@@ -22,17 +22,20 @@ pub fn trigger_arrow_large_string_array_downcast_mismatch_for_test() -> Result<(
     crate::interop::arrow_host::testing_hooks::trigger_large_string_array_downcast_mismatch_for_test()
 }
 
-/// Reset the process-wide host-copy Arrow interop observation counters used by
-/// integration tests.
+/// Start a fresh host-copy Arrow interop observation window for the calling
+/// thread.
 ///
-/// Call this only when no host-copy Arrow interop is in flight in the process.
-/// The process-wide counters are reset, while last-boundary detail is cleared
-/// only for the calling thread.
+/// The underlying call totals remain process-wide and monotonic so resets from
+/// parallel tests cannot rewind another thread's observation window. This
+/// snapshots the calling thread's count baselines and clears last-boundary
+/// detail only for that thread. Calls dispatched to other threads after this
+/// reset remain visible through the calling thread's counters.
 pub fn reset_arrow_host_interop_observation_for_test() {
     crate::interop::arrow_host::testing_hooks::reset_host_interop_observation_for_test();
 }
 
-/// Read how many times the host-copy Arrow export entrypoint ran process-wide.
+/// Read how many times the host-copy Arrow export entrypoint ran process-wide
+/// since the calling thread last reset its observation window.
 ///
 /// The counter follows exports dispatched to dedicated GPU worker threads, so
 /// a caller may reset it before asynchronous execution and inspect it after
@@ -41,7 +44,8 @@ pub fn arrow_host_export_call_count_for_test() -> usize {
     crate::interop::arrow_host::testing_hooks::host_export_call_count_for_test()
 }
 
-/// Read how many times the host-copy Arrow import entrypoint ran process-wide.
+/// Read how many times the host-copy Arrow import entrypoint ran process-wide
+/// since the calling thread last reset its observation window.
 pub fn arrow_host_import_call_count_for_test() -> usize {
     crate::interop::arrow_host::testing_hooks::host_import_call_count_for_test()
 }

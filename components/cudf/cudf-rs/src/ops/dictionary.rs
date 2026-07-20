@@ -125,7 +125,7 @@ fn match_dictionaries_impl(
         [("num_columns", n.to_string()), ("execution_authority", "retained_domain".to_string())],
     )?;
 
-    validate_match_dictionaries_result_shape(out_columns, out_count, n_i32, operation)?;
+    validate_match_dictionaries_result_shape(out_columns, out_count, n_i32, output_domain.device_id(), operation)?;
 
     let returned = unsafe { std::slice::from_raw_parts(out_columns, out_count as usize) };
     let columns = returned

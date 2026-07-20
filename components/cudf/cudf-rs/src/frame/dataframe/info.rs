@@ -2,7 +2,11 @@ use std::{fmt, sync::Arc};
 
 use super::owned::DataFrame;
 use crate::{
-    core::{column::Column, error::Result, types::DataType},
+    core::{
+        column::Column,
+        error::{Error, ErrorCode, Result},
+        types::DataType,
+    },
     internal::hash::{FastHashMap, fast_hash_map_with_capacity},
     runtime::{
         BoundaryKind, BoundaryObservation, QueryMemoryObservation, QueryStageKind,
@@ -299,7 +303,7 @@ impl DataFrame {
                 let bytes = column
                     .payload_size_bytes()
                     .map_err(|e| e.reanchor("dataframe::info_with").with_column(name.clone()))?;
-                total_payload_bytes += bytes;
+                total_payload_bytes = checked_dataframe_memory_total(total_payload_bytes, bytes, name, "payload")?;
                 Some(bytes)
             } else {
                 None
@@ -309,7 +313,8 @@ impl DataFrame {
                 let bytes = column
                     .device_allocated_size_bytes()
                     .map_err(|e| e.reanchor("dataframe::info_with").with_column(name.clone()))?;
-                total_device_allocated_bytes += bytes;
+                total_device_allocated_bytes =
+                    checked_dataframe_memory_total(total_device_allocated_bytes, bytes, name, "device_allocated")?;
                 Some(bytes)
             } else {
                 None
@@ -459,5 +464,42 @@ impl DataFrame {
         let observation = self.boundary_observation_for_query_stage(kind, stage, synchronized_for_host, operation)?;
         record_boundary_observation_in_domain(self.execution_domain(), observation);
         Ok(observation)
+    }
+}
+
+fn checked_dataframe_memory_total(
+    accumulated: usize,
+    column_bytes: usize,
+    column_name: &str,
+    accounting_kind: &'static str,
+) -> Result<usize> {
+    accumulated.checked_add(column_bytes).ok_or_else(|| {
+        Error::new_with(
+            ErrorCode::SizeOverflow,
+            "dataframe::info_with",
+            "DataFrame memory accounting total overflowed usize",
+        )
+        .with_column(column_name.to_string())
+        .with_detail("accounting_kind", accounting_kind)
+        .with_detail("accumulated_bytes", accumulated.to_string())
+        .with_detail("column_bytes", column_bytes.to_string())
+    })
+}
+
+#[cfg(test)]
+mod size_accounting_tests {
+    use super::*;
+
+    #[test]
+    fn dataframe_memory_total_overflow_is_typed_and_does_not_wrap() {
+        for accounting_kind in ["payload", "device_allocated"] {
+            let error = checked_dataframe_memory_total(usize::MAX, 1, "oversized", accounting_kind)
+                .expect_err("usize overflow must be rejected");
+            assert_eq!(error.code(), ErrorCode::SizeOverflow);
+            assert_eq!(error.status(), crate::core::error::ErrorStatus::Permanent);
+            assert_eq!(error.detail_value("accounting_kind"), Some(accounting_kind));
+            assert_eq!(error.detail_value("accumulated_bytes"), Some(usize::MAX.to_string().as_str()));
+            assert_eq!(error.detail_value("column_bytes"), Some("1"));
+        }
     }
 }

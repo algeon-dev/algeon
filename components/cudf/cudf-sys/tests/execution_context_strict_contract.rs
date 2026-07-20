@@ -608,10 +608,10 @@ fn hash_join_ex_entries_use_required_exec_options() {
         ("cudf_full_join_indices_ex", "cudf_status_t cudf_left_semi_join_indices_ex"),
         ("cudf_left_semi_join_indices_ex", "cudf_status_t cudf_left_anti_join_indices_ex"),
         ("cudf_left_anti_join_indices_ex", "cudf_status_t cudf_distinct_hash_join_create_ex"),
-        ("cudf_distinct_hash_join_create_ex", "void cudf_distinct_hash_join_destroy"),
+        ("cudf_distinct_hash_join_create_ex", "cudf_status_t cudf_distinct_hash_join_destroy"),
         ("cudf_distinct_hash_join_left_join_ex", "cudf_status_t cudf_hash_join_create_ex"),
         ("cudf_hash_join_create_ex", "cudf_status_t cudf_hash_join_pre_build_reservation_size_ex"),
-        ("cudf_hash_join_pre_build_reservation_size_ex", "void cudf_hash_join_destroy"),
+        ("cudf_hash_join_pre_build_reservation_size_ex", "cudf_status_t cudf_hash_join_destroy"),
         ("cudf_hash_join_inner_join_ex", "cudf_status_t cudf_hash_join_inner_join_with_output_size_ex"),
         ("cudf_hash_join_inner_join_with_output_size_ex", "cudf_status_t cudf_hash_join_inner_join_size_ex"),
         ("cudf_hash_join_left_join_ex", "cudf_status_t cudf_hash_join_left_join_with_output_size_ex"),
@@ -1453,7 +1453,7 @@ fn io_duplicate_non_ex_production_apis_are_removed() {
 #[test]
 fn device_buffer_ex_entries_use_required_exec_options() {
     for (function, end_marker) in [
-        ("cudf_device_buffer_create_ex", "void cudf_device_buffer_destroy"),
+        ("cudf_device_buffer_create_ex", "cudf_status_t cudf_device_buffer_destroy"),
         ("cudf_device_buffer_copy_from_host_ex", "cudf_status_t cudf_column_adopt_device_buffer("),
     ] {
         let body = function_region_by_function_name(DEVICE_BUFFER_CPP, function, end_marker);
@@ -1586,7 +1586,7 @@ fn arrow_device_entries_use_required_exec_options() {
         ("cudf_arrow_device_column_export", "cudf_status_t cudf_arrow_device_table_export"),
         ("cudf_arrow_device_table_export", "cudf_status_t cudf_arrow_device_column_import"),
         ("cudf_arrow_device_column_import", "cudf_status_t cudf_arrow_device_table_import"),
-        ("cudf_arrow_device_table_import", "void cudf_arrow_device_schema_destroy"),
+        ("cudf_arrow_device_table_import", "cudf_status_t cudf_arrow_device_schema_destroy"),
     ] {
         let body = function_region(ARROW_DEVICE_CPP, &format!("cudf_status_t {function}"), end_marker);
         assert!(
@@ -1637,7 +1637,7 @@ fn scalar_ex_entries_use_required_exec_options() {
         ("cudf_scalar_create_timestamp_raw_ex", "cudf_status_t cudf_scalar_create_duration_raw_ex"),
         ("cudf_scalar_create_duration_raw_ex", "cudf_status_t cudf_scalar_create_string_ex"),
         ("cudf_scalar_create_string_ex", "cudf_status_t cudf_scalar_copy_ex"),
-        ("cudf_scalar_copy_ex", "void cudf_scalar_destroy"),
+        ("cudf_scalar_copy_ex", "cudf_status_t cudf_scalar_destroy"),
         ("cudf_scalar_is_valid_ex", "cudf_status_t cudf_scalar_value_ex"),
         ("cudf_scalar_value_ex", "cudf_status_t cudf_scalar_string_value_ex"),
         ("cudf_scalar_string_value_ex", "void cudf_string_free"),

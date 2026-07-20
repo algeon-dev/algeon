@@ -7,11 +7,11 @@ int cudf_rust_c_header_smoke(void)
     &cudf_cuda_device_pci_bus_id;
   cudf_status_t (*f1_device_memory)(int32_t, size_t*, size_t*) = &cudf_device_memory_info;
   cudf_status_t (*f1_device_attr)(int32_t, int32_t, int32_t*)  = &cudf_device_attribute;
-  void (*f2)(cudf_stream_handle)                              = &cudf_stream_destroy;
+  cudf_status_t (*f2)(cudf_stream_handle)                     = &cudf_stream_destroy;
   cudf_status_t (*f2b)(cudf_stream_handle, void**)            = &cudf_stream_raw;
   cudf_status_t (*f2b2)(void*)                                = &cudf_raw_cuda_stream_synchronize;
   cudf_status_t (*f2c)(cudf_event_handle*)                    = &cudf_event_create;
-  void (*f2d)(cudf_event_handle)                              = &cudf_event_destroy;
+  cudf_status_t (*f2d)(cudf_event_handle)                     = &cudf_event_destroy;
   cudf_status_t (*f2e)(cudf_event_handle, cudf_stream_handle) = &cudf_event_record;
   cudf_status_t (*f2f)(cudf_event_handle)                     = &cudf_event_synchronize;
   cudf_status_t (*f2g)(cudf_event_handle, int32_t*)           = &cudf_event_is_ready;
@@ -36,13 +36,13 @@ int cudf_rust_c_header_smoke(void)
   cudf_status_t (*f4d)(cudf_reservation_handle, size_t) = &cudf_reservation_resize;
 
   cudf_status_t (*f5)(cudf_type_id_t, cudf_data_type_handle*) = &cudf_data_type_create;
-  void (*f6)(cudf_data_type_handle)                           = &cudf_data_type_destroy;
+  cudf_status_t (*f6)(cudf_data_type_handle)                  = &cudf_data_type_destroy;
 
   cudf_status_t (*f7)(cudf_column_handle, cudf_column_view_handle*) = &cudf_column_view;
-  void (*f8)(cudf_column_view_handle)                               = &cudf_column_view_destroy;
+  cudf_status_t (*f8)(cudf_column_view_handle)                      = &cudf_column_view_destroy;
 
   cudf_status_t (*f9)(cudf_table_handle, cudf_table_view_handle*) = &cudf_table_view;
-  void (*f10)(cudf_table_view_handle)                             = &cudf_table_view_destroy;
+  cudf_status_t (*f10)(cudf_table_view_handle)                    = &cudf_table_view_destroy;
 
   cudf_status_t (*f11)(cudf_column_view_handle,
                        cudf_type_id_t,
@@ -147,8 +147,8 @@ int cudf_rust_c_header_smoke(void)
                            cudf_ast_expression_handle,
                            cudf_ast_expression_handle,
                            cudf_ast_expression_handle*) = &cudf_ast_operation_binary_create;
-  void (*f22ast4)(cudf_ast_expression_handle)           = &cudf_ast_expression_destroy;
-  void (*f22cfsd2)(cudf_conditional_full_join_size_data_handle) =
+  cudf_status_t (*f22ast4)(cudf_ast_expression_handle)  = &cudf_ast_expression_destroy;
+  cudf_status_t (*f22cfsd2)(cudf_conditional_full_join_size_data_handle) =
     &cudf_conditional_full_join_size_data_destroy;
   cudf_status_t (*f22cfsd3)(cudf_conditional_full_join_size_data_handle, size_t*) =
     &cudf_conditional_full_join_size_data_output_size;
@@ -157,7 +157,7 @@ int cudf_rust_c_header_smoke(void)
   cudf_status_t (*f22cfsd5)(cudf_conditional_full_join_size_data_handle, size_t*) =
     &cudf_conditional_full_join_size_data_gather_map_size;
   cudf_join_kind_t f22fj_kind                         = CUDF_JOIN_KIND_INNER_JOIN;
-  void (*f22msd10)(cudf_mixed_join_size_data_handle) =
+  cudf_status_t (*f22msd10)(cudf_mixed_join_size_data_handle) =
     &cudf_mixed_join_size_data_destroy;
   cudf_status_t (*f22msd11)(cudf_mixed_join_size_data_handle, size_t*) =
     &cudf_mixed_join_size_data_output_size;
@@ -165,8 +165,8 @@ int cudf_rust_c_header_smoke(void)
     &cudf_mixed_join_size_data_device_allocated_size;
   cudf_status_t (*f22msd13)(cudf_mixed_join_size_data_handle, size_t*) =
     &cudf_mixed_join_size_data_gather_map_size;
-  void (*f22ac)(cudf_distinct_hash_join_handle)         = &cudf_distinct_hash_join_destroy;
-  void (*f22af)(cudf_hash_join_handle)                  = &cudf_hash_join_destroy;
+  cudf_status_t (*f22ac)(cudf_distinct_hash_join_handle) = &cudf_distinct_hash_join_destroy;
+  cudf_status_t (*f22af)(cudf_hash_join_handle)          = &cudf_hash_join_destroy;
   cudf_status_t (*f22af_size)(cudf_hash_join_handle, size_t*) =
     &cudf_hash_join_device_allocated_size;
   cudf_status_t (*f22b)(
@@ -201,7 +201,7 @@ int cudf_rust_c_header_smoke(void)
   cudf_nullable_join_t j1  = CUDF_NULLABLE_JOIN_YES;
   cudf_device_attribute_t device_attr = CUDF_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT;
 
-  void (*f24)(cudf_device_buffer_handle)                   = &cudf_device_buffer_destroy;
+  cudf_status_t (*f24)(cudf_device_buffer_handle)          = &cudf_device_buffer_destroy;
   cudf_status_t (*f25)(cudf_device_buffer_handle, void**)  = &cudf_device_buffer_data;
   cudf_status_t (*f26)(cudf_device_buffer_handle, size_t*) = &cudf_device_buffer_size;
   cudf_status_t (*f28)(cudf_type_id_t, cudf_device_buffer_handle, int32_t, cudf_column_handle*) =

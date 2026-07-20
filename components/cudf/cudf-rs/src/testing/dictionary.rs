@@ -16,3 +16,8 @@ pub fn trigger_match_dictionaries_null_result_array_for_test() -> Result<()> {
 pub fn trigger_match_dictionaries_column_count_limit_error_for_test() -> Result<()> {
     crate::ops::dictionary::testing_hooks::trigger_match_dictionaries_column_count_limit_error_for_test()
 }
+
+/// Trigger fatal teardown while cleaning a malformed dictionary result.
+pub fn trigger_match_dictionaries_fatal_malformed_cleanup_for_test() -> Result<()> {
+    crate::ops::dictionary::testing_hooks::trigger_match_dictionaries_fatal_malformed_cleanup_for_test()
+}

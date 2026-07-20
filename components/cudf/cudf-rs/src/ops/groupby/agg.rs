@@ -214,7 +214,7 @@ pub(crate) fn prepared_groupby_facts_raw(
     keys_domain: &Arc<ExecutionDomain>,
     operation: &'static str,
 ) -> Result<PreparedGroupByFacts> {
-    let exec_options = keys_domain.exec_options_raw();
+    let exec_options = keys_domain.enter_execution()?;
     let mut num_groups: i64 = 0;
     let mut grouped_key_output_bytes: usize = 0;
     let mut max_group_size: i64 = 0;
@@ -225,7 +225,7 @@ pub(crate) fn prepared_groupby_facts_raw(
                 &mut num_groups,
                 &mut grouped_key_output_bytes,
                 &mut max_group_size,
-                &exec_options,
+                exec_options.options(),
             )
         },
         operation,
@@ -256,7 +256,12 @@ pub(crate) fn prepared_groupby_facts_raw(
 
 impl Drop for PreparedGroupBy<'_> {
     fn drop(&mut self) {
-        unsafe { cudf_sys::cudf_prepared_groupby_destroy(self.handle.as_ptr()) };
+        crate::core::native_teardown::drop_device_owned_handle(
+            self.handle.as_ptr(),
+            self.keys_domain.device_id(),
+            "PreparedGroupBy::drop",
+            |owned| unsafe { cudf_sys::cudf_prepared_groupby_destroy(owned) },
+        );
     }
 }
 

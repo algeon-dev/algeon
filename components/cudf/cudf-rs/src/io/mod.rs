@@ -56,6 +56,82 @@ pub mod json;
 pub mod parquet;
 pub mod source;
 
+/// Process-default KvikIO compatibility mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum KvikioCompatMode {
+    Auto,
+    On,
+    Off,
+}
+
+impl KvikioCompatMode {
+    const fn as_ffi(self) -> i32 {
+        match self {
+            Self::Auto => cudf_sys::CUDF_IO_KVIKIO_COMPAT_MODE_AUTO,
+            Self::On => cudf_sys::CUDF_IO_KVIKIO_COMPAT_MODE_ON,
+            Self::Off => cudf_sys::CUDF_IO_KVIKIO_COMPAT_MODE_OFF,
+        }
+    }
+}
+
+/// Configure KvikIO compatibility without mutating process environment.
+///
+/// Call this before starting I/O workers. Existing KvikIO file handles retain
+/// the mode selected when they were created.
+pub fn set_kvikio_compat_mode(mode: KvikioCompatMode) -> Result<()> {
+    const OPERATION: &str = "io::set_kvikio_compat_mode";
+    error::check_status_in_with_details(
+        // SAFETY: the mode is one of the native enum's declared values.
+        unsafe { cudf_sys::cudf_io_kvikio_set_compat_mode(mode.as_ffi()) },
+        OPERATION,
+        [("resource", "kvikio_defaults".to_string())],
+    )
+}
+
+/// Return KvikIO's configured process default, when this build supports it.
+pub fn kvikio_compat_mode() -> Option<KvikioCompatMode> {
+    // SAFETY: this getter takes no pointers and returns a small integer tag.
+    match unsafe { cudf_sys::cudf_io_kvikio_compat_mode() } {
+        cudf_sys::CUDF_IO_KVIKIO_COMPAT_MODE_AUTO => Some(KvikioCompatMode::Auto),
+        cudf_sys::CUDF_IO_KVIKIO_COMPAT_MODE_ON => Some(KvikioCompatMode::On),
+        cudf_sys::CUDF_IO_KVIKIO_COMPAT_MODE_OFF => Some(KvikioCompatMode::Off),
+        _ => None,
+    }
+}
+
+/// Drain KvikIO's retained host bounce-buffer pools.
+///
+/// This operation is idempotent. It must run after I/O workers stop and before
+/// CUDA teardown. Active I/O returns [`ErrorCode::IoBusy`] without clearing
+/// any buffer.
+pub fn drain_kvikio_bounce_buffer_pools() -> Result<u64> {
+    const OPERATION: &str = "io::drain_kvikio_bounce_buffer_pools";
+    let mut cleared_bytes = 0u64;
+    let mut active_io = 0u64;
+    error::check_status_in_with_details(
+        // SAFETY: both out-pointers refer to live aligned u64 stack values.
+        unsafe { cudf_sys::cudf_io_kvikio_drain_bounce_buffer_pools(&mut cleared_bytes, &mut active_io) },
+        OPERATION,
+        [("resource", "kvikio_bounce_buffer_pools".to_string())],
+    )?;
+    kvikio_drain_result(cleared_bytes, active_io)
+}
+
+fn kvikio_drain_result(cleared_bytes: u64, active_io: u64) -> Result<u64> {
+    if active_io == 0 {
+        return Ok(cleared_bytes);
+    }
+    Err(Error::new_with(
+        ErrorCode::IoBusy,
+        "io::drain_kvikio_bounce_buffer_pools",
+        "cannot drain KvikIO bounce buffers while I/O is active",
+    )
+    .with_detail("resource", "kvikio_bounce_buffer_pools")
+    .with_detail("reason", "active_io")
+    .with_detail("active_io", active_io.to_string())
+    .with_detail("remedy", "stop and join all I/O workers before retrying bounce-buffer drain"))
+}
+
 /// Probe whether the cuFile driver can be opened by this process.
 ///
 /// This is a deployment capability check for GPUDirect Storage. It only
@@ -223,6 +299,55 @@ mod tests {
     use std::{ffi::CString, fs, os::raw::c_char, ptr};
 
     use crate::core::error::{ErrorCode, ErrorKind, ErrorStatus, FactKeyName, FactValue};
+
+    #[test]
+    fn kvikio_bounce_buffer_drain_busy_error_is_flat_and_retryable() {
+        let error = super::kvikio_drain_result(0, 2).unwrap_err();
+        assert_eq!(error.code(), ErrorCode::IoBusy);
+        assert_eq!(error.kind(), ErrorKind::ResourceExhausted);
+        assert_eq!(error.status(), ErrorStatus::Temporary);
+        assert_eq!(error.detail_value("active_io"), Some("2"));
+        assert_eq!(error.detail_value("reason"), Some("active_io"));
+    }
+
+    #[test]
+    fn kvikio_bounce_buffer_drain_idle_result_is_idempotent() {
+        assert_eq!(super::kvikio_drain_result(16 * 1024 * 1024, 0).unwrap(), 16 * 1024 * 1024);
+        assert_eq!(super::kvikio_drain_result(0, 0).unwrap(), 0);
+    }
+
+    #[test]
+    fn kvikio_native_lifecycle_gate_rejects_drain_while_io_is_active() {
+        struct ActiveIoGuard(bool);
+
+        impl Drop for ActiveIoGuard {
+            fn drop(&mut self) {
+                if !self.0 {
+                    return;
+                }
+                // SAFETY: this guard owns the matching test-only active-I/O
+                // increment. Cleanup is best-effort while unwinding; the
+                // normal path below asserts the status explicitly.
+                let _ = unsafe { cudf_sys::cudf_test_io_kvikio_active_io_end() };
+            }
+        }
+
+        // SAFETY: the test hook takes no pointers and the guard balances the
+        // process-global lifecycle count even if the assertion below panics.
+        assert_eq!(unsafe { cudf_sys::cudf_test_io_kvikio_active_io_begin() }, cudf_sys::CUDF_SUCCESS);
+        let mut active_io = ActiveIoGuard(true);
+        if super::kvikio_compat_mode().is_some() {
+            let error = super::drain_kvikio_bounce_buffer_pools().unwrap_err();
+            assert_eq!(error.code(), ErrorCode::IoBusy);
+            assert_eq!(error.kind(), ErrorKind::ResourceExhausted);
+            assert_eq!(error.status(), ErrorStatus::Temporary);
+            assert_eq!(error.detail_value("reason"), Some("active_io"));
+        }
+        // SAFETY: this is the matching decrement for the begin call above.
+        let status = unsafe { cudf_sys::cudf_test_io_kvikio_active_io_end() };
+        active_io.0 = false;
+        assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    }
 
     #[test]
     fn test_collect_column_names_rejects_negative_count() {

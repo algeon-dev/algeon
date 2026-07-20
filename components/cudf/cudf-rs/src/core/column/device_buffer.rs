@@ -62,9 +62,9 @@ unsafe impl Sync for DeviceBuffer {}
 impl DeviceBuffer {
     fn create_on_current_device(size_bytes: usize, domain: Arc<ExecutionDomain>) -> Result<Self> {
         let mut handle = ptr::null_mut();
-        let exec_options = domain.exec_options_raw();
+        let exec_options = domain.enter_execution()?;
         error::check_status_in(
-            unsafe { cudf_sys::cudf_device_buffer_create_ex(size_bytes, &exec_options, &mut handle) },
+            unsafe { cudf_sys::cudf_device_buffer_create_ex(size_bytes, exec_options.options(), &mut handle) },
             "device_buffer::create_on_current_device",
         )?;
         Ok(Self {
@@ -83,14 +83,14 @@ impl DeviceBuffer {
         let byte_len = mem::size_of_val(data);
         let buf = Self::create_on_current_device(byte_len, domain)?;
         if byte_len > 0 {
-            let exec_options = buf.domain.exec_options_raw();
+            let exec_options = buf.domain.enter_execution()?;
             error::check_status_in(
                 unsafe {
                     cudf_sys::cudf_device_buffer_copy_from_host_ex(
                         buf.handle.as_ptr(),
                         data.as_ptr() as *const c_void,
                         byte_len,
-                        &exec_options,
+                        exec_options.options(),
                     )
                 },
                 "device_buffer::from_host_data_in_runtime",
@@ -115,7 +115,7 @@ impl DeviceBuffer {
         if data.is_empty() {
             return Ok(());
         }
-        let exec_options = self.domain.exec_options_raw();
+        let exec_options = self.domain.enter_execution()?;
         error::check_status_in(
             unsafe {
                 cudf_sys::cudf_device_buffer_copy_from_host_range_async_ex(
@@ -123,7 +123,7 @@ impl DeviceBuffer {
                     dst_offset,
                     data.as_ptr() as *const c_void,
                     data.len(),
-                    &exec_options,
+                    exec_options.options(),
                 )
             },
             "device_buffer::copy_from_host_range_async",
@@ -191,10 +191,11 @@ impl DeviceBuffer {
 
 impl Drop for DeviceBuffer {
     fn drop(&mut self) {
-        // SAFETY: self.handle is valid (NonNull from construction). Drop runs
-        // exactly once, so the handle is destroyed exactly once.
-        unsafe {
-            cudf_sys::cudf_device_buffer_destroy(self.handle.as_ptr());
-        }
+        crate::core::native_teardown::drop_device_owned_handle(
+            self.handle.as_ptr(),
+            self.domain.device_id(),
+            "DeviceBuffer::drop",
+            |owned| unsafe { cudf_sys::cudf_device_buffer_destroy(owned) },
+        );
     }
 }

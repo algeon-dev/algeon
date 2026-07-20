@@ -158,14 +158,14 @@ impl Scalar {
 
     pub(crate) fn from_value_in_domain<T: CudfType>(value: T, domain: &Arc<ExecutionDomain>) -> Result<Self> {
         let mut handle = ptr::null_mut();
-        let exec_options = domain.exec_options_raw();
+        let exec_options = domain.enter_execution()?;
         error::check_status_in(
             unsafe {
                 cudf_sys::cudf_scalar_create_numeric_ex(
                     T::TYPE_ID.to_raw(),
                     &value as *const T as *const c_void,
                     1,
-                    &exec_options,
+                    exec_options.options(),
                     &mut handle,
                 )
             },
@@ -183,9 +183,9 @@ impl Scalar {
             )
         })?;
         let mut handle = ptr::null_mut();
-        let exec_options = domain.exec_options_raw();
+        let exec_options = domain.enter_execution()?;
         error::check_status_in(
-            unsafe { cudf_sys::cudf_scalar_create_string_ex(c_str.as_ptr(), 1, &exec_options, &mut handle) },
+            unsafe { cudf_sys::cudf_scalar_create_string_ex(c_str.as_ptr(), 1, exec_options.options(), &mut handle) },
             "scalar::from_str_in_domain",
         )?;
         Self::from_handle_with_domain(handle, Arc::clone(domain))
@@ -196,14 +196,14 @@ impl Scalar {
         // primitives, all of which have valid all-zero bit patterns.
         let zero = unsafe { std::mem::zeroed::<T>() };
         let mut handle = ptr::null_mut();
-        let exec_options = domain.exec_options_raw();
+        let exec_options = domain.enter_execution()?;
         error::check_status_in(
             unsafe {
                 cudf_sys::cudf_scalar_create_numeric_ex(
                     T::TYPE_ID.to_raw(),
                     &zero as *const T as *const c_void,
                     0,
-                    &exec_options,
+                    exec_options.options(),
                     &mut handle,
                 )
             },
@@ -216,9 +216,9 @@ impl Scalar {
         // SAFETY (unwrap): empty string literal "" contains no interior null bytes.
         let empty = CString::default();
         let mut handle = ptr::null_mut();
-        let exec_options = domain.exec_options_raw();
+        let exec_options = domain.enter_execution()?;
         error::check_status_in(
-            unsafe { cudf_sys::cudf_scalar_create_string_ex(empty.as_ptr(), 0, &exec_options, &mut handle) },
+            unsafe { cudf_sys::cudf_scalar_create_string_ex(empty.as_ptr(), 0, exec_options.options(), &mut handle) },
             "scalar::null_string_in_domain",
         )?;
         Self::from_handle_with_domain(handle, Arc::clone(domain))
@@ -368,7 +368,7 @@ impl Scalar {
         operation: &'static str,
     ) -> Result<Self> {
         let mut handle = ptr::null_mut();
-        let exec_options = domain.exec_options_raw();
+        let exec_options = domain.enter_execution()?;
         error::check_status_in(
             unsafe {
                 cudf_sys::cudf_scalar_create_decimal_raw_ex(
@@ -376,7 +376,7 @@ impl Scalar {
                     value as *const c_void,
                     dtype.scale(),
                     is_valid,
-                    &exec_options,
+                    exec_options.options(),
                     &mut handle,
                 )
             },
@@ -400,9 +400,9 @@ impl Scalar {
         ) -> cudf_sys::cudf_status_t,
     ) -> Result<Self> {
         let mut handle = ptr::null_mut();
-        let exec_options = domain.exec_options_raw();
+        let exec_options = domain.enter_execution()?;
         error::check_status_in(
-            unsafe { create(type_id.to_raw(), raw, is_valid, &exec_options, &mut handle) },
+            unsafe { create(type_id.to_raw(), raw, is_valid, exec_options.options(), &mut handle) },
             operation,
         )?;
         Self::from_handle_with_domain(handle, Arc::clone(domain))
@@ -445,9 +445,9 @@ impl Scalar {
         let _consumer_fence = ExecutionDomain::insert_stream_dependency(&self.domain, domain, operation)?;
 
         let mut handle = ptr::null_mut();
-        let exec_options = domain.exec_options_raw();
+        let exec_options = domain.enter_execution()?;
         error::check_status_in(
-            unsafe { cudf_sys::cudf_scalar_copy_ex(self.handle.as_ptr(), &exec_options, &mut handle) },
+            unsafe { cudf_sys::cudf_scalar_copy_ex(self.handle.as_ptr(), exec_options.options(), &mut handle) },
             operation,
         )?;
         Self::from_handle_with_domain(handle, Arc::clone(domain))
@@ -583,10 +583,10 @@ impl Scalar {
     /// returning a host-visible boolean result.
     pub fn is_valid(&self) -> Result<bool> {
         let mut out: i32 = 0;
-        let exec_options = self.domain.exec_options_raw();
+        let exec_options = self.domain.enter_execution()?;
         // SAFETY: self.handle is valid (NonNull invariant from construction).
         error::check_status_in(
-            unsafe { cudf_sys::cudf_scalar_is_valid_ex(self.handle.as_ptr(), &mut out, &exec_options) },
+            unsafe { cudf_sys::cudf_scalar_is_valid_ex(self.handle.as_ptr(), &mut out, exec_options.options()) },
             "scalar::is_valid",
         )?;
         self.domain.synchronize_for_host_visibility("scalar::is_valid")?;
@@ -614,12 +614,16 @@ impl Scalar {
         // SAFETY: `CudfType` is sealed to built-in primitives with valid
         // all-zero bit patterns.
         let mut out = unsafe { std::mem::zeroed::<T>() };
-        let exec_options = self.domain.exec_options_raw();
+        let exec_options = self.domain.enter_execution()?;
         // SAFETY: self.handle is valid. Type was checked to match T::TYPE_ID above.
         // &mut out is a valid pointer to receive the scalar value.
         error::check_status_in(
             unsafe {
-                cudf_sys::cudf_scalar_value_ex(self.handle.as_ptr(), &mut out as *mut T as *mut c_void, &exec_options)
+                cudf_sys::cudf_scalar_value_ex(
+                    self.handle.as_ptr(),
+                    &mut out as *mut T as *mut c_void,
+                    exec_options.options(),
+                )
             },
             "scalar::value",
         )?;
@@ -631,10 +635,14 @@ impl Scalar {
         // SAFETY: raw scalar value types used by this module are plain integer
         // representations with valid all-zero bit patterns.
         let mut out = unsafe { std::mem::zeroed::<T>() };
-        let exec_options = self.domain.exec_options_raw();
+        let exec_options = self.domain.enter_execution()?;
         error::check_status_in(
             unsafe {
-                cudf_sys::cudf_scalar_value_ex(self.handle.as_ptr(), &mut out as *mut T as *mut c_void, &exec_options)
+                cudf_sys::cudf_scalar_value_ex(
+                    self.handle.as_ptr(),
+                    &mut out as *mut T as *mut c_void,
+                    exec_options.options(),
+                )
             },
             operation,
         )?;
@@ -776,10 +784,12 @@ impl Scalar {
 
         let mut ptr: *mut c_char = ptr::null_mut();
         let mut len: i32 = 0;
-        let exec_options = self.domain.exec_options_raw();
+        let exec_options = self.domain.enter_execution()?;
         // SAFETY: self.handle is valid (NonNull invariant from construction).
         error::check_status_in(
-            unsafe { cudf_sys::cudf_scalar_string_value_ex(self.handle.as_ptr(), &mut ptr, &mut len, &exec_options) },
+            unsafe {
+                cudf_sys::cudf_scalar_string_value_ex(self.handle.as_ptr(), &mut ptr, &mut len, exec_options.options())
+            },
             "scalar::string_value",
         )?;
         // SAFETY: ptr and len are returned by a successful FFI call.
@@ -799,11 +809,12 @@ pub(crate) fn trigger_negative_string_length_error_for_test() -> Result<()> {
 
 impl Drop for Scalar {
     fn drop(&mut self) {
-        // SAFETY: self.handle is valid (NonNull from construction). Drop runs
-        // exactly once, so the handle is destroyed exactly once.
-        unsafe {
-            cudf_sys::cudf_scalar_destroy(self.handle.as_ptr());
-        }
+        crate::core::native_teardown::drop_device_owned_handle(
+            self.handle.as_ptr(),
+            self.domain.device_id(),
+            "Scalar::drop",
+            |owned| unsafe { cudf_sys::cudf_scalar_destroy(owned) },
+        );
     }
 }
 

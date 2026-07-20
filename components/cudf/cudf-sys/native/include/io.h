@@ -64,6 +64,12 @@ typedef struct {
   int64_t row_groups_after_bloom_filter;
 } cudf_io_parquet_pruning_evidence_t;
 
+typedef enum {
+  CUDF_IO_KVIKIO_COMPAT_MODE_AUTO = 0,
+  CUDF_IO_KVIKIO_COMPAT_MODE_ON   = 1,
+  CUDF_IO_KVIKIO_COMPAT_MODE_OFF  = 2,
+} cudf_io_kvikio_compat_mode_t;
+
 // ---------------------------------------------------------------------------
 // Parquet
 // ---------------------------------------------------------------------------
@@ -275,6 +281,25 @@ void cudf_io_free_column_names(char** names, int32_t num_names);
 /// - 0: libcudf was compiled without CUDF_KVIKIO_REMOTE_IO
 /// - -1: reserved for unknown/unreported future states
 int32_t cudf_io_remote_parquet_kvikio_remote_io_enabled(void);
+
+/// Configure KvikIO's process default compatibility mode without mutating the
+/// process environment. Call before starting any I/O workers.
+cudf_status_t cudf_io_kvikio_set_compat_mode(int32_t compat_mode);
+
+/// Return KvikIO's configured process default compatibility mode, or -1 when
+/// this build has no KvikIO remote-I/O support.
+int32_t cudf_io_kvikio_compat_mode(void);
+
+/// Clear every retained KvikIO bounce-buffer pool allocation.
+///
+/// When I/O is active, no buffers are cleared and `out_active_io` is nonzero.
+/// Repeated idle calls are safe and report zero cleared bytes after the first.
+cudf_status_t cudf_io_kvikio_drain_bounce_buffer_pools(uint64_t* out_cleared_bytes,
+                                                       uint64_t* out_active_io);
+
+/// Test-only active-I/O lifecycle controls used to exercise busy drain paths.
+cudf_status_t cudf_test_io_kvikio_active_io_begin(void);
+cudf_status_t cudf_test_io_kvikio_active_io_end(void);
 
 /// Opens a path datasource and reports datasource-level read capability without
 /// launching a Parquet decode. `preferred_read_size` controls the

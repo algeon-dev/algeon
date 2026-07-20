@@ -1358,7 +1358,7 @@ fn helper_built_owned_transfer_succeeds_across_column_series_table_and_dataframe
 #[test]
 fn runtime_release_owned_column_transfer_abandoned_without_import_or_release_cleans_up_without_panicking() {
     // When both the transfer root and the releaser are dropped without either
-    // importing or releasing, the RuntimeOwnedTransferInner Drop impl must
+    // importing or releasing, the RuntimeOwnedTransferState Drop impl must
     // clean up the retained Column path without panicking.
     let runtime = Runtime::builder().build().unwrap();
     let column = runtime.column_from_slice(&[1i32, 2, 3]).unwrap();

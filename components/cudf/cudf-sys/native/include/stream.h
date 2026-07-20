@@ -19,8 +19,9 @@ typedef void* cudf_stream_handle;
 /// `_ex` APIs onto an explicit stream.
 cudf_status_t cudf_stream_create(cudf_stream_handle* out);
 
-/// Destroy a CUDA stream handle.
-void cudf_stream_destroy(cudf_stream_handle handle);
+/// Destroy a CUDA stream handle. Ownership is consumed on call, including on
+/// failure; the handle must never be reused.
+cudf_status_t cudf_stream_destroy(cudf_stream_handle handle);
 
 /// Synchronize work already enqueued on a CUDA stream handle.
 cudf_status_t cudf_stream_synchronize(cudf_stream_handle handle);

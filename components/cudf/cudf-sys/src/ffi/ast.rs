@@ -24,5 +24,5 @@ unsafe extern "C" {
         out: *mut cudf_ast_expression_handle,
     ) -> cudf_status_t;
 
-    pub fn cudf_ast_expression_destroy(expr: cudf_ast_expression_handle);
+    pub fn cudf_ast_expression_destroy(expr: cudf_ast_expression_handle) -> cudf_status_t;
 }

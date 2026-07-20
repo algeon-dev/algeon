@@ -1148,7 +1148,7 @@ pub(crate) fn read_parquet_table_with_evidence(
     };
 
     let output_domain = Arc::clone(options.runtime.execution_domain());
-    let exec_options = output_domain.exec_options_raw();
+    let exec_options = output_domain.enter_execution()?;
 
     let mut table_handle = ptr::null_mut();
     let mut names_ptr: *mut *mut c_char = ptr::null_mut();
@@ -1221,7 +1221,7 @@ pub(crate) fn read_parquet_table_with_evidence(
                 &mut num_names,
                 &mut remote_raw_evidence,
                 &mut pruning_raw_evidence,
-                &exec_options,
+                exec_options.options(),
             )
         }
     } else if let Some(filepath) = path_input {
@@ -1243,7 +1243,7 @@ pub(crate) fn read_parquet_table_with_evidence(
                 &mut names_ptr,
                 &mut num_names,
                 &mut pruning_raw_evidence,
-                &exec_options,
+                exec_options.options(),
             )
         }
     } else {
@@ -1265,7 +1265,7 @@ pub(crate) fn read_parquet_table_with_evidence(
                 &mut names_ptr,
                 &mut num_names,
                 &mut pruning_raw_evidence,
-                &exec_options,
+                exec_options.options(),
             )
         }
     };
@@ -1423,7 +1423,7 @@ pub(crate) fn read_parquet_multi_table(options: &ParquetMultiTableReadOptions) -
         if row_groups.is_empty() { (ptr::null(), 0) } else { (row_groups.as_ptr(), row_groups.len() as i32) };
 
     let output_domain = Arc::clone(options.runtime.execution_domain());
-    let exec_options = output_domain.exec_options_raw();
+    let exec_options = output_domain.enter_execution()?;
     let predicate = options.predicate.as_ref().map_or(ptr::null_mut(), |predicate| predicate.raw_handle());
     let explicit_remote_source_flags = options
         .inputs
@@ -1506,7 +1506,7 @@ pub(crate) fn read_parquet_multi_table(options: &ParquetMultiTableReadOptions) -
                 &mut num_names,
                 &mut remote_raw_evidence,
                 &mut pruning_raw_evidence,
-                &exec_options,
+                exec_options.options(),
             )
         }
     } else {
@@ -1525,7 +1525,7 @@ pub(crate) fn read_parquet_multi_table(options: &ParquetMultiTableReadOptions) -
                 &mut names_ptr,
                 &mut num_names,
                 &mut pruning_raw_evidence,
-                &exec_options,
+                exec_options.options(),
             )
         }
     };

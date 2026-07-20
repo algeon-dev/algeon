@@ -73,14 +73,14 @@ pub(crate) fn column_view_copy_fixed_width_to_host_for_benchmark(
     // selected stream is synchronized before it returns. Only the destination
     // allocation kind differs between benchmark lanes.
     view.synchronize_host_visibility(operation)?;
-    let exec_options = view.domain.exec_options_raw();
+    let exec_options = view.domain.enter_execution()?;
     error::check_status_in(
         unsafe {
             cudf_sys::cudf_column_view_to_host_ex(
                 view.handle.as_ptr(),
                 host_ptr.cast::<c_void>(),
                 copy_bytes,
-                &exec_options,
+                exec_options.options(),
             )
         },
         operation,

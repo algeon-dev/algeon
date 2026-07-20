@@ -1,11 +1,13 @@
 //! Public owner for device-pinned default stream, allocator provenance, and retained provenance.
 
-use std::sync::Arc;
+use std::{any::Any, sync::Arc};
 
 use rapids_interop::{ExecutionBinding, InteropError, InteropErrorKind};
 
 use super::{
     ExecutionOverrides,
+    affinity::{ExecutionBindingId, RuntimeAffinityAnchor, RuntimeAffinityId, RuntimeLeaseAnchor, RuntimeLeaseOwner},
+    binding_extension::{BindingExtensionInitError, BindingExtensionLease},
     boundary::{BoundaryObserver, BoundaryObserverRef},
     budget::{BudgetedExecutionOutcome, ExecutionBudgetReport, ExecutionBudgetRequest, ExecutionBudgetToken},
     device::DeviceId,
@@ -117,6 +119,7 @@ fn budgeted_series_report(
 #[derive(Clone)]
 pub struct Runtime {
     domain: Arc<ExecutionDomain>,
+    lease_owner: Arc<RuntimeLeaseOwner>,
 }
 
 // SAFETY: Runtime owns an immutable retained-provenance handle bundle. The
@@ -178,6 +181,65 @@ impl Runtime {
         self.domain.placement()
     }
 
+    /// Stable identity shared by this base runtime, derived runtimes, borrowed
+    /// overrides, companion runtimes, and GPU outputs.
+    pub fn affinity_id(&self) -> RuntimeAffinityId {
+        self.domain.affinity_id()
+    }
+
+    /// Stable identity for this runtime's exact stream and memory-resource
+    /// binding. This is stricter than [`Self::affinity_id`].
+    pub fn binding_id(&self) -> ExecutionBindingId {
+        self.domain.binding_id()
+    }
+
+    /// Return a counted lease on an extension generation for this exact
+    /// stream/MR binding, initializing it if necessary.
+    ///
+    /// Values are shared by all runtimes derived without changing either raw
+    /// execution handle. A runtime with a different stream or memory resource
+    /// has a different extension store. Factories and extension destructors
+    /// run outside the type-map and lifecycle locks. Values may retain a
+    /// `Runtime`: the stable slot holds only a weak generation witness, while
+    /// the returned lease keeps the execution domain alive until after value
+    /// destruction.
+    ///
+    /// The returned value is opaque and can only be accessed through its
+    /// scoped execution guard.
+    pub fn get_or_try_init_binding_extension<T, E>(
+        &self,
+        operation: &'static str,
+        factory: impl FnOnce() -> std::result::Result<T, E>,
+    ) -> std::result::Result<BindingExtensionLease<T>, BindingExtensionInitError<E>>
+    where
+        T: Any + Send + Sync,
+    {
+        self.domain.binding_extensions().get_or_try_init(Arc::clone(&self.domain), operation, factory)
+    }
+
+    /// Return a non-owning affinity witness suitable for cache metadata.
+    pub fn affinity_anchor(&self) -> RuntimeAffinityAnchor {
+        self.domain.affinity_anchor()
+    }
+
+    /// Return a non-owning witness for this counted runtime-owner lineage.
+    pub fn lease_anchor(&self) -> RuntimeLeaseAnchor {
+        RuntimeLeaseAnchor::new(self.affinity_anchor(), &self.lease_owner)
+    }
+
+    /// Whether two current counted runtime leases belong to the same stable
+    /// runtime affinity.
+    pub fn shares_affinity(left: &Self, right: &Self) -> bool {
+        ExecutionDomain::same_affinity(&left.domain, &right.domain)
+    }
+
+    /// Whether this current counted runtime lease matches a cached lease
+    /// witness. The `Arc<Self>` receiver prevents GPU-output affinity alone
+    /// from satisfying a cache lookup.
+    pub fn matches_lease_anchor(self: &Arc<Self>, anchor: &RuntimeLeaseAnchor) -> bool {
+        anchor.matches(self.domain.affinity_owner(), &self.lease_owner)
+    }
+
     /// Synchronize the runtime's default stream.
     pub fn synchronize(&self) -> Result<()> {
         self.stream().synchronize()
@@ -204,6 +266,38 @@ impl Runtime {
         DeviceMemoryManager::for_device(self.device())
     }
 
+    /// Derive a runtime whose complete retained-provenance object graph keeps
+    /// `lifetime` alive. Every scalar, series, table, frame, and runtime
+    /// override produced from the returned runtime inherits the same token.
+    pub fn with_retained_lifetime(&self, lifetime: Arc<dyn Send + Sync>) -> Result<Self> {
+        Ok(Self {
+            domain: ExecutionDomain::with_retained_lifetime(&self.domain, lifetime)?,
+            lease_owner: Arc::clone(&self.lease_owner),
+        })
+    }
+
+    /// Inherit the retained lifetime attached to `source`, if any, while
+    /// preserving this runtime's own device, stream, and memory resource.
+    pub fn inherit_retained_lifetime_from(&self, source: &Runtime) -> Result<Self> {
+        Ok(Self {
+            domain: ExecutionDomain::inherit_retained_lifetime(&self.domain, &source.domain)?,
+            lease_owner: Arc::clone(&self.lease_owner),
+        })
+    }
+
+    /// Adopt the stable affinity of a same-device base runtime while keeping
+    /// this runtime's own stream, memory resource, and counted owner lease.
+    ///
+    /// This is intended for companion runtimes whose execution handles differ
+    /// from the base runtime but whose outputs belong to the same reusable
+    /// runtime family.
+    pub fn inherit_affinity_from(&self, source: &Runtime) -> Result<Self> {
+        Ok(Self {
+            domain: ExecutionDomain::inherit_affinity(&self.domain, &source.domain)?,
+            lease_owner: Arc::clone(&self.lease_owner),
+        })
+    }
+
     /// Attach a stream-bound reservation to this runtime's default stream.
     pub fn stream_reservation(&self, reservation_id: u64, limit_bytes: usize) -> Result<StreamReservationLease> {
         self.device_memory_manager()?.reserve_stream(self.stream(), reservation_id, limit_bytes)
@@ -215,7 +309,7 @@ impl Runtime {
         operation: &'static str,
     ) -> Result<Self> {
         let domain = ExecutionDomain::resolve_with_borrowed_override(&self.domain, None, Some(mr), operation)?;
-        Ok(Self { domain })
+        Ok(Self { domain, lease_owner: Arc::clone(&self.lease_owner) })
     }
 
     pub(crate) fn with_execution_overrides(
@@ -225,7 +319,7 @@ impl Runtime {
         operation: &'static str,
     ) -> Result<Self> {
         let domain = ExecutionDomain::resolve_with_borrowed_override(&self.domain, Some(stream), Some(mr), operation)?;
-        Ok(Self { domain })
+        Ok(Self { domain, lease_owner: Arc::clone(&self.lease_owner) })
     }
 
     /// Borrow this runtime's explicit execution binding for cross-crate interop.
@@ -597,7 +691,7 @@ impl Runtime {
     pub fn series_in<T: HostColumnData>(&self, data: &[T], ctx: &ExecutionOverrides<'_>) -> Result<Series> {
         let operation = "runtime::series_in";
         let domain = ctx.resolve_output_domain(&self.domain).map_err(|error| error.reanchor(operation))?;
-        let runtime = Self { domain };
+        let runtime = Self { domain, lease_owner: Arc::clone(&self.lease_owner) };
         runtime.series(data).map_err(|error| error.reanchor(operation))
     }
 
@@ -749,6 +843,9 @@ impl Runtime {
     pub(crate) fn __debug_execution_domain_id(&self) -> u64 {
         self.domain.debug_id()
     }
+    pub(crate) fn __debug_retained_lifetime_count(&self) -> usize {
+        self.domain.debug_retained_lifetime_count()
+    }
 }
 
 impl RuntimeBuilder {
@@ -890,7 +987,7 @@ impl RuntimeBuilder {
             MemoryResourceSelection::DeviceMemoryManager => device_manager.resource().clone(),
         };
         let domain = ExecutionDomain::from_handles_on_device(device, stream, mr, boundary_observer)?;
-        Ok(Runtime { domain })
+        Ok(Runtime { domain, lease_owner: RuntimeLeaseOwner::new() })
     }
 
     /// Resolve the target device, validating handle provenance.

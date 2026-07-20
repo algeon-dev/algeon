@@ -10,8 +10,8 @@
 #include <utility>
 
 struct cudf_scalar_owner {
-  std::unique_ptr<cudf::scalar> scalar;
   cudf_handle_provenance provenance;
+  std::unique_ptr<cudf::scalar> scalar;
 };
 
 inline cudf_scalar_handle cudf_release_scalar_handle(std::unique_ptr<cudf::scalar> scalar,

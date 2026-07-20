@@ -84,3 +84,9 @@ pub unsafe fn force_device_arrow_array_device_type_for_test(raw_device_array: *m
         )
     }
 }
+
+/// Exercise owner-unknown Arrow device-array teardown with a pointer that must
+/// never cross FFI.
+pub fn quarantine_owner_unknown_device_array_for_test() {
+    crate::interop::arrow_device::testing_hooks::quarantine_owner_unknown_device_array_for_test()
+}

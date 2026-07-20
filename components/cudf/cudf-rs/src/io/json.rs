@@ -51,7 +51,7 @@ pub fn read_json_table(options: &JsonTableReadOptions) -> Result<TableReadOutput
     let filepath = super::path_to_cstring(&options.filepath, OPERATION)?;
     super::validate_input_path(&options.filepath, OPERATION)?;
     let output_domain = Arc::clone(options.runtime.execution_domain());
-    let exec_options = output_domain.exec_options_raw();
+    let exec_options = output_domain.enter_execution()?;
 
     let mut table_handle = ptr::null_mut();
     let mut names_ptr: *mut *mut std::os::raw::c_char = ptr::null_mut();
@@ -64,7 +64,7 @@ pub fn read_json_table(options: &JsonTableReadOptions) -> Result<TableReadOutput
                 &mut table_handle,
                 &mut names_ptr,
                 &mut num_names,
-                &exec_options,
+                exec_options.options(),
             )
         },
         OPERATION,

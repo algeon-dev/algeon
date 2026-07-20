@@ -202,20 +202,10 @@ cudf_status_t cudf_table_device_allocated_size(cudf_table_handle handle,
   CUDF_RUST_CATCH
 }
 
-void cudf_table_destroy(cudf_table_handle handle) {
-  if (handle == nullptr) {
-    return;
-  }
-  auto *state = static_cast<cudf_table_handle_state *>(handle);
-  if (auto provenance = state->destroy_provenance()) {
-    auto const cleanup =
-        cudf_destroy_under_provenance(*provenance, [state]() { delete state; });
-    if (cleanup != cudf_provenance_cleanup_result::completed) {
-      std::terminate();
-    }
-  } else {
-    delete state;
-  }
+cudf_status_t cudf_table_destroy(cudf_table_handle handle) {
+  // Ownership is consumed on every return path. A failure means cleanup did
+  // not complete and the allocation was deliberately quarantined.
+  return cudf_destroy_table_handle_under_provenance(handle);
 }
 
 cudf_status_t cudf_table_view(cudf_table_handle handle,
@@ -232,8 +222,13 @@ cudf_status_t cudf_table_view(cudf_table_handle handle,
   CUDF_RUST_CATCH
 }
 
-void cudf_table_view_destroy(cudf_table_view_handle handle) {
-  delete static_cast<cudf::table_view *>(handle);
+cudf_status_t cudf_table_view_destroy(cudf_table_view_handle handle) {
+  try {
+    delete static_cast<cudf::table_view *>(handle);
+    return CUDF_SUCCESS;
+  } catch (...) {
+    return cudf_translate_cleanup_exception_noexcept();
+  }
 }
 
 cudf_status_t cudf_table_view_num_columns(cudf_table_view_handle handle,

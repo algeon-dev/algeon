@@ -55,8 +55,9 @@ cudf_status_t cudf_data_type_create_fixed_point(cudf_type_id_t type_id,
                                                 int32_t scale,
                                                 cudf_data_type_handle* out);
 
-/// Destroy a data_type handle.
-void cudf_data_type_destroy(cudf_data_type_handle handle);
+/// Destroy a data_type handle. Ownership is consumed on call; success means
+/// cleanup completed and failure quarantines the handle.
+cudf_status_t cudf_data_type_destroy(cudf_data_type_handle handle);
 
 /// Get the type_id from a data_type.
 cudf_status_t cudf_data_type_id(cudf_data_type_handle handle, cudf_type_id_t* out);

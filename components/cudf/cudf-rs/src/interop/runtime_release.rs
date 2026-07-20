@@ -8,7 +8,7 @@ use std::{
 use rapids_interop::ReleaseSynchronization;
 
 use super::*;
-use crate::runtime::{CudaEvent, CudaStream};
+use crate::runtime::{CudaEvent, CudaStream, DeviceId, device_guard::DeviceEntryGuard};
 
 /// Consumer-supplied completion authority for owned-transfer release.
 ///
@@ -116,20 +116,36 @@ struct RuntimeOwnedTransferInner<T> {
     owner: Option<ManuallyDrop<T>>,
 }
 
-impl<T> Drop for RuntimeOwnedTransferInner<T> {
-    fn drop(&mut self) {
-        if let Some(owner) = self.owner.take() {
-            // The retained owner was never imported or released. Drop it now
-            // to avoid leaking the underlying GPU resources (Column/Table).
-            drop(ManuallyDrop::into_inner(owner));
-        }
-    }
-}
-
 struct RuntimeOwnedTransferState<T> {
     inner: Mutex<RuntimeOwnedTransferInner<T>>,
     release_device: i32,
     release_synchronization: ReleaseSynchronization,
+}
+
+impl<T> Drop for RuntimeOwnedTransferState<T> {
+    fn drop(&mut self) {
+        let inner = self.inner.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(mut owner) = inner.owner.take() else {
+            return;
+        };
+        let Some(device) = usize::try_from(self.release_device).ok().and_then(|ordinal| DeviceId::new(ordinal).ok())
+        else {
+            // The captured ordinal came from a live execution domain. If it
+            // cannot be reconstructed, ownership cannot be destroyed safely.
+            return;
+        };
+
+        match DeviceEntryGuard::enter_for_teardown(device, "RuntimeOwnedTransferState::drop") {
+            Ok(_entry) => unsafe {
+                // SAFETY: this state owns the retained value exactly once and
+                // owner-device entry remains active for its complete Drop.
+                ManuallyDrop::drop(&mut owner);
+            },
+            Err(error) => {
+                crate::runtime::quarantine_device_resource(device, "RuntimeOwnedTransferState::drop", &error);
+            },
+        }
+    }
 }
 
 enum RuntimeOwnedReleaseCompletion {
@@ -280,15 +296,39 @@ impl<T> RuntimeOwnedTransferState<T> {
             return Err((owner, error));
         }
 
-        // Switch to the release device before dropping GPU-owning types.
-        // In multi-GPU scenarios the spawned release thread may not be on the
-        // correct device, which would cause CUDA resource destruction on the
-        // wrong device context.
-        let mut previous_device: i32 = -1;
-        let get_ok = unsafe { cudf_sys::cudf_cuda_get_device(&mut previous_device) } == cudf_sys::CUDF_SUCCESS;
-        if get_ok && previous_device != self.release_device {
-            let _ = unsafe { cudf_sys::cudf_cuda_set_device(self.release_device) };
-        }
+        // The global cleanup thread may alternate between runtimes on
+        // different devices. Prove entry to this transfer's immutable owner
+        // device before allowing any retained GPU owner to run Drop.
+        let release_device =
+            match usize::try_from(self.release_device).ok().and_then(|ordinal| DeviceId::new(ordinal).ok()) {
+                Some(device) => device,
+                None => {
+                    return Err((
+                        owner,
+                        InteropError::new(
+                            InteropErrorKind::ReadinessUnavailable,
+                            "runtime-backed owned-transfer release device is no longer valid",
+                        )
+                        .with_context("operation", operation)
+                        .with_context("release_device", self.release_device.to_string()),
+                    ));
+                },
+            };
+        let _entry = match DeviceEntryGuard::enter_for_teardown(release_device, operation) {
+            Ok(entry) => entry,
+            Err(error) => {
+                return Err((
+                    owner,
+                    InteropError::new(
+                        InteropErrorKind::ReadinessUnavailable,
+                        "runtime-backed owned-transfer cleanup could not prove owner-device entry",
+                    )
+                    .with_context("operation", operation)
+                    .with_context("release_device", self.release_device.to_string())
+                    .with_context("cudf_error", error.to_string()),
+                ));
+            },
+        };
 
         // Drop the retained owner inside catch_unwind so that a panicking
         // Drop impl on Column/Table does not prevent the state machine from
@@ -296,11 +336,6 @@ impl<T> RuntimeOwnedTransferState<T> {
         let drop_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
             ManuallyDrop::drop(&mut owner);
         }));
-
-        // Restore previous device (best-effort).
-        if get_ok && previous_device != self.release_device {
-            unsafe { cudf_sys::cudf_cuda_set_device(previous_device) };
-        }
 
         let mut inner = self.lock_inner();
         inner.status = RuntimeOwnedTransferStatus::Released;
@@ -627,4 +662,42 @@ pub(super) fn into_owned_table_for_transfer(
     operation: &'static str,
 ) -> Result<(Table, Vec<String>), InteropError> {
     frame.try_into_table().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))
+}
+
+#[cfg(test)]
+mod device_entry_tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
+    use crate::testing::device_safety::{DeviceEntryTestCall, DeviceSafetyTestScope};
+
+    struct DropProbe(Arc<AtomicUsize>);
+
+    impl Drop for DropProbe {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn abandoned_runtime_owner_is_quarantined_when_cleanup_thread_cannot_enter_device() {
+        let drops = Arc::new(AtomicUsize::new(0));
+        let state = RuntimeOwnedTransferState {
+            inner: Mutex::new(RuntimeOwnedTransferInner {
+                status: RuntimeOwnedTransferStatus::Pending,
+                owner: Some(ManuallyDrop::new(DropProbe(Arc::clone(&drops)))),
+            }),
+            release_device: 0,
+            release_synchronization: ReleaseSynchronization::Asynchronous,
+        };
+        let scope = DeviceSafetyTestScope::install([DeviceEntryTestCall::GetDevice {
+            status: cudf_sys::CUDF_ERROR_FATAL_CUDA,
+            device: 0,
+        }]);
+
+        drop(state);
+
+        assert_eq!(drops.load(Ordering::SeqCst), 0, "unproven device entry must suppress retained owner Drop");
+        assert_eq!(scope.health_snapshot(DeviceId::DEFAULT).quarantined_teardown_count(), 1);
+    }
 }

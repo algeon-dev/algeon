@@ -358,6 +358,9 @@ impl AstExpression {
 
 impl Drop for AstExpression {
     fn drop(&mut self) {
-        unsafe { cudf_sys::cudf_ast_expression_destroy(self.handle.as_ptr()) };
+        // AST nodes are host-only metadata. The status is intentionally not
+        // mapped to CUDA device health, but the ownership-consuming ABI still
+        // guarantees that no C++ exception can cross Drop.
+        let _ = unsafe { cudf_sys::cudf_ast_expression_destroy(self.handle.as_ptr()) };
     }
 }

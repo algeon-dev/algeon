@@ -13,6 +13,8 @@
 #include <exception>
 #include <memory>
 #include <new>
+#include <limits>
+#include <stdexcept>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -50,6 +52,22 @@ bool column_parent_stores_direct_element_buffer(cudf::type_id id)
   }
 }
 
+std::size_t checked_size_add(std::size_t left, std::size_t right, char const* context)
+{
+  if (right > std::numeric_limits<std::size_t>::max() - left) {
+    throw std::overflow_error(std::string{"size accounting overflow while "} + context);
+  }
+  return left + right;
+}
+
+std::size_t checked_size_mul(std::size_t left, std::size_t right, char const* context)
+{
+  if (left != 0 && right > std::numeric_limits<std::size_t>::max() / left) {
+    throw std::overflow_error(std::string{"size accounting overflow while "} + context);
+  }
+  return left * right;
+}
+
 std::size_t cudf_column_view_payload_size_bytes(cudf::column_view const& column,
                                                 rmm::cuda_stream_view stream)
 {
@@ -57,20 +75,30 @@ std::size_t cudf_column_view_payload_size_bytes(cudf::column_view const& column,
 
   if (column.type().id() == cudf::type_id::STRING) {
     cudf::strings_column_view const strings{column};
-    total += static_cast<std::size_t>(strings.chars_size(stream));
+    total = checked_size_add(total,
+                             static_cast<std::size_t>(strings.chars_size(stream)),
+                             "sizing string characters");
   } else if (column_parent_stores_direct_element_buffer(column.type().id())) {
-    total += static_cast<std::size_t>(column.size()) *
-             static_cast<std::size_t>(cudf::size_of(column.type()));
+    auto const values_bytes =
+      checked_size_mul(static_cast<std::size_t>(column.size()),
+                       static_cast<std::size_t>(cudf::size_of(column.type())),
+                       "sizing fixed-width column values");
+    total = checked_size_add(total, values_bytes, "accumulating fixed-width column values");
   }
 
   if (column.nullable()) {
-    total += static_cast<std::size_t>(
-               cudf::num_bitmask_words(static_cast<cudf::size_type>(column.size()))) *
-             sizeof(cudf::bitmask_type);
+    auto const mask_bytes =
+      checked_size_mul(static_cast<std::size_t>(
+                         cudf::num_bitmask_words(static_cast<cudf::size_type>(column.size()))),
+                       sizeof(cudf::bitmask_type),
+                       "sizing column validity mask");
+    total = checked_size_add(total, mask_bytes, "accumulating column validity mask");
   }
 
   for (cudf::size_type child_index = 0; child_index < column.num_children(); ++child_index) {
-    total += cudf_column_view_payload_size_bytes(column.child(child_index), stream);
+    total = checked_size_add(total,
+                             cudf_column_view_payload_size_bytes(column.child(child_index), stream),
+                             "accumulating recursive child payload");
   }
 
   return total;
@@ -80,18 +108,8 @@ class native_column_handle_state final : public cudf_column_handle_state {
  public:
   native_column_handle_state(std::unique_ptr<cudf::column> column,
                              cudf_handle_provenance provenance)
-    : _column(std::move(column)), _provenance(std::move(provenance))
+    : _provenance(std::move(provenance)), _column(std::move(column))
   {
-  }
-
-  ~native_column_handle_state() override
-  {
-    auto column = std::move(_column);
-    auto const cleanup =
-      cudf_destroy_under_provenance(_provenance, [&column]() { column.reset(); });
-    if (cleanup != cudf_provenance_cleanup_result::completed && column != nullptr) {
-      std::terminate();
-    }
   }
 
   [[nodiscard]] bool is_native() const noexcept override { return true; }
@@ -121,24 +139,15 @@ class native_column_handle_state final : public cudf_column_handle_state {
   std::unique_ptr<cudf::column> release_native_column() override { return std::move(_column); }
 
  private:
-  std::unique_ptr<cudf::column> _column;
   cudf_handle_provenance _provenance;
+  std::unique_ptr<cudf::column> _column;
 };
 
 class native_table_handle_state final : public cudf_table_handle_state {
  public:
   native_table_handle_state(std::unique_ptr<cudf::table> table, cudf_handle_provenance provenance)
-    : _table(std::move(table)), _provenance(std::move(provenance))
+    : _provenance(std::move(provenance)), _table(std::move(table))
   {
-  }
-
-  ~native_table_handle_state() override
-  {
-    auto table         = std::move(_table);
-    auto const cleanup = cudf_destroy_under_provenance(_provenance, [&table]() { table.reset(); });
-    if (cleanup != cudf_provenance_cleanup_result::completed && table != nullptr) {
-      std::terminate();
-    }
   }
 
   [[nodiscard]] bool is_native() const noexcept override { return true; }
@@ -159,7 +168,9 @@ class native_table_handle_state final : public cudf_table_handle_state {
   {
     std::size_t total = 0;
     for (auto const& column : _table->view()) {
-      total += cudf_column_view_payload_size_bytes(column, stream);
+      total = checked_size_add(total,
+                               cudf_column_view_payload_size_bytes(column, stream),
+                               "accumulating table column payload");
     }
     return total;
   }
@@ -212,8 +223,8 @@ class native_table_handle_state final : public cudf_table_handle_state {
   }
 
  private:
-  std::unique_ptr<cudf::table> _table;
   cudf_handle_provenance _provenance;
+  std::unique_ptr<cudf::table> _table;
 };
 
 // ---------------------------------------------------------------------------
@@ -324,7 +335,9 @@ class foreign_fixed_width_column_handle_state final : public cudf_column_handle_
 
   [[nodiscard]] std::size_t device_allocated_size() const override
   {
-    return _values_byte_len + _common.validity_byte_len;
+    return checked_size_add(_values_byte_len,
+                            _common.validity_byte_len,
+                            "sizing foreign fixed-width allocation");
   }
 
  private:
@@ -386,7 +399,12 @@ class foreign_binary_like_column_handle_state final : public cudf_column_handle_
 
   [[nodiscard]] std::size_t device_allocated_size() const override
   {
-    return _chars_byte_len + _offsets_byte_len + _common.validity_byte_len;
+    auto total = checked_size_add(_chars_byte_len,
+                                  _offsets_byte_len,
+                                  "sizing foreign binary-like data and offsets");
+    return checked_size_add(total,
+                            _common.validity_byte_len,
+                            "sizing foreign binary-like validity");
   }
 
  private:
@@ -449,7 +467,12 @@ class foreign_list_column_handle_state final : public cudf_column_handle_state {
 
   [[nodiscard]] std::size_t device_allocated_size() const override
   {
-    return _offsets_byte_len + _common.validity_byte_len + _child->device_allocated_size();
+    auto total = checked_size_add(_offsets_byte_len,
+                                  _common.validity_byte_len,
+                                  "sizing foreign list offsets and validity");
+    return checked_size_add(total,
+                            _child->device_allocated_size(),
+                            "sizing foreign list child allocation");
   }
 
  private:
@@ -502,7 +525,9 @@ class foreign_struct_column_handle_state final : public cudf_column_handle_state
   {
     std::size_t total = _common.validity_byte_len;
     for (auto const& child : _children) {
-      total += child->device_allocated_size();
+      total = checked_size_add(total,
+                               child->device_allocated_size(),
+                               "accumulating foreign struct child allocation");
     }
     return total;
   }
@@ -564,7 +589,12 @@ class foreign_dictionary_column_handle_state final : public cudf_column_handle_s
 
   [[nodiscard]] std::size_t device_allocated_size() const override
   {
-    return _indices_byte_len + _common.validity_byte_len + _keys->device_allocated_size();
+    auto total = checked_size_add(_indices_byte_len,
+                                  _common.validity_byte_len,
+                                  "sizing foreign dictionary indices and validity");
+    return checked_size_add(total,
+                            _keys->device_allocated_size(),
+                            "sizing foreign dictionary keys allocation");
   }
 
  private:
@@ -718,7 +748,9 @@ class column_state_table_handle_state final : public cudf_table_handle_state {
   {
     std::size_t total = 0;
     for (auto const& column : _columns) {
-      total += column->payload_size(stream);
+      total = checked_size_add(total,
+                               column->payload_size(stream),
+                               "accumulating foreign table column payload");
     }
     return total;
   }
@@ -727,9 +759,19 @@ class column_state_table_handle_state final : public cudf_table_handle_state {
   {
     std::size_t total = 0;
     for (auto const& column : _columns) {
-      total += column->device_allocated_size();
+      total = checked_size_add(total,
+                               column->device_allocated_size(),
+                               "accumulating foreign table column allocation");
     }
     return total;
+  }
+
+  [[nodiscard]] std::optional<cudf_handle_provenance> destroy_provenance() const noexcept override
+  {
+    for (auto const& column : _columns) {
+      if (auto provenance = column->destroy_provenance()) { return provenance; }
+    }
+    return std::nullopt;
   }
 
   std::vector<std::unique_ptr<cudf_column_handle_state>> release_columns() override
@@ -754,6 +796,34 @@ class column_state_table_handle_state final : public cudf_table_handle_state {
 extern "C" void cudf_test_fail_column_handle_release_after(int32_t successful_releases)
 {
   g_fail_column_handle_release_countdown = successful_releases;
+}
+
+extern "C" cudf_status_t cudf_test_checked_owning_handle_size_add(std::size_t left,
+                                                                  std::size_t right,
+                                                                  std::size_t* out)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = 0;
+  CUDF_RUST_TRY
+  {
+    *out = checked_size_add(left, right, "testing owning-handle checked addition");
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+extern "C" cudf_status_t cudf_test_checked_owning_handle_size_mul(std::size_t left,
+                                                                  std::size_t right,
+                                                                  std::size_t* out)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = 0;
+  CUDF_RUST_TRY
+  {
+    *out = checked_size_mul(left, right, "testing owning-handle checked multiplication");
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
 }
 
 std::unique_ptr<cudf::column> cudf_column_handle_state::release_native_column()
@@ -823,27 +893,33 @@ cudf_table_handle cudf_release_table_handle(std::unique_ptr<cudf_table_handle_st
   return static_cast<cudf_table_handle>(table.release());
 }
 
-void cudf_destroy_column_handle_under_provenance(cudf_column_handle handle) noexcept
+cudf_status_t cudf_destroy_column_handle_under_provenance(cudf_column_handle handle) noexcept
 {
-  if (handle == nullptr) { return; }
-  auto* state = static_cast<cudf_column_handle_state*>(handle);
-  if (auto provenance = state->destroy_provenance()) {
-    auto const cleanup = cudf_destroy_under_provenance(*provenance, [state]() { delete state; });
-    if (cleanup != cudf_provenance_cleanup_result::completed) { std::terminate(); }
-  } else {
+  if (handle == nullptr) { return CUDF_SUCCESS; }
+  try {
+    auto* state = static_cast<cudf_column_handle_state*>(handle);
+    if (auto provenance = state->destroy_provenance()) {
+      return cudf_destroy_under_provenance(*provenance, [state]() { delete state; });
+    }
     delete state;
+    return CUDF_SUCCESS;
+  } catch (...) {
+    return cudf_translate_cleanup_exception_noexcept();
   }
 }
 
-void cudf_destroy_table_handle_under_provenance(cudf_table_handle handle) noexcept
+cudf_status_t cudf_destroy_table_handle_under_provenance(cudf_table_handle handle) noexcept
 {
-  if (handle == nullptr) { return; }
-  auto* state = static_cast<cudf_table_handle_state*>(handle);
-  if (auto provenance = state->destroy_provenance()) {
-    auto const cleanup = cudf_destroy_under_provenance(*provenance, [state]() { delete state; });
-    if (cleanup != cudf_provenance_cleanup_result::completed) { std::terminate(); }
-  } else {
+  if (handle == nullptr) { return CUDF_SUCCESS; }
+  try {
+    auto* state = static_cast<cudf_table_handle_state*>(handle);
+    if (auto provenance = state->destroy_provenance()) {
+      return cudf_destroy_under_provenance(*provenance, [state]() { delete state; });
+    }
     delete state;
+    return CUDF_SUCCESS;
+  } catch (...) {
+    return cudf_translate_cleanup_exception_noexcept();
   }
 }
 

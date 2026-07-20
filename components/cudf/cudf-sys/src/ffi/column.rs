@@ -160,13 +160,13 @@ unsafe extern "C" {
 
     pub fn cudf_column_device_allocated_size(handle: cudf_column_handle, out: *mut usize) -> cudf_status_t;
 
-    pub fn cudf_column_destroy(handle: cudf_column_handle);
+    pub fn cudf_column_destroy(handle: cudf_column_handle) -> cudf_status_t;
 
     // -- ColumnView (non-owning) --------------------------------------------
 
     pub fn cudf_column_view(handle: cudf_column_handle, out: *mut cudf_column_view_handle) -> cudf_status_t;
 
-    pub fn cudf_column_view_destroy(handle: cudf_column_view_handle);
+    pub fn cudf_column_view_destroy(handle: cudf_column_view_handle) -> cudf_status_t;
 
     /// `out` receives a raw `cudf_type_id_t` discriminant. Declared as `i32`
     /// so an unmirrored libcudf type id never materializes an invalid Rust

@@ -149,9 +149,9 @@ impl Column {
 
     fn create_empty_in_domain(type_id: TypeId, domain: Arc<ExecutionDomain>, operation: &'static str) -> Result<Self> {
         let mut handle = ptr::null_mut();
-        let exec_options = domain.exec_options_raw();
+        let exec_options = domain.enter_execution()?;
         error::check_status_in(
-            unsafe { cudf_sys::cudf_column_create_empty_ex(type_id.to_raw(), &exec_options, &mut handle) },
+            unsafe { cudf_sys::cudf_column_create_empty_ex(type_id.to_raw(), exec_options.options(), &mut handle) },
             operation,
         )?;
         Self::from_handle_with_domain(handle, domain)
@@ -190,9 +190,9 @@ impl Column {
         // the in-flight copy.
         let _consumer_fence = ExecutionDomain::insert_stream_dependency(&self.domain, &domain, operation)?;
         let mut handle = ptr::null_mut();
-        let exec_options = domain.exec_options_raw();
+        let exec_options = domain.enter_execution()?;
         error::check_status_in(
-            unsafe { cudf_sys::cudf_column_copy_ex(self.handle.as_ptr(), &exec_options, &mut handle) },
+            unsafe { cudf_sys::cudf_column_copy_ex(self.handle.as_ptr(), exec_options.options(), &mut handle) },
             operation,
         )?;
         Self::from_handle_with_domain(handle, domain)
@@ -267,7 +267,7 @@ impl Column {
         let size = usize_to_i32_len(data.len(), "row_count", operation)?;
         let null_mask = validity.map(validity_to_ffi_bitmask);
         let null_count = validity.map(count_nulls).unwrap_or(0);
-        let exec_options = domain.exec_options_raw();
+        let exec_options = domain.enter_execution()?;
         // SAFETY: data and optional null_mask are valid for the reported sizes.
         error::check_status_in(
             unsafe {
@@ -277,7 +277,7 @@ impl Column {
                     size,
                     null_mask.as_ref().map_or(ptr::null(), |mask| mask.as_ptr()),
                     null_count,
-                    &exec_options,
+                    exec_options.options(),
                     &mut handle,
                 )
             },
@@ -340,7 +340,7 @@ impl Column {
 
         let null_mask = validity.map(validity_to_bitmask);
         let null_count = validity.map(count_nulls).unwrap_or(0);
-        let exec_options = runtime.execution_domain().exec_options_raw();
+        let exec_options = runtime.execution_domain().enter_execution()?;
         let mut handle = ptr::null_mut();
         error::check_status_in_with_details(
             unsafe {
@@ -351,7 +351,7 @@ impl Column {
                     size,
                     null_mask.as_ref().map_or(ptr::null(), |mask| mask.as_ptr()),
                     null_count,
-                    &exec_options,
+                    exec_options.options(),
                     &mut handle,
                 )
             },
@@ -473,9 +473,9 @@ impl Column {
 
     pub(crate) fn payload_size_bytes(&self) -> Result<usize> {
         let mut out = 0usize;
-        let exec_options = self.domain.exec_options_raw();
+        let exec_options = self.domain.enter_execution()?;
         error::check_status_in(
-            unsafe { cudf_sys::cudf_column_payload_size_ex(self.handle.as_ptr(), &exec_options, &mut out) },
+            unsafe { cudf_sys::cudf_column_payload_size_ex(self.handle.as_ptr(), exec_options.options(), &mut out) },
             "column::payload_size_bytes",
         )?;
         Ok(out)
@@ -585,7 +585,7 @@ impl Column {
         }
 
         let output_domain = Arc::clone(runtime.execution_domain());
-        let exec_options = output_domain.exec_options_raw();
+        let exec_options = output_domain.enter_execution()?;
         let mut handle = ptr::null_mut();
         // SAFETY: caller guarantees device_ptr is valid for `size` elements.
         // The _ex variant does NOT synchronize — caller must keep device_ptr
@@ -596,7 +596,7 @@ impl Column {
                     type_id.to_raw(),
                     device_ptr,
                     size,
-                    &exec_options,
+                    exec_options.options(),
                     &mut handle,
                 )
             },
@@ -649,7 +649,7 @@ impl Column {
             data.iter().map(|s| usize_to_i32_len(s.len(), "string_element", operation)).collect::<Result<Vec<_>>>()?;
         let null_mask = validity.map(validity_to_ffi_bitmask);
         let null_count = validity.map(count_nulls).unwrap_or(0);
-        let exec_options = domain.exec_options_raw();
+        let exec_options = domain.enter_execution()?;
 
         let mut handle = ptr::null_mut();
         // SAFETY: ptrs and lengths are derived from valid &str slices and have
@@ -662,7 +662,7 @@ impl Column {
                     num_strings,
                     null_mask.as_ref().map_or(ptr::null(), |mask| mask.as_ptr()),
                     null_count,
-                    &exec_options,
+                    exec_options.options(),
                     &mut handle,
                 )
             },
@@ -706,7 +706,7 @@ impl Column {
                 let validity = vec![false; len];
                 let null_mask = validity_to_ffi_bitmask(&validity);
                 let null_count = size;
-                let exec_options = domain.exec_options_raw();
+                let exec_options = domain.enter_execution()?;
 
                 let mut handle = ptr::null_mut();
                 // SAFETY: data is zeroed bytes of the correct size, null_mask marks
@@ -719,7 +719,7 @@ impl Column {
                             size,
                             null_mask.as_ptr(),
                             null_count,
-                            &exec_options,
+                            exec_options.options(),
                             &mut handle,
                         )
                     },
@@ -774,14 +774,14 @@ impl Column {
         let init_scalar = runtime.scalar(init)?;
         let step_scalar = runtime.scalar(step)?;
         let mut handle = ptr::null_mut();
-        let exec_options = runtime.execution_domain().exec_options_raw();
+        let exec_options = runtime.execution_domain().enter_execution()?;
         error::check_status_in(
             unsafe {
                 cudf_sys::cudf_column_create_sequence_ex(
                     init_scalar.raw_handle(),
                     step_scalar.raw_handle(),
                     size_i32,
-                    &exec_options,
+                    exec_options.options(),
                     &mut handle,
                 )
             },
@@ -802,14 +802,14 @@ impl Column {
         let init_scalar = Scalar::from_value_in_domain(init, &domain)?;
         let step_scalar = Scalar::from_value_in_domain(step, &domain)?;
         let mut handle = ptr::null_mut();
-        let exec_options = domain.exec_options_raw();
+        let exec_options = domain.enter_execution()?;
         error::check_status_in(
             unsafe {
                 cudf_sys::cudf_column_create_sequence_ex(
                     init_scalar.raw_handle(),
                     step_scalar.raw_handle(),
                     size_i32,
-                    &exec_options,
+                    exec_options.options(),
                     &mut handle,
                 )
             },
@@ -843,10 +843,12 @@ impl Column {
         let size_i32 = i32::try_from(size)
             .map_err(|_| error::range_limit_error("column::from_scalar", "size", "i32::MAX", size))?;
         let mut handle = ptr::null_mut();
-        let exec_options = scalar.domain.exec_options_raw();
+        let exec_options = scalar.domain.enter_execution()?;
         // SAFETY: scalar.raw_handle() is valid (Scalar maintains NonNull invariant).
         error::check_status_in(
-            unsafe { cudf_sys::cudf_column_from_scalar_ex(scalar.raw_handle(), size_i32, &mut handle, &exec_options) },
+            unsafe {
+                cudf_sys::cudf_column_from_scalar_ex(scalar.raw_handle(), size_i32, &mut handle, exec_options.options())
+            },
             "column::from_scalar",
         )?;
         Self::from_handle_with_domain(handle, Arc::clone(&scalar.domain))
@@ -1461,10 +1463,11 @@ impl Column {
 
 impl Drop for Column {
     fn drop(&mut self) {
-        // SAFETY: self.handle is valid (NonNull from construction). Drop runs
-        // exactly once, so the handle is destroyed exactly once.
-        unsafe {
-            cudf_sys::cudf_column_destroy(self.handle.as_ptr());
-        }
+        crate::core::native_teardown::drop_device_owned_handle(
+            self.handle.as_ptr(),
+            self.domain.device_id(),
+            "Column::drop",
+            |owned| unsafe { cudf_sys::cudf_column_destroy(owned) },
+        );
     }
 }

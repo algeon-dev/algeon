@@ -53,3 +53,31 @@ pub(crate) fn host_import_call_count_for_test() -> usize {
 pub(crate) fn last_host_boundary_observation_for_test() -> Option<BoundaryObservation> {
     super::last_host_boundary_observation()
 }
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        cell::Cell,
+        sync::atomic::{AtomicUsize, Ordering},
+    };
+
+    use super::super::{call_count_since, reset_call_count_baseline};
+
+    #[test]
+    fn resetting_one_call_count_observer_does_not_rewind_another() {
+        let counter = AtomicUsize::new(0);
+        let first_baseline = Cell::new(0);
+        let second_baseline = Cell::new(0);
+
+        counter.fetch_add(2, Ordering::Release);
+        assert_eq!(call_count_since(&counter, &first_baseline), 2);
+
+        reset_call_count_baseline(&counter, &second_baseline);
+        assert_eq!(call_count_since(&counter, &second_baseline), 0);
+        assert_eq!(call_count_since(&counter, &first_baseline), 2);
+
+        counter.fetch_add(1, Ordering::Release);
+        assert_eq!(call_count_since(&counter, &second_baseline), 1);
+        assert_eq!(call_count_since(&counter, &first_baseline), 3);
+    }
+}

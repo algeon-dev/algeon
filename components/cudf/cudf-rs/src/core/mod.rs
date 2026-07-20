@@ -4,6 +4,7 @@ pub mod column;
 mod debug;
 pub mod error;
 pub mod memory;
+pub(crate) mod native_teardown;
 pub(crate) mod row_range;
 pub mod scalar;
 pub(crate) mod schema;

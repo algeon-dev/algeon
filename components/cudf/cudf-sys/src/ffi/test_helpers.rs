@@ -14,6 +14,18 @@ unsafe extern "C" {
     /// to disable.
     pub fn cudf_test_fail_column_handle_release_after(successful_releases: i32);
 
+    /// Exercise owning-handle checked addition. Returns SIZE_OVERFLOW instead
+    /// of wrapping when the sum cannot be represented.
+    pub fn cudf_test_checked_owning_handle_size_add(left: usize, right: usize, out: *mut usize) -> cudf_status_t;
+
+    /// Exercise owning-handle checked multiplication. Returns SIZE_OVERFLOW
+    /// instead of wrapping when the product cannot be represented.
+    pub fn cudf_test_checked_owning_handle_size_mul(left: usize, right: usize, out: *mut usize) -> cudf_status_t;
+
+    /// Force the next provenance-bound native destroy on this thread to
+    /// return `status` without running cleanup.
+    pub fn cudf_test_fail_next_provenance_destroy(status: cudf_status_t);
+
     /// Return the raw `uintptr_t` value of the last stream passed to an `_ex`
     /// shim.
     pub fn cudf_test_exec_last_stream_value(out: *mut usize) -> cudf_status_t;

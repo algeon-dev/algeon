@@ -13,12 +13,12 @@ pub(crate) fn trigger_factorize_empty_row_code_dtype_error_for_test() -> Result<
     let row_codes_view = row_codes.view()?;
     let sorted_keys_view = sorted_keys.view()?;
 
-    let exec_options = output_domain.exec_options_raw();
+    let exec_options = output_domain.enter_execution()?;
     super::ordered_first_seen_keys(
         &row_codes_view,
         &sorted_keys_view,
         &output_domain,
-        &exec_options,
+        exec_options.options(),
         "series::factorize",
     )
     .map(|_| ())

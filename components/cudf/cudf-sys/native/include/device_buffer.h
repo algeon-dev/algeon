@@ -32,10 +32,12 @@ cudf_status_t cudf_device_buffer_create_ex(size_t size,
 
 /// Release a device buffer. Safe to call with NULL (no-op).
 ///
-/// After this call, the handle is invalid. If the buffer was previously
+/// Ownership is consumed on call, including on failure. CUDF_SUCCESS means
+/// cleanup completed; any error means the allocation was quarantined and the
+/// handle must not be reused or destroyed again. If the buffer was previously
 /// adopted by a column (via cudf_column_adopt_device_buffer), the
 /// handle is already invalid and must NOT be destroyed again.
-void cudf_device_buffer_destroy(cudf_device_buffer_handle handle);
+cudf_status_t cudf_device_buffer_destroy(cudf_device_buffer_handle handle);
 
 /// Get the device pointer from a buffer handle.
 ///

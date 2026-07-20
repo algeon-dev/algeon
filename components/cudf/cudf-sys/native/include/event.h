@@ -16,8 +16,9 @@ typedef void* cudf_event_handle;
 /// Create a new CUDA event.
 cudf_status_t cudf_event_create(cudf_event_handle* out);
 
-/// Destroy a CUDA event handle.
-void cudf_event_destroy(cudf_event_handle handle);
+/// Destroy a CUDA event handle. Ownership is consumed on call, including on
+/// failure; the handle must never be reused.
+cudf_status_t cudf_event_destroy(cudf_event_handle handle);
 
 /// Record an event on a CUDA stream.
 cudf_status_t cudf_event_record(cudf_event_handle event, cudf_stream_handle stream);

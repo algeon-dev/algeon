@@ -11,10 +11,13 @@
 //! - [`CudaStream`] and [`CudaEvent`] expose low-level CUDA ordering handles
 //! - [`DeviceId`] is a validated CUDA device ordinal
 
+mod affinity;
+mod binding_extension;
 mod boundary;
 mod budget;
 pub mod device;
-pub(crate) mod device_guard;
+pub mod device_guard;
+pub mod device_health;
 pub mod event;
 pub mod execution_context;
 pub(crate) mod execution_domain;
@@ -26,6 +29,10 @@ mod profiler;
 mod query_execution_context;
 pub mod stream;
 
+pub use affinity::{ExecutionBindingId, RuntimeAffinityAnchor, RuntimeAffinityId, RuntimeLeaseAnchor};
+pub use binding_extension::{
+    BindingExtensionGuard, BindingExtensionInitError, BindingExtensionLease, MAX_BINDING_EXTENSION_SLOTS_PER_BINDING,
+};
 pub use boundary::{BoundaryKind, BoundaryObservation, BoundaryObserver, QueryMemoryObservation, QueryStageKind};
 pub(crate) use boundary::{
     BoundaryObserverRef, last_boundary_observation, record_boundary_observation,
@@ -36,6 +43,11 @@ pub use budget::{
     ExecutionBudgetStatus, ExecutionBudgetToken,
 };
 pub use device::DeviceId;
+pub use device_guard::DeviceEntryGuard;
+pub use device_health::{
+    DeviceFault, DeviceFaultKind, DeviceHealthSnapshot, DeviceHealthStatus, device_health_snapshot,
+    drop_device_resource, quarantine_device_resource, report_device_fault,
+};
 pub use event::CudaEvent;
 pub use execution_context::ExecutionOverrides;
 pub use owner::{Runtime, RuntimeBuilder, StreamDependencyOutcome};

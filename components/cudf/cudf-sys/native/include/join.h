@@ -275,8 +275,9 @@ cudf_status_t cudf_conditional_full_join_begin_size_data_ex(
   cudf_conditional_full_join_size_data_handle* out,
   const cudf_exec_options_t* options);
 
-/// Destroy retained conditional full join output-size data.
-void cudf_conditional_full_join_size_data_destroy(
+/// Destroy retained conditional full join output-size data. Ownership is
+/// consumed on call; failure quarantines the handle and must not be retried.
+cudf_status_t cudf_conditional_full_join_size_data_destroy(
   cudf_conditional_full_join_size_data_handle handle);
 
 /// Return the exact output row count retained in conditional full join size data.
@@ -515,8 +516,9 @@ cudf_status_t cudf_mixed_left_anti_join_begin_size_data_ex(cudf_table_view_handl
                                                            cudf_mixed_join_size_data_handle* out,
                                                            const cudf_exec_options_t* options);
 
-/// Destroy retained mixed-join output-size data.
-void cudf_mixed_join_size_data_destroy(cudf_mixed_join_size_data_handle handle);
+/// Destroy retained mixed-join output-size data. Ownership is consumed on
+/// call; failure quarantines the handle and must not be retried.
+cudf_status_t cudf_mixed_join_size_data_destroy(cudf_mixed_join_size_data_handle handle);
 
 /// Return the exact output row count retained in mixed-join size data.
 cudf_status_t cudf_mixed_join_size_data_output_size(cudf_mixed_join_size_data_handle handle,
@@ -563,8 +565,9 @@ cudf_status_t cudf_distinct_hash_join_create_ex(cudf_table_view_handle build,
                                                 const cudf_exec_options_t* options);
 
 /// Destroy a reusable distinct-hash-join handle under its build-time device
-/// and memory resource.
-void cudf_distinct_hash_join_destroy(cudf_distinct_hash_join_handle handle);
+/// and memory resource. Ownership is consumed on call; success means cleanup
+/// completed and failure means the handle remains quarantined.
+cudf_status_t cudf_distinct_hash_join_destroy(cudf_distinct_hash_join_handle handle);
 
 
 /// Probe a reusable distinct-hash-join artifact with explicit execution
@@ -594,8 +597,8 @@ cudf_status_t cudf_filtered_join_pre_build_reservation_size_ex(cudf_table_view_h
                                                                const cudf_exec_options_t* options);
 
 /// Destroy a reusable filtered-join handle under its build-time device and
-/// memory resource.
-void cudf_filtered_join_destroy(cudf_filtered_join_handle handle);
+/// memory resource. Ownership is consumed on call; failure quarantines it.
+cudf_status_t cudf_filtered_join_destroy(cudf_filtered_join_handle handle);
 
 /// Return device bytes retained by a reusable filtered-join build artifact.
 cudf_status_t cudf_filtered_join_device_allocated_size(cudf_filtered_join_handle handle,
@@ -615,8 +618,9 @@ cudf_status_t cudf_filtered_join_begin_left_anti_probe_ex(cudf_filtered_join_han
                                                           cudf_filtered_join_probe_handle* out,
                                                           const cudf_exec_options_t* options);
 
-/// Destroy a retained filtered-join probe state.
-void cudf_filtered_join_probe_destroy(cudf_filtered_join_probe_handle handle);
+/// Destroy a retained filtered-join probe state. Ownership is consumed on
+/// call; failure quarantines the state and must not be retried.
+cudf_status_t cudf_filtered_join_probe_destroy(cudf_filtered_join_probe_handle handle);
 
 /// Return the exact output row count retained by a filtered-join probe state.
 cudf_status_t cudf_filtered_join_probe_output_size(cudf_filtered_join_probe_handle handle,
@@ -692,8 +696,8 @@ cudf_status_t cudf_hash_join_pre_build_reservation_size_ex(cudf_table_view_handl
                                                            const cudf_exec_options_t* options);
 
 /// Destroy a reusable hash-join handle under its build-time device and memory
-/// resource.
-void cudf_hash_join_destroy(cudf_hash_join_handle handle);
+/// resource. Ownership is consumed on call; failure quarantines it.
+cudf_status_t cudf_hash_join_destroy(cudf_hash_join_handle handle);
 
 /// Return device bytes retained by a reusable hash-join build artifact.
 ///

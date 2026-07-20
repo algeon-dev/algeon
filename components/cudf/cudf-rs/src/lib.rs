@@ -277,6 +277,6 @@ pub use ops::{
 pub use runtime::{
     BoundaryKind, BoundaryObservation, BoundaryObserver, BudgetedExecutionOutcome, DeviceId,
     ExecutionBudgetEnforcement, ExecutionBudgetReport, ExecutionBudgetRequest, ExecutionBudgetStatus,
-    ExecutionBudgetToken, ExecutionOverrides, ExecutionPlacement, QueryExecutionContext, Runtime, RuntimeBuilder,
-    StreamDependencyOutcome,
+    ExecutionBudgetToken, ExecutionOverrides, ExecutionPlacement, QueryExecutionContext, Runtime,
+    RuntimeAffinityAnchor, RuntimeAffinityId, RuntimeBuilder, RuntimeLeaseAnchor, StreamDependencyOutcome,
 };

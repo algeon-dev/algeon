@@ -668,7 +668,7 @@ pub struct DeviceMemoryResource {
 }
 
 struct DeviceMemoryResourceHandle {
-    raw: NonNull<std::ffi::c_void>,
+    raw: Option<NonNull<std::ffi::c_void>>,
     device: DeviceId,
     // Keeps callback states alive until after `raw` and any native upstream
     // lifetimes retained by derived resources are destroyed in Drop.
@@ -809,17 +809,20 @@ pub struct QueryMemoryDomain {
 
 #[derive(Debug)]
 struct ReservationHandle {
-    raw: NonNull<std::ffi::c_void>,
+    raw: Option<NonNull<std::ffi::c_void>>,
+    device: DeviceId,
 }
 
 #[derive(Debug)]
 struct ReservationArenaHandle {
-    raw: NonNull<std::ffi::c_void>,
+    raw: Option<NonNull<std::ffi::c_void>>,
+    device: DeviceId,
 }
 
 #[derive(Debug)]
 struct QueryMemoryDomainHandle {
-    raw: NonNull<std::ffi::c_void>,
+    raw: Option<NonNull<std::ffi::c_void>>,
+    device: DeviceId,
 }
 
 // SAFETY: native detach/usage paths are synchronized by the manager.
@@ -1153,6 +1156,7 @@ impl DeviceMemoryManager {
 
     /// Read physical CUDA async-pool counters for this manager.
     pub fn pool_usage(&self) -> Result<DeviceMemoryPoolUsage> {
+        let _guard = DeviceGuard::new(self.device())?;
         let mut usage = cudf_sys::cudf_memory_pool_usage_t::default();
         error::check_status_in_with_details(
             unsafe { cudf_sys::cudf_memory_manager_pool_usage(self.handle.raw.as_ptr(), &mut usage) },
@@ -1164,6 +1168,7 @@ impl DeviceMemoryManager {
 
     /// Explicitly trim idle bytes from this manager's CUDA async pool.
     pub fn trim_to(&self, keep_bytes: u64) -> Result<()> {
+        let _guard = DeviceGuard::new(self.device())?;
         error::check_status_in_with_details(
             unsafe { cudf_sys::cudf_memory_manager_trim_to(self.handle.raw.as_ptr(), keep_bytes) },
             "memory::device_memory_manager::trim_to",
@@ -1183,6 +1188,7 @@ impl DeviceMemoryManager {
 
     /// Create a query-scoped reservation arena owned by this manager.
     pub fn reservation_arena(&self, arena_id: u64, limit_bytes: usize) -> Result<ReservationArena> {
+        let _guard = DeviceGuard::new(self.device())?;
         let mut arena = ptr::null_mut();
         error::check_status_in_with_details(
             unsafe {
@@ -1201,17 +1207,19 @@ impl DeviceMemoryManager {
             ],
         )?;
         let arena = ReservationArenaHandle {
-            raw: error::require_non_null(
+            raw: Some(error::require_non_null(
                 arena,
                 "memory::device_memory_manager::reservation_arena",
                 "reservation arena",
-            )?,
+            )?),
+            device: self.device(),
         };
         Ok(ReservationArena { handle: Arc::new(arena), manager: self.clone() })
     }
 
     /// Create an opt-in query memory domain backed by a private CUDA async pool.
     pub fn query_memory_domain(&self, domain_id: u64, options: QueryMemoryDomainOptions) -> Result<QueryMemoryDomain> {
+        let _guard = DeviceGuard::new(self.device())?;
         let mut domain = ptr::null_mut();
         error::check_status_in_with_details(
             unsafe {
@@ -1233,11 +1241,12 @@ impl DeviceMemoryManager {
             ],
         )?;
         let domain = QueryMemoryDomainHandle {
-            raw: error::require_non_null(
+            raw: Some(error::require_non_null(
                 domain,
                 "memory::device_memory_manager::query_memory_domain",
                 "query memory domain",
-            )?,
+            )?),
+            device: self.device(),
         };
         Ok(QueryMemoryDomain { handle: Arc::new(domain), manager: self.clone() })
     }
@@ -1249,6 +1258,7 @@ impl DeviceMemoryManager {
         limit_bytes: usize,
         arena: Option<&ReservationArena>,
     ) -> Result<StreamReservationLease> {
+        let _guard = DeviceGuard::new(self.device())?;
         if stream.device() != self.device() {
             return Err(error::Error::new_with(
                 error::ErrorCode::RuntimeBindingMismatch,
@@ -1280,7 +1290,7 @@ impl DeviceMemoryManager {
                 cudf_sys::cudf_memory_manager_attach_reservation_to_arena(
                     self.handle.raw.as_ptr(),
                     stream.as_raw(),
-                    arena.handle.raw.as_ptr(),
+                    arena.handle.raw(),
                     reservation_id,
                     limit_bytes,
                     &mut reservation,
@@ -1306,11 +1316,12 @@ impl DeviceMemoryManager {
             ],
         )?;
         let reservation = ReservationHandle {
-            raw: error::require_non_null(
+            raw: Some(error::require_non_null(
                 reservation,
                 "memory::device_memory_manager::reserve_stream",
                 "stream reservation",
-            )?,
+            )?),
+            device: self.device(),
         };
         Ok(StreamReservationLease {
             manager: self.clone(),
@@ -1346,9 +1357,10 @@ impl ReservationArena {
 
     /// Snapshot usage counters for this arena.
     pub fn usage(&self) -> Result<ReservationArenaUsage> {
+        let _guard = DeviceGuard::new(self.device())?;
         let mut usage = cudf_sys::cudf_memory_resource_usage_t::default();
         error::check_status_in(
-            unsafe { cudf_sys::cudf_reservation_arena_usage(self.handle.raw.as_ptr(), &mut usage) },
+            unsafe { cudf_sys::cudf_reservation_arena_usage(self.handle.raw(), &mut usage) },
             "memory::reservation_arena::usage",
         )?;
         Ok(usage.into())
@@ -1359,8 +1371,9 @@ impl ReservationArena {
     /// Shrinking below current live usage is allowed. Future member allocations
     /// fail until enough memory is released or the arena is grown again.
     pub fn resize(&self, limit_bytes: usize) -> Result<()> {
+        let _guard = DeviceGuard::new(self.device())?;
         error::check_status_in_with_details(
-            unsafe { cudf_sys::cudf_reservation_arena_resize(self.handle.raw.as_ptr(), limit_bytes) },
+            unsafe { cudf_sys::cudf_reservation_arena_resize(self.handle.raw(), limit_bytes) },
             "memory::reservation_arena::resize",
             [("device", self.device().ordinal().to_string()), ("limit_bytes", limit_bytes.to_string())],
         )
@@ -1385,6 +1398,7 @@ impl QueryMemoryDomain {
         reservation_id: u64,
         limit_bytes: usize,
     ) -> Result<StreamReservationLease> {
+        let _guard = DeviceGuard::new(self.device())?;
         if stream.device() != self.device() {
             return Err(error::Error::new_with(
                 error::ErrorCode::RuntimeBindingMismatch,
@@ -1401,7 +1415,7 @@ impl QueryMemoryDomain {
         let mut raw_resource = ptr::null_mut();
         let status = unsafe {
             cudf_sys::cudf_query_memory_domain_attach_stream(
-                self.handle.raw.as_ptr(),
+                self.handle.raw(),
                 stream.as_raw(),
                 reservation_id,
                 limit_bytes,
@@ -1412,9 +1426,14 @@ impl QueryMemoryDomain {
         // Adopt both native outputs before validating either one. If native
         // code ever returns a partial pair, the successfully-created handle is
         // still released on every error path.
-        let reservation = NonNull::new(raw_reservation).map(|raw| ReservationHandle { raw });
+        let reservation =
+            NonNull::new(raw_reservation).map(|raw| ReservationHandle { raw: Some(raw), device: self.device() });
         let resource = NonNull::new(raw_resource).map(|raw| DeviceMemoryResource {
-            handle: Arc::new(DeviceMemoryResourceHandle { raw, device: self.device(), _failure_callbacks: Vec::new() }),
+            handle: Arc::new(DeviceMemoryResourceHandle {
+                raw: Some(raw),
+                device: self.device(),
+                _failure_callbacks: Vec::new(),
+            }),
         });
         error::check_status_in_with_details(
             status,
@@ -1453,9 +1472,10 @@ impl QueryMemoryDomain {
 
     /// Snapshot usage counters for this query memory domain.
     pub fn usage(&self) -> Result<QueryMemoryDomainUsage> {
+        let _guard = DeviceGuard::new(self.device())?;
         let mut usage = cudf_sys::cudf_memory_resource_usage_t::default();
         error::check_status_in(
-            unsafe { cudf_sys::cudf_query_memory_domain_usage(self.handle.raw.as_ptr(), &mut usage) },
+            unsafe { cudf_sys::cudf_query_memory_domain_usage(self.handle.raw(), &mut usage) },
             "memory::query_memory_domain::usage",
         )?;
         Ok(usage.into())
@@ -1463,9 +1483,10 @@ impl QueryMemoryDomain {
 
     /// Read physical CUDA async-pool counters for this query memory domain.
     pub fn pool_usage(&self) -> Result<DeviceMemoryPoolUsage> {
+        let _guard = DeviceGuard::new(self.device())?;
         let mut usage = cudf_sys::cudf_memory_pool_usage_t::default();
         error::check_status_in(
-            unsafe { cudf_sys::cudf_query_memory_domain_pool_usage(self.handle.raw.as_ptr(), &mut usage) },
+            unsafe { cudf_sys::cudf_query_memory_domain_pool_usage(self.handle.raw(), &mut usage) },
             "memory::query_memory_domain::pool_usage",
         )?;
         Ok(usage.into())
@@ -1473,8 +1494,9 @@ impl QueryMemoryDomain {
 
     /// Resize this domain's live-byte grant.
     pub fn resize_grant(&self, grant_bytes: usize) -> Result<()> {
+        let _guard = DeviceGuard::new(self.device())?;
         error::check_status_in_with_details(
-            unsafe { cudf_sys::cudf_query_memory_domain_resize_grant(self.handle.raw.as_ptr(), grant_bytes) },
+            unsafe { cudf_sys::cudf_query_memory_domain_resize_grant(self.handle.raw(), grant_bytes) },
             "memory::query_memory_domain::resize_grant",
             [("device", self.device().ordinal().to_string()), ("grant_bytes", grant_bytes.to_string())],
         )
@@ -1482,8 +1504,9 @@ impl QueryMemoryDomain {
 
     /// Explicitly trim idle bytes from this domain's CUDA async pool.
     pub fn trim_to(&self, keep_bytes: u64) -> Result<()> {
+        let _guard = DeviceGuard::new(self.device())?;
         error::check_status_in_with_details(
-            unsafe { cudf_sys::cudf_query_memory_domain_trim(self.handle.raw.as_ptr(), keep_bytes) },
+            unsafe { cudf_sys::cudf_query_memory_domain_trim(self.handle.raw(), keep_bytes) },
             "memory::query_memory_domain::trim_to",
             [("device", self.device().ordinal().to_string()), ("keep_bytes", keep_bytes.to_string())],
         )
@@ -1518,9 +1541,10 @@ impl StreamReservationLease {
 
     /// Snapshot usage counters for this reservation.
     pub fn usage(&self) -> Result<ReservationUsage> {
+        let _guard = DeviceGuard::new(self.manager.device())?;
         let mut usage = cudf_sys::cudf_memory_resource_usage_t::default();
         error::check_status_in(
-            unsafe { cudf_sys::cudf_reservation_usage(self.reservation.raw.as_ptr(), &mut usage) },
+            unsafe { cudf_sys::cudf_reservation_usage(self.reservation.raw(), &mut usage) },
             "memory::stream_reservation_lease::usage",
         )?;
         Ok(usage.into())
@@ -1533,8 +1557,9 @@ impl StreamReservationLease {
     /// Query-memory-domain members enforce this independently of the parent
     /// domain grant.
     pub fn resize(&self, limit_bytes: usize) -> Result<()> {
+        let _guard = DeviceGuard::new(self.manager.device())?;
         error::check_status_in_with_details(
-            unsafe { cudf_sys::cudf_reservation_resize(self.reservation.raw.as_ptr(), limit_bytes) },
+            unsafe { cudf_sys::cudf_reservation_resize(self.reservation.raw(), limit_bytes) },
             "memory::stream_reservation_lease::resize",
             [("device", self.manager.device().ordinal().to_string()), ("limit_bytes", limit_bytes.to_string())],
         )
@@ -1548,28 +1573,37 @@ impl StreamReservationLease {
 
 impl Drop for ReservationArenaHandle {
     fn drop(&mut self) {
-        let status = unsafe { cudf_sys::cudf_reservation_arena_destroy(self.raw.as_ptr()) };
-        if status != cudf_sys::CUDF_SUCCESS {
-            eprintln!("[cudf::ReservationArena] warning: failed to destroy reservation arena");
-        }
+        let mut raw = self.raw.take().map_or(ptr::null_mut(), NonNull::as_ptr);
+        crate::runtime::drop_device_resource(&mut raw, self.device, "ReservationArenaHandle::drop", |owned| {
+            let status = unsafe { cudf_sys::cudf_reservation_arena_destroy(owned) };
+            if status != cudf_sys::CUDF_SUCCESS {
+                record_native_teardown_failure(self.device, "ReservationArenaHandle::drop", status);
+            }
+        });
     }
 }
 
 impl Drop for QueryMemoryDomainHandle {
     fn drop(&mut self) {
-        let status = unsafe { cudf_sys::cudf_query_memory_domain_destroy(self.raw.as_ptr()) };
-        if status != cudf_sys::CUDF_SUCCESS {
-            eprintln!("[cudf::QueryMemoryDomain] warning: failed to destroy query memory domain");
-        }
+        let mut raw = self.raw.take().map_or(ptr::null_mut(), NonNull::as_ptr);
+        crate::runtime::drop_device_resource(&mut raw, self.device, "QueryMemoryDomainHandle::drop", |owned| {
+            let status = unsafe { cudf_sys::cudf_query_memory_domain_destroy(owned) };
+            if status != cudf_sys::CUDF_SUCCESS {
+                record_native_teardown_failure(self.device, "QueryMemoryDomainHandle::drop", status);
+            }
+        });
     }
 }
 
 impl Drop for ReservationHandle {
     fn drop(&mut self) {
-        let status = unsafe { cudf_sys::cudf_reservation_detach(self.raw.as_ptr()) };
-        if status != cudf_sys::CUDF_SUCCESS {
-            eprintln!("[cudf::StreamReservationLease] warning: failed to detach stream reservation");
-        }
+        let mut raw = self.raw.take().map_or(ptr::null_mut(), NonNull::as_ptr);
+        crate::runtime::drop_device_resource(&mut raw, self.device, "ReservationHandle::drop", |owned| {
+            let status = unsafe { cudf_sys::cudf_reservation_detach(owned) };
+            if status != cudf_sys::CUDF_SUCCESS {
+                record_native_teardown_failure(self.device, "ReservationHandle::drop", status);
+            }
+        });
     }
 }
 
@@ -1590,7 +1624,7 @@ impl DeviceMemoryResource {
     ) -> Result<Self> {
         Ok(Self {
             handle: Arc::new(DeviceMemoryResourceHandle {
-                raw: error::require_non_null(handle, constructor, "device memory resource")?,
+                raw: Some(error::require_non_null(handle, constructor, "device memory resource")?),
                 device,
                 _failure_callbacks: failure_callbacks,
             }),
@@ -1705,11 +1739,7 @@ impl DeviceMemoryResource {
         // SAFETY: handle is initialized to null and set by the C shim on success.
         error::check_status_in_with_details(
             unsafe {
-                cudf_sys::cudf_memory_resource_create_limiting(
-                    self.handle.raw.as_ptr(),
-                    allocation_limit_bytes,
-                    &mut handle,
-                )
+                cudf_sys::cudf_memory_resource_create_limiting(self.handle.raw(), allocation_limit_bytes, &mut handle)
             },
             "memory::device_memory_resource::limiting",
             [
@@ -1759,7 +1789,7 @@ impl DeviceMemoryResource {
         error::check_status_in_with_details(
             unsafe {
                 cudf_sys::cudf_memory_resource_create_failure_callback_v2(
-                    self.handle.raw.as_ptr(),
+                    self.handle.raw(),
                     Some(failure_callback_trampoline),
                     Arc::as_ptr(&callback_state) as *mut c_void,
                     &mut handle,
@@ -1792,7 +1822,7 @@ impl DeviceMemoryResource {
         error::check_status_in_with_details(
             unsafe {
                 cudf_sys::cudf_memory_resource_create_budget_tracking(
-                    self.handle.raw.as_ptr(),
+                    self.handle.raw(),
                     allocation_limit_bytes,
                     &mut handle,
                 )
@@ -1820,9 +1850,10 @@ impl DeviceMemoryResource {
     /// Returns an error if this resource was not created by
     /// [`DeviceMemoryResource::budget_tracking_limit`].
     pub fn budget_tracking_usage(&self) -> Result<DeviceMemoryResourceUsage> {
+        let _guard = DeviceGuard::new(self.device())?;
         let mut usage = cudf_sys::cudf_memory_resource_usage_t::default();
         error::check_status_in(
-            unsafe { cudf_sys::cudf_memory_resource_usage(self.handle.raw.as_ptr(), &mut usage) },
+            unsafe { cudf_sys::cudf_memory_resource_usage(self.handle.raw(), &mut usage) },
             "memory::device_memory_resource::budget_tracking_usage",
         )?;
         Ok(usage.into())
@@ -1830,9 +1861,10 @@ impl DeviceMemoryResource {
 
     /// Read physical CUDA async-pool counters for this resource.
     pub fn pool_usage(&self) -> Result<DeviceMemoryPoolUsage> {
+        let _guard = DeviceGuard::new(self.device())?;
         let mut usage = cudf_sys::cudf_memory_pool_usage_t::default();
         error::check_status_in_with_details(
-            unsafe { cudf_sys::cudf_memory_resource_pool_usage(self.handle.raw.as_ptr(), &mut usage) },
+            unsafe { cudf_sys::cudf_memory_resource_pool_usage(self.handle.raw(), &mut usage) },
             "memory::device_memory_resource::pool_usage",
             [("device", self.device().ordinal().to_string())],
         )?;
@@ -1841,8 +1873,9 @@ impl DeviceMemoryResource {
 
     /// Explicitly trim idle bytes from this resource's CUDA async pool.
     pub fn trim_to(&self, keep_bytes: u64) -> Result<()> {
+        let _guard = DeviceGuard::new(self.device())?;
         error::check_status_in_with_details(
-            unsafe { cudf_sys::cudf_memory_resource_trim_to(self.handle.raw.as_ptr(), keep_bytes) },
+            unsafe { cudf_sys::cudf_memory_resource_trim_to(self.handle.raw(), keep_bytes) },
             "memory::device_memory_resource::trim_to",
             [("device", self.device().ordinal().to_string()), ("keep_bytes", keep_bytes.to_string())],
         )
@@ -1859,25 +1892,29 @@ impl DeviceMemoryResource {
     /// to `&self`, and only `DeviceMemoryResource` remains responsible for
     /// destruction.
     pub fn as_borrowed_sys(&self) -> cudf_sys::BorrowedMemoryResource<'_> {
-        unsafe { cudf_sys::BorrowedMemoryResource::from_raw(self.handle.raw.as_ptr()) }
+        unsafe { cudf_sys::BorrowedMemoryResource::from_raw(self.handle.raw()) }
     }
 
     pub(crate) fn as_raw(&self) -> *mut std::ffi::c_void {
-        self.handle.raw.as_ptr()
+        self.handle.raw()
     }
 
     pub(crate) fn interop_raw_handle(&self) -> Result<*mut std::ffi::c_void> {
+        let _guard = DeviceGuard::new(self.device())?;
         let mut out = std::ptr::null_mut();
         error::check_status_in(
-            unsafe { cudf_sys::cudf_memory_resource_raw(self.handle.raw.as_ptr(), &mut out) },
+            unsafe { cudf_sys::cudf_memory_resource_raw(self.handle.raw(), &mut out) },
             "memory::device_memory_resource::interop_raw_handle",
         )?;
         Ok(out)
     }
     pub(crate) fn __debug_raw_handle_value(&self) -> usize {
+        let Ok(_guard) = DeviceGuard::new(self.device()) else {
+            return 0;
+        };
         let mut out = std::ptr::null_mut();
         error::check_status_in(
-            unsafe { cudf_sys::cudf_test_memory_resource_raw(self.handle.raw.as_ptr(), &mut out) },
+            unsafe { cudf_sys::cudf_test_memory_resource_raw(self.handle.raw(), &mut out) },
             "memory::device_memory_resource::__debug_raw_handle_value",
         )
         .map(|_| out as usize)
@@ -1892,11 +1929,11 @@ impl DeviceMemoryResource {
         )?;
         Ok(Self {
             handle: Arc::new(DeviceMemoryResourceHandle {
-                raw: error::require_non_null(
+                raw: Some(error::require_non_null(
                     handle,
                     "memory::device_memory_resource::__test_stats",
                     "stats memory resource",
-                )?,
+                )?),
                 device,
                 _failure_callbacks: Vec::new(),
             }),
@@ -1906,9 +1943,7 @@ impl DeviceMemoryResource {
         let _guard = DeviceGuard::new(self.device())?;
         let mut handle = ptr::null_mut();
         error::check_status_in_with_details(
-            unsafe {
-                cudf_sys::cudf_test_memory_resource_create_fail_first_allocation(self.handle.raw.as_ptr(), &mut handle)
-            },
+            unsafe { cudf_sys::cudf_test_memory_resource_create_fail_first_allocation(self.handle.raw(), &mut handle) },
             "memory::device_memory_resource::__test_fail_first_allocation",
             [("upstream_device", self.device().ordinal().to_string())],
         )?;
@@ -1920,9 +1955,10 @@ impl DeviceMemoryResource {
         )
     }
     pub(crate) fn __test_allocation_count(&self) -> Result<i64> {
+        let _guard = DeviceGuard::new(self.device())?;
         let mut out = 0_i64;
         error::check_status_in(
-            unsafe { cudf_sys::cudf_test_memory_resource_allocation_count(self.handle.raw.as_ptr(), &mut out) },
+            unsafe { cudf_sys::cudf_test_memory_resource_allocation_count(self.handle.raw(), &mut out) },
             "memory::device_memory_resource::__test_allocation_count",
         )?;
         Ok(out)
@@ -1931,8 +1967,12 @@ impl DeviceMemoryResource {
 
 impl Drop for DeviceMemoryResourceHandle {
     fn drop(&mut self) {
-        let status = unsafe { cudf_sys::cudf_memory_resource_destroy(self.raw.as_ptr(), self.device.ordinal_raw()) };
-        if status != cudf_sys::CUDF_SUCCESS {
+        let mut raw = self.raw.take().map_or(ptr::null_mut(), NonNull::as_ptr);
+        let mut status = None;
+        crate::runtime::drop_device_resource(&mut raw, self.device, "DeviceMemoryResourceHandle::drop", |owned| {
+            status = Some(unsafe { cudf_sys::cudf_memory_resource_destroy(owned, self.device.ordinal_raw()) });
+        });
+        if status != Some(cudf_sys::CUDF_SUCCESS) {
             if !self._failure_callbacks.is_empty() {
                 // Native destroy can be rejected when the resource is installed
                 // as current. In that case the native adaptor may still call
@@ -1940,12 +1980,51 @@ impl Drop for DeviceMemoryResourceHandle {
                 // leaving dangling Rust pointers behind.
                 std::mem::forget(std::mem::take(&mut self._failure_callbacks));
             }
-            eprintln!(
-                "[cudf::DeviceMemoryResourceHandle] warning: failed to destroy memory resource on device {}",
-                self.device.ordinal_raw()
-            );
+            if let Some(status) = status {
+                record_native_teardown_failure(self.device, "DeviceMemoryResourceHandle::drop", status);
+            }
         }
     }
+}
+
+impl DeviceMemoryResourceHandle {
+    fn raw(&self) -> *mut std::ffi::c_void {
+        self.raw.expect("live memory resource retains its native handle").as_ptr()
+    }
+}
+
+impl ReservationHandle {
+    fn raw(&self) -> *mut std::ffi::c_void {
+        self.raw.expect("live reservation retains its native handle").as_ptr()
+    }
+}
+
+impl ReservationArenaHandle {
+    fn raw(&self) -> *mut std::ffi::c_void {
+        self.raw.expect("live reservation arena retains its native handle").as_ptr()
+    }
+}
+
+impl QueryMemoryDomainHandle {
+    fn raw(&self) -> *mut std::ffi::c_void {
+        self.raw.expect("live query memory domain retains its native handle").as_ptr()
+    }
+}
+
+fn record_native_teardown_failure(device: DeviceId, operation: &'static str, status: cudf_sys::cudf_status_t) {
+    if status == cudf_sys::CUDF_ERROR_FATAL_CUDA {
+        crate::runtime::report_device_fault(
+            device,
+            crate::runtime::DeviceFaultKind::FatalDeviceOperation,
+            operation,
+            Some(status),
+        );
+    }
+    crate::runtime::device_health::record_teardown_failure(
+        device,
+        operation,
+        &format_args!("native teardown failed with status {status}"),
+    );
 }
 
 impl std::fmt::Debug for DeviceMemoryResource {

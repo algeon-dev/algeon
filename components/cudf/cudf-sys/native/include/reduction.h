@@ -52,15 +52,17 @@ cudf_status_t cudf_reduce_aggregation_create_std(int32_t ddof, cudf_reduce_aggre
 cudf_status_t cudf_reduce_aggregation_create_nunique(int32_t null_policy,
                                                      cudf_reduce_aggregation_handle* out);
 
-/// Destroy a reduce aggregation handle.
-void cudf_reduce_aggregation_destroy(cudf_reduce_aggregation_handle handle);
+/// Destroy a reduce aggregation handle. Ownership is consumed on call;
+/// success means cleanup completed and failure quarantines the handle.
+cudf_status_t cudf_reduce_aggregation_destroy(cudf_reduce_aggregation_handle handle);
 
 /// Create a simple scan aggregation.
 cudf_status_t cudf_scan_aggregation_create(cudf_reduce_aggregation_kind_t kind,
                                            cudf_scan_aggregation_handle* out);
 
-/// Destroy a scan aggregation handle.
-void cudf_scan_aggregation_destroy(cudf_scan_aggregation_handle handle);
+/// Destroy a scan aggregation handle. Ownership is consumed on call; success
+/// means cleanup completed and failure quarantines the handle.
+cudf_status_t cudf_scan_aggregation_destroy(cudf_scan_aggregation_handle handle);
 
 /// Reduce a column to a single scalar value with explicit execution context.
 ///

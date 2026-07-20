@@ -90,8 +90,9 @@ cudf_status_t cudf_scalar_copy_ex(cudf_scalar_handle src,
                                   const cudf_exec_options_t *options,
                                   cudf_scalar_handle *out);
 
-/// Destroy a scalar handle.
-void cudf_scalar_destroy(cudf_scalar_handle handle);
+/// Destroy a scalar handle. Ownership is consumed on call, including on
+/// failure; a failed cleanup is quarantined and the handle must not be reused.
+cudf_status_t cudf_scalar_destroy(cudf_scalar_handle handle);
 
 /// Get the type_id of a scalar.
 cudf_status_t cudf_scalar_type(cudf_scalar_handle handle, cudf_type_id_t *out);

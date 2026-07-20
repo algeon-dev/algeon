@@ -69,12 +69,14 @@ cudf_status_t cudf_event_create(cudf_event_handle* out)
   CUDF_RUST_CATCH
 }
 
-void cudf_event_destroy(cudf_event_handle handle)
+cudf_status_t cudf_event_destroy(cudf_event_handle handle)
 {
-  if (handle == nullptr) { return; }
+  if (handle == nullptr) { return CUDF_SUCCESS; }
   auto* event = static_cast<cudaEvent_t*>(handle);
-  cudaEventDestroy(*event);
+  auto const status = cuda_error_status(cudaEventDestroy(*event), "cudaEventDestroy");
+  // The host-side owner is consumed even if CUDA rejects device cleanup.
   delete event;
+  return status;
 }
 
 cudf_status_t cudf_event_record(cudf_event_handle event, cudf_stream_handle stream)

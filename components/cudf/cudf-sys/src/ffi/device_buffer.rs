@@ -17,7 +17,7 @@ unsafe extern "C" {
 
     /// Release a device buffer. Safe to call with null (no-op).
     /// Must NOT be called if the buffer was previously adopted by a column.
-    pub fn cudf_device_buffer_destroy(handle: cudf_device_buffer_handle);
+    pub fn cudf_device_buffer_destroy(handle: cudf_device_buffer_handle) -> cudf_status_t;
 
     /// Get the device pointer from a buffer handle.
     ///

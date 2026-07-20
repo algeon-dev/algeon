@@ -13,7 +13,7 @@ unsafe extern "C" {
     pub fn cudf_stream_create(out: *mut cudf_stream_handle) -> cudf_status_t;
 
     /// Destroy a CUDA stream created by [`cudf_stream_create`].
-    pub fn cudf_stream_destroy(handle: cudf_stream_handle);
+    pub fn cudf_stream_destroy(handle: cudf_stream_handle) -> cudf_status_t;
 
     /// Block until work already enqueued on `handle` completes.
     pub fn cudf_stream_synchronize(handle: cudf_stream_handle) -> cudf_status_t;

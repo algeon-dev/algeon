@@ -88,27 +88,48 @@ void move_arrow_device_array(ArrowDeviceArray *src, ArrowDeviceArray *dst) {
 namespace {
 constexpr int fixed_width_data_buffer_index = 1;
 
-void destroy_arrow_schema(ArrowSchema *schema) {
+cudf_status_t destroy_arrow_schema(ArrowSchema *schema) {
   if (schema == nullptr) {
-    return;
+    return CUDF_SUCCESS;
   }
   if (schema->release != nullptr) {
     schema->release(schema);
   }
+  if (schema->release != nullptr) {
+    set_error("ArrowSchema release callback did not consume the schema");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
   delete schema;
+  return CUDF_SUCCESS;
 }
 
-void destroy_arrow_device_array(ArrowDeviceArray *array) {
+thread_local cudf_status_t g_arrow_device_release_status = CUDF_SUCCESS;
+
+cudf_status_t destroy_arrow_device_array(ArrowDeviceArray *array) {
   if (array == nullptr) {
-    return;
+    return CUDF_SUCCESS;
   }
+  g_arrow_device_release_status = CUDF_SUCCESS;
   if (array->array.release != nullptr) {
     array->array.release(&array->array);
   }
   if (array->array.release != nullptr) {
-    std::terminate();
+    if (g_arrow_device_release_status != CUDF_SUCCESS) {
+      return g_arrow_device_release_status;
+    }
+    set_error("ArrowArray release callback did not consume the array");
+    return CUDF_ERROR_INVALID_OPERATION;
   }
   delete array;
+  return CUDF_SUCCESS;
+}
+
+void destroy_arrow_schema_for_owner(ArrowSchema *schema) {
+  (void)destroy_arrow_schema(schema);
+}
+
+void destroy_arrow_device_array_for_owner(ArrowDeviceArray *array) {
+  (void)destroy_arrow_device_array(array);
 }
 
 using schema_owner_t = std::unique_ptr<ArrowSchema, void (*)(ArrowSchema *)>;
@@ -137,24 +158,28 @@ void release_arrow_device_array_under_provenance(ArrowArray *array) {
   array->release = release;
   array->private_data = private_data;
 
-  auto cleanup = cudf_provenance_cleanup_result::completed;
+  auto cleanup = CUDF_SUCCESS;
   if (release != nullptr) {
     cleanup = cudf_destroy_under_provenance(
         provenance, [release, array]() { release(array); });
   }
 
-  if (cleanup == cudf_provenance_cleanup_result::not_run) {
+  if (cleanup != CUDF_SUCCESS) {
     array->release = release_arrow_device_array_under_provenance;
     array->private_data = state;
+    g_arrow_device_release_status = cleanup;
+    return;
+  }
+
+  if (array->release != nullptr) {
+    array->release = release_arrow_device_array_under_provenance;
+    array->private_data = state;
+    set_error("ArrowArray release callback did not clear release");
+    g_arrow_device_release_status = CUDF_ERROR_INVALID_OPERATION;
     return;
   }
 
   delete state;
-
-  if (cleanup == cudf_provenance_cleanup_result::failed &&
-      array->release != nullptr) {
-    std::terminate();
-  }
 }
 
 void wrap_arrow_device_array_release(ArrowDeviceArray *array,
@@ -273,7 +298,7 @@ schema_owner_t export_column_schema(cudf::column_view const &view) {
   auto metadata = cudf::interop::get_column_metadata(view);
   auto table_schema = cudf::to_arrow_schema(
       cudf::table_view{{view}}, std::vector<cudf::column_metadata>{metadata});
-  auto out = schema_owner_t(new ArrowSchema{}, destroy_arrow_schema);
+  auto out = schema_owner_t(new ArrowSchema{}, destroy_arrow_schema_for_owner);
   move_arrow_schema(table_schema->children[0], out.get());
   return out;
 }
@@ -282,7 +307,7 @@ array_owner_t export_column_array(cudf::column_view const &view,
                                   rmm::cuda_stream_view stream,
                                   rmm::device_async_resource_ref mr) {
   auto device_array = cudf::to_arrow_device(view, stream, mr);
-  auto out = array_owner_t(new ArrowDeviceArray{}, destroy_arrow_device_array);
+  auto out = array_owner_t(new ArrowDeviceArray{}, destroy_arrow_device_array_for_owner);
   move_arrow_device_array(device_array.get(), out.get());
   return out;
 }
@@ -316,7 +341,7 @@ schema_owner_t export_table_schema(cudf::table_view const &view,
                                    int32_t num_column_names) {
   auto metadata = export_table_metadata(view, column_names, num_column_names);
   auto table_schema = cudf::to_arrow_schema(view, metadata);
-  auto out = schema_owner_t(new ArrowSchema{}, destroy_arrow_schema);
+  auto out = schema_owner_t(new ArrowSchema{}, destroy_arrow_schema_for_owner);
   move_arrow_schema(table_schema.get(), out.get());
   return out;
 }
@@ -325,7 +350,7 @@ array_owner_t export_table_array(cudf::table_view const &view,
                                  rmm::cuda_stream_view stream,
                                  rmm::device_async_resource_ref mr) {
   auto device_array = cudf::to_arrow_device(view, stream, mr);
-  auto out = array_owner_t(new ArrowDeviceArray{}, destroy_arrow_device_array);
+  auto out = array_owner_t(new ArrowDeviceArray{}, destroy_arrow_device_array_for_owner);
   move_arrow_device_array(device_array.get(), out.get());
   return out;
 }
@@ -392,22 +417,9 @@ public:
   arrow_device_imported_column_handle_state(cudf::unique_column_view_t view,
                                             cudf_handle_provenance provenance,
                                             bool owns_device_memory)
-      : _view(std::make_unique<cudf::unique_column_view_t>(std::move(view))),
-        _provenance(std::move(provenance)),
+      : _provenance(std::move(provenance)),
+        _view(std::make_unique<cudf::unique_column_view_t>(std::move(view))),
         _owns_device_memory(owns_device_memory) {}
-
-  ~arrow_device_imported_column_handle_state() override {
-    if (!_owns_device_memory) {
-      return;
-    }
-    auto view = std::move(_view);
-    auto const cleanup =
-        cudf_destroy_under_provenance(_provenance, [&view]() { view.reset(); });
-    if (cleanup != cudf_provenance_cleanup_result::completed &&
-        view != nullptr) {
-      std::terminate();
-    }
-  }
 
   [[nodiscard]] bool is_native() const noexcept override { return false; }
 
@@ -431,11 +443,18 @@ public:
     return first_slice_payload_size(view_ref());
   }
 
+  [[nodiscard]] std::optional<cudf_handle_provenance>
+  destroy_provenance() const noexcept override {
+    return _owns_device_memory
+             ? std::optional<cudf_handle_provenance>{_provenance}
+             : std::nullopt;
+  }
+
 private:
   [[nodiscard]] cudf::column_view const &view_ref() const { return **_view; }
 
-  std::unique_ptr<cudf::unique_column_view_t> _view;
   cudf_handle_provenance _provenance;
+  std::unique_ptr<cudf::unique_column_view_t> _view;
   bool _owns_device_memory;
 };
 
@@ -443,29 +462,16 @@ struct arrow_device_imported_table_root_state {
   arrow_device_imported_table_root_state(cudf::unique_table_view_t imported,
                                          cudf_handle_provenance provenance,
                                          bool owns_device_memory)
-      : view(std::make_unique<cudf::unique_table_view_t>(std::move(imported))),
-        provenance(std::move(provenance)),
+      : provenance(std::move(provenance)),
+        view(std::make_unique<cudf::unique_table_view_t>(std::move(imported))),
         owns_device_memory(owns_device_memory) {}
-
-  ~arrow_device_imported_table_root_state() {
-    if (!owns_device_memory) {
-      return;
-    }
-    auto local_view = std::move(view);
-    auto const cleanup = cudf_destroy_under_provenance(
-        provenance, [&local_view]() { local_view.reset(); });
-    if (cleanup != cudf_provenance_cleanup_result::completed &&
-        local_view != nullptr) {
-      std::terminate();
-    }
-  }
 
   [[nodiscard]] cudf::table_view const &table_view_ref() const {
     return **view;
   }
 
-  std::unique_ptr<cudf::unique_table_view_t> view;
   cudf_handle_provenance provenance;
+  std::unique_ptr<cudf::unique_table_view_t> view;
   bool owns_device_memory;
 };
 
@@ -497,6 +503,13 @@ public:
 
   [[nodiscard]] std::size_t device_allocated_size() const override {
     return first_slice_payload_size(view());
+  }
+
+  [[nodiscard]] std::optional<cudf_handle_provenance>
+  destroy_provenance() const noexcept override {
+    return _root->owns_device_memory
+             ? std::optional<cudf_handle_provenance>{_root->provenance}
+             : std::nullopt;
   }
 
 private:
@@ -537,6 +550,13 @@ public:
 
   [[nodiscard]] std::size_t device_allocated_size() const override {
     return first_slice_payload_size(_root->table_view_ref());
+  }
+
+  [[nodiscard]] std::optional<cudf_handle_provenance>
+  destroy_provenance() const noexcept override {
+    return _root->owns_device_memory
+             ? std::optional<cudf_handle_provenance>{_root->provenance}
+             : std::nullopt;
   }
 
   std::vector<std::unique_ptr<cudf_column_handle_state>>
@@ -887,12 +907,22 @@ cudf_status_t cudf_arrow_device_table_import(
   CUDF_RUST_CATCH
 }
 
-void cudf_arrow_device_schema_destroy(cudf_arrow_schema_handle schema) {
-  destroy_arrow_schema(static_cast<ArrowSchema *>(schema));
+cudf_status_t cudf_arrow_device_schema_destroy(cudf_arrow_schema_handle schema) {
+  try {
+    // Ownership is consumed regardless of the returned status.
+    return destroy_arrow_schema(static_cast<ArrowSchema *>(schema));
+  } catch (...) {
+    return cudf_translate_cleanup_exception_noexcept();
+  }
 }
 
-void cudf_arrow_device_array_destroy(cudf_arrow_device_array_handle array) {
-  destroy_arrow_device_array(static_cast<ArrowDeviceArray *>(array));
+cudf_status_t cudf_arrow_device_array_destroy(cudf_arrow_device_array_handle array) {
+  try {
+    // Ownership is consumed regardless of the returned status.
+    return destroy_arrow_device_array(static_cast<ArrowDeviceArray *>(array));
+  } catch (...) {
+    return cudf_translate_cleanup_exception_noexcept();
+  }
 }
 
 cudf_status_t

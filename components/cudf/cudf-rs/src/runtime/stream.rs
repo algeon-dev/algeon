@@ -12,8 +12,10 @@ use std::{
     sync::Arc,
 };
 
-use super::{device::DeviceId, event::CudaEvent};
-use crate::core::error::{self, Result};
+use super::{
+    device::DeviceId, device_guard::DeviceEntryGuard, device_health::check_device_status_in, event::CudaEvent,
+};
+use crate::core::error::{self, Error, ErrorCode, Result};
 
 /// An owned CUDA stream.
 ///
@@ -33,7 +35,7 @@ pub struct CudaStream {
 }
 
 struct CudaStreamHandle {
-    raw: NonNull<std::ffi::c_void>,
+    raw: Option<NonNull<std::ffi::c_void>>,
     device: DeviceId,
 }
 
@@ -48,12 +50,13 @@ impl CudaStream {
     /// Create a new CUDA stream on the calling thread's current device.
     pub fn new() -> Result<Self> {
         let device = DeviceId::current()?;
+        let _entry = DeviceEntryGuard::enter(device, "stream::new")?;
         let mut handle = ptr::null_mut();
         // SAFETY: handle is initialized to null and set by the C shim on success.
-        error::check_status_in(unsafe { cudf_sys::cudf_stream_create(&mut handle) }, "stream::new")?;
+        check_device_status_in(unsafe { cudf_sys::cudf_stream_create(&mut handle) }, device, "stream::new")?;
         Ok(Self {
             handle: Arc::new(CudaStreamHandle {
-                raw: error::require_non_null(handle, "stream::new", "CUDA stream")?,
+                raw: Some(error::require_non_null(handle, "stream::new", "CUDA stream")?),
                 device,
             }),
         })
@@ -67,9 +70,11 @@ impl CudaStream {
     /// Block the calling thread until all operations already enqueued on this
     /// stream complete.
     pub fn synchronize(&self) -> Result<()> {
+        let _entry = DeviceEntryGuard::enter(self.device(), "stream::synchronize")?;
         // SAFETY: self.handle is valid (NonNull from construction).
-        error::check_status_in(
-            unsafe { cudf_sys::cudf_stream_synchronize(self.handle.raw.as_ptr()) },
+        check_device_status_in(
+            unsafe { cudf_sys::cudf_stream_synchronize(self.handle.raw()) },
+            self.device(),
             "stream::synchronize",
         )
     }
@@ -77,10 +82,12 @@ impl CudaStream {
     /// Check whether all operations already enqueued on this stream have
     /// completed (non-blocking).
     pub fn is_ready(&self) -> Result<bool> {
+        let _entry = DeviceEntryGuard::enter(self.device(), "stream::is_ready")?;
         let mut out: i32 = 0;
         // SAFETY: self.handle is valid (NonNull from construction).
-        error::check_status_in(
-            unsafe { cudf_sys::cudf_stream_is_ready(self.handle.raw.as_ptr(), &mut out) },
+        check_device_status_in(
+            unsafe { cudf_sys::cudf_stream_is_ready(self.handle.raw(), &mut out) },
+            self.device(),
             "stream::is_ready",
         )?;
         Ok(out != 0)
@@ -89,8 +96,20 @@ impl CudaStream {
     /// Make this stream wait for `event` before subsequently enqueued work
     /// proceeds.
     pub fn wait_event(&self, event: &CudaEvent) -> Result<()> {
-        error::check_status_in(
-            unsafe { cudf_sys::cudf_stream_wait_event(self.handle.raw.as_ptr(), event.as_raw()) },
+        if self.device() != event.device() {
+            return Err(Error::new_with(
+                ErrorCode::RuntimeBindingMismatch,
+                "stream::wait_event",
+                "CUDA stream and event must have the same immutable owner device",
+            )
+            .with_detail("stream_device", self.device().ordinal().to_string())
+            .with_detail("event_device", event.device().ordinal().to_string())
+            .with_detail("reason", "cross_device_stream_event"));
+        }
+        let _entry = DeviceEntryGuard::enter(self.device(), "stream::wait_event")?;
+        check_device_status_in(
+            unsafe { cudf_sys::cudf_stream_wait_event(self.handle.raw(), event.as_raw()) },
+            self.device(),
             "stream::wait_event",
         )
     }
@@ -100,26 +119,30 @@ impl CudaStream {
     /// The returned wrapper does not transfer ownership. Its lifetime is tied
     /// to `&self`, and only `CudaStream` remains responsible for destruction.
     pub fn as_borrowed_sys(&self) -> cudf_sys::BorrowedStream<'_> {
-        unsafe { cudf_sys::BorrowedStream::from_raw(self.handle.raw.as_ptr()) }
+        unsafe { cudf_sys::BorrowedStream::from_raw(self.handle.raw()) }
     }
 
     pub(crate) fn as_raw(&self) -> *mut std::ffi::c_void {
-        self.handle.raw.as_ptr()
+        self.handle.raw()
     }
 
     pub(crate) fn interop_raw_handle(&self) -> Result<*mut std::ffi::c_void> {
+        let _entry = DeviceEntryGuard::enter(self.device(), "stream::interop_raw_handle")?;
         let mut out = std::ptr::null_mut();
-        error::check_status_in(
-            unsafe { cudf_sys::cudf_stream_raw(self.handle.raw.as_ptr(), &mut out) },
+        check_device_status_in(
+            unsafe { cudf_sys::cudf_stream_raw(self.handle.raw(), &mut out) },
+            self.device(),
             "stream::interop_raw_handle",
         )?;
         Ok(out)
     }
 
     pub(crate) fn debug_handle_value(&self) -> Result<usize> {
+        let _entry = DeviceEntryGuard::enter(self.device(), "stream::debug_handle_value")?;
         let mut out: usize = 0;
-        error::check_status_in(
-            unsafe { cudf_sys::cudf_test_stream_handle_value(self.handle.raw.as_ptr(), &mut out) },
+        check_device_status_in(
+            unsafe { cudf_sys::cudf_test_stream_handle_value(self.handle.raw(), &mut out) },
+            self.device(),
             "stream::debug_handle_value",
         )?;
         Ok(out)
@@ -131,29 +154,19 @@ impl CudaStream {
 
 impl Drop for CudaStreamHandle {
     fn drop(&mut self) {
-        // Switch to the device this stream was created on before destroying it.
-        // In multi-GPU scenarios, destroying a CUDA stream while on the wrong
-        // device is undefined behavior.
-        let mut current: i32 = 0;
-        let get_status = unsafe { cudf_sys::cudf_cuda_get_device(&mut current) };
-        if get_status == cudf_sys::CUDF_SUCCESS && current != self.device.ordinal_raw() {
-            let set_status = unsafe { cudf_sys::cudf_cuda_set_device(self.device.ordinal_raw()) };
-            if set_status != cudf_sys::CUDF_SUCCESS {
-                eprintln!(
-                    "[cudf::CudaStreamHandle] warning: failed to switch to device {} for stream destruction",
-                    self.device.ordinal_raw()
-                );
-            }
-        }
-        // SAFETY: self.raw is valid (NonNull from construction). The shared
-        // handle is destroyed exactly once when the last clone drops.
-        unsafe {
-            cudf_sys::cudf_stream_destroy(self.raw.as_ptr());
-        }
-        // Restore the previous device (best-effort).
-        if get_status == cudf_sys::CUDF_SUCCESS && current != self.device.ordinal_raw() {
-            unsafe { cudf_sys::cudf_cuda_set_device(current) };
-        }
+        let raw = self.raw.take().map_or(ptr::null_mut(), NonNull::as_ptr);
+        crate::core::native_teardown::drop_device_owned_handle(
+            raw,
+            self.device,
+            "CudaStreamHandle::drop",
+            |owned| unsafe { cudf_sys::cudf_stream_destroy(owned) },
+        );
+    }
+}
+
+impl CudaStreamHandle {
+    fn raw(&self) -> *mut std::ffi::c_void {
+        self.raw.expect("live CudaStream always retains its native stream").as_ptr()
     }
 }
 
@@ -163,5 +176,49 @@ impl std::fmt::Debug for CudaStream {
             .field("device", &self.device())
             .field("handle", &self.__debug_raw_handle_value())
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testing::device_safety::{DeviceEntryTestCall, DeviceSafetyTestScope};
+
+    #[test]
+    fn drop_get_device_failure_quarantines_without_destroying_on_an_unproven_device() {
+        let stream = CudaStream::new().expect("stream");
+        let device = stream.device();
+        let scope = DeviceSafetyTestScope::install([DeviceEntryTestCall::GetDevice {
+            status: cudf_sys::CUDF_ERROR_FATAL_CUDA,
+            device: device.ordinal() as i32,
+        }]);
+
+        drop(stream);
+
+        let snapshot = scope.health_snapshot(device);
+        assert_eq!(snapshot.status(), crate::runtime::DeviceHealthStatus::Unhealthy);
+        assert_eq!(snapshot.quarantined_teardown_count(), 1);
+        assert_eq!(scope.remaining_call_count(), 0);
+    }
+
+    #[test]
+    fn drop_set_device_failure_quarantines_without_wrong_device_destruction() {
+        let stream = CudaStream::new().expect("stream");
+        let device = stream.device();
+        let ambient = if device.ordinal() == 0 { 1 } else { 0 };
+        let scope = DeviceSafetyTestScope::install([
+            DeviceEntryTestCall::GetDevice { status: cudf_sys::CUDF_SUCCESS, device: ambient },
+            DeviceEntryTestCall::SetDevice {
+                expected_target: device.ordinal() as i32,
+                status: cudf_sys::CUDF_ERROR_FATAL_CUDA,
+            },
+        ]);
+
+        drop(stream);
+
+        let snapshot = scope.health_snapshot(device);
+        assert_eq!(snapshot.status(), crate::runtime::DeviceHealthStatus::Unhealthy);
+        assert_eq!(snapshot.quarantined_teardown_count(), 1);
+        assert_eq!(scope.remaining_call_count(), 0);
     }
 }

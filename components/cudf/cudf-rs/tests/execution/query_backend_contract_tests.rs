@@ -6,18 +6,26 @@
 
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Barrier, Condvar, Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        mpsc,
+    },
+    time::Duration,
 };
 
 use arrow::{
-    array::{Array, Int32Array, LargeStringArray},
+    array::{
+        Array, Int32Array, LargeListBuilder, LargeStringArray, LargeStringBuilder, ListBuilder, StringArray,
+        StringBuilder,
+    },
     datatypes::{DataType as ArrowDataType, Field, Schema},
     record_batch::RecordBatch,
 };
 use cudf::{
     BoundaryKind, DataFrame, ExecutionOverrides, QueryExecutionContext, Runtime, TypeId,
-    core::error::{FactKeyName, FactValue},
-    frame::dataframe::GpuRecordBatch,
+    core::error::{ErrorCode, ErrorKind, ErrorStatus, FactKeyName, FactValue},
+    frame::dataframe::{GpuRecordBatch, HostBatchCursorConfig},
     ops::expr::col,
     runtime::QueryStageKind,
     testing::{self, prelude::*},
@@ -53,6 +61,830 @@ fn sample_record_batch() -> RecordBatch {
         ],
     )
     .unwrap()
+}
+
+fn record_batch_buffer_memory_size(batch: &RecordBatch) -> usize {
+    batch.columns().iter().fold(0usize, |total, column| {
+        total.checked_add(column.get_buffer_memory_size()).expect("test RecordBatch buffer memory must fit usize")
+    })
+}
+
+struct RetainedLifetimeDropCounter(Arc<AtomicUsize>);
+
+impl Drop for RetainedLifetimeDropCounter {
+    fn drop(&mut self) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+fn retained_lifetime_sentinel() -> (Arc<dyn Send + Sync>, Arc<AtomicUsize>) {
+    let drops = Arc::new(AtomicUsize::new(0));
+    let sentinel: Arc<dyn Send + Sync> = Arc::new(RetainedLifetimeDropCounter(Arc::clone(&drops)));
+    (sentinel, drops)
+}
+
+struct BindingExtensionDropCounter(Arc<AtomicUsize>);
+
+impl Drop for BindingExtensionDropCounter {
+    fn drop(&mut self) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+struct RuntimeRetainingBindingExtension {
+    _runtime: Runtime,
+    drops: Arc<AtomicUsize>,
+}
+
+impl Drop for RuntimeRetainingBindingExtension {
+    fn drop(&mut self) {
+        self.drops.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+struct BlockingBindingExtension {
+    destructor_started: Option<mpsc::Sender<()>>,
+    destructor_release: Arc<(Mutex<bool>, Condvar)>,
+    drops: Arc<AtomicUsize>,
+}
+
+struct DestructorReentrantBindingExtension {
+    runtime: Arc<Runtime>,
+    observed: Arc<Mutex<Option<cudf::Error>>>,
+}
+
+struct FactoryCycleA;
+struct FactoryCycleB;
+struct CrossTypeLiveExtension;
+struct CrossTypeConstructorExtension;
+
+struct DestructorCycleA {
+    runtime: Arc<Runtime>,
+    rendezvous: Arc<Barrier>,
+    outcome: mpsc::Sender<String>,
+}
+
+struct DestructorCycleB {
+    runtime: Arc<Runtime>,
+    rendezvous: Arc<Barrier>,
+    outcome: mpsc::Sender<String>,
+}
+
+impl Drop for DestructorCycleA {
+    fn drop(&mut self) {
+        self.rendezvous.wait();
+        let nested = self.runtime.get_or_try_init_binding_extension(
+            "binding_extension_destructor_cycle_a_to_b",
+            || -> std::result::Result<DestructorCycleB, ()> {
+                panic!("cross-type destructor wait must not run the other factory")
+            },
+        );
+        let outcome = match nested {
+            Err(cudf::runtime::BindingExtensionInitError::Lifecycle(error)) => error.to_string(),
+            _ => "unexpected destructor-cycle lookup outcome".to_string(),
+        };
+        let _ = self.outcome.send(outcome);
+        self.rendezvous.wait();
+    }
+}
+
+impl Drop for DestructorCycleB {
+    fn drop(&mut self) {
+        self.rendezvous.wait();
+        let nested = self.runtime.get_or_try_init_binding_extension(
+            "binding_extension_destructor_cycle_b_to_a",
+            || -> std::result::Result<DestructorCycleA, ()> {
+                panic!("cross-type destructor wait must not run the other factory")
+            },
+        );
+        let outcome = match nested {
+            Err(cudf::runtime::BindingExtensionInitError::Lifecycle(error)) => error.to_string(),
+            _ => "unexpected destructor-cycle lookup outcome".to_string(),
+        };
+        let _ = self.outcome.send(outcome);
+        self.rendezvous.wait();
+    }
+}
+
+impl Drop for DestructorReentrantBindingExtension {
+    fn drop(&mut self) {
+        let nested = self.runtime.get_or_try_init_binding_extension(
+            "binding_extension_nested_destruction",
+            || -> std::result::Result<Self, ()> { panic!("destruction-time reinitialization must not run a factory") },
+        );
+        if let Err(cudf::runtime::BindingExtensionInitError::Lifecycle(error)) = nested {
+            *self.observed.lock().expect("observed destruction error lock") = Some(error);
+        }
+    }
+}
+
+impl Drop for BlockingBindingExtension {
+    fn drop(&mut self) {
+        if let Some(started) = self.destructor_started.take() {
+            started.send(()).expect("signal destructor start");
+        }
+        let (released, changed) = self.destructor_release.as_ref();
+        let mut released = released.lock().expect("destructor release lock");
+        while !*released {
+            released = changed.wait(released).expect("wait for destructor release");
+        }
+        self.drops.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+#[test]
+fn binding_extension_is_shared_only_by_the_exact_execution_binding() {
+    let base = sample_runtime();
+    let same_binding = base.with_retained_lifetime(Arc::new(())).unwrap();
+    let different_binding = sample_runtime().inherit_affinity_from(&base).unwrap();
+    assert_eq!(base.binding_id(), same_binding.binding_id());
+    assert_eq!(base.affinity_id(), different_binding.affinity_id());
+    assert_ne!(base.binding_id(), different_binding.binding_id());
+
+    let factory_calls = Arc::new(AtomicUsize::new(0));
+    let first = base
+        .get_or_try_init_binding_extension("binding_extension_exact_binding_first", {
+            let factory_calls = Arc::clone(&factory_calls);
+            move || {
+                factory_calls.fetch_add(1, Ordering::SeqCst);
+                Ok::<_, ()>(BindingExtensionDropCounter(Arc::new(AtomicUsize::new(0))))
+            }
+        })
+        .unwrap();
+    let inherited = same_binding
+        .get_or_try_init_binding_extension(
+            "binding_extension_exact_binding_inherited",
+            || -> std::result::Result<BindingExtensionDropCounter, ()> {
+                panic!("same-binding hot hit must not execute its factory")
+            },
+        )
+        .unwrap();
+    let independent = different_binding
+        .get_or_try_init_binding_extension("binding_extension_exact_binding_independent", {
+            let factory_calls = Arc::clone(&factory_calls);
+            move || {
+                factory_calls.fetch_add(1, Ordering::SeqCst);
+                Ok::<_, ()>(BindingExtensionDropCounter(Arc::new(AtomicUsize::new(0))))
+            }
+        })
+        .unwrap();
+
+    assert!(first.same_generation(&inherited));
+    assert!(!first.same_generation(&independent));
+    assert_eq!(factory_calls.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn binding_extension_cold_n_way_initialization_runs_factory_exactly_once() {
+    let runtime = Arc::new(sample_runtime());
+    let worker_count = 8;
+    let start = Arc::new(Barrier::new(worker_count));
+    let factory_calls = Arc::new(AtomicUsize::new(0));
+    let mut workers = Vec::new();
+    for _ in 0..worker_count {
+        let runtime = Arc::clone(&runtime);
+        let start = Arc::clone(&start);
+        let factory_calls = Arc::clone(&factory_calls);
+        workers.push(std::thread::spawn(move || {
+            start.wait();
+            runtime
+                .get_or_try_init_binding_extension("binding_extension_cold_n_way", || {
+                    factory_calls.fetch_add(1, Ordering::SeqCst);
+                    std::thread::sleep(Duration::from_millis(20));
+                    Ok::<_, ()>(BindingExtensionDropCounter(Arc::new(AtomicUsize::new(0))))
+                })
+                .unwrap()
+        }));
+    }
+
+    let leases = workers.into_iter().map(|worker| worker.join().expect("extension worker")).collect::<Vec<_>>();
+    assert_eq!(factory_calls.load(Ordering::SeqCst), 1);
+    assert!(leases.iter().all(|lease| leases[0].same_generation(lease)));
+}
+
+#[test]
+fn runtime_retaining_binding_extension_drops_without_a_cycle() {
+    let drops = Arc::new(AtomicUsize::new(0));
+    let runtime = sample_runtime();
+    let affinity = runtime.affinity_anchor();
+    let extension = runtime
+        .get_or_try_init_binding_extension("runtime_retaining_binding_extension", {
+            let drops = Arc::clone(&drops);
+            let retained_runtime = runtime.clone();
+            move || Ok::<_, ()>(RuntimeRetainingBindingExtension { _runtime: retained_runtime, drops })
+        })
+        .unwrap();
+
+    drop(runtime);
+    assert!(affinity.is_alive(), "the lease and retained Runtime keep the execution domain alive");
+    drop(extension);
+    assert_eq!(drops.load(Ordering::SeqCst), 1);
+    assert!(!affinity.is_alive(), "the extension's retained Runtime must not form a domain cycle");
+}
+
+#[test]
+fn binding_extension_reinitialization_waits_for_blocked_destructor() {
+    let runtime = Arc::new(sample_runtime());
+    let (started_tx, started_rx) = mpsc::channel();
+    let release = Arc::new((Mutex::new(false), Condvar::new()));
+    let drops = Arc::new(AtomicUsize::new(0));
+    let first = runtime
+        .get_or_try_init_binding_extension("binding_extension_blocked_destructor_first", {
+            let release = Arc::clone(&release);
+            let drops = Arc::clone(&drops);
+            move || {
+                Ok::<_, ()>(BlockingBindingExtension {
+                    destructor_started: Some(started_tx),
+                    destructor_release: release,
+                    drops,
+                })
+            }
+        })
+        .unwrap();
+
+    let drop_worker = std::thread::spawn(move || drop(first));
+    started_rx.recv_timeout(Duration::from_secs(5)).expect("destructor started");
+
+    let factory_calls = Arc::new(AtomicUsize::new(0));
+    let (result_tx, result_rx) = mpsc::channel();
+    let reinit_worker = {
+        let runtime = Arc::clone(&runtime);
+        let release = Arc::clone(&release);
+        let drops = Arc::clone(&drops);
+        let factory_calls = Arc::clone(&factory_calls);
+        std::thread::spawn(move || {
+            let result =
+                runtime.get_or_try_init_binding_extension("binding_extension_blocked_destructor_reinit", move || {
+                    factory_calls.fetch_add(1, Ordering::SeqCst);
+                    Ok::<_, ()>(BlockingBindingExtension {
+                        destructor_started: None,
+                        destructor_release: release,
+                        drops,
+                    })
+                });
+            result_tx.send(result).expect("send reinitialization result");
+        })
+    };
+
+    assert!(
+        result_rx.recv_timeout(Duration::from_millis(100)).is_err(),
+        "reinitialization must wait until native destruction completes"
+    );
+    assert_eq!(factory_calls.load(Ordering::SeqCst), 0, "factory must not overlap destruction");
+
+    {
+        let (released, changed) = release.as_ref();
+        *released.lock().expect("release lock") = true;
+        changed.notify_all();
+    }
+    drop_worker.join().expect("drop worker");
+    let second = result_rx.recv_timeout(Duration::from_secs(5)).expect("reinitialization result").unwrap();
+    reinit_worker.join().expect("reinit worker");
+    assert_eq!(factory_calls.load(Ordering::SeqCst), 1);
+    drop(second);
+    assert_eq!(drops.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn binding_extension_value_remains_live_while_execution_guard_is_held() {
+    let runtime = sample_runtime();
+    let drops = Arc::new(AtomicUsize::new(0));
+    let first = runtime
+        .get_or_try_init_binding_extension("binding_extension_guard_first", {
+            let drops = Arc::clone(&drops);
+            move || Ok::<_, ()>(BindingExtensionDropCounter(drops))
+        })
+        .unwrap();
+    let active = first.clone();
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let entered = active.enter("binding_extension_guard_enter").unwrap();
+        entered_tx.send(()).expect("signal entered extension use");
+        release_rx.recv().expect("release entered extension use");
+        assert!(Arc::strong_count(&entered.value().0) >= 1);
+        drop(entered);
+        drop(active);
+    });
+
+    entered_rx.recv_timeout(Duration::from_secs(5)).expect("extension use entered");
+    drop(first);
+    assert_eq!(drops.load(Ordering::SeqCst), 0);
+    release_tx.send(()).expect("release extension use");
+    worker.join().expect("entered extension worker");
+    assert_eq!(drops.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn different_binding_extension_execution_gates_do_not_serialize() {
+    let first_runtime = sample_runtime();
+    let second_runtime = sample_runtime();
+    let first = first_runtime
+        .get_or_try_init_binding_extension("different_binding_gate_first", || {
+            Ok::<_, ()>(BindingExtensionDropCounter(Arc::new(AtomicUsize::new(0))))
+        })
+        .unwrap();
+    let second = second_runtime
+        .get_or_try_init_binding_extension("different_binding_gate_second", || {
+            Ok::<_, ()>(BindingExtensionDropCounter(Arc::new(AtomicUsize::new(0))))
+        })
+        .unwrap();
+    let _first_entered = first.enter("different_binding_gate_first_enter").unwrap();
+    let (acquired_tx, acquired_rx) = mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let _second_entered = second.enter("different_binding_gate_second_enter").unwrap();
+        acquired_tx.send(()).expect("signal second gate");
+    });
+
+    acquired_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("a different binding gate must remain independently enterable");
+    worker.join().expect("different binding worker");
+}
+
+#[test]
+fn binding_extension_factory_error_is_retryable() {
+    let runtime = sample_runtime();
+    let first = runtime.get_or_try_init_binding_extension(
+        "binding_extension_factory_error",
+        || -> std::result::Result<BindingExtensionDropCounter, &'static str> { Err("expected factory error") },
+    );
+    assert!(matches!(first, Err(cudf::runtime::BindingExtensionInitError::Factory("expected factory error"))));
+
+    let retry = runtime
+        .get_or_try_init_binding_extension("binding_extension_factory_retry", || {
+            Ok::<_, &'static str>(BindingExtensionDropCounter(Arc::new(AtomicUsize::new(0))))
+        })
+        .expect("factory retry");
+    drop(retry);
+}
+
+#[test]
+fn binding_extension_reentrancy_and_execution_poison_fail_closed() {
+    let runtime = Arc::new(sample_runtime());
+    let outer = runtime
+        .get_or_try_init_binding_extension("binding_extension_outer_initialization", {
+            let runtime = Arc::clone(&runtime);
+            move || {
+                let nested = runtime
+                    .get_or_try_init_binding_extension("binding_extension_nested_initialization", || {
+                        Ok::<_, ()>(BindingExtensionDropCounter(Arc::new(AtomicUsize::new(0))))
+                    });
+                let error = match nested {
+                    Err(cudf::runtime::BindingExtensionInitError::Lifecycle(error)) => error,
+                    _ => panic!("nested initialization must return a lifecycle error"),
+                };
+                assert!(error.to_string().contains("nested_binding_extension_initialization"));
+                Ok::<_, ()>(BindingExtensionDropCounter(Arc::new(AtomicUsize::new(0))))
+            }
+        })
+        .unwrap();
+
+    let entered = outer.enter("binding_extension_first_entry").unwrap();
+    let nested = outer.enter("binding_extension_nested_entry").expect_err("nested entry must fail");
+    assert!(nested.to_string().contains("nested_binding_extension_execution"));
+    drop(entered);
+
+    let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _entered = outer.enter("binding_extension_poison_entry").unwrap();
+        panic!("intentional execution-gate poison");
+    }));
+    assert!(unwind.is_err());
+    let poisoned = outer.enter("binding_extension_after_poison").expect_err("poison must fail closed");
+    assert!(poisoned.to_string().contains("binding_extension_execution_gate_poisoned"));
+
+    drop(outer);
+    let next_generation = runtime
+        .get_or_try_init_binding_extension("binding_extension_generation_after_gate_poison", || {
+            Ok::<_, ()>(BindingExtensionDropCounter(Arc::new(AtomicUsize::new(0))))
+        })
+        .expect("lifecycle can create the next generation");
+    let still_poisoned = next_generation
+        .enter("binding_extension_next_generation_after_gate_poison")
+        .expect_err("the stable execution gate remains fail-closed across generations");
+    assert!(still_poisoned.to_string().contains("binding_extension_execution_gate_poisoned"));
+}
+
+#[test]
+fn binding_extension_poisoned_use_gate_still_admits_value_opaque_teardown() {
+    let runtime = sample_runtime();
+    let lease = runtime
+        .get_or_try_init_binding_extension("binding_extension_teardown_setup", || {
+            Ok::<_, ()>(BindingExtensionDropCounter(Arc::new(AtomicUsize::new(0))))
+        })
+        .unwrap();
+    let native_drops = Arc::new(AtomicUsize::new(0));
+    let native_owner = Arc::new(Mutex::new(Some(BindingExtensionDropCounter(Arc::clone(&native_drops)))));
+
+    let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _entered = lease.enter("binding_extension_poison_before_teardown").unwrap();
+        panic!("intentional use-path poison before teardown")
+    }));
+    assert!(unwind.is_err());
+
+    lease.with_teardown_gate({
+        let native_owner = Arc::clone(&native_owner);
+        move || drop(native_owner.lock().expect("native owner lock").take())
+    });
+    lease.with_teardown_gate({
+        let native_owner = Arc::clone(&native_owner);
+        move || drop(native_owner.lock().expect("native owner lock").take())
+    });
+    assert_eq!(native_drops.load(Ordering::SeqCst), 1, "native ownership is consumed exactly once");
+
+    let error = lease.enter("binding_extension_normal_use_after_teardown").expect_err("use remains poisoned");
+    assert!(error.to_string().contains("binding_extension_execution_gate_poisoned"));
+}
+
+#[test]
+fn binding_extension_teardown_gate_serializes_after_use_poison() {
+    let runtime = sample_runtime();
+    let lease = runtime
+        .get_or_try_init_binding_extension("binding_extension_teardown_serialization_setup", || {
+            Ok::<_, ()>(BindingExtensionDropCounter(Arc::new(AtomicUsize::new(0))))
+        })
+        .unwrap();
+    let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _entered = lease.enter("binding_extension_teardown_serialization_poison").unwrap();
+        panic!("intentional poison for teardown serialization")
+    }));
+    assert!(unwind.is_err());
+
+    let first = lease.clone();
+    let second = lease.clone();
+    let (first_entered_tx, first_entered_rx) = mpsc::channel();
+    let (release_first_tx, release_first_rx) = mpsc::channel();
+    let (second_started_tx, second_started_rx) = mpsc::channel();
+    let (second_entered_tx, second_entered_rx) = mpsc::channel();
+    let first_worker = std::thread::spawn(move || {
+        first.with_teardown_gate(|| {
+            first_entered_tx.send(()).expect("signal first teardown entry");
+            release_first_rx.recv().expect("release first teardown entry");
+        });
+    });
+    first_entered_rx.recv_timeout(Duration::from_secs(5)).expect("first teardown entered");
+    let second_worker = std::thread::spawn(move || {
+        second_started_tx.send(()).expect("signal second teardown start");
+        second.with_teardown_gate(|| second_entered_tx.send(()).expect("signal second teardown entry"));
+    });
+    second_started_rx.recv_timeout(Duration::from_secs(5)).expect("second teardown started");
+    assert!(
+        second_entered_rx.recv_timeout(Duration::from_millis(100)).is_err(),
+        "second teardown must wait for the same stable gate"
+    );
+    release_first_tx.send(()).expect("release first teardown");
+    second_entered_rx.recv_timeout(Duration::from_secs(5)).expect("second teardown entered");
+    first_worker.join().expect("first teardown worker");
+    second_worker.join().expect("second teardown worker");
+}
+
+#[test]
+fn binding_extension_factory_cross_type_cycle_returns_instead_of_deadlocking() {
+    let runtime = Arc::new(sample_runtime());
+    let rendezvous = Arc::new(Barrier::new(2));
+    let (outcome_tx, outcome_rx) = mpsc::channel();
+
+    let worker_a = {
+        let outer_runtime = Arc::clone(&runtime);
+        let nested_runtime = Arc::clone(&runtime);
+        let rendezvous = Arc::clone(&rendezvous);
+        let outcome = outcome_tx.clone();
+        std::thread::spawn(move || {
+            outer_runtime
+                .get_or_try_init_binding_extension("binding_extension_factory_cycle_a", move || {
+                    rendezvous.wait();
+                    let nested = nested_runtime
+                        .get_or_try_init_binding_extension("binding_extension_factory_cycle_a_to_b", || {
+                            Ok::<_, ()>(FactoryCycleB)
+                        });
+                    let message = match nested {
+                        Err(cudf::runtime::BindingExtensionInitError::Lifecycle(error)) => error.to_string(),
+                        _ => "unexpected factory-cycle lookup outcome".to_string(),
+                    };
+                    outcome.send(message).expect("send factory cycle A outcome");
+                    rendezvous.wait();
+                    Ok::<_, ()>(FactoryCycleA)
+                })
+                .expect("outer A initialization")
+        })
+    };
+    let worker_b = {
+        let outer_runtime = Arc::clone(&runtime);
+        let nested_runtime = Arc::clone(&runtime);
+        let rendezvous = Arc::clone(&rendezvous);
+        let outcome = outcome_tx;
+        std::thread::spawn(move || {
+            outer_runtime
+                .get_or_try_init_binding_extension("binding_extension_factory_cycle_b", move || {
+                    rendezvous.wait();
+                    let nested = nested_runtime
+                        .get_or_try_init_binding_extension("binding_extension_factory_cycle_b_to_a", || {
+                            Ok::<_, ()>(FactoryCycleA)
+                        });
+                    let message = match nested {
+                        Err(cudf::runtime::BindingExtensionInitError::Lifecycle(error)) => error.to_string(),
+                        _ => "unexpected factory-cycle lookup outcome".to_string(),
+                    };
+                    outcome.send(message).expect("send factory cycle B outcome");
+                    rendezvous.wait();
+                    Ok::<_, ()>(FactoryCycleB)
+                })
+                .expect("outer B initialization")
+        })
+    };
+
+    let first = outcome_rx.recv_timeout(Duration::from_secs(5)).expect("first factory-cycle outcome");
+    let second = outcome_rx.recv_timeout(Duration::from_secs(5)).expect("second factory-cycle outcome");
+    assert!(first.contains("binding_extension_factory_cross_type_wait_forbidden"));
+    assert!(second.contains("binding_extension_factory_cross_type_wait_forbidden"));
+    drop(worker_a.join().expect("factory cycle A worker"));
+    drop(worker_b.join().expect("factory cycle B worker"));
+}
+
+#[test]
+fn binding_extension_factory_can_read_live_and_initialize_vacant_different_types() {
+    let runtime = Arc::new(sample_runtime());
+    let live = runtime
+        .get_or_try_init_binding_extension("binding_extension_cross_type_live_setup", || {
+            Ok::<_, ()>(CrossTypeLiveExtension)
+        })
+        .unwrap();
+    let read_live = Arc::new(AtomicBool::new(false));
+    let initialized_vacant = Arc::new(AtomicBool::new(false));
+    let constructor = runtime
+        .get_or_try_init_binding_extension("binding_extension_cross_type_constructor", {
+            let runtime = Arc::clone(&runtime);
+            let expected_live = live.clone();
+            let read_live = Arc::clone(&read_live);
+            let initialized_vacant = Arc::clone(&initialized_vacant);
+            move || {
+                let observed_live = runtime
+                    .get_or_try_init_binding_extension(
+                        "binding_extension_cross_type_read_live",
+                        || -> std::result::Result<CrossTypeLiveExtension, ()> {
+                            panic!("already-Live different-type factory must not run")
+                        },
+                    )
+                    .expect("read already-Live different type");
+                read_live.store(expected_live.same_generation(&observed_live), Ordering::SeqCst);
+                let vacant = runtime
+                    .get_or_try_init_binding_extension("binding_extension_cross_type_claim_vacant", || {
+                        Ok::<_, ()>(FactoryCycleA)
+                    })
+                    .expect("initialize Vacant different type");
+                initialized_vacant.store(true, Ordering::SeqCst);
+                drop(vacant);
+                Ok::<_, ()>(CrossTypeConstructorExtension)
+            }
+        })
+        .unwrap();
+
+    assert!(read_live.load(Ordering::SeqCst));
+    assert!(initialized_vacant.load(Ordering::SeqCst));
+    drop(constructor);
+}
+
+#[test]
+fn binding_extension_destructor_cross_type_cycle_returns_instead_of_deadlocking() {
+    let runtime = Arc::new(sample_runtime());
+    let rendezvous = Arc::new(Barrier::new(2));
+    let (outcome_tx, outcome_rx) = mpsc::channel();
+    let lease_a = runtime
+        .get_or_try_init_binding_extension("binding_extension_destructor_cycle_a_setup", {
+            let runtime = Arc::clone(&runtime);
+            let rendezvous = Arc::clone(&rendezvous);
+            let outcome = outcome_tx.clone();
+            move || Ok::<_, ()>(DestructorCycleA { runtime, rendezvous, outcome })
+        })
+        .unwrap();
+    let lease_b = runtime
+        .get_or_try_init_binding_extension("binding_extension_destructor_cycle_b_setup", {
+            let runtime = Arc::clone(&runtime);
+            let rendezvous = Arc::clone(&rendezvous);
+            move || Ok::<_, ()>(DestructorCycleB { runtime, rendezvous, outcome: outcome_tx })
+        })
+        .unwrap();
+
+    let drop_a = std::thread::spawn(move || drop(lease_a));
+    let drop_b = std::thread::spawn(move || drop(lease_b));
+    let first = outcome_rx.recv_timeout(Duration::from_secs(5)).expect("first destructor-cycle outcome");
+    let second = outcome_rx.recv_timeout(Duration::from_secs(5)).expect("second destructor-cycle outcome");
+    assert!(first.contains("binding_extension_destructor_cross_type_wait_forbidden"));
+    assert!(second.contains("binding_extension_destructor_cross_type_wait_forbidden"));
+    drop_a.join().expect("destructor cycle A worker");
+    drop_b.join().expect("destructor cycle B worker");
+}
+
+#[test]
+fn binding_extension_same_thread_destructor_reinitialization_is_rejected() {
+    let runtime = Arc::new(sample_runtime());
+    let observed = Arc::new(Mutex::new(None));
+    let lease = runtime
+        .get_or_try_init_binding_extension("binding_extension_destructor_reentrancy_setup", {
+            let runtime = Arc::clone(&runtime);
+            let observed = Arc::clone(&observed);
+            move || Ok::<_, ()>(DestructorReentrantBindingExtension { runtime, observed })
+        })
+        .unwrap();
+
+    drop(lease);
+    let error = observed.lock().expect("observed destruction error lock").take().expect("lifecycle error");
+    assert!(error.to_string().contains("nested_binding_extension_destruction"));
+}
+
+#[test]
+fn binding_extension_factory_panic_poisons_lifecycle() {
+    let runtime = sample_runtime();
+    let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = runtime.get_or_try_init_binding_extension(
+            "binding_extension_panicking_factory",
+            || -> std::result::Result<BindingExtensionDropCounter, ()> { panic!("intentional factory panic") },
+        );
+    }));
+    assert!(unwind.is_err());
+
+    let retry = runtime.get_or_try_init_binding_extension("binding_extension_after_factory_panic", || {
+        Ok::<_, ()>(BindingExtensionDropCounter(Arc::new(AtomicUsize::new(0))))
+    });
+    let error = match retry {
+        Err(cudf::runtime::BindingExtensionInitError::Lifecycle(error)) => error,
+        _ => panic!("panicking factory must poison the stable lifecycle slot"),
+    };
+    assert!(error.to_string().contains("binding_extension_factory_panicked"));
+}
+
+#[test]
+fn binding_extension_hot_churn_reuses_one_type_slot() {
+    let runtime = sample_runtime();
+    let factory_calls = Arc::new(AtomicUsize::new(0));
+    for _ in 0..100 {
+        let lease = runtime
+            .get_or_try_init_binding_extension("binding_extension_hot_churn", {
+                let factory_calls = Arc::clone(&factory_calls);
+                move || {
+                    factory_calls.fetch_add(1, Ordering::SeqCst);
+                    Ok::<_, ()>(BindingExtensionDropCounter(Arc::new(AtomicUsize::new(0))))
+                }
+            })
+            .unwrap();
+        drop(lease);
+    }
+    assert_eq!(factory_calls.load(Ordering::SeqCst), 100);
+}
+
+#[test]
+fn retained_lifetime_add_unions_distinct_tokens_without_duplicate_growth() {
+    let base = sample_runtime();
+    assert_eq!(base.testing_retained_lifetime_count(), 0);
+    let (token_a, drops_a) = retained_lifetime_sentinel();
+    let (token_b, drops_b) = retained_lifetime_sentinel();
+    let runtime_a = base.with_retained_lifetime(token_a).unwrap();
+    let runtime_ab = runtime_a.with_retained_lifetime(Arc::clone(&token_b)).unwrap();
+    let runtime_ab_duplicate = runtime_ab.with_retained_lifetime(token_b).unwrap();
+
+    assert_eq!(runtime_a.testing_retained_lifetime_count(), 1);
+    assert_eq!(runtime_ab.testing_retained_lifetime_count(), 2);
+    assert_eq!(runtime_ab_duplicate.testing_retained_lifetime_count(), 2);
+    let output = runtime_ab_duplicate.series(&[1_i32, 2, 3]).unwrap();
+    drop(runtime_a);
+    drop(runtime_ab);
+    drop(runtime_ab_duplicate);
+    assert_eq!(drops_a.load(Ordering::SeqCst), 0);
+    assert_eq!(drops_b.load(Ordering::SeqCst), 0);
+
+    drop(output);
+    assert_eq!(drops_a.load(Ordering::SeqCst), 1);
+    assert_eq!(drops_b.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn retained_lifetime_inherit_unions_input_and_source_tokens_without_duplicate_growth() {
+    let (token_a, drops_a) = retained_lifetime_sentinel();
+    let (token_b, drops_b) = retained_lifetime_sentinel();
+    let input_a = sample_runtime().with_retained_lifetime(token_a).unwrap();
+    let source_b = sample_runtime().with_retained_lifetime(token_b).unwrap();
+    let merged = input_a.inherit_retained_lifetime_from(&source_b).unwrap();
+    let merged_duplicate = merged.inherit_retained_lifetime_from(&source_b).unwrap();
+
+    assert_eq!(input_a.testing_retained_lifetime_count(), 1);
+    assert_eq!(source_b.testing_retained_lifetime_count(), 1);
+    assert_eq!(merged.testing_retained_lifetime_count(), 2);
+    assert_eq!(merged_duplicate.testing_retained_lifetime_count(), 2);
+    let output = merged_duplicate.series(&[1_i32, 2, 3]).unwrap();
+    drop(input_a);
+    drop(source_b);
+    drop(merged);
+    drop(merged_duplicate);
+    assert_eq!(drops_a.load(Ordering::SeqCst), 0);
+    assert_eq!(drops_b.load(Ordering::SeqCst), 0);
+
+    drop(output);
+    assert_eq!(drops_a.load(Ordering::SeqCst), 1);
+    assert_eq!(drops_b.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn retained_lifetime_survives_runtime_clone_and_derived_runtime_until_last_owner_drops() {
+    let (sentinel, drops) = retained_lifetime_sentinel();
+    let source = sample_runtime().with_retained_lifetime(sentinel).unwrap();
+    let source_clone = source.clone();
+    let derived = sample_runtime().inherit_retained_lifetime_from(&source).unwrap();
+
+    drop(source);
+    drop(source_clone);
+    assert_eq!(drops.load(Ordering::SeqCst), 0);
+
+    drop(derived);
+    assert_eq!(drops.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn retained_lifetime_survives_runtime_output_domain_clone_until_output_drop() {
+    let (sentinel, drops) = retained_lifetime_sentinel();
+    let runtime = sample_runtime().with_retained_lifetime(sentinel).unwrap();
+    let output = runtime.series(&[1_i32, 2, 3]).unwrap();
+
+    drop(runtime);
+    assert_eq!(drops.load(Ordering::SeqCst), 0);
+
+    drop(output);
+    assert_eq!(drops.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn retained_lifetime_survives_borrowed_override_until_output_drop() {
+    let (sentinel, drops) = retained_lifetime_sentinel();
+    let runtime = sample_runtime().with_retained_lifetime(sentinel).unwrap();
+    let override_runtime = sample_runtime();
+    let overrides = ExecutionOverrides::new()
+        .with_stream(override_runtime.stream())
+        .with_memory_resource(override_runtime.memory_resource());
+    let output = runtime.series_in(&[1_i32, 2, 3], &overrides).unwrap();
+
+    assert_eq!(
+        output.as_column().testing_execution_domain_stream_value(),
+        override_runtime.stream().testing_raw_handle_value()
+    );
+    assert_eq!(
+        output.as_column().testing_execution_domain_mr_value(),
+        override_runtime.memory_resource().testing_raw_handle_value()
+    );
+    drop(runtime);
+    assert_eq!(drops.load(Ordering::SeqCst), 0);
+
+    drop(output);
+    assert_eq!(drops.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn runtime_affinity_survives_derived_overrides_and_outputs_without_counting_outputs_as_runtime_leases() {
+    let base = Arc::new(sample_runtime());
+    let affinity_id = base.affinity_id();
+    let binding_id = base.binding_id();
+    let affinity_anchor = base.affinity_anchor();
+    let lease_anchor = base.lease_anchor();
+    let derived = Arc::new(base.with_retained_lifetime(Arc::new(())).unwrap());
+    let override_runtime = sample_runtime();
+    let overrides = ExecutionOverrides::new()
+        .with_stream(override_runtime.stream())
+        .with_memory_resource(override_runtime.memory_resource());
+    let output = derived.series_in(&[1_i32, 2, 3], &overrides).unwrap();
+
+    assert_eq!(derived.affinity_id(), affinity_id);
+    assert_eq!(derived.binding_id(), binding_id);
+    assert!(Runtime::shares_affinity(&base, &derived));
+    assert!(base.matches_lease_anchor(&lease_anchor));
+    assert!(derived.matches_lease_anchor(&lease_anchor));
+    assert!(lease_anchor.is_current());
+
+    drop(override_runtime);
+    drop(base);
+    assert!(lease_anchor.is_current(), "derived Runtime keeps the counted owner lease current");
+    drop(derived);
+
+    assert!(!lease_anchor.is_current(), "GPU outputs must not count as current Runtime leases");
+    assert!(affinity_anchor.is_alive(), "the output execution domain retains affinity identity");
+    drop(output);
+    assert!(!affinity_anchor.is_alive());
+}
+
+#[test]
+fn independent_runtimes_have_distinct_affinity_and_companions_adopt_affinity_not_owner_lease() {
+    let base = Arc::new(sample_runtime());
+    let independent = Arc::new(sample_runtime());
+    assert_ne!(base.affinity_id(), independent.affinity_id());
+    assert!(!Runtime::shares_affinity(&base, &independent));
+
+    let base_lease = base.lease_anchor();
+    let companion = Arc::new(independent.inherit_affinity_from(&base).unwrap());
+    assert_eq!(companion.affinity_id(), base.affinity_id());
+    assert_ne!(companion.binding_id(), base.binding_id());
+    assert!(Runtime::shares_affinity(&base, &companion));
+    assert!(!companion.matches_lease_anchor(&base_lease));
+
+    drop(base);
+    assert!(!base_lease.is_current(), "a companion has its own counted owner lease");
+    assert!(companion.affinity_anchor().is_alive());
 }
 
 #[test]
@@ -239,6 +1071,342 @@ fn gpu_record_batch_wraps_frame_schema_and_keeps_host_materialization_explicit()
     assert_eq!(unwrapped_schema.as_ref(), schema.as_ref());
     assert_eq!(mapped_schema.row_count(), 4);
     assert_eq!(mapped_schema.len(), 2);
+}
+
+#[test]
+fn host_batch_cursor_materializes_bounded_chunks_without_losing_rows_or_schema() {
+    let runtime = sample_runtime();
+    let host = sample_record_batch();
+    let schema = host.schema();
+    let df = DataFrame::from_record_batch(&runtime, &host).unwrap();
+    let gpu = GpuRecordBatch::new(df, Arc::clone(&schema)).unwrap();
+    let mut cursor = gpu
+        .into_host_batch_cursor(HostBatchCursorConfig {
+            target_materialization_bytes: 1,
+            max_rows: 2,
+            ..Default::default()
+        })
+        .unwrap();
+    let mut chunks = Vec::new();
+    while let Some(batch) = cursor.next_batch().unwrap() {
+        assert_eq!(batch.schema().as_ref(), schema.as_ref());
+        assert_eq!(batch.num_rows(), 1, "one row is the unsplittable lower bound");
+        chunks.push(batch);
+    }
+
+    assert_eq!(chunks.len(), host.num_rows());
+    assert_eq!(chunks.iter().map(RecordBatch::num_rows).sum::<usize>(), host.num_rows());
+    assert_eq!(cursor.remaining_rows(), 0);
+}
+
+#[test]
+fn host_batch_cursor_exports_one_schema_preserving_batch_for_an_empty_gpu_result() {
+    let _observation_lock = lock_event_observation();
+    let runtime = sample_runtime();
+    let host = sample_record_batch();
+    let schema = host.schema();
+    let frame = DataFrame::from_record_batch(&runtime, &host).unwrap();
+    let mask = runtime.series(&[false; 4]).unwrap();
+    let frame = frame.filter(&mask).unwrap();
+    assert_eq!(frame.num_rows(), 0);
+    let gpu = GpuRecordBatch::new(frame, Arc::clone(&schema)).unwrap();
+    let mut cursor = gpu.into_host_batch_cursor(HostBatchCursorConfig::default()).unwrap();
+
+    testing::arrow::reset_arrow_host_interop_observation_for_test();
+    assert_eq!(cursor.remaining_rows(), 0);
+    assert!(cursor.has_next_batch());
+    let first = cursor.next_batch().unwrap().expect("an initially empty result still has one typed host batch");
+    assert_eq!(first.schema().as_ref(), schema.as_ref());
+    assert_eq!(first.num_rows(), 0);
+    assert_eq!(testing::arrow::arrow_host_export_call_count_for_test(), 1);
+    let observation = testing::arrow::last_arrow_host_boundary_observation_for_test().unwrap();
+    assert_eq!(observation.kind, BoundaryKind::DeviceToHost);
+    assert_eq!(observation.rows, 0);
+    assert_eq!(observation.columns, schema.fields().len());
+
+    assert!(cursor.next_batch().unwrap().is_none());
+    assert!(!cursor.has_next_batch());
+    assert_eq!(testing::arrow::arrow_host_export_call_count_for_test(), 1);
+}
+
+#[test]
+fn host_batch_cursor_rejects_four_concurrent_oversized_utf8_rows_before_d2h_and_recovers() {
+    let _observation_lock = lock_event_observation();
+    let runtime = sample_runtime();
+    let value = "x".repeat(16 * 1024 * 1024);
+    let schema = Arc::new(Schema::new(vec![Field::new("value", ArrowDataType::Utf8, false)]));
+    let host = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(StringArray::from(vec![value.as_str()])) as Arc<dyn Array>],
+    )
+    .unwrap();
+    let gpu = GpuRecordBatch::new(DataFrame::from_record_batch(&runtime, &host).unwrap(), schema).unwrap();
+    let config = HostBatchCursorConfig::default();
+    let barrier = Arc::new(Barrier::new(4));
+
+    testing::arrow::reset_arrow_host_interop_observation_for_test();
+    let workers = (0..4)
+        .map(|_| {
+            let mut cursor = gpu.clone().into_host_batch_cursor(config).unwrap();
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                testing::arrow::reset_arrow_host_interop_observation_for_test();
+                barrier.wait();
+                let error = cursor
+                    .next_batch()
+                    .expect_err("a 16 MiB scalar must be rejected before device-to-host materialization");
+                assert_eq!(error.code(), ErrorCode::HostMaterializationLimitExceeded);
+                assert_eq!(error.kind(), ErrorKind::ResourceExhausted);
+                assert_eq!(error.status(), ErrorStatus::Permanent);
+                assert_eq!(error.detail_value("reason"), Some("host_materialization_hard_limit_exceeded"));
+                assert_eq!(error.detail_value("candidate_rows"), Some("1"));
+                assert_eq!(
+                    error.detail_value("max_materialization_bytes"),
+                    Some(HostBatchCursorConfig::DEFAULT_MAX_MATERIALIZATION_BYTES.to_string().as_str())
+                );
+                assert!(
+                    error.detail_value("estimated_materialization_bytes").unwrap().parse::<usize>().unwrap()
+                        > HostBatchCursorConfig::DEFAULT_MAX_MATERIALIZATION_BYTES
+                );
+                assert!(
+                    testing::arrow::last_arrow_host_boundary_observation_for_test().is_none(),
+                    "hard-limit rejection must happen before the host export boundary"
+                );
+            })
+        })
+        .collect::<Vec<_>>();
+    for worker in workers {
+        worker.join().unwrap();
+    }
+
+    let small_host = sample_record_batch();
+    let mut small_cursor =
+        GpuRecordBatch::new(DataFrame::from_record_batch(&runtime, &small_host).unwrap(), small_host.schema())
+            .unwrap()
+            .into_host_batch_cursor(config)
+            .unwrap();
+    assert_eq!(small_cursor.next_batch().unwrap().unwrap(), small_host);
+    assert!(small_cursor.next_batch().unwrap().is_none());
+}
+
+#[test]
+fn host_batch_cursor_hard_ceiling_is_inclusive_and_preparation_is_copy_free() {
+    let _observation_lock = lock_event_observation();
+    let runtime = sample_runtime();
+    let schema = Arc::new(Schema::new(vec![Field::new("value", ArrowDataType::Utf8, false)]));
+    let host = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(StringArray::from(vec!["boundary-value"])) as Arc<dyn Array>],
+    )
+    .unwrap();
+    let gpu = GpuRecordBatch::new(DataFrame::from_record_batch(&runtime, &host).unwrap(), schema).unwrap();
+    let probe = gpu
+        .clone()
+        .into_host_batch_cursor(HostBatchCursorConfig {
+            target_materialization_bytes: usize::MAX,
+            max_materialization_bytes: usize::MAX,
+            max_rows: 1,
+        })
+        .unwrap();
+    let exact_materialization_bytes = probe.prepare_next_batch().unwrap().unwrap().estimated_materialization_bytes();
+
+    testing::arrow::reset_arrow_host_interop_observation_for_test();
+    let mut equal = gpu
+        .clone()
+        .into_host_batch_cursor(HostBatchCursorConfig {
+            target_materialization_bytes: exact_materialization_bytes,
+            max_materialization_bytes: exact_materialization_bytes,
+            max_rows: 1,
+        })
+        .unwrap();
+    let prepared = equal.prepare_next_batch().unwrap().unwrap();
+    assert_eq!(prepared.estimated_materialization_bytes(), exact_materialization_bytes);
+    assert!(testing::arrow::last_arrow_host_boundary_observation_for_test().is_none());
+    assert_eq!(equal.materialize_prepared_batch(prepared).unwrap(), host);
+    assert_eq!(
+        testing::arrow::last_arrow_host_boundary_observation_for_test().unwrap().kind,
+        BoundaryKind::DeviceToHost
+    );
+
+    testing::arrow::reset_arrow_host_interop_observation_for_test();
+    let below = gpu
+        .into_host_batch_cursor(HostBatchCursorConfig {
+            target_materialization_bytes: exact_materialization_bytes - 1,
+            max_materialization_bytes: exact_materialization_bytes - 1,
+            max_rows: 1,
+        })
+        .unwrap();
+    let error = below.prepare_next_batch().expect_err("one byte below the exact payload must reject");
+    assert_eq!(error.kind(), ErrorKind::ResourceExhausted);
+    assert!(testing::arrow::last_arrow_host_boundary_observation_for_test().is_none());
+}
+
+#[test]
+fn host_batch_cursor_estimates_final_string_layouts_before_d2h() {
+    let runtime = sample_runtime();
+    let values = (0..32).map(|index| (index != 7).then_some("twenty-byte-string!!")).collect::<Vec<_>>();
+    let source_schema = Arc::new(Schema::new(vec![Field::new("value", ArrowDataType::Utf8, true)]));
+    let source =
+        RecordBatch::try_new(Arc::clone(&source_schema), vec![Arc::new(StringArray::from(values)) as Arc<dyn Array>])
+            .unwrap();
+    let frame = DataFrame::from_record_batch(&runtime, &source).unwrap();
+
+    let mut estimates = Vec::new();
+    for target_type in [ArrowDataType::Utf8, ArrowDataType::LargeUtf8, ArrowDataType::Utf8View] {
+        let schema = Arc::new(Schema::new(vec![Field::new("value", target_type.clone(), true)]));
+        let mut cursor = GpuRecordBatch::new(frame.clone(), schema)
+            .unwrap()
+            .into_host_batch_cursor(HostBatchCursorConfig {
+                target_materialization_bytes: usize::MAX,
+                max_materialization_bytes: usize::MAX,
+                max_rows: usize::MAX,
+            })
+            .unwrap();
+        let prepared = cursor.prepare_next_batch().unwrap().unwrap();
+        let estimate = prepared.estimated_materialization_bytes();
+        let materialized = cursor.materialize_prepared_batch(prepared).unwrap();
+        let actual = record_batch_buffer_memory_size(&materialized);
+        assert_eq!(materialized.column(0).data_type(), &target_type);
+        assert!(actual <= estimate, "{target_type:?}: actual={actual} estimate={estimate}");
+        estimates.push(estimate);
+    }
+
+    assert!(estimates[0] < estimates[1], "LargeUtf8 must account for 64-bit offsets");
+    assert!(estimates[1] < estimates[2], "Utf8View must account for one 16-byte view per row");
+}
+
+#[test]
+fn host_batch_cursor_estimates_large_list_string_offsets_validity_and_children() {
+    let runtime = sample_runtime();
+    let mut builder = LargeListBuilder::new(LargeStringBuilder::with_capacity(8, 256));
+    builder.values().append_value("first child value over twelve bytes");
+    builder.values().append_null();
+    builder.append(true);
+    builder.append(false);
+    builder.values().append_value("third child value over twelve bytes");
+    builder.values().append_value("fourth child value over twelve bytes");
+    builder.append(true);
+    let values = builder.finish();
+    let schema = Arc::new(Schema::new(vec![Field::new("values", values.data_type().clone(), true)]));
+    let host = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(values)]).unwrap();
+    let frame = DataFrame::from_record_batch(&runtime, &host).unwrap();
+    let mut cursor = GpuRecordBatch::new(frame, schema)
+        .unwrap()
+        .into_host_batch_cursor(HostBatchCursorConfig {
+            target_materialization_bytes: usize::MAX,
+            max_materialization_bytes: usize::MAX,
+            max_rows: usize::MAX,
+        })
+        .unwrap();
+
+    let prepared = cursor.prepare_next_batch().unwrap().unwrap();
+    let estimate = prepared.estimated_materialization_bytes();
+    let materialized = cursor.materialize_prepared_batch(prepared).unwrap();
+    let actual = record_batch_buffer_memory_size(&materialized);
+
+    assert_eq!(materialized.column(0).data_type(), host.column(0).data_type());
+    assert!(actual <= estimate, "LargeList<LargeUtf8>: actual={actual} estimate={estimate}");
+}
+
+#[test]
+fn host_batch_cursor_decimal32_and_decimal64_limits_use_decimal128_destination_width() {
+    let runtime = sample_runtime();
+    for (storage_type, source_width) in [(TypeId::Decimal32, 4usize), (TypeId::Decimal64, 8usize)] {
+        let series = match storage_type {
+            TypeId::Decimal32 => {
+                runtime.series(&[123i32]).unwrap().astype(cudf::DataType::fixed_point(storage_type, -2)).unwrap()
+            },
+            TypeId::Decimal64 => {
+                runtime.series(&[123i64]).unwrap().astype(cudf::DataType::fixed_point(storage_type, -2)).unwrap()
+            },
+            _ => unreachable!(),
+        };
+        let frame = DataFrame::from_series([("amount", series)]).unwrap();
+        let schema = Arc::new(Schema::new(vec![Field::new("amount", ArrowDataType::Decimal128(38, 2), false)]));
+        let gpu = GpuRecordBatch::new(frame, schema).unwrap();
+
+        testing::arrow::reset_arrow_host_interop_observation_for_test();
+        let cursor = gpu
+            .clone()
+            .into_host_batch_cursor(HostBatchCursorConfig {
+                target_materialization_bytes: 32,
+                max_materialization_bytes: 32,
+                max_rows: 1,
+            })
+            .unwrap();
+        let error = cursor
+            .prepare_next_batch()
+            .expect_err("Decimal32/64 must be limited by the widened Decimal128 Arrow destination");
+        assert_eq!(error.code(), ErrorCode::HostMaterializationLimitExceeded);
+        assert_eq!(error.status(), ErrorStatus::Permanent);
+        assert!(
+            error.detail_value("estimated_materialization_bytes").unwrap().parse::<usize>().unwrap() > 32,
+            "destination estimate must exceed the hard limit"
+        );
+        assert!(source_width < 32, "source payload alone would have passed this limit");
+        assert!(testing::arrow::last_arrow_host_boundary_observation_for_test().is_none());
+
+        let mut materializing = gpu
+            .into_host_batch_cursor(HostBatchCursorConfig {
+                target_materialization_bytes: usize::MAX,
+                max_materialization_bytes: usize::MAX,
+                max_rows: 1,
+            })
+            .unwrap();
+        let prepared = materializing.prepare_next_batch().unwrap().unwrap();
+        let estimate = prepared.estimated_materialization_bytes();
+        let batch = materializing.materialize_prepared_batch(prepared).unwrap();
+        assert_eq!(batch.column(0).data_type(), &ArrowDataType::Decimal128(38, 2));
+        assert!(record_batch_buffer_memory_size(&batch) <= estimate);
+    }
+}
+
+#[test]
+fn host_batch_cursor_rejects_oversized_nested_list_row_before_d2h() {
+    let runtime = sample_runtime();
+    let value = "n".repeat(16 * 1024 * 1024);
+    let mut builder = ListBuilder::new(StringBuilder::new());
+    builder.values().append_value(value);
+    builder.append(true);
+    let array = builder.finish();
+    let schema = Arc::new(Schema::new(vec![Field::new("values", array.data_type().clone(), false)]));
+    let host = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(array)]).unwrap();
+    let gpu = GpuRecordBatch::new(DataFrame::from_record_batch(&runtime, &host).unwrap(), schema).unwrap();
+    let cursor = gpu.into_host_batch_cursor(HostBatchCursorConfig::default()).unwrap();
+
+    testing::arrow::reset_arrow_host_interop_observation_for_test();
+    let error = cursor.prepare_next_batch().expect_err("an oversized nested row must reject before D2H");
+    assert_eq!(error.kind(), ErrorKind::ResourceExhausted);
+    assert_eq!(error.detail_value("reason"), Some("host_materialization_hard_limit_exceeded"));
+    assert!(testing::arrow::last_arrow_host_boundary_observation_for_test().is_none());
+}
+
+#[test]
+fn materialized_host_chunk_does_not_retain_gpu_or_runtime_backing() {
+    let runtime = sample_runtime();
+    let affinity_anchor = runtime.affinity_anchor();
+    let lease_anchor = runtime.lease_anchor();
+    let host = sample_record_batch();
+    let schema = host.schema();
+    let gpu = GpuRecordBatch::new(DataFrame::from_record_batch(&runtime, &host).unwrap(), schema).unwrap();
+    let mut cursor = gpu
+        .into_host_batch_cursor(HostBatchCursorConfig {
+            target_materialization_bytes: usize::MAX,
+            max_materialization_bytes: usize::MAX,
+            max_rows: usize::MAX,
+        })
+        .unwrap();
+
+    let materialized = cursor.next_batch().unwrap().unwrap();
+    assert_eq!(materialized.num_rows(), host.num_rows());
+    assert!(cursor.next_batch().unwrap().is_none());
+
+    drop(cursor);
+    drop(runtime);
+    assert!(!lease_anchor.is_current(), "a host Arrow chunk must not retain a counted Runtime lease");
+    assert!(!affinity_anchor.is_alive(), "a host Arrow chunk must not retain GPU execution-domain backing");
+
+    assert_eq!(materialized.num_rows(), host.num_rows(), "the detached host chunk remains usable");
 }
 
 #[test]

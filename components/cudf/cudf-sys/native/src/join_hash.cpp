@@ -449,13 +449,12 @@ cudf_status_t cudf_distinct_hash_join_create_ex(cudf_table_view_handle build,
   CUDF_RUST_CATCH
 }
 
-void cudf_distinct_hash_join_destroy(cudf_distinct_hash_join_handle handle)
+cudf_status_t cudf_distinct_hash_join_destroy(cudf_distinct_hash_join_handle handle)
 {
-  if (handle == nullptr) { return; }
-  cudf_clear_error();
+  if (handle == nullptr) { return CUDF_SUCCESS; }
   auto* owner      = static_cast<distinct_hash_join_owner*>(handle);
   auto provenance = cached_join_owner_provenance(*owner);
-  (void)cudf_destroy_under_provenance(provenance, [owner] { delete owner; });
+  return cudf_destroy_under_provenance(provenance, [owner] { delete owner; });
 }
 
 cudf_status_t cudf_distinct_hash_join_left_join_ex(cudf_distinct_hash_join_handle join,
@@ -549,13 +548,12 @@ cudf_status_t cudf_hash_join_pre_build_reservation_size_ex(cudf_table_view_handl
   CUDF_RUST_CATCH
 }
 
-void cudf_hash_join_destroy(cudf_hash_join_handle handle)
+cudf_status_t cudf_hash_join_destroy(cudf_hash_join_handle handle)
 {
-  if (handle == nullptr) { return; }
-  cudf_clear_error();
+  if (handle == nullptr) { return CUDF_SUCCESS; }
   auto* owner      = static_cast<hash_join_owner*>(handle);
   auto provenance = cached_join_owner_provenance(*owner);
-  (void)cudf_destroy_under_provenance(provenance, [owner] { delete owner; });
+  return cudf_destroy_under_provenance(provenance, [owner] { delete owner; });
 }
 
 cudf_status_t cudf_hash_join_device_allocated_size(cudf_hash_join_handle handle, size_t* out)

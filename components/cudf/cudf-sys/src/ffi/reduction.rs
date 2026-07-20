@@ -17,11 +17,11 @@ unsafe extern "C" {
 
     pub fn cudf_reduce_aggregation_create_nunique(null_policy: i32, out: *mut *mut c_void) -> cudf_status_t;
 
-    pub fn cudf_reduce_aggregation_destroy(handle: *mut c_void);
+    pub fn cudf_reduce_aggregation_destroy(handle: *mut c_void) -> cudf_status_t;
 
     pub fn cudf_scan_aggregation_create(kind: cudf_reduce_aggregation_kind_t, out: *mut *mut c_void) -> cudf_status_t;
 
-    pub fn cudf_scan_aggregation_destroy(handle: *mut c_void);
+    pub fn cudf_scan_aggregation_destroy(handle: *mut c_void) -> cudf_status_t;
 
     /// Reduce with explicit execution options.
     ///

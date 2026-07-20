@@ -92,12 +92,20 @@ pub enum ErrorCode {
     // -- Domestic dependency / resource leaves -------------------------------
     /// Device memory (or another bounded resource) was exhausted domestically.
     OutOfMemory,
+    /// A byte-size or element-count computation exceeded the representable
+    /// platform range before allocation or copy.
+    SizeOverflow,
+    /// One unsplittable host result row exceeds a deterministic configured
+    /// materialization ceiling.
+    HostMaterializationLimitExceeded,
     /// A CUDA runtime call returned a potentially transient error.
     CudaRuntime,
     /// A CUDA call reported a fatal, unrecoverable error.
     FatalCuda,
     /// An I/O path (file, Arrow reader) failed.
     IoFailure,
+    /// I/O cleanup could not proceed because operations are still active.
+    IoBusy,
     /// A libcudf I/O path reported a CUDA copy/memset failure signature that
     /// is known to be transient in concurrent reader/writer workloads.
     TransientIoFailure,
@@ -148,9 +156,12 @@ impl fmt::Display for ErrorCode {
             ErrorCode::UnsupportedLayout => "UnsupportedLayout",
             ErrorCode::UnsupportedOperation => "UnsupportedOperation",
             ErrorCode::OutOfMemory => "OutOfMemory",
+            ErrorCode::SizeOverflow => "SizeOverflow",
+            ErrorCode::HostMaterializationLimitExceeded => "HostMaterializationLimitExceeded",
             ErrorCode::CudaRuntime => "CudaRuntime",
             ErrorCode::FatalCuda => "FatalCuda",
             ErrorCode::IoFailure => "IoFailure",
+            ErrorCode::IoBusy => "IoBusy",
             ErrorCode::TransientIoFailure => "TransientIoFailure",
             ErrorCode::InvariantViolation => "InvariantViolation",
             ErrorCode::ForeignInvalidArgument => "ForeignInvalidArgument",
@@ -256,7 +267,11 @@ pub const fn kind_for_code(code: ErrorCode) -> ErrorKind {
             ErrorKind::Unsupported
         },
 
-        ErrorCode::OutOfMemory | ErrorCode::ForeignResourceExhausted => ErrorKind::ResourceExhausted,
+        ErrorCode::OutOfMemory
+        | ErrorCode::SizeOverflow
+        | ErrorCode::HostMaterializationLimitExceeded
+        | ErrorCode::IoBusy
+        | ErrorCode::ForeignResourceExhausted => ErrorKind::ResourceExhausted,
 
         ErrorCode::CudaRuntime
         | ErrorCode::FatalCuda
@@ -276,6 +291,7 @@ pub const fn kind_for_code(code: ErrorCode) -> ErrorKind {
 pub const fn status_for_code(code: ErrorCode) -> ErrorStatus {
     match code {
         ErrorCode::OutOfMemory
+        | ErrorCode::IoBusy
         | ErrorCode::CudaRuntime
         | ErrorCode::TransientIoFailure
         | ErrorCode::ForeignTransientDependencyFailure
@@ -303,6 +319,8 @@ pub const fn status_for_code(code: ErrorCode) -> ErrorStatus {
         | ErrorCode::UnsupportedDtype
         | ErrorCode::UnsupportedLayout
         | ErrorCode::UnsupportedOperation
+        | ErrorCode::SizeOverflow
+        | ErrorCode::HostMaterializationLimitExceeded
         | ErrorCode::IoFailure
         | ErrorCode::InvariantViolation
         | ErrorCode::ForeignInvalidArgument

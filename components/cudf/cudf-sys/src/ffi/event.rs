@@ -9,7 +9,7 @@ unsafe extern "C" {
     pub fn cudf_event_create(out: *mut cudf_event_handle) -> cudf_status_t;
 
     /// Destroy a CUDA event created by [`cudf_event_create`].
-    pub fn cudf_event_destroy(handle: cudf_event_handle);
+    pub fn cudf_event_destroy(handle: cudf_event_handle) -> cudf_status_t;
 
     /// Record an event on a CUDA stream handle.
     pub fn cudf_event_record(event: cudf_event_handle, stream: cudf_stream_handle) -> cudf_status_t;

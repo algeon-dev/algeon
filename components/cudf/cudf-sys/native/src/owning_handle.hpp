@@ -80,9 +80,9 @@ cudf_table_handle cudf_release_table_handle(std::unique_ptr<cudf::table> table,
 
 cudf_table_handle cudf_release_table_handle(std::unique_ptr<cudf_table_handle_state> table);
 
-void cudf_destroy_column_handle_under_provenance(cudf_column_handle handle) noexcept;
+cudf_status_t cudf_destroy_column_handle_under_provenance(cudf_column_handle handle) noexcept;
 
-void cudf_destroy_table_handle_under_provenance(cudf_table_handle handle) noexcept;
+cudf_status_t cudf_destroy_table_handle_under_provenance(cudf_table_handle handle) noexcept;
 
 cudf_column_handle_state& cudf_column_state_from_handle(cudf_column_handle handle);
 
