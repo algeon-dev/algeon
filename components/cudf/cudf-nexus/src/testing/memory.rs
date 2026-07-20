@@ -344,9 +344,8 @@ impl PressurePlan {
             - SIDECAR_ALLOCATION_OVERHEAD_MARGIN_BYTES;
         let bytes_held = usable_bytes / ALLOCATION_GRANULARITY_BYTES * ALLOCATION_GRANULARITY_BYTES;
         let reserve_target_bytes = free_before_bytes - bytes_held;
-        let chunk_count = usize::try_from((bytes_held + MINIMUM_CHUNK_BYTES - 1) / MINIMUM_CHUNK_BYTES)
-            .unwrap_or(usize::MAX)
-            .clamp(1, MAXIMUM_CHUNKS);
+        let chunk_count =
+            usize::try_from(bytes_held.div_ceil(MINIMUM_CHUNK_BYTES)).unwrap_or(usize::MAX).clamp(1, MAXIMUM_CHUNKS);
         let chunk_count_u64 = chunk_count as u64;
         let base_chunk_bytes = bytes_held / chunk_count_u64;
         let final_chunk_bytes = base_chunk_bytes + bytes_held % chunk_count_u64;
