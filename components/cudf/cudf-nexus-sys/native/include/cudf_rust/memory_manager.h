@@ -10,6 +10,10 @@ extern "C" {
 /// Opaque handle to the process-local memory manager for one CUDA device.
 typedef struct cudf_memory_manager_handle_state* cudf_memory_manager_handle;
 
+/// Opaque lease that routes current-RMM allocations for one CUDA stream to an
+/// explicit memory resource without replacing the device's current resource.
+typedef struct cudf_current_resource_route_handle_state* cudf_current_resource_route_handle;
+
 // allocation_limit_bytes consumes the first reserved slot from the original
 // version of this ABI. Keep the complete options record at 72 bytes so callers
 // compiled against the original four-slot layout remain binary-compatible.
@@ -141,6 +145,19 @@ cudf_status_t cudf_memory_manager_options_for_device(int32_t device,
                                                      cudf_memory_manager_options_t* out);
 cudf_status_t cudf_memory_manager_resource(cudf_memory_manager_handle manager,
                                            cudf_memory_resource_handle* out);
+/// Route global/current-RMM allocations issued on `stream` through `resource`.
+///
+/// The manager's installed current resource remains unchanged. The returned
+/// lease retains the target resource until it is destroyed; allocations made
+/// through the lease retain their route until their matching deallocation.
+/// When `resource` is already this manager's permanent resource, `*out` is
+/// null and no route is needed.
+cudf_status_t cudf_memory_manager_route_current_resource(
+  cudf_memory_manager_handle manager,
+  cudf_stream_handle stream,
+  cudf_memory_resource_handle resource,
+  cudf_current_resource_route_handle* out);
+cudf_status_t cudf_current_resource_route_destroy(cudf_current_resource_route_handle route);
 cudf_status_t cudf_memory_manager_pool_usage(cudf_memory_manager_handle manager,
                                              cudf_memory_pool_usage_t* out);
 cudf_status_t cudf_memory_manager_trim_to(cudf_memory_manager_handle manager, uint64_t keep_bytes);

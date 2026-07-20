@@ -208,13 +208,20 @@ bool query_domain_resource::reserve_domain_aligned_bytes(std::size_t aligned_byt
   return reserve_aligned_bytes(current_aligned_bytes_, grant_bytes_, aligned_bytes, reserved_total);
 }
 
-bool query_domain_resource::would_exceed_pool_ceiling(std::size_t aligned_bytes) const noexcept
+bool query_domain_resource::would_exceed_pool_ceiling(std::size_t /*aligned_bytes*/) const noexcept
 {
   cudf_memory_pool_usage_t usage{};
   if (!pool_usage(usage)) { return false; }
-  if (usage.reserved_current_bytes > effective_ceiling_bytes_) { return true; }
-  return aligned_bytes >
-         effective_ceiling_bytes_ - static_cast<std::size_t>(usage.reserved_current_bytes);
+  // The driver pool ceiling caps only the pool's reserved footprint. The
+  // member and domain grant gates run before any pool growth and bound every
+  // accepted request to the grant, which never exceeds this ceiling, so a
+  // grow that the ceiling itself rejected must leave the pool reserved at
+  // the ceiling. A failure whose reserved bytes never reached the ceiling
+  // was rejected by physical exhaustion (or stranded pool free blocks): the
+  // pool can retain aggressively reserved but unused memory from a failed
+  // grow, and counting that footprint against the ceiling would misreport
+  // genuine physical pressure as a reservation-limit rejection.
+  return usage.reserved_current_bytes >= effective_ceiling_bytes_;
 }
 
 [[nodiscard]] memory_failure_domain_identity query_domain_resource::failure_identity(

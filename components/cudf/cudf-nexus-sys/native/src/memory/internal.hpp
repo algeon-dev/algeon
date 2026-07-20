@@ -521,6 +521,14 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
     std::size_t limit_bytes,
     std::string& error);
 
+  std::shared_ptr<struct current_resource_route_state> attach_current_resource_route(
+    rmm::cuda_stream_view stream,
+    std::shared_ptr<struct memory_resource_owner> target_owner,
+    std::string& error);
+
+  void detach_current_resource_route(
+    std::shared_ptr<struct current_resource_route_state> const& state);
+
   void detach(std::shared_ptr<reservation_state> const& state);
 
   void detach_query_domain_member(std::shared_ptr<query_domain_member_state> const& state);
@@ -586,6 +594,12 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
 
   std::optional<query_domain_pointer_route> query_domain_for_pointer(void* ptr);
 
+  std::shared_ptr<struct current_resource_route_state> current_resource_route_for_stream(
+    rmm::cuda_stream_view stream);
+
+  std::shared_ptr<struct current_resource_route_state> current_resource_route_for_deallocation(
+    void* ptr);
+
   void cleanup_query_domain_if_idle(std::shared_ptr<query_domain_state> const& domain);
 
   void cleanup_retired_query_domain_member(
@@ -638,6 +652,11 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
   std::atomic<std::size_t> query_domain_member_count_{0};
   std::atomic<std::size_t> query_domain_routed_pointer_count_{0};
   std::atomic<std::size_t> query_domain_pool_count_{0};
+  std::mutex current_resource_route_mutex_;
+  std::unordered_map<void*, std::shared_ptr<struct current_resource_route_state>>
+    current_resource_routes_by_stream_;
+  std::unordered_map<void*, std::shared_ptr<struct current_resource_route_state>>
+    current_resource_routes_by_pointer_;
   std::unordered_map<void*, std::weak_ptr<reservation_state>> reservations_by_stream_;
   std::unordered_map<void*, allocation_record> allocations_;
 };
@@ -667,6 +686,14 @@ struct memory_resource_handle_state {
   bool non_owning_alias = false;
 };
 
+struct current_resource_route_state {
+  void* stream_key = nullptr;
+  // Keep the explicit target resource, including its full native upstream
+  // chain, alive until every routed allocation has been deallocated.
+  std::shared_ptr<memory_resource_owner> target_owner;
+  bool attached = true;
+};
+
 struct device_memory_manager_state {
   int32_t device = -1;
   std::shared_ptr<memory_resource_owner> owner;
@@ -687,6 +714,11 @@ struct device_memory_manager_state {
   /// Constructed before any allocator callback can be reached and retained for
   /// the process lifetime of this device manager.
   std::unique_ptr<allocator_event_ring> allocator_events;
+};
+
+struct current_resource_route_handle_state {
+  std::shared_ptr<device_memory_manager_state> manager;
+  std::shared_ptr<current_resource_route_state> route;
 };
 
 struct reservation_handle_state {
