@@ -1,0 +1,244 @@
+use super::*;
+
+const QUERY_ID: &str = "parser-fixture-query";
+const TRACE_ID: &str = "parser-fixture-correlation";
+
+fn control_frame(state: &str, retryable: bool, reason: Option<&str>) -> Vec<u8> {
+    serde_json::to_vec(&json!({
+        "schema": CONTROL_SCHEMA,
+        "version": 1,
+        "query_id": QUERY_ID,
+        "state": state,
+        "retryable": retryable,
+        "reason": reason,
+    }))
+    .unwrap()
+}
+
+fn manifest() -> Value {
+    json!({
+        "record_type": "manifest",
+        "data": {
+            "schema": JSONL_SCHEMA,
+            "query_id": QUERY_ID,
+            "trace_id": TRACE_ID,
+            "limits": {
+                "max_retained_records": 16,
+                "max_retained_bytes": 8192,
+            }
+        }
+    })
+}
+
+fn footer(
+    retained_records: u64,
+    retained_bytes: u64,
+    truncated: bool,
+    first_dropped_sequence: Option<u64>,
+    last_attempted_sequence: Option<u64>,
+    dropped_by_class: Vec<Value>,
+    dropped_by_reason: Vec<Value>,
+) -> Value {
+    json!({
+        "record_type": "footer",
+        "data": {
+            "complete": true,
+            "terminal": {"kind": "succeeded"},
+            "retained_records": retained_records,
+            "retained_bytes": retained_bytes,
+            "truncated": truncated,
+            "degraded": false,
+            "poison_recoveries": 0,
+            "first_dropped_sequence": first_dropped_sequence,
+            "last_attempted_sequence": last_attempted_sequence,
+            "dropped_by_class": dropped_by_class,
+            "dropped_by_reason": dropped_by_reason,
+        }
+    })
+}
+
+fn sealed_frames(middle: Vec<Value>, footer: Value) -> Vec<Vec<u8>> {
+    let mut records = vec![manifest()];
+    records.extend(middle);
+    records.push(footer);
+    let mut jsonl = records
+        .into_iter()
+        .map(|record| serde_json::to_string(&record).unwrap())
+        .collect::<Vec<_>>()
+        .join("\n")
+        .into_bytes();
+    jsonl.push(b'\n');
+    vec![control_frame("sealed", false, None), jsonl]
+}
+
+fn canonical_middle() -> Vec<Value> {
+    vec![
+        json!({
+            "record_type": "plan_node",
+            "data": {"sequence": 2, "plan_execution_id": "exec-1"}
+        }),
+        json!({"record_type": "task_definition", "data": {"sequence": 1}}),
+        json!({"record_type": "timeline_event", "data": {"sequence": 3}}),
+        json!({"record_type": "timeline_event", "data": {"sequence": 4}}),
+    ]
+}
+
+#[test]
+fn sealed_two_frame_fixture_accepts_canonical_topology_independent_of_topology_sequence() {
+    let frames = sealed_frames(canonical_middle(), footer(4, 512, false, None, Some(4), vec![], vec![]));
+
+    let artifact = parse_artifact(QUERY_ID, Some(TRACE_ID), &frames, Some("succeeded"), None).unwrap();
+
+    assert_eq!(artifact.state, "sealed");
+    assert_eq!(artifact.frame_count, 2);
+    assert_eq!(artifact.jsonl_records, 6);
+    assert_eq!(artifact.topology_records, 2);
+    assert_eq!(artifact.timeline_events, 2);
+    assert_eq!(artifact.plan_execution_ids, ["exec-1"]);
+    assert_eq!(artifact.retained_records, Some(4));
+    assert_eq!(artifact.truncated, Some(false));
+}
+
+#[test]
+fn control_fixture_accepts_pending_active_and_unavailable_states() {
+    for (state, retryable, reason) in [
+        ("pending", true, None),
+        ("active", true, None),
+        ("unavailable", false, Some("capture_budget")),
+        ("unavailable", false, Some("evicted")),
+        ("unavailable", false, Some("global_budget")),
+    ] {
+        let frames = vec![control_frame(state, retryable, reason)];
+        let artifact = parse_artifact(QUERY_ID, None, &frames, None, None).unwrap();
+        assert_eq!(artifact.state, state);
+        assert_eq!(artifact.reason.as_deref(), reason);
+        assert_eq!(artifact.frame_count, 1);
+        assert_eq!(artifact.jsonl_records, 0);
+    }
+}
+
+#[test]
+fn evidence_v2_separates_capture_and_global_retained_byte_pressure() {
+    assert_eq!(EVIDENCE_SCHEMA, "datafusion_nexus.server_runtime_observability_e2e.v2");
+    assert_eq!(EVIDENCE_VERSION, 2);
+    assert!(GLOBAL_BYTE_PRESSURE_PER_QUERY_BYTES < GLOBAL_BYTE_PRESSURE_RETAINED_BYTES);
+    assert!(
+        GLOBAL_BYTE_PRESSURE_MAX_QUERIES + GLOBAL_BYTE_PRESSURE_SETUP_QUERIES < GLOBAL_BYTE_PRESSURE_RETAINED_COUNT
+    );
+    assert_eq!(artifact_charge(38_000, 12_000).unwrap(), 50_000);
+}
+
+#[test]
+fn parser_rejects_noncanonical_topology_and_nonincreasing_timeline_sequence() {
+    let noncanonical = vec![
+        json!({"record_type": "task_definition", "data": {"sequence": 1}}),
+        json!({"record_type": "plan_node", "data": {"sequence": 2}}),
+    ];
+    let error = parse_artifact(
+        QUERY_ID,
+        None,
+        &sealed_frames(noncanonical, footer(2, 128, false, None, Some(2), vec![], vec![])),
+        Some("succeeded"),
+        None,
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("outside canonical enum order"), "{error}");
+
+    let timeline = vec![
+        json!({"record_type": "timeline_event", "data": {"sequence": 3}}),
+        json!({"record_type": "timeline_event", "data": {"sequence": 2}}),
+    ];
+    let error = parse_artifact(
+        QUERY_ID,
+        None,
+        &sealed_frames(timeline, footer(2, 128, false, None, Some(2), vec![], vec![])),
+        Some("succeeded"),
+        None,
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("timeline sequence is not strictly increasing"), "{error}");
+}
+
+#[test]
+fn footer_loss_fixture_reconciles_and_rejects_inconsistent_reason_loss() {
+    let middle = vec![
+        json!({"record_type": "plan_node", "data": {"sequence": 1}}),
+        json!({"record_type": "timeline_event", "data": {"sequence": 2}}),
+    ];
+    let valid_footer = footer(
+        2,
+        128,
+        true,
+        Some(3),
+        Some(3),
+        vec![json!({"class": "timeline", "count": 1})],
+        vec![json!({"reason": "record_limit", "count": 1})],
+    );
+    let artifact =
+        parse_artifact(QUERY_ID, None, &sealed_frames(middle.clone(), valid_footer), Some("succeeded"), None).unwrap();
+    assert_eq!(artifact.truncated, Some(true));
+    assert_eq!(artifact.dropped_by_class, Some(json!([{"class": "timeline", "count": 1}])));
+
+    let invalid_footer = footer(2, 128, true, Some(3), Some(3), vec![json!({"class": "timeline", "count": 1})], vec![]);
+    let error =
+        parse_artifact(QUERY_ID, None, &sealed_frames(middle, invalid_footer), Some("succeeded"), None).unwrap_err();
+    assert!(error.to_string().contains("reason loss 0 is below class loss 1"), "{error}");
+}
+
+#[test]
+fn parser_rejects_malformed_multiple_sessions_and_oversized_plan_execution_id() {
+    let malformed = vec![control_frame("sealed", false, None), b"{not-json}\n".to_vec()];
+    let error = parse_artifact(QUERY_ID, None, &malformed, Some("succeeded"), None).unwrap_err();
+    assert!(error.to_string().contains("JSONL line 0 is invalid"), "{error}");
+
+    let multiple_sessions = vec![json!({
+        "record_type": "timeline_event",
+        "data": {"sequence": 1, "diagnostic": "multiple_sessions"}
+    })];
+    let error = parse_artifact(
+        QUERY_ID,
+        None,
+        &sealed_frames(multiple_sessions, footer(1, 64, false, None, Some(1), vec![], vec![])),
+        Some("succeeded"),
+        None,
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("reported multiple_sessions"), "{error}");
+
+    let oversized = vec![json!({
+        "record_type": "plan_node",
+        "data": {"sequence": 1, "plan_execution_id": "x".repeat(257)}
+    })];
+    let error = parse_artifact(
+        QUERY_ID,
+        None,
+        &sealed_frames(oversized, footer(1, 64, false, None, Some(1), vec![], vec![])),
+        Some("succeeded"),
+        None,
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("illegal plan_execution_id"), "{error}");
+}
+
+#[test]
+fn variable_frame_evidence_aggregates_and_rejects_transport_oversize() {
+    let count = AtomicUsize::new(0);
+    let max = AtomicUsize::new(0);
+    let frames =
+        [8usize, 32, 16].map(|bytes| FlightData { data_body: vec![b'x'; bytes].into(), ..FlightData::default() });
+    for frame in &frames {
+        observe_encoded_frame(frame, &count, &max);
+    }
+    let evidence = VariableFrameEvidence {
+        encoded_frame_count: count.load(Ordering::Relaxed),
+        record_batch_chunks: 2,
+        max_encoded_frame_bytes: max.load(Ordering::Relaxed),
+    };
+    assert_eq!(evidence.encoded_frame_count, 3);
+    assert_eq!(evidence.max_encoded_frame_bytes, frames[1].encoded_len());
+    validate_variable_frame_evidence(evidence).unwrap();
+
+    let oversized = VariableFrameEvidence { max_encoded_frame_bytes: FLIGHT_MAX_ENCODED_FRAME_BYTES + 1, ..evidence };
+    let error = validate_variable_frame_evidence(oversized).unwrap_err();
+    assert!(error.to_string().contains("above the 4194304 byte limit"), "{error}");
+}
