@@ -6,6 +6,14 @@ struct SourceAdjacentPartitionInput {
     source_row_group_count: u64,
 }
 
+/// Partial aggregate output that remains hash-aligned to a group-key partition.
+struct SourceAdjacentAlignedPartial {
+    partition_index: usize,
+    partition_count: usize,
+    key_columns: Vec<String>,
+    partial: CommittedPartial,
+}
+
 #[derive(Clone, Debug)]
 enum SourceAdjacentAggregatePartitioner {
     RowBalanced,
@@ -24,6 +32,13 @@ impl SourceAdjacentAggregatePartitioner {
         match self {
             Self::RowBalanced => None,
             Self::GroupKey { key_columns } => Some(key_columns.len() as u64),
+        }
+    }
+
+    fn group_key_columns(&self) -> Option<&[String]> {
+        match self {
+            Self::RowBalanced => None,
+            Self::GroupKey { key_columns } => Some(key_columns.as_slice()),
         }
     }
 
@@ -62,7 +77,7 @@ pub(in crate::exec::bounded) fn execute_bounded_partitioned_source_adjacent_aggr
             Ok(raw_inputs) => raw_inputs,
             Err(error) => {
                 release_nested_partition_inputs_reverse(reservations, partition_inputs, metrics);
-                release_partials_reverse(reservations, aggregate_outputs, metrics);
+                release_aligned_partials_reverse(reservations, aggregate_outputs, metrics);
                 return Err(error);
             },
         };
@@ -81,12 +96,16 @@ pub(in crate::exec::bounded) fn execute_bounded_partitioned_source_adjacent_aggr
                 Ok(partitions) => partitions,
                 Err(error) => {
                     release_nested_partition_inputs_reverse(reservations, partition_inputs, metrics);
-                    release_partials_reverse(reservations, aggregate_outputs, metrics);
+                    release_aligned_partials_reverse(reservations, aggregate_outputs, metrics);
                     return Err(error);
                 },
             };
             for (partition_index, partition) in partitions.into_iter().enumerate() {
                 if let Some(partition) = partition {
+                    // Observe partition skew as live row counts; oversized patches still
+                    // go through budgeted partial aggregate (structured OOM/retry), never
+                    // silent whole-set retain.
+                    let _partition_rows = partition.frame.num_rows();
                     partition_inputs[partition_index].push(SourceAdjacentPartitionInput {
                         chunks: batch_chunks.clone(),
                         partial: partition,
@@ -111,7 +130,7 @@ pub(in crate::exec::bounded) fn execute_bounded_partitioned_source_adjacent_aggr
                     Ok(output) => aggregate_outputs.push(output),
                     Err(error) => {
                         release_nested_partition_inputs_reverse(reservations, partition_inputs, metrics);
-                        release_partials_reverse(reservations, aggregate_outputs, metrics);
+                        release_aligned_partials_reverse(reservations, aggregate_outputs, metrics);
                         return Err(error);
                     },
                 }
@@ -136,7 +155,7 @@ pub(in crate::exec::bounded) fn execute_bounded_partitioned_source_adjacent_aggr
             Ok(output) => aggregate_outputs.push(output),
             Err(error) => {
                 release_partition_inputs_reverse(reservations, inputs, metrics);
-                release_partials_reverse(reservations, aggregate_outputs, metrics);
+                release_aligned_partials_reverse(reservations, aggregate_outputs, metrics);
                 return Err(error);
             },
         }
@@ -145,7 +164,30 @@ pub(in crate::exec::bounded) fn execute_bounded_partitioned_source_adjacent_aggr
         metrics.record_source_chunk_commit_count(chunk_count, row_group_count);
     }
 
-    execute_final_aggregate_merge(context, bounded, aggregate_outputs, reservations, metrics)
+    if let Some(key_columns) = partitioner.group_key_columns() {
+        let key_columns = key_columns.to_vec();
+        let aligned = aggregate_outputs
+            .into_iter()
+            .map(|output| AlignedGroupKeyPartitionPartial {
+                partition_index: output.partition_index,
+                partition_count: output.partition_count,
+                key_columns: output.key_columns,
+                partial: output.partial,
+            })
+            .collect::<Vec<_>>();
+        return execute_aligned_group_key_partitioned_final_aggregate_merge(
+            context,
+            bounded,
+            partition_count,
+            &key_columns,
+            aligned,
+            reservations,
+            metrics,
+        );
+    }
+
+    let unaligned = aggregate_outputs.into_iter().map(|output| output.partial).collect::<Vec<_>>();
+    execute_final_aggregate_merge(context, bounded, unaligned, reservations, metrics)
 }
 
 fn execute_source_adjacent_raw_source_batch(
@@ -307,7 +349,7 @@ fn execute_source_adjacent_partition_aggregate_batch(
     inputs: &mut Vec<SourceAdjacentPartitionInput>,
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
-) -> Result<CommittedPartial> {
+) -> Result<SourceAdjacentAlignedPartial> {
     let batch_inputs = std::mem::take(inputs);
     let non_empty_partition_count = usize::from(batch_inputs.iter().any(|input| input.partial.frame.num_rows() > 0));
     let max_partition_fan_in = batch_inputs.len();
@@ -324,7 +366,7 @@ fn execute_source_adjacent_partition_aggregate_batch(
     let partials = batch_inputs.into_iter().map(|input| input.partial).collect::<Vec<_>>();
     let partition_input =
         concatenate_partition_inputs(context, bounded.aggregate_id, partition_index, partials, reservations, metrics)?;
-    execute_source_adjacent_partition_aggregate(
+    let partial = execute_source_adjacent_partition_aggregate(
         context,
         bounded,
         partition_index,
@@ -332,14 +374,20 @@ fn execute_source_adjacent_partition_aggregate_batch(
         input_evidence,
         reservations,
         metrics,
-    )
+    )?;
+    Ok(SourceAdjacentAlignedPartial {
+        partition_index,
+        partition_count,
+        key_columns: partitioner.group_key_columns().unwrap_or(&[]).to_vec(),
+        partial,
+    })
 }
 
 fn source_adjacent_aggregate_partitioner(
-    context: &ExecutionContext,
+    _context: &ExecutionContext,
     bounded: &BoundedPlan<'_>,
     _estimated_input_bytes: u64,
-    chunk_count: usize,
+    _chunk_count: usize,
 ) -> SourceAdjacentAggregatePartitioner {
     let Ok(lowered_keys) = lower_aggregate_spec_keys(&bounded.aggregate.0.spec) else {
         return SourceAdjacentAggregatePartitioner::RowBalanced;
@@ -358,11 +406,8 @@ fn source_adjacent_aggregate_partitioner(
     if !has_string_key {
         return SourceAdjacentAggregatePartitioner::RowBalanced;
     }
-    if matches!(context.memory_control_policy(), MemoryControlPolicy::Bounded { .. })
-        && !BoundedPartitionRowPolicy::default().source_adjacent_group_key_partitioning_fits_chunk_count(chunk_count)
-    {
-        return SourceAdjacentAggregatePartitioner::RowBalanced;
-    }
+    // Variable-width keys always hash-partition by group key. Chunk-count no longer
+    // demotes the path to row-balanced (D5 streaming partition).
     SourceAdjacentAggregatePartitioner::GroupKey { key_columns: lowered_keys.key_columns }
 }
 
@@ -420,6 +465,18 @@ fn partition_source_adjacent_raw_chunk(
     let raw_frame = raw.frame.into_frame();
     let original_columns = matches!(partitioner, SourceAdjacentAggregatePartitioner::RowBalanced)
         .then(|| raw_frame.column_names().into_iter().map(str::to_string).collect::<Vec<_>>());
+    let input_rows = raw_frame.num_rows() as u64;
+    let (observation, plan_execution_id, parent_span_id) = crate::observability::stage_context_from_execution(context);
+    let stage_guard = crate::observability::RuntimeOperatorStageGuard::start(
+        observation,
+        plan_execution_id,
+        parent_span_id,
+        crate::observability::RuntimeOperatorStageKind::HashPartition,
+        crate::observability::RuntimeOperatorStageIdentity::new()
+            .with_node_id(node_id.to_string())
+            .with_chunk_index(chunk_index)
+            .with_input_rows(input_rows),
+    );
     let partitioned = match partitioner {
         SourceAdjacentAggregatePartitioner::RowBalanced => {
             let partition_column = unique_source_adjacent_partition_column_name(&raw_frame);
@@ -443,6 +500,7 @@ fn partition_source_adjacent_raw_chunk(
             let with_partition_column = match with_partition_column {
                 Ok(frame) => frame,
                 Err(error) => {
+                    stage_guard.fail(&error);
                     drop(raw_frame);
                     reservations.release(raw.reservation, metrics);
                     reservations.release(partition_reservation, metrics);
@@ -484,6 +542,16 @@ fn partition_source_adjacent_raw_chunk(
                     &token,
                 )
             }),
+    };
+    let partitioned = match partitioned {
+        Ok(partitioned) => {
+            stage_guard.finish(Some(input_rows), None);
+            Ok(partitioned)
+        },
+        Err(error) => {
+            stage_guard.fail(&error);
+            Err(error)
+        },
     };
     drop(raw_frame);
     reservations.release(raw.reservation, metrics);
@@ -904,6 +972,17 @@ fn release_optional_partials_reverse(
             drop(partial.frame);
             reservations.release(partial.reservation, metrics);
         }
+    }
+}
+
+fn release_aligned_partials_reverse(
+    reservations: &mut ReservationTracker,
+    mut partials: Vec<SourceAdjacentAlignedPartial>,
+    metrics: &mut QueryMetrics,
+) {
+    while let Some(partial) = partials.pop() {
+        drop(partial.partial.frame);
+        reservations.release(partial.partial.reservation, metrics);
     }
 }
 

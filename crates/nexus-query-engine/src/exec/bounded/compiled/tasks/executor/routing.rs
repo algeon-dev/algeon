@@ -40,6 +40,96 @@ impl CompiledGpuTaskExecutor<'_> {
         self.task_feeds_aggregate_input_path(task).unwrap_or(false)
     }
 
+    pub(super) fn source_adjacent_aggregate_chunk_cap_hints(
+        &self,
+        task: PipelineTaskId,
+    ) -> SourceAdjacentAggregateChunkCapHints {
+        let has_source_adjacent_stages = self.task_feeds_aggregate_input_through_unary_chain(task)
+            || self.task_feeds_any_join_input_through_unary_chain(task);
+        let Some(aggregate_node_id) = self.reachable_aggregate_plan_node(task) else {
+            return SourceAdjacentAggregateChunkCapHints { has_source_adjacent_stages, grouped_string_key: false };
+        };
+        let Some(aggregate_node) = self.plan.node(aggregate_node_id) else {
+            return SourceAdjacentAggregateChunkCapHints { has_source_adjacent_stages, grouped_string_key: false };
+        };
+        let PlanNode::Aggregate(aggregate) = &aggregate_node.kind else {
+            return SourceAdjacentAggregateChunkCapHints { has_source_adjacent_stages, grouped_string_key: false };
+        };
+        let grouped_string_key = has_source_adjacent_stages
+            && !aggregate.spec.group_exprs.is_empty()
+            && aggregate.spec.grouping_sets.is_none()
+            && self.aggregate_has_string_group_key(aggregate_node_id, aggregate);
+        SourceAdjacentAggregateChunkCapHints { has_source_adjacent_stages, grouped_string_key }
+    }
+
+    fn reachable_aggregate_plan_node(&self, task: PipelineTaskId) -> Option<NodeId> {
+        let mut pending = vec![task];
+        let mut visited = BTreeSet::new();
+
+        while let Some(current) = pending.pop() {
+            if !visited.insert(current) {
+                continue;
+            }
+            for edge in self.pipeline.edges().iter().filter(|edge| edge.from() == current) {
+                if !matches!(edge.kind(), PipelineEdgeKind::ResidentFrame | PipelineEdgeKind::SharedResidentProducer) {
+                    continue;
+                }
+                let Some(consumer_task) = self.pipeline.tasks().iter().find(|candidate| candidate.id() == edge.to())
+                else {
+                    continue;
+                };
+                match consumer_task.kind() {
+                    PipelineTaskKind::Aggregate => return consumer_task.plan_node(),
+                    PipelineTaskKind::Unary => pending.push(edge.to()),
+                    _ => {},
+                }
+            }
+        }
+
+        None
+    }
+
+    fn aggregate_has_string_group_key(
+        &self,
+        aggregate_node_id: NodeId,
+        aggregate: &crate::plan::AggregateNode,
+    ) -> bool {
+        let Some(aggregate_node) = self.plan.node(aggregate_node_id) else {
+            return false;
+        };
+        let PlanNode::Aggregate(aggregate_ref) = &aggregate_node.kind else {
+            return false;
+        };
+        let Some(input_node) = self.plan.node(aggregate_ref.input) else {
+            return false;
+        };
+        let input_schema = &input_node.facts.output_schema;
+        for expr in &aggregate.spec.group_exprs {
+            let Some(column_name) = self.plain_group_key_column_name(expr) else {
+                continue;
+            };
+            if input_schema.field_with_name(column_name).is_ok_and(|field| {
+                matches!(
+                    field.data_type(),
+                    arrow::datatypes::DataType::Utf8
+                        | arrow::datatypes::DataType::LargeUtf8
+                        | arrow::datatypes::DataType::Utf8View
+                )
+            }) {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn plain_group_key_column_name<'a>(&self, expr: &'a crate::expr::Expr) -> Option<&'a str> {
+        match expr {
+            crate::expr::Expr::Column(column) => Some(column.name()),
+            crate::expr::Expr::Alias { expr, .. } => self.plain_group_key_column_name(expr),
+            _ => None,
+        }
+    }
+
     pub(super) fn task_feeds_aggregate_input_path(&self, task: PipelineTaskId) -> Option<bool> {
         let mut pending = vec![(task, false)];
         let mut visited = BTreeSet::new();

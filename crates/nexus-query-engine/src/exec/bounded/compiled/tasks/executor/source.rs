@@ -53,12 +53,14 @@ impl CompiledGpuTaskExecutor<'_> {
                     } else {
                         let has_source_adjacent_stages =
                             has_join_source_adjacent_stages || has_aggregate_source_adjacent_stages;
+                        let aggregate_chunk_cap_hints = self.source_adjacent_aggregate_chunk_cap_hints(task.id());
                         let stream = if feeds_aggregate && (feeds_direct_join || feeds_join_through_unary) {
                             plan_bounded_shared_join_aggregate_local_parquet_source_stream(
                                 self.context,
                                 source,
                                 node_id,
                                 has_source_adjacent_stages,
+                                aggregate_chunk_cap_hints,
                                 self.metrics,
                             )?
                         } else if feeds_aggregate {
@@ -67,6 +69,7 @@ impl CompiledGpuTaskExecutor<'_> {
                                 source,
                                 node_id,
                                 has_aggregate_source_adjacent_stages,
+                                aggregate_chunk_cap_hints,
                                 self.metrics,
                             )?
                         } else {

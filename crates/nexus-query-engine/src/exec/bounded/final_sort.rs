@@ -58,13 +58,41 @@ pub(super) fn execute_final_sort_node_with_retry(
     let max_attempts = max_retry_attempts.max(1);
     let timer = Instant::now();
     let mut final_sort = FinalSortExecutor { context, node_id, sort, max_attempts, reservations, metrics };
+    let input_rows = input.frame.num_rows() as u64;
+    let (observation, plan_execution_id, parent_span_id) = crate::observability::stage_context_from_execution(context);
+    let stage_guard = crate::observability::RuntimeOperatorStageGuard::start(
+        observation,
+        plan_execution_id,
+        parent_span_id,
+        crate::observability::RuntimeOperatorStageKind::FinalSort,
+        crate::observability::RuntimeOperatorStageIdentity::new()
+            .with_node_id(node_id.to_string())
+            .with_input_rows(input_rows),
+    );
 
-    if let Some(limit) = limit
-        && final_sort.should_use_hierarchical_topk(limit, &input)?
-    {
-        let result = final_sort.hierarchical_topk(limit, input, 1);
-        final_sort.metrics.final_sort_time += timer.elapsed();
-        return result;
+    if let Some(limit) = limit {
+        match final_sort.should_use_hierarchical_topk(limit, &input) {
+            Ok(true) => {
+                let result = final_sort.hierarchical_topk(limit, input, 1);
+                final_sort.metrics.final_sort_time += timer.elapsed();
+                return match result {
+                    Ok(output) => {
+                        stage_guard.finish(Some(output.frame.num_rows() as u64), None);
+                        Ok(output)
+                    },
+                    Err(error) => {
+                        stage_guard.fail(&error);
+                        Err(error)
+                    },
+                };
+            },
+            Ok(false) => {},
+            Err(error) => {
+                final_sort.metrics.final_sort_time += timer.elapsed();
+                stage_guard.fail(&error);
+                return Err(error);
+            },
+        }
     }
 
     let result = final_sort.full_sort_limit_attempt(limit, &input, 1);
@@ -73,6 +101,7 @@ pub(super) fn execute_final_sort_node_with_retry(
         Ok(output) => {
             final_sort.metrics.final_sort_time += timer.elapsed();
             final_sort.reservations.release(input.reservation, final_sort.metrics);
+            stage_guard.finish(Some(output.frame.num_rows() as u64), None);
             Ok(output)
         },
         Err(error) if is_retryable_final_sort_error(&error) => {
@@ -80,29 +109,38 @@ pub(super) fn execute_final_sort_node_with_retry(
             if max_attempts > 1
                 && let Some(limit) = limit
             {
-                crate::exec::retry::backoff_before_retry(
+                if let Err(backoff_error) = crate::exec::retry::backoff_before_retry(
                     final_sort.context,
                     "nexus_query_engine.exec.bounded.final_sort_hierarchical_topk_retry",
-                )?;
+                ) {
+                    stage_guard.fail(&backoff_error);
+                    return Err(backoff_error);
+                }
                 match final_sort.hierarchical_topk(limit, input, 2) {
                     Ok(output) => {
                         final_sort.metrics.final_sort_time += timer.elapsed();
+                        stage_guard.finish(Some(output.frame.num_rows() as u64), None);
                         Ok(output)
                     },
                     Err(error) => {
                         final_sort.metrics.final_sort_time += timer.elapsed();
+                        stage_guard.fail(&error);
                         Err(error)
                     },
                 }
             } else {
                 final_sort.metrics.final_sort_time += timer.elapsed();
                 final_sort.reservations.release(input.reservation, final_sort.metrics);
-                Err(final_sort_retry_facts("retry_attempts_exhausted", final_sort.metrics).attach_to_error(error))
+                let error =
+                    final_sort_retry_facts("retry_attempts_exhausted", final_sort.metrics).attach_to_error(error);
+                stage_guard.fail(&error);
+                Err(error)
             }
         },
         Err(error) => {
             final_sort.metrics.final_sort_time += timer.elapsed();
             final_sort.reservations.release(input.reservation, final_sort.metrics);
+            stage_guard.fail(&error);
             Err(error)
         },
     }

@@ -8,6 +8,9 @@ use std::{env, error::Error};
 
 type ToolResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
 
+#[cfg(all(feature = "clickbench-stage-probe", not(test)))]
+#[path = "../clickbench_stage_probe.rs"]
+mod clickbench_stage_probe;
 #[cfg(any(not(test), feature = "server-runtime-observability-e2e"))]
 #[path = "../connection_retry.rs"]
 mod connection_retry;
@@ -71,6 +74,7 @@ async fn main() -> ToolResult<()> {
         Some("embedded-backend-e2e") => run_embedded_backend_e2e(env::args().skip(2).collect()).await,
         Some("cugraph-fixture-e2e") => run_cugraph_fixture_e2e(env::args().nth(2)).await,
         Some("validate-query") => run_validate_query(env::args().skip(2).collect()).await,
+        Some("clickbench-stage-probe") => run_clickbench_stage_probe(env::args().skip(2).collect()).await,
         Some("-h" | "--help") | None => {
             print_usage();
             if command.is_none() { Err("missing tool command".into()) } else { Ok(()) }
@@ -88,6 +92,7 @@ fn print_usage() {
          \n\
          USAGE:\n\
            cargo run -p datafusion-nexus-tools --features validate-query -- validate-query --sql <SQL> [--format json|human] [--parquet TABLE=PATH]...\n\
+           flock /tmp/cudf-gpu.lock cargo run -p datafusion-nexus-tools --features clickbench-stage-probe -- clickbench-stage-probe [OPTIONS]\n\
            cargo run -p datafusion-nexus-tools -- flight-sql-cugraph-smoke [URL]\n\
            cargo run -p datafusion-nexus-tools -- flight-sql-query [URL] [SQL]\n\
            cargo run -p datafusion-nexus-tools --features iceberg-e2e -- iceberg-rest-local-e2e\n\
@@ -129,6 +134,16 @@ async fn run_validate_query(args: Vec<String>) -> ToolResult<()> {
 #[cfg(not(all(feature = "validate-query", not(test))))]
 async fn run_validate_query(_args: Vec<String>) -> ToolResult<()> {
     Err("validate-query requires --features validate-query and normal cargo run execution".into())
+}
+
+#[cfg(all(feature = "clickbench-stage-probe", not(test)))]
+async fn run_clickbench_stage_probe(args: Vec<String>) -> ToolResult<()> {
+    clickbench_stage_probe::run(args).await
+}
+
+#[cfg(not(all(feature = "clickbench-stage-probe", not(test))))]
+async fn run_clickbench_stage_probe(_args: Vec<String>) -> ToolResult<()> {
+    Err("clickbench-stage-probe requires --features clickbench-stage-probe and normal cargo run execution".into())
 }
 
 #[cfg(all(feature = "iceberg-e2e", not(test)))]

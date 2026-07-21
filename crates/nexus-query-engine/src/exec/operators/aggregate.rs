@@ -38,7 +38,9 @@ use filtered_grouped::{
     execute_segmented_filtered_grouped_partial_aggregate_with_budget, record_filtered_grouped_segmented_failure,
     record_filtered_grouped_single_pass, select_filtered_grouped_aggregate_strategy,
 };
-pub(in crate::exec) use groupby::{execute_groupby_aggregate, execute_groupby_aggregate_with_budget};
+pub(in crate::exec) use groupby::{
+    execute_groupby_aggregate, execute_groupby_aggregate_with_budget, execute_groupby_aggregate_with_budget_observed,
+};
 use grouping_sets::{execute_grouping_sets_aggregate, execute_grouping_sets_partial_aggregate_with_budget};
 use host_exact::{execute_datafusion_exact_host_aggregate, host_group_expr_output_name};
 pub(in crate::exec) use host_exact::{
@@ -517,7 +519,7 @@ pub(in crate::exec) fn execute_aggregate_with_budget_for_node(
         input_rows,
         aggregate_strategy_options,
     ) {
-        let exact_probe = exact_single_key_cardinality_probe(&frame, key_column, input_rows, token, metrics)?;
+        let exact_probe = exact_single_key_cardinality_probe(context, &frame, key_column, input_rows, token, metrics)?;
         selection_elapsed = selection_elapsed.saturating_add(exact_probe.elapsed);
         metrics.operator_time += exact_probe.elapsed;
         add_exact_single_key_cardinality_probe_facts(&mut decision, &exact_probe);
@@ -537,7 +539,7 @@ pub(in crate::exec) fn execute_aggregate_with_budget_for_node(
         input_rows,
         aggregate_strategy_options,
     ) {
-        let exact_probe = exact_grouped_key_cardinality_probe(&frame, &key_columns, input_rows, token)?;
+        let exact_probe = exact_grouped_key_cardinality_probe(context, &frame, &key_columns, input_rows, token)?;
         selection_elapsed = selection_elapsed.saturating_add(exact_probe.elapsed);
         metrics.operator_time += exact_probe.elapsed;
         add_exact_grouped_key_cardinality_probe_facts(&mut decision, &exact_probe);
@@ -568,7 +570,8 @@ pub(in crate::exec) fn execute_aggregate_with_budget_for_node(
         );
     }
     let timer = Instant::now();
-    let mut output = match execute_groupby_aggregate_with_budget(
+    let mut output = match execute_groupby_aggregate_with_budget_observed(
+        Some(context),
         &overrides,
         frame,
         &aggregate,
@@ -954,7 +957,7 @@ fn execute_partial_aggregate_with_budget_single_pass(
         input_rows,
         aggregate_strategy_options,
     ) {
-        let exact_probe = exact_single_key_cardinality_probe(&frame, key_column, input_rows, token, metrics)?;
+        let exact_probe = exact_single_key_cardinality_probe(context, &frame, key_column, input_rows, token, metrics)?;
         selection_elapsed = selection_elapsed.saturating_add(exact_probe.elapsed);
         metrics.operator_time += exact_probe.elapsed;
         add_exact_single_key_cardinality_probe_facts(&mut decision, &exact_probe);
@@ -974,7 +977,7 @@ fn execute_partial_aggregate_with_budget_single_pass(
         input_rows,
         aggregate_strategy_options,
     ) {
-        let exact_probe = exact_grouped_key_cardinality_probe(&frame, &key_columns, input_rows, token)?;
+        let exact_probe = exact_grouped_key_cardinality_probe(context, &frame, &key_columns, input_rows, token)?;
         selection_elapsed = selection_elapsed.saturating_add(exact_probe.elapsed);
         metrics.operator_time += exact_probe.elapsed;
         add_exact_grouped_key_cardinality_probe_facts(&mut decision, &exact_probe);
@@ -1025,7 +1028,8 @@ fn execute_partial_aggregate_with_budget_single_pass(
     let overrides_lease = execution_overrides(context)?;
     let overrides = overrides_lease.overrides();
     let timer = Instant::now();
-    let mut output = match execute_groupby_aggregate_with_budget(
+    let mut output = match execute_groupby_aggregate_with_budget_observed(
+        Some(context),
         &overrides,
         frame,
         &aggregate,

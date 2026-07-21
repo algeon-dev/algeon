@@ -59,6 +59,11 @@ lane = "cpu"
 reason = "Tests validate report rows and policy evidence without executing the native GPU workload."
 
 [[binary]]
+id = "datafusion-nexus-bench::clickbench_workload_tests"
+lane = "cpu"
+reason = "Workload tests validate ClickBench native profile/env resolution without executing the native GPU workload."
+
+[[binary]]
 id = "datafusion-nexus-bench::native_policy_run_evidence_tests"
 lane = "cpu"
 reason = "Tests validate serialized policy evidence without executing CUDA work."

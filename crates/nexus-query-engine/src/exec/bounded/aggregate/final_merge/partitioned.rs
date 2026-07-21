@@ -1,5 +1,189 @@
 use super::*;
 
+/// Pre-aligned group-key partition partials from the source-adjacent streaming path.
+/// Compatible membership means every item shares the same partition count and key identity.
+pub(in crate::exec::bounded) struct AlignedGroupKeyPartitionPartial {
+    pub(in crate::exec::bounded) partition_index: usize,
+    pub(in crate::exec::bounded) partition_count: usize,
+    pub(in crate::exec::bounded) key_columns: Vec<String>,
+    pub(in crate::exec::bounded) partial: CommittedPartial,
+}
+
+/// Merge already group-key-aligned partials without re-hashing (D6).
+pub(in crate::exec::bounded) fn execute_aligned_group_key_partitioned_final_aggregate_merge(
+    context: &ExecutionContext,
+    bounded: &BoundedPlan<'_>,
+    partition_count: usize,
+    key_columns: &[String],
+    partials: Vec<AlignedGroupKeyPartitionPartial>,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<CommittedPartial> {
+    if partials.is_empty() {
+        let frame = execute_compiled_bounded_aggregate_from_empty_input(
+            context,
+            bounded.aggregate_id,
+            bounded.aggregate.0,
+            bounded.aggregate_input_schema,
+            bounded.aggregate.1,
+            reservations,
+            metrics,
+        )?;
+        return Ok(CommittedPartial { frame: frame.frame, reservation: frame.reservation });
+    }
+
+    for partial in &partials {
+        if partial.partition_count != partition_count {
+            let error = QueryError::new(
+                QueryErrorCode::Internal,
+                "nexus_query_engine.final_merge.aligned_partition_metadata",
+                "aligned group-key final merge received mismatched partition_count metadata",
+            )
+            .with_fact("expected_partition_count", partition_count)
+            .with_fact("actual_partition_count", partial.partition_count)
+            .with_fact("partition_index", partial.partition_index);
+            release_aligned_group_key_partials_reverse(reservations, partials, metrics);
+            return Err(error);
+        }
+        if partial.partition_index >= partition_count {
+            let error = QueryError::new(
+                QueryErrorCode::Internal,
+                "nexus_query_engine.final_merge.aligned_partition_metadata",
+                "aligned group-key final merge received out-of-range partition_index",
+            )
+            .with_fact("partition_count", partition_count)
+            .with_fact("partition_index", partial.partition_index);
+            release_aligned_group_key_partials_reverse(reservations, partials, metrics);
+            return Err(error);
+        }
+        if partial.key_columns.as_slice() != key_columns {
+            let error = QueryError::new(
+                QueryErrorCode::Internal,
+                "nexus_query_engine.final_merge.aligned_partition_metadata",
+                "aligned group-key final merge received mismatched partition key identity",
+            )
+            .with_fact("expected_keys", key_columns.join(","))
+            .with_fact("actual_keys", partial.key_columns.join(","))
+            .with_fact("partition_index", partial.partition_index);
+            release_aligned_group_key_partials_reverse(reservations, partials, metrics);
+            return Err(error);
+        }
+    }
+
+    let topk = match partitioned_final_merge_topk_candidate(bounded) {
+        Ok(topk) => topk,
+        Err(error) => {
+            release_aligned_group_key_partials_reverse(reservations, partials, metrics);
+            return Err(error);
+        },
+    };
+    let mut topk_stats = PartitionedFinalMergeTopKStats::default();
+    let input_rows = partials.iter().map(|partial| partial.partial.frame.num_rows() as u64).sum::<u64>();
+    let mut partition_inputs = (0..partition_count).map(|_| Vec::new()).collect::<Vec<Vec<CommittedPartial>>>();
+    let mut max_partition_fan_in = 0usize;
+    for item in partials {
+        let partition_index = item.partition_index;
+        if item.partial.frame.num_rows() == 0 {
+            reservations.release(item.partial.reservation, metrics);
+            continue;
+        }
+        partition_inputs[partition_index].push(item.partial);
+        max_partition_fan_in = max_partition_fan_in.max(partition_inputs[partition_index].len());
+    }
+
+    let timer = Instant::now();
+    let mut merged_partitions = Vec::with_capacity(partition_count);
+    let mut non_empty_partition_count = 0usize;
+    for (partition_index, inputs) in partition_inputs.into_iter().enumerate() {
+        if inputs.is_empty() {
+            continue;
+        }
+        non_empty_partition_count += 1;
+        max_partition_fan_in = max_partition_fan_in.max(inputs.len());
+        let merged = match execute_partitioned_final_merge_group(
+            context,
+            bounded,
+            partition_index,
+            inputs,
+            topk.as_ref(),
+            &mut topk_stats,
+            reservations,
+            metrics,
+        ) {
+            Ok(merged) => merged,
+            Err(error) => {
+                release_partials_reverse(reservations, merged_partitions, metrics);
+                return Err(error);
+            },
+        };
+        merged_partitions.push(merged);
+    }
+    if merged_partitions.is_empty() {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.final_merge.aligned_partitioned",
+            "aligned group-key final aggregate merge produced no non-empty partitions",
+        )
+        .with_fact("node_id", bounded.aggregate_id)
+        .with_fact("partition_count", partition_count));
+    }
+    metrics.record_final_merge_attempt(max_partition_fan_in.max(1));
+    metrics.record_final_merge_level();
+    let mut merged = concatenate_partitioned_final_merge_outputs(
+        context,
+        bounded.aggregate_id,
+        merged_partitions,
+        reservations,
+        metrics,
+    )?;
+    let elapsed = timer.elapsed();
+    let output_rows = merged.frame.num_rows() as u64;
+    record_partitioned_final_merge_strategy(
+        context,
+        bounded,
+        input_rows,
+        output_rows,
+        partition_count,
+        non_empty_partition_count,
+        max_partition_fan_in,
+        &topk_stats,
+        elapsed,
+        metrics,
+    );
+    // Mark the merge as consuming already-aligned group-key partition identity.
+    if let Some(decision) = metrics.aggregate_strategy_decisions.last_mut() {
+        decision.facts.insert("partitioned_merge_aligned_input".to_string(), "group_key_source_adjacent".to_string());
+        decision.facts.insert("partitioned_merge_rehash_skipped".to_string(), "true".to_string());
+        decision.facts.insert("partitioned_merge_key_columns".to_string(), key_columns.join(","));
+    }
+    let merged_reservation_bytes = merged.reservation.bytes();
+    merged.reservation = reservations.transfer(
+        merged.reservation,
+        MemoryReservationRequest::new(ReservationKind::FinalMerge, merged_reservation_bytes, reservations.budget())
+            .with_memory_boundary("partitioned_final_aggregate_merge_output")
+            .with_node_id(bounded.aggregate_id)
+            .with_stage("partitioned_final_merge")
+            .with_task_registration(
+                partitioned_final_merge_task_id(bounded.aggregate_id, "aligned_combined_output"),
+                1,
+                "aggregate",
+            ),
+        metrics,
+    );
+    execute_final_aggregate_projection(context, bounded, merged, reservations, metrics)
+}
+
+fn release_aligned_group_key_partials_reverse(
+    reservations: &mut ReservationTracker,
+    mut partials: Vec<AlignedGroupKeyPartitionPartial>,
+    metrics: &mut QueryMetrics,
+) {
+    while let Some(partial) = partials.pop() {
+        drop(partial.partial.frame);
+        reservations.release(partial.partial.reservation, metrics);
+    }
+}
+
 pub(in crate::exec::bounded) fn execute_final_aggregate_merge(
     context: &ExecutionContext,
     bounded: &BoundedPlan<'_>,
@@ -166,6 +350,18 @@ fn execute_final_merge_group_attempt(
     };
 
     let timer = Instant::now();
+    let input_rows = partials.iter().map(|partial| partial.frame.num_rows() as u64).sum::<u64>();
+    let (observation, plan_execution_id, parent_span_id) = crate::observability::stage_context_from_execution(context);
+    let stage_guard = crate::observability::RuntimeOperatorStageGuard::start(
+        observation,
+        plan_execution_id,
+        parent_span_id,
+        crate::observability::RuntimeOperatorStageKind::FinalMerge,
+        crate::observability::RuntimeOperatorStageIdentity::new()
+            .with_node_id(bounded.aggregate_id.to_string())
+            .with_attempt(u32::try_from(attempt).unwrap_or(u32::MAX))
+            .with_input_rows(input_rows),
+    );
     let result = merge_final_aggregate_partials(
         context,
         bounded,
@@ -181,10 +377,13 @@ fn execute_final_merge_group_attempt(
     let merge_elapsed = timer.elapsed();
     reservations.release(merge_reservation, metrics);
     let frame = match result {
-        Ok(frame) => frame,
+        Ok(frame) => {
+            stage_guard.finish(Some(frame.num_rows() as u64), None);
+            frame
+        },
         Err(error) => {
             metrics.final_merge_time += merge_elapsed;
-            return Err(RuntimeResourceFacts {
+            let error = RuntimeResourceFacts {
                 memory_boundary: "final_aggregate_merge",
                 stage: "final_merge",
                 node_id: bounded.aggregate_id,
@@ -193,7 +392,9 @@ fn execute_final_merge_group_attempt(
                 resume_boundary: "final_merge",
                 metrics,
             }
-            .attach_to(error));
+            .attach_to(error);
+            stage_guard.fail(&error);
+            return Err(error);
         },
     };
     metrics.final_merge_time += merge_elapsed;

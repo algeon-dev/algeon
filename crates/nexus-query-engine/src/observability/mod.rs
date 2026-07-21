@@ -4,6 +4,7 @@ mod clock;
 mod jsonl;
 mod lifecycle;
 mod model;
+mod operator_stage;
 mod recorder;
 
 pub use clock::{DeterministicRuntimeObservationClock, RuntimeObservationClock, SystemRuntimeObservationClock};
@@ -24,7 +25,8 @@ pub use model::{
     RuntimeJobId, RuntimeMeasurementQuality, RuntimeMeasurementScope, RuntimeMeasurementSource,
     RuntimeObservationClassLoss, RuntimeObservationFooter, RuntimeObservationLimits, RuntimeObservationLossReason,
     RuntimeObservationManifest, RuntimeObservationPayload, RuntimeObservationReasonLoss, RuntimeObservationRecord,
-    RuntimeObservationRecordClass, RuntimePipelineEdgeId, RuntimePlanNodeId, RuntimeQueryId, RuntimeReservationAction,
+    RuntimeObservationRecordClass, RuntimeOperatorStageKind, RuntimeOperatorStageObservation,
+    RuntimeOperatorStageState, RuntimePipelineEdgeId, RuntimePlanNodeId, RuntimeQueryId, RuntimeReservationAction,
     RuntimeReservationDisposition, RuntimeReservationGateId, RuntimeReservationId, RuntimeReservationObservation,
     RuntimeResourceDomain, RuntimeResourceId, RuntimeResourceMeasurementObservation, RuntimeResourceRow, RuntimeSinkId,
     RuntimeSourceLocationId, RuntimeSourceReadObservation, RuntimeSpanId, RuntimeStreamLeaseObservation,
@@ -32,6 +34,9 @@ pub use model::{
     RuntimeTimelineEvent, RuntimeTopologyRecord, RuntimeTraceId, RuntimeWorkerId, SinkDefinitionRow,
     SourceReadLifecycleState, StreamLeaseAcquisition, StreamLeaseLifecycleState, TaskAttemptId, TaskDefinitionRow,
     TaskLifecycleState, WorkerDefinitionRow,
+};
+pub use operator_stage::{
+    RuntimeOperatorStageGuard, RuntimeOperatorStageIdentity, observe_operator_stage, stage_context_from_execution,
 };
 pub use recorder::{
     LiveRuntimeObservationSnapshot, RuntimeEventContext, RuntimeObservationConfig, RuntimeObservationHandle,
@@ -209,7 +214,8 @@ pub(crate) fn assert_live_topology_references_resolve(snapshot: &LiveRuntimeObse
             RuntimeObservationPayload::QueryBoundary { .. }
             | RuntimeObservationPayload::PlanExecutionBoundary { .. }
             | RuntimeObservationPayload::Admission(_)
-            | RuntimeObservationPayload::CleanupFailure(_) => {},
+            | RuntimeObservationPayload::CleanupFailure(_)
+            | RuntimeObservationPayload::OperatorStage(_) => {},
         }
     }
 }

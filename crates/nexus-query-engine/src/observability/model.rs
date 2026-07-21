@@ -713,6 +713,169 @@ runtime_observation_body!(
     }
 );
 
+/// Operator-substage category for blocking native primitives.
+///
+/// Pair events by [`RuntimeTimelineEvent::span_id`]. Kinds must stay short and
+/// free of SQL, paths, or unbounded diagnostic text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeOperatorStageKind {
+    RegexReplacePreflight,
+    RegexReplaceExecute,
+    ExactCardinalityProbe,
+    PreparedGroupbyPrepare,
+    PreparedGroupbyAggregate,
+    LibcudfGroupby,
+    HashPartition,
+    PartialAggregate,
+    FinalMerge,
+    PartitionLocalTopK,
+    FinalSort,
+}
+
+impl RuntimeOperatorStageKind {
+    /// Stable snake_case label used in facts and JSON.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::RegexReplacePreflight => "regex_replace_preflight",
+            Self::RegexReplaceExecute => "regex_replace_execute",
+            Self::ExactCardinalityProbe => "exact_cardinality_probe",
+            Self::PreparedGroupbyPrepare => "prepared_groupby_prepare",
+            Self::PreparedGroupbyAggregate => "prepared_groupby_aggregate",
+            Self::LibcudfGroupby => "libcudf_groupby",
+            Self::HashPartition => "hash_partition",
+            Self::PartialAggregate => "partial_aggregate",
+            Self::FinalMerge => "final_merge",
+            Self::PartitionLocalTopK => "partition_local_top_k",
+            Self::FinalSort => "final_sort",
+        }
+    }
+}
+
+impl fmt::Display for RuntimeOperatorStageKind {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+/// Lifecycle state for one operator-substage span.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum RuntimeOperatorStageState {
+    Started,
+    Finished,
+    Failed { error_code: String },
+    Cancelled,
+}
+
+/// Operator-substage payload body retained out of line.
+///
+/// Safe numerical facts only: no SQL, raw paths, or unbounded strings.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeOperatorStageObservation {
+    pub stage_kind: RuntimeOperatorStageKind,
+    pub lifecycle: RuntimeOperatorStageState,
+    pub node_id: Option<String>,
+    pub task_id: Option<RuntimeTaskId>,
+    pub chunk_index: Option<usize>,
+    pub partition_index: Option<usize>,
+    pub attempt: Option<u32>,
+    pub strategy_label: Option<String>,
+    pub input_rows: Option<u64>,
+    pub output_rows: Option<u64>,
+    pub input_bytes: Option<u64>,
+    pub output_bytes: Option<u64>,
+    pub reserved_bytes: Option<u64>,
+}
+
+impl RuntimeOperatorStageObservation {
+    /// Creates a stage observation with only the required identity fields set.
+    pub fn new(stage_kind: RuntimeOperatorStageKind, lifecycle: RuntimeOperatorStageState) -> Self {
+        Self {
+            stage_kind,
+            lifecycle,
+            node_id: None,
+            task_id: None,
+            chunk_index: None,
+            partition_index: None,
+            attempt: None,
+            strategy_label: None,
+            input_rows: None,
+            output_rows: None,
+            input_bytes: None,
+            output_bytes: None,
+            reserved_bytes: None,
+        }
+    }
+
+    pub fn with_node_id(mut self, node_id: impl Into<String>) -> Self {
+        self.node_id = Some(node_id.into());
+        self
+    }
+
+    pub fn with_task_id(mut self, task_id: RuntimeTaskId) -> Self {
+        self.task_id = Some(task_id);
+        self
+    }
+
+    pub fn with_chunk_index(mut self, chunk_index: usize) -> Self {
+        self.chunk_index = Some(chunk_index);
+        self
+    }
+
+    pub fn with_partition_index(mut self, partition_index: usize) -> Self {
+        self.partition_index = Some(partition_index);
+        self
+    }
+
+    pub fn with_attempt(mut self, attempt: u32) -> Self {
+        self.attempt = Some(attempt);
+        self
+    }
+
+    pub fn with_strategy_label(mut self, strategy_label: impl Into<String>) -> Self {
+        self.strategy_label = Some(strategy_label.into());
+        self
+    }
+
+    pub fn with_input_rows(mut self, input_rows: u64) -> Self {
+        self.input_rows = Some(input_rows);
+        self
+    }
+
+    pub fn with_output_rows(mut self, output_rows: u64) -> Self {
+        self.output_rows = Some(output_rows);
+        self
+    }
+
+    pub fn with_input_bytes(mut self, input_bytes: u64) -> Self {
+        self.input_bytes = Some(input_bytes);
+        self
+    }
+
+    pub fn with_output_bytes(mut self, output_bytes: u64) -> Self {
+        self.output_bytes = Some(output_bytes);
+        self
+    }
+
+    pub fn with_reserved_bytes(mut self, reserved_bytes: u64) -> Self {
+        self.reserved_bytes = Some(reserved_bytes);
+        self
+    }
+
+    pub(crate) fn logical_retained_bytes(&self) -> u64 {
+        string_bytes(self.stage_kind.as_str())
+            + match &self.lifecycle {
+                RuntimeOperatorStageState::Failed { error_code } => string_bytes(error_code),
+                _ => 1,
+            }
+            + self.node_id.as_ref().map_or(0, |value| string_bytes(value))
+            + self.task_id.as_ref().map_or(0, |value| string_bytes(value.as_str()))
+            + self.strategy_label.as_ref().map_or(0, |value| string_bytes(value))
+            + 48
+    }
+}
+
 /// Typed dynamic event payload. Later phases extend this enum at authoritative boundaries.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -732,6 +895,8 @@ pub enum RuntimeObservationPayload {
     Reservation(Box<RuntimeReservationObservation>),
     /// Secondary cleanup failure retained without replacing a primary query error.
     CleanupFailure(Box<RuntimeCleanupFailureObservation>),
+    /// Operator-substage lifecycle for blocking native primitives.
+    OperatorStage(Box<RuntimeOperatorStageObservation>),
 }
 
 /// One dynamic event in recorder total order.
@@ -1064,6 +1229,7 @@ impl LogicalRetainedBytes for RuntimeTimelineEvent {
                     + string_bytes(error_status)
                     + string_bytes(error_operation)
             },
+            RuntimeObservationPayload::OperatorStage(observation) => observation.logical_retained_bytes(),
         };
         ENVELOPE + plan_execution_bytes + payload_bytes
     }

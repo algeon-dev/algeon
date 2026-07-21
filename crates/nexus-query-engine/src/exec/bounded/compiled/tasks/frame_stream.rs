@@ -479,24 +479,15 @@ impl UnaryMappedResidentFrameStreamSource {
                     )
                 },
             ),
-            UnaryMappedResidentFrameStreamOperator::Projection(projection) => execute_bounded_generic_unary(
+            UnaryMappedResidentFrameStreamOperator::Projection(projection) => execute_bounded_generic_projection(
                 &self.context,
                 self.node_id,
                 "compiled_projection",
                 "compiled_projection_output",
+                projection,
                 input,
                 reservations,
                 metrics,
-                true,
-                |context, input, token, metrics| {
-                    crate::exec::operators::execute_projection_with_budget(
-                        context,
-                        projection,
-                        input,
-                        token.expect("budget token is created for compiled bounded projection stages"),
-                        metrics,
-                    )
-                },
             ),
         }
     }

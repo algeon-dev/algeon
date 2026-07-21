@@ -2224,6 +2224,8 @@ dependencies = [
  "cudf",
  "datafusion",
  "datafusion-nexus",
+ "datafusion-nexus-bench",
+ "datafusion-nexus-workloads",
  "futures",
  "iceberg",
  "iceberg-catalog-glue",

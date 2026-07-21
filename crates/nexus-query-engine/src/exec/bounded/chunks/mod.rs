@@ -56,9 +56,11 @@ use retry::is_prefetch_chunk_error;
 pub(in crate::exec) use retry::record_chunk_retry_error;
 pub(super) use retry::{chunk_retry_facts, is_retryable_chunk_error, split_retryable_chunk};
 pub(super) use scheduling::execute_bounded_chunks_with_source_scheduler;
-pub(in crate::exec::bounded) use source_adjacent::execute_source_adjacent_chunk_unary;
 #[allow(unused_imports)] // sibling resolution via use super::*
 pub(in crate::exec::bounded::chunks) use source_adjacent::*;
+pub(in crate::exec::bounded) use source_adjacent::{
+    execute_source_adjacent_chunk_projection, execute_source_adjacent_chunk_unary,
+};
 pub(super) use source_read::{
     concatenate_source_read_outputs, read_local_parquet_chunk_batch_required_only_no_commit,
     read_local_parquet_chunks_required_only, read_local_parquet_chunks_required_only_with_observation,

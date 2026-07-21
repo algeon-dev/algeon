@@ -17,6 +17,7 @@ mod source_adjacent;
 mod stream;
 
 pub(super) use final_merge::{
+    AlignedGroupKeyPartitionPartial, execute_aligned_group_key_partitioned_final_aggregate_merge,
     execute_compiled_bounded_final_aggregate_merge, execute_final_aggregate_merge, reduce_merge_fan_in,
 };
 use partitioned::{
@@ -41,24 +42,50 @@ fn aggregate_source_chunk_planning_policy(
     context: &ExecutionContext,
     bounded: &BoundedPlan<'_>,
 ) -> SourceChunkPlanningPolicy {
+    apply_source_adjacent_aggregate_chunk_caps(
+        SourceChunkPlanningPolicy::for_source_task_with_mode_and_options(
+            bounded.source,
+            context.memory_control_policy(),
+            SourceTaskMemoryModel::aggregate_pipeline(bounded.has_source_adjacent_stages()),
+            context.source_chunk_planning_mode(),
+            context.source_chunk_planning_options(),
+        ),
+        SourceAdjacentAggregateChunkCapHints {
+            has_source_adjacent_stages: bounded.has_source_adjacent_stages(),
+            grouped_string_key: is_source_adjacent_grouped_aggregate(bounded)
+                && source_adjacent_grouped_aggregate_has_string_key(bounded),
+        },
+    )
+}
+
+/// Downstream-expression hints that force smaller local-parquet source chunks.
+///
+/// These caps are shared by specialized bounded aggregate planning and compiled
+/// aggregate-input stream planning so string-key grouped shapes do not re-admit
+/// whole-file throughput chunks on either path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::exec::bounded) struct SourceAdjacentAggregateChunkCapHints {
+    pub(in crate::exec::bounded) has_source_adjacent_stages: bool,
+    pub(in crate::exec::bounded) grouped_string_key: bool,
+}
+
+pub(in crate::exec::bounded) fn apply_source_adjacent_aggregate_chunk_caps(
+    mut policy: SourceChunkPlanningPolicy,
+    hints: SourceAdjacentAggregateChunkCapHints,
+) -> SourceChunkPlanningPolicy {
     let batching_policy = BoundedSourceBatchingPolicy::default();
-    let mut policy = SourceChunkPlanningPolicy::for_source_task_with_mode_and_options(
-        bounded.source,
-        context.memory_control_policy(),
-        SourceTaskMemoryModel::aggregate_pipeline(bounded.has_source_adjacent_stages()),
-        context.source_chunk_planning_mode(),
-        context.source_chunk_planning_options(),
-    );
-    if bounded.has_source_adjacent_stages() {
+    if hints.has_source_adjacent_stages {
         let target_chunk_bytes = batching_policy.source_adjacent_aggregate_target_chunk_bytes();
         policy.max_source_chunk_bytes =
             Some(policy.max_source_chunk_bytes.unwrap_or(target_chunk_bytes).min(target_chunk_bytes));
         policy.mark_downstream_cap("source_adjacent_aggregate_downstream_cap");
     }
-    if is_source_adjacent_grouped_aggregate(bounded) && source_adjacent_grouped_aggregate_has_string_key(bounded) {
+    if hints.grouped_string_key {
         let target_chunk_bytes = batching_policy.source_adjacent_grouped_aggregate_target_chunk_bytes();
         policy.max_source_chunk_bytes =
             Some(policy.max_source_chunk_bytes.unwrap_or(target_chunk_bytes).min(target_chunk_bytes));
+        // Keep string-key grouped aggregates from widening back to whole-file
+        // LocalParquetThroughput morsels while connection quality is unknown.
         policy.max_row_groups_per_chunk = policy
             .max_row_groups_per_chunk
             .min(batching_policy.source_adjacent_grouped_aggregate_max_operator_row_groups());
@@ -131,63 +158,71 @@ fn should_execute_partitioned_source_adjacent_grouped_aggregate(
     bounded: &BoundedPlan<'_>,
     chunk_plan: &SourceChunkPlan,
 ) -> bool {
+    // Admission uses the max live incremental working set, not whole-input retention
+    // or a fixed chunk/row-group count. Source-adjacent group-key partition is the
+    // high-cardinality path for multi-chunk string grouped aggregates.
     bounded.has_source_adjacent_stages()
         && !bounded.aggregate.0.spec.group_exprs.is_empty()
         && !aggregate_spec_has_floating_statistical_aggregate(&bounded.aggregate.0.spec)
         && !aggregate_spec_has_median(&bounded.aggregate.0.spec)
         && bounded.aggregate.0.spec.grouping_sets.is_none()
         && chunk_plan.chunks.len() > 1
-        && source_adjacent_partitioned_chunks_are_row_group_morsels(&chunk_plan.chunks)
-        && source_adjacent_partitioned_raw_retention_fits_budget(context, &chunk_plan.chunks)
-        && source_adjacent_group_key_partitioning_fits_rows(bounded, &chunk_plan.chunks)
-        && source_adjacent_group_key_partitioning_fits_chunk_count(context, bounded, &chunk_plan.chunks)
+        && source_adjacent_partitioned_live_working_set_fits_budget(context, bounded, &chunk_plan.chunks)
 }
 
-fn source_adjacent_partitioned_chunks_are_row_group_morsels(chunks: &[SourceChunk]) -> bool {
-    chunks.iter().all(|chunk| chunk.row_group_count() <= 1)
-}
-
-fn source_adjacent_partitioned_raw_retention_fits_budget(context: &ExecutionContext, chunks: &[SourceChunk]) -> bool {
-    let MemoryControlPolicy::Bounded { device_budget_bytes, .. } = context.memory_control_policy() else {
-        return true;
-    };
-
-    let mut retained_bytes = 0u64;
-    let mut largest_chunk_bytes = 0u64;
-    for chunk in chunks {
-        let Some(chunk_bytes) = chunk.estimated_chunk_bytes.or(chunk.estimated_source_read_bytes) else {
-            return false;
-        };
-        retained_bytes = match retained_bytes.checked_add(chunk_bytes) {
-            Some(bytes) => bytes,
-            None => return false,
-        };
-        largest_chunk_bytes = largest_chunk_bytes.max(chunk_bytes);
-    }
-
-    retained_bytes.saturating_add(largest_chunk_bytes) <= device_budget_bytes
-}
-
-fn source_adjacent_group_key_partitioning_fits_rows(bounded: &BoundedPlan<'_>, chunks: &[SourceChunk]) -> bool {
-    if !source_adjacent_grouped_aggregate_has_string_key(bounded) {
-        return true;
-    }
-    chunks.iter().all(|chunk| {
-        BoundedPartitionRowPolicy::default().source_adjacent_group_key_partitioning_fits_rows(chunk.known_row_count)
-    })
-}
-
-fn source_adjacent_group_key_partitioning_fits_chunk_count(
+fn source_adjacent_partitioned_live_working_set_fits_budget(
     context: &ExecutionContext,
     bounded: &BoundedPlan<'_>,
     chunks: &[SourceChunk],
 ) -> bool {
-    if !source_adjacent_grouped_aggregate_has_string_key(bounded)
-        || matches!(context.memory_control_policy(), MemoryControlPolicy::Unbounded)
-    {
+    let MemoryControlPolicy::Bounded { device_budget_bytes, .. } = context.memory_control_policy() else {
+        return true;
+    };
+
+    // Live set approximation (D5):
+    //   one source batch + projected/hash-partition peak + one ready partition batch
+    //   + retained partition-local partial floors across partitions.
+    let mut largest_source_batch_bytes = 0u64;
+    let mut known_chunk_bytes = 0u64;
+    let mut unknown_chunk_bytes = false;
+    for chunk in chunks {
+        match chunk.estimated_chunk_bytes.or(chunk.estimated_source_read_bytes) {
+            Some(chunk_bytes) => {
+                largest_source_batch_bytes = largest_source_batch_bytes.max(chunk_bytes);
+                known_chunk_bytes = known_chunk_bytes.saturating_add(chunk_bytes);
+            },
+            None => unknown_chunk_bytes = true,
+        }
+    }
+
+    // String-key multi-chunk aggregates may stream under group-key partitioning even
+    // when some chunk sizes are unknown; non-string shapes remain capability-first.
+    if unknown_chunk_bytes {
+        return source_adjacent_grouped_aggregate_has_string_key(bounded);
+    }
+    if largest_source_batch_bytes == 0 {
         return true;
     }
-    BoundedPartitionRowPolicy::default().source_adjacent_group_key_partitioning_fits_chunk_count(chunks.len())
+
+    let partition_count = partitioned_aggregate_partition_count(context, known_chunk_bytes.max(1)).max(
+        BoundedPartitionRowPolicy::default().source_adjacent_partitioned_aggregate_min_partition_count(chunks.len()),
+    );
+
+    let batching = BoundedSourceBatchingPolicy::default();
+    let ready_partition_batch_bytes =
+        batching.source_adjacent_partition_batch_byte_limit_for_budget(Some(device_budget_bytes));
+    // Projected + hash-partition peak roughly tracks the live source batch size twice
+    // (input retained while output is built) before the input is released.
+    let projected_and_hash_bytes = largest_source_batch_bytes.saturating_mul(2);
+    // Floor retained partial state without assuming full raw retention.
+    let retained_partial_floor = (largest_source_batch_bytes / (partition_count as u64).max(1)).max(1);
+    let retained_partial_cap = device_budget_bytes / 4;
+    let live_working_set = largest_source_batch_bytes
+        .saturating_add(projected_and_hash_bytes)
+        .saturating_add(ready_partition_batch_bytes)
+        .saturating_add(retained_partial_floor.saturating_mul(partition_count as u64).min(retained_partial_cap));
+
+    live_working_set <= device_budget_bytes
 }
 
 fn source_adjacent_grouped_aggregate_has_string_key(bounded: &BoundedPlan<'_>) -> bool {
@@ -554,5 +589,38 @@ pub(in crate::exec::bounded::aggregate) fn release_nested_partials_reverse(
 ) {
     while let Some(partition) = partitions.pop() {
         release_partials_reverse(reservations, partition, metrics);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::SourceChunkPlanningMode;
+
+    fn throughput_like_policy() -> SourceChunkPlanningPolicy {
+        let mut policy = SourceChunkPlanningPolicy::new(Some(32 * 1024 * 1024 * 1024), 1024);
+        // Mirror LocalParquetThroughput widening without needing a real source.
+        policy.max_row_groups_per_chunk = 1024;
+        policy.mark_downstream_cap("local_parquet_throughput_admitted");
+        let _ = SourceChunkPlanningMode::LocalParquetThroughput;
+        policy
+    }
+
+    #[test]
+    fn string_key_cap_keeps_384_mib_without_forcing_single_row_group() {
+        let policy = apply_source_adjacent_aggregate_chunk_caps(
+            throughput_like_policy(),
+            SourceAdjacentAggregateChunkCapHints { has_source_adjacent_stages: true, grouped_string_key: true },
+        );
+
+        assert_eq!(
+            policy.max_row_groups_per_chunk,
+            BoundedSourceBatchingPolicy::DEFAULT_SOURCE_ADJACENT_GROUPED_AGGREGATE_MAX_OPERATOR_ROW_GROUPS
+        );
+        assert_eq!(
+            policy.max_source_chunk_bytes,
+            Some(BoundedSourceBatchingPolicy::DEFAULT_SOURCE_ADJACENT_GROUPED_AGGREGATE_TARGET_CHUNK_BYTES)
+        );
+        assert_eq!(policy.source_chunk_planning_reason(), "source_adjacent_grouped_aggregate_downstream_cap");
     }
 }

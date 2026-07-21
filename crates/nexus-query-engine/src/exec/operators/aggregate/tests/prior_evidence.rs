@@ -122,7 +122,11 @@ fn exact_node_partial_cardinality_prior_with_mismatched_structural_key_is_ignore
     assert_eq!(decision.facts.get("prior_cardinality_evidence_scope").map(String::as_str), Some("absent"));
     assert_eq!(
         decision.facts.get("prepared_sort_groupby_cost_model_status").map(String::as_str),
-        Some("selected_libcudf_runtime_probe")
+        Some("rejected_by_cost_model")
+    );
+    assert_eq!(
+        decision.facts.get("exact_cardinality_probe_status").map(String::as_str),
+        Some("disabled_non_reusable_probe")
     );
 }
 

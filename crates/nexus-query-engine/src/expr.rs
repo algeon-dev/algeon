@@ -426,6 +426,52 @@ impl Expr {
     pub fn alias(self, alias: impl Into<String>) -> Self {
         Self::Alias { expr: Box::new(self), alias: alias.into() }
     }
+
+    /// Returns true when this expression tree contains a `REGEXP_REPLACE`.
+    ///
+    /// Used by capability labeling and runtime preflight paths that size
+    /// replace-with-backrefs via the owning cudf-rs output-size contract.
+    pub fn contains_regexp_replace(&self) -> bool {
+        match self {
+            Self::RegexpReplace { .. } => true,
+            Self::Not(expr)
+            | Self::IsNull(expr)
+            | Self::IsNotNull(expr)
+            | Self::Cast { expr, .. }
+            | Self::TryCast { expr, .. }
+            | Self::Like { expr, .. }
+            | Self::Substring { expr, .. }
+            | Self::Lower(expr)
+            | Self::Upper(expr)
+            | Self::Trim { expr, .. }
+            | Self::LTrim { expr, .. }
+            | Self::RTrim { expr, .. }
+            | Self::StringContains { expr, .. }
+            | Self::StartsWith { expr, .. }
+            | Self::EndsWith { expr, .. }
+            | Self::StringLength { expr, .. }
+            | Self::Abs(expr)
+            | Self::Sqrt { expr, .. }
+            | Self::Round { expr, .. }
+            | Self::InList { expr, .. }
+            | Self::Extract { expr, .. }
+            | Self::DateTrunc { expr, .. }
+            | Self::Alias { expr, .. } => expr.contains_regexp_replace(),
+            Self::Binary { left, right, .. }
+            | Self::IsDistinctFrom { left, right }
+            | Self::IsNotDistinctFrom { left, right } => {
+                left.contains_regexp_replace() || right.contains_regexp_replace()
+            },
+            Self::Concat(exprs) => exprs.iter().any(Self::contains_regexp_replace),
+            Self::Case { branches, else_expr } => {
+                branches
+                    .iter()
+                    .any(|branch| branch.when.contains_regexp_replace() || branch.then.contains_regexp_replace())
+                    || else_expr.contains_regexp_replace()
+            },
+            Self::Column(_) | Self::Literal(_) => false,
+        }
+    }
 }
 
 impl Not for Expr {

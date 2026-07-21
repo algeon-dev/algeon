@@ -147,24 +147,15 @@ impl CompiledGpuTaskExecutor<'_> {
                                 stream.with_projection_stage(node_id, projection.clone()),
                             ))
                         },
-                        CompiledGpuResourcePayload::ResidentFrame { frame, .. } => execute_bounded_generic_unary(
+                        CompiledGpuResourcePayload::ResidentFrame { frame, .. } => execute_bounded_generic_projection(
                             self.context,
                             node_id,
                             "compiled_projection",
                             "compiled_projection_output",
+                            projection,
                             *frame,
                             &mut self.reservations,
                             self.metrics,
-                            true,
-                            |context, input, token, metrics| {
-                                crate::exec::operators::execute_projection_with_budget(
-                                    context,
-                                    projection,
-                                    input,
-                                    token.expect("budget token is created for compiled bounded projection stages"),
-                                    metrics,
-                                )
-                            },
                         )
                         .map(CompiledGpuResource::new),
                         CompiledGpuResourcePayload::ResidentFrameStream(stream) => {
@@ -201,25 +192,16 @@ impl CompiledGpuTaskExecutor<'_> {
                     } else {
                         self.apply_ready_dynamic_filters_to_shared_source_resource(state, input)?;
                         let input_payload = state.resource_payload(input)?;
-                        execute_bounded_generic_unary_from_frame(
+                        execute_bounded_generic_projection_from_frame(
                             self.context,
                             node_id,
                             "compiled_projection",
                             "compiled_projection_output",
+                            projection,
                             input_payload.clone_frame(),
                             input_payload.reservation_bytes(),
                             &mut self.reservations,
                             self.metrics,
-                            true,
-                            |context, input, token, metrics| {
-                                crate::exec::operators::execute_projection_with_budget(
-                                    context,
-                                    projection,
-                                    input,
-                                    token.expect("budget token is created for compiled bounded projection stages"),
-                                    metrics,
-                                )
-                            },
                         )
                         .map(CompiledGpuResource::new)
                     }
