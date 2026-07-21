@@ -59,6 +59,9 @@ const STREAM_COMPACTION_CPP: &str =
     include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/native/src/stream_compaction.cpp"));
 const STRINGS_H: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/native/include/strings.h"));
 const STRINGS_CPP: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/native/src/strings.cpp"));
+const RMM_CPP: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/native/src/rmm.cpp"));
+const RESERVATION_ACCOUNTING_HPP: &str =
+    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/native/src/reservation_accounting.hpp"));
 const TABLE_H: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/native/include/table.h"));
 const TABLE_CPP: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/native/src/table.cpp"));
 const UNARY_H: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/native/include/unary.h"));
@@ -446,7 +449,19 @@ fn strings_ex_entries_use_required_exec_options() {
         ("cudf_strings_starts_with_ex", "cudf_status_t cudf_strings_ends_with_ex"),
         ("cudf_strings_ends_with_ex", "cudf_status_t cudf_strings_like_ex"),
         ("cudf_strings_like_ex", "cudf_status_t cudf_strings_replace_with_backrefs_ex"),
-        ("cudf_strings_replace_with_backrefs_ex", "cudf_status_t cudf_strings_slice_ex"),
+        ("cudf_strings_replace_with_backrefs_ex", "cudf_status_t cudf_strings_replace_with_backrefs_output_size_ex"),
+        (
+            "cudf_strings_replace_with_backrefs_output_size_ex",
+            "cudf_status_t cudf_strings_prepare_replace_with_backrefs_ex",
+        ),
+        (
+            "cudf_strings_prepare_replace_with_backrefs_ex",
+            "cudf_status_t cudf_strings_prepared_replace_with_backrefs_output_size_facts",
+        ),
+        (
+            "cudf_strings_execute_replace_with_backrefs_ex",
+            "cudf_status_t cudf_strings_prepared_replace_with_backrefs_destroy",
+        ),
         ("cudf_strings_slice_ex", "cudf_status_t cudf_strings_concatenate_ex"),
         ("cudf_strings_concatenate_ex", "cudf_status_t cudf_strings_strip_ex"),
         ("cudf_strings_strip_ex", "cudf_status_t cudf_strings_count_characters_ex"),
@@ -465,6 +480,28 @@ fn strings_ex_entries_use_required_exec_options() {
         );
         assert!(!body.contains("cudf_make_exec_context"), "{function} must not seed execution from ambient defaults");
     }
+}
+
+#[test]
+fn replace_backrefs_reservation_preflight_is_measured_at_the_admission_boundary() {
+    let body = function_region(
+        STRINGS_CPP,
+        "cudf_status_t cudf_strings_replace_with_backrefs_output_size_ex",
+        "cudf_status_t cudf_strings_prepare_replace_with_backrefs_ex",
+    );
+    assert!(contains_normalized(
+        body,
+        "cudf::rust::reservation::statistics_resource_adaptor measurement{exec->mr_raw};"
+    ));
+    assert!(contains_normalized(
+        body,
+        "std::max(measurement.peak_aligned_bytes(), checked_add_reservation_bytes(measurement.current_aligned_bytes(), facts.execute_reservation_required_bytes))"
+    ));
+    assert!(contains_normalized(RESERVATION_ACCOUNTING_HPP, "return rmm::align_up(bytes, alignment);"));
+    assert!(
+        RMM_CPP.contains("cudf::rust::reservation::allocation_charge(bytes, alignment)"),
+        "reservation admission and preflight observation must share one per-allocation charge helper"
+    );
 }
 
 #[test]
@@ -1710,7 +1747,8 @@ fn scalar_duplicate_non_ex_production_apis_are_removed() {
 fn function_region<'a>(source: &'a str, start_marker: &str, end_marker: &str) -> &'a str {
     let start = source.find(start_marker).expect("start marker must exist");
     let tail = &source[start..];
-    let end = tail.find(end_marker).expect("end marker must exist");
+    let end =
+        tail.find(end_marker).unwrap_or_else(|| panic!("end marker must exist after {start_marker}: {end_marker}"));
     &tail[..end]
 }
 

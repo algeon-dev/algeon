@@ -3,8 +3,10 @@
 use super::{context::default_execution_context, owned::Series};
 use crate::{
     core::{error::Result, types::DataType},
-    ops::strings::{self, StringSliceOptions, StripSide},
-    runtime::ExecutionOverrides,
+    ops::strings::{
+        self, ReplaceWithBackrefsOutputSizePreflight, SeriesPreparedReplaceWithBackrefs, StringSliceOptions, StripSide,
+    },
+    runtime::{BudgetedExecutionOutcome, ExecutionBudgetToken, ExecutionOverrides},
 };
 
 impl Series {
@@ -274,6 +276,63 @@ impl SeriesStringNamespace<'_> {
     /// Byte count per string using the explicit execution-context override.
     pub fn byte_count_in(&self, ctx: &ExecutionOverrides<'_>) -> Result<Series> {
         self.0.string_unary_with_context(strings::count_bytes_impl, ctx, "series::str::byte_count_in")
+    }
+
+    // -- Regex replace with back-references --------------------------------
+
+    /// Exact retained-output and temporary-workspace preflight for replace-with-backrefs.
+    ///
+    /// This is the Series surface for
+    /// [`strings::replace_with_backrefs_output_size`](crate::ops::strings::replace_with_backrefs_output_size).
+    pub fn replace_with_backrefs_output_size(
+        &self,
+        pattern: &str,
+        replacement: &str,
+    ) -> Result<ReplaceWithBackrefsOutputSizePreflight> {
+        self.0.replace_with_backrefs_output_size_in_context(
+            pattern,
+            replacement,
+            &default_execution_context(),
+            "series::str::replace_with_backrefs_output_size",
+        )
+    }
+
+    /// Replace-with-backrefs output-size preflight using an explicit execution context.
+    pub fn replace_with_backrefs_output_size_in(
+        &self,
+        pattern: &str,
+        replacement: &str,
+        ctx: &ExecutionOverrides<'_>,
+    ) -> Result<ReplaceWithBackrefsOutputSizePreflight> {
+        self.0.replace_with_backrefs_output_size_in_context(
+            pattern,
+            replacement,
+            ctx,
+            "series::str::replace_with_backrefs_output_size_in",
+        )
+    }
+
+    /// Prepare reusable replace-with-backrefs state after one size pass.
+    ///
+    /// The returned handle retains this series and the completed size-pass state.
+    /// Prefer [`prepare_replace_with_backrefs_with_budget`](Self::prepare_replace_with_backrefs_with_budget)
+    /// under bounded execution so retained state is charged to the operator token.
+    pub fn prepare_replace_with_backrefs(
+        &self,
+        pattern: &str,
+        replacement: &str,
+    ) -> Result<SeriesPreparedReplaceWithBackrefs> {
+        strings::prepare_replace_with_backrefs(self.0, pattern, replacement)
+    }
+
+    /// Prepare reusable replace-with-backrefs state under a hard budget token.
+    pub fn prepare_replace_with_backrefs_with_budget(
+        &self,
+        pattern: &str,
+        replacement: &str,
+        token: &ExecutionBudgetToken,
+    ) -> Result<BudgetedExecutionOutcome<SeriesPreparedReplaceWithBackrefs>> {
+        strings::prepare_replace_with_backrefs_with_budget(self.0, pattern, replacement, token)
     }
 
     // -- Numeric conversion (TRY_CAST string -> integer) -------------------

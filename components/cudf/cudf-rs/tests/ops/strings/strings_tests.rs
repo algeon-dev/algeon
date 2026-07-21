@@ -346,6 +346,186 @@ fn test_str_len_display_omits_input_name() {
 }
 
 // ===========================================================================
+// replace_with_backrefs size preflight
+// ===========================================================================
+
+#[test]
+fn test_replace_with_backrefs_output_size_matches_executed_column() {
+    use cudf::{DataFrame, REPLACE_WITH_BACKREFS_OUTPUT_SIZE_PREFLIGHT_CONTRACT, ops::expr::col};
+
+    assert_eq!(REPLACE_WITH_BACKREFS_OUTPUT_SIZE_PREFLIGHT_CONTRACT, "regexp_replace_output_size_preflight");
+
+    let s = crate::common::series("s", &["https://www.example.com/path", "http://other.test/x", "no-match"]).unwrap();
+    let pattern = r"^https?://(?:www\.)?([^/]+)/.*$";
+    let replacement = r"\1";
+
+    let preflight = s.str().replace_with_backrefs_output_size(pattern, replacement).unwrap();
+    let df = DataFrame::from_series([("s", s)]).unwrap();
+    let executed = df
+        .with_columns(vec![col("s").str().replace_with_backrefs(pattern, replacement).alias("out")])
+        .unwrap()
+        .series("out")
+        .unwrap();
+    assert_eq!(preflight.retained_output_bytes(), executed.device_allocated_size_bytes().unwrap());
+    assert!(preflight.requested_bytes_upper_bound() >= preflight.retained_output_bytes());
+    assert!(preflight.required_budget_bytes() > 0);
+}
+
+// ===========================================================================
+// prepared replace_with_backrefs prepare / execute
+// ===========================================================================
+
+#[test]
+fn test_prepared_replace_with_backrefs_semantics_and_single_size_pass() {
+    use cudf::ops::strings::{replace_with_backrefs_reset_size_pass_count, replace_with_backrefs_size_pass_count};
+
+    let s = crate::common::nullable_series(
+        "s",
+        &["https://www.example.com/path", "http://other.test/x", "no-match", "https://expand.example/long", ""],
+        &[true, true, true, true, false],
+    )
+    .unwrap();
+    let pattern = r"^https?://(?:www\.)?([^/]+)/.*$";
+    let replacement = r"\1";
+
+    // Isolate the process-local counter for this serialized assertion. The
+    // authoritative contract is the handle-local fact; the global counter is a
+    // diagnostic that other threads may also touch under othaer tests.
+    replace_with_backrefs_reset_size_pass_count().unwrap();
+    let prepared = s.str().prepare_replace_with_backrefs(pattern, replacement).unwrap();
+    let facts = prepared.output_size_facts();
+    // Handle-local fact: prepare records exactly one size pass for this handle.
+    assert_eq!(facts.size_pass_count(), 1);
+    assert!(facts.requested_execute_bytes_upper_bound() >= facts.retained_output_bytes());
+    assert!(facts.required_budget_bytes() > 0);
+    assert!(facts.retained_state_bytes() > 0 || s.is_empty());
+    let after_prepare = replace_with_backrefs_size_pass_count().unwrap();
+    assert!(after_prepare >= 1, "prepare must contribute at least_one global size-pass count, got {after_prepare}");
+
+    // Execute must not bump the handle-local size_pass_count; the write path is
+    // documented not to increment the global counter either. Re-read the local
+    // fact after execute via retained_output equality instead of a racy global
+    // delta, which is unsafe under concurrent test threads.
+    let out = prepared.execute().unwrap();
+    assert_eq!(facts.size_pass_count(), 1, "execute must leave handle size_pass_count at 1");
+    assert_eq!(facts.retained_output_bytes(), out.device_allocated_size_bytes().unwrap());
+
+    let vals = out.to_optional_strings().unwrap();
+    assert_eq!(
+        vals,
+        vec![
+            Some("example.com".to_string()),
+            Some("other.test".to_string()),
+            Some("no-match".to_string()),
+            Some("expand.example".to_string()),
+            None,
+        ]
+    );
+}
+
+#[test]
+fn test_prepared_replace_with_backrefs_empty_and_expanding_capture() {
+    let empty = crate::common::series::<&str>("s", &[]).unwrap();
+    let prepared = empty.str().prepare_replace_with_backrefs(r"(a)", r"x\1y").unwrap();
+    let facts = prepared.output_size_facts();
+    assert_eq!(facts.retained_output_bytes(), 0);
+    let out = prepared.execute().unwrap();
+    assert!(out.is_empty());
+
+    let s = crate::common::series("s", &["a1", "zz", "a99"]).unwrap();
+    let prepared = s.str().prepare_replace_with_backrefs(r"a(\d+)", r"X${1}Y").unwrap();
+    let out = prepared.execute().unwrap();
+    assert_eq!(out.to_strings_strict().unwrap(), vec!["X1Y", "zz", "X99Y"]);
+}
+
+#[test]
+fn test_replace_with_backrefs_preflight_exact_budget_covers_prepare_and_execute() {
+    use cudf::{ExecutionBudgetRequest, Runtime};
+
+    let runtime = Runtime::new().unwrap();
+    let s = runtime.series(&["abc-123", "def-456"]).unwrap();
+    let pattern = r"([a-z]+)-(\d+)";
+    let replacement = r"\2/\1";
+    let preflight = s.str().replace_with_backrefs_output_size(pattern, replacement).unwrap();
+    assert_eq!(preflight.retained_output_bytes(), 26);
+    assert!(preflight.requested_bytes_upper_bound() >= preflight.retained_output_bytes());
+    assert!(preflight.required_budget_bytes() > 0);
+
+    {
+        let token = runtime
+            .execution_budget_token(
+                ExecutionBudgetRequest::new(preflight.required_budget_bytes())
+                    .with_boundary("replace_backrefs_preflight_exact"),
+            )
+            .unwrap();
+        let (prepared, _) =
+            s.str().prepare_replace_with_backrefs_with_budget(pattern, replacement, &token).unwrap().into_parts();
+        let (out, _) = prepared.execute_with_budget(&token).unwrap().into_parts();
+        assert_eq!(out.to_strings_strict().unwrap(), vec!["123/abc", "456/def"]);
+    }
+
+    // The aligned bound is exact for this focused case: one byte less must
+    // fail closed in prepare or execute.
+    let token = runtime
+        .execution_budget_token(
+            ExecutionBudgetRequest::new(preflight.required_budget_bytes() - 1)
+                .with_boundary("replace_backrefs_preflight_minus_one"),
+        )
+        .unwrap();
+    match s.str().prepare_replace_with_backrefs_with_budget(pattern, replacement, &token) {
+        Err(_) => {},
+        Ok(prepared) => {
+            let (prepared, _) = prepared.into_parts();
+            assert!(prepared.execute_with_budget(&token).is_err());
+        },
+    }
+}
+
+#[test]
+fn test_prepared_replace_with_backrefs_exact_execute_budget_and_drop_balance() {
+    use cudf::{ExecutionBudgetRequest, Runtime};
+
+    let runtime = Runtime::new().unwrap();
+    let s = runtime.series(&["abc-123", "def-456"]).unwrap();
+    let pattern = r"([a-z]+)-(\d+)";
+    let replacement = r"\2/\1";
+
+    // Unused prepared handle must drop cleanly (no double-free / leak panic path).
+    {
+        let prepared = s.str().prepare_replace_with_backrefs(pattern, replacement).unwrap();
+        assert!(prepared.output_size_facts().required_budget_bytes() > 0);
+        drop(prepared);
+    }
+
+    let prepared = s.str().prepare_replace_with_backrefs(pattern, replacement).unwrap();
+    let facts = prepared.output_size_facts();
+    {
+        let token = runtime
+            .execution_budget_token(
+                ExecutionBudgetRequest::new(facts.required_budget_bytes()).with_boundary("prepared_replace_execute"),
+            )
+            .unwrap();
+        let (out, report) = prepared.execute_with_budget(&token).unwrap().into_parts();
+        assert_eq!(out.to_strings_strict().unwrap(), vec!["123/abc", "456/def"]);
+        assert_eq!(report.output_bytes(), Some(out.device_allocated_size_bytes().unwrap()));
+        assert_eq!(report.retained_bytes(), Some(facts.retained_state_bytes()));
+    }
+
+    // One byte below the prepared execute bound must fail closed without
+    // leaving a leaked handle.
+    // The previous token must be dropped first because stream reservations are exclusive.
+    let prepared = s.str().prepare_replace_with_backrefs(pattern, replacement).unwrap();
+    let required = prepared.output_size_facts().required_budget_bytes();
+    let tiny = runtime
+        .execution_budget_token(
+            ExecutionBudgetRequest::new(required - 1).with_boundary("prepared_replace_execute_minus_one"),
+        )
+        .unwrap();
+    let err = prepared.execute_with_budget(&tiny).unwrap_err();
+    assert_eq!(err.operation(), "series::prepared_replace_with_backrefs::execute_with_budget");
+}
+
+// ===========================================================================
 // try_to_integers (SQL TRY_CAST string -> integer)
 // ===========================================================================
 

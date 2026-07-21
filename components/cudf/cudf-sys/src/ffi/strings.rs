@@ -1,8 +1,8 @@
 use std::os::raw::c_char;
 
 use crate::{
-    cudf_column_handle, cudf_column_view_handle, cudf_data_type_handle, cudf_exec_options_t, cudf_scalar_handle,
-    cudf_status_t, cudf_strip_side_t,
+    cudf_column_handle, cudf_column_view_handle, cudf_data_type_handle, cudf_exec_options_t,
+    cudf_prepared_replace_with_backrefs_handle, cudf_scalar_handle, cudf_status_t, cudf_strip_side_t,
 };
 
 unsafe extern "C" {
@@ -87,6 +87,64 @@ unsafe extern "C" {
         out: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
+
+    /// Exact retained-output / temporary-workspace preflight for
+    /// `cudf_strings_replace_with_backrefs_ex`.
+    ///
+    /// The selected stream is synchronized before return on success so borrowed
+    /// `pattern` and `replacement` host memory is no longer in use.
+    pub fn cudf_strings_replace_with_backrefs_output_size_ex(
+        input: cudf_column_view_handle,
+        pattern: *const c_char,
+        pattern_len: i32,
+        replacement: *const c_char,
+        replacement_len: i32,
+        retained_output_bytes: *mut usize,
+        temporary_workspace_bytes: *mut usize,
+        reservation_required_bytes: *mut usize,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
+    /// Opaque prepared replace-with-backrefs handle.
+    /// Prepare reusable replace-with-backrefs state after one size pass.
+    pub fn cudf_strings_prepare_replace_with_backrefs_ex(
+        input: cudf_column_view_handle,
+        pattern: *const c_char,
+        pattern_len: i32,
+        replacement: *const c_char,
+        replacement_len: i32,
+        out: *mut cudf_prepared_replace_with_backrefs_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
+    /// Read exact output-size / retained-state facts from a prepared handle.
+    pub fn cudf_strings_prepared_replace_with_backrefs_output_size_facts(
+        handle: cudf_prepared_replace_with_backrefs_handle,
+        retained_output_bytes: *mut usize,
+        retained_state_bytes: *mut usize,
+        peak_execute_workspace_bytes: *mut usize,
+        execute_reservation_required_bytes: *mut usize,
+        size_pass_count: *mut u64,
+    ) -> cudf_status_t;
+
+    /// Consume prepared replace state and run only the write pass.
+    pub fn cudf_strings_execute_replace_with_backrefs_ex(
+        input: cudf_column_view_handle,
+        handle: cudf_prepared_replace_with_backrefs_handle,
+        out: *mut cudf_column_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
+    /// Destroy an unused prepared replace handle.
+    pub fn cudf_strings_prepared_replace_with_backrefs_destroy(
+        handle: cudf_prepared_replace_with_backrefs_handle,
+    ) -> cudf_status_t;
+
+    /// Process-local number of replace-with-backrefs size-kernel launches.
+    pub fn cudf_strings_replace_with_backrefs_size_pass_count(out: *mut u64) -> cudf_status_t;
+
+    /// Reset the process-local size-pass counter used by tests.
+    pub fn cudf_strings_replace_with_backrefs_reset_size_pass_count() -> cudf_status_t;
 
     /// Slice each string with explicit execution context.
     /// `options` must name an explicit valid device and non-NULL stream/MR.

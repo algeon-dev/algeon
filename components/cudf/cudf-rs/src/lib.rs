@@ -272,7 +272,10 @@ pub use ops::{
     replace::FillPolicy,
     sorting::SortOptions,
     stream_compaction::DuplicateKeepOption,
-    strings::{StringSliceOptions, StripSide},
+    strings::{
+        REPLACE_WITH_BACKREFS_OUTPUT_SIZE_PREFLIGHT_CONTRACT, ReplaceWithBackrefsOutputSizePreflight,
+        ReplaceWithBackrefsPreparedOutputSizeFacts, SeriesPreparedReplaceWithBackrefs, StringSliceOptions, StripSide,
+    },
 };
 pub use runtime::{
     BoundaryKind, BoundaryObservation, BoundaryObserver, BudgetedExecutionOutcome, DeviceId,

@@ -935,6 +935,19 @@ impl Series {
         self.string_unary_in_context(op, ctx, operation)
     }
 
+    pub(super) fn replace_with_backrefs_output_size_in_context(
+        &self,
+        pattern: &str,
+        replacement: &str,
+        ctx: &ExecutionOverrides<'_>,
+        operation: &'static str,
+    ) -> Result<strings::ReplaceWithBackrefsOutputSizePreflight> {
+        let (output_domain, _consumer_fence) = self.resolve_context_output_domain(ctx, operation)?;
+        let cv = self.column.view()?;
+        let exec_options = output_domain.enter_execution()?;
+        strings::replace_with_backrefs_output_size_impl(&cv, pattern, replacement, exec_options.options(), operation)
+    }
+
     pub(super) fn datetime_component_with_context(
         &self,
         component: DatetimeComponent,

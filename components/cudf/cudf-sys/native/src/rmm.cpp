@@ -2,6 +2,7 @@
 #include "handle_access.hpp"
 #include "memory_resource.h"
 #include "memory_resource_compat.hpp"
+#include "reservation_accounting.hpp"
 #include "shim_common.h"
 
 #include <cudf/utilities/memory_resource.hpp>
@@ -352,7 +353,7 @@ class budget_tracking_resource_adaptor final : public rmm::mr::device_memory_res
 
   void* do_allocate(std::size_t bytes, rmm::cuda_stream_view stream, std::size_t alignment) override
   {
-    auto const aligned_bytes = rmm::align_up(bytes, alignment);
+    auto const aligned_bytes = cudf::rust::reservation::allocation_charge(bytes, alignment);
     auto old_aligned         = current_aligned_bytes_.load(std::memory_order_relaxed);
     std::size_t new_aligned  = 0;
     while (true) {
@@ -394,7 +395,7 @@ class budget_tracking_resource_adaptor final : public rmm::mr::device_memory_res
                      rmm::cuda_stream_view stream,
                      std::size_t alignment) noexcept override
   {
-    auto const aligned_bytes = rmm::align_up(bytes, alignment);
+    auto const aligned_bytes = cudf::rust::reservation::allocation_charge(bytes, alignment);
     upstream_.deallocate(stream, ptr, bytes, alignment);
     current_aligned_bytes_ -= aligned_bytes;
     current_bytes_ -= bytes;
@@ -668,7 +669,7 @@ class query_domain_resource final : public rmm::mr::device_memory_resource {
                       bool require_attached = true)
   {
     if (bytes == 0) { return view_.allocate(stream, bytes, alignment); }
-    auto const aligned_bytes = rmm::align_up(bytes, alignment);
+    auto const aligned_bytes = cudf::rust::reservation::allocation_charge(bytes, alignment);
     std::size_t member_reserved_total = 0;
     if (member != nullptr && require_attached &&
         !member->attached.load(std::memory_order_acquire)) {
@@ -752,7 +753,7 @@ class query_domain_resource final : public rmm::mr::device_memory_resource {
                        std::size_t bytes,
                        std::size_t alignment) noexcept
   {
-    auto const aligned_bytes = rmm::align_up(bytes, alignment);
+    auto const aligned_bytes = cudf::rust::reservation::allocation_charge(bytes, alignment);
     view_.deallocate(stream, ptr, bytes, alignment);
     current_aligned_bytes_.fetch_sub(aligned_bytes);
     current_bytes_.fetch_sub(bytes);
@@ -1638,7 +1639,7 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
       }
     }
 
-    auto const aligned_bytes = rmm::align_up(bytes, alignment);
+    auto const aligned_bytes = cudf::rust::reservation::allocation_charge(bytes, alignment);
     std::shared_ptr<reservation_state> reservation;
     std::shared_ptr<reservation_arena_state> arena;
     {
