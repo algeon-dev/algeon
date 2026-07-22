@@ -1188,6 +1188,15 @@ struct RetirementStreams {
 }
 
 impl RetirementStreams {
+    /// Create a dedicated registry for one short-lived resource lineage. It
+    /// owns `stream` until that resource has fenced and released it during
+    /// teardown, and is intentionally not shared with the upstream resource.
+    fn for_scoped_resource(stream: &CudaStream) -> Arc<Self> {
+        let streams = Arc::new(Self::default());
+        streams.register(stream);
+        streams
+    }
+
     fn register(&self, stream: &CudaStream) {
         let mut streams = match self.streams.lock() {
             Ok(streams) => streams,
@@ -1208,6 +1217,14 @@ impl RetirementStreams {
             stream.synchronize_for_teardown("DeviceMemoryResourceHandle::drop")?;
         }
         Ok(())
+    }
+
+    #[cfg(test)]
+    fn registered_stream_count(&self) -> usize {
+        match self.streams.lock() {
+            Ok(streams) => streams.len(),
+            Err(poisoned) => poisoned.into_inner().len(),
+        }
     }
 }
 
@@ -2795,6 +2812,51 @@ impl DeviceMemoryResource {
     /// `allocation_limit_bytes`, and exposes requested/aligned live-byte
     /// counters through [`DeviceMemoryResource::budget_tracking_usage`].
     pub fn budget_tracking_limit(&self, allocation_limit_bytes: usize) -> Result<Self> {
+        self.create_budget_tracking_limit(
+            allocation_limit_bytes,
+            self.handle.retirement_streams.clone(),
+            "memory::device_memory_resource::budget_tracking_limit",
+        )
+    }
+
+    /// Create one child budget tracker with a private retirement registry for
+    /// `stream`.
+    ///
+    /// Unlike [`Self::budget_tracking_limit`], this child does not inherit the
+    /// upstream allocator's retirement-stream registry. Its final handle drop
+    /// fences and releases only `stream` before the child adaptor is destroyed.
+    /// This is for retained per-operation allocation scopes whose runtime owns
+    /// exactly one stream; callers must keep the returned resource alive until
+    /// that runtime and every native owner using it have been destroyed.
+    pub(crate) fn budget_tracking_limit_for_scope(
+        &self,
+        allocation_limit_bytes: usize,
+        stream: &CudaStream,
+    ) -> Result<Self> {
+        if stream.device() != self.device() {
+            return Err(error::Error::new_with(
+                error::ErrorCode::RuntimeBindingMismatch,
+                "memory::device_memory_resource::budget_tracking_limit_for_scope",
+                "scoped budget tracker requires its stream and upstream resource to share one CUDA device",
+            )
+            .with_fact(error::FACT_LEFT_DEVICE, error::DeviceIdFact(stream.device().ordinal_raw()))
+            .with_fact(error::FACT_RIGHT_DEVICE, error::DeviceIdFact(self.device().ordinal_raw()))
+            .with_detail("resource", "stream_and_upstream_memory_resource")
+            .with_detail("reason", "cross_device_scoped_budget_tracker"));
+        }
+        self.create_budget_tracking_limit(
+            allocation_limit_bytes,
+            Some(RetirementStreams::for_scoped_resource(stream)),
+            "memory::device_memory_resource::budget_tracking_limit_for_scope",
+        )
+    }
+
+    fn create_budget_tracking_limit(
+        &self,
+        allocation_limit_bytes: usize,
+        retirement_streams: Option<Arc<RetirementStreams>>,
+        operation: &'static str,
+    ) -> Result<Self> {
         let _guard = DeviceGuard::new(self.device())?;
         let mut handle = ptr::null_mut();
         // SAFETY: handle is initialized to null and set by the C shim on success.
@@ -2806,7 +2868,7 @@ impl DeviceMemoryResource {
                     &mut handle,
                 )
             },
-            "memory::device_memory_resource::budget_tracking_limit",
+            operation,
             [
                 ("allocation_limit_bytes", allocation_limit_bytes.to_string()),
                 ("upstream_device", self.device().ordinal().to_string()),
@@ -2815,10 +2877,15 @@ impl DeviceMemoryResource {
         Self::from_created_handle_with_callbacks(
             handle,
             self.device(),
-            "memory::device_memory_resource::budget_tracking_limit",
-            self.handle.retirement_streams.clone(),
+            operation,
+            retirement_streams,
             self.handle._failure_callbacks.clone(),
         )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn __debug_retirement_stream_count(&self) -> usize {
+        self.handle.retirement_streams.as_ref().map_or(0, |streams| streams.registered_stream_count())
     }
 
     /// Read usage counters from a budget-tracking memory resource.

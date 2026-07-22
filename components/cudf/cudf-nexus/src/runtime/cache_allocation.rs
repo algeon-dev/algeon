@@ -1,10 +1,12 @@
 //! Device-scoped allocator domains for GPU-resident cache subdomains.
 //!
 //! A cache domain owns exactly one private CUDA async allocator plus one
-//! accounting adaptor. Cache implementations obtain independent runtime leases
-//! from that domain, so source and graph caches can use their own streams while
-//! their retained allocations share one physical allocation limit and one live
-//! byte counter.
+//! hard-cap accounting adaptor. Cache implementations obtain independent
+//! runtime leases from that domain, so source and graph caches can use their
+//! own streams while their retained allocations share one physical allocation
+//! limit and one live byte counter. Per-operation scopes add child accounting
+//! adaptors and their own stream-to-resource routes without retaining streams
+//! after their scopes have been destroyed.
 
 use std::{
     fmt,
@@ -15,7 +17,7 @@ use std::{
     },
 };
 
-use super::{DeviceId, Runtime};
+use super::{CudaStream, DeviceId, Runtime, device_guard::DeviceGuard};
 use crate::core::{
     error::{Error, ErrorCode, Result},
     memory::{DeviceMemoryResource, DeviceMemoryResourceUsage},
@@ -61,6 +63,7 @@ struct CacheAllocationDomainInner {
     id: CacheAllocationDomainId,
     device: DeviceId,
     capacity_bytes: u64,
+    capacity_bytes_usize: usize,
     memory_resource: DeviceMemoryResource,
 }
 
@@ -117,6 +120,7 @@ impl CacheAllocationDomain {
                 id: CacheAllocationDomainId::next()?,
                 device,
                 capacity_bytes,
+                capacity_bytes_usize,
                 memory_resource,
             }),
         })
@@ -160,6 +164,38 @@ impl CacheAllocationDomain {
         Ok(CacheAllocationLease { domain: self.clone(), runtime })
     }
 
+    /// Create one independently tracked allocation scope within this domain.
+    ///
+    /// The scope wraps this domain's already hard-capped memory resource in a
+    /// child budget-tracking resource. Its [`CacheAllocationScope::usage`]
+    /// therefore reports only allocations routed through that scope's runtime,
+    /// while the parent domain remains the one shared physical hard cap for
+    /// every scope and lease. A scope is not a reservation or a partition of
+    /// the cache capacity: concurrent scopes may each attempt to use the full
+    /// capacity, but their aggregate cannot exceed this domain's cap.
+    ///
+    /// Each scope owns a distinct CUDA stream so native current-resource
+    /// routing remains unique for each retained graph. The child resource's
+    /// private retirement registry owns that stream only until the scope's
+    /// runtime and graph outputs have been torn down, so insertion churn cannot
+    /// grow the domain's retirement-stream registry or fence unrelated scopes.
+    pub fn allocation_scope(&self) -> Result<CacheAllocationScope> {
+        let scope_stream = {
+            let _guard = DeviceGuard::new(self.device())?;
+            CudaStream::new()?
+        };
+        let memory_resource = self
+            .inner
+            .memory_resource
+            .budget_tracking_limit_for_scope(self.inner.capacity_bytes_usize, &scope_stream)?;
+        let runtime = Runtime::builder()
+            .with_device(self.device())
+            .with_stream(scope_stream)
+            .with_memory_resource(memory_resource.clone())
+            .build()?;
+        Ok(CacheAllocationScope { runtime, memory_resource, domain: self.clone() })
+    }
+
     /// Snapshot aggregate live-allocation accounting for every lease.
     pub fn usage(&self) -> Result<DeviceMemoryResourceUsage> {
         self.inner.memory_resource.budget_tracking_usage()
@@ -191,5 +227,93 @@ impl CacheAllocationLease {
     /// Runtime whose output allocations are charged to the shared domain.
     pub fn runtime(&self) -> &Runtime {
         &self.runtime
+    }
+}
+
+/// One independently tracked cache-allocation operation within a shared domain.
+///
+/// A scope owns a child budget-tracking memory resource and a runtime bound to
+/// it on one unique CUDA stream. The child resource's private retirement
+/// registry fences and releases that stream during scope teardown without
+/// touching sibling cache streams. Retain the scope for as long as outputs
+/// allocated by its runtime can remain live: this preserves both the exact
+/// operation accounting and the parent domain's device/provenance lifetime.
+///
+/// Fields are ordered so the child resource is destroyed before the retained
+/// parent domain. The native child also retains its upstream lifetime, but the
+/// explicit Rust ownership makes the scope's provenance and teardown ordering
+/// clear at this API boundary.
+#[derive(Debug)]
+pub struct CacheAllocationScope {
+    runtime: Runtime,
+    memory_resource: DeviceMemoryResource,
+    domain: CacheAllocationDomain,
+}
+
+impl CacheAllocationScope {
+    /// Shared physical cache allocation domain retained by this scope.
+    pub fn domain(&self) -> &CacheAllocationDomain {
+        &self.domain
+    }
+
+    /// Stable identity of the shared cache allocation domain.
+    pub fn domain_id(&self) -> CacheAllocationDomainId {
+        self.domain.id()
+    }
+
+    /// CUDA device on which this scope's runtime and allocations reside.
+    pub fn device(&self) -> DeviceId {
+        self.domain.device()
+    }
+
+    /// Child budget-tracking resource used by this scope's runtime.
+    ///
+    /// Prefer [`Self::runtime`] for cache work. This accessor is for native
+    /// consumers that require an explicit resource binding while retaining the
+    /// scope's accounting and parent-domain provenance.
+    pub fn memory_resource(&self) -> &DeviceMemoryResource {
+        &self.memory_resource
+    }
+
+    /// Runtime whose output allocations are charged to this scope.
+    pub fn runtime(&self) -> &Runtime {
+        &self.runtime
+    }
+
+    /// Snapshot allocations routed through this scope only.
+    ///
+    /// The returned limit equals the parent domain capacity, but this counter
+    /// never includes allocations from sibling scopes or ordinary runtime
+    /// leases. Use [`CacheAllocationDomain::usage`] for the aggregate domain
+    /// view.
+    pub fn usage(&self) -> Result<DeviceMemoryResourceUsage> {
+        self.memory_resource.budget_tracking_usage()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scope_retirement_registration_is_private_and_released_with_the_scope() {
+        let domain = CacheAllocationDomain::new(DeviceId::current().unwrap(), 8 * 1024 * 1024).unwrap();
+        assert_eq!(domain.memory_resource().__debug_retirement_stream_count(), 0);
+
+        for _ in 0..3 {
+            let scope = domain.allocation_scope().unwrap();
+            assert_eq!(scope.memory_resource().__debug_retirement_stream_count(), 1);
+            assert_eq!(
+                domain.memory_resource().__debug_retirement_stream_count(),
+                0,
+                "a scope stream must not become a permanent domain retirement registration"
+            );
+
+            let allocation = scope.runtime().device_buffer(1024).unwrap();
+            scope.runtime().synchronize().unwrap();
+            drop(allocation);
+            drop(scope);
+            assert_eq!(domain.memory_resource().__debug_retirement_stream_count(), 0);
+        }
     }
 }

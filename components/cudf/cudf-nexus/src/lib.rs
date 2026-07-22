@@ -284,8 +284,9 @@ pub use ops::{
 };
 pub use runtime::{
     BoundaryKind, BoundaryObservation, BoundaryObserver, BudgetedExecutionOutcome, CacheAllocationDomain,
-    CacheAllocationDomainId, CacheAllocationLease, DenseMatrixLayout, DeviceId, ExecutionBudgetEnforcement,
-    ExecutionBudgetReport, ExecutionBudgetRequest, ExecutionBudgetStatus, ExecutionBudgetToken, ExecutionOverrides,
-    ExecutionPlacement, PackedFloat32Matrix, QueryExecutionContext, Runtime, RuntimeAffinityAnchor, RuntimeAffinityId,
-    RuntimeBuilder, RuntimeLeaseAnchor, StreamDependencyOutcome, ValidatedPackedFloat32Matrix,
+    CacheAllocationDomainId, CacheAllocationLease, CacheAllocationScope, DenseMatrixLayout, DeviceId,
+    ExecutionBudgetEnforcement, ExecutionBudgetReport, ExecutionBudgetRequest, ExecutionBudgetStatus,
+    ExecutionBudgetToken, ExecutionOverrides, ExecutionPlacement, PackedFloat32Matrix, QueryExecutionContext, Runtime,
+    RuntimeAffinityAnchor, RuntimeAffinityId, RuntimeBuilder, RuntimeLeaseAnchor, StreamDependencyOutcome,
+    ValidatedPackedFloat32Matrix,
 };
