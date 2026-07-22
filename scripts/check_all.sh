@@ -23,10 +23,13 @@ Modes:
   --lane LANE                    Partial lane: all, cpu, gpu, gpu-shared,
                                  gpu-exclusive, or policy
 
-Feature selection (CLI selectors replace FEATURES):
+Feature selection (CLI selectors replace FEATURES; core default-member surface only):
   --all-features                 Enable all default-member features (default)
   --features LIST               Enable a comma-separated feature list
   --no-default-features         Disable default features; may accompany --features
+
+  Explicit full-pre-merge bench phases always use --all-features independently
+  (reported as all(fixed)) and are not controlled by the core selectors above.
 
 Execution:
   --runner RUNNER               nextest (canonical) or cargo-diagnostic
@@ -349,14 +352,18 @@ PHASE_ORDER=(
   live-inventory
   gpu-preflight
   cpu-tests
+  bench-tests
   gpu-shared-tests
   gpu-exclusive-tests
   cargo-diagnostic
   doctests
   rustdoc
+  bench-rustdoc
   clippy
+  bench-clippy
   tools-check
   examples-check
+  bench-check
 )
 declare -A PHASE_COMMAND PHASE_DURATION PHASE_STATUS PHASE_COUNTS
 declare -A PHASE_GPU_CAP PHASE_LOCK PHASE_FEATURES PHASE_LOG PHASE_EXIT
@@ -375,21 +382,29 @@ define_phase() {
   PHASE_EXIT["${id}"]=-
 }
 
-define_phase policy-selftests "8 isolated policy/orchestration scripts"
+define_phase policy-selftests "9 isolated policy/orchestration scripts"
 define_phase rustfmt "cargo +${RUSTFMT_TOOLCHAIN} fmt --all --check"
 define_phase lane-structure "test_lane_policy.py check-catalog + generated override check"
 define_phase default-members "cargo check ${FEATURE_ARGS[*]}"
 define_phase live-inventory "bash scripts/ci/check_gpu_test_lane.sh ${FEATURE_ARGS[*]}"
 define_phase gpu-preflight "cargo nextest show-config --color never -P ${GPU_NEXTEST_PROFILE} test-groups ${FEATURE_ARGS[*]}"
 define_phase cpu-tests "cargo nextest run ${FEATURE_ARGS[*]} -E 'not group(gpu) & not group(gpu-exclusive)' --no-fail-fast"
+define_phase bench-tests "cargo nextest run -p datafusion-nexus-bench --all-features -E 'not group(gpu) & not group(gpu-exclusive)' --no-fail-fast"
 define_phase gpu-shared-tests "flock ${GPU_LOCK} cargo nextest run -P ${GPU_NEXTEST_PROFILE} ${FEATURE_ARGS[*]} -E group(${GPU_NEXTEST_GROUP}) --no-fail-fast --test-threads ${gpu_threads}"
 define_phase gpu-exclusive-tests "flock ${GPU_LOCK} cargo nextest run -P ${GPU_NEXTEST_PROFILE} ${FEATURE_ARGS[*]} -E group(gpu-exclusive) --no-fail-fast --test-threads ${GPU_EXCLUSIVE_CAP}"
 define_phase cargo-diagnostic "RUST_TEST_THREADS=1 flock ${GPU_LOCK} cargo test ${FEATURE_ARGS[*]} --no-fail-fast --lib --bins --tests --examples -- --test-threads=1"
 define_phase doctests "flock ${GPU_LOCK} cargo test ${FEATURE_ARGS[*]} --doc --no-fail-fast"
 define_phase rustdoc "RUSTDOCFLAGS='${DOC_RUSTDOCFLAGS}' cargo doc ${FEATURE_ARGS[*]} --no-deps --keep-going"
+define_phase bench-rustdoc "RUSTDOCFLAGS='${DOC_RUSTDOCFLAGS}' cargo doc -p datafusion-nexus-bench --all-features --no-deps --keep-going"
 define_phase clippy "cargo clippy --all-targets ${FEATURE_ARGS[*]}"
+define_phase bench-clippy "cargo clippy -p datafusion-nexus-bench --all-targets --all-features"
 define_phase tools-check "cargo check -p datafusion-nexus-tools --all-targets --all-features"
 define_phase examples-check "cargo check -p datafusion-nexus-examples --all-targets"
+define_phase bench-check "cargo check -p datafusion-nexus-bench --all-targets --all-features"
+PHASE_FEATURES[bench-tests]='all(fixed)'
+PHASE_FEATURES[bench-rustdoc]='all(fixed)'
+PHASE_FEATURES[bench-clippy]='all(fixed)'
+PHASE_FEATURES[bench-check]='all(fixed)'
 
 phase_now_ms() {
   local value
@@ -524,6 +539,7 @@ run_isolated_policy_commands() {
     scripts/ci/tests/check_gpu_test_lane_tests.sh \
     scripts/ci/tests/check_doctest_rustdoc_tests.sh \
     scripts/ci/tests/check_gpu_scheduling_tests.sh \
+    scripts/ci/tests/check_clean_target_artifacts_tests.sh \
     scripts/ci/tests/check_pass_as_skip_policy_tests.sh; do
     echo
     echo "--> ${script}"
@@ -602,6 +618,11 @@ cpu_test_command() {
     -E 'not group(gpu) & not group(gpu-exclusive)' --no-fail-fast
 }
 
+bench_test_command() {
+  cargo nextest run -p datafusion-nexus-bench --all-features \
+    -E 'not group(gpu) & not group(gpu-exclusive)' --no-fail-fast
+}
+
 gpu_shared_test_command() {
   flock "${GPU_LOCK}" cargo nextest run -P "${GPU_NEXTEST_PROFILE}" \
     "${FEATURE_ARGS[@]}" -E "group(${GPU_NEXTEST_GROUP})" --no-fail-fast --test-threads "${gpu_threads}"
@@ -617,6 +638,14 @@ cargo_diagnostic_command() {
     "${FEATURE_ARGS[@]}" --no-fail-fast --lib --bins --tests --examples -- --test-threads=1
 }
 
+# Bench tested surface still uses pure Cargo on the cargo-diagnostic runner so
+# diagnostics remain available without nextest profile mechanics. All admitted
+# bench tests are CPU, so this does not take the GPU lock.
+bench_cargo_diagnostic_command() {
+  cargo test -p datafusion-nexus-bench --all-features \
+    --no-fail-fast --lib --tests -- --test-threads=1
+}
+
 doctest_command() {
   flock "${GPU_LOCK}" cargo test \
     "${FEATURE_ARGS[@]}" --doc --no-fail-fast
@@ -626,8 +655,13 @@ rustdoc_command() {
   RUSTDOCFLAGS="${DOC_RUSTDOCFLAGS}" cargo doc "${FEATURE_ARGS[@]}" --no-deps --keep-going
 }
 
+bench_rustdoc_command() {
+  RUSTDOCFLAGS="${DOC_RUSTDOCFLAGS}" cargo doc \
+    -p datafusion-nexus-bench --all-features --no-deps --keep-going
+}
+
 if [[ "${mode}" == full || "${lane}" == policy || "${mode}" == fast ]]; then
-  run_phase policy-selftests literal:checks=7 - - run_isolated_policy_commands || true
+  run_phase policy-selftests literal:checks=9 - - run_isolated_policy_commands || true
   run_phase rustfmt none - - cargo "+${RUSTFMT_TOOLCHAIN}" fmt --all --check || true
   if ! run_phase lane-structure literal:checks=2 - - run_lane_structure_commands; then
     lane_safe=0
@@ -675,6 +709,10 @@ if [[ "${runner}" == nextest && "${lane}" != policy ]]; then
   if [[ "${lane_safe}" -eq 1 ]]; then
     [[ "${needs_cpu}" -eq 0 ]] \
       || run_phase cpu-tests nextest - - cpu_test_command || true
+    # Full and --lane cpu keep bench CPU pins; --fast and GPU-only lanes omit them.
+    if [[ "${needs_cpu}" -eq 1 && "${mode}" != fast ]]; then
+      run_phase bench-tests nextest - - bench_test_command || true
+    fi
     [[ "${needs_shared_gpu}" -eq 0 ]] \
       || run_phase gpu-shared-tests nextest "${gpu_threads}" "${GPU_LOCK}" gpu_shared_test_command || true
     [[ "${needs_exclusive_gpu}" -eq 0 ]] \
@@ -682,6 +720,9 @@ if [[ "${runner}" == nextest && "${lane}" != policy ]]; then
   else
     [[ "${needs_cpu}" -eq 0 || "${PHASE_STATUS[cpu-tests]}" != SKIPPED ]] \
       || PHASE_STATUS[cpu-tests]='SKIPPED(blocked)'
+    if [[ "${needs_cpu}" -eq 1 && "${mode}" != fast && "${PHASE_STATUS[bench-tests]}" == SKIPPED ]]; then
+      PHASE_STATUS[bench-tests]='SKIPPED(blocked)'
+    fi
     [[ "${needs_shared_gpu}" -eq 0 || "${PHASE_STATUS[gpu-shared-tests]}" != SKIPPED ]] \
       || PHASE_STATUS[gpu-shared-tests]='SKIPPED(blocked)'
     [[ "${needs_exclusive_gpu}" -eq 0 || "${PHASE_STATUS[gpu-exclusive-tests]}" != SKIPPED ]] \
@@ -690,18 +731,25 @@ if [[ "${runner}" == nextest && "${lane}" != policy ]]; then
 elif [[ "${runner}" == cargo-diagnostic && "${lane}" == all ]]; then
   if [[ "${lane_safe}" -eq 1 ]]; then
     run_phase cargo-diagnostic cargo "${GPU_EXCLUSIVE_CAP}" "${GPU_LOCK}" cargo_diagnostic_command || true
+    # Replace the nextest bench-tests phase when the diagnostic runner is selected.
+    PHASE_COMMAND[bench-tests]="cargo test -p datafusion-nexus-bench --all-features --no-fail-fast --lib --tests -- --test-threads=1"
+    run_phase bench-tests cargo - - bench_cargo_diagnostic_command || true
   else
     PHASE_STATUS[cargo-diagnostic]='SKIPPED(blocked)'
+    PHASE_STATUS[bench-tests]='SKIPPED(blocked)'
   fi
 fi
 
 if [[ "${mode}" == full ]]; then
   run_phase doctests doctest - "${GPU_LOCK}" doctest_command || true
   run_phase rustdoc none - - rustdoc_command || true
+  run_phase bench-rustdoc none - - bench_rustdoc_command || true
   rustdoc_summary="command_status=${PHASE_EXIT[rustdoc]} warnings=denied"
   run_phase clippy none - - cargo clippy --all-targets "${FEATURE_ARGS[@]}" || true
+  run_phase bench-clippy none - - cargo clippy -p datafusion-nexus-bench --all-targets --all-features || true
   run_phase tools-check none - - cargo check -p datafusion-nexus-tools --all-targets --all-features || true
   run_phase examples-check none - - cargo check -p datafusion-nexus-examples --all-targets || true
+  run_phase bench-check none - - cargo check -p datafusion-nexus-bench --all-targets --all-features || true
 fi
 
 sanitize_phase_cell() {

@@ -73,48 +73,42 @@ use nexus_query_engine::{
     source::{SourceColumnRef, SourceNode, ZERO_COLUMN_COUNT_COLUMN},
 };
 
-#[path = "support/analytical_olap_workload.rs"]
-mod analytical_olap_workload;
-#[path = "support/tpch_fallback_workload.rs"]
-mod tpch_fallback_workload;
-#[path = "support/tpch_session.rs"]
-mod tpch_session;
+use crate::{
+    analytical_olap_workload::*, tpch_fallback_workload::tpch_fallback_pressure_workload_items,
+    tpch_session::tpch_report_session_config,
+};
 
-use analytical_olap_workload::*;
-use tpch_fallback_workload::tpch_fallback_pressure_workload_items;
-use tpch_session::tpch_report_session_config;
-
-#[path = "native_lowering_tests/analytical_olap.rs"]
+#[path = "../native_lowering_tests/analytical_olap.rs"]
 mod analytical_olap;
-#[path = "native_lowering_tests/fixtures.rs"]
+#[path = "../native_lowering_tests/fixtures.rs"]
 mod fixtures;
-#[path = "native_lowering_tests/full_gpu_gap_analysis.rs"]
+#[path = "../native_lowering_tests/full_gpu_gap_analysis.rs"]
 mod full_gpu_gap_analysis;
-#[path = "native_lowering_tests/join_plan_builders.rs"]
+#[path = "../native_lowering_tests/join_plan_builders.rs"]
 mod join_plan_builders;
-#[path = "native_lowering_tests/join_shapes.rs"]
+#[path = "../native_lowering_tests/join_shapes.rs"]
 mod join_shapes;
-#[path = "native_lowering_tests/semijoin_reduction.rs"]
+#[path = "../native_lowering_tests/semijoin_reduction.rs"]
 mod semijoin_reduction;
-#[path = "native_lowering_tests/source_contracts.rs"]
+#[path = "../native_lowering_tests/source_contracts.rs"]
 mod source_contracts;
-#[path = "native_lowering_tests/source_fixtures.rs"]
+#[path = "../native_lowering_tests/source_fixtures.rs"]
 mod source_fixtures;
-#[path = "native_lowering_tests/sql.rs"]
+#[path = "../native_lowering_tests/sql.rs"]
 mod sql;
-#[path = "native_lowering_tests/tpch_shapes.rs"]
+#[path = "../native_lowering_tests/tpch_shapes.rs"]
 mod tpch_shapes;
 
-#[path = "native_lowering_tests/aggregate_plan_builders.rs"]
+#[path = "../native_lowering_tests/aggregate_plan_builders.rs"]
 mod aggregate_plan_builders;
-#[path = "native_lowering_tests/sql_aggregate_shapes.rs"]
+#[path = "../native_lowering_tests/sql_aggregate_shapes.rs"]
 mod sql_aggregate_shapes;
 
-#[path = "native_lowering_tests/core_shapes.rs"]
+#[path = "../native_lowering_tests/core_shapes.rs"]
 mod core_shapes;
-#[path = "native_lowering_tests/expression_validation.rs"]
+#[path = "../native_lowering_tests/expression_validation.rs"]
 mod expression_validation;
-#[path = "native_lowering_tests/source_column_pruning.rs"]
+#[path = "../native_lowering_tests/source_column_pruning.rs"]
 mod source_column_pruning;
 
 use aggregate_plan_builders::*;

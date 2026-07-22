@@ -31,10 +31,13 @@ bash scripts/check_all.sh
 
 This is more than the three test lanes. It runs all isolated policy self-tests,
 the dated-nightly rustfmt check, build-support checks, the live canonical
-test-binary inventory, a default-member compile, CPU/shared-GPU/
-exclusive-GPU tests, locked doctests with exact accounting, strict rustdoc,
-clippy, and compile-only checks for the explicit tools and examples packages.
-Those last checks compile code but never run tools or contact external services.
+test-binary inventory (union of the default-member surface and an explicit
+all-feature bench inventory), a default-member compile, CPU/shared-GPU/
+exclusive-GPU tests, an explicit all-feature bench nextest phase, locked
+doctests with exact accounting, strict rustdoc for default members and bench,
+clippy for default members and bench, and compile-only checks for the explicit
+bench, tools, and examples packages. Those package checks compile code but never
+run operator/E2E tools or contact external services.
 
 Every invocation ends with a compact phase table. Each row records the
 effective command, wall time, pass/fail/skipped state, fail-closed test counts
@@ -70,13 +73,21 @@ binary-lane classification tripwire and verifies the configured cap with
 
 ```bash
 bash scripts/check_all.sh --fast
+bash scripts/check_all.sh --fast --no-default-features
+bash scripts/check_all.sh --fast --features server
 ```
 
 It runs isolated policy self-tests, pinned rustfmt, build support, the
 catalog/generated lane-structure checks, and the CPU nextest lane. It does not
-run live nextest inventory, GPU tests, doctests, rustdoc, clippy, or the explicit
-tools/examples checks. CPU-lane membership is enforced by the binary-lane
-classification tripwire before the test command runs.
+run live nextest inventory, GPU tests, doctests, rustdoc, clippy, the explicit
+bench phases, or the tools/examples checks. CPU-lane membership is enforced by
+the binary-lane classification tripwire before the test command runs. `--lane
+cpu` (unlike `--fast`) still runs the explicit bench CPU nextest phase.
+
+By default `--fast` still uses `--all-features` for the packages it builds. That
+narrows *which tests execute*, not necessarily *which unrelated test binaries
+Cargo links*. For a true single-harness edit loop, use Cargo target selectors
+(below) rather than assuming nextest filtering eliminated link work.
 
 Use `--lane` for an intentionally partial lane-only run:
 
@@ -103,7 +114,10 @@ bash scripts/check_all.sh --all-features
 
 `--all-features` conflicts with the other feature selectors.
 `--no-default-features` may accompany `--features`. Any CLI feature selector
-replaces, rather than merges with, the compatibility `FEATURES` value.
+replaces, rather than merges with, the compatibility `FEATURES` value. Those
+selectors apply only to the core default-member surface; explicit full-pre-merge
+bench phases always use `--all-features` and report `all(fixed)` in the phase
+table.
 
 Shared-GPU tests automatically use every CPU core available to the current
 environment. `check_all.sh` validates the positive integer returned by `nproc`
@@ -181,11 +195,13 @@ outer lock solve different problems. The same lock convention applies to
 `cudf-rs` and `cugraph-rs` test runs.
 
 GPU-lane membership is **binary-level and explicit**. `.config/policies/test-lanes.toml`
-is the single admission source: every live nextest binary has one CPU or GPU
-entry, every GPU entry is `shared` or `exclusive`, and every entry records a
-reason. `scripts/ci/check_gpu_test_lane.sh` (run by `check_all.sh`) fails closed on
-missing, duplicate, stale all-feature, or malformed entries and on generated
-nextest drift. After editing the catalog, regenerate the scheduling overrides:
+is the single admission source: every live pre-merge-admitted nextest binary
+(default-member surface plus the explicit all-feature bench surface) has one CPU
+or GPU entry, every GPU entry is `shared` or `exclusive`, and every entry records
+a reason. `scripts/ci/check_gpu_test_lane.sh` (run by `check_all.sh`) validates the
+union of those inventories and fails closed on missing, duplicate, stale
+all-feature, or malformed entries and on generated nextest drift. After editing
+the catalog, regenerate the scheduling overrides:
 
 ```bash
 python3 scripts/ci/test_lane_policy.py generate-nextest --write
@@ -214,13 +230,86 @@ required RMM failure, optional `rapids_logger` linkage, direct/aggregate
 metadata precedence, and deterministic multi-candidate handling. It neither
 loads nor modifies the real RAPIDS libraries.
 
-## Per-crate suites
+## Per-crate suites and targeted edit loops
 
 ```bash
 bash scripts/check_all.sh --fast
 bash scripts/check_all.sh --lane gpu-shared
 bash scripts/check_all.sh --runner cargo-diagnostic
 ```
+
+### One package, one harness
+
+A warm source tree should not force the all-feature test surface while you edit
+a single contract. Prefer Cargo package and harness selectors:
+
+```bash
+# One CPU adapter planning harness with the minimal feature set.
+cargo nextest run -p datafusion-nexus \
+  --no-default-features \
+  --test native_planning_tests
+
+# CPU adapter contracts (errors, policy reports, public facade, table-format).
+cargo nextest run -p datafusion-nexus \
+  --no-default-features \
+  --test cpu_contract_tests
+
+# Pure native-engine contract harness.
+cargo nextest run -p nexus-query-engine \
+  --no-default-features \
+  --test native_contract_tests
+
+# Repository policy/fmt/CPU partial loop without optional features.
+bash scripts/check_all.sh --fast --no-default-features
+```
+
+Feature work should select only its required set until the all-feature pass, for
+example `--features server` or `--features iceberg`. Targeted GPU work must
+still take `/tmp/cudf-gpu.lock`, preferably through
+`bash scripts/check_all.sh --lane gpu-shared` or `--lane gpu-exclusive`.
+
+Workspace `[profile.test]` uses `debug = 1` (line tables) so routine test links
+stay smaller than full debuginfo while preserving file:line failure diagnostics.
+
+### Compile delay versus test delay
+
+If a command sits at
+
+```text
+Finished `test` profile [unoptimized + debuginfo] target(s) in …
+```
+
+before any `PASS`/`FAIL`, the cost is Cargo compile/link, not nextest execution.
+Expose the first dirty unit with:
+
+```bash
+CARGO_LOG=cargo::core::compiler::fingerprint=info \
+  cargo nextest run --all-features --no-run 2>&1 \
+  | rg 'fingerprint dirty|dirty:|Compiling'
+```
+
+Fingerprint logs can contain full local environment values such as `PATH`.
+Redact them before attaching to an issue. Sibling `cudf-rs` documents the live
+matrix as `bash scripts/check_fingerprint_matrix.sh` (under the `cudf-rs`
+checkout) and the static contract as
+`cargo test -p cudf-sys --test fingerprint_matrix_contract`.
+
+### Target artifact maintenance
+
+Stale feature/hash variants and interrupted mold links can inflate `target/`
+without reflecting the active surface. Report and clean **explicitly**:
+
+```bash
+bash scripts/dev/clean_target_artifacts.sh            # sizes + mold temps
+bash scripts/dev/clean_target_artifacts.sh --mold-only --yes
+bash scripts/dev/clean_target_artifacts.sh --clean-cargo-target --yes
+```
+
+Never treat cleanup as a side effect of a test command. After cleanup the next
+build is cold. An advisory size budget should be taken from a clean rebuild of
+the active all-feature surface, not from a multi-day dirty `target/` tree.
+`sccache` (or equivalent) can help clean CI and branch switches; it does not
+remove the cost of linking many large test binaries.
 
 Do not use bare parallel `cargo test` for `datafusion-nexus`: libtest runs
 cases in a binary as threads and does not provide the native standalone-context

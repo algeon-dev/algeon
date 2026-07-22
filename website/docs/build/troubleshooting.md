@@ -170,3 +170,46 @@ For canonical validation, run `bash scripts/check_all.sh`. A bare
 Inherited environment. Re-run the failing step under `env -i` with only
 `env.sh` ([Environment](./environment.md#validated-against-shell-state-leakage));
 diff the outcomes to find the leaking variable.
+
+## Cargo recompiles cudf-sys after only PATH changed
+
+`cudf-sys` no longer treats ambient `PATH` as a rebuild input. It tracks
+explicit `CC`/`CXX`, cuDF/CUDA discovery variables, lint mode, optional
+`CUDF_RUST_CLANG_FORMAT` / `CUDF_RUST_CLANG_TIDY` / `CUDF_RUST_CMAKE`, and the
+selected runtime libraries. A PATH-only change (venv activate, agent tool
+shim, PATH normalization) should leave `cudf-sys` fresh when source and those
+explicit inputs are unchanged.
+
+If you still see a PATH-driven invalidation, you are likely on an older
+`cudf-rs` revision. Confirm the sibling checkout includes the fingerprint
+matrix and re-run:
+
+```bash
+cd "${NEXUS_ROOT}/cudf-rs"
+bash scripts/check_fingerprint_matrix.sh
+```
+
+Diagnose the first dirty unit without publishing secrets:
+
+```bash
+CARGO_LOG=cargo::core::compiler::fingerprint=info \
+  cargo nextest run -p cudf-sys --no-run 2>&1 \
+  | rg 'fingerprint dirty|dirty:|Compiling' \
+  | sed -E 's/(PATH=)[^ ]*/\1<redacted>/g'
+```
+
+## `target/` is hundreds of gigabytes
+
+Historical feature hashes, full-debuginfo test links, and interrupted mold
+temps accumulate under `target/debug/deps`. Inventory and clean explicitly:
+
+```bash
+bash scripts/dev/clean_target_artifacts.sh
+bash scripts/dev/clean_target_artifacts.sh --mold-only --yes
+# only when you accept a cold rebuild:
+bash scripts/dev/clean_target_artifacts.sh --clean-cargo-target --yes
+```
+
+Do not delete `target/` while `cargo`, `rustc`, or `mold` is running. Prefer
+the single-harness edit loop in [Tests](./tests.md#one-package-one-harness)
+before paying for an all-feature warm-up.

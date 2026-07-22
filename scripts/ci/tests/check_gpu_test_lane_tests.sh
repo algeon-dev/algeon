@@ -21,6 +21,15 @@ if [[ "${1:-}" == "nextest" && "${2:-}" == "list" ]]; then
     echo "inventory must request nextest's binaries-only JSON format: $*" >&2
     exit 98
   fi
+  if [[ " $* " == *" -p datafusion-nexus-bench "* ]]; then
+    if [[ " $* " != *" --all-features "* ]]; then
+      echo "bench inventory must use --all-features: $*" >&2
+      exit 95
+    fi
+    [[ -z "${FAKE_NEXTEST_STDERR:-}" ]] || printf '%s\n' "${FAKE_NEXTEST_STDERR}" >&2
+    [[ -z "${FAKE_BENCH_INVENTORY:-}" ]] || /usr/bin/cat "${FAKE_BENCH_INVENTORY}"
+    exit "${FAKE_BENCH_NEXTEST_STATUS:-${FAKE_NEXTEST_STATUS:-0}}"
+  fi
   if [[ -n "${FAKE_REQUIRED_FEATURE_ARGS:-}" && " $* " != *" ${FAKE_REQUIRED_FEATURE_ARGS} "* ]]; then
     echo "inventory command is missing required feature args '${FAKE_REQUIRED_FEATURE_ARGS}': $*" >&2
     exit 96
@@ -34,15 +43,19 @@ exit 97
 SH
 chmod +x "${tmp_dir}/bin/cargo"
 
-python3 - "${tmp_dir}/expected" <<'PY'
+python3 - "${tmp_dir}/expected" "${tmp_dir}/default-ids" "${tmp_dir}/bench-ids" <<'PY'
 import sys
 import tomllib
 
 with open(".config/policies/test-lanes.toml", "rb") as catalog_file:
     catalog = tomllib.load(catalog_file)
 ids = sorted(entry["id"] for entry in catalog["binary"])
-with open(sys.argv[1], "w", encoding="utf-8") as output:
-    output.write("\n".join(ids) + "\n")
+bench_ids = sorted(binary_id for binary_id in ids if binary_id == "datafusion-nexus-bench" or binary_id.startswith("datafusion-nexus-bench::"))
+default_ids = sorted(binary_id for binary_id in ids if binary_id not in set(bench_ids))
+Path = __import__("pathlib").Path
+Path(sys.argv[1]).write_text("\n".join(ids) + "\n", encoding="utf-8")
+Path(sys.argv[2]).write_text("\n".join(default_ids) + "\n", encoding="utf-8")
+Path(sys.argv[3]).write_text("\n".join(bench_ids) + "\n", encoding="utf-8")
 PY
 
 make_inventory() {
@@ -73,7 +86,11 @@ PY
 }
 
 make_inventory "${tmp_dir}/expected" "${tmp_dir}/complete.json"
-head -n 1 "${tmp_dir}/expected" >"${tmp_dir}/partial"
+make_inventory "${tmp_dir}/default-ids" "${tmp_dir}/default-only.json"
+make_inventory "${tmp_dir}/bench-ids" "${tmp_dir}/bench-only.json"
+# overlapping bench packages while still on default-members; matching IDs coalesce
+make_inventory "${tmp_dir}/expected" "${tmp_dir}/default-with-bench.json"
+head -n 1 "${tmp_dir}/default-ids" >"${tmp_dir}/partial"
 make_inventory "${tmp_dir}/partial" "${tmp_dir}/partial.json"
 catalog_count=$(wc -l <"${tmp_dir}/expected")
 catalog_success="all ${catalog_count} live test binaries are cataloged exactly once"
@@ -86,11 +103,13 @@ run_shell_case() {
   local command_status=${5:-0}
   local features=${6:-}
   local stderr_text=${7:-}
+  local bench_inventory=${8:-${tmp_dir}/bench-only.json}
   local output="${tmp_dir}/${name}.output"
   local actual_status=0
 
   PATH="${tmp_dir}/bin:${PATH}" \
     FAKE_NEXTEST_INVENTORY="${inventory}" \
+    FAKE_BENCH_INVENTORY="${bench_inventory}" \
     FAKE_NEXTEST_STATUS="${command_status}" \
     FAKE_NEXTEST_STDERR="${stderr_text}" \
     FEATURES="${features}" \
@@ -131,12 +150,17 @@ run_policy_case() {
 }
 
 run_shell_case complete 0 "${catalog_success}" \
-  "${tmp_dir}/complete.json" 0 "" "visible-successful-inventory-progress"
+  "${tmp_dir}/default-only.json" 0 "" "visible-successful-inventory-progress" "${tmp_dir}/bench-only.json"
 grep -Fq "visible-successful-inventory-progress" "${tmp_dir}/complete.output"
+
+# Matching bench IDs present in both surfaces must coalesce rather than fail.
+run_shell_case overlapping_union 0 "${catalog_success}" \
+  "${tmp_dir}/default-with-bench.json" 0 "" "" "${tmp_dir}/bench-only.json"
 
 cli_feature_output="${tmp_dir}/cli-feature-args.output"
 PATH="${tmp_dir}/bin:${PATH}" \
-  FAKE_NEXTEST_INVENTORY="${tmp_dir}/complete.json" \
+  FAKE_NEXTEST_INVENTORY="${tmp_dir}/default-only.json" \
+  FAKE_BENCH_INVENTORY="${tmp_dir}/bench-only.json" \
   FAKE_REQUIRED_FEATURE_ARGS='--no-default-features --features server' \
   /usr/bin/bash scripts/ci/check_gpu_test_lane.sh --no-default-features --features server \
   >"${cli_feature_output}" 2>&1
@@ -149,7 +173,7 @@ run_shell_case nonzero_empty 2 "nextest inventory command failed with status 42"
 grep -Fq "native-link-error-empty" "${tmp_dir}/nonzero_empty.output"
 run_shell_case nonzero_partial 2 "nextest inventory command failed with status 42" "${tmp_dir}/partial.json" 42 "" "native-link-error-partial"
 grep -Fq "native-link-error-partial" "${tmp_dir}/nonzero_partial.output"
-run_shell_case nonzero_apparently_complete 2 "nextest inventory command failed with status 42" "${tmp_dir}/complete.json" 42 "" "native-link-error-complete"
+run_shell_case nonzero_apparently_complete 2 "nextest inventory command failed with status 42" "${tmp_dir}/default-only.json" 42 "" "native-link-error-complete"
 grep -Fq "native-link-error-complete" "${tmp_dir}/nonzero_apparently_complete.output"
 
 printf '{not json\n' >"${tmp_dir}/malformed.json"
@@ -157,20 +181,48 @@ run_shell_case malformed_json 2 "malformed nextest JSON inventory" "${tmp_dir}/m
 printf '{"rust-binaries":{}}\n' >"${tmp_dir}/empty.json"
 run_shell_case empty_inventory 2 "contained no test binaries" "${tmp_dir}/empty.json"
 
-cp "${tmp_dir}/expected" "${tmp_dir}/duplicate-name"
+cp "${tmp_dir}/default-ids" "${tmp_dir}/duplicate-name"
 printf '%s\n' 'fault-injection-package::native_exec_tests' >>"${tmp_dir}/duplicate-name"
 make_inventory "${tmp_dir}/duplicate-name" "${tmp_dir}/duplicate-name.json"
 run_shell_case duplicate_binary_name 1 "test-binary name collision" "${tmp_dir}/duplicate-name.json"
 
-cp "${tmp_dir}/expected" "${tmp_dir}/unclassified"
+cp "${tmp_dir}/default-ids" "${tmp_dir}/unclassified"
 printf '%s\n' 'datafusion-nexus::fault_injection_unclassified' >>"${tmp_dir}/unclassified"
 make_inventory "${tmp_dir}/unclassified" "${tmp_dir}/unclassified.json"
 run_shell_case unclassified_binary 1 "unclassified test binary" "${tmp_dir}/unclassified.json"
 
-grep -vFx 'datafusion-nexus::server_cugraph_tests' "${tmp_dir}/expected" >"${tmp_dir}/feature-gated"
+grep -vFx 'datafusion-nexus::server_cugraph_tests' "${tmp_dir}/default-ids" >"${tmp_dir}/feature-gated"
 make_inventory "${tmp_dir}/feature-gated" "${tmp_dir}/feature-gated.json"
 run_shell_case stale_all_features 1 "stale all-feature catalog entry" "${tmp_dir}/feature-gated.json"
 run_shell_case stale_explicit_features 0 "absent from explicit narrower feature inventory" "${tmp_dir}/feature-gated.json" 0 server
+
+# Cross-inventory ID conflict with different binary-names fails closed.
+python3 - "${tmp_dir}/bench-conflict.json" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "w", encoding="utf-8") as output_file:
+    json.dump(
+        {
+            "rust-binaries": {
+                "datafusion-nexus-bench": {
+                    "binary-id": "datafusion-nexus-bench",
+                    "binary-name": "renamed_bench",
+                    "package-id": "path+file:///fault-injection#fixture",
+                    "kind": "test",
+                    "binary-path": "/tmp/renamed_bench",
+                    "build-platform": "target",
+                }
+            }
+        },
+        output_file,
+    )
+PY
+run_policy_case conflicting_union_names 1 "conflicting binary-name for datafusion-nexus-bench" \
+  validate-inventory \
+  --inventory "${tmp_dir}/default-with-bench.json" \
+  --inventory "${tmp_dir}/bench-conflict.json" \
+  --feature-mode all
 
 # Strict catalog schema: duplicate IDs violate exact-once admission, reasons
 # cannot be empty, and GPU resource classes are mandatory and enumerated.

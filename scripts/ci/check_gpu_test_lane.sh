@@ -3,6 +3,12 @@
 # reasons, and GPU resource classes live only in .config/policies/test-lanes.toml;
 # scripts/ci/test_lane_policy.py validates that catalog against nextest JSON and
 # byte-checks the generated scheduling overrides in .config/nextest.toml.
+#
+# Live inventory is the union of:
+#   1. the ordinary default-member inventory under the requested core feature args
+#   2. an explicit all-feature bench inventory
+# Cargo, not the catalog, selects packages; the catalog only classifies what
+# pre-merge admits.
 set -uo pipefail
 cd "$(dirname "$0")/../.."
 
@@ -67,22 +73,33 @@ inventory_tmp=$(mktemp -d "${TMPDIR:-/tmp}/datafusion-nexus-test-inventory.XXXXX
   exit 2
 }
 trap 'rm -rf "${inventory_tmp}"' EXIT
-inventory_json="${inventory_tmp}/inventory.json"
+default_inventory_json="${inventory_tmp}/default-members.json"
+bench_inventory_json="${inventory_tmp}/bench.json"
 inventory_stderr="${inventory_tmp}/inventory.stderr"
 
 # A nonzero producer status always wins over partial stdout. Stream stderr so
 # Cargo build progress remains visible, while teeing it to a file preserves
 # native compiler/linker diagnostics for failure investigation.
-inventory_status=0
-cargo nextest list "${FEATURE_ARGS[@]}" --list-type binaries-only --message-format json \
-  >"${inventory_json}" 2> >(tee "${inventory_stderr}" >&2) || inventory_status=$?
-if [[ "${inventory_status}" -ne 0 ]]; then
-  echo "ERROR: nextest inventory command failed with status ${inventory_status}; lane safety cannot be verified." >&2
-  exit 2
-fi
+list_inventory() {
+  local output_json=$1
+  shift
+  local inventory_status=0
+  cargo nextest list "$@" --list-type binaries-only --message-format json \
+    >"${output_json}" 2> >(tee -a "${inventory_stderr}" >&2) || inventory_status=$?
+  if [[ "${inventory_status}" -ne 0 ]]; then
+    echo "ERROR: nextest inventory command failed with status ${inventory_status}; lane safety cannot be verified." >&2
+    return 2
+  fi
+  return 0
+}
+
+: >"${inventory_stderr}"
+list_inventory "${default_inventory_json}" "${FEATURE_ARGS[@]}" || exit $?
+list_inventory "${bench_inventory_json}" -p datafusion-nexus-bench --all-features || exit $?
 
 validation_status=0
 python3 scripts/ci/test_lane_policy.py validate-inventory \
-  --inventory "${inventory_json}" \
+  --inventory "${default_inventory_json}" \
+  --inventory "${bench_inventory_json}" \
   --feature-mode "${FEATURE_MODE}" || validation_status=$?
 exit "${validation_status}"
