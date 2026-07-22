@@ -569,7 +569,7 @@ pub(super) fn validate_stream_pool_admission_capacity(
 
 pub(super) fn default_stream_pool_size_for_ordinals(device_ordinals: &[usize]) -> Result<usize> {
     let ordinals = if device_ordinals.is_empty() {
-        let device_count = super::CudfInventory.device_count()?;
+        let device_count = super::NexusGpuInventory.device_count()?;
         (0..device_count).collect::<Vec<_>>()
     } else {
         device_ordinals.to_vec()

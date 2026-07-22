@@ -72,7 +72,7 @@ fn print_usage() {
 
 fn parse_args() -> Result<CliOptions, CliError> {
     let mut opts = CliOptions {
-        python: PathBuf::from(std::env::var("CUDF_CUGRAPH_PYTHON").unwrap_or_else(|_| "python3".to_string())),
+        python: PathBuf::from(std::env::var("NEXUS_CUGRAPH_PYTHON").unwrap_or_else(|_| "python3".to_string())),
         ..Default::default()
     };
     let mut args = std::env::args().skip(1);
@@ -212,7 +212,7 @@ fn default_workspace_root() -> Result<PathBuf, Box<dyn std::error::Error>> {
 }
 
 fn fixture_data_root(workspace_root: &Path) -> PathBuf {
-    if let Ok(env) = std::env::var("CUDF_CUGRAPH_DATA_ROOT") {
+    if let Ok(env) = std::env::var("NEXUS_CUGRAPH_DATA_ROOT") {
         return PathBuf::from(env);
     }
     workspace_root.join(CUGRAPH_DATA_DIR_FROM_CARGO_MANIFEST)
@@ -411,7 +411,7 @@ mod tests {
     #[test]
     fn fixture_data_root_defaults_under_workspace_root() {
         let root = Path::new("/tmp/example-workspace");
-        if std::env::var_os("CUDF_CUGRAPH_DATA_ROOT").is_some() {
+        if std::env::var_os("NEXUS_CUGRAPH_DATA_ROOT").is_some() {
             return;
         }
         assert_eq!(fixture_data_root(root), root.join(CUGRAPH_DATA_DIR_FROM_CARGO_MANIFEST));

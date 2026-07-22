@@ -41,13 +41,13 @@ pub const TPCDS_TABLES: &[&str] = &[
     "web_site",
 ];
 /// Reported scale-factor label; set this explicitly for non-SF1 fixtures.
-pub const CUDF_TPCDS_SCALE_FACTOR_ENV: &str = "CUDF_TPCDS_SCALE_FACTOR";
+pub const NEXUS_TPCDS_SCALE_FACTOR_ENV: &str = "NEXUS_TPCDS_SCALE_FACTOR";
 /// Free-form provenance command recorded in dataset metadata.
-pub const CUDF_TPCDS_GENERATION_COMMAND_ENV: &str = "CUDF_TPCDS_GENERATION_COMMAND";
+pub const NEXUS_TPCDS_GENERATION_COMMAND_ENV: &str = "NEXUS_TPCDS_GENERATION_COMMAND";
 /// Optional caller-supplied content fingerprint. When unset, only the cheaper
 /// metadata fingerprint is recorded unless the caller explicitly requests a
 /// content-fingerprint pass.
-pub const CUDF_TPCDS_CONTENT_FINGERPRINT_ENV: &str = "CUDF_TPCDS_CONTENT_FINGERPRINT";
+pub const NEXUS_TPCDS_CONTENT_FINGERPRINT_ENV: &str = "NEXUS_TPCDS_CONTENT_FINGERPRINT";
 
 /// In-repo default Parquet root for the TPC-DS SF1 fixture.
 pub const DEFAULT_LOCAL_TPCDS_SF1_PARQUET_DIR: &str = "./fixture/tpc-ds/data/sf1/parquet";
@@ -196,15 +196,15 @@ pub fn external_tpcds_dataset_metadata(
 /// `NEXUS_PARQUET_DIR` is strict: if set, that fixture must be complete.
 /// When unset, the helper tries the implicit SF1 default and falls back to
 /// generating tiny data under `tiny_root`. A truthy
-/// `CUDF_TPCDS_CONTENT_FINGERPRINT` requests the expensive content hash.
+/// `NEXUS_TPCDS_CONTENT_FINGERPRINT` requests the expensive content hash.
 pub fn prepare_tpcds_report_dataset(tiny_root: &Path) -> TpcdsWorkloadResult<(PathBuf, TpcdsDatasetMetadata)> {
     if let Ok(root) = std::env::var(NEXUS_PARQUET_DIR_ENV) {
         let root = PathBuf::from(root);
-        let scale_factor = std::env::var(CUDF_TPCDS_SCALE_FACTOR_ENV).unwrap_or_else(|_| "unknown".to_string());
+        let scale_factor = std::env::var(NEXUS_TPCDS_SCALE_FACTOR_ENV).unwrap_or_else(|_| "unknown".to_string());
         let generation_command =
-            std::env::var(CUDF_TPCDS_GENERATION_COMMAND_ENV).unwrap_or_else(|_| "unknown_external".to_string());
+            std::env::var(NEXUS_TPCDS_GENERATION_COMMAND_ENV).unwrap_or_else(|_| "unknown_external".to_string());
         let include_content_fingerprint =
-            std::env::var(CUDF_TPCDS_CONTENT_FINGERPRINT_ENV).is_ok_and(|value| env_truthy(&value));
+            std::env::var(NEXUS_TPCDS_CONTENT_FINGERPRINT_ENV).is_ok_and(|value| env_truthy(&value));
         let metadata = describe_tpcds_dataset_with_content_fingerprint(
             &root,
             scale_factor,

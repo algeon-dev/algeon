@@ -50,11 +50,11 @@ pub use context::{
     SourceSchedulerPolicy,
 };
 pub use gpu::{
-    BestFitPlacement, CudfInventory, CudfNvmlTelemetry, DeviceContext, DeviceFacts, DeviceMemoryFailureReport,
-    DeviceRegistry, DeviceRegistryConfig, DeviceTelemetrySnapshot, DeviceTelemetryStatus, EvictableMemoryObserver,
-    EvictableMemoryPressure, GpuComms, GpuInventory, GpuTelemetry, GrantRequest, LeastLoadedPlacement, MemoryGovernor,
-    MemoryGovernorGrantRow, MemoryGovernorReport, MemoryGrant, PinnedDevicePlacement, Placement, PlacementPolicy,
-    PlacementRequest, Priority, QueryPlacementHint, QueryPlacementPolicy, QueryQos, SingleDeviceComms,
+    BestFitPlacement, DeviceContext, DeviceFacts, DeviceMemoryFailureReport, DeviceRegistry, DeviceRegistryConfig,
+    DeviceTelemetrySnapshot, DeviceTelemetryStatus, EvictableMemoryObserver, EvictableMemoryPressure, GpuComms,
+    GpuInventory, GpuTelemetry, GrantRequest, LeastLoadedPlacement, MemoryGovernor, MemoryGovernorGrantRow,
+    MemoryGovernorReport, MemoryGrant, NexusGpuInventory, NexusNvmlTelemetry, PinnedDevicePlacement, Placement,
+    PlacementPolicy, PlacementRequest, Priority, QueryPlacementHint, QueryPlacementPolicy, QueryQos, SingleDeviceComms,
     device_budget_bytes_from_facts,
 };
 pub use gpu_execution_pool::{

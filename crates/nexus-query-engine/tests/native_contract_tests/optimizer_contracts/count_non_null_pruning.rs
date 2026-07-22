@@ -166,10 +166,7 @@ fn count_non_null_pruning_keeps_count_column_when_footer_proof_is_missing() {
     assert!(!candidate.applied);
     assert_eq!(candidate.column, "order_count_input");
     assert_eq!(candidate.file_column_index, Some(1));
-    assert_eq!(
-        candidate.rejected_reason,
-        Some(CountNonNullColumnPruningRejectedReason::NullCountProofUnavailable)
-    );
+    assert_eq!(candidate.rejected_reason, Some(CountNonNullColumnPruningRejectedReason::NullCountProofUnavailable));
 }
 
 #[test]
@@ -188,10 +185,7 @@ fn count_non_null_pruning_keeps_grouped_count_column_when_no_retained_non_null_c
     assert_eq!(result.diagnostics.count_non_null_column_pruning.applied_count, 0);
     let candidate = &result.diagnostics.count_non_null_column_pruning.candidates[0];
     assert!(!candidate.applied);
-    assert_eq!(
-        candidate.rejected_reason,
-        Some(CountNonNullColumnPruningRejectedReason::NonNullCarrierUnavailable)
-    );
+    assert_eq!(candidate.rejected_reason, Some(CountNonNullColumnPruningRejectedReason::NonNullCarrierUnavailable));
 }
 
 fn count_non_null_pruning_source_adjacent_plan(
@@ -228,20 +222,13 @@ fn count_non_null_pruning_source_adjacent_plan(
     )));
     let filtered = builder.add_filter(
         source,
-        Expr::binary(
-            Expr::column("o_orderstatus"),
-            BinaryOp::Eq,
-            Expr::literal(LiteralValue::Int32(1)),
-        ),
+        Expr::binary(Expr::column("o_orderstatus"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(1))),
         Arc::clone(&source_schema),
     );
     let projected = builder.add_projection(
         filtered,
         projection_outputs(
-            vec![
-                Expr::column("o_custkey"),
-                Expr::column("o_orderkey").alias("order_count_input"),
-            ],
+            vec![Expr::column("o_custkey"), Expr::column("o_orderkey").alias("order_count_input")],
             projection_schema,
         ),
     );
@@ -311,12 +298,7 @@ fn count_non_null_pruning_synthetic_source_plan() -> nexus_query_engine::plan::Q
     let projected = builder.add_projection(
         source,
         projection_outputs(
-            vec![
-                Expr::column("p1"),
-                Expr::column("m1"),
-                Expr::column("k"),
-                Expr::column("cnt").alias("count_input"),
-            ],
+            vec![Expr::column("p1"), Expr::column("m1"), Expr::column("k"), Expr::column("cnt").alias("count_input")],
             projection_schema,
         ),
     );
@@ -396,10 +378,7 @@ fn count_non_null_pruning_overridden_source_plan() -> nexus_query_engine::plan::
         Arc::clone(&physical_schema),
         vec!["raw_custkey".to_string(), "raw_orderkey".to_string(), "raw_status".to_string()],
     )
-    .with_column_roles(
-        vec!["o_custkey".to_string(), "o_orderkey".to_string(), "o_orderstatus".to_string()],
-        Vec::new(),
-    )
+    .with_column_roles(vec!["o_custkey".to_string(), "o_orderkey".to_string(), "o_orderstatus".to_string()], Vec::new())
     .with_column_source_refs(
         vec![0, 1, 2],
         vec![SourceColumnRef::File(0), SourceColumnRef::File(1), SourceColumnRef::File(2)],
@@ -411,20 +390,13 @@ fn count_non_null_pruning_overridden_source_plan() -> nexus_query_engine::plan::
     let source = builder.add_source(SourceNode::LocalParquet(source));
     let filtered = builder.add_filter(
         source,
-        Expr::binary(
-            Expr::column("o_orderstatus"),
-            BinaryOp::Eq,
-            Expr::literal(LiteralValue::Int32(1)),
-        ),
+        Expr::binary(Expr::column("o_orderstatus"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(1))),
         Arc::clone(&source_output_schema),
     );
     let projected = builder.add_projection(
         filtered,
         projection_outputs(
-            vec![
-                Expr::column("o_custkey"),
-                Expr::column("o_orderkey").alias("order_count_input"),
-            ],
+            vec![Expr::column("o_custkey"), Expr::column("o_orderkey").alias("order_count_input")],
             projection_schema,
         ),
     );

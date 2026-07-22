@@ -17,13 +17,13 @@ use crate::NEXUS_PARQUET_DIR_ENV;
 pub const TPCH_TABLES: &[&str] =
     &["customer", "lineitem", "nation", "orders", "part", "partsupp", "region", "supplier"];
 /// Reported scale-factor label; it does not change fixture discovery by itself.
-pub const CUDF_TPCH_SCALE_FACTOR_ENV: &str = "CUDF_TPCH_SCALE_FACTOR";
+pub const NEXUS_TPCH_SCALE_FACTOR_ENV: &str = "NEXUS_TPCH_SCALE_FACTOR";
 /// Free-form provenance command recorded in dataset metadata.
-pub const CUDF_TPCH_GENERATION_COMMAND_ENV: &str = "CUDF_TPCH_GENERATION_COMMAND";
+pub const NEXUS_TPCH_GENERATION_COMMAND_ENV: &str = "NEXUS_TPCH_GENERATION_COMMAND";
 /// Optional caller-supplied content fingerprint. When unset, only the cheaper
 /// metadata fingerprint is recorded unless the caller explicitly requests a
 /// content-fingerprint pass.
-pub const CUDF_TPCH_CONTENT_FINGERPRINT_ENV: &str = "CUDF_TPCH_CONTENT_FINGERPRINT";
+pub const NEXUS_TPCH_CONTENT_FINGERPRINT_ENV: &str = "NEXUS_TPCH_CONTENT_FINGERPRINT";
 
 /// In-repo default Parquet root for the TPC-H SF1 fixture.
 pub const DEFAULT_LOCAL_TPCH_SF1_PARQUET_DIR: &str = "./fixture/tpc-h/data/sf1/parquet";
@@ -187,15 +187,15 @@ pub fn external_tpch_dataset_metadata(
 /// `NEXUS_PARQUET_DIR` is strict: if set, that fixture must be complete.
 /// When unset, the helper tries the implicit SF1 default and falls back to
 /// generating tiny data under `tiny_root`. A truthy
-/// `CUDF_TPCH_CONTENT_FINGERPRINT` requests the expensive content hash.
+/// `NEXUS_TPCH_CONTENT_FINGERPRINT` requests the expensive content hash.
 pub fn prepare_tpch_report_dataset(tiny_root: &Path) -> TpchWorkloadResult<(PathBuf, TpchDatasetMetadata)> {
     if let Ok(root) = std::env::var(NEXUS_PARQUET_DIR_ENV) {
         let root = PathBuf::from(root);
-        let scale_factor = std::env::var(CUDF_TPCH_SCALE_FACTOR_ENV).unwrap_or_else(|_| "unknown".to_string());
+        let scale_factor = std::env::var(NEXUS_TPCH_SCALE_FACTOR_ENV).unwrap_or_else(|_| "unknown".to_string());
         let generation_command =
-            std::env::var(CUDF_TPCH_GENERATION_COMMAND_ENV).unwrap_or_else(|_| "unknown_external".to_string());
+            std::env::var(NEXUS_TPCH_GENERATION_COMMAND_ENV).unwrap_or_else(|_| "unknown_external".to_string());
         let include_content_fingerprint =
-            std::env::var(CUDF_TPCH_CONTENT_FINGERPRINT_ENV).is_ok_and(|value| env_truthy(&value));
+            std::env::var(NEXUS_TPCH_CONTENT_FINGERPRINT_ENV).is_ok_and(|value| env_truthy(&value));
         let metadata = describe_tpch_dataset_with_content_fingerprint(
             &root,
             scale_factor,

@@ -49,8 +49,8 @@ use nexus_query_engine::{
 use crate::graph_sql::CugraphAlgoExec;
 use crate::{
     native::lower_physical_plan_to_native,
-    native_exec::{NativeCudfComposedExec, NativeCudfExec, NativeCudfExecutionConfig, NativeCudfGpuProducerExec},
-    planner::CudfNativePhysicalOptimizerRule,
+    native_exec::{NexusNativeComposedExec, NexusNativeExec, NexusNativeExecutionConfig, NexusNativeGpuProducerExec},
+    planner::NexusNativePhysicalOptimizerRule,
     policy::FallbackReason,
     report::{CandidateOutcome, GpuCandidate},
 };
@@ -164,7 +164,7 @@ pub fn format_native_join_strategy_metric_rows(rows: &[NativeJoinStrategyMetricR
 
 fn report_rows_for_item(
     item: NativeFallbackPressureWorkloadItem,
-    execution_config: &NativeCudfExecutionConfig,
+    execution_config: &NexusNativeExecutionConfig,
 ) -> Vec<NativeFallbackPressureRow> {
     match item.input {
         NativeFallbackPressureWorkloadInput::PhysicalPlan(plan) => {
@@ -179,7 +179,7 @@ fn report_rows_for_item(
 fn report_rows_for_plan(
     query_id: String,
     plan: Arc<dyn ExecutionPlan>,
-    execution_config: &NativeCudfExecutionConfig,
+    execution_config: &NexusNativeExecutionConfig,
 ) -> Vec<NativeFallbackPressureRow> {
     let physical_root = plan.name().to_string();
     let physical_shape = physical_plan_shape(plan.as_ref());
@@ -264,7 +264,7 @@ fn report_row_for_planning_failure(query_id: String, failure: NativePlanningFail
 
 fn fallback_pressure_adaptive_pipeline_rows(
     lowering: &crate::native::NativeLoweringResult,
-    execution_config: &NativeCudfExecutionConfig,
+    execution_config: &NexusNativeExecutionConfig,
 ) -> crate::planner::NativeAdaptivePipelineDiagnostics {
     if execution_config.native_pipeline_execution_mode()
         != nexus_query_engine::mode::NativePipelineExecutionMode::Adaptive
@@ -294,17 +294,17 @@ fn fallback_pressure_adaptive_pipeline_rows(
 }
 
 fn post_native_plan_edge_normalize_inserted(plan: &dyn ExecutionPlan) -> bool {
-    if let Some(exec) = plan.downcast_ref::<NativeCudfExec>()
+    if let Some(exec) = plan.downcast_ref::<NexusNativeExec>()
         && exec.native_plan().contains_edge_normalize()
     {
         return true;
     }
-    if let Some(exec) = plan.downcast_ref::<NativeCudfComposedExec>()
+    if let Some(exec) = plan.downcast_ref::<NexusNativeComposedExec>()
         && exec.native_plan().contains_edge_normalize()
     {
         return true;
     }
-    if let Some(exec) = plan.downcast_ref::<NativeCudfGpuProducerExec>()
+    if let Some(exec) = plan.downcast_ref::<NexusNativeGpuProducerExec>()
         && exec.native_plan().contains_edge_normalize()
     {
         return true;

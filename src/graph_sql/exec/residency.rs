@@ -34,11 +34,11 @@ pub(super) fn cugraph_graph_residency_analysis(
     edge_source: Arc<dyn ExecutionPlan>,
     native_spec: &GraphAlgorithmSpec,
 ) -> GraphResidencyPlanAnalysis {
-    if let Some(native) = as_native_cudf_exec(edge_source.as_ref()) {
+    if let Some(native) = as_nexus_native_exec(edge_source.as_ref()) {
         graph_residency_descriptor_for_edge_plan(native.native_plan(), native_spec)
-    } else if let Some(native) = as_native_cudf_composed_exec(edge_source.as_ref()) {
+    } else if let Some(native) = as_nexus_native_composed_exec(edge_source.as_ref()) {
         graph_residency_descriptor_for_edge_plan(native.native_plan(), native_spec)
-    } else if let Some(native) = edge_source.as_ref().downcast_ref::<NativeCudfGpuProducerExec>() {
+    } else if let Some(native) = edge_source.as_ref().downcast_ref::<NexusNativeGpuProducerExec>() {
         graph_residency_descriptor_for_edge_plan(native.native_plan(), native_spec)
     } else {
         cugraph_datafusion_edge_plan_residency_analysis(edge_source, native_spec)

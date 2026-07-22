@@ -1,6 +1,6 @@
 use super::*;
 
-impl DatafusionCudfFlightSqlService {
+impl DatafusionNexusFlightSqlService {
     pub(super) async fn execute_update_sql(
         &self,
         mut planning_lease: QueryPlanningLease,

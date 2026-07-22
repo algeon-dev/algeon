@@ -133,7 +133,9 @@ fn bounded_native_query_finalizes_single_chunk_global_sum_min_max_hidden_state()
     };
     assert_eq!(batch.num_columns(), expected_names.len());
     assert_eq!(batch.schema().fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>(), expected_names);
-    assert!(batch.schema().fields().iter().all(|field| !field.name().starts_with("__cudf_global_valid_count_")));
+    assert!(
+        batch.schema().fields().iter().all(|field| !field.name().starts_with("__nexus_native_global_valid_count_"))
+    );
     assert_eq!(batch.num_rows(), 1);
     assert_eq!(int64_array(batch, 0).values().as_ref(), &[1500]);
     assert_eq!(int64_array(batch, 1).values().as_ref(), &[100]);
@@ -191,7 +193,7 @@ fn bounded_native_query_finalizes_single_chunk_global_sum_min_max_hidden_state()
 fn native_query_rejects_global_valid_count_reserved_state_alias_collision_before_source_read() {
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let input_schema = Arc::new(Schema::new(vec![Field::new("m00", DataType::Int64, false)]));
-    let reserved_alias = "__cudf_global_valid_count_sum_m00";
+    let reserved_alias = "__nexus_native_global_valid_count_sum_m00";
     let aggregated_schema = Arc::new(Schema::new(vec![
         Field::new("sum_m00", DataType::Int64, true),
         Field::new(reserved_alias, DataType::Int64, false),

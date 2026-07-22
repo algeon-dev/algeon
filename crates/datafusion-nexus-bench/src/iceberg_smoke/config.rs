@@ -650,21 +650,21 @@ fn shared_native_runtime() -> SmokeResult<Arc<cudf::Runtime>> {
 pub(crate) async fn native_session_context(
     source_storage_profile: Option<nexus_query_engine::runtime::SourceStorageProfile>,
     native_execution_profile: NativeExecutionProfile,
-) -> SmokeResult<(SessionContext, Arc<CudfNativePhysicalOptimizerRule>)> {
+) -> SmokeResult<(SessionContext, Arc<NexusNativePhysicalOptimizerRule>)> {
     let (mut execution_config, fallback_policy) = native_session_execution_config_from_env(native_execution_profile)?;
     execution_config = execution_config.with_shared_runtime(shared_native_runtime()?);
     if let Some(profile) = resolve_default_chain_source_storage_profile(source_storage_profile).await? {
         execution_config = execution_config.with_source_storage_profile(profile);
     }
     let native_optimizer_options = native_optimizer_options_for_profile(native_execution_profile, &execution_config);
-    let native_rule = Arc::new(CudfNativePhysicalOptimizerRule::new(
-        CudfOptimizerConfig::new(fallback_policy)
+    let native_rule = Arc::new(NexusNativePhysicalOptimizerRule::new(
+        NexusNativeOptimizerConfig::new(fallback_policy)
             .with_native_execution_config(execution_config)
             .with_native_optimizer_options(native_optimizer_options),
     ));
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(native_session_config_for_profile(native_execution_profile))
-        .with_cudf_native_rule(Arc::clone(&native_rule))
+        .with_nexus_native_rule(Arc::clone(&native_rule))
         .build();
     Ok((SessionContext::new_with_state(state), native_rule))
 }
@@ -679,7 +679,7 @@ pub fn native_session_config_for_profile(profile: NativeExecutionProfile) -> Ses
 
 pub fn native_optimizer_options_for_profile(
     profile: NativeExecutionProfile,
-    execution_config: &NativeCudfExecutionConfig,
+    execution_config: &NexusNativeExecutionConfig,
 ) -> nexus_query_engine::optimizer::NativeOptimizerOptions {
     let mut options = nexus_query_engine::optimizer::NativeOptimizerOptions::default();
     if matches!(profile, NativeExecutionProfile::TpchBenchmark | NativeExecutionProfile::TpcdsBenchmark)
@@ -747,25 +747,25 @@ async fn resolve_default_chain_source_storage_profile(
 pub fn native_execution_config_for_profile_with_env(
     profile: NativeExecutionProfile,
     mut get: impl FnMut(&str) -> Option<String>,
-) -> SmokeResult<NativeCudfExecutionConfig> {
+) -> SmokeResult<NexusNativeExecutionConfig> {
     let mut config = match profile {
-        NativeExecutionProfile::Smoke => NativeCudfExecutionConfig::bounded_auto_sized(),
+        NativeExecutionProfile::Smoke => NexusNativeExecutionConfig::bounded_auto_sized(),
         NativeExecutionProfile::TpchBenchmark | NativeExecutionProfile::TpcdsBenchmark => {
             let device_budget_bytes = optional_env_u64_get(&mut get, NATIVE_DEVICE_BUDGET_BYTES_ENV)?
-                .unwrap_or_else(NativeCudfExecutionConfig::auto_sized_device_budget_bytes);
+                .unwrap_or_else(NexusNativeExecutionConfig::auto_sized_device_budget_bytes);
             let max_source_chunk_bytes = optional_env_u64_get(&mut get, NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV)?
                 .unwrap_or(TPCH_NATIVE_MAX_SOURCE_CHUNK_BYTES_DEFAULT);
             let max_row_groups_per_chunk = optional_env_usize_get(&mut get, NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV)?
                 .unwrap_or(TPCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_DEFAULT);
             let max_retry_attempts = optional_env_usize_get(&mut get, NATIVE_MAX_RETRY_ATTEMPTS_ENV)?
-                .unwrap_or(NativeCudfExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS);
+                .unwrap_or(NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS);
             let min_retry_chunk_row_groups = optional_env_usize_get(&mut get, NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV)?
-                .unwrap_or(NativeCudfExecutionConfig::DEFAULT_BOUNDED_MIN_RETRY_CHUNK_ROW_GROUPS);
+                .unwrap_or(NexusNativeExecutionConfig::DEFAULT_BOUNDED_MIN_RETRY_CHUNK_ROW_GROUPS);
             let max_source_reads_in_flight = optional_env_usize_get(&mut get, NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV)?
                 .unwrap_or(TPCH_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_DEFAULT);
             let statistical_aggregate_execution_mode =
                 native_statistical_aggregate_execution_mode_for_profile_with_env(profile, &mut get)?;
-            NativeCudfExecutionConfig::bounded(
+            NexusNativeExecutionConfig::bounded(
                 device_budget_bytes,
                 max_source_chunk_bytes,
                 max_row_groups_per_chunk,

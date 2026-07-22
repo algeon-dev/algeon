@@ -302,13 +302,13 @@ fn full_join_size_preflight_workspace_reservation_bytes(
 }
 
 // Diagnostic trace surface for the bounded-join output-materialize preflight.
-// Gated by `CUDF_BOUNDED_JOIN_MATERIALIZE_TRACE=1`. Emits per-call entry /
+// Gated by `NEXUS_BOUNDED_JOIN_MATERIALIZE_TRACE=1`. Emits per-call entry /
 // success / failure events on stderr with the reservation-tracker snapshot
 // (budget, reserved, remaining) at the moment the libcudf preflight runs.
 // Used to localize unreserved-allocation hazards in the join-materialize
 // chokepoint without changing TSV report schemas.
 pub(in crate::exec::bounded) fn trace_preflight_enabled() -> bool {
-    std::env::var("CUDF_BOUNDED_JOIN_MATERIALIZE_TRACE").map(|v| v == "1").unwrap_or(false)
+    std::env::var("NEXUS_BOUNDED_JOIN_MATERIALIZE_TRACE").map(|v| v == "1").unwrap_or(false)
 }
 
 pub(in crate::exec::bounded) fn trace_preflight_entry(

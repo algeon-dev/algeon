@@ -18,8 +18,8 @@ pub use governor::{
     MemoryGovernorReport, MemoryGrant,
 };
 pub use inventory::{
-    CudfInventory, CudfNvmlTelemetry, DeviceFacts, DeviceTelemetrySnapshot, DeviceTelemetryStatus, GpuInventory,
-    GpuTelemetry, device_budget_bytes_from_facts,
+    DeviceFacts, DeviceTelemetrySnapshot, DeviceTelemetryStatus, GpuInventory, GpuTelemetry, NexusGpuInventory,
+    NexusNvmlTelemetry, device_budget_bytes_from_facts,
 };
 pub use memory_failure::{DeviceMemoryFailureReport, DeviceMemoryFailureTracker};
 pub use placement::{

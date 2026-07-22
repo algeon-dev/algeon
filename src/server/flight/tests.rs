@@ -17,7 +17,7 @@ use crate::{
         },
     },
     table_format::{
-        iceberg::CudfIcebergTableProvider,
+        iceberg::NexusIcebergTableProvider,
         scan::{
             TableFormat, TableFormatColumnMapping, TableFormatColumnRole, TableFormatColumnSource, TableFormatDataFile,
             TableFormatDataFileFormat, TableFormatPlanner, TableFormatReadCapability, TableFormatScanPlan,
@@ -156,7 +156,7 @@ async fn unsupported_non_iceberg_operator_column_in_mixed_plan_does_not_fast_fai
     let iceberg_schema = iceberg_test_schema();
     let planner = Arc::new(CountingPlanner::new(native_admissible_scan_plan(Arc::clone(&iceberg_schema))));
     let provider = Arc::new(
-        CudfIcebergTableProvider::from_table_format_planner(Arc::clone(&iceberg_schema), planner.clone())
+        NexusIcebergTableProvider::from_table_format_planner(Arc::clone(&iceberg_schema), planner.clone())
             .with_catalog_type("local"),
     );
     let ctx = SessionContext::new();
@@ -180,7 +180,7 @@ async fn unsupported_iceberg_operator_column_in_mixed_plan_fast_fails() {
     let iceberg_schema = map_schema();
     let planner = Arc::new(CountingPlanner::new(map_scan_plan(Arc::clone(&iceberg_schema))));
     let provider = Arc::new(
-        CudfIcebergTableProvider::from_table_format_planner(Arc::clone(&iceberg_schema), planner.clone())
+        NexusIcebergTableProvider::from_table_format_planner(Arc::clone(&iceberg_schema), planner.clone())
             .with_catalog_type("local"),
     );
     let ctx = Arc::new(SessionContext::new());
@@ -190,9 +190,9 @@ async fn unsupported_iceberg_operator_column_in_mixed_plan_fast_fails() {
     let memory_table = Arc::new(MemTable::try_new(Arc::clone(&memory_schema), vec![vec![]]).unwrap());
     ctx.register_table("mem_t", memory_table).expect("test registers memory table");
 
-    let service = DatafusionCudfFlightSqlService::new(
+    let service = DatafusionNexusFlightSqlService::new(
         ctx,
-        CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred),
+        NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred),
         ServerSessionProfile::Native,
         Arc::new(QueryAdmission::new(1).expect("test admission limit")),
         Duration::from_secs(30),
@@ -227,15 +227,15 @@ async fn assert_unsupported_table_format_operator_fast_fails_before_scan_plannin
     type_prefix: &str,
 ) {
     let provider = Arc::new(
-        CudfIcebergTableProvider::from_table_format_planner(Arc::clone(&schema), planner.clone())
+        NexusIcebergTableProvider::from_table_format_planner(Arc::clone(&schema), planner.clone())
             .with_catalog_type("local"),
     );
     let ctx = Arc::new(SessionContext::new());
     ctx.register_table("iceberg_t", provider).expect("test registers table once");
 
-    let service = DatafusionCudfFlightSqlService::new(
+    let service = DatafusionNexusFlightSqlService::new(
         ctx,
-        CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred),
+        NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred),
         ServerSessionProfile::Native,
         Arc::new(QueryAdmission::new(1).expect("test admission limit")),
         Duration::from_secs(30),
@@ -266,16 +266,16 @@ async fn planning_timeout_consumes_statement_ticket_without_holding_admission() 
     let planner =
         Arc::new(SleepingPlanner::new(native_admissible_scan_plan(Arc::clone(&schema)), Duration::from_millis(50)));
     let provider = Arc::new(
-        CudfIcebergTableProvider::from_table_format_planner(Arc::clone(&schema), planner)
+        NexusIcebergTableProvider::from_table_format_planner(Arc::clone(&schema), planner)
             .with_catalog_type("local")
             .with_scan_planning_timeout(Some(Duration::from_millis(1))),
     );
     let ctx = Arc::new(SessionContext::new());
     ctx.register_table("iceberg_t", provider).expect("test registers table once");
 
-    let service = DatafusionCudfFlightSqlService::new(
+    let service = DatafusionNexusFlightSqlService::new(
         ctx,
-        CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred),
+        NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred),
         ServerSessionProfile::Native,
         Arc::new(QueryAdmission::new(1).expect("test admission limit")),
         Duration::from_secs(30),
@@ -311,9 +311,9 @@ async fn update_ddl_read_only_schema_failure_captures_catalog_target_facts() {
         "glue",
         Arc::new(ReadOnlyCatalog::new("nexus_graph", [("edges_by_src", read_only_edge_table())])),
     );
-    let service = DatafusionCudfFlightSqlService::new(
+    let service = DatafusionNexusFlightSqlService::new(
         ctx,
-        CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred),
+        NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred),
         ServerSessionProfile::Native,
         Arc::new(QueryAdmission::new(1).expect("test admission limit")),
         Duration::from_secs(30),
@@ -359,9 +359,9 @@ async fn update_ddl_read_only_schema_failure_captures_catalog_target_facts() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn update_set_datafusion_nexus_key_is_rejected_loudly() {
     let ctx = Arc::new(SessionContext::new());
-    let service = DatafusionCudfFlightSqlService::new(
+    let service = DatafusionNexusFlightSqlService::new(
         ctx,
-        CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred),
+        NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred),
         ServerSessionProfile::Native,
         Arc::new(QueryAdmission::new(1).expect("test admission limit")),
         Duration::from_secs(30),
@@ -393,9 +393,9 @@ async fn update_set_datafusion_nexus_key_is_rejected_loudly() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn update_set_plain_datafusion_key_still_succeeds() {
     let ctx = Arc::new(SessionContext::new());
-    let service = DatafusionCudfFlightSqlService::new(
+    let service = DatafusionNexusFlightSqlService::new(
         ctx,
-        CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred),
+        NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred),
         ServerSessionProfile::Native,
         Arc::new(QueryAdmission::new(1).expect("test admission limit")),
         Duration::from_secs(30),
@@ -417,9 +417,9 @@ async fn update_set_plain_datafusion_key_still_succeeds() {
 
 #[tokio::test]
 async fn prepared_update_shutdown_promotion_preserves_operation_and_request_metadata() {
-    let service = DatafusionCudfFlightSqlService::new(
+    let service = DatafusionNexusFlightSqlService::new(
         Arc::new(SessionContext::new()),
-        CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred),
+        NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred),
         ServerSessionProfile::Native,
         Arc::new(QueryAdmission::new(1).expect("test admission limit")),
         Duration::from_secs(30),
@@ -458,7 +458,7 @@ async fn prepared_update_shutdown_promotion_preserves_operation_and_request_meta
 }
 
 async fn issue_statement_ticket(
-    service: &DatafusionCudfFlightSqlService,
+    service: &DatafusionNexusFlightSqlService,
     sql: &str,
 ) -> Result<Response<FlightInfo>, Status> {
     service
@@ -471,9 +471,9 @@ async fn issue_statement_ticket(
 
 #[tokio::test]
 async fn issuing_a_new_ticket_sweeps_abandoned_tickets_without_do_get() {
-    let service = DatafusionCudfFlightSqlService::new(
+    let service = DatafusionNexusFlightSqlService::new(
         Arc::new(SessionContext::new()),
-        CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred),
+        NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred),
         ServerSessionProfile::Native,
         Arc::new(QueryAdmission::new(1).expect("test admission limit")),
         Duration::ZERO,
@@ -495,7 +495,7 @@ async fn issuing_a_new_ticket_sweeps_abandoned_tickets_without_do_get() {
     ));
 }
 
-fn only_ticket_query_id(service: &DatafusionCudfFlightSqlService) -> String {
+fn only_ticket_query_id(service: &DatafusionNexusFlightSqlService) -> String {
     let query_ids = service.coordinator.ticket_query_ids();
     assert_eq!(query_ids.len(), 1, "expected exactly one live statement ticket, got {query_ids:?}");
     query_ids[0].clone()

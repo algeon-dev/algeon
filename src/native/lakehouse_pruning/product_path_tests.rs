@@ -44,7 +44,8 @@ use nexus_query_engine::{
 
 use super::prune_native_query_plan;
 use crate::native_exec::{
-    NativeCudfComposedExec, NativeCudfExec, NativeCudfExecutionConfig, NativeCudfGpuProducerExec, QueryAdmissionSource,
+    NexusNativeComposedExec, NexusNativeExec, NexusNativeExecutionConfig, NexusNativeGpuProducerExec,
+    QueryAdmissionSource,
 };
 
 #[derive(Debug)]
@@ -235,7 +236,7 @@ fn prunable_query_plan(uri: &str, file_size_bytes: usize, gpu_resident_sink: boo
     (plan, source)
 }
 
-fn admission_only_execution_config() -> NativeCudfExecutionConfig {
+fn admission_only_execution_config() -> NexusNativeExecutionConfig {
     let tenant_id = TenantId::new("lakehouse-order-test");
     let deployment = DeploymentIoCapability::from_probe_inputs(
         NvidiaFsProbeStatus::DriverMissing,
@@ -252,7 +253,7 @@ fn admission_only_execution_config() -> NativeCudfExecutionConfig {
         deployment,
     )
     .expect("admission-only query service should build");
-    NativeCudfExecutionConfig::bounded(1024 * 1024, 512, 1, 3, 1)
+    NexusNativeExecutionConfig::bounded(1024 * 1024, 512, 1, 3, 1)
         .with_query_admission_source(QueryAdmissionSource::new(service, tenant_id))
         .with_plan_query_admission_ticket()
         .with_lakehouse_footer_pruning(true)
@@ -365,7 +366,7 @@ async fn native_host_resolves_lakehouse_metadata_before_admission_context() {
     let runtime_env = Arc::new(RuntimeEnv::default());
     let get_calls = register_tracking_parquet_store(&runtime_env, "s3://host-source", &bytes).await;
     let (plan, _) = prunable_query_plan("s3://host-source/table/data.parquet", bytes.len(), false);
-    let exec = NativeCudfExec::try_new(plan, admission_only_execution_config())
+    let exec = NexusNativeExec::try_new(plan, admission_only_execution_config())
         .expect("test native host execution should build");
 
     let mut stream = exec
@@ -386,7 +387,7 @@ async fn native_composed_resolves_consumer_and_producer_metadata_before_admissio
     let producer_gets = register_tracking_parquet_store(&runtime_env, "s3://producer-source", &bytes).await;
 
     let (producer_plan, _) = prunable_query_plan("s3://producer-source/table/data.parquet", bytes.len(), true);
-    let producer = NativeCudfGpuProducerExec::try_new_with_metrics_capture_and_shape(
+    let producer = NexusNativeGpuProducerExec::try_new_with_metrics_capture_and_shape(
         "producer",
         producer_plan,
         None,
@@ -408,7 +409,7 @@ async fn native_composed_resolves_consumer_and_producer_metadata_before_admissio
     let union = builder.add_union(vec![consumer_source, producer_source], Arc::clone(&schema));
     let consumer_plan = builder.finish_with_host_sink(union);
     let exec =
-        NativeCudfComposedExec::try_new(consumer_plan, vec![Arc::new(producer)], admission_only_execution_config())
+        NexusNativeComposedExec::try_new(consumer_plan, vec![Arc::new(producer)], admission_only_execution_config())
             .expect("test native composed execution should build");
 
     let mut stream = exec

@@ -460,7 +460,7 @@ impl GpuResultHandle {
         self.batch.to_host_record_batch().map_err(|error| {
             QueryError::from_cudf(
                 "nexus_query_engine.host_arrow.materialize",
-                "failed to materialize native cudf output to host Arrow",
+                "failed to materialize nexus native output to host Arrow",
                 error,
             )
         })
@@ -631,7 +631,7 @@ impl GpuFilteredJoinBuildHandle {
             filtered_join.device_allocated_size_bytes().map(|bytes| bytes as u64).map_err(|error| {
                 QueryError::from_cudf(
                     "nexus_query_engine.gpu_filtered_join_build_handle",
-                    "failed to observe native cudf reusable filtered join memory",
+                    "failed to observe nexus native reusable filtered join memory",
                     error,
                 )
                 .with_fact("key_count", filtered_join.build_keys().len())
@@ -701,7 +701,7 @@ impl GpuHashJoinBuildHandle {
             hash_join.device_allocated_size_bytes().map(|bytes| bytes as u64).map_err(|error| {
                 QueryError::from_cudf(
                     "nexus_query_engine.gpu_hash_join_build_handle",
-                    "failed to observe native cudf reusable hash join memory",
+                    "failed to observe nexus native reusable hash join memory",
                     error,
                 )
                 .with_fact("key_count", hash_join.build_keys().len())
@@ -826,7 +826,7 @@ pub(crate) fn gpu_hash_join_build_columns(frame: &DataFrame) -> Result<Vec<GpuHa
     let info = frame.info_with(InfoDetail::COLUMNS).map_err(|error| {
         QueryError::from_cudf(
             "nexus_query_engine.gpu_hash_join_build_contract",
-            "failed to observe native cudf hash-join build schema contract",
+            "failed to observe nexus native hash-join build schema contract",
             error,
         )
     })?;
@@ -834,7 +834,7 @@ pub(crate) fn gpu_hash_join_build_columns(frame: &DataFrame) -> Result<Vec<GpuHa
         QueryError::new(
             crate::error::QueryErrorCode::InvalidPlan,
             "nexus_query_engine.gpu_hash_join_build_contract",
-            "native cudf hash-join build schema contract did not include column metadata",
+            "nexus native hash-join build schema contract did not include column metadata",
         )
     })?;
     Ok(columns

@@ -28,8 +28,8 @@ async fn native_runtime_tpch_q1_tiny_matches_cpu() {
 
     let native_plan = native_datafusion_tpch_sql_plan(&dir, q1.sql, native_datafusion_config()).await;
     assert!(
-        displayable(native_plan.as_ref()).indent(false).to_string().contains("NativeCudfExec"),
-        "TPC-H Q1 should be replaced by NativeCudfExec"
+        displayable(native_plan.as_ref()).indent(false).to_string().contains("NexusNativeExec"),
+        "TPC-H Q1 should be replaced by NexusNativeExec"
     );
 
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
@@ -51,8 +51,8 @@ async fn native_runtime_tpch_q3_tiny_join_matches_cpu() {
 
     let native_plan = native_datafusion_tpch_sql_plan(&dir, q3.sql, unbounded_native_datafusion_config()).await;
     assert!(
-        displayable(native_plan.as_ref()).indent(false).to_string().contains("NativeCudfExec"),
-        "TPC-H Q3 should be replaced by NativeCudfExec"
+        displayable(native_plan.as_ref()).indent(false).to_string().contains("NexusNativeExec"),
+        "TPC-H Q3 should be replaced by NexusNativeExec"
     );
 
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
@@ -84,7 +84,7 @@ async fn native_runtime_tpch_q7_tiny_bounded_duplicate_nation_identity_matches_c
     );
 
     let native_plan = native_datafusion_tpch_sql_plan(&dir, q7.sql, native_datafusion_config()).await;
-    assert_native_cudf_exec(&native_plan, "bounded TPC-H Q7 should be replaced by NativeCudfExec");
+    assert_nexus_native_exec(&native_plan, "bounded TPC-H Q7 should be replaced by NexusNativeExec");
 
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
     cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
@@ -94,7 +94,7 @@ async fn native_runtime_tpch_q7_tiny_bounded_duplicate_nation_identity_matches_c
     assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
     assert!(cudf::testing::arrow::arrow_host_export_call_count_for_test() >= 1);
 
-    let metrics = native_plan.metrics().expect("NativeCudfExec should expose DataFusion metrics");
+    let metrics = native_plan.metrics().expect("NexusNativeExec should expose DataFusion metrics");
     assert_eq!(metrics.sum_by_name("host_to_device_uploads").unwrap().as_usize(), 0);
     assert!(metrics.sum_by_name("device_to_host_materializations").unwrap().as_usize() >= 1);
     assert_eq!(metrics.sum_by_name("reservation_denied_count").unwrap().as_usize(), 0);
@@ -120,7 +120,7 @@ async fn native_runtime_tpch_q2_tiny_bounded_aggregate_over_join_subplan_topk_ma
     );
 
     let native_plan = native_datafusion_tpch_sql_plan(&dir, q2.sql, native_datafusion_config()).await;
-    assert_native_cudf_exec(&native_plan, "bounded TPC-H Q2 should be replaced by NativeCudfExec");
+    assert_nexus_native_exec(&native_plan, "bounded TPC-H Q2 should be replaced by NexusNativeExec");
 
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
     cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
@@ -141,8 +141,8 @@ async fn native_runtime_tpch_q19_tiny_join_residual_in_list_matches_cpu() {
 
     let native_plan = native_datafusion_tpch_sql_plan(&dir, q19.sql, unbounded_native_datafusion_config()).await;
     assert!(
-        displayable(native_plan.as_ref()).indent(false).to_string().contains("NativeCudfExec"),
-        "TPC-H Q19 should be replaced by NativeCudfExec"
+        displayable(native_plan.as_ref()).indent(false).to_string().contains("NexusNativeExec"),
+        "TPC-H Q19 should be replaced by NexusNativeExec"
     );
 
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
@@ -182,7 +182,7 @@ async fn native_runtime_tpch_q04_tiny_bounded_left_semi_full_sort_matches_cpu() 
     assert_batches_equal(&cpu_batches, std::slice::from_ref(direct_batches));
 
     let native_plan = native_datafusion_tpch_sql_plan(&dir, q4.sql, native_datafusion_config()).await;
-    assert_native_cudf_exec(&native_plan, "bounded TPC-H Q4 should be replaced by NativeCudfExec");
+    assert_nexus_native_exec(&native_plan, "bounded TPC-H Q4 should be replaced by NexusNativeExec");
 
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
     cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
@@ -191,7 +191,7 @@ async fn native_runtime_tpch_q04_tiny_bounded_left_semi_full_sort_matches_cpu() 
     assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
     assert!(cudf::testing::arrow::arrow_host_export_call_count_for_test() >= 1);
 
-    let metrics = native_plan.metrics().expect("NativeCudfExec should expose DataFusion metrics");
+    let metrics = native_plan.metrics().expect("NexusNativeExec should expose DataFusion metrics");
     assert_eq!(metrics.sum_by_name("host_to_device_uploads").unwrap().as_usize(), 0);
     assert!(metrics.sum_by_name("device_to_host_materializations").unwrap().as_usize() >= 1);
     assert_eq!(metrics.sum_by_name("reservation_denied_count").unwrap().as_usize(), 0);
@@ -208,8 +208,8 @@ async fn native_runtime_tpch_q15_tiny_root_join_matches_cpu() {
 
     let native_plan = native_datafusion_tpch_sql_plan(&dir, q15.sql, unbounded_native_datafusion_config()).await;
     assert!(
-        displayable(native_plan.as_ref()).indent(false).to_string().contains("NativeCudfExec"),
-        "TPC-H Q15 should be replaced by NativeCudfExec"
+        displayable(native_plan.as_ref()).indent(false).to_string().contains("NexusNativeExec"),
+        "TPC-H Q15 should be replaced by NexusNativeExec"
     );
 
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
@@ -266,7 +266,7 @@ async fn native_runtime_tpch_q18_tiny_bounded_resident_aggregate_topk_matches_cp
     assert_batches_equal_allow_empty(&cpu_batches, std::slice::from_ref(direct_batches));
 
     let native_plan = native_datafusion_tpch_sql_plan(&dir, q18.sql, native_datafusion_config()).await;
-    assert_native_cudf_exec(&native_plan, "bounded TPC-H Q18 should be replaced by NativeCudfExec");
+    assert_nexus_native_exec(&native_plan, "bounded TPC-H Q18 should be replaced by NexusNativeExec");
 
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
     cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
@@ -275,7 +275,7 @@ async fn native_runtime_tpch_q18_tiny_bounded_resident_aggregate_topk_matches_cp
     assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
     assert!(cudf::testing::arrow::arrow_host_export_call_count_for_test() >= 1);
 
-    let metrics = native_plan.metrics().expect("NativeCudfExec should expose DataFusion metrics");
+    let metrics = native_plan.metrics().expect("NexusNativeExec should expose DataFusion metrics");
     assert_eq!(metrics.sum_by_name("host_to_device_uploads").unwrap().as_usize(), 0);
     assert!(metrics.sum_by_name("device_to_host_materializations").unwrap().as_usize() >= 1);
     assert_eq!(metrics.sum_by_name("reservation_denied_count").unwrap().as_usize(), 0);
@@ -324,7 +324,7 @@ async fn native_runtime_tpch_q20_tiny_bounded_resident_aggregate_subquery_filter
     assert_batches_equal_allow_empty(&cpu_batches, std::slice::from_ref(direct_batches));
 
     let native_plan = native_datafusion_tpch_sql_plan(&dir, q20.sql, native_datafusion_config()).await;
-    assert_native_cudf_exec(&native_plan, "bounded TPC-H Q20 should be replaced by NativeCudfExec");
+    assert_nexus_native_exec(&native_plan, "bounded TPC-H Q20 should be replaced by NexusNativeExec");
 
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
     cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
@@ -333,7 +333,7 @@ async fn native_runtime_tpch_q20_tiny_bounded_resident_aggregate_subquery_filter
     assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
     assert!(cudf::testing::arrow::arrow_host_export_call_count_for_test() >= 1);
 
-    let metrics = native_plan.metrics().expect("NativeCudfExec should expose DataFusion metrics");
+    let metrics = native_plan.metrics().expect("NexusNativeExec should expose DataFusion metrics");
     assert_eq!(metrics.sum_by_name("host_to_device_uploads").unwrap().as_usize(), 0);
     assert!(metrics.sum_by_name("device_to_host_materializations").unwrap().as_usize() >= 1);
     assert_eq!(metrics.sum_by_name("reservation_denied_count").unwrap().as_usize(), 0);
@@ -350,8 +350,8 @@ async fn native_runtime_tpch_q16_tiny_distinct_anti_join_matches_cpu() {
 
     let native_plan = native_datafusion_tpch_sql_plan(&dir, q16.sql, unbounded_native_datafusion_config()).await;
     assert!(
-        displayable(native_plan.as_ref()).indent(false).to_string().contains("NativeCudfExec"),
-        "TPC-H Q16 should be replaced by NativeCudfExec"
+        displayable(native_plan.as_ref()).indent(false).to_string().contains("NexusNativeExec"),
+        "TPC-H Q16 should be replaced by NexusNativeExec"
     );
 
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
@@ -373,8 +373,8 @@ async fn native_runtime_tpch_q11_tiny_nested_loop_having_subquery_matches_cpu() 
 
     let native_plan = native_datafusion_tpch_sql_plan(&dir, q11.sql, unbounded_native_datafusion_config()).await;
     assert!(
-        displayable(native_plan.as_ref()).indent(false).to_string().contains("NativeCudfExec"),
-        "TPC-H Q11 should be replaced by NativeCudfExec"
+        displayable(native_plan.as_ref()).indent(false).to_string().contains("NexusNativeExec"),
+        "TPC-H Q11 should be replaced by NexusNativeExec"
     );
 
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
@@ -396,7 +396,7 @@ async fn native_runtime_tpch_q11_tiny_bounded_aggregate_over_join_subplan_inputs
     assert_eq!(record_batch_row_count(&cpu_batches), 1, "tiny TPC-H Q11 CPU output should be non-empty");
 
     let native_plan = native_datafusion_tpch_sql_plan(&dir, q11.sql, native_datafusion_config()).await;
-    assert_native_cudf_exec(&native_plan, "bounded TPC-H Q11 should be replaced by NativeCudfExec");
+    assert_nexus_native_exec(&native_plan, "bounded TPC-H Q11 should be replaced by NexusNativeExec");
 
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
     cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
@@ -405,7 +405,7 @@ async fn native_runtime_tpch_q11_tiny_bounded_aggregate_over_join_subplan_inputs
     assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
     assert!(cudf::testing::arrow::arrow_host_export_call_count_for_test() >= 1);
 
-    let metrics = native_plan.metrics().expect("NativeCudfExec should expose DataFusion metrics");
+    let metrics = native_plan.metrics().expect("NexusNativeExec should expose DataFusion metrics");
     assert_eq!(metrics.sum_by_name("host_to_device_uploads").unwrap().as_usize(), 0);
     assert!(metrics.sum_by_name("device_to_host_materializations").unwrap().as_usize() >= 1);
     assert_eq!(metrics.sum_by_name("reservation_denied_count").unwrap().as_usize(), 0);
@@ -420,7 +420,7 @@ async fn native_runtime_tpch_q11_tiny_bounded_budget_failure_preserves_reservati
     let q11 = TPCH_QUERIES.iter().find(|query| query.id == "q11").expect("TPC-H Q11 query must exist");
 
     let native_plan = native_datafusion_tpch_sql_plan(&dir, q11.sql, constrained_native_datafusion_config()).await;
-    assert_native_cudf_exec(
+    assert_nexus_native_exec(
         &native_plan,
         "bounded TPC-H Q11 should be admitted before the constrained runtime budget fails",
     );
@@ -458,8 +458,8 @@ async fn native_runtime_tpch_q17_tiny_bounded_decimal_residual_matches_cpu() {
 
     let native_plan = native_datafusion_tpch_sql_plan(&dir, q17.sql, native_datafusion_config()).await;
     assert!(
-        displayable(native_plan.as_ref()).indent(false).to_string().contains("NativeCudfExec"),
-        "TPC-H Q17 should be replaced by NativeCudfExec"
+        displayable(native_plan.as_ref()).indent(false).to_string().contains("NexusNativeExec"),
+        "TPC-H Q17 should be replaced by NexusNativeExec"
     );
 
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
@@ -481,8 +481,8 @@ async fn native_runtime_tpch_q22_tiny_bounded_scalar_subquery_matches_cpu() {
 
     let native_plan = native_datafusion_tpch_sql_plan(&dir, q22.sql, native_datafusion_config()).await;
     assert!(
-        displayable(native_plan.as_ref()).indent(false).to_string().contains("NativeCudfExec"),
-        "TPC-H Q22 should be replaced by NativeCudfExec"
+        displayable(native_plan.as_ref()).indent(false).to_string().contains("NexusNativeExec"),
+        "TPC-H Q22 should be replaced by NexusNativeExec"
     );
 
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
@@ -510,8 +510,8 @@ async fn assert_tpch_q6_native_parity(lineitem_path: &std::path::Path) {
 
     let native_plan = native_datafusion_lineitem_sql_plan(lineitem_path, q6.sql, native_datafusion_config()).await;
     assert!(
-        displayable(native_plan.as_ref()).indent(false).to_string().contains("NativeCudfExec"),
-        "TPC-H Q6 should be replaced by NativeCudfExec"
+        displayable(native_plan.as_ref()).indent(false).to_string().contains("NexusNativeExec"),
+        "TPC-H Q6 should be replaced by NexusNativeExec"
     );
 
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;

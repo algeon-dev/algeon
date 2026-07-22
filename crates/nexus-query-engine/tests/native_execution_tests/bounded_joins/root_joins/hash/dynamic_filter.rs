@@ -32,15 +32,20 @@ fn bounded_native_query_applies_hash_join_build_dynamic_filter_to_probe_source()
         right,
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
-                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(
+                    nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
+                    "order_id",
+                ),
                 JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(join);
-    let optimized =
-        nexus_query_engine::optimizer::optimize_query_plan(plan, &nexus_query_engine::optimizer::NativeOptimizerOptions::default());
+    let optimized = nexus_query_engine::optimizer::optimize_query_plan(
+        plan,
+        &nexus_query_engine::optimizer::NativeOptimizerOptions::default(),
+    );
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     let context = ExecutionContext::builder()
         .with_shared_runtime(Arc::clone(&runtime))
@@ -120,7 +125,10 @@ fn bounded_native_query_applies_post_decode_filter_to_shared_local_source_frame(
             )],
         )
         .with_output_projection(vec![
-            JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "p_partkey", "p_partkey"), "p_partkey"),
+            JoinOutputColumn::left(
+                nexus_query_engine::expr::ColumnRef::input(0, "p_partkey", "p_partkey"),
+                "p_partkey",
+            ),
             JoinOutputColumn::right(
                 nexus_query_engine::expr::ColumnRef::input(1, "ps_supplycost", "ps_supplycost"),
                 "ps_supplycost",
@@ -140,7 +148,10 @@ fn bounded_native_query_applies_post_decode_filter_to_shared_local_source_frame(
             )],
         )
         .with_output_projection(vec![
-            JoinOutputColumn::right(nexus_query_engine::expr::ColumnRef::input(1, "ps_partkey", "ps_partkey"), "ps_partkey"),
+            JoinOutputColumn::right(
+                nexus_query_engine::expr::ColumnRef::input(1, "ps_partkey", "ps_partkey"),
+                "ps_partkey",
+            ),
             JoinOutputColumn::right(
                 nexus_query_engine::expr::ColumnRef::input(1, "ps_supplycost", "ps_supplycost"),
                 "ps_supplycost",
@@ -177,7 +188,10 @@ fn bounded_native_query_applies_post_decode_filter_to_shared_local_source_frame(
             ],
         )
         .with_output_projection(vec![
-            JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "p_partkey", "p_partkey"), "p_partkey"),
+            JoinOutputColumn::left(
+                nexus_query_engine::expr::ColumnRef::input(0, "p_partkey", "p_partkey"),
+                "p_partkey",
+            ),
             JoinOutputColumn::left(
                 nexus_query_engine::expr::ColumnRef::input(0, "ps_supplycost", "ps_supplycost"),
                 "ps_supplycost",
@@ -195,7 +209,8 @@ fn bounded_native_query_applies_post_decode_filter_to_shared_local_source_frame(
     let optimized = nexus_query_engine::optimizer::optimize_query_plan(plan, &optimizer_options);
     assert!(optimized.plan.dynamic_filter_routes().iter().any(|route| {
         route.consumer_columns == ["ps_partkey".to_string()]
-            && route.consumer_lowering == nexus_query_engine::dynamic_filter::DynamicFilterConsumerLowering::PostDecodeOnly
+            && route.consumer_lowering
+                == nexus_query_engine::dynamic_filter::DynamicFilterConsumerLowering::PostDecodeOnly
             && matches!(
                 route.consumer,
                 nexus_query_engine::dynamic_filter::DynamicFilterConsumer::LocalParquetSource { source_node_id }
@@ -305,7 +320,10 @@ fn bounded_native_query_batches_dynamic_reader_predicate_probe_source_chunks() {
         right,
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
-                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(
+                    nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
+                    "order_id",
+                ),
                 JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
             ])
             .with_build_side(JoinSide::Right),
@@ -444,7 +462,10 @@ fn bounded_native_query_applies_residual_equality_dynamic_filter_before_downstre
             )],
         )
         .with_output_projection(vec![
-            JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "cs_item_sk", "cs_item_sk"), "cs_item_sk"),
+            JoinOutputColumn::left(
+                nexus_query_engine::expr::ColumnRef::input(0, "cs_item_sk", "cs_item_sk"),
+                "cs_item_sk",
+            ),
             JoinOutputColumn::right(
                 nexus_query_engine::expr::ColumnRef::input(1, "d_week_seq", "d_week_seq"),
                 "d_week_seq",
@@ -599,7 +620,10 @@ fn bounded_native_query_prunes_hash_set_dynamic_filter_gap_row_group_off_probe_s
         right,
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
-                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(
+                    nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
+                    "order_id",
+                ),
                 JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
             ])
             .with_build_side(JoinSide::Right),
@@ -698,7 +722,10 @@ fn bounded_native_query_defers_large_small_in_list_reader_filter_when_sibling_re
         order_keys,
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
-                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(
+                    nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
+                    "order_id",
+                ),
                 JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
             ])
             .with_build_side(JoinSide::Right),
@@ -814,7 +841,10 @@ fn bounded_native_query_produces_range_only_dynamic_filter_for_large_local_parqu
         right,
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
-                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(
+                    nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
+                    "order_id",
+                ),
                 JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
             ])
             .with_build_side(JoinSide::Right),
@@ -904,7 +934,10 @@ fn bounded_native_query_skips_large_dynamic_filter_for_dimension_sized_probe_sou
         right,
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
-                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(
+                    nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
+                    "order_id",
+                ),
                 JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
             ])
             .with_build_side(JoinSide::Right),
@@ -992,7 +1025,10 @@ fn bounded_native_query_splits_large_dynamic_filter_between_dimension_and_fact_s
         right,
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
-                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(
+                    nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
+                    "order_id",
+                ),
                 JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
             ])
             .with_build_side(JoinSide::Right),
@@ -1026,7 +1062,8 @@ fn bounded_native_query_splits_large_dynamic_filter_between_dimension_and_fact_s
     assert_eq!(metrics.dynamic_filter_skipped_count, 1);
     assert!(metrics.dynamic_filter_runtime_rows.iter().any(|row| {
         row.event == "skipped"
-            && row.skipped_reason.as_deref() == Some(nexus_query_engine::dynamic_filter::LARGE_KEYSET_DIMENSION_SOURCE_SKIP_REASON)
+            && row.skipped_reason.as_deref()
+                == Some(nexus_query_engine::dynamic_filter::LARGE_KEYSET_DIMENSION_SOURCE_SKIP_REASON)
     }));
     assert!(metrics.dynamic_filter_runtime_rows.iter().any(|row| {
         row.event == "produced"
@@ -1071,7 +1108,10 @@ fn bounded_native_query_does_not_duplicate_small_in_list_reader_predicate_after_
         right,
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
-                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(
+                    nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
+                    "order_id",
+                ),
                 JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
             ])
             .with_build_side(JoinSide::Right),
@@ -1180,7 +1220,10 @@ fn bounded_native_query_does_not_duplicate_tpcds_sized_small_in_list_reader_pred
         right,
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
-                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(
+                    nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
+                    "order_id",
+                ),
                 JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
             ])
             .with_build_side(JoinSide::Right),
@@ -1287,15 +1330,20 @@ fn bounded_native_query_handles_dynamic_filter_pruned_empty_probe_source() {
         right,
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
-                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(
+                    nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
+                    "order_id",
+                ),
                 JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
             ])
             .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(join);
-    let optimized =
-        nexus_query_engine::optimizer::optimize_query_plan(plan, &nexus_query_engine::optimizer::NativeOptimizerOptions::default());
+    let optimized = nexus_query_engine::optimizer::optimize_query_plan(
+        plan,
+        &nexus_query_engine::optimizer::NativeOptimizerOptions::default(),
+    );
     assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     let context = ExecutionContext::builder()
         .with_shared_runtime(Arc::clone(&runtime))
@@ -1360,7 +1408,10 @@ fn bounded_native_query_applies_hash_join_build_dynamic_filter_to_resident_probe
         right,
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
-                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(
+                    nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
+                    "order_id",
+                ),
                 JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
             ])
             .with_build_side(JoinSide::Right),
@@ -1455,7 +1506,10 @@ fn bounded_native_query_applies_hash_join_build_dynamic_filter_at_resident_probe
         right,
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
-                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(
+                    nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
+                    "order_id",
+                ),
                 JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
             ])
             .with_build_side(JoinSide::Right),
@@ -1560,7 +1614,10 @@ fn bounded_native_query_applies_filter_dynamic_filter_through_projection_alias()
         right,
         JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
             .with_output_projection(vec![
-                JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(
+                    nexus_query_engine::expr::ColumnRef::input(0, "order_id", "order_id"),
+                    "order_id",
+                ),
                 JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "qty", "qty"), "qty"),
             ])
             .with_build_side(JoinSide::Right),

@@ -58,7 +58,7 @@ fn benchmark_report_header_and_rejected_rows_are_stable() {
 #[test]
 fn benchmark_report_metadata_identifies_named_sf100_profile() {
     let profile =
-        tpch_native_profile_settings_from([(CUDF_TPCH_BENCH_NATIVE_PROFILE_ENV, "sf100_gpu_throughput")]).unwrap();
+        tpch_native_profile_settings_from([(NEXUS_TPCH_BENCH_NATIVE_PROFILE_ENV, "sf100_gpu_throughput")]).unwrap();
     let config = NativeTpchBenchmarkConfig {
         query_ids: vec!["q01".to_string()],
         dataset_mode: NativeTpchDatasetMode::External(NativeTpchScaleFactor::Sf100),

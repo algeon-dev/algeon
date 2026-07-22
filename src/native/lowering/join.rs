@@ -273,7 +273,7 @@ fn unique_synthetic_join_key_alias(
         JoinKeySide::Right => "right",
     };
     for attempt in 0.. {
-        let alias = format!("__cudf_join_key_{side}_{key_index}_{attempt}");
+        let alias = format!("__nexus_native_join_key_{side}_{key_index}_{attempt}");
         if input_schema.field_with_name(alias.as_str()).is_err()
             && materializations.iter().all(|materialization| materialization.alias != alias)
         {

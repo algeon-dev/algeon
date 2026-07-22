@@ -305,7 +305,7 @@ pub(super) fn apply_position_deletes_to_data_file(
             .map_err(|error| {
                 QueryError::from_cudf(
                     "nexus_query_engine.local_parquet_source.position_deletes.apply",
-                    "failed to apply Iceberg position deletes with native cudf anti join",
+                    "failed to apply Iceberg position deletes with nexus native anti join",
                     error,
                 )
                 .with_fact("path", parquet_file_path_fact(file))
@@ -337,7 +337,7 @@ pub(super) fn apply_position_deletes_to_data_file(
             .map_err(|error| {
                 QueryError::from_cudf(
                     "nexus_query_engine.local_parquet_source.equality_deletes.apply",
-                    "failed to apply Iceberg equality deletes with native cudf anti join",
+                    "failed to apply Iceberg equality deletes with nexus native anti join",
                     error,
                 )
                 .with_fact("path", parquet_file_path_fact(file))

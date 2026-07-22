@@ -96,10 +96,10 @@ async fn plan_native_query_with_resources(
     resources: &NativeTpchRuntimeResources,
 ) -> DataFusionResult<PlannedNativeQuery> {
     let optimizer_config = native_optimizer_config(config, resources);
-    let native_rule = Arc::new(CudfNativePhysicalOptimizerRule::new(optimizer_config.clone()));
+    let native_rule = Arc::new(NexusNativePhysicalOptimizerRule::new(optimizer_config.clone()));
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(native_session_config(config))
-        .with_cudf_native_rule(Arc::clone(&native_rule))
+        .with_nexus_native_rule(Arc::clone(&native_rule))
         .build();
     let ctx = SessionContext::new_with_state(state);
     dataset::register_tpch_tables(&ctx, metadata).await?;
@@ -114,8 +114,8 @@ async fn plan_native_query_with_resources(
 pub(super) fn native_optimizer_config(
     config: &NativeTpchBenchmarkConfig,
     resources: &NativeTpchRuntimeResources,
-) -> CudfOptimizerConfig {
-    CudfOptimizerConfig::new(config.native_fallback_policy)
+) -> NexusNativeOptimizerConfig {
+    NexusNativeOptimizerConfig::new(config.native_fallback_policy)
         .with_native_execution_config(config.native_execution_config_with_resources(resources))
 }
 
@@ -527,7 +527,7 @@ async fn collect_native_plan_once(plan: Arc<dyn ExecutionPlan>) -> DataFusionRes
 }
 
 fn cpu_session_config() -> SessionConfig {
-    match std::env::var("CUDF_TPCH_CPU_PROFILE").as_deref().map(str::to_ascii_lowercase).as_deref() {
+    match std::env::var("NEXUS_TPCH_CPU_PROFILE").as_deref().map(str::to_ascii_lowercase).as_deref() {
         Ok("untuned") | Ok("report") => tpch_report_session_config(),
         _ => crate::report_workload::tpch::tpch_tuned_cpu_session_config(),
     }

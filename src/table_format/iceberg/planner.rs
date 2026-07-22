@@ -55,7 +55,7 @@ use crate::{
             TableFormatScanRequest, TableFormatUnsupportedFeature, TableFormatUnsupportedFeatureCode,
             credential_free_endpoint_identity, resolve_table_format_parquet_source_with_metadata,
         },
-        scan_exec::CudfTableFormatScanExec,
+        scan_exec::NexusTableFormatScanExec,
     },
 };
 
@@ -88,14 +88,14 @@ type SharedTableFormatPlanner = Arc<dyn TableFormatPlanner + Send + Sync>;
 /// filter context and the scan can retain DataFusion's source-level limit
 /// bound.
 #[derive(Clone)]
-pub struct CudfIcebergTableProvider {
+pub struct NexusIcebergTableProvider {
     schema: SchemaRef,
     planner: SharedTableFormatPlanner,
     catalog_type: Option<String>,
     scan_planning_timeout: Option<Duration>,
 }
 
-impl CudfIcebergTableProvider {
+impl NexusIcebergTableProvider {
     /// Builds a provider from an `iceberg-rust` table handle.
     ///
     /// The table schema is converted eagerly; file planning remains lazy and
@@ -143,9 +143,9 @@ impl CudfIcebergTableProvider {
     }
 }
 
-impl fmt::Debug for CudfIcebergTableProvider {
+impl fmt::Debug for NexusIcebergTableProvider {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("CudfIcebergTableProvider")
+        f.debug_struct("NexusIcebergTableProvider")
             .field("schema", &self.schema)
             .field("catalog_type", &self.catalog_type)
             .field("scan_planning_timeout", &self.scan_planning_timeout)
@@ -154,7 +154,7 @@ impl fmt::Debug for CudfIcebergTableProvider {
 }
 
 #[async_trait]
-impl TableProvider for CudfIcebergTableProvider {
+impl TableProvider for NexusIcebergTableProvider {
     fn schema(&self) -> SchemaRef {
         Arc::clone(&self.schema)
     }
@@ -185,7 +185,7 @@ impl TableProvider for CudfIcebergTableProvider {
         let scan_plan = plan_scan_with_optional_timeout(Arc::clone(&self.planner), request, self.scan_planning_timeout)
             .await
             .map_err(DataFusionError::from)?;
-        Ok(Arc::new(CudfTableFormatScanExec::new(scan_plan, projected_schema)))
+        Ok(Arc::new(NexusTableFormatScanExec::new(scan_plan, projected_schema)))
     }
 
     fn supports_filters_pushdown(

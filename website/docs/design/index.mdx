@@ -223,8 +223,8 @@ ORDER BY value DESC;
       id: 'gdf', lane: 'gpu', col: 1,
       kind: 'edge data', name: 'GpuDataFrame', note: 'native or imported', tone: 'gpu',
       sub: 'execute_edge_source_to_gpu',
-      detail: <>If the edge source is already <code>NativeCudfExec</code> or
-        <code>NativeCudfComposedExec</code>, it is re-sunk as GPU-resident and
+      detail: <>If the edge source is already <code>NexusNativeExec</code> or
+        <code>NexusNativeComposedExec</code>, it is re-sunk as GPU-resident and
         handed forward without materializing host Arrow. Otherwise DataFusion
         produces Arrow batches and Nexus imports them into cuDF.</>,
     },

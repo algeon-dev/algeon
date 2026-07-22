@@ -14,17 +14,17 @@ use datafusion::{
 };
 use datafusion_nexus::{
     error::{DataFusionErrorExt, Error as AdapterError},
-    native_exec::NativeCudfExecutionConfig,
+    native_exec::NexusNativeExecutionConfig,
     native_report::{
         NativeDataFusionPlanningOutcome, NativeDataFusionPlanningReport, NativeDataFusionPlanningRow,
         NativeDataFusionPostNativeExecutionPath,
     },
-    planner::{CudfNativePhysicalOptimizerRule, CudfOptimizerConfig},
+    planner::{NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule},
     policy::GpuFallbackPolicy,
-    session::CudfSessionStateBuilderExt,
+    session::NexusSessionStateBuilderExt,
 };
 use datafusion_nexus_workloads::tpcds::{
-    CUDF_TPCDS_GENERATION_COMMAND_ENV, CUDF_TPCDS_SCALE_FACTOR_ENV, NEXUS_PARQUET_DIR_ENV, TPCDS_QUERIES,
+    NEXUS_PARQUET_DIR_ENV, NEXUS_TPCDS_GENERATION_COMMAND_ENV, NEXUS_TPCDS_SCALE_FACTOR_ENV, TPCDS_QUERIES,
     TpcdsDatasetMetadata, TpcdsQuery, default_tpcds_sf1_parquet_root, describe_tpcds_dataset,
 };
 use nexus_query_engine::{
@@ -67,29 +67,29 @@ const TSV_COLUMNS: &[&str] = &[
     "error_message",
 ];
 const DATASET_ROOT_ENV: &str = NEXUS_PARQUET_DIR_ENV;
-const BULK_QUERIES_ENV: &str = "CUDF_QUERY_SERVICE_TPCDS_BULK_QUERY_IDS";
-const INTERACTIVE_QUERIES_ENV: &str = "CUDF_QUERY_SERVICE_TPCDS_INTERACTIVE_QUERY_IDS";
-const BULK_ITERATIONS_ENV: &str = "CUDF_QUERY_SERVICE_TPCDS_BULK_ITERATIONS";
-const INTERACTIVE_ITERATIONS_ENV: &str = "CUDF_QUERY_SERVICE_TPCDS_INTERACTIVE_ITERATIONS";
-const TENANT_BUDGET_BYTES_ENV: &str = "CUDF_QUERY_SERVICE_TPCDS_TENANT_BUDGET_BYTES";
-const DEVICE_CAPACITY_BYTES_ENV: &str = "CUDF_QUERY_SERVICE_TPCDS_DEVICE_CAPACITY_BYTES";
-const TENANT_MIN_GRANT_BYTES_ENV: &str = "CUDF_QUERY_SERVICE_TPCDS_TENANT_MIN_GRANT_BYTES";
-const TENANT_WANT_GRANT_BYTES_ENV: &str = "CUDF_QUERY_SERVICE_TPCDS_TENANT_WANT_GRANT_BYTES";
-const SLOT_GUARANTEE_ENV: &str = "CUDF_QUERY_SERVICE_TPCDS_SLOT_GUARANTEE";
-const MAX_CONCURRENT_QUERIES_ENV: &str = "CUDF_QUERY_SERVICE_TPCDS_MAX_CONCURRENT_QUERIES";
-const MAX_ADMISSION_QUEUE_LEN_ENV: &str = "CUDF_QUERY_SERVICE_TPCDS_MAX_ADMISSION_QUEUE_LEN";
-const ADMISSION_WAIT_TIMEOUT_MS_ENV: &str = "CUDF_QUERY_SERVICE_TPCDS_ADMISSION_WAIT_TIMEOUT_MS";
-const MAX_SOURCE_CHUNK_BYTES_ENV: &str = "CUDF_QUERY_SERVICE_TPCDS_MAX_SOURCE_CHUNK_BYTES";
-const MAX_ROW_GROUPS_PER_CHUNK_ENV: &str = "CUDF_QUERY_SERVICE_TPCDS_MAX_ROW_GROUPS_PER_CHUNK";
-const QUERY_TIMEOUT_MS_ENV: &str = "CUDF_QUERY_SERVICE_TPCDS_QUERY_TIMEOUT_MS";
-const OVERLOAD_PROBE_ENV: &str = "CUDF_QUERY_SERVICE_TPCDS_OVERLOAD_PROBE";
+const BULK_QUERIES_ENV: &str = "NEXUS_QUERY_SERVICE_TPCDS_BULK_QUERY_IDS";
+const INTERACTIVE_QUERIES_ENV: &str = "NEXUS_QUERY_SERVICE_TPCDS_INTERACTIVE_QUERY_IDS";
+const BULK_ITERATIONS_ENV: &str = "NEXUS_QUERY_SERVICE_TPCDS_BULK_ITERATIONS";
+const INTERACTIVE_ITERATIONS_ENV: &str = "NEXUS_QUERY_SERVICE_TPCDS_INTERACTIVE_ITERATIONS";
+const TENANT_BUDGET_BYTES_ENV: &str = "NEXUS_QUERY_SERVICE_TPCDS_TENANT_BUDGET_BYTES";
+const DEVICE_CAPACITY_BYTES_ENV: &str = "NEXUS_QUERY_SERVICE_TPCDS_DEVICE_CAPACITY_BYTES";
+const TENANT_MIN_GRANT_BYTES_ENV: &str = "NEXUS_QUERY_SERVICE_TPCDS_TENANT_MIN_GRANT_BYTES";
+const TENANT_WANT_GRANT_BYTES_ENV: &str = "NEXUS_QUERY_SERVICE_TPCDS_TENANT_WANT_GRANT_BYTES";
+const SLOT_GUARANTEE_ENV: &str = "NEXUS_QUERY_SERVICE_TPCDS_SLOT_GUARANTEE";
+const MAX_CONCURRENT_QUERIES_ENV: &str = "NEXUS_QUERY_SERVICE_TPCDS_MAX_CONCURRENT_QUERIES";
+const MAX_ADMISSION_QUEUE_LEN_ENV: &str = "NEXUS_QUERY_SERVICE_TPCDS_MAX_ADMISSION_QUEUE_LEN";
+const ADMISSION_WAIT_TIMEOUT_MS_ENV: &str = "NEXUS_QUERY_SERVICE_TPCDS_ADMISSION_WAIT_TIMEOUT_MS";
+const MAX_SOURCE_CHUNK_BYTES_ENV: &str = "NEXUS_QUERY_SERVICE_TPCDS_MAX_SOURCE_CHUNK_BYTES";
+const MAX_ROW_GROUPS_PER_CHUNK_ENV: &str = "NEXUS_QUERY_SERVICE_TPCDS_MAX_ROW_GROUPS_PER_CHUNK";
+const QUERY_TIMEOUT_MS_ENV: &str = "NEXUS_QUERY_SERVICE_TPCDS_QUERY_TIMEOUT_MS";
+const OVERLOAD_PROBE_ENV: &str = "NEXUS_QUERY_SERVICE_TPCDS_OVERLOAD_PROBE";
 pub async fn run() -> DataFusionResult<()> {
     let config = StressConfig::from_env()?;
     let dataset = describe_tpcds_dataset(
         &config.dataset_root,
-        std::env::var(CUDF_TPCDS_SCALE_FACTOR_ENV).unwrap_or_else(|_| "sf1".to_string()),
+        std::env::var(NEXUS_TPCDS_SCALE_FACTOR_ENV).unwrap_or_else(|_| "sf1".to_string()),
         "query_service_tpcds_stress",
-        std::env::var(CUDF_TPCDS_GENERATION_COMMAND_ENV).unwrap_or_else(|_| "unspecified".to_string()),
+        std::env::var(NEXUS_TPCDS_GENERATION_COMMAND_ENV).unwrap_or_else(|_| "unspecified".to_string()),
     )
     .map_err(|error| plan_error(error.to_string()))?;
     let cpu_baselines = Arc::new(compute_cpu_baselines(&config).await?);
@@ -652,13 +652,14 @@ async fn collect_native_with_handle(
     query: &TpcdsQuery,
     handle: Arc<nexus_query_engine::runtime::QueryHandle>,
 ) -> DataFusionResult<NativeCollectOutcome> {
-    let optimizer_config = CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred).with_native_execution_config(
-        NativeCudfExecutionConfig::bounded_auto_sized().with_query_service_handle(handle),
-    );
-    let native_rule = Arc::new(CudfNativePhysicalOptimizerRule::new(optimizer_config));
+    let optimizer_config = NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
+        .with_native_execution_config(
+            NexusNativeExecutionConfig::bounded_auto_sized().with_query_service_handle(handle),
+        );
+    let native_rule = Arc::new(NexusNativePhysicalOptimizerRule::new(optimizer_config));
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(tpcds_native_report_session_config())
-        .with_cudf_native_rule(Arc::clone(&native_rule))
+        .with_nexus_native_rule(Arc::clone(&native_rule))
         .build();
     let ctx = SessionContext::new_with_state(state);
     register_tpcds_tables(&ctx, &config.dataset_root).await?;
@@ -1038,7 +1039,7 @@ fn default_device_capacity_bytes(legacy_tenant_budget_bytes: Option<u64>, max_co
     if let Some(tenant_budget_bytes) = legacy_tenant_budget_bytes {
         return tenant_budget_bytes.saturating_mul(u64::try_from(max_concurrent_queries).unwrap_or(u64::MAX));
     }
-    NativeCudfExecutionConfig::auto_sized_device_budget_bytes()
+    NexusNativeExecutionConfig::auto_sized_device_budget_bytes()
 }
 
 fn grant_fraction_bytes(device_capacity_bytes: u64, numerator: u64, denominator: u64) -> u64 {

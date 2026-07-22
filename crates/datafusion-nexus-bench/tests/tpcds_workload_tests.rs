@@ -5,12 +5,12 @@ use std::{
 };
 
 use datafusion_nexus::{
-    native_exec::NativeCudfExecutionConfig,
+    native_exec::NexusNativeExecutionConfig,
     native_report::{
         NativeDataFusionPlanningOutcome, NativeDataFusionPlanningReport, NativeDataFusionPlanningWorkloadInput,
         ParityFloatTolerance,
     },
-    planner::CudfOptimizerConfig,
+    planner::NexusNativeOptimizerConfig,
     policy::GpuFallbackPolicy,
 };
 use datafusion_nexus_bench::{
@@ -18,13 +18,13 @@ use datafusion_nexus_bench::{
     report_workload::{
         gpu_fallback_policy_label, parse_gpu_fallback_policy,
         tpcds::{
-            CUDF_TPCDS_NATIVE_CPU_PREFERENCE_ENV, CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_ROW_GROUPS_ENV,
-            CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_SOURCE_BYTES_ENV,
-            CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_SMALL_SELECTIVE_ROW_GROUPS_ENV,
-            CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_SMALL_SELECTIVE_SOURCE_BYTES_ENV,
-            CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_TOPK_FETCH_ENV, CUDF_TPCDS_NATIVE_DEVICE_BUDGET_BYTES_ENV,
-            CUDF_TPCDS_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, CUDF_TPCDS_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV,
-            CUDF_TPCDS_NATIVE_PROFILE_ENV, CUDF_TPCDS_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV,
+            NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_ENV, NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_ROW_GROUPS_ENV,
+            NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_SOURCE_BYTES_ENV,
+            NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_MAX_SMALL_SELECTIVE_ROW_GROUPS_ENV,
+            NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_MAX_SMALL_SELECTIVE_SOURCE_BYTES_ENV,
+            NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_MAX_TOPK_FETCH_ENV, NEXUS_TPCDS_NATIVE_DEVICE_BUDGET_BYTES_ENV,
+            NEXUS_TPCDS_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, NEXUS_TPCDS_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV,
+            NEXUS_TPCDS_NATIVE_PROFILE_ENV, NEXUS_TPCDS_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV,
             TPCDS_HYBRID_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_ROW_GROUPS, TPCDS_NATIVE_PROFILE_CONSERVATIVE,
             TPCDS_NATIVE_PROFILE_CUSTOM, TPCDS_NATIVE_PROFILE_SF100_GPU_THROUGHPUT,
             TPCDS_SF100_GPU_THROUGHPUT_DEVICE_BUDGET_BYTES, TPCDS_SF100_GPU_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK,
@@ -167,8 +167,8 @@ fn tpcds_native_optimizer_configs_disable_cpu_preference_for_gpu_only_sql_surfac
     let ordinary_config = tpcds_native_optimizer_config_with_profile_settings(&profile);
     let analytics_config = tpcds_native_analytics_optimizer_config_with_profile_settings(&profile);
     let env_overridden_hybrid_preference = tpcds_native_cpu_preference_options_from([
-        (CUDF_TPCDS_NATIVE_CPU_PREFERENCE_ENV, "on"),
-        (CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_ROW_GROUPS_ENV, "999"),
+        (NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_ENV, "on"),
+        (NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_ROW_GROUPS_ENV, "999"),
     ]);
 
     assert!(env_overridden_hybrid_preference.enabled);
@@ -204,12 +204,12 @@ fn tpcds_hybrid_benchmark_optimizer_config_enables_cpu_preference() {
 #[test]
 fn tpcds_hybrid_cpu_preference_options_apply_env_overrides() {
     let options = tpcds_native_cpu_preference_options_from([
-        (CUDF_TPCDS_NATIVE_CPU_PREFERENCE_ENV, "off"),
-        (CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_SMALL_SELECTIVE_ROW_GROUPS_ENV, "17"),
-        (CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_SMALL_SELECTIVE_SOURCE_BYTES_ENV, "123456"),
-        (CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_ROW_GROUPS_ENV, "24"),
-        (CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_SOURCE_BYTES_ENV, "654321"),
-        (CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_TOPK_FETCH_ENV, "42"),
+        (NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_ENV, "off"),
+        (NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_MAX_SMALL_SELECTIVE_ROW_GROUPS_ENV, "17"),
+        (NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_MAX_SMALL_SELECTIVE_SOURCE_BYTES_ENV, "123456"),
+        (NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_ROW_GROUPS_ENV, "24"),
+        (NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_SOURCE_BYTES_ENV, "654321"),
+        (NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_MAX_TOPK_FETCH_ENV, "42"),
     ]);
 
     assert!(!options.enabled);
@@ -226,14 +226,14 @@ fn tpcds_native_profile_defaults_to_conservative() {
 
     assert_eq!(profile.profile_name, TPCDS_NATIVE_PROFILE_CONSERVATIVE);
     assert_eq!(profile.profile_source, "default");
-    assert_eq!(profile.max_source_chunk_bytes, NativeCudfExecutionConfig::DEFAULT_BOUNDED_MAX_SOURCE_CHUNK_BYTES);
-    assert_eq!(profile.max_row_groups_per_chunk, NativeCudfExecutionConfig::DEFAULT_BOUNDED_MAX_ROW_GROUPS_PER_CHUNK);
+    assert_eq!(profile.max_source_chunk_bytes, NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_SOURCE_CHUNK_BYTES);
+    assert_eq!(profile.max_row_groups_per_chunk, NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_ROW_GROUPS_PER_CHUNK);
     assert_eq!(profile.source_chunk_planning_mode, nexus_query_engine::runtime::SourceChunkPlanningMode::Conservative);
 }
 
 #[test]
 fn tpcds_native_profile_resolves_sf100_gpu_throughput() {
-    let profile = tpcds_native_profile_settings_from([(CUDF_TPCDS_NATIVE_PROFILE_ENV, "sf100_gpu_throughput")]);
+    let profile = tpcds_native_profile_settings_from([(NEXUS_TPCDS_NATIVE_PROFILE_ENV, "sf100_gpu_throughput")]);
 
     assert_eq!(profile.profile_name, TPCDS_NATIVE_PROFILE_SF100_GPU_THROUGHPUT);
     assert_eq!(profile.profile_source, "env_profile");
@@ -249,10 +249,10 @@ fn tpcds_native_profile_resolves_sf100_gpu_throughput() {
 #[test]
 fn tpcds_native_profile_numeric_overrides_become_custom() {
     let profile = tpcds_native_profile_settings_from([
-        (CUDF_TPCDS_NATIVE_PROFILE_ENV, "conservative"),
-        (CUDF_TPCDS_NATIVE_DEVICE_BUDGET_BYTES_ENV, "123456789"),
-        (CUDF_TPCDS_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, "268435456"),
-        (CUDF_TPCDS_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, "8"),
+        (NEXUS_TPCDS_NATIVE_PROFILE_ENV, "conservative"),
+        (NEXUS_TPCDS_NATIVE_DEVICE_BUDGET_BYTES_ENV, "123456789"),
+        (NEXUS_TPCDS_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, "268435456"),
+        (NEXUS_TPCDS_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, "8"),
     ]);
 
     assert_eq!(profile.profile_name, TPCDS_NATIVE_PROFILE_CUSTOM);
@@ -266,8 +266,8 @@ fn tpcds_native_profile_numeric_overrides_become_custom() {
 #[test]
 fn tpcds_native_profile_source_chunk_planning_mode_override_becomes_custom() {
     let profile = tpcds_native_profile_settings_from([
-        (CUDF_TPCDS_NATIVE_PROFILE_ENV, "conservative"),
-        (CUDF_TPCDS_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV, "local_parquet_throughput"),
+        (NEXUS_TPCDS_NATIVE_PROFILE_ENV, "conservative"),
+        (NEXUS_TPCDS_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV, "local_parquet_throughput"),
     ]);
 
     assert_eq!(profile.profile_name, TPCDS_NATIVE_PROFILE_CUSTOM);
@@ -282,8 +282,8 @@ fn tpcds_native_profile_source_chunk_planning_mode_override_becomes_custom() {
 fn tpcds_native_profile_rejects_zero_numeric_values() {
     let result = panic::catch_unwind(|| {
         tpcds_native_profile_settings_from([
-            (CUDF_TPCDS_NATIVE_PROFILE_ENV, "sf100_gpu_throughput"),
-            (CUDF_TPCDS_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, "0"),
+            (NEXUS_TPCDS_NATIVE_PROFILE_ENV, "sf100_gpu_throughput"),
+            (NEXUS_TPCDS_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, "0"),
         ]);
     });
 
@@ -371,7 +371,7 @@ async fn tpcds_parity_report_rows_emit_progress_per_completed_query() {
     let rows = tpcds_parity_report_rows_with_external_oracles(
         &dir,
         tpcds_report_session_config(),
-        CudfOptimizerConfig::new(GpuFallbackPolicy::CpuOnly),
+        NexusNativeOptimizerConfig::new(GpuFallbackPolicy::CpuOnly),
         Some(&query_filter),
         None,
         ParityFloatTolerance::exact(),

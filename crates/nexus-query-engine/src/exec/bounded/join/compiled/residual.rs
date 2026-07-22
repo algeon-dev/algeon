@@ -313,7 +313,7 @@ pub(super) fn residual_candidate_column_name(
     if sanitized.is_empty() {
         sanitized.push_str("column");
     }
-    let base = format!("__cudf_one_shot_residual_{side_label}_{index}_{sanitized}");
+    let base = format!("__nexus_native_one_shot_residual_{side_label}_{index}_{sanitized}");
     let mut candidate = base.clone();
     let mut suffix = 0_usize;
     while !used_names.insert(candidate.clone()) {

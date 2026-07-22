@@ -20,9 +20,9 @@ use nexus_query_engine::{
     mode::{NativePipelineExecutionMode, StddevSampExecutionMode},
     observability::{RuntimeObservationConfig, RuntimeObservationOwner, RuntimeTraceId},
     runtime::{
-        CudfInventory, ExecutionBoundaryPolicy, ExecutionCancellation, ExecutionContext, GpuExecutionJobKind,
-        GpuExecutionPool, GpuInventory, IoLifecycle, LakehouseCacheFillConfig, MemoryControlPolicy,
-        MemoryResourcePolicy, QueryGrantRequest, QueryHandle, QueryMemoryDomainPolicy, QueryPlacementHint,
+        ExecutionBoundaryPolicy, ExecutionCancellation, ExecutionContext, GpuExecutionJobKind, GpuExecutionPool,
+        GpuInventory, IoLifecycle, LakehouseCacheFillConfig, MemoryControlPolicy, MemoryResourcePolicy,
+        NexusGpuInventory, QueryGrantRequest, QueryHandle, QueryMemoryDomainPolicy, QueryPlacementHint,
         ServiceStreamPool, SourceChunkPlanningMode, SourceSchedulerPolicy, SourceStorageProfile, TenantQueryContext,
         cache::{hash_join::GpuHashJoinBuildCache, local_parquet::GpuLocalParquetSourceCache},
         default_service_stream_pool_size_for_device, device_budget_bytes_from_facts,
@@ -49,7 +49,7 @@ use crate::{
 /// runtime injection, allocator setup, memory-control validation, boundary policy, and durable build
 /// cache wiring happen at the DataFusion/native boundary.
 #[derive(Debug, Clone)]
-pub struct NativeCudfExecutionConfig {
+pub struct NexusNativeExecutionConfig {
     pub(super) runtime: Option<Arc<cudf::Runtime>>,
     pub(super) device_ordinal: Option<usize>,
     pub(super) memory_resource_policy: MemoryResourcePolicy,
@@ -95,7 +95,7 @@ pub struct NativeCudfExecutionConfig {
 
 /// Native execution context plus any service leases that must outlive execution.
 #[derive(Debug)]
-pub(crate) struct NativeCudfExecutionContext {
+pub(crate) struct NexusNativeExecutionContext {
     pub(super) context: ExecutionContext,
     pub(super) admission_facts: Option<QueryAdmissionFacts>,
     pub(super) record_admission_facts: bool,
@@ -111,11 +111,11 @@ mod device_budget;
 #[cfg(test)]
 mod tests;
 
-// Field type for NativeCudfExecutionContext (debug builds).
+// Field type for NexusNativeExecutionContext (debug builds).
 #[cfg(debug_assertions)]
 use context::StandaloneBoundedContextDebugGuard;
 
-impl NativeCudfExecutionConfig {
+impl NexusNativeExecutionConfig {
     /// Fallback bounded device budget, in bytes, used when auto-sizing cannot
     /// read the primary GPU's total memory.
     pub const AUTO_SIZED_DEVICE_BUDGET_FALLBACK_BYTES: u64 = 256 * 1024 * 1024;
@@ -324,7 +324,7 @@ impl NativeCudfExecutionConfig {
     /// Set the lakehouse cache-fill resource policy for standalone native execution.
     ///
     /// Query-service execution gets this policy from the admitted service handle
-    /// instead; this setter covers direct `NativeCudfExec`/optimizer usage.
+    /// instead; this setter covers direct `NexusNativeExec`/optimizer usage.
     pub fn with_lakehouse_cache_fill_config(mut self, config: LakehouseCacheFillConfig) -> Self {
         self.lakehouse_cache_fill_config = config;
         self

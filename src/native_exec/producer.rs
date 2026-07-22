@@ -27,7 +27,7 @@ use super::{
         comma_separated, conservative_properties, gpu_resident_source_names, native_plan_one_line,
         native_query_runtime_error, write_native_plan_tree,
     },
-    metrics::{NativeCudfMetrics, NativeExecutionMetricsCapture, NativeMetricsCapture},
+    metrics::{NativeExecutionMetricsCapture, NativeMetricsCapture, NexusNativeMetrics},
 };
 use crate::error::{Error, ErrorCode};
 
@@ -78,7 +78,7 @@ pub fn register_gpu_resident_producer_discovery(discovery: GpuResidentProducerDi
 /// Valid only under composed native execution; returns a device-resident handle,
 /// not a streamable DataFusion plan.
 #[derive(Debug, Clone)]
-pub struct NativeCudfGpuProducerExec {
+pub struct NexusNativeGpuProducerExec {
     input_name: String,
     plan: QueryPlan,
     metrics_capture: Option<NativeExecutionMetricsCapture>,
@@ -89,7 +89,7 @@ pub struct NativeCudfGpuProducerExec {
     cache: Arc<PlanProperties>,
 }
 
-impl NativeCudfGpuProducerExec {
+impl NexusNativeGpuProducerExec {
     /// Create a native producer fragment for composed execution.
     ///
     /// Requires a GPU-resident sink and no external GPU-resident inputs.
@@ -177,7 +177,7 @@ impl NativeCudfGpuProducerExec {
 
     #[cfg(test)]
     pub(crate) fn record_test_query_metrics(&self, metrics: &nexus_query_engine::metrics::QueryMetrics) {
-        NativeCudfMetrics::new(&self.metrics, 0).record_query_metrics(metrics);
+        NexusNativeMetrics::new(&self.metrics, 0).record_query_metrics(metrics);
     }
 
     /// Execute this producer inside a composed exec's shared native context.
@@ -200,7 +200,7 @@ impl NativeCudfGpuProducerExec {
             .into());
         }
 
-        let metrics = NativeCudfMetrics::new_with_capture_and_shape(
+        let metrics = NexusNativeMetrics::new_with_capture_and_shape(
             &self.metrics,
             partition,
             self.metrics_capture.clone(),
@@ -215,7 +215,7 @@ impl NativeCudfGpuProducerExec {
         let output = metrics.finalize_query_outcome(outcome).map_err(|error| {
             DataFusionError::from(native_query_runtime_error(
                 "datafusion_nexus.native_gpu_producer.execute_gpu",
-                "native cudf GPU-resident fragment execution failed",
+                "nexus native GPU-resident fragment execution failed",
                 error,
             ))
         })?;
@@ -233,7 +233,7 @@ impl NativeCudfGpuProducerExec {
     }
 }
 
-impl GpuResidentProducer for NativeCudfGpuProducerExec {
+impl GpuResidentProducer for NexusNativeGpuProducerExec {
     fn gpu_result_input_name(&self) -> &str {
         self.input_name()
     }
@@ -279,13 +279,13 @@ impl GpuResidentProducer for NativeCudfGpuProducerExec {
             } else {
                 self.plan.clone()
             };
-            NativeCudfGpuProducerExec::execute_gpu_result_with_context(self, native_context, partition, &plan)
+            NexusNativeGpuProducerExec::execute_gpu_result_with_context(self, native_context, partition, &plan)
         })
     }
 }
 
 fn native_gpu_resident_producer(plan: &dyn ExecutionPlan) -> Option<&dyn GpuResidentProducer> {
-    if let Some(producer) = plan.downcast_ref::<NativeCudfGpuProducerExec>() {
+    if let Some(producer) = plan.downcast_ref::<NexusNativeGpuProducerExec>() {
         return Some(producer);
     }
     None
@@ -342,19 +342,19 @@ pub(crate) async fn execute_gpu_resident_producer_with_context(
     .into())
 }
 
-impl DisplayAs for NativeCudfGpuProducerExec {
+impl DisplayAs for NexusNativeGpuProducerExec {
     fn fmt_as(&self, t: DisplayFormatType, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match t {
             DisplayFormatType::Default => write!(
                 f,
-                "NativeCudfGpuProducerExec: input_name={}, native_nodes={}, sink=gpu_resident, output_boundary=device_resident, edge_normalize_inserted={}",
+                "NexusNativeGpuProducerExec: input_name={}, native_nodes={}, sink=gpu_resident, output_boundary=device_resident, edge_normalize_inserted={}",
                 self.input_name,
                 self.plan.node_count(),
                 self.plan.contains_edge_normalize(),
             ),
             DisplayFormatType::Verbose => write!(
                 f,
-                "NativeCudfGpuProducerExec: input_name={}, native_nodes={}, sink=gpu_resident, output_boundary=device_resident, edge_normalize_inserted={}, native_plan={}",
+                "NexusNativeGpuProducerExec: input_name={}, native_nodes={}, sink=gpu_resident, output_boundary=device_resident, edge_normalize_inserted={}, native_plan={}",
                 self.input_name,
                 self.plan.node_count(),
                 self.plan.contains_edge_normalize(),
@@ -372,9 +372,9 @@ impl DisplayAs for NativeCudfGpuProducerExec {
     }
 }
 
-impl ExecutionPlan for NativeCudfGpuProducerExec {
+impl ExecutionPlan for NexusNativeGpuProducerExec {
     fn name(&self) -> &str {
-        "NativeCudfGpuProducerExec"
+        "NexusNativeGpuProducerExec"
     }
 
     fn properties(&self) -> &Arc<PlanProperties> {

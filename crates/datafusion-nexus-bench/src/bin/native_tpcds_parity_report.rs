@@ -7,7 +7,7 @@ use std::{
 
 use datafusion_nexus::{
     native_report::{NativeTpcdsParityReport, ParityFloatTolerance},
-    planner::CudfOptimizerConfig,
+    planner::NexusNativeOptimizerConfig,
     policy::GpuFallbackPolicy,
 };
 use datafusion_nexus_bench::{
@@ -20,12 +20,12 @@ use datafusion_nexus_bench::{
 use datafusion_nexus_workloads::tpcds::{TpcdsWorkloadResult, prepare_tpcds_report_dataset};
 use nexus_query_engine::mode::{NativePipelineExecutionMode, StatisticalAggregateExecutionMode};
 
-const CUDF_TPCDS_PARITY_QUERY_IDS_ENV: &str = "CUDF_TPCDS_PARITY_QUERY_IDS";
-const CUDF_TPCDS_PARITY_FLOAT_ABS_TOLERANCE_ENV: &str = "CUDF_TPCDS_PARITY_FLOAT_ABS_TOLERANCE";
-const CUDF_TPCDS_PARITY_FLOAT_REL_TOLERANCE_ENV: &str = "CUDF_TPCDS_PARITY_FLOAT_REL_TOLERANCE";
-const CUDF_TPCDS_PARITY_DUCKDB_BIN_ENV: &str = "CUDF_TPCDS_PARITY_DUCKDB_BIN";
-const CUDF_TPCDS_PARITY_SKIP_NATIVE_ENV: &str = "CUDF_TPCDS_PARITY_SKIP_NATIVE";
-const CUDF_NATIVE_PIPELINE_EXECUTION_MODE_ENV: &str = "CUDF_NATIVE_PIPELINE_EXECUTION_MODE";
+const NEXUS_TPCDS_PARITY_QUERY_IDS_ENV: &str = "NEXUS_TPCDS_PARITY_QUERY_IDS";
+const NEXUS_TPCDS_PARITY_FLOAT_ABS_TOLERANCE_ENV: &str = "NEXUS_TPCDS_PARITY_FLOAT_ABS_TOLERANCE";
+const NEXUS_TPCDS_PARITY_FLOAT_REL_TOLERANCE_ENV: &str = "NEXUS_TPCDS_PARITY_FLOAT_REL_TOLERANCE";
+const NEXUS_TPCDS_PARITY_DUCKDB_BIN_ENV: &str = "NEXUS_TPCDS_PARITY_DUCKDB_BIN";
+const NEXUS_TPCDS_PARITY_SKIP_NATIVE_ENV: &str = "NEXUS_TPCDS_PARITY_SKIP_NATIVE";
+const NEXUS_NATIVE_PIPELINE_EXECUTION_MODE_ENV: &str = "NEXUS_NATIVE_PIPELINE_EXECUTION_MODE";
 
 #[tokio::main]
 async fn main() {
@@ -79,19 +79,19 @@ fn unique_temp_dir(prefix: &str) -> std::path::PathBuf {
 }
 
 fn native_pipeline_execution_mode_from_env() -> NativePipelineExecutionMode {
-    let mode = std::env::var(CUDF_NATIVE_PIPELINE_EXECUTION_MODE_ENV)
+    let mode = std::env::var(NEXUS_NATIVE_PIPELINE_EXECUTION_MODE_ENV)
         .unwrap_or_else(|_| NativePipelineExecutionMode::StrictBounded.as_str().to_string());
     mode.parse::<NativePipelineExecutionMode>().unwrap_or_else(|error| {
         panic!(
-            "unsupported {CUDF_NATIVE_PIPELINE_EXECUTION_MODE_ENV}={}; expected strict_bounded or adaptive",
+            "unsupported {NEXUS_NATIVE_PIPELINE_EXECUTION_MODE_ENV}={}; expected strict_bounded or adaptive",
             error.value()
         )
     })
 }
 
-fn native_optimizer_config_from_env() -> CudfOptimizerConfig {
-    let base = if bool_env(CUDF_TPCDS_PARITY_SKIP_NATIVE_ENV) {
-        CudfOptimizerConfig::new(GpuFallbackPolicy::CpuOnly)
+fn native_optimizer_config_from_env() -> NexusNativeOptimizerConfig {
+    let base = if bool_env(NEXUS_TPCDS_PARITY_SKIP_NATIVE_ENV) {
+        NexusNativeOptimizerConfig::new(GpuFallbackPolicy::CpuOnly)
     } else {
         tpcds_native_optimizer_config()
     };
@@ -105,17 +105,17 @@ fn bool_env(name: &str) -> bool {
 }
 
 fn query_filter_from_env() -> Option<Vec<String>> {
-    let raw = std::env::var(CUDF_TPCDS_PARITY_QUERY_IDS_ENV).ok()?;
+    let raw = std::env::var(NEXUS_TPCDS_PARITY_QUERY_IDS_ENV).ok()?;
     let filtered: Vec<String> = raw.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
     if filtered.is_empty() { None } else { Some(filtered) }
 }
 
 fn parity_float_tolerance_from_env() -> ParityFloatTolerance {
-    let absolute = std::env::var(CUDF_TPCDS_PARITY_FLOAT_ABS_TOLERANCE_ENV)
+    let absolute = std::env::var(NEXUS_TPCDS_PARITY_FLOAT_ABS_TOLERANCE_ENV)
         .ok()
         .and_then(|value| value.parse::<f64>().ok())
         .unwrap_or(0.0);
-    let relative = std::env::var(CUDF_TPCDS_PARITY_FLOAT_REL_TOLERANCE_ENV)
+    let relative = std::env::var(NEXUS_TPCDS_PARITY_FLOAT_REL_TOLERANCE_ENV)
         .ok()
         .and_then(|value| value.parse::<f64>().ok())
         .unwrap_or(0.0);
@@ -130,13 +130,13 @@ fn validate_statistical_aggregate_parity_contract(
         && !tolerance.is_enabled()
     {
         panic!(
-            "invalid TPC-DS parity configuration: {mode} requires non-zero {CUDF_TPCDS_PARITY_FLOAT_ABS_TOLERANCE_ENV} or {CUDF_TPCDS_PARITY_FLOAT_REL_TOLERANCE_ENV}"
+            "invalid TPC-DS parity configuration: {mode} requires non-zero {NEXUS_TPCDS_PARITY_FLOAT_ABS_TOLERANCE_ENV} or {NEXUS_TPCDS_PARITY_FLOAT_REL_TOLERANCE_ENV}"
         );
     }
 }
 
 fn external_oracle_config_from_env(scratch_dir: PathBuf) -> Option<TpcdsExternalOracleConfig> {
-    let duckdb = std::env::var_os(CUDF_TPCDS_PARITY_DUCKDB_BIN_ENV)
+    let duckdb = std::env::var_os(NEXUS_TPCDS_PARITY_DUCKDB_BIN_ENV)
         .map(|binary| TpcdsExternalEngineConfig { binary: PathBuf::from(binary) });
     if duckdb.is_none() { None } else { Some(TpcdsExternalOracleConfig { scratch_dir, duckdb }) }
 }

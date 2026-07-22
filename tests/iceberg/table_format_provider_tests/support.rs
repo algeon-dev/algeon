@@ -503,8 +503,8 @@ fn timestamp_decimal_identity_partition_scan_plan(schema: Arc<Schema>) -> TableF
         ))
 }
 
-fn find_table_format_scan(plan: &dyn ExecutionPlan) -> Option<&CudfTableFormatScanExec> {
-    if let Some(scan) = plan.downcast_ref::<CudfTableFormatScanExec>() {
+fn find_table_format_scan(plan: &dyn ExecutionPlan) -> Option<&NexusTableFormatScanExec> {
+    if let Some(scan) = plan.downcast_ref::<NexusTableFormatScanExec>() {
         return Some(scan);
     }
     plan.children().into_iter().find_map(|child| find_table_format_scan(child.as_ref()))

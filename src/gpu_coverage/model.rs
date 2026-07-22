@@ -43,7 +43,7 @@ impl QueryGpuCoverage {
     pub(super) fn planned(
         validated_under: QueryGpuValidatedUnder,
         plan: &dyn ExecutionPlan,
-        cudf_native_path: NativeDataFusionPostNativeExecutionPath,
+        nexus_native_path: NativeDataFusionPostNativeExecutionPath,
         walk: QueryGpuCoverageWalk,
         fallback_reasons: Vec<QueryGpuFallbackReason>,
         planning_did_io: bool,
@@ -62,7 +62,7 @@ impl QueryGpuCoverage {
         };
         let runtime_caveats = runtime_caveats(&walk, &overall, &validated_under);
         let domains = QueryGpuCoverageDomains {
-            cudf_native_coverage: QueryGpuCudfNativeCoverage::from_post_native_path(cudf_native_path),
+            nexus_native_coverage: QueryGpuNexusNativeCoverage::from_post_native_path(nexus_native_path),
             cugraph_operator: if walk.cugraph_present {
                 QueryGpuCugraphOperatorDomain::Present
             } else {
@@ -105,7 +105,7 @@ impl QueryGpuCoverage {
         Self {
             overall,
             domains: QueryGpuCoverageDomains {
-                cudf_native_coverage: QueryGpuCudfNativeCoverage::None,
+                nexus_native_coverage: QueryGpuNexusNativeCoverage::None,
                 cugraph_operator: QueryGpuCugraphOperatorDomain::Absent,
                 datafusion_cpu_ingest_or_boundary: QueryGpuPresence::Absent,
                 host_output_materialization: QueryGpuPresence::Absent,
@@ -203,7 +203,7 @@ impl QueryGpuRejectionPhase {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueryGpuCoverageDomains {
-    pub cudf_native_coverage: QueryGpuCudfNativeCoverage,
+    pub nexus_native_coverage: QueryGpuNexusNativeCoverage,
     pub cugraph_operator: QueryGpuCugraphOperatorDomain,
     pub datafusion_cpu_ingest_or_boundary: QueryGpuPresence,
     pub host_output_materialization: QueryGpuPresence,
@@ -212,7 +212,7 @@ pub struct QueryGpuCoverageDomains {
 impl QueryGpuCoverageDomains {
     fn to_json(&self) -> Value {
         json!({
-            "cudf_native_coverage": self.cudf_native_coverage.as_str(),
+            "nexus_native_coverage": self.nexus_native_coverage.as_str(),
             "cugraph_operator": self.cugraph_operator.as_str(),
             "datafusion_cpu_ingest_or_boundary": self.datafusion_cpu_ingest_or_boundary.as_str(),
             "host_output_materialization": self.host_output_materialization.as_str(),
@@ -221,13 +221,13 @@ impl QueryGpuCoverageDomains {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum QueryGpuCudfNativeCoverage {
+pub enum QueryGpuNexusNativeCoverage {
     Full,
     Partial,
     None,
 }
 
-impl QueryGpuCudfNativeCoverage {
+impl QueryGpuNexusNativeCoverage {
     fn from_post_native_path(path: NativeDataFusionPostNativeExecutionPath) -> Self {
         match path {
             NativeDataFusionPostNativeExecutionPath::Native => Self::Full,

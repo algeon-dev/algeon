@@ -28,7 +28,7 @@ use iceberg_catalog_glue::{
 };
 
 pub use self::planner::{
-    CudfIcebergTableProvider, IcebergTableFormatPlanner, iceberg_file_scan_tasks_to_table_format_scan_plan,
+    IcebergTableFormatPlanner, NexusIcebergTableProvider, iceberg_file_scan_tasks_to_table_format_scan_plan,
     iceberg_schema_to_datafusion_arrow_schema,
 };
 
@@ -123,8 +123,8 @@ pub(crate) fn insert_explicit_nexus_s3_credentials(
 
 /// Builds the adapter-owned Iceberg provider that plans scans into native
 /// table-format facts instead of delegating to an Arrow reader.
-pub fn table_provider(table: Table) -> crate::error::Result<CudfIcebergTableProvider> {
-    CudfIcebergTableProvider::try_new(table)
+pub fn table_provider(table: Table) -> crate::error::Result<NexusIcebergTableProvider> {
+    NexusIcebergTableProvider::try_new(table)
 }
 
 /// Registers an Iceberg table provider on a DataFusion session context.
@@ -433,7 +433,7 @@ pub async fn load_glue_table(config: GlueIcebergTableConfig) -> crate::error::Re
 }
 
 /// Loads an AWS Glue Iceberg table and registers it as a native-planned
-/// `CudfIcebergTableProvider`.
+/// `NexusIcebergTableProvider`.
 pub async fn register_glue_table(
     ctx: &SessionContext,
     table_ref: impl Into<TableReference>,

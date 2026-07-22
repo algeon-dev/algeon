@@ -987,7 +987,7 @@ fn release_aligned_partials_reverse(
 }
 
 fn unique_source_adjacent_partition_column_name(frame: &cudf::DataFrame) -> String {
-    let base = "__cudf_source_adjacent_partition_row_id";
+    let base = "__nexus_native_source_adjacent_partition_row_id";
     crate::naming::unique_alias_with_suffix(base, |candidate| frame.contains(candidate))
 }
 

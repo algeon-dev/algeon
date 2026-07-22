@@ -95,7 +95,7 @@ fn hidden_row_count_preserving_output(
     right: &LoweredNativeInput,
     canonical: CanonicalJoin,
 ) -> Result<JoinOutputColumns, FallbackReason> {
-    const HIDDEN_JOIN_ROW_PRESENCE_COLUMN: &str = "__cudf_join_row_presence";
+    const HIDDEN_JOIN_ROW_PRESENCE_COLUMN: &str = "__nexus_native_join_row_presence";
     let (datafusion_side, input, input_binding) =
         hidden_row_count_input(left, right, canonical).ok_or(FallbackReason::UnsupportedExpression)?;
     let native_side = canonical.native_side_for_datafusion_side(datafusion_side)?;

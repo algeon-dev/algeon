@@ -173,7 +173,7 @@ fn native_optimizer_combines_repeated_scalar_count_branches_with_filtered_aggreg
         })
         .collect::<Vec<_>>();
     assert!(source_predicates.iter().any(|predicate| predicate.contains(" OR ")));
-    assert!(plan_has_output_name_prefix(&result.plan, "__cudf_shared_scalar_"));
+    assert!(plan_has_output_name_prefix(&result.plan, "__nexus_native_shared_scalar_"));
 }
 
 #[test]
@@ -288,7 +288,9 @@ fn native_optimizer_rejects_repeated_scalar_mixed_distinct_branches_without_stre
     assert_eq!(candidate.filtered_aggregate_memory_threshold_policy, "runtime_budget/2");
     assert_eq!(
         candidate.rejected_reason,
-        Some(nexus_query_engine::optimizer::SharedSubplanMaterializationRejectedReason::UnsupportedScalarAggregateShape)
+        Some(
+            nexus_query_engine::optimizer::SharedSubplanMaterializationRejectedReason::UnsupportedScalarAggregateShape
+        )
     );
     let local_source_reuse = &result.diagnostics.local_parquet_source_reuse;
     assert_eq!(local_source_reuse.considered_count, 1);
@@ -308,7 +310,7 @@ fn native_optimizer_rejects_repeated_scalar_mixed_distinct_branches_without_stre
         })
         .collect::<Vec<_>>();
     assert_eq!(aggregates.len(), 3);
-    assert!(!plan_has_output_name_prefix(&result.plan, "__cudf_shared_scalar_"));
+    assert!(!plan_has_output_name_prefix(&result.plan, "__nexus_native_shared_scalar_"));
 }
 
 #[test]
@@ -492,7 +494,7 @@ fn native_optimizer_combines_projected_literal_count_star_scalar_branches() {
     assert_eq!(aggregates.len(), 1);
     assert_eq!(aggregates[0].spec.aggr_exprs.len(), 2);
     assert!(aggregates[0].spec.aggr_exprs.iter().all(|expr| expr.filter.is_some()));
-    assert!(plan_has_output_name_prefix(&result.plan, "__cudf_shared_scalar_"));
+    assert!(plan_has_output_name_prefix(&result.plan, "__nexus_native_shared_scalar_"));
 }
 
 #[test]
@@ -862,7 +864,8 @@ fn repeated_aliased_grouped_aggregate_materialization_plan() -> nexus_query_engi
     builder.finish_gpu_resident(union)
 }
 
-fn repeated_grouped_aggregate_materialization_with_projected_argument_aliases_plan() -> nexus_query_engine::plan::QueryPlan {
+fn repeated_grouped_aggregate_materialization_with_projected_argument_aliases_plan()
+-> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let aggregate_schema = Arc::new(Schema::new(vec![
         Field::new("county", DataType::Int32, false),
@@ -1209,7 +1212,8 @@ fn repeated_scalar_count_materialization_plan() -> nexus_query_engine::plan::Que
     builder.finish_gpu_resident(union)
 }
 
-fn repeated_scalar_count_materialization_with_mismatched_source_contracts_plan() -> nexus_query_engine::plan::QueryPlan {
+fn repeated_scalar_count_materialization_with_mismatched_source_contracts_plan() -> nexus_query_engine::plan::QueryPlan
+{
     let mut builder = QueryPlanBuilder::new();
     let fact_schema = schema(&["ss_sold_time_sk"]);
     let count_schema = schema(&["count"]);
@@ -1260,7 +1264,8 @@ fn repeated_scalar_count_materialization_with_mismatched_source_contracts_plan()
     builder.finish_gpu_resident(union)
 }
 
-fn repeated_scalar_count_materialization_with_mismatched_decimal_contracts_plan() -> nexus_query_engine::plan::QueryPlan {
+fn repeated_scalar_count_materialization_with_mismatched_decimal_contracts_plan() -> nexus_query_engine::plan::QueryPlan
+{
     let mut builder = QueryPlanBuilder::new();
     let fact_schema = schema(&["ss_sold_time_sk"]);
     let count_schema = schema(&["count"]);
@@ -1505,7 +1510,7 @@ fn repeated_q09_like_scalar_materialization_plan_with_order_and_bucket_count(
                         vec![
                             ProjectionOutput::new(
                                 Expr::literal(LiteralValue::Int64(1)),
-                                Field::new("__cudf_aggregate_arg_0", DataType::Int64, false),
+                                Field::new("__nexus_native_aggregate_arg_0", DataType::Int64, false),
                             ),
                             ProjectionOutput::new(
                                 Expr::column("ss_quantity"),
@@ -1517,7 +1522,7 @@ fn repeated_q09_like_scalar_materialization_plan_with_order_and_bucket_count(
                         count_arg,
                         AggregateExpr::new(
                             AggregateFunction::Count,
-                            Expr::column("__cudf_aggregate_arg_0"),
+                            Expr::column("__nexus_native_aggregate_arg_0"),
                             format!("B{bucket}_CNT"),
                         ),
                         format!("B{bucket}_CNT"),
@@ -1576,7 +1581,7 @@ fn repeated_projected_literal_count_star_scalar_materialization_plan() -> nexus_
             empty,
             vec![ProjectionOutput::new(
                 Expr::literal(LiteralValue::Int64(1)),
-                Field::new("__cudf_aggregate_arg_0", DataType::Int64, false),
+                Field::new("__nexus_native_aggregate_arg_0", DataType::Int64, false),
             )],
         );
         let output_schema = Arc::new(Schema::new(vec![Field::new(format!("B{bucket}_CNT"), DataType::Int64, true)]));
@@ -1586,7 +1591,7 @@ fn repeated_projected_literal_count_star_scalar_materialization_plan() -> nexus_
                 Vec::new(),
                 vec![AggregateExpr::new(
                     AggregateFunction::Count,
-                    Expr::column("__cudf_aggregate_arg_0"),
+                    Expr::column("__nexus_native_aggregate_arg_0"),
                     format!("B{bucket}_CNT"),
                 )],
             ),

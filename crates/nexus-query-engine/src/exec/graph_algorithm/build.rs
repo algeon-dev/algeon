@@ -34,7 +34,7 @@ where
     let handle =
         cugraph::ResourceHandle::for_runtime(std::sync::Arc::clone(&budget.runtime)).map_err(map_cugraph_error(
             "nexus_query_engine.graph_algorithm.resource_handle",
-            "failed to bind cuGraph resource handle to the native cudf runtime",
+            "failed to bind cuGraph resource handle to the nexus native runtime",
         ))?;
     let entered = handle.enter(operation).map_err(map_cugraph_error(
         "nexus_query_engine.graph_algorithm.enter",
@@ -84,7 +84,7 @@ where
     let handle =
         cugraph::ResourceHandle::for_runtime(std::sync::Arc::clone(&budget.runtime)).map_err(map_cugraph_error(
             "nexus_query_engine.graph_algorithm.resource_handle",
-            "failed to bind cuGraph resource handle to the native cudf runtime",
+            "failed to bind cuGraph resource handle to the nexus native runtime",
         ))?;
     let entered = handle.enter(operation).map_err(map_cugraph_error(
         "nexus_query_engine.graph_algorithm.enter",

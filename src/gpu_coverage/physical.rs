@@ -9,7 +9,7 @@ use super::model::{
 #[cfg(feature = "cugraph")]
 use crate::graph_sql::CugraphAlgoExec;
 use crate::{
-    native_exec::{NativeCudfComposedExec, NativeCudfExec, NativeCudfGpuProducerExec},
+    native_exec::{NexusNativeComposedExec, NexusNativeExec, NexusNativeGpuProducerExec},
     policy::{FallbackReason, GpuFallbackPolicy},
     report::{CandidateOutcome, PlanningReport},
 };
@@ -42,7 +42,7 @@ impl QueryGpuCoverageWalk {
 }
 
 pub(super) fn walk_gpu_coverage(plan: &dyn ExecutionPlan) -> QueryGpuCoverageWalk {
-    if plan.downcast_ref::<NativeCudfExec>().is_some() {
+    if plan.downcast_ref::<NexusNativeExec>().is_some() {
         return QueryGpuCoverageWalk {
             has_gpu: true,
             all_gpu_covered: true,
@@ -53,7 +53,7 @@ pub(super) fn walk_gpu_coverage(plan: &dyn ExecutionPlan) -> QueryGpuCoverageWal
             cugraph_calls: Vec::new(),
         };
     }
-    if plan.downcast_ref::<NativeCudfGpuProducerExec>().is_some() {
+    if plan.downcast_ref::<NexusNativeGpuProducerExec>().is_some() {
         return QueryGpuCoverageWalk {
             has_gpu: true,
             all_gpu_covered: true,
@@ -64,7 +64,7 @@ pub(super) fn walk_gpu_coverage(plan: &dyn ExecutionPlan) -> QueryGpuCoverageWal
             cugraph_calls: Vec::new(),
         };
     }
-    if plan.downcast_ref::<NativeCudfComposedExec>().is_some() {
+    if plan.downcast_ref::<NexusNativeComposedExec>().is_some() {
         let mut walk = QueryGpuCoverageWalk {
             has_gpu: true,
             all_gpu_covered: true,
@@ -140,7 +140,7 @@ fn walk_generic_datafusion(plan: &dyn ExecutionPlan) -> QueryGpuCoverageWalk {
 
 #[cfg(feature = "cugraph")]
 pub(super) fn cugraph_child_stays_gpu_resident(plan: &dyn ExecutionPlan) -> bool {
-    if plan.downcast_ref::<NativeCudfExec>().is_some() || plan.downcast_ref::<NativeCudfComposedExec>().is_some() {
+    if plan.downcast_ref::<NexusNativeExec>().is_some() || plan.downcast_ref::<NexusNativeComposedExec>().is_some() {
         return true;
     }
     if plan.name() == "CooperativeExec" {
@@ -148,17 +148,17 @@ pub(super) fn cugraph_child_stays_gpu_resident(plan: &dyn ExecutionPlan) -> bool
         return matches!(
             children.as_slice(),
             [child]
-                if child.downcast_ref::<NativeCudfExec>().is_some()
-                    || child.downcast_ref::<NativeCudfComposedExec>().is_some()
+                if child.downcast_ref::<NexusNativeExec>().is_some()
+                    || child.downcast_ref::<NexusNativeComposedExec>().is_some()
         );
     }
     false
 }
 
 pub(super) fn root_is_gpu_runtime_node(plan: &dyn ExecutionPlan) -> bool {
-    plan.downcast_ref::<NativeCudfExec>().is_some()
-        || plan.downcast_ref::<NativeCudfComposedExec>().is_some()
-        || plan.downcast_ref::<NativeCudfGpuProducerExec>().is_some()
+    plan.downcast_ref::<NexusNativeExec>().is_some()
+        || plan.downcast_ref::<NexusNativeComposedExec>().is_some()
+        || plan.downcast_ref::<NexusNativeGpuProducerExec>().is_some()
         || root_is_cugraph_node(plan)
 }
 
@@ -294,8 +294,8 @@ pub(super) fn runtime_caveats_for_overall(
 }
 
 pub(super) fn planning_diagnostics_did_io(diagnostics: &crate::planner::NativePlanningDiagnostics) -> bool {
-    diagnostics.input_plan_root.contains("CudfTableFormatScanExec")
-        || diagnostics.input_plan_shape.contains("CudfTableFormatScanExec")
+    diagnostics.input_plan_root.contains("NexusTableFormatScanExec")
+        || diagnostics.input_plan_shape.contains("NexusTableFormatScanExec")
         || diagnostics.report.outcomes().iter().any(|outcome| match outcome {
             CandidateOutcome::Rejected { reason, .. } => fallback_reason_is_table_format(*reason),
             CandidateOutcome::Rewritten { .. } => false,

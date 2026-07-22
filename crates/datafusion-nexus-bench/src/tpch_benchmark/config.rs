@@ -1,17 +1,17 @@
 use super::*;
 
-pub(super) const CUDF_TPCH_BENCH_NATIVE_PROFILE_ENV: &str = "CUDF_TPCH_BENCH_NATIVE_PROFILE";
-pub(super) const CUDF_TPCH_BENCH_NATIVE_FALLBACK_POLICY_ENV: &str = "CUDF_TPCH_BENCH_NATIVE_FALLBACK_POLICY";
-pub(super) const CUDF_TPCH_BENCH_NATIVE_DEVICE_BUDGET_BYTES_ENV: &str = "CUDF_TPCH_BENCH_NATIVE_DEVICE_BUDGET_BYTES";
-pub(super) const CUDF_TPCH_BENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV: &str =
-    "CUDF_TPCH_BENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES";
-pub(super) const CUDF_TPCH_BENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV: &str =
-    "CUDF_TPCH_BENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK";
-pub(super) const CUDF_TPCH_BENCH_NATIVE_MAX_RETRY_ATTEMPTS_ENV: &str = "CUDF_TPCH_BENCH_NATIVE_MAX_RETRY_ATTEMPTS";
-pub(super) const CUDF_TPCH_BENCH_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV: &str =
-    "CUDF_TPCH_BENCH_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS";
-pub(super) const CUDF_TPCH_BENCH_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV: &str =
-    "CUDF_TPCH_BENCH_NATIVE_SOURCE_CHUNK_PLANNING_MODE";
+pub(super) const NEXUS_TPCH_BENCH_NATIVE_PROFILE_ENV: &str = "NEXUS_TPCH_BENCH_NATIVE_PROFILE";
+pub(super) const NEXUS_TPCH_BENCH_NATIVE_FALLBACK_POLICY_ENV: &str = "NEXUS_TPCH_BENCH_NATIVE_FALLBACK_POLICY";
+pub(super) const NEXUS_TPCH_BENCH_NATIVE_DEVICE_BUDGET_BYTES_ENV: &str = "NEXUS_TPCH_BENCH_NATIVE_DEVICE_BUDGET_BYTES";
+pub(super) const NEXUS_TPCH_BENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV: &str =
+    "NEXUS_TPCH_BENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES";
+pub(super) const NEXUS_TPCH_BENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV: &str =
+    "NEXUS_TPCH_BENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK";
+pub(super) const NEXUS_TPCH_BENCH_NATIVE_MAX_RETRY_ATTEMPTS_ENV: &str = "NEXUS_TPCH_BENCH_NATIVE_MAX_RETRY_ATTEMPTS";
+pub(super) const NEXUS_TPCH_BENCH_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV: &str =
+    "NEXUS_TPCH_BENCH_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS";
+pub(super) const NEXUS_TPCH_BENCH_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV: &str =
+    "NEXUS_TPCH_BENCH_NATIVE_SOURCE_CHUNK_PLANNING_MODE";
 
 pub(super) const DEFAULT_NATIVE_DEVICE_BUDGET_BYTES: u64 = 14 * 1024 * 1024 * 1024;
 pub(super) const DEFAULT_NATIVE_MAX_SOURCE_CHUNK_BYTES: u64 = 512 * 1024 * 1024;
@@ -51,22 +51,22 @@ pub(super) struct NativeTpchRuntimeResources {
 impl NativeTpchBenchmarkConfig {
     pub(super) fn from_env() -> DataFusionResult<Self> {
         let config = Self {
-            query_ids: query_ids_from_env("CUDF_TPCH_BENCH_QUERY_IDS")?,
-            warmup_iterations: env_usize("CUDF_TPCH_BENCH_WARMUPS", 0)?,
-            iterations: env_usize("CUDF_TPCH_BENCH_ITERATIONS", 1)?,
-            dataset_mode: NativeTpchDatasetMode::from_env("CUDF_TPCH_BENCH_DATASET_MODE")?,
-            parquet_pushdown_filters: optional_env_bool("CUDF_TPCH_BENCH_PARQUET_PUSHDOWN_FILTERS")?,
+            query_ids: query_ids_from_env("NEXUS_TPCH_BENCH_QUERY_IDS")?,
+            warmup_iterations: env_usize("NEXUS_TPCH_BENCH_WARMUPS", 0)?,
+            iterations: env_usize("NEXUS_TPCH_BENCH_ITERATIONS", 1)?,
+            dataset_mode: NativeTpchDatasetMode::from_env("NEXUS_TPCH_BENCH_DATASET_MODE")?,
+            parquet_pushdown_filters: optional_env_bool("NEXUS_TPCH_BENCH_PARQUET_PUSHDOWN_FILTERS")?,
             native_fallback_policy: native_tpch_fallback_policy_from_env()?,
-            native_memory_policy: NativeTpchMemoryPolicy::from_env("CUDF_TPCH_BENCH_NATIVE_MEMORY_POLICY")?,
+            native_memory_policy: NativeTpchMemoryPolicy::from_env("NEXUS_TPCH_BENCH_NATIVE_MEMORY_POLICY")?,
             native_pipeline_execution_mode: native_pipeline_execution_mode_from_env(
-                "CUDF_TPCH_BENCH_NATIVE_PIPELINE_EXECUTION_MODE",
+                "NEXUS_TPCH_BENCH_NATIVE_PIPELINE_EXECUTION_MODE",
             )?,
             max_source_reads_in_flight: env_usize(
-                "CUDF_TPCH_BENCH_NATIVE_MAX_SOURCE_READS_IN_FLIGHT",
+                "NEXUS_TPCH_BENCH_NATIVE_MAX_SOURCE_READS_IN_FLIGHT",
                 DEFAULT_NATIVE_MAX_SOURCE_READS_IN_FLIGHT,
             )?,
             native_source_cache_policy: NativeTpchSourceCachePolicy::from_env(
-                "CUDF_TPCH_BENCH_NATIVE_SOURCE_CACHE_POLICY",
+                "NEXUS_TPCH_BENCH_NATIVE_SOURCE_CACHE_POLICY",
             )?,
         };
         config.validate()?;
@@ -74,11 +74,11 @@ impl NativeTpchBenchmarkConfig {
     }
 
     pub(super) fn validate(&self) -> DataFusionResult<()> {
-        validate_nonzero("CUDF_TPCH_BENCH_ITERATIONS", self.iterations)?;
+        validate_nonzero("NEXUS_TPCH_BENCH_ITERATIONS", self.iterations)?;
         validate_query_ids(&self.query_ids)?;
-        validate_nonzero("CUDF_TPCH_BENCH_NATIVE_MAX_SOURCE_READS_IN_FLIGHT", self.max_source_reads_in_flight)?;
+        validate_nonzero("NEXUS_TPCH_BENCH_NATIVE_MAX_SOURCE_READS_IN_FLIGHT", self.max_source_reads_in_flight)?;
         if let Some(max_retained_bytes) = self.native_source_cache_policy.max_retained_bytes() {
-            validate_nonzero("CUDF_TPCH_BENCH_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES", max_retained_bytes)?;
+            validate_nonzero("NEXUS_TPCH_BENCH_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES", max_retained_bytes)?;
         }
         self.native_memory_policy.validate()
     }
@@ -98,11 +98,11 @@ impl NativeTpchBenchmarkConfig {
     pub(super) fn native_execution_config_with_resources(
         &self,
         resources: &NativeTpchRuntimeResources,
-    ) -> NativeCudfExecutionConfig {
+    ) -> NexusNativeExecutionConfig {
         let config = match self.native_memory_policy {
             // Explicit benchmark override used to compare legacy whole-plan
             // execution against the bounded production profile.
-            NativeTpchMemoryPolicy::Unbounded => NativeCudfExecutionConfig::unbounded(),
+            NativeTpchMemoryPolicy::Unbounded => NexusNativeExecutionConfig::unbounded(),
             NativeTpchMemoryPolicy::Bounded {
                 device_budget_bytes,
                 max_source_chunk_bytes,
@@ -111,7 +111,7 @@ impl NativeTpchBenchmarkConfig {
                 min_retry_chunk_row_groups,
                 source_chunk_planning_mode,
                 ..
-            } => NativeCudfExecutionConfig::bounded(
+            } => NexusNativeExecutionConfig::bounded(
                 device_budget_bytes,
                 max_source_chunk_bytes,
                 max_row_groups_per_chunk,
@@ -148,17 +148,17 @@ impl NativeTpchBenchmarkConfig {
 /// The decision-grade benchmark defaults to `GpuPreferred`, while explicit
 /// GPU-only admission can be validated with `gpu_only`.
 pub(super) fn native_tpch_fallback_policy_from_env() -> DataFusionResult<GpuFallbackPolicy> {
-    match std::env::var(CUDF_TPCH_BENCH_NATIVE_FALLBACK_POLICY_ENV) {
+    match std::env::var(NEXUS_TPCH_BENCH_NATIVE_FALLBACK_POLICY_ENV) {
         Ok(value) => native_tpch_fallback_policy_from_value(Some(&value)),
         Err(std::env::VarError::NotPresent) => native_tpch_fallback_policy_from_value(None),
-        Err(error) => Err(plan_error(format!("failed to read {CUDF_TPCH_BENCH_NATIVE_FALLBACK_POLICY_ENV}: {error}"))),
+        Err(error) => Err(plan_error(format!("failed to read {NEXUS_TPCH_BENCH_NATIVE_FALLBACK_POLICY_ENV}: {error}"))),
     }
 }
 
 pub(super) fn native_tpch_fallback_policy_from_value(value: Option<&str>) -> DataFusionResult<GpuFallbackPolicy> {
     value.map_or(Ok(GpuFallbackPolicy::GpuPreferred), |value| {
         crate::report_workload::parse_gpu_fallback_policy(value)
-            .map_err(|error| plan_error(format!("invalid {CUDF_TPCH_BENCH_NATIVE_FALLBACK_POLICY_ENV}: {error}")))
+            .map_err(|error| plan_error(format!("invalid {NEXUS_TPCH_BENCH_NATIVE_FALLBACK_POLICY_ENV}: {error}")))
     })
 }
 
@@ -188,7 +188,7 @@ trait NativeExecutionConfigSourceCacheExt {
     ) -> Self;
 }
 
-impl NativeExecutionConfigSourceCacheExt for NativeCudfExecutionConfig {
+impl NativeExecutionConfigSourceCacheExt for NexusNativeExecutionConfig {
     fn with_optional_shared_runtime(self, runtime: Option<Arc<cudf::Runtime>>) -> Self {
         match runtime {
             Some(runtime) => self.with_shared_runtime(runtime),
@@ -352,11 +352,11 @@ impl NativeTpchMemoryPolicy {
         else {
             return Ok(());
         };
-        validate_nonzero(CUDF_TPCH_BENCH_NATIVE_DEVICE_BUDGET_BYTES_ENV, device_budget_bytes)?;
-        validate_nonzero(CUDF_TPCH_BENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, max_source_chunk_bytes)?;
-        validate_nonzero(CUDF_TPCH_BENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, max_row_groups_per_chunk)?;
-        validate_nonzero(CUDF_TPCH_BENCH_NATIVE_MAX_RETRY_ATTEMPTS_ENV, max_retry_attempts)?;
-        validate_nonzero(CUDF_TPCH_BENCH_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV, min_retry_chunk_row_groups)?;
+        validate_nonzero(NEXUS_TPCH_BENCH_NATIVE_DEVICE_BUDGET_BYTES_ENV, device_budget_bytes)?;
+        validate_nonzero(NEXUS_TPCH_BENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, max_source_chunk_bytes)?;
+        validate_nonzero(NEXUS_TPCH_BENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, max_row_groups_per_chunk)?;
+        validate_nonzero(NEXUS_TPCH_BENCH_NATIVE_MAX_RETRY_ATTEMPTS_ENV, max_retry_attempts)?;
+        validate_nonzero(NEXUS_TPCH_BENCH_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV, min_retry_chunk_row_groups)?;
         Ok(())
     }
 }
@@ -424,15 +424,15 @@ fn native_tpch_profile_settings_from_env() -> DataFusionResult<NativeTpchProfile
 pub(super) fn native_tpch_profile_settings_with_env(
     mut get: impl FnMut(&'static str) -> Option<String>,
 ) -> DataFusionResult<NativeTpchProfileSettings> {
-    let requested_profile = get(CUDF_TPCH_BENCH_NATIVE_PROFILE_ENV).map(|value| value.trim().to_ascii_lowercase());
+    let requested_profile = get(NEXUS_TPCH_BENCH_NATIVE_PROFILE_ENV).map(|value| value.trim().to_ascii_lowercase());
     let base = native_tpch_profile_base(requested_profile.as_deref())?;
     let mut resolved = NativeTpchProfileSettings::from_base(base);
-    let device_budget_bytes = get(CUDF_TPCH_BENCH_NATIVE_DEVICE_BUDGET_BYTES_ENV);
-    let max_source_chunk_bytes = get(CUDF_TPCH_BENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV);
-    let max_row_groups_per_chunk = get(CUDF_TPCH_BENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV);
-    let max_retry_attempts = get(CUDF_TPCH_BENCH_NATIVE_MAX_RETRY_ATTEMPTS_ENV);
-    let min_retry_chunk_row_groups = get(CUDF_TPCH_BENCH_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV);
-    let source_chunk_planning_mode = get(CUDF_TPCH_BENCH_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV);
+    let device_budget_bytes = get(NEXUS_TPCH_BENCH_NATIVE_DEVICE_BUDGET_BYTES_ENV);
+    let max_source_chunk_bytes = get(NEXUS_TPCH_BENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV);
+    let max_row_groups_per_chunk = get(NEXUS_TPCH_BENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV);
+    let max_retry_attempts = get(NEXUS_TPCH_BENCH_NATIVE_MAX_RETRY_ATTEMPTS_ENV);
+    let min_retry_chunk_row_groups = get(NEXUS_TPCH_BENCH_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV);
+    let source_chunk_planning_mode = get(NEXUS_TPCH_BENCH_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV);
     let had_override = device_budget_bytes.is_some()
         || max_source_chunk_bytes.is_some()
         || max_row_groups_per_chunk.is_some()
@@ -441,22 +441,22 @@ pub(super) fn native_tpch_profile_settings_with_env(
         || source_chunk_planning_mode.is_some();
 
     if let Some(value) = device_budget_bytes {
-        resolved.device_budget_bytes = parse_env_u64_value(CUDF_TPCH_BENCH_NATIVE_DEVICE_BUDGET_BYTES_ENV, value)?;
+        resolved.device_budget_bytes = parse_env_u64_value(NEXUS_TPCH_BENCH_NATIVE_DEVICE_BUDGET_BYTES_ENV, value)?;
     }
     if let Some(value) = max_source_chunk_bytes {
         resolved.max_source_chunk_bytes =
-            parse_env_u64_value(CUDF_TPCH_BENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, value)?;
+            parse_env_u64_value(NEXUS_TPCH_BENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, value)?;
     }
     if let Some(value) = max_row_groups_per_chunk {
         resolved.max_row_groups_per_chunk =
-            parse_env_usize_value(CUDF_TPCH_BENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, value)?;
+            parse_env_usize_value(NEXUS_TPCH_BENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, value)?;
     }
     if let Some(value) = max_retry_attempts {
-        resolved.max_retry_attempts = parse_env_usize_value(CUDF_TPCH_BENCH_NATIVE_MAX_RETRY_ATTEMPTS_ENV, value)?;
+        resolved.max_retry_attempts = parse_env_usize_value(NEXUS_TPCH_BENCH_NATIVE_MAX_RETRY_ATTEMPTS_ENV, value)?;
     }
     if let Some(value) = min_retry_chunk_row_groups {
         resolved.min_retry_chunk_row_groups =
-            parse_env_usize_value(CUDF_TPCH_BENCH_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV, value)?;
+            parse_env_usize_value(NEXUS_TPCH_BENCH_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV, value)?;
     }
     if let Some(value) = source_chunk_planning_mode {
         resolved.source_chunk_planning_mode = parse_env_source_chunk_planning_mode(value)?;
@@ -493,11 +493,11 @@ pub(super) fn native_tpch_profile_settings_with_env(
 }
 
 fn validate_tpch_profile_settings(profile: &NativeTpchProfileSettings) -> DataFusionResult<()> {
-    validate_nonzero(CUDF_TPCH_BENCH_NATIVE_DEVICE_BUDGET_BYTES_ENV, profile.device_budget_bytes)?;
-    validate_nonzero(CUDF_TPCH_BENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, profile.max_source_chunk_bytes)?;
-    validate_nonzero(CUDF_TPCH_BENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, profile.max_row_groups_per_chunk)?;
-    validate_nonzero(CUDF_TPCH_BENCH_NATIVE_MAX_RETRY_ATTEMPTS_ENV, profile.max_retry_attempts)?;
-    validate_nonzero(CUDF_TPCH_BENCH_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV, profile.min_retry_chunk_row_groups)?;
+    validate_nonzero(NEXUS_TPCH_BENCH_NATIVE_DEVICE_BUDGET_BYTES_ENV, profile.device_budget_bytes)?;
+    validate_nonzero(NEXUS_TPCH_BENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, profile.max_source_chunk_bytes)?;
+    validate_nonzero(NEXUS_TPCH_BENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, profile.max_row_groups_per_chunk)?;
+    validate_nonzero(NEXUS_TPCH_BENCH_NATIVE_MAX_RETRY_ATTEMPTS_ENV, profile.max_retry_attempts)?;
+    validate_nonzero(NEXUS_TPCH_BENCH_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV, profile.min_retry_chunk_row_groups)?;
     Ok(())
 }
 
@@ -525,7 +525,7 @@ fn native_tpch_profile_base(profile: Option<&str>) -> DataFusionResult<NativeTpc
             source_chunk_planning_mode: nexus_query_engine::runtime::SourceChunkPlanningMode::LocalParquetThroughput,
         }),
         other => Err(plan_error(format!(
-            "invalid {CUDF_TPCH_BENCH_NATIVE_PROFILE_ENV}: {other}; expected {TPCH_NATIVE_PROFILE_CONSERVATIVE} or {TPCH_NATIVE_PROFILE_SF100_GPU_THROUGHPUT}"
+            "invalid {NEXUS_TPCH_BENCH_NATIVE_PROFILE_ENV}: {other}; expected {TPCH_NATIVE_PROFILE_CONSERVATIVE} or {TPCH_NATIVE_PROFILE_SF100_GPU_THROUGHPUT}"
         ))),
     }
 }
@@ -555,7 +555,7 @@ impl NativeTpchSourceCachePolicy {
             "disabled" | "off" | "none" => Ok(Self::Disabled),
             "gpu_resident" | "gpu-resident" | "enabled" => Ok(Self::GpuResident {
                 max_retained_bytes: env_u64(
-                    "CUDF_TPCH_BENCH_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES",
+                    "NEXUS_TPCH_BENCH_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES",
                     DEFAULT_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES,
                 )?,
             }),
@@ -597,7 +597,7 @@ fn query_ids_from_env(name: &'static str) -> DataFusionResult<Vec<String>> {
 
 fn validate_query_ids(query_ids: &[String]) -> DataFusionResult<()> {
     if query_ids.is_empty() {
-        return Err(plan_error("CUDF_TPCH_BENCH_QUERY_IDS must name at least one query id"));
+        return Err(plan_error("NEXUS_TPCH_BENCH_QUERY_IDS must name at least one query id"));
     }
 
     let known = TPCH_QUERIES.iter().map(|query| query.id).collect::<BTreeSet<_>>();
@@ -646,7 +646,7 @@ fn parse_env_source_chunk_planning_mode(
             Ok(nexus_query_engine::runtime::SourceChunkPlanningMode::LocalParquetThroughput)
         },
         other => Err(plan_error(format!(
-            "invalid {CUDF_TPCH_BENCH_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV}: {other}; expected conservative or local_parquet_throughput"
+            "invalid {NEXUS_TPCH_BENCH_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV}: {other}; expected conservative or local_parquet_throughput"
         ))),
     }
 }

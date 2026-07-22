@@ -44,7 +44,8 @@ fn native_optimizer_preserves_keyed_hash_join_strategy_options_through_projectio
     let plan_schema = schema(&["key"]);
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&plan_schema))));
-    let projection = builder.add_projection(source, projection_outputs(vec![Expr::column("key")], Arc::clone(&plan_schema)));
+    let projection =
+        builder.add_projection(source, projection_outputs(vec![Expr::column("key")], Arc::clone(&plan_schema)));
     let plan = builder.finish_gpu_resident(projection);
     let keyed_hash_join_strategy =
         KeyedHashJoinStrategyOptions::default().with_small_reusable_hash_build_row_threshold(11);
@@ -128,7 +129,9 @@ fn join_filter_reassociation_options_and_rule_name_are_stable() {
     assert!(nexus_query_engine::optimizer::JoinFilterReassociationOptions::default().enabled);
     assert!(nexus_query_engine::optimizer::JoinFilterReassociationOptions::default().residual_filter_pushdown_enabled);
     assert!(!nexus_query_engine::optimizer::JoinFilterReassociationOptions::disabled().enabled);
-    assert!(!nexus_query_engine::optimizer::JoinFilterReassociationOptions::disabled().residual_filter_pushdown_enabled);
+    assert!(
+        !nexus_query_engine::optimizer::JoinFilterReassociationOptions::disabled().residual_filter_pushdown_enabled
+    );
 }
 
 #[test]
@@ -140,7 +143,10 @@ fn dimension_derived_row_group_pruning_options_and_rule_name_are_stable() {
         DimensionDerivedRowGroupPruningOptions::DEFAULT_MAX_DIMENSION_ROWS
     );
     assert!(!DimensionDerivedRowGroupPruningOptions::disabled().enabled);
-    assert_eq!(nexus_query_engine::optimizer::DIMENSION_KEY_FILTER_MAX_RUNS, nexus_query_engine::optimizer::DimensionKeyFilter::MAX_RUNS);
+    assert_eq!(
+        nexus_query_engine::optimizer::DIMENSION_KEY_FILTER_MAX_RUNS,
+        nexus_query_engine::optimizer::DimensionKeyFilter::MAX_RUNS
+    );
     DimensionDerivedRowGroupPruningOptions::default().validate().unwrap();
 }
 
@@ -179,10 +185,7 @@ fn native_optimizer_options_validate_expert_optimizer_thresholds() {
     assert_eq!(error.fact_value("reason"), Some("zero"));
 
     let error = NativeOptimizerOptions {
-        join_build_side_selection: JoinBuildSideSelectionOptions {
-            small_build_side_bytes: 0,
-            ..Default::default()
-        },
+        join_build_side_selection: JoinBuildSideSelectionOptions { small_build_side_bytes: 0, ..Default::default() },
         ..Default::default()
     }
     .validate()
@@ -192,10 +195,7 @@ fn native_optimizer_options_validate_expert_optimizer_thresholds() {
     assert_eq!(error.fact_value("reason"), Some("zero"));
 
     let error = NativeOptimizerOptions {
-        join_build_side_selection: JoinBuildSideSelectionOptions {
-            small_build_side_rows: 0,
-            ..Default::default()
-        },
+        join_build_side_selection: JoinBuildSideSelectionOptions { small_build_side_rows: 0, ..Default::default() },
         ..Default::default()
     }
     .validate()
@@ -273,8 +273,5 @@ fn keyed_hash_join_strategy_options_defaults_are_stable() {
     assert_eq!(options.small_reusable_hash_build_bytes_threshold(), 64 * 1024 * 1024);
     assert_eq!(options.small_one_shot_probe_bytes_threshold(), 256 * 1024 * 1024);
     assert_eq!(options.max_small_probe_left_one_shot_build_row_threshold(), 128_000_000);
-    assert_eq!(
-        options.max_small_probe_left_one_shot_build_bytes_threshold(),
-        2 * 1024 * 1024 * 1024
-    );
+    assert_eq!(options.max_small_probe_left_one_shot_build_bytes_threshold(), 2 * 1024 * 1024 * 1024);
 }

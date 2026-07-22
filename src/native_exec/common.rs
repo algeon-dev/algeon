@@ -1,7 +1,7 @@
 //! Shared helpers for the native execution wrappers.
 //!
-//! Each wrapper (`NativeCudfExec`, `NativeCudfComposedExec`,
-//! `NativeCudfGpuProducerExec`) advertises the same conservative
+//! Each wrapper (`NexusNativeExec`, `NexusNativeComposedExec`,
+//! `NexusNativeGpuProducerExec`) advertises the same conservative
 //! `PlanProperties` and uses the same error tagging at the DataFusion runtime
 //! boundary, so those concerns live here rather than being duplicated.
 
@@ -35,11 +35,11 @@ use nexus_query_engine::{
     source::SourceNode,
 };
 
-use super::metrics::NativeCudfMetrics;
+use super::metrics::NexusNativeMetrics;
 use crate::error::{Error, ErrorCode};
 
-pub(super) const NATIVE_CUDF_EXEC_HOST_OUTPUT_MEMORY_CONSUMER: &str = "NativeCudfExec[host-output]";
-pub(super) const NATIVE_CUDF_COMPOSED_EXEC_HOST_OUTPUT_MEMORY_CONSUMER: &str = "NativeCudfComposedExec[host-output]";
+pub(super) const NATIVE_NEXUS_EXEC_HOST_OUTPUT_MEMORY_CONSUMER: &str = "NexusNativeExec[host-output]";
+pub(super) const NATIVE_NEXUS_COMPOSED_EXEC_HOST_OUTPUT_MEMORY_CONSUMER: &str = "NexusNativeComposedExec[host-output]";
 
 struct HostOutputReservation {
     reservation: Option<MemoryReservation>,
@@ -127,7 +127,7 @@ pub(super) struct NativeHostOutputCursor {
     cursor: GpuHostBatchCursor,
     pool: GpuExecutionPool,
     observation: RuntimeObservationHandle,
-    metrics: NativeCudfMetrics,
+    metrics: NexusNativeMetrics,
 }
 
 impl NativeHostOutputCursor {
@@ -135,7 +135,7 @@ impl NativeHostOutputCursor {
         cursor: GpuHostBatchCursor,
         pool: GpuExecutionPool,
         observation: RuntimeObservationHandle,
-        metrics: NativeCudfMetrics,
+        metrics: NexusNativeMetrics,
     ) -> Self {
         Self { cursor, pool, observation, metrics }
     }

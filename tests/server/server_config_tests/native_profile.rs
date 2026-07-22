@@ -105,7 +105,7 @@ fn server_config_accepts_bounded_native_profile() {
             max_source_chunk_bytes: 512,
             max_row_groups_per_chunk: 8,
             max_retry_attempts:
-                datafusion_nexus::native_exec::NativeCudfExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS,
+                datafusion_nexus::native_exec::NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS,
             min_retry_chunk_row_groups: 1,
         }
     );
@@ -289,7 +289,7 @@ max_source_chunk_bytes = 512
             max_source_chunk_bytes: 512,
             max_row_groups_per_chunk: 8,
             max_retry_attempts:
-                datafusion_nexus::native_exec::NativeCudfExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS,
+                datafusion_nexus::native_exec::NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS,
             min_retry_chunk_row_groups: 1,
         }
     );

@@ -143,7 +143,7 @@ pub async fn run_pagerank_filter_sort_limit_acceptance() {
     let plan = df.create_physical_plan().await.unwrap();
     let plan_display = displayable(plan.as_ref()).indent(false).to_string();
     assert!(
-        plan_display.contains("NativeCudfComposedExec"),
+        plan_display.contains("NexusNativeComposedExec"),
         "PageRank post-algorithm filter/sort/limit should be a composed native GPU handoff:\n{plan_display}"
     );
     assert!(
@@ -151,7 +151,7 @@ pub async fn run_pagerank_filter_sort_limit_acceptance() {
         "composed native plan should keep cuGraph as the GPU-resident producer child:\n{plan_display}"
     );
     let composed =
-        find_composed_exec(plan.as_ref()).expect("PageRank composition plan should contain NativeCudfComposedExec");
+        find_composed_exec(plan.as_ref()).expect("PageRank composition plan should contain NexusNativeComposedExec");
     let native_plan = composed.native_plan().to_string();
     for expected in ["GpuResidentSource", "Filter", "Sort", "Limit"] {
         assert!(

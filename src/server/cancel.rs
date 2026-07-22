@@ -74,7 +74,7 @@ impl QueryCancellation {
     /// Statements that have been planned but not yet inserted (before ticket
     /// consumption or during the narrow handoff into `execute_ticket`) are not
     /// counted; cancellation of those is handled by the shared shutdown token in
-    /// [`crate::server::flight::DatafusionCudfFlightSqlService`].
+    /// [`crate::server::flight::DatafusionNexusFlightSqlService`].
     pub fn len(&self) -> usize {
         self.tokens.len()
     }

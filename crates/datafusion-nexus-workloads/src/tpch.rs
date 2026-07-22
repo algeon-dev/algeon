@@ -15,9 +15,9 @@ pub mod registration;
 
 pub use catalog::{TPCH_QUERIES, TPCH_QUERY_COUNT, TpchQuery, tpch_query_ids};
 pub use dataset::{
-    CUDF_TPCH_CONTENT_FINGERPRINT_ENV, CUDF_TPCH_GENERATION_COMMAND_ENV, CUDF_TPCH_SCALE_FACTOR_ENV,
     DEFAULT_LOCAL_TPCH_SF1_PARQUET_DIR, DEFAULT_LOCAL_TPCH_SF10_PARQUET_DIR,
-    DEFAULT_LOCAL_TPCH_SF100_OPTIMIZED_PARQUET_DIR, TPCH_TABLES, TpchDatasetMetadata, TpchDefaultScale,
+    DEFAULT_LOCAL_TPCH_SF100_OPTIMIZED_PARQUET_DIR, NEXUS_TPCH_CONTENT_FINGERPRINT_ENV,
+    NEXUS_TPCH_GENERATION_COMMAND_ENV, NEXUS_TPCH_SCALE_FACTOR_ENV, TPCH_TABLES, TpchDatasetMetadata, TpchDefaultScale,
     TpchTableFileMetadata, TpchTableLayout, TpchTableMetadata, default_tpch_dataset,
     default_tpch_dataset_with_fingerprint, default_tpch_parquet_root, describe_tpch_dataset,
     describe_tpch_dataset_with_content_fingerprint, discover_tpch_table_layout, external_tpch_dataset_metadata,

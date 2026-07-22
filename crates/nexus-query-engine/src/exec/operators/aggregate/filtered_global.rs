@@ -645,7 +645,7 @@ fn prepare_filtered_global_predicates_for_chunk(
         if predicate_aliases.contains_key(predicate_key.as_str()) {
             continue;
         }
-        let alias = unique_filtered_global_segment_alias("__cudf_filtered_global_predicate", &fields);
+        let alias = unique_filtered_global_segment_alias("__nexus_native_filtered_global_predicate", &fields);
         predicate_aliases.insert(predicate_key, alias.clone());
         predicate_expressions.push((alias.clone(), lower_expr(filter)?));
         fields.push(Field::new(alias, ArrowDataType::Boolean, true));
@@ -688,7 +688,7 @@ fn prepare_filtered_global_partial_segment(
         };
         let input_type = filtered_aggregate_input_type(aggregate_expr, input_schema)?;
         let value_expr = filtered_aggregate_value_expr(aggregate_expr);
-        let alias = unique_filtered_global_segment_alias("__cudf_filtered_global_arg", &fields);
+        let alias = unique_filtered_global_segment_alias("__nexus_native_filtered_global_arg", &fields);
         let predicate_alias = prepared_chunk.predicate_aliases.get(filter.to_string().as_str()).ok_or_else(|| {
             QueryError::new(
                 QueryErrorCode::Internal,

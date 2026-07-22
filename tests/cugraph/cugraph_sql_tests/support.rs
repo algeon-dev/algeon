@@ -28,8 +28,8 @@ pub(super) fn schema_fields(algorithm: CugraphAlgorithm) -> Vec<Field> {
 #[cfg_attr(test, allow(dead_code))]
 pub(super) fn find_composed_exec(
     plan: &dyn datafusion::physical_plan::ExecutionPlan,
-) -> Option<&NativeCudfComposedExec> {
-    if let Some(composed) = plan.downcast_ref::<NativeCudfComposedExec>() {
+) -> Option<&NexusNativeComposedExec> {
+    if let Some(composed) = plan.downcast_ref::<NexusNativeComposedExec>() {
         return Some(composed);
     }
     plan.children().into_iter().find_map(|child| find_composed_exec(child.as_ref()))
@@ -45,8 +45,8 @@ pub(super) fn find_cugraph_algo_exec(
 }
 
 pub(super) fn plan_contains_native_exec(plan: &dyn datafusion::physical_plan::ExecutionPlan) -> bool {
-    plan.downcast_ref::<NativeCudfExec>().is_some()
-        || plan.downcast_ref::<NativeCudfComposedExec>().is_some()
+    plan.downcast_ref::<NexusNativeExec>().is_some()
+        || plan.downcast_ref::<NexusNativeComposedExec>().is_some()
         || plan.children().into_iter().any(|child| plan_contains_native_exec(child.as_ref()))
 }
 

@@ -7,8 +7,8 @@ use public_surface::{assert_modules_are_private, assert_no_crate_root_reexports,
 
 #[test]
 fn canonical_adapter_paths_expose_stable_contract_symbols() {
-    let _rule_name: &str = datafusion_nexus::session::CUDF_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME;
-    let _metric_names: &[&str] = datafusion_nexus::native_exec::NATIVE_CUDF_DATAFUSION_METRIC_NAMES;
+    let _rule_name: &str = datafusion_nexus::session::NEXUS_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME;
+    let _metric_names: &[&str] = datafusion_nexus::native_exec::NATIVE_NEXUS_DATAFUSION_METRIC_NAMES;
     let _headers: [&str; 4] = [
         datafusion_nexus::native_report::NATIVE_DATAFUSION_EXECUTION_TSV_HEADER,
         datafusion_nexus::native_report::NATIVE_DATAFUSION_PLANNING_TSV_HEADER,
@@ -16,14 +16,14 @@ fn canonical_adapter_paths_expose_stable_contract_symbols() {
         datafusion_nexus::native_report::NATIVE_TPCDS_PARITY_TSV_HEADER,
     ];
     let _wrappers = (
-        size_of::<datafusion_nexus::native_exec::NativeCudfExec>(),
-        size_of::<datafusion_nexus::native_exec::NativeCudfComposedExec>(),
-        size_of::<datafusion_nexus::native_exec::NativeCudfGpuProducerExec>(),
+        size_of::<datafusion_nexus::native_exec::NexusNativeExec>(),
+        size_of::<datafusion_nexus::native_exec::NexusNativeComposedExec>(),
+        size_of::<datafusion_nexus::native_exec::NexusNativeGpuProducerExec>(),
     );
     let _planning_report = datafusion_nexus::report::PlanningReport::default();
     let _workload_contracts = (
         datafusion_nexus_workloads::NEXUS_PARQUET_DIR_ENV,
-        datafusion_nexus_workloads::tpcds::CUDF_TPCDS_SCALE_FACTOR_ENV,
+        datafusion_nexus_workloads::tpcds::NEXUS_TPCDS_SCALE_FACTOR_ENV,
         datafusion_nexus_workloads::NEXUS_PARQUET_DIR_ENV,
         size_of::<datafusion_nexus_workloads::tpch::TpchQuery>(),
         size_of::<datafusion_nexus_workloads::tpcds::TpcdsQuery>(),
@@ -104,6 +104,81 @@ fn removed_adapter_facades_and_glob_reexports_do_not_reappear() {
     assert_no_crate_root_reexports(&root.join("src/lib.rs"));
     assert_no_removed_public_surface(&root.join("src"));
     assert_modules_are_private(&root.join("src/server/mod.rs"), &["auth", "config", "diagnostics", "error"]);
+}
+
+/// The nexus-owned Cudf -> Nexus API rename is a deliberate pre-alpha break.
+/// Keep retired project spellings out of the live public surface without
+/// dual method names or compatibility aliases.
+#[test]
+fn retired_cudf_product_api_spellings_do_not_reappear() {
+    let root = workspace_root();
+    let retired = [
+        "CudfOptimizerConfig",
+        "CudfNativePhysicalOptimizerRule",
+        "CudfSessionStateBuilderExt",
+        "NativeCudfExec",
+        "NativeCudfComposedExec",
+        "NativeCudfGpuProducerExec",
+        "NativeCudfExecutionConfig",
+        "NativeCudfMetrics",
+        "CudfTableFormatScanExec",
+        "CudfTableFormatGpuOnlyLeafGuardRule",
+        "CudfIcebergTableProvider",
+        "CudfIcebergCatalogProvider",
+        "CudfIcebergSchemaProvider",
+        "QueryGpuCudfNativeCoverage",
+        "cudf_native_coverage",
+        "DatafusionCudfFlightSqlService",
+        "CudfNvmlTelemetry",
+        "CudfInventory",
+        "NATIVE_CUDF_DATAFUSION_METRIC_NAMES",
+        "with_cudf_native",
+        "with_cudf_native_rule",
+        "cudf_native_physical_optimizer_rules",
+        "install_cudf_native_rule_with_session_config",
+        "__cudf_",
+    ];
+
+    // Public facade modules where product APIs are declared/re-exported.
+    let surface_roots = [root.join("src"), root.join("crates/nexus-query-engine/src")];
+    for surface_root in surface_roots {
+        assert_dir_omits_retired_product_spellings(&surface_root, &retired);
+    }
+
+    // Canonical new identities remain reachable on stable module paths.
+    let _ = (
+        size_of::<datafusion_nexus::planner::NexusNativeOptimizerConfig>(),
+        size_of::<datafusion_nexus::native_exec::NexusNativeExecutionConfig>(),
+        size_of::<datafusion_nexus::native_exec::NexusNativeExec>(),
+        datafusion_nexus::native_exec::NATIVE_NEXUS_DATAFUSION_METRIC_NAMES,
+        datafusion_nexus::session::NEXUS_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME,
+    );
+}
+
+fn assert_dir_omits_retired_product_spellings(dir: &std::path::Path, retired: &[&str]) {
+    for entry in std::fs::read_dir(dir).unwrap_or_else(|error| panic!("failed to read {}: {error}", dir.display())) {
+        let path = entry.unwrap_or_else(|error| panic!("failed to read directory entry: {error}")).path();
+        if path.is_dir() {
+            // Retain the cudf_contract module; it speaks about cuDF I/O contracts.
+            if path.file_name().is_some_and(|name| name == "cudf_contract") {
+                continue;
+            }
+            assert_dir_omits_retired_product_spellings(&path, retired);
+            continue;
+        }
+        if path.extension().is_none_or(|extension| extension != "rs") {
+            continue;
+        }
+        let source =
+            std::fs::read_to_string(&path).unwrap_or_else(|error| panic!("failed to read {}: {error}", path.display()));
+        for spelling in retired {
+            assert!(
+                !source.contains(spelling),
+                "{} must not retain retired product spelling `{spelling}`",
+                path.display()
+            );
+        }
+    }
 }
 
 #[test]

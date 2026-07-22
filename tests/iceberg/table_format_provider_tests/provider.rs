@@ -2,7 +2,7 @@
 async fn iceberg_provider_plans_structured_table_format_scan_leaf() {
     let schema = iceberg_test_schema();
     let planner = Arc::new(RecordingPlanner::new(native_admissible_scan_plan(Arc::clone(&schema))));
-    let provider = Arc::new(CudfIcebergTableProvider::from_table_format_planner(Arc::clone(&schema), planner.clone()));
+    let provider = Arc::new(NexusIcebergTableProvider::from_table_format_planner(Arc::clone(&schema), planner.clone()));
     let ctx = SessionContext::new();
     ctx.register_table("iceberg_t", provider).unwrap();
 
@@ -16,7 +16,7 @@ async fn iceberg_provider_plans_structured_table_format_scan_leaf() {
     assert_eq!(planner.requests().len(), 1);
     assert_eq!(planner.requests()[0].projected_column_names.as_deref(), Some(&["value".to_string()][..]));
 
-    assert_eq!(scan.name(), "CudfTableFormatScanExec");
+    assert_eq!(scan.name(), "NexusTableFormatScanExec");
 
     let lowering = lower_physical_plan_to_native(Arc::clone(&physical_plan));
     assert_eq!(lowering.rewritten_count(), 1);
@@ -56,7 +56,7 @@ async fn iceberg_provider_unprojected_unsupported_map_field_does_not_block_nativ
             TableFormatColumnRole::Projected,
         ));
     let planner = Arc::new(RecordingPlanner::new(plan));
-    let provider = Arc::new(CudfIcebergTableProvider::from_table_format_planner(Arc::clone(&schema), planner.clone()));
+    let provider = Arc::new(NexusIcebergTableProvider::from_table_format_planner(Arc::clone(&schema), planner.clone()));
     let ctx = SessionContext::new_with_config(direct_friendly_session_config());
     ctx.register_table("iceberg_t", provider).unwrap();
 
@@ -114,7 +114,7 @@ async fn iceberg_provider_projected_unsupported_map_field_rejects_native_project
             TableFormatColumnRole::Projected,
         ));
     let planner = Arc::new(RecordingPlanner::new(plan));
-    let provider = Arc::new(CudfIcebergTableProvider::from_table_format_planner(Arc::clone(&schema), planner));
+    let provider = Arc::new(NexusIcebergTableProvider::from_table_format_planner(Arc::clone(&schema), planner));
     let ctx = SessionContext::new_with_config(direct_friendly_session_config());
     ctx.register_table("iceberg_t", provider).unwrap();
 
@@ -134,7 +134,7 @@ async fn iceberg_provider_scan_planning_timeout_returns_structured_error() {
     let schema = iceberg_test_schema();
     let planner =
         Arc::new(SleepingPlanner::new(native_admissible_scan_plan(Arc::clone(&schema)), Duration::from_millis(50)));
-    let provider = CudfIcebergTableProvider::from_table_format_planner(Arc::clone(&schema), planner)
+    let provider = NexusIcebergTableProvider::from_table_format_planner(Arc::clone(&schema), planner)
         .with_catalog_type("local")
         .with_scan_planning_timeout(Some(Duration::from_millis(1)));
     let ctx = SessionContext::new();
@@ -159,7 +159,7 @@ async fn iceberg_provider_scan_planning_timeout_returns_before_non_yielding_plan
     let schema = iceberg_test_schema();
     let planner =
         Arc::new(BusyPlanner::new(native_admissible_scan_plan(Arc::clone(&schema)), Duration::from_millis(30)));
-    let provider = CudfIcebergTableProvider::from_table_format_planner(Arc::clone(&schema), planner)
+    let provider = NexusIcebergTableProvider::from_table_format_planner(Arc::clone(&schema), planner)
         .with_catalog_type("local")
         .with_scan_planning_timeout(Some(Duration::from_millis(1)));
     let ctx = SessionContext::new();
@@ -182,7 +182,7 @@ async fn iceberg_provider_scan_planning_timeout_returns_before_non_yielding_plan
 async fn iceberg_provider_plumbs_explicit_scan_limit_into_table_format_source() {
     let schema = iceberg_test_schema();
     let planner = Arc::new(RecordingPlanner::new(native_admissible_scan_plan(Arc::clone(&schema))));
-    let provider = Arc::new(CudfIcebergTableProvider::from_table_format_planner(Arc::clone(&schema), planner.clone()));
+    let provider = Arc::new(NexusIcebergTableProvider::from_table_format_planner(Arc::clone(&schema), planner.clone()));
     let ctx = SessionContext::new();
     let projection = vec![1];
     let physical_plan = provider.scan(&ctx.state(), Some(&projection), &[], Some(7)).await.unwrap();
@@ -204,7 +204,7 @@ async fn iceberg_provider_plumbs_explicit_scan_limit_into_table_format_source() 
 fn native_lowering_pushes_root_global_limit_into_table_format_source_scan_limit() {
     let schema = iceberg_test_schema();
     let scan: Arc<dyn ExecutionPlan> =
-        Arc::new(CudfTableFormatScanExec::new(native_admissible_scan_plan(Arc::clone(&schema)), schema));
+        Arc::new(NexusTableFormatScanExec::new(native_admissible_scan_plan(Arc::clone(&schema)), schema));
     let limited: Arc<dyn ExecutionPlan> = Arc::new(GlobalLimitExec::new(scan, 3, Some(7)));
 
     let result = lower_physical_plan_to_native(limited);

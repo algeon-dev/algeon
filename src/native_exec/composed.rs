@@ -24,12 +24,12 @@ use nexus_query_engine::{
 
 use super::{
     common::{
-        NATIVE_CUDF_COMPOSED_EXEC_HOST_OUTPUT_MEMORY_CONSUMER, NativeHostOutputCursor, conservative_properties,
+        NATIVE_NEXUS_COMPOSED_EXEC_HOST_OUTPUT_MEMORY_CONSUMER, NativeHostOutputCursor, conservative_properties,
         gpu_resident_source_names, mark_native_runtime_error, native_host_output_stream, native_plan_one_line,
         native_query_runtime_error, properties_with_equivalence, run_gpu_execution_task, write_native_plan_tree,
     },
-    config::NativeCudfExecutionConfig,
-    metrics::{NativeCudfMetrics, NativeExecutionMetricsCapture},
+    config::NexusNativeExecutionConfig,
+    metrics::{NativeExecutionMetricsCapture, NexusNativeMetrics},
     producer::{
         execute_gpu_resident_producer_with_context, gpu_resident_producer_input_name,
         prepare_gpu_resident_producer_for_execution,
@@ -43,16 +43,16 @@ use crate::error::{Error, ErrorCode};
 /// `GpuResidentInputMap`, then runs a host-sink native consumer plan that materializes the final
 /// result as Arrow for DataFusion.
 #[derive(Debug, Clone)]
-pub struct NativeCudfComposedExec {
+pub struct NexusNativeComposedExec {
     plan: QueryPlan,
     gpu_inputs: Vec<Arc<dyn ExecutionPlan>>,
-    execution_config: NativeCudfExecutionConfig,
+    execution_config: NexusNativeExecutionConfig,
     metrics_capture: Option<NativeExecutionMetricsCapture>,
     metrics: ExecutionPlanMetricsSet,
     cache: Arc<PlanProperties>,
 }
 
-impl NativeCudfComposedExec {
+impl NexusNativeComposedExec {
     /// Create composed native execution from GPU-resident producer children.
     ///
     /// The final plan must use a host Arrow sink, every child must advertise a
@@ -61,7 +61,7 @@ impl NativeCudfComposedExec {
     pub fn try_new(
         plan: QueryPlan,
         gpu_inputs: Vec<Arc<dyn ExecutionPlan>>,
-        execution_config: NativeCudfExecutionConfig,
+        execution_config: NexusNativeExecutionConfig,
     ) -> crate::error::Result<Self> {
         Self::try_new_with_cache(plan, gpu_inputs, execution_config, None)
     }
@@ -69,7 +69,7 @@ impl NativeCudfComposedExec {
     pub(crate) fn try_new_with_equivalence_properties(
         plan: QueryPlan,
         gpu_inputs: Vec<Arc<dyn ExecutionPlan>>,
-        execution_config: NativeCudfExecutionConfig,
+        execution_config: NexusNativeExecutionConfig,
         eq_properties: EquivalenceProperties,
     ) -> crate::error::Result<Self> {
         Self::try_new_with_cache(plan, gpu_inputs, execution_config, Some(eq_properties))
@@ -78,7 +78,7 @@ impl NativeCudfComposedExec {
     fn try_new_with_cache(
         plan: QueryPlan,
         gpu_inputs: Vec<Arc<dyn ExecutionPlan>>,
-        execution_config: NativeCudfExecutionConfig,
+        execution_config: NexusNativeExecutionConfig,
         eq_properties: Option<EquivalenceProperties>,
     ) -> crate::error::Result<Self> {
         // Constructor validation preserves the composed execution contract: the final consumer must
@@ -148,7 +148,8 @@ impl NativeCudfComposedExec {
         let gpu_inputs = gpu_inputs
             .into_iter()
             .map(|input| {
-                let Some(producer) = input.as_ref().downcast_ref::<super::producer::NativeCudfGpuProducerExec>() else {
+                let Some(producer) = input.as_ref().downcast_ref::<super::producer::NexusNativeGpuProducerExec>()
+                else {
                     return input;
                 };
                 Arc::new(producer.clone().with_metrics_capture(metrics_capture.clone())) as Arc<dyn ExecutionPlan>
@@ -162,7 +163,7 @@ impl NativeCudfComposedExec {
     }
 
     #[cfg_attr(not(feature = "cugraph"), allow(dead_code))]
-    pub(crate) fn execution_config(&self) -> &NativeCudfExecutionConfig {
+    pub(crate) fn execution_config(&self) -> &NexusNativeExecutionConfig {
         &self.execution_config
     }
 
@@ -193,12 +194,12 @@ impl NativeCudfComposedExec {
     }
 }
 
-impl DisplayAs for NativeCudfComposedExec {
+impl DisplayAs for NexusNativeComposedExec {
     fn fmt_as(&self, t: DisplayFormatType, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match t {
             DisplayFormatType::Default => write!(
                 f,
-                "NativeCudfComposedExec: native_nodes={}, gpu_input_count={}, sink=host_arrow, native_pipeline_execution_mode={}, memory_control_policy={}, boundary_policy={}, input_boundary=gpu_resident, output_boundary=device_to_host, edge_normalize_inserted={}",
+                "NexusNativeComposedExec: native_nodes={}, gpu_input_count={}, sink=host_arrow, native_pipeline_execution_mode={}, memory_control_policy={}, boundary_policy={}, input_boundary=gpu_resident, output_boundary=device_to_host, edge_normalize_inserted={}",
                 self.plan.node_count(),
                 self.gpu_inputs.len(),
                 self.execution_config.native_pipeline_execution_mode(),
@@ -208,7 +209,7 @@ impl DisplayAs for NativeCudfComposedExec {
             ),
             DisplayFormatType::Verbose => write!(
                 f,
-                "NativeCudfComposedExec: native_nodes={}, gpu_input_count={}, sink=host_arrow, native_pipeline_execution_mode={}, memory_control_policy={}, boundary_policy={}, input_boundary=gpu_resident, output_boundary=device_to_host, edge_normalize_inserted={}, native_plan={}",
+                "NexusNativeComposedExec: native_nodes={}, gpu_input_count={}, sink=host_arrow, native_pipeline_execution_mode={}, memory_control_policy={}, boundary_policy={}, input_boundary=gpu_resident, output_boundary=device_to_host, edge_normalize_inserted={}, native_plan={}",
                 self.plan.node_count(),
                 self.gpu_inputs.len(),
                 self.execution_config.native_pipeline_execution_mode(),
@@ -237,9 +238,9 @@ impl DisplayAs for NativeCudfComposedExec {
     }
 }
 
-impl ExecutionPlan for NativeCudfComposedExec {
+impl ExecutionPlan for NexusNativeComposedExec {
     fn name(&self) -> &str {
-        "NativeCudfComposedExec"
+        "NexusNativeComposedExec"
     }
 
     fn properties(&self) -> &Arc<PlanProperties> {
@@ -254,7 +255,7 @@ impl ExecutionPlan for NativeCudfComposedExec {
         self: Arc<Self>,
         children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
-        NativeCudfComposedExec::try_new_with_equivalence_properties(
+        NexusNativeComposedExec::try_new_with_equivalence_properties(
             self.plan.clone(),
             children,
             self.execution_config.clone(),
@@ -281,7 +282,7 @@ impl ExecutionPlan for NativeCudfComposedExec {
         let runtime_observation_config = execution_config.runtime_observation_config();
         let account_memory_pool = execution_config.host_output_memory_pool_accounting();
         let gpu_inputs = self.gpu_inputs.clone();
-        let metrics = NativeCudfMetrics::new_with_capture_and_shape(
+        let metrics = NexusNativeMetrics::new_with_capture_and_shape(
             &self.metrics,
             partition,
             self.metrics_capture.clone(),
@@ -289,7 +290,7 @@ impl ExecutionPlan for NativeCudfComposedExec {
         );
         let output_schema = Arc::clone(&schema);
         let output = native_host_output_stream(
-            NATIVE_CUDF_COMPOSED_EXEC_HOST_OUTPUT_MEMORY_CONSUMER,
+            NATIVE_NEXUS_COMPOSED_EXEC_HOST_OUTPUT_MEMORY_CONSUMER,
             schema,
             Arc::clone(&task_context),
             account_memory_pool,
@@ -356,7 +357,7 @@ impl ExecutionPlan for NativeCudfComposedExec {
                         let output = metrics.finalize_query_outcome_for_deferred_host(outcome).map_err(|error| {
                             DataFusionError::from(native_query_runtime_error(
                                 "datafusion_nexus.native_composed.execute",
-                                "native cudf composed query execution failed",
+                                "nexus native composed query execution failed",
                                 error,
                             ))
                         })?;

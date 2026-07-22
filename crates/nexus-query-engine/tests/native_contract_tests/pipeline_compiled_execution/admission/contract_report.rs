@@ -120,7 +120,10 @@ fn d5_contract_gate_rows_are_inventory_backed_and_family_path_free() {
     assert!(source_unresolved_rows > 0, "D.5 inventory should cover source unresolved preflight gates");
     assert!(aggregate_unresolved_rows > 0, "D.5 inventory should cover aggregate unresolved preflight gates");
     assert!(final_sort_unresolved_rows > 0, "D.5 inventory should cover final-sort unresolved preflight gates");
-    assert!(one_shot_output_exact_rows > 0, "D.5 inventory should cover one-shot equality join output-size preflight gates");
+    assert!(
+        one_shot_output_exact_rows > 0,
+        "D.5 inventory should cover one-shot equality join output-size preflight gates"
+    );
     assert!(filtered_retained_state_rows > 0, "D.5 inventory should cover filtered semi/anti retained state");
     assert!(mixed_retained_state_rows > 0, "D.5 inventory should cover mixed residual retained state");
     assert!(observed_retained_state_rows > 0, "D.5 inventory should cover observed retained-state gates");

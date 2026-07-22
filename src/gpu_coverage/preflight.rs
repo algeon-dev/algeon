@@ -24,17 +24,17 @@ use super::{
 };
 use crate::{
     error::{DataFusionErrorExt, Error, ErrorCode, ErrorSourceDiagnostics},
-    native_exec::NativeCudfExecutionConfig,
-    planner::CudfOptimizerConfig,
+    native_exec::NexusNativeExecutionConfig,
+    planner::NexusNativeOptimizerConfig,
     policy::GpuFallbackPolicy,
-    session::installed_cudf_native_optimizer_config,
+    session::installed_nexus_native_optimizer_config,
 };
 
 #[derive(Debug, Clone)]
 pub(super) struct ValidationOptimizerConfig {
     pub(super) actual_policy: GpuFallbackPolicy,
     pub(super) optimizer_config_source: &'static str,
-    pub(super) diagnostic_optimizer_config: CudfOptimizerConfig,
+    pub(super) diagnostic_optimizer_config: NexusNativeOptimizerConfig,
 }
 
 #[derive(Debug)]
@@ -85,7 +85,7 @@ impl QueryGpuRejection {
 }
 
 pub(super) fn optimizer_config_for_validation(ctx: &SessionContext) -> ValidationOptimizerConfig {
-    let (optimizer_config_source, optimizer_config) = installed_cudf_native_optimizer_config(&ctx.state())
+    let (optimizer_config_source, optimizer_config) = installed_nexus_native_optimizer_config(&ctx.state())
         .map(|config| ("installed_session_rule", config))
         .unwrap_or_else(|| ("default_gpu_preferred", default_validation_optimizer_config()));
     let actual_policy = optimizer_config.fallback_policy();
@@ -93,9 +93,9 @@ pub(super) fn optimizer_config_for_validation(ctx: &SessionContext) -> Validatio
     ValidationOptimizerConfig { actual_policy, optimizer_config_source, diagnostic_optimizer_config }
 }
 
-fn default_validation_optimizer_config() -> CudfOptimizerConfig {
-    CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
-        .with_native_execution_config(NativeCudfExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 1, 3, 1))
+fn default_validation_optimizer_config() -> NexusNativeOptimizerConfig {
+    NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
+        .with_native_execution_config(NexusNativeExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 1, 3, 1))
 }
 
 pub(super) fn validated_under(state: &SessionState, config: &ValidationOptimizerConfig) -> QueryGpuValidatedUnder {

@@ -67,8 +67,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--out-dir",
         type=Path,
-        default=Path(os.getenv("CUDF_CUGRAPH_DATA_ROOT", DEFAULT_DATA_ROOT)),
-        help="Local fixture root. Defaults to CUDF_CUGRAPH_DATA_ROOT or fixture/graph/cugraph.",
+        default=Path(os.getenv("NEXUS_CUGRAPH_DATA_ROOT", DEFAULT_DATA_ROOT)),
+        help="Local fixture root. Defaults to NEXUS_CUGRAPH_DATA_ROOT or fixture/graph/cugraph.",
     )
     parser.add_argument(
         "--oracle",
@@ -203,8 +203,8 @@ def run_oracle(args: argparse.Namespace, out_root: Path) -> None:
         command.append("--force")
     print("running:", " ".join(command), file=sys.stderr)
     env = os.environ.copy()
-    env["CUDF_CUGRAPH_DATA_ROOT"] = str(out_root)
-    env.setdefault("CUDF_CUGRAPH_PYTHON", sys.executable)
+    env["NEXUS_CUGRAPH_DATA_ROOT"] = str(out_root)
+    env.setdefault("NEXUS_CUGRAPH_PYTHON", sys.executable)
     subprocess.run(command, cwd=REPO_ROOT, env=env, check=True)
 
 

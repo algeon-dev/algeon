@@ -121,10 +121,12 @@ fn control_fixture_accepts_pending_active_and_unavailable_states() {
 fn evidence_v2_separates_capture_and_global_retained_byte_pressure() {
     assert_eq!(EVIDENCE_SCHEMA, "datafusion_nexus.server_runtime_observability_e2e.v2");
     assert_eq!(EVIDENCE_VERSION, 2);
-    assert!(GLOBAL_BYTE_PRESSURE_PER_QUERY_BYTES < GLOBAL_BYTE_PRESSURE_RETAINED_BYTES);
-    assert!(
-        GLOBAL_BYTE_PRESSURE_MAX_QUERIES + GLOBAL_BYTE_PRESSURE_SETUP_QUERIES < GLOBAL_BYTE_PRESSURE_RETAINED_COUNT
-    );
+    const {
+        assert!(GLOBAL_BYTE_PRESSURE_PER_QUERY_BYTES < GLOBAL_BYTE_PRESSURE_RETAINED_BYTES);
+        assert!(
+            GLOBAL_BYTE_PRESSURE_MAX_QUERIES + GLOBAL_BYTE_PRESSURE_SETUP_QUERIES < GLOBAL_BYTE_PRESSURE_RETAINED_COUNT
+        );
+    }
     assert_eq!(artifact_charge(38_000, 12_000).unwrap(), 50_000);
 }
 

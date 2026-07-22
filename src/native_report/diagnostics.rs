@@ -35,13 +35,13 @@ fn contains_native_exec(plan: &dyn ExecutionPlan) -> bool {
 }
 
 fn native_plan_root_is_whole_native(plan: &dyn ExecutionPlan) -> bool {
-    plan.downcast_ref::<NativeCudfExec>().is_some() || plan.downcast_ref::<NativeCudfComposedExec>().is_some()
+    plan.downcast_ref::<NexusNativeExec>().is_some() || plan.downcast_ref::<NexusNativeComposedExec>().is_some()
 }
 
 fn is_native_fragment(plan: &dyn ExecutionPlan) -> bool {
-    plan.downcast_ref::<NativeCudfExec>().is_some()
-        || plan.downcast_ref::<NativeCudfComposedExec>().is_some()
-        || plan.downcast_ref::<NativeCudfGpuProducerExec>().is_some()
+    plan.downcast_ref::<NexusNativeExec>().is_some()
+        || plan.downcast_ref::<NexusNativeComposedExec>().is_some()
+        || plan.downcast_ref::<NexusNativeGpuProducerExec>().is_some()
 }
 
 fn count_native_fragments(plan: &dyn ExecutionPlan) -> usize {
@@ -253,9 +253,9 @@ fn native_report_operator_is_supported(name: &str, candidate_shape: &str) -> boo
             | "LocalLimitExec"
             | "GlobalLimitExec"
             | "CoalescePartitionsExec"
-            | "NativeCudfExec"
-            | "NativeCudfComposedExec"
-            | "NativeCudfGpuProducerExec"
+            | "NexusNativeExec"
+            | "NexusNativeComposedExec"
+            | "NexusNativeGpuProducerExec"
     ) || (name == "RepartitionExec" && candidate_shape.contains("RepartitionExec"))
 }
 

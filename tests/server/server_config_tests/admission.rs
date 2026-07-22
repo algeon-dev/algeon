@@ -548,11 +548,11 @@ fn query_service_handle_rejects_stale_session_budget_extension() {
     .unwrap();
     let handle = Arc::new(service.try_admit_query("tenant").unwrap().expect("query should admit"));
     let admitted_policy = handle.memory_control_policy();
-    let query_config = CudfOptimizerConfig::default().with_native_execution_config(
-        NativeCudfExecutionConfig::bounded_auto_sized().with_query_service_handle(handle),
+    let query_config = NexusNativeOptimizerConfig::default().with_native_execution_config(
+        NexusNativeExecutionConfig::bounded_auto_sized().with_query_service_handle(handle),
     );
-    let stale_server_config = CudfOptimizerConfig::default()
-        .with_native_execution_config(NativeCudfExecutionConfig::bounded(12 * 1024 * 1024, 64 * 1024 * 1024, 1, 3, 1));
+    let stale_server_config = NexusNativeOptimizerConfig::default()
+        .with_native_execution_config(NexusNativeExecutionConfig::bounded(12 * 1024 * 1024, 64 * 1024 * 1024, 1, 3, 1));
     let mut options = ConfigOptions::default();
     options.extensions.insert(DataFusionNexusSessionConfig::from_optimizer_config(&stale_server_config));
 

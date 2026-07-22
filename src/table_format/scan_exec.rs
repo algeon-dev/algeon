@@ -24,12 +24,12 @@ const EXECUTE_OPERATION: &str = "datafusion_nexus.table_format.scan_exec.execute
 /// through DataFusion Arrow readers; native lowering must consume the
 /// structured [`TableFormatScanPlan`] instead.
 #[derive(Debug, Clone)]
-pub struct CudfTableFormatScanExec {
+pub struct NexusTableFormatScanExec {
     scan_plan: TableFormatScanPlan,
     cache: Arc<PlanProperties>,
 }
 
-impl CudfTableFormatScanExec {
+impl NexusTableFormatScanExec {
     /// Creates a table-format planning leaf with conservative DataFusion plan properties.
     pub fn new(scan_plan: TableFormatScanPlan, schema: SchemaRef) -> Self {
         Self { cache: conservative_properties(schema), scan_plan }
@@ -50,13 +50,13 @@ impl CudfTableFormatScanExec {
     }
 }
 
-impl DisplayAs for CudfTableFormatScanExec {
+impl DisplayAs for NexusTableFormatScanExec {
     fn fmt_as(&self, t: DisplayFormatType, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let diagnostics = self.diagnostics();
         match t {
             DisplayFormatType::Default | DisplayFormatType::Verbose => write!(
                 f,
-                "CudfTableFormatScanExec: table_format={}, snapshot_id={}, catalog_type={}, planned_data_file_count={}, planned_delete_file_count={}, admitted_native_source_file_count={}, native_source_read_capability={}, source_read_strategy={}, credential_mode={}, lakehouse_cache_status={}, lakehouse_cache_read_mode={}, lakehouse_cache_fill_mode={}, direct_device_read_disposition={}",
+                "NexusTableFormatScanExec: table_format={}, snapshot_id={}, catalog_type={}, planned_data_file_count={}, planned_delete_file_count={}, admitted_native_source_file_count={}, native_source_read_capability={}, source_read_strategy={}, credential_mode={}, lakehouse_cache_status={}, lakehouse_cache_read_mode={}, lakehouse_cache_fill_mode={}, direct_device_read_disposition={}",
                 diagnostics.table_format,
                 diagnostics.snapshot_id.as_deref().unwrap_or_default(),
                 diagnostics.catalog_type.as_deref().unwrap_or_default(),
@@ -90,9 +90,9 @@ impl DisplayAs for CudfTableFormatScanExec {
     }
 }
 
-impl ExecutionPlan for CudfTableFormatScanExec {
+impl ExecutionPlan for NexusTableFormatScanExec {
     fn name(&self) -> &str {
-        "CudfTableFormatScanExec"
+        "NexusTableFormatScanExec"
     }
 
     fn properties(&self) -> &Arc<PlanProperties> {

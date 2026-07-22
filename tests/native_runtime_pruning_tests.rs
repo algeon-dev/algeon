@@ -43,10 +43,10 @@ use datafusion::{
 use datafusion_nexus::{
     error::{Error, ErrorCode},
     native::lower_physical_plan_to_native,
-    native_exec::{NativeCudfExec, NativeCudfExecutionConfig},
-    planner::CudfOptimizerConfig,
+    native_exec::{NexusNativeExec, NexusNativeExecutionConfig},
+    planner::NexusNativeOptimizerConfig,
     policy::GpuFallbackPolicy,
-    session::CudfSessionStateBuilderExt,
+    session::NexusSessionStateBuilderExt,
 };
 use datafusion_nexus_workloads::tpch::{TPCH_QUERIES, TPCH_TABLES, write_tiny_tpch_parquet_dataset};
 use nexus_query_engine::{
@@ -365,7 +365,7 @@ async fn native_runtime_filtered_empty_rollup_grand_total_matches_cpu() {
 
     let native_physical_plan =
         native_datafusion_sql_plan(&path, SQL_FILTERED_EMPTY_ROLLUP_SUM_QUERY, native_datafusion_config()).await;
-    assert_native_cudf_exec(&native_physical_plan, "runtime-filtered empty ROLLUP should lower to NativeCudfExec");
+    assert_nexus_native_exec(&native_physical_plan, "runtime-filtered empty ROLLUP should lower to NexusNativeExec");
 
     let task_ctx = Arc::new(TaskContext::default());
     let native_batches = collect(native_physical_plan, task_ctx).await.unwrap();
@@ -606,7 +606,7 @@ async fn native_runtime_parquet_sorting_columns_scan_matches_cpu() {
         collect(Arc::clone(&cpu_plan), Arc::new(datafusion::execution::context::TaskContext::default())).await.unwrap();
     let native_plan =
         native_datafusion_sql_plan(&path, "SELECT key, payload FROM bench LIMIT 3", native_datafusion_config()).await;
-    assert_native_cudf_exec(&native_plan, "sorting_columns scan should optimize to native exec");
+    assert_nexus_native_exec(&native_plan, "sorting_columns scan should optimize to native exec");
     assert_eq!(native_plan.properties().output_ordering(), cpu_plan.properties().output_ordering());
 
     let native_batches =

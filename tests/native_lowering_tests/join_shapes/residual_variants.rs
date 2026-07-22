@@ -399,11 +399,11 @@ fn hash_join_filter_decimal_cast_materializes_inputs_before_residual_predicate()
         Expr::Binary { left, right, .. }
             if matches!(
                 left.as_ref(),
-                Expr::Column(column) if column.to_string() == "input0.__cudf_join_residual_left_0"
+                Expr::Column(column) if column.to_string() == "input0.__nexus_native_join_residual_left_0"
             )
                 && matches!(
                     right.as_ref(),
-                    Expr::Column(column) if column.to_string() == "input1.__cudf_join_residual_right_0"
+                    Expr::Column(column) if column.to_string() == "input1.__nexus_native_join_residual_right_0"
                 )
     ));
     assert_join_output_projection(
@@ -417,13 +417,13 @@ fn hash_join_filter_decimal_cast_materializes_inputs_before_residual_predicate()
     assert_join_input_materializes_decimal_cast(
         &result.plans[0],
         join.inputs[0],
-        "__cudf_join_residual_left_0",
+        "__nexus_native_join_residual_left_0",
         "l_payload",
     );
     assert_join_input_materializes_decimal_cast(
         &result.plans[0],
         join.inputs[1],
-        "__cudf_join_residual_right_0",
+        "__nexus_native_join_residual_right_0",
         "r_payload",
     );
     let sources = native_local_parquet_sources(&result.plans[0]);
@@ -455,23 +455,23 @@ fn hash_join_filter_case_decimal_divide_materializes_inputs_before_residual_pred
         Expr::Binary { left, right, .. }
             if matches!(
                 left.as_ref(),
-                Expr::Column(column) if column.to_string() == "input0.__cudf_join_residual_left_0"
+                Expr::Column(column) if column.to_string() == "input0.__nexus_native_join_residual_left_0"
             )
                 && matches!(
                     right.as_ref(),
-                    Expr::Column(column) if column.to_string() == "input1.__cudf_join_residual_right_0"
+                    Expr::Column(column) if column.to_string() == "input1.__nexus_native_join_residual_right_0"
                 )
     ));
     assert_join_input_materializes_case_decimal_divide(
         &result.plans[0],
         join.inputs[0],
-        "__cudf_join_residual_left_0",
+        "__nexus_native_join_residual_left_0",
         "l_payload",
     );
     assert_join_input_materializes_case_decimal_divide(
         &result.plans[0],
         join.inputs[1],
-        "__cudf_join_residual_right_0",
+        "__nexus_native_join_residual_right_0",
         "r_payload",
     );
 
@@ -502,7 +502,7 @@ fn hash_join_filter_substring_materializes_inputs_before_residual_predicate() {
                 Expr::InList { expr, list, negated: false }
                     if matches!(
                         expr.as_ref(),
-                        Expr::Column(column) if column.to_string() == "input0.__cudf_join_residual_left_0"
+                        Expr::Column(column) if column.to_string() == "input0.__nexus_native_join_residual_left_0"
                     )
                         && list.len() == 1
             )
@@ -511,17 +511,32 @@ fn hash_join_filter_substring_materializes_inputs_before_residual_predicate() {
                     Expr::Binary { left, right, op: nexus_query_engine::expr::BinaryOp::NotEq, .. }
                         if matches!(
                             left.as_ref(),
-                            Expr::Column(column) if column.to_string() == "input0.__cudf_join_residual_left_1"
+                            Expr::Column(column) if column.to_string() == "input0.__nexus_native_join_residual_left_1"
                         )
                             && matches!(
                                 right.as_ref(),
-                                Expr::Column(column) if column.to_string() == "input1.__cudf_join_residual_right_0"
+                                Expr::Column(column) if column.to_string() == "input1.__nexus_native_join_residual_right_0"
                             )
                 )
     ));
-    assert_join_input_materializes_substring(&result.plans[0], join.inputs[0], "__cudf_join_residual_left_0", "l_zip");
-    assert_join_input_materializes_substring(&result.plans[0], join.inputs[0], "__cudf_join_residual_left_1", "l_zip");
-    assert_join_input_materializes_substring(&result.plans[0], join.inputs[1], "__cudf_join_residual_right_0", "r_zip");
+    assert_join_input_materializes_substring(
+        &result.plans[0],
+        join.inputs[0],
+        "__nexus_native_join_residual_left_0",
+        "l_zip",
+    );
+    assert_join_input_materializes_substring(
+        &result.plans[0],
+        join.inputs[0],
+        "__nexus_native_join_residual_left_1",
+        "l_zip",
+    );
+    assert_join_input_materializes_substring(
+        &result.plans[0],
+        join.inputs[1],
+        "__nexus_native_join_residual_right_0",
+        "r_zip",
+    );
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -548,13 +563,13 @@ fn hash_join_filter_upper_string_cast_materializes_input_before_residual_predica
             if matches!(left.as_ref(), Expr::Column(column) if column.to_string() == "input0.l_country")
                 && matches!(
                     right.as_ref(),
-                    Expr::Column(column) if column.to_string() == "input1.__cudf_join_residual_right_0"
+                    Expr::Column(column) if column.to_string() == "input1.__nexus_native_join_residual_right_0"
                 )
     ));
     assert_join_input_materializes_upper_utf8view_cast(
         &result.plans[0],
         join.inputs[1],
-        "__cudf_join_residual_right_0",
+        "__nexus_native_join_residual_right_0",
         "r_country",
     );
 
@@ -584,23 +599,23 @@ fn right_hash_join_filter_decimal_cast_materialization_uses_swapped_native_input
         Expr::Binary { left, right, .. }
             if matches!(
                 left.as_ref(),
-                Expr::Column(column) if column.to_string() == "input1.__cudf_join_residual_left_0"
+                Expr::Column(column) if column.to_string() == "input1.__nexus_native_join_residual_left_0"
             )
                 && matches!(
                     right.as_ref(),
-                    Expr::Column(column) if column.to_string() == "input0.__cudf_join_residual_right_0"
+                    Expr::Column(column) if column.to_string() == "input0.__nexus_native_join_residual_right_0"
                 )
     ));
     assert_join_input_materializes_decimal_cast(
         &result.plans[0],
         join.inputs[0],
-        "__cudf_join_residual_right_0",
+        "__nexus_native_join_residual_right_0",
         "r_payload",
     );
     assert_join_input_materializes_decimal_cast(
         &result.plans[0],
         join.inputs[1],
-        "__cudf_join_residual_left_0",
+        "__nexus_native_join_residual_left_0",
         "l_payload",
     );
 
@@ -718,7 +733,7 @@ fn assert_right_semi_anti_count_star_hidden_row_presence(
     assert_eq!(join.spec.output_projection.len(), 1);
     assert_join_output_projection(
         &join.spec.output_projection,
-        &[(NativeJoinSide::Left, "input0.key", "__cudf_join_row_presence")],
+        &[(NativeJoinSide::Left, "input0.key", "__nexus_native_join_row_presence")],
     );
     assert!(
         !native_plan.capability_analysis().has_rejections(),

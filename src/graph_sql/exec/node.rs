@@ -6,7 +6,7 @@ pub struct CugraphAlgoExec {
     pub(super) predicate_sources: Vec<Arc<dyn ExecutionPlan>>,
     pub(super) projection: Option<Vec<usize>>,
     pub(super) limit: Option<usize>,
-    pub(super) native_execution_config: NativeCudfExecutionConfig,
+    pub(super) native_execution_config: NexusNativeExecutionConfig,
     pub(super) metrics_capture: Option<NativeExecutionMetricsCapture>,
     pub(super) edge_source_canonical_facts: CugraphEdgeCanonicalFacts,
     pub(super) graph_residency: Option<GraphResidencyDescriptor>,
@@ -22,7 +22,7 @@ impl CugraphAlgoExec {
         predicate_sources: Vec<Arc<dyn ExecutionPlan>>,
         projection: Option<Vec<usize>>,
         limit: Option<usize>,
-        native_execution_config: NativeCudfExecutionConfig,
+        native_execution_config: NexusNativeExecutionConfig,
     ) -> Result<Self> {
         let id = NEXT_CUGRAPH_GPU_RESULT_INPUT_ID.fetch_add(1, Ordering::Relaxed);
         Self::try_new_with_gpu_result_input_name(
@@ -42,7 +42,7 @@ impl CugraphAlgoExec {
         predicate_sources: Vec<Arc<dyn ExecutionPlan>>,
         projection: Option<Vec<usize>>,
         limit: Option<usize>,
-        native_execution_config: NativeCudfExecutionConfig,
+        native_execution_config: NexusNativeExecutionConfig,
         gpu_result_input_name: String,
     ) -> Result<Self> {
         register_cugraph_execution_spis();
@@ -261,7 +261,7 @@ impl CugraphAlgoExec {
         output_device_bytes: Option<u64>,
         elapsed: std::time::Duration,
     ) {
-        let metrics = NativeCudfMetrics::new_with_capture(&self.metrics, partition, self.metrics_capture.clone());
+        let metrics = NexusNativeMetrics::new_with_capture(&self.metrics, partition, self.metrics_capture.clone());
         let mut query_metrics = QueryMetrics::default();
         query_metrics.record_graph_algorithm_runtime(GraphAlgorithmRuntimeMetrics {
             node_id: "bfs_singleflight_follower".to_string(),
@@ -291,7 +291,7 @@ impl CugraphAlgoExec {
         &self,
         native_context: &ExecutionContext,
         task_context: Arc<TaskContext>,
-        metrics: &NativeCudfMetrics,
+        metrics: &NexusNativeMetrics,
     ) -> Result<RecordBatch> {
         let runtime = counted_cudf_runtime(
             native_context,
@@ -358,7 +358,7 @@ impl CugraphAlgoExec {
         &self,
         context: &ExecutionContext,
         task_context: Arc<TaskContext>,
-        metrics: &NativeCudfMetrics,
+        metrics: &NexusNativeMetrics,
         mut singleflight_leader: Option<&mut GraphBfsLeader>,
     ) -> Result<RecordBatch> {
         let _elapsed_compute = metrics.baseline.elapsed_compute().timer();
@@ -437,7 +437,7 @@ impl CugraphAlgoExec {
 
     pub(super) fn record_bfs_singleflight_host_follower_metrics(
         &self,
-        metrics: &NativeCudfMetrics,
+        metrics: &NexusNativeMetrics,
         key: &GraphBfsSingleflightKey,
         batch: &RecordBatch,
         elapsed: std::time::Duration,
@@ -482,7 +482,7 @@ impl CugraphAlgoExec {
             .into());
         }
         self.validate_standalone_bounded_sources()?;
-        let metrics = NativeCudfMetrics::new_with_capture(&self.metrics, partition, self.metrics_capture.clone());
+        let metrics = NexusNativeMetrics::new_with_capture(&self.metrics, partition, self.metrics_capture.clone());
         let _elapsed_compute = metrics.baseline.elapsed_compute().timer();
         let mut graph_metrics =
             GraphExecutionMetrics::new(&metrics, self.native_execution_config.runtime_observation_config());
@@ -785,7 +785,7 @@ impl ExecutionPlan for CugraphAlgoExec {
         let schema = self.schema();
         let exec = self.clone();
         let default_execution_config = self.native_execution_config.clone();
-        let metrics = NativeCudfMetrics::new_with_capture(&self.metrics, partition, self.metrics_capture.clone());
+        let metrics = NexusNativeMetrics::new_with_capture(&self.metrics, partition, self.metrics_capture.clone());
         self.validate_standalone_bounded_sources()?;
         let output = futures::stream::once(async move {
             let exec = exec.prepare_lakehouse_source_metadata(task_context.as_ref()).await;

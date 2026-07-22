@@ -10,7 +10,7 @@ pub(super) fn assert_highlighted_planning_rows_and_tsv(
         assert_eq!(row.reason_code, None);
         assert_eq!(row.unsupported_category, None);
         if row.post_native_execution_path == NativeDataFusionPostNativeExecutionPath::Native {
-            assert_eq!(row.post_native_plan_root, "NativeCudfExec");
+            assert_eq!(row.post_native_plan_root, "NexusNativeExec");
         } else {
             assert_eq!(row.post_native_execution_path, NativeDataFusionPostNativeExecutionPath::PartialNative);
         }

@@ -8,8 +8,8 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(git -C "${HERE}" rev-parse --show-toplevel)"
 
 rapids_python() {
-  if [[ -n "${CUDF_CUGRAPH_PYTHON:-}" ]]; then
-    echo "${CUDF_CUGRAPH_PYTHON}"
+  if [[ -n "${NEXUS_CUGRAPH_PYTHON:-}" ]]; then
+    echo "${NEXUS_CUGRAPH_PYTHON}"
   elif [[ -x "${REPO_ROOT}/.venv/bin/python" ]]; then
     echo "${REPO_ROOT}/.venv/bin/python"
   else

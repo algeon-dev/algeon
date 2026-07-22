@@ -16,7 +16,7 @@ use datafusion::{
     prelude::{SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
-    planner::CudfNativePhysicalOptimizerRule, policy::GpuFallbackPolicy, session::CudfSessionStateBuilderExt,
+    planner::NexusNativePhysicalOptimizerRule, policy::GpuFallbackPolicy, session::NexusSessionStateBuilderExt,
 };
 use datafusion_nexus_workloads::clickbench::{
     CLICKBENCH_QUERIES, ClickbenchDatasetMetadata, ClickbenchLayout, ClickbenchQuery, ClickbenchWorkloadError,
@@ -130,16 +130,16 @@ fn parity_waiver_reasons_label() -> String {
         .join(",")
 }
 
-const QUERY_IDS_ENV: &str = "CUDF_CLICKBENCH_BENCH_QUERY_IDS";
-const WARMUPS_ENV: &str = "CUDF_CLICKBENCH_BENCH_WARMUPS";
-const ITERATIONS_ENV: &str = "CUDF_CLICKBENCH_BENCH_ITERATIONS";
-const SKIP_CPU_ENV: &str = "CUDF_CLICKBENCH_BENCH_SKIP_CPU";
-const SKIP_NATIVE_ENV: &str = "CUDF_CLICKBENCH_BENCH_SKIP_NATIVE";
-const CPU_PROFILE_ENV: &str = "CUDF_CLICKBENCH_BENCH_CPU_PROFILE";
-const NATIVE_FALLBACK_POLICY_ENV: &str = "CUDF_CLICKBENCH_BENCH_NATIVE_FALLBACK_POLICY";
-const PIPELINE_MODE_ENV: &str = "CUDF_NATIVE_PIPELINE_EXECUTION_MODE";
-const PROGRESS_ENV: &str = "CUDF_CLICKBENCH_BENCH_PROGRESS";
-const DUMP_ROWS_DIR_ENV: &str = "CUDF_CLICKBENCH_BENCH_DUMP_ROWS_DIR";
+const QUERY_IDS_ENV: &str = "NEXUS_CLICKBENCH_BENCH_QUERY_IDS";
+const WARMUPS_ENV: &str = "NEXUS_CLICKBENCH_BENCH_WARMUPS";
+const ITERATIONS_ENV: &str = "NEXUS_CLICKBENCH_BENCH_ITERATIONS";
+const SKIP_CPU_ENV: &str = "NEXUS_CLICKBENCH_BENCH_SKIP_CPU";
+const SKIP_NATIVE_ENV: &str = "NEXUS_CLICKBENCH_BENCH_SKIP_NATIVE";
+const CPU_PROFILE_ENV: &str = "NEXUS_CLICKBENCH_BENCH_CPU_PROFILE";
+const NATIVE_FALLBACK_POLICY_ENV: &str = "NEXUS_CLICKBENCH_BENCH_NATIVE_FALLBACK_POLICY";
+const PIPELINE_MODE_ENV: &str = "NEXUS_NATIVE_PIPELINE_EXECUTION_MODE";
+const PROGRESS_ENV: &str = "NEXUS_CLICKBENCH_BENCH_PROGRESS";
+const DUMP_ROWS_DIR_ENV: &str = "NEXUS_CLICKBENCH_BENCH_DUMP_ROWS_DIR";
 const KVIKIO_COMPAT_MODE_ENV: &str = "KVIKIO_COMPAT_MODE";
 
 pub async fn run_main() -> ExitCode {
@@ -315,14 +315,14 @@ async fn build_cpu_ctx(
 async fn build_native_ctx(
     config: &BenchmarkConfig,
     layout: &ClickbenchLayout,
-) -> ClickbenchWorkloadResult<(SessionContext, Arc<CudfNativePhysicalOptimizerRule>)> {
+) -> ClickbenchWorkloadResult<(SessionContext, Arc<NexusNativePhysicalOptimizerRule>)> {
     let optimizer_config = clickbench_native_optimizer_config_with_profile_settings(&config.native_profile)
         .with_fallback_policy(config.native_fallback_policy)
         .with_native_pipeline_execution_mode(config.native_pipeline_execution_mode);
-    let native_rule = Arc::new(CudfNativePhysicalOptimizerRule::new(optimizer_config));
+    let native_rule = Arc::new(NexusNativePhysicalOptimizerRule::new(optimizer_config));
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(clickbench_report_session_config())
-        .with_cudf_native_rule(Arc::clone(&native_rule))
+        .with_nexus_native_rule(Arc::clone(&native_rule))
         .build();
     let ctx = SessionContext::new_with_state(state);
     register_clickbench_table(&ctx, layout).await?;
@@ -336,7 +336,7 @@ async fn measure_query(
     qpos: usize,
     total: usize,
     config: &BenchmarkConfig,
-    native_rule: Option<&CudfNativePhysicalOptimizerRule>,
+    native_rule: Option<&NexusNativePhysicalOptimizerRule>,
     stderr: &mut io::StderrLock<'_>,
 ) -> EngineMeasurement {
     for w in 0..config.warmup_iterations {
@@ -500,7 +500,7 @@ impl RunOutcome {
 async fn run_once(
     ctx: &SessionContext,
     query: &ClickbenchQuery,
-    native_rule: Option<&CudfNativePhysicalOptimizerRule>,
+    native_rule: Option<&NexusNativePhysicalOptimizerRule>,
     dump: Option<DumpRowsSpec<'_>>,
 ) -> RunResult {
     let started = Instant::now();
@@ -1106,7 +1106,7 @@ mod tests {
     }
 
     fn test_config() -> BenchmarkConfig {
-        use datafusion_nexus::native_exec::NativeCudfExecutionConfig;
+        use datafusion_nexus::native_exec::NexusNativeExecutionConfig;
 
         use crate::report_workload::clickbench::{
             CLICKBENCH_GPU_THROUGHPUT_DEVICE_BUDGET_BYTES, CLICKBENCH_GPU_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK,
@@ -1127,8 +1127,8 @@ mod tests {
                 device_budget_bytes: CLICKBENCH_GPU_THROUGHPUT_DEVICE_BUDGET_BYTES,
                 max_source_chunk_bytes: CLICKBENCH_GPU_THROUGHPUT_MAX_SOURCE_CHUNK_BYTES,
                 max_row_groups_per_chunk: CLICKBENCH_GPU_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK,
-                max_retry_attempts: NativeCudfExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS,
-                min_retry_chunk_row_groups: NativeCudfExecutionConfig::DEFAULT_BOUNDED_MIN_RETRY_CHUNK_ROW_GROUPS,
+                max_retry_attempts: NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS,
+                min_retry_chunk_row_groups: NexusNativeExecutionConfig::DEFAULT_BOUNDED_MIN_RETRY_CHUNK_ROW_GROUPS,
                 source_chunk_planning_mode:
                     nexus_query_engine::runtime::SourceChunkPlanningMode::LocalParquetThroughput,
             },

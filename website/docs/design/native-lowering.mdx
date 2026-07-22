@@ -52,7 +52,7 @@ planner inside the adapter.
     },
     {
       id: 'native', lane: 'gpu', col: 2,
-      kind: 'engine', name: 'NativeCudfExec', note: 'QueryPlan on cuDF', tone: 'gpu',
+      kind: 'engine', name: 'NexusNativeExec', note: 'QueryPlan on cuDF', tone: 'gpu',
       sub: 'src/native_exec/ · crates/nexus-query-engine',
       detail: <>DataFusion sees a normal <code>ExecutionPlan</code> wrapper.
         Inside it is an engine-owned <code>QueryPlan</code>. Host Arrow batches
@@ -100,7 +100,7 @@ planner inside the adapter.
 Fallback is a planning-time boundary. If a CPU-readable candidate is rejected,
 DataFusion keeps the CPU plan. If a GPU-only table-format leaf survives native
 planning, the leaf guard fails planning before a placeholder CPU execution path
-can run. Once `NativeCudfExec` or `NativeCudfComposedExec` starts, native
+can run. Once `NexusNativeExec` or `NexusNativeComposedExec` starts, native
 runtime failures surface as structured errors and metrics; Nexus does not
 silently reroute that already-started native fragment back to CPU.
 :::
@@ -119,11 +119,11 @@ CPU fallback is not priced as GPU work. A fallback statement does not acquire a
 admission ledger. Server mode still bounds this host-side work with
 `NEXUS_SERVER_CPU_FALLBACK_MAX_CONCURRENT_STATEMENTS` (default `2`, `0` to
 disable); library mode leaves it unbounded unless the caller installs a
-`CudfOptimizerConfig` fallback limit.
+`NexusNativeOptimizerConfig` fallback limit.
 
 ## Session wiring
 
-`with_cudf_native` installs three physical optimizer hooks. Only the final
+`with_nexus_native` installs three physical optimizer hooks. Only the final
 rewrite is the public relational decision point, but the surrounding hooks are
 part of the operable design.
 
@@ -157,7 +157,7 @@ are locally supported.
 | Adaptive bounded execution | `crates/nexus-query-engine/src/exec/bounded/adaptive.rs` | `AdaptivePipelineReport`; runtime-action counts and optional memory-history evidence stay adaptive-only. |
 | Runtime execution | `execute_query_plan` / `execute_query_plan_with_gpu_inputs` | `QueryMetrics`, DataFusion metrics, and native TSV reports, not printed plans. |
 
-Adapter-side `NativeCudfExecutionConfig` stores the DataFusion-facing knobs and
+Adapter-side `NexusNativeExecutionConfig` stores the DataFusion-facing knobs and
 builds the native `ExecutionContext` at the DataFusion/native boundary. The
 engine context then owns execution-time memory control, boundary policy,
 reservation, cache, source scheduling, and retry evidence.

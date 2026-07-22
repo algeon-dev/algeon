@@ -1,7 +1,7 @@
 use super::*;
 
 pub(in crate::native::lowering) fn lower_table_format_zero_column_count_source(
-    scan_exec: &CudfTableFormatScanExec,
+    scan_exec: &NexusTableFormatScanExec,
     builder: &mut NativeQueryPlanBuilder,
 ) -> Result<LoweredNativeInput, FallbackReason> {
     let scan_plan = scan_exec.scan_plan();
@@ -59,7 +59,7 @@ pub(in crate::native::lowering) fn table_format_count_star_probe_can_lower(scan_
 }
 
 pub(in crate::native::lowering) fn lower_table_format_count_star_mixed_row_count_source(
-    scan_exec: &CudfTableFormatScanExec,
+    scan_exec: &NexusTableFormatScanExec,
     builder: &mut NativeQueryPlanBuilder,
 ) -> Result<LoweredNativeInput, FallbackReason> {
     let scan_plan = scan_exec.scan_plan();
@@ -106,7 +106,7 @@ pub(in crate::native::lowering) fn lower_table_format_count_star_mixed_row_count
 }
 
 pub(in crate::native::lowering) fn lower_table_format_count_star_fallback_source(
-    scan_exec: &CudfTableFormatScanExec,
+    scan_exec: &NexusTableFormatScanExec,
     builder: &mut NativeQueryPlanBuilder,
 ) -> Result<LoweredNativeInput, FallbackReason> {
     let scan_plan = scan_exec.scan_plan();
@@ -214,7 +214,7 @@ pub(super) fn table_format_count_weight_schema() -> SchemaRef {
 }
 
 pub(in crate::native::lowering) fn lower_empty_table_format_count_star_source(
-    scan_exec: &CudfTableFormatScanExec,
+    scan_exec: &NexusTableFormatScanExec,
     builder: &mut NativeQueryPlanBuilder,
 ) -> Result<LoweredNativeInput, FallbackReason> {
     if !table_format_scan_plan_is_empty_admissible(scan_exec.scan_plan()) {

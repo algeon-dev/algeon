@@ -136,7 +136,10 @@ fn assert_all_node_inputs_exist(plan: &nexus_query_engine::plan::QueryPlan) {
     }
 }
 
-fn source_input_name(plan: &nexus_query_engine::plan::QueryPlan, node_id: nexus_query_engine::plan::NodeId) -> Option<String> {
+fn source_input_name(
+    plan: &nexus_query_engine::plan::QueryPlan,
+    node_id: nexus_query_engine::plan::NodeId,
+) -> Option<String> {
     let node = plan.node(node_id)?;
     let PlanNode::Source(source) = &node.kind else { return None };
     match source.as_ref() {

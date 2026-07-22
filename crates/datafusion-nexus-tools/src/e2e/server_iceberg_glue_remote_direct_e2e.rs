@@ -450,7 +450,7 @@ async fn validate_remote_evidence(
     // requested read strategy. Unlike min/max aggregates, it cannot be folded
     // entirely from Parquet statistics.
     let explain_text = query_plan_text(client, &format!("EXPLAIN VERBOSE {}", params.projection_sql())).await?;
-    require_contains(label, "EXPLAIN VERBOSE", &explain_text, "NativeCudfExec")?;
+    require_contains(label, "EXPLAIN VERBOSE", &explain_text, "NexusNativeExec")?;
     require_contains(label, "EXPLAIN VERBOSE", &explain_text, "source_read_strategy=remote_direct")?;
     require_contains(label, "EXPLAIN VERBOSE", &explain_text, "credential_mode=scoped_resolved")?;
 
@@ -493,7 +493,7 @@ async fn validate_local_kvikio(
     }
 
     let explain_text = query_plan_text(client, &format!("EXPLAIN VERBOSE {projection_sql}")).await?;
-    require_contains(&label, "EXPLAIN VERBOSE", &explain_text, "NativeCudfExec")?;
+    require_contains(&label, "EXPLAIN VERBOSE", &explain_text, "NexusNativeExec")?;
     let (_batches, runtime_text) = query_batches_with_stats(client, &projection_sql).await?;
     require_contains(&label, "GetQueryStats", &runtime_text, "[source_read_runtime]")?;
     require_contains(&label, "GetQueryStats", &runtime_text, "read_strategy=local_kvikio")?;
@@ -510,7 +510,7 @@ async fn validate_cache_kvikio(params: &RunParams, addr: std::net::SocketAddr, l
     // The data query above fills every selected file before opening it. A new
     // plan must therefore resolve to a complete local cache path.
     let explain_text = query_plan_text(&mut client, &format!("EXPLAIN VERBOSE {}", params.projection_sql())).await?;
-    require_contains(label, "EXPLAIN VERBOSE", &explain_text, "NativeCudfExec")?;
+    require_contains(label, "EXPLAIN VERBOSE", &explain_text, "NexusNativeExec")?;
     require_contains(label, "EXPLAIN VERBOSE", &explain_text, "source_read_strategy=local_cache_hit")?;
     require_contains(label, "EXPLAIN VERBOSE", &explain_text, "lakehouse_cache_status=hit")?;
     let (_batches, runtime_text) = query_batches_with_stats(&mut client, &params.projection_sql()).await?;

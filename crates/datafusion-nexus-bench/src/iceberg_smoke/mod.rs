@@ -28,25 +28,25 @@ use datafusion::{
 };
 use datafusion_nexus::{
     error::{Error, ErrorCode},
-    native_exec::NativeCudfExecutionConfig,
+    native_exec::NexusNativeExecutionConfig,
     native_report::{
         NativeDataFusionExecutionMetrics, NativeDataFusionPlanningOutcome, NativeDataFusionPostNativeExecutionPath,
         NativeDataFusionRuntimeOutcome, ParityComparisonMode, ParityFloatTolerance, ParityStatus,
         compare_record_batches, sql_has_top_level_order_by, sql_top_level_order_by_covers_output_columns,
     },
-    planner::{CudfNativePhysicalOptimizerRule, CudfOptimizerConfig},
+    planner::{NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule},
     policy::{FallbackReason, GpuFallbackPolicy},
-    session::CudfSessionStateBuilderExt,
+    session::NexusSessionStateBuilderExt,
     source_cardinality::{register_source_unique_keys_for_path, schema_with_source_unique_keys},
     table_format::{
         TableFormatDataFileFormat, TableFormatDirectDeviceReadDisposition, TableFormatParquetReadStrategyConfig,
         TableFormatParquetSourceMetadata, TableFormatPlanner, TableFormatReadCapability, TableFormatScanDiagnostics,
         TableFormatScanPlan, TableFormatScanRequest, TableFormatUnsupportedFeatureCode,
         iceberg::{
-            AWS_DEFAULT_REGION_ENV, AWS_PROFILE_ENV, AWS_REGION_ENV, CudfIcebergTableProvider,
-            GlueIcebergCredentialSource, GlueIcebergTableConfig, IcebergTableFormatPlanner,
-            NEXUS_ICEBERG_GLUE_CATALOG_ID_ENV, NEXUS_ICEBERG_GLUE_CATALOG_NAME_ENV, NEXUS_ICEBERG_GLUE_DATABASE_ENV,
-            NEXUS_ICEBERG_GLUE_TABLE_ENV, NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV,
+            AWS_DEFAULT_REGION_ENV, AWS_PROFILE_ENV, AWS_REGION_ENV, GlueIcebergCredentialSource,
+            GlueIcebergTableConfig, IcebergTableFormatPlanner, NEXUS_ICEBERG_GLUE_CATALOG_ID_ENV,
+            NEXUS_ICEBERG_GLUE_CATALOG_NAME_ENV, NEXUS_ICEBERG_GLUE_DATABASE_ENV, NEXUS_ICEBERG_GLUE_TABLE_ENV,
+            NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, NexusIcebergTableProvider,
             catalog::{IcebergCatalogBackend, RestIcebergCatalogBackend, RestIcebergCatalogConfig},
             iceberg_schema_to_datafusion_arrow_schema, load_glue_table,
         },
@@ -182,7 +182,7 @@ const TPCH_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_DEFAULT: usize = 2;
 
 fn native_session_execution_config_from_env(
     profile: NativeExecutionProfile,
-) -> SmokeResult<(NativeCudfExecutionConfig, GpuFallbackPolicy)> {
+) -> SmokeResult<(NexusNativeExecutionConfig, GpuFallbackPolicy)> {
     let execution_config = native_execution_config_for_profile_with_env(profile, |name| std::env::var(name).ok())?;
     let fallback_policy = match std::env::var(NATIVE_FALLBACK_POLICY_ENV) {
         Ok(value) => crate::report_workload::parse_gpu_fallback_policy(&value).map_err(smoke_error),

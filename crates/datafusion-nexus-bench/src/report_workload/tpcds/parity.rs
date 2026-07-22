@@ -18,8 +18,8 @@ use datafusion_nexus::{
         NativeTpcdsParityNativePlanningOutcome, NativeTpcdsParityNativeRuntimeOutcome, NativeTpcdsParityRow,
         NativeTpcdsParityWorkloadItem, ParityFloatTolerance,
     },
-    planner::{CudfNativePhysicalOptimizerRule, CudfOptimizerConfig},
-    session::CudfSessionStateBuilderExt,
+    planner::{NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule},
+    session::NexusSessionStateBuilderExt,
 };
 use datafusion_nexus_workloads::tpcds::TpcdsQuery;
 use futures::FutureExt;
@@ -78,7 +78,7 @@ pub enum TpcdsParityProgressEvent<'a> {
 pub async fn tpcds_parity_workload_items(
     root: &Path,
     session_config: SessionConfig,
-    optimizer_config: CudfOptimizerConfig,
+    optimizer_config: NexusNativeOptimizerConfig,
     query_filter: Option<&[String]>,
 ) -> TpcdsWorkloadResult<Vec<NativeTpcdsParityWorkloadItem>> {
     tpcds_parity_workload_items_with_external_oracles(root, session_config, optimizer_config, query_filter, None).await
@@ -92,7 +92,7 @@ pub async fn tpcds_parity_workload_items_with_session_configs(
     root: &Path,
     cpu_session_config: SessionConfig,
     native_session_config: SessionConfig,
-    optimizer_config: CudfOptimizerConfig,
+    optimizer_config: NexusNativeOptimizerConfig,
     query_filter: Option<&[String]>,
 ) -> TpcdsWorkloadResult<Vec<NativeTpcdsParityWorkloadItem>> {
     tpcds_parity_workload_items_with_session_configs_and_external_oracles(
@@ -115,7 +115,7 @@ pub async fn tpcds_parity_workload_items_with_session_configs(
 pub async fn tpcds_parity_workload_items_with_external_oracles(
     root: &Path,
     session_config: SessionConfig,
-    optimizer_config: CudfOptimizerConfig,
+    optimizer_config: NexusNativeOptimizerConfig,
     query_filter: Option<&[String]>,
     external_oracles: Option<TpcdsExternalOracleConfig>,
 ) -> TpcdsWorkloadResult<Vec<NativeTpcdsParityWorkloadItem>> {
@@ -138,7 +138,7 @@ pub async fn tpcds_parity_workload_items_with_external_oracles(
 pub async fn tpcds_parity_report_rows_with_external_oracles(
     root: &Path,
     session_config: SessionConfig,
-    optimizer_config: CudfOptimizerConfig,
+    optimizer_config: NexusNativeOptimizerConfig,
     query_filter: Option<&[String]>,
     external_oracles: Option<TpcdsExternalOracleConfig>,
     float_tolerance: ParityFloatTolerance,
@@ -161,7 +161,7 @@ async fn tpcds_parity_workload_items_with_session_configs_and_external_oracles(
     root: &Path,
     cpu_session_config: SessionConfig,
     native_session_config: SessionConfig,
-    optimizer_config: CudfOptimizerConfig,
+    optimizer_config: NexusNativeOptimizerConfig,
     query_filter: Option<&[String]>,
     external_oracles: Option<TpcdsExternalOracleConfig>,
 ) -> TpcdsWorkloadResult<Vec<NativeTpcdsParityWorkloadItem>> {
@@ -181,7 +181,7 @@ async fn tpcds_parity_report_rows_with_session_configs_and_external_oracles(
     root: &Path,
     cpu_session_config: SessionConfig,
     native_session_config: SessionConfig,
-    optimizer_config: CudfOptimizerConfig,
+    optimizer_config: NexusNativeOptimizerConfig,
     query_filter: Option<&[String]>,
     external_oracles: Option<TpcdsExternalOracleConfig>,
     float_tolerance: ParityFloatTolerance,
@@ -211,7 +211,7 @@ struct TpcdsParityRunner {
     cpu_ctx: SessionContext,
     cpu_stats_fallback_ctx: Option<SessionContext>,
     native_ctx: SessionContext,
-    native_rule: Arc<CudfNativePhysicalOptimizerRule>,
+    native_rule: Arc<NexusNativePhysicalOptimizerRule>,
 }
 
 impl TpcdsParityRunner {
@@ -219,7 +219,7 @@ impl TpcdsParityRunner {
         root: &Path,
         cpu_session_config: SessionConfig,
         native_session_config: SessionConfig,
-        optimizer_config: CudfOptimizerConfig,
+        optimizer_config: NexusNativeOptimizerConfig,
     ) -> TpcdsWorkloadResult<Self> {
         let cpu_stats_fallback_ctx = if cpu_session_config.options().execution.collect_statistics {
             let mut fallback_config = cpu_session_config.clone();
@@ -233,10 +233,10 @@ impl TpcdsParityRunner {
         let cpu_ctx = SessionContext::new_with_config(cpu_session_config);
         register_tpcds_tables_with_native_metadata(&cpu_ctx, root).await?;
 
-        let native_rule = Arc::new(CudfNativePhysicalOptimizerRule::new(optimizer_config));
+        let native_rule = Arc::new(NexusNativePhysicalOptimizerRule::new(optimizer_config));
         let native_state = SessionStateBuilder::new_with_default_features()
             .with_config(native_tpcds_session_config(native_session_config))
-            .with_cudf_native_rule(Arc::clone(&native_rule))
+            .with_nexus_native_rule(Arc::clone(&native_rule))
             .build();
         let native_ctx = SessionContext::new_with_state(native_state);
         register_tpcds_tables_with_native_metadata(&native_ctx, root).await?;
@@ -362,7 +362,7 @@ fn panic_payload_to_string(payload: &(dyn Any + Send)) -> String {
 
 async fn run_native_query(
     ctx: &SessionContext,
-    native_rule: &Arc<CudfNativePhysicalOptimizerRule>,
+    native_rule: &Arc<NexusNativePhysicalOptimizerRule>,
     sql: &str,
 ) -> (NativeTpcdsParityNativePlanningOutcome, NativeTpcdsParityNativeRuntimeOutcome) {
     let df = match ctx.sql(sql).await {

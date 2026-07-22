@@ -26,8 +26,8 @@ use super::{
 use crate::table_format::scan::{DEFAULT_TABLE_FORMAT_S3_SOURCE_STORAGE_PROFILE_ID, credential_free_endpoint_identity};
 use crate::{
     backend::{MemoryShare, NexusAdmissionPolicy},
-    native_exec::NativeCudfExecutionConfig,
-    planner::CudfOptimizerConfig,
+    native_exec::NexusNativeExecutionConfig,
+    planner::NexusNativeOptimizerConfig,
     policy::GpuFallbackPolicy,
 };
 #[cfg(feature = "cugraph")]
@@ -141,7 +141,7 @@ pub struct ServerConfig {
     pub statement_ticket_ttl: Duration,
     /// Bounded native runtime-artifact capture and sealed retention policy.
     pub observability: ServerObservabilityConfig,
-    pub native_optimizer_config: CudfOptimizerConfig,
+    pub native_optimizer_config: NexusNativeOptimizerConfig,
     /// DataFusion physical-plan profile applied to the Flight SQL session.
     /// See [`NEXUS_SERVER_SESSION_PROFILE_ENV`] and
     /// [`ServerSessionProfile`].

@@ -33,13 +33,13 @@ use datafusion_nexus::{
     report::CandidateOutcome,
     source_cardinality::schema_with_source_unique_keys,
     table_format::{
-        CudfTableFormatScanExec, TableFormat, TableFormatColumnMapping, TableFormatColumnRole, TableFormatColumnSource,
-        TableFormatDataFile, TableFormatDataFileFormat, TableFormatDeleteFile, TableFormatDeleteFileContent,
-        TableFormatLakehouseCachePolicy, TableFormatParquetReadStrategyConfig, TableFormatParquetSourceMetadata,
-        TableFormatPartitionTransform, TableFormatPartitionValue, TableFormatPlanner, TableFormatReadCapability,
-        TableFormatScalarValue, TableFormatScanPlan, TableFormatScanRequest, TableFormatUnsupportedFeature,
-        TableFormatUnsupportedFeatureCode, iceberg::CudfIcebergTableProvider, resolve_table_format_parquet_source,
-        resolve_table_format_parquet_source_with_metadata,
+        NexusTableFormatScanExec, TableFormat, TableFormatColumnMapping, TableFormatColumnRole,
+        TableFormatColumnSource, TableFormatDataFile, TableFormatDataFileFormat, TableFormatDeleteFile,
+        TableFormatDeleteFileContent, TableFormatLakehouseCachePolicy, TableFormatParquetReadStrategyConfig,
+        TableFormatParquetSourceMetadata, TableFormatPartitionTransform, TableFormatPartitionValue, TableFormatPlanner,
+        TableFormatReadCapability, TableFormatScalarValue, TableFormatScanPlan, TableFormatScanRequest,
+        TableFormatUnsupportedFeature, TableFormatUnsupportedFeatureCode, iceberg::NexusIcebergTableProvider,
+        resolve_table_format_parquet_source, resolve_table_format_parquet_source_with_metadata,
     },
 };
 use futures::future::BoxFuture;

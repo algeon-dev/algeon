@@ -502,14 +502,14 @@ fn unique_synthetic_join_residual_alias(
     input_schema: &SchemaRef,
     materializations: &[JoinResidualMaterialization],
 ) -> String {
-    // The `__cudf_join_residual_*` prefix is visible in native plans and tests.
+    // The `__nexus_native_join_residual_*` prefix is visible in native plans and tests.
     // Treat it as stable unless a migration updates diagnostics consumers.
     let side_name = match side {
         DataFusionJoinSide::Left => "left",
         DataFusionJoinSide::Right => "right",
         DataFusionJoinSide::None => "none",
     };
-    let base = format!("__cudf_join_residual_{side_name}_{index}");
+    let base = format!("__nexus_native_join_residual_{side_name}_{index}");
     unique_name_with_suffix(base.as_str(), |alias| {
         synthetic_join_residual_alias_is_available(alias, input_schema, materializations)
     })

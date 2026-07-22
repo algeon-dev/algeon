@@ -48,8 +48,7 @@ impl SharedScalarFilteredMaterializationEstimatePolicy {
         if rows == 0 {
             0
         } else {
-            rows.div_ceil(self.shared_null_mask_bits_per_byte)
-                .div_ceil(self.shared_null_mask_alignment_bytes)
+            rows.div_ceil(self.shared_null_mask_bits_per_byte).div_ceil(self.shared_null_mask_alignment_bytes)
                 * self.shared_null_mask_alignment_bytes
         }
     }
@@ -111,8 +110,7 @@ fn shared_aggregate_value_width_and_nullability(
             .find_map(|columns| columns.get(column.name()))
             .map(|column| {
                 (
-                    arrow_fixed_width_byte_size(column.field.data_type())
-                        .unwrap_or(policy.unknown_value_width_bytes()),
+                    arrow_fixed_width_byte_size(column.field.data_type()).unwrap_or(policy.unknown_value_width_bytes()),
                     column.field.is_nullable(),
                 )
             })

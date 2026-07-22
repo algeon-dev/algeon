@@ -138,6 +138,6 @@ fn aggregate_expr_input_type_unsupported_message(operation: &'static str) -> &'s
 }
 
 fn unique_filtered_aggregate_alias(index: usize, fields: &[Field]) -> String {
-    let base = format!("__cudf_filtered_aggregate_arg_{index}");
+    let base = format!("__nexus_native_filtered_aggregate_arg_{index}");
     crate::naming::unique_alias_with_suffix(base.as_str(), |alias| fields.iter().any(|field| field.name() == alias))
 }

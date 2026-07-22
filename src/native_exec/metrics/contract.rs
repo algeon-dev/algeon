@@ -20,7 +20,7 @@ pub(super) struct NativeMetricDescriptor {
 // This is the single ordered source for public names, recorder field identifiers,
 // DataFusion registration type/category, and native-to-DataFusion recording ids.
 // Keep entries in public contract order; consumers parse that order verbatim.
-macro_rules! for_each_native_cudf_metric {
+macro_rules! for_each_native_nexus_metric {
     ($macro:ident) => {
         $macro! {
             input_batches => "input_batches": rows,
@@ -153,7 +153,7 @@ macro_rules! for_each_native_cudf_metric {
     };
 }
 
-pub(super) use for_each_native_cudf_metric;
+pub(super) use for_each_native_nexus_metric;
 
 #[cfg(test)]
 macro_rules! metric_kind {
@@ -174,10 +174,10 @@ macro_rules! define_contract {
         ///
         /// Every name is registered as a DataFusion `MetricType::Summary` metric. Timer names
         /// use DataFusion `Time` storage in nanoseconds; all other entries use `Count` storage.
-        pub const NATIVE_CUDF_DATAFUSION_METRIC_NAMES: &[&str] = &[$($name),*];
+        pub const NATIVE_NEXUS_DATAFUSION_METRIC_NAMES: &[&str] = &[$($name),*];
 
         #[cfg(test)]
-        pub(super) const NATIVE_CUDF_METRIC_DESCRIPTORS: &[NativeMetricDescriptor] = &[
+        pub(super) const NATIVE_NEXUS_METRIC_DESCRIPTORS: &[NativeMetricDescriptor] = &[
             $(NativeMetricDescriptor { name: $name, kind: metric_kind!($kind) }),*
         ];
 
@@ -206,4 +206,4 @@ macro_rules! define_contract {
     };
 }
 
-for_each_native_cudf_metric!(define_contract);
+for_each_native_nexus_metric!(define_contract);

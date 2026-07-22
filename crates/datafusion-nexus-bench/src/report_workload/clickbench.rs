@@ -8,14 +8,14 @@ use datafusion::{
     prelude::{SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
-    native_exec::NativeCudfExecutionConfig,
+    native_exec::NexusNativeExecutionConfig,
     native_report::{
         NativeDataFusionExecutionWorkloadInput, NativeDataFusionExecutionWorkloadItem,
         NativeDataFusionPlanningWorkloadItem, NativeDataFusionRuntime, NativeFallbackPressureWorkloadItem,
     },
-    planner::{CudfNativePhysicalOptimizerRule, CudfOptimizerConfig},
+    planner::{NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule},
     policy::GpuFallbackPolicy,
-    session::CudfSessionStateBuilderExt,
+    session::NexusSessionStateBuilderExt,
 };
 use datafusion_nexus_workloads::clickbench::{
     CLICKBENCH_QUERIES, ClickbenchQuery, ClickbenchWorkloadResult, discover_clickbench_layout,
@@ -28,25 +28,26 @@ use datafusion_nexus_workloads::clickbench::{
 /// conservative profile uses CUDA/cudf-rs inventory total memory minus 500 MiB,
 /// with a 256 MiB fallback if GPU memory cannot be detected. Invalid values
 /// panic during profile construction.
-pub const CUDF_CLICKBENCH_NATIVE_DEVICE_BUDGET_BYTES_ENV: &str = "CUDF_CLICKBENCH_NATIVE_DEVICE_BUDGET_BYTES";
+pub const NEXUS_CLICKBENCH_NATIVE_DEVICE_BUDGET_BYTES_ENV: &str = "NEXUS_CLICKBENCH_NATIVE_DEVICE_BUDGET_BYTES";
 /// Named native memory/source profile used by ClickBench benchmark/report
 /// surfaces. Accepts `conservative` (default) or `clickbench_gpu_throughput`;
-/// individual `CUDF_CLICKBENCH_NATIVE_*` knobs may still override the profile.
-pub const CUDF_CLICKBENCH_NATIVE_PROFILE_ENV: &str = "CUDF_CLICKBENCH_NATIVE_PROFILE";
+/// individual `NEXUS_CLICKBENCH_NATIVE_*` knobs may still override the profile.
+pub const NEXUS_CLICKBENCH_NATIVE_PROFILE_ENV: &str = "NEXUS_CLICKBENCH_NATIVE_PROFILE";
 /// Planning target, in bytes, for native Parquet source chunks.
-pub const CUDF_CLICKBENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV: &str = "CUDF_CLICKBENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES";
+pub const NEXUS_CLICKBENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV: &str = "NEXUS_CLICKBENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES";
 /// Planning target for row groups per native Parquet source chunk.
-pub const CUDF_CLICKBENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV: &str = "CUDF_CLICKBENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK";
+pub const NEXUS_CLICKBENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV: &str =
+    "NEXUS_CLICKBENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK";
 /// Maximum bounded retry attempts after resource or reservation pressure.
-pub const CUDF_CLICKBENCH_NATIVE_MAX_RETRY_ATTEMPTS_ENV: &str = "CUDF_CLICKBENCH_NATIVE_MAX_RETRY_ATTEMPTS";
+pub const NEXUS_CLICKBENCH_NATIVE_MAX_RETRY_ATTEMPTS_ENV: &str = "NEXUS_CLICKBENCH_NATIVE_MAX_RETRY_ATTEMPTS";
 /// Minimum row-group granularity used when retrying with smaller chunks.
-pub const CUDF_CLICKBENCH_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV: &str =
-    "CUDF_CLICKBENCH_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS";
+pub const NEXUS_CLICKBENCH_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV: &str =
+    "NEXUS_CLICKBENCH_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS";
 /// Source chunk planning mode used by bounded native ClickBench execution.
 /// Accepts `conservative` or `local_parquet_throughput`; defaults to the
 /// selected profile.
-pub const CUDF_CLICKBENCH_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV: &str =
-    "CUDF_CLICKBENCH_NATIVE_SOURCE_CHUNK_PLANNING_MODE";
+pub const NEXUS_CLICKBENCH_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV: &str =
+    "NEXUS_CLICKBENCH_NATIVE_SOURCE_CHUNK_PLANNING_MODE";
 
 /// Conservative bounded profile: production-safe ClickBench defaults.
 pub const CLICKBENCH_NATIVE_PROFILE_CONSERVATIVE: &str = "conservative";
@@ -146,20 +147,20 @@ pub fn clickbench_tuned_cpu_session_config() -> SessionConfig {
 
 /// Native optimizer config used by ClickBench report and benchmark surfaces.
 ///
-/// Resolves [`CUDF_CLICKBENCH_NATIVE_PROFILE_ENV`] plus optional
-/// `CUDF_CLICKBENCH_NATIVE_*` overrides. Defaults remain conservative (64 MiB /
+/// Resolves [`NEXUS_CLICKBENCH_NATIVE_PROFILE_ENV`] plus optional
+/// `NEXUS_CLICKBENCH_NATIVE_*` overrides. Defaults remain conservative (64 MiB /
 /// 1 row group) with `GpuPreferred` fallback; callers that need
 /// `gpu_only` should chain `.with_fallback_policy(...)`.
-pub fn clickbench_native_optimizer_config() -> CudfOptimizerConfig {
+pub fn clickbench_native_optimizer_config() -> NexusNativeOptimizerConfig {
     clickbench_native_optimizer_config_with_profile_settings(&clickbench_native_profile_settings_from_env())
 }
 
 /// Native optimizer config using an already-resolved ClickBench native profile.
 pub fn clickbench_native_optimizer_config_with_profile_settings(
     profile: &ClickbenchNativeProfileSettings,
-) -> CudfOptimizerConfig {
-    CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred).with_native_execution_config(
-        NativeCudfExecutionConfig::bounded(
+) -> NexusNativeOptimizerConfig {
+    NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred).with_native_execution_config(
+        NexusNativeExecutionConfig::bounded(
             profile.device_budget_bytes,
             profile.max_source_chunk_bytes,
             profile.max_row_groups_per_chunk,
@@ -172,10 +173,10 @@ pub fn clickbench_native_optimizer_config_with_profile_settings(
 
 /// Resolves the ClickBench native bounded memory/source profile from env.
 ///
-/// `CUDF_CLICKBENCH_NATIVE_PROFILE` chooses a named base profile:
+/// `NEXUS_CLICKBENCH_NATIVE_PROFILE` chooses a named base profile:
 /// `conservative` keeps the existing bounded defaults, while
 /// `clickbench_gpu_throughput` applies the TPC SF100-like local Parquet
-/// throughput knobs. Individual `CUDF_CLICKBENCH_NATIVE_*` knobs override
+/// throughput knobs. Individual `NEXUS_CLICKBENCH_NATIVE_*` knobs override
 /// either base. If those final values exactly match a named profile, the
 /// resolved `profile_name` is that profile; otherwise it is `custom`.
 pub fn clickbench_native_profile_settings_from_env() -> ClickbenchNativeProfileSettings {
@@ -186,15 +187,15 @@ pub fn clickbench_native_profile_settings_from_env() -> ClickbenchNativeProfileS
 pub fn clickbench_native_profile_settings_with_env(
     mut get: impl FnMut(&'static str) -> Option<String>,
 ) -> ClickbenchNativeProfileSettings {
-    let requested_profile = get(CUDF_CLICKBENCH_NATIVE_PROFILE_ENV).map(|value| value.trim().to_ascii_lowercase());
+    let requested_profile = get(NEXUS_CLICKBENCH_NATIVE_PROFILE_ENV).map(|value| value.trim().to_ascii_lowercase());
     let base = native_profile_base(requested_profile.as_deref());
     let mut resolved = ClickbenchNativeProfileSettings::from_base(base);
-    let device_budget_bytes = get(CUDF_CLICKBENCH_NATIVE_DEVICE_BUDGET_BYTES_ENV);
-    let max_source_chunk_bytes = get(CUDF_CLICKBENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV);
-    let max_row_groups_per_chunk = get(CUDF_CLICKBENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV);
-    let max_retry_attempts = get(CUDF_CLICKBENCH_NATIVE_MAX_RETRY_ATTEMPTS_ENV);
-    let min_retry_chunk_row_groups = get(CUDF_CLICKBENCH_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV);
-    let source_chunk_planning_mode = get(CUDF_CLICKBENCH_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV);
+    let device_budget_bytes = get(NEXUS_CLICKBENCH_NATIVE_DEVICE_BUDGET_BYTES_ENV);
+    let max_source_chunk_bytes = get(NEXUS_CLICKBENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV);
+    let max_row_groups_per_chunk = get(NEXUS_CLICKBENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV);
+    let max_retry_attempts = get(NEXUS_CLICKBENCH_NATIVE_MAX_RETRY_ATTEMPTS_ENV);
+    let min_retry_chunk_row_groups = get(NEXUS_CLICKBENCH_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV);
+    let source_chunk_planning_mode = get(NEXUS_CLICKBENCH_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV);
     let had_override = device_budget_bytes.is_some()
         || max_source_chunk_bytes.is_some()
         || max_row_groups_per_chunk.is_some()
@@ -203,20 +204,21 @@ pub fn clickbench_native_profile_settings_with_env(
         || source_chunk_planning_mode.is_some();
 
     if let Some(value) = device_budget_bytes {
-        resolved.device_budget_bytes = parse_env_u64(CUDF_CLICKBENCH_NATIVE_DEVICE_BUDGET_BYTES_ENV, value);
+        resolved.device_budget_bytes = parse_env_u64(NEXUS_CLICKBENCH_NATIVE_DEVICE_BUDGET_BYTES_ENV, value);
     }
     if let Some(value) = max_source_chunk_bytes {
-        resolved.max_source_chunk_bytes = parse_env_u64(CUDF_CLICKBENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, value);
+        resolved.max_source_chunk_bytes = parse_env_u64(NEXUS_CLICKBENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, value);
     }
     if let Some(value) = max_row_groups_per_chunk {
-        resolved.max_row_groups_per_chunk = parse_env_usize(CUDF_CLICKBENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, value);
+        resolved.max_row_groups_per_chunk =
+            parse_env_usize(NEXUS_CLICKBENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, value);
     }
     if let Some(value) = max_retry_attempts {
-        resolved.max_retry_attempts = parse_env_usize(CUDF_CLICKBENCH_NATIVE_MAX_RETRY_ATTEMPTS_ENV, value);
+        resolved.max_retry_attempts = parse_env_usize(NEXUS_CLICKBENCH_NATIVE_MAX_RETRY_ATTEMPTS_ENV, value);
     }
     if let Some(value) = min_retry_chunk_row_groups {
         resolved.min_retry_chunk_row_groups =
-            parse_env_usize(CUDF_CLICKBENCH_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV, value);
+            parse_env_usize(NEXUS_CLICKBENCH_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV, value);
     }
     if let Some(value) = source_chunk_planning_mode {
         resolved.source_chunk_planning_mode = parse_env_source_chunk_planning_mode(value);
@@ -252,11 +254,11 @@ pub fn clickbench_native_profile_settings_with_env(
 }
 
 fn validate_clickbench_native_profile_settings(profile: &ClickbenchNativeProfileSettings) {
-    validate_positive(CUDF_CLICKBENCH_NATIVE_DEVICE_BUDGET_BYTES_ENV, profile.device_budget_bytes);
-    validate_positive(CUDF_CLICKBENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, profile.max_source_chunk_bytes);
-    validate_positive(CUDF_CLICKBENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, profile.max_row_groups_per_chunk);
-    validate_positive(CUDF_CLICKBENCH_NATIVE_MAX_RETRY_ATTEMPTS_ENV, profile.max_retry_attempts);
-    validate_positive(CUDF_CLICKBENCH_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV, profile.min_retry_chunk_row_groups);
+    validate_positive(NEXUS_CLICKBENCH_NATIVE_DEVICE_BUDGET_BYTES_ENV, profile.device_budget_bytes);
+    validate_positive(NEXUS_CLICKBENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, profile.max_source_chunk_bytes);
+    validate_positive(NEXUS_CLICKBENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, profile.max_row_groups_per_chunk);
+    validate_positive(NEXUS_CLICKBENCH_NATIVE_MAX_RETRY_ATTEMPTS_ENV, profile.max_retry_attempts);
+    validate_positive(NEXUS_CLICKBENCH_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV, profile.min_retry_chunk_row_groups);
 }
 
 fn validate_positive<T>(name: &'static str, value: T)
@@ -270,11 +272,11 @@ fn native_profile_base(profile: Option<&str>) -> NativeProfileBase {
         CLICKBENCH_NATIVE_PROFILE_CONSERVATIVE => NativeProfileBase {
             name: CLICKBENCH_NATIVE_PROFILE_CONSERVATIVE,
             source: "default",
-            device_budget_bytes: NativeCudfExecutionConfig::auto_sized_device_budget_bytes(),
-            max_source_chunk_bytes: NativeCudfExecutionConfig::DEFAULT_BOUNDED_MAX_SOURCE_CHUNK_BYTES,
-            max_row_groups_per_chunk: NativeCudfExecutionConfig::DEFAULT_BOUNDED_MAX_ROW_GROUPS_PER_CHUNK,
-            max_retry_attempts: NativeCudfExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS,
-            min_retry_chunk_row_groups: NativeCudfExecutionConfig::DEFAULT_BOUNDED_MIN_RETRY_CHUNK_ROW_GROUPS,
+            device_budget_bytes: NexusNativeExecutionConfig::auto_sized_device_budget_bytes(),
+            max_source_chunk_bytes: NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_SOURCE_CHUNK_BYTES,
+            max_row_groups_per_chunk: NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_ROW_GROUPS_PER_CHUNK,
+            max_retry_attempts: NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS,
+            min_retry_chunk_row_groups: NexusNativeExecutionConfig::DEFAULT_BOUNDED_MIN_RETRY_CHUNK_ROW_GROUPS,
             source_chunk_planning_mode: nexus_query_engine::runtime::SourceChunkPlanningMode::Conservative,
         },
         CLICKBENCH_NATIVE_PROFILE_GPU_THROUGHPUT => NativeProfileBase {
@@ -283,12 +285,12 @@ fn native_profile_base(profile: Option<&str>) -> NativeProfileBase {
             device_budget_bytes: CLICKBENCH_GPU_THROUGHPUT_DEVICE_BUDGET_BYTES,
             max_source_chunk_bytes: CLICKBENCH_GPU_THROUGHPUT_MAX_SOURCE_CHUNK_BYTES,
             max_row_groups_per_chunk: CLICKBENCH_GPU_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK,
-            max_retry_attempts: NativeCudfExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS,
-            min_retry_chunk_row_groups: NativeCudfExecutionConfig::DEFAULT_BOUNDED_MIN_RETRY_CHUNK_ROW_GROUPS,
+            max_retry_attempts: NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS,
+            min_retry_chunk_row_groups: NexusNativeExecutionConfig::DEFAULT_BOUNDED_MIN_RETRY_CHUNK_ROW_GROUPS,
             source_chunk_planning_mode: nexus_query_engine::runtime::SourceChunkPlanningMode::LocalParquetThroughput,
         },
         other => panic!(
-            "unsupported {CUDF_CLICKBENCH_NATIVE_PROFILE_ENV}={other}; expected {CLICKBENCH_NATIVE_PROFILE_CONSERVATIVE} or {CLICKBENCH_NATIVE_PROFILE_GPU_THROUGHPUT}"
+            "unsupported {NEXUS_CLICKBENCH_NATIVE_PROFILE_ENV}={other}; expected {CLICKBENCH_NATIVE_PROFILE_CONSERVATIVE} or {CLICKBENCH_NATIVE_PROFILE_GPU_THROUGHPUT}"
         ),
     }
 }
@@ -321,7 +323,7 @@ fn parse_env_source_chunk_planning_mode(value: String) -> nexus_query_engine::ru
             nexus_query_engine::runtime::SourceChunkPlanningMode::LocalParquetThroughput
         },
         other => panic!(
-            "unsupported {CUDF_CLICKBENCH_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV}={other}; expected conservative or local_parquet_throughput"
+            "unsupported {NEXUS_CLICKBENCH_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV}={other}; expected conservative or local_parquet_throughput"
         ),
     }
 }
@@ -386,12 +388,12 @@ pub async fn clickbench_datafusion_planning_workload_items(
 pub async fn clickbench_datafusion_planning_workload_items_with_optimizer_config(
     root: &Path,
     session_config: SessionConfig,
-    optimizer_config: CudfOptimizerConfig,
+    optimizer_config: NexusNativeOptimizerConfig,
 ) -> ClickbenchWorkloadResult<Vec<NativeDataFusionPlanningWorkloadItem>> {
-    let native_rule = Arc::new(CudfNativePhysicalOptimizerRule::new(optimizer_config.clone()));
+    let native_rule = Arc::new(NexusNativePhysicalOptimizerRule::new(optimizer_config.clone()));
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(session_config)
-        .with_cudf_native_rule(Arc::clone(&native_rule))
+        .with_nexus_native_rule(Arc::clone(&native_rule))
         .build();
     let ctx = SessionContext::new_with_state(state);
     let layout = discover_clickbench_layout(root)?;
@@ -451,7 +453,7 @@ pub async fn clickbench_datafusion_execution_workload_items(
 pub async fn clickbench_datafusion_execution_workload_items_with_optimizer_config(
     root: &Path,
     session_config: SessionConfig,
-    optimizer_config: CudfOptimizerConfig,
+    optimizer_config: NexusNativeOptimizerConfig,
 ) -> ClickbenchWorkloadResult<Vec<NativeDataFusionExecutionWorkloadItem>> {
     clickbench_datafusion_execution_workload_items_filtered(root, session_config, optimizer_config, None, None).await
 }
@@ -494,14 +496,14 @@ pub enum ClickbenchExecutionProgressEvent<'a> {
 pub async fn clickbench_datafusion_execution_workload_items_filtered(
     root: &Path,
     session_config: SessionConfig,
-    optimizer_config: CudfOptimizerConfig,
+    optimizer_config: NexusNativeOptimizerConfig,
     query_ids: Option<&[&str]>,
     mut progress: Option<&mut dyn FnMut(ClickbenchExecutionProgressEvent<'_>)>,
 ) -> ClickbenchWorkloadResult<Vec<NativeDataFusionExecutionWorkloadItem>> {
-    let native_rule = Arc::new(CudfNativePhysicalOptimizerRule::new(optimizer_config.clone()));
+    let native_rule = Arc::new(NexusNativePhysicalOptimizerRule::new(optimizer_config.clone()));
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(session_config)
-        .with_cudf_native_rule(Arc::clone(&native_rule))
+        .with_nexus_native_rule(Arc::clone(&native_rule))
         .build();
     let ctx = SessionContext::new_with_state(state);
     let layout = discover_clickbench_layout(root)?;

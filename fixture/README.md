@@ -94,7 +94,7 @@ while the fixture metadata is live.
 
 To refresh the smaller cuGraph parity corpus and its optional Python oracle,
 run `fixture/graph/prepare.sh --oracle`. It uses
-`CUDF_CUGRAPH_PYTHON` when set, otherwise the repository virtual environment
+`NEXUS_CUGRAPH_PYTHON` when set, otherwise the repository virtual environment
 or `python3`.
 
 ## Local data placement

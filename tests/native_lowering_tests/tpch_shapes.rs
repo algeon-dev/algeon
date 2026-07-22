@@ -589,7 +589,11 @@ async fn tpch_q11_lowers_joined_grouped_and_scalar_aggregate_inputs_for_bounded_
         .iter()
         .filter_map(|node| match &node.kind {
             PlanNode::Aggregate(aggregate)
-                if aggregate.spec.aggr_exprs.iter().any(|expr| expr.alias.starts_with("__cudf_preagg_sum_")) =>
+                if aggregate
+                    .spec
+                    .aggr_exprs
+                    .iter()
+                    .any(|expr| expr.alias.starts_with("__nexus_native_preagg_sum_")) =>
             {
                 Some(aggregate)
             },
@@ -762,7 +766,7 @@ async fn tpch_q13_lowers_left_join_filter_aggregates_and_final_sort() {
                 matches!(
                     &output.expr,
                     Expr::Alias { expr, alias }
-                        if alias.starts_with("__cudf_preagg_sum_") && matches!(expr.as_ref(), Expr::Case { .. })
+                        if alias.starts_with("__nexus_native_preagg_sum_") && matches!(expr.as_ref(), Expr::Case { .. })
                 )
             }),
             _ => false,

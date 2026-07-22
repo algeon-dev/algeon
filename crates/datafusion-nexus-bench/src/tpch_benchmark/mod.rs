@@ -15,7 +15,7 @@ use datafusion::{
 };
 use datafusion_nexus::{
     error::{DataFusionErrorExt, Error as AdapterError},
-    native_exec::NativeCudfExecutionConfig,
+    native_exec::NexusNativeExecutionConfig,
     native_report::{
         NativeAggregateStrategyMetricRow, NativeDataFusionExecutionMetrics, NativeDataFusionPlanningOutcome,
         NativeDataFusionPlanningReport, NativeDataFusionPlanningRow, NativeDataFusionPostNativeExecutionPath,
@@ -23,12 +23,12 @@ use datafusion_nexus::{
         NativeGraphRuntimeMetricRow, NativeJoinStrategyMetricRow, NativeSourceDiagnosticSummary,
         NativeTaskOperatorMetricRow, NativeTaskRuntimeMetricRow,
     },
-    planner::{CudfNativePhysicalOptimizerRule, CudfOptimizerConfig},
+    planner::{NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule},
     policy::GpuFallbackPolicy,
-    session::CudfSessionStateBuilderExt,
+    session::NexusSessionStateBuilderExt,
 };
 use datafusion_nexus_workloads::tpch::{
-    CUDF_TPCH_GENERATION_COMMAND_ENV, CUDF_TPCH_SCALE_FACTOR_ENV, NEXUS_PARQUET_DIR_ENV, TPCH_QUERIES, TPCH_TABLES,
+    NEXUS_PARQUET_DIR_ENV, NEXUS_TPCH_GENERATION_COMMAND_ENV, NEXUS_TPCH_SCALE_FACTOR_ENV, TPCH_QUERIES, TPCH_TABLES,
     TpchDatasetMetadata, TpchQuery, TpchTableLayout, TpchWorkloadError, default_tpch_dataset_with_fingerprint,
     describe_tpch_dataset_with_content_fingerprint, prepare_tpch_report_dataset, register_tpch_table_layout,
 };

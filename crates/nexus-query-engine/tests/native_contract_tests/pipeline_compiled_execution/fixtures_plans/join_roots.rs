@@ -586,11 +586,7 @@ pub(super) fn simple_multi_join_plan(a_path: &Path, b_path: &Path, c_path: &Path
     builder.finish_with_host_sink(abc)
 }
 
-pub(super) fn residual_one_shot_frame_stream_multi_join_plan(
-    a_path: &Path,
-    b_path: &Path,
-    c_path: &Path,
-) -> QueryPlan {
+pub(super) fn residual_one_shot_frame_stream_multi_join_plan(a_path: &Path, b_path: &Path, c_path: &Path) -> QueryPlan {
     let a_schema = Arc::new(Schema::new(vec![
         Field::new("a_id", DataType::Int32, false),
         Field::new("a_value", DataType::Int32, false),
@@ -677,10 +673,7 @@ pub(super) fn residual_one_shot_frame_stream_multi_join_plan(
                 Expr::input_column(1, "c_value", "c_value"),
             ),
             BinaryOp::And,
-            Expr::is_not_distinct_from(
-                Expr::input_column(0, "a_id", "a_id"),
-                Expr::input_column(1, "c_id", "c_id"),
-            ),
+            Expr::is_not_distinct_from(Expr::input_column(0, "a_id", "a_id"), Expr::input_column(1, "c_id", "c_id")),
         ))
         .with_output_projection(vec![
             JoinOutputColumn::left(ColumnRef::input(0, "a_id", "a_id"), "a_id"),

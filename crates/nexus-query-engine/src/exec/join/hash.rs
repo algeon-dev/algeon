@@ -129,7 +129,7 @@ fn build_hash_join(
         .map_err(|error| {
             QueryError::from_cudf(
                 "nexus_query_engine.join.build_hash_join",
-                "failed to build native cudf reusable hash join",
+                "failed to build nexus native reusable hash join",
                 error,
             )
             .with_fact("join_type", node.spec.join_type)

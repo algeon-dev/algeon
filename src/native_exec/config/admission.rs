@@ -10,7 +10,7 @@ pub(super) struct GraphAdmissionGrantAsk {
     warm_bytes: u64,
 }
 
-impl NativeCudfExecutionConfig {
+impl NexusNativeExecutionConfig {
     /// Execute through an admitted multi-tenant query-service handle.
     ///
     /// The handle supplies the service-owned CUDA stream pool, source-fetch

@@ -62,7 +62,7 @@ fn aggregate_validation_spec(spec: &AggregateSpec) -> AggregateSpec {
             && !expr.distinct
             && global_count_star_expr(&expr.expr)
         {
-            expr.expr = Expr::column(format!("__cudf_filtered_count_star_validation_{index}"));
+            expr.expr = Expr::column(format!("__nexus_native_filtered_count_star_validation_{index}"));
         }
     }
     validation

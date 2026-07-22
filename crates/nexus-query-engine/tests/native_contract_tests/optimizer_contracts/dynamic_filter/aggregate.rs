@@ -65,10 +65,7 @@ fn native_optimizer_keeps_join_backed_aggregate_keyset_route_without_large_keyse
                 ColumnRef::input(1, "date_key", "date_key"),
             )],
         )
-        .with_output_projection(vec![JoinOutputColumn::left(
-            ColumnRef::input(0, "fact_key", "fact_key"),
-            "fact_key",
-        )])
+        .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "fact_key", "fact_key"), "fact_key")])
         .with_build_side(JoinSide::Right),
         schema(&["fact_key"]),
     );
@@ -83,12 +80,12 @@ fn native_optimizer_keeps_join_backed_aggregate_keyset_route_without_large_keyse
         item,
         JoinSpec::new(
             JoinType::Inner,
-            vec![JoinKey::new(ColumnRef::input(0, "fact_key", "fact_key"), ColumnRef::input(1, "item_key", "item_key"))],
+            vec![JoinKey::new(
+                ColumnRef::input(0, "fact_key", "fact_key"),
+                ColumnRef::input(1, "item_key", "item_key"),
+            )],
         )
-        .with_output_projection(vec![JoinOutputColumn::left(
-            ColumnRef::input(0, "fact_key", "fact_key"),
-            "fact_key",
-        )])
+        .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "fact_key", "fact_key"), "fact_key")])
         .with_build_side(JoinSide::Left),
         schema(&["fact_key"]),
     );
@@ -182,7 +179,8 @@ fn native_optimizer_keeps_small_dimension_build_for_source_filter_below_aggregat
         ),
         schema(&["date_sk", "sales_total"]),
     );
-    let date = builder.add_source(estimated_local_source("small_date_dim_for_grouped_fact", "d_date_sk", 1024 * 1024, 365));
+    let date =
+        builder.add_source(estimated_local_source("small_date_dim_for_grouped_fact", "d_date_sk", 1024 * 1024, 365));
     let join = builder.add_join(
         grouped_fact,
         date,
@@ -225,10 +223,7 @@ fn native_optimizer_keeps_small_dimension_build_for_source_filter_below_aggregat
     assert_eq!(routes.len(), 1);
     assert_eq!(routes[0].producer_columns, vec!["d_date_sk".to_string()]);
     assert_eq!(routes[0].consumer_columns, vec!["raw_date_sk".to_string()]);
-    assert!(matches!(
-        routes[0].producer,
-        DynamicFilterProducer::HashJoinBuild { build_side: JoinSide::Right, .. }
-    ));
+    assert!(matches!(routes[0].producer, DynamicFilterProducer::HashJoinBuild { build_side: JoinSide::Right, .. }));
     assert!(
         matches!(routes[0].consumer, DynamicFilterConsumer::LocalParquetSource { source_node_id } if source_node_id == fact)
     );

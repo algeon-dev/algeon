@@ -4,7 +4,7 @@ pub(super) fn tracing_correlation_id(correlation_id: Option<&str>) -> Option<&st
     correlation_id.filter(|value| !value.is_empty())
 }
 
-impl DatafusionCudfFlightSqlService {
+impl DatafusionNexusFlightSqlService {
     pub(super) fn query_span(query_id: &str, correlation_id: Option<&str>, operation: &'static str) -> tracing::Span {
         tracing::info_span!(
             "datafusion_nexus.flight_sql.query",
@@ -101,10 +101,10 @@ mod correlation_tests {
         },
     };
 
-    pub(super) fn test_service() -> DatafusionCudfFlightSqlService {
-        DatafusionCudfFlightSqlService::new(
+    pub(super) fn test_service() -> DatafusionNexusFlightSqlService {
+        DatafusionNexusFlightSqlService::new(
             Arc::new(SessionContext::new()),
-            CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred),
+            NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred),
             ServerSessionProfile::Native,
             Arc::new(QueryAdmission::new(1).expect("test admission limit")),
             Duration::from_secs(30),
@@ -114,7 +114,7 @@ mod correlation_tests {
         )
     }
 
-    fn query_stats(service: &DatafusionCudfFlightSqlService, query_id: &str) -> String {
+    fn query_stats(service: &DatafusionNexusFlightSqlService, query_id: &str) -> String {
         String::from_utf8(
             service.coordinator.query_stats(query_id).expect("query stats capture should be retained").to_vec(),
         )

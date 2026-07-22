@@ -129,12 +129,12 @@ fn expression_hash_join_keys_materialize_as_synthetic_projection_columns() {
         })
         .expect("native plan should contain a join node");
     assert_eq!(join.spec.keys.len(), 1);
-    assert_eq!(join.spec.keys[0].left.name(), "__cudf_join_key_left_0_0");
+    assert_eq!(join.spec.keys[0].left.name(), "__nexus_native_join_key_left_0_0");
     assert_eq!(join.spec.keys[0].right.name(), "key");
     assert!(
         native_plan.nodes().iter().any(|node| match &node.kind {
             PlanNode::Projection(projection) =>
-                projection.outputs.iter().any(|output| output.field.name() == "__cudf_join_key_left_0_0"),
+                projection.outputs.iter().any(|output| output.field.name() == "__nexus_native_join_key_left_0_0"),
             _ => false,
         }),
         "expression join key should be materialized by a pre-join projection"
@@ -413,7 +413,7 @@ fn duplicate_same_named_canonical_swapped_join_fields_project_by_ordinal_to_dist
         join.spec.output_projection.iter().map(|column| column.output_name.as_str()).collect::<Vec<_>>();
     assert_eq!(join_output_names.len(), 2);
     assert_ne!(join_output_names[0], join_output_names[1]);
-    assert!(join_output_names.iter().all(|name| name.starts_with("__cudf_field_")));
+    assert!(join_output_names.iter().all(|name| name.starts_with("__nexus_native_field_")));
     assert_join_output_projection(
         &join.spec.output_projection,
         &[
@@ -498,7 +498,7 @@ fn bare_duplicate_frontend_join_fields_restore_at_native_host_sink_without_execu
     let executable_root_schema = native_plan.node(native_plan.root_id()).unwrap().output_schema();
     assert_eq!(
         executable_root_schema.fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>(),
-        vec!["__cudf_field_0_n_name", "__cudf_field_1_n_name"]
+        vec!["__nexus_native_field_0_n_name", "__nexus_native_field_1_n_name"]
     );
 
     fs::remove_dir_all(dir).unwrap();
@@ -672,18 +672,18 @@ fn duplicate_named_residual_columns_bind_executable_names_after_canonical_swap()
         Expr::Binary { left, right, .. }
             if matches!(
                 left.as_ref(),
-                Expr::Column(column) if column.to_string() == "input1.__cudf_field_1_dup"
+                Expr::Column(column) if column.to_string() == "input1.__nexus_native_field_1_dup"
             )
                 && matches!(
                     right.as_ref(),
-                    Expr::Column(column) if column.to_string() == "input0.__cudf_field_1_dup"
+                    Expr::Column(column) if column.to_string() == "input0.__nexus_native_field_1_dup"
                 )
     ));
     assert_join_output_projection(
         &join.spec.output_projection,
         &[
-            (NativeJoinSide::Right, "input1.__cudf_field_1_dup", "__cudf_field_0_dup"),
-            (NativeJoinSide::Left, "input0.__cudf_field_1_dup", "__cudf_field_1_dup"),
+            (NativeJoinSide::Right, "input1.__nexus_native_field_1_dup", "__nexus_native_field_0_dup"),
+            (NativeJoinSide::Left, "input0.__nexus_native_field_1_dup", "__nexus_native_field_1_dup"),
         ],
     );
 

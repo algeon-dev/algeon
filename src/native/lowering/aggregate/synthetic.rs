@@ -231,17 +231,17 @@ fn unique_synthetic_aggregate_group_alias(index: usize, alias: &str, fields: &[F
     }
 
     let sanitized = sanitize_field_name(alias);
-    let base = format!("__cudf_group_expr_{index}_{sanitized}");
+    let base = format!("__nexus_native_group_expr_{index}_{sanitized}");
     unique_name_with_suffix(base.as_str(), |candidate| fields.iter().all(|field| field.name() != candidate))
 }
 
 fn unique_synthetic_aggregate_arg_alias(index: usize, input_schema: &SchemaRef, fields: &[Field]) -> String {
-    let base = format!("__cudf_aggregate_arg_{index}");
+    let base = format!("__nexus_native_aggregate_arg_{index}");
     unique_name_with_suffix(base.as_str(), |alias| synthetic_alias_is_available(alias, input_schema, fields))
 }
 
 fn unique_synthetic_aggregate_filter_alias(index: usize, input_schema: &SchemaRef, fields: &[Field]) -> String {
-    let base = format!("__cudf_aggregate_filter_{index}");
+    let base = format!("__nexus_native_aggregate_filter_{index}");
     unique_name_with_suffix(base.as_str(), |alias| synthetic_alias_is_available(alias, input_schema, fields))
 }
 

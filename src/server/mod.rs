@@ -106,7 +106,7 @@ pub struct FlightSqlServerBuilder {
 
 /// Embeddable Flight SQL server assembled from a [`ServerConfig`].
 pub struct FlightSqlServer {
-    service: flight::DatafusionCudfFlightSqlService,
+    service: flight::DatafusionNexusFlightSqlService,
     listen: Listen,
     shutdown: ServerShutdown,
     ctx: Arc<SessionContext>,
@@ -234,7 +234,7 @@ impl FlightSqlServerBuilder {
 
         let auth_interceptor = auth::AuthInterceptor::new(config.auth.mode.clone(), auth::TokenStore::new());
         log_auth_mode_snapshot(&config.auth.mode);
-        let service = flight::DatafusionCudfFlightSqlService::new_with_io_lifecycle(
+        let service = flight::DatafusionNexusFlightSqlService::new_with_io_lifecycle(
             Arc::clone(&ctx),
             native_optimizer_config.clone(),
             config.session_profile,
@@ -729,7 +729,7 @@ fn validate_injected_backend_matches_config(backend: &NexusGpuBackend, config: &
 
 fn validate_injected_session_matches_backend(ctx: &SessionContext, backend: &NexusGpuBackend) -> Result<()> {
     let state = ctx.state();
-    let Some(optimizer_config) = crate::session::installed_cudf_native_optimizer_config(&state) else {
+    let Some(optimizer_config) = crate::session::installed_nexus_native_optimizer_config(&state) else {
         return Err(ServerError::builder_validation(
             "server_session_backend_mismatch",
             "injected session_context does not have the datafusion-nexus native optimizer installed",
@@ -1079,7 +1079,7 @@ fn warn_if_testing_profile_active(config: &ServerConfig) {
         "datafusion-nexus Flight SQL server starting with cpu_fallback session \
          profile while Iceberg is configured, but this binary was built \
          without the `iceberg-cpu` feature. Iceberg tables will be served by \
-         the GPU-only CudfTableFormatScanExec leaf and plain ORDER BY queries \
+         the GPU-only NexusTableFormatScanExec leaf and plain ORDER BY queries \
          will fail with a structured planning error. Either rebuild with \
          --features iceberg-cpu to enable the CPU Iceberg reader, or switch \
          to NEXUS_SERVER_SESSION_PROFILE=native."

@@ -97,7 +97,7 @@ iceberg = [
 # Opt-in on top of `iceberg`. When this feature is on and the server runs
 # under SESSION_PROFILE=cpu_fallback, Iceberg tables are served by
 # IcebergStaticTableProvider (real CPU Arrow reader) instead of the
-# GPU-only CudfTableFormatScanExec leaf.
+# GPU-only NexusTableFormatScanExec leaf.
 iceberg-cpu = ["iceberg", "dep:iceberg-datafusion"]
 server = [
   "dep:arrow-flight",

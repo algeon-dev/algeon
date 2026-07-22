@@ -27,7 +27,7 @@ pools, and plan-scoped admission tickets.
 ```rust
 use datafusion::execution::SessionStateBuilder;
 use datafusion::prelude::{ParquetReadOptions, SessionContext};
-use datafusion_nexus::{CudfSessionStateBuilderExt, CugraphSqlConfig, GpuFallbackPolicy, NexusGpuBackend};
+use datafusion_nexus::{NexusSessionStateBuilderExt, CugraphSqlConfig, GpuFallbackPolicy, NexusGpuBackend};
 
 async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let backend = NexusGpuBackend::builder()
@@ -166,11 +166,11 @@ For local single-query experiments, you can still install the raw optimizer rule
 directly:
 
 ```rust
-use datafusion_nexus::{CudfOptimizerConfig, CudfSessionStateBuilderExt, GpuFallbackPolicy};
+use datafusion_nexus::{NexusNativeOptimizerConfig, NexusSessionStateBuilderExt, GpuFallbackPolicy};
 
 let state = SessionStateBuilder::new()
     .with_default_features()
-    .with_cudf_native(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
+    .with_nexus_native(NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
     .build();
 ```
 

@@ -22,7 +22,7 @@ use super::{
 };
 use crate::{
     graph_sql::{CugraphAlgoExec, metadata::cugraph_metadata_table_functions},
-    native_exec::NativeCudfExecutionConfig,
+    native_exec::NexusNativeExecutionConfig,
     session::session_state_with_native_execution_config,
     session_config::DataFusionNexusSessionConfig,
 };
@@ -30,11 +30,11 @@ use crate::{
 #[derive(Debug)]
 pub struct CugraphAlgoTableProvider {
     spec: CugraphAlgorithmSpec,
-    native_execution_config: NativeCudfExecutionConfig,
+    native_execution_config: NexusNativeExecutionConfig,
 }
 
 impl CugraphAlgoTableProvider {
-    pub fn new(spec: CugraphAlgorithmSpec, native_execution_config: NativeCudfExecutionConfig) -> Self {
+    pub fn new(spec: CugraphAlgorithmSpec, native_execution_config: NexusNativeExecutionConfig) -> Self {
         Self { spec, native_execution_config }
     }
 
@@ -98,8 +98,8 @@ impl TableProvider for CugraphAlgoTableProvider {
 
 fn native_execution_config_with_request_options(
     session_state: &SessionState,
-    native_execution_config: NativeCudfExecutionConfig,
-) -> NativeCudfExecutionConfig {
+    native_execution_config: NexusNativeExecutionConfig,
+) -> NexusNativeExecutionConfig {
     let Some(session_config) = session_state.config_options().extensions.get::<DataFusionNexusSessionConfig>() else {
         return native_execution_config;
     };
@@ -419,7 +419,7 @@ mod tests {
 
         let execution_config = native_execution_config_with_request_options(
             &state,
-            NativeCudfExecutionConfig::bounded(1024, 512, 1, 3, 1),
+            NexusNativeExecutionConfig::bounded(1024, 512, 1, 3, 1),
         );
 
         assert_eq!(execution_config.requested_grant_min_bytes(), Some(384));

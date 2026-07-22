@@ -327,8 +327,8 @@ fn compiled_bounded_support_accepts_root_topk_null_filtered_aggregate_fan_in_gra
     let plan = optimized.plan;
     let analysis = plan.capability_analysis();
     assert!(analysis.admits_root_topk_join_aggregate_pipeline());
-    let pipeline = compile_pipeline(&plan, &analysis)
-        .expect("anti-rewritten null-filtered aggregate fan-in plan should compile");
+    let pipeline =
+        compile_pipeline(&plan, &analysis).expect("anti-rewritten null-filtered aggregate fan-in plan should compile");
 
     assert_task_kind_count(&pipeline, PipelineTaskKind::JoinMaterialize, 8);
     assert_task_kind_count(&pipeline, PipelineTaskKind::Aggregate, 6);

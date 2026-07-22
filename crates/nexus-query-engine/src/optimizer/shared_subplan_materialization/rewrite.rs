@@ -484,7 +484,7 @@ fn shared_scalar_filtered_aggregate_rewrite_plan(
                 let count_star = scalar_count_star_aggregate_expr(plan, aggregate.input, &aggregate_expr.expr);
                 let mut aggregate_expr = aggregate_expr.clone();
                 aggregate_expr.alias =
-                    format!("__cudf_shared_scalar_{}_{}", signature.aggregate_node_id.index(), index);
+                    format!("__nexus_native_shared_scalar_{}_{}", signature.aggregate_node_id.index(), index);
                 aggregate_expr.filter = Some(filter.clone());
                 if count_star {
                     aggregate_expr.expr = Expr::literal(crate::expr::LiteralValue::Int64(1));

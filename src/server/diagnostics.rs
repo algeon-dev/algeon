@@ -425,13 +425,13 @@ mod tests {
             "table-format scan leaf was not rewritten to native",
         )
         .with_fact("fallback_reason", FallbackReason::TableFormatGpuOnlyLeafNotRewritten.code())
-        .with_fact("leftover_operator", "CudfTableFormatScanExec")
+        .with_fact("leftover_operator", "NexusTableFormatScanExec")
         .with_fact("table_format", "iceberg")
         .with_fact("cpu_arrow_reader_fallback", false)
         .with_fact("physical_plan_root", "SortPreservingMergeExec")
         .with_fact(
             "physical_plan_shape",
-            "SortPreservingMergeExec(SortExec(AggregateExec(RepartitionExec(CudfTableFormatScanExec))))",
+            "SortPreservingMergeExec(SortExec(AggregateExec(RepartitionExec(NexusTableFormatScanExec))))",
         );
         if let Some(reason) = native_rule_blocking_rejection {
             error = error.with_fact("leaf_guard_first_rejection", reason);
@@ -452,7 +452,7 @@ mod tests {
         assert_eq!(fields.native_rule_blocking_rejection, FallbackReason::NativeSortPreservingMergeUnsupported.code());
         assert_eq!(fields.physical_plan_root, "SortPreservingMergeExec");
         assert!(fields.physical_plan_shape.starts_with("SortPreservingMergeExec("));
-        assert!(fields.physical_plan_shape.contains("CudfTableFormatScanExec"));
+        assert!(fields.physical_plan_shape.contains("NexusTableFormatScanExec"));
         assert_eq!(fields.table_format, "iceberg");
         assert_eq!(fields.leaf_guard_first_rejection, FallbackReason::NativeSortPreservingMergeUnsupported.code());
         assert_eq!(fields.unsupported_column, "");
@@ -481,11 +481,11 @@ mod tests {
             "table-format scan leaf was not rewritten to native",
         )
         .with_fact("fallback_reason", FallbackReason::TableFormatGpuOnlyLeafNotRewritten.code())
-        .with_fact("leftover_operator", "CudfTableFormatScanExec")
+        .with_fact("leftover_operator", "NexusTableFormatScanExec")
         .with_fact("table_format", "iceberg")
         .with_fact("cpu_arrow_reader_fallback", false)
         .with_fact("physical_plan_root", "UnionExec")
-        .with_fact("physical_plan_shape", "UnionExec(CudfTableFormatScanExec,NativeCudfExec)");
+        .with_fact("physical_plan_shape", "UnionExec(NexusTableFormatScanExec,NexusNativeExec)");
         error = error.with_fact("native_rule_blocking_context", "union_branch_not_rewritten");
         let df_error: DataFusionError = error.into();
 
@@ -506,7 +506,7 @@ mod tests {
         .with_fact("leaf_guard_first_rejection", FallbackReason::IcebergFieldIdMappingUnsupported.code())
         .with_fact("leaf_guard_context_source", "scan_plan")
         .with_fact("native_rule_blocking_context", FallbackReason::IcebergFieldIdMappingUnsupported.code())
-        .with_fact("leftover_operator", "CudfTableFormatScanExec")
+        .with_fact("leftover_operator", "NexusTableFormatScanExec")
         .with_fact("table_format", "iceberg")
         .with_fact("snapshot_id", "s-123")
         .with_fact("catalog_type", "glue")

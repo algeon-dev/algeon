@@ -19,14 +19,14 @@ use super::StreamLease;
 #[cfg(feature = "cugraph")]
 use super::gpu::placement::rank_cache_affine_candidates;
 use super::{
-    CacheFillByteBudget, CudfInventory, CudfNvmlTelemetry, DeploymentIoCapability, DeviceContext,
-    DeviceMemoryFailureReport, DeviceRegistry, DeviceRegistryConfig, DeviceTelemetrySnapshot, ExecutionBoundaryPolicy,
-    ExecutionCancellation, ExecutionContext, GdsDriverProbeStatus, GpuExecutionJobKind, GpuExecutionPool,
-    GpuExecutionPoolSnapshot, GpuExecutionQuerySnapshot, GpuExecutionQueryTracker, GpuInventory, GpuTelemetry,
-    GrantRequest, KvikioCompatModeStatus, LakehouseCacheFillConfig, MemoryControlPolicy, MemoryGovernor,
-    MemoryGovernorReport, MemoryGrant, MemoryResourcePolicy, NvidiaFsProbeStatus, PlacementPolicy, PlacementRequest,
-    Priority, QueryPlacementHint, QueryPlacementPolicy, QueryQos, SourceChunkPlanningMode, SourceSchedulerPolicy,
-    SourceStorageProfile,
+    CacheFillByteBudget, DeploymentIoCapability, DeviceContext, DeviceMemoryFailureReport, DeviceRegistry,
+    DeviceRegistryConfig, DeviceTelemetrySnapshot, ExecutionBoundaryPolicy, ExecutionCancellation, ExecutionContext,
+    GdsDriverProbeStatus, GpuExecutionJobKind, GpuExecutionPool, GpuExecutionPoolSnapshot, GpuExecutionQuerySnapshot,
+    GpuExecutionQueryTracker, GpuInventory, GpuTelemetry, GrantRequest, KvikioCompatModeStatus,
+    LakehouseCacheFillConfig, MemoryControlPolicy, MemoryGovernor, MemoryGovernorReport, MemoryGrant,
+    MemoryResourcePolicy, NexusGpuInventory, NexusNvmlTelemetry, NvidiaFsProbeStatus, PlacementPolicy,
+    PlacementRequest, Priority, QueryPlacementHint, QueryPlacementPolicy, QueryQos, SourceChunkPlanningMode,
+    SourceSchedulerPolicy, SourceStorageProfile,
     cache_events::LakehouseCacheFillEventSink,
     cache_fill::{CacheFillConcurrencyGate, default_lakehouse_cache_fill_budget_bytes},
     context::{ExecutionContextParts, QueryServiceEpoch, QueryServiceEpochUser, validate_service_stream_pool_device},

@@ -17,7 +17,7 @@ pub(crate) fn mixed_keyed_residual_join_grouped_aggregate_input_plan(
         Field::new("entity_id", DataType::Int32, false),
         Field::new("measure", DataType::Float64, false),
         Field::new("quantity", DataType::Float64, false),
-        Field::new("__cudf_join_residual_left_0", DataType::Float64, false),
+        Field::new("__nexus_native_join_residual_left_0", DataType::Float64, false),
     ]));
     let grouped_schema = Arc::new(Schema::new(vec![
         Field::new("entity_id", DataType::Int32, false),
@@ -70,7 +70,7 @@ pub(crate) fn mixed_keyed_residual_join_grouped_aggregate_input_plan(
                 Expr::column("entity_id"),
                 Expr::column("measure"),
                 Expr::column("quantity"),
-                Expr::cast(Expr::column("quantity"), DataType::Float64).alias("__cudf_join_residual_left_0"),
+                Expr::cast(Expr::column("quantity"), DataType::Float64).alias("__nexus_native_join_residual_left_0"),
             ],
             Arc::clone(&joined_fact_residual_schema),
         ),

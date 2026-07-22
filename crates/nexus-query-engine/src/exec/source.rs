@@ -152,7 +152,7 @@ pub fn read_literal_batch_source(
         let frame = DataFrame::from_record_batch(&context.runtime()?, batch).map_err(|error| {
             QueryError::from_cudf(
                 "nexus_query_engine.literal_batch_source.read",
-                "failed to import literal Arrow batch into native cudf",
+                "failed to import literal Arrow batch into nexus native",
                 error,
             )
             .with_fact("rows", batch.num_rows())

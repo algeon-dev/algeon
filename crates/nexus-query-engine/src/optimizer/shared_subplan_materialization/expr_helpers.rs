@@ -59,7 +59,7 @@ fn scalar_count_star_aggregate_expr(plan: &QueryPlan, input: NodeId, expr: &Expr
 }
 
 fn projected_count_preserving_column(plan: &QueryPlan, node_id: NodeId, column: &str) -> bool {
-    const HIDDEN_JOIN_ROW_PRESENCE_COLUMN: &str = "__cudf_join_row_presence";
+    const HIDDEN_JOIN_ROW_PRESENCE_COLUMN: &str = "__nexus_native_join_row_presence";
     let Some(node) = plan.node(node_id) else {
         return false;
     };

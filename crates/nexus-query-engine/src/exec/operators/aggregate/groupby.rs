@@ -15,7 +15,7 @@ pub(in crate::exec) fn execute_groupby_aggregate(
         .options(GroupByOptions::builder().include_null_keys(true).build())
         .with_execution(overrides)
         .agg(&aggregate.aggregations)
-        .map_err(|error| QueryError::from_cudf(operation, "failed to execute native cudf aggregate", error))?;
+        .map_err(|error| QueryError::from_cudf(operation, "failed to execute nexus native aggregate", error))?;
     rename_groupby_key_columns(&mut output, aggregate, "nexus_query_engine.aggregate.rename_keys")?;
     Ok(output)
 }
@@ -99,7 +99,7 @@ pub(super) fn rename_groupby_key_columns(
     if !key_renames.is_empty() {
         *output = output
             .rename_columns(key_renames)
-            .map_err(|error| QueryError::from_cudf(operation, "failed to rename native cudf aggregate keys", error))?;
+            .map_err(|error| QueryError::from_cudf(operation, "failed to rename nexus native aggregate keys", error))?;
     }
     Ok(())
 }
@@ -117,7 +117,7 @@ fn execute_groupby_distinct(
             DropDuplicatesOptions::builder().subset(key_columns.as_slice()).keep(DuplicateKeepOption::KeepAny).build(),
         )
         .map_err(|error| {
-            QueryError::from_cudf(operation, "failed to execute native cudf group-only aggregate", error)
+            QueryError::from_cudf(operation, "failed to execute nexus native group-only aggregate", error)
         })?;
     select_and_rename_groupby_distinct_keys(output, aggregate)
 }

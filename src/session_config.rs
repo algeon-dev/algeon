@@ -21,8 +21,8 @@ use nexus_query_engine::{
 
 use crate::{
     error::{Error, ErrorCode},
-    native_exec::NativeCudfExecutionConfig,
-    planner::CudfOptimizerConfig,
+    native_exec::NexusNativeExecutionConfig,
+    planner::NexusNativeOptimizerConfig,
 };
 
 /// DataFusion config-extension namespace prefix for datafusion-nexus options.
@@ -177,7 +177,7 @@ impl fmt::Display for NativeMemoryPolicyConfig {
 
 /// DataFusion session options under the `datafusion_nexus.native.*` namespace.
 ///
-/// `with_cudf_native` registers this extension automatically, initialized from
+/// `with_nexus_native` registers this extension automatically, initialized from
 /// the optimizer config passed by the caller. Applications may also insert or
 /// update it directly through `SessionConfig`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -222,13 +222,13 @@ enum DataFusionNexusSessionConfigAuthority {
 
 impl Default for DataFusionNexusSessionConfig {
     fn default() -> Self {
-        Self::from_optimizer_config(&CudfOptimizerConfig::default())
+        Self::from_optimizer_config(&NexusNativeOptimizerConfig::default())
     }
 }
 
 impl DataFusionNexusSessionConfig {
     /// Build config-extension values from an optimizer config.
-    pub fn from_optimizer_config(config: &CudfOptimizerConfig) -> Self {
+    pub fn from_optimizer_config(config: &NexusNativeOptimizerConfig) -> Self {
         let execution = config.native_execution_config();
         let (
             native_memory_policy,
@@ -254,11 +254,11 @@ impl DataFusionNexusSessionConfig {
             ),
             MemoryControlPolicy::Unbounded => (
                 NativeMemoryPolicyConfig::Unbounded,
-                NativeCudfExecutionConfig::auto_sized_device_budget_bytes(),
-                NativeCudfExecutionConfig::DEFAULT_BOUNDED_MAX_SOURCE_CHUNK_BYTES,
-                NativeCudfExecutionConfig::DEFAULT_BOUNDED_MAX_ROW_GROUPS_PER_CHUNK,
-                NativeCudfExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS,
-                NativeCudfExecutionConfig::DEFAULT_BOUNDED_MIN_RETRY_CHUNK_ROW_GROUPS,
+                NexusNativeExecutionConfig::auto_sized_device_budget_bytes(),
+                NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_SOURCE_CHUNK_BYTES,
+                NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_ROW_GROUPS_PER_CHUNK,
+                NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS,
+                NexusNativeExecutionConfig::DEFAULT_BOUNDED_MIN_RETRY_CHUNK_ROW_GROUPS,
             ),
         };
 
@@ -291,24 +291,33 @@ impl DataFusionNexusSessionConfig {
         self.authority == DataFusionNexusSessionConfigAuthority::BackendAdmission
     }
 
-    pub(crate) fn validate_backend_admission_matches(&self, config: &CudfOptimizerConfig) -> DataFusionResult<()> {
+    pub(crate) fn validate_backend_admission_matches(
+        &self,
+        config: &NexusNativeOptimizerConfig,
+    ) -> DataFusionResult<()> {
         if !self.is_backend_admission_frozen() {
             return Ok(());
         }
         self.validate_matches_optimizer_config(config)
     }
 
-    pub(crate) fn validate_matches_query_service_policy(&self, config: &CudfOptimizerConfig) -> DataFusionResult<()> {
+    pub(crate) fn validate_matches_query_service_policy(
+        &self,
+        config: &NexusNativeOptimizerConfig,
+    ) -> DataFusionResult<()> {
         self.validate_matches_optimizer_config_inner(config, NativeDeviceBudgetValidation::QueryServiceGrant)
     }
 
-    pub(crate) fn validate_matches_optimizer_config(&self, config: &CudfOptimizerConfig) -> DataFusionResult<()> {
+    pub(crate) fn validate_matches_optimizer_config(
+        &self,
+        config: &NexusNativeOptimizerConfig,
+    ) -> DataFusionResult<()> {
         self.validate_matches_optimizer_config_inner(config, NativeDeviceBudgetValidation::Exact)
     }
 
     fn validate_matches_optimizer_config_inner(
         &self,
-        config: &CudfOptimizerConfig,
+        config: &NexusNativeOptimizerConfig,
         device_budget_validation: NativeDeviceBudgetValidation,
     ) -> DataFusionResult<()> {
         let expected = Self::from_optimizer_config(config);
@@ -349,7 +358,10 @@ impl DataFusionNexusSessionConfig {
 
     /// Apply these session options to an optimizer config, preserving non-session
     /// execution resources already attached to the base config.
-    pub fn apply_to_optimizer_config(&self, base: CudfOptimizerConfig) -> DataFusionResult<CudfOptimizerConfig> {
+    pub fn apply_to_optimizer_config(
+        &self,
+        base: NexusNativeOptimizerConfig,
+    ) -> DataFusionResult<NexusNativeOptimizerConfig> {
         self.validate()?;
         let mut execution = base.native_execution_config().clone();
         execution = match self.native_memory_policy {
@@ -404,8 +416,8 @@ impl DataFusionNexusSessionConfig {
 
     pub(crate) fn apply_graph_memory_calibration_request_options(
         &self,
-        mut execution: NativeCudfExecutionConfig,
-    ) -> NativeCudfExecutionConfig {
+        mut execution: NexusNativeExecutionConfig,
+    ) -> NexusNativeExecutionConfig {
         let base = execution.graph_memory_calibration_override();
         let request = self.graph_memory_calibration_override();
         if self.request_graph_raw_input_edges_configured || request.raw_input_edges != base.raw_input_edges {
@@ -570,9 +582,9 @@ impl ExtensionOptions for DataFusionNexusSessionConfig {
 /// Return the native optimizer config after applying any registered
 /// `datafusion_nexus.native.*` DataFusion session options.
 pub fn optimizer_config_with_datafusion_options(
-    config: &CudfOptimizerConfig,
+    config: &NexusNativeOptimizerConfig,
     options: &ConfigOptions,
-) -> DataFusionResult<CudfOptimizerConfig> {
+) -> DataFusionResult<NexusNativeOptimizerConfig> {
     if config.native_execution_config().has_query_service_handle() {
         // QueryService admission is the authority for bounded server/query execution.
         if let Some(session_config) = options.extensions.get::<DataFusionNexusSessionConfig>() {
@@ -603,9 +615,9 @@ pub fn optimizer_config_with_datafusion_options(
 }
 
 fn apply_request_options(
-    config: CudfOptimizerConfig,
+    config: NexusNativeOptimizerConfig,
     session_config: &DataFusionNexusSessionConfig,
-) -> CudfOptimizerConfig {
+) -> NexusNativeOptimizerConfig {
     let execution_config = config
         .native_execution_config()
         .clone()
@@ -749,7 +761,7 @@ mod tests {
 
     #[test]
     fn request_key_is_mutable_when_backend_admission_config_is_frozen() {
-        let base = CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred);
+        let base = NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred);
         let mut session_config =
             DataFusionNexusSessionConfig::from_optimizer_config(&base).frozen_for_backend_admission();
 
@@ -785,10 +797,10 @@ mod tests {
             nongds_deployment(),
         )
         .unwrap();
-        let execution_config = NativeCudfExecutionConfig::bounded(512, 512, 1, 3, 1)
+        let execution_config = NexusNativeExecutionConfig::bounded(512, 512, 1, 3, 1)
             .with_query_admission_source(QueryAdmissionSource::new(service, tenant_id));
-        let base =
-            CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred).with_native_execution_config(execution_config);
+        let base = NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
+            .with_native_execution_config(execution_config);
         let mut session_config =
             DataFusionNexusSessionConfig::from_optimizer_config(&base).frozen_for_backend_admission();
         session_config.set(REQUEST_REQUESTED_GRANT_MIN_BYTES_KEY, "768").unwrap();
@@ -818,8 +830,8 @@ mod tests {
     #[test]
     fn default_request_graph_options_do_not_override_service_acquired_calibration() {
         let service_override = GraphMemoryCalibrationOverride::default().with_raw_input_edges(45_564_149);
-        let base = CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
-            .with_native_execution_config(NativeCudfExecutionConfig::bounded_auto_sized());
+        let base = NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
+            .with_native_execution_config(NexusNativeExecutionConfig::bounded_auto_sized());
         let mut options = ConfigOptions::default();
         options
             .extensions
@@ -838,8 +850,8 @@ mod tests {
     #[test]
     fn explicit_request_graph_reset_overrides_service_acquired_calibration() {
         let service_override = GraphMemoryCalibrationOverride::default().with_raw_input_edges(45_564_149);
-        let base = CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
-            .with_native_execution_config(NativeCudfExecutionConfig::bounded_auto_sized());
+        let base = NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
+            .with_native_execution_config(NexusNativeExecutionConfig::bounded_auto_sized());
         let mut session_config =
             DataFusionNexusSessionConfig::from_optimizer_config(&base).frozen_for_backend_admission();
         session_config.set(REQUEST_GRAPH_RAW_INPUT_EDGES_KEY, "none").unwrap();
@@ -859,8 +871,8 @@ mod tests {
     #[test]
     fn public_request_graph_reset_setters_mark_request_options_configured() {
         let service_override = GraphMemoryCalibrationOverride::default().with_raw_input_edges(45_564_149);
-        let base = CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
-            .with_native_execution_config(NativeCudfExecutionConfig::bounded_auto_sized());
+        let base = NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
+            .with_native_execution_config(NexusNativeExecutionConfig::bounded_auto_sized());
         let mut session_config =
             DataFusionNexusSessionConfig::from_optimizer_config(&base).frozen_for_backend_admission();
         session_config.set_request_graph_raw_input_edges(None);

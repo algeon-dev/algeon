@@ -171,7 +171,7 @@ fn unique_synthetic_field_name(
     used_native_names: &BTreeSet<String>,
 ) -> String {
     let sanitized = sanitize_field_name(frontend_name);
-    let base = format!("__cudf_field_{ordinal}_{sanitized}");
+    let base = format!("__nexus_native_field_{ordinal}_{sanitized}");
     unique_name_with_suffix(base.as_str(), |candidate| {
         !frontend_names.contains(candidate) && !used_native_names.contains(candidate)
     })

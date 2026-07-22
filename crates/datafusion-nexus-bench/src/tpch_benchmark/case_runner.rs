@@ -56,7 +56,7 @@ pub(super) fn benchmark_query_progress_line(
         source_chunk_planning_mode,
         max_row_groups_per_chunk,
         max_source_chunk_bytes,
-        std::env::var_os("CUDF_TPCH_BENCH_SKIP_CPU").is_some(),
+        std::env::var_os("NEXUS_TPCH_BENCH_SKIP_CPU").is_some(),
     )
 }
 
@@ -81,7 +81,7 @@ async fn run_query(
         return NativeTpchBenchmarkRow::planning_failure(query.id, error);
     }
 
-    let cpu = if std::env::var_os("CUDF_TPCH_BENCH_SKIP_CPU").is_some() {
+    let cpu = if std::env::var_os("NEXUS_TPCH_BENCH_SKIP_CPU").is_some() {
         Err(execution::CpuRunFailure {
             runtime_started: false,
             message: "cpu_skipped_by_CUDF_TPCH_BENCH_SKIP_CPU".to_string(),

@@ -48,7 +48,7 @@ fi
 #                                          match the native-lowerable shapes the cudf
 #                                          optimizer rule expects. Required for Iceberg
 #                                          tables that use the GPU-only
-#                                          CudfTableFormatScanExec leaf.
+#                                          NexusTableFormatScanExec leaf.
 #                                          NOTE: cpu_fallback is **testing-only** while
 #                                          Iceberg is configured — the GPU-only leaf has
 #                                          no CPU Arrow reader yet,
@@ -156,7 +156,7 @@ export NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE="${NEXUS_SERVER_
 # ---------------------------------------------------------------------------
 # The default Iceberg/native profile pins target_partitions=1 to keep DataFusion
 # from inserting CPU-style RepartitionExec / SortPreservingMergeExec nodes over
-# the GPU-only CudfTableFormatScanExec leaf. Only override this when explicitly
+# the GPU-only NexusTableFormatScanExec leaf. Only override this when explicitly
 # running under NEXUS_SERVER_SESSION_PROFILE=cpu_fallback.
 # export DATAFUSION_EXECUTION_TARGET_PARTITIONS=16
 export DATAFUSION_EXECUTION_BATCH_SIZE="${DATAFUSION_EXECUTION_BATCH_SIZE:-8192}"

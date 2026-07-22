@@ -33,7 +33,7 @@ fn native_fallback_policy_config_resolver_accepts_stable_spellings_and_rejects_u
 
     let error = native_tpch_fallback_policy_from_value(Some("native_only"))
         .expect_err("unknown fallback policies must be rejected while config is resolved");
-    assert!(error.to_string().contains(CUDF_TPCH_BENCH_NATIVE_FALLBACK_POLICY_ENV));
+    assert!(error.to_string().contains(NEXUS_TPCH_BENCH_NATIVE_FALLBACK_POLICY_ENV));
 }
 
 #[test]
@@ -66,7 +66,7 @@ fn native_profile_defaults_to_conservative() {
 #[test]
 fn native_profile_resolves_sf100_gpu_throughput() {
     let profile =
-        tpch_native_profile_settings_from([(CUDF_TPCH_BENCH_NATIVE_PROFILE_ENV, "sf100_gpu_throughput")]).unwrap();
+        tpch_native_profile_settings_from([(NEXUS_TPCH_BENCH_NATIVE_PROFILE_ENV, "sf100_gpu_throughput")]).unwrap();
 
     assert_eq!(profile.profile_name, TPCH_NATIVE_PROFILE_SF100_GPU_THROUGHPUT);
     assert_eq!(profile.profile_source, "env_profile");
@@ -84,7 +84,7 @@ fn native_profile_resolves_sf100_gpu_throughput() {
 #[test]
 fn native_profile_source_chunk_planning_reaches_execution_config() {
     let profile =
-        tpch_native_profile_settings_from([(CUDF_TPCH_BENCH_NATIVE_PROFILE_ENV, "sf100_gpu_throughput")]).unwrap();
+        tpch_native_profile_settings_from([(NEXUS_TPCH_BENCH_NATIVE_PROFILE_ENV, "sf100_gpu_throughput")]).unwrap();
     let config = NativeTpchBenchmarkConfig {
         native_memory_policy: NativeTpchMemoryPolicy::bounded_from_profile_settings(profile),
         ..NativeTpchBenchmarkConfig::default()
@@ -102,12 +102,12 @@ fn native_profile_source_chunk_planning_reaches_execution_config() {
 #[test]
 fn native_profile_exact_overrides_resolve_to_named_profile() {
     let profile = tpch_native_profile_settings_from([
-        (CUDF_TPCH_BENCH_NATIVE_DEVICE_BUDGET_BYTES_ENV, "102005473280"),
-        (CUDF_TPCH_BENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, "34359738368"),
-        (CUDF_TPCH_BENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, "1024"),
-        (CUDF_TPCH_BENCH_NATIVE_MAX_RETRY_ATTEMPTS_ENV, "4"),
-        (CUDF_TPCH_BENCH_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV, "1"),
-        (CUDF_TPCH_BENCH_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV, "local_parquet_throughput"),
+        (NEXUS_TPCH_BENCH_NATIVE_DEVICE_BUDGET_BYTES_ENV, "102005473280"),
+        (NEXUS_TPCH_BENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, "34359738368"),
+        (NEXUS_TPCH_BENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, "1024"),
+        (NEXUS_TPCH_BENCH_NATIVE_MAX_RETRY_ATTEMPTS_ENV, "4"),
+        (NEXUS_TPCH_BENCH_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV, "1"),
+        (NEXUS_TPCH_BENCH_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV, "local_parquet_throughput"),
     ])
     .unwrap();
 
@@ -118,9 +118,9 @@ fn native_profile_exact_overrides_resolve_to_named_profile() {
 #[test]
 fn native_profile_overrides_become_custom() {
     let profile = tpch_native_profile_settings_from([
-        (CUDF_TPCH_BENCH_NATIVE_PROFILE_ENV, "sf100_gpu_throughput"),
-        (CUDF_TPCH_BENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, "123456"),
-        (CUDF_TPCH_BENCH_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV, "conservative"),
+        (NEXUS_TPCH_BENCH_NATIVE_PROFILE_ENV, "sf100_gpu_throughput"),
+        (NEXUS_TPCH_BENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, "123456"),
+        (NEXUS_TPCH_BENCH_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV, "conservative"),
     ])
     .unwrap();
 
@@ -133,11 +133,11 @@ fn native_profile_overrides_become_custom() {
 #[test]
 fn native_profile_rejects_zero_values() {
     for name in [
-        CUDF_TPCH_BENCH_NATIVE_DEVICE_BUDGET_BYTES_ENV,
-        CUDF_TPCH_BENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV,
-        CUDF_TPCH_BENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV,
-        CUDF_TPCH_BENCH_NATIVE_MAX_RETRY_ATTEMPTS_ENV,
-        CUDF_TPCH_BENCH_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV,
+        NEXUS_TPCH_BENCH_NATIVE_DEVICE_BUDGET_BYTES_ENV,
+        NEXUS_TPCH_BENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV,
+        NEXUS_TPCH_BENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV,
+        NEXUS_TPCH_BENCH_NATIVE_MAX_RETRY_ATTEMPTS_ENV,
+        NEXUS_TPCH_BENCH_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV,
     ] {
         let error = tpch_native_profile_settings_from([(name, "0")])
             .expect_err("zero TPC-H native profile values must be rejected");
@@ -147,11 +147,11 @@ fn native_profile_rejects_zero_values() {
 
 #[test]
 fn native_profile_rejects_invalid_profile_and_source_mode() {
-    let error = tpch_native_profile_settings_from([(CUDF_TPCH_BENCH_NATIVE_PROFILE_ENV, "fast")])
+    let error = tpch_native_profile_settings_from([(NEXUS_TPCH_BENCH_NATIVE_PROFILE_ENV, "fast")])
         .expect_err("unknown TPC-H native profiles must be rejected");
     assert!(error.to_string().contains("expected conservative or sf100_gpu_throughput"));
 
-    let error = tpch_native_profile_settings_from([(CUDF_TPCH_BENCH_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV, "wide")])
+    let error = tpch_native_profile_settings_from([(NEXUS_TPCH_BENCH_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV, "wide")])
         .expect_err("unknown source chunk planning modes must be rejected");
     assert!(error.to_string().contains("expected conservative or local_parquet_throughput"));
 }
@@ -168,7 +168,7 @@ fn sf1_external_dataset_mode_rejects_tiny_or_unknown_metadata() {
     };
     let error =
         dataset::validate_sf1_external_metadata(&tiny).expect_err("SF1 benchmark mode must not accept tiny metadata");
-    assert!(error.to_string().contains("requires CUDF_TPCH_SCALE_FACTOR=sf1"));
+    assert!(error.to_string().contains("requires NEXUS_TPCH_SCALE_FACTOR=sf1"));
 
     let unknown = TpchDatasetMetadata {
         scale_factor: "unknown".to_string(),
@@ -188,7 +188,7 @@ fn sf1_external_dataset_mode_rejects_tiny_or_unknown_metadata() {
         TpchDatasetMetadata { generation_command: "unknown_external".to_string(), ..benchmark_metadata() };
     let error = dataset::validate_sf1_external_metadata(&unknown_generation)
         .expect_err("SF1 benchmark mode must preserve reproducible generation metadata");
-    assert!(error.to_string().contains("requires a reproducible CUDF_TPCH_GENERATION_COMMAND"));
+    assert!(error.to_string().contains("requires a reproducible NEXUS_TPCH_GENERATION_COMMAND"));
 
     let mut mislabeled_tiny = benchmark_metadata();
     mislabeled_tiny.tables.iter_mut().find(|table| table.table == "lineitem").unwrap().row_count = 3;
@@ -198,11 +198,11 @@ fn sf1_external_dataset_mode_rejects_tiny_or_unknown_metadata() {
 
     let error = dataset::validate_sf1_external_metadata(&benchmark_sf10_metadata())
         .expect_err("SF1 benchmark mode must reject SF10 metadata");
-    assert!(error.to_string().contains("requires CUDF_TPCH_SCALE_FACTOR=sf1"));
+    assert!(error.to_string().contains("requires NEXUS_TPCH_SCALE_FACTOR=sf1"));
 
     let error = dataset::validate_sf10_external_metadata(&benchmark_metadata())
         .expect_err("SF10 benchmark mode must reject SF1 metadata");
-    assert!(error.to_string().contains("requires CUDF_TPCH_SCALE_FACTOR=sf10"));
+    assert!(error.to_string().contains("requires NEXUS_TPCH_SCALE_FACTOR=sf10"));
 }
 
 #[test]

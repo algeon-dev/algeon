@@ -165,7 +165,7 @@ async fn scalar_expression_aggregate_argument_required_source_columns_are_exact(
     assert_eq!(aggregate_exprs.len(), 1);
     assert!(matches!(
         &aggregate_exprs[0].expr,
-        Expr::Column(column) if column.name().starts_with("__cudf_aggregate_arg_")
+        Expr::Column(column) if column.name().starts_with("__nexus_native_aggregate_arg_")
     ));
     assert!(!source.read_columns.contains(&"payload".to_string()));
 

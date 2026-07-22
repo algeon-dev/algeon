@@ -125,7 +125,7 @@ impl DeviceRegistry {
             return Ok(Arc::clone(registry));
         }
         let config = DeviceRegistryConfig::new(Vec::new(), crate::runtime::DEFAULT_SERVICE_STREAM_POOL_SIZE);
-        let registry = Arc::new(Self::install(&super::CudfInventory, &config)?);
+        let registry = Arc::new(Self::install(&super::NexusGpuInventory, &config)?);
         Ok(Arc::clone(SHARED.get_or_init(|| registry)))
     }
 

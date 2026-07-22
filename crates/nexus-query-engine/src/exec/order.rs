@@ -11,8 +11,8 @@ use crate::{
     runtime::ExecutionContext,
 };
 
-const SOURCE_ORDER_MAJOR_COLUMN: &str = "__cudf_df_order_0";
-const SOURCE_ORDER_ROW_COLUMN: &str = "__cudf_df_order_1";
+const SOURCE_ORDER_MAJOR_COLUMN: &str = "__nexus_native_df_order_0";
+const SOURCE_ORDER_ROW_COLUMN: &str = "__nexus_native_df_order_1";
 
 thread_local! {
     static DATAFUSION_ORDER_TRACKING_DEPTH: Cell<usize> = const { Cell::new(0) };

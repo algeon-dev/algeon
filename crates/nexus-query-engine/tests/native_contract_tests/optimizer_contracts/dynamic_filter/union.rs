@@ -279,12 +279,10 @@ fn native_optimizer_adds_post_decode_probe_route_when_all_union_branch_lineages_
     );
     let returns_passthrough = builder.add_projection(
         returns,
-        vec![ProjectionOutput::new(
-            Expr::column("wr_returned_date_sk"),
-            Field::new("date_sk", DataType::Int32, false),
-        )],
+        vec![ProjectionOutput::new(Expr::column("wr_returned_date_sk"), Field::new("date_sk", DataType::Int32, false))],
     );
-    let union = builder.add_union(vec![sales_branch, returns_with_sales, returns_passthrough], Arc::clone(&branch_schema));
+    let union =
+        builder.add_union(vec![sales_branch, returns_with_sales, returns_passthrough], Arc::clone(&branch_schema));
     let final_join = builder.add_join(
         union,
         dim,

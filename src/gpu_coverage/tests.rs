@@ -22,24 +22,24 @@ use super::{
 };
 use crate::{
     error::{Error, ErrorCode},
-    native_exec::{NativeCudfComposedExec, NativeCudfExec, NativeCudfExecutionConfig},
+    native_exec::{NexusNativeComposedExec, NexusNativeExec, NexusNativeExecutionConfig},
     native_report::NativeDataFusionPostNativeExecutionPath,
-    planner::CudfOptimizerConfig,
+    planner::NexusNativeOptimizerConfig,
     policy::{FallbackReason, GpuFallbackPolicy},
-    session::CudfSessionStateBuilderExt,
+    session::NexusSessionStateBuilderExt,
 };
 
-fn test_execution_config() -> NativeCudfExecutionConfig {
-    NativeCudfExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 1, 3, 1)
+fn test_execution_config() -> NexusNativeExecutionConfig {
+    NexusNativeExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 1, 3, 1)
 }
 
-fn unbounded_optimizer_config(policy: GpuFallbackPolicy) -> CudfOptimizerConfig {
-    CudfOptimizerConfig::new(policy).with_native_execution_config(NativeCudfExecutionConfig::unbounded())
+fn unbounded_optimizer_config(policy: GpuFallbackPolicy) -> NexusNativeOptimizerConfig {
+    NexusNativeOptimizerConfig::new(policy).with_native_execution_config(NexusNativeExecutionConfig::unbounded())
 }
 
 fn validation_context(policy: GpuFallbackPolicy) -> SessionContext {
     let state =
-        SessionStateBuilder::new_with_default_features().with_cudf_native(unbounded_optimizer_config(policy)).build();
+        SessionStateBuilder::new_with_default_features().with_nexus_native(unbounded_optimizer_config(policy)).build();
     SessionContext::new_with_state(state)
 }
 
@@ -55,7 +55,7 @@ fn native_exec_leaf() -> Arc<dyn ExecutionPlan> {
         schema,
         vec!["key".to_string()],
     )));
-    Arc::new(NativeCudfExec::try_new(builder.finish_with_host_sink(source), test_execution_config()).unwrap())
+    Arc::new(NexusNativeExec::try_new(builder.finish_with_host_sink(source), test_execution_config()).unwrap())
 }
 
 #[cfg(feature = "cugraph")]
@@ -65,7 +65,7 @@ fn composed_exec_with_child(child: Arc<dyn ExecutionPlan>, input_name: impl Into
     let source = builder
         .add_source(SourceNode::GpuResident(nexus_query_engine::source::GpuResidentSource::new(input_name, schema)));
     Arc::new(
-        NativeCudfComposedExec::try_new(builder.finish_with_host_sink(source), vec![child], test_execution_config())
+        NexusNativeComposedExec::try_new(builder.finish_with_host_sink(source), vec![child], test_execution_config())
             .unwrap(),
     )
 }
@@ -73,8 +73,8 @@ fn composed_exec_with_child(child: Arc<dyn ExecutionPlan>, input_name: impl Into
 #[tokio::test]
 async fn validate_query_rejects_multiple_statements_but_not_semicolon_literal() {
     let state = SessionStateBuilder::new()
-        .with_cudf_native(
-            CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
+        .with_nexus_native(
+            NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
                 .with_native_execution_config(test_execution_config()),
         )
         .build();
@@ -172,8 +172,8 @@ async fn validate_query_rejects_multiple_statements_but_not_semicolon_literal() 
 async fn validate_query_preflight_uses_session_sql_dialect() {
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(SessionConfig::new().set_str("datafusion.sql_parser.dialect", "postgresql"))
-        .with_cudf_native(
-            CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
+        .with_nexus_native(
+            NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
                 .with_native_execution_config(test_execution_config()),
         )
         .build();
@@ -188,7 +188,7 @@ async fn validate_query_reports_cpu_only_and_partial_fallback_axes() {
 
     let cpu = validate_query(&ctx, "SELECT random() AS r").await.unwrap();
     assert_eq!(cpu.overall, QueryGpuCoverageOverall::CpuOnly);
-    assert_eq!(cpu.domains.cudf_native_coverage, QueryGpuCudfNativeCoverage::None);
+    assert_eq!(cpu.domains.nexus_native_coverage, QueryGpuNexusNativeCoverage::None);
     assert!(
         cpu.fallback_reasons.iter().any(|reason| reason.reason_code == FallbackReason::UnsupportedExpression.code()
             && reason.kind == QueryGpuFallbackReasonKind::Expression)
@@ -196,7 +196,7 @@ async fn validate_query_reports_cpu_only_and_partial_fallback_axes() {
 
     let partial = validate_query(&ctx, "SELECT array[1, 2] AS values").await.unwrap();
     assert!(matches!(partial.overall, QueryGpuCoverageOverall::PartialGpuPlanned { .. }));
-    assert_eq!(partial.domains.cudf_native_coverage, QueryGpuCudfNativeCoverage::Partial);
+    assert_eq!(partial.domains.nexus_native_coverage, QueryGpuNexusNativeCoverage::Partial);
     assert_eq!(partial.domains.datafusion_cpu_ingest_or_boundary, QueryGpuPresence::Present);
     assert!(partial.fallback_reasons.iter().any(|reason| reason.reason_code == FallbackReason::UnsupportedType.code()
         && reason.kind == QueryGpuFallbackReasonKind::ArrowType));
@@ -353,7 +353,7 @@ mod cugraph {
         );
 
         assert_eq!(coverage.overall, QueryGpuCoverageOverall::NoCpuInPlannedPath);
-        assert_eq!(coverage.domains.cudf_native_coverage, QueryGpuCudfNativeCoverage::None);
+        assert_eq!(coverage.domains.nexus_native_coverage, QueryGpuNexusNativeCoverage::None);
         assert_eq!(coverage.domains.cugraph_operator, QueryGpuCugraphOperatorDomain::Present);
         assert_eq!(coverage.domains.datafusion_cpu_ingest_or_boundary, QueryGpuPresence::Absent);
     }
@@ -374,7 +374,7 @@ mod cugraph {
         );
 
         assert!(matches!(coverage.overall, QueryGpuCoverageOverall::PartialGpuPlanned { .. }));
-        assert_eq!(coverage.domains.cudf_native_coverage, QueryGpuCudfNativeCoverage::Full);
+        assert_eq!(coverage.domains.nexus_native_coverage, QueryGpuNexusNativeCoverage::Full);
         assert_eq!(coverage.domains.cugraph_operator, QueryGpuCugraphOperatorDomain::Present);
         assert_eq!(coverage.domains.datafusion_cpu_ingest_or_boundary, QueryGpuPresence::Present);
     }

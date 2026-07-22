@@ -6,8 +6,8 @@ use datafusion::{
 };
 use datafusion_nexus::{
     native_report::{NativeDataFusionPlanningWorkloadItem, NativeFallbackPressureWorkloadItem},
-    planner::{CudfNativePhysicalOptimizerRule, CudfOptimizerConfig},
-    session::CudfSessionStateBuilderExt,
+    planner::{NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule},
+    session::NexusSessionStateBuilderExt,
 };
 
 use super::{TpchWorkloadResult, register_tpch_tables, tpch_native_optimizer_config};
@@ -318,12 +318,12 @@ pub async fn analytical_olap_datafusion_planning_workload_items(
 pub async fn analytical_olap_datafusion_planning_workload_items_with_optimizer_config(
     root: &Path,
     session_config: SessionConfig,
-    optimizer_config: CudfOptimizerConfig,
+    optimizer_config: NexusNativeOptimizerConfig,
 ) -> TpchWorkloadResult<Vec<NativeDataFusionPlanningWorkloadItem>> {
-    let native_rule = Arc::new(CudfNativePhysicalOptimizerRule::new(optimizer_config));
+    let native_rule = Arc::new(NexusNativePhysicalOptimizerRule::new(optimizer_config));
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(session_config)
-        .with_cudf_native_rule(Arc::clone(&native_rule))
+        .with_nexus_native_rule(Arc::clone(&native_rule))
         .build();
     let ctx = SessionContext::new_with_state(state);
     register_tpch_tables(&ctx, root).await?;

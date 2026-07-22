@@ -25,7 +25,7 @@ fn native_datafusion_execution_report_records_runtime_boundaries() {
         row.strict_bounded_contract_rows.iter().any(|gate| gate.reservation_kind == ReservationKind::Materialization
             && gate.contract_quality == ContractQuality::QueryEngineOwnedBoundary)
     );
-    assert_eq!(row.post_native_plan_root, "NativeCudfExec");
+    assert_eq!(row.post_native_plan_root, "NexusNativeExec");
     assert_eq!(row.post_native_execution_path, NativeDataFusionPostNativeExecutionPath::Native);
     assert!(!row.rejected_before_execution);
     assert!(row.native_runtime_started);
@@ -317,11 +317,9 @@ fn native_datafusion_execution_report_records_runtime_boundaries() {
     assert!(!text.contains("bounded_join_execution_status"));
     assert!(!text.contains("bounded_join_reservation_facts"));
     assert!(text.contains("node_id=n2,join_strategy=one_shot_equi,execution_strategy=bounded_one_shot_equi_join"));
-    assert!(
-        text.contains(
-            "\tNativeCudfExec\tnative\t1\t0\tfalse\tnone\tnone\tnone\tnone\ttrue\tsucceeded\tnone\t1\t4\t256\t"
-        )
-    );
+    assert!(text.contains(
+        "\tNexusNativeExec\tnative\t1\t0\tfalse\tnone\tnone\tnone\tnone\ttrue\tsucceeded\tnone\t1\t4\t256\t"
+    ));
 }
 
 #[test]
@@ -1156,7 +1154,7 @@ fn native_datafusion_reports_classify_composed_native_roots_as_native() {
         Arc::clone(&composed),
         accepted_native_diagnostics(),
     )]);
-    assert_eq!(planning.rows[0].post_native_plan_root, "NativeCudfComposedExec");
+    assert_eq!(planning.rows[0].post_native_plan_root, "NexusNativeComposedExec");
     assert_eq!(planning.rows[0].post_native_execution_path, NativeDataFusionPostNativeExecutionPath::Native);
 
     let execution = NativeDataFusionExecutionReport::collect([NativeDataFusionExecutionWorkloadItem::new(
@@ -1165,6 +1163,6 @@ fn native_datafusion_reports_classify_composed_native_roots_as_native() {
         accepted_native_diagnostics(),
         NativeDataFusionRuntime::NotStarted,
     )]);
-    assert_eq!(execution.rows[0].post_native_plan_root, "NativeCudfComposedExec");
+    assert_eq!(execution.rows[0].post_native_plan_root, "NexusNativeComposedExec");
     assert_eq!(execution.rows[0].post_native_execution_path, NativeDataFusionPostNativeExecutionPath::Native);
 }

@@ -36,9 +36,9 @@ use datafusion_nexus::{
     backend::{MemoryShare, NexusAdmissionPolicy, NexusGpuBackend, NexusMemoryPolicy},
     graph_sql::CugraphSqlConfig,
     native_report::NativeDataFusionExecutionMetrics,
-    planner::CudfNativePhysicalOptimizerRule,
+    planner::NexusNativePhysicalOptimizerRule,
     report::CandidateOutcome,
-    session::CudfSessionStateBuilderExt,
+    session::NexusSessionStateBuilderExt,
 };
 use nexus_query_engine::{harness::StableFnv1a64, runtime::SlotGuarantee};
 use tokio::sync::Barrier;
@@ -60,7 +60,7 @@ use sampling::spawn_sampler;
 use workload::{catalog, expand_workload};
 
 /// Retained optimizer rules (diagnostic planning-report mode only).
-static PLANNING_RULES: Mutex<Vec<Arc<CudfNativePhysicalOptimizerRule>>> = Mutex::new(Vec::new());
+static PLANNING_RULES: Mutex<Vec<Arc<NexusNativePhysicalOptimizerRule>>> = Mutex::new(Vec::new());
 
 #[derive(Debug, Clone)]
 struct HarnessConfig {
@@ -304,9 +304,9 @@ async fn build_session(
     // config, so the rule-name dedup key replaces the backend's instance) so
     // per-query PlanningReports can be read back.
     let builder = if std::env::var(ENV_PRINT_PLANNING).is_ok() {
-        let rule = Arc::new(CudfNativePhysicalOptimizerRule::new(backend.optimizer_config().clone()));
+        let rule = Arc::new(NexusNativePhysicalOptimizerRule::new(backend.optimizer_config().clone()));
         PLANNING_RULES.lock().unwrap().push(Arc::clone(&rule));
-        builder.with_cudf_native_rule(rule)
+        builder.with_nexus_native_rule(rule)
     } else {
         builder
     };
@@ -375,7 +375,7 @@ async fn run_one(config: &HarnessConfig, ctx: &SessionContext, request: &Request
     };
 
     let plan_display = displayable(plan.as_ref()).indent(false).to_string();
-    row.native_lowered = plan_display.contains("CugraphAlgoExec") || plan_display.contains("NativeCudf");
+    row.native_lowered = plan_display.contains("CugraphAlgoExec") || plan_display.contains("NexusNative");
     if std::env::var(ENV_PRINT_PLANNING).is_ok() {
         for rule in PLANNING_RULES.lock().unwrap().iter() {
             if let Some(report) = rule.last_report() {

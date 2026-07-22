@@ -17,7 +17,7 @@ fn native_clickbench_benchmark_admission_contract_is_stable() {
     let src = fs::read_to_string("src/clickbench_benchmark/mod.rs")
         .expect("benchmark module source must be readable from the package root");
     for required in [
-        "CUDF_CLICKBENCH_BENCH_NATIVE_FALLBACK_POLICY",
+        "NEXUS_CLICKBENCH_BENCH_NATIVE_FALLBACK_POLICY",
         "clickbench_native_profile_settings_from_env",
         "clickbench_native_optimizer_config_with_profile_settings",
         ".with_fallback_policy(config.native_fallback_policy)",
@@ -36,9 +36,9 @@ fn native_clickbench_benchmark_admission_contract_is_stable() {
     let workload_src = fs::read_to_string("src/report_workload/clickbench.rs")
         .expect("workload source must be readable from the package root");
     for required in [
-        "CUDF_CLICKBENCH_NATIVE_PROFILE",
+        "NEXUS_CLICKBENCH_NATIVE_PROFILE",
         "clickbench_gpu_throughput",
-        "CUDF_CLICKBENCH_NATIVE_SOURCE_CHUNK_PLANNING_MODE",
+        "NEXUS_CLICKBENCH_NATIVE_SOURCE_CHUNK_PLANNING_MODE",
     ] {
         assert!(workload_src.contains(required), "clickbench workload missing contract surface {required}");
     }
@@ -53,10 +53,10 @@ fn native_clickbench_execution_report_env_var_names_are_stable() {
     let src = fs::read_to_string("src/bin/native_clickbench_execution_report.rs")
         .expect("binary source must be readable from the workspace root");
     for required in [
-        "CUDF_CLICKBENCH_EXECUTION_QUERY_IDS",
-        "CUDF_CLICKBENCH_EXECUTION_PROGRESS",
-        "CUDF_CLICKBENCH_NATIVE_FALLBACK_POLICY",
-        "CUDF_NATIVE_PIPELINE_EXECUTION_MODE",
+        "NEXUS_CLICKBENCH_EXECUTION_QUERY_IDS",
+        "NEXUS_CLICKBENCH_EXECUTION_PROGRESS",
+        "NEXUS_CLICKBENCH_NATIVE_FALLBACK_POLICY",
+        "NEXUS_NATIVE_PIPELINE_EXECUTION_MODE",
     ] {
         assert!(src.contains(required), "binary source missing env var {required}");
     }
@@ -71,9 +71,9 @@ fn native_clickbench_execution_report_env_var_names_are_stable() {
 }
 
 /// Pin that the binary uses the workload module's filtered execution entry
-/// point (not the unfiltered one), so `CUDF_CLICKBENCH_EXECUTION_QUERY_IDS`
+/// point (not the unfiltered one), so `NEXUS_CLICKBENCH_EXECUTION_QUERY_IDS`
 /// remains functional. The progress event type must also stay wired in so
-/// `CUDF_CLICKBENCH_EXECUTION_PROGRESS` keeps writing to stderr.
+/// `NEXUS_CLICKBENCH_EXECUTION_PROGRESS` keeps writing to stderr.
 #[test]
 fn native_clickbench_execution_report_wires_filtered_entrypoint() {
     let src = fs::read_to_string("src/bin/native_clickbench_execution_report.rs").unwrap();

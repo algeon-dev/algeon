@@ -172,10 +172,10 @@ fn parity_oracle_lookup_reports_missing_with_refresh_hint() {
 
 #[test]
 fn parity_data_root_lives_under_workspace_fixture_dir() {
-    // `data_root` honors `CUDF_CUGRAPH_DATA_ROOT` so refresh tooling can
+    // `data_root` honors `NEXUS_CUGRAPH_DATA_ROOT` so refresh tooling can
     // point at a staging fixture path. The default-case assertion only
     // runs when the override is absent.
-    if std::env::var_os("CUDF_CUGRAPH_DATA_ROOT").is_some() {
+    if std::env::var_os("NEXUS_CUGRAPH_DATA_ROOT").is_some() {
         return;
     }
     let root = data_root();

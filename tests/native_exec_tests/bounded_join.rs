@@ -8,11 +8,11 @@ fn native_optimizer_rule_rewrites_and_executes_bounded_left_semi_join_plan() {
     write_join_left_parquet_file(&left);
     write_join_right_parquet_file(&right);
     let plan = root_left_semi_join_plan(&left, &right);
-    let rule = CudfNativePhysicalOptimizerRule::new(native_optimizer_config());
+    let rule = NexusNativePhysicalOptimizerRule::new(native_optimizer_config());
 
     let optimized = rule.optimize(plan, &ConfigOptions::default()).unwrap();
 
-    assert!(optimized.downcast_ref::<NativeCudfExec>().is_some());
+    assert!(optimized.downcast_ref::<NexusNativeExec>().is_some());
     let report = rule.last_report().expect("native optimizer should record a planning report");
     assert_eq!(report.rewritten_count(), 1);
     assert_eq!(report.rejected_count(), 0);
@@ -46,11 +46,11 @@ fn native_optimizer_rule_rewrites_and_executes_bounded_left_anti_join_plan() {
     write_join_left_parquet_file(&left);
     write_join_right_parquet_file(&right);
     let plan = root_left_anti_join_plan(&left, &right);
-    let rule = CudfNativePhysicalOptimizerRule::new(native_optimizer_config());
+    let rule = NexusNativePhysicalOptimizerRule::new(native_optimizer_config());
 
     let optimized = rule.optimize(plan, &ConfigOptions::default()).unwrap();
 
-    assert!(optimized.downcast_ref::<NativeCudfExec>().is_some());
+    assert!(optimized.downcast_ref::<NexusNativeExec>().is_some());
     let report = rule.last_report().expect("native optimizer should record a planning report");
     assert_eq!(report.rewritten_count(), 1);
     assert_eq!(report.rejected_count(), 0);
@@ -73,13 +73,13 @@ fn native_optimizer_rule_rewrites_and_executes_bounded_join_aggregate_pipeline()
     write_parquet_file(&left);
     write_parquet_file(&right);
     let plan = join_aggregate_sort_limit_sql_plan(&left, &right);
-    let rule = CudfNativePhysicalOptimizerRule::new(native_optimizer_config());
+    let rule = NexusNativePhysicalOptimizerRule::new(native_optimizer_config());
 
     let optimized = rule.optimize(plan, &ConfigOptions::default()).unwrap();
 
     let native = optimized
-        .downcast_ref::<NativeCudfExec>()
-        .expect("single-join post-root pipeline should optimize to NativeCudfExec");
+        .downcast_ref::<NexusNativeExec>()
+        .expect("single-join post-root pipeline should optimize to NexusNativeExec");
     let pipeline = compile_pipeline(native.native_plan(), &native.native_plan().capability_analysis())
         .expect("lowered single-join post-root pipeline should compile");
     assert_eq!(task_kind_count(&pipeline, PipelineTaskKind::Aggregate), 1);
@@ -114,17 +114,17 @@ fn native_optimizer_rule_adaptive_mode_rewrites_join_with_adaptive_diagnostics()
     write_parquet_file(&left);
     write_parquet_file(&right);
     let plan = join_aggregate_sort_limit_sql_plan(&left, &right);
-    let config = NativeCudfExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 2, 3, 1)
+    let config = NexusNativeExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 2, 3, 1)
         .with_native_pipeline_execution_mode(NativePipelineExecutionMode::Adaptive);
-    let rule = CudfNativePhysicalOptimizerRule::new(
-        CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred).with_native_execution_config(config),
+    let rule = NexusNativePhysicalOptimizerRule::new(
+        NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred).with_native_execution_config(config),
     );
 
     let optimized = rule.optimize(plan, &ConfigOptions::default()).unwrap();
 
     let native = optimized
-        .downcast_ref::<NativeCudfExec>()
-        .expect("adaptive mode should still present a NativeCudfExec DataFusion boundary");
+        .downcast_ref::<NexusNativeExec>()
+        .expect("adaptive mode should still present a NexusNativeExec DataFusion boundary");
     assert!(displayable(native).one_line().to_string().contains("native_pipeline_execution_mode=adaptive"));
     let diagnostics = rule.last_planning_diagnostics().expect("native optimizer should retain diagnostics");
     assert!(diagnostics.strict_bounded_contract.is_empty());
@@ -163,14 +163,14 @@ fn native_optimizer_rule_rewrites_bounded_q11_aggregate_over_join_subplan_inputs
         );
     };
     assert_eq!(envelope, nexus_query_engine::capability::StrictBoundedEnvelope::RootFullSortJoinAggregate);
-    let rule = CudfNativePhysicalOptimizerRule::new(native_optimizer_config());
+    let rule = NexusNativePhysicalOptimizerRule::new(native_optimizer_config());
 
     let optimized = rule.optimize(plan, &ConfigOptions::default()).unwrap();
 
     let report = rule.last_report().expect("native optimizer should record a planning report");
     assert!(
-        optimized.downcast_ref::<NativeCudfExec>().is_some(),
-        "Q11 should optimize to NativeCudfExec; report={report:?}; diagnostics={:?}",
+        optimized.downcast_ref::<NexusNativeExec>().is_some(),
+        "Q11 should optimize to NexusNativeExec; report={report:?}; diagnostics={:?}",
         rule.last_planning_diagnostics()
     );
     assert_eq!(report.rewritten_count(), 1);
@@ -260,11 +260,11 @@ fn native_optimizer_rule_rewrites_and_executes_bounded_root_hash_join() {
     write_join_left_parquet_file(&left);
     write_join_right_parquet_file(&right);
     let plan = root_hash_join_plan(&left, &right);
-    let rule = CudfNativePhysicalOptimizerRule::new(native_optimizer_config());
+    let rule = NexusNativePhysicalOptimizerRule::new(native_optimizer_config());
 
     let optimized = rule.optimize(plan, &ConfigOptions::default()).unwrap();
 
-    assert!(optimized.downcast_ref::<NativeCudfExec>().is_some());
+    assert!(optimized.downcast_ref::<NexusNativeExec>().is_some());
     let report = rule.last_report().expect("native optimizer should record a planning report");
     assert_eq!(report.rewritten_count(), 1);
     assert_eq!(report.rejected_count(), 0);
@@ -292,7 +292,7 @@ fn native_optimizer_rule_rewrites_and_executes_bounded_root_hash_join() {
 #[test]
 fn native_exec_preserves_bounded_join_rejection_facts_from_native_runtime() {
     let native_plan = bounded_left_build_left_semi_join_host_sink_plan();
-    let exec = Arc::new(NativeCudfExec::try_new(native_plan, bounded_config()).unwrap()) as Arc<dyn ExecutionPlan>;
+    let exec = Arc::new(NexusNativeExec::try_new(native_plan, bounded_config()).unwrap()) as Arc<dyn ExecutionPlan>;
 
     let error = futures::executor::block_on(collect(exec, Arc::new(TaskContext::default()))).unwrap_err();
     let adapter_error = adapter_error(&error);
@@ -381,14 +381,14 @@ fn native_composed_exec_preserves_deferred_host_materialization_facts_on_runtime
     let input_schema = parquet_file_schema();
 
     let left_producer = Arc::new(
-        NativeCudfGpuProducerExec::try_new(
+        NexusNativeGpuProducerExec::try_new(
             "left_input",
             local_parquet_gpu_resident_plan(&left, Arc::clone(&input_schema)),
         )
         .unwrap(),
     ) as Arc<dyn ExecutionPlan>;
     let right_producer = Arc::new(
-        NativeCudfGpuProducerExec::try_new(
+        NexusNativeGpuProducerExec::try_new(
             "right_input",
             local_parquet_gpu_resident_plan(&right, Arc::clone(&input_schema)),
         )
@@ -397,7 +397,7 @@ fn native_composed_exec_preserves_deferred_host_materialization_facts_on_runtime
     let consumer_plan =
         bounded_gpu_resident_left_build_left_semi_join_host_sink_plan("left_input", "right_input", input_schema);
     let exec = Arc::new(
-        NativeCudfComposedExec::try_new(consumer_plan, vec![left_producer, right_producer], bounded_config()).unwrap(),
+        NexusNativeComposedExec::try_new(consumer_plan, vec![left_producer, right_producer], bounded_config()).unwrap(),
     ) as Arc<dyn ExecutionPlan>;
 
     let error = futures::executor::block_on(collect(exec, Arc::new(TaskContext::default()))).unwrap_err();
@@ -436,7 +436,7 @@ fn strict_bounded_planner_rows_cover_supported_join_path_while_runtime_rejection
     write_join_left_parquet_file(&left);
     write_join_right_parquet_file(&right);
     let plan = root_nested_loop_join_plan(&left, &right);
-    let rule = CudfNativePhysicalOptimizerRule::new(native_optimizer_config());
+    let rule = NexusNativePhysicalOptimizerRule::new(native_optimizer_config());
     let _ = rule.optimize(plan, &ConfigOptions::default()).unwrap();
     let diagnostics = rule.last_planning_diagnostics().expect("native optimizer should retain diagnostics");
 
@@ -456,7 +456,7 @@ fn strict_bounded_planner_rows_cover_supported_join_path_while_runtime_rejection
 
     // --- Runtime path ---
     let native_plan = bounded_left_build_left_semi_join_host_sink_plan();
-    let exec = Arc::new(NativeCudfExec::try_new(native_plan, bounded_config()).unwrap()) as Arc<dyn ExecutionPlan>;
+    let exec = Arc::new(NexusNativeExec::try_new(native_plan, bounded_config()).unwrap()) as Arc<dyn ExecutionPlan>;
     let error = futures::executor::block_on(collect(exec, Arc::new(TaskContext::default()))).unwrap_err();
     let runtime_error = adapter_error(&error);
 

@@ -147,17 +147,17 @@ fn log_iceberg_metadata_lookup(
 /// server is built with both `iceberg` and `iceberg-cpu`).
 ///
 /// `Gpu` wraps loaded tables in the adapter's native
-/// `CudfIcebergTableProvider` (GPU-only `CudfTableFormatScanExec` leaf).
+/// `NexusIcebergTableProvider` (GPU-only `NexusTableFormatScanExec` leaf).
 /// `Cpu` wraps them in upstream `iceberg-datafusion`'s
 /// `IcebergStaticTableProvider`, which provides a real CPU Arrow reader and
 /// is only available when the `iceberg-cpu` feature is enabled.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IcebergProviderKind {
-    /// Native GPU planning leaf via [`crate::table_format::iceberg::CudfIcebergTableProvider`].
+    /// Native GPU planning leaf via [`crate::table_format::iceberg::NexusIcebergTableProvider`].
     Gpu,
     /// CPU Arrow reader via `iceberg_datafusion::IcebergStaticTableProvider`.
     ///
-    /// Requires the `iceberg-cpu` feature. Building [`CudfIcebergSchemaProvider`]
+    /// Requires the `iceberg-cpu` feature. Building [`NexusIcebergSchemaProvider`]
     /// with this variant when the feature is off returns an error at startup
     /// rather than at first-query time.
     Cpu,
@@ -205,11 +205,11 @@ async fn build_table_provider(
         IcebergProviderKind::Gpu => {
             let provider = match parquet_read_strategy_config {
                 Some(config) => {
-                    crate::table_format::iceberg::CudfIcebergTableProvider::try_new_with_parquet_read_strategy_config(
+                    crate::table_format::iceberg::NexusIcebergTableProvider::try_new_with_parquet_read_strategy_config(
                         table, config,
                     )?
                 },
-                None => crate::table_format::iceberg::CudfIcebergTableProvider::try_new(table)?,
+                None => crate::table_format::iceberg::NexusIcebergTableProvider::try_new(table)?,
             };
             Ok(Arc::new(
                 provider
@@ -287,12 +287,12 @@ pub trait IcebergCatalogBackend: fmt::Debug + Send + Sync {
 /// Iceberg namespace; individual tables are loaded lazily through the backend
 /// when first queried via [`SchemaProvider::table`].
 #[derive(Debug)]
-pub struct CudfIcebergCatalogProvider {
-    schemas: BTreeMap<String, Arc<CudfIcebergSchemaProvider>>,
+pub struct NexusIcebergCatalogProvider {
+    schemas: BTreeMap<String, Arc<NexusIcebergSchemaProvider>>,
 }
 
-impl CudfIcebergCatalogProvider {
-    fn new(schemas: BTreeMap<String, Arc<CudfIcebergSchemaProvider>>) -> Self {
+impl NexusIcebergCatalogProvider {
+    fn new(schemas: BTreeMap<String, Arc<NexusIcebergSchemaProvider>>) -> Self {
         Self { schemas }
     }
 
@@ -300,12 +300,12 @@ impl CudfIcebergCatalogProvider {
     ///
     /// Use this to seed pre-loaded alias tables before registering the catalog
     /// in a [`datafusion::prelude::SessionContext`].
-    pub fn schema_concrete(&self, name: &str) -> Option<Arc<CudfIcebergSchemaProvider>> {
+    pub fn schema_concrete(&self, name: &str) -> Option<Arc<NexusIcebergSchemaProvider>> {
         self.schemas.get(name).cloned()
     }
 }
 
-impl CatalogProvider for CudfIcebergCatalogProvider {
+impl CatalogProvider for NexusIcebergCatalogProvider {
     fn schema_names(&self) -> Vec<String> {
         self.schemas.keys().cloned().collect()
     }
@@ -323,7 +323,7 @@ impl CatalogProvider for CudfIcebergCatalogProvider {
 /// The cache has no refresh policy; concurrent first access can call the
 /// backend more than once, with the first inserted provider retained.
 #[derive(Debug)]
-pub struct CudfIcebergSchemaProvider {
+pub struct NexusIcebergSchemaProvider {
     namespace: NamespaceIdent,
     known_table_names: Vec<String>,
     backend: Arc<dyn IcebergCatalogBackend>,
@@ -335,7 +335,7 @@ pub struct CudfIcebergSchemaProvider {
     seeded_table_names: StdRwLock<BTreeSet<String>>,
 }
 
-impl CudfIcebergSchemaProvider {
+impl NexusIcebergSchemaProvider {
     fn new(
         namespace: NamespaceIdent,
         known_table_names: Vec<String>,
@@ -360,7 +360,7 @@ impl CudfIcebergSchemaProvider {
 
     /// Seeds a pre-loaded table provider under `name`.
     ///
-    /// Call this before registering the parent [`CudfIcebergCatalogProvider`]
+    /// Call this before registering the parent [`NexusIcebergCatalogProvider`]
     /// in the session to inject alias mappings without triggering a backend
     /// load.  A name already in the cache is left unchanged (first write wins).
     /// Seeded names do not appear in `table_names()`.
@@ -393,7 +393,7 @@ impl CudfIcebergSchemaProvider {
 }
 
 #[async_trait]
-impl SchemaProvider for CudfIcebergSchemaProvider {
+impl SchemaProvider for NexusIcebergSchemaProvider {
     fn table_names(&self) -> Vec<String> {
         self.known_table_names.clone()
     }
@@ -508,7 +508,7 @@ impl SchemaProvider for CudfIcebergSchemaProvider {
     }
 }
 
-/// Builds a [`CudfIcebergCatalogProvider`] by discovering all namespaces and
+/// Builds a [`NexusIcebergCatalogProvider`] by discovering all namespaces and
 /// their table names from `backend` at startup.
 ///
 /// This populates the synchronous `schema_names()` / `table_names()` caches.
@@ -521,7 +521,7 @@ pub async fn build_catalog_provider_from_backend(
     backend: Arc<dyn IcebergCatalogBackend>,
     catalog_type: impl Into<String>,
     provider_kind: IcebergProviderKind,
-) -> Result<CudfIcebergCatalogProvider> {
+) -> Result<NexusIcebergCatalogProvider> {
     build_catalog_provider_from_backend_with_options(
         backend,
         catalog_type,
@@ -531,19 +531,19 @@ pub async fn build_catalog_provider_from_backend(
     .await
 }
 
-/// Builds a [`CudfIcebergCatalogProvider`] with explicit provider options.
+/// Builds a [`NexusIcebergCatalogProvider`] with explicit provider options.
 pub async fn build_catalog_provider_from_backend_with_options(
     backend: Arc<dyn IcebergCatalogBackend>,
     catalog_type: impl Into<String>,
     provider_kind: IcebergProviderKind,
     provider_options: IcebergProviderOptions,
-) -> Result<CudfIcebergCatalogProvider> {
+) -> Result<NexusIcebergCatalogProvider> {
     let catalog_type = catalog_type.into();
     let namespaces = backend.list_namespaces().await?;
     build_catalog_provider_for_namespaces(backend, catalog_type, namespaces, provider_kind, provider_options).await
 }
 
-/// Builds a [`CudfIcebergCatalogProvider`] scoped to one configured namespace.
+/// Builds a [`NexusIcebergCatalogProvider`] scoped to one configured namespace.
 ///
 /// Unlike [`build_catalog_provider_from_backend`], this does not enumerate all
 /// namespaces the backend can see. It lists tables only for `namespace`, so the
@@ -556,7 +556,7 @@ pub async fn build_scoped_catalog_provider_from_backend(
     catalog_type: impl Into<String>,
     namespace: &str,
     provider_kind: IcebergProviderKind,
-) -> Result<CudfIcebergCatalogProvider> {
+) -> Result<NexusIcebergCatalogProvider> {
     build_scoped_catalog_provider_from_backend_with_options(
         backend,
         catalog_type,
@@ -567,14 +567,14 @@ pub async fn build_scoped_catalog_provider_from_backend(
     .await
 }
 
-/// Builds a namespace-scoped [`CudfIcebergCatalogProvider`] with explicit provider options.
+/// Builds a namespace-scoped [`NexusIcebergCatalogProvider`] with explicit provider options.
 pub async fn build_scoped_catalog_provider_from_backend_with_options(
     backend: Arc<dyn IcebergCatalogBackend>,
     catalog_type: impl Into<String>,
     namespace: &str,
     provider_kind: IcebergProviderKind,
     provider_options: IcebergProviderOptions,
-) -> Result<CudfIcebergCatalogProvider> {
+) -> Result<NexusIcebergCatalogProvider> {
     let namespace = namespace_ident_from_flat_name(namespace)?;
     build_catalog_provider_for_namespaces(
         backend,
@@ -592,8 +592,8 @@ async fn build_catalog_provider_for_namespaces(
     namespaces: Vec<NamespaceIdent>,
     provider_kind: IcebergProviderKind,
     provider_options: IcebergProviderOptions,
-) -> Result<CudfIcebergCatalogProvider> {
-    let mut schemas: BTreeMap<String, Arc<CudfIcebergSchemaProvider>> = BTreeMap::new();
+) -> Result<NexusIcebergCatalogProvider> {
+    let mut schemas: BTreeMap<String, Arc<NexusIcebergSchemaProvider>> = BTreeMap::new();
 
     for namespace in namespaces {
         let ns_parts: &Vec<String> = namespace.as_ref();
@@ -631,7 +631,7 @@ async fn build_catalog_provider_for_namespaces(
         };
         let known_table_names: Vec<String> = table_idents.into_iter().map(|t| t.name).collect();
 
-        let schema_provider = Arc::new(CudfIcebergSchemaProvider::new(
+        let schema_provider = Arc::new(NexusIcebergSchemaProvider::new(
             namespace,
             known_table_names,
             Arc::clone(&backend),
@@ -643,7 +643,7 @@ async fn build_catalog_provider_for_namespaces(
         schemas.insert(schema_name, schema_provider);
     }
 
-    Ok(CudfIcebergCatalogProvider::new(schemas))
+    Ok(NexusIcebergCatalogProvider::new(schemas))
 }
 
 /// Builds a [`TableIdent`] from a flat dotted namespace scope and a bare table

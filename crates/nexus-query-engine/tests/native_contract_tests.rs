@@ -110,7 +110,7 @@ fn execution_cancellation_clones_share_state_across_threads() {
 
 #[test]
 fn execution_cancellation_default_is_independent_of_other_instances() {
-    // `ExecutionContext::new` / `NativeCudfExecutionConfig::new` construct a
+    // `ExecutionContext::new` / `NexusNativeExecutionConfig::new` construct a
     // fresh `ExecutionCancellation` by default. Two independently-constructed
     // contexts must not share a flag — otherwise cancelling one query would
     // poison every other in-flight query in the server.
@@ -167,7 +167,7 @@ fn query_error_codes_and_facts_are_stable_without_datafusion() {
     let error = QueryError::new(
         QueryErrorCode::UnsupportedExpression,
         "nexus_query_engine.plan.validate",
-        "expression is not supported by native cudf query engine",
+        "expression is not supported by nexus native query engine",
     )
     .with_fact("expression", "Utf8 LIKE")
     .with_fact("reason", "unsupported_expression");

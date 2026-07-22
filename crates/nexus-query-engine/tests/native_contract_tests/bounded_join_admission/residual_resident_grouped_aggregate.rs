@@ -309,13 +309,13 @@ pub(crate) fn residual_resident_grouped_aggregate_input_plan(
                 Expr::column("l_partkey"),
                 Expr::column("l_quantity"),
                 Expr::column("l_extendedprice"),
-                Expr::cast(Expr::column("l_quantity"), DataType::Float64).alias("__cudf_join_residual_left_0"),
+                Expr::cast(Expr::column("l_quantity"), DataType::Float64).alias("__nexus_native_join_residual_left_0"),
             ],
             Arc::new(Schema::new(vec![
                 Field::new("l_partkey", DataType::Int32, false),
                 Field::new("l_quantity", DataType::Float64, false),
                 Field::new("l_extendedprice", DataType::Float64, false),
-                Field::new("__cudf_join_residual_left_0", DataType::Float64, false),
+                Field::new("__nexus_native_join_residual_left_0", DataType::Float64, false),
             ])),
         ),
     );
@@ -470,7 +470,7 @@ pub(crate) fn residual_resident_grouped_aggregate_input_plan(
         builder.add_projection(
             root,
             projection_outputs(
-                vec![Expr::column("l_extendedprice").alias("__cudf_aggregate_arg_0")],
+                vec![Expr::column("l_extendedprice").alias("__nexus_native_aggregate_arg_0")],
                 root_output_schema,
             ),
         )
@@ -485,7 +485,7 @@ pub(crate) fn residual_resident_grouped_aggregate_input_plan(
                 } else {
                     AggregateFunction::Sum
                 },
-                Expr::column("__cudf_aggregate_arg_0"),
+                Expr::column("__nexus_native_aggregate_arg_0"),
                 "sum_extendedprice",
             )],
         ),

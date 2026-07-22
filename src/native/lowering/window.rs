@@ -512,7 +512,7 @@ fn window_key_expr(
 }
 
 fn unique_window_key_name(index: usize, used_names: &BTreeSet<String>) -> String {
-    let base = format!("__cudf_window_key_{index}");
+    let base = format!("__nexus_native_window_key_{index}");
     unique_name_with_suffix(base.as_str(), |candidate| !used_names.contains(candidate))
 }
 
@@ -623,7 +623,7 @@ fn unique_window_output_name(
         return frontend_name.to_string();
     }
     let sanitized = sanitize_field_name(frontend_name);
-    let base = format!("__cudf_window_{ordinal}_{sanitized}");
+    let base = format!("__nexus_native_window_{ordinal}_{sanitized}");
     unique_name_with_suffix(base.as_str(), |candidate| {
         !frontend_names.contains(candidate) && !used_native_names.contains(candidate)
     })

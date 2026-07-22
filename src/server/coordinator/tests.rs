@@ -40,7 +40,7 @@ use super::{
 };
 use crate::{
     error::ErrorCode,
-    native_exec::{NativeCudfComposedExec, NativeCudfExecutionConfig, NativeCudfGpuProducerExec},
+    native_exec::{NexusNativeComposedExec, NexusNativeExecutionConfig, NexusNativeGpuProducerExec},
     planner::NativePlanningDiagnostics,
     report::{GpuCandidate, PlanningReport},
 };
@@ -195,17 +195,17 @@ fn tsv_value<'a>(payload: &'a str, section: &str, column: &str) -> &'a str {
     row[header.iter().position(|name| *name == column).unwrap()]
 }
 
-fn test_native_producer(input_name: &str) -> (NativeCudfGpuProducerExec, Arc<Schema>) {
+fn test_native_producer(input_name: &str) -> (NexusNativeGpuProducerExec, Arc<Schema>) {
     let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int32, false)]));
     let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![1]))]).unwrap();
     let mut builder = QueryPlanBuilder::new();
     let source =
         builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![batch])));
     let plan = builder.finish_with_host_sink(source).clone_with_gpu_resident_sink();
-    (NativeCudfGpuProducerExec::try_new(input_name, plan).unwrap(), schema)
+    (NexusNativeGpuProducerExec::try_new(input_name, plan).unwrap(), schema)
 }
 
-fn record_one_gpu_handoff(producer: &NativeCudfGpuProducerExec) {
+fn record_one_gpu_handoff(producer: &NexusNativeGpuProducerExec) {
     let mut metrics = QueryMetrics::default();
     metrics.boundary.record_gpu_resident_input_handoff();
     producer.record_test_query_metrics(&metrics);
@@ -693,7 +693,7 @@ fn coordinator_stats_project_producer_only_composed_metrics_exactly_once() {
     let source = consumer_builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("producer-only", schema)));
     let consumer = consumer_builder.finish_with_host_sink(source);
     let composed =
-        NativeCudfComposedExec::try_new(consumer, vec![Arc::new(producer)], NativeCudfExecutionConfig::unbounded())
+        NexusNativeComposedExec::try_new(consumer, vec![Arc::new(producer)], NexusNativeExecutionConfig::unbounded())
             .unwrap();
     let plan = Arc::new(composed) as Arc<dyn ExecutionPlan>;
 

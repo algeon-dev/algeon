@@ -36,7 +36,7 @@ Any session with the native optimizer installed (embedded sessions,
 literal:
 
 ```sql
-SELECT overall, cudf_native_coverage, datafusion_cpu_ingest_or_boundary,
+SELECT overall, nexus_native_coverage, datafusion_cpu_ingest_or_boundary,
        fallback_reason_count, coverage_json
 FROM nexus_explain_coverage('SELECT l_returnflag, sum(l_quantity)
                              FROM lineitem GROUP BY l_returnflag');
@@ -51,7 +51,7 @@ The result is one row:
 | Column | Meaning |
 | --- | --- |
 | `overall` | `no_cpu_in_planned_path` \| `partial_gpu_planned` \| `cpu_only` \| `rejected` |
-| `cudf_native_coverage` | `full` \| `partial` \| `none` — the cudf-native axis (excludes cuGraph) |
+| `nexus_native_coverage` | `full` \| `partial` \| `none` — the nexus-native axis (excludes cuGraph) |
 | `cugraph_operator` | `present` \| `absent` — whether the plan contains a cuGraph algorithm node |
 | `datafusion_cpu_ingest_or_boundary` | `present` when any GPU node is fed by, or feeds, DataFusion CPU execution |
 | `host_output_materialization` | `present` when results are materialized back to host Arrow |
@@ -88,14 +88,14 @@ worth retrying as-is.
 
 ## Why the axes are separate
 
-`cudf_native_coverage` deliberately preserves the meaning it has everywhere
-else in Nexus reports: coverage by the **cudf-native** wrappers only. cuGraph
+`nexus_native_coverage` deliberately preserves the meaning it has everywhere
+else in Nexus reports: coverage by the **nexus-native** wrappers only. cuGraph
 is a different execution domain, so it gets its own axis, and the honest
 overall verdict is computed from a recursive walk of the final plan:
 
 - A bare `SELECT * FROM cugraph_pagerank(...)` reports
-  `cudf_native_coverage = none` yet `overall = no_cpu_in_planned_path` — the
-  cuGraph operator runs entirely on the GPU even though no cudf-native wrapper
+  `nexus_native_coverage = none` yet `overall = no_cpu_in_planned_path` — the
+  cuGraph operator runs entirely on the GPU even though no nexus-native wrapper
   is involved.
 - A cuGraph node whose edge or predicate input is **not** GPU-resident has that
   input collected on DataFusion CPU and imported host→GPU. The walk reports

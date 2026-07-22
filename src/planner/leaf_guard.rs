@@ -1,13 +1,13 @@
 //! Final-stage guard for adapter-owned GPU-only table-format scan leaves.
 //!
-//! [`CudfTableFormatScanExec`] is a metadata-only planning leaf. Native
+//! [`NexusTableFormatScanExec`] is a metadata-only planning leaf. Native
 //! lowering is expected to consume it; if the native physical optimizer rule
 //! leaves it in place, the surrounding plan cannot fall back to DataFusion CPU
 //! execution because the leaf has no CPU Arrow reader. Letting such a plan
 //! reach `ExecutionPlan::execute` produces a placeholder runtime error.
 //!
 //! This rule runs immediately after the native rewrite rule. If any
-//! `CudfTableFormatScanExec` survives, the rule turns that into a structured
+//! `NexusTableFormatScanExec` survives, the rule turns that into a structured
 //! planning error tagged with [`FallbackReason::TableFormatGpuOnlyLeafNotRewritten`]
 //! so callers see a real native rejection reason rather than the placeholder.
 
@@ -21,32 +21,32 @@ use datafusion::{
 
 use crate::{
     error::{Error, ErrorCode},
-    native_exec::{NativeCudfComposedExec, NativeCudfExec, producer::gpu_resident_producer_input_name},
+    native_exec::{NexusNativeComposedExec, NexusNativeExec, producer::gpu_resident_producer_input_name},
     physical_plan::physical_plan_shape,
-    planner::CudfNativePhysicalOptimizerRule,
+    planner::NexusNativePhysicalOptimizerRule,
     policy::FallbackReason,
     report::{CandidateOutcome, PlanningReport},
-    table_format::CudfTableFormatScanExec,
+    table_format::NexusTableFormatScanExec,
 };
 
 /// Public rule name and deduplication key for the leftover GPU-only leaf guard.
-pub const CUDF_TABLE_FORMAT_GPU_ONLY_LEAF_GUARD_RULE_NAME: &str = "datafusion_nexus_table_format_gpu_only_leaf_guard";
+pub const NEXUS_TABLE_FORMAT_GPU_ONLY_LEAF_GUARD_RULE_NAME: &str = "datafusion_nexus_table_format_gpu_only_leaf_guard";
 const UNION_BRANCH_NOT_REWRITTEN_CONTEXT: &str = "union_branch_not_rewritten";
 
 /// Final-stage physical optimizer rule that converts leftover
-/// [`CudfTableFormatScanExec`] nodes into a structured planning error.
+/// [`NexusTableFormatScanExec`] nodes into a structured planning error.
 ///
-/// The rule reads diagnostics from a sibling [`CudfNativePhysicalOptimizerRule`]
+/// The rule reads diagnostics from a sibling [`NexusNativePhysicalOptimizerRule`]
 /// when wired through session installation so the resulting error can quote a
 /// native rule rejection when that rejection is the blocking context.
 /// Constructed standalone with [`Self::new`], the rule still fires but native
 /// rule context facts stay empty.
 #[derive(Debug, Clone)]
-pub struct CudfTableFormatGpuOnlyLeafGuardRule {
-    native_rule: Option<Arc<CudfNativePhysicalOptimizerRule>>,
+pub struct NexusTableFormatGpuOnlyLeafGuardRule {
+    native_rule: Option<Arc<NexusNativePhysicalOptimizerRule>>,
 }
 
-impl CudfTableFormatGpuOnlyLeafGuardRule {
+impl NexusTableFormatGpuOnlyLeafGuardRule {
     /// Build a guard rule that does not reference a native rule's diagnostics.
     pub fn new() -> Self {
         Self { native_rule: None }
@@ -55,18 +55,18 @@ impl CudfTableFormatGpuOnlyLeafGuardRule {
     /// Build a guard rule that can quote retained native rule diagnostics into
     /// emitted errors when the final plan shape does not provide a more local
     /// blocking context.
-    pub fn with_native_rule(native_rule: Arc<CudfNativePhysicalOptimizerRule>) -> Self {
+    pub fn with_native_rule(native_rule: Arc<NexusNativePhysicalOptimizerRule>) -> Self {
         Self { native_rule: Some(native_rule) }
     }
 }
 
-impl Default for CudfTableFormatGpuOnlyLeafGuardRule {
+impl Default for NexusTableFormatGpuOnlyLeafGuardRule {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl PhysicalOptimizerRule for CudfTableFormatGpuOnlyLeafGuardRule {
+impl PhysicalOptimizerRule for NexusTableFormatGpuOnlyLeafGuardRule {
     fn optimize(
         &self,
         plan: Arc<dyn ExecutionPlan>,
@@ -81,7 +81,7 @@ impl PhysicalOptimizerRule for CudfTableFormatGpuOnlyLeafGuardRule {
     }
 
     fn name(&self) -> &str {
-        CUDF_TABLE_FORMAT_GPU_ONLY_LEAF_GUARD_RULE_NAME
+        NEXUS_TABLE_FORMAT_GPU_ONLY_LEAF_GUARD_RULE_NAME
     }
 
     fn schema_check(&self) -> bool {
@@ -89,8 +89,8 @@ impl PhysicalOptimizerRule for CudfTableFormatGpuOnlyLeafGuardRule {
     }
 }
 
-fn find_leftover_table_format_scan(plan: &dyn ExecutionPlan) -> Option<&CudfTableFormatScanExec> {
-    if let Some(scan) = plan.downcast_ref::<CudfTableFormatScanExec>() {
+fn find_leftover_table_format_scan(plan: &dyn ExecutionPlan) -> Option<&NexusTableFormatScanExec> {
+    if let Some(scan) = plan.downcast_ref::<NexusTableFormatScanExec>() {
         return Some(scan);
     }
     for child in plan.children() {
@@ -141,7 +141,7 @@ impl LeafGuardBlockingContext {
 
 fn leaf_guard_blocking_context(
     plan: &dyn ExecutionPlan,
-    leaf: &CudfTableFormatScanExec,
+    leaf: &NexusTableFormatScanExec,
     report: Option<&PlanningReport>,
 ) -> Option<LeafGuardBlockingContext> {
     if let Some(reason) = scan_plan_rejection(leaf).filter(|reason| is_table_format_or_dtype_rejection(*reason)) {
@@ -155,7 +155,7 @@ fn leaf_guard_blocking_context(
     native_rule_rejection.map(LeafGuardBlockingContext::NativeRuleRejection)
 }
 
-fn first_blocking_rejection(report: &PlanningReport, leaf: &CudfTableFormatScanExec) -> Option<FallbackReason> {
+fn first_blocking_rejection(report: &PlanningReport, leaf: &NexusTableFormatScanExec) -> Option<FallbackReason> {
     let leftover_leaf_is_proven_empty = table_format_leaf_is_proven_empty(leaf);
     report.outcomes().iter().find_map(|outcome| match outcome {
         CandidateOutcome::Rejected { reason: FallbackReason::NativeSourceEmpty, .. }
@@ -175,12 +175,12 @@ fn candidate_shape_contains_table_format_scan(shape: &str) -> bool {
     shape.contains("TableFormatScan(")
 }
 
-fn table_format_leaf_is_proven_empty(leaf: &CudfTableFormatScanExec) -> bool {
+fn table_format_leaf_is_proven_empty(leaf: &NexusTableFormatScanExec) -> bool {
     let scan_plan = leaf.scan_plan();
     scan_plan.data_files.is_empty() && scan_plan.delete_files.is_empty() && scan_plan.unsupported_features.is_empty()
 }
 
-fn scan_plan_rejection(leaf: &CudfTableFormatScanExec) -> Option<FallbackReason> {
+fn scan_plan_rejection(leaf: &NexusTableFormatScanExec) -> Option<FallbackReason> {
     leaf.scan_plan().first_rejection_reason().or_else(|| {
         leaf.schema()
             .fields()
@@ -209,7 +209,7 @@ fn is_table_format_or_dtype_rejection(reason: FallbackReason) -> bool {
     )
 }
 
-fn plan_has_mixed_union_branch_with_leftover_leaf(plan: &dyn ExecutionPlan, leaf: &CudfTableFormatScanExec) -> bool {
+fn plan_has_mixed_union_branch_with_leftover_leaf(plan: &dyn ExecutionPlan, leaf: &NexusTableFormatScanExec) -> bool {
     if let Some(union) = plan.downcast_ref::<UnionExec>() {
         let mut native_branch = false;
         let mut leftover_leaf_branch = false;
@@ -228,8 +228,8 @@ fn plan_has_mixed_union_branch_with_leftover_leaf(plan: &dyn ExecutionPlan, leaf
 }
 
 fn subtree_contains_native_execution_boundary(plan: &dyn ExecutionPlan) -> bool {
-    if plan.downcast_ref::<NativeCudfExec>().is_some()
-        || plan.downcast_ref::<NativeCudfComposedExec>().is_some()
+    if plan.downcast_ref::<NexusNativeExec>().is_some()
+        || plan.downcast_ref::<NexusNativeComposedExec>().is_some()
         || gpu_resident_producer_input_name(plan).is_some()
     {
         return true;
@@ -238,8 +238,8 @@ fn subtree_contains_native_execution_boundary(plan: &dyn ExecutionPlan) -> bool 
     plan.children().into_iter().any(|child| subtree_contains_native_execution_boundary(child.as_ref()))
 }
 
-fn subtree_contains_table_format_leaf(plan: &dyn ExecutionPlan, leaf: &CudfTableFormatScanExec) -> bool {
-    if let Some(scan) = plan.downcast_ref::<CudfTableFormatScanExec>() {
+fn subtree_contains_table_format_leaf(plan: &dyn ExecutionPlan, leaf: &NexusTableFormatScanExec) -> bool {
+    if let Some(scan) = plan.downcast_ref::<NexusTableFormatScanExec>() {
         return std::ptr::eq(scan, leaf);
     }
 
@@ -247,7 +247,7 @@ fn subtree_contains_table_format_leaf(plan: &dyn ExecutionPlan, leaf: &CudfTable
 }
 
 fn leftover_leaf_error(
-    leaf: &CudfTableFormatScanExec,
+    leaf: &NexusTableFormatScanExec,
     plan: &dyn ExecutionPlan,
     blocking_context: Option<LeafGuardBlockingContext>,
 ) -> Error {
@@ -300,8 +300,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        native_exec::NativeCudfExecutionConfig,
-        planner::CudfOptimizerConfig,
+        native_exec::NexusNativeExecutionConfig,
+        planner::NexusNativeOptimizerConfig,
         report::GpuCandidate,
         table_format::{
             TableFormat, TableFormatColumnMapping, TableFormatColumnRole, TableFormatColumnSource, TableFormatDataFile,
@@ -341,7 +341,7 @@ mod tests {
         let plan = TableFormatScanPlan::new(TableFormat::Iceberg)
             .with_logical_schema(Arc::clone(&schema))
             .with_native_source_schema(Arc::clone(&schema));
-        let leaf = CudfTableFormatScanExec::new(plan, schema);
+        let leaf = NexusTableFormatScanExec::new(plan, schema);
         let mut report = PlanningReport::new();
         report.push_rejected(GpuCandidate::new("AggregateExec", 1), FallbackReason::NativeSourceEmpty);
 
@@ -356,16 +356,16 @@ mod tests {
         let table_format_branch: Arc<dyn ExecutionPlan> = table_format_leaf.clone();
         let union = UnionExec::try_new(vec![table_format_branch, native_branch]).expect("schema-compatible union");
 
-        let native_rule = Arc::new(CudfNativePhysicalOptimizerRule::new(CudfOptimizerConfig::default()));
+        let native_rule = Arc::new(NexusNativePhysicalOptimizerRule::new(NexusNativeOptimizerConfig::default()));
         let empty_leaf: Arc<dyn ExecutionPlan> =
-            Arc::new(CudfTableFormatScanExec::new(empty_scan_plan(Arc::clone(&schema)), Arc::clone(&schema)));
+            Arc::new(NexusTableFormatScanExec::new(empty_scan_plan(Arc::clone(&schema)), Arc::clone(&schema)));
         native_rule
             .optimize(empty_leaf, &ConfigOptions::new())
             .expect("native rule should retain a rejection report for an empty source");
         let seeded_report = native_rule.last_report().expect("empty source native attempt must produce a report");
         assert_eq!(first_blocking_rejection(&seeded_report, table_format_leaf.as_ref()), None);
 
-        let guard = CudfTableFormatGpuOnlyLeafGuardRule::with_native_rule(native_rule);
+        let guard = NexusTableFormatGpuOnlyLeafGuardRule::with_native_rule(native_rule);
         let error = guard
             .optimize(union, &ConfigOptions::new())
             .expect_err("mixed native/table-format union must be rejected by the leaf guard");
@@ -375,7 +375,7 @@ mod tests {
             adapter.fact_value("fallback_reason"),
             Some(FallbackReason::TableFormatGpuOnlyLeafNotRewritten.code())
         );
-        assert_eq!(adapter.fact_value("leftover_operator"), Some("CudfTableFormatScanExec"));
+        assert_eq!(adapter.fact_value("leftover_operator"), Some("NexusTableFormatScanExec"));
         assert_eq!(adapter.fact_value("table_format"), Some("iceberg"));
         assert_eq!(adapter.fact_value("cpu_arrow_reader_fallback"), Some("false"));
         assert_eq!(adapter.fact_value("physical_plan_root"), Some("UnionExec"));
@@ -384,8 +384,8 @@ mod tests {
         assert_ne!(adapter.fact_value("native_rule_blocking_context"), Some(FallbackReason::NativeSourceEmpty.code()));
         let shape = adapter.fact_value("physical_plan_shape").expect("physical plan shape fact");
         assert!(shape.contains("UnionExec("), "shape must include the union: {shape}");
-        assert!(shape.contains("CudfTableFormatScanExec"), "shape must include the leftover leaf: {shape}");
-        assert!(shape.contains("NativeCudfExec"), "shape must include the native branch: {shape}");
+        assert!(shape.contains("NexusTableFormatScanExec"), "shape must include the leftover leaf: {shape}");
+        assert!(shape.contains("NexusNativeExec"), "shape must include the native branch: {shape}");
     }
 
     #[test]
@@ -393,7 +393,7 @@ mod tests {
         let leaf = table_format_scan_with_data_file();
         let mut report = PlanningReport::new();
         report.push_rejected(
-            GpuCandidate::new("CudfTableFormatScanExec", 1),
+            GpuCandidate::new("NexusTableFormatScanExec", 1),
             FallbackReason::IcebergFieldIdMappingUnsupported,
         );
 
@@ -453,9 +453,9 @@ mod tests {
                 TableFormatUnsupportedFeatureCode::IcebergFieldIdMappingUnsupported,
                 "schema evolution requires field-id-safe binding",
             ));
-        let scan: Arc<dyn ExecutionPlan> = Arc::new(CudfTableFormatScanExec::new(scan_plan, schema));
+        let scan: Arc<dyn ExecutionPlan> = Arc::new(NexusTableFormatScanExec::new(scan_plan, schema));
 
-        let error = CudfTableFormatGpuOnlyLeafGuardRule::new()
+        let error = NexusTableFormatGpuOnlyLeafGuardRule::new()
             .optimize(scan, &ConfigOptions::new())
             .expect_err("leftover table-format scan must be rejected");
         let adapter = adapter_error_from(&error);
@@ -515,9 +515,9 @@ mod tests {
                 TableFormatColumnSource::DirectTopLevelFileColumn,
                 TableFormatColumnRole::Projected,
             ));
-        let scan: Arc<dyn ExecutionPlan> = Arc::new(CudfTableFormatScanExec::new(scan_plan, schema));
+        let scan: Arc<dyn ExecutionPlan> = Arc::new(NexusTableFormatScanExec::new(scan_plan, schema));
 
-        let error = CudfTableFormatGpuOnlyLeafGuardRule::new()
+        let error = NexusTableFormatGpuOnlyLeafGuardRule::new()
             .optimize(scan, &ConfigOptions::new())
             .expect_err("leftover table-format scan must be rejected");
         let adapter = adapter_error_from(&error);
@@ -530,12 +530,12 @@ mod tests {
         assert_eq!(adapter.fact_value("unsupported_column_role"), Some("projected"));
     }
 
-    fn table_format_scan_with_data_file() -> CudfTableFormatScanExec {
+    fn table_format_scan_with_data_file() -> NexusTableFormatScanExec {
         let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
         table_format_scan_with_schema_and_data_file(schema)
     }
 
-    fn table_format_scan_with_schema_and_data_file(schema: Arc<Schema>) -> CudfTableFormatScanExec {
+    fn table_format_scan_with_schema_and_data_file(schema: Arc<Schema>) -> NexusTableFormatScanExec {
         let file = TableFormatDataFile::new(
             "data-0001",
             "/tmp/iceberg/data-0001.parquet",
@@ -546,7 +546,7 @@ mod tests {
             .with_logical_schema(Arc::clone(&schema))
             .with_native_source_schema(Arc::clone(&schema))
             .with_data_file(file);
-        CudfTableFormatScanExec::new(plan, schema)
+        NexusTableFormatScanExec::new(plan, schema)
     }
 
     fn empty_scan_plan(schema: Arc<Schema>) -> TableFormatScanPlan {
@@ -559,7 +559,7 @@ mod tests {
         let mut builder = QueryPlanBuilder::new();
         let source = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::empty(schema)));
         Arc::new(
-            NativeCudfExec::try_new(builder.finish_with_host_sink(source), NativeCudfExecutionConfig::unbounded())
+            NexusNativeExec::try_new(builder.finish_with_host_sink(source), NexusNativeExecutionConfig::unbounded())
                 .expect("literal native plan should be host-sink executable"),
         )
     }

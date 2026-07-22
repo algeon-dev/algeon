@@ -34,20 +34,20 @@ use nexus_query_engine::{
 #[cfg(feature = "server")]
 use super::NativeMetricsCaptureSink;
 use super::{
-    NATIVE_CUDF_DATAFUSION_METRIC_NAMES, NativeCudfMetrics, NativeMetricsCapture,
-    contract::{NATIVE_CUDF_METRIC_DESCRIPTORS, NativeMetricKind},
-    record::{NATIVE_CUDF_RECORDING_DESCRIPTORS, NativeMetricRecordingKind},
+    NATIVE_NEXUS_DATAFUSION_METRIC_NAMES, NativeMetricsCapture, NexusNativeMetrics,
+    contract::{NATIVE_NEXUS_METRIC_DESCRIPTORS, NativeMetricKind},
+    record::{NATIVE_NEXUS_RECORDING_DESCRIPTORS, NativeMetricRecordingKind},
 };
 #[cfg(feature = "server")]
 use crate::native_exec::{
-    NativeCudfComposedExec, NativeCudfExec, NativeCudfExecutionConfig, NativeCudfGpuProducerExec,
+    NexusNativeComposedExec, NexusNativeExec, NexusNativeExecutionConfig, NexusNativeGpuProducerExec,
 };
 use crate::{native_exec::admission::QueryAdmissionFacts, native_report::NativeDataFusionExecutionMetrics};
 
 #[test]
 fn native_summary_metrics_set_datafusion_v54_categories() {
     let metrics_set = ExecutionPlanMetricsSet::new();
-    let _native_metrics = NativeCudfMetrics::new(&metrics_set, 0);
+    let _native_metrics = NexusNativeMetrics::new(&metrics_set, 0);
     let metrics = metrics_set.clone_inner();
 
     let category_for = |name: &str| {
@@ -81,14 +81,14 @@ fn ordered_descriptors_drive_names_registration_and_legacy_categories() {
         "materialization_time",
     ];
 
-    let descriptor_names = NATIVE_CUDF_METRIC_DESCRIPTORS.iter().map(|descriptor| descriptor.name).collect::<Vec<_>>();
-    assert_eq!(descriptor_names, NATIVE_CUDF_DATAFUSION_METRIC_NAMES);
+    let descriptor_names = NATIVE_NEXUS_METRIC_DESCRIPTORS.iter().map(|descriptor| descriptor.name).collect::<Vec<_>>();
+    assert_eq!(descriptor_names, NATIVE_NEXUS_DATAFUSION_METRIC_NAMES);
 
     let metrics_set = ExecutionPlanMetricsSet::new();
-    let _native_metrics = NativeCudfMetrics::new(&metrics_set, 0);
+    let _native_metrics = NexusNativeMetrics::new(&metrics_set, 0);
     let registered = metrics_set.clone_inner();
 
-    for descriptor in NATIVE_CUDF_METRIC_DESCRIPTORS {
+    for descriptor in NATIVE_NEXUS_METRIC_DESCRIPTORS {
         let legacy_kind = if TIMER_NAMES.contains(&descriptor.name) {
             NativeMetricKind::Timer
         } else if descriptor.name.ends_with("_bytes_observed") {
@@ -113,15 +113,15 @@ fn ordered_descriptors_drive_names_registration_and_legacy_categories() {
 
 #[test]
 fn every_ordered_descriptor_has_a_compile_time_recording_mapping() {
-    let recording_names = NATIVE_CUDF_RECORDING_DESCRIPTORS.iter().map(|(name, _kind)| *name).collect::<Vec<_>>();
-    assert_eq!(recording_names, NATIVE_CUDF_DATAFUSION_METRIC_NAMES);
+    let recording_names = NATIVE_NEXUS_RECORDING_DESCRIPTORS.iter().map(|(name, _kind)| *name).collect::<Vec<_>>();
+    assert_eq!(recording_names, NATIVE_NEXUS_DATAFUSION_METRIC_NAMES);
     assert_eq!(recording_names.len(), 126, "the stable public metric count must not change");
 
     for expected_kind in
         [NativeMetricRecordingKind::Query, NativeMetricRecordingKind::Admission, NativeMetricRecordingKind::CacheEvents]
     {
         assert!(
-            NATIVE_CUDF_RECORDING_DESCRIPTORS.iter().any(|(_name, kind)| *kind == expected_kind),
+            NATIVE_NEXUS_RECORDING_DESCRIPTORS.iter().any(|(_name, kind)| *kind == expected_kind),
             "recording contract must exercise {expected_kind:?} mappings"
         );
     }
@@ -139,7 +139,7 @@ fn labelled_row_recording_targets_do_not_repeat_metric_name_literals() {
 #[test]
 fn native_metrics_record_query_service_admission_facts() {
     let metrics_set = ExecutionPlanMetricsSet::new();
-    let native_metrics = NativeCudfMetrics::new(&metrics_set, 0);
+    let native_metrics = NexusNativeMetrics::new(&metrics_set, 0);
 
     native_metrics.record_admission_facts(QueryAdmissionFacts {
         admission_sequence: 7,
@@ -328,7 +328,7 @@ fn standalone_execution_has_no_coordinated_activity_requirement() {
 fn cloned_config_allocates_isolated_drainable_local_collectors_and_drop_releases_evidence() {
     let wiring = NativeMetricsCapture::without_sink("reused-config")
         .with_runtime_observation_config(RuntimeObservationConfig::bounded(7, 777));
-    let config = NativeCudfExecutionConfig::unbounded().with_metrics_capture(wiring);
+    let config = NexusNativeExecutionConfig::unbounded().with_metrics_capture(wiring);
     assert_eq!(config.runtime_observation_config().limits().max_retained_records, 7);
     assert_eq!(config.runtime_observation_config().limits().max_retained_bytes, 777);
     let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int32, false)]));
@@ -340,8 +340,8 @@ fn cloned_config_allocates_isolated_drainable_local_collectors_and_drop_releases
         builder.finish_with_host_sink(source)
     };
 
-    let first = NativeCudfExec::try_new(make_plan(), config.clone()).expect("first wrapper builds");
-    let second = NativeCudfExec::try_new(make_plan(), config.clone()).expect("second wrapper builds");
+    let first = NexusNativeExec::try_new(make_plan(), config.clone()).expect("first wrapper builds");
+    let second = NexusNativeExec::try_new(make_plan(), config.clone()).expect("second wrapper builds");
     let first_owner = first.metrics_capture().expect("default config creates a local collector");
     let second_owner = second.metrics_capture().expect("default config creates a local collector");
     assert_eq!(first_owner.runtime_observation_config().limits().max_retained_records, 7);
@@ -415,14 +415,14 @@ fn local_collector_overflow_and_zero_capacity_have_explicit_accounting() {
 fn composed_native_fragments_share_only_the_parent_local_collector_and_capacity() {
     let wiring = NativeMetricsCapture::without_sink("composed-owner")
         .with_runtime_observation_config(RuntimeObservationConfig::bounded(9, 999));
-    let config = NativeCudfExecutionConfig::unbounded().with_metrics_capture(wiring);
+    let config = NexusNativeExecutionConfig::unbounded().with_metrics_capture(wiring);
     let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int32, false)]));
     let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![1]))]).unwrap();
     let mut producer_builder = QueryPlanBuilder::new();
     let producer_source = producer_builder
         .add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![batch])));
     let producer_plan = producer_builder.finish_with_host_sink(producer_source).clone_with_gpu_resident_sink();
-    let producer = NativeCudfGpuProducerExec::try_new_with_metrics_capture(
+    let producer = NexusNativeGpuProducerExec::try_new_with_metrics_capture(
         "fragment",
         producer_plan,
         config.metrics_capture_factory(),
@@ -434,12 +434,12 @@ fn composed_native_fragments_share_only_the_parent_local_collector_and_capacity(
     let consumer_source =
         consumer_builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("fragment", Arc::clone(&schema))));
     let consumer_plan = consumer_builder.finish_with_host_sink(consumer_source);
-    let composed = NativeCudfComposedExec::try_new(consumer_plan.clone(), vec![Arc::new(producer)], config.clone())
+    let composed = NexusNativeComposedExec::try_new(consumer_plan.clone(), vec![Arc::new(producer)], config.clone())
         .expect("composed wrapper builds");
     let composed_owner = composed.metrics_capture().expect("composed wrapper has a local collector");
     let rebound = composed.gpu_inputs()[0]
         .as_ref()
-        .downcast_ref::<NativeCudfGpuProducerExec>()
+        .downcast_ref::<NexusNativeGpuProducerExec>()
         .expect("native producer remains typed")
         .metrics_capture()
         .expect("rebound producer has a local collector");
@@ -458,7 +458,7 @@ fn composed_native_fragments_share_only_the_parent_local_collector_and_capacity(
     assert_eq!(stats.evicted_total, 1);
     assert_eq!(stats.dropped_total, 0);
 
-    let independent = NativeCudfComposedExec::try_new(consumer_plan, composed.gpu_inputs().to_vec(), config)
+    let independent = NexusNativeComposedExec::try_new(consumer_plan, composed.gpu_inputs().to_vec(), config)
         .expect("independent composed wrapper builds");
     assert!(!composed_owner.shares_owner_with(&independent.metrics_capture().expect("owner exists")));
 }
@@ -470,7 +470,7 @@ fn cancelled_native_outcome_retains_local_evidence_before_error_conversion() {
     let capture = NativeMetricsCapture::new("capture-cancel", sink.clone()).new_execution();
     let capture_owner = capture.clone();
     let metrics_set = ExecutionPlanMetricsSet::new();
-    let native_metrics = NativeCudfMetrics::new_with_capture(&metrics_set, 0, Some(capture));
+    let native_metrics = NexusNativeMetrics::new_with_capture(&metrics_set, 0, Some(capture));
     let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int32, false)]));
     let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![1]))]).unwrap();
     let mut plan = QueryPlanBuilder::new();
@@ -510,7 +510,7 @@ fn successful_native_outcome_retains_one_owned_snapshot_in_local_collector() {
     let capture = NativeMetricsCapture::new("capture-success", sink.clone()).new_execution();
     let capture_owner = capture.clone();
     let metrics_set = ExecutionPlanMetricsSet::new();
-    let native_metrics = NativeCudfMetrics::new_with_capture(&metrics_set, 0, Some(capture));
+    let native_metrics = NexusNativeMetrics::new_with_capture(&metrics_set, 0, Some(capture));
     let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int32, false)]));
     let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![1]))]).unwrap();
     let mut plan = QueryPlanBuilder::new();
@@ -531,7 +531,7 @@ fn successful_native_outcome_retains_one_owned_snapshot_in_local_collector() {
 #[test]
 fn aggregate_strategy_rows_bridge_statistical_contract_labels() {
     let metrics_set = ExecutionPlanMetricsSet::new();
-    let native_metrics = NativeCudfMetrics::new(&metrics_set, 0);
+    let native_metrics = NexusNativeMetrics::new(&metrics_set, 0);
     let mut query_metrics = QueryMetrics::default();
     let mut facts = BTreeMap::new();
     facts.insert("selected_strategy", "stddev_samp_gpu_native_tolerant".to_string());
@@ -569,7 +569,7 @@ fn aggregate_strategy_rows_bridge_statistical_contract_labels() {
 #[test]
 fn aggregate_strategy_rows_bridge_strategy_execution_option_labels() {
     let metrics_set = ExecutionPlanMetricsSet::new();
-    let native_metrics = NativeCudfMetrics::new(&metrics_set, 0);
+    let native_metrics = NexusNativeMetrics::new(&metrics_set, 0);
     let mut query_metrics = QueryMetrics::default();
     let facts = BTreeMap::from([
         ("selected_strategy", "libcudf_groupby".to_string()),
@@ -616,7 +616,7 @@ fn aggregate_strategy_rows_bridge_strategy_execution_option_labels() {
 #[test]
 fn aggregate_strategy_rows_bridge_filtered_global_materialization_labels() {
     let metrics_set = ExecutionPlanMetricsSet::new();
-    let native_metrics = NativeCudfMetrics::new(&metrics_set, 0);
+    let native_metrics = NexusNativeMetrics::new(&metrics_set, 0);
     let mut query_metrics = QueryMetrics::default();
     let mut facts = BTreeMap::new();
     facts.insert("selected_strategy", "filtered_global_segmented_state".to_string());
@@ -675,7 +675,7 @@ fn aggregate_strategy_rows_bridge_filtered_global_materialization_labels() {
 #[test]
 fn aggregate_strategy_rows_bridge_filtered_grouped_materialization_labels() {
     let metrics_set = ExecutionPlanMetricsSet::new();
-    let native_metrics = NativeCudfMetrics::new(&metrics_set, 0);
+    let native_metrics = NexusNativeMetrics::new(&metrics_set, 0);
     let mut query_metrics = QueryMetrics::default();
     let mut facts = BTreeMap::new();
     facts.insert("selected_strategy", "filtered_grouped_segmented_state".to_string());
@@ -727,7 +727,7 @@ fn aggregate_strategy_rows_bridge_filtered_grouped_materialization_labels() {
 #[test]
 fn join_strategy_rows_preserve_planned_strategy_while_counting_runtime_execution_strategy() {
     let metrics_set = ExecutionPlanMetricsSet::new();
-    let native_metrics = NativeCudfMetrics::new(&metrics_set, 0);
+    let native_metrics = NexusNativeMetrics::new(&metrics_set, 0);
     let mut query_metrics = QueryMetrics::default();
     let mut facts = BTreeMap::new();
     facts.insert("join_strategy", "partitioned_hash_equi".to_string());
@@ -769,7 +769,7 @@ fn join_strategy_rows_preserve_planned_strategy_while_counting_runtime_execution
 #[test]
 fn source_read_runtime_rows_bridge_runtime_labels() {
     let metrics_set = ExecutionPlanMetricsSet::new();
-    let native_metrics = NativeCudfMetrics::new(&metrics_set, 0);
+    let native_metrics = NexusNativeMetrics::new(&metrics_set, 0);
     let mut query_metrics = QueryMetrics::default();
 
     query_metrics.record_source_read_runtime(SourceReadRuntimeMetrics {
@@ -857,7 +857,7 @@ fn query_metric_row_bridge_enforces_shared_record_and_byte_caps() {
     let capture = NativeMetricsCapture::without_sink("bounded-metric-rows")
         .with_runtime_observation_config(RuntimeObservationConfig::bounded(1, 4096))
         .new_execution();
-    let native_metrics = NativeCudfMetrics::new_with_capture(&metrics_set, 0, Some(capture));
+    let native_metrics = NexusNativeMetrics::new_with_capture(&metrics_set, 0, Some(capture));
     let mut query_metrics = QueryMetrics::default();
     for index in 0..128 {
         query_metrics.record_source_read_runtime(SourceReadRuntimeMetrics {
@@ -887,7 +887,7 @@ fn query_metric_row_bridge_enforces_shared_record_and_byte_caps() {
 #[test]
 fn lakehouse_cache_fill_event_snapshot_rows_bridge_runtime_labels() {
     let metrics_set = ExecutionPlanMetricsSet::new();
-    let native_metrics = NativeCudfMetrics::new(&metrics_set, 0);
+    let native_metrics = NexusNativeMetrics::new(&metrics_set, 0);
     native_metrics.record_lakehouse_cache_fill_events(&[LakehouseCacheFillEventSnapshot {
         outcome: "failed",
         bytes: None,
@@ -920,7 +920,7 @@ fn lakehouse_cache_fill_event_snapshot_rows_bridge_runtime_labels() {
 fn plan_task_mapping_rows_bridge_correlation_labels() {
     let metrics_set = ExecutionPlanMetricsSet::new();
     let native_metrics =
-        NativeCudfMetrics::new_with_capture_and_shape(&metrics_set, 0, None, Some("AggregateExec(LocalParquetScan)"));
+        NexusNativeMetrics::new_with_capture_and_shape(&metrics_set, 0, None, Some("AggregateExec(LocalParquetScan)"));
     let mut query_metrics = QueryMetrics::new("q-mapping");
 
     query_metrics.record_compiled_pipeline_task_mapping("t3", "source_read", Some("n4"));

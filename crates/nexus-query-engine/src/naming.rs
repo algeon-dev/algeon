@@ -1,7 +1,7 @@
 //! Stable name-generation helpers shared across native planning code.
 
 /// Prefix reserved for hidden columns that preserve DataFusion row ordering.
-pub(crate) const DATAFUSION_ORDER_COLUMN_PREFIX: &str = "__cudf_df_order_";
+pub(crate) const DATAFUSION_ORDER_COLUMN_PREFIX: &str = "__nexus_native_df_order_";
 
 /// Returns whether `name` belongs to the hidden DataFusion ordering contract.
 pub(crate) fn is_datafusion_order_column_name(name: &str) -> bool {

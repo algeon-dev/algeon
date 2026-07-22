@@ -346,10 +346,11 @@ fn native_query_rejects_grouped_avg_with_unsupported_output_schema_before_source
 fn native_query_rejects_global_avg_reserved_state_alias_collision_before_source_read() {
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let input_schema = Arc::new(Schema::new(vec![Field::new("m00", DataType::Int64, false)]));
-    let aggregated_schema = Arc::new(Schema::new(vec![Field::new("__cudf_avg_0_sum", DataType::Float64, true)]));
+    let aggregated_schema =
+        Arc::new(Schema::new(vec![Field::new("__nexus_native_avg_0_sum", DataType::Float64, true)]));
     let aggregate = AggregateSpec::new(
         Vec::new(),
-        vec![AggregateExpr::new(AggregateFunction::Avg, Expr::column("m00"), "__cudf_avg_0_sum")],
+        vec![AggregateExpr::new(AggregateFunction::Avg, Expr::column("m00"), "__nexus_native_avg_0_sum")],
     );
 
     let mut builder = QueryPlanBuilder::new();
@@ -364,8 +365,11 @@ fn native_query_rejects_global_avg_reserved_state_alias_collision_before_source_
         Err(error) => {
             assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
             assert_eq!(error.operation(), "nexus_query_engine.global_aggregate.validate_avg_state_alias");
-            assert_eq!(error.fact_value("alias"), Some("__cudf_avg_0_sum"));
-            assert_eq!(error.fact_value("reserved_aliases"), Some("__cudf_avg_0_sum,__cudf_avg_0_count"));
+            assert_eq!(error.fact_value("alias"), Some("__nexus_native_avg_0_sum"));
+            assert_eq!(
+                error.fact_value("reserved_aliases"),
+                Some("__nexus_native_avg_0_sum,__nexus_native_avg_0_count")
+            );
         },
     }
 }

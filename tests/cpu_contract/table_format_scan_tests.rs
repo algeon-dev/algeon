@@ -5,11 +5,11 @@ use datafusion::physical_plan::displayable;
 use datafusion_nexus::{
     policy::FallbackReason,
     table_format::{
-        CudfTableFormatScanExec, TableFormat, TableFormatColumnMapping, TableFormatColumnRole, TableFormatColumnSource,
-        TableFormatDataFile, TableFormatDataFileFormat, TableFormatDeleteFile, TableFormatDeleteFileContent,
-        TableFormatDirectDeviceReadDisposition, TableFormatPartitionTransform, TableFormatPartitionValue,
-        TableFormatReadCapability, TableFormatScalarValue, TableFormatScanPlan, TableFormatUnsupportedFeature,
-        TableFormatUnsupportedFeatureCode,
+        NexusTableFormatScanExec, TableFormat, TableFormatColumnMapping, TableFormatColumnRole,
+        TableFormatColumnSource, TableFormatDataFile, TableFormatDataFileFormat, TableFormatDeleteFile,
+        TableFormatDeleteFileContent, TableFormatDirectDeviceReadDisposition, TableFormatPartitionTransform,
+        TableFormatPartitionValue, TableFormatReadCapability, TableFormatScalarValue, TableFormatScanPlan,
+        TableFormatUnsupportedFeature, TableFormatUnsupportedFeatureCode,
     },
 };
 
@@ -150,7 +150,7 @@ fn table_format_scan_display_omits_retired_source_labels() {
         .with_catalog_type("local")
         .with_logical_schema(Arc::clone(&schema))
         .with_native_source_schema(Arc::clone(&schema));
-    let scan = CudfTableFormatScanExec::new(plan, schema);
+    let scan = NexusTableFormatScanExec::new(plan, schema);
     let rendered = displayable(&scan).indent(false).to_string();
 
     assert!(!rendered.contains(concat!("source_decode_", "input=")), "{rendered}");

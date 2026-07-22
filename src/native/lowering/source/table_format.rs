@@ -38,7 +38,7 @@ use crate::{
     policy::FallbackReason,
     source_cardinality::reader_predicate_proves_source_at_most_one_row,
     table_format::{
-        CudfTableFormatScanExec, TableFormat, TableFormatColumnMapping, TableFormatColumnSource, TableFormatDataFile,
+        NexusTableFormatScanExec, TableFormat, TableFormatColumnMapping, TableFormatColumnSource, TableFormatDataFile,
         TableFormatDataFileFormat, TableFormatParquetReadStrategyConfig, TableFormatParquetSourceMetadata,
         TableFormatPartitionTransform, TableFormatScalarValue, TableFormatScanPlan,
         resolve_table_format_parquet_source_with_metadata,
@@ -69,7 +69,7 @@ use groups::*;
 use schema_match::*;
 
 pub(super) fn lower_table_format_source_input(
-    scan_exec: &CudfTableFormatScanExec,
+    scan_exec: &NexusTableFormatScanExec,
     filter: Option<&datafusion::physical_plan::filter::FilterExec>,
     builder: &mut NativeQueryPlanBuilder,
     required_output_fields: &RequiredFields,
@@ -232,7 +232,7 @@ fn table_format_native_source_for_group(
 }
 
 fn lower_empty_table_format_source_input(
-    scan_exec: &CudfTableFormatScanExec,
+    scan_exec: &NexusTableFormatScanExec,
     filter: Option<&datafusion::physical_plan::filter::FilterExec>,
     builder: &mut NativeQueryPlanBuilder,
     required_output_fields: &RequiredFields,

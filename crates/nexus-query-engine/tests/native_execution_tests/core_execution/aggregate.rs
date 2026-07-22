@@ -85,7 +85,7 @@ fn native_query_executes_group_only_aggregate_when_output_key_name_already_exist
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let schema = Arc::new(Schema::new(vec![
         Field::new("i_item_id", DataType::Utf8, false),
-        Field::new("__cudf_group_expr_0_i_item_id", DataType::Utf8, false),
+        Field::new("__nexus_native_group_expr_0_i_item_id", DataType::Utf8, false),
         Field::new("i_item_desc", DataType::Utf8, false),
         Field::new("i_current_price", DataType::Int32, false),
     ]));
@@ -106,7 +106,7 @@ fn native_query_executes_group_only_aggregate_when_output_key_name_already_exist
     ]));
     let aggregate = AggregateSpec::new(
         vec![
-            Expr::column("__cudf_group_expr_0_i_item_id").alias("i_item_id"),
+            Expr::column("__nexus_native_group_expr_0_i_item_id").alias("i_item_id"),
             Expr::column("i_item_desc"),
             Expr::column("i_current_price"),
         ],

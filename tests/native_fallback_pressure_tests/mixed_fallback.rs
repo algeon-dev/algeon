@@ -12,7 +12,7 @@ use arrow::{array::StringArray, util::pretty::pretty_format_batches};
 use datafusion_nexus::{
     backend::{GrantBand, MemoryShare, NexusAdmissionPolicy, NexusGpuBackend, NexusMemoryPolicy},
     report::CandidateOutcome,
-    session::CUDF_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME,
+    session::NEXUS_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME,
 };
 use nexus_query_engine::runtime::SlotGuarantee;
 
@@ -194,12 +194,12 @@ async fn run_mixed_fallback_case(case: &MixedFallbackCase, bench: &std::path::Pa
 
 fn installed_final_native_rule(
     state: &datafusion::execution::session_state::SessionState,
-) -> Option<&CudfNativePhysicalOptimizerRule> {
+) -> Option<&NexusNativePhysicalOptimizerRule> {
     state.physical_optimizers().iter().find_map(|rule| {
-        if rule.name() != CUDF_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME {
+        if rule.name() != NEXUS_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME {
             return None;
         }
-        (rule.as_ref() as &dyn std::any::Any).downcast_ref::<CudfNativePhysicalOptimizerRule>()
+        (rule.as_ref() as &dyn std::any::Any).downcast_ref::<NexusNativePhysicalOptimizerRule>()
     })
 }
 

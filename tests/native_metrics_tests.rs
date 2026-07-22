@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use arrow::datatypes::{DataType, Field, Schema};
 use datafusion_nexus::{
-    native_exec::NATIVE_CUDF_DATAFUSION_METRIC_NAMES,
+    native_exec::NATIVE_NEXUS_DATAFUSION_METRIC_NAMES,
     native_report::{
         NATIVE_DATAFUSION_EXECUTION_TSV_HEADER, NATIVE_DATAFUSION_PLANNING_TSV_HEADER,
         NATIVE_FALLBACK_PRESSURE_TSV_HEADER, NATIVE_TPCDS_PARITY_TSV_HEADER, native_report_metric_descriptor,
@@ -486,7 +486,7 @@ fn bounded_context_accepts_source_cache_with_reservation_accounting() {
 
 #[test]
 fn native_datafusion_metric_names_cover_bounded_runtime_contract() {
-    let names = NATIVE_CUDF_DATAFUSION_METRIC_NAMES;
+    let names = NATIVE_NEXUS_DATAFUSION_METRIC_NAMES;
     let mut sorted = names.to_vec();
     sorted.sort_unstable();
     sorted.dedup();
@@ -596,13 +596,13 @@ fn native_datafusion_metric_names_cover_bounded_runtime_contract() {
 
 #[test]
 fn native_datafusion_metric_name_order_matches_public_contract_golden() {
-    let actual = format!("{}\n", NATIVE_CUDF_DATAFUSION_METRIC_NAMES.join("\n"));
-    assert_eq!(actual, include_str!("fixtures/native_cudf_datafusion_metric_names.txt"));
+    let actual = format!("{}\n", NATIVE_NEXUS_DATAFUSION_METRIC_NAMES.join("\n"));
+    assert_eq!(actual, include_str!("fixtures/native_nexus_datafusion_metric_names.txt"));
 }
 
 #[test]
 fn descriptor_registry_covers_report_tsv_columns_and_datafusion_metrics() {
-    for name in NATIVE_CUDF_DATAFUSION_METRIC_NAMES {
+    for name in NATIVE_NEXUS_DATAFUSION_METRIC_NAMES {
         assert!(native_report_metric_descriptor(name).is_some(), "missing descriptor for metric {name}");
     }
     for header in [

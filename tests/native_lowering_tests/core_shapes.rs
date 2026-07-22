@@ -960,9 +960,9 @@ fn grouped_aggregate_late_original_index_columns_bind_after_source_compaction() 
         .iter()
         .find_map(|node| match &node.kind {
             PlanNode::Projection(projection)
-                if projection
-                    .expressions()
-                    .any(|expr| matches!(expr, Expr::Alias { alias, .. } if alias == "__cudf_aggregate_arg_0")) =>
+                if projection.expressions().any(
+                    |expr| matches!(expr, Expr::Alias { alias, .. } if alias == "__nexus_native_aggregate_arg_0"),
+                ) =>
             {
                 Some(projection)
             },
@@ -981,7 +981,7 @@ fn grouped_aggregate_late_original_index_columns_bind_after_source_compaction() 
             matches!(
                 expr,
                 Expr::Alias { expr, alias }
-                    if alias == "__cudf_aggregate_arg_0"
+                    if alias == "__nexus_native_aggregate_arg_0"
                         && matches!(expr.as_ref(), Expr::Column(column) if column.name() == "m00")
             )
         }),
@@ -993,7 +993,7 @@ fn grouped_aggregate_late_original_index_columns_bind_after_source_compaction() 
             matches!(
                 expr,
                 Expr::Alias { expr, alias }
-                    if alias == "__cudf_aggregate_arg_1"
+                    if alias == "__nexus_native_aggregate_arg_1"
                         && matches!(expr.as_ref(), Expr::Column(column) if column.name() == "m01")
             )
         }),
@@ -1002,8 +1002,12 @@ fn grouped_aggregate_late_original_index_columns_bind_after_source_compaction() 
     );
     let aggregate_exprs = native_aggregate_exprs(plan);
     assert_eq!(aggregate_exprs.len(), 2);
-    assert!(matches!(&aggregate_exprs[0].expr, Expr::Column(column) if column.name() == "__cudf_aggregate_arg_0"));
-    assert!(matches!(&aggregate_exprs[1].expr, Expr::Column(column) if column.name() == "__cudf_aggregate_arg_1"));
+    assert!(
+        matches!(&aggregate_exprs[0].expr, Expr::Column(column) if column.name() == "__nexus_native_aggregate_arg_0")
+    );
+    assert!(
+        matches!(&aggregate_exprs[1].expr, Expr::Column(column) if column.name() == "__nexus_native_aggregate_arg_1")
+    );
 
     fs::remove_dir_all(dir).unwrap();
 }

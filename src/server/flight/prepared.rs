@@ -55,7 +55,7 @@ impl PreparedStatementEntry {
     }
 }
 
-impl DatafusionCudfFlightSqlService {
+impl DatafusionNexusFlightSqlService {
     pub(super) fn dataset_schema_for_prepared_statement(&self, plan: &LogicalPlan) -> crate::error::Result<Schema> {
         match plan {
             LogicalPlan::Ddl(ddl) => {

@@ -15,11 +15,11 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
-    native_exec::NativeCudfExecutionConfig,
+    native_exec::NexusNativeExecutionConfig,
     native_report::NativeDataFusionPlanningReport,
-    planner::{CudfNativePhysicalOptimizerRule, CudfOptimizerConfig},
+    planner::{NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule},
     policy::GpuFallbackPolicy,
-    session::CudfSessionStateBuilderExt,
+    session::NexusSessionStateBuilderExt,
 };
 use datafusion_nexus_bench::{
     report_metadata::ReportDatasetMetadataExt,
@@ -47,16 +47,16 @@ use datafusion_nexus_workloads::{
 };
 use nexus_query_engine::mode::NativePipelineExecutionMode;
 
-const CUDF_NATIVE_DATAFUSION_PLANNING_WORKLOAD_ENV: &str = "CUDF_NATIVE_DATAFUSION_PLANNING_WORKLOAD";
-const CUDF_NATIVE_PIPELINE_EXECUTION_MODE_ENV: &str = "CUDF_NATIVE_PIPELINE_EXECUTION_MODE";
-const CUDF_TPCH_PLANNING_PARQUET_PUSHDOWN_FILTERS_ENV: &str = "CUDF_TPCH_PLANNING_PARQUET_PUSHDOWN_FILTERS";
-const CUDF_TPCDS_PLANNING_PARQUET_PUSHDOWN_FILTERS_ENV: &str = "CUDF_TPCDS_PLANNING_PARQUET_PUSHDOWN_FILTERS";
+const NEXUS_NATIVE_DATAFUSION_PLANNING_WORKLOAD_ENV: &str = "NEXUS_NATIVE_DATAFUSION_PLANNING_WORKLOAD";
+const NEXUS_NATIVE_PIPELINE_EXECUTION_MODE_ENV: &str = "NEXUS_NATIVE_PIPELINE_EXECUTION_MODE";
+const NEXUS_TPCH_PLANNING_PARQUET_PUSHDOWN_FILTERS_ENV: &str = "NEXUS_TPCH_PLANNING_PARQUET_PUSHDOWN_FILTERS";
+const NEXUS_TPCDS_PLANNING_PARQUET_PUSHDOWN_FILTERS_ENV: &str = "NEXUS_TPCDS_PLANNING_PARQUET_PUSHDOWN_FILTERS";
 
 #[tokio::main]
 async fn main() {
     let dir = unique_temp_dir("datafusion-nexus-native-datafusion-planning");
     let workload =
-        std::env::var(CUDF_NATIVE_DATAFUSION_PLANNING_WORKLOAD_ENV).unwrap_or_else(|_| "synthetic".to_string());
+        std::env::var(NEXUS_NATIVE_DATAFUSION_PLANNING_WORKLOAD_ENV).unwrap_or_else(|_| "synthetic".to_string());
     let report = match workload.as_str() {
         "synthetic" => synthetic_report(&dir).await,
         "tpch" => {
@@ -73,7 +73,7 @@ async fn main() {
         },
         value => {
             panic!(
-                "unsupported {CUDF_NATIVE_DATAFUSION_PLANNING_WORKLOAD_ENV}={value}; expected synthetic, tpch, tpcds, or clickbench"
+                "unsupported {NEXUS_NATIVE_DATAFUSION_PLANNING_WORKLOAD_ENV}={value}; expected synthetic, tpch, tpcds, or clickbench"
             )
         },
     };
@@ -115,7 +115,7 @@ async fn tpch_report(dir: &std::path::Path) -> TpchWorkloadResult<TpchPlanningRe
     let optimizer_config =
         tpch_native_optimizer_config().with_native_pipeline_execution_mode(native_pipeline_execution_mode_from_env());
     let mut session_config = tpch_report_session_config();
-    if let Some(pushdown_filters) = optional_env_bool(CUDF_TPCH_PLANNING_PARQUET_PUSHDOWN_FILTERS_ENV) {
+    if let Some(pushdown_filters) = optional_env_bool(NEXUS_TPCH_PLANNING_PARQUET_PUSHDOWN_FILTERS_ENV) {
         session_config.options_mut().execution.parquet.pushdown_filters = pushdown_filters;
     }
     let items =
@@ -134,7 +134,7 @@ async fn tpcds_report(dir: &std::path::Path) -> TpcdsWorkloadResult<TpcdsPlannin
     let optimizer_config =
         tpcds_native_optimizer_config().with_native_pipeline_execution_mode(native_pipeline_execution_mode_from_env());
     let mut session_config = tpcds_report_session_config();
-    if let Some(pushdown_filters) = optional_env_bool(CUDF_TPCDS_PLANNING_PARQUET_PUSHDOWN_FILTERS_ENV) {
+    if let Some(pushdown_filters) = optional_env_bool(NEXUS_TPCDS_PLANNING_PARQUET_PUSHDOWN_FILTERS_ENV) {
         session_config.options_mut().execution.parquet.pushdown_filters = pushdown_filters;
     }
     let items =
@@ -187,14 +187,15 @@ async fn native_datafusion_planning_report_with_session(
     sql: &str,
     session_config: SessionConfig,
 ) -> NativeDataFusionPlanningReport {
-    let optimizer_config = CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred).with_native_execution_config(
-        NativeCudfExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 1, 3, 1)
-            .with_native_pipeline_execution_mode(native_pipeline_execution_mode_from_env()),
-    );
-    let native_rule = Arc::new(CudfNativePhysicalOptimizerRule::new(optimizer_config.clone()));
+    let optimizer_config = NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
+        .with_native_execution_config(
+            NexusNativeExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 1, 3, 1)
+                .with_native_pipeline_execution_mode(native_pipeline_execution_mode_from_env()),
+        );
+    let native_rule = Arc::new(NexusNativePhysicalOptimizerRule::new(optimizer_config.clone()));
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(session_config)
-        .with_cudf_native_rule(Arc::clone(&native_rule))
+        .with_nexus_native_rule(Arc::clone(&native_rule))
         .build();
     let ctx = SessionContext::new_with_state(state);
     ctx.register_parquet("bench", path.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
@@ -204,11 +205,11 @@ async fn native_datafusion_planning_report_with_session(
 }
 
 fn native_pipeline_execution_mode_from_env() -> NativePipelineExecutionMode {
-    let mode = std::env::var(CUDF_NATIVE_PIPELINE_EXECUTION_MODE_ENV)
+    let mode = std::env::var(NEXUS_NATIVE_PIPELINE_EXECUTION_MODE_ENV)
         .unwrap_or_else(|_| NativePipelineExecutionMode::StrictBounded.as_str().to_string());
     mode.parse::<NativePipelineExecutionMode>().unwrap_or_else(|error| {
         panic!(
-            "unsupported {CUDF_NATIVE_PIPELINE_EXECUTION_MODE_ENV}={}; expected strict_bounded or adaptive",
+            "unsupported {NEXUS_NATIVE_PIPELINE_EXECUTION_MODE_ENV}={}; expected strict_bounded or adaptive",
             error.value()
         )
     })
