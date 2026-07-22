@@ -11,10 +11,12 @@ use std::{borrow::Cow, error::Error as StdError, ffi::CStr, fmt, ptr::NonNull};
 
 use rapids_interop::{InteropError, InteropErrorKind};
 
+pub mod classification;
 pub mod code;
 pub mod facts;
 pub(crate) mod testing_hooks;
 
+pub use classification::{CudfErrorClassification, classify_cudf_error};
 pub use code::{ErrorCode, ErrorKind, ErrorStatus, kind_for_code, status_for_code};
 pub(crate) use facts::{
     DeviceIdFact, FACT_ACTUAL_COUNT, FACT_ACTUAL_ROWS, FACT_COLUMN_INDEX, FACT_COLUMN_NAME,

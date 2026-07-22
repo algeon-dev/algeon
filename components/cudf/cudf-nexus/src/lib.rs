@@ -232,7 +232,10 @@ pub mod testing;
 // — Primary entry points —
 // — Types and error —
 pub use core::{
-    error::{BudgetExhaustionDetail, Error, ErrorCode, ErrorKind, ErrorStatus, Result},
+    error::{
+        BudgetExhaustionDetail, CudfErrorClassification, Error, ErrorCode, ErrorKind, ErrorStatus, Result,
+        classify_cudf_error,
+    },
     memory::{
         AllocatorEvent, AllocatorEventAction, AllocatorEventCompleteness, AllocatorEventDomainIdentity,
         AllocatorEventRead, AllocatorEventRingBounds, CurrentResourceRouteLease, DeviceMemoryFailureAction,
@@ -284,7 +287,8 @@ pub use ops::{
 };
 pub use runtime::{
     BoundaryKind, BoundaryObservation, BoundaryObserver, BudgetedExecutionOutcome, CacheAllocationDomain,
-    CacheAllocationDomainId, CacheAllocationLease, CacheAllocationScope, DenseMatrixLayout, DeviceId,
+    CacheAllocationDomainId, CacheAllocationLease, CacheAllocationScope, CacheAllocationScopeId,
+    CacheAllocationScopeIdentity, DenseMatrixLayout, DeviceId,
     ExecutionBudgetEnforcement, ExecutionBudgetReport, ExecutionBudgetRequest, ExecutionBudgetStatus,
     ExecutionBudgetToken, ExecutionOverrides, ExecutionPlacement, PackedFloat32Matrix, QueryExecutionContext, Runtime,
     RuntimeAffinityAnchor, RuntimeAffinityId, RuntimeBuilder, RuntimeLeaseAnchor, StreamDependencyOutcome,

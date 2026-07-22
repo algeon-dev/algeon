@@ -46,6 +46,7 @@ pub use budget::{
 };
 pub use cache_allocation::{
     CacheAllocationDomain, CacheAllocationDomainId, CacheAllocationLease, CacheAllocationScope,
+    CacheAllocationScopeId, CacheAllocationScopeIdentity,
 };
 pub use device::DeviceId;
 pub use device_guard::DeviceEntryGuard;
