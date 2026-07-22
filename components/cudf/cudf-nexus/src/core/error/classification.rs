@@ -7,8 +7,10 @@
 
 use std::fmt;
 
-use super::Error;
-use super::code::{ErrorCode, ErrorKind, ErrorStatus};
+use super::{
+    Error,
+    code::{ErrorCode, ErrorKind, ErrorStatus},
+};
 
 /// Coarse classification of a `cudf::Error` for downstream mapping.
 ///
@@ -78,9 +80,7 @@ pub fn classify_cudf_error(error: &Error) -> CudfErrorClassification {
         ErrorKind::InvalidInput | ErrorKind::NotFound => CudfErrorClassification::InvalidInput,
         ErrorKind::Unsupported => CudfErrorClassification::Unsupported,
         ErrorKind::DependencyFailure => CudfErrorClassification::DependencyFailure,
-        ErrorKind::InvariantViolation | ErrorKind::ExecutionContext => {
-            CudfErrorClassification::InvariantViolation
-        },
+        ErrorKind::InvariantViolation | ErrorKind::ExecutionContext => CudfErrorClassification::InvariantViolation,
         _ => CudfErrorClassification::DependencyFailure,
     }
 }

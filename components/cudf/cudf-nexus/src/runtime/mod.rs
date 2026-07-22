@@ -45,8 +45,8 @@ pub use budget::{
     ExecutionBudgetStatus, ExecutionBudgetToken,
 };
 pub use cache_allocation::{
-    CacheAllocationDomain, CacheAllocationDomainId, CacheAllocationLease, CacheAllocationScope,
-    CacheAllocationScopeId, CacheAllocationScopeIdentity,
+    CacheAllocationDomain, CacheAllocationDomainId, CacheAllocationLease, CacheAllocationScope, CacheAllocationScopeId,
+    CacheAllocationScopeIdentity,
 };
 pub use device::DeviceId;
 pub use device_guard::DeviceEntryGuard;

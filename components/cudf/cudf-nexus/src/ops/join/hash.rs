@@ -1172,7 +1172,6 @@ impl HashJoin {
     }
 }
 
-
 /// Metadata-only estimator for hash-join pre-build reservation size.
 ///
 /// This stub mirrors `cudf::ops::join::hash_join_pre_build_reservation_size_bytes_from_non_nullable_fixed_width_metadata`
@@ -1225,9 +1224,13 @@ pub fn hash_join_pre_build_reservation_size_bytes_from_non_nullable_fixed_width_
     let bytes_per_key: usize = key_type_ids
         .iter()
         .map(|id| match id {
-            crate::core::types::TypeId::Int8 | crate::core::types::TypeId::UInt8 | crate::core::types::TypeId::Bool8 => 1,
+            crate::core::types::TypeId::Int8
+            | crate::core::types::TypeId::UInt8
+            | crate::core::types::TypeId::Bool8 => 1,
             crate::core::types::TypeId::Int16 | crate::core::types::TypeId::UInt16 => 2,
-            crate::core::types::TypeId::Int32 | crate::core::types::TypeId::UInt32 | crate::core::types::TypeId::Float32 => 4,
+            crate::core::types::TypeId::Int32
+            | crate::core::types::TypeId::UInt32
+            | crate::core::types::TypeId::Float32 => 4,
             crate::core::types::TypeId::Int64
             | crate::core::types::TypeId::UInt64
             | crate::core::types::TypeId::Float64
