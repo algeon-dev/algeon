@@ -235,9 +235,9 @@ pub use core::{
     error::{BudgetExhaustionDetail, Error, ErrorCode, ErrorKind, ErrorStatus, Result},
     memory::{
         AllocatorEvent, AllocatorEventAction, AllocatorEventCompleteness, AllocatorEventDomainIdentity,
-        AllocatorEventRead, AllocatorEventRingBounds, DeviceMemoryFailureAction, DeviceMemoryFailureAllocationDomain,
-        DeviceMemoryFailureInfo, DeviceMemoryFailureSource, DeviceMemoryManager, DeviceMemoryManagerBase,
-        DeviceMemoryManagerFailureCallbackState, DeviceMemoryManagerInstallationCause,
+        AllocatorEventRead, AllocatorEventRingBounds, CurrentResourceRouteLease, DeviceMemoryFailureAction,
+        DeviceMemoryFailureAllocationDomain, DeviceMemoryFailureInfo, DeviceMemoryFailureSource, DeviceMemoryManager,
+        DeviceMemoryManagerBase, DeviceMemoryManagerFailureCallbackState, DeviceMemoryManagerInstallationCause,
         DeviceMemoryManagerInstallationError, DeviceMemoryManagerInstallationIdentity,
         DeviceMemoryManagerInstallationOutcome, DeviceMemoryManagerInstallationOutcomeKind,
         DeviceMemoryManagerInstallationRetry, DeviceMemoryManagerInstallationState,
