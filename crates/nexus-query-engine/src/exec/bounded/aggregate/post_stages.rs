@@ -280,6 +280,18 @@ pub(in crate::exec::bounded::aggregate) fn execute_final_aggregate(
         return execute_global_aggregate_with_budget(context, &final_spec, input, &output_schema, token, metrics);
     }
 
+    if bounded.aggregate.0.spec.grouping_sets.is_some() && input.num_rows() == 0 {
+        return execute_aggregate_with_budget(
+            context,
+            bounded.aggregate.0,
+            bounded.aggregate_input_schema,
+            input,
+            bounded.aggregate.1,
+            token,
+            metrics,
+        );
+    }
+
     let aggregate = lower_final_aggregate_spec(&bounded.aggregate.0.spec)?;
     if !aggregate_spec_has_avg(&bounded.aggregate.0.spec) {
         validate_aggregate_output_names(

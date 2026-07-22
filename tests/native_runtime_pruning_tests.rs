@@ -351,6 +351,30 @@ async fn native_runtime_empty_local_parquet_aggregates_match_cpu() {
 }
 
 #[tokio::test]
+async fn native_runtime_filtered_empty_rollup_grand_total_matches_cpu() {
+    let dir = unique_temp_dir("datafusion-nexus-native-runtime-filtered-empty-rollup");
+    let path = dir.join("bench.parquet");
+    write_filtered_empty_rollup_parquet_file(&path);
+
+    let cpu_batches = cpu_sql_output(&path, SQL_FILTERED_EMPTY_ROLLUP_SUM_QUERY).await;
+    assert_eq!(
+        cpu_batches.iter().map(|batch| batch.num_rows()).sum::<usize>(),
+        1,
+        "CPU DataFusion must emit the ROLLUP grand-total row over filtered-empty input"
+    );
+
+    let native_physical_plan =
+        native_datafusion_sql_plan(&path, SQL_FILTERED_EMPTY_ROLLUP_SUM_QUERY, native_datafusion_config()).await;
+    assert_native_cudf_exec(&native_physical_plan, "runtime-filtered empty ROLLUP should lower to NativeCudfExec");
+
+    let task_ctx = Arc::new(TaskContext::default());
+    let native_batches = collect(native_physical_plan, task_ctx).await.unwrap();
+    assert_batches_equal(&cpu_batches, &native_batches);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
 async fn native_runtime_bare_boolean_filter_stays_post_decode() {
     let dir = unique_temp_dir("datafusion-nexus-native-runtime-bare-boolean-filter");
     let path = dir.join("input.parquet");

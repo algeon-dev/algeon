@@ -724,6 +724,11 @@ impl LeasedExecutionContext {
     pub fn context(&self) -> &ExecutionContext {
         &self.context
     }
+
+    /// Consumes the wrapper and keeps the owned stream lease on the context.
+    pub fn into_context(self) -> ExecutionContext {
+        self.context
+    }
 }
 
 #[derive(Debug)]

@@ -3,6 +3,129 @@ use super::*;
 type RollupAvgRow = (Option<String>, Option<String>, Option<String>, Option<String>, u32, f64);
 
 #[test]
+fn bounded_native_query_emits_rollup_grand_total_row_for_empty_literal_input() {
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let input_schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("payload", DataType::Int64, false),
+    ]));
+    let empty_batch = RecordBatch::try_new_with_options(
+        Arc::clone(&input_schema),
+        vec![Arc::new(Int32Array::from(Vec::<i32>::new())) as _, Arc::new(Int64Array::from(Vec::<i64>::new())) as _],
+        &arrow::record_batch::RecordBatchOptions::new().with_row_count(Some(0)),
+    )
+    .unwrap();
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, true),
+        Field::new("__grouping_id", DataType::UInt32, false),
+        Field::new("s", DataType::Int64, true),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder
+        .add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&input_schema), vec![empty_batch])));
+    let aggregate = builder.add_aggregate(
+        source,
+        AggregateSpec::new(
+            vec![Expr::column("key")],
+            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("payload"), "s")],
+        )
+        .with_grouping_sets(GroupingSetsSpec::new(vec![vec![false], vec![true]], "__grouping_id")),
+        Arc::clone(&output_schema),
+    );
+    let plan = builder.finish_with_host_sink(aggregate);
+
+    let context = ExecutionContext::builder()
+        .with_shared_runtime(Arc::clone(&runtime))
+        .with_memory_control_policy(MemoryControlPolicy::Bounded {
+            device_budget_bytes: 8 * 1024 * 1024 * 1024,
+            max_source_chunk_bytes: 1024 * 1024,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        })
+        .build()
+        .unwrap();
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.num_rows(), 1, "empty-input ROLLUP must keep the grand-total row");
+    assert!(int32_array(batch, 0).is_null(0));
+    assert!(int64_array(batch, 2).is_null(0));
+}
+
+#[test]
+fn bounded_native_query_emits_rollup_grand_total_row_for_runtime_filtered_empty_input() {
+    let dir = unique_temp_dir("nexus-query-engine-bounded-native-filtered-empty-rollup");
+    let path = dir.join("bench.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let input_schema = write_filtered_empty_rollup_input_parquet(&path);
+
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, true),
+        Field::new("__grouping_id", DataType::UInt32, false),
+        Field::new("s", DataType::Int64, true),
+    ]));
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
+        Arc::clone(&input_schema),
+        vec!["key".to_string(), "payload".to_string()],
+    );
+    let filter = Expr::binary(Expr::column("key"), BinaryOp::Gt, Expr::literal(LiteralValue::Int32(100_000)));
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let filtered = builder.add_filter(source, filter, Arc::clone(&input_schema));
+    let aggregate = builder.add_aggregate(
+        filtered,
+        AggregateSpec::new(
+            vec![Expr::column("key")],
+            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("payload"), "s")],
+        )
+        .with_grouping_sets(GroupingSetsSpec::new(vec![vec![false], vec![true]], "__grouping_id")),
+        Arc::clone(&output_schema),
+    );
+    let plan = builder.finish_with_host_sink(aggregate);
+
+    let context = ExecutionContext::builder()
+        .with_shared_runtime(Arc::clone(&runtime))
+        .with_memory_control_policy(MemoryControlPolicy::Bounded {
+            device_budget_bytes: 8 * 1024 * 1024 * 1024,
+            max_source_chunk_bytes: 1024 * 1024,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        })
+        .build()
+        .unwrap();
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let metrics = result.metrics().clone();
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+
+    assert_eq!(
+        batch.num_rows(),
+        1,
+        "runtime-filtered empty ROLLUP must keep the grand-total row; metrics partials={} final_merges={} source_chunks_committed={} input_rows={}",
+        metrics.partial_aggregate_count,
+        metrics.final_merge_attempts,
+        metrics.source_chunks_committed,
+        metrics.input_rows
+    );
+    assert_eq!(batch.schema().field(0).data_type(), &DataType::Int32);
+    assert_eq!(batch.schema().field(1).data_type(), &DataType::UInt32);
+    assert_eq!(batch.schema().field(2).data_type(), &DataType::Int64);
+    assert!(int32_array(batch, 0).is_null(0), "grand-total key must be NULL");
+    let grouping_ids = batch.column(1).as_any().downcast_ref::<UInt32Array>().unwrap();
+    assert_eq!(grouping_ids.value(0), 1, "grand-total grouping id must mark null key");
+    assert!(int64_array(batch, 2).is_null(0), "grand-total SUM over empty input must be NULL");
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn bounded_compiled_join_rollup_avg_final_merge_concatenates_typed_null_partials() {
     let dir = unique_temp_dir("nexus-query-engine-bounded-compiled-rollup-avg-typed-null-partials");
     let inventory_path = dir.join("inventory.parquet");
@@ -241,6 +364,23 @@ fn assert_rollup_avg_rows_eq(actual: Vec<RollupAvgRow>, expected: Vec<RollupAvgR
 
 fn string_value(array: &StringArray, row: usize) -> Option<String> {
     (!array.is_null(row)).then(|| array.value(row).to_string())
+}
+
+fn write_filtered_empty_rollup_input_parquet(path: &Path) -> Arc<Schema> {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("payload", DataType::Int64, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from((0..32).map(|i| i % 4).collect::<Vec<_>>())),
+            Arc::new(Int64Array::from((0..32).map(|i| i as i64).collect::<Vec<_>>())),
+        ],
+    )
+    .unwrap();
+    write_single_batch_parquet(path, Arc::clone(&schema), batch);
+    schema
 }
 
 fn write_inventory_rollup_parquet(path: &Path) -> Arc<Schema> {

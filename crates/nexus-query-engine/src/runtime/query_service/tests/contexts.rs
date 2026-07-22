@@ -430,7 +430,7 @@ fn quiescence_reached_after_absolute_deadline_is_not_accepted() {
     assert_eq!(error.fact_value("deadline_stage"), Some("admission_quiescence"));
 }
 #[test]
-fn query_service_handle_reuses_one_root_context() {
+fn query_service_handle_binds_secondary_context_to_dedicated_stream() {
     let service = runtime_test_service(1, 8);
     let handle = service.admit_query("large").unwrap();
     let first = handle.acquire_context().unwrap();
@@ -438,11 +438,26 @@ fn query_service_handle_reuses_one_root_context() {
     let first_runtime = first.context().shared_runtime().unwrap();
     let second_runtime = second.context().shared_runtime().unwrap();
 
-    assert_eq!(first_runtime.placement().workflow_id, second_runtime.placement().workflow_id);
+    // Secondary acquires keep the same admitted device while binding a dedicated
+    // CUDA stream so concurrent native fragments can each create a live
+    // query-domain budget token (cuDF rejects two live tokens on one stream).
+    assert_eq!(first_runtime.placement().device, second_runtime.placement().device);
     assert!(!Arc::ptr_eq(&first_runtime, &second_runtime));
-    assert!(cudf::Runtime::shares_affinity(&first_runtime, &second_runtime));
     let lease = first_runtime.lease_anchor();
-    assert!(second_runtime.matches_lease_anchor(&lease));
+    assert!(!second_runtime.matches_lease_anchor(&lease));
+    assert_ne!(first_runtime.placement().stream_debug, second_runtime.placement().stream_debug);
+
+    // Concurrent live query-domain budget tokens must succeed on both contexts.
+    let left = first
+        .context()
+        .execution_budget_token(cudf::ExecutionBudgetRequest::new(1024 * 1024).with_boundary("secondary_stream_left"))
+        .expect("first fragment budget token");
+    let right = second
+        .context()
+        .execution_budget_token(cudf::ExecutionBudgetRequest::new(1024 * 1024).with_boundary("secondary_stream_right"))
+        .expect("second fragment budget token");
+    drop(left);
+    drop(right);
 }
 #[test]
 fn escaped_context_causes_bounded_shutdown_timeout_until_final_anchor_drops() {

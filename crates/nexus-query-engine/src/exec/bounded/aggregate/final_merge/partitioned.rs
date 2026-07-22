@@ -198,6 +198,25 @@ pub(in crate::exec::bounded) fn execute_final_aggregate_merge(
     let mut partials = partials;
     let mut merge_level = 1;
 
+    // Empty ROLLUP/CUBE/GROUPING SETS still need the grand-total identity row.
+    // A single empty partial used to short-circuit through final projection and
+    // drop that row because SUM/COUNT partial state needs no AVG finalize pass.
+    let all_empty_grouping_sets = bounded.aggregate.0.spec.grouping_sets.is_some()
+        && (partials.is_empty() || partials.iter().all(|partial| partial.frame.num_rows() == 0));
+    if all_empty_grouping_sets {
+        release_partials_reverse(reservations, partials, metrics);
+        let frame = execute_compiled_bounded_aggregate_from_empty_input(
+            context,
+            bounded.aggregate_id,
+            bounded.aggregate.0,
+            bounded.aggregate_input_schema,
+            bounded.aggregate.1,
+            reservations,
+            metrics,
+        )?;
+        return Ok(CommittedPartial { frame: frame.frame, reservation: frame.reservation });
+    }
+
     if partials.is_empty() {
         let frame = execute_compiled_bounded_aggregate_from_empty_input(
             context,

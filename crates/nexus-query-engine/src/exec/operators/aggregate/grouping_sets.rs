@@ -35,6 +35,7 @@ pub(super) fn execute_grouping_sets_aggregate(
         &aggregate,
         token,
         metrics,
+        /* synthesize_empty_grand_total */ true,
         "nexus_query_engine.aggregate.grouping_sets",
     )?;
     output = match token {
@@ -80,6 +81,10 @@ pub(super) fn execute_grouping_sets_partial_aggregate_with_budget(
     let expected_output_names = aggregate.output_names.clone();
     let timer = Instant::now();
     let frame = input.into_frame();
+    // Partial chunks must stay empty when the chunk has no rows. Grand-total
+    // identity rows are only synthesized on the final/single-stage path (or by
+    // final-merge over an empty input frame), so empty partials remain type-
+    // compatible for later concat/merge.
     let mut output = execute_grouping_sets_groupby(
         context,
         spec,
@@ -89,6 +94,7 @@ pub(super) fn execute_grouping_sets_partial_aggregate_with_budget(
         &aggregate,
         Some(token),
         metrics,
+        /* synthesize_empty_grand_total */ false,
         "nexus_query_engine.aggregate.grouping_sets_partial",
     )?;
     output = cast_count_output_columns_with_budget(output, spec, aggregate_output_schema, token, metrics)?;
@@ -112,6 +118,7 @@ fn execute_grouping_sets_groupby(
     aggregate: &LoweredAggregate,
     token: Option<&ExecutionBudgetToken>,
     metrics: &mut QueryMetrics,
+    synthesize_empty_grand_total: bool,
     operation: &'static str,
 ) -> Result<DataFrame> {
     let grouping_sets = spec.grouping_sets.as_ref().ok_or_else(|| {
@@ -134,6 +141,7 @@ fn execute_grouping_sets_groupby(
             &levels,
             token,
             metrics,
+            synthesize_empty_grand_total,
             operation,
         );
     }
@@ -159,6 +167,7 @@ fn execute_grouping_sets_groupby(
             group,
             token,
             metrics,
+            synthesize_empty_grand_total,
             operation,
         )?
         .select(expected_output_names.iter().map(String::as_str).collect::<Vec<_>>())
@@ -180,6 +189,7 @@ fn execute_prefix_rollup_grouping_sets_groupby(
     levels: &[usize],
     token: Option<&ExecutionBudgetToken>,
     metrics: &mut QueryMetrics,
+    synthesize_empty_grand_total: bool,
     operation: &'static str,
 ) -> Result<DataFrame> {
     let key_count = levels.len().saturating_sub(1);
@@ -197,6 +207,7 @@ fn execute_prefix_rollup_grouping_sets_groupby(
         &full_group,
         token,
         metrics,
+        synthesize_empty_grand_total,
         operation,
     )?
     .select(expected_output_names.iter().map(String::as_str).collect::<Vec<_>>())
@@ -212,6 +223,31 @@ fn execute_prefix_rollup_grouping_sets_groupby(
             .expect("finer rollup level must be produced before coarser level")
             .clone();
         let group = prefix_rollup_group(key_count, level);
+        // Grand-total ROLLUP level over empty input must still emit the identity row
+        // (NULL keys + empty aggregate values). cuDF groupby drops zero-row inputs.
+        // Only the final/single-stage path synthesizes; empty partials stay empty.
+        if synthesize_empty_grand_total && level == 0 && source.num_rows() == 0 {
+            let output = empty_grand_total_grouping_set_frame(
+                context,
+                output_schema,
+                aggregate,
+                grouping_id_alias,
+                &group,
+                token,
+                metrics,
+                operation,
+            )?
+            .select(expected_output_names.iter().map(String::as_str).collect::<Vec<_>>())
+            .map_err(|error| {
+                QueryError::from_cudf(
+                    operation,
+                    "failed to select native empty prefix-rollup grand-total output columns",
+                    error,
+                )
+            })?;
+            outputs_by_level[level] = Some(output);
+            continue;
+        }
         let source = if level == 0 {
             with_grouping_id_column(
                 context,
@@ -282,8 +318,25 @@ fn execute_single_grouping_set_groupby(
     group: &[bool],
     token: Option<&ExecutionBudgetToken>,
     metrics: &mut QueryMetrics,
+    synthesize_empty_grand_total: bool,
     operation: &'static str,
 ) -> Result<DataFrame> {
+    // SQL ROLLUP/CUBE/GROUPING SETS keep the grand-total set even when the
+    // filtered input is empty. cuDF groupby emits zero groups for empty frames,
+    // so the final/single-stage path synthesizes the identity row here.
+    if synthesize_empty_grand_total && is_grand_total_grouping_set(group) && frame.num_rows() == 0 {
+        return empty_grand_total_grouping_set_frame(
+            context,
+            output_schema,
+            aggregate,
+            grouping_id_alias,
+            group,
+            token,
+            metrics,
+            operation,
+        );
+    }
+
     let grouping_set_aggregate = aggregate_for_grouping_set(aggregate, group);
     if grouping_set_aggregate.key_columns.is_empty() {
         let working = prepare_grouping_set_frame(
@@ -351,6 +404,288 @@ fn execute_single_grouping_set_groupby(
         metrics,
         operation,
     )
+}
+
+fn is_grand_total_grouping_set(group: &[bool]) -> bool {
+    !group.is_empty() && group.iter().all(|is_null| *is_null)
+}
+
+fn empty_grand_total_grouping_set_frame(
+    context: &ExecutionContext,
+    output_schema: &ArrowSchemaRef,
+    aggregate: &LoweredAggregate,
+    grouping_id_alias: &str,
+    group: &[bool],
+    token: Option<&ExecutionBudgetToken>,
+    metrics: &mut QueryMetrics,
+    operation: &'static str,
+) -> Result<DataFrame> {
+    let mut columns = Vec::with_capacity(aggregate.output_names.len());
+
+    for (index, is_null) in group.iter().enumerate() {
+        let key_column = &aggregate.output_key_names[index];
+        if *is_null {
+            columns.push((
+                key_column.clone(),
+                empty_grouping_set_null_series(context, output_schema, key_column, token, metrics, operation)?,
+            ));
+        } else {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                operation,
+                "empty grand-total grouping-set synthesis requires an all-null group mask",
+            )
+            .with_fact("active_key", key_column.as_str()));
+        }
+    }
+
+    let grouping_id_field = output_schema.field_with_name(grouping_id_alias).map_err(|error| {
+        QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            operation,
+            "grouping-id column is missing from grouping-sets output schema",
+        )
+        .with_fact("grouping_id_alias", grouping_id_alias)
+        .with_fact("arrow_error", error.to_string())
+    })?;
+    let grouping_id = grouping_id_value(group);
+    columns.push((
+        grouping_id_alias.to_string(),
+        empty_grouping_set_literal_series(
+            context,
+            grouping_id_field.data_type(),
+            grouping_id,
+            token,
+            metrics,
+            operation,
+        )?,
+    ));
+
+    for aggregation in &aggregate.aggregations {
+        let output_name = aggregation.resolved_output_name();
+        let series = match aggregation.agg() {
+            GroupByAgg::Count { .. } | GroupByAgg::NUnique => {
+                let data_type = output_schema
+                    .field_with_name(output_name.as_str())
+                    .map(|field| field.data_type().clone())
+                    .unwrap_or(ArrowDataType::Int64);
+                empty_grouping_set_zero_series(context, &data_type, output_name.as_str(), token, metrics, operation)?
+            },
+            GroupByAgg::Sum
+            | GroupByAgg::Min
+            | GroupByAgg::Max
+            | GroupByAgg::Mean
+            | GroupByAgg::Median
+            | GroupByAgg::Std { .. }
+            | GroupByAgg::Variance { .. } => {
+                // Final AVG columns live under the user alias, while partial/final
+                // state frames keep intermediate sum/count aliases. Prefer the
+                // declared schema type and fall back for state columns.
+                if let Ok(field) = output_schema.field_with_name(output_name.as_str()) {
+                    empty_grouping_set_null_series_with_type(
+                        context,
+                        field.data_type(),
+                        output_name.as_str(),
+                        token,
+                        metrics,
+                        operation,
+                    )?
+                } else if output_name.contains("_count") {
+                    empty_grouping_set_zero_series(
+                        context,
+                        &ArrowDataType::Int64,
+                        output_name.as_str(),
+                        token,
+                        metrics,
+                        operation,
+                    )?
+                } else {
+                    empty_grouping_set_null_series_with_type(
+                        context,
+                        &ArrowDataType::Float64,
+                        output_name.as_str(),
+                        token,
+                        metrics,
+                        operation,
+                    )?
+                }
+            },
+        };
+        columns.push((output_name, series));
+    }
+
+    DataFrame::from_series(columns.iter().map(|(name, series)| (name.as_str(), series.clone()))).map_err(|error| {
+        QueryError::from_cudf(
+            operation,
+            "failed to construct native empty grand-total grouping-set output frame",
+            error,
+        )
+    })
+}
+
+fn empty_grouping_set_null_series(
+    context: &ExecutionContext,
+    output_schema: &ArrowSchemaRef,
+    column: &str,
+    token: Option<&ExecutionBudgetToken>,
+    metrics: &mut QueryMetrics,
+    operation: &'static str,
+) -> Result<cudf::Series> {
+    let field = output_schema.field_with_name(column).map_err(|error| {
+        QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            operation,
+            "grouping-set output column is missing from aggregate output schema",
+        )
+        .with_fact("column", column)
+        .with_fact("arrow_error", error.to_string())
+    })?;
+    empty_grouping_set_null_series_with_type(context, field.data_type(), column, token, metrics, operation)
+}
+
+fn empty_grouping_set_null_series_with_type(
+    context: &ExecutionContext,
+    data_type: &ArrowDataType,
+    column: &str,
+    token: Option<&ExecutionBudgetToken>,
+    metrics: &mut QueryMetrics,
+    operation: &'static str,
+) -> Result<cudf::Series> {
+    let dtype = cudf_dtype_from_arrow_type(data_type).ok_or_else(|| {
+        QueryError::new(
+            QueryErrorCode::UnsupportedType,
+            operation,
+            "grouping-set empty identity column type is not supported by native execution",
+        )
+        .with_fact("column", column)
+        .with_fact("data_type", format!("{data_type:?}"))
+    })?;
+    match token {
+        Some(token) => context
+            .runtime()?
+            .nulls_with_budget(dtype, 1, token)
+            .map_err(|error| {
+                QueryError::from_cudf_with_budget_details(
+                    operation,
+                    "failed to construct bounded empty grand-total null column",
+                    error,
+                )
+                .with_fact("column", column)
+                .with_fact_if_absent("budget_operation", "runtime::nulls_with_budget")
+            })
+            .map(|outcome| budgeted_value(outcome, metrics, operation)),
+        None => context.runtime()?.nulls(dtype, 1).map_err(|error| {
+            QueryError::from_cudf(operation, "failed to construct empty grand-total null column", error)
+                .with_fact("column", column)
+        }),
+    }
+}
+
+fn empty_grouping_set_zero_series(
+    context: &ExecutionContext,
+    data_type: &ArrowDataType,
+    column: &str,
+    token: Option<&ExecutionBudgetToken>,
+    metrics: &mut QueryMetrics,
+    operation: &'static str,
+) -> Result<cudf::Series> {
+    match data_type {
+        ArrowDataType::Int8 => empty_grouping_set_typed_zero_series(context, 0i8, column, token, metrics, operation),
+        ArrowDataType::Int16 => empty_grouping_set_typed_zero_series(context, 0i16, column, token, metrics, operation),
+        ArrowDataType::Int32 => empty_grouping_set_typed_zero_series(context, 0i32, column, token, metrics, operation),
+        ArrowDataType::Int64 => empty_grouping_set_typed_zero_series(context, 0i64, column, token, metrics, operation),
+        ArrowDataType::UInt8 => empty_grouping_set_typed_zero_series(context, 0u8, column, token, metrics, operation),
+        ArrowDataType::UInt16 => empty_grouping_set_typed_zero_series(context, 0u16, column, token, metrics, operation),
+        ArrowDataType::UInt32 => empty_grouping_set_typed_zero_series(context, 0u32, column, token, metrics, operation),
+        ArrowDataType::UInt64 => empty_grouping_set_typed_zero_series(context, 0u64, column, token, metrics, operation),
+        _ => Err(QueryError::new(
+            QueryErrorCode::UnsupportedType,
+            operation,
+            "grouping-set empty count identity type is not supported by native execution",
+        )
+        .with_fact("column", column)
+        .with_fact("data_type", format!("{data_type:?}"))),
+    }
+}
+
+fn empty_grouping_set_typed_zero_series<T>(
+    context: &ExecutionContext,
+    value: T,
+    column: &str,
+    token: Option<&ExecutionBudgetToken>,
+    metrics: &mut QueryMetrics,
+    operation: &'static str,
+) -> Result<cudf::Series>
+where
+    T: ::cudf::CudfType + Copy,
+{
+    match token {
+        Some(token) => context
+            .runtime()?
+            .series_from_value_with_budget(value, 1, token)
+            .map_err(|error| {
+                QueryError::from_cudf_with_budget_details(
+                    operation,
+                    "failed to construct bounded empty grand-total zero column",
+                    error,
+                )
+                .with_fact("column", column)
+                .with_fact_if_absent("budget_operation", "runtime::series_from_value_with_budget")
+            })
+            .map(|outcome| budgeted_value(outcome, metrics, operation)),
+        None => {
+            let scalar = context.runtime()?.scalar(value).map_err(|error| {
+                QueryError::from_cudf(operation, "failed to construct empty grand-total zero scalar", error)
+                    .with_fact("column", column)
+            })?;
+            context.runtime()?.series_from_scalar(&scalar, 1).map_err(|error| {
+                QueryError::from_cudf(operation, "failed to construct empty grand-total zero column", error)
+                    .with_fact("column", column)
+            })
+        },
+    }
+}
+
+fn empty_grouping_set_literal_series(
+    context: &ExecutionContext,
+    data_type: &ArrowDataType,
+    value: u64,
+    token: Option<&ExecutionBudgetToken>,
+    metrics: &mut QueryMetrics,
+    operation: &'static str,
+) -> Result<cudf::Series> {
+    match data_type {
+        ArrowDataType::UInt8 => {
+            let value = u8::try_from(value).map_err(|_error| {
+                QueryError::new(QueryErrorCode::InvalidPlan, operation, "grouping id does not fit UInt8")
+                    .with_fact("grouping_id", value)
+            })?;
+            empty_grouping_set_typed_zero_series(context, value, "grouping_id", token, metrics, operation)
+        },
+        ArrowDataType::UInt16 => {
+            let value = u16::try_from(value).map_err(|_error| {
+                QueryError::new(QueryErrorCode::InvalidPlan, operation, "grouping id does not fit UInt16")
+                    .with_fact("grouping_id", value)
+            })?;
+            empty_grouping_set_typed_zero_series(context, value, "grouping_id", token, metrics, operation)
+        },
+        ArrowDataType::UInt32 => {
+            let value = u32::try_from(value).map_err(|_error| {
+                QueryError::new(QueryErrorCode::InvalidPlan, operation, "grouping id does not fit UInt32")
+                    .with_fact("grouping_id", value)
+            })?;
+            empty_grouping_set_typed_zero_series(context, value, "grouping_id", token, metrics, operation)
+        },
+        ArrowDataType::UInt64 => {
+            empty_grouping_set_typed_zero_series(context, value, "grouping_id", token, metrics, operation)
+        },
+        _ => Err(QueryError::new(
+            QueryErrorCode::UnsupportedType,
+            operation,
+            "grouping-id output type is not supported by native execution",
+        )
+        .with_fact("data_type", format!("{data_type:?}"))),
+    }
 }
 
 fn aggregate_for_grouping_set(aggregate: &LoweredAggregate, group: &[bool]) -> LoweredAggregate {

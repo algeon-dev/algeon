@@ -10,6 +10,23 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_final_aggregate_merge(
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
 ) -> Result<ResidentGpuFrame> {
+    // Empty grouping-set / ROLLUP partials still need the final grand-total row.
+    // Treat all-empty partials like a true empty final-merge input so synthesis
+    // runs on the single-stage path with the original aggregate input schema.
+    let all_empty_grouping_sets = aggregate.spec.grouping_sets.is_some()
+        && (partials.is_empty() || partials.iter().all(|partial| partial.frame.num_rows() == 0));
+    if all_empty_grouping_sets {
+        release_partials_reverse(reservations, partials, metrics);
+        return execute_compiled_bounded_aggregate_from_empty_input(
+            context,
+            node_id,
+            aggregate,
+            input_schema,
+            output_schema,
+            reservations,
+            metrics,
+        );
+    }
     if partials.is_empty() {
         return execute_compiled_bounded_aggregate_from_empty_input(
             context,
@@ -766,11 +783,17 @@ fn execute_compiled_final_aggregate_projection(
             return Err(error);
         },
     };
-    let frame =
+    // Empty grouping-set finalization is a full single-stage shrink (including
+    // AVG finalize). Skip the usual partial-state final-projection path so we
+    // do not look for missing AVG state aliases on an already-final frame.
+    let frame = if aggregate.spec.grouping_sets.is_some() && input.frame.num_rows() == 0 {
+        execute_aggregate_with_budget(context, aggregate, input_schema, input.frame, output_schema, &token, metrics)
+    } else {
         execute_compiled_final_aggregate(context, aggregate, input_schema, output_schema, input.frame, &token, metrics)
             .and_then(|frame| {
                 finalize_compiled_final_aggregate_output(context, aggregate, output_schema, frame, &token, metrics)
-            });
+            })
+    };
     reservations.release(work_reservation, metrics);
     reservations.release(input.reservation, metrics);
     let frame = frame?;
@@ -857,6 +880,21 @@ fn execute_final_aggregate_for_plan(
             Arc::clone(bounded.output_schema)
         };
         return execute_global_aggregate_with_budget(context, &final_spec, input, &output_schema, token, metrics);
+    }
+
+    // Empty ROLLUP/CUBE/GROUPING SETS still need the grand-total identity row.
+    // Regular final-merge groupby over an empty partial drops it. Route through
+    // the full single-stage aggregatemapath, which synthesizes identity rows.
+    if bounded.aggregate.spec.grouping_sets.is_some() && input.num_rows() == 0 {
+        return execute_aggregate_with_budget(
+            context,
+            bounded.aggregate,
+            bounded.input_schema,
+            input,
+            bounded.output_schema,
+            token,
+            metrics,
+        );
     }
 
     let aggregate = lower_final_aggregate_spec(&bounded.aggregate.spec)?;
