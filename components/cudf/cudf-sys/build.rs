@@ -101,14 +101,7 @@ fn cached_compiler_matches_env(cache: &str, cache_key: &str, env_key: &str) -> b
 }
 
 fn compiler_from_env(env_key: &str) -> Option<PathBuf> {
-    let raw = env::var(env_key).ok()?;
-    let raw = raw.trim();
-    if raw.is_empty() || raw.contains(char::is_whitespace) {
-        return None;
-    }
-
-    let path = PathBuf::from(raw);
-    if path.components().count() > 1 { Some(path) } else { build_support::find_required_executable(raw).ok() }
+    build_support::resolve_compiler_from_env(env_key).ok().flatten()
 }
 
 /// Locate the pre-built `libcudf.so` based on the same env vars cudf-sys's
@@ -307,6 +300,35 @@ fn main() {
         env::var("CARGO_CFG_TARGET_OS").unwrap_or_else(|error| panic!("failed to read CARGO_CFG_TARGET_OS: {error}"));
     build_support::ensure_supported_target_os(&target_os).unwrap_or_else(|error| panic!("{error}"));
 
+    // Resolve compilers once to absolute paths before any CMake cache checks so
+    // discard and cmake-rs observe the same toolchain identity. Basename CC/CXX
+    // values remain accepted for ergonomics, but PATH is no longer a Cargo
+    // fingerprint input.
+    if let Some(cc) = build_support::resolve_compiler_from_env("CC").unwrap_or_else(|error| panic!("{error}")) {
+        // SAFETY: build scripts are single-threaded and cmake-rs reads CC before spawn.
+        unsafe {
+            env::set_var("CC", &cc);
+        }
+    }
+    if let Some(cxx) = build_support::resolve_compiler_from_env("CXX").unwrap_or_else(|error| panic!("{error}")) {
+        unsafe {
+            env::set_var("CXX", &cxx);
+        }
+    }
+
+    // Make the repository-owned CMake pin effective, not metadata-only. The
+    // cmake crate reads the standard CMAKE variable when it constructs both its
+    // configure and build commands.
+    if env::var_os(build_support::CMAKE_EXE_ENV).is_some() {
+        let cmake = build_support::resolve_tool_from_env_or_name(build_support::CMAKE_EXE_ENV, "cmake")
+            .unwrap_or_else(|error| panic!("{error}"));
+        // SAFETY: build scripts are single-threaded and cmake-rs reads CMAKE
+        // only after this point.
+        unsafe {
+            env::set_var("CMAKE", cmake);
+        }
+    }
+
     discard_stale_cmake_build_dir();
 
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
@@ -321,9 +343,10 @@ fn main() {
     config.define("CUDF_RUST_ENABLE_CLANG_TIDY", clang_lint.unwrap_or("OFF"));
     if clang_lint == Some("ON") {
         let clang_format =
-            build_support::find_required_executable("clang-format").unwrap_or_else(|error| panic!("{error}"));
-        let clang_tidy =
-            build_support::find_required_executable("clang-tidy").unwrap_or_else(|error| panic!("{error}"));
+            build_support::resolve_tool_from_env_or_name(build_support::CLANG_FORMAT_EXE_ENV, "clang-format")
+                .unwrap_or_else(|error| panic!("{error}"));
+        let clang_tidy = build_support::resolve_tool_from_env_or_name(build_support::CLANG_TIDY_EXE_ENV, "clang-tidy")
+            .unwrap_or_else(|error| panic!("{error}"));
 
         ensure_file_exists(&clang_format_config, "clang-format config");
         ensure_file_exists(&clang_tidy_config, "clang-tidy config");
@@ -359,19 +382,71 @@ fn main() {
     rerun_if_changed_recursive(&native_dir.join("include"));
     println!("cargo:rerun-if-changed={}", native_dir.join("CMakeLists.txt").display());
     println!("cargo:rerun-if-changed={}", native_dir.join("cmake/cudf-discovery.cmake").display());
-    println!("cargo:rerun-if-changed={}", manifest_dir.join("../cudf/cpp/build/CMakeCache.txt").display());
-    if let Ok(cudf_cpp_build_dir) = env::var("CUDF_CPP_BUILD_DIR") {
-        println!("cargo:rerun-if-changed={}", PathBuf::from(cudf_cpp_build_dir).join("CMakeCache.txt").display());
+
+    let install_dir = env::var_os("CUDF_INSTALL_DIR").map(PathBuf::from);
+    let build_dir = env::var_os("CUDF_CPP_BUILD_DIR").map(PathBuf::from);
+    if let Some(cmake_cache) =
+        build_support::active_cudf_cmake_cache(&manifest_dir, install_dir.as_deref(), build_dir.as_deref())
+    {
+        println!("cargo:rerun-if-changed={}", cmake_cache.display());
     }
+
     println!("cargo:rerun-if-changed={}", native_dir.join(".clang-tidy").display());
     println!("cargo:rerun-if-changed={}", clang_format_config.display());
     println!("cargo:rerun-if-changed=build_support.rs");
     println!("cargo:rerun-if-changed=native/cmake/cargo-link.txt.in");
+    // Explicit literals keep the rebuild contract reviewable and match the
+    // static include_str! fingerprint matrix. Keep in sync with
+    // build_support::tracked_native_build_env_vars().
+    const TRACKED_ENV: &[&str] = &[
+        "CC",
+        "CXX",
+        "CUDACXX",
+        "CUDAHOSTCXX",
+        "CUDF_INSTALL_DIR",
+        "CUDF_CPP_BUILD_DIR",
+        "CUDA_HOME",
+        "CUDA_PATH",
+        "CUDAToolkit_ROOT",
+        "CUDA_STATIC_RUNTIME",
+        "CMAKE",
+        "CMAKE_GENERATOR",
+        "CMAKE_TOOLCHAIN_FILE",
+        "CMAKE_PREFIX_PATH",
+        "CMAKE_LIBRARY_PATH",
+        "CMAKE_CUDA_ARCHITECTURES",
+        "CUDAARCHS",
+        "CUDF_RUST_CLANG_LINT",
+        "CUDF_RUST_CLANG_FORMAT",
+        "CUDF_RUST_CLANG_TIDY",
+        "CUDF_RUST_CMAKE",
+        "CUDF_RS_SKIP_STALENESS_CHECK",
+    ];
+    assert_eq!(
+        build_support::tracked_native_build_env_vars(),
+        TRACKED_ENV,
+        "build.rs TRACKED_ENV drifted from build_support::tracked_native_build_env_vars()"
+    );
+    println!("cargo:rerun-if-env-changed=CC");
+    println!("cargo:rerun-if-env-changed=CXX");
+    println!("cargo:rerun-if-env-changed=CUDACXX");
+    println!("cargo:rerun-if-env-changed=CUDAHOSTCXX");
     println!("cargo:rerun-if-env-changed=CUDF_INSTALL_DIR");
     println!("cargo:rerun-if-env-changed=CUDF_CPP_BUILD_DIR");
     println!("cargo:rerun-if-env-changed=CUDA_HOME");
     println!("cargo:rerun-if-env-changed=CUDA_PATH");
+    println!("cargo:rerun-if-env-changed=CUDAToolkit_ROOT");
     println!("cargo:rerun-if-env-changed=CUDA_STATIC_RUNTIME");
+    println!("cargo:rerun-if-env-changed=CMAKE");
+    println!("cargo:rerun-if-env-changed=CMAKE_GENERATOR");
+    println!("cargo:rerun-if-env-changed=CMAKE_TOOLCHAIN_FILE");
+    println!("cargo:rerun-if-env-changed=CMAKE_PREFIX_PATH");
+    println!("cargo:rerun-if-env-changed=CMAKE_LIBRARY_PATH");
+    println!("cargo:rerun-if-env-changed=CMAKE_CUDA_ARCHITECTURES");
+    println!("cargo:rerun-if-env-changed=CUDAARCHS");
     println!("cargo:rerun-if-env-changed=CUDF_RUST_CLANG_LINT");
-    println!("cargo:rerun-if-env-changed=PATH");
+    println!("cargo:rerun-if-env-changed=CUDF_RUST_CLANG_FORMAT");
+    println!("cargo:rerun-if-env-changed=CUDF_RUST_CLANG_TIDY");
+    println!("cargo:rerun-if-env-changed=CUDF_RUST_CMAKE");
+    println!("cargo:rerun-if-env-changed=CUDF_RS_SKIP_STALENESS_CHECK");
 }
