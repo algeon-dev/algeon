@@ -246,6 +246,22 @@ pub(crate) fn cast_impl(
     unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
 
+// libcudf's fixed-point scalar uses RMM's default device-allocation alignment.
+const DECIMAL_RESCALE_SCALAR_RESERVATION_BYTES: usize = 256;
+
+/// Returns the exact scalar workspace reservation used by libcudf's same-width decimal rescale.
+///
+/// Returns `None` outside that dispatch and `Some(0)` when the decimal scale is unchanged.
+pub fn decimal_rescale_temporary_workspace_reservation_bytes(
+    input_type: &DataType,
+    output_type: &DataType,
+) -> Option<usize> {
+    if input_type.id() != output_type.id() || !input_type.id().is_decimal() {
+        return None;
+    }
+    Some(if input_type.scale() == output_type.scale() { 0 } else { DECIMAL_RESCALE_SCALAR_RESERVATION_BYTES })
+}
+
 const INT64_EXCLUSIVE_UPPER_BOUND_AS_F64: f64 = 9_223_372_036_854_775_808.0;
 
 fn validate_float64_to_int64_cast_input(

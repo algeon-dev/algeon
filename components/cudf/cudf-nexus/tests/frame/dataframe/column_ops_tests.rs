@@ -407,9 +407,7 @@ fn test_cast_column_with_budget_decimal128_scale_to_scale_reports_output_and_rou
     let df = decimal128_scale_zero_frame();
     let token = with_test_runtime(|runtime| {
         runtime
-            .execution_budget_token(
-                ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("shape_cast_decimal_scale"),
-            )
+            .execution_budget_token(ExecutionBudgetRequest::new(512).with_boundary("shape_cast_decimal_scale"))
             .unwrap()
     });
 
@@ -431,6 +429,7 @@ fn test_cast_column_with_budget_decimal128_scale_to_scale_reports_output_and_rou
         report.unresolved_contract(),
         Some(DATAFRAME_EXPRESSION_TEMPORARY_WORKSPACE_AND_RELOCATION_CONTRACT_GAP)
     );
+    assert_eq!(token.reservation_usage().unwrap().peak_aligned_bytes, 512);
     assert_eq!(result.testing_execution_domain_mr_value(), token.memory_resource().testing_raw_handle_value());
     assert_all_observed_exec_mrs_are_manager_mr(&token);
 }

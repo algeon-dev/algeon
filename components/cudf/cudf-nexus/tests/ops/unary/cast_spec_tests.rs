@@ -232,6 +232,28 @@ fn test_cast_display_omits_input_name() {
 // ===========================================================================
 
 #[test]
+fn decimal_rescale_workspace_contract_is_scale_sensitive() {
+    let scale_zero = DataType::fixed_point(TypeId::Decimal128, 0);
+    let scale_two = DataType::fixed_point(TypeId::Decimal128, -2);
+
+    assert_eq!(
+        cudf::ops::unary::decimal_rescale_temporary_workspace_reservation_bytes(&scale_zero, &scale_zero),
+        Some(0)
+    );
+    assert_eq!(
+        cudf::ops::unary::decimal_rescale_temporary_workspace_reservation_bytes(&scale_zero, &scale_two),
+        Some(256)
+    );
+    assert_eq!(
+        cudf::ops::unary::decimal_rescale_temporary_workspace_reservation_bytes(
+            &DataType::fixed_point(TypeId::Decimal64, 0),
+            &scale_two,
+        ),
+        None
+    );
+}
+
+#[test]
 fn test_is_supported_cast_numeric_to_float() {
     let from = DataType::new(TypeId::Int32);
     let to = DataType::new(TypeId::Float64);
