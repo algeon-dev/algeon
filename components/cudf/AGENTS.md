@@ -6,8 +6,38 @@
   do not hide them behind a DataFrame-specific workaround.
 - Keep changes scoped and preserve unrelated worktree edits, generated output,
   caches, and native build trees.
-- Preserve public behavior and contract tests unless the task changes them. Add
-  focused tests and document only non-obvious safety or lifecycle constraints.
+- Preserve public behavior and contract tests unless the task changes them.
+- Grow the system in layers: start from the smallest version that works end to
+  end, and add each capability on top of a product that already works; never
+  trade a working product for unfinished complexity.
+
+## Subtractive development
+
+- Prefer extending existing code over adding parallel paths and the smallest
+  change that fully solves the current requirement; net line count should
+  trend down or stay flat. About to add a second way to do something? Stop and
+  propose removing or consolidating the first.
+- Before writing new code for a non-trivial task, list the related existing
+  files and functions; for each, state whether it should be extended, replaced,
+  or left alone. Report before implementing.
+- Never add speculative abstractions, configuration, or "just in case"
+  fallbacks; every defensive branch must name a concrete scenario that actually
+  happens in this codebase, and delete any that cannot. Remove obsolete or
+  backward-compatibility paths not required by a contract in this file instead
+  of stacking new code on top.
+- Before committing, re-read your own diff for anything now duplicated,
+  superseded, unused, or overly defensive. Propose deletions as a separate
+  cleanup commit, or fold them in when the scope is small and safe.
+
+## Comments
+
+- Default to no comments. Never explain what the code does; if code needs a
+  comment to be understandable, rename things instead.
+- Comment only the non-obvious *why*: hidden constraints, workarounds, and
+  business rules the code cannot express.
+- An explicit `drop()` in production code needs a one-line comment on why the
+  value cannot wait until end of scope (lock window, re-entrancy, `RefCell`
+  re-borrow); otherwise delete the `drop()`. Test code is exempt.
 
 ## Project boundaries
 
@@ -52,6 +82,15 @@ flock /tmp/cudf-gpu.lock cargo test --workspace --all-features --no-fail-fast
 
 Run focused checks first, then broaden validation with the change's blast
 radius. Report exact commands and selected native prefix or GPU environment.
+
+## Writing tests
+
+- Extend existing tests before creating new ones.
+- Add tests for behavior or regressions that could fail silently and cause
+  real damage; never test what the type system already guarantees.
+- Test observable behavior, not implementation details.
+- A new test must fail when the code under test is reverted; if it does not,
+  delete it.
 
 ## Testing and repository policy
 
