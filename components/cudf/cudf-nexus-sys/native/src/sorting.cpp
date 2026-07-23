@@ -13,6 +13,8 @@
 #include <memory>
 #include <vector>
 
+static_assert(sizeof(uint64_t) >= sizeof(std::size_t));
+
 namespace {
 /// Build a vector of cudf::order from the C enum array.
 cudf_status_t to_order_vec(const cudf_order_t* orders, int32_t n, std::vector<cudf::order>* out)
@@ -89,6 +91,53 @@ cudf_status_t is_sorted_impl(cudf_table_view_handle input,
 }  // namespace
 
 extern "C" {
+cudf_status_t cudf_sorted_order_radix_preflight(
+  int64_t num_rows,
+  cudf_type_id_t key_type,
+  int64_t null_count,
+  int32_t key_count,
+  int32_t stable,
+  cudf_order_t key_order,
+  int32_t device,
+  cudf_sorted_order_radix_preflight_result_t* out)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = {};
+  if (stable != 0 && stable != 1) {
+    set_error("stable must be 0 or 1");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
+
+  cudf::order const cudf_order = [&] {
+    switch (key_order) {
+      case CUDF_ORDER_ASCENDING: return cudf::order::ASCENDING;
+      case CUDF_ORDER_DESCENDING: return cudf::order::DESCENDING;
+      default: set_error("invalid key_order value"); return cudf::order::ASCENDING;
+    }
+  }();
+  if (key_order != CUDF_ORDER_ASCENDING && key_order != CUDF_ORDER_DESCENDING) {
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
+
+  CUDF_RUST_TRY
+  {
+    auto const result = cudf::sorted_order_radix_preflight(num_rows,
+                                                           cudf::data_type(to_cudf_type_id(key_type)),
+                                                           null_count,
+                                                           key_count,
+                                                           stable != 0,
+                                                           cudf_order,
+                                                           device);
+    out->key_output_bytes          = static_cast<uint64_t>(result.key_output_bytes);
+    out->sequence_bytes            = static_cast<uint64_t>(result.sequence_bytes);
+    out->temporary_workspace_bytes = static_cast<uint64_t>(result.temporary_workspace_bytes);
+    out->retained_order_bytes      = static_cast<uint64_t>(result.retained_order_bytes);
+    out->active_phase_peak_bytes  = static_cast<uint64_t>(result.active_phase_peak_bytes);
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
 cudf_status_t cudf_sort_ex(cudf_table_view_handle input,
                            const cudf_order_t* column_order,
                            const cudf_null_order_t* null_precedence,

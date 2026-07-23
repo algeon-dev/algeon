@@ -26,20 +26,234 @@ pub(crate) mod testing_hooks;
 
 use std::{ptr, sync::Arc};
 
-use self::errors::{sort_key_count_limit_error, sort_option_count_mismatch_error};
+use self::errors::{sort_key_count_limit_error, sort_option_count_mismatch_error, unsupported_sort_validation_error};
 use crate::{
     core::{
         column::Column,
-        error::{self, FACT_KEYS_COUNT, Result},
+        error::{self, Error, ErrorCode, FACT_KEYS_COUNT, Result},
         table::{Table, TableView},
+        types::{DataType, TypeId},
     },
     runtime::{
-        execution_context::ExecutionOverrides, execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution,
+        DeviceId, execution_context::ExecutionOverrides, execution_domain::ExecutionDomain,
+        execution_resolver::ResolvedExecution,
     },
 };
 
 const SORTED_ORDER_INDEX_SIZE_BYTES: usize = std::mem::size_of::<i32>();
 const SORTED_ORDER_MAX_ROWS: usize = i32::MAX as usize;
+
+/// Stable contract label for the libcudf-owned sorted-order radix preflight.
+pub const SORTED_ORDER_RADIX_PREFLIGHT_CONTRACT: &str = "sorted_order_radix_owner_preflight";
+
+/// Allocation components returned by the owner-level unstable one-key radix
+/// sorted-order preflight.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SortedOrderRadixPreflight {
+    key_output_bytes: usize,
+    sequence_bytes: usize,
+    temporary_workspace_bytes: usize,
+    retained_order_bytes: usize,
+    active_phase_peak_bytes: usize,
+}
+
+impl SortedOrderRadixPreflight {
+    /// Requested bytes for the temporary key-output buffer.
+    pub fn key_output_bytes(self) -> usize {
+        self.key_output_bytes
+    }
+
+    /// Requested bytes for the INT32 sequence/value buffer.
+    pub fn sequence_bytes(self) -> usize {
+        self.sequence_bytes
+    }
+
+    /// Exact CUB temporary-storage query result for the selected device/order.
+    pub fn temporary_workspace_bytes(self) -> usize {
+        self.temporary_workspace_bytes
+    }
+
+    /// Requested bytes for the retained INT32 sorted-order output.
+    pub fn retained_order_bytes(self) -> usize {
+        self.retained_order_bytes
+    }
+
+    /// Checked sum of all four co-resident allocations during radix execution.
+    pub fn active_phase_peak_bytes(self) -> usize {
+        self.active_phase_peak_bytes
+    }
+}
+
+pub(crate) fn sorted_order_radix_key_supported(type_id: TypeId) -> bool {
+    type_id.is_signed_int() || type_id.is_unsigned_int() || type_id.is_timestamp() || type_id.is_duration()
+}
+
+fn sorted_order_radix_preflight_unsupported(
+    operation: &'static str,
+    message: impl Into<String>,
+    reason: &'static str,
+    remedy: &'static str,
+) -> Error {
+    unsupported_sort_validation_error(operation, message, reason, remedy)
+        .with_detail("resource", "sorted_order_radix_preflight")
+}
+
+fn checked_native_preflight_bytes(raw: u64, field: &'static str, operation: &'static str) -> Result<usize> {
+    usize::try_from(raw).map_err(|_| {
+        Error::new_with(ErrorCode::SizeOverflow, operation, "native preflight byte count exceeds usize")
+            .with_detail("resource", field)
+            .with_detail("reason", "native_byte_count_exceeds_usize")
+            .with_detail("native_bytes", raw.to_string())
+    })
+}
+
+fn checked_preflight_sum(lhs: usize, rhs: usize, operation: &'static str) -> Result<usize> {
+    lhs.checked_add(rhs).ok_or_else(|| {
+        Error::new_with(ErrorCode::SizeOverflow, operation, "sorted-order radix preflight byte sum overflowed usize")
+            .with_detail("resource", "active_phase_peak_bytes")
+            .with_detail("reason", "component_sum_overflowed_usize")
+    })
+}
+
+fn sorted_order_radix_preflight_impl(
+    num_rows: usize,
+    key_type: DataType,
+    null_count: usize,
+    stable: bool,
+    key_order: Order,
+    device: DeviceId,
+    operation: &'static str,
+) -> Result<SortedOrderRadixPreflight> {
+    if num_rows > SORTED_ORDER_MAX_ROWS {
+        return Err(sorted_order_radix_preflight_unsupported(
+            operation,
+            "sorted-order radix preflight rows exceed cudf::size_type",
+            "row_count_exceeds_cudf_size_type",
+            "reduce row_count to fit within cudf::size_type",
+        )
+        .with_detail("row_count", num_rows.to_string())
+        .with_detail("max_row_count", SORTED_ORDER_MAX_ROWS.to_string()));
+    }
+    if stable {
+        return Err(sorted_order_radix_preflight_unsupported(
+            operation,
+            "sorted-order radix preflight supports only unstable sorting",
+            "stable_sort_unsupported",
+            "use unstable sorting or retain the unresolved sort workspace contract",
+        ));
+    }
+    if null_count != 0 {
+        return Err(Error::new_with(
+            ErrorCode::NullUnexpected,
+            operation,
+            "sorted-order radix preflight requires a non-null key",
+        )
+        .with_detail("resource", "sort_key")
+        .with_detail("reason", "nullable_key_unsupported")
+        .with_detail("null_count", null_count.to_string())
+        .with_detail("remedy", "drop nulls or use the unresolved general sorted-order path"));
+    }
+    if !sorted_order_radix_key_supported(key_type.id()) {
+        return Err(Error::new_with(
+            ErrorCode::UnsupportedDtype,
+            operation,
+            "sorted-order radix preflight key type is unsupported",
+        )
+        .with_fact(crate::core::error::FACT_TYPE_ID, key_type.id())
+        .with_detail("resource", "sort_key")
+        .with_detail("reason", "key_type_not_integral_or_chrono")
+        .with_detail("remedy", "use an integral or chrono key or retain the unresolved general sorted-order path"));
+    }
+
+    let num_rows = error::usize_to_i64(num_rows, operation, "num_rows")?;
+    let null_count = error::usize_to_i64(null_count, operation, "null_count")?;
+    let mut raw = cudf_sys::cudf_sorted_order_radix_preflight_result_t {
+        key_output_bytes: 0,
+        sequence_bytes: 0,
+        temporary_workspace_bytes: 0,
+        retained_order_bytes: 0,
+        active_phase_peak_bytes: 0,
+    };
+    let status = unsafe {
+        cudf_sys::cudf_sorted_order_radix_preflight(
+            num_rows,
+            key_type.id().to_raw(),
+            null_count,
+            1,
+            0,
+            match key_order {
+                Order::Ascending => cudf_sys::CUDF_ORDER_ASCENDING,
+                Order::Descending => cudf_sys::CUDF_ORDER_DESCENDING,
+            },
+            device.ordinal_raw(),
+            &mut raw,
+        )
+    };
+    error::check_status_in(status, operation)?;
+
+    let key_output_bytes = checked_native_preflight_bytes(raw.key_output_bytes, "key_output_bytes", operation)?;
+    let sequence_bytes = checked_native_preflight_bytes(raw.sequence_bytes, "sequence_bytes", operation)?;
+    let temporary_workspace_bytes =
+        checked_native_preflight_bytes(raw.temporary_workspace_bytes, "temporary_workspace_bytes", operation)?;
+    let retained_order_bytes =
+        checked_native_preflight_bytes(raw.retained_order_bytes, "retained_order_bytes", operation)?;
+    let active_phase_peak_bytes =
+        checked_native_preflight_bytes(raw.active_phase_peak_bytes, "active_phase_peak_bytes", operation)?;
+    if sequence_bytes != retained_order_bytes {
+        return Err(Error::new_with(
+            ErrorCode::ForeignInvariantViolation,
+            operation,
+            "native sorted-order radix preflight sequence and retained-order bytes differ",
+        )
+        .with_detail("resource", "sorted_order_radix_preflight_result")
+        .with_detail("reason", "sequence_retained_component_mismatch")
+        .with_detail("sequence_bytes", sequence_bytes.to_string())
+        .with_detail("retained_order_bytes", retained_order_bytes.to_string()));
+    }
+    let expected_peak = checked_preflight_sum(key_output_bytes, sequence_bytes, operation)?;
+    let expected_peak = checked_preflight_sum(expected_peak, temporary_workspace_bytes, operation)?;
+    let expected_peak = checked_preflight_sum(expected_peak, retained_order_bytes, operation)?;
+    if expected_peak != active_phase_peak_bytes {
+        return Err(Error::new_with(
+            ErrorCode::ForeignInvariantViolation,
+            operation,
+            "native sorted-order radix preflight active phase peak is not the checked component sum",
+        )
+        .with_detail("resource", "sorted_order_radix_preflight_result")
+        .with_detail("reason", "active_phase_peak_component_sum_mismatch")
+        .with_detail("expected_peak_bytes", expected_peak.to_string())
+        .with_detail("reported_peak_bytes", active_phase_peak_bytes.to_string()));
+    }
+
+    Ok(SortedOrderRadixPreflight {
+        key_output_bytes,
+        sequence_bytes,
+        temporary_workspace_bytes,
+        retained_order_bytes,
+        active_phase_peak_bytes,
+    })
+}
+
+/// Query the libcudf-owned unstable one-key radix sorted-order allocation
+/// contract for a candidate device without allocating or requiring a stream.
+pub fn sorted_order_radix_preflight(
+    num_rows: usize,
+    key_type: DataType,
+    null_count: usize,
+    stable: bool,
+    key_order: Order,
+    device: DeviceId,
+) -> Result<SortedOrderRadixPreflight> {
+    sorted_order_radix_preflight_impl(
+        num_rows,
+        key_type,
+        null_count,
+        stable,
+        key_order,
+        device,
+        "sorting::sorted_order_radix_preflight",
+    )
+}
 
 /// Column sort order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

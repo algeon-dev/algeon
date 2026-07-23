@@ -531,6 +531,16 @@ pub struct cudf_query_memory_domain_identity_t {
     pub generation: u64,
     pub reserved: [u64; 4usize],
 }
+#[doc = " Allocation components for the unstable one-key radix sorted-order path.\n\n All fields are requested bytes. `active_phase_peak_bytes` is the checked\n sum of key output, sequence, CUB temporary storage, and retained INT32\n sorted-order output, which are co-resident during execution."]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct cudf_sorted_order_radix_preflight_result_t {
+    pub key_output_bytes: u64,
+    pub sequence_bytes: u64,
+    pub temporary_workspace_bytes: u64,
+    pub retained_order_bytes: u64,
+    pub active_phase_peak_bytes: u64,
+}
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct cudf_prepared_replace_with_backrefs_handle_state {
@@ -2904,6 +2914,17 @@ unsafe extern "C" {
         needles: cudf_column_view_handle,
         out: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+    #[doc = " Metadata-only preflight for the unstable one-key radix sorted-order path.\n\n `key_type` uses the `cudf_type_id_t` discriminants. The selected candidate\n device is activated only for the CUB temporary-storage query and restored\n before return. No stream, memory resource, column, or device allocation is\n required."]
+    pub fn cudf_sorted_order_radix_preflight(
+        num_rows: i64,
+        key_type: cudf_type_id_t,
+        null_count: i64,
+        key_count: i32,
+        stable: i32,
+        key_order: cudf_order_t,
+        device: i32,
+        out: *mut cudf_sorted_order_radix_preflight_result_t,
     ) -> cudf_status_t;
     #[doc = " Sort with explicit execution context.\n\n `column_order` and `null_precedence` are arrays of size `num_keys`\n (i.e., the number of columns in `input`). Pass NULL for defaults\n (all ASCENDING, nulls AFTER).\n `options` must be non-NULL and carry an explicit device, stream, and memory\n resource. `options->mr` must outlive the returned table."]
     pub fn cudf_sort_ex(
