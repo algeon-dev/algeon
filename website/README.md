@@ -1,6 +1,6 @@
 # DataFusion Nexus Website
 
-The documentation site for [DataFusion Nexus](https://github.com/morristai/datafusion-nexus),
+The documentation site for [DataFusion Nexus](https://github.com/DataFusion-Nexus/datafusion-nexus),
 built with [Docusaurus](https://docusaurus.io/) 3.10.1.
 
 > Requires Node.js >= 20.

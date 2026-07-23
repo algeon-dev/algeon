@@ -1,0 +1,9 @@
+{
+  "label": "cuVS SQL API",
+  "position": 5.5,
+  "collapsed": true,
+  "link": {
+    "type": "doc",
+    "id": "cuvs/overview"
+  }
+}

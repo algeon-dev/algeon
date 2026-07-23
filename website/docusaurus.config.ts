@@ -5,7 +5,7 @@ import prismLight from './src/utils/prismLight';
 
 // This runs in Node.js - Don't use client-side code here (browser APIs, JSX...)
 
-const GITHUB_ORG = 'morristai';
+const GITHUB_ORG = 'DataFusion-Nexus';
 const GITHUB_REPO = 'datafusion-nexus';
 const GITHUB_URL = `https://github.com/${GITHUB_ORG}/${GITHUB_REPO}`;
 
@@ -83,9 +83,7 @@ const config: Config = {
   ],
 
   themeConfig: {
-    // TODO: still the Docusaurus default template card. Replace with a
-    // 1200x675 DataFusion Nexus branded social card before wide sharing.
-    image: 'img/docusaurus-social-card.jpg',
+    image: 'img/nexus-social-card.jpg',
     colorMode: {
       defaultMode: 'dark',
       respectPrefersColorScheme: true,

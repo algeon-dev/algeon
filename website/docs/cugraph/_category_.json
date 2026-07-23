@@ -1,7 +1,7 @@
 {
   "label": "cuGraph SQL API",
   "position": 5,
-  "collapsed": false,
+  "collapsed": true,
   "link": {
     "type": "doc",
     "id": "cugraph/overview"

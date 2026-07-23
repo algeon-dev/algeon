@@ -113,7 +113,8 @@ function measureNode(node: DiagramNode, fonts: BoxFonts = COMPACT_FONTS): {w: nu
 }
 
 /** One node box: hairline rect, tone accent bar, mono text block, optional interactivity. */
-function Box({node, x, y, w, h, selected, onSelect, fonts = COMPACT_FONTS}: {
+function Box({node, x, y, w, h, selected, onSelect, fonts = COMPACT_FONTS, kindColor,
+  borderColor = COLOR.border, borderWidth = 1}: {
   node: DiagramNode;
   x: number;
   y: number;
@@ -122,6 +123,9 @@ function Box({node, x, y, w, h, selected, onSelect, fonts = COMPACT_FONTS}: {
   selected?: boolean;
   onSelect?: () => void;
   fonts?: BoxFonts;
+  kindColor?: string;
+  borderColor?: string;
+  borderWidth?: number;
 }) {
   const notes = noteLines(node);
   const tone = node.tone ?? 'plain';
@@ -134,7 +138,8 @@ function Box({node, x, y, w, h, selected, onSelect, fonts = COMPACT_FONTS}: {
   if (node.kind) {
     lines.push(
       <text key="kind" x={tx} y={lineY + fonts.kind.lh * 0.74} fontSize={fonts.kind.size}
-        letterSpacing={`${fonts.kind.track}em`} fill={tone === 'plain' ? COLOR.subtle : toneColor}>
+        letterSpacing={`${fonts.kind.track}em`}
+        fill={kindColor ?? (tone === 'plain' ? COLOR.subtle : toneColor)}>
         {node.kind.toUpperCase()}
       </text>,
     );
@@ -174,7 +179,8 @@ function Box({node, x, y, w, h, selected, onSelect, fonts = COMPACT_FONTS}: {
           : undefined
       }>
       <rect className={styles.boxRect} x={x} y={y} width={w} height={h} rx={6}
-        fill={COLOR.surface} stroke={selected ? toneColor : COLOR.border} strokeWidth={selected ? 1.4 : 1} />
+        fill={COLOR.surface} stroke={selected ? toneColor : borderColor}
+        strokeWidth={selected ? 1.4 : borderWidth} />
       {selected ? (
         <rect x={x} y={y} width={w} height={h} rx={6} fill={toneColor} opacity={0.07} pointerEvents="none" />
       ) : null}
@@ -544,231 +550,262 @@ export function StackDiagram({ariaLabel, nodes, caption}: StackDiagramProps) {
 }
 
 // ---------------------------------------------------------------------------
-// OverviewDiagram — the static "where Nexus sits" figure on the site homepage.
-// Top-down and non-interactive, with larger type than the Design-page
-// diagrams: it is the first figure a newcomer sees, so it optimizes for
-// glanceability over information density.
+// ArchitectureDiagram — the single static overview on the site homepage.
+// The query path stays centered and top-down; lakehouse input and planning
+// evidence occupy a compact left rail. No node is interactive and no edge is
+// animated.
 // ---------------------------------------------------------------------------
 
-const OV_KIND = {size: 11, lh: 17, track: 0.07};
-const OV_NAME = {size: 16, lh: 23};
-const OV_NOTE = {size: 13, lh: 19};
-const OV_LABEL = {size: 12, track: 0.03};
-const OV_CHIP = {size: 13.5};
+const ARCH_KIND = {size: 11.5, lh: 18, track: 0.07};
+const ARCH_NAME = {size: 17, lh: 25};
+const ARCH_NOTE = {size: 13, lh: 19};
+const ARCH_FONTS: BoxFonts = {
+  kind: ARCH_KIND,
+  name: ARCH_NAME,
+  note: ARCH_NOTE,
+  padX: 20,
+  padY: 15,
+};
+const ARCH_CARD_BORDER = 'var(--nx-arch-card-border, #d7dce1)';
+const ARCH_EDGE = 'var(--nx-arch-edge, #748292)';
+const ARCH_EVIDENCE_EDGE = 'var(--nx-arch-evidence-edge, #b7c0ca)';
+const ARCH_CARD_BORDER_WIDTH = 1.2;
+const ARCH_EDGE_WIDTH = 1.1;
 
-interface OvSpec {
-  kind: string;
-  name: string;
-  note: string;
-  tone: Tone;
-}
-
-function ovBoxSize(spec: OvSpec): {w: number; h: number} {
-  const w = Math.max(
-    textWidth(spec.kind.toUpperCase(), OV_KIND),
-    textWidth(spec.name, OV_NAME),
-    textWidth(spec.note, OV_NOTE),
-  );
-  return {w: Math.ceil(w) + 32, h: OV_KIND.lh + OV_NAME.lh + OV_NOTE.lh + 22};
-}
-
-function OvBox({cx, y, spec}: {cx: number; y: number; spec: OvSpec}) {
-  const {w, h} = ovBoxSize(spec);
-  const x = cx - w / 2;
-  const toneColor = TONE[spec.tone];
-  const tx = x + 16;
-  const top = y + 11;
-  return (
-    <g>
-      <rect x={x} y={y} width={w} height={h} rx={7} fill={COLOR.surface}
-        stroke={COLOR.border} strokeWidth={1} />
-      {spec.tone !== 'plain' ? (
-        <>
-          <rect x={x} y={y} width={w} height={h} rx={7} fill={toneColor}
-            opacity={0.06} pointerEvents="none" />
-          <line x1={x + 1.25} y1={y + 9} x2={x + 1.25} y2={y + h - 9}
-            stroke={toneColor} strokeWidth={2.5} strokeLinecap="round" />
-        </>
-      ) : null}
-      <text x={tx} y={top + OV_KIND.lh * 0.72} fontSize={OV_KIND.size}
-        letterSpacing={`${OV_KIND.track}em`}
-        fill={spec.tone === 'plain' ? COLOR.subtle : toneColor}>
-        {spec.kind.toUpperCase()}
-      </text>
-      <text x={tx} y={top + OV_KIND.lh + OV_NAME.lh * 0.72} fontSize={OV_NAME.size}
-        fontWeight={600} fill={COLOR.fg}>
-        {spec.name}
-      </text>
-      <text x={tx} y={top + OV_KIND.lh + OV_NAME.lh + OV_NOTE.lh * 0.7}
-        fontSize={OV_NOTE.size} fill={COLOR.muted}>
-        {spec.note}
-      </text>
-    </g>
-  );
-}
-
-function ovHeadDown(x: number, y: number): string {
+function smallHeadDown(x: number, y: number): string {
   return `M ${x - 4} ${y - 5} L ${x} ${y - 0.5} L ${x + 4} ${y - 5}`;
 }
 
-function ovHeadUp(x: number, y: number): string {
-  return `M ${x - 4} ${y + 5} L ${x} ${y + 0.5} L ${x + 4} ${y + 5}`;
-}
-
-function ovHeadLeft(x: number, y: number): string {
+function smallHeadLeft(x: number, y: number): string {
   return `M ${x + 5} ${y - 4} L ${x + 0.5} ${y} L ${x + 5} ${y + 4}`;
 }
 
-function ovHeadRight(x: number, y: number): string {
+function smallHeadRight(x: number, y: number): string {
   return `M ${x - 5} ${y - 4} L ${x - 0.5} ${y} L ${x - 5} ${y + 4}`;
 }
 
-export function OverviewDiagram({caption}: {caption?: React.ReactNode}) {
-  const W = 800;
-  const cx = 240; // clients / API / Nexus / GPU column
-  const lakeCx = 680; // lakehouse column
+/** Down → across → down, with rounded bends from the rule to an execution path. */
+function archForkPath(sx: number, sy: number, midY: number, dx: number, dy: number): string {
+  const R = 10;
+  const hDir = dx > sx ? 1 : -1;
+  const r1 = Math.min(R, (midY - sy) / 2, Math.abs(dx - sx));
+  const r2 = Math.min(R, (dy - midY) / 2, Math.abs(dx - sx));
+  return [
+    `M ${sx} ${sy}`,
+    `L ${sx} ${midY - r1}`,
+    `Q ${sx} ${midY} ${sx + r1 * hDir} ${midY}`,
+    `L ${dx - r2 * hDir} ${midY}`,
+    `Q ${dx} ${midY} ${dx} ${midY + r2}`,
+    `L ${dx} ${dy - 1}`,
+  ].join(' ');
+}
 
-  // Clients group: dashed container with one chip per caller type.
-  const chips = ['web UI', 'agents', 'domain experts', 'apps'];
-  const chipH = 34;
-  const chipGap = 14;
-  const chipWs = chips.map((c) => Math.ceil(textWidth(c, OV_CHIP)) + 26);
-  const chipsW = chipWs.reduce((a, b) => a + b, 0) + chipGap * (chips.length - 1);
-  const gPad = 18;
-  const gHead = 26;
-  const gW = chipsW + gPad * 2;
-  const gX = cx - gW / 2;
-  const gY = 6;
-  const gH = gHead + chipH + gPad;
+/** Down → across into the result junction, rounded bend, no arrowhead. */
+function archMergePath(sx: number, sy: number, midY: number, cx: number): string {
+  const r = Math.min(10, (midY - sy) / 2, Math.abs(cx - sx));
+  const hDir = cx > sx ? 1 : -1;
+  return [
+    `M ${sx} ${sy}`,
+    `L ${sx} ${midY - r}`,
+    `Q ${sx} ${midY} ${sx + r * hDir} ${midY}`,
+    `L ${cx} ${midY}`,
+  ].join(' ');
+}
 
-  const api: OvSpec = {
-    kind: 'your backend', name: 'domain API',
-    note: 'ontology / semantic layer', tone: 'plain',
+export function ArchitectureDiagram({caption}: {caption?: React.ReactNode}) {
+  const cx = 570;
+  const sourceCx = 170;
+  const gpuCx = 400;
+  const cpuCx = 740;
+  const outputCx = cx;
+  const reportCx = sourceCx;
+
+  const top: DiagramNode = {
+    kind: 'query interfaces',
+    name: 'SQL · DataFrame · Flight SQL',
+    note: 'embedded Rust · remote ADBC clients',
+    tone: 'plain',
   };
-  const nexus: OvSpec = {
-    kind: 'query layer', name: 'DataFusion Nexus',
-    note: 'embedded library or standalone server', tone: 'engine',
+  const rule: DiagramNode = {
+    kind: 'DataFusion optimizer rule',
+    name: 'datafusion_nexus_native',
+    note: 'promotes each supported candidate subtree',
+    tone: 'engine',
   };
-  const gpu: OvSpec = {
-    kind: 'execution', name: 'GPU', note: 'cuDF · cuGraph', tone: 'gpu',
+  const source: DiagramNode = {
+    kind: 'lakehouse',
+    name: 'Iceberg · Parquet',
+    note: [
+      'REST / Glue catalog metadata',
+    ],
+    tone: 'lake',
   };
-  const catalog: OvSpec = {
-    kind: 'iceberg catalog', name: 'REST / Glue',
-    note: 'table metadata', tone: 'lake',
+  const gpu: DiagramNode = {
+    kind: 'native · same process',
+    name: 'GPU execution',
+    note: [
+      'native plan · cuDF / cuGraph / cuVS',
+      'admission queue · GPU memory ledger'
+    ],
+    tone: 'gpu',
   };
-  const store: OvSpec = {
-    kind: 'object storage', name: 'S3 · Parquet',
-    note: 'data files', tone: 'lake',
+  const cpu: DiagramNode = {
+    kind: 'fallback · when valid',
+    name: 'DataFusion CPU execution',
+    note: [
+      'original operators · stock readers',
+      'no valid CPU path → structured error',
+      'native Iceberg cannot fall back',
+    ],
+    tone: 'plain',
+  };
+  const out: DiagramNode = {
+    kind: 'same caller contract',
+    name: 'Arrow RecordBatch stream',
+    note: 'returns to the original query interface',
+    tone: 'plain',
+  };
+  const report: DiagramNode = {
+    kind: 'machine-readable planning',
+    name: 'Planning evidence',
+    note: [
+      'PlanningReport · stable reason codes',
+      'nexus_explain_coverage · preflight',
+    ],
+    tone: 'bridge',
   };
 
-  const GROUP_HEAD = 24; // headroom for a group's corner label
-  const apiY = gY + gH + 34;
-  const apiH = ovBoxSize(api).h;
-  // Enough headroom that the Flight SQL edge label clears both the API box
-  // above it and the SAME PROCESS group border below it.
-  const nexusY = apiY + apiH + 84;
-  const nexusH = ovBoxSize(nexus).h;
-  const nexusBottom = nexusY + nexusH;
-  const gpuY = nexusBottom + 56;
-  const rowH = ovBoxSize(gpu).h;
+  const topSize = measureNode(top, ARCH_FONTS);
+  const ruleSize = measureNode(rule, ARCH_FONTS);
+  const sourceSize = measureNode(source, ARCH_FONTS);
+  const gpuSize = measureNode(gpu, ARCH_FONTS);
+  const cpuSize = measureNode(cpu, ARCH_FONTS);
+  const outSize = measureNode(out, ARCH_FONTS);
+  const reportSize = measureNode(report, ARCH_FONTS);
+  const executionH = Math.max(gpuSize.h, cpuSize.h);
 
-  // Two dashed containers echo the CLIENTS group: Nexus and the GPU executor
-  // share one process (cuDF/cuGraph are linked in — no service hop), and the
-  // catalog + object storage together form the lakehouse.
-  const nexusW = ovBoxSize(nexus).w;
-  const gpuW = ovBoxSize(gpu).w;
-  const procX = cx - Math.max(nexusW, gpuW) / 2 - 14;
-  const procW = Math.max(nexusW, gpuW) + 28;
-  const procY = nexusY - GROUP_HEAD - 8;
-  const procH = gpuY + rowH + 12 - procY;
-  const lakeW = Math.max(ovBoxSize(catalog).w, ovBoxSize(store).w) + 28;
-  const lakeX = lakeCx - lakeW / 2;
+  const topY = EDGE;
+  const topBottom = topY + topSize.h;
+  const ruleY = topBottom + 68;
+  const ruleBottom = ruleY + ruleSize.h;
+  const ruleCy = ruleY + ruleSize.h / 2;
+  const legY = ruleBottom + 46;
+  const executionY = ruleBottom + 112;
+  const executionBottom = executionY + executionH;
+  const mergeY = executionBottom + 68;
+  const outY = mergeY + 34;
+  // Side cards stay away from the top edge so the query interface remains the
+  // only visual entry point. Evidence aligns with the optimizer; lakehouse
+  // input aligns its bottom edge with the result tier.
+  const reportY = ruleCy - reportSize.h / 2;
+  const sourceY = outY + outSize.h - sourceSize.h - 32;
+  const H = Math.max(outY + outSize.h, sourceY + sourceSize.h) + EDGE;
 
-  const H = procY + procH + 8;
-
-  const nexusRight = cx + nexusW / 2;
-  const gpuRight = cx + gpuW / 2;
-  const catLeft = lakeCx - ovBoxSize(catalog).w / 2;
-  const storeLeft = lakeCx - ovBoxSize(store).w / 2;
-  const metaY = nexusY + nexusH / 2;
-  const kvikY = gpuY + rowH / 2;
-
-  const stroke = COLOR.border;
-  const label = (x: number, y: number, text: string, anchor: 'start' | 'middle' = 'middle') => (
-    <text x={x} y={y} fontSize={OV_LABEL.size} letterSpacing={`${OV_LABEL.track}em`}
-      textAnchor={anchor} fill={COLOR.subtle}>
-      {text}
-    </text>
-  );
-  const head = (d: string) => (
-    <path d={d} fill="none" stroke={stroke} strokeWidth={1.25}
-      strokeLinecap="round" strokeLinejoin="round" />
-  );
-  const groupBox = (x: number, w: number, name: string) => (
-    <>
-      <rect x={x} y={procY} width={w} height={procH} rx={9} fill="none"
-        stroke={stroke} strokeWidth={1} strokeDasharray="5 4" />
-      <text x={x + 14} y={procY + 17} fontSize={OV_KIND.size}
-        letterSpacing={`${OV_KIND.track}em`} fill={COLOR.subtle}>
-        {name}
-      </text>
-    </>
+  const stroke = ARCH_EDGE;
+  const evidenceStroke = ARCH_EVIDENCE_EDGE;
+  const ruleLeft = cx - ruleSize.w / 2;
+  const reportRight = reportCx + reportSize.w / 2;
+  const reportCy = reportY + reportSize.h / 2;
+  const sourceTop = sourceY;
+  const gpuLeft = gpuCx - gpuSize.w / 2;
+  const executionCy = executionY + executionH / 2;
+  const outRight = outputCx + outSize.w / 2;
+  const outCy = outY + outSize.h / 2;
+  const topRight = cx + topSize.w / 2;
+  const topCy = topY + topSize.h / 2;
+  const cpuRight = cpuCx + cpuSize.w / 2;
+  const returnRailX = cpuRight + 18;
+  const W = Math.ceil(returnRailX + 8);
+  const returnRadius = 12;
+  const head = (d: string, fill = stroke) => (
+    <path d={d} fill={fill} stroke="none" />
   );
 
   return (
-    <Figure caption={caption} svgW={W} svgH={H} minW={560} center>
-      {/* clients group */}
-      <rect x={gX} y={gY} width={gW} height={gH} rx={9} fill="none"
-        stroke={stroke} strokeWidth={1} strokeDasharray="5 4" />
-      <text x={gX + 14} y={gY + 17} fontSize={OV_KIND.size}
-        letterSpacing={`${OV_KIND.track}em`} fill={COLOR.subtle}>
-        CLIENTS
+    <Figure caption={caption} svgW={W} svgH={H} minW={680} center>
+      {/* The main query path uses one stroke language throughout. */}
+      <line x1={cx} y1={topBottom} x2={cx} y2={ruleY - 1}
+        stroke={stroke} strokeWidth={ARCH_EDGE_WIDTH} />
+      {head(smallHeadDown(cx, ruleY))}
+
+      {/* Box headings carry branch semantics, keeping labels off the paths. */}
+      <path d={archForkPath(cx - 70, ruleBottom, legY, gpuCx, executionY)}
+        fill="none" stroke={stroke} strokeWidth={ARCH_EDGE_WIDTH} strokeLinejoin="round" />
+      {head(smallHeadDown(gpuCx, executionY))}
+      <path d={archForkPath(cx + 70, ruleBottom, legY, cpuCx, executionY)}
+        fill="none" stroke={stroke} strokeWidth={ARCH_EDGE_WIDTH} strokeLinejoin="round" />
+      {head(smallHeadDown(cpuCx, executionY))}
+
+      {/* The lakehouse sits low on the page as an input dependency rather than
+          a competing entry point. Its rail climbs to the native path. */}
+      <path
+        d={[
+          `M ${sourceCx} ${sourceTop}`,
+          `L ${sourceCx} ${executionCy + returnRadius}`,
+          `Q ${sourceCx} ${executionCy} ${sourceCx + returnRadius} ${executionCy}`,
+          `L ${gpuLeft - 1} ${executionCy}`,
+        ].join(' ')}
+        fill="none" stroke={stroke} strokeWidth={ARCH_EDGE_WIDTH} strokeLinejoin="round" />
+      {head(smallHeadRight(gpuLeft, executionCy))}
+      <text x={sourceCx - 10} y={(sourceTop + executionCy + returnRadius) / 2 + ARCH_KIND.size * 0.35}
+        fontSize={ARCH_KIND.size} fontWeight={600} textAnchor="end" fill={COLOR.muted}>
+        KvikIO
       </text>
-      {chips.map((chip, i) => {
-        const x = gX + gPad + chipWs.slice(0, i).reduce((a, b) => a + b, 0) + i * chipGap;
-        return (
-          <g key={chip}>
-            <rect x={x} y={gY + gHead} width={chipWs[i]} height={chipH} rx={6}
-              fill={COLOR.surface} stroke={stroke} strokeWidth={1} />
-            <text x={x + chipWs[i] / 2} y={gY + gHead + chipH / 2 + 4.5}
-              fontSize={OV_CHIP.size} textAnchor="middle" fill={COLOR.fg}>
-              {chip}
-            </text>
-          </g>
-        );
-      })}
-      {/* clients <-> domain API (queries down, results back up) */}
-      <line x1={cx} y1={gY + gH} x2={cx} y2={apiY - 1} stroke={stroke} strokeWidth={1} />
-      {head(ovHeadDown(cx, apiY))}
-      {head(ovHeadUp(cx, gY + gH))}
-      <OvBox cx={cx} y={apiY} spec={api} />
-      {/* domain API <-> nexus */}
-      <line x1={cx} y1={apiY + apiH} x2={cx} y2={nexusY - 1} stroke={stroke} strokeWidth={1} />
-      {head(ovHeadDown(cx, nexusY))}
-      {head(ovHeadUp(cx, apiY + apiH))}
-      {label(cx + 12, (apiY + apiH + procY) / 2 + 4, 'Arrow Flight SQL / in-process', 'start')}
-      {/* same-process group: nexus + gpu executor */}
-      {groupBox(procX, procW, 'SAME PROCESS')}
-      <OvBox cx={cx} y={nexusY} spec={nexus} />
-      {/* nexus <-> gpu (plans down, record batches back up) */}
-      <line x1={cx} y1={nexusBottom} x2={cx} y2={gpuY - 1} stroke={stroke} strokeWidth={1} />
-      {head(ovHeadDown(cx, gpuY))}
-      {head(ovHeadUp(cx, nexusBottom))}
-      {label(cx + 12, (nexusBottom + gpuY) / 2 + 4, 'native plans', 'start')}
-      <OvBox cx={cx} y={gpuY} spec={gpu} />
-      {/* lakehouse group: catalog + object storage */}
-      {groupBox(lakeX, lakeW, 'LAKEHOUSE')}
-      <OvBox cx={lakeCx} y={nexusY} spec={catalog} />
-      <OvBox cx={lakeCx} y={gpuY} spec={store} />
-      {/* nexus -> catalog (host-side metadata) */}
-      <line x1={nexusRight} y1={metaY} x2={catLeft - 1} y2={metaY} stroke={stroke}
-        strokeWidth={1} strokeDasharray="5 4" />
-      {head(ovHeadRight(catLeft, metaY))}
-      {label((nexusRight + catLeft) / 2, metaY - 8, 'catalog · metadata')}
-      {/* storage -> gpu-resident frame (KvikIO reader path) */}
-      <line x1={storeLeft} y1={kvikY} x2={gpuRight + 1} y2={kvikY} stroke={stroke} strokeWidth={1} />
-      {head(ovHeadLeft(gpuRight, kvikY))}
-      {label((gpuRight + storeLeft) / 2, kvikY - 8, 'KvikIO')}
+
+      {/* Both execution paths preserve the same Arrow result contract. */}
+      <path d={archMergePath(gpuCx, executionBottom, mergeY, outputCx)} fill="none"
+        stroke={stroke} strokeWidth={ARCH_EDGE_WIDTH} strokeLinejoin="round" />
+      <path d={archMergePath(cpuCx, executionBottom, mergeY, outputCx)} fill="none"
+        stroke={stroke} strokeWidth={ARCH_EDGE_WIDTH} strokeLinejoin="round" />
+      <line x1={outputCx} y1={mergeY} x2={outputCx} y2={outY - 1}
+        stroke={stroke} strokeWidth={ARCH_EDGE_WIDTH} />
+      {head(smallHeadDown(outputCx, outY))}
+
+      {/* Evidence is the only dotted side channel. The aligned cards make its
+          relationship to the optimizer explicit without another elbow. */}
+      <line x1={ruleLeft} y1={ruleCy} x2={reportRight + 1} y2={reportCy}
+        stroke={evidenceStroke} strokeWidth={ARCH_EDGE_WIDTH} strokeDasharray="2 6" />
+      {head(smallHeadLeft(reportRight, reportCy), evidenceStroke)}
+
+      {/* Results return outside the planning/execution layout, so the loop is
+          visible without crossing any card or branch. */}
+      <path
+        d={[
+          `M ${outRight} ${outCy}`,
+          `L ${returnRailX - returnRadius} ${outCy}`,
+          `Q ${returnRailX} ${outCy} ${returnRailX} ${outCy - returnRadius}`,
+          `L ${returnRailX} ${topCy + returnRadius}`,
+          `Q ${returnRailX} ${topCy} ${returnRailX - returnRadius} ${topCy}`,
+          `L ${topRight + 1} ${topCy}`,
+        ].join(' ')}
+        fill="none" stroke={stroke} strokeWidth={ARCH_EDGE_WIDTH} strokeLinejoin="round" />
+      {head(smallHeadLeft(topRight, topCy))}
+
+      {/* Boxes are last so edge endpoints tuck under their borders. */}
+      <Box node={top} x={cx - topSize.w / 2} y={topY} w={topSize.w} h={topSize.h}
+        fonts={ARCH_FONTS} kindColor={COLOR.muted}
+        borderColor={ARCH_CARD_BORDER} borderWidth={ARCH_CARD_BORDER_WIDTH} />
+      <rect x={cx - ruleSize.w / 2 - 7} y={ruleY - 7}
+        width={ruleSize.w + 14} height={ruleSize.h + 14} rx={12}
+        fill={TONE.engine} opacity={0.1} />
+      <Box node={rule} x={cx - ruleSize.w / 2} y={ruleY} w={ruleSize.w} h={ruleSize.h}
+        fonts={ARCH_FONTS} kindColor={COLOR.muted}
+        borderColor={ARCH_CARD_BORDER} borderWidth={ARCH_CARD_BORDER_WIDTH} />
+      <Box node={report} x={reportCx - reportSize.w / 2} y={reportY}
+        w={reportSize.w} h={reportSize.h} fonts={ARCH_FONTS} kindColor={COLOR.muted}
+        borderColor={ARCH_CARD_BORDER} borderWidth={ARCH_CARD_BORDER_WIDTH} />
+      <Box node={source} x={sourceCx - sourceSize.w / 2} y={sourceY}
+        w={sourceSize.w} h={sourceSize.h} fonts={ARCH_FONTS} kindColor={COLOR.muted}
+        borderColor={ARCH_CARD_BORDER} borderWidth={ARCH_CARD_BORDER_WIDTH} />
+      <Box node={gpu} x={gpuCx - gpuSize.w / 2} y={executionY}
+        w={gpuSize.w} h={executionH} fonts={ARCH_FONTS} kindColor={COLOR.muted}
+        borderColor={ARCH_CARD_BORDER} borderWidth={ARCH_CARD_BORDER_WIDTH} />
+      <Box node={cpu} x={cpuCx - cpuSize.w / 2} y={executionY}
+        w={cpuSize.w} h={executionH} fonts={ARCH_FONTS} kindColor={COLOR.muted}
+        borderColor={ARCH_CARD_BORDER} borderWidth={ARCH_CARD_BORDER_WIDTH} />
+      <Box node={out} x={outputCx - outSize.w / 2} y={outY} w={outSize.w} h={outSize.h}
+        fonts={ARCH_FONTS} kindColor={COLOR.muted}
+        borderColor={ARCH_CARD_BORDER} borderWidth={ARCH_CARD_BORDER_WIDTH} />
     </Figure>
   );
 }
@@ -776,7 +813,7 @@ export function OverviewDiagram({caption}: {caption?: React.ReactNode}) {
 /* ======================= FlowDiagram ======================= */
 
 // Flow boxes sit between the compact Design-DAG type and the homepage's
-// Overview type: a notch larger than StackDiagram, without its density.
+// ArchitectureDiagram type: a notch larger than StackDiagram, without its density.
 const FLOW_KIND = {size: 10.5, lh: 16, track: 0.07};
 const FLOW_NAME = {size: 14.5, lh: 21};
 const FLOW_NOTE = {size: 12, lh: 17};
@@ -815,7 +852,7 @@ export interface FlowDiagramProps {
 }
 
 /**
- * A top-down flow at OverviewDiagram scale: one centered column of large-type
+ * A top-down flow at ArchitectureDiagram scale: one centered column of large-type
  * boxes, arrow labels beside the spine, dashed ownership containers, and an
  * optional dashed return rail on the right for the backflow. Nodes with
  * `detail` are clickable and drive the panel below the SVG — a blend of the
@@ -920,7 +957,7 @@ export function FlowDiagram({ariaLabel, nodes, groups = [], returns = [], captio
         return (
           <g key={`spine-${i}`}>
             <line x1={cx} y1={top} x2={cx} y2={bottom - 1} stroke={COLOR.border} strokeWidth={1} />
-            <path d={ovHeadDown(cx, bottom)} fill="none" stroke={COLOR.border}
+            <path d={smallHeadDown(cx, bottom)} fill="none" stroke={COLOR.border}
               strokeWidth={1.25} strokeLinecap="round" strokeLinejoin="round" />
             {lines.map((line, j) => (
               <text key={`l-${j}`} x={cx + 12}
@@ -952,7 +989,7 @@ export function FlowDiagram({ariaLabel, nodes, groups = [], returns = [], captio
           <g key={`return-${i}`}>
             <path d={d} fill="none" stroke={COLOR.border} strokeWidth={1}
               strokeDasharray="5 4" strokeLinejoin="round" />
-            <path d={ovHeadLeft(boxRight, to.cy)} fill="none" stroke={COLOR.border}
+            <path d={smallHeadLeft(boxRight, to.cy)} fill="none" stroke={COLOR.border}
               strokeWidth={1.25} strokeLinecap="round" strokeLinejoin="round" />
             {lines.map((line, j) => (
               <text key={`l-${j}`} x={railX + 12}

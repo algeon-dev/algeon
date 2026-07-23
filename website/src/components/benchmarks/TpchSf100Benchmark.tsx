@@ -99,17 +99,17 @@ export default function TpchSf100Benchmark(): React.ReactElement {
     <div className={styles.benchmark}>
       <section className={styles.header}>
         <div>
-          <p className={styles.eyebrow}>AWS EC2 g7e.4xlarge local NVMe</p>
           <ul className={styles.benchmarkFacts}>
             <li>
               <strong>Environment:</strong> AWS EC2 g7e.4xlarge, 16 vCPUs,
-              128 GiB system memory, local NVMe fixture storage, RTX PRO 6000
-              GPU (96 GiB).
+              128 GiB system memory, local NVMe fixture storage, RTX PRO 6000.
             </li>
             <li>
-              <strong>Run:</strong> release build, {dataset.scaleFactor.toUpperCase()},
+              <strong>Run:</strong> {dataset.scaleFactor.toUpperCase()},
               {config.warmups} warmup / {config.iterations} measured iteration,
-              source cache <code>{config.nativeSourceCachePolicy}</code>.
+              <code>GpuOnly</code> fallback policy, source cache{' '}
+              <code>{config.nativeSourceCachePolicy}</code>, LocalKvikio parquet
+              reads.
             </li>
             <li>
               <strong>Result:</strong> CPU {formatSeconds(summary.cpuTotalMs)},
