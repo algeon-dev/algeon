@@ -152,10 +152,6 @@ cudf_status_t cudf_rust_test_support_memory_manager_query_domain_pool_count_for_
       return CUDF_ERROR_INVALID_OPERATION;
     }
     auto* adaptor = manager_state->owner->reservation_adaptor;
-    if (adaptor == nullptr) {
-      set_error("memory manager resource is not reservation-aware");
-      return CUDF_ERROR_INVALID_OPERATION;
-    }
     *out = adaptor->query_domain_pool_count_for_id(domain_id);
     return CUDF_SUCCESS;
   }

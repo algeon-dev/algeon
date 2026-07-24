@@ -939,7 +939,7 @@ cudf_status_t cudf_memory_manager_allocator_event_ring_bounds(
   CUDF_RUST_TRY
   {
     auto manager_state = memory_manager_from_handle(manager);
-    if (manager_state == nullptr || manager_state->allocator_events == nullptr) {
+    if (manager_state == nullptr) {
       set_error("memory manager allocator event ring is unavailable");
       return CUDF_ERROR_INVALID_OPERATION;
     }
@@ -963,7 +963,7 @@ cudf_status_t cudf_memory_manager_read_allocator_event(
   CUDF_RUST_TRY
   {
     auto manager_state = memory_manager_from_handle(manager);
-    if (manager_state == nullptr || manager_state->allocator_events == nullptr) {
+    if (manager_state == nullptr) {
       set_error("memory manager allocator event ring is unavailable");
       return CUDF_ERROR_INVALID_OPERATION;
     }

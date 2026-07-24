@@ -257,7 +257,6 @@ cudf_status_t cudf_device_buffer_copy_from_host_range_async_ex(cudf_device_buffe
     set_error("copy range exceeds buffer size");
     return CUDF_ERROR_INVALID_OPERATION;
   }
-  if (size == 0) { return CUDF_SUCCESS; }
   CUDF_RUST_TRY
   {
     auto exec                       = std::unique_ptr<cudf_exec_context>{};
@@ -267,6 +266,7 @@ cudf_status_t cudf_device_buffer_copy_from_host_range_async_ex(cudf_device_buffe
       set_error("exec options device must match device buffer provenance");
       return CUDF_ERROR_INVALID_OPERATION;
     }
+    if (size == 0) { return CUDF_SUCCESS; }
 
     CUDF_CUDA_TRY(cudaMemcpyAsync(static_cast<char*>(buf.data()) + dst_offset,
                                   host_data,

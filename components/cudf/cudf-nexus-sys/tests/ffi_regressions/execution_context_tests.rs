@@ -87,6 +87,44 @@ fn test_device_buffer_copy_from_host_requires_explicit_exec_options_and_syncs() 
 }
 
 #[test]
+fn test_zero_length_device_buffer_range_copy_requires_explicit_exec_options() {
+    let _shim_state = lock_shim_state();
+    let source = [0u8];
+    let (stream, _mr, exec) = strict_exec_owners();
+    let explicit_stream = stream_value(stream.as_raw());
+    let mut buffer: cudf_sys::cudf_device_buffer_handle = ptr::null_mut();
+    let st = unsafe { cudf_sys::cudf_device_buffer_create_ex(1, &exec, &mut buffer) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+
+    let st = unsafe {
+        cudf_sys::cudf_device_buffer_copy_from_host_range_async_ex(
+            buffer,
+            0,
+            source.as_ptr() as *const c_void,
+            0,
+            ptr::null(),
+        )
+    };
+    assert_eq!(st, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
+
+    reset_exec_observation();
+    let st = unsafe {
+        cudf_sys::cudf_device_buffer_copy_from_host_range_async_ex(
+            buffer,
+            0,
+            source.as_ptr() as *const c_void,
+            0,
+            &exec,
+        )
+    };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(last_exec_stream_value(), explicit_stream);
+    assert_eq!(last_exec_sync_stream_value(), NO_SYNC_RECORDED);
+
+    unsafe { cudf_sys::cudf_device_buffer_destroy(buffer) };
+}
+
+#[test]
 fn test_column_copy_requires_explicit_exec_options() {
     let _shim_state = lock_shim_state();
     let col = make_i32_column(&[1, 2, 3, 4]);
