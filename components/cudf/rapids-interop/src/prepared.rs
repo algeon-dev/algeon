@@ -141,7 +141,7 @@ impl<'a> PreparedColumnExport<'a> {
             retained_owner: None,
             producer_device,
             lease_state: LeaseRootState::default(),
-            lease_backend: LeaseBackend::semantic_default(),
+            lease_backend: LeaseBackend::semantic_guaranteed_fallback(),
         })
     }
 
@@ -210,7 +210,7 @@ impl<'a> PreparedColumnExport<'a> {
         read_start: ReadStartAuthority<'consumer>,
         completion: CompletionAuthority<'consumer>,
     ) -> Result<ActiveColumnReadLease<'export, 'a, 'consumer>> {
-        validate_read_start_authority(self.profile, read_start, self.producer_device)?;
+        validate_read_start_authority(self.profile, read_start)?;
         validate_completion_authority(self.profile, completion, self.producer_device)?;
         let read_start_binding = read_start_binding(read_start);
         let completion_binding = completion_binding(completion);
@@ -438,7 +438,7 @@ impl<'a> PreparedTableExport<'a> {
             retained_owner: None,
             producer_device,
             lease_state: LeaseRootState::default(),
-            lease_backend: LeaseBackend::semantic_default(),
+            lease_backend: LeaseBackend::semantic_guaranteed_fallback(),
         })
     }
 
@@ -537,7 +537,7 @@ impl<'a> PreparedTableExport<'a> {
         read_start: ReadStartAuthority<'consumer>,
         completion: CompletionAuthority<'consumer>,
     ) -> Result<ActiveTableReadLease<'export, 'a, 'consumer>> {
-        validate_read_start_authority(self.profile, read_start, self.producer_device)?;
+        validate_read_start_authority(self.profile, read_start)?;
         validate_completion_authority(self.profile, completion, self.producer_device)?;
         let read_start_binding = read_start_binding(read_start);
         let completion_binding = completion_binding(completion);

@@ -151,7 +151,6 @@ impl SourceChunk {
         chunk_index: usize,
         row_group_indexes: Option<Vec<usize>>,
     ) -> Result<Self> {
-        source.validate(OP_PLAN_CHUNKS)?;
         let source_file = source.files.get(file_index).ok_or_else(|| {
             Error::new_with(
                 ErrorCode::IndexOutOfBounds,
@@ -449,8 +448,6 @@ pub fn plan_local_parquet_source_chunks(
     source: &LocalParquetSource,
     policy: SourceChunkPlanningPolicy,
 ) -> Result<SourceChunkPlan> {
-    source.validate(OP_PLAN_CHUNKS)?;
-
     let mut chunks = Vec::new();
     let mut metadata_unavailable_files = 0usize;
 

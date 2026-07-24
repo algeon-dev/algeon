@@ -530,13 +530,8 @@ impl DataFrame {
         event: &'a CudaEvent,
     ) -> Result<PreparedTableExport<'a>, InteropError> {
         let operation = "interop::DataFrame::try_prepare_device_table_export_with_event";
-        let (default_device, readiness) = prepared_device_event_readiness(operation, self.execution_domain(), event)?;
-        let context = super::table_export::DeviceTableExportContext::with_readiness(
-            operation,
-            self.execution_domain(),
-            default_device,
-            readiness,
-        )?;
+        let context =
+            super::table_export::DeviceTableExportContext::from_event(operation, self.execution_domain(), event)?;
         prepare_device_table_export_from_columns_with_readiness(
             self.columns_map().values().map(AsRef::as_ref),
             self.num_rows(),

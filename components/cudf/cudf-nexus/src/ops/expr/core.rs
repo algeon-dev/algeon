@@ -430,10 +430,7 @@ impl Expr {
                 ctx.wrap_column(col)
             },
 
-            Expr::Alias { inner, name } => {
-                let _ = name;
-                inner.eval_with_context(ctx)
-            },
+            Expr::Alias { inner, .. } => inner.eval_with_context(ctx),
 
             Expr::FillNaScalar { input, value } => {
                 let series = input.eval_with_context(ctx)?;

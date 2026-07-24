@@ -93,6 +93,7 @@ impl<'a> PartitionedPreparedTableExport<'a> {
     ) -> Result<Self> {
         validate_partitioned_table_partitions(
             "partitioned prepared table export",
+            ExportProfile::PreparedDeviceExport,
             schema_names.as_deref(),
             num_rows,
             &partitions,
@@ -159,6 +160,7 @@ impl PartitionedOwnedTableTransfer {
     ) -> Result<Self> {
         validate_partitioned_table_partitions(
             "partitioned owned table transfer",
+            ExportProfile::OwnedDeviceTransfer,
             schema_names.as_deref(),
             num_rows,
             &partitions,
@@ -189,6 +191,7 @@ impl PartitionedOwnedTableTransfer {
 
 fn validate_partitioned_table_partitions<P>(
     kind: &'static str,
+    expected_profile: ExportProfile,
     schema_names: Option<&[String]>,
     num_rows: usize,
     partitions: &[P],
@@ -218,12 +221,6 @@ where
         .with_context("names_len", names.len().to_string())
         .with_context("partition_top_level_columns", partition_top_level_columns.to_string()));
     }
-
-    let expected_profile = match kind {
-        "partitioned prepared table export" => ExportProfile::PreparedDeviceExport,
-        "partitioned owned table transfer" => ExportProfile::OwnedDeviceTransfer,
-        _ => unreachable!("unexpected partitioned table validation kind"),
-    };
 
     let mut seen = vec![false; total_top_level_columns];
     for (partition_index, partition) in partitions.iter().enumerate() {

@@ -742,19 +742,6 @@ pub(crate) fn check_status_in_without_device_report(
 /// Canonical facts should use typed fact helpers; this helper is reserved for
 /// annotations that are useful for diagnosis but are not part of the stable
 /// machine-readable error identity.
-pub(crate) fn check_status_in_with<I>(
-    status: cudf_sys::cudf_status_t,
-    operation: &'static str,
-    details: I,
-) -> Result<()>
-where
-    I: IntoIterator<Item = (&'static str, String)>,
-{
-    check_status_in(status, operation).map_err(|err| err.with_details(details))
-}
-
-/// Alias for `check_status_in_with` under the new canonical name. Kept for
-/// call sites updated to the new vocabulary.
 pub(crate) fn check_status_in_with_details<I>(
     status: cudf_sys::cudf_status_t,
     operation: &'static str,
@@ -763,7 +750,7 @@ pub(crate) fn check_status_in_with_details<I>(
 where
     I: IntoIterator<Item = (&'static str, String)>,
 {
-    check_status_in_with(status, operation, details)
+    check_status_in(status, operation).map_err(|err| err.with_details(details))
 }
 
 // --------------------------------------------------------------------------

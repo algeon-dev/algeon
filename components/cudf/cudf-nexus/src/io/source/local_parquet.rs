@@ -38,12 +38,7 @@ impl ParquetSourceLocation {
     pub fn read_capability(&self) -> &'static str {
         match self {
             Self::LocalPath(_) => "local_file_system",
-            Self::ObjectStoreUri(source)
-                if uri_scheme(source.uri()).is_some_and(|scheme| scheme.eq_ignore_ascii_case("s3")) =>
-            {
-                "object_store:s3"
-            },
-            Self::ObjectStoreUri(_) => "object_store:unsupported",
+            Self::ObjectStoreUri(_) => "object_store:s3",
         }
     }
 
@@ -219,7 +214,6 @@ impl LocalParquetSource {
             .with_detail("reason", "reader_predicate_on_non_data_source"));
         }
         self.reader_predicate = Some(predicate);
-        self.validate(OP_SOURCE_DATA)?;
         Ok(self)
     }
 

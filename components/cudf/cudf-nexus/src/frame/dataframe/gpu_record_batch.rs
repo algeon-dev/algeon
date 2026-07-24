@@ -724,7 +724,7 @@ impl HostBatchCursor {
     }
 
     pub fn remaining_rows(&self) -> usize {
-        self.batch.num_rows().saturating_sub(self.offset)
+        self.batch.num_rows() - self.offset
     }
 
     /// Whether the cursor can still yield a host batch.
@@ -746,6 +746,7 @@ impl HostBatchCursor {
         let mut candidate = self.candidate(candidate_rows)?;
         let mut estimated_bytes = candidate.estimated_materialization_bytes()?;
         if candidate_rows > 1 && estimated_bytes > self.config.target_materialization_bytes {
+            // Release the oversized GPU slice before allocating binary-search probes.
             drop(candidate);
             let mut low = 1usize;
             let mut high = candidate_rows - 1;
@@ -754,6 +755,7 @@ impl HostBatchCursor {
                 let middle = low + (high - low) / 2;
                 let probe = self.candidate(middle)?;
                 let estimated_bytes = probe.estimated_materialization_bytes()?;
+                // Release each GPU slice before allocating the next probe.
                 drop(probe);
                 if estimated_bytes <= self.config.target_materialization_bytes {
                     best_rows = middle;
@@ -1451,9 +1453,7 @@ fn validate_fixed_size_list_offsets(
         2,
         true,
     )
-    .with_memory(
-        QueryMemoryObservation::empty().with_downloaded_bytes(2usize.saturating_mul(std::mem::size_of::<i32>())),
-    );
+    .with_memory(QueryMemoryObservation::empty().with_downloaded_bytes(2 * std::mem::size_of::<i32>()));
     record_boundary_observation_in_domain(producer.execution_domain(), observation);
     if minimum != dimension || maximum != dimension {
         return Err(Error::new_with(
@@ -1678,7 +1678,7 @@ fn record_fixed_size_list_structural_proof(
     producer: &Arc<crate::core::Column>,
     observation: Option<BoundaryObservation>,
 ) -> FixedSizeListStructuralProof {
-    FIXED_SIZE_LIST_STRUCTURAL_PROOF_BUILD_COUNT.with(|count| count.set(count.get().saturating_add(1)));
+    FIXED_SIZE_LIST_STRUCTURAL_PROOF_BUILD_COUNT.with(|count| count.set(count.get() + 1));
     FixedSizeListStructuralProof {
         field_index,
         dimension,
@@ -1777,12 +1777,14 @@ fn validate_list_float32_export<'a>(
         .with_detail("root_rows", root.len().to_string())
         .with_detail("proof_rows", contract.rows.to_string()));
     }
-    if contract.root_offset.is_some_and(|root_offset| root.offset() != root_offset) {
+    if let Some(root_offset) = contract.root_offset
+        && root.offset() != root_offset
+    {
         return Err(contract_error(
             "prepared list export root offset differs from the proven active range",
             "list_float32_export_root_offset_mismatch",
         )
-        .with_detail("proof_root_offset", contract.root_offset.unwrap_or_default().to_string())
+        .with_detail("proof_root_offset", root_offset.to_string())
         .with_detail("export_root_offset", root.offset().to_string()));
     }
     if !validity_proves_no_nulls(root.validity()) {

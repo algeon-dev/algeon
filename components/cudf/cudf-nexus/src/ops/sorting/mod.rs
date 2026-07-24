@@ -294,8 +294,6 @@ fn validate_sort_params(
     column_order: Option<&[Order]>,
     null_precedence: Option<&[NullOrder]>,
 ) -> Result<()> {
-    let expected = i32::try_from(num_keys).map_err(|_| sort_key_count_limit_error(operation, num_keys))?;
-
     if let Some(orders) = column_order
         && orders.len() != num_keys
     {
@@ -322,7 +320,6 @@ fn validate_sort_params(
         ));
     }
 
-    let _ = expected;
     Ok(())
 }
 
@@ -376,7 +373,7 @@ fn sort_params(column_order: Option<&[Order]>, null_precedence: Option<&[NullOrd
             .iter()
             .enumerate()
             .map(|(index, &null_order)| {
-                let order = column_order.and_then(|orders| orders.get(index)).copied().unwrap_or(Order::Ascending);
+                let order = column_order.map_or(Order::Ascending, |orders| orders[index]);
                 cudf_null_order_for_output_placement(order, null_order)
             })
             .collect::<Vec<_>>()

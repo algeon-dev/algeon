@@ -32,16 +32,7 @@ fn join_gather_map_reservation_size_bytes(
         .with_detail("max_output_rows", JOIN_GATHER_MAP_MAX_ROWS.to_string()));
     }
 
-    output_rows
-        .checked_mul(JOIN_GATHER_MAP_INDEX_SIZE_BYTES)
-        .and_then(|single_map_bytes| single_map_bytes.checked_mul(map_count))
-        .ok_or_else(|| {
-            Error::new_with(ErrorCode::ValueOutOfRange, operation, "join gather-map reservation size overflowed usize")
-                .with_detail("reason", "size_overflowed_usize")
-                .with_detail("output_rows", output_rows.to_string())
-                .with_detail("gather_map_count", map_count.to_string())
-                .with_detail("index_size_bytes", JOIN_GATHER_MAP_INDEX_SIZE_BYTES.to_string())
-        })
+    Ok(output_rows * JOIN_GATHER_MAP_INDEX_SIZE_BYTES * map_count)
 }
 
 /// DataFrame-level equality join key options for query-planning helpers.
@@ -692,7 +683,7 @@ impl DataFrameJoinPairIndices {
 
     /// Returns bytes retained by both device-side gather maps.
     pub fn device_allocated_size_bytes(&self) -> crate::core::error::Result<usize> {
-        Ok(self.left.device_allocated_size_bytes()?.saturating_add(self.right.device_allocated_size_bytes()?))
+        Ok(self.left.device_allocated_size_bytes()? + self.right.device_allocated_size_bytes()?)
     }
 
     /// Return exact bytes that must be reserved for a pair of device-side join
@@ -750,7 +741,7 @@ impl DataFrameHashJoinPairIndices {
 
     /// Returns bytes retained by both device-side gather maps.
     pub fn device_allocated_size_bytes(&self) -> crate::core::error::Result<usize> {
-        Ok(self.probe.device_allocated_size_bytes()?.saturating_add(self.build.device_allocated_size_bytes()?))
+        Ok(self.probe.device_allocated_size_bytes()? + self.build.device_allocated_size_bytes()?)
     }
 
     /// Return exact bytes that must be reserved for a reusable hash-join probe

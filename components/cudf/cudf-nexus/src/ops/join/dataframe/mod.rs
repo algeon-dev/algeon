@@ -4,7 +4,6 @@ use crate::{
     core::{
         column::Column,
         error::{Error, ErrorCode, FACT_KEYS_COUNT, FACT_LEFT_TYPE_ID, FACT_RIGHT_TYPE_ID, Result},
-        types::TypeId,
     },
     frame::{
         dataframe::{
@@ -33,22 +32,6 @@ use crate::{
 
 const MATERIALIZE_JOIN_INDICES_RESERVATION_CONTRACT: &str = "materialize_join_indices_reservation_size_bytes";
 const PROJECTED_CROSS_JOIN_RESERVATION_CONTRACT: &str = "projected_cross_join_reservation_size_bytes";
-
-fn hash_join_retained_preprocessing_reservation_gap(error: &Error) -> bool {
-    error.code() == ErrorCode::ForeignInvalidArgument
-        && error.detail_value("reservation_contract") == Some("hash_join_pre_build_reservation_size_bytes")
-        && error.message().contains("preprocessing buffers")
-}
-
-fn hash_join_retained_preprocessing_fallback_supported(build: &TempTableView<'_>) -> Result<bool> {
-    for index in 0..build.table().num_columns()? {
-        match build.table().column(index)?.data_type()?.id() {
-            TypeId::String | TypeId::List | TypeId::Struct => return Ok(false),
-            _ => {},
-        }
-    }
-    Ok(true)
-}
 
 struct JoinSplitKeys<'a, 'key> {
     left_on: &'a [&'key str],
@@ -111,10 +94,8 @@ fn mixed_join_tables<'a>(
     options: &DataFrameMixedJoinOptions,
     operation: &'static str,
 ) -> Result<MixedDataFrameJoinTables<'a>> {
-    let (left_on, right_on) = resolve_dataframe_mixed_join_keys(options, operation)?;
-    if left_on.len() != right_on.len() {
-        return Err(merge_key_count_mismatch_error(operation, left_on.len(), right_on.len()));
-    }
+    let (left_on, right_on, _) =
+        resolve_join_keys(options.on_keys(), options.left_on_keys(), options.right_on_keys(), operation)?;
     if options.left_predicate_column_names().is_empty() || options.right_predicate_column_names().is_empty() {
         return Err(merge_validation_error(
             operation,
@@ -242,6 +223,27 @@ fn validate_hash_join_key_names(keys: &[String], operation: &'static str) -> Res
     validate_no_duplicate_names(keys, operation)
 }
 
+fn resolve_probe_key_table<'a, I, S>(
+    probe: &'a DataFrame,
+    probe_on: I,
+    build_key_count: usize,
+    operation: &'static str,
+) -> Result<TempTableView<'a>>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let probe_keys = probe_on.into_iter().map(|key| key.as_ref().to_string()).collect::<Vec<_>>();
+    validate_hash_join_key_names(&probe_keys, operation)?;
+    if probe_keys.len() != build_key_count {
+        return Err(merge_key_count_mismatch_error(operation, probe_keys.len(), build_key_count));
+    }
+
+    let probe_key_refs = string_refs(&probe_keys);
+    let probe_key_indices = resolve_column_names(probe.columns_map(), &probe_key_refs, operation)?;
+    build_borrowed_table_view_from_columns(probe.columns_map(), &probe_key_indices)
+}
+
 fn merge_key_count_mismatch_error(operation: &'static str, left_count: usize, right_count: usize) -> Error {
     merge_validation_error(
         operation,
@@ -295,11 +297,13 @@ pub(super) fn trigger_projected_cross_join_input_row_limit_for_test_impl() -> Re
         .map(|plan| plan.output_rows())
 }
 
-fn resolve_merge_keys(
-    options: &join::MergeOptions,
+fn resolve_join_keys(
+    on: Option<&[String]>,
+    left_on: Option<&[String]>,
+    right_on: Option<&[String]>,
     operation: &'static str,
 ) -> Result<(Vec<String>, Vec<String>, bool)> {
-    match (options.on_keys(), options.left_on_keys(), options.right_on_keys()) {
+    let (left, right, shared) = match (on, left_on, right_on) {
         // on() mode: shared key names
         (Some(on), None, None) => {
             let keys: Vec<String> = on.to_vec();
@@ -335,81 +339,12 @@ fn resolve_merge_keys(
             "missing_join_keys",
             "set on() or left_on() + right_on()",
         )),
-    }
-}
+    }?;
 
-fn resolve_dataframe_join_keys(
-    options: &DataFrameJoinOptions,
-    operation: &'static str,
-) -> Result<(Vec<String>, Vec<String>)> {
-    match (options.on_keys(), options.left_on_keys(), options.right_on_keys()) {
-        (Some(on), None, None) => {
-            let keys: Vec<String> = on.to_vec();
-            Ok((keys.clone(), keys))
-        },
-        (None, Some(lo), Some(ro)) => Ok((lo.to_vec(), ro.to_vec())),
-        (None, Some(_), None) => Err(merge_validation_error(
-            operation,
-            "left_on was specified without right_on; set both or use on()",
-            "left_on_without_right_on",
-            "set right_on() or use on()",
-        )),
-        (None, None, Some(_)) => Err(merge_validation_error(
-            operation,
-            "right_on was specified without left_on; set both or use on()",
-            "right_on_without_left_on",
-            "set left_on() or use on()",
-        )),
-        (Some(_), _, _) => Err(merge_validation_error(
-            operation,
-            "on() cannot be combined with left_on()/right_on(); use one or the other",
-            "ambiguous_join_key_configuration",
-            "use on() or left_on() + right_on(), not both",
-        )),
-        (None, None, None) => Err(merge_validation_error(
-            operation,
-            "no join keys specified; use on() or left_on() + right_on()",
-            "missing_join_keys",
-            "set on() or left_on() + right_on()",
-        )),
+    if left.len() != right.len() {
+        return Err(merge_key_count_mismatch_error(operation, left.len(), right.len()));
     }
-}
-
-fn resolve_dataframe_mixed_join_keys(
-    options: &DataFrameMixedJoinOptions,
-    operation: &'static str,
-) -> Result<(Vec<String>, Vec<String>)> {
-    match (options.on_keys(), options.left_on_keys(), options.right_on_keys()) {
-        (Some(on), None, None) => {
-            let keys: Vec<String> = on.to_vec();
-            Ok((keys.clone(), keys))
-        },
-        (None, Some(lo), Some(ro)) => Ok((lo.to_vec(), ro.to_vec())),
-        (None, Some(_), None) => Err(merge_validation_error(
-            operation,
-            "left_on was specified without right_on; set both or use on()",
-            "left_on_without_right_on",
-            "set right_on() or use on()",
-        )),
-        (None, None, Some(_)) => Err(merge_validation_error(
-            operation,
-            "right_on was specified without left_on; set both or use on()",
-            "right_on_without_left_on",
-            "set left_on() or use on()",
-        )),
-        (Some(_), _, _) => Err(merge_validation_error(
-            operation,
-            "on() cannot be combined with left_on()/right_on(); use one or the other",
-            "ambiguous_join_key_configuration",
-            "use on() or left_on() + right_on(), not both",
-        )),
-        (None, None, None) => Err(merge_validation_error(
-            operation,
-            "no join keys specified; use on() or left_on() + right_on()",
-            "missing_join_keys",
-            "set on() or left_on() + right_on()",
-        )),
-    }
+    Ok((left, right, shared))
 }
 
 /// Reassemble a split join result into a single DataFrame using high-level suffix rules.

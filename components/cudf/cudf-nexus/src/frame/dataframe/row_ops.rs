@@ -255,10 +255,6 @@ impl DataFrame {
     }
 
     fn gather_range(&self, start: usize, len: usize) -> Result<Self> {
-        if len == 0 {
-            return self.empty_with_same_schema();
-        }
-
         let output_domain = Arc::clone(&self.domain);
         self.gather_range_impl(start, len, output_domain, "dataframe::gather_range")
     }

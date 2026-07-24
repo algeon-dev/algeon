@@ -34,10 +34,9 @@ impl ActiveLeaseBackend for SharedCudaLeaseBackend {
         &self,
         export: &LeaseExportContext,
         read_start: rapids_interop::ReadStartBinding,
-        completion: CompletionBinding,
+        _completion: CompletionBinding,
     ) -> rapids_interop::Result<LeaseActivation> {
         let producer_readiness = producer_readiness_binding_from_export(export, SHARED_ACTIVATE_LEASE_OP)?;
-        let _ = completion;
 
         match read_start {
             rapids_interop::ReadStartBinding::SynchronousByReturn => {

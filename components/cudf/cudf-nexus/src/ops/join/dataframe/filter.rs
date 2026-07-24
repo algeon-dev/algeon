@@ -383,15 +383,7 @@ impl DataFrameFilteredJoin {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        let probe_keys = probe_on.into_iter().map(|key| key.as_ref().to_string()).collect::<Vec<_>>();
-        validate_hash_join_key_names(&probe_keys, operation)?;
-        if probe_keys.len() != self.build_keys.len() {
-            return Err(merge_key_count_mismatch_error(operation, probe_keys.len(), self.build_keys.len()));
-        }
-
-        let probe_key_refs = probe_keys.iter().map(|key| key.as_str()).collect::<Vec<_>>();
-        let probe_key_indices = resolve_column_names(probe.columns_map(), &probe_key_refs, operation)?;
-        let probe_key_table = build_borrowed_table_view_from_columns(probe.columns_map(), &probe_key_indices)?;
+        let probe_key_table = resolve_probe_key_table(probe, probe_on, self.build_keys.len(), operation)?;
         let raw_indices = match (semi_join, output_size) {
             (true, Some(output_size)) => {
                 self.join.left_semi_join_indices_with_output_size_in(probe_key_table.table(), output_size, ctx)?
@@ -423,15 +415,7 @@ impl DataFrameFilteredJoin {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        let probe_keys = probe_on.into_iter().map(|key| key.as_ref().to_string()).collect::<Vec<_>>();
-        validate_hash_join_key_names(&probe_keys, operation)?;
-        if probe_keys.len() != self.build_keys.len() {
-            return Err(merge_key_count_mismatch_error(operation, probe_keys.len(), self.build_keys.len()));
-        }
-
-        let probe_key_refs = probe_keys.iter().map(|key| key.as_str()).collect::<Vec<_>>();
-        let probe_key_indices = resolve_column_names(probe.columns_map(), &probe_key_refs, operation)?;
-        let probe_key_table = build_borrowed_table_view_from_columns(probe.columns_map(), &probe_key_indices)?;
+        let probe_key_table = resolve_probe_key_table(probe, probe_on, self.build_keys.len(), operation)?;
         let state = if semi_join {
             self.join.begin_left_semi_probe_in(probe_key_table.table(), ctx)?
         } else {
@@ -452,15 +436,7 @@ impl DataFrameFilteredJoin {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        let probe_keys = probe_on.into_iter().map(|key| key.as_ref().to_string()).collect::<Vec<_>>();
-        validate_hash_join_key_names(&probe_keys, operation)?;
-        if probe_keys.len() != self.build_keys.len() {
-            return Err(merge_key_count_mismatch_error(operation, probe_keys.len(), self.build_keys.len()));
-        }
-
-        let probe_key_refs = probe_keys.iter().map(|key| key.as_str()).collect::<Vec<_>>();
-        let probe_key_indices = resolve_column_names(probe.columns_map(), &probe_key_refs, operation)?;
-        let probe_key_table = build_borrowed_table_view_from_columns(probe.columns_map(), &probe_key_indices)?;
+        let probe_key_table = resolve_probe_key_table(probe, probe_on, self.build_keys.len(), operation)?;
         if semi_join {
             self.join.left_semi_join_size_in(probe_key_table.table(), ctx)
         } else {

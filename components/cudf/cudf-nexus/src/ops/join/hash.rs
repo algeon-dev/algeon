@@ -1255,13 +1255,13 @@ pub fn hash_join_pre_build_reservation_size_bytes_from_non_nullable_fixed_width_
     Ok(slots.saturating_mul(bytes_per_key).saturating_add(64))
 }
 
-fn is_hash_join_retained_preprocessing_reservation_gap(error: &Error) -> bool {
+pub(crate) fn is_hash_join_retained_preprocessing_reservation_gap(error: &Error) -> bool {
     error.code() == ErrorCode::ForeignInvalidArgument
         && error.detail_value("reservation_contract") == Some("hash_join_pre_build_reservation_size_bytes")
         && error.message().contains("preprocessing buffers")
 }
 
-fn hash_join_retained_preprocessing_fallback_supported(build: &TableView<'_>) -> Result<bool> {
+pub(crate) fn hash_join_retained_preprocessing_fallback_supported(build: &TableView<'_>) -> Result<bool> {
     for index in 0..build.num_columns()? {
         match build.column(index)?.data_type()?.id() {
             TypeId::String | TypeId::List | TypeId::Struct => return Ok(false),

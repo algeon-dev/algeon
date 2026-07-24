@@ -1,9 +1,6 @@
 use std::sync::Arc;
 
-use super::{
-    InfoDetail,
-    owned::{DataFrame, derive_frame_domain_from_columns},
-};
+use super::owned::DataFrame;
 use crate::{
     core::{
         error::{Error, ErrorCode, ErrorKind, FACT_ACTUAL_ROWS, FACT_EXPECTED_ROWS, Result},
@@ -100,7 +97,7 @@ impl DataFrame {
         new_columns.insert(name.to_string(), Arc::clone(series.column_arc()));
 
         let row_count = expected_rows.unwrap_or(col_rows);
-        let domain = derive_frame_domain_from_columns(&new_columns, "dataframe::with_column")?;
+        let domain = Arc::clone(&self.domain);
         Ok(Self { columns: new_columns, row_count, domain })
     }
 
@@ -178,7 +175,7 @@ impl DataFrame {
         }
 
         let row_count = expected_rows.unwrap_or(self.row_count);
-        let domain = derive_frame_domain_from_columns(&new_columns, "dataframe::assign")?;
+        let domain = Arc::clone(&self.domain);
         Ok(Self { columns: new_columns, row_count, domain })
     }
 
@@ -251,7 +248,7 @@ impl DataFrame {
         let output = self
             .with_columns_in_context(exprs, &ctx, operation)
             .map_err(|error| annotate_dataframe_budget_execution_error(error, token, operation))?;
-        let output_bytes = dataframe_device_allocated_size_bytes(&output, operation)?;
+        let output_bytes = output.device_allocated_size_bytes().map_err(|error| error.reanchor_if_needed(operation))?;
         let report = token
             .reservation_enforced_report()
             .with_retained_bytes(output_bytes)
@@ -341,8 +338,7 @@ impl DataFrame {
             }
         }
 
-        let domain =
-            super::owned::resolve_frame_domain_from_authoritative_source(&new_columns, &output_domain, operation)?;
+        let domain = output_domain;
         Ok(Self { columns: new_columns, row_count: self.row_count, domain })
     }
 
@@ -392,7 +388,7 @@ impl DataFrame {
         let output = self
             .cast_column_in_context(column, target_type.into(), &context, operation)
             .map_err(|error| annotate_dataframe_budget_execution_error(error, token, operation))?;
-        let output_bytes = dataframe_device_allocated_size_bytes(&output, operation)?;
+        let output_bytes = output.device_allocated_size_bytes().map_err(|error| error.reanchor_if_needed(operation))?;
         let report = token
             .reservation_enforced_report()
             .with_retained_bytes(output_bytes)
@@ -456,7 +452,7 @@ impl DataFrame {
         let mut new_columns = self.columns.clone();
         new_columns.insert(column.to_string(), Arc::new(new_col));
 
-        let domain = derive_frame_domain_from_columns(&new_columns, operation)?;
+        let domain = Arc::clone(&self.domain);
         Ok(Self { columns: new_columns, row_count: self.row_count, domain })
     }
 }
@@ -470,20 +466,4 @@ fn annotate_dataframe_budget_execution_error(
         ErrorKind::ResourceExhausted | ErrorKind::DependencyFailure => token.annotate_error(error, operation),
         _ => error.reanchor_if_needed(operation),
     }
-}
-
-fn dataframe_device_allocated_size_bytes(frame: &DataFrame, operation: &'static str) -> Result<usize> {
-    let info = frame.info_with(InfoDetail::DEVICE_ALLOCATED).map_err(|error| error.reanchor_if_needed(operation))?;
-    let Some(memory) = info.memory_accounting else {
-        return Err(crate::core::error::invariant_violation(
-            operation,
-            "InfoDetail::DEVICE_ALLOCATED must populate dataframe memory accounting",
-        ));
-    };
-    memory.device_allocated_bytes.ok_or_else(|| {
-        crate::core::error::invariant_violation(
-            operation,
-            "InfoDetail::DEVICE_ALLOCATED must populate dataframe device-allocated bytes",
-        )
-    })
 }
