@@ -1301,9 +1301,9 @@ mod tests {
     fn adapter_unsupported_column_facts_are_client_visible() {
         let status = datafusion_error_to_status_for_operation(
             Error::new(
-                ErrorCode::NativeCandidateRejected,
+                ErrorCode::UnsupportedType,
                 "datafusion_nexus.native.lowering.table_format",
-                "native table-format candidate rejected; first rejection=unsupported_type",
+                "native table-format capability does not support the projected type",
             )
             .with_fact("unsupported_column", "countDetail")
             .with_fact(
@@ -1315,9 +1315,9 @@ mod tests {
             TEST_OPERATION,
         );
 
-        assert_eq!(status.code(), Code::InvalidArgument);
-        assert_error_metadata(&status, "native_candidate_rejected", "planning", "permanent");
-        assert!(status.message().contains("first rejection=unsupported_type"));
+        assert_eq!(status.code(), Code::Unimplemented);
+        assert_error_metadata(&status, "unsupported_type", "unsupported", "permanent");
+        assert!(status.message().contains("does not support the projected type"));
         assert!(status.message().contains("unsupported_column=countDetail"));
         assert!(status.message().contains(
             "unsupported_column_type=Map(\"entries\": non-null Struct(\"key\": non-null Utf8, \"value\": Int32), unsorted)"

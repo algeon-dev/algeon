@@ -16,8 +16,8 @@ use datafusion_nexus::{
     error::{DataFusionErrorExt, Error as AdapterError},
     native_exec::NexusNativeExecutionConfig,
     native_report::{
-        NativeDataFusionExecutionMetrics, NativeDataFusionPlanningOutcome, NativeDataFusionPlanningReport,
-        NativeDataFusionPlanningRow, NativeDataFusionPostNativeExecutionPath,
+        FinalPlanDisposition, NativeDataFusionExecutionMetrics, NativeDataFusionPlanningOutcome,
+        NativeDataFusionPlanningReport, NativeDataFusionPlanningRow,
     },
     planner::{NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule},
     session::NexusSessionStateBuilderExt,
@@ -149,7 +149,7 @@ struct StressRow {
     total_wall_ms: f64,
     native_wall_ms: Option<f64>,
     planning_outcome: String,
-    post_native_execution_path: String,
+    final_disposition: String,
     native_runtime_outcome: &'static str,
     parity_status: &'static str,
     cpu_output_rows: Option<usize>,
@@ -453,8 +453,11 @@ async fn run_native_request(
                 admission_facts,
                 total_wall_ms: duration_ms(total_started.elapsed()),
                 native_wall_ms: Some(duration_ms(native_started.elapsed())),
-                planning_outcome: planning_row.outcome.as_str().to_string(),
-                post_native_execution_path: planning_row.post_native_execution_path.as_str().to_string(),
+                planning_outcome: planning_row
+                    .outcome
+                    .map_or("none", NativeDataFusionPlanningOutcome::as_str)
+                    .to_string(),
+                final_disposition: planning_row.final_disposition.as_str().to_string(),
                 native_runtime_outcome: "succeeded",
                 parity_status: parity,
                 cpu_output_rows: cpu.map(|cpu| cpu.output_rows),
@@ -470,8 +473,8 @@ async fn run_native_request(
             admission_sequence,
             admission_wait_ms,
             admission_facts,
-            planning_row.outcome.as_str(),
-            planning_row.post_native_execution_path.as_str(),
+            planning_row.outcome.map_or("none", NativeDataFusionPlanningOutcome::as_str),
+            planning_row.final_disposition.as_str(),
             "failed",
             "native_failed",
             StructuredFailure::from_datafusion_error(&error),
@@ -523,19 +526,19 @@ async fn prepare_native_with_handle(
     let plan = df.create_physical_plan().await?;
     let planning_report = NativeDataFusionPlanningReport::from_retained_rule(query.id, Arc::clone(&plan), &native_rule);
     let planning_row = select_planning_row(query.id, planning_report.rows)?;
-    if planning_row.outcome != NativeDataFusionPlanningOutcome::AcceptedReplaced {
+    if planning_row.outcome != Some(NativeDataFusionPlanningOutcome::Selected) {
         return Err(plan_error(format!(
             "{} was not accepted by native planning; outcome={} reason_code={}",
             query.id,
-            planning_row.outcome.as_str(),
+            planning_row.outcome.map_or("none", NativeDataFusionPlanningOutcome::as_str),
             planning_row.reason_code.as_deref().unwrap_or("none"),
         )));
     }
-    if planning_row.post_native_execution_path != NativeDataFusionPostNativeExecutionPath::Native {
+    if planning_row.final_disposition != FinalPlanDisposition::Native {
         return Err(plan_error(format!(
-            "{} accepted planning row did not produce post_native_execution_path=native; observed {}",
+            "{} accepted planning row did not produce final_disposition=native; observed {}",
             query.id,
-            planning_row.post_native_execution_path.as_str(),
+            planning_row.final_disposition.as_str(),
         )));
     }
     let schema = plan.schema();
@@ -618,7 +621,7 @@ fn run_overload_probe(config: &StressConfig) -> DataFusionResult<StressRow> {
         total_wall_ms: duration_ms(started.elapsed()),
         native_wall_ms: None,
         planning_outcome: "not_planned".to_string(),
-        post_native_execution_path: "not_planned".to_string(),
+        final_disposition: "not_planned".to_string(),
         native_runtime_outcome: "not_started",
         parity_status: "not_run",
         cpu_output_rows: None,
@@ -684,7 +687,7 @@ fn failure_row(
     admission_wait_ms: Option<f64>,
     admission_facts: AdmissionFacts,
     planning_outcome: &str,
-    post_native_execution_path: &str,
+    final_disposition: &str,
     native_runtime_outcome: &'static str,
     parity_status: &'static str,
     error: StructuredFailure,
@@ -704,7 +707,7 @@ fn failure_row(
         total_wall_ms: duration_ms(total_wall),
         native_wall_ms: None,
         planning_outcome: planning_outcome.to_string(),
-        post_native_execution_path: post_native_execution_path.to_string(),
+        final_disposition: final_disposition.to_string(),
         native_runtime_outcome,
         parity_status,
         cpu_output_rows: cpu.map(|cpu| cpu.output_rows),

@@ -5,11 +5,11 @@ pub(super) fn assert_planning_rows(report: &NativeDataFusionPlanningReport) {
         let row = planning_replacement_row(report, query_id);
         assert_row_rejection_diagnostics_are_family_free(row);
         if EXPECTED_BOUNDED_TPCH_ACCEPTED.contains(&row.query_id.as_str()) {
-            assert_eq!(row.outcome, NativeDataFusionPlanningOutcome::AcceptedReplaced);
+            assert_eq!(row.outcome, Some(NativeDataFusionPlanningOutcome::Selected));
             assert_eq!(row.reason_code.as_deref(), None);
             assert_eq!(row.unsupported_category.as_deref(), None);
             if EXPECTED_BOUNDED_TPCH_JOIN_ACCEPTED.contains(&row.query_id.as_str())
-                && row.post_native_execution_path == NativeDataFusionPostNativeExecutionPath::Native
+                && row.final_disposition == FinalPlanDisposition::Native
             {
                 assert!(
                     !row.strict_bounded_contract_rows.is_empty(),
@@ -45,7 +45,7 @@ pub(super) fn assert_planning_rows(report: &NativeDataFusionPlanningReport) {
                     row.query_id
                 );
             } else {
-                if row.post_native_execution_path == NativeDataFusionPostNativeExecutionPath::Native {
+                if row.final_disposition == FinalPlanDisposition::Native {
                     assert!(
                         row.strict_bounded_contract_rows.is_empty(),
                         "{} non-join accepted row is outside the current strict join gate report surface",
@@ -54,16 +54,16 @@ pub(super) fn assert_planning_rows(report: &NativeDataFusionPlanningReport) {
                     assert!(row.strict_bounded_compiled_graphs.is_empty());
                 }
             }
-            if row.post_native_execution_path == NativeDataFusionPostNativeExecutionPath::Native {
+            if row.final_disposition == FinalPlanDisposition::Native {
                 assert_eq!(row.post_native_plan_root, "NexusNativeExec");
             } else {
-                assert_eq!(row.post_native_execution_path, NativeDataFusionPostNativeExecutionPath::PartialNative);
+                assert_eq!(row.final_disposition, FinalPlanDisposition::Mixed);
             }
             assert!(!row.rejected_before_execution, "{} should be replaced by native execution", row.query_id);
         } else {
             let (expected_reason, expected_category) =
                 expected_tpch_datafusion_planning_rejection(row.query_id.as_str());
-            assert_eq!(row.outcome, NativeDataFusionPlanningOutcome::RejectedBeforeExecution);
+            assert_eq!(row.outcome, Some(NativeDataFusionPlanningOutcome::NotSupported));
             assert_eq!(row.reason_code.as_deref(), Some(expected_reason), "unexpected reason for {}", row.query_id);
             assert_eq!(
                 row.unsupported_category.as_deref(),
@@ -79,12 +79,12 @@ pub(super) fn assert_planning_rows(report: &NativeDataFusionPlanningReport) {
                 "{} rejected strict contract rows should not preserve family/path vocabulary",
                 row.query_id
             );
-            assert_ne!(row.post_native_execution_path, NativeDataFusionPostNativeExecutionPath::Native);
+            assert_ne!(row.final_disposition, FinalPlanDisposition::Native);
             assert!(row.rejected_before_execution, "{} should reject before native execution", row.query_id);
         }
         assert_eq!(row.physical_root, expected_tpch_physical_root(row.query_id.as_str()));
-        if row.post_native_execution_path == NativeDataFusionPostNativeExecutionPath::Native
-            || row.outcome == NativeDataFusionPlanningOutcome::RejectedBeforeExecution
+        if row.final_disposition == FinalPlanDisposition::Native
+            || row.outcome == Some(NativeDataFusionPlanningOutcome::NotSupported)
         {
             assert_eq!(
                 row.native_candidate_shape.as_deref().unwrap_or("none"),
@@ -101,7 +101,7 @@ pub(super) fn assert_planning_rows(report: &NativeDataFusionPlanningReport) {
         } else {
             assert!(
                 row.native_candidate_shape.is_some() && row.native_candidate_shape_family.is_some(),
-                "{} partial-native accepted rows should keep candidate diagnostics",
+                "{} mixed-plan accepted rows should keep candidate diagnostics",
                 row.query_id
             );
         }
@@ -112,8 +112,8 @@ pub(super) fn assert_planning_rows(report: &NativeDataFusionPlanningReport) {
             row.physical_shape
         );
         if EXPECTED_BOUNDED_TPCH_JOIN_ACCEPTED.contains(&row.query_id.as_str())
-            && row.outcome == NativeDataFusionPlanningOutcome::AcceptedReplaced
-            && row.post_native_execution_path == NativeDataFusionPostNativeExecutionPath::Native
+            && row.outcome == Some(NativeDataFusionPlanningOutcome::Selected)
+            && row.final_disposition == FinalPlanDisposition::Native
         {
             assert!(
                 row.join_diagnostics.is_empty(),

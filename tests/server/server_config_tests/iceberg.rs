@@ -158,12 +158,18 @@ fn server_iceberg_config_kind_glue_explicit_selects_glue_backend() {
     }
     let iceberg = config.iceberg.expect("iceberg config must be present");
     let glue = expect_glue_backend(&iceberg);
+    let source_access = iceberg.source_access_policy().s3_access();
 
     assert_eq!(glue.region, "us-east-1");
     assert_eq!(glue.uri.as_deref(), Some("http://localhost:5001"));
     assert_eq!(glue.s3_endpoint.as_deref(), Some("http://localhost:9000"));
     assert_eq!(glue.s3_region.as_deref(), Some("us-east-2"));
     assert_eq!(glue.s3_path_style_access, Some(true));
+    assert_eq!(source_access.endpoint, Some("http://localhost:9000"));
+    assert_eq!(source_access.region, Some("us-east-2"));
+    assert_eq!(source_access.path_style_access, Some(true));
+    assert_eq!(format!("{:?}", source_access.credential.mode()), "ExplicitStatic");
+    assert!(!format!("{:?}", iceberg.source_access_policy()).contains("local-secret"));
     assert_eq!(iceberg.catalog_name, "glue", "default catalog name for glue kind");
 }
 
@@ -202,10 +208,49 @@ fn server_iceberg_s3_credential_source_default_chain_keeps_default_chain_with_en
         s3_profile.credential
     );
     let iceberg = config.iceberg.expect("iceberg config must be present");
+    assert_eq!(format!("{:?}", iceberg.source_access_policy().s3_access().credential.mode()), "DefaultChain",);
     assert_eq!(
         iceberg.parquet_read_strategy_config.credential_mode,
         nexus_query_engine::source::CredentialMode::ScopedResolved
     );
+}
+
+#[cfg(feature = "iceberg")]
+#[test]
+fn server_iceberg_custom_endpoint_freezes_unsigned_source_policy_and_native_profile() {
+    use datafusion_nexus::server::{
+        NEXUS_ICEBERG_CATALOG_KIND_ENV, NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, NEXUS_ICEBERG_NAMESPACE_ENV,
+        NEXUS_ICEBERG_REST_URI_ENV, NEXUS_ICEBERG_S3_ENDPOINT_ENV, NEXUS_ICEBERG_S3_PATH_STYLE_ENV,
+        NEXUS_ICEBERG_S3_REGION_ENV,
+    };
+    let env = BTreeMap::from([
+        (NEXUS_ICEBERG_CATALOG_KIND_ENV, "rest".to_string()),
+        (NEXUS_ICEBERG_NAMESPACE_ENV, "tpch_sf1".to_string()),
+        (NEXUS_ICEBERG_REST_URI_ENV, "http://localhost:8181".to_string()),
+        (NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://lakehouse/warehouse".to_string()),
+        (NEXUS_ICEBERG_S3_ENDPOINT_ENV, "http://localhost:9000".to_string()),
+        (NEXUS_ICEBERG_S3_REGION_ENV, "us-east-1".to_string()),
+        (NEXUS_ICEBERG_S3_PATH_STYLE_ENV, "true".to_string()),
+        // A custom endpoint must not silently use these ambient credentials.
+        (datafusion_nexus::table_format::iceberg::AWS_ACCESS_KEY_ID_ENV, "AKIA_AMBIENT".to_string()),
+        (datafusion_nexus::table_format::iceberg::AWS_SECRET_ACCESS_KEY_ENV, "ambient-secret".to_string()),
+    ]);
+
+    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+    let iceberg = config.iceberg.as_ref().expect("iceberg config must be present");
+    let source_access = iceberg.source_access_policy().s3_access();
+    assert_eq!(source_access.endpoint, Some("http://localhost:9000"));
+    assert_eq!(source_access.region, Some("us-east-1"));
+    assert_eq!(source_access.path_style_access, Some(true));
+    assert_eq!(format!("{:?}", source_access.credential.mode()), "Unsigned");
+
+    let profile = config.native_optimizer_config.native_execution_config().source_storage_profiles();
+    assert_eq!(profile.len(), 1);
+    let native = profile[0].s3_profile();
+    assert_eq!(native.endpoint.as_deref(), source_access.endpoint);
+    assert_eq!(native.region.as_deref(), source_access.region);
+    assert_eq!(native.virtual_hosted_style_request, Some(false));
+    assert!(matches!(native.credential, S3SourceStorageCredential::Unsigned));
 }
 
 #[cfg(feature = "iceberg")]
@@ -362,11 +407,13 @@ fn server_iceberg_config_kind_rest_happy_path() {
     // REST kind defaults the DataFusion catalog name to "rest".
     assert_eq!(iceberg.catalog_name, "rest");
     let rest = expect_rest_backend(&iceberg);
-    assert_eq!(rest.uri, "http://localhost:8181");
+    assert_eq!(rest.uri(), "http://localhost:8181");
     assert_eq!(rest.warehouse, "s3://lakehouse/warehouse");
-    assert_eq!(rest.s3_endpoint.as_deref(), Some("http://localhost:9000"));
-    assert_eq!(rest.s3_region.as_deref(), Some("us-east-1"));
-    assert_eq!(rest.s3_path_style_access, Some(true));
+    let source_access = iceberg.source_access_policy().s3_access();
+    assert_eq!(source_access.endpoint, Some("http://localhost:9000"));
+    assert_eq!(source_access.region, Some("us-east-1"));
+    assert_eq!(source_access.path_style_access, Some(true));
+    assert_eq!(format!("{:?}", source_access.credential.mode()), "ExplicitStatic");
 }
 
 #[cfg(feature = "iceberg")]
@@ -459,7 +506,7 @@ fn server_iceberg_config_kind_rest_does_not_require_region() {
     ]);
     let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
     let iceberg = config.iceberg.expect("iceberg config must be present");
-    assert_eq!(expect_rest_backend(&iceberg).uri, "http://localhost:8181");
+    assert_eq!(expect_rest_backend(&iceberg).uri(), "http://localhost:8181");
 }
 
 #[cfg(feature = "iceberg")]

@@ -22,7 +22,7 @@ use super::{
         format_task_runtime_rows,
     },
 };
-use crate::planner::NativeStrictBoundedCompiledGraphDiagnostics;
+use crate::planner::{FinalPlanDisposition, NativeStrictBoundedCompiledGraphDiagnostics};
 
 /// One row in the native planning TSV.
 ///
@@ -42,7 +42,7 @@ pub struct NativeDataFusionPlanningRow {
     /// Broader native candidate shape family, or `none` when unavailable.
     pub native_candidate_shape_family: Option<String>,
     /// Planning outcome for this row.
-    pub outcome: NativeDataFusionPlanningOutcome,
+    pub outcome: Option<NativeDataFusionPlanningOutcome>,
     /// Stable fallback reason code, or `none` for accepted candidates.
     pub reason_code: Option<String>,
     /// Stable unsupported-category label, or `none` when not rejected as unsupported.
@@ -63,8 +63,8 @@ pub struct NativeDataFusionPlanningRow {
     pub source_diagnostics: Vec<NativeSourceDiagnosticSummary>,
     /// Display name of the post-native-optimizer physical root.
     pub post_native_plan_root: String,
-    /// Summary of CPU/native coverage after the native optimizer rule.
-    pub post_native_execution_path: NativeDataFusionPostNativeExecutionPath,
+    /// Final disposition after the native optimizer rule.
+    pub final_disposition: FinalPlanDisposition,
     /// Number of native fragments in the post-optimizer plan.
     pub native_plan_fragment_count: usize,
     /// Number of host DataFusion boundaries around native fragments.
@@ -92,7 +92,7 @@ pub struct NativeDataFusionExecutionRow {
     /// Broader native candidate shape family, or `none` when unavailable.
     pub native_candidate_shape_family: Option<String>,
     /// Planning outcome for this row.
-    pub planning_outcome: NativeDataFusionPlanningOutcome,
+    pub planning_outcome: Option<NativeDataFusionPlanningOutcome>,
     /// Stable fallback reason code, or `none` for accepted candidates.
     pub reason_code: Option<String>,
     /// Stable unsupported-category label, or `none` when not rejected as unsupported.
@@ -107,8 +107,8 @@ pub struct NativeDataFusionExecutionRow {
     pub source_diagnostics: Vec<NativeSourceDiagnosticSummary>,
     /// Display name of the post-native-optimizer physical root.
     pub post_native_plan_root: String,
-    /// Summary of CPU/native coverage after the native optimizer rule.
-    pub post_native_execution_path: NativeDataFusionPostNativeExecutionPath,
+    /// Final disposition after the native optimizer rule.
+    pub final_disposition: FinalPlanDisposition,
     /// Number of native fragments in the post-optimizer plan.
     pub native_plan_fragment_count: usize,
     /// Number of host DataFusion boundaries around native fragments.
@@ -134,18 +134,21 @@ pub struct NativeDataFusionExecutionRow {
 /// Stable planning outcomes emitted by native planning reports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NativeDataFusionPlanningOutcome {
-    /// Candidate was accepted and replaced by native execution.
-    AcceptedReplaced,
-    /// Candidate was rejected before native execution.
-    RejectedBeforeExecution,
+    /// Candidate was selected for native execution.
+    Selected,
+    /// Candidate is not supported by the native capability contract.
+    NotSupported,
+    /// Candidate is native-capable but was not selected by the cost model.
+    NotSelectedByCost,
 }
 
 impl NativeDataFusionPlanningOutcome {
     /// Stable TSV label for this planning outcome.
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::AcceptedReplaced => "accepted_replaced",
-            Self::RejectedBeforeExecution => "rejected_before_execution",
+            Self::Selected => "selected",
+            Self::NotSupported => "not_supported",
+            Self::NotSelectedByCost => "not_selected_by_cost",
         }
     }
 }
@@ -172,35 +175,11 @@ impl NativeDataFusionRuntimeOutcome {
     }
 }
 
-/// Report vocabulary for how much of the optimized DataFusion plan runs through
-/// native GPU execution after native planning.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NativeDataFusionPostNativeExecutionPath {
-    /// The optimized plan is fully native after the native optimizer rule.
-    Native,
-    /// The optimized plan keeps at least one native fragment but still contains
-    /// CPU DataFusion execution outside the native fragment.
-    PartialNative,
-    /// The optimized plan contains no native execution after planning fallback.
-    Cpu,
-}
-
-impl NativeDataFusionPostNativeExecutionPath {
-    /// Stable TSV label for this post-native execution path.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Native => "native",
-            Self::PartialNative => "partial_native",
-            Self::Cpu => "cpu",
-        }
-    }
-}
-
 /// Native coverage summary for a post-optimizer DataFusion plan.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NativeDataFusionPlanCoverage {
-    /// CPU/native coverage class after native planning.
-    pub execution_path: NativeDataFusionPostNativeExecutionPath,
+    /// Final plan disposition after native planning.
+    pub final_disposition: FinalPlanDisposition,
     /// Number of native fragments in the plan.
     pub native_fragment_count: usize,
     /// Number of host DataFusion boundaries around native fragments.
@@ -221,7 +200,7 @@ pub struct NativeFallbackPressureRow {
     /// Broader native candidate shape family, or `none` when unavailable.
     pub native_candidate_shape_family: Option<String>,
     /// Fallback-pressure outcome for this candidate.
-    pub outcome: NativeFallbackPressureOutcome,
+    pub outcome: Option<NativeFallbackPressureOutcome>,
     /// Stable fallback reason code, or `none` for rewritten candidates.
     pub reason_code: Option<String>,
     /// Stable unsupported-category label, or `none` when not rejected as unsupported.
@@ -239,18 +218,21 @@ pub struct NativeFallbackPressureRow {
 /// Stable fallback-pressure outcome strings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NativeFallbackPressureOutcome {
-    /// Candidate was rewritten to native execution.
-    Rewritten,
-    /// Candidate was rejected and contributes fallback pressure.
-    Rejected,
+    /// Candidate was selected for native execution.
+    Selected,
+    /// Candidate is not supported by the native capability contract.
+    NotSupported,
+    /// Candidate is native-capable but was not selected by the cost model.
+    NotSelectedByCost,
 }
 
 impl NativeFallbackPressureOutcome {
     /// Stable TSV label for this fallback-pressure outcome.
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Rewritten => "rewritten",
-            Self::Rejected => "rejected",
+            Self::Selected => "selected",
+            Self::NotSupported => "not_supported",
+            Self::NotSelectedByCost => "not_selected_by_cost",
         }
     }
 }
@@ -344,7 +326,7 @@ impl TsvRow for NativeFallbackPressureRow {
             self.physical_shape.clone(),
             self.native_candidate_shape.clone().unwrap_or_else(|| "none".to_string()),
             self.native_candidate_shape_family.clone().unwrap_or_else(|| "none".to_string()),
-            self.outcome.as_str().to_string(),
+            self.outcome.map_or_else(|| "none".to_string(), |outcome| outcome.as_str().to_string()),
             self.reason_code.clone().unwrap_or_else(|| "none".to_string()),
             self.unsupported_category.clone().unwrap_or_else(|| "none".to_string()),
             format_adaptive_pipeline_rows(&self.adaptive_pipeline_rows),
@@ -365,7 +347,7 @@ impl TsvRow for NativeDataFusionPlanningRow {
             self.physical_shape.clone(),
             self.native_candidate_shape.clone().unwrap_or_else(|| "none".to_string()),
             self.native_candidate_shape_family.clone().unwrap_or_else(|| "none".to_string()),
-            self.outcome.as_str().to_string(),
+            self.outcome.map_or_else(|| "none".to_string(), |outcome| outcome.as_str().to_string()),
             self.reason_code.clone().unwrap_or_else(|| "none".to_string()),
             self.unsupported_category.clone().unwrap_or_else(|| "none".to_string()),
             format_strict_bounded_contract_rows(&self.strict_bounded_contract_rows),
@@ -376,7 +358,7 @@ impl TsvRow for NativeDataFusionPlanningRow {
             format_join_diagnostics(&self.join_diagnostics),
             format_source_diagnostics(&self.source_diagnostics),
             self.post_native_plan_root.clone(),
-            self.post_native_execution_path.as_str().to_string(),
+            self.final_disposition.as_str().to_string(),
             self.native_plan_fragment_count.to_string(),
             self.host_datafusion_boundary_count.to_string(),
             self.rejected_before_execution.to_string(),
@@ -398,14 +380,14 @@ impl TsvRow for NativeDataFusionExecutionRow {
             self.physical_shape.clone(),
             self.native_candidate_shape.clone().unwrap_or_else(|| "none".to_string()),
             self.native_candidate_shape_family.clone().unwrap_or_else(|| "none".to_string()),
-            self.planning_outcome.as_str().to_string(),
+            self.planning_outcome.map_or_else(|| "none".to_string(), |outcome| outcome.as_str().to_string()),
             self.reason_code.clone().unwrap_or_else(|| "none".to_string()),
             self.unsupported_category.clone().unwrap_or_else(|| "none".to_string()),
             format_strict_bounded_contract_rows(&self.strict_bounded_contract_rows),
             format_strict_bounded_compiled_graphs(&self.strict_bounded_compiled_graphs),
             format_adaptive_pipeline_rows(&self.adaptive_pipeline_rows),
             self.post_native_plan_root.clone(),
-            self.post_native_execution_path.as_str().to_string(),
+            self.final_disposition.as_str().to_string(),
             self.native_plan_fragment_count.to_string(),
             self.host_datafusion_boundary_count.to_string(),
             self.rejected_before_execution.to_string(),
@@ -556,18 +538,18 @@ mod tests {
             physical_shape: "Root(Source)".to_string(),
             native_candidate_shape: None,
             native_candidate_shape_family: None,
-            outcome: NativeFallbackPressureOutcome::Rejected,
+            outcome: Some(NativeFallbackPressureOutcome::NotSupported),
             reason_code: Some("unsupported_operator".to_string()),
             unsupported_category: Some("operator_sort".to_string()),
             adaptive_pipeline_rows: Vec::new(),
             join_diagnostics: Vec::new(),
             source_diagnostics: Vec::new(),
-            rejected_before_execution: true,
+            rejected_before_execution: false,
         };
         assert_eq!(fallback.fields().len(), NativeFallbackPressureRow::COLUMNS.len());
         assert_eq!(
             fallback.to_tsv_line(),
-            "q\tRoot\tRoot(Source)\tnone\tnone\trejected\tunsupported_operator\toperator_sort\tnone\tnone\tnone\ttrue"
+            "q\tRoot\tRoot(Source)\tnone\tnone\tnot_supported\tunsupported_operator\toperator_sort\tnone\tnone\tnone\tfalse"
         );
 
         let planning = NativeDataFusionPlanningRow {
@@ -576,7 +558,7 @@ mod tests {
             physical_shape: "Root(Source)".to_string(),
             native_candidate_shape: None,
             native_candidate_shape_family: None,
-            outcome: NativeDataFusionPlanningOutcome::RejectedBeforeExecution,
+            outcome: Some(NativeDataFusionPlanningOutcome::NotSupported),
             reason_code: Some("unsupported_operator".to_string()),
             unsupported_category: Some("operator_sort".to_string()),
             strict_bounded_contract_rows: Vec::new(),
@@ -587,15 +569,15 @@ mod tests {
             join_diagnostics: Vec::new(),
             source_diagnostics: Vec::new(),
             post_native_plan_root: "Root".to_string(),
-            post_native_execution_path: NativeDataFusionPostNativeExecutionPath::Cpu,
+            final_disposition: FinalPlanDisposition::DataFusion,
             native_plan_fragment_count: 0,
             host_datafusion_boundary_count: 0,
-            rejected_before_execution: true,
+            rejected_before_execution: false,
         };
         assert_eq!(planning.fields().len(), NativeDataFusionPlanningRow::COLUMNS.len());
         assert_eq!(
             planning.to_tsv_line(),
-            "q\tRoot\tRoot(Source)\tnone\tnone\trejected_before_execution\tunsupported_operator\toperator_sort\tnone\tnone\tnone\tnone\tfalse\tnone\tnone\tRoot\tcpu\t0\t0\ttrue"
+            "q\tRoot\tRoot(Source)\tnone\tnone\tnot_supported\tunsupported_operator\toperator_sort\tnone\tnone\tnone\tnone\tfalse\tnone\tnone\tRoot\tdatafusion\t0\t0\tfalse"
         );
 
         let execution = NativeDataFusionExecutionRow {
@@ -604,7 +586,7 @@ mod tests {
             physical_shape: "Root(Source)".to_string(),
             native_candidate_shape: None,
             native_candidate_shape_family: None,
-            planning_outcome: NativeDataFusionPlanningOutcome::RejectedBeforeExecution,
+            planning_outcome: Some(NativeDataFusionPlanningOutcome::NotSupported),
             reason_code: Some("unsupported_operator".to_string()),
             unsupported_category: Some("operator_sort".to_string()),
             strict_bounded_contract_rows: Vec::new(),
@@ -612,10 +594,10 @@ mod tests {
             adaptive_pipeline_rows: Vec::new(),
             source_diagnostics: Vec::new(),
             post_native_plan_root: "Root".to_string(),
-            post_native_execution_path: NativeDataFusionPostNativeExecutionPath::Cpu,
+            final_disposition: FinalPlanDisposition::DataFusion,
             native_plan_fragment_count: 0,
             host_datafusion_boundary_count: 0,
-            rejected_before_execution: true,
+            rejected_before_execution: false,
             native_runtime_started: false,
             runtime_outcome: NativeDataFusionRuntimeOutcome::NotStarted,
             runtime_failure: None,
@@ -631,11 +613,11 @@ mod tests {
                 "query_id" => "q",
                 "physical_root" | "post_native_plan_root" => "Root",
                 "physical_shape" => "Root(Source)",
-                "planning_outcome" => "rejected_before_execution",
+                "planning_outcome" => "not_supported",
                 "reason_code" => "unsupported_operator",
                 "unsupported_category" => "operator_sort",
-                "post_native_execution_path" => "cpu",
-                "rejected_before_execution" => "true",
+                "post_native_execution_path" => "datafusion",
+                "rejected_before_execution" => "false",
                 "native_runtime_started" => "false",
                 "runtime_outcome" => "not_started",
                 "output_batches" | "output_rows" | "output_bytes" => "not_run",
@@ -679,7 +661,7 @@ mod tests {
             physical_shape: "RootExec(Source)".to_string(),
             native_candidate_shape: Some("candidate_shape".to_string()),
             native_candidate_shape_family: Some("candidate_family".to_string()),
-            planning_outcome: NativeDataFusionPlanningOutcome::AcceptedReplaced,
+            planning_outcome: Some(NativeDataFusionPlanningOutcome::Selected),
             reason_code: None,
             unsupported_category: None,
             strict_bounded_contract_rows: Vec::new(),
@@ -687,7 +669,7 @@ mod tests {
             adaptive_pipeline_rows: Vec::new(),
             source_diagnostics: Vec::new(),
             post_native_plan_root: "NexusNativeExec".to_string(),
-            post_native_execution_path: NativeDataFusionPostNativeExecutionPath::Native,
+            final_disposition: FinalPlanDisposition::Native,
             native_plan_fragment_count: 7,
             host_datafusion_boundary_count: 2,
             rejected_before_execution: false,
@@ -808,7 +790,7 @@ mod tests {
         assert_eq!(
             execution.to_tsv_line(),
             concat!(
-                "q_exec\tRootExec\tRootExec(Source)\tcandidate_shape\tcandidate_family\taccepted_replaced\tnone\tnone\t",
+                "q_exec\tRootExec\tRootExec(Source)\tcandidate_shape\tcandidate_family\tselected\tnone\tnone\t",
                 "none\tnone\tnone\tNexusNativeExec\tnative\t7\t2\tfalse\t100\t1.500\t2\t4096\t",
                 "true\tsucceeded\tnone\t3\t111\t2222\t",
                 "10\t11\t12\t13\t14\t15\t16\t17\t18\t19\t20\t21\t22\t23\t24\t25\t26\t27\t28\t29\t30\t31\t",

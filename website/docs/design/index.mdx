@@ -30,17 +30,18 @@ DataFusion session.
 - **Graph SQL user:** Jump to [cuGraph SQL path](#cugraph-sql-path). Discover
   and validate calls before running GPU graph work.
 - **Native contributor:** Read
-  [Native Lowering & Fallback](./native-lowering.mdx), then use
+  [Native Lowering & Final Plans](./native-lowering.mdx), then use
   [Layering and ownership](#layering-and-ownership) and
   [Developer checklist](#developer-checklist) to route code changes.
 
 ## The design contract
 
-- **DataFusion stays in charge:** SQL, catalogs, physical planning, and
-  CPU-readable fallback remain stock DataFusion. Every Iceberg scan keeps an
-  executable upstream CPU delegate alongside its optional native scan facts.
-- **The adapter translates:** `src/` recognizes DataFusion physical shapes,
-  lowers supported candidates into `QueryPlan`, and exposes reports.
+- **DataFusion stays in charge:** SQL, catalogs, physical planning, and the
+  executable baseline remain stock DataFusion. Every unified Iceberg scan keeps
+  an executable upstream CPU delegate alongside its optional native scan facts.
+- **The adapter translates:** `src/` recognizes whole relational DataFusion
+  physical candidates, lowers selected candidates into `QueryPlan`, and exposes
+  reports.
 - **The engine owns native execution:** `crates/nexus-query-engine` has no
   DataFusion dependency. It owns the IR, capability analysis, execution-time
   context, and executor.
@@ -56,7 +57,7 @@ DataFusion session.
 | Flight SQL service | You want a ready remote endpoint for notebooks, BI tools, agents, and non-Rust clients. | `src/server/` |
 | cuGraph SQL | You want graph algorithms as relations that can be joined, filtered, validated, and described from SQL. | `src/graph_sql/` |
 | Iceberg/lakehouse sources | You need Iceberg catalog tables to lower into native table-format scan facts while workspace views stay mutable. | `src/table_format/` |
-| Reports and errors | You need stable evidence for admission, fallback, runtime, graph validation, source access, and failures. | `src/report.rs`, `src/native_report/`, `src/error.rs` |
+| Reports and errors | You need stable evidence for candidate selection, final plans, runtime, graph validation, source access, and failures. | `src/report.rs`, `src/native_report/`, `src/error.rs` |
 
 The preferred embedded entry point is a process-scoped `NexusGpuBackend`. It
 installs the native optimizer and gives every installed session the same
@@ -65,24 +66,31 @@ available only when the crate is built with `--features cugraph`; omit it for a
 pure relational session.
 
 ```rust
-let backend = NexusGpuBackend::builder()
-    .fallback_policy(GpuFallbackPolicy::GpuPreferred)
-    .build()?;
-let cugraph = CugraphSqlConfig::default()
-    .with_native_execution_config(backend.optimizer_config().native_execution_config().clone());
+use datafusion::execution::SessionStateBuilder;
+use datafusion_nexus::{
+    backend::NexusGpuBackend,
+    graph_sql::CugraphSqlConfig,
+};
 
+let backend = NexusGpuBackend::builder()
+    .build()?;
 let state = backend
-    .install_on(SessionStateBuilder::new().with_default_features())?
-    .with_cugraph_sql(cugraph)
+    .install_on_with_cugraph_sql(
+        SessionStateBuilder::new().with_default_features(),
+        CugraphSqlConfig::default(),
+    )?
     .build();
 ```
 
-### Fallback policy
+### Baseline preservation and requirements
 
-`GpuPreferred` leaves rejected CPU-readable candidates on DataFusion's CPU
-path; `GpuOnly` turns the first native rejection into a planning error. The
-full boundary is described in
-[Fallback policy boundary](./native-lowering.mdx#fallback-policy-boundary).
+Installing the relational optimizer preserves the executable DataFusion
+baseline. A candidate that is `NotSupported` or `NotSelectedByCost` is reported
+but does not turn an otherwise valid query into an error. A caller that needs
+the final plan to avoid DataFusion CPU execution configures a completed-plan
+requirement such as `NoDataFusionCpu`; that requirement evaluates the exact
+plan after native selection. The full boundary is described in
+[Baseline preservation and final-plan requirements](./native-lowering.mdx#baseline-preservation-and-final-plan-requirements).
 
 ### Feature gates
 
@@ -97,10 +105,10 @@ full boundary is described in
 
 Three deep contracts sit behind this overview, each on its own page:
 
-- [Native Lowering & Fallback](./native-lowering.mdx) — the *plan-time*
+- [Native Lowering & Final Plans](./native-lowering.mdx) — the *plan-time*
   boundary: the relational acceleration path, the `datafusion_nexus_native`
-  rewrite rule and its surrounding session hooks, the fallback policy boundary,
-  and the plan-shape admission evidence developers assert against
+  rewrite rule and its surrounding session hooks, baseline preservation,
+  final-plan requirements, and the plan-shape admission evidence developers assert against
   (`PlanningReport`, engine capability analysis, strict/adaptive bounded
   reports).
 - [Admission & Memory Governance](./admission.mdx) — the *runtime* boundary:
@@ -183,7 +191,7 @@ The current `PlanNode` variants are `Source`, `Filter`, `Projection`,
 
 | Change | Correct home | Contract to update |
 | --- | --- | --- |
-| Support a new DataFusion physical shape | `src/native/normalize.rs`, `src/native/lowering/`, `src/native/validate*` | Planning reports and fallback reasons |
+| Support a new DataFusion physical shape | `src/native/normalize.rs`, `src/native/lowering/`, `src/native/validate*` | Planning reports, candidate outcomes, and final-plan requirements |
 | Add native IR or executor behavior | `crates/nexus-query-engine/src/plan`, `expr`, `source`, `exec`, `runtime` | Engine contract tests and metrics |
 | Admit a bounded compiled shape | `crates/nexus-query-engine/src/admission`, `capability`, `pipeline` | Strict/adaptive diagnostics; no family-name shortcuts |
 | Improve GPU memory, streams, source readers, or graph interop | `cudf`, `cugraph`, `rapids-interop` crates | Binding crate API and FFI error mapping |
@@ -301,7 +309,7 @@ Use this page as the routing table before changing behavior:
 
 | If you are changing... | Inspect first | Keep stable |
 | --- | --- | --- |
-| Native rewrite coverage | `src/native/normalize.rs`, `src/native/lowering/`, `src/native/validate*` | `PlanningReport`, `FallbackReason`, rule names |
+| Native rewrite coverage | `src/native/normalize.rs`, `src/native/lowering/`, `src/native/validate*` | `PlanningReport`, `CandidateOutcome`, `CapabilityReason`, rule names |
 | Native execution semantics | `crates/nexus-query-engine/src/admission/`, `capability/`, `pipeline/`, `exec/`, `runtime/` | Strict/adaptive separation and reservation evidence |
 | cuGraph SQL behavior | `src/graph_sql/types.rs`, `parser.rs`, `metadata/`, `exec/`, engine `exec/graph_algorithm/` | Metadata column order and validation output |
 | Iceberg/source behavior | `src/table_format/`, `src/table_format/iceberg/`, server workspace configuration | Source diagnostics and credential-safe error facts |

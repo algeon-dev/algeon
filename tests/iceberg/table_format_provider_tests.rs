@@ -36,10 +36,10 @@ use datafusion::{
     prelude::{SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
+    capability::CapabilityReason,
     error::{Error, ErrorCode, ErrorStatus},
     native::lower_physical_plan_to_native,
     planner::NexusNativeOptimizerConfig,
-    policy::FallbackReason,
     report::CandidateOutcome,
     session::NexusSessionStateBuilderExt,
     source_cardinality::schema_with_source_unique_keys,

@@ -1,10 +1,10 @@
-//! Relational-fallback execution coverage migrated from
+//! DataFusion-baseline execution coverage migrated from
 //! `native_mixed_fallback_report` (formerly `c1_mixed_fallback_experiment`).
 //!
 //! Asserts whole-plan native selection under the normal session configuration:
 //! - post-native execution path
 //! - exact native fragment count
-//! - DataFusion fallback for unsupported relational parents
+//! - retained DataFusion baseline for unsupported relational parents
 //! - candidate rewritten/rejected outcomes
 //! - session results vs plain DataFusion parity
 
@@ -18,35 +18,35 @@ use nexus_query_engine::runtime::SlotGuarantee;
 
 use super::*;
 
-struct RelationalFallbackCase {
+struct DataFusionBaselineCase {
     id: &'static str,
     sql: &'static str,
-    expected_path: NativeDataFusionPostNativeExecutionPath,
+    expected_path: FinalPlanDisposition,
     expected_native_fragment_count: usize,
 }
 
-const RELATIONAL_FALLBACK_CASES: &[RelationalFallbackCase] = &[
+const DATAFUSION_BASELINE_CASES: &[DataFusionBaselineCase] = &[
     // Control: fully supported query should be rewritten whole.
-    RelationalFallbackCase {
+    DataFusionBaselineCase {
         id: "control_supported",
         sql: "SELECT key, SUM(m00) AS s, COUNT(*) AS c FROM bench GROUP BY key ORDER BY key",
-        expected_path: NativeDataFusionPostNativeExecutionPath::Native,
+        expected_path: FinalPlanDisposition::Native,
         expected_native_fragment_count: 1,
     },
     // APPROX_DISTINCT is an unsupported relational parent. Its supported join
     // subtree must not be extracted into a separate native fragment.
-    RelationalFallbackCase {
-        id: "mixed_unsupported_aggregate",
+    DataFusionBaselineCase {
+        id: "datafusion_baseline_unsupported_aggregate",
         sql: "SELECT t.key, APPROX_DISTINCT(t.name) AS d \
               FROM (SELECT b.key, b.name FROM bench b JOIN bench2 s ON b.key = s.key WHERE s.payload >= 10) t \
               GROUP BY t.key ORDER BY t.key",
-        expected_path: NativeDataFusionPostNativeExecutionPath::Cpu,
+        expected_path: FinalPlanDisposition::DataFusion,
         expected_native_fragment_count: 0,
     },
     // A union of unsupported relational parents remains a single DataFusion
     // plan; no disjoint native child fragments are producerized.
-    RelationalFallbackCase {
-        id: "mixed_two_disjoint_fragments",
+    DataFusionBaselineCase {
+        id: "datafusion_baseline_two_disjoint_rejections",
         sql: "SELECT * FROM ( \
               SELECT 'a' AS src, t.key, APPROX_DISTINCT(t.name) AS d \
               FROM (SELECT b.key, b.name FROM bench b JOIN bench2 s ON b.key = s.key WHERE s.payload >= 10) t \
@@ -55,42 +55,42 @@ const RELATIONAL_FALLBACK_CASES: &[RelationalFallbackCase] = &[
               SELECT 'b' AS src, u.key, APPROX_DISTINCT(u.name) AS d \
               FROM (SELECT b2.key, b2.name FROM bench2 b2 JOIN bench b3 ON b2.key = b3.key WHERE b3.m00 >= 2.0) u \
               GROUP BY u.key) v ORDER BY src, key",
-        expected_path: NativeDataFusionPostNativeExecutionPath::Cpu,
+        expected_path: FinalPlanDisposition::DataFusion,
         expected_native_fragment_count: 0,
     },
     // Unsupported expressions likewise retain the whole query on DataFusion.
-    RelationalFallbackCase {
+    DataFusionBaselineCase {
         id: "negative_unsupported_expression",
         sql: "SELECT t.key, SUM(TRY_CAST(t.name AS DOUBLE)) AS s \
               FROM (SELECT b.key, b.name FROM bench b JOIN bench2 s ON b.key = s.key WHERE s.payload >= 10) t \
               GROUP BY t.key ORDER BY t.key",
-        expected_path: NativeDataFusionPostNativeExecutionPath::Cpu,
+        expected_path: FinalPlanDisposition::DataFusion,
         expected_native_fragment_count: 0,
     },
 ];
 
 #[tokio::test]
-async fn relational_fallback_execution_coverage_preserves_datafusion_plans() {
-    let dir = unique_temp_dir("datafusion-nexus-relational-fallback");
+async fn datafusion_baseline_execution_coverage_preserves_datafusion_plans() {
+    let dir = unique_temp_dir("datafusion-nexus-datafusion-baseline");
     let bench = dir.join("bench.parquet");
     let bench2 = dir.join("bench2.parquet");
-    write_mixed_fallback_input_parquet(&bench, 0);
-    write_mixed_fallback_input_parquet(&bench2, 1);
+    write_datafusion_baseline_input_parquet(&bench, 0);
+    write_datafusion_baseline_input_parquet(&bench2, 1);
 
-    for case in RELATIONAL_FALLBACK_CASES {
-        run_relational_fallback_case(case, &bench, &bench2).await;
+    for case in DATAFUSION_BASELINE_CASES {
+        run_datafusion_baseline_case(case, &bench, &bench2).await;
     }
 
     fs::remove_dir_all(&dir).ok();
 }
 
-async fn run_relational_fallback_case(
-    case: &RelationalFallbackCase,
+async fn run_datafusion_baseline_case(
+    case: &DataFusionBaselineCase,
     bench: &std::path::Path,
     bench2: &std::path::Path,
 ) {
     // Keep the normal bounded QueryService configuration so the fully supported
-    // control retains its native performance coverage alongside CPU fallbacks.
+    // control retains its native performance coverage alongside DataFusion baselines.
     let backend = NexusGpuBackend::builder()
         .memory_policy(NexusMemoryPolicy::Bounded {
             device_ordinals: vec![0],
@@ -111,7 +111,7 @@ async fn run_relational_fallback_case(
         .unwrap_or_else(|error| panic!("{}: backend install failed: {error}", case.id))
         .build();
     let gpu_ctx = SessionContext::new_with_state(state);
-    register_mixed_fallback_tables(&gpu_ctx, bench, bench2).await;
+    register_datafusion_baseline_tables(&gpu_ctx, bench, bench2).await;
 
     let df = gpu_ctx.sql(case.sql).await.expect(case.id);
     let plan = df.create_physical_plan().await.expect(case.id);
@@ -128,8 +128,13 @@ async fn run_relational_fallback_case(
     let mut rejected_reasons = Vec::new();
     for outcome in planning_report.outcomes() {
         match outcome {
-            CandidateOutcome::Rewritten { .. } => rewritten += 1,
-            CandidateOutcome::Rejected { reason, .. } => rejected_reasons.push(reason.code().to_string()),
+            CandidateOutcome::Selected { .. } => rewritten += 1,
+            CandidateOutcome::NotSupported { capability_reason, .. } => {
+                rejected_reasons.push(capability_reason.code().to_string());
+            },
+            CandidateOutcome::NotSelectedByCost { cost_reason, .. } => {
+                rejected_reasons.push(cost_reason.code().to_string());
+            },
         }
     }
     drop(session_state);
@@ -138,13 +143,13 @@ async fn run_relational_fallback_case(
         Ok(batches) => batches,
         Err(error) => panic!(
             "{}: GPU collect failed: {error:#}\npath={:?} fragments={} host_boundaries={} rewritten={rewritten} rejected={rejected_reasons:?}",
-            case.id, row.post_native_execution_path, row.native_plan_fragment_count, row.host_datafusion_boundary_count,
+            case.id, row.final_disposition, row.native_plan_fragment_count, row.host_datafusion_boundary_count,
         ),
     };
     let cpu_ctx = SessionContext::new_with_state(
         SessionStateBuilder::new_with_default_features().with_config(direct_friendly_sql_session_config()).build(),
     );
-    register_mixed_fallback_tables(&cpu_ctx, bench, bench2).await;
+    register_datafusion_baseline_tables(&cpu_ctx, bench, bench2).await;
     let cpu_batches = cpu_ctx.sql(case.sql).await.expect(case.id).collect().await.expect(case.id);
 
     let gpu_text = pretty_format_batches(&gpu_batches).expect(case.id).to_string();
@@ -156,8 +161,8 @@ async fn run_relational_fallback_case(
     );
 
     assert_eq!(
-        row.post_native_execution_path, case.expected_path,
-        "{}: unexpected post_native_execution_path (fragments={}, host_boundaries={}, rewritten={rewritten}, rejected={rejected_reasons:?})",
+        row.final_disposition, case.expected_path,
+        "{}: unexpected final_disposition (fragments={}, host_boundaries={}, rewritten={rewritten}, rejected={rejected_reasons:?})",
         case.id, row.native_plan_fragment_count, row.host_datafusion_boundary_count
     );
     assert_eq!(
@@ -167,20 +172,24 @@ async fn run_relational_fallback_case(
     );
 
     match case.expected_path {
-        NativeDataFusionPostNativeExecutionPath::Cpu => {
-            assert_eq!(rewritten, 0, "{}: CPU path should have zero rewritten candidates, got {rewritten}", case.id);
+        FinalPlanDisposition::DataFusion => {
+            assert_eq!(
+                rewritten, 0,
+                "{}: DataFusion baseline should have zero rewritten candidates, got {rewritten}",
+                case.id
+            );
             assert!(
                 !rejected_reasons.is_empty(),
-                "{}: CPU fallback should retain its native rejection evidence",
+                "{}: DataFusion baseline should retain its native rejection evidence",
                 case.id
             );
             assert_eq!(
                 row.host_datafusion_boundary_count, 0,
-                "{}: ordinary relational fallback must not create a host/native boundary",
+                "{}: ordinary relational DataFusion baseline must not create a host/native boundary",
                 case.id
             );
         },
-        NativeDataFusionPostNativeExecutionPath::Native => {
+        FinalPlanDisposition::Native => {
             assert_eq!(rewritten, 1, "{}: supported whole plan should have one rewrite", case.id);
             assert!(rejected_reasons.is_empty(), "{}: supported whole plan should not have rejections", case.id);
             assert_eq!(
@@ -189,7 +198,7 @@ async fn run_relational_fallback_case(
                 case.id
             );
         },
-        unexpected => panic!("{}: relational fallback coverage does not admit {unexpected:?}", case.id),
+        unexpected => panic!("{}: DataFusion-baseline coverage does not admit {unexpected:?}", case.id),
     }
 }
 
@@ -204,12 +213,12 @@ fn installed_final_native_rule(
     })
 }
 
-async fn register_mixed_fallback_tables(ctx: &SessionContext, bench: &std::path::Path, bench2: &std::path::Path) {
+async fn register_datafusion_baseline_tables(ctx: &SessionContext, bench: &std::path::Path, bench2: &std::path::Path) {
     ctx.register_parquet("bench", bench.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
     ctx.register_parquet("bench2", bench2.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
 }
 
-fn write_mixed_fallback_input_parquet(path: &std::path::Path, salt: i64) {
+fn write_datafusion_baseline_input_parquet(path: &std::path::Path, salt: i64) {
     let schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int32, false),
         Field::new("payload", DataType::Int64, false),

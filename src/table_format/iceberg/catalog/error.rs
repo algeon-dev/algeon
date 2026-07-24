@@ -2,25 +2,6 @@ use super::*;
 
 pub(super) const CATALOG_BACKEND_OP: &str = "datafusion_nexus.iceberg.catalog_backend";
 
-pub(super) fn catalog_backend_error(
-    message: &'static str,
-    catalog_type: &'static str,
-    source: iceberg::Error,
-) -> Error {
-    let error = Error::new(classify_iceberg_catalog_error(&source), CATALOG_BACKEND_OP, message)
-        .with_fact("catalog_type", catalog_type);
-    let error = apply_iceberg_catalog_error_facts(error, &source);
-    error.with_source(source)
-}
-
-pub(super) fn glue_catalog_backend_error(
-    message: &'static str,
-    context: &GlueCatalogBackendErrorContext,
-    source: iceberg::Error,
-) -> Error {
-    context.apply(catalog_backend_error(message, "glue", source))
-}
-
 fn catalog_backend_error_code(source: &iceberg::Error, aws_facts: Option<&AwsCatalogErrorFacts>) -> ErrorCode {
     if let Some(aws_facts) = aws_facts {
         if matches!(
@@ -44,11 +25,6 @@ fn catalog_backend_error_code(source: &iceberg::Error, aws_facts: Option<&AwsCat
         _ if source.retryable() => ErrorCode::SourceTemporaryFailure,
         _ => ErrorCode::CudfDependencyFailure,
     }
-}
-
-pub(in crate::table_format::iceberg) fn classify_iceberg_catalog_error(source: &iceberg::Error) -> ErrorCode {
-    let aws_facts = AwsCatalogErrorFacts::from_error(source);
-    catalog_backend_error_code(source, aws_facts.as_ref())
 }
 
 pub(crate) fn classify_iceberg_scan_error(source: &iceberg::Error) -> ErrorCode {
@@ -272,80 +248,4 @@ fn extract_value_after(text: &str, marker: &str) -> Option<String> {
         .unwrap_or("")
         .trim_matches('"');
     (!value.is_empty()).then(|| value.to_string())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn upstream_iceberg_error() -> iceberg::Error {
-        iceberg::Error::new(iceberg::ErrorKind::Unexpected, "upstream catalog failure")
-    }
-
-    fn glue_expired_token_error() -> iceberg::Error {
-        iceberg::Error::new(iceberg::ErrorKind::Unexpected, "Operation failed for hitting aws sdk error")
-            .with_retryable(true)
-            .with_source(std::io::Error::other(
-                "aws sdk error: ServiceError(ServiceError { source: Unhandled(Unhandled { \
-                 source: ErrorMetadata { code: Some(\"ExpiredTokenException\"), \
-                 message: Some(\"The security token included in the request is expired\"), \
-                 extras: Some({\"aws_request_id\": \"req-expired-123\"}) }, retryable: true }), \
-                 status code: 401 Unauthorized })",
-            ))
-    }
-
-    #[test]
-    fn catalog_backend_error_preserves_glue_contract() {
-        let error =
-            catalog_backend_error("failed to connect to AWS Glue Iceberg catalog", "glue", upstream_iceberg_error());
-
-        assert_eq!(error.code(), ErrorCode::CudfDependencyFailure);
-        assert_eq!(error.operation(), CATALOG_BACKEND_OP);
-        assert_eq!(error.message(), "failed to connect to AWS Glue Iceberg catalog");
-        assert_eq!(error.fact_value("catalog_type"), Some("glue"));
-        assert_eq!(error.fact_value("iceberg_error_kind"), Some("Unexpected"));
-        assert_eq!(error.fact_value("iceberg_retryable"), Some("false"));
-        assert!(error.source_error().is_some());
-    }
-
-    #[test]
-    fn catalog_backend_error_preserves_rest_contract() {
-        let error =
-            catalog_backend_error("failed to connect to Iceberg REST catalog", "rest", upstream_iceberg_error());
-
-        assert_eq!(error.code(), ErrorCode::CudfDependencyFailure);
-        assert_eq!(error.operation(), CATALOG_BACKEND_OP);
-        assert_eq!(error.message(), "failed to connect to Iceberg REST catalog");
-        assert_eq!(error.fact_value("catalog_type"), Some("rest"));
-        assert_eq!(error.fact_value("iceberg_error_kind"), Some("Unexpected"));
-        assert_eq!(error.fact_value("iceberg_retryable"), Some("false"));
-        assert!(error.source_error().is_some());
-    }
-
-    #[test]
-    fn catalog_backend_error_extracts_safe_aws_metadata_facts() {
-        let error =
-            catalog_backend_error("failed to connect to AWS Glue Iceberg catalog", "glue", glue_expired_token_error());
-
-        assert_eq!(error.code(), ErrorCode::SourceUnauthenticated);
-        assert_eq!(error.fact_value("catalog_type"), Some("glue"));
-        assert_eq!(error.fact_value("iceberg_retryable"), Some("true"));
-        assert_eq!(error.fact_value("aws_error_code"), Some("ExpiredTokenException"));
-        assert_eq!(error.fact_value("aws_request_id"), Some("req-expired-123"));
-        assert_eq!(error.fact_value("aws_http_status"), Some("401"));
-        assert_eq!(error.fact_value("aws_retryable"), Some("true"));
-        assert_eq!(error.fact_value("aws_error_detail"), Some("expired_token"));
-    }
-
-    #[test]
-    fn catalog_backend_error_allows_namespace_and_table_facts() {
-        let error =
-            catalog_backend_error("failed to load table from Iceberg REST catalog", "rest", upstream_iceberg_error())
-                .with_fact("namespace", "tpch_sf1")
-                .with_fact("table", "lineitem");
-
-        assert_eq!(error.fact_value("catalog_type"), Some("rest"));
-        assert_eq!(error.fact_value("namespace"), Some("tpch_sf1"));
-        assert_eq!(error.fact_value("table"), Some("lineitem"));
-    }
 }

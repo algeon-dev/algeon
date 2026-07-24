@@ -18,7 +18,7 @@ fn native_datafusion_execution_report_records_runtime_boundaries() {
     assert_eq!(report.runtime_started_count(), 1);
     assert_eq!(report.rejected_before_execution_count(), 0);
     let row = &report.rows[0];
-    assert_eq!(row.planning_outcome, NativeDataFusionPlanningOutcome::AcceptedReplaced);
+    assert_eq!(row.planning_outcome, Some(NativeDataFusionPlanningOutcome::Selected));
     assert_eq!(row.strict_bounded_contract_rows.len(), 2);
     assert_eq!(row.strict_bounded_compiled_graphs.len(), 1);
     assert!(
@@ -26,7 +26,7 @@ fn native_datafusion_execution_report_records_runtime_boundaries() {
             && gate.contract_quality == ContractQuality::QueryEngineOwnedBoundary)
     );
     assert_eq!(row.post_native_plan_root, "NexusNativeExec");
-    assert_eq!(row.post_native_execution_path, NativeDataFusionPostNativeExecutionPath::Native);
+    assert_eq!(row.final_disposition, FinalPlanDisposition::Native);
     assert!(!row.rejected_before_execution);
     assert!(row.native_runtime_started);
     assert_eq!(row.runtime_outcome, NativeDataFusionRuntimeOutcome::Succeeded);
@@ -556,15 +556,126 @@ fn native_datafusion_execution_report_keeps_unobserved_optional_memory_metrics_e
 }
 
 #[test]
+fn native_datafusion_execution_report_projects_runtime_for_mixed_plan_despite_candidate_declines() {
+    let report = NativeDataFusionExecutionReport::collect([NativeDataFusionExecutionWorkloadItem::new(
+        "mixed_gpu_island",
+        mixed_native_exec_for_runtime_projection(),
+        capability_and_cost_declined_diagnostics(),
+        NativeDataFusionRuntime::Succeeded {
+            output_batches: 1,
+            output_rows: 4,
+            output_bytes: 256,
+            metrics: native_execution_metrics_set(),
+        },
+    )]);
+
+    assert_eq!(report.rows.len(), 2);
+    assert!(report.rows.iter().any(|row| {
+        row.planning_outcome == Some(NativeDataFusionPlanningOutcome::NotSupported)
+            && row.reason_code.as_deref() == Some("unsupported_expression")
+    }));
+    assert!(report.rows.iter().any(|row| {
+        row.planning_outcome == Some(NativeDataFusionPlanningOutcome::NotSelectedByCost)
+            && row.reason_code.as_deref() == Some("native_small_selective_topk_not_selected_by_cost")
+    }));
+
+    for row in &report.rows {
+        assert_eq!(row.final_disposition, FinalPlanDisposition::Mixed);
+        assert!(row.native_runtime_started);
+        assert_eq!(row.runtime_outcome, NativeDataFusionRuntimeOutcome::Succeeded);
+        assert_eq!(row.output_batches, Some(1));
+        assert_eq!(row.output_rows, Some(4));
+        assert_eq!(row.output_bytes, Some(256));
+        assert_eq!(row.metrics.graph_runtime_rows.len(), 1);
+        assert_eq!(row.metrics.graph_runtime_rows[0].algorithm, "pagerank");
+    }
+}
+
+#[test]
+fn native_datafusion_execution_report_keeps_runtime_unstarted_for_pure_datafusion_candidate_baseline() {
+    let report = NativeDataFusionExecutionReport::collect([NativeDataFusionExecutionWorkloadItem::new(
+        "cpu_baseline",
+        Arc::new(datafusion::physical_plan::empty::EmptyExec::new(Arc::new(Schema::empty()))),
+        capability_and_cost_declined_diagnostics(),
+        NativeDataFusionRuntime::Succeeded {
+            output_batches: 1,
+            output_rows: 4,
+            output_bytes: 256,
+            metrics: native_execution_metrics_set(),
+        },
+    )]);
+
+    assert_eq!(report.rows.len(), 2);
+    for row in &report.rows {
+        assert_eq!(row.final_disposition, FinalPlanDisposition::DataFusion);
+        assert!(!row.native_runtime_started);
+        assert_eq!(row.runtime_outcome, NativeDataFusionRuntimeOutcome::NotStarted);
+        assert_eq!(row.runtime_failure, None);
+        assert_eq!(row.output_batches, None);
+        assert_eq!(row.output_rows, None);
+        assert_eq!(row.output_bytes, None);
+        assert!(row.metrics.graph_runtime_rows.is_empty());
+    }
+}
+
+fn mixed_native_exec_for_runtime_projection() -> Arc<dyn ExecutionPlan> {
+    let native = native_exec_leaf_for_report();
+    let schema = native.schema();
+    Arc::new(
+        ProjectionExec::try_new(
+            [ProjectionExpr { expr: col("key", &schema).unwrap(), alias: "key".to_string() }],
+            native,
+        )
+        .unwrap(),
+    )
+}
+
+fn capability_and_cost_declined_diagnostics() -> NativePlanningDiagnostics {
+    let mut report = PlanningReport::new();
+    report.push_not_supported(GpuCandidate::new("UnsupportedCandidate", 1), CapabilityReason::UnsupportedExpression);
+    report.push_not_selected_by_cost(
+        GpuCandidate::new("CostDeclinedCandidate", 1),
+        nexus_query_engine::plan::NativePlanCostReason::SmallSelectiveTopK,
+        datafusion_nexus::report::NativeCandidateCostEvidence {
+            node_count: 1,
+            source_count: 1,
+            local_parquet_source_count: 1,
+            selected_row_groups_known: true,
+            selected_row_groups: Some(1),
+            estimated_source_rows: Some(4),
+            estimated_source_bytes: Some(256),
+            selected_source_bytes_known: true,
+            join_count: 0,
+            residual_join_count: 0,
+            aggregate_count: 0,
+            grouped_aggregate_count: 0,
+            sort_count: 0,
+            limit_count: 1,
+            min_topk_fetch: Some(1),
+        },
+    );
+    NativePlanningDiagnostics {
+        input_plan_root: "ProjectionExec".to_string(),
+        input_plan_shape: "ProjectionExec(GpuIsland)".to_string(),
+        input_join_diagnostics: Vec::new(),
+        report,
+        native_optimizer: Default::default(),
+        source_diagnostics: Vec::new(),
+        strict_bounded_contract: Default::default(),
+        adaptive_pipeline: Default::default(),
+    }
+}
+
+#[test]
 fn native_datafusion_reports_scope_strict_contract_rows_to_join_candidates() {
     let mut report = PlanningReport::new();
-    report.push_rewritten(GpuCandidate::new(
+    report.push_selected(GpuCandidate::new(
         "SortExec(fetch)(AggregateExec(HashJoinExec(LocalParquetScan,LocalParquetScan)))",
         1,
     ));
-    report.push_rejected(
+    report.push_not_supported(
         GpuCandidate::new("SortExec(fetch)(AggregateExec(LocalParquetScan))", 1),
-        datafusion_nexus::policy::FallbackReason::UnsupportedExpression,
+        datafusion_nexus::capability::CapabilityReason::UnsupportedExpression,
     );
     let diagnostics = NativePlanningDiagnostics {
         input_plan_root: "SortExec".to_string(),
@@ -614,8 +725,8 @@ fn native_datafusion_reports_keep_multiple_accepted_join_candidates_separated() 
     let first_candidate = GpuCandidate::new("HashJoinExec(LocalParquetScan,LocalParquetScan)", 1);
     let second_candidate = GpuCandidate::new("NestedLoopJoinExec(LocalParquetScan,LocalParquetScan)", 1);
     let mut report = PlanningReport::new();
-    report.push_rewritten(first_candidate.clone());
-    report.push_rewritten(second_candidate.clone());
+    report.push_selected(first_candidate.clone());
+    report.push_selected(second_candidate.clone());
 
     let diagnostics = NativePlanningDiagnostics {
         input_plan_root: "UnionExec".to_string(),
@@ -685,7 +796,7 @@ fn native_datafusion_reports_keep_multiple_accepted_join_candidates_separated() 
 fn native_datafusion_reports_project_adaptive_rows_without_strict_contract_rows() {
     let candidate = GpuCandidate::new("HashJoinExec(LocalParquetScan,LocalParquetScan)", 1);
     let mut report = PlanningReport::new();
-    report.push_rewritten(candidate.clone());
+    report.push_selected(candidate.clone());
     let diagnostics = NativePlanningDiagnostics {
         input_plan_root: "HashJoinExec".to_string(),
         input_plan_shape: "HashJoinExec(LocalParquetScan,LocalParquetScan)".to_string(),
@@ -729,7 +840,7 @@ fn native_datafusion_planning_report_projects_native_optimizer_diagnostics() {
     assert_eq!(optimizer_result.diagnostics.semijoin_reduction.applied_count, 1);
 
     let mut report = PlanningReport::new();
-    report.push_rewritten(GpuCandidate::new("HashJoinExec(HashJoinExec,GpuKeyset)", 1));
+    report.push_selected(GpuCandidate::new("HashJoinExec(HashJoinExec,GpuKeyset)", 1));
     let diagnostics = NativePlanningDiagnostics {
         input_plan_root: "HashJoinExec".to_string(),
         input_plan_shape: "HashJoinExec(HashJoinExec,GpuKeyset)".to_string(),
@@ -772,7 +883,7 @@ fn native_datafusion_planning_report_projects_projection_simplification_diagnost
     assert_eq!(optimizer_result.diagnostics.projection_simplification.applied_count, 1);
 
     let mut report = PlanningReport::new();
-    report.push_rewritten(GpuCandidate::new("ProjectionExec(GpuResidentSource)", 1));
+    report.push_selected(GpuCandidate::new("ProjectionExec(GpuResidentSource)", 1));
     let diagnostics = NativePlanningDiagnostics {
         input_plan_root: "ProjectionExec".to_string(),
         input_plan_shape: "ProjectionExec(GpuResidentSource)".to_string(),
@@ -811,7 +922,7 @@ fn native_datafusion_planning_report_projects_dynamic_filter_route_diagnostics()
     assert_eq!(optimizer_result.diagnostics.dynamic_filter_route_discovery.route_count, 1);
 
     let mut report = PlanningReport::new();
-    report.push_rewritten(GpuCandidate::new("HashJoinExec(LocalParquetScan,LocalParquetScan)", 1));
+    report.push_selected(GpuCandidate::new("HashJoinExec(LocalParquetScan,LocalParquetScan)", 1));
     let diagnostics = NativePlanningDiagnostics {
         input_plan_root: "HashJoinExec".to_string(),
         input_plan_shape: "HashJoinExec(LocalParquetScan,LocalParquetScan)".to_string(),
@@ -847,7 +958,7 @@ fn native_datafusion_planning_report_projects_dynamic_filter_route_diagnostics()
 #[test]
 fn native_datafusion_planning_report_uses_native_optimizer_stable_rule_rows() {
     let mut report = PlanningReport::new();
-    report.push_rewritten(GpuCandidate::new("AggregateExec(HashJoinExec)", 1));
+    report.push_selected(GpuCandidate::new("AggregateExec(HashJoinExec)", 1));
     let diagnostics = NativePlanningDiagnostics {
         input_plan_root: "AggregateExec".to_string(),
         input_plan_shape: "AggregateExec(HashJoinExec)".to_string(),
@@ -1117,26 +1228,22 @@ fn accepted_candidate_contract_entry(
 }
 
 #[test]
-fn native_datafusion_execution_report_keeps_rejected_queries_out_of_runtime() {
-    let report = NativeDataFusionExecutionReport::collect([NativeDataFusionExecutionWorkloadItem::new(
+fn native_datafusion_execution_report_marks_terminal_planning_failure_before_runtime() {
+    let report = NativeDataFusionExecutionReport::collect([NativeDataFusionExecutionWorkloadItem::planning_failure(
         "q03",
-        native_exec_leaf_for_report(),
-        rejected_native_diagnostics(),
-        NativeDataFusionRuntime::NotStarted,
+        "native_planning",
+        "native_planning_failed",
+        "native planning did not produce an executable plan",
     )]);
 
     assert_eq!(report.rows.len(), 1);
     assert_eq!(report.runtime_started_count(), 0);
     assert_eq!(report.rejected_before_execution_count(), 1);
     let row = &report.rows[0];
-    assert_eq!(row.planning_outcome, NativeDataFusionPlanningOutcome::RejectedBeforeExecution);
-    assert_eq!(row.reason_code.as_deref(), Some("native_bounded_join_unsupported"));
-    assert_eq!(row.strict_bounded_contract_rows.len(), 1);
-    assert_eq!(
-        row.strict_bounded_contract_rows[0].execution_mode,
-        StrictBoundedExecutionMode::UnsupportedStrictBounded
-    );
-    assert_eq!(row.strict_bounded_contract_rows[0].contract_status, ContractStatus::BlockedByLowerLevel);
+    assert_eq!(row.planning_outcome, None);
+    assert_eq!(row.reason_code.as_deref(), Some("native_planning_failed"));
+    assert_eq!(row.final_disposition, FinalPlanDisposition::Rejected);
+    assert!(row.strict_bounded_contract_rows.is_empty());
     assert!(row.strict_bounded_compiled_graphs.is_empty());
     assert!(row.rejected_before_execution);
     assert!(!row.native_runtime_started);
@@ -1155,7 +1262,7 @@ fn native_datafusion_reports_classify_composed_native_roots_as_native() {
         accepted_native_diagnostics(),
     )]);
     assert_eq!(planning.rows[0].post_native_plan_root, "NexusNativeComposedExec");
-    assert_eq!(planning.rows[0].post_native_execution_path, NativeDataFusionPostNativeExecutionPath::Native);
+    assert_eq!(planning.rows[0].final_disposition, FinalPlanDisposition::Native);
 
     let execution = NativeDataFusionExecutionReport::collect([NativeDataFusionExecutionWorkloadItem::new(
         "composed",
@@ -1164,5 +1271,5 @@ fn native_datafusion_reports_classify_composed_native_roots_as_native() {
         NativeDataFusionRuntime::NotStarted,
     )]);
     assert_eq!(execution.rows[0].post_native_plan_root, "NexusNativeComposedExec");
-    assert_eq!(execution.rows[0].post_native_execution_path, NativeDataFusionPostNativeExecutionPath::Native);
+    assert_eq!(execution.rows[0].final_disposition, FinalPlanDisposition::Native);
 }

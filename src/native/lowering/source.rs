@@ -34,8 +34,8 @@ use super::{
     projection_outputs,
 };
 use crate::{
+    capability::CapabilityReason,
     native::normalize::{NormalizedNativeScan, NormalizedNativeSource},
-    policy::FallbackReason,
 };
 
 pub(super) fn lower_source_input(
@@ -43,7 +43,7 @@ pub(super) fn lower_source_input(
     builder: &mut NativeQueryPlanBuilder,
     required_output_fields: &RequiredFields,
     pushed_scan_limit: Option<usize>,
-) -> Result<LoweredNativeInput, FallbackReason> {
+) -> Result<LoweredNativeInput, CapabilityReason> {
     match source.scan {
         NormalizedNativeScan::LocalParquet(source_exec) => lower_local_parquet_source_input(
             source_exec,
@@ -94,7 +94,7 @@ pub(super) fn project_scan_output_columns(
     input_schema: SchemaRef,
     input_bindings: Vec<super::FieldBinding>,
     required_output_fields: &RequiredFields,
-) -> Result<LoweredNativeInput, FallbackReason> {
+) -> Result<LoweredNativeInput, CapabilityReason> {
     let selected_bindings = selected_source_bindings_in_frontend_order(&input_bindings, required_output_fields)?;
     if selected_bindings.len() == input_schema.fields().len()
         && selected_bindings.iter().zip(input_bindings.iter()).all(|(selected, input)| {
@@ -110,7 +110,7 @@ pub(super) fn project_scan_output_columns(
         expressions.push(NativeExpr::column(binding.native_name.as_str()));
         let field = input_schema
             .field_with_name(binding.native_name.as_str())
-            .map_err(|_error| FallbackReason::UnsupportedExpression)?;
+            .map_err(|_error| CapabilityReason::UnsupportedExpression)?;
         fields.push(field.clone());
     }
     let schema = Arc::new(Schema::new(fields));
@@ -121,7 +121,7 @@ pub(super) fn project_scan_output_columns(
 fn selected_source_bindings_in_frontend_order(
     input_bindings: &[super::FieldBinding],
     required_output_fields: &RequiredFields,
-) -> Result<Vec<super::FieldBinding>, FallbackReason> {
+) -> Result<Vec<super::FieldBinding>, CapabilityReason> {
     let mut selected_bindings = match required_output_fields {
         RequiredFields::All => input_bindings.to_vec(),
         RequiredFields::Only { .. } => {
@@ -135,7 +135,7 @@ fn selected_source_bindings_in_frontend_order(
                         .iter()
                         .find(|binding| binding.frontend_index == frontend_index)
                         .cloned()
-                        .ok_or(FallbackReason::UnsupportedExpression)
+                        .ok_or(CapabilityReason::UnsupportedExpression)
                 })
                 .collect::<Result<Vec<_>, _>>()?
         },
@@ -172,14 +172,14 @@ pub(super) fn required_source_scan_output_indices(
     source_schema: SchemaRef,
     filter: Option<&datafusion::physical_plan::filter::FilterExec>,
     required_output_fields: &RequiredFields,
-) -> Result<Vec<usize>, FallbackReason> {
+) -> Result<Vec<usize>, CapabilityReason> {
     if let Some(filter) = filter
         && let Some(projection) = filter.projection()
     {
         return required_output_fields
             .requested_indices(filter.schema().fields().len())?
             .into_iter()
-            .map(|output_index| projection.get(output_index).copied().ok_or(FallbackReason::UnsupportedExpression))
+            .map(|output_index| projection.get(output_index).copied().ok_or(CapabilityReason::UnsupportedExpression))
             .collect();
     }
     required_output_fields.requested_indices(source_schema.fields().len())
@@ -192,7 +192,7 @@ pub(super) fn add_source_filter_projection(
     filter_schema: SchemaRef,
     projection: &[usize],
     required_output_fields: &RequiredFields,
-) -> Result<LoweredNativeInput, FallbackReason> {
+) -> Result<LoweredNativeInput, CapabilityReason> {
     let requested_output_indices = required_output_fields.requested_indices(filter_schema.fields().len())?;
     let requested = RequiredFields::only(requested_output_indices.iter().copied().collect());
     let (schema, bindings) = executable_schema_and_bindings(&filter_schema, &requested)?;
@@ -200,14 +200,14 @@ pub(super) fn add_source_filter_projection(
         .iter()
         .zip(bindings.iter())
         .map(|(output_index, output_binding)| {
-            let input_index = projection.get(*output_index).copied().ok_or(FallbackReason::UnsupportedExpression)?;
+            let input_index = projection.get(*output_index).copied().ok_or(CapabilityReason::UnsupportedExpression)?;
             let input_binding = scan_output.binding_for_frontend_index(input_index)?;
             Ok(alias_if_needed(
                 nexus_query_engine::expr::Expr::column(input_binding.native_name.as_str()),
                 output_binding.native_name.as_str(),
             ))
         })
-        .collect::<Result<Vec<_>, FallbackReason>>()?;
+        .collect::<Result<Vec<_>, CapabilityReason>>()?;
     let node = builder.add_projection(filtered_node, projection_outputs(expressions, &schema)?);
     Ok(LoweredNativeInput::with_bindings(node, schema, bindings))
 }
@@ -219,7 +219,7 @@ pub(super) fn lower_source_filter_and_projection(
     reader_pushdown_covers_filter: bool,
     required_output_fields: &RequiredFields,
     unprojected_output: SourceUnprojectedFilterOutput,
-) -> Result<LoweredNativeInput, FallbackReason> {
+) -> Result<LoweredNativeInput, CapabilityReason> {
     if reader_pushdown_covers_filter {
         if let Some(projection) = filter.projection() {
             return add_source_filter_projection(
@@ -266,7 +266,7 @@ fn unprojected_source_filter_output(
     scan_output: LoweredNativeInput,
     required_output_fields: &RequiredFields,
     unprojected_output: SourceUnprojectedFilterOutput,
-) -> Result<LoweredNativeInput, FallbackReason> {
+) -> Result<LoweredNativeInput, CapabilityReason> {
     match unprojected_output {
         SourceUnprojectedFilterOutput::PreserveScanOutput => Ok(scan_output),
         SourceUnprojectedFilterOutput::ProjectRequiredOutput => project_scan_output_columns(
@@ -315,7 +315,7 @@ pub(super) fn required_scan_projection<'a>(
 pub(super) fn lower_required_file_source_projection_exprs(
     projection: &[RequiredScanProjectionExpr<'_>],
     input_schema: &SchemaRef,
-) -> Result<Vec<NativeExpr>, FallbackReason> {
+) -> Result<Vec<NativeExpr>, CapabilityReason> {
     projection
         .iter()
         .map(|projection_expr| {
@@ -342,7 +342,7 @@ pub(super) fn required_scan_projection_needs_native_projection(
     input_schema: &SchemaRef,
     current_source_schema: &SchemaRef,
     scan_output_schema: SchemaRef,
-) -> Result<bool, FallbackReason> {
+) -> Result<bool, CapabilityReason> {
     if required_scan_projection_requires_native_projection(projection, input_schema) {
         return Ok(true);
     }
@@ -353,7 +353,7 @@ pub(super) fn required_scan_projection_needs_native_projection(
 pub(super) fn required_scan_projection_schema(
     projection: &[RequiredScanProjectionExpr<'_>],
     scan_output_schema: SchemaRef,
-) -> Result<SchemaRef, FallbackReason> {
+) -> Result<SchemaRef, CapabilityReason> {
     let fields = projection
         .iter()
         .map(|projection_expr| {
@@ -361,7 +361,7 @@ pub(super) fn required_scan_projection_schema(
                 .fields()
                 .get(projection_expr.output_index)
                 .cloned()
-                .ok_or(FallbackReason::UnsupportedExpression)
+                .ok_or(CapabilityReason::UnsupportedExpression)
         })
         .collect::<Result<Vec<_>, _>>()?;
     Ok(Arc::new(Schema::new(fields)))

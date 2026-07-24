@@ -85,13 +85,14 @@ impl TableProvider for GpuCoverageProvider {
 fn coverage_schema() -> SchemaRef {
     Arc::new(Schema::new(vec![
         Field::new("overall", DataType::Utf8, false),
-        Field::new("nexus_native_coverage", DataType::Utf8, false),
-        Field::new("cugraph_operator", DataType::Utf8, false),
-        Field::new("datafusion_cpu_ingest_or_boundary", DataType::Utf8, false),
-        Field::new("host_output_materialization", DataType::Utf8, false),
+        Field::new("final_disposition", DataType::Utf8, false),
+        Field::new("native_fragment_count", DataType::Int64, false),
+        Field::new("explicit_gpu_island_count", DataType::Int64, false),
+        Field::new("datafusion_boundary_count", DataType::Int64, false),
+        Field::new("host_materialization_count", DataType::Int64, false),
         Field::new("confidence", DataType::Utf8, false),
         Field::new("planning_did_io", DataType::Boolean, false),
-        Field::new("fallback_reason_count", DataType::Int64, false),
+        Field::new("candidate_outcome_count", DataType::Int64, false),
         Field::new("runtime_caveat_count", DataType::Int64, false),
         Field::new("coverage_json", DataType::Utf8, false),
     ]))
@@ -102,13 +103,14 @@ fn coverage_batch(coverage: &QueryGpuCoverage) -> Result<RecordBatch> {
         coverage_schema(),
         vec![
             strings(vec![coverage.overall.as_str().to_string()]),
-            strings(vec![coverage.domains.nexus_native_coverage.as_str().to_string()]),
-            strings(vec![coverage.domains.cugraph_operator.as_str().to_string()]),
-            strings(vec![coverage.domains.datafusion_cpu_ingest_or_boundary.as_str().to_string()]),
-            strings(vec![coverage.domains.host_output_materialization.as_str().to_string()]),
+            strings(vec![coverage.final_disposition.as_str().to_string()]),
+            int64s(vec![usize_to_i64(coverage.domains.native_fragment_count, "native_fragment_count")?]),
+            int64s(vec![usize_to_i64(coverage.domains.explicit_gpu_island_count, "explicit_gpu_island_count")?]),
+            int64s(vec![usize_to_i64(coverage.domains.datafusion_boundary_count, "datafusion_boundary_count")?]),
+            int64s(vec![usize_to_i64(coverage.domains.host_materialization_count, "host_materialization_count")?]),
             strings(vec![coverage.confidence.as_str().to_string()]),
             bools(vec![coverage.planning_did_io]),
-            int64s(vec![usize_to_i64(coverage.fallback_reasons.len(), "fallback_reason_count")?]),
+            int64s(vec![usize_to_i64(coverage.candidate_outcomes.len(), "candidate_outcome_count")?]),
             int64s(vec![usize_to_i64(coverage.runtime_caveats.len(), "runtime_caveat_count")?]),
             strings(vec![coverage.to_json().to_string()]),
         ],
@@ -188,7 +190,7 @@ mod tests {
 
         let batches = ctx
             .sql(
-                "SELECT overall, nexus_native_coverage, coverage_json \
+                "SELECT overall, final_disposition, coverage_json \
                  FROM nexus_explain_coverage('SELECT 1')",
             )
             .await
@@ -202,7 +204,7 @@ mod tests {
         assert_ne!(string_value(batch, 0, 0), "rejected");
         let json: serde_json::Value = serde_json::from_str(string_value(batch, 2, 0)).unwrap();
         assert_eq!(json["overall"]["verdict"], string_value(batch, 0, 0));
-        assert_eq!(json["domains"]["nexus_native_coverage"], string_value(batch, 1, 0));
+        assert_eq!(json["final_disposition"], string_value(batch, 1, 0));
         assert_eq!(json["validated_under"]["native_optimizer_rule_installed"], true);
         assert_eq!(json["validated_under"]["final_plan_requirements"], serde_json::json!([]));
     }

@@ -75,7 +75,7 @@ impl NexusNativeExecutionConfig {
         self.requested_grant_bytes
     }
 
-    #[cfg(feature = "server")]
+    #[cfg(any(feature = "server", test))]
     pub(crate) fn with_unbounded_native_execution_limiter(mut self, limiter: UnboundedNativeExecutionLimiter) -> Self {
         self.unbounded_native_execution_limiter = Some(limiter);
         self

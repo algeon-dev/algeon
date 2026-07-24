@@ -1,7 +1,7 @@
 use super::*;
 
 pub(super) const CONTROL_SCHEMA: &str = "datafusion_nexus.query_runtime_artifact.control.v1";
-pub(super) const JSONL_SCHEMA: &str = "nexus_query_engine.runtime_observation.v1";
+pub(super) const JSONL_SCHEMA: &str = nexus_query_engine::observability::RUNTIME_OBSERVATION_JSONL_SCHEMA;
 pub(super) const QUERY_ID_METADATA: &str = "x-datafusion-nexus-query-id";
 pub(super) const CORRELATION_HEADER: &str = "x-datafusion-nexus-correlation-id";
 pub(super) const FLIGHT_MAX_ENCODED_FRAME_BYTES: usize = 4 * 1024 * 1024;

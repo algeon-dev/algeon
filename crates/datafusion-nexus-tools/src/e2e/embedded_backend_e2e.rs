@@ -281,7 +281,7 @@ async fn assert_rest_pipelines(
             return Err(format!("pipeline listing missing {expected}: {listed}").into());
         }
         let plan = get_json(http, &format!("{}/api/pipelines/{expected}/plan", params.rest_base)).await?;
-        require_rewritten_plan(expected, &plan)?;
+        require_selected_plan(expected, &plan)?;
     }
 
     let aggregate =
@@ -520,14 +520,14 @@ async fn post_pipeline(http: &reqwest::Client, params: &RunParams, name: &str, b
     Ok(serde_json::from_str(&body_text)?)
 }
 
-fn require_rewritten_plan(name: &str, plan: &Value) -> E2eResult<()> {
+fn require_selected_plan(name: &str, plan: &Value) -> E2eResult<()> {
     let report = plan.get("planning_report").ok_or("plan response missing planning_report")?;
-    let rewritten_count = report.get("rewritten_count").and_then(Value::as_u64).unwrap_or_default();
-    let has_rewritten = report.get("outcomes").and_then(Value::as_array).is_some_and(|outcomes| {
-        outcomes.iter().any(|outcome| outcome.get("outcome").and_then(Value::as_str) == Some("rewritten"))
+    let selected_count = report.get("selected_count").and_then(Value::as_u64).unwrap_or_default();
+    let has_selected = report.get("outcomes").and_then(Value::as_array).is_some_and(|outcomes| {
+        outcomes.iter().any(|outcome| outcome.get("outcome").and_then(Value::as_str) == Some("selected"))
     });
-    if rewritten_count == 0 || !has_rewritten {
-        return Err(format!("pipeline {name} did not report a rewritten native candidate: {plan}").into());
+    if selected_count == 0 || !has_selected {
+        return Err(format!("pipeline {name} did not report a selected native candidate: {plan}").into());
     }
     Ok(())
 }

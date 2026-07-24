@@ -117,7 +117,7 @@ where
 }
 
 #[tokio::test]
-async fn table_format_distinct_list_issues_ticket_and_executes_cpu_delegate() {
+async fn table_format_distinct_list_issues_ticket_and_executes_datafusion_delegate() {
     let schema = list_string_schema();
     let planner = Arc::new(CountingPlanner::new(list_string_scan_plan(Arc::clone(&schema))));
     let provider = Arc::new(
@@ -142,7 +142,7 @@ async fn table_format_distinct_list_issues_ticket_and_executes_cpu_delegate() {
 
     issue_statement_ticket(&service, "SELECT DISTINCT \"pCodes\" FROM iceberg_t")
         .await
-        .expect("logical planning should issue a ticket for CPU-supported List semantics");
+        .expect("logical planning should issue a ticket for DataFusion-executable List semantics");
     assert_eq!(planner.request_count(), 0, "scan planning belongs to the execution-ticket path");
     let query_id = only_ticket_query_id(&service);
     let batches = execute_ticket_batches(&service, query_id.clone()).await;
@@ -150,11 +150,11 @@ async fn table_format_distinct_list_issues_ticket_and_executes_cpu_delegate() {
     assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 2);
     assert_eq!(batches[0].schema().field(0).data_type(), &list_string_type());
     assert_eq!(planner.request_count(), 1, "physical planning must resolve the Iceberg scan once");
-    assert_cpu_fallback_evidence(&service, &query_id, None);
+    assert_datafusion_baseline_evidence(&service, &query_id, None);
 }
 
 #[tokio::test]
-async fn table_format_map_in_mixed_plan_executes_cpu_delegate() {
+async fn table_format_map_preserves_datafusion_baseline() {
     let iceberg_schema = map_schema();
     let planner = Arc::new(CountingPlanner::new(map_scan_plan(Arc::clone(&iceberg_schema))));
     let provider = Arc::new(
@@ -189,7 +189,7 @@ async fn table_format_map_in_mixed_plan_executes_cpu_delegate() {
 
     issue_statement_ticket(&service, "SELECT i.\"countDetail\" FROM iceberg_t AS i CROSS JOIN mem_t AS m")
         .await
-        .expect("logical planning should issue a ticket for CPU-supported Map semantics in a mixed plan");
+        .expect("logical planning should issue a ticket for DataFusion-executable Map semantics");
     assert_eq!(planner.request_count(), 0, "scan planning belongs to the execution-ticket path");
     let query_id = only_ticket_query_id(&service);
     let batches = execute_ticket_batches(&service, query_id.clone()).await;
@@ -197,21 +197,21 @@ async fn table_format_map_in_mixed_plan_executes_cpu_delegate() {
     assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 3);
     assert_eq!(batches[0].schema().field(0).data_type(), &map_type());
     assert_eq!(planner.request_count(), 1, "physical planning must resolve the Iceberg scan once");
-    assert_cpu_fallback_evidence(&service, &query_id, Some("native_outcome=not_supported"));
+    assert_datafusion_baseline_evidence(&service, &query_id, Some("native_outcome=not_supported"));
 }
 
 async fn execute_ticket_batches(service: &DatafusionNexusFlightSqlService, query_id: String) -> Vec<RecordBatch> {
     let response = service
         .execute_ticket(query_id, None)
         .await
-        .expect("physical planning and CPU delegate execution should succeed");
+        .expect("physical planning and DataFusion delegate execution should succeed");
     FlightRecordBatchStream::new_from_flight_data(response.into_inner().map_err(arrow_flight::error::FlightError::from))
         .try_collect::<Vec<_>>()
         .await
         .expect("Flight result should decode into Arrow batches")
 }
 
-fn assert_cpu_fallback_evidence(
+fn assert_datafusion_baseline_evidence(
     service: &DatafusionNexusFlightSqlService,
     query_id: &str,
     physical_plan_fragment: Option<&str>,
@@ -221,7 +221,10 @@ fn assert_cpu_fallback_evidence(
     )
     .expect("query stats are UTF-8");
     assert!(payload.contains("# outcome=succeeded"), "{payload}");
-    assert!(payload.contains("NexusIcebergScanExec"), "CPU fallback must retain the executable wrapper: {payload}");
+    assert!(
+        payload.contains("NexusIcebergScanExec"),
+        "the DataFusion baseline must retain the executable wrapper: {payload}"
+    );
     if let Some(fragment) = physical_plan_fragment {
         assert!(payload.contains(fragment), "missing physical-plan evidence `{fragment}`: {payload}");
     }
@@ -242,14 +245,17 @@ fn assert_cpu_fallback_evidence(
         .iter()
         .position(|column| *column == "rejected_before_execution")
         .expect("rejected_before_execution column");
-    let has_cpu_rejection = lines.take_while(|line| !line.is_empty()).any(|line| {
+    let has_datafusion_baseline_outcome = lines.take_while(|line| !line.is_empty()).any(|line| {
         let fields = line.split('\t').collect::<Vec<_>>();
-        fields.get(outcome) == Some(&"rejected_before_execution")
+        fields.get(outcome) == Some(&"not_supported")
             && fields.get(reason) == Some(&"unsupported_type")
-            && fields.get(execution_path) == Some(&"cpu")
-            && fields.get(rejected) == Some(&"true")
+            && fields.get(execution_path) == Some(&"datafusion")
+            && fields.get(rejected) == Some(&"false")
     });
-    assert!(has_cpu_rejection, "missing structured unsupported-type CPU fallback evidence: {payload}");
+    assert!(
+        has_datafusion_baseline_outcome,
+        "missing structured unsupported-type DataFusion-baseline evidence: {payload}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

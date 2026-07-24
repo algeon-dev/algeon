@@ -30,8 +30,8 @@ async fn non_tpch_sql_in_subquery_semijoin_reduction_is_generic() {
 
     let plan = non_tpch_semijoin_sql_plan(&dir).await;
     let lowering = lower_physical_plan_to_native(plan);
-    assert_eq!(lowering.rewritten_count(), 1, "outcomes={:?}", lowering.report.outcomes());
-    assert_eq!(lowering.rejected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.selected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.not_selected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
 
     let direct_plan = &lowering.plans[0];
     let direct_left_semi = native_join_ids(direct_plan, NativeJoinType::LeftSemi);

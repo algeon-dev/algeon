@@ -18,6 +18,10 @@ use arrow::{
 };
 use cudf::DataFrame;
 #[cfg(feature = "cugraph")]
+use nexus_query_engine::observability::{
+    PlanExecutionBoundaryKind, RuntimeObservationConfig, RuntimeObservationPayload, RuntimeTerminalOutcome,
+};
+#[cfg(feature = "cugraph")]
 use nexus_query_engine::runtime::cache::resident_graph::GpuResidentGraphCache;
 #[cfg(feature = "cugraph")]
 use nexus_query_engine::{
@@ -42,7 +46,8 @@ use nexus_query_engine::{
     chunk::{SourceChunkPlanningPolicy, plan_local_parquet_source_chunks},
     error::QueryErrorCode,
     exec::{
-        execute_query_plan, execute_query_plan_with_gpu_inputs, materialize_gpu_result_to_host, output::QueryOutput,
+        execute_query_plan, execute_query_plan_with_gpu_inputs, execute_query_plan_with_gpu_inputs_observed,
+        materialize_gpu_result_to_host, output::QueryOutput,
     },
     expr::{
         AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, Expr, GroupingSetsSpec, LimitSpec, LiteralValue,

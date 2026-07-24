@@ -100,6 +100,10 @@ pub(crate) fn plan_is_unbounded_native_execution_limited(plan: &dyn ExecutionPla
     (plan as &dyn Any).is::<UnboundedNativeExecutionAdmissionExec>()
 }
 
+pub(crate) fn unbounded_native_execution_limited_input(plan: &dyn ExecutionPlan) -> Option<&Arc<dyn ExecutionPlan>> {
+    (plan as &dyn Any).downcast_ref::<UnboundedNativeExecutionAdmissionExec>().map(|wrapper| &wrapper.input)
+}
+
 impl DisplayAs for UnboundedNativeExecutionAdmissionExec {
     fn fmt_as(&self, t: DisplayFormatType, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.input.fmt_as(t, f)

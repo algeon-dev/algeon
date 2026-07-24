@@ -147,9 +147,9 @@ fn runtime_params_fixture() -> RuntimeParams {
 }
 
 #[test]
-fn evidence_v3_pins_execution_path_payload_shape() {
-    assert_eq!(EVIDENCE_SCHEMA, "datafusion_nexus.server_runtime_observability_e2e.v3");
-    assert_eq!(EVIDENCE_VERSION, 3);
+fn evidence_v4_pins_datafusion_baseline_payload_shape() {
+    assert_eq!(EVIDENCE_SCHEMA, "datafusion_nexus.server_runtime_observability_e2e.v4");
+    assert_eq!(EVIDENCE_VERSION, 4);
     const {
         assert!(GLOBAL_BYTE_PRESSURE_PER_QUERY_BYTES < GLOBAL_BYTE_PRESSURE_RETAINED_BYTES);
         assert!(
@@ -160,8 +160,8 @@ fn evidence_v3_pins_execution_path_payload_shape() {
 
     let mut evidence = RunEvidence::new(&runtime_params_fixture());
     evidence.scenarios.push(ScenarioEvidence {
-        scenario: "native".to_string(),
-        execution_path: "native".to_string(),
+        scenario: "datafusion_baseline".to_string(),
+        execution_path: "datafusion".to_string(),
         query_id: QUERY_ID.to_string(),
         correlation_id: TRACE_ID.to_string(),
         outcome: "succeeded".to_string(),
@@ -199,8 +199,17 @@ fn evidence_v3_pins_execution_path_payload_shape() {
     assert_eq!(config.get("native_once"), Some(&json!(false)));
     assert!(!config.contains_key("profile"));
     let scenario = payload["scenarios"][0].as_object().unwrap();
-    assert_eq!(scenario.get("execution_path"), Some(&json!("native")));
+    assert_eq!(scenario.get("scenario"), Some(&json!("datafusion_baseline")));
+    assert_eq!(scenario.get("execution_path"), Some(&json!("datafusion")));
     assert!(!scenario.contains_key("profile"));
+}
+
+#[test]
+fn datafusion_baseline_is_the_only_non_native_scenario_selector() {
+    assert_eq!(ScenarioSelection::parse("datafusion_baseline").unwrap().label(), "datafusion_baseline");
+    for legacy_selector in ["cpu_fallback", "cpu-fallback"] {
+        assert!(ScenarioSelection::parse(legacy_selector).is_err(), "{legacy_selector} must be rejected");
+    }
 }
 
 #[test]

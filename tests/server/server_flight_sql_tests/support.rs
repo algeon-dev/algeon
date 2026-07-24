@@ -176,7 +176,7 @@ async fn wait_for_shared_ledger_queue(backend: &NexusGpuBackend, expected_queued
 ///
 /// Native CUDA cleanup is handed off to the service GPU execution pool, so a
 /// just-finished handle may still briefly occupy `active_queries` / cleanup
-/// accounting while stream pool work drains. CPU-fallback assertions use this
+/// accounting while stream pool work drains. DataFusion-baseline assertions use this
 /// fence before reading ledger counters.
 async fn wait_for_empty_gpu_ledger(backend: &NexusGpuBackend) {
     let deadline = Instant::now() + Duration::from_secs(10);

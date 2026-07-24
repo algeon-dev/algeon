@@ -17,8 +17,8 @@ fn explicit_numeric_cast_lowers_to_native_expr_and_reads_inner_column() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let projection = native_projection_exprs(&result.plans[0])
         .into_iter()
         .find(|expr| matches!(expr, Expr::Alias { alias, .. } if alias == "x00"))
@@ -53,8 +53,8 @@ fn scan_only_partial_reader_predicate_keeps_native_residual_filter() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let source = native_local_parquet_source(&result.plans[0]);
     let reader_predicate = source
         .reader_predicate
@@ -92,8 +92,8 @@ fn decimal_division_lowers_with_declared_binary_output_type() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let projection = native_projection_exprs(&result.plans[0])
         .into_iter()
         .find(|expr| matches!(expr, Expr::Alias { alias, .. } if alias == "ratio"))
@@ -123,8 +123,8 @@ async fn sql_round_decimal_integral_cast_lowers_to_native_expr() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let projection = native_projection_exprs(&result.plans[0])
         .into_iter()
         .find(|expr| matches!(expr, Expr::Alias { alias, .. } if alias == "segment"))
@@ -154,8 +154,8 @@ async fn sql_nullif_lowers_to_case_with_null_aware_comparison() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let projection = native_projection_exprs(&result.plans[0])
         .into_iter()
         .find(|expr| matches!(expr, Expr::Alias { alias, .. } if alias == "maybe_payload"))
@@ -206,10 +206,10 @@ async fn sql_ilike_ascii_pattern_remains_rejected() {
     let result = lower_physical_plan_to_native(plan);
 
     assert!(result.plans.is_empty());
-    assert_eq!(result.rejected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert!(matches!(
         result.report.outcomes()[0],
-        CandidateOutcome::Rejected { reason: FallbackReason::UnsupportedExpression, .. }
+        CandidateOutcome::NotSupported { capability_reason: CapabilityReason::UnsupportedExpression, .. }
     ));
 
     fs::remove_dir_all(dir).unwrap();
@@ -227,10 +227,10 @@ async fn sql_ilike_non_ascii_pattern_remains_rejected() {
     let result = lower_physical_plan_to_native(plan);
 
     assert!(result.plans.is_empty());
-    assert_eq!(result.rejected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert!(matches!(
         result.report.outcomes()[0],
-        CandidateOutcome::Rejected { reason: FallbackReason::UnsupportedExpression, .. }
+        CandidateOutcome::NotSupported { capability_reason: CapabilityReason::UnsupportedExpression, .. }
     ));
 
     fs::remove_dir_all(dir).unwrap();
@@ -250,8 +250,8 @@ async fn sql_trim_family_lowers_to_native_string_trim_expressions() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let projections = native_projection_exprs(&result.plans[0]);
     assert!(projections.iter().any(|expr| matches!(
         expr,
@@ -326,8 +326,8 @@ fn string_predicates_lower_to_native_string_predicate_expressions() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let projections = native_projection_exprs(&result.plans[0]);
     assert!(projections.iter().any(|expr| matches!(
         expr,
@@ -374,11 +374,11 @@ fn date_trunc_plural_and_nanosecond_grains_reject_during_native_planning() {
 
         let result = lower_physical_plan_to_native(plan);
 
-        assert_eq!(result.rewritten_count(), 0, "{grain} outcomes={:?}", result.report.outcomes());
-        assert_eq!(result.rejected_count(), 1, "{grain} outcomes={:?}", result.report.outcomes());
+        assert_eq!(result.selected_count(), 0, "{grain} outcomes={:?}", result.report.outcomes());
+        assert_eq!(result.not_selected_count(), 1, "{grain} outcomes={:?}", result.report.outcomes());
         assert!(matches!(
             result.report.outcomes()[0],
-            CandidateOutcome::Rejected { reason: FallbackReason::UnsupportedExpression, .. }
+            CandidateOutcome::NotSupported { capability_reason: CapabilityReason::UnsupportedExpression, .. }
         ));
     }
 
@@ -406,11 +406,11 @@ fn date_trunc_output_unit_mismatch_rejects_during_native_planning() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 0, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert!(matches!(
         result.report.outcomes()[0],
-        CandidateOutcome::Rejected { reason: FallbackReason::UnsupportedType, .. }
+        CandidateOutcome::NotSupported { capability_reason: CapabilityReason::UnsupportedType, .. }
     ));
 
     fs::remove_dir_all(dir).unwrap();
@@ -433,10 +433,10 @@ fn try_cast_from_non_string_source_is_rejected_during_native_planning() {
     let result = lower_physical_plan_to_native(plan);
 
     assert!(result.plans.is_empty());
-    assert_eq!(result.rejected_count(), 1);
+    assert_eq!(result.not_selected_count(), 1);
     assert!(matches!(
         result.report.outcomes()[0],
-        CandidateOutcome::Rejected { reason: FallbackReason::UnsupportedExpression, .. }
+        CandidateOutcome::NotSupported { capability_reason: CapabilityReason::UnsupportedExpression, .. }
     ));
 
     fs::remove_dir_all(dir).unwrap();
@@ -461,10 +461,10 @@ fn in_list_with_null_literal_is_rejected_during_native_planning() {
     let result = lower_physical_plan_to_native(plan);
 
     assert!(result.plans.is_empty());
-    assert_eq!(result.rejected_count(), 1);
+    assert_eq!(result.not_selected_count(), 1);
     assert!(matches!(
         result.report.outcomes()[0],
-        CandidateOutcome::Rejected { reason: FallbackReason::UnsupportedExpression, .. }
+        CandidateOutcome::NotSupported { capability_reason: CapabilityReason::UnsupportedExpression, .. }
     ));
 
     fs::remove_dir_all(dir).unwrap();
@@ -493,7 +493,7 @@ fn list_utf8_is_null_filter_is_rejected_during_native_planning() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_native_rejection(&result, FallbackReason::UnsupportedType);
+    assert_native_rejection(&result, CapabilityReason::UnsupportedType);
     fs::remove_dir_all(dir).unwrap();
 }
 
@@ -511,7 +511,7 @@ async fn list_utf8_count_window_is_rejected_during_native_planning() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_native_rejection(&result, FallbackReason::UnsupportedType);
+    assert_native_rejection(&result, CapabilityReason::UnsupportedType);
     fs::remove_dir_all(dir).unwrap();
 }
 
@@ -529,7 +529,7 @@ async fn list_utf8_lag_window_is_rejected_during_native_planning() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_native_rejection(&result, FallbackReason::UnsupportedType);
+    assert_native_rejection(&result, CapabilityReason::UnsupportedType);
     fs::remove_dir_all(dir).unwrap();
 }
 
@@ -549,8 +549,8 @@ fn dynamic_filter_expression_lowers_as_current_inner_expression() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let source = native_local_parquet_source(&result.plans[0]);
     assert_eq!(
         source.read_columns,
@@ -579,10 +579,10 @@ fn substring_unsupported_arity_is_rejected_during_native_planning() {
     let result = lower_physical_plan_to_native(plan);
 
     assert!(result.plans.is_empty());
-    assert_eq!(result.rejected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert!(matches!(
         result.report.outcomes()[0],
-        CandidateOutcome::Rejected { reason: FallbackReason::UnsupportedExpression, .. }
+        CandidateOutcome::NotSupported { capability_reason: CapabilityReason::UnsupportedExpression, .. }
     ));
 
     fs::remove_dir_all(dir).unwrap();
@@ -602,11 +602,11 @@ fn non_numeric_cast_targets_are_rejected_during_native_planning() {
     let result = lower_physical_plan_to_native(plan);
 
     assert!(result.plans.is_empty(), "string cast should not lower");
-    assert_eq!(result.rejected_count(), 1, "string cast outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 1, "string cast outcomes={:?}", result.report.outcomes());
     assert!(
         matches!(
             result.report.outcomes()[0],
-            CandidateOutcome::Rejected { reason: FallbackReason::UnsupportedType, .. }
+            CandidateOutcome::NotSupported { capability_reason: CapabilityReason::UnsupportedType, .. }
         ),
         "string cast outcomes={:?}",
         result.report.outcomes()
@@ -633,7 +633,7 @@ fn integer_to_timestamp_cast_lowers_during_native_planning() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     let native = result.plans.first().expect("timestamp cast should lower to a native plan").to_string();
     assert!(native.contains("CAST(payload AS Timestamp(ns))"), "{native}");
 
@@ -653,7 +653,7 @@ fn explicit_numeric_to_decimal_cast_lowers_during_native_planning() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     let native = result.plans.first().expect("decimal cast should lower to a native plan").to_string();
     assert!(native.contains("CAST(payload AS Decimal128(10, 0))"), "{native}");
 
@@ -674,10 +674,10 @@ fn lossy_numeric_cast_is_rejected_during_native_planning() {
     let result = lower_physical_plan_to_native(plan);
 
     assert!(result.plans.is_empty());
-    assert_eq!(result.rejected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert!(matches!(
         result.report.outcomes()[0],
-        CandidateOutcome::Rejected { reason: FallbackReason::UnsupportedType, .. }
+        CandidateOutcome::NotSupported { capability_reason: CapabilityReason::UnsupportedType, .. }
     ));
 
     fs::remove_dir_all(dir).unwrap();
@@ -693,9 +693,9 @@ async fn direct_friendly_sql_physical_plan_without_scan_predicate_lowers_to_nati
     let result = lower_physical_plan_to_native(plan);
 
     assert_eq!(result.candidate_count(), 1);
-    assert_eq!(result.rewritten_count(), 1);
-    assert_eq!(result.rejected_count(), 0);
-    let CandidateOutcome::Rewritten { candidate } = &result.report.outcomes()[0] else {
+    assert_eq!(result.selected_count(), 1);
+    assert_eq!(result.not_selected_count(), 0);
+    let CandidateOutcome::Selected { candidate } = &result.report.outcomes()[0] else {
         panic!("direct-friendly SQL no-filter plan should lower to native");
     };
     assert_eq!(candidate.shape, "SortExec(fetch)(ProjectionExec(AggregateExec(LocalParquetScan)))");
@@ -728,10 +728,10 @@ fn integer_division_is_rejected_during_native_planning() {
     let result = lower_physical_plan_to_native(plan);
 
     assert!(result.plans.is_empty(), "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert!(matches!(
         result.report.outcomes()[0],
-        CandidateOutcome::Rejected { reason: FallbackReason::UnsupportedExpression, .. }
+        CandidateOutcome::NotSupported { capability_reason: CapabilityReason::UnsupportedExpression, .. }
     ));
 
     fs::remove_dir_all(dir).unwrap();
@@ -755,10 +755,10 @@ fn integer_modulo_is_rejected_during_native_planning() {
     let result = lower_physical_plan_to_native(plan);
 
     assert!(result.plans.is_empty(), "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert!(matches!(
         result.report.outcomes()[0],
-        CandidateOutcome::Rejected { reason: FallbackReason::UnsupportedExpression, .. }
+        CandidateOutcome::NotSupported { capability_reason: CapabilityReason::UnsupportedExpression, .. }
     ));
 
     fs::remove_dir_all(dir).unwrap();
@@ -773,12 +773,12 @@ fn every_rejected_native_candidate_has_stable_rejection_code() {
         [lower_physical_plan_to_native(aggregate_sort_limit_plan(parquet_scan(&path), Operator::Modulo))];
 
     for result in rejected_results {
-        assert_eq!(result.rejected_count(), 1);
+        assert_eq!(result.not_selected_count(), 1);
         for outcome in result.report.outcomes() {
-            let CandidateOutcome::Rejected { reason, .. } = outcome else {
+            let CandidateOutcome::NotSupported { capability_reason, .. } = outcome else {
                 panic!("expected only rejected native candidates");
             };
-            assert!(!reason.code().is_empty());
+            assert!(!capability_reason.code().is_empty());
         }
     }
 

@@ -107,9 +107,8 @@ export default function TpchSf100Benchmark(): React.ReactElement {
             <li>
               <strong>Run:</strong> {dataset.scaleFactor.toUpperCase()},
               {config.warmups} warmup / {config.iterations} measured iteration,
-              <code>GpuOnly</code> fallback policy, source cache{' '}
-              <code>{config.nativeSourceCachePolicy}</code>, LocalKvikio parquet
-              reads.
+              source cache <code>{config.nativeSourceCachePolicy}</code>,
+              LocalKvikio parquet reads.
             </li>
             <li>
               <strong>Result:</strong> CPU {formatSeconds(summary.cpuTotalMs)},

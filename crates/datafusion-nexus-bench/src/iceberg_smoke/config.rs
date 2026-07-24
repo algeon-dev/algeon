@@ -111,6 +111,20 @@ impl IcebergNativeSmokeConfig {
                 let s3_path_style_access = get(REST_S3_PATH_STYLE_ENV)
                     .filter(|value| !value.trim().is_empty())
                     .map(|value| matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"));
+                let aws_access_key_id = get(AWS_ACCESS_KEY_ID_ENV).filter(|value| !value.trim().is_empty());
+                let aws_secret_access_key = get(AWS_SECRET_ACCESS_KEY_ENV).filter(|value| !value.trim().is_empty());
+                let aws_session_token = get(AWS_SESSION_TOKEN_ENV)
+                    .or_else(|| get(AWS_SECURITY_TOKEN_ENV))
+                    .filter(|value| !value.trim().is_empty());
+                let nexus_access_key_id =
+                    get(NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV).filter(|value| !value.trim().is_empty());
+                let nexus_secret_access_key =
+                    get(NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV).filter(|value| !value.trim().is_empty());
+                let nexus_session_token =
+                    get(NEXUS_ICEBERG_S3_SESSION_TOKEN_ENV).filter(|value| !value.trim().is_empty());
+                let default_chain_opt_in = get(NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_ENV).is_some_and(|value| {
+                    value.trim().eq_ignore_ascii_case(NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_DEFAULT_CHAIN)
+                });
                 let mut glue_config = GlueIcebergTableConfig::new(catalog_name, database, table, warehouse, region);
                 if let Some(profile) = get(AWS_PROFILE_ENV).filter(|value| !value.trim().is_empty()) {
                     glue_config = glue_config.with_profile(profile);
@@ -121,7 +135,27 @@ impl IcebergNativeSmokeConfig {
                     None if DEFAULT_SMOKE_GLUE_CATALOG_ID.trim().is_empty() => None,
                     None => Some(DEFAULT_SMOKE_GLUE_CATALOG_ID.to_string()),
                 };
-                let credential_source = glue_config.diagnostics_with_env(&mut get).credential_source;
+                let credential_source = match (
+                    glue_config.profile.as_deref(),
+                    aws_access_key_id.is_some(),
+                    aws_secret_access_key.is_some(),
+                    aws_session_token.is_some(),
+                ) {
+                    (Some(profile), _, _, _) if !profile.is_empty() => GlueIcebergCredentialSource::AwsProfileEnv,
+                    (_, true, true, true) => GlueIcebergCredentialSource::StsEnv,
+                    (_, true, true, false) => GlueIcebergCredentialSource::StaticKeyEnv,
+                    _ => GlueIcebergCredentialSource::AwsDefaultChain,
+                };
+                let source_access_policy = frozen_s3_source_access_policy(
+                    s3_endpoint.clone(),
+                    s3_region.clone().or_else(|| Some(glue_config.region.clone())),
+                    s3_path_style_access,
+                    nexus_access_key_id,
+                    nexus_secret_access_key,
+                    nexus_session_token,
+                    default_chain_opt_in,
+                    Some((aws_access_key_id, aws_secret_access_key, aws_session_token)),
+                );
                 IcebergNativeSmokeFixture::GlueS3 {
                     catalog_name: glue_config.catalog_name,
                     database: glue_config.database,
@@ -135,6 +169,7 @@ impl IcebergNativeSmokeConfig {
                     s3_region,
                     s3_path_style_access,
                     credential_source,
+                    source_access_policy,
                 }
             },
             "rest_s3" => {
@@ -151,14 +186,23 @@ impl IcebergNativeSmokeConfig {
                 let s3_path_style_access = get(REST_S3_PATH_STYLE_ENV)
                     .filter(|value| !value.trim().is_empty())
                     .map(|value| matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"));
-                let credential_source =
-                    if get(REST_S3_ACCESS_KEY_ID_ENV).filter(|value| !value.trim().is_empty()).is_some()
-                        && get(REST_S3_SECRET_ACCESS_KEY_ENV).filter(|value| !value.trim().is_empty()).is_some()
-                    {
-                        "static"
-                    } else {
-                        "default_chain"
-                    };
+                let access_key_id = get(REST_S3_ACCESS_KEY_ID_ENV).filter(|value| !value.trim().is_empty());
+                let secret_access_key = get(REST_S3_SECRET_ACCESS_KEY_ENV).filter(|value| !value.trim().is_empty());
+                let session_token = get(REST_S3_SESSION_TOKEN_ENV).filter(|value| !value.trim().is_empty());
+                let default_chain_opt_in = get(NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_ENV).is_some_and(|value| {
+                    value.trim().eq_ignore_ascii_case(NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_DEFAULT_CHAIN)
+                });
+                let source_access_policy = frozen_s3_source_access_policy(
+                    s3_endpoint.clone(),
+                    s3_region.clone(),
+                    s3_path_style_access,
+                    access_key_id,
+                    secret_access_key,
+                    session_token,
+                    default_chain_opt_in,
+                    None,
+                );
+                let credential_source = source_access_credential_source(&source_access_policy);
                 IcebergNativeSmokeFixture::RestS3 {
                     catalog_handle,
                     uri,
@@ -169,6 +213,7 @@ impl IcebergNativeSmokeConfig {
                     s3_region,
                     s3_path_style_access,
                     credential_source,
+                    source_access_policy,
                 }
             },
             other => {
@@ -339,6 +384,9 @@ pub enum IcebergNativeSmokeFixture {
         s3_region: Option<String>,
         s3_path_style_access: Option<bool>,
         credential_source: GlueIcebergCredentialSource,
+        /// One frozen policy used by the leaf catalog/FileIO and the native
+        /// execution profile. It never appears in report rows.
+        source_access_policy: SourceAccessPolicy,
     },
     RestS3 {
         catalog_handle: String,
@@ -350,6 +398,9 @@ pub enum IcebergNativeSmokeFixture {
         s3_region: Option<String>,
         s3_path_style_access: Option<bool>,
         credential_source: &'static str,
+        /// One frozen policy used by the leaf catalog/FileIO and the native
+        /// execution profile. It never appears in report rows.
+        source_access_policy: SourceAccessPolicy,
     },
 }
 
@@ -419,6 +470,7 @@ impl IcebergNativeSmokeFixture {
                 s3_region,
                 s3_path_style_access,
                 credential_source,
+                source_access_policy,
                 ..
             } => Ok(Self::GlueS3 {
                 catalog_name: catalog_name.clone(),
@@ -433,6 +485,7 @@ impl IcebergNativeSmokeFixture {
                 s3_region: s3_region.clone(),
                 s3_path_style_access: *s3_path_style_access,
                 credential_source: *credential_source,
+                source_access_policy: source_access_policy.clone(),
             }),
             Self::RestS3 {
                 catalog_handle,
@@ -443,6 +496,7 @@ impl IcebergNativeSmokeFixture {
                 s3_region,
                 s3_path_style_access,
                 credential_source,
+                source_access_policy,
                 ..
             } => Ok(Self::RestS3 {
                 catalog_handle: catalog_handle.clone(),
@@ -454,6 +508,7 @@ impl IcebergNativeSmokeFixture {
                 s3_region: s3_region.clone(),
                 s3_path_style_access: *s3_path_style_access,
                 credential_source,
+                source_access_policy: source_access_policy.clone(),
             }),
             Self::LocalMetadata { .. } => {
                 Err(smoke_error("only glue_s3/rest_s3 fixtures can be rewritten to another TPC-H table"))
@@ -475,6 +530,7 @@ impl IcebergNativeSmokeFixture {
                 s3_region,
                 s3_path_style_access,
                 credential_source,
+                source_access_policy,
                 ..
             } => Ok(Self::GlueS3 {
                 catalog_name: catalog_name.clone(),
@@ -489,6 +545,7 @@ impl IcebergNativeSmokeFixture {
                 s3_region: s3_region.clone(),
                 s3_path_style_access: *s3_path_style_access,
                 credential_source: *credential_source,
+                source_access_policy: source_access_policy.clone(),
             }),
             Self::RestS3 {
                 catalog_handle,
@@ -499,6 +556,7 @@ impl IcebergNativeSmokeFixture {
                 s3_region,
                 s3_path_style_access,
                 credential_source,
+                source_access_policy,
                 ..
             } => Ok(Self::RestS3 {
                 catalog_handle: catalog_handle.clone(),
@@ -510,6 +568,7 @@ impl IcebergNativeSmokeFixture {
                 s3_region: s3_region.clone(),
                 s3_path_style_access: *s3_path_style_access,
                 credential_source,
+                source_access_policy: source_access_policy.clone(),
             }),
             Self::LocalMetadata { .. } => {
                 Err(smoke_error("only glue_s3/rest_s3 fixtures can be rewritten to another TPC-DS table"))
@@ -536,38 +595,19 @@ impl IcebergNativeSmokeFixture {
     }
 
     pub(crate) fn rest_config(&self) -> Option<RestIcebergCatalogConfig> {
-        let Self::RestS3 { catalog_handle, uri, warehouse, s3_endpoint, s3_region, s3_path_style_access, .. } = self
-        else {
+        let Self::RestS3 { catalog_handle, uri, warehouse, source_access_policy, .. } = self else {
             return None;
         };
-        let mut config = RestIcebergCatalogConfig::new(catalog_handle.clone(), uri.clone(), warehouse.clone());
-        if let Some(endpoint) = s3_endpoint.as_ref() {
-            config = config.with_s3_endpoint(endpoint.clone());
-        }
-        if let Some(region) = s3_region.as_ref() {
-            config = config.with_s3_region(region.clone());
-        }
-        if let Some(path_style) = s3_path_style_access {
-            config = config.with_s3_path_style_access(*path_style);
-        }
-        Some(config)
+        Some(
+            RestIcebergCatalogConfig::new(catalog_handle.clone(), uri.clone(), warehouse.clone())
+                .with_source_access_policy(source_access_policy.clone()),
+        )
     }
 
     pub(crate) fn glue_catalog_config(
         &self,
     ) -> Option<datafusion_nexus::table_format::iceberg::catalog::GlueIcebergCatalogConfig> {
-        let Self::GlueS3 {
-            catalog_name,
-            warehouse,
-            region,
-            catalog_id,
-            profile,
-            uri,
-            s3_endpoint,
-            s3_region,
-            s3_path_style_access,
-            ..
-        } = self
+        let Self::GlueS3 { catalog_name, warehouse, region, catalog_id, profile, uri, source_access_policy, .. } = self
         else {
             return None;
         };
@@ -585,24 +625,11 @@ impl IcebergNativeSmokeFixture {
         if let Some(uri) = uri.as_ref() {
             config = config.with_uri(uri.clone());
         }
-        if let Some(endpoint) = s3_endpoint.as_ref() {
-            config = config.with_s3_endpoint(endpoint.clone());
-        }
-        if let Some(region) = s3_region.as_ref() {
-            config = config.with_s3_region(region.clone());
-        }
-        if let Some(path_style) = s3_path_style_access {
-            config = config.with_s3_path_style_access(*path_style);
-        }
-        Some(config)
+        Some(config.with_source_access_policy(source_access_policy.clone()))
     }
 
     pub(crate) fn parquet_read_strategy_config(&self) -> TableFormatParquetReadStrategyConfig {
-        let config = match self {
-            Self::LocalMetadata { .. } => TableFormatParquetReadStrategyConfig::from_env(),
-            Self::GlueS3 { .. } => self.glue_catalog_config().expect("glue config").parquet_read_strategy_config(),
-            Self::RestS3 { .. } => self.rest_config().expect("rest config").parquet_read_strategy_config(),
-        };
+        let config = TableFormatParquetReadStrategyConfig::from_env();
         if let Some(profile) = self.source_storage_profile() {
             config.with_source_storage_profile_remote_direct_capability(&profile)
         } else {
@@ -611,13 +638,54 @@ impl IcebergNativeSmokeFixture {
     }
 
     pub(crate) fn source_storage_profile(&self) -> Option<nexus_query_engine::runtime::SourceStorageProfile> {
+        self.source_access_policy().map(source_access_policy_to_native_source_storage_profile)
+    }
+
+    pub(crate) fn source_access_policy(&self) -> Option<&SourceAccessPolicy> {
         match self {
             Self::LocalMetadata { .. } => None,
-            Self::GlueS3 { .. } => {
-                Some(self.glue_catalog_config().expect("glue config").source_storage_profile_from_env())
+            Self::GlueS3 { source_access_policy, .. } | Self::RestS3 { source_access_policy, .. } => {
+                Some(source_access_policy)
             },
-            Self::RestS3 { .. } => Some(self.rest_config().expect("rest config").source_storage_profile_from_env()),
         }
+    }
+}
+
+fn frozen_s3_source_access_policy(
+    endpoint: Option<String>,
+    region: Option<String>,
+    path_style_access: Option<bool>,
+    nexus_access_key_id: Option<String>,
+    nexus_secret_access_key: Option<String>,
+    nexus_session_token: Option<String>,
+    default_chain_opt_in: bool,
+    aws_credentials: Option<(Option<String>, Option<String>, Option<String>)>,
+) -> SourceAccessPolicy {
+    let mut policy = match endpoint {
+        Some(endpoint) => SourceAccessPolicy::s3_custom_endpoint(endpoint, region, path_style_access),
+        None => SourceAccessPolicy::s3_default_chain(region),
+    };
+    policy = match (nexus_access_key_id, nexus_secret_access_key) {
+        (Some(access_key_id), Some(secret_access_key)) => SourceAccessPolicy::S3(
+            policy.as_s3().clone().with_static_credentials(access_key_id, secret_access_key, nexus_session_token),
+        ),
+        _ if default_chain_opt_in => SourceAccessPolicy::S3(policy.as_s3().clone().with_default_chain()),
+        _ if policy.as_s3().endpoint().is_none() => match aws_credentials {
+            Some((Some(access_key_id), Some(secret_access_key), session_token)) => SourceAccessPolicy::S3(
+                policy.as_s3().clone().with_static_credentials(access_key_id, secret_access_key, session_token),
+            ),
+            _ => policy,
+        },
+        _ => policy,
+    };
+    policy
+}
+
+fn source_access_credential_source(policy: &SourceAccessPolicy) -> &'static str {
+    match policy.as_s3().credential_mode() {
+        datafusion_nexus::table_format::iceberg::S3CredentialMode::DefaultChain => "default_chain",
+        datafusion_nexus::table_format::iceberg::S3CredentialMode::ExplicitStatic => "static",
+        datafusion_nexus::table_format::iceberg::S3CredentialMode::Unsigned => "unsigned",
     }
 }
 

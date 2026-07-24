@@ -59,7 +59,7 @@ async fn get_query_stats_returns_structured_error_after_planning_failure() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn get_query_stats_surfaces_complete_cpu_fallback_rejection() {
+async fn get_query_stats_surfaces_complete_cpu_baseline_not_supported() {
     let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
     config.bind_addr = addr;
@@ -93,21 +93,21 @@ async fn get_query_stats_surfaces_complete_cpu_fallback_rejection() {
     assert!(payload.contains("# outcome=succeeded"), "{payload}");
 
     let (planning_header, planning_row) = query_stats_tsv_single_row(&payload, "planning");
-    assert_eq!(tsv_value(&planning_header, &planning_row, "outcome"), "rejected_before_execution", "{payload}");
+    assert_eq!(tsv_value(&planning_header, &planning_row, "outcome"), "not_supported", "{payload}");
     assert_eq!(tsv_value(&planning_header, &planning_row, "reason_code"), "unsupported_expression", "{payload}");
     assert_eq!(tsv_value(&planning_header, &planning_row, "unsupported_category"), "expression", "{payload}");
-    assert_eq!(tsv_value(&planning_header, &planning_row, "post_native_execution_path"), "cpu", "{payload}");
+    assert_eq!(tsv_value(&planning_header, &planning_row, "post_native_execution_path"), "datafusion", "{payload}");
     assert_eq!(tsv_value(&planning_header, &planning_row, "native_plan_fragment_count"), "0", "{payload}");
     assert_eq!(tsv_value(&planning_header, &planning_row, "host_datafusion_boundary_count"), "0", "{payload}");
-    assert_eq!(tsv_value(&planning_header, &planning_row, "rejected_before_execution"), "true", "{payload}");
+    assert_eq!(tsv_value(&planning_header, &planning_row, "rejected_before_execution"), "false", "{payload}");
 
     let (execution_header, execution_row) = query_stats_tsv_single_row(&payload, "execution");
     assert_eq!(
         tsv_value(&execution_header, &execution_row, "planning_outcome"),
-        "rejected_before_execution",
+        "not_supported",
         "{payload}"
     );
-    assert_eq!(tsv_value(&execution_header, &execution_row, "post_native_execution_path"), "cpu", "{payload}");
+    assert_eq!(tsv_value(&execution_header, &execution_row, "post_native_execution_path"), "datafusion", "{payload}");
     assert_eq!(tsv_value(&execution_header, &execution_row, "native_runtime_started"), "false", "{payload}");
     assert_eq!(tsv_value(&execution_header, &execution_row, "runtime_outcome"), "not_started", "{payload}");
     assert_eq!(tsv_value(&execution_header, &execution_row, "output_rows"), "not_run", "{payload}");

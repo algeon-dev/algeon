@@ -56,12 +56,6 @@ impl<'a, 'm> AdaptiveCompiledPipelineExecutor<'a, 'm> {
 
     fn run(self) -> Result<QueryOutput> {
         debug_assert_eq!(self.admission.native_mode(), NativePipelineExecutionMode::Adaptive);
-        let counts = self.admission.runtime_action_counts();
-        self.metrics.record_adaptive_runtime_action_counts(
-            counts.retry_count,
-            counts.spill_count,
-            counts.downgrade_count,
-        );
         let memory_history_evidence = &self.admission.report().row().memory_history_evidence;
         if memory_history_evidence.lookup_attempted() {
             self.metrics.record_adaptive_memory_history_lookup(memory_history_evidence.lookup_hit());
@@ -121,9 +115,6 @@ fn adaptive_candidate_error(message: &'static str, row: &AdaptivePipelineReportR
         .with_fact("adaptive_strategy", row.adaptive_strategy.as_str())
         .with_fact("runtime_actions_allowed", row.runtime_actions_allowed.to_stable_value())
         .with_fact("memory_history_evidence", row.memory_history_evidence.to_stable_value())
-        .with_fact("retry_count", row.runtime_action_counts.retry_count)
-        .with_fact("spill_count", row.runtime_action_counts.spill_count)
-        .with_fact("downgrade_count", row.runtime_action_counts.downgrade_count)
         .with_fact("missing_strict_contract_count", row.missing_strict_contracts.len())
         .with_fact("rejection_reason", row.rejection_reason.unwrap_or("none"))
         .with_fact("strict_bounded_contract_report", "not_emitted")

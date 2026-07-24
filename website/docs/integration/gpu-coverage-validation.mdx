@@ -1,210 +1,175 @@
 ---
 sidebar_position: 3.5
 sidebar_label: GPU Coverage Validation
-description: Ask before running - will this SQL execute on the GPU without falling back to DataFusion CPU, and if not, which operator, expression, type, or source forces the fallback?
+description: Inspect the exact planned GPU and DataFusion execution domains for one SQL query before execution.
 ---
 
 # GPU Coverage Validation
 
-Before shipping a query, you usually want to know: **will this SQL stay on the
-GPU, or will part of it silently run on DataFusion CPU — and if so, why?**
-GPU coverage validation answers that question from the planned physical path,
-without executing the query. It is available as a SQL table function on every
-Nexus session (including the Flight SQL server), as a Rust API, and as a CLI
-tool — all three return the same verdict.
+`nexus_explain_coverage` answers a plan-time question: what execution domains
+does this exact SQL query use after physical planning? It plans the query but
+does not execute it or acquire a GPU admission grant.
 
-## The promise — and its limits
+The answer is not a runtime guarantee. GPU admission, device memory, native
+runtime errors, and cuGraph input checks still happen at execution time. Read
+the returned `runtime_caveats` whenever the final plan contains GPU work.
 
-The verdict is **plan-time only**. `no_cpu_in_planned_path` means:
+## SQL surface
 
-> Under this session context (policy, execution mode, configuration, catalog
-> state), the planned physical execution path contains **no known DataFusion
-> CPU execution**.
-
-It is **not** a runtime guarantee. GPU admission grants are acquired at
-execution time and can wait, shrink, or fail under concurrency; device memory
-outcomes are data-dependent; cuGraph seed/personalization validity is only
-checked on device. Every verdict that involves the GPU therefore carries a
-non-empty `runtime_caveats` list — read it as part of the answer, not as fine
-print.
-
-## SQL surface: `nexus_explain_coverage`
-
-Any session with the native optimizer installed (embedded sessions,
-`NexusGpuBackend::install_on`, and the Flight SQL server) exposes the
-`nexus_explain_coverage` table function. Pass the SQL to validate as a string
-literal:
+On a session with the Nexus native optimizer installed, call the table function
+with one query string literal:
 
 ```sql
-SELECT overall, nexus_native_coverage, datafusion_cpu_ingest_or_boundary,
-       fallback_reason_count, coverage_json
+SELECT overall,
+       final_disposition,
+       native_fragment_count,
+       explicit_gpu_island_count,
+       datafusion_boundary_count,
+       host_materialization_count,
+       confidence,
+       planning_did_io,
+       candidate_outcome_count,
+       runtime_caveat_count,
+       coverage_json
 FROM nexus_explain_coverage('SELECT l_returnflag, sum(l_quantity)
                              FROM lineitem GROUP BY l_returnflag');
 ```
 
-Because it is plain SQL, it works from any Flight SQL client — notebooks,
-agents, `flight-sql-query`, JDBC/ADBC — on the same path your production
-queries use, against the same catalog and session configuration.
-
-The result is one row:
+The function returns one row.
 
 | Column | Meaning |
 | --- | --- |
-| `overall` | `no_cpu_in_planned_path` \| `partial_gpu_planned` \| `cpu_only` \| `rejected` |
-| `nexus_native_coverage` | `full` \| `partial` \| `none` — the nexus-native axis (excludes cuGraph) |
-| `cugraph_operator` | `present` \| `absent` — whether the plan contains a cuGraph algorithm node |
-| `datafusion_cpu_ingest_or_boundary` | `present` when any GPU node is fed by, or feeds, DataFusion CPU execution |
-| `host_output_materialization` | `present` when results are materialized back to host Arrow |
-| `confidence` | always `plan_time_only` |
-| `actual_policy` | your session's fallback policy |
-| `diagnostic_policy` | the policy used for diagnosis, always `gpu_preferred` (see below) |
-| `planning_did_io` | `true` when the plan involved a table-format (Iceberg) source, whose planning performs manifest/footer IO |
-| `fallback_reason_count` | number of entries in the JSON `fallback_reasons` list |
-| `runtime_caveat_count` | number of entries in the JSON `runtime_caveats` list |
-| `coverage_json` | the complete structured verdict |
+| `overall` | `no_cpu_in_planned_path`, `partial_gpu_planned`, `cpu_only`, or `rejected`. |
+| `final_disposition` | Exact final result: `datafusion`, `native`, `mixed`, or terminal `rejected`. |
+| `native_fragment_count` | Number of recognized Nexus native execution fragments. |
+| `explicit_gpu_island_count` | Number of required explicit GPU operations, such as a cuGraph plan node. |
+| `datafusion_boundary_count` | Host DataFusion execution boundaries around GPU work. |
+| `host_materialization_count` | GPU-to-host Arrow result materializations. This does not by itself make a plan mixed. |
+| `confidence` | Always `plan_time_only`. |
+| `planning_did_io` | Whether planning inspected a source that required planning-time I/O. |
+| `candidate_outcome_count` | Number of relational candidate-selection diagnostics in `coverage_json`. |
+| `runtime_caveat_count` | Number of runtime caveats in `coverage_json`. |
+| `coverage_json` | The complete structured result, including configuration stamps and candidate evidence. |
 
-Validation expects exactly **one SELECT/query statement**. Multi-statement
-input, non-query statements, and SQL that calls `nexus_explain_coverage`
-again — directly or indirectly through a view — are rejected with a
-structured `rejected` verdict.
+Validation accepts exactly one query statement. Empty input, multiple
+statements, non-query statements, and direct or view-indirect recursive calls
+to `nexus_explain_coverage` return a structured terminal result.
 
-## The four verdicts
+## Final disposition and overall verdict
 
-| `overall` | Meaning | What to do |
+The final disposition is derived by walking the executable final physical plan.
+It is not inferred from whether an optimizer attempted a native rewrite.
+
+| Final disposition | Overall verdict | Meaning |
 | --- | --- | --- |
-| `no_cpu_in_planned_path` | The inspected physical path has no known DataFusion CPU execution. | Ship it — but read `runtime_caveats`. |
-| `partial_gpu_planned` | GPU fragments exist, but at least one CPU boundary is in the path (`gpu_fragments` / `cpu_boundaries` counts are in the JSON). | Read `fallback_reasons` to find the operator / expression / type / source that forced CPU. |
-| `cpu_only` | Nothing was admitted to the GPU. | Read `fallback_reasons`; the query shape or source is unsupported. |
-| `rejected` | Validation itself failed — parsing, logical planning, physical planning, or terminal source-resolution IO. | Check `phase`, `reason_code`, and `retryable` in the JSON. |
+| `native` | `no_cpu_in_planned_path` | The planned path contains no known DataFusion CPU execution. GPU fragments and explicit GPU islands are counted separately. |
+| `mixed` | `partial_gpu_planned` | The same executable plan contains GPU runtime work and at least one DataFusion CPU boundary. |
+| `datafusion` | `cpu_only` | The executable plan has no selected GPU runtime node. |
+| `rejected` | `rejected` | Planning returned no executable plan. |
 
-`rejected` carries a phase (`parsing`, `logical_planning`, `physical_planning`,
-`planning_io`, `native_lowering`) and a `retryable` flag. This matters most for
-Iceberg: common source-resolution failures such as credentials, timeouts,
-missing objects, or corrupt snapshot/manifest metadata remain terminal. Native
-inspection failures and capability misses retain the same wrapper's executable
-CPU delegate under `GpuPreferred`. A `planning_io` rejection means "fix the
-environment," not "rewrite the query"; `retryable: true` additionally marks
-failures classified as transient, worth retrying as-is.
+`rejected` includes the phase, stable `reason_code`, retryability, and safe
+detail in `coverage_json`. Terminal source-resolution failures, an unsupported
+required GPU island, and a failed final-plan requirement are planning errors.
+By contrast, an ordinary relational capability miss is not an error: the same
+query remains executable on the DataFusion baseline and normally has final
+disposition `datafusion`.
 
-## Why the axes are separate
+## Candidate outcomes are diagnostics, not the final plan
 
-`nexus_native_coverage` deliberately preserves the meaning it has everywhere
-else in Nexus reports: coverage by the **nexus-native** wrappers only. cuGraph
-is a different execution domain, so it gets its own axis, and the honest
-overall verdict is computed from a recursive walk of the final plan:
+`coverage_json.candidate_outcomes` retains relational candidate-selection
+diagnostics from the native optimizer. Each entry has one of these `outcome`
+values:
 
-- A bare `SELECT * FROM cugraph_pagerank(...)` reports
-  `nexus_native_coverage = none` yet `overall = no_cpu_in_planned_path` — the
-  cuGraph operator runs entirely on the GPU even though no nexus-native wrapper
-  is involved.
-- A cuGraph node whose edge or predicate input is **not** GPU-resident has that
-  input collected on DataFusion CPU and imported host→GPU. The walk reports
-  `datafusion_cpu_ingest_or_boundary = present` and the overall verdict drops
-  to `partial_gpu_planned`, even when every wrapper in the plan is "native."
+| Outcome | Meaning | Evidence |
+| --- | --- | --- |
+| `selected` | The candidate was selected for native execution. | Candidate shape (`detail`); `reason_code`, `reason_kind`, and `category` are absent. |
+| `not_supported` | The exact relational candidate is outside the native capability contract. | `reason_code`, `reason_kind`, candidate shape (`detail`), and category. |
+| `not_selected_by_cost` | The candidate is native-capable, but an enabled preference rule retained the DataFusion plan. | The same fields plus `cost_evidence` projected from native plan-preference facts. |
 
-One consequence worth knowing: `fallback_reasons` are **per-candidate planning
-diagnostics**, not final-path facts. The planner can reject one candidate shape
-and later cover the same work through fragment composition, so a
-`no_cpu_in_planned_path` verdict with a non-empty `fallback_reasons` list is
-possible. Trust `overall` and the domain axes for the final path; use
-`fallback_reasons` to understand what the planner considered and why.
+These are independent from `final_disposition`. A report can contain candidate
+diagnostics while the final plan is native because another selected candidate
+covers the executable path. Conversely, a `not_supported` or
+`not_selected_by_cost` outcome normally produces an executable DataFusion plan,
+not a rejected result. Candidate outcomes explain selection; final-plan domains
+describe the completed executable plan.
 
-## Policy: diagnosed as GpuPreferred, stamped with yours
+## Validation uses the caller's real planning contract
 
-Validation always plans **as-if `GpuPreferred`**, so that fallback diagnostics
-stay visible instead of aborting at the first rejection. Your session's real
-policy is stamped in `validated_under.actual_policy`. Under `GpuOnly`, read
-`partial_gpu_planned` / `cpu_only` as: **this query will fail planning** on
-your session — every listed fallback becomes a hard error rather than a CPU
-fallback. The verdict makes this explicit with a `gpu_only_policy_would_error`
-caveat whenever the actual policy is `GpuOnly` and the verdict is not
-`no_cpu_in_planned_path`.
+Validation clones the caller's `SessionState`. If that state has a Nexus
+native optimizer rule, the clone receives an isolated copy of the exact
+optimizer configuration after the cloned DataFusion options are applied. Its
+completed-plan requirements are copied too. Validation does not install a
+diagnostic policy and does not plan a second time under another configuration.
 
-`validated_under` also records the execution mode, a session-config
-fingerprint, and an optimizer fingerprint. Verdicts are only comparable when
-these match — and note that catalog/table state is **not** fingerprinted: the
-same SQL can flip verdicts across policies, execution modes, config changes,
-or table-state changes (LIMIT-driven file trimming, deletes, schema
-evolution), so revalidate after catalog or data changes.
+`coverage_json.validated_under` records:
 
-## Rust surface: `validate_query`
+| Field | Meaning |
+| --- | --- |
+| `native_optimizer_rule_installed` | Whether the copied session had the native rule. |
+| `optimizer_config_source` | `installed_session_rule` or `native_rule_absent`. |
+| `execution_mode` | The copied native pipeline mode, when a native rule is present. |
+| `final_plan_requirements` | Requirements checked against the exact completed plan, such as `no_datafusion_cpu`. |
+| `session_config_fingerprint` and `optimizer_fingerprint` | Stable comparison stamps for the cloned configuration. |
+| `catalog_snapshot` | `session_state_cloned_at_validation_call`; it labels the clone and is not a catalog or table-data fingerprint. |
 
-The SQL function, CLI, and server all call this one primitive:
+Revalidate after catalog, view, table, or configuration changes. The
+fingerprints do not claim that source metadata or table contents are unchanged.
+
+## Rust surface
+
+The SQL function and Rust API use the same validation primitive:
 
 ```rust
-use datafusion_nexus::{validate_query, QueryGpuCoverageOverall};
+use datafusion_nexus::{
+    gpu_coverage::{validate_query, QueryGpuCoverageOverall},
+    planner::FinalPlanDisposition,
+};
 
 let coverage = validate_query(&ctx, "SELECT count(*) FROM lineitem").await?;
-match coverage.overall {
-    QueryGpuCoverageOverall::NoCpuInPlannedPath => {}
-    QueryGpuCoverageOverall::PartialGpuPlanned { gpu_fragments, cpu_boundaries } => {
-        for reason in &coverage.fallback_reasons {
-            eprintln!("{} [{}] {}", reason.reason_code, reason.kind.as_str(), reason.detail);
+
+match coverage.final_disposition {
+    FinalPlanDisposition::Native => {}
+    FinalPlanDisposition::DataFusion | FinalPlanDisposition::Mixed => {
+        for outcome in &coverage.candidate_outcomes {
+            eprintln!(
+                "{} reason_code={} reason_kind={} category={} detail={}",
+                outcome.selection.as_str(),
+                outcome.reason_code.as_deref().unwrap_or("absent"),
+                outcome.reason_kind.map_or("absent", |kind| kind.as_str()),
+                outcome.category.as_deref().unwrap_or("absent"),
+                outcome.detail,
+            );
         }
     }
-    QueryGpuCoverageOverall::CpuOnly => {}
-    QueryGpuCoverageOverall::Rejected { phase, reason_code, retryable, detail } => {}
+    FinalPlanDisposition::Rejected => {
+        if let QueryGpuCoverageOverall::Rejected { phase, reason_code, retryable, detail } = &coverage.overall {
+            eprintln!("{} {reason_code} retryable={retryable}: {detail}", phase.as_str());
+        }
+    }
 }
-println!("{}", serde_json::to_string_pretty(&coverage.to_json())?);
+
+println!("{}", coverage.to_json());
 ```
 
-`validate_query` is `async` because planning can perform real IO: validating an
-Iceberg query loads manifests and Parquet footers (that is what makes the
-answer honest — Iceberg admissibility is not derivable from the SQL string).
-Each call plans through an isolated retained optimizer rule on a cloned
-planning state, so concurrent validations on a shared session do not
-contaminate each other's verdicts, and validation never executes the plan or
-acquires GPU admission grants. Catalog and table providers are shared with
-the session, which is what allows planning to read real table metadata.
+The API is `async` because source planning can perform real I/O. It never
+executes the returned plan or performs GPU admission.
 
-If the context has a Nexus rule installed, validation uses that configuration
-(`validated_under.optimizer_config_source = "installed_session_rule"`).
-Otherwise it falls back to a built-in diagnostic default
-(`"default_gpu_preferred"`, a small bounded-memory config) — see the CLI
-caveat below.
-
-## CLI surface: `validate-query`
-
-For quick capability checks over local Parquet without writing a harness:
-
-```bash
-cargo run -p datafusion-nexus-tools --features validate-query -- \
-  validate-query \
-  --sql "SELECT l_returnflag, sum(l_quantity) FROM lineitem GROUP BY l_returnflag" \
-  --parquet lineitem=/data/tpch/lineitem.parquet \
-  --format human   # or: json
-```
-
-:::warning[Verdict fidelity]
-The CLI builds an ad-hoc session with the built-in diagnostic default
-configuration — a small bounded device budget that is **not** your deployment's
-configuration. The human output shows this as
-`optimizer_config_source: default_gpu_preferred`. Capability-shape answers
-(unsupported operator / expression / type / source) transfer to any deployment;
-memory-sensitive admission outcomes may not. To validate against production
-settings, run `nexus_explain_coverage` on the production session itself.
-:::
-
-## Runtime caveats reference
+## Runtime caveats
 
 | Code | Meaning |
 | --- | --- |
-| `runtime_gpu_admission_unknown` | Query-service grants are acquired at execution time; they can wait, shrink, or fail under concurrency. |
-| `device_memory_runtime_unknown` | Device allocation, reservation, and retry outcomes are data- and concurrency-dependent. |
-| `native_runtime_failure_has_no_cpu_rescue` | Once native GPU execution starts, native failures surface as failures, not CPU fallback. |
-| `host_output_materialization` | Query output is materialized back to host Arrow, outside the GPU-execution promise. |
+| `runtime_gpu_admission_unknown` | Query-service grants are acquired only at execution time and can wait, shrink, or fail under concurrency. |
+| `device_memory_runtime_unknown` | Allocation, reservation, and retry outcomes depend on data and concurrency. |
+| `native_runtime_failure_has_no_cpu_rescue` | Once native GPU execution starts, a native failure is terminal; Nexus does not replay it on CPU. |
+| `host_output_materialization` | Query output is materialized back to host Arrow outside the GPU-execution promise. |
 | `cugraph_runtime_validation_unknown` | cuGraph seed, personalization, weight, and device-side checks can still fail at runtime. |
-| `execution_mode_plan_time_only` | Strict/adaptive runtime gates still execute later, under the stamped execution mode. |
-| `gpu_only_policy_would_error` | The session's `GpuOnly` policy turns this non-full-GPU outcome into a hard planning failure; validation diagnosed under `GpuPreferred` to retain fallback evidence. |
+| `execution_mode_plan_time_only` | Strict or adaptive runtime gates still execute later under the stamped native pipeline mode. |
 
 ## Relationship to `cugraph_validate_call`
 
-[`cugraph_validate_call`](../cugraph/discovery-and-validation.mdx) is a
-schema-level dry-run of **one cuGraph call**: it confirms the function,
-relation, columns, dtypes, and options are well-formed. Its
-`would_execute_gpu` column means "the call is well-formed enough to dispatch
-to the GPU" — it does not inspect the rest of your query.
-`nexus_explain_coverage` validates the **whole query's planned path**,
-including how the cuGraph node's inputs are fed and what surrounds it. Use
-`cugraph_validate_call` while composing a call; use `nexus_explain_coverage`
-to check the query you will actually run.
+[`cugraph_validate_call`](../cugraph/discovery-and-validation.mdx) validates one
+cuGraph call's schema, arguments, and options. Its result does not inspect the
+surrounding physical plan. `nexus_explain_coverage` inspects the whole planned
+query, including DataFusion boundaries feeding or consuming an explicit GPU
+island. Use both when composing graph SQL: call validation for the algorithm,
+then coverage validation for the query that will execute.

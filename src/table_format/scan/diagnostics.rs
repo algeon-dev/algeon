@@ -23,28 +23,41 @@ pub enum TableFormatUnsupportedFeatureCode {
     IcebergResidualPredicateUnsupported,
     /// Iceberg row-selection/page-index semantics are unsupported.
     IcebergRowSelectionUnsupported,
+    /// Iceberg file range semantics cannot be represented by a whole-file native read.
+    IcebergFileRangeUnsupported,
     /// Iceberg object-store read cannot be represented by native source facts.
     IcebergObjectStoreReadUnsupported,
+    /// Remote Iceberg S3 FileIO cannot be proven to match the frozen
+    /// CPU/native source-access policy.
+    IcebergFileIoSourceAccessUnverified,
     /// Iceberg snapshot selection is unsupported or invalid.
     IcebergSnapshotUnsupported,
+    /// Iceberg file encryption metadata cannot be materialized natively.
+    IcebergEncryptedFileUnsupported,
+    /// An Iceberg metadata scalar cannot be materialized natively.
+    IcebergScalarValueUnsupported,
 }
 
 impl TableFormatUnsupportedFeatureCode {
     /// Stable fallback reason associated with this unsupported feature.
-    pub const fn fallback_reason(self) -> FallbackReason {
+    pub const fn fallback_reason(self) -> CapabilityReason {
         match self {
-            Self::TableFormatUnsupported => FallbackReason::TableFormatUnsupported,
-            Self::TableFormatPlanningFailed => FallbackReason::TableFormatPlanningFailed,
-            Self::IcebergNonParquetDataFile => FallbackReason::IcebergNonParquetDataFile,
-            Self::IcebergDeleteFilesUnsupported => FallbackReason::IcebergDeleteFilesUnsupported,
-            Self::IcebergFieldIdMappingUnsupported => FallbackReason::IcebergFieldIdMappingUnsupported,
-            Self::IcebergNameMappingUnsupported => FallbackReason::IcebergNameMappingUnsupported,
-            Self::IcebergNestedProjectionUnsupported => FallbackReason::IcebergNestedProjectionUnsupported,
-            Self::IcebergPartitionTransformUnsupported => FallbackReason::IcebergPartitionTransformUnsupported,
-            Self::IcebergResidualPredicateUnsupported => FallbackReason::IcebergResidualPredicateUnsupported,
-            Self::IcebergRowSelectionUnsupported => FallbackReason::IcebergRowSelectionUnsupported,
-            Self::IcebergObjectStoreReadUnsupported => FallbackReason::IcebergObjectStoreReadUnsupported,
-            Self::IcebergSnapshotUnsupported => FallbackReason::IcebergSnapshotUnsupported,
+            Self::TableFormatUnsupported => CapabilityReason::TableFormatUnsupported,
+            Self::TableFormatPlanningFailed => CapabilityReason::TableFormatPlanningFailed,
+            Self::IcebergNonParquetDataFile => CapabilityReason::IcebergNonParquetDataFile,
+            Self::IcebergDeleteFilesUnsupported => CapabilityReason::IcebergDeleteFilesUnsupported,
+            Self::IcebergFieldIdMappingUnsupported => CapabilityReason::IcebergFieldIdMappingUnsupported,
+            Self::IcebergNameMappingUnsupported => CapabilityReason::IcebergNameMappingUnsupported,
+            Self::IcebergNestedProjectionUnsupported => CapabilityReason::IcebergNestedProjectionUnsupported,
+            Self::IcebergPartitionTransformUnsupported => CapabilityReason::IcebergPartitionTransformUnsupported,
+            Self::IcebergResidualPredicateUnsupported => CapabilityReason::IcebergResidualPredicateUnsupported,
+            Self::IcebergRowSelectionUnsupported => CapabilityReason::IcebergRowSelectionUnsupported,
+            Self::IcebergFileRangeUnsupported => CapabilityReason::NativeSourceByteRange,
+            Self::IcebergObjectStoreReadUnsupported => CapabilityReason::IcebergObjectStoreReadUnsupported,
+            Self::IcebergFileIoSourceAccessUnverified => CapabilityReason::IcebergFileIoSourceAccessUnverified,
+            Self::IcebergSnapshotUnsupported => CapabilityReason::IcebergSnapshotUnsupported,
+            Self::IcebergEncryptedFileUnsupported => CapabilityReason::IcebergEncryptedFileUnsupported,
+            Self::IcebergScalarValueUnsupported => CapabilityReason::IcebergScalarValueUnsupported,
         }
     }
 
@@ -81,7 +94,7 @@ impl TableFormatUnsupportedFeature {
     }
 
     /// Stable fallback reason associated with this feature.
-    pub fn fallback_reason(&self) -> FallbackReason {
+    pub fn fallback_reason(&self) -> CapabilityReason {
         self.code.fallback_reason()
     }
 

@@ -16,6 +16,7 @@ use parquet::{
 };
 
 use crate::{
+    capability::CapabilityReason,
     native::{
         expression_contract::is_supported_native_type,
         pruning::{
@@ -24,7 +25,6 @@ use crate::{
         },
         validate::{collect_required_columns, native_zero_column_count_source_is_safe},
     },
-    policy::FallbackReason,
 };
 
 /// Column-role bridge from a DataFusion Parquet scan to native source metadata.
@@ -105,7 +105,7 @@ pub(in crate::native) fn required_parquet_column_requirements(
     filter: Option<&FilterExec>,
     pre_aggregate_projection: Option<&ProjectionExec>,
     aggregate: &AggregateExec,
-) -> Result<NativeParquetColumnRequirements, FallbackReason> {
+) -> Result<NativeParquetColumnRequirements, CapabilityReason> {
     let file_schema = native_physical_file_schema(file_scan)?;
     let table_schema = Arc::clone(file_scan.file_source().table_schema().table_schema());
     if native_zero_column_count_source_is_safe(filter, pre_aggregate_projection, aggregate)
@@ -133,7 +133,7 @@ pub(in crate::native) fn required_parquet_column_requirements(
     let mut scan_output_columns: BTreeSet<String> = BTreeSet::new();
 
     let scan_projection = file_scan.file_source().projection();
-    let scan_output_schema = file_scan.projected_schema().map_err(|_error| FallbackReason::UnsupportedExpression)?;
+    let scan_output_schema = file_scan.projected_schema().map_err(|_error| CapabilityReason::UnsupportedExpression)?;
 
     if filter.is_none() {
         collect_scan_predicate_source_columns(parquet_source, scan_projection, &table_schema, &mut filter_columns)?;
@@ -237,11 +237,11 @@ pub(in crate::native) fn required_parquet_column_requirements_for_scan_columns(
     parquet_source: &ParquetSource,
     filter: Option<&FilterExec>,
     required_scan_output_indices: &[usize],
-) -> Result<NativeParquetColumnRequirements, FallbackReason> {
+) -> Result<NativeParquetColumnRequirements, CapabilityReason> {
     let file_schema = native_physical_file_schema(file_scan)?;
     let table_schema = Arc::clone(file_scan.file_source().table_schema().table_schema());
     let scan_projection = file_scan.file_source().projection();
-    let scan_output_schema = file_scan.projected_schema().map_err(|_error| FallbackReason::UnsupportedExpression)?;
+    let scan_output_schema = file_scan.projected_schema().map_err(|_error| CapabilityReason::UnsupportedExpression)?;
 
     let mut filter_columns: BTreeSet<String> = BTreeSet::new();
     let mut output_columns: BTreeSet<String> = BTreeSet::new();
@@ -257,7 +257,7 @@ pub(in crate::native) fn required_parquet_column_requirements_for_scan_columns(
     }
 
     for index in required_scan_output_indices {
-        let field = scan_output_schema.fields().get(*index).ok_or(FallbackReason::UnsupportedExpression)?;
+        let field = scan_output_schema.fields().get(*index).ok_or(CapabilityReason::UnsupportedExpression)?;
         let expr: Arc<dyn PhysicalExpr> = Arc::new(Column::new(field.name(), *index));
         let mut expr_output_columns = BTreeSet::new();
         collect_source_required_columns(&expr, scan_projection, &table_schema, &mut expr_output_columns)?;
@@ -315,9 +315,9 @@ fn collect_scan_projection_indices(
     projection: &[usize],
     scan_output_schema: &SchemaRef,
     required: &mut BTreeSet<String>,
-) -> Result<(), FallbackReason> {
+) -> Result<(), CapabilityReason> {
     for index in projection {
-        let field = scan_output_schema.fields().get(*index).ok_or(FallbackReason::UnsupportedExpression)?;
+        let field = scan_output_schema.fields().get(*index).ok_or(CapabilityReason::UnsupportedExpression)?;
         required.insert(field.name().clone());
     }
     Ok(())
@@ -332,7 +332,7 @@ fn collect_scan_predicate_source_columns(
     scan_projection: Option<&ProjectionExprs>,
     table_schema: &SchemaRef,
     required: &mut BTreeSet<String>,
-) -> Result<(), FallbackReason> {
+) -> Result<(), CapabilityReason> {
     let Some(predicate) = parquet_source.filter() else {
         return Ok(());
     };
@@ -349,9 +349,9 @@ fn collect_source_projection_indices(
     scan_output_schema: &SchemaRef,
     table_schema: &SchemaRef,
     required: &mut BTreeSet<String>,
-) -> Result<(), FallbackReason> {
+) -> Result<(), CapabilityReason> {
     for index in projection {
-        let field = scan_output_schema.fields().get(*index).ok_or(FallbackReason::UnsupportedExpression)?;
+        let field = scan_output_schema.fields().get(*index).ok_or(CapabilityReason::UnsupportedExpression)?;
         let expr: Arc<dyn PhysicalExpr> = Arc::new(Column::new(field.name(), *index));
         collect_source_required_columns(&expr, scan_projection, table_schema, required)?;
     }
@@ -363,19 +363,21 @@ fn collect_source_required_columns(
     scan_projection: Option<&ProjectionExprs>,
     table_schema: &SchemaRef,
     required: &mut BTreeSet<String>,
-) -> Result<(), FallbackReason> {
+) -> Result<(), CapabilityReason> {
     let source_expr = match scan_projection {
-        Some(projection) => projection.unproject_expr(expr).map_err(|_error| FallbackReason::UnsupportedExpression)?,
+        Some(projection) => {
+            projection.unproject_expr(expr).map_err(|_error| CapabilityReason::UnsupportedExpression)?
+        },
         None => Arc::clone(expr),
     };
     collect_required_columns(&source_expr, table_schema, required)
 }
 
-fn native_physical_file_schema(file_scan: &FileScanConfig) -> Result<SchemaRef, FallbackReason> {
+fn native_physical_file_schema(file_scan: &FileScanConfig) -> Result<SchemaRef, CapabilityReason> {
     let files = file_scan.file_groups.iter().flat_map(|group| group.files()).collect::<Vec<_>>();
     if !file_scan.object_store_url.as_str().starts_with("file://") {
         if files.len() > 1 {
-            return Err(FallbackReason::NativeSourceSchemaMapping);
+            return Err(CapabilityReason::NativeSourceSchemaMapping);
         }
         return Ok(Arc::clone(file_scan.file_schema()));
     }
@@ -386,36 +388,36 @@ fn native_physical_file_schema(file_scan: &FileScanConfig) -> Result<SchemaRef, 
     for file in files.iter().skip(1) {
         let schema = local_parquet_footer_schema(file.object_meta.location.as_ref())?;
         if schema.as_ref() != first_schema.as_ref() {
-            return Err(FallbackReason::NativeSourceSchemaMapping);
+            return Err(CapabilityReason::NativeSourceSchemaMapping);
         }
     }
     Ok(first_schema)
 }
 
-fn local_parquet_footer_schema(location: &str) -> Result<SchemaRef, FallbackReason> {
+fn local_parquet_footer_schema(location: &str) -> Result<SchemaRef, CapabilityReason> {
     let path = local_object_path_to_filesystem(location);
     let reader =
-        SerializedFileReader::try_from(path.as_path()).map_err(|_error| FallbackReason::NativeSourceSchemaMapping)?;
+        SerializedFileReader::try_from(path.as_path()).map_err(|_error| CapabilityReason::NativeSourceSchemaMapping)?;
     let metadata = reader.metadata().file_metadata();
     let schema = parquet_to_arrow_schema(metadata.schema_descr(), metadata.key_value_metadata())
-        .map_err(|_error| FallbackReason::NativeSourceSchemaMapping)?;
+        .map_err(|_error| CapabilityReason::NativeSourceSchemaMapping)?;
     Ok(Arc::new(schema))
 }
 
-fn column_file_indices(file_schema: &SchemaRef, columns: &[String]) -> Result<Vec<usize>, FallbackReason> {
+fn column_file_indices(file_schema: &SchemaRef, columns: &[String]) -> Result<Vec<usize>, CapabilityReason> {
     columns
         .iter()
-        .map(|column| file_schema.index_of(column).map_err(|_error| FallbackReason::UnsupportedExpression))
+        .map(|column| file_schema.index_of(column).map_err(|_error| CapabilityReason::UnsupportedExpression))
         .collect()
 }
 
-fn first_supported_physical_file_column(file_schema: &SchemaRef) -> Result<String, FallbackReason> {
+fn first_supported_physical_file_column(file_schema: &SchemaRef) -> Result<String, CapabilityReason> {
     file_schema
         .fields()
         .iter()
         .find(|field| is_supported_native_type(field.data_type()))
         .map(|field| field.name().clone())
-        .ok_or(FallbackReason::UnsupportedType)
+        .ok_or(CapabilityReason::UnsupportedType)
 }
 
 /// Builds the native source node's emitted schema from file and partition columns.
@@ -429,14 +431,15 @@ fn first_supported_physical_file_column(file_schema: &SchemaRef) -> Result<Strin
 pub(in crate::native) fn native_source_output_schema(
     file_scan: &FileScanConfig,
     requirements: &NativeParquetColumnRequirements,
-) -> Result<SchemaRef, FallbackReason> {
+) -> Result<SchemaRef, CapabilityReason> {
     let file_schema = file_scan.file_schema();
     let mut fields = Vec::with_capacity(
         requirements.read_columns.len() + requirements.partition_columns.len() + requirements.missing_columns.len(),
     );
     for column in &requirements.read_columns {
-        fields
-            .push(file_schema.field_with_name(column).map_err(|_error| FallbackReason::UnsupportedExpression)?.clone());
+        fields.push(
+            file_schema.field_with_name(column).map_err(|_error| CapabilityReason::UnsupportedExpression)?.clone(),
+        );
     }
     for partition_column in &requirements.partition_columns {
         fields.push(arrow::datatypes::Field::new(
@@ -463,13 +466,13 @@ pub(in crate::native) fn native_source_output_schema(
 fn native_required_partition_columns(
     file_scan: &FileScanConfig,
     required_columns: &BTreeSet<String>,
-) -> Result<(Vec<NativePartitionColumn>, Vec<usize>), FallbackReason> {
+) -> Result<(Vec<NativePartitionColumn>, Vec<usize>), CapabilityReason> {
     let mut columns = Vec::new();
     let mut indices = Vec::new();
     for (index, field) in file_scan.table_partition_cols().iter().enumerate() {
         if required_columns.contains(field.name()) {
             if !is_supported_native_type(field.data_type()) {
-                return Err(FallbackReason::UnsupportedType);
+                return Err(CapabilityReason::UnsupportedType);
             }
             columns.push(NativePartitionColumn::new(field.name(), field.data_type().clone(), field.is_nullable()));
             indices.push(index);
@@ -483,19 +486,20 @@ fn native_required_missing_columns(
     file_schema: &SchemaRef,
     required_columns: &BTreeSet<String>,
     partition_columns: &[NativePartitionColumn],
-) -> Result<Vec<NativeMissingColumn>, FallbackReason> {
+) -> Result<Vec<NativeMissingColumn>, CapabilityReason> {
     let table_schema = file_scan.file_source().table_schema().table_schema();
     let mut columns = Vec::new();
     for column in required_columns {
         if file_schema.index_of(column).is_ok() || partition_columns.iter().any(|field| &field.name == column) {
             continue;
         }
-        let field = table_schema.field_with_name(column).map_err(|_error| FallbackReason::NativeSourceSchemaMapping)?;
+        let field =
+            table_schema.field_with_name(column).map_err(|_error| CapabilityReason::NativeSourceSchemaMapping)?;
         if !field.is_nullable() {
-            return Err(FallbackReason::NativeSourceSchemaMapping);
+            return Err(CapabilityReason::NativeSourceSchemaMapping);
         }
         if !is_supported_native_type(field.data_type()) {
-            return Err(FallbackReason::UnsupportedType);
+            return Err(CapabilityReason::UnsupportedType);
         }
         columns.push(NativeMissingColumn::new(column.as_str(), field.data_type().clone(), field.is_nullable()));
     }
@@ -508,7 +512,7 @@ fn column_source_refs(
     partition_columns: &[NativePartitionColumn],
     missing_columns: &[NativeMissingColumn],
     columns: &[String],
-) -> Result<Vec<NativeSourceColumnRef>, FallbackReason> {
+) -> Result<Vec<NativeSourceColumnRef>, CapabilityReason> {
     columns
         .iter()
         .map(|column| {
@@ -525,7 +529,7 @@ fn column_source_refs(
                         .position(|field| &field.name == column)
                         .map(NativeSourceColumnRef::MissingNull)
                 })
-                .ok_or(FallbackReason::UnsupportedExpression)
+                .ok_or(CapabilityReason::UnsupportedExpression)
         })
         .collect()
 }

@@ -13,6 +13,8 @@ pub enum TableFormatScalarValue {
     Int64(i64),
     /// Signed 128-bit integer metadata value.
     Int128(i128),
+    /// 32-bit floating-point metadata value.
+    Float32(f32),
     /// Unsigned 32-bit integer metadata value.
     UInt32(u32),
     /// Unsigned 64-bit integer metadata value.
@@ -23,6 +25,16 @@ pub enum TableFormatScalarValue {
     Utf8(String),
     /// Arrow Date32 day value.
     Date32(i32),
+    /// Arrow Time64 microsecond value.
+    Time64Micros(i64),
+    /// Arrow Timestamp microsecond value.
+    TimestampMicros(i64),
+    /// Arrow Timestamp nanosecond value.
+    TimestampNanos(i64),
+    /// Iceberg UUID bytes in network byte order.
+    Uuid([u8; 16]),
+    /// Opaque binary metadata value.
+    Binary(Vec<u8>),
 }
 
 impl fmt::Display for TableFormatScalarValue {
@@ -33,11 +45,17 @@ impl fmt::Display for TableFormatScalarValue {
             Self::Int32(value) => write!(f, "{value}"),
             Self::Int64(value) => write!(f, "{value}"),
             Self::Int128(value) => write!(f, "{value}"),
+            Self::Float32(value) => write!(f, "{value}"),
             Self::UInt32(value) => write!(f, "{value}"),
             Self::UInt64(value) => write!(f, "{value}"),
             Self::Float64(value) => write!(f, "{value}"),
             Self::Utf8(value) => write!(f, "{value:?}"),
             Self::Date32(value) => write!(f, "{value}"),
+            Self::Time64Micros(value) => write!(f, "{value}"),
+            Self::TimestampMicros(value) => write!(f, "{value}"),
+            Self::TimestampNanos(value) => write!(f, "{value}"),
+            Self::Uuid(value) => write!(f, "{:02x?}", value),
+            Self::Binary(value) => write!(f, "{:02x?}", value),
         }
     }
 }
@@ -207,11 +225,13 @@ pub(crate) struct TableFormatUnsupportedColumn<'a> {
 
 impl TableFormatUnsupportedColumn<'_> {
     /// Stable role code for diagnostics.
+    #[cfg(test)]
     pub(crate) const fn role_code(&self) -> &'static str {
         self.role.code()
     }
 
     /// Human-readable Arrow type for client-facing diagnostics.
+    #[cfg(test)]
     pub(crate) fn data_type_summary(&self) -> String {
         nexus_query_engine::datatypes::diagnostic_arrow_type(self.data_type)
     }

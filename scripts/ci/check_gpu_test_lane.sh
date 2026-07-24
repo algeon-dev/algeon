@@ -7,6 +7,7 @@
 # Live inventory is the union of:
 #   1. the ordinary default-member inventory under the requested core feature args
 #   2. an explicit all-feature bench inventory
+#   3. the explicit all-feature DataFusion-free Iceberg leaf inventory
 # Cargo, not the catalog, selects packages; the catalog only classifies what
 # pre-merge admits.
 set -uo pipefail
@@ -75,6 +76,7 @@ inventory_tmp=$(mktemp -d "${TMPDIR:-/tmp}/datafusion-nexus-test-inventory.XXXXX
 trap 'rm -rf "${inventory_tmp}"' EXIT
 default_inventory_json="${inventory_tmp}/default-members.json"
 bench_inventory_json="${inventory_tmp}/bench.json"
+iceberg_leaf_inventory_json="${inventory_tmp}/iceberg-leaf.json"
 inventory_stderr="${inventory_tmp}/inventory.stderr"
 
 # A nonzero producer status always wins over partial stdout. Stream stderr so
@@ -96,10 +98,12 @@ list_inventory() {
 : >"${inventory_stderr}"
 list_inventory "${default_inventory_json}" "${FEATURE_ARGS[@]}" || exit $?
 list_inventory "${bench_inventory_json}" -p datafusion-nexus-bench --all-features || exit $?
+list_inventory "${iceberg_leaf_inventory_json}" -p datafusion-nexus-iceberg --all-features || exit $?
 
 validation_status=0
 python3 scripts/ci/test_lane_policy.py validate-inventory \
   --inventory "${default_inventory_json}" \
   --inventory "${bench_inventory_json}" \
+  --inventory "${iceberg_leaf_inventory_json}" \
   --feature-mode "${FEATURE_MODE}" || validation_status=$?
 exit "${validation_status}"

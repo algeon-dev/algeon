@@ -9,8 +9,8 @@ use std::{
 
 use datafusion_nexus::{
     native_report::{
-        NativeDataFusionPlanningOutcome, NativeDataFusionPostNativeExecutionPath, NativeDataFusionRuntimeOutcome,
-        ParityComparisonMode, ParityStatus,
+        FinalPlanDisposition, NativeDataFusionPlanningOutcome, NativeDataFusionRuntimeOutcome, ParityComparisonMode,
+        ParityStatus,
     },
     table_format::{TableFormat, TableFormatScanPlan},
 };
@@ -681,9 +681,9 @@ fn timeout_smoke_row(
         config.smoke_config.fixture.tpch_all_tables_ident_display(&config.smoke_config.tpch_scale_factor),
         query_sql,
         diagnostics,
-        NativeDataFusionPlanningOutcome::RejectedBeforeExecution,
+        None,
         Some(category.as_str().to_string()),
-        NativeDataFusionPostNativeExecutionPath::Cpu,
+        FinalPlanDisposition::Rejected,
         None,
         ObjectStoreStagingSummary::new(config.smoke_config.object_store_staging, ObjectStoreStagingStatus::NotNeeded),
         config.smoke_config.fixture.credential_source().to_string(),
@@ -867,7 +867,7 @@ impl IcebergTpchBenchmarkRow {
             object_store_staging_status_code(row.staging_summary.status).to_string(),
             row.staging_summary.staged_data_file_count.to_string(),
             row.staging_summary.staged_bytes.to_string(),
-            row.native_planning_outcome.as_str().to_string(),
+            row.native_planning_outcome.map_or("none", NativeDataFusionPlanningOutcome::as_str).to_string(),
             row.native_runtime_outcome.as_str().to_string(),
             optional_u128(row.native_runtime_elapsed_ms),
             optional_usize(row.native_output_rows),
@@ -976,9 +976,11 @@ pub fn validate_full_sf1_staged_s3_gate_for_config(
                 row.smoke_row.staging_summary.staged_data_file_count
             ));
         }
-        if row.smoke_row.native_planning_outcome.as_str() != "accepted_replaced" {
-            failures
-                .push(format!("{query_id}:native_planning_outcome={}", row.smoke_row.native_planning_outcome.as_str()));
+        if row.smoke_row.native_planning_outcome != Some(NativeDataFusionPlanningOutcome::Selected) {
+            failures.push(format!(
+                "{query_id}:native_planning_outcome={}",
+                row.smoke_row.native_planning_outcome.map_or("none", NativeDataFusionPlanningOutcome::as_str)
+            ));
         }
         if row.smoke_row.native_runtime_outcome.as_str() != "succeeded" {
             failures

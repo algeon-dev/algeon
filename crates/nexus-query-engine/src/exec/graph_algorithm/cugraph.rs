@@ -216,7 +216,7 @@ pub(in crate::exec) fn execute_graph_algorithm_sanitized(
                 };
                 record_graph_adaptive_memory_history_from_error(context, &node.spec, &error);
                 record_graph_budget_observation_from_error(metrics, &error);
-                metrics.record_adaptive_runtime_action_counts(1, 0, 0);
+                metrics.record_adaptive_retry();
                 let retry_result =
                     execute_chunked_betweenness_retry(context, spec, retry_inputs, seed_batches, executor);
                 if let Err(retry_error) = &retry_result {

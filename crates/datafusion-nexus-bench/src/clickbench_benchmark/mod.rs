@@ -501,7 +501,7 @@ async fn run_once(
         Ok(df) => match df.create_physical_plan().await {
             Ok(plan) => {
                 let rewritten = native_rule
-                    .map(|rule| rule.last_planning_diagnostics().is_some_and(|diag| diag.report.rewritten_count() > 0));
+                    .map(|rule| rule.last_planning_diagnostics().is_some_and(|diag| diag.report.selected_count() > 0));
                 (execute_plan(plan, ctx, dump).await, rewritten)
             },
             Err(error) => (Err(format!("physical_plan: {error}")), None),
@@ -649,9 +649,9 @@ struct EngineMeasurement {
     output_fingerprint: Option<String>,
     /// `None` on the CPU side. On the native side, `Some(true)` when the
     /// optimizer rule actually replaced a sub-plan with a native node, else
-    /// `Some(false)` — in which case the recorded wall time is CPU fallback,
-    /// not GPU execution. Used to gate `speedup_vs_cpu` so the report cannot
-    /// publish CPU-fallback time as native time.
+    /// `Some(false)` — in which case the recorded wall time is the retained
+    /// DataFusion baseline, not GPU execution. Used to gate `speedup_vs_cpu`
+    /// so the report cannot publish DataFusion-baseline time as native time.
     native_rewritten: Option<bool>,
     samples_ms: Vec<u128>,
     /// Count of measured iterations that did not produce a successful result.
@@ -700,7 +700,8 @@ enum ParityStatus {
     /// Row counts agree but order-insensitive fingerprints differ.
     ContentMismatch,
     /// Both engines succeeded but the native rule did not rewrite this plan,
-    /// so the recorded native timing is CPU fallback, not native execution.
+    /// so the recorded native timing is the retained DataFusion baseline, not
+    /// native execution.
     /// Parity is trivially equal here; the row is flagged so consumers
     /// don't conflate it with a real native run.
     NativeNotRewritten,
@@ -770,7 +771,8 @@ impl BenchmarkRow {
 
     /// `speedup_vs_cpu` is only meaningful when both sides succeeded **and**
     /// the native rule actually rewrote the plan — otherwise the "native"
-    /// wall time is CPU fallback and a 1.0× ratio would be misleading.
+    /// wall time is a retained DataFusion baseline and a 1.0× ratio would be
+    /// misleading.
     fn speedup_vs_cpu(&self) -> Option<f64> {
         let cpu = self.cpu.as_ref()?;
         let native = self.native.as_ref()?;

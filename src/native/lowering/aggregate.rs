@@ -21,12 +21,12 @@ use super::{
     source::required_scan_projection,
 };
 use crate::{
+    capability::CapabilityReason,
     native::{
         expression_contract::validate_physical_expr,
         normalize::{NormalizedNativeAggregate, NormalizedNativeAggregateRoot, NormalizedNativeSortExprs},
         validate::{aggregate_is_count_star_only, validate_aggregate_for_native_lowering, validate_schema},
     },
-    policy::FallbackReason,
 };
 
 mod synthetic;
@@ -38,7 +38,7 @@ pub(super) use synthetic::{
 
 pub(super) fn validate_joined_aggregate_scalar_expressions(
     root: &NormalizedNativeAggregateRoot<'_>,
-) -> Result<(), FallbackReason> {
+) -> Result<(), CapabilityReason> {
     if let Some(projection) = root.pre_aggregate_projection {
         validate_projection_scalar_expressions(projection)?;
     }
@@ -52,7 +52,7 @@ pub(super) fn validate_joined_aggregate_scalar_expressions(
 pub(super) fn required_aggregate_input_fields(
     aggregate: &AggregateExec,
     pre_aggregate_projection: Option<&ProjectionExec>,
-) -> Result<RequiredFields, FallbackReason> {
+) -> Result<RequiredFields, CapabilityReason> {
     let mut required = BTreeSet::new();
     let mut predicate_required = BTreeSet::new();
     if let Some(projection) = pre_aggregate_projection {
@@ -64,7 +64,7 @@ pub(super) fn required_aggregate_input_fields(
             collect_required_field_indices(filter, &aggregate.input().schema(), &mut filter_projection_indices)?;
         }
         for index in filter_projection_indices {
-            let projection_expr = projection.expr().get(index).ok_or(FallbackReason::UnsupportedExpression)?;
+            let projection_expr = projection.expr().get(index).ok_or(CapabilityReason::UnsupportedExpression)?;
             collect_required_field_indices(
                 &projection_expr.expr,
                 &projection.input().schema(),
@@ -92,7 +92,7 @@ pub(super) fn lower_aggregate_input(
     aggregate: &NormalizedNativeAggregate<'_>,
     builder: &mut NativeQueryPlanBuilder,
     required_output_fields: &RequiredFields,
-) -> Result<LoweredNativeInput, FallbackReason> {
+) -> Result<LoweredNativeInput, CapabilityReason> {
     validate_schema(Arc::clone(&aggregate.aggregate_output_schema))?;
     validate_aggregate_for_native_lowering(aggregate.aggregate, aggregate.aggregate_allows_partial)?;
     validate_aggregate_scalar_expressions(aggregate.aggregate)?;
@@ -117,13 +117,13 @@ pub(super) fn add_native_aggregate_node(
     aggregate: &AggregateExec,
     output_schema: &SchemaRef,
     output_bindings: &[FieldBinding],
-) -> Result<NativeNodeId, FallbackReason> {
+) -> Result<NativeNodeId, CapabilityReason> {
     let prepared = prepare_aggregate_input_with_optional_synthetic_args(builder, input, aggregate)?;
     let aggregate_spec = rename_aggregate_spec_outputs(lower_aggregate_spec(aggregate, &prepared)?, output_bindings)?;
     Ok(builder.add_aggregate(prepared.input.node, aggregate_spec, Arc::clone(output_schema)))
 }
 
-fn validate_aggregate_scalar_expressions(aggregate: &AggregateExec) -> Result<(), FallbackReason> {
+fn validate_aggregate_scalar_expressions(aggregate: &AggregateExec) -> Result<(), CapabilityReason> {
     for aggregate_expr in aggregate.aggr_expr() {
         for expr in aggregate_expr.expressions() {
             validate_physical_expr(&expr, &aggregate.input().schema())?;
@@ -138,7 +138,7 @@ fn validate_aggregate_scalar_expressions(aggregate: &AggregateExec) -> Result<()
     Ok(())
 }
 
-fn validate_projection_scalar_expressions(projection: &ProjectionExec) -> Result<(), FallbackReason> {
+fn validate_projection_scalar_expressions(projection: &ProjectionExec) -> Result<(), CapabilityReason> {
     for projection_expr in projection.expr() {
         validate_physical_expr(&projection_expr.expr, &projection.input().schema())?;
     }
@@ -151,7 +151,7 @@ pub(super) fn project_required_output_columns(
     input_schema: SchemaRef,
     input_bindings: Vec<super::FieldBinding>,
     required_output_fields: &RequiredFields,
-) -> Result<LoweredNativeInput, FallbackReason> {
+) -> Result<LoweredNativeInput, CapabilityReason> {
     if required_output_fields.is_all() {
         return Ok(LoweredNativeInput::with_bindings(input_node, input_schema, input_bindings));
     }
@@ -163,7 +163,7 @@ pub(super) fn project_required_output_columns(
             expressions.push(NativeExpr::column(binding.native_name.as_str()));
             let field = input_schema
                 .field_with_name(binding.native_name.as_str())
-                .map_err(|_error| FallbackReason::UnsupportedExpression)?;
+                .map_err(|_error| CapabilityReason::UnsupportedExpression)?;
             fields.push(field.clone());
             bindings.push(binding.clone());
         }
@@ -181,7 +181,7 @@ pub(super) fn validate_aggregate_root_operator_schemas(
     pre_aggregate_projection: Option<&ProjectionExec>,
     post_aggregate_projection: Option<&ProjectionExec>,
     sort: Option<&NormalizedNativeSortExprs<'_>>,
-) -> Result<(), FallbackReason> {
+) -> Result<(), CapabilityReason> {
     if let Some(projection) = pre_aggregate_projection {
         validate_schema(projection.schema())?;
     }
@@ -210,7 +210,7 @@ pub(super) struct RequiredScalarExpressions<'a> {
 
 pub(super) fn validate_required_scalar_expressions(
     inputs: RequiredScalarExpressions<'_>,
-) -> Result<(), FallbackReason> {
+) -> Result<(), CapabilityReason> {
     if let Some(scan_projection) = inputs.scan_projection {
         for projection_expr in
             required_scan_projection(scan_projection, inputs.scan_output_schema, inputs.required_scan_output_columns)
@@ -234,7 +234,7 @@ pub(super) fn validate_required_scalar_expressions(
 pub(super) fn lower_aggregate_spec(
     aggregate: &AggregateExec,
     prepared: &PreparedAggregateInput,
-) -> Result<NativeAggregateSpec, FallbackReason> {
+) -> Result<NativeAggregateSpec, CapabilityReason> {
     let frontend_schema = aggregate.input().schema();
     let group_exprs = aggregate
         .group_expr()
@@ -244,9 +244,9 @@ pub(super) fn lower_aggregate_spec(
         .map(|(index, (expr, alias))| {
             let native_expr = prepared.group_expr_aliases.as_ref().and_then(|aliases| aliases.get(index)).map_or_else(
                 || lower_physical_expr_with_bindings(expr, &frontend_schema, Some(&prepared.input.bindings)),
-                |alias| Ok::<NativeExpr, FallbackReason>(NativeExpr::column(alias)),
+                |alias| Ok::<NativeExpr, CapabilityReason>(NativeExpr::column(alias)),
             )?;
-            Ok::<NativeExpr, FallbackReason>(alias_if_needed(native_expr, alias))
+            Ok::<NativeExpr, CapabilityReason>(alias_if_needed(native_expr, alias))
         })
         .collect::<Result<Vec<_>, _>>()?;
 
@@ -257,7 +257,7 @@ pub(super) fn lower_aggregate_spec(
         .map(|(index, expr)| {
             let expressions = expr.expressions();
             let [arg] = expressions.as_slice() else {
-                return Err(FallbackReason::UnsupportedExpression);
+                return Err(CapabilityReason::UnsupportedExpression);
             };
             let lowered_arg =
                 prepared.aggregate_arg_aliases.as_deref().and_then(|aliases| aliases.get(index)).map_or_else(
@@ -301,12 +301,12 @@ pub(super) fn lower_aggregate_spec(
 pub(super) fn rename_aggregate_spec_outputs(
     mut spec: NativeAggregateSpec,
     output_bindings: &[FieldBinding],
-) -> Result<NativeAggregateSpec, FallbackReason> {
+) -> Result<NativeAggregateSpec, CapabilityReason> {
     let grouping_id_offset = spec.group_exprs.len();
     let grouping_id_count = usize::from(spec.grouping_sets.is_some());
     let expected_outputs = spec.group_exprs.len() + grouping_id_count + spec.aggr_exprs.len();
     if output_bindings.len() != expected_outputs {
-        return Err(FallbackReason::UnsupportedExpression);
+        return Err(CapabilityReason::UnsupportedExpression);
     }
     for (expr, binding) in spec.group_exprs.iter_mut().zip(output_bindings.iter()) {
         if binding.native_name != binding.frontend_name {
@@ -334,9 +334,9 @@ fn with_output_alias(expr: NativeExpr, alias: &str) -> NativeExpr {
 
 pub(super) fn lower_zero_column_count_aggregate_spec(
     aggregate: &AggregateExec,
-) -> Result<NativeAggregateSpec, FallbackReason> {
+) -> Result<NativeAggregateSpec, CapabilityReason> {
     if !aggregate_is_count_star_only(aggregate) {
-        return Err(FallbackReason::UnsupportedOperator);
+        return Err(CapabilityReason::UnsupportedOperator);
     }
     let expr = &aggregate.aggr_expr()[0];
     Ok(NativeAggregateSpec::new(
@@ -349,7 +349,7 @@ pub(super) fn lower_zero_column_count_aggregate_spec(
     ))
 }
 
-pub(super) fn lower_native_aggregate_function(name: &str) -> Result<NativeAggregateFunction, FallbackReason> {
+pub(super) fn lower_native_aggregate_function(name: &str) -> Result<NativeAggregateFunction, CapabilityReason> {
     if name.eq_ignore_ascii_case("sum") {
         Ok(NativeAggregateFunction::Sum)
     } else if name.eq_ignore_ascii_case("min") {
@@ -375,14 +375,14 @@ pub(super) fn lower_native_aggregate_function(name: &str) -> Result<NativeAggreg
     } else if name.eq_ignore_ascii_case("var_pop") || name.eq_ignore_ascii_case("var_population") {
         Ok(NativeAggregateFunction::VarPop)
     } else {
-        Err(FallbackReason::UnsupportedOperator)
+        Err(CapabilityReason::UnsupportedOperator)
     }
 }
 
 fn lower_native_aggregate_expr_function(
     name: &str,
     distinct: bool,
-) -> Result<(NativeAggregateFunction, bool), FallbackReason> {
+) -> Result<(NativeAggregateFunction, bool), CapabilityReason> {
     let function = lower_native_aggregate_function(name)?;
     if distinct && function == NativeAggregateFunction::Count {
         Ok((NativeAggregateFunction::NUnique, false))

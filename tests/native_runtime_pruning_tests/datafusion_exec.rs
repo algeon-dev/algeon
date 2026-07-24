@@ -167,8 +167,8 @@ async fn native_datafusion_exec_nullable_avg_output_ordering_matches_cpu() {
 }
 
 #[tokio::test]
-async fn native_datafusion_exec_unsupported_sql_falls_back_before_native_execution() {
-    let dir = unique_temp_dir("datafusion-nexus-native-datafusion-fallback");
+async fn native_datafusion_exec_unsupported_sql_retains_datafusion_baseline_before_native_execution() {
+    let dir = unique_temp_dir("datafusion-nexus-native-datafusion-baseline");
     let path = dir.join("input.parquet");
     write_row_group_pruning_parquet_file(&path);
 
@@ -197,7 +197,11 @@ async fn native_datafusion_exec_resource_failure_preserves_adapter_facts() {
     assert_eq!(adapter_error.code(), ErrorCode::MemoryReservationFailed);
     assert_eq!(adapter_error.fact_value("native_code"), Some("memory_reservation_failed"));
     assert_eq!(adapter_error.fact_value("native_datafusion_stage"), Some("runtime_execution"));
-    assert_eq!(adapter_error.fact_value("cpu_fallback_after_native_start"), Some("false"));
+    assert_eq!(
+        adapter_error.fact_value("cpu_fallback_after_native_start"),
+        Some("false"),
+        "a started native attempt is terminal and must not replay through DataFusion"
+    );
     assert!(adapter_error.fact_value("native_operation").is_some());
     assert!(adapter_error.fact_value("memory_boundary").is_some());
     assert!(adapter_error.fact_value("reservation_kind").is_some());

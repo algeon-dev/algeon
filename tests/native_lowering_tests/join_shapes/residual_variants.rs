@@ -208,7 +208,7 @@ fn hash_join_filter_rejects_timestamp_timezone_residual_comparison() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_native_rejection(&result, FallbackReason::UnsupportedType);
+    assert_native_rejection(&result, CapabilityReason::UnsupportedType);
     fs::remove_dir_all(dir).unwrap();
 }
 
@@ -223,7 +223,7 @@ fn hash_join_filter_rejects_timestamp_timezone_residual_in_list() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_native_rejection(&result, FallbackReason::UnsupportedType);
+    assert_native_rejection(&result, CapabilityReason::UnsupportedType);
     fs::remove_dir_all(dir).unwrap();
 }
 
@@ -238,7 +238,7 @@ fn hash_join_filter_rejects_list_null_predicate_residual() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_native_rejection(&result, FallbackReason::UnsupportedType);
+    assert_native_rejection(&result, CapabilityReason::UnsupportedType);
     fs::remove_dir_all(dir).unwrap();
 }
 
@@ -253,7 +253,7 @@ fn hash_join_filter_rejects_integer_divide_residual() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_native_rejection(&result, FallbackReason::UnsupportedExpression);
+    assert_native_rejection(&result, CapabilityReason::UnsupportedExpression);
     fs::remove_dir_all(dir).unwrap();
 }
 
@@ -268,7 +268,7 @@ fn nested_loop_join_filter_rejects_timestamp_timezone_residual_comparison() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_native_rejection(&result, FallbackReason::UnsupportedType);
+    assert_native_rejection(&result, CapabilityReason::UnsupportedType);
     fs::remove_dir_all(dir).unwrap();
 }
 
@@ -283,8 +283,8 @@ fn hash_join_filter_literal_in_list_lowers_to_native_residual_predicate() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let join = rewritten_native_join(&result);
     let residual = join.spec.residual_predicate.as_ref().expect("join filter should lower as residual predicate");
     assert!(matches!(
@@ -318,8 +318,8 @@ fn hash_join_filter_cast_lowers_to_native_residual_predicate() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let join = rewritten_native_join(&result);
     let residual = join.spec.residual_predicate.as_ref().expect("join filter should lower as residual predicate");
     assert!(matches!(
@@ -353,8 +353,8 @@ fn hash_join_filter_decimal_to_float_cast_lowers_to_native_residual_predicate() 
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let join = rewritten_native_join(&result);
     let residual = join.spec.residual_predicate.as_ref().expect("join filter should lower as residual predicate");
     assert!(matches!(
@@ -758,8 +758,8 @@ fn nested_loop_join_filter_lowers_to_native_residual_predicate() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let join = result.plans[0]
         .nodes()
         .iter()
@@ -796,8 +796,8 @@ fn full_nested_loop_join_filter_lowers_to_native_conditional_full_join() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let join = result.plans[0]
         .nodes()
         .iter()
@@ -828,8 +828,8 @@ fn inner_nested_loop_join_without_filter_lowers_to_native_cross_join() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let join = result.plans[0]
         .nodes()
         .iter()
@@ -860,8 +860,8 @@ fn predicate_free_full_nested_loop_join_lowers_to_native_keyless_outer_cross_joi
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let join = rewritten_native_join(&result);
     assert_eq!(join.spec.join_type, NativeJoinType::Full);
     assert_eq!(join.spec.build_side, NativeJoinSide::Left);
@@ -886,8 +886,8 @@ fn predicate_free_right_nested_loop_join_lowers_to_swapped_native_keyless_outer_
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let join = rewritten_native_join(&result);
     assert_eq!(join.spec.join_type, NativeJoinType::Left);
     assert_eq!(join.spec.build_side, NativeJoinSide::Right);

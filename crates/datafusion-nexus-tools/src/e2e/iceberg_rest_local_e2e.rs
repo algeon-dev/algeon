@@ -24,11 +24,14 @@
 use std::sync::Arc;
 
 use datafusion::catalog::CatalogProvider;
-use datafusion_nexus::table_format::iceberg::catalog::{
-    IcebergCatalogBackend, RestIcebergCatalogBackend, RestIcebergCatalogConfig,
-    build_scoped_catalog_provider_from_backend,
+use datafusion_nexus::table_format::iceberg::{
+    IcebergTableIdentifier, SourceAccessPolicy,
+    catalog::{
+        IcebergCatalogBackend, NexusIcebergCatalogSource, RestIcebergCatalogBackend, RestIcebergCatalogConfig,
+        build_scoped_catalog_provider_from_backend,
+    },
+    source_access_policy_to_native_source_storage_profile,
 };
-use iceberg::{NamespaceIdent, TableIdent};
 use url::Url;
 
 type E2eResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
@@ -106,9 +109,7 @@ fn reject_non_empty_env(name: &'static str) -> E2eResult<()> {
     Ok(())
 }
 
-/// Builds a REST config from the standard `NEXUS_ICEBERG_*` env vars.
-/// S3 credentials are resolved from `NEXUS_ICEBERG_S3_*` by the
-/// backend itself (never `AWS_*`).
+/// Builds a REST config with one explicit, frozen RustFS source policy.
 fn rest_config_from_env() -> RestIcebergCatalogConfig {
     let uri = std::env::var("NEXUS_ICEBERG_REST_URI").unwrap_or_else(|_| "http://localhost:8181".to_string());
     let warehouse = std::env::var("NEXUS_ICEBERG_WAREHOUSE").unwrap_or_else(|_| "s3://lakehouse/warehouse".to_string());
@@ -116,18 +117,33 @@ fn rest_config_from_env() -> RestIcebergCatalogConfig {
     let endpoint = std::env::var("NEXUS_ICEBERG_S3_ENDPOINT").expect("validated NEXUS_ICEBERG_S3_ENDPOINT");
     let path_style = std::env::var("NEXUS_ICEBERG_S3_PATH_STYLE").expect("validated NEXUS_ICEBERG_S3_PATH_STYLE");
     let region = std::env::var("NEXUS_ICEBERG_S3_REGION").unwrap_or_else(|_| "us-east-1".to_string());
+    let source_access = SourceAccessPolicy::S3(
+        SourceAccessPolicy::s3_custom_endpoint(endpoint, Some(region), Some(path_style == "true"))
+            .as_s3()
+            .clone()
+            .with_static_credentials(
+                std::env::var("NEXUS_ICEBERG_S3_ACCESS_KEY_ID").expect("validated NEXUS_ICEBERG_S3_ACCESS_KEY_ID"),
+                std::env::var("NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY")
+                    .expect("validated NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY"),
+                None,
+            ),
+    );
 
-    RestIcebergCatalogConfig::new("lake", uri, warehouse)
-        .with_s3_endpoint(endpoint)
-        .with_s3_region(region)
-        .with_s3_path_style_access(path_style == "true")
+    RestIcebergCatalogConfig::new("lake", uri, warehouse).with_source_access_policy(source_access)
+}
+
+async fn rest_catalog_source(config: RestIcebergCatalogConfig) -> E2eResult<Arc<dyn IcebergCatalogBackend>> {
+    let backend = RestIcebergCatalogBackend::connect(config).await?.into_backend();
+    Ok(Arc::new(NexusIcebergCatalogSource::new(backend)))
 }
 
 /// Read path: list namespaces through the REST backend. Proves the Rust/OpenDAL
 /// catalog client can talk to the fixture.
 async fn rest_backend_lists_namespaces_local() {
-    let backend =
-        RestIcebergCatalogBackend::from_config_env(rest_config_from_env()).await.expect("connect to REST catalog");
+    let backend = RestIcebergCatalogBackend::connect(rest_config_from_env())
+        .await
+        .expect("connect to REST catalog")
+        .into_backend();
     let namespaces = backend.list_namespaces().await.expect("list namespaces");
     eprintln!("discovered namespaces: {namespaces:?}");
     assert!(!namespaces.is_empty(), "expected at least one namespace in the local catalog");
@@ -138,8 +154,7 @@ async fn rest_backend_lists_namespaces_local() {
 async fn rest_scoped_catalog_provider_discovers_tables_local() {
     let namespace = std::env::var("NEXUS_ICEBERG_NAMESPACE").expect("set NEXUS_ICEBERG_NAMESPACE for local REST E2E");
 
-    let backend: Arc<dyn IcebergCatalogBackend> =
-        Arc::new(RestIcebergCatalogBackend::from_config_env(rest_config_from_env()).await.unwrap());
+    let backend = rest_catalog_source(rest_config_from_env()).await.unwrap();
     let provider = build_scoped_catalog_provider_from_backend(Arc::clone(&backend), "rest", &namespace)
         .await
         .expect("build scoped catalog provider");
@@ -171,8 +186,7 @@ async fn rest_datafusion_scan_local() {
     let expected_rows: Option<i64> =
         std::env::var("NEXUS_ICEBERG_REST_E2E_EXPECTED_ROWS").ok().and_then(|v| v.parse().ok());
 
-    let backend: Arc<dyn IcebergCatalogBackend> =
-        Arc::new(RestIcebergCatalogBackend::from_config_env(rest_config_from_env()).await.unwrap());
+    let backend = rest_catalog_source(rest_config_from_env()).await.unwrap();
     let provider = build_scoped_catalog_provider_from_backend(Arc::clone(&backend), "rest", &namespace)
         .await
         .expect("build scoped catalog provider");
@@ -221,12 +235,15 @@ async fn rest_table_metadata_contract_local() {
         std::env::var("NEXUS_ICEBERG_NAMESPACE").expect("set NEXUS_ICEBERG_NAMESPACE for local REST metadata E2E");
     let table_name = std::env::var("NEXUS_ICEBERG_REST_E2E_TABLE").unwrap_or_else(|_| "nation".to_string());
 
-    let backend: Arc<dyn IcebergCatalogBackend> =
-        Arc::new(RestIcebergCatalogBackend::from_config_env(rest_config_from_env()).await.unwrap());
-
-    let ns = NamespaceIdent::new(namespace.clone());
-    let ident = TableIdent::new(ns, table_name.clone());
-    let table = backend.load_table(&ident).await.expect("load REST E2E table");
+    let backend = RestIcebergCatalogBackend::connect(rest_config_from_env())
+        .await
+        .expect("connect to REST catalog")
+        .into_backend();
+    let table = backend
+        .load_table(IcebergTableIdentifier { namespace: vec![namespace.clone()], name: table_name.clone() })
+        .await
+        .expect("load REST E2E table");
+    let table = table.table();
 
     // (1) Schema field names match the selected fixture table.
     let schema = table.metadata().current_schema();
@@ -328,9 +345,8 @@ async fn rest_native_planning_and_parity_local() {
 
     // --- native (GPU) session: catalog + native optimizer rule ---------------
     let rest_config = rest_config_from_env();
-    let storage_profile = rest_config.source_storage_profile_from_env();
-    let gpu_backend: Arc<dyn IcebergCatalogBackend> =
-        Arc::new(RestIcebergCatalogBackend::from_config_env(rest_config.clone()).await.unwrap());
+    let storage_profile = source_access_policy_to_native_source_storage_profile(rest_config.source_access_policy());
+    let gpu_backend = rest_catalog_source(rest_config.clone()).await.unwrap();
     let gpu_provider = build_scoped_catalog_provider_from_backend(Arc::clone(&gpu_backend), "rest", &namespace)
         .await
         .expect("build scoped catalog provider");
@@ -367,8 +383,7 @@ async fn rest_native_planning_and_parity_local() {
     );
 
     // --- CPU reference session: GPU-free Arrow reader ------------------------
-    let cpu_backend: Arc<dyn IcebergCatalogBackend> =
-        Arc::new(RestIcebergCatalogBackend::from_config_env(rest_config.clone()).await.unwrap());
+    let cpu_backend = rest_catalog_source(rest_config.clone()).await.unwrap();
     let cpu_provider = build_scoped_catalog_provider_from_backend(Arc::clone(&cpu_backend), "rest", &namespace)
         .await
         .expect("build scoped catalog provider");
@@ -384,14 +399,10 @@ async fn rest_native_planning_and_parity_local() {
     // it proves the read + aggregate shape is stable end-to-end through RustFS. It
     // does NOT validate the native-rewritten plan's result — that is the GPU-parity
     // opt-in below.
-    let cpu_provider2 = build_scoped_catalog_provider_from_backend(
-        Arc::new(RestIcebergCatalogBackend::from_config_env(rest_config).await.unwrap())
-            as Arc<dyn IcebergCatalogBackend>,
-        "rest",
-        &namespace,
-    )
-    .await
-    .expect("build second scoped CPU catalog provider");
+    let cpu_provider2 =
+        build_scoped_catalog_provider_from_backend(rest_catalog_source(rest_config).await.unwrap(), "rest", &namespace)
+            .await
+            .expect("build second scoped CPU catalog provider");
     let cpu_ctx2 = SessionContext::new_with_config(SessionConfig::new());
     cpu_ctx2.register_catalog("lake", Arc::new(cpu_provider2));
     let cpu_rows2 = sorted_rows(

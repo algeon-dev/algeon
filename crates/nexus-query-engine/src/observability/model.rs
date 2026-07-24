@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::metrics::QueryId;
 
 /// JSONL schema emitted by sealed runtime observation snapshots.
-pub const RUNTIME_OBSERVATION_JSONL_SCHEMA: &str = "nexus_query_engine.runtime_observation.v1";
+pub const RUNTIME_OBSERVATION_JSONL_SCHEMA: &str = "nexus_query_engine.runtime_observation.v2";
 
 macro_rules! string_id {
     ($name:ident, $doc:literal) => {
@@ -915,7 +915,11 @@ pub struct RuntimeTimelineEvent {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RuntimeTerminalOutcome {
     Succeeded,
-    Failed { error_code: String },
+    /// A terminal error classified from the terminal structured error itself.
+    Failed {
+        error_code: String,
+        error_status: String,
+    },
     Cancelled,
     Dropped,
     Panicked,

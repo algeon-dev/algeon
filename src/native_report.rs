@@ -48,10 +48,10 @@ use nexus_query_engine::{
 #[cfg(feature = "cugraph")]
 use crate::graph_sql::CugraphAlgoExec;
 use crate::{
+    capability::CapabilityReason,
     native::lower_physical_plan_to_native,
     native_exec::{NexusNativeComposedExec, NexusNativeExec, NexusNativeExecutionConfig, NexusNativeGpuProducerExec},
     planner::NexusNativePhysicalOptimizerRule,
-    policy::FallbackReason,
     report::{CandidateOutcome, GpuCandidate},
 };
 
@@ -78,13 +78,13 @@ pub use metrics::{
     NativeJoinStrategyMetricRow, NativeLakehouseCacheFillEventMetricRow, NativePlanTaskMappingMetricRow,
     NativeSourceReadRuntimeMetricRow, NativeTaskOperatorMetricRow, NativeTaskRuntimeMetricRow,
 };
+#[cfg(feature = "server")]
 pub(crate) use reports::NativeDataFusionExecutionTsvTemplate;
 pub use reports::{NativeDataFusionExecutionReport, NativeDataFusionPlanningReport, NativeFallbackPressureReport};
 pub use rows::{
     NativeDataFusionExecutionRow, NativeDataFusionPlanCoverage, NativeDataFusionPlanningOutcome,
-    NativeDataFusionPlanningRow, NativeDataFusionPostNativeExecutionPath, NativeDataFusionRuntimeOutcome,
-    NativeFallbackPressureOutcome, NativeFallbackPressureRow, NativeJoinDiagnosticSummary,
-    NativeSourceDiagnosticSummary,
+    NativeDataFusionPlanningRow, NativeDataFusionRuntimeOutcome, NativeFallbackPressureOutcome,
+    NativeFallbackPressureRow, NativeJoinDiagnosticSummary, NativeSourceDiagnosticSummary,
 };
 use runtime_summary::NativeDataFusionRuntimeSummary;
 pub use schema::{
@@ -105,10 +105,10 @@ pub use schema::{
 pub use tpcds_parity::{
     NATIVE_TPCDS_PARITY_TSV_HEADER, NativeTpcdsParityCpuOutcome, NativeTpcdsParityExternalOutput,
     NativeTpcdsParityExternalOutputStatus, NativeTpcdsParityExternalOutputSummary,
-    NativeTpcdsParityNativePlanningOutcome, NativeTpcdsParityNativeRuntimeOutcome, NativeTpcdsParityPlanningOutcome,
-    NativeTpcdsParityReport, NativeTpcdsParityRow, NativeTpcdsParityWorkloadItem, ParityComparisonMode,
-    ParityComparisonResult, ParityFloatTolerance, ParityStageStatus, ParityStatus, compare_record_batches,
-    sql_has_top_level_order_by, sql_top_level_order_by_covers_output_columns,
+    NativeTpcdsParityNativePlanningOutcome, NativeTpcdsParityNativeRuntimeOutcome, NativeTpcdsParityReport,
+    NativeTpcdsParityRow, NativeTpcdsParityWorkloadItem, ParityComparisonMode, ParityComparisonResult,
+    ParityFloatTolerance, ParityStageStatus, ParityStatus, compare_record_batches, sql_has_top_level_order_by,
+    sql_top_level_order_by_covers_output_columns,
 };
 use tsv::{TsvRow, stable_tsv_field, write_workload_dataset_metadata};
 pub use workload::{
@@ -116,6 +116,8 @@ pub use workload::{
     NativeDataFusionPlanningWorkloadInput, NativeDataFusionPlanningWorkloadItem, NativeDataFusionRuntime,
     NativeFallbackPressureWorkloadInput, NativeFallbackPressureWorkloadItem, NativePlanningFailure,
 };
+
+pub use crate::planner::FinalPlanDisposition;
 
 /// Format nested graph-runtime metric rows for TSV report cells.
 pub fn format_native_graph_runtime_metric_rows(rows: &[NativeGraphRuntimeMetricRow]) -> String {
@@ -194,7 +196,7 @@ fn report_rows_for_plan(
         .outcomes()
         .iter()
         .map(|outcome| match outcome {
-            CandidateOutcome::Rewritten { candidate } => {
+            CandidateOutcome::Selected { candidate } => {
                 let adaptive_pipeline_rows = adaptive_pipeline_rows_for_candidate(&adaptive_pipeline, candidate);
                 let adaptive_rejected = adaptive_pipeline_rows.iter().any(|row| {
                     row.candidate_status == nexus_query_engine::adaptive_report::AdaptiveCandidateStatus::Rejected
@@ -205,41 +207,48 @@ fn report_rows_for_plan(
                     physical_shape: physical_shape.clone(),
                     native_candidate_shape: Some(candidate.shape.to_string()),
                     native_candidate_shape_family: Some(candidate_shape_family(candidate)),
-                    outcome: if adaptive_rejected {
-                        NativeFallbackPressureOutcome::Rejected
+                    outcome: Some(if adaptive_rejected {
+                        NativeFallbackPressureOutcome::NotSupported
                     } else {
-                        NativeFallbackPressureOutcome::Rewritten
-                    },
+                        NativeFallbackPressureOutcome::Selected
+                    }),
                     reason_code: adaptive_rejected
-                        .then(|| FallbackReason::NativeAdaptivePipelineUnsupported.code().to_string()),
+                        .then(|| CapabilityReason::NativeAdaptivePipelineUnsupported.code().to_string()),
                     unsupported_category: adaptive_rejected
                         .then(|| {
                             unsupported_category(
                                 source_diagnostics_plan.as_ref(),
                                 candidate,
-                                FallbackReason::NativeAdaptivePipelineUnsupported,
+                                CapabilityReason::NativeAdaptivePipelineUnsupported,
                             )
                         })
                         .flatten(),
                     adaptive_pipeline_rows,
                     join_diagnostics: join_diagnostics.clone(),
                     source_diagnostics: source_diagnostics.clone(),
-                    rejected_before_execution: adaptive_rejected,
+                    rejected_before_execution: false,
                 }
             },
-            CandidateOutcome::Rejected { candidate, reason } => NativeFallbackPressureRow {
+            CandidateOutcome::NotSupported { candidate, capability_reason } => NativeFallbackPressureRow {
                 query_id: query_id.clone(),
                 physical_root: physical_root.clone(),
                 physical_shape: physical_shape.clone(),
                 native_candidate_shape: Some(candidate.shape.to_string()),
                 native_candidate_shape_family: Some(candidate_shape_family(candidate)),
-                outcome: NativeFallbackPressureOutcome::Rejected,
-                reason_code: Some(reason.code().to_string()),
-                unsupported_category: unsupported_category(source_diagnostics_plan.as_ref(), candidate, *reason),
+                outcome: Some(NativeFallbackPressureOutcome::NotSupported),
+                reason_code: Some(capability_reason.code().to_string()),
+                unsupported_category: unsupported_category(
+                    source_diagnostics_plan.as_ref(),
+                    candidate,
+                    *capability_reason,
+                ),
                 adaptive_pipeline_rows: Vec::new(),
                 join_diagnostics: join_diagnostics.clone(),
                 source_diagnostics: source_diagnostics.clone(),
-                rejected_before_execution: true,
+                rejected_before_execution: false,
+            },
+            CandidateOutcome::NotSelectedByCost { .. } => {
+                unreachable!("candidate-only pressure report does not run cost selection")
             },
         })
         .collect()
@@ -252,7 +261,7 @@ fn report_row_for_planning_failure(query_id: String, failure: NativePlanningFail
         physical_shape: failure.stage,
         native_candidate_shape: None,
         native_candidate_shape_family: None,
-        outcome: NativeFallbackPressureOutcome::Rejected,
+        outcome: None,
         reason_code: Some(failure.reason_code),
         unsupported_category: Some("planning".to_string()),
         adaptive_pipeline_rows: Vec::new(),
@@ -274,7 +283,7 @@ fn fallback_pressure_adaptive_pipeline_rows(
     let Some(plan) = lowering.plans.first() else {
         return crate::planner::NativeAdaptivePipelineDiagnostics::default();
     };
-    let Some(candidate) = lowering.report.single_rewritten_candidate().cloned() else {
+    let Some(candidate) = lowering.report.single_selected_candidate().cloned() else {
         return crate::planner::NativeAdaptivePipelineDiagnostics::default();
     };
     let memory_history = execution_config.adaptive_memory_history();
@@ -345,13 +354,13 @@ fn datafusion_planning_rows_for_item(item: NativeDataFusionPlanningWorkloadItem)
         .outcomes()
         .iter()
         .map(|outcome| match outcome {
-            CandidateOutcome::Rewritten { candidate } => NativeDataFusionPlanningRow {
+            CandidateOutcome::Selected { candidate } => NativeDataFusionPlanningRow {
                 query_id: item.query_id.clone(),
                 physical_root: native_diagnostics.input_plan_root.clone(),
                 physical_shape: native_diagnostics.input_plan_shape.clone(),
                 native_candidate_shape: Some(candidate.shape.to_string()),
                 native_candidate_shape_family: Some(candidate_shape_family(candidate)),
-                outcome: NativeDataFusionPlanningOutcome::AcceptedReplaced,
+                outcome: Some(NativeDataFusionPlanningOutcome::Selected),
                 reason_code: None,
                 unsupported_category: None,
                 strict_bounded_contract_rows: strict_bounded_contract_rows_for_candidate(
@@ -370,38 +379,36 @@ fn datafusion_planning_rows_for_item(item: NativeDataFusionPlanningWorkloadItem)
                 ),
                 native_optimizer: native_diagnostics.native_optimizer.clone(),
                 edge_normalize_inserted,
-                join_diagnostics: if post_native_coverage.execution_path
-                    == NativeDataFusionPostNativeExecutionPath::Native
-                {
+                join_diagnostics: if post_native_coverage.final_disposition == FinalPlanDisposition::Native {
                     post_native_join_diagnostics.clone()
                 } else {
                     input_join_diagnostics.clone()
                 },
                 source_diagnostics: source_diagnostics.clone(),
                 post_native_plan_root: post_native_plan_root.clone(),
-                post_native_execution_path: post_native_coverage.execution_path,
+                final_disposition: post_native_coverage.final_disposition,
                 native_plan_fragment_count: post_native_coverage.native_fragment_count,
                 host_datafusion_boundary_count: post_native_coverage.host_datafusion_boundary_count,
                 rejected_before_execution: false,
             },
-            CandidateOutcome::Rejected { candidate, reason } => NativeDataFusionPlanningRow {
+            CandidateOutcome::NotSupported { candidate, capability_reason } => NativeDataFusionPlanningRow {
                 query_id: item.query_id.clone(),
                 physical_root: native_diagnostics.input_plan_root.clone(),
                 physical_shape: native_diagnostics.input_plan_shape.clone(),
                 native_candidate_shape: Some(candidate.shape.to_string()),
                 native_candidate_shape_family: Some(candidate_shape_family(candidate)),
-                outcome: NativeDataFusionPlanningOutcome::RejectedBeforeExecution,
-                reason_code: Some(reason.code().to_string()),
-                unsupported_category: unsupported_category(planned_plan.as_ref(), candidate, *reason),
+                outcome: Some(NativeDataFusionPlanningOutcome::NotSupported),
+                reason_code: Some(capability_reason.code().to_string()),
+                unsupported_category: unsupported_category(planned_plan.as_ref(), candidate, *capability_reason),
                 strict_bounded_contract_rows: strict_bounded_contract_rows_for_candidate(
                     &native_diagnostics.strict_bounded_contract,
                     candidate,
-                    Some(*reason),
+                    Some(*capability_reason),
                 ),
                 strict_bounded_compiled_graphs: strict_bounded_compiled_graphs_for_candidate(
                     &native_diagnostics.strict_bounded_contract,
                     candidate,
-                    Some(*reason),
+                    Some(*capability_reason),
                 ),
                 adaptive_pipeline_rows: adaptive_pipeline_rows_for_candidate(
                     &native_diagnostics.adaptive_pipeline,
@@ -412,10 +419,35 @@ fn datafusion_planning_rows_for_item(item: NativeDataFusionPlanningWorkloadItem)
                 join_diagnostics: input_join_diagnostics.clone(),
                 source_diagnostics: source_diagnostics.clone(),
                 post_native_plan_root: post_native_plan_root.clone(),
-                post_native_execution_path: post_native_coverage.execution_path,
+                final_disposition: post_native_coverage.final_disposition,
                 native_plan_fragment_count: post_native_coverage.native_fragment_count,
                 host_datafusion_boundary_count: post_native_coverage.host_datafusion_boundary_count,
-                rejected_before_execution: true,
+                rejected_before_execution: false,
+            },
+            CandidateOutcome::NotSelectedByCost { candidate, cost_reason, .. } => NativeDataFusionPlanningRow {
+                query_id: item.query_id.clone(),
+                physical_root: native_diagnostics.input_plan_root.clone(),
+                physical_shape: native_diagnostics.input_plan_shape.clone(),
+                native_candidate_shape: Some(candidate.shape.to_string()),
+                native_candidate_shape_family: Some(candidate_shape_family(candidate)),
+                outcome: Some(NativeDataFusionPlanningOutcome::NotSelectedByCost),
+                reason_code: Some(cost_reason.code().to_string()),
+                unsupported_category: None,
+                strict_bounded_contract_rows: Vec::new(),
+                strict_bounded_compiled_graphs: Vec::new(),
+                adaptive_pipeline_rows: adaptive_pipeline_rows_for_candidate(
+                    &native_diagnostics.adaptive_pipeline,
+                    candidate,
+                ),
+                native_optimizer: native_diagnostics.native_optimizer.clone(),
+                edge_normalize_inserted,
+                join_diagnostics: input_join_diagnostics.clone(),
+                source_diagnostics: source_diagnostics.clone(),
+                post_native_plan_root: post_native_plan_root.clone(),
+                final_disposition: post_native_coverage.final_disposition,
+                native_plan_fragment_count: post_native_coverage.native_fragment_count,
+                host_datafusion_boundary_count: post_native_coverage.host_datafusion_boundary_count,
+                rejected_before_execution: false,
             },
         })
         .collect()
@@ -436,20 +468,20 @@ fn datafusion_execution_rows_for_item(
     let post_native_coverage = post_native_plan_coverage(planned_plan.as_ref());
     let source_diagnostics =
         native_diagnostics.source_diagnostics.iter().map(summarize_source_diagnostics).collect::<Vec<_>>();
-    let runtime_summary = NativeDataFusionRuntimeSummary::from_runtime(runtime);
+    let runtime_summary = runtime_summary_for_final_plan(post_native_coverage.final_disposition, runtime);
 
     native_diagnostics
         .report
         .outcomes()
         .iter()
         .map(|outcome| match outcome {
-            CandidateOutcome::Rewritten { candidate } => NativeDataFusionExecutionRow {
+            CandidateOutcome::Selected { candidate } => NativeDataFusionExecutionRow {
                 query_id: item.query_id.clone(),
                 physical_root: native_diagnostics.input_plan_root.clone(),
                 physical_shape: native_diagnostics.input_plan_shape.clone(),
                 native_candidate_shape: Some(candidate.shape.to_string()),
                 native_candidate_shape_family: Some(candidate_shape_family(candidate)),
-                planning_outcome: NativeDataFusionPlanningOutcome::AcceptedReplaced,
+                planning_outcome: Some(NativeDataFusionPlanningOutcome::Selected),
                 reason_code: None,
                 unsupported_category: None,
                 strict_bounded_contract_rows: strict_bounded_contract_rows_for_candidate(
@@ -468,7 +500,7 @@ fn datafusion_execution_rows_for_item(
                 ),
                 source_diagnostics: source_diagnostics.clone(),
                 post_native_plan_root: post_native_plan_root.clone(),
-                post_native_execution_path: post_native_coverage.execution_path,
+                final_disposition: post_native_coverage.final_disposition,
                 native_plan_fragment_count: post_native_coverage.native_fragment_count,
                 host_datafusion_boundary_count: post_native_coverage.host_datafusion_boundary_count,
                 rejected_before_execution: false,
@@ -480,24 +512,24 @@ fn datafusion_execution_rows_for_item(
                 output_bytes: runtime_summary.output_bytes,
                 metrics: runtime_summary.metrics.clone(),
             },
-            CandidateOutcome::Rejected { candidate, reason } => NativeDataFusionExecutionRow {
+            CandidateOutcome::NotSupported { candidate, capability_reason } => NativeDataFusionExecutionRow {
                 query_id: item.query_id.clone(),
                 physical_root: native_diagnostics.input_plan_root.clone(),
                 physical_shape: native_diagnostics.input_plan_shape.clone(),
                 native_candidate_shape: Some(candidate.shape.to_string()),
                 native_candidate_shape_family: Some(candidate_shape_family(candidate)),
-                planning_outcome: NativeDataFusionPlanningOutcome::RejectedBeforeExecution,
-                reason_code: Some(reason.code().to_string()),
-                unsupported_category: unsupported_category(planned_plan.as_ref(), candidate, *reason),
+                planning_outcome: Some(NativeDataFusionPlanningOutcome::NotSupported),
+                reason_code: Some(capability_reason.code().to_string()),
+                unsupported_category: unsupported_category(planned_plan.as_ref(), candidate, *capability_reason),
                 strict_bounded_contract_rows: strict_bounded_contract_rows_for_candidate(
                     &native_diagnostics.strict_bounded_contract,
                     candidate,
-                    Some(*reason),
+                    Some(*capability_reason),
                 ),
                 strict_bounded_compiled_graphs: strict_bounded_compiled_graphs_for_candidate(
                     &native_diagnostics.strict_bounded_contract,
                     candidate,
-                    Some(*reason),
+                    Some(*capability_reason),
                 ),
                 adaptive_pipeline_rows: adaptive_pipeline_rows_for_candidate(
                     &native_diagnostics.adaptive_pipeline,
@@ -505,20 +537,67 @@ fn datafusion_execution_rows_for_item(
                 ),
                 source_diagnostics: source_diagnostics.clone(),
                 post_native_plan_root: post_native_plan_root.clone(),
-                post_native_execution_path: post_native_coverage.execution_path,
+                final_disposition: post_native_coverage.final_disposition,
                 native_plan_fragment_count: post_native_coverage.native_fragment_count,
                 host_datafusion_boundary_count: post_native_coverage.host_datafusion_boundary_count,
-                rejected_before_execution: true,
-                native_runtime_started: false,
-                runtime_outcome: NativeDataFusionRuntimeOutcome::NotStarted,
-                runtime_failure: None,
-                output_batches: None,
-                output_rows: None,
-                output_bytes: None,
-                metrics: NativeDataFusionExecutionMetrics::default(),
+                rejected_before_execution: false,
+                native_runtime_started: runtime_summary.started,
+                runtime_outcome: runtime_summary.outcome,
+                runtime_failure: runtime_summary.failure.clone(),
+                output_batches: runtime_summary.output_batches,
+                output_rows: runtime_summary.output_rows,
+                output_bytes: runtime_summary.output_bytes,
+                metrics: runtime_summary.metrics.clone(),
+            },
+            CandidateOutcome::NotSelectedByCost { candidate, cost_reason, .. } => NativeDataFusionExecutionRow {
+                query_id: item.query_id.clone(),
+                physical_root: native_diagnostics.input_plan_root.clone(),
+                physical_shape: native_diagnostics.input_plan_shape.clone(),
+                native_candidate_shape: Some(candidate.shape.to_string()),
+                native_candidate_shape_family: Some(candidate_shape_family(candidate)),
+                planning_outcome: Some(NativeDataFusionPlanningOutcome::NotSelectedByCost),
+                reason_code: Some(cost_reason.code().to_string()),
+                unsupported_category: None,
+                strict_bounded_contract_rows: Vec::new(),
+                strict_bounded_compiled_graphs: Vec::new(),
+                adaptive_pipeline_rows: adaptive_pipeline_rows_for_candidate(
+                    &native_diagnostics.adaptive_pipeline,
+                    candidate,
+                ),
+                source_diagnostics: source_diagnostics.clone(),
+                post_native_plan_root: post_native_plan_root.clone(),
+                final_disposition: post_native_coverage.final_disposition,
+                native_plan_fragment_count: post_native_coverage.native_fragment_count,
+                host_datafusion_boundary_count: post_native_coverage.host_datafusion_boundary_count,
+                rejected_before_execution: false,
+                native_runtime_started: runtime_summary.started,
+                runtime_outcome: runtime_summary.outcome,
+                runtime_failure: runtime_summary.failure.clone(),
+                output_batches: runtime_summary.output_batches,
+                output_rows: runtime_summary.output_rows,
+                output_bytes: runtime_summary.output_bytes,
+                metrics: runtime_summary.metrics.clone(),
             },
         })
         .collect()
+}
+
+/// Projects statement-level runtime observations only when the completed plan
+/// contains a native runtime island. Candidate admission is intentionally
+/// independent: a declined candidate can share a statement with a separately
+/// executed native or cuGraph island.
+fn runtime_summary_for_final_plan(
+    final_disposition: FinalPlanDisposition,
+    runtime: NativeDataFusionRuntime,
+) -> NativeDataFusionRuntimeSummary {
+    match final_disposition {
+        FinalPlanDisposition::Native | FinalPlanDisposition::Mixed => {
+            NativeDataFusionRuntimeSummary::from_runtime(runtime)
+        },
+        FinalPlanDisposition::DataFusion | FinalPlanDisposition::Rejected => {
+            NativeDataFusionRuntimeSummary::from_runtime(NativeDataFusionRuntime::NotStarted)
+        },
+    }
 }
 
 fn datafusion_planning_row_for_planning_failure(
@@ -531,7 +610,7 @@ fn datafusion_planning_row_for_planning_failure(
         physical_shape: failure.stage,
         native_candidate_shape: None,
         native_candidate_shape_family: None,
-        outcome: NativeDataFusionPlanningOutcome::RejectedBeforeExecution,
+        outcome: None,
         reason_code: Some(failure.reason_code),
         unsupported_category: Some("planning".to_string()),
         strict_bounded_contract_rows: Vec::new(),
@@ -542,7 +621,7 @@ fn datafusion_planning_row_for_planning_failure(
         join_diagnostics: Vec::new(),
         source_diagnostics: Vec::new(),
         post_native_plan_root: "PlanningFailure".to_string(),
-        post_native_execution_path: NativeDataFusionPostNativeExecutionPath::Cpu,
+        final_disposition: FinalPlanDisposition::Rejected,
         native_plan_fragment_count: 0,
         host_datafusion_boundary_count: 0,
         rejected_before_execution: true,
@@ -559,7 +638,7 @@ fn datafusion_execution_row_for_planning_failure(
         physical_shape: failure.stage,
         native_candidate_shape: None,
         native_candidate_shape_family: None,
-        planning_outcome: NativeDataFusionPlanningOutcome::RejectedBeforeExecution,
+        planning_outcome: None,
         reason_code: Some(failure.reason_code),
         unsupported_category: Some("planning".to_string()),
         strict_bounded_contract_rows: Vec::new(),
@@ -567,7 +646,7 @@ fn datafusion_execution_row_for_planning_failure(
         adaptive_pipeline_rows: Vec::new(),
         source_diagnostics: Vec::new(),
         post_native_plan_root: "PlanningFailure".to_string(),
-        post_native_execution_path: NativeDataFusionPostNativeExecutionPath::Cpu,
+        final_disposition: FinalPlanDisposition::Rejected,
         native_plan_fragment_count: 0,
         host_datafusion_boundary_count: 0,
         rejected_before_execution: true,
@@ -584,12 +663,12 @@ fn datafusion_execution_row_for_planning_failure(
 fn strict_bounded_contract_rows_for_candidate(
     diagnostics: &crate::planner::NativeStrictBoundedContractDiagnostics,
     candidate: &GpuCandidate,
-    reason: Option<FallbackReason>,
+    reason: Option<CapabilityReason>,
 ) -> Vec<StrictBoundedContractGateRow> {
     if !strict_bounded_contract_is_candidate_scoped(candidate, reason) {
         return Vec::new();
     }
-    if reason == Some(FallbackReason::NativeBoundedJoinUnsupported) {
+    if reason == Some(CapabilityReason::NativeBoundedJoinUnsupported) {
         return diagnostics
             .rejected_candidates
             .iter()
@@ -609,7 +688,7 @@ fn strict_bounded_contract_rows_for_candidate(
 fn strict_bounded_compiled_graphs_for_candidate(
     diagnostics: &crate::planner::NativeStrictBoundedContractDiagnostics,
     candidate: &GpuCandidate,
-    reason: Option<FallbackReason>,
+    reason: Option<CapabilityReason>,
 ) -> Vec<crate::planner::NativeStrictBoundedCompiledGraphDiagnostics> {
     if reason.is_some() || !strict_bounded_contract_is_candidate_scoped(candidate, reason) {
         return Vec::new();
@@ -629,6 +708,6 @@ fn adaptive_pipeline_rows_for_candidate(
     diagnostics.rows_for_candidate(candidate)
 }
 
-fn strict_bounded_contract_is_candidate_scoped(candidate: &GpuCandidate, reason: Option<FallbackReason>) -> bool {
-    reason == Some(FallbackReason::NativeBoundedJoinUnsupported) || candidate.shape.contains("JoinExec")
+fn strict_bounded_contract_is_candidate_scoped(candidate: &GpuCandidate, reason: Option<CapabilityReason>) -> bool {
+    reason == Some(CapabilityReason::NativeBoundedJoinUnsupported) || candidate.shape.contains("JoinExec")
 }

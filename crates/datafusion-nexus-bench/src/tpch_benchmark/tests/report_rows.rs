@@ -9,14 +9,14 @@ fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resou
     };
     let row = NativeTpchBenchmarkRow {
         query_id: "q01".to_string(),
-        planning_outcome: NativeDataFusionPlanningOutcome::AcceptedReplaced,
+        planning_outcome: Some(NativeDataFusionPlanningOutcome::Selected),
         strict_bounded_contract_rows: Vec::new(),
         strict_bounded_compiled_graphs: Vec::new(),
         adaptive_pipeline_rows: Vec::new(),
         reason_code: None,
         unsupported_category: None,
         native_candidate_shape_family: Some("sort_local_parquet_aggregate".to_string()),
-        post_native_execution_path: NativeDataFusionPostNativeExecutionPath::Native,
+        final_disposition: FinalPlanDisposition::Native,
         rejected_before_execution: false,
         cpu_runtime_started: true,
         native_runtime_started: true,
@@ -314,7 +314,7 @@ fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resou
     let text = report.to_tsv();
     assert!(text.contains("# tpch_benchmark_relational_execution=native_no_datafusion_cpu\n"));
     assert!(text.contains(
-        "q01\taccepted_replaced\tbounded_accepted_parity_matched\tnone\tnone\tnone\tnone\tnone\tsort_local_parquet_aggregate\tnative\tfalse\ttrue\ttrue\tsucceeded"
+        "q01\tselected\tbounded_accepted_parity_matched\tnone\tnone\tnone\tnone\tnone\tsort_local_parquet_aggregate\tnative\tfalse\ttrue\ttrue\tsucceeded"
     ));
     assert!(text.contains(
         "\t20.000\t5.000\t4.000\t1\t1\t4\t4\t128\t128\toutput-fnv1a64:1111111111111111\toutput-fnv1a64:1111111111111111\toutput-fnv1a64:1111111111111111\t"
@@ -326,6 +326,7 @@ fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resou
     let header_fields = header.split('\t').collect::<Vec<_>>();
     assert_eq!(header, NATIVE_TPCH_BENCHMARK_TSV_HEADER);
     assert_eq!(fields.len(), header_fields.len());
+    assert_eq!(fields[header_index(&header_fields, "post_native_execution_path")], "native");
     assert_eq!(fields[header_index(&header_fields, "peak_memory_operator_class")], "source");
     assert_eq!(fields[header_index(&header_fields, "peak_memory_operator_class_bytes")], "64");
     assert_eq!(fields[header_index(&header_fields, "task_reservation_operator_class")], "source");

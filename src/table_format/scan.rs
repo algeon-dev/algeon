@@ -15,7 +15,7 @@ use nexus_query_engine::{
     },
 };
 
-use crate::{error::Result, policy::FallbackReason};
+use crate::{capability::CapabilityReason, error::Result};
 
 mod columns;
 mod config;

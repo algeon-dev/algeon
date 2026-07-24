@@ -30,6 +30,15 @@ if [[ "${1:-}" == "nextest" && "${2:-}" == "list" ]]; then
     [[ -z "${FAKE_BENCH_INVENTORY:-}" ]] || /usr/bin/cat "${FAKE_BENCH_INVENTORY}"
     exit "${FAKE_BENCH_NEXTEST_STATUS:-${FAKE_NEXTEST_STATUS:-0}}"
   fi
+  if [[ " $* " == *" -p datafusion-nexus-iceberg "* ]]; then
+    if [[ " $* " != *" --all-features "* ]]; then
+      echo "Iceberg leaf inventory must use --all-features: $*" >&2
+      exit 94
+    fi
+    [[ -z "${FAKE_NEXTEST_STDERR:-}" ]] || printf '%s\n' "${FAKE_NEXTEST_STDERR}" >&2
+    [[ -z "${FAKE_ICEBERG_LEAF_INVENTORY:-}" ]] || /usr/bin/cat "${FAKE_ICEBERG_LEAF_INVENTORY}"
+    exit "${FAKE_ICEBERG_LEAF_NEXTEST_STATUS:-${FAKE_NEXTEST_STATUS:-0}}"
+  fi
   if [[ -n "${FAKE_REQUIRED_FEATURE_ARGS:-}" && " $* " != *" ${FAKE_REQUIRED_FEATURE_ARGS} "* ]]; then
     echo "inventory command is missing required feature args '${FAKE_REQUIRED_FEATURE_ARGS}': $*" >&2
     exit 96
@@ -43,7 +52,7 @@ exit 97
 SH
 chmod +x "${tmp_dir}/bin/cargo"
 
-python3 - "${tmp_dir}/expected" "${tmp_dir}/default-ids" "${tmp_dir}/bench-ids" <<'PY'
+python3 - "${tmp_dir}/expected" "${tmp_dir}/default-ids" "${tmp_dir}/bench-ids" "${tmp_dir}/iceberg-leaf-ids" <<'PY'
 import sys
 import tomllib
 
@@ -51,11 +60,17 @@ with open(".config/policies/test-lanes.toml", "rb") as catalog_file:
     catalog = tomllib.load(catalog_file)
 ids = sorted(entry["id"] for entry in catalog["binary"])
 bench_ids = sorted(binary_id for binary_id in ids if binary_id == "datafusion-nexus-bench" or binary_id.startswith("datafusion-nexus-bench::"))
-default_ids = sorted(binary_id for binary_id in ids if binary_id not in set(bench_ids))
+iceberg_leaf_ids = sorted(
+    binary_id
+    for binary_id in ids
+    if binary_id == "datafusion-nexus-iceberg" or binary_id.startswith("datafusion-nexus-iceberg::")
+)
+default_ids = sorted(binary_id for binary_id in ids if binary_id not in set(bench_ids) | set(iceberg_leaf_ids))
 Path = __import__("pathlib").Path
 Path(sys.argv[1]).write_text("\n".join(ids) + "\n", encoding="utf-8")
 Path(sys.argv[2]).write_text("\n".join(default_ids) + "\n", encoding="utf-8")
 Path(sys.argv[3]).write_text("\n".join(bench_ids) + "\n", encoding="utf-8")
+Path(sys.argv[4]).write_text("\n".join(iceberg_leaf_ids) + "\n", encoding="utf-8")
 PY
 
 make_inventory() {
@@ -88,6 +103,7 @@ PY
 make_inventory "${tmp_dir}/expected" "${tmp_dir}/complete.json"
 make_inventory "${tmp_dir}/default-ids" "${tmp_dir}/default-only.json"
 make_inventory "${tmp_dir}/bench-ids" "${tmp_dir}/bench-only.json"
+make_inventory "${tmp_dir}/iceberg-leaf-ids" "${tmp_dir}/iceberg-leaf-only.json"
 # overlapping bench packages while still on default-members; matching IDs coalesce
 make_inventory "${tmp_dir}/expected" "${tmp_dir}/default-with-bench.json"
 head -n 1 "${tmp_dir}/default-ids" >"${tmp_dir}/partial"
@@ -104,12 +120,14 @@ run_shell_case() {
   local features=${6:-}
   local stderr_text=${7:-}
   local bench_inventory=${8:-${tmp_dir}/bench-only.json}
+  local iceberg_leaf_inventory=${9:-${tmp_dir}/iceberg-leaf-only.json}
   local output="${tmp_dir}/${name}.output"
   local actual_status=0
 
   PATH="${tmp_dir}/bin:${PATH}" \
     FAKE_NEXTEST_INVENTORY="${inventory}" \
     FAKE_BENCH_INVENTORY="${bench_inventory}" \
+    FAKE_ICEBERG_LEAF_INVENTORY="${iceberg_leaf_inventory}" \
     FAKE_NEXTEST_STATUS="${command_status}" \
     FAKE_NEXTEST_STDERR="${stderr_text}" \
     FEATURES="${features}" \
@@ -161,6 +179,7 @@ cli_feature_output="${tmp_dir}/cli-feature-args.output"
 PATH="${tmp_dir}/bin:${PATH}" \
   FAKE_NEXTEST_INVENTORY="${tmp_dir}/default-only.json" \
   FAKE_BENCH_INVENTORY="${tmp_dir}/bench-only.json" \
+  FAKE_ICEBERG_LEAF_INVENTORY="${tmp_dir}/iceberg-leaf-only.json" \
   FAKE_REQUIRED_FEATURE_ARGS='--no-default-features --features server' \
   /usr/bin/bash scripts/ci/check_gpu_test_lane.sh --no-default-features --features server \
   >"${cli_feature_output}" 2>&1

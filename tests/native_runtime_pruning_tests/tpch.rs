@@ -75,8 +75,8 @@ async fn native_runtime_tpch_q7_tiny_bounded_duplicate_nation_identity_matches_c
 
     let physical_plan = tpch_sql_plan(&dir, tpch_report_session_config(), q7.sql).await;
     let lowering = lower_physical_plan_to_native(Arc::clone(&physical_plan));
-    assert_eq!(lowering.rewritten_count(), 1, "outcomes={:?}", lowering.report.outcomes());
-    assert_eq!(lowering.rejected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.selected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.not_selected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
     assert!(
         lowering.plans[0].capability_analysis().admits_closed_multi_join_subgraph(),
         "Q7 should use the bounded multi-join native path:\n{}",
@@ -111,8 +111,8 @@ async fn native_runtime_tpch_q2_tiny_bounded_aggregate_over_join_subplan_topk_ma
 
     let physical_plan = tpch_sql_plan(&dir, tpch_report_session_config(), q2.sql).await;
     let lowering = lower_physical_plan_to_native(Arc::clone(&physical_plan));
-    assert_eq!(lowering.rewritten_count(), 1, "outcomes={:?}", lowering.report.outcomes());
-    assert_eq!(lowering.rejected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.selected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.not_selected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
     assert!(
         lowering.plans[0].capability_analysis().admits_multi_join_aggregate_over_join_subplan_topk_pipeline(),
         "Q2 should use the bounded aggregate-over-join subplan TopK path:\n{}",
@@ -165,8 +165,8 @@ async fn native_runtime_tpch_q04_tiny_bounded_left_semi_full_sort_matches_cpu() 
 
     let physical_plan = tpch_sql_plan(&dir, tpch_report_session_config(), q4.sql).await;
     let lowering = lower_physical_plan_to_native(Arc::clone(&physical_plan));
-    assert_eq!(lowering.rewritten_count(), 1, "outcomes={:?}", lowering.report.outcomes());
-    assert_eq!(lowering.rejected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.selected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.not_selected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
     assert!(
         lowering.plans[0].capability_analysis().admits_root_full_sort_join_aggregate_pipeline(),
         "Q4 should use the bounded full-sort left-semi grouped aggregate path:\n{}",
@@ -231,8 +231,8 @@ async fn native_runtime_tpch_q18_tiny_bounded_resident_aggregate_topk_matches_cp
 
     let physical_plan = tpch_sql_plan(&dir, tpch_report_session_config(), q18.sql).await;
     let lowering = lower_physical_plan_to_native(Arc::clone(&physical_plan));
-    assert_eq!(lowering.rewritten_count(), 1, "outcomes={:?}", lowering.report.outcomes());
-    assert_eq!(lowering.rejected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.selected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.not_selected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
     assert!(
         lowering.plans[0]
             .capability_analysis()
@@ -292,8 +292,8 @@ async fn native_runtime_tpch_q20_tiny_bounded_resident_aggregate_subquery_filter
 
     let physical_plan = tpch_sql_plan(&dir, tpch_report_session_config(), q20.sql).await;
     let lowering = lower_physical_plan_to_native(Arc::clone(&physical_plan));
-    assert_eq!(lowering.rewritten_count(), 1, "outcomes={:?}", lowering.report.outcomes());
-    assert_eq!(lowering.rejected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.selected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.not_selected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
     assert!(
         lowering.plans[0].capability_analysis().admits_multi_join_resident_grouped_aggregate_subquery_filter_pipeline(),
         "Q20 should use the resident grouped aggregate subquery-filter bounded path:\n{}",

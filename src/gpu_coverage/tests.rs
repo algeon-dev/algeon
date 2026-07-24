@@ -11,23 +11,24 @@ use datafusion::{
     },
     prelude::{SessionConfig, SessionContext},
 };
+#[cfg(feature = "cugraph")]
+use nexus_query_engine::{expr::Expr, plan::ProjectionOutput};
 use nexus_query_engine::{
-    expr::Expr,
-    plan::{ProjectionOutput, QueryPlanBuilder},
+    plan::{NativePlanCostReason, QueryPlanBuilder},
     source::{LocalParquetSource, SourceNode},
 };
 
-#[cfg(feature = "cugraph")]
-use super::physical::cugraph_child_stays_gpu_resident;
-use super::{physical::walk_gpu_coverage, *};
+use super::{physical::candidate_outcomes_from_report, *};
 #[cfg(feature = "cugraph")]
 use crate::native_exec::NexusNativeComposedExec;
 use crate::{
+    capability::CapabilityReason,
     error::{Error, ErrorCode},
+    final_plan_observation::observe_final_plan,
     native_exec::{NexusNativeExec, NexusNativeExecutionConfig},
-    native_report::NativeDataFusionPostNativeExecutionPath,
+    native_report::FinalPlanDisposition,
     planner::NexusNativeOptimizerConfig,
-    policy::FallbackReason,
+    report::{CandidateOutcome, GpuCandidate, NativeCandidateCostEvidence, PlanningReport},
     session::NexusSessionStateBuilderExt,
 };
 
@@ -193,25 +194,84 @@ async fn validate_query_preflight_uses_session_sql_dialect() {
 }
 
 #[tokio::test]
-async fn validate_query_reports_cpu_only_and_partial_fallback_axes() {
+async fn validate_query_reports_capability_misses_without_terminal_rejection() {
     let ctx = validation_context(unbounded_optimizer_config());
 
     let cpu = validate_query(&ctx, "SELECT random() AS r").await.unwrap();
     assert_eq!(cpu.overall, QueryGpuCoverageOverall::CpuOnly);
-    assert_eq!(cpu.domains.nexus_native_coverage, QueryGpuNexusNativeCoverage::None);
+    assert_eq!(cpu.final_disposition, FinalPlanDisposition::DataFusion);
+    assert_eq!(cpu.domains.native_fragment_count, 0);
     assert!(
-        cpu.fallback_reasons.iter().any(|reason| reason.reason_code == FallbackReason::UnsupportedExpression.code()
-            && reason.kind == QueryGpuFallbackReasonKind::Expression)
+        cpu.candidate_outcomes
+            .iter()
+            .any(|outcome| outcome.selection == QueryGpuCandidateSelectionOutcome::NotSupported
+                && outcome.reason_code.as_deref() == Some(CapabilityReason::UnsupportedExpression.code())
+                && outcome.reason_kind == Some(QueryGpuCandidateReasonKind::Expression))
     );
 
     let unsupported = validate_query(&ctx, "SELECT array[1, 2] AS values").await.unwrap();
     assert_eq!(unsupported.overall, QueryGpuCoverageOverall::CpuOnly);
-    assert_eq!(unsupported.domains.nexus_native_coverage, QueryGpuNexusNativeCoverage::None);
-    assert_eq!(unsupported.domains.datafusion_cpu_ingest_or_boundary, QueryGpuPresence::Absent);
+    assert_eq!(unsupported.final_disposition, FinalPlanDisposition::DataFusion);
+    assert_eq!(unsupported.domains.native_fragment_count, 0);
+    assert_eq!(unsupported.domains.datafusion_boundary_count, 0);
     assert!(
-        unsupported.fallback_reasons.iter().any(|reason| reason.reason_code == FallbackReason::UnsupportedType.code()
-            && reason.kind == QueryGpuFallbackReasonKind::ArrowType)
+        unsupported
+            .candidate_outcomes
+            .iter()
+            .any(|outcome| outcome.selection == QueryGpuCandidateSelectionOutcome::NotSupported
+                && outcome.reason_code.as_deref() == Some(CapabilityReason::UnsupportedType.code())
+                && outcome.reason_kind == Some(QueryGpuCandidateReasonKind::ArrowType))
     );
+}
+
+#[test]
+fn candidate_outcomes_retain_selected_candidates_without_selection_reasons() {
+    let report = PlanningReport::from_outcomes([CandidateOutcome::Selected {
+        candidate: GpuCandidate::new("ProjectionExec", 1),
+    }]);
+
+    let outcomes = candidate_outcomes_from_report(&report);
+
+    assert_eq!(outcomes.len(), 1);
+    assert_eq!(outcomes[0].selection, QueryGpuCandidateSelectionOutcome::Selected);
+    assert_eq!(outcomes[0].detail, "ProjectionExec");
+    assert_eq!(outcomes[0].reason_code, None);
+    assert_eq!(outcomes[0].reason_kind, None);
+    assert_eq!(outcomes[0].category, None);
+    assert_eq!(outcomes[0].cost_evidence, None);
+}
+
+#[test]
+fn candidate_outcomes_classify_cost_decisions_as_cost() {
+    let report = PlanningReport::from_outcomes([CandidateOutcome::NotSelectedByCost {
+        candidate: GpuCandidate::new("ProjectionExec", 1),
+        cost_reason: NativePlanCostReason::SmallSelectiveTopK,
+        evidence: NativeCandidateCostEvidence {
+            node_count: 1,
+            source_count: 1,
+            local_parquet_source_count: 1,
+            selected_row_groups_known: true,
+            selected_row_groups: Some(1),
+            estimated_source_rows: Some(1),
+            estimated_source_bytes: Some(1),
+            selected_source_bytes_known: true,
+            join_count: 0,
+            residual_join_count: 0,
+            aggregate_count: 0,
+            grouped_aggregate_count: 0,
+            sort_count: 0,
+            limit_count: 0,
+            min_topk_fetch: Some(1),
+        },
+    }]);
+
+    let outcomes = candidate_outcomes_from_report(&report);
+
+    assert_eq!(outcomes.len(), 1);
+    assert_eq!(outcomes[0].selection, QueryGpuCandidateSelectionOutcome::NotSelectedByCost);
+    assert_eq!(outcomes[0].reason_kind, Some(QueryGpuCandidateReasonKind::Cost));
+    assert_eq!(outcomes[0].category.as_deref(), Some("cost"));
+    assert_eq!(outcomes[0].reason_code.as_deref(), Some("native_small_selective_topk_not_selected_by_cost"));
 }
 
 #[tokio::test]
@@ -225,6 +285,13 @@ async fn validate_query_preserves_the_installed_final_plan_requirement() {
             QueryGpuCoverageOverall::Rejected { phase: QueryGpuRejectionPhase::PhysicalPlanning, .. }
         ),
         "coverage={coverage:?}"
+    );
+    assert_eq!(coverage.final_disposition, FinalPlanDisposition::Rejected);
+    assert!(
+        coverage
+            .candidate_outcomes
+            .iter()
+            .any(|outcome| outcome.reason_code.as_deref() == Some("unsupported_expression"))
     );
     assert!(
         matches!(&coverage.overall, QueryGpuCoverageOverall::Rejected { detail, .. } if detail.contains("final physical plan")),
@@ -244,7 +311,7 @@ async fn validate_query_without_a_native_rule_keeps_the_default_session_cpu_base
     assert_eq!(coverage.validated_under.optimizer_config_source, "native_rule_absent");
     assert_eq!(coverage.validated_under.execution_mode, None);
     assert!(coverage.validated_under.final_plan_requirements.is_empty());
-    assert!(coverage.fallback_reasons.is_empty(), "coverage={coverage:?}");
+    assert!(coverage.candidate_outcomes.is_empty(), "coverage={coverage:?}");
 }
 
 #[tokio::test]
@@ -272,9 +339,25 @@ async fn validate_query_concurrent_calls_do_not_share_retained_rule_state() {
     let cpu = cpu.unwrap();
 
     assert_eq!(native.overall, QueryGpuCoverageOverall::NoCpuInPlannedPath);
-    assert!(native.fallback_reasons.is_empty());
+    assert_eq!(native.final_disposition, FinalPlanDisposition::Native);
+    assert!(native.candidate_outcomes.iter().any(|outcome| {
+        outcome.selection == QueryGpuCandidateSelectionOutcome::Selected
+            && outcome.reason_code.is_none()
+            && outcome.reason_kind.is_none()
+    }));
+    assert!(native.to_json()["candidate_outcomes"].as_array().is_some_and(|outcomes| {
+        outcomes.iter().any(|outcome| {
+            outcome["outcome"].as_str() == Some("selected")
+                && outcome["reason_code"].is_null()
+                && outcome["reason_kind"].is_null()
+                && outcome["category"].is_null()
+                && outcome["cost_evidence"].is_null()
+        })
+    }));
     assert_eq!(cpu.overall, QueryGpuCoverageOverall::CpuOnly);
-    assert!(cpu.fallback_reasons.iter().any(|reason| reason.reason_code == "unsupported_expression"));
+    assert!(
+        cpu.candidate_outcomes.iter().any(|outcome| outcome.reason_code.as_deref() == Some("unsupported_expression"))
+    );
 }
 
 #[test]
@@ -292,6 +375,30 @@ fn planning_io_phase_marks_planning_did_io_without_retained_diagnostics() {
 }
 
 #[test]
+fn coverage_preflight_ignores_retired_rejection_facts() {
+    let legacy_facts: [(&'static str, &'static str); 2] = [
+        ("fallback_reason", "iceberg_table_format_unavailable"),
+        ("leaf_guard_first_rejection", "unsupported_legacy_leaf"),
+    ];
+
+    for (legacy_key, legacy_value) in legacy_facts {
+        let error = DataFusionError::External(Box::new(
+            Error::new(ErrorCode::UnsupportedOperator, "datafusion_nexus.test", "unsupported operator")
+                .with_fact(legacy_key, legacy_value),
+        ));
+
+        let rejection = QueryGpuRejection::from_datafusion_error(QueryGpuRejectionPhase::PhysicalPlanning, &error);
+
+        assert_eq!(rejection.reason_code, ErrorCode::UnsupportedOperator.as_str(), "legacy fact `{legacy_key}`");
+        assert_eq!(
+            classify_physical_planning_error(&error),
+            QueryGpuRejectionPhase::PhysicalPlanning,
+            "legacy fact `{legacy_key}` must not change coverage phase"
+        );
+    }
+}
+
+#[test]
 fn generic_cpu_parent_over_native_fragment_is_partial() {
     let child = native_exec_leaf();
     let schema = child.schema();
@@ -303,18 +410,19 @@ fn generic_cpu_parent_over_native_fragment_is_partial() {
         .unwrap(),
     ) as Arc<dyn ExecutionPlan>;
 
-    let walk = walk_gpu_coverage(plan.as_ref());
+    let observation = observe_final_plan(plan.as_ref());
     let coverage = QueryGpuCoverage::planned(
         validated_under_for_tests(),
         plan.as_ref(),
-        NativeDataFusionPostNativeExecutionPath::PartialNative,
-        walk,
+        observation,
+        Vec::new(),
         Vec::new(),
         false,
     );
 
     assert!(matches!(coverage.overall, QueryGpuCoverageOverall::PartialGpuPlanned { .. }));
-    assert_eq!(coverage.domains.datafusion_cpu_ingest_or_boundary, QueryGpuPresence::Present);
+    assert_eq!(coverage.final_disposition, FinalPlanDisposition::Mixed);
+    assert_eq!(coverage.domains.datafusion_boundary_count, 1);
 }
 
 #[cfg(feature = "cugraph")]
@@ -426,13 +534,13 @@ mod cugraph {
     }
 
     #[test]
-    fn cugraph_child_residency_matches_runtime_one_level_cooperative_unwrap() {
-        let single_wrapped: Arc<dyn ExecutionPlan> = Arc::new(CooperativeExec::new(native_exec_leaf()));
-        assert!(cugraph_child_stays_gpu_resident(single_wrapped.as_ref()));
+    fn final_observation_matches_runtime_one_level_cooperative_unwrap() {
+        let single_wrapped: Arc<dyn ExecutionPlan> = Arc::new(CooperativeExec::new(native_edge_exec()));
+        assert_eq!(classify_final_plan(cugraph_exec(single_wrapped).as_ref()), FinalPlanDisposition::Native);
 
-        let inner_wrapped: Arc<dyn ExecutionPlan> = Arc::new(CooperativeExec::new(native_exec_leaf()));
+        let inner_wrapped: Arc<dyn ExecutionPlan> = Arc::new(CooperativeExec::new(native_edge_exec()));
         let nested_wrapped: Arc<dyn ExecutionPlan> = Arc::new(CooperativeExec::new(inner_wrapped));
-        assert!(!cugraph_child_stays_gpu_resident(nested_wrapped.as_ref()));
+        assert_eq!(classify_final_plan(cugraph_exec(nested_wrapped).as_ref()), FinalPlanDisposition::Mixed);
     }
 
     #[test]
@@ -454,22 +562,23 @@ mod cugraph {
     }
 
     #[test]
-    fn bare_cugraph_with_native_child_is_no_cpu_even_when_cudf_axis_is_none() {
+    fn bare_cugraph_with_native_child_is_native() {
         let plan: Arc<dyn ExecutionPlan> = cugraph_exec(native_edge_exec());
-        let walk = walk_gpu_coverage(plan.as_ref());
+        let observation = observe_final_plan(plan.as_ref());
         let coverage = QueryGpuCoverage::planned(
             validated_under_for_tests(),
             plan.as_ref(),
-            NativeDataFusionPostNativeExecutionPath::Cpu,
-            walk,
+            observation,
             Vec::new(),
+            super::physical::cugraph_calls(plan.as_ref()),
             false,
         );
 
         assert_eq!(coverage.overall, QueryGpuCoverageOverall::NoCpuInPlannedPath);
-        assert_eq!(coverage.domains.nexus_native_coverage, QueryGpuNexusNativeCoverage::None);
-        assert_eq!(coverage.domains.cugraph_operator, QueryGpuCugraphOperatorDomain::Present);
-        assert_eq!(coverage.domains.datafusion_cpu_ingest_or_boundary, QueryGpuPresence::Absent);
+        assert_eq!(coverage.final_disposition, FinalPlanDisposition::Native);
+        assert_eq!(coverage.domains.native_fragment_count, 1);
+        assert_eq!(coverage.domains.explicit_gpu_island_count, 1);
+        assert_eq!(coverage.domains.datafusion_boundary_count, 0);
     }
 
     #[test]
@@ -477,20 +586,21 @@ mod cugraph {
         let cugraph = cugraph_exec(memory_edge_source());
         let input_name = cugraph.coverage_gpu_result_input_name().to_string();
         let plan = composed_exec_with_child(cugraph, input_name);
-        let walk = walk_gpu_coverage(plan.as_ref());
+        let observation = observe_final_plan(plan.as_ref());
         let coverage = QueryGpuCoverage::planned(
             validated_under_for_tests(),
             plan.as_ref(),
-            NativeDataFusionPostNativeExecutionPath::Native,
-            walk,
+            observation,
             Vec::new(),
+            super::physical::cugraph_calls(plan.as_ref()),
             false,
         );
 
         assert!(matches!(coverage.overall, QueryGpuCoverageOverall::PartialGpuPlanned { .. }));
-        assert_eq!(coverage.domains.nexus_native_coverage, QueryGpuNexusNativeCoverage::Full);
-        assert_eq!(coverage.domains.cugraph_operator, QueryGpuCugraphOperatorDomain::Present);
-        assert_eq!(coverage.domains.datafusion_cpu_ingest_or_boundary, QueryGpuPresence::Present);
+        assert_eq!(coverage.final_disposition, FinalPlanDisposition::Mixed);
+        assert_eq!(coverage.domains.native_fragment_count, 1);
+        assert_eq!(coverage.domains.explicit_gpu_island_count, 1);
+        assert!(coverage.domains.datafusion_boundary_count > 0);
     }
 
     #[test]
@@ -498,18 +608,19 @@ mod cugraph {
         let cugraph = cugraph_exec(native_edge_exec());
         let input_name = cugraph.coverage_gpu_result_input_name().to_string();
         let plan = composed_exec_with_child(cugraph, input_name);
-        let walk = walk_gpu_coverage(plan.as_ref());
+        let observation = observe_final_plan(plan.as_ref());
         let coverage = QueryGpuCoverage::planned(
             validated_under_for_tests(),
             plan.as_ref(),
-            NativeDataFusionPostNativeExecutionPath::Native,
-            walk,
+            observation,
             Vec::new(),
+            super::physical::cugraph_calls(plan.as_ref()),
             false,
         );
 
         assert_eq!(coverage.overall, QueryGpuCoverageOverall::NoCpuInPlannedPath);
-        assert_eq!(coverage.domains.datafusion_cpu_ingest_or_boundary, QueryGpuPresence::Absent);
+        assert_eq!(coverage.final_disposition, FinalPlanDisposition::Native);
+        assert_eq!(coverage.domains.datafusion_boundary_count, 0);
         assert!(!coverage.runtime_caveats.is_empty());
     }
 }

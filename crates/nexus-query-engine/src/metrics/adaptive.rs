@@ -1,11 +1,19 @@
 use super::QueryMetrics;
 
 impl QueryMetrics {
-    /// Adds adaptive runtime action counters.
-    pub fn record_adaptive_runtime_action_counts(&mut self, retry_count: u64, spill_count: u64, downgrade_count: u64) {
-        self.adaptive_retry_count = self.adaptive_retry_count.saturating_add(retry_count);
-        self.adaptive_spill_count = self.adaptive_spill_count.saturating_add(spill_count);
-        self.adaptive_downgrade_count = self.adaptive_downgrade_count.saturating_add(downgrade_count);
+    /// Records one adaptive retry action at the operator that performs it.
+    pub fn record_adaptive_retry(&mut self) {
+        self.adaptive_retry_count = self.adaptive_retry_count.saturating_add(1);
+    }
+
+    /// Records one adaptive spill action at the operator that performs it.
+    pub fn record_adaptive_spill(&mut self) {
+        self.adaptive_spill_count = self.adaptive_spill_count.saturating_add(1);
+    }
+
+    /// Records one adaptive downgrade action at the operator that performs it.
+    pub fn record_adaptive_downgrade(&mut self) {
+        self.adaptive_downgrade_count = self.adaptive_downgrade_count.saturating_add(1);
     }
 
     /// Records one adaptive memory-history lookup.

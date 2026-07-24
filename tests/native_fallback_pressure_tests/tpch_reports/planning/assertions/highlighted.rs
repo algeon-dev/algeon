@@ -6,13 +6,13 @@ pub(super) fn assert_highlighted_planning_rows_and_tsv(
 ) {
     for query_id in ["q07", "q11", "q15", "q17", "q21", "q22"] {
         let row = planning_replacement_row(report, query_id);
-        assert_eq!(row.outcome, NativeDataFusionPlanningOutcome::AcceptedReplaced);
+        assert_eq!(row.outcome, Some(NativeDataFusionPlanningOutcome::Selected));
         assert_eq!(row.reason_code, None);
         assert_eq!(row.unsupported_category, None);
-        if row.post_native_execution_path == NativeDataFusionPostNativeExecutionPath::Native {
+        if row.final_disposition == FinalPlanDisposition::Native {
             assert_eq!(row.post_native_plan_root, "NexusNativeExec");
         } else {
-            assert_eq!(row.post_native_execution_path, NativeDataFusionPostNativeExecutionPath::PartialNative);
+            assert_eq!(row.final_disposition, FinalPlanDisposition::Mixed);
         }
         assert!(!row.rejected_before_execution, "{query_id} should be replaced by native execution");
         assert!(
@@ -34,7 +34,7 @@ pub(super) fn assert_highlighted_planning_rows_and_tsv(
     );
 
     let q15 = planning_replacement_row(report, "q15");
-    if q15.post_native_execution_path == NativeDataFusionPostNativeExecutionPath::Native {
+    if q15.final_disposition == FinalPlanDisposition::Native {
         assert!(
             q15.strict_bounded_contract_rows.iter().any(|gate| gate.reservation_kind == ReservationKind::FinalSort
                 && gate.contract_quality == ContractQuality::HardBudgetedReportWithUnresolvedPreflight
@@ -70,8 +70,7 @@ pub(super) fn assert_highlighted_planning_rows_and_tsv(
 
     let rejected_query_ids = tpch_query_ids()
         .filter(|query_id| {
-            planning_replacement_row(report, query_id).outcome
-                == NativeDataFusionPlanningOutcome::RejectedBeforeExecution
+            planning_replacement_row(report, query_id).outcome == Some(NativeDataFusionPlanningOutcome::NotSupported)
         })
         .collect::<Vec<_>>();
     assert!(rejected_query_ids.is_empty(), "all TPC-H replacement rows should now be native-admitted");
@@ -97,7 +96,7 @@ pub(super) fn assert_highlighted_planning_rows_and_tsv(
     assert!(text.contains("q01\t"));
     assert!(text.contains("q06\t"));
     assert!(text.contains("q22\t"));
-    assert!(text.contains("\taccepted_replaced\t"));
+    assert!(text.contains("\tselected\t"));
 }
 
 fn strict_contract_row_excludes_adaptive_terms(rendered: &str) -> bool {

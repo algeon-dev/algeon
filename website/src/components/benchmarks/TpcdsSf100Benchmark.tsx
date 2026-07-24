@@ -193,9 +193,8 @@ export default function TpcdsSf100Benchmark(): React.ReactElement {
             <li>
               <strong>Run:</strong> {typedDataset.scaleFactor.toUpperCase()} full
               suite ({typedSummary.queryCount} queries), {typedConfig.warmups} warmup /{' '}
-              {typedConfig.iterations} measured iteration, <code>GpuOnly</code> fallback
-              policy, profile <code>{typedConfig.nativeProfileName}</code>, LocalKvikio
-              parquet reads.
+              {typedConfig.iterations} measured iteration, profile{' '}
+              <code>{typedConfig.nativeProfileName}</code>, LocalKvikio parquet reads.
             </li>
             <li>
               <strong>Result:</strong> CPU {formatSeconds(typedSummary.cpuTotalMs)}, GPU{' '}

@@ -1,17 +1,14 @@
 use std::{path::PathBuf, sync::Arc};
 
 use datafusion::logical_expr::{Cast, col, lit};
+use datafusion_nexus_iceberg::S3FileIoConfigVerification;
 use iceberg::{
     scan::FileScanTask,
-    spec::{
-        DataContentType, DataFileBuilder, DataFileFormat, ManifestStatus, MappedField, NameMapping, NestedField,
-        PrimitiveType, Schema as IcebergSchema, Struct, Type,
-    },
+    spec::{DataContentType, DataFileFormat, NestedField, PrimitiveType, Schema as IcebergSchema, Struct, Type},
 };
-use nexus_query_engine::source::{CredentialMode, ResolvedParquetSource};
 
 use super::*;
-use crate::{policy::FallbackReason, table_format::scan::TableFormatLakehouseCachePolicy};
+use crate::{capability::CapabilityReason, table_format::scan::TableFormatLakehouseCachePolicy};
 
 fn iceberg_schema() -> Arc<IcebergSchema> {
     Arc::new(
@@ -67,46 +64,6 @@ fn iceberg_task_conversion_uses_injected_parquet_read_strategy_config() {
 }
 
 #[test]
-fn predicate_free_limit_manifest_entry_task_carries_table_name_mapping() {
-    let data_file = DataFileBuilder::default()
-        .partition_spec_id(0)
-        .content(DataContentType::Data)
-        .file_path("s3://bucket/table/data.parquet".to_string())
-        .file_format(DataFileFormat::Parquet)
-        .file_size_in_bytes(4096)
-        .record_count(17)
-        .partition(Struct::empty())
-        .key_metadata(None)
-        .build()
-        .unwrap();
-    let entry = ManifestEntry {
-        status: ManifestStatus::Added,
-        snapshot_id: Some(7),
-        sequence_number: Some(11),
-        file_sequence_number: Some(13),
-        data_file,
-    };
-    let name_mapping = Arc::new(NameMapping::new(vec![MappedField::new(
-        Some(1),
-        vec!["id".to_string(), "old_id".to_string()],
-        vec![],
-    )]));
-
-    let task = file_scan_task_from_manifest_entry(
-        &entry,
-        iceberg_schema(),
-        Arc::new(vec![1]),
-        None,
-        Some(Arc::clone(&name_mapping)),
-        Vec::new(),
-        true,
-    );
-
-    let task_mapping = task.name_mapping.expect("predicate-free LIMIT task should carry table name mapping");
-    assert_eq!(task_mapping.fields(), name_mapping.fields());
-}
-
-#[test]
 fn iceberg_snapshot_content_identity_is_complete_object_scoped() {
     let first = FileScanTask {
         file_size_in_bytes: 4096,
@@ -128,6 +85,71 @@ fn iceberg_snapshot_content_identity_is_complete_object_scoped() {
     let second = FileScanTask { start: 2048, length: 2048, record_count: None, ..first.clone() };
 
     assert_eq!(iceberg_task_content_identity(Some("123"), &first), iceberg_task_content_identity(Some("123"), &second));
+}
+
+#[test]
+fn remote_s3_without_file_io_policy_proof_is_native_unsupported_but_local_is_not() {
+    let mut remote = TableFormatScanPlan::new(TableFormat::Iceberg).with_data_file(TableFormatDataFile::new(
+        "remote",
+        "s3://bucket/table/data.parquet",
+        TableFormatDataFileFormat::Parquet,
+        TableFormatReadCapability::object_store("s3"),
+    ));
+    append_unverified_remote_s3_source_access_rejection(&mut remote, S3FileIoConfigVerification::NoS3Properties);
+
+    assert_eq!(remote.unsupported_capability_reasons(), vec![CapabilityReason::IcebergFileIoSourceAccessUnverified]);
+    assert!(!remote.is_native_admissible());
+
+    let mut local = TableFormatScanPlan::new(TableFormat::Iceberg).with_data_file(TableFormatDataFile::new(
+        "local",
+        "file:///tmp/table/data.parquet",
+        TableFormatDataFileFormat::Parquet,
+        TableFormatReadCapability::local_file_system(),
+    ));
+    append_unverified_remote_s3_source_access_rejection(&mut local, S3FileIoConfigVerification::NoS3Properties);
+
+    assert!(local.unsupported_features.is_empty());
+}
+
+#[test]
+fn remote_s3_with_exact_file_io_policy_remains_native_admissible() {
+    let mut plan = TableFormatScanPlan::new(TableFormat::Iceberg).with_data_file(TableFormatDataFile::new(
+        "remote",
+        "s3://bucket/table/data.parquet",
+        TableFormatDataFileFormat::Parquet,
+        TableFormatReadCapability::object_store("s3"),
+    ));
+
+    append_unverified_remote_s3_source_access_rejection(&mut plan, S3FileIoConfigVerification::ExactPolicy);
+
+    assert!(plan.unsupported_features.is_empty());
+    assert!(plan.is_native_admissible());
+}
+
+#[test]
+fn remote_s3_delete_source_without_file_io_policy_proof_is_native_unsupported() {
+    let delete_file = TableFormatDeleteFile::for_data_file(
+        "delete",
+        "local",
+        "s3://bucket/table/delete.parquet",
+        TableFormatDataFileFormat::Parquet,
+        TableFormatDeleteFileContent::PositionDeletes,
+    );
+    let mut plan = TableFormatScanPlan::new(TableFormat::Iceberg)
+        .with_data_file(
+            TableFormatDataFile::new(
+                "local",
+                "file:///tmp/table/data.parquet",
+                TableFormatDataFileFormat::Parquet,
+                TableFormatReadCapability::local_file_system(),
+            )
+            .with_position_delete_files(vec![delete_file.clone()]),
+        )
+        .with_delete_file(delete_file);
+
+    append_unverified_remote_s3_source_access_rejection(&mut plan, S3FileIoConfigVerification::NoS3Properties);
+
+    assert_eq!(plan.unsupported_capability_reasons(), vec![CapabilityReason::IcebergFileIoSourceAccessUnverified]);
 }
 
 #[test]
@@ -188,28 +210,6 @@ fn iceberg_data_file_id_hashes_credential_free_object_path() {
     assert!(!file_id.contains("secret-bucket"));
     assert!(!file_id.contains("X-Amz-Signature"));
     assert!(!file_id.contains("do-not-leak"));
-}
-
-#[test]
-fn iceberg_position_delete_bounds_use_reserved_manifest_fields() {
-    assert_eq!(
-        iceberg_position_delete_bound(&std::collections::HashMap::from([(
-            RESERVED_FIELD_ID_DELETE_FILE_POS,
-            Datum::long(7),
-        )])),
-        Some(7)
-    );
-    assert_eq!(
-        iceberg_position_delete_bound(&std::collections::HashMap::from([(RESERVED_FIELD_ID_POS, Datum::long(9))])),
-        Some(9)
-    );
-    assert_eq!(
-        iceberg_position_delete_bound(&std::collections::HashMap::from([(
-            RESERVED_FIELD_ID_DELETE_FILE_POS,
-            Datum::long(-1),
-        )])),
-        None
-    );
 }
 
 #[test]
@@ -355,8 +355,6 @@ fn predicate_free_scan_limit_does_not_trim_equality_delete_files_by_metadata_low
         )
         .with_delete_file(delete_0);
 
-    assert_eq!(scan_plan_live_row_lower_bound(&plan), None);
-
     trim_predicate_free_scan_limit_data_files(&mut plan, false);
 
     assert_eq!(plan.data_files.iter().map(|file| file.id.as_str()).collect::<Vec<_>>(), vec!["file-0", "file-1"]);
@@ -430,40 +428,6 @@ fn predicate_free_scan_limit_trims_delete_files_when_live_lower_bound_covers_lim
 }
 
 #[test]
-fn limited_delete_matching_preserves_iceberg_sequence_partition_and_reference_semantics() {
-    let data_file = test_data_file("s3://bucket/table/data.parquet", 7);
-    let same_sequence_position_delete = test_limited_delete(DataContentType::PositionDeletes, 7, Some(10), None, None);
-    let older_position_delete = test_limited_delete(DataContentType::PositionDeletes, 7, Some(9), None, None);
-    let wrong_spec_position_delete = test_limited_delete(DataContentType::PositionDeletes, 8, Some(10), None, None);
-    let referenced_position_delete = test_limited_delete(
-        DataContentType::PositionDeletes,
-        7,
-        Some(10),
-        None,
-        Some("s3://bucket/table/data.parquet"),
-    );
-    let other_referenced_position_delete = test_limited_delete(
-        DataContentType::PositionDeletes,
-        7,
-        Some(10),
-        None,
-        Some("s3://bucket/table/other.parquet"),
-    );
-    let same_sequence_global_equality_delete =
-        test_limited_delete(DataContentType::EqualityDeletes, 99, Some(10), Some(vec![1]), None);
-    let newer_global_equality_delete =
-        test_limited_delete(DataContentType::EqualityDeletes, 99, Some(11), Some(vec![1]), None);
-
-    assert!(same_sequence_position_delete.applies_to_data_file(&data_file, 7, Some(10)));
-    assert!(!older_position_delete.applies_to_data_file(&data_file, 7, Some(10)));
-    assert!(!wrong_spec_position_delete.applies_to_data_file(&data_file, 7, Some(10)));
-    assert!(referenced_position_delete.applies_to_data_file(&data_file, 7, Some(10)));
-    assert!(!other_referenced_position_delete.applies_to_data_file(&data_file, 7, Some(10)));
-    assert!(!same_sequence_global_equality_delete.applies_to_data_file(&data_file, 7, Some(10)));
-    assert!(newer_global_equality_delete.applies_to_data_file(&data_file, 7, Some(10)));
-}
-
-#[test]
 fn iceberg_delete_file_id_hashes_credential_free_object_path() {
     let delete_file = FileScanTaskDeleteFile {
         file_path: "s3://secret-bucket/table/delete.parquet?X-Amz-Signature=do-not-leak".to_string(),
@@ -527,89 +491,6 @@ fn iceberg_task_delete_attachment_preserves_data_row_groups() {
     assert_eq!(data_file.row_groups, Some(vec![2, 3]));
     assert_eq!(data_file.position_delete_files.len(), 1);
     assert_eq!(plan.delete_files.len(), 1);
-}
-
-fn test_data_file(path: &str, partition_spec_id: i32) -> DataFile {
-    DataFileBuilder::default()
-        .content(DataContentType::Data)
-        .file_path(path.to_string())
-        .file_format(DataFileFormat::Parquet)
-        .partition(Struct::empty())
-        .partition_spec_id(partition_spec_id)
-        .record_count(10)
-        .file_size_in_bytes(1024)
-        .build()
-        .unwrap()
-}
-
-fn test_limited_delete(
-    file_type: DataContentType,
-    partition_spec_id: i32,
-    sequence_number: Option<i64>,
-    equality_ids: Option<Vec<i32>>,
-    referenced_data_file: Option<&str>,
-) -> LimitedDeleteFile {
-    LimitedDeleteFile {
-        file_path: "s3://bucket/table/delete.parquet".to_string(),
-        file_size_in_bytes: 512,
-        file_type,
-        partition_spec_id,
-        equality_ids,
-        sequence_number,
-        record_count: 1,
-        partition: Struct::empty(),
-        referenced_data_file: referenced_data_file.map(str::to_string),
-        position_lower_bound: None,
-        position_upper_bound: None,
-        key_metadata: None,
-    }
-}
-
-#[test]
-fn attach_manifest_delete_metadata_copies_row_count_and_position_bounds_to_associated_delete_files() {
-    let table_delete = TableFormatDeleteFile::for_data_file(
-        "delete-0",
-        "data-0",
-        "s3://bucket/table/delete.parquet",
-        TableFormatDataFileFormat::Parquet,
-        TableFormatDeleteFileContent::PositionDeletes,
-    )
-    .with_read_capability(TableFormatReadCapability::object_store("s3"))
-    .with_resolved_parquet_source(ResolvedParquetSource::remote_kvikio(
-        "s3://bucket/table/delete.parquet",
-        CredentialMode::SharedProcessEnv,
-    ));
-    let data_file = TableFormatDataFile::new(
-        "data-0",
-        "s3://bucket/table/data.parquet",
-        TableFormatDataFileFormat::Parquet,
-        TableFormatReadCapability::object_store("s3"),
-    )
-    .with_position_delete_files(vec![table_delete.clone()]);
-    let mut plan =
-        TableFormatScanPlan::new(TableFormat::Iceberg).with_data_file(data_file).with_delete_file(table_delete);
-    let mut limited_delete = test_limited_delete(
-        DataContentType::PositionDeletes,
-        0,
-        Some(10),
-        None,
-        Some("s3://bucket/table/data.parquet"),
-    );
-    limited_delete.record_count = 7;
-    limited_delete.position_lower_bound = Some(11);
-    limited_delete.position_upper_bound = Some(29);
-
-    attach_manifest_delete_metadata(&mut plan, 0, &[limited_delete]);
-
-    let associated_delete = &plan.data_files[0].position_delete_files[0];
-    assert_eq!(associated_delete.row_count, Some(7));
-    assert_eq!(associated_delete.referenced_data_file.as_deref(), Some("s3://bucket/table/data.parquet"));
-    assert_eq!(associated_delete.position_lower_bound, Some(11));
-    assert_eq!(associated_delete.position_upper_bound, Some(29));
-    assert_eq!(plan.delete_files[0].row_count, Some(7));
-    assert_eq!(plan.delete_files[0].referenced_data_file.as_deref(), Some("s3://bucket/table/data.parquet"));
-    assert_eq!(plan.delete_files[0].position_lower_bound, Some(11));
-    assert_eq!(plan.delete_files[0].position_upper_bound, Some(29));
 }
 
 #[test]
@@ -689,8 +570,8 @@ fn iceberg_equality_delete_files_without_footer_field_id_proof_are_structured_re
     assert_eq!(plan.delete_files[0].data_file_id, plan.data_files[0].id);
     assert_eq!(plan.delete_files[0].equality_ids.as_deref(), Some([1].as_slice()));
     assert!(plan.delete_files[0].is_supported_equality_delete());
-    assert_eq!(plan.unsupported_fallback_reasons(), vec![FallbackReason::IcebergDeleteFilesUnsupported]);
-    assert_eq!(plan.first_rejection_reason(), Some(FallbackReason::IcebergDeleteFilesUnsupported));
+    assert_eq!(plan.unsupported_capability_reasons(), vec![CapabilityReason::IcebergDeleteFilesUnsupported]);
+    assert_eq!(plan.first_not_supported_reason(), Some(CapabilityReason::IcebergDeleteFilesUnsupported));
     assert!(!plan.is_native_admissible());
 }
 
@@ -726,8 +607,8 @@ fn iceberg_equality_delete_files_without_key_ids_remain_structured_rejections() 
         iceberg_file_scan_tasks_to_table_format_scan_plan_with_config(None, None, [task], &Default::default()).unwrap();
 
     assert_eq!(plan.data_files[0].equality_delete_files.len(), 0);
-    assert_eq!(plan.unsupported_fallback_reasons(), vec![FallbackReason::IcebergDeleteFilesUnsupported]);
-    assert_eq!(plan.first_rejection_reason(), Some(FallbackReason::IcebergDeleteFilesUnsupported));
+    assert_eq!(plan.unsupported_capability_reasons(), vec![CapabilityReason::IcebergDeleteFilesUnsupported]);
+    assert_eq!(plan.first_not_supported_reason(), Some(CapabilityReason::IcebergDeleteFilesUnsupported));
     assert!(!plan.is_native_admissible());
 }
 

@@ -3,7 +3,7 @@ use super::*;
 pub(in crate::native::lowering) fn lower_table_format_zero_column_count_source(
     scan_exec: &NexusIcebergScanExec,
     builder: &mut NativeQueryPlanBuilder,
-) -> Result<LoweredNativeInput, FallbackReason> {
+) -> Result<LoweredNativeInput, CapabilityReason> {
     let scan_plan = available_table_format_scan_plan(scan_exec)?;
     validate_table_format_scan_plan(scan_plan)?;
     let source_node = add_table_format_zero_column_count_source_node(scan_plan, builder)?;
@@ -13,7 +13,7 @@ pub(in crate::native::lowering) fn lower_table_format_zero_column_count_source(
 pub(super) fn add_table_format_zero_column_count_source_node(
     scan_plan: &TableFormatScanPlan,
     builder: &mut NativeQueryPlanBuilder,
-) -> Result<nexus_query_engine::plan::NodeId, FallbackReason> {
+) -> Result<nexus_query_engine::plan::NodeId, CapabilityReason> {
     let requirements = NativeParquetColumnRequirements {
         read_columns: Vec::new(),
         read_column_file_indices: Vec::new(),
@@ -61,10 +61,10 @@ pub(in crate::native::lowering) fn table_format_count_star_probe_can_lower(scan_
 pub(in crate::native::lowering) fn lower_table_format_count_star_mixed_row_count_source(
     scan_exec: &NexusIcebergScanExec,
     builder: &mut NativeQueryPlanBuilder,
-) -> Result<LoweredNativeInput, FallbackReason> {
+) -> Result<LoweredNativeInput, CapabilityReason> {
     let scan_plan = available_table_format_scan_plan(scan_exec)?;
     if !table_format_count_star_mixed_row_count_metadata_can_split(scan_plan) {
-        return Err(FallbackReason::TableFormatUnsupported);
+        return Err(CapabilityReason::TableFormatUnsupported);
     }
     validate_table_format_scan_plan(scan_plan)?;
 
@@ -98,7 +98,7 @@ pub(in crate::native::lowering) fn lower_table_format_count_star_mixed_row_count
     }
 
     let node = match inputs.as_slice() {
-        [] => return Err(FallbackReason::NativeSourceEmpty),
+        [] => return Err(CapabilityReason::NativeSourceEmpty),
         [node] => *node,
         _ => builder.add_union(inputs, Arc::clone(&count_weight_schema)),
     };
@@ -108,7 +108,7 @@ pub(in crate::native::lowering) fn lower_table_format_count_star_mixed_row_count
 pub(in crate::native::lowering) fn lower_table_format_count_star_fallback_source(
     scan_exec: &NexusIcebergScanExec,
     builder: &mut NativeQueryPlanBuilder,
-) -> Result<LoweredNativeInput, FallbackReason> {
+) -> Result<LoweredNativeInput, CapabilityReason> {
     let scan_plan = available_table_format_scan_plan(scan_exec)?;
     validate_table_format_scan_plan(scan_plan)?;
     lower_table_format_count_star_fallback_source_for_plan(scan_plan, builder)
@@ -117,7 +117,7 @@ pub(in crate::native::lowering) fn lower_table_format_count_star_fallback_source
 pub(super) fn lower_table_format_count_star_fallback_source_for_plan(
     scan_plan: &TableFormatScanPlan,
     builder: &mut NativeQueryPlanBuilder,
-) -> Result<LoweredNativeInput, FallbackReason> {
+) -> Result<LoweredNativeInput, CapabilityReason> {
     let file_schema = table_format_file_schema(scan_plan);
     let fallback_column = table_format_count_star_fallback_column(scan_plan, &file_schema)?;
     if let Some(mapping) = fallback_column.direct_mapping
@@ -148,7 +148,7 @@ pub(super) fn lower_table_format_count_star_fallback_source_for_plan(
         file_schema
             .fields()
             .get(read_column_file_index)
-            .ok_or(FallbackReason::NativeSourceSchemaMapping)?
+            .ok_or(CapabilityReason::NativeSourceSchemaMapping)?
             .as_ref()
             .clone()
     };
@@ -158,7 +158,7 @@ pub(super) fn lower_table_format_count_star_fallback_source_for_plan(
     let mut inputs = Vec::with_capacity(read_groups.len());
     for group in &read_groups {
         if group.requirements.read_columns.is_empty() {
-            return Err(FallbackReason::IcebergFieldIdMappingUnsupported);
+            return Err(CapabilityReason::IcebergFieldIdMappingUnsupported);
         }
         let native_files = table_format_local_parquet_files_for_group(scan_plan, group)?;
         let source = if table_format_count_star_probe_can_lower(scan_plan) {
@@ -191,7 +191,7 @@ pub(super) fn lower_table_format_count_star_fallback_source_for_plan(
         source_output_schema
     };
     let source_node = match inputs.as_slice() {
-        [] => return Err(FallbackReason::NativeSourceEmpty),
+        [] => return Err(CapabilityReason::NativeSourceEmpty),
         [node] => *node,
         _ => builder.add_union(inputs, Arc::clone(&output_schema)),
     };
@@ -216,7 +216,7 @@ pub(super) fn table_format_count_weight_schema() -> SchemaRef {
 pub(in crate::native::lowering) fn lower_empty_table_format_count_star_source(
     scan_exec: &NexusIcebergScanExec,
     builder: &mut NativeQueryPlanBuilder,
-) -> Result<LoweredNativeInput, FallbackReason> {
+) -> Result<LoweredNativeInput, CapabilityReason> {
     let scan_plan = available_table_format_scan_plan(scan_exec)?;
     if !table_format_scan_plan_is_empty_admissible(scan_plan) {
         return Err(table_format_scan_plan_rejection(scan_plan));
@@ -237,17 +237,17 @@ pub(super) struct TableFormatCountStarFallbackColumn<'a> {
 pub(super) fn table_format_count_star_fallback_column<'a>(
     scan_plan: &'a TableFormatScanPlan,
     file_schema: &SchemaRef,
-) -> Result<TableFormatCountStarFallbackColumn<'a>, FallbackReason> {
+) -> Result<TableFormatCountStarFallbackColumn<'a>, CapabilityReason> {
     if let Some(column) = table_format_explicit_count_star_probe_column(scan_plan, file_schema) {
         return Ok(column);
     }
     if table_format_local_footer_schema(scan_plan).is_some() {
         if scan_plan.format == TableFormat::Iceberg {
-            return Err(FallbackReason::IcebergFieldIdMappingUnsupported);
+            return Err(CapabilityReason::IcebergFieldIdMappingUnsupported);
         }
         return table_format_first_supported_file_column(file_schema);
     }
-    Err(FallbackReason::NativeSourceSchemaMapping)
+    Err(CapabilityReason::NativeSourceSchemaMapping)
 }
 
 pub(super) fn table_format_explicit_count_star_probe_column<'a>(
@@ -293,7 +293,7 @@ fn table_format_count_star_probe_candidate_file_index(
 
 pub(super) fn table_format_first_supported_file_column(
     file_schema: &SchemaRef,
-) -> Result<TableFormatCountStarFallbackColumn<'static>, FallbackReason> {
+) -> Result<TableFormatCountStarFallbackColumn<'static>, CapabilityReason> {
     file_schema
         .fields()
         .iter()
@@ -304,5 +304,5 @@ pub(super) fn table_format_first_supported_file_column(
             read_column_file_index: index,
             direct_mapping: None,
         })
-        .ok_or(FallbackReason::UnsupportedType)
+        .ok_or(CapabilityReason::UnsupportedType)
 }

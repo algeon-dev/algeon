@@ -9,17 +9,17 @@ use super::{
     project_bindings_to_schema,
 };
 use crate::{
+    capability::CapabilityReason,
     native::{normalize::NormalizedNativeUnion, validate::validate_schema},
-    policy::FallbackReason,
 };
 
 pub(super) fn lower_union_input(
     union: &NormalizedNativeUnion<'_>,
     builder: &mut NativeQueryPlanBuilder,
     required_output_fields: &RequiredFields,
-) -> Result<LoweredNativeInput, FallbackReason> {
+) -> Result<LoweredNativeInput, CapabilityReason> {
     if union.inputs.is_empty() {
-        return Err(FallbackReason::UnsupportedOperator);
+        return Err(CapabilityReason::UnsupportedOperator);
     }
     validate_schema(union.union.schema())?;
     validate_union_input_schemas(union)?;
@@ -37,16 +37,16 @@ pub(super) fn lower_union_input(
     Ok(LoweredNativeInput::with_bindings(node, schema, bindings))
 }
 
-fn validate_union_input_schemas(union: &NormalizedNativeUnion<'_>) -> Result<(), FallbackReason> {
+fn validate_union_input_schemas(union: &NormalizedNativeUnion<'_>) -> Result<(), CapabilityReason> {
     let output_schema = union.union.schema();
     for input in union.union.inputs() {
         let input_schema = input.schema();
         if input_schema.fields().len() != output_schema.fields().len() {
-            return Err(FallbackReason::UnsupportedOperator);
+            return Err(CapabilityReason::UnsupportedOperator);
         }
         for (input_field, output_field) in input_schema.fields().iter().zip(output_schema.fields().iter()) {
             if input_field.data_type() != output_field.data_type() {
-                return Err(FallbackReason::UnsupportedType);
+                return Err(CapabilityReason::UnsupportedType);
             }
         }
         validate_schema(input_schema)?;
@@ -59,7 +59,7 @@ fn project_union_child_to_output_schema(
     input: LoweredNativeInput,
     schema: SchemaRef,
     bindings: &[FieldBinding],
-) -> Result<LoweredNativeInput, FallbackReason> {
+) -> Result<LoweredNativeInput, CapabilityReason> {
     if input.schema.as_ref() == schema.as_ref()
         && input.bindings.iter().zip(bindings.iter()).all(|(input, output)| {
             input.frontend_index == output.frontend_index && input.native_name == output.native_name

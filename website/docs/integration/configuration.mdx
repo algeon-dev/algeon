@@ -41,16 +41,27 @@ use the full device budget minus the floor reserved for remaining slots.
 | `NEXUS_SERVER_ADMISSION_MAX_QUERIES_PER_DEVICE` | unset | Optional active-query cap on each eligible device. |
 | `NEXUS_SERVER_GPU_DEVICES` | `0` | Comma-separated CUDA device ordinals used for independent query placement. |
 
-## CPU fallback bound
+## Host execution QoS
 
-CPU-readable plans rejected by native lowering run on DataFusion, not through
-the GPU admission ledger. Server mode bounds those fallback statements with a
-separate host-side semaphore.
+Host execution QoS is independent of relational native selection and GPU
+query-service admission. It wraps each completed DataFusion or mixed plan once;
+fully native plans do not acquire a host-execution permit. This gives a server
+one statement-level bound for its DataFusion baseline and CPU/GPU boundary work,
+without treating a capability miss as a second policy mode.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `NEXUS_SERVER_CPU_FALLBACK_MAX_CONCURRENT_STATEMENTS` | `2` | Maximum concurrent CPU fallback statements. Set `0` to disable the bound. |
-| `NEXUS_SERVER_CPU_FALLBACK_WAIT_TIMEOUT_MS` | `30000` | Maximum wait for a CPU fallback permit before `service_overloaded`; set `0` to wait indefinitely. |
+| `NEXUS_SERVER_HOST_EXECUTION_QOS_MAX_CONCURRENT_STATEMENTS` | `2` | Maximum concurrent host-executing statements. Set `0` to disable the QoS rule. |
+| `NEXUS_SERVER_HOST_EXECUTION_QOS_WAIT_TIMEOUT_MS` | `30000` | Maximum wait for a host-execution permit before `service_overloaded`; set `0` to wait indefinitely. |
+
+The same values can come from the TOML overlay named by
+`NEXUS_SERVER_CONFIG_FILE`; environment variables take precedence:
+
+```toml
+[host_execution_qos]
+max_concurrent_statements = 2
+wait_timeout_ms = 30000
+```
 
 ## cuGraph defaults
 

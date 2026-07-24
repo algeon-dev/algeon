@@ -14,7 +14,7 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
         panic!("q02 should produce a physical plan");
     };
     let result = lower_physical_plan_to_native(Arc::clone(plan));
-    assert_eq!(result.rewritten_count(), 1, "q02 outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "q02 outcomes={:?}", result.report.outcomes());
     let native_plan = &result.plans[0];
     let analysis = native_plan.capability_analysis();
     assert!(
@@ -51,7 +51,7 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
         panic!("q15 should produce a physical plan");
     };
     let result = lower_physical_plan_to_native(Arc::clone(plan));
-    assert_eq!(result.rewritten_count(), 1, "q15 outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "q15 outcomes={:?}", result.report.outcomes());
     let native_plan = &result.plans[0];
     assert!(
         native_plan.capability_analysis().admits_root_full_sort_join_aggregate_pipeline(),
@@ -75,7 +75,7 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
         panic!("q18 should produce a physical plan");
     };
     let result = lower_physical_plan_to_native(Arc::clone(plan));
-    assert_eq!(result.rewritten_count(), 1, "q18 outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "q18 outcomes={:?}", result.report.outcomes());
     let native_plan = &result.plans[0];
     assert!(
         native_plan
@@ -95,7 +95,7 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
         panic!("q20 should produce a physical plan");
     };
     let result = lower_physical_plan_to_native(Arc::clone(plan));
-    assert_eq!(result.rewritten_count(), 1, "q20 outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "q20 outcomes={:?}", result.report.outcomes());
     let native_plan = &result.plans[0];
     assert!(
         native_plan.capability_analysis().admits_multi_join_resident_grouped_aggregate_subquery_filter_pipeline(),
@@ -123,8 +123,8 @@ async fn tpch_q18_direct_lowering_preserves_pre_semijoin_reduction_late_left_sem
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let plan = &result.plans[0];
     let left_semi_joins = native_join_ids(plan, NativeJoinType::LeftSemi);
     assert_eq!(left_semi_joins.len(), 1, "Q18 before semijoin reduction should have one late left-semi join");
@@ -171,7 +171,7 @@ async fn tpch_q18_semijoin_reduction_pushes_filter_to_orders_subtree() {
     };
 
     let result = lower_physical_plan_to_native(plan);
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     let optimized = nexus_query_engine::optimizer::optimize_query_plan(result.plans[0].clone(), &Default::default());
 
     assert_eq!(optimized.change, nexus_query_engine::optimizer::NativeOptimizerChange::Changed);
@@ -236,8 +236,8 @@ async fn tpch_q21_decorrelates_to_native_left_only_mixed_residual_joins() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let joins = native_joins(&result.plans[0]);
     assert!(
         joins.iter().any(|join| q21_left_only_mixed_residual_join_matches(join, NativeJoinType::LeftSemi)),
@@ -385,8 +385,8 @@ async fn tpch_q7_lowers_duplicate_nation_names_through_distinct_native_identity_
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let native_plan = &result.plans[0];
     let nation_projection = native_plan
         .nodes()
@@ -439,8 +439,8 @@ async fn tpch_q8_final_mkt_share_projection_preserves_decimal_schema() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let native_plan = &result.plans[0];
     let PlanNode::Sort(sort) = &native_plan.root_node().kind else {
         panic!("q8 native root should be the final ORDER BY sort");
@@ -475,9 +475,9 @@ async fn tpch_q11_lowers_joined_grouped_and_scalar_aggregate_inputs_for_bounded_
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    let CandidateOutcome::Rewritten { candidate } = &result.report.outcomes()[0] else {
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let CandidateOutcome::Selected { candidate } = &result.report.outcomes()[0] else {
         panic!("q11 should lower to native");
     };
     assert_eq!(
@@ -671,8 +671,8 @@ async fn tpch_q13_lowers_left_join_filter_aggregates_and_final_sort() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let plan = &result.plans[0];
     let joins = native_joins(plan);
     assert_eq!(joins.len(), 1, "q13 should lower to exactly one native join");
@@ -790,9 +790,9 @@ async fn tpch_q16_lowers_multi_join_leaves_then_serial_aggregates_and_final_sort
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    let CandidateOutcome::Rewritten { candidate } = &result.report.outcomes()[0] else {
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let CandidateOutcome::Selected { candidate } = &result.report.outcomes()[0] else {
         panic!("q16 should lower to native");
     };
     assert_eq!(

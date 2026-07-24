@@ -1,7 +1,9 @@
 use std::{error::Error, path::PathBuf};
 
 use datafusion::prelude::{ParquetReadOptions, SessionContext};
-use datafusion_nexus::gpu_coverage::{QueryGpuCoverage, QueryGpuCoverageOverall, validate_query};
+use datafusion_nexus::gpu_coverage::{
+    QueryGpuCandidateOutcome, QueryGpuCoverage, QueryGpuCoverageOverall, validate_query,
+};
 
 type ValidateResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
 
@@ -108,17 +110,18 @@ fn print_human(coverage: &QueryGpuCoverage) {
         println!("retryable: {retryable}");
         println!("detail: {detail}");
     }
-    println!("nexus_native_coverage: {}", coverage.domains.nexus_native_coverage.as_str());
-    println!("cugraph_operator: {}", coverage.domains.cugraph_operator.as_str());
-    println!("datafusion_cpu_ingest_or_boundary: {}", coverage.domains.datafusion_cpu_ingest_or_boundary.as_str());
-    println!("host_output_materialization: {}", coverage.domains.host_output_materialization.as_str());
+    println!("final_disposition: {}", coverage.final_disposition.as_str());
+    println!("native_fragment_count: {}", coverage.domains.native_fragment_count);
+    println!("explicit_gpu_island_count: {}", coverage.domains.explicit_gpu_island_count);
+    println!("datafusion_boundary_count: {}", coverage.domains.datafusion_boundary_count);
+    println!("host_materialization_count: {}", coverage.domains.host_materialization_count);
     println!("confidence: {}", coverage.confidence.as_str());
     println!("planning_did_io: {}", coverage.planning_did_io);
     println!("optimizer_config_source: {}", coverage.validated_under.optimizer_config_source);
     println!("execution_mode: {}", coverage.validated_under.execution_mode.as_deref().unwrap_or("absent"));
-    println!("fallback_reason_count: {}", coverage.fallback_reasons.len());
-    for reason in &coverage.fallback_reasons {
-        println!("fallback_reason: {} [{}] {}", reason.reason_code, reason.kind.as_str(), reason.detail);
+    println!("candidate_outcome_count: {}", coverage.candidate_outcomes.len());
+    for outcome in &coverage.candidate_outcomes {
+        println!("{}", candidate_outcome_human_line(outcome));
     }
     println!("runtime_caveat_count: {}", coverage.runtime_caveats.len());
     for caveat in &coverage.runtime_caveats {
@@ -129,8 +132,56 @@ fn print_human(coverage: &QueryGpuCoverage) {
     }
 }
 
+fn candidate_outcome_human_line(outcome: &QueryGpuCandidateOutcome) -> String {
+    format!(
+        "candidate_outcome: outcome={} reason_code={} reason_kind={} category={} detail={}",
+        outcome.selection.as_str(),
+        outcome.reason_code.as_deref().unwrap_or("absent"),
+        outcome.reason_kind.map_or("absent", |kind| kind.as_str()),
+        outcome.category.as_deref().unwrap_or("absent"),
+        outcome.detail
+    )
+}
+
 fn validate_query_usage() -> String {
     "USAGE:\n  cargo run -p datafusion-nexus-tools --features validate-query -- validate-query --sql <SQL> [--format json|human] [--parquet TABLE=PATH]...\n\n\
      EXAMPLE:\n  cargo run -p datafusion-nexus-tools --features validate-query -- validate-query --sql \"SELECT * FROM lineitem\" --parquet lineitem=/data/tpch/lineitem.parquet --format json"
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use datafusion_nexus::gpu_coverage::{QueryGpuCandidateReasonKind, QueryGpuCandidateSelectionOutcome};
+
+    use super::*;
+
+    #[test]
+    fn selected_candidate_human_line_marks_optional_reason_fields_absent() {
+        let outcome = QueryGpuCandidateOutcome {
+            selection: QueryGpuCandidateSelectionOutcome::Selected,
+            reason_code: None,
+            reason_kind: None,
+            detail: "ProjectionExec".to_string(),
+            category: None,
+            cost_evidence: None,
+        };
+
+        assert_eq!(
+            candidate_outcome_human_line(&outcome),
+            "candidate_outcome: outcome=selected reason_code=absent reason_kind=absent category=absent detail=ProjectionExec"
+        );
+
+        let unsupported = QueryGpuCandidateOutcome {
+            selection: QueryGpuCandidateSelectionOutcome::NotSupported,
+            reason_code: Some("unsupported_expression".to_string()),
+            reason_kind: Some(QueryGpuCandidateReasonKind::Expression),
+            detail: "ProjectionExec".to_string(),
+            category: Some("expression".to_string()),
+            cost_evidence: None,
+        };
+        assert_eq!(
+            candidate_outcome_human_line(&unsupported),
+            "candidate_outcome: outcome=not_supported reason_code=unsupported_expression reason_kind=expression category=expression detail=ProjectionExec"
+        );
+    }
 }

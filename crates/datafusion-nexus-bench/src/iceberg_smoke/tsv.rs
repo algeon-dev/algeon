@@ -101,25 +101,25 @@ impl fmt::Display for SmokeError {
 
 impl StdError for SmokeError {}
 
-pub(crate) trait FallbackReasonExt {
-    fn from_code(code: &str) -> Option<FallbackReason>;
+pub(crate) trait CapabilityReasonExt {
+    fn from_code(code: &str) -> Option<CapabilityReason>;
 }
 
-impl FallbackReasonExt for FallbackReason {
-    fn from_code(code: &str) -> Option<FallbackReason> {
+impl CapabilityReasonExt for CapabilityReason {
+    fn from_code(code: &str) -> Option<CapabilityReason> {
         [
-            FallbackReason::TableFormatUnsupported,
-            FallbackReason::TableFormatPlanningFailed,
-            FallbackReason::IcebergNonParquetDataFile,
-            FallbackReason::IcebergDeleteFilesUnsupported,
-            FallbackReason::IcebergFieldIdMappingUnsupported,
-            FallbackReason::IcebergNameMappingUnsupported,
-            FallbackReason::IcebergNestedProjectionUnsupported,
-            FallbackReason::IcebergPartitionTransformUnsupported,
-            FallbackReason::IcebergResidualPredicateUnsupported,
-            FallbackReason::IcebergRowSelectionUnsupported,
-            FallbackReason::IcebergObjectStoreReadUnsupported,
-            FallbackReason::IcebergSnapshotUnsupported,
+            CapabilityReason::TableFormatUnsupported,
+            CapabilityReason::TableFormatPlanningFailed,
+            CapabilityReason::IcebergNonParquetDataFile,
+            CapabilityReason::IcebergDeleteFilesUnsupported,
+            CapabilityReason::IcebergFieldIdMappingUnsupported,
+            CapabilityReason::IcebergNameMappingUnsupported,
+            CapabilityReason::IcebergNestedProjectionUnsupported,
+            CapabilityReason::IcebergPartitionTransformUnsupported,
+            CapabilityReason::IcebergResidualPredicateUnsupported,
+            CapabilityReason::IcebergRowSelectionUnsupported,
+            CapabilityReason::IcebergObjectStoreReadUnsupported,
+            CapabilityReason::IcebergSnapshotUnsupported,
         ]
         .into_iter()
         .find(|reason| reason.code() == code)

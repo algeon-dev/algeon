@@ -327,7 +327,7 @@ impl QueryCoordinator {
                     captured.finish_success(now);
                 }
             },
-            QueryTerminal::Failed { stage, error } | QueryTerminal::Cancelled { stage, error } => {
+            QueryTerminal::Failed { stage, error, .. } | QueryTerminal::Cancelled { stage, error } => {
                 if let Some(captured) = &mut record.captured {
                     captured.bound_error(Arc::make_mut(error));
                     captured.finish_failed(stage, Arc::clone(error), now);

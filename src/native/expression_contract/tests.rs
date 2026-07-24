@@ -22,7 +22,7 @@ use super::{
     join_residual::validate_join_residual_scalar_function, join_residual_cast_mode, validate_join_residual,
     validate_physical_expr,
 };
-use crate::{native::lowering::lower_physical_expr_for_test, policy::FallbackReason};
+use crate::{capability::CapabilityReason, native::lowering::lower_physical_expr_for_test};
 
 fn scalar_function(
     name: &str,
@@ -49,7 +49,7 @@ fn binary_capability_rejection_is_structured_and_preserves_public_reason() {
     let rejection = SupportedBinaryOperator::from_datafusion(&Operator::RegexMatch).unwrap_err();
     assert_eq!(rejection.kind(), super::rejection::ExpressionRejectionKind::UnsupportedExpression);
     assert_eq!(rejection.capability(), ExpressionCapability::BinaryOperator);
-    assert_eq!(FallbackReason::from(rejection), FallbackReason::UnsupportedExpression);
+    assert_eq!(CapabilityReason::from(rejection), CapabilityReason::UnsupportedExpression);
 }
 
 #[test]
@@ -94,7 +94,7 @@ fn join_residual_rejects_a_column_index_missing_from_its_declared_side_schema() 
     let rejection = validate_join_residual(&filter, &left_schema, &right_schema).unwrap_err();
 
     assert_eq!(rejection.capability(), ExpressionCapability::JoinResidualSideSchema);
-    assert_eq!(FallbackReason::from(rejection), FallbackReason::UnsupportedExpression);
+    assert_eq!(CapabilityReason::from(rejection), CapabilityReason::UnsupportedExpression);
 }
 
 #[test]

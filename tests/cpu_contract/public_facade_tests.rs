@@ -59,7 +59,7 @@ fn canonical_server_path_exposes_session_contracts() {
         datafusion_nexus::server::verify_password,
     );
     let _diagnostic_contracts = (
-        datafusion_nexus::server::FlightSqlNativeRejectClass::Other,
+        datafusion_nexus::server::FlightSqlNativeNotSupportedClass::Other,
         datafusion_nexus::server::log_native_planning_report,
         datafusion_nexus::server::log_native_planning_report_for_tables,
     );

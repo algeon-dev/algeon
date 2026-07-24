@@ -27,8 +27,8 @@ async fn native_pipeline_analytical_olap_workload_lowers_into_native_query_plans
         };
         let result = lower_physical_plan_to_native(Arc::clone(plan));
         assert_eq!(result.candidate_count(), 1, "{} outcomes={:?}", query.id, result.report.outcomes());
-        assert_eq!(result.rewritten_count(), 1, "{} outcomes={:?}", query.id, result.report.outcomes());
-        assert_eq!(result.rejected_count(), 0, "{} outcomes={:?}", query.id, result.report.outcomes());
+        assert_eq!(result.selected_count(), 1, "{} outcomes={:?}", query.id, result.report.outcomes());
+        assert_eq!(result.not_selected_count(), 0, "{} outcomes={:?}", query.id, result.report.outcomes());
         assert!(result.plans[0].contains_join(), "{} should lower to a join-bearing native plan", query.id);
     }
 

@@ -347,8 +347,8 @@ impl ExecutionPlan for NexusNativeComposedExec {
 
                         let _elapsed_compute = metrics.baseline.elapsed_compute().timer();
                         let gpu_plan = plan.clone_with_deferred_host_materialization_sink();
-                        // The consumer query starts after all GPU-resident producer handles are registered. No
-                        // CPU fallback is attempted after this point.
+                        // The consumer query starts after all GPU-resident producer handles are registered. The
+                        // native attempt is terminal after this point and is not replayed through DataFusion.
                         let outcome = execute_query_plan_with_gpu_inputs_observed(
                             &context,
                             &gpu_plan,

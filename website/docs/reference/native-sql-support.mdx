@@ -6,10 +6,11 @@ description: Native cuDF support boundaries for relational SQL operators, expres
 
 # Native SQL Support
 
-Nexus lowers supported DataFusion physical-plan fragments to cuDF. Support is
-capability-first: every operator, expression, type, source, and bounded-memory
-contract must be admitted for the exact physical plan. This page is a practical
-map, not a substitute for validating a production query with
+Nexus selects supported whole relational DataFusion physical-plan candidates
+for cuDF execution. Support is capability-first: every operator, expression,
+type, source, and bounded-memory contract must be admitted for the exact
+physical candidate. This page is a practical map, not a substitute for
+validating a production query with
 [`nexus_explain_coverage`](../integration/gpu-coverage-validation.mdx).
 
 ## Relational plan shapes
@@ -23,11 +24,12 @@ map, not a substitute for validating a production query with
 | Joins | Equi joins and admitted residual/keyless forms for inner, outer, semi, anti, mark, and cross joins. Build side, output projection, key types, residual expressions, and bounded reservation evidence can narrow an otherwise supported join kind. |
 | Graph | cuGraph table functions are a separate GPU execution domain. See the [cuGraph SQL API](../cugraph/overview.mdx) for the function-level contract. |
 
-An unsupported CPU-readable fragment remains on DataFusion under
-`GpuPreferred`. Every Iceberg table uses the unified provider: its scan wrapper
-retains an executable `iceberg-datafusion` CPU delegate unless native lowering
-replaces the wrapper. Runtime errors after native execution starts do not fall
-back.
+When a relational candidate is not supported, or an enabled cost rule does not
+select it, the executable DataFusion baseline remains in place. Every Iceberg
+table uses the unified provider: its scan wrapper retains an executable
+`iceberg-datafusion` CPU delegate unless native lowering replaces the wrapper.
+Runtime errors after native execution starts are terminal and do not replay on
+CPU.
 
 ## Expressions and scalar functions
 
@@ -74,7 +76,13 @@ For ad-hoc SQL, validate against the same catalog and server configuration that
 will execute the query:
 
 ```sql
-SELECT overall, nexus_native_coverage, fallback_reason_count, coverage_json
+SELECT overall,
+       final_disposition,
+       native_fragment_count,
+       explicit_gpu_island_count,
+       datafusion_boundary_count,
+       candidate_outcome_count,
+       coverage_json
 FROM nexus_explain_coverage('
   SELECT l_returnflag, sum(l_quantity)
   FROM lineitem
@@ -84,6 +92,11 @@ FROM nexus_explain_coverage('
 ');
 ```
 
-`no_cpu_in_planned_path` is the strongest plan-time result. Read
-`runtime_caveats` too: admission, data-dependent memory, and device-side graph
-validation are execution-time contracts.
+`final_disposition` describes the exact planned path: `datafusion`, `native`,
+or `mixed`; `rejected` means planning returned no executable plan. Candidate
+outcomes in `coverage_json` are separate diagnostics: `not_supported` is a
+capability miss, while `not_selected_by_cost` records an enabled preference
+decision with structured cost evidence. `no_cpu_in_planned_path` is the
+strongest plan-time result. Read `runtime_caveats` too: admission,
+data-dependent memory, and device-side graph validation are execution-time
+contracts.

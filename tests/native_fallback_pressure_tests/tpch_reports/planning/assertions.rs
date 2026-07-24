@@ -14,10 +14,10 @@ pub(super) fn assert_tpch_datafusion_planning_report_contract(
 ) {
     assert_eq!(planning_query_count(report), TPCH_QUERY_COUNT);
     assert!(report.rows.len() >= TPCH_QUERY_COUNT);
-    assert_duplicate_query_rows_are_partial_native_fragments(report);
+    assert_duplicate_query_rows_are_mixed_plan_fragments(report);
     let accepted_primary_count = tpch_query_ids()
         .filter(|query_id| {
-            planning_replacement_row(report, query_id).outcome == NativeDataFusionPlanningOutcome::AcceptedReplaced
+            planning_replacement_row(report, query_id).outcome == Some(NativeDataFusionPlanningOutcome::Selected)
         })
         .count();
     assert_eq!(accepted_primary_count, EXPECTED_BOUNDED_TPCH_ACCEPTED.len());
@@ -37,7 +37,7 @@ pub(super) fn assert_tpch_datafusion_planning_report_contract(
     assert_highlighted_planning_rows_and_tsv(report, metadata_fingerprint);
 }
 
-fn assert_duplicate_query_rows_are_partial_native_fragments(report: &NativeDataFusionPlanningReport) {
+fn assert_duplicate_query_rows_are_mixed_plan_fragments(report: &NativeDataFusionPlanningReport) {
     for query_id in tpch_query_ids() {
         let rows = planning_rows(report, query_id);
         if rows.len() <= 1 {
@@ -46,7 +46,7 @@ fn assert_duplicate_query_rows_are_partial_native_fragments(report: &NativeDataF
         let whole_plan = whole_plan_planning_row(report, query_id);
         assert_eq!(
             whole_plan.outcome,
-            NativeDataFusionPlanningOutcome::RejectedBeforeExecution,
+            Some(NativeDataFusionPlanningOutcome::NotSupported),
             "{query_id} duplicate diagnostics should keep the whole-plan strict rejection as the first row"
         );
         assert!(
@@ -58,17 +58,16 @@ fn assert_duplicate_query_rows_are_partial_native_fragments(report: &NativeDataF
             "{query_id} whole-plan duplicate diagnostic must carry rejection details"
         );
         assert!(
-            rows.iter()
-                .all(|row| row.post_native_execution_path == NativeDataFusionPostNativeExecutionPath::PartialNative),
-            "{query_id} duplicate rows must be scoped to partial-native planning diagnostics"
+            rows.iter().all(|row| row.final_disposition == FinalPlanDisposition::Mixed),
+            "{query_id} duplicate rows must be scoped to mixed-plan planning diagnostics"
         );
         let accepted = rows
             .iter()
-            .filter(|row| row.outcome == NativeDataFusionPlanningOutcome::AcceptedReplaced)
+            .filter(|row| row.outcome == Some(NativeDataFusionPlanningOutcome::Selected))
             .collect::<Vec<_>>();
         assert!(
             !accepted.is_empty(),
-            "{query_id} duplicate partial-native diagnostics must include accepted fragment rows"
+            "{query_id} duplicate mixed-plan diagnostics must include accepted fragment rows"
         );
         for accepted in accepted {
             assert!(!accepted.rejected_before_execution, "{query_id} accepted fragment must not be marked rejected");
@@ -84,11 +83,11 @@ fn assert_duplicate_query_rows_are_partial_native_fragments(report: &NativeDataF
         }
         let rejected = rows
             .iter()
-            .filter(|row| row.outcome == NativeDataFusionPlanningOutcome::RejectedBeforeExecution)
+            .filter(|row| row.outcome == Some(NativeDataFusionPlanningOutcome::NotSupported))
             .collect::<Vec<_>>();
         assert!(
             !rejected.is_empty(),
-            "{query_id} duplicate partial-native diagnostics must include rejected whole-plan candidate rows"
+            "{query_id} duplicate mixed-plan diagnostics must include rejected whole-plan candidate rows"
         );
         for rejected in rejected {
             assert!(

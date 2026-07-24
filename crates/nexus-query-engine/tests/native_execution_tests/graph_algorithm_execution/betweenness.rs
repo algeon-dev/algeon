@@ -137,6 +137,7 @@ fn adaptive_betweenness_oom_retries_once_by_chunking_same_seed_set() {
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let memory_history = Arc::new(AdaptiveMemoryHistory::new());
     let context = ExecutionContext::builder()
+        .with_query_id("adaptive-betweenness-retry")
         .with_shared_runtime(Arc::clone(&runtime))
         .with_memory_control_policy(MemoryControlPolicy::Bounded {
             device_budget_bytes: 16 * 1024 * 1024,
@@ -193,23 +194,27 @@ fn adaptive_betweenness_oom_retries_once_by_chunking_same_seed_set() {
     };
 
     force_next_graph_adaptive_full_attempt_resource_exhausted_for_test();
-    let result = execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs).unwrap();
-    let QueryOutput::HostArrow(batch) = result.output() else {
+    let outcome = execute_query_plan_with_gpu_inputs_observed(
+        &context,
+        &plan,
+        &gpu_inputs,
+        RuntimeObservationConfig::native_execution(),
+    );
+    let QueryOutput::HostArrow(batch) = outcome.result().expect("adaptive retry should preserve native execution") else {
         panic!("host sink should materialize adaptive chunked betweenness output");
     };
+    let metrics = outcome.metrics();
     assert!(batch.num_rows() > 0);
     assert_vertex_betweenness_batches_close(expected_batch, batch);
-    assert_eq!(result.metrics().adaptive_retry_count, 1);
-    let graph_reservation = result
-        .metrics()
+    assert_eq!(metrics.adaptive_retry_count, 1);
+    let graph_reservation = metrics
         .reservation_events
         .iter()
         .find(|event| {
             event.memory_boundary == "graph_memory" && event.reservation_kind == ReservationKind::GraphAlgorithm
         })
         .expect("adaptive graph retry should reserve graph memory");
-    let graph_budget_events = result
-        .metrics()
+    let graph_budget_events = metrics
         .budgeted_execution_events
         .iter()
         .filter(|event| event.operation == "datafusion_nexus_cugraph_betweenness_centrality")
@@ -224,8 +229,8 @@ fn adaptive_betweenness_oom_retries_once_by_chunking_same_seed_set() {
         assert_eq!(event.budget_bytes, graph_reservation.requested_bytes);
         assert!(event.allocator_high_water_bytes.is_some());
     }
-    assert!(result.metrics().max_task_observed_peak_bytes.is_some());
-    let graph_metrics = &result.metrics().graph_algorithm_runtime_rows;
+    assert!(metrics.max_task_observed_peak_bytes.is_some());
+    let graph_metrics = &metrics.graph_algorithm_runtime_rows;
     assert_eq!(graph_metrics.len(), 1);
     assert!(graph_metrics[0].algorithm_metadata.contains("adaptive_retry=oom_retry"));
     assert!(graph_metrics[0].algorithm_metadata.contains("seed_count=4"));
@@ -236,6 +241,31 @@ fn adaptive_betweenness_oom_retries_once_by_chunking_same_seed_set() {
             "runtime graph peak should cover the graph-boundary budget high-water fallback"
         );
     }
+    assert_eq!(metrics.query_id().as_str(), "adaptive-betweenness-retry");
+    let snapshot = outcome.observation().expect("adaptive retry should preserve one native observation");
+    assert_eq!(snapshot.manifest().query_id.as_str(), "adaptive-betweenness-retry");
+    assert_eq!(snapshot.footer().terminal, Some(RuntimeTerminalOutcome::Succeeded));
+    let plan_execution_ids = snapshot
+        .topology()
+        .filter_map(|record| match record {
+            nexus_query_engine::observability::RuntimeTopologyRecord::PlanNode(row) => Some(row.plan_execution_id.clone()),
+            _ => None,
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(plan_execution_ids.len(), 1, "internal retry must not start another query or execution identity");
+    let plan_boundaries = snapshot
+        .events()
+        .iter()
+        .filter_map(|event| match &event.payload {
+            RuntimeObservationPayload::PlanExecutionBoundary { boundary } => Some(*boundary),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        plan_boundaries,
+        vec![PlanExecutionBoundaryKind::Started, PlanExecutionBoundaryKind::Finished],
+        "internal retry remains inside the initial native execution and never replays through another plan",
+    );
     assert!(
         memory_history.lookup_query_plan(&plan).is_none(),
         "graph retry evidence must not enter query-level adaptive history"
@@ -305,11 +335,28 @@ fn adaptive_betweenness_failed_retry_still_records_graph_floor() {
 
     force_next_graph_adaptive_full_attempt_resource_exhausted_for_test();
     force_next_graph_adaptive_chunk_attempt_resource_exhausted_for_test();
-    let error = match execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs) {
+    let outcome = execute_query_plan_with_gpu_inputs_observed(
+        &context,
+        &plan,
+        &gpu_inputs,
+        RuntimeObservationConfig::native_execution(),
+    );
+    let error = match outcome.result() {
         Ok(_) => panic!("forced failed graph retry should return resource exhausted"),
         Err(error) => error,
     };
     assert_eq!(error.code(), QueryErrorCode::CudfResourceExhausted);
+    assert_eq!(error.status(), QueryErrorCode::CudfResourceExhausted.status());
+    assert_eq!(outcome.metrics().adaptive_retry_count, 1, "only the retry action increments the adaptive counter");
+    let snapshot = outcome.observation().expect("failed adaptive retry retains its terminal observation");
+    assert_eq!(
+        snapshot.footer().terminal,
+        Some(RuntimeTerminalOutcome::Failed {
+            error_code: QueryErrorCode::CudfResourceExhausted.to_string(),
+            error_status: QueryErrorCode::CudfResourceExhausted.status().as_str().to_string(),
+        }),
+        "terminal status must come from the terminal retry error, not the recorded retry action",
+    );
     assert!(memory_history.lookup_query_plan(&plan).is_none());
     let history = memory_history
         .lookup_graph_algorithm(&history_spec)

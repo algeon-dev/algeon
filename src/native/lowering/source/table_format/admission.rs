@@ -1,17 +1,19 @@
 use super::*;
 
-pub(in crate::native::lowering) fn table_format_scan_rejection(source: &NormalizedNativeSource<'_>) -> FallbackReason {
+pub(in crate::native::lowering) fn table_format_scan_rejection(
+    source: &NormalizedNativeSource<'_>,
+) -> CapabilityReason {
     let Some(scan_exec) = source.table_format_scan_exec() else {
-        return FallbackReason::TableFormatUnsupported;
+        return CapabilityReason::TableFormatUnsupported;
     };
     if let Some(reason) = scan_exec.native_outcome().rejection_reason() {
         return reason;
     }
     let Some(scan_plan) = scan_exec.scan_plan() else {
-        return FallbackReason::TableFormatPlanningFailed;
+        return CapabilityReason::TableFormatPlanningFailed;
     };
     scan_plan
-        .unsupported_fallback_reasons()
+        .unsupported_capability_reasons()
         .into_iter()
         .next()
         .unwrap_or_else(|| table_format_scan_plan_rejection(scan_plan))
@@ -19,23 +21,23 @@ pub(in crate::native::lowering) fn table_format_scan_rejection(source: &Normaliz
 
 pub(in crate::native::lowering) fn available_table_format_scan_plan(
     scan_exec: &NexusIcebergScanExec,
-) -> Result<&TableFormatScanPlan, FallbackReason> {
+) -> Result<&TableFormatScanPlan, CapabilityReason> {
     if let Some(reason) = scan_exec.native_outcome().rejection_reason() {
         return Err(reason);
     }
-    scan_exec.scan_plan().ok_or(FallbackReason::TableFormatPlanningFailed)
+    scan_exec.scan_plan().ok_or(CapabilityReason::TableFormatPlanningFailed)
 }
 
-pub(super) fn validate_table_format_scan_plan(plan: &TableFormatScanPlan) -> Result<(), FallbackReason> {
+pub(super) fn validate_table_format_scan_plan(plan: &TableFormatScanPlan) -> Result<(), CapabilityReason> {
     match table_format_scan_plan_rejection(plan) {
-        FallbackReason::TableFormatUnsupported if plan.is_native_admissible() => Ok(()),
-        FallbackReason::TableFormatUnsupported => Err(FallbackReason::TableFormatUnsupported),
+        CapabilityReason::TableFormatUnsupported if plan.is_native_admissible() => Ok(()),
+        CapabilityReason::TableFormatUnsupported => Err(CapabilityReason::TableFormatUnsupported),
         reason => Err(reason),
     }
 }
 
-pub(super) fn table_format_scan_plan_rejection(plan: &TableFormatScanPlan) -> FallbackReason {
-    plan.first_rejection_reason().unwrap_or(FallbackReason::TableFormatUnsupported)
+pub(super) fn table_format_scan_plan_rejection(plan: &TableFormatScanPlan) -> CapabilityReason {
+    plan.first_not_supported_reason().unwrap_or(CapabilityReason::TableFormatUnsupported)
 }
 
 pub(super) fn table_format_scan_plan_is_empty_admissible(plan: &TableFormatScanPlan) -> bool {
@@ -48,7 +50,7 @@ pub(super) fn table_format_column_requirements(
     scan_schema: SchemaRef,
     filter: Option<&datafusion::physical_plan::filter::FilterExec>,
     required_output_fields: &RequiredFields,
-) -> Result<NativeParquetColumnRequirements, FallbackReason> {
+) -> Result<NativeParquetColumnRequirements, CapabilityReason> {
     let required_scan_output_indices =
         required_source_scan_output_indices(scan_schema.clone(), filter, required_output_fields)?;
     let output_columns = required_scan_output_indices
@@ -58,7 +60,7 @@ pub(super) fn table_format_column_requirements(
                 .fields()
                 .get(*index)
                 .map(|field| field.name().clone())
-                .ok_or(FallbackReason::UnsupportedExpression)
+                .ok_or(CapabilityReason::UnsupportedExpression)
         })
         .collect::<Result<Vec<_>, _>>()?;
     let mut filter_columns: BTreeSet<String> = BTreeSet::new();
@@ -76,7 +78,7 @@ pub(super) fn table_format_column_requirements(
                     .fields()
                     .get(index)
                     .map(|field| field.name().clone())
-                    .ok_or(FallbackReason::UnsupportedExpression)
+                    .ok_or(CapabilityReason::UnsupportedExpression)
             })
             .chain(filter_columns.iter().cloned().map(Ok))
             .collect::<Result<BTreeSet<_>, _>>()?;
@@ -103,7 +105,7 @@ pub(super) fn table_format_column_requirements(
     let mappings = table_format_column_mapping_by_name(scan_plan)?;
     let ordered_required_mappings = ordered_required_columns
         .iter()
-        .map(|column| mappings.get(column.as_str()).copied().ok_or(FallbackReason::NativeSourceSchemaMapping))
+        .map(|column| mappings.get(column.as_str()).copied().ok_or(CapabilityReason::NativeSourceSchemaMapping))
         .collect::<Result<Vec<_>, _>>()?;
     let mut read_columns: Vec<String> = Vec::new();
     let mut read_columns_seen: BTreeSet<String> = BTreeSet::new();
@@ -119,7 +121,7 @@ pub(super) fn table_format_column_requirements(
                 if file_schema.index_of(source_name).is_err()
                     && !(scan_plan.format == TableFormat::Iceberg && mapping.field_id.is_some())
                 {
-                    return Err(FallbackReason::NativeSourceSchemaMapping);
+                    return Err(CapabilityReason::NativeSourceSchemaMapping);
                 }
                 if read_columns_seen.insert(mapping.logical_name.clone()) {
                     read_columns.push(mapping.logical_name.clone());
@@ -127,7 +129,7 @@ pub(super) fn table_format_column_requirements(
             },
             TableFormatColumnSource::IdentityPartitionValue => {
                 if !is_supported_native_type(&mapping.data_type) {
-                    return Err(FallbackReason::UnsupportedType);
+                    return Err(CapabilityReason::UnsupportedType);
                 }
                 if partition_columns_seen.insert(mapping.logical_name.clone()) {
                     partition_columns.push(NativePartitionColumn::new(
@@ -140,13 +142,13 @@ pub(super) fn table_format_column_requirements(
             },
             TableFormatColumnSource::MissingNullableColumn => {
                 if !mapping.nullable {
-                    return Err(FallbackReason::NativeSourceSchemaMapping);
+                    return Err(CapabilityReason::NativeSourceSchemaMapping);
                 }
                 if !is_supported_native_type(&mapping.data_type) {
-                    return Err(FallbackReason::UnsupportedType);
+                    return Err(CapabilityReason::UnsupportedType);
                 }
                 if is_list_carry_type(&mapping.data_type) {
-                    return Err(FallbackReason::UnsupportedType);
+                    return Err(CapabilityReason::UnsupportedType);
                 }
                 if missing_columns_seen.insert(mapping.logical_name.clone()) {
                     missing_columns.push(NativeMissingColumn::new(
@@ -157,7 +159,7 @@ pub(super) fn table_format_column_requirements(
                 }
             },
             TableFormatColumnSource::UnsupportedNestedProjection => {
-                return Err(FallbackReason::IcebergNestedProjectionUnsupported);
+                return Err(CapabilityReason::IcebergNestedProjectionUnsupported);
             },
         }
     }
@@ -172,7 +174,7 @@ pub(super) fn table_format_column_requirements(
                 if scan_plan.format == TableFormat::Iceberg && mapping.field_id.is_some() { Ok(0) } else { Err(()) }
             })
         })
-        .map(|result| result.map_err(|_error| FallbackReason::NativeSourceSchemaMapping))
+        .map(|result| result.map_err(|_error| CapabilityReason::NativeSourceSchemaMapping))
         .collect::<Result<Vec<_>, _>>()?;
     let projected_output_column_source_refs = table_format_column_source_refs(
         scan_plan,
@@ -211,12 +213,12 @@ pub(super) fn table_format_column_requirements(
 
 fn table_format_equality_delete_required_columns(
     scan_plan: &TableFormatScanPlan,
-) -> Result<Vec<String>, FallbackReason> {
+) -> Result<Vec<String>, CapabilityReason> {
     let mut columns = Vec::new();
     for data_file in &scan_plan.data_files {
         for delete_file in &data_file.equality_delete_files {
             let Some(equality_ids) = delete_file.equality_ids.as_ref().filter(|ids| !ids.is_empty()) else {
-                return Err(FallbackReason::IcebergDeleteFilesUnsupported);
+                return Err(CapabilityReason::IcebergDeleteFilesUnsupported);
             };
             for field_id in equality_ids {
                 let mapping = scan_plan
@@ -224,9 +226,9 @@ fn table_format_equality_delete_required_columns(
                     .iter()
                     .chain(scan_plan.pure_filter_columns.iter())
                     .find(|mapping| mapping.field_id == Some(*field_id))
-                    .ok_or(FallbackReason::IcebergDeleteFilesUnsupported)?;
+                    .ok_or(CapabilityReason::IcebergDeleteFilesUnsupported)?;
                 if mapping.source != TableFormatColumnSource::DirectTopLevelFileColumn {
-                    return Err(FallbackReason::IcebergDeleteFilesUnsupported);
+                    return Err(CapabilityReason::IcebergDeleteFilesUnsupported);
                 }
                 if !columns.contains(&mapping.logical_name) {
                     columns.push(mapping.logical_name.clone());
@@ -241,14 +243,14 @@ fn table_format_predicate_scan_output_indices(
     scan_schema: SchemaRef,
     filter: Option<&datafusion::physical_plan::filter::FilterExec>,
     required_output_fields: &RequiredFields,
-) -> Result<Vec<usize>, FallbackReason> {
+) -> Result<Vec<usize>, CapabilityReason> {
     if let Some(filter) = filter
         && let Some(projection) = filter.projection()
     {
         return required_output_fields
             .predicate_indices(filter.schema().fields().len())?
             .into_iter()
-            .map(|output_index| projection.get(output_index).copied().ok_or(FallbackReason::UnsupportedExpression))
+            .map(|output_index| projection.get(output_index).copied().ok_or(CapabilityReason::UnsupportedExpression))
             .collect();
     }
     required_output_fields.predicate_indices(scan_schema.fields().len())
@@ -257,7 +259,7 @@ fn table_format_predicate_scan_output_indices(
 pub(super) fn table_format_row_presence_carrier_requirements(
     scan_plan: &TableFormatScanPlan,
     file_schema: &SchemaRef,
-) -> Result<NativeParquetColumnRequirements, FallbackReason> {
+) -> Result<NativeParquetColumnRequirements, CapabilityReason> {
     let carrier = table_format_count_star_fallback_column(scan_plan, file_schema)?;
     let read_column = carrier.read_column;
     let read_column_file_index = carrier.read_column_file_index;
@@ -280,14 +282,14 @@ pub(super) fn table_format_row_presence_carrier_requirements(
 
 pub(super) fn table_format_column_mapping_by_name(
     scan_plan: &TableFormatScanPlan,
-) -> Result<BTreeMap<&str, &TableFormatColumnMapping>, FallbackReason> {
+) -> Result<BTreeMap<&str, &TableFormatColumnMapping>, CapabilityReason> {
     let mut mappings = BTreeMap::new();
     for mapping in scan_plan.projected_columns.iter().chain(scan_plan.pure_filter_columns.iter()) {
         for key in [Some(mapping.logical_name.as_str()), mapping.source_name.as_deref()].into_iter().flatten() {
             if let Some(existing) = mappings.get(key)
                 && *existing != mapping
             {
-                return Err(FallbackReason::NativeSourceSchemaMapping);
+                return Err(CapabilityReason::NativeSourceSchemaMapping);
             }
             mappings.insert(key, mapping);
         }
@@ -302,11 +304,11 @@ pub(super) fn table_format_column_source_refs(
     partition_columns: &[NativePartitionColumn],
     missing_columns: &[NativeMissingColumn],
     columns: &[String],
-) -> Result<Vec<NativeSourceColumnRef>, FallbackReason> {
+) -> Result<Vec<NativeSourceColumnRef>, CapabilityReason> {
     columns
         .iter()
         .map(|column| {
-            let mapping = mappings.get(column.as_str()).ok_or(FallbackReason::NativeSourceSchemaMapping)?;
+            let mapping = mappings.get(column.as_str()).ok_or(CapabilityReason::NativeSourceSchemaMapping)?;
             match mapping.source {
                 TableFormatColumnSource::DirectTopLevelFileColumn => {
                     let source_name = mapping.source_name.as_ref().unwrap_or(&mapping.logical_name);
@@ -315,21 +317,21 @@ pub(super) fn table_format_column_source_refs(
                         Err(_) if scan_plan.format == TableFormat::Iceberg && mapping.field_id.is_some() => {
                             Ok(NativeSourceColumnRef::File(0))
                         },
-                        Err(_) => Err(FallbackReason::NativeSourceSchemaMapping),
+                        Err(_) => Err(CapabilityReason::NativeSourceSchemaMapping),
                     }
                 },
                 TableFormatColumnSource::IdentityPartitionValue => partition_columns
                     .iter()
                     .position(|field| field.name == mapping.logical_name)
                     .map(NativeSourceColumnRef::Partition)
-                    .ok_or(FallbackReason::NativeSourceSchemaMapping),
+                    .ok_or(CapabilityReason::NativeSourceSchemaMapping),
                 TableFormatColumnSource::MissingNullableColumn => missing_columns
                     .iter()
                     .position(|field| field.name == mapping.logical_name)
                     .map(NativeSourceColumnRef::MissingNull)
-                    .ok_or(FallbackReason::NativeSourceSchemaMapping),
+                    .ok_or(CapabilityReason::NativeSourceSchemaMapping),
                 TableFormatColumnSource::UnsupportedNestedProjection => {
-                    Err(FallbackReason::IcebergNestedProjectionUnsupported)
+                    Err(CapabilityReason::IcebergNestedProjectionUnsupported)
                 },
             }
         })

@@ -1,12 +1,12 @@
-//! Empirical CPU-fallback contract matrix validator.
+//! Empirical DataFusion-baseline contract matrix validator.
 //!
 //! Proves (with structured PlanningReport / plan node / result-parity evidence)
-//! what CPU retention means in datafusion-nexus, including:
+//! how datafusion-nexus retains executable DataFusion plans, including:
 //! - default native planning retaining an executable DataFusion plan
-//! - an explicit completed-plan requirement that rejects DataFusion CPU work
-//! - a CPU baseline that deliberately installs no relational native rule
-//! - Parquet and dual-mode Nexus Iceberg CPU delegates
-//! - frozen fact that runtime failures never restart on CPU
+//! - an explicit completed-plan requirement that rejects DataFusion execution
+//! - a DataFusion baseline that deliberately installs no relational native rule
+//! - Parquet and dual-mode Nexus Iceberg DataFusion delegates
+//! - the frozen fact that native runtime failures do not replay through DataFusion
 //!
 //! This is an explicit developer tool (`cargo run`), not a Cargo test target.
 
@@ -39,7 +39,7 @@ use datafusion_nexus::{
     backend::{GrantBand, MemoryShare, NexusAdmissionPolicy, NexusGpuBackend, NexusMemoryPolicy},
     error::{DataFusionErrorExt, ErrorCode},
     native_exec::NexusNativeExecutionConfig,
-    native_report::{NativeDataFusionPlanningReport, NativeDataFusionPostNativeExecutionPath},
+    native_report::{FinalPlanDisposition, NativeDataFusionPlanningReport},
     planner::{NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule},
     report::CandidateOutcome,
     session::{NEXUS_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME, NexusSessionStateBuilderExt},
@@ -57,19 +57,19 @@ type ToolResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 /// Session-level relational execution selection for this contract matrix.
 ///
-/// A CPU baseline deliberately has no native rule. The strict case still uses
-/// native planning, but rejects a completed plan that retains DataFusion CPU
+/// A DataFusion baseline deliberately has no native rule. The strict case still
+/// uses native planning, but rejects a completed plan that retains DataFusion
 /// execution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RelationalExecution {
     NativeDefault,
     RequireNoDataFusionCpu,
-    CpuBaseline,
+    DataFusionBaseline,
 }
 
 impl RelationalExecution {
     const fn installs_native_rule(self) -> bool {
-        !matches!(self, Self::CpuBaseline)
+        !matches!(self, Self::DataFusionBaseline)
     }
 
     const fn requires_no_datafusion_cpu(self) -> bool {
@@ -80,7 +80,7 @@ impl RelationalExecution {
         match self {
             Self::NativeDefault => "native_default",
             Self::RequireNoDataFusionCpu => "no_datafusion_cpu_requirement",
-            Self::CpuBaseline => "cpu_baseline",
+            Self::DataFusionBaseline => "datafusion_baseline",
         }
     }
 }
@@ -123,9 +123,9 @@ pub async fn run(args: Vec<String>) -> ToolResult<()> {
         .unwrap_or_else(|| PathBuf::from("docs/report"));
     fs::create_dir_all(&out_dir)?;
 
-    let work = env::var("CPU_FALLBACK_WORK_DIR")
+    let work = env::var("NEXUS_DATAFUSION_BASELINE_CONTRACT_WORK_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("/opt/dlami/nvme/fixture/data/cpu_fallback_validation"));
+        .unwrap_or_else(|_| PathBuf::from("/opt/dlami/nvme/fixture/data/datafusion_baseline_contract_validation"));
     fs::create_dir_all(&work)?;
     let fixture = work.join("synthetic");
     fs::create_dir_all(&fixture)?;
@@ -148,7 +148,7 @@ pub async fn run(args: Vec<String>) -> ToolResult<()> {
             &bench,
             &bench2,
             "SELECT key, SUM(m00) AS s, COUNT(*) AS c FROM bench GROUP BY key ORDER BY key",
-            Some(NativeDataFusionPostNativeExecutionPath::Native),
+            Some(FinalPlanDisposition::Native),
             Some(1),
             true,
             false,
@@ -158,14 +158,14 @@ pub async fn run(args: Vec<String>) -> ToolResult<()> {
 
     cases.push(
         run_parquet_case(
-            "parquet_native_default_unsupported_approx_distinct_retains_cpu",
+            "parquet_native_default_unsupported_approx_distinct_retains_datafusion",
             RelationalExecution::NativeDefault,
             &bench,
             &bench2,
             "SELECT t.key, APPROX_DISTINCT(t.name) AS d \
              FROM (SELECT b.key, b.name FROM bench b JOIN bench2 s ON b.key = s.key WHERE s.payload >= 10) t \
              GROUP BY t.key ORDER BY t.key",
-            Some(NativeDataFusionPostNativeExecutionPath::Cpu),
+            Some(FinalPlanDisposition::DataFusion),
             Some(0),
             true,
             false,
@@ -175,7 +175,7 @@ pub async fn run(args: Vec<String>) -> ToolResult<()> {
 
     cases.push(
         run_parquet_case(
-            "parquet_native_default_two_unsupported_branches_retain_cpu",
+            "parquet_native_default_two_unsupported_branches_retain_datafusion",
             RelationalExecution::NativeDefault,
             &bench,
             &bench2,
@@ -187,7 +187,7 @@ pub async fn run(args: Vec<String>) -> ToolResult<()> {
                SELECT 'b' AS src, u.key, APPROX_DISTINCT(u.name) AS d \
                FROM (SELECT b2.key, b2.name FROM bench2 b2 JOIN bench b3 ON b2.key = b3.key WHERE b3.m00 >= 2.0) u \
                GROUP BY u.key) v ORDER BY src, key",
-            Some(NativeDataFusionPostNativeExecutionPath::Cpu),
+            Some(FinalPlanDisposition::DataFusion),
             Some(0),
             true,
             false,
@@ -197,14 +197,14 @@ pub async fn run(args: Vec<String>) -> ToolResult<()> {
 
     cases.push(
         run_parquet_case(
-            "parquet_native_default_unsupported_expression_retains_cpu",
+            "parquet_native_default_unsupported_expression_retains_datafusion",
             RelationalExecution::NativeDefault,
             &bench,
             &bench2,
             "SELECT t.key, SUM(TRY_CAST(t.name AS DOUBLE)) AS s \
              FROM (SELECT b.key, b.name FROM bench b JOIN bench2 s ON b.key = s.key WHERE s.payload >= 10) t \
              GROUP BY t.key ORDER BY t.key",
-            Some(NativeDataFusionPostNativeExecutionPath::Cpu),
+            Some(FinalPlanDisposition::DataFusion),
             Some(0),
             true,
             false,
@@ -231,7 +231,7 @@ pub async fn run(args: Vec<String>) -> ToolResult<()> {
 
     cases.push(
         run_parquet_case(
-            "parquet_no_datafusion_cpu_requirement_rejects_cpu_plan",
+            "parquet_no_datafusion_cpu_requirement_rejects_datafusion_plan",
             RelationalExecution::RequireNoDataFusionCpu,
             &bench,
             &bench2,
@@ -248,8 +248,8 @@ pub async fn run(args: Vec<String>) -> ToolResult<()> {
 
     cases.push(
         run_parquet_case(
-            "parquet_cpu_baseline_supported_without_native_rule",
-            RelationalExecution::CpuBaseline,
+            "parquet_datafusion_baseline_supported_without_native_rule",
+            RelationalExecution::DataFusionBaseline,
             &bench,
             &bench2,
             "SELECT key, SUM(m00) AS s, COUNT(*) AS c FROM bench GROUP BY key ORDER BY key",
@@ -284,13 +284,13 @@ pub async fn run(args: Vec<String>) -> ToolResult<()> {
         });
     }
 
-    // ---- Runtime failure: no CPU rescue ----
+    // ---- Runtime failure: no DataFusion replay ----
     cases.push(run_runtime_no_rescue(&bench).await);
 
     // ---- Iceberg dual-mode provider ----
-    cases.push(run_iceberg_cpu_baseline_executes().await);
+    cases.push(run_iceberg_datafusion_baseline_executes().await);
     cases.push(run_iceberg_native_group_by_rewrites().await);
-    cases.push(run_iceberg_unsupported_expression_retains_executable_cpu_plan().await);
+    cases.push(run_iceberg_unsupported_expression_retains_executable_datafusion_plan().await);
 
     // Corner: empty parquet file
     let empty = fixture.join("empty.parquet");
@@ -316,13 +316,13 @@ pub async fn run(args: Vec<String>) -> ToolResult<()> {
     let fail_count = cases.len() - pass_count;
 
     let conclusions = vec![
-        "CPU retention is a planning-time completed-plan outcome, never a runtime GPU-to-CPU replay.".into(),
-        "Default native planning may retain an executable DataFusion CPU plan when a relational candidate is unsupported.".into(),
-        "The no_datafusion_cpu requirement rejects a completed plan with DataFusion CPU execution as FinalPlanRequirementUnsatisfied.".into(),
-        "A cpu_baseline session deliberately installs no relational native optimizer rule and executes through DataFusion.".into(),
-        "Local Parquet and NexusIcebergTableProvider both expose executable CPU plans when native lowering is not selected.".into(),
-        "NexusIcebergTableProvider is dual-mode: successful native lowering replaces NexusIcebergScanExec; otherwise its CPU delegate remains executable.".into(),
-        "After native execution starts, failures carry cpu_fallback_after_native_start=false and never restart on CPU.".into(),
+        "DataFusion retention is a planning-time completed-plan outcome, never a native-failure replay.".into(),
+        "Default native planning may retain an executable DataFusion plan when a relational candidate is unsupported.".into(),
+        "The no_datafusion_cpu requirement rejects a completed plan with DataFusion execution as FinalPlanRequirementUnsatisfied.".into(),
+        "A datafusion_baseline session deliberately installs no relational native optimizer rule and executes through DataFusion.".into(),
+        "Local Parquet and NexusIcebergTableProvider both expose executable DataFusion plans when native lowering is not selected.".into(),
+        "NexusIcebergTableProvider is dual-mode: successful native lowering replaces NexusIcebergScanExec; otherwise its DataFusion delegate remains executable.".into(),
+        "After native execution starts, cpu_fallback_after_native_start=false means that attempt is terminal and is not restarted through DataFusion.".into(),
     ];
 
     let report = MatrixReport {
@@ -334,8 +334,8 @@ pub async fn run(args: Vec<String>) -> ToolResult<()> {
         fail_count,
     };
 
-    let json_path = out_dir.join("cpu_fallback_contract_matrix.json");
-    let md_path = out_dir.join("cpu_fallback_contract_matrix.md");
+    let json_path = out_dir.join("datafusion_baseline_contract_matrix.json");
+    let md_path = out_dir.join("datafusion_baseline_contract_matrix.md");
     fs::write(&json_path, serde_json::to_string_pretty(&report)?)?;
     fs::write(&md_path, render_markdown(&report))?;
 
@@ -355,7 +355,7 @@ pub async fn run(args: Vec<String>) -> ToolResult<()> {
 
 fn render_markdown(report: &MatrixReport) -> String {
     let mut out = String::new();
-    out.push_str("# CPU fallback contract validation matrix\n\n");
+    out.push_str("# DataFusion baseline contract validation matrix\n\n");
     out.push_str(&format!(
         "- generated_at_unix_ms: {}\n- fixture_dir: `{}`\n- pass: **{}** / fail: **{}** / total: {}\n\n",
         report.generated_at_unix_ms,
@@ -406,11 +406,15 @@ fn render_markdown(report: &MatrixReport) -> String {
     out.push_str(
         "| `no_datafusion_cpu_requirement` | Install the native rule and reject the completed plan unless it has no DataFusion CPU execution. |\n",
     );
-    out.push_str("| `cpu_baseline` | Install no relational native rule; plan and execute solely with DataFusion. |\n");
     out.push_str(
-        "| Iceberg provider | `NexusIcebergScanExec` retains an executable CPU delegate unless native lowering replaces the wrapper. |\n",
+        "| `datafusion_baseline` | Install no relational native rule; plan and execute solely with DataFusion. |\n",
     );
-    out.push_str("| Runtime fallback | Does **not** exist (`cpu_fallback_after_native_start=false`). |\n");
+    out.push_str(
+        "| Iceberg provider | `NexusIcebergScanExec` retains an executable DataFusion delegate unless native lowering replaces the wrapper. |\n",
+    );
+    out.push_str(
+        "| Native runtime replay | Does **not** exist (`cpu_fallback_after_native_start=false` means the started native attempt is terminal). |\n",
+    );
     out
 }
 
@@ -420,7 +424,7 @@ async fn run_parquet_case(
     bench: &Path,
     bench2: &Path,
     sql: &str,
-    expected_path: Option<NativeDataFusionPostNativeExecutionPath>,
+    expected_path: Option<FinalPlanDisposition>,
     expected_min_fragments: Option<usize>,
     expect_execute_ok: bool,
     require_host_boundary_if_partial: bool,
@@ -468,7 +472,7 @@ async fn run_parquet_case_inner(
     bench: &Path,
     bench2: &Path,
     sql: &str,
-    expected_path: Option<NativeDataFusionPostNativeExecutionPath>,
+    expected_path: Option<FinalPlanDisposition>,
     expected_min_fragments: Option<usize>,
     expect_execute_ok: bool,
     require_host_boundary_if_partial: bool,
@@ -515,7 +519,7 @@ async fn run_parquet_case_inner(
     let row = report.as_ref().and_then(|r| r.rows.first());
     let (rewritten, rejected_reasons) = native_rule.map(outcome_stats).unwrap_or((0, Vec::new()));
 
-    let path = row.map(|r| r.post_native_execution_path);
+    let path = row.map(|r| r.final_disposition);
     let fragments = row.map(|r| r.native_plan_fragment_count);
     let host_boundaries = row.map(|r| r.host_datafusion_boundary_count);
     let plan_root = Some(plan.name().to_string());
@@ -533,11 +537,11 @@ async fn run_parquet_case_inner(
         ok = false;
         detail.push_str("; native rule installation did not match the selected execution mode");
     }
-    if selection == RelationalExecution::CpuBaseline
+    if selection == RelationalExecution::DataFusionBaseline
         && (contains_native == Some(true) || contains_data_source != Some(true))
     {
         ok = false;
-        detail.push_str("; cpu baseline must have no native plan and retain DataSourceExec");
+        detail.push_str("; DataFusion baseline must have no native plan and retain DataSourceExec");
     }
 
     if let Some(expected) = expected_path {
@@ -552,17 +556,15 @@ async fn run_parquet_case_inner(
             detail.push_str(&format!("; fragments {} < {min_f}", fragments.unwrap_or(0)));
         }
     }
-    if require_host_boundary_if_partial
-        && path == Some(NativeDataFusionPostNativeExecutionPath::PartialNative)
-        && host_boundaries.unwrap_or(0) < 1
+    if require_host_boundary_if_partial && path == Some(FinalPlanDisposition::Mixed) && host_boundaries.unwrap_or(0) < 1
     {
         ok = false;
-        detail.push_str("; PartialNative without host boundary");
+        detail.push_str("; mixed plan without a DataFusion boundary");
     }
     // A DataFusion plan retained by default native planning cannot contain native fragments.
-    if path == Some(NativeDataFusionPostNativeExecutionPath::Cpu) && fragments.unwrap_or(0) != 0 {
+    if path == Some(FinalPlanDisposition::DataFusion) && fragments.unwrap_or(0) != 0 {
         ok = false;
-        detail.push_str("; Cpu path must have zero fragments");
+        detail.push_str("; DataFusion path must have zero fragments");
     }
 
     let mut parity_ok = None;
@@ -591,12 +593,12 @@ async fn run_parquet_case_inner(
                 });
             },
         };
-        let cpu_ctx = plain_cpu_ctx();
-        register_pair(&cpu_ctx, bench, bench2).await?;
-        let cpu_batches = cpu_ctx.sql(sql).await?.collect().await?;
+        let datafusion_ctx = plain_datafusion_ctx();
+        register_pair(&datafusion_ctx, bench, bench2).await?;
+        let datafusion_batches = datafusion_ctx.sql(sql).await?.collect().await?;
         let gpu_text = pretty_format_batches(&gpu_batches)?.to_string();
-        let cpu_text = pretty_format_batches(&cpu_batches)?.to_string();
-        let equals = gpu_text == cpu_text;
+        let datafusion_text = pretty_format_batches(&datafusion_batches)?.to_string();
+        let equals = gpu_text == datafusion_text;
         parity_ok = Some(equals);
         if !equals {
             ok = false;
@@ -645,7 +647,7 @@ async fn run_single_table_case(
         let (rewritten, rejected_reasons) = native_rule.map(outcome_stats).unwrap_or((0, Vec::new()));
         let mut detail = format!(
             "path={:?} frag={:?} host={:?} rewritten={rewritten} rejected={rejected_reasons:?}",
-            row.map(|r| r.post_native_execution_path),
+            row.map(|r| r.final_disposition),
             row.map(|r| r.native_plan_fragment_count),
             row.map(|r| r.host_datafusion_boundary_count),
         );
@@ -653,11 +655,11 @@ async fn run_single_table_case(
         let mut parity_ok = None;
         if expect_execute_ok {
             let gpu_batches = gpu_ctx.sql(sql).await?.collect().await?;
-            let cpu_ctx = plain_cpu_ctx();
-            cpu_ctx.register_parquet(table, path.to_str().unwrap(), ParquetReadOptions::default()).await?;
-            let cpu_batches = cpu_ctx.sql(sql).await?.collect().await?;
-            let equals =
-                pretty_format_batches(&gpu_batches)?.to_string() == pretty_format_batches(&cpu_batches)?.to_string();
+            let datafusion_ctx = plain_datafusion_ctx();
+            datafusion_ctx.register_parquet(table, path.to_str().unwrap(), ParquetReadOptions::default()).await?;
+            let datafusion_batches = datafusion_ctx.sql(sql).await?.collect().await?;
+            let equals = pretty_format_batches(&gpu_batches)?.to_string()
+                == pretty_format_batches(&datafusion_batches)?.to_string();
             parity_ok = Some(equals);
             if !equals {
                 ok = false;
@@ -671,7 +673,7 @@ async fn run_single_table_case(
             category: selection.as_str().into(),
             ok,
             detail,
-            path: row.map(|r| format!("{:?}", r.post_native_execution_path)),
+            path: row.map(|r| format!("{:?}", r.final_disposition)),
             fragments: row.map(|r| r.native_plan_fragment_count),
             host_boundaries: row.map(|r| r.host_datafusion_boundary_count),
             plan_root: Some(plan.name().to_string()),
@@ -725,15 +727,12 @@ async fn run_tpch_case(tpch: &Path) -> CaseResult {
         let report = NativeDataFusionPlanningReport::from_retained_rule(id, Arc::clone(&plan), native_rule);
         let row = report.rows.first().ok_or("no planning row")?;
         let (rewritten, rejected_reasons) = outcome_stats(native_rule);
-        let dump_dir = PathBuf::from("/tmp/cpu_fallback_validation/plans");
+        let dump_dir = PathBuf::from("/tmp/datafusion_baseline_contract_validation/plans");
         fs::create_dir_all(&dump_dir)?;
         fs::write(dump_dir.join(format!("{id}.plan.txt")), displayable(plan.as_ref()).indent(false).to_string())?;
 
-        let path = row.post_native_execution_path;
-        let planning_ok = matches!(
-            path,
-            NativeDataFusionPostNativeExecutionPath::Cpu | NativeDataFusionPostNativeExecutionPath::Native
-        );
+        let path = row.final_disposition;
+        let planning_ok = matches!(path, FinalPlanDisposition::DataFusion | FinalPlanDisposition::Native);
 
         // Prefer full parity; if GPU collect fails, retain planning evidence and classify.
         let mut detail = format!(
@@ -742,14 +741,14 @@ async fn run_tpch_case(tpch: &Path) -> CaseResult {
         );
         let (ok, parity_ok, error_facts) = match gpu_ctx.sql(sql).await?.collect().await {
             Ok(gpu_batches) => {
-                let cpu_ctx = plain_cpu_ctx();
+                let datafusion_ctx = plain_datafusion_ctx();
                 for t in ["lineitem", "orders"] {
                     let p = tpch.join(format!("{t}.parquet"));
-                    cpu_ctx.register_parquet(t, p.to_str().unwrap(), ParquetReadOptions::default()).await?;
+                    datafusion_ctx.register_parquet(t, p.to_str().unwrap(), ParquetReadOptions::default()).await?;
                 }
-                let cpu_batches = cpu_ctx.sql(sql).await?.collect().await?;
+                let datafusion_batches = datafusion_ctx.sql(sql).await?.collect().await?;
                 let equals = pretty_format_batches(&gpu_batches)?.to_string()
-                    == pretty_format_batches(&cpu_batches)?.to_string();
+                    == pretty_format_batches(&datafusion_batches)?.to_string();
                 detail.push_str(&format!("; parity={equals}"));
                 (planning_ok && equals, Some(equals), BTreeMap::new())
             },
@@ -801,7 +800,7 @@ async fn run_tpch_case(tpch: &Path) -> CaseResult {
 }
 
 async fn run_runtime_no_rescue(bench: &Path) -> CaseResult {
-    let id = "runtime_failure_no_cpu_rescue";
+    let id = "runtime_failure_no_datafusion_replay";
     match run_runtime_no_rescue_constrained(bench).await {
         Ok(c) => c,
         Err(e) => CaseResult {
@@ -825,7 +824,7 @@ async fn run_runtime_no_rescue(bench: &Path) -> CaseResult {
 }
 
 async fn run_runtime_no_rescue_constrained(bench: &Path) -> ToolResult<CaseResult> {
-    let id = "runtime_failure_no_cpu_rescue";
+    let id = "runtime_failure_no_datafusion_replay";
     // Mirror tests/native_runtime_pruning_tests::constrained_native_datafusion_config:
     // device_budget_bytes=1 forces a memory reservation failure after native start.
     let runtime = Arc::new(cudf::Runtime::new()?);
@@ -850,9 +849,9 @@ async fn run_runtime_no_rescue_constrained(bench: &Path) -> ToolResult<CaseResul
             detail: format!(
                 "constrained plan not native: root={} path={:?}",
                 plan.name(),
-                row.map(|r| r.post_native_execution_path)
+                row.map(|r| r.final_disposition)
             ),
-            path: row.map(|r| format!("{:?}", r.post_native_execution_path)),
+            path: row.map(|r| format!("{:?}", r.final_disposition)),
             fragments: row.map(|r| r.native_plan_fragment_count),
             host_boundaries: row.map(|r| r.host_datafusion_boundary_count),
             plan_root: Some(plan.name().to_string()),
@@ -872,7 +871,7 @@ async fn run_runtime_no_rescue_constrained(bench: &Path) -> ToolResult<CaseResul
                 category: "runtime_failure".into(),
                 ok: false,
                 detail: format!("expected runtime failure under 1-byte budget; got {} batches", batches.len()),
-                path: row.map(|r| format!("{:?}", r.post_native_execution_path)),
+                path: row.map(|r| format!("{:?}", r.final_disposition)),
                 fragments: row.map(|r| r.native_plan_fragment_count),
                 host_boundaries: row.map(|r| r.host_datafusion_boundary_count),
                 plan_root: Some(plan.name().to_string()),
@@ -895,8 +894,10 @@ async fn run_runtime_no_rescue_constrained(bench: &Path) -> ToolResult<CaseResul
         id: id.into(),
         category: "runtime_failure".into(),
         ok,
-        detail: format!("native plan started then failed; no_rescue={no_rescue} stage={stage:?} err={err}"),
-        path: row.map(|r| format!("{:?}", r.post_native_execution_path)),
+        detail: format!(
+            "native plan started then failed without DataFusion replay; no_rescue={no_rescue} stage={stage:?} err={err}"
+        ),
+        path: row.map(|r| format!("{:?}", r.final_disposition)),
         fragments: row.map(|r| r.native_plan_fragment_count),
         host_boundaries: row.map(|r| r.host_datafusion_boundary_count),
         plan_root: Some(plan.name().to_string()),
@@ -910,12 +911,12 @@ async fn run_runtime_no_rescue_constrained(bench: &Path) -> ToolResult<CaseResul
     })
 }
 
-async fn run_iceberg_cpu_baseline_executes() -> CaseResult {
-    let id = "iceberg_cpu_baseline_executes_cpu_delegate";
+async fn run_iceberg_datafusion_baseline_executes() -> CaseResult {
+    let id = "iceberg_datafusion_baseline_executes_datafusion_delegate";
     let result = async {
         let schema = iceberg_schema();
         let provider = iceberg_provider(Arc::clone(&schema), 32)?;
-        let ctx = relational_ctx(RelationalExecution::CpuBaseline)?;
+        let ctx = relational_ctx(RelationalExecution::DataFusionBaseline)?;
         ctx.register_table("iceberg_t", provider)?;
         let sql = "SELECT value, COUNT(*) AS c FROM iceberg_t GROUP BY value ORDER BY value";
         let plan = ctx.sql(sql).await?.create_physical_plan().await?;
@@ -926,7 +927,7 @@ async fn run_iceberg_cpu_baseline_executes() -> CaseResult {
         let native_rule = installed_final_native_rule(&session_state);
         ToolResult::Ok(CaseResult {
             id: id.into(),
-            category: RelationalExecution::CpuBaseline.as_str().into(),
+            category: RelationalExecution::DataFusionBaseline.as_str().into(),
             ok: has_scan && !has_native && native_rule.is_none() && !batches.is_empty(),
             detail: format!(
                 "has_scan={has_scan} has_native={has_native} native_rule={} batches={}",
@@ -947,7 +948,7 @@ async fn run_iceberg_cpu_baseline_executes() -> CaseResult {
         })
     }
     .await;
-    case_result_or_error(id, RelationalExecution::CpuBaseline.as_str(), result)
+    case_result_or_error(id, RelationalExecution::DataFusionBaseline.as_str(), result)
 }
 
 async fn run_iceberg_native_group_by_rewrites() -> CaseResult {
@@ -971,18 +972,13 @@ async fn run_iceberg_native_group_by_rewrites() -> CaseResult {
         let has_native = plan_contains_native(plan.as_ref());
         let ok = !has_scan
             && has_native
-            && row
-                .map(|r| r.post_native_execution_path == NativeDataFusionPostNativeExecutionPath::Native)
-                .unwrap_or(false);
+            && row.map(|r| r.final_disposition == FinalPlanDisposition::Native).unwrap_or(false);
         ToolResult::Ok(CaseResult {
             id: id.into(),
             category: RelationalExecution::NativeDefault.as_str().into(),
             ok,
-            detail: format!(
-                "has_scan={has_scan} has_native={has_native} path={:?}",
-                row.map(|r| r.post_native_execution_path)
-            ),
-            path: row.map(|r| format!("{:?}", r.post_native_execution_path)),
+            detail: format!("has_scan={has_scan} has_native={has_native} path={:?}", row.map(|r| r.final_disposition)),
+            path: row.map(|r| format!("{:?}", r.final_disposition)),
             fragments: row.map(|r| r.native_plan_fragment_count),
             host_boundaries: row.map(|r| r.host_datafusion_boundary_count),
             plan_root: Some(plan.name().to_string()),
@@ -999,8 +995,8 @@ async fn run_iceberg_native_group_by_rewrites() -> CaseResult {
     case_result_or_error(id, RelationalExecution::NativeDefault.as_str(), result)
 }
 
-async fn run_iceberg_unsupported_expression_retains_executable_cpu_plan() -> CaseResult {
-    let id = "iceberg_native_default_unsupported_expression_retains_cpu_delegate";
+async fn run_iceberg_unsupported_expression_retains_executable_datafusion_plan() -> CaseResult {
+    let id = "iceberg_native_default_unsupported_expression_retains_datafusion_delegate";
     let result = async {
         let schema = iceberg_schema();
         let provider = iceberg_provider(Arc::clone(&schema), 48)?;
@@ -1013,7 +1009,7 @@ async fn run_iceberg_unsupported_expression_retains_executable_cpu_plan() -> Cas
         let ctx = SessionContext::new_with_state(state);
         ctx.register_table("iceberg_t", provider)?;
         // TRY_CAST blocks native lowering. The dual-mode wrapper must retain its
-        // executable CPU delegate rather than making the query unplannable.
+        // executable DataFusion delegate rather than making the query unplannable.
         let sql = "SELECT value, SUM(TRY_CAST(value AS DOUBLE)) AS s FROM iceberg_t GROUP BY value";
         let plan = ctx.sql(sql).await?.create_physical_plan().await?;
         let report = NativeDataFusionPlanningReport::from_retained_rule(id, Arc::clone(&plan), rule.as_ref());
@@ -1026,16 +1022,14 @@ async fn run_iceberg_unsupported_expression_retains_executable_cpu_plan() -> Cas
             category: RelationalExecution::NativeDefault.as_str().into(),
             ok: has_scan
                 && !has_native
-                && row
-                    .map(|row| row.post_native_execution_path == NativeDataFusionPostNativeExecutionPath::Cpu)
-                    .unwrap_or(false)
+                && row.map(|row| row.final_disposition == FinalPlanDisposition::DataFusion).unwrap_or(false)
                 && !batches.is_empty(),
             detail: format!(
                 "has_scan={has_scan} has_native={has_native} path={:?} batches={}",
-                row.map(|row| row.post_native_execution_path),
+                row.map(|row| row.final_disposition),
                 batches.len()
             ),
-            path: row.map(|row| format!("{:?}", row.post_native_execution_path)),
+            path: row.map(|row| format!("{:?}", row.final_disposition)),
             fragments: row.map(|row| row.native_plan_fragment_count),
             host_boundaries: row.map(|row| row.host_datafusion_boundary_count),
             plan_root: Some(plan.name().to_string()),
@@ -1067,35 +1061,35 @@ async fn run_empty_parquet_corner(path: &Path) -> CaseResult {
         let (rewritten, rejected_reasons) = native_rule.map(outcome_stats).unwrap_or((0, vec![]));
         let mut detail = format!(
             "path={:?} frag={:?} host={:?} rewritten={rewritten} rejected={rejected_reasons:?}",
-            row.map(|r| r.post_native_execution_path),
+            row.map(|r| r.final_disposition),
             row.map(|r| r.native_plan_fragment_count),
             row.map(|r| r.host_datafusion_boundary_count)
         );
         let (ok, parity_ok, error_facts) = match gpu_ctx.sql(sql).await?.collect().await {
             Ok(gpu_batches) => {
-                let cpu_ctx = plain_cpu_ctx();
-                cpu_ctx.register_parquet("empty", path.to_str().unwrap(), ParquetReadOptions::default()).await?;
-                let cpu_batches = cpu_ctx.sql(sql).await?.collect().await?;
+                let datafusion_ctx = plain_datafusion_ctx();
+                datafusion_ctx.register_parquet("empty", path.to_str().unwrap(), ParquetReadOptions::default()).await?;
+                let datafusion_batches = datafusion_ctx.sql(sql).await?.collect().await?;
                 let equals = pretty_format_batches(&gpu_batches)?.to_string()
-                    == pretty_format_batches(&cpu_batches)?.to_string();
+                    == pretty_format_batches(&datafusion_batches)?.to_string();
                 detail.push_str(&format!("; parity={equals}"));
                 (equals, Some(equals), BTreeMap::new())
             },
             Err(e) => {
                 let error_facts = nexus_facts_from_df_error(&e);
-                // Empty-input native path may fail closed rather than fallback; that is OK
-                // for contract validation as long as it is NOT silent CPU rescue after start
+                // Empty-input native execution may fail closed. That is valid evidence as
+                // long as it does not silently replay through DataFusion after native start
                 // of a different plan id, and the planning report is populated.
                 let no_rescue = error_facts.get("cpu_fallback_after_native_start").map(String::as_str) == Some("false");
                 let ok = if row.is_some() && (no_rescue || error_facts.get("error_code").is_some()) {
-                    detail.push_str(&format!("; empty native collect failed without CPU rescue (contractual): {e}"));
+                    detail.push_str(&format!(
+                        "; empty native collect failed without DataFusion replay (contractual): {e}"
+                    ));
                     true
                 } else if row.is_some()
-                    && row
-                        .map(|r| r.post_native_execution_path == NativeDataFusionPostNativeExecutionPath::Cpu)
-                        .unwrap_or(false)
+                    && row.map(|r| r.final_disposition == FinalPlanDisposition::DataFusion).unwrap_or(false)
                 {
-                    detail.push_str(&format!("; unexpected CPU path collect failure: {e}"));
+                    detail.push_str(&format!("; unexpected DataFusion-path collect failure: {e}"));
                     false
                 } else {
                     detail.push_str(&format!("; collect failed: {e}"));
@@ -1109,7 +1103,7 @@ async fn run_empty_parquet_corner(path: &Path) -> CaseResult {
             category: "parquet_corner".into(),
             ok,
             detail,
-            path: row.map(|r| format!("{:?}", r.post_native_execution_path)),
+            path: row.map(|r| format!("{:?}", r.final_disposition)),
             fragments: row.map(|r| r.native_plan_fragment_count),
             host_boundaries: row.map(|r| r.host_datafusion_boundary_count),
             plan_root: Some(plan.name().to_string()),
@@ -1182,7 +1176,7 @@ fn build_backend() -> ToolResult<NexusGpuBackend> {
 fn relational_ctx(selection: RelationalExecution) -> ToolResult<SessionContext> {
     let builder = SessionStateBuilder::new_with_default_features().with_config(direct_cfg());
     let state = match selection {
-        RelationalExecution::CpuBaseline => builder.build(),
+        RelationalExecution::DataFusionBaseline => builder.build(),
         RelationalExecution::NativeDefault => build_backend()?.install_on(builder)?.build(),
         RelationalExecution::RequireNoDataFusionCpu => builder
             .with_nexus_native(NexusNativeOptimizerConfig::default().with_no_datafusion_cpu_requirement())
@@ -1226,7 +1220,7 @@ fn direct_cfg() -> SessionConfig {
     config
 }
 
-fn plain_cpu_ctx() -> SessionContext {
+fn plain_datafusion_ctx() -> SessionContext {
     SessionContext::new_with_state(SessionStateBuilder::new_with_default_features().with_config(direct_cfg()).build())
 }
 
@@ -1251,15 +1245,20 @@ fn outcome_stats(rule: &NexusNativePhysicalOptimizerRule) -> (usize, Vec<String>
     let Some(report) = rule.last_report() else {
         return (0, Vec::new());
     };
-    let mut rewritten = 0;
-    let mut rejected = Vec::new();
+    let mut selected = 0;
+    let mut not_selected = Vec::new();
     for outcome in report.outcomes() {
         match outcome {
-            CandidateOutcome::Rewritten { .. } => rewritten += 1,
-            CandidateOutcome::Rejected { reason, .. } => rejected.push(reason.code().to_string()),
+            CandidateOutcome::Selected { .. } => selected += 1,
+            CandidateOutcome::NotSupported { capability_reason, .. } => {
+                not_selected.push(capability_reason.code().to_string())
+            },
+            CandidateOutcome::NotSelectedByCost { cost_reason, .. } => {
+                not_selected.push(cost_reason.code().to_string())
+            },
         }
     }
-    (rewritten, rejected)
+    (selected, not_selected)
 }
 
 fn plan_contains_native(plan: &dyn ExecutionPlan) -> bool {
@@ -1355,11 +1354,11 @@ fn iceberg_schema() -> Arc<Schema> {
 }
 
 fn iceberg_provider(schema: Arc<Schema>, rows: i64) -> ToolResult<Arc<NexusIcebergTableProvider>> {
-    let cpu_provider: Arc<dyn TableProvider> =
+    let datafusion_provider: Arc<dyn TableProvider> =
         Arc::new(MemTable::try_new(Arc::clone(&schema), vec![vec![iceberg_record_batch(Arc::clone(&schema), rows)?]])?);
-    let scan_plan = native_admissible_scan_plan(schema, "/tmp/cpu-fallback-contract-iceberg.parquet");
+    let scan_plan = native_admissible_scan_plan(schema, "/tmp/datafusion-baseline-contract-iceberg.parquet");
     Ok(Arc::new(NexusIcebergTableProvider::from_cpu_provider_and_native_planner(
-        cpu_provider,
+        datafusion_provider,
         Some(12_345),
         Arc::new(FixedPlanner { plan: scan_plan }),
     )))

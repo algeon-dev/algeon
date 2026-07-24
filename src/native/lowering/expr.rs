@@ -17,6 +17,7 @@ use nexus_query_engine::expr::{
 };
 
 use crate::{
+    capability::CapabilityReason,
     native::{
         expression_contract::{
             ResolvedColumn, ScalarFunctionKind, SupportedBinaryOperator, ValidatedPhysicalExpr,
@@ -29,14 +30,13 @@ use crate::{
         },
         lowering::FieldBinding,
     },
-    policy::FallbackReason,
 };
 
 pub(super) fn physical_expr_field(
     expr: &Arc<dyn PhysicalExpr>,
     input_schema: &SchemaRef,
     name: &str,
-) -> Result<Field, FallbackReason> {
+) -> Result<Field, CapabilityReason> {
     let validated = validate_physical_expr(expr, input_schema)?;
     physical_expr_field_from_validated(&validated, name)
 }
@@ -44,20 +44,20 @@ pub(super) fn physical_expr_field(
 pub(super) fn physical_expr_field_from_validated(
     validated: &ValidatedPhysicalExpr,
     name: &str,
-) -> Result<Field, FallbackReason> {
+) -> Result<Field, CapabilityReason> {
     let expr = validated.expr();
     let input_schema = validated.input_schema();
     let data_type =
         physical_expr_data_type(expr, input_schema).expect("validated expression must have a resolved output type");
     debug_assert!(is_supported_native_type(&data_type), "validated expression output must be a native type");
-    let nullable = expr.nullable(input_schema.as_ref()).map_err(|_error| FallbackReason::UnsupportedExpression)?;
+    let nullable = expr.nullable(input_schema.as_ref()).map_err(|_error| CapabilityReason::UnsupportedExpression)?;
     Ok(Field::new(name, data_type, nullable))
 }
 
 pub(in crate::native) fn lower_physical_expr(
     expr: &Arc<dyn PhysicalExpr>,
     input_schema: &SchemaRef,
-) -> Result<NativeExpr, FallbackReason> {
+) -> Result<NativeExpr, CapabilityReason> {
     lower_physical_expr_with_bindings(expr, input_schema, None)
 }
 
@@ -65,7 +65,7 @@ pub(super) fn lower_physical_expr_with_bindings(
     expr: &Arc<dyn PhysicalExpr>,
     input_schema: &SchemaRef,
     bindings: Option<&[FieldBinding]>,
-) -> Result<NativeExpr, FallbackReason> {
+) -> Result<NativeExpr, CapabilityReason> {
     let validated = validate_physical_expr(expr, input_schema)?;
     lower_validated_physical_expr_with_bindings(&validated, bindings)
 }
@@ -73,7 +73,7 @@ pub(super) fn lower_physical_expr_with_bindings(
 pub(super) fn lower_validated_physical_expr_with_bindings(
     validated: &crate::native::expression_contract::ValidatedPhysicalExpr,
     bindings: Option<&[FieldBinding]>,
-) -> Result<NativeExpr, FallbackReason> {
+) -> Result<NativeExpr, CapabilityReason> {
     let expr = validated.expr();
     let input_schema = validated.input_schema();
     if let Some(column) = expr.downcast_ref::<Column>() {
@@ -153,7 +153,7 @@ pub(super) fn lower_validated_physical_expr_with_bindings(
         return lower_case_expr(case, validated, bindings);
     }
     if let Some(dynamic_filter) = expr.downcast_ref::<DynamicFilterPhysicalExpr>() {
-        let current = dynamic_filter.current().map_err(|_error| FallbackReason::UnsupportedExpression)?;
+        let current = dynamic_filter.current().map_err(|_error| CapabilityReason::UnsupportedExpression)?;
         // Dynamic filters are mutable. Validate the current snapshot before
         // deriving a new lowering proof rather than trusting the older root.
         let current = validate_physical_expr(&current, input_schema)?;
@@ -172,7 +172,7 @@ fn lower_validated_child_expr_with_bindings(
     expr: &Arc<dyn PhysicalExpr>,
     parent: &crate::native::expression_contract::ValidatedPhysicalExpr,
     bindings: Option<&[FieldBinding]>,
-) -> Result<NativeExpr, FallbackReason> {
+) -> Result<NativeExpr, CapabilityReason> {
     let child = parent.trusted_descendant(expr);
     lower_validated_physical_expr_with_bindings(&child, bindings)
 }
@@ -181,7 +181,7 @@ fn lower_try_cast_expr(
     try_cast: &TryCastExpr,
     validated: &crate::native::expression_contract::ValidatedPhysicalExpr,
     bindings: Option<&[FieldBinding]>,
-) -> Result<NativeExpr, FallbackReason> {
+) -> Result<NativeExpr, CapabilityReason> {
     let inner = lower_validated_child_expr_with_bindings(try_cast.expr(), validated, bindings)?;
     Ok(NativeExpr::try_cast(inner, try_cast.cast_type().clone()))
 }
@@ -205,7 +205,7 @@ fn lower_like_expr(
     like: &LikeExpr,
     validated: &ValidatedPhysicalExpr,
     bindings: Option<&[FieldBinding]>,
-) -> Result<NativeExpr, FallbackReason> {
+) -> Result<NativeExpr, CapabilityReason> {
     let pattern = literal_string(like.pattern()).expect("validated LIKE pattern must be a string literal");
     debug_assert!(!like.case_insensitive(), "case-insensitive LIKE cannot carry a validation proof");
     let expr = lower_validated_child_expr_with_bindings(like.expr(), validated, bindings)?;
@@ -220,7 +220,7 @@ fn lower_in_list_expr(
     in_list: &InListExpr,
     validated: &ValidatedPhysicalExpr,
     bindings: Option<&[FieldBinding]>,
-) -> Result<NativeExpr, FallbackReason> {
+) -> Result<NativeExpr, CapabilityReason> {
     debug_assert!(!in_list.is_empty(), "an empty IN list cannot carry a validation proof");
     let expr = lower_validated_child_expr_with_bindings(in_list.expr(), validated, bindings)?;
     let list = in_list
@@ -239,7 +239,7 @@ fn lower_case_expr(
     case: &CaseExpr,
     validated: &ValidatedPhysicalExpr,
     bindings: Option<&[FieldBinding]>,
-) -> Result<NativeExpr, FallbackReason> {
+) -> Result<NativeExpr, CapabilityReason> {
     let input_schema = validated.input_schema();
     let base_expr =
         case.expr().map(|expr| lower_validated_child_expr_with_bindings(expr, validated, bindings)).transpose()?;
@@ -257,7 +257,7 @@ fn lower_case_expr(
             };
             Ok(NativeCaseWhen::new(when, lower_validated_child_expr_with_bindings(then, validated, bindings)?))
         })
-        .collect::<Result<Vec<_>, FallbackReason>>()?;
+        .collect::<Result<Vec<_>, CapabilityReason>>()?;
     let else_expr = match case.else_expr() {
         Some(else_expr) => lower_validated_child_expr_with_bindings(else_expr, validated, bindings)?,
         None => {
@@ -273,7 +273,7 @@ fn lower_scalar_function_expr(
     function: &ScalarFunctionExpr,
     validated: &ValidatedPhysicalExpr,
     bindings: Option<&[FieldBinding]>,
-) -> Result<NativeExpr, FallbackReason> {
+) -> Result<NativeExpr, CapabilityReason> {
     let kind = ScalarFunctionKind::from_name(function.name()).expect("validated scalar function kind");
     match kind {
         ScalarFunctionKind::Substring => lower_substring_function(function, validated, bindings),
@@ -308,7 +308,7 @@ fn lower_substring_function(
     function: &ScalarFunctionExpr,
     validated: &ValidatedPhysicalExpr,
     bindings: Option<&[FieldBinding]>,
-) -> Result<NativeExpr, FallbackReason> {
+) -> Result<NativeExpr, CapabilityReason> {
     let args = function.args();
     debug_assert!((2..=3).contains(&args.len()), "invalid SUBSTRING arity cannot carry a validation proof");
     let start = literal_i32(&args[1]).expect("validated SUBSTRING start must be an i32 literal");
@@ -329,7 +329,7 @@ fn lower_extract_function(
     function: &ScalarFunctionExpr,
     validated: &ValidatedPhysicalExpr,
     bindings: Option<&[FieldBinding]>,
-) -> Result<NativeExpr, FallbackReason> {
+) -> Result<NativeExpr, CapabilityReason> {
     let [field, expr] = function.args() else { unreachable!("validated EXTRACT must have two arguments") };
     let field = match literal_string(field)
         .expect("validated EXTRACT field must be a string literal")
@@ -349,7 +349,7 @@ fn lower_date_trunc_function(
     function: &ScalarFunctionExpr,
     validated: &ValidatedPhysicalExpr,
     bindings: Option<&[FieldBinding]>,
-) -> Result<NativeExpr, FallbackReason> {
+) -> Result<NativeExpr, CapabilityReason> {
     let [field, expr] = function.args() else { unreachable!("validated DATE_TRUNC must have two arguments") };
     let field = lower_validated_date_trunc_field(
         &literal_string(field).expect("validated DATE_TRUNC field must be a string literal").to_ascii_lowercase(),
@@ -374,7 +374,7 @@ fn lower_to_timestamp_seconds_function(
     function: &ScalarFunctionExpr,
     validated: &ValidatedPhysicalExpr,
     bindings: Option<&[FieldBinding]>,
-) -> Result<NativeExpr, FallbackReason> {
+) -> Result<NativeExpr, CapabilityReason> {
     let [expr] = function.args() else { unreachable!("validated TO_TIMESTAMP_SECONDS must have one argument") };
     let output_type = validated_scalar_output_type(function, validated);
     Ok(NativeExpr::cast(lower_validated_child_expr_with_bindings(expr, validated, bindings)?, output_type))
@@ -385,7 +385,7 @@ fn lower_string_case_function(
     validated: &ValidatedPhysicalExpr,
     bindings: Option<&[FieldBinding]>,
     constructor: fn(NativeExpr) -> NativeExpr,
-) -> Result<NativeExpr, FallbackReason> {
+) -> Result<NativeExpr, CapabilityReason> {
     let [expr] = function.args() else { unreachable!("validated string case function must have one argument") };
     Ok(constructor(lower_validated_child_expr_with_bindings(expr, validated, bindings)?))
 }
@@ -395,7 +395,7 @@ fn lower_trim_function(
     validated: &ValidatedPhysicalExpr,
     bindings: Option<&[FieldBinding]>,
     constructor: fn(NativeExpr, String) -> NativeExpr,
-) -> Result<NativeExpr, FallbackReason> {
+) -> Result<NativeExpr, CapabilityReason> {
     let args = function.args();
     debug_assert!((1..=2).contains(&args.len()), "invalid TRIM arity cannot carry a validation proof");
     let trim_chars = if args.len() == 2 {
@@ -412,7 +412,7 @@ fn lower_string_predicate_function(
     validated: &ValidatedPhysicalExpr,
     bindings: Option<&[FieldBinding]>,
     constructor: fn(NativeExpr, String) -> NativeExpr,
-) -> Result<NativeExpr, FallbackReason> {
+) -> Result<NativeExpr, CapabilityReason> {
     let [expr, pattern] = function.args() else { unreachable!("validated string predicate must have two arguments") };
     Ok(constructor(
         lower_validated_child_expr_with_bindings(expr, validated, bindings)?,
@@ -424,7 +424,7 @@ fn lower_string_length_function(
     function: &ScalarFunctionExpr,
     validated: &ValidatedPhysicalExpr,
     bindings: Option<&[FieldBinding]>,
-) -> Result<NativeExpr, FallbackReason> {
+) -> Result<NativeExpr, CapabilityReason> {
     let [expr] = function.args() else { unreachable!("validated string length function must have one argument") };
     let output_type = validated_scalar_output_type(function, validated);
     Ok(NativeExpr::string_length(lower_validated_child_expr_with_bindings(expr, validated, bindings)?, output_type))
@@ -434,7 +434,7 @@ fn lower_regexp_replace_function(
     function: &ScalarFunctionExpr,
     validated: &ValidatedPhysicalExpr,
     bindings: Option<&[FieldBinding]>,
-) -> Result<NativeExpr, FallbackReason> {
+) -> Result<NativeExpr, CapabilityReason> {
     let [expr, pattern, replacement] = function.args() else {
         unreachable!("validated REGEXP_REPLACE must have three arguments")
     };
@@ -451,7 +451,7 @@ fn lower_concat_function(
     function: &ScalarFunctionExpr,
     validated: &ValidatedPhysicalExpr,
     bindings: Option<&[FieldBinding]>,
-) -> Result<NativeExpr, FallbackReason> {
+) -> Result<NativeExpr, CapabilityReason> {
     debug_assert!(!function.args().is_empty(), "empty CONCAT cannot carry a validation proof");
     function
         .args()
@@ -465,7 +465,7 @@ fn lower_abs_function(
     function: &ScalarFunctionExpr,
     validated: &ValidatedPhysicalExpr,
     bindings: Option<&[FieldBinding]>,
-) -> Result<NativeExpr, FallbackReason> {
+) -> Result<NativeExpr, CapabilityReason> {
     let [expr] = function.args() else { unreachable!("validated ABS must have one argument") };
     Ok(NativeExpr::abs(lower_validated_child_expr_with_bindings(expr, validated, bindings)?))
 }
@@ -474,7 +474,7 @@ fn lower_sqrt_function(
     function: &ScalarFunctionExpr,
     validated: &ValidatedPhysicalExpr,
     bindings: Option<&[FieldBinding]>,
-) -> Result<NativeExpr, FallbackReason> {
+) -> Result<NativeExpr, CapabilityReason> {
     let [expr] = function.args() else { unreachable!("validated SQRT must have one argument") };
     let output_type = validated_scalar_output_type(function, validated);
     Ok(NativeExpr::sqrt(lower_validated_child_expr_with_bindings(expr, validated, bindings)?, output_type))
@@ -484,7 +484,7 @@ fn lower_round_function(
     function: &ScalarFunctionExpr,
     validated: &ValidatedPhysicalExpr,
     bindings: Option<&[FieldBinding]>,
-) -> Result<NativeExpr, FallbackReason> {
+) -> Result<NativeExpr, CapabilityReason> {
     let args = function.args();
     debug_assert!((1..=2).contains(&args.len()), "invalid ROUND arity cannot carry a validation proof");
     let decimal_places = if args.len() == 2 {
@@ -504,7 +504,7 @@ fn lower_nullif_function(
     function: &ScalarFunctionExpr,
     validated: &ValidatedPhysicalExpr,
     bindings: Option<&[FieldBinding]>,
-) -> Result<NativeExpr, FallbackReason> {
+) -> Result<NativeExpr, CapabilityReason> {
     let [left, right] = function.args() else { unreachable!("validated NULLIF must have two arguments") };
     let output_type = validated_scalar_output_type(function, validated);
     let left = lower_validated_child_expr_with_bindings(left, validated, bindings)?;
@@ -526,7 +526,7 @@ pub(super) fn resolved_column_name<'a>(
     column: &Column,
     input_schema: &'a SchemaRef,
     bindings: Option<&'a [FieldBinding]>,
-) -> Result<&'a str, FallbackReason> {
+) -> Result<&'a str, CapabilityReason> {
     let resolved: ResolvedColumn<'_> = resolve_column(column, input_schema)?;
     if let Some(bindings) = bindings {
         return bindings
@@ -544,7 +544,7 @@ pub(super) fn resolved_column_name<'a>(
             })
             .or_else(|| bindings.iter().find(|binding| binding.frontend_index == resolved.index()))
             .map(|binding| binding.native_name.as_str())
-            .ok_or(FallbackReason::UnsupportedExpression);
+            .ok_or(CapabilityReason::UnsupportedExpression);
     }
     Ok(resolved.field().name())
 }
@@ -553,7 +553,7 @@ pub(super) fn collect_required_field_indices(
     expr: &Arc<dyn PhysicalExpr>,
     input_schema: &SchemaRef,
     required: &mut std::collections::BTreeSet<usize>,
-) -> Result<(), FallbackReason> {
+) -> Result<(), CapabilityReason> {
     let validated = validate_physical_expr(expr, input_schema)?;
     collect_validated_required_field_indices(&validated, required)
 }
@@ -561,7 +561,7 @@ pub(super) fn collect_required_field_indices(
 fn collect_validated_required_field_indices(
     validated: &ValidatedPhysicalExpr,
     required: &mut std::collections::BTreeSet<usize>,
-) -> Result<(), FallbackReason> {
+) -> Result<(), CapabilityReason> {
     let expr = validated.expr();
     let input_schema = validated.input_schema();
     if let Some(column) = expr.downcast_ref::<Column>() {
@@ -612,7 +612,7 @@ fn collect_validated_required_field_indices(
         return Ok(());
     }
     if let Some(dynamic_filter) = expr.downcast_ref::<DynamicFilterPhysicalExpr>() {
-        let current = dynamic_filter.current().map_err(|_error| FallbackReason::UnsupportedExpression)?;
+        let current = dynamic_filter.current().map_err(|_error| CapabilityReason::UnsupportedExpression)?;
         // Dynamic filters are mutable, so the current snapshot needs its own
         // proof even when the outer expression was validated earlier.
         let current = validate_physical_expr(&current, input_schema)?;
@@ -630,7 +630,7 @@ fn collect_validated_required_field_indices(
     unreachable!("validated physical expression must have a required-field branch")
 }
 
-pub(super) fn lower_literal(value: &ScalarValue) -> Result<NativeExpr, FallbackReason> {
+pub(super) fn lower_literal(value: &ScalarValue) -> Result<NativeExpr, CapabilityReason> {
     Ok(NativeExpr::literal(native_literal_value(value, NativeLiteralContext::Expression)?))
 }
 
@@ -715,7 +715,7 @@ mod tests {
 
         let error = lower_physical_expr_with_bindings(&try_cast, &schema, Some(&bindings)).unwrap_err();
 
-        assert_eq!(error, FallbackReason::UnsupportedExpression);
+        assert_eq!(error, CapabilityReason::UnsupportedExpression);
     }
 
     #[test]

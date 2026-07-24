@@ -156,6 +156,7 @@ const NATIVE_REPORT_DESCRIPTOR_NAMES: &[&str] = &[
     "physical_shape",
     "plan_task_mapping_rows",
     "planning_outcome",
+    "final_disposition",
     "post_native_execution_path",
     "post_native_plan_root",
     "probe_execution_boundary_reusable",
@@ -416,6 +417,7 @@ fn is_label_field(name: &str) -> bool {
         || name == "unsupported_category"
         || name == "native_optimizer"
         || name == "post_native_plan_root"
+        || name == "final_disposition"
         || name == "post_native_execution_path"
         || name == "dynamic_filter_post_decode_reduction_stage"
         || name == "dynamic_filter_measured_reduction_status"

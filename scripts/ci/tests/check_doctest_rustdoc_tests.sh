@@ -38,6 +38,12 @@ if [[ "${1:-}" == "nextest" && "${2:-}" == "show-config" ]]; then
   echo "group: gpu-exclusive (max threads = 1)"
   exit 0
 fi
+if [[ "${1:-}" == "metadata" ]]; then
+  cat <<'JSON'
+{"packages":[{"id":"path+file:///fake#datafusion-nexus-iceberg@0.1.0","name":"datafusion-nexus-iceberg"}],"resolve":{"nodes":[{"id":"path+file:///fake#datafusion-nexus-iceberg@0.1.0","deps":[]}]}}
+JSON
+  exit 0
+fi
 if [[ "${1:-}" == "nextest" && "${2:-}" == "run" ]]; then
   if [[ " $* " == *" not group(gpu) & not group(gpu-exclusive) "* ]]; then
     echo "Summary [ 0.100s] 3 tests run: 3 passed, 5 skipped"

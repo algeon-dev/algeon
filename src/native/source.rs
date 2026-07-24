@@ -23,7 +23,7 @@ use super::{
     },
 };
 use crate::{
-    policy::FallbackReason,
+    capability::CapabilityReason,
     table_format::{
         TableFormatParquetReadStrategyConfig, TableFormatParquetSourceMetadata, TableFormatReadCapability,
         resolve_table_format_parquet_source_with_metadata,
@@ -45,22 +45,22 @@ pub(super) fn validate_slice1_parquet_scan(
     filter: Option<&FilterExec>,
     source_schema: SchemaRef,
     column_requirements: &NativeParquetColumnRequirements,
-) -> Result<(), FallbackReason> {
+) -> Result<(), CapabilityReason> {
     if !native_parquet_object_store_scan_is_supported(file_scan) {
-        return Err(FallbackReason::NativeSourceNonLocalObjectStore);
+        return Err(CapabilityReason::NativeSourceNonLocalObjectStore);
     }
     validate_partition_columns(file_scan, &column_requirements.partition_column_indices)?;
     if file_scan.expr_adapter_factory.is_some() {
-        return Err(FallbackReason::NativeSourceExprAdapter);
+        return Err(CapabilityReason::NativeSourceExprAdapter);
     }
     if !native_parquet_file_reader_factory_is_supported(parquet_source) {
-        return Err(FallbackReason::NativeSourceParquetFileReaderFactory);
+        return Err(CapabilityReason::NativeSourceParquetFileReaderFactory);
     }
     if !native_declared_output_ordering_scan_is_supported(file_scan) {
-        return Err(FallbackReason::NativeSourceOutputOrdering);
+        return Err(CapabilityReason::NativeSourceOutputOrdering);
     }
     if !native_preserve_order_scan_is_supported(file_scan) {
-        return Err(FallbackReason::NativeSourcePreserveOrder);
+        return Err(CapabilityReason::NativeSourcePreserveOrder);
     }
     if parquet_source
         .filter()
@@ -116,10 +116,10 @@ pub(super) fn local_parquet_files(
     filter: Option<&FilterExec>,
     source_schema: SchemaRef,
     column_requirements: &NativeParquetColumnRequirements,
-) -> Result<Vec<NativeLocalParquetFile>, FallbackReason> {
+) -> Result<Vec<NativeLocalParquetFile>, CapabilityReason> {
     let files = file_scan.file_groups.iter().flat_map(|group| group.files()).collect::<Vec<_>>();
     if local_parquet_scan_is_empty(file_scan) {
-        return Err(FallbackReason::NativeSourceEmpty);
+        return Err(CapabilityReason::NativeSourceEmpty);
     }
     let scan_files = coalesced_local_parquet_scan_files(&files)?;
     let metadata_row_group_selections =
@@ -154,7 +154,7 @@ pub(super) fn local_parquet_scan_is_empty(file_scan: &FileScanConfig) -> bool {
 fn native_parquet_file_for_scan(
     file_scan: &FileScanConfig,
     file: &datafusion::datasource::listing::PartitionedFile,
-) -> Result<NativeLocalParquetFile, FallbackReason> {
+) -> Result<NativeLocalParquetFile, CapabilityReason> {
     if file_scan.object_store_url.as_str().starts_with("file://") {
         let path = local_object_path_to_filesystem(file.object_meta.location.as_ref());
         let stable_id = format!(
@@ -169,7 +169,7 @@ fn native_parquet_file_for_scan(
     }
 
     if !file_scan.object_store_url.as_str().starts_with("s3://") {
-        return Err(FallbackReason::NativeSourceNonLocalObjectStore);
+        return Err(CapabilityReason::NativeSourceNonLocalObjectStore);
     }
 
     let uri = object_store_file_uri(file_scan, file)?;
@@ -183,22 +183,22 @@ fn native_parquet_file_for_scan(
         &TableFormatParquetReadStrategyConfig::from_env(),
         &metadata,
     )
-    .map_err(|_error| FallbackReason::NativeSourceNonLocalObjectStore)?;
+    .map_err(|_error| CapabilityReason::NativeSourceNonLocalObjectStore)?;
     NativeLocalParquetFile::from_resolved_parquet_source(resolved)
         .map(|native_file| native_file.with_file_size_bytes(file.object_meta.size))
-        .map_err(|_error| FallbackReason::NativeSourceNonLocalObjectStore)
+        .map_err(|_error| CapabilityReason::NativeSourceNonLocalObjectStore)
 }
 
 fn object_store_file_uri(
     file_scan: &FileScanConfig,
     file: &datafusion::datasource::listing::PartitionedFile,
-) -> Result<String, FallbackReason> {
+) -> Result<String, CapabilityReason> {
     let location = file.object_meta.location.as_ref();
     if location.starts_with("s3://") {
         return Ok(location.to_string());
     }
     if location.contains("://") {
-        return Err(FallbackReason::NativeSourceNonLocalObjectStore);
+        return Err(CapabilityReason::NativeSourceNonLocalObjectStore);
     }
     let base = file_scan.object_store_url.as_str().trim_end_matches('/');
     let key = location.trim_start_matches('/');
@@ -288,7 +288,7 @@ fn file_source_ref_index(source_ref: &NativeSourceColumnRef) -> Option<usize> {
 fn validate_partition_columns(
     file_scan: &FileScanConfig,
     required_partition_indices: &[usize],
-) -> Result<(), FallbackReason> {
+) -> Result<(), CapabilityReason> {
     let files = file_scan.file_groups.iter().flat_map(|group| group.files()).collect::<Vec<_>>();
     if required_partition_indices.is_empty() {
         return Ok(());
@@ -296,11 +296,11 @@ fn validate_partition_columns(
 
     let partition_column_count = file_scan.table_partition_cols().len();
     if required_partition_indices.iter().any(|index| *index >= partition_column_count) {
-        return Err(FallbackReason::NativeSourcePartitionValues);
+        return Err(CapabilityReason::NativeSourcePartitionValues);
     }
     for file in &files {
         if required_partition_indices.iter().any(|index| file.partition_values.get(*index).is_none()) {
-            return Err(FallbackReason::NativeSourcePartitionValues);
+            return Err(CapabilityReason::NativeSourcePartitionValues);
         }
         native_partition_values(file, required_partition_indices)?;
     }
@@ -328,13 +328,13 @@ fn partition_column_disposition(
 fn native_partition_values(
     file: &datafusion::datasource::listing::PartitionedFile,
     required_partition_indices: &[usize],
-) -> Result<Vec<NativeLiteralValue>, FallbackReason> {
+) -> Result<Vec<NativeLiteralValue>, CapabilityReason> {
     required_partition_indices
         .iter()
         .map(|index| {
             file.partition_values
                 .get(*index)
-                .ok_or(FallbackReason::NativeSourcePartitionValues)
+                .ok_or(CapabilityReason::NativeSourcePartitionValues)
                 .and_then(|value| native_literal_value(value, NativeLiteralContext::SourceValue))
         })
         .collect()

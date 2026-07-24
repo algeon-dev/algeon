@@ -19,8 +19,8 @@ async fn physical_cross_join_exec_lowers_to_native_cross_join() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let join = result.plans[0]
         .nodes()
         .iter()
@@ -48,8 +48,8 @@ fn hash_join_filter_lowers_to_native_residual_predicate() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let native_plan = &result.plans[0];
     let join = native_plan
         .nodes()
@@ -117,8 +117,8 @@ fn expression_hash_join_keys_materialize_as_synthetic_projection_columns() {
 
     let result = lower_physical_plan_to_native(join);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let native_plan = &result.plans[0];
     let join = native_plan
         .nodes()
@@ -176,10 +176,10 @@ fn integer_divide_hash_join_key_is_rejected_during_native_planning() {
     let result = lower_physical_plan_to_native(join);
 
     assert!(result.plans.is_empty(), "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert!(matches!(
         result.report.outcomes()[0],
-        CandidateOutcome::Rejected { reason: FallbackReason::UnsupportedExpression, .. }
+        CandidateOutcome::NotSupported { capability_reason: CapabilityReason::UnsupportedExpression, .. }
     ));
 
     fs::remove_dir_all(dir).unwrap();
@@ -212,9 +212,9 @@ fn hash_join_fetch_lowers_to_native_limit_above_join() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    let CandidateOutcome::Rewritten { candidate } = &result.report.outcomes()[0] else {
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let CandidateOutcome::Selected { candidate } = &result.report.outcomes()[0] else {
         panic!("hash join with fetch should lower to native");
     };
     assert_eq!(candidate.shape, "HashJoinExec(fetch)(LocalParquetScan,LocalParquetScan)");
@@ -276,8 +276,8 @@ fn predicate_free_left_nested_loop_join_with_scalar_right_lowers_to_native_cross
 
     let result = lower_physical_plan_to_native(join);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let join = rewritten_native_join(&result);
     assert_eq!(join.spec.join_type, NativeJoinType::Cross);
     assert!(join.spec.keys.is_empty());
@@ -340,8 +340,8 @@ fn predicate_free_left_nested_loop_join_with_skipped_scalar_right_stays_left_joi
 
     let result = lower_physical_plan_to_native(join);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let join = rewritten_native_join(&result);
     assert_eq!(join.spec.join_type, NativeJoinType::Left);
     assert!(join.spec.keys.is_empty());
@@ -405,8 +405,8 @@ fn duplicate_same_named_canonical_swapped_join_fields_project_by_ordinal_to_dist
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}, join_schema={join_schema:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}, join_schema={join_schema:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let native_plan = &result.plans[0];
     let join = native_joins(native_plan).into_iter().next().expect("native plan should contain a join");
     let join_output_names =
@@ -488,8 +488,8 @@ fn bare_duplicate_frontend_join_fields_restore_at_native_host_sink_without_execu
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let native_plan = &result.plans[0];
     assert_eq!(
         native_plan.output_schema().fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>(),
@@ -518,9 +518,9 @@ fn recursive_hash_join_input_filters_lower_to_native_filters() {
     let result = lower_physical_plan_to_native(plan);
 
     assert_eq!(result.candidate_count(), 1);
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    let CandidateOutcome::Rewritten { candidate } = &result.report.outcomes()[0] else {
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let CandidateOutcome::Selected { candidate } = &result.report.outcomes()[0] else {
         panic!("filtered recursive hash-join inputs should lower to native");
     };
     assert_eq!(
@@ -569,9 +569,9 @@ fn post_join_filter_lowers_to_native_filter_input() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    let CandidateOutcome::Rewritten { candidate } = &result.report.outcomes()[0] else {
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let CandidateOutcome::Selected { candidate } = &result.report.outcomes()[0] else {
         panic!("post-join filter should lower as a native input filter");
     };
     assert_eq!(
@@ -703,9 +703,9 @@ fn hash_join_aggregate_inputs_lower_to_native_aggregate_inputs() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    let CandidateOutcome::Rewritten { candidate } = &result.report.outcomes()[0] else {
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let CandidateOutcome::Selected { candidate } = &result.report.outcomes()[0] else {
         panic!("aggregate join inputs should lower as native aggregate input nodes");
     };
     assert_eq!(

@@ -8,7 +8,9 @@ use datafusion::{
 };
 
 use super::{NativePlanRejection, peel_repartition};
-use crate::{native::expression_contract::is_supported_native_type, policy::FallbackReason, report::GpuCandidate};
+use crate::{
+    capability::CapabilityReason, native::expression_contract::is_supported_native_type, report::GpuCandidate,
+};
 
 #[derive(Debug, Clone)]
 pub(in crate::native) struct DistributedAggregatePeel<'a> {
@@ -37,10 +39,10 @@ pub(super) fn peel_distributed_aggregate_pair_if_present(
     let partial =
         peel_repartition(aggregate.input().as_ref()).downcast_ref::<AggregateExec>().ok_or(NativePlanRejection {
             candidate: candidate.clone(),
-            reason: FallbackReason::NativeDistributedAggregateUnsupported,
+            reason: CapabilityReason::NativeDistributedAggregateUnsupported,
         })?;
     if !distributed_aggregate_pair_is_safe(aggregate, partial) {
-        return Err(NativePlanRejection { candidate, reason: FallbackReason::NativeDistributedAggregateUnsupported });
+        return Err(NativePlanRejection { candidate, reason: CapabilityReason::NativeDistributedAggregateUnsupported });
     }
 
     Ok(DistributedAggregatePeel {

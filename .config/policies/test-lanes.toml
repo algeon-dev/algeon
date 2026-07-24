@@ -50,6 +50,11 @@ lane = "cpu"
 reason = "ClickBench catalog, deterministic fixture discovery, and Parquet metadata contracts do not create a native runtime."
 
 [[binary]]
+id = "datafusion-nexus-iceberg"
+lane = "cpu"
+reason = "DataFusion-free Iceberg catalog, resolved-source, and scan-candidate contracts do not initialize DataFusion or CUDA."
+
+[[binary]]
 id = "datafusion-nexus::bin/datafusion_nexus_server"
 lane = "cpu"
 reason = "Server binary unit tests exercise error/log formatting and configuration without starting CUDA or the service."

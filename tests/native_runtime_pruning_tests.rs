@@ -157,8 +157,8 @@ async fn native_runtime_median_aggregate_matches_cpu_single_stage_unbounded() {
     let cpu_batches = cpu_sql_output(&path, SQL_MEDIAN_AGGREGATE_QUERY).await;
     let native_physical_plan = sql_plan(&path, direct_friendly_sql_session_config(), SQL_MEDIAN_AGGREGATE_QUERY).await;
     let lowering = lower_physical_plan_to_native(native_physical_plan);
-    assert_eq!(lowering.rewritten_count(), 1, "outcomes={:?}", lowering.report.outcomes());
-    assert_eq!(lowering.rejected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.selected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.not_selected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
 
     let context = unbounded_execution_context();
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
@@ -185,8 +185,8 @@ async fn native_runtime_median_aggregate_matches_cpu_single_stage_bounded_withou
     let cpu_batches = cpu_sql_output(&path, SQL_MEDIAN_AGGREGATE_QUERY).await;
     let native_physical_plan = sql_plan(&path, direct_friendly_sql_session_config(), SQL_MEDIAN_AGGREGATE_QUERY).await;
     let lowering = lower_physical_plan_to_native(native_physical_plan);
-    assert_eq!(lowering.rewritten_count(), 1, "outcomes={:?}", lowering.report.outcomes());
-    assert_eq!(lowering.rejected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.selected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.not_selected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
 
     let context = bounded_execution_context();
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
@@ -306,8 +306,8 @@ async fn native_runtime_pushed_predicate_source_limit_matches_cpu() {
     let cpu_batches =
         collect(Arc::clone(&scan), Arc::new(datafusion::execution::context::TaskContext::default())).await.unwrap();
     let lowering = lower_physical_plan_to_native(scan);
-    assert_eq!(lowering.rewritten_count(), 1, "outcomes={:?}", lowering.report.outcomes());
-    assert_eq!(lowering.rejected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.selected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.not_selected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
     assert_eq!(lowering.source_diagnostics[0].predicate_disposition.as_str(), "reader_pushdown");
     assert!(lowering.source_diagnostics[0].rejected_features.is_empty());
     let source = lowering.plans[0]
@@ -412,8 +412,8 @@ async fn native_runtime_bare_boolean_filter_stays_post_decode() {
     config.options_mut().execution.parquet.pushdown_filters = true;
     let native_physical_plan = sql_plan(&path, config, SQL_BARE_BOOLEAN_FILTER_QUERY).await;
     let lowering = lower_physical_plan_to_native(native_physical_plan);
-    assert_eq!(lowering.rewritten_count(), 1, "outcomes={:?}", lowering.report.outcomes());
-    assert_eq!(lowering.rejected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.selected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.not_selected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
     assert_eq!(lowering.plans.len(), 1);
     let sources = lowering.plans[0]
         .nodes()
@@ -455,8 +455,8 @@ struct NativeQueryObservation {
 async fn execute_sql_native_query(path: &std::path::Path, config: SessionConfig, sql: &str) -> NativeQueryObservation {
     let native_physical_plan = sql_plan(path, config, sql).await;
     let lowering = lower_physical_plan_to_native(native_physical_plan);
-    assert_eq!(lowering.rewritten_count(), 1, "outcomes={:?}", lowering.report.outcomes());
-    assert_eq!(lowering.rejected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.selected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.not_selected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
     assert_eq!(lowering.plans.len(), 1);
     assert_eq!(lowering.source_diagnostics.len(), 1);
 
@@ -548,8 +548,8 @@ async fn native_runtime_discounted_revenue_global_decimal_sum_matches_cpu() {
     let cpu_batches = cpu_sql_output(&path, SQL_Q6_SHAPED_QUERY).await;
     let native_physical_plan = sql_plan(&path, direct_friendly_sql_session_config(), SQL_Q6_SHAPED_QUERY).await;
     let lowering = lower_physical_plan_to_native(native_physical_plan);
-    assert_eq!(lowering.rewritten_count(), 1, "outcomes={:?}", lowering.report.outcomes());
-    assert_eq!(lowering.rejected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.selected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.not_selected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
     assert_eq!(lowering.plans.len(), 1);
     assert_eq!(lowering.source_diagnostics[0].read_column_count, 4);
 
@@ -593,8 +593,8 @@ async fn native_runtime_order_sensitive_source_scan_limit_matches_cpu() {
     let cpu_batches =
         collect(Arc::clone(&plan), Arc::new(datafusion::execution::context::TaskContext::default())).await.unwrap();
     let lowering = lower_physical_plan_to_native(plan);
-    assert_eq!(lowering.rewritten_count(), 1, "outcomes={:?}", lowering.report.outcomes());
-    assert_eq!(lowering.rejected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.selected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.not_selected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
     assert_eq!(lowering.plans.len(), 1);
     assert_eq!(lowering.source_diagnostics[0].scan_limit_disposition.as_str(), "represented");
     assert!(
@@ -655,8 +655,8 @@ async fn native_runtime_global_decimal_avg_matches_cpu() {
     let native_physical_plan =
         sql_plan(&path, direct_friendly_sql_session_config(), SQL_GLOBAL_DECIMAL_AVG_QUERY).await;
     let lowering = lower_physical_plan_to_native(native_physical_plan);
-    assert_eq!(lowering.rewritten_count(), 1, "outcomes={:?}", lowering.report.outcomes());
-    assert_eq!(lowering.rejected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.selected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.not_selected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
     assert_eq!(lowering.plans.len(), 1);
 
     let context = bounded_execution_context();
@@ -686,8 +686,8 @@ async fn native_runtime_zero_column_count_matches_cpu_without_parquet_data_colum
             .await
             .unwrap();
     let lowering = lower_physical_plan_to_native(native_physical_plan);
-    assert_eq!(lowering.rewritten_count(), 1, "outcomes={:?}", lowering.report.outcomes());
-    assert_eq!(lowering.rejected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.selected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.not_selected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
     assert_eq!(lowering.source_diagnostics[0].read_column_count, 0);
     assert_eq!(lowering.source_diagnostics[0].zero_column_count_disposition.as_str(), "represented");
 
@@ -817,8 +817,8 @@ async fn assert_sql_native_parity(
     let cpu_batches = cpu_sql_output(path, sql).await;
     let native_physical_plan = sql_plan(path, config, sql).await;
     let lowering = lower_physical_plan_to_native(native_physical_plan);
-    assert_eq!(lowering.rewritten_count(), 1, "outcomes={:?}", lowering.report.outcomes());
-    assert_eq!(lowering.rejected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.selected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.not_selected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
     assert_eq!(lowering.plans.len(), 1);
     if let Some((selected_row_groups, total_row_groups)) = expected_selected_row_groups {
         assert_eq!(lowering.source_diagnostics[0].selected_row_groups, Some(selected_row_groups));
@@ -855,8 +855,8 @@ async fn assert_empty_local_parquet_aggregate_parity(plan: Arc<dyn ExecutionPlan
     let cpu_batches =
         collect(Arc::clone(&plan), Arc::new(datafusion::execution::context::TaskContext::default())).await.unwrap();
     let lowering = lower_physical_plan_to_native(plan);
-    assert_eq!(lowering.rewritten_count(), 1, "outcomes={:?}", lowering.report.outcomes());
-    assert_eq!(lowering.rejected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.selected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.not_selected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
     assert!(lowering.source_diagnostics.is_empty());
     assert!(lowering.plans[0].nodes().iter().any(|node| {
         matches!(
@@ -886,8 +886,8 @@ async fn assert_native_physical_plan_parity(
     let cpu_batches =
         collect(Arc::clone(&plan), Arc::new(datafusion::execution::context::TaskContext::default())).await.unwrap();
     let lowering = lower_physical_plan_to_native(plan);
-    assert_eq!(lowering.rewritten_count(), 1, "outcomes={:?}", lowering.report.outcomes());
-    assert_eq!(lowering.rejected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.selected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.not_selected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
     assert_eq!(lowering.plans.len(), 1);
     if let Some((selected_row_groups, total_row_groups)) = expected_selected_row_groups {
         assert_eq!(lowering.source_diagnostics[0].selected_row_groups, Some(selected_row_groups));

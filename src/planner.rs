@@ -15,17 +15,18 @@ use datafusion::{
 };
 
 use crate::{
-    native_exec::{CpuFallbackStatementLimiter, NexusNativeExecutionConfig},
+    native_exec::{HostExecutionQosLimiter, NexusNativeExecutionConfig},
     session_config::optimizer_config_with_datafusion_options,
 };
 
 mod native;
 
 pub use native::{
-    NEXUS_FINAL_PLAN_REQUIREMENT_RULE_NAME, NativeAdaptivePipelineCandidateDiagnostics,
-    NativeAdaptivePipelineDiagnostics, NativePlanningDiagnostics, NativeStrictBoundedAcceptedCandidateDiagnostics,
-    NativeStrictBoundedCompiledGraphDiagnostics, NativeStrictBoundedContractDiagnostics,
-    NativeStrictBoundedRejectedCandidateDiagnostics, NexusFinalPlanRequirementRule, NexusNativePhysicalOptimizerRule,
+    NEXUS_FINAL_PLAN_REQUIREMENT_RULE_NAME, NEXUS_HOST_EXECUTION_QOS_RULE_NAME,
+    NativeAdaptivePipelineCandidateDiagnostics, NativeAdaptivePipelineDiagnostics, NativePlanningDiagnostics,
+    NativeStrictBoundedAcceptedCandidateDiagnostics, NativeStrictBoundedCompiledGraphDiagnostics,
+    NativeStrictBoundedContractDiagnostics, NativeStrictBoundedRejectedCandidateDiagnostics,
+    NexusFinalPlanRequirementRule, NexusHostExecutionQosRule, NexusNativePhysicalOptimizerRule,
     STRICT_BOUNDED_NON_JOIN_OUTSIDE_REPORT_SCOPE_REASON,
 };
 
@@ -88,6 +89,52 @@ impl std::fmt::Display for FinalPlanRequirement {
     }
 }
 
+/// Host-side execution QoS applied once to a completed DataFusion or mixed
+/// physical plan.
+///
+/// This configuration is intentionally independent of
+/// [`NexusNativeOptimizerConfig`]. CPU-baseline and cuGraph-only sessions use
+/// the same outer statement bound without installing relational native
+/// selection. Clones share the limiter instance and therefore one bound.
+#[derive(Debug, Clone)]
+pub struct HostExecutionQosConfig {
+    limiter: HostExecutionQosLimiter,
+}
+
+impl HostExecutionQosConfig {
+    /// Create a host statement bound with indefinite wait time.
+    pub fn new(max_concurrent_statements: NonZeroUsize) -> Self {
+        Self { limiter: HostExecutionQosLimiter::new_with_wait_timeout(max_concurrent_statements, None) }
+    }
+
+    /// Set the maximum time a statement waits for a host execution permit.
+    ///
+    /// A zero duration restores indefinite waiting. This is independent of
+    /// GPU query-service admission timeouts.
+    pub fn with_wait_timeout(self, wait_timeout: Duration) -> Self {
+        Self {
+            limiter: HostExecutionQosLimiter::new_with_wait_timeout(
+                self.max_concurrent_statements(),
+                (!wait_timeout.is_zero()).then_some(wait_timeout),
+            ),
+        }
+    }
+
+    /// Maximum number of host-executing statements allowed concurrently.
+    pub fn max_concurrent_statements(&self) -> NonZeroUsize {
+        self.limiter.max_concurrent_statements()
+    }
+
+    /// Maximum host-permit wait time, or `None` for an indefinite wait.
+    pub fn wait_timeout(&self) -> Option<Duration> {
+        self.limiter.wait_timeout()
+    }
+
+    pub(crate) fn limiter(&self) -> HostExecutionQosLimiter {
+        self.limiter.clone()
+    }
+}
+
 /// Classify the exact completed physical plan without invoking planning.
 ///
 /// The classifier intentionally recognizes only runtime nodes whose execution
@@ -95,85 +142,14 @@ impl std::fmt::Display for FinalPlanRequirement {
 /// around native fragments are conservative [`FinalPlanDisposition::Mixed`]
 /// plans rather than being treated as native-only.
 pub fn classify_final_plan(plan: &dyn ExecutionPlan) -> FinalPlanDisposition {
-    if plan.downcast_ref::<crate::native_exec::NexusNativeExec>().is_some()
-        || plan.downcast_ref::<crate::native_exec::NexusNativeGpuProducerExec>().is_some()
-    {
-        return FinalPlanDisposition::Native;
-    }
-    if plan.downcast_ref::<crate::native_exec::NexusNativeComposedExec>().is_some() {
-        return classify_native_composed_final_plan(plan);
-    }
-    if crate::native_exec::graph::graph_execution_plan(plan).is_some() {
-        return classify_graph_final_plan(plan);
-    }
-    if is_transparent_native_runtime_wrapper(plan)
-        && let [child] = plan.children().as_slice()
-    {
-        return classify_final_plan(child.as_ref());
-    }
-
-    let child_dispositions = plan.children();
-    if child_dispositions.is_empty() {
-        return FinalPlanDisposition::DataFusion;
-    }
-    if child_dispositions.iter().any(|child| classify_final_plan(child.as_ref()) != FinalPlanDisposition::DataFusion) {
-        FinalPlanDisposition::Mixed
-    } else {
-        FinalPlanDisposition::DataFusion
-    }
-}
-
-fn classify_native_composed_final_plan(plan: &dyn ExecutionPlan) -> FinalPlanDisposition {
-    // A composed wrapper owns its native consumer, but its producer children
-    // may contain DataFusion work before they yield GPU-resident results.
-    // Treat the complete composed plan as native only when every producer is
-    // independently native.
-    if plan.children().iter().all(|child| matches!(classify_final_plan(child.as_ref()), FinalPlanDisposition::Native)) {
-        FinalPlanDisposition::Native
-    } else {
-        FinalPlanDisposition::Mixed
-    }
-}
-
-fn classify_graph_final_plan(plan: &dyn ExecutionPlan) -> FinalPlanDisposition {
-    if plan.children().iter().all(|child| graph_child_is_gpu_resident_at_runtime(child.as_ref())) {
-        FinalPlanDisposition::Native
-    } else {
-        // A graph runtime node is native, but any non-native edge or predicate
-        // child still executes through DataFusion before it runs.
-        FinalPlanDisposition::Mixed
-    }
-}
-
-fn graph_child_is_gpu_resident_at_runtime(plan: &dyn ExecutionPlan) -> bool {
-    if is_native_graph_runtime_child(plan) {
-        return classify_final_plan(plan) == FinalPlanDisposition::Native;
-    }
-    if plan.name() != "CooperativeExec" {
-        return false;
-    }
-    let children = plan.children();
-    let [child] = children.as_slice() else {
-        return false;
-    };
-    is_native_graph_runtime_child(child.as_ref()) && classify_final_plan(child.as_ref()) == FinalPlanDisposition::Native
-}
-
-fn is_native_graph_runtime_child(plan: &dyn ExecutionPlan) -> bool {
-    plan.downcast_ref::<crate::native_exec::NexusNativeExec>().is_some()
-        || plan.downcast_ref::<crate::native_exec::NexusNativeComposedExec>().is_some()
-}
-
-fn is_transparent_native_runtime_wrapper(plan: &dyn ExecutionPlan) -> bool {
-    crate::native_exec::plan_is_query_admission_wrapped(plan)
-        || crate::native_exec::plan_is_unbounded_native_execution_limited(plan)
+    crate::final_plan_observation::observe_final_plan(plan).disposition
 }
 
 /// DataFusion-facing native optimizer configuration.
 ///
 /// Defaults preserve the DataFusion baseline when native candidates are not
 /// accepted. Native execution uses an auto-sized bounded profile, query-engine
-/// optimizer options use their own defaults, and plan-preference fallback is
+/// optimizer options use their own defaults, and plan-cost selection is
 /// disabled unless a workload opts in. The native
 /// [`ExecutionContext`](nexus_query_engine::runtime::ExecutionContext) is still built
 /// lazily at execution time through [`NexusNativeExecutionConfig`], so allocator
@@ -183,10 +159,8 @@ fn is_transparent_native_runtime_wrapper(plan: &dyn ExecutionPlan) -> bool {
 pub struct NexusNativeOptimizerConfig {
     native_execution_config: NexusNativeExecutionConfig,
     native_optimizer_options: nexus_query_engine::optimizer::NativeOptimizerOptions,
-    native_plan_preference_options: nexus_query_engine::plan::NativePlanPreferenceOptions,
+    native_plan_cost_options: nexus_query_engine::plan::NativePlanCostOptions,
     final_plan_requirements: Vec<FinalPlanRequirement>,
-    cpu_fallback_statement_limiter: Option<CpuFallbackStatementLimiter>,
-    cpu_fallback_wait_timeout: Option<Duration>,
 }
 
 impl Default for NexusNativeOptimizerConfig {
@@ -194,10 +168,8 @@ impl Default for NexusNativeOptimizerConfig {
         Self {
             native_execution_config: NexusNativeExecutionConfig::bounded_auto_sized(),
             native_optimizer_options: nexus_query_engine::optimizer::NativeOptimizerOptions::default(),
-            native_plan_preference_options: nexus_query_engine::plan::NativePlanPreferenceOptions::disabled(),
+            native_plan_cost_options: nexus_query_engine::plan::NativePlanCostOptions::disabled(),
             final_plan_requirements: Vec::new(),
-            cpu_fallback_statement_limiter: None,
-            cpu_fallback_wait_timeout: None,
         }
     }
 }
@@ -213,13 +185,13 @@ impl NexusNativeOptimizerConfig {
         &self.native_optimizer_options
     }
 
-    /// Native-vs-CPU preference rules applied after native optimizer rewrites.
+    /// Native plan cost-selection rules applied after native optimizer rewrites.
     ///
     /// The adapter default is disabled to preserve generic optimizer rewrite
     /// behavior; workload configs can opt in when their benchmark evidence
     /// shows native fixed overhead dominates small selective shapes.
-    pub fn native_plan_preference_options(&self) -> &nexus_query_engine::plan::NativePlanPreferenceOptions {
-        &self.native_plan_preference_options
+    pub fn native_plan_cost_options(&self) -> &nexus_query_engine::plan::NativePlanCostOptions {
+        &self.native_plan_cost_options
     }
 
     /// Completed-plan constraints enforced after native rewriting, without
@@ -239,19 +211,6 @@ impl NexusNativeOptimizerConfig {
     /// Require the exact completed physical plan to contain no DataFusion CPU execution.
     pub fn with_no_datafusion_cpu_requirement(self) -> Self {
         self.with_final_plan_requirement(FinalPlanRequirement::NoDataFusionCpu)
-    }
-
-    /// Host-side concurrency limiter for physical plans that remain on DataFusion CPU fallback.
-    pub fn cpu_fallback_max_concurrent_statements(&self) -> Option<NonZeroUsize> {
-        self.cpu_fallback_statement_limiter.as_ref().map(CpuFallbackStatementLimiter::max_concurrent_statements)
-    }
-
-    /// Maximum time a CPU fallback statement waits for the fallback limiter.
-    ///
-    /// `None` means wait indefinitely. Library configs default to `None`;
-    /// server configs install their own default unless disabled.
-    pub fn cpu_fallback_wait_timeout(&self) -> Option<Duration> {
-        self.cpu_fallback_wait_timeout
     }
 
     /// Strict bounded or adaptive pipeline mode used by native execution.
@@ -285,50 +244,10 @@ impl NexusNativeOptimizerConfig {
         self
     }
 
-    /// Replace native-vs-CPU preference options.
-    pub fn with_native_plan_preference_options(
-        mut self,
-        options: nexus_query_engine::plan::NativePlanPreferenceOptions,
-    ) -> Self {
-        self.native_plan_preference_options = options;
+    /// Replace native plan cost-selection options.
+    pub fn with_native_plan_cost_options(mut self, options: nexus_query_engine::plan::NativePlanCostOptions) -> Self {
+        self.native_plan_cost_options = options;
         self
-    }
-
-    /// Bound concurrent CPU fallback statements that were not rewritten to native execution.
-    ///
-    /// This limiter is independent of GPU query-service admission. It exists
-    /// to bound DataFusion CPU fallback work without consuming native GPU
-    /// admission slots. Library users opt in explicitly; the Flight SQL server
-    /// installs its own default unless disabled by server configuration.
-    pub fn with_cpu_fallback_max_concurrent_statements(mut self, max_concurrent_statements: NonZeroUsize) -> Self {
-        self.cpu_fallback_statement_limiter = Some(CpuFallbackStatementLimiter::new_with_wait_timeout(
-            max_concurrent_statements,
-            self.cpu_fallback_wait_timeout,
-        ));
-        self
-    }
-
-    /// Set the maximum time a CPU fallback statement waits for the fallback limiter.
-    ///
-    /// Passing a zero duration restores indefinite waiting. The setting is
-    /// independent of GPU query-service admission timeouts.
-    pub fn with_cpu_fallback_wait_timeout(mut self, wait_timeout: Duration) -> Self {
-        self.cpu_fallback_wait_timeout = (!wait_timeout.is_zero()).then_some(wait_timeout);
-        if let Some(limit) = self.cpu_fallback_max_concurrent_statements() {
-            self.cpu_fallback_statement_limiter =
-                Some(CpuFallbackStatementLimiter::new_with_wait_timeout(limit, self.cpu_fallback_wait_timeout));
-        }
-        self
-    }
-
-    /// Disable the host-side CPU fallback statement limiter.
-    pub fn without_cpu_fallback_max_concurrent_statements(mut self) -> Self {
-        self.cpu_fallback_statement_limiter = None;
-        self
-    }
-
-    pub(crate) fn cpu_fallback_statement_limiter(&self) -> Option<CpuFallbackStatementLimiter> {
-        self.cpu_fallback_statement_limiter.clone()
     }
 
     #[cfg(feature = "server")]

@@ -10,8 +10,8 @@ async fn iceberg_provider_reads_non_identity_partition_source_column_from_parque
     let physical_plan = df.create_physical_plan().await.unwrap();
     let result = lower_physical_plan_to_native(physical_plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     assert_eq!(
         result.plans[0].output_schema().fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>(),
         vec!["customerId", "event_ts"]
@@ -45,8 +45,8 @@ async fn iceberg_provider_materializes_identity_partition_only_projection() {
     let physical_plan = df.create_physical_plan().await.unwrap();
     let result = lower_physical_plan_to_native(physical_plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let source = native_local_parquet_source(&result.plans[0]);
     assert_eq!(source.read_columns, Vec::<String>::new());
     assert_eq!(source.projected_output_columns, vec!["customerId".to_string()]);
@@ -68,8 +68,8 @@ async fn iceberg_provider_materializes_timestamp_and_decimal_identity_partitions
     let physical_plan = df.create_physical_plan().await.unwrap();
     let result = lower_physical_plan_to_native(physical_plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let source = native_local_parquet_source(&result.plans[0]);
     assert_eq!(source.read_columns, Vec::<String>::new());
     assert_eq!(source.partition_columns.len(), 2);
@@ -105,9 +105,9 @@ async fn iceberg_provider_rejects_mixed_file_and_partition_source_mapping_for_on
     let physical_plan = df.create_physical_plan().await.unwrap();
     let result = lower_physical_plan_to_native(physical_plan);
 
-    assert_eq!(result.rewritten_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     assert!(matches!(
         result.report.outcomes()[0],
-        CandidateOutcome::Rejected { reason: FallbackReason::NativeSourceSchemaMapping, .. }
+        CandidateOutcome::NotSupported { capability_reason: CapabilityReason::NativeSourceSchemaMapping, .. }
     ));
 }

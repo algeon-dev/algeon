@@ -1,11 +1,11 @@
 use super::*;
 
 #[test]
-fn benchmark_report_header_and_rejected_rows_are_stable() {
+fn benchmark_report_header_and_not_selected_rows_are_stable() {
     let config =
         NativeTpchBenchmarkConfig { query_ids: vec!["q02".to_string()], ..NativeTpchBenchmarkConfig::default() };
     let metadata = benchmark_metadata();
-    let mut planning = rejected_planning_row("q02");
+    let mut planning = not_supported_planning_row("q02");
     planning.strict_bounded_contract_rows = vec![nexus_query_engine::contract_report::StrictBoundedContractGateRow {
         execution_mode: nexus_query_engine::mode::StrictBoundedExecutionMode::UnsupportedStrictBounded,
         contract_scope: nexus_query_engine::capability::ReservationRequirementScope::Node,
@@ -24,8 +24,11 @@ fn benchmark_report_header_and_rejected_rows_are_stable() {
         contract_quality: nexus_query_engine::capability::ContractQuality::ObservedRetainedState,
         unresolved_preflight_gap: None,
     }];
-    let report =
-        NativeTpchBenchmarkReport { metadata, config, rows: vec![NativeTpchBenchmarkRow::rejected("q02", planning)] };
+    let report = NativeTpchBenchmarkReport {
+        metadata,
+        config,
+        rows: vec![NativeTpchBenchmarkRow::not_selected("q02", planning)],
+    };
 
     let text = report.to_tsv();
     assert!(text.starts_with("# tpch_dataset_root=/tmp/tpch\n"));
@@ -45,14 +48,12 @@ fn benchmark_report_header_and_rejected_rows_are_stable() {
     assert!(text.contains("# tpch_benchmark_native_max_source_reads_in_flight=2\n"));
     assert!(text.contains("# tpch_benchmark_native_source_cache_policy=disabled\n"));
     assert!(text.contains("# tpch_benchmark_native_source_cache_max_retained_bytes=none\n"));
-    assert!(text.contains(
-        "q02\trejected_before_execution\tbounded_rejected\tnative_bounded_join_unsupported\toperator_hashjoin"
-    ));
+    assert!(text.contains("q02\tnot_supported\tbounded_rejected\tnative_bounded_join_unsupported\toperator_hashjoin"));
     assert!(text.contains("execution_mode=unsupported_strict_bounded"));
     assert!(text.contains("contract_status=blocked_by_lower_level"));
     assert!(!text.contains("bounded_join_reservation_facts"));
     assert!(!text.contains("bounded_join_execution_family"));
-    assert!(text.contains("\ttrue\tfalse\tfalse\tnot_started\tnone\tnone\tnone\tnone\tnone\tnone\tnone\tnone\tnone\tnone\tnone\tnone\tnot_run\t"));
+    assert!(text.contains("\tfalse\tfalse\tfalse\tnot_started\tnone\tnone\tnone\tnone\tnone\tnone\tnone\tnone\tnone\tnone\tnone\tnone\tnot_run\t"));
 }
 
 #[test]

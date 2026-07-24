@@ -32,7 +32,7 @@ use nexus_query_engine::{
 };
 
 use super::normalize::{NormalizedNativeInput, NormalizedNativePlan, NormalizedNativeRoot};
-use crate::policy::FallbackReason;
+use crate::capability::CapabilityReason;
 
 /// Lowers a normalized native tree into the DataFusion-free query IR.
 ///
@@ -40,7 +40,9 @@ use crate::policy::FallbackReason;
 /// pruning, filter pushdown, zero-column count, aggregate, sort, and limit can
 /// be planned together. All other aggregate roots lower their input tree first,
 /// which covers joins and recursive unary/aggregate inputs.
-pub(super) fn lower_normalized_plan(normalized: &NormalizedNativePlan<'_>) -> Result<NativeQueryPlan, FallbackReason> {
+pub(super) fn lower_normalized_plan(
+    normalized: &NormalizedNativePlan<'_>,
+) -> Result<NativeQueryPlan, CapabilityReason> {
     match &normalized.root {
         NormalizedNativeRoot::Aggregate(root)
             if normalized.single_source_input().is_some_and(|source| source.local_parquet_source_exec().is_some()) =>
@@ -67,9 +69,9 @@ pub(super) fn lower_normalized_plan(normalized: &NormalizedNativePlan<'_>) -> Re
 pub(super) fn projection_outputs(
     expressions: Vec<NativeExpr>,
     schema: &SchemaRef,
-) -> Result<Vec<NativeProjectionOutput>, FallbackReason> {
+) -> Result<Vec<NativeProjectionOutput>, CapabilityReason> {
     if expressions.len() != schema.fields().len() {
-        return Err(FallbackReason::UnsupportedExpression);
+        return Err(CapabilityReason::UnsupportedExpression);
     }
     Ok(expressions
         .into_iter()
@@ -83,7 +85,7 @@ fn project_bindings_to_schema(
     input: LoweredNativeInput,
     schema: SchemaRef,
     bindings: Vec<FieldBinding>,
-) -> Result<LoweredNativeInput, FallbackReason> {
+) -> Result<LoweredNativeInput, CapabilityReason> {
     let expressions = bindings
         .iter()
         .map(|binding| {
@@ -93,7 +95,7 @@ fn project_bindings_to_schema(
                 binding.native_name.as_str(),
             ))
         })
-        .collect::<Result<Vec<_>, FallbackReason>>()?;
+        .collect::<Result<Vec<_>, CapabilityReason>>()?;
     let node = builder.add_projection(input.node, projection_outputs(expressions, &schema)?);
     Ok(LoweredNativeInput::with_bindings(node, schema, bindings))
 }
@@ -107,7 +109,7 @@ fn lower_native_input(
     input: &NormalizedNativeInput<'_>,
     builder: &mut NativeQueryPlanBuilder,
     required_output_fields: &RequiredFields,
-) -> Result<LoweredNativeInput, FallbackReason> {
+) -> Result<LoweredNativeInput, CapabilityReason> {
     lower_native_input_with_scan_limit(input, builder, required_output_fields, None)
 }
 
@@ -116,7 +118,7 @@ fn lower_native_input_with_scan_limit(
     builder: &mut NativeQueryPlanBuilder,
     required_output_fields: &RequiredFields,
     source_scan_limit: Option<usize>,
-) -> Result<LoweredNativeInput, FallbackReason> {
+) -> Result<LoweredNativeInput, CapabilityReason> {
     match input {
         NormalizedNativeInput::Source(source) => {
             source::lower_source_input(source, builder, required_output_fields, source_scan_limit)
@@ -178,11 +180,11 @@ fn lower_literal_source_input(
     source: &super::normalize::NormalizedNativeLiteralSource<'_>,
     builder: &mut NativeQueryPlanBuilder,
     required_output_fields: &RequiredFields,
-) -> Result<LoweredNativeInput, FallbackReason> {
+) -> Result<LoweredNativeInput, CapabilityReason> {
     let (source_schema, batches, fetch) = match source {
         super::normalize::NormalizedNativeLiteralSource::PlaceholderRow(placeholder) => {
             if !placeholder.schema().fields().is_empty() {
-                return Err(FallbackReason::UnsupportedOperator);
+                return Err(CapabilityReason::UnsupportedOperator);
             }
             (placeholder.schema(), NativeLiteralBatchSource::placeholder_row().batches, None)
         },
@@ -195,7 +197,7 @@ fn lower_literal_source_input(
             let memory = source_exec
                 .data_source()
                 .downcast_ref::<MemorySourceConfig>()
-                .ok_or(FallbackReason::UnsupportedOperator)?;
+                .ok_or(CapabilityReason::UnsupportedOperator)?;
             let batches = memory
                 .partitions()
                 .iter()
@@ -218,10 +220,10 @@ fn lower_literal_source_input(
     project_literal_output_columns(builder, source_input, required_output_fields)
 }
 
-fn project_memory_batch(batch: &RecordBatch, projection: &Option<Vec<usize>>) -> Result<RecordBatch, FallbackReason> {
+fn project_memory_batch(batch: &RecordBatch, projection: &Option<Vec<usize>>) -> Result<RecordBatch, CapabilityReason> {
     projection.as_ref().map_or_else(
         || Ok(batch.clone()),
-        |projection| batch.project(projection).map_err(|_| FallbackReason::UnsupportedOperator),
+        |projection| batch.project(projection).map_err(|_| CapabilityReason::UnsupportedOperator),
     )
 }
 
@@ -229,7 +231,7 @@ fn project_literal_output_columns(
     builder: &mut NativeQueryPlanBuilder,
     input: LoweredNativeInput,
     required_output_fields: &RequiredFields,
-) -> Result<LoweredNativeInput, FallbackReason> {
+) -> Result<LoweredNativeInput, CapabilityReason> {
     if required_output_fields.is_all() {
         return Ok(input);
     }
@@ -242,13 +244,13 @@ fn project_literal_output_columns(
             let field = input
                 .schema
                 .field_with_name(input_binding.native_name.as_str())
-                .map_err(|_| FallbackReason::UnsupportedExpression)?;
+                .map_err(|_| CapabilityReason::UnsupportedExpression)?;
             Ok(NativeProjectionOutput::new(
                 NativeExpr::column(input_binding.native_name.as_str()),
                 rename_field(field, projected.native_name.as_str()),
             ))
         })
-        .collect::<Result<Vec<_>, FallbackReason>>()?;
+        .collect::<Result<Vec<_>, CapabilityReason>>()?;
     let projected_node = builder.add_projection(input.node, expressions);
     Ok(LoweredNativeInput::with_bindings(projected_node, projected_schema, projected_bindings))
 }
@@ -257,7 +259,7 @@ fn lower_gpu_resident_source_input(
     source: &super::normalize::NormalizedNativeGpuResidentSource<'_>,
     builder: &mut NativeQueryPlanBuilder,
     required_output_fields: &RequiredFields,
-) -> Result<LoweredNativeInput, FallbackReason> {
+) -> Result<LoweredNativeInput, CapabilityReason> {
     let full_schema = source.source_exec.schema();
     let full_required = RequiredFields::all();
     let (source_schema, source_bindings) = executable_schema_and_bindings(&full_schema, &full_required)?;
@@ -276,20 +278,20 @@ fn lower_gpu_resident_source_input(
             let input = source_bindings
                 .iter()
                 .find(|binding| binding.frontend_index == projected.frontend_index)
-                .ok_or(FallbackReason::UnsupportedExpression)?;
+                .ok_or(CapabilityReason::UnsupportedExpression)?;
             Ok(NativeProjectionOutput::new(
                 NativeExpr::column(input.native_name.as_str()),
                 rename_field(
                     source_schema
                         .fields()
                         .get(input.frontend_index)
-                        .ok_or(FallbackReason::UnsupportedExpression)?
+                        .ok_or(CapabilityReason::UnsupportedExpression)?
                         .as_ref(),
                     projected.native_name.as_str(),
                 ),
             ))
         })
-        .collect::<Result<Vec<_>, FallbackReason>>()?;
+        .collect::<Result<Vec<_>, CapabilityReason>>()?;
     let projected_node = builder.add_projection(source_node, expressions);
     Ok(LoweredNativeInput::with_bindings(projected_node, projected_schema, projected_bindings))
 }

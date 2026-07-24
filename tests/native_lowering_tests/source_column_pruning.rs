@@ -17,11 +17,11 @@ fn adapter_validation_rejects_like_over_non_string_input() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 0, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert!(matches!(
         result.report.outcomes()[0],
-        CandidateOutcome::Rejected { reason: FallbackReason::UnsupportedType, .. }
+        CandidateOutcome::NotSupported { capability_reason: CapabilityReason::UnsupportedType, .. }
     ));
 
     fs::remove_dir_all(dir).unwrap();
@@ -47,8 +47,8 @@ fn adapter_validation_lowers_date64_projection() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let source = native_local_parquet_source(&result.plans[0]);
     assert_eq!(source.read_columns, vec!["event_date64".to_string(), "m00".to_string()]);
     assert!(source.diagnostics.rejected_features.is_empty());
@@ -65,11 +65,11 @@ async fn adapter_validation_rejects_extract_over_date64_until_expression_semanti
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 0, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert!(matches!(
         result.report.outcomes()[0],
-        CandidateOutcome::Rejected { reason: FallbackReason::UnsupportedType, .. }
+        CandidateOutcome::NotSupported { capability_reason: CapabilityReason::UnsupportedType, .. }
     ));
 
     fs::remove_dir_all(dir).unwrap();
@@ -85,8 +85,8 @@ fn pushed_scan_projection_reads_only_downstream_required_columns() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let source = native_local_parquet_source(&result.plans[0]);
     assert_eq!(source.read_columns, vec!["key".to_string(), "m00".to_string(), "m01".to_string()]);
     assert!(!source.read_columns.contains(&"payload".to_string()));
@@ -105,8 +105,8 @@ async fn scalar_expression_filter_predicate_required_source_columns_are_exact() 
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let source = native_local_parquet_source(&result.plans[0]);
     assert_eq!(source.read_columns, vec!["key".to_string(), "label".to_string(), "m00".to_string(), "m01".to_string()]);
     assert_eq!(source.projected_output_columns, vec!["key".to_string(), "m00".to_string(), "m01".to_string()]);
@@ -131,8 +131,8 @@ async fn scalar_expression_pre_aggregate_projection_required_source_columns_are_
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let source = native_local_parquet_source(&result.plans[0]);
     assert_eq!(source.read_columns, vec!["key".to_string(), "label".to_string(), "m00".to_string(), "m01".to_string()]);
     assert!(source.pure_filter_columns.is_empty());
@@ -157,8 +157,8 @@ async fn scalar_expression_aggregate_argument_required_source_columns_are_exact(
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let source = native_local_parquet_source(&result.plans[0]);
     assert_eq!(source.read_columns, vec!["key".to_string(), "label".to_string(), "m00".to_string(), "m01".to_string()]);
     let aggregate_exprs = native_aggregate_exprs(&result.plans[0]);
@@ -183,8 +183,8 @@ async fn nullif_aggregate_argument_reads_both_operand_columns() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let source = native_local_parquet_source(&result.plans[0]);
     assert_eq!(source.read_columns, vec!["key".to_string(), "m00".to_string(), "m01".to_string()]);
     assert!(!source.read_columns.contains(&"payload".to_string()));
@@ -202,8 +202,8 @@ async fn scalar_expression_group_expression_required_source_columns_are_exact() 
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let source = native_local_parquet_source(&result.plans[0]);
     assert_eq!(source.read_columns, vec!["label".to_string(), "m00".to_string(), "shipdate".to_string()]);
     for unused in ["key", "payload", "m01", "amount", "event_ts"] {
@@ -227,8 +227,8 @@ async fn pushed_scan_projection_prunes_payload_for_nested_scalar_expression_scal
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let source = native_local_parquet_source(&result.plans[0]);
     assert_eq!(source.read_columns, vec!["label".to_string(), "m00".to_string(), "shipdate".to_string()]);
     assert_eq!(source.read_column_file_indices, vec![4, 2, 6]);

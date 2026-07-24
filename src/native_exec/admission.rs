@@ -754,7 +754,10 @@ impl QueryAdmissionTicket {
         if error.code() == nexus_query_engine::error::QueryErrorCode::Cancelled {
             RuntimeTerminalOutcome::Cancelled
         } else {
-            RuntimeTerminalOutcome::Failed { error_code: error.code().to_string() }
+            RuntimeTerminalOutcome::Failed {
+                error_code: error.code().to_string(),
+                error_status: error.status().as_str().to_string(),
+            }
         }
     }
 
@@ -935,6 +938,10 @@ pub(crate) fn wrap_plan_with_query_admission_ticket(
 
 pub(crate) fn plan_is_query_admission_wrapped(plan: &dyn ExecutionPlan) -> bool {
     (plan as &dyn Any).is::<NativeAdmissionExec>()
+}
+
+pub(crate) fn query_admission_wrapped_input(plan: &dyn ExecutionPlan) -> Option<&Arc<dyn ExecutionPlan>> {
+    (plan as &dyn Any).downcast_ref::<NativeAdmissionExec>().map(|wrapper| &wrapper.input)
 }
 
 impl DisplayAs for NativeAdmissionExec {

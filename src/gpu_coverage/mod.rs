@@ -18,20 +18,19 @@ use std::sync::Arc;
 use datafusion::{execution::SessionStateBuilder, prelude::SessionContext};
 
 pub use self::model::{
-    QueryGpuCoverage, QueryGpuCoverageConfidence, QueryGpuCoverageDomains, QueryGpuCoverageOverall,
-    QueryGpuCugraphCall, QueryGpuCugraphOperatorDomain, QueryGpuFallbackReason, QueryGpuFallbackReasonKind,
-    QueryGpuNexusNativeCoverage, QueryGpuPresence, QueryGpuRejectionPhase, QueryGpuRuntimeCaveat,
-    QueryGpuValidatedUnder,
+    QueryGpuCandidateOutcome, QueryGpuCandidateReasonKind, QueryGpuCandidateSelectionOutcome, QueryGpuCoverage,
+    QueryGpuCoverageConfidence, QueryGpuCoverageDomains, QueryGpuCoverageOverall, QueryGpuCugraphCall,
+    QueryGpuRejectionPhase, QueryGpuRuntimeCaveat, QueryGpuValidatedUnder,
 };
 use self::{
-    physical::{fallback_reasons_from_report, planning_diagnostics_did_io, walk_gpu_coverage},
+    physical::{candidate_outcomes_from_report, cugraph_calls, planning_diagnostics_did_io},
     preflight::{
         QueryGpuRejection, classify_physical_planning_error, mark_coverage_validation_in_progress,
         optimizer_config_for_validation, planning_did_io_for_physical_error, preflight_single_query, validated_under,
     },
 };
 use crate::{
-    native_report::post_native_plan_coverage, planner::NexusNativePhysicalOptimizerRule,
+    final_plan_observation::observe_final_plan, planner::NexusNativePhysicalOptimizerRule,
     session::NexusSessionStateBuilderExt,
 };
 
@@ -49,9 +48,9 @@ pub(crate) use self::preflight::{coverage_validator_recursion_error, gpu_coverag
 /// of that exact configuration, including completed-plan requirements. A
 /// caller with no native rule remains on its DataFusion CPU baseline.
 ///
-/// `fallback_reasons` are retained per-candidate optimizer diagnostics, not an
-/// alternative verdict. They can be non-empty even when the final optimized plan
-/// has [`QueryGpuCoverageOverall::NoCpuInPlannedPath`].
+/// Candidate outcomes are retained as optimizer diagnostics, not an alternative
+/// verdict. They can be non-empty even when the final optimized plan has
+/// [`QueryGpuCoverageOverall::NoCpuInPlannedPath`].
 ///
 /// `validated_under.catalog_snapshot` is a constant label for the cloned
 /// planning state, not a catalog or table-state fingerprint. Do not compare
@@ -103,17 +102,17 @@ pub async fn validate_query(ctx: &SessionContext, sql: impl AsRef<str>) -> crate
     };
 
     let diagnostics = native_rule.as_ref().and_then(|rule| rule.last_planning_diagnostics());
-    let cudf_coverage = post_native_plan_coverage(plan.as_ref());
-    let walk = walk_gpu_coverage(plan.as_ref());
-    let fallback_reasons =
-        diagnostics.as_ref().map(|diagnostics| fallback_reasons_from_report(&diagnostics.report)).unwrap_or_default();
+    let observation = observe_final_plan(plan.as_ref());
+    let candidate_outcomes =
+        diagnostics.as_ref().map(|diagnostics| candidate_outcomes_from_report(&diagnostics.report)).unwrap_or_default();
+    let cugraph_calls = cugraph_calls(plan.as_ref());
     let planning_did_io = diagnostics.as_ref().is_some_and(planning_diagnostics_did_io);
     Ok(QueryGpuCoverage::planned(
         validated_under,
         plan.as_ref(),
-        cudf_coverage.execution_path,
-        walk,
-        fallback_reasons,
+        observation,
+        candidate_outcomes,
+        cugraph_calls,
         planning_did_io,
     ))
 }

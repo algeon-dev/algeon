@@ -15,16 +15,16 @@ use datafusion_nexus::{
     error::{DataFusionErrorExt, Error as AdapterError},
     native_exec::NexusNativeExecutionConfig,
     native_report::{
-        NativeDataFusionPlanningOutcome, NativeDataFusionPlanningReport, NativeDataFusionPlanningRow,
-        NativeDataFusionPostNativeExecutionPath,
+        FinalPlanDisposition, NativeDataFusionPlanningOutcome, NativeDataFusionPlanningReport,
+        NativeDataFusionPlanningRow,
     },
     planner::{NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule},
     session::NexusSessionStateBuilderExt,
     table_format::{
         TableFormatScanRequest,
         iceberg::{
-            GlueIcebergTableConfig, IcebergTableFormatPlanner, NexusIcebergTableProvider,
-            catalog::GlueIcebergCatalogConfig, load_glue_table,
+            GlueIcebergTableConfig, IcebergTableFormatPlanner, NexusIcebergTableProvider, load_glue_table,
+            source_access_policy_to_native_source_storage_profile,
         },
     },
 };
@@ -45,7 +45,7 @@ const TSV_COLUMNS: &[&str] = &[
     "total_wall_ms",
     "native_wall_ms",
     "planning_outcome",
-    "post_native_execution_path",
+    "final_disposition",
     "native_runtime_outcome",
     "count_status",
     "expected_count",
@@ -177,7 +177,9 @@ impl StressConfig {
 
     fn service_config(&self) -> QueryServiceConfig {
         QueryServiceConfig {
-            source_storage_profiles: vec![glue_catalog_config(&self.glue).source_storage_profile_from_env()],
+            source_storage_profiles: vec![source_access_policy_to_native_source_storage_profile(
+                &self.glue.source_access_policy_from_env(),
+            )],
             max_concurrent_queries: self.max_concurrent_queries,
             max_admission_queue_len: self.max_admission_queue_len,
             admission_wait_timeout: self.admission_wait_timeout,
@@ -206,7 +208,7 @@ struct StressRow {
     total_wall_ms: f64,
     native_wall_ms: Option<f64>,
     planning_outcome: String,
-    post_native_execution_path: String,
+    final_disposition: String,
     native_runtime_outcome: &'static str,
     count_status: &'static str,
     expected_count: Option<u64>,
@@ -296,7 +298,7 @@ impl StressRow {
             format_ms(self.total_wall_ms),
             self.native_wall_ms.map(format_ms).unwrap_or_else(|| "none".to_string()),
             self.planning_outcome.clone(),
-            self.post_native_execution_path.clone(),
+            self.final_disposition.clone(),
             self.native_runtime_outcome.to_string(),
             self.count_status.to_string(),
             self.expected_count.map(|value| value.to_string()).unwrap_or_else(|| "none".to_string()),
@@ -348,7 +350,7 @@ impl StructuredFailure {
 
 async fn planned_table_row_count(config: &GlueIcebergTableConfig) -> DataFusionResult<Option<u64>> {
     let loaded = load_glue_table(config.clone()).await.map_err(DataFusionError::from)?;
-    let scan_plan = IcebergTableFormatPlanner::new(loaded.table)
+    let scan_plan = IcebergTableFormatPlanner::new(loaded.resolved)
         .resolve_table_format_scan(TableFormatScanRequest::default())
         .await
         .map_err(DataFusionError::from)?;
@@ -442,8 +444,11 @@ async fn run_native_request(
                 admission_wait_ms,
                 total_wall_ms: duration_ms(total_started.elapsed()),
                 native_wall_ms: Some(duration_ms(native_started.elapsed())),
-                planning_outcome: planning_row.outcome.as_str().to_string(),
-                post_native_execution_path: planning_row.post_native_execution_path.as_str().to_string(),
+                planning_outcome: planning_row
+                    .outcome
+                    .map_or("none", NativeDataFusionPlanningOutcome::as_str)
+                    .to_string(),
+                final_disposition: planning_row.final_disposition.as_str().to_string(),
                 native_runtime_outcome: "succeeded",
                 count_status,
                 expected_count,
@@ -457,8 +462,8 @@ async fn run_native_request(
             total_started.elapsed(),
             admission_sequence,
             admission_wait_ms,
-            planning_row.outcome.as_str(),
-            planning_row.post_native_execution_path.as_str(),
+            planning_row.outcome.map_or("none", NativeDataFusionPlanningOutcome::as_str),
+            planning_row.final_disposition.as_str(),
             "failed",
             "native_failed",
             expected_count,
@@ -495,33 +500,26 @@ async fn collect_native_with_handle(
         .build();
     let ctx = SessionContext::new_with_state(state);
     let loaded = load_glue_table(config.glue.clone()).await.map_err(DataFusionError::from)?;
-    let source_storage_profile = glue_catalog_config(&config.glue).source_storage_profile_from_env();
-    let parquet_read_strategy_config = glue_catalog_config(&config.glue)
-        .parquet_read_strategy_config()
-        .with_source_storage_profile_remote_direct_capability(&source_storage_profile);
-    let provider = NexusIcebergTableProvider::try_new_with_parquet_read_strategy_config(
-        loaded.table,
-        parquet_read_strategy_config,
-    )
-    .map_err(DataFusionError::from)?
-    .with_catalog_type("glue");
+    let provider = NexusIcebergTableProvider::try_new_resolved(loaded.resolved)
+        .map_err(DataFusionError::from)?
+        .with_catalog_type("glue");
     ctx.register_table(config.table_alias.as_str(), Arc::new(provider))?;
     let df = ctx.sql(&config.sql).await?;
     let plan = df.create_physical_plan().await?;
     let planning_report =
         NativeDataFusionPlanningReport::from_retained_rule("iceberg_count", Arc::clone(&plan), &native_rule);
     let planning_row = select_planning_row(planning_report.rows)?;
-    if planning_row.outcome != NativeDataFusionPlanningOutcome::AcceptedReplaced {
+    if planning_row.outcome != Some(NativeDataFusionPlanningOutcome::Selected) {
         return Err(plan_error(format!(
             "remote Iceberg query was not accepted by native planning; outcome={} reason_code={}",
-            planning_row.outcome.as_str(),
+            planning_row.outcome.map_or("none", NativeDataFusionPlanningOutcome::as_str),
             planning_row.reason_code.as_deref().unwrap_or("none"),
         )));
     }
-    if planning_row.post_native_execution_path != NativeDataFusionPostNativeExecutionPath::Native {
+    if planning_row.final_disposition != FinalPlanDisposition::Native {
         return Err(plan_error(format!(
-            "remote Iceberg query did not produce post_native_execution_path=native; observed {}",
-            planning_row.post_native_execution_path.as_str(),
+            "remote Iceberg query did not produce final_disposition=native; observed {}",
+            planning_row.final_disposition.as_str(),
         )));
     }
     let batches = match collect(Arc::clone(&plan), Arc::new(TaskContext::default())).await {
@@ -530,18 +528,6 @@ async fn collect_native_with_handle(
     };
     let measurement = measure_native_output(&batches)?;
     Ok(NativeCollectOutcome::Succeeded { planning_row, measurement })
-}
-
-fn glue_catalog_config(config: &GlueIcebergTableConfig) -> GlueIcebergCatalogConfig {
-    let mut catalog_config =
-        GlueIcebergCatalogConfig::new(config.catalog_name.clone(), config.warehouse.clone(), config.region.clone());
-    if let Some(catalog_id) = config.catalog_id.as_ref() {
-        catalog_config = catalog_config.with_catalog_id(catalog_id.clone());
-    }
-    if let Some(profile) = config.profile.as_ref() {
-        catalog_config = catalog_config.with_profile(profile.clone());
-    }
-    catalog_config
 }
 
 fn run_overload_probe(config: &StressConfig) -> DataFusionResult<StressRow> {
@@ -582,7 +568,7 @@ fn run_overload_probe(config: &StressConfig) -> DataFusionResult<StressRow> {
         total_wall_ms: duration_ms(started.elapsed()),
         native_wall_ms: None,
         planning_outcome: "not_planned".to_string(),
-        post_native_execution_path: "not_planned".to_string(),
+        final_disposition: "not_planned".to_string(),
         native_runtime_outcome: "not_started",
         count_status: "not_run",
         expected_count: None,
@@ -622,7 +608,7 @@ fn failure_row(
     admission_sequence: Option<u64>,
     admission_wait_ms: Option<f64>,
     planning_outcome: &str,
-    post_native_execution_path: &str,
+    final_disposition: &str,
     native_runtime_outcome: &'static str,
     count_status: &'static str,
     expected_count: Option<u64>,
@@ -639,7 +625,7 @@ fn failure_row(
         total_wall_ms: duration_ms(total_wall),
         native_wall_ms: None,
         planning_outcome: planning_outcome.to_string(),
-        post_native_execution_path: post_native_execution_path.to_string(),
+        final_disposition: final_disposition.to_string(),
         native_runtime_outcome,
         count_status,
         expected_count,
@@ -878,8 +864,8 @@ mod tests {
             admission_wait_ms: Some(0.0),
             total_wall_ms: 10.0,
             native_wall_ms: Some(5.0),
-            planning_outcome: "accepted_replaced".to_string(),
-            post_native_execution_path: "native".to_string(),
+            planning_outcome: "selected".to_string(),
+            final_disposition: "native".to_string(),
             native_runtime_outcome: "succeeded",
             count_status: "matched",
             expected_count: Some(1),

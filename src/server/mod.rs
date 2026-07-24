@@ -48,16 +48,16 @@ pub use config::{
     NEXUS_SERVER_ADMISSION_MAX_QUERIES_PER_DEVICE_ENV, NEXUS_SERVER_ADMISSION_PINNED_DEVICE_ENV,
     NEXUS_SERVER_ADMISSION_PLACEMENT_POLICY_ENV, NEXUS_SERVER_ADMISSION_SLOT_GUARANTEE_ENV,
     NEXUS_SERVER_ADMISSION_WAIT_TIMEOUT_MS_ENV, NEXUS_SERVER_ADMISSION_WORKLOAD_PROFILE_ENV, NEXUS_SERVER_BIND_ENV,
-    NEXUS_SERVER_CONFIG_FILE_ENV, NEXUS_SERVER_CPU_FALLBACK_MAX_CONCURRENT_STATEMENTS_ENV,
-    NEXUS_SERVER_CPU_FALLBACK_WAIT_TIMEOUT_MS_ENV, NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV,
-    NEXUS_SERVER_CUGRAPH_DIRECTED_ENV, NEXUS_SERVER_CUGRAPH_ENABLED_ENV, NEXUS_SERVER_CUGRAPH_RENUMBER_ENV,
-    NEXUS_SERVER_DEVICE_BUDGET_FRACTION_ENV, NEXUS_SERVER_GPU_DEVICES_ENV, NEXUS_SERVER_LOG_ENV,
-    NEXUS_SERVER_MAX_CONCURRENT_QUERIES_ENV, NEXUS_SERVER_MAX_IN_FLIGHT_ENV, NEXUS_SERVER_NATIVE_CONFIG_OPTIONS,
-    NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV, NEXUS_SERVER_NATIVE_GRAPH_CACHE_MAX_RETAINED_BYTES_ENV,
-    NEXUS_SERVER_NATIVE_MAX_RETRY_ATTEMPTS_ENV, NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV,
-    NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, NEXUS_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV,
-    NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV, NEXUS_SERVER_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV,
-    NEXUS_SERVER_NATIVE_PIPELINE_EXECUTION_MODE_ENV, NEXUS_SERVER_NATIVE_QUERY_MEMORY_DOMAIN_CEILING_MULTIPLIER_ENV,
+    NEXUS_SERVER_CONFIG_FILE_ENV, NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV, NEXUS_SERVER_CUGRAPH_DIRECTED_ENV,
+    NEXUS_SERVER_CUGRAPH_ENABLED_ENV, NEXUS_SERVER_CUGRAPH_RENUMBER_ENV, NEXUS_SERVER_DEVICE_BUDGET_FRACTION_ENV,
+    NEXUS_SERVER_GPU_DEVICES_ENV, NEXUS_SERVER_HOST_EXECUTION_QOS_MAX_CONCURRENT_STATEMENTS_ENV,
+    NEXUS_SERVER_HOST_EXECUTION_QOS_WAIT_TIMEOUT_MS_ENV, NEXUS_SERVER_LOG_ENV, NEXUS_SERVER_MAX_CONCURRENT_QUERIES_ENV,
+    NEXUS_SERVER_MAX_IN_FLIGHT_ENV, NEXUS_SERVER_NATIVE_CONFIG_OPTIONS, NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV,
+    NEXUS_SERVER_NATIVE_GRAPH_CACHE_MAX_RETAINED_BYTES_ENV, NEXUS_SERVER_NATIVE_MAX_RETRY_ATTEMPTS_ENV,
+    NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV,
+    NEXUS_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV, NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV,
+    NEXUS_SERVER_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV, NEXUS_SERVER_NATIVE_PIPELINE_EXECUTION_MODE_ENV,
+    NEXUS_SERVER_NATIVE_QUERY_MEMORY_DOMAIN_CEILING_MULTIPLIER_ENV,
     NEXUS_SERVER_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES_ENV, NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV,
     NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV,
     NEXUS_SERVER_OBSERVABILITY_ACTIVE_LOGICAL_CAPTURE_MAX_BYTES_ENV,
@@ -69,7 +69,9 @@ pub use config::{
     NEXUS_SERVER_WORKSPACE_CATALOG_ENV, NEXUS_SERVER_WORKSPACE_SCHEMA_ENV, NexusServerNativeConfigOption, ServerConfig,
     ServerNativeConfigScope, ServerObservabilityConfig, WorkspaceOverlayConfig,
 };
-pub use diagnostics::{FlightSqlNativeRejectClass, log_native_planning_report, log_native_planning_report_for_tables};
+pub use diagnostics::{
+    FlightSqlNativeNotSupportedClass, log_native_planning_report, log_native_planning_report_for_tables,
+};
 pub use error::{
     ERROR_CODE_METADATA_KEY, ERROR_KIND_METADATA_KEY, ERROR_OPERATION_METADATA_KEY, ERROR_STATUS_METADATA_KEY, Result,
     ServerError, UNSUPPORTED_COLUMN_METADATA_KEY, UNSUPPORTED_COLUMN_ROLE_METADATA_KEY,
@@ -214,7 +216,7 @@ impl FlightSqlServerBuilder {
         let ctx = match self.session_context {
             Some(ctx) => {
                 let backend = backend.as_ref().expect("injected session_context requires injected backend");
-                validate_injected_session_matches_backend(&ctx, backend)?;
+                validate_injected_session_matches_server_config(&ctx, backend, &config)?;
                 ctx
             },
             None => {
@@ -695,30 +697,14 @@ fn validate_injected_backend_matches_config(backend: &NexusGpuBackend, config: &
             backend_want,
         ));
     }
-    let config_fallback_limit = config.native_optimizer_config.cpu_fallback_max_concurrent_statements();
-    let backend_fallback_limit = backend.optimizer_config().cpu_fallback_max_concurrent_statements();
-    if config_fallback_limit != backend_fallback_limit {
-        return Err(ServerError::builder_conflict(
-            "server_backend_admission_conflict",
-            "fallback.max_concurrent_statements",
-            config_fallback_limit.map(|value| value.get()).unwrap_or(0),
-            backend_fallback_limit.map(|value| value.get()).unwrap_or(0),
-        ));
-    }
-    let config_fallback_timeout = config_fallback_limit.and(config.native_optimizer_config.cpu_fallback_wait_timeout());
-    let backend_fallback_timeout = backend_fallback_limit.and(backend.optimizer_config().cpu_fallback_wait_timeout());
-    if config_fallback_timeout != backend_fallback_timeout {
-        return Err(ServerError::builder_conflict(
-            "server_backend_admission_conflict",
-            "fallback.wait_timeout_ms",
-            config_fallback_timeout.map(|value| value.as_millis()).unwrap_or(0),
-            backend_fallback_timeout.map(|value| value.as_millis()).unwrap_or(0),
-        ));
-    }
     Ok(())
 }
 
-fn validate_injected_session_matches_backend(ctx: &SessionContext, backend: &NexusGpuBackend) -> Result<()> {
+fn validate_injected_session_matches_server_config(
+    ctx: &SessionContext,
+    backend: &NexusGpuBackend,
+    config: &ServerConfig,
+) -> Result<()> {
     let state = ctx.state();
     let Some(optimizer_config) = crate::session::installed_nexus_native_optimizer_config(&state) else {
         return Err(ServerError::builder_validation(
@@ -733,6 +719,22 @@ fn validate_injected_session_matches_backend(ctx: &SessionContext, backend: &Nex
         return Err(ServerError::builder_validation(
             "server_session_backend_mismatch",
             "injected session_context is not installed on the injected backend query service",
+        ));
+    }
+    let installed_host_execution_qos = crate::session::installed_host_execution_qos_config(&state);
+    let configured_host_execution_qos = config.host_execution_qos.as_ref();
+    let host_execution_qos_matches = match (installed_host_execution_qos.as_ref(), configured_host_execution_qos) {
+        (None, None) => true,
+        (Some(installed), Some(configured)) => {
+            installed.max_concurrent_statements() == configured.max_concurrent_statements()
+                && installed.wait_timeout() == configured.wait_timeout()
+        },
+        _ => false,
+    };
+    if !host_execution_qos_matches {
+        return Err(ServerError::builder_validation(
+            "server_session_host_execution_qos_mismatch",
+            "injected session_context host execution QoS does not match server configuration",
         ));
     }
     Ok(())
@@ -764,25 +766,34 @@ fn placement_policy_value(policy: nexus_query_engine::runtime::QueryPlacementPol
     }
 }
 
+fn host_execution_qos_max_concurrent_statements(config: &ServerConfig) -> usize {
+    config.host_execution_qos.as_ref().map(|qos| qos.max_concurrent_statements().get()).unwrap_or(0)
+}
+
+fn host_execution_qos_wait_timeout_ms(config: &ServerConfig) -> u128 {
+    config
+        .host_execution_qos
+        .as_ref()
+        .and_then(|qos| qos.wait_timeout())
+        .map(|timeout| timeout.as_millis())
+        .unwrap_or(0)
+}
+
 #[cfg(feature = "iceberg")]
 fn log_server_config_snapshot(config: &ServerConfig) {
     let native_execution = config.native_optimizer_config.native_execution_config();
     let native_memory = NativeMemorySnapshot::from(native_execution.memory_control_policy());
     let source_scheduler = native_execution.source_scheduler_policy();
+    let host_execution_qos_max_concurrent_statements = host_execution_qos_max_concurrent_statements(config);
+    let host_execution_qos_wait_timeout_ms = host_execution_qos_wait_timeout_ms(config);
     match &config.iceberg {
         Some(iceberg) => {
-            let snapshot = iceberg_backend_snapshot(&iceberg.backend);
+            let snapshot = iceberg_backend_snapshot(&iceberg.backend, iceberg.source_access_policy());
             tracing::info!(
                 bind_addr = %config.bind_addr,
                 max_in_flight = config.max_in_flight,
-                cpu_fallback_max_concurrent_statements = config
-                    .cpu_fallback_max_concurrent_statements
-                    .map(|value| value.get())
-                    .unwrap_or(0),
-                cpu_fallback_wait_timeout_ms = config
-                    .cpu_fallback_wait_timeout
-                    .map(|value| value.as_millis())
-                    .unwrap_or(0),
+                host_execution_qos_max_concurrent_statements,
+                host_execution_qos_wait_timeout_ms,
                 statement_ticket_ttl_secs = config.statement_ticket_ttl.as_secs(),
                 observability_per_query_max_records = config.observability.per_query_max_records,
                 observability_per_query_max_bytes = config.observability.per_query_max_bytes,
@@ -824,14 +835,8 @@ fn log_server_config_snapshot(config: &ServerConfig) {
         None => tracing::info!(
             bind_addr = %config.bind_addr,
             max_in_flight = config.max_in_flight,
-            cpu_fallback_max_concurrent_statements = config
-                .cpu_fallback_max_concurrent_statements
-                .map(|value| value.get())
-                .unwrap_or(0),
-            cpu_fallback_wait_timeout_ms = config
-                .cpu_fallback_wait_timeout
-                .map(|value| value.as_millis())
-                .unwrap_or(0),
+            host_execution_qos_max_concurrent_statements,
+            host_execution_qos_wait_timeout_ms,
             statement_ticket_ttl_secs = config.statement_ticket_ttl.as_secs(),
             observability_per_query_max_records = config.observability.per_query_max_records,
             observability_per_query_max_bytes = config.observability.per_query_max_bytes,
@@ -865,17 +870,13 @@ fn log_server_config_snapshot(config: &ServerConfig) {
     let native_execution = config.native_optimizer_config.native_execution_config();
     let native_memory = NativeMemorySnapshot::from(native_execution.memory_control_policy());
     let source_scheduler = native_execution.source_scheduler_policy();
+    let host_execution_qos_max_concurrent_statements = host_execution_qos_max_concurrent_statements(config);
+    let host_execution_qos_wait_timeout_ms = host_execution_qos_wait_timeout_ms(config);
     tracing::info!(
         bind_addr = %config.bind_addr,
         max_in_flight = config.max_in_flight,
-        cpu_fallback_max_concurrent_statements = config
-            .cpu_fallback_max_concurrent_statements
-            .map(|value| value.get())
-            .unwrap_or(0),
-        cpu_fallback_wait_timeout_ms = config
-            .cpu_fallback_wait_timeout
-            .map(|value| value.as_millis())
-            .unwrap_or(0),
+        host_execution_qos_max_concurrent_statements,
+        host_execution_qos_wait_timeout_ms,
         statement_ticket_ttl_secs = config.statement_ticket_ttl.as_secs(),
         observability_per_query_max_records = config.observability.per_query_max_records,
         observability_per_query_max_bytes = config.observability.per_query_max_bytes,
@@ -1002,7 +1003,10 @@ struct IcebergBackendSnapshot<'a> {
 }
 
 #[cfg(feature = "iceberg")]
-fn iceberg_backend_snapshot(backend: &config::IcebergCatalogBackendConfig) -> IcebergBackendSnapshot<'_> {
+fn iceberg_backend_snapshot<'a>(
+    backend: &'a config::IcebergCatalogBackendConfig,
+    source_access_policy: &'a crate::table_format::iceberg::SourceAccessPolicy,
+) -> IcebergBackendSnapshot<'a> {
     match backend {
         config::IcebergCatalogBackendConfig::Glue(glue) => IcebergBackendSnapshot {
             catalog_type: "glue",
@@ -1021,10 +1025,10 @@ fn iceberg_backend_snapshot(backend: &config::IcebergCatalogBackendConfig) -> Ic
             glue_region: "none",
             glue_catalog_id: "none",
             aws_profile: "none",
-            rest_uri: Cow::Owned(credential_free_endpoint_identity(&rest.uri)),
-            rest_s3_endpoint: rest
-                .s3_endpoint
-                .as_deref()
+            rest_uri: Cow::Owned(credential_free_endpoint_identity(rest.uri())),
+            rest_s3_endpoint: source_access_policy
+                .s3_access()
+                .endpoint
                 .map(credential_free_endpoint_identity)
                 .map(Cow::Owned)
                 .unwrap_or(Cow::Borrowed("none")),

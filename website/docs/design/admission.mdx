@@ -135,7 +135,8 @@ Flight SQL uses the same unit as embedded DataFusion sessions. `GetFlightInfo`
 and prepared-statement creation may plan and issue a Flight ticket, but they do
 not acquire a GPU slot. If the client never calls `DoGet`, no native admission
 is consumed. The first native execution poll behind `DoGet` admits through the
-plan ticket above; a CPU fallback plan never enters the GPU ledger.
+plan ticket above; a completed DataFusion-baseline plan never enters the GPU
+ledger.
 
 :::warning[Admission failures are structured, not silent]
 Queue overflow and admission timeouts surface as the same structured
@@ -154,7 +155,7 @@ stream pools, and admission queue.
 use datafusion::execution::SessionStateBuilder;
 use datafusion::prelude::SessionContext;
 use datafusion_nexus::backend::{NexusAdmissionPolicy, NexusGpuBackend, NexusMemoryPolicy};
-use nexus_query_engine::runtime::query_service::SlotGuarantee;
+use nexus_query_engine::runtime::SlotGuarantee;
 
 let backend = NexusGpuBackend::builder()
     .memory_policy(NexusMemoryPolicy::BoundedAuto {
@@ -368,25 +369,20 @@ default unbounded pool is installed. If you install a bounded DataFusion pool
 alongside a backend, the pool governs host operators; device memory belongs to
 the governor.
 
-CPU fallback concurrency is bounded separately from GPU admission. The server
-defaults to two concurrent fallback statements and a 30 s fallback wait timeout,
-exposed as `NEXUS_SERVER_CPU_FALLBACK_MAX_CONCURRENT_STATEMENTS` and
-`NEXUS_SERVER_CPU_FALLBACK_WAIT_TIMEOUT_MS`; set the timeout to `0` to wait
-indefinitely. Library users opt in with
-`NexusNativeOptimizerConfig::with_cpu_fallback_max_concurrent_statements` and can set
-`NexusNativeOptimizerConfig::with_cpu_fallback_wait_timeout`; the library default is
-indefinite waiting for embedder compatibility. Nested fallback execution with
-the same DataFusion `TaskContext` reuses the ambient fallback permit, so a
-fallback statement that internally collects another fallback-planned source does
-not acquire the semaphore twice. The semaphore governs statements that remain
-on DataFusion CPU operators. It does not reserve GPU memory, does not appear in
-`QueryService` admission snapshots, and is deliberately not coupled to
-`max_concurrent_queries`.
+Host execution QoS is bounded separately from GPU admission. The rule wraps a
+completed DataFusion or mixed plan once; a fully native final plan does not
+acquire a host permit. It governs the DataFusion baseline and host boundaries,
+does not reserve GPU memory, does not appear in `QueryService` admission
+snapshots, and is deliberately not coupled to `max_concurrent_queries`.
+
+Library users install it independently of relational native selection with
+`HostExecutionQosConfig` and `SessionStateBuilder::with_host_execution_qos`.
+The configuration uses a non-zero limit; omit the rule to leave library host
+execution unbounded. A zero `Duration` restores indefinite waiting.
 
 ## Server configuration lowering
 
-The server constructs the same backend from its config. Existing deployments
-keep working; the new keys are additive:
+The server applies the same host-execution QoS contract from its configuration:
 
 | Env | TOML | Backend field |
 | --- | --- | --- |
@@ -399,8 +395,8 @@ keep working; the new keys are additive:
 | `NEXUS_SERVER_ADMISSION_PINNED_DEVICE` | `admission.pinned_device_ordinal` | Required companion ordinal for `pinned` placement |
 | `NEXUS_SERVER_ADMISSION_MAX_QUERIES_PER_DEVICE` | `admission.max_queries_per_device` | Optional per-device slot cap |
 | `NEXUS_SERVER_ADMISSION_WAIT_TIMEOUT_MS` | `admission.wait_timeout_ms` | Query-service admission wait timeout; default 60 s |
-| `NEXUS_SERVER_CPU_FALLBACK_MAX_CONCURRENT_STATEMENTS` | `fallback.max_concurrent_statements` | Host-side CPU fallback statement limit; default 2, `0` disables |
-| `NEXUS_SERVER_CPU_FALLBACK_WAIT_TIMEOUT_MS` | `fallback.wait_timeout_ms` | CPU fallback semaphore wait timeout; default 30 s, `0` waits indefinitely |
+| `NEXUS_SERVER_HOST_EXECUTION_QOS_MAX_CONCURRENT_STATEMENTS` | `host_execution_qos.max_concurrent_statements` | Host-executing statement limit; default 2, `0` disables the QoS rule |
+| `NEXUS_SERVER_HOST_EXECUTION_QOS_WAIT_TIMEOUT_MS` | `host_execution_qos.wait_timeout_ms` | Host-execution permit wait timeout; default 30 s, `0` waits indefinitely |
 
 Setting the alias and the primary key to different values is a startup error.
 Explicit shares are spelled as decimals: `GRANT_WANT=1.0`, and
@@ -443,9 +439,9 @@ from log archaeology.
 - **cuGraph:** graph SQL executes eagerly through table functions. The
   admission ticket is ambient per query: a `cugraph_*` call executing inside a
   natively rewritten plan joins that plan's ticket, and a standalone
-  `cugraph_*` query — including its fallback-planned edge and predicate
-  fragments — admits exactly once through its own. Standalone *bounded*
-  sessions (no backend) refuse to execute native fragments inside a
+  `cugraph_*` query — including DataFusion-baseline edge and predicate inputs —
+  admits exactly once through its own. Standalone *bounded* sessions (no
+  backend) refuse to execute native relational work inside a
   `cugraph_*` call — a loud structured error instead of a second full-budget
   ledger. Graph workspace memory follows the same governance contract as
   relational work: a runtime statistics probe on the resident edge frame

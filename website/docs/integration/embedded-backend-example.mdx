@@ -16,8 +16,8 @@ requests use the backend-installed session's plan-scoped admission tickets.
 Flight SQL statements issue Flight tickets first and acquire GPU admission only
 when a native plan starts executing. Native work from both paths draws slots and
 memory grants from the same query-service ledger, which is exposed by
-`GET /api/gpu`; CPU fallback work is bounded separately by the server fallback
-statement limit.
+`GET /api/gpu`. Completed DataFusion and mixed statements are bounded
+separately by the server's host-execution QoS rule.
 
 ```text
                                    one backend process
@@ -161,8 +161,9 @@ curl http://127.0.0.1:8080/api/pipelines/sql_aggregate_topk/plan
 ```
 
 The response contains the native `PlanningReport` JSON for the pipeline's
-default parameters. Treat `Rewritten` and `Rejected` report outcomes as the
-execution evidence. Do not depend on printed physical plans.
+default parameters. Treat `Selected` as native execution evidence;
+`NotSupported` and `NotSelectedByCost` retain the reason for a non-native
+choice. Do not depend on printed physical plans.
 
 ## Ad-Hoc Flight SQL
 

@@ -10,8 +10,9 @@ Both frontends use the same `NexusGpuBackend` and the same base
 `SessionContext`. REST requests use plan-scoped admission from the shared
 session. Flight SQL issues statement tickets first and acquires GPU admission
 only when a native plan starts executing. Native work from both paths draws
-from one `QueryService` ledger, visible at `GET /api/gpu`; CPU fallback work is
-bounded separately by the server fallback statement limit.
+from one `QueryService` ledger, visible at `GET /api/gpu`. Completed
+DataFusion and mixed statements are governed separately by the server's
+host-execution QoS bound.
 
 ```text
                                    one backend process
@@ -46,8 +47,9 @@ This topology is useful when an application has a small set of product-owned
 workflows but still needs an expert SQL side door for operators, notebooks, or
 BI tools. The important property is not the REST framework; it is that every
 frontend in the process shares one backend and one catalog view. GPU-native
-execution shares one admission ledger; CPU fallback statements use the separate
-host-side fallback bound.
+execution shares one admission ledger. The host-execution QoS rule separately
+bounds completed DataFusion and mixed statements without consuming a GPU
+admission slot.
 
 ## Data
 
@@ -185,9 +187,9 @@ printf '%s\n' \
 | `graph_bfs_hops` | Run `cugraph_bfs`, join vertices back to papers, and aggregate by hop distance. |
 
 `GET /api/pipelines/{name}/plan` returns the structured `PlanningReport` JSON
-for that pipeline's default parameters. Use the report's `Rewritten` and
-`Rejected` outcomes as execution evidence; do not depend on printed physical
-plans.
+for that pipeline's default parameters. Use a `Selected` outcome as native
+execution evidence; `NotSupported` and `NotSelectedByCost` retain the reason
+for a non-native choice. Do not depend on printed physical plans.
 
 ## E2E
 

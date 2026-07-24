@@ -1,4 +1,4 @@
-//! Host-side concurrency bound for CPU fallback plans.
+//! Host-side statement concurrency bound.
 
 use std::{
     any::Any,
@@ -27,20 +27,20 @@ use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 use crate::error::{Error, ErrorCode};
 
 #[derive(Debug, Clone)]
-pub(crate) struct CpuFallbackStatementLimiter {
-    inner: Arc<CpuFallbackStatementLimiterInner>,
+pub(crate) struct HostExecutionQosLimiter {
+    inner: Arc<HostExecutionQosLimiterInner>,
 }
 
 #[derive(Debug)]
-struct CpuFallbackStatementLimiterInner {
+struct HostExecutionQosLimiterInner {
     permits: Arc<Semaphore>,
     max_concurrent_statements: NonZeroUsize,
     wait_timeout: Option<Duration>,
-    state: Mutex<CpuFallbackTicketState>,
+    state: Mutex<HostExecutionQosTicketState>,
     notify: Arc<Notify>,
 }
 
-impl CpuFallbackStatementLimiter {
+impl HostExecutionQosLimiter {
     #[cfg(test)]
     pub(crate) fn new(max_concurrent_statements: NonZeroUsize) -> Self {
         Self::new_with_wait_timeout(max_concurrent_statements, None)
@@ -52,7 +52,7 @@ impl CpuFallbackStatementLimiter {
     ) -> Self {
         let wait_timeout = wait_timeout.filter(|timeout| !timeout.is_zero());
         Self {
-            inner: Arc::new(CpuFallbackStatementLimiterInner {
+            inner: Arc::new(HostExecutionQosLimiterInner {
                 permits: Arc::new(Semaphore::new(max_concurrent_statements.get())),
                 max_concurrent_statements,
                 wait_timeout,
@@ -77,19 +77,19 @@ impl CpuFallbackStatementLimiter {
 }
 
 #[derive(Debug)]
-struct CpuFallbackAdmissionTicket {
-    limiter: CpuFallbackStatementLimiter,
+struct HostExecutionQosTicket {
+    limiter: HostExecutionQosLimiter,
 }
 
 #[derive(Debug, Default)]
-struct CpuFallbackTicketState {
-    rounds: HashMap<usize, CpuFallbackTicketRound>,
+struct HostExecutionQosTicketState {
+    rounds: HashMap<usize, HostExecutionQosTicketRound>,
     acquiring: HashSet<usize>,
     next_epoch: u64,
 }
 
 #[derive(Debug)]
-struct CpuFallbackTicketRound {
+struct HostExecutionQosTicketRound {
     _task_context: Arc<TaskContext>,
     permit: Option<Arc<OwnedSemaphorePermit>>,
     active_streams: usize,
@@ -97,28 +97,28 @@ struct CpuFallbackTicketRound {
 }
 
 #[derive(Debug)]
-struct CpuFallbackExecutionRoundGuard {
-    ticket: Arc<CpuFallbackAdmissionTicket>,
+struct HostExecutionQosExecutionRoundGuard {
+    ticket: Arc<HostExecutionQosTicket>,
     task_key: usize,
     epoch: u64,
     released: bool,
 }
 
-struct CpuFallbackAcquireResetGuard {
-    ticket: Arc<CpuFallbackAdmissionTicket>,
+struct HostExecutionQosAcquireResetGuard {
+    ticket: Arc<HostExecutionQosTicket>,
     task_key: usize,
     disarmed: bool,
 }
 
-impl CpuFallbackAdmissionTicket {
-    fn new(limiter: CpuFallbackStatementLimiter) -> Arc<Self> {
+impl HostExecutionQosTicket {
+    fn new(limiter: HostExecutionQosLimiter) -> Arc<Self> {
         Arc::new(Self { limiter })
     }
 
     fn begin_execution_round(
         self: &Arc<Self>,
         task_context: Arc<TaskContext>,
-    ) -> DataFusionResult<CpuFallbackExecutionRoundGuard> {
+    ) -> DataFusionResult<HostExecutionQosExecutionRoundGuard> {
         let task_key = Self::task_key(&task_context);
         let mut state = self.lock_state()?;
         Self::remove_stale_rounds_locked(&mut state);
@@ -130,7 +130,7 @@ impl CpuFallbackAdmissionTicket {
             let epoch = state.next_epoch;
             state.rounds.insert(
                 task_key,
-                CpuFallbackTicketRound {
+                HostExecutionQosTicketRound {
                     _task_context: Arc::clone(&task_context),
                     permit: None,
                     active_streams: 1,
@@ -139,7 +139,7 @@ impl CpuFallbackAdmissionTicket {
             );
             epoch
         };
-        Ok(CpuFallbackExecutionRoundGuard { ticket: Arc::clone(self), task_key, epoch, released: false })
+        Ok(HostExecutionQosExecutionRoundGuard { ticket: Arc::clone(self), task_key, epoch, released: false })
     }
 
     async fn acquire_permit_for_epoch(
@@ -156,38 +156,42 @@ impl CpuFallbackAdmissionTicket {
                 let mut state = self.lock_state()?;
                 Self::remove_stale_rounds_locked(&mut state);
                 let Some(round) = state.rounds.get(&task_key) else {
-                    return Err(cpu_fallback_admission_error("fallback execution round disappeared before admission"));
+                    return Err(host_execution_qos_admission_error(
+                        "host execution QoS execution round disappeared before admission",
+                    ));
                 };
                 if round.epoch != epoch {
-                    return Err(cpu_fallback_admission_error("fallback execution round changed before admission"));
+                    return Err(host_execution_qos_admission_error(
+                        "host execution QoS execution round changed before admission",
+                    ));
                 }
                 if round.permit.is_some() {
-                    CpuFallbackAcquireAction::Ready
+                    HostExecutionQosAcquireAction::Ready
                 } else {
                     notified.as_mut().enable();
                     if state.acquiring.contains(&task_key) {
-                        CpuFallbackAcquireAction::Wait
+                        HostExecutionQosAcquireAction::Wait
                     } else {
                         state.acquiring.insert(task_key);
-                        CpuFallbackAcquireAction::Acquire
+                        HostExecutionQosAcquireAction::Acquire
                     }
                 }
             };
 
             match action {
-                CpuFallbackAcquireAction::Ready => return Ok(()),
-                CpuFallbackAcquireAction::Wait => {
+                HostExecutionQosAcquireAction::Ready => return Ok(()),
+                HostExecutionQosAcquireAction::Wait => {
                     notified.await;
                 },
-                CpuFallbackAcquireAction::Acquire => {
+                HostExecutionQosAcquireAction::Acquire => {
                     let mut reset_guard =
-                        CpuFallbackAcquireResetGuard { ticket: Arc::clone(&self), task_key, disarmed: false };
+                        HostExecutionQosAcquireResetGuard { ticket: Arc::clone(&self), task_key, disarmed: false };
                     let acquire = self.limiter.inner.permits.clone().acquire_owned();
                     let permit = match self.limiter.wait_timeout() {
                         Some(wait_timeout) => match tokio::time::timeout(wait_timeout, acquire).await {
                             Ok(result) => result,
                             Err(_elapsed) => {
-                                return Err(cpu_fallback_wait_timeout_error(
+                                return Err(host_execution_qos_wait_timeout_error(
                                     self.limiter.max_concurrent_statements(),
                                     wait_timeout,
                                 ));
@@ -199,8 +203,8 @@ impl CpuFallbackAdmissionTicket {
                         DataFusionError::External(Box::new(
                             Error::new(
                                 ErrorCode::ServiceOverloaded,
-                                "datafusion_nexus.cpu_fallback.admission",
-                                "CPU fallback admission queue was closed",
+                                "datafusion_nexus.host_execution_qos.admission",
+                                "host execution QoS admission queue was closed",
                             )
                             .with_source(error),
                         ))
@@ -210,14 +214,16 @@ impl CpuFallbackAdmissionTicket {
                     let Some(round) = state.rounds.get_mut(&task_key) else {
                         reset_guard.disarmed = true;
                         self.limiter.inner.notify.notify_waiters();
-                        return Err(cpu_fallback_admission_error(
-                            "fallback execution round disappeared during admission",
+                        return Err(host_execution_qos_admission_error(
+                            "host execution QoS execution round disappeared during admission",
                         ));
                     };
                     if round.epoch != epoch {
                         reset_guard.disarmed = true;
                         self.limiter.inner.notify.notify_waiters();
-                        return Err(cpu_fallback_admission_error("fallback execution round changed during admission"));
+                        return Err(host_execution_qos_admission_error(
+                            "host execution QoS execution round changed during admission",
+                        ));
                     }
                     round.permit = Some(Arc::new(permit));
                     reset_guard.disarmed = true;
@@ -230,7 +236,7 @@ impl CpuFallbackAdmissionTicket {
 
     fn release_execution_round(self: &Arc<Self>, task_key: usize, epoch: u64) {
         let Ok(mut state) = self.limiter.inner.state.lock() else {
-            eprintln!("[datafusion-nexus] warning: failed to release poisoned CPU fallback admission state");
+            eprintln!("[datafusion-nexus] warning: failed to release poisoned host execution QoS admission state");
             return;
         };
         let Some(round) = state.rounds.get_mut(&task_key) else {
@@ -248,37 +254,37 @@ impl CpuFallbackAdmissionTicket {
 
     fn reset_acquiring(&self, task_key: usize) {
         let Ok(mut state) = self.limiter.inner.state.lock() else {
-            eprintln!("[datafusion-nexus] warning: failed to reset poisoned CPU fallback admission state");
+            eprintln!("[datafusion-nexus] warning: failed to reset poisoned host execution QoS admission state");
             return;
         };
         state.acquiring.remove(&task_key);
         self.limiter.inner.notify.notify_waiters();
     }
 
-    fn lock_state(&self) -> DataFusionResult<std::sync::MutexGuard<'_, CpuFallbackTicketState>> {
+    fn lock_state(&self) -> DataFusionResult<std::sync::MutexGuard<'_, HostExecutionQosTicketState>> {
         self.limiter
             .inner
             .state
             .lock()
-            .map_err(|_| cpu_fallback_admission_error("CPU fallback admission state mutex was poisoned"))
+            .map_err(|_| host_execution_qos_admission_error("host execution QoS admission state mutex was poisoned"))
     }
 
     fn task_key(task_context: &Arc<TaskContext>) -> usize {
         Arc::as_ptr(task_context) as usize
     }
 
-    fn remove_stale_rounds_locked(state: &mut CpuFallbackTicketState) {
+    fn remove_stale_rounds_locked(state: &mut HostExecutionQosTicketState) {
         state.rounds.retain(|_task_key, round| round.active_streams > 0);
     }
 }
 
-enum CpuFallbackAcquireAction {
+enum HostExecutionQosAcquireAction {
     Ready,
     Acquire,
     Wait,
 }
 
-impl Drop for CpuFallbackExecutionRoundGuard {
+impl Drop for HostExecutionQosExecutionRoundGuard {
     fn drop(&mut self) {
         if self.released {
             return;
@@ -288,7 +294,7 @@ impl Drop for CpuFallbackExecutionRoundGuard {
     }
 }
 
-impl Drop for CpuFallbackAcquireResetGuard {
+impl Drop for HostExecutionQosAcquireResetGuard {
     fn drop(&mut self) {
         if !self.disarmed {
             self.disarmed = true;
@@ -298,38 +304,42 @@ impl Drop for CpuFallbackAcquireResetGuard {
 }
 
 #[derive(Debug)]
-pub(crate) struct CpuFallbackAdmissionExec {
+pub(crate) struct HostExecutionQosExec {
     input: Arc<dyn ExecutionPlan>,
-    ticket: Arc<CpuFallbackAdmissionTicket>,
+    ticket: Arc<HostExecutionQosTicket>,
 }
 
-impl CpuFallbackAdmissionExec {
-    fn new(input: Arc<dyn ExecutionPlan>, limiter: CpuFallbackStatementLimiter) -> Self {
-        Self { input, ticket: CpuFallbackAdmissionTicket::new(limiter) }
+impl HostExecutionQosExec {
+    fn new(input: Arc<dyn ExecutionPlan>, limiter: HostExecutionQosLimiter) -> Self {
+        Self { input, ticket: HostExecutionQosTicket::new(limiter) }
     }
 }
 
-pub(crate) fn wrap_plan_with_cpu_fallback_limit(
+pub(crate) fn wrap_plan_with_host_execution_qos(
     plan: Arc<dyn ExecutionPlan>,
-    limiter: CpuFallbackStatementLimiter,
+    limiter: HostExecutionQosLimiter,
 ) -> Arc<dyn ExecutionPlan> {
-    if plan_is_cpu_fallback_limited(plan.as_ref()) {
+    if plan_is_host_execution_qos_limited(plan.as_ref()) {
         return plan;
     }
-    Arc::new(CpuFallbackAdmissionExec::new(plan, limiter))
+    Arc::new(HostExecutionQosExec::new(plan, limiter))
 }
 
-pub(crate) fn plan_is_cpu_fallback_limited(plan: &dyn ExecutionPlan) -> bool {
-    (plan as &dyn Any).is::<CpuFallbackAdmissionExec>()
+pub(crate) fn plan_is_host_execution_qos_limited(plan: &dyn ExecutionPlan) -> bool {
+    (plan as &dyn Any).is::<HostExecutionQosExec>()
 }
 
-impl DisplayAs for CpuFallbackAdmissionExec {
+pub(crate) fn host_execution_qos_wrapped_input(plan: &dyn ExecutionPlan) -> Option<&Arc<dyn ExecutionPlan>> {
+    (plan as &dyn Any).downcast_ref::<HostExecutionQosExec>().map(|wrapper| &wrapper.input)
+}
+
+impl DisplayAs for HostExecutionQosExec {
     fn fmt_as(&self, t: DisplayFormatType, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.input.fmt_as(t, f)
     }
 }
 
-impl ExecutionPlan for CpuFallbackAdmissionExec {
+impl ExecutionPlan for HostExecutionQosExec {
     fn name(&self) -> &str {
         self.input.name()
     }
@@ -377,7 +387,7 @@ impl ExecutionPlan for CpuFallbackAdmissionExec {
 
     fn execute(&self, partition: usize, context: Arc<TaskContext>) -> DataFusionResult<SendableRecordBatchStream> {
         let round_guard = self.ticket.begin_execution_round(Arc::clone(&context))?;
-        Ok(Box::pin(CpuFallbackAdmissionStream::new(
+        Ok(Box::pin(HostExecutionQosStream::new(
             Arc::clone(&self.input),
             partition,
             context,
@@ -397,52 +407,52 @@ impl ExecutionPlan for CpuFallbackAdmissionExec {
 
 type BoxAcquireFuture = Pin<Box<dyn Future<Output = DataFusionResult<()>> + Send>>;
 
-struct CpuFallbackAdmissionStream {
+struct HostExecutionQosStream {
     schema: SchemaRef,
-    state: CpuFallbackAdmissionStreamState,
-    round_guard: Option<CpuFallbackExecutionRoundGuard>,
+    state: HostExecutionQosStreamState,
+    round_guard: Option<HostExecutionQosExecutionRoundGuard>,
 }
 
-enum CpuFallbackAdmissionStreamState {
+enum HostExecutionQosStreamState {
     Waiting { input: Arc<dyn ExecutionPlan>, partition: usize, context: Arc<TaskContext>, acquire: BoxAcquireFuture },
     Running(SendableRecordBatchStream),
     Done,
 }
 
-impl CpuFallbackAdmissionStream {
+impl HostExecutionQosStream {
     fn new(
         input: Arc<dyn ExecutionPlan>,
         partition: usize,
         context: Arc<TaskContext>,
-        ticket: Arc<CpuFallbackAdmissionTicket>,
-        round_guard: CpuFallbackExecutionRoundGuard,
+        ticket: Arc<HostExecutionQosTicket>,
+        round_guard: HostExecutionQosExecutionRoundGuard,
     ) -> Self {
         let schema = input.schema();
         let epoch = round_guard.epoch;
         let acquire = Box::pin(ticket.acquire_permit_for_epoch(Arc::clone(&context), epoch));
         Self {
             schema,
-            state: CpuFallbackAdmissionStreamState::Waiting { input, partition, context, acquire },
+            state: HostExecutionQosStreamState::Waiting { input, partition, context, acquire },
             round_guard: Some(round_guard),
         }
     }
 }
 
-impl Unpin for CpuFallbackAdmissionStream {}
+impl Unpin for HostExecutionQosStream {}
 
-impl Stream for CpuFallbackAdmissionStream {
+impl Stream for HostExecutionQosStream {
     type Item = DataFusionResult<arrow::record_batch::RecordBatch>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.get_mut();
         loop {
             match &mut this.state {
-                CpuFallbackAdmissionStreamState::Waiting { input, partition, context, acquire } => {
+                HostExecutionQosStreamState::Waiting { input, partition, context, acquire } => {
                     match acquire.as_mut().poll(cx) {
                         Poll::Pending => return Poll::Pending,
                         Poll::Ready(Err(error)) => {
                             this.round_guard = None;
-                            this.state = CpuFallbackAdmissionStreamState::Done;
+                            this.state = HostExecutionQosStreamState::Done;
                             return Poll::Ready(Some(Err(error)));
                         },
                         Poll::Ready(Ok(())) => {
@@ -450,55 +460,55 @@ impl Stream for CpuFallbackAdmissionStream {
                                 Ok(stream) => stream,
                                 Err(error) => {
                                     this.round_guard = None;
-                                    this.state = CpuFallbackAdmissionStreamState::Done;
+                                    this.state = HostExecutionQosStreamState::Done;
                                     return Poll::Ready(Some(Err(error)));
                                 },
                             };
-                            this.state = CpuFallbackAdmissionStreamState::Running(stream);
+                            this.state = HostExecutionQosStreamState::Running(stream);
                         },
                     }
                 },
-                CpuFallbackAdmissionStreamState::Running(stream) => match stream.as_mut().poll_next(cx) {
+                HostExecutionQosStreamState::Running(stream) => match stream.as_mut().poll_next(cx) {
                     Poll::Ready(None) => {
                         this.round_guard = None;
-                        this.state = CpuFallbackAdmissionStreamState::Done;
+                        this.state = HostExecutionQosStreamState::Done;
                         return Poll::Ready(None);
                     },
                     Poll::Ready(Some(Err(error))) => {
                         this.round_guard = None;
-                        this.state = CpuFallbackAdmissionStreamState::Done;
+                        this.state = HostExecutionQosStreamState::Done;
                         return Poll::Ready(Some(Err(error)));
                     },
                     other => return other,
                 },
-                CpuFallbackAdmissionStreamState::Done => return Poll::Ready(None),
+                HostExecutionQosStreamState::Done => return Poll::Ready(None),
             }
         }
     }
 }
 
-impl RecordBatchStream for CpuFallbackAdmissionStream {
+impl RecordBatchStream for HostExecutionQosStream {
     fn schema(&self) -> SchemaRef {
         Arc::clone(&self.schema)
     }
 }
 
-fn cpu_fallback_admission_error(message: &'static str) -> DataFusionError {
+fn host_execution_qos_admission_error(message: &'static str) -> DataFusionError {
     DataFusionError::External(Box::new(Error::new(
         ErrorCode::Internal,
-        "datafusion_nexus.cpu_fallback.admission",
+        "datafusion_nexus.host_execution_qos.admission",
         message,
     )))
 }
 
-fn cpu_fallback_wait_timeout_error(limit: NonZeroUsize, waited: Duration) -> DataFusionError {
+fn host_execution_qos_wait_timeout_error(limit: NonZeroUsize, waited: Duration) -> DataFusionError {
     DataFusionError::External(Box::new(
         Error::new(
             ErrorCode::ServiceOverloaded,
-            "datafusion_nexus.cpu_fallback.admission",
-            "CPU fallback admission wait timed out",
+            "datafusion_nexus.host_execution_qos.admission",
+            "host execution QoS admission wait timed out",
         )
-        .with_fact("reason", "cpu_fallback_wait_timeout")
+        .with_fact("reason", "host_execution_qos_wait_timeout")
         .with_fact("limit", limit.get())
         .with_fact("waited_ms", waited.as_millis()),
     ))
@@ -519,7 +529,10 @@ mod tests {
     use datafusion::physical_plan::{collect, empty::EmptyExec};
     use futures::StreamExt;
 
-    use super::*;
+    use super::{
+        super::unbounded_native::{UnboundedNativeExecutionLimiter, wrap_plan_with_unbounded_native_execution_limit},
+        *,
+    };
 
     #[derive(Debug)]
     struct PendingExec {
@@ -810,12 +823,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cpu_fallback_limiter_holds_one_per_task_context_until_stream_drops() {
-        let limiter = CpuFallbackStatementLimiter::new(NonZeroUsize::new(1).unwrap());
+    async fn host_execution_qos_limiter_holds_one_per_task_context_until_stream_drops() {
+        let limiter = HostExecutionQosLimiter::new(NonZeroUsize::new(1).unwrap());
         let execute_count = Arc::new(AtomicUsize::new(0));
         let input =
             Arc::new(PendingExec::new(Arc::new(Schema::empty()), Arc::clone(&execute_count))) as Arc<dyn ExecutionPlan>;
-        let plan = wrap_plan_with_cpu_fallback_limit(input, limiter.clone());
+        let plan = wrap_plan_with_host_execution_qos(input, limiter.clone());
 
         let mut first = plan.execute(0, Arc::new(TaskContext::default())).unwrap();
         assert!(
@@ -828,7 +841,7 @@ mod tests {
         let mut second = plan.execute(0, Arc::new(TaskContext::default())).unwrap();
         assert!(
             tokio::time::timeout(Duration::from_millis(50), second.next()).await.is_err(),
-            "second stream should wait for the fallback permit"
+            "second stream should wait for the host execution QoS permit"
         );
         assert_eq!(execute_count.load(Ordering::SeqCst), 1);
 
@@ -842,35 +855,35 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cpu_fallback_limiter_reuses_outer_round_for_nested_collect_with_same_task_context() {
-        let limiter = CpuFallbackStatementLimiter::new(NonZeroUsize::new(1).unwrap());
+    async fn host_execution_qos_limiter_reuses_outer_round_for_nested_collect_with_same_task_context() {
+        let limiter = HostExecutionQosLimiter::new(NonZeroUsize::new(1).unwrap());
         let inner_execute_count = Arc::new(AtomicUsize::new(0));
         let schema = Arc::new(Schema::empty());
         let inner = Arc::new(CountingEmptyExec::new(Arc::clone(&schema), Arc::clone(&inner_execute_count)))
             as Arc<dyn ExecutionPlan>;
-        let inner = wrap_plan_with_cpu_fallback_limit(inner, limiter.clone());
+        let inner = wrap_plan_with_host_execution_qos(inner, limiter.clone());
         let outer = Arc::new(NestedCollectExec::new(Arc::clone(&schema), inner)) as Arc<dyn ExecutionPlan>;
-        let outer = wrap_plan_with_cpu_fallback_limit(outer, limiter.clone());
+        let outer = wrap_plan_with_host_execution_qos(outer, limiter.clone());
 
         tokio::time::timeout(Duration::from_secs(1), collect(outer, Arc::new(TaskContext::default())))
             .await
-            .expect("nested fallback collect should not self-deadlock")
-            .expect("nested fallback collect should succeed");
+            .expect("nested host QoS collect should not self-deadlock")
+            .expect("nested host QoS collect should succeed");
 
         assert_eq!(inner_execute_count.load(Ordering::SeqCst), 1);
         assert_eq!(limiter.available_permits(), 1);
     }
 
     #[tokio::test]
-    async fn cpu_fallback_limiter_times_out_waiting_sibling_statement() {
-        let limiter = CpuFallbackStatementLimiter::new_with_wait_timeout(
+    async fn host_execution_qos_limiter_times_out_waiting_sibling_statement() {
+        let limiter = HostExecutionQosLimiter::new_with_wait_timeout(
             NonZeroUsize::new(1).unwrap(),
             Some(Duration::from_millis(5)),
         );
         let execute_count = Arc::new(AtomicUsize::new(0));
         let input =
             Arc::new(PendingExec::new(Arc::new(Schema::empty()), Arc::clone(&execute_count))) as Arc<dyn ExecutionPlan>;
-        let plan = wrap_plan_with_cpu_fallback_limit(input, limiter.clone());
+        let plan = wrap_plan_with_host_execution_qos(input, limiter.clone());
 
         let mut first = plan.execute(0, Arc::new(TaskContext::default())).unwrap();
         assert!(tokio::time::timeout(Duration::from_millis(50), first.next()).await.is_err());
@@ -881,10 +894,10 @@ mod tests {
             .await
             .expect("wait timeout should return promptly")
             .expect("timeout should produce a stream item")
-            .expect_err("saturated fallback limiter should reject after wait timeout");
+            .expect_err("saturated host execution QoS limiter should reject after wait timeout");
         let error = adapter_error(&error);
         assert_eq!(error.code(), ErrorCode::ServiceOverloaded);
-        assert_eq!(error.fact_value("reason"), Some("cpu_fallback_wait_timeout"));
+        assert_eq!(error.fact_value("reason"), Some("host_execution_qos_wait_timeout"));
         assert_eq!(error.fact_value("limit"), Some("1"));
         assert_eq!(error.fact_value("waited_ms"), Some("5"));
 
@@ -893,12 +906,48 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cpu_fallback_limiter_cancellation_while_waiting_resets_acquire_state() {
-        let limiter = CpuFallbackStatementLimiter::new(NonZeroUsize::new(1).unwrap());
+    async fn host_execution_qos_timeout_does_not_start_gpu_admission() {
+        let host_limiter = HostExecutionQosLimiter::new_with_wait_timeout(
+            NonZeroUsize::new(1).unwrap(),
+            Some(Duration::from_millis(5)),
+        );
+        let first_execute_count = Arc::new(AtomicUsize::new(0));
+        let first_input = Arc::new(PendingExec::new(Arc::new(Schema::empty()), Arc::clone(&first_execute_count)))
+            as Arc<dyn ExecutionPlan>;
+        let first_plan = wrap_plan_with_host_execution_qos(first_input, host_limiter.clone());
+        let mut first = first_plan.execute(0, Arc::new(TaskContext::default())).unwrap();
+        assert!(tokio::time::timeout(Duration::from_millis(50), first.next()).await.is_err());
+        assert_eq!(first_execute_count.load(Ordering::SeqCst), 1);
+
+        let gpu_limiter = UnboundedNativeExecutionLimiter::new(NonZeroUsize::new(1).unwrap());
+        let second_execute_count = Arc::new(AtomicUsize::new(0));
+        let second_input = Arc::new(PendingExec::new(Arc::new(Schema::empty()), Arc::clone(&second_execute_count)))
+            as Arc<dyn ExecutionPlan>;
+        let native_admission = wrap_plan_with_unbounded_native_execution_limit(second_input, gpu_limiter.clone());
+        let second_plan = wrap_plan_with_host_execution_qos(native_admission, host_limiter.clone());
+        let mut second = second_plan.execute(0, Arc::new(TaskContext::default())).unwrap();
+
+        let error = tokio::time::timeout(Duration::from_secs(1), second.next())
+            .await
+            .expect("host QoS timeout should finish promptly")
+            .expect("host QoS timeout should produce a stream item")
+            .expect_err("second statement must time out before GPU admission");
+        let error = adapter_error(&error);
+        assert_eq!(error.fact_value("reason"), Some("host_execution_qos_wait_timeout"));
+        assert_eq!(second_execute_count.load(Ordering::SeqCst), 0);
+        assert_eq!(gpu_limiter.available_permits(), 1, "timed-out host wait must not start GPU admission");
+
+        drop(first);
+        assert_eq!(host_limiter.available_permits(), 1);
+    }
+
+    #[tokio::test]
+    async fn host_execution_qos_limiter_cancellation_while_waiting_resets_acquire_state() {
+        let limiter = HostExecutionQosLimiter::new(NonZeroUsize::new(1).unwrap());
         let execute_count = Arc::new(AtomicUsize::new(0));
         let input =
             Arc::new(PendingExec::new(Arc::new(Schema::empty()), Arc::clone(&execute_count))) as Arc<dyn ExecutionPlan>;
-        let plan = wrap_plan_with_cpu_fallback_limit(input, limiter);
+        let plan = wrap_plan_with_host_execution_qos(input, limiter);
 
         let mut first = plan.execute(0, Arc::new(TaskContext::default())).unwrap();
         assert!(tokio::time::timeout(Duration::from_millis(50), first.next()).await.is_err());
@@ -919,5 +968,31 @@ mod tests {
             "third stream with the same TaskContext should acquire after the cancelled wait"
         );
         assert_eq!(execute_count.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn host_execution_qos_precedes_gpu_admission_and_cancellation_releases_it() {
+        let host_limiter = HostExecutionQosLimiter::new(NonZeroUsize::new(1).unwrap());
+        let gpu_limiter = UnboundedNativeExecutionLimiter::new(NonZeroUsize::new(1).unwrap());
+        let gpu_blocker = gpu_limiter.acquire().await.expect("test GPU permit should acquire");
+        let execute_count = Arc::new(AtomicUsize::new(0));
+        let input =
+            Arc::new(PendingExec::new(Arc::new(Schema::empty()), Arc::clone(&execute_count))) as Arc<dyn ExecutionPlan>;
+        let native_admission = wrap_plan_with_unbounded_native_execution_limit(input, gpu_limiter.clone());
+        let plan = wrap_plan_with_host_execution_qos(native_admission, host_limiter.clone());
+
+        let mut stream = plan.execute(0, Arc::new(TaskContext::default())).unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), stream.next()).await.is_err(),
+            "the outer host permit must be acquired before waiting for GPU admission"
+        );
+        assert_eq!(host_limiter.available_permits(), 0, "host QoS is held while the GPU boundary waits");
+        assert_eq!(execute_count.load(Ordering::SeqCst), 0, "GPU admission must precede child execution");
+
+        drop(stream);
+        assert_eq!(host_limiter.available_permits(), 1, "cancelling before GPU admission releases host QoS");
+        assert_eq!(gpu_limiter.available_permits(), 0, "only the test blocker holds the GPU admission permit");
+        drop(gpu_blocker);
+        assert_eq!(gpu_limiter.available_permits(), 1, "cancellation leaves no GPU admission permit behind");
     }
 }

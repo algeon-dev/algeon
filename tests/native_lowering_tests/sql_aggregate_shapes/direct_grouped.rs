@@ -10,9 +10,9 @@ async fn direct_friendly_sql_physical_plan_has_stable_native_lowering_outcome() 
     let result = lower_physical_plan_to_native(plan);
 
     assert_eq!(result.candidate_count(), 1);
-    assert_eq!(result.rewritten_count(), 1);
-    assert_eq!(result.rejected_count(), 0);
-    let CandidateOutcome::Rewritten { candidate } = &result.report.outcomes()[0] else {
+    assert_eq!(result.selected_count(), 1);
+    assert_eq!(result.not_selected_count(), 0);
+    let CandidateOutcome::Selected { candidate } = &result.report.outcomes()[0] else {
         panic!("direct-friendly SQL plan should lower to native");
     };
     assert_eq!(candidate.shape, "SortExec(fetch)(ProjectionExec(AggregateExec(FilterExec(LocalParquetScan))))");
@@ -39,8 +39,8 @@ async fn direct_friendly_sql_native_aggregate_parity_functions_lower() {
     let result = lower_physical_plan_to_native(plan);
 
     assert_eq!(result.candidate_count(), 1);
-    assert_eq!(result.rewritten_count(), 1);
-    assert_eq!(result.rejected_count(), 0);
+    assert_eq!(result.selected_count(), 1);
+    assert_eq!(result.not_selected_count(), 0);
     let functions = native_aggregate_functions(&result.plans[0]);
     assert_eq!(functions, vec![AggregateFunction::Min, AggregateFunction::Max, AggregateFunction::Count]);
     assert_eq!(result.source_diagnostics.len(), 1);
@@ -67,8 +67,8 @@ async fn direct_friendly_sql_median_aggregate_lowers_to_native_median() {
     let result = lower_physical_plan_to_native(plan);
 
     assert_eq!(result.candidate_count(), 1);
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let aggregate_exprs = native_aggregate_exprs(&result.plans[0]);
     assert_eq!(aggregate_exprs.len(), 1);
     assert_eq!(aggregate_exprs[0].function, AggregateFunction::Median);
@@ -91,7 +91,7 @@ async fn direct_friendly_sql_mixed_median_and_statistical_aggregate_is_rejected(
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_native_rejection(&result, FallbackReason::UnsupportedOperator);
+    assert_native_rejection(&result, CapabilityReason::UnsupportedOperator);
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -106,8 +106,8 @@ async fn direct_friendly_sql_statistical_aggregate_aliases_lower() {
     let result = lower_physical_plan_to_native(plan);
 
     assert_eq!(result.candidate_count(), 1);
-    assert_eq!(result.rewritten_count(), 1);
-    assert_eq!(result.rejected_count(), 0);
+    assert_eq!(result.selected_count(), 1);
+    assert_eq!(result.not_selected_count(), 0);
     assert_eq!(
         native_aggregate_functions(&result.plans[0]),
         vec![
@@ -148,8 +148,8 @@ async fn direct_physical_count_distinct_lowers_to_exact_nunique() {
     let result = lower_physical_plan_to_native(aggregate);
 
     assert_eq!(result.candidate_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let aggregate_exprs = native_aggregate_exprs(&result.plans[0]);
     assert_eq!(aggregate_exprs.len(), 1);
     assert_eq!(aggregate_exprs[0].function, AggregateFunction::NUnique);
@@ -167,8 +167,8 @@ async fn direct_friendly_sql_count_star_lowers_with_synthetic_argument_column() 
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1);
-    assert_eq!(result.rejected_count(), 0);
+    assert_eq!(result.selected_count(), 1);
+    assert_eq!(result.not_selected_count(), 0);
     let aggregate_exprs = native_aggregate_exprs(&result.plans[0]);
     assert_eq!(aggregate_exprs.len(), 2);
     assert_eq!(native_aggregate_functions(&result.plans[0]), vec![AggregateFunction::Sum, AggregateFunction::Count]);
@@ -200,8 +200,8 @@ async fn direct_friendly_sql_zero_column_count_lowers_to_represented_source() {
     let result = lower_physical_plan_to_native(plan);
 
     assert_eq!(result.candidate_count(), 1);
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.source_diagnostics.len(), 1);
     assert!(result.source_diagnostics[0].direct_device_read);
     assert_eq!(result.source_diagnostics[0].read_column_count, 0);
@@ -233,8 +233,8 @@ async fn direct_friendly_sql_typed_null_count_does_not_use_zero_column_count() {
     let result = lower_physical_plan_to_native(plan);
 
     assert_eq!(result.candidate_count(), 1);
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     assert!(
         !result
             .source_diagnostics
@@ -272,11 +272,11 @@ async fn sql_count_only_lowers_to_native_zero_column_count_without_manual_plan_s
     let result = lower_physical_plan_to_native(plan);
 
     assert_eq!(result.candidate_count(), 1);
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     assert_eq!(
         result.report.outcomes()[0],
-        CandidateOutcome::Rewritten {
+        CandidateOutcome::Selected {
             candidate: datafusion_nexus::report::GpuCandidate::with_operator_count(
                 "ProjectionExec(AggregateExec(LocalParquetScan))",
                 1,
@@ -312,9 +312,9 @@ async fn direct_friendly_sql_filter_plan_lowers_when_scan_predicate_is_absent() 
     let result = lower_physical_plan_to_native(plan);
 
     assert_eq!(result.candidate_count(), 1);
-    assert_eq!(result.rewritten_count(), 1);
-    assert_eq!(result.rejected_count(), 0);
-    let CandidateOutcome::Rewritten { candidate } = &result.report.outcomes()[0] else {
+    assert_eq!(result.selected_count(), 1);
+    assert_eq!(result.not_selected_count(), 0);
+    let CandidateOutcome::Selected { candidate } = &result.report.outcomes()[0] else {
         panic!("direct-friendly SQL filter plan should lower to native");
     };
     assert_eq!(candidate.shape, "SortExec(fetch)(ProjectionExec(AggregateExec(FilterExec(LocalParquetScan))))");
@@ -349,8 +349,8 @@ async fn direct_friendly_sql_not_filter_lowers_to_native_expr() {
     let result = lower_physical_plan_to_native(plan);
 
     assert_eq!(result.candidate_count(), 1);
-    assert_eq!(result.rewritten_count(), 1);
-    assert_eq!(result.rejected_count(), 0);
+    assert_eq!(result.selected_count(), 1);
+    assert_eq!(result.not_selected_count(), 0);
     let filter = native_filter_expr(&result.plans[0]);
     assert_eq!(filter.to_string(), "NOT (payload < 10)");
     let source = native_local_parquet_source(&result.plans[0]);

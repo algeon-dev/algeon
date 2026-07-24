@@ -10,9 +10,9 @@ fn pushed_down_parquet_predicate_with_filter_is_reader_pushdown() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1);
-    assert_eq!(result.rejected_count(), 0);
-    assert!(matches!(result.report.outcomes()[0], CandidateOutcome::Rewritten { .. }));
+    assert_eq!(result.selected_count(), 1);
+    assert_eq!(result.not_selected_count(), 0);
+    assert!(matches!(result.report.outcomes()[0], CandidateOutcome::Selected { .. }));
     assert_eq!(result.source_diagnostics.len(), 1);
     assert!(result.source_diagnostics[0].direct_device_read);
     assert_eq!(result.source_diagnostics[0].predicate_disposition.as_str(), "reader_pushdown");
@@ -38,8 +38,8 @@ fn reader_pushdown_covered_filter_keeps_frontend_projection_order_after_reordere
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.source_diagnostics.len(), 1);
     assert_eq!(result.source_diagnostics[0].predicate_disposition.as_str(), "reader_pushdown");
     let source = native_local_parquet_source(&result.plans[0]);
@@ -83,9 +83,9 @@ fn pushed_down_parquet_predicate_subset_of_filter_is_reader_pushdown_with_native
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1);
-    assert_eq!(result.rejected_count(), 0);
-    assert!(matches!(result.report.outcomes()[0], CandidateOutcome::Rewritten { .. }));
+    assert_eq!(result.selected_count(), 1);
+    assert_eq!(result.not_selected_count(), 0);
+    assert!(matches!(result.report.outcomes()[0], CandidateOutcome::Selected { .. }));
     assert_eq!(result.source_diagnostics.len(), 1);
     assert!(result.source_diagnostics[0].direct_device_read);
     assert_eq!(result.source_diagnostics[0].predicate_disposition.as_str(), "reader_pushdown");
@@ -115,8 +115,8 @@ fn pushed_down_parquet_predicate_uses_filter_input_schema_for_validation() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.source_diagnostics.len(), 1);
     assert!(result.source_diagnostics[0].direct_device_read);
     assert_eq!(result.source_diagnostics[0].predicate_disposition.as_str(), "reader_pushdown");
@@ -138,8 +138,8 @@ fn pushed_down_substring_prefix_predicate_is_rewritten_to_reader_pushdown_ranges
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.source_diagnostics.len(), 1);
     assert_eq!(result.source_diagnostics[0].predicate_disposition.as_str(), "reader_pushdown");
     assert!(result.source_diagnostics[0].rejected_features.is_empty());
@@ -166,9 +166,9 @@ fn pushed_down_parquet_predicate_without_filter_is_reader_pushdown() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1);
-    assert_eq!(result.rejected_count(), 0);
-    assert!(matches!(result.report.outcomes()[0], CandidateOutcome::Rewritten { .. }));
+    assert_eq!(result.selected_count(), 1);
+    assert_eq!(result.not_selected_count(), 0);
+    assert!(matches!(result.report.outcomes()[0], CandidateOutcome::Selected { .. }));
     assert_eq!(result.source_diagnostics.len(), 1);
     assert!(result.source_diagnostics[0].direct_device_read);
     assert_eq!(result.source_diagnostics[0].predicate_disposition.as_str(), "reader_pushdown");
@@ -189,8 +189,8 @@ fn pushed_down_parquet_predicate_with_source_limit_lowers_limit_after_reader_pre
 
     let result = lower_physical_plan_to_native(scan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.source_diagnostics.len(), 1);
     assert_eq!(result.source_diagnostics[0].predicate_disposition.as_str(), "reader_pushdown");
     assert!(result.source_diagnostics[0].rejected_features.is_empty());
@@ -221,8 +221,8 @@ fn pushed_down_post_scan_predicate_with_source_limit_lowers_filter_then_limit() 
 
     let result = lower_physical_plan_to_native(scan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.source_diagnostics.len(), 1);
     assert_eq!(result.source_diagnostics[0].predicate_disposition.as_str(), "native_post_scan_only");
     assert!(result.source_diagnostics[0].rejected_features.is_empty());
@@ -261,8 +261,8 @@ fn empty_local_parquet_scan_lowers_to_empty_literal_source() {
 
     let result = lower_physical_plan_to_native(scan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     assert!(result.source_diagnostics.is_empty());
     assert!(native_local_parquet_sources(&result.plans[0]).is_empty());
     let literal_sources = native_literal_batch_sources(&result.plans[0]);
@@ -287,8 +287,8 @@ fn empty_s3_parquet_scan_lowers_to_empty_literal_source() {
 
     let result = lower_physical_plan_to_native(scan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     assert!(result.source_diagnostics.is_empty());
     assert!(native_local_parquet_sources(&result.plans[0]).is_empty());
     let literal_sources = native_literal_batch_sources(&result.plans[0]);
@@ -318,8 +318,8 @@ fn empty_local_parquet_scan_with_filter_projection_lowers_to_projected_empty_lit
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     assert!(result.source_diagnostics.is_empty());
     assert!(native_filter_exprs(&result.plans[0]).is_empty());
     assert!(native_local_parquet_sources(&result.plans[0]).is_empty());
@@ -341,8 +341,8 @@ fn empty_local_parquet_scan_with_source_limit_lowers_to_empty_literal_source() {
 
     let result = lower_physical_plan_to_native(scan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     assert!(result.source_diagnostics.is_empty());
     assert!(native_local_parquet_sources(&result.plans[0]).is_empty());
     assert!(result.plans[0].nodes().iter().all(|node| !matches!(node.kind, PlanNode::Limit(_))));
@@ -363,8 +363,8 @@ fn empty_local_parquet_scan_with_pushed_predicate_and_source_limit_lowers_to_emp
 
     let result = lower_physical_plan_to_native(scan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     assert!(result.source_diagnostics.is_empty());
     assert!(native_local_parquet_sources(&result.plans[0]).is_empty());
     assert!(native_filter_exprs(&result.plans[0]).is_empty());
@@ -385,8 +385,8 @@ fn empty_local_parquet_aggregate_lowers_through_literal_source() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     assert!(result.source_diagnostics.is_empty());
     assert!(native_local_parquet_sources(&result.plans[0]).is_empty());
     let literal_sources = native_literal_batch_sources(&result.plans[0]);
@@ -407,8 +407,8 @@ fn pushed_down_scan_only_decimal_predicate_uses_reader_pushdown() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.source_diagnostics.len(), 1);
     assert!(result.source_diagnostics[0].direct_device_read);
     assert_eq!(result.source_diagnostics[0].predicate_disposition.as_str(), "reader_pushdown");
@@ -435,8 +435,8 @@ fn pushed_down_decimal_equality_predicate_uses_reader_pushdown() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.source_diagnostics.len(), 1);
     assert!(result.source_diagnostics[0].direct_device_read);
     assert_eq!(result.source_diagnostics[0].predicate_disposition.as_str(), "reader_pushdown");
@@ -459,8 +459,8 @@ fn pushed_down_decimal_in_list_predicate_uses_reader_pushdown() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.source_diagnostics.len(), 1);
     assert!(result.source_diagnostics[0].direct_device_read);
     assert_eq!(result.source_diagnostics[0].predicate_disposition.as_str(), "reader_pushdown");
@@ -483,8 +483,8 @@ fn pushed_down_case_decimal_divide_predicate_uses_native_post_scan_filter() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.source_diagnostics.len(), 1);
     assert!(result.source_diagnostics[0].direct_device_read);
     assert_eq!(result.source_diagnostics[0].predicate_disposition.as_str(), "native_post_scan_only");
@@ -509,10 +509,10 @@ fn pushed_down_integer_divide_predicate_is_rejected_during_native_planning() {
     let result = lower_physical_plan_to_native(plan);
 
     assert!(result.plans.is_empty(), "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert!(matches!(
         result.report.outcomes()[0],
-        CandidateOutcome::Rejected { reason: FallbackReason::UnsupportedExpression, .. }
+        CandidateOutcome::NotSupported { capability_reason: CapabilityReason::UnsupportedExpression, .. }
     ));
 
     fs::remove_dir_all(dir).unwrap();
@@ -528,9 +528,9 @@ fn pushed_down_parquet_predicate_with_different_filter_uses_native_post_scan_fil
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1);
-    assert_eq!(result.rejected_count(), 0);
-    assert!(matches!(result.report.outcomes()[0], CandidateOutcome::Rewritten { .. }));
+    assert_eq!(result.selected_count(), 1);
+    assert_eq!(result.not_selected_count(), 0);
+    assert!(matches!(result.report.outcomes()[0], CandidateOutcome::Selected { .. }));
     assert_eq!(result.source_diagnostics.len(), 1);
     assert!(result.source_diagnostics[0].direct_device_read);
     assert_eq!(result.source_diagnostics[0].predicate_disposition.as_str(), "native_post_scan_only");
@@ -552,8 +552,8 @@ fn full_file_byte_range_coalesces_to_native_source() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1);
-    assert_eq!(result.rejected_count(), 0);
+    assert_eq!(result.selected_count(), 1);
+    assert_eq!(result.not_selected_count(), 0);
     let source = native_local_parquet_source(&result.plans[0]);
     assert_eq!(source.file_count(), 1);
     assert_eq!(source.files[0].file_size_bytes, Some(fs::metadata(&path).unwrap().len()));
@@ -588,8 +588,8 @@ fn partial_byte_range_maps_to_row_group_selection() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let source = native_local_parquet_source(&result.plans[0]);
     assert_eq!(source.file_count(), 1);
     assert_eq!(source.files[0].row_groups.as_deref(), Some(&[0][..]));
@@ -619,8 +619,8 @@ fn partial_byte_range_owns_row_groups_by_start_offset_boundaries() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let source = native_local_parquet_source(&result.plans[0]);
     assert_eq!(source.files[0].row_groups.as_deref(), Some(&[1, 2][..]));
     assert_eq!(source.diagnostics.ranged_file_count, 1);
@@ -657,8 +657,8 @@ fn partial_byte_range_with_access_plan_lowers_to_selected_row_groups() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let source = native_local_parquet_source(&result.plans[0]);
     assert_eq!(source.file_count(), 1);
     assert_eq!(source.files[0].row_groups.as_deref(), Some(&[1][..]));
@@ -698,8 +698,8 @@ fn partial_byte_range_ignores_row_level_selection_outside_range() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let source = native_local_parquet_source(&result.plans[0]);
     assert_eq!(source.files[0].row_groups.as_deref(), Some(&[1][..]));
     assert_eq!(source.diagnostics.byte_range_disposition.as_str(), "row_group_selection");
@@ -727,10 +727,10 @@ fn partial_byte_range_rejects_access_plan_length_mismatch() {
     let result = lower_physical_plan_to_native(plan);
 
     assert!(result.plans.is_empty());
-    assert_eq!(result.rejected_count(), 1);
+    assert_eq!(result.not_selected_count(), 1);
     assert!(matches!(
         result.report.outcomes()[0],
-        CandidateOutcome::Rejected { reason: FallbackReason::NativeSourceByteRange, .. }
+        CandidateOutcome::NotSupported { capability_reason: CapabilityReason::NativeSourceByteRange, .. }
     ));
     assert_eq!(result.source_diagnostics[0].byte_range_disposition.as_str(), "rejected");
     assert!(result.source_diagnostics[0].rejected_features.iter().any(|feature| feature.as_str() == "byte_range"));
@@ -756,8 +756,8 @@ fn mixed_partial_byte_range_and_full_file_reports_selected_row_group_total() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let source = native_local_parquet_source(&result.plans[0]);
     assert_eq!(source.file_count(), 2);
     assert_eq!(source.diagnostics.ranged_file_count, 1);
@@ -786,10 +786,10 @@ fn partial_byte_range_with_access_plan_and_extra_extension_is_rejected() {
     let result = lower_physical_plan_to_native(plan);
 
     assert!(result.plans.is_empty());
-    assert_eq!(result.rejected_count(), 1);
+    assert_eq!(result.not_selected_count(), 1);
     assert!(matches!(
         result.report.outcomes()[0],
-        CandidateOutcome::Rejected { reason: FallbackReason::NativeSourceByteRange, .. }
+        CandidateOutcome::NotSupported { capability_reason: CapabilityReason::NativeSourceByteRange, .. }
     ));
     assert_eq!(result.source_diagnostics.len(), 1);
     assert_eq!(result.source_diagnostics[0].byte_range_disposition.as_str(), "rejected");
@@ -808,8 +808,8 @@ fn split_full_file_byte_ranges_coalesce_without_duplicate_native_files() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1);
-    assert_eq!(result.rejected_count(), 0);
+    assert_eq!(result.selected_count(), 1);
+    assert_eq!(result.not_selected_count(), 0);
     let source = native_local_parquet_source(&result.plans[0]);
     assert_eq!(source.file_count(), 1);
     assert_eq!(source.files[0].file_size_bytes, Some(fs::metadata(&path).unwrap().len()));
@@ -836,10 +836,10 @@ fn overlapping_byte_ranges_are_rejected_with_source_reason() {
     let result = lower_physical_plan_to_native(plan);
 
     assert!(result.plans.is_empty());
-    assert_eq!(result.rejected_count(), 1);
+    assert_eq!(result.not_selected_count(), 1);
     assert!(matches!(
         result.report.outcomes()[0],
-        CandidateOutcome::Rejected { reason: FallbackReason::NativeSourceByteRange, .. }
+        CandidateOutcome::NotSupported { capability_reason: CapabilityReason::NativeSourceByteRange, .. }
     ));
     assert_eq!(result.source_diagnostics[0].ranged_file_count, 2);
     assert_eq!(result.source_diagnostics[0].byte_range_disposition.as_str(), "rejected");
@@ -877,8 +877,8 @@ fn s3_parquet_object_store_scan_lowers_to_remote_native_source() {
 
     let result = lower_physical_plan_to_native(scan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.source_diagnostics.len(), 1);
     assert!(result.source_diagnostics[0].rejected_features.is_empty());
     assert!(!result.source_diagnostics[0].direct_device_read);
@@ -902,10 +902,10 @@ fn s3_multi_file_parquet_object_store_scan_rejects_unverified_footer_schema() {
     let result = lower_physical_plan_to_native(scan);
 
     assert!(result.plans.is_empty());
-    assert_eq!(result.rejected_count(), 1);
+    assert_eq!(result.not_selected_count(), 1);
     assert!(matches!(
         result.report.outcomes()[0],
-        CandidateOutcome::Rejected { reason: FallbackReason::NativeSourceSchemaMapping, .. }
+        CandidateOutcome::NotSupported { capability_reason: CapabilityReason::NativeSourceSchemaMapping, .. }
     ));
 
     fs::remove_dir_all(dir).unwrap();
@@ -926,8 +926,8 @@ fn s3_parquet_object_store_aggregate_root_preserves_remote_source_diagnostics() 
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.source_diagnostics.len(), 1);
     assert!(result.source_diagnostics[0].rejected_features.is_empty());
     let source = native_local_parquet_source(&result.plans[0]);
@@ -949,10 +949,10 @@ fn non_s3_parquet_object_store_is_rejected_with_source_reason() {
     let result = lower_physical_plan_to_native(plan);
 
     assert!(result.plans.is_empty());
-    assert_eq!(result.rejected_count(), 1);
+    assert_eq!(result.not_selected_count(), 1);
     assert!(matches!(
         result.report.outcomes()[0],
-        CandidateOutcome::Rejected { reason: FallbackReason::NativeSourceNonLocalObjectStore, .. }
+        CandidateOutcome::NotSupported { capability_reason: CapabilityReason::NativeSourceNonLocalObjectStore, .. }
     ));
     assert_eq!(result.source_diagnostics.len(), 1);
     assert_eq!(result.source_diagnostics[0].file_count, 1);
@@ -991,10 +991,13 @@ fn custom_parquet_file_reader_factory_is_rejected_with_source_reason() {
     let result = lower_physical_plan_to_native(plan);
 
     assert!(result.plans.is_empty());
-    assert_eq!(result.rejected_count(), 1);
+    assert_eq!(result.not_selected_count(), 1);
     assert!(matches!(
         result.report.outcomes()[0],
-        CandidateOutcome::Rejected { reason: FallbackReason::NativeSourceParquetFileReaderFactory, .. }
+        CandidateOutcome::NotSupported {
+            capability_reason: CapabilityReason::NativeSourceParquetFileReaderFactory,
+            ..
+        }
     ));
     assert_eq!(result.source_diagnostics.len(), 1);
     assert!(!result.source_diagnostics[0].direct_device_read);
@@ -1018,8 +1021,8 @@ fn parquet_partition_columns_are_represented_in_native_source_contract() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.source_diagnostics.len(), 1);
     assert_eq!(result.source_diagnostics[0].partition_column_disposition.as_str(), "represented");
     assert!(result.source_diagnostics[0].rejected_features.is_empty());
@@ -1043,8 +1046,8 @@ fn parquet_partition_typed_null_values_are_represented_in_native_source_contract
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.source_diagnostics.len(), 1);
     assert_eq!(result.source_diagnostics[0].partition_column_disposition.as_str(), "represented");
     assert!(result.source_diagnostics[0].rejected_features.is_empty());
@@ -1067,10 +1070,10 @@ fn parquet_partition_columns_without_literal_values_are_rejected_with_source_rea
     let result = lower_physical_plan_to_native(plan);
 
     assert!(result.plans.is_empty());
-    assert_eq!(result.rejected_count(), 1);
+    assert_eq!(result.not_selected_count(), 1);
     assert!(matches!(
         result.report.outcomes()[0],
-        CandidateOutcome::Rejected { reason: FallbackReason::NativeSourcePartitionValues, .. }
+        CandidateOutcome::NotSupported { capability_reason: CapabilityReason::NativeSourcePartitionValues, .. }
     ));
     assert_eq!(result.source_diagnostics.len(), 1);
     assert_eq!(result.source_diagnostics[0].partition_column_disposition.as_str(), "rejected");
@@ -1092,8 +1095,8 @@ fn unused_parquet_binary_partition_columns_do_not_block_native_lowering() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.source_diagnostics.len(), 1);
     assert_eq!(result.source_diagnostics[0].partition_column_disposition.as_str(), "absent");
     let source = native_local_parquet_source(&result.plans[0]);
@@ -1117,8 +1120,8 @@ fn unused_parquet_utf8_partition_columns_are_not_represented_in_native_source_co
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.source_diagnostics.len(), 1);
     assert_eq!(result.source_diagnostics[0].partition_column_disposition.as_str(), "absent");
     assert!(result.source_diagnostics[0].rejected_features.is_empty());
@@ -1143,8 +1146,8 @@ fn unused_parquet_utf8_view_partition_values_do_not_enter_native_source_contract
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.source_diagnostics.len(), 1);
     assert_eq!(result.source_diagnostics[0].partition_column_disposition.as_str(), "absent");
     assert!(result.source_diagnostics[0].rejected_features.is_empty());
@@ -1169,8 +1172,8 @@ fn unused_parquet_utf8_view_partition_typed_null_values_do_not_enter_native_sour
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.source_diagnostics.len(), 1);
     assert_eq!(result.source_diagnostics[0].partition_column_disposition.as_str(), "absent");
     assert!(result.source_diagnostics[0].rejected_features.is_empty());
@@ -1190,8 +1193,8 @@ fn unused_unsupported_binary_schema_fields_do_not_block_native_lowering() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let source = native_local_parquet_source(&result.plans[0]);
     assert!(!source.read_columns.contains(&"blob".to_string()));
     assert!(source.schema.field_with_name("blob").is_err());
@@ -1219,8 +1222,8 @@ fn list_utf8_projection_lowers_as_native_carry_column() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let source = native_local_parquet_source(&result.plans[0]);
     assert_eq!(source.read_columns, vec!["key".to_string(), "tags".to_string()]);
 
@@ -1241,7 +1244,7 @@ fn list_utf8_sort_key_is_rejected_locally_during_native_planning() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_native_rejection(&result, FallbackReason::UnsupportedType);
+    assert_native_rejection(&result, CapabilityReason::UnsupportedType);
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -1266,8 +1269,8 @@ fn unprojected_struct_and_map_schema_fields_do_not_block_native_lowering() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let source = native_local_parquet_source(&result.plans[0]);
     assert_eq!(source.read_columns, vec!["key".to_string(), "m00".to_string()]);
     assert!(source.schema.field_with_name("details").is_err());
@@ -1293,7 +1296,7 @@ fn projected_struct_schema_field_is_rejected_with_unsupported_type() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_native_rejection(&result, FallbackReason::UnsupportedType);
+    assert_native_rejection(&result, CapabilityReason::UnsupportedType);
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -1315,7 +1318,7 @@ fn projected_map_schema_field_is_rejected_with_unsupported_type() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_native_rejection(&result, FallbackReason::UnsupportedType);
+    assert_native_rejection(&result, CapabilityReason::UnsupportedType);
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -1351,8 +1354,8 @@ fn parquet_missing_nullable_columns_are_represented_as_native_typed_nulls() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.source_diagnostics.len(), 1);
     assert_eq!(result.source_diagnostics[0].schema_mapping_disposition.as_str(), "missing_nullable_columns");
     assert!(result.source_diagnostics[0].rejected_features.is_empty());

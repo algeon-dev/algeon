@@ -5,11 +5,12 @@ description: Arrow, cuDF, and cuGraph data type support boundaries for native Da
 
 # Data Type Support
 
-DataFusion Nexus checks Arrow data types before a plan fragment enters native
-execution. Unsupported CPU-readable fragments stay on the standard DataFusion
-CPU path under the default GPU-preferred policy. Unified Iceberg scans retain
-their executable CPU delegate when native type admission rejects them;
-GPU-only policies fail planning with a structured reason instead.
+DataFusion Nexus checks Arrow data types before a whole relational candidate
+enters native execution. A candidate with an unsupported type keeps the
+executable DataFusion baseline. Unified Iceberg scans retain their executable
+CPU delegate when native type admission does not select acceleration. A
+`NoDataFusionCpu` final-plan requirement instead rejects a completed plan that
+retains DataFusion CPU execution.
 
 This page covers column representation. Operator and function support is
 documented separately in [Native SQL Support](./native-sql-support.mdx), and

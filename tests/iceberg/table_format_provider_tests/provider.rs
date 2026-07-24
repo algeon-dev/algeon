@@ -19,7 +19,7 @@ async fn iceberg_provider_plans_structured_table_format_scan_leaf() {
     assert_eq!(scan.name(), "NexusIcebergScanExec");
 
     let lowering = lower_physical_plan_to_native(Arc::clone(&physical_plan));
-    assert_eq!(lowering.rewritten_count(), 1);
+    assert_eq!(lowering.selected_count(), 1);
     let source = native_local_parquet_source(&lowering.plans[0]);
     assert_eq!(source.read_columns, vec!["value".to_string()]);
     assert_eq!(source.projected_output_columns, vec!["value".to_string()]);
@@ -177,8 +177,8 @@ async fn iceberg_provider_unprojected_unsupported_map_field_does_not_block_nativ
 
     assert_eq!(planner.requests().len(), 1);
     assert_eq!(planner.requests()[0].projected_column_names.as_deref(), Some(&["id".to_string()][..]));
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let source = native_local_parquet_source(&result.plans[0]);
     assert_eq!(source.read_columns, vec!["id".to_string()]);
     assert_eq!(source.projected_output_columns, vec!["id".to_string()]);
@@ -233,10 +233,10 @@ async fn iceberg_provider_projected_unsupported_map_field_rejects_native_project
     let physical_plan = df.create_physical_plan().await.unwrap();
     let result = lower_physical_plan_to_native(physical_plan);
 
-    assert_eq!(result.rewritten_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     assert!(matches!(
         result.report.outcomes()[0],
-        CandidateOutcome::Rejected { reason: FallbackReason::UnsupportedType, .. }
+        CandidateOutcome::NotSupported { capability_reason: CapabilityReason::UnsupportedType, .. }
     ));
 }
 
@@ -294,7 +294,7 @@ async fn iceberg_provider_native_probe_failure_keeps_cpu_delegate_executable() {
     let lowering = lower_physical_plan_to_native(Arc::clone(&physical_plan));
     assert!(matches!(
         lowering.report.outcomes()[0],
-        CandidateOutcome::Rejected { reason: FallbackReason::TableFormatPlanningFailed, .. }
+        CandidateOutcome::NotSupported { capability_reason: CapabilityReason::TableFormatPlanningFailed, .. }
     ));
 
     let batches = collect(physical_plan, Arc::new(TaskContext::default()))
@@ -322,7 +322,7 @@ async fn resolved_native_capability_miss_survives_optional_inspection_failure() 
     let NexusIcebergNativeScanOutcome::NotSupported { scan_plan, reason } = scan.native_outcome() else {
         panic!("resolved capability evidence must remain NotSupported");
     };
-    assert_eq!(*reason, FallbackReason::IcebergDeleteFilesUnsupported);
+    assert_eq!(*reason, CapabilityReason::IcebergDeleteFilesUnsupported);
     assert_eq!(scan_plan.snapshot_id.as_deref(), Some("12345"));
     assert_eq!(scan_plan.data_files.len(), 1);
     assert_eq!(inspection_count.load(AtomicOrdering::Relaxed), 1);
@@ -330,7 +330,7 @@ async fn resolved_native_capability_miss_survives_optional_inspection_failure() 
     let lowering = lower_physical_plan_to_native(Arc::clone(&physical_plan));
     assert!(matches!(
         lowering.report.outcomes()[0],
-        CandidateOutcome::Rejected { reason: FallbackReason::IcebergDeleteFilesUnsupported, .. }
+        CandidateOutcome::NotSupported { capability_reason: CapabilityReason::IcebergDeleteFilesUnsupported, .. }
     ));
     let batches = collect(physical_plan, Arc::new(TaskContext::default())).await.unwrap();
     assert!(batches.is_empty());
@@ -356,7 +356,7 @@ async fn predicate_free_limit_inspection_can_clear_dropped_file_rejection() {
         "dropped-orc-file",
         "the predicate-free LIMIT inspection must remove this dropped file rejection",
     ));
-    assert_eq!(resolved_scan.first_rejection_reason(), Some(FallbackReason::IcebergNonParquetDataFile));
+    assert_eq!(resolved_scan.first_not_supported_reason(), Some(CapabilityReason::IcebergNonParquetDataFile));
 
     let inspection_count = Arc::new(AtomicUsize::new(0));
     let planner = Arc::new(TrimmingInspectionPlanner {
@@ -378,8 +378,8 @@ async fn predicate_free_limit_inspection_can_clear_dropped_file_rejection() {
     assert_eq!(inspection_count.load(AtomicOrdering::Relaxed), 1);
 
     let lowering = lower_physical_plan_to_native(physical_plan);
-    assert_eq!(lowering.rewritten_count(), 1, "outcomes={:?}", lowering.report.outcomes());
-    assert_eq!(lowering.rejected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.selected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.not_selected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
 }
 
 #[tokio::test]
@@ -432,7 +432,7 @@ async fn iceberg_provider_scan_planning_timeout_preserves_cpu_delegate_and_struc
     let lowering = lower_physical_plan_to_native(Arc::clone(&physical_plan));
     assert!(matches!(
         lowering.report.outcomes()[0],
-        CandidateOutcome::Rejected { reason: FallbackReason::TableFormatPlanningFailed, .. }
+        CandidateOutcome::NotSupported { capability_reason: CapabilityReason::TableFormatPlanningFailed, .. }
     ));
     let batches = collect(physical_plan, Arc::new(TaskContext::default()))
         .await
@@ -485,7 +485,7 @@ async fn iceberg_provider_plumbs_explicit_scan_limit_into_table_format_source() 
 
     assert_eq!(planner.requests().len(), 1);
     assert_eq!(planner.requests()[0].scan_limit, Some(7));
-    assert_eq!(result.rewritten_count(), 1);
+    assert_eq!(result.selected_count(), 1);
     let source = native_local_parquet_source(&result.plans[0]);
     assert_eq!(source.scan_limit, Some(7));
     assert_eq!(
@@ -504,8 +504,8 @@ fn native_lowering_pushes_root_global_limit_into_table_format_source_scan_limit(
 
     let result = lower_physical_plan_to_native(limited);
 
-    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let source = native_local_parquet_source(&result.plans[0]);
     assert_eq!(source.scan_limit, Some(10), "source reads must cover skip + fetch before the native Limit trims");
     assert_eq!(source.diagnostics.scan_limit_disposition.as_str(), "represented");

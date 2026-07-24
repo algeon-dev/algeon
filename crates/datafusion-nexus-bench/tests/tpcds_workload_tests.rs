@@ -17,19 +17,19 @@ use datafusion_nexus_bench::{
     report_workload::{
         RelationalExecutionSelection,
         tpcds::{
-            NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_ENV, NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_ROW_GROUPS_ENV,
-            NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_SOURCE_BYTES_ENV,
-            NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_MAX_SMALL_SELECTIVE_ROW_GROUPS_ENV,
-            NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_MAX_SMALL_SELECTIVE_SOURCE_BYTES_ENV,
-            NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_MAX_TOPK_FETCH_ENV, NEXUS_TPCDS_NATIVE_DEVICE_BUDGET_BYTES_ENV,
+            NEXUS_TPCDS_NATIVE_COST_SELECTION_ENV, NEXUS_TPCDS_NATIVE_COST_SELECTION_MAX_RESIDUAL_JOIN_ROW_GROUPS_ENV,
+            NEXUS_TPCDS_NATIVE_COST_SELECTION_MAX_RESIDUAL_JOIN_SOURCE_BYTES_ENV,
+            NEXUS_TPCDS_NATIVE_COST_SELECTION_MAX_SMALL_SELECTIVE_ROW_GROUPS_ENV,
+            NEXUS_TPCDS_NATIVE_COST_SELECTION_MAX_SMALL_SELECTIVE_SOURCE_BYTES_ENV,
+            NEXUS_TPCDS_NATIVE_COST_SELECTION_MAX_TOPK_FETCH_ENV, NEXUS_TPCDS_NATIVE_DEVICE_BUDGET_BYTES_ENV,
             NEXUS_TPCDS_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, NEXUS_TPCDS_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV,
             NEXUS_TPCDS_NATIVE_PROFILE_ENV, NEXUS_TPCDS_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV,
-            TPCDS_HYBRID_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_ROW_GROUPS, TPCDS_NATIVE_PROFILE_CONSERVATIVE,
+            TPCDS_COST_SELECTION_MAX_RESIDUAL_JOIN_ROW_GROUPS, TPCDS_NATIVE_PROFILE_CONSERVATIVE,
             TPCDS_NATIVE_PROFILE_CUSTOM, TPCDS_NATIVE_PROFILE_SF100_GPU_THROUGHPUT,
             TPCDS_SF100_GPU_THROUGHPUT_DEVICE_BUDGET_BYTES, TPCDS_SF100_GPU_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK,
             TPCDS_SF100_GPU_THROUGHPUT_MAX_SOURCE_CHUNK_BYTES, TpcdsNativeProfileSettings, TpcdsParityProgressEvent,
             tpcds_datafusion_planning_workload_items, tpcds_native_analytics_optimizer_config_with_profile_settings,
-            tpcds_native_cpu_preference_options_with_env, tpcds_native_optimizer_config_with_profile_settings,
+            tpcds_native_cost_selection_options_with_env, tpcds_native_optimizer_config_with_profile_settings,
             tpcds_native_profile_settings_with_env, tpcds_native_report_session_config,
             tpcds_parity_report_rows_with_external_oracles, tpcds_report_session_config,
         },
@@ -119,11 +119,11 @@ fn tpcds_production_planning_builder_preserves_order_and_retained_diagnostics() 
                 let mut report_ids = report.rows.iter().map(|row| row.query_id.as_str()).collect::<Vec<_>>();
                 report_ids.dedup();
                 assert_eq!(report_ids, expected_ids);
-                assert_eq!(report.accepted_count(), 99);
-                assert_eq!(report.rejected_count(), 0);
+                assert_eq!(report.selected_count(), 99);
+                assert_eq!(report.not_selected_count(), 0);
                 for query_id in ["q01", "q39", "q72"] {
                     let row = report.rows.iter().find(|row| row.query_id == query_id).unwrap();
-                    assert_eq!(row.outcome, NativeDataFusionPlanningOutcome::AcceptedReplaced, "{query_id}");
+                    assert_eq!(row.outcome, Some(NativeDataFusionPlanningOutcome::Selected), "{query_id}");
                     assert_eq!(row.reason_code, None, "{query_id}");
                     assert_eq!(row.unsupported_category, None, "{query_id}");
                 }
@@ -162,54 +162,54 @@ fn tpcds_native_report_session_config_avoids_datafusion_statistics_estimates() {
 }
 
 #[test]
-fn tpcds_native_optimizer_configs_disable_cpu_preference_for_gpu_only_sql_surface() {
+fn tpcds_native_optimizer_configs_disable_cost_selection_for_gpu_only_sql_surface() {
     let profile = tpcds_native_profile_settings_with_env(|_| None);
     let ordinary_config = tpcds_native_optimizer_config_with_profile_settings(&profile);
     let analytics_config = tpcds_native_analytics_optimizer_config_with_profile_settings(&profile);
-    let env_overridden_hybrid_preference = tpcds_native_cpu_preference_options_from([
-        (NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_ENV, "on"),
-        (NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_ROW_GROUPS_ENV, "999"),
+    let env_overridden_cost_selection = tpcds_native_cost_selection_options_from([
+        (NEXUS_TPCDS_NATIVE_COST_SELECTION_ENV, "on"),
+        (NEXUS_TPCDS_NATIVE_COST_SELECTION_MAX_RESIDUAL_JOIN_ROW_GROUPS_ENV, "999"),
     ]);
 
-    assert!(env_overridden_hybrid_preference.enabled);
-    assert_eq!(env_overridden_hybrid_preference.max_small_selective_residual_join_row_groups, 999);
+    assert!(env_overridden_cost_selection.enabled);
+    assert_eq!(env_overridden_cost_selection.max_small_selective_residual_join_row_groups, 999);
     assert!(
-        !ordinary_config.native_plan_preference_options().enabled,
-        "TPC-DS native surfaces must not emit cpu_preferred_not_run while SQL may contain GPU-only cugraph_* calls"
+        !ordinary_config.native_plan_cost_options().enabled,
+        "TPC-DS native surfaces must not emit cost-selection rows while SQL may contain GPU-only cugraph_* calls"
     );
     assert!(
-        !analytics_config.native_plan_preference_options().enabled,
+        !analytics_config.native_plan_cost_options().enabled,
         "TPC-DS native analytics/GPU benchmark surfaces must keep all supported plans on native GPU"
     );
     assert_eq!(analytics_config.native_pipeline_execution_mode(), NativePipelineExecutionMode::StrictBounded);
 }
 
 #[test]
-fn tpcds_hybrid_benchmark_optimizer_config_enables_cpu_preference() {
+fn tpcds_cost_declined_datafusion_config_enables_cost_selection() {
     let profile = tpcds_native_profile_settings_with_env(|_| None);
     let config = tpcds_native_analytics_optimizer_config_with_profile_settings(&profile)
-        .with_native_plan_preference_options(tpcds_native_cpu_preference_options_from([]));
+        .with_native_plan_cost_options(tpcds_native_cost_selection_options_from([]));
 
     assert!(
-        config.native_plan_preference_options().enabled,
-        "hybrid_cpu_preferred must classify small/selective native plans instead of skipping every query"
+        config.native_plan_cost_options().enabled,
+        "cost_declined_datafusion must classify small/selective native plans before its DataFusion comparison"
     );
     assert_eq!(
-        config.native_plan_preference_options().max_small_selective_residual_join_row_groups,
-        TPCDS_HYBRID_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_ROW_GROUPS,
-        "TPC-DS hybrid classification should admit low-byte residual joins spread over a modest number of row groups"
+        config.native_plan_cost_options().max_small_selective_residual_join_row_groups,
+        TPCDS_COST_SELECTION_MAX_RESIDUAL_JOIN_ROW_GROUPS,
+        "TPC-DS cost selection should admit low-byte residual joins spread over a modest number of row groups"
     );
 }
 
 #[test]
-fn tpcds_hybrid_cpu_preference_options_apply_env_overrides() {
-    let options = tpcds_native_cpu_preference_options_from([
-        (NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_ENV, "off"),
-        (NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_MAX_SMALL_SELECTIVE_ROW_GROUPS_ENV, "17"),
-        (NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_MAX_SMALL_SELECTIVE_SOURCE_BYTES_ENV, "123456"),
-        (NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_ROW_GROUPS_ENV, "24"),
-        (NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_SOURCE_BYTES_ENV, "654321"),
-        (NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_MAX_TOPK_FETCH_ENV, "42"),
+fn tpcds_cost_selection_options_apply_env_overrides() {
+    let options = tpcds_native_cost_selection_options_from([
+        (NEXUS_TPCDS_NATIVE_COST_SELECTION_ENV, "off"),
+        (NEXUS_TPCDS_NATIVE_COST_SELECTION_MAX_SMALL_SELECTIVE_ROW_GROUPS_ENV, "17"),
+        (NEXUS_TPCDS_NATIVE_COST_SELECTION_MAX_SMALL_SELECTIVE_SOURCE_BYTES_ENV, "123456"),
+        (NEXUS_TPCDS_NATIVE_COST_SELECTION_MAX_RESIDUAL_JOIN_ROW_GROUPS_ENV, "24"),
+        (NEXUS_TPCDS_NATIVE_COST_SELECTION_MAX_RESIDUAL_JOIN_SOURCE_BYTES_ENV, "654321"),
+        (NEXUS_TPCDS_NATIVE_COST_SELECTION_MAX_TOPK_FETCH_ENV, "42"),
     ]);
 
     assert!(!options.enabled);
@@ -402,9 +402,9 @@ fn tpcds_native_profile_settings_from(
     tpcds_native_profile_settings_with_env(|name| env.get(name).cloned())
 }
 
-fn tpcds_native_cpu_preference_options_from(
+fn tpcds_native_cost_selection_options_from(
     pairs: impl IntoIterator<Item = (&'static str, &'static str)>,
-) -> nexus_query_engine::plan::NativePlanPreferenceOptions {
+) -> nexus_query_engine::plan::NativePlanCostOptions {
     let env = pairs.into_iter().map(|(key, value)| (key, value.to_string())).collect::<BTreeMap<_, _>>();
-    tpcds_native_cpu_preference_options_with_env(|name| env.get(name).cloned())
+    tpcds_native_cost_selection_options_with_env(|name| env.get(name).cloned())
 }

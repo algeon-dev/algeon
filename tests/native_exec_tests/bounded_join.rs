@@ -14,9 +14,9 @@ fn native_optimizer_rule_rewrites_and_executes_bounded_left_semi_join_plan() {
 
     assert!(optimized.downcast_ref::<NexusNativeExec>().is_some());
     let report = rule.last_report().expect("native optimizer should record a planning report");
-    assert_eq!(report.rewritten_count(), 1);
-    assert_eq!(report.rejected_count(), 0);
-    assert!(matches!(report.outcomes()[0], CandidateOutcome::Rewritten { .. }));
+    assert_eq!(report.selected_count(), 1);
+    assert_eq!(report.not_selected_count(), 0);
+    assert!(matches!(report.outcomes()[0], CandidateOutcome::Selected { .. }));
     assert_eq!(rule.last_source_diagnostics().len(), 2);
 
     let batches = futures::executor::block_on(collect(optimized, Arc::new(TaskContext::default()))).unwrap();
@@ -52,9 +52,9 @@ fn native_optimizer_rule_rewrites_and_executes_bounded_left_anti_join_plan() {
 
     assert!(optimized.downcast_ref::<NexusNativeExec>().is_some());
     let report = rule.last_report().expect("native optimizer should record a planning report");
-    assert_eq!(report.rewritten_count(), 1);
-    assert_eq!(report.rejected_count(), 0);
-    assert!(matches!(report.outcomes()[0], CandidateOutcome::Rewritten { .. }));
+    assert_eq!(report.selected_count(), 1);
+    assert_eq!(report.not_selected_count(), 0);
+    assert!(matches!(report.outcomes()[0], CandidateOutcome::Selected { .. }));
     assert_eq!(rule.last_source_diagnostics().len(), 2);
 
     let batches = futures::executor::block_on(collect(optimized, Arc::new(TaskContext::default()))).unwrap();
@@ -86,9 +86,9 @@ fn native_optimizer_rule_rewrites_and_executes_bounded_join_aggregate_pipeline()
     assert_eq!(task_kind_count(&pipeline, PipelineTaskKind::FinalSort), 1);
     assert_eq!(task_kind_count(&pipeline, PipelineTaskKind::Limit), 1);
     let report = rule.last_report().expect("native optimizer should record a planning report");
-    assert_eq!(report.rewritten_count(), 1);
-    assert_eq!(report.rejected_count(), 0);
-    assert!(matches!(report.outcomes()[0], CandidateOutcome::Rewritten { .. }));
+    assert_eq!(report.selected_count(), 1);
+    assert_eq!(report.not_selected_count(), 0);
+    assert!(matches!(report.outcomes()[0], CandidateOutcome::Selected { .. }));
 
     let batches =
         futures::executor::block_on(collect(Arc::clone(&optimized), Arc::new(TaskContext::default()))).unwrap();
@@ -132,8 +132,8 @@ fn native_optimizer_rule_adaptive_mode_rewrites_join_with_adaptive_diagnostics()
     let row = diagnostics.adaptive_pipeline.candidates[0].report.row();
     assert_eq!(row.execution_mode.as_str(), "adaptive");
     assert_eq!(row.candidate_status.as_str(), "admitted");
-    assert_eq!(diagnostics.report.rewritten_count(), 1);
-    assert_eq!(diagnostics.report.rejected_count(), 0);
+    assert_eq!(diagnostics.report.selected_count(), 1);
+    assert_eq!(diagnostics.report.not_selected_count(), 0);
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -145,7 +145,7 @@ fn native_optimizer_rule_rewrites_bounded_q11_aggregate_over_join_subplan_inputs
     let q11 = TPCH_QUERIES.iter().find(|query| query.id == "q11").expect("TPC-H Q11 query must exist");
     let plan = tpch_sql_plan(&dir, q11.sql);
     let lowering = lower_physical_plan_to_native(Arc::clone(&plan));
-    assert_eq!(lowering.rewritten_count(), 1, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.selected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
     let analysis = lowering.plans[0].capability_analysis();
     assert_eq!(
         analysis.keyless_conditional_join_aggregate_over_join_subplan_inputs_admission,
@@ -173,9 +173,9 @@ fn native_optimizer_rule_rewrites_bounded_q11_aggregate_over_join_subplan_inputs
         "Q11 should optimize to NexusNativeExec; report={report:?}; diagnostics={:?}",
         rule.last_planning_diagnostics()
     );
-    assert_eq!(report.rewritten_count(), 1);
-    assert_eq!(report.rejected_count(), 0);
-    assert!(matches!(report.outcomes()[0], CandidateOutcome::Rewritten { .. }));
+    assert_eq!(report.selected_count(), 1);
+    assert_eq!(report.not_selected_count(), 0);
+    assert!(matches!(report.outcomes()[0], CandidateOutcome::Selected { .. }));
 
     let diagnostics = rule.last_planning_diagnostics().expect("native optimizer should retain diagnostics");
     assert_eq!(diagnostics.strict_bounded_contract.accepted_candidates.len(), 1);
@@ -266,9 +266,9 @@ fn native_optimizer_rule_rewrites_and_executes_bounded_root_hash_join() {
 
     assert!(optimized.downcast_ref::<NexusNativeExec>().is_some());
     let report = rule.last_report().expect("native optimizer should record a planning report");
-    assert_eq!(report.rewritten_count(), 1);
-    assert_eq!(report.rejected_count(), 0);
-    assert!(matches!(report.outcomes()[0], CandidateOutcome::Rewritten { .. }));
+    assert_eq!(report.selected_count(), 1);
+    assert_eq!(report.not_selected_count(), 0);
+    assert!(matches!(report.outcomes()[0], CandidateOutcome::Selected { .. }));
 
     let batches = futures::executor::block_on(collect(optimized, Arc::new(TaskContext::default()))).unwrap();
     assert_eq!(batches.len(), 1);

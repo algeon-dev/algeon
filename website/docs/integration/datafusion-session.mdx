@@ -27,16 +27,19 @@ pools, and plan-scoped admission tickets.
 ```rust
 use datafusion::execution::SessionStateBuilder;
 use datafusion::prelude::{ParquetReadOptions, SessionContext};
-use datafusion_nexus::{NexusSessionStateBuilderExt, CugraphSqlConfig, GpuFallbackPolicy, NexusGpuBackend};
+use datafusion_nexus::{
+    backend::NexusGpuBackend,
+    graph_sql::CugraphSqlConfig,
+};
 
 async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let backend = NexusGpuBackend::builder()
-        .fallback_policy(GpuFallbackPolicy::GpuPreferred)
-        .build()?;
+    let backend = NexusGpuBackend::builder().build()?;
 
     let state = backend
-        .install_on(SessionStateBuilder::new().with_default_features())?
-        .with_cugraph_sql(CugraphSqlConfig::default())
+        .install_on_with_cugraph_sql(
+            SessionStateBuilder::new().with_default_features(),
+            CugraphSqlConfig::default(),
+        )?
         .build();
     let ctx = SessionContext::new_with_state(state);
 
@@ -51,9 +54,53 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 }
 ```
 
-`GpuPreferred` runs supported physical-plan fragments on the GPU and leaves
-unsupported CPU-readable fragments on stock DataFusion. Use `GpuOnly` when an
-unsupported native fragment should fail planning instead.
+The default preserves the executable DataFusion baseline: a whole relational
+candidate that is `NotSupported` or `NotSelectedByCost` remains executable on
+DataFusion. To reject a completed plan that still contains DataFusion CPU
+execution, use a final-plan requirement rather than a separate candidate
+policy:
+
+```rust
+use datafusion_nexus::backend::NexusGpuBackend;
+
+let backend = NexusGpuBackend::builder()
+    .with_no_datafusion_cpu_requirement()
+    .build()?;
+```
+
+Nexus plans once, evaluates that exact completed plan, and returns terminal
+`Rejected` if the requirement is not satisfied. It never retries a native
+runtime failure on CPU after execution has started.
+
+## Host execution QoS
+
+`HostExecutionQosConfig` is an independent outer statement bound. It wraps
+completed DataFusion and mixed plans once, but not fully native plans, and it
+does not consume a GPU query-service admission slot. Install it with the
+session extension trait:
+
+```rust
+use std::{num::NonZeroUsize, time::Duration};
+
+use datafusion::execution::SessionStateBuilder;
+use datafusion_nexus::{
+    backend::NexusGpuBackend,
+    planner::HostExecutionQosConfig,
+    session::NexusSessionStateBuilderExt,
+};
+
+let backend = NexusGpuBackend::builder().build()?;
+let state = backend
+    .install_on(SessionStateBuilder::new().with_default_features())?
+    .with_host_execution_qos(
+        HostExecutionQosConfig::new(NonZeroUsize::new(2).unwrap())
+            .with_wait_timeout(Duration::from_secs(30)),
+    )
+    .build();
+```
+
+Use `Duration::ZERO` for an indefinite wait. To leave host execution
+unbounded in an embedded session, do not install this rule.
 
 `NexusGpuBackend::builder().build()` uses bounded device memory, two admitted
 queries, `grant_min = 1/8`, a policy-derived `grant_want`, and
@@ -75,7 +122,9 @@ silently diverging from the shared ledger.
 
 ```rust
 use std::time::Duration;
-use datafusion_nexus::{GrantBand, MemoryShare, NexusAdmissionPolicy, NexusGpuBackend, SlotGuarantee};
+
+use datafusion_nexus::backend::{GrantBand, MemoryShare, NexusAdmissionPolicy, NexusGpuBackend};
+use nexus_query_engine::runtime::SlotGuarantee;
 
 let backend = NexusGpuBackend::builder()
     .admission(
@@ -118,8 +167,8 @@ defaults there, not mutable session state.
 Two runtime behaviors to plan for in your service layer:
 
 - **Admission is lazy and per query.** Planning admits nothing; the first
-  native stream poll admits, and every native fragment of one plan shares one
-  slot and one grant. Under load a query may wait up to `wait_timeout` for its
+  native stream poll admits, and all native work in one plan shares one slot
+  and one grant. Under load a query may wait up to `wait_timeout` for its
   grant; a full queue or an expired wait surfaces as a structured
   `service_overloaded` (`resource_exhausted`) error — treat it as retryable
   backpressure, not a query bug.
@@ -166,19 +215,23 @@ For local single-query experiments, you can still install the raw optimizer rule
 directly:
 
 ```rust
-use datafusion_nexus::{NexusNativeOptimizerConfig, NexusSessionStateBuilderExt, GpuFallbackPolicy};
+use datafusion::execution::SessionStateBuilder;
+use datafusion_nexus::{
+    planner::NexusNativeOptimizerConfig,
+    session::NexusSessionStateBuilderExt,
+};
 
 let state = SessionStateBuilder::new()
     .with_default_features()
-    .with_nexus_native(NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
+    .with_nexus_native(NexusNativeOptimizerConfig::default())
     .build();
 ```
 
 That direct path does not create a shared admission owner. If multiple
 `SessionContext`s or concurrent queries use independent bounded configs on the
 same GPU, each config has its own device budget. On such a session, graph SQL
-also refuses to execute natively rewritten fragments inside a `cugraph_*` call
-(a structured error at execute time) rather than stack a second full-budget
+also refuses native relational work inside a `cugraph_*` call (a structured
+error at execute time) rather than stack a second full-budget
 ledger. Use `NexusGpuBackend` whenever the embedding process can run more than
 one GPU query at a time or mixes cuGraph with native execution.
 

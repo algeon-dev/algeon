@@ -272,7 +272,7 @@ fn row_fields(
 
 fn statistical_aggregate_execution_mode_for_row(engine: Engine) -> String {
     match engine {
-        Engine::NativeGpu | Engine::HybridCpuPreferred => {
+        Engine::NativeGpu | Engine::CostDeclinedDataFusion => {
             native_statistical_aggregate_execution_mode_from_env().as_str().to_string()
         },
         Engine::CpuDataFusion => "not_applicable".to_string(),
@@ -281,7 +281,7 @@ fn statistical_aggregate_execution_mode_for_row(engine: Engine) -> String {
 
 fn statistical_aggregate_tolerance_contract_for_row(engine: Engine) -> String {
     match engine {
-        Engine::NativeGpu | Engine::HybridCpuPreferred => {
+        Engine::NativeGpu | Engine::CostDeclinedDataFusion => {
             native_statistical_aggregate_execution_mode_from_env().tolerance_contract().as_str().to_string()
         },
         Engine::CpuDataFusion => "not_applicable".to_string(),
@@ -664,7 +664,7 @@ mod tests {
         let outcome = IterOutcome {
             wall: Some(Duration::from_millis(1)),
             outcome: "succeeded",
-            planning_outcome: "rewritten=1 rejected=0".to_string(),
+            planning_outcome: "selected=1 not_selected=0".to_string(),
             output_batches: Some(1),
             output_rows: Some(2),
             output_bytes: Some(3),
@@ -681,7 +681,7 @@ mod tests {
         let tolerance_index =
             header.iter().position(|field| *field == "statistical_aggregate_tolerance_contract").unwrap();
 
-        for engine in [Engine::NativeGpu, Engine::HybridCpuPreferred] {
+        for engine in [Engine::NativeGpu, Engine::CostDeclinedDataFusion] {
             let fields = row_fields(query, 0, false, &outcome, engine);
             assert_eq!(fields[mode_index], "gpu_native_tolerant");
             assert_eq!(fields[tolerance_index], "float_tolerant");
@@ -698,7 +698,7 @@ mod tests {
         let outcome = IterOutcome {
             wall: None,
             outcome: "native_rejected_not_run",
-            planning_outcome: "rewritten=0 rejected=1 reasons=native_bounded_join_unsupported".to_string(),
+            planning_outcome: "selected=0 not_selected=1 reasons=native_bounded_join_unsupported".to_string(),
             output_batches: None,
             output_rows: None,
             output_bytes: None,
@@ -731,15 +731,15 @@ mod tests {
     }
 
     #[test]
-    fn hybrid_cpu_preferred_engine_has_stable_label() {
-        assert_eq!(Engine::HybridCpuPreferred.as_str(), "hybrid_cpu_preferred");
+    fn cost_declined_datafusion_engine_has_stable_label() {
+        assert_eq!(Engine::CostDeclinedDataFusion.as_str(), "cost_declined_datafusion");
     }
 
     #[test]
-    fn cpu_preferred_reason_codes_are_classified() {
-        assert!(cpu_preferred_reason_code("native_small_selective_topk_cpu_preferred"));
-        assert!(cpu_preferred_reason_code("native_small_selective_residual_join_cpu_preferred"));
-        assert!(cpu_preferred_reason_code("native_small_selective_full_sort_cpu_preferred"));
-        assert!(!cpu_preferred_reason_code("native_bounded_join_unsupported"));
+    fn cost_reason_codes_are_classified() {
+        assert!(cost_reason_code("native_small_selective_topk_not_selected_by_cost"));
+        assert!(cost_reason_code("native_small_selective_residual_join_not_selected_by_cost"));
+        assert!(cost_reason_code("native_small_selective_full_sort_not_selected_by_cost"));
+        assert!(!cost_reason_code("native_bounded_join_unsupported"));
     }
 }

@@ -7,7 +7,7 @@ use datafusion::{
 };
 use nexus_query_engine::{datatypes::is_supported_arrow_type, expr::LiteralValue as NativeLiteralValue};
 
-use crate::policy::FallbackReason;
+use crate::capability::CapabilityReason;
 
 /// Chooses the fallback category for literal lowering failures.
 #[derive(Debug, Clone, Copy)]
@@ -17,10 +17,10 @@ pub(super) enum NativeLiteralContext {
 }
 
 impl NativeLiteralContext {
-    fn fallback_reason(self) -> FallbackReason {
+    fn fallback_reason(self) -> CapabilityReason {
         match self {
-            Self::Expression => FallbackReason::UnsupportedExpression,
-            Self::SourceValue => FallbackReason::UnsupportedType,
+            Self::Expression => CapabilityReason::UnsupportedExpression,
+            Self::SourceValue => CapabilityReason::UnsupportedType,
         }
     }
 }
@@ -28,7 +28,7 @@ impl NativeLiteralContext {
 pub(super) fn native_literal_value(
     value: &ScalarValue,
     context: NativeLiteralContext,
-) -> Result<NativeLiteralValue, FallbackReason> {
+) -> Result<NativeLiteralValue, CapabilityReason> {
     let literal = match value {
         ScalarValue::Boolean(Some(value)) => NativeLiteralValue::Boolean(*value),
         ScalarValue::Int8(Some(value)) => NativeLiteralValue::Int8(*value),
@@ -134,7 +134,7 @@ pub(super) fn native_literal_value(
 pub(super) fn validate_native_literal(
     value: &ScalarValue,
     context: NativeLiteralContext,
-) -> Result<(), FallbackReason> {
+) -> Result<(), CapabilityReason> {
     native_literal_value(value, context).map(|_literal| ())
 }
 
@@ -152,38 +152,38 @@ pub(super) fn parse_yyyy_mm_dd_date32(value: &str) -> Option<i32> {
     Some(days_from_civil(year, month, day))
 }
 
-pub(crate) fn literal_string(expr: &Arc<dyn PhysicalExpr>) -> Result<String, FallbackReason> {
+pub(crate) fn literal_string(expr: &Arc<dyn PhysicalExpr>) -> Result<String, CapabilityReason> {
     let Some(literal) = expr.downcast_ref::<Literal>() else {
-        return Err(FallbackReason::UnsupportedExpression);
+        return Err(CapabilityReason::UnsupportedExpression);
     };
     match literal.value() {
         ScalarValue::Utf8(Some(value)) | ScalarValue::LargeUtf8(Some(value)) | ScalarValue::Utf8View(Some(value)) => {
             Ok(value.clone())
         },
-        _ => Err(FallbackReason::UnsupportedExpression),
+        _ => Err(CapabilityReason::UnsupportedExpression),
     }
 }
 
-pub(crate) fn literal_i32(expr: &Arc<dyn PhysicalExpr>) -> Result<i32, FallbackReason> {
+pub(crate) fn literal_i32(expr: &Arc<dyn PhysicalExpr>) -> Result<i32, CapabilityReason> {
     let Some(literal) = expr.downcast_ref::<Literal>() else {
-        return Err(FallbackReason::UnsupportedExpression);
+        return Err(CapabilityReason::UnsupportedExpression);
     };
     match literal.value() {
         ScalarValue::Int8(Some(value)) => Ok(i32::from(*value)),
         ScalarValue::Int16(Some(value)) => Ok(i32::from(*value)),
         ScalarValue::Int32(Some(value)) => Ok(*value),
         ScalarValue::Int64(Some(value)) => {
-            i32::try_from(*value).map_err(|_error| FallbackReason::UnsupportedExpression)
+            i32::try_from(*value).map_err(|_error| CapabilityReason::UnsupportedExpression)
         },
         ScalarValue::UInt8(Some(value)) => Ok(i32::from(*value)),
         ScalarValue::UInt16(Some(value)) => Ok(i32::from(*value)),
         ScalarValue::UInt32(Some(value)) => {
-            i32::try_from(*value).map_err(|_error| FallbackReason::UnsupportedExpression)
+            i32::try_from(*value).map_err(|_error| CapabilityReason::UnsupportedExpression)
         },
         ScalarValue::UInt64(Some(value)) => {
-            i32::try_from(*value).map_err(|_error| FallbackReason::UnsupportedExpression)
+            i32::try_from(*value).map_err(|_error| CapabilityReason::UnsupportedExpression)
         },
-        _ => Err(FallbackReason::UnsupportedExpression),
+        _ => Err(CapabilityReason::UnsupportedExpression),
     }
 }
 

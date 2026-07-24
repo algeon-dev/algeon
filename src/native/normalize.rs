@@ -21,7 +21,7 @@ use datafusion::{
 use nexus_query_engine::expr::LimitSpec as NativeLimitSpec;
 
 use crate::{
-    native_exec::producer::gpu_resident_producer_input_name, policy::FallbackReason, report::GpuCandidate,
+    capability::CapabilityReason, native_exec::producer::gpu_resident_producer_input_name, report::GpuCandidate,
     table_format::NexusIcebergScanExec,
 };
 
@@ -89,7 +89,7 @@ pub(super) fn normalize_native_plan(plan: &dyn ExecutionPlan) -> Result<Normaliz
                         normalize_global_aggregate_stack(plan.schema().fields().len(), Some(projection), aggregate)?;
                     return Ok(with_global_limit(normalized, limit_spec));
                 },
-                Err(rejection) if rejection.reason == FallbackReason::UnsupportedOperator => {
+                Err(rejection) if rejection.reason == CapabilityReason::UnsupportedOperator => {
                     let normalized = normalize_input_root(
                         plan.schema().fields().len(),
                         None,
@@ -110,7 +110,7 @@ pub(super) fn normalize_native_plan(plan: &dyn ExecutionPlan) -> Result<Normaliz
             Ok(aggregate) => {
                 return normalize_global_aggregate_stack(plan.schema().fields().len(), Some(projection), aggregate);
             },
-            Err(rejection) if rejection.reason == FallbackReason::UnsupportedOperator => {
+            Err(rejection) if rejection.reason == CapabilityReason::UnsupportedOperator => {
                 let sort_fetch =
                     projection.input().downcast_ref::<SortExec>().and_then(SortExec::fetch).map(NativeLimitSpec::fetch);
                 return normalize_input_root(
@@ -160,7 +160,7 @@ pub(super) fn normalize_native_plan(plan: &dyn ExecutionPlan) -> Result<Normaliz
 
     Err(NativePlanRejection {
         candidate: GpuCandidate::with_operator_count(UNSUPPORTED_NATIVE_PLAN_SHAPE, plan.schema().fields().len(), 1),
-        reason: FallbackReason::UnsupportedOperator,
+        reason: CapabilityReason::UnsupportedOperator,
     })
 }
 
@@ -174,12 +174,12 @@ fn normalize_sort_stack(
     if !partition_preserving_sort_is_supported(sort, native_stack_root_is_sort_preserving_merge(root)) {
         return Err(NativePlanRejection {
             candidate: initial_candidate,
-            reason: FallbackReason::NativePartitionPreservingSortUnsupported,
+            reason: CapabilityReason::NativePartitionPreservingSortUnsupported,
         });
     }
     let (post_aggregate_projection, aggregate) = match peel_post_aggregate_projection(sort, initial_candidate.clone()) {
         Ok(stack) => stack,
-        Err(rejection) if rejection.reason == FallbackReason::UnsupportedOperator => {
+        Err(rejection) if rejection.reason == CapabilityReason::UnsupportedOperator => {
             return normalize_sort_input_root(root, output_schema_fields, sort, limit, initial_candidate);
         },
         Err(rejection) => return Err(rejection),
@@ -227,17 +227,17 @@ fn normalize_sort_preserving_merge_root(
     };
     let candidate = sort_preserving_merge_candidate(merge);
     if !sort_ordering_is_column_keyed(merge.expr()) {
-        return Err(NativePlanRejection { candidate, reason: FallbackReason::NativeSortPreservingMergeUnsupported });
+        return Err(NativePlanRejection { candidate, reason: CapabilityReason::NativeSortPreservingMergeUnsupported });
     }
     if !plan_output_ordering_matches(merge.input().as_ref(), merge.expr()) {
-        return Err(NativePlanRejection { candidate, reason: FallbackReason::NativeSortPreservingMergeUnsupported });
+        return Err(NativePlanRejection { candidate, reason: CapabilityReason::NativeSortPreservingMergeUnsupported });
     }
 
     if let Some(sort) = merge.input().downcast_ref::<SortExec>() {
         if merge.fetch().is_none() && sort.fetch().is_some() {
             return Err(NativePlanRejection {
                 candidate,
-                reason: FallbackReason::NativeSortPreservingMergeUnsupported,
+                reason: CapabilityReason::NativeSortPreservingMergeUnsupported,
             });
         }
         if let Some(fetch) = merge.fetch()
@@ -245,7 +245,7 @@ fn normalize_sort_preserving_merge_root(
         {
             return Err(NativePlanRejection {
                 candidate,
-                reason: FallbackReason::NativeSortPreservingMergeUnsupported,
+                reason: CapabilityReason::NativeSortPreservingMergeUnsupported,
             });
         }
         if sort_orderings_match(merge.expr(), sort.expr()) {
@@ -335,7 +335,7 @@ fn normalize_global_limit_root(
                 let normalized = normalize_global_aggregate_stack(output_schema_fields, Some(projection), aggregate)?;
                 return Ok(with_global_limit(normalized, limit));
             },
-            Err(rejection) if rejection.reason == FallbackReason::UnsupportedOperator => {
+            Err(rejection) if rejection.reason == CapabilityReason::UnsupportedOperator => {
                 let normalized = normalize_input_root(
                     output_schema_fields,
                     None,
@@ -399,7 +399,7 @@ fn normalize_sort_input_root(
     if !partition_preserving_sort_is_supported(sort, native_stack_root_is_sort_preserving_merge(root)) {
         return Err(NativePlanRejection {
             candidate,
-            reason: FallbackReason::NativePartitionPreservingSortUnsupported,
+            reason: CapabilityReason::NativePartitionPreservingSortUnsupported,
         });
     }
     let (projection, input) = peel_root_projection(sort.input().as_ref());
@@ -541,7 +541,10 @@ fn normalize_native_input(
             if !allow_ordered_multi_partition_memory_source
                 && ordered_multi_partition_memory_source_is_unsupported(source_exec)
             {
-                return Err(NativePlanRejection { candidate, reason: FallbackReason::NativeOrderedOutputUnsupported });
+                return Err(NativePlanRejection {
+                    candidate,
+                    reason: CapabilityReason::NativeOrderedOutputUnsupported,
+                });
             }
             return Ok(NormalizedNativeInput::LiteralSource(NormalizedNativeLiteralSource::Memory(source_exec)));
         }
@@ -601,7 +604,7 @@ fn normalize_native_input(
         if !partition_preserving_sort_is_supported(sort, false) {
             return Err(NativePlanRejection {
                 candidate,
-                reason: FallbackReason::NativePartitionPreservingSortUnsupported,
+                reason: CapabilityReason::NativePartitionPreservingSortUnsupported,
             });
         }
         let input = normalize_native_input(sort.input().as_ref(), candidate, true)?;
@@ -661,7 +664,7 @@ fn normalize_native_input(
             .collect::<Result<Vec<_>, _>>()?;
         return Ok(NormalizedNativeInput::Union(NormalizedNativeUnion { union, inputs }));
     }
-    Err(NativePlanRejection { candidate, reason: FallbackReason::UnsupportedOperator })
+    Err(NativePlanRejection { candidate, reason: CapabilityReason::UnsupportedOperator })
 }
 
 fn peel_repartition(plan: &dyn ExecutionPlan) -> &dyn ExecutionPlan {
@@ -697,7 +700,7 @@ fn required_child<T: ExecutionPlan>(
     plan: &dyn ExecutionPlan,
     candidate: GpuCandidate,
 ) -> Result<&T, NativePlanRejection> {
-    plan.downcast_ref::<T>().ok_or(NativePlanRejection { candidate, reason: FallbackReason::UnsupportedOperator })
+    plan.downcast_ref::<T>().ok_or(NativePlanRejection { candidate, reason: CapabilityReason::UnsupportedOperator })
 }
 
 fn sort_orderings_match(left: &LexOrdering, right: &LexOrdering) -> bool {

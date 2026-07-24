@@ -4,8 +4,8 @@ pub(super) const DEFAULT_FIXTURE_ROOT: &str = "/opt/dlami/nvme/fixture/data";
 pub(super) const DEFAULT_SERVER_BINARY: &str = "target/release/datafusion_nexus_server";
 pub(super) const DEFAULT_EVIDENCE_PATH: &str = "target/runtime_observability_e2e/evidence.json";
 pub(super) const DEFAULT_SERVER_LOG_PATH: &str = "target/runtime_observability_e2e/server";
-pub(super) const EVIDENCE_SCHEMA: &str = "datafusion_nexus.server_runtime_observability_e2e.v3";
-pub(super) const EVIDENCE_VERSION: u32 = 3;
+pub(super) const EVIDENCE_SCHEMA: &str = "datafusion_nexus.server_runtime_observability_e2e.v4";
+pub(super) const EVIDENCE_VERSION: u32 = 4;
 pub(super) const TABLE_NAME: &str = "runtime_observability_lineitem";
 pub(super) const ORDERS_TABLE_NAME: &str = "runtime_observability_orders";
 pub(super) const OBS_RECORDS_ENV: &str = "NEXUS_SERVER_OBSERVABILITY_PER_QUERY_MAX_RECORDS";
@@ -27,7 +27,7 @@ pub(super) fn print_usage() {
            --concurrency N              Overlapping queries and per-device limit (default: 4)\n\
            --waves N                    Native success waves (default: 2)\n\
            --restart-iterations N       Hard termination/restart iterations (default: 1)\n\
-           --scenarios matrix|native|cpu_fallback\n\
+           --scenarios matrix|native|datafusion_baseline\n\
            --bounded-mode strict_bounded|adaptive\n\
            --evidence-json PATH         Machine-readable evidence output\n\
            --server-log PATH            Prefix for per-process stdout/stderr logs\n\
@@ -49,7 +49,7 @@ pub(super) fn print_usage() {
 pub(super) enum ScenarioSelection {
     Matrix,
     Native,
-    CpuFallback,
+    DataFusionBaseline,
 }
 
 impl ScenarioSelection {
@@ -57,8 +57,8 @@ impl ScenarioSelection {
         match raw {
             "matrix" => Ok(Self::Matrix),
             "native" => Ok(Self::Native),
-            "cpu_fallback" | "cpu-fallback" => Ok(Self::CpuFallback),
-            _ => Err(format!("--scenarios must be matrix, native, or cpu_fallback; got {raw:?}").into()),
+            "datafusion_baseline" => Ok(Self::DataFusionBaseline),
+            _ => Err(format!("--scenarios must be matrix, native, or datafusion_baseline; got {raw:?}").into()),
         }
     }
 
@@ -66,15 +66,15 @@ impl ScenarioSelection {
         matches!(self, Self::Matrix | Self::Native)
     }
 
-    pub(super) fn runs_cpu(self) -> bool {
-        matches!(self, Self::Matrix | Self::CpuFallback)
+    pub(super) fn runs_datafusion_baseline(self) -> bool {
+        matches!(self, Self::Matrix | Self::DataFusionBaseline)
     }
 
     pub(super) fn label(self) -> &'static str {
         match self {
             Self::Matrix => "matrix",
             Self::Native => "native",
-            Self::CpuFallback => "cpu_fallback",
+            Self::DataFusionBaseline => "datafusion_baseline",
         }
     }
 }

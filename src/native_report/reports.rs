@@ -53,13 +53,16 @@ impl NativeFallbackPressureReport {
     }
 
     /// Number of accepted candidate rows, not distinct query ids.
-    pub fn rewritten_count(&self) -> usize {
-        self.rows.iter().filter(|row| row.outcome == NativeFallbackPressureOutcome::Rewritten).count()
+    pub fn selected_count(&self) -> usize {
+        self.rows.iter().filter(|row| row.outcome == Some(NativeFallbackPressureOutcome::Selected)).count()
     }
 
     /// Number of rejected candidate rows, not distinct query ids.
-    pub fn rejected_count(&self) -> usize {
-        self.rows.iter().filter(|row| row.outcome == NativeFallbackPressureOutcome::Rejected).count()
+    pub fn not_selected_count(&self) -> usize {
+        self.rows
+            .iter()
+            .filter(|row| row.outcome.is_some_and(|outcome| outcome != NativeFallbackPressureOutcome::Selected))
+            .count()
     }
 
     /// Serializes the report as TSV with metadata comments followed by rows.
@@ -125,13 +128,16 @@ impl NativeDataFusionPlanningReport {
     }
 
     /// Number of planning rows where native planning replaced at least one fragment.
-    pub fn accepted_count(&self) -> usize {
-        self.rows.iter().filter(|row| row.outcome == NativeDataFusionPlanningOutcome::AcceptedReplaced).count()
+    pub fn selected_count(&self) -> usize {
+        self.rows.iter().filter(|row| row.outcome == Some(NativeDataFusionPlanningOutcome::Selected)).count()
     }
 
     /// Number of planning rows rejected before native execution.
-    pub fn rejected_count(&self) -> usize {
-        self.rows.iter().filter(|row| row.outcome == NativeDataFusionPlanningOutcome::RejectedBeforeExecution).count()
+    pub fn not_selected_count(&self) -> usize {
+        self.rows
+            .iter()
+            .filter(|row| row.outcome.is_some_and(|outcome| outcome != NativeDataFusionPlanningOutcome::Selected))
+            .count()
     }
 
     /// Serializes the report as TSV with metadata comments followed by rows.
@@ -220,18 +226,21 @@ impl NativeDataFusionExecutionReport {
 /// Planning-only fields are flattened into exact-size strings so the original
 /// physical plan and diagnostics can be dropped before execution. Runtime
 /// fields are projected from bounded metric handles when the artifact is read.
+#[cfg(feature = "server")]
 #[derive(Debug)]
 pub(crate) struct NativeDataFusionExecutionTsvTemplate {
     rows: Box<[NativeDataFusionExecutionTsvTemplateRow]>,
     retained_capacity_bytes: u64,
 }
 
+#[cfg(feature = "server")]
 #[derive(Debug)]
 struct NativeDataFusionExecutionTsvTemplateRow {
     prefix: Box<[Box<str>]>,
     rejected_before_execution: bool,
 }
 
+#[cfg(feature = "server")]
 impl NativeDataFusionExecutionTsvTemplate {
     const RUNTIME_FIELD_START: usize = 16;
 
@@ -297,6 +306,7 @@ impl NativeDataFusionExecutionTsvTemplate {
     }
 }
 
+#[cfg(feature = "server")]
 fn runtime_fields(query_id: &str, summary: NativeDataFusionRuntimeSummary) -> Vec<String> {
     let row = NativeDataFusionExecutionRow {
         query_id: query_id.to_string(),
@@ -304,7 +314,7 @@ fn runtime_fields(query_id: &str, summary: NativeDataFusionRuntimeSummary) -> Ve
         physical_shape: String::new(),
         native_candidate_shape: None,
         native_candidate_shape_family: None,
-        planning_outcome: NativeDataFusionPlanningOutcome::AcceptedReplaced,
+        planning_outcome: Some(NativeDataFusionPlanningOutcome::Selected),
         reason_code: None,
         unsupported_category: None,
         strict_bounded_contract_rows: Vec::new(),
@@ -312,7 +322,7 @@ fn runtime_fields(query_id: &str, summary: NativeDataFusionRuntimeSummary) -> Ve
         adaptive_pipeline_rows: Vec::new(),
         source_diagnostics: Vec::new(),
         post_native_plan_root: String::new(),
-        post_native_execution_path: NativeDataFusionPostNativeExecutionPath::Cpu,
+        final_disposition: FinalPlanDisposition::DataFusion,
         native_plan_fragment_count: 0,
         host_datafusion_boundary_count: 0,
         rejected_before_execution: false,

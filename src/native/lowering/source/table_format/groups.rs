@@ -27,7 +27,7 @@ pub(super) fn table_format_source_read_groups(
     scan_plan: &TableFormatScanPlan,
     requirements: &NativeParquetColumnRequirements,
     output_schema: SchemaRef,
-) -> Result<Vec<TableFormatSourceReadGroup>, FallbackReason> {
+) -> Result<Vec<TableFormatSourceReadGroup>, CapabilityReason> {
     if !table_format_requires_iceberg_field_id_bindings(scan_plan, requirements)? {
         let file_schema = table_format_file_schema(scan_plan);
         let source_schema = table_format_source_contract_schema(requirements, &output_schema, &file_schema)?;
@@ -45,14 +45,14 @@ pub(super) fn table_format_source_read_groups(
     let mut group_by_key: BTreeMap<String, usize> = BTreeMap::new();
 
     for (file_index, file) in scan_plan.data_files.iter().enumerate() {
-        let footer_schema =
-            table_format_data_file_footer_arrow_schema(file).ok_or(FallbackReason::IcebergFieldIdMappingUnsupported)?;
+        let footer_schema = table_format_data_file_footer_arrow_schema(file)
+            .ok_or(CapabilityReason::IcebergFieldIdMappingUnsupported)?;
         let file_bindings =
             table_format_file_field_id_read_bindings(file_index, &footer_schema, requirements, &mappings)?;
         let file_requirements =
             table_format_requirements_for_file(requirements, &mappings, &file_bindings, &footer_schema)?;
         if requirements.requires_physical_row_presence && file_requirements.read_columns.is_empty() {
-            return Err(FallbackReason::IcebergFieldIdMappingUnsupported);
+            return Err(CapabilityReason::IcebergFieldIdMappingUnsupported);
         }
         let source_schema = table_format_source_contract_schema(&file_requirements, &output_schema, &footer_schema)?;
         let key = table_format_source_group_key(&file_requirements);
@@ -79,7 +79,7 @@ pub(super) fn table_format_requirements_for_file(
     mappings: &BTreeMap<&str, &TableFormatColumnMapping>,
     file_bindings: &TableFormatFileReadBindings,
     footer_schema: &Schema,
-) -> Result<NativeParquetColumnRequirements, FallbackReason> {
+) -> Result<NativeParquetColumnRequirements, CapabilityReason> {
     let mut read_columns = Vec::new();
     let mut read_column_file_indices = Vec::new();
     let mut read_seen = BTreeSet::new();
@@ -90,11 +90,11 @@ pub(super) fn table_format_requirements_for_file(
     let mut partition_seen = partition_columns.iter().map(|column| column.name.clone()).collect::<BTreeSet<_>>();
 
     for column in &base.scan_output_columns {
-        let mapping = mappings.get(column.as_str()).ok_or(FallbackReason::NativeSourceSchemaMapping)?;
+        let mapping = mappings.get(column.as_str()).ok_or(CapabilityReason::NativeSourceSchemaMapping)?;
         if mapping.source != TableFormatColumnSource::DirectTopLevelFileColumn {
             continue;
         }
-        let field_id = mapping.field_id.ok_or(FallbackReason::IcebergFieldIdMappingUnsupported)?;
+        let field_id = mapping.field_id.ok_or(CapabilityReason::IcebergFieldIdMappingUnsupported)?;
         if let Some(binding) = file_bindings.bindings.iter().find(|binding| binding.logical_field_id == field_id) {
             if read_seen.insert(binding.physical_name.clone()) {
                 read_columns.push(binding.physical_name.clone());
@@ -112,10 +112,10 @@ pub(super) fn table_format_requirements_for_file(
             }
         } else if mapping.nullable {
             if table_format_mapping_is_predicate_required(mapping, base) {
-                return Err(FallbackReason::IcebergFieldIdMappingUnsupported);
+                return Err(CapabilityReason::IcebergFieldIdMappingUnsupported);
             }
             if is_list_carry_type(&mapping.data_type) {
-                return Err(FallbackReason::UnsupportedType);
+                return Err(CapabilityReason::UnsupportedType);
             }
             if missing_seen.insert(mapping.logical_name.clone()) {
                 missing_columns.push(NativeMissingColumn::new(
@@ -125,7 +125,7 @@ pub(super) fn table_format_requirements_for_file(
                 ));
             }
         } else {
-            return Err(FallbackReason::IcebergFieldIdMappingUnsupported);
+            return Err(CapabilityReason::IcebergFieldIdMappingUnsupported);
         }
     }
 
@@ -179,14 +179,14 @@ pub(super) fn table_format_file_column_source_refs(
     partition_columns: &[NativePartitionColumn],
     missing_columns: &[NativeMissingColumn],
     columns: &[String],
-) -> Result<Vec<NativeSourceColumnRef>, FallbackReason> {
+) -> Result<Vec<NativeSourceColumnRef>, CapabilityReason> {
     columns
         .iter()
         .map(|column| {
-            let mapping = mappings.get(column.as_str()).ok_or(FallbackReason::NativeSourceSchemaMapping)?;
+            let mapping = mappings.get(column.as_str()).ok_or(CapabilityReason::NativeSourceSchemaMapping)?;
             match mapping.source {
                 TableFormatColumnSource::DirectTopLevelFileColumn => {
-                    let field_id = mapping.field_id.ok_or(FallbackReason::IcebergFieldIdMappingUnsupported)?;
+                    let field_id = mapping.field_id.ok_or(CapabilityReason::IcebergFieldIdMappingUnsupported)?;
                     if let Some(binding) =
                         file_bindings.bindings.iter().find(|binding| binding.logical_field_id == field_id)
                     {
@@ -196,29 +196,29 @@ pub(super) fn table_format_file_column_source_refs(
                             .iter()
                             .position(|field| field.name == mapping.logical_name)
                             .map(NativeSourceColumnRef::Partition)
-                            .ok_or(FallbackReason::NativeSourceSchemaMapping)
+                            .ok_or(CapabilityReason::NativeSourceSchemaMapping)
                     } else if mapping.nullable {
                         missing_columns
                             .iter()
                             .position(|field| field.name == mapping.logical_name)
                             .map(NativeSourceColumnRef::MissingNull)
-                            .ok_or(FallbackReason::NativeSourceSchemaMapping)
+                            .ok_or(CapabilityReason::NativeSourceSchemaMapping)
                     } else {
-                        Err(FallbackReason::IcebergFieldIdMappingUnsupported)
+                        Err(CapabilityReason::IcebergFieldIdMappingUnsupported)
                     }
                 },
                 TableFormatColumnSource::IdentityPartitionValue => partition_columns
                     .iter()
                     .position(|field| field.name == mapping.logical_name)
                     .map(NativeSourceColumnRef::Partition)
-                    .ok_or(FallbackReason::NativeSourceSchemaMapping),
+                    .ok_or(CapabilityReason::NativeSourceSchemaMapping),
                 TableFormatColumnSource::MissingNullableColumn => missing_columns
                     .iter()
                     .position(|field| field.name == mapping.logical_name)
                     .map(NativeSourceColumnRef::MissingNull)
-                    .ok_or(FallbackReason::NativeSourceSchemaMapping),
+                    .ok_or(CapabilityReason::NativeSourceSchemaMapping),
                 TableFormatColumnSource::UnsupportedNestedProjection => {
-                    Err(FallbackReason::IcebergNestedProjectionUnsupported)
+                    Err(CapabilityReason::IcebergNestedProjectionUnsupported)
                 },
             }
         })
@@ -228,7 +228,7 @@ pub(super) fn table_format_file_column_source_refs(
                 if let NativeSourceColumnRef::File(index) = source_ref
                     && footer_schema.fields().get(*index).is_none()
                 {
-                    return Err(FallbackReason::NativeSourceSchemaMapping);
+                    return Err(CapabilityReason::NativeSourceSchemaMapping);
                 }
             }
             Ok(refs)
@@ -239,15 +239,15 @@ pub(super) fn table_format_source_contract_schema(
     requirements: &NativeParquetColumnRequirements,
     output_schema: &SchemaRef,
     footer_schema: &Schema,
-) -> Result<SchemaRef, FallbackReason> {
+) -> Result<SchemaRef, CapabilityReason> {
     let mut fields = Vec::new();
     let mut seen = BTreeSet::new();
     let read_fields = requirements
         .read_column_file_indices
         .iter()
         .map(|index| {
-            let field = footer_schema.fields().get(*index).ok_or(FallbackReason::NativeSourceSchemaMapping)?;
-            Ok::<_, FallbackReason>((field.name().clone(), table_format_file_read_contract_field(field)))
+            let field = footer_schema.fields().get(*index).ok_or(CapabilityReason::NativeSourceSchemaMapping)?;
+            Ok::<_, CapabilityReason>((field.name().clone(), table_format_file_read_contract_field(field)))
         })
         .collect::<Result<Vec<_>, _>>()?;
     for field in output_schema.fields() {
@@ -317,7 +317,7 @@ pub(super) fn table_format_source_output_schema(
     scan_plan: &TableFormatScanPlan,
     requirements: &NativeParquetColumnRequirements,
     file_schema: &SchemaRef,
-) -> Result<SchemaRef, FallbackReason> {
+) -> Result<SchemaRef, CapabilityReason> {
     let mappings = table_format_column_mapping_by_name(scan_plan)?;
     let mut fields =
         Vec::with_capacity(requirements.projected_output_columns.len() + requirements.pure_filter_columns.len());
@@ -341,21 +341,22 @@ pub(super) fn table_format_source_output_field(
     requirements: &NativeParquetColumnRequirements,
     file_schema: &SchemaRef,
     mappings: &BTreeMap<&str, &TableFormatColumnMapping>,
-) -> Result<Field, FallbackReason> {
+) -> Result<Field, CapabilityReason> {
     match source_ref {
         NativeSourceColumnRef::File(index) => {
             if let Some(mapping) = mappings.get(column) {
                 return Ok(Field::new(column, mapping.data_type.clone(), mapping.nullable));
             }
-            let field = file_schema.fields().get(*index).ok_or(FallbackReason::NativeSourceSchemaMapping)?;
+            let field = file_schema.fields().get(*index).ok_or(CapabilityReason::NativeSourceSchemaMapping)?;
             Ok(Field::new(column, field.data_type().clone(), field.is_nullable()))
         },
         NativeSourceColumnRef::Partition(index) => {
-            let column = requirements.partition_columns.get(*index).ok_or(FallbackReason::NativeSourceSchemaMapping)?;
+            let column =
+                requirements.partition_columns.get(*index).ok_or(CapabilityReason::NativeSourceSchemaMapping)?;
             Ok(Field::new(column.name.as_str(), column.data_type.clone(), column.nullable))
         },
         NativeSourceColumnRef::MissingNull(index) => {
-            let column = requirements.missing_columns.get(*index).ok_or(FallbackReason::NativeSourceSchemaMapping)?;
+            let column = requirements.missing_columns.get(*index).ok_or(CapabilityReason::NativeSourceSchemaMapping)?;
             Ok(Field::new(column.name.as_str(), column.data_type.clone(), column.nullable))
         },
     }

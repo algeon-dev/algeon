@@ -703,7 +703,10 @@ mod tests {
         assert_eq!(executor.released, [ResidentResourceId::new(0)]);
         assert_eq!(executor.cleanup_calls, 1);
         let snapshot = lifecycle
-            .finish(RuntimeTerminalOutcome::Failed { error_code: error.code().to_string() })
+            .finish(RuntimeTerminalOutcome::Failed {
+                error_code: error.code().to_string(),
+                error_status: error.status().as_str().to_string(),
+            })
             .expect("observation seals");
         let states = task_states(&snapshot);
         assert_eq!(
@@ -754,7 +757,10 @@ mod tests {
         assert_eq!(error.operation(), OPERATION);
         assert_eq!(error.fact_value("primary_marker"), Some("retained"));
         let snapshot = lifecycle
-            .finish(RuntimeTerminalOutcome::Failed { error_code: error.code().to_string() })
+            .finish(RuntimeTerminalOutcome::Failed {
+                error_code: error.code().to_string(),
+                error_status: error.status().as_str().to_string(),
+            })
             .expect("observation seals");
         let cleanup = snapshot
             .events()

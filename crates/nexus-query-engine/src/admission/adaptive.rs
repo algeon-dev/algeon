@@ -47,11 +47,6 @@ impl AdaptivePipelineAdmission {
     pub fn pipeline(&self) -> Option<&CompiledPipeline> {
         self.pipeline.as_ref()
     }
-
-    /// Runtime action counters promised by the adaptive strategy.
-    pub fn runtime_action_counts(&self) -> crate::adaptive_report::AdaptiveRuntimeActionCounts {
-        self.report.row().runtime_action_counts
-    }
 }
 
 /// Run adaptive bounded admission without historical memory evidence.

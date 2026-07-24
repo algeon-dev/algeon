@@ -33,9 +33,9 @@ pub struct IcebergNativeSmokeReportRow {
     pub table_ident: String,
     pub sql: String,
     pub diagnostics: TableFormatScanDiagnostics,
-    pub native_planning_outcome: NativeDataFusionPlanningOutcome,
+    pub native_planning_outcome: Option<NativeDataFusionPlanningOutcome>,
     pub native_reason_code: Option<String>,
-    pub post_native_execution_path: NativeDataFusionPostNativeExecutionPath,
+    pub final_disposition: FinalPlanDisposition,
     pub staging_summary: ObjectStoreStagingSummary,
     pub cpu_arrow_reader_fallback: bool,
     pub native_runtime_started: bool,
@@ -68,9 +68,9 @@ impl IcebergNativeSmokeReportRow {
         table_ident: String,
         sql: String,
         diagnostics: TableFormatScanDiagnostics,
-        native_planning_outcome: NativeDataFusionPlanningOutcome,
+        native_planning_outcome: Option<NativeDataFusionPlanningOutcome>,
         native_reason_code: Option<String>,
-        post_native_execution_path: NativeDataFusionPostNativeExecutionPath,
+        final_disposition: FinalPlanDisposition,
         expected_count: Option<u64>,
         staging_summary: ObjectStoreStagingSummary,
         credential_source: String,
@@ -84,7 +84,7 @@ impl IcebergNativeSmokeReportRow {
             diagnostics,
             native_planning_outcome,
             native_reason_code,
-            post_native_execution_path,
+            final_disposition,
             staging_summary,
             cpu_arrow_reader_fallback: false,
             native_runtime_started: false,
@@ -119,9 +119,9 @@ impl IcebergNativeSmokeReportRow {
         if self.cpu_runtime_started {
             return;
         }
-        if self.native_planning_outcome != NativeDataFusionPlanningOutcome::AcceptedReplaced {
+        if self.native_planning_outcome != Some(NativeDataFusionPlanningOutcome::Selected) {
             self.parity_status = ParityStatus::NativeRejected;
-            self.parity_detail.get_or_insert_with(|| "native planning rejected before execution".to_string());
+            self.parity_detail.get_or_insert_with(|| "native planning did not select GPU execution".to_string());
             return;
         }
         if self.native_runtime_started && self.native_runtime_outcome == NativeDataFusionRuntimeOutcome::Failed {
@@ -169,9 +169,9 @@ impl IcebergNativeSmokeReportRow {
             self.staging_summary.status.code().to_string(),
             self.staging_summary.staged_data_file_count.to_string(),
             self.staging_summary.staged_bytes.to_string(),
-            self.native_planning_outcome.as_str().to_string(),
+            self.native_planning_outcome.map_or("none", NativeDataFusionPlanningOutcome::as_str).to_string(),
             self.native_reason_code.clone().unwrap_or_else(|| "none".to_string()),
-            self.post_native_execution_path.as_str().to_string(),
+            self.final_disposition.as_str().to_string(),
             self.cpu_arrow_reader_fallback.to_string(),
             self.native_runtime_started.to_string(),
             self.native_runtime_outcome.as_str().to_string(),

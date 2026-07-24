@@ -18,7 +18,9 @@
 //! [`nexus_query_engine`].
 
 pub mod backend;
+pub mod capability;
 pub mod error;
+mod final_plan_observation;
 pub mod gpu_coverage;
 pub mod gpu_coverage_sql;
 #[cfg(feature = "cugraph")]
@@ -28,7 +30,6 @@ pub mod native_exec;
 pub mod native_report;
 mod physical_plan;
 pub mod planner;
-pub mod policy;
 pub mod report;
 #[cfg(feature = "server")]
 pub mod server;
