@@ -19,6 +19,7 @@ fn failure_source_code(source: DeviceMemoryFailureSource) -> u32 {
     match source {
         DeviceMemoryFailureSource::Physical => 0,
         DeviceMemoryFailureSource::ReservationLimit => 1,
+        DeviceMemoryFailureSource::AllocationLimit => 2,
         DeviceMemoryFailureSource::Unknown(value) => value,
     }
 }
