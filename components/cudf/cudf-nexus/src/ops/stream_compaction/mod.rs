@@ -16,6 +16,19 @@ use crate::{
     },
 };
 
+fn check_status_with_keys_count<I>(
+    status: cudf_sys::cudf_status_t,
+    operation: &'static str,
+    keys_count: usize,
+    details: I,
+) -> Result<()>
+where
+    I: IntoIterator<Item = (&'static str, String)>,
+{
+    error::check_status_in(status, operation)
+        .map_err(|err| err.with_fact(FACT_KEYS_COUNT, keys_count).with_details(details))
+}
+
 /// Policy for which duplicate rows to keep.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(i32)]
@@ -143,14 +156,11 @@ pub(crate) fn drop_nulls_impl(
             exec_options,
         )
     };
-    error::check_status_in_with_details(
+    check_status_with_keys_count(
         status,
         operation,
-        [
-            ("keys_count", keys_count.to_string()),
-            ("keep_threshold", keep_threshold.to_string()),
-            ("execution_authority", "retained_domain".to_string()),
-        ],
+        keys_i32.len(),
+        [("keep_threshold", keep_threshold.to_string()), ("execution_authority", "retained_domain".to_string())],
     )?;
     unsafe { Table::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
@@ -180,11 +190,11 @@ pub(crate) fn distinct_impl(
             execution.exec_options,
         )
     };
-    error::check_status_in_with_details(
+    check_status_with_keys_count(
         status,
         operation,
+        keys_i32.len(),
         [
-            ("keys_count", keys_count.to_string()),
             ("keep", format!("{:?}", config.keep).to_lowercase()),
             ("null_equality", format!("{:?}", config.null_equality).to_lowercase()),
             ("nan_equality", format!("{:?}", config.nan_equality).to_lowercase()),
@@ -260,4 +270,25 @@ pub fn distinct(
             "stream_compaction::distinct",
         ),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::check_status_with_keys_count;
+    use crate::core::error::{FactKeyName, FactValue};
+
+    #[test]
+    fn ffi_failure_records_keys_count_as_a_typed_fact() {
+        let err = check_status_with_keys_count(
+            cudf_sys::CUDF_ERROR_INVALID_ARGUMENT,
+            "stream_compaction::test",
+            2,
+            [("execution_authority", "retained_domain".to_string())],
+        )
+        .expect_err("injected FFI failure should remain an error");
+
+        assert_eq!(err.fact_value(FactKeyName::KeysCount), Some(&FactValue::Usize(2)));
+        assert_eq!(err.detail_value("keys_count"), None);
+        assert_eq!(err.detail_value("execution_authority"), Some("retained_domain"));
+    }
 }
