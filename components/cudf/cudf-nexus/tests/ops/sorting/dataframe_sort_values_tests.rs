@@ -2,7 +2,7 @@
 
 use cudf::{
     DataFrame, DataFramePreparedSort, DataType, DeviceId, ErrorCode, ErrorKind, ExecutionBudgetEnforcement,
-    ExecutionBudgetRequest, ExecutionBudgetStatus, SortOptions, TypeId,
+    ExecutionBudgetRequest, ExecutionBudgetStatus, Runtime, SortOptions, TypeId,
     core::error::{FactKeyName, FactValue},
     frame::dataframe::InfoDetail,
     ops::sorting,
@@ -69,6 +69,7 @@ fn assert_sorted_order_radix_preflight_facts(
     report: &cudf::ExecutionBudgetReport,
     preflight: sorting::SortedOrderRadixPreflight,
 ) {
+    let key_input_bytes = preflight.key_input_bytes().to_string();
     let key_output_bytes = preflight.key_output_bytes().to_string();
     let sequence_bytes = preflight.sequence_bytes().to_string();
     let temporary_workspace_bytes = preflight.temporary_workspace_bytes().to_string();
@@ -83,6 +84,10 @@ fn assert_sorted_order_radix_preflight_facts(
     assert_eq!(
         report.context_facts().get("sorted_order_radix_preflight_contract").map(String::as_str),
         Some(sorting::SORTED_ORDER_RADIX_PREFLIGHT_CONTRACT),
+    );
+    assert_eq!(
+        report.context_facts().get("sorted_order_radix_key_input_bytes").map(String::as_str),
+        Some(key_input_bytes.as_str()),
     );
     assert_eq!(
         report.context_facts().get("sorted_order_radix_key_output_bytes").map(String::as_str),
@@ -501,17 +506,73 @@ fn test_sorted_order_radix_preflight_rejects_unsupported_metadata_shapes() {
     assert_eq!(nullable.code(), ErrorCode::NullUnexpected);
     assert_eq!(error_context_value(&nullable, "reason").as_deref(), Some("nullable_key_unsupported"));
 
-    let float = DataFramePreparedSort::sorted_order_radix_preflight_for_metadata(
+    let unsupported = DataFramePreparedSort::sorted_order_radix_preflight_for_metadata(
         4,
-        DataType::new(TypeId::Float64),
+        DataType::new(TypeId::String),
         0,
         false,
         sorting::Order::Ascending,
         DeviceId::DEFAULT,
     )
-    .expect_err("floating-point sorted-order radix preflight must remain unsupported");
-    assert_eq!(float.code(), ErrorCode::UnsupportedDtype);
-    assert_eq!(error_context_value(&float, "reason").as_deref(), Some("key_type_not_integral_or_chrono"));
+    .expect_err("non-radix sorted-order key type must remain unsupported");
+    assert_eq!(unsupported.code(), ErrorCode::UnsupportedDtype);
+    assert_eq!(error_context_value(&unsupported, "reason").as_deref(), Some("key_type_not_radix_dispatchable"));
+}
+
+#[test]
+fn test_sorted_order_radix_preflight_accounts_float_pair_buffers() {
+    for (key_type, expected_key_bytes) in [(TypeId::Float32, 8_usize), (TypeId::Float64, 16_usize)] {
+        let preflight = DataFramePreparedSort::sorted_order_radix_preflight_for_metadata(
+            4,
+            DataType::new(key_type),
+            0,
+            false,
+            sorting::Order::Ascending,
+            DeviceId::DEFAULT,
+        )
+        .expect("floating-point sorted-order radix preflight should be supported");
+
+        assert_eq!(preflight.key_input_bytes(), 4 * expected_key_bytes);
+        assert_eq!(preflight.key_output_bytes(), preflight.key_input_bytes());
+        assert_eq!(preflight.sequence_bytes(), 4 * std::mem::size_of::<i32>());
+        assert_eq!(preflight.retained_order_bytes(), preflight.sequence_bytes());
+        assert_eq!(
+            preflight.active_phase_peak_bytes(),
+            preflight
+                .key_input_bytes()
+                .checked_add(preflight.key_output_bytes())
+                .and_then(|bytes| bytes.checked_add(preflight.sequence_bytes()))
+                .and_then(|bytes| bytes.checked_add(preflight.temporary_workspace_bytes()))
+                .and_then(|bytes| bytes.checked_add(preflight.retained_order_bytes()))
+                .expect("preflight components should sum without overflow")
+        );
+    }
+}
+
+#[test]
+fn test_float_sorted_order_runtime_peak_matches_owner_preflight() {
+    let runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
+    for key_type in [TypeId::Float32, TypeId::Float64] {
+        let key = match key_type {
+            TypeId::Float32 => runtime.series(&(0..4096).map(|row| (4096 - row) as f32).collect::<Vec<_>>()).unwrap(),
+            TypeId::Float64 => runtime.series(&(0..4096).map(|row| (4096 - row) as f64).collect::<Vec<_>>()).unwrap(),
+            _ => unreachable!(),
+        };
+        let df = DataFrame::from_series([("value", key)]).unwrap();
+        let token = runtime
+            .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("float_sort"))
+            .unwrap();
+
+        let outcome = df.prepare_sort_values_with_budget(["value"], SortOptions::new(), &token).unwrap();
+        let prepared = outcome.value();
+        let preflight = prepared
+            .sorted_order_radix_preflight()
+            .expect("non-null floating-point sorted-order dispatch should expose owner preflight");
+
+        assert!(preflight.temporary_workspace_bytes() > 0);
+        assert_eq!(prepared.sorted_order().len(), 4096);
+        assert_eq!(token.reservation_usage().unwrap().peak_bytes as usize, preflight.active_phase_peak_bytes());
+    }
 }
 
 #[test]

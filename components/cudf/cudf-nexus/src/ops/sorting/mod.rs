@@ -50,6 +50,7 @@ pub const SORTED_ORDER_RADIX_PREFLIGHT_CONTRACT: &str = "sorted_order_radix_owne
 /// sorted-order preflight.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SortedOrderRadixPreflight {
+    key_input_bytes: usize,
     key_output_bytes: usize,
     sequence_bytes: usize,
     temporary_workspace_bytes: usize,
@@ -58,6 +59,11 @@ pub struct SortedOrderRadixPreflight {
 }
 
 impl SortedOrderRadixPreflight {
+    /// Requested bytes for the temporary transformed-key input buffer.
+    pub fn key_input_bytes(self) -> usize {
+        self.key_input_bytes
+    }
+
     /// Requested bytes for the temporary key-output buffer.
     pub fn key_output_bytes(self) -> usize {
         self.key_output_bytes
@@ -78,14 +84,18 @@ impl SortedOrderRadixPreflight {
         self.retained_order_bytes
     }
 
-    /// Checked sum of all four co-resident allocations during radix execution.
+    /// Checked sum of all five co-resident allocations during radix execution.
     pub fn active_phase_peak_bytes(self) -> usize {
         self.active_phase_peak_bytes
     }
 }
 
 pub(crate) fn sorted_order_radix_key_supported(type_id: TypeId) -> bool {
-    type_id.is_signed_int() || type_id.is_unsigned_int() || type_id.is_timestamp() || type_id.is_duration()
+    type_id.is_signed_int()
+        || type_id.is_unsigned_int()
+        || type_id.is_timestamp()
+        || type_id.is_duration()
+        || type_id.is_float()
 }
 
 fn sorted_order_radix_preflight_unsupported(
@@ -161,13 +171,17 @@ fn sorted_order_radix_preflight_impl(
         )
         .with_fact(crate::core::error::FACT_TYPE_ID, key_type.id())
         .with_detail("resource", "sort_key")
-        .with_detail("reason", "key_type_not_integral_or_chrono")
-        .with_detail("remedy", "use an integral or chrono key or retain the unresolved general sorted-order path"));
+        .with_detail("reason", "key_type_not_radix_dispatchable")
+        .with_detail(
+            "remedy",
+            "use an integral, chrono, or floating-point key or retain the unresolved general sorted-order path",
+        ));
     }
 
     let num_rows = error::usize_to_i64(num_rows, operation, "num_rows")?;
     let null_count = error::usize_to_i64(null_count, operation, "null_count")?;
     let mut raw = cudf_sys::cudf_sorted_order_radix_preflight_result_t {
+        key_input_bytes: 0,
         key_output_bytes: 0,
         sequence_bytes: 0,
         temporary_workspace_bytes: 0,
@@ -191,6 +205,7 @@ fn sorted_order_radix_preflight_impl(
     };
     error::check_status_in(status, operation)?;
 
+    let key_input_bytes = checked_native_preflight_bytes(raw.key_input_bytes, "key_input_bytes", operation)?;
     let key_output_bytes = checked_native_preflight_bytes(raw.key_output_bytes, "key_output_bytes", operation)?;
     let sequence_bytes = checked_native_preflight_bytes(raw.sequence_bytes, "sequence_bytes", operation)?;
     let temporary_workspace_bytes =
@@ -210,7 +225,8 @@ fn sorted_order_radix_preflight_impl(
         .with_detail("sequence_bytes", sequence_bytes.to_string())
         .with_detail("retained_order_bytes", retained_order_bytes.to_string()));
     }
-    let expected_peak = checked_preflight_sum(key_output_bytes, sequence_bytes, operation)?;
+    let expected_peak = checked_preflight_sum(key_input_bytes, key_output_bytes, operation)?;
+    let expected_peak = checked_preflight_sum(expected_peak, sequence_bytes, operation)?;
     let expected_peak = checked_preflight_sum(expected_peak, temporary_workspace_bytes, operation)?;
     let expected_peak = checked_preflight_sum(expected_peak, retained_order_bytes, operation)?;
     if expected_peak != active_phase_peak_bytes {
@@ -226,6 +242,7 @@ fn sorted_order_radix_preflight_impl(
     }
 
     Ok(SortedOrderRadixPreflight {
+        key_input_bytes,
         key_output_bytes,
         sequence_bytes,
         temporary_workspace_bytes,

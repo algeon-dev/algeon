@@ -37,4 +37,5 @@ cudf-install/
 # agent config
 .codex
 .claude
+.pi
 .pi-subagents

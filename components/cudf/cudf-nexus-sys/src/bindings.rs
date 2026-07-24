@@ -298,6 +298,27 @@ pub struct cudf_arrow_device_array_handle_state {
 pub struct cudf_ast_expression_handle_state {
     _unused: [u8; 0],
 }
+#[doc = " Flat source-column metadata for the DONT_CHECK gather preflight."]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct cudf_gather_fixed_width_column_metadata_t {
+    pub type_id: cudf_type_id_t,
+    pub nullable: i32,
+    pub num_children: i32,
+}
+#[doc = " Allocation components for the flat fixed-width DONT_CHECK gather path."]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct cudf_gather_fixed_width_dont_check_preflight_result_t {
+    pub gather_map_bytes: u64,
+    pub output_data_bytes: u64,
+    pub output_null_mask_bytes: u64,
+    pub target_mask_pointer_array_bytes: u64,
+    pub source_table_device_view_bytes: u64,
+    pub valid_count_array_bytes: u64,
+    pub native_temporary_workspace_bytes: u64,
+    pub active_phase_peak_bytes: u64,
+}
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct cudf_device_buffer_handle_state {
@@ -531,10 +552,11 @@ pub struct cudf_query_memory_domain_identity_t {
     pub generation: u64,
     pub reserved: [u64; 4usize],
 }
-#[doc = " Allocation components for the unstable one-key radix sorted-order path.\n\n All fields are requested bytes. `active_phase_peak_bytes` is the checked\n sum of key output, sequence, CUB temporary storage, and retained INT32\n sorted-order output, which are co-resident during execution."]
+#[doc = " Allocation components for the unstable one-key radix sorted-order path.\n\n All fields are requested bytes. `key_input_bytes` is zero for integral and\n chrono keys and the transformed float-pair input for floating keys.\n `active_phase_peak_bytes` is the checked sum of the five components, which\n are co-resident during execution."]
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct cudf_sorted_order_radix_preflight_result_t {
+    pub key_input_bytes: u64,
     pub key_output_bytes: u64,
     pub sequence_bytes: u64,
     pub temporary_workspace_bytes: u64,
@@ -1457,6 +1479,14 @@ unsafe extern "C" {
         num_tables: i32,
         options: *const cudf_exec_options_t,
         out: *mut cudf_table_handle,
+    ) -> cudf_status_t;
+    #[doc = " Query flat fixed-width DONT_CHECK gather allocation components from metadata.\n\n No stream, memory resource, column, or device allocation is required.\n `columns` may be NULL only when `num_columns == 0`; each `nullable` value\n must be 0 or 1, and each `num_children` must be non-negative."]
+    pub fn cudf_gather_fixed_width_dont_check_preflight(
+        output_rows: i64,
+        columns: *const cudf_gather_fixed_width_column_metadata_t,
+        num_columns: i32,
+        device: i32,
+        out: *mut cudf_gather_fixed_width_dont_check_preflight_result_t,
     ) -> cudf_status_t;
     #[doc = " Gather rows from a table by index with explicit execution options.\n\n `gather_map` must be a non-nullable INT32 column of row indices.\n\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned table."]
     pub fn cudf_gather_ex(

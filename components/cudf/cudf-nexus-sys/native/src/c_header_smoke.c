@@ -112,12 +112,12 @@ static int cudf_rust_c_header_smoke(void)
                        cudf_column_view_handle,
                        cudf_column_handle*,
 
-                       const cudf_exec_options_t*)            = &cudf_replace_nulls_column_ex;
+                       const cudf_exec_options_t*)  = &cudf_replace_nulls_column_ex;
   cudf_status_t (*f21)(cudf_table_view_handle,
                        cudf_column_view_handle,
                        cudf_table_handle*,
 
-                       const cudf_exec_options_t*)            = &cudf_apply_boolean_mask_ex;
+                       const cudf_exec_options_t*)  = &cudf_apply_boolean_mask_ex;
   cudf_status_t (*f21b)(cudf_table_view_handle,
 
                         const cudf_row_predicate_node_t*,
@@ -125,13 +125,19 @@ static int cudf_rust_c_header_smoke(void)
                         int32_t,
                         cudf_table_handle*,
 
-                        const cudf_exec_options_t*)           = &cudf_filter_rows_by_predicate_ex;
+                        const cudf_exec_options_t*) = &cudf_filter_rows_by_predicate_ex;
   cudf_status_t (*f22)(cudf_table_view_handle,
                        cudf_column_view_handle,
                        cudf_out_of_bounds_policy_t,
                        cudf_table_handle*,
 
-                       const cudf_exec_options_t*)            = &cudf_gather_ex;
+                       const cudf_exec_options_t*)  = &cudf_gather_ex;
+  cudf_status_t (*f22_gather_preflight)(int64_t,
+                                        const cudf_gather_fixed_width_column_metadata_t*,
+                                        int32_t,
+                                        int32_t,
+                                        cudf_gather_fixed_width_dont_check_preflight_result_t*) =
+    &cudf_gather_fixed_width_dont_check_preflight;
   cudf_status_t (*f22_scatter_ex)(cudf_table_view_handle,
                                   cudf_column_view_handle,
                                   cudf_table_view_handle,
@@ -320,6 +326,7 @@ static int cudf_rust_c_header_smoke(void)
   (void)f20;
   (void)f21;
   (void)f22;
+  (void)f22_gather_preflight;
   (void)f22_scatter_ex;
   (void)f22ast0;
   (void)f22ast1;

@@ -53,18 +53,51 @@ static_assert(sizeof(cudf_order_t) == sizeof(int32_t), "cudf_order_t must be 32-
 static_assert(sizeof(cudf_null_order_t) == sizeof(int32_t), "cudf_null_order_t must be 32-bit");
 static_assert(std::is_standard_layout_v<cudf_sorted_order_radix_preflight_result_t>,
               "sorted-order radix preflight result must be standard layout");
-static_assert(sizeof(cudf_sorted_order_radix_preflight_result_t) == sizeof(uint64_t) * 5,
+static_assert(sizeof(cudf_sorted_order_radix_preflight_result_t) == sizeof(uint64_t) * 6,
               "sorted-order radix preflight result ABI size changed");
 static_assert(alignof(cudf_sorted_order_radix_preflight_result_t) == alignof(uint64_t),
               "sorted-order radix preflight result ABI alignment changed");
-static_assert(offsetof(cudf_sorted_order_radix_preflight_result_t, key_output_bytes) == 0);
-static_assert(offsetof(cudf_sorted_order_radix_preflight_result_t, sequence_bytes) == sizeof(uint64_t));
-static_assert(offsetof(cudf_sorted_order_radix_preflight_result_t, temporary_workspace_bytes) ==
+static_assert(offsetof(cudf_sorted_order_radix_preflight_result_t, key_input_bytes) == 0);
+static_assert(offsetof(cudf_sorted_order_radix_preflight_result_t, key_output_bytes) ==
+              sizeof(uint64_t));
+static_assert(offsetof(cudf_sorted_order_radix_preflight_result_t, sequence_bytes) ==
               sizeof(uint64_t) * 2);
-static_assert(offsetof(cudf_sorted_order_radix_preflight_result_t, retained_order_bytes) ==
+static_assert(offsetof(cudf_sorted_order_radix_preflight_result_t, temporary_workspace_bytes) ==
               sizeof(uint64_t) * 3);
-static_assert(offsetof(cudf_sorted_order_radix_preflight_result_t, active_phase_peak_bytes) ==
+static_assert(offsetof(cudf_sorted_order_radix_preflight_result_t, retained_order_bytes) ==
               sizeof(uint64_t) * 4);
+static_assert(offsetof(cudf_sorted_order_radix_preflight_result_t, active_phase_peak_bytes) ==
+              sizeof(uint64_t) * 5);
+static_assert(std::is_standard_layout_v<cudf_gather_fixed_width_column_metadata_t>,
+              "gather fixed-width metadata must be standard layout");
+static_assert(sizeof(cudf_gather_fixed_width_column_metadata_t) == sizeof(int32_t) * 3,
+              "gather fixed-width metadata ABI size changed");
+static_assert(offsetof(cudf_gather_fixed_width_column_metadata_t, type_id) == 0);
+static_assert(offsetof(cudf_gather_fixed_width_column_metadata_t, nullable) == sizeof(int32_t));
+static_assert(offsetof(cudf_gather_fixed_width_column_metadata_t, num_children) ==
+              sizeof(int32_t) * 2);
+static_assert(std::is_standard_layout_v<cudf_gather_fixed_width_dont_check_preflight_result_t>,
+              "gather fixed-width preflight result must be standard layout");
+static_assert(sizeof(cudf_gather_fixed_width_dont_check_preflight_result_t) == sizeof(uint64_t) * 8,
+              "gather fixed-width preflight result ABI size changed");
+static_assert(alignof(cudf_gather_fixed_width_dont_check_preflight_result_t) == alignof(uint64_t),
+              "gather fixed-width preflight result ABI alignment changed");
+static_assert(offsetof(cudf_gather_fixed_width_dont_check_preflight_result_t, gather_map_bytes) ==
+              sizeof(uint64_t) * 0);
+static_assert(offsetof(cudf_gather_fixed_width_dont_check_preflight_result_t, output_data_bytes) ==
+              sizeof(uint64_t) * 1);
+static_assert(offsetof(cudf_gather_fixed_width_dont_check_preflight_result_t,
+                       output_null_mask_bytes) == sizeof(uint64_t) * 2);
+static_assert(offsetof(cudf_gather_fixed_width_dont_check_preflight_result_t,
+                       target_mask_pointer_array_bytes) == sizeof(uint64_t) * 3);
+static_assert(offsetof(cudf_gather_fixed_width_dont_check_preflight_result_t,
+                       source_table_device_view_bytes) == sizeof(uint64_t) * 4);
+static_assert(offsetof(cudf_gather_fixed_width_dont_check_preflight_result_t,
+                       valid_count_array_bytes) == sizeof(uint64_t) * 5);
+static_assert(offsetof(cudf_gather_fixed_width_dont_check_preflight_result_t,
+                       native_temporary_workspace_bytes) == sizeof(uint64_t) * 6);
+static_assert(offsetof(cudf_gather_fixed_width_dont_check_preflight_result_t,
+                       active_phase_peak_bytes) == sizeof(uint64_t) * 7);
 static_assert(sizeof(cudf_aggregation_kind_t) == sizeof(int32_t),
               "cudf_aggregation_kind_t must be 32-bit");
 static_assert(sizeof(cudf_null_policy_t) == sizeof(int32_t), "cudf_null_policy_t must be 32-bit");

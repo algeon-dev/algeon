@@ -891,10 +891,16 @@ fn sorted_order_radix_preflight_preserves_owner_and_runtime_dispatch_contract() 
         VENDORED_SORTED_ORDER_RADIX_CU,
         "radix_sort_pairs_temp_bytes(d_in, d_out, dv_in, dv_out, n, ascending, sv)",
     ));
+    assert!(contains_normalized(
+        VENDORED_SORTED_ORDER_RADIX_CU,
+        "radix_sort_float_pairs_temp_bytes<T>(nullptr, nullptr, nullptr, nullptr, num_rows, ascending, stream)",
+    ));
+    assert!(VENDORED_SORTED_ORDER_RADIX_CU.contains("float_decomposer<T>{}"));
     assert!(VENDORED_SORTED_ORDER_RADIX_CU.contains("requires(cudf::is_floating_point<T>())"));
     assert!(VENDORED_SORTED_ORDER_RADIX_CU.contains("cub::DeviceRadixSort::SortPairsDescending"));
 
     let h_fields = [
+        "std::size_t key_input_bytes{0};",
         "std::size_t key_output_bytes{0};",
         "std::size_t sequence_bytes{0};",
         "std::size_t temporary_workspace_bytes{0};",
@@ -909,6 +915,7 @@ fn sorted_order_radix_preflight_preserves_owner_and_runtime_dispatch_contract() 
     }
 
     let ffi_fields = [
+        "uint64_t key_input_bytes;",
         "uint64_t key_output_bytes;",
         "uint64_t sequence_bytes;",
         "uint64_t temporary_workspace_bytes;",
