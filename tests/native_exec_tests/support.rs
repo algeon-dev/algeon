@@ -5,7 +5,7 @@ use std::{
 };
 
 use arrow::{
-    array::{Int32Array, Int64Array},
+    array::{Int32Array, Int64Array, StringViewArray},
     compute::SortOptions as ArrowSortOptions,
     datatypes::{DataType, Field, Schema},
     record_batch::RecordBatch,
@@ -16,6 +16,7 @@ use datafusion::{
         physical_plan::{FileScanConfigBuilder, ParquetSource},
         source::DataSourceExec,
     },
+    execution::object_store::ObjectStoreUrl,
     functions_aggregate::{count::count_udaf, sum::sum_udaf},
     logical_expr::Operator,
     parquet::arrow::ArrowWriter,
@@ -163,6 +164,20 @@ pub(super) fn parquet_scan(path: &std::path::Path) -> Arc<dyn ExecutionPlan> {
     let df =
         futures::executor::block_on(ctx.read_parquet(path.to_str().unwrap(), ParquetReadOptions::default())).unwrap();
     futures::executor::block_on(df.create_physical_plan()).unwrap()
+}
+
+pub(super) fn parquet_scan_with_object_store_url(
+    path: &std::path::Path,
+    object_store_url: ObjectStoreUrl,
+) -> Arc<dyn ExecutionPlan> {
+    let scan = parquet_scan(path);
+    let data_source = scan.downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
+    let (file_scan, _parquet_source) =
+        data_source.downcast_to_file_source::<ParquetSource>().expect("parquet scan should use ParquetSource");
+    let file_scan = FileScanConfigBuilder::new(object_store_url, Arc::clone(file_scan.file_source()))
+        .with_file_groups(file_scan.file_groups.clone())
+        .build();
+    DataSourceExec::from_data_source(file_scan)
 }
 
 pub(super) fn parquet_scan_with_declared_output_ordering(path: &std::path::Path) -> Arc<dyn ExecutionPlan> {
@@ -525,6 +540,34 @@ pub(super) fn write_parquet_file(path: &std::path::Path) {
     let mut writer = ArrowWriter::try_new(file, schema, None).unwrap();
     writer.write(&batch).unwrap();
     writer.close().unwrap();
+}
+
+pub(super) fn write_ilike_parquet_file(path: &std::path::Path) {
+    write_ilike_parquet_file_with_labels(
+        path,
+        &[
+            Some("Alpha".to_string()),
+            Some("beta".to_string()),
+            Some("ALMANAC".to_string()),
+            None,
+            Some("zeta".to_string()),
+        ],
+    );
+}
+
+pub(super) fn write_ilike_parquet_file_with_labels(path: &std::path::Path, labels: &[Option<String>]) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("label", DataType::Utf8View, true),
+    ]));
+    let ids = (1..=i32::try_from(labels.len()).expect("P2a fixture row count must fit i32")).collect::<Vec<_>>();
+    let labels = labels.iter().map(|label| label.as_deref()).collect::<Vec<_>>();
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(Int32Array::from(ids)), Arc::new(StringViewArray::from(labels))],
+    )
+    .unwrap();
+    write_batch(path, schema, batch);
 }
 
 pub(super) fn write_sorted_parquet_file(path: &std::path::Path) {

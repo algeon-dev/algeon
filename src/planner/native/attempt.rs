@@ -49,6 +49,7 @@ pub(super) fn optimize_count_only_native_plan(
     replace_lowered_root_or_keep_plan(
         plan,
         None,
+        None,
         lowering,
         native_execution_config,
         native_optimizer_options,
@@ -63,8 +64,34 @@ pub(super) fn optimize_final_native_plan(
     native_plan_cost_options: &nexus_query_engine::plan::NativePlanCostOptions,
 ) -> DataFusionResult<NativeOptimizationAttempt> {
     let lowering = crate::native::lower_physical_plan_to_native(Arc::clone(&plan));
+    if whole_plan_has_unsupported_expression_miss(&lowering)
+        && let Some(boundary) = super::mixed::CertifiedMixedFilterBoundary::certify(Arc::clone(&plan))
+    {
+        let native_leaf_lowering = crate::native::lower_physical_plan_to_native(Arc::clone(boundary.source()));
+        if native_leaf_lowering.plans.len() == 1
+            && native_leaf_lowering.selected_count() == 1
+            && boundary.accepts_native_leaf(&native_leaf_lowering.plans[0])
+        {
+            let mut native_leaf = replace_lowered_root_or_keep_plan(
+                Arc::clone(boundary.source()),
+                None,
+                Some(boundary.native_equivalence_properties()),
+                native_leaf_lowering,
+                native_execution_config,
+                native_optimizer_options,
+                native_plan_cost_options,
+            )?;
+            if native_leaf.rewritten
+                && let Some(plan) = boundary.rebuild(Arc::clone(&native_leaf.plan))
+            {
+                native_leaf.plan = plan;
+                return Ok(native_leaf);
+            }
+        }
+    }
     replace_lowered_root_or_keep_plan(
         plan,
+        None,
         None,
         lowering,
         native_execution_config,
@@ -76,6 +103,7 @@ pub(super) fn optimize_final_native_plan(
 fn replace_lowered_root_or_keep_plan(
     plan: Arc<dyn ExecutionPlan>,
     properties_plan: Option<Arc<dyn ExecutionPlan>>,
+    output_equivalence_properties: Option<EquivalenceProperties>,
     lowering: crate::native::NativeLoweringResult,
     native_execution_config: &NexusNativeExecutionConfig,
     native_optimizer_options: &nexus_query_engine::optimizer::NativeOptimizerOptions,
@@ -187,7 +215,9 @@ fn replace_lowered_root_or_keep_plan(
             native_plan,
             native_execution_config,
             &candidate.shape,
-            properties_plan.properties().equivalence_properties().clone(),
+            output_equivalence_properties
+                .clone()
+                .unwrap_or_else(|| properties_plan.properties().equivalence_properties().clone()),
         )?;
         return Ok(NativeOptimizationAttempt {
             plan,
@@ -228,7 +258,7 @@ fn replace_lowered_root_or_keep_plan(
         native_plan,
         native_execution_config,
         &datafusion_shape,
-        properties_plan.properties().equivalence_properties().clone(),
+        output_equivalence_properties.unwrap_or_else(|| properties_plan.properties().equivalence_properties().clone()),
     )?;
     Ok(NativeOptimizationAttempt {
         plan,
@@ -239,6 +269,15 @@ fn replace_lowered_root_or_keep_plan(
         adaptive_pipeline: NativeAdaptivePipelineDiagnostics::default(),
         rewritten: true,
     })
+}
+
+fn whole_plan_has_unsupported_expression_miss(lowering: &crate::native::NativeLoweringResult) -> bool {
+    lowering.plans.is_empty()
+        && lowering.selected_count() == 0
+        && matches!(
+            lowering.report.outcomes(),
+            [CandidateOutcome::NotSupported { capability_reason: CapabilityReason::UnsupportedExpression, .. }]
+        )
 }
 
 fn native_optimizer_options_for_execution(

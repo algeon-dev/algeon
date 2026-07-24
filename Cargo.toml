@@ -155,6 +155,7 @@ uuid = { version = "1.23", features = ["v4"], optional = true }
 [dev-dependencies]
 datafusion-nexus-workloads = { workspace = true }
 hex = "0.4"
+proptest = "1.7"
 sha2 = "0.11"
 tempfile = { workspace = true }
 
