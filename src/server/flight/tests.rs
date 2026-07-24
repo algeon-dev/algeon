@@ -3,12 +3,19 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use datafusion::{datasource::MemTable, prelude::SessionConfig};
-use futures::future::BoxFuture;
+use arrow::{
+    array::{ArrayRef, Int32Builder, ListBuilder, MapBuilder, MapFieldNames, StringBuilder},
+    record_batch::RecordBatch,
+};
+use arrow_flight::decode::FlightRecordBatchStream;
+use datafusion::{
+    datasource::{MemTable, TableProvider},
+    prelude::SessionConfig,
+};
+use futures::{TryStreamExt as _, future::BoxFuture};
 
 use super::*;
 use crate::{
-    policy::GpuFallbackPolicy,
     server::{
         auth::{AuthMode, TokenStore},
         coordinator::QueryTerminalOutcome,
@@ -41,7 +48,7 @@ impl SleepingPlanner {
 }
 
 impl TableFormatPlanner for SleepingPlanner {
-    fn plan_scan(&self, _request: TableFormatScanRequest) -> PlannerFuture<'_> {
+    fn resolve_scan(&self, _request: TableFormatScanRequest) -> PlannerFuture<'_> {
         let plan = self.plan.clone();
         let delay = self.delay;
         Box::pin(async move {
@@ -84,116 +91,48 @@ impl CountingPlanner {
 }
 
 impl TableFormatPlanner for CountingPlanner {
-    fn plan_scan(&self, _request: TableFormatScanRequest) -> PlannerFuture<'_> {
+    fn resolve_scan(&self, _request: TableFormatScanRequest) -> PlannerFuture<'_> {
         self.requests.fetch_add(1, Ordering::SeqCst);
         let plan = self.plan.clone();
         Box::pin(async move { Ok(plan) })
     }
 }
 
+fn test_iceberg_provider<P>(schema: Arc<Schema>, planner: Arc<P>) -> NexusIcebergTableProvider
+where P: TableFormatPlanner + Send + Sync + 'static {
+    test_iceberg_provider_with_batches(schema, vec![], planner)
+}
+
+fn test_iceberg_provider_with_batches<P>(
+    schema: Arc<Schema>,
+    batches: Vec<RecordBatch>,
+    planner: Arc<P>,
+) -> NexusIcebergTableProvider
+where
+    P: TableFormatPlanner + Send + Sync + 'static,
+{
+    let cpu_provider: Arc<dyn TableProvider> =
+        Arc::new(MemTable::try_new(schema, vec![batches]).expect("test CPU provider must build"));
+    NexusIcebergTableProvider::from_cpu_provider_and_native_planner(cpu_provider, None, planner)
+}
+
 #[tokio::test]
-async fn unsupported_table_format_distinct_list_fast_fails_before_scan_planning() {
+async fn table_format_distinct_list_issues_ticket_and_executes_cpu_delegate() {
     let schema = list_string_schema();
     let planner = Arc::new(CountingPlanner::new(list_string_scan_plan(Arc::clone(&schema))));
-    assert_unsupported_table_format_operator_fast_fails_before_scan_planning(
-        Arc::clone(&schema),
-        planner,
-        "SELECT DISTINCT \"pCodes\" FROM iceberg_t",
-        "distinct",
-        "pCodes",
-        "List(",
-    )
-    .await;
-}
-
-#[tokio::test]
-async fn unsupported_table_format_group_by_list_fast_fails_before_scan_planning() {
-    let schema = list_string_schema();
-    let planner = Arc::new(CountingPlanner::new(list_string_scan_plan(Arc::clone(&schema))));
-    assert_unsupported_table_format_operator_fast_fails_before_scan_planning(
-        Arc::clone(&schema),
-        planner,
-        "SELECT \"pCodes\", COUNT(*) AS n FROM iceberg_t GROUP BY \"pCodes\"",
-        "group_by",
-        "pCodes",
-        "List(",
-    )
-    .await;
-}
-
-#[tokio::test]
-async fn unsupported_table_format_count_distinct_list_fast_fails_before_scan_planning() {
-    let schema = list_string_schema();
-    let planner = Arc::new(CountingPlanner::new(list_string_scan_plan(Arc::clone(&schema))));
-    assert_unsupported_table_format_operator_fast_fails_before_scan_planning(
-        Arc::clone(&schema),
-        planner,
-        "SELECT COUNT(DISTINCT \"pCodes\") AS n FROM iceberg_t",
-        "aggregate_distinct",
-        "pCodes",
-        "List(",
-    )
-    .await;
-}
-
-#[tokio::test]
-async fn unsupported_table_format_distinct_map_fast_fails_before_scan_planning() {
-    let schema = map_schema();
-    let planner = Arc::new(CountingPlanner::new(map_scan_plan(Arc::clone(&schema))));
-    assert_unsupported_table_format_operator_fast_fails_before_scan_planning(
-        Arc::clone(&schema),
-        planner,
-        "SELECT DISTINCT \"countDetail\" FROM iceberg_t",
-        "distinct",
-        "countDetail",
-        "Map(",
-    )
-    .await;
-}
-
-#[tokio::test]
-async fn unsupported_non_iceberg_operator_column_in_mixed_plan_does_not_fast_fail() {
-    let iceberg_schema = iceberg_test_schema();
-    let planner = Arc::new(CountingPlanner::new(native_admissible_scan_plan(Arc::clone(&iceberg_schema))));
     let provider = Arc::new(
-        NexusIcebergTableProvider::from_table_format_planner(Arc::clone(&iceberg_schema), planner.clone())
-            .with_catalog_type("local"),
-    );
-    let ctx = SessionContext::new();
-    ctx.register_table("iceberg_t", provider).expect("test registers iceberg table");
-
-    let memory_schema = Arc::new(Schema::new(vec![Field::new("memCodes", list_string_type(), true)]));
-    let memory_table = Arc::new(MemTable::try_new(Arc::clone(&memory_schema), vec![vec![]]).unwrap());
-    ctx.register_table("mem_t", memory_table).expect("test registers memory table");
-
-    let df = ctx
-        .sql("SELECT DISTINCT m.\"memCodes\" FROM mem_t AS m CROSS JOIN iceberg_t AS i")
-        .await
-        .expect("logical plan builds");
-
-    assert!(fast_fail_unsupported_table_format_operator_plan(df.logical_plan()).is_none());
-    assert_eq!(planner.request_count(), 0, "logical fast-fail proof must not trigger Iceberg scan planning");
-}
-
-#[tokio::test]
-async fn unsupported_iceberg_operator_column_in_mixed_plan_fast_fails() {
-    let iceberg_schema = map_schema();
-    let planner = Arc::new(CountingPlanner::new(map_scan_plan(Arc::clone(&iceberg_schema))));
-    let provider = Arc::new(
-        NexusIcebergTableProvider::from_table_format_planner(Arc::clone(&iceberg_schema), planner.clone())
-            .with_catalog_type("local"),
+        test_iceberg_provider_with_batches(
+            Arc::clone(&schema),
+            vec![list_string_batch(Arc::clone(&schema))],
+            planner.clone(),
+        )
+        .with_catalog_type("local"),
     );
     let ctx = Arc::new(SessionContext::new());
     ctx.register_table("iceberg_t", provider).expect("test registers iceberg table");
-
-    let memory_schema = Arc::new(Schema::new(vec![Field::new("mem_id", DataType::Int64, false)]));
-    let memory_table = Arc::new(MemTable::try_new(Arc::clone(&memory_schema), vec![vec![]]).unwrap());
-    ctx.register_table("mem_t", memory_table).expect("test registers memory table");
-
     let service = DatafusionNexusFlightSqlService::new(
         ctx,
-        NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred),
-        ServerSessionProfile::Native,
+        NexusNativeOptimizerConfig::default(),
         Arc::new(QueryAdmission::new(1).expect("test admission limit")),
         Duration::from_secs(30),
         AuthInterceptor::new(AuthMode::Disabled, TokenStore::new()),
@@ -201,42 +140,46 @@ async fn unsupported_iceberg_operator_column_in_mixed_plan_fast_fails() {
         None,
     );
 
-    let status =
-        issue_statement_ticket(&service, "SELECT DISTINCT i.\"countDetail\" FROM iceberg_t AS i CROSS JOIN mem_t AS m")
-            .await
-            .expect_err("unsupported Iceberg operator column should fast-fail through mixed joins");
+    issue_statement_ticket(&service, "SELECT DISTINCT \"pCodes\" FROM iceberg_t")
+        .await
+        .expect("logical planning should issue a ticket for CPU-supported List semantics");
+    assert_eq!(planner.request_count(), 0, "scan planning belongs to the execution-ticket path");
+    let query_id = only_ticket_query_id(&service);
+    let batches = execute_ticket_batches(&service, query_id.clone()).await;
 
-    assert_eq!(status.code(), Code::InvalidArgument);
-    assert_status_metadata(&status, "native_candidate_rejected", "planning", "permanent");
-    assert!(status.message().contains("operator=distinct"), "status={status:?}");
-    assert!(status.message().contains("column=countDetail"), "status={status:?}");
-    assert!(status.message().contains("type=Map("), "status={status:?}");
-    assert_eq!(planner.request_count(), 0, "Iceberg scan planning must be skipped");
-    assert!(
-        service.coordinator.ticket_query_ids().is_empty(),
-        "fast-failed statements should not issue execution tickets"
-    );
+    assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 2);
+    assert_eq!(batches[0].schema().field(0).data_type(), &list_string_type());
+    assert_eq!(planner.request_count(), 1, "physical planning must resolve the Iceberg scan once");
+    assert_cpu_fallback_evidence(&service, &query_id, None);
 }
 
-async fn assert_unsupported_table_format_operator_fast_fails_before_scan_planning(
-    schema: Arc<Schema>,
-    planner: Arc<CountingPlanner>,
-    sql: &str,
-    operator: &str,
-    column: &str,
-    type_prefix: &str,
-) {
+#[tokio::test]
+async fn table_format_map_in_mixed_plan_executes_cpu_delegate() {
+    let iceberg_schema = map_schema();
+    let planner = Arc::new(CountingPlanner::new(map_scan_plan(Arc::clone(&iceberg_schema))));
     let provider = Arc::new(
-        NexusIcebergTableProvider::from_table_format_planner(Arc::clone(&schema), planner.clone())
-            .with_catalog_type("local"),
+        test_iceberg_provider_with_batches(
+            Arc::clone(&iceberg_schema),
+            vec![map_batch(Arc::clone(&iceberg_schema))],
+            planner.clone(),
+        )
+        .with_catalog_type("local"),
     );
     let ctx = Arc::new(SessionContext::new());
     ctx.register_table("iceberg_t", provider).expect("test registers table once");
 
+    let memory_schema = Arc::new(Schema::new(vec![Field::new("mem_id", DataType::Int64, false)]));
+    let memory_batch = RecordBatch::try_new(
+        Arc::clone(&memory_schema),
+        vec![Arc::new(arrow::array::Int64Array::from(vec![1_i64])) as ArrayRef],
+    )
+    .unwrap();
+    let memory_table = Arc::new(MemTable::try_new(memory_schema, vec![vec![memory_batch]]).unwrap());
+    ctx.register_table("mem_t", memory_table).expect("test registers memory table");
+
     let service = DatafusionNexusFlightSqlService::new(
         ctx,
-        NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred),
-        ServerSessionProfile::Native,
+        NexusNativeOptimizerConfig::default(),
         Arc::new(QueryAdmission::new(1).expect("test admission limit")),
         Duration::from_secs(30),
         AuthInterceptor::new(AuthMode::Disabled, TokenStore::new()),
@@ -244,20 +187,69 @@ async fn assert_unsupported_table_format_operator_fast_fails_before_scan_plannin
         None,
     );
 
-    let status = issue_statement_ticket(&service, sql)
+    issue_statement_ticket(&service, "SELECT i.\"countDetail\" FROM iceberg_t AS i CROSS JOIN mem_t AS m")
         .await
-        .expect_err("unsupported table-format operator should fail before table scan planning");
+        .expect("logical planning should issue a ticket for CPU-supported Map semantics in a mixed plan");
+    assert_eq!(planner.request_count(), 0, "scan planning belongs to the execution-ticket path");
+    let query_id = only_ticket_query_id(&service);
+    let batches = execute_ticket_batches(&service, query_id.clone()).await;
 
-    assert_eq!(status.code(), Code::InvalidArgument);
-    assert_status_metadata(&status, "native_candidate_rejected", "planning", "permanent");
-    assert!(status.message().contains(&format!("operator={operator}")), "status={status:?}");
-    assert!(status.message().contains(&format!("column={column}")), "status={status:?}");
-    assert!(status.message().contains(&format!("type={type_prefix}")), "status={status:?}");
-    assert_eq!(planner.request_count(), 0, "Iceberg scan planning must be skipped");
-    assert!(
-        service.coordinator.ticket_query_ids().is_empty(),
-        "fast-failed statements should not issue execution tickets"
-    );
+    assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 3);
+    assert_eq!(batches[0].schema().field(0).data_type(), &map_type());
+    assert_eq!(planner.request_count(), 1, "physical planning must resolve the Iceberg scan once");
+    assert_cpu_fallback_evidence(&service, &query_id, Some("native_outcome=not_supported"));
+}
+
+async fn execute_ticket_batches(service: &DatafusionNexusFlightSqlService, query_id: String) -> Vec<RecordBatch> {
+    let response = service
+        .execute_ticket(query_id, None)
+        .await
+        .expect("physical planning and CPU delegate execution should succeed");
+    FlightRecordBatchStream::new_from_flight_data(response.into_inner().map_err(arrow_flight::error::FlightError::from))
+        .try_collect::<Vec<_>>()
+        .await
+        .expect("Flight result should decode into Arrow batches")
+}
+
+fn assert_cpu_fallback_evidence(
+    service: &DatafusionNexusFlightSqlService,
+    query_id: &str,
+    physical_plan_fragment: Option<&str>,
+) {
+    let payload = String::from_utf8(
+        service.coordinator.query_stats(query_id).expect("query stats capture should be retained").to_vec(),
+    )
+    .expect("query stats are UTF-8");
+    assert!(payload.contains("# outcome=succeeded"), "{payload}");
+    assert!(payload.contains("NexusIcebergScanExec"), "CPU fallback must retain the executable wrapper: {payload}");
+    if let Some(fragment) = physical_plan_fragment {
+        assert!(payload.contains(fragment), "missing physical-plan evidence `{fragment}`: {payload}");
+    }
+
+    let planning = payload
+        .split_once("\n[planning]\n")
+        .map(|(_, planning)| planning)
+        .expect("query stats should expose native planning evidence");
+    let mut lines = planning.lines();
+    let header = lines.next().expect("planning TSV header").split('\t').collect::<Vec<_>>();
+    let outcome = header.iter().position(|column| *column == "outcome").expect("outcome column");
+    let reason = header.iter().position(|column| *column == "reason_code").expect("reason_code column");
+    let execution_path = header
+        .iter()
+        .position(|column| *column == "post_native_execution_path")
+        .expect("post_native_execution_path column");
+    let rejected = header
+        .iter()
+        .position(|column| *column == "rejected_before_execution")
+        .expect("rejected_before_execution column");
+    let has_cpu_rejection = lines.take_while(|line| !line.is_empty()).any(|line| {
+        let fields = line.split('\t').collect::<Vec<_>>();
+        fields.get(outcome) == Some(&"rejected_before_execution")
+            && fields.get(reason) == Some(&"unsupported_type")
+            && fields.get(execution_path) == Some(&"cpu")
+            && fields.get(rejected) == Some(&"true")
+    });
+    assert!(has_cpu_rejection, "missing structured unsupported-type CPU fallback evidence: {payload}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -266,7 +258,7 @@ async fn planning_timeout_consumes_statement_ticket_without_holding_admission() 
     let planner =
         Arc::new(SleepingPlanner::new(native_admissible_scan_plan(Arc::clone(&schema)), Duration::from_millis(50)));
     let provider = Arc::new(
-        NexusIcebergTableProvider::from_table_format_planner(Arc::clone(&schema), planner)
+        test_iceberg_provider(Arc::clone(&schema), planner)
             .with_catalog_type("local")
             .with_scan_planning_timeout(Some(Duration::from_millis(1))),
     );
@@ -275,8 +267,7 @@ async fn planning_timeout_consumes_statement_ticket_without_holding_admission() 
 
     let service = DatafusionNexusFlightSqlService::new(
         ctx,
-        NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred),
-        ServerSessionProfile::Native,
+        NexusNativeOptimizerConfig::default(),
         Arc::new(QueryAdmission::new(1).expect("test admission limit")),
         Duration::from_secs(30),
         AuthInterceptor::new(AuthMode::Disabled, TokenStore::new()),
@@ -313,8 +304,7 @@ async fn update_ddl_read_only_schema_failure_captures_catalog_target_facts() {
     );
     let service = DatafusionNexusFlightSqlService::new(
         ctx,
-        NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred),
-        ServerSessionProfile::Native,
+        NexusNativeOptimizerConfig::default(),
         Arc::new(QueryAdmission::new(1).expect("test admission limit")),
         Duration::from_secs(30),
         AuthInterceptor::new(AuthMode::Disabled, TokenStore::new()),
@@ -361,8 +351,7 @@ async fn update_set_datafusion_nexus_key_is_rejected_loudly() {
     let ctx = Arc::new(SessionContext::new());
     let service = DatafusionNexusFlightSqlService::new(
         ctx,
-        NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred),
-        ServerSessionProfile::Native,
+        NexusNativeOptimizerConfig::default(),
         Arc::new(QueryAdmission::new(1).expect("test admission limit")),
         Duration::from_secs(30),
         AuthInterceptor::new(AuthMode::Disabled, TokenStore::new()),
@@ -395,8 +384,7 @@ async fn update_set_plain_datafusion_key_still_succeeds() {
     let ctx = Arc::new(SessionContext::new());
     let service = DatafusionNexusFlightSqlService::new(
         ctx,
-        NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred),
-        ServerSessionProfile::Native,
+        NexusNativeOptimizerConfig::default(),
         Arc::new(QueryAdmission::new(1).expect("test admission limit")),
         Duration::from_secs(30),
         AuthInterceptor::new(AuthMode::Disabled, TokenStore::new()),
@@ -419,8 +407,7 @@ async fn update_set_plain_datafusion_key_still_succeeds() {
 async fn prepared_update_shutdown_promotion_preserves_operation_and_request_metadata() {
     let service = DatafusionNexusFlightSqlService::new(
         Arc::new(SessionContext::new()),
-        NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred),
-        ServerSessionProfile::Native,
+        NexusNativeOptimizerConfig::default(),
         Arc::new(QueryAdmission::new(1).expect("test admission limit")),
         Duration::from_secs(30),
         AuthInterceptor::new(AuthMode::Disabled, TokenStore::new()),
@@ -473,8 +460,7 @@ async fn issue_statement_ticket(
 async fn issuing_a_new_ticket_sweeps_abandoned_tickets_without_do_get() {
     let service = DatafusionNexusFlightSqlService::new(
         Arc::new(SessionContext::new()),
-        NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred),
-        ServerSessionProfile::Native,
+        NexusNativeOptimizerConfig::default(),
         Arc::new(QueryAdmission::new(1).expect("test admission limit")),
         Duration::ZERO,
         AuthInterceptor::new(AuthMode::Disabled, TokenStore::new()),
@@ -623,6 +609,15 @@ fn list_string_type() -> DataType {
     DataType::List(Arc::new(Field::new("element", DataType::Utf8, true)))
 }
 
+fn list_string_batch(schema: Arc<Schema>) -> RecordBatch {
+    let mut values =
+        ListBuilder::new(StringBuilder::new()).with_field(Arc::new(Field::new("element", DataType::Utf8, true)));
+    values.append_value([Some("north"), Some("east")]);
+    values.append_value([Some("north"), Some("east")]);
+    values.append_value([Some("south")]);
+    RecordBatch::try_new(schema, vec![Arc::new(values.finish()) as ArrayRef]).unwrap()
+}
+
 fn list_string_scan_plan(schema: Arc<Schema>) -> TableFormatScanPlan {
     let data_type = list_string_type();
     single_column_scan_plan(schema, "pCodes", data_type)
@@ -644,6 +639,20 @@ fn map_type() -> DataType {
         )),
         false,
     )
+}
+
+fn map_batch(schema: Arc<Schema>) -> RecordBatch {
+    let mut values = MapBuilder::new(
+        Some(MapFieldNames { entry: "entries".to_string(), key: "key".to_string(), value: "value".to_string() }),
+        StringBuilder::new(),
+        Int32Builder::new(),
+    );
+    for (key, value) in [("a", 1), ("a", 1), ("b", 2)] {
+        values.keys().append_value(key);
+        values.values().append_value(value);
+        values.append(true).unwrap();
+    }
+    RecordBatch::try_new(schema, vec![Arc::new(values.finish()) as ArrayRef]).unwrap()
 }
 
 fn map_scan_plan(schema: Arc<Schema>) -> TableFormatScanPlan {

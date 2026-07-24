@@ -24,11 +24,10 @@ map, not a substitute for validating a production query with
 | Graph | cuGraph table functions are a separate GPU execution domain. See the [cuGraph SQL API](../cugraph/overview.mdx) for the function-level contract. |
 
 An unsupported CPU-readable fragment remains on DataFusion under
-`GpuPreferred`. An unsupported scan from the native GPU Iceberg providers is a
-planning error because those providers do not carry a CPU Arrow reader. The
-`iceberg-cpu` feature and server `cpu_fallback` profile instead install
-`IcebergStaticTableProvider` for CPU-readable Iceberg scans. Runtime errors
-after native execution starts do not fall back.
+`GpuPreferred`. Every Iceberg table uses the unified provider: its scan wrapper
+retains an executable `iceberg-datafusion` CPU delegate unless native lowering
+replaces the wrapper. Runtime errors after native execution starts do not fall
+back.
 
 ## Expressions and scalar functions
 

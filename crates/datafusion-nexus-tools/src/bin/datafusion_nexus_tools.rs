@@ -14,6 +14,9 @@ mod clickbench_stage_probe;
 #[cfg(any(not(test), feature = "server-runtime-observability-e2e"))]
 #[path = "../connection_retry.rs"]
 mod connection_retry;
+#[cfg(all(feature = "cpu-fallback-contract-validate", not(test)))]
+#[path = "../cpu_fallback_contract_validate.rs"]
+mod cpu_fallback_contract_validate;
 #[cfg(all(feature = "cugraph-oracle", not(test)))]
 #[path = "../../../../tests/cugraph/cugraph_bfs_predicate_fixture.rs"]
 mod cugraph_bfs_predicate_fixture;
@@ -56,10 +59,6 @@ mod server_iceberg_rest_multigpu_e2e;
 #[cfg(all(feature = "validate-query", not(test)))]
 #[path = "../validate_query.rs"]
 mod validate_query;
-#[cfg(all(feature = "cpu-fallback-contract-validate", not(test)))]
-#[path = "../cpu_fallback_contract_validate.rs"]
-mod cpu_fallback_contract_validate;
-
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ToolResult<()> {
     let command = env::args().nth(1);

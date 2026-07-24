@@ -8,7 +8,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use datafusion::catalog::CatalogProvider;
 use datafusion_nexus::table_format::iceberg::catalog::{
-    GlueIcebergCatalogBackend, GlueIcebergCatalogConfig, IcebergCatalogBackend, IcebergProviderKind,
+    GlueIcebergCatalogBackend, GlueIcebergCatalogConfig, IcebergCatalogBackend,
     build_scoped_catalog_provider_from_backend,
 };
 use iceberg::{
@@ -185,13 +185,7 @@ async fn validate_provider(config: &GlueIcebergCatalogConfig, namespace: &Namesp
     let backend: Arc<dyn IcebergCatalogBackend> =
         Arc::new(GlueIcebergCatalogBackend::from_config(config.clone(), local_env).await?);
     let namespace_name = namespace.to_string();
-    let provider = build_scoped_catalog_provider_from_backend(
-        Arc::clone(&backend),
-        "glue",
-        &namespace_name,
-        IcebergProviderKind::Gpu,
-    )
-    .await?;
+    let provider = build_scoped_catalog_provider_from_backend(Arc::clone(&backend), "glue", &namespace_name).await?;
 
     let schema_names = provider.schema_names();
     if schema_names != vec![namespace_name.clone()] {

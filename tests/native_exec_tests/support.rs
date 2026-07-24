@@ -35,9 +35,7 @@ use datafusion::{
     },
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
-use datafusion_nexus::{
-    native_exec::NexusNativeExecutionConfig, planner::NexusNativeOptimizerConfig, policy::GpuFallbackPolicy,
-};
+use datafusion_nexus::{native_exec::NexusNativeExecutionConfig, planner::NexusNativeOptimizerConfig};
 use datafusion_nexus_workloads::tpch::TPCH_TABLES;
 use nexus_query_engine::{
     expr::ColumnRef,
@@ -52,7 +50,7 @@ pub(super) fn bounded_config() -> NexusNativeExecutionConfig {
 }
 
 pub(super) fn native_optimizer_config() -> NexusNativeOptimizerConfig {
-    NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred).with_native_execution_config(bounded_config())
+    NexusNativeOptimizerConfig::default().with_native_execution_config(bounded_config())
 }
 
 pub(super) fn host_sink_plan() -> QueryPlan {

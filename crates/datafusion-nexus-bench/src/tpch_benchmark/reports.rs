@@ -219,7 +219,7 @@ impl NativeTpchBenchmarkReport {
         write_native_execution_policy_metadata(
             &mut output,
             self.config.native_pipeline_execution_mode,
-            self.config.native_fallback_policy,
+            self.config.native_execution,
         );
         push_line(
             &mut output,

@@ -32,8 +32,8 @@ runs.
   Supported subtrees execute in-process with cuDF and cuGraph; remaining
   operators keep stock DataFusion only when a CPU path exists. Iceberg metadata
   comes from REST or Glue catalogs, and KvikIO reads Parquet from S3-compatible
-  storage into the GPU. Iceberg is GPU-only by default, so an inadmissible
-  Iceberg leaf is a structured planning error.
+  storage into the GPU. A unified Iceberg scan keeps an executable CPU delegate
+  when its native candidate is inadmissible.
   <code>PlanningReport</code> and <code>nexus_explain_coverage</code> expose
   stable reasons before execution,  and Arrow batches return through the caller's original interface.</>}
 />
@@ -81,18 +81,15 @@ runs.
 - **A subset of Arrow data types.** Native execution covers the common
   relational types — booleans, integers, floats, `Decimal128`, strings, dates,
   timestamps, and durations. Nested and binary types and most list shapes stay
-  on the DataFusion CPU path; on Iceberg scans an unsupported projected type
-  fails planning instead. [Data Type Support](./reference/data-type-support.md)
+  on the DataFusion CPU path, including through the unified Iceberg CPU
+  delegate under `GpuPreferred`. [Data Type Support](./reference/data-type-support.md)
   lists the exact boundaries.
 - **No cross-GPU communication.** Independent queries can be placed on different
   GPUs, but a single query cannot exchange data between GPUs.
 - **Partial Iceberg merge-on-read.** Position deletes are applied natively, but
   not on a fast path. Equality deletes and delete vectors are unsupported:
-  because Iceberg scans have no built-in CPU reader, planning fails with a
-  structured error even under the default `GpuPreferred` policy. Serving such
-  tables on the CPU requires the opt-in `iceberg-cpu` build and the
-  `cpu_fallback` session profile, which reroutes every Iceberg table in the
-  session.
+  the unified Iceberg provider rejects native acceleration for those scans and
+  keeps its executable DataFusion CPU delegate under `GpuPreferred`.
 - **Parquet only.** Parquet is the only supported data file format for now.
 - **No Substrait query-plan input.** Queries enter as SQL text, through an
   embedded DataFusion session or Flight SQL.

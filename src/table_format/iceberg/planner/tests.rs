@@ -522,7 +522,7 @@ fn iceberg_task_delete_attachment_preserves_data_row_groups() {
         key_metadata: None,
     };
 
-    append_delete_file_facts(&mut plan, &mut data_file, "data-0", 0, &delete_file, &Default::default()).unwrap();
+    append_delete_file_facts(&mut plan, &mut data_file, "data-0", 0, &delete_file).unwrap();
 
     assert_eq!(data_file.row_groups, Some(vec![2, 3]));
     assert_eq!(data_file.position_delete_files.len(), 1);

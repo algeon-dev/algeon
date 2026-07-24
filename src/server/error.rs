@@ -975,6 +975,7 @@ mod tests {
             (ErrorCode::ServiceOverloaded, Code::ResourceExhausted),
             (ErrorCode::SizeOverflow, Code::ResourceExhausted),
             (ErrorCode::HostMaterializationLimitExceeded, Code::ResourceExhausted),
+            (ErrorCode::HostStagingLimitExceeded, Code::ResourceExhausted),
             (ErrorCode::CudfDependencyFailure, Code::Internal),
             (ErrorCode::CudfInvariantViolation, Code::Internal),
             (ErrorCode::Internal, Code::Internal),
@@ -1301,8 +1302,8 @@ mod tests {
         let status = datafusion_error_to_status_for_operation(
             Error::new(
                 ErrorCode::NativeCandidateRejected,
-                "datafusion_nexus.planner.table_format_gpu_only_leaf_guard",
-                "table-format scan leaf was not rewritten to native; first rejection=unsupported_type; no CPU Arrow reader fallback",
+                "datafusion_nexus.native.lowering.table_format",
+                "native table-format candidate rejected; first rejection=unsupported_type",
             )
             .with_fact("unsupported_column", "countDetail")
             .with_fact(

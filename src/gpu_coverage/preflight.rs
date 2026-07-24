@@ -9,7 +9,6 @@ use std::{
 use datafusion::{
     common::DataFusionError,
     execution::{SessionState, SessionStateBuilder},
-    prelude::SessionContext,
     sql::{
         parser::{DFParserBuilder, Statement as DfSqlStatement},
         sqlparser::{ast::Statement as SqlStatement, dialect::dialect_from_str},
@@ -24,17 +23,18 @@ use super::{
 };
 use crate::{
     error::{DataFusionErrorExt, Error, ErrorCode, ErrorSourceDiagnostics},
-    native_exec::NexusNativeExecutionConfig,
     planner::NexusNativeOptimizerConfig,
-    policy::GpuFallbackPolicy,
     session::installed_nexus_native_optimizer_config,
 };
 
 #[derive(Debug, Clone)]
 pub(super) struct ValidationOptimizerConfig {
-    pub(super) actual_policy: GpuFallbackPolicy,
     pub(super) optimizer_config_source: &'static str,
-    pub(super) diagnostic_optimizer_config: NexusNativeOptimizerConfig,
+    /// The exact caller-installed rule configuration copied into validation.
+    pub(super) optimizer_config: Option<NexusNativeOptimizerConfig>,
+    /// The copied rule configuration after the cloned session's DataFusion
+    /// options have been applied.
+    pub(super) effective_optimizer_config: Option<NexusNativeOptimizerConfig>,
 }
 
 #[derive(Debug)]
@@ -84,30 +84,54 @@ impl QueryGpuRejection {
     }
 }
 
-pub(super) fn optimizer_config_for_validation(ctx: &SessionContext) -> ValidationOptimizerConfig {
-    let (optimizer_config_source, optimizer_config) = installed_nexus_native_optimizer_config(&ctx.state())
-        .map(|config| ("installed_session_rule", config))
-        .unwrap_or_else(|| ("default_gpu_preferred", default_validation_optimizer_config()));
-    let actual_policy = optimizer_config.fallback_policy();
-    let diagnostic_optimizer_config = optimizer_config.with_fallback_policy(GpuFallbackPolicy::GpuPreferred);
-    ValidationOptimizerConfig { actual_policy, optimizer_config_source, diagnostic_optimizer_config }
-}
-
-fn default_validation_optimizer_config() -> NexusNativeOptimizerConfig {
-    NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
-        .with_native_execution_config(NexusNativeExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 1, 3, 1))
+pub(super) fn optimizer_config_for_validation(state: &SessionState) -> crate::error::Result<ValidationOptimizerConfig> {
+    let (optimizer_config_source, optimizer_config, effective_optimizer_config) =
+        match installed_nexus_native_optimizer_config(state) {
+            Some(config) => {
+                let effective_config =
+                    config.with_datafusion_config_options(state.config_options()).map_err(|error| {
+                        Error::new(
+                            ErrorCode::DataFusionPlanning,
+                            "datafusion_nexus.gpu_coverage.validation_config",
+                            "failed to apply the cloned session's datafusion-nexus options for GPU coverage validation",
+                        )
+                        .with_source(error)
+                    })?;
+                ("installed_session_rule", Some(config), Some(effective_config))
+            },
+            None => ("native_rule_absent", None, None),
+        };
+    Ok(ValidationOptimizerConfig { optimizer_config_source, optimizer_config, effective_optimizer_config })
 }
 
 pub(super) fn validated_under(state: &SessionState, config: &ValidationOptimizerConfig) -> QueryGpuValidatedUnder {
     let rules = state.physical_optimizers();
     let rule_names = rules.iter().map(|rule| rule.name()).collect::<Vec<_>>().join(",");
+    let optimizer_fingerprint_input = match &config.effective_optimizer_config {
+        Some(optimizer_config) => format!("native_optimizer_rule=installed;{rule_names};{optimizer_config:?}"),
+        None => format!("native_optimizer_rule=absent;{rule_names}"),
+    };
+    let final_plan_requirements = config
+        .effective_optimizer_config
+        .as_ref()
+        .map(|optimizer_config| {
+            optimizer_config
+                .final_plan_requirements()
+                .iter()
+                .map(|requirement| requirement.as_str().to_string())
+                .collect()
+        })
+        .unwrap_or_default();
     QueryGpuValidatedUnder {
-        actual_policy: config.actual_policy.to_string(),
-        diagnostic_policy: GpuFallbackPolicy::GpuPreferred.to_string(),
         optimizer_config_source: config.optimizer_config_source.to_string(),
-        execution_mode: config.diagnostic_optimizer_config.native_pipeline_execution_mode().to_string(),
+        native_optimizer_rule_installed: config.optimizer_config.is_some(),
+        execution_mode: config
+            .effective_optimizer_config
+            .as_ref()
+            .map(|config| config.native_pipeline_execution_mode().to_string()),
+        final_plan_requirements,
         session_config_fingerprint: fingerprint_debug(state.config_options()),
-        optimizer_fingerprint: fingerprint_debug(&format!("{rule_names};{:?}", config.diagnostic_optimizer_config)),
+        optimizer_fingerprint: fingerprint_debug(&optimizer_fingerprint_input),
         catalog_snapshot: "session_state_cloned_at_validation_call".to_string(),
     }
 }

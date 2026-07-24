@@ -21,6 +21,8 @@ const ADAPTER_STATUS_CASES: &[(ErrorCode, ErrorStatus)] = &[
     (ErrorCode::SourceTemporaryFailure, ErrorStatus::Temporary),
     (ErrorCode::FieldNotFound, ErrorStatus::Permanent),
     (ErrorCode::NativeCandidateRejected, ErrorStatus::Permanent),
+    (ErrorCode::RequiredGpuOperationUnsupported, ErrorStatus::Permanent),
+    (ErrorCode::FinalPlanRequirementUnsatisfied, ErrorStatus::Permanent),
     (ErrorCode::UnsupportedOperator, ErrorStatus::Permanent),
     (ErrorCode::UnsupportedExpression, ErrorStatus::Permanent),
     (ErrorCode::UnsupportedType, ErrorStatus::Permanent),
@@ -31,6 +33,7 @@ const ADAPTER_STATUS_CASES: &[(ErrorCode, ErrorStatus)] = &[
     (ErrorCode::CudfResourceExhausted, ErrorStatus::Temporary),
     (ErrorCode::SizeOverflow, ErrorStatus::Permanent),
     (ErrorCode::HostMaterializationLimitExceeded, ErrorStatus::Permanent),
+    (ErrorCode::HostStagingLimitExceeded, ErrorStatus::Permanent),
     (ErrorCode::CudfTemporaryFailure, ErrorStatus::Temporary),
     (ErrorCode::CudfPersistentFailure, ErrorStatus::Persistent),
     (ErrorCode::CudfDependencyFailure, ErrorStatus::Permanent),
@@ -73,7 +76,7 @@ const NATIVE_ADAPTER_STATUS_CASES: &[(QueryErrorCode, ErrorCode, QueryErrorStatu
 
 #[test]
 fn every_adapter_code_has_the_expected_retry_status() {
-    assert_eq!(ADAPTER_STATUS_CASES.len(), 31, "update the complete adapter status policy table");
+    assert_eq!(ADAPTER_STATUS_CASES.len(), 34, "update the complete adapter status policy table");
 
     for &(code, expected_status) in ADAPTER_STATUS_CASES {
         let error = Error::new(code, "datafusion_nexus.test.retry_policy", "retry policy test");
@@ -152,6 +155,14 @@ fn error_code_projections_are_stable_policy_contracts() {
     assert_eq!(ErrorCode::FieldNotFound.kind(), ErrorKind::InvalidInput);
     assert_eq!(ErrorCode::FieldNotFound.status(), ErrorStatus::Permanent);
 
+    assert_eq!(ErrorCode::RequiredGpuOperationUnsupported.as_str(), "required_gpu_operation_unsupported");
+    assert_eq!(ErrorCode::RequiredGpuOperationUnsupported.kind(), ErrorKind::Unsupported);
+    assert_eq!(ErrorCode::RequiredGpuOperationUnsupported.status(), ErrorStatus::Permanent);
+
+    assert_eq!(ErrorCode::FinalPlanRequirementUnsatisfied.as_str(), "final_plan_requirement_unsatisfied");
+    assert_eq!(ErrorCode::FinalPlanRequirementUnsatisfied.kind(), ErrorKind::Planning);
+    assert_eq!(ErrorCode::FinalPlanRequirementUnsatisfied.status(), ErrorStatus::Permanent);
+
     assert_eq!(ErrorCode::UnsupportedExpression.as_str(), "unsupported_expression");
     assert_eq!(ErrorCode::UnsupportedExpression.kind(), ErrorKind::Unsupported);
     assert_eq!(ErrorCode::UnsupportedExpression.status(), ErrorStatus::Permanent);
@@ -167,6 +178,10 @@ fn error_code_projections_are_stable_policy_contracts() {
     assert_eq!(ErrorCode::HostMaterializationLimitExceeded.as_str(), "host_materialization_limit_exceeded");
     assert_eq!(ErrorCode::HostMaterializationLimitExceeded.kind(), ErrorKind::ResourceExhausted);
     assert_eq!(ErrorCode::HostMaterializationLimitExceeded.status(), ErrorStatus::Permanent);
+
+    assert_eq!(ErrorCode::HostStagingLimitExceeded.as_str(), "host_staging_limit_exceeded");
+    assert_eq!(ErrorCode::HostStagingLimitExceeded.kind(), ErrorKind::ResourceExhausted);
+    assert_eq!(ErrorCode::HostStagingLimitExceeded.status(), ErrorStatus::Permanent);
 
     assert_eq!(ErrorCode::CudfPersistentFailure.as_str(), "cudf_persistent_failure");
     assert_eq!(ErrorCode::CudfPersistentFailure.kind(), ErrorKind::DependencyFailure);

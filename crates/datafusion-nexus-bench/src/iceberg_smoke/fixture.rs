@@ -56,7 +56,3 @@ pub(crate) async fn load_iceberg_table(fixture: &IcebergNativeSmokeFixture) -> S
         },
     }
 }
-
-pub(crate) fn iceberg_table_arrow_schema(table: &Table) -> SmokeResult<arrow::datatypes::SchemaRef> {
-    Ok(iceberg_schema_to_datafusion_arrow_schema(table.current_schema_ref().as_ref())?)
-}

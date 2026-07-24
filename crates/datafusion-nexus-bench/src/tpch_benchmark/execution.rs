@@ -115,8 +115,13 @@ pub(super) fn native_optimizer_config(
     config: &NativeTpchBenchmarkConfig,
     resources: &NativeTpchRuntimeResources,
 ) -> NexusNativeOptimizerConfig {
-    NexusNativeOptimizerConfig::new(config.native_fallback_policy)
-        .with_native_execution_config(config.native_execution_config_with_resources(resources))
+    config
+        .native_execution
+        .configure_native_optimizer(
+            NexusNativeOptimizerConfig::default()
+                .with_native_execution_config(config.native_execution_config_with_resources(resources)),
+        )
+        .expect("native TPC-H benchmark installs the native rule")
 }
 
 fn native_session_config(config: &NativeTpchBenchmarkConfig) -> SessionConfig {

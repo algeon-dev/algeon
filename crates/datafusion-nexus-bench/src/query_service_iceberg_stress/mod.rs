@@ -19,7 +19,6 @@ use datafusion_nexus::{
         NativeDataFusionPostNativeExecutionPath,
     },
     planner::{NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule},
-    policy::GpuFallbackPolicy,
     session::NexusSessionStateBuilderExt,
     table_format::{
         TableFormatScanRequest,
@@ -350,7 +349,7 @@ impl StructuredFailure {
 async fn planned_table_row_count(config: &GlueIcebergTableConfig) -> DataFusionResult<Option<u64>> {
     let loaded = load_glue_table(config.clone()).await.map_err(DataFusionError::from)?;
     let scan_plan = IcebergTableFormatPlanner::new(loaded.table)
-        .plan_table_format_scan(TableFormatScanRequest::default())
+        .resolve_table_format_scan(TableFormatScanRequest::default())
         .await
         .map_err(DataFusionError::from)?;
     Ok(scan_plan
@@ -486,10 +485,9 @@ async fn collect_native_with_handle(
     config: &StressConfig,
     handle: Arc<nexus_query_engine::runtime::QueryHandle>,
 ) -> DataFusionResult<NativeCollectOutcome> {
-    let optimizer_config = NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
-        .with_native_execution_config(
-            NexusNativeExecutionConfig::bounded_auto_sized().with_query_service_handle(handle),
-        );
+    let optimizer_config = NexusNativeOptimizerConfig::default().with_native_execution_config(
+        NexusNativeExecutionConfig::bounded_auto_sized().with_query_service_handle(handle),
+    );
     let native_rule = Arc::new(NexusNativePhysicalOptimizerRule::new(optimizer_config));
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(tpch_report_session_config())

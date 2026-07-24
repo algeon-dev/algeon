@@ -6,10 +6,7 @@ use datafusion::{
     prelude::{SessionConfig, SessionContext},
 };
 
-use super::{
-    config::{ServerConfig, ServerSessionProfile},
-    error::ServerError,
-};
+use super::{config::ServerConfig, error::ServerError};
 #[cfg(feature = "cugraph")]
 use crate::graph_sql::CugraphSqlConfig;
 use crate::{backend::NexusGpuBackend, session::NexusSessionStateBuilderExt};
@@ -85,62 +82,17 @@ pub(crate) fn cugraph_sql_config(
     sql.with_native_execution_config(native_execution_config)
 }
 
-/// Build the `SessionConfig` for the Flight SQL server, honoring the
-/// configured [`ServerSessionProfile`].
-///
-/// Starts from `DATAFUSION_*` env vars, then overrides native-sensitive
-/// DataFusion settings for [`ServerSessionProfile::Native`] so server plans
-/// match the workload harness shape.
-pub fn build_session_config(config: &ServerConfig) -> super::error::Result<SessionConfig> {
-    let base = SessionConfig::from_env()
-        .map_err(|error| ServerError::session("failed to build DataFusion session config from environment", error))?;
-    Ok(apply_session_profile(base, config.session_profile))
+/// Build the `SessionConfig` for the Flight SQL server from DataFusion's
+/// standard environment configuration. The server enables catalog discovery
+/// but does not change optimizer or execution settings.
+pub fn build_session_config(_config: &ServerConfig) -> super::error::Result<SessionConfig> {
+    SessionConfig::from_env()
+        .map(enable_session_discovery)
+        .map_err(|error| ServerError::session("failed to build DataFusion session config from environment", error))
 }
 
-/// Apply [`ServerSessionProfile`] to a base `SessionConfig`. Always enables
-/// `information_schema` so Flight SQL clients can discover the catalog. The
-/// native profile additionally pins the native-friendly DataFusion settings;
-/// the CPU-fallback profile only enables `information_schema` and leaves the
-/// rest of `base` (e.g. values loaded from `DATAFUSION_*` env vars) untouched.
-///
-/// Embedders can call this directly when they do not want to inherit
-/// `DATAFUSION_*` process env.
-pub fn apply_session_profile(base: SessionConfig, profile: ServerSessionProfile) -> SessionConfig {
-    let base = base.with_information_schema(true);
-    match profile {
-        ServerSessionProfile::Native => apply_native_friendly_profile(base),
-        ServerSessionProfile::CpuFallback => base,
-    }
-}
-
-/// Pin the DataFusion physical-plan profile to the native-friendly defaults
-/// the workload harnesses use:
-///
-/// - `target_partitions=1`
-/// - file-scan / aggregation / join / sort repartitioning all disabled
-/// - top-k, join, aggregate, and umbrella dynamic-filter pushdown all
-///   disabled (DataFusion checks each per-operator flag directly, so the
-///   umbrella alone does not suppress joins or top-k pushdown)
-/// - physical uncorrelated scalar subqueries disabled so scalar subquery
-///   shapes stay relationalized for native planning
-///
-/// These overrides intentionally take precedence over `DATAFUSION_*` env
-/// vars; the env vars still apply to other settings (for example
-/// `batch_size`).
-fn apply_native_friendly_profile(config: SessionConfig) -> SessionConfig {
-    let mut config = config
-        .with_target_partitions(1)
-        .with_repartition_file_scans(false)
-        .with_repartition_aggregations(false)
-        .with_repartition_joins(false)
-        .with_repartition_sorts(false);
-    let optimizer = &mut config.options_mut().optimizer;
-    optimizer.enable_topk_dynamic_filter_pushdown = false;
-    optimizer.enable_join_dynamic_filter_pushdown = false;
-    optimizer.enable_aggregate_dynamic_filter_pushdown = false;
-    optimizer.enable_dynamic_filter_pushdown = false;
-    optimizer.enable_physical_uncorrelated_scalar_subquery = false;
-    config
+pub(super) fn enable_session_discovery(config: SessionConfig) -> SessionConfig {
+    config.with_information_schema(true)
 }
 
 #[cfg(feature = "iceberg")]
@@ -148,13 +100,6 @@ async fn register_iceberg_catalog(ctx: &SessionContext, config: &ServerConfig) -
     let Some(iceberg) = &config.iceberg else {
         return Ok(());
     };
-
-    // Select which DataFusion TableProvider backs loaded Iceberg tables, based
-    // on the session profile. The CPU path is only available when built with
-    // the `iceberg-cpu` feature; without it Cpu+Iceberg falls back to the
-    // GPU-only provider (server emits a startup WARN — see [`is_testing_profile_active`]
-    // in `super::is_testing_profile_active`).
-    let provider_kind = iceberg_provider_kind_for(config.session_profile);
 
     // Build the catalog backend once; it holds a connected catalog handle that
     // is reused for all namespace/table listing and lazy table loading. The
@@ -221,7 +166,6 @@ async fn register_iceberg_catalog(ctx: &SessionContext, config: &ServerConfig) -
             Arc::clone(&backend),
             catalog_type,
             &iceberg.namespace,
-            provider_kind,
             provider_options,
         )
         .await
@@ -241,12 +185,10 @@ async fn register_iceberg_catalog(ctx: &SessionContext, config: &ServerConfig) -
             .map_err(|error| ServerError::session("failed to load Iceberg table for alias seeding", error))?;
         let provider = build_alias_provider(
             loaded_table,
-            provider_kind,
             catalog_type,
             backend.parquet_read_strategy_config(),
             Some(iceberg.scan_planning_timeout),
-        )
-        .await?;
+        )?;
 
         // Seed both real name and alias before catalog registration so first
         // queries reuse this load and cannot race the seed.
@@ -302,7 +244,7 @@ async fn register_iceberg_catalog(ctx: &SessionContext, config: &ServerConfig) -
         catalog_type,
         df_catalog_name = iceberg.catalog_name,
         namespace = iceberg.namespace,
-        provider_kind = provider_kind.as_str(),
+        provider_mode = "dual_mode",
         pre_declared_aliases = iceberg.tables.len(),
         "registered dynamic Iceberg catalog provider"
     );
@@ -310,73 +252,26 @@ async fn register_iceberg_catalog(ctx: &SessionContext, config: &ServerConfig) -
     Ok(())
 }
 
-/// Maps a [`ServerSessionProfile`] to the Iceberg provider kind the dynamic
-/// catalog should use.
-///
-/// Without the `iceberg-cpu` feature the CPU path is unavailable, so
-/// `CpuFallback` still routes through the GPU-only provider; the server's
-/// startup WARN (see `super::is_testing_profile_active`) covers that
-/// configuration.
-#[cfg(feature = "iceberg")]
-fn iceberg_provider_kind_for(
-    profile: ServerSessionProfile,
-) -> crate::table_format::iceberg::catalog::IcebergProviderKind {
-    use crate::table_format::iceberg::catalog::IcebergProviderKind;
-    match profile {
-        ServerSessionProfile::Native => IcebergProviderKind::Gpu,
-        #[cfg(feature = "iceberg-cpu")]
-        ServerSessionProfile::CpuFallback => IcebergProviderKind::Cpu,
-        #[cfg(not(feature = "iceberg-cpu"))]
-        ServerSessionProfile::CpuFallback => IcebergProviderKind::Gpu,
-    }
-}
-
 /// Builds the [`TableProvider`] used to seed a pre-declared alias.
 ///
-/// Mirrors the dispatch in [`crate::table_format::iceberg::catalog::NexusIcebergSchemaProvider`]
-/// so the dynamic three-part path and the legacy bare-alias path resolve to
-/// the same provider kind.
+/// Uses the same dual-mode provider as the dynamic three-part catalog path.
 #[cfg(feature = "iceberg")]
-async fn build_alias_provider(
+fn build_alias_provider(
     table: iceberg::table::Table,
-    kind: crate::table_format::iceberg::catalog::IcebergProviderKind,
     catalog_type: &str,
     parquet_read_strategy_config: Option<crate::table_format::scan::TableFormatParquetReadStrategyConfig>,
     scan_planning_timeout: Option<std::time::Duration>,
 ) -> super::error::Result<Arc<dyn datafusion::datasource::TableProvider>> {
-    use crate::table_format::iceberg::catalog::IcebergProviderKind;
-    match kind {
-        IcebergProviderKind::Gpu => {
-            let provider = match parquet_read_strategy_config {
-                Some(config) => {
-                    crate::table_format::iceberg::NexusIcebergTableProvider::try_new_with_parquet_read_strategy_config(
-                        table, config,
-                    )
-                },
-                None => crate::table_format::iceberg::NexusIcebergTableProvider::try_new(table),
-            }
-            .map_err(|error| ServerError::session("failed to build NexusIcebergTableProvider", error))?
-            .with_catalog_type(catalog_type)
-            .with_scan_planning_timeout(scan_planning_timeout);
-            Ok(Arc::new(provider))
+    let provider = match parquet_read_strategy_config {
+        Some(config) => {
+            crate::table_format::iceberg::NexusIcebergTableProvider::try_new_with_parquet_read_strategy_config(
+                table, config,
+            )
         },
-        #[cfg(feature = "iceberg-cpu")]
-        IcebergProviderKind::Cpu => {
-            let _ = (parquet_read_strategy_config, scan_planning_timeout);
-            let provider =
-                iceberg_datafusion::IcebergStaticTableProvider::try_new_from_table(table).await.map_err(|error| {
-                    ServerError::session("failed to build iceberg-datafusion CPU table provider", error)
-                })?;
-            Ok(Arc::new(provider))
-        },
-        #[cfg(not(feature = "iceberg-cpu"))]
-        IcebergProviderKind::Cpu => Err(ServerError::session(
-            "iceberg-cpu feature is required to build CPU IcebergStaticTableProvider",
-            crate::error::Error::new(
-                crate::error::ErrorCode::CudfInvalidInput,
-                "datafusion_nexus.server.session.build_alias_provider",
-                "iceberg-cpu feature disabled at build time",
-            ),
-        )),
+        None => crate::table_format::iceberg::NexusIcebergTableProvider::try_new(table),
     }
+    .map_err(|error| ServerError::session("failed to build NexusIcebergTableProvider", error))?
+    .with_catalog_type(catalog_type)
+    .with_scan_planning_timeout(scan_planning_timeout);
+    Ok(Arc::new(provider))
 }

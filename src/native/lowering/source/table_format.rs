@@ -38,7 +38,7 @@ use crate::{
     policy::FallbackReason,
     source_cardinality::reader_predicate_proves_source_at_most_one_row,
     table_format::{
-        NexusTableFormatScanExec, TableFormat, TableFormatColumnMapping, TableFormatColumnSource, TableFormatDataFile,
+        NexusIcebergScanExec, TableFormat, TableFormatColumnMapping, TableFormatColumnSource, TableFormatDataFile,
         TableFormatDataFileFormat, TableFormatParquetReadStrategyConfig, TableFormatParquetSourceMetadata,
         TableFormatPartitionTransform, TableFormatScalarValue, TableFormatScanPlan,
         resolve_table_format_parquet_source_with_metadata,
@@ -52,8 +52,8 @@ mod files;
 mod groups;
 mod schema_match;
 
-pub(in crate::native::lowering) use admission::table_format_scan_rejection;
 use admission::*;
+pub(in crate::native::lowering) use admission::{available_table_format_scan_plan, table_format_scan_rejection};
 #[cfg(test)]
 use count_star::lower_table_format_count_star_fallback_source_for_plan;
 use count_star::table_format_count_star_fallback_column;
@@ -69,13 +69,13 @@ use groups::*;
 use schema_match::*;
 
 pub(super) fn lower_table_format_source_input(
-    scan_exec: &NexusTableFormatScanExec,
+    scan_exec: &NexusIcebergScanExec,
     filter: Option<&datafusion::physical_plan::filter::FilterExec>,
     builder: &mut NativeQueryPlanBuilder,
     required_output_fields: &RequiredFields,
     pushed_scan_limit: Option<usize>,
 ) -> Result<LoweredNativeInput, FallbackReason> {
-    let scan_plan = scan_exec.scan_plan();
+    let scan_plan = available_table_format_scan_plan(scan_exec)?;
     if table_format_scan_plan_is_empty_admissible(scan_plan) {
         return lower_empty_table_format_source_input(scan_exec, filter, builder, required_output_fields);
     }
@@ -232,7 +232,7 @@ fn table_format_native_source_for_group(
 }
 
 fn lower_empty_table_format_source_input(
-    scan_exec: &NexusTableFormatScanExec,
+    scan_exec: &NexusIcebergScanExec,
     filter: Option<&datafusion::physical_plan::filter::FilterExec>,
     builder: &mut NativeQueryPlanBuilder,
     required_output_fields: &RequiredFields,

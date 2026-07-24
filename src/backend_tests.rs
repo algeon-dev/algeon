@@ -5,7 +5,10 @@ use datafusion::{
 };
 
 use super::*;
-use crate::session_config::DATAFUSION_NEXUS_SESSION_CONFIG_OPTIONS;
+use crate::{
+    planner::FinalPlanRequirement, session::installed_nexus_native_optimizer_config,
+    session_config::DATAFUSION_NEXUS_SESSION_CONFIG_OPTIONS,
+};
 
 #[test]
 fn backend_admission_only_lowers_to_query_service_and_planning_floor() {
@@ -49,8 +52,7 @@ fn backend_admission_only_lowers_to_query_service_and_planning_floor() {
 fn backend_propagates_query_service_local_parquet_source_cache_capacity() {
     let execution_config = NexusNativeExecutionConfig::bounded(4096, 1024, 1, 3, 1)
         .with_query_service_local_parquet_source_cache_max_retained_bytes(Some(2048));
-    let optimizer_config = NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
-        .with_native_execution_config(execution_config.clone());
+    let optimizer_config = NexusNativeOptimizerConfig::default().with_native_execution_config(execution_config.clone());
     let resolved = ResolvedBackendMemoryPolicy {
         device_ordinals: vec![0, 1],
         planning_device_budget_bytes: 4096,
@@ -84,8 +86,7 @@ fn backend_propagates_query_service_local_parquet_source_cache_capacity() {
 fn backend_rejects_zero_query_service_local_parquet_source_cache_capacity() {
     let execution_config = NexusNativeExecutionConfig::bounded(4096, 1024, 1, 3, 1)
         .with_query_service_local_parquet_source_cache_max_retained_bytes(Some(0));
-    let optimizer_config = NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
-        .with_native_execution_config(execution_config.clone());
+    let optimizer_config = NexusNativeOptimizerConfig::default().with_native_execution_config(execution_config.clone());
     let resolved = ResolvedBackendMemoryPolicy {
         device_ordinals: vec![0],
         planning_device_budget_bytes: 4096,
@@ -181,8 +182,7 @@ fn backend_builder_rejects_zero_query_service_local_parquet_source_cache_capacit
 fn backend_propagates_query_service_resident_graph_cache_capacity() {
     let execution_config = NexusNativeExecutionConfig::bounded(4096, 1024, 1, 3, 1)
         .with_query_service_resident_graph_cache_max_retained_bytes(Some(2048));
-    let optimizer_config = NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
-        .with_native_execution_config(execution_config.clone());
+    let optimizer_config = NexusNativeOptimizerConfig::default().with_native_execution_config(execution_config.clone());
     let resolved = ResolvedBackendMemoryPolicy {
         device_ordinals: vec![0, 1],
         planning_device_budget_bytes: 4096,
@@ -214,8 +214,7 @@ fn backend_propagates_query_service_resident_graph_cache_capacity() {
 fn backend_rejects_zero_query_service_resident_graph_cache_capacity() {
     let execution_config = NexusNativeExecutionConfig::bounded(4096, 1024, 1, 3, 1)
         .with_query_service_resident_graph_cache_max_retained_bytes(Some(0));
-    let optimizer_config = NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
-        .with_native_execution_config(execution_config.clone());
+    let optimizer_config = NexusNativeOptimizerConfig::default().with_native_execution_config(execution_config.clone());
     let resolved = ResolvedBackendMemoryPolicy {
         device_ordinals: vec![0],
         planning_device_budget_bytes: 4096,
@@ -738,6 +737,28 @@ fn backend_install_freezes_native_session_keys() {
         assert!(error.to_string().contains(&option.full_key()), "{} should reject", option.full_key());
         assert!(error.to_string().contains("query-service admission"));
     }
+}
+
+#[test]
+fn backend_installs_configured_final_plan_requirements() {
+    let backend = NexusGpuBackend::builder()
+        .memory_policy(NexusMemoryPolicy::Bounded {
+            device_ordinals: vec![0],
+            device_budget_bytes: 4096,
+            max_source_chunk_bytes: 1024,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 3,
+            min_retry_chunk_row_groups: 1,
+        })
+        .with_no_datafusion_cpu_requirement()
+        .build_admission_only()
+        .unwrap();
+
+    assert_eq!(backend.optimizer_config().final_plan_requirements(), &[FinalPlanRequirement::NoDataFusionCpu]);
+
+    let state = backend.install_on(SessionStateBuilder::new()).unwrap().build();
+    let installed = installed_nexus_native_optimizer_config(&state).expect("backend install must retain native config");
+    assert_eq!(installed.final_plan_requirements(), &[FinalPlanRequirement::NoDataFusionCpu]);
 }
 
 #[test]

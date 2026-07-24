@@ -261,6 +261,49 @@ fn bfs_edge_id_predicates_require_primary_edge_id_binding() {
 }
 
 #[test]
+fn graph_operation_registry_pins_empty_input_policy_for_every_algorithm() {
+    let policies = GRAPH_OPERATION_REGISTRY
+        .iter()
+        .map(|definition| {
+            (
+                definition.name,
+                definition.empty_input_policy.edge_input.as_str(),
+                definition.empty_input_policy.side_inputs.as_str(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        policies,
+        vec![
+            ("pagerank", "return_empty", "none"),
+            ("bfs", "bfs_endpoint_policy", "bfs_predicates"),
+            ("louvain", "return_empty", "none"),
+            ("eigenvector_centrality", "return_empty", "none"),
+            ("katz_centrality", "return_empty", "none"),
+            ("hits", "return_empty", "none"),
+            ("betweenness_centrality", "validate_selectors_then_return_empty", "none"),
+            ("edge_betweenness_centrality", "validate_selectors_then_return_empty", "none"),
+            ("sssp", "reject", "none"),
+            ("degrees_all", "return_empty", "none"),
+            ("in_degrees_all", "return_empty", "none"),
+            ("out_degrees_all", "return_empty", "none"),
+            ("weakly_connected_components", "return_empty", "none"),
+            ("strongly_connected_components", "return_empty", "none"),
+            ("triangle_count_all", "return_empty", "none"),
+            ("core_number", "return_empty", "none"),
+            ("k_core", "return_empty", "none"),
+            ("minimum_spanning_tree", "return_empty", "none"),
+            ("personalized_pagerank", "reject", "require_personalization"),
+            ("leiden", "return_empty", "none"),
+            ("ecg", "return_empty", "none"),
+            ("spectral_modularity_maximization", "reject", "none"),
+            ("force_atlas2", "return_empty", "none"),
+        ]
+    );
+    assert_eq!(policies.len(), GraphAlgorithm::all().len());
+}
+
+#[test]
 fn edge_id_binding_is_preserved_through_python_edge_normalize() {
     let mut builder = QueryPlanBuilder::new();
     let input = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(

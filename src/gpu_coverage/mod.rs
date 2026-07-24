@@ -44,10 +44,10 @@ pub(crate) use self::preflight::{coverage_validator_recursion_error, gpu_coverag
 
 /// Validate a single SQL query against the native GPU planning path.
 ///
-/// The validation uses an isolated retained native optimizer rule installed
-/// into a derived [`SessionContext`]. It plans as-if [`crate::policy::GpuFallbackPolicy::GpuPreferred`]
-/// to preserve fallback diagnostics, while recording the caller's actual policy
-/// in [`QueryGpuCoverage::validated_under`].
+/// The validation clones the caller's planning state. When the caller has an
+/// installed native optimizer rule, validation uses an isolated retained copy
+/// of that exact configuration, including completed-plan requirements. A
+/// caller with no native rule remains on its DataFusion CPU baseline.
 ///
 /// `fallback_reasons` are retained per-candidate optimizer diagnostics, not an
 /// alternative verdict. They can be non-empty even when the final optimized plan
@@ -59,12 +59,19 @@ pub(crate) use self::preflight::{coverage_validator_recursion_error, gpu_coverag
 /// field.
 pub async fn validate_query(ctx: &SessionContext, sql: impl AsRef<str>) -> crate::error::Result<QueryGpuCoverage> {
     let sql = sql.as_ref();
-    let config = optimizer_config_for_validation(ctx);
-    let native_rule = Arc::new(NexusNativePhysicalOptimizerRule::new(config.diagnostic_optimizer_config.clone()));
-    let mut planning_state_builder =
-        SessionStateBuilder::new_from_existing(ctx.state()).with_nexus_native_rule(Arc::clone(&native_rule));
+    let mut planning_state_builder = SessionStateBuilder::new_from_existing(ctx.state());
     mark_coverage_validation_in_progress(&mut planning_state_builder);
     let planning_state = planning_state_builder.build();
+    let config = optimizer_config_for_validation(&planning_state)?;
+    let native_rule = config
+        .optimizer_config
+        .as_ref()
+        .map(|optimizer_config| Arc::new(NexusNativePhysicalOptimizerRule::new(optimizer_config.clone())));
+    let planning_state = if let Some(native_rule) = &native_rule {
+        SessionStateBuilder::new_from_existing(planning_state).with_nexus_native_rule(Arc::clone(native_rule)).build()
+    } else {
+        planning_state
+    };
     let validated_under = validated_under(&planning_state, &config);
     if let Some(rejection) = preflight_single_query(&planning_state, sql) {
         return Ok(QueryGpuCoverage::rejected(validated_under, rejection));
@@ -83,7 +90,7 @@ pub async fn validate_query(ctx: &SessionContext, sql: impl AsRef<str>) -> crate
     let plan = match df.create_physical_plan().await {
         Ok(plan) => plan,
         Err(error) => {
-            let diagnostics = native_rule.last_planning_diagnostics();
+            let diagnostics = native_rule.as_ref().and_then(|rule| rule.last_planning_diagnostics());
             let phase = classify_physical_planning_error(&error);
             let planning_did_io = planning_did_io_for_physical_error(phase, diagnostics.as_ref());
             return Ok(QueryGpuCoverage::rejected_with_diagnostics(
@@ -95,7 +102,7 @@ pub async fn validate_query(ctx: &SessionContext, sql: impl AsRef<str>) -> crate
         },
     };
 
-    let diagnostics = native_rule.last_planning_diagnostics();
+    let diagnostics = native_rule.as_ref().and_then(|rule| rule.last_planning_diagnostics());
     let cudf_coverage = post_native_plan_coverage(plan.as_ref());
     let walk = walk_gpu_coverage(plan.as_ref());
     let fallback_reasons =

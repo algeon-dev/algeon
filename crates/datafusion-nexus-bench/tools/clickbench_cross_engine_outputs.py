@@ -140,11 +140,6 @@ def parse_args() -> argparse.Namespace:
         help="Named ClickBench native profile (default: clickbench_gpu_throughput).",
     )
     parser.add_argument(
-        "--native-fallback-policy",
-        default=os.environ.get("NEXUS_CLICKBENCH_BENCH_NATIVE_FALLBACK_POLICY", "gpu_preferred"),
-        help="Native fallback policy for datafusion_nexus runs (default: gpu_preferred).",
-    )
-    parser.add_argument(
         "--native-source-chunk-bytes",
         default=os.environ.get("NEXUS_CLICKBENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES"),
         help="Optional override for NEXUS_CLICKBENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES.",
@@ -305,7 +300,6 @@ def run_datafusion_outputs(
             "NEXUS_CLICKBENCH_BENCH_DUMP_ROWS_DIR": str(dump_dir),
             "NEXUS_CLICKBENCH_BENCH_PROGRESS": "1",
             "NEXUS_CLICKBENCH_NATIVE_PROFILE": str(args.native_profile),
-            "NEXUS_CLICKBENCH_BENCH_NATIVE_FALLBACK_POLICY": str(args.native_fallback_policy),
         }
     )
     if args.native_source_chunk_bytes is not None:

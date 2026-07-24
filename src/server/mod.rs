@@ -25,7 +25,6 @@ mod flight;
 mod io_lifecycle;
 mod observability;
 mod session;
-mod table_format_operator_fast_fail;
 mod workspace;
 
 pub use auth::{
@@ -65,24 +64,18 @@ pub use config::{
     NEXUS_SERVER_OBSERVABILITY_GLOBAL_SEALED_MAX_BYTES_ENV, NEXUS_SERVER_OBSERVABILITY_GLOBAL_SEALED_MAX_COUNT_ENV,
     NEXUS_SERVER_OBSERVABILITY_PER_QUERY_MAX_BYTES_ENV, NEXUS_SERVER_OBSERVABILITY_PER_QUERY_MAX_RECORDS_ENV,
     NEXUS_SERVER_OBSERVABILITY_SEALED_TTL_SECS_ENV, NEXUS_SERVER_OBSERVABILITY_SHUTDOWN_GRACE_SECS_ENV,
-    NEXUS_SERVER_SESSION_PROFILE_ENV, NEXUS_SERVER_STATEMENT_TICKET_TTL_SECS_ENV,
-    NEXUS_SERVER_WORKSPACE_BACKING_ALIASES_ENV, NEXUS_SERVER_WORKSPACE_BACKING_CATALOG_ENV,
-    NEXUS_SERVER_WORKSPACE_BACKING_SCHEMA_ENV, NEXUS_SERVER_WORKSPACE_CATALOG_ENV, NEXUS_SERVER_WORKSPACE_SCHEMA_ENV,
-    NexusServerNativeConfigOption, ServerConfig, ServerNativeConfigScope, ServerObservabilityConfig,
-    ServerSessionProfile, WorkspaceOverlayConfig,
+    NEXUS_SERVER_STATEMENT_TICKET_TTL_SECS_ENV, NEXUS_SERVER_WORKSPACE_BACKING_ALIASES_ENV,
+    NEXUS_SERVER_WORKSPACE_BACKING_CATALOG_ENV, NEXUS_SERVER_WORKSPACE_BACKING_SCHEMA_ENV,
+    NEXUS_SERVER_WORKSPACE_CATALOG_ENV, NEXUS_SERVER_WORKSPACE_SCHEMA_ENV, NexusServerNativeConfigOption, ServerConfig,
+    ServerNativeConfigScope, ServerObservabilityConfig, WorkspaceOverlayConfig,
 };
-pub use diagnostics::{
-    FlightSqlNativeRejectClass, log_leaf_guard_rejection, log_native_planning_report,
-    log_native_planning_report_for_tables,
-};
+pub use diagnostics::{FlightSqlNativeRejectClass, log_native_planning_report, log_native_planning_report_for_tables};
 pub use error::{
     ERROR_CODE_METADATA_KEY, ERROR_KIND_METADATA_KEY, ERROR_OPERATION_METADATA_KEY, ERROR_STATUS_METADATA_KEY, Result,
     ServerError, UNSUPPORTED_COLUMN_METADATA_KEY, UNSUPPORTED_COLUMN_ROLE_METADATA_KEY,
     UNSUPPORTED_COLUMN_TYPE_METADATA_KEY, datafusion_error_to_status, datafusion_error_to_status_for_operation,
 };
-pub use session::{
-    apply_session_profile, build_session_config, build_session_context, build_session_context_with_backend,
-};
+pub use session::{build_session_config, build_session_context, build_session_context_with_backend};
 
 /// Flight SQL server shutdown source.
 #[derive(Debug, Clone, Default)]
@@ -179,7 +172,6 @@ impl FlightSqlServerBuilder {
         };
         let addr = listen.addr()?;
         log_server_config_snapshot(&config);
-        warn_if_testing_profile_active(&config);
         warn_if_cugraph_built_but_disabled(&config);
 
         if self.session_context.is_some() && self.backend.is_none() {
@@ -237,7 +229,6 @@ impl FlightSqlServerBuilder {
         let service = flight::DatafusionNexusFlightSqlService::new_with_io_lifecycle(
             Arc::clone(&ctx),
             native_optimizer_config.clone(),
-            config.session_profile,
             admission,
             config.statement_ticket_ttl,
             auth_interceptor,
@@ -801,7 +792,6 @@ fn log_server_config_snapshot(config: &ServerConfig) {
                 observability_sealed_ttl_secs = config.observability.sealed_ttl.as_secs(),
                 observability_shutdown_grace_secs = config.observability.shutdown_grace.as_secs(),
                 log_filter = %config.log_filter,
-                session_profile = %config.session_profile,
                 native_pipeline_execution_mode = %native_execution.native_pipeline_execution_mode(),
                 native_memory_control_policy = %native_execution.memory_control_policy(),
                 native_device_budget_bytes = %native_memory.device_budget_bytes,
@@ -851,7 +841,6 @@ fn log_server_config_snapshot(config: &ServerConfig) {
             observability_sealed_ttl_secs = config.observability.sealed_ttl.as_secs(),
             observability_shutdown_grace_secs = config.observability.shutdown_grace.as_secs(),
             log_filter = %config.log_filter,
-            session_profile = %config.session_profile,
             native_pipeline_execution_mode = %native_execution.native_pipeline_execution_mode(),
             native_memory_control_policy = %native_execution.memory_control_policy(),
             native_device_budget_bytes = %native_memory.device_budget_bytes,
@@ -896,7 +885,6 @@ fn log_server_config_snapshot(config: &ServerConfig) {
         observability_sealed_ttl_secs = config.observability.sealed_ttl.as_secs(),
         observability_shutdown_grace_secs = config.observability.shutdown_grace.as_secs(),
         log_filter = %config.log_filter,
-        session_profile = %config.session_profile,
         native_pipeline_execution_mode = %native_execution.native_pipeline_execution_mode(),
         native_memory_control_policy = %native_execution.memory_control_policy(),
         native_device_budget_bytes = %native_memory.device_budget_bytes,
@@ -1067,50 +1055,6 @@ fn log_auth_mode_snapshot(mode: &auth::AuthMode) {
             );
         },
     }
-}
-
-/// Warn when Iceberg uses `CpuFallback` without the CPU Iceberg reader.
-fn warn_if_testing_profile_active(config: &ServerConfig) {
-    if !is_testing_profile_active(config) {
-        return;
-    }
-    tracing::warn!(
-        session_profile = %config.session_profile,
-        "datafusion-nexus Flight SQL server starting with cpu_fallback session \
-         profile while Iceberg is configured, but this binary was built \
-         without the `iceberg-cpu` feature. Iceberg tables will be served by \
-         the GPU-only NexusTableFormatScanExec leaf and plain ORDER BY queries \
-         will fail with a structured planning error. Either rebuild with \
-         --features iceberg-cpu to enable the CPU Iceberg reader, or switch \
-         to NEXUS_SERVER_SESSION_PROFILE=native."
-    );
-}
-
-/// Returns true when the active configuration produces a CPU profile + Iceberg
-/// pairing that this binary cannot actually serve.
-///
-/// With the `iceberg-cpu` feature compiled in, `CpuFallback` + Iceberg routes
-/// through `iceberg_datafusion::IcebergStaticTableProvider` and is fully
-/// supported, so this returns false. Without that feature the leaf is still
-/// GPU-only and the warning fires.
-#[cfg(all(feature = "iceberg", not(feature = "iceberg-cpu")))]
-pub(crate) fn is_testing_profile_active(config: &ServerConfig) -> bool {
-    matches!(config.session_profile, ServerSessionProfile::CpuFallback) && config.iceberg.is_some()
-}
-
-#[cfg(all(feature = "iceberg", feature = "iceberg-cpu"))]
-pub(crate) fn is_testing_profile_active(_config: &ServerConfig) -> bool {
-    // CpuFallback + Iceberg + iceberg-cpu serves Iceberg via
-    // iceberg_datafusion::IcebergStaticTableProvider (real CPU Arrow reader),
-    // so the pairing is production-supported.
-    false
-}
-
-#[cfg(not(feature = "iceberg"))]
-pub(crate) fn is_testing_profile_active(_config: &ServerConfig) -> bool {
-    // Without the iceberg feature there is no GPU-only table-format leaf, so
-    // cpu_fallback is the right choice for any CPU-readable source.
-    false
 }
 
 /// Resolve when the process receives SIGINT or SIGTERM. cudf and cugraph are

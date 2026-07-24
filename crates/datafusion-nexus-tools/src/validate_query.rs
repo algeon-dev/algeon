@@ -114,10 +114,8 @@ fn print_human(coverage: &QueryGpuCoverage) {
     println!("host_output_materialization: {}", coverage.domains.host_output_materialization.as_str());
     println!("confidence: {}", coverage.confidence.as_str());
     println!("planning_did_io: {}", coverage.planning_did_io);
-    println!("actual_policy: {}", coverage.validated_under.actual_policy);
-    println!("diagnostic_policy: {}", coverage.validated_under.diagnostic_policy);
     println!("optimizer_config_source: {}", coverage.validated_under.optimizer_config_source);
-    println!("execution_mode: {}", coverage.validated_under.execution_mode);
+    println!("execution_mode: {}", coverage.validated_under.execution_mode.as_deref().unwrap_or("absent"));
     println!("fallback_reason_count: {}", coverage.fallback_reasons.len());
     for reason in &coverage.fallback_reasons {
         println!("fallback_reason: {} [{}] {}", reason.reason_code, reason.kind.as_str(), reason.detail);

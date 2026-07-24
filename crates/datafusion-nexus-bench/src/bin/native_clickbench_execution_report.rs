@@ -7,12 +7,12 @@ use datafusion_nexus::native_report::NativeDataFusionExecutionReport;
 use datafusion_nexus_bench::{
     report_metadata::ReportDatasetMetadataExt,
     report_workload::{
+        RelationalExecutionSelection,
         clickbench::{
             ClickbenchExecutionProgressEvent, clickbench_datafusion_execution_workload_items_filtered,
             clickbench_native_optimizer_config, clickbench_native_profile_settings_from_env,
             clickbench_report_session_config,
         },
-        gpu_fallback_policy_label, parse_gpu_fallback_policy,
     },
 };
 use datafusion_nexus_workloads::clickbench::{
@@ -21,7 +21,6 @@ use datafusion_nexus_workloads::clickbench::{
 use nexus_query_engine::mode::NativePipelineExecutionMode;
 
 const NEXUS_NATIVE_PIPELINE_EXECUTION_MODE_ENV: &str = "NEXUS_NATIVE_PIPELINE_EXECUTION_MODE";
-const NEXUS_CLICKBENCH_NATIVE_FALLBACK_POLICY_ENV: &str = "NEXUS_CLICKBENCH_NATIVE_FALLBACK_POLICY";
 const NEXUS_CLICKBENCH_EXECUTION_QUERY_IDS_ENV: &str = "NEXUS_CLICKBENCH_EXECUTION_QUERY_IDS";
 const NEXUS_CLICKBENCH_EXECUTION_PROGRESS_ENV: &str = "NEXUS_CLICKBENCH_EXECUTION_PROGRESS";
 
@@ -41,12 +40,12 @@ async fn main() -> ExitCode {
 }
 
 async fn clickbench_report() -> ClickbenchWorkloadResult<ClickbenchExecutionReport> {
-    let fallback_policy = native_fallback_policy_from_env();
+    let relational_execution = RelationalExecutionSelection::native();
     let native_pipeline_execution_mode = native_pipeline_execution_mode_from_env();
     let native_profile = clickbench_native_profile_settings_from_env();
     eprintln!(
-        "[native_clickbench_execution_report] stage=run_config fallback_policy={} native_profile={} native_pipeline_execution_mode={} device_budget_bytes={} max_source_chunk_bytes={} max_row_groups_per_chunk={} source_chunk_planning_mode={}",
-        gpu_fallback_policy_label(fallback_policy),
+        "[native_clickbench_execution_report] stage=run_config relational_execution={} native_profile={} native_pipeline_execution_mode={} device_budget_bytes={} max_source_chunk_bytes={} max_row_groups_per_chunk={} source_chunk_planning_mode={}",
+        relational_execution.as_str(),
         native_profile.profile_name,
         native_pipeline_execution_mode.as_str(),
         native_profile.device_budget_bytes,
@@ -61,9 +60,11 @@ async fn clickbench_report() -> ClickbenchWorkloadResult<ClickbenchExecutionRepo
                 .to_string(),
         )
     })?;
-    let optimizer_config = clickbench_native_optimizer_config()
-        .with_fallback_policy(fallback_policy)
-        .with_native_pipeline_execution_mode(native_pipeline_execution_mode);
+    let optimizer_config = relational_execution
+        .configure_native_optimizer(
+            clickbench_native_optimizer_config().with_native_pipeline_execution_mode(native_pipeline_execution_mode),
+        )
+        .expect("native execution report installs the native rule");
     let query_filter = query_filter_from_env();
     let progress_enabled = progress_enabled_from_env();
     let mut progress_callback = |event: ClickbenchExecutionProgressEvent<'_>| {
@@ -130,13 +131,5 @@ fn progress_enabled_from_env() -> bool {
     match std::env::var(NEXUS_CLICKBENCH_EXECUTION_PROGRESS_ENV) {
         Ok(value) => matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"),
         Err(_) => false,
-    }
-}
-
-fn native_fallback_policy_from_env() -> datafusion_nexus::policy::GpuFallbackPolicy {
-    match std::env::var(NEXUS_CLICKBENCH_NATIVE_FALLBACK_POLICY_ENV) {
-        Ok(value) => parse_gpu_fallback_policy(&value).unwrap_or_else(|error| panic!("{error}")),
-        Err(std::env::VarError::NotPresent) => datafusion_nexus::policy::GpuFallbackPolicy::GpuPreferred,
-        Err(error) => panic!("failed to read {NEXUS_CLICKBENCH_NATIVE_FALLBACK_POLICY_ENV}: {error}"),
     }
 }

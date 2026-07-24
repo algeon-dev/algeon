@@ -42,6 +42,11 @@ pub enum QueryErrorCode {
     /// Use this when the plan is malformed for the native engine, not when the
     /// plan is well-formed but outside the supported catalogue.
     InvalidPlan,
+    /// Runtime graph inputs violate an engine-owned graph-operation contract.
+    ///
+    /// Unlike [`Self::InvalidPlan`], this describes materialized edge or
+    /// side-input data rather than malformed native IR.
+    GraphInputInvalid,
     /// cuDF rejected an input, including permanent `NotFound` conditions.
     CudfInvalidInput,
     /// cuDF reported a permanent unsupported capability.
@@ -98,6 +103,7 @@ impl QueryErrorCode {
             Self::UnsupportedExpression => "unsupported_expression",
             Self::UnsupportedType => "unsupported_type",
             Self::InvalidPlan => "invalid_plan",
+            Self::GraphInputInvalid => "graph_input_invalid",
             Self::CudfInvalidInput => "cudf_invalid_input",
             Self::CudfUnsupported => "cudf_unsupported",
             Self::CudfResourceExhausted => "cudf_resource_exhausted",
@@ -228,6 +234,7 @@ pub const fn kind_for_code(code: QueryErrorCode) -> QueryErrorKind {
         | QueryErrorCode::UnsupportedExpression
         | QueryErrorCode::UnsupportedType => QueryErrorKind::Unsupported,
         QueryErrorCode::InvalidPlan => QueryErrorKind::Planning,
+        QueryErrorCode::GraphInputInvalid => QueryErrorKind::InvalidInput,
         QueryErrorCode::CudfInvalidInput => QueryErrorKind::InvalidInput,
         QueryErrorCode::CudfUnsupported => QueryErrorKind::Unsupported,
         QueryErrorCode::CudfResourceExhausted
@@ -268,6 +275,7 @@ pub const fn status_for_code(code: QueryErrorCode) -> QueryErrorStatus {
         | QueryErrorCode::UnsupportedExpression
         | QueryErrorCode::UnsupportedType
         | QueryErrorCode::InvalidPlan
+        | QueryErrorCode::GraphInputInvalid
         | QueryErrorCode::CudfInvalidInput
         | QueryErrorCode::CudfUnsupported
         | QueryErrorCode::SizeOverflow

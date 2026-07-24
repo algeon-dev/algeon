@@ -1,53 +1,46 @@
 use super::{node::projected_schema, *};
 
-pub(super) fn execute_cugraph_query_to_host(
-    context: &ExecutionContext,
-    metrics: &mut GraphExecutionMetrics<'_>,
+pub(super) fn preflight_cugraph_query_plan(
     spec: &CugraphAlgorithmSpec,
     edge_schema: SchemaRef,
-    edge_frame: GpuDataFrame,
-    predicate_frames: Vec<CugraphGpuFrame>,
+    predicate_schemas: Vec<SchemaRef>,
     projection: Option<&Vec<usize>>,
     limit: Option<usize>,
     edge_normalize_inserted: bool,
-    singleflight_leader: Option<&mut GraphBfsLeader>,
-) -> Result<RecordBatch> {
-    let graph_context = graph_algorithm_execution_context(context)?;
-    let plan = cugraph_query_plan(
-        &graph_context,
-        spec,
-        edge_schema,
-        edge_frame,
-        predicate_frames,
-        projection,
-        limit,
-        CugraphQuerySink::HostArrow,
+) -> Result<()> {
+    let prepared = prepare_bfs_logical_input_schemas(spec, edge_schema, predicate_schemas)?;
+    // Logical-id decoding and path reconstruction are host-side finalization
+    // steps.  The graph plan itself must retain its raw traversal output until
+    // those steps have completed, so a user projection/limit cannot be
+    // applied to that internal schema during preflight.
+    let defer_final_projection = prepared.logical_mapping || is_bfs_path_output(spec);
+    let plan = cugraph_schema_query_plan(
+        &prepared.execution_spec,
+        prepared.edge_schema,
+        prepared.predicate_schemas,
+        if defer_final_projection { None } else { projection },
+        if defer_final_projection { None } else { limit },
         edge_normalize_inserted,
     )?;
-    if let Some(leader) = singleflight_leader {
-        leader.record_traversal_submission();
-    }
-    let outcome = execute_query_plan_with_gpu_inputs_observed(
-        &graph_context,
-        &plan.plan,
-        &plan.inputs,
-        metrics.runtime_observation_config(),
-    );
-    let output = finalize_graph_query_outcome(
-        metrics,
-        outcome,
-        "datafusion_nexus.cugraph_sql.execute",
-        "native cuGraph SQL query execution failed",
-    )?;
-    let QueryOutput::HostArrow(batch) = output else {
-        return Err(Error::new(
-            ErrorCode::InvalidExecutionPlan,
-            "datafusion_nexus.cugraph_sql.execute",
-            "native cuGraph SQL query did not produce host Arrow output",
-        )
-        .into());
-    };
-    Ok(batch)
+    nexus_query_engine::exec::preflight_query_plan(&plan).map_err(|error| {
+        if error.kind() == nexus_query_engine::error::QueryErrorKind::Unsupported {
+            return DataFusionError::from(
+                Error::new(
+                    ErrorCode::RequiredGpuOperationUnsupported,
+                    "datafusion_nexus.cugraph_sql.preflight",
+                    "required cuGraph GPU operation is unsupported by the native engine",
+                )
+                .with_fact("native_code", error.code())
+                .with_fact("native_operation", error.operation())
+                .with_source(error),
+            );
+        }
+        DataFusionError::from(Error::from_native(
+            "datafusion_nexus.cugraph_sql.preflight",
+            "native cuGraph query-plan preflight failed",
+            error,
+        ))
+    })
 }
 
 pub(super) fn execute_cugraph_query_to_gpu_with_options(
@@ -71,7 +64,6 @@ pub(super) fn execute_cugraph_query_to_gpu_with_options(
         predicate_frames,
         projection,
         limit,
-        CugraphQuerySink::GpuResident,
         edge_normalize_inserted,
     )?;
     if let Some(leader) = singleflight_leader {
@@ -108,15 +100,15 @@ pub(super) fn graph_algorithm_execution_context(context: &ExecutionContext) -> R
     Ok(context.clone())
 }
 
-#[derive(Debug, Clone, Copy)]
-pub(super) enum CugraphQuerySink {
-    HostArrow,
-    GpuResident,
-}
-
 pub(super) struct CugraphQueryPlan {
     plan: nexus_query_engine::plan::QueryPlan,
     inputs: GpuResidentInputMap,
+}
+
+const CUGRAPH_EDGE_INPUT_NAME: &str = "__datafusion_nexus_cugraph_edges";
+
+fn cugraph_side_input_name(index: usize) -> String {
+    format!("__datafusion_nexus_cugraph_side_input_{index}")
 }
 
 pub(super) fn cugraph_query_plan(
@@ -127,10 +119,8 @@ pub(super) fn cugraph_query_plan(
     predicate_frames: Vec<CugraphGpuFrame>,
     projection: Option<&Vec<usize>>,
     limit: Option<usize>,
-    sink: CugraphQuerySink,
     edge_normalize_inserted: bool,
 ) -> Result<CugraphQueryPlan> {
-    let input_name = "__datafusion_nexus_cugraph_edges";
     let handle = GpuResultHandle::new(context, edge_frame, Arc::clone(&edge_schema)).map_err(|error| {
         DataFusionError::from(Error::from_native(
             "datafusion_nexus.cugraph_sql.gpu_input",
@@ -139,12 +129,32 @@ pub(super) fn cugraph_query_plan(
         ))
     })?;
     let mut inputs = GpuResidentInputMap::new();
-    inputs.insert(input_name.to_string(), handle);
+    inputs.insert(CUGRAPH_EDGE_INPUT_NAME.to_string(), handle);
+    let predicate_schemas = predicate_frames.iter().map(|frame| Arc::clone(&frame.schema)).collect::<Vec<_>>();
+    bind_predicate_gpu_inputs(context, &mut inputs, predicate_frames)?;
+    let plan =
+        cugraph_schema_query_plan(spec, edge_schema, predicate_schemas, projection, limit, edge_normalize_inserted)?;
+    Ok(CugraphQueryPlan { plan, inputs })
+}
 
+pub(super) fn cugraph_schema_query_plan(
+    spec: &CugraphAlgorithmSpec,
+    edge_schema: SchemaRef,
+    predicate_schemas: Vec<SchemaRef>,
+    projection: Option<&Vec<usize>>,
+    limit: Option<usize>,
+    edge_normalize_inserted: bool,
+) -> Result<nexus_query_engine::plan::QueryPlan> {
     let mut builder = QueryPlanBuilder::new();
-    let input =
-        builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(input_name, Arc::clone(&edge_schema))));
-    let predicate_nodes = bind_predicate_gpu_inputs(context, &mut builder, &mut inputs, predicate_frames)?;
+    let input = builder
+        .add_source(SourceNode::GpuResident(GpuResidentSource::new(CUGRAPH_EDGE_INPUT_NAME, Arc::clone(&edge_schema))));
+    let predicate_nodes = predicate_schemas
+        .into_iter()
+        .enumerate()
+        .map(|(index, schema)| {
+            builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(cugraph_side_input_name(index), schema)))
+        })
+        .collect::<Vec<_>>();
     let graph_spec = native_graph_spec(spec, edge_normalize_inserted, &predicate_nodes);
     let mut root_schema = Arc::clone(&graph_spec.output_schema);
     let mut root = builder.try_add_graph_algorithm(input, graph_spec).map_err(|error| {
@@ -175,22 +185,16 @@ pub(super) fn cugraph_query_plan(
     if let Some(limit) = limit {
         root = builder.add_limit(root, LimitSpec::fetch(limit), Arc::clone(&root_schema));
     }
-    let plan = match sink {
-        CugraphQuerySink::HostArrow => builder.finish_with_host_sink_schema(root, root_schema),
-        CugraphQuerySink::GpuResident => builder.finish_gpu_resident(root),
-    };
-    Ok(CugraphQueryPlan { plan, inputs })
+    Ok(builder.finish_gpu_resident(root))
 }
 
 pub(super) fn bind_predicate_gpu_inputs(
     context: &ExecutionContext,
-    builder: &mut QueryPlanBuilder,
     inputs: &mut GpuResidentInputMap,
     predicate_frames: Vec<CugraphGpuFrame>,
-) -> Result<Vec<nexus_query_engine::plan::NodeId>> {
-    let mut nodes = Vec::with_capacity(predicate_frames.len());
+) -> Result<()> {
     for (index, CugraphGpuFrame { schema, frame }) in predicate_frames.into_iter().enumerate() {
-        let input_name = format!("__datafusion_nexus_cugraph_side_input_{index}");
+        let input_name = cugraph_side_input_name(index);
         let handle = GpuResultHandle::new(context, frame, Arc::clone(&schema)).map_err(|error| {
             DataFusionError::from(Error::from_native(
                 "datafusion_nexus.cugraph_sql.gpu_input",
@@ -199,9 +203,8 @@ pub(super) fn bind_predicate_gpu_inputs(
             ))
         })?;
         inputs.insert(input_name.clone(), handle);
-        nodes.push(builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(input_name, schema))));
     }
-    Ok(nodes)
+    Ok(())
 }
 
 pub(super) fn native_graph_spec(

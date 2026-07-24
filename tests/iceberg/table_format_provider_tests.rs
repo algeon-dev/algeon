@@ -2,24 +2,33 @@ use std::{
     collections::HashMap,
     fs::{self, File},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering as AtomicOrdering},
+    },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use arrow::{
-    array::{Int64Array, StringArray},
+    array::{
+        ArrayRef, BooleanArray, Float64Array, Int32Array, Int64Array, ListArray, MapArray, StringArray, StructArray,
+    },
+    buffer::OffsetBuffer,
     datatypes::{DataType, Field, Fields, Schema, TimeUnit},
     record_batch::RecordBatch,
 };
 use datafusion::{
-    common::{DataFusionError, NullEquality, ScalarValue},
-    datasource::TableProvider,
-    execution::context::TaskContext,
-    logical_expr::{JoinType, Operator},
+    catalog::Session,
+    common::{DataFusionError, NullEquality, ScalarValue, project_schema},
+    datasource::{MemTable, TableProvider},
+    execution::{SessionStateBuilder, context::TaskContext},
+    logical_expr::{Expr, JoinType, Operator, TableProviderFilterPushDown, TableType},
     physical_expr::expressions::{binary, col, lit},
     physical_plan::{
-        ExecutionPlan,
+        DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, SendableRecordBatchStream,
         coalesce_partitions::CoalescePartitionsExec,
+        collect,
+        empty::EmptyExec,
         filter::FilterExec,
         joins::{HashJoinExec, PartitionMode},
         limit::GlobalLimitExec,
@@ -27,22 +36,34 @@ use datafusion::{
     prelude::{SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
-    error::{DataFusionErrorExt, ErrorCode, ErrorStatus},
+    error::{Error, ErrorCode, ErrorStatus},
     native::lower_physical_plan_to_native,
+    planner::NexusNativeOptimizerConfig,
     policy::FallbackReason,
     report::CandidateOutcome,
+    session::NexusSessionStateBuilderExt,
     source_cardinality::schema_with_source_unique_keys,
     table_format::{
-        NexusTableFormatScanExec, TableFormat, TableFormatColumnMapping, TableFormatColumnRole,
-        TableFormatColumnSource, TableFormatDataFile, TableFormatDataFileFormat, TableFormatDeleteFile,
-        TableFormatDeleteFileContent, TableFormatLakehouseCachePolicy, TableFormatParquetReadStrategyConfig,
-        TableFormatParquetSourceMetadata, TableFormatPartitionTransform, TableFormatPartitionValue, TableFormatPlanner,
-        TableFormatReadCapability, TableFormatScalarValue, TableFormatScanPlan, TableFormatScanRequest,
-        TableFormatUnsupportedFeature, TableFormatUnsupportedFeatureCode, iceberg::NexusIcebergTableProvider,
-        resolve_table_format_parquet_source, resolve_table_format_parquet_source_with_metadata,
+        NexusIcebergNativeScanOutcome, NexusIcebergScanExec, TableFormat, TableFormatColumnMapping,
+        TableFormatColumnRole, TableFormatColumnSource, TableFormatDataFile, TableFormatDataFileFormat,
+        TableFormatDeleteFile, TableFormatDeleteFileContent, TableFormatLakehouseCachePolicy,
+        TableFormatParquetReadStrategyConfig, TableFormatParquetSourceMetadata, TableFormatPartitionTransform,
+        TableFormatPartitionValue, TableFormatPlanner, TableFormatReadCapability, TableFormatScalarValue,
+        TableFormatScanPlan, TableFormatScanRequest, TableFormatUnsupportedFeature, TableFormatUnsupportedFeatureCode,
+        iceberg::NexusIcebergTableProvider, resolve_table_format_parquet_source,
+        resolve_table_format_parquet_source_with_metadata,
     },
 };
 use futures::future::BoxFuture;
+use iceberg::{
+    TableIdent,
+    io::FileIO,
+    spec::{
+        DataContentType, DataFileBuilder, DataFileFormat, Literal, ManifestListWriter, ManifestWriterBuilder, Struct,
+        TableMetadata,
+    },
+    table::Table,
+};
 use nexus_query_engine::{
     exec::{execute_query_plan, output::QueryOutput},
     expr::LiteralValue as NativeLiteralValue,

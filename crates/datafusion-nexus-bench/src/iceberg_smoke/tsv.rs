@@ -120,7 +120,6 @@ impl FallbackReasonExt for FallbackReason {
             FallbackReason::IcebergRowSelectionUnsupported,
             FallbackReason::IcebergObjectStoreReadUnsupported,
             FallbackReason::IcebergSnapshotUnsupported,
-            FallbackReason::TableFormatGpuOnlyLeafNotRewritten,
         ]
         .into_iter()
         .find(|reason| reason.code() == code)

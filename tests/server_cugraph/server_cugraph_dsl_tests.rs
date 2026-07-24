@@ -15,8 +15,7 @@ use arrow::{
 };
 use arrow_flight::sql::client::FlightSqlServiceClient;
 use datafusion_nexus::server::{
-    NEXUS_SERVER_CUGRAPH_ENABLED_ENV, NEXUS_SERVER_SESSION_PROFILE_ENV, Result as ServerResult, ServerConfig,
-    serve_with_listener,
+    NEXUS_SERVER_CUGRAPH_ENABLED_ENV, Result as ServerResult, ServerConfig, serve_with_listener,
 };
 use futures::TryStreamExt;
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
@@ -148,10 +147,7 @@ async fn cugraph_dsl_nullable_parquet_edge_schema_validates_over_flight_sql() {
 async fn cugraph_bfs_path_uses_gpu_resident_join_side_inputs_over_flight_sql() {
     let _guard = server_test_lock().lock().await;
     let (listener, addr) = free_local_addr();
-    let env = BTreeMap::from([
-        (NEXUS_SERVER_CUGRAPH_ENABLED_ENV, "true".to_string()),
-        (NEXUS_SERVER_SESSION_PROFILE_ENV, "native".to_string()),
-    ]);
+    let env = BTreeMap::from([(NEXUS_SERVER_CUGRAPH_ENABLED_ENV, "true".to_string())]);
     let mut config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
     config.bind_addr = addr;
 

@@ -32,10 +32,11 @@ use nexus_query_engine::{
     plan::GraphAlgorithmSpec, plan::GraphBetweennessCentralityParams, plan::GraphBetweennessSeeds,
     plan::GraphBfsEndpointPolicy, plan::GraphBfsParams, plan::GraphBfsPredicateInputs, plan::GraphConstructionOptions,
     plan::GraphConstructionPolicy, plan::GraphEdgeBetweennessCentralityParams, plan::GraphEdgeColumnBindings,
-    plan::GraphEdgePredicateInput, plan::GraphPageRankParams, plan::GraphPredicateInput,
-    plan::GraphResidencyPlanAnalysis, plan::GraphTriangleCountAllParams,
-    plan::graph_residency_descriptor_for_edge_plan, plan::planned_resident_graph_key, plan::stable_graph_result_schema,
-    runtime::QueryAdmissionRequest, runtime::QueryGrantRequest, runtime::QueryPlacementHint,
+    plan::GraphEdgePredicateInput, plan::GraphPageRankParams, plan::GraphPageRankPersonalizationInput,
+    plan::GraphPersonalizedPageRankParams, plan::GraphPredicateInput, plan::GraphResidencyPlanAnalysis,
+    plan::GraphTriangleCountAllParams, plan::graph_residency_descriptor_for_edge_plan,
+    plan::planned_resident_graph_key, plan::stable_graph_result_schema, runtime::QueryAdmissionRequest,
+    runtime::QueryGrantRequest, runtime::QueryPlacementHint,
 };
 use nexus_query_engine::{
     chunk::{SourceChunkPlanningPolicy, plan_local_parquet_source_chunks},

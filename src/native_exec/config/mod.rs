@@ -360,6 +360,12 @@ impl NexusNativeExecutionConfig {
         self
     }
 
+    /// Cooperative cancellation observed while an adapter-owned host boundary
+    /// is staged before native context acquisition.
+    pub(crate) fn cancellation(&self) -> &ExecutionCancellation {
+        &self.cancellation
+    }
+
     /// Attaches the server-generation gate used by file-backed native I/O.
     pub fn with_io_lifecycle(mut self, lifecycle: IoLifecycle) -> Self {
         self.io_lifecycle = Some(lifecycle);

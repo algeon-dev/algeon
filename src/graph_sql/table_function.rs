@@ -16,9 +16,9 @@ use datafusion::{
 
 use super::{
     CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphBfsSource, CugraphBfsSourceVertex,
-    CugraphSqlConfig, CugraphTableReference, CugraphVertexIdDomain, bfs_result_schema_for_vertex_domain,
-    datafusion_table_reference, parse_cugraph_algorithm_spec, plan_error, validate_vertex_id_domain_support_for_call,
-    vertex_id_domain_for_call,
+    CugraphSqlConfig, CugraphTableReference, CugraphVertexIdDomain, GpuIslandHostBoundaryConfig,
+    bfs_result_schema_for_vertex_domain, datafusion_table_reference, parse_cugraph_algorithm_spec, plan_error,
+    validate_vertex_id_domain_support_for_call, vertex_id_domain_for_call,
 };
 use crate::{
     graph_sql::{CugraphAlgoExec, metadata::cugraph_metadata_table_functions},
@@ -31,11 +31,16 @@ use crate::{
 pub struct CugraphAlgoTableProvider {
     spec: CugraphAlgorithmSpec,
     native_execution_config: NexusNativeExecutionConfig,
+    host_boundary_config: GpuIslandHostBoundaryConfig,
 }
 
 impl CugraphAlgoTableProvider {
-    pub fn new(spec: CugraphAlgorithmSpec, native_execution_config: NexusNativeExecutionConfig) -> Self {
-        Self { spec, native_execution_config }
+    pub fn new(
+        spec: CugraphAlgorithmSpec,
+        native_execution_config: NexusNativeExecutionConfig,
+        host_boundary_config: GpuIslandHostBoundaryConfig,
+    ) -> Self {
+        Self { spec, native_execution_config, host_boundary_config }
     }
 
     pub fn spec(&self) -> &CugraphAlgorithmSpec {
@@ -85,13 +90,14 @@ impl TableProvider for CugraphAlgoTableProvider {
         let edge_source_plan = LogicalPlanBuilder::from(scan).project(edge_source_projection(&spec))?.build()?;
         let edge_source = planning_state.create_physical_plan(&edge_source_plan).await?;
         let predicate_sources = predicate_source_plans(&planning_state, session_state, &spec, &vertex_domain).await?;
-        Ok(Arc::new(CugraphAlgoExec::try_new(
+        Ok(Arc::new(CugraphAlgoExec::try_new_with_host_boundary_config(
             spec,
             edge_source,
             predicate_sources,
             projection.cloned(),
             limit,
             native_execution_config,
+            self.host_boundary_config,
         )?))
     }
 }
@@ -118,13 +124,21 @@ struct CugraphTableFunction {
 impl TableFunctionImpl for CugraphTableFunction {
     fn call(&self, args: &[Expr]) -> Result<Arc<dyn TableProvider>> {
         let spec = parse_cugraph_algorithm_spec(self.algorithm, args, &self.config)?;
-        Ok(Arc::new(CugraphAlgoTableProvider::new(spec, self.config.native_execution_config.clone())))
+        Ok(Arc::new(CugraphAlgoTableProvider::new(
+            spec,
+            self.config.native_execution_config.clone(),
+            self.config.host_boundary_config,
+        )))
     }
 
     fn call_with_args(&self, args: TableFunctionArgs) -> Result<Arc<dyn TableProvider>> {
         let mut spec = parse_cugraph_algorithm_spec(self.algorithm, args.exprs(), &self.config)?;
         maybe_resolve_bfs_relation_output_schema(&mut spec, args.session());
-        Ok(Arc::new(CugraphAlgoTableProvider::new(spec, self.config.native_execution_config.clone())))
+        Ok(Arc::new(CugraphAlgoTableProvider::new(
+            spec,
+            self.config.native_execution_config.clone(),
+            self.config.host_boundary_config,
+        )))
     }
 }
 
@@ -354,9 +368,6 @@ fn validate_edge_source_schema(spec: &CugraphAlgorithmSpec, schema: &SchemaRef) 
         let edge_id = schema.field_with_name(edge_id_col).map_err(|_| {
             plan_error(format!("cuGraph edge source '{}' is missing edge-id column '{edge_id_col}'", spec.table_name))
         })?;
-        if domain.is_string_logical() {
-            return Err(plan_error("cuGraph BFS logical string vertex-id mapping does not yet support edge_id_col"));
-        }
         if !domain.accepts(edge_id.data_type()) {
             return Err(plan_error(format!(
                 "cuGraph edge-id column '{edge_id_col}' must have dtype {}",
@@ -364,6 +375,7 @@ fn validate_edge_source_schema(spec: &CugraphAlgorithmSpec, schema: &SchemaRef) 
             )));
         }
     }
+    super::validate_bfs_logical_edge_id_capability(spec, domain.is_string_logical())?;
     Ok(domain)
 }
 

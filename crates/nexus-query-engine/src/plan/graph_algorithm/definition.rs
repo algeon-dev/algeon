@@ -294,6 +294,88 @@ pub enum GraphOutputSchemaKind {
     DefaultMode,
 }
 
+/// Engine-owned behavior when a graph operation receives no usable edges.
+///
+/// The executor applies this after null edge rows have been removed and before
+/// graph admission or cuGraph construction. This keeps empty-input semantics
+/// independent of libcugraph's incidental behavior and distinguishes a valid
+/// empty result from an operation that requires an actual graph or side input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct EmptyGraphInputPolicy {
+    /// Action for an empty edge list after input sanitization.
+    pub edge_input: EmptyGraphEdgeInputAction,
+    /// Contract for any relation-backed algorithm inputs.
+    pub side_inputs: EmptyGraphSideInputPolicy,
+}
+
+impl EmptyGraphInputPolicy {
+    const RETURN_EMPTY: Self =
+        Self { edge_input: EmptyGraphEdgeInputAction::ReturnEmpty, side_inputs: EmptyGraphSideInputPolicy::None };
+    const VALIDATE_SELECTORS_THEN_RETURN_EMPTY: Self = Self {
+        edge_input: EmptyGraphEdgeInputAction::ValidateSelectorsThenReturnEmpty,
+        side_inputs: EmptyGraphSideInputPolicy::None,
+    };
+    const REQUIRE_GRAPH: Self =
+        Self { edge_input: EmptyGraphEdgeInputAction::Reject, side_inputs: EmptyGraphSideInputPolicy::None };
+    const REQUIRE_GRAPH_AND_PERSONALIZATION: Self = Self {
+        edge_input: EmptyGraphEdgeInputAction::Reject,
+        side_inputs: EmptyGraphSideInputPolicy::RequirePersonalization,
+    };
+    const BFS: Self = Self {
+        edge_input: EmptyGraphEdgeInputAction::BfsEndpointPolicy,
+        side_inputs: EmptyGraphSideInputPolicy::BfsPredicates,
+    };
+}
+
+/// Action for a sanitized empty graph edge list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EmptyGraphEdgeInputAction {
+    /// The operation has a schema-correct zero-row result.
+    ReturnEmpty,
+    /// Validate explicit vertex selectors first, then return the zero-row
+    /// result only when no selector requires a vertex.
+    ValidateSelectorsThenReturnEmpty,
+    /// The operation cannot run without at least one graph edge/vertex.
+    Reject,
+    /// BFS delegates empty-edge behavior to its explicit endpoint policy.
+    BfsEndpointPolicy,
+}
+
+impl EmptyGraphEdgeInputAction {
+    /// Stable policy label for diagnostics and contract tests.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ReturnEmpty => "return_empty",
+            Self::ValidateSelectorsThenReturnEmpty => "validate_selectors_then_return_empty",
+            Self::Reject => "reject",
+            Self::BfsEndpointPolicy => "bfs_endpoint_policy",
+        }
+    }
+}
+
+/// Relation-backed input contract for an empty graph operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EmptyGraphSideInputPolicy {
+    /// The operation accepts no relation-backed side input.
+    None,
+    /// Personalized PageRank requires a non-empty personalization relation.
+    RequirePersonalization,
+    /// BFS has role-specific source and predicate semantics owned by its
+    /// traversal executor.
+    BfsPredicates,
+}
+
+impl EmptyGraphSideInputPolicy {
+    /// Stable policy label for diagnostics and contract tests.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::RequirePersonalization => "require_personalization",
+            Self::BfsPredicates => "bfs_predicates",
+        }
+    }
+}
+
 impl GraphOutputSchemaKind {
     /// Stable lowercase schema-kind code used by metadata projections.
     pub const fn as_str(self) -> &'static str {
@@ -324,6 +406,8 @@ pub struct GraphOperationDefinition {
     pub name: &'static str,
     /// cuGraph layout requirement for this operation.
     pub layout_requirement: GraphLayoutRequirement,
+    /// Engine-owned empty-edge and side-input behavior.
+    pub empty_input_policy: EmptyGraphInputPolicy,
 }
 
 impl GraphOperationDefinition {
@@ -375,6 +459,11 @@ impl GraphOperationDefinition {
             },
             _ => GraphVertexIdTypeSupport::Int32OrInt64,
         }
+    }
+
+    /// Engine-owned contract for empty graph inputs.
+    pub const fn empty_input_policy(&self) -> EmptyGraphInputPolicy {
+        self.empty_input_policy
     }
 
     /// Stable SQL-facing result schema for this algorithm.
@@ -485,116 +574,139 @@ pub const GRAPH_OPERATION_REGISTRY: &[GraphOperationDefinition] = &[
         algorithm: GraphAlgorithm::PageRank,
         name: "pagerank",
         layout_requirement: GraphLayoutRequirement::Transposed,
+        empty_input_policy: EmptyGraphInputPolicy::RETURN_EMPTY,
     },
     GraphOperationDefinition {
         algorithm: GraphAlgorithm::Bfs,
         name: "bfs",
         layout_requirement: GraphLayoutRequirement::Forward,
+        empty_input_policy: EmptyGraphInputPolicy::BFS,
     },
     GraphOperationDefinition {
         algorithm: GraphAlgorithm::Louvain,
         name: "louvain",
         layout_requirement: GraphLayoutRequirement::Forward,
+        empty_input_policy: EmptyGraphInputPolicy::RETURN_EMPTY,
     },
     GraphOperationDefinition {
         algorithm: GraphAlgorithm::EigenvectorCentrality,
         name: "eigenvector_centrality",
         layout_requirement: GraphLayoutRequirement::Transposed,
+        empty_input_policy: EmptyGraphInputPolicy::RETURN_EMPTY,
     },
     GraphOperationDefinition {
         algorithm: GraphAlgorithm::KatzCentrality,
         name: "katz_centrality",
         layout_requirement: GraphLayoutRequirement::Transposed,
+        empty_input_policy: EmptyGraphInputPolicy::RETURN_EMPTY,
     },
     GraphOperationDefinition {
         algorithm: GraphAlgorithm::Hits,
         name: "hits",
         layout_requirement: GraphLayoutRequirement::Transposed,
+        empty_input_policy: EmptyGraphInputPolicy::RETURN_EMPTY,
     },
     GraphOperationDefinition {
         algorithm: GraphAlgorithm::BetweennessCentrality,
         name: "betweenness_centrality",
         layout_requirement: GraphLayoutRequirement::Any,
+        empty_input_policy: EmptyGraphInputPolicy::VALIDATE_SELECTORS_THEN_RETURN_EMPTY,
     },
     GraphOperationDefinition {
         algorithm: GraphAlgorithm::EdgeBetweennessCentrality,
         name: "edge_betweenness_centrality",
         layout_requirement: GraphLayoutRequirement::Any,
+        empty_input_policy: EmptyGraphInputPolicy::VALIDATE_SELECTORS_THEN_RETURN_EMPTY,
     },
     GraphOperationDefinition {
         algorithm: GraphAlgorithm::Sssp,
         name: "sssp",
         layout_requirement: GraphLayoutRequirement::Forward,
+        empty_input_policy: EmptyGraphInputPolicy::REQUIRE_GRAPH,
     },
     GraphOperationDefinition {
         algorithm: GraphAlgorithm::DegreesAll,
         name: "degrees_all",
         layout_requirement: GraphLayoutRequirement::Transposed,
+        empty_input_policy: EmptyGraphInputPolicy::RETURN_EMPTY,
     },
     GraphOperationDefinition {
         algorithm: GraphAlgorithm::InDegreesAll,
         name: "in_degrees_all",
         layout_requirement: GraphLayoutRequirement::Transposed,
+        empty_input_policy: EmptyGraphInputPolicy::RETURN_EMPTY,
     },
     GraphOperationDefinition {
         algorithm: GraphAlgorithm::OutDegreesAll,
         name: "out_degrees_all",
         layout_requirement: GraphLayoutRequirement::Any,
+        empty_input_policy: EmptyGraphInputPolicy::RETURN_EMPTY,
     },
     GraphOperationDefinition {
         algorithm: GraphAlgorithm::WeaklyConnectedComponents,
         name: "weakly_connected_components",
         layout_requirement: GraphLayoutRequirement::Any,
+        empty_input_policy: EmptyGraphInputPolicy::RETURN_EMPTY,
     },
     GraphOperationDefinition {
         algorithm: GraphAlgorithm::StronglyConnectedComponents,
         name: "strongly_connected_components",
         layout_requirement: GraphLayoutRequirement::Any,
+        empty_input_policy: EmptyGraphInputPolicy::RETURN_EMPTY,
     },
     GraphOperationDefinition {
         algorithm: GraphAlgorithm::TriangleCountAll,
         name: "triangle_count_all",
         layout_requirement: GraphLayoutRequirement::Any,
+        empty_input_policy: EmptyGraphInputPolicy::RETURN_EMPTY,
     },
     GraphOperationDefinition {
         algorithm: GraphAlgorithm::CoreNumber,
         name: "core_number",
         layout_requirement: GraphLayoutRequirement::Any,
+        empty_input_policy: EmptyGraphInputPolicy::RETURN_EMPTY,
     },
     GraphOperationDefinition {
         algorithm: GraphAlgorithm::KCore,
         name: "k_core",
         layout_requirement: GraphLayoutRequirement::Any,
+        empty_input_policy: EmptyGraphInputPolicy::RETURN_EMPTY,
     },
     GraphOperationDefinition {
         algorithm: GraphAlgorithm::MinimumSpanningTree,
         name: "minimum_spanning_tree",
         layout_requirement: GraphLayoutRequirement::Any,
+        empty_input_policy: EmptyGraphInputPolicy::RETURN_EMPTY,
     },
     GraphOperationDefinition {
         algorithm: GraphAlgorithm::PersonalizedPageRank,
         name: "personalized_pagerank",
         layout_requirement: GraphLayoutRequirement::Transposed,
+        empty_input_policy: EmptyGraphInputPolicy::REQUIRE_GRAPH_AND_PERSONALIZATION,
     },
     GraphOperationDefinition {
         algorithm: GraphAlgorithm::Leiden,
         name: "leiden",
         layout_requirement: GraphLayoutRequirement::Forward,
+        empty_input_policy: EmptyGraphInputPolicy::RETURN_EMPTY,
     },
     GraphOperationDefinition {
         algorithm: GraphAlgorithm::Ecg,
         name: "ecg",
         layout_requirement: GraphLayoutRequirement::Forward,
+        empty_input_policy: EmptyGraphInputPolicy::RETURN_EMPTY,
     },
     GraphOperationDefinition {
         algorithm: GraphAlgorithm::SpectralModularityMaximization,
         name: "spectral_modularity_maximization",
         layout_requirement: GraphLayoutRequirement::Forward,
+        empty_input_policy: EmptyGraphInputPolicy::REQUIRE_GRAPH,
     },
     GraphOperationDefinition {
         algorithm: GraphAlgorithm::ForceAtlas2,
         name: "force_atlas2",
         layout_requirement: GraphLayoutRequirement::Any,
+        empty_input_policy: EmptyGraphInputPolicy::RETURN_EMPTY,
     },
 ];
 

@@ -17,8 +17,7 @@ pub(super) async fn native_datafusion_sql_plan(
     sql: &str,
     native_config: NexusNativeExecutionConfig,
 ) -> Arc<dyn ExecutionPlan> {
-    let config =
-        NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred).with_native_execution_config(native_config);
+    let config = NexusNativeOptimizerConfig::default().with_native_execution_config(native_config);
     let state = SessionStateBuilder::new_with_default_features().with_nexus_native(config).build();
     let ctx = SessionContext::new_with_state(state);
     ctx.register_parquet("bench", path.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
@@ -31,8 +30,7 @@ pub(super) async fn native_datafusion_lineitem_sql_plan(
     sql: &str,
     native_config: NexusNativeExecutionConfig,
 ) -> Arc<dyn ExecutionPlan> {
-    let config =
-        NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred).with_native_execution_config(native_config);
+    let config = NexusNativeOptimizerConfig::default().with_native_execution_config(native_config);
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(tpch_report_session_config())
         .with_nexus_native(config)
@@ -48,8 +46,7 @@ pub(super) async fn native_datafusion_tpch_sql_plan(
     sql: &str,
     native_config: NexusNativeExecutionConfig,
 ) -> Arc<dyn ExecutionPlan> {
-    let config =
-        NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred).with_native_execution_config(native_config);
+    let config = NexusNativeOptimizerConfig::default().with_native_execution_config(native_config);
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(tpch_report_session_config())
         .with_nexus_native(config)

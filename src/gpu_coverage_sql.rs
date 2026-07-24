@@ -90,8 +90,6 @@ fn coverage_schema() -> SchemaRef {
         Field::new("datafusion_cpu_ingest_or_boundary", DataType::Utf8, false),
         Field::new("host_output_materialization", DataType::Utf8, false),
         Field::new("confidence", DataType::Utf8, false),
-        Field::new("actual_policy", DataType::Utf8, false),
-        Field::new("diagnostic_policy", DataType::Utf8, false),
         Field::new("planning_did_io", DataType::Boolean, false),
         Field::new("fallback_reason_count", DataType::Int64, false),
         Field::new("runtime_caveat_count", DataType::Int64, false),
@@ -109,8 +107,6 @@ fn coverage_batch(coverage: &QueryGpuCoverage) -> Result<RecordBatch> {
             strings(vec![coverage.domains.datafusion_cpu_ingest_or_boundary.as_str().to_string()]),
             strings(vec![coverage.domains.host_output_materialization.as_str().to_string()]),
             strings(vec![coverage.confidence.as_str().to_string()]),
-            strings(vec![coverage.validated_under.actual_policy.clone()]),
-            strings(vec![coverage.validated_under.diagnostic_policy.clone()]),
             bools(vec![coverage.planning_did_io]),
             int64s(vec![usize_to_i64(coverage.fallback_reasons.len(), "fallback_reason_count")?]),
             int64s(vec![usize_to_i64(coverage.runtime_caveats.len(), "runtime_caveat_count")?]),
@@ -167,13 +163,12 @@ mod tests {
 
     use super::*;
     use crate::{
-        native_exec::NexusNativeExecutionConfig, planner::NexusNativeOptimizerConfig, policy::GpuFallbackPolicy,
+        native_exec::NexusNativeExecutionConfig, planner::NexusNativeOptimizerConfig,
         session::NexusSessionStateBuilderExt,
     };
 
     fn test_optimizer_config() -> NexusNativeOptimizerConfig {
-        NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
-            .with_native_execution_config(NexusNativeExecutionConfig::unbounded())
+        NexusNativeOptimizerConfig::default().with_native_execution_config(NexusNativeExecutionConfig::unbounded())
     }
 
     fn string_value(batch: &RecordBatch, column: usize, row: usize) -> &str {
@@ -208,6 +203,8 @@ mod tests {
         let json: serde_json::Value = serde_json::from_str(string_value(batch, 2, 0)).unwrap();
         assert_eq!(json["overall"]["verdict"], string_value(batch, 0, 0));
         assert_eq!(json["domains"]["nexus_native_coverage"], string_value(batch, 1, 0));
+        assert_eq!(json["validated_under"]["native_optimizer_rule_installed"], true);
+        assert_eq!(json["validated_under"]["final_plan_requirements"], serde_json::json!([]));
     }
 
     #[tokio::test]

@@ -32,7 +32,6 @@ use datafusion_nexus::{
         CUGRAPH_OPERATION_REGISTRY, CugraphAlgorithm, CugraphSqlConfig,
         parity::{CUGRAPH_PARITY_SPECS, OracleLookup, ParityTruthSource, data_root, load_ref_csv_vertex_list},
     },
-    policy::GpuFallbackPolicy,
 };
 use nexus_query_engine::runtime::SlotGuarantee;
 use serde_json::{Map, Value};
@@ -274,7 +273,6 @@ fn parity_session_state() -> datafusion::execution::SessionState {
         .with_repartition_aggregations(false)
         .with_repartition_sorts(false);
     let backend = NexusGpuBackend::builder()
-        .fallback_policy(GpuFallbackPolicy::GpuPreferred)
         .admission(NexusAdmissionPolicy::default().with_slot_guarantee(SlotGuarantee::Optimistic))
         .build()
         .expect("parity backend must build");

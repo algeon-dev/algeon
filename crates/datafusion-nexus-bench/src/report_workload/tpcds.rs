@@ -14,7 +14,6 @@ use datafusion_nexus::{
         NativeDataFusionPlanningWorkloadItem, NativeDataFusionRuntime, NativeFallbackPressureWorkloadItem,
     },
     planner::{NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule},
-    policy::GpuFallbackPolicy,
     session::NexusSessionStateBuilderExt,
     source_cardinality::register_source_unique_keys_for_path,
 };
@@ -308,7 +307,7 @@ fn tpcds_native_optimizer_config_with_statistical_aggregate_default_and_profile(
     // preference. Leave the env constants above in place so the old benchmark
     // gate can be restored once graph SQL has an explicit GPU-only boundary.
     let preference_options = nexus_query_engine::plan::NativePlanPreferenceOptions::disabled();
-    NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
+    NexusNativeOptimizerConfig::default()
         .with_native_execution_config(
             NexusNativeExecutionConfig::bounded(
                 profile.device_budget_bytes,

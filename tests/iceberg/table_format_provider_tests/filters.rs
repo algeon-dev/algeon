@@ -2,7 +2,7 @@
 async fn iceberg_provider_accepts_inexact_filter_without_losing_filter_columns() {
     let schema = iceberg_test_schema();
     let planner = Arc::new(RecordingPlanner::new(native_admissible_scan_plan(Arc::clone(&schema))));
-    let provider = Arc::new(NexusIcebergTableProvider::from_table_format_planner(Arc::clone(&schema), planner.clone()));
+    let provider = Arc::new(test_iceberg_provider(Arc::clone(&schema), planner.clone()));
     let ctx = SessionContext::new_with_config(direct_friendly_session_config());
     ctx.register_table("iceberg_t", provider).unwrap();
 
@@ -36,7 +36,7 @@ async fn iceberg_provider_accepts_inexact_filter_without_losing_filter_columns()
 async fn iceberg_provider_keeps_filter_native_when_position_deletes_are_present() {
     let schema = iceberg_test_schema();
     let planner = Arc::new(RecordingPlanner::new(position_delete_projection_scan_plan(Arc::clone(&schema))));
-    let provider = Arc::new(NexusIcebergTableProvider::from_table_format_planner(Arc::clone(&schema), planner.clone()));
+    let provider = Arc::new(test_iceberg_provider(Arc::clone(&schema), planner.clone()));
     let ctx = SessionContext::new_with_config(direct_friendly_session_config());
     ctx.register_table("iceberg_t", provider).unwrap();
 
@@ -59,7 +59,7 @@ async fn iceberg_provider_keeps_filter_native_when_position_deletes_are_present(
 async fn iceberg_provider_pushes_supported_filter_conjuncts_and_keeps_native_filter_for_residual() {
     let schema = iceberg_test_schema();
     let planner = Arc::new(RecordingPlanner::new(native_admissible_scan_plan(Arc::clone(&schema))));
-    let provider = Arc::new(NexusIcebergTableProvider::from_table_format_planner(Arc::clone(&schema), planner.clone()));
+    let provider = Arc::new(test_iceberg_provider(Arc::clone(&schema), planner.clone()));
     let ctx = SessionContext::new_with_config(direct_friendly_session_config());
     ctx.register_table("iceberg_t", provider).unwrap();
 
@@ -122,7 +122,7 @@ async fn iceberg_provider_keeps_native_filter_for_temporal_table_format_predicat
             TableFormatColumnRole::Projected,
         ));
     let planner = Arc::new(RecordingPlanner::new(plan));
-    let provider = Arc::new(NexusIcebergTableProvider::from_table_format_planner(Arc::clone(&schema), planner.clone()));
+    let provider = Arc::new(test_iceberg_provider(Arc::clone(&schema), planner.clone()));
     let ctx = SessionContext::new_with_config(direct_friendly_session_config());
     ctx.register_table("iceberg_t", provider).unwrap();
 
@@ -155,7 +155,7 @@ fn native_lowering_rejects_iceberg_missing_predicate_column_above_hash_join() {
         Field::new("profile_id", DataType::Int64, false)
             .with_metadata(HashMap::from([(PARQUET_FIELD_ID_META_KEY.to_string(), "1".to_string())])),
     ]));
-    let edge_scan: Arc<dyn ExecutionPlan> = Arc::new(NexusTableFormatScanExec::new(
+    let edge_scan: Arc<dyn ExecutionPlan> = Arc::new(test_iceberg_scan_exec(
         native_admissible_scan_plan_for_schema(
             Arc::clone(&edge_schema),
             "edges-data-0001",
@@ -202,7 +202,7 @@ fn native_lowering_rejects_iceberg_missing_predicate_column_above_hash_join() {
             TableFormatColumnRole::Projected,
         ));
     let profile_scan: Arc<dyn ExecutionPlan> =
-        Arc::new(NexusTableFormatScanExec::new(profile_plan, Arc::clone(&profile_schema)));
+        Arc::new(test_iceberg_scan_exec(profile_plan, Arc::clone(&profile_schema)));
     let edge_profile_id = col("profile_id", &edge_schema).unwrap();
     let profile_profile_id = col("profile_id", &profile_schema).unwrap();
     let join: Arc<dyn ExecutionPlan> = Arc::new(
@@ -255,7 +255,7 @@ fn native_lowering_accepts_iceberg_same_name_signed_widened_predicate_column_abo
             .with_metadata(HashMap::from([(PARQUET_FIELD_ID_META_KEY.to_string(), "1".to_string())])),
         Field::new("age", DataType::Int16, true),
     ]));
-    let edge_scan: Arc<dyn ExecutionPlan> = Arc::new(NexusTableFormatScanExec::new(
+    let edge_scan: Arc<dyn ExecutionPlan> = Arc::new(test_iceberg_scan_exec(
         native_admissible_scan_plan_for_schema(
             Arc::clone(&edge_schema),
             "edges-data-0001",
@@ -302,7 +302,7 @@ fn native_lowering_accepts_iceberg_same_name_signed_widened_predicate_column_abo
             TableFormatColumnRole::Projected,
         ));
     let profile_scan: Arc<dyn ExecutionPlan> =
-        Arc::new(NexusTableFormatScanExec::new(profile_plan, Arc::clone(&profile_schema)));
+        Arc::new(test_iceberg_scan_exec(profile_plan, Arc::clone(&profile_schema)));
     let edge_profile_id = col("profile_id", &edge_schema).unwrap();
     let profile_profile_id = col("profile_id", &profile_schema).unwrap();
     let join: Arc<dyn ExecutionPlan> = Arc::new(

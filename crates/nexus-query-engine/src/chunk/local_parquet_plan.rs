@@ -6,7 +6,7 @@ use super::{
     SourceChunkPlan, SourceChunkPlanningPolicy, SourceMetadataCache,
     assembly::{
         append_row_group_chunks, exact_source_read_preflight_bytes, planned_row_groups, single_all_row_groups_chunk,
-        source_file_has_row_count_metadata,
+        source_file_has_row_count_metadata, zero_column_count_identity_chunk,
     },
     metadata::{SourceMetadataLoadContext, read_parquet_metadata},
     scan_limit::apply_source_scan_limit_to_chunks,
@@ -136,6 +136,18 @@ fn plan_local_parquet_source_chunks_with_metadata_cache_and_context(
     }
 
     chunks = apply_source_scan_limit_to_chunks(source, chunks)?;
+
+    if source.is_zero_column_count_source() && chunks.is_empty() {
+        let (file_index, file) = source.files.iter().enumerate().next().ok_or_else(|| {
+            QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "nexus_query_engine.source_chunk.plan",
+                "represented zero-column count source requires at least one file",
+            )
+            .with_fact("reason", "empty_files")
+        })?;
+        chunks.push(zero_column_count_identity_chunk(source_node_id, source, file, file_index, 0, policy, &[], false));
+    }
 
     if source.is_zero_column_count_source()
         && let Some(chunk) = chunks.iter().find(|chunk| chunk.known_row_count.is_none())

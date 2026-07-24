@@ -643,6 +643,7 @@ fn code_for_native_error(error: &nexus_query_engine::error::QueryError) -> Error
         nexus_query_engine::error::QueryErrorCode::UnsupportedExpression => ErrorCode::UnsupportedExpression,
         nexus_query_engine::error::QueryErrorCode::UnsupportedType => ErrorCode::UnsupportedType,
         nexus_query_engine::error::QueryErrorCode::InvalidPlan => ErrorCode::InvalidExecutionPlan,
+        nexus_query_engine::error::QueryErrorCode::GraphInputInvalid => ErrorCode::GraphInputInvalid,
         nexus_query_engine::error::QueryErrorCode::CudfInvalidInput => ErrorCode::CudfInvalidInput,
         nexus_query_engine::error::QueryErrorCode::CudfUnsupported => ErrorCode::CudfUnsupported,
         nexus_query_engine::error::QueryErrorCode::CudfResourceExhausted => ErrorCode::CudfResourceExhausted,

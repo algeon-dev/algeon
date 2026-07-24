@@ -12,6 +12,8 @@ mod centrality;
 mod community;
 #[path = "diagnostics.rs"]
 pub(in crate::exec) mod diagnostics;
+#[path = "empty_input.rs"]
+mod empty_input;
 #[path = "layout.rs"]
 mod layout;
 #[path = "memory.rs"]
@@ -41,6 +43,7 @@ use build::*;
 use centrality::*;
 use community::*;
 use diagnostics::*;
+use empty_input::*;
 use layout::*;
 use memory::*;
 use params::*;
@@ -80,6 +83,18 @@ pub(in crate::exec) fn execute_graph_algorithm_cache_hit(
     )
 }
 
+pub(in crate::exec) fn graph_empty_input_prevalidated(
+    context: &ExecutionContext,
+    node: &crate::plan::GraphAlgorithmNode,
+    sanitized_edges: &DataFrame,
+    side_inputs: &BTreeMap<NodeId, GpuDataFrame>,
+    input_rows: u64,
+    sanitized_input_rows: u64,
+) -> Result<bool> {
+    resolve_empty_graph_input(context, node, sanitized_edges, side_inputs, input_rows, sanitized_input_rows)
+        .map(|result| result.is_some())
+}
+
 fn execute_graph_algorithm_with_cache_requirement(
     context: &ExecutionContext,
     node_id: NodeId,
@@ -110,8 +125,13 @@ fn execute_graph_algorithm_with_cache_requirement(
     let null_edge_rows_dropped =
         prior_null_edge_rows_dropped.saturating_add(input_rows.saturating_sub(sanitized_input_rows));
     validate_betweenness_static_seed_policy(&node.spec)?;
-    let graph_memory_limit_bytes =
-        admit_graph_memory(context, node_id, &node.spec, &filtered_input, sanitized_input_rows, metrics)?;
+    let empty_input_prevalidated =
+        graph_empty_input_prevalidated(context, node, &filtered_input, &side_inputs, input_rows, sanitized_input_rows)?;
+    let graph_memory_limit_bytes = if empty_input_prevalidated {
+        None
+    } else {
+        admit_graph_memory(context, node_id, &node.spec, &filtered_input, sanitized_input_rows, metrics)?
+    };
     let runtime_spec = runtime_graph_spec_resolution_after_bounded_seed_validation(&node.spec, false);
     let mut sanitized_input = GpuDataFrame::try_new_with_source_residency(filtered_input, &input)?;
     if null_edge_rows_dropped == 0
@@ -131,6 +151,7 @@ fn execute_graph_algorithm_with_cache_requirement(
         input_columns,
         null_edge_rows_dropped,
         preparation_pin_id,
+        empty_input_prevalidated,
         metrics,
     )
 }
@@ -147,54 +168,65 @@ pub(in crate::exec) fn execute_graph_algorithm_sanitized(
     input_columns: u64,
     null_edge_rows_dropped: u64,
     preparation_pin_id: Option<u64>,
+    empty_input_prevalidated: bool,
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
     let boundary_before = metrics.boundary.clone();
     let graph_budget_event_start = metrics.budgeted_execution_events.len();
     let pool_usage_before = graph_pool_usage_snapshot(context);
     let timer = Instant::now();
-    let runtime_spec = match runtime_spec {
-        RuntimeGraphSpecResolution::Unresolved => resolve_runtime_graph_spec_for_execution(
-            context,
-            input.frame(),
-            &node.spec,
-            graph_memory_limit_bytes,
-            metrics,
-        )?,
-        runtime_spec => runtime_spec,
-    };
-    let spec = runtime_spec.spec_or(&node.spec);
-    let executor = graph_algorithm_executor(spec.algorithm)?;
-    let adaptive_retry_inputs = graph_adaptive_retry_seed_batches(spec).map(|batches| {
-        (
-            GraphAlgorithmExecutionInputs {
-                edge_list: input.clone(),
-                side_inputs: side_inputs.clone(),
+    let result = if empty_input_prevalidated {
+        resolve_empty_graph_input(context, node, input.frame(), &side_inputs, input_rows, input.num_rows() as u64)?
+            .expect("prevalidated empty graph input must resolve to an empty result")
+    } else {
+        let runtime_spec = match runtime_spec {
+            RuntimeGraphSpecResolution::Unresolved => resolve_runtime_graph_spec_for_execution(
+                context,
+                input.frame(),
+                &node.spec,
                 graph_memory_limit_bytes,
-                preparation_pin_id,
+                metrics,
+            )?,
+            runtime_spec => runtime_spec,
+        };
+        let spec = runtime_spec.spec_or(&node.spec);
+        let executor = graph_algorithm_executor(spec.algorithm)?;
+        let adaptive_retry_inputs = graph_adaptive_retry_seed_batches(spec).map(|batches| {
+            (
+                GraphAlgorithmExecutionInputs {
+                    edge_list: input.clone(),
+                    side_inputs: side_inputs.clone(),
+                    graph_memory_limit_bytes,
+                    preparation_pin_id,
+                },
+                batches,
+            )
+        });
+        let inputs = GraphAlgorithmExecutionInputs {
+            edge_list: input,
+            side_inputs,
+            graph_memory_limit_bytes,
+            preparation_pin_id,
+        };
+        match execute_graph_algorithm_attempt(context, spec, inputs, executor) {
+            Ok(result) => result,
+            Err(error) if should_retry_graph_resource_exhausted(context, &error, adaptive_retry_inputs.as_ref()) => {
+                let Some((retry_inputs, seed_batches)) = adaptive_retry_inputs else {
+                    return Err(error);
+                };
+                record_graph_adaptive_memory_history_from_error(context, &node.spec, &error);
+                record_graph_budget_observation_from_error(metrics, &error);
+                metrics.record_adaptive_runtime_action_counts(1, 0, 0);
+                let retry_result =
+                    execute_chunked_betweenness_retry(context, spec, retry_inputs, seed_batches, executor);
+                if let Err(retry_error) = &retry_result {
+                    record_graph_adaptive_memory_history_from_error(context, &node.spec, retry_error);
+                    record_graph_budget_observation_from_error(metrics, retry_error);
+                }
+                retry_result?
             },
-            batches,
-        )
-    });
-    let inputs =
-        GraphAlgorithmExecutionInputs { edge_list: input, side_inputs, graph_memory_limit_bytes, preparation_pin_id };
-    let result = match execute_graph_algorithm_attempt(context, spec, inputs, executor) {
-        Ok(result) => result,
-        Err(error) if should_retry_graph_resource_exhausted(context, &error, adaptive_retry_inputs.as_ref()) => {
-            let Some((retry_inputs, seed_batches)) = adaptive_retry_inputs else {
-                return Err(error);
-            };
-            record_graph_adaptive_memory_history_from_error(context, &node.spec, &error);
-            record_graph_budget_observation_from_error(metrics, &error);
-            metrics.record_adaptive_runtime_action_counts(1, 0, 0);
-            let retry_result = execute_chunked_betweenness_retry(context, spec, retry_inputs, seed_batches, executor);
-            if let Err(retry_error) = &retry_result {
-                record_graph_adaptive_memory_history_from_error(context, &node.spec, retry_error);
-                record_graph_budget_observation_from_error(metrics, retry_error);
-            }
-            retry_result?
-        },
-        Err(error) => return Err(error),
+            Err(error) => return Err(error),
+        }
     };
     let pool_usage_after = graph_pool_usage_snapshot(context);
     let elapsed = timer.elapsed();

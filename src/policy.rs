@@ -1,4 +1,4 @@
-//! CPU/GPU fallback policy and stable fallback-reason codes.
+//! CPU/GPU candidate-outcome reason codes.
 //!
 //! `FallbackReason::code()` produces the snake-case strings that planning,
 //! execution, and fallback-pressure reports emit verbatim. Changing a code is
@@ -6,18 +6,6 @@
 //! version.
 
 use nexus_query_engine::triage::TriageCode;
-
-/// Policy controlling whether DataFusion may fall back to CPU execution.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub enum GpuFallbackPolicy {
-    /// Require native GPU execution; rejected candidates become errors.
-    GpuOnly,
-    /// Prefer native GPU execution but allow CPU DataFusion fallback.
-    #[default]
-    GpuPreferred,
-    /// Skip native GPU execution and use CPU DataFusion.
-    CpuOnly,
-}
 
 /// Stable reason codes explaining why a candidate physical plan stayed on CPU
 /// or was rejected by the native GPU path.
@@ -33,8 +21,6 @@ pub enum FallbackReason {
     UnsupportedExpression,
     /// Data type or physical representation is not supported.
     UnsupportedType,
-    /// Caller selected an explicit CPU-only policy.
-    ExplicitCpuPolicy,
     /// DataFusion produced a sort-preserving merge shape that the native
     /// planner does not lower as an execution boundary yet.
     NativeSortPreservingMergeUnsupported,
@@ -132,9 +118,6 @@ pub enum FallbackReason {
     /// branch/tag refs are not modeled in scan requests). Kept because reason
     /// codes are a stable report contract.
     IcebergSnapshotUnsupported,
-    /// A GPU-only table-format scan leaf survived native optimization, so the
-    /// remaining plan cannot fall back to DataFusion CPU execution.
-    TableFormatGpuOnlyLeafNotRewritten,
 }
 
 impl FallbackReason {
@@ -144,7 +127,6 @@ impl FallbackReason {
             Self::UnsupportedOperator => "unsupported_operator",
             Self::UnsupportedExpression => "unsupported_expression",
             Self::UnsupportedType => "unsupported_type",
-            Self::ExplicitCpuPolicy => "explicit_cpu_policy",
             Self::NativeSortPreservingMergeUnsupported => "native_sort_preserving_merge_unsupported",
             Self::NativeDistributedAggregateUnsupported => "native_distributed_aggregate_unsupported",
             Self::NativePartitionPreservingSortUnsupported => "native_partition_preserving_sort_unsupported",
@@ -180,7 +162,6 @@ impl FallbackReason {
             Self::IcebergRowSelectionUnsupported => "iceberg_row_selection_unsupported",
             Self::IcebergObjectStoreReadUnsupported => "iceberg_object_store_read_unsupported",
             Self::IcebergSnapshotUnsupported => "iceberg_snapshot_unsupported",
-            Self::TableFormatGpuOnlyLeafNotRewritten => "table_format_gpu_only_leaf_not_rewritten",
         }
     }
 
@@ -190,7 +171,6 @@ impl FallbackReason {
             Self::UnsupportedOperator => TriageCode::UnsupportedOperator,
             Self::UnsupportedExpression => TriageCode::UnsupportedExpression,
             Self::UnsupportedType => TriageCode::UnsupportedType,
-            Self::ExplicitCpuPolicy => TriageCode::ExplicitCpuPolicy,
             Self::NativeSmallSelectiveTopkCpuPreferred
             | Self::NativeSmallSelectiveResidualJoinCpuPreferred
             | Self::NativeSmallSelectiveFullSortCpuPreferred => TriageCode::CpuPreferred,
@@ -225,8 +205,7 @@ impl FallbackReason {
             Self::NativeSortPreservingMergeUnsupported
             | Self::NativeDistributedAggregateUnsupported
             | Self::NativePartitionPreservingSortUnsupported
-            | Self::NativeOrderedOutputUnsupported
-            | Self::TableFormatGpuOnlyLeafNotRewritten => TriageCode::UnsupportedPlanShape,
+            | Self::NativeOrderedOutputUnsupported => TriageCode::UnsupportedPlanShape,
         }
     }
 

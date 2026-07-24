@@ -117,7 +117,7 @@ fn native_optimizer_rule_adaptive_mode_rewrites_join_with_adaptive_diagnostics()
     let config = NexusNativeExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 2, 3, 1)
         .with_native_pipeline_execution_mode(NativePipelineExecutionMode::Adaptive);
     let rule = NexusNativePhysicalOptimizerRule::new(
-        NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred).with_native_execution_config(config),
+        NexusNativeOptimizerConfig::default().with_native_execution_config(config),
     );
 
     let optimized = rule.optimize(plan, &ConfigOptions::default()).unwrap();

@@ -165,28 +165,54 @@ pub enum TableFormatLiteral {
 
 /// Adapter-owned table-format metadata planning boundary.
 ///
-/// Implementations resolve metadata into scan facts and diagnostics; they do
-/// not execute data reads. Diagnostics must not contain credentials or signed
-/// URLs, and unsupported features should map to stable fallback reasons.
+/// Source resolution and optional native inspection are deliberately separate.
+/// Resolution selects immutable table-format metadata and produces the scan
+/// facts shared by both execution capabilities; its failures are terminal.
+/// Native inspection may enrich those facts with acceleration-only source and
+/// footer evidence; its failures may leave an already-built CPU delegate
+/// executable. Neither phase executes table data. Diagnostics must not contain
+/// credentials or signed URLs, and unsupported features should map to stable
+/// fallback reasons.
 pub trait TableFormatPlanner {
-    /// Resolves metadata into scan facts without reading table data.
-    fn plan_scan(&self, request: TableFormatScanRequest) -> BoxFuture<'_, Result<TableFormatScanPlan>>;
+    /// Resolves immutable source metadata into scan facts without reading table data.
+    fn resolve_scan(&self, request: TableFormatScanRequest) -> BoxFuture<'_, Result<TableFormatScanPlan>>;
 
-    /// Resolves metadata with a caller-owned wall-clock deadline.
+    /// Resolves immutable source metadata with a caller-owned wall-clock deadline.
     ///
     /// The default implementation preserves existing planner behavior. Format
     /// planners with long synchronous or ready-loop sections should override
     /// this method and check the deadline at natural cancellation points.
-    fn plan_scan_with_deadline(
+    fn resolve_scan_with_deadline(
         &self,
         request: TableFormatScanRequest,
         _deadline: TableFormatPlanningDeadline,
     ) -> BoxFuture<'_, Result<TableFormatScanPlan>> {
-        self.plan_scan(request)
+        self.resolve_scan(request)
     }
 
-    /// Credential-free metadata facts to attach when planning fails before a
-    /// [`TableFormatScanPlan`] can be produced.
+    /// Enriches resolved scan facts with optional native-only inspection evidence.
+    ///
+    /// The default is the identity transformation for planners whose resolved
+    /// facts need no additional native probes.
+    fn inspect_native_scan(
+        &self,
+        _request: TableFormatScanRequest,
+        resolved_scan: TableFormatScanPlan,
+    ) -> BoxFuture<'_, Result<TableFormatScanPlan>> {
+        Box::pin(async move { Ok(resolved_scan) })
+    }
+
+    /// Performs optional native inspection with a caller-owned wall-clock deadline.
+    fn inspect_native_scan_with_deadline(
+        &self,
+        request: TableFormatScanRequest,
+        resolved_scan: TableFormatScanPlan,
+        _deadline: TableFormatPlanningDeadline,
+    ) -> BoxFuture<'_, Result<TableFormatScanPlan>> {
+        self.inspect_native_scan(request, resolved_scan)
+    }
+
+    /// Credential-free metadata facts to attach when either planning phase fails.
     fn planning_failure_facts(&self) -> Vec<(&'static str, String)> {
         Vec::new()
     }

@@ -28,7 +28,6 @@ use crate::{
     backend::{MemoryShare, NexusAdmissionPolicy},
     native_exec::NexusNativeExecutionConfig,
     planner::NexusNativeOptimizerConfig,
-    policy::GpuFallbackPolicy,
 };
 #[cfg(feature = "cugraph")]
 use crate::{graph_sql::CugraphGraphConstructionPolicy, graph_sql::CugraphGraphOptions};
@@ -77,8 +76,8 @@ pub use cugraph::{
 };
 use env::{DEFAULT_BIND_ADDR, DEFAULT_LOG_FILTER, DEFAULT_STATEMENT_TICKET_TTL_SECS, EnvValues};
 pub use env::{
-    NEXUS_SERVER_BIND_ENV, NEXUS_SERVER_CONFIG_FILE_ENV, NEXUS_SERVER_LOG_ENV, NEXUS_SERVER_SESSION_PROFILE_ENV,
-    NEXUS_SERVER_STATEMENT_TICKET_TTL_SECS_ENV, ServerSessionProfile,
+    NEXUS_SERVER_BIND_ENV, NEXUS_SERVER_CONFIG_FILE_ENV, NEXUS_SERVER_LOG_ENV,
+    NEXUS_SERVER_STATEMENT_TICKET_TTL_SECS_ENV,
 };
 use file::{ServerFileOverlay, load_overlay};
 #[cfg(not(feature = "iceberg"))]
@@ -142,10 +141,6 @@ pub struct ServerConfig {
     /// Bounded native runtime-artifact capture and sealed retention policy.
     pub observability: ServerObservabilityConfig,
     pub native_optimizer_config: NexusNativeOptimizerConfig,
-    /// DataFusion physical-plan profile applied to the Flight SQL session.
-    /// See [`NEXUS_SERVER_SESSION_PROFILE_ENV`] and
-    /// [`ServerSessionProfile`].
-    pub session_profile: ServerSessionProfile,
     /// Authentication mode applied to incoming Flight SQL RPCs. Loaded
     /// from the TOML overlay pointed to by
     /// [`NEXUS_SERVER_CONFIG_FILE_ENV`]; defaults to
@@ -240,14 +235,6 @@ impl ServerConfig {
 
         let workspace = workspace_overlay_config(&mut values)?;
 
-        let explicit_profile = values.optional_session_profile(NEXUS_SERVER_SESSION_PROFILE_ENV)?;
-        #[cfg(feature = "iceberg")]
-        let default_profile =
-            if iceberg.is_some() { ServerSessionProfile::Native } else { ServerSessionProfile::CpuFallback };
-        #[cfg(not(feature = "iceberg"))]
-        let default_profile = ServerSessionProfile::CpuFallback;
-        let session_profile = explicit_profile.unwrap_or(default_profile);
-
         overlay.auth.mode.validate()?;
         if matches!(
             native_optimizer_config.native_execution_config().memory_control_policy(),
@@ -284,7 +271,6 @@ impl ServerConfig {
             statement_ticket_ttl,
             observability,
             native_optimizer_config,
-            session_profile,
             auth: overlay.auth,
             workspace,
             #[cfg(feature = "iceberg")]

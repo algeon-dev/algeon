@@ -21,29 +21,29 @@ pub struct IcebergNativeSmokeConfig {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SmokeQueryExecutionMode {
-    NativeAndCpu,
+    NativeAndCpuBaseline,
     NativeOnly,
-    CpuOnly,
+    CpuBaselineOnly,
 }
 
 impl SmokeQueryExecutionMode {
     pub(crate) fn from_env_value(value: &str) -> SmokeResult<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
-            "native_and_cpu" | "native+cpu" | "all" => Ok(Self::NativeAndCpu),
+            "native_and_cpu_baseline" => Ok(Self::NativeAndCpuBaseline),
             "native_only" | "native" => Ok(Self::NativeOnly),
-            "cpu_only" | "cpu" => Ok(Self::CpuOnly),
+            "cpu_baseline" => Ok(Self::CpuBaselineOnly),
             other => Err(smoke_error(format!(
-                "unsupported {SMOKE_EXECUTION_MODE_ENV}={other}; expected native_and_cpu, native_only, or cpu_only"
+                "unsupported {SMOKE_EXECUTION_MODE_ENV}={other}; expected native_and_cpu_baseline, native_only, or cpu_baseline"
             ))),
         }
     }
 
     pub(crate) const fn runs_native(self) -> bool {
-        matches!(self, Self::NativeAndCpu | Self::NativeOnly)
+        matches!(self, Self::NativeAndCpuBaseline | Self::NativeOnly)
     }
 
     pub(crate) const fn runs_cpu_baseline(self) -> bool {
-        matches!(self, Self::NativeAndCpu | Self::CpuOnly)
+        matches!(self, Self::NativeAndCpuBaseline | Self::CpuBaselineOnly)
     }
 }
 
@@ -250,7 +250,7 @@ impl IcebergNativeSmokeConfig {
             .filter(|value| !value.trim().is_empty())
             .map(|value| SmokeQueryExecutionMode::from_env_value(&value))
             .transpose()?
-            .unwrap_or(SmokeQueryExecutionMode::NativeAndCpu);
+            .unwrap_or(SmokeQueryExecutionMode::NativeAndCpuBaseline);
         let stream_tsv_rows = parse_optional_bool(get(STREAM_TSV_ENV), STREAM_TSV_ENV)?;
         let continue_on_query_error =
             parse_optional_bool(get(CONTINUE_ON_QUERY_ERROR_ENV), CONTINUE_ON_QUERY_ERROR_ENV)?;
@@ -651,17 +651,20 @@ pub(crate) async fn native_session_context(
     source_storage_profile: Option<nexus_query_engine::runtime::SourceStorageProfile>,
     native_execution_profile: NativeExecutionProfile,
 ) -> SmokeResult<(SessionContext, Arc<NexusNativePhysicalOptimizerRule>)> {
-    let (mut execution_config, fallback_policy) = native_session_execution_config_from_env(native_execution_profile)?;
+    let mut execution_config = native_session_execution_config_from_env(native_execution_profile)?;
     execution_config = execution_config.with_shared_runtime(shared_native_runtime()?);
     if let Some(profile) = resolve_default_chain_source_storage_profile(source_storage_profile).await? {
         execution_config = execution_config.with_source_storage_profile(profile);
     }
     let native_optimizer_options = native_optimizer_options_for_profile(native_execution_profile, &execution_config);
-    let native_rule = Arc::new(NexusNativePhysicalOptimizerRule::new(
-        NexusNativeOptimizerConfig::new(fallback_policy)
-            .with_native_execution_config(execution_config)
-            .with_native_optimizer_options(native_optimizer_options),
-    ));
+    let optimizer_config = crate::report_workload::RelationalExecutionSelection::strict_native()
+        .configure_native_optimizer(
+            NexusNativeOptimizerConfig::default()
+                .with_native_execution_config(execution_config)
+                .with_native_optimizer_options(native_optimizer_options),
+        )
+        .expect("native Iceberg session installs the native rule");
+    let native_rule = Arc::new(NexusNativePhysicalOptimizerRule::new(optimizer_config));
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(native_session_config_for_profile(native_execution_profile))
         .with_nexus_native_rule(Arc::clone(&native_rule))

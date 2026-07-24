@@ -16,8 +16,8 @@ mod implementation;
 pub(in crate::exec) use implementation::execute_graph_algorithm;
 #[cfg(feature = "cugraph")]
 pub(in crate::exec) use implementation::{
-    adaptive_betweenness, diagnostics, execute_graph_algorithm_cache_hit, execute_graph_algorithm_sanitized, memory,
-    resident_cache, statistics,
+    adaptive_betweenness, diagnostics, execute_graph_algorithm_cache_hit, execute_graph_algorithm_sanitized,
+    graph_empty_input_prevalidated, memory, resident_cache, statistics,
 };
 #[cfg(feature = "cugraph")]
 pub use implementation::{

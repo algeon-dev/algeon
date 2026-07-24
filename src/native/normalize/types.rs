@@ -217,7 +217,7 @@ impl NormalizedNativeSource<'_> {
         }
     }
 
-    pub(in crate::native) fn table_format_scan_exec(&self) -> Option<&NexusTableFormatScanExec> {
+    pub(in crate::native) fn table_format_scan_exec(&self) -> Option<&NexusIcebergScanExec> {
         match self.scan {
             NormalizedNativeScan::LocalParquet(_) => None,
             NormalizedNativeScan::TableFormat(scan_exec) => Some(scan_exec),
@@ -243,7 +243,7 @@ impl NormalizedNativeSource<'_> {
 #[derive(Debug, Clone, Copy)]
 pub(in crate::native) enum NormalizedNativeScan<'a> {
     LocalParquet(&'a DataSourceExec),
-    TableFormat(&'a NexusTableFormatScanExec),
+    TableFormat(&'a NexusIcebergScanExec),
 }
 
 /// Non-source filter in a recursive native input tree.

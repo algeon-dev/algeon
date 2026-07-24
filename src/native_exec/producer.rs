@@ -35,15 +35,15 @@ use crate::error::{Error, ErrorCode};
 pub trait GpuResidentProducer: Send + Sync {
     fn gpu_result_input_name(&self) -> &str;
 
-    /// Performs async metadata preparation before callers acquire native GPU
-    /// admission. Frontends return an equivalent producer plan carrying any
-    /// resolved metadata-only state.
+    /// Performs fallible async preparation before callers acquire native GPU
+    /// admission. Frontends return an equivalent producer plan carrying
+    /// resolved metadata and any bounded host inputs required by the GPU island.
     fn prepare_execution_plan<'a>(
         &'a self,
         plan: Arc<dyn ExecutionPlan>,
-        _task_context: &'a TaskContext,
-    ) -> BoxFuture<'a, Arc<dyn ExecutionPlan>> {
-        Box::pin(async move { plan })
+        _task_context: Arc<TaskContext>,
+    ) -> BoxFuture<'a, DataFusionResult<Arc<dyn ExecutionPlan>>> {
+        Box::pin(async move { Ok(plan) })
     }
 
     fn execute_gpu_result_with_context<'a>(
@@ -241,11 +241,11 @@ impl GpuResidentProducer for NexusNativeGpuProducerExec {
     fn prepare_execution_plan<'a>(
         &'a self,
         plan: Arc<dyn ExecutionPlan>,
-        task_context: &'a TaskContext,
-    ) -> BoxFuture<'a, Arc<dyn ExecutionPlan>> {
+        task_context: Arc<TaskContext>,
+    ) -> BoxFuture<'a, DataFusionResult<Arc<dyn ExecutionPlan>>> {
         Box::pin(async move {
             if !self.lakehouse_footer_pruning {
-                return plan;
+                return Ok(plan);
             }
             let runtime_env = task_context.runtime_env();
             let resolved_plan = crate::native::lakehouse_pruning::prune_native_query_plan(
@@ -257,7 +257,7 @@ impl GpuResidentProducer for NexusNativeGpuProducerExec {
             let mut prepared = self.clone();
             prepared.plan = resolved_plan;
             prepared.lakehouse_footer_pruning = false;
-            Arc::new(prepared)
+            Ok(Arc::new(prepared) as Arc<dyn ExecutionPlan>)
         })
     }
 
@@ -312,14 +312,14 @@ pub(crate) fn gpu_resident_producer_input_name(plan: &dyn ExecutionPlan) -> Opti
     gpu_resident_producer(plan).map(|producer| producer.gpu_result_input_name().to_string())
 }
 
-/// Resolves metadata-only lakehouse work before a composed query acquires GPU
-/// admission or enters the dedicated GPU executor.
+/// Resolves producer metadata and bounded host inputs before a composed query
+/// acquires GPU admission or enters the dedicated GPU executor.
 pub(crate) async fn prepare_gpu_resident_producer_for_execution(
     plan: Arc<dyn ExecutionPlan>,
-    task_context: &TaskContext,
-) -> Arc<dyn ExecutionPlan> {
+    task_context: Arc<TaskContext>,
+) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
     let Some(producer) = gpu_resident_producer(plan.as_ref()) else {
-        return plan;
+        return Ok(plan);
     };
     producer.prepare_execution_plan(Arc::clone(&plan), task_context).await
 }

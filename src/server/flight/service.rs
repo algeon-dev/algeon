@@ -3,10 +3,6 @@ use super::*;
 pub struct DatafusionNexusFlightSqlService {
     pub(super) ctx: Arc<SessionContext>,
     pub(super) native_optimizer_config: NexusNativeOptimizerConfig,
-    /// Static session-profile selection from [`crate::server::ServerConfig`];
-    /// per-statement diagnostics use it to add the "switch to native" hint
-    /// when the testing-only `cpu_fallback` profile is active.
-    pub(super) session_profile: ServerSessionProfile,
     pub(super) admission: Arc<QueryAdmission>,
     pub(super) io_lifecycle: Arc<crate::server::io_lifecycle::ServerIoLifecycle>,
     pub(super) cancellations: Arc<QueryCancellation>,
@@ -104,7 +100,6 @@ impl DatafusionNexusFlightSqlService {
     pub fn new(
         ctx: Arc<SessionContext>,
         native_optimizer_config: NexusNativeOptimizerConfig,
-        session_profile: ServerSessionProfile,
         admission: Arc<QueryAdmission>,
         statement_ticket_ttl: Duration,
         auth: AuthInterceptor,
@@ -114,7 +109,6 @@ impl DatafusionNexusFlightSqlService {
         Self::new_with_io_lifecycle(
             ctx,
             native_optimizer_config,
-            session_profile,
             admission,
             statement_ticket_ttl,
             auth,
@@ -127,7 +121,6 @@ impl DatafusionNexusFlightSqlService {
     pub(in crate::server) fn new_with_io_lifecycle(
         ctx: Arc<SessionContext>,
         native_optimizer_config: NexusNativeOptimizerConfig,
-        session_profile: ServerSessionProfile,
         admission: Arc<QueryAdmission>,
         statement_ticket_ttl: Duration,
         auth: AuthInterceptor,
@@ -148,7 +141,6 @@ impl DatafusionNexusFlightSqlService {
         Self {
             ctx,
             native_optimizer_config,
-            session_profile,
             admission,
             io_lifecycle,
             cancellations: Arc::default(),

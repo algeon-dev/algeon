@@ -5,7 +5,7 @@ use arrow_flight::sql::client::FlightSqlServiceClient;
 use datafusion_nexus::server::{
     NEXUS_ICEBERG_CATALOG_KIND_ENV, NEXUS_ICEBERG_GLUE_URI_ENV, NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV,
     NEXUS_ICEBERG_NAMESPACE_ENV, NEXUS_ICEBERG_S3_ENDPOINT_ENV, NEXUS_ICEBERG_S3_PATH_STYLE_ENV,
-    NEXUS_ICEBERG_S3_REGION_ENV, NEXUS_SERVER_SESSION_PROFILE_ENV, ServerConfig, serve_with_listener,
+    NEXUS_ICEBERG_S3_REGION_ENV, ServerConfig, serve_with_listener,
 };
 use futures::TryStreamExt;
 use iceberg::{
@@ -67,7 +67,6 @@ fn local_server_env(
     warehouse: &str,
 ) -> HashMap<&'static str, String> {
     HashMap::from([
-        (NEXUS_SERVER_SESSION_PROFILE_ENV, "cpu_fallback".to_string()),
         (NEXUS_ICEBERG_CATALOG_KIND_ENV, "glue".to_string()),
         (NEXUS_ICEBERG_NAMESPACE_ENV, namespace.to_string()),
         (NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, warehouse.to_string()),

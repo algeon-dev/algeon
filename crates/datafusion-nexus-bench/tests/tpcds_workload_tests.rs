@@ -11,12 +11,11 @@ use datafusion_nexus::{
         ParityFloatTolerance,
     },
     planner::NexusNativeOptimizerConfig,
-    policy::GpuFallbackPolicy,
 };
 use datafusion_nexus_bench::{
     report_metadata::ReportDatasetMetadataExt,
     report_workload::{
-        gpu_fallback_policy_label, parse_gpu_fallback_policy,
+        RelationalExecutionSelection,
         tpcds::{
             NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_ENV, NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_ROW_GROUPS_ENV,
             NEXUS_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_SOURCE_BYTES_ENV,
@@ -49,14 +48,15 @@ fn tpcds_query_count_matches_official_99_queries() {
 }
 
 #[test]
-fn native_workload_fallback_policy_parser_accepts_stable_spellings() {
-    assert_eq!(parse_gpu_fallback_policy("gpu_only").unwrap(), GpuFallbackPolicy::GpuOnly);
-    assert_eq!(parse_gpu_fallback_policy("gpu-preferred").unwrap(), GpuFallbackPolicy::GpuPreferred);
-    assert_eq!(parse_gpu_fallback_policy("CpuOnly").unwrap(), GpuFallbackPolicy::CpuOnly);
-    assert!(parse_gpu_fallback_policy("native_only").is_err());
-    assert_eq!(gpu_fallback_policy_label(GpuFallbackPolicy::GpuOnly), "gpu_only");
-    assert_eq!(gpu_fallback_policy_label(GpuFallbackPolicy::GpuPreferred), "gpu_preferred");
-    assert_eq!(gpu_fallback_policy_label(GpuFallbackPolicy::CpuOnly), "cpu_only");
+fn strict_native_selection_requires_a_completed_plan_without_datafusion_cpu() {
+    let optimizer = RelationalExecutionSelection::strict_native()
+        .configure_native_optimizer(NexusNativeOptimizerConfig::default())
+        .expect("strict native execution installs a native rule");
+
+    assert_eq!(
+        optimizer.final_plan_requirements(),
+        &[datafusion_nexus::planner::FinalPlanRequirement::NoDataFusionCpu]
+    );
 }
 
 #[test]
@@ -371,7 +371,7 @@ async fn tpcds_parity_report_rows_emit_progress_per_completed_query() {
     let rows = tpcds_parity_report_rows_with_external_oracles(
         &dir,
         tpcds_report_session_config(),
-        NexusNativeOptimizerConfig::new(GpuFallbackPolicy::CpuOnly),
+        NexusNativeOptimizerConfig::default(),
         Some(&query_filter),
         None,
         ParityFloatTolerance::exact(),

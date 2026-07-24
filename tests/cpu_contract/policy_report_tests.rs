@@ -1,13 +1,8 @@
 use datafusion_nexus::{
-    policy::{FallbackReason, GpuFallbackPolicy},
+    policy::FallbackReason,
     report::{CandidateOutcome, GpuCandidate, PlanningReport},
 };
 use nexus_query_engine::triage::{TriageCode, TriageVerdict};
-
-#[test]
-fn gpu_preferred_is_default_development_policy() {
-    assert_eq!(GpuFallbackPolicy::default(), GpuFallbackPolicy::GpuPreferred);
-}
 
 #[test]
 fn fallback_reason_codes_are_stable_manifest_values() {
@@ -15,7 +10,6 @@ fn fallback_reason_codes_are_stable_manifest_values() {
         (FallbackReason::UnsupportedOperator, "unsupported_operator"),
         (FallbackReason::UnsupportedExpression, "unsupported_expression"),
         (FallbackReason::UnsupportedType, "unsupported_type"),
-        (FallbackReason::ExplicitCpuPolicy, "explicit_cpu_policy"),
         (FallbackReason::NativeSortPreservingMergeUnsupported, "native_sort_preserving_merge_unsupported"),
         (FallbackReason::NativeDistributedAggregateUnsupported, "native_distributed_aggregate_unsupported"),
         (FallbackReason::NativePartitionPreservingSortUnsupported, "native_partition_preserving_sort_unsupported"),
@@ -54,7 +48,6 @@ fn fallback_reason_codes_are_stable_manifest_values() {
         (FallbackReason::IcebergRowSelectionUnsupported, "iceberg_row_selection_unsupported"),
         (FallbackReason::IcebergObjectStoreReadUnsupported, "iceberg_object_store_read_unsupported"),
         (FallbackReason::IcebergSnapshotUnsupported, "iceberg_snapshot_unsupported"),
-        (FallbackReason::TableFormatGpuOnlyLeafNotRewritten, "table_format_gpu_only_leaf_not_rewritten"),
     ];
 
     for (reason, expected) in codes {

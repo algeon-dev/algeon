@@ -508,7 +508,7 @@ pub(super) fn native_optimizer_config(
         execution_config = execution_config.with_statistical_aggregate_execution_mode(mode.value);
     }
 
-    Ok(NexusNativeOptimizerConfig::new(GpuFallbackPolicy::default()).with_native_execution_config(execution_config))
+    Ok(NexusNativeOptimizerConfig::default().with_native_execution_config(execution_config))
 }
 
 pub(super) fn optional_native_string(

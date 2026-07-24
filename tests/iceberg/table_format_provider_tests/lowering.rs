@@ -19,12 +19,8 @@ async fn iceberg_provider_lowers_q09_style_scalar_aggregate_subqueries_as_one_na
         "store-sales-data-0001",
         "/tmp/iceberg/store_sales.parquet",
     )));
-    let reason =
-        Arc::new(NexusIcebergTableProvider::from_table_format_planner(Arc::clone(&reason_schema), reason_planner));
-    let store_sales = Arc::new(NexusIcebergTableProvider::from_table_format_planner(
-        Arc::clone(&store_sales_schema),
-        store_sales_planner,
-    ));
+    let reason = Arc::new(test_iceberg_provider(Arc::clone(&reason_schema), reason_planner));
+    let store_sales = Arc::new(test_iceberg_provider(Arc::clone(&store_sales_schema), store_sales_planner));
     let ctx = SessionContext::new_with_config(direct_friendly_session_config());
     ctx.register_table("reason", reason).unwrap();
     ctx.register_table("store_sales", store_sales).unwrap();
@@ -72,7 +68,7 @@ async fn iceberg_provider_lowers_q09_style_scalar_aggregate_subqueries_as_one_na
 fn native_lowering_preserves_fetch_pushed_to_table_format_filter_and_coalesce() {
     let schema = iceberg_test_schema();
     let scan: Arc<dyn ExecutionPlan> =
-        Arc::new(NexusTableFormatScanExec::new(native_admissible_scan_plan(Arc::clone(&schema)), schema));
+        Arc::new(test_iceberg_scan_exec(native_admissible_scan_plan(Arc::clone(&schema)), schema));
     let scan_schema = scan.schema();
     let predicate =
         binary(col("id", &scan_schema).unwrap(), Operator::Eq, lit(ScalarValue::Int64(Some(1))), &scan_schema).unwrap();
@@ -92,7 +88,7 @@ fn native_lowering_preserves_fetch_pushed_to_table_format_filter_and_coalesce() 
 #[test]
 fn native_lowering_lowers_table_format_scan_to_local_parquet_source() {
     let schema = iceberg_test_schema();
-    let scan = Arc::new(NexusTableFormatScanExec::new(native_admissible_scan_plan(Arc::clone(&schema)), schema));
+    let scan = Arc::new(test_iceberg_scan_exec(native_admissible_scan_plan(Arc::clone(&schema)), schema));
 
     let result = lower_physical_plan_to_native(scan);
 
@@ -124,7 +120,7 @@ fn native_lowering_lowers_s3_table_format_scan_to_object_store_parquet_source() 
         )
         .with_size_bytes(4096),
     ];
-    let scan = Arc::new(NexusTableFormatScanExec::new(plan, schema));
+    let scan = Arc::new(test_iceberg_scan_exec(plan, schema));
 
     let result = lower_physical_plan_to_native(scan);
 
@@ -161,7 +157,7 @@ fn native_lowering_preserves_remote_direct_reader_contract_for_dispatch() {
             CredentialMode::SharedProcessEnv,
         )),
     ];
-    let scan = Arc::new(NexusTableFormatScanExec::new(plan, schema));
+    let scan = Arc::new(test_iceberg_scan_exec(plan, schema));
 
     let result = lower_physical_plan_to_native(scan);
 
@@ -174,15 +170,15 @@ fn native_lowering_preserves_remote_direct_reader_contract_for_dispatch() {
     assert_eq!(source.diagnostics.source_read_strategy, "remote_direct");
 }
 
-#[test]
-fn table_format_scan_preserves_unsupported_feature_reason_and_never_executes_cpu_arrow_reader() {
+#[tokio::test]
+async fn table_format_scan_preserves_unsupported_feature_reason_and_executes_cpu_delegate() {
     let schema = iceberg_test_schema();
     let plan =
         native_admissible_scan_plan(Arc::clone(&schema)).with_unsupported_feature(TableFormatUnsupportedFeature::new(
             TableFormatUnsupportedFeatureCode::IcebergDeleteFilesUnsupported,
             "delete files require Milestone 2 row-level semantics",
         ));
-    let scan = Arc::new(NexusTableFormatScanExec::new(plan, schema));
+    let scan = Arc::new(test_iceberg_scan_exec(plan, schema));
 
     let result = lower_physical_plan_to_native(Arc::clone(&scan) as Arc<dyn ExecutionPlan>);
 
@@ -191,13 +187,8 @@ fn table_format_scan_preserves_unsupported_feature_reason_and_never_executes_cpu
     };
     assert_eq!(*reason, FallbackReason::IcebergDeleteFilesUnsupported);
 
-    let err = match scan.execute(0, Arc::new(TaskContext::default())) {
-        Ok(_) => panic!("scan leaf should not execute"),
-        Err(error) => error,
-    };
-    let rendered = err.to_string();
-    assert!(rendered.contains("does not execute a CPU Arrow reader"));
-    let nexus = err.find_nexus_error().expect("table-format execution error must preserve typed Nexus facts");
-    assert_eq!(nexus.fact_value("cpu_arrow_reader_fallback"), Some("false"));
-    assert_eq!(nexus.fact_value("table_format"), Some("iceberg"));
+    let batches = collect(scan, Arc::new(TaskContext::default()))
+        .await
+        .expect("native-unsupported scan must execute its CPU delegate");
+    assert!(batches.is_empty());
 }

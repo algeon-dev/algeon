@@ -1,4 +1,212 @@
+use datafusion::{common::config::ConfigOptions, physical_optimizer::PhysicalOptimizerRule};
+use datafusion_nexus::planner::{
+    FinalPlanDisposition, NexusFinalPlanRequirementRule, NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule,
+    classify_final_plan,
+};
+
 use super::{support::*, *};
+
+const CPU_INPUT_BFS_SQL: &str = "SELECT vertex, distance, predecessor \
+     FROM cugraph_bfs('raw_edges', 0, 'src', 'dst', NULL, \
+          '{\"construction_policy\":\"raw_libcugraph\",\
+             \"include_edges_table\":\"allowed_edges\",\
+             \"include_edge_src_col\":\"allowed_src\",\
+             \"include_edge_dst_col\":\"allowed_dst\"}') \
+     ORDER BY vertex";
+
+fn cugraph_input_is_runtime_native(plan: &dyn datafusion::physical_plan::ExecutionPlan) -> bool {
+    if plan.downcast_ref::<NexusNativeExec>().is_some() {
+        return true;
+    }
+    let children = plan.children();
+    matches!(
+        children.as_slice(),
+        [child] if plan.name() == "CooperativeExec" && child.downcast_ref::<NexusNativeExec>().is_some()
+    )
+}
+
+fn plan_contains_named_node(plan: &dyn datafusion::physical_plan::ExecutionPlan, name: &str) -> bool {
+    plan.name() == name || plan.children().into_iter().any(|child| plan_contains_named_node(child.as_ref(), name))
+}
+
+fn register_edges_with_upstream_only_list(ctx: &SessionContext, table_name: &str) {
+    let tag_field = Arc::new(Field::new("item", DataType::Int64, true));
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("src", DataType::Int64, false),
+        Field::new("dst", DataType::Int64, false),
+        Field::new("tags", DataType::List(Arc::clone(&tag_field)), false),
+    ]));
+    let tags = arrow::array::ListArray::new(
+        tag_field,
+        arrow::buffer::OffsetBuffer::new(vec![0_i32, 1, 2, 3].into()),
+        Arc::new(Int64Array::from(vec![1_i64, 2, 3])),
+        None,
+    );
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int64Array::from(vec![0_i64, 1, 2])) as ArrayRef,
+            Arc::new(Int64Array::from(vec![1_i64, 2, 3])) as ArrayRef,
+            Arc::new(tags) as ArrayRef,
+        ],
+    )
+    .unwrap();
+    ctx.register_table(table_name, Arc::new(MemTable::try_new(schema, vec![vec![batch]]).unwrap())).unwrap();
+}
+
+#[tokio::test]
+async fn cugraph_sql_stages_cpu_edge_and_side_inputs_for_cpu_downstream() {
+    let state = SessionStateBuilder::new_with_default_features().with_cugraph_sql(CugraphSqlConfig::default()).build();
+    let ctx = SessionContext::new_with_state(state);
+    register_directed_bfs_edges(&ctx, "raw_edges");
+    register_allowed_bfs_edges(&ctx, "allowed_edges");
+
+    let df = ctx.sql(CPU_INPUT_BFS_SQL).await.unwrap();
+    let plan = df.create_physical_plan().await.unwrap();
+    assert!(find_composed_exec(plan.as_ref()).is_none(), "standalone SQL should keep the downstream plan on CPU");
+    let cugraph = find_cugraph_algo_exec(plan.as_ref()).expect("physical plan should contain CugraphAlgoExec");
+    assert!(!plan_contains_native_exec(cugraph), "MemTable edge and side inputs should remain CPU sources");
+
+    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    let batches = datafusion::physical_plan::collect(plan, ctx.task_ctx()).await.unwrap();
+    assert!(cudf::testing::arrow::arrow_host_import_call_count_for_test() >= 2);
+    assert!(cudf::testing::arrow::arrow_host_export_call_count_for_test() >= 1);
+    let batch = single_batch(&batches);
+    assert_eq!(bfs_distance_for(batch, 0), Some(0));
+    assert_eq!(bfs_distance_for(batch, 1), None);
+    assert_eq!(bfs_distance_for(batch, 2), Some(1));
+    assert_eq!(bfs_distance_for(batch, 3), Some(2));
+}
+
+#[tokio::test]
+async fn cugraph_sql_cpu_to_gpu_to_cpu_projects_away_unsupported_upstream_type() {
+    let state = SessionStateBuilder::new_with_default_features().with_cugraph_sql(CugraphSqlConfig::default()).build();
+    let ctx = SessionContext::new_with_state(state);
+    register_edges_with_upstream_only_list(&ctx, "raw_edges");
+    ctx.sql(
+        "CREATE VIEW filtered_edges AS \
+         SELECT src, dst FROM raw_edges WHERE array_length(tags) > 0",
+    )
+    .await
+    .unwrap()
+    .collect()
+    .await
+    .unwrap();
+
+    let df = ctx
+        .sql(
+            "SELECT vertex, out_degree \
+             FROM cugraph_degrees_all('filtered_edges', 'src', 'dst') \
+             WHERE out_degree > 0 ORDER BY vertex",
+        )
+        .await
+        .unwrap();
+    let plan = df.create_physical_plan().await.unwrap();
+    let cugraph =
+        find_cugraph_algo_exec(plan.as_ref()).expect("physical plan should contain the explicit cuGraph island");
+    let cugraph_children = cugraph.children();
+    let [edge_input] = cugraph_children.as_slice() else {
+        panic!("degrees should have one edge input");
+    };
+
+    assert_eq!(classify_final_plan(plan.as_ref()), FinalPlanDisposition::Mixed);
+    assert_ne!(
+        plan.name(),
+        "CugraphAlgoExec",
+        "the public SQL filter/order must retain a CPU operator downstream of the graph island"
+    );
+    assert!(
+        plan_contains_named_node(edge_input.as_ref(), "FilterExec"),
+        "the unsupported list must be consumed by a CPU filter before the graph island"
+    );
+    assert!(
+        edge_input.schema().field_with_name("tags").is_err(),
+        "the optimized CPU projection must remove the upstream-only list before the cuGraph boundary"
+    );
+    assert!(!plan_contains_native_exec(edge_input.as_ref()), "the upstream view must execute through DataFusion CPU");
+
+    let native_rule = NexusNativePhysicalOptimizerRule::new(NexusNativeOptimizerConfig::default());
+    let selected = native_rule.optimize(Arc::clone(&plan), &ConfigOptions::default()).unwrap();
+    assert_eq!(classify_final_plan(selected.as_ref()), FinalPlanDisposition::Mixed);
+    assert!(
+        find_cugraph_algo_exec(selected.as_ref()).is_some(),
+        "ordinary relational selection must retain the explicit cuGraph island"
+    );
+    let report = native_rule.last_report().expect("native selection must retain a planning report");
+    assert_eq!(
+        report.rewritten_count(),
+        1,
+        "the post-island native consumer is an explicit declared GPU-island binding"
+    );
+    assert!(
+        report
+            .outcomes()
+            .iter()
+            .any(|outcome| matches!(outcome, datafusion_nexus::report::CandidateOutcome::Rewritten { .. })),
+        "the report must retain the explicit-island selection: {report:?}"
+    );
+
+    let requirement =
+        NexusFinalPlanRequirementRule::new(NexusNativeOptimizerConfig::default().with_no_datafusion_cpu_requirement());
+    let error = requirement
+        .optimize(selected, &ConfigOptions::default())
+        .expect_err("NoDataFusionCpu must reject this exact already-planned mixed island");
+    let nexus = typed_nexus_error(&error);
+    assert_eq!(nexus.code(), ErrorCode::FinalPlanRequirementUnsatisfied);
+    assert_eq!(nexus.fact_value("observed_final_plan_disposition"), Some("mixed"));
+
+    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    let batches = datafusion::physical_plan::collect(Arc::clone(&plan), ctx.task_ctx()).await.unwrap();
+    assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 3);
+    assert!(
+        cudf::testing::arrow::arrow_host_import_call_count_for_test() >= 1,
+        "the CPU edge view must cross the explicit host-to-GPU boundary"
+    );
+    let metrics = NativeDataFusionExecutionMetrics::from_metrics(&plan_metrics_recursive(plan.as_ref()));
+    assert_eq!(metrics.graph_runtime_rows.len(), 1, "the explicit island must record one terminal GPU observation");
+    let observation = &metrics.graph_runtime_rows[0];
+    assert_eq!(observation.algorithm, "degrees_all");
+    assert_eq!(observation.runtime_outcome, "succeeded");
+}
+
+#[tokio::test]
+async fn cugraph_sql_keeps_native_inputs_device_resident_for_native_downstream() {
+    let state = default_backend_cugraph_sql_state();
+    let ctx = SessionContext::new_with_state(state);
+    register_directed_bfs_edges(&ctx, "raw_edges");
+    register_allowed_bfs_edges(&ctx, "allowed_edges");
+
+    let df = ctx.sql(CPU_INPUT_BFS_SQL).await.unwrap();
+    let plan = df.create_physical_plan().await.unwrap();
+    assert!(find_composed_exec(plan.as_ref()).is_some(), "backend SQL should compose the downstream native plan");
+    let cugraph = find_cugraph_algo_exec(plan.as_ref()).expect("physical plan should contain CugraphAlgoExec");
+    let cugraph_display = displayable(cugraph).indent(false).to_string();
+    let cugraph_children = cugraph.children();
+    assert_eq!(cugraph_children.len(), 2, "BFS should retain its edge and side-input children");
+    assert!(
+        cugraph_children.iter().all(|child| cugraph_input_is_runtime_native(child.as_ref())),
+        "backend-managed edge and side inputs should remain native or transparently cooperative:\n{cugraph_display}"
+    );
+
+    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    let batches = datafusion::physical_plan::collect(plan, ctx.task_ctx()).await.unwrap();
+    assert_eq!(
+        cudf::testing::arrow::arrow_host_import_call_count_for_test(),
+        2,
+        "the two native literal sources should import once each without an extra cuGraph boundary"
+    );
+    assert_eq!(
+        cudf::testing::arrow::arrow_host_export_call_count_for_test(),
+        1,
+        "cuGraph output must stay device-resident until the composed root materializes"
+    );
+    let batch = single_batch(&batches);
+    assert_eq!(batch.num_rows(), 3);
+    assert_eq!(bfs_distance_for(batch, 0), Some(0));
+    assert_eq!(bfs_distance_for(batch, 1), None);
+    assert_eq!(bfs_distance_for(batch, 2), Some(1));
+    assert_eq!(bfs_distance_for(batch, 3), Some(2));
+}
 
 // Per-algorithm Python-oracle GPU tests for PageRank, BFS, and Louvain
 // previously lived here. They have been subsumed by the registry-driven

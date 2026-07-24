@@ -158,7 +158,6 @@ ENV LD_LIBRARY_PATH=/app/lib \
 #   NEXUS_SERVER_MAX_IN_FLIGHT         legacy alias of the above
 #   NEXUS_SERVER_GPU_DEVICES           CUDA ordinals, csv    (default 0)
 #   NEXUS_SERVER_DEVICE_BUDGET_FRACTION  0<f<=1 of GPU mem for native budgets
-#   NEXUS_SERVER_SESSION_PROFILE       native | cpu_fallback
 #   NEXUS_SERVER_STATEMENT_TICKET_TTL_SECS                   (default 300)
 #   NEXUS_SERVER_CONFIG_FILE           optional TOML overlay ([auth],[native])
 #

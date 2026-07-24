@@ -15,8 +15,7 @@ use nexus_query_engine::{
 use crate::{
     error::{Error, ErrorCode, Result},
     native_exec::{NexusNativeExecutionConfig, QueryAdmissionSource},
-    planner::{NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule},
-    policy::GpuFallbackPolicy,
+    planner::{FinalPlanRequirement, NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule},
     session::install_nexus_native_rule_with_session_config,
     session_config::DataFusionNexusSessionConfig,
 };
@@ -207,9 +206,9 @@ impl Default for GrantBand {
 /// Builder for [`NexusGpuBackend`].
 #[derive(Debug, Clone)]
 pub struct NexusGpuBackendBuilder {
-    fallback_policy: GpuFallbackPolicy,
     memory_policy: NexusMemoryPolicy,
     admission_policy: NexusAdmissionPolicy,
+    final_plan_requirements: Vec<FinalPlanRequirement>,
     query_service_local_parquet_source_cache_max_retained_bytes: Option<u64>,
     #[cfg(feature = "cugraph")]
     query_service_resident_graph_cache_max_retained_bytes: Option<u64>,
@@ -392,9 +391,9 @@ impl NexusGpuBackend {
 impl Default for NexusGpuBackendBuilder {
     fn default() -> Self {
         Self {
-            fallback_policy: GpuFallbackPolicy::default(),
             memory_policy: NexusMemoryPolicy::default(),
             admission_policy: NexusAdmissionPolicy::default(),
+            final_plan_requirements: Vec::new(),
             query_service_local_parquet_source_cache_max_retained_bytes: None,
             #[cfg(feature = "cugraph")]
             query_service_resident_graph_cache_max_retained_bytes: None,
@@ -405,9 +404,18 @@ impl Default for NexusGpuBackendBuilder {
 }
 
 impl NexusGpuBackendBuilder {
-    pub fn fallback_policy(mut self, fallback_policy: GpuFallbackPolicy) -> Self {
-        self.fallback_policy = fallback_policy;
+    /// Require each completed backend-installed physical plan to satisfy this
+    /// native execution constraint.
+    pub fn with_final_plan_requirement(mut self, requirement: FinalPlanRequirement) -> Self {
+        if !self.final_plan_requirements.contains(&requirement) {
+            self.final_plan_requirements.push(requirement);
+        }
         self
+    }
+
+    /// Reject backend-installed physical plans that retain DataFusion CPU execution.
+    pub fn with_no_datafusion_cpu_requirement(self) -> Self {
+        self.with_final_plan_requirement(FinalPlanRequirement::NoDataFusionCpu)
     }
 
     pub fn memory_policy(mut self, memory_policy: NexusMemoryPolicy) -> Self {
@@ -481,8 +489,10 @@ impl NexusGpuBackendBuilder {
         }
         resolved.execution_config =
             resolved.execution_config.with_query_service_query_memory_domain(self.query_service_query_memory_domain);
-        let optimizer_config = NexusNativeOptimizerConfig::new(self.fallback_policy)
-            .with_native_execution_config(resolved.execution_config.clone());
+        let optimizer_config = self.final_plan_requirements.into_iter().fold(
+            NexusNativeOptimizerConfig::default().with_native_execution_config(resolved.execution_config.clone()),
+            |optimizer_config, requirement| optimizer_config.with_final_plan_requirement(requirement),
+        );
         NexusGpuBackend::build_bounded(
             optimizer_config,
             resolved,

@@ -7,11 +7,6 @@ pub const NEXUS_SERVER_LOG_ENV: &str = "NEXUS_SERVER_LOG";
 /// Seconds an unconsumed Flight SQL statement ticket may wait for `DoGet`
 /// before it expires. Defaults to `300`.
 pub const NEXUS_SERVER_STATEMENT_TICKET_TTL_SECS_ENV: &str = "NEXUS_SERVER_STATEMENT_TICKET_TTL_SECS";
-/// DataFusion physical-plan profile for Flight SQL sessions. Use `native` for
-/// GPU-native plan shapes or `cpu_fallback` to keep DataFusion's CPU-oriented
-/// execution settings; the default is `native` when Iceberg is configured and
-/// `cpu_fallback` otherwise.
-pub const NEXUS_SERVER_SESSION_PROFILE_ENV: &str = "NEXUS_SERVER_SESSION_PROFILE";
 /// Path to a TOML server config file. The file supplies durable server config
 /// such as `[auth]` and `[native]`; scalar env vars remain bootstrap overrides.
 pub const NEXUS_SERVER_CONFIG_FILE_ENV: &str = "NEXUS_SERVER_CONFIG_FILE";
@@ -35,51 +30,6 @@ impl<T> NativeConfigValue<T> {
 pub(super) enum DurationZeroPolicy {
     Reject,
     Indefinite,
-}
-/// DataFusion physical-plan profile applied to the Flight SQL session.
-///
-/// Decisions tracked here only affect DataFusion's logical/physical plan shape
-/// for queries served through Flight SQL. They are orthogonal to the native
-/// nexus-query-engine memory budget, which is controlled by the server native
-/// config (`[native]` TOML or `NEXUS_SERVER_NATIVE_*` environment variables).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ServerSessionProfile {
-    /// Native-friendly profile that matches the workload harness defaults:
-    /// `target_partitions=1`, repartitioning disabled for file scans /
-    /// aggregations / joins / sorts, and all dynamic-filter-pushdown variants
-    /// disabled. Required for GPU-only table-format leaves.
-    Native,
-    /// Preserve DataFusion's CPU-style profile derived from
-    /// `DATAFUSION_EXECUTION_*` environment variables (single underscores,
-    /// matching DataFusion's `SessionConfig::from_env()` mapping).
-    ///
-    /// For Iceberg, this requires the `iceberg-cpu` feature; otherwise the
-    /// catalog still exposes GPU-only leaves and planning can fail. Non-Iceberg
-    /// CPU sessions do not need that feature.
-    CpuFallback,
-}
-
-impl ServerSessionProfile {
-    pub fn parse(raw: &str) -> std::result::Result<Self, String> {
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "native" => Ok(Self::Native),
-            "cpu_fallback" | "cpu-fallback" => Ok(Self::CpuFallback),
-            other => Err(format!("must be `native` or `cpu_fallback`, got `{other}`")),
-        }
-    }
-
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Native => "native",
-            Self::CpuFallback => "cpu_fallback",
-        }
-    }
-}
-
-impl std::fmt::Display for ServerSessionProfile {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
-    }
 }
 pub(super) struct EnvValues<'a> {
     get: &'a mut dyn FnMut(&str) -> Option<String>,
@@ -162,12 +112,6 @@ impl<'a> EnvValues<'a> {
                 }
                 Ok(value)
             })
-            .transpose()
-    }
-
-    pub(super) fn optional_session_profile(&mut self, name: &'static str) -> Result<Option<ServerSessionProfile>> {
-        self.string(name)
-            .map(|raw| ServerSessionProfile::parse(&raw).map_err(|reason| ServerError::invalid_config(name, reason)))
             .transpose()
     }
 

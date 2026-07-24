@@ -21,7 +21,9 @@ use std::{
 };
 
 use arrow::record_batch::RecordBatch;
-use datafusion::{common::Result as DataFusionResult, physical_plan::ExecutionPlan};
+use datafusion::{
+    common::Result as DataFusionResult, execution::memory_pool::MemoryReservation, physical_plan::ExecutionPlan,
+};
 use nexus_query_engine::{
     plan::ResidentGraphKey,
     runtime::{ExecutionCancellation, QueryPlacementHint},
@@ -131,6 +133,7 @@ pub(crate) struct GraphBfsSingleflightKey {
     pub(crate) normalized_output: bool,
     pub(crate) projection: Option<Vec<usize>>,
     pub(crate) limit: Option<usize>,
+    pub(crate) max_output_staging_bytes: usize,
 }
 
 /// Additive diagnostics for exact-request BFS serving coalescing.
@@ -332,8 +335,30 @@ struct SingleflightCounters {
 #[derive(Debug, Clone)]
 enum PublishedResult {
     Pending,
-    Ready(Arc<RecordBatch>),
+    Ready(GraphBfsPublishedResult),
     Retry,
+}
+
+/// Bounded host batches published by one BFS leader and retained until every
+/// joined follower has imported or returned them.
+#[derive(Debug, Clone)]
+pub(crate) struct GraphBfsPublishedResult {
+    batches: Arc<Vec<RecordBatch>>,
+    reservation: Arc<MemoryReservation>,
+}
+
+impl GraphBfsPublishedResult {
+    pub(crate) fn new(batches: Arc<Vec<RecordBatch>>, reservation: Arc<MemoryReservation>) -> Self {
+        Self { batches, reservation }
+    }
+
+    pub(crate) fn batches(&self) -> &[RecordBatch] {
+        self.batches.as_slice()
+    }
+
+    pub(crate) fn shared_parts(&self) -> (Arc<Vec<RecordBatch>>, Arc<MemoryReservation>) {
+        (Arc::clone(&self.batches), Arc::clone(&self.reservation))
+    }
 }
 
 pub(crate) enum GraphBfsSingleflightJoin {
@@ -362,8 +387,8 @@ impl GraphBfsLeader {
         self.coordinator.participant_count(&self.key, self.generation).map(|count| count > 1)
     }
 
-    pub(crate) fn publish(&mut self, batch: Arc<RecordBatch>) -> Result<()> {
-        self.coordinator.publish(&self.key, self.generation, PublishedResult::Ready(batch))?;
+    pub(crate) fn publish(&mut self, result: GraphBfsPublishedResult) -> Result<()> {
+        self.coordinator.publish(&self.key, self.generation, PublishedResult::Ready(result))?;
         self.resolved = true;
         Ok(())
     }
@@ -438,7 +463,7 @@ impl Drop for GraphBfsFollower {
 }
 
 pub(crate) enum GraphBfsFollowerOutcome {
-    Ready(Arc<RecordBatch>),
+    Ready(GraphBfsPublishedResult),
     Retry,
 }
 
@@ -471,7 +496,10 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     use arrow::{datatypes::Schema, record_batch::RecordBatch};
-    use datafusion::physical_plan::{ExecutionPlan, empty::EmptyExec};
+    use datafusion::{
+        execution::{TaskContext, memory_pool::MemoryConsumer},
+        physical_plan::{ExecutionPlan, empty::EmptyExec},
+    };
 
     use super::*;
 
@@ -505,11 +533,17 @@ mod tests {
             normalized_output: true,
             projection: None,
             limit: None,
+            max_output_staging_bytes: 1024,
         }
     }
 
-    fn empty_batch() -> Arc<RecordBatch> {
-        Arc::new(RecordBatch::new_empty(Arc::new(Schema::empty())))
+    fn empty_result() -> GraphBfsPublishedResult {
+        let task_context = TaskContext::default();
+        let reservation = MemoryConsumer::new("GraphBfsSingleflight[test]").register(task_context.memory_pool());
+        GraphBfsPublishedResult::new(
+            Arc::new(vec![RecordBatch::new_empty(Arc::new(Schema::empty()))]),
+            Arc::new(reservation),
+        )
     }
 
     #[tokio::test]
@@ -523,7 +557,7 @@ mod tests {
         };
 
         leader.record_traversal_submission();
-        leader.publish(empty_batch()).unwrap();
+        leader.publish(empty_result()).unwrap();
         assert!(matches!(
             follower.wait(&ExecutionCancellation::new()).await.unwrap(),
             GraphBfsFollowerOutcome::Ready(_)
@@ -533,6 +567,58 @@ mod tests {
         assert_eq!(snapshot.physical_traversals, 1);
         assert_eq!(snapshot.groups_formed, 1);
         assert_eq!(snapshot.peak_width, 2);
+    }
+
+    #[tokio::test]
+    async fn published_multi_batch_result_retains_one_shared_reservation_for_followers() {
+        let coordinator = GraphBfsSingleflight::new(4);
+        let GraphBfsSingleflightJoin::Leader(mut leader) = coordinator.join(key(1)).unwrap() else {
+            panic!("first request must lead")
+        };
+        let GraphBfsSingleflightJoin::Follower(mut follower) = coordinator.join(key(1)).unwrap() else {
+            panic!("second request must follow")
+        };
+        let task_context = TaskContext::default();
+        let pool = Arc::clone(task_context.memory_pool());
+        let reservation = MemoryConsumer::new("GraphBfsSingleflight[multi-batch-test]").register(&pool);
+        reservation.try_grow(128).unwrap();
+        let result = GraphBfsPublishedResult::new(
+            Arc::new(vec![
+                RecordBatch::new_empty(Arc::new(Schema::empty())),
+                RecordBatch::new_empty(Arc::new(Schema::empty())),
+            ]),
+            Arc::new(reservation),
+        );
+
+        leader.publish(result).unwrap();
+        let GraphBfsFollowerOutcome::Ready(result) = follower.wait(&ExecutionCancellation::new()).await.unwrap() else {
+            panic!("published result must be ready")
+        };
+        assert_eq!(result.batches().len(), 2);
+        assert_eq!(pool.reserved(), 128);
+        drop(result);
+        assert_eq!(pool.reserved(), 128, "the follower receiver still retains the published result");
+        drop(follower);
+        assert_eq!(pool.reserved(), 0);
+    }
+
+    #[test]
+    fn requests_with_different_output_caps_never_form_a_leader_follower_group() {
+        let coordinator = GraphBfsSingleflight::new(4);
+        let loose_key = key(1);
+        let mut strict_key = loose_key.clone();
+        strict_key.max_output_staging_bytes -= 1;
+
+        let GraphBfsSingleflightJoin::Leader(_loose_leader) = coordinator.join(loose_key).unwrap() else {
+            panic!("first output-cap request must lead")
+        };
+        let GraphBfsSingleflightJoin::Leader(_strict_leader) = coordinator.join(strict_key).unwrap() else {
+            panic!("a request with a different output cap must start an independent generation")
+        };
+
+        let snapshot = coordinator.snapshot();
+        assert_eq!(snapshot.groups_formed, 2);
+        assert_eq!(snapshot.peak_width, 1);
     }
 
     #[test]

@@ -8,7 +8,6 @@ use std::{
 use datafusion_nexus::{
     native_report::{NativeTpcdsParityReport, ParityFloatTolerance},
     planner::NexusNativeOptimizerConfig,
-    policy::GpuFallbackPolicy,
 };
 use datafusion_nexus_bench::{
     report_metadata::ReportDatasetMetadataExt,
@@ -24,7 +23,6 @@ const NEXUS_TPCDS_PARITY_QUERY_IDS_ENV: &str = "NEXUS_TPCDS_PARITY_QUERY_IDS";
 const NEXUS_TPCDS_PARITY_FLOAT_ABS_TOLERANCE_ENV: &str = "NEXUS_TPCDS_PARITY_FLOAT_ABS_TOLERANCE";
 const NEXUS_TPCDS_PARITY_FLOAT_REL_TOLERANCE_ENV: &str = "NEXUS_TPCDS_PARITY_FLOAT_REL_TOLERANCE";
 const NEXUS_TPCDS_PARITY_DUCKDB_BIN_ENV: &str = "NEXUS_TPCDS_PARITY_DUCKDB_BIN";
-const NEXUS_TPCDS_PARITY_SKIP_NATIVE_ENV: &str = "NEXUS_TPCDS_PARITY_SKIP_NATIVE";
 const NEXUS_NATIVE_PIPELINE_EXECUTION_MODE_ENV: &str = "NEXUS_NATIVE_PIPELINE_EXECUTION_MODE";
 
 #[tokio::main]
@@ -90,18 +88,7 @@ fn native_pipeline_execution_mode_from_env() -> NativePipelineExecutionMode {
 }
 
 fn native_optimizer_config_from_env() -> NexusNativeOptimizerConfig {
-    let base = if bool_env(NEXUS_TPCDS_PARITY_SKIP_NATIVE_ENV) {
-        NexusNativeOptimizerConfig::new(GpuFallbackPolicy::CpuOnly)
-    } else {
-        tpcds_native_optimizer_config()
-    };
-    base.with_native_pipeline_execution_mode(native_pipeline_execution_mode_from_env())
-}
-
-fn bool_env(name: &str) -> bool {
-    std::env::var(name)
-        .ok()
-        .is_some_and(|value| matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+    tpcds_native_optimizer_config().with_native_pipeline_execution_mode(native_pipeline_execution_mode_from_env())
 }
 
 fn query_filter_from_env() -> Option<Vec<String>> {

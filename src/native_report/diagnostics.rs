@@ -197,16 +197,14 @@ pub(super) fn unsupported_category(
         | FallbackReason::IcebergResidualPredicateUnsupported
         | FallbackReason::IcebergRowSelectionUnsupported
         | FallbackReason::IcebergObjectStoreReadUnsupported
-        | FallbackReason::IcebergSnapshotUnsupported
-        | FallbackReason::TableFormatGpuOnlyLeafNotRewritten => Some("table_format".to_string()),
+        | FallbackReason::IcebergSnapshotUnsupported => Some("table_format".to_string()),
         FallbackReason::NativeSortPreservingMergeUnsupported
         | FallbackReason::NativePartitionPreservingSortUnsupported => Some("operator_sort".to_string()),
         FallbackReason::NativeOrderedOutputUnsupported => Some("operator_ordering".to_string()),
         FallbackReason::NativeBoundedJoinUnsupported | FallbackReason::NativeAdaptivePipelineUnsupported => {
             first_join_operator_category(plan).or_else(|| Some("operator_join".to_string()))
         },
-        FallbackReason::ExplicitCpuPolicy
-        | FallbackReason::NativeSmallSelectiveTopkCpuPreferred
+        FallbackReason::NativeSmallSelectiveTopkCpuPreferred
         | FallbackReason::NativeSmallSelectiveResidualJoinCpuPreferred
         | FallbackReason::NativeSmallSelectiveFullSortCpuPreferred => None,
     }

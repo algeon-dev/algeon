@@ -47,15 +47,19 @@ mod glue;
 mod provider;
 mod rest;
 
+pub(super) use error::classify_iceberg_catalog_error;
 use error::{CATALOG_BACKEND_OP, catalog_backend_error, glue_catalog_backend_error};
-pub(super) use error::{apply_iceberg_catalog_error_facts, classify_iceberg_catalog_error};
+pub(crate) use error::{
+    apply_iceberg_catalog_error_facts, apply_opendal_scan_error_facts, classify_iceberg_scan_error,
+    classify_opendal_scan_error,
+};
 use glue::GlueCatalogBackendErrorContext;
 pub use glue::{GlueIcebergCatalogBackend, GlueIcebergCatalogConfig};
 #[cfg(feature = "server")]
 pub(crate) use provider::table_ident_from_flat_name;
 pub use provider::{
-    IcebergCatalogBackend, IcebergProviderKind, IcebergProviderOptions, NexusIcebergCatalogProvider,
-    NexusIcebergSchemaProvider, build_catalog_provider_from_backend, build_catalog_provider_from_backend_with_options,
+    IcebergCatalogBackend, IcebergProviderOptions, NexusIcebergCatalogProvider, NexusIcebergSchemaProvider,
+    build_catalog_provider_from_backend, build_catalog_provider_from_backend_with_options,
     build_scoped_catalog_provider_from_backend, build_scoped_catalog_provider_from_backend_with_options,
 };
 use provider::{

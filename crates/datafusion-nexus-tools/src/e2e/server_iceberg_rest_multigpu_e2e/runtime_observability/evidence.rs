@@ -75,9 +75,9 @@ impl RunEvidence {
                 "concurrency": params.concurrency,
                 "waves": params.waves,
                 "restart_iterations": params.restart_iterations,
-                "profile": params.profile.label(),
+                "scenario_selection": params.scenario_selection.label(),
                 "bounded_mode": params.bounded_mode,
-                "profile_once": params.profile_once,
+                "native_once": params.native_once,
                 "timeouts_secs": {
                     "connect": params.connect_timeout.as_secs(),
                     "query": params.query_timeout.as_secs(),
@@ -125,7 +125,7 @@ pub(super) struct WaveEvidence {
 #[derive(Debug, Serialize)]
 pub(super) struct ScenarioEvidence {
     pub(super) scenario: String,
-    pub(super) profile: String,
+    pub(super) execution_path: String,
     pub(super) query_id: String,
     pub(super) correlation_id: String,
     pub(super) outcome: String,
@@ -227,7 +227,6 @@ pub(super) struct RestartEvidence {
 pub(super) struct ProcessEvidence {
     pub(super) label: String,
     pub(super) pid: Option<u32>,
-    pub(super) profile: String,
     pub(super) stdout_log: PathBuf,
     pub(super) stderr_log: PathBuf,
     pub(super) exit_success: bool,
@@ -252,7 +251,6 @@ impl ProcessEvidence {
         Self {
             label: self.label.clone(),
             pid: self.pid,
-            profile: self.profile.clone(),
             stdout_log: self.stdout_log.clone(),
             stderr_log: self.stderr_log.clone(),
             exit_success: self.exit_success,

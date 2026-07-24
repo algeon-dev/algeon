@@ -20,7 +20,6 @@ use datafusion_nexus::{
         NativeDataFusionPlanningRow, NativeDataFusionPostNativeExecutionPath,
     },
     planner::{NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule},
-    policy::GpuFallbackPolicy,
     session::NexusSessionStateBuilderExt,
 };
 use datafusion_nexus_workloads::tpch::{
@@ -510,10 +509,9 @@ async fn prepare_native_with_handle(
     query: &TpchQuery,
     handle: Arc<nexus_query_engine::runtime::QueryHandle>,
 ) -> DataFusionResult<PreparedNativeQuery> {
-    let optimizer_config = NexusNativeOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
-        .with_native_execution_config(
-            NexusNativeExecutionConfig::bounded_auto_sized().with_query_service_handle(handle),
-        );
+    let optimizer_config = NexusNativeOptimizerConfig::default().with_native_execution_config(
+        NexusNativeExecutionConfig::bounded_auto_sized().with_query_service_handle(handle),
+    );
     let native_rule = Arc::new(NexusNativePhysicalOptimizerRule::new(optimizer_config));
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(tpch_report_session_config())

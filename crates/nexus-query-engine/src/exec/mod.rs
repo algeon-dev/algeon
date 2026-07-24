@@ -382,6 +382,15 @@ use crate::{
     },
 };
 
+/// Validates a complete native plan without constructing a runtime or touching
+/// GPU resources.
+///
+/// Frontends use this capability-first boundary before host work or native
+/// admission. Execution entrypoints call the same validation internally.
+pub fn preflight_query_plan(plan: &QueryPlan) -> Result<()> {
+    validate::validate_query_plan(plan)
+}
+
 static NEXT_PLAN_EXECUTION_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Per-query execution state for unbounded native execution.

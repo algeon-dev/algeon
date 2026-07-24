@@ -42,7 +42,7 @@ fn glue_s3_defaults_use_aws_profile_without_exposing_credential_value_in_report_
     assert_eq!(config.custom_query_file, None);
     assert!(!config.stream_tsv_rows);
     assert!(!config.continue_on_query_error);
-    assert_eq!(config.execution_mode, SmokeQueryExecutionMode::NativeAndCpu);
+    assert_eq!(config.execution_mode, SmokeQueryExecutionMode::NativeAndCpuBaseline);
     assert_eq!(native_iceberg_smoke_report::tpch_glue_table_name("orders", &config.tpch_scale_factor), "orders");
 }
 

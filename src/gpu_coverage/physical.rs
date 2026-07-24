@@ -10,7 +10,7 @@ use super::model::{
 use crate::graph_sql::CugraphAlgoExec;
 use crate::{
     native_exec::{NexusNativeComposedExec, NexusNativeExec, NexusNativeGpuProducerExec},
-    policy::{FallbackReason, GpuFallbackPolicy},
+    policy::FallbackReason,
     report::{CandidateOutcome, PlanningReport},
 };
 
@@ -192,7 +192,6 @@ fn fallback_reason_kind(reason: FallbackReason) -> QueryGpuFallbackReasonKind {
     match reason {
         FallbackReason::UnsupportedExpression => QueryGpuFallbackReasonKind::Expression,
         FallbackReason::UnsupportedType => QueryGpuFallbackReasonKind::ArrowType,
-        FallbackReason::ExplicitCpuPolicy => QueryGpuFallbackReasonKind::Policy,
         FallbackReason::NativeSmallSelectiveTopkCpuPreferred
         | FallbackReason::NativeSmallSelectiveResidualJoinCpuPreferred
         | FallbackReason::NativeSmallSelectiveFullSortCpuPreferred => QueryGpuFallbackReasonKind::Preference,
@@ -227,8 +226,7 @@ fn fallback_reason_kind(reason: FallbackReason) -> QueryGpuFallbackReasonKind {
         | FallbackReason::NativePartitionPreservingSortUnsupported
         | FallbackReason::NativeBoundedJoinUnsupported
         | FallbackReason::NativeAdaptivePipelineUnsupported
-        | FallbackReason::NativeOrderedOutputUnsupported
-        | FallbackReason::TableFormatGpuOnlyLeafNotRewritten => QueryGpuFallbackReasonKind::PlanShape,
+        | FallbackReason::NativeOrderedOutputUnsupported => QueryGpuFallbackReasonKind::PlanShape,
         FallbackReason::UnsupportedOperator => QueryGpuFallbackReasonKind::Operator,
     }
 }
@@ -239,7 +237,7 @@ pub(super) fn runtime_caveats(
     validated_under: &QueryGpuValidatedUnder,
 ) -> Vec<QueryGpuRuntimeCaveat> {
     if !walk.has_gpu {
-        return runtime_caveats_for_overall(overall, validated_under, Vec::new());
+        return runtime_caveats_for_overall(overall, Vec::new());
     }
     let mut caveats = vec![
         QueryGpuRuntimeCaveat::new(
@@ -267,35 +265,27 @@ pub(super) fn runtime_caveats(
             "cuGraph seed, personalization, weight, and device-side checks can still fail at runtime",
         ));
     }
-    caveats.push(QueryGpuRuntimeCaveat::new(
-        "execution_mode_plan_time_only",
-        format!(
-            "validated under native pipeline execution mode {}; strict/adaptive runtime gates still execute later",
-            validated_under.execution_mode
-        ),
-    ));
-    runtime_caveats_for_overall(overall, validated_under, caveats)
+    if let Some(execution_mode) = &validated_under.execution_mode {
+        caveats.push(QueryGpuRuntimeCaveat::new(
+            "execution_mode_plan_time_only",
+            format!(
+                "validated under native pipeline execution mode {execution_mode}; strict/adaptive runtime gates still execute later"
+            ),
+        ));
+    }
+    runtime_caveats_for_overall(overall, caveats)
 }
 
 pub(super) fn runtime_caveats_for_overall(
-    overall: &QueryGpuCoverageOverall,
-    validated_under: &QueryGpuValidatedUnder,
-    mut caveats: Vec<QueryGpuRuntimeCaveat>,
+    _overall: &QueryGpuCoverageOverall,
+    caveats: Vec<QueryGpuRuntimeCaveat>,
 ) -> Vec<QueryGpuRuntimeCaveat> {
-    if validated_under.actual_policy == GpuFallbackPolicy::GpuOnly.to_string()
-        && !matches!(overall, QueryGpuCoverageOverall::NoCpuInPlannedPath)
-    {
-        caveats.push(QueryGpuRuntimeCaveat::new(
-            "gpu_only_policy_would_error",
-            "the caller's GpuOnly policy treats non-full-GPU validation outcomes as hard planning failures; validation plans diagnostically under GpuPreferred to retain fallback evidence",
-        ));
-    }
     caveats
 }
 
 pub(super) fn planning_diagnostics_did_io(diagnostics: &crate::planner::NativePlanningDiagnostics) -> bool {
-    diagnostics.input_plan_root.contains("NexusTableFormatScanExec")
-        || diagnostics.input_plan_shape.contains("NexusTableFormatScanExec")
+    diagnostics.input_plan_root.contains("NexusIcebergScanExec")
+        || diagnostics.input_plan_shape.contains("NexusIcebergScanExec")
         || diagnostics.report.outcomes().iter().any(|outcome| match outcome {
             CandidateOutcome::Rejected { reason, .. } => fallback_reason_is_table_format(*reason),
             CandidateOutcome::Rewritten { .. } => false,
@@ -317,6 +307,5 @@ fn fallback_reason_is_table_format(reason: FallbackReason) -> bool {
             | FallbackReason::IcebergRowSelectionUnsupported
             | FallbackReason::IcebergObjectStoreReadUnsupported
             | FallbackReason::IcebergSnapshotUnsupported
-            | FallbackReason::TableFormatGpuOnlyLeafNotRewritten
     )
 }

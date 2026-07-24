@@ -24,7 +24,6 @@ use datafusion_nexus::{
         NativeTaskOperatorMetricRow, NativeTaskRuntimeMetricRow,
     },
     planner::{NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule},
-    policy::GpuFallbackPolicy,
     session::NexusSessionStateBuilderExt,
 };
 use datafusion_nexus_workloads::tpch::{
@@ -34,7 +33,7 @@ use datafusion_nexus_workloads::tpch::{
 };
 use nexus_query_engine::mode::NativePipelineExecutionMode;
 
-use crate::report_workload::{gpu_fallback_policy_label, tpch::tpch_report_session_config};
+use crate::report_workload::tpch::tpch_report_session_config;
 
 mod case_runner;
 mod config;

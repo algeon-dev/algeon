@@ -1,4 +1,4 @@
-use std::{fmt, sync::Arc};
+use std::{fmt, num::NonZeroUsize, sync::Arc};
 
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::common::{DataFusionError, Result};
@@ -10,7 +10,55 @@ use nexus_query_engine::plan::{
 };
 
 use super::plan_error;
-use crate::native_exec::NexusNativeExecutionConfig;
+use crate::{
+    error::{Error, ErrorCode},
+    native_exec::NexusNativeExecutionConfig,
+};
+
+/// Cumulative host-memory ceilings for one explicit CPU-to-GPU-to-CPU graph
+/// island.
+///
+/// Input staging covers the edge source and every graph side input under one
+/// shared limit. Output staging covers all eagerly materialized Arrow batches
+/// retained until GPU ownership has been released.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GpuIslandHostBoundaryConfig {
+    max_input_staging_bytes: NonZeroUsize,
+    max_output_staging_bytes: NonZeroUsize,
+}
+
+impl GpuIslandHostBoundaryConfig {
+    pub const DEFAULT_MAX_INPUT_STAGING_BYTES: usize = 1024 * 1024 * 1024;
+    pub const DEFAULT_MAX_OUTPUT_STAGING_BYTES: usize = 1024 * 1024 * 1024;
+
+    /// Creates finite non-zero cumulative input and output staging limits.
+    pub fn try_new(max_input_staging_bytes: usize, max_output_staging_bytes: usize) -> Result<Self> {
+        let max_input_staging_bytes = NonZeroUsize::new(max_input_staging_bytes)
+            .ok_or_else(|| plan_error("cuGraph GPU-island input staging limit must be non-zero"))?;
+        let max_output_staging_bytes = NonZeroUsize::new(max_output_staging_bytes)
+            .ok_or_else(|| plan_error("cuGraph GPU-island output staging limit must be non-zero"))?;
+        Ok(Self { max_input_staging_bytes, max_output_staging_bytes })
+    }
+
+    pub fn max_input_staging_bytes(self) -> usize {
+        self.max_input_staging_bytes.get()
+    }
+
+    pub fn max_output_staging_bytes(self) -> usize {
+        self.max_output_staging_bytes.get()
+    }
+}
+
+impl Default for GpuIslandHostBoundaryConfig {
+    fn default() -> Self {
+        Self {
+            max_input_staging_bytes: NonZeroUsize::new(Self::DEFAULT_MAX_INPUT_STAGING_BYTES)
+                .expect("default cuGraph input staging limit is non-zero"),
+            max_output_staging_bytes: NonZeroUsize::new(Self::DEFAULT_MAX_OUTPUT_STAGING_BYTES)
+                .expect("default cuGraph output staging limit is non-zero"),
+        }
+    }
+}
 
 pub const CUGRAPH_PAGERANK_FUNCTION: &str = "cugraph_pagerank";
 pub const CUGRAPH_PERSONALIZED_PAGERANK_FUNCTION: &str = "cugraph_personalized_pagerank";
@@ -47,6 +95,8 @@ pub struct CugraphSqlConfig {
     /// Native execution policy used when a cuGraph edge source has not already
     /// been rewritten into a nexus native execution node.
     pub native_execution_config: NexusNativeExecutionConfig,
+    /// Explicit CPU/GPU island host-boundary limits.
+    pub host_boundary_config: GpuIslandHostBoundaryConfig,
 }
 
 impl Default for CugraphSqlConfig {
@@ -54,6 +104,7 @@ impl Default for CugraphSqlConfig {
         Self {
             default_graph_options: CugraphGraphOptions::default(),
             native_execution_config: NexusNativeExecutionConfig::bounded_auto_sized(),
+            host_boundary_config: GpuIslandHostBoundaryConfig::default(),
         }
     }
 }
@@ -68,6 +119,12 @@ impl CugraphSqlConfig {
     /// native context.
     pub fn with_native_execution_config(mut self, native_execution_config: NexusNativeExecutionConfig) -> Self {
         self.native_execution_config = native_execution_config;
+        self
+    }
+
+    /// Set cumulative host input/output limits for explicit cuGraph GPU islands.
+    pub fn with_host_boundary_config(mut self, host_boundary_config: GpuIslandHostBoundaryConfig) -> Self {
+        self.host_boundary_config = host_boundary_config;
         self
     }
 }
@@ -827,11 +884,19 @@ pub(crate) fn validate_vertex_id_domain_support_for_call(
     if support.accepts_arrow_data_type(&data_type) {
         return Ok(());
     }
-    Err(plan_error(format!(
-        "cuGraph {} vertex columns have unsupported dtype {data_type:?}; supported vertex dtypes: {}",
-        algorithm.function_name(),
-        support.supported_dtypes_label()
-    )))
+    Err(Error::new(
+        ErrorCode::RequiredGpuOperationUnsupported,
+        "datafusion_nexus.cugraph_sql.vertex_id_type.preflight",
+        format!(
+            "cuGraph {} vertex columns have unsupported dtype {data_type:?}; supported vertex dtypes: {}",
+            algorithm.function_name(),
+            support.supported_dtypes_label()
+        ),
+    )
+    .with_fact("algorithm", algorithm.function_name())
+    .with_fact("vertex_dtype", format!("{data_type:?}"))
+    .with_fact("supported_vertex_dtypes", support.supported_dtypes_label())
+    .into())
 }
 
 pub(crate) fn is_numeric_vertex_dtype(data_type: &DataType) -> bool {

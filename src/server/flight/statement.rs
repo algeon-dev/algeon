@@ -141,12 +141,6 @@ impl DatafusionNexusFlightSqlService {
             planning_lease.finish_captured("planning", &status, captured);
             return Err(status);
         }
-        if let Some(error) = fast_fail_unsupported_table_format_operator_plan(&logical_plan) {
-            let (status, captured) = adapter_error_to_status_and_capture(error);
-            let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
-            planning_lease.finish_captured("planning", &status, captured);
-            return Err(status);
-        }
         let schema = flight_info_result_schema(&logical_plan);
 
         // Both ticket variants carry the per-execution `query_id` bytes. For

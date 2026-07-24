@@ -2,7 +2,7 @@
 async fn iceberg_provider_reads_non_identity_partition_source_column_from_parquet() {
     let schema = transformed_partition_test_schema();
     let planner = Arc::new(RecordingPlanner::new(identity_and_day_partition_scan_plan(Arc::clone(&schema))));
-    let provider = Arc::new(NexusIcebergTableProvider::from_table_format_planner(Arc::clone(&schema), planner.clone()));
+    let provider = Arc::new(test_iceberg_provider(Arc::clone(&schema), planner.clone()));
     let ctx = SessionContext::new_with_config(direct_friendly_session_config());
     ctx.register_table("iceberg_t", provider).unwrap();
 
@@ -37,7 +37,7 @@ async fn iceberg_provider_reads_non_identity_partition_source_column_from_parque
 async fn iceberg_provider_materializes_identity_partition_only_projection() {
     let schema = transformed_partition_test_schema();
     let planner = Arc::new(RecordingPlanner::new(identity_and_day_partition_scan_plan(Arc::clone(&schema))));
-    let provider = Arc::new(NexusIcebergTableProvider::from_table_format_planner(Arc::clone(&schema), planner));
+    let provider = Arc::new(test_iceberg_provider(Arc::clone(&schema), planner));
     let ctx = SessionContext::new_with_config(direct_friendly_session_config());
     ctx.register_table("iceberg_t", provider).unwrap();
 
@@ -60,7 +60,7 @@ async fn iceberg_provider_materializes_identity_partition_only_projection() {
 async fn iceberg_provider_materializes_timestamp_and_decimal_identity_partitions() {
     let schema = timestamp_decimal_partition_test_schema();
     let planner = Arc::new(RecordingPlanner::new(timestamp_decimal_identity_partition_scan_plan(Arc::clone(&schema))));
-    let provider = Arc::new(NexusIcebergTableProvider::from_table_format_planner(Arc::clone(&schema), planner));
+    let provider = Arc::new(test_iceberg_provider(Arc::clone(&schema), planner));
     let ctx = SessionContext::new_with_config(direct_friendly_session_config());
     ctx.register_table("iceberg_t", provider).unwrap();
 
@@ -97,7 +97,7 @@ async fn iceberg_provider_rejects_mixed_file_and_partition_source_mapping_for_on
             TableFormatColumnRole::Projected,
         ));
     let planner = Arc::new(RecordingPlanner::new(plan));
-    let provider = Arc::new(NexusIcebergTableProvider::from_table_format_planner(Arc::clone(&schema), planner));
+    let provider = Arc::new(test_iceberg_provider(Arc::clone(&schema), planner));
     let ctx = SessionContext::new_with_config(direct_friendly_session_config());
     ctx.register_table("iceberg_t", provider).unwrap();
 
