@@ -186,6 +186,18 @@ impl DataFrame {
         self.distinct(&subset_names, opts.keep).map_err(|e| e.reanchor("dataframe::drop_duplicates"))
     }
 
+    /// Remove consecutive duplicate rows.
+    ///
+    /// Rows that compare equal on the selected columns must already be
+    /// adjacent. Use [`drop_duplicates`](Self::drop_duplicates) otherwise.
+    pub fn drop_consecutive_duplicates(&self, opts: DropDuplicatesOptions) -> Result<Self> {
+        let subset_names: Vec<&str> =
+            if opts.subset.is_empty() { self.column_names() } else { opts.subset.iter().map(|s| s.as_str()).collect() };
+
+        let output_domain = Arc::clone(&self.domain);
+        self.unique_impl(&subset_names, opts.keep, output_domain, "dataframe::drop_consecutive_duplicates")
+    }
+
     pub(crate) fn drop_duplicates_in_context(
         &self,
         opts: DropDuplicatesOptions,
@@ -196,6 +208,23 @@ impl DataFrame {
 
         let output_domain = ctx.resolve_output_domain(&self.domain)?;
         self.distinct_impl(&subset_names, opts.keep, output_domain, "dataframe::with_execution::drop_duplicates")
+    }
+
+    pub(crate) fn drop_consecutive_duplicates_in_context(
+        &self,
+        opts: DropDuplicatesOptions,
+        ctx: &ExecutionOverrides<'_>,
+    ) -> Result<Self> {
+        let subset_names: Vec<&str> =
+            if opts.subset.is_empty() { self.column_names() } else { opts.subset.iter().map(|s| s.as_str()).collect() };
+
+        let output_domain = ctx.resolve_output_domain(&self.domain)?;
+        self.unique_impl(
+            &subset_names,
+            opts.keep,
+            output_domain,
+            "dataframe::with_execution::drop_consecutive_duplicates",
+        )
     }
 
     /// Replace null values in a single column with a plain Rust value.
@@ -257,6 +286,28 @@ impl DataFrame {
         let result_table = stream_compaction::distinct_impl(
             &tv,
             stream_compaction::DistinctConfig::new(&key_indices, keep, NullEquality::Equal, NanEquality::AllEqual),
+            stream_compaction::StreamCompactionExecution::new(&output_domain, execution.exec_options(), operation),
+        )?;
+        Self::from_table_with_names(result_table, self.column_names_owned())
+    }
+
+    fn unique_impl(
+        &self,
+        subset: &[&str],
+        keep: DuplicateKeepOption,
+        output_domain: Arc<ExecutionDomain>,
+        operation: &'static str,
+    ) -> Result<Self> {
+        let execution = ResolvedExecution::with_output_domain(Arc::clone(&output_domain), [&self.domain], operation)?;
+        let output_domain = Arc::clone(execution.output_domain());
+
+        let key_indices = resolve_column_names(&self.columns, subset, operation)?;
+        let tv = self.build_table_view()?;
+        let result_table = stream_compaction::unique_impl(
+            &tv,
+            &key_indices,
+            keep,
+            NullEquality::Equal,
             stream_compaction::StreamCompactionExecution::new(&output_domain, execution.exec_options(), operation),
         )?;
         Self::from_table_with_names(result_table, self.column_names_owned())

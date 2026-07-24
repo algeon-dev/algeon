@@ -60,6 +60,20 @@ cudf_status_t cudf_distinct_ex(cudf_table_view_handle input,
                                cudf_table_handle* out,
                                const cudf_exec_options_t* options);
 
+/// Create a new table by removing consecutive duplicate rows with explicit
+/// execution context.
+///
+/// Equal rows must already be adjacent for all duplicates to be removed.
+/// `options` must be non-NULL and must carry an explicit device, stream, and
+/// memory resource. `options->mr` must outlive the returned table.
+cudf_status_t cudf_unique_ex(cudf_table_view_handle input,
+                             const int* keys,
+                             int num_keys,
+                             cudf_duplicate_keep_option_t keep,
+                             cudf_stream_compaction_null_equality_t null_equality,
+                             cudf_table_handle* out,
+                             const cudf_exec_options_t* options);
+
 #ifdef __cplusplus
 }
 #endif

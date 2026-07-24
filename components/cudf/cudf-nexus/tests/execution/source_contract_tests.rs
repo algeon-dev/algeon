@@ -141,6 +141,10 @@ const SAFE_LAYER_NON_EXECUTION_FFI_ALLOWLIST: &[(&str, &str)] = &[
     ("cudf_filtered_join_probe_device_allocated_size", "metadata-only cached join planning accessor"),
     ("cudf_filtered_join_probe_output_size", "metadata-only cached join planning accessor"),
     ("cudf_free_column_array", "pure lifecycle for returned handle arrays"),
+    (
+        "cudf_gather_fixed_width_dont_check_preflight",
+        "allocation-free owner preflight from explicit device and column metadata",
+    ),
     ("cudf_gds_driver_available", "process-local GDS capability probe with no stream or allocator inputs"),
     ("cudf_groupby_scan_aggregation_create", "descriptor-only aggregation factory"),
     ("cudf_groupby_scan_aggregation_destroy", "pure lifecycle"),
@@ -213,6 +217,10 @@ const SAFE_LAYER_NON_EXECUTION_FFI_ALLOWLIST: &[(&str, &str)] = &[
     ("cudf_scalar_destroy", "provenance-bound lifecycle"),
     ("cudf_scan_aggregation_create", "descriptor-only aggregation factory"),
     ("cudf_scan_aggregation_destroy", "pure lifecycle"),
+    (
+        "cudf_sorted_order_radix_preflight",
+        "allocation-free owner preflight with explicit device and no stream or allocator inputs",
+    ),
     ("cudf_stream_create", "runtime stream lifecycle"),
     ("cudf_stream_destroy", "runtime stream lifecycle"),
     ("cudf_stream_is_ready", "runtime stream state query with explicit stream handle"),

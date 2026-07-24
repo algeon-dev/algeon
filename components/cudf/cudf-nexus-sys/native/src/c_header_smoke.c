@@ -132,6 +132,13 @@ static int cudf_rust_c_header_smoke(void)
                        cudf_table_handle*,
 
                        const cudf_exec_options_t*)  = &cudf_gather_ex;
+  cudf_status_t (*f22_unique)(cudf_table_view_handle,
+                              const int*,
+                              int,
+                              cudf_duplicate_keep_option_t,
+                              cudf_stream_compaction_null_equality_t,
+                              cudf_table_handle*,
+                              const cudf_exec_options_t*) = &cudf_unique_ex;
   cudf_status_t (*f22_gather_preflight)(int64_t,
                                         const cudf_gather_fixed_width_column_metadata_t*,
                                         int32_t,
@@ -326,6 +333,7 @@ static int cudf_rust_c_header_smoke(void)
   (void)f20;
   (void)f21;
   (void)f22;
+  (void)f22_unique;
   (void)f22_gather_preflight;
   (void)f22_scatter_ex;
   (void)f22ast0;

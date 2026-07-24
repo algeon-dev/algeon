@@ -152,6 +152,36 @@ fn test_unique_basic_i32() {
 }
 
 #[test]
+fn test_adjacent_unique_preserves_separated_equal_groups_and_keep_policy() {
+    let key = column_from_slice(&[1i32, 1, 2, 1]).unwrap();
+    let value = column_from_slice(&[10i32, 11, 20, 12]).unwrap();
+    let table = Table::from_columns(vec![key, value]).unwrap();
+    let tv = table.testing_view().unwrap();
+
+    let first = stream_compaction::unique(
+        &tv,
+        &[0],
+        stream_compaction::DuplicateKeepOption::KeepFirst,
+        stream_compaction::NullEquality::Equal,
+    )
+    .unwrap();
+    let first = first.testing_view().unwrap();
+    assert_eq!(first.column(0).unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 1]);
+    assert_eq!(first.column(1).unwrap().to_vec::<i32>().unwrap(), vec![10, 20, 12]);
+
+    let last = stream_compaction::unique(
+        &tv,
+        &[0],
+        stream_compaction::DuplicateKeepOption::KeepLast,
+        stream_compaction::NullEquality::Equal,
+    )
+    .unwrap();
+    let last = last.testing_view().unwrap();
+    assert_eq!(last.column(0).unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 1]);
+    assert_eq!(last.column(1).unwrap().to_vec::<i32>().unwrap(), vec![11, 20, 12]);
+}
+
+#[test]
 fn test_unique_no_duplicates() {
     let col = column_from_slice(&[1i32, 2, 3]).unwrap();
     let table = Table::from_columns(vec![col]).unwrap();
