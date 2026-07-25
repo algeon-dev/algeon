@@ -4,10 +4,12 @@
 //! optimized physical path contains known DataFusion CPU execution. It is a
 //! plan-time validation surface, not a runtime admission or success guarantee.
 
+mod explain_gpu;
 mod model;
 mod physical;
 mod preflight;
 mod recursion_guard;
+mod remedy;
 
 #[cfg(test)]
 #[path = "tests.rs"]
@@ -17,10 +19,13 @@ use std::sync::Arc;
 
 use datafusion::{execution::SessionStateBuilder, prelude::SessionContext};
 
+pub(crate) use self::explain_gpu::ExplainGpuOutputMode;
+#[cfg(feature = "server")]
+pub(crate) use self::explain_gpu::parse_explain_gpu;
 pub use self::model::{
     QueryGpuCandidateOutcome, QueryGpuCandidateReasonKind, QueryGpuCandidateSelectionOutcome, QueryGpuCoverage,
     QueryGpuCoverageConfidence, QueryGpuCoverageDomains, QueryGpuCoverageOverall, QueryGpuCugraphCall,
-    QueryGpuRejectionPhase, QueryGpuRuntimeCaveat, QueryGpuValidatedUnder,
+    QueryGpuRejectionPhase, QueryGpuRemedy, QueryGpuRemedyKind, QueryGpuRuntimeCaveat, QueryGpuValidatedUnder,
 };
 use self::{
     physical::{candidate_outcomes_from_report, cugraph_calls, planning_diagnostics_did_io},
@@ -36,6 +41,8 @@ use crate::{
 
 /// SQL table function that exposes query GPU coverage validation.
 pub const NEXUS_EXPLAIN_COVERAGE_FUNCTION: &str = "nexus_explain_coverage";
+/// Version of the shared multi-row UDTF and `EXPLAIN GPU` output schema.
+pub const EXPLAIN_GPU_SCHEMA_VERSION: u8 = 1;
 pub(crate) const COVERAGE_VALIDATOR_RECURSION_REASON_CODE: &str = "coverage_validator_recursion_unsupported";
 pub(crate) const GPU_COVERAGE_REJECTION_REASON_FACT: &str = "gpu_coverage_rejection_reason";
 
@@ -95,7 +102,7 @@ pub async fn validate_query(ctx: &SessionContext, sql: impl AsRef<str>) -> crate
             return Ok(QueryGpuCoverage::rejected_with_diagnostics(
                 validated_under,
                 QueryGpuRejection::from_datafusion_error(phase, &error),
-                diagnostics.as_ref().map(|diagnostics| &diagnostics.report),
+                diagnostics.as_ref(),
                 planning_did_io,
             ));
         },
@@ -114,5 +121,6 @@ pub async fn validate_query(ctx: &SessionContext, sql: impl AsRef<str>) -> crate
         candidate_outcomes,
         cugraph_calls,
         planning_did_io,
+        diagnostics.as_ref(),
     ))
 }

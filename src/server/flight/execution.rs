@@ -106,6 +106,145 @@ impl DatafusionNexusFlightSqlService {
             return Err(status);
         }
 
+        if let Some(output_mode) = ticket_kind.explain_gpu_output_mode() {
+            // `EXPLAIN GPU` is a plan-time diagnostic. It uses the same
+            // per-query context, coordinator lease, and cancellation wiring as
+            // ordinary statements, but deliberately never creates an
+            // executable physical stream or acquires GPU admission.
+            let planning = self.coordinated_query_planning(
+                &query_id,
+                correlation_id.as_deref(),
+                native_cancellation.clone(),
+                observation,
+                activity_factory,
+            );
+            let coverage = tokio::select! {
+                result = validate_query(&planning.ctx, &sql)
+                    .instrument(Self::query_stage_span(
+                        Some(&query_span),
+                        &query_id,
+                        correlation_id.as_deref(),
+                        "planning",
+                    )) => match result {
+                    Ok(coverage) => coverage,
+                    Err(error) => {
+                        let (status, captured) = adapter_error_to_status_and_capture(error);
+                        let status = status_with_query_id_and_correlation_id(
+                            status,
+                            &query_id,
+                            correlation_id.as_deref(),
+                        );
+                        coordinator_terminal.finish_captured("planning", &status, captured);
+                        return Err(status);
+                    },
+                },
+                _ = token.cancelled() => {
+                    native_cancellation.cancel();
+                    let (status, captured) = adapter_error_to_status_and_capture(cancellation_error(&self.shutdown_token));
+                    let status = status_with_query_id_and_correlation_id(
+                        status,
+                        &query_id,
+                        correlation_id.as_deref(),
+                    );
+                    coordinator_terminal.finish_captured("planning", &status, captured);
+                    return Err(status);
+                },
+            };
+            let batch = match coverage_batch(&coverage, output_mode, Some(&query_id)) {
+                Ok(batch) => batch,
+                Err(error) => {
+                    let (status, captured) = datafusion_error_to_status_and_capture(
+                        error,
+                        "datafusion_nexus.server.flight.do_get_statement.explain_gpu.project",
+                    );
+                    let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
+                    coordinator_terminal.finish_captured("planning", &status, captured);
+                    return Err(status);
+                },
+            };
+            let token_for_body = token.clone();
+            let native_cancellation_for_body = native_cancellation.clone();
+            let shutdown_token_for_body = self.shutdown_token.clone();
+            let query_id_for_body = query_id.clone();
+            let correlation_id_for_body = correlation_id.clone();
+            let terminal_for_body = Arc::clone(&coordinator_terminal);
+            let output_counters_for_body = Arc::clone(&output_counters);
+            let body = futures::stream::once(async move { Ok::<_, FlightError>(batch) })
+                .map(move |result| {
+                    if token_for_body.is_cancelled() {
+                        native_cancellation_for_body.cancel();
+                        let (status, captured) =
+                            adapter_error_to_status_and_capture(cancellation_error(&shutdown_token_for_body));
+                        let status = status_with_query_id_and_correlation_id(
+                            status,
+                            &query_id_for_body,
+                            correlation_id_for_body.as_deref(),
+                        );
+                        terminal_for_body.finish_captured("stream", &status, captured);
+                        return Err(FlightError::from(status));
+                    }
+                    result.inspect(|batch| {
+                        output_counters_for_body.record_output(batch.num_rows(), batch.get_array_memory_size());
+                    })
+                })
+                .take_until(token.clone().cancelled_owned());
+            // Match ordinary query streams: a cancellation tail owns the
+            // terminal cancellation status, and a distinct end stream marks
+            // success only after the source has been fully consumed.
+            let cancel_token_for_tail = token.clone();
+            let shutdown_token_for_tail = self.shutdown_token.clone();
+            let query_id_for_tail = query_id.clone();
+            let correlation_id_for_tail = correlation_id.clone();
+            let terminal_for_tail = Arc::clone(&coordinator_terminal);
+            let tail = futures::stream::once(async move {
+                cancel_token_for_tail.is_cancelled().then(|| {
+                    native_cancellation.cancel();
+                    let (status, captured) =
+                        adapter_error_to_status_and_capture(cancellation_error(&shutdown_token_for_tail));
+                    let status = status_with_query_id_and_correlation_id(
+                        status,
+                        &query_id_for_tail,
+                        correlation_id_for_tail.as_deref(),
+                    );
+                    terminal_for_tail.finish_captured("stream", &status, captured);
+                    Err(FlightError::from(status))
+                })
+            })
+            .filter_map(|result| async move { result });
+            let terminal_for_end = Arc::clone(&coordinator_terminal);
+            let end = futures::stream::once(async move {
+                terminal_for_end.finish_success("stream");
+                None::<Result<arrow::record_batch::RecordBatch, FlightError>>
+            })
+            .filter_map(|result| async move { result });
+            let stream = body.chain(tail).chain(end).map(move |result| {
+                // Hold cancellation and coordinator cleanup state until Flight
+                // has consumed the diagnostic stream's terminal event.
+                let _guard = &guard;
+                result
+            });
+            let terminal_for_encode = Arc::clone(&coordinator_terminal);
+            let query_id_for_encode = query_id.clone();
+            let correlation_id_for_encode = correlation_id.clone();
+            let stream = encode_flight_data_stream(coverage_schema(), stream).map_err(move |error| {
+                let (status, captured) = arrow_flight_error_to_status_and_capture(
+                    error,
+                    "datafusion_nexus.server.flight.do_get_statement.explain_gpu.encode",
+                    "failed to encode EXPLAIN GPU result stream",
+                );
+                let status = status_with_query_id_and_correlation_id(
+                    status,
+                    &query_id_for_encode,
+                    correlation_id_for_encode.as_deref(),
+                );
+                terminal_for_encode.finish_captured("flight_encode", &status, captured);
+                status
+            });
+            let mut response = Response::new(Box::pin(stream) as <Self as FlightService>::DoGetStream);
+            attach_query_response_metadata(&mut response, &query_id, correlation_id.as_deref());
+            return Ok(response);
+        }
+
         // DataGrip-class clients re-run held prepared-statement handles. A
         // no-result-set DDL handle that already executed once is a no-op on
         // re-execution: return an empty result so the client's `execute()`

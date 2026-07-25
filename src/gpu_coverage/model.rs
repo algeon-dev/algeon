@@ -7,8 +7,8 @@ use super::preflight::QueryGpuRejection;
 use crate::{
     final_plan_observation::FinalPlanObservation,
     physical_plan::physical_plan_shape,
-    planner::FinalPlanDisposition,
-    report::{NativeCandidateCostEvidence, PlanningReport},
+    planner::{FinalPlanDisposition, NativePlanningDiagnostics},
+    report::NativeCandidateCostEvidence,
 };
 
 /// Structured answer for "will this query's planned path avoid DataFusion CPU execution?"
@@ -27,7 +27,15 @@ pub struct QueryGpuCoverage {
     pub planning_did_io: bool,
     pub validated_under: QueryGpuValidatedUnder,
     pub confidence: QueryGpuCoverageConfidence,
+    /// Root captured from the authoritative DataFusion physical plan before
+    /// the native optimizer attempted replacement.
+    pub input_physical_plan_root: Option<String>,
+    /// Shape captured from the authoritative DataFusion physical plan before
+    /// the native optimizer attempted replacement.
+    pub input_physical_plan_shape: Option<String>,
+    /// Root of the completed executable plan after native optimization.
     pub physical_plan_root: Option<String>,
+    /// Shape of the completed executable plan after native optimization.
     pub physical_plan_shape: Option<String>,
 }
 
@@ -39,6 +47,7 @@ impl QueryGpuCoverage {
         candidate_outcomes: Vec<QueryGpuCandidateOutcome>,
         cugraph_calls: Vec<QueryGpuCugraphCall>,
         planning_did_io: bool,
+        diagnostics: Option<&NativePlanningDiagnostics>,
     ) -> Self {
         debug_assert_ne!(observation.disposition, FinalPlanDisposition::Rejected);
         let overall = match observation.disposition {
@@ -67,6 +76,12 @@ impl QueryGpuCoverage {
             planning_did_io,
             validated_under,
             confidence: QueryGpuCoverageConfidence::PlanTimeOnly,
+            input_physical_plan_root: diagnostics
+                .map(|diagnostics| diagnostics.input_plan_root.clone())
+                .filter(|root| !root.is_empty()),
+            input_physical_plan_shape: diagnostics
+                .map(|diagnostics| diagnostics.input_plan_shape.clone())
+                .filter(|shape| !shape.is_empty()),
             physical_plan_root: Some(plan.name().to_string()),
             physical_plan_shape: Some(physical_plan_shape(plan)),
         }
@@ -79,7 +94,7 @@ impl QueryGpuCoverage {
     pub(super) fn rejected_with_diagnostics(
         validated_under: QueryGpuValidatedUnder,
         rejection: QueryGpuRejection,
-        report: Option<&PlanningReport>,
+        diagnostics: Option<&NativePlanningDiagnostics>,
         planning_did_io: bool,
     ) -> Self {
         let overall = QueryGpuCoverageOverall::Rejected {
@@ -92,12 +107,20 @@ impl QueryGpuCoverage {
             overall,
             final_disposition: FinalPlanDisposition::Rejected,
             domains: QueryGpuCoverageDomains::default(),
-            candidate_outcomes: report.map(super::physical::candidate_outcomes_from_report).unwrap_or_default(),
+            candidate_outcomes: diagnostics
+                .map(|diagnostics| super::physical::candidate_outcomes_from_report(&diagnostics.report))
+                .unwrap_or_default(),
             cugraph_calls: Vec::new(),
             runtime_caveats: Vec::new(),
             planning_did_io,
             validated_under,
             confidence: QueryGpuCoverageConfidence::PlanTimeOnly,
+            input_physical_plan_root: diagnostics
+                .map(|diagnostics| diagnostics.input_plan_root.clone())
+                .filter(|root| !root.is_empty()),
+            input_physical_plan_shape: diagnostics
+                .map(|diagnostics| diagnostics.input_plan_shape.clone())
+                .filter(|shape| !shape.is_empty()),
             physical_plan_root: None,
             physical_plan_shape: None,
         }
@@ -115,6 +138,8 @@ impl QueryGpuCoverage {
             "planning_did_io": self.planning_did_io,
             "validated_under": self.validated_under.to_json(),
             "confidence": self.confidence.as_str(),
+            "input_physical_plan_root": self.input_physical_plan_root,
+            "input_physical_plan_shape": self.input_physical_plan_shape,
             "physical_plan_root": self.physical_plan_root,
             "physical_plan_shape": self.physical_plan_shape,
         })
@@ -135,6 +160,17 @@ impl QueryGpuCoverageOverall {
             Self::NoCpuInPlannedPath => "no_cpu_in_planned_path",
             Self::PartialGpuPlanned { .. } => "partial_gpu_planned",
             Self::CpuOnly => "cpu_only",
+            Self::Rejected { .. } => "rejected",
+        }
+    }
+
+    /// Stable, user-facing execution-path vocabulary shared by the UDTF and
+    /// `EXPLAIN GPU` projection.
+    pub const fn as_gpu_path(&self) -> &'static str {
+        match self {
+            Self::NoCpuInPlannedPath => "native",
+            Self::PartialGpuPlanned { .. } => "partial_native",
+            Self::CpuOnly => "cpu",
             Self::Rejected { .. } => "rejected",
         }
     }
@@ -250,6 +286,8 @@ impl QueryGpuCandidateReasonKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueryGpuCandidateOutcome {
     pub selection: QueryGpuCandidateSelectionOutcome,
+    /// Stable family derived from the native candidate shape.
+    pub candidate_family: String,
     /// Present only when a capability or cost decision has a stable reason.
     pub reason_code: Option<String>,
     /// Present only when a capability or cost decision has a reason category.
@@ -257,6 +295,8 @@ pub struct QueryGpuCandidateOutcome {
     pub detail: String,
     /// Triage category for an unselected candidate, when available.
     pub category: Option<String>,
+    /// Actionable guidance for a stable capability or cost reason.
+    pub remedy: Option<QueryGpuRemedy>,
     pub cost_evidence: Option<NativeCandidateCostEvidence>,
 }
 
@@ -264,12 +304,52 @@ impl QueryGpuCandidateOutcome {
     fn to_json(&self) -> Value {
         json!({
             "outcome": self.selection.as_str(),
+            "candidate_family": self.candidate_family,
             "reason_code": self.reason_code,
             "reason_kind": self.reason_kind.map(QueryGpuCandidateReasonKind::as_str),
             "detail": self.detail,
             "category": self.category,
+            "remedy_code": self.remedy.map(|remedy| remedy.code),
+            "remedy_kind": self.remedy.map(|remedy| remedy.kind.as_str()),
+            "remedy": self.remedy.map(|remedy| remedy.guidance),
             "cost_evidence": self.cost_evidence.as_ref().map(|evidence| evidence.to_json()),
         })
+    }
+}
+
+/// Stable category for a prescribed action after a candidate was not selected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueryGpuRemedyKind {
+    UserAction,
+    ConfigAction,
+    EngineGap,
+    CudfRsGap,
+    CpuPreferred,
+}
+
+impl QueryGpuRemedyKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::UserAction => "user_action",
+            Self::ConfigAction => "config_action",
+            Self::EngineGap => "engine_gap",
+            Self::CudfRsGap => "cudf_rs_gap",
+            Self::CpuPreferred => "cpu_preferred",
+        }
+    }
+}
+
+/// Stable remedy code and human-readable guidance for a candidate reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QueryGpuRemedy {
+    pub code: &'static str,
+    pub kind: QueryGpuRemedyKind,
+    pub guidance: &'static str,
+}
+
+impl QueryGpuRemedy {
+    pub const fn new(code: &'static str, kind: QueryGpuRemedyKind, guidance: &'static str) -> Self {
+        Self { code, kind, guidance }
     }
 }
 

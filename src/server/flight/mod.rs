@@ -71,6 +71,8 @@ use crate::graph_sql::CugraphSqlConfig;
 use crate::session::NexusSessionStateBuilderExt;
 use crate::{
     error::{DataFusionErrorExt, Error, ErrorCode, ErrorSourceDiagnostics},
+    gpu_coverage::{ExplainGpuOutputMode, parse_explain_gpu, validate_query},
+    gpu_coverage_sql::{coverage_batch, coverage_schema},
     native_exec::{NativeMetricsCapture, NativeObservationActivityFactory},
     planner::{NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule},
     session::install_nexus_native_rule_with_session_config,

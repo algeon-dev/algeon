@@ -43,10 +43,12 @@ runs.
   facts with its executable CPU delegate; remote catalogs remain read-only, and
   views and scratch tables can live in an opt-in mutable local workspace overlay.
 - **Explainable planning.** Planning reports record relational candidate
-  outcomes and the exact completed-plan disposition. `nexus_explain_coverage('<sql>')`
-  returns that evidence as machine-readable JSON before a query runs, and errors
-  cross the DataFusion boundary as typed values with stable identity rather than
-  log text — a surface application code and agents can consume directly.
+  outcomes and the exact completed-plan disposition. Use
+  `nexus_explain_coverage('<sql>')` in every native session or `EXPLAIN GPU <sql>`
+  through Flight SQL; both return the same remedy-bearing coverage evidence
+  before a query runs. Errors cross the DataFusion boundary as typed values with
+  stable identity rather than log text — a surface application code and agents
+  can consume directly.
 - **Bounded GPU memory.** Bounded mode plans each query against a GPU memory
   budget: shapes without a provable memory contract are rejected at planning
   time, admitted queries receive their reservation before execution, and runtime

@@ -91,7 +91,7 @@ pub(super) fn native_parquet_object_store_scan_is_supported(file_scan: &FileScan
     object_store_url.starts_with("file://") || object_store_url.starts_with("s3://")
 }
 
-pub(super) fn native_parquet_file_reader_factory_is_supported(parquet_source: &ParquetSource) -> bool {
+pub(crate) fn native_parquet_file_reader_factory_is_supported(parquet_source: &ParquetSource) -> bool {
     let Some(factory) = parquet_source.parquet_file_reader_factory() else {
         return true;
     };

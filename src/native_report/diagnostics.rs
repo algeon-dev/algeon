@@ -13,7 +13,7 @@ use expressions::{
     expression_category, expression_category_with_schema, join_residual_expression_category,
     stable_data_type_identifier,
 };
-pub(super) use shape_family::candidate_shape_family;
+pub(crate) use shape_family::candidate_shape_family;
 
 pub(super) use crate::physical_plan::physical_plan_shape;
 

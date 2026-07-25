@@ -147,7 +147,9 @@ impl DatafusionNexusFlightSqlService {
         // prepared statements this reuses `prepared_statement_handle`; the
         // persistent handle remains in `self.prepared_statements`.
         let ticket_payload = match ticket_kind {
-            StatementTicketKind::Statement => {
+            StatementTicketKind::Statement
+            | StatementTicketKind::ExplainGpuRows
+            | StatementTicketKind::ExplainGpuJson => {
                 let ticket = TicketStatementQuery { statement_handle: query_id.as_bytes().to_vec().into() };
                 ticket.as_any().encode_to_vec().into()
             },
@@ -182,6 +184,62 @@ impl DatafusionNexusFlightSqlService {
                 prepared_handle,
                 kind: ticket_kind.code(),
                 native_cancellation,
+                started_at,
+                deadline,
+            })
+            .map_err(|error| {
+                status_with_query_id_and_correlation_id(
+                    adapter_error_status(error.adapter_error("datafusion_nexus.server.query_coordinator.issue_ticket")),
+                    &query_id,
+                    correlation_id.as_deref(),
+                )
+            })?;
+        Ok(info)
+    }
+
+    /// Issue an `EXPLAIN GPU` ticket without asking DataFusion to parse the
+    /// extension as its ordinary `EXPLAIN` statement. The inner SQL is planned
+    /// exactly once at DoGet by `validate_query`.
+    pub(super) fn explain_gpu_flight_info(
+        &self,
+        mut planning_lease: QueryPlanningLease,
+        query_id: String,
+        inner_sql: String,
+        output_mode: ExplainGpuOutputMode,
+        correlation_id: Option<String>,
+        descriptor: FlightDescriptor,
+        started_at: Instant,
+    ) -> Result<FlightInfo, Status> {
+        self.expire_stale_tickets(Instant::now());
+        let ticket_kind = match output_mode {
+            ExplainGpuOutputMode::Rows => StatementTicketKind::ExplainGpuRows,
+            ExplainGpuOutputMode::Json => StatementTicketKind::ExplainGpuJson,
+        };
+        let ticket = TicketStatementQuery { statement_handle: query_id.as_bytes().to_vec().into() };
+        let endpoint = FlightEndpoint::new().with_ticket(Ticket { ticket: ticket.as_any().encode_to_vec().into() });
+        let info = FlightInfo::new()
+            .try_with_schema(coverage_schema().as_ref())
+            .map_err(|error| {
+                let (status, captured) = arrow_error_to_status_and_capture(
+                    error,
+                    "datafusion_nexus.server.flight.get_flight_info_statement.explain_gpu.schema",
+                    "failed to build EXPLAIN GPU FlightInfo schema",
+                );
+                planning_lease.finish_captured("planning", &status, captured);
+                status
+            })?
+            .with_descriptor(descriptor)
+            .with_endpoint(endpoint)
+            .with_ordered(false);
+        let issued_at = Instant::now();
+        let deadline = issued_at.checked_add(self.statement_ticket_ttl).unwrap_or(issued_at);
+        planning_lease
+            .issue_ticket(CoordinatorTicketPayload {
+                sql: inner_sql,
+                correlation_id: correlation_id.clone(),
+                prepared_handle: None,
+                kind: ticket_kind.code(),
+                native_cancellation: ExecutionCancellation::new(),
                 started_at,
                 deadline,
             })

@@ -25,6 +25,7 @@ use crate::{
     error::{DataFusionErrorExt, Error, ErrorCode, ErrorSourceDiagnostics},
     planner::NexusNativeOptimizerConfig,
     session::installed_nexus_native_optimizer_config,
+    session_config::DataFusionNexusSessionConfig,
 };
 
 #[derive(Debug, Clone)]
@@ -106,7 +107,20 @@ pub(super) fn validated_under(state: &SessionState, config: &ValidationOptimizer
     let rules = state.physical_optimizers();
     let rule_names = rules.iter().map(|rule| rule.name()).collect::<Vec<_>>().join(",");
     let optimizer_fingerprint_input = match &config.effective_optimizer_config {
-        Some(optimizer_config) => format!("native_optimizer_rule=installed;{rule_names};{optimizer_config:?}"),
+        Some(optimizer_config) => {
+            // The native execution config holds request-scoped IDs, service
+            // handles, cancellation state, and caches. Those values must not
+            // turn the plan-time configuration fingerprint into a per-call
+            // nonce. Project only the stable session/planner options that
+            // affect validation and lowering.
+            let session_options = DataFusionNexusSessionConfig::from_optimizer_config(optimizer_config);
+            format!(
+                "native_optimizer_rule=installed;{rule_names};session_options={session_options:?};native_optimizer_options={:?};native_plan_cost_options={:?};final_plan_requirements={:?}",
+                optimizer_config.native_optimizer_options(),
+                optimizer_config.native_plan_cost_options(),
+                optimizer_config.final_plan_requirements(),
+            )
+        },
         None => format!("native_optimizer_rule=absent;{rule_names}"),
     };
     let final_plan_requirements = config

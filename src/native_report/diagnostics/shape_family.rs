@@ -1,6 +1,6 @@
 use super::*;
 
-pub(in crate::native_report) fn candidate_shape_family(candidate: &GpuCandidate) -> String {
+pub(crate) fn candidate_shape_family(candidate: &GpuCandidate) -> String {
     let shape = candidate.shape.as_str();
     if shape == "UnsupportedNativePhysicalPlan" {
         return NATIVE_CANDIDATE_SHAPE_FAMILY_UNSUPPORTED_NATIVE_PHYSICAL_PLAN.to_string();

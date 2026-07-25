@@ -36,6 +36,8 @@ use nexus_query_engine::{
     source::{SourceDiagnostics as NativeSourceDiagnostics, SourceNode as NativeSourceNode},
 };
 use normalize::normalize_native_plan;
+pub(crate) use pruning::scan_predicate_exactly_matches_filter;
+pub(crate) use source::native_parquet_file_reader_factory_is_supported;
 use source::source_diagnostics_for_normalized_plan;
 use validate::{native_zero_column_count_source_is_safe, validate_sort_ordering};
 

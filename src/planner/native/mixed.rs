@@ -12,7 +12,7 @@ use std::sync::Arc;
 use arrow::datatypes::{DataType, SchemaRef};
 use datafusion::{
     datasource::{
-        physical_plan::{FileSource, ParquetSource},
+        physical_plan::{FileScanConfigBuilder, FileSource, ParquetSource},
         source::DataSourceExec,
     },
     physical_expr::{
@@ -52,11 +52,12 @@ impl CertifiedMixedFilterBoundary {
         };
         let filter = filter_plan.downcast_ref::<FilterExec>()?;
         let source = Arc::clone(filter.input());
+        let native_lowering_source = native_lowering_source(filter, source.as_ref())?;
 
         root_filter_is_eligible(filter, source.as_ref()).then(|| Self {
             root: plan,
             source_schema: source.schema(),
-            source,
+            source: native_lowering_source,
             has_cooperative_wrapper,
         })
     }
@@ -163,12 +164,48 @@ fn root_filter_is_eligible(filter: &FilterExec, source: &dyn ExecutionPlan) -> b
         && file_scan.table_partition_cols().is_empty()
         && !file_scan.partitioned_by_file_group
         && file_scan.expr_adapter_factory.is_none()
-        && parquet_source.filter().is_none()
+        && crate::native::native_parquet_file_reader_factory_is_supported(parquet_source)
+        // DataFusion retains a source-level copy of filters it can use for
+        // Parquet pruning. P2a may clear that hint only when it exactly
+        // matches the retained CPU ILIKE filter, which remains the sole
+        // predicate evaluator after the source is replaced.
+        && source_predicate_is_absent_or_matches_filter(parquet_source, filter)
         // ParquetSource always carries a source-level projection, including
         // for an ordinary unprojected scan. Allow only the canonical identity
         // form; a projection with different columns, aliases, or expressions
         // remains outside this P2a boundary.
         && file_source_projection_is_identity(file_scan.file_source().as_ref())
+}
+
+fn source_predicate_is_absent_or_matches_filter(parquet_source: &ParquetSource, filter: &FilterExec) -> bool {
+    parquet_source.filter().is_none()
+        || crate::native::scan_predicate_exactly_matches_filter(parquet_source, Some(filter))
+}
+
+/// Rebuild a P2a source without a source-level copy of the CPU predicate.
+///
+/// The caller has already certified that the retained root filter evaluates
+/// the exact same expression. Keeping a second predicate on the native source
+/// would require native support for that expression and would incorrectly
+/// prevent a CPU-boundary rewrite for SQL plans that use Parquet pruning.
+fn native_lowering_source(filter: &FilterExec, source: &dyn ExecutionPlan) -> Option<Arc<dyn ExecutionPlan>> {
+    let source_exec = source.downcast_ref::<DataSourceExec>()?;
+    let (file_scan, parquet_source) = source_exec.downcast_to_file_source::<ParquetSource>()?;
+    if parquet_source.filter().is_none() {
+        return Some(Arc::clone(filter.input()));
+    }
+    if !crate::native::scan_predicate_exactly_matches_filter(parquet_source, Some(filter)) {
+        return None;
+    }
+
+    let projection_indices = file_scan.file_source().projection().map(|projection| projection.column_indices());
+    let parquet_source = ParquetSource::new(file_scan.file_source().table_schema().clone());
+    let mut builder =
+        FileScanConfigBuilder::from(file_scan.clone()).with_source(Arc::new(parquet_source) as Arc<dyn FileSource>);
+    if let Some(projection_indices) = projection_indices {
+        builder = builder.with_projection_indices(Some(projection_indices)).ok()?;
+    }
+    Some(DataSourceExec::from_data_source(builder.build()))
 }
 
 fn root_filter_has_deterministic_ilike(filter: &FilterExec) -> bool {

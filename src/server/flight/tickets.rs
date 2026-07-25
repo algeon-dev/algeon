@@ -11,6 +11,8 @@ use super::*;
 pub(super) enum StatementTicketKind {
     Statement,
     PreparedStatement,
+    ExplainGpuRows,
+    ExplainGpuJson,
 }
 
 impl StatementTicketKind {
@@ -18,6 +20,8 @@ impl StatementTicketKind {
         match self {
             Self::Statement => 0,
             Self::PreparedStatement => 1,
+            Self::ExplainGpuRows => 2,
+            Self::ExplainGpuJson => 3,
         }
     }
 
@@ -25,6 +29,8 @@ impl StatementTicketKind {
         match code {
             0 => Ok(Self::Statement),
             1 => Ok(Self::PreparedStatement),
+            2 => Ok(Self::ExplainGpuRows),
+            3 => Ok(Self::ExplainGpuJson),
             _ => Err(Status::internal("query coordinator retained an invalid statement ticket kind")),
         }
     }
@@ -35,6 +41,9 @@ impl StatementTicketKind {
             Self::PreparedStatement => {
                 "datafusion_nexus.server.flight.get_flight_info_prepared_statement.create_logical_plan"
             },
+            Self::ExplainGpuRows | Self::ExplainGpuJson => {
+                "datafusion_nexus.server.flight.get_flight_info_statement.explain_gpu"
+            },
         }
     }
 
@@ -42,6 +51,9 @@ impl StatementTicketKind {
         match self {
             Self::Statement => "datafusion_nexus.server.flight.do_get_statement.sql",
             Self::PreparedStatement => "datafusion_nexus.server.flight.do_get_prepared_statement.sql",
+            Self::ExplainGpuRows | Self::ExplainGpuJson => {
+                "datafusion_nexus.server.flight.do_get_statement.explain_gpu"
+            },
         }
     }
 
@@ -49,6 +61,9 @@ impl StatementTicketKind {
         match self {
             Self::Statement => "datafusion_nexus.server.flight.do_get_statement.execute_stream",
             Self::PreparedStatement => "datafusion_nexus.server.flight.do_get_prepared_statement.execute_stream",
+            Self::ExplainGpuRows | Self::ExplainGpuJson => {
+                "datafusion_nexus.server.flight.do_get_statement.explain_gpu"
+            },
         }
     }
 
@@ -56,6 +71,17 @@ impl StatementTicketKind {
         match self {
             Self::Statement => "datafusion_nexus.server.flight.do_get_statement.stream",
             Self::PreparedStatement => "datafusion_nexus.server.flight.do_get_prepared_statement.stream",
+            Self::ExplainGpuRows | Self::ExplainGpuJson => {
+                "datafusion_nexus.server.flight.do_get_statement.explain_gpu"
+            },
+        }
+    }
+
+    pub(super) const fn explain_gpu_output_mode(self) -> Option<ExplainGpuOutputMode> {
+        match self {
+            Self::ExplainGpuRows => Some(ExplainGpuOutputMode::Rows),
+            Self::ExplainGpuJson => Some(ExplainGpuOutputMode::Json),
+            Self::Statement | Self::PreparedStatement => None,
         }
     }
 }

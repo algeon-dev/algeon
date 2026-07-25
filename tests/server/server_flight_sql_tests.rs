@@ -25,13 +25,17 @@ use arrow_flight::{
         SqlSupportedUnions, TicketStatementQuery, client::FlightSqlServiceClient,
     },
 };
-use datafusion::prelude::ParquetReadOptions;
+use datafusion::{
+    execution::SessionStateBuilder,
+    prelude::{ParquetReadOptions, SessionConfig, SessionContext},
+};
 use datafusion_nexus::{
     backend::NexusGpuBackend,
     server::{
         ERROR_CODE_METADATA_KEY, ERROR_KIND_METADATA_KEY, ERROR_STATUS_METADATA_KEY, FlightSqlServer, ServerConfig,
         ServerShutdown, serve_with_listener,
     },
+    session::NexusSessionStateBuilderExt,
 };
 use futures::TryStreamExt;
 use nexus_query_engine::runtime::SlotGuarantee;
@@ -51,3 +55,4 @@ include!("server_flight_sql_tests/errors.rs");
 include!("server_flight_sql_tests/tickets.rs");
 include!("server_flight_sql_tests/metadata.rs");
 include!("server_flight_sql_tests/prepared.rs");
+include!("server_flight_sql_tests/explain_gpu.rs");
