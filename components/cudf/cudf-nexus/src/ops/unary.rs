@@ -223,6 +223,11 @@ pub(crate) fn cast_impl(
     operation: &'static str,
 ) -> Result<Column> {
     let input_type = input.data_type()?;
+    if input_type == *output_type {
+        return crate::core::column::copy_view_to_owned(input)
+            .map(|col| col.with_execution_domain(Arc::clone(output_domain)))
+            .map_err(|error| error.reanchor(operation));
+    }
     validate_float64_to_int64_cast_input(input, &input_type, output_type, output_domain, exec_options, operation)?;
     let dtype_handle = output_type.to_raw_handle_for("unary::cast")?;
     let mut out = ptr::null_mut();
