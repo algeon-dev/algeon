@@ -352,7 +352,6 @@ pub struct ReplaceWithBackrefsPreparedOutputSizeFacts {
     retained_state_bytes: usize,
     peak_execute_workspace_bytes: usize,
     execute_reservation_required_bytes: usize,
-    size_pass_count: u64,
 }
 
 impl ReplaceWithBackrefsPreparedOutputSizeFacts {
@@ -374,11 +373,6 @@ impl ReplaceWithBackrefsPreparedOutputSizeFacts {
     /// Conservative requested/CUDA-utilized byte upper bound for execute.
     pub fn requested_execute_bytes_upper_bound(self) -> usize {
         self.retained_output_bytes.saturating_add(self.peak_execute_workspace_bytes)
-    }
-
-    /// Number of size-kernel launches recorded while building this handle.
-    pub fn size_pass_count(self) -> u64 {
-        self.size_pass_count
     }
 
     /// Hard budget required before launching execute under a bounded token.
@@ -445,7 +439,6 @@ impl SeriesPreparedReplaceWithBackrefs {
                     "replace_with_backrefs_peak_execute_workspace_bytes",
                     facts.peak_execute_workspace_bytes().to_string(),
                 ),
-                ("replace_with_backrefs_size_pass_count", facts.size_pass_count().to_string()),
                 (
                     "replace_with_backrefs_requested_execute_bytes_upper_bound",
                     facts.requested_execute_bytes_upper_bound().to_string(),
@@ -535,7 +528,6 @@ pub fn prepare_replace_with_backrefs_with_budget(
         .with_output_rows(input.len())
         .with_context_facts([
             ("replace_with_backrefs_peak_execute_workspace_bytes", facts.peak_execute_workspace_bytes().to_string()),
-            ("replace_with_backrefs_size_pass_count", facts.size_pass_count().to_string()),
             (
                 "replace_with_backrefs_requested_execute_bytes_upper_bound",
                 facts.requested_execute_bytes_upper_bound().to_string(),
@@ -590,7 +582,6 @@ pub(crate) fn prepare_replace_with_backrefs_in_context(
     let mut retained_state_bytes = 0usize;
     let mut peak_execute_workspace_bytes = 0usize;
     let mut execute_reservation_required_bytes = 0usize;
-    let mut size_pass_count = 0u64;
     let facts_status = unsafe {
         cudf_sys::cudf_strings_prepared_replace_with_backrefs_output_size_facts(
             handle.as_ptr(),
@@ -598,7 +589,6 @@ pub(crate) fn prepare_replace_with_backrefs_in_context(
             &mut retained_state_bytes,
             &mut peak_execute_workspace_bytes,
             &mut execute_reservation_required_bytes,
-            &mut size_pass_count,
         )
     };
     if let Err(error) = error::check_status_in(facts_status, operation) {
@@ -620,26 +610,8 @@ pub(crate) fn prepare_replace_with_backrefs_in_context(
             retained_state_bytes,
             peak_execute_workspace_bytes,
             execute_reservation_required_bytes,
-            size_pass_count,
         },
     })
-}
-
-/// Process-local number of replace-with-backrefs size-kernel launches.
-pub fn replace_with_backrefs_size_pass_count() -> Result<u64> {
-    let operation = "strings::replace_with_backrefs_size_pass_count";
-    let mut out = 0u64;
-    let status = unsafe { cudf_sys::cudf_strings_replace_with_backrefs_size_pass_count(&mut out) };
-    error::check_status_in(status, operation)?;
-    Ok(out)
-}
-
-/// Reset the process-local size-pass counter used by tests.
-pub fn replace_with_backrefs_reset_size_pass_count() -> Result<()> {
-    let operation = "strings::replace_with_backrefs_reset_size_pass_count";
-    let status = unsafe { cudf_sys::cudf_strings_replace_with_backrefs_reset_size_pass_count() };
-    error::check_status_in(status, operation)?;
-    Ok(())
 }
 
 /// Element-wise starts-with test against a scalar string. Returns a BOOL8 column.

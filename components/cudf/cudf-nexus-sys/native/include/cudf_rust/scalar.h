@@ -21,9 +21,9 @@ typedef struct cudf_scalar_handle_state* cudf_scalar_handle;
 /// This helper does not add an extra stream synchronization barrier before
 /// returning. `options->mr` must outlive the returned scalar.
 cudf_status_t cudf_scalar_create_numeric_ex(cudf_type_id_t type_id,
-                                            const void* value,
+                                            void const* value,
                                             int32_t is_valid,
-                                            const cudf_exec_options_t* options,
+                                            cudf_exec_options_t const* options,
                                             cudf_scalar_handle* out);
 
 /// Create a fixed-point decimal scalar from its raw integer representation
@@ -37,10 +37,10 @@ cudf_status_t cudf_scalar_create_numeric_ex(cudf_type_id_t type_id,
 /// This helper does not add an extra stream synchronization barrier before
 /// returning. `options->mr` must outlive the returned scalar.
 cudf_status_t cudf_scalar_create_decimal_raw_ex(cudf_type_id_t type_id,
-                                                const void* value,
+                                                void const* value,
                                                 int32_t scale,
                                                 int32_t is_valid,
-                                                const cudf_exec_options_t* options,
+                                                cudf_exec_options_t const* options,
                                                 cudf_scalar_handle* out);
 
 /// Create a timestamp scalar from a raw integer count with explicit execution
@@ -57,7 +57,7 @@ cudf_status_t cudf_scalar_create_decimal_raw_ex(cudf_type_id_t type_id,
 cudf_status_t cudf_scalar_create_timestamp_raw_ex(cudf_type_id_t type_id,
                                                   int64_t value,
                                                   int32_t is_valid,
-                                                  const cudf_exec_options_t* options,
+                                                  cudf_exec_options_t const* options,
                                                   cudf_scalar_handle* out);
 
 /// Create a duration scalar from a raw integer count with explicit execution
@@ -73,7 +73,7 @@ cudf_status_t cudf_scalar_create_timestamp_raw_ex(cudf_type_id_t type_id,
 cudf_status_t cudf_scalar_create_duration_raw_ex(cudf_type_id_t type_id,
                                                  int64_t value,
                                                  int32_t is_valid,
-                                                 const cudf_exec_options_t* options,
+                                                 cudf_exec_options_t const* options,
                                                  cudf_scalar_handle* out);
 
 /// Create a string scalar with explicit execution options.
@@ -82,9 +82,9 @@ cudf_status_t cudf_scalar_create_duration_raw_ex(cudf_type_id_t type_id,
 /// The selected stream is synchronized before return on success so the
 /// borrowed host string is no longer in use. `options->mr` must outlive the
 /// returned scalar.
-cudf_status_t cudf_scalar_create_string_ex(const char* value,
+cudf_status_t cudf_scalar_create_string_ex(char const* value,
                                            int32_t is_valid,
-                                           const cudf_exec_options_t* options,
+                                           cudf_exec_options_t const* options,
                                            cudf_scalar_handle* out);
 
 /// Deep-copy a scalar with explicit execution options.
@@ -96,7 +96,7 @@ cudf_status_t cudf_scalar_create_string_ex(const char* value,
 /// This is a device-only operation: no stream synchronization is added
 /// before returning. `options->mr` must outlive the returned scalar.
 cudf_status_t cudf_scalar_copy_ex(cudf_scalar_handle src,
-                                  const cudf_exec_options_t* options,
+                                  cudf_exec_options_t const* options,
                                   cudf_scalar_handle* out);
 
 /// Destroy a scalar handle. Ownership is consumed on call, including on
@@ -120,7 +120,7 @@ cudf_status_t cudf_scalar_data_type(cudf_scalar_handle handle,
 /// does not add an extra synchronization barrier beyond that materialization.
 cudf_status_t cudf_scalar_is_valid_ex(cudf_scalar_handle handle,
                                       int32_t* out,
-                                      const cudf_exec_options_t* options);
+                                      cudf_exec_options_t const* options);
 
 /// Get the raw value of a fixed-width scalar with explicit execution options.
 ///
@@ -133,7 +133,7 @@ cudf_status_t cudf_scalar_is_valid_ex(cudf_scalar_handle handle,
 /// does not add an extra synchronization barrier beyond that materialization.
 cudf_status_t cudf_scalar_value_ex(cudf_scalar_handle handle,
                                    void* out,
-                                   const cudf_exec_options_t* options);
+                                   cudf_exec_options_t const* options);
 
 /// Get the string value of a string scalar with explicit execution options.
 ///
@@ -148,7 +148,7 @@ cudf_status_t cudf_scalar_value_ex(cudf_scalar_handle handle,
 cudf_status_t cudf_scalar_string_value_ex(cudf_scalar_handle handle,
                                           char** out,
                                           int32_t* len_out,
-                                          const cudf_exec_options_t* options);
+                                          cudf_exec_options_t const* options);
 
 /// Free an owned host string returned by this shim.
 void cudf_string_free(char* ptr);

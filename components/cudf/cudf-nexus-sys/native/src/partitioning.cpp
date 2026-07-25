@@ -13,7 +13,7 @@
 #include <vector>
 
 namespace {
-cudf_status_t copy_column_indices(const int32_t* column_indices,
+cudf_status_t copy_column_indices(int32_t const* column_indices,
                                   int32_t num_columns,
                                   std::vector<cudf::size_type>* out)
 {
@@ -37,7 +37,7 @@ cudf_status_t copy_column_indices(const int32_t* column_indices,
 
 extern "C" {
 cudf_status_t cudf_hash_partition_ex(cudf_table_view_handle input,
-                                     const int32_t* column_indices,
+                                     int32_t const* column_indices,
                                      int32_t num_columns,
                                      int32_t num_partitions,
                                      cudf_table_handle* out,

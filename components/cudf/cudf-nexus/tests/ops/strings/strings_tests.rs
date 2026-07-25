@@ -376,9 +376,7 @@ fn test_replace_with_backrefs_output_size_matches_executed_column() {
 // ===========================================================================
 
 #[test]
-fn test_prepared_replace_with_backrefs_semantics_and_single_size_pass() {
-    use cudf::ops::strings::{replace_with_backrefs_reset_size_pass_count, replace_with_backrefs_size_pass_count};
-
+fn test_prepared_replace_with_backrefs_semantics_and_facts() {
     let s = crate::common::nullable_series(
         "s",
         &["https://www.example.com/path", "http://other.test/x", "no-match", "https://expand.example/long", ""],
@@ -388,26 +386,13 @@ fn test_prepared_replace_with_backrefs_semantics_and_single_size_pass() {
     let pattern = r"^https?://(?:www\.)?([^/]+)/.*$";
     let replacement = r"\1";
 
-    // Isolate the process-local counter for this serialized assertion. The
-    // authoritative contract is the handle-local fact; the global counter is a
-    // diagnostic that other threads may also touch under othaer tests.
-    replace_with_backrefs_reset_size_pass_count().unwrap();
     let prepared = s.str().prepare_replace_with_backrefs(pattern, replacement).unwrap();
     let facts = prepared.output_size_facts();
-    // Handle-local fact: prepare records exactly one size pass for this handle.
-    assert_eq!(facts.size_pass_count(), 1);
     assert!(facts.requested_execute_bytes_upper_bound() >= facts.retained_output_bytes());
+    assert!(facts.peak_execute_workspace_bytes() > 0);
     assert!(facts.required_budget_bytes() > 0);
     assert!(facts.retained_state_bytes() > 0 || s.is_empty());
-    let after_prepare = replace_with_backrefs_size_pass_count().unwrap();
-    assert!(after_prepare >= 1, "prepare must contribute at least_one global size-pass count, got {after_prepare}");
-
-    // Execute must not bump the handle-local size_pass_count; the write path is
-    // documented not to increment the global counter either. Re-read the local
-    // fact after execute via retained_output equality instead of a racy global
-    // delta, which is unsafe under concurrent test threads.
     let out = prepared.execute().unwrap();
-    assert_eq!(facts.size_pass_count(), 1, "execute must leave handle size_pass_count at 1");
     assert_eq!(facts.retained_output_bytes(), out.device_allocated_size_bytes().unwrap());
 
     let vals = out.to_optional_strings().unwrap();

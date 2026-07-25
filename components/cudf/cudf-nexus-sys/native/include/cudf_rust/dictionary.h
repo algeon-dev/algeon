@@ -30,7 +30,7 @@ extern "C" {
 cudf_status_t cudf_dictionary_encode_ex(cudf_column_view_handle input,
                                         cudf_type_id_t indices_type_id,
                                         cudf_column_handle* out,
-                                        const cudf_exec_options_t* options);
+                                        cudf_exec_options_t const* options);
 
 /// Decode a dictionary column back to a regular column with explicit execution
 /// context.
@@ -45,7 +45,7 @@ cudf_status_t cudf_dictionary_encode_ex(cudf_column_view_handle input,
 /// outlive the returned column.
 cudf_status_t cudf_dictionary_decode_ex(cudf_column_view_handle dict_column,
                                         cudf_column_handle* out,
-                                        const cudf_exec_options_t* options);
+                                        cudf_exec_options_t const* options);
 
 /// Get the keys column view from a dictionary column.
 ///
@@ -75,7 +75,7 @@ cudf_status_t cudf_dictionary_indices(cudf_column_view_handle dict_column,
 cudf_status_t cudf_dictionary_set_keys_ex(cudf_column_view_handle dict_column,
                                           cudf_column_view_handle keys,
                                           cudf_column_handle* out,
-                                          const cudf_exec_options_t* options);
+                                          cudf_exec_options_t const* options);
 
 /// Align multiple dictionary columns to a shared key set with explicit
 /// execution context.
@@ -100,11 +100,11 @@ cudf_status_t cudf_dictionary_set_keys_ex(cudf_column_view_handle dict_column,
 /// `options` must be non-NULL, name an explicit valid device, provide a
 /// non-NULL stream, and provide a non-NULL memory resource. `options->mr` must
 /// outlive all returned columns.
-cudf_status_t cudf_dictionary_match_dictionaries_ex(const cudf_column_view_handle* dict_columns,
+cudf_status_t cudf_dictionary_match_dictionaries_ex(cudf_column_view_handle const* dict_columns,
                                                     int32_t num_columns,
                                                     cudf_column_handle** out_columns,
                                                     int32_t* out_count,
-                                                    const cudf_exec_options_t* options);
+                                                    cudf_exec_options_t const* options);
 
 #ifdef __cplusplus
 }

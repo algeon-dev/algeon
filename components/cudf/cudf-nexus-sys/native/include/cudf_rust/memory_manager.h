@@ -45,10 +45,10 @@ typedef struct {
 } cudf_memory_manager_installation_identity_t;
 
 typedef enum {
-  CUDF_MEMORY_MANAGER_INSTALLATION_UNINSTALLED      = 0,
-  CUDF_MEMORY_MANAGER_INSTALLATION_INCOMPLETE       = 1,
-  CUDF_MEMORY_MANAGER_INSTALLATION_OWNED            = 2,
-  CUDF_MEMORY_MANAGER_INSTALLATION_UNIDENTIFIED     = 3,
+  CUDF_MEMORY_MANAGER_INSTALLATION_UNINSTALLED       = 0,
+  CUDF_MEMORY_MANAGER_INSTALLATION_INCOMPLETE        = 1,
+  CUDF_MEMORY_MANAGER_INSTALLATION_OWNED             = 2,
+  CUDF_MEMORY_MANAGER_INSTALLATION_UNIDENTIFIED      = 3,
   CUDF_MEMORY_MANAGER_INSTALLATION_CALLBACK_PANICKED = 4,
 } cudf_memory_manager_installation_status_t;
 
@@ -73,14 +73,14 @@ typedef enum {
 } cudf_memory_manager_installation_cause_t;
 
 enum {
-  CUDF_MEMORY_MANAGER_INSTALLATION_FLAG_EXISTS               = 1u << 0,
+  CUDF_MEMORY_MANAGER_INSTALLATION_FLAG_EXISTS                     = 1u << 0,
   CUDF_MEMORY_MANAGER_INSTALLATION_FLAG_FAILURE_CALLBACK_INSTALLED = 1u << 1,
   CUDF_MEMORY_MANAGER_INSTALLATION_FLAG_CURRENT_RESOURCE_INSTALLED = 1u << 2,
-  CUDF_MEMORY_MANAGER_INSTALLATION_FLAG_CALLBACK_PANICKED     = 1u << 3,
-  CUDF_MEMORY_MANAGER_INSTALLATION_FLAG_HAS_IDENTITY          = 1u << 4,
+  CUDF_MEMORY_MANAGER_INSTALLATION_FLAG_CALLBACK_PANICKED          = 1u << 3,
+  CUDF_MEMORY_MANAGER_INSTALLATION_FLAG_HAS_IDENTITY               = 1u << 4,
   /// The manager was created by this install call, even if its current-resource
   /// switch remained incomplete.
-  CUDF_MEMORY_MANAGER_INSTALLATION_FLAG_CREATED_BY_CALL       = 1u << 5,
+  CUDF_MEMORY_MANAGER_INSTALLATION_FLAG_CREATED_BY_CALL = 1u << 5,
 };
 
 /// Atomic process installation record for one device manager.
@@ -152,11 +152,10 @@ cudf_status_t cudf_memory_manager_resource(cudf_memory_manager_handle manager,
 /// through the lease retain their route until their matching deallocation.
 /// When `resource` is already this manager's permanent resource, `*out` is
 /// null and no route is needed.
-cudf_status_t cudf_memory_manager_route_current_resource(
-  cudf_memory_manager_handle manager,
-  cudf_stream_handle stream,
-  cudf_memory_resource_handle resource,
-  cudf_current_resource_route_handle* out);
+cudf_status_t cudf_memory_manager_route_current_resource(cudf_memory_manager_handle manager,
+                                                         cudf_stream_handle stream,
+                                                         cudf_memory_resource_handle resource,
+                                                         cudf_current_resource_route_handle* out);
 cudf_status_t cudf_current_resource_route_destroy(cudf_current_resource_route_handle route);
 cudf_status_t cudf_memory_manager_pool_usage(cudf_memory_manager_handle manager,
                                              cudf_memory_pool_usage_t* out);
@@ -166,11 +165,10 @@ cudf_status_t cudf_memory_manager_trim_to(cudf_memory_manager_handle manager, ui
 cudf_status_t cudf_memory_manager_allocator_event_ring_bounds(
   cudf_memory_manager_handle manager, cudf_allocator_event_ring_bounds_t* out);
 /// Reads one exact sequence. `out` is zeroed when the result is not available.
-cudf_status_t cudf_memory_manager_read_allocator_event(
-  cudf_memory_manager_handle manager,
-  uint64_t sequence,
-  cudf_allocator_event_t* out,
-  cudf_allocator_event_read_status_t* status);
+cudf_status_t cudf_memory_manager_read_allocator_event(cudf_memory_manager_handle manager,
+                                                       uint64_t sequence,
+                                                       cudf_allocator_event_t* out,
+                                                       cudf_allocator_event_read_status_t* status);
 
 #ifdef __cplusplus
 }

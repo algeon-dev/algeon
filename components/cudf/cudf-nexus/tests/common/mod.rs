@@ -187,16 +187,20 @@ pub fn host_export_fixed_width_bytes(series: &Series) -> Vec<u8> {
 #[allow(dead_code)]
 pub fn host_export_i32_values(series: &Series) -> Vec<i32> {
     host_export_fixed_width_bytes(series)
-        .chunks_exact(std::mem::size_of::<i32>())
-        .map(|chunk| i32::from_ne_bytes(chunk.try_into().unwrap()))
+        .as_chunks::<{ std::mem::size_of::<i32>() }>()
+        .0
+        .iter()
+        .map(|chunk| i32::from_ne_bytes(*chunk))
         .collect()
 }
 
 #[allow(dead_code)]
 pub fn host_export_i64_values(series: &Series) -> Vec<i64> {
     host_export_fixed_width_bytes(series)
-        .chunks_exact(std::mem::size_of::<i64>())
-        .map(|chunk| i64::from_ne_bytes(chunk.try_into().unwrap()))
+        .as_chunks::<{ std::mem::size_of::<i64>() }>()
+        .0
+        .iter()
+        .map(|chunk| i64::from_ne_bytes(*chunk))
         .collect()
 }
 

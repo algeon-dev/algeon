@@ -1,6 +1,9 @@
 mod build_support;
 
-use std::{env, path::PathBuf};
+use std::{
+    env,
+    path::{Path, PathBuf},
+};
 
 fn main() {
     // Validate the Linux-only contract and resolve absolute compiler paths
@@ -18,10 +21,62 @@ fn main() {
 
     // Configure the native shim and opt-in linting.
     let mut config = cmake::Config::new(&native_dir);
+    configure_common(&mut config, &manifest_dir);
+    config.define("CUDF_RUST_ENABLE_TEST_HOOKS", test_hooks);
+
+    // Build the shim, replay CMake's link manifest, and expose the resolved
+    // runtime identity to downstream RAPIDS consumers.
+    let install_dir = config.build();
+    let runtime_shim = emit_shim_metadata(&install_dir, &manifest_dir, &native_dir);
+
+    // The `native_abi_contract` integration test validates the production
+    // (test-hooks OFF) shim of the current Cargo unit: without `test-hooks`
+    // that is the primary build, with `test-hooks` a dedicated sibling
+    // production prefix. Bind the contract test to this exact artifact at
+    // compile time.
+    let production_shim = if test_hooks == "OFF" {
+        runtime_shim.clone()
+    } else {
+        build_production_shim(&install_dir, &native_dir, &manifest_dir, &cc, &cxx)
+    };
+
+    // Downstream identity contract: the exported root, the runtime library
+    // metadata, and the active linked shim must all name the primary prefix.
+    build_support::cmake::verify_primary_shim_identity(&install_dir, &runtime_shim)
+        .unwrap_or_else(|error| panic!("{error}"));
+
+    println!("cargo:cudf-rust-production-shim={}", production_shim.display());
+    println!("cargo:rerun-if-changed={}", production_shim.display());
+    println!("cargo:rustc-env=CUDF_RUST_PRODUCTION_SHIM={}", production_shim.display());
+}
+
+/// Build the sibling production (test-hooks OFF) shim, then restore the
+/// exported package root to the primary install prefix.
+///
+/// `cmake::Config::build` emits `cargo:root` for the prefix it configured,
+/// and Cargo keeps the last value for a repeated key. Keeping the auxiliary
+/// build and the root re-assertion in one function guarantees the auxiliary
+/// prefix never becomes `DEP_CUDF_RUST_ROOT` while the replayed link search,
+/// rpath, and `cudf-rust-runtime-lib` metadata keep naming the primary prefix.
+fn build_production_shim(install_dir: &Path, native_dir: &Path, manifest_dir: &Path, cc: &Path, cxx: &Path) -> PathBuf {
+    let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR must be set"));
+    let production_out = out_dir.join("production-out");
+    build_support::cmake::discard_stale_cmake_build_dir_at(&production_out, cc, cxx, "OFF");
+    let mut production_config = cmake::Config::new(native_dir);
+    production_config.out_dir(&production_out);
+    configure_common(&mut production_config, manifest_dir);
+    production_config.define("CUDF_RUST_ENABLE_TEST_HOOKS", "OFF");
+    let production_shim = production_config.build().join("lib/libcudf_rust.so");
+    build_support::cmake::reassert_primary_root(install_dir);
+    production_shim
+}
+
+/// Shared CMake configuration for the primary and any sibling production
+/// shim build: opt-in linting and the CUDA static runtime selection.
+fn configure_common(config: &mut cmake::Config, manifest_dir: &Path) {
     let clang_lint = build_support::cmake::normalized_cmake_bool_from_env("CUDF_RUST_CLANG_LINT")
         .unwrap_or_else(|error| panic!("{error}"));
     config.define("CUDF_RUST_ENABLE_CLANG_TIDY", clang_lint.unwrap_or("OFF"));
-    config.define("CUDF_RUST_ENABLE_TEST_HOOKS", test_hooks);
     if clang_lint == Some("ON") {
         let clang_format = build_support::toolchain::resolve_tool_from_env_or_name(
             build_support::toolchain::CLANG_FORMAT_EXE_ENV,
@@ -33,10 +88,10 @@ fn main() {
             "clang-tidy",
         )
         .unwrap_or_else(|error| panic!("{error}"));
-        let clang_format_config = build_support::lint::clang_format_config_path(&manifest_dir);
-        let clang_tidy_config = build_support::lint::clang_tidy_config_path(&manifest_dir);
+        let clang_format_config = build_support::lint::clang_format_config_path(manifest_dir);
+        let clang_tidy_config = build_support::lint::clang_tidy_config_path(manifest_dir);
         build_support::lint::ensure_file_exists(&clang_tidy_config, "clang-tidy config");
-        let lint_files = build_support::lint::collect_native_clang_lint_files(&manifest_dir)
+        let lint_files = build_support::lint::collect_native_clang_lint_files(manifest_dir)
             .unwrap_or_else(|error| panic!("{error}"));
         build_support::lint::run_clang_format_check(&clang_format, &clang_format_config, &lint_files);
         config.define("CUDF_RUST_CLANG_TIDY_EXE", &clang_tidy);
@@ -47,12 +102,14 @@ fn main() {
     {
         config.define("CUDA_STATIC_RUNTIME", cuda_static_runtime);
     }
+}
 
-    // Build the shim, replay CMake's link manifest, and expose the resolved
-    // runtime identity to downstream RAPIDS consumers.
-    let install_dir = config.build();
+/// Replay the CMake link manifest for the shim install prefix and emit the
+/// runtime identity and native fingerprint metadata downstream consumers
+/// need. Returns the runtime shim path tracked as `cudf-rust-runtime-lib`.
+fn emit_shim_metadata(install_dir: &Path, manifest_dir: &Path, native_dir: &Path) -> PathBuf {
     let directives =
-        build_support::cmake::read_cargo_link_directives(&install_dir).unwrap_or_else(|error| panic!("{error}"));
+        build_support::cmake::read_cargo_link_directives(install_dir).unwrap_or_else(|error| panic!("{error}"));
     build_support::cmake::replay_cargo_link_directives(&directives);
     // The freshly built libcudf_rust shim lives under the CMake install
     // prefix and must be tracked as `cudf-rust-runtime-lib` so downstream
@@ -68,8 +125,9 @@ fn main() {
     // Track all native, binding-generation, compiler, and discovery inputs
     // from the canonical fingerprint contract.
     build_support::emit_build_fingerprints(
-        &manifest_dir,
-        &native_dir,
-        &build_support::lint::clang_format_config_path(&manifest_dir),
+        manifest_dir,
+        native_dir,
+        &build_support::lint::clang_format_config_path(manifest_dir),
     );
+    shim
 }

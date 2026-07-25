@@ -11,20 +11,20 @@
 static thread_local std::string g_last_error_message;
 static thread_local bool g_has_error = false;
 
-void set_error(const std::string& msg)
+void set_error(std::string const& msg)
 {
   g_last_error_message = msg;
   g_has_error          = true;
 }
 
-void set_error(const char* msg)
+void set_error(char const* msg)
 {
   g_last_error_message = msg;
   g_has_error          = true;
 }
 
 extern "C" {
-const char* cudf_last_error_message(void)
+char const* cudf_last_error_message(void)
 {
   if (g_has_error) { return g_last_error_message.c_str(); }
   return nullptr;

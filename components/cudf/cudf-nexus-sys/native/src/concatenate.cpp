@@ -14,7 +14,7 @@
 #include <vector>
 
 extern "C" {
-cudf_status_t cudf_concatenate_columns_ex(const cudf_column_view_handle* columns,
+cudf_status_t cudf_concatenate_columns_ex(cudf_column_view_handle const* columns,
                                           int32_t num_columns,
                                           cudf_exec_options_t const* options,
                                           cudf_column_handle* out)
@@ -49,7 +49,7 @@ cudf_status_t cudf_concatenate_columns_ex(const cudf_column_view_handle* columns
   CUDF_RUST_CATCH
 }
 
-cudf_status_t cudf_concatenate_tables_ex(const cudf_table_view_handle* tables,
+cudf_status_t cudf_concatenate_tables_ex(cudf_table_view_handle const* tables,
                                          int32_t num_tables,
                                          cudf_exec_options_t const* options,
                                          cudf_table_handle* out)

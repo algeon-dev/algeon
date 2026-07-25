@@ -117,8 +117,10 @@ fn expected_i64_bytes(values: &[i64]) -> Vec<u8> {
 
 fn host_string_values(bindings: &[BufferBinding<'_>], offsets: BufferId, data: BufferId) -> Vec<String> {
     let offsets = binding_bytes(binding(bindings, offsets))
-        .chunks_exact(std::mem::size_of::<i32>())
-        .map(|chunk| i32::from_ne_bytes(chunk.try_into().unwrap()) as usize)
+        .as_chunks::<{ std::mem::size_of::<i32>() }>()
+        .0
+        .iter()
+        .map(|chunk| i32::from_ne_bytes(*chunk) as usize)
         .collect::<Vec<_>>();
     let data = binding_bytes(binding(bindings, data));
     offsets.windows(2).map(|bounds| String::from_utf8(data[bounds[0]..bounds[1]].to_vec()).unwrap()).collect()

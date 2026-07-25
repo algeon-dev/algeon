@@ -71,7 +71,7 @@ typedef struct cudf_interop_semantic_column_t {
 /// non-NULL stream, and a non-NULL memory resource. `options->mr` must outlive
 /// the returned column.
 cudf_status_t cudf_column_create_empty_ex(cudf_type_id_t type_id,
-                                          const cudf_exec_options_t* options,
+                                          cudf_exec_options_t const* options,
                                           cudf_column_handle* out);
 
 /// Create a numeric column from host data with explicit execution options.
@@ -84,11 +84,11 @@ cudf_status_t cudf_column_create_empty_ex(cudf_type_id_t type_id,
 /// before return on success or failure so the borrowed host buffers are no
 /// longer in use.
 cudf_status_t cudf_column_create_numeric_ex(cudf_type_id_t type_id,
-                                            const void* data,
+                                            void const* data,
                                             int32_t size,
-                                            const uint8_t* null_mask,
+                                            uint8_t const* null_mask,
                                             int32_t null_count,
-                                            const cudf_exec_options_t* options,
+                                            cudf_exec_options_t const* options,
                                             cudf_column_handle* out);
 
 /// Create a fixed-width column from host data with explicit logical dtype and
@@ -103,11 +103,11 @@ cudf_status_t cudf_column_create_numeric_ex(cudf_type_id_t type_id,
 /// longer in use.
 cudf_status_t cudf_column_create_fixed_width_from_host_ex(cudf_type_id_t type_id,
                                                           int32_t scale,
-                                                          const void* data,
+                                                          void const* data,
                                                           int32_t size,
-                                                          const uint8_t* null_mask,
+                                                          uint8_t const* null_mask,
                                                           int32_t null_count,
-                                                          const cudf_exec_options_t* options,
+                                                          cudf_exec_options_t const* options,
                                                           cudf_column_handle* out);
 
 /// Create a fixed-width sequence column with explicit execution options.
@@ -121,7 +121,7 @@ cudf_status_t cudf_column_create_fixed_width_from_host_ex(cudf_type_id_t type_id
 cudf_status_t cudf_column_create_sequence_ex(cudf_scalar_handle init,
                                              cudf_scalar_handle step,
                                              int32_t size,
-                                             const cudf_exec_options_t* options,
+                                             cudf_exec_options_t const* options,
                                              cudf_column_handle* out);
 
 /// Deep-copy a column with explicit execution options.
@@ -130,7 +130,7 @@ cudf_status_t cudf_column_create_sequence_ex(cudf_scalar_handle init,
 /// non-NULL stream, and a non-NULL memory resource. `options->mr` must outlive
 /// the returned column.
 cudf_status_t cudf_column_copy_ex(cudf_column_handle src,
-                                  const cudf_exec_options_t* options,
+                                  cudf_exec_options_t const* options,
                                   cudf_column_handle* out);
 
 /// Deep-copy a column from a column_view with explicit execution options.
@@ -139,7 +139,7 @@ cudf_status_t cudf_column_copy_ex(cudf_column_handle src,
 /// non-NULL and must name an explicit valid device, a non-NULL stream, and a
 /// non-NULL memory resource. `options->mr` must outlive the returned column.
 cudf_status_t cudf_column_copy_from_view_ex(cudf_column_view_handle src,
-                                            const cudf_exec_options_t* options,
+                                            cudf_exec_options_t const* options,
                                             cudf_column_handle* out);
 
 /// Deep-copy a fixed-width column from raw borrowed interop-view facts with
@@ -156,10 +156,10 @@ cudf_status_t cudf_column_copy_from_borrowed_view_ex(cudf_type_id_t type_id,
                                                      int32_t scale,
                                                      int32_t size,
                                                      int32_t offset,
-                                                     const void* data,
-                                                     const void* null_mask,
+                                                     void const* data,
+                                                     void const* null_mask,
                                                      int32_t null_count,
-                                                     const cudf_exec_options_t* options,
+                                                     cudf_exec_options_t const* options,
                                                      cudf_column_handle* out);
 
 /// Deep-copy a column from a prepared-device export semantic graph with
@@ -215,7 +215,7 @@ cudf_status_t cudf_column_create_from_owned_device_transfer(
 /// non-NULL stream, and a non-NULL memory resource. Payload accounting excludes
 /// allocator padding.
 cudf_status_t cudf_column_payload_size_ex(cudf_column_handle handle,
-                                          const cudf_exec_options_t* options,
+                                          cudf_exec_options_t const* options,
                                           size_t* out);
 
 /// Return the total device allocation footprint of this owning column.
@@ -258,7 +258,7 @@ cudf_status_t cudf_column_view_null_count(cudf_column_view_handle handle, int32_
 /// non-NULL stream, and a non-NULL memory resource. If the view carries an
 /// unknown null count, the selected stream is used to compute it.
 cudf_status_t cudf_column_view_null_count_ex(cudf_column_view_handle handle,
-                                             const cudf_exec_options_t* options,
+                                             cudf_exec_options_t const* options,
                                              int32_t* out);
 
 /// Check if the column_view has a null mask allocated.
@@ -282,7 +282,7 @@ cudf_status_t cudf_column_view_child(cudf_column_view_handle handle,
 /// non-NULL stream, and a non-NULL memory resource. The memory resource is
 /// retained only for provenance; this helper does not allocate output storage.
 cudf_status_t cudf_column_view_list_sliced_child_ex(cudf_column_view_handle handle,
-                                                    const cudf_exec_options_t* options,
+                                                    cudf_exec_options_t const* options,
                                                     cudf_column_view_handle* out);
 
 /// Copy column data to host buffer with explicit execution options.
@@ -295,7 +295,7 @@ cudf_status_t cudf_column_view_list_sliced_child_ex(cudf_column_view_handle hand
 cudf_status_t cudf_column_view_to_host_ex(cudf_column_view_handle handle,
                                           void* host_buf,
                                           size_t buf_size,
-                                          const cudf_exec_options_t* options);
+                                          cudf_exec_options_t const* options);
 
 /// Get the raw device (GPU) data pointer of a column_view.
 ///
@@ -309,7 +309,7 @@ cudf_status_t cudf_column_view_to_host_ex(cudf_column_view_handle handle,
 /// The offset of the column view is NOT applied — the pointer is to the
 /// base of the device buffer. Callers working with sliced views must add
 /// `offset * element_size` manually.
-cudf_status_t cudf_column_view_data_ptr(cudf_column_view_handle handle, const void** out);
+cudf_status_t cudf_column_view_data_ptr(cudf_column_view_handle handle, void const** out);
 
 /// Get the device pointer and active byte length for a STRING column's chars
 /// buffer with explicit execution options.
@@ -324,14 +324,14 @@ cudf_status_t cudf_column_view_data_ptr(cudf_column_view_handle handle, const vo
 /// non-NULL stream, and a non-NULL memory resource. The memory resource is
 /// retained only for provenance; this helper does not allocate output storage.
 cudf_status_t cudf_column_view_string_chars_ptr_and_size_ex(cudf_column_view_handle handle,
-                                                            const cudf_exec_options_t* options,
-                                                            const void** out_ptr,
+                                                            cudf_exec_options_t const* options,
+                                                            void const** out_ptr,
                                                             size_t* out_size);
 
 /// Get the raw device null-mask pointer of a column_view.
 ///
 /// Returns `CUDF_ERROR_NULL` when the column has no null mask.
-cudf_status_t cudf_column_view_null_mask_ptr(cudf_column_view_handle handle, const void** out);
+cudf_status_t cudf_column_view_null_mask_ptr(cudf_column_view_handle handle, void const** out);
 
 /// Get the element offset of a column_view into its parent buffer.
 ///
@@ -351,7 +351,7 @@ cudf_status_t cudf_column_view_offset(cudf_column_view_handle handle, int32_t* o
 cudf_status_t cudf_column_view_slice_ex(cudf_column_view_handle handle,
                                         int32_t offset,
                                         int32_t length,
-                                        const cudf_exec_options_t* options,
+                                        cudf_exec_options_t const* options,
                                         cudf_column_view_handle* out);
 
 /// Copy null mask to host buffer with explicit execution options.
@@ -367,7 +367,7 @@ cudf_status_t cudf_column_view_slice_ex(cudf_column_view_handle handle,
 cudf_status_t cudf_column_view_null_mask_to_host_ex(cudf_column_view_handle handle,
                                                     uint8_t* host_buf,
                                                     size_t buf_size,
-                                                    const cudf_exec_options_t* options);
+                                                    cudf_exec_options_t const* options);
 
 /// Create a column by copying data from an existing device (GPU) pointer.
 ///
@@ -381,7 +381,7 @@ cudf_status_t cudf_column_view_null_mask_to_host_ex(cudf_column_view_handle hand
 /// `cudf_column_create_from_device_data_ex`; this wrapper rejects calls because
 /// explicit execution options are required.
 cudf_status_t cudf_column_create_from_device_data(cudf_type_id_t type_id,
-                                                  const void* device_data,
+                                                  void const* device_data,
                                                   int32_t size,
                                                   cudf_column_handle* out);
 
@@ -397,9 +397,9 @@ cudf_status_t cudf_column_create_from_device_data(cudf_type_id_t type_id,
 /// work on the selected stream has completed, and must establish any required
 /// cross-stream ordering for later consumers of the returned column.
 cudf_status_t cudf_column_create_from_device_data_ex(cudf_type_id_t type_id,
-                                                     const void* device_data,
+                                                     void const* device_data,
                                                      int32_t size,
-                                                     const cudf_exec_options_t* options,
+                                                     cudf_exec_options_t const* options,
                                                      cudf_column_handle* out);
 
 /// Create a STRING type column from host string data with explicit execution
@@ -421,12 +421,12 @@ cudf_status_t cudf_column_create_from_device_data_ex(cudf_type_id_t type_id,
 /// If host-source copies are queued, the selected stream is synchronized
 /// before return on success or failure so the borrowed host buffers are no
 /// longer in use.
-cudf_status_t cudf_column_create_strings_ex(const char** strings,
-                                            const int32_t* lengths,
+cudf_status_t cudf_column_create_strings_ex(char const** strings,
+                                            int32_t const* lengths,
                                             int32_t num_strings,
-                                            const uint8_t* null_mask,
+                                            uint8_t const* null_mask,
                                             int32_t null_count,
-                                            const cudf_exec_options_t* options,
+                                            cudf_exec_options_t const* options,
                                             cudf_column_handle* out);
 
 /// Create a column by repeating a scalar value `size` times with explicit
@@ -441,7 +441,7 @@ cudf_status_t cudf_column_create_strings_ex(const char** strings,
 cudf_status_t cudf_column_from_scalar_ex(cudf_scalar_handle scalar,
                                          int32_t size,
                                          cudf_column_handle* out,
-                                         const cudf_exec_options_t* options);
+                                         cudf_exec_options_t const* options);
 
 /// Copy string column data to host buffers with explicit execution options.
 ///
@@ -463,7 +463,7 @@ cudf_status_t cudf_column_view_strings_to_host_ex(cudf_column_view_handle handle
                                                   char* chars_buf,
                                                   size_t chars_buf_size,
                                                   int32_t* total_chars_bytes,
-                                                  const cudf_exec_options_t* options);
+                                                  cudf_exec_options_t const* options);
 
 #ifdef __cplusplus
 }

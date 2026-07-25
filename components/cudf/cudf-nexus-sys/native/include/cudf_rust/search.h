@@ -18,7 +18,7 @@ extern "C" {
 cudf_status_t cudf_contains_ex(cudf_column_view_handle haystack,
                                cudf_column_view_handle needles,
                                cudf_column_handle* out,
-                               const cudf_exec_options_t* options);
+                               cudf_exec_options_t const* options);
 
 #ifdef __cplusplus
 }

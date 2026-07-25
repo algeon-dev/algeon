@@ -34,12 +34,12 @@ constexpr std::size_t k_exec_mr_observation_capacity = 64;
 thread_local std::uintptr_t g_last_exec_stream_value = std::numeric_limits<std::uintptr_t>::max();
 thread_local std::uintptr_t g_last_exec_sync_stream_value =
   std::numeric_limits<std::uintptr_t>::max();
-thread_local std::uint64_t g_exec_observation_sequence = 0;
-thread_local std::uint64_t g_last_exec_sync_sequence = 0;
-thread_local void* g_last_memory_resource_destroy_raw = nullptr;
+thread_local std::uint64_t g_exec_observation_sequence             = 0;
+thread_local std::uint64_t g_last_exec_sync_sequence               = 0;
+thread_local void* g_last_memory_resource_destroy_raw              = nullptr;
 thread_local std::uint64_t g_last_memory_resource_destroy_sequence = 0;
-thread_local void* g_last_exec_mr_raw   = nullptr;
-thread_local int32_t g_last_exec_device = -1;
+thread_local void* g_last_exec_mr_raw                              = nullptr;
+thread_local int32_t g_last_exec_device                            = -1;
 thread_local std::array<void*, k_exec_mr_observation_capacity> g_exec_mr_observations{};
 thread_local std::size_t g_exec_mr_observation_start = 0;
 thread_local std::size_t g_exec_mr_observation_count = 0;
@@ -95,14 +95,14 @@ std::unordered_map<std::uintptr_t, int32_t> g_event_synchronize_counts_by_event_
 
 void reset_exec_observation()
 {
-  g_last_exec_stream_value      = std::numeric_limits<std::uintptr_t>::max();
-  g_last_exec_sync_stream_value = std::numeric_limits<std::uintptr_t>::max();
-  g_exec_observation_sequence = 0;
-  g_last_exec_sync_sequence = 0;
-  g_last_memory_resource_destroy_raw = nullptr;
+  g_last_exec_stream_value                = std::numeric_limits<std::uintptr_t>::max();
+  g_last_exec_sync_stream_value           = std::numeric_limits<std::uintptr_t>::max();
+  g_exec_observation_sequence             = 0;
+  g_last_exec_sync_sequence               = 0;
+  g_last_memory_resource_destroy_raw      = nullptr;
   g_last_memory_resource_destroy_sequence = 0;
-  g_last_exec_mr_raw            = nullptr;
-  g_last_exec_device            = -1;
+  g_last_exec_mr_raw                      = nullptr;
+  g_last_exec_device                      = -1;
   g_exec_mr_observations.fill(nullptr);
   g_exec_mr_observation_start      = 0;
   g_exec_mr_observation_count      = 0;
@@ -148,12 +148,12 @@ void record_exec_context(std::uintptr_t stream_raw, void* mr_raw)
 void record_synchronized_stream(std::uintptr_t stream_raw)
 {
   g_last_exec_sync_stream_value = stream_raw;
-  g_last_exec_sync_sequence = ++g_exec_observation_sequence;
+  g_last_exec_sync_sequence     = ++g_exec_observation_sequence;
 }
 
 void record_memory_resource_destroy(void* mr_raw)
 {
-  g_last_memory_resource_destroy_raw = mr_raw;
+  g_last_memory_resource_destroy_raw      = mr_raw;
   g_last_memory_resource_destroy_sequence = ++g_exec_observation_sequence;
 }
 

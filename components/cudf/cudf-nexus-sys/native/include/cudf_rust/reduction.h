@@ -73,7 +73,7 @@ cudf_status_t cudf_reduce_ex(cudf_column_view_handle input,
                              cudf_reduce_aggregation_handle agg,
                              cudf_data_type_handle output_type,
                              cudf_scalar_handle* out,
-                             const cudf_exec_options_t* options);
+                             cudf_exec_options_t const* options);
 
 /// Compute a prefix scan on a column with explicit execution context.
 ///
@@ -85,7 +85,7 @@ cudf_status_t cudf_scan_ex(cudf_column_view_handle input,
                            cudf_scan_type_t scan_type,
                            int32_t null_policy,
                            cudf_column_handle* out,
-                           const cudf_exec_options_t* options);
+                           cudf_exec_options_t const* options);
 
 /// Compute the min and max of a column with explicit execution context.
 ///
@@ -95,7 +95,7 @@ cudf_status_t cudf_scan_ex(cudf_column_view_handle input,
 cudf_status_t cudf_minmax_ex(cudf_column_view_handle input,
                              cudf_scalar_handle* out_min,
                              cudf_scalar_handle* out_max,
-                             const cudf_exec_options_t* options);
+                             cudf_exec_options_t const* options);
 
 #ifdef __cplusplus
 }

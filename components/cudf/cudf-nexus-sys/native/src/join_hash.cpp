@@ -525,7 +525,7 @@ cudf_status_t cudf_hash_join_create_ex(cudf_table_view_handle build,
       *build_view, load_factor, exec->stream, *exec->mr);
     {
       owner->join = std::make_unique<cudf::hash_join>(
-        *build_view, nullable, null_eq, load_factor, exec->stream);
+        *build_view, nullable, null_eq, load_factor, exec->stream, *exec->mr);
       owner->device_allocated_size_bytes = reservation_size;
     }
     *out = reinterpret_cast<cudf_hash_join_handle>(owner.release());

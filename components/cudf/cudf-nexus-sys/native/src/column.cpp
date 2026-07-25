@@ -123,7 +123,7 @@ cudf_status_t resolve_column_view_null_count(cudf::column_view const& view,
 }  // namespace
 
 static cudf_status_t create_column_from_device_data_impl(cudf_type_id_t type_id,
-                                                         const void* device_data,
+                                                         void const* device_data,
                                                          int32_t size,
                                                          cudf_exec_options_t const* options,
                                                          bool synchronize_before_return,
@@ -193,9 +193,9 @@ cudf_status_t cudf_column_create_empty_ex(cudf_type_id_t type_id,
 }
 
 cudf_status_t cudf_column_create_numeric_ex(cudf_type_id_t type_id,
-                                            const void* data,
+                                            void const* data,
                                             int32_t size,
-                                            const uint8_t* null_mask,
+                                            uint8_t const* null_mask,
                                             int32_t null_count,
                                             cudf_exec_options_t const* options,
                                             cudf_column_handle* out)
@@ -258,9 +258,9 @@ cudf_status_t cudf_column_create_numeric_ex(cudf_type_id_t type_id,
 
 cudf_status_t cudf_column_create_fixed_width_from_host_ex(cudf_type_id_t type_id,
                                                           int32_t scale,
-                                                          const void* data,
+                                                          void const* data,
                                                           int32_t size,
-                                                          const uint8_t* null_mask,
+                                                          uint8_t const* null_mask,
                                                           int32_t null_count,
                                                           cudf_exec_options_t const* options,
                                                           cudf_column_handle* out)
@@ -715,7 +715,7 @@ cudf_status_t cudf_column_view_list_sliced_child_ex(cudf_column_view_handle hand
   CUDF_RUST_CATCH
 }
 
-cudf_status_t cudf_column_view_data_ptr(cudf_column_view_handle handle, const void** out)
+cudf_status_t cudf_column_view_data_ptr(cudf_column_view_handle handle, void const** out)
 {
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
@@ -733,7 +733,7 @@ cudf_status_t cudf_column_view_data_ptr(cudf_column_view_handle handle, const vo
 
 cudf_status_t cudf_column_view_string_chars_ptr_and_size_ex(cudf_column_view_handle handle,
                                                             cudf_exec_options_t const* options,
-                                                            const void** out_ptr,
+                                                            void const** out_ptr,
                                                             size_t* out_size)
 {
   CUDF_RUST_NULL_CHECK(out_ptr, "out_ptr is null");
@@ -782,7 +782,7 @@ cudf_status_t cudf_column_view_string_chars_ptr_and_size_ex(cudf_column_view_han
   CUDF_RUST_CATCH
 }
 
-cudf_status_t cudf_column_view_null_mask_ptr(cudf_column_view_handle handle, const void** out)
+cudf_status_t cudf_column_view_null_mask_ptr(cudf_column_view_handle handle, void const** out)
 {
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
@@ -972,7 +972,7 @@ cudf_status_t cudf_column_view_null_mask_to_host_ex(cudf_column_view_handle hand
 }
 
 cudf_status_t cudf_column_create_from_device_data(cudf_type_id_t type_id,
-                                                  const void* device_data,
+                                                  void const* device_data,
                                                   int32_t size,
                                                   cudf_column_handle* out)
 {
@@ -980,7 +980,7 @@ cudf_status_t cudf_column_create_from_device_data(cudf_type_id_t type_id,
 }
 
 cudf_status_t cudf_column_create_from_device_data_ex(cudf_type_id_t type_id,
-                                                     const void* device_data,
+                                                     void const* device_data,
                                                      int32_t size,
                                                      cudf_exec_options_t const* options,
                                                      cudf_column_handle* out)
@@ -988,10 +988,10 @@ cudf_status_t cudf_column_create_from_device_data_ex(cudf_type_id_t type_id,
   return create_column_from_device_data_impl(type_id, device_data, size, options, false, out);
 }
 
-cudf_status_t cudf_column_create_strings_ex(const char** strings,
-                                            const int32_t* lengths,
+cudf_status_t cudf_column_create_strings_ex(char const** strings,
+                                            int32_t const* lengths,
                                             int32_t num_strings,
-                                            const uint8_t* null_mask,
+                                            uint8_t const* null_mask,
                                             int32_t null_count,
                                             cudf_exec_options_t const* options,
                                             cudf_column_handle* out)

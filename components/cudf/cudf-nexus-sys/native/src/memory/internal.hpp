@@ -8,6 +8,7 @@
 #include "memory_resource_compat.hpp"
 #include "reservation_accounting.hpp"
 
+#include <rmm/detail/export.hpp>
 #include <rmm/error.hpp>
 #include <rmm/mr/cuda_async_memory_resource.hpp>
 #include <rmm/mr/cuda_async_view_memory_resource.hpp>
@@ -30,9 +31,11 @@
 #include <unordered_map>
 #include <utility>
 
-namespace rmm::mr {
+RMM_NAMESPACE_BEGIN
+namespace mr {
 class statistics_resource_adaptor;
 }
+RMM_NAMESPACE_END
 
 namespace cudf::rust::memory {
 
@@ -51,7 +54,7 @@ struct memory_failure_domain_identity {
   /// Monotonically minted by the native query-domain owner. It is never a
   /// pointer identity and is required before the engine may correlate an
   /// event to an attempt.
-  std::uint64_t generation          = 0;
+  std::uint64_t generation = 0;
 };
 
 /// Per-device, multi-producer fixed allocator-event ring.
@@ -73,8 +76,8 @@ class allocator_event_ring final {
 
   [[nodiscard]] cudf_allocator_event_ring_bounds_t bounds() const noexcept;
 
-  [[nodiscard]] cudf_allocator_event_read_status_t read(
-    std::uint64_t sequence, cudf_allocator_event_t& out) const noexcept;
+  [[nodiscard]] cudf_allocator_event_read_status_t read(std::uint64_t sequence,
+                                                        cudf_allocator_event_t& out) const noexcept;
 
  private:
   struct slot {
@@ -359,9 +362,9 @@ class query_domain_resource final : public rmm::mr::device_memory_resource {
 };
 
 struct query_domain_state {
-  std::uint64_t id = 0;
+  std::uint64_t id         = 0;
   std::uint64_t generation = 0;
-  int32_t device   = -1;
+  int32_t device           = -1;
   cudaMemPool_t pool{};
   std::size_t ceiling_bytes = 0;
   bool active               = true;
@@ -501,13 +504,14 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
   std::shared_ptr<reservation_arena_state> create_arena(std::uint64_t arena_id,
                                                         std::size_t limit_bytes);
 
-  std::shared_ptr<query_domain_state> create_query_domain(std::uint64_t domain_id,
-                                                          std::size_t grant_bytes,
-                                                          std::size_t ceiling_bytes,
-                                                          std::uint64_t release_threshold,
-                                                          int32_t device,
-                                                          std::shared_ptr<manager_allocation_limit_state> manager_allocation_limit,
-                                                          std::string& error);
+  std::shared_ptr<query_domain_state> create_query_domain(
+    std::uint64_t domain_id,
+    std::size_t grant_bytes,
+    std::size_t ceiling_bytes,
+    std::uint64_t release_threshold,
+    int32_t device,
+    std::shared_ptr<manager_allocation_limit_state> manager_allocation_limit,
+    std::string& error);
 
   std::shared_ptr<query_domain_member_state> attach_query_domain(
     std::shared_ptr<query_domain_state> const& domain,
@@ -703,9 +707,9 @@ struct device_memory_manager_state {
   cudf_memory_manager_installation_cause_t current_resource_install_cause =
     CUDF_MEMORY_MANAGER_INSTALLATION_CAUSE_NONE;
   std::atomic<bool> failure_callback_panicked{false};
-  bool has_installation_identity                        = false;
+  bool has_installation_identity = false;
   cudf_memory_manager_installation_identity_t installation_identity{};
-  std::uint64_t installation_generation                 = 0;
+  std::uint64_t installation_generation = 0;
   /// Constructed before any allocator callback can be reached and retained for
   /// the process lifetime of this device manager.
   std::unique_ptr<allocator_event_ring> allocator_events;

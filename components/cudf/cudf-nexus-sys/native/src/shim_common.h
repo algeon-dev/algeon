@@ -11,9 +11,9 @@
 #include <string>
 
 // Defined in error.cpp
-void set_error(const std::string& msg);
+void set_error(std::string const& msg);
 
-void set_error(const char* msg);
+void set_error(char const* msg);
 
 cudf_status_t translate_exception();
 

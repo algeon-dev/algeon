@@ -50,7 +50,8 @@ cudf_status_t cudf_filtered_join_pre_build_reservation_size_ex(cudf_table_view_h
     (void)null_equality;
 
     auto* build_view = reinterpret_cast<cudf::table_view*>(build);
-    *out             = cudf::filtered_join::pre_build_reservation_size(*build_view, load_factor);
+    *out             = cudf::filtered_join::pre_build_reservation_size(
+      *build_view, load_factor, exec->stream, *exec->mr);
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH

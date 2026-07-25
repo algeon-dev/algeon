@@ -16,9 +16,9 @@ extern "C" {
 ///
 /// `options` must be non-NULL and carry an explicit device, stream, and memory
 /// resource. `options->mr` must outlive the returned column.
-cudf_status_t cudf_interleave_columns_ex(const cudf_column_view_handle* columns,
+cudf_status_t cudf_interleave_columns_ex(cudf_column_view_handle const* columns,
                                          int32_t num_columns,
-                                         const cudf_exec_options_t* options,
+                                         cudf_exec_options_t const* options,
                                          cudf_column_handle* out);
 
 /// Copy a flat, non-null Float32 column into a contiguous dense matrix order.
@@ -31,7 +31,7 @@ cudf_status_t cudf_pack_flat_float32_matrix_ex(cudf_column_view_handle input,
                                                int32_t rows,
                                                int32_t columns,
                                                int32_t column_major,
-                                               const cudf_exec_options_t* options,
+                                               cudf_exec_options_t const* options,
                                                cudf_column_handle* out);
 
 /// Copy a borrowed device-resident Float32 span into a dense matrix order.
@@ -41,11 +41,11 @@ cudf_status_t cudf_pack_flat_float32_matrix_ex(cudf_column_view_handle input,
 /// and must keep it alive until work enqueued on `options->stream` completes.
 /// The returned column performs exactly one output allocation and one payload
 /// copy/reorder on the explicit stream and memory resource.
-cudf_status_t cudf_pack_borrowed_float32_matrix_ex(const void* input,
+cudf_status_t cudf_pack_borrowed_float32_matrix_ex(void const* input,
                                                    int32_t rows,
                                                    int32_t columns,
                                                    int32_t column_major,
-                                                   const cudf_exec_options_t* options,
+                                                   cudf_exec_options_t const* options,
                                                    cudf_column_handle* out);
 
 #ifdef __cplusplus

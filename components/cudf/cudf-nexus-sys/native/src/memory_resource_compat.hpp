@@ -3,6 +3,7 @@
 
 #include <rmm/aligned.hpp>
 #include <rmm/cuda_stream_view.hpp>
+#include <rmm/detail/export.hpp>
 
 #include <cuda/memory_resource>
 #include <cuda/stream_ref>
@@ -12,7 +13,8 @@
 #include <memory>
 #include <utility>
 
-namespace rmm::mr {
+RMM_NAMESPACE_BEGIN
+namespace mr {
 
 /// Project-local compatibility base for the pre-26.06 RMM device-resource
 /// surface. RMM 26.06 moved to CCCL resource concepts, but the shim still
@@ -156,6 +158,7 @@ class device_memory_resource_box final : public device_memory_resource {
   Resource resource_;
 };
 
-}  // namespace rmm::mr
+}  // namespace mr
+RMM_NAMESPACE_END
 
 #endif  // CUDF_RUST_MEMORY_RESOURCE_COMPAT_HPP

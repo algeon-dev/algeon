@@ -5,6 +5,10 @@
 
 cmake_minimum_required(VERSION 3.30.4 FATAL_ERROR)
 
+# Fetch rapids-cmake via git instead of the codeload HTTP zip archive. GitHub
+# rate-limits the codeload zip endpoint (429), while git clone stays on a
+# separate, non-rate-limited path.
+set(rapids-cmake-fetch-via-git ON)
 include(../../cudf/cmake/rapids_config.cmake)
 include(rapids-cmake)
 include(rapids-cuda)

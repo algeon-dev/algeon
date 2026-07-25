@@ -136,22 +136,28 @@ fn host_export_dtype(series: &Series) -> InteropDataType {
 
 fn host_export_i32_values(series: &Series) -> Vec<i32> {
     host_export_fixed_width_bytes(series)
-        .chunks_exact(std::mem::size_of::<i32>())
-        .map(|chunk| i32::from_ne_bytes(chunk.try_into().unwrap()))
+        .as_chunks::<{ std::mem::size_of::<i32>() }>()
+        .0
+        .iter()
+        .map(|chunk| i32::from_ne_bytes(*chunk))
         .collect()
 }
 
 fn host_export_i64_values(series: &Series) -> Vec<i64> {
     host_export_fixed_width_bytes(series)
-        .chunks_exact(std::mem::size_of::<i64>())
-        .map(|chunk| i64::from_ne_bytes(chunk.try_into().unwrap()))
+        .as_chunks::<{ std::mem::size_of::<i64>() }>()
+        .0
+        .iter()
+        .map(|chunk| i64::from_ne_bytes(*chunk))
         .collect()
 }
 
 fn host_export_i128_values(series: &Series) -> Vec<i128> {
     host_export_fixed_width_bytes(series)
-        .chunks_exact(std::mem::size_of::<i128>())
-        .map(|chunk| i128::from_ne_bytes(chunk.try_into().unwrap()))
+        .as_chunks::<{ std::mem::size_of::<i128>() }>()
+        .0
+        .iter()
+        .map(|chunk| i128::from_ne_bytes(*chunk))
         .collect()
 }
 

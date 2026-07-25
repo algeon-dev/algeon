@@ -59,7 +59,7 @@ cudf_status_t cudf_binary_operation_vv_ex(cudf_column_view_handle lhs,
                                           cudf_binary_operator_t op,
                                           cudf_data_type_handle output_type,
                                           cudf_column_handle* out,
-                                          const cudf_exec_options_t* options);
+                                          cudf_exec_options_t const* options);
 
 /// Binary operation: column op scalar with explicit execution context.
 /// `options` must name an explicit valid device and non-NULL stream/MR.
@@ -69,7 +69,7 @@ cudf_status_t cudf_binary_operation_vs_ex(cudf_column_view_handle lhs,
                                           cudf_binary_operator_t op,
                                           cudf_data_type_handle output_type,
                                           cudf_column_handle* out,
-                                          const cudf_exec_options_t* options);
+                                          cudf_exec_options_t const* options);
 
 /// Binary operation: scalar op column with explicit execution context.
 /// `options` must name an explicit valid device and non-NULL stream/MR.
@@ -79,7 +79,7 @@ cudf_status_t cudf_binary_operation_sv_ex(cudf_scalar_handle lhs,
                                           cudf_binary_operator_t op,
                                           cudf_data_type_handle output_type,
                                           cudf_column_handle* out,
-                                          const cudf_exec_options_t* options);
+                                          cudf_exec_options_t const* options);
 
 #ifdef __cplusplus
 }

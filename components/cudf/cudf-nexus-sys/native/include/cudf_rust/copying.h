@@ -45,7 +45,7 @@ typedef struct cudf_gather_fixed_width_dont_check_preflight_result_t {
 /// must be 0 or 1, and each `num_children` must be non-negative.
 cudf_status_t cudf_gather_fixed_width_dont_check_preflight(
   int64_t output_rows,
-  const cudf_gather_fixed_width_column_metadata_t* columns,
+  cudf_gather_fixed_width_column_metadata_t const* columns,
   int32_t num_columns,
   int32_t device,
   cudf_gather_fixed_width_dont_check_preflight_result_t* out);
@@ -60,7 +60,7 @@ cudf_status_t cudf_gather_ex(cudf_table_view_handle input,
                              cudf_column_view_handle gather_map,
                              cudf_out_of_bounds_policy_t bounds_policy,
                              cudf_table_handle* out,
-                             const cudf_exec_options_t* options);
+                             cudf_exec_options_t const* options);
 
 /// Return the exact device allocation footprint of gathering `input` by
 /// `gather_map`.
@@ -74,7 +74,7 @@ cudf_status_t cudf_gather_device_allocated_size_ex(cudf_table_view_handle input,
                                                    cudf_column_view_handle gather_map,
                                                    cudf_out_of_bounds_policy_t bounds_policy,
                                                    size_t* out,
-                                                   const cudf_exec_options_t* options);
+                                                   cudf_exec_options_t const* options);
 
 /// Scatter rows from `source` into `target` by index with explicit execution
 /// options.
@@ -89,7 +89,7 @@ cudf_status_t cudf_scatter_ex(cudf_table_view_handle source,
                               cudf_column_view_handle scatter_map,
                               cudf_table_view_handle target,
                               cudf_table_handle* out,
-                              const cudf_exec_options_t* options);
+                              cudf_exec_options_t const* options);
 
 /// Conditionally select elements from two columns based on a boolean mask with
 /// explicit execution options.
@@ -105,7 +105,7 @@ cudf_status_t cudf_copy_if_else_vv_ex(cudf_column_view_handle lhs,
                                       cudf_column_view_handle rhs,
                                       cudf_column_view_handle boolean_mask,
                                       cudf_column_handle* out,
-                                      const cudf_exec_options_t* options);
+                                      cudf_exec_options_t const* options);
 
 /// Shift the rows of `input` by `offset` positions with explicit execution
 /// options, filling indeterminate outputs with `fill_value`.
@@ -125,7 +125,7 @@ cudf_status_t cudf_shift_ex(cudf_column_view_handle input,
                             int32_t offset,
                             cudf_scalar_handle fill_value,
                             cudf_column_handle* out,
-                            const cudf_exec_options_t* options);
+                            cudf_exec_options_t const* options);
 
 #ifdef __cplusplus
 }

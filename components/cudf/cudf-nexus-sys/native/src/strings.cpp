@@ -30,6 +30,7 @@
 #include <algorithm>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -476,8 +477,7 @@ cudf_status_t cudf_strings_prepared_replace_with_backrefs_output_size_facts(
   size_t* retained_output_bytes,
   size_t* retained_state_bytes,
   size_t* peak_execute_workspace_bytes,
-  size_t* execute_reservation_required_bytes,
-  uint64_t* size_pass_count)
+  size_t* execute_reservation_required_bytes)
 {
   CUDF_RUST_NULL_CHECK(retained_output_bytes, "retained_output_bytes is null");
   *retained_output_bytes = 0;
@@ -488,8 +488,6 @@ cudf_status_t cudf_strings_prepared_replace_with_backrefs_output_size_facts(
   CUDF_RUST_NULL_CHECK(execute_reservation_required_bytes,
                        "execute_reservation_required_bytes is null");
   *execute_reservation_required_bytes = 0;
-  CUDF_RUST_NULL_CHECK(size_pass_count, "size_pass_count is null");
-  *size_pass_count = 0;
   CUDF_RUST_NULL_CHECK(handle, "handle is null");
 
   CUDF_RUST_TRY
@@ -502,7 +500,6 @@ cudf_status_t cudf_strings_prepared_replace_with_backrefs_output_size_facts(
     *retained_state_bytes               = facts.retained_state_bytes;
     *peak_execute_workspace_bytes       = facts.peak_execute_workspace_bytes;
     *execute_reservation_required_bytes = facts.execute_reservation_required_bytes;
-    *size_pass_count                    = facts.size_pass_count;
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -579,19 +576,6 @@ cudf_status_t cudf_strings_prepared_replace_with_backrefs_destroy(
   return cudf_destroy_under_provenance(provenance, [owner] { delete owner; });
 }
 
-cudf_status_t cudf_strings_replace_with_backrefs_size_pass_count(uint64_t* out)
-{
-  CUDF_RUST_NULL_CHECK(out, "out is null");
-  *out = cudf::strings::replace_with_backrefs_size_pass_count();
-  return CUDF_SUCCESS;
-}
-
-cudf_status_t cudf_strings_replace_with_backrefs_reset_size_pass_count()
-{
-  cudf::strings::replace_with_backrefs_reset_size_pass_count();
-  return CUDF_SUCCESS;
-}
-
 // ---------------------------------------------------------------------------
 // Slice
 // ---------------------------------------------------------------------------
@@ -620,13 +604,13 @@ cudf_status_t cudf_strings_slice_ex(cudf_column_view_handle input,
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     {
-      cudf::numeric_scalar<cudf::size_type> start_scalar{
-        start, start_valid != 0, exec->stream, *exec->mr};
-      cudf::numeric_scalar<cudf::size_type> stop_scalar{
-        stop, stop_valid != 0, exec->stream, *exec->mr};
-      cudf::numeric_scalar<cudf::size_type> step_scalar{step, true, exec->stream, *exec->mr};
+      std::optional<cudf::size_type> const start_value =
+        start_valid != 0 ? std::optional<cudf::size_type>{start} : std::nullopt;
+      std::optional<cudf::size_type> const stop_value =
+        stop_valid != 0 ? std::optional<cudf::size_type>{stop} : std::nullopt;
+      std::optional<cudf::size_type> const step_value{step};
       auto result = cudf::strings::slice_strings(
-        to_strings_view(input), start_scalar, stop_scalar, step_scalar, exec->stream, *exec->mr);
+        to_strings_view(input), start_value, stop_value, step_value, exec->stream, *exec->mr);
       *out = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
     }
     return CUDF_SUCCESS;

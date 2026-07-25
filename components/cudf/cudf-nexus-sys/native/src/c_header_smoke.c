@@ -50,49 +50,49 @@ static int cudf_rust_c_header_smoke(void)
   cudf_status_t (*f10)(cudf_table_view_handle)                    = &cudf_table_view_destroy;
 
   cudf_status_t (*f11)(
-    cudf_column_view_handle, cudf_type_id_t, cudf_column_handle*, const cudf_exec_options_t*) =
+    cudf_column_view_handle, cudf_type_id_t, cudf_column_handle*, cudf_exec_options_t const*) =
     &cudf_dictionary_encode_ex;
   cudf_status_t (*f12)(
-    cudf_table_view_handle, uint32_t, cudf_column_handle*, const cudf_exec_options_t*) =
+    cudf_table_view_handle, uint32_t, cudf_column_handle*, cudf_exec_options_t const*) =
     &cudf_hashing_murmurhash3_x86_32_ex;
-  cudf_status_t (*f13)(cudf_column_handle, const cudf_exec_options_t*, cudf_column_handle*) =
+  cudf_status_t (*f13)(cudf_column_handle, cudf_exec_options_t const*, cudf_column_handle*) =
     &cudf_column_copy_ex;
-  cudf_status_t (*f14)(cudf_column_view_handle, const cudf_exec_options_t*, cudf_column_handle*) =
+  cudf_status_t (*f14)(cudf_column_view_handle, cudf_exec_options_t const*, cudf_column_handle*) =
     &cudf_column_copy_from_view_ex;
-  cudf_status_t (*f14c)(cudf_column_handle, const cudf_exec_options_t*, size_t*) =
+  cudf_status_t (*f14c)(cudf_column_handle, cudf_exec_options_t const*, size_t*) =
     &cudf_column_payload_size_ex;
   cudf_status_t (*f14d)(cudf_column_handle, size_t*) = &cudf_column_device_allocated_size;
   cudf_status_t (*f15)(cudf_type_id_t,
-                       const void*,
+                       void const*,
                        int32_t,
 
-                       const uint8_t*,
+                       uint8_t const*,
                        int32_t,
 
-                       const cudf_exec_options_t*,
+                       cudf_exec_options_t const*,
                        cudf_column_handle*)          = &cudf_column_create_numeric_ex;
   cudf_status_t (*f15a)(cudf_type_id_t,
                         int32_t,
-                        const void*,
+                        void const*,
                         int32_t,
 
-                        const uint8_t*,
+                        uint8_t const*,
                         int32_t,
 
-                        const cudf_exec_options_t*,
+                        cudf_exec_options_t const*,
                         cudf_column_handle*)         = &cudf_column_create_fixed_width_from_host_ex;
   cudf_status_t (*f15b)(cudf_scalar_handle,
                         cudf_scalar_handle,
                         int32_t,
 
-                        const cudf_exec_options_t*,
+                        cudf_exec_options_t const*,
                         cudf_column_handle*)         = &cudf_column_create_sequence_ex;
-  cudf_status_t (*f16)(cudf_table_handle, const cudf_exec_options_t*, cudf_table_handle*) =
+  cudf_status_t (*f16)(cudf_table_handle, cudf_exec_options_t const*, cudf_table_handle*) =
     &cudf_table_copy_ex;
-  cudf_status_t (*f16c)(cudf_table_handle, const cudf_exec_options_t*, size_t*) =
+  cudf_status_t (*f16c)(cudf_table_handle, cudf_exec_options_t const*, size_t*) =
     &cudf_table_payload_size_ex;
   cudf_status_t (*f16d)(cudf_table_handle, size_t*) = &cudf_table_device_allocated_size;
-  cudf_status_t (*f17)(cudf_column_view_handle, void*, size_t, const cudf_exec_options_t*) =
+  cudf_status_t (*f17)(cudf_column_view_handle, void*, size_t, cudf_exec_options_t const*) =
     &cudf_column_view_to_host_ex;
   cudf_status_t (*f17b)(cudf_column_view_handle,
                         int32_t*,
@@ -101,46 +101,46 @@ static int cudf_rust_c_header_smoke(void)
                         size_t,
                         int32_t*,
 
-                        const cudf_exec_options_t*) = &cudf_column_view_strings_to_host_ex;
+                        cudf_exec_options_t const*) = &cudf_column_view_strings_to_host_ex;
   cudf_status_t (*f18)(
-    cudf_type_id_t, const void*, int32_t, const cudf_exec_options_t*, cudf_column_handle*) =
+    cudf_type_id_t, void const*, int32_t, cudf_exec_options_t const*, cudf_column_handle*) =
     &cudf_column_create_from_device_data_ex;
   cudf_status_t (*f19)(
-    cudf_column_view_handle, cudf_scalar_handle, cudf_column_handle*, const cudf_exec_options_t*) =
+    cudf_column_view_handle, cudf_scalar_handle, cudf_column_handle*, cudf_exec_options_t const*) =
     &cudf_replace_nulls_scalar_ex;
   cudf_status_t (*f20)(cudf_column_view_handle,
                        cudf_column_view_handle,
                        cudf_column_handle*,
 
-                       const cudf_exec_options_t*)  = &cudf_replace_nulls_column_ex;
+                       cudf_exec_options_t const*)        = &cudf_replace_nulls_column_ex;
   cudf_status_t (*f21)(cudf_table_view_handle,
                        cudf_column_view_handle,
                        cudf_table_handle*,
 
-                       const cudf_exec_options_t*)  = &cudf_apply_boolean_mask_ex;
+                       cudf_exec_options_t const*)        = &cudf_apply_boolean_mask_ex;
   cudf_status_t (*f21b)(cudf_table_view_handle,
 
-                        const cudf_row_predicate_node_t*,
+                        cudf_row_predicate_node_t const*,
                         int32_t,
                         int32_t,
                         cudf_table_handle*,
 
-                        const cudf_exec_options_t*) = &cudf_filter_rows_by_predicate_ex;
+                        cudf_exec_options_t const*)       = &cudf_filter_rows_by_predicate_ex;
   cudf_status_t (*f22)(cudf_table_view_handle,
                        cudf_column_view_handle,
                        cudf_out_of_bounds_policy_t,
                        cudf_table_handle*,
 
-                       const cudf_exec_options_t*)  = &cudf_gather_ex;
+                       cudf_exec_options_t const*)        = &cudf_gather_ex;
   cudf_status_t (*f22_unique)(cudf_table_view_handle,
-                              const int*,
+                              int const*,
                               int,
                               cudf_duplicate_keep_option_t,
                               cudf_stream_compaction_null_equality_t,
                               cudf_table_handle*,
-                              const cudf_exec_options_t*) = &cudf_unique_ex;
+                              cudf_exec_options_t const*) = &cudf_unique_ex;
   cudf_status_t (*f22_gather_preflight)(int64_t,
-                                        const cudf_gather_fixed_width_column_metadata_t*,
+                                        cudf_gather_fixed_width_column_metadata_t const*,
                                         int32_t,
                                         int32_t,
                                         cudf_gather_fixed_width_dont_check_preflight_result_t*) =
@@ -150,7 +150,7 @@ static int cudf_rust_c_header_smoke(void)
                                   cudf_table_view_handle,
                                   cudf_table_handle*,
 
-                                  const cudf_exec_options_t*) = &cudf_scatter_ex;
+                                  cudf_exec_options_t const*) = &cudf_scatter_ex;
   cudf_status_t (*f22ast0)(int32_t, cudf_ast_table_reference_t, cudf_ast_expression_handle*) =
     &cudf_ast_column_reference_create;
   cudf_status_t (*f22ast1)(cudf_scalar_handle, cudf_ast_expression_handle*) =
@@ -184,30 +184,30 @@ static int cudf_rust_c_header_smoke(void)
   cudf_status_t (*f22af_size)(cudf_hash_join_handle, size_t*) =
     &cudf_hash_join_device_allocated_size;
   cudf_status_t (*f22b)(
-    cudf_type_id_t, const void*, int32_t, const cudf_exec_options_t*, cudf_scalar_handle*) =
+    cudf_type_id_t, void const*, int32_t, cudf_exec_options_t const*, cudf_scalar_handle*) =
     &cudf_scalar_create_numeric_ex;
-  cudf_status_t (*f22c)(const char*, int32_t, const cudf_exec_options_t*, cudf_scalar_handle*) =
+  cudf_status_t (*f22c)(char const*, int32_t, cudf_exec_options_t const*, cudf_scalar_handle*) =
     &cudf_scalar_create_string_ex;
   cudf_status_t (*f22c1)(cudf_type_id_t,
-                         const void*,
+                         void const*,
                          int32_t,
                          int32_t,
 
-                         const cudf_exec_options_t*,
+                         cudf_exec_options_t const*,
                          cudf_scalar_handle*) = &cudf_scalar_create_decimal_raw_ex;
   cudf_status_t (*f22c2)(
-    cudf_type_id_t, int64_t, int32_t, const cudf_exec_options_t*, cudf_scalar_handle*) =
+    cudf_type_id_t, int64_t, int32_t, cudf_exec_options_t const*, cudf_scalar_handle*) =
     &cudf_scalar_create_timestamp_raw_ex;
   cudf_status_t (*f22c3)(
-    cudf_type_id_t, int64_t, int32_t, const cudf_exec_options_t*, cudf_scalar_handle*) =
+    cudf_type_id_t, int64_t, int32_t, cudf_exec_options_t const*, cudf_scalar_handle*) =
     &cudf_scalar_create_duration_raw_ex;
-  cudf_status_t (*f22d)(cudf_scalar_handle, int32_t*, const cudf_exec_options_t*) =
+  cudf_status_t (*f22d)(cudf_scalar_handle, int32_t*, cudf_exec_options_t const*) =
     &cudf_scalar_is_valid_ex;
-  cudf_status_t (*f22e)(cudf_scalar_handle, void*, const cudf_exec_options_t*) =
+  cudf_status_t (*f22e)(cudf_scalar_handle, void*, cudf_exec_options_t const*) =
     &cudf_scalar_value_ex;
-  cudf_status_t (*f22f)(cudf_scalar_handle, char**, int32_t*, const cudf_exec_options_t*) =
+  cudf_status_t (*f22f)(cudf_scalar_handle, char**, int32_t*, cudf_exec_options_t const*) =
     &cudf_scalar_string_value_ex;
-  cudf_status_t (*f22h)(cudf_scalar_handle, const cudf_exec_options_t*, cudf_scalar_handle*) =
+  cudf_status_t (*f22h)(cudf_scalar_handle, cudf_exec_options_t const*, cudf_scalar_handle*) =
     &cudf_scalar_copy_ex;
   cudf_status_t (*f22i)(int32_t, cudf_reduce_aggregation_handle*) =
     &cudf_reduce_aggregation_create_nunique;
@@ -228,27 +228,27 @@ static int cudf_rust_c_header_smoke(void)
                        cudf_column_handle*) = &cudf_column_adopt_device_buffer_nullable;
 
   /* strings.h */
-  cudf_status_t (*f31)(cudf_column_view_handle, cudf_column_handle*, const cudf_exec_options_t*) =
+  cudf_status_t (*f31)(cudf_column_view_handle, cudf_column_handle*, cudf_exec_options_t const*) =
     &cudf_strings_to_lower_ex;
-  cudf_status_t (*f33)(cudf_column_view_handle, cudf_column_handle*, const cudf_exec_options_t*) =
+  cudf_status_t (*f33)(cudf_column_view_handle, cudf_column_handle*, cudf_exec_options_t const*) =
     &cudf_strings_to_upper_ex;
   cudf_status_t (*f35)(
-    cudf_column_view_handle, cudf_scalar_handle, cudf_column_handle*, const cudf_exec_options_t*) =
+    cudf_column_view_handle, cudf_scalar_handle, cudf_column_handle*, cudf_exec_options_t const*) =
     &cudf_strings_contains_ex;
   cudf_status_t (*f37)(
-    cudf_column_view_handle, cudf_scalar_handle, cudf_column_handle*, const cudf_exec_options_t*) =
+    cudf_column_view_handle, cudf_scalar_handle, cudf_column_handle*, cudf_exec_options_t const*) =
     &cudf_strings_starts_with_ex;
   cudf_status_t (*f39)(
-    cudf_column_view_handle, cudf_scalar_handle, cudf_column_handle*, const cudf_exec_options_t*) =
+    cudf_column_view_handle, cudf_scalar_handle, cudf_column_handle*, cudf_exec_options_t const*) =
     &cudf_strings_ends_with_ex;
   cudf_status_t (*f39b)(cudf_column_view_handle,
-                        const char*,
+                        char const*,
                         int32_t,
-                        const char*,
+                        char const*,
                         int32_t,
                         cudf_column_handle*,
 
-                        const cudf_exec_options_t*) = &cudf_strings_like_ex;
+                        cudf_exec_options_t const*) = &cudf_strings_like_ex;
   cudf_status_t (*f39d)(cudf_column_view_handle,
                         int32_t,
                         int32_t,
@@ -257,23 +257,23 @@ static int cudf_rust_c_header_smoke(void)
                         int32_t,
                         cudf_column_handle*,
 
-                        const cudf_exec_options_t*) = &cudf_strings_slice_ex;
+                        cudf_exec_options_t const*) = &cudf_strings_slice_ex;
   cudf_status_t (*f41)(cudf_column_view_handle,
                        cudf_strip_side_t,
                        cudf_scalar_handle,
                        cudf_column_handle*,
 
-                       const cudf_exec_options_t*)  = &cudf_strings_strip_ex;
-  cudf_status_t (*f43)(cudf_column_view_handle, cudf_column_handle*, const cudf_exec_options_t*) =
+                       cudf_exec_options_t const*)  = &cudf_strings_strip_ex;
+  cudf_status_t (*f43)(cudf_column_view_handle, cudf_column_handle*, cudf_exec_options_t const*) =
     &cudf_strings_count_characters_ex;
-  cudf_status_t (*f45)(cudf_column_view_handle, cudf_column_handle*, const cudf_exec_options_t*) =
+  cudf_status_t (*f45)(cudf_column_view_handle, cudf_column_handle*, cudf_exec_options_t const*) =
     &cudf_strings_count_bytes_ex;
 
   /* device.h */
   cudf_status_t (*f46)(int32_t*)              = &cudf_cuda_get_device;
   cudf_status_t (*f47)(int32_t)               = &cudf_cuda_set_device;
   cudf_status_t (*f48)(int32_t*)              = &cudf_cuda_get_device_count;
-  cudf_status_t (*f49)(const void*, int32_t*) = &cudf_cuda_pointer_get_device;
+  cudf_status_t (*f49)(void const*, int32_t*) = &cudf_cuda_pointer_get_device;
 
   /* gds.h */
   cudf_status_t (*f49g)(void) = &cudf_gds_driver_available;
@@ -283,9 +283,9 @@ static int cudf_rust_c_header_smoke(void)
                        cudf_datetime_component_t,
                        cudf_column_handle*,
 
-                       const cudf_exec_options_t*) = &cudf_datetime_extract_component_ex;
+                       cudf_exec_options_t const*) = &cudf_datetime_extract_component_ex;
   cudf_status_t (*f51)(
-    cudf_column_view_handle, int32_t, cudf_column_handle*, const cudf_exec_options_t*) =
+    cudf_column_view_handle, int32_t, cudf_column_handle*, cudf_exec_options_t const*) =
     &cudf_datetime_add_calendrical_months_scalar_ex;
   cudf_datetime_component_t c1 = CUDF_DATETIME_COMPONENT_YEAR;
 

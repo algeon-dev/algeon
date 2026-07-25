@@ -26,7 +26,7 @@ cudf_status_t cudf_cuda_profiler_stop(void);
 cudf_status_t cudf_cuda_get_device_count(int32_t* count);
 
 /// Resolve the CUDA device ordinal that owns a device pointer.
-cudf_status_t cudf_cuda_pointer_get_device(const void* ptr, int32_t* device);
+cudf_status_t cudf_cuda_pointer_get_device(void const* ptr, int32_t* device);
 
 /// Query the CUDA PCI bus id for a CUDA device.
 cudf_status_t cudf_cuda_device_pci_bus_id(int32_t device, char* out, size_t out_len);
