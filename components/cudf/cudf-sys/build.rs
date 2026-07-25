@@ -151,9 +151,12 @@ fn emit_required_runtime_dep_library_metadata(
     file_name: &str,
     build_dir_subpath: &str,
     discovery_env_present: bool,
-) {
+) -> Option<PathBuf> {
     match locate_runtime_dep_library(file_name, build_dir_subpath) {
-        Some(path) => emit_runtime_dep_path_metadata(key, &path),
+        Some(path) => {
+            emit_runtime_dep_path_metadata(key, &path);
+            Some(path)
+        },
         None if discovery_env_present => {
             println!(
                 "cargo:warning=required shared runtime dependency {file_name} was not found under the libcudf discovery prefix \
@@ -161,18 +164,44 @@ fn emit_required_runtime_dep_library_metadata(
                  consumer (e.g. cugraph) cannot verify the single-RMM invariant. Rebuild libcudf with \
                  CUDF_RMM_BUILD_SHARED=ON and re-run `cmake --install` if this is unexpected."
             );
+            None
         },
-        None => {},
+        None => None,
     }
 }
 
-fn emit_optional_runtime_dep_library_metadata(key: &str, file_name: &str, build_dir_subpath: &str, linkage_key: &str) {
-    match locate_runtime_dep_library(file_name, build_dir_subpath) {
-        Some(path) => {
+fn emit_optional_runtime_dep_library_metadata(
+    key: &str,
+    file_name: &str,
+    build_dir_subpath: &str,
+    linkage_key: &str,
+    consumers: &[PathBuf],
+) {
+    let candidate = locate_runtime_dep_library(file_name, build_dir_subpath);
+    let linkage = build_support::classify_optional_runtime_dep(candidate, consumers, file_name)
+        .unwrap_or_else(|error| panic!("failed to determine {file_name} linkage: {error}"));
+    match linkage {
+        build_support::OptionalRuntimeDepLinkage::Shared(path) => {
             emit_runtime_dep_path_metadata(key, &path);
             emit_runtime_dep_linkage_metadata(linkage_key, "shared");
         },
-        None => emit_runtime_dep_linkage_metadata(linkage_key, "absorbed"),
+        build_support::OptionalRuntimeDepLinkage::Absorbed => {
+            emit_runtime_dep_linkage_metadata(linkage_key, "absorbed")
+        },
+        build_support::OptionalRuntimeDepLinkage::StaleSharedArtifact(path) => {
+            emit_runtime_dep_linkage_metadata(linkage_key, "absorbed");
+            // Track the stale file so removing it reruns discovery and clears
+            // the warning instead of replaying it from the cached output.
+            println!("cargo:rerun-if-changed={}", path.display());
+            println!(
+                "cargo:warning={} exists but no shipped RAPIDS shared library links it (no DT_NEEDED entry in \
+                 libcudf.so/librmm.so); it is a stale artifact from an earlier shared build and is reported as \
+                 absorbed. Remove it and any stale rapids_logger CMake package (lib/cmake/rapids_logger under \
+                 the same prefix): downstream single-runtime enforcement must observe real linkage, not \
+                 leftovers `cmake --install` never removed.",
+                path.display()
+            );
+        },
     }
 }
 
@@ -185,29 +214,41 @@ fn emit_optional_runtime_dep_library_metadata(key: &str, file_name: &str, build_
 ///
 /// rapids_logger is metadata-only here. cuDF's static-deps build can absorb
 /// rapids_logger into librmm.so, so a missing librapids_logger.so is not itself
-/// a single-RMM violation.
+/// a single-RMM violation. A *present* librapids_logger.so is not proof of
+/// shared linkage either: `cmake --install` never removes files, so stale
+/// artifacts from earlier shared builds linger. Linkage is therefore
+/// classified by the DT_NEEDED entries of the shipped libcudf.so/librmm.so,
+/// and stale candidates are reported as absorbed with a removal warning.
 fn emit_runtime_dep_library_metadata() {
     let discovery_env_present =
         env::var_os("CUDF_INSTALL_DIR").is_some() || env::var_os("CUDF_CPP_BUILD_DIR").is_some();
-    match locate_prebuilt_libcudf() {
-        Some(path) => emit_runtime_dep_path_metadata("libcudf-runtime-lib", &path),
-        None if discovery_env_present => println!(
-            "cargo:warning=required libcudf.so was not found under the configured libcudf discovery path \
-             (CUDF_INSTALL_DIR/CUDF_CPP_BUILD_DIR); downstream builds cannot pin the exact libcudf runtime identity"
-        ),
-        None => {},
-    }
-    emit_required_runtime_dep_library_metadata(
+    let libcudf = match locate_prebuilt_libcudf() {
+        Some(path) => {
+            emit_runtime_dep_path_metadata("libcudf-runtime-lib", &path);
+            Some(path)
+        },
+        None if discovery_env_present => {
+            println!(
+                "cargo:warning=required libcudf.so was not found under the configured libcudf discovery path \
+                 (CUDF_INSTALL_DIR/CUDF_CPP_BUILD_DIR); downstream builds cannot pin the exact libcudf runtime identity"
+            );
+            None
+        },
+        None => None,
+    };
+    let rmm = emit_required_runtime_dep_library_metadata(
         "rmm-runtime-lib",
         "librmm.so",
         "_deps/rmm-build",
         discovery_env_present,
     );
+    let consumers = [libcudf, rmm].into_iter().flatten().collect::<Vec<_>>();
     emit_optional_runtime_dep_library_metadata(
         "rapids-logger-runtime-lib",
         "librapids_logger.so",
         "_deps/rapids_logger-build",
         "rapids-logger-linkage",
+        &consumers,
     );
 }
 

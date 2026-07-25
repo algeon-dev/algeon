@@ -418,6 +418,8 @@ fn build_script_treats_rapids_logger_runtime_library_as_optional() {
         "\"_deps/rapids_logger-build\"",
         "\"rapids-logger-linkage\"",
         "\"absorbed\"",
+        "classify_optional_runtime_dep",
+        "StaleSharedArtifact",
     ] {
         assert!(BUILD_RS.contains(expected), "expected build.rs to contain runtime metadata contract `{expected}`");
     }
@@ -426,6 +428,196 @@ fn build_script_treats_rapids_logger_runtime_library_as_optional() {
         !BUILD_RS.contains("no shared {file_name} found under the libcudf discovery prefix"),
         "expected build.rs to avoid warning generically for optional runtime dependencies"
     );
+}
+
+/// Minimal ELF64 shared object with the given `DT_NEEDED` entries. Layout:
+/// ELF header, PT_LOAD covering the whole file (vaddr == file offset),
+/// PT_DYNAMIC, the dynamic section, then the dynamic string table.
+fn synthetic_elf64_with_dt_needed(needed: &[&str]) -> Vec<u8> {
+    const EHDR: usize = 64;
+    const PHDR: usize = 56;
+
+    let mut strtab = vec![0u8];
+    let mut name_offsets = Vec::new();
+    for name in needed {
+        name_offsets.push(strtab.len() as u64);
+        strtab.extend_from_slice(name.as_bytes());
+        strtab.push(0);
+    }
+    let dynamic_offset = EHDR + 2 * PHDR;
+    let entries = 2 + needed.len() + 1; // DT_STRTAB + DT_STRSZ + DT_NEEDEDs + DT_NULL
+    let dynamic_size = entries * 16;
+    let strtab_offset = dynamic_offset + dynamic_size;
+    let total = strtab_offset + strtab.len();
+
+    let mut bytes = vec![0u8; total];
+    bytes[0..4].copy_from_slice(&[0x7f, b'E', b'L', b'F']);
+    bytes[4] = 2; // ELFCLASS64
+    bytes[5] = 1; // ELFDATA2LSB
+    bytes[6] = 1; // EV_CURRENT
+    bytes[16..18].copy_from_slice(&3u16.to_le_bytes()); // ET_DYN
+    bytes[18..20].copy_from_slice(&62u16.to_le_bytes()); // EM_X86_64
+    bytes[20..24].copy_from_slice(&1u32.to_le_bytes()); // e_version
+    bytes[32..40].copy_from_slice(&(EHDR as u64).to_le_bytes()); // e_phoff
+    bytes[52..54].copy_from_slice(&(EHDR as u16).to_le_bytes()); // e_ehsize
+    bytes[54..56].copy_from_slice(&(PHDR as u16).to_le_bytes()); // e_phentsize
+    bytes[56..58].copy_from_slice(&2u16.to_le_bytes()); // e_phnum
+
+    let load = &mut bytes[EHDR..EHDR + PHDR];
+    load[0..4].copy_from_slice(&1u32.to_le_bytes()); // PT_LOAD
+    load[4..8].copy_from_slice(&5u32.to_le_bytes()); // PF_R | PF_X
+    load[32..40].copy_from_slice(&(total as u64).to_le_bytes()); // p_filesz
+    load[40..48].copy_from_slice(&(total as u64).to_le_bytes()); // p_memsz
+
+    let dynamic = &mut bytes[EHDR + PHDR..EHDR + 2 * PHDR];
+    dynamic[0..4].copy_from_slice(&2u32.to_le_bytes()); // PT_DYNAMIC
+    dynamic[8..16].copy_from_slice(&(dynamic_offset as u64).to_le_bytes()); // p_offset
+    dynamic[16..24].copy_from_slice(&(dynamic_offset as u64).to_le_bytes()); // p_vaddr
+    dynamic[32..40].copy_from_slice(&(dynamic_size as u64).to_le_bytes()); // p_filesz
+
+    let tags: Vec<(i64, u64)> = [(5, strtab_offset as u64), (10, strtab.len() as u64)]
+        .into_iter()
+        .chain(name_offsets.iter().map(|offset| (1, *offset)))
+        .chain([(0, 0)])
+        .collect();
+    for (index, (tag, value)) in tags.iter().enumerate() {
+        let at = dynamic_offset + index * 16;
+        bytes[at..at + 8].copy_from_slice(&tag.to_le_bytes());
+        bytes[at + 8..at + 16].copy_from_slice(&value.to_le_bytes());
+    }
+    bytes[strtab_offset..].copy_from_slice(&strtab);
+    bytes
+}
+
+fn elf_contract_temp_dir(label: &str) -> PathBuf {
+    let unique = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let dir = std::env::temp_dir().join(format!("cudf-sys-{label}-{unique}"));
+    fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+#[test]
+fn elf_dt_needed_reads_dynamic_dependencies_in_order() {
+    let dir = elf_contract_temp_dir("elf-dt-needed");
+    let library = dir.join("libfake.so");
+    fs::write(&library, synthetic_elf64_with_dt_needed(&["libfoo.so", "libbar.so"])).unwrap();
+
+    let dependencies = build_support::elf_dt_needed(&library).unwrap();
+
+    assert_eq!(dependencies, vec!["libfoo.so".to_string(), "libbar.so".to_string()]);
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn elf_dt_needed_is_empty_without_a_dynamic_section() {
+    let dir = elf_contract_temp_dir("elf-no-dynamic");
+    let library = dir.join("libfake.so");
+
+    let mut no_program_headers = synthetic_elf64_with_dt_needed(&["libfoo.so"]);
+    no_program_headers[56..58].copy_from_slice(&0u16.to_le_bytes()); // e_phnum = 0
+    fs::write(&library, &no_program_headers).unwrap();
+    assert!(build_support::elf_dt_needed(&library).unwrap().is_empty());
+
+    let mut no_dynamic_segment = synthetic_elf64_with_dt_needed(&["libfoo.so"]);
+    no_dynamic_segment[64 + 56..64 + 60].copy_from_slice(&4u32.to_le_bytes()); // PT_DYNAMIC -> PT_NOTE
+    fs::write(&library, &no_dynamic_segment).unwrap();
+    assert!(build_support::elf_dt_needed(&library).unwrap().is_empty());
+
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn elf_dt_needed_rejects_non_elf_and_unsupported_layouts() {
+    let dir = elf_contract_temp_dir("elf-rejects");
+    let library = dir.join("libfake.so");
+
+    fs::write(&library, b"not an elf file at all, long enough to pass the header read.........").unwrap();
+    assert!(build_support::elf_dt_needed(&library).unwrap_err().contains("not an ELF file"));
+
+    fs::write(&library, b"\x7fELF").unwrap();
+    assert!(build_support::elf_dt_needed(&library).unwrap_err().contains("failed to read ELF header"));
+
+    let mut thirty_two_bit = synthetic_elf64_with_dt_needed(&[]);
+    thirty_two_bit[4] = 1; // ELFCLASS32
+    fs::write(&library, &thirty_two_bit).unwrap();
+    assert!(build_support::elf_dt_needed(&library).unwrap_err().contains("not a 64-bit ELF file"));
+
+    let mut big_endian = synthetic_elf64_with_dt_needed(&[]);
+    big_endian[5] = 2; // ELFDATA2MSB
+    fs::write(&library, &big_endian).unwrap();
+    assert!(build_support::elf_dt_needed(&library).unwrap_err().contains("not a little-endian ELF file"));
+
+    let mut relocatable = synthetic_elf64_with_dt_needed(&[]);
+    relocatable[16..18].copy_from_slice(&1u16.to_le_bytes()); // ET_REL
+    fs::write(&library, &relocatable).unwrap();
+    assert!(build_support::elf_dt_needed(&library).unwrap_err().contains("unsupported ELF type"));
+
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn optional_runtime_dep_classification_requires_real_linkage() {
+    let dir = elf_contract_temp_dir("logger-classification");
+    let candidate = dir.join("librapids_logger.so");
+    fs::write(&candidate, b"shared logger candidate").unwrap();
+    let linked_consumer = dir.join("librmm.so");
+    fs::write(&linked_consumer, synthetic_elf64_with_dt_needed(&["libcudart.so", "librapids_logger.so"])).unwrap();
+    let absorbed_consumer = dir.join("libcudf.so");
+    fs::write(&absorbed_consumer, synthetic_elf64_with_dt_needed(&["libcudart.so"])).unwrap();
+
+    assert_eq!(
+        build_support::classify_optional_runtime_dep(
+            None,
+            std::slice::from_ref(&linked_consumer),
+            "librapids_logger.so"
+        )
+        .unwrap(),
+        build_support::OptionalRuntimeDepLinkage::Absorbed,
+        "no candidate must classify as absorbed"
+    );
+    assert_eq!(
+        build_support::classify_optional_runtime_dep(
+            Some(candidate.clone()),
+            std::slice::from_ref(&linked_consumer),
+            "librapids_logger.so"
+        )
+        .unwrap(),
+        build_support::OptionalRuntimeDepLinkage::Shared(candidate.clone()),
+        "a consumer with a DT_NEEDED entry makes the candidate genuinely shared"
+    );
+    assert_eq!(
+        build_support::classify_optional_runtime_dep(
+            Some(candidate.clone()),
+            std::slice::from_ref(&absorbed_consumer),
+            "librapids_logger.so"
+        )
+        .unwrap(),
+        build_support::OptionalRuntimeDepLinkage::StaleSharedArtifact(candidate.clone()),
+        "a candidate no consumer links is a stale artifact"
+    );
+    assert_eq!(
+        build_support::classify_optional_runtime_dep(
+            Some(candidate.clone()),
+            &[absorbed_consumer.clone(), linked_consumer.clone()],
+            "librapids_logger.so"
+        )
+        .unwrap(),
+        build_support::OptionalRuntimeDepLinkage::Shared(candidate.clone()),
+        "any single linking consumer is sufficient evidence"
+    );
+    let missing_consumer = dir.join("missing.so");
+    assert_eq!(
+        build_support::classify_optional_runtime_dep(
+            Some(candidate.clone()),
+            &[missing_consumer],
+            "librapids_logger.so"
+        )
+        .unwrap(),
+        build_support::OptionalRuntimeDepLinkage::Shared(candidate.clone()),
+        "without readable consumers the historical presence-based classification is preserved"
+    );
+
+    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
