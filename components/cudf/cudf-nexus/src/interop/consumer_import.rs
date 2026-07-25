@@ -146,18 +146,6 @@ fn validate_runtime_device(
     Ok(())
 }
 
-fn zero_column_non_empty_borrowed_table_error(operation: &'static str, table_row_count: usize) -> InteropError {
-    InteropError::new(
-        InteropErrorKind::InvalidView,
-        "borrowed table import cannot materialize a zero-column table with non-zero row count",
-    )
-    .with_context("operation", operation)
-    .with_context("resource", "table_shape")
-    .with_context("reason", "zero_column_non_empty_table")
-    .with_context("table_row_count", table_row_count.to_string())
-    .with_context("remedy", "provide at least one semantic column or report zero rows")
-}
-
 fn partition_runtime_count_mismatch_error(
     operation: &'static str,
     expected_count: usize,
@@ -306,21 +294,19 @@ pub(super) fn import_table_from_borrowed_view(
         borrowed.execution().device(),
         runtime,
     )?;
-    if borrowed.num_columns() == 0 {
-        if borrowed.num_rows() != 0 {
-            return Err(zero_column_non_empty_borrowed_table_error(operation, borrowed.num_rows()));
-        }
-
-        return runtime.empty_table().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error));
-    }
-
     let columns = borrowed
         .columns()
         .iter()
         .map(|column| import_column_from_borrowed_view(column, runtime, operation))
         .collect::<Result<Vec<_>, _>>()?;
 
-    Table::from_columns(columns).map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))
+    Table::from_columns_in_domain_with_num_rows(
+        columns,
+        borrowed.num_rows(),
+        Arc::clone(runtime.execution_domain()),
+        operation,
+    )
+    .map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))
 }
 
 pub(super) fn import_column_from_owned_transfer(

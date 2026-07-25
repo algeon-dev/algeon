@@ -441,7 +441,7 @@ fn table_release_columns_preserves_existing_column_provenance_from_table_state()
 #[test]
 fn table_create_preserves_input_column_handle_provenance() {
     let sources = NativeSources::load();
-    let table_create = sources.function_body("cudf_table_create");
+    let table_create = sources.function_body("cudf_table_create_impl");
     let mut violations = Vec::new();
 
     if table_create.body.contains("release_native_column") {

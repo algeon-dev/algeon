@@ -24,10 +24,10 @@ use crate::{
 /// Returns an error if the column count of the table does not match the
 /// number of names.
 pub(crate) fn dataframe_from_table_and_names(table: Table, names: Vec<String>) -> Result<DataFrame> {
-    let view = table.view()?;
-    let row_count = if view.num_columns()? > 0 { view.num_rows()? } else { 0 };
-    drop(view);
-    let table_domain = Arc::clone(table.execution_domain());
+    let (row_count, table_domain) = {
+        let view = table.view()?;
+        (view.num_rows()?, Arc::clone(table.execution_domain()))
+    };
 
     let cols = table.into_columns()?;
     if cols.len() != names.len() {

@@ -1256,6 +1256,13 @@ unsafe extern "C" {
         num_columns: i32,
         out: *mut cudf_table_handle,
     ) -> cudf_status_t;
+    #[doc = " Create a table from an array of column handles with an explicit row count.\n\n The explicit row count is required to preserve non-zero rows when\n `num_columns == 0`. When columns are present, it must match every column's\n size. Ownership and failure behavior match cudf_table_create."]
+    pub fn cudf_table_create_with_num_rows(
+        columns: *mut cudf_column_handle,
+        num_columns: i32,
+        num_rows: i32,
+        out: *mut cudf_table_handle,
+    ) -> cudf_status_t;
     #[doc = " Deep-copy a table with explicit execution options.\n\n `options` must be non-NULL and must name an explicit valid device, a\n non-NULL stream, and a non-NULL memory resource. `options->mr` must outlive\n the returned table."]
     pub fn cudf_table_copy_ex(
         src: cudf_table_handle,
@@ -1319,6 +1326,13 @@ unsafe extern "C" {
     pub fn cudf_table_view_from_column_views(
         column_views: *mut cudf_column_view_handle,
         num_columns: i32,
+        out: *mut cudf_table_view_handle,
+    ) -> cudf_status_t;
+    #[doc = " Construct a table_view from column_view handles with an explicit row count.\n\n The explicit row count is required to preserve non-zero rows when\n `num_columns == 0`. When column views are present, it must match every\n column view's size. The returned table_view borrows from the column views."]
+    pub fn cudf_table_view_from_column_views_with_num_rows(
+        column_views: *mut cudf_column_view_handle,
+        num_columns: i32,
+        num_rows: i32,
         out: *mut cudf_table_view_handle,
     ) -> cudf_status_t;
     #[doc = " Construct a projected table_view by selecting columns from an existing\n table_view. The returned table_view is heap-allocated and must be freed\n with cudf_table_view_destroy."]

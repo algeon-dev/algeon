@@ -111,6 +111,28 @@ fn test_table_release_columns_empty_table() {
 }
 
 #[test]
+fn test_table_create_with_num_rows_preserves_zero_column_row_count() {
+    let _shim_state = lock_shim_state();
+    let mut tbl: cudf_sys::cudf_table_handle = ptr::null_mut();
+    let st = unsafe { cudf_sys::cudf_table_create_with_num_rows(ptr::null_mut(), 0, 3, &mut tbl) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert!(!tbl.is_null());
+
+    let tv = make_table_view(tbl);
+    let mut num_cols: i32 = -1;
+    let mut num_rows: i32 = -1;
+    assert_eq!(unsafe { cudf_sys::cudf_table_view_num_columns(tv, &mut num_cols) }, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(unsafe { cudf_sys::cudf_table_view_num_rows(tv, &mut num_rows) }, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(num_cols, 0);
+    assert_eq!(num_rows, 3);
+
+    unsafe {
+        cudf_sys::cudf_table_view_destroy(tv);
+        cudf_sys::cudf_table_destroy(tbl);
+    }
+}
+
+#[test]
 fn test_table_release_columns_null_table_rejected() {
     let _shim_state = lock_shim_state();
     let mut out_columns: *mut cudf_sys::cudf_column_handle = ptr::null_mut();
@@ -406,5 +428,66 @@ fn test_table_view_from_column_views_zero_columns_succeeds() {
 
     unsafe {
         cudf_sys::cudf_table_view_destroy(out);
+    }
+}
+
+#[test]
+fn test_table_view_from_column_views_with_num_rows_preserves_zero_column_row_count() {
+    let _shim_state = lock_shim_state();
+    let mut out: cudf_sys::cudf_table_view_handle = ptr::null_mut();
+    let status = unsafe { cudf_sys::cudf_table_view_from_column_views_with_num_rows(ptr::null_mut(), 0, 3, &mut out) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert!(!out.is_null());
+
+    let mut num_cols: i32 = -1;
+    let mut num_rows: i32 = -1;
+    assert_eq!(unsafe { cudf_sys::cudf_table_view_num_columns(out, &mut num_cols) }, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(unsafe { cudf_sys::cudf_table_view_num_rows(out, &mut num_rows) }, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(num_cols, 0);
+    assert_eq!(num_rows, 3);
+
+    unsafe { cudf_sys::cudf_table_view_destroy(out) };
+}
+
+#[test]
+fn test_table_view_from_column_views_with_num_rows_rejects_mismatched_columns() {
+    let _shim_state = lock_shim_state();
+    let column = make_i32_column(&[1, 2, 3]);
+    let view = make_column_view(column);
+    let mut views = [view];
+    let mut out: cudf_sys::cudf_table_view_handle = ptr::null_mut();
+
+    let status =
+        unsafe { cudf_sys::cudf_table_view_from_column_views_with_num_rows(views.as_mut_ptr(), 1, 2, &mut out) };
+    assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
+    assert!(out.is_null());
+
+    unsafe {
+        cudf_sys::cudf_column_view_destroy(view);
+        cudf_sys::cudf_column_destroy(column);
+    }
+}
+
+#[test]
+fn test_table_view_select_zero_columns_preserves_source_row_count() {
+    let _shim_state = lock_shim_state();
+    let tbl = make_table_from_columns(vec![make_i32_column(&[1, 2, 3]), make_i32_column(&[4, 5, 6])]);
+    let source = make_table_view(tbl);
+    let mut projected: cudf_sys::cudf_table_view_handle = ptr::null_mut();
+    let status = unsafe { cudf_sys::cudf_table_view_select_columns(source, ptr::null(), 0, &mut projected) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert!(!projected.is_null());
+
+    let mut num_cols: i32 = -1;
+    let mut num_rows: i32 = -1;
+    assert_eq!(unsafe { cudf_sys::cudf_table_view_num_columns(projected, &mut num_cols) }, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(unsafe { cudf_sys::cudf_table_view_num_rows(projected, &mut num_rows) }, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(num_cols, 0);
+    assert_eq!(num_rows, 3);
+
+    unsafe {
+        cudf_sys::cudf_table_view_destroy(projected);
+        cudf_sys::cudf_table_view_destroy(source);
+        cudf_sys::cudf_table_destroy(tbl);
     }
 }

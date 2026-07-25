@@ -181,6 +181,45 @@ fn test_into_table() {
 }
 
 #[test]
+fn test_zero_column_dataframe_table_round_trip_preserves_row_count() {
+    let source =
+        crate::common::dataframe_from_columns(vec!["id".to_string()], vec![column_from_slice(&[1i32, 2, 3]).unwrap()])
+            .unwrap()
+            .select(std::iter::empty::<&str>())
+            .unwrap();
+
+    let copied = source.to_table_copy().unwrap();
+    {
+        let copied_view = copied.testing_view().unwrap();
+        assert_eq!(copied_view.num_columns().unwrap(), 0);
+        assert_eq!(copied_view.num_rows().unwrap(), 3);
+    }
+    assert_eq!(copied.testing_execution_domain_stream_value(), source.testing_execution_domain_stream_value());
+    assert_eq!(copied.testing_execution_domain_mr_value(), source.testing_execution_domain_mr_value());
+
+    let (table, names) = source.clone().try_into_table().unwrap();
+    assert!(names.is_empty());
+    {
+        let view = table.testing_view().unwrap();
+        assert_eq!(view.num_columns().unwrap(), 0);
+        assert_eq!(view.num_rows().unwrap(), 3);
+    }
+    assert_eq!(table.testing_execution_domain_stream_value(), source.testing_execution_domain_stream_value());
+    assert_eq!(table.testing_execution_domain_mr_value(), source.testing_execution_domain_mr_value());
+
+    let reassembled =
+        cudf::testing::dataframe::reassemble_dataframe_from_table_and_names_for_test(copied, Vec::new()).unwrap();
+    assert_eq!(reassembled.num_columns(), 0);
+    assert_eq!(reassembled.num_rows(), 3);
+
+    let restored = DataFrame::from_table(table, names).unwrap();
+    assert_eq!(restored.num_columns(), 0);
+    assert_eq!(restored.num_rows(), 3);
+    let restored_view = restored.testing_view().unwrap();
+    assert_eq!(restored_view.num_rows().unwrap(), 3);
+}
+
+#[test]
 fn test_empty_dataframe() {
     let df = crate::common::dataframe_from_columns(vec![], vec![]).unwrap();
     assert_eq!(df.num_columns(), 0);
