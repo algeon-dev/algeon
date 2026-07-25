@@ -193,7 +193,9 @@ fn cuda_async_resource_exposes_pool_usage_and_explicit_trim() {
 
 #[test]
 fn device_memory_manager_default_async_pool_exposes_usage_and_trim() {
-    let _pool_state = shared_device_pool_guard();
+    // The reserved/used relation is read as two independent native counters;
+    // only the exclusive guard keeps sibling pool traffic from tearing the pair.
+    let _pool_state = exclusive_device_pool_guard();
     let device = DeviceId::current().unwrap();
     let manager = DeviceMemoryManager::install_for_device_with_options(
         device,
@@ -1177,8 +1179,13 @@ fn concurrent_query_domain_and_legacy_reservation_on_same_stream_never_both_atta
         });
 
         barrier.wait();
-        let legacy_attached = legacy.join().unwrap().is_ok();
-        let domain_attached = query_domain.join().unwrap().is_ok();
+        // Both results must outlive both joins: dropping the winner's token
+        // detaches its reservation, after which a delayed loser attach
+        // legitimately succeeds without exercising the exclusion.
+        let legacy_result = legacy.join().unwrap();
+        let domain_result = query_domain.join().unwrap();
+        let legacy_attached = legacy_result.is_ok();
+        let domain_attached = domain_result.is_ok();
         assert_ne!(
             legacy_attached, domain_attached,
             "iteration {iteration}: exactly one reservation family must attach to one stream"
