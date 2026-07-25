@@ -1017,11 +1017,7 @@ fn dictionary_helpers_require_explicit_execution_options() {
 
 #[test]
 fn sorting_is_sorted_uses_explicit_retained_execution_options() {
-    let body = function_region(
-        SORTING_RS,
-        "pub fn is_sorted",
-        "// ---------------------------------------------------------------------------",
-    );
+    let body = function_region(SORTING_RS, "pub fn is_sorted", "\n}\n");
 
     assert!(
         body.contains("ResolvedExecution::unary(input.execution_domain(), &ctx, operation)"),

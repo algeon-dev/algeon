@@ -19,10 +19,6 @@ use crate::{
     },
 };
 
-// ---------------------------------------------------------------------------
-// Strip side type
-// ---------------------------------------------------------------------------
-
 /// Which side(s) of each string to strip characters from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(i32)]
@@ -44,10 +40,6 @@ impl StripSide {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// String slice options
-// ---------------------------------------------------------------------------
 
 /// Fixed-position string slicing options.
 ///
@@ -82,10 +74,6 @@ impl Default for StringSliceOptions {
         Self::new(None, None)
     }
 }
-
-// ---------------------------------------------------------------------------
-// Case conversion
-// ---------------------------------------------------------------------------
 
 /// Convert each string element to lowercase. Returns a new STRING column.
 pub fn to_lower(input: &ColumnView<'_>) -> Result<Column> {
@@ -124,10 +112,6 @@ pub(crate) fn to_upper_impl(
     error::check_status_in(status, operation)?;
     unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
-
-// ---------------------------------------------------------------------------
-// Find / contains / starts_with / ends_with
-// ---------------------------------------------------------------------------
 
 /// Element-wise literal substring containment test. Returns a BOOL8 column.
 ///
@@ -701,10 +685,6 @@ pub(crate) fn slice_impl(
     unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
 
-// ---------------------------------------------------------------------------
-// Concatenate
-// ---------------------------------------------------------------------------
-
 /// Row-wise concatenate string columns with an empty separator.
 ///
 /// Null input values are treated as empty strings, matching DataFusion SQL
@@ -738,10 +718,6 @@ pub(crate) fn concatenate_impl(inputs: &[&ColumnView<'_>], operation: &'static s
     unsafe { Column::from_raw_with_domain(out, Arc::clone(execution.output_domain())) }
 }
 
-// ---------------------------------------------------------------------------
-// Strip / trim
-// ---------------------------------------------------------------------------
-
 /// Strip characters from one or both sides of each string.
 ///
 /// `to_strip` specifies the set of characters to remove. Pass a valid empty
@@ -769,10 +745,6 @@ pub(crate) fn strip_impl(
     error::check_status_in(status, operation)?;
     unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
-
-// ---------------------------------------------------------------------------
-// Attributes
-// ---------------------------------------------------------------------------
 
 /// Character count (not byte count) per string. Returns an INT32 column.
 ///
@@ -813,10 +785,6 @@ pub(crate) fn count_bytes_impl(
     error::check_status_in(status, operation)?;
     unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
-
-// ---------------------------------------------------------------------------
-// Numeric conversion (null-on-failure / TRY_CAST contract)
-// ---------------------------------------------------------------------------
 
 /// Parse each string element as an integer of `output_type`, producing null
 /// rows for any element that does not parse cleanly or whose value would

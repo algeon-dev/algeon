@@ -195,10 +195,6 @@ pub(crate) fn eval_in_output_domain(
     let ctx = ExprEvalContext::with_output_domain(df, output_domain, operation)?;
     expr.eval_with_context(&ctx)
 }
-// ===========================================================================
-// LitValue — type-erased scalar factory (crate-private)
-// ===========================================================================
-
 /// A type-erased factory for creating a [`Scalar`] from a literal value.
 ///
 /// Not part of the public API — use [`lit()`] to create literals.

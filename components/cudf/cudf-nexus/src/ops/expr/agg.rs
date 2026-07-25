@@ -1,9 +1,5 @@
 use super::*;
 
-// ===========================================================================
-// Aggregation expression methods
-// ===========================================================================
-
 /// Aggregation expression methods for row-aligned broadcast aggregate
 /// expressions.
 ///

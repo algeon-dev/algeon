@@ -1,9 +1,5 @@
 use super::*;
 
-// ===========================================================================
-// StringOperator enum
-// ===========================================================================
-
 /// String operations that can be applied within an [`Expr`].
 #[derive(Debug, Clone)]
 pub enum StringOperator {
@@ -21,10 +17,6 @@ pub enum StringOperator {
     ReplaceWithBackrefs { pattern: String, replacement: String },
     Slice(StringSliceOptions),
 }
-
-// ===========================================================================
-// String expression methods
-// ===========================================================================
 
 /// String expression methods on string columns.
 ///

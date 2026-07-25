@@ -697,7 +697,6 @@ impl<'a> ColumnView<'a> {
             .with_detail("actual_total_chars_bytes", total_chars_bytes.to_string()));
         }
 
-        // Parse strings from offsets + chars
         let mut result = Vec::with_capacity(size);
         for i in 0..size {
             let start = usize::try_from(offsets[i]).map_err(|_| {

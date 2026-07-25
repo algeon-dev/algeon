@@ -1203,10 +1203,6 @@ fn flush_staging_slab(
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Trait-based cudf TypeId ↔ Arrow DataType mapping
-// ---------------------------------------------------------------------------
-
 impl TryFrom<TypeId> for ArrowDataType {
     type Error = Error;
 
@@ -1232,10 +1228,6 @@ impl TryFrom<&ArrowDataType> for TypeId {
         cudf_dtype_from_arrow_type_in(dt, "arrow::TryFrom<&ArrowDataType> for TypeId").map(|dtype| dtype.id())
     }
 }
-
-// ---------------------------------------------------------------------------
-// Internal helpers: ColumnView → Arrow Array
-// ---------------------------------------------------------------------------
 
 /// Convert a single `ColumnView` to an Arrow `Array`.
 fn column_view_to_arrow(cv: &ColumnView<'_>, dtype: DataType) -> Result<Arc<dyn Array>> {
@@ -1615,10 +1607,6 @@ fn string_to_arrow(cv: &ColumnView<'_>) -> Result<Arc<dyn Array>> {
     }
     Ok(Arc::new(builder.finish()))
 }
-
-// ---------------------------------------------------------------------------
-// Internal helpers: Arrow Array → Column
-// ---------------------------------------------------------------------------
 
 /// Convert a single Arrow array to an owned cudf `Column`.
 fn arrow_array_to_column(runtime: &Runtime, arr: &dyn Array, field_name: &str) -> Result<Column> {
@@ -2435,10 +2423,6 @@ fn string_view_array_to_column(runtime: &Runtime, arr: &dyn Array) -> Result<Col
 
     string_like_arrow_host_column_to_column(runtime, arr, "arrow::string_view_array_to_column")
 }
-
-// ---------------------------------------------------------------------------
-// Trait bounds helper: map Rust primitives to Arrow primitive types
-// ---------------------------------------------------------------------------
 
 /// Trait to associate a `CudfType` with its Arrow primitive type.
 ///

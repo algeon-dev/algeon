@@ -20,10 +20,6 @@ pub fn when(condition: Expr) -> WhenBuilder {
     WhenBuilder(condition)
 }
 
-// ===========================================================================
-// Staged conditional expression chain
-// ===========================================================================
-
 /// First stage of a `when(...).then(...).otherwise(...)` chain.
 ///
 /// Holds the condition until you provide the `true` branch with [`Self::then`].

@@ -59,10 +59,6 @@ pub use expr::{Expr, col, lit, lit_null, when};
 
 use crate::core::{column::Column, error::Result, scalar::Scalar};
 
-// ---------------------------------------------------------------------------
-// Column op Scalar (for each supported arithmetic numeric Rust type)
-// ---------------------------------------------------------------------------
-
 macro_rules! impl_column_scalar_ops {
     ($($rust_type:ty),+) => {
         $(
@@ -95,10 +91,6 @@ macro_rules! impl_column_scalar_ops {
 }
 
 impl_column_scalar_ops!(u8, u16, u32, u64, i8, i16, i32, i64, f32, f64);
-
-// ---------------------------------------------------------------------------
-// Column op Column
-// ---------------------------------------------------------------------------
 
 impl Add<&Column> for &Column {
     type Output = Result<Column>;

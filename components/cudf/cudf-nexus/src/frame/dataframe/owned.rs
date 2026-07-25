@@ -209,7 +209,6 @@ impl DataFrame {
             .with_detail("remedy", "use Runtime::empty_dataframe()"));
         }
 
-        // Validate all columns have the same row count.
         let first_rows = columns[0].view()?.len()?;
         for (i, col) in columns.iter().enumerate().skip(1) {
             let rows = col.view()?.len()?;
