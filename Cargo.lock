@@ -2232,13 +2232,13 @@ dependencies = [
  "cugraph-sys",
  "dashmap",
  "datafusion",
- "datafusion-nexus-iceberg",
- "datafusion-nexus-workloads",
  "futures",
  "hex",
  "iceberg",
  "iceberg-datafusion",
+ "nexus-iceberg",
  "nexus-query-engine",
+ "nexus-workloads",
  "object_store",
  "opendal",
  "parquet",
@@ -2256,106 +2256,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
-]
-
-[[package]]
-name = "datafusion-nexus-bench"
-version = "0.1.0"
-dependencies = [
- "arrow",
- "async-trait",
- "aws-config",
- "aws-credential-types",
- "cudf",
- "cudf-sys",
- "cugraph",
- "cugraph-sys",
- "datafusion",
- "datafusion-nexus",
- "datafusion-nexus-workloads",
- "futures",
- "iceberg",
- "iceberg-datafusion",
- "nexus-query-engine",
- "object_store",
- "parquet",
- "serde_json",
- "tempfile",
- "tokio",
-]
-
-[[package]]
-name = "datafusion-nexus-examples"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "arrow",
- "arrow-json",
- "axum",
- "cudf-sys",
- "cugraph-sys",
- "datafusion",
- "datafusion-nexus",
- "nexus-query-engine",
- "serde",
- "serde_json",
- "tokio",
- "tokio-util",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "datafusion-nexus-iceberg"
-version = "0.1.0"
-dependencies = [
- "arrow",
- "futures",
- "iceberg",
- "iceberg-catalog-glue",
- "iceberg-catalog-rest",
- "iceberg-storage-opendal",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tokio-util",
- "typetag",
-]
-
-[[package]]
-name = "datafusion-nexus-tools"
-version = "0.1.0"
-dependencies = [
- "arrow",
- "arrow-flight",
- "cudf",
- "datafusion",
- "datafusion-nexus",
- "datafusion-nexus-bench",
- "datafusion-nexus-workloads",
- "futures",
- "iceberg",
- "iceberg-catalog-glue",
- "nexus-query-engine",
- "parquet",
- "prost",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "tokio",
- "tonic",
- "url",
-]
-
-[[package]]
-name = "datafusion-nexus-workloads"
-version = "0.1.0"
-dependencies = [
- "arrow",
- "datafusion",
- "parquet",
- "tempfile",
 ]
 
 [[package]]
@@ -3952,6 +3852,71 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9252111cf132ba0929b6f8e030cac2a24b507f3a4d6db6fb2896f27b354c714b"
 
 [[package]]
+name = "nexus-bench"
+version = "0.1.0"
+dependencies = [
+ "arrow",
+ "async-trait",
+ "aws-config",
+ "aws-credential-types",
+ "cudf",
+ "cudf-sys",
+ "cugraph",
+ "cugraph-sys",
+ "datafusion",
+ "datafusion-nexus",
+ "futures",
+ "iceberg",
+ "iceberg-datafusion",
+ "nexus-query-engine",
+ "nexus-workloads",
+ "object_store",
+ "parquet",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "nexus-examples"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "arrow",
+ "arrow-json",
+ "axum",
+ "cudf-sys",
+ "cugraph-sys",
+ "datafusion",
+ "datafusion-nexus",
+ "nexus-query-engine",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "nexus-iceberg"
+version = "0.1.0"
+dependencies = [
+ "arrow",
+ "futures",
+ "iceberg",
+ "iceberg-catalog-glue",
+ "iceberg-catalog-rest",
+ "iceberg-storage-opendal",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "typetag",
+]
+
+[[package]]
 name = "nexus-query-engine"
 version = "0.1.0"
 dependencies = [
@@ -3971,6 +3936,41 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "nexus-tools"
+version = "0.1.0"
+dependencies = [
+ "arrow",
+ "arrow-flight",
+ "cudf",
+ "datafusion",
+ "datafusion-nexus",
+ "futures",
+ "iceberg",
+ "iceberg-catalog-glue",
+ "nexus-bench",
+ "nexus-query-engine",
+ "nexus-workloads",
+ "parquet",
+ "prost",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tonic",
+ "url",
+]
+
+[[package]]
+name = "nexus-workloads"
+version = "0.1.0"
+dependencies = [
+ "arrow",
+ "datafusion",
+ "parquet",
+ "tempfile",
 ]
 
 [[package]]

@@ -124,7 +124,7 @@ async fn iceberg_provider_count_star_probe_rejects_unproven_remote_carrier_colum
 
 #[tokio::test]
 async fn iceberg_provider_count_star_fallback_executes_with_mixed_row_count_metadata() {
-    let dir = unique_temp_dir("datafusion-nexus-iceberg-count-star-fallback");
+    let dir = unique_temp_dir("nexus-iceberg-count-star-fallback");
     let first_path = dir.join("data-0001.parquet");
     let second_path = dir.join("data-0002.parquet");
     let schema = iceberg_test_schema();

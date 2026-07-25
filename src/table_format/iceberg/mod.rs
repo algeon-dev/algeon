@@ -15,10 +15,8 @@ use datafusion::{
     datasource::TableProvider,
     prelude::SessionContext,
 };
-pub use datafusion_nexus_iceberg::{
-    IcebergTableIdentifier, ResolvedIcebergTable, S3CredentialMode, SourceAccessPolicy,
-};
 use iceberg::table::Table;
+pub use nexus_iceberg::{IcebergTableIdentifier, ResolvedIcebergTable, S3CredentialMode, SourceAccessPolicy};
 
 pub use self::planner::{
     IcebergTableFormatPlanner, NexusIcebergTableProvider, iceberg_file_scan_tasks_to_table_format_scan_plan,
@@ -568,7 +566,7 @@ async fn load_glue_table_with_env(
         .map_err(|error| glue_leaf_error("failed to connect AWS Glue Iceberg catalog", &config, &diagnostics, error))?
         .into_backend();
     let resolved = backend
-        .load_table(datafusion_nexus_iceberg::IcebergTableIdentifier {
+        .load_table(nexus_iceberg::IcebergTableIdentifier {
             namespace: vec![config.database.clone()],
             name: config.table.clone(),
         })
@@ -581,7 +579,7 @@ fn glue_leaf_error(
     message: &'static str,
     config: &GlueIcebergTableConfig,
     diagnostics: &GlueIcebergTableDiagnostics,
-    source: datafusion_nexus_iceberg::IcebergError,
+    source: nexus_iceberg::IcebergError,
 ) -> crate::error::Error {
     adapter::root_error_from_iceberg(source, LOAD_GLUE_TABLE_OPERATION, message)
         .with_fact("catalog_type", "glue")
@@ -626,7 +624,7 @@ mod tests {
         assert_eq!(access.endpoint, Some("http://rustfs.example:9000"));
         assert_eq!(access.region, Some("eu-west-1"));
         assert_eq!(access.path_style_access, Some(true));
-        assert!(matches!(access.credential, datafusion_nexus_iceberg::S3CredentialRef::Static { .. }));
+        assert!(matches!(access.credential, nexus_iceberg::S3CredentialRef::Static { .. }));
 
         let native = source_access_policy_to_native_source_storage_profile(policy);
         let native_s3 = native.s3_profile();
@@ -645,7 +643,7 @@ mod tests {
         let leaf_config = config.leaf_catalog_config(&environment, &diagnostics);
         let policy = leaf_config.source_access_policy();
 
-        assert!(matches!(policy.s3_access().credential, datafusion_nexus_iceberg::S3CredentialRef::Unsigned));
+        assert!(matches!(policy.s3_access().credential, nexus_iceberg::S3CredentialRef::Unsigned));
         assert!(matches!(
             source_access_policy_to_native_source_storage_profile(policy).s3_profile().credential,
             S3SourceStorageCredential::Unsigned
@@ -660,7 +658,7 @@ mod tests {
         let leaf_config = config.leaf_catalog_config(&environment, &diagnostics);
         let policy = leaf_config.source_access_policy();
 
-        assert!(matches!(policy.s3_access().credential, datafusion_nexus_iceberg::S3CredentialRef::DefaultChain));
+        assert!(matches!(policy.s3_access().credential, nexus_iceberg::S3CredentialRef::DefaultChain));
         assert!(matches!(
             source_access_policy_to_native_source_storage_profile(policy).s3_profile().credential,
             S3SourceStorageCredential::DefaultChain

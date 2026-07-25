@@ -189,7 +189,7 @@ def run_oracle(args: argparse.Namespace, out_root: Path) -> None:
         command.append("--release")
     command.extend([
         "-p",
-        "datafusion-nexus-tools",
+        "nexus-tools",
         "--features",
         "cugraph-oracle",
         "--bin",

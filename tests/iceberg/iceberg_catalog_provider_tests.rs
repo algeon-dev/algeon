@@ -60,7 +60,7 @@ impl IcebergCatalogBackend for MockIcebergCatalogBackend {
     async fn load_table(
         &self,
         _table: &TableIdent,
-    ) -> datafusion_nexus::error::Result<datafusion_nexus_iceberg::ResolvedIcebergTable> {
+    ) -> datafusion_nexus::error::Result<nexus_iceberg::ResolvedIcebergTable> {
         Err(datafusion_nexus::error::Error::new(
             datafusion_nexus::error::ErrorCode::CudfDependencyFailure,
             "mock_backend.load_table",
@@ -409,7 +409,7 @@ impl IcebergCatalogBackend for CountingMockBackend {
     async fn load_table(
         &self,
         table: &TableIdent,
-    ) -> datafusion_nexus::error::Result<datafusion_nexus_iceberg::ResolvedIcebergTable> {
+    ) -> datafusion_nexus::error::Result<nexus_iceberg::ResolvedIcebergTable> {
         self.load_count.fetch_add(1, Ordering::SeqCst);
         self.inner.load_table(table).await
     }

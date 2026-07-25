@@ -47,13 +47,13 @@ use datafusion_nexus::{
     planner::NexusNativeOptimizerConfig,
     session::NexusSessionStateBuilderExt,
 };
-use datafusion_nexus_workloads::tpch::{TPCH_QUERIES, TPCH_TABLES, write_tiny_tpch_parquet_dataset};
 use nexus_query_engine::{
     exec::{execute_query_plan, output::QueryOutput},
     plan::PlanNode,
     runtime::{ExecutionContext, MemoryControlPolicy},
     source::SourceNode,
 };
+use nexus_workloads::tpch::{TPCH_QUERIES, TPCH_TABLES, write_tiny_tpch_parquet_dataset};
 use tokio::sync::Mutex;
 
 static ARROW_HOST_OBSERVATION_LOCK: Mutex<()> = Mutex::const_new(());

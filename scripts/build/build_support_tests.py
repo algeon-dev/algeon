@@ -39,7 +39,7 @@ SITES = (
     ),
     InclusionSite(
         "bench",
-        "crates/datafusion-nexus-bench/build.rs",
+        "crates/nexus-bench/build.rs",
         "../../scripts/build/rapids.rs",
         True,
         True,
@@ -48,7 +48,7 @@ SITES = (
     ),
     InclusionSite(
         "examples",
-        "crates/datafusion-nexus-examples/build.rs",
+        "crates/nexus-examples/build.rs",
         "../../scripts/build/rapids.rs",
         False,
         True,

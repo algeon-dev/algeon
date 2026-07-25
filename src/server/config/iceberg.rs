@@ -315,7 +315,7 @@ pub(super) fn iceberg_parquet_read_strategy_config(
     if source_access.endpoint.is_some()
         || source_access.region.is_some()
         || source_access.path_style_access.is_some()
-        || !matches!(source_access.credential, datafusion_nexus_iceberg::S3CredentialRef::DefaultChain)
+        || !matches!(source_access.credential, nexus_iceberg::S3CredentialRef::DefaultChain)
     {
         config.credential_mode = nexus_query_engine::source::CredentialMode::ScopedResolved;
     }

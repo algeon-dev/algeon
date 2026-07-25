@@ -40,7 +40,7 @@ if [[ "${1:-}" == "nextest" && "${2:-}" == "show-config" ]]; then
 fi
 if [[ "${1:-}" == "metadata" ]]; then
   cat <<'JSON'
-{"packages":[{"id":"path+file:///fake#datafusion-nexus-iceberg@0.1.0","name":"datafusion-nexus-iceberg"}],"resolve":{"nodes":[{"id":"path+file:///fake#datafusion-nexus-iceberg@0.1.0","deps":[]}]}}
+{"packages":[{"id":"path+file:///fake#nexus-iceberg@0.1.0","name":"nexus-iceberg"}],"resolve":{"nodes":[{"id":"path+file:///fake#nexus-iceberg@0.1.0","deps":[]}]}}
 JSON
   exit 0
 fi

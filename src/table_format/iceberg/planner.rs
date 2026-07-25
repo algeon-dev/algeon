@@ -20,11 +20,6 @@ use datafusion::{
     logical_expr::{Expr, Operator, TableProviderFilterPushDown},
     physical_plan::ExecutionPlan,
 };
-use datafusion_nexus_iceberg::{
-    IcebergColumnBinding, IcebergColumnRole, IcebergColumnSource, IcebergPredicateIntent, IcebergProjection,
-    IcebergScanPlanningOptions, IcebergScanRequest, IcebergSourceLimit, ResolvedIcebergTable, S3CredentialMode,
-    S3CredentialRef, S3FileIoConfigVerification, SourceAccessPolicy,
-};
 use futures::{StreamExt, future::BoxFuture};
 use iceberg::{
     expr::Reference,
@@ -37,6 +32,11 @@ use iceberg::{
     table::Table,
 };
 use iceberg_datafusion::IcebergStaticTableProvider;
+use nexus_iceberg::{
+    IcebergColumnBinding, IcebergColumnRole, IcebergColumnSource, IcebergPredicateIntent, IcebergProjection,
+    IcebergScanPlanningOptions, IcebergScanRequest, IcebergSourceLimit, ResolvedIcebergTable, S3CredentialMode,
+    S3CredentialRef, S3FileIoConfigVerification, SourceAccessPolicy,
+};
 use nexus_query_engine::{
     datatypes::is_supported_arrow_type,
     runtime::{S3SourceStorageProfile, SourceStorageProfile},

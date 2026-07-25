@@ -22,12 +22,12 @@ fn canonical_adapter_paths_expose_stable_contract_symbols() {
     );
     let _planning_report = datafusion_nexus::report::PlanningReport::default();
     let _workload_contracts = (
-        datafusion_nexus_workloads::NEXUS_PARQUET_DIR_ENV,
-        datafusion_nexus_workloads::tpcds::NEXUS_TPCDS_SCALE_FACTOR_ENV,
-        datafusion_nexus_workloads::NEXUS_PARQUET_DIR_ENV,
-        size_of::<datafusion_nexus_workloads::tpch::TpchQuery>(),
-        size_of::<datafusion_nexus_workloads::tpcds::TpcdsQuery>(),
-        size_of::<datafusion_nexus_workloads::clickbench::ClickbenchQuery>(),
+        nexus_workloads::NEXUS_PARQUET_DIR_ENV,
+        nexus_workloads::tpcds::NEXUS_TPCDS_SCALE_FACTOR_ENV,
+        nexus_workloads::NEXUS_PARQUET_DIR_ENV,
+        size_of::<nexus_workloads::tpch::TpchQuery>(),
+        size_of::<nexus_workloads::tpcds::TpcdsQuery>(),
+        size_of::<nexus_workloads::clickbench::ClickbenchQuery>(),
     );
 }
 
@@ -182,7 +182,7 @@ fn assert_dir_omits_retired_product_spellings(dir: &std::path::Path, retired: &[
 #[test]
 fn bench_workload_facade_does_not_reappear() {
     let root = workspace_root();
-    let bench_src = root.join("crates/datafusion-nexus-bench/src");
+    let bench_src = root.join("crates/nexus-bench/src");
     assert!(!bench_src.join("workload.rs").exists(), "bench must not own a workload facade");
     assert!(!bench_src.join("workload").exists(), "bench must not retain workload implementation modules");
 

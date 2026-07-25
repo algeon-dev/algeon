@@ -2,7 +2,7 @@ use std::path::Path;
 
 use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_nexus::native_report::NativeFallbackPressureWorkloadItem;
-use datafusion_nexus_workloads::tpch::{TpchWorkloadResult, register_tpch_tables};
+use nexus_workloads::tpch::{TpchWorkloadResult, register_tpch_tables};
 
 pub(crate) const ANALYTICAL_OLAP_QUERY_COUNT: usize = ANALYTICAL_OLAP_QUERIES.len();
 

@@ -52,9 +52,6 @@ use datafusion_nexus::{
     report::{GpuCandidate, PlanningReport},
     session::NexusSessionStateBuilderExt,
 };
-use datafusion_nexus_workloads::tpch::{
-    TPCH_QUERY_COUNT, tiny_tpch_dataset_metadata, tpch_query_ids, write_tiny_tpch_parquet_dataset,
-};
 use nexus_query_engine::{
     adaptive_report::{AdaptiveCandidateStatus, AdaptivePipelineReport, AdaptiveStrategy},
     capability::{ContractQuality, ContractStatus, ReservationRequirementScope},
@@ -67,6 +64,9 @@ use nexus_query_engine::{
     plan::QueryPlanBuilder,
     runtime::ReservationKind,
     source::{GpuResidentSource, LocalParquetSource, SourceNode},
+};
+use nexus_workloads::tpch::{
+    TPCH_QUERY_COUNT, tiny_tpch_dataset_metadata, tpch_query_ids, write_tiny_tpch_parquet_dataset,
 };
 
 #[path = "../support/analytical_olap_planning.rs"]

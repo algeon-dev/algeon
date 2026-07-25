@@ -62,14 +62,6 @@ impl<'a> EnvValues<'a> {
         value
     }
 
-    #[cfg(feature = "iceberg")]
-    pub(super) fn string_uncached(&mut self, name: &str) -> Option<String> {
-        (self.get)(name).and_then(|value| {
-            let trimmed = value.trim();
-            if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
-        })
-    }
-
     pub(super) fn socket_addr(&mut self, name: &'static str, default: &str) -> Result<SocketAddr> {
         let raw = self.string(name).unwrap_or_else(|| default.to_string());
         raw.parse().map_err(|error| ServerError::invalid_config_with_source(name, "must be a socket address", error))

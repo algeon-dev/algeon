@@ -63,7 +63,6 @@ use datafusion_nexus::{
     },
     report::CandidateOutcome,
 };
-use datafusion_nexus_workloads::tpch::write_tiny_tpch_parquet_dataset;
 use nexus_query_engine::{
     expr::{AggregateFunction, Expr, LiteralValue},
     plan::{
@@ -72,6 +71,7 @@ use nexus_query_engine::{
     },
     source::{SourceColumnRef, SourceNode, ZERO_COLUMN_COUNT_COLUMN},
 };
+use nexus_workloads::tpch::write_tiny_tpch_parquet_dataset;
 
 use crate::{
     analytical_olap_workload::*, tpch_fallback_workload::tpch_fallback_pressure_workload_items,

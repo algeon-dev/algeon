@@ -120,7 +120,7 @@ NEXUS_SERVER_WORKSPACE_BACKING_CATALOG=lake \
 NEXUS_SERVER_WORKSPACE_BACKING_SCHEMA=citation_network \
 NEXUS_SERVER_WORKSPACE_BACKING_ALIASES=papers,paper_fos,citation_edges,citation_edges_by_dst \
 flock /tmp/cudf-gpu.lock \
-cargo run -p datafusion-nexus-examples --bin embedded_backend
+cargo run -p nexus-examples --bin embedded_backend
 ```
 
 Use the exact Iceberg keys shown above. `NEXUS_ICEBERG_CATALOG=rest` is not a
@@ -189,7 +189,7 @@ REST pipeline results, Flight SQL graph queries, shared-ledger overload, and
 graceful shutdown:
 
 ```bash
-crates/datafusion-nexus-examples/scripts/e2e.sh
+crates/nexus-examples/scripts/e2e.sh
 ```
 
 Use `--skip-stack` when the REST catalog and RustFS are already running, and

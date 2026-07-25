@@ -395,25 +395,25 @@ define_phase policy-selftests "${policy_selftest_count} isolated policy/orchestr
 define_phase rustfmt "cargo +${RUSTFMT_TOOLCHAIN} fmt --all --check"
 define_phase lane-structure "test_lane_policy.py check-catalog + generated override check"
 define_phase default-members "cargo check ${FEATURE_ARGS[*]}"
-define_phase iceberg-fmt "cargo +${RUSTFMT_TOOLCHAIN} fmt -p datafusion-nexus-iceberg -- --check"
+define_phase iceberg-fmt "cargo +${RUSTFMT_TOOLCHAIN} fmt -p nexus-iceberg -- --check"
 define_phase live-inventory "bash scripts/ci/check_gpu_test_lane.sh ${FEATURE_ARGS[*]}"
 define_phase gpu-preflight "cargo nextest show-config --color never -P ${GPU_NEXTEST_PROFILE} test-groups ${FEATURE_ARGS[*]}"
 define_phase cpu-tests "cargo nextest run ${FEATURE_ARGS[*]} -E 'not group(gpu) & not group(gpu-exclusive)' --no-fail-fast"
-define_phase bench-tests "cargo nextest run -p datafusion-nexus-bench --all-features -E 'not group(gpu) & not group(gpu-exclusive)' --no-fail-fast"
-define_phase iceberg-tests "cargo nextest run -p datafusion-nexus-iceberg --all-features --no-fail-fast"
+define_phase bench-tests "cargo nextest run -p nexus-bench --all-features -E 'not group(gpu) & not group(gpu-exclusive)' --no-fail-fast"
+define_phase iceberg-tests "cargo nextest run -p nexus-iceberg --all-features --no-fail-fast"
 define_phase gpu-shared-tests "flock ${GPU_LOCK} cargo nextest run -P ${GPU_NEXTEST_PROFILE} ${FEATURE_ARGS[*]} -E group(${GPU_NEXTEST_GROUP}) --no-fail-fast --test-threads ${gpu_threads}"
 define_phase gpu-exclusive-tests "flock ${GPU_LOCK} cargo nextest run -P ${GPU_NEXTEST_PROFILE} ${FEATURE_ARGS[*]} -E group(gpu-exclusive) --no-fail-fast --test-threads ${GPU_EXCLUSIVE_CAP}"
 define_phase cargo-diagnostic "RUST_TEST_THREADS=1 flock ${GPU_LOCK} cargo test ${FEATURE_ARGS[*]} --no-fail-fast --lib --bins --tests --examples -- --test-threads=1"
 define_phase doctests "flock ${GPU_LOCK} cargo test ${FEATURE_ARGS[*]} --doc --no-fail-fast"
 define_phase rustdoc "RUSTDOCFLAGS='${DOC_RUSTDOCFLAGS}' cargo doc ${FEATURE_ARGS[*]} --no-deps --keep-going"
-define_phase bench-rustdoc "RUSTDOCFLAGS='${DOC_RUSTDOCFLAGS}' cargo doc -p datafusion-nexus-bench --all-features --no-deps --keep-going"
+define_phase bench-rustdoc "RUSTDOCFLAGS='${DOC_RUSTDOCFLAGS}' cargo doc -p nexus-bench --all-features --no-deps --keep-going"
 define_phase clippy "cargo clippy --all-targets ${FEATURE_ARGS[*]}"
-define_phase bench-clippy "cargo clippy -p datafusion-nexus-bench --all-targets --all-features"
-define_phase iceberg-clippy "cargo clippy -p datafusion-nexus-iceberg --all-targets --all-features"
-define_phase tools-check "cargo check -p datafusion-nexus-tools --all-targets --all-features"
-define_phase examples-check "cargo check -p datafusion-nexus-examples --all-targets"
-define_phase bench-check "cargo check -p datafusion-nexus-bench --all-targets --all-features"
-define_phase iceberg-check "cargo check -p datafusion-nexus-iceberg --all-targets --all-features"
+define_phase bench-clippy "cargo clippy -p nexus-bench --all-targets --all-features"
+define_phase iceberg-clippy "cargo clippy -p nexus-iceberg --all-targets --all-features"
+define_phase tools-check "cargo check -p nexus-tools --all-targets --all-features"
+define_phase examples-check "cargo check -p nexus-examples --all-targets"
+define_phase bench-check "cargo check -p nexus-bench --all-targets --all-features"
+define_phase iceberg-check "cargo check -p nexus-iceberg --all-targets --all-features"
 PHASE_FEATURES[bench-tests]='all(fixed)'
 PHASE_FEATURES[bench-rustdoc]='all(fixed)'
 PHASE_FEATURES[bench-clippy]='all(fixed)'
@@ -644,7 +644,7 @@ cpu_test_command() {
 }
 
 bench_test_command() {
-  cargo nextest run -p datafusion-nexus-bench --all-features \
+  cargo nextest run -p nexus-bench --all-features \
     -E 'not group(gpu) & not group(gpu-exclusive)' --no-fail-fast
 }
 
@@ -667,7 +667,7 @@ cargo_diagnostic_command() {
 # diagnostics remain available without nextest profile mechanics. All admitted
 # bench tests are CPU, so this does not take the GPU lock.
 bench_cargo_diagnostic_command() {
-  cargo test -p datafusion-nexus-bench --all-features \
+  cargo test -p nexus-bench --all-features \
     --no-fail-fast --lib --tests -- --test-threads=1
 }
 
@@ -682,7 +682,7 @@ rustdoc_command() {
 
 bench_rustdoc_command() {
   RUSTDOCFLAGS="${DOC_RUSTDOCFLAGS}" cargo doc \
-    -p datafusion-nexus-bench --all-features --no-deps --keep-going
+    -p nexus-bench --all-features --no-deps --keep-going
 }
 
 if [[ "${mode}" == full || "${lane}" == policy || "${mode}" == fast ]]; then
@@ -699,7 +699,7 @@ fi
 
 if [[ "${mode}" == full ]]; then
   run_phase default-members none - - cargo check "${FEATURE_ARGS[@]}" || true
-  run_phase iceberg-fmt none - - cargo "+${RUSTFMT_TOOLCHAIN}" fmt -p datafusion-nexus-iceberg -- --check || true
+  run_phase iceberg-fmt none - - cargo "+${RUSTFMT_TOOLCHAIN}" fmt -p nexus-iceberg -- --check || true
 fi
 
 if [[ "${runner}" == nextest && "${lane}" != policy ]]; then
@@ -739,7 +739,7 @@ if [[ "${runner}" == nextest && "${lane}" != policy ]]; then
     if [[ "${needs_cpu}" -eq 1 && "${mode}" != fast ]]; then
       run_phase bench-tests nextest - - bench_test_command || true
       [[ "${mode}" != full ]] \
-        || run_phase iceberg-tests nextest - - cargo nextest run -p datafusion-nexus-iceberg --all-features --no-fail-fast || true
+        || run_phase iceberg-tests nextest - - cargo nextest run -p nexus-iceberg --all-features --no-fail-fast || true
     fi
     [[ "${needs_shared_gpu}" -eq 0 ]] \
       || run_phase gpu-shared-tests nextest "${gpu_threads}" "${GPU_LOCK}" gpu_shared_test_command || true
@@ -760,7 +760,7 @@ elif [[ "${runner}" == cargo-diagnostic && "${lane}" == all ]]; then
   if [[ "${lane_safe}" -eq 1 ]]; then
     run_phase cargo-diagnostic cargo "${GPU_EXCLUSIVE_CAP}" "${GPU_LOCK}" cargo_diagnostic_command || true
     # Replace the nextest bench-tests phase when the diagnostic runner is selected.
-    PHASE_COMMAND[bench-tests]="cargo test -p datafusion-nexus-bench --all-features --no-fail-fast --lib --tests -- --test-threads=1"
+    PHASE_COMMAND[bench-tests]="cargo test -p nexus-bench --all-features --no-fail-fast --lib --tests -- --test-threads=1"
     run_phase bench-tests cargo - - bench_cargo_diagnostic_command || true
   else
     PHASE_STATUS[cargo-diagnostic]='SKIPPED(blocked)'
@@ -774,12 +774,12 @@ if [[ "${mode}" == full ]]; then
   run_phase bench-rustdoc none - - bench_rustdoc_command || true
   rustdoc_summary="command_status=${PHASE_EXIT[rustdoc]} warnings=denied"
   run_phase clippy none - - cargo clippy --all-targets "${FEATURE_ARGS[@]}" || true
-  run_phase bench-clippy none - - cargo clippy -p datafusion-nexus-bench --all-targets --all-features || true
-  run_phase iceberg-clippy none - - cargo clippy -p datafusion-nexus-iceberg --all-targets --all-features || true
-  run_phase tools-check none - - cargo check -p datafusion-nexus-tools --all-targets --all-features || true
-  run_phase examples-check none - - cargo check -p datafusion-nexus-examples --all-targets || true
-  run_phase bench-check none - - cargo check -p datafusion-nexus-bench --all-targets --all-features || true
-  run_phase iceberg-check none - - cargo check -p datafusion-nexus-iceberg --all-targets --all-features || true
+  run_phase bench-clippy none - - cargo clippy -p nexus-bench --all-targets --all-features || true
+  run_phase iceberg-clippy none - - cargo clippy -p nexus-iceberg --all-targets --all-features || true
+  run_phase tools-check none - - cargo check -p nexus-tools --all-targets --all-features || true
+  run_phase examples-check none - - cargo check -p nexus-examples --all-targets || true
+  run_phase bench-check none - - cargo check -p nexus-bench --all-targets --all-features || true
+  run_phase iceberg-check none - - cargo check -p nexus-iceberg --all-targets --all-features || true
 fi
 
 sanitize_phase_cell() {

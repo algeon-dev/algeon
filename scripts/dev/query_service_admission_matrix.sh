@@ -255,7 +255,7 @@ print_command() {
   shift
   printf 'env'
   printf ' %q' "$@"
-  printf ' flock %q cargo run --release -p datafusion-nexus-bench --bin query_service_tpch_stress > %q\n' \
+  printf ' flock %q cargo run --release -p nexus-bench --bin query_service_tpch_stress > %q\n' \
     "${GPU_LOCK}" "${output}"
 }
 
@@ -301,7 +301,7 @@ run_case() {
     return 0
   fi
 
-  env "${env_vars[@]}" flock "${GPU_LOCK}" cargo run --release -p datafusion-nexus-bench --bin query_service_tpch_stress >"${output}"
+  env "${env_vars[@]}" flock "${GPU_LOCK}" cargo run --release -p nexus-bench --bin query_service_tpch_stress >"${output}"
   validate_report "${output}" "${scale}" "${expected_rows}"
   echo "OK: ${output}"
 }

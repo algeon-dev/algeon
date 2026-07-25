@@ -48,7 +48,6 @@ use datafusion_nexus::{
     session::nexus_native_physical_optimizer_rules,
     session_config::DataFusionNexusSessionConfig,
 };
-use datafusion_nexus_workloads::tpch::{TPCH_QUERIES, write_tiny_tpch_parquet_dataset};
 use nexus_query_engine::{
     capability::ContractQuality,
     chunk::SourceChunkPlanningOptions,
@@ -60,6 +59,7 @@ use nexus_query_engine::{
         ReservationKind, SourceChunkPlanningMode,
     },
 };
+use nexus_workloads::tpch::{TPCH_QUERIES, write_tiny_tpch_parquet_dataset};
 use proptest::prelude::*;
 
 #[path = "native_exec_tests/bounded_join.rs"]
