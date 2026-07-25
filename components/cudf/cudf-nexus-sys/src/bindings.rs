@@ -2661,6 +2661,14 @@ unsafe extern "C" {
         out: *mut usize,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
+    #[doc = " Return checked hash-table and retained key-view storage bytes from build\n metadata only. This owner preflight does not construct a table or allocate\n device memory. `rows` must fit `cudf::size_type`, `load_factor` must be in\n `(0, 1]`, and `flat_device_view_count` is the number of flat key views."]
+    pub fn cudf_hash_join_metadata_only_owner_preflight_ex(
+        rows: usize,
+        load_factor: f64,
+        flat_device_view_count: usize,
+        hash_table_storage_bytes: *mut usize,
+        retained_key_view_storage_bytes: *mut usize,
+    ) -> cudf_status_t;
     #[doc = " Destroy a reusable hash-join handle under its build-time device and memory\n resource. Ownership is consumed on call; failure quarantines it."]
     pub fn cudf_hash_join_destroy(handle: cudf_hash_join_handle) -> cudf_status_t;
     #[doc = " Return device bytes retained by a reusable hash-join build artifact.\n\n This excludes the build table viewed by the handle and any per-probe\n output/index allocations."]

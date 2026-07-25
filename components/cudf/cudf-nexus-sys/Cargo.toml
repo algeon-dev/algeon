@@ -74,6 +74,10 @@ name = "hash_join_destroy_provenance"
 required-features = ["test-hooks"]
 
 [[test]]
+name = "hash_join_metadata_preflight"
+required-features = ["test-hooks"]
+
+[[test]]
 name = "memory_resource_hooks"
 required-features = ["test-hooks"]
 

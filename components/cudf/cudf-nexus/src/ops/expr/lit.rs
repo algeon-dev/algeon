@@ -4,7 +4,7 @@ type NumericLiteralFactory = dyn Fn(&Arc<ExecutionDomain>) -> Result<Scalar> + S
 
 enum LitValueInner {
     /// A numeric scalar factory. The closure creates the Scalar on demand.
-    Numeric(Box<NumericLiteralFactory>),
+    Numeric { factory: Box<NumericLiteralFactory>, dtype: DataType },
     /// A string literal.
     String(String),
     /// A typed null literal.
@@ -20,14 +20,17 @@ pub struct LitValue(Arc<LitValueInner>);
 impl LitValue {
     pub(crate) fn to_scalar_in_domain(&self, domain: &Arc<ExecutionDomain>) -> Result<Scalar> {
         match &*self.0 {
-            LitValueInner::Numeric(f) => f(domain),
+            LitValueInner::Numeric { factory, .. } => factory(domain),
             LitValueInner::String(s) => Scalar::from_str_in_domain(s, domain),
             LitValueInner::Null(dtype) => Scalar::null_in_domain(*dtype, domain),
         }
     }
 
-    fn numeric(f: impl Fn(&Arc<ExecutionDomain>) -> Result<Scalar> + Send + Sync + 'static) -> Self {
-        Self(Arc::new(LitValueInner::Numeric(Box::new(f))))
+    fn numeric(
+        dtype: DataType,
+        factory: impl Fn(&Arc<ExecutionDomain>) -> Result<Scalar> + Send + Sync + 'static,
+    ) -> Self {
+        Self(Arc::new(LitValueInner::Numeric { factory: Box::new(factory), dtype }))
     }
 
     fn string(s: String) -> Self {
@@ -36,6 +39,14 @@ impl LitValue {
 
     fn null(dtype: DataType) -> Self {
         Self(Arc::new(LitValueInner::Null(dtype)))
+    }
+
+    pub(super) fn fixed_width_metadata(&self) -> Option<(DataType, bool)> {
+        match &*self.0 {
+            LitValueInner::Numeric { dtype, .. } => Some((*dtype, false)),
+            LitValueInner::Null(dtype) => Some((*dtype, true)),
+            LitValueInner::String(_) => None,
+        }
     }
 }
 
@@ -66,7 +77,9 @@ pub fn lit_null(dtype: impl Into<DataType>) -> Expr {
 
 pub fn lit_decimal32_raw(raw: i32, scale: i32) -> Expr {
     let dtype = DataType::fixed_point(TypeId::Decimal32, scale);
-    Expr::Literal(LitValue::numeric(move |domain| Scalar::decimal_from_raw_in_domain(i128::from(raw), dtype, domain)))
+    Expr::Literal(LitValue::numeric(dtype, move |domain| {
+        Scalar::decimal_from_raw_in_domain(i128::from(raw), dtype, domain)
+    }))
 }
 
 /// Create a `DECIMAL64` literal from its raw fixed-point representation.
@@ -82,7 +95,9 @@ pub fn lit_decimal32_raw(raw: i32, scale: i32) -> Expr {
 /// returning; later host-visible reads may synchronize.
 pub fn lit_decimal64_raw(raw: i64, scale: i32) -> Expr {
     let dtype = DataType::fixed_point(TypeId::Decimal64, scale);
-    Expr::Literal(LitValue::numeric(move |domain| Scalar::decimal_from_raw_in_domain(i128::from(raw), dtype, domain)))
+    Expr::Literal(LitValue::numeric(dtype, move |domain| {
+        Scalar::decimal_from_raw_in_domain(i128::from(raw), dtype, domain)
+    }))
 }
 
 /// Create a `DECIMAL128` literal from its raw fixed-point representation.
@@ -98,7 +113,7 @@ pub fn lit_decimal64_raw(raw: i64, scale: i32) -> Expr {
 /// returning; later host-visible reads may synchronize.
 pub fn lit_decimal128_raw(raw: i128, scale: i32) -> Expr {
     let dtype = DataType::fixed_point(TypeId::Decimal128, scale);
-    Expr::Literal(LitValue::numeric(move |domain| Scalar::decimal_from_raw_in_domain(raw, dtype, domain)))
+    Expr::Literal(LitValue::numeric(dtype, move |domain| Scalar::decimal_from_raw_in_domain(raw, dtype, domain)))
 }
 
 /// Create a timestamp literal from its raw epoch-unit representation.
@@ -112,7 +127,8 @@ pub fn lit_decimal128_raw(raw: i128, scale: i32) -> Expr {
 /// [`Series`]. Evaluation does not intentionally synchronize the host before
 /// returning; later host-visible reads may synchronize.
 pub fn lit_timestamp_raw(raw: i64, resolution: TimestampResolution) -> Expr {
-    Expr::Literal(LitValue::numeric(move |domain| {
+    let dtype = DataType::new(resolution.type_id());
+    Expr::Literal(LitValue::numeric(dtype, move |domain| {
         Scalar::timestamp_from_raw_in_domain(raw, resolution.type_id(), domain)
     }))
 }
@@ -128,7 +144,8 @@ pub fn lit_timestamp_raw(raw: i64, resolution: TimestampResolution) -> Expr {
 /// [`Series`]. Evaluation does not intentionally synchronize the host before
 /// returning; later host-visible reads may synchronize.
 pub fn lit_duration_raw(raw: i64, resolution: TimestampResolution) -> Expr {
-    Expr::Literal(LitValue::numeric(move |domain| {
+    let dtype = DataType::new(resolution.duration_type_id());
+    Expr::Literal(LitValue::numeric(dtype, move |domain| {
         Scalar::duration_from_raw_in_domain(raw, resolution.duration_type_id(), domain)
     }))
 }
@@ -147,7 +164,9 @@ pub trait IntoLit {
 impl<T: CudfType + Send + Sync> IntoLit for T {
     fn into_expr(self) -> Expr {
         let val = self;
-        Expr::Literal(LitValue::numeric(move |domain| Scalar::from_value_in_domain(val, domain)))
+        Expr::Literal(LitValue::numeric(DataType::new(T::TYPE_ID), move |domain| {
+            Scalar::from_value_in_domain(val, domain)
+        }))
     }
 }
 
