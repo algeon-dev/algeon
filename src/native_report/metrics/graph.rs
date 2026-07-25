@@ -35,6 +35,14 @@ pub struct NativeGraphReservationMetricRow {
     pub vertex_width_bytes: usize,
     /// Consumed edge-weight width in bytes, if present.
     pub weight_width_bytes: Option<usize>,
+    /// Exact or hard-bounded explicit-pair relation rows, if applicable.
+    pub pair_rows: Option<usize>,
+    /// Vertex width of the explicit-pair relation, if applicable.
+    pub pair_vertex_width_bytes: Option<usize>,
+    /// Provenance for explicit-pair cardinality evidence, or `none`.
+    pub pair_cardinality_source: String,
+    /// Admission contract that consumed explicit-pair cardinality evidence, or `none`.
+    pub pair_cardinality_admission_mode: String,
     /// Whether a stable edge id column was bound.
     pub has_edge_id: bool,
     /// Whether the graph was treated as directed.
@@ -61,6 +69,8 @@ pub struct NativeGraphReservationMetricRow {
     pub budget_bytes: Option<usize>,
     /// Model ask divided by measured graph-stage peak, when observed.
     pub graph_model_error_ratio: Option<String>,
+    /// Measured graph-stage allocator high-water bytes, when observed.
+    pub measured_peak_bytes: Option<usize>,
     /// Exact runtime distinct endpoint count, when graph statistics were probed.
     pub graph_statistics_exact_vertices: Option<usize>,
     /// Maximum source out-degree, when graph degree statistics were probed.
@@ -83,7 +93,7 @@ impl NativeGraphReservationMetricRow {
     /// Serializes this nested row as stable comma-separated key/value pairs.
     pub fn to_stable_kv_row(&self) -> String {
         format!(
-            "node_id={},algorithm={},class={},outcome={},raw_input_edges={},input_edges={},vertex_upper_bound={},vertex_estimate={},vertex_estimate_source={},vertex_width_bytes={},weight_width_bytes={},has_edge_id={},directed={},renumber={},construction_policy={},edge_normalize_inserted={},calibration_source={},seed_count={},seed_mode={},data_dependent={},model_requested_bytes={},requested_bytes={},budget_bytes={},graph_model_error_ratio={},graph_statistics_exact_vertices={},graph_statistics_degree_max={},graph_statistics_degree_p99={},graph_statistics_sum_min_degree_oriented={},graph_statistics_oriented_edge_count={},graph_statistics_peak_chunk_min_degree_sum={},graph_statistics_sum_out_degree={},reason={}",
+            "node_id={},algorithm={},class={},outcome={},raw_input_edges={},input_edges={},vertex_upper_bound={},vertex_estimate={},vertex_estimate_source={},vertex_width_bytes={},weight_width_bytes={},pair_rows={},pair_vertex_width_bytes={},pair_cardinality_source={},pair_cardinality_admission_mode={},has_edge_id={},directed={},renumber={},construction_policy={},edge_normalize_inserted={},calibration_source={},seed_count={},seed_mode={},data_dependent={},model_requested_bytes={},requested_bytes={},budget_bytes={},graph_model_error_ratio={},measured_peak_bytes={},graph_statistics_exact_vertices={},graph_statistics_degree_max={},graph_statistics_degree_p99={},graph_statistics_sum_min_degree_oriented={},graph_statistics_oriented_edge_count={},graph_statistics_peak_chunk_min_degree_sum={},graph_statistics_sum_out_degree={},reason={}",
             self.node_id,
             self.algorithm,
             self.class,
@@ -95,6 +105,10 @@ impl NativeGraphReservationMetricRow {
             self.vertex_estimate_source,
             self.vertex_width_bytes,
             optional_usize(self.weight_width_bytes),
+            optional_usize(self.pair_rows),
+            optional_usize(self.pair_vertex_width_bytes),
+            self.pair_cardinality_source,
+            self.pair_cardinality_admission_mode,
             self.has_edge_id,
             self.directed,
             self.renumber,
@@ -108,6 +122,7 @@ impl NativeGraphReservationMetricRow {
             self.requested_bytes,
             optional_usize(self.budget_bytes),
             optional_str(self.graph_model_error_ratio.as_deref()),
+            optional_usize(self.measured_peak_bytes),
             optional_usize(self.graph_statistics_exact_vertices),
             optional_usize(self.graph_statistics_degree_max),
             optional_usize(self.graph_statistics_degree_p99),
@@ -277,6 +292,10 @@ fn labels_to_graph_reservation_row(labels: BTreeMap<&str, &str>) -> NativeGraphR
         vertex_estimate_source: string_label(&labels, "vertex_estimate_source"),
         vertex_width_bytes: usize_label(&labels, "vertex_width_bytes"),
         weight_width_bytes: optional_usize_label(&labels, "weight_width_bytes"),
+        pair_rows: optional_usize_label(&labels, "pair_rows"),
+        pair_vertex_width_bytes: optional_usize_label(&labels, "pair_vertex_width_bytes"),
+        pair_cardinality_source: string_label(&labels, "pair_cardinality_source"),
+        pair_cardinality_admission_mode: string_label(&labels, "pair_cardinality_admission_mode"),
         has_edge_id: bool_label(&labels, "has_edge_id"),
         directed: bool_label(&labels, "directed"),
         renumber: bool_label(&labels, "renumber"),
@@ -290,6 +309,7 @@ fn labels_to_graph_reservation_row(labels: BTreeMap<&str, &str>) -> NativeGraphR
         requested_bytes: usize_label(&labels, "requested_bytes"),
         budget_bytes: optional_usize_label(&labels, "budget_bytes"),
         graph_model_error_ratio: optional_string_label(&labels, "graph_model_error_ratio"),
+        measured_peak_bytes: optional_usize_label(&labels, "measured_peak_bytes"),
         graph_statistics_exact_vertices: optional_usize_label(&labels, "graph_statistics_exact_vertices"),
         graph_statistics_degree_max: optional_usize_label(&labels, "graph_statistics_degree_max"),
         graph_statistics_degree_p99: optional_usize_label(&labels, "graph_statistics_degree_p99"),

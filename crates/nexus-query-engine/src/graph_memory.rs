@@ -112,6 +112,8 @@ pub enum GraphMemoryClass {
     WorkspaceHeavyDataDependent,
     /// Workspace-heavy algorithms whose memory is primarily seed-count driven.
     WorkspaceHeavySeedDependent,
+    /// Explicit-pair similarity with one output row per pair relation row.
+    PairOutputSized,
 }
 
 impl GraphMemoryClass {
@@ -122,11 +124,84 @@ impl GraphMemoryClass {
             Self::MultiArray => "multi_array",
             Self::WorkspaceHeavyDataDependent => "workspace_heavy_data_dependent",
             Self::WorkspaceHeavySeedDependent => "workspace_heavy_seed_dependent",
+            Self::PairOutputSized => "pair_output_sized",
         }
     }
 
     const fn is_data_dependent(self) -> bool {
         matches!(self, Self::WorkspaceHeavyDataDependent | Self::WorkspaceHeavySeedDependent)
+    }
+}
+
+/// Provenance for cardinality evidence used by explicit-pair similarity memory
+/// admission.
+///
+/// A similarity call cannot reuse graph vertex or edge cardinality as a proxy:
+/// one pair relation row produces one output row and the relation is a
+/// multiset.  The source is therefore retained on the reservation report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum GraphPairCardinalitySource {
+    /// A deterministic literal native-plan input supplied the exact row count.
+    PlanExact,
+    /// An explicit plan-level upper bound constrained the pair relation.
+    PlanHardUpperBound,
+    /// The side input was materialized before graph admission.
+    RuntimeMaterialized,
+}
+
+impl GraphPairCardinalitySource {
+    /// Stable label used in reports.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::PlanExact => "plan_exact",
+            Self::PlanHardUpperBound => "plan_hard_upper_bound",
+            Self::RuntimeMaterialized => "runtime_materialized",
+        }
+    }
+
+    /// Returns whether the evidence is admissible for strict bounded pricing.
+    pub const fn is_strict_bounded_evidence(self) -> bool {
+        matches!(self, Self::PlanExact | Self::PlanHardUpperBound)
+    }
+}
+
+impl std::fmt::Display for GraphPairCardinalitySource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Admission contract that consumed explicit-pair cardinality evidence.
+///
+/// A runtime-materialized count is valid for adaptive bounded execution, but
+/// never proves a strict pre-admission bound.  Preserve that distinction on
+/// the estimate and its report projection rather than inferring it from a
+/// later execution mode label.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum GraphPairCardinalityAdmissionMode {
+    /// No bounded admission was active; the row records observed execution
+    /// evidence only.
+    Unbounded,
+    /// Strict bounded admission used a plan-exact count or hard upper bound.
+    StrictBounded,
+    /// Adaptive bounded admission used materialized/preflight evidence.
+    AdaptiveBounded,
+}
+
+impl GraphPairCardinalityAdmissionMode {
+    /// Stable label used in reports.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Unbounded => "unbounded",
+            Self::StrictBounded => "strict_bounded",
+            Self::AdaptiveBounded => "adaptive_bounded",
+        }
+    }
+}
+
+impl std::fmt::Display for GraphPairCardinalityAdmissionMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 
@@ -397,6 +472,12 @@ pub struct GraphMemoryModelInput {
     pub edge_normalize_inserted: bool,
     /// Runtime topology evidence used by data-dependent pricing, when available.
     pub statistics: Option<GraphStatistics>,
+    /// Exact or hard-bounded candidate-pair rows for a similarity operation.
+    pub pair_rows: Option<u64>,
+    /// Width in bytes of each vertex column in the candidate-pair relation.
+    pub pair_vertex_width_bytes: Option<u64>,
+    /// Provenance for [`Self::pair_rows`].
+    pub pair_cardinality_source: Option<GraphPairCardinalitySource>,
 }
 
 impl GraphMemoryModelInput {
@@ -441,6 +522,20 @@ impl GraphMemoryModelInput {
         self.edge_normalize_inserted = inserted;
         self
     }
+
+    /// Attach explicit-pair cardinality and dtype evidence for a similarity
+    /// operation.
+    pub fn with_similarity_pair_input(
+        mut self,
+        pair_rows: u64,
+        pair_vertex_width_bytes: u64,
+        pair_cardinality_source: GraphPairCardinalitySource,
+    ) -> Self {
+        self.pair_rows = Some(pair_rows);
+        self.pair_vertex_width_bytes = Some(pair_vertex_width_bytes);
+        self.pair_cardinality_source = Some(pair_cardinality_source);
+        self
+    }
 }
 
 /// Approximate graph memory estimate.
@@ -455,6 +550,11 @@ pub struct GraphMemoryEstimate {
     pub vertex_estimate_source: GraphVertexEstimateSource,
     pub vertex_width_bytes: u64,
     pub weight_width_bytes: Option<u64>,
+    pub pair_rows: Option<u64>,
+    pub pair_vertex_width_bytes: Option<u64>,
+    pub pair_cardinality_source: Option<GraphPairCardinalitySource>,
+    /// Admission contract that consumed [`Self::pair_cardinality_source`].
+    pub pair_cardinality_admission_mode: Option<GraphPairCardinalityAdmissionMode>,
     pub has_edge_id: bool,
     pub directed: bool,
     pub renumber: bool,
@@ -527,6 +627,11 @@ pub struct GraphReservationReport {
     pub vertex_estimate_source: GraphVertexEstimateSource,
     pub vertex_width_bytes: u64,
     pub weight_width_bytes: Option<u64>,
+    pub pair_rows: Option<u64>,
+    pub pair_vertex_width_bytes: Option<u64>,
+    pub pair_cardinality_source: Option<GraphPairCardinalitySource>,
+    /// Admission contract that consumed explicit-pair cardinality evidence.
+    pub pair_cardinality_admission_mode: Option<GraphPairCardinalityAdmissionMode>,
     pub has_edge_id: bool,
     pub directed: bool,
     pub renumber: bool,
@@ -540,6 +645,9 @@ pub struct GraphReservationReport {
     pub requested_bytes: u64,
     pub budget_bytes: Option<u64>,
     pub graph_model_error_ratio: Option<GraphModelErrorRatio>,
+    /// Measured graph-stage allocator high-water bytes, when runtime evidence
+    /// was available.  This is the denominator of [`Self::graph_model_error_ratio`].
+    pub measured_peak_bytes: Option<u64>,
     pub statistics: Option<GraphStatistics>,
     pub reason: Option<&'static str>,
 }
@@ -571,6 +679,10 @@ impl GraphReservationReport {
             vertex_estimate_source: estimate.vertex_estimate_source,
             vertex_width_bytes: estimate.vertex_width_bytes,
             weight_width_bytes: estimate.weight_width_bytes,
+            pair_rows: estimate.pair_rows,
+            pair_vertex_width_bytes: estimate.pair_vertex_width_bytes,
+            pair_cardinality_source: estimate.pair_cardinality_source,
+            pair_cardinality_admission_mode: estimate.pair_cardinality_admission_mode,
             has_edge_id: estimate.has_edge_id,
             directed: estimate.directed,
             renumber: estimate.renumber,
@@ -584,9 +696,43 @@ impl GraphReservationReport {
             requested_bytes,
             budget_bytes,
             graph_model_error_ratio: None,
+            measured_peak_bytes: None,
             statistics: None,
             reason: denied.then_some(GRAPH_MEMORY_ESTIMATE_EXCEEDS_BUDGET_REASON),
         }
+    }
+
+    /// Converts an isolated similarity model price into the incremental
+    /// reservation required while its explicit pair relation is already live.
+    ///
+    /// The model intentionally includes the pair columns because it is also
+    /// used for unbounded and planning-time estimates. Bounded execution must
+    /// reserve only the additional graph work when those exact bytes already
+    /// consume the same query grant. Credit no more than the modeled pair
+    /// overlap so a wider source frame cannot reduce unrelated graph work.
+    pub fn credit_live_similarity_pair_input(mut self, already_accounted_bytes: u64) -> Self {
+        let Some(budget_bytes) = self.budget_bytes else {
+            return self;
+        };
+        if !self.algorithm.is_similarity() {
+            return self;
+        }
+        let pair_input_overlap_bytes = self
+            .pair_rows
+            .zip(self.pair_vertex_width_bytes)
+            .map(|(rows, width)| rows.saturating_mul(width.saturating_mul(2)))
+            .unwrap_or(0);
+        let credit_bytes = pair_input_overlap_bytes.min(already_accounted_bytes);
+        if credit_bytes == 0 {
+            return self;
+        }
+
+        self.requested_bytes =
+            self.requested_bytes.saturating_sub(credit_bytes).max(GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES);
+        let denied = self.requested_bytes > budget_bytes;
+        self.outcome = if denied { GraphReservationOutcome::Denied } else { GraphReservationOutcome::Admitted };
+        self.reason = denied.then_some(GRAPH_MEMORY_ESTIMATE_EXCEEDS_BUDGET_REASON);
+        self
     }
 
     /// Attach runtime graph statistics evidence to this row.
@@ -597,6 +743,7 @@ impl GraphReservationReport {
 
     /// Attach the observed model error ratio for a completed graph execution.
     pub fn record_model_error_ratio(&mut self, measured_peak_bytes: u64) {
+        self.measured_peak_bytes = Some(measured_peak_bytes);
         self.graph_model_error_ratio =
             GraphModelErrorRatio::from_requested_and_measured(self.model_requested_bytes, measured_peak_bytes);
     }
@@ -613,6 +760,11 @@ impl GraphReservationReport {
             .with_fact("vertex_estimate", self.vertex_estimate)
             .with_fact("vertex_estimate_source", self.vertex_estimate_source.as_str())
             .with_fact("vertex_width_bytes", self.vertex_width_bytes)
+            .with_fact("pair_rows", self.pair_rows.unwrap_or(0))
+            .with_fact(
+                "pair_cardinality_source",
+                self.pair_cardinality_source.map_or("none", GraphPairCardinalitySource::as_str),
+            )
             .with_fact("directed", self.directed)
             .with_fact("renumber", self.renumber)
             .with_fact("construction_policy", self.construction_policy.as_str())
@@ -639,6 +791,51 @@ pub struct GraphMemoryModel;
 impl GraphMemoryModel {
     /// Estimate the graph fragment memory for an algorithm and graph input.
     pub fn estimate(&self, spec: &GraphAlgorithmSpec, input: GraphMemoryModelInput) -> Result<GraphMemoryEstimate> {
+        self.estimate_with_pair_cardinality_admission_mode(spec, input, GraphPairCardinalityAdmissionMode::Unbounded)
+    }
+
+    /// Estimate a graph fragment for strict bounded admission.
+    ///
+    /// Similarity requires plan-exact or hard-upper-bound pair cardinality
+    /// evidence here.  A count obtained by executing the pair relation is
+    /// deliberately rejected, because it is adaptive evidence and cannot be
+    /// retroactively promoted to a strict admission proof.
+    pub fn estimate_for_strict_bounded(
+        &self,
+        spec: &GraphAlgorithmSpec,
+        input: GraphMemoryModelInput,
+    ) -> Result<GraphMemoryEstimate> {
+        require_strict_similarity_pair_cardinality_evidence(spec, input)?;
+        self.estimate_with_pair_cardinality_admission_mode(
+            spec,
+            input,
+            GraphPairCardinalityAdmissionMode::StrictBounded,
+        )
+    }
+
+    /// Estimate a graph fragment for adaptive bounded admission.
+    ///
+    /// The adaptive path may consume a pair relation after its own
+    /// materialization boundary.  Its report is labelled separately so that
+    /// runtime evidence is never presented as a strict bound.
+    pub fn estimate_for_adaptive_bounded(
+        &self,
+        spec: &GraphAlgorithmSpec,
+        input: GraphMemoryModelInput,
+    ) -> Result<GraphMemoryEstimate> {
+        self.estimate_with_pair_cardinality_admission_mode(
+            spec,
+            input,
+            GraphPairCardinalityAdmissionMode::AdaptiveBounded,
+        )
+    }
+
+    fn estimate_with_pair_cardinality_admission_mode(
+        &self,
+        spec: &GraphAlgorithmSpec,
+        input: GraphMemoryModelInput,
+        pair_cardinality_admission_mode: GraphPairCardinalityAdmissionMode,
+    ) -> Result<GraphMemoryEstimate> {
         if input.vertex_width_bytes == 0 {
             return Err(QueryError::new(
                 QueryErrorCode::InvalidPlan,
@@ -649,6 +846,8 @@ impl GraphMemoryModel {
         }
 
         let class = graph_memory_class(spec.algorithm);
+        let (pair_rows, pair_vertex_width_bytes, pair_cardinality_source) =
+            similarity_pair_memory_evidence(spec, input)?;
         let vertex_upper_bound = input.vertex_upper_bound();
         let (vertex_estimate, vertex_estimate_source) = input
             .vertex_estimate
@@ -670,11 +869,19 @@ impl GraphMemoryModel {
             } else {
                 0
             });
-        let output_bytes = output_bytes_for_algorithm(spec.algorithm, input, vertex_estimate);
+        let output_bytes = output_bytes_for_algorithm(spec.algorithm, input, vertex_estimate, pair_rows);
         let seed_input = graph_seed_memory_input(&spec.params, vertex_estimate);
         let seed_count = seed_input.map(|seed_input| seed_input.requested_count);
         let seed_mode = seed_input.map(|seed_input| seed_input.mode);
-        let workspace_bytes = workspace_bytes_for_algorithm(spec.algorithm, class, input, vertex_estimate, seed_input);
+        let workspace_bytes = workspace_bytes_for_algorithm(
+            spec.algorithm,
+            class,
+            input,
+            vertex_estimate,
+            seed_input,
+            pair_rows,
+            pair_vertex_width_bytes,
+        );
         let execution_bytes = output_bytes.saturating_add(workspace_bytes).max(1);
         let requested_bytes = construction_bytes.saturating_add(output_bytes).saturating_add(workspace_bytes).max(1);
         let calibration_source = graph_calibration_source(input);
@@ -689,6 +896,10 @@ impl GraphMemoryModel {
             vertex_estimate_source,
             vertex_width_bytes: input.vertex_width_bytes,
             weight_width_bytes: input.weight_width_bytes,
+            pair_rows,
+            pair_vertex_width_bytes,
+            pair_cardinality_source,
+            pair_cardinality_admission_mode: spec.algorithm.is_similarity().then_some(pair_cardinality_admission_mode),
             has_edge_id: input.has_edge_id,
             directed: spec.graph_options.directed,
             renumber: spec.graph_options.renumber,
@@ -738,6 +949,9 @@ pub const fn graph_memory_class(algorithm: GraphAlgorithm) -> GraphMemoryClass {
         | GraphAlgorithm::WeaklyConnectedComponents
         | GraphAlgorithm::CoreNumber
         | GraphAlgorithm::MinimumSpanningTree => GraphMemoryClass::OutputSized,
+        GraphAlgorithm::Jaccard | GraphAlgorithm::Sorensen | GraphAlgorithm::Overlap | GraphAlgorithm::Cosine => {
+            GraphMemoryClass::PairOutputSized
+        },
         GraphAlgorithm::Louvain
         | GraphAlgorithm::Leiden
         | GraphAlgorithm::Ecg
@@ -780,7 +994,11 @@ pub const fn graph_memory_reservation_required(algorithm: GraphAlgorithm) -> boo
         | GraphAlgorithm::Leiden
         | GraphAlgorithm::Ecg
         | GraphAlgorithm::SpectralModularityMaximization
-        | GraphAlgorithm::ForceAtlas2 => true,
+        | GraphAlgorithm::ForceAtlas2
+        | GraphAlgorithm::Jaccard
+        | GraphAlgorithm::Sorensen
+        | GraphAlgorithm::Overlap
+        | GraphAlgorithm::Cosine => true,
     }
 }
 
@@ -833,8 +1051,16 @@ fn construction_multiplier(policy: GraphConstructionPolicy, directed: bool) -> u
     }
 }
 
-fn output_bytes_for_algorithm(algorithm: GraphAlgorithm, input: GraphMemoryModelInput, vertex_estimate: u64) -> u64 {
+fn output_bytes_for_algorithm(
+    algorithm: GraphAlgorithm,
+    input: GraphMemoryModelInput,
+    vertex_estimate: u64,
+    pair_rows: Option<u64>,
+) -> u64 {
     match algorithm {
+        GraphAlgorithm::Jaccard | GraphAlgorithm::Sorensen | GraphAlgorithm::Overlap | GraphAlgorithm::Cosine => {
+            pair_rows.unwrap_or(0).saturating_mul(24)
+        },
         GraphAlgorithm::EdgeBetweennessCentrality => {
             input.input_edges.saturating_mul(edge_betweenness_output_row_width(input))
         },
@@ -860,6 +1086,8 @@ fn workspace_bytes_for_algorithm(
     input: GraphMemoryModelInput,
     vertex_estimate: u64,
     seed_input: Option<GraphSeedMemoryInput>,
+    pair_rows: Option<u64>,
+    pair_vertex_width_bytes: Option<u64>,
 ) -> u64 {
     let vertex_array = vertex_estimate.saturating_mul(input.vertex_width_bytes.max(8));
     // Graph construction keeps copied endpoints live while sorting/renumbering
@@ -882,7 +1110,153 @@ fn workspace_bytes_for_algorithm(
             },
             _ => output_sized,
         },
+        GraphMemoryClass::PairOutputSized => similarity_workspace_bytes(
+            pair_rows.expect("similarity memory evidence validated before workspace pricing"),
+            pair_vertex_width_bytes.expect("similarity memory evidence validated before workspace pricing"),
+            input.weight_width_bytes.is_some(),
+        ),
     }
+}
+
+/// Fixed cuGraph allocator floor retained during pairwise similarity
+/// coefficient dispatch. The linear term is calibrated separately for the
+/// selected vertex width and weighted path: weighted coefficients retain
+/// additional per-pair temporary state in libcugraph. Input overlap and
+/// `VertexPairs` are accounted for in [`similarity_workspace_bytes`] as
+/// separate live buffers.
+///
+/// The 2026-07-25 `cugraph-similarity-calibrate` 100k-pair observations pin
+/// these terms for both Int32/Int64 and weighted/unweighted Jaccard across
+/// sparse-uniform and hub-skewed graph topologies. The sparse topology is the
+/// observed high-water case; the hub case remains admitted without projecting
+/// its lower peak into the model. The same libcugraph pairwise workspace is
+/// used by all four exposed metrics. See the calibration-band contract test
+/// for the captured peaks and commands.
+const SIMILARITY_WORKSPACE_FIXED_BYTES: u64 = 120 * 1024;
+const SIMILARITY_NATIVE_SCORE_WIDTH_BYTES: u64 = 8;
+
+fn similarity_workspace_bytes(pair_rows: u64, pair_vertex_width_bytes: u64, weighted: bool) -> u64 {
+    let pair_columns = pair_rows.saturating_mul(pair_vertex_width_bytes.saturating_mul(2));
+    let pair_input_overlap = pair_columns;
+    let native_vertex_pairs = pair_columns;
+    let native_scores = pair_rows.saturating_mul(SIMILARITY_NATIVE_SCORE_WIDTH_BYTES);
+    let kernel_workspace = SIMILARITY_WORKSPACE_FIXED_BYTES.saturating_add(
+        pair_rows.saturating_mul(similarity_workspace_per_pair_bytes(pair_vertex_width_bytes, weighted)),
+    );
+    pair_input_overlap
+        .saturating_add(native_vertex_pairs)
+        .saturating_add(native_scores)
+        .saturating_add(kernel_workspace)
+}
+
+fn similarity_workspace_per_pair_bytes(pair_vertex_width_bytes: u64, weighted: bool) -> u64 {
+    if weighted {
+        // The supported vertex domains are exact-width Int32 and Int64. The
+        // isolated calibration matrix observes 66 B and 85 B respectively;
+        // a single linear term would either under-admit Int64 or add an
+        // unexplained broad multiplier to Int32.
+        match pair_vertex_width_bytes {
+            4 => 66,
+            8 => 85,
+            _ => unreachable!("similarity validation admits only Int32 or Int64 vertex domains"),
+        }
+    } else {
+        // As above, price the two supported widths from the isolated matrix
+        // rather than using a broad common slope: Int32 => 8 B, Int64 => 28 B.
+        match pair_vertex_width_bytes {
+            4 => 8,
+            8 => 28,
+            _ => unreachable!("similarity validation admits only Int32 or Int64 vertex domains"),
+        }
+    }
+}
+
+fn similarity_pair_memory_evidence(
+    spec: &GraphAlgorithmSpec,
+    input: GraphMemoryModelInput,
+) -> Result<(Option<u64>, Option<u64>, Option<GraphPairCardinalitySource>)> {
+    if !spec.algorithm.is_similarity() {
+        return Ok((None, None, None));
+    }
+    let (Some(pair_rows), Some(pair_vertex_width_bytes), Some(pair_cardinality_source)) =
+        (input.pair_rows, input.pair_vertex_width_bytes, input.pair_cardinality_source)
+    else {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.graph_memory.similarity",
+            "explicit-pair similarity requires pair-cardinality evidence before memory admission",
+        )
+        .with_fact("algorithm", spec.algorithm.as_str())
+        .with_fact("reason", "missing_pair_cardinality_evidence")
+        .with_fact("pair_rows", input.pair_rows.unwrap_or(0))
+        .with_fact("pair_vertex_width_bytes", input.pair_vertex_width_bytes.unwrap_or(0))
+        .with_fact(
+            "pair_cardinality_source",
+            input.pair_cardinality_source.map_or("none", GraphPairCardinalitySource::as_str),
+        ));
+    };
+    if pair_vertex_width_bytes == 0 {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.graph_memory.similarity",
+            "explicit-pair similarity requires a positive pair vertex dtype width",
+        )
+        .with_fact("algorithm", spec.algorithm.as_str())
+        .with_fact("reason", "invalid_pair_vertex_width")
+        .with_fact("pair_vertex_width_bytes", pair_vertex_width_bytes));
+    }
+    if pair_vertex_width_bytes != input.vertex_width_bytes {
+        return Err(QueryError::new(
+            QueryErrorCode::UnsupportedType,
+            "nexus_query_engine.graph_memory.similarity",
+            "explicit-pair vertex width must match the graph vertex width",
+        )
+        .with_fact("algorithm", spec.algorithm.as_str())
+        .with_fact("reason", "pair_graph_vertex_width_mismatch")
+        .with_fact("pair_vertex_width_bytes", pair_vertex_width_bytes)
+        .with_fact("vertex_width_bytes", input.vertex_width_bytes));
+    }
+    Ok((Some(pair_rows), Some(pair_vertex_width_bytes), Some(pair_cardinality_source)))
+}
+
+fn require_strict_similarity_pair_cardinality_evidence(
+    spec: &GraphAlgorithmSpec,
+    input: GraphMemoryModelInput,
+) -> Result<()> {
+    if !spec.algorithm.is_similarity() {
+        return Ok(());
+    }
+
+    let Some(source) = input.pair_cardinality_source else {
+        return Err(strict_similarity_pair_cardinality_error(
+            spec.algorithm,
+            "strict_missing_pair_cardinality_evidence",
+        )
+        .with_fact("pair_rows", input.pair_rows.unwrap_or(0))
+        .with_fact("pair_vertex_width_bytes", input.pair_vertex_width_bytes.unwrap_or(0))
+        .with_fact("pair_cardinality_source", "none"));
+    };
+    if !source.is_strict_bounded_evidence() {
+        return Err(strict_similarity_pair_cardinality_error(
+            spec.algorithm,
+            "strict_pair_cardinality_evidence_not_plan_bound",
+        )
+        .with_fact("pair_rows", input.pair_rows.unwrap_or(0))
+        .with_fact("pair_vertex_width_bytes", input.pair_vertex_width_bytes.unwrap_or(0))
+        .with_fact("pair_cardinality_source", source.as_str()));
+    }
+    Ok(())
+}
+
+fn strict_similarity_pair_cardinality_error(algorithm: GraphAlgorithm, reason: &'static str) -> QueryError {
+    QueryError::new(
+        QueryErrorCode::InvalidPlan,
+        "nexus_query_engine.graph_memory.strict_similarity_admission",
+        "strict bounded similarity admission requires plan-exact pair cardinality or a hard pair-row upper bound",
+    )
+    .with_fact("algorithm", algorithm.as_str())
+    .with_fact("admission_mode", GraphPairCardinalityAdmissionMode::StrictBounded.as_str())
+    .with_fact("reason", reason)
 }
 
 fn legacy_workspace_heavy_data_dependent_bytes(vertex_estimate: u64, output_sized: u64) -> u64 {
@@ -1078,13 +1452,19 @@ pub fn graph_memory_model_input(
         vertex_estimate: None,
         statistics: None,
         edge_normalize_inserted: false,
+        pair_rows: None,
+        pair_vertex_width_bytes: None,
+        pair_cardinality_source: None,
     }
 }
 
-/// Estimate graph memory asks for graph nodes whose plan/config facts are known.
+/// Estimate graph memory asks for strict bounded admission when plan/config
+/// facts are known.
 ///
-/// Missing row-count evidence is treated as unknown and skips that graph node.
-/// This keeps admission pricing deterministic without inventing cardinality.
+/// Missing ordinary edge-row evidence leaves a graph node unpriced. In
+/// contrast, a similarity node with known edge rows but no plan-exact or hard
+/// pair-row bound is a strict admission failure: materializing the pair source
+/// first would create adaptive evidence, not a strict pre-admission proof.
 pub fn graph_memory_estimates_for_plan(
     plan: &QueryPlan,
     calibration_override: GraphMemoryCalibrationOverride,
@@ -1102,7 +1482,7 @@ pub fn graph_memory_estimates_for_plan(
         if let Some(device_total_memory_bytes) = device_total_memory_bytes {
             input = input.with_device_total_memory_bytes(device_total_memory_bytes);
         }
-        let estimate = GraphMemoryModel.estimate(&graph.spec, input)?;
+        let estimate = GraphMemoryModel.estimate_for_strict_bounded(&graph.spec, input)?;
         estimates.push(GraphPlanMemoryEstimate { node_id: node.id, estimate });
     }
     Ok(estimates)
@@ -1130,6 +1510,16 @@ pub fn graph_edge_list_output_rows_for_plan(plan: &QueryPlan) -> Option<u64> {
     estimated_output_rows(plan, plan.root_id())
 }
 
+/// Returns a mathematically hard upper bound on the root row count when the
+/// native plan can prove one without executing any source.
+///
+/// This is intentionally narrower than [`graph_edge_list_output_rows_for_plan`]:
+/// strict admission may use it for resident side inputs, while descriptive
+/// planning estimates remain unsuitable as an admission proof.
+pub fn query_plan_hard_row_upper_bound(plan: &QueryPlan) -> Option<u64> {
+    hard_row_upper_bound_for_plan_node(plan, plan.root_id()).map(|(rows, _)| rows)
+}
+
 fn graph_memory_model_input_for_plan_node(
     plan: &QueryPlan,
     graph: &crate::plan::GraphAlgorithmNode,
@@ -1140,12 +1530,129 @@ fn graph_memory_model_input_for_plan_node(
     };
     let input_schema =
         plan.node(graph.input).ok_or_else(|| missing_graph_input_error(graph.input))?.output_schema().clone();
-    Ok(Some(graph_memory_model_input_for_edge_list(
+    let mut input = graph_memory_model_input_for_edge_list(
         &graph.spec,
         &input_schema,
         edge_counts.input_edges,
         edge_counts.raw_input_edges,
-    )?))
+    )?;
+    if let Some((pair_rows, pair_cardinality_source)) = strict_similarity_pair_cardinality_for_plan(plan, graph)? {
+        let crate::plan::GraphAlgorithmParams::Similarity(params) = &graph.spec.params else {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "nexus_query_engine.graph_memory.plan_estimate",
+                "similarity algorithm node carried non-similarity parameters",
+            )
+            .with_fact("algorithm", graph.spec.algorithm.as_str()));
+        };
+        let pair_schema = plan
+            .node(params.vertex_pairs.input)
+            .ok_or_else(|| missing_graph_input_error(params.vertex_pairs.input))?
+            .output_schema();
+        let first_width = graph_vertex_field_width(
+            pair_schema,
+            &params.vertex_pairs.first_column,
+            "pair_first",
+            graph.spec.algorithm,
+        )?;
+        let second_width = graph_vertex_field_width(
+            pair_schema,
+            &params.vertex_pairs.second_column,
+            "pair_second",
+            graph.spec.algorithm,
+        )?;
+        if first_width != second_width || first_width != input.vertex_width_bytes {
+            return Err(QueryError::new(
+                QueryErrorCode::UnsupportedType,
+                "nexus_query_engine.graph_memory.plan_estimate",
+                "similarity pair columns must match each other and the graph vertex width",
+            )
+            .with_fact("algorithm", graph.spec.algorithm.as_str())
+            .with_fact("first_vertex_width_bytes", first_width)
+            .with_fact("second_vertex_width_bytes", second_width)
+            .with_fact("graph_vertex_width_bytes", input.vertex_width_bytes));
+        }
+        input = input.with_similarity_pair_input(pair_rows, first_width, pair_cardinality_source);
+    }
+    Ok(Some(input))
+}
+
+/// Returns only the pair-cardinality evidence that can prove strict bounded
+/// similarity admission before the candidate relation is materialized.
+///
+/// This intentionally excludes runtime counts.  Callers that execute a
+/// strict bounded graph node must invoke it before evaluating graph side
+/// inputs, then price the graph reservation with the returned exact count or
+/// upper bound.
+pub fn strict_similarity_pair_cardinality_for_plan(
+    plan: &QueryPlan,
+    graph: &crate::plan::GraphAlgorithmNode,
+) -> Result<Option<(u64, GraphPairCardinalitySource)>> {
+    if !graph.spec.algorithm.is_similarity() {
+        return Ok(None);
+    }
+    let crate::plan::GraphAlgorithmParams::Similarity(params) = &graph.spec.params else {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.graph_memory.strict_similarity_admission",
+            "similarity algorithm node carried non-similarity parameters",
+        )
+        .with_fact("algorithm", graph.spec.algorithm.as_str()));
+    };
+    hard_row_upper_bound_for_plan_node(plan, params.vertex_pairs.input).map(Some).ok_or_else(|| {
+        strict_similarity_pair_cardinality_error(graph.spec.algorithm, "strict_missing_pair_cardinality_evidence")
+    })
+}
+
+/// Derive only mathematically hard cardinality evidence.  This deliberately
+/// does not reuse [`estimated_output_rows`], whose contract is descriptive and
+/// unsuitable for strict bounded admission.
+fn hard_row_upper_bound_for_plan_node(plan: &QueryPlan, node_id: NodeId) -> Option<(u64, GraphPairCardinalitySource)> {
+    let node = plan.node(node_id)?;
+    match &node.kind {
+        PlanNode::Source(source) => match source.as_ref() {
+            crate::source::SourceNode::LiteralBatch(source) => {
+                Some((source.row_count() as u64, GraphPairCardinalitySource::PlanExact))
+            },
+            crate::source::SourceNode::LocalParquet(source) => {
+                let rows = source
+                    .files
+                    .iter()
+                    .map(|file| {
+                        file.row_group_rows.as_ref()?.iter().try_fold(0_u64, |total, rows| total.checked_add(*rows))
+                    })
+                    .try_fold(0_u64, |total, rows| total.checked_add(rows?))?;
+                let rows = source.scan_limit.map_or(rows, |limit| rows.min(limit as u64));
+                Some((
+                    source.max_rows.map_or(rows, |max_rows| rows.min(max_rows as u64)),
+                    GraphPairCardinalitySource::PlanHardUpperBound,
+                ))
+            },
+            crate::source::SourceNode::GpuResident(source) => {
+                source.row_count_upper_bound.map(|rows| (rows, GraphPairCardinalitySource::PlanHardUpperBound))
+            },
+        },
+        PlanNode::Projection(projection) => hard_row_upper_bound_for_plan_node(plan, projection.input),
+        PlanNode::Filter(filter) => hard_row_upper_bound_for_plan_node(plan, filter.input)
+            .map(|(rows, _)| (rows, GraphPairCardinalitySource::PlanHardUpperBound)),
+        PlanNode::Window(window) => hard_row_upper_bound_for_plan_node(plan, window.input),
+        PlanNode::Sort(sort) => hard_row_upper_bound_for_plan_node(plan, sort.input),
+        PlanNode::Limit(limit) => match limit.spec.fetch {
+            Some(fetch) => Some((fetch as u64, GraphPairCardinalitySource::PlanHardUpperBound)),
+            None => hard_row_upper_bound_for_plan_node(plan, limit.input).map(|(rows, _)| {
+                (rows.saturating_sub(limit.spec.skip as u64), GraphPairCardinalitySource::PlanHardUpperBound)
+            }),
+        },
+        PlanNode::Union(union) => union
+            .inputs
+            .iter()
+            .try_fold(0_u64, |total, input| hard_row_upper_bound_for_plan_node(plan, *input)?.0.checked_add(total))
+            .map(|rows| (rows, GraphPairCardinalitySource::PlanHardUpperBound)),
+        PlanNode::Aggregate(aggregate) if aggregate.spec.group_exprs.is_empty() => {
+            Some((1, GraphPairCardinalitySource::PlanExact))
+        },
+        PlanNode::Aggregate(_) | PlanNode::Join(_) | PlanNode::EdgeNormalize(_) | PlanNode::GraphAlgorithm(_) => None,
+    }
 }
 
 fn graph_memory_model_input_for_edge_list(

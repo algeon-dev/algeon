@@ -18,6 +18,8 @@ use arrow::{
 };
 use cudf::DataFrame;
 #[cfg(feature = "cugraph")]
+use nexus_query_engine::exec::execute_query_plan_with_gpu_inputs_observed;
+#[cfg(feature = "cugraph")]
 use nexus_query_engine::observability::{
     PlanExecutionBoundaryKind, RuntimeObservationConfig, RuntimeObservationPayload, RuntimeTerminalOutcome,
 };
@@ -38,16 +40,15 @@ use nexus_query_engine::{
     plan::GraphConstructionPolicy, plan::GraphEdgeBetweennessCentralityParams, plan::GraphEdgeColumnBindings,
     plan::GraphEdgePredicateInput, plan::GraphPageRankParams, plan::GraphPageRankPersonalizationInput,
     plan::GraphPersonalizedPageRankParams, plan::GraphPredicateInput, plan::GraphResidencyPlanAnalysis,
-    plan::GraphTriangleCountAllParams, plan::graph_residency_descriptor_for_edge_plan,
-    plan::planned_resident_graph_key, plan::stable_graph_result_schema, runtime::QueryAdmissionRequest,
-    runtime::QueryGrantRequest, runtime::QueryPlacementHint,
+    plan::GraphSimilarityParams, plan::GraphTriangleCountAllParams, plan::GraphVertexPairInput,
+    plan::graph_residency_descriptor_for_edge_plan, plan::planned_resident_graph_key, plan::stable_graph_result_schema,
+    runtime::QueryAdmissionRequest, runtime::QueryGrantRequest, runtime::QueryPlacementHint,
 };
 use nexus_query_engine::{
     chunk::{SourceChunkPlanningPolicy, plan_local_parquet_source_chunks},
     error::QueryErrorCode,
     exec::{
-        execute_query_plan, execute_query_plan_with_gpu_inputs, execute_query_plan_with_gpu_inputs_observed,
-        materialize_gpu_result_to_host, output::QueryOutput,
+        execute_query_plan, execute_query_plan_with_gpu_inputs, materialize_gpu_result_to_host, output::QueryOutput,
     },
     expr::{
         AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, Expr, GroupingSetsSpec, LimitSpec, LiteralValue,

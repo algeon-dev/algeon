@@ -223,6 +223,72 @@ fn bfs_source_vertex_side_input_precedes_predicate_side_inputs() {
 }
 
 #[test]
+fn similarity_ir_records_explicit_pair_side_input_and_fixed_schema() {
+    let mut builder = QueryPlanBuilder::new();
+    let edges = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
+        "edges",
+        edge_schema(DataType::Int32, DataType::Float32, false),
+    )));
+    let pairs = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
+        "pairs",
+        Arc::new(Schema::new(vec![
+            Field::new("first", DataType::Int32, false),
+            Field::new("second", DataType::Int32, false),
+        ])),
+    )));
+    let spec = GraphAlgorithmSpec::with_stable_schema(
+        GraphAlgorithm::Jaccard,
+        GraphEdgeColumnBindings::new("src", "dst", Some("weight")),
+        GraphConstructionOptions { directed: false, policy: GraphConstructionPolicy::RawLibcugraph, ..Default::default() },
+        GraphAlgorithmParams::Similarity(GraphSimilarityParams::new(GraphVertexPairInput::new(
+            pairs, "first", "second",
+        ))),
+    );
+    let graph = builder.add_graph_algorithm(edges, spec);
+    let plan = builder.finish_with_host_sink(graph);
+
+    let PlanNode::GraphAlgorithm(graph) = &plan.root_node().kind else {
+        panic!("expected graph algorithm root");
+    };
+    assert_eq!(graph.inputs, vec![edges, pairs]);
+    assert_eq!(plan.root_node().input_ids(), &[edges, pairs]);
+    assert_eq!(
+        graph.output_schema().fields().iter().map(|field| field.as_ref().clone()).collect::<Vec<_>>(),
+        vec![
+            Field::new("first", DataType::Int64, false),
+            Field::new("second", DataType::Int64, false),
+            Field::new("similarity", DataType::Float64, false),
+        ],
+    );
+    let display = plan.to_string();
+    assert!(display.contains("side_inputs=n1"));
+    assert!(display.contains("params=vertex_pairs_node=n1:first_column=first:second_column=second"));
+}
+
+#[test]
+fn similarity_registry_contract_is_shared_across_metrics() {
+    for algorithm in [
+        GraphAlgorithm::Jaccard,
+        GraphAlgorithm::Sorensen,
+        GraphAlgorithm::Overlap,
+        GraphAlgorithm::Cosine,
+    ] {
+        let definition = algorithm.definition();
+        assert!(algorithm.is_similarity());
+        assert_eq!(definition.required_graph_directedness(), Some(false));
+        assert_eq!(definition.weight_policy(), GraphWeightPolicy::Optional);
+        assert!(definition.weight_policy().consumes_weight());
+        assert_eq!(definition.empty_input_policy.edge_input.as_str(), "similarity_vertex_pairs");
+        assert_eq!(definition.empty_input_policy.side_inputs.as_str(), "require_vertex_pairs");
+        assert!(definition.default_params().supports_algorithm(algorithm));
+        assert_eq!(
+            stable_graph_result_schema(algorithm).fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>(),
+            vec!["first", "second", "similarity"],
+        );
+    }
+}
+
+#[test]
 fn bfs_edge_id_predicates_require_primary_edge_id_binding() {
     let mut builder = QueryPlanBuilder::new();
     let edges = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
@@ -298,6 +364,10 @@ fn graph_operation_registry_pins_empty_input_policy_for_every_algorithm() {
             ("ecg", "return_empty", "none"),
             ("spectral_modularity_maximization", "reject", "none"),
             ("force_atlas2", "return_empty", "none"),
+            ("jaccard", "similarity_vertex_pairs", "require_vertex_pairs"),
+            ("sorensen", "similarity_vertex_pairs", "require_vertex_pairs"),
+            ("overlap", "similarity_vertex_pairs", "require_vertex_pairs"),
+            ("cosine", "similarity_vertex_pairs", "require_vertex_pairs"),
         ]
     );
     assert_eq!(policies.len(), GraphAlgorithm::all().len());
@@ -371,6 +441,10 @@ fn graph_operation_registry_pins_baseline_inventory() {
                 GraphLayoutRequirement::Forward,
             ),
             (GraphAlgorithm::ForceAtlas2, "force_atlas2", GraphLayoutRequirement::Any),
+            (GraphAlgorithm::Jaccard, "jaccard", GraphLayoutRequirement::Any),
+            (GraphAlgorithm::Sorensen, "sorensen", GraphLayoutRequirement::Any),
+            (GraphAlgorithm::Overlap, "overlap", GraphLayoutRequirement::Any),
+            (GraphAlgorithm::Cosine, "cosine", GraphLayoutRequirement::Any),
         ],
         "graph operation registry order is part of the public surface; \
          adding an algorithm requires extending this baseline list",
@@ -404,10 +478,9 @@ fn graph_operation_registry_pins_baseline_inventory() {
             def.output_schema_kind(),
             "GraphAlgorithm output-schema helper must project the descriptor",
         );
-        assert_eq!(
-            def.default_params().algorithm(),
-            def.algorithm,
-            "descriptor default params must use the registry algorithm variant",
+        assert!(
+            def.default_params().supports_algorithm(def.algorithm),
+            "descriptor default params must support the registry algorithm variant",
         );
     }
 
@@ -623,6 +696,34 @@ fn graph_operation_registry_pins_descriptor_contracts() {
                 GraphOutputSchemaKind::Fixed,
                 false,
             ),
+            (
+                GraphAlgorithm::Jaccard,
+                GraphSourceVertexRequirement::None,
+                GraphWeightPolicy::Optional,
+                GraphOutputSchemaKind::Fixed,
+                false,
+            ),
+            (
+                GraphAlgorithm::Sorensen,
+                GraphSourceVertexRequirement::None,
+                GraphWeightPolicy::Optional,
+                GraphOutputSchemaKind::Fixed,
+                false,
+            ),
+            (
+                GraphAlgorithm::Overlap,
+                GraphSourceVertexRequirement::None,
+                GraphWeightPolicy::Optional,
+                GraphOutputSchemaKind::Fixed,
+                false,
+            ),
+            (
+                GraphAlgorithm::Cosine,
+                GraphSourceVertexRequirement::None,
+                GraphWeightPolicy::Optional,
+                GraphOutputSchemaKind::Fixed,
+                false,
+            ),
         ],
         "native graph descriptor fields are part of the SQL/native graph contract",
     );
@@ -683,6 +784,10 @@ fn graph_operation_registry_has_cugraph_public_contracts() {
     let _ = cugraph::Graph::<cugraph::Forward>::ecg;
     let _ = cugraph::Graph::<cugraph::Forward>::spectral_modularity_maximization;
     let _ = cugraph::Graph::<cugraph::Forward>::force_atlas2;
+    let _ = cugraph::Graph::<cugraph::Forward>::jaccard_coefficients;
+    let _ = cugraph::Graph::<cugraph::Forward>::sorensen_coefficients;
+    let _ = cugraph::Graph::<cugraph::Forward>::overlap_coefficients;
+    let _ = cugraph::Graph::<cugraph::Forward>::cosine_similarity_coefficients;
 
     let registry_names: std::collections::BTreeSet<&str> =
         GRAPH_OPERATION_REGISTRY.iter().map(|definition| definition.name).collect();

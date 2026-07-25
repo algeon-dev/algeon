@@ -12,6 +12,7 @@ mod community;
 mod definition;
 mod layout;
 mod residency;
+mod similarity;
 mod structure;
 mod traversal;
 
@@ -37,6 +38,7 @@ pub use residency::{
     GraphResidencyDescriptor, GraphResidencyOrientation, GraphResidencyPlanAnalysis, GraphSourceFingerprint,
     GraphSourceFingerprintBypassReason, ResidentGraphKey, graph_residency_descriptor_for_edge_plan,
 };
+pub use similarity::{GraphSimilarityParams, GraphVertexPairInput};
 pub use structure::{
     EdgeDedupStrategy, EdgeNormalizeSpec, EdgeWeightCombiner, GraphCoreNumberParams, GraphDegreesAllParams,
     GraphInDegreesAllParams, GraphKCoreDegreeType, GraphKCoreParams, GraphMstParams, GraphOutDegreesAllParams,
@@ -74,35 +76,53 @@ pub enum GraphAlgorithmParams {
     Ecg(GraphEcgParams),
     SpectralModularityMaximization(GraphSpectralClusteringParams),
     ForceAtlas2(GraphForceAtlas2Params),
+    Similarity(GraphSimilarityParams),
 }
 
 impl GraphAlgorithmParams {
-    /// Algorithm variant associated with this parameter payload.
-    pub const fn algorithm(&self) -> GraphAlgorithm {
+    /// Whether this payload is valid for an algorithm variant.
+    ///
+    /// Similarity deliberately has one shared payload for four metric
+    /// identities. The metric stays in [`GraphAlgorithm`] so the pair side
+    /// input and its validation cannot drift across copied parameter variants.
+    pub const fn supports_algorithm(&self, algorithm: GraphAlgorithm) -> bool {
         match self {
-            Self::PageRank(_) => GraphAlgorithm::PageRank,
-            Self::PersonalizedPageRank(_) => GraphAlgorithm::PersonalizedPageRank,
-            Self::Bfs(_) => GraphAlgorithm::Bfs,
-            Self::Louvain(_) => GraphAlgorithm::Louvain,
-            Self::EigenvectorCentrality(_) => GraphAlgorithm::EigenvectorCentrality,
-            Self::KatzCentrality(_) => GraphAlgorithm::KatzCentrality,
-            Self::Hits(_) => GraphAlgorithm::Hits,
-            Self::BetweennessCentrality(_) => GraphAlgorithm::BetweennessCentrality,
-            Self::EdgeBetweennessCentrality(_) => GraphAlgorithm::EdgeBetweennessCentrality,
-            Self::Sssp(_) => GraphAlgorithm::Sssp,
-            Self::DegreesAll(_) => GraphAlgorithm::DegreesAll,
-            Self::InDegreesAll(_) => GraphAlgorithm::InDegreesAll,
-            Self::OutDegreesAll(_) => GraphAlgorithm::OutDegreesAll,
-            Self::WeaklyConnectedComponents(_) => GraphAlgorithm::WeaklyConnectedComponents,
-            Self::StronglyConnectedComponents(_) => GraphAlgorithm::StronglyConnectedComponents,
-            Self::TriangleCountAll(_) => GraphAlgorithm::TriangleCountAll,
-            Self::CoreNumber(_) => GraphAlgorithm::CoreNumber,
-            Self::KCore(_) => GraphAlgorithm::KCore,
-            Self::MinimumSpanningTree(_) => GraphAlgorithm::MinimumSpanningTree,
-            Self::Leiden(_) => GraphAlgorithm::Leiden,
-            Self::Ecg(_) => GraphAlgorithm::Ecg,
-            Self::SpectralModularityMaximization(_) => GraphAlgorithm::SpectralModularityMaximization,
-            Self::ForceAtlas2(_) => GraphAlgorithm::ForceAtlas2,
+            Self::PageRank(_) => matches!(algorithm, GraphAlgorithm::PageRank),
+            Self::PersonalizedPageRank(_) => matches!(algorithm, GraphAlgorithm::PersonalizedPageRank),
+            Self::Bfs(_) => matches!(algorithm, GraphAlgorithm::Bfs),
+            Self::Louvain(_) => matches!(algorithm, GraphAlgorithm::Louvain),
+            Self::EigenvectorCentrality(_) => matches!(algorithm, GraphAlgorithm::EigenvectorCentrality),
+            Self::KatzCentrality(_) => matches!(algorithm, GraphAlgorithm::KatzCentrality),
+            Self::Hits(_) => matches!(algorithm, GraphAlgorithm::Hits),
+            Self::BetweennessCentrality(_) => matches!(algorithm, GraphAlgorithm::BetweennessCentrality),
+            Self::EdgeBetweennessCentrality(_) => matches!(algorithm, GraphAlgorithm::EdgeBetweennessCentrality),
+            Self::Sssp(_) => matches!(algorithm, GraphAlgorithm::Sssp),
+            Self::DegreesAll(_) => matches!(algorithm, GraphAlgorithm::DegreesAll),
+            Self::InDegreesAll(_) => matches!(algorithm, GraphAlgorithm::InDegreesAll),
+            Self::OutDegreesAll(_) => matches!(algorithm, GraphAlgorithm::OutDegreesAll),
+            Self::WeaklyConnectedComponents(_) => matches!(algorithm, GraphAlgorithm::WeaklyConnectedComponents),
+            Self::StronglyConnectedComponents(_) => matches!(algorithm, GraphAlgorithm::StronglyConnectedComponents),
+            Self::TriangleCountAll(_) => matches!(algorithm, GraphAlgorithm::TriangleCountAll),
+            Self::CoreNumber(_) => matches!(algorithm, GraphAlgorithm::CoreNumber),
+            Self::KCore(_) => matches!(algorithm, GraphAlgorithm::KCore),
+            Self::MinimumSpanningTree(_) => matches!(algorithm, GraphAlgorithm::MinimumSpanningTree),
+            Self::Leiden(_) => matches!(algorithm, GraphAlgorithm::Leiden),
+            Self::Ecg(_) => matches!(algorithm, GraphAlgorithm::Ecg),
+            Self::SpectralModularityMaximization(_) => {
+                matches!(algorithm, GraphAlgorithm::SpectralModularityMaximization)
+            },
+            Self::ForceAtlas2(_) => matches!(algorithm, GraphAlgorithm::ForceAtlas2),
+            Self::Similarity(_) => algorithm.is_similarity(),
+        }
+    }
+
+    /// Visits every relation-backed side-input node in stable execution order.
+    pub fn side_input_node_ids(&self) -> Box<dyn Iterator<Item = NodeId> + '_> {
+        match self {
+            Self::Bfs(params) => Box::new(params.side_input_node_ids()),
+            Self::PersonalizedPageRank(params) => Box::new(params.side_input_node_ids()),
+            Self::Similarity(params) => Box::new(params.side_input_node_ids()),
+            _ => Box::new(std::iter::empty()),
         }
     }
 }
@@ -134,7 +154,7 @@ impl GraphAlgorithmSpec {
         params: GraphAlgorithmParams,
         output_schema: SchemaRef,
     ) -> Self {
-        assert_eq!(algorithm, params.algorithm(), "graph algorithm and parameter variant must match");
+        assert!(params.supports_algorithm(algorithm), "graph algorithm and parameter variant must match");
         Self { algorithm, edge_columns, graph_options, edge_normalize_inserted: false, params, output_schema }
     }
 
@@ -175,6 +195,10 @@ pub fn planned_resident_graph_key(
         (GraphAlgorithm::PageRank, GraphAlgorithmParams::PageRank(_)) => {
             Some(descriptor.resident_key(spec, GraphResidencyOrientation::Transposed))
         },
+        (
+            GraphAlgorithm::Jaccard | GraphAlgorithm::Sorensen | GraphAlgorithm::Overlap | GraphAlgorithm::Cosine,
+            GraphAlgorithmParams::Similarity(_),
+        ) => Some(descriptor.resident_key(spec, GraphResidencyOrientation::Forward)),
         _ => None,
     }
 }
@@ -298,6 +322,11 @@ pub fn stable_graph_result_schema(algorithm: GraphAlgorithm) -> SchemaRef {
             Field::new("x", arrow::datatypes::DataType::Float32, false),
             Field::new("y", arrow::datatypes::DataType::Float32, false),
         ],
+        GraphAlgorithm::Jaccard | GraphAlgorithm::Sorensen | GraphAlgorithm::Overlap | GraphAlgorithm::Cosine => vec![
+            Field::new("first", arrow::datatypes::DataType::Int64, false),
+            Field::new("second", arrow::datatypes::DataType::Int64, false),
+            Field::new("similarity", arrow::datatypes::DataType::Float64, false),
+        ],
     };
     Arc::new(Schema::new(fields))
 }
@@ -306,6 +335,6 @@ pub fn stable_graph_result_schema(algorithm: GraphAlgorithm) -> SchemaRef {
 ///
 /// Most graph algorithms use [`stable_graph_result_schema`] exactly. BFS can
 /// opt into target metadata columns through [`GraphBfsParams::return_target_info`].
-pub fn graph_result_schema_for_params(params: &GraphAlgorithmParams) -> SchemaRef {
-    params.algorithm().definition().result_schema_for_params(params)
+pub fn graph_result_schema_for_params(algorithm: GraphAlgorithm, params: &GraphAlgorithmParams) -> SchemaRef {
+    algorithm.definition().result_schema_for_params(params)
 }

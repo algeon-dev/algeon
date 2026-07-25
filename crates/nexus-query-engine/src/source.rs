@@ -138,11 +138,24 @@ pub struct GpuResidentSource {
     pub input_name: String,
     /// Schema of the GPU-resident input as seen by the native plan.
     pub schema: SchemaRef,
+    /// A frontend-proved hard upper bound on the number of input rows.
+    ///
+    /// This evidence is optional because a generic device-resident handle does
+    /// not intrinsically have a planning-time cardinality.  When present, it
+    /// can admit bounded operators without inspecting or materializing the
+    /// handle first.
+    pub row_count_upper_bound: Option<u64>,
 }
 
 impl GpuResidentSource {
     /// Creates a GPU-resident source with the provided runtime name and schema.
     pub fn new(input_name: impl Into<String>, schema: SchemaRef) -> Self {
-        Self { input_name: input_name.into(), schema }
+        Self { input_name: input_name.into(), schema, row_count_upper_bound: None }
+    }
+
+    /// Attaches a frontend-proved hard upper bound on this input's row count.
+    pub fn with_row_count_upper_bound(mut self, row_count_upper_bound: u64) -> Self {
+        self.row_count_upper_bound = Some(row_count_upper_bound);
+        self
     }
 }

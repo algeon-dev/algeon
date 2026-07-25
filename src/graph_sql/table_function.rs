@@ -16,8 +16,9 @@ use datafusion::{
 
 use super::{
     CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphBfsSource, CugraphBfsSourceVertex,
-    CugraphSqlConfig, CugraphTableReference, CugraphVertexIdDomain, GpuIslandHostBoundaryConfig,
-    bfs_result_schema_for_vertex_domain, datafusion_table_reference, parse_cugraph_algorithm_spec, plan_error,
+    CugraphSqlConfig, CugraphTableReference, CugraphVertexIdDomain, CugraphVertexPairTable,
+    GpuIslandHostBoundaryConfig, bfs_result_schema_for_vertex_domain, datafusion_table_reference,
+    parse_cugraph_algorithm_spec, plan_error, validate_similarity_pair_table_schema,
     validate_vertex_id_domain_support_for_call, vertex_id_domain_for_call,
 };
 use crate::{
@@ -267,6 +268,13 @@ async fn literal_bfs_source_plan(
 struct PredicateSourceSpec {
     table_name: CugraphTableReference,
     columns: Vec<PredicateSourceColumn>,
+    validation: PredicateSourceValidation,
+}
+
+#[derive(Debug, Clone)]
+enum PredicateSourceValidation {
+    Standard,
+    SimilarityVertexPairs(CugraphVertexPairTable),
 }
 
 #[derive(Debug, Clone)]
@@ -299,30 +307,35 @@ fn predicate_source_specs(spec: &CugraphAlgorithmSpec) -> Vec<PredicateSourceSpe
                 sources.push(PredicateSourceSpec {
                     table_name: input.table_name.clone(),
                     columns: vec![PredicateSourceColumn::vertex(input.column.clone())],
+                    validation: PredicateSourceValidation::Standard,
                 });
             }
             if let Some(input) = &params.predicates.include_vertices {
                 sources.push(PredicateSourceSpec {
                     table_name: input.table_name.clone(),
                     columns: vec![PredicateSourceColumn::vertex(input.column.clone())],
+                    validation: PredicateSourceValidation::Standard,
                 });
             }
             if let Some(input) = &params.predicates.exclude_vertices {
                 sources.push(PredicateSourceSpec {
                     table_name: input.table_name.clone(),
                     columns: vec![PredicateSourceColumn::vertex(input.column.clone())],
+                    validation: PredicateSourceValidation::Standard,
                 });
             }
             if let Some(input) = &params.predicates.target_vertices {
                 sources.push(PredicateSourceSpec {
                     table_name: input.table_name.clone(),
                     columns: vec![PredicateSourceColumn::vertex(input.column.clone())],
+                    validation: PredicateSourceValidation::Standard,
                 });
             }
             if let Some(input) = &params.predicates.include_edge_ids {
                 sources.push(PredicateSourceSpec {
                     table_name: input.table_name.clone(),
                     columns: vec![PredicateSourceColumn::vertex(input.column.clone())],
+                    validation: PredicateSourceValidation::Standard,
                 });
             }
             if let Some(input) = &params.predicates.include_edges {
@@ -335,7 +348,11 @@ fn predicate_source_specs(spec: &CugraphAlgorithmSpec) -> Vec<PredicateSourceSpe
                 {
                     columns.push(PredicateSourceColumn::vertex(edge_id.clone()));
                 }
-                sources.push(PredicateSourceSpec { table_name: input.table_name.clone(), columns });
+                sources.push(PredicateSourceSpec {
+                    table_name: input.table_name.clone(),
+                    columns,
+                    validation: PredicateSourceValidation::Standard,
+                });
             }
         },
         CugraphAlgorithmParams::PersonalizedPageRank(params) => {
@@ -345,6 +362,18 @@ fn predicate_source_specs(spec: &CugraphAlgorithmSpec) -> Vec<PredicateSourceSpe
                     PredicateSourceColumn::vertex(params.personalization.vertex_col.clone()),
                     PredicateSourceColumn::float_value(params.personalization.value_col.clone()),
                 ],
+                validation: PredicateSourceValidation::Standard,
+            });
+        },
+        CugraphAlgorithmParams::Similarity(params) => {
+            let vertex_pairs = params.vertex_pairs.clone();
+            sources.push(PredicateSourceSpec {
+                table_name: vertex_pairs.table_name.clone(),
+                columns: vec![
+                    PredicateSourceColumn::vertex(vertex_pairs.first_vertex_col.clone()),
+                    PredicateSourceColumn::vertex(vertex_pairs.second_vertex_col.clone()),
+                ],
+                validation: PredicateSourceValidation::SimilarityVertexPairs(vertex_pairs),
             });
         },
         _ => {},
@@ -384,6 +413,9 @@ fn validate_predicate_source_schema(
     schema: &SchemaRef,
     vertex_domain: &CugraphVertexIdDomain,
 ) -> Result<()> {
+    if let PredicateSourceValidation::SimilarityVertexPairs(vertex_pairs) = &source.validation {
+        return validate_similarity_pair_table_schema(vertex_pairs, schema, vertex_domain);
+    }
     for column in &source.columns {
         let field = schema.field_with_name(&column.name).map_err(|_| {
             plan_error(format!("cuGraph side-input source '{}' is missing column '{}'", source.table_name, column.name))

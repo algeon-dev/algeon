@@ -83,6 +83,10 @@ pub const CUGRAPH_LEIDEN_FUNCTION: &str = "cugraph_leiden";
 pub const CUGRAPH_ECG_FUNCTION: &str = "cugraph_ecg";
 pub const CUGRAPH_SPECTRAL_MODULARITY_MAXIMIZATION_FUNCTION: &str = "cugraph_spectral_modularity_maximization";
 pub const CUGRAPH_FORCE_ATLAS2_FUNCTION: &str = "cugraph_force_atlas2";
+pub const CUGRAPH_JACCARD_FUNCTION: &str = "cugraph_jaccard";
+pub const CUGRAPH_SORENSEN_FUNCTION: &str = "cugraph_sorensen";
+pub const CUGRAPH_OVERLAP_FUNCTION: &str = "cugraph_overlap";
+pub const CUGRAPH_COSINE_FUNCTION: &str = "cugraph_cosine";
 pub const CUGRAPH_LIST_ALGORITHMS_FUNCTION: &str = "cugraph_list_algorithms";
 pub const CUGRAPH_DESCRIBE_ALGORITHM_FUNCTION: &str = "cugraph_describe_algorithm";
 pub const CUGRAPH_VALIDATE_CALL_FUNCTION: &str = "cugraph_validate_call";
@@ -154,6 +158,10 @@ pub enum CugraphAlgorithm {
     Ecg,
     SpectralModularityMaximization,
     ForceAtlas2,
+    Jaccard,
+    Sorensen,
+    Overlap,
+    Cosine,
 }
 
 impl CugraphAlgorithm {
@@ -176,6 +184,24 @@ impl CugraphAlgorithm {
 
     pub fn native_algorithm(self) -> NativeGraphAlgorithm {
         self.definition().native_algorithm
+    }
+
+    /// SQL argument counts accepted by this algorithm's table function.
+    ///
+    /// This is the single arity contract shared by parser admission and the
+    /// metadata surface. Similarity requires all five arguments because its
+    /// explicit vertex-pair relation is configured through `options_json`.
+    pub fn allowed_arg_counts(self) -> &'static [usize] {
+        match self {
+            Self::MinimumSpanningTree => &[4, 5],
+            Self::PersonalizedPageRank | Self::Jaccard | Self::Sorensen | Self::Overlap | Self::Cosine => &[5],
+            algorithm if algorithm.native_algorithm().requires_source_vertex() => &[2, 4, 5, 6],
+            _ => &[1, 3, 4, 5],
+        }
+    }
+
+    pub(crate) const fn is_similarity(self) -> bool {
+        matches!(self, Self::Jaccard | Self::Sorensen | Self::Overlap | Self::Cosine)
     }
 
     pub(crate) fn requires_source_vertex(self) -> bool {
@@ -330,6 +356,26 @@ pub const CUGRAPH_OPERATION_REGISTRY: &[CugraphOperationDefinition] = &[
         native_algorithm: NativeGraphAlgorithm::ForceAtlas2,
         sql_function_name: CUGRAPH_FORCE_ATLAS2_FUNCTION,
     },
+    CugraphOperationDefinition {
+        algorithm: CugraphAlgorithm::Jaccard,
+        native_algorithm: NativeGraphAlgorithm::Jaccard,
+        sql_function_name: CUGRAPH_JACCARD_FUNCTION,
+    },
+    CugraphOperationDefinition {
+        algorithm: CugraphAlgorithm::Sorensen,
+        native_algorithm: NativeGraphAlgorithm::Sorensen,
+        sql_function_name: CUGRAPH_SORENSEN_FUNCTION,
+    },
+    CugraphOperationDefinition {
+        algorithm: CugraphAlgorithm::Overlap,
+        native_algorithm: NativeGraphAlgorithm::Overlap,
+        sql_function_name: CUGRAPH_OVERLAP_FUNCTION,
+    },
+    CugraphOperationDefinition {
+        algorithm: CugraphAlgorithm::Cosine,
+        native_algorithm: NativeGraphAlgorithm::Cosine,
+        sql_function_name: CUGRAPH_COSINE_FUNCTION,
+    },
 ];
 
 #[derive(Debug, Clone, PartialEq)]
@@ -467,6 +513,7 @@ pub enum CugraphAlgorithmParams {
     Ecg(CugraphEcgParams),
     SpectralModularityMaximization(CugraphSpectralClusteringParams),
     ForceAtlas2(CugraphForceAtlas2Params),
+    Similarity(CugraphSimilarityParams),
 }
 
 impl CugraphAlgorithmParams {
@@ -598,8 +645,52 @@ impl CugraphAlgorithmParams {
                 verbose: params.verbose,
                 seed: params.seed,
             }),
+            NativeGraphAlgorithmParams::Similarity(_) => Self::Similarity(CugraphSimilarityParams::default()),
         }
     }
+}
+
+/// Typed selector for the relation of aligned vertex pairs consumed by a
+/// similarity coefficient.
+///
+/// The pair relation is resolved by the SQL adapter during planning and then
+/// lowered as a normal native-plan input.  Keeping a table reference here is
+/// therefore limited to the DataFusion-facing layer; native IR stores only its
+/// input node and selected column names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CugraphVertexPairTable {
+    pub table_name: CugraphTableReference,
+    pub first_vertex_col: String,
+    pub second_vertex_col: String,
+}
+
+impl CugraphVertexPairTable {
+    pub fn new(
+        table_name: CugraphTableReference,
+        first_vertex_col: impl Into<String>,
+        second_vertex_col: impl Into<String>,
+    ) -> Self {
+        Self { table_name, first_vertex_col: first_vertex_col.into(), second_vertex_col: second_vertex_col.into() }
+    }
+}
+
+impl Default for CugraphVertexPairTable {
+    fn default() -> Self {
+        Self::new(
+            CugraphTableReference::parse("vertex_pairs").expect("default vertex-pair table name is valid"),
+            "first",
+            "second",
+        )
+    }
+}
+
+/// Parameters shared by the four explicit-pair similarity functions.
+///
+/// The metric remains on [`CugraphAlgorithm`] so all functions share the
+/// same relation binding and cannot drift into copied SQL parameter types.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CugraphSimilarityParams {
+    pub vertex_pairs: CugraphVertexPairTable,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -897,6 +988,60 @@ pub(crate) fn validate_vertex_id_domain_support_for_call(
     .with_fact("vertex_dtype", format!("{data_type:?}"))
     .with_fact("supported_vertex_dtypes", support.supported_dtypes_label())
     .into())
+}
+
+/// Validates the static schema contract for an explicit-pair similarity
+/// relation.
+///
+/// Resolution remains with the caller because the SQL table provider and
+/// metadata validator own different catalog entry points.  Both call this
+/// function after resolving the relation, which keeps the selected-column and
+/// vertex-domain rules identical.
+pub(crate) fn validate_similarity_pair_table_schema(
+    table: &CugraphVertexPairTable,
+    schema: &SchemaRef,
+    vertex_domain: &CugraphVertexIdDomain,
+) -> Result<()> {
+    let first = schema.field_with_name(&table.first_vertex_col).map_err(|_| {
+        plan_error(format!(
+            "cuGraph vertex-pair source '{}' is missing first vertex column '{}'",
+            table.table_name, table.first_vertex_col
+        ))
+    })?;
+    let second = schema.field_with_name(&table.second_vertex_col).map_err(|_| {
+        plan_error(format!(
+            "cuGraph vertex-pair source '{}' is missing second vertex column '{}'",
+            table.table_name, table.second_vertex_col
+        ))
+    })?;
+
+    if first.data_type() != second.data_type() {
+        return Err(plan_error(format!(
+            "cuGraph vertex-pair columns '{}' and '{}' in '{}' must have the same dtype, found {:?} and {:?}",
+            table.first_vertex_col,
+            table.second_vertex_col,
+            table.table_name,
+            first.data_type(),
+            second.data_type(),
+        )));
+    }
+    if !vertex_domain.accepts(first.data_type()) {
+        return Err(plan_error(format!(
+            "cuGraph vertex-pair first vertex column '{}' in '{}' must have dtype {}",
+            table.first_vertex_col,
+            table.table_name,
+            vertex_domain.label(),
+        )));
+    }
+    if !vertex_domain.accepts(second.data_type()) {
+        return Err(plan_error(format!(
+            "cuGraph vertex-pair second vertex column '{}' in '{}' must have dtype {}",
+            table.second_vertex_col,
+            table.table_name,
+            vertex_domain.label(),
+        )));
+    }
+    Ok(())
 }
 
 pub(crate) fn is_numeric_vertex_dtype(data_type: &DataType) -> bool {

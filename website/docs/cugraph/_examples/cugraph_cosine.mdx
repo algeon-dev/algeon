@@ -1,0 +1,11 @@
+{/* Hand-owned examples for cugraph_cosine. NOT generated — safe to edit. */}
+{/* Add dataset-specific runnable examples here against your own tables. */}
+
+Canonical call shape using `target_edges` as the edge table:
+
+```sql
+SELECT * FROM cugraph_cosine('target_edges', 'src', 'dst', NULL, '{"vertex_pairs_table":"candidate_pairs","first_vertex_col":"first","second_vertex_col":"second"}')
+```
+
+Use the same shape with your registered edge table or view; configure
+algorithm and graph options through `options_json` as described above.

@@ -277,6 +277,82 @@ fn cugraph_sql_planning_rejects_incompatible_directedness_options() {
 }
 
 #[test]
+fn cugraph_similarity_parser_requires_typed_pair_options_and_an_undirected_graph() {
+    let config = CugraphSqlConfig::default();
+    let options = r#"{"vertex_pairs_table":"candidate_pairs","first_vertex_col":"first","second_vertex_col":"second"}"#;
+
+    for algorithm in
+        [CugraphAlgorithm::Jaccard, CugraphAlgorithm::Sorensen, CugraphAlgorithm::Overlap, CugraphAlgorithm::Cosine]
+    {
+        let spec = parse_cugraph_algorithm_spec(
+            algorithm,
+            &[lit("edges"), lit("src"), lit("dst"), datafusion::logical_expr::lit(ScalarValue::Null), lit(options)],
+            &config,
+        )
+        .unwrap();
+        assert!(!spec.graph_options.directed, "{} must default to directed=false", algorithm.function_name());
+        assert_eq!(spec.weight_col, None);
+        let CugraphAlgorithmParams::Similarity(params) = spec.params else {
+            panic!("{} must carry the shared similarity parameter contract", algorithm.function_name())
+        };
+        assert_eq!(params.vertex_pairs.table_name.to_string(), "candidate_pairs");
+        assert_eq!(params.vertex_pairs.first_vertex_col, "first");
+        assert_eq!(params.vertex_pairs.second_vertex_col, "second");
+
+        assert_error_contains(
+            parse_cugraph_algorithm_spec(algorithm, &[lit("edges")], &config),
+            "expected table_name, src_col, dst_col, weight_col, options_json",
+        );
+        assert_error_contains(
+            parse_cugraph_algorithm_spec(
+                algorithm,
+                &[
+                    lit("edges"),
+                    lit("src"),
+                    lit("dst"),
+                    datafusion::logical_expr::lit(ScalarValue::Null),
+                    lit(
+                        r#"{"vertex_pairs_table":"candidate_pairs","first_vertex_col":"first","second_vertex_col":"second","directed":true}"#,
+                    ),
+                ],
+                &config,
+            ),
+            "requires directed=false",
+        );
+        assert_error_contains(
+            parse_cugraph_algorithm_spec(
+                algorithm,
+                &[
+                    lit("edges"),
+                    lit("src"),
+                    lit("dst"),
+                    datafusion::logical_expr::lit(ScalarValue::Null),
+                    lit(r#"{"vertex_pairs_table":"candidate_pairs","first_vertex_col":"first"}"#),
+                ],
+                &config,
+            ),
+            "requires options: second_vertex_col",
+        );
+        assert_error_contains(
+            parse_cugraph_algorithm_spec(
+                algorithm,
+                &[
+                    lit("edges"),
+                    lit("src"),
+                    lit("dst"),
+                    datafusion::logical_expr::lit(ScalarValue::Null),
+                    lit(
+                        r#"{"vertex_pairs_table":"candidate_pairs","first_vertex_col":"first","second_vertex_col":"second","all_pairs":true}"#,
+                    ),
+                ],
+                &config,
+            ),
+            "unknown option 'all_pairs'",
+        );
+    }
+}
+
+#[test]
 fn cugraph_sql_planning_parses_algorithm_options() {
     let config = CugraphSqlConfig::default();
     let spec = parse_cugraph_algorithm_spec(
@@ -1298,7 +1374,7 @@ fn cugraph_sql_planning_rejects_invalid_arguments() {
     // MST without weight_col is rejected at planning time.
     assert_error_contains(
         parse_cugraph_algorithm_spec(CugraphAlgorithm::MinimumSpanningTree, &[lit("graph_edges")], &config),
-        "requires a weight column",
+        "requires a weight column; supply one as the fourth argument",
     );
     assert_error_contains(
         parse_cugraph_algorithm_spec(
@@ -1306,6 +1382,6 @@ fn cugraph_sql_planning_rejects_invalid_arguments() {
             &[lit("graph_edges"), lit("src"), lit("dst"), datafusion::logical_expr::lit(ScalarValue::Null)],
             &config,
         ),
-        "requires a weight column",
+        "requires a weight column; supply one as the fourth argument",
     );
 }

@@ -485,6 +485,9 @@ fn bounded_sparse_pagerank_uses_runtime_vertex_estimate_to_admit_graph_memory() 
         vertex_estimate: None,
         statistics: None,
         edge_normalize_inserted: false,
+        pair_rows: None,
+        pair_vertex_width_bytes: None,
+        pair_cardinality_source: None,
     };
     let fallback_estimate = GraphMemoryModel.estimate(&spec, model_input).unwrap();
     let exact_estimate = GraphMemoryModel
@@ -662,6 +665,9 @@ fn bounded_triangle_count_reports_runtime_graph_statistics() {
                 vertex_estimate: Some(GraphVertexEstimate::runtime_exact_distinct(graph_statistics.exact_vertices)),
                 statistics: None,
                 edge_normalize_inserted: graph_report.edge_normalize_inserted,
+                pair_rows: None,
+                pair_vertex_width_bytes: None,
+                pair_cardinality_source: None,
             },
         )
         .unwrap();
@@ -678,6 +684,9 @@ fn bounded_triangle_count_reports_runtime_graph_statistics() {
                 vertex_estimate: Some(GraphVertexEstimate::runtime_exact_distinct(graph_statistics.exact_vertices)),
                 statistics: Some(graph_statistics),
                 edge_normalize_inserted: graph_report.edge_normalize_inserted,
+                pair_rows: None,
+                pair_vertex_width_bytes: None,
+                pair_cardinality_source: None,
             },
         )
         .unwrap();

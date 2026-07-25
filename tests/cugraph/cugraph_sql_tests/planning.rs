@@ -92,6 +92,64 @@ async fn cugraph_sql_planning_exposes_stable_output_schemas() {
 }
 
 #[tokio::test]
+async fn cugraph_similarity_sql_resolves_the_pair_relation_as_an_explicit_second_input() {
+    let state = SessionStateBuilder::new_with_default_features().with_cugraph_sql(CugraphSqlConfig::default()).build();
+    let ctx = SessionContext::new_with_state(state);
+    register_edge_memtable(&ctx, "similarity_edges", DataType::Int32, DataType::Int32, DataType::Float64);
+    register_vertex_pair_memtable(&ctx, "candidate_pairs", DataType::Int32, DataType::Int32, false);
+    register_vertex_pair_memtable(&ctx, "nullable_pairs", DataType::Int32, DataType::Int32, true);
+    register_vertex_pair_memtable(&ctx, "mismatched_pairs", DataType::Int32, DataType::Int64, false);
+    register_vertex_pair_memtable(&ctx, "int64_pairs", DataType::Int64, DataType::Int64, false);
+    register_vertex_pair_memtable(&ctx, "utf8_pairs", DataType::Utf8, DataType::Utf8, false);
+
+    for (function, algorithm) in [
+        ("cugraph_jaccard", CugraphAlgorithm::Jaccard),
+        ("cugraph_sorensen", CugraphAlgorithm::Sorensen),
+        ("cugraph_overlap", CugraphAlgorithm::Overlap),
+        ("cugraph_cosine", CugraphAlgorithm::Cosine),
+    ] {
+        let sql = format!(
+            "SELECT * FROM {function}('similarity_edges', 'src', 'dst', NULL, \
+             '{{\"vertex_pairs_table\":\"candidate_pairs\",\"first_vertex_col\":\"first\",\"second_vertex_col\":\"second\"}}')"
+        );
+        assert_sql_schema(&ctx, &sql, algorithm).await;
+        let plan = ctx.sql(&sql).await.unwrap().create_physical_plan().await.unwrap();
+        let cugraph =
+            find_cugraph_algo_exec(plan.as_ref()).expect("similarity must plan as an explicit cuGraph island");
+        assert_eq!(cugraph.children().len(), 2, "{function} must retain independent edge and candidate-pair inputs",);
+
+        let nullable_sql = format!(
+            "SELECT * FROM {function}('similarity_edges', 'src', 'dst', NULL, \
+             '{{\"vertex_pairs_table\":\"nullable_pairs\",\"first_vertex_col\":\"first\",\"second_vertex_col\":\"second\"}}')"
+        );
+        ctx.sql(&nullable_sql)
+            .await
+            .unwrap()
+            .create_physical_plan()
+            .await
+            .expect("nullable but null-free pair schemas must be admitted until execution");
+
+        for (pairs, first, second, expected) in [
+            ("missing_pairs", "first", "second", "No table named 'missing_pairs' for cuGraph side-input source"),
+            ("candidate_pairs", "missing", "second", "missing first vertex column 'missing'"),
+            ("mismatched_pairs", "first", "second", "must have the same dtype"),
+            ("int64_pairs", "first", "second", "must have dtype Int32"),
+            ("utf8_pairs", "first", "second", "must have dtype Int32"),
+        ] {
+            let sql = format!(
+                "SELECT * FROM {function}('similarity_edges', 'src', 'dst', NULL, \
+                 '{{\"vertex_pairs_table\":\"{pairs}\",\"first_vertex_col\":\"{first}\",\"second_vertex_col\":\"{second}\"}}')"
+            );
+            let error = match ctx.sql(&sql).await {
+                Ok(df) => df.create_physical_plan().await.unwrap_err(),
+                Err(error) => error,
+            };
+            assert!(error.to_string().contains(expected), "{function}: {error}");
+        }
+    }
+}
+
+#[tokio::test]
 async fn cugraph_strongly_connected_components_rejects_undirected_graph_option() {
     let state = SessionStateBuilder::new_with_default_features().with_cugraph_sql(CugraphSqlConfig::default()).build();
     let ctx = SessionContext::new_with_state(state);

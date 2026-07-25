@@ -18,10 +18,14 @@ mod empty_input;
 mod layout;
 #[path = "memory.rs"]
 pub(in crate::exec) mod memory;
+#[path = "nvtx.rs"]
+mod nvtx;
 #[path = "params.rs"]
 mod params;
 #[path = "resident_cache.rs"]
 pub(in crate::exec) mod resident_cache;
+#[path = "similarity.rs"]
+mod similarity;
 #[path = "statistics.rs"]
 pub(in crate::exec) mod statistics;
 #[path = "structure.rs"]
@@ -46,8 +50,10 @@ use diagnostics::*;
 use empty_input::*;
 use layout::*;
 use memory::*;
+use nvtx::*;
 use params::*;
 use resident_cache::*;
+use similarity::*;
 pub use statistics::force_next_graph_statistics_optional_resource_exhausted_for_test;
 use structure::*;
 use traversal::{execute_bfs, execute_sssp};
@@ -130,7 +136,7 @@ fn execute_graph_algorithm_with_cache_requirement(
     let graph_memory_limit_bytes = if empty_input_prevalidated {
         None
     } else {
-        admit_graph_memory(context, node_id, &node.spec, &filtered_input, sanitized_input_rows, metrics)?
+        admit_graph_memory(context, node_id, &node.spec, &filtered_input, &side_inputs, sanitized_input_rows, metrics)?
     };
     let runtime_spec = runtime_graph_spec_resolution_after_bounded_seed_validation(&node.spec, false);
     let mut sanitized_input = GpuDataFrame::try_new_with_source_residency(filtered_input, &input)?;
@@ -370,6 +376,10 @@ const GRAPH_ALGORITHM_EXECUTORS: &[(crate::plan::GraphAlgorithm, GraphAlgorithmE
     (crate::plan::GraphAlgorithm::Ecg, execute_ecg),
     (crate::plan::GraphAlgorithm::SpectralModularityMaximization, execute_spectral_modularity_maximization),
     (crate::plan::GraphAlgorithm::ForceAtlas2, execute_force_atlas2),
+    (crate::plan::GraphAlgorithm::Jaccard, execute_similarity),
+    (crate::plan::GraphAlgorithm::Sorensen, execute_similarity),
+    (crate::plan::GraphAlgorithm::Overlap, execute_similarity),
+    (crate::plan::GraphAlgorithm::Cosine, execute_similarity),
 ];
 
 fn graph_algorithm_executor(algorithm: crate::plan::GraphAlgorithm) -> Result<GraphAlgorithmExecutor> {

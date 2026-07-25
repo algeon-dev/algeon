@@ -411,7 +411,7 @@ fn signature(algorithm: CugraphAlgorithm) -> String {
     let function_name = algorithm.function_name();
     if algorithm == CugraphAlgorithm::MinimumSpanningTree {
         format!("{function_name}(table_name, src_col, dst_col, weight_col [, options_json])")
-    } else if algorithm == CugraphAlgorithm::PersonalizedPageRank {
+    } else if algorithm.is_similarity() || algorithm == CugraphAlgorithm::PersonalizedPageRank {
         format!("{function_name}(table_name, src_col, dst_col, weight_col, options_json)")
     } else if algorithm == CugraphAlgorithm::Bfs {
         format!(
@@ -425,15 +425,7 @@ fn signature(algorithm: CugraphAlgorithm) -> String {
 }
 
 fn allowed_arg_counts_json(algorithm: CugraphAlgorithm) -> String {
-    if algorithm == CugraphAlgorithm::MinimumSpanningTree {
-        "[4,5]".to_string()
-    } else if algorithm == CugraphAlgorithm::PersonalizedPageRank {
-        "[5]".to_string()
-    } else if algorithm.requires_source_vertex() {
-        "[2,4,5,6]".to_string()
-    } else {
-        "[1,3,4,5]".to_string()
-    }
+    serde_json::to_string(algorithm.allowed_arg_counts()).expect("cuGraph SQL arity counts serialize")
 }
 
 fn strings(values: Vec<String>) -> ArrayRef {
@@ -447,4 +439,23 @@ fn opt_strings(values: Vec<Option<String>>) -> ArrayRef {
 
 fn bools(values: Vec<bool>) -> ArrayRef {
     Arc::new(BooleanArray::from(values))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn similarity_metadata_requires_the_explicit_pair_relation_signature() {
+        for algorithm in
+            [CugraphAlgorithm::Jaccard, CugraphAlgorithm::Sorensen, CugraphAlgorithm::Overlap, CugraphAlgorithm::Cosine]
+        {
+            let function_name = algorithm.function_name();
+            assert_eq!(
+                signature(algorithm),
+                format!("{function_name}(table_name, src_col, dst_col, weight_col, options_json)")
+            );
+            assert_eq!(allowed_arg_counts_json(algorithm), "[5]");
+        }
+    }
 }

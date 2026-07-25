@@ -24,6 +24,8 @@ pub fn lookup(data_root: &Path, manifest: &ParityManifest, spec: &ParitySpec) ->
 /// printed on a separate line so a copy-paste of the command line is
 /// shell-runnable as-is.
 pub fn refresh_hint(data_root: &Path, spec: &ParitySpec) -> String {
+    let oracle = oracle_path(data_root, spec)
+        .expect("refresh hints are only rendered for parity rows with a generated oracle path");
     format!(
         "to populate oracle JSON for `{label}`, run:\n      \
          cargo run --release -p nexus-tools --features cugraph-oracle --bin refresh_cugraph_oracle -- \
@@ -32,6 +34,6 @@ pub fn refresh_hint(data_root: &Path, spec: &ParitySpec) -> String {
         label = spec.label,
         algorithm = spec.algorithm.native_algorithm().as_str(),
         dataset = spec.dataset,
-        oracle = oracle_path(data_root, spec).display(),
+        oracle = oracle.display(),
     )
 }

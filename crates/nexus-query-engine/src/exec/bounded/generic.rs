@@ -485,11 +485,46 @@ fn execute_bounded_generic_graph_algorithm(
     {
         filtered_input = filtered_input.with_graph_residency(graph_residency);
     }
+    // Strict bounded admission must prove the candidate-pair cardinality from
+    // the plan before it evaluates the side-input relation.  Adaptive mode
+    // intentionally obtains its count from the materialized preflight frame.
+    let strict_pair_cardinality =
+        if context.native_pipeline_execution_mode() == crate::mode::NativePipelineExecutionMode::StrictBounded {
+            match crate::graph_memory::strict_similarity_pair_cardinality_for_plan(plan, graph) {
+                Ok(evidence) => evidence,
+                Err(error) => {
+                    drop(filtered_input);
+                    reservations.release(input_reservation, metrics);
+                    return Err(error.with_fact_if_absent("node_id", node_id));
+                },
+            }
+        } else {
+            None
+        };
     let mut live_reservations = vec![input_reservation];
     let mut side_inputs = std::collections::BTreeMap::new();
+    let mut side_input_accounted_bytes = std::collections::BTreeMap::new();
+    let query_memory_grant = match context.memory_grant() {
+        Ok(grant) => grant,
+        Err(error) => {
+            drop(filtered_input);
+            release_reservations_reverse(reservations, live_reservations, metrics);
+            return Err(error.with_fact_if_absent("node_id", node_id));
+        },
+    };
     for input_id in graph.inputs.iter().skip(1) {
         match execute_bounded_generic_node(context, plan, *input_id, gpu_inputs, reservations, metrics) {
             Ok(frame) => {
+                // A literal side input is charged by this tracker, while a
+                // GPU-resident handle may already retain bytes in this query
+                // grant. Keep the two sources distinct from the frame's raw
+                // allocation so similarity can credit only live-accounted
+                // pair columns from its incremental graph reservation.
+                let accounted_bytes = frame
+                    .reservation
+                    .charged_bytes()
+                    .saturating_add(frame.frame.live_reservation_bytes_for(query_memory_grant.as_ref()));
+                side_input_accounted_bytes.insert(*input_id, accounted_bytes);
                 live_reservations.push(frame.reservation);
                 side_inputs.insert(*input_id, frame.frame);
             },
@@ -522,6 +557,12 @@ fn execute_bounded_generic_graph_algorithm(
     };
     let mut runtime_spec = RuntimeGraphSpecResolution::CheckedNoRewrite;
     let mut graph_reservation = None;
+    let already_accounted_similarity_pair_input_bytes = match &graph.spec.params {
+        crate::plan::GraphAlgorithmParams::Similarity(params) => {
+            side_input_accounted_bytes.get(&params.vertex_pairs.input).copied().unwrap_or(0)
+        },
+        _ => 0,
+    };
     let graph_memory_limit_bytes = if !empty_input_prevalidated
         && crate::graph_memory::graph_memory_reservation_required(graph.spec.algorithm)
     {
@@ -571,12 +612,15 @@ fn execute_bounded_generic_graph_algorithm(
             node_id,
             &graph.spec,
             filtered_input.frame(),
+            &side_inputs,
             sanitized_input_rows,
+            strict_pair_cardinality,
             Some(graph_reservable_remaining_bytes),
             device_total_memory_bytes,
             false,
             graph_statistics_probe.as_ref().map(|probe| probe.vertex_estimate),
             graph_statistics_probe.as_ref().map(|probe| probe.statistics),
+            already_accounted_similarity_pair_input_bytes,
         ) {
             Ok(report) => report,
             Err(error) => {
@@ -608,11 +652,22 @@ fn execute_bounded_generic_graph_algorithm(
                 .with_fact_if_absent("node_id", node_id));
         }
 
+        // Similarity's graph-memory model is calibrated against the native
+        // cuGraph allocation domain, which still needs the full model price
+        // while constructing `VertexPairs` and coefficients. Its pair-column
+        // overlap may already be live in the query grant, so the tracker
+        // reserves only `report.requested_bytes` but the cuGraph allocator
+        // retains the uncredited execution ceiling. These are deliberately
+        // separate contracts: charging the full price double-counts the
+        // source frame, while shrinking the native allocation limit would
+        // under-provision the calibrated cuGraph call.
+        let graph_execution_limit_bytes =
+            report.model_requested_bytes.max(crate::graph_memory::GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES);
+
         match reservations.try_reserve_work(request, metrics) {
             Ok(reservation) => {
-                let bytes = reservation.bytes();
                 graph_reservation = Some(reservation);
-                Some(bytes)
+                Some(graph_execution_limit_bytes)
             },
             Err(error) => {
                 drop(filtered_input);

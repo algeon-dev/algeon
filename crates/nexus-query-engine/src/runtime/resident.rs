@@ -22,8 +22,9 @@ use crate::{
     naming::is_datafusion_order_column_name,
     plan::{GraphResidencyDescriptor, JoinNullEquality},
     runtime::{
-        DevicePlacement, ExecutionCancellation, ExecutionContext, cache::local_parquet::GpuLocalParquetSourceCachePin,
-        gpu::governor::MemoryGrantLiveReservation,
+        DevicePlacement, ExecutionCancellation, ExecutionContext,
+        cache::local_parquet::GpuLocalParquetSourceCachePin,
+        gpu::governor::{MemoryGrant, MemoryGrantLiveReservation},
     },
 };
 
@@ -177,6 +178,17 @@ impl GpuDataFrame {
                 .with_fact("columns", self.num_columns())
             })?;
         Ok(bytes as u64)
+    }
+
+    /// Bytes of this frame already charged to `grant`.
+    ///
+    /// This is intentionally distinct from the frame's physical allocation:
+    /// callers use it only to avoid reserving an overlapping live input twice.
+    pub(crate) fn live_reservation_bytes_for(&self, grant: Option<&MemoryGrant>) -> u64 {
+        match (self.live_reservation.as_ref(), grant) {
+            (Some(reservation), Some(grant)) if reservation.belongs_to(grant) => reservation.bytes(),
+            _ => 0,
+        }
     }
 
     pub(crate) fn source_cache_pin(&self) -> Option<GpuLocalParquetSourceCachePin> {
@@ -893,6 +905,25 @@ mod tests {
         let observed_bytes = GpuDataFrame::new(frame.clone()).device_allocated_size_bytes().unwrap();
         let live_reservation = grant.retain_live_reservation(observed_bytes);
         (GpuDataFrame::new_with_live_reservation(frame, live_reservation), observed_bytes)
+    }
+
+    #[test]
+    fn gpu_frame_counts_live_reservation_only_for_the_owning_grant() {
+        let runtime = Arc::new(cudf::Runtime::new().unwrap());
+        let governor = MemoryGovernor::new(runtime.device().ordinal(), 2048).unwrap();
+        let owner = governor
+            .try_request(GrantRequest::new(AdmissionRequestId::new(1), 1, 1024))
+            .unwrap()
+            .expect("owner grant must fit");
+        let foreign = governor
+            .try_request(GrantRequest::new(AdmissionRequestId::new(2), 1, 1024))
+            .unwrap()
+            .expect("foreign grant must fit");
+        let (frame, bytes) = frame_with_live_reservation(&runtime, &owner, "id", vec![1, 2, 3]);
+
+        assert_eq!(frame.live_reservation_bytes_for(Some(&owner)), bytes);
+        assert_eq!(frame.live_reservation_bytes_for(Some(&foreign)), 0);
+        assert_eq!(frame.live_reservation_bytes_for(None), 0);
     }
 
     #[test]

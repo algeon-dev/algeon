@@ -14,7 +14,16 @@ pub(super) fn argument_descriptions_json(algorithm: CugraphAlgorithm) -> String 
             "semantic_effect": weight_argument_semantic_effect(algorithm),
             "note": weight_argument_note(algorithm)
         }),
-        json!({"name": "options_json", "type": "Utf8", "required": false}),
+        json!({
+            "name": "options_json",
+            "type": "Utf8",
+            "required": is_similarity(algorithm),
+            "note": if is_similarity(algorithm) {
+                "required: identifies the explicit candidate-pair relation with vertex_pairs_table, first_vertex_col, and second_vertex_col"
+            } else {
+                ""
+            }
+        }),
     ];
     if algorithm.requires_source_vertex() {
         let source = if algorithm == CugraphAlgorithm::Bfs {
@@ -31,6 +40,13 @@ pub(super) fn argument_descriptions_json(algorithm: CugraphAlgorithm) -> String 
         args.insert(1, source);
     }
     Value::Array(args).to_string()
+}
+
+fn is_similarity(algorithm: CugraphAlgorithm) -> bool {
+    matches!(
+        algorithm,
+        CugraphAlgorithm::Jaccard | CugraphAlgorithm::Sorensen | CugraphAlgorithm::Overlap | CugraphAlgorithm::Cosine
+    )
 }
 
 fn weight_argument_note(algorithm: CugraphAlgorithm) -> &'static str {
@@ -177,6 +193,11 @@ fn result_field_description(algorithm: CugraphAlgorithm, field_name: &str) -> &'
         (CugraphAlgorithm::MinimumSpanningTree, "dst") => {
             "Destination vertex of an edge selected for the minimum spanning tree."
         },
+        (algorithm, "first") if is_similarity(algorithm) => "First vertex from the explicit candidate-pair relation.",
+        (algorithm, "second") if is_similarity(algorithm) => "Second vertex from the explicit candidate-pair relation.",
+        (algorithm, "similarity") if is_similarity(algorithm) => {
+            "Similarity coefficient for the explicit candidate pair."
+        },
         _ => "Algorithm result column.",
     }
 }
@@ -198,6 +219,17 @@ pub(super) fn limitations_json(algorithm: CugraphAlgorithm) -> String {
     }
     if algorithm == CugraphAlgorithm::ForceAtlas2 {
         limitations.push("prevent_overlapping=true is rejected until vertex_radius side inputs are exposed");
+    }
+    if is_similarity(algorithm) {
+        limitations.extend([
+            "similarity is explicit-pair only; all-pairs candidate generation and all-pairs top-k search are not exposed",
+            "options_json must name vertex_pairs_table, first_vertex_col, and second_vertex_col",
+            "candidate-pair columns must share the same Int32 or Int64 dtype and match the graph vertex domain",
+            "null candidate-pair values are rejected at execution and are never dropped",
+            "candidate pairs are a multiset: duplicate, reversed, and self pairs remain distinct output rows",
+            "result rows have no global ordering; use ORDER BY when order is required",
+            "providing weight_col selects weighted similarity; omitting it selects unit-weight similarity",
+        ]);
     }
     if matches!(
         algorithm.native_algorithm().vertex_id_type_support(),
@@ -242,6 +274,10 @@ pub(super) fn summary(algorithm: CugraphAlgorithm) -> &'static str {
         CugraphAlgorithm::Ecg => "Detect communities with ensemble clustering for graphs.",
         CugraphAlgorithm::SpectralModularityMaximization => "Cluster vertices with spectral modularity maximization.",
         CugraphAlgorithm::ForceAtlas2 => "Compute ForceAtlas2 two-dimensional layout coordinates.",
+        CugraphAlgorithm::Jaccard => "Compute Jaccard coefficients for explicit candidate vertex pairs.",
+        CugraphAlgorithm::Sorensen => "Compute Sorensen coefficients for explicit candidate vertex pairs.",
+        CugraphAlgorithm::Overlap => "Compute overlap coefficients for explicit candidate vertex pairs.",
+        CugraphAlgorithm::Cosine => "Compute cosine similarity coefficients for explicit candidate vertex pairs.",
     }
 }
 
@@ -260,6 +296,9 @@ pub(super) fn primary_example_sql(algorithm: CugraphAlgorithm) -> String {
         CugraphAlgorithm::MinimumSpanningTree => {
             format!("SELECT * FROM {function_name}('target_edges', 'src', 'dst', 'weight')")
         },
+        algorithm if is_similarity(algorithm) => format!(
+            "SELECT * FROM {function_name}('target_edges', 'src', 'dst', NULL, '{{\"vertex_pairs_table\":\"candidate_pairs\",\"first_vertex_col\":\"first\",\"second_vertex_col\":\"second\"}}')"
+        ),
         _ => format!("SELECT * FROM {function_name}('target_edges')"),
     }
 }
@@ -274,8 +313,25 @@ pub(super) fn examples_json(algorithm: CugraphAlgorithm) -> String {
         ])
         .to_string(),
         CugraphAlgorithm::MinimumSpanningTree => json!([weighted_example(algorithm, "weighted_mst")]).to_string(),
+        algorithm if is_similarity(algorithm) => json!([similarity_example(algorithm)]).to_string(),
         _ => json!([minimal_example(algorithm)]).to_string(),
     }
+}
+
+fn similarity_example(algorithm: CugraphAlgorithm) -> Value {
+    json!({
+        "name": format!("basic_{}", algorithm.native_algorithm().definition().name),
+        "function_name": algorithm.function_name(),
+        "call_json": {
+            "src_col": "src",
+            "dst_col": "dst",
+            "options": {
+                "vertex_pairs_table": "candidate_pairs",
+                "first_vertex_col": "first",
+                "second_vertex_col": "second"
+            }
+        }
+    })
 }
 
 fn personalized_pagerank_examples_json() -> String {

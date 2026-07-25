@@ -1219,6 +1219,16 @@ impl Drop for MemoryGrantLiveReservationInner {
 }
 
 impl MemoryGrantLiveReservation {
+    /// Bytes retained by this handle in the owning memory grant.
+    pub(crate) fn bytes(&self) -> u64 {
+        self.inner.bytes
+    }
+
+    /// Whether this retention consumes capacity from `grant`.
+    pub(crate) fn belongs_to(&self, grant: &MemoryGrant) -> bool {
+        self.inner.grant.identity_key() == grant.identity_key()
+    }
+
     pub(crate) fn retain_derived_live_reservation(&self, bytes: u64) -> Result<Option<Self>> {
         let retained = self.inner.grant.retain_live_reservation(bytes);
         if retained.is_none() {

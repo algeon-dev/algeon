@@ -116,11 +116,48 @@ pub(super) fn cugraph_graph_model_ask_bytes(
 }
 
 pub(super) fn edge_source_output_rows(edge_source: &dyn ExecutionPlan) -> Result<Option<u64>> {
-    let statistics = edge_source.partition_statistics(None)?;
+    if let Some(rows) = exact_execution_plan_output_rows(edge_source)? {
+        return Ok(Some(rows));
+    }
+    Ok(native_edge_source_output_rows(edge_source))
+}
+
+/// Returns cardinality evidence that is exact in the physical DataFusion
+/// plan. Inexact optimizer estimates must never be used for strict bounded
+/// graph admission.
+pub(super) fn exact_execution_plan_output_rows(plan: &dyn ExecutionPlan) -> Result<Option<u64>> {
+    let statistics = plan.partition_statistics(None)?;
     if let Precision::Exact(rows) = statistics.num_rows {
         return Ok(u64::try_from(rows).ok());
     }
-    Ok(native_edge_source_output_rows(edge_source))
+    let mut total = 0_u64;
+    for partition in 0..plan.properties().output_partitioning().partition_count() {
+        let statistics = plan.partition_statistics(Some(partition))?;
+        let Precision::Exact(rows) = statistics.num_rows else {
+            return Ok(native_query_plan_hard_row_upper_bound(plan));
+        };
+        let Some(rows) = u64::try_from(rows).ok() else {
+            return Ok(native_query_plan_hard_row_upper_bound(plan));
+        };
+        let Some(next_total) = total.checked_add(rows) else {
+            return Ok(native_query_plan_hard_row_upper_bound(plan));
+        };
+        total = next_total;
+    }
+    Ok(Some(total))
+}
+
+fn native_query_plan_hard_row_upper_bound(plan: &dyn ExecutionPlan) -> Option<u64> {
+    if let Some(native) = as_nexus_native_exec(plan) {
+        return nexus_query_engine::graph_memory::query_plan_hard_row_upper_bound(native.native_plan());
+    }
+    if let Some(native) = as_nexus_native_composed_exec(plan) {
+        return nexus_query_engine::graph_memory::query_plan_hard_row_upper_bound(native.native_plan());
+    }
+    if let Some(native) = plan.downcast_ref::<NexusNativeGpuProducerExec>() {
+        return nexus_query_engine::graph_memory::query_plan_hard_row_upper_bound(native.native_plan());
+    }
+    None
 }
 
 pub(super) fn native_edge_source_output_rows(edge_source: &dyn ExecutionPlan) -> Option<u64> {

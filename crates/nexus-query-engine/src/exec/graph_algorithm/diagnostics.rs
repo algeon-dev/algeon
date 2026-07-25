@@ -124,6 +124,10 @@ pub(super) fn graph_algorithm_parameters(params: &crate::plan::GraphAlgorithmPar
             params.verbose,
             params.seed,
         ),
+        crate::plan::GraphAlgorithmParams::Similarity(params) => format!(
+            "vertex_pairs_node={},first_column={},second_column={}",
+            params.vertex_pairs.input, params.vertex_pairs.first_column, params.vertex_pairs.second_column,
+        ),
     }
 }
 

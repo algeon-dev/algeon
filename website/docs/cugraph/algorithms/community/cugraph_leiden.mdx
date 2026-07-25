@@ -52,7 +52,7 @@ Shared by all cuGraph functions, shown here with this function's defaults. The `
 | Option | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
 | `construction_policy` | `Utf8` | `"python_cugraph"` | one of `"python_cugraph"`, `"raw_libcugraph"` | Edge-list construction semantics used before calling libcugraph. |
-| `directed` | `Boolean` | `true` |  | Whether graph construction treats edges as directed. |
+| `directed` | `Boolean` | `false` |  | Whether graph construction treats edges as directed. |
 | `renumber` | `Boolean` | `true` |  | Whether graph construction may renumber external vertex identifiers internally. |
 
 
@@ -64,6 +64,8 @@ Shared by all cuGraph functions, shown here with this function's defaults. The `
 | `partition` | `Int64` | no | Community identifier assigned by Leiden. |
 
 **Concrete schemas are call-specific.** These are the generic registry schemas. Run [`cugraph_validate_call`](../../discovery-and-validation.mdx#cugraph_validate_call) for the concrete, table-specific output schema of a particular call.
+
+
 
 
 ## Examples

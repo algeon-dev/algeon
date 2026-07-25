@@ -402,7 +402,9 @@ fn validate_graph_algorithm_node(
         .with_fact("directed", graph.spec.graph_options.directed)
         .with_fact("required_directed", required));
     }
-    if output_schema.as_ref() != crate::plan::graph_result_schema_for_params(&graph.spec.params).as_ref() {
+    if output_schema.as_ref()
+        != crate::plan::graph_result_schema_for_params(graph.spec.algorithm, &graph.spec.params).as_ref()
+    {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
             "nexus_query_engine.graph_algorithm.validate",
@@ -468,7 +470,7 @@ fn validate_graph_algorithm_side_inputs(
         graph_edge_field("source", &graph.spec.edge_columns.source, edge_input.output_schema(), edge_available)?
             .data_type()
             .clone();
-    let expected_side_inputs = graph_algorithm_side_input_node_ids(&graph.spec.params);
+    let expected_side_inputs = graph.spec.params.side_input_node_ids().collect::<Vec<_>>();
     if graph.inputs[1..] != expected_side_inputs[..] {
         return Err(graph_algorithm_error("graph algorithm side-input list must match parameter input bindings")
             .with_fact("node_id", node_id)
@@ -482,83 +484,123 @@ fn validate_graph_algorithm_side_inputs(
                 expected_side_inputs.iter().map(ToString::to_string).collect::<Vec<_>>().join(","),
             ));
     }
-    let crate::plan::GraphAlgorithmParams::Bfs(params) = &graph.spec.params else {
-        if let crate::plan::GraphAlgorithmParams::PersonalizedPageRank(params) = &graph.spec.params {
-            return validate_graph_personalization_input(
-                &params.personalization,
+    match &graph.spec.params {
+        crate::plan::GraphAlgorithmParams::Bfs(params) => {
+            validate_graph_predicate_input(
+                params.source_vertices.as_ref(),
+                "source_vertices",
                 &vertex_type,
                 plan,
                 available_columns_by_node,
                 node_id,
-            );
-        }
-        if graph.inputs.len() > 1 {
-            return Err(graph_algorithm_error("graph algorithm node does not accept side inputs")
-                .with_fact("node_id", node_id)
-                .with_fact("algorithm", graph.spec.algorithm.as_str())
-                .with_fact("side_input_count", graph.inputs.len().saturating_sub(1)));
-        }
-        return Ok(());
-    };
-
-    validate_graph_predicate_input(
-        params.source_vertices.as_ref(),
-        "source_vertices",
-        &vertex_type,
-        plan,
-        available_columns_by_node,
-        node_id,
-    )?;
-    validate_graph_predicate_input(
-        params.predicates.include_vertices.as_ref(),
-        "include_vertices",
-        &vertex_type,
-        plan,
-        available_columns_by_node,
-        node_id,
-    )?;
-    validate_graph_predicate_input(
-        params.predicates.exclude_vertices.as_ref(),
-        "exclude_vertices",
-        &vertex_type,
-        plan,
-        available_columns_by_node,
-        node_id,
-    )?;
-    validate_graph_predicate_input(
-        params.predicates.target_vertices.as_ref(),
-        "target_vertices",
-        &vertex_type,
-        plan,
-        available_columns_by_node,
-        node_id,
-    )?;
-    validate_graph_predicate_input(
-        params.predicates.include_edge_ids.as_ref(),
-        "include_edge_ids",
-        &vertex_type,
-        plan,
-        available_columns_by_node,
-        node_id,
-    )?;
-    if params.predicates.include_edge_ids.is_some() && graph.spec.edge_columns.edge_id.is_none() {
-        return Err(graph_algorithm_error("BFS include_edge_ids requires a primary edge-id column binding")
-            .with_fact("reason", "missing_edge_id_binding")
-            .with_fact("predicate_role", "include_edge_ids")
-            .with_fact("missing_binding", "edge_id_col"));
+            )?;
+            validate_graph_predicate_input(
+                params.predicates.include_vertices.as_ref(),
+                "include_vertices",
+                &vertex_type,
+                plan,
+                available_columns_by_node,
+                node_id,
+            )?;
+            validate_graph_predicate_input(
+                params.predicates.exclude_vertices.as_ref(),
+                "exclude_vertices",
+                &vertex_type,
+                plan,
+                available_columns_by_node,
+                node_id,
+            )?;
+            validate_graph_predicate_input(
+                params.predicates.target_vertices.as_ref(),
+                "target_vertices",
+                &vertex_type,
+                plan,
+                available_columns_by_node,
+                node_id,
+            )?;
+            validate_graph_predicate_input(
+                params.predicates.include_edge_ids.as_ref(),
+                "include_edge_ids",
+                &vertex_type,
+                plan,
+                available_columns_by_node,
+                node_id,
+            )?;
+            if params.predicates.include_edge_ids.is_some() && graph.spec.edge_columns.edge_id.is_none() {
+                return Err(graph_algorithm_error("BFS include_edge_ids requires a primary edge-id column binding")
+                    .with_fact("reason", "missing_edge_id_binding")
+                    .with_fact("predicate_role", "include_edge_ids")
+                    .with_fact("missing_binding", "edge_id_col"));
+            }
+            if let Some(input) = &params.predicates.include_edges {
+                validate_graph_edge_predicate_input(input, &vertex_type, plan, available_columns_by_node, node_id)?;
+            }
+            Ok(())
+        },
+        crate::plan::GraphAlgorithmParams::PersonalizedPageRank(params) => validate_graph_personalization_input(
+            &params.personalization,
+            &vertex_type,
+            plan,
+            available_columns_by_node,
+            node_id,
+        ),
+        crate::plan::GraphAlgorithmParams::Similarity(params) => validate_graph_vertex_pair_input(
+            &params.vertex_pairs,
+            &vertex_type,
+            plan,
+            available_columns_by_node,
+            node_id,
+        ),
+        _ => Ok(()),
     }
-    if let Some(input) = &params.predicates.include_edges {
-        validate_graph_edge_predicate_input(input, &vertex_type, plan, available_columns_by_node, node_id)?;
-    }
-    Ok(())
 }
 
-fn graph_algorithm_side_input_node_ids(params: &crate::plan::GraphAlgorithmParams) -> Vec<NodeId> {
-    match params {
-        crate::plan::GraphAlgorithmParams::Bfs(params) => params.side_input_node_ids().collect(),
-        crate::plan::GraphAlgorithmParams::PersonalizedPageRank(params) => params.side_input_node_ids().collect(),
-        _ => Vec::new(),
+fn validate_graph_vertex_pair_input(
+    input: &crate::plan::GraphVertexPairInput,
+    vertex_type: &arrow::datatypes::DataType,
+    plan: &QueryPlan,
+    available_columns_by_node: &[BTreeSet<String>],
+    node_id: NodeId,
+) -> Result<()> {
+    let input_node = input_node(plan, input.input, node_id)?;
+    let input_available = available_columns(available_columns_by_node, input.input)?;
+    let first = graph_vertex_pair_field("first", &input.first_column, input_node.output_schema(), input_available)?;
+    let second = graph_vertex_pair_field("second", &input.second_column, input_node.output_schema(), input_available)?;
+    if first.data_type() != second.data_type() {
+        return Err(QueryError::new(
+            QueryErrorCode::UnsupportedType,
+            "nexus_query_engine.graph_algorithm.validate",
+            "vertex-pair columns must have matching physical types",
+        )
+        .with_fact("reason", "vertex_pair_dtype_mismatch")
+        .with_fact("first_column", &input.first_column)
+        .with_fact("first_type", format!("{:?}", first.data_type()))
+        .with_fact("second_column", &input.second_column)
+        .with_fact("second_type", format!("{:?}", second.data_type())));
     }
+    if !matches!(first.data_type(), arrow::datatypes::DataType::Int32 | arrow::datatypes::DataType::Int64) {
+        return Err(QueryError::new(
+            QueryErrorCode::UnsupportedType,
+            "nexus_query_engine.graph_algorithm.validate",
+            "vertex-pair column type is unsupported",
+        )
+        .with_fact("reason", "unsupported_vertex_pair_type")
+        .with_fact("pair_column_role", "first")
+        .with_fact("column", &input.first_column)
+        .with_fact("data_type", format!("{:?}", first.data_type())));
+    }
+    if first.data_type() != vertex_type {
+        return Err(QueryError::new(
+            QueryErrorCode::UnsupportedType,
+            "nexus_query_engine.graph_algorithm.validate",
+            "vertex-pair columns must match the graph vertex domain",
+        )
+        .with_fact("reason", "vertex_pair_graph_vertex_dtype_mismatch")
+        .with_fact("first_column", &input.first_column)
+        .with_fact("pair_type", format!("{:?}", first.data_type()))
+        .with_fact("vertex_type", format!("{vertex_type:?}")));
+    }
+    Ok(())
 }
 
 fn validate_graph_personalization_input(
@@ -767,6 +809,27 @@ fn graph_edge_field<'a>(
         graph_algorithm_error("graph edge column is not present in the input schema")
             .with_fact("reason", "missing_edge_column")
             .with_fact("edge_column_role", role)
+            .with_fact("column", column)
+    })
+}
+
+fn graph_vertex_pair_field<'a>(
+    role: &'static str,
+    column: &str,
+    input_schema: &'a SchemaRef,
+    input_available: &BTreeSet<String>,
+) -> Result<&'a Field> {
+    if !input_available.contains(column) {
+        return Err(graph_algorithm_error("vertex-pair column is not produced by the input node")
+            .with_fact("reason", "missing_vertex_pair_column")
+            .with_fact("pair_column_role", role)
+            .with_fact("column", column)
+            .with_fact("available_columns", comma_separated(input_available)));
+    }
+    input_schema.field_with_name(column).map_err(|_| {
+        graph_algorithm_error("vertex-pair column is not present in the input schema")
+            .with_fact("reason", "missing_vertex_pair_column")
+            .with_fact("pair_column_role", role)
             .with_fact("column", column)
     })
 }

@@ -3,6 +3,12 @@ fn graph_memory_classes_pin_phase_f3_algorithm_tiers() {
     assert_eq!(graph_memory_class(GraphAlgorithm::PageRank), GraphMemoryClass::OutputSized);
     assert_eq!(graph_memory_class(GraphAlgorithm::Bfs), GraphMemoryClass::OutputSized);
     assert_eq!(graph_memory_class(GraphAlgorithm::MinimumSpanningTree), GraphMemoryClass::OutputSized);
+    for algorithm in
+        [GraphAlgorithm::Jaccard, GraphAlgorithm::Sorensen, GraphAlgorithm::Overlap, GraphAlgorithm::Cosine]
+    {
+        assert_eq!(graph_memory_class(algorithm), GraphMemoryClass::PairOutputSized);
+        assert!(graph_memory_reservation_required(algorithm));
+    }
     assert_eq!(graph_memory_class(GraphAlgorithm::StronglyConnectedComponents), GraphMemoryClass::MultiArray);
     assert_eq!(graph_memory_class(GraphAlgorithm::Louvain), GraphMemoryClass::MultiArray);
     assert_eq!(graph_memory_class(GraphAlgorithm::TriangleCountAll), GraphMemoryClass::WorkspaceHeavyDataDependent);
@@ -26,6 +32,392 @@ fn graph_memory_classes_pin_phase_f3_algorithm_tiers() {
 }
 
 #[test]
+fn similarity_memory_model_requires_pair_evidence_and_prices_each_pair_relation_row() {
+    assert!(GraphPairCardinalitySource::PlanExact.is_strict_bounded_evidence());
+    assert!(GraphPairCardinalitySource::PlanHardUpperBound.is_strict_bounded_evidence());
+    assert!(
+        !GraphPairCardinalitySource::RuntimeMaterialized.is_strict_bounded_evidence(),
+        "runtime materialization is adaptive/unbounded evidence, not a strict pre-admission bound"
+    );
+
+    let spec = GraphAlgorithmSpec::with_stable_schema(
+        GraphAlgorithm::Jaccard,
+        GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
+        GraphConstructionOptions { directed: false, renumber: true, policy: GraphConstructionPolicy::PythonCugraph },
+        GraphAlgorithmParams::Similarity(GraphSimilarityParams::default()),
+    );
+    let input = GraphMemoryModelInput {
+        raw_input_edges: None,
+        input_edges: 20,
+        vertex_width_bytes: 8,
+        weight_width_bytes: None,
+        has_edge_id: false,
+        device_total_memory_bytes: None,
+        vertex_estimate: None,
+        statistics: None,
+        edge_normalize_inserted: false,
+        pair_rows: None,
+        pair_vertex_width_bytes: None,
+        pair_cardinality_source: None,
+    };
+    let missing = GraphMemoryModel.estimate(&spec, input).unwrap_err();
+    assert_eq!(missing.code(), QueryErrorCode::InvalidPlan);
+    assert_eq!(missing.fact_value("reason"), Some("missing_pair_cardinality_evidence"));
+
+    let estimate = GraphMemoryModel
+        .estimate(&spec, input.with_similarity_pair_input(100, 8, GraphPairCardinalitySource::RuntimeMaterialized))
+        .unwrap();
+    assert_eq!(estimate.class, GraphMemoryClass::PairOutputSized);
+    assert_eq!(estimate.pair_rows, Some(100));
+    assert_eq!(estimate.pair_vertex_width_bytes, Some(8));
+    assert_eq!(estimate.pair_cardinality_source, Some(GraphPairCardinalitySource::RuntimeMaterialized));
+    assert_eq!(estimate.pair_cardinality_admission_mode, Some(GraphPairCardinalityAdmissionMode::Unbounded));
+    // 100 rows * (two 8-byte pair columns + two native pair columns + an
+    // 8-byte score + a 28-byte Int64 unweighted workspace term + normalized
+    // `Int64, Int64, Float64` output) plus the calibrated fixed workspace.
+    assert_eq!(estimate.execution_bytes, 120 * 1024 + 9_200);
+    assert_eq!(estimate.requested_bytes, estimate.construction_bytes + estimate.execution_bytes);
+
+    let adaptive = GraphMemoryModel
+        .estimate_for_adaptive_bounded(
+            &spec,
+            input.with_similarity_pair_input(100, 8, GraphPairCardinalitySource::RuntimeMaterialized),
+        )
+        .unwrap();
+    assert_eq!(
+        adaptive.pair_cardinality_admission_mode,
+        Some(GraphPairCardinalityAdmissionMode::AdaptiveBounded),
+        "materialized pair evidence is valid only for adaptive bounded admission"
+    );
+
+    let runtime_only_strict = GraphMemoryModel
+        .estimate_for_strict_bounded(
+            &spec,
+            input.with_similarity_pair_input(100, 8, GraphPairCardinalitySource::RuntimeMaterialized),
+        )
+        .unwrap_err();
+    assert_eq!(runtime_only_strict.code(), QueryErrorCode::InvalidPlan);
+    assert_eq!(runtime_only_strict.fact_value("reason"), Some("strict_pair_cardinality_evidence_not_plan_bound"));
+    assert_eq!(runtime_only_strict.fact_value("admission_mode"), Some("strict_bounded"));
+
+    for source in [GraphPairCardinalitySource::PlanExact, GraphPairCardinalitySource::PlanHardUpperBound] {
+        let strict = GraphMemoryModel
+            .estimate_for_strict_bounded(&spec, input.with_similarity_pair_input(100, 8, source))
+            .unwrap();
+        assert_eq!(strict.pair_cardinality_source, Some(source));
+        assert_eq!(strict.pair_cardinality_admission_mode, Some(GraphPairCardinalityAdmissionMode::StrictBounded));
+    }
+
+    let strict_missing = GraphMemoryModel.estimate_for_strict_bounded(&spec, input).unwrap_err();
+    assert_eq!(strict_missing.code(), QueryErrorCode::InvalidPlan);
+    assert_eq!(strict_missing.fact_value("reason"), Some("strict_missing_pair_cardinality_evidence"));
+}
+
+#[test]
+fn strict_similarity_admission_accepts_a_frontend_proved_gpu_pair_upper_bound() {
+    let mut builder = QueryPlanBuilder::new();
+    let edges = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
+        "edges",
+        Arc::new(Schema::new(vec![
+            Field::new("src", DataType::Int64, false),
+            Field::new("dst", DataType::Int64, false),
+        ])),
+    )));
+    let pairs = builder.add_source(SourceNode::GpuResident(
+        GpuResidentSource::new(
+            "pairs",
+            Arc::new(Schema::new(vec![
+                Field::new("first", DataType::Int64, false),
+                Field::new("second", DataType::Int64, false),
+            ])),
+        )
+        .with_row_count_upper_bound(13),
+    ));
+    let spec = GraphAlgorithmSpec::with_stable_schema(
+        GraphAlgorithm::Jaccard,
+        GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
+        GraphConstructionOptions { directed: false, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+        GraphAlgorithmParams::Similarity(GraphSimilarityParams::new(GraphVertexPairInput::new(
+            pairs, "first", "second",
+        ))),
+    );
+    let graph = builder.add_graph_algorithm(edges, spec);
+    let plan = builder.finish_with_host_sink(graph);
+    let PlanNode::GraphAlgorithm(graph) = &plan.root_node().kind else {
+        panic!("expected graph algorithm root");
+    };
+
+    assert_eq!(
+        strict_similarity_pair_cardinality_for_plan(&plan, graph).unwrap(),
+        Some((13, GraphPairCardinalitySource::PlanHardUpperBound))
+    );
+}
+
+#[test]
+fn similarity_memory_model_pins_2026_07_25_medium_and_fixed_floor_cases() {
+    // Captured with the same isolated sparse-uniform calibration command as
+    // the large-case matrix. The 10k rows are a linear-regime check; the
+    // 16-row case intentionally remains fixed-floor dominated.
+    for (vertex_width_bytes, pair_rows, observed_peak_bytes, should_fit_band) in
+        [(4, 10_000, 521_719, true), (8, 10_000, 841_887, true), (4, 16, 2_551, false)]
+    {
+        let spec = GraphAlgorithmSpec::with_stable_schema(
+            GraphAlgorithm::Jaccard,
+            GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
+            GraphConstructionOptions {
+                directed: false,
+                renumber: true,
+                policy: GraphConstructionPolicy::RawLibcugraph,
+            },
+            GraphAlgorithmParams::Similarity(GraphSimilarityParams::default()),
+        );
+        let estimate = GraphMemoryModel
+            .estimate(
+                &spec,
+                GraphMemoryModelInput {
+                    raw_input_edges: None,
+                    input_edges: 16,
+                    vertex_width_bytes,
+                    weight_width_bytes: None,
+                    has_edge_id: false,
+                    device_total_memory_bytes: None,
+                    vertex_estimate: None,
+                    statistics: None,
+                    edge_normalize_inserted: false,
+                    pair_rows: None,
+                    pair_vertex_width_bytes: None,
+                    pair_cardinality_source: None,
+                }
+                .with_similarity_pair_input(
+                    pair_rows,
+                    vertex_width_bytes,
+                    GraphPairCardinalitySource::RuntimeMaterialized,
+                ),
+            )
+            .unwrap();
+        assert!(
+            estimate.requested_bytes >= observed_peak_bytes,
+            "width={vertex_width_bytes}, pairs={pair_rows}: ask={} must cover observed={observed_peak_bytes}",
+            estimate.requested_bytes,
+        );
+        if should_fit_band {
+            assert!(
+                estimate.requested_bytes <= observed_peak_bytes.saturating_mul(3).saturating_div(2),
+                "width={vertex_width_bytes}, pairs={pair_rows}: ask={} must stay within the calibrated 1.50 band over observed={observed_peak_bytes}",
+                estimate.requested_bytes,
+            );
+            assert!(
+                estimate.requested_bytes >= observed_peak_bytes.saturating_mul(11).saturating_div(10),
+                "width={vertex_width_bytes}, pairs={pair_rows}: ask={} must retain the calibrated 1.10 safety band over observed={observed_peak_bytes}",
+                estimate.requested_bytes,
+            );
+        } else {
+            assert!(
+                estimate.requested_bytes > observed_peak_bytes.saturating_mul(3).saturating_div(2),
+                "the named fixed workspace floor is the only allowed small-case excess",
+            );
+        }
+    }
+}
+
+#[test]
+fn similarity_memory_model_pins_2026_07_25_runtime_calibration_bands() {
+    // Captured with `nexus-tools cugraph-similarity-calibrate` on 2026-07-25
+    // using 100,000 candidate pairs on the sparse-uniform topology:
+    //
+    //   --topology sparse-uniform --pair-rows 100000
+    //
+    // The companion hub-skewed cold/warm captures remain below these asks;
+    // sparse is the observed high-water topology. These cases pin the
+    // calibrated per-pair terms above: no observed peak may exceed the ask,
+    // and medium/large asks stay inside the 1.10-1.50 admission band.
+    for (vertex_width_bytes, weighted, observed_peak_bytes) in
+        [(4, false, 5_201_975), (8, false, 8_402_143), (4, true, 10_414_167), (8, true, 13_614_303)]
+    {
+        let spec = GraphAlgorithmSpec::with_stable_schema(
+            GraphAlgorithm::Jaccard,
+            GraphEdgeColumnBindings::new("src", "dst", weighted.then_some("weight")),
+            GraphConstructionOptions {
+                directed: false,
+                renumber: true,
+                policy: GraphConstructionPolicy::RawLibcugraph,
+            },
+            GraphAlgorithmParams::Similarity(GraphSimilarityParams::default()),
+        );
+        let estimate = GraphMemoryModel
+            .estimate(
+                &spec,
+                GraphMemoryModelInput {
+                    raw_input_edges: None,
+                    input_edges: 16,
+                    vertex_width_bytes,
+                    weight_width_bytes: weighted.then_some(8),
+                    has_edge_id: false,
+                    device_total_memory_bytes: None,
+                    vertex_estimate: None,
+                    statistics: None,
+                    edge_normalize_inserted: false,
+                    pair_rows: None,
+                    pair_vertex_width_bytes: None,
+                    pair_cardinality_source: None,
+                }
+                .with_similarity_pair_input(
+                    100_000,
+                    vertex_width_bytes,
+                    GraphPairCardinalitySource::RuntimeMaterialized,
+                ),
+            )
+            .unwrap();
+        assert!(
+            estimate.requested_bytes >= observed_peak_bytes,
+            "width={vertex_width_bytes}, weighted={weighted}: ask={} must cover observed={observed_peak_bytes}",
+            estimate.requested_bytes,
+        );
+        assert!(
+            estimate.requested_bytes <= observed_peak_bytes.saturating_mul(3).saturating_div(2),
+            "width={vertex_width_bytes}, weighted={weighted}: ask={} must stay within the calibrated 1.50 band over observed={observed_peak_bytes}",
+            estimate.requested_bytes,
+        );
+        assert!(
+            estimate.requested_bytes >= observed_peak_bytes.saturating_mul(11).saturating_div(10),
+            "width={vertex_width_bytes}, weighted={weighted}: ask={} must retain the calibrated 1.10 safety band over observed={observed_peak_bytes}",
+            estimate.requested_bytes,
+        );
+    }
+}
+
+#[test]
+fn similarity_memory_model_pins_all_unweighted_metric_captures() {
+    // Each case was captured through the shared native executor with
+    // `nexus-tools cugraph-similarity-calibrate --pair-rows 100000` on
+    // 2026-07-25. They deliberately span both supported vertex widths,
+    // sparse/hub topology, and cold/warm graph-cache state. The cache capture
+    // uses the normal cold-size report because no exact-resident admission
+    // price was reserved for this standalone calibration invocation.
+    for (algorithm, vertex_width_bytes, observed_peak_bytes) in [
+        (GraphAlgorithm::Jaccard, 4, 5_201_975),
+        (GraphAlgorithm::Sorensen, 8, 7_201_623),
+        (GraphAlgorithm::Overlap, 4, 5_201_975),
+        (GraphAlgorithm::Cosine, 8, 8_402_143),
+    ] {
+        let spec = GraphAlgorithmSpec::with_stable_schema(
+            algorithm,
+            GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
+            GraphConstructionOptions {
+                directed: false,
+                renumber: true,
+                policy: GraphConstructionPolicy::RawLibcugraph,
+            },
+            GraphAlgorithmParams::Similarity(GraphSimilarityParams::default()),
+        );
+        let estimate = GraphMemoryModel
+            .estimate(
+                &spec,
+                GraphMemoryModelInput {
+                    raw_input_edges: None,
+                    input_edges: 16,
+                    vertex_width_bytes,
+                    weight_width_bytes: None,
+                    has_edge_id: false,
+                    device_total_memory_bytes: None,
+                    vertex_estimate: None,
+                    statistics: None,
+                    edge_normalize_inserted: false,
+                    pair_rows: None,
+                    pair_vertex_width_bytes: None,
+                    pair_cardinality_source: None,
+                }
+                .with_similarity_pair_input(
+                    100_000,
+                    vertex_width_bytes,
+                    GraphPairCardinalitySource::RuntimeMaterialized,
+                ),
+            )
+            .unwrap();
+        assert!(
+            estimate.requested_bytes >= observed_peak_bytes,
+            "algorithm={}: ask={} must cover observed={observed_peak_bytes}",
+            algorithm.as_str(),
+            estimate.requested_bytes,
+        );
+        assert!(
+            estimate.requested_bytes <= observed_peak_bytes.saturating_mul(3).saturating_div(2),
+            "algorithm={}: ask={} must stay within the calibrated 1.50 band over observed={observed_peak_bytes}",
+            algorithm.as_str(),
+            estimate.requested_bytes,
+        );
+        assert!(
+            estimate.requested_bytes >= observed_peak_bytes.saturating_mul(11).saturating_div(10),
+            "algorithm={}: ask={} must retain the calibrated 1.10 safety band over observed={observed_peak_bytes}",
+            algorithm.as_str(),
+            estimate.requested_bytes,
+        );
+    }
+}
+
+#[test]
+fn similarity_memory_model_pins_representative_citation_fixture_capture() {
+    // Captured on 2026-07-25 with the repository-owned citation-network
+    // fixture, rather than a synthetic topology:
+    //
+    //   flock /tmp/cudf-gpu.lock cargo run -p nexus-tools \
+    //     --features cugraph-similarity-calibrate -- \
+    //     cugraph-similarity-calibrate --algorithm jaccard \
+    //     --pair-rows 100000 --weighted --vertex-dtype int64 \
+    //     --graph-cache-state cold \
+    //     --edge-parquet fixture/graph/demo/citation_network/v1/parquet/edges_by_src.parquet \
+    //     --edge-row-groups 1
+    //
+    // The selected row group contains 1,048,576 directed edges; calibration
+    // supplies their reverse relation explicitly for raw-libcugraph, so the
+    // native input has 2,097,152 edge rows. The runtime-observation peak was
+    // 121,728,623 bytes. This pins a realistic local fixture in addition to
+    // the synthetic topology matrix without folding its lower/higher graph
+    // construction profile into an unexplained global multiplier.
+    let spec = GraphAlgorithmSpec::with_stable_schema(
+        GraphAlgorithm::Jaccard,
+        GraphEdgeColumnBindings::new("src", "dst", Some("weight")),
+        GraphConstructionOptions {
+            directed: false,
+            renumber: true,
+            policy: GraphConstructionPolicy::RawLibcugraph,
+        },
+        GraphAlgorithmParams::Similarity(GraphSimilarityParams::default()),
+    );
+    let estimate = GraphMemoryModel
+        .estimate(
+            &spec,
+            GraphMemoryModelInput {
+                raw_input_edges: None,
+                input_edges: 2_097_152,
+                vertex_width_bytes: 8,
+                weight_width_bytes: Some(8),
+                has_edge_id: false,
+                device_total_memory_bytes: None,
+                vertex_estimate: None,
+                statistics: None,
+                edge_normalize_inserted: false,
+                pair_rows: None,
+                pair_vertex_width_bytes: None,
+                pair_cardinality_source: None,
+            }
+            .with_similarity_pair_input(100_000, 8, GraphPairCardinalitySource::RuntimeMaterialized),
+        )
+        .unwrap();
+    let observed_peak_bytes = 121_728_623;
+    assert_eq!(estimate.requested_bytes, 166_017_824);
+    assert!(estimate.requested_bytes >= observed_peak_bytes);
+    assert!(
+        estimate.requested_bytes <= observed_peak_bytes.saturating_mul(3).saturating_div(2),
+        "representative fixture ask must stay within the 1.50 calibration band"
+    );
+    assert!(
+        estimate.requested_bytes >= observed_peak_bytes.saturating_mul(11).saturating_div(10),
+        "representative fixture ask must retain the 1.10 calibration safety band"
+    );
+}
+
+#[test]
 fn graph_memory_report_admits_and_denies_without_strict_contract_projection() {
     let spec = GraphAlgorithmSpec::with_stable_schema(
         GraphAlgorithm::PageRank,
@@ -46,6 +438,9 @@ fn graph_memory_report_admits_and_denies_without_strict_contract_projection() {
                 vertex_estimate: None,
                 statistics: None,
                 edge_normalize_inserted: false,
+                pair_rows: None,
+                pair_vertex_width_bytes: None,
+                pair_cardinality_source: None,
             },
         )
         .unwrap();
@@ -107,6 +502,9 @@ fn graph_memory_model_uses_refined_vertex_estimate_for_sparse_graph_admission() 
         vertex_estimate: None,
         statistics: None,
         edge_normalize_inserted: false,
+        pair_rows: None,
+        pair_vertex_width_bytes: None,
+        pair_cardinality_source: None,
     };
 
     let fallback = GraphMemoryModel.estimate(&spec, input).unwrap();
@@ -154,6 +552,9 @@ fn graph_memory_model_clamps_refined_vertex_estimate_to_endpoint_upper_bound() {
                 vertex_estimate: Some(GraphVertexEstimate::graph_metadata(999)),
                 statistics: None,
                 edge_normalize_inserted: false,
+                pair_rows: None,
+                pair_vertex_width_bytes: None,
+                pair_cardinality_source: None,
             },
         )
         .unwrap();
@@ -181,6 +582,9 @@ fn graph_memory_model_keeps_triangle_no_stats_fallback_topology_independent() {
         vertex_estimate: Some(GraphVertexEstimate::runtime_exact_distinct(4_146_772)),
         statistics: None,
         edge_normalize_inserted: true,
+        pair_rows: None,
+        pair_vertex_width_bytes: None,
+        pair_cardinality_source: None,
     };
 
     let estimate = GraphMemoryModel.estimate(&spec, input).unwrap();
@@ -225,6 +629,9 @@ fn graph_memory_model_prices_triangle_count_from_runtime_statistics_formula() {
         vertex_estimate: Some(GraphVertexEstimate::runtime_exact_distinct(20)),
         statistics: Some(statistics),
         edge_normalize_inserted: true,
+        pair_rows: None,
+        pair_vertex_width_bytes: None,
+        pair_cardinality_source: None,
     };
 
     let estimate = GraphMemoryModel.estimate(&spec, input).unwrap();
@@ -256,6 +663,9 @@ fn graph_memory_model_prices_dblp_triangle_from_runtime_statistics_above_measure
         vertex_estimate: Some(GraphVertexEstimate::runtime_exact_distinct(4_146_772)),
         statistics: Some(statistics),
         edge_normalize_inserted: true,
+        pair_rows: None,
+        pair_vertex_width_bytes: None,
+        pair_cardinality_source: None,
     };
 
     let estimate = GraphMemoryModel.estimate(&spec, input).unwrap();
@@ -289,6 +699,9 @@ fn graph_memory_model_keeps_triangle_plan_time_fallback_below_whole_device_ticke
         vertex_estimate: None,
         statistics: None,
         edge_normalize_inserted: true,
+        pair_rows: None,
+        pair_vertex_width_bytes: None,
+        pair_cardinality_source: None,
     };
 
     let estimate = GraphMemoryModel.estimate(&spec, input).unwrap();
@@ -313,6 +726,9 @@ fn graph_runtime_statistics_probe_reserves_remaining_window_for_triangle_evidenc
         vertex_estimate: None,
         statistics: None,
         edge_normalize_inserted: false,
+        pair_rows: None,
+        pair_vertex_width_bytes: None,
+        pair_cardinality_source: None,
     };
     let default_min_grant = 101_449_662_464 / 8;
     let remaining_after_live_input = default_min_grant - 2_190_000_000;
@@ -412,6 +828,9 @@ fn graph_memory_model_is_dtype_sensitive_for_calibrated_sparse_keys() {
         vertex_estimate: Some(GraphVertexEstimate::runtime_exact_distinct(100_000)),
         statistics: None,
         edge_normalize_inserted: false,
+        pair_rows: None,
+        pair_vertex_width_bytes: None,
+        pair_cardinality_source: None,
     };
 
     for spec in [&pagerank_spec, &louvain_spec] {
@@ -440,6 +859,9 @@ fn graph_memory_model_is_dtype_sensitive_for_calibrated_sparse_keys() {
         vertex_estimate: Some(GraphVertexEstimate::runtime_exact_distinct(100_000)),
         statistics: None,
         edge_normalize_inserted: false,
+        pair_rows: None,
+        pair_vertex_width_bytes: None,
+        pair_cardinality_source: None,
     };
     let narrow = GraphMemoryModel.estimate(&triangle_spec, triangle_input(4)).unwrap();
     let wide = GraphMemoryModel.estimate(&triangle_spec, triangle_input(8)).unwrap();
@@ -471,6 +893,9 @@ fn graph_memory_model_error_ratio_is_fixed_point_and_optional_on_zero_peak() {
                 vertex_estimate: None,
                 statistics: None,
                 edge_normalize_inserted: false,
+                pair_rows: None,
+                pair_vertex_width_bytes: None,
+                pair_cardinality_source: None,
             },
         )
         .unwrap();
@@ -481,9 +906,13 @@ fn graph_memory_model_error_ratio_is_fixed_point_and_optional_on_zero_peak() {
     assert_eq!(report.model_requested_bytes, requested_bytes);
     assert_eq!(report.requested_bytes, GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES);
     report.record_model_error_ratio(requested_bytes);
+    assert_eq!(report.measured_peak_bytes, Some(requested_bytes));
     assert_eq!(
         report.graph_model_error_ratio.unwrap().as_decimal_string(),
         "1.000",
         "model error ratio must use the raw model ask, not the bounded reservation floor"
     );
+    let json = report.to_json();
+    assert_eq!(json["measured_peak_bytes"], requested_bytes);
+    assert_eq!(json["graph_model_error_ratio"], "1.000");
 }

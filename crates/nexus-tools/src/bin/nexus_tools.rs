@@ -20,6 +20,9 @@ mod cugraph_bfs_predicate_fixture;
 #[cfg(all(feature = "cugraph-oracle", not(test)))]
 #[path = "../../../../tests/cugraph/optional_fixture.rs"]
 mod cugraph_optional_fixture;
+#[cfg(all(feature = "cugraph-similarity-calibrate", not(test)))]
+#[path = "../cugraph_similarity_calibrate.rs"]
+mod cugraph_similarity_calibrate;
 #[cfg(all(feature = "cugraph-oracle", not(test)))]
 #[path = "../../../../tests/cugraph/cugraph_sql_tests.rs"]
 // Path-includes the shared cuGraph SQL fixtures for the pagerank tools runner; most
@@ -75,6 +78,7 @@ async fn main() -> ToolResult<()> {
         },
         Some("embedded-backend-e2e") => run_embedded_backend_e2e(env::args().skip(2).collect()).await,
         Some("cugraph-fixture-e2e") => run_cugraph_fixture_e2e(env::args().nth(2)).await,
+        Some("cugraph-similarity-calibrate") => run_cugraph_similarity_calibrate(env::args().skip(2).collect()).await,
         Some("validate-query") => run_validate_query(env::args().skip(2).collect()).await,
         Some("clickbench-stage-probe") => run_clickbench_stage_probe(env::args().skip(2).collect()).await,
         Some("datafusion-baseline-contract-validate") => {
@@ -108,6 +112,7 @@ fn print_usage() {
            flock /tmp/cudf-gpu.lock cargo run -p nexus-tools --features server-runtime-observability-e2e -- server-runtime-observability-e2e [OPTIONS]\n\
            flock /tmp/cudf-gpu.lock cargo run -p nexus-tools --features embedded-backend-e2e -- embedded-backend-e2e\n\
            flock /tmp/cudf-gpu.lock cargo run -p nexus-tools --features cugraph-oracle -- cugraph-fixture-e2e <pagerank|bfs-include-edges|bfs-utf8-include-edges|bfs-utf8-path|bfs-utf8-predicates>\n\
+           flock /tmp/cudf-gpu.lock cargo run -p nexus-tools --features cugraph-similarity-calibrate -- cugraph-similarity-calibrate --algorithm <jaccard|sorensen|overlap|cosine> --pair-rows <N> [--weighted] [--vertex-dtype int32|int64] [--graph-cache-state cold|warm] [--topology sparse-uniform|hub-skewed] [--edge-parquet PATH --edge-row-groups N] [--observation-out PATH]\n\
            flock /tmp/cudf-gpu.lock cargo run -p nexus-tools --features datafusion-baseline-contract-validate -- datafusion-baseline-contract-validate [--out-dir DIR]"
     );
 }
@@ -253,4 +258,15 @@ async fn run_cugraph_fixture_e2e(case: Option<String>) -> ToolResult<()> {
 #[cfg(not(all(feature = "cugraph-oracle", not(test))))]
 async fn run_cugraph_fixture_e2e(_case: Option<String>) -> ToolResult<()> {
     Err("cugraph-fixture-e2e requires --features cugraph-oracle and normal cargo run execution".into())
+}
+
+#[cfg(all(feature = "cugraph-similarity-calibrate", not(test)))]
+async fn run_cugraph_similarity_calibrate(args: Vec<String>) -> ToolResult<()> {
+    cugraph_similarity_calibrate::run(args)
+}
+
+#[cfg(not(all(feature = "cugraph-similarity-calibrate", not(test))))]
+async fn run_cugraph_similarity_calibrate(_args: Vec<String>) -> ToolResult<()> {
+    Err("cugraph-similarity-calibrate requires --features cugraph-similarity-calibrate and normal cargo run execution"
+        .into())
 }

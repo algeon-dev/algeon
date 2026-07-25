@@ -216,11 +216,7 @@ impl QueryPlanBuilder {
 }
 
 fn graph_algorithm_side_inputs(spec: &GraphAlgorithmSpec) -> Vec<NodeId> {
-    match &spec.params {
-        GraphAlgorithmParams::Bfs(params) => params.side_input_node_ids().collect(),
-        GraphAlgorithmParams::PersonalizedPageRank(params) => params.side_input_node_ids().collect(),
-        _ => Vec::new(),
-    }
+    spec.params.side_input_node_ids().collect()
 }
 
 fn edge_normalize_output_schema(input_schema: &SchemaRef, spec: &EdgeNormalizeSpec) -> Result<SchemaRef> {

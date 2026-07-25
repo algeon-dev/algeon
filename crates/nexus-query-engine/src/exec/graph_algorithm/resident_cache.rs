@@ -268,6 +268,7 @@ where
         .with_source(error)
     })?;
     let build_current_bytes_before = graph_budget_current_bytes(budget.token.as_ref());
+    let _graph_build_range = graph_build_range(operation);
     let mut graph =
         cugraph::cudf_interop::graph_from_prepared_table_export::<T>(&entered, &export, &options).map_err(|error| {
             attach_graph_budget_error_facts(

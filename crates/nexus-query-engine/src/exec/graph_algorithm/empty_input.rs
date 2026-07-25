@@ -12,6 +12,12 @@ pub(super) fn resolve_empty_graph_input(
 ) -> Result<Option<GraphAlgorithmExecutionResult>> {
     let policy = node.spec.algorithm.definition().empty_input_policy();
     validate_required_side_inputs(&node.spec, side_inputs, policy.side_inputs)?;
+    if policy.side_inputs == crate::plan::EmptyGraphSideInputPolicy::RequireVertexPairs {
+        let pairs = similarity_vertex_pairs(&node.spec, side_inputs)?;
+        if pairs.num_rows() == 0 {
+            return empty_graph_execution_result(context, &node.spec, policy, "vertex_pairs_empty").map(Some);
+        }
+    }
     if sanitized_input_rows != 0 {
         return Ok(None);
     }
@@ -34,6 +40,18 @@ pub(super) fn resolve_empty_graph_input(
         crate::plan::EmptyGraphEdgeInputAction::BfsEndpointPolicy => {
             traversal::resolve_empty_bfs_edge_input(context, &node.spec, sanitized_edges, side_inputs).map(Some)
         },
+        crate::plan::EmptyGraphEdgeInputAction::SimilarityVertexPairs => {
+            let pairs = similarity_vertex_pairs(&node.spec, side_inputs)?;
+            Err(empty_graph_input_error(
+                &node.spec,
+                "edge",
+                "nonempty_vertex_pairs_require_graph",
+                input_rows,
+                sanitized_input_rows,
+            )
+            .with_fact("vertex_pairs_node", similarity_vertex_pairs_params(&node.spec)?.vertex_pairs.input)
+            .with_fact("vertex_pair_rows", pairs.num_rows()))
+        },
     }
 }
 
@@ -42,42 +60,78 @@ fn validate_required_side_inputs(
     side_inputs: &std::collections::BTreeMap<NodeId, GpuDataFrame>,
     policy: crate::plan::EmptyGraphSideInputPolicy,
 ) -> Result<()> {
-    if policy != crate::plan::EmptyGraphSideInputPolicy::RequirePersonalization {
-        return Ok(());
+    match policy {
+        crate::plan::EmptyGraphSideInputPolicy::None | crate::plan::EmptyGraphSideInputPolicy::BfsPredicates => Ok(()),
+        crate::plan::EmptyGraphSideInputPolicy::RequireVertexPairs => {
+            similarity_vertex_pairs(spec, side_inputs).map(|_| ())
+        },
+        crate::plan::EmptyGraphSideInputPolicy::RequirePersonalization => {
+            let crate::plan::GraphAlgorithmParams::PersonalizedPageRank(params) = &spec.params else {
+                return Err(QueryError::new(
+                    QueryErrorCode::InvalidPlan,
+                    "nexus_query_engine.graph_algorithm.empty_input",
+                    "Personalized PageRank empty-input policy was attached to incompatible parameters",
+                )
+                .with_fact("algorithm", spec.algorithm.as_str()));
+            };
+            let input = side_inputs.get(&params.personalization.input).ok_or_else(|| {
+                QueryError::new(
+                    QueryErrorCode::InvalidPlan,
+                    "nexus_query_engine.graph_algorithm.personalized_pagerank",
+                    "Personalized PageRank graph algorithm node is missing its personalization side input",
+                )
+                .with_fact("algorithm", spec.algorithm.as_str())
+                .with_fact("input_role", "personalization")
+                .with_fact("side_input_node", params.personalization.input)
+            })?;
+            let rows = input.num_rows();
+            if rows != 0 {
+                return Ok(());
+            }
+            Err(QueryError::new(
+                QueryErrorCode::GraphInputInvalid,
+                "nexus_query_engine.graph_algorithm.empty_input",
+                "personalized PageRank requires a non-empty personalization side input",
+            )
+            .with_fact("algorithm", spec.algorithm.as_str())
+            .with_fact("input_role", "personalization")
+            .with_fact("side_input_node", params.personalization.input)
+            .with_fact("side_input_rows", rows)
+            .with_fact("reason", "required_side_input_empty")
+            .with_fact("empty_input_policy", policy.as_str()))
+        },
     }
-    let crate::plan::GraphAlgorithmParams::PersonalizedPageRank(params) = &spec.params else {
+}
+
+fn similarity_vertex_pairs_params(
+    spec: &crate::plan::GraphAlgorithmSpec,
+) -> Result<&crate::plan::GraphSimilarityParams> {
+    let crate::plan::GraphAlgorithmParams::Similarity(params) = &spec.params else {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
             "nexus_query_engine.graph_algorithm.empty_input",
-            "Personalized PageRank empty-input policy was attached to incompatible parameters",
+            "similarity empty-input policy was attached to incompatible parameters",
         )
         .with_fact("algorithm", spec.algorithm.as_str()));
     };
-    let input = side_inputs.get(&params.personalization.input).ok_or_else(|| {
+    Ok(params)
+}
+
+fn similarity_vertex_pairs<'a>(
+    spec: &crate::plan::GraphAlgorithmSpec,
+    side_inputs: &'a std::collections::BTreeMap<NodeId, GpuDataFrame>,
+) -> Result<&'a GpuDataFrame> {
+    let params = similarity_vertex_pairs_params(spec)?;
+    side_inputs.get(&params.vertex_pairs.input).ok_or_else(|| {
         QueryError::new(
             QueryErrorCode::InvalidPlan,
-            "nexus_query_engine.graph_algorithm.personalized_pagerank",
-            "Personalized PageRank graph algorithm node is missing its personalization side input",
+            "nexus_query_engine.graph_algorithm.similarity",
+            "similarity graph algorithm node is missing its vertex-pair side input",
         )
         .with_fact("algorithm", spec.algorithm.as_str())
-        .with_fact("input_role", "personalization")
-        .with_fact("side_input_node", params.personalization.input)
-    })?;
-    let rows = input.num_rows();
-    if rows != 0 {
-        return Ok(());
-    }
-    Err(QueryError::new(
-        QueryErrorCode::GraphInputInvalid,
-        "nexus_query_engine.graph_algorithm.empty_input",
-        "personalized PageRank requires a non-empty personalization side input",
-    )
-    .with_fact("algorithm", spec.algorithm.as_str())
-    .with_fact("input_role", "personalization")
-    .with_fact("side_input_node", params.personalization.input)
-    .with_fact("side_input_rows", rows)
-    .with_fact("reason", "required_side_input_empty")
-    .with_fact("empty_input_policy", policy.as_str()))
+        .with_fact("input_role", "vertex_pairs")
+        .with_fact("side_input_node", params.vertex_pairs.input)
+    })
 }
 
 fn validate_empty_graph_selectors(

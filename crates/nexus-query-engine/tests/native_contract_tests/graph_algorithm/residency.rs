@@ -22,6 +22,40 @@ fn graph_residency_descriptor_sees_through_edge_projection() {
 }
 
 #[test]
+fn graph_residency_descriptor_for_content_identity_requires_a_stable_nonempty_identity() {
+    let first = GraphResidencyDescriptor::for_content_identity(
+        "sha256:edge-rowset-a",
+        DataType::Int32,
+        Some(DataType::Float64),
+        None,
+    )
+    .unwrap();
+    let same = GraphResidencyDescriptor::for_content_identity(
+        "sha256:edge-rowset-a",
+        DataType::Int32,
+        Some(DataType::Float64),
+        None,
+    )
+    .unwrap();
+    let different = GraphResidencyDescriptor::for_content_identity(
+        "sha256:edge-rowset-b",
+        DataType::Int32,
+        Some(DataType::Float64),
+        None,
+    )
+    .unwrap();
+
+    assert_eq!(first.source_fingerprint, same.source_fingerprint);
+    assert_ne!(first.source_fingerprint, different.source_fingerprint);
+    assert_eq!(first.vertex_data_type, DataType::Int32);
+    assert_eq!(first.weight_data_type, Some(DataType::Float64));
+
+    let error = GraphResidencyDescriptor::for_content_identity(" ", DataType::Int32, None, None).unwrap_err();
+    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+    assert_eq!(error.fact_value("reason"), Some("missing_content_identity"));
+}
+
+#[test]
 fn graph_residency_descriptor_ignores_unconsumed_weight_without_python_normalization() {
     let with_extra_weight = graph_edge_source_plan(&["src", "dst", "weight"], Some(&["src", "dst"]));
     let without_extra_weight = graph_edge_source_plan(&["src", "dst"], Some(&["src", "dst"]));
