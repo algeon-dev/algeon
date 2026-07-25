@@ -96,6 +96,36 @@ impl TableGraphOptions {
     }
 }
 
+/// Column selection for explicit vertex-pair input from a prepared cudf table
+/// export.
+///
+/// Pairwise similarity preserves row alignment: `first_col` and `second_col`
+/// are read as two equally sized, same-typed vertex columns.  The selected
+/// columns must be `Int32` or `Int64` and match the graph vertex domain.
+///
+/// # Example
+///
+/// ```no_run
+/// use cugraph::cudf_interop::TableVertexPairOptions;
+///
+/// let options = TableVertexPairOptions::new(0, 1);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[must_use]
+pub struct TableVertexPairOptions {
+    /// Zero-based column index for the first vertex of each pair.
+    pub first_col: usize,
+    /// Zero-based column index for the second vertex of each pair.
+    pub second_col: usize,
+}
+
+impl TableVertexPairOptions {
+    /// Select the first and second vertex columns by zero-based index.
+    pub const fn new(first_col: usize, second_col: usize) -> Self {
+        Self { first_col, second_col }
+    }
+}
+
 /// Options for building a graph from a cudf [`DataFrame`] using column names.
 ///
 /// # Example

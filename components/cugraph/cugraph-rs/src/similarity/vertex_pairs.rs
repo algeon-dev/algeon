@@ -11,6 +11,7 @@ use crate::{
     array::RawDeviceArrayView,
     cuda::{DeviceResourceKind, drop_device_resource},
     error::{Error, ErrorKind, Result, require_non_null},
+    graph::DeferredInputCompletion,
     handle::ResourceHandleLease,
     structure::typed_results::VertexIds,
 };
@@ -23,6 +24,11 @@ use crate::{
 pub struct VertexPairs {
     raw: *mut cugraph_vertex_pairs_t,
     device: i32,
+    // Prepared cuDF pair columns can still be read asynchronously while the
+    // native pair object is live.  Retain their producer owners and completion
+    // witnesses until drop so the zero-copy ingress path cannot outlive input
+    // storage or race its producer stream.
+    pending_input_completion: Option<DeferredInputCompletion>,
     // Keeps a runtime-bound cuGraph handle alive until after Drop frees `raw`.
     _resource_handle_lease: Option<ResourceHandleLease>,
     _nosend_nosync: PhantomData<*mut ()>,
@@ -48,11 +54,22 @@ impl VertexPairs {
         resource_handle_lease: Option<ResourceHandleLease>,
     ) -> Result<Self> {
         let raw = require_non_null(raw, operation, "vertex_pairs")?;
-        Ok(Self { raw, device, _resource_handle_lease: resource_handle_lease, _nosend_nosync: PhantomData })
+        Ok(Self {
+            raw,
+            device,
+            pending_input_completion: None,
+            _resource_handle_lease: resource_handle_lease,
+            _nosend_nosync: PhantomData,
+        })
     }
 
     pub(crate) fn as_ptr_const(&self) -> *const cugraph_vertex_pairs_t {
         self.raw.cast_const()
+    }
+
+    pub(crate) fn with_pending_input_completion(mut self, pending: DeferredInputCompletion) -> Self {
+        self.pending_input_completion = Some(pending);
+        self
     }
 
     fn raw_view(
@@ -113,6 +130,9 @@ impl VertexPairs {
 
 impl Drop for VertexPairs {
     fn drop(&mut self) {
+        if let Some(pending) = self.pending_input_completion.take() {
+            pending.synchronize();
+        }
         drop_device_resource(&mut self.raw, self.device, "VertexPairs::drop", DeviceResourceKind::VertexPairs);
     }
 }

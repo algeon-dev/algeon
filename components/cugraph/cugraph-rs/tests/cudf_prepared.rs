@@ -21,12 +21,14 @@ use cudf::testing::prelude::*;
 use cugraph::{
     array::DeviceArray,
     cudf_interop::{
-        SeriesGraphOptions, TableGraphOptions, graph_from_prepared_columns, graph_from_prepared_table_export,
+        SeriesGraphOptions, TableGraphOptions, TableVertexPairOptions, graph_from_prepared_columns,
+        graph_from_prepared_table_export, vertex_pairs_from_prepared_columns, vertex_pairs_from_prepared_table_export,
     },
     error::ErrorKind,
-    graph::Forward,
+    graph::{Forward, Graph, GraphBuilder},
     handle::ResourceHandle,
     traversal::BfsParams,
+    types::GraphProperties,
 };
 use rapids_interop::{
     ActiveLeaseBackend, CompletionBinding, IncompleteDropBehavior, InteropError, InteropErrorKind, LeaseActivation,
@@ -36,6 +38,17 @@ use rapids_interop::{
 fn test_handle() -> ResourceHandle {
     let runtime = std::sync::Arc::new(explicit_runtime());
     ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).expect("handle")
+}
+
+fn pair_test_graph(handle: &cugraph::EnteredContext<'_>) -> Graph<Forward> {
+    let src = DeviceArray::from_slice(handle, &[0i32, 1, 2]).expect("pair graph src");
+    let dst = DeviceArray::from_slice(handle, &[1i32, 2, 0]).expect("pair graph dst");
+    let src = src.view().expect("pair graph src view");
+    let dst = dst.view().expect("pair graph dst view");
+    GraphBuilder::new(&src, &dst)
+        .properties(GraphProperties::undirected())
+        .build::<Forward>(handle)
+        .expect("pair graph")
 }
 
 fn reset_event_observation() {
@@ -200,6 +213,154 @@ impl ActiveLeaseBackend for RecordingLeaseBackend {
     ) -> rapids_interop::Result<()> {
         Ok(())
     }
+}
+
+#[test]
+fn vertex_pairs_from_prepared_columns_and_table_export_preserve_selected_pair_rows() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let _event_observation = lock_event_observation();
+    let handle = test_handle();
+    let handle = handle
+        .enter("vertex_pairs_from_prepared_columns_and_table_export_preserve_selected_pair_rows")
+        .expect("entered");
+    let runtime = explicit_runtime();
+    let mut graph = pair_test_graph(&handle);
+
+    let first = runtime.series(&[0i32, 0, 1, 2]).expect("first");
+    let second = runtime.series(&[1i32, 2, 2, 0]).expect("second");
+    let first_export = first.try_prepare_device_column_export().expect("first export");
+    let second_export = second.try_prepare_device_column_export().expect("second export");
+
+    let pairs = vertex_pairs_from_prepared_columns(&handle, &mut graph, &first_export, &second_export)
+        .expect("prepared column pairs");
+    assert_eq!(pairs.len().expect("pair length"), 4);
+    assert_eq!(pairs.first().expect("first pairs").to_vec_i32(&handle).expect("first copy"), vec![0, 0, 1, 2]);
+    assert_eq!(pairs.second().expect("second pairs").to_vec_i32(&handle).expect("second copy"), vec![1, 2, 2, 0]);
+
+    let ignored = runtime.series(&[9i32, 9, 9, 9]).expect("ignored");
+    let pair_table =
+        cudf::DataFrame::from_series([("ignored", ignored), ("second", second), ("first", first)]).expect("pair table");
+    let table_export = pair_table.try_prepare_device_table_export().expect("table export");
+    let pairs =
+        vertex_pairs_from_prepared_table_export(&handle, &mut graph, &table_export, &TableVertexPairOptions::new(2, 1))
+            .expect("prepared table pairs");
+    assert_eq!(pairs.first().expect("first pairs").to_vec_i32(&handle).expect("first copy"), vec![0, 0, 1, 2]);
+    assert_eq!(pairs.second().expect("second pairs").to_vec_i32(&handle).expect("second copy"), vec![1, 2, 2, 0]);
+}
+
+#[test]
+fn vertex_pairs_from_prepared_columns_rejects_mismatched_dtype_row_count_and_nulls() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let _event_observation = lock_event_observation();
+    let handle = test_handle();
+    let handle = handle
+        .enter("vertex_pairs_from_prepared_columns_rejects_mismatched_dtype_row_count_and_nulls")
+        .expect("entered");
+    let runtime = explicit_runtime();
+    let mut graph = pair_test_graph(&handle);
+
+    let first = runtime.series(&[0i32, 1]).expect("first");
+    let second_i64 = runtime.series(&[1i64, 2]).expect("second i64");
+    let first_export = first.try_prepare_device_column_export().expect("first export");
+    let second_i64_export = second_i64.try_prepare_device_column_export().expect("second i64 export");
+    let err = vertex_pairs_from_prepared_columns(&handle, &mut graph, &first_export, &second_i64_export)
+        .expect_err("mismatched pair dtypes must fail");
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert!(err.to_string().contains("first_dtype"), "error should retain first dtype context: {err}");
+    assert!(err.to_string().contains("second_dtype"), "error should retain second dtype context: {err}");
+
+    let second_short = runtime.series(&[1i32]).expect("second short");
+    let second_short_export = second_short.try_prepare_device_column_export().expect("second short export");
+    let err = vertex_pairs_from_prepared_columns(&handle, &mut graph, &first_export, &second_short_export)
+        .expect_err("mismatched pair row counts must fail");
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert!(err.to_string().contains("first_len"), "error should retain first length context: {err}");
+    assert!(err.to_string().contains("second_len"), "error should retain second length context: {err}");
+
+    let second_with_null = runtime.nullable_series(&[1i32, 0], &[true, false]).expect("second with null");
+    let second_with_null_export = second_with_null.try_prepare_device_column_export().expect("second null export");
+    let err = vertex_pairs_from_prepared_columns(&handle, &mut graph, &first_export, &second_with_null_export)
+        .expect_err("null pair values must fail");
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert!(err.to_string().contains("column_name: second"), "error should identify second pair column: {err}");
+    assert!(err.to_string().contains("null_count: 1"), "error should retain null count: {err}");
+}
+
+#[test]
+fn vertex_pairs_from_prepared_columns_runtime_bound_handle_uses_consumer_stream_authorities() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let _event_observation = lock_event_observation();
+    let runtime = std::sync::Arc::new(explicit_runtime());
+    let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).expect("handle");
+    let handle = handle
+        .enter("vertex_pairs_from_prepared_columns_runtime_bound_handle_uses_consumer_stream_authorities")
+        .expect("entered");
+    let mut graph = pair_test_graph(&handle);
+    let first = runtime.series(&[0i32, 1]).expect("first");
+    let second = runtime.series(&[1i32, 2]).expect("second");
+    let recorded = Arc::new(Mutex::new(Vec::new()));
+    let first_export = first
+        .try_prepare_device_column_export()
+        .expect("first export")
+        .with_lease_backend(LeaseBackend::new(RecordingLeaseBackend { recorded: Arc::clone(&recorded) }));
+    let second_export = second.try_prepare_device_column_export().expect("second export");
+
+    let _pairs =
+        vertex_pairs_from_prepared_columns(&handle, &mut graph, &first_export, &second_export).expect("prepared pairs");
+
+    let expected_stream_raw = runtime.stream().testing_raw_handle_value() as *mut std::ffi::c_void;
+    let expected_device = runtime.device().ordinal() as i32;
+    let recorded = recorded.lock().expect("recorded");
+    assert_eq!(recorded.len(), 1, "first export should record one activation/completion pair");
+    assert_eq!(
+        recorded[0],
+        RecordedLeaseBindings {
+            activate_read_start: RecordedReadStartBinding::ConsumerStream {
+                raw: expected_stream_raw as usize,
+                device: expected_device,
+            },
+            activate_completion: RecordedCompletionBinding::SameDeviceStream {
+                raw: expected_stream_raw as usize,
+                device: expected_device,
+            },
+            complete_completion: RecordedCompletionBinding::SameDeviceStream {
+                raw: expected_stream_raw as usize,
+                device: expected_device,
+            },
+        }
+    );
+}
+
+#[test]
+fn vertex_pairs_from_prepared_columns_runtime_bound_handle_defers_completion_sync_until_pair_drop() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let _event_observation = lock_event_observation();
+    let runtime = explicit_runtime_owner();
+    let handle = runtime_bound_handle(&runtime);
+    let handle = handle
+        .enter("vertex_pairs_from_prepared_columns_runtime_bound_handle_defers_completion_sync_until_pair_drop")
+        .expect("entered");
+    let mut graph = pair_test_graph(&handle);
+    let first = runtime.series(&[0i32, 1]).expect("first");
+    let second = runtime.series(&[1i32, 2]).expect("second");
+    let first_export = first.try_prepare_device_column_export().expect("first export");
+    let second_export = second.try_prepare_device_column_export().expect("second export");
+    assert!(first_export.clone_retained_owner().is_some(), "first export should retain its producer owner");
+    assert!(second_export.clone_retained_owner().is_some(), "second export should retain its producer owner");
+
+    reset_event_observation();
+    let _ = event_synchronize_call_count();
+
+    let pairs =
+        vertex_pairs_from_prepared_columns(&handle, &mut graph, &first_export, &second_export).expect("prepared pairs");
+    let before_drop = event_synchronize_call_count();
+    drop(pairs);
+    let after_drop = event_synchronize_call_count();
+
+    assert!(
+        after_drop > before_drop,
+        "dropping vertex pairs should synchronize deferred prepared-column completion witnesses"
+    );
 }
 
 #[test]
