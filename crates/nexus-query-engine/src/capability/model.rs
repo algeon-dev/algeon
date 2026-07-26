@@ -408,6 +408,11 @@ pub enum NodeOperator {
         /// Algorithm family whose parameter contract must be supported.
         algorithm: GraphAlgorithm,
     },
+    /// cuVS vector algorithm execution over one or more resident relations.
+    VectorAlgorithm {
+        /// Algorithm family whose parameter contract must be supported.
+        algorithm: crate::plan::VectorAlgorithm,
+    },
 }
 
 /// Source format capability known by the native engine.
@@ -526,6 +531,11 @@ pub enum EdgeContractKind {
     SortInput,
     /// Graph algorithm input residency contract.
     GraphAlgorithmInput,
+    /// Vector algorithm relation-input residency contract.
+    VectorAlgorithmInput {
+        /// Semantic relation role within the vector algorithm.
+        role: VectorInputRole,
+    },
     /// Final result materialization boundary.
     ExplicitSinkMaterialization,
 }
@@ -573,6 +583,11 @@ pub enum InputRole {
     },
     /// Input consumed by a graph algorithm node.
     GraphAlgorithmInput,
+    /// Input consumed by a vector algorithm node.
+    VectorAlgorithmInput {
+        /// Semantic relation role within the vector algorithm.
+        role: VectorInputRole,
+    },
     /// Input consumed by a limit node.
     LimitInput,
     /// Build-side input consumed by a join node.
@@ -587,6 +602,43 @@ pub enum InputRole {
     },
     /// Final result sink input.
     SinkInput,
+}
+
+/// Stable semantic role for a relation consumed by a vector algorithm.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum VectorInputRole {
+    /// Indexed dataset for exact brute-force kNN.
+    Dataset,
+    /// Query vectors for exact brute-force kNN.
+    Queries,
+    /// Training/transform input for K-means or PCA.
+    Input,
+    /// Relation-backed initial K-means centroids.
+    InitialCentroids,
+}
+
+impl VectorInputRole {
+    pub(crate) fn for_vector_input(vector: &crate::plan::VectorAlgorithmNode, input_index: usize) -> Self {
+        match (&vector.spec.params, input_index) {
+            (crate::plan::VectorAlgorithmParams::BruteForceKnn(_), 0) => Self::Dataset,
+            (crate::plan::VectorAlgorithmParams::BruteForceKnn(_), 1) => Self::Queries,
+            (crate::plan::VectorAlgorithmParams::KMeans(_), 0) | (crate::plan::VectorAlgorithmParams::Pca(_), 0) => {
+                Self::Input
+            },
+            (crate::plan::VectorAlgorithmParams::KMeans(_), 1) => Self::InitialCentroids,
+            _ => Self::Input,
+        }
+    }
+
+    /// Stable snake-case diagnostic label.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Dataset => "dataset",
+            Self::Queries => "queries",
+            Self::Input => "input",
+            Self::InitialCentroids => "initial_centroids",
+        }
+    }
 }
 
 /// Property required from an edge producer.

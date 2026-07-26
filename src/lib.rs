@@ -19,6 +19,7 @@
 
 pub mod backend;
 pub mod capability;
+pub mod cuvs_sql;
 pub mod error;
 mod final_plan_observation;
 pub mod gpu_coverage;

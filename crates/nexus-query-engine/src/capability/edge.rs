@@ -58,6 +58,9 @@ pub(super) fn edge_contract_kinds(
     if matches!(consumer_kind, PlanNode::GraphAlgorithm(_)) {
         kinds.push(EdgeContractKind::GraphAlgorithmInput);
     }
+    if let InputRole::VectorAlgorithmInput { role } = input_role {
+        kinds.push(EdgeContractKind::VectorAlgorithmInput { role });
+    }
     match input_role {
         InputRole::JoinBuildInput { side } => kinds.push(EdgeContractKind::JoinBuildInput { side }),
         InputRole::JoinProbeInput { side } => kinds.push(EdgeContractKind::JoinProbeInput { side }),
@@ -133,6 +136,7 @@ pub(super) fn node_operator_fact(kind: &PlanNode) -> &'static str {
         PlanNode::Union(_) => "union",
         PlanNode::EdgeNormalize(_) => "edge_normalize",
         PlanNode::GraphAlgorithm(_) => "graph_algorithm",
+        PlanNode::VectorAlgorithm(_) => "vector_algorithm",
     }
 }
 
@@ -145,6 +149,9 @@ pub(super) fn input_role(kind: &PlanNode, input_index: usize) -> InputRole {
         PlanNode::Union(_) => InputRole::UnionInput { input_index },
         PlanNode::EdgeNormalize(_) => InputRole::UnaryInput,
         PlanNode::GraphAlgorithm(_) => InputRole::GraphAlgorithmInput,
+        PlanNode::VectorAlgorithm(vector) => {
+            InputRole::VectorAlgorithmInput { role: VectorInputRole::for_vector_input(vector, input_index) }
+        },
         PlanNode::Join(join) => {
             let side = if input_index == 0 { JoinSide::Left } else { JoinSide::Right };
             if side == join.spec.build_side {

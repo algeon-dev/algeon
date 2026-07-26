@@ -85,7 +85,7 @@ impl CapabilityFirstPipelineAdmission {
 pub(super) fn capability_first_bounded_pipeline_admission(
     plan: &QueryPlan,
 ) -> Result<Option<CapabilityFirstPipelineAdmission>> {
-    if !plan.contains_join() {
+    if !plan.contains_join() && !plan.contains_vector_algorithm() {
         return Ok(None);
     }
 

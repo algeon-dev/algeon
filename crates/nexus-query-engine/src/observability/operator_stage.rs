@@ -28,6 +28,14 @@ pub struct RuntimeOperatorStageIdentity {
     pub input_rows: Option<u64>,
     pub input_bytes: Option<u64>,
     pub reserved_bytes: Option<u64>,
+    pub vector_algorithm: Option<String>,
+    pub vector_relation_role: Option<String>,
+    pub vector_dimension: Option<usize>,
+    pub matrix_layout: Option<String>,
+    pub execution_binding_id: Option<u64>,
+    pub device_ordinal: Option<usize>,
+    pub native_version: Option<(u16, u16, u16)>,
+    pub bounded_control_scalars: Option<(u64, u64)>,
 }
 
 impl RuntimeOperatorStageIdentity {
@@ -80,6 +88,46 @@ impl RuntimeOperatorStageIdentity {
         self
     }
 
+    pub fn with_vector_algorithm(mut self, algorithm: impl Into<String>) -> Self {
+        self.vector_algorithm = Some(algorithm.into());
+        self
+    }
+
+    pub fn with_vector_relation_role(mut self, role: impl Into<String>) -> Self {
+        self.vector_relation_role = Some(role.into());
+        self
+    }
+
+    pub fn with_vector_dimension(mut self, dimension: usize) -> Self {
+        self.vector_dimension = Some(dimension);
+        self
+    }
+
+    pub fn with_matrix_layout(mut self, layout: impl Into<String>) -> Self {
+        self.matrix_layout = Some(layout.into());
+        self
+    }
+
+    pub fn with_execution_binding_id(mut self, binding_id: u64) -> Self {
+        self.execution_binding_id = Some(binding_id);
+        self
+    }
+
+    pub fn with_device_ordinal(mut self, device_ordinal: usize) -> Self {
+        self.device_ordinal = Some(device_ordinal);
+        self
+    }
+
+    pub fn with_native_version(mut self, major: u16, minor: u16, patch: u16) -> Self {
+        self.native_version = Some((major, minor, patch));
+        self
+    }
+
+    pub fn with_bounded_control_scalars(mut self, events: u64, bytes: u64) -> Self {
+        self.bounded_control_scalars = Some((events, bytes));
+        self
+    }
+
     fn apply_identity(&self, mut observation: RuntimeOperatorStageObservation) -> RuntimeOperatorStageObservation {
         if let Some(node_id) = &self.node_id {
             observation = observation.with_node_id(node_id.clone());
@@ -107,6 +155,30 @@ impl RuntimeOperatorStageIdentity {
         }
         if let Some(reserved_bytes) = self.reserved_bytes {
             observation = observation.with_reserved_bytes(reserved_bytes);
+        }
+        if let Some(vector_algorithm) = &self.vector_algorithm {
+            observation = observation.with_vector_algorithm(vector_algorithm.clone());
+        }
+        if let Some(vector_relation_role) = &self.vector_relation_role {
+            observation = observation.with_vector_relation_role(vector_relation_role.clone());
+        }
+        if let Some(vector_dimension) = self.vector_dimension {
+            observation = observation.with_vector_dimension(vector_dimension);
+        }
+        if let Some(matrix_layout) = &self.matrix_layout {
+            observation = observation.with_matrix_layout(matrix_layout.clone());
+        }
+        if let Some(execution_binding_id) = self.execution_binding_id {
+            observation = observation.with_execution_binding_id(execution_binding_id);
+        }
+        if let Some(device_ordinal) = self.device_ordinal {
+            observation = observation.with_device_ordinal(device_ordinal);
+        }
+        if let Some((major, minor, patch)) = self.native_version {
+            observation = observation.with_native_version(major, minor, patch);
+        }
+        if let Some((events, bytes)) = self.bounded_control_scalars {
+            observation = observation.with_bounded_control_scalars(events, bytes);
         }
         observation
     }
@@ -144,6 +216,25 @@ impl RuntimeOperatorStageGuard {
 
     /// Records successful completion with optional output facts.
     pub fn finish(mut self, output_rows: Option<u64>, output_bytes: Option<u64>) {
+        self.record(RuntimeOperatorStageState::Finished, output_rows, output_bytes);
+        self.terminal_recorded = true;
+    }
+
+    /// Attach successful bounded host-control evidence to the terminal event.
+    /// The already-emitted Started event intentionally has no speculative
+    /// boundary totals.
+    pub fn finish_with_bounded_control_scalars(
+        mut self,
+        output_rows: Option<u64>,
+        output_bytes: Option<u64>,
+        events: u64,
+        bytes: u64,
+    ) {
+        // `RuntimeOperatorStageGuard` owns a `Drop` implementation so moving
+        // its identity out would make the terminal observation itself fail to
+        // compile. Keep the guard intact and replace the identity from a
+        // cheap clone instead.
+        self.identity = self.identity.clone().with_bounded_control_scalars(events, bytes);
         self.record(RuntimeOperatorStageState::Finished, output_rows, output_bytes);
         self.terminal_recorded = true;
     }
@@ -291,6 +382,53 @@ mod tests {
         assert_eq!(stages[0].1.input_rows, Some(12));
         assert_eq!(stages[1].1.output_rows, Some(12));
         assert_eq!(stages[1].1.output_bytes, Some(64));
+    }
+
+    #[test]
+    fn vector_stage_identity_retains_typed_runtime_and_native_facts() {
+        let session = session();
+        let guard = RuntimeOperatorStageGuard::start(
+            session.handle(),
+            Some(PlanExecutionId::new("plan-vector")),
+            None,
+            RuntimeOperatorStageKind::VectorPack,
+            RuntimeOperatorStageIdentity::new()
+                .with_node_id("7")
+                .with_vector_algorithm("brute_force_knn")
+                .with_vector_relation_role("dataset")
+                .with_vector_dimension(32)
+                .with_matrix_layout("row_major")
+                .with_execution_binding_id(41)
+                .with_device_ordinal(2)
+                .with_native_version(26, 6, 0)
+                .with_input_rows(128)
+                .with_input_bytes(16_384),
+        );
+        guard.finish(Some(128), Some(16_384));
+
+        let snapshot = session.seal(RuntimeTerminalOutcome::Succeeded).expect("seal");
+        let stage = snapshot
+            .events()
+            .iter()
+            .find_map(|event| match &event.payload {
+                RuntimeObservationPayload::OperatorStage(stage)
+                    if matches!(stage.lifecycle, RuntimeOperatorStageState::Started) =>
+                {
+                    Some(stage)
+                },
+                _ => None,
+            })
+            .expect("vector stage started event");
+        assert_eq!(stage.stage_kind, RuntimeOperatorStageKind::VectorPack);
+        assert_eq!(stage.vector_algorithm.as_deref(), Some("brute_force_knn"));
+        assert_eq!(stage.vector_relation_role.as_deref(), Some("dataset"));
+        assert_eq!(stage.vector_dimension, Some(32));
+        assert_eq!(stage.matrix_layout.as_deref(), Some("row_major"));
+        assert_eq!(stage.execution_binding_id, Some(41));
+        assert_eq!(stage.device_ordinal, Some(2));
+        assert_eq!(stage.native_version_major, Some(26));
+        assert_eq!(stage.native_version_minor, Some(6));
+        assert_eq!(stage.native_version_patch, Some(0));
     }
 
     #[test]
@@ -456,6 +594,9 @@ mod tests {
             RuntimeOperatorStageKind::FinalMerge,
             RuntimeOperatorStageKind::PartitionLocalTopK,
             RuntimeOperatorStageKind::FinalSort,
+            RuntimeOperatorStageKind::VectorPack,
+            RuntimeOperatorStageKind::VectorNative,
+            RuntimeOperatorStageKind::VectorAssemble,
         ];
         let session = session_with_limits(256);
         for kind in kinds {

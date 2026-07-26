@@ -16,10 +16,14 @@ use datafusion::{
         metrics::{ExecutionPlanMetricsSet, MetricsSet},
     },
 };
+use futures::future::BoxFuture;
 use nexus_query_engine::{
     exec::{execute_query_plan_with_gpu_inputs_observed, output::QueryOutput},
     plan::QueryPlan,
-    runtime::resident::{GpuResidentInputMap, GpuResultHandle},
+    runtime::{
+        ExecutionContext,
+        resident::{GpuResidentInputMap, GpuResultHandle},
+    },
 };
 
 use super::{
@@ -31,8 +35,8 @@ use super::{
     config::NexusNativeExecutionConfig,
     metrics::{NativeExecutionMetricsCapture, NexusNativeMetrics},
     producer::{
-        execute_gpu_resident_producer_with_context, gpu_resident_producer_input_name,
-        prepare_gpu_resident_producer_for_execution,
+        GpuResidentProducer, execute_gpu_resident_producer_with_context, gpu_resident_producer_input_name,
+        prepare_gpu_resident_producer_for_execution, register_gpu_resident_producer_discovery,
     },
 };
 use crate::error::{Error, ErrorCode};
@@ -172,6 +176,24 @@ impl NexusNativeComposedExec {
         &self.gpu_inputs
     }
 
+    /// Convert this already-validated composed host boundary into an internal
+    /// GPU-resident relational producer. The native consumer and all nested
+    /// accelerator producers will execute in the context supplied by the
+    /// outer consumer; no intermediate Arrow result is materialized.
+    pub(crate) fn to_gpu_resident_producer(
+        &self,
+        input_name: impl Into<String>,
+    ) -> crate::error::Result<NexusNativeComposedGpuProducerExec> {
+        NexusNativeComposedGpuProducerExec::try_new(
+            input_name,
+            self.plan.clone_with_gpu_resident_sink(),
+            self.gpu_inputs.clone(),
+            self.execution_config.clone(),
+            self.metrics_capture.clone(),
+            self.cache.equivalence_properties().clone(),
+        )
+    }
+
     #[cfg(test)]
     pub(crate) fn metrics_capture(&self) -> Option<NativeExecutionMetricsCapture> {
         self.metrics_capture.clone()
@@ -250,6 +272,13 @@ impl ExecutionPlan for NexusNativeComposedExec {
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         self.gpu_inputs.iter().collect()
+    }
+
+    fn benefits_from_input_partitioning(&self) -> Vec<bool> {
+        // These children are device-handle producers, not DataFusion row
+        // streams. Repartitioning or coalescing one would wrap the producer
+        // in a host execution node and break the composed GPU contract.
+        vec![false; self.gpu_inputs.len()]
     }
 
     fn with_new_children(
@@ -410,4 +439,316 @@ impl ExecutionPlan for NexusNativeComposedExec {
     fn metrics(&self) -> Option<MetricsSet> {
         Some(self.metrics.clone_inner())
     }
+}
+
+/// GPU-resident form of a relational native consumer with accelerator
+/// producer children.
+///
+/// This is an internal composition boundary. It cannot stream Arrow through
+/// [`ExecutionPlan::execute`]; an outer [`GpuResidentProducer`] consumer must
+/// prepare it before native admission and execute it with the same native
+/// context used by the final accelerator operation.
+#[derive(Debug, Clone)]
+pub struct NexusNativeComposedGpuProducerExec {
+    input_name: String,
+    plan: QueryPlan,
+    gpu_inputs: Vec<Arc<dyn ExecutionPlan>>,
+    execution_config: NexusNativeExecutionConfig,
+    metrics_capture: Option<NativeExecutionMetricsCapture>,
+    prepared: bool,
+    metrics: ExecutionPlanMetricsSet,
+    cache: Arc<PlanProperties>,
+}
+
+impl NexusNativeComposedGpuProducerExec {
+    fn try_new(
+        input_name: impl Into<String>,
+        plan: QueryPlan,
+        gpu_inputs: Vec<Arc<dyn ExecutionPlan>>,
+        execution_config: NexusNativeExecutionConfig,
+        metrics_capture: Option<NativeExecutionMetricsCapture>,
+        eq_properties: EquivalenceProperties,
+    ) -> crate::error::Result<Self> {
+        let input_name = input_name.into();
+        if input_name.is_empty() {
+            return Err(Error::new(
+                ErrorCode::InvalidExecutionPlan,
+                "datafusion_nexus.native_composed_gpu_producer.try_new",
+                "composed GPU-resident producer input name must not be empty",
+            ));
+        }
+        if plan.sink().materializes_host_boundary() {
+            return Err(Error::new(
+                ErrorCode::InvalidExecutionPlan,
+                "datafusion_nexus.native_composed_gpu_producer.try_new",
+                "composed GPU-resident producer requires a GPU-resident sink",
+            )
+            .with_fact("result_sink", "host_arrow"));
+        }
+        validate_composed_gpu_inputs(&plan, &gpu_inputs, "datafusion_nexus.native_composed_gpu_producer.try_new")?;
+        let cache = properties_with_equivalence(Arc::clone(plan.output_schema()), eq_properties)?;
+        register_composed_gpu_producer();
+        Ok(Self {
+            input_name,
+            plan,
+            gpu_inputs,
+            execution_config,
+            metrics_capture,
+            prepared: false,
+            metrics: ExecutionPlanMetricsSet::new(),
+            cache,
+        })
+    }
+
+    pub fn native_plan(&self) -> &QueryPlan {
+        &self.plan
+    }
+}
+
+impl GpuResidentProducer for NexusNativeComposedGpuProducerExec {
+    fn gpu_result_input_name(&self) -> &str {
+        &self.input_name
+    }
+
+    fn prepare_execution_plan<'a>(
+        &'a self,
+        _plan: Arc<dyn ExecutionPlan>,
+        task_context: Arc<TaskContext>,
+    ) -> BoxFuture<'a, DataFusionResult<Arc<dyn ExecutionPlan>>> {
+        Box::pin(async move {
+            let mut prepared = self.clone();
+            prepared.plan =
+                super::lakehouse::resolve_query_plan(&self.execution_config, self.plan.clone(), task_context.as_ref())
+                    .await
+                    .clone_with_gpu_resident_sink();
+            let mut prepared_inputs = Vec::with_capacity(self.gpu_inputs.len());
+            for input in &self.gpu_inputs {
+                prepared_inputs.push(
+                    prepare_gpu_resident_producer_for_execution(Arc::clone(input), Arc::clone(&task_context)).await?,
+                );
+            }
+            prepared.gpu_inputs = prepared_inputs;
+            prepared.execution_config = prepared.execution_config.with_lakehouse_footer_pruning(false);
+            prepared.prepared = true;
+            Ok(Arc::new(prepared) as Arc<dyn ExecutionPlan>)
+        })
+    }
+
+    fn execute_gpu_result_with_context<'a>(
+        &'a self,
+        native_context: &'a ExecutionContext,
+        partition: usize,
+        task_context: Arc<TaskContext>,
+    ) -> BoxFuture<'a, DataFusionResult<(String, GpuResultHandle)>> {
+        Box::pin(async move {
+            if partition != 0 {
+                return Err(Error::new(
+                    ErrorCode::InvalidExecutionPlan,
+                    "datafusion_nexus.native_composed_gpu_producer.execute_gpu",
+                    "composed GPU-resident producer exposes exactly one output partition",
+                )
+                .with_fact("partition", partition)
+                .into());
+            }
+            if !self.prepared {
+                return Err(Error::new(
+                    ErrorCode::InvalidExecutionPlan,
+                    "datafusion_nexus.native_composed_gpu_producer.execute_gpu",
+                    "composed GPU-resident producer was not prepared before native context acquisition",
+                )
+                .with_log_safe_fact("producer_state", "not_prepared")
+                .into());
+            }
+
+            let mut input_map = GpuResidentInputMap::new();
+            for child in &self.gpu_inputs {
+                let (input_name, handle) = execute_gpu_resident_producer_with_context(
+                    child.as_ref(),
+                    native_context,
+                    partition,
+                    Arc::clone(&task_context),
+                )
+                .await?;
+                input_map.insert(input_name, handle);
+            }
+
+            let metrics = NexusNativeMetrics::new_with_capture_and_shape(
+                &self.metrics,
+                partition,
+                self.metrics_capture.clone(),
+                self.execution_config.plan_task_mapping_datafusion_shape(),
+            );
+            let _elapsed_compute = metrics.baseline.elapsed_compute().timer();
+            let outcome = execute_query_plan_with_gpu_inputs_observed(
+                native_context,
+                &self.plan,
+                &input_map,
+                self.execution_config.runtime_observation_config(),
+            );
+            let output = metrics.finalize_query_outcome(outcome).map_err(|error| {
+                DataFusionError::from(native_query_runtime_error(
+                    "datafusion_nexus.native_composed_gpu_producer.execute_gpu",
+                    "nexus composed GPU-resident relational execution failed",
+                    error,
+                ))
+            })?;
+            metrics.record_lakehouse_cache_fill_events(&native_context.drain_lakehouse_cache_fill_event_snapshots());
+            let QueryOutput::GpuResident(handle) = output else {
+                return Err(Error::new(
+                    ErrorCode::InvalidExecutionPlan,
+                    "datafusion_nexus.native_composed_gpu_producer.execute_gpu",
+                    "composed GPU-resident producer materialized a host result",
+                )
+                .with_fact("result_sink", "host_arrow")
+                .into());
+            };
+            Ok((self.input_name.clone(), handle))
+        })
+    }
+}
+
+impl DisplayAs for NexusNativeComposedGpuProducerExec {
+    fn fmt_as(&self, t: DisplayFormatType, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match t {
+            DisplayFormatType::Default => write!(
+                f,
+                "NexusNativeComposedGpuProducerExec: input_name={}, native_nodes={}, gpu_input_count={}, sink=gpu_resident, input_boundary=gpu_resident, output_boundary=device_resident",
+                self.input_name,
+                self.plan.node_count(),
+                self.gpu_inputs.len(),
+            ),
+            DisplayFormatType::Verbose => write!(
+                f,
+                "NexusNativeComposedGpuProducerExec: input_name={}, native_nodes={}, gpu_input_count={}, sink=gpu_resident, input_boundary=gpu_resident, output_boundary=device_resident, native_plan={}",
+                self.input_name,
+                self.plan.node_count(),
+                self.gpu_inputs.len(),
+                native_plan_one_line(&self.plan),
+            ),
+            DisplayFormatType::TreeRender => {
+                writeln!(f, "input_name={}", self.input_name)?;
+                writeln!(f, "gpu_input_count={}", self.gpu_inputs.len())?;
+                writeln!(f, "sink=gpu_resident")?;
+                writeln!(f, "input_boundary=gpu_resident")?;
+                writeln!(f, "output_boundary=device_resident")?;
+                write_native_plan_tree(f, &self.plan)
+            },
+        }
+    }
+}
+
+impl ExecutionPlan for NexusNativeComposedGpuProducerExec {
+    fn name(&self) -> &str {
+        "NexusNativeComposedGpuProducerExec"
+    }
+
+    fn properties(&self) -> &Arc<PlanProperties> {
+        &self.cache
+    }
+
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+        self.gpu_inputs.iter().collect()
+    }
+
+    fn benefits_from_input_partitioning(&self) -> Vec<bool> {
+        // Keep DataFusion distribution rules from inserting a row-stream
+        // wrapper between this internal producer and its device inputs.
+        vec![false; self.gpu_inputs.len()]
+    }
+
+    fn with_new_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+        NexusNativeComposedGpuProducerExec::try_new(
+            self.input_name.clone(),
+            self.plan.clone(),
+            children,
+            self.execution_config.clone(),
+            self.metrics_capture.clone(),
+            self.cache.equivalence_properties().clone(),
+        )
+        .map(|plan| Arc::new(plan) as Arc<dyn ExecutionPlan>)
+        .map_err(DataFusionError::from)
+    }
+
+    fn execute(
+        &self,
+        _partition: usize,
+        _task_context: Arc<TaskContext>,
+    ) -> DataFusionResult<SendableRecordBatchStream> {
+        Err(Error::new(
+            ErrorCode::InvalidExecutionPlan,
+            "datafusion_nexus.native_composed_gpu_producer.execute",
+            "composed GPU-resident producer cannot stream host Arrow directly",
+        )
+        .with_fact("result_sink", "gpu_resident")
+        .into())
+    }
+
+    fn metrics(&self) -> Option<MetricsSet> {
+        Some(self.metrics.clone_inner())
+    }
+}
+
+fn validate_composed_gpu_inputs(
+    plan: &QueryPlan,
+    gpu_inputs: &[Arc<dyn ExecutionPlan>],
+    operation: &'static str,
+) -> crate::error::Result<()> {
+    if gpu_inputs.is_empty() {
+        return Err(Error::new(
+            ErrorCode::InvalidExecutionPlan,
+            operation,
+            "composed native execution requires at least one GPU-resident producer",
+        ));
+    }
+    let required_inputs = gpu_resident_source_names(plan);
+    let mut provided_inputs = BTreeSet::new();
+    for child in gpu_inputs {
+        let Some(input_name) = gpu_resident_producer_input_name(child.as_ref()) else {
+            return Err(Error::new(
+                ErrorCode::InvalidExecutionPlan,
+                operation,
+                "composed native execution children must be GPU-resident producers",
+            )
+            .with_fact("child_name", child.name()));
+        };
+        if !provided_inputs.insert(input_name.clone()) {
+            return Err(Error::new(
+                ErrorCode::InvalidExecutionPlan,
+                operation,
+                "composed native execution received duplicate GPU-resident input names",
+            )
+            .with_fact("input_name", input_name));
+        }
+    }
+    let missing_inputs = required_inputs.difference(&provided_inputs).map(String::as_str).collect::<Vec<_>>();
+    if !missing_inputs.is_empty() {
+        return Err(Error::new(
+            ErrorCode::InvalidExecutionPlan,
+            operation,
+            "composed native execution is missing GPU-resident producer inputs",
+        )
+        .with_fact("missing_inputs", missing_inputs.join(",")));
+    }
+    let unused_inputs = provided_inputs.difference(&required_inputs).map(String::as_str).collect::<Vec<_>>();
+    if !unused_inputs.is_empty() {
+        return Err(Error::new(
+            ErrorCode::InvalidExecutionPlan,
+            operation,
+            "composed native execution received unused GPU-resident producer inputs",
+        )
+        .with_fact("unused_inputs", unused_inputs.join(",")));
+    }
+    Ok(())
+}
+
+fn composed_gpu_producer_discovery(plan: &dyn ExecutionPlan) -> Option<&dyn GpuResidentProducer> {
+    plan.downcast_ref::<NexusNativeComposedGpuProducerExec>().map(|producer| producer as &dyn GpuResidentProducer)
+}
+
+fn register_composed_gpu_producer() {
+    static REGISTER: std::sync::Once = std::sync::Once::new();
+    REGISTER.call_once(|| register_gpu_resident_producer_discovery(composed_gpu_producer_discovery));
 }

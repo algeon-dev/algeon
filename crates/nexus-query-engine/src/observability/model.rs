@@ -731,6 +731,9 @@ pub enum RuntimeOperatorStageKind {
     FinalMerge,
     PartitionLocalTopK,
     FinalSort,
+    VectorPack,
+    VectorNative,
+    VectorAssemble,
 }
 
 impl RuntimeOperatorStageKind {
@@ -748,6 +751,9 @@ impl RuntimeOperatorStageKind {
             Self::FinalMerge => "final_merge",
             Self::PartitionLocalTopK => "partition_local_top_k",
             Self::FinalSort => "final_sort",
+            Self::VectorPack => "vector_pack",
+            Self::VectorNative => "vector_native",
+            Self::VectorAssemble => "vector_assemble",
         }
     }
 }
@@ -786,6 +792,28 @@ pub struct RuntimeOperatorStageObservation {
     pub input_bytes: Option<u64>,
     pub output_bytes: Option<u64>,
     pub reserved_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vector_algorithm: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vector_relation_role: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vector_dimension: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub matrix_layout: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub execution_binding_id: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device_ordinal: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub native_version_major: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub native_version_minor: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub native_version_patch: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bounded_control_scalar_events: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bounded_control_scalar_bytes: Option<u64>,
 }
 
 impl RuntimeOperatorStageObservation {
@@ -805,6 +833,17 @@ impl RuntimeOperatorStageObservation {
             input_bytes: None,
             output_bytes: None,
             reserved_bytes: None,
+            vector_algorithm: None,
+            vector_relation_role: None,
+            vector_dimension: None,
+            matrix_layout: None,
+            execution_binding_id: None,
+            device_ordinal: None,
+            native_version_major: None,
+            native_version_minor: None,
+            native_version_patch: None,
+            bounded_control_scalar_events: None,
+            bounded_control_scalar_bytes: None,
         }
     }
 
@@ -860,6 +899,49 @@ impl RuntimeOperatorStageObservation {
 
     pub fn with_reserved_bytes(mut self, reserved_bytes: u64) -> Self {
         self.reserved_bytes = Some(reserved_bytes);
+        self
+    }
+
+    pub fn with_vector_algorithm(mut self, algorithm: impl Into<String>) -> Self {
+        self.vector_algorithm = Some(algorithm.into());
+        self
+    }
+
+    pub fn with_vector_relation_role(mut self, role: impl Into<String>) -> Self {
+        self.vector_relation_role = Some(role.into());
+        self
+    }
+
+    pub fn with_vector_dimension(mut self, dimension: usize) -> Self {
+        self.vector_dimension = Some(dimension);
+        self
+    }
+
+    pub fn with_matrix_layout(mut self, layout: impl Into<String>) -> Self {
+        self.matrix_layout = Some(layout.into());
+        self
+    }
+
+    pub fn with_execution_binding_id(mut self, binding_id: u64) -> Self {
+        self.execution_binding_id = Some(binding_id);
+        self
+    }
+
+    pub fn with_device_ordinal(mut self, device_ordinal: usize) -> Self {
+        self.device_ordinal = Some(device_ordinal);
+        self
+    }
+
+    pub fn with_native_version(mut self, major: u16, minor: u16, patch: u16) -> Self {
+        self.native_version_major = Some(major);
+        self.native_version_minor = Some(minor);
+        self.native_version_patch = Some(patch);
+        self
+    }
+
+    pub fn with_bounded_control_scalars(mut self, events: u64, bytes: u64) -> Self {
+        self.bounded_control_scalar_events = Some(events);
+        self.bounded_control_scalar_bytes = Some(bytes);
         self
     }
 

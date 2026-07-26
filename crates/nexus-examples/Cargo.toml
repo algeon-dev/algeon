@@ -10,6 +10,10 @@ default-run = "embedded_backend"
 [lints]
 workspace = true
 
+[features]
+default = []
+cuvs = ["dep:cuvs-sys", "datafusion-nexus/server-cuvs", "nexus-query-engine/cuvs"]
+
 [dependencies]
 anyhow = { workspace = true }
 arrow = { workspace = true }
@@ -17,6 +21,7 @@ arrow-json = { workspace = true }
 axum = { workspace = true }
 cudf-sys = { workspace = true }
 cugraph-sys = { workspace = true }
+cuvs-sys = { workspace = true, optional = true }
 datafusion = { workspace = true }
 datafusion-nexus = { workspace = true, features = ["server-cugraph", "iceberg"] }
 nexus-query-engine = { workspace = true }

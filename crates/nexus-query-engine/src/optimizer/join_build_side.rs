@@ -323,7 +323,8 @@ fn bounded_left_semijoin_rows(plan: &QueryPlan, node_id: NodeId) -> Option<u64> 
         | PlanNode::Union(_)
         | PlanNode::Join(_)
         | PlanNode::EdgeNormalize(_)
-        | PlanNode::GraphAlgorithm(_) => None,
+        | PlanNode::GraphAlgorithm(_)
+        | PlanNode::VectorAlgorithm(_) => None,
     }
 }
 
@@ -346,7 +347,8 @@ fn bounded_left_semijoin_bytes(plan: &QueryPlan, node_id: NodeId) -> Option<u64>
         | PlanNode::Union(_)
         | PlanNode::Join(_)
         | PlanNode::EdgeNormalize(_)
-        | PlanNode::GraphAlgorithm(_) => None,
+        | PlanNode::GraphAlgorithm(_)
+        | PlanNode::VectorAlgorithm(_) => None,
     }
 }
 
@@ -396,7 +398,10 @@ fn output_field_is_grouped_aggregate_key(plan: &QueryPlan, node_id: NodeId, fiel
             field_index < input.output_schema().fields().len()
                 && output_field_is_grouped_aggregate_key(plan, window.input, field_index)
         }),
-        PlanNode::Union(_) | PlanNode::EdgeNormalize(_) | PlanNode::GraphAlgorithm(_) => false,
+        PlanNode::Union(_)
+        | PlanNode::EdgeNormalize(_)
+        | PlanNode::GraphAlgorithm(_)
+        | PlanNode::VectorAlgorithm(_) => false,
     }
 }
 

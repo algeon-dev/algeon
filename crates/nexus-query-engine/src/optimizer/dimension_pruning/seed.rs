@@ -148,7 +148,8 @@ fn push_filter_conjunct_to_reader_source(
         | PlanNode::Window(_)
         | PlanNode::Union(_)
         | PlanNode::EdgeNormalize(_)
-        | PlanNode::GraphAlgorithm(_) => false,
+        | PlanNode::GraphAlgorithm(_)
+        | PlanNode::VectorAlgorithm(_) => false,
     }
 }
 

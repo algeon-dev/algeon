@@ -263,7 +263,63 @@ impl QueryNode {
                 self.facts.placement,
                 self.facts.schema_behavior
             ),
+            PlanNode::VectorAlgorithm(node) => writeln!(
+                f,
+                "{padding}{} VectorAlgorithm inputs={} algorithm={} params={} output_schema_fields={} placement={} schema_behavior={}",
+                self.id,
+                format_node_ids(&node.inputs),
+                node.spec.algorithm,
+                format_vector_algorithm_params(&node.spec.params),
+                node.output_schema().fields().len(),
+                self.facts.placement,
+                self.facts.schema_behavior
+            ),
         }
+    }
+}
+
+fn format_vector_relation(binding: &super::VectorRelationBinding) -> String {
+    format!(
+        "input:{};row_id:{};features:{}",
+        binding.input,
+        binding.row_id.diagnostic_label(),
+        binding.vector.display_label()
+    )
+}
+
+fn format_vector_algorithm_params(params: &super::VectorAlgorithmParams) -> String {
+    match params {
+        super::VectorAlgorithmParams::BruteForceKnn(params) => format!(
+            "dataset=({}) queries=({}) k={} metric={}",
+            format_vector_relation(&params.dataset),
+            format_vector_relation(&params.queries),
+            params.k,
+            params.metric
+        ),
+        super::VectorAlgorithmParams::KMeans(params) => format!(
+            "input=({}) n_clusters={} max_iterations={} tolerance={} n_init={} init={} initial_centroids={} metric={}",
+            format_vector_relation(&params.input),
+            params.n_clusters,
+            params.max_iterations,
+            params.tolerance,
+            params.n_init,
+            params.init,
+            params
+                .initial_centroids
+                .as_ref()
+                .map_or_else(|| "none".to_string(), |binding| format!("({})", format_vector_relation(binding))),
+            params.metric
+        ),
+        super::VectorAlgorithmParams::Pca(params) => format!(
+            "input=({}) n_components={} whiten={} solver={} tolerance={} n_iterations={} flip_signs_based_on_u={}",
+            format_vector_relation(&params.input),
+            params.n_components,
+            params.whiten,
+            params.solver,
+            params.tolerance,
+            params.n_iterations,
+            params.flip_signs_based_on_u
+        ),
     }
 }
 

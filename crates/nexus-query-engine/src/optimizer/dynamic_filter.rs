@@ -328,7 +328,8 @@ fn earliest_filter_consumer_for_column(
         | PlanNode::Union(_)
         | PlanNode::Window(_)
         | PlanNode::EdgeNormalize(_)
-        | PlanNode::GraphAlgorithm(_) => None,
+        | PlanNode::GraphAlgorithm(_)
+        | PlanNode::VectorAlgorithm(_) => None,
     }
 }
 

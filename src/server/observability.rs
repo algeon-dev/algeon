@@ -16,7 +16,9 @@ use datafusion::{
 use crate::{
     error::{Error, ErrorCode, ErrorSourceDiagnostics, Facts},
     final_plan_observation::observe_final_plan,
-    native_exec::{NexusNativeComposedExec, NexusNativeExec, NexusNativeGpuProducerExec},
+    native_exec::{
+        NexusNativeComposedExec, NexusNativeComposedGpuProducerExec, NexusNativeExec, NexusNativeGpuProducerExec,
+    },
     native_report::{
         NativeDataFusionExecutionMetrics, NativeDataFusionExecutionReport, NativeDataFusionExecutionTsvTemplate,
         NativeDataFusionExecutionWorkloadItem, NativeDataFusionPlanningReport, NativeDataFusionPlanningWorkloadItem,
@@ -1046,7 +1048,9 @@ fn project_native_execution_metrics(
 fn is_native_execution_wrapper(plan: &dyn ExecutionPlan) -> bool {
     if plan.downcast_ref::<NexusNativeExec>().is_some()
         || plan.downcast_ref::<NexusNativeComposedExec>().is_some()
+        || plan.downcast_ref::<NexusNativeComposedGpuProducerExec>().is_some()
         || plan.downcast_ref::<NexusNativeGpuProducerExec>().is_some()
+        || plan.downcast_ref::<crate::cuvs_sql::CuvsAlgoExec>().is_some()
     {
         return true;
     }

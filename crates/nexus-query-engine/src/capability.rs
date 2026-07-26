@@ -53,7 +53,7 @@ pub use model::{
     ReservationRequirement, ReservationRequirementScope, ResidentResource, ResidualRequirement, ResultSinkKind,
     STATISTICAL_JOIN_FINAL_SORT_REQUIRES_EXACT_CONTRACTS, STRICT_UNRESOLVED_PREFLIGHT_GAPS, ScheduleConstraint,
     SharedProducerIdentity, SourceFormatCapability, StrictBoundedEnvelope, StrictUnresolvedPreflightGap,
-    SubgraphInvariant, SubgraphInvariantKind, lower_level_unresolved_preflight_gap,
+    SubgraphInvariant, SubgraphInvariantKind, VectorInputRole, lower_level_unresolved_preflight_gap,
     lower_level_unresolved_preflight_gap_for_contract, strict_unresolved_preflight_gap,
 };
 pub use requirements::reservation_requirement_scope;

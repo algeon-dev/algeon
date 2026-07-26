@@ -593,6 +593,7 @@ fn root_topk_all_keyless_outer_cross_consumers_reach_window(
             | PlanNode::Union(_)
             | PlanNode::EdgeNormalize(_)
             | PlanNode::GraphAlgorithm(_)
+            | PlanNode::VectorAlgorithm(_)
             | PlanNode::Sort(_) => {
                 visited.remove(&node_id);
                 return Ok(false);
@@ -664,7 +665,8 @@ fn final_topk_sort_and_projection_chain(
             | PlanNode::Limit(_)
             | PlanNode::Union(_)
             | PlanNode::EdgeNormalize(_)
-            | PlanNode::GraphAlgorithm(_) => {
+            | PlanNode::GraphAlgorithm(_)
+            | PlanNode::VectorAlgorithm(_) => {
                 return Err(CapabilityDecision::rejected(
                     "root_topk_join_aggregate_requires_final_sort",
                     [
@@ -836,7 +838,8 @@ fn root_topk_distinct_aggregate_ids(
             | PlanNode::Limit(_)
             | PlanNode::Union(_)
             | PlanNode::EdgeNormalize(_)
-            | PlanNode::GraphAlgorithm(_) => {
+            | PlanNode::GraphAlgorithm(_)
+            | PlanNode::VectorAlgorithm(_) => {
                 return Err(CapabilityDecision::rejected(
                     "root_topk_join_aggregate_rejects_nested_blocking_or_branch_node",
                     [("node_id", node_id.to_string()), ("operator", node_operator_fact(&node.kind).to_string())],
@@ -1293,7 +1296,8 @@ fn root_topk_joined_pipeline_has_branch_local_source_reduction(
             | PlanNode::Limit(_)
             | PlanNode::Union(_)
             | PlanNode::EdgeNormalize(_)
-            | PlanNode::GraphAlgorithm(_),
+            | PlanNode::GraphAlgorithm(_)
+            | PlanNode::VectorAlgorithm(_),
         )
         | None => Ok(false),
     };
@@ -1377,7 +1381,8 @@ fn root_topk_direct_local_parquet_pipeline_has_source_reduction(
             | PlanNode::Limit(_)
             | PlanNode::Union(_)
             | PlanNode::EdgeNormalize(_)
-            | PlanNode::GraphAlgorithm(_),
+            | PlanNode::GraphAlgorithm(_)
+            | PlanNode::VectorAlgorithm(_),
         )
         | None => Ok(false),
     };

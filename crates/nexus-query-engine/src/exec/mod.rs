@@ -50,6 +50,7 @@ mod retry;
 mod source;
 mod util;
 mod validate;
+mod vector_algorithm;
 
 #[doc(hidden)]
 pub use bounded::strict::{
@@ -346,6 +347,7 @@ use self::{
     output::{QueryExecutionOutcome, QueryExecutionResult as ExecutionResult, QueryOutput as Output},
     util::*,
     validate::*,
+    vector_algorithm::*,
 };
 use crate::{
     chunk::{
@@ -698,6 +700,7 @@ fn plan_node_kind(node: &PlanNode) -> &'static str {
         PlanNode::Union(_) => "union",
         PlanNode::EdgeNormalize(_) => "edge_normalize",
         PlanNode::GraphAlgorithm(_) => "graph_algorithm",
+        PlanNode::VectorAlgorithm(_) => "vector_algorithm",
     }
 }
 
@@ -893,6 +896,24 @@ fn execute_node(
             #[cfg(not(feature = "cugraph"))]
             let result = execute_graph_algorithm(context, node.id, graph, input, side_inputs, metrics);
             Ok(result.map_err(|error| error.with_fact("node_id", node.id))?)
+        },
+        PlanNode::VectorAlgorithm(vector) => {
+            #[cfg(feature = "cuvs")]
+            {
+                validate_vector_algorithm_execution(node.id, vector)?;
+                let mut inputs = std::collections::BTreeMap::new();
+                for input_id in &vector.inputs {
+                    if !inputs.contains_key(input_id) {
+                        let input = execute_node(context, plan, *input_id, gpu_inputs, scratch, metrics)?;
+                        inputs.insert(*input_id, input);
+                    }
+                }
+                execute_vector_algorithm(context, plan, node.id, vector, &inputs)
+            }
+            #[cfg(not(feature = "cuvs"))]
+            {
+                execute_vector_algorithm(node.id, vector)
+            }
         },
     }?;
 

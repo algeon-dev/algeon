@@ -237,6 +237,7 @@ fn projection_scalar_setop_components(
             | PlanNode::Union(_)
             | PlanNode::EdgeNormalize(_)
             | PlanNode::GraphAlgorithm(_)
+            | PlanNode::VectorAlgorithm(_)
             | PlanNode::Source(_)
             | PlanNode::Filter(_)
             | PlanNode::Projection(_) => {},

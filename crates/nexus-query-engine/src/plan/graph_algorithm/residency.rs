@@ -357,7 +357,8 @@ fn graph_residency_descriptor_for_edge_node(
         | PlanNode::Join(_)
         | PlanNode::Union(_)
         | PlanNode::EdgeNormalize(_)
-        | PlanNode::GraphAlgorithm(_) => Err(GraphSourceFingerprintBypassReason::UnsupportedTransformedInput),
+        | PlanNode::GraphAlgorithm(_)
+        | PlanNode::VectorAlgorithm(_) => Err(GraphSourceFingerprintBypassReason::UnsupportedTransformedInput),
     }
 }
 

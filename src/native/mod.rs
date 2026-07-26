@@ -330,7 +330,8 @@ fn native_node_allows_declared_output_ordering_sort_append(
         | NativePlanNode::Join(_)
         | NativePlanNode::Union(_)
         | NativePlanNode::EdgeNormalize(_)
-        | NativePlanNode::GraphAlgorithm(_) => false,
+        | NativePlanNode::GraphAlgorithm(_)
+        | NativePlanNode::VectorAlgorithm(_) => false,
     };
     stack.pop();
     allowed
@@ -364,7 +365,8 @@ fn native_node_reproduces_declared_output_ordering(
         | NativePlanNode::Join(_)
         | NativePlanNode::Union(_)
         | NativePlanNode::EdgeNormalize(_)
-        | NativePlanNode::GraphAlgorithm(_) => false,
+        | NativePlanNode::GraphAlgorithm(_)
+        | NativePlanNode::VectorAlgorithm(_) => false,
     };
     stack.pop();
     reproduced
@@ -398,7 +400,8 @@ fn native_node_reproduces_limit_output_ordering(
         | NativePlanNode::Join(_)
         | NativePlanNode::Union(_)
         | NativePlanNode::EdgeNormalize(_)
-        | NativePlanNode::GraphAlgorithm(_) => false,
+        | NativePlanNode::GraphAlgorithm(_)
+        | NativePlanNode::VectorAlgorithm(_) => false,
     };
     stack.pop();
     reproduced

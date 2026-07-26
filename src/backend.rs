@@ -16,7 +16,7 @@ use crate::{
     error::{Error, ErrorCode, Result},
     native_exec::{NexusNativeExecutionConfig, QueryAdmissionSource},
     planner::{FinalPlanRequirement, NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule},
-    session::install_nexus_native_rule_with_session_config,
+    session::{NexusSessionStateBuilderExt, install_nexus_native_rule_with_session_config},
     session_config::DataFusionNexusSessionConfig,
 };
 
@@ -223,6 +223,14 @@ impl NexusGpuBackend {
 
     /// Install this backend's native optimizer into a DataFusion session builder.
     pub fn install_on(&self, builder: SessionStateBuilder) -> Result<SessionStateBuilder> {
+        let builder = builder.try_with_cuvs_sql().map_err(|error| {
+            Error::new(
+                ErrorCode::InvalidRequest,
+                "datafusion_nexus.backend.install_on",
+                "failed to install the Nexus cuVS query planner",
+            )
+            .with_source(error)
+        })?;
         #[cfg(feature = "cugraph")]
         let builder = {
             let mut builder = builder;

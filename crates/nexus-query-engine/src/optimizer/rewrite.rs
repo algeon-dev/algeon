@@ -116,6 +116,12 @@ pub(super) fn clone_plan_node_with_inputs(
             remap_graph_algorithm_spec_side_inputs(&mut graph.spec, &input_remap);
             PlanNode::GraphAlgorithm(graph)
         },
+        PlanNode::VectorAlgorithm(vector) => {
+            let mut vector = vector.clone();
+            vector.spec.params.remap_relation_inputs(&mut rewrite_input);
+            vector.inputs = vector.spec.params.relation_bindings().map(|binding| binding.input).collect();
+            PlanNode::VectorAlgorithm(vector)
+        },
     }
 }
 
@@ -202,7 +208,10 @@ mod tests {
             GraphAlgorithmParams, GraphAlgorithmSpec, GraphBfsParams, GraphBfsPredicateInputs,
             GraphConstructionOptions, GraphEdgeColumnBindings, GraphEdgePredicateInput, GraphPredicateInput, JoinNode,
             JoinSpec, JoinType, LimitNode, PlanFacts, ProjectionNode, ProjectionOutput, SchemaBehavior, SortNode,
-            UnionNode, WindowNode, WindowSpec,
+            UnionNode, VectorAlgorithm, VectorAlgorithmNode, VectorAlgorithmParams, VectorAlgorithmSpec,
+            VectorBruteForceKnnParams, VectorDistanceMetric, VectorKMeansParams, VectorPcaParams,
+            VectorRelationBinding, VectorRowIdBinding, WindowNode, WindowSpec, vector_brute_force_knn_output_schema,
+            vector_kmeans_output_schema, vector_pca_output_schema,
         },
         source::{GpuResidentSource, SourceNode},
     };
@@ -214,6 +223,7 @@ mod tests {
 
             assert_eq!(cloned.input_ids(), expected_inputs.as_slice(), "{label}");
             assert_graph_bfs_side_inputs_match_input_list(label, &cloned);
+            assert_vector_bindings_match_input_list(label, &cloned);
         }
     }
 
@@ -225,6 +235,7 @@ mod tests {
 
             assert_eq!(remapped.input_ids(), expected_inputs.as_slice(), "{label}");
             assert_graph_bfs_side_inputs_match_input_list(label, &remapped);
+            assert_vector_bindings_match_input_list(label, &remapped);
         }
     }
 
@@ -350,6 +361,13 @@ mod tests {
                 graph_algorithm_with_all_bfs_side_inputs(),
                 (0..=6).map(|index| remapped(node_id(index))).collect(),
             ),
+            ("vector_brute_force_knn", vector_brute_force_knn(), vec![remapped(node_id(12)), remapped(node_id(13))]),
+            (
+                "vector_kmeans_with_initial_centroids",
+                vector_kmeans_with_initial_centroids(),
+                vec![remapped(node_id(13)), remapped(node_id(14))],
+            ),
+            ("vector_pca", vector_pca(), vec![remapped(node_id(15))]),
         ]
     }
 
@@ -392,6 +410,75 @@ mod tests {
         assert_eq!(params.predicates.target_vertices.as_ref().map(|input| input.input), Some(remapped(node_id(4))));
         assert_eq!(params.predicates.include_edge_ids.as_ref().map(|input| input.input), Some(remapped(node_id(5))));
         assert_eq!(params.predicates.include_edges.as_ref().map(|input| input.input), Some(remapped(node_id(6))));
+    }
+
+    fn vector_brute_force_knn() -> PlanNode {
+        let params = VectorBruteForceKnnParams::new(
+            vector_relation_binding(node_id(12)),
+            vector_relation_binding(node_id(13)),
+            3,
+            VectorDistanceMetric::L2Expanded,
+        );
+        vector_algorithm_node(
+            VectorAlgorithm::BruteForceKnn,
+            VectorAlgorithmParams::BruteForceKnn(params),
+            vector_brute_force_knn_output_schema(DataType::Int32, DataType::Int32),
+        )
+    }
+
+    fn vector_kmeans_with_initial_centroids() -> PlanNode {
+        let params = VectorKMeansParams::new(vector_relation_binding(node_id(13)), 4)
+            .with_initial_centroids(vector_relation_binding(node_id(14)));
+        vector_algorithm_node(
+            VectorAlgorithm::KMeans,
+            VectorAlgorithmParams::KMeans(params),
+            vector_kmeans_output_schema(DataType::Int32),
+        )
+    }
+
+    fn vector_pca() -> PlanNode {
+        let params = VectorPcaParams::new(vector_relation_binding(node_id(15)), 1);
+        vector_algorithm_node(
+            VectorAlgorithm::Pca,
+            VectorAlgorithmParams::Pca(params),
+            vector_pca_output_schema(DataType::Int32, 1),
+        )
+    }
+
+    fn vector_algorithm_node(
+        algorithm: VectorAlgorithm,
+        params: VectorAlgorithmParams,
+        output_schema: Arc<Schema>,
+    ) -> PlanNode {
+        let spec = VectorAlgorithmSpec::new(algorithm, params, output_schema);
+        let inputs = spec.params.relation_bindings().map(|binding| binding.input).collect();
+        PlanNode::VectorAlgorithm(VectorAlgorithmNode { inputs, spec })
+    }
+
+    fn vector_relation_binding(input: NodeId) -> VectorRelationBinding {
+        VectorRelationBinding::new(input, VectorRowIdBinding::column("id"), ["x"])
+    }
+
+    fn assert_vector_bindings_match_input_list(label: &str, node: &PlanNode) {
+        let PlanNode::VectorAlgorithm(vector) = node else {
+            return;
+        };
+        match &vector.spec.params {
+            VectorAlgorithmParams::BruteForceKnn(params) => {
+                assert_eq!(vector.inputs, [params.dataset.input, params.queries.input], "{label}");
+            },
+            VectorAlgorithmParams::KMeans(params) => {
+                assert_eq!(vector.inputs.first().copied(), Some(params.input.input), "{label}: input");
+                assert_eq!(
+                    vector.inputs.get(1).copied(),
+                    params.initial_centroids.as_ref().map(|binding| binding.input),
+                    "{label}: initial centroids"
+                );
+            },
+            VectorAlgorithmParams::Pca(params) => {
+                assert_eq!(vector.inputs, [params.input.input], "{label}");
+            },
+        }
     }
 
     fn test_schema(fields: &[&str]) -> Arc<Schema> {

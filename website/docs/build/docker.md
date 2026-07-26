@@ -9,14 +9,15 @@ description: Build the DataFusion Nexus Flight SQL server image from locally bui
 The Docker image packages the standalone Flight SQL server plus the exact
 forked RAPIDS libraries it was linked against. It is a **packaging step after a
 source build**, not a replacement for building `cudf-nexus`, `cugraph-nexus`, and
-`datafusion-nexus` from source.
+`cuvs-nexus`, `cugraph-nexus`, and `datafusion-nexus` from source.
 
 The image build has two phases:
 
 1. `docker/build.sh` runs on the host. It builds
    `datafusion_nexus_server`, stages the binary, copies the locally built
-   forked cuDF/RMM libraries, copies cuGraph/cuVS when the `cugraph` feature is
-   enabled, and bundles optional KvikIO/nvCOMP libraries when they are present.
+   forked cuDF/RMM libraries, then adds cuVS and cuGraph libraries for the
+   selected features. cuGraph always brings its cuVS runtime dependency.
+   It also bundles optional KvikIO/nvCOMP libraries when they are present.
    It strips artifacts when `strip` is available and rewrites RUNPATHs when
    `patchelf` is available.
 2. `docker build` runs the Dockerfile. It copies that staged payload into an
@@ -32,12 +33,13 @@ want to package. The default full image expects these sibling artifacts:
 <NEXUS_ROOT>/
 ├── cudf-nexus/cudf-install/lib/libcudf.so
 ├── cudf-nexus/cudf-install/lib/librmm.so
+├── cuvs-nexus/cuvs-install/lib/libcuvs.so
 ├── cugraph-nexus/cugraph/cpp/build/libcugraph.so
 └── datafusion-nexus/
 ```
 
-The lean `FEATURES=server,iceberg,nvml` image omits cuGraph and does not need
-the `cugraph-nexus` artifact. Production examples keep `nvml` enabled so live
+The lean `FEATURES=server,iceberg,nvml` image omits cuVS and cuGraph, so it
+needs neither sibling artifact. Production examples keep `nvml` enabled so live
 device telemetry is available without affecting admission decisions.
 
 You also need Docker with NVIDIA Container Toolkit installed on the runtime
@@ -61,13 +63,14 @@ From the `datafusion-nexus` checkout:
 ```bash
 cd "$NEXUS_ROOT/datafusion-nexus"
 
-# Full image: Flight SQL server + Iceberg + cuGraph SQL + NVML diagnostics.
+# Full image: Flight SQL server + Iceberg + cuVS/cuGraph SQL + NVML diagnostics.
 bash docker/build.sh
 # Run the exact docker build command printed above. It includes policy-derived
 # CPU label inputs and artifact/provenance hashes.
 ```
 
-For a smaller cuDF-only server image, omit `cugraph` when staging the payload:
+For a smaller cuDF-only server image, omit both `cugraph` and `cuvs` when
+staging the payload:
 
 ```bash
 FEATURES=server,iceberg,nvml bash docker/build.sh

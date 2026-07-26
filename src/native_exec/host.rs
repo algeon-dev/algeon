@@ -110,6 +110,22 @@ impl NexusNativeExec {
         prepared.execution_config = prepared.execution_config.with_lakehouse_footer_pruning(false);
         prepared
     }
+
+    /// Convert this host boundary into an internal native producer so an
+    /// accelerator consumer can keep the relational result device-resident.
+    pub(crate) fn to_gpu_resident_producer(
+        &self,
+        input_name: impl Into<String>,
+    ) -> crate::error::Result<super::producer::NexusNativeGpuProducerExec> {
+        super::producer::NexusNativeGpuProducerExec::try_new_with_metrics_capture_and_shape(
+            input_name,
+            self.plan.clone_with_gpu_resident_sink(),
+            self.execution_config.metrics_capture_factory(),
+            self.execution_config.plan_task_mapping_datafusion_shape(),
+            self.execution_config.lakehouse_footer_pruning(),
+            self.execution_config.source_storage_profiles().to_vec(),
+        )
+    }
 }
 
 impl DisplayAs for NexusNativeExec {

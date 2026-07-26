@@ -10,7 +10,7 @@ as `env.sh` in your checkout root (`$NEXUS_ROOT`) and source it in every
 shell you build or test from.
 
 ```bash title="$NEXUS_ROOT/env.sh"
-# Root that holds the three sibling checkouts.
+# Root that holds the four sibling checkouts.
 nexus_env_source="${BASH_SOURCE[0]:-$0}"
 nexus_env_dir=$(dirname "$nexus_env_source")
 nexus_env_dir=$(cd "$nexus_env_dir" && pwd)
@@ -22,7 +22,7 @@ export NEXUS_ROOT
 source "$HOME/.cargo/env"
 
 # --- CUDA toolkit -----------------------------------------------------------
-# CUDACXX / CUDAToolkit_ROOT are read by CMake (libcudf, libcugraph, the
+# CUDACXX / CUDAToolkit_ROOT are read by CMake (libcudf, libcuvs, libcugraph, the
 # cudf-nexus-sys shim); nvcc must ALSO be on PATH for CMake language detection.
 export CUDA_HOME=/usr/local/cuda
 export CUDA_PATH="$CUDA_HOME"
@@ -40,13 +40,13 @@ export CC=/usr/bin/gcc-14
 export CXX=/usr/bin/g++-14
 export CUDAHOSTCXX=/usr/bin/g++-14
 
-# --- RAPIDS install prefix ---------------------------------------------------
-# One prefix shared by the whole stack (see below).
+# --- RAPIDS native libraries -------------------------------------------------
 export CUDF_INSTALL_DIR="$NEXUS_ROOT/cudf-nexus/cudf-install"
 export INSTALL_PREFIX="$CUDF_INSTALL_DIR"
+export CUVS_INSTALL_DIR="$NEXUS_ROOT/cuvs-nexus/cuvs-install"
 
 # --- Runtime library resolution ----------------------------------------------
-export LD_LIBRARY_PATH="$CUDF_INSTALL_DIR/lib:$CUDA_HOME/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export LD_LIBRARY_PATH="$CUDF_INSTALL_DIR/lib:$CUVS_INSTALL_DIR/lib:$CUDA_HOME/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 ```
 
 ## What each variable is for
@@ -60,25 +60,27 @@ export LD_LIBRARY_PATH="$CUDF_INSTALL_DIR/lib:$CUDA_HOME/lib64${LD_LIBRARY_PATH:
 | `CUDF_RUST_CMAKE` | `cudf-nexus-sys`, `cmake-rs` | Optional absolute pin for the CMake executable. The build script forwards it through cmake-rs's standard `CMAKE` input and tracks the pin as rebuild identity. |
 | `PATH` (+`$CUDA_HOME/bin`) | CMake language detection (`nvcc`), one-shot tool discovery | The `cudf-nexus-sys` shim declares CUDA as a project language; setting only `CUDA_HOME` is not enough — `nvcc` must be on `PATH`. PATH is **not** a `cargo:rerun-if-env-changed` input for `cudf-nexus-sys`. |
 | `INSTALL_PREFIX` | `cudf/build.sh` | Where `./build.sh libcudf` installs the libcudf tree. The RAPIDS build script defaults to `$CONDA_PREFIX`, which is unset outside conda — this must point at `cudf-nexus/cudf-install`. |
-| `CUDF_INSTALL_DIR` | `cudf-nexus-sys/build.rs`, `cugraph-nexus/scripts/build_libcugraph.sh` | How the Rust shim discovers the prebuilt libcudf, and how the cuGraph build resolves the **shared** RMM / rapids_logger packages. |
-| `LD_LIBRARY_PATH` (+`$CUDF_INSTALL_DIR/lib`, `$CUDA_HOME/lib64`) | test binaries, benchmarks, servers | Runtime resolution of `libcudf.so`, `librmm.so`, `libcugraph.so`. `cudf-nexus-sys` bakes a `DT_RUNPATH` for its own consumers, but the install prefix on `LD_LIBRARY_PATH` is the documented contract for everything else. |
+| `CUDF_INSTALL_DIR` | cuDF, cuVS, and cuGraph builds | The canonical cuDF install, including the one shared `librmm.so` used by the rest of the stack. |
+| `CUVS_INSTALL_DIR` | cuVS and cuGraph builds | Where the cuVS build installs `libcuvs.so`; cuGraph uses this library rather than building its own copy. |
+| `LD_LIBRARY_PATH` (+`$CUDF_INSTALL_DIR/lib`, `$CUVS_INSTALL_DIR/lib`, `$CUDA_HOME/lib64`) | test binaries, benchmarks, servers | Runtime resolution of the native cuDF/RMM, cuVS, and cuGraph libraries. |
 
-:::warning[Keep the three prefix views consistent]
-`CUDF_INSTALL_DIR`, `INSTALL_PREFIX`, and the `LD_LIBRARY_PATH` entry must
-all point at the **same** install tree. If they drift (for example after
+:::warning[Keep the cuDF prefix views consistent]
+`CUDF_INSTALL_DIR`, `INSTALL_PREFIX`, and the cuDF entry in `LD_LIBRARY_PATH`
+must all point at the **same** install tree. If they drift (for example after
 moving a checkout), `cudf-nexus-sys` links one libcudf while tests load another —
 the staleness check in `cudf-nexus-sys/build.rs` warns about exactly this.
 :::
 
-## Why one shared install prefix
+## Dependency relationship
 
-`librmm.so` must exist **exactly once per process**. `datafusion-nexus
---features cugraph` loads libcudf and libcugraph together; if the cuGraph
-build let CPM compile its own private RMM, both copies would bind RMM symbols
-in the same process and corrupt memory-resource state.
-`cugraph-nexus/scripts/build_libcugraph.sh` therefore resolves `rmm` and
-`rapids_logger` from `CUDF_INSTALL_DIR` and **aborts** if a private copy is
-still reachable — this is enforced, not advisory.
+The `libcudf` build in `cudf-nexus` produces the stack's one shared
+`librmm.so`. The `libcuvs` build in `cuvs-nexus` uses it, and the `libcugraph`
+build in `cugraph-nexus` uses both `librmm.so` and `libcuvs.so`. Build in that
+order:
+
+```text
+cuDF/RMM → cuVS → cuGraph → DataFusion Nexus
+```
 
 ## Validated against shell-state leakage
 

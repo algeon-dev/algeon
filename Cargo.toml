@@ -52,6 +52,8 @@ cudf = { package = "cudf-nexus", path = "../cudf-nexus/cudf-nexus" }
 cudf-sys = { package = "cudf-nexus-sys", path = "../cudf-nexus/cudf-nexus-sys" }
 cugraph = { package = "cugraph-nexus", path = "../cugraph-nexus/cugraph-nexus" }
 cugraph-sys = { package = "cugraph-nexus-sys", path = "../cugraph-nexus/cugraph-nexus-sys" }
+cuvs = { package = "cuvs-nexus", path = "../cuvs-nexus/cuvs-nexus" }
+cuvs-sys = { package = "cuvs-nexus-sys", path = "../cuvs-nexus/cuvs-nexus-sys" }
 anyhow = "1"
 arrow = { version = "58.3.0", default-features = false, features = ["ipc"] }
 arrow-flight = { version = "58.3.0", features = ["flight-sql-experimental"] }
@@ -83,6 +85,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 [features]
 default = []
 cugraph = ["dep:cugraph", "dep:cugraph-sys", "nexus-query-engine/cugraph"]
+cuvs = ["dep:cuvs", "dep:cuvs-sys", "nexus-query-engine/cuvs"]
 # Optional live NVML diagnostics; admission capacity and SM count remain on cudf CUDA/RMM inventory.
 nvml = ["nexus-query-engine/nvml"]
 iceberg = [
@@ -110,6 +113,7 @@ server = [
   "dep:uuid",
 ]
 server-cugraph = ["server", "cugraph"]
+server-cuvs = ["server", "cuvs"]
 
 [dependencies]
 arrow = { workspace = true }
@@ -129,6 +133,10 @@ cugraph = { workspace = true, optional = true }
 # Direct (non-transitive) dep on cugraph-sys so this crate's build.rs receives
 # DEP_CUGRAPH_RUNTIME_LIB_DIRS from cugraph-sys's `links = "cugraph"` metadata.
 cugraph-sys = { workspace = true, optional = true }
+cuvs = { workspace = true, optional = true }
+# Direct edge so build.rs receives the authoritative libcuvs/libcuvs_c paths
+# exported through cuvs-sys's `links = "cuvs_c"` metadata.
+cuvs-sys = { workspace = true, optional = true }
 nexus-query-engine = { workspace = true }
 dashmap = { version = "6.2", optional = true }
 datafusion = { workspace = true }
@@ -186,3 +194,11 @@ required-features = ["server", "iceberg"]
 [[test]]
 name = "server_cugraph_tests"
 required-features = ["server", "cugraph"]
+
+[[test]]
+name = "server_cuvs_tests"
+required-features = ["server", "cuvs"]
+
+[[test]]
+name = "cuvs_sql_gpu_tests"
+required-features = ["cuvs"]

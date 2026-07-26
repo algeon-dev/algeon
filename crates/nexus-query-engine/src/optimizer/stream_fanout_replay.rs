@@ -276,7 +276,8 @@ fn stream_replayable_subtree_inner(plan: &QueryPlan, node_id: NodeId, visiting: 
         | PlanNode::Limit(_)
         | PlanNode::Union(_)
         | PlanNode::EdgeNormalize(_)
-        | PlanNode::GraphAlgorithm(_) => false,
+        | PlanNode::GraphAlgorithm(_)
+        | PlanNode::VectorAlgorithm(_) => false,
     };
     visiting.remove(&node_id);
     replayable

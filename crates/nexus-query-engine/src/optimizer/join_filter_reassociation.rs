@@ -436,7 +436,8 @@ impl<'a> JoinFilterReassociationRewriter<'a> {
             | PlanNode::Limit(_)
             | PlanNode::Union(_)
             | PlanNode::EdgeNormalize(_)
-            | PlanNode::GraphAlgorithm(_) => {},
+            | PlanNode::GraphAlgorithm(_)
+            | PlanNode::VectorAlgorithm(_) => {},
         }
 
         self.wrap_filter_above_subtree(old_input, predicate)
@@ -710,7 +711,8 @@ fn residual_filter_pushdown_target_supported(plan: &QueryPlan, node_id: NodeId) 
         | PlanNode::Limit(_)
         | PlanNode::Union(_)
         | PlanNode::EdgeNormalize(_)
-        | PlanNode::GraphAlgorithm(_) => false,
+        | PlanNode::GraphAlgorithm(_)
+        | PlanNode::VectorAlgorithm(_) => false,
     }
 }
 

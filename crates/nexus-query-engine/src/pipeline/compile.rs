@@ -283,6 +283,9 @@ fn input_role(kind: &PlanNode, input_index: usize) -> InputRole {
         PlanNode::Limit(_) => InputRole::LimitInput,
         PlanNode::Union(_) => InputRole::UnionInput { input_index },
         PlanNode::GraphAlgorithm(_) => InputRole::GraphAlgorithmInput,
+        PlanNode::VectorAlgorithm(vector) => InputRole::VectorAlgorithmInput {
+            role: crate::capability::VectorInputRole::for_vector_input(vector, input_index),
+        },
         PlanNode::Join(join) => {
             let side = if input_index == 0 { JoinSide::Left } else { JoinSide::Right };
             if side == join.spec.build_side {
@@ -424,6 +427,11 @@ fn build_tasks(
                 return Err(invalid("graph algorithm nodes are not supported by the strict compiled pipeline")
                     .with_fact("node_id", node_id)
                     .with_fact("operator", "graph_algorithm"));
+            },
+            PlanNode::VectorAlgorithm(_) => {
+                return Err(invalid("vector algorithm nodes are not supported by the strict compiled pipeline")
+                    .with_fact("node_id", node_id)
+                    .with_fact("operator", "vector_algorithm"));
             },
             PlanNode::EdgeNormalize(_) => {
                 return Err(invalid("edge normalize nodes are not supported by the strict compiled pipeline")
@@ -825,7 +833,8 @@ fn build_barriers(
             | PlanNode::Limit(_)
             | PlanNode::Union(_)
             | PlanNode::EdgeNormalize(_)
-            | PlanNode::GraphAlgorithm(_) => {},
+            | PlanNode::GraphAlgorithm(_)
+            | PlanNode::VectorAlgorithm(_) => {},
         }
     }
     let sink_input = sink_task.unwrap_or_else(|| {
@@ -1025,6 +1034,12 @@ fn input_role_label(role: InputRole) -> &'static str {
         InputRole::LimitInput => "limit_input",
         InputRole::UnionInput { .. } => "union_input",
         InputRole::GraphAlgorithmInput => "graph_algorithm_input",
+        InputRole::VectorAlgorithmInput { role } => match role {
+            crate::capability::VectorInputRole::Dataset => "vector_dataset_input",
+            crate::capability::VectorInputRole::Queries => "vector_queries_input",
+            crate::capability::VectorInputRole::Input => "vector_input",
+            crate::capability::VectorInputRole::InitialCentroids => "vector_initial_centroids_input",
+        },
         InputRole::JoinBuildInput { .. } => "join_build_input",
         InputRole::JoinProbeInput { .. } => "join_probe_input",
         InputRole::SinkInput => "sink_input",

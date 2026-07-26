@@ -123,7 +123,6 @@ impl NexusNativeMetrics {
         Self::new_with_capture_and_shape(metrics, partition, None, None)
     }
 
-    #[cfg(any(test, feature = "cugraph"))]
     pub(crate) fn new_with_capture(
         metrics: &ExecutionPlanMetricsSet,
         partition: usize,

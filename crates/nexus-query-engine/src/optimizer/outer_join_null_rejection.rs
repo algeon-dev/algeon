@@ -512,7 +512,11 @@ fn trace_right_origins_inner(
                 trace_right_origins_inner(nodes, *input, column_name, path, traces);
             }
         },
-        PlanNode::Source(_) | PlanNode::Window(_) | PlanNode::EdgeNormalize(_) | PlanNode::GraphAlgorithm(_) => {},
+        PlanNode::Source(_)
+        | PlanNode::Window(_)
+        | PlanNode::EdgeNormalize(_)
+        | PlanNode::GraphAlgorithm(_)
+        | PlanNode::VectorAlgorithm(_) => {},
     }
     path.pop();
 }

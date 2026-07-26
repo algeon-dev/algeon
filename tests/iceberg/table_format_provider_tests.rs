@@ -9,6 +9,8 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+#[cfg(feature = "cuvs")]
+use arrow::array::{Array, Float32Array};
 use arrow::{
     array::{
         ArrayRef, BooleanArray, Float64Array, Int32Array, Int64Array, ListArray, MapArray, StringArray, StructArray,
@@ -35,6 +37,8 @@ use datafusion::{
     },
     prelude::{SessionConfig, SessionContext},
 };
+#[cfg(feature = "cuvs")]
+use datafusion_nexus::native_exec::NexusNativeExecutionConfig;
 use datafusion_nexus::{
     capability::CapabilityReason,
     error::{Error, ErrorCode, ErrorStatus},

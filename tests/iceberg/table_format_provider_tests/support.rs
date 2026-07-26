@@ -110,6 +110,36 @@ impl RealIcebergProviderFixture {
         })
     }
 
+    #[cfg(feature = "cuvs")]
+    fn new_float32_vector_list() -> Self {
+        Self::new_with_metadata_transform(|metadata| {
+            metadata["last-column-id"] = serde_json::json!(3);
+            let current_schema = metadata["schemas"]
+                .as_array_mut()
+                .unwrap()
+                .iter_mut()
+                .find(|schema| schema["schema-id"] == serde_json::json!(1))
+                .unwrap();
+            current_schema["identifier-field-ids"] = serde_json::json!([1]);
+            current_schema["fields"] = serde_json::json!([
+                {"id": 1, "name": "x", "required": true, "type": "long"},
+                {
+                    "id": 2,
+                    "name": "embedding",
+                    "required": true,
+                    "type": {
+                        "type": "list",
+                        "element-id": 3,
+                        "element-required": true,
+                        "element": "float"
+                    }
+                }
+            ]);
+            metadata["default-sort-order-id"] = serde_json::json!(0);
+            metadata["sort-orders"] = serde_json::json!([{"order-id": 0, "fields": []}]);
+        })
+    }
+
     fn new_with_metadata_transform(transform: impl FnOnce(&mut serde_json::Value)) -> Self {
         let temp_dir = tempfile::TempDir::new().unwrap();
         let table_location = temp_dir.path().join("table1");
@@ -143,6 +173,89 @@ impl RealIcebergProviderFixture {
     }
 
     async fn write_one_row_and_current_manifest_list(&self) {
+        self.write_vector_rows_and_current_manifest_list(&[(100, 200, 300)]).await;
+    }
+
+    async fn write_clusterable_vector_rows_and_current_manifest_list(&self) {
+        self.write_vector_rows_and_current_manifest_list(&[(100, 0, 0), (100, 1, 0), (100, 10, 10), (100, 11, 10)])
+            .await;
+    }
+
+    #[cfg(feature = "cuvs")]
+    async fn write_float32_vector_list_rows_and_current_manifest_list(&self, rows: &[(i64, &[f32])]) {
+        assert!(!rows.is_empty(), "vector-list fixture must contain at least one row");
+        assert!(
+            rows.iter().all(|(x, embedding)| *x == 100 && embedding.len() == 2),
+            "fixture must retain the table's identity partition value and a fixed vector dimension"
+        );
+        let current_snapshot = self.table.metadata().current_snapshot().unwrap();
+        let current_schema = current_snapshot.schema(self.table.metadata()).unwrap();
+        let arrow_schema = Arc::new(iceberg::arrow::schema_to_arrow_schema(current_schema.as_ref()).unwrap());
+        let DataType::List(element) = arrow_schema.field(1).data_type() else {
+            panic!("embedding must be an Iceberg list");
+        };
+        assert_eq!(element.data_type(), &DataType::Float32, "embedding values must be Float32");
+        let offsets =
+            (0..=rows.len()).map(|row| i32::try_from(row * 2).expect("small test List offset")).collect::<Vec<_>>();
+        let values = rows.iter().flat_map(|(_, embedding)| embedding.iter().copied()).collect::<Vec<_>>();
+        let batch = RecordBatch::try_new(
+            Arc::clone(&arrow_schema),
+            vec![
+                Arc::new(Int64Array::from(rows.iter().map(|(x, _)| *x).collect::<Vec<_>>())),
+                Arc::new(ListArray::new(
+                    Arc::clone(element),
+                    OffsetBuffer::new(offsets.into()),
+                    Arc::new(Float32Array::from(values)),
+                    None,
+                )),
+            ],
+        )
+        .unwrap();
+        let data_path = self.table_location.join("data-0001.parquet");
+        let file = File::create(&data_path).unwrap();
+        let mut parquet_writer = ArrowWriter::try_new(file, arrow_schema, None).unwrap();
+        parquet_writer.write(&batch).unwrap();
+        parquet_writer.close().unwrap();
+
+        let current_partition_spec = self.table.metadata().default_partition_spec();
+        let manifest_path = self.table_location.join("metadata/data_manifest.avro");
+        let manifest_output = self.table.file_io().new_output(manifest_path.to_str().unwrap()).unwrap();
+        let mut writer = ManifestWriterBuilder::new(
+            manifest_output,
+            Some(current_snapshot.snapshot_id()),
+            current_schema,
+            current_partition_spec.as_ref().clone(),
+        )
+        .build_v2_data();
+        let data_file = DataFileBuilder::default()
+            .partition_spec_id(0)
+            .content(DataContentType::Data)
+            .file_path(data_path.to_str().unwrap().to_string())
+            .file_format(DataFileFormat::Parquet)
+            .file_size_in_bytes(fs::metadata(&data_path).unwrap().len())
+            .record_count(u64::try_from(rows.len()).expect("small fixture row count"))
+            .partition(Struct::from_iter([Some(Literal::long(100))]))
+            .key_metadata(None)
+            .build()
+            .unwrap();
+        writer.add_file(data_file, current_snapshot.sequence_number()).unwrap();
+        let data_file_manifest = writer.write_manifest_file().await.unwrap();
+
+        let manifest_list_writer =
+            self.table.file_io().new_output(current_snapshot.manifest_list()).unwrap().writer().await.unwrap();
+        let mut manifest_list_write = ManifestListWriter::v2(
+            manifest_list_writer,
+            current_snapshot.snapshot_id(),
+            current_snapshot.parent_snapshot_id(),
+            current_snapshot.sequence_number(),
+        );
+        manifest_list_write.add_manifests(vec![data_file_manifest].into_iter()).unwrap();
+        manifest_list_write.close().await.unwrap();
+    }
+
+    async fn write_vector_rows_and_current_manifest_list(&self, rows: &[(i64, i64, i64)]) {
+        assert!(!rows.is_empty(), "vector fixture must contain at least one row");
+        assert!(rows.iter().all(|(x, _, _)| *x == 100), "fixture must retain the table's identity partition value");
         let current_snapshot = self.table.metadata().current_snapshot().unwrap();
         let current_schema = current_snapshot.schema(self.table.metadata()).unwrap();
         let arrow_schema = Arc::new(iceberg::arrow::schema_to_arrow_schema(current_schema.as_ref()).unwrap());
@@ -150,14 +263,14 @@ impl RealIcebergProviderFixture {
         let batch = RecordBatch::try_new(
             Arc::clone(&arrow_schema),
             vec![
-                Arc::new(Int64Array::from(vec![100])),
-                Arc::new(Int64Array::from(vec![200])),
-                Arc::new(Int64Array::from(vec![300])),
-                Arc::new(StringArray::from(vec!["row"])),
-                Arc::new(Float64Array::from(vec![1.5])),
-                Arc::new(Int32Array::from(vec![32])),
-                Arc::new(Int64Array::from(vec![64])),
-                Arc::new(BooleanArray::from(vec![true])),
+                Arc::new(Int64Array::from(rows.iter().map(|(x, _, _)| *x).collect::<Vec<_>>())),
+                Arc::new(Int64Array::from(rows.iter().map(|(_, y, _)| *y).collect::<Vec<_>>())),
+                Arc::new(Int64Array::from(rows.iter().map(|(_, _, z)| *z).collect::<Vec<_>>())),
+                Arc::new(StringArray::from(vec!["row"; rows.len()])),
+                Arc::new(Float64Array::from(vec![1.5; rows.len()])),
+                Arc::new(Int32Array::from(vec![32; rows.len()])),
+                Arc::new(Int64Array::from(vec![64; rows.len()])),
+                Arc::new(BooleanArray::from(vec![true; rows.len()])),
             ],
         )
         .unwrap();
@@ -182,7 +295,7 @@ impl RealIcebergProviderFixture {
             .file_path(data_path.to_str().unwrap().to_string())
             .file_format(DataFileFormat::Parquet)
             .file_size_in_bytes(fs::metadata(&data_path).unwrap().len())
-            .record_count(1)
+            .record_count(u64::try_from(rows.len()).expect("small fixture row count"))
             .partition(Struct::from_iter([Some(Literal::long(100))]))
             .key_metadata(None)
             .build()

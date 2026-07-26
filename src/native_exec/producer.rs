@@ -11,6 +11,7 @@ use datafusion::{
     execution::context::TaskContext,
     physical_plan::{
         DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, SendableRecordBatchStream,
+        coop::CooperativeExec,
         metrics::{ExecutionPlanMetricsSet, MetricsSet},
     },
 };
@@ -305,7 +306,15 @@ pub(crate) fn gpu_resident_producer(plan: &dyn ExecutionPlan) -> Option<&dyn Gpu
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
     };
-    discoveries.iter().find_map(|discovery| discovery(plan))
+    discoveries.iter().find_map(|discovery| discovery(plan)).or_else(|| {
+        // DataFusion adds this scheduling-only wrapper around leaf plans after
+        // physical planning. It does not alter rows, partitions, or device
+        // ownership, so composed execution may safely reach the inner producer
+        // directly. Do not generalize this to repartition/coalesce wrappers:
+        // those are row-stream operators and would be host boundaries.
+        plan.downcast_ref::<CooperativeExec>()
+            .and_then(|cooperative| discoveries.iter().find_map(|discovery| discovery(cooperative.input().as_ref())))
+    })
 }
 
 pub(crate) fn gpu_resident_producer_input_name(plan: &dyn ExecutionPlan) -> Option<String> {

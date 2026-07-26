@@ -577,6 +577,12 @@ fn node_signature(node: &PlanNode) -> String {
             node.spec.edge_columns.weight.is_some(),
             node.output_schema().fields().len()
         ),
+        PlanNode::VectorAlgorithm(node) => format!(
+            "vector_algorithm:algorithm={}:inputs={}:schema_fields={}",
+            node.spec.algorithm,
+            node.inputs.len(),
+            node.output_schema().fields().len()
+        ),
     }
 }
 

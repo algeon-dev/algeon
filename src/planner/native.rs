@@ -1,7 +1,10 @@
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicU64, Ordering},
+};
 
 use datafusion::{
-    common::{Result as DataFusionResult, config::ConfigOptions},
+    common::{DataFusionError, Result as DataFusionResult, config::ConfigOptions},
     physical_optimizer::PhysicalOptimizerRule,
     physical_plan::ExecutionPlan,
 };
@@ -14,7 +17,8 @@ use crate::{
     error::{Error, ErrorCode},
     native::lakehouse_pruning,
     native_exec::{
-        NexusNativeComposedExec, NexusNativeExec, NexusNativeExecutionConfig, NexusNativeGpuProducerExec,
+        NexusNativeComposedExec, NexusNativeComposedGpuProducerExec, NexusNativeExec, NexusNativeExecutionConfig,
+        NexusNativeGpuProducerExec,
         admission::QueryAdmissionTicket,
         graph::{GraphAdmissionModelAsk, graph_execution_plan},
         plan_is_host_execution_qos_limited, plan_is_query_admission_wrapped,
@@ -43,6 +47,56 @@ pub use strict_bounded::{
     NativeStrictBoundedContractDiagnostics, NativeStrictBoundedRejectedCandidateDiagnostics,
     STRICT_BOUNDED_NON_JOIN_OUTSIDE_REPORT_SCOPE_REASON,
 };
+
+static NEXT_NATIVE_RELATIONAL_PRODUCER_ID: AtomicU64 = AtomicU64::new(0);
+
+/// Attempt native lowering for one relational child that will feed an outer
+/// accelerator operator. Successful host-native wrappers are converted to
+/// their GPU-resident producer form so the outer operator owns the only native
+/// context and final host boundary. Unsupported children remain ordinary
+/// DataFusion plans and are staged by the accelerator frontend.
+pub(crate) fn optimize_native_relational_child_to_gpu_producer(
+    plan: Arc<dyn ExecutionPlan>,
+    config: &NexusNativeOptimizerConfig,
+) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+    if crate::native_exec::producer::gpu_resident_producer_input_name(plan.as_ref()).is_some() {
+        return Ok(plan);
+    }
+    if config.native_execution_config().memory_control_policy().is_bounded() {
+        return Ok(plan);
+    }
+
+    let optimized = optimize_final_native_plan(
+        Arc::clone(&plan),
+        config.native_execution_config(),
+        config.native_optimizer_options(),
+        config.native_plan_cost_options(),
+    )?;
+    if !optimized.rewritten {
+        return Ok(plan);
+    }
+
+    // The normal root rewrite may retain DataFusion's cooperative wrapper
+    // around a native host plan. It is an ordinary row-stream wrapper, so it
+    // must be removed before this child becomes a device-handle producer.
+    let optimized_plan = peel_cooperative_native_exec(&optimized.plan).unwrap_or_else(|| Arc::clone(&optimized.plan));
+    let producer_id = NEXT_NATIVE_RELATIONAL_PRODUCER_ID.fetch_add(1, Ordering::Relaxed);
+    let input_name = format!("__datafusion_nexus_relational_gpu_input_{producer_id}");
+    if let Some(native) = optimized_plan.downcast_ref::<NexusNativeExec>() {
+        return native
+            .to_gpu_resident_producer(input_name)
+            .map(|producer| Arc::new(producer) as Arc<dyn ExecutionPlan>)
+            .map_err(DataFusionError::from);
+    }
+    if let Some(composed) = optimized_plan.downcast_ref::<NexusNativeComposedExec>() {
+        return composed
+            .to_gpu_resident_producer(input_name)
+            .map(|producer| Arc::new(producer) as Arc<dyn ExecutionPlan>)
+            .map_err(DataFusionError::from);
+    }
+
+    Ok(plan)
+}
 
 /// Internal optimizer-rule identity for completed-plan requirements.
 pub const NEXUS_FINAL_PLAN_REQUIREMENT_RULE_NAME: &str = "datafusion_nexus_final_plan_requirement";
@@ -586,6 +640,12 @@ fn collect_graph_model_ask_scan(
         }
         local_has_graph =
             update_graph_model_ask_scan(native.native_plan(), calibration_override, device_total_memory_bytes, scan)?;
+    } else if let Some(native) = plan.downcast_ref::<NexusNativeComposedGpuProducerExec>() {
+        if child_has_graph && native_plan_is_graph_ticket_light_fragment(native.native_plan()) {
+            return Ok(true);
+        }
+        local_has_graph =
+            update_graph_model_ask_scan(native.native_plan(), calibration_override, device_total_memory_bytes, scan)?;
     } else if let Some(native) = plan.downcast_ref::<NexusNativeGpuProducerExec>() {
         local_has_graph =
             update_graph_model_ask_scan(native.native_plan(), calibration_override, device_total_memory_bytes, scan)?;
@@ -658,7 +718,8 @@ fn native_plan_is_graph_dominated(native_plan: &nexus_query_engine::plan::QueryP
             | PlanNode::Window(_)
             | PlanNode::Sort(_)
             | PlanNode::Join(_)
-            | PlanNode::Union(_) => {
+            | PlanNode::Union(_)
+            | PlanNode::VectorAlgorithm(_) => {
                 return false;
             },
         }

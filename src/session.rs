@@ -18,6 +18,7 @@ use crate::graph_sql::{CugraphSqlConfig, cugraph_table_functions};
 #[cfg(feature = "cugraph")]
 use crate::native_exec::NexusNativeExecutionConfig;
 use crate::{
+    cuvs_sql::{CuvsQueryPlanner, cuvs_metadata_table_functions, cuvs_relation_planner},
     gpu_coverage_sql::gpu_coverage_table_function,
     planner::{
         HostExecutionQosConfig, NEXUS_FINAL_PLAN_REQUIREMENT_RULE_NAME, NEXUS_HOST_EXECUTION_QOS_RULE_NAME,
@@ -74,6 +75,13 @@ pub trait NexusSessionStateBuilderExt {
     /// selection. The rule wraps final DataFusion and mixed plans once.
     fn with_host_execution_qos(self, config: HostExecutionQosConfig) -> Self;
 
+    /// Install relation-aware cuVS SQL, metadata, and typed physical planning.
+    /// Existing opaque query planners are rejected; callers that need other
+    /// physical extension planners can compose them with the public
+    /// [`CuvsQueryPlanner`].
+    fn try_with_cuvs_sql(self) -> DataFusionResult<Self>
+    where Self: Sized;
+
     #[cfg(feature = "cugraph")]
     fn with_cugraph_sql(self, config: CugraphSqlConfig) -> Self;
 
@@ -94,6 +102,24 @@ impl NexusSessionStateBuilderExt for SessionStateBuilder {
             Arc::new(NexusHostExecutionQosRule::new(config)),
         );
         self.with_physical_optimizer_rules(rules)
+    }
+
+    fn try_with_cuvs_sql(mut self) -> DataFusionResult<Self> {
+        if self.query_planner().is_some() {
+            return Err(crate::error::Error::new(
+                crate::error::ErrorCode::InvalidRequest,
+                "datafusion_nexus.cuvs_sql.install",
+                "cannot install cuVS SQL over an existing query planner",
+            )
+            .with_log_safe_fact("reason", "query_planner_conflict")
+            .into());
+        }
+        self.relation_planners().get_or_insert_with(Vec::new).insert(0, cuvs_relation_planner());
+        let functions = self.table_functions().get_or_insert_with(Default::default);
+        for function in cuvs_metadata_table_functions() {
+            functions.insert(function.name().to_string(), function);
+        }
+        Ok(self.with_query_planner(Arc::new(CuvsQueryPlanner::default())))
     }
 
     #[cfg(feature = "cugraph")]

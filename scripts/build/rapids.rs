@@ -23,6 +23,14 @@ const CUDF_RAPIDS_LOGGER_LINKAGE_ENV: &str = "DEP_CUDF_RUST_RAPIDS_LOGGER_LINKAG
 const CUGRAPH_METADATA_ENV: &str = "DEP_CUGRAPH_METADATA";
 const CUGRAPH_RUNTIME_LIB_DIRS_ENV: &str = "DEP_CUGRAPH_RUNTIME_LIB_DIRS";
 const CUGRAPH_NATIVE_LINK_DIRS_ENV: &str = "DEP_CUGRAPH_NATIVE_LINK_DIRS";
+const CUGRAPH_CUVS_LIBRARY_PATH_ENV: &str = "DEP_CUGRAPH_CUVS_LIBRARY_PATH";
+const CUGRAPH_CUVS_RUNTIME_LIB_DIR_ENV: &str = "DEP_CUGRAPH_CUVS_RUNTIME_LIB_DIR";
+
+const CUVS_METADATA_ENV: &str = "DEP_CUVS_C_METADATA";
+const CUVS_RUNTIME_LIB_DIRS_ENV: &str = "DEP_CUVS_C_RUNTIME_LIB_DIRS";
+const CUVS_NATIVE_LINK_DIRS_ENV: &str = "DEP_CUVS_C_NATIVE_LINK_DIRS";
+const CUVS_LIBCUVS_RUNTIME_LIB_ENV: &str = "DEP_CUVS_C_LIBCUVS_RUNTIME_LIB";
+const CUVS_LIBCUVS_C_RUNTIME_LIB_ENV: &str = "DEP_CUVS_C_LIBCUVS_C_RUNTIME_LIB";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LinkArgTargets {
@@ -63,18 +71,27 @@ impl LinkArgTargets {
     }
 }
 
-#[derive(Clone, Copy)]
-#[allow(dead_code)] // Each including package selects only its own feature policy.
-pub enum CugraphRuntime {
-    Disabled,
-    EmitRpathAndRequireCudfIdentity,
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RapidsConsumers {
+    cugraph: bool,
+    cuvs: bool,
+}
+
+impl RapidsConsumers {
+    pub const fn new(cugraph: bool, cuvs: bool) -> Self {
+        Self { cugraph, cuvs }
+    }
+
+    const fn any(self) -> bool {
+        self.cugraph || self.cuvs
+    }
 }
 
 pub struct Config {
     /// Path as Cargo should track it, relative to the package manifest.
     pub support_source: &'static str,
     pub link_arg_targets: LinkArgTargets,
-    pub cugraph_runtime: CugraphRuntime,
+    pub consumers: RapidsConsumers,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -92,12 +109,24 @@ struct CugraphEnvironment {
     aggregate_metadata: Option<String>,
     runtime_lib_dirs: Option<String>,
     native_link_dirs: Option<String>,
+    cuvs_library_path: Option<String>,
+    cuvs_runtime_lib_dir: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct CuvsEnvironment {
+    aggregate_metadata: Option<String>,
+    runtime_lib_dirs: Option<String>,
+    native_link_dirs: Option<String>,
+    libcuvs_runtime_lib: Option<String>,
+    libcuvs_c_runtime_lib: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct EnvironmentSnapshot {
     cudf: CudfEnvironment,
     cugraph: CugraphEnvironment,
+    cuvs: CuvsEnvironment,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -113,38 +142,63 @@ struct CudfMetadata {
 struct CugraphMetadata {
     runtime_lib_dirs: Option<Vec<PathBuf>>,
     native_link_dirs: Option<Vec<PathBuf>>,
+    cuvs_library_path: Option<PathBuf>,
+    cuvs_runtime_lib_dir: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct CuvsMetadata {
+    runtime_lib_dirs: Option<Vec<PathBuf>>,
+    native_link_dirs: Option<Vec<PathBuf>>,
+    libcuvs_runtime_lib: Option<PathBuf>,
+    libcuvs_c_runtime_lib: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct ResolvedMetadata {
     cudf: CudfMetadata,
     cugraph: CugraphMetadata,
+    cuvs: CuvsMetadata,
 }
 
-fn read_environment(cugraph_enabled: bool) -> EnvironmentSnapshot {
+fn read_environment(consumers: RapidsConsumers) -> EnvironmentSnapshot {
     let cudf = CudfEnvironment {
         aggregate_metadata: std::env::var(CUDF_METADATA_ENV).ok(),
         runtime_lib_dir: std::env::var(CUDF_RUNTIME_LIB_DIR_ENV).ok(),
         libcudf_runtime_lib: std::env::var(CUDF_LIBCUDF_RUNTIME_LIB_ENV).ok(),
         rmm_runtime_lib: std::env::var(CUDF_RMM_RUNTIME_LIB_ENV).ok(),
         rapids_logger_runtime_lib: std::env::var(CUDF_RAPIDS_LOGGER_RUNTIME_LIB_ENV).ok(),
-        rapids_logger_linkage: cugraph_enabled.then(|| std::env::var(CUDF_RAPIDS_LOGGER_LINKAGE_ENV).ok()).flatten(),
+        rapids_logger_linkage: consumers.any().then(|| std::env::var(CUDF_RAPIDS_LOGGER_LINKAGE_ENV).ok()).flatten(),
     };
-    let cugraph = if cugraph_enabled {
+    let cugraph = if consumers.cugraph {
         CugraphEnvironment {
             aggregate_metadata: std::env::var(CUGRAPH_METADATA_ENV).ok(),
             runtime_lib_dirs: std::env::var(CUGRAPH_RUNTIME_LIB_DIRS_ENV).ok(),
             native_link_dirs: std::env::var(CUGRAPH_NATIVE_LINK_DIRS_ENV).ok(),
+            cuvs_library_path: std::env::var(CUGRAPH_CUVS_LIBRARY_PATH_ENV).ok(),
+            cuvs_runtime_lib_dir: std::env::var(CUGRAPH_CUVS_RUNTIME_LIB_DIR_ENV).ok(),
         }
     } else {
         CugraphEnvironment::default()
     };
-    EnvironmentSnapshot { cudf, cugraph }
+    let cuvs = if consumers.cuvs {
+        CuvsEnvironment {
+            aggregate_metadata: std::env::var(CUVS_METADATA_ENV).ok(),
+            runtime_lib_dirs: std::env::var(CUVS_RUNTIME_LIB_DIRS_ENV).ok(),
+            native_link_dirs: std::env::var(CUVS_NATIVE_LINK_DIRS_ENV).ok(),
+            libcuvs_runtime_lib: std::env::var(CUVS_LIBCUVS_RUNTIME_LIB_ENV).ok(),
+            libcuvs_c_runtime_lib: std::env::var(CUVS_LIBCUVS_C_RUNTIME_LIB_ENV).ok(),
+        }
+    } else {
+        CuvsEnvironment::default()
+    };
+    EnvironmentSnapshot { cudf, cugraph, cuvs }
 }
 
 fn resolve_metadata(environment: &EnvironmentSnapshot) -> ResolvedMetadata {
     let cudf = &environment.cudf;
     let cugraph = &environment.cugraph;
+    let cuvs = &environment.cuvs;
     ResolvedMetadata {
         cudf: CudfMetadata {
             runtime_lib_dir: select_metadata_value(
@@ -190,6 +244,44 @@ fn resolve_metadata(environment: &EnvironmentSnapshot) -> ResolvedMetadata {
                 "native-link-dirs",
             )
             .map(|value| parse_platform_path_list(OsStr::new(&value))),
+            cuvs_library_path: select_metadata_value(
+                cugraph.cuvs_library_path.as_deref(),
+                cugraph.aggregate_metadata.as_deref(),
+                "cuvs-library-path",
+            )
+            .map(PathBuf::from),
+            cuvs_runtime_lib_dir: select_metadata_value(
+                cugraph.cuvs_runtime_lib_dir.as_deref(),
+                cugraph.aggregate_metadata.as_deref(),
+                "cuvs-runtime-lib-dir",
+            )
+            .map(PathBuf::from),
+        },
+        cuvs: CuvsMetadata {
+            runtime_lib_dirs: select_metadata_value(
+                cuvs.runtime_lib_dirs.as_deref(),
+                cuvs.aggregate_metadata.as_deref(),
+                "runtime-lib-dirs",
+            )
+            .map(|value| parse_platform_path_list(OsStr::new(&value))),
+            native_link_dirs: select_metadata_value(
+                cuvs.native_link_dirs.as_deref(),
+                cuvs.aggregate_metadata.as_deref(),
+                "native-link-dirs",
+            )
+            .map(|value| parse_platform_path_list(OsStr::new(&value))),
+            libcuvs_runtime_lib: select_metadata_value(
+                cuvs.libcuvs_runtime_lib.as_deref(),
+                cuvs.aggregate_metadata.as_deref(),
+                "libcuvs-runtime-lib",
+            )
+            .map(PathBuf::from),
+            libcuvs_c_runtime_lib: select_metadata_value(
+                cuvs.libcuvs_c_runtime_lib.as_deref(),
+                cuvs.aggregate_metadata.as_deref(),
+                "libcuvs-c-runtime-lib",
+            )
+            .map(PathBuf::from),
         },
     }
 }
@@ -213,7 +305,7 @@ fn push_unique_path(paths: &mut Vec<PathBuf>, path: PathBuf) {
     }
 }
 
-fn runtime_directories(metadata: &ResolvedMetadata, cugraph_enabled: bool) -> Vec<PathBuf> {
+fn runtime_directories(metadata: &ResolvedMetadata, consumers: RapidsConsumers) -> Vec<PathBuf> {
     let mut runtime_dirs = Vec::new();
     if let Some(dir) = &metadata.cudf.runtime_lib_dir {
         push_unique_path(&mut runtime_dirs, dir.clone());
@@ -230,17 +322,33 @@ fn runtime_directories(metadata: &ResolvedMetadata, cugraph_enabled: bool) -> Ve
             push_unique_path(&mut runtime_dirs, parent.to_path_buf());
         }
     }
-    if cugraph_enabled {
+    if consumers.cugraph {
         for dir in metadata.cugraph.runtime_lib_dirs.iter().flatten() {
             push_unique_path(&mut runtime_dirs, dir.clone());
+        }
+        if let Some(dir) = &metadata.cugraph.cuvs_runtime_lib_dir {
+            push_unique_path(&mut runtime_dirs, dir.clone());
+        }
+    }
+    if consumers.cuvs {
+        for dir in metadata.cuvs.runtime_lib_dirs.iter().flatten() {
+            push_unique_path(&mut runtime_dirs, dir.clone());
+        }
+        for library in [metadata.cuvs.libcuvs_runtime_lib.as_ref(), metadata.cuvs.libcuvs_c_runtime_lib.as_ref()]
+            .into_iter()
+            .flatten()
+        {
+            if let Some(parent) = library.parent() {
+                push_unique_path(&mut runtime_dirs, parent.to_path_buf());
+            }
         }
     }
     runtime_dirs
 }
 
-fn link_directives(metadata: &ResolvedMetadata, cugraph_enabled: bool, targets: LinkArgTargets) -> Vec<String> {
+fn link_directives(metadata: &ResolvedMetadata, consumers: RapidsConsumers, targets: LinkArgTargets) -> Vec<String> {
     let mut directives = Vec::new();
-    for dir in runtime_directories(metadata, cugraph_enabled) {
+    for dir in runtime_directories(metadata, consumers) {
         directives.extend(targets.rpath_directives(&dir));
     }
     for library in [
@@ -252,6 +360,14 @@ fn link_directives(metadata: &ResolvedMetadata, cugraph_enabled: bool, targets: 
     .flatten()
     {
         directives.extend(targets.required_runtime_library_directives(library));
+    }
+    if consumers.cuvs {
+        for library in [metadata.cuvs.libcuvs_runtime_lib.as_ref(), metadata.cuvs.libcuvs_c_runtime_lib.as_ref()]
+            .into_iter()
+            .flatten()
+        {
+            directives.extend(targets.required_runtime_library_directives(library));
+        }
     }
     directives
 }
@@ -269,12 +385,22 @@ fn track_env(name: &str) {
 fn track_cugraph_env() {
     track_env(CUGRAPH_RUNTIME_LIB_DIRS_ENV);
     track_env(CUGRAPH_NATIVE_LINK_DIRS_ENV);
+    track_env(CUGRAPH_CUVS_LIBRARY_PATH_ENV);
+    track_env(CUGRAPH_CUVS_RUNTIME_LIB_DIR_ENV);
     track_env(CUGRAPH_METADATA_ENV);
 }
 
+fn track_cuvs_env() {
+    track_env(CUVS_RUNTIME_LIB_DIRS_ENV);
+    track_env(CUVS_NATIVE_LINK_DIRS_ENV);
+    track_env(CUVS_LIBCUVS_RUNTIME_LIB_ENV);
+    track_env(CUVS_LIBCUVS_C_RUNTIME_LIB_ENV);
+    track_env(CUVS_METADATA_ENV);
+}
+
 pub fn configure(config: Config) {
-    let cugraph_enabled = matches!(config.cugraph_runtime, CugraphRuntime::EmitRpathAndRequireCudfIdentity);
-    let environment = read_environment(cugraph_enabled);
+    let consumers = config.consumers;
+    let environment = read_environment(consumers);
     let metadata = resolve_metadata(&environment);
 
     println!("cargo:rerun-if-changed={}", config.support_source);
@@ -287,14 +413,22 @@ pub fn configure(config: Config) {
     if metadata.cudf.runtime_lib_dir.is_none() {
         println!("cargo:warning=cudf-sys runtime lib dir not exposed via DEP_CUDF_RUST_*; skipping rpath bake");
     }
-    if cugraph_enabled {
+    if consumers.cugraph {
         track_cugraph_env();
         if metadata.cugraph.runtime_lib_dirs.is_none() {
             println!("cargo:warning=cugraph-sys runtime lib dirs not exposed via DEP_CUGRAPH_*; skipping rpath bake");
         }
     }
+    if consumers.cuvs {
+        track_cuvs_env();
+        if metadata.cuvs.runtime_lib_dirs.is_none() {
+            println!(
+                "cargo:warning=cuvs-sys runtime lib dirs not exposed via DEP_CUVS_C_*; using authoritative library paths for rpath bake"
+            );
+        }
+    }
 
-    emit_cargo_directives(link_directives(&metadata, cugraph_enabled, config.link_arg_targets));
+    emit_cargo_directives(link_directives(&metadata, consumers, config.link_arg_targets));
     if metadata.cudf.libcudf_runtime_lib.is_none() {
         println!(
             "cargo:warning=cudf-sys did not expose its authoritative libcudf.so; \
@@ -308,8 +442,8 @@ pub fn configure(config: Config) {
         );
     }
 
-    if cugraph_enabled {
-        enforce_single_rapids_runtime_libraries(&metadata);
+    if consumers.any() {
+        enforce_single_rapids_runtime_libraries(&metadata, consumers);
     }
 }
 
@@ -328,7 +462,7 @@ fn optional_logger_policy(library: Option<&Path>, linkage: Option<&str>) -> Opti
 
 fn missing_required_library_diagnostic(lib_name: &str, cudf_dep_env: &str) -> String {
     format!(
-        "the `cugraph` feature requires libcudf to ship a shared {lib_name}, but cudf-sys did not expose \
+        "an enabled RAPIDS consumer requires libcudf to ship a shared {lib_name}, but cudf-sys did not expose \
          one via {cudf_dep_env}. Rebuild libcudf with CUDF_RMM_BUILD_SHARED=ON (the cudf fork default), \
          re-run `cmake --install`, and rebuild cudf-sys so the install prefix exports a single canonical \
          {lib_name} for every RAPIDS consumer in the process."
@@ -342,11 +476,11 @@ fn optional_logger_warning(linkage: &str) -> String {
     )
 }
 
-fn absorbed_logger_shared_candidate_diagnostic(candidate: &Path) -> String {
+fn absorbed_logger_shared_candidate_diagnostic(consumer: &str, candidate: &Path) -> String {
     format!(
         "cudf-sys reports rapids_logger absorbed into libcudf/librmm (no shipped RAPIDS shared library links a \
-         shared librapids_logger.so), but one is reachable from the cugraph-sys link/runtime dirs: {}. \
-         If libcugraph links it, this process carries two rapids_logger builds and logger symbols bind \
+         shared librapids_logger.so), but one is reachable from the {consumer} link/runtime dirs: {}. \
+         If the consumer links it, this process carries two rapids_logger builds and logger symbols bind \
          unpredictably; if it is a stale artifact from an earlier shared build, any future relink would \
          adopt it. Remove the stale file and any stale rapids_logger CMake package (lib/cmake/rapids_logger \
          under the same prefix), then reconfigure the cugraph C++ build against the cudf install prefix \
@@ -355,44 +489,83 @@ fn absorbed_logger_shared_candidate_diagnostic(candidate: &Path) -> String {
     )
 }
 
-fn missing_candidate_diagnostic(lib_name: &str, cudf_lib: &Path) -> String {
+fn missing_candidate_diagnostic(consumer: &str, env_names: &str, lib_name: &str, cudf_lib: &Path) -> String {
     format!(
-        "the `cugraph` feature is enabled but no {lib_name} is reachable from the cugraph-sys link/runtime \
-         dirs (DEP_CUGRAPH_NATIVE_LINK_DIRS / DEP_CUGRAPH_RUNTIME_LIB_DIRS), so the build cannot prove \
-         libcugraph links the same {lib_name} as libcudf ({}). Reconfigure the cugraph C++ build against \
-         the cudf install prefix (cmake -Drmm_ROOT=<cudf-install> -Drapids_logger_ROOT=<cudf-install>) and \
-         rebuild it.",
+        "the {consumer} consumer is enabled but no {lib_name} is reachable from its link/runtime dirs \
+         ({env_names}), so the build cannot prove it links the same {lib_name} as libcudf ({}). Reconfigure \
+         that native consumer against the canonical cudf/RMM install prefix and rebuild it.",
         cudf_lib.display()
     )
 }
 
-fn divergent_library_diagnostic(lib_name: &str, cudf_lib: &Path, cugraph_lib: &Path) -> String {
+fn divergent_library_diagnostic(consumer: &str, lib_name: &str, cudf_lib: &Path, consumer_lib: &Path) -> String {
     format!(
-        "two divergent {lib_name} builds are linked into this process:\n  cudf-sys:    {}\n  cugraph-sys: {}\n\
+        "two divergent {lib_name} builds are linked into this process:\n  cudf-sys: {}\n  {consumer}: {}\n\
          One process must bind every {lib_name} symbol to a single build, or execution corrupts at runtime. \
-         Reconfigure the cugraph C++ build against the cudf install prefix \
-         (cmake -Drmm_ROOT=<cudf-install> -Drapids_logger_ROOT=<cudf-install>), rebuild it, and remove stale \
-         copies from the cugraph build tree.",
+         Reconfigure the native consumer against the canonical cudf/RMM install prefix, rebuild it, and remove \
+         stale copies from its build tree.",
         cudf_lib.display(),
-        cugraph_lib.display()
+        consumer_lib.display()
     )
 }
 
-fn enforce_single_rapids_runtime_libraries(metadata: &ResolvedMetadata) {
+fn enforce_single_rapids_runtime_libraries(metadata: &ResolvedMetadata, consumers: RapidsConsumers) {
     track_env(CUDF_RAPIDS_LOGGER_LINKAGE_ENV);
 
     let rmm =
         metadata.cudf.rmm_runtime_lib.as_deref().unwrap_or_else(|| {
             panic!("{}", missing_required_library_diagnostic("librmm.so", CUDF_RMM_RUNTIME_LIB_ENV))
         });
-    enforce_shared_rapids_library_matches_cudf("librmm.so", rmm, &metadata.cugraph);
+    if consumers.cugraph {
+        enforce_shared_rapids_library_matches_cudf(
+            "cugraph-sys",
+            "DEP_CUGRAPH_NATIVE_LINK_DIRS / DEP_CUGRAPH_RUNTIME_LIB_DIRS",
+            "librmm.so",
+            rmm,
+            &metadata.cugraph.native_link_dirs,
+            &metadata.cugraph.runtime_lib_dirs,
+            true,
+        );
+    }
+    if consumers.cuvs {
+        enforce_shared_rapids_library_matches_cudf(
+            "cuvs-sys",
+            "DEP_CUVS_C_NATIVE_LINK_DIRS / DEP_CUVS_C_RUNTIME_LIB_DIRS",
+            "librmm.so",
+            rmm,
+            &metadata.cuvs.native_link_dirs,
+            &metadata.cuvs.runtime_lib_dirs,
+            false,
+        );
+    }
 
     match optional_logger_policy(
         metadata.cudf.rapids_logger_runtime_lib.as_deref(),
         metadata.cudf.rapids_logger_linkage.as_deref(),
     ) {
         OptionalLoggerPolicy::Enforce(library) => {
-            enforce_shared_rapids_library_matches_cudf("librapids_logger.so", &library, &metadata.cugraph);
+            if consumers.cugraph {
+                enforce_shared_rapids_library_matches_cudf(
+                    "cugraph-sys",
+                    "DEP_CUGRAPH_NATIVE_LINK_DIRS / DEP_CUGRAPH_RUNTIME_LIB_DIRS",
+                    "librapids_logger.so",
+                    &library,
+                    &metadata.cugraph.native_link_dirs,
+                    &metadata.cugraph.runtime_lib_dirs,
+                    true,
+                );
+            }
+            if consumers.cuvs {
+                enforce_shared_rapids_library_matches_cudf(
+                    "cuvs-sys",
+                    "DEP_CUVS_C_NATIVE_LINK_DIRS / DEP_CUVS_C_RUNTIME_LIB_DIRS",
+                    "librapids_logger.so",
+                    &library,
+                    &metadata.cuvs.native_link_dirs,
+                    &metadata.cuvs.runtime_lib_dirs,
+                    false,
+                );
+            }
         },
         // cudf-sys classified rapids_logger as absorbed by inspecting real
         // DT_NEEDED linkage. The single-RMM enforcement above already pins
@@ -403,27 +576,51 @@ fn enforce_single_rapids_runtime_libraries(metadata: &ResolvedMetadata) {
         // second logger build in the process or a stale artifact any relink
         // would adopt, and it breaks the absorbed contract.
         OptionalLoggerPolicy::Skip { linkage } if linkage == "absorbed" => {
-            enforce_absorbed_logger_has_no_shared_candidate(&metadata.cugraph);
+            if consumers.cugraph {
+                enforce_absorbed_logger_has_no_shared_candidate(
+                    "cugraph-sys",
+                    &metadata.cugraph.native_link_dirs,
+                    &metadata.cugraph.runtime_lib_dirs,
+                );
+            }
+            if consumers.cuvs {
+                enforce_absorbed_logger_has_no_shared_candidate(
+                    "cuvs-sys",
+                    &metadata.cuvs.native_link_dirs,
+                    &metadata.cuvs.runtime_lib_dirs,
+                );
+            }
         },
         OptionalLoggerPolicy::Skip { linkage } => println!("{}", optional_logger_warning(&linkage)),
     }
+
+    enforce_cuvs_runtime_contract(metadata, consumers);
 }
 
-fn enforce_absorbed_logger_has_no_shared_candidate(cugraph_metadata: &CugraphMetadata) {
-    let candidates = existing_candidates(cugraph_candidate_paths("librapids_logger.so", cugraph_metadata));
+fn enforce_absorbed_logger_has_no_shared_candidate(
+    consumer: &str,
+    native_link_dirs: &Option<Vec<PathBuf>>,
+    runtime_lib_dirs: &Option<Vec<PathBuf>>,
+) {
+    let candidates =
+        existing_candidates(consumer_candidate_paths("librapids_logger.so", native_link_dirs, runtime_lib_dirs));
     for candidate in &candidates {
         println!("cargo:rerun-if-changed={}", candidate.display());
     }
     if let Some(candidate) = candidates.first() {
-        panic!("{}", absorbed_logger_shared_candidate_diagnostic(candidate));
+        panic!("{}", absorbed_logger_shared_candidate_diagnostic(consumer, candidate));
     }
 }
 
 /// Produce candidate paths without reading the filesystem. Native link dirs
 /// precede runtime dirs, matching the historical build-script policy.
-fn cugraph_candidate_paths(lib_name: &str, metadata: &CugraphMetadata) -> Vec<PathBuf> {
+fn consumer_candidate_paths(
+    lib_name: &str,
+    native_link_dirs: &Option<Vec<PathBuf>>,
+    runtime_lib_dirs: &Option<Vec<PathBuf>>,
+) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
-    for dirs in [&metadata.native_link_dirs, &metadata.runtime_lib_dirs].into_iter().flatten() {
+    for dirs in [native_link_dirs, runtime_lib_dirs].into_iter().flatten() {
         for dir in dirs {
             push_unique_path(&mut candidates, dir.join(lib_name));
         }
@@ -433,6 +630,78 @@ fn cugraph_candidate_paths(lib_name: &str, metadata: &CugraphMetadata) -> Vec<Pa
 
 fn existing_candidates(candidate_paths: Vec<PathBuf>) -> Vec<PathBuf> {
     candidate_paths.into_iter().filter(|candidate| candidate.is_file()).collect()
+}
+
+fn require_runtime_library<'a>(feature: &str, env_name: &str, library: Option<&'a Path>) -> &'a Path {
+    let library = library.unwrap_or_else(|| {
+        panic!(
+            "the `{feature}` feature requires {env_name} from its sys crate's Cargo metadata; \
+             rebuild the sys crate against the canonical native prefix"
+        )
+    });
+    if !library.is_file() {
+        panic!(
+            "the `{feature}` feature received {env_name}={}, but that runtime library does not exist",
+            library.display()
+        );
+    }
+    println!("cargo:rerun-if-changed={}", library.display());
+    library
+}
+
+fn path_has_private_deps_component(path: &Path) -> bool {
+    path.components().any(|component| component.as_os_str() == OsStr::new("_deps"))
+}
+
+fn reject_private_cuvs_path(consumer: &str, path: &Path) {
+    if path_has_private_deps_component(path) {
+        panic!(
+            "{consumer} resolved libcuvs.so from a private `_deps` build ({}); configure every consumer with \
+             the canonical cuVS install prefix and remove the private artifact",
+            path.display()
+        );
+    }
+}
+
+fn canonical_runtime_path(consumer: &str, path: &Path) -> PathBuf {
+    path.canonicalize()
+        .unwrap_or_else(|error| panic!("failed to canonicalize {consumer} runtime library {}: {error}", path.display()))
+}
+
+fn divergent_cuvs_identity_diagnostic(cuvs_path: &Path, cugraph_path: &Path) -> String {
+    format!(
+        "the Rust cuVS wrapper and cuGraph resolved different canonical libcuvs.so files:\n  \
+         cuvs-sys:    {}\n  cugraph-sys: {}\nConfigure both with the same CUVS_ROOT/cuvs_ROOT install prefix; \
+         one process must load exactly one cuVS build.",
+        cuvs_path.display(),
+        cugraph_path.display()
+    )
+}
+
+fn enforce_cuvs_runtime_contract(metadata: &ResolvedMetadata, consumers: RapidsConsumers) {
+    let cuvs_library = consumers.cuvs.then(|| {
+        let libcuvs =
+            require_runtime_library("cuvs", CUVS_LIBCUVS_RUNTIME_LIB_ENV, metadata.cuvs.libcuvs_runtime_lib.as_deref());
+        require_runtime_library("cuvs", CUVS_LIBCUVS_C_RUNTIME_LIB_ENV, metadata.cuvs.libcuvs_c_runtime_lib.as_deref());
+        reject_private_cuvs_path("cuvs-sys", libcuvs);
+        canonical_runtime_path("cuvs-sys", libcuvs)
+    });
+
+    let cugraph_library = consumers.cugraph.then(|| {
+        let libcuvs = require_runtime_library(
+            "cugraph",
+            CUGRAPH_CUVS_LIBRARY_PATH_ENV,
+            metadata.cugraph.cuvs_library_path.as_deref(),
+        );
+        reject_private_cuvs_path("cugraph-sys", libcuvs);
+        canonical_runtime_path("cugraph-sys", libcuvs)
+    });
+
+    if let (Some(cuvs_path), Some(cugraph_path)) = (&cuvs_library, &cugraph_library)
+        && cuvs_path != cugraph_path
+    {
+        panic!("{}", divergent_cuvs_identity_diagnostic(cuvs_path, cugraph_path));
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -503,9 +772,17 @@ fn resolve_candidate_identities(candidates: &[CandidateIdentity]) -> CandidateRe
     }
 }
 
-fn enforce_shared_rapids_library_matches_cudf(lib_name: &str, cudf_lib: &Path, cugraph_metadata: &CugraphMetadata) {
+fn enforce_shared_rapids_library_matches_cudf(
+    consumer: &str,
+    env_names: &str,
+    lib_name: &str,
+    cudf_lib: &Path,
+    native_link_dirs: &Option<Vec<PathBuf>>,
+    runtime_lib_dirs: &Option<Vec<PathBuf>>,
+    candidate_required: bool,
+) {
     println!("cargo:rerun-if-changed={}", cudf_lib.display());
-    let candidate_paths = existing_candidates(cugraph_candidate_paths(lib_name, cugraph_metadata));
+    let candidate_paths = existing_candidates(consumer_candidate_paths(lib_name, native_link_dirs, runtime_lib_dirs));
     let candidates = candidate_paths
         .iter()
         .map(|candidate| CandidateIdentity {
@@ -517,12 +794,13 @@ fn enforce_shared_rapids_library_matches_cudf(lib_name: &str, cudf_lib: &Path, c
         println!("cargo:rerun-if-changed={}", candidate.display());
     }
     match resolve_candidate_identities(&candidates) {
-        CandidateResolution::Missing => {
-            panic!("{}", missing_candidate_diagnostic(lib_name, cudf_lib))
+        CandidateResolution::Missing if candidate_required => {
+            panic!("{}", missing_candidate_diagnostic(consumer, env_names, lib_name, cudf_lib))
         },
+        CandidateResolution::Missing => {},
         CandidateResolution::Consistent { .. } => {},
         CandidateResolution::Divergent { divergent, .. } => {
-            panic!("{}", divergent_library_diagnostic(lib_name, cudf_lib, &divergent))
+            panic!("{}", divergent_library_diagnostic(consumer, lib_name, cudf_lib, &divergent))
         },
     }
 }
@@ -636,6 +914,8 @@ mod tests {
                 )),
                 runtime_lib_dirs: Some(encoded.to_string_lossy().into_owned()),
                 native_link_dirs: None,
+                cuvs_library_path: None,
+                cuvs_runtime_lib_dir: None,
             },
             ..Default::default()
         });
@@ -653,9 +933,15 @@ mod tests {
                 rapids_logger_runtime_lib: None,
                 rapids_logger_linkage: None,
             },
-            cugraph: CugraphMetadata { runtime_lib_dirs: Some(vec!["/graph".into()]), native_link_dirs: None },
+            cugraph: CugraphMetadata {
+                runtime_lib_dirs: Some(vec!["/graph".into()]),
+                native_link_dirs: None,
+                ..Default::default()
+            },
+            cuvs: CuvsMetadata::default(),
         };
-        let directives = link_directives(&metadata, true, LinkArgTargets::new(true, false, true));
+        let directives =
+            link_directives(&metadata, RapidsConsumers::new(true, false), LinkArgTargets::new(true, false, true));
         assert_eq!(directives[0], "cargo:rustc-link-arg=-Wl,-rpath,/runtime");
         assert_eq!(directives[1], "cargo:rustc-link-arg-tests=-Wl,-rpath,/runtime");
         assert!(directives.iter().any(|line| line.contains("/cudf/libcudf.so")));
@@ -667,7 +953,7 @@ mod tests {
     fn missing_required_rmm_and_optional_logger_policies_are_typed_and_stable() {
         assert_eq!(
             missing_required_library_diagnostic("librmm.so", CUDF_RMM_RUNTIME_LIB_ENV),
-            "the `cugraph` feature requires libcudf to ship a shared librmm.so, but cudf-sys did not expose one via DEP_CUDF_RUST_RMM_RUNTIME_LIB. Rebuild libcudf with CUDF_RMM_BUILD_SHARED=ON (the cudf fork default), re-run `cmake --install`, and rebuild cudf-sys so the install prefix exports a single canonical librmm.so for every RAPIDS consumer in the process."
+            "an enabled RAPIDS consumer requires libcudf to ship a shared librmm.so, but cudf-sys did not expose one via DEP_CUDF_RUST_RMM_RUNTIME_LIB. Rebuild libcudf with CUDF_RMM_BUILD_SHARED=ON (the cudf fork default), re-run `cmake --install`, and rebuild cudf-sys so the install prefix exports a single canonical librmm.so for every RAPIDS consumer in the process."
         );
         assert_eq!(
             optional_logger_policy(None, Some("static")),
@@ -688,9 +974,10 @@ mod tests {
         let metadata = CugraphMetadata {
             native_link_dirs: Some(vec!["/z".into(), "/a".into()]),
             runtime_lib_dirs: Some(vec!["/a".into(), "/b".into()]),
+            ..Default::default()
         };
         assert_eq!(
-            cugraph_candidate_paths("librmm.so", &metadata),
+            consumer_candidate_paths("librmm.so", &metadata.native_link_dirs, &metadata.runtime_lib_dirs),
             vec![PathBuf::from("/z/librmm.so"), PathBuf::from("/a/librmm.so"), PathBuf::from("/b/librmm.so"),]
         );
     }
@@ -760,16 +1047,26 @@ mod tests {
     #[test]
     fn divergent_and_missing_candidate_diagnostics_are_stable() {
         assert_eq!(
-            missing_candidate_diagnostic("librmm.so", Path::new("/cudf/librmm.so")),
-            "the `cugraph` feature is enabled but no librmm.so is reachable from the cugraph-sys link/runtime dirs (DEP_CUGRAPH_NATIVE_LINK_DIRS / DEP_CUGRAPH_RUNTIME_LIB_DIRS), so the build cannot prove libcugraph links the same librmm.so as libcudf (/cudf/librmm.so). Reconfigure the cugraph C++ build against the cudf install prefix (cmake -Drmm_ROOT=<cudf-install> -Drapids_logger_ROOT=<cudf-install>) and rebuild it."
+            missing_candidate_diagnostic(
+                "cugraph-sys",
+                "DEP_CUGRAPH_NATIVE_LINK_DIRS / DEP_CUGRAPH_RUNTIME_LIB_DIRS",
+                "librmm.so",
+                Path::new("/cudf/librmm.so")
+            ),
+            "the cugraph-sys consumer is enabled but no librmm.so is reachable from its link/runtime dirs (DEP_CUGRAPH_NATIVE_LINK_DIRS / DEP_CUGRAPH_RUNTIME_LIB_DIRS), so the build cannot prove it links the same librmm.so as libcudf (/cudf/librmm.so). Reconfigure that native consumer against the canonical cudf/RMM install prefix and rebuild it."
         );
         assert_eq!(
-            divergent_library_diagnostic("librmm.so", Path::new("/cudf/librmm.so"), Path::new("/graph/librmm.so")),
-            "two divergent librmm.so builds are linked into this process:\n  cudf-sys:    /cudf/librmm.so\n  cugraph-sys: /graph/librmm.so\nOne process must bind every librmm.so symbol to a single build, or execution corrupts at runtime. Reconfigure the cugraph C++ build against the cudf install prefix (cmake -Drmm_ROOT=<cudf-install> -Drapids_logger_ROOT=<cudf-install>), rebuild it, and remove stale copies from the cugraph build tree."
+            divergent_library_diagnostic(
+                "cugraph-sys",
+                "librmm.so",
+                Path::new("/cudf/librmm.so"),
+                Path::new("/graph/librmm.so")
+            ),
+            "two divergent librmm.so builds are linked into this process:\n  cudf-sys: /cudf/librmm.so\n  cugraph-sys: /graph/librmm.so\nOne process must bind every librmm.so symbol to a single build, or execution corrupts at runtime. Reconfigure the native consumer against the canonical cudf/RMM install prefix, rebuild it, and remove stale copies from its build tree."
         );
         assert_eq!(
-            absorbed_logger_shared_candidate_diagnostic(Path::new("/graph/librapids_logger.so")),
-            "cudf-sys reports rapids_logger absorbed into libcudf/librmm (no shipped RAPIDS shared library links a shared librapids_logger.so), but one is reachable from the cugraph-sys link/runtime dirs: /graph/librapids_logger.so. If libcugraph links it, this process carries two rapids_logger builds and logger symbols bind unpredictably; if it is a stale artifact from an earlier shared build, any future relink would adopt it. Remove the stale file and any stale rapids_logger CMake package (lib/cmake/rapids_logger under the same prefix), then reconfigure the cugraph C++ build against the cudf install prefix (cmake -Drmm_ROOT=<cudf-install> -Drapids_logger_ROOT=<cudf-install>) and rebuild it."
+            absorbed_logger_shared_candidate_diagnostic("cugraph-sys", Path::new("/graph/librapids_logger.so")),
+            "cudf-sys reports rapids_logger absorbed into libcudf/librmm (no shipped RAPIDS shared library links a shared librapids_logger.so), but one is reachable from the cugraph-sys link/runtime dirs: /graph/librapids_logger.so. If the consumer links it, this process carries two rapids_logger builds and logger symbols bind unpredictably; if it is a stale artifact from an earlier shared build, any future relink would adopt it. Remove the stale file and any stale rapids_logger CMake package (lib/cmake/rapids_logger under the same prefix), then reconfigure the cugraph C++ build against the cudf install prefix (cmake -Drmm_ROOT=<cudf-install> -Drapids_logger_ROOT=<cudf-install>) and rebuild it."
         );
     }
 
@@ -778,15 +1075,29 @@ mod tests {
         let test_dir = TestDir::new("absorbed-logger");
         let graph_native = test_dir.path().join("graph native");
         std::fs::create_dir_all(&graph_native).unwrap();
-        let metadata = CugraphMetadata { native_link_dirs: Some(vec![graph_native.clone()]), runtime_lib_dirs: None };
+        let metadata = CugraphMetadata {
+            native_link_dirs: Some(vec![graph_native.clone()]),
+            runtime_lib_dirs: None,
+            ..Default::default()
+        };
 
         // Nothing reachable: the absorbed contract holds and stays quiet.
-        enforce_absorbed_logger_has_no_shared_candidate(&metadata);
+        enforce_absorbed_logger_has_no_shared_candidate(
+            "cugraph-sys",
+            &metadata.native_link_dirs,
+            &metadata.runtime_lib_dirs,
+        );
 
         // A reachable shared logger breaks the absorbed contract.
         let candidate = graph_native.join("librapids_logger.so");
         std::fs::write(&candidate, b"stale or divergent shared logger").unwrap();
-        let result = std::panic::catch_unwind(|| enforce_absorbed_logger_has_no_shared_candidate(&metadata));
+        let result = std::panic::catch_unwind(|| {
+            enforce_absorbed_logger_has_no_shared_candidate(
+                "cugraph-sys",
+                &metadata.native_link_dirs,
+                &metadata.runtime_lib_dirs,
+            )
+        });
         let panic = result.expect_err("a reachable shared logger must fail the absorbed policy");
         let message = panic.downcast_ref::<String>().cloned().unwrap_or_default();
         assert!(message.contains("two rapids_logger builds"), "unexpected diagnostic: {message}");

@@ -114,6 +114,9 @@ mod core_execution;
 mod graph_algorithm_execution;
 #[path = "native_execution_tests/partition_execution.rs"]
 mod partition_execution;
+#[cfg(feature = "cuvs")]
+#[path = "native_execution_tests/vector_algorithm_execution.rs"]
+mod vector_algorithm_execution;
 
 use aggregate_test_support::*;
 use join_test_support::*;
