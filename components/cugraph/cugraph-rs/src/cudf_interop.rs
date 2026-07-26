@@ -91,6 +91,52 @@ impl DeviceSliceExt for DeviceSlice {
     }
 }
 
+/// Extension trait for converting a cugraph [`DeviceArrayView`] into a cudf [`Column`].
+pub trait DeviceArrayViewExt {
+    /// Convert this cugraph device array into a cudf [`Column`].
+    ///
+    /// Performs a device-to-device copy. The returned column owns its memory
+    /// independently of this view, so the view (and its parent result object)
+    /// can be dropped afterwards.
+    ///
+    /// Returns an error if the view's [`DataType`] has no cudf equivalent
+    /// (i.e. [`DataType::SizeT`]).
+    ///
+    /// [`Column`]: cudf::Column
+    fn to_cudf_column(&self) -> Result<cudf::Column>;
+}
+
+impl DeviceArrayViewExt for DeviceArrayView<'_> {
+    fn to_cudf_column(&self) -> Result<cudf::Column> {
+        let dtype = self.dtype()?;
+        let cudf_type = cugraph_type_to_cudf(dtype).ok_or_else(|| {
+            Error::new(ErrorKind::UnsupportedType, "DeviceArrayViewExt::to_cudf_column")
+                .with_message(format!(
+                    "cugraph DataType {:?} has no cudf TypeId equivalent",
+                    dtype
+                ))
+        })?;
+
+        // SAFETY: `self.device_ptr()` points to valid GPU memory containing
+        // `self.len()` elements of `dtype`, which we have verified maps to
+        // `cudf_type`. `Column::from_device_ptr` performs a device-to-device
+        // copy, so the returned column is independent of this view.
+        let col = unsafe {
+            cudf::Column::from_device_ptr(
+                self.device_ptr() as *const std::ffi::c_void,
+                self.len(),
+                cudf_type,
+            )
+        }
+        .map_err(|e| {
+            Error::new(ErrorKind::Unexpected, "DeviceArrayViewExt::to_cudf_column")
+                .with_message(format!("cudf Column::from_device_ptr failed: {}", e))
+        })?;
+
+        Ok(col)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
