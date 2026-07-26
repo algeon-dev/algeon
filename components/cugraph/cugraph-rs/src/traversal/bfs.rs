@@ -135,6 +135,8 @@ mod tests {
             &src.view(),
             &dst.view(),
             Some(&wgt.view()),
+            None,
+            None,
             false, // store_transposed (BFS needs non-transposed)
             true,  // renumber
         )
@@ -209,6 +211,8 @@ mod tests {
             props,
             &src.view(),
             &dst.view(),
+            None,
+            None,
             None,
             false, // store_transposed (BFS needs non-transposed)
             false, // renumber (not needed, IDs are 0-based sequential)

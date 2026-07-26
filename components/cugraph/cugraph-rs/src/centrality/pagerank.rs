@@ -151,6 +151,8 @@ mod tests {
             &src.view(),
             &dst.view(),
             None,
+            None,
+            None,
             true,  // store_transposed (required for PageRank)
             false, // renumber (not needed, IDs are 0-based sequential)
         )
