@@ -16,9 +16,10 @@ use cugraph_sys::{
     cugraph_type_erased_device_array_view, cugraph_type_erased_device_array_view_copy_from_host,
     cugraph_type_erased_device_array_view_copy_to_host,
     cugraph_type_erased_device_array_view_create, cugraph_type_erased_device_array_view_free,
-    cugraph_type_erased_device_array_view_size, cugraph_type_erased_device_array_view_t,
-    cugraph_type_erased_device_array_view_type, cugraph_type_erased_host_array_view_create,
-    cugraph_type_erased_host_array_view_free, cugraph_type_erased_host_array_view_t,
+    cugraph_type_erased_device_array_view_pointer, cugraph_type_erased_device_array_view_size,
+    cugraph_type_erased_device_array_view_t, cugraph_type_erased_device_array_view_type,
+    cugraph_type_erased_host_array_view_create, cugraph_type_erased_host_array_view_free,
+    cugraph_type_erased_host_array_view_t,
 };
 
 use crate::error::{check_error, Error, ErrorKind, Result};
@@ -143,6 +144,28 @@ impl Drop for DeviceArray {
     }
 }
 
+/// Contract for a type that safely exposes a contiguous device-memory region.
+///
+/// This trait is intended for interop crates (for example GPU DataFrame wrappers)
+/// to provide a safe bridge into [`DeviceArrayView::from_device_buffer`].
+///
+/// # Safety
+///
+/// Implementors must guarantee that:
+/// - `device_ptr()` returns a pointer to valid device memory
+/// - the allocation contains at least `len()` elements of type `dtype()`
+/// - the returned pointer remains valid for as long as `self` is alive
+pub unsafe trait DeviceBuffer {
+    /// Raw device pointer to the first element.
+    fn device_ptr(&self) -> *mut std::ffi::c_void;
+
+    /// Number of logical elements.
+    fn len(&self) -> usize;
+
+    /// Element type of the allocation.
+    fn dtype(&self) -> DataType;
+}
+
 /// A non-owning view into device (GPU) memory.
 ///
 /// The lifetime parameter `'a` ties this view to whatever owns the underlying
@@ -172,11 +195,15 @@ impl<'a> DeviceArrayView<'a> {
 
     /// Create a view from an existing raw device pointer.
     ///
+    /// Useful for zero-copy interop with external GPU libraries that expose raw
+    /// device pointers.
+    ///
     /// # Safety
     ///
-    /// The caller must ensure the pointer is valid device memory with at least
-    /// `len` elements of type `dtype`, and that the memory remains valid for
-    /// the lifetime `'a`.
+    /// The caller must ensure all of the following:
+    /// - `pointer` points to valid device memory
+    /// - the allocation contains at least `len` elements of type `dtype`
+    /// - the underlying memory outlives the returned view's lifetime `'a`
     pub unsafe fn from_raw(pointer: *mut std::ffi::c_void, len: usize, dtype: DataType) -> Self {
         let raw = cugraph_type_erased_device_array_view_create(pointer, len, dtype.into());
         DeviceArrayView {
@@ -185,6 +212,35 @@ impl<'a> DeviceArrayView<'a> {
             _lifetime: PhantomData,
             _nosend_nosync: PhantomData,
         }
+    }
+
+    /// Create a view from a safe [`DeviceBuffer`] implementor.
+    ///
+    /// This is the ergonomic constructor for zero-copy interop. The lifetime
+    /// of the returned view is tied to `buffer`, preventing accidental use
+    /// after the external allocation is dropped.
+    pub fn from_device_buffer<B>(buffer: &'a B) -> Self
+    where
+        B: DeviceBuffer + ?Sized,
+    {
+        let raw = unsafe {
+            cugraph_type_erased_device_array_view_create(
+                buffer.device_ptr(),
+                buffer.len(),
+                buffer.dtype().into(),
+            )
+        };
+        DeviceArrayView {
+            raw,
+            owned: true,
+            _lifetime: PhantomData,
+            _nosend_nosync: PhantomData,
+        }
+    }
+
+    /// Device pointer to the first element of this view.
+    pub fn device_ptr(&self) -> *mut std::ffi::c_void {
+        unsafe { cugraph_type_erased_device_array_view_pointer(self.raw) as *mut std::ffi::c_void }
     }
 
     /// Number of elements in this view.
@@ -300,6 +356,37 @@ pub fn device_array_from_host<T: Copy>(
     Ok(arr)
 }
 
+unsafe impl DeviceBuffer for DeviceArray {
+    fn device_ptr(&self) -> *mut std::ffi::c_void {
+        self.view().device_ptr()
+    }
+
+    fn len(&self) -> usize {
+        self.view().len()
+    }
+
+    fn dtype(&self) -> DataType {
+        self.view()
+            .dtype()
+            .expect("DeviceArray must contain a valid cuGraph data type")
+    }
+}
+
+unsafe impl<'a> DeviceBuffer for DeviceArrayView<'a> {
+    fn device_ptr(&self) -> *mut std::ffi::c_void {
+        DeviceArrayView::device_ptr(self)
+    }
+
+    fn len(&self) -> usize {
+        DeviceArrayView::len(self)
+    }
+
+    fn dtype(&self) -> DataType {
+        self.dtype()
+            .expect("DeviceArrayView must contain a valid cuGraph data type")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -381,5 +468,74 @@ mod tests {
         assert_not_impl_any!(DeviceArray: Send, Sync);
         assert_not_impl_any!(DeviceArrayView<'static>: Send, Sync);
         assert_not_impl_any!(HostArrayView<'static>: Send, Sync);
+    }
+
+    #[test]
+    fn test_from_raw_roundtrip() {
+        // Create a device array, get its raw pointer, create a view from it,
+        // and verify data survives the round trip.
+        let handle = ResourceHandle::new().expect("handle");
+        let src: Vec<i32> = vec![100, 200, 300];
+        let arr = device_array_from_host(&handle, &src, DataType::Int32).expect("create");
+
+        // Get the raw device pointer from the owned array's view.
+        let owned_view = arr.view();
+        let raw_ptr = owned_view.device_ptr();
+
+        // SAFETY: `raw_ptr` comes from a live device allocation with exactly 3 i32 values,
+        // and `arr` is kept alive for the duration of `raw_view` usage.
+        let raw_view = unsafe { DeviceArrayView::from_raw(raw_ptr, 3, DataType::Int32) };
+        assert_eq!(raw_view.len(), 3);
+        assert_eq!(raw_view.dtype().expect("dtype"), DataType::Int32);
+
+        // Read back through the raw view.
+        let bytes = raw_view.to_host_vec(&handle).expect("to_host_vec");
+        let result: Vec<i32> = bytes
+            .chunks_exact(4)
+            .map(|c| i32::from_ne_bytes([c[0], c[1], c[2], c[3]]))
+            .collect();
+        assert_eq!(result, vec![100, 200, 300]);
+    }
+
+    #[test]
+    fn test_from_device_buffer_roundtrip() {
+        struct ExternalBuffer<'a> {
+            arr: &'a DeviceArray,
+            dtype: DataType,
+        }
+
+        unsafe impl DeviceBuffer for ExternalBuffer<'_> {
+            fn device_ptr(&self) -> *mut std::ffi::c_void {
+                self.arr.view().device_ptr()
+            }
+
+            fn len(&self) -> usize {
+                self.arr.view().len()
+            }
+
+            fn dtype(&self) -> DataType {
+                self.dtype
+            }
+        }
+
+        let handle = ResourceHandle::new().expect("handle");
+        let src: Vec<i32> = vec![7, 8, 9, 10];
+        let arr = device_array_from_host(&handle, &src, DataType::Int32).expect("create");
+
+        let ext = ExternalBuffer {
+            arr: &arr,
+            dtype: DataType::Int32,
+        };
+
+        let view = DeviceArrayView::from_device_buffer(&ext);
+        assert_eq!(view.len(), 4);
+        assert_eq!(view.dtype().expect("dtype"), DataType::Int32);
+
+        let bytes = view.to_host_vec(&handle).expect("to_host_vec");
+        let result: Vec<i32> = bytes
+            .chunks_exact(4)
+            .map(|c| i32::from_ne_bytes([c[0], c[1], c[2], c[3]]))
+            .collect();
+        assert_eq!(result, src);
     }
 }

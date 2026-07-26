@@ -7,11 +7,15 @@ fn manifest_dir() -> PathBuf {
 }
 
 fn include_dir() -> PathBuf {
+    // Mirror the fallback logic from build.rs: only use the env var if it
+    // actually contains cuGraph headers, otherwise fall back to the submodule.
     if let Ok(val) = std::env::var("CUGRAPH_INCLUDE_DIR") {
-        PathBuf::from(val)
-    } else {
-        manifest_dir().join("../cugraph/cpp/include")
+        let p = PathBuf::from(&val);
+        if p.join("cugraph_c").is_dir() {
+            return p;
+        }
     }
+    manifest_dir().join("../cugraph/cpp/include")
 }
 
 fn bindings_rs_path() -> PathBuf {
