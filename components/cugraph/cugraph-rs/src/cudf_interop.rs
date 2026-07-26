@@ -7,6 +7,7 @@
 //! [`DeviceArrayView`]: crate::array::DeviceArrayView
 
 use crate::array::{DeviceArrayView, DeviceBuffer};
+use crate::error::{Error, ErrorKind, Result};
 use crate::types::DataType;
 use cudf::column::DeviceSlice;
 use cudf::types::TypeId;
@@ -45,20 +46,26 @@ unsafe impl DeviceBuffer for DeviceSlice {
         self.len()
     }
 
-    fn dtype(&self) -> DataType {
-        cudf_type_to_cugraph(self.type_id())
-            .expect("DeviceSlice type must be convertible to cugraph DataType")
+    fn dtype(&self) -> Result<DataType> {
+        let type_id = self.type_id();
+        cudf_type_to_cugraph(type_id).ok_or_else(|| {
+            Error::new(ErrorKind::UnsupportedType, "DeviceSlice::dtype")
+                .with_message(format!(
+                    "cudf TypeId {:?} has no cugraph DataType equivalent",
+                    type_id
+                ))
+        })
     }
 }
 
 /// Extension trait for creating a [`DeviceArrayView`] from a cudf [`DeviceSlice`].
 pub trait DeviceSliceExt {
     /// Create a zero-copy [`DeviceArrayView`] from this [`DeviceSlice`].
-    fn as_cugraph_view(&self) -> DeviceArrayView<'_>;
+    fn as_cugraph_view(&self) -> Result<DeviceArrayView<'_>>;
 }
 
 impl DeviceSliceExt for DeviceSlice {
-    fn as_cugraph_view(&self) -> DeviceArrayView<'_> {
+    fn as_cugraph_view(&self) -> Result<DeviceArrayView<'_>> {
         DeviceArrayView::from_device_buffer(self)
     }
 }
