@@ -51,9 +51,9 @@ pub enum MemoryResourcePolicy {
     DefaultCuda,
     /// Build a pool memory resource with an initial and optional maximum size.
     Pool {
-        /// Initial pool size in bytes requested from cudf-rs.
+        /// Initial pool size in bytes requested from cudf.
         initial_pool_size: usize,
-        /// Optional maximum pool size in bytes requested from cudf-rs.
+        /// Optional maximum pool size in bytes requested from cudf.
         maximum_pool_size: Option<usize>,
     },
     /// Runtime was supplied by the caller and already owns its memory resource.

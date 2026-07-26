@@ -1,7 +1,7 @@
 //! Arrow-to-cuDF datatype support policy.
 //!
 //! These helpers define the native engine's admitted Arrow surface before a
-//! plan reaches cudf-rs. Returning `false` or `None` means the query should be
+//! plan reaches cudf. Returning `false` or `None` means the query should be
 //! rejected by capability analysis rather than attempted at execution time.
 
 use std::collections::HashMap;

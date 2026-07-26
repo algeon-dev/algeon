@@ -21,7 +21,7 @@ pub struct NativeSourceReadRuntimeMetricRow {
     pub remote_read_mode: String,
     /// Parquet reader backend evidence.
     pub parquet_read_backend: String,
-    /// Build-time remote backend status reported by cudf-rs/libcudf.
+    /// Build-time remote backend status reported by cudf/libcudf.
     pub remote_backend_build_status: String,
     /// Remote bytes read, when reported by the lower layer.
     pub remote_read_bytes: Option<usize>,

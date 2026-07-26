@@ -4,7 +4,7 @@ use super::*;
 
 /// Required cuGraph graph-layout state for an algorithm.
 ///
-/// Mirrors the `Graph<Forward>` / `Graph<Transposed>` type-state in cugraph-rs.
+/// Mirrors the `Graph<Forward>` / `Graph<Transposed>` type-state in the local `cugraph` crate.
 /// [`Any`](Self::Any) indicates that the algorithm runs under either layout;
 /// the executor still picks one concrete layout at runtime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -36,8 +36,8 @@ impl fmt::Display for GraphLayoutRequirement {
 
 /// Parameters for ForceAtlas2 graph layout.
 ///
-/// Mirrors `cugraph::layout::ForceAtlas2Params` without cugraph-rs newtype
-/// wrappers and adds a deterministic RNG seed used to create the cuGraph
+/// Mirrors `cugraph::layout::ForceAtlas2Params` without the `cugraph` crate's
+/// newtype wrappers and adds a deterministic RNG seed used to create the cuGraph
 /// `RngState` for each execution.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GraphForceAtlas2Params {

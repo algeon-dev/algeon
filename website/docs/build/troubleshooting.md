@@ -46,11 +46,11 @@ warning: libcudf appears stale: N source file(s) under cudf/cpp/{src,include}
 are newer than .../libcudf.so
 ```
 
-`cudf-sys` compares libcudf source mtimes against the installed
+`cudf-nexus-sys` compares libcudf source mtimes against the installed
 `libcudf.so`. Two distinct causes:
 
 1. You actually edited or pulled `cudf/` sources — rebuild:
-   `cd cudf-rs/cudf && ./build.sh libcudf`.
+   `cd cudf-nexus/cudf && ./build.sh libcudf`.
 2. `CUDF_INSTALL_DIR` points at a **different (older) install tree** than
    the one you rebuilt — tests would load the stale libcudf. Check
    `echo $CUDF_INSTALL_DIR` and realign it with the tree that
@@ -68,7 +68,7 @@ each `.so`:
 
 ```bash
 for so in "$CUDF_INSTALL_DIR"/lib/libcudf.so \
-          "$NEXUS_ROOT"/cugraph-rs/cugraph/cpp/build/libcugraph.so; do
+          "$NEXUS_ROOT"/cugraph-nexus/cugraph/cpp/build/libcugraph.so; do
   echo "== $so =="
   cuobjdump --list-elf "$so" | grep -oE 'sm_[0-9]+' | sort | uniq -c
 done
@@ -109,7 +109,7 @@ simply to run it (or the bootstrap alone) with the cudf `cpp/build` tree
 intact:
 
 ```bash
-cd "$NEXUS_ROOT/cugraph-rs" && bash scripts/build_libcugraph.sh
+cd "$NEXUS_ROOT/cugraph-nexus" && bash scripts/build_libcugraph.sh
 # or just the prefix-completion step:
 CUDF_INSTALL_DIR="$CUDF_INSTALL_DIR" bash scripts/bootstrap_cudf_install.sh
 ```
@@ -119,7 +119,7 @@ bootstrap nothing to install from — rebuild libcudf first (keeping
 `cpp/build`), then re-run the bootstrap:
 
 ```bash
-cd "$NEXUS_ROOT/cudf-rs/cudf" && ./build.sh libcudf
+cd "$NEXUS_ROOT/cudf-nexus/cudf" && ./build.sh libcudf
 ```
 
 ## SCC fails on Blackwell (sm_120): `cudaErrorInvalidDeviceFunction`
@@ -171,21 +171,21 @@ Inherited environment. Re-run the failing step under `env -i` with only
 `env.sh` ([Environment](./environment.md#validated-against-shell-state-leakage));
 diff the outcomes to find the leaking variable.
 
-## Cargo recompiles cudf-sys after only PATH changed
+## Cargo recompiles cudf-nexus-sys after only PATH changed
 
-`cudf-sys` no longer treats ambient `PATH` as a rebuild input. It tracks
+`cudf-nexus-sys` no longer treats ambient `PATH` as a rebuild input. It tracks
 explicit `CC`/`CXX`, cuDF/CUDA discovery variables, lint mode, optional
 `CUDF_RUST_CLANG_FORMAT` / `CUDF_RUST_CLANG_TIDY` / `CUDF_RUST_CMAKE`, and the
 selected runtime libraries. A PATH-only change (venv activate, agent tool
-shim, PATH normalization) should leave `cudf-sys` fresh when source and those
+shim, PATH normalization) should leave `cudf-nexus-sys` fresh when source and those
 explicit inputs are unchanged.
 
 If you still see a PATH-driven invalidation, you are likely on an older
-`cudf-rs` revision. Confirm the sibling checkout includes the fingerprint
+`cudf-nexus` revision. Confirm the sibling checkout includes the fingerprint
 matrix and re-run:
 
 ```bash
-cd "${NEXUS_ROOT}/cudf-rs"
+cd "${NEXUS_ROOT}/cudf-nexus"
 bash scripts/check_fingerprint_matrix.sh
 ```
 
@@ -193,7 +193,7 @@ Diagnose the first dirty unit without publishing secrets:
 
 ```bash
 CARGO_LOG=cargo::core::compiler::fingerprint=info \
-  cargo nextest run -p cudf-sys --no-run 2>&1 \
+  cargo nextest run -p cudf-nexus-sys --no-run 2>&1 \
   | rg 'fingerprint dirty|dirty:|Compiling' \
   | sed -E 's/(PATH=)[^ ]*/\1<redacted>/g'
 ```

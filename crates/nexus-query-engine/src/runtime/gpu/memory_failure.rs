@@ -70,7 +70,7 @@ impl DeviceMemoryFailureTracker {
 
     /// Returns the process-global tracker for one CUDA device ordinal.
     ///
-    /// cudf-rs installs at most one callback-bearing device manager per
+    /// cudf installs at most one callback-bearing device manager per
     /// process/device, so the Nexus counters must have the same lifetime and
     /// sharing semantics. Multiple QueryServices for one device therefore
     /// report the same callback counters.
@@ -88,9 +88,9 @@ impl DeviceMemoryFailureTracker {
         self.inner.device_ordinal
     }
 
-    /// Returns a re-entrancy-safe callback for cudf-rs/RMM.
+    /// Returns a re-entrancy-safe callback for cudf/RMM.
     ///
-    /// The callback records counters and asks cudf-rs to trim idle async-pool
+    /// The callback records counters and asks cudf to trim idle async-pool
     /// pages only when the failure payload shows enough reclaimable idle
     /// memory for one trim retry. It must remain allocation-free and lock-free
     /// because RMM invokes it inside allocation failure handling.

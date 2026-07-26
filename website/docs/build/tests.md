@@ -154,7 +154,7 @@ final phase table.
 
 The binary-lane catalog is the admission control for CPU and GPU tests. Keep it
 complete and run the live inventory check when changing test binaries: without
-the former cudf-rs runtime-policy backstop, an incorrectly classified CPU test
+the former cudf-nexus runtime-policy backstop, an incorrectly classified CPU test
 is not rejected at CUDA-runtime creation.
 
 ## Doctests and rustdoc
@@ -195,7 +195,7 @@ The outer `flock /tmp/cudf-gpu.lock` serializes each GPU lane against *other*
 GPU consumers — benchmarks, a running Flight SQL server, E2E scripts, or
 another checkout's test run. The inner cap, separate resource-class runs, and
 outer lock solve different problems. The same lock convention applies to
-`cudf-rs` and `cugraph-rs` test runs.
+`cudf-nexus` and `cugraph-nexus` test runs.
 
 GPU-lane membership is **binary-level and explicit**. `.config/policies/test-lanes.toml`
 is the single admission source: every live pre-merge-admitted nextest binary
@@ -292,10 +292,10 @@ CARGO_LOG=cargo::core::compiler::fingerprint=info \
 ```
 
 Fingerprint logs can contain full local environment values such as `PATH`.
-Redact them before attaching to an issue. Sibling `cudf-rs` documents the live
-matrix as `bash scripts/check_fingerprint_matrix.sh` (under the `cudf-rs`
+Redact them before attaching to an issue. Sibling `cudf-nexus` documents the live
+matrix as `bash scripts/check_fingerprint_matrix.sh` (under the `cudf-nexus`
 checkout) and the static contract as
-`cargo test -p cudf-sys --test fingerprint_matrix_contract`.
+`cargo test -p cudf-nexus-sys --test fingerprint_matrix_contract`.
 
 ### Target artifact maintenance
 

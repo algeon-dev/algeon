@@ -2,7 +2,7 @@
 //!
 //! Fact keys here are part of the public report/test contract: changing or
 //! removing one is a downstream-visible break. Most values document the
-//! lower-level `cudf-rs` / `libcudf` reservation and observability hooks
+//! lower-level `cudf` / `libcudf` reservation and observability hooks
 //! that strict bounded join admission depends on.
 
 use std::collections::BTreeMap;
@@ -74,7 +74,7 @@ impl BoundedJoinReservationContract {
     /// Builds the bounded join reservation fact map.
     ///
     /// Fact keys and many values here are consumed by reports and tests. This
-    /// map documents cudf-rs observability/reservation contracts that bounded
+    /// map documents cudf observability/reservation contracts that bounded
     /// execution relies on, including exact hash-table sizing, gather-map
     /// sizing, retained size-data observability, and explicit sink ownership.
     pub fn facts(self, boundary_policy: ExecutionBoundaryPolicy) -> BTreeMap<&'static str, String> {

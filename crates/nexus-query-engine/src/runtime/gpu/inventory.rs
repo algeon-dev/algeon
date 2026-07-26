@@ -124,7 +124,7 @@ pub trait GpuInventory: Send + Sync {
     }
 }
 
-/// Production GPU inventory backed by cudf-rs.
+/// Production GPU inventory backed by cudf.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct NexusGpuInventory;
 

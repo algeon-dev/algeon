@@ -23,7 +23,7 @@ source "$HOME/.cargo/env"
 
 # --- CUDA toolkit -----------------------------------------------------------
 # CUDACXX / CUDAToolkit_ROOT are read by CMake (libcudf, libcugraph, the
-# cudf-sys shim); nvcc must ALSO be on PATH for CMake language detection.
+# cudf-nexus-sys shim); nvcc must ALSO be on PATH for CMake language detection.
 export CUDA_HOME=/usr/local/cuda
 export CUDA_PATH="$CUDA_HOME"
 export CUDAToolkit_ROOT="$CUDA_HOME"
@@ -33,7 +33,7 @@ export PATH="$CUDA_HOME/bin:$PATH"
 # --- Host compiler ----------------------------------------------------------
 # RAPIDS 26.06 pins gcc 14. Ubuntu 24.04's default is gcc 13, so point the
 # native builds at gcc-14 explicitly instead of changing the system default.
-# Prefer absolute paths: cudf-sys fingerprints CC/CXX (and clang tool overrides)
+# Prefer absolute paths: cudf-nexus-sys fingerprints CC/CXX (and clang tool overrides)
 # rather than ambient PATH, so a venv or agent PATH prepend must not force a
 # native rebuild when source and selected compilers are unchanged.
 export CC=/usr/bin/gcc-14
@@ -42,7 +42,7 @@ export CUDAHOSTCXX=/usr/bin/g++-14
 
 # --- RAPIDS install prefix ---------------------------------------------------
 # One prefix shared by the whole stack (see below).
-export CUDF_INSTALL_DIR="$NEXUS_ROOT/cudf-rs/cudf-install"
+export CUDF_INSTALL_DIR="$NEXUS_ROOT/cudf-nexus/cudf-install"
 export INSTALL_PREFIX="$CUDF_INSTALL_DIR"
 
 # --- Runtime library resolution ----------------------------------------------
@@ -53,21 +53,21 @@ export LD_LIBRARY_PATH="$CUDF_INSTALL_DIR/lib:$CUDA_HOME/lib64${LD_LIBRARY_PATH:
 
 | Variable | Consumed by | Purpose |
 | --- | --- | --- |
-| `CUDA_HOME` / `CUDA_PATH` / `CUDAToolkit_ROOT` | CMake toolkit discovery, `cudf-sys` fingerprint | Pin which installed CUDA toolkit compiles the stack. |
-| `CUDACXX` | CMake, `cudf-sys` fingerprint | The CUDA compiler executable. |
-| `CC` / `CXX` / `CUDAHOSTCXX` | CMake, `nvcc`, `cudf-sys` fingerprint | Pin the host compiler to gcc 14 (the RAPIDS 26.06 toolchain) without changing the system default. Prefer **absolute** paths. `cudf-sys` tracks these selections as rebuild inputs and resolves `CC`/`CXX` basenames once; ambient PATH is no longer a fingerprint. `CUDAHOSTCXX` is the host compiler `nvcc` drives for device compilation. |
-| `CUDF_RUST_CLANG_FORMAT` / `CUDF_RUST_CLANG_TIDY` | `cudf-sys` when `CUDF_RUST_CLANG_LINT=ON` | Optional absolute pins for clang tools. When unset, tools are discovered once from PATH and tracked via these variables / lint mode rather than re-fingerprinting every PATH change. |
-| `CUDF_RUST_CMAKE` | `cudf-sys`, `cmake-rs` | Optional absolute pin for the CMake executable. The build script forwards it through cmake-rs's standard `CMAKE` input and tracks the pin as rebuild identity. |
-| `PATH` (+`$CUDA_HOME/bin`) | CMake language detection (`nvcc`), one-shot tool discovery | The `cudf-sys` shim declares CUDA as a project language; setting only `CUDA_HOME` is not enough — `nvcc` must be on `PATH`. PATH is **not** a `cargo:rerun-if-env-changed` input for `cudf-sys`. |
-| `INSTALL_PREFIX` | `cudf/build.sh` | Where `./build.sh libcudf` installs the libcudf tree. The RAPIDS build script defaults to `$CONDA_PREFIX`, which is unset outside conda — this must point at `cudf-rs/cudf-install`. |
-| `CUDF_INSTALL_DIR` | `cudf-sys/build.rs`, `cugraph-rs/scripts/build_libcugraph.sh` | How the Rust shim discovers the prebuilt libcudf, and how the cuGraph build resolves the **shared** RMM / rapids_logger packages. |
-| `LD_LIBRARY_PATH` (+`$CUDF_INSTALL_DIR/lib`, `$CUDA_HOME/lib64`) | test binaries, benchmarks, servers | Runtime resolution of `libcudf.so`, `librmm.so`, `libcugraph.so`. `cudf-sys` bakes a `DT_RUNPATH` for its own consumers, but the install prefix on `LD_LIBRARY_PATH` is the documented contract for everything else. |
+| `CUDA_HOME` / `CUDA_PATH` / `CUDAToolkit_ROOT` | CMake toolkit discovery, `cudf-nexus-sys` fingerprint | Pin which installed CUDA toolkit compiles the stack. |
+| `CUDACXX` | CMake, `cudf-nexus-sys` fingerprint | The CUDA compiler executable. |
+| `CC` / `CXX` / `CUDAHOSTCXX` | CMake, `nvcc`, `cudf-nexus-sys` fingerprint | Pin the host compiler to gcc 14 (the RAPIDS 26.06 toolchain) without changing the system default. Prefer **absolute** paths. `cudf-nexus-sys` tracks these selections as rebuild inputs and resolves `CC`/`CXX` basenames once; ambient PATH is no longer a fingerprint. `CUDAHOSTCXX` is the host compiler `nvcc` drives for device compilation. |
+| `CUDF_RUST_CLANG_FORMAT` / `CUDF_RUST_CLANG_TIDY` | `cudf-nexus-sys` when `CUDF_RUST_CLANG_LINT=ON` | Optional absolute pins for clang tools. When unset, tools are discovered once from PATH and tracked via these variables / lint mode rather than re-fingerprinting every PATH change. |
+| `CUDF_RUST_CMAKE` | `cudf-nexus-sys`, `cmake-rs` | Optional absolute pin for the CMake executable. The build script forwards it through cmake-rs's standard `CMAKE` input and tracks the pin as rebuild identity. |
+| `PATH` (+`$CUDA_HOME/bin`) | CMake language detection (`nvcc`), one-shot tool discovery | The `cudf-nexus-sys` shim declares CUDA as a project language; setting only `CUDA_HOME` is not enough — `nvcc` must be on `PATH`. PATH is **not** a `cargo:rerun-if-env-changed` input for `cudf-nexus-sys`. |
+| `INSTALL_PREFIX` | `cudf/build.sh` | Where `./build.sh libcudf` installs the libcudf tree. The RAPIDS build script defaults to `$CONDA_PREFIX`, which is unset outside conda — this must point at `cudf-nexus/cudf-install`. |
+| `CUDF_INSTALL_DIR` | `cudf-nexus-sys/build.rs`, `cugraph-nexus/scripts/build_libcugraph.sh` | How the Rust shim discovers the prebuilt libcudf, and how the cuGraph build resolves the **shared** RMM / rapids_logger packages. |
+| `LD_LIBRARY_PATH` (+`$CUDF_INSTALL_DIR/lib`, `$CUDA_HOME/lib64`) | test binaries, benchmarks, servers | Runtime resolution of `libcudf.so`, `librmm.so`, `libcugraph.so`. `cudf-nexus-sys` bakes a `DT_RUNPATH` for its own consumers, but the install prefix on `LD_LIBRARY_PATH` is the documented contract for everything else. |
 
 :::warning[Keep the three prefix views consistent]
 `CUDF_INSTALL_DIR`, `INSTALL_PREFIX`, and the `LD_LIBRARY_PATH` entry must
 all point at the **same** install tree. If they drift (for example after
-moving a checkout), `cudf-sys` links one libcudf while tests load another —
-the staleness check in `cudf-sys/build.rs` warns about exactly this.
+moving a checkout), `cudf-nexus-sys` links one libcudf while tests load another —
+the staleness check in `cudf-nexus-sys/build.rs` warns about exactly this.
 :::
 
 ## Why one shared install prefix
@@ -76,7 +76,7 @@ the staleness check in `cudf-sys/build.rs` warns about exactly this.
 --features cugraph` loads libcudf and libcugraph together; if the cuGraph
 build let CPM compile its own private RMM, both copies would bind RMM symbols
 in the same process and corrupt memory-resource state.
-`cugraph-rs/scripts/build_libcugraph.sh` therefore resolves `rmm` and
+`cugraph-nexus/scripts/build_libcugraph.sh` therefore resolves `rmm` and
 `rapids_logger` from `CUDF_INSTALL_DIR` and **aborts** if a private copy is
 still reachable — this is enforced, not advisory.
 

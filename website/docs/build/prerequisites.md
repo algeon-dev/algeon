@@ -22,11 +22,11 @@ follow the [RAPIDS install guide](https://docs.rapids.ai/install/) and the
 | --- | --- | --- |
 | NVIDIA driver + CUDA toolkit | libcudf build, libcugraph build (nvcc); every layer at runtime (GPU) | CUDA 12.2 through 13.2 |
 | gcc/g++ **14** | libcudf build, libcugraph build (host compiler) | RAPIDS 26.06 pins gcc 14 |
-| CMake ≥ 3.30.4 | libcudf build, libcugraph build, the `cudf-sys` C++ shim | hard floor in the C++ projects |
+| CMake ≥ 3.30.4 | libcudf build, libcugraph build, the `cudf-nexus-sys` C++ shim | hard floor in the C++ projects |
 | Ninja | libcudf build, libcugraph build | RAPIDS build scripts default to it |
-| mold + clang | `cudf-rs`, `cugraph-rs`, `datafusion-nexus` Cargo builds | `datafusion-nexus` pins mold in `.cargo/config.toml`; install both on the host |
-| Rust (stable + nightly) | `cudf-rs`, `cugraph-rs`, `datafusion-nexus` | nightly only for `rustfmt` |
-| Python + pyarrow | a few `cudf-rs` Parquet **fixture tests** | **not** a build dependency |
+| mold + clang | `cudf-nexus`, `cugraph-nexus`, `datafusion-nexus` Cargo builds | `datafusion-nexus` pins mold in `.cargo/config.toml`; install both on the host |
+| Rust (stable + nightly) | `cudf-nexus`, `cugraph-nexus`, `datafusion-nexus` | nightly only for `rustfmt` |
+| Python + pyarrow | a few `cudf-nexus` Parquet **fixture tests** | **not** a build dependency |
 
 ## NVIDIA driver and CUDA toolkit
 
@@ -98,7 +98,7 @@ toolkit is a classic source of inscrutable `nvcc` errors.
 
 ### CMake ≥ 3.30.4
 
-Both native builds (`libcudf`, `libcugraph`) and the `cudf-sys` shim declare
+Both native builds (`libcudf`, `libcugraph`) and the `cudf-nexus-sys` shim declare
 `cmake_minimum_required(VERSION 3.30.4)`. Ubuntu 24.04 ships 3.28, which fails
 immediately — install a newer CMake from the
 [Kitware apt repository](https://apt.kitware.com/):
@@ -133,7 +133,7 @@ mold --version
 clang --version
 ```
 
-For sibling crates built outside `datafusion-nexus` (`cudf-rs`, `cugraph-rs`),
+For sibling crates built outside `datafusion-nexus` (`cudf-nexus`, `cugraph-nexus`),
 install the same packages and keep an equivalent linker setting in
 `~/.cargo/config.toml` so plain `cargo build` still uses mold:
 
@@ -162,10 +162,10 @@ it. The nightly toolchain is only used for `cargo +nightly fmt`.
 
 ## Python (test fixtures only)
 
-A few `cudf-rs` Parquet fixture tests shell out to Python with pyarrow. This is
+A few `cudf-nexus` Parquet fixture tests shell out to Python with pyarrow. This is
 **not** a build dependency — libcudf, libcugraph, and every Rust crate compile
 and link without it — so install it only if you intend to run the full
-`cudf-rs` test suite:
+`cudf-nexus` test suite:
 
 ```bash
 python3 -m pip install --user pyarrow

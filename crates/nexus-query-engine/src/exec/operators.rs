@@ -889,7 +889,7 @@ fn execute_lag_lead_window(
     //    with offset 0 so we can re-sort by it to recover input order.
     //
     // SQL `PARTITION BY` groups NULL keys together, so we have to request
-    // `include_null_keys` from cudf-rs explicitly: `DataFrame::groupby`
+    // `include_null_keys` from cudf explicitly: `DataFrame::groupby`
     // defaults to excluding null keys, which would drop those rows from the
     // shift output and break the row-index based reattach below.
     let shift_specs = [

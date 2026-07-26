@@ -46,7 +46,7 @@ DataFusion session.
   DataFusion dependency. It owns the IR, capability analysis, execution-time
   context, and executor.
 - **RAPIDS capability belongs below:** Missing GPU APIs, memory hooks, device
-  interop, or graph contracts belong in `cudf-rs` / `cugraph-rs`, not adapter
+  interop, or graph contracts belong in `cudf-nexus` / `cugraph-nexus`, not adapter
   workarounds.
 
 ## Integration surfaces
@@ -148,7 +148,7 @@ Three deep contracts sit behind this overview, each on its own page:
         It has no DataFusion dependency.</>,
     },
     {
-      kind: 'bindings', name: 'cudf-rs / cugraph-rs', note: 'safe Rust over RAPIDS', tone: 'gpu',
+      kind: 'bindings', name: 'cudf-nexus / cugraph-nexus', note: 'safe Rust over RAPIDS', tone: 'gpu',
       boundary: 'FFI / C ABI boundary',
       sub: 'cudf · cugraph',
       detail: <>The binding crates own RAII device memory, runtime and stream

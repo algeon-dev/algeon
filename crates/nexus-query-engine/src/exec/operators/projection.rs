@@ -205,7 +205,7 @@ pub(in crate::exec) fn projection_regexp_replace_prepare(
 /// need a reservation size and will re-prepare under the execute token.
 ///
 /// Returns `None` when the projection has no regexp_replace. Nested non-column
-/// regexp inputs are rejected fail-closed because the owning cudf-rs preflight
+/// regexp inputs are rejected fail-closed because the owning cudf preflight
 /// only sizes a concrete strings column.
 pub(in crate::exec) fn projection_regexp_replace_work_reservation_bytes(
     context: &ExecutionContext,

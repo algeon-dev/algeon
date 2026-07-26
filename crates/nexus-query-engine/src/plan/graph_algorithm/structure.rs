@@ -162,8 +162,8 @@ impl Default for GraphCoreNumberParams {
 
 /// Parameters for k-core subgraph extraction.
 ///
-/// Mirrors `cugraph::structure::KCoreParams` without cugraph-rs newtype
-/// wrappers so the native IR can be constructed without the cuGraph feature.
+/// Mirrors `cugraph::structure::KCoreParams` without the `cugraph` crate's
+/// newtype wrappers so the native IR can be constructed without the cuGraph feature.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GraphKCoreParams {
     /// K value for the extracted core. Must be >= 1.

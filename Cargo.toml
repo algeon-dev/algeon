@@ -48,10 +48,10 @@ workspace = true
 datafusion-nexus = { path = ".", default-features = false }
 nexus-workloads = { path = "crates/nexus-workloads" }
 nexus-query-engine = { path = "crates/nexus-query-engine", default-features = false }
-cudf = { path = "../cudf-rs/cudf-rs" }
-cudf-sys = { path = "../cudf-rs/cudf-sys" }
-cugraph = { path = "../cugraph-rs/cugraph-rs" }
-cugraph-sys = { path = "../cugraph-rs/cugraph-sys" }
+cudf = { package = "cudf-nexus", path = "../cudf-nexus/cudf-nexus" }
+cudf-sys = { package = "cudf-nexus-sys", path = "../cudf-nexus/cudf-nexus-sys" }
+cugraph = { package = "cugraph-nexus", path = "../cugraph-nexus/cugraph-nexus" }
+cugraph-sys = { package = "cugraph-nexus-sys", path = "../cugraph-nexus/cugraph-nexus-sys" }
 anyhow = "1"
 arrow = { version = "58.3.0", default-features = false, features = ["ipc"] }
 arrow-flight = { version = "58.3.0", features = ["flight-sql-experimental"] }
@@ -83,7 +83,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 [features]
 default = []
 cugraph = ["dep:cugraph", "dep:cugraph-sys", "nexus-query-engine/cugraph"]
-# Optional live NVML diagnostics; admission capacity and SM count remain on cudf-rs CUDA/RMM inventory.
+# Optional live NVML diagnostics; admission capacity and SM count remain on cudf CUDA/RMM inventory.
 nvml = ["nexus-query-engine/nvml"]
 iceberg = [
   "dep:nexus-iceberg",

@@ -639,8 +639,8 @@ def _spectral_modularity_maximization(cugraph_mod, graph, params: Dict[str, Any]
 
 def _force_atlas2(cugraph_mod, graph, params: Dict[str, Any]) -> Dict[str, Any]:
     # Pass every option explicitly: Python cuGraph defaults differ from
-    # cugraph-rs for a few ForceAtlas2 knobs, while the adapter mirrors
-    # cugraph-rs/C API defaults.
+    # the Rust `cugraph` crate for a few ForceAtlas2 knobs, while the adapter mirrors
+    # libcugraph C API defaults.
     df = cugraph_mod.force_atlas2(
         graph,
         max_iter=int(params.get("max_iter", 500)),

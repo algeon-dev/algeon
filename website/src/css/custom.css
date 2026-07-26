@@ -352,7 +352,7 @@
   --nx-design-df: #c93a26;      /* DataFusion / host SQL surface */
   --nx-design-nexus: #a87414;   /* the Nexus adapter layer */
   --nx-design-bridge: #7e8f00;  /* nexus-query-engine — halfway to the GPU */
-  --nx-design-gpu: #5e9400;     /* cudf-rs / libcudf / CUDA — NVIDIA green */
+  --nx-design-gpu: #5e9400;     /* cudf / libcudf / CUDA — NVIDIA green */
   --nx-design-graph: #1f8b4d;   /* cugraph, one step off the cuDF green */
   --nx-design-lake: #2e7cb4;    /* Iceberg lakehouse blue */
 

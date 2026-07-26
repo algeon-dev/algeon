@@ -1,6 +1,6 @@
 ---
 sidebar_position: 4
-description: Clone the repositories and build the stack bottom-up — libcudf, cudf-rs, libcugraph, cugraph-rs, then datafusion-nexus.
+description: Clone the repositories and build the stack bottom-up — libcudf, cudf-nexus, libcugraph, cugraph-nexus, then datafusion-nexus.
 ---
 
 # Building from Source
@@ -18,11 +18,11 @@ of the Rust dependency graph) is fetched by Cargo, not cloned.
 export NEXUS_ROOT=~/nexus # pick any root
 mkdir -p "$NEXUS_ROOT" && cd "$NEXUS_ROOT"
 
-git clone https://github.com/DataFusion-Nexus/cudf-rs.git
-git -C cudf-rs submodule update --init cudf          # libcudf fork sources
+git clone https://github.com/DataFusion-Nexus/cudf-nexus.git
+git -C cudf-nexus submodule update --init cudf          # libcudf fork sources
 
-git clone https://github.com/DataFusion-Nexus/cugraph-rs.git
-git -C cugraph-rs submodule update --init cugraph    # libcugraph fork sources
+git clone https://github.com/DataFusion-Nexus/cugraph-nexus.git
+git -C cugraph-nexus submodule update --init cugraph    # libcugraph fork sources
 
 git clone https://github.com/DataFusion-Nexus/datafusion-nexus.git
 ```
@@ -32,8 +32,9 @@ the fork and checks out the pinned commit. A shallow `--depth 1` submodule
 fetch does **not** work here — GitHub refuses to serve the pinned commit as a
 bare object, so use the default (full) fetch shown above.
 
-`datafusion-nexus/Cargo.toml` resolves `cudf` and `cugraph` through `../`
-sibling paths — keep the directory names exactly as cloned. Apache DataFusion
+`datafusion-nexus/Cargo.toml` resolves the `cudf-nexus` and `cugraph-nexus`
+packages through the stable `cudf` and `cugraph` aliases at `../` sibling paths
+— keep the directory names exactly as cloned. Apache DataFusion
 is an ordinary published crate (`datafusion = "54"`), so there is nothing to
 clone for it — Cargo fetches it and the rest of the dependency graph
 automatically.
@@ -46,12 +47,12 @@ with that parallelism, so cap it (`PARALLEL_LEVEL=<n> ./build.sh libcudf`) on a
 memory-constrained box.
 
 ```bash
-cd "$NEXUS_ROOT/cudf-rs/cudf"
+cd "$NEXUS_ROOT/cudf-nexus/cudf"
 ./build.sh libcudf
 ```
 
 `INSTALL_PREFIX` (from `env.sh`) sends the install to
-`cudf-rs/cudf-install/`. The fork builds RMM as a **shared** library by
+`cudf-nexus/cudf-install/`. The fork builds RMM as a **shared** library by
 default (`CUDF_RMM_BUILD_SHARED=ON`) — downstream layers depend on that.
 
 By default the build targets your GPU's own architecture
@@ -65,7 +66,7 @@ Verify the install tree. `./build.sh libcudf` installs **cudf and rmm only** —
 `libcudf.so`, the shared `librmm.so`, and their CMake packages. The
 `rapids_logger`/`nvtx3` packages that cuGraph's `find_package(rmm)` needs are
 **not** installed here; the cuGraph build adds them in
-[step 4](#4-build-libcugraph). `cudf-sys` links the `.so` files directly
+[step 4](#4-build-libcugraph). `cudf-nexus-sys` links the `.so` files directly
 without a CMake configure, so cudf + rmm is all it needs:
 
 ```bash
@@ -78,16 +79,16 @@ cuobjdump --list-elf "$CUDF_INSTALL_DIR/lib/libcudf.so" \
   | grep -oE 'sm_[0-9]+' | sort | uniq -c
 ```
 
-## 3. Build and test cudf-rs
+## 3. Build and test cudf-nexus
 
-`cudf-sys` compiles a C++ shim with CMake and links it against the installed
+`cudf-nexus-sys` compiles a C++ shim with CMake and links it against the installed
 libcudf; the pure-Rust crates build on top. These Cargo builds need the mold
 linker on the host (install mold and clang in
 [Prerequisites](./prerequisites.md#rust-linker-mold)).
 
 ```bash
-cd "$NEXUS_ROOT/cudf-rs"
-cargo build -p cudf-sys      # smoke-test shim compile + libcudf link first
+cd "$NEXUS_ROOT/cudf-nexus"
+cargo build -p cudf-nexus-sys      # smoke-test shim compile + libcudf link first
 cargo build
 flock /tmp/cudf-gpu.lock cargo test --all-features
 ```
@@ -98,7 +99,7 @@ Tests execute on the GPU, so they take the global GPU lock (see
 ## 4. Build libcugraph
 
 ```bash
-cd "$NEXUS_ROOT/cugraph-rs"
+cd "$NEXUS_ROOT/cugraph-nexus"
 bash scripts/build_libcugraph.sh
 ```
 
@@ -132,10 +133,10 @@ After this step the cudf prefix is self-contained — the bootstrap has added th
 ls -d "$CUDF_INSTALL_DIR"/lib/cmake/{cudf,rmm,rapids_logger,nvtx3,fmt,spdlog}
 ```
 
-## 5. Build and test cugraph-rs
+## 5. Build and test cugraph-nexus
 
 ```bash
-cd "$NEXUS_ROOT/cugraph-rs"
+cd "$NEXUS_ROOT/cugraph-nexus"
 cargo build
 flock /tmp/cudf-gpu.lock cargo test --all-features
 ```

@@ -284,13 +284,13 @@ allocator high-water bytes, and retry counters.
   nodes={[
     {
       kind: 'bindings', name: 'CUDA async pool', note: 'physical pool · explicit trim', tone: 'gpu',
-      boundary: 'cudf-rs / RMM',
-      sub: 'cudf-rs · DeviceMemoryManager',
-      detail: <>Layer 0. cudf-rs backs each device memory manager with CUDA's
+      boundary: 'cudf-nexus / RMM',
+      sub: 'cudf-nexus · DeviceMemoryManager',
+      detail: <>Layer 0. cudf-nexus backs each device memory manager with CUDA's
         stream-ordered async pool. The pool stays warm by default
         (<code>release_threshold = UINT64_MAX</code>) so steady-state query
         loops do not repay physical mapping cost, but the backend can
-        explicitly trim idle pages. cudf-rs also exposes pool reserved/used
+        explicitly trim idle pages. cudf-nexus also exposes pool reserved/used
         counters so the physical allocator state is observable instead of only
         inferred from grant ledgers.</>,
     },
@@ -318,8 +318,8 @@ allocator high-water bytes, and retry counters.
     {
       kind: 'bindings', name: 'RMM arena members + failure callback', note: 'hard backstop · trim retry', tone: 'gpu',
       boundary: 'FFI / C ABI boundary',
-      sub: 'cudf-rs · reservation_aware_resource_adaptor',
-      detail: <>Layer 3. cudf-rs installs a reservation-aware RMM resource per
+      sub: 'cudf-nexus · reservation_aware_resource_adaptor',
+      detail: <>Layer 3. cudf-nexus installs a reservation-aware RMM resource per
         device: each <code>ExecutionBudgetToken</code> is a per-stream member
         lease under the query arena. Native allocation accounting charges the
         arena parent first, then the member, so concurrent streams cannot exceed
@@ -328,7 +328,7 @@ allocator high-water bytes, and retry counters.
         rather than landing on the bare device pool. Over-limit allocations
         fail as structured <code>ResourceExhausted</code> (retryable upstream).
         The reclaim-capable failure callback receives device, request, and
-        async-pool reserved/used counters; the backend can ask cudf-rs to trim
+        async-pool reserved/used counters; the backend can ask cudf-nexus to trim
         idle async-pool pages once, then retry the failed allocation.</>,
     },
   ]}
@@ -425,7 +425,7 @@ reports-not-printed-plans convention:
   `device_telemetry_snapshots()` (best-effort live CUDA/NVML memory and
   utilization), and `device_memory_failure_reports()` (failure-callback counters, trim retries,
   last failed allocation bytes, and the latest observed async-pool
-  reserved/used counters). The underlying cudf-rs manager also exposes
+  reserved/used counters). The underlying cudf-nexus manager also exposes
   async-pool reserved/used counters and an explicit trim hook for operator
   diagnostics and administrative controls.
 - **Server surface:** the same snapshots in server logs and the

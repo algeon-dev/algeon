@@ -760,7 +760,7 @@ fn graph_operation_registry_has_cugraph_public_contracts() {
     let _: Option<cugraph::Graph<cugraph::Forward>> = None;
     let _: Option<cugraph::Graph<cugraph::Transposed>> = None;
 
-    // Method-item references are compile-time contracts against cugraph-rs's
+    // Method-item references are compile-time contracts against the local `cugraph` crate's
     // public API. They intentionally avoid reading a sibling checkout's
     // source, while still failing if an execution adapter's entry point is
     // renamed or removed.

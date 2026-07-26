@@ -1610,14 +1610,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "cudf"
+name = "cudf-nexus"
 version = "0.1.0"
 dependencies = [
  "ahash",
  "arrow",
  "bitflags",
  "csv",
- "cudf-sys",
+ "cudf-nexus-sys",
  "indexmap 2.14.0",
  "parquet",
  "rapids-interop",
@@ -1627,25 +1627,25 @@ dependencies = [
 ]
 
 [[package]]
-name = "cudf-sys"
+name = "cudf-nexus-sys"
 version = "0.1.0"
 dependencies = [
  "cmake",
 ]
 
 [[package]]
-name = "cugraph"
+name = "cugraph-nexus"
 version = "0.1.0"
 dependencies = [
  "cc",
- "cudf",
- "cudf-sys",
- "cugraph-sys",
+ "cudf-nexus",
+ "cudf-nexus-sys",
+ "cugraph-nexus-sys",
  "rapids-interop",
 ]
 
 [[package]]
-name = "cugraph-sys"
+name = "cugraph-nexus-sys"
 version = "0.1.0"
 dependencies = [
  "bindgen",
@@ -2226,10 +2226,10 @@ dependencies = [
  "async-trait",
  "base64",
  "bytes",
- "cudf",
- "cudf-sys",
- "cugraph",
- "cugraph-sys",
+ "cudf-nexus",
+ "cudf-nexus-sys",
+ "cugraph-nexus",
+ "cugraph-nexus-sys",
  "dashmap",
  "datafusion",
  "futures",
@@ -3859,10 +3859,10 @@ dependencies = [
  "async-trait",
  "aws-config",
  "aws-credential-types",
- "cudf",
- "cudf-sys",
- "cugraph",
- "cugraph-sys",
+ "cudf-nexus",
+ "cudf-nexus-sys",
+ "cugraph-nexus",
+ "cugraph-nexus-sys",
  "datafusion",
  "datafusion-nexus",
  "futures",
@@ -3885,8 +3885,8 @@ dependencies = [
  "arrow",
  "arrow-json",
  "axum",
- "cudf-sys",
- "cugraph-sys",
+ "cudf-nexus-sys",
+ "cugraph-nexus-sys",
  "datafusion",
  "datafusion-nexus",
  "nexus-query-engine",
@@ -3924,10 +3924,10 @@ dependencies = [
  "async-trait",
  "blake3",
  "bytes",
- "cudf",
- "cudf-sys",
- "cugraph",
- "cugraph-sys",
+ "cudf-nexus",
+ "cudf-nexus-sys",
+ "cugraph-nexus",
+ "cugraph-nexus-sys",
  "futures",
  "getrandom 0.4.2",
  "nvml-wrapper",
@@ -3944,7 +3944,7 @@ version = "0.1.0"
 dependencies = [
  "arrow",
  "arrow-flight",
- "cudf",
+ "cudf-nexus",
  "datafusion",
  "datafusion-nexus",
  "futures",

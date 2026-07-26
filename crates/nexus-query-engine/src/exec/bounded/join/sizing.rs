@@ -23,7 +23,7 @@ use crate::error::{QueryError, QueryErrorCode, Result};
 ///
 /// These values encode conservative cudf/RMM/Arrow allocation assumptions used
 /// before the materialization operator can report observed device memory. They
-/// are not user-facing knobs; they should move downstack when cudf-rs can
+/// are not user-facing knobs; they should move downstack when cudf can
 /// expose authoritative sizing or allocation-alignment contracts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct JoinOutputSizingPolicy {
@@ -37,7 +37,7 @@ impl JoinOutputSizingPolicy {
     /// Conservative offsets-buffer width for cuDF `String` columns. cuDF
     /// starts with INT32 offsets and switches to INT64 above
     /// `cudf::strings::detail::get_offset64_threshold()`
-    /// (`../cudf-rs/cudf/cpp/include/cudf/strings/detail/strings_children.cuh:133-157`);
+    /// (`../cudf-nexus/cudf/cpp/include/cudf/strings/detail/strings_children.cuh:133-157`);
     /// using 8 bytes per offset upper-bounds both regimes.
     const DEFAULT_STRING_OFFSET_BYTES_CONSERVATIVE: u64 = 8;
     /// Conservative per-buffer-pair allocation padding used to upper-bound
