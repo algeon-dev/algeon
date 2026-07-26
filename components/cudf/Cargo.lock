@@ -388,14 +388,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "cudf"
+name = "cudf-nexus"
 version = "0.1.0"
 dependencies = [
  "ahash",
  "arrow",
  "bitflags",
  "csv",
- "cudf-sys",
+ "cudf-nexus-sys",
  "indexmap",
  "parquet",
  "rapids-interop",
@@ -408,7 +408,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "cudf-sys"
+name = "cudf-nexus-sys"
 version = "0.1.0"
 dependencies = [
  "cmake",
