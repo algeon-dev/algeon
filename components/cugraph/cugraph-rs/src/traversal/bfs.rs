@@ -12,6 +12,7 @@ use crate::array::DeviceArrayView;
 use crate::error::{check_error, Result};
 use crate::graph::Graph;
 use crate::handle::ResourceHandle;
+use crate::params::BfsDepthLimit;
 use crate::types::to_bool_t;
 
 /// Perform breadth-first search from one or more source vertices.
@@ -23,14 +24,16 @@ use crate::types::to_bool_t;
 /// - `sources` — source vertex ids (device array view, mutable because the C
 ///   API may modify it if renumbering is enabled)
 /// - `depth_limit` — maximum BFS depth, or `None` for unlimited traversal.
-///   The C API treats depth_limit=0 as "stop at depth 0", so `None` maps to
-///   `i32::MAX` (matching the C++ default of `std::numeric_limits<vertex_t>::max()`).
+///   When provided, this uses [`BfsDepthLimit`] so invalid zero values are
+///   unrepresentable at the type level.
+///   `None` maps to `i32::MAX` (matching the C++ default of
+///   `std::numeric_limits<vertex_t>::max()`).
 /// - `compute_predecessors` — whether to compute predecessor vertices
 pub fn bfs(
     handle: &ResourceHandle,
     graph: &mut Graph,
     sources: &mut DeviceArrayView<'_>,
-    depth_limit: Option<usize>,
+    depth_limit: Option<BfsDepthLimit>,
     compute_predecessors: bool,
 ) -> Result<BfsResult> {
     let mut result: *mut cugraph_paths_result_t = ptr::null_mut();
@@ -38,7 +41,7 @@ pub fn bfs(
 
     // The C++ BFS defaults to std::numeric_limits<vertex_t>::max() for unlimited
     // depth. Since vertex_t is typically int32_t, we use i32::MAX.
-    let limit = depth_limit.unwrap_or(i32::MAX as usize);
+    let limit = depth_limit.map(usize::from).unwrap_or(i32::MAX as usize);
 
     unsafe {
         let code = cugraph_bfs(
@@ -189,6 +192,72 @@ mod tests {
         // Check predecessors are present
         let preds = result.predecessors();
         assert!(preds.is_some(), "predecessors should be computed");
+    }
+
+    #[test]
+    fn test_bfs_depth_limit_works() {
+        let handle = ResourceHandle::new().expect("handle");
+
+        // Path graph 0->1->2->3->4
+        let src_data: Vec<i32> = vec![0, 1, 2, 3];
+        let dst_data: Vec<i32> = vec![1, 2, 3, 4];
+
+        let src = device_array_from_host(&handle, &src_data, DataType::Int32).expect("src");
+        let dst = device_array_from_host(&handle, &dst_data, DataType::Int32).expect("dst");
+
+        let props = GraphProperties {
+            is_symmetric: false,
+            is_multigraph: false,
+        };
+
+        let mut graph = Graph::from_edge_list(
+            &handle,
+            props,
+            &src.view(),
+            &dst.view(),
+            None,
+            None,
+            None,
+            false, // store_transposed (BFS needs non-transposed)
+            false, // renumber (IDs are sequential)
+        )
+        .expect("graph");
+
+        let sources_arr =
+            device_array_from_host(&handle, &[0i32], DataType::Int32).expect("sources");
+        let mut sources_view = sources_arr.view();
+
+        let result = bfs(
+            &handle,
+            &mut graph,
+            &mut sources_view,
+            Some(BfsDepthLimit::new(2).unwrap()),
+            false,
+        )
+        .expect("bfs");
+
+        let vert_bytes = result.vertices().to_host_vec(&handle).expect("vert copy");
+        let dist_bytes = result.distances().to_host_vec(&handle).expect("dist copy");
+
+        let vertices: Vec<i32> = vert_bytes
+            .chunks_exact(4)
+            .map(|c| i32::from_ne_bytes([c[0], c[1], c[2], c[3]]))
+            .collect();
+        let distances: Vec<i32> = dist_bytes
+            .chunks_exact(4)
+            .map(|c| i32::from_ne_bytes([c[0], c[1], c[2], c[3]]))
+            .collect();
+
+        let mut dist_map = std::collections::HashMap::new();
+        for (v, d) in vertices.iter().zip(distances.iter()) {
+            dist_map.insert(*v, *d);
+        }
+
+        assert_eq!(dist_map[&0], 0);
+        assert_eq!(dist_map[&1], 1);
+        assert_eq!(dist_map[&2], 2);
+        assert_eq!(dist_map[&3], i32::MAX);
+        assert_eq!(dist_map[&4], i32::MAX);
     }
 
     #[test]
