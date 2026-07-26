@@ -21,7 +21,7 @@ struct TestDir {
 impl TestDir {
     fn new() -> Self {
         let unique = format!(
-            "cugraph-rs-build-test-{}-{}",
+            "cugraph-build-test-{}-{}",
             std::process::id(),
             SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
         );
@@ -43,7 +43,7 @@ impl Drop for TestDir {
 
 #[test]
 fn local_shim_dir_stays_project_owned_include_root() {
-    let manifest_dir = Path::new("/tmp/cugraph-rs");
+    let manifest_dir = Path::new("/tmp/cugraph-nexus");
     let native_include_dirs = vec![PathBuf::from("/opt/cugraph/include")];
 
     let layout = resolve_shim_compile_layout(manifest_dir, native_include_dirs).expect("compile layout");
@@ -111,13 +111,13 @@ fn build_rs_tracks_project_owned_shim_sources() {
     assert!(build_rs.contains(r#"join("shim").join("runtime_resource_handle.h")"#));
     assert!(
         !build_rs.contains(r#"join("cpp").join("runtime_resource_handle"#),
-        "runtime resource shim sources should stay under cugraph-rs/shim, not cugraph-rs/cpp"
+        "runtime resource shim sources should stay under cugraph-nexus/shim, not cugraph-nexus/cpp"
     );
 }
 
 #[test]
 fn compile_layout_rejects_missing_native_include_dirs() {
-    let manifest_dir = Path::new("/tmp/cugraph-rs");
+    let manifest_dir = Path::new("/tmp/cugraph-nexus");
 
     let err = resolve_shim_compile_layout(manifest_dir, Vec::new()).expect_err("missing native include dirs");
 

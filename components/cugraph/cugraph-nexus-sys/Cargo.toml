@@ -1,5 +1,5 @@
 [package]
-name = "cugraph-sys"
+name = "cugraph-nexus-sys"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,9 +9,12 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 readme.workspace = true
-documentation = "https://docs.rs/cugraph-sys"
+documentation = "https://docs.rs/cugraph-nexus-sys"
 categories = ["api-bindings", "external-ffi-bindings"]
 keywords = ["cugraph", "cuda", "ffi", "gpu", "rapids"]
+
+[lib]
+name = "cugraph_sys"
 
 [build-dependencies]
 bindgen.workspace = true

@@ -14,8 +14,8 @@
 
 namespace rmm::mr {
 
-/// Compatibility base for cudf-rs' pre-26.06 RMM device-resource FFI.
-/// Keep this definition in sync with cudf-rs so cross-crate pointer/vtable
+/// Compatibility base for cudf's pre-26.06 RMM device-resource FFI.
+/// Keep this definition in sync with cudf so cross-crate pointer/vtable
 /// identity remains stable after RMM's CCCL resource-model migration.
 class device_memory_resource {
  public:

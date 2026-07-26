@@ -1,7 +1,7 @@
 #include "runtime_resource_handle.h"
 
-// cudf-rs passes its runtime memory resource through a project-local compat
-// base. Keep memory_resource_compat.hpp byte-identical to cudf-rs, then wrap the
+// cudf passes its runtime memory resource through a project-local compat
+// base. Keep memory_resource_compat.hpp byte-identical to cudf, then wrap the
 // borrowed pointer as the RAFT 26.06 device_resource expected by handle_t.
 #include "memory_resource_compat.hpp"
 

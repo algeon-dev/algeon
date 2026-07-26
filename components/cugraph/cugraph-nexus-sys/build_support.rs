@@ -200,7 +200,7 @@ fn workspace_native_build_layout(
 
     let build_dir = cpp_build_dir_env.map(PathBuf::from).unwrap_or_else(|| src_dir.join("build"));
     let cudf_install_dir =
-        cudf_install_dir_env.map(PathBuf::from).unwrap_or_else(|| workspace_parent.join("cudf-rs/cudf-install"));
+        cudf_install_dir_env.map(PathBuf::from).unwrap_or_else(|| workspace_parent.join("cudf-nexus/cudf-install"));
     let rmm_config = cudf_install_dir.join("lib/cmake/rmm/rmm-config.cmake");
     if !rmm_config.is_file() {
         return Err(format!(
@@ -842,7 +842,7 @@ fn looks_like_library_path(path: &Path) -> bool {
         // CMake export via absolute paths. Capture their directory so the
         // toolkit lib dir flows through the formal native-link metadata; the
         // same directory also holds the corresponding shared libraries that
-        // `cugraph-rs/build.rs` links (e.g. `-lcudart`).
+        // the cugraph-nexus build script (`cugraph-nexus/build.rs`) links (e.g. `-lcudart`).
         || file_name.ends_with(".a")
 }
 
