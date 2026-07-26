@@ -1,0 +1,3 @@
+[submodule "cuvs"]
+	path = cuvs
+	url = https://github.com/rapidsai/cuvs.git

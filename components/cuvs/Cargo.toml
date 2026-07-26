@@ -1,5 +1,6 @@
 [workspace]
-members = ["cuvs-sys", "cuvs"]
+members = ["cuvs-nexus-sys", "cuvs-nexus", "tools/generate-bindings"]
+default-members = ["cuvs-nexus-sys", "cuvs-nexus"]
 resolver = "3"
 
 [workspace.package]
@@ -7,9 +8,18 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.94.0"
 license = "Apache-2.0"
-repository = "https://github.com/morristai/cuvs-rs"
-homepage = "https://github.com/morristai/cuvs-rs"
+license-file = "LICENSE"
+repository = "https://github.com/DataFusion-Nexus/cuvs-nexus"
+homepage = "https://github.com/DataFusion-Nexus/cuvs-nexus"
 readme = "README.md"
 
 [workspace.dependencies]
-cuvs-sys = { path = "cuvs-sys", version = "0.1.0" }
+anyhow = "1"
+arrow = "58.3"
+bindgen = "0.72"
+cc = "1.2"
+cmake-package = "0.2.0"
+cudf = { package = "cudf-nexus", path = "../cudf-nexus/cudf-nexus", version = "0.1.0" }
+cuvs-sys = { package = "cuvs-nexus-sys", path = "cuvs-nexus-sys", version = "0.1.0" }
+rapids-interop = { path = "../cudf-nexus/rapids-interop", version = "0.1.0" }
+static_assertions = "1"
