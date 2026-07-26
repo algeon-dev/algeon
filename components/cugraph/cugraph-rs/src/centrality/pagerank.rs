@@ -2,18 +2,12 @@
 
 use std::ptr;
 
-use cugraph_sys::{
-    bool_t, cugraph_centrality_result_converged, cugraph_centrality_result_free,
-    cugraph_centrality_result_get_num_iterations, cugraph_centrality_result_get_values,
-    cugraph_centrality_result_get_vertices, cugraph_centrality_result_t, cugraph_error_t,
-    cugraph_pagerank,
-};
+use cugraph_sys::{bool_t, cugraph_centrality_result_t, cugraph_error_t, cugraph_pagerank};
 
-use crate::array::DeviceArrayView;
-use crate::error::{check_error, Error, ErrorKind, Result};
+use super::CentralityResult;
+use crate::error::{check_error, Result};
 use crate::graph::Graph;
 use crate::handle::ResourceHandle;
-use crate::types::try_from_bool_t;
 
 /// Parameters for the PageRank algorithm.
 #[derive(Debug, Clone, Copy)]
@@ -38,14 +32,14 @@ impl Default for PageRankParams {
 
 /// Compute PageRank on a graph.
 ///
-/// Returns a [`PageRankResult`] containing vertex ids and their PageRank
-/// values. The result must be kept alive as long as any [`DeviceArrayView`]
-/// borrowed from it is in use.
+/// Returns a [`CentralityResult`] containing vertex ids and their PageRank
+/// values. The result must be kept alive as long as any
+/// [`crate::array::DeviceArrayView`] borrowed from it is in use.
 pub fn pagerank(
     handle: &ResourceHandle,
     graph: &mut Graph,
     params: &PageRankParams,
-) -> Result<PageRankResult> {
+) -> Result<CentralityResult> {
     let mut result: *mut cugraph_centrality_result_t = ptr::null_mut();
     let mut error: *mut cugraph_error_t = ptr::null_mut();
 
@@ -67,61 +61,11 @@ pub fn pagerank(
         check_error(code, error, "pagerank")?;
     }
 
-    Ok(PageRankResult {
-        raw: result,
-        _nosend_nosync: std::marker::PhantomData,
-    })
+    Ok(unsafe { CentralityResult::from_raw(result) })
 }
 
-/// Result of a PageRank computation.
-///
-/// Provides access to vertex ids, their PageRank values, iteration count, and
-/// convergence status. Freed on drop.
-pub struct PageRankResult {
-    raw: *mut cugraph_centrality_result_t,
-    _nosend_nosync: std::marker::PhantomData<*mut ()>,
-}
-
-impl PageRankResult {
-    /// Get the vertex ids as a device array view.
-    ///
-    /// The view borrows `self`, so this result must outlive the returned view.
-    pub fn vertices(&self) -> DeviceArrayView<'_> {
-        let view_ptr = unsafe { cugraph_centrality_result_get_vertices(self.raw) };
-        unsafe { DeviceArrayView::from_borrowed(view_ptr) }
-    }
-
-    /// Get the PageRank values as a device array view.
-    ///
-    /// The view borrows `self`, so this result must outlive the returned view.
-    pub fn values(&self) -> DeviceArrayView<'_> {
-        let view_ptr = unsafe { cugraph_centrality_result_get_values(self.raw) };
-        unsafe { DeviceArrayView::from_borrowed(view_ptr) }
-    }
-
-    /// Number of iterations performed.
-    pub fn num_iterations(&self) -> usize {
-        unsafe { cugraph_centrality_result_get_num_iterations(self.raw) }
-    }
-
-    /// Whether the algorithm converged within the maximum iterations.
-    pub fn converged(&self) -> Result<bool> {
-        let b = unsafe { cugraph_centrality_result_converged(self.raw) };
-        try_from_bool_t(b).ok_or_else(|| {
-            Error::new(ErrorKind::Unexpected, "PageRankResult::converged").with_message(
-                format!("invalid bool_t value returned by cuGraph: {}", b.0),
-            )
-        })
-    }
-}
-
-impl Drop for PageRankResult {
-    fn drop(&mut self) {
-        if !self.raw.is_null() {
-            unsafe { cugraph_centrality_result_free(self.raw) };
-        }
-    }
-}
+/// Type alias for backward compatibility.
+pub type PageRankResult = CentralityResult;
 
 #[cfg(test)]
 mod tests {
