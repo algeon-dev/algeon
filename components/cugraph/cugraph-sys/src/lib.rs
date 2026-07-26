@@ -17,29 +17,36 @@ mod tests {
 
     #[test]
     fn test_error_code_values() {
-        assert_eq!(cugraph_error_code_t::CUGRAPH_SUCCESS as u32, 0);
-        assert_eq!(cugraph_error_code_t::CUGRAPH_UNKNOWN_ERROR as u32, 1);
-        assert_eq!(cugraph_error_code_t::CUGRAPH_INVALID_HANDLE as u32, 2);
-        assert_eq!(cugraph_error_code_t::CUGRAPH_ALLOC_ERROR as u32, 3);
-        assert_eq!(cugraph_error_code_t::CUGRAPH_INVALID_INPUT as u32, 4);
-        assert_eq!(cugraph_error_code_t::CUGRAPH_NOT_IMPLEMENTED as u32, 5);
+        assert_eq!(cugraph_error_code_t::CUGRAPH_SUCCESS.0, 0);
+        assert_eq!(cugraph_error_code_t::CUGRAPH_UNKNOWN_ERROR.0, 1);
+        assert_eq!(cugraph_error_code_t::CUGRAPH_INVALID_HANDLE.0, 2);
+        assert_eq!(cugraph_error_code_t::CUGRAPH_ALLOC_ERROR.0, 3);
+        assert_eq!(cugraph_error_code_t::CUGRAPH_INVALID_INPUT.0, 4);
+        assert_eq!(cugraph_error_code_t::CUGRAPH_NOT_IMPLEMENTED.0, 5);
         assert_eq!(
-            cugraph_error_code_t::CUGRAPH_UNSUPPORTED_TYPE_COMBINATION as u32,
+            cugraph_error_code_t::CUGRAPH_UNSUPPORTED_TYPE_COMBINATION.0,
             6
         );
     }
 
     #[test]
     fn test_bool_values() {
-        assert_eq!(bool_t::FALSE as u32, 0);
-        assert_eq!(bool_t::TRUE as u32, 1);
+        assert_eq!(bool_t::FALSE.0, 0);
+        assert_eq!(bool_t::TRUE.0, 1);
     }
 
     #[test]
     fn test_data_type_values() {
-        assert_eq!(cugraph_data_type_id_t::INT32 as u32, 2);
-        assert_eq!(cugraph_data_type_id_t::INT64 as u32, 3);
-        assert_eq!(cugraph_data_type_id_t::FLOAT32 as u32, 8);
-        assert_eq!(cugraph_data_type_id_t::FLOAT64 as u32, 9);
+        assert_eq!(cugraph_data_type_id_t::INT32.0, 2);
+        assert_eq!(cugraph_data_type_id_t::INT64.0, 3);
+        assert_eq!(cugraph_data_type_id_t::FLOAT32.0, 8);
+        assert_eq!(cugraph_data_type_id_t::FLOAT64.0, 9);
+    }
+
+    #[test]
+    fn test_unknown_error_code_is_representable() {
+        let unknown = cugraph_error_code_t(999);
+        assert_ne!(unknown, cugraph_error_code_t::CUGRAPH_SUCCESS);
+        assert_eq!(unknown.0, 999);
     }
 }

@@ -1,0 +1,21 @@
+[package]
+name = "cugraph"
+version = "0.1.0"
+edition = "2021"
+description = "Safe Rust bindings for NVIDIA cuGraph GPU-accelerated graph analytics"
+license = "Apache-2.0"
+
+[dependencies]
+anyhow = "1"
+cugraph-sys = { path = "../cugraph-sys" }
+
+[dev-dependencies]
+static_assertions = "1"
+
+[[example]]
+name = "bfs"
+path = "examples/bfs.rs"
+
+[[example]]
+name = "pagerank"
+path = "examples/pagerank.rs"
