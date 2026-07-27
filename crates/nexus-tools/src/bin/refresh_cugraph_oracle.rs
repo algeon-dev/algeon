@@ -27,7 +27,7 @@ use std::{
     process::{Command, ExitCode},
 };
 
-use datafusion_nexus::graph_sql::parity::{
+use datafusion_nexus::cugraph_sql::parity::{
     CUGRAPH_DATA_DIR_FROM_CARGO_MANIFEST, CUGRAPH_PARITY_SPECS, ParitySpec, ParityTruthSource, load_manifest,
     oracle_path,
 };

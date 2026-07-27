@@ -459,12 +459,12 @@ mod cugraph {
 
     use super::*;
     use crate::{
-        error::DataFusionErrorExt,
-        graph_sql::{
+        cugraph_sql::{
             CugraphAlgoExec, CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec,
             CugraphGraphConstructionPolicy, CugraphGraphOptions, CugraphTableReference, CugraphTriangleCountAllParams,
             result_schema_for_params,
         },
+        error::DataFusionErrorExt,
         planner::{FinalPlanDisposition, NexusFinalPlanRequirementRule, classify_final_plan},
     };
 

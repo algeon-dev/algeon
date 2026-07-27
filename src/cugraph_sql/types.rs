@@ -228,7 +228,7 @@ pub struct CugraphOperationDefinition {
 /// Source-of-truth list of SQL-visible cuGraph algorithms.
 ///
 /// Order is preserved by [`CugraphAlgorithm::all`] and is the order in which
-/// [`cugraph_table_functions`](crate::graph_sql::cugraph_table_functions) registers UDTFs.
+/// [`cugraph_table_functions`](crate::cugraph_sql::cugraph_table_functions) registers UDTFs.
 pub const CUGRAPH_OPERATION_REGISTRY: &[CugraphOperationDefinition] = &[
     CugraphOperationDefinition {
         algorithm: CugraphAlgorithm::PageRank,

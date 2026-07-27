@@ -8,7 +8,7 @@ use datafusion::{
 
 use super::{config::ServerConfig, error::ServerError};
 #[cfg(feature = "cugraph")]
-use crate::graph_sql::CugraphSqlConfig;
+use crate::cugraph_sql::CugraphSqlConfig;
 use crate::{backend::NexusGpuBackend, session::NexusSessionStateBuilderExt};
 
 pub async fn build_session_context(config: &ServerConfig) -> super::error::Result<SessionContext> {

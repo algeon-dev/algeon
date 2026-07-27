@@ -255,7 +255,7 @@ impl NexusGpuBackend {
     pub fn install_on_with_cugraph_sql(
         &self,
         builder: SessionStateBuilder,
-        cugraph_config: crate::graph_sql::CugraphSqlConfig,
+        cugraph_config: crate::cugraph_sql::CugraphSqlConfig,
     ) -> Result<SessionStateBuilder> {
         use crate::session::NexusSessionStateBuilderExt;
 
@@ -903,7 +903,7 @@ fn reject_preexisting_cugraph_sql(builder: &mut SessionStateBuilder) -> Result<(
 
 #[cfg(feature = "cugraph")]
 fn is_cugraph_sql_table_function_name(name: &str) -> bool {
-    use crate::graph_sql::CugraphAlgorithm;
+    use crate::cugraph_sql::CugraphAlgorithm;
 
     CugraphAlgorithm::all().any(|algorithm| algorithm.function_name() == name)
 }

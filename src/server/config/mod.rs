@@ -29,7 +29,7 @@ use crate::{
     planner::{HostExecutionQosConfig, NexusNativeOptimizerConfig},
 };
 #[cfg(feature = "cugraph")]
-use crate::{graph_sql::CugraphGraphConstructionPolicy, graph_sql::CugraphGraphOptions};
+use crate::{cugraph_sql::CugraphGraphConstructionPolicy, cugraph_sql::CugraphGraphOptions};
 #[cfg(feature = "iceberg")]
 use crate::{
     table_format::AWS_ENDPOINT_URL_ENV, table_format::AWS_ENDPOINT_URL_S3_ENV,

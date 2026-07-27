@@ -14,7 +14,7 @@ use datafusion::{
 };
 
 #[cfg(feature = "cugraph")]
-use crate::graph_sql::{CugraphGpuFunctionFamily, CugraphSqlConfig, cugraph_table_functions};
+use crate::cugraph_sql::{CugraphGpuFunctionFamily, CugraphSqlConfig, cugraph_table_functions};
 #[cfg(feature = "cugraph")]
 use crate::native_exec::NexusNativeExecutionConfig;
 use crate::{

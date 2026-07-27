@@ -9,7 +9,7 @@
 use std::sync::Arc;
 
 use arrow::datatypes::{DataType, Field, Schema};
-use datafusion_nexus::graph_sql::{CUGRAPH_OPERATION_REGISTRY, CugraphAlgorithm, stable_result_schema};
+use datafusion_nexus::cugraph_sql::{CUGRAPH_OPERATION_REGISTRY, CugraphAlgorithm, stable_result_schema};
 use nexus_query_engine::{
     capability::{CapabilityDecision, ContractQuality, ContractStatus, NodeOperator},
     contract_report::StrictBoundedContractReport,

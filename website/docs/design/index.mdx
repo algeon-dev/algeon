@@ -55,7 +55,7 @@ DataFusion session.
 | --- | --- | --- |
 | Embedded DataFusion backend | You already own the service API, auth, tenancy, and domain model. Install Nexus on a caller-owned `SessionStateBuilder`. | `src/session.rs` |
 | Flight SQL service | You want a ready remote endpoint for notebooks, BI tools, agents, and non-Rust clients. | `src/server/` |
-| cuGraph SQL | You want graph algorithms as relations that can be joined, filtered, validated, and described from SQL. | `src/graph_sql/` |
+| cuGraph SQL | You want graph algorithms as relations that can be joined, filtered, validated, and described from SQL. | `src/cugraph_sql/` |
 | Iceberg/lakehouse sources | You need Iceberg catalog tables to lower into native table-format scan facts while workspace views stay mutable. | `src/table_format/` |
 | Reports and errors | You need stable evidence for candidate selection, final plans, runtime, graph validation, source access, and failures. | `src/report.rs`, `src/native_report/`, `src/error.rs` |
 
@@ -69,7 +69,7 @@ pure relational session.
 use datafusion::execution::SessionStateBuilder;
 use datafusion_nexus::{
     backend::NexusGpuBackend,
-    graph_sql::CugraphSqlConfig,
+    cugraph_sql::CugraphSqlConfig,
 };
 
 let backend = NexusGpuBackend::builder()
@@ -221,7 +221,7 @@ ORDER BY value DESC;
     {
       id: 'udtf', lane: 'host', col: 0,
       kind: 'sql', name: 'cugraph_*()', note: ['table function', 'CugraphAlgoExec'], tone: 'plan',
-      sub: 'src/graph_sql/table_function.rs · src/graph_sql/exec/',
+      sub: 'src/cugraph_sql/table_function.rs · src/cugraph_sql/exec/',
       detail: <><code>CugraphAlgoTableProvider</code> parses SQL arguments,
         resolves the edge relation in the DataFusion catalog, creates the
         physical edge-source plan, and returns <code>CugraphAlgoExec</code>.
@@ -314,7 +314,7 @@ Use this page as the routing table before changing behavior:
 | --- | --- | --- |
 | Native rewrite coverage | `src/native/normalize.rs`, `src/native/lowering/`, `src/native/validate*` | `PlanningReport`, `CandidateOutcome`, `CapabilityReason`, rule names |
 | Native execution semantics | `crates/nexus-query-engine/src/admission/`, `capability/`, `pipeline/`, `exec/`, `runtime/` | Strict/adaptive separation and reservation evidence |
-| cuGraph SQL behavior | `src/graph_sql/types.rs`, `parser.rs`, `metadata/`, `exec/`, engine `exec/graph_algorithm/` | Metadata column order and validation output |
+| cuGraph SQL behavior | `src/cugraph_sql/types.rs`, `parser.rs`, `metadata/`, `exec/`, engine `exec/graph_algorithm/` | Metadata column order and validation output |
 | Iceberg/source behavior | `src/table_format/`, `src/table_format/iceberg/`, server workspace configuration | Source diagnostics and credential-safe error facts |
 | Public diagnostics | `src/native_report/schema.rs`, `src/native_exec/metrics/`, `src/error.rs` | TSV headers, metric names, `ErrorCode`s |
 

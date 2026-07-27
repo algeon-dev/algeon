@@ -1,7 +1,7 @@
 #[cfg(feature = "cugraph")]
 #[test]
 fn server_cugraph_config_accepts_enabled_env() {
-    use datafusion_nexus::graph_sql::CugraphGraphConstructionPolicy;
+    use datafusion_nexus::cugraph_sql::CugraphGraphConstructionPolicy;
     let env = BTreeMap::from([
         (NEXUS_SERVER_CUGRAPH_ENABLED_ENV, "true".to_string()),
         (NEXUS_SERVER_CUGRAPH_DIRECTED_ENV, "false".to_string()),

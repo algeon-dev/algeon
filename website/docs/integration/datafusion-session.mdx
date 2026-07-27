@@ -29,7 +29,7 @@ use datafusion::execution::SessionStateBuilder;
 use datafusion::prelude::{ParquetReadOptions, SessionContext};
 use datafusion_nexus::{
     backend::NexusGpuBackend,
-    graph_sql::CugraphSqlConfig,
+    cugraph_sql::CugraphSqlConfig,
 };
 
 async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {

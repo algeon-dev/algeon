@@ -8,7 +8,7 @@
 use datafusion::physical_plan::ExecutionPlan;
 
 #[cfg(feature = "cugraph")]
-use crate::graph_sql::CugraphAlgoExec;
+use crate::cugraph_sql::CugraphAlgoExec;
 use crate::{
     cuvs_sql::CuvsAlgoExec,
     native_exec::{

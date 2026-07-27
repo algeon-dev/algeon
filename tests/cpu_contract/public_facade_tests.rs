@@ -40,7 +40,7 @@ fn canonical_iceberg_path_exposes_catalog_contracts() {
 #[cfg(feature = "cugraph")]
 #[test]
 fn canonical_graph_path_exposes_sql_contracts() {
-    let _bfs_function: &str = datafusion_nexus::graph_sql::CUGRAPH_BFS_FUNCTION;
+    let _bfs_function: &str = datafusion_nexus::cugraph_sql::CUGRAPH_BFS_FUNCTION;
 }
 
 #[cfg(feature = "server")]

@@ -34,7 +34,7 @@ use datafusion::{
 };
 use datafusion_nexus::{
     backend::{MemoryShare, NexusAdmissionPolicy, NexusGpuBackend, NexusMemoryPolicy},
-    graph_sql::CugraphSqlConfig,
+    cugraph_sql::CugraphSqlConfig,
     native_report::NativeDataFusionExecutionMetrics,
     planner::NexusNativePhysicalOptimizerRule,
     report::CandidateOutcome,

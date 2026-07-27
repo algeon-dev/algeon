@@ -789,7 +789,7 @@ fn backend_install_rejects_conflicting_preexisting_session_extension() {
 #[cfg(feature = "cugraph")]
 #[test]
 fn backend_install_rejects_preexisting_cugraph_sql_registration() {
-    use crate::{graph_sql::CugraphSqlConfig, session::NexusSessionStateBuilderExt};
+    use crate::{cugraph_sql::CugraphSqlConfig, session::NexusSessionStateBuilderExt};
 
     let backend = NexusGpuBackend::builder()
         .memory_policy(NexusMemoryPolicy::Bounded {

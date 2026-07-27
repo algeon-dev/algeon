@@ -217,16 +217,16 @@ pub fn assert_modules_are_private(module_root: &Path, modules: &[&str]) {
 fn rust_token_scan_is_format_independent_and_ignores_non_code() {
     let source = r###"
         // pub use crate::ignored;
-        const DOC: &str = "exec graph_sql pub use";
+        const DOC: &str = "exec cugraph_sql pub use";
         pub
         use crate::{kept, *};
-        use crate::{exec as executor, graph_sql as graph, runtime as native_runtime};
+        use crate::{exec as executor, cugraph_sql as graph, runtime as native_runtime};
     "###;
     let tokens = rust_tokens(source);
 
     assert!(contains_public_use(&tokens));
     assert!(contains_public_glob_use(&tokens));
     assert_eq!(rust_identifier_count(source, "exec"), 1);
-    assert_eq!(rust_identifier_count(source, "graph_sql"), 1);
+    assert_eq!(rust_identifier_count(source, "cugraph_sql"), 1);
     assert_eq!(rust_identifier_count(source, "runtime"), 1);
 }

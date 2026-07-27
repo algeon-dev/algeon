@@ -13,7 +13,7 @@ pub(super) async fn assert_sql_schema(ctx: &SessionContext, sql: &str, algorithm
 }
 
 pub(super) fn assert_error_contains(
-    result: datafusion::common::Result<datafusion_nexus::graph_sql::CugraphAlgorithmSpec>,
+    result: datafusion::common::Result<datafusion_nexus::cugraph_sql::CugraphAlgorithmSpec>,
     expected: &str,
 ) {
     let error = result.unwrap_err().to_string();
