@@ -32,7 +32,7 @@
 //!     .renumber()
 //!     .build::<Transposed>(&handle)?;
 //!
-//! let result = graph.pagerank(&handle, &PageRankParams::default())?;
+//! let result = graph.pagerank_simple(&handle, &PageRankParams::default())?;
 //! let vertices: Vec<i64> = result.vertex_ids()?.to_vec_i64(&handle)?;
 //! let scores: Vec<f64> = result.scores()?.to_vec_f64(&handle)?;
 //! # Ok(())
@@ -80,7 +80,10 @@ pub mod cudf_interop;
 // Arrays
 pub use array::{DeviceArray, DeviceArrayView, DeviceBuffer};
 // Centrality algorithms
-pub use centrality::{BetweennessCentralityParams, BetweennessCentralityResult, PageRankParams, PageRankResult};
+pub use centrality::{
+    BetweennessCentralityParams, BetweennessCentralityResult, InitialGuess, PageRankOptions, PageRankParams,
+    PageRankResult, PrecomputedWeights,
+};
 #[cfg(feature = "cudf-interop")]
 pub use cudf_interop::{DataFrameGraphOptions, LoadedGraph, ParquetGraphOptions, TableGraphOptions};
 // Error handling

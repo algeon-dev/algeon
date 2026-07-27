@@ -6,7 +6,7 @@
 use std::ptr;
 
 use cugraph_sys::{
-    bool_t, cugraph_degrees, cugraph_degrees_result_free, cugraph_degrees_result_get_in_degrees,
+    cugraph_degrees, cugraph_degrees_result_free, cugraph_degrees_result_get_in_degrees,
     cugraph_degrees_result_get_out_degrees, cugraph_degrees_result_get_vertices, cugraph_degrees_result_t,
     cugraph_error_t, cugraph_in_degrees, cugraph_out_degrees,
 };
@@ -17,7 +17,7 @@ use crate::{
     graph::{Graph, Transposed},
     handle::ResourceHandle,
     structure::typed_results::VertexIds,
-    types::{CugraphElement, DataType},
+    types::{CugraphElement, DataType, to_bool_t},
 };
 
 /// Specifies which vertices to query degrees for.
@@ -62,6 +62,7 @@ pub(crate) fn degrees<V: CugraphElement>(
     handle: &ResourceHandle,
     graph: &mut Graph<Transposed>,
     vertices: &DegreeVertices<'_, V>,
+    do_expensive_check: bool,
 ) -> Result<DegreesResult> {
     let mut result: *mut cugraph_degrees_result_t = ptr::null_mut();
     let mut error: *mut cugraph_error_t = ptr::null_mut();
@@ -76,7 +77,7 @@ pub(crate) fn degrees<V: CugraphElement>(
             handle.as_ptr(),
             graph.raw,
             src_ptr,
-            bool_t::FALSE, // do_expensive_check
+            to_bool_t(do_expensive_check),
             &mut result,
             &mut error,
         );
@@ -94,6 +95,7 @@ pub(crate) fn in_degrees<V: CugraphElement>(
     handle: &ResourceHandle,
     graph: &mut Graph<Transposed>,
     vertices: &DegreeVertices<'_, V>,
+    do_expensive_check: bool,
 ) -> Result<InDegreesResult> {
     let mut result: *mut cugraph_degrees_result_t = ptr::null_mut();
     let mut error: *mut cugraph_error_t = ptr::null_mut();
@@ -108,7 +110,7 @@ pub(crate) fn in_degrees<V: CugraphElement>(
             handle.as_ptr(),
             graph.raw,
             src_ptr,
-            bool_t::FALSE, // do_expensive_check
+            to_bool_t(do_expensive_check),
             &mut result,
             &mut error,
         );
@@ -126,6 +128,7 @@ pub(crate) fn out_degrees<T, V: CugraphElement>(
     handle: &ResourceHandle,
     graph: &mut Graph<T>,
     vertices: &DegreeVertices<'_, V>,
+    do_expensive_check: bool,
 ) -> Result<OutDegreesResult> {
     let mut result: *mut cugraph_degrees_result_t = ptr::null_mut();
     let mut error: *mut cugraph_error_t = ptr::null_mut();
@@ -140,7 +143,7 @@ pub(crate) fn out_degrees<T, V: CugraphElement>(
             handle.as_ptr(),
             graph.raw,
             src_ptr,
-            bool_t::FALSE, // do_expensive_check
+            to_bool_t(do_expensive_check),
             &mut result,
             &mut error,
         );

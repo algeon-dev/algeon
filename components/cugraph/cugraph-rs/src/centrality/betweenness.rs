@@ -32,7 +32,7 @@
 
 use std::ptr;
 
-use cugraph_sys::{bool_t, cugraph_betweenness_centrality, cugraph_centrality_result_t, cugraph_error_t};
+use cugraph_sys::{cugraph_betweenness_centrality, cugraph_centrality_result_t, cugraph_error_t};
 
 use super::BetweennessCentralityResult;
 use crate::{
@@ -53,11 +53,14 @@ pub struct BetweennessCentralityParams {
     /// shortest path. The traditional formulation does not include endpoints
     /// (default: `false`).
     pub include_endpoints: bool,
+    /// Whether to run expensive input validation checks in the C library
+    /// (default: `false`).
+    pub do_expensive_check: bool,
 }
 
 impl Default for BetweennessCentralityParams {
     fn default() -> Self {
-        Self { normalized: true, include_endpoints: false }
+        Self { normalized: true, include_endpoints: false, do_expensive_check: false }
     }
 }
 
@@ -83,7 +86,7 @@ pub(crate) fn betweenness_centrality<T, V: CugraphElement>(
             vertex_list_ptr,
             to_bool_t(params.normalized),
             to_bool_t(params.include_endpoints),
-            bool_t::FALSE, // do_expensive_check
+            to_bool_t(params.do_expensive_check),
             &mut result,
             &mut error,
         );
@@ -237,7 +240,7 @@ mod tests {
         let mut graph =
             GraphBuilder::new(&src.view(), &dst.view()).renumber().build::<Forward>(&handle).expect("graph");
 
-        let params = BetweennessCentralityParams { normalized: false, include_endpoints: false };
+        let params = BetweennessCentralityParams { normalized: false, include_endpoints: false, ..Default::default() };
         let result = graph.betweenness_centrality_all(&handle, &params).expect("betweenness");
 
         let map = betweenness_map(&handle, &result);
@@ -267,7 +270,8 @@ mod tests {
         let mut graph_a =
             GraphBuilder::new(&src.view(), &dst.view()).renumber().build::<Forward>(&handle).expect("graph_a");
 
-        let params_no_ep = BetweennessCentralityParams { normalized: false, include_endpoints: false };
+        let params_no_ep =
+            BetweennessCentralityParams { normalized: false, include_endpoints: false, ..Default::default() };
         let result_no_ep = graph_a.betweenness_centrality_all(&handle, &params_no_ep).expect("bc no ep");
         let map_no_ep = betweenness_map(&handle, &result_no_ep);
 
@@ -275,7 +279,8 @@ mod tests {
         let mut graph_b =
             GraphBuilder::new(&src.view(), &dst.view()).renumber().build::<Forward>(&handle).expect("graph_b");
 
-        let params_with_ep = BetweennessCentralityParams { normalized: false, include_endpoints: true };
+        let params_with_ep =
+            BetweennessCentralityParams { normalized: false, include_endpoints: true, ..Default::default() };
         let result_with_ep = graph_b.betweenness_centrality_all(&handle, &params_with_ep).expect("bc with ep");
         let map_with_ep = betweenness_map(&handle, &result_with_ep);
 

@@ -99,7 +99,8 @@ impl PageRankResult {
     ///
     /// # Safety
     ///
-    /// `raw` must be a valid, non-null pointer returned by `cugraph_pagerank`.
+    /// `raw` must be a valid, non-null pointer returned by
+    /// `cugraph_pagerank_allow_nonconvergence`.
     /// Ownership is transferred to this struct.
     pub(crate) unsafe fn from_raw(raw: *mut cugraph_centrality_result_t) -> Self {
         Self(unsafe { CentralityResult::from_raw(raw) })

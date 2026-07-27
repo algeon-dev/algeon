@@ -117,7 +117,7 @@ fn centrality_result_accessors_return_result() {
 
     let mut graph = GraphBuilder::new(&src.view(), &dst.view()).renumber().build::<Transposed>(&handle).expect("graph");
 
-    let result = graph.pagerank(&handle, &PageRankParams::default()).expect("pagerank");
+    let result = graph.pagerank_simple(&handle, &PageRankParams::default()).expect("pagerank");
 
     // These calls exercise the null-guard code paths (happy path — should succeed)
     let vids = result.vertex_ids().expect("vertex_ids should not be null");

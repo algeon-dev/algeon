@@ -28,7 +28,7 @@ fn pagerank_results_decode_runtime_dtypes() {
         .build::<Transposed>(&handle)
         .expect("graph");
 
-    let result = graph.pagerank(&handle, &PageRankParams::default()).expect("pagerank");
+    let result = graph.pagerank_simple(&handle, &PageRankParams::default()).expect("pagerank");
 
     assert!(matches!(result.vertex_ids().expect("vertex_ids"), VertexIds::I64(_)));
     assert!(matches!(result.scores().expect("scores"), ScoreValues::F64(_)));

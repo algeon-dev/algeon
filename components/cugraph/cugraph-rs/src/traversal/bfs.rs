@@ -3,7 +3,7 @@
 use std::ptr;
 
 use cugraph_sys::{
-    bool_t, cugraph_bfs, cugraph_error_t, cugraph_paths_result_free, cugraph_paths_result_get_distances,
+    cugraph_bfs, cugraph_error_t, cugraph_paths_result_free, cugraph_paths_result_get_distances,
     cugraph_paths_result_get_predecessors, cugraph_paths_result_get_vertices, cugraph_paths_result_t,
 };
 
@@ -37,6 +37,7 @@ use crate::{
 pub struct BfsParams {
     depth_limit: Option<BfsDepthLimit>,
     compute_predecessors: bool,
+    do_expensive_check: bool,
 }
 
 impl BfsParams {
@@ -52,6 +53,12 @@ impl BfsParams {
         self
     }
 
+    /// Enable expensive input validation checks in the C library.
+    pub fn with_expensive_check(mut self) -> Self {
+        self.do_expensive_check = true;
+        self
+    }
+
     /// Whether predecessor vertices will be computed.
     pub fn compute_predecessors(&self) -> bool {
         self.compute_predecessors
@@ -60,6 +67,11 @@ impl BfsParams {
     /// The maximum BFS depth, or `None` for unlimited traversal.
     pub fn depth_limit(&self) -> Option<BfsDepthLimit> {
         self.depth_limit
+    }
+
+    /// Whether expensive input validation checks are enabled.
+    pub fn do_expensive_check(&self) -> bool {
+        self.do_expensive_check
     }
 }
 
@@ -85,10 +97,10 @@ pub(crate) fn bfs<V: CugraphElement>(
             handle.as_ptr(),
             graph.raw,
             sources.as_ptr(),
-            bool_t::FALSE, // direction_optimizing
+            to_bool_t(false), // direction_optimizing
             limit,
             to_bool_t(params.compute_predecessors),
-            bool_t::FALSE, // do_expensive_check
+            to_bool_t(params.do_expensive_check),
             &mut result,
             &mut error,
         );
