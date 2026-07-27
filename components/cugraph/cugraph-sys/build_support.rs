@@ -149,25 +149,9 @@ fn resolve_library_override(dir_str: &str) -> Result<PathBuf, String> {
 }
 
 fn has_library(dir: &Path, stem: &str) -> bool {
-    #[cfg(target_os = "macos")]
-    {
-        return dir.join(format!("lib{stem}.dylib")).exists();
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        return dir.join(format!("{stem}.dll")).exists()
-            || dir.join(format!("lib{stem}.dll")).exists()
-            || dir.join(format!("{stem}.lib")).exists()
-            || dir.join(format!("lib{stem}.lib")).exists();
-    }
-
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    {
-        dir.join(format!("lib{stem}.so")).exists()
-            || dir.join(format!("lib{stem}.so.0")).exists()
-            || dir.join(format!("lib{stem}.so.1")).exists()
-    }
+    dir.join(format!("lib{stem}.so")).exists()
+        || dir.join(format!("lib{stem}.so.0")).exists()
+        || dir.join(format!("lib{stem}.so.1")).exists()
 }
 
 fn parse_compiler_include_dir(stderr: &str) -> Option<PathBuf> {
