@@ -1,14 +1,40 @@
-use cugraph::{DeviceArray, Forward, GraphBuilder, ResourceHandle, error::ErrorKind, types::GraphProperties};
+use std::collections::HashMap;
+
+use cugraph::{
+    DeviceArray, Forward, GraphBuilder, ResourceHandle, Transposed,
+    error::ErrorKind,
+    types::{DataType, GraphProperties},
+};
+mod common;
+use common::support::{
+    DIRECTED_TRIANGLE_CYCLE_DST_I32, DIRECTED_TRIANGLE_CYCLE_SRC_I32, MULTI_EDGE_DROP_DST_I32, MULTI_EDGE_DROP_SRC_I32,
+    SELF_LOOP_DROP_DST_I32, SELF_LOOP_DROP_SRC_I32, TRIANGLE_TAIL_DST_I32, TRIANGLE_TAIL_SRC_I32,
+    TRIANGLE_VERTEX_IDS_I32, TRIANGLE_VERTEX_IDS_I64, TWO_CYCLE_DST_I32, TWO_CYCLE_SRC_I32,
+};
+
+fn degree_map(
+    graph: &mut cugraph::Graph<Transposed>,
+    handle: &ResourceHandle,
+    query: &[i32],
+) -> HashMap<i32, (i64, i64)> {
+    let result = graph.degrees(handle, query).expect("degrees");
+    let vertices = result.vertex_ids().expect("vertex_ids").to_vec_i32(handle).expect("vertex copy");
+    let in_degrees = result.in_degrees().expect("in_degrees").to_vec_i64(handle).expect("in copy");
+    let out_degrees = result.out_degrees().expect("out_degrees").to_vec_i64(handle).expect("out copy");
+
+    vertices.into_iter().zip(in_degrees.into_iter().zip(out_degrees)).collect()
+}
 
 #[test]
 fn builder_rejects_mismatched_src_dst_lengths() {
     let handle = ResourceHandle::new().expect("handle");
     let src = DeviceArray::from_slice(&handle, &[0i32, 1, 2]).expect("src");
     let dst = DeviceArray::from_slice(&handle, &[1i32, 2]).expect("dst");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
 
-    let err = GraphBuilder::new(&src.view(), &dst.view())
-        .build::<Forward>(&handle)
-        .expect_err("must reject mismatched lengths");
+    let err =
+        GraphBuilder::new(&src_view, &dst_view).build::<Forward>(&handle).expect_err("must reject mismatched lengths");
 
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
 }
@@ -16,12 +42,15 @@ fn builder_rejects_mismatched_src_dst_lengths() {
 #[test]
 fn builder_rejects_mismatched_weights_length() {
     let handle = ResourceHandle::new().expect("handle");
-    let src = DeviceArray::from_slice(&handle, &[0i32, 1, 2]).expect("src");
-    let dst = DeviceArray::from_slice(&handle, &[1i32, 2, 0]).expect("dst");
+    let src = DeviceArray::from_slice(&handle, TRIANGLE_TAIL_SRC_I32).expect("src");
+    let dst = DeviceArray::from_slice(&handle, TRIANGLE_TAIL_DST_I32).expect("dst");
     let wgt = DeviceArray::from_slice(&handle, &[1.0f32, 2.0]).expect("wgt");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+    let wgt_view = wgt.view().expect("wgt_view");
 
-    let err = GraphBuilder::new(&src.view(), &dst.view())
-        .weights(&wgt.view())
+    let err = GraphBuilder::new(&src_view, &dst_view)
+        .weights(&wgt_view)
         .build::<Forward>(&handle)
         .expect_err("must reject mismatched weights length");
 
@@ -32,12 +61,15 @@ fn builder_rejects_mismatched_weights_length() {
 #[test]
 fn builder_rejects_symmetrize_with_edge_ids() {
     let handle = ResourceHandle::new().expect("handle");
-    let src = DeviceArray::from_slice(&handle, &[0i32, 1, 2]).expect("src");
-    let dst = DeviceArray::from_slice(&handle, &[1i32, 2, 0]).expect("dst");
+    let src = DeviceArray::from_slice(&handle, DIRECTED_TRIANGLE_CYCLE_SRC_I32).expect("src");
+    let dst = DeviceArray::from_slice(&handle, DIRECTED_TRIANGLE_CYCLE_DST_I32).expect("dst");
     let edge_ids = DeviceArray::from_slice(&handle, &[10i32, 20, 30]).expect("edge_ids");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+    let edge_ids_view = edge_ids.view().expect("edge_ids_view");
 
-    let err = GraphBuilder::new(&src.view(), &dst.view())
-        .edge_ids(&edge_ids.view())
+    let err = GraphBuilder::new(&src_view, &dst_view)
+        .edge_ids(&edge_ids_view)
         .symmetrize()
         .build::<Forward>(&handle)
         .expect_err("must reject symmetrize plus edge ids");
@@ -49,14 +81,18 @@ fn builder_rejects_symmetrize_with_edge_ids() {
 #[test]
 fn builder_rejects_mismatched_temporal_dtypes() {
     let handle = ResourceHandle::new().expect("handle");
-    let src = DeviceArray::from_slice(&handle, &[0i32, 1, 2]).expect("src");
-    let dst = DeviceArray::from_slice(&handle, &[1i32, 2, 0]).expect("dst");
-    let start = DeviceArray::from_slice(&handle, &[0i32, 1, 2]).expect("start");
-    let end = DeviceArray::from_slice(&handle, &[0i64, 1, 2]).expect("end");
+    let src = DeviceArray::from_slice(&handle, DIRECTED_TRIANGLE_CYCLE_SRC_I32).expect("src");
+    let dst = DeviceArray::from_slice(&handle, DIRECTED_TRIANGLE_CYCLE_DST_I32).expect("dst");
+    let start = DeviceArray::from_slice(&handle, TRIANGLE_VERTEX_IDS_I32).expect("start");
+    let end = DeviceArray::from_slice(&handle, TRIANGLE_VERTEX_IDS_I64).expect("end");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+    let start_view = start.view().expect("start_view");
+    let end_view = end.view().expect("end_view");
 
-    let err = GraphBuilder::new(&src.view(), &dst.view())
-        .edge_start_time_ids(&start.view())
-        .edge_end_time_ids(&end.view())
+    let err = GraphBuilder::new(&src_view, &dst_view)
+        .edge_start_time_ids(&start_view)
+        .edge_end_time_ids(&end_view)
         .build::<Forward>(&handle)
         .expect_err("must reject mismatched temporal dtypes");
 
@@ -67,13 +103,16 @@ fn builder_rejects_mismatched_temporal_dtypes() {
 #[test]
 fn builder_rejects_vertices_dtype_mismatch_with_src_dst() {
     let handle = ResourceHandle::new().expect("handle");
-    let src = DeviceArray::from_slice(&handle, &[0i32, 1, 2]).expect("src");
-    let dst = DeviceArray::from_slice(&handle, &[1i32, 2, 0]).expect("dst");
+    let src = DeviceArray::from_slice(&handle, DIRECTED_TRIANGLE_CYCLE_SRC_I32).expect("src");
+    let dst = DeviceArray::from_slice(&handle, DIRECTED_TRIANGLE_CYCLE_DST_I32).expect("dst");
     // vertices are i64 but src/dst are i32 — upstream would silently truncate
-    let verts = DeviceArray::from_slice(&handle, &[0i64, 1, 2]).expect("verts");
+    let verts = DeviceArray::from_slice(&handle, TRIANGLE_VERTEX_IDS_I64).expect("verts");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+    let verts_view = verts.view().expect("verts_view");
 
-    let err = GraphBuilder::new(&src.view(), &dst.view())
-        .vertices(&verts.view())
+    let err = GraphBuilder::new(&src_view, &dst_view)
+        .vertices(&verts_view)
         .build::<Forward>(&handle)
         .expect_err("must reject vertices dtype != src/dst dtype");
 
@@ -85,13 +124,16 @@ fn builder_rejects_vertices_dtype_mismatch_with_src_dst() {
 #[test]
 fn builder_accepts_vertices_matching_src_dst_dtype() {
     let handle = ResourceHandle::new().expect("handle");
-    let src = DeviceArray::from_slice(&handle, &[0i32, 1, 2]).expect("src");
-    let dst = DeviceArray::from_slice(&handle, &[1i32, 2, 0]).expect("dst");
-    let verts = DeviceArray::from_slice(&handle, &[0i32, 1, 2]).expect("verts");
+    let src = DeviceArray::from_slice(&handle, DIRECTED_TRIANGLE_CYCLE_SRC_I32).expect("src");
+    let dst = DeviceArray::from_slice(&handle, DIRECTED_TRIANGLE_CYCLE_DST_I32).expect("dst");
+    let verts = DeviceArray::from_slice(&handle, TRIANGLE_VERTEX_IDS_I32).expect("verts");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+    let verts_view = verts.view().expect("verts_view");
 
     // Same dtype (i32) — should succeed
-    GraphBuilder::new(&src.view(), &dst.view())
-        .vertices(&verts.view())
+    GraphBuilder::new(&src_view, &dst_view)
+        .vertices(&verts_view)
         .renumber()
         .build::<Forward>(&handle)
         .expect("vertices with matching dtype should build");
@@ -100,13 +142,16 @@ fn builder_accepts_vertices_matching_src_dst_dtype() {
 #[test]
 fn builder_chainable_setters_preserve_build_path() {
     let handle = ResourceHandle::new().expect("handle");
-    let src = DeviceArray::from_slice(&handle, &[0i32, 1]).expect("src");
-    let dst = DeviceArray::from_slice(&handle, &[1i32, 0]).expect("dst");
+    let src = DeviceArray::from_slice(&handle, TWO_CYCLE_SRC_I32).expect("src");
+    let dst = DeviceArray::from_slice(&handle, TWO_CYCLE_DST_I32).expect("dst");
     let wgt = DeviceArray::from_slice(&handle, &[1.0f32, 2.0]).expect("wgt");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+    let wgt_view = wgt.view().expect("wgt_view");
 
-    let graph = GraphBuilder::new(&src.view(), &dst.view())
+    let graph = GraphBuilder::new(&src_view, &dst_view)
         .properties(GraphProperties::directed())
-        .weights(&wgt.view())
+        .weights(&wgt_view)
         .renumber()
         .drop_self_loops()
         .drop_multi_edges()
@@ -114,5 +159,47 @@ fn builder_chainable_setters_preserve_build_path() {
         .build::<Forward>(&handle)
         .expect("graph");
 
-    assert_eq!(graph.vertex_dtype(), cugraph::DataType::Int32);
+    assert_eq!(graph.vertex_dtype(), DataType::Int32);
+}
+
+#[test]
+fn drop_self_loops_removes_loop_degree_contribution() {
+    let handle = ResourceHandle::new().expect("handle");
+    let src = DeviceArray::from_slice(&handle, SELF_LOOP_DROP_SRC_I32).expect("src");
+    let dst = DeviceArray::from_slice(&handle, SELF_LOOP_DROP_DST_I32).expect("dst");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+
+    let mut graph = GraphBuilder::new(&src_view, &dst_view)
+        .properties(GraphProperties { is_symmetric: false, is_multigraph: true })
+        .drop_self_loops()
+        .build::<Transposed>(&handle)
+        .expect("graph");
+
+    let degrees = degree_map(&mut graph, &handle, &[0, 1, 2]);
+
+    assert_eq!(degrees[&0], (0, 1));
+    assert_eq!(degrees[&1], (1, 1));
+    assert_eq!(degrees[&2], (1, 0));
+}
+
+#[test]
+fn drop_multi_edges_collapses_duplicate_edges() {
+    let handle = ResourceHandle::new().expect("handle");
+    let src = DeviceArray::from_slice(&handle, MULTI_EDGE_DROP_SRC_I32).expect("src");
+    let dst = DeviceArray::from_slice(&handle, MULTI_EDGE_DROP_DST_I32).expect("dst");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+
+    let mut graph = GraphBuilder::new(&src_view, &dst_view)
+        .properties(GraphProperties { is_symmetric: false, is_multigraph: true })
+        .drop_multi_edges()
+        .build::<Transposed>(&handle)
+        .expect("graph");
+
+    let degrees = degree_map(&mut graph, &handle, &[0, 1, 2]);
+
+    assert_eq!(degrees[&0], (0, 1));
+    assert_eq!(degrees[&1], (1, 1));
+    assert_eq!(degrees[&2], (1, 0));
 }

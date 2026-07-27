@@ -4,25 +4,13 @@ use std::{
     path::{Path, PathBuf},
 };
 
-#[allow(dead_code)]
-#[path = "../build_support.rs"]
-mod build_support;
+mod support;
 
-fn manifest_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-}
-
-fn include_dir() -> PathBuf {
-    let submodule_include = manifest_dir().join("../cugraph/cpp/include");
-    build_support::resolve_include_dir(std::env::var("CUGRAPH_INCLUDE_DIR").ok().as_deref(), &submodule_include)
-        .unwrap_or_else(|err| panic!("{err}"))
-}
+// Shared helper still delegates to build_support::resolve_include_dir.
+use support::{include_dir, manifest_dir, strip_c_comments};
 
 fn bindings_rs_path() -> PathBuf {
-    PathBuf::from(
-        option_env!("CUGRAPH_SYS_BINDINGS_RS")
-            .expect("CUGRAPH_SYS_BINDINGS_RS not set — build.rs must export this via cargo:rustc-env"),
-    )
+    PathBuf::from(env!("CUGRAPH_SYS_BINDINGS_RS"))
 }
 
 fn parse_cugraph_includes(source: &str) -> Vec<String> {
@@ -94,43 +82,6 @@ fn strip_disabled_if0_blocks(source: &str) -> String {
             out.push_str(line);
             out.push('\n');
         }
-    }
-
-    out
-}
-
-fn strip_c_comments(source: &str) -> String {
-    let mut out = String::with_capacity(source.len());
-    let bytes = source.as_bytes();
-    let mut i = 0;
-    let mut in_block = false;
-
-    while i < bytes.len() {
-        if in_block {
-            if i + 1 < bytes.len() && bytes[i] == b'*' && bytes[i + 1] == b'/' {
-                in_block = false;
-                i += 2;
-            } else {
-                i += 1;
-            }
-            continue;
-        }
-
-        if i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'*' {
-            in_block = true;
-            i += 2;
-            continue;
-        }
-
-        if i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'/' {
-            while i < bytes.len() && bytes[i] != b'\n' {
-                i += 1;
-            }
-            continue;
-        }
-
-        out.push(bytes[i] as char);
-        i += 1;
     }
 
     out

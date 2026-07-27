@@ -1,9 +1,11 @@
 [package]
 name = "cugraph"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
 description = "Safe Rust bindings for NVIDIA cuGraph GPU-accelerated graph analytics"
-license = "Apache-2.0"
+license.workspace = true
+repository.workspace = true
 build = "build.rs"
 
 [dependencies]
@@ -15,4 +17,3 @@ rapids-interop = { path = "../../cudf-rs/rapids-interop" }
 
 [dev-dependencies]
 static_assertions = "1"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }

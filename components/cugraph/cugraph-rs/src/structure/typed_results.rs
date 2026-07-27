@@ -35,12 +35,11 @@ impl<'a> VertexIds<'a> {
     /// Construct from a type-erased raw view after checking the dtype.
     ///
     /// Returns an error if the dtype is neither `Int32` nor `Int64`.
-    #[allow(dead_code)] // will be used by algorithm result accessors
     pub(crate) fn from_raw(raw: RawDeviceArrayView<'a>) -> Result<Self> {
         match raw.dtype()? {
             DataType::Int32 => Ok(Self::I32(DeviceArrayView::from_raw_unchecked(raw))),
             DataType::Int64 => Ok(Self::I64(DeviceArrayView::from_raw_unchecked(raw))),
-            other => Err(Error::new(ErrorKind::InvalidInput, "VertexIds::from_raw")
+            other => Err(Error::new(ErrorKind::InvalidState, "VertexIds::from_raw")
                 .with_message(format!("unexpected vertex id dtype: {other}"))),
         }
     }
@@ -76,7 +75,7 @@ impl<'a> VertexIds<'a> {
     pub fn to_vec_i32(&self, handle: &ResourceHandle) -> Result<Vec<i32>> {
         match self {
             Self::I32(v) => v.to_vec(handle),
-            Self::I64(_) => Err(Error::new(ErrorKind::InvalidInput, "VertexIds::to_vec_i32")
+            Self::I64(_) => Err(Error::new(ErrorKind::InvalidState, "VertexIds::to_vec_i32")
                 .with_message("vertex ids are i64; use to_vec_i64() to avoid data loss")),
         }
     }
@@ -122,12 +121,11 @@ impl<'a> ScoreValues<'a> {
     /// Construct from a type-erased raw view after checking the dtype.
     ///
     /// Returns an error if the dtype is neither `Float32` nor `Float64`.
-    #[allow(dead_code)] // will be used by algorithm result accessors
     pub(crate) fn from_raw(raw: RawDeviceArrayView<'a>) -> Result<Self> {
         match raw.dtype()? {
             DataType::Float32 => Ok(Self::F32(DeviceArrayView::from_raw_unchecked(raw))),
             DataType::Float64 => Ok(Self::F64(DeviceArrayView::from_raw_unchecked(raw))),
-            other => Err(Error::new(ErrorKind::InvalidInput, "ScoreValues::from_raw")
+            other => Err(Error::new(ErrorKind::InvalidState, "ScoreValues::from_raw")
                 .with_message(format!("unexpected score dtype: {other}"))),
         }
     }
@@ -163,7 +161,7 @@ impl<'a> ScoreValues<'a> {
     pub fn to_vec_f32(&self, handle: &ResourceHandle) -> Result<Vec<f32>> {
         match self {
             Self::F32(v) => v.to_vec(handle),
-            Self::F64(_) => Err(Error::new(ErrorKind::InvalidInput, "ScoreValues::to_vec_f32")
+            Self::F64(_) => Err(Error::new(ErrorKind::InvalidState, "ScoreValues::to_vec_f32")
                 .with_message("score values are f64; use to_vec_f64() to avoid data loss")),
         }
     }
@@ -220,7 +218,7 @@ impl<'a> Distances<'a> {
             DataType::Int64 => Ok(Self::I64(DeviceArrayView::from_raw_unchecked(raw))),
             DataType::Float32 => Ok(Self::F32(DeviceArrayView::from_raw_unchecked(raw))),
             DataType::Float64 => Ok(Self::F64(DeviceArrayView::from_raw_unchecked(raw))),
-            other => Err(Error::new(ErrorKind::InvalidInput, "Distances::from_raw")
+            other => Err(Error::new(ErrorKind::InvalidState, "Distances::from_raw")
                 .with_message(format!("unexpected distance dtype: {other}"))),
         }
     }
@@ -251,7 +249,7 @@ impl<'a> Distances<'a> {
                 Ok(vals.into_iter().map(|x| x as i64).collect())
             },
             Self::I64(v) => v.to_vec(handle),
-            Self::F32(_) | Self::F64(_) => Err(Error::new(ErrorKind::InvalidInput, "Distances::to_vec_i64")
+            Self::F32(_) | Self::F64(_) => Err(Error::new(ErrorKind::InvalidState, "Distances::to_vec_i64")
                 .with_message("distances are floating-point; use to_vec_f64()")),
         }
     }
@@ -263,9 +261,9 @@ impl<'a> Distances<'a> {
     pub fn to_vec_i32(&self, handle: &ResourceHandle) -> Result<Vec<i32>> {
         match self {
             Self::I32(v) => v.to_vec(handle),
-            Self::I64(_) => Err(Error::new(ErrorKind::InvalidInput, "Distances::to_vec_i32")
+            Self::I64(_) => Err(Error::new(ErrorKind::InvalidState, "Distances::to_vec_i32")
                 .with_message("distances are i64; use to_vec_i64() to avoid data loss")),
-            Self::F32(_) | Self::F64(_) => Err(Error::new(ErrorKind::InvalidInput, "Distances::to_vec_i32")
+            Self::F32(_) | Self::F64(_) => Err(Error::new(ErrorKind::InvalidState, "Distances::to_vec_i32")
                 .with_message("distances are floating-point; use to_vec_f64()")),
         }
     }
@@ -299,8 +297,119 @@ impl<'a> Distances<'a> {
     pub fn to_vec_f32(&self, handle: &ResourceHandle) -> Result<Vec<f32>> {
         match self {
             Self::F32(v) => v.to_vec(handle),
-            _ => Err(Error::new(ErrorKind::InvalidInput, "Distances::to_vec_f32")
+            _ => Err(Error::new(ErrorKind::InvalidState, "Distances::to_vec_f32")
                 .with_message("distances are not f32; use to_vec_f64() for a lossless conversion")),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        array::{DeviceArray, RawDeviceArrayView},
+        error::ErrorKind,
+        handle::ResourceHandle,
+        types::DataType,
+    };
+
+    #[test]
+    fn vertex_ids_i64_to_vec_i32_is_invalid_state() {
+        let handle = ResourceHandle::new().expect("handle");
+        let ids = DeviceArray::from_slice(&handle, &[1i64, 2, 3]).expect("ids");
+        let values = VertexIds::I64(ids.view().expect("view"));
+
+        let err = values.to_vec_i32(&handle).expect_err("i64 vertex ids should reject i32 copy");
+        assert_eq!(err.kind(), ErrorKind::InvalidState);
+        assert_eq!(err.operation(), "VertexIds::to_vec_i32");
+    }
+
+    #[test]
+    fn score_values_f64_to_vec_f32_is_invalid_state() {
+        let handle = ResourceHandle::new().expect("handle");
+        let scores = DeviceArray::from_slice(&handle, &[1.0f64, 2.0, 3.0]).expect("scores");
+        let values = ScoreValues::F64(scores.view().expect("view"));
+
+        let err = values.to_vec_f32(&handle).expect_err("f64 score values should reject f32 copy");
+        assert_eq!(err.kind(), ErrorKind::InvalidState);
+        assert_eq!(err.operation(), "ScoreValues::to_vec_f32");
+    }
+
+    #[test]
+    fn distances_float_to_vec_i64_is_invalid_state() {
+        let handle = ResourceHandle::new().expect("handle");
+        let distances = DeviceArray::from_slice(&handle, &[1.5f32, 2.5, 3.5]).expect("distances");
+        let values = Distances::F32(distances.view().expect("view"));
+
+        let err = values.to_vec_i64(&handle).expect_err("float distances should reject integer copy");
+        assert_eq!(err.kind(), ErrorKind::InvalidState);
+        assert_eq!(err.operation(), "Distances::to_vec_i64");
+    }
+
+    #[test]
+    fn distances_i64_to_vec_i32_is_invalid_state() {
+        let handle = ResourceHandle::new().expect("handle");
+        let distances = DeviceArray::from_slice(&handle, &[10i64, 20, 30]).expect("distances");
+        let values = Distances::I64(distances.view().expect("view"));
+
+        let err = values.to_vec_i32(&handle).expect_err("i64 distances should reject i32 copy");
+        assert_eq!(err.kind(), ErrorKind::InvalidState);
+        assert_eq!(err.operation(), "Distances::to_vec_i32");
+    }
+
+    #[test]
+    fn distances_non_f32_to_vec_f32_is_invalid_state() {
+        let handle = ResourceHandle::new().expect("handle");
+        let distances = DeviceArray::from_slice(&handle, &[10i32, 20, 30]).expect("distances");
+        let values = Distances::I32(distances.view().expect("view"));
+
+        let err = values.to_vec_f32(&handle).expect_err("non-f32 distances should reject f32 copy");
+        assert_eq!(err.kind(), ErrorKind::InvalidState);
+        assert_eq!(err.operation(), "Distances::to_vec_f32");
+    }
+
+    #[test]
+    fn vertex_ids_from_raw_unexpected_dtype_is_invalid_state() {
+        let handle = ResourceHandle::new().expect("handle");
+        let ids = DeviceArray::from_slice(&handle, &[1i16, 2, 3]).expect("ids");
+        let view = ids.view().expect("view");
+        let raw = unsafe {
+            RawDeviceArrayView::try_from_raw(view.device_ptr(), view.len(), DataType::Int16, "test_raw")
+                .expect("raw view")
+        };
+
+        let err = VertexIds::from_raw(raw).expect_err("unexpected vertex dtype should be rejected");
+        assert_eq!(err.kind(), ErrorKind::InvalidState);
+        assert_eq!(err.operation(), "VertexIds::from_raw");
+    }
+
+    #[test]
+    fn score_values_from_raw_unexpected_dtype_is_invalid_state() {
+        let handle = ResourceHandle::new().expect("handle");
+        let scores = DeviceArray::from_slice(&handle, &[1i32, 2, 3]).expect("scores");
+        let view = scores.view().expect("view");
+        let raw = unsafe {
+            RawDeviceArrayView::try_from_raw(view.device_ptr(), view.len(), DataType::Int32, "test_raw")
+                .expect("raw view")
+        };
+
+        let err = ScoreValues::from_raw(raw).expect_err("unexpected score dtype should be rejected");
+        assert_eq!(err.kind(), ErrorKind::InvalidState);
+        assert_eq!(err.operation(), "ScoreValues::from_raw");
+    }
+
+    #[test]
+    fn distances_from_raw_unexpected_dtype_is_invalid_state() {
+        let handle = ResourceHandle::new().expect("handle");
+        let distances = DeviceArray::from_slice(&handle, &[1i16, 2, 3]).expect("distances");
+        let view = distances.view().expect("view");
+        let raw = unsafe {
+            RawDeviceArrayView::try_from_raw(view.device_ptr(), view.len(), DataType::Int16, "test_raw")
+                .expect("raw view")
+        };
+
+        let err = Distances::from_raw(raw).expect_err("unexpected distance dtype should be rejected");
+        assert_eq!(err.kind(), ErrorKind::InvalidState);
+        assert_eq!(err.operation(), "Distances::from_raw");
     }
 }

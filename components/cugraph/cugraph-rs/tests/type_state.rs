@@ -6,21 +6,6 @@
 //! catching mismatches at compile time.
 
 use cugraph::graph::{Forward, Graph, Transposed};
-use static_assertions::assert_not_impl_any;
-
-// ---------------------------------------------------------------------------
-// Marker-type assertions
-// ---------------------------------------------------------------------------
-
-#[test]
-fn graph_forward_is_not_send_or_sync() {
-    assert_not_impl_any!(Graph<Forward>: Send, Sync);
-}
-
-#[test]
-fn graph_transposed_is_not_send_or_sync() {
-    assert_not_impl_any!(Graph<Transposed>: Send, Sync);
-}
 
 #[test]
 fn graph_default_type_param_is_forward() {

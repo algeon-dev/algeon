@@ -7,18 +7,19 @@
 //! # Example
 //!
 //! ```no_run
-//! use cugraph::{ResourceHandle, RngState};
+//! use cugraph::{ResourceHandle, random::RngState};
 //!
 //! let handle = ResourceHandle::for_current_device().unwrap();
 //! let rng = RngState::new(&handle, 42).unwrap();
 //! ```
 
-use std::ptr;
+use std::{marker::PhantomData, ptr};
 
 use cugraph_sys::{cugraph_error_t, cugraph_rng_state_create, cugraph_rng_state_free, cugraph_rng_state_t};
 
 use crate::{
-    error::{Result, check_error},
+    cuda::DeviceGuard,
+    error::{Result, check_error, require_non_null},
     handle::ResourceHandle,
 };
 
@@ -29,7 +30,8 @@ use crate::{
 /// created it.
 pub struct RngState {
     raw: *mut cugraph_rng_state_t,
-    _nosend_nosync: std::marker::PhantomData<*mut ()>,
+    device: i32,
+    _nosend_nosync: PhantomData<*mut ()>,
 }
 
 impl std::fmt::Debug for RngState {
@@ -47,12 +49,16 @@ impl RngState {
         let mut raw: *mut cugraph_rng_state_t = ptr::null_mut();
         let mut error: *mut cugraph_error_t = ptr::null_mut();
 
+        // SAFETY: `handle` outlives the call and `raw`/`error` are valid
+        // out-pointers for cuGraph to initialize.
         unsafe {
             let code = cugraph_rng_state_create(handle.as_ptr(), seed, &mut raw, &mut error);
             check_error(code, error, "RngState::new")?;
         }
 
-        Ok(Self { raw, _nosend_nosync: std::marker::PhantomData })
+        let raw = require_non_null(raw, "RngState::new", "rng_state")?;
+
+        Ok(Self { raw, device: handle.device(), _nosend_nosync: PhantomData })
     }
 
     /// Get the raw C pointer. For internal use by other modules.
@@ -64,6 +70,9 @@ impl RngState {
 impl Drop for RngState {
     fn drop(&mut self) {
         if !self.raw.is_null() {
+            let _guard = DeviceGuard::switch_to(self.device, "RngState::drop").ok();
+            // SAFETY: `self.raw` is owned by this wrapper and has not been
+            // freed yet.
             unsafe { cugraph_rng_state_free(self.raw) };
         }
     }

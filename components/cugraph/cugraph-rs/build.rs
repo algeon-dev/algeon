@@ -1,7 +1,7 @@
 use std::{collections::BTreeSet, env, path::PathBuf};
 
 fn emit_runtime_search_path(path: &str) {
-    #[cfg(any(target_os = "linux"))]
+    #[cfg(target_os = "linux")]
     println!("cargo:rustc-link-arg=-Wl,-rpath,{}", path);
 }
 

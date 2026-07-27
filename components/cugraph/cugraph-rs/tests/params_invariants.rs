@@ -1,15 +1,14 @@
-//! Integration tests verifying that the type-level parameter invariants (CX-1)
-//! are enforced correctly and that migrated APIs remain compatible.
+//! Integration tests for top-level algorithm parameter structs.
+//!
+//! Primitive wrapper invariants live in source-local unit tests. Keep this file
+//! focused on cross-module defaults and a minimal "ergonomic to construct"
+//! smoke for public params types.
 
 use cugraph::{
     centrality::PageRankParams,
     layout::ForceAtlas2Params,
-    params::{BfsDepthLimit, ClosedUnitF64, IterationCount, NonNegativeF64, PositiveF64, UnitF64},
+    params::{ClosedUnitF64, IterationCount, NonNegativeF64, PositiveF64},
 };
-
-// ---------------------------------------------------------------------------
-// PageRankParams compatibility
-// ---------------------------------------------------------------------------
 
 #[test]
 fn pagerank_params_default_has_expected_values() {
@@ -18,51 +17,6 @@ fn pagerank_params_default_has_expected_values() {
     assert_eq!(params.epsilon.get(), 1e-5);
     assert_eq!(params.max_iterations.get(), 100);
 }
-
-#[test]
-fn pagerank_params_custom_construction() {
-    let params = PageRankParams {
-        alpha: ClosedUnitF64::new(0.9).unwrap(),
-        epsilon: NonNegativeF64::new(1e-6).unwrap(),
-        max_iterations: IterationCount::new(200).unwrap(),
-        do_expensive_check: false,
-    };
-    assert_eq!(params.alpha.get(), 0.9);
-    assert_eq!(params.epsilon.get(), 1e-6);
-    assert_eq!(params.max_iterations.get(), 200);
-}
-
-#[test]
-fn pagerank_params_alpha_rejects_invalid() {
-    // C++ validates: (alpha >= 0.0) && (alpha <= 1.0)
-    // Boundary values are accepted (closed interval [0.0, 1.0]):
-    assert!(ClosedUnitF64::new(0.0).is_ok());
-    assert!(ClosedUnitF64::new(1.0).is_ok());
-    // negative
-    assert!(ClosedUnitF64::new(-0.5).is_err());
-    // > 1
-    assert!(ClosedUnitF64::new(1.5).is_err());
-}
-
-#[test]
-fn pagerank_params_epsilon_rejects_invalid() {
-    // C++ validates: epsilon >= 0.0 ("epsilon should be non-negative")
-    // Zero is valid (means "never converge early, always run max_iterations"):
-    assert!(NonNegativeF64::new(0.0).is_ok());
-    // Negative is rejected:
-    assert!(NonNegativeF64::new(-1e-5).is_err());
-    assert!(NonNegativeF64::new(f64::NAN).is_err());
-    assert!(NonNegativeF64::new(f64::INFINITY).is_err());
-}
-
-#[test]
-fn pagerank_params_max_iterations_rejects_zero() {
-    assert!(IterationCount::new(0).is_err());
-}
-
-// ---------------------------------------------------------------------------
-// ForceAtlas2Params compatibility
-// ---------------------------------------------------------------------------
 
 #[test]
 fn force_atlas2_params_default_has_expected_values() {
@@ -83,136 +37,27 @@ fn force_atlas2_params_default_has_expected_values() {
 }
 
 #[test]
-fn force_atlas2_params_custom_override() {
-    let params = ForceAtlas2Params {
+fn top_level_algorithm_params_are_ergonomic_to_construct() {
+    let pagerank = PageRankParams {
+        alpha: ClosedUnitF64::new(0.9).unwrap(),
+        epsilon: NonNegativeF64::new(1e-6).unwrap(),
+        max_iterations: IterationCount::new(200).unwrap(),
+        do_expensive_check: false,
+    };
+    let force_atlas2 = ForceAtlas2Params {
         max_iter: IterationCount::new(100).unwrap(),
+        prevent_overlapping: true,
+        overlap_scaling_ratio: PositiveF64::new(3.0).unwrap(),
         barnes_hut_optimize: true,
         barnes_hut_theta: ClosedUnitF64::new(0.8).unwrap(),
         gravity: NonNegativeF64::new(5.0).unwrap(),
         edge_weight_influence: NonNegativeF64::new(0.0).unwrap(),
         ..Default::default()
     };
-    assert_eq!(params.max_iter.get(), 100);
-    assert!(params.barnes_hut_optimize);
-    assert_eq!(params.barnes_hut_theta.get(), 0.8);
-    assert_eq!(params.gravity.get(), 5.0);
-    assert_eq!(params.edge_weight_influence.get(), 0.0);
-}
 
-#[test]
-fn force_atlas2_params_rejects_zero_max_iter() {
-    assert!(IterationCount::new(0).is_err());
-}
-
-#[test]
-fn force_atlas2_barnes_hut_theta_closed_unit_boundaries() {
-    // [0.0, 1.0] is valid for ClosedUnitF64
-    assert!(ClosedUnitF64::new(0.0).is_ok());
-    assert!(ClosedUnitF64::new(1.0).is_ok());
-    assert!(ClosedUnitF64::new(-0.01).is_err());
-    assert!(ClosedUnitF64::new(1.01).is_err());
-}
-
-#[test]
-fn force_atlas2_edge_weight_influence_allows_zero() {
-    // edge_weight_influence = 0 means "no influence", which is valid
-    assert!(NonNegativeF64::new(0.0).is_ok());
-    assert!(NonNegativeF64::new(-0.001).is_err());
-}
-
-#[test]
-fn force_atlas2_gravity_allows_zero() {
-    // gravity = 0 disables gravity (no attraction to center), which is valid.
-    // The C API accepts any double; the CUDA kernels multiply by gravity, so
-    // zero simply zeroes out the gravity force.
-    let params = ForceAtlas2Params { gravity: NonNegativeF64::new(0.0).unwrap(), ..Default::default() };
-    assert_eq!(params.gravity.get(), 0.0);
-}
-
-// ---------------------------------------------------------------------------
-// Conversion round-trips
-// ---------------------------------------------------------------------------
-
-#[test]
-fn iteration_count_u32_roundtrip() {
-    let count = IterationCount::new(42).unwrap();
-    let raw: u32 = count.into();
-    let back = IterationCount::new(raw).unwrap();
-    assert_eq!(count, back);
-}
-
-#[test]
-fn iteration_count_i32_roundtrip() {
-    let count = IterationCount::new(100).unwrap();
-    let raw: i32 = count.try_into().unwrap();
-    let back = IterationCount::try_from(raw).unwrap();
-    assert_eq!(count, back);
-}
-
-#[test]
-fn positive_f64_f64_roundtrip() {
-    let val = PositiveF64::new(3.15).unwrap();
-    let raw: f64 = val.into();
-    let back = PositiveF64::new(raw).unwrap();
-    assert_eq!(val, back);
-}
-
-#[test]
-fn unit_f64_f64_roundtrip() {
-    let val = UnitF64::new(0.85).unwrap();
-    let raw: f64 = val.into();
-    let back = UnitF64::new(raw).unwrap();
-    assert_eq!(val, back);
-}
-
-#[test]
-fn bfs_depth_limit_rejects_zero() {
-    assert!(BfsDepthLimit::new(0).is_err());
-}
-
-#[test]
-fn bfs_depth_limit_accepts_positive_values() {
-    assert_eq!(BfsDepthLimit::new(1).unwrap().get(), 1);
-    assert_eq!(BfsDepthLimit::new(10).unwrap().get(), 10);
-}
-
-#[test]
-fn bfs_depth_limit_try_from_i32_and_usize() {
-    let a: BfsDepthLimit = 7i32.try_into().unwrap();
-    assert_eq!(a.get(), 7);
-
-    let b: BfsDepthLimit = 9usize.try_into().unwrap();
-    assert_eq!(b.get(), 9);
-
-    assert!(BfsDepthLimit::try_from(0i32).is_err());
-    assert!(BfsDepthLimit::try_from(-1i32).is_err());
-    assert!(BfsDepthLimit::try_from(0usize).is_err());
-}
-
-// ---------------------------------------------------------------------------
-// Params are Copy + Clone + Debug
-// ---------------------------------------------------------------------------
-
-#[test]
-fn pagerank_params_is_copy() {
-    let params = PageRankParams::default();
-    let copy = params;
-    // If PageRankParams is Copy, both should be usable:
-    assert_eq!(params.alpha.get(), copy.alpha.get());
-}
-
-#[test]
-fn force_atlas2_params_is_copy() {
-    let params = ForceAtlas2Params::default();
-    let copy = params;
-    assert_eq!(params.max_iter.get(), copy.max_iter.get());
-}
-
-#[test]
-fn params_are_debug() {
-    let pr = PageRankParams::default();
-    let _s = format!("{:?}", pr);
-
-    let fa2 = ForceAtlas2Params::default();
-    let _s = format!("{:?}", fa2);
+    assert_eq!(pagerank.alpha.get(), 0.9);
+    assert_eq!(pagerank.max_iterations.get(), 200);
+    assert_eq!(force_atlas2.max_iter.get(), 100);
+    assert!(force_atlas2.prevent_overlapping);
+    assert!(force_atlas2.barnes_hut_optimize);
 }
