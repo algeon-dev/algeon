@@ -1,7 +1,5 @@
 //! Interop between cudf and cugraph types.
 //!
-//! This module is only available when the `cudf-interop` feature is enabled.
-//!
 //! # Memory ownership model
 //!
 //! Functions in this module differ in whether they copy data or create
@@ -9,53 +7,58 @@
 //!
 //! ## Zero-copy view paths
 //!
-//! - [`DeviceSliceExt::as_device_array_view()`] — wraps a cudf
-//!   [`DeviceSlice`] as a cugraph `RawDeviceArrayView` without copying.
-//!   The view borrows the slice; the slice must outlive the view.
+//! - [`device_array_view_from_slice()`] — wraps a cudf column's GPU memory as a
+//!   typed cugraph array view without copying, with a runtime type check.
+//! - [`graph_from_series()`] — reads Series column pointers directly during
+//!   graph construction. No intermediate table copy.
+//! - [`graph_from_dataframe()`] — reads DataFrame column pointers directly
+//!   during graph construction. No intermediate table copy.
 //! - [`graph_from_table_view()`] — creates views into the cudf table's
-//!   column buffers during construction. The table must outlive the
-//!   intermediate views. Once graph construction completes, the [`Graph`]
-//!   owns its internal CSR/CSC representation independently.
+//!   column buffers during construction.
 //!
 //! ## Copy-based paths
 //!
-//! - [`RawDeviceArrayViewExt::to_cudf_column()`] — performs a
-//!   device-to-device copy. The returned column owns its memory
-//!   independently of the source view.
+//! - [`IntoSeries`] trait — converts cugraph result arrays to cudf Series.
+//!   Performs a device-to-device copy (unavoidable: cugraph owns result memory).
 //! - [`graph_from_parquet()`] — reads Parquet from disk into GPU memory
 //!   (I/O + copy). Returns a [`LoadedGraph`] that owns both the [`Graph`]
 //!   and the backing table.
-//! - [`graph_from_dataframe()`] — copies the DataFrame to a table, then
-//!   delegates to [`graph_from_table_view()`].
-//!
-//! ## Owned result type
-//!
-//! [`LoadedGraph`] bundles a [`Graph`] with the source table loaded from
-//! an external source (e.g. Parquet). The graph's internal representation
-//! is independent of the table once constructed, but keeping the table
-//! allows callers to reuse it for additional queries.
 //!
 //! ## Summary
 //!
 //! | Function | Copy? | Lifetime constraint |
 //! |----------|-------|---------------------|
-//! | [`DeviceSliceExt::as_device_array_view`] | No | View borrows slice |
-//! | [`RawDeviceArrayViewExt::to_cudf_column`] | Yes | Column is independent |
-//! | [`graph_from_table_view`] | Yes (CSR) | Table must outlive views during build |
-//! | [`graph_from_dataframe`] | Yes | Copies table internally |
+//! | [`device_array_view_from_slice`] | No | View borrows slice |
+//! | [`graph_from_series`] | No (input) | Series must outlive build |
+//! | [`graph_from_dataframe`] | No (input) | DataFrame must outlive build |
+//! | [`graph_from_table_view`] | No (input) | Table must outlive build |
+//! | [`IntoSeries::to_series`] | Yes (D2D) | Series is independent |
 //! | [`graph_from_parquet`] | Yes | [`LoadedGraph`] owns both |
 //!
 //! [`DeviceSlice`]: cudf::DeviceSlice
 
-use cudf::{column::DeviceSlice, io::parquet, types::TypeId};
+use std::ffi::c_void;
+
+use cudf::{TypeId, core::DeviceSlice, io::parquet};
 
 use crate::{
     array::RawDeviceArrayView,
+    centrality::{BetweennessCentralityResult, PageRankResult},
     error::{Error, ErrorKind, Result},
     graph::{Graph, GraphBuilder, Transposition},
     handle::ResourceHandle,
-    types::{DataType, GraphProperties},
+    layout::LayoutResult,
+    structure::{
+        degrees::{DegreeValues, DegreesResult, InDegreesResult, OutDegreesResult},
+        typed_results::{Distances, ScoreValues, VertexIds},
+    },
+    traversal::bfs::BfsResult,
+    types::{CugraphElement, DataType, GraphProperties},
 };
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Type conversions
+// ═══════════════════════════════════════════════════════════════════════════
 
 /// Convert a cudf [`TypeId`] to a cugraph [`DataType`].
 ///
@@ -99,24 +102,62 @@ pub fn cugraph_type_to_cudf(dtype: DataType) -> Option<TypeId> {
     }
 }
 
-/// Extension trait for creating a [`RawDeviceArrayView`] from a cudf [`DeviceSlice`].
-#[allow(dead_code)] // available for future internal use
-pub(crate) trait DeviceSliceExt {
-    /// Create a zero-copy [`RawDeviceArrayView`] from this [`DeviceSlice`].
-    fn as_device_array_view(&self) -> Result<RawDeviceArrayView<'_>>;
-}
+// ═══════════════════════════════════════════════════════════════════════════
+// Checked DeviceSlice → DeviceArrayView — zero-copy bridge
+// ═══════════════════════════════════════════════════════════════════════════
 
-impl DeviceSliceExt for DeviceSlice<'_> {
-    fn as_device_array_view(&self) -> Result<RawDeviceArrayView<'_>> {
-        let type_id = self.type_id();
-        let cugraph_dtype = cudf_type_to_cugraph(type_id).ok_or_else(|| {
-            Error::new(ErrorKind::UnsupportedType, "DeviceSliceExt::as_device_array_view")
-                .with_message(format!("cudf TypeId {:?} has no cugraph DataType equivalent", type_id))
-        })?;
+/// Create a typed [`DeviceArrayView`] from a runtime-typed cudf [`DeviceSlice`],
+/// verifying that the slice's element type matches `T` at runtime.
+///
+/// This is the safe zero-copy bridge between cudf and cugraph. The returned
+/// view borrows the slice's GPU memory without copying.
+///
+/// # Errors
+///
+/// Returns [`ErrorKind::UnsupportedType`] if the slice's cudf type has no
+/// cugraph equivalent, or if the mapped cugraph type does not match `T`.
+///
+/// # Example
+///
+/// ```no_run
+/// use cugraph::cudf_interop::device_array_view_from_slice;
+///
+/// let series = cudf::Series::new("v", &[0i32, 1, 2]).unwrap();
+/// let col = series.as_column_view().unwrap();
+/// let slice = col.device_slice::<i32>().unwrap();
+///
+/// let view = device_array_view_from_slice::<i32>(&slice).unwrap();
+/// assert_eq!(view.len(), 3);
+/// ```
+pub fn device_array_view_from_slice<'a, T: CugraphElement>(
+    slice: &'a DeviceSlice<'a>,
+) -> Result<crate::array::DeviceArrayView<'a, T>> {
+    let cudf_tid = slice.type_id();
+    let cugraph_dtype = cudf_type_to_cugraph(cudf_tid).ok_or_else(|| {
+        Error::new(ErrorKind::UnsupportedType, "device_array_view_from_slice")
+            .with_message(format!("cudf TypeId {:?} has no cugraph equivalent", cudf_tid))
+    })?;
 
-        Ok(unsafe { RawDeviceArrayView::from_raw(self.as_ptr(), self.len(), cugraph_dtype) })
+    let expected = T::data_type();
+    if cugraph_dtype != expected {
+        return Err(Error::new(ErrorKind::UnsupportedType, "device_array_view_from_slice")
+            .with_message(format!(
+                "dtype mismatch: slice contains {:?} but requested type maps to {:?}",
+                cugraph_dtype, expected
+            ))
+            .with_context("slice_dtype", format!("{:?}", cugraph_dtype))
+            .with_context("requested_dtype", format!("{:?}", expected)));
     }
+
+    // SAFETY: we have verified that the slice's runtime dtype matches T.
+    // DeviceSlice guarantees a valid device pointer for its lifetime.
+    let raw = unsafe { crate::array::RawDeviceArrayView::from_raw(slice.as_ptr(), slice.len(), expected) };
+    Ok(crate::array::DeviceArrayView::from_raw_unchecked(raw))
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Internal extension traits (pub(crate))
+// ═══════════════════════════════════════════════════════════════════════════
 
 /// Extension trait for converting a cugraph [`RawDeviceArrayView`] into a cudf [`Column`].
 ///
@@ -124,12 +165,8 @@ impl DeviceSliceExt for DeviceSlice<'_> {
 pub(crate) trait RawDeviceArrayViewExt {
     /// Convert this cugraph device array into a cudf [`Column`].
     ///
-    /// Performs a device-to-device copy. The returned column owns its memory
-    /// independently of this view, so the view (and its parent result object)
-    /// can be dropped afterwards.
-    ///
-    /// Returns an error if the view's [`DataType`] has no cudf equivalent
-    /// (i.e. [`DataType::SizeT`]).
+    /// Device-to-device copy: unavoidable because the cugraph C API owns
+    /// result memory and frees it on drop. Matches Python cudf/cugraph behavior.
     ///
     /// [`Column`]: cudf::Column
     fn to_cudf_column(&self) -> Result<cudf::Column>;
@@ -147,10 +184,8 @@ impl RawDeviceArrayViewExt for RawDeviceArrayView<'_> {
         // `self.len()` elements of `dtype`, which we have verified maps to
         // `cudf_type`. `Column::from_device_ptr` performs a device-to-device
         // copy, so the returned column is independent of this view.
-        let col = unsafe {
-            cudf::Column::from_device_ptr(self.device_ptr() as *const std::ffi::c_void, self.len(), cudf_type)
-        }
-        .map_err(|e| {
+        let col = unsafe { cudf::Column::from_device_ptr(self.device_ptr() as *const c_void, self.len(), cudf_type) }
+            .map_err(|e| {
             Error::new(ErrorKind::Unexpected, "RawDeviceArrayViewExt::to_cudf_column")
                 .with_message(format!("cudf Column::from_device_ptr failed: {}", e))
         })?;
@@ -158,6 +193,203 @@ impl RawDeviceArrayViewExt for RawDeviceArrayView<'_> {
         Ok(col)
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// IntoSeries — public extension trait for result → cudf Series conversion
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Extension trait for converting cugraph GPU arrays to cudf [`Series`].
+///
+/// Device-to-device copy: unavoidable because the cugraph C API owns result
+/// memory and frees it on drop. Matches Python cudf/cugraph behavior.
+///
+/// [`Series`]: cudf::Series
+pub trait IntoSeries {
+    /// Convert this GPU array to a named cudf [`Series`].
+    ///
+    /// [`Series`]: cudf::Series
+    fn to_series(&self, name: &str) -> Result<cudf::Series>;
+}
+
+impl IntoSeries for VertexIds<'_> {
+    fn to_series(&self, name: &str) -> Result<cudf::Series> {
+        let raw = match self {
+            Self::I32(v) => &v.inner,
+            Self::I64(v) => &v.inner,
+        };
+        let col = raw.to_cudf_column()?;
+        cudf::Series::from_column(col).map(|s| s.rename(name)).map_err(|e| {
+            Error::new(ErrorKind::Unexpected, "VertexIds::to_series")
+                .with_message(format!("failed to create Series: {}", e))
+        })
+    }
+}
+
+impl IntoSeries for ScoreValues<'_> {
+    fn to_series(&self, name: &str) -> Result<cudf::Series> {
+        let raw = match self {
+            Self::F32(v) => &v.inner,
+            Self::F64(v) => &v.inner,
+        };
+        let col = raw.to_cudf_column()?;
+        cudf::Series::from_column(col).map(|s| s.rename(name)).map_err(|e| {
+            Error::new(ErrorKind::Unexpected, "ScoreValues::to_series")
+                .with_message(format!("failed to create Series: {}", e))
+        })
+    }
+}
+
+impl IntoSeries for Distances<'_> {
+    fn to_series(&self, name: &str) -> Result<cudf::Series> {
+        let raw = match self {
+            Self::I32(v) => &v.inner,
+            Self::I64(v) => &v.inner,
+            Self::F32(v) => &v.inner,
+            Self::F64(v) => &v.inner,
+        };
+        let col = raw.to_cudf_column()?;
+        cudf::Series::from_column(col).map(|s| s.rename(name)).map_err(|e| {
+            Error::new(ErrorKind::Unexpected, "Distances::to_series")
+                .with_message(format!("failed to create Series: {}", e))
+        })
+    }
+}
+
+impl IntoSeries for DegreeValues<'_> {
+    fn to_series(&self, name: &str) -> Result<cudf::Series> {
+        let raw = match self {
+            Self::I32(v) => &v.inner,
+            Self::I64(v) => &v.inner,
+        };
+        let col = raw.to_cudf_column()?;
+        cudf::Series::from_column(col).map(|s| s.rename(name)).map_err(|e| {
+            Error::new(ErrorKind::Unexpected, "DegreeValues::to_series")
+                .with_message(format!("failed to create Series: {}", e))
+        })
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// TryFrom impls — result structs → cudf::DataFrame
+// ═══════════════════════════════════════════════════════════════════════════
+
+impl TryFrom<&PageRankResult> for cudf::DataFrame {
+    type Error = Error;
+
+    fn try_from(result: &PageRankResult) -> Result<Self> {
+        let vert = result.vertex_ids()?.to_series("vertex")?;
+        let vals = result.scores()?.to_series("value")?;
+        cudf::DataFrame::from_series([("vertex", vert), ("value", vals)]).map_err(|e| {
+            Error::new(ErrorKind::Unexpected, "TryFrom<&PageRankResult>")
+                .with_message(format!("failed to build DataFrame: {}", e))
+        })
+    }
+}
+
+impl TryFrom<&BetweennessCentralityResult> for cudf::DataFrame {
+    type Error = Error;
+
+    fn try_from(result: &BetweennessCentralityResult) -> Result<Self> {
+        let vert = result.vertex_ids()?.to_series("vertex")?;
+        let vals = result.scores()?.to_series("value")?;
+        cudf::DataFrame::from_series([("vertex", vert), ("value", vals)]).map_err(|e| {
+            Error::new(ErrorKind::Unexpected, "TryFrom<&BetweennessCentralityResult>")
+                .with_message(format!("failed to build DataFrame: {}", e))
+        })
+    }
+}
+
+impl TryFrom<&BfsResult> for cudf::DataFrame {
+    type Error = Error;
+
+    fn try_from(result: &BfsResult) -> Result<Self> {
+        let vertices_raw = result.vertices_raw()?;
+        let distances_raw = result.distances_raw()?;
+        let expected_len = vertices_raw.len();
+
+        let vert_col = vertices_raw.to_cudf_column()?;
+        let dist_col = distances_raw.to_cudf_column()?;
+
+        let (names, columns) = match result.predecessors_raw() {
+            Some(preds) if preds.len() == expected_len => {
+                let pred_col = preds.to_cudf_column()?;
+                (vec!["vertex".into(), "distance".into(), "predecessor".into()], vec![vert_col, dist_col, pred_col])
+            },
+            Some(preds) => {
+                return Err(Error::new(ErrorKind::Unexpected, "TryFrom<&BfsResult>").with_message(format!(
+                    "predecessor length {} does not match vertex length {}",
+                    preds.len(),
+                    expected_len
+                )));
+            },
+            None => (vec!["vertex".into(), "distance".into()], vec![vert_col, dist_col]),
+        };
+
+        cudf::DataFrame::new(names, columns).map_err(|e| {
+            Error::new(ErrorKind::Unexpected, "TryFrom<&BfsResult>")
+                .with_message(format!("failed to build DataFrame: {}", e))
+        })
+    }
+}
+
+impl TryFrom<&LayoutResult> for cudf::DataFrame {
+    type Error = Error;
+
+    fn try_from(result: &LayoutResult) -> Result<Self> {
+        let vert_col = result.vertices_raw()?.to_cudf_column()?;
+        let x_col = result.x_raw()?.to_cudf_column()?;
+        let y_col = result.y_raw()?.to_cudf_column()?;
+
+        cudf::DataFrame::new(vec!["vertex".into(), "x".into(), "y".into()], vec![vert_col, x_col, y_col]).map_err(|e| {
+            Error::new(ErrorKind::Unexpected, "TryFrom<&LayoutResult>")
+                .with_message(format!("failed to build DataFrame: {}", e))
+        })
+    }
+}
+
+impl TryFrom<&DegreesResult> for cudf::DataFrame {
+    type Error = Error;
+
+    fn try_from(result: &DegreesResult) -> Result<Self> {
+        let vert = result.vertex_ids()?.to_series("vertex")?;
+        let in_deg = result.in_degrees()?.to_series("in_degree")?;
+        let out_deg = result.out_degrees()?.to_series("out_degree")?;
+        cudf::DataFrame::from_series([("vertex", vert), ("in_degree", in_deg), ("out_degree", out_deg)]).map_err(|e| {
+            Error::new(ErrorKind::Unexpected, "TryFrom<&DegreesResult>")
+                .with_message(format!("failed to build DataFrame: {}", e))
+        })
+    }
+}
+
+impl TryFrom<&InDegreesResult> for cudf::DataFrame {
+    type Error = Error;
+
+    fn try_from(result: &InDegreesResult) -> Result<Self> {
+        let vert = result.vertex_ids()?.to_series("vertex")?;
+        let in_deg = result.in_degrees()?.to_series("in_degree")?;
+        cudf::DataFrame::from_series([("vertex", vert), ("in_degree", in_deg)]).map_err(|e| {
+            Error::new(ErrorKind::Unexpected, "TryFrom<&InDegreesResult>")
+                .with_message(format!("failed to build DataFrame: {}", e))
+        })
+    }
+}
+
+impl TryFrom<&OutDegreesResult> for cudf::DataFrame {
+    type Error = Error;
+
+    fn try_from(result: &OutDegreesResult) -> Result<Self> {
+        let vert = result.vertex_ids()?.to_series("vertex")?;
+        let out_deg = result.out_degrees()?.to_series("out_degree")?;
+        cudf::DataFrame::from_series([("vertex", vert), ("out_degree", out_deg)]).map_err(|e| {
+            Error::new(ErrorKind::Unexpected, "TryFrom<&OutDegreesResult>")
+                .with_message(format!("failed to build DataFrame: {}", e))
+        })
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Graph construction option types
+// ═══════════════════════════════════════════════════════════════════════════
 
 /// Options for building a graph from a cudf [`TableView`] using column indices.
 ///
@@ -268,6 +500,39 @@ impl<'a> DataFrameGraphOptions<'a> {
     }
 }
 
+/// Options for building a graph from cudf [`Series`] directly.
+///
+/// # Example
+///
+/// ```no_run
+/// use cugraph::cudf_interop::SeriesGraphOptions;
+///
+/// let opts = SeriesGraphOptions::default().renumber();
+/// ```
+///
+/// [`Series`]: cudf::Series
+#[derive(Debug, Clone, Default)]
+pub struct SeriesGraphOptions {
+    /// Graph properties (directed/undirected, multigraph).
+    pub properties: GraphProperties,
+    /// Whether to renumber vertices.
+    pub renumber: bool,
+}
+
+impl SeriesGraphOptions {
+    /// Set graph properties.
+    pub fn properties(mut self, properties: GraphProperties) -> Self {
+        self.properties = properties;
+        self
+    }
+
+    /// Enable vertex renumbering.
+    pub fn renumber(mut self) -> Self {
+        self.renumber = true;
+        self
+    }
+}
+
 /// Options for loading a graph from a Parquet file.
 ///
 /// # Example
@@ -322,30 +587,99 @@ impl<'a> ParquetGraphOptions<'a> {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Helper: extract a RawDeviceArrayView from a cudf ColumnView
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Extract a cugraph [`RawDeviceArrayView`] from a cudf [`ColumnView`],
+/// validating nulls, dtype, and offset.
+///
+/// [`ColumnView`]: cudf::ColumnView
+fn column_view_to_raw<'a>(
+    col: &cudf::ColumnView<'a>,
+    name: &str,
+    operation: &'static str,
+) -> Result<RawDeviceArrayView<'a>> {
+    let dt = col.data_type().map_err(|e| {
+        Error::new(ErrorKind::Unexpected, operation)
+            .with_message(format!("failed to get {} column data type: {}", name, e))
+    })?;
+
+    let cudf_type_id = dt.id();
+    let cugraph_dtype = cudf_type_to_cugraph(cudf_type_id).ok_or_else(|| {
+        Error::new(ErrorKind::UnsupportedType, operation)
+            .with_message(format!("{} column has cudf type {:?} which has no cugraph equivalent", name, cudf_type_id))
+    })?;
+
+    let null_count = col.null_count().map_err(|e| {
+        Error::new(ErrorKind::Unexpected, operation)
+            .with_message(format!("failed to get {} column null count: {}", name, e))
+    })?;
+
+    if null_count != 0 {
+        return Err(Error::new(ErrorKind::InvalidInput, operation)
+            .with_message(format!(
+                "{} column contains {} null value(s); nulls are not supported for edge lists",
+                name, null_count
+            ))
+            .with_context("column_name", name.to_string())
+            .with_context("null_count", null_count.to_string()));
+    }
+
+    let base_ptr = col.device_data_ptr().map_err(|e| {
+        Error::new(ErrorKind::Unexpected, operation)
+            .with_message(format!("failed to get {} column device pointer: {}", name, e))
+    })? as *const u8;
+
+    let len = col.len().map_err(|e| {
+        Error::new(ErrorKind::Unexpected, operation)
+            .with_message(format!("failed to get {} column length: {}", name, e))
+    })?;
+
+    let offset = col.offset().map_err(|e| {
+        Error::new(ErrorKind::Unexpected, operation)
+            .with_message(format!("failed to get {} column offset: {}", name, e))
+    })?;
+
+    if offset < 0 {
+        return Err(Error::new(ErrorKind::Unexpected, operation)
+            .with_message(format!("{} column returned a negative offset {}", name, offset)));
+    }
+    let offset = offset as usize;
+
+    let byte_offset = offset.checked_mul(cugraph_dtype.size_of()).ok_or_else(|| {
+        Error::new(ErrorKind::InvalidInput, operation)
+            .with_message(format!("{} column offset is too large", name))
+            .with_context("offset", offset.to_string())
+            .with_context("dtype_size", cugraph_dtype.size_of().to_string())
+    })?;
+
+    let ptr = if base_ptr.is_null() {
+        base_ptr as *mut c_void
+    } else {
+        // SAFETY: `base_ptr` is the start of the cudf device buffer for this
+        // column, and `byte_offset` is derived from the column's logical offset
+        // and element size.
+        unsafe { base_ptr.add(byte_offset) as *mut c_void }
+    };
+
+    // SAFETY: `ptr` points at the active (offset-adjusted) region of
+    // the cudf column's device buffer for `len` elements of `cugraph_dtype`.
+    Ok(unsafe { RawDeviceArrayView::from_raw(ptr, len, cugraph_dtype) })
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Graph construction functions
+// ═══════════════════════════════════════════════════════════════════════════
+
 /// Build a cuGraph [`Graph`] from a cudf [`TableView`].
 ///
 /// This is the core function that extracts column views from a table, validates
-/// them, and builds a graph. Both [`graph_from_parquet`] and
-/// [`graph_from_dataframe`] delegate to this function.
+/// them, and builds a graph. [`graph_from_parquet`] delegates to this function.
 ///
-/// **Copy semantics**: cuGraph reads the edge data from the table's columns
-/// and builds its own internal CSR/CSC representation. The returned [`Graph`]
-/// is independent of the input table — the table can be dropped immediately
-/// after this function returns.
-///
-/// The type parameter `T` determines the transposition state of the
-/// resulting graph:
-///
-/// ```ignore
-/// use cugraph::{Forward, Transposed, cudf_interop::{graph_from_table_view, TableGraphOptions}};
-///
-/// // For BFS (requires forward):
-/// let opts = TableGraphOptions::new(0, 1).renumber();
-/// let graph = graph_from_table_view::<Forward>(&handle, &view, &opts)?;
-///
-/// // For PageRank (requires transposed):
-/// let graph = graph_from_table_view::<Transposed>(&handle, &view, &opts)?;
-/// ```
+/// **Zero-copy input**: cuGraph reads the edge data directly from the table's
+/// column device pointers and builds its own internal CSR/CSC representation.
+/// The returned [`Graph`] is independent of the input table.
 ///
 /// # Errors
 ///
@@ -393,94 +727,13 @@ pub fn graph_from_table_view<T: Transposition>(
     }
 
     // ── Helper: extract a cugraph RawDeviceArrayView from a table column
-    // Rejects nullable columns (graph edges/weights must be fully defined)
-    // and accounts for cudf column offsets when computing the device ptr.
     let col_to_cugraph_view = |idx: usize, name: &str| -> Result<RawDeviceArrayView<'_>> {
         let col = view.column(idx as i32).map_err(|e| {
             Error::new(ErrorKind::Unexpected, "graph_from_table_view")
                 .with_message(format!("failed to get {} column: {}", name, e))
                 .with_context("column_index", idx.to_string())
         })?;
-
-        let dt = col.data_type().map_err(|e| {
-            Error::new(ErrorKind::Unexpected, "graph_from_table_view")
-                .with_message(format!("failed to get {} column data type: {}", name, e))
-                .with_context("column_index", idx.to_string())
-        })?;
-
-        let cudf_type_id = dt.id();
-        let cugraph_dtype = cudf_type_to_cugraph(cudf_type_id).ok_or_else(|| {
-            Error::new(ErrorKind::UnsupportedType, "graph_from_table_view")
-                .with_message(format!(
-                    "{} column has cudf type {:?} which has no cugraph equivalent",
-                    name, cudf_type_id
-                ))
-                .with_context("column_index", idx.to_string())
-        })?;
-
-        let null_count = col.null_count().map_err(|e| {
-            Error::new(ErrorKind::Unexpected, "graph_from_table_view")
-                .with_message(format!("failed to get {} column null count: {}", name, e))
-                .with_context("column_index", idx.to_string())
-        })?;
-
-        if null_count != 0 {
-            return Err(Error::new(ErrorKind::InvalidInput, "graph_from_table_view")
-                .with_message(format!(
-                    "{} column contains {} null value(s); nulls are not supported for edge lists",
-                    name, null_count
-                ))
-                .with_context("column_name", name.to_string())
-                .with_context("column_index", idx.to_string())
-                .with_context("null_count", null_count.to_string()));
-        }
-
-        let base_ptr = col.device_data_ptr().map_err(|e| {
-            Error::new(ErrorKind::Unexpected, "graph_from_table_view")
-                .with_message(format!("failed to get {} column device pointer: {}", name, e))
-                .with_context("column_index", idx.to_string())
-        })? as *const u8;
-
-        let len = col.len().map_err(|e| {
-            Error::new(ErrorKind::Unexpected, "graph_from_table_view")
-                .with_message(format!("failed to get {} column length: {}", name, e))
-                .with_context("column_index", idx.to_string())
-        })?;
-
-        let offset = col.offset().map_err(|e| {
-            Error::new(ErrorKind::Unexpected, "graph_from_table_view")
-                .with_message(format!("failed to get {} column offset: {}", name, e))
-                .with_context("column_index", idx.to_string())
-        })?;
-
-        if offset < 0 {
-            return Err(Error::new(ErrorKind::Unexpected, "graph_from_table_view")
-                .with_message(format!("{} column returned a negative offset {}", name, offset))
-                .with_context("column_index", idx.to_string()));
-        }
-        let offset = offset as usize;
-
-        let byte_offset = offset.checked_mul(cugraph_dtype.size_of()).ok_or_else(|| {
-            Error::new(ErrorKind::InvalidInput, "graph_from_table_view")
-                .with_message(format!("{} column offset is too large", name))
-                .with_context("column_index", idx.to_string())
-                .with_context("offset", offset.to_string())
-                .with_context("dtype_size", cugraph_dtype.size_of().to_string())
-        })?;
-
-        let ptr = if base_ptr.is_null() {
-            base_ptr as *mut std::ffi::c_void
-        } else {
-            // SAFETY: `base_ptr` is the start of the cudf device buffer for this
-            // column, and `byte_offset` is derived from the column's logical offset
-            // and element size.
-            unsafe { base_ptr.add(byte_offset) as *mut std::ffi::c_void }
-        };
-
-        // SAFETY: `ptr` points at the active (offset-adjusted) region of
-        // the cudf column's device buffer for `len` elements of `cugraph_dtype`.
-        // The table outlives all intermediate views in this scope.
-        Ok(unsafe { RawDeviceArrayView::from_raw(ptr, len, cugraph_dtype) })
+        column_view_to_raw(&col, name, "graph_from_table_view")
     };
 
     let src_cg = col_to_cugraph_view(src_col, "src")?;
@@ -495,60 +748,162 @@ pub fn graph_from_table_view<T: Transposition>(
     builder.build_inner(handle, T::store_transposed())
 }
 
+/// Map a cudf error from `series_view()` to a cugraph error with the correct
+/// kind and retry classification.
+///
+/// `series_view()` can fail for multiple reasons: column not found (caller
+/// error), FFI/GPU failures (runtime error). Mapping all failures to
+/// `InvalidInput` would misclassify transient GPU errors as permanent.
+fn map_series_view_error(e: cudf::Error, col_label: &str, operation: &'static str) -> Error {
+    match e.kind() {
+        cudf::ErrorKind::InvalidOperation => {
+            // Column not found — caller input error, permanent.
+            Error::new(ErrorKind::InvalidInput, operation)
+                .with_message(format!("{} column: {}", col_label, e))
+                .with_context("column_label", col_label.to_string())
+                .set_source(e)
+        },
+        cudf::ErrorKind::OutOfMemory => Error::new(ErrorKind::OutOfMemory, operation)
+            .with_message(format!("{} column: {}", col_label, e))
+            .with_context("column_label", col_label.to_string())
+            .set_temporary()
+            .set_source(e),
+        cudf::ErrorKind::CudaError => Error::new(ErrorKind::Unexpected, operation)
+            .with_message(format!("{} column: {}", col_label, e))
+            .with_context("column_label", col_label.to_string())
+            .set_temporary()
+            .set_source(e),
+        cudf::ErrorKind::FatalCudaError => Error::new(ErrorKind::Unexpected, operation)
+            .with_message(format!("{} column: {}", col_label, e))
+            .with_context("column_label", col_label.to_string())
+            .set_persistent()
+            .set_source(e),
+        _ => Error::new(ErrorKind::Unexpected, operation)
+            .with_message(format!("{} column: {}", col_label, e))
+            .with_context("column_label", col_label.to_string())
+            .set_source(e),
+    }
+}
+
 /// Build a cuGraph [`Graph`] from a cudf [`DataFrame`] using column names.
 ///
-/// Resolves column names to indices, copies the DataFrame into a [`Table`],
-/// and delegates to [`graph_from_table_view`].
-///
-/// **Copy semantics**: this performs a device-to-device copy of the
-/// DataFrame's columns into a table, then cuGraph builds its internal
-/// representation from that table. The returned graph is independent of
-/// the input DataFrame.
-///
-/// The type parameter `T` determines the transposition state of the
-/// resulting graph. See [`graph_from_table_view`] for details.
+/// **Zero-copy input**: resolves column names, obtains column views from the
+/// DataFrame, and passes device pointers directly to cuGraph. No intermediate
+/// table copy is performed.
 ///
 /// # Errors
 ///
 /// Returns an error if any column name is not found in the DataFrame, or if
-/// [`graph_from_table_view`] fails.
+/// graph construction fails.
 ///
 /// [`DataFrame`]: cudf::DataFrame
-/// [`Table`]: cudf::Table
 pub fn graph_from_dataframe<T: Transposition>(
     handle: &ResourceHandle,
     df: &cudf::DataFrame,
     options: &DataFrameGraphOptions<'_>,
 ) -> Result<Graph<T>> {
-    let resolve = |name: &str, role: &str| -> Result<usize> {
-        df.column_index(name).ok_or_else(|| {
-            Error::new(ErrorKind::InvalidInput, "graph_from_dataframe")
-                .with_message(format!("{} column \"{}\" not found in DataFrame", role, name))
-                .with_context("column_name", name.to_string())
+    let operation = "graph_from_dataframe";
+
+    // Resolve column names to SeriesViews (zero-copy borrows from DataFrame)
+    let src_sv = df.series_view(options.src_col).map_err(|e| map_series_view_error(e, "src", operation))?;
+    let dst_sv = df.series_view(options.dst_col).map_err(|e| map_series_view_error(e, "dst", operation))?;
+    let wgt_sv = options
+        .wgt_col
+        .map(|name| df.series_view(name).map_err(|e| map_series_view_error(e, "wgt", operation)))
+        .transpose()?;
+
+    // SeriesView derefs to ColumnView — extract raw device array views
+    let src_cg = column_view_to_raw(&src_sv, "src", operation)?;
+    let dst_cg = column_view_to_raw(&dst_sv, "dst", operation)?;
+    let wgt_cg = wgt_sv.as_ref().map(|sv| column_view_to_raw(sv, "wgt", operation)).transpose()?;
+
+    let mut builder =
+        GraphBuilder::from_raw_views(options.properties, &src_cg, &dst_cg).renumber_flag(options.renumber);
+    if let Some(ref w) = wgt_cg {
+        builder = builder.weights_raw(w);
+    }
+    builder.build_inner(handle, T::store_transposed())
+}
+
+/// Build a cuGraph [`Graph`] from cudf [`Series`] (src vertices, dst vertices,
+/// optional weights).
+///
+/// **Zero-copy input**: the Series' GPU memory is read directly during graph
+/// construction. The Graph's internal CSR/CSC is independent after construction
+/// — the Series can be dropped afterward.
+///
+/// # Example
+///
+/// ```no_run
+/// use cugraph::{
+///     Forward, ResourceHandle,
+///     cudf_interop::{SeriesGraphOptions, graph_from_series},
+/// };
+///
+/// let handle = ResourceHandle::new().unwrap();
+/// let src = cudf::Series::new("src", &[0i32, 1, 2]).unwrap();
+/// let dst = cudf::Series::new("dst", &[1i32, 2, 0]).unwrap();
+///
+/// let opts = SeriesGraphOptions::default().renumber();
+/// let graph =
+///     graph_from_series::<Forward>(&handle, &src, &dst, None, &opts).unwrap();
+/// ```
+///
+/// [`Series`]: cudf::Series
+pub fn graph_from_series<T: Transposition>(
+    handle: &ResourceHandle,
+    src: &cudf::Series,
+    dst: &cudf::Series,
+    weights: Option<&cudf::Series>,
+    options: &SeriesGraphOptions,
+) -> Result<Graph<T>> {
+    let operation = "graph_from_series";
+
+    // ── Provenance validation ────────────────────────────────────────
+    if !src.same_provenance(dst) {
+        return Err(Error::new(ErrorKind::InvalidInput, operation).with_message(
+            "src and dst series have different retained provenance \
+             (CUDA stream / memory resource); combine them in a single \
+             cudf Runtime or DataFrame before building a graph",
+        ));
+    }
+    if let Some(wgt) = weights {
+        if !src.same_provenance(wgt) {
+            return Err(Error::new(ErrorKind::InvalidInput, operation).with_message(
+                "weights series has different retained provenance from \
+                 src/dst (CUDA stream / memory resource); combine them in \
+                 a single cudf Runtime or DataFrame before building a graph",
+            ));
+        }
+    }
+
+    let src_cv = src.as_column_view().map_err(|e| {
+        Error::new(ErrorKind::Unexpected, operation).with_message(format!("failed to get src column view: {}", e))
+    })?;
+    let dst_cv = dst.as_column_view().map_err(|e| {
+        Error::new(ErrorKind::Unexpected, operation).with_message(format!("failed to get dst column view: {}", e))
+    })?;
+
+    let src_cg = column_view_to_raw(&src_cv, "src", operation)?;
+    let dst_cg = column_view_to_raw(&dst_cv, "dst", operation)?;
+
+    let wgt_cv = weights
+        .map(|w| {
+            w.as_column_view().map_err(|e| {
+                Error::new(ErrorKind::Unexpected, operation)
+                    .with_message(format!("failed to get wgt column view: {}", e))
+            })
         })
-    };
+        .transpose()?;
 
-    let src_idx = resolve(options.src_col, "src")?;
-    let dst_idx = resolve(options.dst_col, "dst")?;
-    let wgt_idx = options.wgt_col.map(|name| resolve(name, "wgt")).transpose()?;
+    let wgt_cg = wgt_cv.as_ref().map(|cv| column_view_to_raw(cv, "wgt", operation)).transpose()?;
 
-    let table = df.to_table_copy().map_err(|e| {
-        Error::new(ErrorKind::Unexpected, "graph_from_dataframe")
-            .with_message(format!("failed to build table from DataFrame: {}", e))
-    })?;
-    let view = table.view().map_err(|e| {
-        Error::new(ErrorKind::Unexpected, "graph_from_dataframe")
-            .with_message(format!("failed to get table view: {}", e))
-    })?;
-
-    let table_opts = TableGraphOptions {
-        src_col: src_idx,
-        dst_col: dst_idx,
-        wgt_col: wgt_idx,
-        properties: options.properties,
-        renumber: options.renumber,
-    };
-    graph_from_table_view::<T>(handle, &view, &table_opts)
+    let mut builder =
+        GraphBuilder::from_raw_views(options.properties, &src_cg, &dst_cg).renumber_flag(options.renumber);
+    if let Some(ref w) = wgt_cg {
+        builder = builder.weights_raw(w);
+    }
+    builder.build_inner(handle, T::store_transposed())
 }
 
 /// A graph loaded from an external data source along with its backing table.
@@ -577,10 +932,6 @@ impl<T: Transposition> std::fmt::Debug for LoadedGraph<T> {
 
 /// Read a Parquet edge-list and build a cuGraph [`Graph`] on the GPU.
 ///
-/// This convenience helper eliminates the ~20 lines of boilerplate that every
-/// Parquet-to-Graph workflow repeats: read table → extract column views →
-/// create DeviceSlices → convert to cugraph views → build Graph.
-///
 /// **Copy semantics**: this function performs two copies:
 /// 1. **Disk → GPU**: the Parquet file is read into a cudf [`Table`] in GPU
 ///    memory (managed by cudf's Parquet reader).
@@ -590,9 +941,6 @@ impl<T: Transposition> std::fmt::Debug for LoadedGraph<T> {
 /// The returned [`LoadedGraph`] bundles both the graph and the table. The
 /// graph is independent of the table — the table is retained so callers can
 /// reuse the loaded edge-list data without re-reading the Parquet file.
-///
-/// The type parameter `T` determines the transposition state of the
-/// resulting graph. See [`graph_from_table_view`] for details.
 ///
 /// [`Table`]: cudf::Table
 ///
@@ -604,30 +952,10 @@ impl<T: Transposition> std::fmt::Debug for LoadedGraph<T> {
 /// - selected columns contain null values
 /// - column types are incompatible with cugraph
 /// - graph construction fails
-///
-/// # Example
-///
-/// ```no_run
-/// use cugraph::{
-///     Forward, ResourceHandle,
-///     cudf_interop::{ParquetGraphOptions, graph_from_parquet},
-/// };
-///
-/// let handle = ResourceHandle::new().unwrap();
-///
-/// let opts = ParquetGraphOptions::new("edges.parquet", 0, 1)
-///     .weight_col(2)
-///     .renumber();
-///
-/// let loaded = graph_from_parquet::<Forward>(&handle, &opts).unwrap();
-/// let mut graph = loaded.graph;
-/// let _table = loaded.table;
-/// ```
 pub fn graph_from_parquet<T: Transposition>(
     handle: &ResourceHandle,
     options: &ParquetGraphOptions<'_>,
 ) -> Result<LoadedGraph<T>> {
-    // ── Read the Parquet file into GPU memory ───────────────────────────
     let reader_opts = parquet::ParquetReaderOptions::new(options.path);
 
     let result = parquet::read_parquet_with_metadata(reader_opts).map_err(|e| {
@@ -637,8 +965,6 @@ pub fn graph_from_parquet<T: Transposition>(
     })?;
     let table = result.table;
 
-    // Build the graph inside an inner scope so that the TableView and all
-    // intermediate RawDeviceArrayViews are dropped before we return `table`.
     let graph = {
         let view = table.view().map_err(|e| {
             Error::new(ErrorKind::Unexpected, "graph_from_parquet")
@@ -657,6 +983,10 @@ pub fn graph_from_parquet<T: Transposition>(
 
     Ok(LoadedGraph { graph, table })
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Tests
+// ═══════════════════════════════════════════════════════════════════════════
 
 #[cfg(test)]
 mod tests {
@@ -694,7 +1024,6 @@ mod tests {
 
     #[test]
     fn cugraph_to_cudf_roundtrip() {
-        // For every mapped cugraph DataType, converting to cudf and back yields the original.
         for &dt in MAPPED_DATA_TYPES {
             let cudf_tid =
                 cugraph_type_to_cudf(dt).unwrap_or_else(|| panic!("cugraph_type_to_cudf returned None for {:?}", dt));
@@ -706,7 +1035,6 @@ mod tests {
 
     #[test]
     fn cudf_to_cugraph_roundtrip() {
-        // For every mapped cudf TypeId, converting to cugraph and back yields the original.
         for &tid in MAPPED_TYPE_IDS {
             let cugraph_dt =
                 cudf_type_to_cugraph(tid).unwrap_or_else(|| panic!("cudf_type_to_cugraph returned None for {:?}", tid));
@@ -721,9 +1049,43 @@ mod tests {
         assert_eq!(cugraph_type_to_cudf(DataType::SizeT), None);
     }
 
+    // ── map_series_view_error tests ─────────────────────────────────────
+
+    #[test]
+    fn map_series_view_error_column_not_found() {
+        let cudf_err = cudf::Error::new(cudf::ErrorKind::InvalidOperation, "column 'foo' not found");
+        let err = map_series_view_error(cudf_err, "src", "test_op");
+        assert_eq!(err.kind(), ErrorKind::InvalidInput);
+        assert!(err.is_permanent(), "column-not-found should be permanent");
+        assert!(err.message().contains("src column"), "message: {}", err.message());
+    }
+
+    #[test]
+    fn map_series_view_error_cuda_error() {
+        let cudf_err = cudf::Error::new(cudf::ErrorKind::CudaError, "device launch failed");
+        let err = map_series_view_error(cudf_err, "dst", "test_op");
+        assert_eq!(err.kind(), ErrorKind::Unexpected);
+        assert!(err.is_temporary(), "CUDA error should be temporary");
+    }
+
+    #[test]
+    fn map_series_view_error_out_of_memory() {
+        let cudf_err = cudf::Error::new(cudf::ErrorKind::OutOfMemory, "alloc failed");
+        let err = map_series_view_error(cudf_err, "wgt", "test_op");
+        assert_eq!(err.kind(), ErrorKind::OutOfMemory);
+        assert!(err.is_temporary(), "OOM should be temporary");
+    }
+
+    #[test]
+    fn map_series_view_error_unknown() {
+        let cudf_err = cudf::Error::new(cudf::ErrorKind::Unknown, "something else");
+        let err = map_series_view_error(cudf_err, "src", "test_op");
+        assert_eq!(err.kind(), ErrorKind::Unexpected);
+        assert!(err.is_permanent(), "unknown should be permanent (default)");
+    }
+
     #[test]
     fn unsupported_cudf_types_return_none() {
-        // Non-numeric cudf types should not map to cugraph.
         let unsupported = [
             TypeId::Empty,
             TypeId::TimestampDays,

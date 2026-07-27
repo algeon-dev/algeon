@@ -289,7 +289,6 @@ impl LayoutResult {
     }
 }
 
-#[cfg(feature = "cudf-interop")]
 impl LayoutResult {
     /// Get the raw vertices view (for cudf interop).
     pub(crate) fn vertices_raw(&self) -> crate::error::Result<crate::array::RawDeviceArrayView<'_>> {
@@ -328,22 +327,10 @@ impl LayoutResult {
     /// - `"x"` — x-axis coordinates as `Float32`
     /// - `"y"` — y-axis coordinates as `Float32`
     ///
-    /// Performs a device-to-device copy.
+    /// Device-to-device copy: unavoidable because the cugraph C API owns
+    /// result memory and frees it on drop. Matches Python cudf/cugraph behavior.
     pub fn to_dataframe(&self) -> crate::error::Result<cudf::DataFrame> {
-        use crate::{
-            cudf_interop::RawDeviceArrayViewExt,
-            error::{Error, ErrorKind},
-        };
-
-        let vert_col =
-            self.vertices_raw()?.to_cudf_column().map_err(|e| e.with_operation("LayoutResult::to_dataframe"))?;
-        let x_col = self.x_raw()?.to_cudf_column().map_err(|e| e.with_operation("LayoutResult::to_dataframe"))?;
-        let y_col = self.y_raw()?.to_cudf_column().map_err(|e| e.with_operation("LayoutResult::to_dataframe"))?;
-
-        cudf::DataFrame::new(vec!["vertex".into(), "x".into(), "y".into()], vec![vert_col, x_col, y_col]).map_err(|e| {
-            Error::new(ErrorKind::Unexpected, "LayoutResult::to_dataframe")
-                .with_message(format!("failed to build DataFrame: {}", e))
-        })
+        cudf::DataFrame::try_from(self).map_err(|e: crate::error::Error| e.with_operation("LayoutResult::to_dataframe"))
     }
 }
 

@@ -116,7 +116,6 @@ impl<'a> RawDeviceArrayView<'a> {
     /// # Safety
     ///
     /// Same safety requirements as `DeviceArrayView::from_raw`.
-    #[allow(dead_code)] // used by cudf_interop (feature-gated)
     pub(crate) unsafe fn from_raw(pointer: *mut std::ffi::c_void, len: usize, dtype: DataType) -> Self {
         let raw = cugraph_type_erased_device_array_view_create(pointer, len, dtype.into());
         RawDeviceArrayView { raw, owned: true, _lifetime: PhantomData, _nosend_nosync: PhantomData }

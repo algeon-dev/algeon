@@ -5,33 +5,11 @@ edition = "2021"
 description = "Safe Rust bindings for NVIDIA cuGraph GPU-accelerated graph analytics"
 license = "Apache-2.0"
 
-[features]
-cudf-interop = ["cudf"]
-
 [dependencies]
 anyhow = "1"
 cugraph-sys = { path = "../cugraph-sys" }
-cudf = { path = "../../cudf-rs/cudf-rs", optional = true }
+cudf = { path = "../../cudf-rs/cudf-rs" }
 
 [dev-dependencies]
 static_assertions = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
-
-[[example]]
-name = "bfs"
-path = "examples/bfs.rs"
-required-features = ["cudf-interop"]
-
-[[example]]
-name = "bfs_roundtrip"
-path = "examples/bfs_roundtrip.rs"
-required-features = ["cudf-interop"]
-
-[[example]]
-name = "pagerank"
-path = "examples/pagerank.rs"
-
-[[test]]
-name = "cudf_roundtrip"
-path = "tests/cudf_roundtrip.rs"
-required-features = ["cudf-interop"]
