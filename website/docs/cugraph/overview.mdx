@@ -12,10 +12,10 @@ Rust process or served remotely through Flight SQL. Each `cugraph_*` function
 reads an edge relation, builds a GPU graph, runs an algorithm, and returns rows
 you can compose with ordinary SQL.
 
-This section is the self-describing contract for discovering and calling those
-functions — the same metadata an agent reads at runtime, rendered for humans.
+This section helps you choose a graph function, provide its edge relation, and
+understand its execution and reuse boundaries.
 
-## The call convention
+## Graph input and call shape
 
 Every algorithm follows one positional shape:
 
@@ -32,27 +32,37 @@ cugraph_<algorithm>(table_name [, src_col, dst_col [, weight_col [, options_json
 A few functions take extra positional arguments (for example, `cugraph_bfs`
 takes a source vertex); see each function's page for its exact signature.
 
-## Recommended workflow
+The relation name must resolve to a table or view registered in the session.
+That relation can be backed by the session's configured sources, including
+Parquet and Iceberg. See [Integrating Nexus](../integration/overview.mdx) for
+source and session setup, and [Graph Construction Options](./graph-options.mdx)
+for directedness, vertex renumbering, and edge normalization.
 
-1. **List** — `gpu_list_functions()` to find enabled functions; filter with
-   `WHERE provider = 'cugraph'` when you need graph functions only.
-2. **Describe** — `gpu_describe_function('<fn>')` for the fixed descriptor with
-   arguments, options, schemas, examples, and limitations.
-3. **Validate** — `gpu_validate_call('<fn>', '<call_json>')` to statically check
-   a versioned envelope containing named relations and provider-owned options.
-4. **Execute** — run the `cugraph_*` call once validation returns `valid = true`.
+## Functions
 
-See [Discovery & Validation](./discovery-and-validation.mdx) for details. To
-run these functions in a process or server, see
-[Integrating Nexus](../integration/overview.mdx).
+Start with [Browse functions](./algorithms/index.mdx) to choose an algorithm by
+family or compare the generated catalog descriptors.
+
+## Discovery and validation
+
+Use [Discover & Validate GPU Functions](../guides/gpu-function-discovery.mdx)
+for the shared list, describe, validate, and execute workflow. The exact
+metadata response and validation-request schemas are in the
+[GPU Function Catalog API](../reference/gpu-function-catalog.mdx).
+
+## Reuse in bounded servers
+
+A bounded Flight SQL server can optionally retain constructed graphs for repeat
+calls with a strongly identified, eligible input. Reuse is deliberately not a
+promise for every algorithm or graph transformation: the current reusable path
+covers eligible BFS and PageRank calls, while other calls bypass the cache.
+Configure and observe this behavior through [Cache Design](../design/cache.mdx).
 
 ## Next steps
 
-- **[Browse algorithms](./algorithms/index.mdx)** — choose an algorithm by
-  family or compare every function generated from its catalog descriptor.
-- **[Discover & validate calls](./discovery-and-validation.mdx)** — inspect the
-  runtime contract and dry-run a concrete call before execution.
-- **[Set graph construction options](./graph-options.mdx)** — choose directed
-  semantics, vertex renumbering, and edge normalization behavior.
+- **[Integrate cuGraph](../integration/overview.mdx)** — configure an embedded
+  session or a Flight SQL server.
+- **[Set graph construction options](./graph-options.mdx)** — refine graph
+  semantics before choosing an algorithm.
 - **[Run the citation-network demo](./demo-dataset.mdx)** — follow the shared
   dataset and runnable examples used by the algorithm reference.

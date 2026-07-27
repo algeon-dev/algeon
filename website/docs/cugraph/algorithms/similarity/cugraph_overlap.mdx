@@ -12,6 +12,10 @@ SQL function: `cugraph_overlap`
 
 Compute overlap coefficients for explicit candidate vertex pairs.
 
+## Use this when
+
+Use this when a SQL statement needs Overlap results over a registered edge relation.
+
 ## Signature
 
 ```sql
@@ -24,7 +28,17 @@ cugraph_overlap(table_name, src_col, dst_col, weight_col, options_json)
 SELECT * FROM cugraph_overlap('target_edges', 'src', 'dst', NULL, '{"vertex_pairs_table":"candidate_pairs","first_vertex_col":"first","second_vertex_col":"second"}')
 ```
 
-## Non-relation arguments
+## Relation inputs
+
+cuGraph consumes a registered edge table or view by its first positional name. It does not accept a parenthesized relation subquery. Metadata validation uses the same registered name.
+
+| Role | Required | Reference | Description |
+| --- | --- | --- | --- |
+| `edges` | yes | `table` | Required edge-list table or view for graph construction. |
+
+## Scalar arguments & JSON options
+
+### Positional scalar arguments
 
 | Argument | Type | Required | Default | Notes |
 | --- | --- | --- | --- | --- |
@@ -32,7 +46,7 @@ SELECT * FROM cugraph_overlap('target_edges', 'src', 'dst', NULL, '{"vertex_pair
 | `dst_col` | `Utf8` | no | `dst` |  |
 | `weight_col` | `Utf8\|null` | no |  | optional edge weight column for graph construction when supported by the algorithm; semantic effect: edge weights affect algorithm results when provided |
 
-## JSON options
+### JSON options
 
 | Option | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
@@ -40,7 +54,7 @@ SELECT * FROM cugraph_overlap('target_edges', 'src', 'dst', NULL, '{"vertex_pair
 | `second_vertex_col` | `Utf8` |  | required; column of `vertex_pairs_table`; type ref `vertex_pairs_domain` | Second endpoint column in vertex_pairs_table. |
 | `vertex_pairs_table` | `Utf8` |  | required; side input (vertex_pairs, cols: `first_vertex_col`, `second_vertex_col`) | Table or view containing the explicit candidate vertex pairs. |
 
-### Graph Construction Options
+### Graph construction options
 
 Shared by all cuGraph functions, shown with this function's defaults. See [Graph Construction Options](../../graph-options.mdx) for the construction-policy guide.
 
@@ -58,7 +72,7 @@ Shared by all cuGraph functions, shown with this function's defaults. See [Graph
 | `second` | `Int64` | no | Second vertex from the explicit candidate-pair relation. |
 | `similarity` | `Float64` | no | Similarity coefficient for the explicit candidate pair. |
 
-**Concrete schemas are call-specific.** These are generic descriptor schemas. Run [`gpu_validate_call`](../../discovery-and-validation.mdx#gpu_validate_callfunction_name-call_json) for a concrete, table-specific output schema.
+**Concrete schemas are call-specific.** These are generic descriptor schemas. Run [`gpu_validate_call`](../../../reference/gpu-function-catalog.mdx#gpu_validate_callfunction_name-call_json) for a concrete, table-specific output schema.
 
 ## Examples
 
@@ -66,7 +80,7 @@ import Examples from '../../_examples/cugraph_overlap.mdx';
 
 <Examples />
 
-## Limitations & notes
+## Limitations & lifecycle
 
 - dry-run validates table resolution, column presence, static dtypes, and options only
 - dry-run does not scan edge data, construct a graph, or prove source-vertex existence
@@ -81,13 +95,13 @@ import Examples from '../../_examples/cugraph_overlap.mdx';
 
 ## Validate before running
 
-Validation checks named relations, bindings, dtypes, and options without scanning rows or touching the GPU:
+Validation checks registered relation metadata, bindings, dtypes, and options without scanning rows or touching the GPU:
 
 ```sql
 SELECT * FROM gpu_validate_call(
   'cugraph_overlap',
-  '{"schema_version":1,"relations":{"edges":{"table":"target_edges"}},"options":{"first_vertex_col":"first","second_vertex_col":"second","vertex_pairs_table":"candidate_pairs","src_col":"src","dst_col":"dst"}}'
+  '{"options":{"dst_col":"dst","first_vertex_col":"first","second_vertex_col":"second","src_col":"src","vertex_pairs_table":"candidate_pairs"},"relations":{"edges":{"table":"target_edges"}},"schema_version":1}'
 );
 ```
 
-See [Discovery & Validation](../../discovery-and-validation.mdx) for the full `gpu_validate_call` contract.
+See [GPU Function Catalog API](../../../reference/gpu-function-catalog.mdx) for the full `gpu_validate_call` contract.

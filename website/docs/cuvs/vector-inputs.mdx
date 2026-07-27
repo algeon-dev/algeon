@@ -1,0 +1,75 @@
+---
+sidebar_position: 3
+slug: /cuvs/vector-inputs
+description: The relational ID, dense-vector binding, schema, and runtime-data contract shared by cuVS SQL functions.
+---
+
+# Vector Inputs
+
+`cuvs_brute_force_knn`, `cuvs_kmeans`, and `cuvs_pca` consume relations, not
+table-name strings or host-materialized arrays. Every execution relation is a
+parenthesized `SELECT` subquery; the relation remains a real planner child.
+For `gpu_validate_call`, register a named table or view with the same schema
+because validation deliberately resolves metadata without evaluating rows.
+
+## Relation identity
+
+Every `dataset`, `queries`, or `input` binding names an explicit logical ID
+column:
+
+- The ID must be non-null `Int32`, `Int64`, `Utf8`, `LargeUtf8`, or `Utf8View`.
+- IDs do not need to be unique. The result's ordinal columns disambiguate
+  physical rows when the same ID appears more than once.
+- The ID is a relation field, not an implicit row-number or an ambient table
+  key. Name it in each JSON binding with `"id"`.
+
+## Dense-vector binding shapes
+
+Each relation binding chooses exactly one of the following shapes. The shapes
+are equivalent only when they describe the same ordered Float32 dimensions.
+
+### Wide Float32 columns
+
+```json
+{"id":"paper_id","vector":{"columns":["d0","d1","d2"]}}
+```
+
+- `columns` must contain at least one unique, non-empty column name.
+- The listed order defines the vector dimension order.
+- Each selected feature column must be non-null `Float32`.
+
+### One list column
+
+```json
+{"id":"paper_id","vector":{"column":"embedding"}}
+```
+
+- `embedding` must be non-null `FixedSizeList<Float32, D>`, `List<Float32>`,
+  or `LargeList<Float32>`.
+- Every list element must be a non-null `Float32`.
+- A variable-width list must have one uniform, positive dimension after rows
+  are evaluated.
+
+For both shapes, vector values must be finite. Nulls, `NaN`, infinity, and
+non-uniform variable-width rows fail closed. Exact kNN additionally requires
+the evaluated dataset and query dimensions to match.
+
+## What validation can prove
+
+`gpu_validate_call` validates the versioned JSON envelope, relation existence,
+field names, static data types, the two binding shapes, duplicate wide-column
+names, and scalar option ranges. It does not scan relation rows, evaluate a
+subquery, allocate GPU memory, or launch cuVS.
+
+The following are therefore execution-time checks:
+
+| Operation | Evaluated-relation requirements |
+| --- | --- |
+| Exact kNN | Dataset must be non-empty and `k` must not exceed evaluated dataset rows. An empty query relation may return an empty result with the stable schema. |
+| KMeans | Input must be non-empty and `n_clusters` must not exceed evaluated input rows. |
+| PCA | Input needs at least two rows and two dimensions; `n_components` must not exceed evaluated dimension. |
+
+All cuVS calls currently require explicitly unbounded native execution. The
+default bounded server rejects them with structured `unsupported_operator`;
+there is no CPU fallback. See [Integrating Nexus](../integration/overview.mdx)
+for embedded and Flight SQL setup.

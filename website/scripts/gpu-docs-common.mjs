@@ -1,0 +1,196 @@
+// Shared deterministic rendering primitives for the cuGraph and cuVS SQL
+// references. Provider adapters own their relation syntax, option schemas, and
+// presentation families; this module owns the common page contract.
+
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+
+export const REQUIRED_DESCRIPTOR_KEYS = [
+  'function_name', 'provider', 'domain', 'available', 'unavailable_reason',
+  'signature', 'summary', 'relation_roles_json', 'argument_descriptions_json',
+  'options_schema_json', 'result_schemas_json',
+  'validation_request_schema_json', 'examples_json', 'limitations_json',
+];
+
+export const COMMON_HEADINGS = [
+  'Use this when',
+  'Signature',
+  'Quickstart',
+  'Relation inputs',
+  'Scalar arguments & JSON options',
+  'Output schema',
+  'Limitations & lifecycle',
+  'Validate before running',
+];
+
+export function write(path, content) {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, content.replace(/\n*$/, '\n'));
+}
+
+export function parseJson(file, key, value) {
+  try {
+    return JSON.parse(value);
+  } catch (error) {
+    throw new Error(`${file}: ${key} is not valid JSON: ${error.message}`);
+  }
+}
+
+export function loadProviderSpecs({ specDir, provider, domain, namePattern, validate }) {
+  if (!existsSync(specDir)) throw new Error(`missing ${specDir}; run the descriptor capture script first`);
+  const names = new Set();
+  const specs = readdirSync(specDir)
+    .filter(file => file.endsWith('.json'))
+    .sort()
+    .map(file => {
+      const spec = JSON.parse(readFileSync(join(specDir, file), 'utf8'));
+      for (const key of REQUIRED_DESCRIPTOR_KEYS) {
+        if (!(key in spec)) throw new Error(`${file}: missing unified descriptor key ${key}`);
+      }
+      if (file !== `${spec.function_name}.json`) throw new Error(`${file}: filename must equal ${spec.function_name}.json`);
+      if (!namePattern.test(spec.function_name)) throw new Error(`${file}: invalid canonical ${provider} function name`);
+      if (names.has(spec.function_name)) throw new Error(`${file}: duplicate function descriptor`);
+      names.add(spec.function_name);
+      if (spec.provider !== provider || spec.domain !== domain) throw new Error(`${file}: expected a ${provider} ${domain} descriptor`);
+      if (typeof spec.available !== 'boolean' || !(spec.unavailable_reason === null || typeof spec.unavailable_reason === 'string')) {
+        throw new Error(`${file}: invalid availability fields`);
+      }
+      spec.relation_roles = parseJson(file, 'relation_roles_json', spec.relation_roles_json);
+      spec.argument_descriptions = parseJson(file, 'argument_descriptions_json', spec.argument_descriptions_json);
+      spec.options_schema = parseJson(file, 'options_schema_json', spec.options_schema_json);
+      spec.result_schemas = parseJson(file, 'result_schemas_json', spec.result_schemas_json);
+      spec.validation_request_schema = parseJson(file, 'validation_request_schema_json', spec.validation_request_schema_json);
+      spec.examples = parseJson(file, 'examples_json', spec.examples_json);
+      spec.limitations = parseJson(file, 'limitations_json', spec.limitations_json);
+      validate(file, spec);
+      return spec;
+    });
+  if (specs.length === 0) throw new Error(`no ${provider} function descriptors found`);
+  return specs.sort((left, right) => left.function_name.localeCompare(right.function_name));
+}
+
+export function cell(value) {
+  return String(value ?? '')
+    .replace(/\\/g, '\\\\')
+    .replace(/\|/g, '\\|')
+    .replace(/[{}]/g, match => `\\${match}`)
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/\n/g, ' ');
+}
+
+export function code(value) {
+  if (value === '' || value == null) return '';
+  const inner = String(value).replace(/\|/g, '\\|');
+  const longest = (inner.match(/`+/g) || []).reduce((max, run) => Math.max(max, run.length), 0);
+  const fence = '`'.repeat(longest + 1);
+  const pad = inner.startsWith('`') || inner.endsWith('`') ? ' ' : '';
+  return `${fence}${pad}${inner}${pad}${fence}`;
+}
+
+export function prose(value) {
+  return String(value ?? '')
+    .replace(/[{}]/g, match => `\\${match}`)
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+export function table(headers, rows) {
+  return [
+    `| ${headers.join(' | ')} |`,
+    `| ${headers.map(() => '---').join(' | ')} |`,
+    ...rows.map(row => `| ${row.join(' | ')} |`),
+  ].join('\n');
+}
+
+export function sqlBlock(sql) {
+  if (typeof sql !== 'string' || sql.trim() === '') throw new Error('generated page has no Quickstart SQL');
+  return ['```sql', sql, '```'].join('\n');
+}
+
+export function validationBlock({ functionName, call, discoveryLink }) {
+  if (!call || typeof call !== 'object') throw new Error(`${functionName}: no renderable validation call`);
+  return [
+    'Validation checks registered relation metadata, bindings, dtypes, and options without scanning rows or touching the GPU:',
+    '',
+    sqlBlock(`SELECT * FROM gpu_validate_call(\n  '${functionName}',\n  '${JSON.stringify(call)}'\n);`),
+    '',
+    `See [GPU Function Catalog API](${discoveryLink}) for the full \`gpu_validate_call\` contract.`,
+  ].join('\n');
+}
+
+export function narrativeExampleImport(importPath) {
+  return [`import Examples from '${importPath}';`, '', '<Examples />'].join('\n');
+}
+
+export function renderFunctionPage({
+  generator,
+  spec,
+  title,
+  useThisWhen,
+  quickstartSql,
+  relationInputs,
+  scalarArgumentsAndOptions,
+  outputSchema,
+  examples,
+  limitations,
+  validation,
+}) {
+  const parts = [
+    '---',
+    `title: ${title}`,
+    `sidebar_label: ${title}`,
+    `description: ${JSON.stringify(spec.summary)}`,
+    '---',
+    '',
+    `{/* GENERATED FROM the unified GPU function catalog by ${generator}. Do not edit by hand. */}`,
+    '',
+    `# ${title}`,
+    '',
+    `SQL function: ${code(spec.function_name)}`,
+    '',
+    prose(spec.summary),
+    '',
+    '## Use this when',
+    '',
+    prose(useThisWhen),
+    '',
+    '## Signature',
+    '',
+    sqlBlock(spec.signature),
+    '',
+    '## Quickstart',
+    '',
+    sqlBlock(quickstartSql),
+    '',
+    '## Relation inputs',
+    '',
+    relationInputs,
+    '',
+    '## Scalar arguments & JSON options',
+    '',
+    scalarArgumentsAndOptions,
+    '',
+    '## Output schema',
+    '',
+    outputSchema,
+  ];
+  if (examples) parts.push('', '## Examples', '', examples);
+  parts.push('', '## Limitations & lifecycle', '', limitations, '', '## Validate before running', '', validation);
+  const page = parts.join('\n');
+  assertPageContract(spec.function_name, page, Boolean(examples));
+  return page;
+}
+
+export function assertPageContract(functionName, page, hasExamples) {
+  const headings = hasExamples
+    ? [...COMMON_HEADINGS.slice(0, 6), 'Examples', ...COMMON_HEADINGS.slice(6)]
+    : COMMON_HEADINGS;
+  let previous = -1;
+  for (const heading of headings) {
+    const index = page.indexOf(`## ${heading}`);
+    if (index === -1) throw new Error(`${functionName}: generated page is missing common heading '${heading}'`);
+    if (index <= previous) throw new Error(`${functionName}: common headings are out of order at '${heading}'`);
+    previous = index;
+  }
+}

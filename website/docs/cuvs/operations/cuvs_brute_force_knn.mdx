@@ -1,16 +1,20 @@
 ---
-title: cuvs_brute_force_knn
-sidebar_label: cuvs_brute_force_knn
+title: Brute-force kNN
+sidebar_label: Brute-force kNN
 description: "Exact brute-force nearest-neighbor search over dense vectors."
 ---
 
 {/* GENERATED FROM the unified GPU function catalog by website/scripts/gen-cuvs-docs.mjs. Do not edit by hand. */}
 
-# cuvs_brute_force_knn
+# Brute-force kNN
+
+SQL function: `cuvs_brute_force_knn`
 
 Exact brute-force nearest-neighbor search over dense vectors.
 
-Provider: `cuvs`. Domain: `vector`.
+## Use this when
+
+Use this when SQL can first filter a candidate relation and you need exact batch reranking, not a persistent ANN index.
 
 ## Signature
 
@@ -18,62 +22,87 @@ Provider: `cuvs`. Domain: `vector`.
 cuvs_brute_force_knn((dataset relation subquery), (queries relation subquery), options_json)
 ```
 
-## Execution call shape
-
-Each relation argument is a parenthesized `SELECT` subquery. The execution function preserves those subqueries as real planner children; a bare table identifier or quoted table-name string is intentionally rejected.
+## Quickstart
 
 ```sql
-SELECT * FROM cuvs_brute_force_knn(
+SELECT *
+FROM cuvs_brute_force_knn(
   (SELECT item_id, d0, d1 FROM dataset_vectors),
-  (SELECT query_id, d0, d1 FROM queries_vectors),
+  (SELECT query_id, d0, d1 FROM query_vectors),
   '{"dataset":{"id":"item_id","vector":{"columns":["d0","d1"]}},"queries":{"id":"query_id","vector":{"columns":["d0","d1"]}},"k":8,"metric":"l2_expanded"}'
 );
 ```
 
-## Validation relations
+## Relation inputs
 
-For metadata validation, use registered named tables or views in the common envelope:
+Every execution relation argument is a parenthesized `SELECT` subquery. The planner retains that relation as a real logical and physical child; a bare table identifier or quoted table-name string is rejected. Metadata validation instead uses a registered named table or view in its relation envelope.
 
-| Role | Required | Reference | Description |
+| Role | Required | Validation reference | Description |
 | --- | --- | --- | --- |
-| `dataset` | yes | `table` | Indexed dense-vector dataset. |
-| `queries` | yes | `table` | Dense-vector query relation. |
+| `dataset` | yes | `table` | Dense-vector rows searched by the exact kNN operation. |
+| `queries` | yes | `table` | Dense-vector query rows matched against the evaluated dataset. |
 
-## Options JSON
+See [Vector Inputs](../vector-inputs.mdx) for the ID and dense-vector type, null, finite-value, and runtime-dimension contract.
 
-| Option | Required | JSON type | Default | Constraints |
-| --- | --- | --- | --- | --- |
-| `dataset` | yes | `object` |  |  |
-| `k` | yes | `integer` |  | minimum 1; maximum 4294967295 |
-| `metric` | yes | `string` |  | one of `"l2_expanded"`, `"l2_sqrt_expanded"`, `"cosine"`, `"inner_product"` |
-| `queries` | yes | `object` |  |  |
+## Scalar arguments & JSON options
 
-Unknown option keys are rejected.
+### Scalar SQL arguments
+
+| Argument | Type | Required | Description |
+| --- | --- | --- | --- |
+| `options_json` | `JSON string literal` | yes | cuVS operation options and relation-column bindings |
+
+### JSON options
+
+| Option | Required | JSON shape | Default | Constraints | Description |
+| --- | --- | --- | --- | --- | --- |
+| `dataset` | yes | `object` |  |  | Names the dataset ID column and one dense-vector binding shape. |
+| `k` | yes | `integer` |  | minimum 1; maximum 4294967295 | Number of neighbors returned for each evaluated query row. |
+| `metric` | yes | `string` |  | one of `"l2_expanded"`, `"l2_sqrt_expanded"`, `"cosine"`, `"inner_product"` | Distance or score metric. Distance metrics rank lower values first; inner product ranks higher values first. |
+| `queries` | yes | `object` |  |  | Names the query ID column and one dense-vector binding shape. |
+
+### Vector binding shapes
+
+`id`: Non-null logical row ID column. IDs may repeat; result ordinals disambiguate physical rows.
+
+| Shape | JSON | Contract |
+| --- | --- | --- |
+| Wide Float32 columns | `{"vector":{"columns":["d0","d1"]}}` | Ordered, unique non-null Float32 feature columns; order defines vector dimensions. |
+| List column | `{"vector":{"column":"embedding"}}` | One non-null FixedSizeList&lt;Float32, D&gt;, List&lt;Float32&gt;, or LargeList&lt;Float32&gt; column. |
+
+Choose exactly one dense-vector binding shape.
 
 ## Output schema
 
-| Column | Type | Nullable | Notes |
+| Column | Type | Nullable | Description |
 | --- | --- | --- | --- |
-| `query_ordinal` | `UInt64` | no |  |
-| `query_id` | `same_as_queries.id` | no |  |
-| `neighbor_ordinal` | `UInt64` | no |  |
-| `neighbor_id` | `same_as_dataset.id` | no |  |
-| `rank` | `UInt32` | no |  |
-| `distance` | `Float32` | no |  |
+| `query_ordinal` | `UInt64` | no | Zero-based ordinal of the evaluated query row; it disambiguates duplicate query IDs. |
+| `query_id` | `same_as_queries.id` | no | Logical ID copied from the queries relation. |
+| `neighbor_ordinal` | `UInt64` | no | Zero-based ordinal of the matched dataset row; it disambiguates duplicate dataset IDs. |
+| `neighbor_id` | `same_as_dataset.id` | no | Logical ID copied from the matched dataset row. |
+| `rank` | `UInt32` | no | One-based neighbor rank within a query. Order consumers explicitly by query_ordinal, rank. |
+| `distance` | `Float32` | no | Metric value; smaller is better for distance metrics, while inner_product prefers larger values. |
 
-## Limitations & notes
+**Concrete schemas are call-specific.** Run `gpu_validate_call` against registered relations to inspect the output schema after the actual ID types and literal options are validated.
+
+## Limitations & lifecycle
 
 - Validation resolves named tables or views and reads schemas only; it does not execute relation scans or GPU work.
 - Bounded cuVS execution is unavailable until the lower-level peak-memory preflight contract exists.
-- Execution relation arguments support parenthesized subqueries; dry-run validation accepts registered named relations only.
+- Execution relation arguments require parenthesized subqueries; dry-run validation accepts registered named relations only.
+- Builds an exact query-local index over the evaluated dataset relation; it does not persist an ANN index or replace a vector database.
+- The evaluated dataset must be non-empty and k must not exceed its row count. An empty query relation may return an empty result with the stable schema.
+- Dataset and query vector dimensions must match after both relation children are evaluated.
 
 ## Validate before running
+
+Validation checks registered relation metadata, bindings, dtypes, and options without scanning rows or touching the GPU:
 
 ```sql
 SELECT * FROM gpu_validate_call(
   'cuvs_brute_force_knn',
-  '{"schema_version":1,"relations":{"dataset":{"table":"dataset_vectors"},"queries":{"table":"queries_vectors"}},"options":{"dataset":{"id":"item_id","vector":{"columns":["d0","d1"]}},"queries":{"id":"query_id","vector":{"columns":["d0","d1"]}},"k":8,"metric":"l2_expanded"}}'
+  '{"options":{"dataset":{"id":"item_id","vector":{"columns":["d0","d1"]}},"k":8,"metric":"l2_expanded","queries":{"id":"query_id","vector":{"columns":["d0","d1"]}}},"relations":{"dataset":{"table":"dataset_vectors"},"queries":{"table":"queries_vectors"}},"schema_version":1}'
 );
 ```
 
-See [Discovery & Validation](../../cugraph/discovery-and-validation.mdx) for the common `gpu_validate_call` contract.
+See [GPU Function Catalog API](../../reference/gpu-function-catalog.mdx) for the full `gpu_validate_call` contract.

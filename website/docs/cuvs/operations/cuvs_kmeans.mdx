@@ -1,16 +1,20 @@
 ---
-title: cuvs_kmeans
-sidebar_label: cuvs_kmeans
+title: KMeans
+sidebar_label: KMeans
 description: "K-means clustering assignments for dense vector rows."
 ---
 
 {/* GENERATED FROM the unified GPU function catalog by website/scripts/gen-cuvs-docs.mjs. Do not edit by hand. */}
 
-# cuvs_kmeans
+# KMeans
+
+SQL function: `cuvs_kmeans`
 
 K-means clustering assignments for dense vector rows.
 
-Provider: `cuvs`. Domain: `vector`.
+## Use this when
+
+Use this when one statement should fit clusters over its evaluated relation and immediately join or aggregate the assignments.
 
 ## Signature
 
@@ -18,60 +22,86 @@ Provider: `cuvs`. Domain: `vector`.
 cuvs_kmeans((input relation subquery), options_json)
 ```
 
-## Execution call shape
-
-Each relation argument is a parenthesized `SELECT` subquery. The execution function preserves those subqueries as real planner children; a bare table identifier or quoted table-name string is intentionally rejected.
+## Quickstart
 
 ```sql
-SELECT * FROM cuvs_kmeans(
+SELECT id, cluster_id
+FROM cuvs_kmeans(
   (SELECT item_id, d0, d1 FROM input_vectors),
   '{"input":{"id":"item_id","vector":{"columns":["d0","d1"]}},"n_clusters":8}'
-);
+)
+ORDER BY row_ordinal;
 ```
 
-## Validation relations
+## Relation inputs
 
-For metadata validation, use registered named tables or views in the common envelope:
+Every execution relation argument is a parenthesized `SELECT` subquery. The planner retains that relation as a real logical and physical child; a bare table identifier or quoted table-name string is rejected. Metadata validation instead uses a registered named table or view in its relation envelope.
 
-| Role | Required | Reference | Description |
+| Role | Required | Validation reference | Description |
 | --- | --- | --- | --- |
-| `input` | yes | `table` | Dense-vector input relation. |
+| `input` | yes | `table` | Dense-vector rows consumed by the fit-and-transform operation. |
 
-## Options JSON
+See [Vector Inputs](../vector-inputs.mdx) for the ID and dense-vector type, null, finite-value, and runtime-dimension contract.
 
-| Option | Required | JSON type | Default | Constraints |
-| --- | --- | --- | --- | --- |
-| `init` | no | `string` | `"kmeans++"` | one of `"kmeans++"`, `"random"` |
-| `input` | yes | `object` |  |  |
-| `max_iter` | no | `integer` | `100` | minimum 1; maximum 2147483647 |
-| `metric` | no | `string` | `"l2_expanded"` | one of `"l2_expanded"`, `"l2_sqrt_expanded"` |
-| `n_clusters` | yes | `integer` |  | minimum 1; maximum 2147483647 |
-| `n_init` | no | `integer` | `1` | minimum 1; maximum 2147483647 |
-| `tol` | no | `number` | `0.0001` | minimum 0 |
+## Scalar arguments & JSON options
 
-Unknown option keys are rejected.
+### Scalar SQL arguments
+
+| Argument | Type | Required | Description |
+| --- | --- | --- | --- |
+| `options_json` | `JSON string literal` | yes | cuVS operation options and relation-column bindings |
+
+### JSON options
+
+| Option | Required | JSON shape | Default | Constraints | Description |
+| --- | --- | --- | --- | --- | --- |
+| `init` | no | `string` | `"kmeans++"` | one of `"kmeans++"`, `"random"` | Centroid initialization strategy for this fitted model. |
+| `input` | yes | `object` |  |  | Names the input ID column and one dense-vector binding shape. |
+| `max_iter` | no | `integer` | `100` | minimum 1; maximum 2147483647 | Maximum fitting iterations for this invocation. |
+| `metric` | no | `string` | `"l2_expanded"` | one of `"l2_expanded"`, `"l2_sqrt_expanded"` | L2 distance form used while fitting and assigning the current input relation. |
+| `n_clusters` | yes | `integer` |  | minimum 1; maximum 2147483647 | Number of clusters fitted for this one statement. |
+| `n_init` | no | `integer` | `1` | minimum 1; maximum 2147483647 | Number of initialization attempts performed within this call. |
+| `tol` | no | `number` | `0.0001` | minimum 0 | Non-negative convergence tolerance used by the fitted model. |
+
+### Vector binding shapes
+
+`id`: Non-null logical row ID column. IDs may repeat; result ordinals disambiguate physical rows.
+
+| Shape | JSON | Contract |
+| --- | --- | --- |
+| Wide Float32 columns | `{"vector":{"columns":["d0","d1"]}}` | Ordered, unique non-null Float32 feature columns; order defines vector dimensions. |
+| List column | `{"vector":{"column":"embedding"}}` | One non-null FixedSizeList&lt;Float32, D&gt;, List&lt;Float32&gt;, or LargeList&lt;Float32&gt; column. |
+
+Choose exactly one dense-vector binding shape.
 
 ## Output schema
 
-| Column | Type | Nullable | Notes |
+| Column | Type | Nullable | Description |
 | --- | --- | --- | --- |
-| `row_ordinal` | `UInt64` | no |  |
-| `id` | `same_as_input.id` | no |  |
-| `cluster_id` | `Int32` | no |  |
+| `row_ordinal` | `UInt64` | no | Zero-based ordinal of the evaluated input row; it disambiguates duplicate IDs. |
+| `id` | `same_as_input.id` | no | Logical ID copied from the input relation. |
+| `cluster_id` | `Int32` | no | Query-local numeric assignment label, not a stable business or topic identifier. |
 
-## Limitations & notes
+**Concrete schemas are call-specific.** Run `gpu_validate_call` against registered relations to inspect the output schema after the actual ID types and literal options are validated.
+
+## Limitations & lifecycle
 
 - Validation resolves named tables or views and reads schemas only; it does not execute relation scans or GPU work.
 - Bounded cuVS execution is unavailable until the lower-level peak-memory preflight contract exists.
-- Execution relation arguments support parenthesized subqueries; dry-run validation accepts registered named relations only.
+- Execution relation arguments require parenthesized subqueries; dry-run validation accepts registered named relations only.
+- Fits a model and returns assignments within one statement; it does not return a reusable model, centroids, or inertia.
+- The evaluated input must be non-empty and n_clusters must not exceed its row count.
+- cluster_id values are query-local labels. Do not attach permanent business meaning to their numeric values.
 
 ## Validate before running
+
+Validation checks registered relation metadata, bindings, dtypes, and options without scanning rows or touching the GPU:
 
 ```sql
 SELECT * FROM gpu_validate_call(
   'cuvs_kmeans',
-  '{"schema_version":1,"relations":{"input":{"table":"input_vectors"}},"options":{"input":{"id":"item_id","vector":{"columns":["d0","d1"]}},"n_clusters":8}}'
+  '{"options":{"input":{"id":"item_id","vector":{"columns":["d0","d1"]}},"n_clusters":8},"relations":{"input":{"table":"input_vectors"}},"schema_version":1}'
 );
 ```
 
-See [Discovery & Validation](../../cugraph/discovery-and-validation.mdx) for the common `gpu_validate_call` contract.
+See [GPU Function Catalog API](../../reference/gpu-function-catalog.mdx) for the full `gpu_validate_call` contract.

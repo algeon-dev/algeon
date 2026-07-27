@@ -5,21 +5,27 @@
 //   node website/scripts/gen-cugraph-docs.mjs
 //
 // Refresh descriptors with capture-cugraph-specs.sh before running this file.
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+import {
+  cell,
+  code,
+  loadProviderSpecs,
+  narrativeExampleImport,
+  prose,
+  renderFunctionPage,
+  table,
+  validationBlock,
+  write,
+} from './gpu-docs-common.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const WEBSITE = join(HERE, '..');
 const SPEC_DIR = join(WEBSITE, 'gpu-function-specs', 'cugraph');
 const DOCS_DIR = join(WEBSITE, 'docs', 'cugraph');
 const ALGORITHMS_DIR = join(DOCS_DIR, 'algorithms');
-const REQUIRED_KEYS = [
-  'function_name', 'provider', 'domain', 'available', 'unavailable_reason',
-  'signature', 'summary', 'relation_roles_json', 'argument_descriptions_json',
-  'options_schema_json', 'result_schemas_json',
-  'validation_request_schema_json', 'examples_json', 'limitations_json',
-];
+
 // Presentation grouping remains specific to the cuGraph documentation; the
 // function inventory itself always comes from the unified descriptors.
 const FAMILIES = {
@@ -39,51 +45,13 @@ function familyOf(functionName) {
   throw new Error(`No documentation family for ${functionName}; classify it before generating docs`);
 }
 
-function write(path, content) {
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, content.replace(/\n*$/, '\n'));
-}
-
-function parseJson(file, key, value) {
-  try {
-    return JSON.parse(value);
-  } catch (error) {
-    throw new Error(`${file}: ${key} is not valid JSON: ${error.message}`);
-  }
-}
-
 function loadSpecs() {
-  if (!existsSync(SPEC_DIR)) throw new Error(`missing ${SPEC_DIR}; run capture-cugraph-specs.sh first`);
-  const names = new Set();
-  const specs = readdirSync(SPEC_DIR)
-    .filter(file => file.endsWith('.json'))
-    .sort()
-    .map(file => {
-      const spec = JSON.parse(readFileSync(join(SPEC_DIR, file), 'utf8'));
-      for (const key of REQUIRED_KEYS) {
-        if (!(key in spec)) throw new Error(`${file}: missing unified descriptor key ${key}`);
-      }
-      if (file !== `${spec.function_name}.json`) {
-        throw new Error(`${file}: filename must equal ${spec.function_name}.json`);
-      }
-      if (!/^cugraph_[a-z0-9_]+$/.test(spec.function_name)) {
-        throw new Error(`${file}: invalid canonical cuGraph function name`);
-      }
-      if (names.has(spec.function_name)) throw new Error(`${file}: duplicate function descriptor`);
-      names.add(spec.function_name);
-      if (spec.provider !== 'cugraph' || spec.domain !== 'graph') {
-        throw new Error(`${file}: expected a cuGraph graph descriptor`);
-      }
-      if (typeof spec.available !== 'boolean' || !(spec.unavailable_reason === null || typeof spec.unavailable_reason === 'string')) {
-        throw new Error(`${file}: invalid availability fields`);
-      }
-      spec.relation_roles = parseJson(file, 'relation_roles_json', spec.relation_roles_json);
-      spec.argument_descriptions = parseJson(file, 'argument_descriptions_json', spec.argument_descriptions_json);
-      spec.options_schema = parseJson(file, 'options_schema_json', spec.options_schema_json);
-      spec.result_schemas = parseJson(file, 'result_schemas_json', spec.result_schemas_json);
-      spec.validation_request_schema = parseJson(file, 'validation_request_schema_json', spec.validation_request_schema_json);
-      spec.examples = parseJson(file, 'examples_json', spec.examples_json);
-      spec.limitations = parseJson(file, 'limitations_json', spec.limitations_json);
+  return loadProviderSpecs({
+    specDir: SPEC_DIR,
+    provider: 'cugraph',
+    domain: 'graph',
+    namePattern: /^cugraph_[a-z0-9_]+$/,
+    validate(file, spec) {
       if (!Array.isArray(spec.relation_roles) || spec.relation_roles.length !== 1 || spec.relation_roles[0]?.name !== 'edges') {
         throw new Error(`${file}: cuGraph descriptor must declare exactly the edges relation role`);
       }
@@ -94,44 +62,8 @@ function loadSpecs() {
         throw new Error(`${file}: descriptor schemas must be JSON objects`);
       }
       spec.family = familyOf(spec.function_name);
-      return spec;
-    });
-  if (specs.length === 0) throw new Error('no cuGraph function descriptors found');
-  return specs.sort((left, right) => left.function_name.localeCompare(right.function_name));
-}
-
-function cell(value) {
-  return String(value ?? '')
-    .replace(/\\/g, '\\\\')
-    .replace(/\|/g, '\\|')
-    .replace(/[{}]/g, match => `\\${match}`)
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/\n/g, ' ');
-}
-
-function code(value) {
-  if (value === '' || value == null) return '';
-  const inner = String(value).replace(/\|/g, '\\|');
-  const longest = (inner.match(/`+/g) || []).reduce((max, run) => Math.max(max, run.length), 0);
-  const fence = '`'.repeat(longest + 1);
-  const pad = inner.startsWith('`') || inner.endsWith('`') ? ' ' : '';
-  return `${fence}${pad}${inner}${pad}${fence}`;
-}
-
-function prose(value) {
-  return String(value ?? '')
-    .replace(/[{}]/g, match => `\\${match}`)
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
-}
-
-function table(headers, rows) {
-  return [
-    `| ${headers.join(' | ')} |`,
-    `| ${headers.map(() => '---').join(' | ')} |`,
-    ...rows.map(row => `| ${row.join(' | ')} |`),
-  ].join('\n');
+    },
+  });
 }
 
 function displayName(spec) {
@@ -192,26 +124,41 @@ function optionTable(options) {
     ]));
 }
 
-function renderArguments(spec) {
-  if (spec.argument_descriptions.length === 0) return '_This function has no non-relation arguments._';
-  return table(['Argument', 'Type', 'Required', 'Default', 'Notes'], spec.argument_descriptions.map(argument => [
-    code(argument.name),
-    code(argument.type),
-    argument.required ? 'yes' : 'no',
-    Object.hasOwn(argument, 'default') ? code(argument.default) : '',
-    cell([argument.note, argument.description, argument.semantic_effect && `semantic effect: ${argument.semantic_effect}`, argument.selector_policy && `selector: ${argument.selector_policy}`].filter(Boolean).join('; ')),
-  ]));
+function renderRelations(spec) {
+  return [
+    'cuGraph consumes a registered edge table or view by its first positional name. It does not accept a parenthesized relation subquery. Metadata validation uses the same registered name.',
+    '',
+    table(['Role', 'Required', 'Reference', 'Description'], spec.relation_roles.map(role => [
+      code(role.name), role.required === false ? 'no' : 'yes', code(role.reference?.type || 'table'), cell(role.description),
+    ])),
+  ].join('\n');
 }
 
-function renderOptions(spec) {
-  const parts = [];
+function renderArguments(spec) {
+  const argumentsTable = spec.argument_descriptions.length === 0
+    ? '_This function has no non-relation arguments._'
+    : table(['Argument', 'Type', 'Required', 'Default', 'Notes'], spec.argument_descriptions.map(argument => [
+      code(argument.name),
+      code(argument.type),
+      argument.required ? 'yes' : 'no',
+      Object.hasOwn(argument, 'default') ? code(argument.default) : '',
+      cell([argument.note, argument.description, argument.semantic_effect && `semantic effect: ${argument.semantic_effect}`, argument.selector_policy && `selector: ${argument.selector_policy}`].filter(Boolean).join('; ')),
+    ]));
   const algorithmOptions = spec.options_schema.algorithm_options || {};
-  parts.push(Object.keys(algorithmOptions).length === 0 ? '_This function has no algorithm-specific options._' : optionTable(algorithmOptions));
+  const optionSections = [
+    '### Positional scalar arguments',
+    '',
+    argumentsTable,
+    '',
+    '### JSON options',
+    '',
+    Object.keys(algorithmOptions).length === 0 ? '_This function has no algorithm-specific options._' : optionTable(algorithmOptions),
+  ];
   const graphOptions = spec.options_schema.graph_options || {};
   if (Object.keys(graphOptions).length > 0) {
-    parts.push('### Graph Construction Options\n\nShared by all cuGraph functions, shown with this function\'s defaults. See [Graph Construction Options](../../graph-options.mdx) for the construction-policy guide.\n\n' + optionTable(graphOptions));
+    optionSections.push('', '### Graph construction options', '', 'Shared by all cuGraph functions, shown with this function\'s defaults. See [Graph Construction Options](../../graph-options.mdx) for the construction-policy guide.', '', optionTable(graphOptions));
   }
-  return parts.join('\n\n');
+  return optionSections.join('\n');
 }
 
 function renderSchemas(spec) {
@@ -223,86 +170,42 @@ function renderSchemas(spec) {
   const blocks = names.map(name => {
     const fields = schemas[name]?.fields;
     if (!Array.isArray(fields)) throw new Error(`${spec.function_name}: result schema ${name} has no fields`);
-    const heading = names.length > 1 ? `#### ${code(name)}${name === defaultSchema ? ' (default)' : ''}\n\n` : '';
+    const heading = names.length > 1 ? `### ${code(name)}${name === defaultSchema ? ' (default)' : ''}\n\n` : '';
     return heading + table(['Column', 'Type', 'Nullable', 'Description'], fields.map(field => [
       code(field.name), code(field.data_type), field.nullable ? 'yes' : 'no', cell(descriptions[field.name]),
     ]));
   });
-  blocks.push('**Concrete schemas are call-specific.** These are generic descriptor schemas. Run [`gpu_validate_call`](../../discovery-and-validation.mdx#gpu_validate_callfunction_name-call_json) for a concrete, table-specific output schema.');
+  blocks.push('**Concrete schemas are call-specific.** These are generic descriptor schemas. Run [`gpu_validate_call`](../../../reference/gpu-function-catalog.mdx#gpu_validate_callfunction_name-call_json) for a concrete, table-specific output schema.');
   return blocks.join('\n\n');
 }
 
 function firstExample(spec) {
-  const example = spec.examples.find(candidate => candidate?.call && typeof candidate.call === 'object');
+  const example = spec.examples.find(candidate => (candidate?.call || candidate?.call_json) && typeof (candidate.call || candidate.call_json) === 'object');
   if (!example) throw new Error(`${spec.function_name}: examples_json must contain a unified validation call`);
-  return example;
+  if (typeof example.execution_sql !== 'string') throw new Error(`${spec.function_name}: example must contain execution_sql`);
+  return { ...example, call: example.call || example.call_json };
 }
 
 function renderPage(spec) {
   const title = displayName(spec);
   const example = firstExample(spec);
-  const executionSql = example.execution_sql;
-  if (typeof executionSql !== 'string') throw new Error(`${spec.function_name}: example must contain execution_sql`);
-  const validateSql = `SELECT * FROM gpu_validate_call(\n  '${spec.function_name}',\n  '${JSON.stringify(example.call)}'\n);`;
-  return [
-    '---',
-    `title: ${title}`,
-    `sidebar_label: ${title}`,
-    `description: ${JSON.stringify(spec.summary)}`,
-    '---',
-    '',
-    '{/* GENERATED FROM the unified GPU function catalog by website/scripts/gen-cugraph-docs.mjs. Do not edit by hand. */}',
-    '',
-    `# ${title}`,
-    '',
-    `SQL function: ${code(spec.function_name)}`,
-    '',
-    prose(spec.summary),
-    '',
-    '## Signature',
-    '',
-    '```sql',
-    spec.signature,
-    '```',
-    '',
-    '## Quickstart',
-    '',
-    '```sql',
-    executionSql,
-    '```',
-    '',
-    '## Non-relation arguments',
-    '',
-    renderArguments(spec),
-    '',
-    '## JSON options',
-    '',
-    renderOptions(spec),
-    '',
-    '## Output schema',
-    '',
-    renderSchemas(spec),
-    '',
-    '## Examples',
-    '',
-    `import Examples from '../../_examples/${spec.function_name}.mdx';`,
-    '',
-    '<Examples />',
-    '',
-    '## Limitations & notes',
-    '',
-    spec.limitations.map(limitation => `- ${prose(limitation)}`).join('\n'),
-    '',
-    '## Validate before running',
-    '',
-    'Validation checks named relations, bindings, dtypes, and options without scanning rows or touching the GPU:',
-    '',
-    '```sql',
-    validateSql,
-    '```',
-    '',
-    'See [Discovery & Validation](../../discovery-and-validation.mdx) for the full `gpu_validate_call` contract.',
-  ].join('\n');
+  return renderFunctionPage({
+    generator: 'website/scripts/gen-cugraph-docs.mjs',
+    spec,
+    title,
+    useThisWhen: `Use this when a SQL statement needs ${title} results over a registered edge relation.`,
+    quickstartSql: example.execution_sql,
+    relationInputs: renderRelations(spec),
+    scalarArgumentsAndOptions: renderArguments(spec),
+    outputSchema: renderSchemas(spec),
+    examples: narrativeExampleImport(`../../_examples/${spec.function_name}.mdx`),
+    limitations: spec.limitations.map(limitation => `- ${prose(limitation)}`).join('\n'),
+    validation: validationBlock({
+      functionName: spec.function_name,
+      call: example.call,
+      discoveryLink: '../../../reference/gpu-function-catalog.mdx',
+    }),
+  });
 }
 
 function renderCheatsheet(specs) {
@@ -311,8 +214,9 @@ function renderCheatsheet(specs) {
     '',
     `The live catalog contains **${specs.length} SQL-visible cuGraph functions**.`,
     '',
-    table(['Function', 'Signature', 'Summary'], specs.map(spec => [
+    table(['Function', 'Family', 'Signature', 'Summary'], specs.map(spec => [
       `[${cell(displayName(spec))}](./algorithms/${spec.family}/${spec.function_name}.mdx)`,
+      cell(FAMILIES[spec.family].label),
       code(spec.function_name),
       cell(spec.summary),
     ])),
@@ -333,10 +237,7 @@ function main() {
     }
   }
   for (const [slug, family] of Object.entries(FAMILIES)) {
-    write(join(ALGORITHMS_DIR, slug, '_category_.json'), JSON.stringify({
-      label: family.label,
-      position: family.position,
-    }, null, 2));
+    write(join(ALGORITHMS_DIR, slug, '_category_.json'), JSON.stringify({ label: family.label, position: family.position }, null, 2));
   }
   for (const spec of specs) write(join(ALGORITHMS_DIR, spec.family, `${spec.function_name}.mdx`), renderPage(spec));
   write(join(DOCS_DIR, '_cheatsheet.mdx'), renderCheatsheet(specs));
