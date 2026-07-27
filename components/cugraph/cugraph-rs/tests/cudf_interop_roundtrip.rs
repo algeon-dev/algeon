@@ -6,9 +6,10 @@
 use std::collections::HashMap;
 
 use cudf::io::parquet;
+use cudf::Column;
 
 use cugraph::array::device_array_from_host;
-use cugraph::cudf_interop::{DeviceArrayViewExt, DeviceSliceExt};
+use cugraph::cudf_interop::{graph_from_parquet, DeviceArrayViewExt, DeviceSliceExt};
 use cugraph::graph::Graph;
 use cugraph::handle::ResourceHandle;
 use cugraph::traversal::bfs;
@@ -58,8 +59,14 @@ fn bfs_results_to_cudf_columns() {
     let result = bfs(&handle, &mut graph, &mut sources_view, None, true).expect("bfs");
 
     // ── Convert BFS results to cudf Columns ─────────────────────────────
-    let vert_col = result.vertices().to_cudf_column().expect("vertices to cudf column");
-    let dist_col = result.distances().to_cudf_column().expect("distances to cudf column");
+    let vert_col = result
+        .vertices()
+        .to_cudf_column()
+        .expect("vertices to cudf column");
+    let dist_col = result
+        .distances()
+        .to_cudf_column()
+        .expect("distances to cudf column");
 
     // ── Read back via cudf Column::view().to_vec() ──────────────────────
     let vert_view = vert_col.view().expect("vert view");
@@ -108,15 +115,7 @@ fn bfs_results_roundtrip_through_parquet() {
     };
 
     let mut graph = Graph::from_edge_list(
-        &handle,
-        props,
-        &src_cg,
-        &dst_cg,
-        None,
-        None,
-        None,
-        false,
-        true,
+        &handle, props, &src_cg, &dst_cg, None, None, None, false, true,
     )
     .expect("graph");
 
@@ -126,16 +125,21 @@ fn bfs_results_roundtrip_through_parquet() {
     let result = bfs(&handle, &mut graph, &mut sources_view, None, false).expect("bfs");
 
     // ── Convert results to cudf Columns ─────────────────────────────────
-    let vert_col = result.vertices().to_cudf_column().expect("vertices to cudf");
-    let dist_col = result.distances().to_cudf_column().expect("distances to cudf");
+    let vert_col = result
+        .vertices()
+        .to_cudf_column()
+        .expect("vertices to cudf");
+    let dist_col = result
+        .distances()
+        .to_cudf_column()
+        .expect("distances to cudf");
 
     // Snapshot the expected values before writing to Parquet.
     let expected_vertices: Vec<i32> = vert_col.view().expect("v").to_vec().expect("v vec");
     let expected_distances: Vec<i32> = dist_col.view().expect("d").to_vec().expect("d vec");
 
     // ── Write results to a temporary Parquet file ───────────────────────
-    let result_table =
-        cudf::Table::from_columns(vec![vert_col, dist_col]).expect("result table");
+    let result_table = cudf::Table::from_columns(vec![vert_col, dist_col]).expect("result table");
     let result_view = result_table.view().expect("result table view");
 
     let tmp_dir = std::env::temp_dir().join("cugraph_test_bfs_roundtrip");
@@ -166,8 +170,14 @@ fn bfs_results_roundtrip_through_parquet() {
         .to_vec()
         .expect("col 1 vec");
 
-    assert_eq!(read_verts, expected_vertices, "vertex column mismatch after Parquet round-trip");
-    assert_eq!(read_dists, expected_distances, "distance column mismatch after Parquet round-trip");
+    assert_eq!(
+        read_verts, expected_vertices,
+        "vertex column mismatch after Parquet round-trip"
+    );
+    assert_eq!(
+        read_dists, expected_distances,
+        "distance column mismatch after Parquet round-trip"
+    );
 
     // Cleanup
     let _ = std::fs::remove_dir_all(&tmp_dir);
@@ -194,4 +204,205 @@ fn size_t_view_to_cudf_column_returns_error() {
         "error operation should mention to_cudf_column, got: {}",
         err.operation()
     );
+}
+
+/// Build a graph from Parquet using `graph_from_parquet`, then run BFS and
+/// verify the results match the known graph topology.
+#[test]
+fn graph_from_parquet_then_bfs() {
+    let handle = ResourceHandle::new().expect("handle");
+
+    let props = GraphProperties {
+        is_symmetric: false,
+        is_multigraph: false,
+    };
+
+    let (_table, mut graph) = graph_from_parquet(
+        &handle,
+        BFS_PARQUET,
+        0,       // src column
+        1,       // dst column
+        Some(2), // weight column
+        props,
+        false, // store_transposed
+        true,  // renumber
+    )
+    .expect("graph_from_parquet");
+
+    // Run BFS from vertex 0
+    let sources = device_array_from_host(&handle, &[0i32], DataType::Int32).expect("sources");
+    let mut sources_view = sources.view();
+
+    let result = bfs(&handle, &mut graph, &mut sources_view, None, false).expect("bfs");
+
+    // Verify we get results for all vertices
+    let vert_bytes = result.vertices().to_host_vec(&handle).expect("vertices");
+    let dist_bytes = result.distances().to_host_vec(&handle).expect("distances");
+
+    let vertices: Vec<i32> = vert_bytes
+        .chunks_exact(4)
+        .map(|c| i32::from_ne_bytes([c[0], c[1], c[2], c[3]]))
+        .collect();
+    let distances: Vec<i32> = dist_bytes
+        .chunks_exact(4)
+        .map(|c| i32::from_ne_bytes([c[0], c[1], c[2], c[3]]))
+        .collect();
+
+    assert!(
+        !vertices.is_empty(),
+        "graph_from_parquet should produce a non-empty graph"
+    );
+    assert_eq!(vertices.len(), distances.len());
+
+    // Source vertex should have distance 0
+    let dist_map: HashMap<i32, i32> = vertices.into_iter().zip(distances).collect();
+    assert_eq!(dist_map[&0], 0, "source vertex 0 should have distance 0");
+}
+
+/// Build a graph from Parquet without weights using `graph_from_parquet`.
+#[test]
+fn graph_from_parquet_without_weights() {
+    let handle = ResourceHandle::new().expect("handle");
+
+    let props = GraphProperties {
+        is_symmetric: false,
+        is_multigraph: false,
+    };
+
+    let (_table, mut graph) = graph_from_parquet(
+        &handle,
+        BFS_PARQUET,
+        0,    // src column
+        1,    // dst column
+        None, // no weight column
+        props,
+        false, // store_transposed
+        true,  // renumber
+    )
+    .expect("graph_from_parquet without weights");
+
+    // Verify the graph is valid by running BFS
+    let sources = device_array_from_host(&handle, &[0i32], DataType::Int32).expect("sources");
+    let mut sources_view = sources.view();
+
+    let result = bfs(&handle, &mut graph, &mut sources_view, None, false).expect("bfs");
+
+    let vert_bytes = result.vertices().to_host_vec(&handle).expect("vertices");
+    let vertices: Vec<i32> = vert_bytes
+        .chunks_exact(4)
+        .map(|c| i32::from_ne_bytes([c[0], c[1], c[2], c[3]]))
+        .collect();
+
+    assert!(!vertices.is_empty(), "graph should have vertices");
+}
+
+/// `graph_from_parquet` should return an error for out-of-bounds column indices.
+#[test]
+fn graph_from_parquet_rejects_out_of_bounds_column() {
+    let handle = ResourceHandle::new().expect("handle");
+
+    let props = GraphProperties {
+        is_symmetric: false,
+        is_multigraph: false,
+    };
+
+    // The test Parquet has 3 columns (src, dst, wgt), so index 10 is OOB.
+    let result = graph_from_parquet(
+        &handle,
+        BFS_PARQUET,
+        0,
+        10, // out of bounds
+        None,
+        props,
+        false,
+        true,
+    );
+
+    let err = match result {
+        Ok(_) => panic!("should reject out-of-bounds column index"),
+        Err(e) => e,
+    };
+
+    assert_eq!(err.kind(), cugraph::error::ErrorKind::InvalidInput);
+    assert_eq!(err.operation(), "graph_from_parquet");
+}
+
+/// `graph_from_parquet` should return an error for a non-existent file.
+#[test]
+fn graph_from_parquet_rejects_nonexistent_file() {
+    let handle = ResourceHandle::new().expect("handle");
+
+    let props = GraphProperties {
+        is_symmetric: false,
+        is_multigraph: false,
+    };
+
+    let result = graph_from_parquet(
+        &handle,
+        "/tmp/this_file_definitely_does_not_exist_12345.parquet",
+        0,
+        1,
+        None,
+        props,
+        false,
+        true,
+    );
+
+    let err = match result {
+        Ok(_) => panic!("should reject non-existent file"),
+        Err(e) => e,
+    };
+
+    assert_eq!(err.kind(), cugraph::error::ErrorKind::InvalidInput);
+    assert_eq!(err.operation(), "graph_from_parquet");
+}
+
+/// `graph_from_parquet` should reject nullable source columns.
+#[test]
+fn graph_from_parquet_rejects_nulls_in_src_column() {
+    // Build a 3-column edge table where src contains one null.
+    let src = Column::from_slice_nullable(&[0i32, 1, 2], &[true, false, true]).expect("src");
+    let dst = Column::from_slice(&[1i32, 2, 0]).expect("dst");
+    let wgt = Column::from_slice(&[1.0f32, 2.0, 3.0]).expect("wgt");
+
+    let table = cudf::Table::from_columns(vec![src, dst, wgt]).expect("table");
+    let tmp_dir = std::env::temp_dir().join("cugraph_test_graph_from_parquet_nulls");
+    std::fs::create_dir_all(&tmp_dir).expect("create tmp dir");
+    let path = tmp_dir.join("edges_with_null_src.parquet");
+
+    let table_view = table.view().expect("table view");
+    let write_opts = parquet::ParquetWriterOptions::new(&path).expect("writer options");
+    parquet::write_parquet(&table_view, &write_opts).expect("write parquet");
+
+    let handle = ResourceHandle::new().expect("handle");
+    let props = GraphProperties {
+        is_symmetric: false,
+        is_multigraph: false,
+    };
+
+    let result = graph_from_parquet(
+        &handle,
+        path.to_str().expect("utf8 path"),
+        0,
+        1,
+        Some(2),
+        props,
+        false,
+        true,
+    );
+
+    let err = match result {
+        Ok(_) => panic!("should reject nullable src column"),
+        Err(e) => e,
+    };
+
+    assert_eq!(err.kind(), cugraph::error::ErrorKind::InvalidInput);
+    assert_eq!(err.operation(), "graph_from_parquet");
+    assert!(
+        err.message().contains("null"),
+        "unexpected error message: {}",
+        err.message()
+    );
+
+    let _ = std::fs::remove_dir_all(&tmp_dir);
 }

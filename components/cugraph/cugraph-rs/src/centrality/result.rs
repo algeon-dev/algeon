@@ -73,10 +73,8 @@ impl CentralityResult {
     pub fn converged(&self) -> Result<bool> {
         let b = unsafe { cugraph_centrality_result_converged(self.raw) };
         try_from_bool_t(b).ok_or_else(|| {
-            Error::new(ErrorKind::Unexpected, "CentralityResult::converged").with_message(format!(
-                "invalid bool_t value returned by cuGraph: {}",
-                b.0
-            ))
+            Error::new(ErrorKind::Unexpected, "CentralityResult::converged")
+                .with_message(format!("invalid bool_t value returned by cuGraph: {}", b.0))
         })
     }
 }

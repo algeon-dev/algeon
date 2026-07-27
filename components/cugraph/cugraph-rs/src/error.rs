@@ -166,8 +166,7 @@ impl Error {
     /// for debugging.
     pub fn with_operation(mut self, operation: &'static str) -> Self {
         if !self.operation.is_empty() {
-            self.context
-                .push(("called", self.operation.to_string()));
+            self.context.push(("called", self.operation.to_string()));
         }
         self.operation = operation;
         self
@@ -431,8 +430,7 @@ mod tests {
 
     #[test]
     fn test_error_display_message_only() {
-        let err = Error::new(ErrorKind::InvalidInput, "test_op")
-            .with_message("bad input");
+        let err = Error::new(ErrorKind::InvalidInput, "test_op").with_message("bad input");
         assert_eq!(
             err.to_string(),
             "InvalidInput (permanent) at test_op => bad input"
@@ -484,8 +482,7 @@ mod tests {
 
     #[test]
     fn test_error_accessors() {
-        let err =
-            Error::new(ErrorKind::InvalidInput, "test_op").with_message("bad input");
+        let err = Error::new(ErrorKind::InvalidInput, "test_op").with_message("bad input");
         assert_eq!(err.kind(), ErrorKind::InvalidInput);
         assert_eq!(err.operation(), "test_op");
         assert_eq!(err.message(), "bad input");

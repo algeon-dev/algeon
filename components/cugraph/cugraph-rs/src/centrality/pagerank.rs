@@ -8,15 +8,16 @@ use super::CentralityResult;
 use crate::error::{check_error, Result};
 use crate::graph::Graph;
 use crate::handle::ResourceHandle;
-use crate::params::{IterationCount, PositiveF64, UnitF64};
+use crate::params::{ClosedUnitF64, IterationCount, NonNegativeF64};
 
 /// Parameters for the PageRank algorithm.
 ///
 /// All fields use strongly-typed wrappers that enforce invariants at
 /// construction time:
 ///
-/// - `alpha` ([`UnitF64`]): damping factor, must be in `(0.0, 1.0)`
-/// - `epsilon` ([`PositiveF64`]): convergence tolerance, must be `> 0.0`
+/// - `alpha` ([`ClosedUnitF64`]): damping factor, must be in `[0.0, 1.0]`
+/// - `epsilon` ([`NonNegativeF64`]): convergence tolerance, must be `>= 0.0`
+///   (zero means "never converge early")
 /// - `max_iterations` ([`IterationCount`]): must be `>= 1`
 ///
 /// Use the [`Default`] implementation for standard values, or construct
@@ -32,19 +33,20 @@ use crate::params::{IterationCount, PositiveF64, UnitF64};
 /// assert_eq!(params.alpha.get(), 0.85);
 ///
 /// // Custom parameters
-/// use cugraph::params::{IterationCount, PositiveF64, UnitF64};
+/// use cugraph::params::{ClosedUnitF64, IterationCount, NonNegativeF64};
 /// let params = PageRankParams {
-///     alpha: UnitF64::new(0.9).unwrap(),
-///     epsilon: PositiveF64::new(1e-6).unwrap(),
+///     alpha: ClosedUnitF64::new(0.9).unwrap(),
+///     epsilon: NonNegativeF64::new(1e-6).unwrap(),
 ///     max_iterations: IterationCount::new(200).unwrap(),
 /// };
 /// ```
 #[derive(Debug, Clone, Copy)]
 pub struct PageRankParams {
-    /// Damping factor (default 0.85). Must be in the open interval `(0.0, 1.0)`.
-    pub alpha: UnitF64,
-    /// Convergence tolerance (default 1e-5). Must be strictly positive.
-    pub epsilon: PositiveF64,
+    /// Damping factor (default 0.85). Must be in the closed interval `[0.0, 1.0]`.
+    pub alpha: ClosedUnitF64,
+    /// Convergence tolerance (default 1e-5). Must be non-negative. Zero
+    /// disables early convergence (always runs for `max_iterations`).
+    pub epsilon: NonNegativeF64,
     /// Maximum number of iterations (default 100). Must be at least 1.
     pub max_iterations: IterationCount,
 }
@@ -53,8 +55,8 @@ impl Default for PageRankParams {
     fn default() -> Self {
         Self {
             // SAFETY: these literals are known-valid constants.
-            alpha: UnitF64::new(0.85).unwrap(),
-            epsilon: PositiveF64::new(1e-5).unwrap(),
+            alpha: ClosedUnitF64::new(0.85).unwrap(),
+            epsilon: NonNegativeF64::new(1e-5).unwrap(),
             max_iterations: IterationCount::new(100).unwrap(),
         }
     }

@@ -134,19 +134,13 @@ mod tests {
         handle: &ResourceHandle,
         result: &CentralityResult,
     ) -> std::collections::HashMap<i32, f32> {
-        let vert_bytes = result
-            .vertices()
-            .to_host_vec(handle)
-            .expect("vert copy");
+        let vert_bytes = result.vertices().to_host_vec(handle).expect("vert copy");
         let val_bytes = result.values().to_host_vec(handle).expect("val copy");
 
         let vertices = to_i32_vec(&vert_bytes);
         let values = to_f32_vec(&val_bytes);
 
-        vertices
-            .into_iter()
-            .zip(values.into_iter())
-            .collect()
+        vertices.into_iter().zip(values.into_iter()).collect()
     }
 
     #[test]
@@ -303,8 +297,7 @@ mod tests {
         .expect("graph");
 
         // Use only vertices 0 and 1 as seeds
-        let seeds =
-            device_array_from_host(&handle, &[0i32, 1], DataType::Int32).expect("seeds");
+        let seeds = device_array_from_host(&handle, &[0i32, 1], DataType::Int32).expect("seeds");
 
         let params = BetweennessCentralityParams::default();
         let result = betweenness_centrality(&handle, &mut graph, Some(&seeds.view()), &params)

@@ -22,8 +22,8 @@ fn pagerank_params_default_has_expected_values() {
 #[test]
 fn pagerank_params_custom_construction() {
     let params = PageRankParams {
-        alpha: UnitF64::new(0.9).unwrap(),
-        epsilon: PositiveF64::new(1e-6).unwrap(),
+        alpha: ClosedUnitF64::new(0.9).unwrap(),
+        epsilon: NonNegativeF64::new(1e-6).unwrap(),
         max_iterations: IterationCount::new(200).unwrap(),
     };
     assert_eq!(params.alpha.get(), 0.9);
@@ -33,22 +33,25 @@ fn pagerank_params_custom_construction() {
 
 #[test]
 fn pagerank_params_alpha_rejects_invalid() {
-    // 0.0 is not in (0, 1)
-    assert!(UnitF64::new(0.0).is_err());
-    // 1.0 is not in (0, 1)
-    assert!(UnitF64::new(1.0).is_err());
+    // C++ validates: (alpha >= 0.0) && (alpha <= 1.0)
+    // Boundary values are accepted (closed interval [0.0, 1.0]):
+    assert!(ClosedUnitF64::new(0.0).is_ok());
+    assert!(ClosedUnitF64::new(1.0).is_ok());
     // negative
-    assert!(UnitF64::new(-0.5).is_err());
+    assert!(ClosedUnitF64::new(-0.5).is_err());
     // > 1
-    assert!(UnitF64::new(1.5).is_err());
+    assert!(ClosedUnitF64::new(1.5).is_err());
 }
 
 #[test]
 fn pagerank_params_epsilon_rejects_invalid() {
-    assert!(PositiveF64::new(0.0).is_err());
-    assert!(PositiveF64::new(-1e-5).is_err());
-    assert!(PositiveF64::new(f64::NAN).is_err());
-    assert!(PositiveF64::new(f64::INFINITY).is_err());
+    // C++ validates: epsilon >= 0.0 ("epsilon should be non-negative")
+    // Zero is valid (means "never converge early, always run max_iterations"):
+    assert!(NonNegativeF64::new(0.0).is_ok());
+    // Negative is rejected:
+    assert!(NonNegativeF64::new(-1e-5).is_err());
+    assert!(NonNegativeF64::new(f64::NAN).is_err());
+    assert!(NonNegativeF64::new(f64::INFINITY).is_err());
 }
 
 #[test]
@@ -84,7 +87,7 @@ fn force_atlas2_params_custom_override() {
         max_iter: IterationCount::new(100).unwrap(),
         barnes_hut_optimize: true,
         barnes_hut_theta: ClosedUnitF64::new(0.8).unwrap(),
-        gravity: PositiveF64::new(5.0).unwrap(),
+        gravity: NonNegativeF64::new(5.0).unwrap(),
         edge_weight_influence: NonNegativeF64::new(0.0).unwrap(),
         ..Default::default()
     };
@@ -114,6 +117,18 @@ fn force_atlas2_edge_weight_influence_allows_zero() {
     // edge_weight_influence = 0 means "no influence", which is valid
     assert!(NonNegativeF64::new(0.0).is_ok());
     assert!(NonNegativeF64::new(-0.001).is_err());
+}
+
+#[test]
+fn force_atlas2_gravity_allows_zero() {
+    // gravity = 0 disables gravity (no attraction to center), which is valid.
+    // The C API accepts any double; the CUDA kernels multiply by gravity, so
+    // zero simply zeroes out the gravity force.
+    let params = ForceAtlas2Params {
+        gravity: NonNegativeF64::new(0.0).unwrap(),
+        ..Default::default()
+    };
+    assert_eq!(params.gravity.get(), 0.0);
 }
 
 // ---------------------------------------------------------------------------

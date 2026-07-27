@@ -10,10 +10,10 @@
 //! |------|-----------|-----------|
 //! | [`IterationCount`] | `> 0` (u32) | `max_iter`, `max_iterations` |
 //! | [`BfsDepthLimit`] | `> 0` (usize) | BFS `depth_limit` |
-//! | [`PositiveF64`] | `> 0.0`, finite | `epsilon`, `gravity`, `scaling_ratio` |
-//! | [`UnitF64`] | `∈ (0.0, 1.0)`, finite | `alpha` (damping factor) |
-//! | [`NonNegativeF64`] | `>= 0.0`, finite | `edge_weight_influence`, `jitter_tolerance` |
-//! | [`ClosedUnitF64`] | `∈ [0.0, 1.0]`, finite | `barnes_hut_theta` |
+//! | [`PositiveF64`] | `> 0.0`, finite | `scaling_ratio` |
+//! | [`UnitF64`] | `∈ (0.0, 1.0)`, finite | *(currently unused — kept for future algorithms)* |
+//! | [`NonNegativeF64`] | `>= 0.0`, finite | `epsilon`, `edge_weight_influence`, `gravity`, `jitter_tolerance` |
+//! | [`ClosedUnitF64`] | `∈ [0.0, 1.0]`, finite | `alpha` (damping factor), `barnes_hut_theta` |
 //!
 //! # Examples
 //!
@@ -256,8 +256,7 @@ impl TryFrom<i32> for BfsDepthLimit {
 
 /// A strictly positive, finite `f64` value.
 ///
-/// Used for parameters that must be greater than zero, such as convergence
-/// tolerance (`epsilon`), gravity strength, and scaling ratios.
+/// Used for parameters that must be greater than zero, such as scaling ratios.
 ///
 /// # Construction
 ///
@@ -487,7 +486,7 @@ impl ClosedUnitF64 {
     /// Returns [`ErrorKind::InvalidInput`] if `value` is not in the closed
     /// interval `[0.0, 1.0]` or is not finite.
     pub fn new(value: f64) -> crate::error::Result<Self> {
-        if !value.is_finite() || value < 0.0 || value > 1.0 {
+        if !value.is_finite() || !(0.0..=1.0).contains(&value) {
             return Err(Error::new(ErrorKind::InvalidInput, "ClosedUnitF64::new")
                 .with_message("value must be in the closed interval [0.0, 1.0]")
                 .with_context("value", format!("{value}")));

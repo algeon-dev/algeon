@@ -15,7 +15,9 @@
 
 use std::ptr;
 
-use cugraph_sys::{cugraph_error_t, cugraph_rng_state_create, cugraph_rng_state_free, cugraph_rng_state_t};
+use cugraph_sys::{
+    cugraph_error_t, cugraph_rng_state_create, cugraph_rng_state_free, cugraph_rng_state_t,
+};
 
 use crate::error::{check_error, Result};
 use crate::handle::ResourceHandle;
