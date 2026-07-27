@@ -25,11 +25,10 @@ use super::{
 use crate::table_format::scan::{DEFAULT_TABLE_FORMAT_S3_SOURCE_STORAGE_PROFILE_ID, credential_free_endpoint_identity};
 use crate::{
     backend::{MemoryShare, NexusAdmissionPolicy},
+    cugraph_sql::{CugraphGraphConstructionPolicy, CugraphGraphOptions},
     native_exec::NexusNativeExecutionConfig,
     planner::{HostExecutionQosConfig, NexusNativeOptimizerConfig},
 };
-#[cfg(feature = "cugraph")]
-use crate::{cugraph_sql::CugraphGraphConstructionPolicy, cugraph_sql::CugraphGraphOptions};
 #[cfg(feature = "iceberg")]
 use crate::{
     table_format::AWS_ENDPOINT_URL_ENV, table_format::AWS_ENDPOINT_URL_S3_ENV,
@@ -63,15 +62,10 @@ use admission::{
     server_host_execution_qos_wait_timeout, server_max_concurrent_queries, server_placement_eligible_device_count,
     validate_admission_grant_min_capacity,
 };
-#[cfg(feature = "cugraph")]
-pub use cugraph::CugraphServerConfig;
-#[cfg(feature = "cugraph")]
 use cugraph::cugraph_config;
-#[cfg(not(feature = "cugraph"))]
-use cugraph::reject_cugraph_env_without_feature;
 pub use cugraph::{
-    NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV, NEXUS_SERVER_CUGRAPH_DIRECTED_ENV, NEXUS_SERVER_CUGRAPH_ENABLED_ENV,
-    NEXUS_SERVER_CUGRAPH_RENUMBER_ENV,
+    CugraphServerConfig, NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV, NEXUS_SERVER_CUGRAPH_DIRECTED_ENV,
+    NEXUS_SERVER_CUGRAPH_ENABLED_ENV, NEXUS_SERVER_CUGRAPH_RENUMBER_ENV,
 };
 use env::{DEFAULT_BIND_ADDR, DEFAULT_LOG_FILTER, DEFAULT_STATEMENT_TICKET_TTL_SECS, EnvValues};
 pub use env::{
@@ -151,7 +145,6 @@ pub struct ServerConfig {
     pub workspace: Option<WorkspaceOverlayConfig>,
     #[cfg(feature = "iceberg")]
     pub iceberg: Option<IcebergServerConfig>,
-    #[cfg(feature = "cugraph")]
     pub cugraph: Option<CugraphServerConfig>,
 }
 impl ServerConfig {
@@ -227,11 +220,7 @@ impl ServerConfig {
         #[cfg(not(feature = "iceberg"))]
         reject_iceberg_env_without_feature(&mut values)?;
 
-        #[cfg(feature = "cugraph")]
         let cugraph = cugraph_config(&mut values)?;
-
-        #[cfg(not(feature = "cugraph"))]
-        reject_cugraph_env_without_feature(&mut values)?;
 
         let workspace = workspace_overlay_config(&mut values)?;
 
@@ -274,7 +263,6 @@ impl ServerConfig {
             workspace,
             #[cfg(feature = "iceberg")]
             iceberg,
-            #[cfg(feature = "cugraph")]
             cugraph,
         })
     }

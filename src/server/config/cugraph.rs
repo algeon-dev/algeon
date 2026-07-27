@@ -1,10 +1,9 @@
 use super::{env::EnvValues, *};
 
 /// Enables registration of cuGraph SQL functions. Must be `true` before any
-/// other cuGraph server setting is accepted. On a build without the `cugraph`
-/// feature an explicit `false` is accepted (it requests no capability), so one
-/// env file can serve both artifact flavors; `true` and every other cuGraph
-/// setting are still rejected there.
+/// other cuGraph server setting is accepted. A feature-off server still
+/// registers the public SQL frontend when enabled, but execution then returns
+/// its structured `required_feature_disabled` capability error.
 pub const NEXUS_SERVER_CUGRAPH_ENABLED_ENV: &str = "NEXUS_SERVER_CUGRAPH_ENABLED";
 /// Default cuGraph edge direction setting for SQL calls. Accepts boolean
 /// values; per-call `options_json` can override it.
@@ -15,14 +14,12 @@ pub const NEXUS_SERVER_CUGRAPH_RENUMBER_ENV: &str = "NEXUS_SERVER_CUGRAPH_RENUMB
 /// Default cuGraph graph construction backend. Use `python_cugraph` or
 /// `raw_libcugraph`; per-call `options_json` can override it.
 pub const NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV: &str = "NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY";
-#[cfg(feature = "cugraph")]
 #[derive(Debug, Clone, PartialEq)]
 pub struct CugraphServerConfig {
     /// Operator-level graph construction defaults used by cuGraph SQL UDTFs.
     /// Per-call `options_json` still overrides these values.
     pub default_graph_options: CugraphGraphOptions,
 }
-#[cfg(feature = "cugraph")]
 pub(super) fn cugraph_config(values: &mut EnvValues<'_>) -> Result<Option<CugraphServerConfig>> {
     let requested = values.any_present([
         NEXUS_SERVER_CUGRAPH_DIRECTED_ENV,
@@ -55,7 +52,6 @@ pub(super) fn cugraph_config(values: &mut EnvValues<'_>) -> Result<Option<Cugrap
     Ok(Some(CugraphServerConfig { default_graph_options }))
 }
 
-#[cfg(feature = "cugraph")]
 pub(super) fn parse_cugraph_construction_policy(
     env_name: &'static str,
     raw: &str,
@@ -68,21 +64,4 @@ pub(super) fn parse_cugraph_construction_policy(
             format!("must be `python_cugraph` or `raw_libcugraph`, got `{other}`"),
         )),
     }
-}
-#[cfg(not(feature = "cugraph"))]
-pub(super) fn reject_cugraph_env_without_feature(values: &mut EnvValues<'_>) -> Result<()> {
-    // An explicit `NEXUS_SERVER_CUGRAPH_ENABLED=false` requests no capability
-    // and is accepted, so one env file can serve both artifact flavors.
-    if values.any_present([
-        NEXUS_SERVER_CUGRAPH_DIRECTED_ENV,
-        NEXUS_SERVER_CUGRAPH_RENUMBER_ENV,
-        NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV,
-    ]) || values.optional_bool(NEXUS_SERVER_CUGRAPH_ENABLED_ENV)? == Some(true)
-    {
-        return Err(ServerError::invalid_config(
-            NEXUS_SERVER_CUGRAPH_ENABLED_ENV,
-            "cuGraph server registration requires building with --features server,cugraph or --features server-cugraph",
-        ));
-    }
-    Ok(())
 }

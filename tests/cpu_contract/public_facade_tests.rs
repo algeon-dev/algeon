@@ -37,10 +37,11 @@ fn canonical_iceberg_path_exposes_catalog_contracts() {
     let _s3_access_key_env: &str = datafusion_nexus::table_format::iceberg::NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV;
 }
 
-#[cfg(feature = "cugraph")]
 #[test]
 fn canonical_graph_path_exposes_sql_contracts() {
     let _bfs_function: &str = datafusion_nexus::cugraph_sql::CUGRAPH_BFS_FUNCTION;
+    let _parser = datafusion_nexus::cugraph_sql::parse_cugraph_algorithm_spec;
+    let _config = datafusion_nexus::cugraph_sql::CugraphSqlConfig::default();
 }
 
 #[cfg(feature = "server")]
@@ -89,7 +90,7 @@ fn canonical_server_path_exposes_iceberg_config_contracts() {
     );
 }
 
-#[cfg(all(feature = "server", feature = "cugraph"))]
+#[cfg(feature = "server")]
 #[test]
 fn canonical_server_path_exposes_cugraph_config_contract() {
     let _contract = size_of::<datafusion_nexus::server::CugraphServerConfig>();

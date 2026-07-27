@@ -31,11 +31,23 @@ use crate::gpu_functions::{
 #[derive(Debug, Clone)]
 pub(crate) struct CugraphGpuFunctionFamily {
     config: CugraphSqlConfig,
+    availability: GpuFunctionAvailability,
 }
 
 impl CugraphGpuFunctionFamily {
     pub(crate) fn new(config: CugraphSqlConfig) -> Self {
-        Self { config }
+        Self { config, availability: cugraph_gpu_function_availability() }
+    }
+}
+
+/// Build-level cuGraph execution availability projected through the common
+/// discovery catalog. The SQL parser and schema validator remain available in
+/// either build; only native graph execution is feature-owned.
+pub(crate) fn cugraph_gpu_function_availability() -> GpuFunctionAvailability {
+    if cfg!(feature = "cugraph") {
+        GpuFunctionAvailability::Available
+    } else {
+        GpuFunctionAvailability::Unavailable { reason: "required_feature_disabled".to_string() }
     }
 }
 
@@ -46,7 +58,10 @@ impl GpuFunctionFamily for CugraphGpuFunctionFamily {
     }
 
     fn descriptors(&self) -> Vec<GpuFunctionDescriptor> {
-        CUGRAPH_OPERATION_REGISTRY.iter().map(|definition| descriptor(definition.algorithm, &self.config)).collect()
+        CUGRAPH_OPERATION_REGISTRY
+            .iter()
+            .map(|definition| descriptor(definition.algorithm, &self.config, self.availability.clone()))
+            .collect()
     }
 
     async fn validate(
@@ -119,7 +134,11 @@ impl GpuFunctionFamily for CugraphGpuFunctionFamily {
     }
 }
 
-fn descriptor(algorithm: CugraphAlgorithm, config: &CugraphSqlConfig) -> GpuFunctionDescriptor {
+fn descriptor(
+    algorithm: CugraphAlgorithm,
+    config: &CugraphSqlConfig,
+    availability: GpuFunctionAvailability,
+) -> GpuFunctionDescriptor {
     let result_schemas = value(&json_schema::result_schemas_json(algorithm));
     let result_schemas = match result_schemas {
         Value::Object(mut object) => {
@@ -147,7 +166,7 @@ fn descriptor(algorithm: CugraphAlgorithm, config: &CugraphSqlConfig) -> GpuFunc
         validation_request_schema: validation_request_schema(algorithm, config),
         examples: examples(algorithm),
         limitations: value(&descriptions::limitations_json(algorithm)),
-        availability: GpuFunctionAvailability::Available,
+        availability,
     }
 }
 

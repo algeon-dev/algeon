@@ -33,6 +33,11 @@ use nexus_query_engine::{
         ParquetPositionDeleteFile, ResolvedParquetSource, SourceNode,
     },
 };
+#[cfg(not(feature = "cugraph"))]
+use nexus_query_engine::{
+    exec::execute_query_plan_with_gpu_inputs,
+    runtime::{ExecutionContext, MemoryControlPolicy, resident::GpuResidentInputMap},
+};
 
 include!("graph_algorithm/support.rs");
 include!("graph_algorithm/residency.rs");

@@ -28,7 +28,6 @@ pub struct DatafusionNexusFlightSqlService {
     /// per-RPC validate path.
     pub(super) auth: AuthInterceptor,
     pub(super) catalog_diagnostics: ServerCatalogDiagnostics,
-    #[cfg(feature = "cugraph")]
     pub(super) cugraph_sql_config: Option<CugraphSqlConfig>,
 }
 
@@ -106,6 +105,10 @@ impl DatafusionNexusFlightSqlService {
         #[cfg(feature = "cugraph")] cugraph_sql_config: Option<CugraphSqlConfig>,
     ) -> Self {
         let io_lifecycle = Arc::new(crate::server::io_lifecycle::ServerIoLifecycle::new());
+        #[cfg(feature = "cugraph")]
+        let cugraph_sql_config = cugraph_sql_config;
+        #[cfg(not(feature = "cugraph"))]
+        let cugraph_sql_config = None;
         Self::new_with_io_lifecycle(
             ctx,
             native_optimizer_config,
@@ -113,7 +116,6 @@ impl DatafusionNexusFlightSqlService {
             statement_ticket_ttl,
             auth,
             io_lifecycle,
-            #[cfg(feature = "cugraph")]
             cugraph_sql_config,
         )
     }
@@ -125,7 +127,7 @@ impl DatafusionNexusFlightSqlService {
         statement_ticket_ttl: Duration,
         auth: AuthInterceptor,
         io_lifecycle: Arc<crate::server::io_lifecycle::ServerIoLifecycle>,
-        #[cfg(feature = "cugraph")] cugraph_sql_config: Option<CugraphSqlConfig>,
+        cugraph_sql_config: Option<CugraphSqlConfig>,
     ) -> Self {
         let native_execution_config = native_optimizer_config
             .native_execution_config()
@@ -134,7 +136,6 @@ impl DatafusionNexusFlightSqlService {
             .with_host_output_memory_pool_accounting(true);
         let native_optimizer_config =
             native_optimizer_config.with_native_execution_config(native_execution_config.clone());
-        #[cfg(feature = "cugraph")]
         let cugraph_sql_config =
             cugraph_sql_config.map(|config| config.with_native_execution_config(native_execution_config));
         let observability_config = crate::server::config::ServerObservabilityConfig::default();
@@ -151,7 +152,6 @@ impl DatafusionNexusFlightSqlService {
             shutdown_token: CancellationToken::new(),
             auth,
             catalog_diagnostics: ServerCatalogDiagnostics::default(),
-            #[cfg(feature = "cugraph")]
             cugraph_sql_config,
         }
     }

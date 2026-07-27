@@ -121,6 +121,15 @@ fn captured_specs_and_generated_reference_pages_match_the_canonical_registry() {
             descriptor.options_json_schema(),
             "captured options schema must be an exact projection of the canonical registry"
         );
+        let options_schema =
+            serde_json::from_str::<serde_json::Value>(captured["options_schema_json"].as_str().unwrap()).unwrap();
+        for option in descriptor.options {
+            assert_eq!(
+                options_schema["properties"][option.name]["description"], option.description,
+                "{} option {} must retain the canonical description",
+                descriptor.sql_function_name, option.name
+            );
+        }
         let roles =
             serde_json::from_str::<serde_json::Value>(captured["relation_roles_json"].as_str().unwrap()).unwrap();
         assert_eq!(
@@ -128,6 +137,33 @@ fn captured_specs_and_generated_reference_pages_match_the_canonical_registry() {
             descriptor.relation_roles.iter().map(|role| role.as_str()).collect::<Vec<_>>(),
             "captured relation roles must be an exact projection of the canonical registry"
         );
+        for role in descriptor.relation_roles {
+            let captured_role = roles
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|captured_role| captured_role["name"] == role.as_str())
+                .unwrap_or_else(|| {
+                    panic!("{} must project relation role {}", descriptor.sql_function_name, role.as_str())
+                });
+            assert_eq!(captured_role["description"], role.description());
+        }
+        let result_schema =
+            serde_json::from_str::<serde_json::Value>(captured["result_schemas_json"].as_str().unwrap()).unwrap();
+        let fields = result_schema["fields"].as_array().unwrap();
+        assert_eq!(fields.len(), descriptor.output_fields.len());
+        for (field, expected) in fields.iter().zip(descriptor.output_fields) {
+            assert_eq!(field["name"], expected.name);
+            assert_eq!(field["data_type"], expected.data_type);
+            assert_eq!(field["nullable"], expected.nullable);
+            assert_eq!(field["description"], expected.description);
+            assert_eq!(field.get("repeats").and_then(serde_json::Value::as_str), expected.repeats);
+        }
+        let examples = serde_json::from_str::<serde_json::Value>(captured["examples_json"].as_str().unwrap()).unwrap();
+        let quickstart = &examples[0]["quickstart"];
+        assert_eq!(quickstart["display_name"], descriptor.display_name);
+        assert_eq!(quickstart["use_this_when"], descriptor.use_this_when);
+        assert_eq!(quickstart["sql"], descriptor.quickstart_sql);
 
         let page_path = page_directory.join(format!("{}.mdx", descriptor.sql_function_name));
         let page = fs::read_to_string(&page_path)
@@ -137,19 +173,42 @@ fn captured_specs_and_generated_reference_pages_match_the_canonical_registry() {
             "{} must retain its generated-source marker",
             page_path.display()
         );
-        assert!(page.contains(&format!("# {}", descriptor.sql_function_name)), "{}", page_path.display());
-        assert!(
-            page.contains("Provider: `cuvs`. Domain: `vector`."),
-            "{} must agree with the captured unified descriptor",
-            page_path.display()
-        );
+        assert!(page.contains(&format!("# {}", descriptor.display_name)), "{}", page_path.display());
+        assert!(page.contains(&format!("SQL function: `{}`", descriptor.sql_function_name)), "{}", page_path.display());
+        assert!(page.contains(descriptor.use_this_when), "{}", page_path.display());
+        assert!(page.contains(descriptor.quickstart_sql), "{}", page_path.display());
+        let headings = [
+            "## Use this when",
+            "## Signature",
+            "## Quickstart",
+            "## Relation inputs",
+            "## Scalar arguments & JSON options",
+            "## Output schema",
+            "## Limitations & lifecycle",
+            "## Validate before running",
+        ];
+        let mut previous_heading = 0;
+        for heading in headings {
+            let index = page.find(heading).unwrap_or_else(|| panic!("{} is missing {heading}", page_path.display()));
+            assert!(index >= previous_heading, "{} puts {heading} out of order", page_path.display());
+            previous_heading = index;
+        }
         for relation_role in descriptor.relation_roles {
             assert!(page.contains(&format!("`{}`", relation_role.as_str())), "{}", page_path.display());
         }
         for option in descriptor.options {
             assert!(page.contains(&format!("`{}`", option.name)), "{}", page_path.display());
+            assert!(page.contains(&mdx_table_text(option.description)), "{}", page_path.display());
+        }
+        for field in descriptor.output_fields {
+            assert!(page.contains(&format!("`{}`", field.name)), "{}", page_path.display());
+            assert!(page.contains(&mdx_table_text(field.description)), "{}", page_path.display());
         }
     }
+}
+
+fn mdx_table_text(value: &str) -> String {
+    value.replace('<', "&lt;").replace('>', "&gt;")
 }
 
 #[tokio::test]

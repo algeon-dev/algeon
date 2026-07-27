@@ -580,35 +580,15 @@ fn client_datafusion_error_message(error: &DataFusionError) -> String {
     maybe_append_cugraph_feature_hint(message)
 }
 
-/// When a missing `cugraph_*` table function shows up in a DataFusion
-/// not-found message, the bare "table function '...' not found" text hides the
-/// real cause. The hint differs by build:
-///
-/// - Built *without* the `cugraph` feature: the cuGraph SQL surface is compiled
-///   out, so the function was never registered. Point operators at rebuilding
-///   with the feature.
-/// - Built *with* the `cugraph` feature: the code is present but registration is
-///   gated on `NEXUS_SERVER_CUGRAPH_ENABLED=true`. A not-found here means the
-///   runtime toggle is off, not a build problem.
-#[cfg(not(feature = "cugraph"))]
+/// When a missing `cugraph_*` table function shows up in a DataFusion not-found
+/// message, the runtime registration toggle is the actionable problem. This
+/// applies to both build flavors: feature-off registration exposes the stable
+/// capability error instead of a missing function.
 fn maybe_append_cugraph_feature_hint(message: String) -> String {
     if is_cugraph_table_function_not_found(&message) {
         format!(
-            "{message}; this build was compiled without the `cugraph` feature, so cuGraph SQL \
-             functions are unavailable - rebuild with --features server-cugraph (or \
-             --features server,cugraph) to enable them"
-        )
-    } else {
-        message
-    }
-}
-
-#[cfg(feature = "cugraph")]
-fn maybe_append_cugraph_feature_hint(message: String) -> String {
-    if is_cugraph_table_function_not_found(&message) {
-        format!(
-            "{message}; this build includes the `cugraph` feature but cuGraph SQL functions are \
-             not registered - set NEXUS_SERVER_CUGRAPH_ENABLED=true to enable them"
+            "{message}; cuGraph SQL functions are not registered - set \
+             NEXUS_SERVER_CUGRAPH_ENABLED=true to register them"
         )
     } else {
         message
@@ -1085,24 +1065,8 @@ mod tests {
         assert_error_metadata(&status, "object_not_found", "not_found", "permanent");
     }
 
-    #[cfg(not(feature = "cugraph"))]
     #[test]
-    fn cugraph_table_function_not_found_appends_build_hint_without_feature() {
-        let status = datafusion_error_to_status_for_operation(
-            DataFusionError::Plan("table function 'cugraph_bfs' not found".to_string()),
-            TEST_OPERATION,
-        );
-
-        assert_eq!(status.code(), Code::NotFound);
-        assert_error_metadata(&status, "object_not_found", "not_found", "permanent");
-        assert!(status.message().contains("cugraph_bfs"));
-        assert!(status.message().contains("without the `cugraph` feature"));
-        assert!(status.message().contains("server-cugraph"));
-    }
-
-    #[cfg(feature = "cugraph")]
-    #[test]
-    fn cugraph_table_function_not_found_appends_runtime_hint_with_feature() {
+    fn cugraph_table_function_not_found_appends_registration_hint() {
         let status = datafusion_error_to_status_for_operation(
             DataFusionError::Plan("table function 'cugraph_bfs' not found".to_string()),
             TEST_OPERATION,
@@ -1112,8 +1076,7 @@ mod tests {
         assert_error_metadata(&status, "object_not_found", "not_found", "permanent");
         assert!(status.message().contains("cugraph_bfs"));
         assert!(status.message().contains("NEXUS_SERVER_CUGRAPH_ENABLED=true"));
-        // The runtime build must not tell operators to rebuild.
-        assert!(!status.message().contains("without the `cugraph` feature"));
+        assert!(!status.message().contains("server-cugraph"));
     }
 
     #[test]

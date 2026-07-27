@@ -1,31 +1,52 @@
 use std::sync::Arc;
 
+use arrow::datatypes::{DataType, Schema, SchemaRef};
+#[cfg(feature = "cugraph")]
 use arrow::{
     array::{ArrayRef, Int32Array, Int64Array},
-    datatypes::{DataType, Field, Schema, SchemaRef},
+    datatypes::Field,
     record_batch::RecordBatch,
 };
 use datafusion::{
     catalog::{Session, TableFunction, TableFunctionArgs, TableFunctionImpl, TableProvider},
     common::Result,
-    datasource::{MemTable, TableType, provider_as_source},
+    datasource::TableType,
     execution::{SessionState, context::SessionContext},
-    logical_expr::{Expr, LogicalPlanBuilder, col},
+    logical_expr::Expr,
     physical_plan::ExecutionPlan,
 };
+#[cfg(feature = "cugraph")]
+use datafusion::{
+    datasource::{MemTable, provider_as_source},
+    logical_expr::{LogicalPlanBuilder, col},
+};
+#[cfg(not(feature = "cugraph"))]
+use datafusion::{
+    execution::context::TaskContext,
+    physical_expr::{EquivalenceProperties, Partitioning},
+    physical_plan::{
+        DisplayAs, DisplayFormatType, PlanProperties, SendableRecordBatchStream,
+        execution_plan::{Boundedness, EmissionType},
+    },
+};
 
+#[cfg(feature = "cugraph")]
+use super::GpuIslandHostBoundaryConfig;
 use super::{
-    CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphBfsSource, CugraphBfsSourceVertex,
-    CugraphSqlConfig, CugraphTableReference, CugraphVertexIdDomain, CugraphVertexPairTable,
-    GpuIslandHostBoundaryConfig, bfs_result_schema_for_vertex_domain, datafusion_table_reference,
+    CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphSqlConfig, CugraphTableReference,
+    CugraphVertexIdDomain, CugraphVertexPairTable, bfs_result_schema_for_vertex_domain, datafusion_table_reference,
     parse_cugraph_algorithm_spec, plan_error, validate_similarity_pair_table_schema,
     validate_vertex_id_domain_support_for_call, vertex_id_domain_for_call,
 };
+#[cfg(feature = "cugraph")]
+use super::{CugraphBfsSource, CugraphBfsSourceVertex};
+#[cfg(feature = "cugraph")]
 use crate::{
     cugraph_sql::CugraphAlgoExec, native_exec::NexusNativeExecutionConfig,
     session::session_state_with_native_execution_config, session_config::DataFusionNexusSessionConfig,
 };
 
+#[cfg(feature = "cugraph")]
 #[derive(Debug)]
 pub struct CugraphAlgoTableProvider {
     spec: CugraphAlgorithmSpec,
@@ -33,6 +54,7 @@ pub struct CugraphAlgoTableProvider {
     host_boundary_config: GpuIslandHostBoundaryConfig,
 }
 
+#[cfg(feature = "cugraph")]
 impl CugraphAlgoTableProvider {
     pub fn new(
         spec: CugraphAlgorithmSpec,
@@ -47,6 +69,7 @@ impl CugraphAlgoTableProvider {
     }
 }
 
+#[cfg(feature = "cugraph")]
 #[async_trait::async_trait]
 impl TableProvider for CugraphAlgoTableProvider {
     fn schema(&self) -> SchemaRef {
@@ -101,6 +124,7 @@ impl TableProvider for CugraphAlgoTableProvider {
     }
 }
 
+#[cfg(feature = "cugraph")]
 fn native_execution_config_with_request_options(
     session_state: &SessionState,
     native_execution_config: NexusNativeExecutionConfig,
@@ -114,6 +138,131 @@ fn native_execution_config_with_request_options(
     session_config.apply_graph_memory_calibration_request_options(native_execution_config)
 }
 
+/// Feature-off table provider. It retains the parser-derived output schema but
+/// produces an execution boundary with no input children, so an unavailable
+/// build cannot scan, stage, or materialize an edge source on the host.
+#[cfg(not(feature = "cugraph"))]
+#[derive(Debug)]
+struct CugraphUnavailableTableProvider {
+    spec: CugraphAlgorithmSpec,
+}
+
+#[cfg(not(feature = "cugraph"))]
+impl CugraphUnavailableTableProvider {
+    fn new(spec: CugraphAlgorithmSpec) -> Self {
+        Self { spec }
+    }
+}
+
+#[cfg(not(feature = "cugraph"))]
+#[async_trait::async_trait]
+impl TableProvider for CugraphUnavailableTableProvider {
+    fn schema(&self) -> SchemaRef {
+        Arc::clone(&self.spec.output_schema)
+    }
+
+    fn table_type(&self) -> TableType {
+        TableType::Temporary
+    }
+
+    async fn scan(
+        &self,
+        state: &dyn Session,
+        projection: Option<&Vec<usize>>,
+        filters: &[Expr],
+        limit: Option<usize>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        if !filters.is_empty() {
+            return Err(plan_error("cuGraph SQL table functions do not accept pushed filters in the MVP"));
+        }
+        let spec = validate_cugraph_static_sources(state, &self.spec).await?;
+        Ok(Arc::new(CugraphFeatureDisabledExec::new(
+            spec.algorithm,
+            Arc::clone(&spec.output_schema),
+            projection.cloned(),
+            limit,
+        )?))
+    }
+}
+
+#[cfg(not(feature = "cugraph"))]
+#[derive(Debug)]
+struct CugraphFeatureDisabledExec {
+    algorithm: CugraphAlgorithm,
+    cache: Arc<PlanProperties>,
+}
+
+#[cfg(not(feature = "cugraph"))]
+impl CugraphFeatureDisabledExec {
+    fn new(
+        algorithm: CugraphAlgorithm,
+        schema: SchemaRef,
+        projection: Option<Vec<usize>>,
+        _limit: Option<usize>,
+    ) -> Result<Self> {
+        let schema = match projection {
+            Some(projection) => Arc::new(Schema::new(
+                projection
+                    .iter()
+                    .map(|index| {
+                        schema.fields().get(*index).cloned().ok_or_else(|| {
+                            plan_error(format!("cuGraph output projection index {index} is out of range"))
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()?,
+            )),
+            None => schema,
+        };
+        Ok(Self {
+            algorithm,
+            cache: Arc::new(PlanProperties::new(
+                EquivalenceProperties::new(schema),
+                Partitioning::UnknownPartitioning(1),
+                EmissionType::Final,
+                Boundedness::Bounded,
+            )),
+        })
+    }
+}
+
+#[cfg(not(feature = "cugraph"))]
+impl DisplayAs for CugraphFeatureDisabledExec {
+    fn fmt_as(&self, _: DisplayFormatType, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "CugraphFeatureDisabledExec: algorithm={}, reason=required_feature_disabled, required_feature=cugraph",
+            self.algorithm.function_name()
+        )
+    }
+}
+
+#[cfg(not(feature = "cugraph"))]
+impl ExecutionPlan for CugraphFeatureDisabledExec {
+    fn name(&self) -> &str {
+        "CugraphFeatureDisabledExec"
+    }
+
+    fn properties(&self) -> &Arc<PlanProperties> {
+        &self.cache
+    }
+
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+        Vec::new()
+    }
+
+    fn with_new_children(self: Arc<Self>, children: Vec<Arc<dyn ExecutionPlan>>) -> Result<Arc<dyn ExecutionPlan>> {
+        if children.is_empty() {
+            Ok(self)
+        } else {
+            Err(plan_error("feature-disabled cuGraph SQL execution must not have input children"))
+        }
+    }
+
+    fn execute(&self, _partition: usize, _task_context: Arc<TaskContext>) -> Result<SendableRecordBatchStream> {
+        Err(super::cugraph_feature_disabled(self.algorithm))
+    }
+}
+
 #[derive(Debug)]
 struct CugraphTableFunction {
     algorithm: CugraphAlgorithm,
@@ -123,24 +272,40 @@ struct CugraphTableFunction {
 impl TableFunctionImpl for CugraphTableFunction {
     fn call(&self, args: &[Expr]) -> Result<Arc<dyn TableProvider>> {
         let spec = parse_cugraph_algorithm_spec(self.algorithm, args, &self.config)?;
-        Ok(Arc::new(CugraphAlgoTableProvider::new(
-            spec,
-            self.config.native_execution_config.clone(),
-            self.config.host_boundary_config,
-        )))
+        #[cfg(feature = "cugraph")]
+        {
+            Ok(Arc::new(CugraphAlgoTableProvider::new(
+                spec,
+                self.config.native_execution_config.clone(),
+                self.config.host_boundary_config,
+            )))
+        }
+        #[cfg(not(feature = "cugraph"))]
+        {
+            Ok(Arc::new(CugraphUnavailableTableProvider::new(spec)))
+        }
     }
 
     fn call_with_args(&self, args: TableFunctionArgs) -> Result<Arc<dyn TableProvider>> {
-        let mut spec = parse_cugraph_algorithm_spec(self.algorithm, args.exprs(), &self.config)?;
-        maybe_resolve_bfs_relation_output_schema(&mut spec, args.session());
-        Ok(Arc::new(CugraphAlgoTableProvider::new(
-            spec,
-            self.config.native_execution_config.clone(),
-            self.config.host_boundary_config,
-        )))
+        #[cfg(feature = "cugraph")]
+        {
+            let mut spec = parse_cugraph_algorithm_spec(self.algorithm, args.exprs(), &self.config)?;
+            maybe_resolve_bfs_relation_output_schema(&mut spec, args.session());
+            Ok(Arc::new(CugraphAlgoTableProvider::new(
+                spec,
+                self.config.native_execution_config.clone(),
+                self.config.host_boundary_config,
+            )))
+        }
+        #[cfg(not(feature = "cugraph"))]
+        {
+            let spec = parse_cugraph_algorithm_spec(self.algorithm, args.exprs(), &self.config)?;
+            Ok(Arc::new(CugraphUnavailableTableProvider::new(spec)))
+        }
     }
 }
 
+#[cfg(feature = "cugraph")]
 fn maybe_resolve_bfs_relation_output_schema(spec: &mut CugraphAlgorithmSpec, session: &dyn Session) {
     let CugraphAlgorithmParams::Bfs(params) = &spec.params else {
         return;
@@ -183,6 +348,43 @@ pub fn register_cugraph_udtfs(ctx: &SessionContext, config: CugraphSqlConfig) {
     }
 }
 
+/// Resolve only catalog schemas needed by a cuGraph call.
+///
+/// This deliberately stops before logical or physical child planning. The
+/// feature-off provider uses it to preserve deterministic request diagnostics
+/// while its zero-child execution node prevents source execution and native
+/// graph preparation.
+#[cfg(not(feature = "cugraph"))]
+async fn validate_cugraph_static_sources(
+    state: &dyn Session,
+    original_spec: &CugraphAlgorithmSpec,
+) -> Result<CugraphAlgorithmSpec> {
+    let session_state = state.as_any().downcast_ref::<SessionState>().ok_or_else(|| {
+        plan_error("cuGraph SQL table functions require a DataFusion SessionState for catalog resolution")
+    })?;
+    let mut spec = original_spec.clone();
+    let table_ref = datafusion_table_reference(&spec.table_name);
+    let schema = session_state.schema_for_ref(table_ref.clone())?;
+    let provider = schema
+        .table(table_ref.table())
+        .await?
+        .ok_or_else(|| plan_error(format!("No table named '{}' for cuGraph edge source", spec.table_name)))?;
+    let vertex_domain = validate_edge_source_schema(&spec, &provider.schema())?;
+    if let CugraphAlgorithmParams::Bfs(params) = &spec.params {
+        spec.output_schema = bfs_result_schema_for_vertex_domain(params, &vertex_domain);
+    }
+    for source in predicate_source_specs(&spec) {
+        let table_ref = datafusion_table_reference(&source.table_name);
+        let schema = session_state.schema_for_ref(table_ref.clone())?;
+        let provider = schema.table(table_ref.table()).await?.ok_or_else(|| {
+            plan_error(format!("No table named '{}' for cuGraph side-input source", source.table_name))
+        })?;
+        validate_predicate_source_schema(&source, &provider.schema(), &vertex_domain)?;
+    }
+    Ok(spec)
+}
+
+#[cfg(feature = "cugraph")]
 fn edge_source_projection(spec: &CugraphAlgorithmSpec) -> Vec<Expr> {
     let mut projection = vec![col(&spec.src_col), col(&spec.dst_col)];
     if let Some(weight) = &spec.weight_col {
@@ -194,6 +396,7 @@ fn edge_source_projection(spec: &CugraphAlgorithmSpec) -> Vec<Expr> {
     projection
 }
 
+#[cfg(feature = "cugraph")]
 async fn predicate_source_plans(
     planning_state: &SessionState,
     session_state: &SessionState,
@@ -219,6 +422,7 @@ async fn predicate_source_plans(
     Ok(plans)
 }
 
+#[cfg(feature = "cugraph")]
 async fn literal_bfs_source_plan(
     state: &dyn Session,
     spec: &CugraphAlgorithmSpec,
@@ -442,10 +646,13 @@ fn validate_predicate_source_schema(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "cugraph")]
     use datafusion::execution::SessionStateBuilder;
 
+    #[cfg(feature = "cugraph")]
     use super::*;
 
+    #[cfg(feature = "cugraph")]
     #[test]
     fn native_execution_config_with_request_options_reads_session_request_grant() {
         let mut builder = SessionStateBuilder::new();

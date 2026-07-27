@@ -51,7 +51,6 @@ fn base_config() -> ServerConfig {
         workspace: None,
         #[cfg(feature = "iceberg")]
         iceberg: None,
-        #[cfg(feature = "cugraph")]
         cugraph: None,
     }
 }

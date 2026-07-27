@@ -29,6 +29,8 @@ use datafusion::{
     execution::SessionStateBuilder,
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
+#[cfg(not(feature = "cugraph"))]
+use datafusion_nexus::server::ERROR_OPERATION_METADATA_KEY;
 use datafusion_nexus::{
     backend::NexusGpuBackend,
     server::{
