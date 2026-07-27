@@ -75,6 +75,18 @@ pub fn cached_cudf_discovery_matches_env(cache: &str) -> bool {
     cached_cudf_discovery_matches(cache, install_dir.as_deref(), build_dir.as_deref())
 }
 
+pub fn cached_cmake_compilers_match(cache: &str, c_compiler: &Path, cxx_compiler: &Path) -> bool {
+    cached_cmake_compiler_matches(cache, "CMAKE_C_COMPILER", c_compiler)
+        && cached_cmake_compiler_matches(cache, "CMAKE_CXX_COMPILER", cxx_compiler)
+}
+
+fn cached_cmake_compiler_matches(cache: &str, cache_key: &str, expected: &Path) -> bool {
+    let Some(cached) = cmake_cache_value(cache, cache_key) else { return false };
+    // CMake invalidates its cache when the compiler path's spelling changes,
+    // even when both spellings resolve to the same executable through a symlink.
+    Path::new(cached) == expected
+}
+
 pub fn cached_cudf_discovery_matches(cache: &str, install_dir: Option<&Path>, build_dir: Option<&Path>) -> bool {
     if let Some(install_dir) = install_dir {
         return cmake_cache_path_matches(cache, "CUDF_INSTALL_DIR", install_dir)
@@ -426,6 +438,15 @@ pub fn resolve_compiler_from_env(env_key: &str) -> Result<Option<PathBuf>, Strin
         },
         Err(env::VarError::NotPresent) => Ok(None),
         Err(env::VarError::NotUnicode(_)) => Err(format!("{env_key} contained non-Unicode data")),
+    }
+}
+
+/// Resolve the compiler selected by an optional `CC` / `CXX`-style override,
+/// falling back to the same conventional executable names used by cc-rs.
+pub fn resolve_compiler_from_env_or_name(env_key: &str, default_name: &str) -> Result<PathBuf, String> {
+    match resolve_compiler_from_env(env_key)? {
+        Some(compiler) => Ok(compiler),
+        None => find_required_executable(default_name),
     }
 }
 
