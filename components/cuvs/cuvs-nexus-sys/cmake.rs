@@ -68,7 +68,7 @@ fn canonical_existing_dir(path: impl AsRef<Path>, description: &str) -> Result<P
     fs::canonicalize(path).with_context(|| format!("failed to canonicalize {description} at {}", path.display()))
 }
 
-fn reject_private_dependency_path(path: &Path) -> Result<()> {
+pub(crate) fn reject_private_dependency_path(path: &Path) -> Result<()> {
     let private = path.components().any(|component| matches!(component, Component::Normal(name) if name == "_deps"));
     anyhow::ensure!(
         !private,

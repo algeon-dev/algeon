@@ -1,6 +1,13 @@
-use std::mem::{align_of, offset_of, size_of};
+use std::{
+    ffi::c_int,
+    mem::{align_of, offset_of, size_of},
+};
 
-use cuvs_sys::{EXPECTED_CUVS_VERSION, cuvsKMeansParams_v2, cuvsPcaParams, validate_runtime_version};
+use cuvs_sys::{
+    DLManagedTensor, EXPECTED_CUVS_VERSION, cuvsError_t, cuvsKMeansFit_v2, cuvsKMeansParams_v2, cuvsKMeansParams_v2_t,
+    cuvsKMeansParamsCreate_v2, cuvsKMeansParamsDestroy_v2, cuvsKMeansPredict_v2, cuvsPcaParams, cuvsResources_t,
+    cuvsVersionGet, validate_runtime_version,
+};
 
 unsafe extern "C" {
     fn cuvs_nexus_sizeof_kmeans_params_v2() -> usize;
@@ -35,4 +42,30 @@ fn generated_rust_layout_matches_the_pinned_c_headers() {
 #[test]
 fn loaded_runtime_matches_the_exact_binding_version() {
     assert_eq!(validate_runtime_version().expect("cuvsVersionGet must succeed"), EXPECTED_CUVS_VERSION);
+}
+
+#[test]
+fn generated_bindings_expose_the_pinned_kmeans_v2_function_surface() {
+    let _: unsafe extern "C" fn(*mut cuvsKMeansParams_v2_t) -> cuvsError_t = cuvsKMeansParamsCreate_v2;
+    let _: unsafe extern "C" fn(cuvsKMeansParams_v2_t) -> cuvsError_t = cuvsKMeansParamsDestroy_v2;
+    let _: unsafe extern "C" fn(
+        cuvsResources_t,
+        cuvsKMeansParams_v2_t,
+        *mut DLManagedTensor,
+        *mut DLManagedTensor,
+        *mut DLManagedTensor,
+        *mut f64,
+        *mut c_int,
+    ) -> cuvsError_t = cuvsKMeansFit_v2;
+    let _: unsafe extern "C" fn(
+        cuvsResources_t,
+        cuvsKMeansParams_v2_t,
+        *mut DLManagedTensor,
+        *mut DLManagedTensor,
+        *mut DLManagedTensor,
+        *mut DLManagedTensor,
+        bool,
+        *mut f64,
+    ) -> cuvsError_t = cuvsKMeansPredict_v2;
+    let _: unsafe extern "C" fn(*mut u16, *mut u16, *mut u16) -> cuvsError_t = cuvsVersionGet;
 }

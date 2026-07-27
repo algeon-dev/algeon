@@ -8,7 +8,7 @@ install_dir="${CUVS_INSTALL_DIR:-${repo_root}/cuvs-install}"
 cudf_install_dir="${CUDF_INSTALL_DIR:-$(cd -- "${repo_root}/.." && pwd -P)/cudf-nexus/cudf-install}"
 expected_revision="2bd7cd71d31e39eb9ee00c2a250085a1afb84977"
 
-"${repo_root}/scripts/check_cuvs_source.sh"
+(cd "${repo_root}" && cargo xtask source check)
 
 cuda_toolkit_root="${CUDAToolkit_ROOT:-${CUDA_HOME:-${CUDA_PATH:-/usr/local/cuda}}}"
 cuda_runtime_lib=""
