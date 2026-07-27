@@ -23,7 +23,7 @@
 //! };
 //!
 //! # fn main() -> Result<(), cugraph::Error> {
-//! let handle = ResourceHandle::new()?;
+//! let handle = ResourceHandle::for_current_device()?;
 //!
 //! let src = DeviceArray::from_slice(&handle, &[0i32, 1, 2])?;
 //! let dst = DeviceArray::from_slice(&handle, &[1i32, 2, 0])?;

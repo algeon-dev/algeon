@@ -13,7 +13,7 @@
 //!     ResourceHandle,
 //! };
 //!
-//! let handle = ResourceHandle::new().unwrap();
+//! let handle = ResourceHandle::for_current_device().unwrap();
 //!
 //! let src = DeviceArray::from_slice(&handle, &[0i32, 1, 2, 3]).unwrap();
 //! let dst = DeviceArray::from_slice(&handle, &[1i32, 2, 3, 0]).unwrap();

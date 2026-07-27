@@ -21,7 +21,7 @@
 //!
 //! ```no_run
 //! # use cugraph::{DeviceArray, GraphBuilder, ResourceHandle, Transposed};
-//! # let handle = ResourceHandle::new().unwrap();
+//! # let handle = ResourceHandle::for_current_device().unwrap();
 //! # let src = DeviceArray::from_slice(&handle, &[0i32, 1, 2]).unwrap();
 //! # let dst = DeviceArray::from_slice(&handle, &[1i32, 2, 0]).unwrap();
 //! let graph = GraphBuilder::new(&src.view(), &dst.view())
@@ -174,7 +174,7 @@ impl<T> std::fmt::Debug for Graph<T> {
 ///
 /// ```no_run
 /// # use cugraph::{DeviceArray, GraphBuilder, ResourceHandle, Transposed};
-/// # let handle = ResourceHandle::new().unwrap();
+/// # let handle = ResourceHandle::for_current_device().unwrap();
 /// # let src = DeviceArray::from_slice(&handle, &[0i32, 1, 2]).unwrap();
 /// # let dst = DeviceArray::from_slice(&handle, &[1i32, 2, 0]).unwrap();
 /// # let wgt = DeviceArray::from_slice(&handle, &[1.0f32, 2.0, 3.0]).unwrap();
@@ -226,7 +226,7 @@ impl<'a> GraphBuilder<'a> {
     ///
     /// ```no_run
     /// # use cugraph::{DeviceArray, Forward, GraphBuilder, ResourceHandle};
-    /// # let handle = ResourceHandle::new().unwrap();
+    /// # let handle = ResourceHandle::for_current_device().unwrap();
     /// let src = DeviceArray::from_slice(&handle, &[0i32, 1, 2]).unwrap();
     /// let dst = DeviceArray::from_slice(&handle, &[1i32, 2, 0]).unwrap();
     ///
@@ -666,7 +666,7 @@ impl Graph<Transposed> {
     ///
     /// ```no_run
     /// # use cugraph::{DeviceArray, GraphBuilder, PageRankOptions, ResourceHandle, Transposed};
-    /// # let handle = ResourceHandle::new().unwrap();
+    /// # let handle = ResourceHandle::for_current_device().unwrap();
     /// # let src = DeviceArray::from_slice(&handle, &[0i32, 1, 2]).unwrap();
     /// # let dst = DeviceArray::from_slice(&handle, &[1i32, 2, 0]).unwrap();
     /// # let mut graph = GraphBuilder::new(&src.view(), &dst.view())
@@ -779,7 +779,7 @@ impl Graph<Forward> {
     ///
     /// ```no_run
     /// # use cugraph::{BfsParams, DeviceArray, Forward, GraphBuilder, ResourceHandle};
-    /// # let handle = ResourceHandle::new().unwrap();
+    /// # let handle = ResourceHandle::for_current_device().unwrap();
     /// # let src = DeviceArray::from_slice(&handle, &[0i32, 1, 2]).unwrap();
     /// # let dst = DeviceArray::from_slice(&handle, &[1i32, 2, 0]).unwrap();
     /// # let mut graph = GraphBuilder::new(&src.view(), &dst.view())
@@ -840,7 +840,7 @@ impl<T: Transposition> Graph<T> {
     ///
     /// ```no_run
     /// # use cugraph::*;
-    /// # let handle = ResourceHandle::new().unwrap();
+    /// # let handle = ResourceHandle::for_current_device().unwrap();
     /// # let mut rng = RngState::new(&handle, 42).unwrap();
     /// # let src = DeviceArray::from_slice(&handle, &[0i32, 1, 2]).unwrap();
     /// # let dst = DeviceArray::from_slice(&handle, &[1i32, 2, 0]).unwrap();
