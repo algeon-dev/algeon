@@ -5,7 +5,8 @@
 //!
 //! # Key concepts
 //!
-//! - **[`ResourceHandle`]** — manages GPU resources (CUDA stream, RAFT handle).
+//! - **[`ResourceHandle`]** — manages GPU resources (CUDA stream and cuGraph
+//!   resource handle).
 //!   Required by every cuGraph operation. Not thread-safe.
 //! - **[`DeviceArray<T>`]** — owning GPU array with compile-time element type.
 //!   Freed on drop. Create views via [`DeviceArray::view()`].
@@ -53,9 +54,11 @@
 //!
 //! # cudf interop
 //!
-//! The [`cudf_interop`] module provides zero-copy graph construction from
+//! The [`cudf_interop`] module provides single-GPU graph construction from
 //! cudf [`Series`](cudf::Series) and [`DataFrame`](cudf::DataFrame), plus
-//! result-to-DataFrame conversions.
+//! result-to-DataFrame conversions. Prefer its prepared-export entry points
+//! for new shared-contract integrations; borrowed zero-copy entry points remain
+//! available as compatibility paths.
 
 pub mod array;
 pub mod centrality;
@@ -84,7 +87,9 @@ pub use centrality::{
 // cudf interop — graph construction
 pub use cudf_interop::{
     DataFrameGraphOptions, IntoSeries, LoadedGraph, ParquetGraphOptions, SeriesGraphOptions, TableGraphOptions,
-    device_array_view_from_slice, graph_from_dataframe, graph_from_parquet, graph_from_series, graph_from_table_view,
+    device_array_view_from_slice, graph_from_borrowed_columns, graph_from_borrowed_table_view, graph_from_dataframe,
+    graph_from_parquet, graph_from_prepared_columns, graph_from_prepared_table_export, graph_from_series,
+    graph_from_table_view,
 };
 // Error handling
 pub use error::{Error, ErrorKind, ErrorStatus};

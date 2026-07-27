@@ -8,20 +8,26 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use cudf::{core::Table, io::parquet};
+use cudf::{
+    core::Table,
+    interop::{InteropErrorKind, RuntimeCompletionAuthority},
+    io::parquet,
+};
 use cugraph::{
     array::DeviceArray,
+    centrality::PageRankParams,
     cudf_interop::{
         DataFrameGraphOptions, ParquetGraphOptions, TableGraphOptions, graph_from_dataframe, graph_from_parquet,
-        graph_from_table_view,
+        graph_from_prepared_table_export, graph_from_table_view,
     },
-    graph::{Forward, GraphBuilder, Transposed},
+    graph::{Forward, Graph, GraphBuilder, Transposed},
     handle::ResourceHandle,
     traversal::BfsParams,
     types::GraphProperties,
 };
 
 static NEXT_TEMP_FIXTURE_ID: AtomicUsize = AtomicUsize::new(0);
+const EDGE_COLUMN_NAMES: &[&str] = &["src", "dst", "weight"];
 
 fn explicit_runtime() -> cudf::Runtime {
     cudf::Runtime::builder().build().expect("runtime")
@@ -32,6 +38,87 @@ fn bfs_graph_table(runtime: &cudf::Runtime) -> Table {
     let dst = runtime.column_from_slice(&[1i32, 3, 4, 0, 1, 3, 5, 5]).expect("dst");
     let wgt = runtime.column_from_slice(&[0.1f32, 2.1, 1.1, 5.1, 3.1, 4.1, 7.2, 3.2]).expect("wgt");
     Table::from_columns(vec![src, dst, wgt]).expect("bfs graph table")
+}
+
+fn bfs_graph_dataframe(runtime: &cudf::Runtime) -> cudf::DataFrame {
+    let src = runtime.series("src", &[0i32, 1, 1, 2, 2, 2, 3, 4]).expect("src");
+    let dst = runtime.series("dst", &[1i32, 3, 4, 0, 1, 3, 5, 5]).expect("dst");
+    let wgt = runtime.series("weight", &[0.1f32, 2.1, 1.1, 5.1, 3.1, 4.1, 7.2, 3.2]).expect("weight");
+    cudf::DataFrame::from_series([src, dst, wgt]).expect("bfs graph dataframe")
+}
+
+fn pagerank_graph_dataframe(runtime: &cudf::Runtime) -> cudf::DataFrame {
+    let src = runtime.series("src", &[0i32, 1, 2, 1, 2, 0]).expect("src");
+    let dst = runtime.series("dst", &[1i32, 2, 0, 0, 1, 2]).expect("dst");
+    let wgt = runtime.series("weight", &[1.0f32, 2.0, 3.0, 1.0, 2.0, 3.0]).expect("weight");
+    cudf::DataFrame::from_series([src, dst, wgt]).expect("pagerank graph dataframe")
+}
+
+fn i32_series_device_ptr(series: &cudf::Series) -> usize {
+    series.as_column_view().expect("column view").device_slice::<i32>().expect("i32 device slice").as_ptr() as usize
+}
+
+fn f32_series_device_ptr(series: &cudf::Series) -> usize {
+    series.as_column_view().expect("column view").device_slice::<f32>().expect("f32 device slice").as_ptr() as usize
+}
+
+fn assert_named_edge_columns(df: &cudf::DataFrame) {
+    assert_eq!(df.column_names().as_slice(), EDGE_COLUMN_NAMES);
+}
+
+fn build_directed_named_dataframe_graph(
+    handle: &ResourceHandle,
+    df: &cudf::DataFrame,
+) -> cugraph::error::Result<Graph<Forward>> {
+    let opts = DataFrameGraphOptions::new("src", "dst")
+        .weight_col("weight")
+        .properties(GraphProperties::directed())
+        .renumber();
+    graph_from_dataframe::<Forward>(handle, df, &opts)
+}
+
+fn build_undirected_named_dataframe_graph(
+    handle: &ResourceHandle,
+    df: &cudf::DataFrame,
+) -> cugraph::error::Result<Graph<Transposed>> {
+    let opts = DataFrameGraphOptions::new("src", "dst")
+        .weight_col("weight")
+        .properties(GraphProperties::undirected())
+        .renumber();
+    graph_from_dataframe::<Transposed>(handle, df, &opts)
+}
+
+fn build_directed_prepared_graph(
+    handle: &ResourceHandle,
+    export: &cudf::interop::PreparedTableExport<'_>,
+) -> cugraph::error::Result<Graph<Forward>> {
+    let opts = TableGraphOptions::new(0, 1).weight_col(2).properties(GraphProperties::directed()).renumber();
+    graph_from_prepared_table_export::<Forward>(handle, export, &opts)
+}
+
+fn build_undirected_prepared_graph(
+    handle: &ResourceHandle,
+    export: &cudf::interop::PreparedTableExport<'_>,
+) -> cugraph::error::Result<Graph<Transposed>> {
+    let opts = TableGraphOptions::new(0, 1).weight_col(2).properties(GraphProperties::undirected()).renumber();
+    graph_from_prepared_table_export::<Transposed>(handle, export, &opts)
+}
+
+fn bfs_distance_map(handle: &ResourceHandle, graph: &mut Graph<Forward>, source: i32) -> HashMap<i32, i32> {
+    let sources = DeviceArray::from_slice(handle, &[source]).expect("sources");
+    let result = graph.bfs(handle, &sources.view(), &BfsParams::default()).expect("bfs");
+
+    let vertices: Vec<i32> = result.vertex_ids().expect("vertex_ids").to_vec_i32(handle).expect("vertices");
+    let distances: Vec<i32> = result.distances().expect("distances").to_vec_i32(handle).expect("distances");
+    vertices.into_iter().zip(distances).collect()
+}
+
+fn pagerank_score_map(handle: &ResourceHandle, graph: &mut Graph<Transposed>) -> HashMap<i32, f32> {
+    let result = graph.pagerank_simple(handle, &PageRankParams::default()).expect("pagerank");
+
+    let vertices: Vec<i32> = result.vertex_ids().expect("vertex_ids").to_vec_i32(handle).expect("vertices");
+    let scores: Vec<f32> = result.scores().expect("scores").to_vec_f32(handle).expect("scores");
+    vertices.into_iter().zip(scores).collect()
 }
 
 fn write_parquet_table(view: &cudf::core::TableView<'_>, path: &Path, column_names: &[&str], runtime: &cudf::Runtime) {
@@ -453,6 +540,236 @@ fn graph_from_dataframe_rejects_unknown_column_name() {
 
     let err = result.expect_err("should reject unknown column name");
     assert_eq!(err.kind(), cugraph::error::ErrorKind::InvalidInput);
+}
+
+/// Validate the primary prepared-export graph build path against the explicit
+/// deep-copy-import fallback path using the same producer-rooted table export.
+#[test]
+fn prepared_export_vs_deep_copy_import_bfs_equivalence() {
+    let handle = ResourceHandle::new().expect("handle");
+    let producer_runtime = explicit_runtime();
+    let consumer_runtime = explicit_runtime();
+
+    let producer_df = bfs_graph_dataframe(&producer_runtime);
+    let export = producer_df.try_prepare_device_table_export().expect("prepared export");
+    let mut prepared_graph = build_directed_prepared_graph(&handle, &export).expect("prepared graph");
+
+    let imported_df = cudf::DataFrame::try_import_from_prepared_table_export_into_runtime(&export, &consumer_runtime)
+        .expect("deep-copy import");
+    assert_named_edge_columns(&imported_df);
+    let mut fallback_graph = build_directed_named_dataframe_graph(&handle, &imported_df).expect("fallback graph");
+
+    let prepared_map = bfs_distance_map(&handle, &mut prepared_graph, 0);
+    let fallback_map = bfs_distance_map(&handle, &mut fallback_graph, 0);
+
+    assert_eq!(prepared_map, fallback_map, "deep-copy import fallback should preserve BFS semantics");
+}
+
+/// Validate that the deep-copy-import fallback produces the same PageRank
+/// semantics as direct prepared-export consumption.
+#[test]
+fn prepared_export_vs_deep_copy_import_pagerank_equivalence() {
+    let handle = ResourceHandle::new().expect("handle");
+    let producer_runtime = explicit_runtime();
+    let consumer_runtime = explicit_runtime();
+
+    let producer_df = pagerank_graph_dataframe(&producer_runtime);
+    let export = producer_df.try_prepare_device_table_export().expect("prepared export");
+    let mut prepared_graph = build_undirected_prepared_graph(&handle, &export).expect("prepared graph");
+
+    let imported_df = cudf::DataFrame::try_import_from_prepared_table_export_into_runtime(&export, &consumer_runtime)
+        .expect("deep-copy import");
+    assert_named_edge_columns(&imported_df);
+    let mut fallback_graph = build_undirected_named_dataframe_graph(&handle, &imported_df).expect("fallback graph");
+
+    let prepared_map = pagerank_score_map(&handle, &mut prepared_graph);
+    let fallback_map = pagerank_score_map(&handle, &mut fallback_graph);
+
+    assert_eq!(prepared_map.len(), fallback_map.len(), "vertex coverage should match");
+    for (vertex, prepared_score) in prepared_map {
+        let fallback_score = fallback_map.get(&vertex).expect("fallback result should contain every prepared vertex");
+        assert!(
+            (prepared_score - fallback_score).abs() <= 1.0e-6,
+            "vertex {} score mismatch: prepared={} fallback={}",
+            vertex,
+            prepared_score,
+            fallback_score
+        );
+    }
+}
+
+/// Validate that prepared-host export remains a correct single-GPU fallback:
+/// the host-materialized export imports into a consumer runtime and preserves
+/// the same BFS semantics as direct prepared-device consumption.
+#[test]
+fn prepared_host_export_import_bfs_matches_prepared_device_path() {
+    let handle = ResourceHandle::new().expect("handle");
+    let producer_runtime = explicit_runtime();
+    let consumer_runtime = explicit_runtime();
+
+    let producer_df = bfs_graph_dataframe(&producer_runtime);
+    let prepared_export = producer_df.try_prepare_device_table_export().expect("prepared device export");
+    let mut prepared_graph = build_directed_prepared_graph(&handle, &prepared_export).expect("prepared graph");
+
+    let host_export = producer_df.try_prepare_host_table_export().expect("prepared host export");
+    let imported_df = cudf::DataFrame::try_import_from_prepared_table_export_into_runtime(&host_export, &consumer_runtime)
+        .expect("host fallback import");
+    assert_named_edge_columns(&imported_df);
+    let mut fallback_graph = build_directed_named_dataframe_graph(&handle, &imported_df).expect("fallback graph");
+
+    let prepared_map = bfs_distance_map(&handle, &mut prepared_graph, 0);
+    let fallback_map = bfs_distance_map(&handle, &mut fallback_graph, 0);
+
+    assert_eq!(prepared_map, fallback_map, "prepared host export fallback should preserve BFS semantics");
+}
+
+/// Validate that prepared-host export preserves one algorithm-shaped path
+/// after host-to-device fallback import into the consumer runtime.
+#[test]
+fn prepared_host_export_import_pagerank_matches_prepared_device_path() {
+    let handle = ResourceHandle::new().expect("handle");
+    let producer_runtime = explicit_runtime();
+    let consumer_runtime = explicit_runtime();
+
+    let producer_df = pagerank_graph_dataframe(&producer_runtime);
+    let prepared_export = producer_df.try_prepare_device_table_export().expect("prepared device export");
+    let mut prepared_graph = build_undirected_prepared_graph(&handle, &prepared_export).expect("prepared graph");
+
+    let host_export = producer_df.try_prepare_host_table_export().expect("prepared host export");
+    let imported_df = cudf::DataFrame::try_import_from_prepared_table_export_into_runtime(&host_export, &consumer_runtime)
+        .expect("host fallback import");
+    assert_named_edge_columns(&imported_df);
+    let mut fallback_graph = build_undirected_named_dataframe_graph(&handle, &imported_df).expect("fallback graph");
+
+    let prepared_map = pagerank_score_map(&handle, &mut prepared_graph);
+    let fallback_map = pagerank_score_map(&handle, &mut fallback_graph);
+
+    assert_eq!(prepared_map.len(), fallback_map.len(), "vertex coverage should match");
+    for (vertex, prepared_score) in prepared_map {
+        let fallback_score = fallback_map.get(&vertex).expect("fallback result should contain every prepared vertex");
+        assert!(
+            (prepared_score - fallback_score).abs() <= 1.0e-6,
+            "vertex {} score mismatch: prepared={} fallback={}",
+            vertex,
+            prepared_score,
+            fallback_score
+        );
+    }
+}
+
+/// Owned-transfer round-trips should preserve high-level schema names and, for
+/// uniquely owned cudf-rs producers, zero-copy device-buffer identity.
+#[test]
+fn owned_transfer_zero_copy_import_preserves_device_buffers_and_bfs_semantics() {
+    let handle = ResourceHandle::new().expect("handle");
+    let runtime = explicit_runtime();
+
+    let src = runtime.series("src", &[0i32, 1, 1, 2, 2, 2, 3, 4]).expect("src");
+    let dst = runtime.series("dst", &[1i32, 3, 4, 0, 1, 3, 5, 5]).expect("dst");
+    let wgt = runtime.series("weight", &[0.1f32, 2.1, 1.1, 5.1, 3.1, 4.1, 7.2, 3.2]).expect("weight");
+
+    let src_ptr = i32_series_device_ptr(&src);
+    let dst_ptr = i32_series_device_ptr(&dst);
+    let wgt_ptr = f32_series_device_ptr(&wgt);
+
+    let df = cudf::DataFrame::from_series([src, dst, wgt]).expect("dataframe");
+    let transfer = df.try_into_owned_transfer().expect("owned transfer");
+    let imported_df = cudf::DataFrame::try_from_owned_device_table_transfer(transfer).expect("owned-transfer import");
+
+    assert_named_edge_columns(&imported_df);
+    assert_eq!(i32_series_device_ptr(&imported_df.series("src").expect("src series")), src_ptr);
+    assert_eq!(i32_series_device_ptr(&imported_df.series("dst").expect("dst series")), dst_ptr);
+    assert_eq!(f32_series_device_ptr(&imported_df.series("weight").expect("weight series")), wgt_ptr);
+
+    let mut graph = build_directed_named_dataframe_graph(&handle, &imported_df).expect("graph_from_dataframe");
+    let dist_map = bfs_distance_map(&handle, &mut graph, 0);
+
+    assert_eq!(dist_map[&0], 0);
+    assert_eq!(dist_map[&1], 1);
+    assert_eq!(dist_map[&3], 2);
+    assert_eq!(dist_map[&4], 2);
+    assert_eq!(dist_map[&5], 3);
+}
+
+/// The owned-transfer fast path should remain semantically equivalent to
+/// consuming the same graph through a direct DataFrame adapter path.
+#[test]
+fn owned_transfer_import_pagerank_matches_direct_dataframe_path() {
+    let handle = ResourceHandle::new().expect("handle");
+    let runtime = explicit_runtime();
+
+    let direct_df = pagerank_graph_dataframe(&runtime);
+    let mut direct_graph = build_undirected_named_dataframe_graph(&handle, &direct_df).expect("direct graph");
+
+    let transferred_df = pagerank_graph_dataframe(&runtime);
+    let transfer = transferred_df.try_into_owned_transfer().expect("owned transfer");
+    let imported_df = cudf::DataFrame::try_from_owned_device_table_transfer(transfer).expect("owned-transfer import");
+    assert_named_edge_columns(&imported_df);
+
+    let mut imported_graph = build_undirected_named_dataframe_graph(&handle, &imported_df).expect("imported graph");
+
+    let direct_map = pagerank_score_map(&handle, &mut direct_graph);
+    let imported_map = pagerank_score_map(&handle, &mut imported_graph);
+
+    assert_eq!(direct_map.len(), imported_map.len(), "vertex coverage should match");
+    for (vertex, direct_score) in direct_map {
+        let imported_score = imported_map.get(&vertex).expect("imported result should contain every direct vertex");
+        assert!(
+            (direct_score - imported_score).abs() <= 1.0e-6,
+            "vertex {} score mismatch: direct={} imported={}",
+            vertex,
+            direct_score,
+            imported_score
+        );
+    }
+}
+
+/// Runtime-backed owned-transfer release is mutually exclusive with native
+/// import: once cudf claims the transfer back into native ownership, the
+/// releaser must reject later release attempts.
+#[test]
+fn owned_transfer_with_release_import_invalidates_releaser() {
+    let handle = ResourceHandle::new().expect("handle");
+    let runtime = explicit_runtime();
+
+    let producer_df = bfs_graph_dataframe(&runtime);
+    let (transfer, releaser) = producer_df.try_into_owned_transfer_with_release().expect("owned transfer with release");
+    let imported_df = cudf::DataFrame::try_from_owned_device_table_transfer(transfer).expect("owned-transfer import");
+
+    let mut graph = build_directed_named_dataframe_graph(&handle, &imported_df).expect("graph_from_dataframe");
+    let dist_map = bfs_distance_map(&handle, &mut graph, 0);
+    assert!(!dist_map.is_empty(), "imported owned-transfer graph should produce bfs results");
+
+    let err = releaser
+        .release(RuntimeCompletionAuthority::same_device_stream(runtime.stream()))
+        .expect_err("releaser should be invalid after native import has already claimed the owned-transfer root");
+    assert_eq!(err.kind(), InteropErrorKind::ProfileUnsupported);
+    let err_text = format!("{}", err);
+    assert!(
+        err_text.contains("ownership state changed") || err_text.contains("no longer has importable native ownership"),
+        "unexpected releaser error: {}",
+        err
+    );
+}
+
+/// Runtime-backed table-transfer release should accept a same-device consumer
+/// stream when the transfer is released instead of imported.
+#[test]
+fn owned_transfer_with_release_accepts_same_device_stream_completion() {
+    let runtime = explicit_runtime();
+    let producer_df = bfs_graph_dataframe(&runtime);
+    let (transfer, releaser) = producer_df.try_into_owned_transfer_with_release().expect("owned transfer with release");
+
+    assert_eq!(
+        transfer.release_contract().completion(),
+        cudf::interop::TransferCompletionRule::ReleaseWaitsOnConsumerSignal
+    );
+    assert_eq!(transfer.release_contract().synchronization(), cudf::interop::ReleaseSynchronization::Asynchronous);
+
+    drop(transfer);
+    releaser
+        .release(RuntimeCompletionAuthority::same_device_stream(runtime.stream()))
+        .expect("runtime-backed owned-transfer release should accept same-device stream completion");
 }
 
 // ── to_dataframe() tests ────────────────────────────────────────────────────
