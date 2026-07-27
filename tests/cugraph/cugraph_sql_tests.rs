@@ -7,10 +7,7 @@ use std::{
 };
 
 use arrow::{
-    array::{
-        Array, ArrayRef, BooleanArray, Float32Array, Float64Array, Int32Array, Int64Array, LargeStringArray,
-        StringArray,
-    },
+    array::{Array, ArrayRef, BooleanArray, Float32Array, Float64Array, Int32Array, Int64Array, StringArray},
     datatypes::{DataType, Field, Schema},
     record_batch::RecordBatch,
 };
@@ -27,10 +24,9 @@ use datafusion_nexus::{
     backend::{NexusAdmissionPolicy, NexusGpuBackend},
     error::{DataFusionErrorExt, Error, ErrorCode},
     graph_sql::{
-        CUGRAPH_DESCRIBE_ALGORITHM_FUNCTION, CUGRAPH_LIST_ALGORITHMS_FUNCTION, CUGRAPH_OPERATION_REGISTRY,
-        CUGRAPH_VALIDATE_CALL_FUNCTION, CugraphAlgorithm, CugraphAlgorithmParams, CugraphBfsOutputMode,
-        CugraphBfsSource, CugraphBfsSourceVertex, CugraphGraphConstructionPolicy, CugraphSqlConfig,
-        parse_cugraph_algorithm_spec, stable_result_schema,
+        CUGRAPH_OPERATION_REGISTRY, CugraphAlgorithm, CugraphAlgorithmParams, CugraphBfsOutputMode, CugraphBfsSource,
+        CugraphBfsSourceVertex, CugraphGraphConstructionPolicy, CugraphSqlConfig, parse_cugraph_algorithm_spec,
+        stable_result_schema,
     },
     native_exec::{NexusNativeComposedExec, NexusNativeExec},
     native_report::NativeDataFusionExecutionMetrics,

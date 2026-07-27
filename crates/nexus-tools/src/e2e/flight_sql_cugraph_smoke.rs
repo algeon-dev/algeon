@@ -86,7 +86,7 @@ pub async fn run(url_arg: Option<String>) -> SmokeResult<()> {
     let batches = execute_batches(
         &mut client,
         "SELECT function_name \
-         FROM cugraph_list_algorithms() \
+         FROM gpu_list_functions() \
          WHERE function_name IN ('cugraph_bfs', 'cugraph_pagerank') \
          ORDER BY function_name",
     )
@@ -96,11 +96,10 @@ pub async fn run(url_arg: Option<String>) -> SmokeResult<()> {
     require_string(batch, 0, 1, "cugraph_pagerank")?;
 
     let validate_sql = format!(
-        r#"SELECT valid, error_code, table_resolved, src_dtype, dst_dtype, weight_dtype, would_execute_gpu
-           FROM cugraph_validate_call(
+        r#"SELECT valid, error_code, relations_resolved, details_json, would_execute_gpu
+           FROM gpu_validate_call(
              'cugraph_bfs',
-             '{target_view}',
-             '{{"source_vertex":0,"src_col":"src","dst_col":"dst","weight_col":{weight_col_json},"options":{{"depth_limit":2}}}}'
+             '{{"schema_version":1,"relations":{{"edges":{{"table":"{target_view}"}}}},"options":{{"source_vertex":0,"src_col":"src","dst_col":"dst","weight_col":{weight_col_json},"depth_limit":2}}}}'
            )"#,
         weight_col_json = weight_col.map(|column| format!("\"{column}\"")).unwrap_or_else(|| "null".to_string())
     );
@@ -109,13 +108,20 @@ pub async fn run(url_arg: Option<String>) -> SmokeResult<()> {
     require_bool(batch, 0, 0, true)?;
     require_null(batch, 1, 0)?;
     require_bool(batch, 2, 0, true)?;
-    require_string(batch, 3, 0, "Int64")?;
-    require_string(batch, 4, 0, "Int64")?;
-    match weight_col {
-        Some(_) => require_string(batch, 5, 0, "Float64")?,
-        None => require_null(batch, 5, 0)?,
+    let details: serde_json::Value = serde_json::from_str(string_at(batch, 3, 0)?)?;
+    if details["edges"]["src_dtype"] != "Int64" || details["edges"]["dst_dtype"] != "Int64" {
+        return Err(format!("unexpected cuGraph edge dtypes: {details}").into());
     }
-    require_bool(batch, 6, 0, true)?;
+    match weight_col {
+        Some(_) if details["edges"]["weight_dtype"] != "Float64" => {
+            return Err(format!("unexpected cuGraph edge weight dtype: {details}").into());
+        },
+        None if !details["edges"]["weight_dtype"].is_null() => {
+            return Err(format!("unexpected cuGraph edge weight dtype: {details}").into());
+        },
+        _ => {},
+    }
+    require_bool(batch, 4, 0, true)?;
 
     let graph_weight_arg = weight_col.map(|column| format!("'{column}'")).unwrap_or_else(|| "NULL".to_string());
     execute_batches(
@@ -335,15 +341,19 @@ fn single_batch(batches: &[RecordBatch]) -> SmokeResult<&RecordBatch> {
 }
 
 fn require_string(batch: &RecordBatch, column: usize, row: usize, expected: &str) -> SmokeResult<()> {
-    let array = batch.column(column).as_any().downcast_ref::<StringArray>().ok_or("expected StringArray")?;
-    if array.is_null(row) {
-        return Err(format!("expected {expected:?}, got NULL").into());
-    }
-    let actual = array.value(row);
+    let actual = string_at(batch, column, row)?;
     if actual != expected {
         return Err(format!("expected {expected:?}, got {actual:?}").into());
     }
     Ok(())
+}
+
+fn string_at(batch: &RecordBatch, column: usize, row: usize) -> SmokeResult<&str> {
+    let array = batch.column(column).as_any().downcast_ref::<StringArray>().ok_or("expected StringArray")?;
+    if array.is_null(row) {
+        return Err(format!("expected string at column {column} row {row}, got NULL").into());
+    }
+    Ok(array.value(row))
 }
 
 fn require_null(batch: &RecordBatch, column: usize, row: usize) -> SmokeResult<()> {

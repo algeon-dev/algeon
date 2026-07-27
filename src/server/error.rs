@@ -1089,13 +1089,13 @@ mod tests {
     #[test]
     fn cugraph_table_function_not_found_appends_build_hint_without_feature() {
         let status = datafusion_error_to_status_for_operation(
-            DataFusionError::Plan("table function 'cugraph_list_algorithms' not found".to_string()),
+            DataFusionError::Plan("table function 'cugraph_bfs' not found".to_string()),
             TEST_OPERATION,
         );
 
         assert_eq!(status.code(), Code::NotFound);
         assert_error_metadata(&status, "object_not_found", "not_found", "permanent");
-        assert!(status.message().contains("cugraph_list_algorithms"));
+        assert!(status.message().contains("cugraph_bfs"));
         assert!(status.message().contains("without the `cugraph` feature"));
         assert!(status.message().contains("server-cugraph"));
     }
@@ -1104,13 +1104,13 @@ mod tests {
     #[test]
     fn cugraph_table_function_not_found_appends_runtime_hint_with_feature() {
         let status = datafusion_error_to_status_for_operation(
-            DataFusionError::Plan("table function 'cugraph_list_algorithms' not found".to_string()),
+            DataFusionError::Plan("table function 'cugraph_bfs' not found".to_string()),
             TEST_OPERATION,
         );
 
         assert_eq!(status.code(), Code::NotFound);
         assert_error_metadata(&status, "object_not_found", "not_found", "permanent");
-        assert!(status.message().contains("cugraph_list_algorithms"));
+        assert!(status.message().contains("cugraph_bfs"));
         assert!(status.message().contains("NEXUS_SERVER_CUGRAPH_ENABLED=true"));
         // The runtime build must not tell operators to rebuild.
         assert!(!status.message().contains("without the `cugraph` feature"));

@@ -2,91 +2,135 @@
 sidebar_position: 3
 title: Discovery & Validation
 sidebar_label: Discovery & Validation
-description: The cugraph_list_algorithms, cugraph_describe_algorithm, and cugraph_validate_call meta functions.
+description: Discover every installed GPU SQL function, inspect one descriptor, and validate a versioned call envelope.
 ---
 
 # Discovery & Validation
 
-Three meta functions let humans and agents discover the API and check calls
-without reading server source.
+The unified GPU function catalog lets humans and agents discover every
+SQL-visible GPU function and dry-run a call without reading server source. It
+contains the installed cuGraph and cuVS families; filter by `provider` or
+`domain` when you want a provider-specific view.
 
-## `cugraph_list_algorithms`
+## gpu_list_functions
 
-Inventory of every registered function.
+`gpu_list_functions()` takes no arguments and returns one row for each
+installed execution function. It does not list the three metadata functions
+themselves. Rows are ordered by `function_name` before ordinary SQL projection
+or filtering.
 
 ```sql
-SELECT * FROM cugraph_list_algorithms();
+SELECT function_name, provider, domain, available, summary
+FROM gpu_list_functions()
+WHERE provider = 'cugraph'
+ORDER BY function_name;
 ```
 
-Columns: `function_name`, `algorithm`, `source_vertex_policy`,
-`weight_col_policy`, `output_schema_kind`, `signature`,
-`allowed_arg_counts_json`, `summary`.
+| Column | Arrow type | Nullable | Meaning |
+| --- | --- | --- | --- |
+| `function_name` | `Utf8` | no | Exact canonical execution-function name. |
+| `provider` | `Utf8` | no | Implementation provider, such as `cugraph` or `cuvs`. |
+| `domain` | `Utf8` | no | User-facing domain, such as `graph` or `vector`. |
+| `available` | `Boolean` | no | Whether the function can be planned for GPU execution in this session and build. |
+| `unavailable_reason` | `Utf8` | yes | Stable reason code when `available=false`. |
+| `signature` | `Utf8` | no | Canonical SQL execution signature. |
+| `summary` | `Utf8` | no | Short human-readable description. |
+| `relation_roles_json` | `Utf8` | no | Ordered relation-role definitions as valid JSON. |
 
-Policy columns use stable machine-readable values:
+`available=true` means the selected function is statically plannable. It does
+not reserve GPU memory, acquire runtime admission, inspect relation rows, or
+prove that an entire query is GPU-native.
 
-| Field | Values |
-| --- | --- |
-| `source_vertex_policy` | `none` means the function has no source vertex input; `required_scalar` means a single source vertex is required; `required_scalar_or_list_or_relation` means the function accepts a scalar, list, or source-vertex relation. |
-| `weight_col_policy` | `ignored` means `weight_col` is accepted only as an edge-column binding and does not affect results; `optional` means weights affect results when provided; `required` means the function requires a weight column. |
-| `output_schema_kind` | `fixed` means the registry schema shape is fixed; `default_mode` means options such as `output_mode` can change the result schema. |
+## gpu_describe_function(function_name)
 
-## `cugraph_describe_algorithm`
-
-Machine-readable contract for one function. The optional second argument
-`'verbose'` adds full option, schema, argument, and limitation metadata.
+`gpu_describe_function` takes one exact canonical execution-function name and
+returns one full descriptor row. It has no compact or verbose mode: project the
+columns you need. Provider-local short aliases are not accepted.
 
 ```sql
-SELECT * FROM cugraph_describe_algorithm('cugraph_bfs');
-SELECT * FROM cugraph_describe_algorithm('cugraph_bfs', 'verbose');
+SELECT signature, options_schema_json, result_schemas_json
+FROM gpu_describe_function('cugraph_bfs');
 ```
 
-The per-function pages in this section are generated from this verbose output.
+| Column | Arrow type | Nullable | Meaning |
+| --- | --- | --- | --- |
+| `function_name` | `Utf8` | no | Exact canonical execution-function name. |
+| `provider` | `Utf8` | no | Implementation provider. |
+| `domain` | `Utf8` | no | User-facing domain. |
+| `available` | `Boolean` | no | Current session/build planning availability. |
+| `unavailable_reason` | `Utf8` | yes | Stable reason code when unavailable. |
+| `signature` | `Utf8` | no | Canonical SQL execution signature. |
+| `summary` | `Utf8` | no | Short human-readable description. |
+| `relation_roles_json` | `Utf8` | no | Ordered relation-role definitions as valid JSON. |
+| `argument_descriptions_json` | `Utf8` | no | Structured descriptions of non-relation arguments as valid JSON. |
+| `options_schema_json` | `Utf8` | no | JSON schema for the execution function's options object. |
+| `result_schemas_json` | `Utf8` | no | Generic/default and mode-dependent result schemas. |
+| `validation_request_schema_json` | `Utf8` | no | JSON schema accepted by `gpu_validate_call` for this function. |
+| `examples_json` | `Utf8` | no | Structured validation and execution examples. |
+| `limitations_json` | `Utf8` | no | Known static and runtime limitations. |
 
-## `cugraph_validate_call`
+Every JSON column contains valid JSON. Empty objects and arrays are represented
+as `{}` and `[]`, not SQL `NULL`.
 
-Static dry-run of a specific call. Returns the concrete, table-specific output
-schema and a structured verdict — without scanning edges, building a graph, or
-launching CUDA.
+## gpu_validate_call(function_name, call_json)
+
+`gpu_validate_call` takes an exact canonical execution-function name and a
+common versioned JSON envelope. The selected provider owns the meaning of
+relation roles and options, while the envelope consistently names the function
+inputs.
 
 ```sql
-SELECT * FROM cugraph_validate_call(
+SELECT *
+FROM gpu_validate_call(
   'cugraph_pagerank',
-  'your_edges_table',
-  '{"src_col":"src","dst_col":"dst","weight_col":"weight"}'
+  '{
+    "schema_version":1,
+    "relations":{"edges":{"table":"analytics.edges"}},
+    "options":{"src_col":"src","dst_col":"dst","weight_col":"weight"}
+  }'
 );
 ```
 
-Output columns (in order):
+Version 1 requires exactly these envelope fields:
 
-| Column | Meaning |
-| --- | --- |
-| `valid` | whether the call is statically valid |
-| `error_code` | structured code when invalid (for example, `table_not_found`) |
-| `message` | human-readable explanation |
-| `function_name` | the function checked |
-| `table_resolved` | whether the edge relation resolved |
-| `src_col_resolved` | whether `src_col` exists |
-| `dst_col_resolved` | whether `dst_col` exists |
-| `weight_col_resolved` | whether `weight_col` exists (when given) |
-| `src_dtype` | resolved source-column dtype |
-| `dst_dtype` | resolved destination-column dtype |
-| `weight_dtype` | resolved weight-column dtype |
-| `output_schema_json` | the concrete output schema for this call |
-| `normalized_options_json` | options after defaulting and normalization |
-| `would_execute_gpu` | whether execution would dispatch to the GPU |
+- `schema_version`: integer `1`.
+- `relations`: object keyed by the descriptor-defined relation roles. Each
+  relation currently has exactly one `table` field with a one-, two-, or
+  three-part DataFusion table or view reference.
+- `options`: object validated by the selected function.
+
+Unknown envelope keys, relation roles, and option keys are rejected. The
+metadata path resolves named tables and views only; it does not accept arbitrary
+SQL in JSON. To dry-run a derived subquery, register it as a temporary view
+first.
+
+| Column | Arrow type | Nullable | Meaning |
+| --- | --- | --- | --- |
+| `valid` | `Boolean` | no | Whether the full static call is valid in this session. |
+| `error_code` | `Utf8` | yes | Stable structured reason when invalid. |
+| `message` | `Utf8` | no | Human-readable validation result. |
+| `function_name` | `Utf8` | no | Canonical name, or the unresolved requested name. |
+| `relations_resolved` | `Boolean` | no | Whether every required relation resolved. |
+| `normalized_call_json` | `Utf8` | no | Versioned envelope after defaults and canonicalization. |
+| `output_schema_json` | `Utf8` | no | Concrete output schema when it can be derived. |
+| `would_execute_gpu` | `Boolean` | no | Whether this function call would target GPU execution after static planning. |
+| `details_json` | `Utf8` | no | Structured per-relation and provider-specific validation facts. |
+
+A syntactically valid request for an unknown function or invalid execution call
+returns one structured invalid row. Wrong metadata-function arity and nonliteral
+metadata arguments are planning errors.
 
 ### What validation does & does not do
 
-**Does:** confirm the function exists; resolve the relation;
-check that src/dst/weight/predicate columns exist; check vertex dtype
-compatibility; validate JSON option names, types, and values; enforce
-conditional requirements (for example, BFS path mode needs a target relation);
-and compute the concrete output schema.
+**Does:** check that the function exists; resolve every required named relation;
+validate provider-owned relation bindings, columns, dtypes, dimensions,
+conditional arguments, and option values; apply defaults; and derive a concrete
+output schema when possible.
 
-**Does Not:** scan edge rows, materialize Parquet, build the graph, launch
-CUDA, or prove the source vertex or target row actually exists.
+**Does Not:** scan relation rows, materialize Parquet, construct graphs, launch
+CUDA, allocate device memory, acquire query admission, or prove runtime facts
+such as source-vertex existence.
 
-`would_execute_gpu` is scoped to this one call being well-formed — it says
-nothing about the rest of your query. To check whether a whole query's planned
-path stays on the GPU (including how the cuGraph node's inputs are fed), use
+`would_execute_gpu` is scoped to one selected function call. To check whether a
+whole query's planned path stays on the GPU, use
 [GPU coverage validation](../integration/gpu-coverage-validation.mdx).

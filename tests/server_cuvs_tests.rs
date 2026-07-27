@@ -8,9 +8,12 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use arrow_flight::{error::FlightError, sql::client::FlightSqlServiceClient};
-use datafusion_nexus::server::{
-    ERROR_CODE_METADATA_KEY, ERROR_KIND_METADATA_KEY, ERROR_STATUS_METADATA_KEY, NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV,
-    Result as ServerResult, ServerConfig, serve_with_listener,
+use datafusion_nexus::{
+    gpu_functions::GPU_LIST_FUNCTIONS_FUNCTION,
+    server::{
+        ERROR_CODE_METADATA_KEY, ERROR_KIND_METADATA_KEY, ERROR_STATUS_METADATA_KEY,
+        NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV, Result as ServerResult, ServerConfig, serve_with_listener,
+    },
 };
 use futures::TryStreamExt;
 use parquet::arrow::ArrowWriter;
@@ -46,8 +49,13 @@ async fn explicitly_unbounded_flight_sql_executes_all_cuvs_operations_over_relat
     let mut client = connect_with_retry(addr).await;
     register_vector_views(&mut client).await;
 
-    let metadata =
-        execute_batches(&mut client, "SELECT function_name FROM cuvs_list_operations() ORDER BY function_name").await;
+    let metadata = execute_batches(
+        &mut client,
+        &format!(
+            "SELECT function_name FROM {GPU_LIST_FUNCTIONS_FUNCTION}() WHERE provider = 'cuvs' ORDER BY function_name"
+        ),
+    )
+    .await;
     let metadata = single_batch(&metadata);
     let operations = metadata
         .column(0)

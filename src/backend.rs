@@ -903,16 +903,9 @@ fn reject_preexisting_cugraph_sql(builder: &mut SessionStateBuilder) -> Result<(
 
 #[cfg(feature = "cugraph")]
 fn is_cugraph_sql_table_function_name(name: &str) -> bool {
-    use crate::graph_sql::{
-        CUGRAPH_DESCRIBE_ALGORITHM_FUNCTION, CUGRAPH_LIST_ALGORITHMS_FUNCTION, CUGRAPH_VALIDATE_CALL_FUNCTION,
-        CugraphAlgorithm,
-    };
+    use crate::graph_sql::CugraphAlgorithm;
 
     CugraphAlgorithm::all().any(|algorithm| algorithm.function_name() == name)
-        || matches!(
-            name,
-            CUGRAPH_LIST_ALGORITHMS_FUNCTION | CUGRAPH_DESCRIBE_ALGORITHM_FUNCTION | CUGRAPH_VALIDATE_CALL_FUNCTION
-        )
 }
 
 fn nongds_deployment() -> DeploymentIoCapability {

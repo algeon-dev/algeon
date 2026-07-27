@@ -189,7 +189,7 @@ For a full image launched with `NEXUS_SERVER_CUGRAPH_ENABLED=true`:
 ```bash
 cargo run -p nexus-tools -- \
   flight-sql-query http://127.0.0.1:50051 \
-  "SELECT COUNT(*) AS algorithms FROM cugraph_list_algorithms()"
+  "SELECT COUNT(*) AS algorithms FROM gpu_list_functions() WHERE provider = 'cugraph'"
 ```
 
 Expected output starts with:

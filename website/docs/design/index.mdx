@@ -200,9 +200,11 @@ The current `PlanNode` variants are `Source`, `Filter`, `Projection`,
 ## cuGraph SQL path
 
 With `--features cugraph`, graph algorithms are SQL table functions. The SQL
-surface has 23 algorithm functions from `CUGRAPH_OPERATION_REGISTRY`, plus
-`cugraph_list_algorithms`, `cugraph_describe_algorithm`, and
-`cugraph_validate_call` for discovery and dry-run validation.
+surface projects every graph execution function from `CUGRAPH_OPERATION_REGISTRY`
+through the shared GPU catalog. `gpu_list_functions`,
+`gpu_describe_function`, and `gpu_validate_call` provide discovery and dry-run
+validation for every installed GPU family without adding provider-specific
+metadata functions.
 
 ```sql
 SELECT * FROM cugraph_pagerank('edges', 'src', 'dst')
@@ -275,11 +277,12 @@ ORDER BY value DESC;
 
 For callers, the recommended workflow is:
 
-1. `cugraph_list_algorithms()` to discover enabled functions.
-2. `cugraph_describe_algorithm('<fn>', 'verbose')` to inspect signatures,
-   options, schemas, and limitations.
-3. `cugraph_validate_call('<fn>', '<table>', '<call_json>')` to check a concrete
-   call without scanning edges or launching CUDA.
+1. `gpu_list_functions()` to discover enabled functions, using
+   `WHERE provider = 'cugraph'` for a graph-only inventory.
+2. `gpu_describe_function('<fn>')` to inspect the fixed descriptor, including
+   signatures, options, schemas, examples, and limitations.
+3. `gpu_validate_call('<fn>', '<call_json>')` to check a versioned envelope
+   containing named relations and options without scanning edges or launching CUDA.
 4. Execute the `cugraph_*` function once validation returns `valid = true`.
 
 The detailed function reference lives in [cuGraph SQL API](../cugraph/overview.mdx).

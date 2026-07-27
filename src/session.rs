@@ -14,12 +14,13 @@ use datafusion::{
 };
 
 #[cfg(feature = "cugraph")]
-use crate::graph_sql::{CugraphSqlConfig, cugraph_table_functions};
+use crate::graph_sql::{CugraphGpuFunctionFamily, CugraphSqlConfig, cugraph_table_functions};
 #[cfg(feature = "cugraph")]
 use crate::native_exec::NexusNativeExecutionConfig;
 use crate::{
-    cuvs_sql::{CuvsQueryPlanner, cuvs_metadata_table_functions, cuvs_relation_planner},
+    cuvs_sql::{CuvsGpuFunctionFamily, CuvsQueryPlanner, cuvs_gpu_function_availability, cuvs_relation_planner},
     gpu_coverage_sql::gpu_coverage_table_function,
+    gpu_functions::{GpuFunctionCatalog, gpu_metadata_table_functions, install_gpu_function_family},
     planner::{
         HostExecutionQosConfig, NEXUS_FINAL_PLAN_REQUIREMENT_RULE_NAME, NEXUS_HOST_EXECUTION_QOS_RULE_NAME,
         NexusFinalPlanRequirementRule, NexusHostExecutionQosRule, NexusNativeOptimizerConfig,
@@ -105,6 +106,17 @@ impl NexusSessionStateBuilderExt for SessionStateBuilder {
     }
 
     fn try_with_cuvs_sql(mut self) -> DataFusionResult<Self> {
+        // A cloned/session-rebuilt state can retain the cuVS planner and its
+        // immutable catalog family. Treat that exact installation as a no-op
+        // before checking the otherwise-exclusive opaque query planner.
+        if self
+            .config()
+            .as_ref()
+            .and_then(|config| config.get_extension::<GpuFunctionCatalog>())
+            .is_some_and(|catalog| catalog.contains_family("cuvs"))
+        {
+            return Ok(self);
+        }
         if self.query_planner().is_some() {
             return Err(crate::error::Error::new(
                 crate::error::ErrorCode::InvalidRequest,
@@ -115,10 +127,8 @@ impl NexusSessionStateBuilderExt for SessionStateBuilder {
             .into());
         }
         self.relation_planners().get_or_insert_with(Vec::new).insert(0, cuvs_relation_planner());
-        let functions = self.table_functions().get_or_insert_with(Default::default);
-        for function in cuvs_metadata_table_functions() {
-            functions.insert(function.name().to_string(), function);
-        }
+        let availability = cuvs_gpu_function_availability(self.config().as_ref());
+        install_gpu_function_family(&mut self, Arc::new(CuvsGpuFunctionFamily::new(availability)))?;
         Ok(self.with_query_planner(Arc::new(CuvsQueryPlanner::default())))
     }
 
@@ -126,14 +136,18 @@ impl NexusSessionStateBuilderExt for SessionStateBuilder {
     fn with_cugraph_sql(mut self, config: CugraphSqlConfig) -> Self {
         let config = cugraph_config_with_builder_native_admission(&mut self, config);
         let functions = self.table_functions().get_or_insert_with(Default::default);
-        for function in cugraph_table_functions(config) {
+        for function in cugraph_table_functions(config.clone()) {
             functions.insert(function.name().to_string(), function);
         }
+        install_gpu_function_family(&mut self, Arc::new(CugraphGpuFunctionFamily::new(config)))
+            .expect("cuGraph GPU function catalog installation must be valid");
         self
     }
 
     fn with_nexus_native_rule(mut self, rule: Arc<NexusNativePhysicalOptimizerRule>) -> Self {
         ensure_datafusion_nexus_session_config(&mut self, rule.config());
+        refresh_cuvs_gpu_function_family_availability(&mut self)
+            .expect("cuVS GPU function catalog refresh must be valid");
         install_gpu_coverage_table_function(&mut self);
         let mut rules = take_physical_optimizer_rules(&mut self);
         insert_nexus_native_rules_before_final_validation(&mut rules, rule);
@@ -157,6 +171,7 @@ pub(crate) fn install_nexus_native_rule_with_session_config(
         }
     }
     session_config.options_mut().extensions.insert(session_extension);
+    refresh_cuvs_gpu_function_family_availability(&mut builder)?;
     install_gpu_coverage_table_function(&mut builder);
     let mut rules = take_physical_optimizer_rules(&mut builder);
     insert_nexus_native_rules_before_final_validation(&mut rules, rule);
@@ -242,6 +257,32 @@ fn ensure_datafusion_nexus_session_config(builder: &mut SessionStateBuilder, con
     if session_config.options().extensions.get::<DataFusionNexusSessionConfig>().is_none() {
         session_config.options_mut().extensions.insert(DataFusionNexusSessionConfig::from_optimizer_config(config));
     }
+}
+
+/// Rebuild only the cuVS family after native session options become known.
+///
+/// `try_with_cuvs_sql` may run before a backend or native optimizer attaches
+/// its session extension. The unified catalog snapshot must therefore be
+/// refreshed once the final memory-control mode is available; otherwise a
+/// bounded session could incorrectly advertise cuVS as plannable.
+fn refresh_cuvs_gpu_function_family_availability(builder: &mut SessionStateBuilder) -> DataFusionResult<()> {
+    let availability = cuvs_gpu_function_availability(builder.config().as_ref());
+    let Some(prior) = builder.config().as_ref().and_then(|config| config.get_extension::<GpuFunctionCatalog>()) else {
+        return Ok(());
+    };
+    let mut families = prior.families().to_vec();
+    let Some(position) = families.iter().position(|family| family.family_id() == "cuvs") else {
+        return Ok(());
+    };
+    families[position] = Arc::new(CuvsGpuFunctionFamily::new(availability));
+    let catalog = Arc::new(GpuFunctionCatalog::try_new(families)?);
+    let config = builder.config().get_or_insert_with(Default::default);
+    config.set_extension(Arc::clone(&catalog));
+    let functions = builder.table_functions().get_or_insert_with(Default::default);
+    for function in gpu_metadata_table_functions(catalog) {
+        functions.insert(function.name().to_string(), function);
+    }
+    Ok(())
 }
 
 fn install_gpu_coverage_table_function(builder: &mut SessionStateBuilder) {

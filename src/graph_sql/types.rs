@@ -87,9 +87,6 @@ pub const CUGRAPH_JACCARD_FUNCTION: &str = "cugraph_jaccard";
 pub const CUGRAPH_SORENSEN_FUNCTION: &str = "cugraph_sorensen";
 pub const CUGRAPH_OVERLAP_FUNCTION: &str = "cugraph_overlap";
 pub const CUGRAPH_COSINE_FUNCTION: &str = "cugraph_cosine";
-pub const CUGRAPH_LIST_ALGORITHMS_FUNCTION: &str = "cugraph_list_algorithms";
-pub const CUGRAPH_DESCRIBE_ALGORITHM_FUNCTION: &str = "cugraph_describe_algorithm";
-pub const CUGRAPH_VALIDATE_CALL_FUNCTION: &str = "cugraph_validate_call";
 
 #[derive(Debug, Clone)]
 pub struct CugraphSqlConfig {
@@ -206,14 +203,6 @@ impl CugraphAlgorithm {
 
     pub(crate) fn requires_source_vertex(self) -> bool {
         self.native_algorithm().requires_source_vertex()
-    }
-
-    pub(crate) fn weight_col_policy(self) -> &'static str {
-        self.native_algorithm().weight_policy().as_str()
-    }
-
-    pub(crate) fn output_schema_kind(self) -> &'static str {
-        self.native_algorithm().output_schema_kind().as_str()
     }
 
     pub(crate) fn effective_default_graph_options(self, defaults: &CugraphGraphOptions) -> CugraphGraphOptions {

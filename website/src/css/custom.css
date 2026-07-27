@@ -235,7 +235,7 @@
 }
 
 /* Inline code tokens are identifiers — never break them across lines
-   (e.g. `cugraph_validate_call` splitting at the underscore). Long tokens move to the
+   (e.g. `gpu_validate_call` splitting at the underscore). Long tokens move to the
    next line whole; tables already scroll horizontally when needed. */
 .markdown :not(pre) > code {
   white-space: nowrap;

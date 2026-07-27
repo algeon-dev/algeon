@@ -72,7 +72,8 @@ cuGraph table functions have a narrower edge-table contract:
   `include_edge_id_col`).
 :::
 
-The SQL metadata functions expose the same contract at runtime. Use
-`cugraph_describe_algorithm('<function>', 'verbose')` and
-`cugraph_validate_call('<function>', '<table>', '<call_json>')` before running a
-new graph call.
+The unified SQL metadata functions expose the same contract at runtime. Use
+`gpu_describe_function('<function>')` and
+`gpu_validate_call('<function>', '<call_json>')` before running a new graph
+call. The validation envelope names the edge table or view under
+`relations.edges.table` and supplies graph bindings under `options`.

@@ -1,9 +1,9 @@
-{/* GENERATED FROM cuVS SQL metadata by website/scripts/gen-cuvs-docs.mjs. Do not edit by hand. */}
+{/* GENERATED FROM the unified GPU function catalog by website/scripts/gen-cuvs-docs.mjs. Do not edit by hand. */}
 
-The live registry exposes **3 SQL-visible cuVS operations**.
+The live catalog contains **3 SQL-visible cuVS functions**.
 
-| SQL function | Operation | Relation arguments | Output contract |
-| --- | --- | --- | --- |
-| [cuvs_brute_force_knn](./operations/cuvs_brute_force_knn.mdx) | `brute_force_knn` | `dataset`, `queries` | `brute_force_knn` |
-| [cuvs_kmeans](./operations/cuvs_kmeans.mdx) | `kmeans` | `input` | `kmeans_assignments` |
-| [cuvs_pca](./operations/cuvs_pca.mdx) | `pca` | `input` | `pca_components` |
+| Function | Relation roles | Summary |
+| --- | --- | --- |
+| [cuvs_brute_force_knn](./operations/cuvs_brute_force_knn.mdx) | `dataset`, `queries` | Exact brute-force nearest-neighbor search over dense vectors. |
+| [cuvs_kmeans](./operations/cuvs_kmeans.mdx) | `input` | K-means clustering assignments for dense vector rows. |
+| [cuvs_pca](./operations/cuvs_pca.mdx) | `input` | Principal-component analysis transform for dense vector rows. |

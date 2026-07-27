@@ -20,25 +20,32 @@ same live metadata API exposed to embedded and Flight SQL clients.
 ## Discovery and validation
 
 ```sql
-SELECT function_name, relation_roles_json, output_contract
-FROM cuvs_list_operations()
+SELECT function_name, relation_roles_json, summary
+FROM gpu_list_functions()
+WHERE provider = 'cuvs'
 ORDER BY function_name;
 
 SELECT *
-FROM cuvs_describe_operation('cuvs_brute_force_knn');
+FROM gpu_describe_function('cuvs_brute_force_knn');
 
 SELECT *
-FROM cuvs_validate_call(
+FROM gpu_validate_call(
   'cuvs_kmeans',
-  '{"input":{"id":"item_id","vector":{"columns":["d0","d1"]}},"n_clusters":2}'
+  '{
+    "schema_version":1,
+    "relations":{"input":{"table":"embeddings"}},
+    "options":{"input":{"id":"item_id","vector":{"columns":["d0","d1"]}},"n_clusters":2}
+  }'
 );
 ```
 
-The relation arguments of every `cuvs_*` function must be parenthesized
-subqueries. This makes regular tables, views, CTEs, Parquet scans, Iceberg
-tables, and cuGraph-derived relations explicit planner children. Bare table
-identifiers and quoted table-name strings are rejected; there is no CTAS or
-adapter-owned name-lookup bridge.
+The relation arguments of every `cuvs_*` execution function must be
+parenthesized subqueries. This makes regular tables, views, CTEs, Parquet
+scans, Iceberg tables, and cuGraph-derived relations explicit planner children.
+For metadata dry-run validation, `gpu_validate_call` resolves registered named
+tables or views and validates their schemas without scanning rows or invoking
+the GPU. Bare table identifiers and quoted table-name strings are rejected by
+the execution surface; there is no CTAS or adapter-owned name-lookup bridge.
 
 ## Parquet and Iceberg relation examples
 

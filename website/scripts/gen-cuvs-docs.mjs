@@ -1,29 +1,74 @@
 #!/usr/bin/env node
-// GENERATOR for the cuVS SQL API reference. It transforms only committed
-// metadata captured by capture-cuvs-specs.sh; site builds never call a server.
+// Transform committed unified GPU catalog descriptors into the cuVS SQL
+// reference. The generator is deterministic and never contacts a server.
 //
 //   node website/scripts/gen-cuvs-docs.mjs
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const WEBSITE = join(HERE, '..');
-const SPEC_DIR = join(WEBSITE, 'cuvs-specs');
+const SPEC_DIR = join(WEBSITE, 'gpu-function-specs', 'cuvs');
 const DOCS_DIR = join(WEBSITE, 'docs', 'cuvs');
 const OPERATIONS_DIR = join(DOCS_DIR, 'operations');
 const REQUIRED_KEYS = [
-  'function_name',
-  'operation',
-  'relation_roles_json',
-  'relation_argument_syntax',
-  'output_contract',
-  'options_schema_json',
+  'function_name', 'provider', 'domain', 'available', 'unavailable_reason',
+  'signature', 'summary', 'relation_roles_json', 'argument_descriptions_json',
+  'options_schema_json', 'result_schemas_json',
+  'validation_request_schema_json', 'examples_json', 'limitations_json',
 ];
 
 function write(path, content) {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, content.replace(/\n*$/, '\n'));
+}
+
+function parseJson(file, key, value) {
+  try {
+    return JSON.parse(value);
+  } catch (error) {
+    throw new Error(`${file}: ${key} is not valid JSON: ${error.message}`);
+  }
+}
+
+function loadSpecs() {
+  if (!existsSync(SPEC_DIR)) throw new Error(`missing ${SPEC_DIR}; run capture-cuvs-specs.sh first`);
+  const names = new Set();
+  const specs = readdirSync(SPEC_DIR)
+    .filter(file => file.endsWith('.json'))
+    .sort()
+    .map(file => {
+      const spec = JSON.parse(readFileSync(join(SPEC_DIR, file), 'utf8'));
+      for (const key of REQUIRED_KEYS) {
+        if (!(key in spec)) throw new Error(`${file}: missing unified descriptor key ${key}`);
+      }
+      if (file !== `${spec.function_name}.json`) throw new Error(`${file}: filename must equal ${spec.function_name}.json`);
+      if (!/^cuvs_[a-z0-9_]+$/.test(spec.function_name)) throw new Error(`${file}: invalid canonical cuVS function name`);
+      if (names.has(spec.function_name)) throw new Error(`${file}: duplicate function descriptor`);
+      names.add(spec.function_name);
+      if (spec.provider !== 'cuvs' || spec.domain !== 'vector') throw new Error(`${file}: expected a cuVS vector descriptor`);
+      if (typeof spec.available !== 'boolean' || !(spec.unavailable_reason === null || typeof spec.unavailable_reason === 'string')) {
+        throw new Error(`${file}: invalid availability fields`);
+      }
+      spec.relation_roles = parseJson(file, 'relation_roles_json', spec.relation_roles_json);
+      spec.argument_descriptions = parseJson(file, 'argument_descriptions_json', spec.argument_descriptions_json);
+      spec.options_schema = parseJson(file, 'options_schema_json', spec.options_schema_json);
+      spec.result_schemas = parseJson(file, 'result_schemas_json', spec.result_schemas_json);
+      spec.validation_request_schema = parseJson(file, 'validation_request_schema_json', spec.validation_request_schema_json);
+      spec.examples = parseJson(file, 'examples_json', spec.examples_json);
+      spec.limitations = parseJson(file, 'limitations_json', spec.limitations_json);
+      if (!Array.isArray(spec.relation_roles) || spec.relation_roles.length === 0 || spec.relation_roles.some(role => !role?.name)) {
+        throw new Error(`${file}: relation_roles_json must contain named roles`);
+      }
+      if (!spec.options_schema || typeof spec.options_schema !== 'object' || !spec.result_schemas || typeof spec.result_schemas !== 'object') {
+        throw new Error(`${file}: descriptor schemas must be JSON objects`);
+      }
+      if (!Array.isArray(spec.examples) || !Array.isArray(spec.limitations)) throw new Error(`${file}: descriptor arrays have an invalid shape`);
+      return spec;
+    });
+  if (specs.length === 0) throw new Error('no cuVS function descriptors found');
+  return specs;
 }
 
 function cell(value) {
@@ -37,9 +82,18 @@ function cell(value) {
 }
 
 function code(value) {
-  const inner = String(value ?? '').replace(/\|/g, '\\|');
+  if (value === '' || value == null) return '';
+  const inner = String(value).replace(/\|/g, '\\|');
   const longest = (inner.match(/`+/g) || []).reduce((max, run) => Math.max(max, run.length), 0);
-  return `${'`'.repeat(longest + 1)}${inner}${'`'.repeat(longest + 1)}`;
+  const fence = '`'.repeat(longest + 1);
+  return `${fence}${inner}${fence}`;
+}
+
+function prose(value) {
+  return String(value ?? '')
+    .replace(/[{}]/g, match => `\\${match}`)
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
 }
 
 function table(headers, rows) {
@@ -50,177 +104,140 @@ function table(headers, rows) {
   ].join('\n');
 }
 
-function loadSpecs() {
-  if (!existsSync(SPEC_DIR)) throw new Error(`missing ${SPEC_DIR}; run capture-cuvs-specs.sh first`);
-  const names = new Set();
-  return readdirSync(SPEC_DIR)
-    .filter(file => file.endsWith('.json'))
-    .sort()
-    .map(file => {
-      const spec = JSON.parse(readFileSync(join(SPEC_DIR, file), 'utf8'));
-      for (const key of REQUIRED_KEYS) {
-        if (!(key in spec)) throw new Error(`${file}: missing required metadata key ${key}`);
-      }
-      if (file !== `${spec.function_name}.json`) {
-        throw new Error(`${file}: filename must equal function_name ${spec.function_name}.json`);
-      }
-      if (!/^cuvs_[a-z0-9_]+$/.test(spec.function_name)) {
-        throw new Error(`${file}: invalid SQL function name ${spec.function_name}`);
-      }
-      if (names.has(spec.function_name)) throw new Error(`${file}: duplicate operation ${spec.function_name}`);
-      names.add(spec.function_name);
-      spec.relation_roles = JSON.parse(spec.relation_roles_json);
-      spec.options_schema = JSON.parse(spec.options_schema_json);
-      if (!Array.isArray(spec.relation_roles) || spec.relation_roles.length === 0) {
-        throw new Error(`${file}: relation_roles_json must describe at least one relation`);
-      }
-      if (spec.relation_argument_syntax !== 'parenthesized_subquery') {
-        throw new Error(`${file}: unsupported relation argument syntax ${spec.relation_argument_syntax}`);
-      }
-      if (spec.options_schema.type !== 'object' || spec.options_schema.additionalProperties !== false) {
-        throw new Error(`${file}: options schema must be a closed JSON object`);
-      }
-      return spec;
-    });
+function relationNames(spec) {
+  return spec.relation_roles.map(role => role.name);
 }
 
-function outputRows(contract) {
-  switch (contract) {
-    case 'brute_force_knn':
-      return [
-        [code('query_ordinal'), code('UInt64'), 'Stable zero-based input query row ordinal.'],
-        [code('query_id'), code('same type as queries.id'), 'Query identifier.'],
-        [code('neighbor_ordinal'), code('UInt64'), 'Stable zero-based dataset row ordinal.'],
-        [code('neighbor_id'), code('same type as dataset.id'), 'Neighbor identifier.'],
-        [code('rank'), code('UInt32'), 'Zero-based nearest-neighbor rank.'],
-        [code('distance'), code('Float32'), 'Metric result for the selected neighbor.'],
-      ];
-    case 'kmeans_assignments':
-      return [
-        [code('row_ordinal'), code('UInt64'), 'Stable zero-based input row ordinal.'],
-        [code('id'), code('same type as input.id'), 'Input identifier.'],
-        [code('cluster_id'), code('Int32'), 'Fitted-cluster assignment.'],
-      ];
-    case 'pca_components':
-      return [
-        [code('row_ordinal'), code('UInt64'), 'Stable zero-based input row ordinal.'],
-        [code('id'), code('same type as input.id'), 'Input identifier.'],
-        [code('pc_0 … pc_(n_components - 1)'), code('Float32'), 'One transformed component column for each requested component.'],
-      ];
-    default:
-      throw new Error(`unknown output_contract ${contract}; extend outputRows so metadata is not silently dropped`);
-  }
+function renderRelations(spec) {
+  return table(['Role', 'Required', 'Reference', 'Description'], spec.relation_roles.map(role => [
+    code(role.name), role.required === false ? 'no' : 'yes', code(role.reference?.type || 'table'), cell(role.description),
+  ]));
 }
 
 function optionConstraints(option) {
-  const values = [];
-  if (option.enum) values.push(`one of ${option.enum.map(value => code(JSON.stringify(value))).join(', ')}`);
-  if ('minimum' in option) values.push(`minimum ${option.minimum}`);
-  if ('maximum' in option) values.push(`maximum ${option.maximum}`);
-  if ('minLength' in option) values.push(`minimum string length ${option.minLength}`);
-  if ('minItems' in option) values.push(`at least ${option.minItems} item${option.minItems === 1 ? '' : 's'}`);
-  if (option.oneOf) values.push('one of wide Float32 columns or a Float32 vector column');
-  return values.join('; ');
+  const constraints = [];
+  if (option.enum) constraints.push(`one of ${option.enum.map(value => code(JSON.stringify(value))).join(', ')}`);
+  if ('minimum' in option) constraints.push(`minimum ${option.minimum}`);
+  if ('maximum' in option) constraints.push(`maximum ${option.maximum}`);
+  if ('minLength' in option) constraints.push(`minimum string length ${option.minLength}`);
+  if ('minItems' in option) constraints.push(`at least ${option.minItems} item${option.minItems === 1 ? '' : 's'}`);
+  if (option.oneOf) constraints.push('one of the documented binding shapes');
+  return constraints.join('; ');
 }
 
-function optionRows(spec) {
+function renderOptions(spec) {
   const required = new Set(spec.options_schema.required || []);
-  return Object.entries(spec.options_schema.properties || {})
+  const rows = Object.entries(spec.options_schema.properties || {})
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([name, option]) => [
       code(name),
       required.has(name) ? 'yes' : 'no',
-      code(option.type ?? (option.oneOf ? 'relation binding' : 'unknown')),
+      code(option.type ?? (option.oneOf ? 'object' : 'unknown')),
       Object.hasOwn(option, 'default') ? code(JSON.stringify(option.default)) : '',
       cell(optionConstraints(option)),
     ]);
+  return rows.length === 0 ? '_This function has no options._' : table(['Option', 'Required', 'JSON type', 'Default', 'Constraints'], rows);
 }
 
-function exampleOptions(spec) {
-  const options = {};
-  for (const role of spec.relation_roles) {
-    options[role] = { id: role === 'queries' ? 'query_id' : 'item_id', vector: { columns: ['d0', 'd1'] } };
-  }
-  for (const [name, option] of Object.entries(spec.options_schema.properties || {})) {
-    if (name in options || !spec.options_schema.required?.includes(name)) continue;
-    if (option.enum) options[name] = option.enum[0];
-    else if (option.type === 'integer') options[name] = name === 'n_components' ? 2 : 1;
-    else if (option.type === 'number') options[name] = option.minimum ?? 0;
-    else if (option.type === 'boolean') options[name] = false;
-    else throw new Error(`${spec.function_name}: cannot make a generated example for required option ${name}`);
-  }
-  return JSON.stringify(options);
+function renderOutputSchema(spec) {
+  const fields = spec.result_schemas.fields;
+  if (!Array.isArray(fields)) throw new Error(`${spec.function_name}: result_schemas_json must contain fields`);
+  return table(['Column', 'Type', 'Nullable', 'Notes'], fields.map(field => [
+    code(field.name), code(field.data_type), field.nullable ? 'yes' : 'no', cell(field.repeats ? `repeats: ${field.repeats}` : ''),
+  ]));
 }
 
-function relationSql(spec) {
-  return spec.relation_roles
-    .map(role => `(SELECT ${role === 'queries' ? 'query_id' : 'item_id'}, d0, d1 FROM ${role}_vectors)`)
-    .join(', ');
+function firstExample(spec) {
+  const example = spec.examples.find(candidate => candidate?.validation?.call && typeof candidate.validation.call === 'object');
+  if (!example) throw new Error(`${spec.function_name}: examples_json must contain a unified validation call`);
+  return example.validation.call;
+}
+
+function relationSql(role) {
+  const id = role === 'queries' ? 'query_id' : 'item_id';
+  return `(SELECT ${id}, d0, d1 FROM ${role}_vectors)`;
 }
 
 function renderPage(spec) {
-  const options = exampleOptions(spec);
+  const call = firstExample(spec);
   return [
     '---',
     `title: ${spec.function_name}`,
     `sidebar_label: ${spec.function_name}`,
-    `description: ${JSON.stringify(`Generated reference for ${spec.function_name}.`)}`,
+    `description: ${JSON.stringify(spec.summary)}`,
     '---',
     '',
-    '{/* GENERATED FROM cuVS SQL metadata by website/scripts/gen-cuvs-docs.mjs. Do not edit by hand. */}',
+    '{/* GENERATED FROM the unified GPU function catalog by website/scripts/gen-cuvs-docs.mjs. Do not edit by hand. */}',
     '',
     `# ${spec.function_name}`,
     '',
-    `Native operation: ${code(spec.operation)}. Output contract: ${code(spec.output_contract)}.`,
+    prose(spec.summary),
     '',
-    '## Call shape',
+    `Provider: ${code(spec.provider)}. Domain: ${code(spec.domain)}.`,
     '',
-    'Every relation argument is a parenthesized `SELECT` subquery. Nexus resolves the tables reached by those subqueries before logical planning and preserves the subqueries as real children. A bare relation identifier or quoted table-name string is intentionally rejected.',
+    '## Signature',
+    '',
+    '```sql',
+    spec.signature,
+    '```',
+    '',
+    '## Execution call shape',
+    '',
+    'Each relation argument is a parenthesized `SELECT` subquery. The execution function preserves those subqueries as real planner children; a bare table identifier or quoted table-name string is intentionally rejected.',
     '',
     '```sql',
     `SELECT * FROM ${spec.function_name}(`,
-    `  ${relationSql(spec)},`,
-    `  '${options}'`,
+    `  ${relationNames(spec).map(relationSql).join(',\n  ')},`,
+    `  '${JSON.stringify(call.options)}'`,
     ');',
     '```',
     '',
-    `Relation roles, in argument order: ${spec.relation_roles.map(code).join(', ')}.`,
+    '## Validation relations',
     '',
-    'A binding names a non-null `Int32`, `Int64`, `Utf8`, `LargeUtf8`, or `Utf8View` ID column and either non-null `Float32` columns or one non-null `FixedSizeList<Float32, D>`, `List<Float32>`, or `LargeList<Float32>` column. Variable-width lists are checked for a uniform dimension on the device.',
+    'For metadata validation, use registered named tables or views in the common envelope:',
+    '',
+    renderRelations(spec),
     '',
     '## Options JSON',
     '',
-    table(['Option', 'Required', 'JSON type', 'Default', 'Constraints'], optionRows(spec)),
+    renderOptions(spec),
     '',
-    'Unknown option keys are rejected. Use `cuvs_validate_call` to canonicalize an options JSON object before executing it.',
+    'Unknown option keys are rejected.',
     '',
     '## Output schema',
     '',
-    table(['Column', 'Type', 'Meaning'], outputRows(spec.output_contract)),
+    renderOutputSchema(spec),
     '',
-    'Ordering is deterministic by the declared ordinals and rank. Use `ORDER BY` when a different presentation order is required.',
+    '## Limitations & notes',
+    '',
+    spec.limitations.map(limitation => `- ${prose(limitation)}`).join('\n'),
+    '',
+    '## Validate before running',
+    '',
+    '```sql',
+    `SELECT * FROM gpu_validate_call(\n  '${spec.function_name}',\n  '${JSON.stringify(call)}'\n);`,
+    '```',
+    '',
+    'See [Discovery & Validation](../../cugraph/discovery-and-validation.mdx) for the common `gpu_validate_call` contract.',
   ].join('\n');
 }
 
 function renderCheatsheet(specs) {
-  const rows = specs.map(spec => [
-    `[${cell(spec.function_name)}](./operations/${spec.function_name}.mdx)`,
-    code(spec.operation),
-    spec.relation_roles.map(code).join(', '),
-    code(spec.output_contract),
-  ]);
   return [
-    '{/* GENERATED FROM cuVS SQL metadata by website/scripts/gen-cuvs-docs.mjs. Do not edit by hand. */}',
+    '{/* GENERATED FROM the unified GPU function catalog by website/scripts/gen-cuvs-docs.mjs. Do not edit by hand. */}',
     '',
-    `The live registry exposes **${specs.length} SQL-visible cuVS operations**.`,
+    `The live catalog contains **${specs.length} SQL-visible cuVS functions**.`,
     '',
-    table(['SQL function', 'Operation', 'Relation arguments', 'Output contract'], rows),
+    table(['Function', 'Relation roles', 'Summary'], specs.map(spec => [
+      `[${cell(spec.function_name)}](./operations/${spec.function_name}.mdx)`,
+      relationNames(spec).map(code).join(', '),
+      cell(spec.summary),
+    ])),
   ].join('\n');
 }
 
 function main() {
   const specs = loadSpecs();
-  if (specs.length === 0) throw new Error('no cuVS operation specs found');
   write(join(OPERATIONS_DIR, '_category_.json'), JSON.stringify({
     label: 'Operations',
     position: 1,
@@ -228,7 +245,7 @@ function main() {
   }, null, 2));
   for (const spec of specs) write(join(OPERATIONS_DIR, `${spec.function_name}.mdx`), renderPage(spec));
   write(join(DOCS_DIR, '_cheatsheet.mdx'), renderCheatsheet(specs));
-  console.log(`Wrote ${specs.length} generated cuVS operation pages and cheatsheet.`);
+  console.log(`Wrote ${specs.length} generated cuVS function pages and cheatsheet.`);
 }
 
 main();

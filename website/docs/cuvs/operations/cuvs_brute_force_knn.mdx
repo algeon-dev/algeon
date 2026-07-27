@@ -1,29 +1,43 @@
 ---
 title: cuvs_brute_force_knn
 sidebar_label: cuvs_brute_force_knn
-description: "Generated reference for cuvs_brute_force_knn."
+description: "Exact brute-force nearest-neighbor search over dense vectors."
 ---
 
-{/* GENERATED FROM cuVS SQL metadata by website/scripts/gen-cuvs-docs.mjs. Do not edit by hand. */}
+{/* GENERATED FROM the unified GPU function catalog by website/scripts/gen-cuvs-docs.mjs. Do not edit by hand. */}
 
 # cuvs_brute_force_knn
 
-Native operation: `brute_force_knn`. Output contract: `brute_force_knn`.
+Exact brute-force nearest-neighbor search over dense vectors.
 
-## Call shape
+Provider: `cuvs`. Domain: `vector`.
 
-Every relation argument is a parenthesized `SELECT` subquery. Nexus resolves the tables reached by those subqueries before logical planning and preserves the subqueries as real children. A bare relation identifier or quoted table-name string is intentionally rejected.
+## Signature
+
+```sql
+cuvs_brute_force_knn((dataset relation subquery), (queries relation subquery), options_json)
+```
+
+## Execution call shape
+
+Each relation argument is a parenthesized `SELECT` subquery. The execution function preserves those subqueries as real planner children; a bare table identifier or quoted table-name string is intentionally rejected.
 
 ```sql
 SELECT * FROM cuvs_brute_force_knn(
-  (SELECT item_id, d0, d1 FROM dataset_vectors), (SELECT query_id, d0, d1 FROM queries_vectors),
-  '{"dataset":{"id":"item_id","vector":{"columns":["d0","d1"]}},"queries":{"id":"query_id","vector":{"columns":["d0","d1"]}},"k":1,"metric":"l2_expanded"}'
+  (SELECT item_id, d0, d1 FROM dataset_vectors),
+  (SELECT query_id, d0, d1 FROM queries_vectors),
+  '{"dataset":{"id":"item_id","vector":{"columns":["d0","d1"]}},"queries":{"id":"query_id","vector":{"columns":["d0","d1"]}},"k":8,"metric":"l2_expanded"}'
 );
 ```
 
-Relation roles, in argument order: `dataset`, `queries`.
+## Validation relations
 
-A binding names a non-null `Int32`, `Int64`, `Utf8`, `LargeUtf8`, or `Utf8View` ID column and either non-null `Float32` columns or one non-null `FixedSizeList<Float32, D>`, `List<Float32>`, or `LargeList<Float32>` column. Variable-width lists are checked for a uniform dimension on the device.
+For metadata validation, use registered named tables or views in the common envelope:
+
+| Role | Required | Reference | Description |
+| --- | --- | --- | --- |
+| `dataset` | yes | `table` | Indexed dense-vector dataset. |
+| `queries` | yes | `table` | Dense-vector query relation. |
 
 ## Options JSON
 
@@ -34,17 +48,32 @@ A binding names a non-null `Int32`, `Int64`, `Utf8`, `LargeUtf8`, or `Utf8View` 
 | `metric` | yes | `string` |  | one of `"l2_expanded"`, `"l2_sqrt_expanded"`, `"cosine"`, `"inner_product"` |
 | `queries` | yes | `object` |  |  |
 
-Unknown option keys are rejected. Use `cuvs_validate_call` to canonicalize an options JSON object before executing it.
+Unknown option keys are rejected.
 
 ## Output schema
 
-| Column | Type | Meaning |
-| --- | --- | --- |
-| `query_ordinal` | `UInt64` | Stable zero-based input query row ordinal. |
-| `query_id` | `same type as queries.id` | Query identifier. |
-| `neighbor_ordinal` | `UInt64` | Stable zero-based dataset row ordinal. |
-| `neighbor_id` | `same type as dataset.id` | Neighbor identifier. |
-| `rank` | `UInt32` | Zero-based nearest-neighbor rank. |
-| `distance` | `Float32` | Metric result for the selected neighbor. |
+| Column | Type | Nullable | Notes |
+| --- | --- | --- | --- |
+| `query_ordinal` | `UInt64` | no |  |
+| `query_id` | `same_as_queries.id` | no |  |
+| `neighbor_ordinal` | `UInt64` | no |  |
+| `neighbor_id` | `same_as_dataset.id` | no |  |
+| `rank` | `UInt32` | no |  |
+| `distance` | `Float32` | no |  |
 
-Ordering is deterministic by the declared ordinals and rank. Use `ORDER BY` when a different presentation order is required.
+## Limitations & notes
+
+- Validation resolves named tables or views and reads schemas only; it does not execute relation scans or GPU work.
+- Bounded cuVS execution is unavailable until the lower-level peak-memory preflight contract exists.
+- Execution relation arguments support parenthesized subqueries; dry-run validation accepts registered named relations only.
+
+## Validate before running
+
+```sql
+SELECT * FROM gpu_validate_call(
+  'cuvs_brute_force_knn',
+  '{"schema_version":1,"relations":{"dataset":{"table":"dataset_vectors"},"queries":{"table":"queries_vectors"}},"options":{"dataset":{"id":"item_id","vector":{"columns":["d0","d1"]}},"queries":{"id":"query_id","vector":{"columns":["d0","d1"]}},"k":8,"metric":"l2_expanded"}}'
+);
+```
+
+See [Discovery & Validation](../../cugraph/discovery-and-validation.mdx) for the common `gpu_validate_call` contract.

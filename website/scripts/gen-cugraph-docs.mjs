@@ -1,350 +1,261 @@
 #!/usr/bin/env node
-// GENERATOR for the cuGraph SQL API pages. Pure transform: reads committed
-// verbose specs from website/cugraph-specs/*.json and writes MDX under
-// the cuGraph content tree. Deterministic, no network, no server.
+// Transform committed unified GPU catalog descriptors into the cuGraph SQL
+// reference. The generator is deterministic and never contacts a server.
 //
 //   node website/scripts/gen-cugraph-docs.mjs
 //
-// Re-run after capture-cugraph-specs.sh refreshes the specs. Never writes into
-// hand-owned examples or the hand-written cross-cutting pages.
-import { readFileSync, readdirSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
+// Refresh descriptors with capture-cugraph-specs.sh before running this file.
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const WEBSITE = join(HERE, '..');
-const SPEC_DIR = join(WEBSITE, 'cugraph-specs');
+const SPEC_DIR = join(WEBSITE, 'gpu-function-specs', 'cugraph');
 const DOCS_DIR = join(WEBSITE, 'docs', 'cugraph');
-// Algorithm reference pages live one layer below the cuGraph guides
-// (overview/connecting/discovery/graph-options), under cugraph/algorithms/.
 const ALGORITHMS_DIR = join(DOCS_DIR, 'algorithms');
 const REQUIRED_KEYS = [
-  'function_name', 'algorithm', 'source_vertex_policy', 'weight_col_policy',
-  'output_schema_kind', 'signature', 'allowed_arg_counts_json', 'summary',
-  'primary_example_sql', 'result_schemas_json', 'options_schema_json',
-  'argument_descriptions_json', 'result_field_descriptions_json',
-  'limitations_json', 'examples_json',
+  'function_name', 'provider', 'domain', 'available', 'unavailable_reason',
+  'signature', 'summary', 'relation_roles_json', 'argument_descriptions_json',
+  'options_schema_json', 'result_schemas_json',
+  'validation_request_schema_json', 'examples_json', 'limitations_json',
 ];
-
-// family slug -> { label, position, functions[] } ; position drives sidebar order
+// Presentation grouping remains specific to the cuGraph documentation; the
+// function inventory itself always comes from the unified descriptors.
 const FAMILIES = {
-  centrality:   { label: 'Centrality', position: 2, functions: ['cugraph_pagerank','cugraph_personalized_pagerank','cugraph_eigenvector_centrality','cugraph_katz_centrality','cugraph_hits','cugraph_betweenness_centrality','cugraph_edge_betweenness_centrality'] },
-  community:    { label: 'Community Detection', position: 3, functions: ['cugraph_louvain','cugraph_leiden','cugraph_ecg','cugraph_spectral_modularity_maximization'] },
-  traversal:    { label: 'Traversal & Paths', position: 4, functions: ['cugraph_bfs','cugraph_sssp'] },
-  connectivity: { label: 'Connectivity', position: 5, functions: ['cugraph_weakly_connected_components','cugraph_strongly_connected_components','cugraph_minimum_spanning_tree'] },
-  structure:    { label: 'Structure', position: 6, functions: ['cugraph_degrees_all','cugraph_in_degrees_all','cugraph_out_degrees_all','cugraph_triangle_count_all','cugraph_core_number','cugraph_k_core'] },
-  similarity:   { label: 'Similarity', position: 7, functions: ['cugraph_jaccard','cugraph_sorensen','cugraph_overlap','cugraph_cosine'] },
-  layout:       { label: 'Layout', position: 1, functions: ['cugraph_force_atlas2'] },
+  centrality: { label: 'Centrality', position: 2, functions: ['cugraph_pagerank', 'cugraph_personalized_pagerank', 'cugraph_eigenvector_centrality', 'cugraph_katz_centrality', 'cugraph_hits', 'cugraph_betweenness_centrality', 'cugraph_edge_betweenness_centrality'] },
+  community: { label: 'Community Detection', position: 3, functions: ['cugraph_louvain', 'cugraph_leiden', 'cugraph_ecg', 'cugraph_spectral_modularity_maximization'] },
+  traversal: { label: 'Traversal & Paths', position: 4, functions: ['cugraph_bfs', 'cugraph_sssp'] },
+  connectivity: { label: 'Connectivity', position: 5, functions: ['cugraph_weakly_connected_components', 'cugraph_strongly_connected_components', 'cugraph_minimum_spanning_tree'] },
+  structure: { label: 'Structure', position: 6, functions: ['cugraph_degrees_all', 'cugraph_in_degrees_all', 'cugraph_out_degrees_all', 'cugraph_triangle_count_all', 'cugraph_core_number', 'cugraph_k_core'] },
+  similarity: { label: 'Similarity', position: 7, functions: ['cugraph_jaccard', 'cugraph_sorensen', 'cugraph_overlap', 'cugraph_cosine'] },
+  layout: { label: 'Layout', position: 1, functions: ['cugraph_force_atlas2'] },
 };
 
-function familyOf(fn) {
-  for (const [slug, fam] of Object.entries(FAMILIES)) if (fam.functions.includes(fn)) return slug;
-  throw new Error(`No family for ${fn} — update FAMILIES in gen-cugraph-docs.mjs`);
-}
-
-function loadSpecs() {
-  const files = readdirSync(SPEC_DIR).filter(f => f.endsWith('.json')).sort();
-  const specs = files.map(f => {
-    const spec = JSON.parse(readFileSync(join(SPEC_DIR, f), 'utf8'));
-    for (const k of REQUIRED_KEYS) {
-      if (!(k in spec)) throw new Error(`${f}: missing required key "${k}" — metadata contract changed`);
-    }
-    if (f !== `${spec.function_name}.json`) {
-      throw new Error(`${f}: filename does not match function_name "${spec.function_name}" — a stale spec was left behind; re-run capture-cugraph-specs.sh`);
-    }
-    familyOf(spec.function_name); // throws if unclassified
-    return spec;
-  });
-  // no duplicate function names, and every classified function has a spec
-  const have = new Set();
-  for (const s of specs) {
-    if (have.has(s.function_name)) throw new Error(`duplicate spec for ${s.function_name}`);
-    have.add(s.function_name);
+function familyOf(functionName) {
+  for (const [slug, family] of Object.entries(FAMILIES)) {
+    if (family.functions.includes(functionName)) return slug;
   }
-  for (const fam of Object.values(FAMILIES)) {
-    for (const fn of fam.functions) if (!have.has(fn)) throw new Error(`FAMILIES lists ${fn} but no spec file found`);
-  }
-  return specs.sort((a, b) => a.function_name.localeCompare(b.function_name));
+  throw new Error(`No documentation family for ${functionName}; classify it before generating docs`);
 }
 
 function write(path, content) {
   mkdirSync(dirname(path), { recursive: true });
-  // normalize to a single trailing newline for deterministic diffs
   writeFileSync(path, content.replace(/\n*$/, '\n'));
 }
 
-function writeAlgorithmsCategory() {
-  // The algorithms/ landing groups all per-UDF reference pages below the guides.
-  const body = JSON.stringify({
-    label: 'Algorithms',
-    position: 5,
-    link: { type: 'generated-index', description: 'Per-function reference for every cuGraph SQL algorithm, grouped by family.' },
-  }, null, 2);
-  write(join(ALGORITHMS_DIR, '_category_.json'), body);
-}
-
-function writeFamilyCategories() {
-  for (const [slug, fam] of Object.entries(FAMILIES)) {
-    const body = JSON.stringify({ label: fam.label, position: fam.position }, null, 2);
-    write(join(ALGORITHMS_DIR, slug, '_category_.json'), body);
+function parseJson(file, key, value) {
+  try {
+    return JSON.parse(value);
+  } catch (error) {
+    throw new Error(`${file}: ${key} is not valid JSON: ${error.message}`);
   }
 }
 
-// Human display name for a function (the spec's `algorithm` field), used as the
-// page title and sidebar label — e.g. cugraph_bfs -> "BFS", cugraph_ecg -> "ECG".
-const DISPLAY_NAME = new Map();
+function loadSpecs() {
+  if (!existsSync(SPEC_DIR)) throw new Error(`missing ${SPEC_DIR}; run capture-cugraph-specs.sh first`);
+  const names = new Set();
+  const specs = readdirSync(SPEC_DIR)
+    .filter(file => file.endsWith('.json'))
+    .sort()
+    .map(file => {
+      const spec = JSON.parse(readFileSync(join(SPEC_DIR, file), 'utf8'));
+      for (const key of REQUIRED_KEYS) {
+        if (!(key in spec)) throw new Error(`${file}: missing unified descriptor key ${key}`);
+      }
+      if (file !== `${spec.function_name}.json`) {
+        throw new Error(`${file}: filename must equal ${spec.function_name}.json`);
+      }
+      if (!/^cugraph_[a-z0-9_]+$/.test(spec.function_name)) {
+        throw new Error(`${file}: invalid canonical cuGraph function name`);
+      }
+      if (names.has(spec.function_name)) throw new Error(`${file}: duplicate function descriptor`);
+      names.add(spec.function_name);
+      if (spec.provider !== 'cugraph' || spec.domain !== 'graph') {
+        throw new Error(`${file}: expected a cuGraph graph descriptor`);
+      }
+      if (typeof spec.available !== 'boolean' || !(spec.unavailable_reason === null || typeof spec.unavailable_reason === 'string')) {
+        throw new Error(`${file}: invalid availability fields`);
+      }
+      spec.relation_roles = parseJson(file, 'relation_roles_json', spec.relation_roles_json);
+      spec.argument_descriptions = parseJson(file, 'argument_descriptions_json', spec.argument_descriptions_json);
+      spec.options_schema = parseJson(file, 'options_schema_json', spec.options_schema_json);
+      spec.result_schemas = parseJson(file, 'result_schemas_json', spec.result_schemas_json);
+      spec.validation_request_schema = parseJson(file, 'validation_request_schema_json', spec.validation_request_schema_json);
+      spec.examples = parseJson(file, 'examples_json', spec.examples_json);
+      spec.limitations = parseJson(file, 'limitations_json', spec.limitations_json);
+      if (!Array.isArray(spec.relation_roles) || spec.relation_roles.length !== 1 || spec.relation_roles[0]?.name !== 'edges') {
+        throw new Error(`${file}: cuGraph descriptor must declare exactly the edges relation role`);
+      }
+      if (!Array.isArray(spec.argument_descriptions) || !Array.isArray(spec.examples) || !Array.isArray(spec.limitations)) {
+        throw new Error(`${file}: descriptor arrays have an invalid shape`);
+      }
+      if (!spec.options_schema || typeof spec.options_schema !== 'object' || !spec.result_schemas || typeof spec.result_schemas !== 'object') {
+        throw new Error(`${file}: descriptor schemas must be JSON objects`);
+      }
+      spec.family = familyOf(spec.function_name);
+      return spec;
+    });
+  if (specs.length === 0) throw new Error('no cuGraph function descriptors found');
+  return specs.sort((left, right) => left.function_name.localeCompare(right.function_name));
+}
 
-// ---------------------------------------------------------------------------
-// Rendering helpers
-// ---------------------------------------------------------------------------
-
-// MDX-safe inline text for table cells / prose: escape pipes (cells), braces
-// (JSX expressions), and angle brackets so types like List<Int64> and the
-// dtype union Int64|Utf8 render literally, and collapse newlines.
-function cell(s) {
-  if (s === null || s === undefined) return '';
-  return String(s)
+function cell(value) {
+  return String(value ?? '')
     .replace(/\\/g, '\\\\')
     .replace(/\|/g, '\\|')
-    .replace(/[{}]/g, m => '\\' + m)
+    .replace(/[{}]/g, match => `\\${match}`)
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/\n/g, ' ');
 }
 
-// Inline code span. Uses a backtick fence longer than any run of backticks in
-// the payload (the CommonMark rule), with surrounding spaces when the content
-// starts/ends with a backtick, so embedded backticks render literally. Pipes
-// are escaped because code spans still need escaping inside Markdown table cells.
-function code(s) {
-  if (s === '' || s == null) return '';
-  const inner = String(s).replace(/\|/g, '\\|');
-  const longest = (inner.match(/`+/g) || []).reduce((m, r) => Math.max(m, r.length), 0);
+function code(value) {
+  if (value === '' || value == null) return '';
+  const inner = String(value).replace(/\|/g, '\\|');
+  const longest = (inner.match(/`+/g) || []).reduce((max, run) => Math.max(max, run.length), 0);
   const fence = '`'.repeat(longest + 1);
   const pad = inner.startsWith('`') || inner.endsWith('`') ? ' ' : '';
   return `${fence}${pad}${inner}${pad}${fence}`;
 }
 
-// MDX-safe inline prose (NOT inside a table cell): escape JSX braces and angle
-// brackets so stray { } or < > can't start a JSX expression/element, but keep
-// pipes and newlines intact for readability.
-function prose(s) {
-  if (s === null || s === undefined) return '';
-  return String(s)
-    .replace(/[{}]/g, m => '\\' + m)
+function prose(value) {
+  return String(value ?? '')
+    .replace(/[{}]/g, match => `\\${match}`)
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
 }
 
 function table(headers, rows) {
-  const head = `| ${headers.join(' | ')} |`;
-  const sep = `| ${headers.map(() => '---').join(' | ')} |`;
-  const body = rows.map(r => `| ${r.join(' | ')} |`).join('\n');
-  return [head, sep, body].join('\n');
+  return [
+    `| ${headers.join(' | ')} |`,
+    `| ${headers.map(() => '---').join(' | ')} |`,
+    ...rows.map(row => `| ${row.join(' | ')} |`),
+  ].join('\n');
 }
 
-// Keys handled directly by the table columns (Option/Type/Default/Description)
-// rather than the Constraints column.
-const OPTION_COLUMN_KEYS = new Set(['type', 'default', 'description', 'scope']);
+function displayName(spec) {
+  const words = new Map([
+    ['bfs', 'BFS'], ['ecg', 'ECG'], ['hits', 'HITS'], ['sssp', 'SSSP'],
+    ['pagerank', 'PageRank'], ['force_atlas2', 'ForceAtlas2'], ['k_core', 'K-Core'],
+  ]);
+  const name = spec.function_name.replace(/^cugraph_/, '');
+  return words.get(name) ?? name
+    .split('_')
+    .map(word => words.get(word) ?? word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ');
+}
 
-// Every option key the Constraints renderer knows how to surface. Any key in a
-// spec that is NOT here (and not an OPTION_COLUMN_KEYS) makes the generator fail
-// loudly — so new metadata can never be silently dropped from the docs.
+const OPTION_DIRECT_KEYS = new Set(['type', 'default', 'description', 'scope']);
 const OPTION_CONSTRAINT_KEYS = new Set([
   'allowed_values', 'min', 'max', 'exclusive_min', 'required', 'required_when',
   'required_with', 'mutually_exclusive_with', 'valid_when', 'defaults_to',
   'column_of', 'expected_type_ref', 'example', 'side_input',
 ]);
 
-// Constraint summary for an option object. Renders every known constraint key
-// and throws on any unhandled key so the metadata contract stays complete.
-function optionConstraints(name, o) {
-  for (const k of Object.keys(o)) {
-    if (!OPTION_COLUMN_KEYS.has(k) && !OPTION_CONSTRAINT_KEYS.has(k)) {
-      throw new Error(`option "${name}" has unhandled key "${k}" — extend OPTION_CONSTRAINT_KEYS / optionConstraints() in gen-cugraph-docs.mjs so it is not dropped from the docs`);
+function optionConstraints(name, option) {
+  for (const key of Object.keys(option)) {
+    if (!OPTION_DIRECT_KEYS.has(key) && !OPTION_CONSTRAINT_KEYS.has(key)) {
+      throw new Error(`option ${name} has unrendered descriptor key ${key}`);
     }
   }
   const parts = [];
-  if (o.required === true) parts.push('required');
-  if (o.allowed_values) parts.push(`one of ${o.allowed_values.map(v => code(JSON.stringify(v))).join(', ')}`);
-  if ('min' in o) parts.push(`min ${o.min}`);
-  if ('max' in o) parts.push(`max ${o.max}`);
-  if ('exclusive_min' in o) parts.push(`> ${o.exclusive_min}`);
-  if (o.required_when) parts.push(`required when ${o.required_when}`);
-  if (o.required_with) parts.push(`required with ${code(o.required_with)}`);
-  if (o.mutually_exclusive_with) parts.push(`mutually exclusive with ${code(o.mutually_exclusive_with)}`);
-  if (o.valid_when) parts.push(`valid when ${o.valid_when}`);
-  if (o.defaults_to) parts.push(`defaults to ${o.defaults_to}`);
-  if (o.column_of) parts.push(`column of ${code(o.column_of)}`);
-  if (o.expected_type_ref) parts.push(`type ref ${code(o.expected_type_ref)}`);
-  if ('example' in o) parts.push(`example ${code(JSON.stringify(o.example))}`);
-  if (o.side_input) {
-    const role = o.side_input.role;
-    const cols = o.side_input.column_option ? [o.side_input.column_option] : (o.side_input.column_options || []);
-    parts.push(`side input (${role}${cols.length ? `, cols: ${cols.map(code).join(', ')}` : ''})`);
+  if (option.required === true) parts.push('required');
+  if (option.allowed_values) parts.push(`one of ${option.allowed_values.map(value => code(JSON.stringify(value))).join(', ')}`);
+  if ('min' in option) parts.push(`min ${option.min}`);
+  if ('max' in option) parts.push(`max ${option.max}`);
+  if ('exclusive_min' in option) parts.push(`> ${option.exclusive_min}`);
+  if (option.required_when) parts.push(`required when ${option.required_when}`);
+  if (option.required_with) parts.push(`required with ${code(option.required_with)}`);
+  if (option.mutually_exclusive_with) parts.push(`mutually exclusive with ${code(option.mutually_exclusive_with)}`);
+  if (option.valid_when) parts.push(`valid when ${option.valid_when}`);
+  if (option.defaults_to) parts.push(`defaults to ${option.defaults_to}`);
+  if (option.column_of) parts.push(`column of ${code(option.column_of)}`);
+  if (option.expected_type_ref) parts.push(`type ref ${code(option.expected_type_ref)}`);
+  if ('example' in option) parts.push(`example ${code(JSON.stringify(option.example))}`);
+  if (option.side_input) {
+    const columns = option.side_input.column_option ? [option.side_input.column_option] : (option.side_input.column_options || []);
+    parts.push(`side input (${option.side_input.role}${columns.length ? `, cols: ${columns.map(code).join(', ')}` : ''})`);
   }
-  return parts.map(p => (typeof p === 'string' ? cell(p) : p)).join('; ');
+  return parts.map(cell).join('; ');
 }
 
-function optionDescription(name, o) {
-  if (name === 'construction_policy' && o.scope === 'graph') {
-    return 'Edge-list construction semantics used before calling libcugraph.';
-  }
-  return o.description || '';
+function optionTable(options) {
+  return table(['Option', 'Type', 'Default', 'Constraints', 'Description'], Object.entries(options)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([name, option]) => [
+      code(name),
+      code(option.type),
+      option.default === null ? code('null') : (Object.hasOwn(option, 'default') ? code(JSON.stringify(option.default)) : ''),
+      optionConstraints(name, option),
+      cell(option.description),
+    ]));
 }
-
-function algorithmOptionCount(spec) {
-  const opts = JSON.parse(spec.options_schema_json).algorithm_options || {};
-  return String(Object.keys(opts).length);
-}
-
-function sourceInputLabel(policy) {
-  switch (policy) {
-    case 'none':
-      return 'not needed';
-    case 'required_scalar':
-      return 'single source';
-    case 'required_scalar_or_list_or_relation':
-      return 'source selector';
-    default:
-      return code(policy);
-  }
-}
-
-function weightColumnLabel(policy) {
-  switch (policy) {
-    case 'ignored':
-      return 'not used';
-    case 'optional':
-      return 'optional';
-    case 'required':
-      return 'required';
-    default:
-      return code(policy);
-  }
-}
-
-function outputSchemaLabel(kind) {
-  switch (kind) {
-    case 'fixed':
-      return 'fixed';
-    case 'default_mode':
-      return 'mode-dependent';
-    default:
-      return code(kind);
-  }
-}
-
-const BANNER = (fn) => `{/* GENERATED FROM cuGraph SQL metadata by website/scripts/gen-cugraph-docs.mjs. Do not edit by hand; edit the matching hand-owned example partial and re-run the generator. */}`;
 
 function renderArguments(spec) {
-  const args = JSON.parse(spec.argument_descriptions_json);
-  const rows = args.map(a => {
-    const notes = [
-      a.note,
-      a.name === 'options_json' ? 'JSON string with algorithm-specific options plus shared graph construction options.' : '',
-      a.semantic_effect ? `semantic effect: ${a.semantic_effect}` : '',
-      a.selector_policy ? `selector: ${a.selector_policy}` : '',
-    ].filter(Boolean).join('; ');
-    return [code(a.name), code(a.type), a.required ? 'yes' : 'no', a.default != null ? code(a.default) : '', cell(notes)];
-  });
-  return table(['Argument', 'Type', 'Required', 'Default', 'Notes'], rows);
-}
-
-function optionTable(opts) {
-  const rows = Object.entries(opts).sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => [
-    code(k),
-    code(v.type),
-    v.default === null ? code('null') : (v.default !== undefined ? code(JSON.stringify(v.default)) : ''),
-    optionConstraints(k, v),
-    cell(optionDescription(k, v)),
-  ]);
-  return table(['Option', 'Type', 'Default', 'Constraints', 'Description'], rows);
+  if (spec.argument_descriptions.length === 0) return '_This function has no non-relation arguments._';
+  return table(['Argument', 'Type', 'Required', 'Default', 'Notes'], spec.argument_descriptions.map(argument => [
+    code(argument.name),
+    code(argument.type),
+    argument.required ? 'yes' : 'no',
+    Object.hasOwn(argument, 'default') ? code(argument.default) : '',
+    cell([argument.note, argument.description, argument.semantic_effect && `semantic effect: ${argument.semantic_effect}`, argument.selector_policy && `selector: ${argument.selector_policy}`].filter(Boolean).join('; ')),
+  ]));
 }
 
 function renderOptions(spec) {
-  const o = JSON.parse(spec.options_schema_json);
-  const algo = o.algorithm_options || {};
-  let out = '';
-  if (Object.keys(algo).length === 0) {
-    out += '_This algorithm has no algorithm-specific options._\n';
-  } else {
-    out += optionTable(algo);
+  const parts = [];
+  const algorithmOptions = spec.options_schema.algorithm_options || {};
+  parts.push(Object.keys(algorithmOptions).length === 0 ? '_This function has no algorithm-specific options._' : optionTable(algorithmOptions));
+  const graphOptions = spec.options_schema.graph_options || {};
+  if (Object.keys(graphOptions).length > 0) {
+    parts.push('### Graph Construction Options\n\nShared by all cuGraph functions, shown with this function\'s defaults. See [Graph Construction Options](../../graph-options.mdx) for the construction-policy guide.\n\n' + optionTable(graphOptions));
   }
-  // Render this function's actual graph_options so per-function defaults (e.g.
-  // ForceAtlas2 directed=false) are visible, not hidden behind a generic link.
-  const graph = o.graph_options || {};
-  if (Object.keys(graph).length > 0) {
-    out += `\n\n### Graph Construction Options\n\nShared by all cuGraph functions, shown here with this function's defaults. The \`construction_policy\` option controls whether Nexus requests Python cuGraph-compatible edge normalization or bypasses it for raw libcugraph-style construction; see [Graph Construction Options](../../graph-options.mdx) for the full policy guide.\n\n`;
-    out += optionTable(graph);
-    out += '\n';
-  }
-  return out;
+  return parts.join('\n\n');
 }
 
 function renderSchemas(spec) {
-  const rs = JSON.parse(spec.result_schemas_json);
-  const fieldDescs = Object.fromEntries(JSON.parse(spec.result_field_descriptions_json).map(d => [d.name, d.description]));
-  const def = rs.default_schema;
-  const names = Object.keys(rs.schemas).sort((a, b) => (a === def ? -1 : b === def ? 1 : a.localeCompare(b)));
-  const multi = names.length > 1;
-  let out = '';
-  for (const mode of names) {
-    if (multi) out += `\n#### \`${mode}\`${mode === def ? ' (default)' : ''}\n\n`;
-    const rows = rs.schemas[mode].fields.map(f => [code(f.name), code(f.data_type), f.nullable ? 'yes' : 'no', cell(fieldDescs[f.name] || '')]);
-    out += table(['Column', 'Type', 'Nullable', 'Description'], rows) + '\n';
-  }
-  out += `\n**Concrete schemas are call-specific.** These are the generic registry schemas. Run [\`cugraph_validate_call\`](../../discovery-and-validation.mdx#cugraph_validate_call) for the concrete, table-specific output schema of a particular call.\n`;
-  return out;
+  const schemas = spec.result_schemas.schemas;
+  if (!schemas || typeof schemas !== 'object') throw new Error(`${spec.function_name}: result_schemas_json must contain schemas`);
+  const descriptions = Object.fromEntries((spec.result_schemas.field_descriptions || []).map(field => [field.name, field.description]));
+  const defaultSchema = spec.result_schemas.default_schema;
+  const names = Object.keys(schemas).sort((left, right) => (left === defaultSchema ? -1 : right === defaultSchema ? 1 : left.localeCompare(right)));
+  const blocks = names.map(name => {
+    const fields = schemas[name]?.fields;
+    if (!Array.isArray(fields)) throw new Error(`${spec.function_name}: result schema ${name} has no fields`);
+    const heading = names.length > 1 ? `#### ${code(name)}${name === defaultSchema ? ' (default)' : ''}\n\n` : '';
+    return heading + table(['Column', 'Type', 'Nullable', 'Description'], fields.map(field => [
+      code(field.name), code(field.data_type), field.nullable ? 'yes' : 'no', cell(descriptions[field.name]),
+    ]));
+  });
+  blocks.push('**Concrete schemas are call-specific.** These are generic descriptor schemas. Run [`gpu_validate_call`](../../discovery-and-validation.mdx#gpu_validate_callfunction_name-call_json) for a concrete, table-specific output schema.');
+  return blocks.join('\n\n');
 }
 
-function renderSimilarityPairContract(spec) {
-  if (familyOf(spec.function_name) !== 'similarity') return '';
-  return [
-    '## Candidate-pair relation',
-    '',
-    'Similarity functions score only the rows in the required candidate-pair relation selected by `options_json`. Set `vertex_pairs_table`, `first_vertex_col`, and `second_vertex_col` to identify it. The selected columns must exist, have the same physical `Int32` or `Int64` dtype, and match the edge table vertex domain.',
-    '',
-    'The candidate relation is a multiset: duplicate, reversed, and self pairs each remain distinct output rows. Null pair values are rejected at execution; they are never dropped. Results have no global ordering, so add `ORDER BY` when an order is required.',
-    '',
-    'These functions require an undirected graph (`directed=false`). Providing `weight_col` selects weighted similarity; omitting it selects unit-weight similarity. This API deliberately does not include all-pairs candidate generation or all-pairs top-k search.',
-  ].join('\n');
-}
-
-function validationCallJson(spec) {
-  const call = { src_col: 'src', dst_col: 'dst' };
-  if (familyOf(spec.function_name) !== 'similarity') return JSON.stringify(call);
-
-  call.options = {
-    vertex_pairs_table: 'your_candidate_pairs_table',
-    first_vertex_col: 'first',
-    second_vertex_col: 'second',
-  };
-  const algorithmOptions = JSON.parse(spec.options_schema_json).algorithm_options || {};
-  for (const [name, option] of Object.entries(algorithmOptions)) {
-    if (option.required === true && !(name in call.options)) {
-      throw new Error(`${spec.function_name}: validation example omits required similarity option "${name}"`);
-    }
-  }
-  return JSON.stringify(call);
+function firstExample(spec) {
+  const example = spec.examples.find(candidate => candidate?.call && typeof candidate.call === 'object');
+  if (!example) throw new Error(`${spec.function_name}: examples_json must contain a unified validation call`);
+  return example;
 }
 
 function renderPage(spec) {
-  const fn = spec.function_name;
-  const argCounts = JSON.parse(spec.allowed_arg_counts_json).join(', ');
-  const validateCall = `SELECT * FROM cugraph_validate_call(\n  '${fn}',\n  'your_edges_table',\n  '${validationCallJson(spec)}'\n);`;
+  const title = displayName(spec);
+  const example = firstExample(spec);
+  const executionSql = example.execution_sql;
+  if (typeof executionSql !== 'string') throw new Error(`${spec.function_name}: example must contain execution_sql`);
+  const validateSql = `SELECT * FROM gpu_validate_call(\n  '${spec.function_name}',\n  '${JSON.stringify(example.call)}'\n);`;
   return [
     '---',
-    `title: ${spec.algorithm}`,
-    `sidebar_label: ${spec.algorithm}`,
+    `title: ${title}`,
+    `sidebar_label: ${title}`,
     `description: ${JSON.stringify(spec.summary)}`,
     '---',
     '',
-    BANNER(fn),
+    '{/* GENERATED FROM the unified GPU function catalog by website/scripts/gen-cugraph-docs.mjs. Do not edit by hand. */}',
     '',
-    `# ${spec.algorithm}`,
+    `# ${title}`,
     '',
-    `SQL function: \`${fn}\``,
+    `SQL function: ${code(spec.function_name)}`,
     '',
     prose(spec.summary),
     '',
@@ -354,15 +265,13 @@ function renderPage(spec) {
     spec.signature,
     '```',
     '',
-    `Allowed argument counts: ${argCounts}.`,
-    '',
     '## Quickstart',
     '',
     '```sql',
-    spec.primary_example_sql,
+    executionSql,
     '```',
     '',
-    '## Positional arguments',
+    '## Non-relation arguments',
     '',
     renderArguments(spec),
     '',
@@ -374,96 +283,64 @@ function renderPage(spec) {
     '',
     renderSchemas(spec),
     '',
-    renderSimilarityPairContract(spec),
-    '',
     '## Examples',
     '',
-    `import Examples from '../../_examples/${fn}.mdx';`,
+    `import Examples from '../../_examples/${spec.function_name}.mdx';`,
     '',
     '<Examples />',
     '',
     '## Limitations & notes',
     '',
-    JSON.parse(spec.limitations_json).map(l => `- ${prose(l)}`).join('\n'),
+    spec.limitations.map(limitation => `- ${prose(limitation)}`).join('\n'),
     '',
     '## Validate before running',
     '',
-    'Always dry-run a call before executing it. Validation checks the function, table, columns, dtypes, and options without touching the GPU:',
+    'Validation checks named relations, bindings, dtypes, and options without scanning rows or touching the GPU:',
     '',
     '```sql',
-    validateCall,
+    validateSql,
     '```',
     '',
-    `See [Discovery & Validation](../../discovery-and-validation.mdx) for the full \`cugraph_validate_call\` contract.`,
+    'See [Discovery & Validation](../../discovery-and-validation.mdx) for the full `gpu_validate_call` contract.',
   ].join('\n');
 }
 
 function renderCheatsheet(specs) {
-  const rows = specs.map(s => {
-    const fn = s.function_name;
-    const slug = familyOf(fn);
-    const fam = FAMILIES[slug].label;
-    // Links resolve relative to overview.mdx (which imports this partial), so
-    // they point into the algorithms/ subtree.
-    const link = `[${cell(s.algorithm)}](./algorithms/${slug}/${fn}.mdx)`;
-    return [
-      link,
-      code(fn),
-      cell(fam),
-      sourceInputLabel(s.source_vertex_policy),
-      weightColumnLabel(s.weight_col_policy),
-      outputSchemaLabel(s.output_schema_kind),
-      algorithmOptionCount(s),
-      cell(s.summary),
-    ];
-  });
   return [
-    '{/* GENERATED FROM cuGraph SQL metadata by website/scripts/gen-cugraph-docs.mjs. Do not edit by hand. */}',
+    '{/* GENERATED FROM the unified GPU function catalog by website/scripts/gen-cugraph-docs.mjs. Do not edit by hand. */}',
     '',
-    `The live registry exposes **${specs.length} SQL-visible algorithms**.`,
+    `The live catalog contains **${specs.length} SQL-visible cuGraph functions**.`,
     '',
-    'Cheatsheet columns are human summaries of registry metadata. Source input says whether the function needs a source selector; Weight column says whether `weight_col` affects execution; Output schema says whether the result schema is fixed or mode-dependent. The Algorithm options column counts only algorithm-specific JSON options; shared graph construction options are documented on each function page.',
-    '',
-    table(['Algorithm', 'SQL function', 'Family', 'Source input', 'Weight column', 'Output schema', 'Algorithm options', 'Summary'], rows),
+    table(['Function', 'Signature', 'Summary'], specs.map(spec => [
+      `[${cell(displayName(spec))}](./algorithms/${spec.family}/${spec.function_name}.mdx)`,
+      code(spec.function_name),
+      cell(spec.summary),
+    ])),
   ].join('\n');
-}
-
-function seedExample(spec) {
-  const fn = spec.function_name;
-  // Underscore-prefixed dir keeps these out of the docs route/sidebar; they are
-  // imported as partials into each algorithm page, not standalone docs.
-  const path = join(DOCS_DIR, '_examples', `${fn}.mdx`);
-  if (existsSync(path)) return false; // never clobber hand-written examples
-  const body = [
-    `{/* Hand-owned examples for ${fn}. NOT generated — safe to edit. */}`,
-    `{/* Add dataset-specific runnable examples here against your own tables. */}`,
-    '',
-    'Canonical call shape using `target_edges` as the edge table:',
-    '',
-    '```sql',
-    spec.primary_example_sql,
-    '```',
-    '',
-    'Use the same shape with your registered edge table or view; configure',
-    'algorithm and graph options through `options_json` as described above.',
-  ].join('\n');
-  write(path, body);
-  return true;
 }
 
 function main() {
   const specs = loadSpecs();
-  for (const spec of specs) DISPLAY_NAME.set(spec.function_name, spec.algorithm);
-  writeAlgorithmsCategory();
-  writeFamilyCategories();
-  let seeded = 0;
-  for (const spec of specs) {
-    const fam = familyOf(spec.function_name);
-    write(join(ALGORITHMS_DIR, fam, `${spec.function_name}.mdx`), renderPage(spec));
-    if (seedExample(spec)) seeded++;
+  const classified = new Set(specs.map(spec => spec.function_name));
+  for (const family of Object.values(FAMILIES)) {
+    for (const functionName of family.functions) {
+      if (!classified.has(functionName)) throw new Error(`missing unified descriptor for ${functionName}`);
+    }
   }
+  for (const spec of specs) {
+    if (!Object.values(FAMILIES).some(family => family.functions.includes(spec.function_name))) {
+      throw new Error(`unclassified unified descriptor ${spec.function_name}`);
+    }
+  }
+  for (const [slug, family] of Object.entries(FAMILIES)) {
+    write(join(ALGORITHMS_DIR, slug, '_category_.json'), JSON.stringify({
+      label: family.label,
+      position: family.position,
+    }, null, 2));
+  }
+  for (const spec of specs) write(join(ALGORITHMS_DIR, spec.family, `${spec.function_name}.mdx`), renderPage(spec));
   write(join(DOCS_DIR, '_cheatsheet.mdx'), renderCheatsheet(specs));
-  console.log(`Wrote ${specs.length} pages, ${Object.keys(FAMILIES).length} families under algorithms/, cheatsheet, and ${seeded} example seeds.`);
+  console.log(`Wrote ${specs.length} generated cuGraph function pages and cheatsheet.`);
 }
 
 main();

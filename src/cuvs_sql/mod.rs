@@ -6,15 +6,16 @@
 
 mod error;
 mod exec;
+mod gpu_family;
 mod logical;
 mod lowering;
-mod metadata;
 mod options;
 mod query_planner;
 mod registry;
 mod relation_planner;
 
 pub use exec::CuvsAlgoExec;
+pub(crate) use gpu_family::{CuvsGpuFunctionFamily, cuvs_gpu_function_availability};
 pub use logical::CuvsLogicalNode;
 pub use options::{CuvsValidatedOptions, CuvsVectorRelationBinding};
 pub use query_planner::{CuvsExtensionPlanner, CuvsQueryPlanner};
@@ -25,9 +26,3 @@ pub use registry::{
     canonicalize_cuvs_options, cuvs_options_json_schema,
 };
 pub use relation_planner::{CuvsRelationPlanner, cuvs_relation_planner};
-
-pub const CUVS_LIST_OPERATIONS_FUNCTION: &str = "cuvs_list_operations";
-pub const CUVS_DESCRIBE_OPERATION_FUNCTION: &str = "cuvs_describe_operation";
-pub const CUVS_VALIDATE_CALL_FUNCTION: &str = "cuvs_validate_call";
-
-pub(crate) use metadata::cuvs_metadata_table_functions;

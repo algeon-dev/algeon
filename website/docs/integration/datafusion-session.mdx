@@ -236,6 +236,6 @@ ledger. Use `NexusGpuBackend` whenever the embedding process can run more than
 one GPU query at a time or mixes cuGraph with native execution.
 
 The same [discovery and validation functions](../cugraph/discovery-and-validation.mdx)
-work in-process: run `SELECT * FROM cugraph_list_algorithms()` or
-`cugraph_validate_call(...)` against your `SessionContext` before executing GPU
-graph work.
+work in-process: run `SELECT * FROM gpu_list_functions()` (optionally filtering
+with `provider = 'cugraph'`) or `gpu_validate_call(...)` against your
+`SessionContext` before executing GPU graph work.
