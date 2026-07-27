@@ -32,6 +32,12 @@ pub struct RngState {
     _nosend_nosync: std::marker::PhantomData<*mut ()>,
 }
 
+impl std::fmt::Debug for RngState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RngState").finish_non_exhaustive()
+    }
+}
+
 impl RngState {
     /// Create a new RNG state with the given seed.
     ///

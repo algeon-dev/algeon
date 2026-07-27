@@ -7,7 +7,7 @@ use cugraph_sys::{bool_t, cugraph_centrality_result_t, cugraph_error_t, cugraph_
 use super::CentralityResult;
 use crate::{
     error::{Result, check_error},
-    graph::Graph,
+    graph::{Graph, Transposed},
     handle::ResourceHandle,
     params::{ClosedUnitF64, IterationCount, NonNegativeF64},
 };
@@ -66,10 +66,18 @@ impl Default for PageRankParams {
 
 /// Compute PageRank on a graph.
 ///
+/// The graph must be stored in transposed form ([`Graph<Transposed>`]).
+/// Use [`GraphBuilder::build_transposed`](crate::graph::GraphBuilder::build_transposed)
+/// to construct the graph.
+///
 /// Returns a [`CentralityResult`] containing vertex ids and their PageRank
 /// values. The result must be kept alive as long as any
 /// [`crate::array::DeviceArrayView`] borrowed from it is in use.
-pub fn pagerank(handle: &ResourceHandle, graph: &mut Graph, params: &PageRankParams) -> Result<CentralityResult> {
+pub fn pagerank(
+    handle: &ResourceHandle,
+    graph: &mut Graph<Transposed>,
+    params: &PageRankParams,
+) -> Result<CentralityResult> {
     let mut result: *mut cugraph_centrality_result_t = ptr::null_mut();
     let mut error: *mut cugraph_error_t = ptr::null_mut();
 
@@ -102,6 +110,7 @@ mod tests {
     use super::*;
     use crate::{
         array::device_array_from_host,
+        graph::GraphBuilder,
         types::{DataType, GraphProperties},
     };
 
@@ -118,18 +127,9 @@ mod tests {
 
         let props = GraphProperties { is_symmetric: false, is_multigraph: false };
 
-        let mut graph = Graph::from_edge_list(
-            &handle,
-            props,
-            &src.view(),
-            &dst.view(),
-            None,
-            None,
-            None,
-            true,  // store_transposed (required for PageRank)
-            false, // renumber (not needed, IDs are 0-based sequential)
-        )
-        .expect("graph");
+        let src_view = src.view();
+        let dst_view = dst.view();
+        let mut graph = GraphBuilder::new(props, &src_view, &dst_view).build_transposed(&handle).expect("graph");
 
         let params = PageRankParams::default();
         let result = pagerank(&handle, &mut graph, &params).expect("pagerank");

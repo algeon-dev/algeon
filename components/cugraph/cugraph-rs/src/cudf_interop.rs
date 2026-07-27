@@ -11,7 +11,7 @@ use cudf::{column::DeviceSlice, io::parquet, types::TypeId};
 use crate::{
     array::{DeviceArrayView, DeviceBuffer},
     error::{Error, ErrorKind, Result},
-    graph::Graph,
+    graph::{Graph, GraphBuilder, Transposition},
     handle::ResourceHandle,
     types::{DataType, GraphProperties},
 };
@@ -62,7 +62,7 @@ pub fn cugraph_type_to_cudf(dtype: DataType) -> Option<TypeId> {
 // are fully compatible with cugraph's type-erased device array API. The pointer
 // is GPU memory owned by the cudf column (not host-dereferenceable), and the
 // type mapping is verified at construction time via `cudf_type_to_cugraph`.
-unsafe impl DeviceBuffer for DeviceSlice {
+unsafe impl DeviceBuffer for DeviceSlice<'_> {
     fn device_ptr(&self) -> *mut std::ffi::c_void {
         self.as_ptr()
     }
@@ -86,7 +86,7 @@ pub trait DeviceSliceExt {
     fn as_cugraph_view(&self) -> Result<DeviceArrayView<'_>>;
 }
 
-impl DeviceSliceExt for DeviceSlice {
+impl DeviceSliceExt for DeviceSlice<'_> {
     fn as_cugraph_view(&self) -> Result<DeviceArrayView<'_>> {
         DeviceArrayView::from_device_buffer(self)
     }
@@ -137,6 +137,19 @@ impl DeviceArrayViewExt for DeviceArrayView<'_> {
 /// them, and builds a graph. Both [`graph_from_parquet`] and
 /// [`graph_from_dataframe`] delegate to this function.
 ///
+/// The type parameter `T` determines the transposition state of the
+/// resulting graph:
+///
+/// ```ignore
+/// use cugraph::graph::{Forward, Transposed};
+///
+/// // For BFS (requires forward):
+/// let graph = graph_from_table_view::<Forward>(&handle, &view, 0, 1, None, props, true)?;
+///
+/// // For PageRank (requires transposed):
+/// let graph = graph_from_table_view::<Transposed>(&handle, &view, 0, 1, None, props, true)?;
+/// ```
+///
 /// # Arguments
 ///
 /// - `handle` — resource handle for GPU operations
@@ -145,8 +158,6 @@ impl DeviceArrayViewExt for DeviceArrayView<'_> {
 /// - `dst_col` — zero-based column index for destination vertex ids
 /// - `wgt_col` — optional zero-based column index for edge weights
 /// - `props` — graph properties (symmetric / multigraph)
-/// - `store_transposed` — whether to store the graph transposed (needed by
-///   some algorithms like PageRank)
 /// - `renumber` — whether to renumber vertices (strongly recommended when
 ///   vertex IDs are not sequential from 0)
 ///
@@ -159,16 +170,15 @@ impl DeviceArrayViewExt for DeviceArrayView<'_> {
 /// - graph construction fails
 ///
 /// [`TableView`]: cudf::TableView
-pub fn graph_from_table_view(
+pub fn graph_from_table_view<T: Transposition>(
     handle: &ResourceHandle,
     view: &cudf::TableView<'_>,
     src_col: usize,
     dst_col: usize,
     wgt_col: Option<usize>,
     props: GraphProperties,
-    store_transposed: bool,
     renumber: bool,
-) -> Result<Graph> {
+) -> Result<Graph<T>> {
     let num_cols = view.num_columns().map_err(|e| {
         Error::new(ErrorKind::Unexpected, "graph_from_table_view")
             .with_message(format!("failed to get column count: {}", e))
@@ -291,22 +301,20 @@ pub fn graph_from_table_view(
     let wgt_cg = wgt_col.map(|w| col_to_cugraph_view(w, "wgt")).transpose()?;
 
     // ── Build the graph ─────────────────────────────────────────────
-    Graph::from_edge_list(
-        handle,
-        props,
-        &src_cg,
-        &dst_cg,
-        wgt_cg.as_ref(),
-        None, // no edge IDs
-        None, // no edge type IDs
-        store_transposed,
-        renumber,
-    )
+    let mut builder = GraphBuilder::new(props, &src_cg, &dst_cg);
+    builder.renumber(renumber);
+    if let Some(ref w) = wgt_cg {
+        builder.weights(w);
+    }
+    builder.build_inner(handle, T::store_transposed())
 }
 
 /// Build a cuGraph [`Graph`] from a cudf [`DataFrame`] using column names.
 ///
 /// Resolves column names to indices and delegates to [`graph_from_table_view`].
+///
+/// The type parameter `T` determines the transposition state of the
+/// resulting graph. See [`graph_from_table_view`] for details.
 ///
 /// # Arguments
 ///
@@ -316,7 +324,6 @@ pub fn graph_from_table_view(
 /// - `dst_col` — column name for destination vertex ids
 /// - `wgt_col` — optional column name for edge weights
 /// - `props` — graph properties (symmetric / multigraph)
-/// - `store_transposed` — whether to store the graph transposed
 /// - `renumber` — whether to renumber vertices
 ///
 /// # Errors
@@ -325,16 +332,15 @@ pub fn graph_from_table_view(
 /// [`graph_from_table_view`] fails.
 ///
 /// [`DataFrame`]: cudf::DataFrame
-pub fn graph_from_dataframe(
+pub fn graph_from_dataframe<T: Transposition>(
     handle: &ResourceHandle,
     df: &cudf::DataFrame,
     src_col: &str,
     dst_col: &str,
     wgt_col: Option<&str>,
     props: GraphProperties,
-    store_transposed: bool,
     renumber: bool,
-) -> Result<Graph> {
+) -> Result<Graph<T>> {
     let resolve = |name: &str, role: &str| -> Result<usize> {
         df.column_index(name).ok_or_else(|| {
             Error::new(ErrorKind::InvalidInput, "graph_from_dataframe")
@@ -356,7 +362,7 @@ pub fn graph_from_dataframe(
             .with_message(format!("failed to get table view: {}", e))
     })?;
 
-    graph_from_table_view(handle, &view, src_idx, dst_idx, wgt_idx, props, store_transposed, renumber)
+    graph_from_table_view::<T>(handle, &view, src_idx, dst_idx, wgt_idx, props, renumber)
 }
 
 /// Read a Parquet edge-list and build a cuGraph [`Graph`] on the GPU.
@@ -364,6 +370,9 @@ pub fn graph_from_dataframe(
 /// This convenience helper eliminates the ~20 lines of boilerplate that every
 /// Parquet-to-Graph workflow repeats: read table → extract column views →
 /// create DeviceSlices → convert to cugraph views → build Graph.
+///
+/// The type parameter `T` determines the transposition state of the
+/// resulting graph. See [`graph_from_table_view`] for details.
 ///
 /// The returned [`cudf::Table`] lets callers reuse the loaded edge-list data
 /// (for additional algorithms or inspection) without re-reading Parquet.
@@ -380,8 +389,6 @@ pub fn graph_from_dataframe(
 /// - `dst_col` — zero-based column index for destination vertex ids
 /// - `wgt_col` — optional zero-based column index for edge weights
 /// - `props` — graph properties (symmetric / multigraph)
-/// - `store_transposed` — whether to store the graph transposed (needed by
-///   some algorithms like PageRank)
 /// - `renumber` — whether to renumber vertices (strongly recommended when
 ///   vertex IDs are not sequential from 0)
 ///
@@ -398,35 +405,33 @@ pub fn graph_from_dataframe(
 ///
 /// ```no_run
 /// use cugraph::{
-///     cudf_interop::graph_from_parquet, handle::ResourceHandle,
-///     types::GraphProperties,
+///     cudf_interop::graph_from_parquet, graph::Forward,
+///     handle::ResourceHandle, types::GraphProperties,
 /// };
 ///
 /// let handle = ResourceHandle::new().unwrap();
 /// let props = GraphProperties { is_symmetric: false, is_multigraph: false };
 ///
-/// let (_table, mut graph) = graph_from_parquet(
+/// let (_table, mut graph) = graph_from_parquet::<Forward>(
 ///     &handle,
 ///     "edges.parquet",
 ///     0,
 ///     1,
 ///     Some(2),
 ///     props,
-///     false,
 ///     true,
 /// )
 /// .unwrap();
 /// ```
-pub fn graph_from_parquet(
+pub fn graph_from_parquet<T: Transposition>(
     handle: &ResourceHandle,
     path: &str,
     src_col: usize,
     dst_col: usize,
     wgt_col: Option<usize>,
     props: GraphProperties,
-    store_transposed: bool,
     renumber: bool,
-) -> Result<(cudf::Table, Graph)> {
+) -> Result<(cudf::Table, Graph<T>)> {
     // ── Read the Parquet file into GPU memory ───────────────────────────
     let options = parquet::ParquetReaderOptions::new(path);
 
@@ -445,7 +450,7 @@ pub fn graph_from_parquet(
                 .with_message(format!("failed to get table view: {}", e))
         })?;
 
-        graph_from_table_view(handle, &view, src_col, dst_col, wgt_col, props, store_transposed, renumber)?
+        graph_from_table_view::<T>(handle, &view, src_col, dst_col, wgt_col, props, renumber)?
     };
 
     Ok((table, graph))

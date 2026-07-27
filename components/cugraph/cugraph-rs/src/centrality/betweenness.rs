@@ -11,7 +11,7 @@
 //! use cugraph::{
 //!     array::device_array_from_host,
 //!     centrality::{BetweennessCentralityParams, betweenness_centrality},
-//!     graph::Graph,
+//!     graph::GraphBuilder,
 //!     handle::ResourceHandle,
 //!     types::{DataType, GraphProperties},
 //! };
@@ -26,18 +26,12 @@
 //!         .unwrap();
 //!
 //! let props = GraphProperties { is_symmetric: false, is_multigraph: false };
-//! let mut graph = Graph::from_edge_list(
-//!     &handle,
-//!     props,
-//!     &src.view(),
-//!     &dst.view(),
-//!     None,
-//!     None,
-//!     None,
-//!     false,
-//!     true,
-//! )
-//! .unwrap();
+//! let src_view = src.view();
+//! let dst_view = dst.view();
+//! let mut graph = GraphBuilder::new(props, &src_view, &dst_view)
+//!     .renumber(true)
+//!     .build_forward(&handle)
+//!     .unwrap();
 //!
 //! let params = BetweennessCentralityParams::default();
 //! let result =
@@ -78,6 +72,9 @@ impl Default for BetweennessCentralityParams {
 
 /// Compute vertex betweenness centrality on a graph.
 ///
+/// Works with either [`Forward`](crate::graph::Forward) or
+/// [`Transposed`](crate::graph::Transposed) graphs.
+///
 /// Betweenness centrality can be computed exactly by passing `vertex_list` as
 /// `None`. This performs a traversal from every source vertex.
 ///
@@ -88,9 +85,9 @@ impl Default for BetweennessCentralityParams {
 ///
 /// Returns a [`CentralityResult`] containing vertex ids and their betweenness
 /// centrality values.
-pub fn betweenness_centrality(
+pub fn betweenness_centrality<T>(
     handle: &ResourceHandle,
-    graph: &mut Graph,
+    graph: &mut Graph<T>,
     vertex_list: Option<&DeviceArrayView<'_>>,
     params: &BetweennessCentralityParams,
 ) -> Result<CentralityResult> {
@@ -121,6 +118,7 @@ mod tests {
     use super::*;
     use crate::{
         array::device_array_from_host,
+        graph::GraphBuilder,
         types::{DataType, GraphProperties},
     };
 
@@ -160,18 +158,8 @@ mod tests {
 
         let props = GraphProperties { is_symmetric: false, is_multigraph: false };
 
-        let mut graph = Graph::from_edge_list(
-            &handle,
-            props,
-            &src.view(),
-            &dst.view(),
-            None,
-            None,
-            None,
-            false, // store_transposed not required for betweenness
-            true,  // renumber
-        )
-        .expect("graph");
+        let mut graph =
+            GraphBuilder::new(props, &src.view(), &dst.view()).renumber(true).build_forward(&handle).expect("graph");
 
         let params = BetweennessCentralityParams::default();
         let result = betweenness_centrality(&handle, &mut graph, None, &params).expect("betweenness");
@@ -213,8 +201,8 @@ mod tests {
 
         let props = GraphProperties { is_symmetric: false, is_multigraph: false };
 
-        let mut graph = Graph::from_edge_list(&handle, props, &src.view(), &dst.view(), None, None, None, false, true)
-            .expect("graph");
+        let mut graph =
+            GraphBuilder::new(props, &src.view(), &dst.view()).renumber(true).build_forward(&handle).expect("graph");
 
         let params = BetweennessCentralityParams::default();
         let result = betweenness_centrality(&handle, &mut graph, None, &params).expect("betweenness");
@@ -248,8 +236,8 @@ mod tests {
 
         let props = GraphProperties { is_symmetric: false, is_multigraph: false };
 
-        let mut graph = Graph::from_edge_list(&handle, props, &src.view(), &dst.view(), None, None, None, false, true)
-            .expect("graph");
+        let mut graph =
+            GraphBuilder::new(props, &src.view(), &dst.view()).renumber(true).build_forward(&handle).expect("graph");
 
         // Use only vertices 0 and 1 as seeds
         let seeds = device_array_from_host(&handle, &[0i32, 1], DataType::Int32).expect("seeds");
@@ -283,8 +271,8 @@ mod tests {
 
         let props = GraphProperties { is_symmetric: false, is_multigraph: false };
 
-        let mut graph = Graph::from_edge_list(&handle, props, &src.view(), &dst.view(), None, None, None, false, true)
-            .expect("graph");
+        let mut graph =
+            GraphBuilder::new(props, &src.view(), &dst.view()).renumber(true).build_forward(&handle).expect("graph");
 
         let params = BetweennessCentralityParams { normalized: false, include_endpoints: false };
         let result = betweenness_centrality(&handle, &mut graph, None, &params).expect("betweenness");
@@ -316,8 +304,7 @@ mod tests {
 
         // Without endpoints
         let mut graph_a =
-            Graph::from_edge_list(&handle, props, &src.view(), &dst.view(), None, None, None, false, true)
-                .expect("graph_a");
+            GraphBuilder::new(props, &src.view(), &dst.view()).renumber(true).build_forward(&handle).expect("graph_a");
 
         let params_no_ep = BetweennessCentralityParams { normalized: false, include_endpoints: false };
         let result_no_ep = betweenness_centrality(&handle, &mut graph_a, None, &params_no_ep).expect("bc no ep");
@@ -325,8 +312,7 @@ mod tests {
 
         // With endpoints
         let mut graph_b =
-            Graph::from_edge_list(&handle, props, &src.view(), &dst.view(), None, None, None, false, true)
-                .expect("graph_b");
+            GraphBuilder::new(props, &src.view(), &dst.view()).renumber(true).build_forward(&handle).expect("graph_b");
 
         let params_with_ep = BetweennessCentralityParams { normalized: false, include_endpoints: true };
         let result_with_ep = betweenness_centrality(&handle, &mut graph_b, None, &params_with_ep).expect("bc with ep");
@@ -367,8 +353,8 @@ mod tests {
 
         let props = GraphProperties { is_symmetric: false, is_multigraph: false };
 
-        let mut graph = Graph::from_edge_list(&handle, props, &src.view(), &dst.view(), None, None, None, false, true)
-            .expect("graph");
+        let mut graph =
+            GraphBuilder::new(props, &src.view(), &dst.view()).renumber(true).build_forward(&handle).expect("graph");
 
         let params = BetweennessCentralityParams::default();
         let result = betweenness_centrality(&handle, &mut graph, None, &params).expect("betweenness");

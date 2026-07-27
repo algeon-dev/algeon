@@ -13,7 +13,7 @@
 //! ```no_run
 //! use cugraph::{
 //!     array::device_array_from_host,
-//!     graph::Graph,
+//!     graph::GraphBuilder,
 //!     handle::ResourceHandle,
 //!     layout::{ForceAtlas2Params, force_atlas2},
 //!     params::IterationCount,
@@ -30,18 +30,12 @@
 //!     .unwrap();
 //!
 //! let props = GraphProperties { is_symmetric: false, is_multigraph: false };
-//! let mut graph = Graph::from_edge_list(
-//!     &handle,
-//!     props,
-//!     &src.view(),
-//!     &dst.view(),
-//!     None,
-//!     None,
-//!     None,
-//!     false,
-//!     true,
-//! )
-//! .unwrap();
+//! let src_view = src.view();
+//! let dst_view = dst.view();
+//! let mut graph = GraphBuilder::new(props, &src_view, &dst_view)
+//!     .renumber(true)
+//!     .build_forward(&handle)
+//!     .unwrap();
 //!
 //! let params = ForceAtlas2Params {
 //!     max_iter: IterationCount::new(100).unwrap(),
@@ -150,6 +144,16 @@ impl Default for ForceAtlas2Params {
 ///
 /// Each attribute is a pair of device arrays: one for vertex ids and one for
 /// the corresponding values. Both arrays must have the same length.
+impl std::fmt::Debug for ForceAtlas2VertexAttrs<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ForceAtlas2VertexAttrs")
+            .field("radius", &self.radius.is_some())
+            .field("mobility", &self.mobility.is_some())
+            .field("mass", &self.mass.is_some())
+            .finish()
+    }
+}
+
 #[derive(Default)]
 pub struct ForceAtlas2VertexAttrs<'a> {
     /// Per-vertex radius (used when `prevent_overlapping` is set).
@@ -167,6 +171,12 @@ pub struct ForceAtlas2VertexAttrs<'a> {
 ///
 /// Used for refinement passes where a previous layout result is fed back as
 /// starting positions.
+impl std::fmt::Debug for InitialPositions<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InitialPositions").finish_non_exhaustive()
+    }
+}
+
 pub struct InitialPositions<'a> {
     /// Vertex ids for the initial positions.
     pub vertices: &'a DeviceArrayView<'a>,
@@ -187,7 +197,7 @@ pub struct LayoutResult {
 
 impl std::fmt::Debug for LayoutResult {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("LayoutResult").field("raw", &self.raw).finish()
+        f.debug_struct("LayoutResult").finish_non_exhaustive()
     }
 }
 
@@ -264,6 +274,9 @@ impl Drop for LayoutResult {
 
 /// Compute a Force Atlas 2 layout for a graph.
 ///
+/// Works with either [`Forward`](crate::graph::Forward) or
+/// [`Transposed`](crate::graph::Transposed) graphs.
+///
 /// Returns a [`LayoutResult`] containing vertex ids and (x, y) coordinates.
 ///
 /// # Arguments
@@ -279,10 +292,10 @@ impl Drop for LayoutResult {
 ///
 /// Returns an error if the C API call fails (e.g., invalid input, GPU memory
 /// allocation failure).
-pub fn force_atlas2(
+pub fn force_atlas2<T>(
     handle: &ResourceHandle,
     rng_state: &mut RngState,
-    graph: &mut Graph,
+    graph: &mut Graph<T>,
     params: &ForceAtlas2Params,
     vertex_attrs: Option<&ForceAtlas2VertexAttrs<'_>>,
     initial_pos: Option<&InitialPositions<'_>>,
@@ -402,6 +415,7 @@ mod tests {
     use super::*;
     use crate::{
         array::device_array_from_host,
+        graph::GraphBuilder,
         params::{ClosedUnitF64, IterationCount, NonNegativeF64},
         types::{DataType, GraphProperties},
     };
@@ -430,8 +444,8 @@ mod tests {
 
         let props = GraphProperties { is_symmetric: true, is_multigraph: false };
 
-        let mut graph = Graph::from_edge_list(&handle, props, &src.view(), &dst.view(), None, None, None, false, true)
-            .expect("graph");
+        let mut graph =
+            GraphBuilder::new(props, &src.view(), &dst.view()).renumber(true).build_forward(&handle).expect("graph");
 
         let params = ForceAtlas2Params { max_iter: IterationCount::new(50).unwrap(), ..Default::default() };
 
@@ -469,8 +483,8 @@ mod tests {
 
         let props = GraphProperties { is_symmetric: true, is_multigraph: false };
 
-        let mut graph = Graph::from_edge_list(&handle, props, &src.view(), &dst.view(), None, None, None, false, true)
-            .expect("graph");
+        let mut graph =
+            GraphBuilder::new(props, &src.view(), &dst.view()).renumber(true).build_forward(&handle).expect("graph");
 
         // First pass: 50 iterations, random initial positions
         let params1 = ForceAtlas2Params { max_iter: IterationCount::new(50).unwrap(), ..Default::default() };
@@ -514,8 +528,8 @@ mod tests {
 
         let props = GraphProperties { is_symmetric: true, is_multigraph: false };
 
-        let mut graph = Graph::from_edge_list(&handle, props, &src.view(), &dst.view(), None, None, None, false, true)
-            .expect("graph");
+        let mut graph =
+            GraphBuilder::new(props, &src.view(), &dst.view()).renumber(true).build_forward(&handle).expect("graph");
 
         let params = ForceAtlas2Params { max_iter: IterationCount::new(10).unwrap(), ..Default::default() };
 
@@ -549,9 +563,11 @@ mod tests {
 
         let props = GraphProperties { is_symmetric: true, is_multigraph: false };
 
-        let mut graph =
-            Graph::from_edge_list(&handle, props, &src.view(), &dst.view(), Some(&wgt.view()), None, None, false, true)
-                .expect("graph");
+        let mut graph = GraphBuilder::new(props, &src.view(), &dst.view())
+            .weights(&wgt.view())
+            .renumber(true)
+            .build_forward(&handle)
+            .expect("graph");
 
         let params = ForceAtlas2Params {
             max_iter: IterationCount::new(50).unwrap(),
@@ -580,8 +596,8 @@ mod tests {
 
         let props = GraphProperties { is_symmetric: true, is_multigraph: false };
 
-        let mut graph = Graph::from_edge_list(&handle, props, &src.view(), &dst.view(), None, None, None, false, true)
-            .expect("graph");
+        let mut graph =
+            GraphBuilder::new(props, &src.view(), &dst.view()).renumber(true).build_forward(&handle).expect("graph");
 
         let params = ForceAtlas2Params {
             max_iter: IterationCount::new(50).unwrap(),
@@ -618,8 +634,8 @@ mod tests {
 
         let props = GraphProperties { is_symmetric: true, is_multigraph: false };
 
-        let mut graph = Graph::from_edge_list(&handle, props, &src.view(), &dst.view(), None, None, None, false, true)
-            .expect("graph");
+        let mut graph =
+            GraphBuilder::new(props, &src.view(), &dst.view()).renumber(true).build_forward(&handle).expect("graph");
 
         // Create mismatched initial position arrays
         let verts = device_array_from_host(&handle, &[0i32, 1], DataType::Int32).expect("verts");
@@ -648,8 +664,8 @@ mod tests {
 
         let props = GraphProperties { is_symmetric: true, is_multigraph: false };
 
-        let mut graph = Graph::from_edge_list(&handle, props, &src.view(), &dst.view(), None, None, None, false, true)
-            .expect("graph");
+        let mut graph =
+            GraphBuilder::new(props, &src.view(), &dst.view()).renumber(true).build_forward(&handle).expect("graph");
 
         // Create mismatched mass arrays
         let mass_verts = device_array_from_host(&handle, &[0i32, 1], DataType::Int32).expect("mass_verts");
@@ -679,8 +695,8 @@ mod tests {
 
         let props = GraphProperties { is_symmetric: true, is_multigraph: false };
 
-        let mut graph = Graph::from_edge_list(&handle, props, &src.view(), &dst.view(), None, None, None, false, true)
-            .expect("graph");
+        let mut graph =
+            GraphBuilder::new(props, &src.view(), &dst.view()).renumber(true).build_forward(&handle).expect("graph");
 
         let params = ForceAtlas2Params {
             max_iter: IterationCount::new(30).unwrap(),

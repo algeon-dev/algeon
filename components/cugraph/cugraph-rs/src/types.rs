@@ -1,5 +1,7 @@
 //! Fundamental types shared across the cuGraph Rust API.
 
+use std::fmt;
+
 use cugraph_sys::{bool_t, cugraph_data_type_id_t, cugraph_graph_properties_t};
 
 /// Element data type for type-erased arrays.
@@ -17,6 +19,26 @@ pub enum DataType {
     Float64,
     SizeT,
     Bool,
+}
+
+impl fmt::Display for DataType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let name = match self {
+            Self::Int8 => "Int8",
+            Self::Int16 => "Int16",
+            Self::Int32 => "Int32",
+            Self::Int64 => "Int64",
+            Self::Uint8 => "Uint8",
+            Self::Uint16 => "Uint16",
+            Self::Uint32 => "Uint32",
+            Self::Uint64 => "Uint64",
+            Self::Float32 => "Float32",
+            Self::Float64 => "Float64",
+            Self::SizeT => "SizeT",
+            Self::Bool => "Bool",
+        };
+        f.write_str(name)
+    }
 }
 
 impl DataType {
@@ -77,6 +99,14 @@ impl TryFrom<cugraph_data_type_id_t> for DataType {
 pub struct GraphProperties {
     pub is_symmetric: bool,
     pub is_multigraph: bool,
+}
+
+impl fmt::Display for GraphProperties {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let symmetry = if self.is_symmetric { "symmetric" } else { "directed" };
+        let kind = if self.is_multigraph { "multigraph" } else { "simple graph" };
+        write!(f, "{symmetry} {kind}")
+    }
 }
 
 impl From<GraphProperties> for cugraph_graph_properties_t {
