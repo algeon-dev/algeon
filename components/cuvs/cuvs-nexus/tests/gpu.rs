@@ -7,13 +7,14 @@ use std::{
 };
 
 use arrow::{
-    array::{FixedSizeListArray, Float32Array},
+    array::{FixedSizeListArray, Float32Array, ListArray},
+    buffer::{OffsetBuffer, ScalarBuffer},
     datatypes::{DataType as ArrowDataType, Field, Schema},
     record_batch::RecordBatch,
 };
 use cudf::{
-    DeviceMemoryResource, ErrorCode, Runtime, TypeId, interop::cuda_explicit_completion_required_lease_backend,
-    runtime::stream::CudaStream,
+    DataFrame, DeviceMemoryResource, ErrorCode, Runtime, TypeId, frame::dataframe::GpuRecordBatch,
+    interop::cuda_explicit_completion_required_lease_backend, runtime::stream::CudaStream,
 };
 use cuvs::{
     BruteForceIndex, CuvsResources, DeviceBuffer, DistanceMetric, ErrorKind, KMeansInit, KMeansMetric, KMeansModel,
@@ -311,6 +312,55 @@ fn prepared_table_ingress_uses_one_root_lease_and_runtime_packing() {
     assert_eq!(matrix.layout(), MatrixLayout::RowMajor);
     assert_eq!(matrix.binding_id(), resources.binding_id());
     assert_eq!(synchronizations.load(Ordering::SeqCst), 1, "table import must activate one root lease");
+}
+
+#[test]
+fn validated_list_pack_entrypoints_preserve_public_shape_layout_and_binding() {
+    let (runtime, resources) = resources();
+    let item = Arc::new(Field::new("item", ArrowDataType::Float32, false));
+    let fixed =
+        FixedSizeListArray::new(Arc::clone(&item), 2, Arc::new(Float32Array::from(vec![1.0_f32, 2.0, 3.0, 4.0])), None);
+    let fixed_schema =
+        Arc::new(Schema::new(vec![Field::new("features", ArrowDataType::FixedSizeList(item, 2), false)]));
+    let fixed_host = RecordBatch::try_new(Arc::clone(&fixed_schema), vec![Arc::new(fixed)]).expect("fixed host batch");
+    let fixed_gpu = GpuRecordBatch::new(
+        DataFrame::from_record_batch(&runtime, &fixed_host).expect("fixed GPU frame"),
+        fixed_schema,
+    )
+    .expect("fixed GPU batch");
+    let fixed_export = fixed_gpu.try_prepare_fixed_size_list_float32_export(0).expect("fixed validated export");
+
+    let fixed_matrix = resources
+        .pack_validated_fixed_size_list_float32(&fixed_export, MatrixLayout::RowMajor)
+        .expect("direct fixed-list pack");
+    assert_eq!(fixed_matrix.rows(), 2);
+    assert_eq!(fixed_matrix.columns(), 2);
+    assert_eq!(fixed_matrix.layout(), MatrixLayout::RowMajor);
+    assert_eq!(fixed_matrix.binding_id(), resources.binding_id());
+    assert!(fixed_matrix.is_finite_validated());
+
+    let element = Arc::new(Field::new("element", ArrowDataType::Float32, false));
+    let lists = ListArray::new(
+        Arc::clone(&element),
+        OffsetBuffer::new(ScalarBuffer::from(vec![0_i32, 2, 4])),
+        Arc::new(Float32Array::from(vec![1.0_f32, 2.0, 3.0, 4.0])),
+        None,
+    );
+    let list_schema = Arc::new(Schema::new(vec![Field::new("features", ArrowDataType::List(element), false)]));
+    let list_host = RecordBatch::try_new(Arc::clone(&list_schema), vec![Arc::new(lists)]).expect("list host batch");
+    let list_gpu =
+        GpuRecordBatch::new(DataFrame::from_record_batch(&runtime, &list_host).expect("list GPU frame"), list_schema)
+            .expect("list GPU batch");
+    let list_export = list_gpu.try_prepare_uniform_list_float32_export(0).expect("uniform validated export");
+
+    let list_matrix = resources
+        .pack_validated_uniform_list_float32(&list_export, MatrixLayout::ColumnMajor)
+        .expect("direct uniform-list pack");
+    assert_eq!(list_matrix.rows(), 2);
+    assert_eq!(list_matrix.columns(), 2);
+    assert_eq!(list_matrix.layout(), MatrixLayout::ColumnMajor);
+    assert_eq!(list_matrix.binding_id(), resources.binding_id());
+    assert!(list_matrix.is_finite_validated());
 }
 
 #[test]
