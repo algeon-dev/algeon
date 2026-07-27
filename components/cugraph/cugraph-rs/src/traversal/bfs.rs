@@ -195,20 +195,12 @@ mod tests {
 
         let result = bfs(&handle, &mut graph, &mut sources_view, None, true).expect("bfs");
 
-        let vert_view = result.vertices();
-        let dist_view = result.distances();
+        assert_eq!(result.vertices().len(), 6, "should have 6 vertices");
+        assert_eq!(result.distances().len(), 6, "should have 6 distances");
 
-        assert_eq!(vert_view.len(), 6, "should have 6 vertices");
-        assert_eq!(dist_view.len(), 6, "should have 6 distances");
-
-        // Copy to host
-        let vert_bytes = vert_view.to_host_vec(&handle).expect("vert copy");
-        let dist_bytes = dist_view.to_host_vec(&handle).expect("dist copy");
-
-        let vertices: Vec<i32> =
-            vert_bytes.chunks_exact(4).map(|c| i32::from_ne_bytes([c[0], c[1], c[2], c[3]])).collect();
-        let distances: Vec<i32> =
-            dist_bytes.chunks_exact(4).map(|c| i32::from_ne_bytes([c[0], c[1], c[2], c[3]])).collect();
+        // Copy to host using typed helpers
+        let vertices: Vec<i32> = result.vertices().to_typed_vec(&handle).expect("vert copy");
+        let distances: Vec<i32> = result.distances().to_typed_vec(&handle).expect("dist copy");
 
         // Build a map of vertex -> distance
         let mut dist_map = std::collections::HashMap::new();
@@ -250,13 +242,8 @@ mod tests {
         let result =
             bfs(&handle, &mut graph, &mut sources_view, Some(BfsDepthLimit::new(2).unwrap()), false).expect("bfs");
 
-        let vert_bytes = result.vertices().to_host_vec(&handle).expect("vert copy");
-        let dist_bytes = result.distances().to_host_vec(&handle).expect("dist copy");
-
-        let vertices: Vec<i32> =
-            vert_bytes.chunks_exact(4).map(|c| i32::from_ne_bytes([c[0], c[1], c[2], c[3]])).collect();
-        let distances: Vec<i32> =
-            dist_bytes.chunks_exact(4).map(|c| i32::from_ne_bytes([c[0], c[1], c[2], c[3]])).collect();
+        let vertices: Vec<i32> = result.vertices().to_typed_vec(&handle).expect("vert copy");
+        let distances: Vec<i32> = result.distances().to_typed_vec(&handle).expect("dist copy");
 
         let mut dist_map = std::collections::HashMap::new();
         for (v, d) in vertices.iter().zip(distances.iter()) {

@@ -43,7 +43,7 @@ use std::ptr;
 
 use cugraph_sys::{bool_t, cugraph_betweenness_centrality, cugraph_centrality_result_t, cugraph_error_t};
 
-use super::CentralityResult;
+use super::BetweennessCentralityResult;
 use crate::{
     array::DeviceArrayView,
     error::{Result, check_error},
@@ -83,14 +83,14 @@ impl Default for BetweennessCentralityParams {
 /// corresponds to the Python `cugraph.betweenness_centrality(G, k=seeds)`
 /// usage.
 ///
-/// Returns a [`CentralityResult`] containing vertex ids and their betweenness
-/// centrality values.
+/// Returns a [`BetweennessCentralityResult`] containing vertex ids and their
+/// betweenness centrality values.
 pub fn betweenness_centrality<T>(
     handle: &ResourceHandle,
     graph: &mut Graph<T>,
     vertex_list: Option<&DeviceArrayView<'_>>,
     params: &BetweennessCentralityParams,
-) -> Result<CentralityResult> {
+) -> Result<BetweennessCentralityResult> {
     let mut result: *mut cugraph_centrality_result_t = ptr::null_mut();
     let mut error: *mut cugraph_error_t = ptr::null_mut();
 
@@ -110,7 +110,7 @@ pub fn betweenness_centrality<T>(
         check_error(code, error, "betweenness_centrality")?;
     }
 
-    Ok(unsafe { CentralityResult::from_raw(result) })
+    Ok(unsafe { BetweennessCentralityResult::from_raw(result) })
 }
 
 #[cfg(test)]
@@ -122,25 +122,15 @@ mod tests {
         types::{DataType, GraphProperties},
     };
 
-    /// Helper: decode device array bytes into Vec<i32>.
-    fn to_i32_vec(bytes: &[u8]) -> Vec<i32> {
-        bytes.chunks_exact(4).map(|c| i32::from_ne_bytes([c[0], c[1], c[2], c[3]])).collect()
-    }
+    /// Helper: build a vertex -> betweenness map from a BetweennessCentralityResult.
+    fn betweenness_map(
+        handle: &ResourceHandle,
+        result: &BetweennessCentralityResult,
+    ) -> std::collections::HashMap<i32, f32> {
+        let vertices: Vec<i32> = result.vertices().to_typed_vec(handle).expect("vert copy");
+        let values: Vec<f32> = result.values().to_typed_vec(handle).expect("val copy");
 
-    /// Helper: decode device array bytes into Vec<f32>.
-    fn to_f32_vec(bytes: &[u8]) -> Vec<f32> {
-        bytes.chunks_exact(4).map(|c| f32::from_ne_bytes([c[0], c[1], c[2], c[3]])).collect()
-    }
-
-    /// Helper: build a vertex -> betweenness map from a CentralityResult.
-    fn betweenness_map(handle: &ResourceHandle, result: &CentralityResult) -> std::collections::HashMap<i32, f32> {
-        let vert_bytes = result.vertices().to_host_vec(handle).expect("vert copy");
-        let val_bytes = result.values().to_host_vec(handle).expect("val copy");
-
-        let vertices = to_i32_vec(&vert_bytes);
-        let values = to_f32_vec(&val_bytes);
-
-        vertices.into_iter().zip(values.into_iter()).collect()
+        vertices.into_iter().zip(values).collect()
     }
 
     #[test]

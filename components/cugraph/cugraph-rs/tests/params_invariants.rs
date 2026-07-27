@@ -143,7 +143,7 @@ fn iteration_count_u32_roundtrip() {
 #[test]
 fn iteration_count_i32_roundtrip() {
     let count = IterationCount::new(100).unwrap();
-    let raw: i32 = count.into();
+    let raw: i32 = count.try_into().unwrap();
     let back = IterationCount::try_from(raw).unwrap();
     assert_eq!(count, back);
 }

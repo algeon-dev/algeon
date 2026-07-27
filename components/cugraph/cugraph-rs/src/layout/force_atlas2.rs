@@ -378,7 +378,7 @@ pub fn force_atlas2<T>(
             handle.as_ptr(),
             rng_state.as_ptr(),
             graph.raw,
-            i32::from(params.max_iter),
+            i32::try_from(params.max_iter)?,
             start_verts_ptr,
             x_start_ptr,
             y_start_ptr,
@@ -420,16 +420,6 @@ mod tests {
         types::{DataType, GraphProperties},
     };
 
-    /// Helper: decode device array bytes into Vec<i32>.
-    fn to_i32_vec(bytes: &[u8]) -> Vec<i32> {
-        bytes.chunks_exact(4).map(|c| i32::from_ne_bytes([c[0], c[1], c[2], c[3]])).collect()
-    }
-
-    /// Helper: decode device array bytes into Vec<f32>.
-    fn to_f32_vec(bytes: &[u8]) -> Vec<f32> {
-        bytes.chunks_exact(4).map(|c| f32::from_ne_bytes([c[0], c[1], c[2], c[3]])).collect()
-    }
-
     #[test]
     fn test_force_atlas2_triangle_produces_coordinates() {
         // Triangle: 0->1, 1->2, 2->0 (symmetric for layout purposes)
@@ -457,10 +447,8 @@ mod tests {
         assert_eq!(result.y().len(), 3, "should have 3 y coordinates");
 
         // Verify coordinates are finite (not NaN or infinity)
-        let x_bytes = result.x().to_host_vec(&handle).expect("x copy");
-        let y_bytes = result.y().to_host_vec(&handle).expect("y copy");
-        let x_vals = to_f32_vec(&x_bytes);
-        let y_vals = to_f32_vec(&y_bytes);
+        let x_vals: Vec<f32> = result.x().to_typed_vec(&handle).expect("x copy");
+        let y_vals: Vec<f32> = result.y().to_typed_vec(&handle).expect("y copy");
 
         for (i, (&x, &y)) in x_vals.iter().zip(y_vals.iter()).enumerate() {
             assert!(x.is_finite(), "x[{}] = {} should be finite", i, x);
@@ -502,10 +490,8 @@ mod tests {
         assert_eq!(result2.y().len(), 4);
 
         // Verify coordinates are finite
-        let x_bytes = result2.x().to_host_vec(&handle).expect("x copy");
-        let y_bytes = result2.y().to_host_vec(&handle).expect("y copy");
-        let x_vals = to_f32_vec(&x_bytes);
-        let y_vals = to_f32_vec(&y_bytes);
+        let x_vals: Vec<f32> = result2.x().to_typed_vec(&handle).expect("x copy");
+        let y_vals: Vec<f32> = result2.y().to_typed_vec(&handle).expect("y copy");
 
         for (i, (&x, &y)) in x_vals.iter().zip(y_vals.iter()).enumerate() {
             assert!(x.is_finite(), "x[{}] = {} should be finite", i, x);
@@ -540,8 +526,7 @@ mod tests {
         assert_eq!(result.y().len(), 5, "should have 5 y coords");
 
         // Verify all 5 vertex ids are present
-        let vert_bytes = result.vertices().to_host_vec(&handle).expect("vert copy");
-        let vertices = to_i32_vec(&vert_bytes);
+        let vertices: Vec<i32> = result.vertices().to_typed_vec(&handle).expect("vert copy");
         let mut sorted = vertices.clone();
         sorted.sort();
         assert_eq!(sorted, vec![0, 1, 2, 3, 4], "should contain vertices 0-4");
@@ -610,10 +595,8 @@ mod tests {
 
         assert_eq!(result.vertices().len(), 3);
 
-        let x_bytes = result.x().to_host_vec(&handle).expect("x copy");
-        let y_bytes = result.y().to_host_vec(&handle).expect("y copy");
-        let x_vals = to_f32_vec(&x_bytes);
-        let y_vals = to_f32_vec(&y_bytes);
+        let x_vals: Vec<f32> = result.x().to_typed_vec(&handle).expect("x copy");
+        let y_vals: Vec<f32> = result.y().to_typed_vec(&handle).expect("y copy");
 
         for (i, (&x, &y)) in x_vals.iter().zip(y_vals.iter()).enumerate() {
             assert!(x.is_finite(), "BH x[{}] = {} should be finite", i, x);

@@ -4,7 +4,7 @@ use std::ptr;
 
 use cugraph_sys::{bool_t, cugraph_centrality_result_t, cugraph_error_t, cugraph_pagerank};
 
-use super::CentralityResult;
+use super::PageRankResult;
 use crate::{
     error::{Result, check_error},
     graph::{Graph, Transposed},
@@ -70,14 +70,14 @@ impl Default for PageRankParams {
 /// Use [`GraphBuilder::build_transposed`](crate::graph::GraphBuilder::build_transposed)
 /// to construct the graph.
 ///
-/// Returns a [`CentralityResult`] containing vertex ids and their PageRank
-/// values. The result must be kept alive as long as any
-/// [`crate::array::DeviceArrayView`] borrowed from it is in use.
+/// Returns a [`PageRankResult`] containing vertex ids, PageRank values,
+/// iteration count, and convergence status. The result must be kept alive as
+/// long as any [`crate::array::DeviceArrayView`] borrowed from it is in use.
 pub fn pagerank(
     handle: &ResourceHandle,
     graph: &mut Graph<Transposed>,
     params: &PageRankParams,
-) -> Result<CentralityResult> {
+) -> Result<PageRankResult> {
     let mut result: *mut cugraph_centrality_result_t = ptr::null_mut();
     let mut error: *mut cugraph_error_t = ptr::null_mut();
 
@@ -99,11 +99,8 @@ pub fn pagerank(
         check_error(code, error, "pagerank")?;
     }
 
-    Ok(unsafe { CentralityResult::from_raw(result) })
+    Ok(unsafe { PageRankResult::from_raw(result) })
 }
-
-/// Type alias for backward compatibility.
-pub type PageRankResult = CentralityResult;
 
 #[cfg(test)]
 mod tests {
@@ -144,13 +141,8 @@ mod tests {
         assert_eq!(values_view.len(), 4);
 
         // Copy results to host and verify hub (node 0) has the highest rank
-        let vert_bytes = vertices_view.to_host_vec(&handle).expect("vert copy");
-        let val_bytes = values_view.to_host_vec(&handle).expect("val copy");
-
-        let vertices: Vec<i32> =
-            vert_bytes.chunks_exact(4).map(|c| i32::from_ne_bytes([c[0], c[1], c[2], c[3]])).collect();
-        let values: Vec<f32> =
-            val_bytes.chunks_exact(4).map(|c| f32::from_ne_bytes([c[0], c[1], c[2], c[3]])).collect();
+        let vertices: Vec<i32> = vertices_view.to_typed_vec(&handle).expect("vert copy");
+        let values: Vec<f32> = values_view.to_typed_vec(&handle).expect("val copy");
 
         // Find the PageRank of vertex 0 (hub) — should be highest
         let hub_idx = vertices.iter().position(|&v| v == 0).expect("hub vertex");

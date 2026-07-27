@@ -23,7 +23,7 @@ use cugraph_sys::{
 use crate::{
     error::{Error, ErrorKind, Result, check_error},
     handle::ResourceHandle,
-    types::DataType,
+    types::{CugraphElement, DataType},
 };
 
 /// An owning device (GPU) array.
@@ -257,8 +257,8 @@ impl<'a> DeviceArrayView<'a> {
     ///
     /// # Errors
     ///
-    /// Returns an error if `size_of::<T>()` does not match the element size of this
-    /// array's [`DataType`], or if the device-to-host copy fails.
+    /// Returns an error if `T::data_type()` does not match this array's [`DataType`],
+    /// or if the device-to-host copy fails.
     ///
     /// # Example
     ///
@@ -270,16 +270,15 @@ impl<'a> DeviceArrayView<'a> {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn to_typed_vec<T: Copy>(&self, handle: &ResourceHandle) -> Result<Vec<T>> {
-        let type_size = std::mem::size_of::<T>();
-        let dtype = self.dtype()?;
-        let elem_size = dtype.size_of();
-        if type_size != elem_size {
-            return Err(Error::new(ErrorKind::InvalidInput, "to_typed_vec").with_message(format!(
-                "type size mismatch: size_of::<T>() = {type_size} but dtype {dtype:?} has size {elem_size}"
-            )));
+    pub fn to_typed_vec<T: CugraphElement>(&self, handle: &ResourceHandle) -> Result<Vec<T>> {
+        let expected = T::data_type();
+        let actual = self.dtype()?;
+        if expected != actual {
+            return Err(Error::new(ErrorKind::InvalidInput, "to_typed_vec")
+                .with_message(format!("type mismatch: requested {expected} but array dtype is {actual}")));
         }
 
+        let type_size = std::mem::size_of::<T>();
         let bytes = self.to_host_vec(handle)?;
         let len = bytes.len() / type_size;
 
@@ -344,11 +343,26 @@ impl<'a> HostArrayView<'a> {
     ///
     /// `n_elems` is the number of logical elements (not bytes). The slice must
     /// contain at least `n_elems * dtype.size_of()` bytes.
-    pub fn new(data: &'a [u8], n_elems: usize, dtype: DataType) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ErrorKind::InvalidInput`] if the slice is too small to hold
+    /// `n_elems` elements of the given `dtype`.
+    pub fn new(data: &'a [u8], n_elems: usize, dtype: DataType) -> Result<Self> {
+        let required = n_elems * dtype.size_of();
+        if data.len() < required {
+            return Err(Error::new(ErrorKind::InvalidInput, "HostArrayView::new")
+                .with_message("slice is too small for the requested number of elements")
+                .with_context("required_bytes", required.to_string())
+                .with_context("actual_bytes", data.len().to_string())
+                .with_context("n_elems", n_elems.to_string())
+                .with_context("dtype", format!("{:?}", dtype)));
+        }
+
         let raw = unsafe {
             cugraph_type_erased_host_array_view_create(data.as_ptr() as *mut std::ffi::c_void, n_elems, dtype.into())
         };
-        HostArrayView { raw, _lifetime: PhantomData, _nosend_nosync: PhantomData }
+        Ok(HostArrayView { raw, _lifetime: PhantomData, _nosend_nosync: PhantomData })
     }
 }
 
@@ -362,14 +376,19 @@ impl<'a> Drop for HostArrayView<'a> {
 
 /// Helper: create a [`DeviceArray`] from a typed host slice, copying the data
 /// to the GPU.
-pub fn device_array_from_host<T: Copy>(handle: &ResourceHandle, data: &[T], dtype: DataType) -> Result<DeviceArray> {
-    let type_size = std::mem::size_of::<T>();
-    let dtype_size = dtype.size_of();
-    if type_size != dtype_size {
+///
+/// # Errors
+///
+/// Returns an error if `T::data_type()` does not match the specified `dtype`.
+pub fn device_array_from_host<T: CugraphElement>(
+    handle: &ResourceHandle,
+    data: &[T],
+    dtype: DataType,
+) -> Result<DeviceArray> {
+    let expected = T::data_type();
+    if expected != dtype {
         return Err(Error::new(ErrorKind::InvalidInput, "device_array_from_host")
-            .with_message("Rust type size does not match the specified DataType size")
-            .with_context("rust_type_size", type_size.to_string())
-            .with_context("dtype_size", dtype_size.to_string()));
+            .with_message(format!("type mismatch: Rust type maps to {expected} but specified dtype is {dtype}")));
     }
 
     let byte_len = std::mem::size_of_val(data);
@@ -477,6 +496,28 @@ mod tests {
     }
 
     #[test]
+    fn test_host_array_view_rejects_undersized_slice() {
+        // 2 elements × 4 bytes (Int32) = 8 bytes required, but only 3 provided
+        let err = HostArrayView::new(&[0u8; 3], 2, DataType::Int32).expect_err("must reject undersized slice");
+        assert_eq!(err.kind(), crate::error::ErrorKind::InvalidInput);
+        assert_eq!(err.operation(), "HostArrayView::new");
+    }
+
+    #[test]
+    fn test_host_array_view_accepts_exact_size() {
+        // 2 elements × 4 bytes (Int32) = 8 bytes required, exactly 8 provided
+        let view = HostArrayView::new(&[0u8; 8], 2, DataType::Int32).expect("exact size should succeed");
+        drop(view);
+    }
+
+    #[test]
+    fn test_host_array_view_accepts_oversized_slice() {
+        // 2 elements × 4 bytes (Int32) = 8 bytes required, 16 provided (extra bytes are fine)
+        let view = HostArrayView::new(&[0u8; 16], 2, DataType::Int32).expect("oversized slice should succeed");
+        drop(view);
+    }
+
+    #[test]
     fn test_array_types_not_send_sync() {
         assert_not_impl_any!(DeviceArray: Send, Sync);
         assert_not_impl_any!(DeviceArrayView<'static>: Send, Sync);
@@ -554,6 +595,59 @@ mod tests {
         };
         assert_eq!(err.kind(), crate::error::ErrorKind::InvalidInput);
         assert_eq!(err.operation(), "device_array_from_host");
-        assert!(err.message().contains("size"));
+        assert!(err.message().contains("size") || err.message().contains("mismatch"));
+    }
+
+    #[test]
+    fn test_to_typed_vec_rejects_int32_as_f32() {
+        let handle = ResourceHandle::new().expect("handle");
+        let src: Vec<i32> = vec![1, 2, 3];
+        let arr = device_array_from_host(&handle, &src, DataType::Int32).expect("create");
+        let view = arr.view();
+        let err = view.to_typed_vec::<f32>(&handle).expect_err("must reject Int32 as f32");
+        assert_eq!(err.kind(), crate::error::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn test_to_typed_vec_rejects_float32_as_i32() {
+        let handle = ResourceHandle::new().expect("handle");
+        let src: Vec<f32> = vec![1.0, 2.0, 3.0];
+        let arr = device_array_from_host(&handle, &src, DataType::Float32).expect("create");
+        let view = arr.view();
+        let err = view.to_typed_vec::<i32>(&handle).expect_err("must reject Float32 as i32");
+        assert_eq!(err.kind(), crate::error::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn test_device_array_from_host_rejects_f32_as_int32() {
+        let handle = ResourceHandle::new().expect("handle");
+        let err = device_array_from_host(&handle, &[1.0f32], DataType::Int32).expect_err("must reject f32 with Int32");
+        assert_eq!(err.kind(), crate::error::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn test_device_array_from_host_rejects_i32_as_float32() {
+        let handle = ResourceHandle::new().expect("handle");
+        let err =
+            device_array_from_host(&handle, &[1i32], DataType::Float32).expect_err("must reject i32 with Float32");
+        assert_eq!(err.kind(), crate::error::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn test_to_typed_vec_roundtrip_i32() {
+        let handle = ResourceHandle::new().expect("handle");
+        let src: Vec<i32> = vec![10, 20, 30];
+        let arr = device_array_from_host(&handle, &src, DataType::Int32).expect("create");
+        let result: Vec<i32> = arr.view().to_typed_vec(&handle).expect("roundtrip");
+        assert_eq!(result, src);
+    }
+
+    #[test]
+    fn test_to_typed_vec_roundtrip_f64() {
+        let handle = ResourceHandle::new().expect("handle");
+        let src: Vec<f64> = vec![1.5, 2.5, 3.5];
+        let arr = device_array_from_host(&handle, &src, DataType::Float64).expect("create");
+        let result: Vec<f64> = arr.view().to_typed_vec(&handle).expect("roundtrip");
+        assert_eq!(result, src);
     }
 }

@@ -111,13 +111,15 @@ impl From<IterationCount> for usize {
     }
 }
 
-impl From<IterationCount> for i32 {
-    fn from(count: IterationCount) -> i32 {
-        // IterationCount is NonZeroU32, so the value is in [1, u32::MAX].
-        // This can truncate for values > i32::MAX, but the C API uses i32
-        // for FA2's max_iter. Values above i32::MAX are extremely unlikely
-        // for iteration counts.
-        count.get() as i32
+impl TryFrom<IterationCount> for i32 {
+    type Error = crate::error::Error;
+
+    fn try_from(count: IterationCount) -> crate::error::Result<i32> {
+        i32::try_from(count.get()).map_err(|_| {
+            Error::new(ErrorKind::InvalidInput, "IterationCount::try_into<i32>")
+                .with_message("iteration count exceeds i32::MAX")
+                .with_context("value", count.get().to_string())
+        })
     }
 }
 
@@ -589,7 +591,14 @@ mod tests {
         let count = IterationCount::new(42).unwrap();
         assert_eq!(u32::from(count), 42);
         assert_eq!(usize::from(count), 42);
-        assert_eq!(i32::from(count), 42);
+        assert_eq!(i32::try_from(count).unwrap(), 42);
+    }
+
+    #[test]
+    fn iteration_count_try_into_i32_rejects_overflow() {
+        let count = IterationCount::new(u32::MAX).unwrap();
+        let err = i32::try_from(count).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::InvalidInput);
     }
 
     #[test]
