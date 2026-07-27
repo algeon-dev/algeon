@@ -23,11 +23,6 @@ path = "examples/bfs.rs"
 required-features = ["cudf-interop"]
 
 [[example]]
-name = "bfs_tokio"
-path = "examples/bfs_tokio.rs"
-required-features = ["cudf-interop"]
-
-[[example]]
 name = "bfs_roundtrip"
 path = "examples/bfs_roundtrip.rs"
 required-features = ["cudf-interop"]
@@ -37,6 +32,6 @@ name = "pagerank"
 path = "examples/pagerank.rs"
 
 [[test]]
-name = "cudf_interop_roundtrip"
-path = "tests/cudf_interop_roundtrip.rs"
+name = "cudf_roundtrip"
+path = "tests/cudf_roundtrip.rs"
 required-features = ["cudf-interop"]

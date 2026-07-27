@@ -3,6 +3,10 @@ use std::{
     path::PathBuf,
 };
 
+#[allow(dead_code)]
+#[path = "../build_support.rs"]
+mod build_support;
+
 const LAYOUT_FUNCTIONS: &[&str] = &[
     "cugraph_force_atlas2",
     "cugraph_layout_result_get_vertices",
@@ -16,14 +20,9 @@ fn manifest_dir() -> PathBuf {
 }
 
 fn include_dir() -> PathBuf {
-    if let Ok(val) = std::env::var("CUGRAPH_INCLUDE_DIR") {
-        let path = PathBuf::from(&val);
-        if path.join("cugraph_c").is_dir() {
-            return path;
-        }
-    }
-
-    manifest_dir().join("../cugraph/cpp/include")
+    let submodule_include = manifest_dir().join("../cugraph/cpp/include");
+    build_support::resolve_include_dir(std::env::var("CUGRAPH_INCLUDE_DIR").ok().as_deref(), &submodule_include)
+        .unwrap_or_else(|err| panic!("{err}"))
 }
 
 fn strip_c_comments(source: &str) -> String {

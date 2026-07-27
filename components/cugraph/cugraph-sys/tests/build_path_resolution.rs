@@ -1,6 +1,8 @@
 #[path = "../build_support.rs"]
 mod build_support;
 
+#[cfg(not(target_os = "windows"))]
+use std::os::unix::fs::PermissionsExt;
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -126,4 +128,65 @@ fn library_resolution_uses_first_candidate_with_required_libraries_when_env_is_a
         build_support::resolve_library_dir(None, &[first.clone(), second.clone()]).expect("resolve library fallback");
 
     assert_eq!(resolved, second.canonicalize().expect("canonical library path"));
+}
+
+#[test]
+fn library_resolution_fails_when_no_fallback_candidate_contains_required_libraries() {
+    let root = TestDir::new();
+    let first = root.path().join("first");
+    let second = root.path().join("second");
+    fs::create_dir_all(&first).expect("create first");
+    fs::create_dir_all(&second).expect("create second");
+
+    let err = build_support::resolve_library_dir(None, &[first.clone(), second.clone()]).unwrap_err();
+
+    assert!(err.contains("libcugraph"));
+    assert!(err.contains("libcugraph_c"));
+    assert!(err.contains(&first.display().to_string()));
+    assert!(err.contains(&second.display().to_string()));
+}
+
+#[test]
+fn compiler_probe_defaults_to_cc_when_env_is_absent() {
+    let (compiler, args) = build_support::resolve_compiler_probe_command(None).expect("resolve default compiler");
+
+    assert_eq!(compiler, "cc");
+    assert!(args.is_empty());
+}
+
+#[test]
+fn compiler_probe_uses_cc_env_command_and_flags() {
+    let (compiler, args) = build_support::resolve_compiler_probe_command(Some("clang --target=aarch64-linux-gnu"))
+        .expect("resolve compiler override");
+
+    assert_eq!(compiler, "clang");
+    assert_eq!(args, vec!["--target=aarch64-linux-gnu"]);
+}
+
+#[cfg(not(target_os = "windows"))]
+#[test]
+fn detect_system_include_dir_uses_selected_compiler_output() {
+    let root = TestDir::new();
+    let include_dir = root.path().join("fake-include");
+    fs::create_dir_all(&include_dir).expect("create include dir");
+    fs::write(include_dir.join("stddef.h"), []).expect("create stddef.h");
+
+    let compiler = root.path().join("fake-cc");
+    fs::write(
+        &compiler,
+        format!(
+            "#!/bin/sh\ncat >/dev/null\ncat <<'EOF' 1>&2\n#include <...> search starts here:\n {}\nEnd of search list.\nEOF\n",
+            include_dir.display()
+        ),
+    )
+    .expect("write fake compiler");
+
+    let mut permissions = fs::metadata(&compiler).expect("stat fake compiler").permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&compiler, permissions).expect("chmod fake compiler");
+
+    let detected = build_support::detect_system_include_dir(Some(compiler.to_str().unwrap()))
+        .expect("detect include dir from fake compiler");
+
+    assert_eq!(detected, include_dir);
 }

@@ -12,8 +12,9 @@ use cugraph_sys::{
 };
 
 use crate::{
-    array::DeviceArrayView,
+    array::RawDeviceArrayView,
     error::{Error, ErrorKind, Result},
+    structure::typed_results::{ScoreValues, VertexIds},
     types::try_from_bool_t,
 };
 
@@ -38,14 +39,22 @@ impl CentralityResult {
         Self { raw, _nosend_nosync: std::marker::PhantomData }
     }
 
-    pub(crate) fn vertices(&self) -> DeviceArrayView<'_> {
+    pub(crate) fn vertices_raw(&self) -> Result<RawDeviceArrayView<'_>> {
         let view_ptr = unsafe { cugraph_centrality_result_get_vertices(self.raw) };
-        unsafe { DeviceArrayView::from_borrowed(view_ptr) }
+        if view_ptr.is_null() {
+            return Err(Error::new(ErrorKind::Unexpected, "CentralityResult::vertices_raw")
+                .with_message("C API returned null pointer for vertices"));
+        }
+        Ok(unsafe { RawDeviceArrayView::from_borrowed(view_ptr) })
     }
 
-    pub(crate) fn values(&self) -> DeviceArrayView<'_> {
+    pub(crate) fn values_raw(&self) -> Result<RawDeviceArrayView<'_>> {
         let view_ptr = unsafe { cugraph_centrality_result_get_values(self.raw) };
-        unsafe { DeviceArrayView::from_borrowed(view_ptr) }
+        if view_ptr.is_null() {
+            return Err(Error::new(ErrorKind::Unexpected, "CentralityResult::values_raw")
+                .with_message("C API returned null pointer for values"));
+        }
+        Ok(unsafe { RawDeviceArrayView::from_borrowed(view_ptr) })
     }
 
     pub(crate) fn num_iterations(&self) -> usize {
@@ -96,18 +105,20 @@ impl PageRankResult {
         Self(unsafe { CentralityResult::from_raw(raw) })
     }
 
-    /// Get the vertex ids as a device array view.
+    /// Get the vertex ids as a runtime-typed device array view.
     ///
-    /// The view borrows `self`, so this result must outlive the returned view.
-    pub fn vertices(&self) -> DeviceArrayView<'_> {
-        self.0.vertices()
+    /// Returns [`VertexIds::I32`] or [`VertexIds::I64`] depending on the
+    /// graph's vertex type.
+    pub fn vertex_ids(&self) -> Result<VertexIds<'_>> {
+        VertexIds::from_raw(self.0.vertices_raw()?)
     }
 
-    /// Get the PageRank values as a device array view.
+    /// Get the PageRank scores as a runtime-typed device array view.
     ///
-    /// The view borrows `self`, so this result must outlive the returned view.
-    pub fn values(&self) -> DeviceArrayView<'_> {
-        self.0.values()
+    /// Returns [`ScoreValues::F32`] or [`ScoreValues::F64`] depending on the
+    /// graph's weight type.
+    pub fn scores(&self) -> Result<ScoreValues<'_>> {
+        ScoreValues::from_raw(self.0.values_raw()?)
     }
 
     /// Number of iterations performed by the PageRank solver.
@@ -126,17 +137,18 @@ impl PageRankResult {
     /// Convert this PageRank result to a cudf DataFrame.
     ///
     /// Returns a 2-column DataFrame:
-    /// - `"vertex"` — vertex ids (same dtype as the algorithm produced)
-    /// - `"value"` — PageRank values (typically Float32 or Float64)
+    /// - `"vertex"` — vertex ids with the underlying result dtype (`Int32` or `Int64`)
+    /// - `"value"` — PageRank values with the underlying result dtype (`Float32` or `Float64`)
     ///
     /// Performs a device-to-device copy. The returned DataFrame owns its
     /// memory independently.
     pub fn to_dataframe(&self) -> Result<cudf::DataFrame> {
-        use crate::cudf_interop::DeviceArrayViewExt;
+        use crate::cudf_interop::RawDeviceArrayViewExt;
 
         let vert_col =
-            self.vertices().to_cudf_column().map_err(|e| e.with_operation("PageRankResult::to_dataframe"))?;
-        let val_col = self.values().to_cudf_column().map_err(|e| e.with_operation("PageRankResult::to_dataframe"))?;
+            self.0.vertices_raw()?.to_cudf_column().map_err(|e| e.with_operation("PageRankResult::to_dataframe"))?;
+        let val_col =
+            self.0.values_raw()?.to_cudf_column().map_err(|e| e.with_operation("PageRankResult::to_dataframe"))?;
 
         cudf::DataFrame::new(vec!["vertex".into(), "value".into()], vec![vert_col, val_col]).map_err(|e| {
             Error::new(ErrorKind::Unexpected, "PageRankResult::to_dataframe")
@@ -175,18 +187,20 @@ impl BetweennessCentralityResult {
         Self(unsafe { CentralityResult::from_raw(raw) })
     }
 
-    /// Get the vertex ids as a device array view.
+    /// Get the vertex ids as a runtime-typed device array view.
     ///
-    /// The view borrows `self`, so this result must outlive the returned view.
-    pub fn vertices(&self) -> DeviceArrayView<'_> {
-        self.0.vertices()
+    /// Returns [`VertexIds::I32`] or [`VertexIds::I64`] depending on the
+    /// graph's vertex type.
+    pub fn vertex_ids(&self) -> Result<VertexIds<'_>> {
+        VertexIds::from_raw(self.0.vertices_raw()?)
     }
 
-    /// Get the betweenness centrality values as a device array view.
+    /// Get the betweenness centrality scores as a runtime-typed device array view.
     ///
-    /// The view borrows `self`, so this result must outlive the returned view.
-    pub fn values(&self) -> DeviceArrayView<'_> {
-        self.0.values()
+    /// Returns [`ScoreValues::F32`] or [`ScoreValues::F64`] depending on the
+    /// graph's weight type.
+    pub fn scores(&self) -> Result<ScoreValues<'_>> {
+        ScoreValues::from_raw(self.0.values_raw()?)
     }
 }
 
@@ -195,20 +209,23 @@ impl BetweennessCentralityResult {
     /// Convert this betweenness centrality result to a cudf DataFrame.
     ///
     /// Returns a 2-column DataFrame:
-    /// - `"vertex"` — vertex ids (same dtype as the algorithm produced)
-    /// - `"value"` — betweenness centrality values (typically Float32 or Float64)
+    /// - `"vertex"` — vertex ids with the underlying result dtype (`Int32` or `Int64`)
+    /// - `"value"` — betweenness centrality values with the underlying result
+    ///   dtype (`Float32` or `Float64`)
     ///
     /// Performs a device-to-device copy. The returned DataFrame owns its
     /// memory independently.
     pub fn to_dataframe(&self) -> Result<cudf::DataFrame> {
-        use crate::cudf_interop::DeviceArrayViewExt;
+        use crate::cudf_interop::RawDeviceArrayViewExt;
 
         let vert_col = self
-            .vertices()
+            .0
+            .vertices_raw()?
             .to_cudf_column()
             .map_err(|e| e.with_operation("BetweennessCentralityResult::to_dataframe"))?;
         let val_col = self
-            .values()
+            .0
+            .values_raw()?
             .to_cudf_column()
             .map_err(|e| e.with_operation("BetweennessCentralityResult::to_dataframe"))?;
 

@@ -7,7 +7,7 @@
 //! # Example
 //!
 //! ```no_run
-//! use cugraph::{handle::ResourceHandle, random::RngState};
+//! use cugraph::{ResourceHandle, RngState};
 //!
 //! let handle = ResourceHandle::new().unwrap();
 //! let rng = RngState::new(&handle, 42).unwrap();

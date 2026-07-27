@@ -9,34 +9,25 @@
 //!
 //! ```no_run
 //! use cugraph::{
-//!     array::device_array_from_host,
-//!     centrality::{BetweennessCentralityParams, betweenness_centrality},
-//!     graph::GraphBuilder,
-//!     handle::ResourceHandle,
-//!     types::{DataType, GraphProperties},
+//!     BetweennessCentralityParams, DeviceArray, Forward, GraphBuilder,
+//!     ResourceHandle,
 //! };
 //!
 //! let handle = ResourceHandle::new().unwrap();
 //!
-//! let src =
-//!     device_array_from_host(&handle, &[0i32, 1, 2, 3], DataType::Int32)
-//!         .unwrap();
-//! let dst =
-//!     device_array_from_host(&handle, &[1i32, 2, 3, 0], DataType::Int32)
-//!         .unwrap();
+//! let src = DeviceArray::from_slice(&handle, &[0i32, 1, 2, 3]).unwrap();
+//! let dst = DeviceArray::from_slice(&handle, &[1i32, 2, 3, 0]).unwrap();
 //!
-//! let props = GraphProperties { is_symmetric: false, is_multigraph: false };
 //! let src_view = src.view();
 //! let dst_view = dst.view();
-//! let mut graph = GraphBuilder::new(props, &src_view, &dst_view)
-//!     .renumber(true)
-//!     .build_forward(&handle)
+//! let mut graph = GraphBuilder::new(&src_view, &dst_view)
+//!     .renumber()
+//!     .build::<Forward>(&handle)
 //!     .unwrap();
 //!
 //! let params = BetweennessCentralityParams::default();
-//! let result =
-//!     betweenness_centrality(&handle, &mut graph, None, &params).unwrap();
-//! // result.vertices() and result.values() provide the centrality scores.
+//! let result = graph.betweenness_centrality_all(&handle, &params).unwrap();
+//! // result.vertex_ids() and result.scores() provide the centrality scores.
 //! ```
 
 use std::ptr;
@@ -49,7 +40,7 @@ use crate::{
     error::{Result, check_error},
     graph::Graph,
     handle::ResourceHandle,
-    types::to_bool_t,
+    types::{CugraphElement, to_bool_t},
 };
 
 /// Parameters for the betweenness centrality algorithm.
@@ -72,23 +63,12 @@ impl Default for BetweennessCentralityParams {
 
 /// Compute vertex betweenness centrality on a graph.
 ///
-/// Works with either [`Forward`](crate::graph::Forward) or
-/// [`Transposed`](crate::graph::Transposed) graphs.
-///
-/// Betweenness centrality can be computed exactly by passing `vertex_list` as
-/// `None`. This performs a traversal from every source vertex.
-///
-/// Approximate betweenness centrality can be computed by passing a
-/// `vertex_list` containing seed vertices to use as traversal sources. This
-/// corresponds to the Python `cugraph.betweenness_centrality(G, k=seeds)`
-/// usage.
-///
-/// Returns a [`BetweennessCentralityResult`] containing vertex ids and their
-/// betweenness centrality values.
-pub fn betweenness_centrality<T>(
+/// Prefer using [`Graph::betweenness_centrality`](crate::graph::Graph::betweenness_centrality)
+/// instead of calling this function directly.
+pub(crate) fn betweenness_centrality<T, V: CugraphElement>(
     handle: &ResourceHandle,
     graph: &mut Graph<T>,
-    vertex_list: Option<&DeviceArrayView<'_>>,
+    vertex_list: Option<&DeviceArrayView<'_, V>>,
     params: &BetweennessCentralityParams,
 ) -> Result<BetweennessCentralityResult> {
     let mut result: *mut cugraph_centrality_result_t = ptr::null_mut();
@@ -115,11 +95,12 @@ pub fn betweenness_centrality<T>(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::BetweennessCentralityParams;
     use crate::{
-        array::device_array_from_host,
-        graph::GraphBuilder,
-        types::{DataType, GraphProperties},
+        array::DeviceArray,
+        centrality::BetweennessCentralityResult,
+        graph::{Forward, GraphBuilder},
+        handle::ResourceHandle,
     };
 
     /// Helper: build a vertex -> betweenness map from a BetweennessCentralityResult.
@@ -127,8 +108,8 @@ mod tests {
         handle: &ResourceHandle,
         result: &BetweennessCentralityResult,
     ) -> std::collections::HashMap<i32, f32> {
-        let vertices: Vec<i32> = result.vertices().to_typed_vec(handle).expect("vert copy");
-        let values: Vec<f32> = result.values().to_typed_vec(handle).expect("val copy");
+        let vertices: Vec<i32> = result.vertex_ids().expect("vertex_ids").to_vec_i32(handle).expect("vert copy");
+        let values: Vec<f32> = result.scores().expect("scores").to_vec_f32(handle).expect("val copy");
 
         vertices.into_iter().zip(values).collect()
     }
@@ -143,16 +124,14 @@ mod tests {
         let src_data: Vec<i32> = vec![1, 2, 3, 0, 0, 0];
         let dst_data: Vec<i32> = vec![0, 0, 0, 1, 2, 3];
 
-        let src = device_array_from_host(&handle, &src_data, DataType::Int32).expect("src");
-        let dst = device_array_from_host(&handle, &dst_data, DataType::Int32).expect("dst");
-
-        let props = GraphProperties { is_symmetric: false, is_multigraph: false };
+        let src = DeviceArray::from_slice(&handle, &src_data).expect("src");
+        let dst = DeviceArray::from_slice(&handle, &dst_data).expect("dst");
 
         let mut graph =
-            GraphBuilder::new(props, &src.view(), &dst.view()).renumber(true).build_forward(&handle).expect("graph");
+            GraphBuilder::new(&src.view(), &dst.view()).renumber().build::<Forward>(&handle).expect("graph");
 
         let params = BetweennessCentralityParams::default();
-        let result = betweenness_centrality(&handle, &mut graph, None, &params).expect("betweenness");
+        let result = graph.betweenness_centrality_all(&handle, &params).expect("betweenness");
 
         let map = betweenness_map(&handle, &result);
 
@@ -186,16 +165,14 @@ mod tests {
         let src_data: Vec<i32> = vec![0, 1, 2, 3];
         let dst_data: Vec<i32> = vec![1, 2, 3, 4];
 
-        let src = device_array_from_host(&handle, &src_data, DataType::Int32).expect("src");
-        let dst = device_array_from_host(&handle, &dst_data, DataType::Int32).expect("dst");
-
-        let props = GraphProperties { is_symmetric: false, is_multigraph: false };
+        let src = DeviceArray::from_slice(&handle, &src_data).expect("src");
+        let dst = DeviceArray::from_slice(&handle, &dst_data).expect("dst");
 
         let mut graph =
-            GraphBuilder::new(props, &src.view(), &dst.view()).renumber(true).build_forward(&handle).expect("graph");
+            GraphBuilder::new(&src.view(), &dst.view()).renumber().build::<Forward>(&handle).expect("graph");
 
         let params = BetweennessCentralityParams::default();
-        let result = betweenness_centrality(&handle, &mut graph, None, &params).expect("betweenness");
+        let result = graph.betweenness_centrality_all(&handle, &params).expect("betweenness");
 
         let map = betweenness_map(&handle, &result);
 
@@ -221,20 +198,18 @@ mod tests {
         let src_data: Vec<i32> = vec![1, 2, 3, 0, 0, 0];
         let dst_data: Vec<i32> = vec![0, 0, 0, 1, 2, 3];
 
-        let src = device_array_from_host(&handle, &src_data, DataType::Int32).expect("src");
-        let dst = device_array_from_host(&handle, &dst_data, DataType::Int32).expect("dst");
-
-        let props = GraphProperties { is_symmetric: false, is_multigraph: false };
+        let src = DeviceArray::from_slice(&handle, &src_data).expect("src");
+        let dst = DeviceArray::from_slice(&handle, &dst_data).expect("dst");
 
         let mut graph =
-            GraphBuilder::new(props, &src.view(), &dst.view()).renumber(true).build_forward(&handle).expect("graph");
+            GraphBuilder::new(&src.view(), &dst.view()).renumber().build::<Forward>(&handle).expect("graph");
 
         // Use only vertices 0 and 1 as seeds
-        let seeds = device_array_from_host(&handle, &[0i32, 1], DataType::Int32).expect("seeds");
+        let seeds = DeviceArray::from_slice(&handle, &[0i32, 1]).expect("seeds");
 
         let params = BetweennessCentralityParams::default();
         let result =
-            betweenness_centrality(&handle, &mut graph, Some(&seeds.view()), &params).expect("betweenness with seeds");
+            graph.betweenness_centrality(&handle, Some(&seeds.view()), &params).expect("betweenness with seeds");
 
         let map = betweenness_map(&handle, &result);
 
@@ -256,16 +231,14 @@ mod tests {
         let src_data: Vec<i32> = vec![0, 1, 2];
         let dst_data: Vec<i32> = vec![1, 2, 0];
 
-        let src = device_array_from_host(&handle, &src_data, DataType::Int32).expect("src");
-        let dst = device_array_from_host(&handle, &dst_data, DataType::Int32).expect("dst");
-
-        let props = GraphProperties { is_symmetric: false, is_multigraph: false };
+        let src = DeviceArray::from_slice(&handle, &src_data).expect("src");
+        let dst = DeviceArray::from_slice(&handle, &dst_data).expect("dst");
 
         let mut graph =
-            GraphBuilder::new(props, &src.view(), &dst.view()).renumber(true).build_forward(&handle).expect("graph");
+            GraphBuilder::new(&src.view(), &dst.view()).renumber().build::<Forward>(&handle).expect("graph");
 
         let params = BetweennessCentralityParams { normalized: false, include_endpoints: false };
-        let result = betweenness_centrality(&handle, &mut graph, None, &params).expect("betweenness");
+        let result = graph.betweenness_centrality_all(&handle, &params).expect("betweenness");
 
         let map = betweenness_map(&handle, &result);
 
@@ -287,25 +260,23 @@ mod tests {
         let src_data: Vec<i32> = vec![0, 1];
         let dst_data: Vec<i32> = vec![1, 2];
 
-        let src = device_array_from_host(&handle, &src_data, DataType::Int32).expect("src");
-        let dst = device_array_from_host(&handle, &dst_data, DataType::Int32).expect("dst");
-
-        let props = GraphProperties { is_symmetric: false, is_multigraph: false };
+        let src = DeviceArray::from_slice(&handle, &src_data).expect("src");
+        let dst = DeviceArray::from_slice(&handle, &dst_data).expect("dst");
 
         // Without endpoints
         let mut graph_a =
-            GraphBuilder::new(props, &src.view(), &dst.view()).renumber(true).build_forward(&handle).expect("graph_a");
+            GraphBuilder::new(&src.view(), &dst.view()).renumber().build::<Forward>(&handle).expect("graph_a");
 
         let params_no_ep = BetweennessCentralityParams { normalized: false, include_endpoints: false };
-        let result_no_ep = betweenness_centrality(&handle, &mut graph_a, None, &params_no_ep).expect("bc no ep");
+        let result_no_ep = graph_a.betweenness_centrality_all(&handle, &params_no_ep).expect("bc no ep");
         let map_no_ep = betweenness_map(&handle, &result_no_ep);
 
         // With endpoints
         let mut graph_b =
-            GraphBuilder::new(props, &src.view(), &dst.view()).renumber(true).build_forward(&handle).expect("graph_b");
+            GraphBuilder::new(&src.view(), &dst.view()).renumber().build::<Forward>(&handle).expect("graph_b");
 
         let params_with_ep = BetweennessCentralityParams { normalized: false, include_endpoints: true };
-        let result_with_ep = betweenness_centrality(&handle, &mut graph_b, None, &params_with_ep).expect("bc with ep");
+        let result_with_ep = graph_b.betweenness_centrality_all(&handle, &params_with_ep).expect("bc with ep");
         let map_with_ep = betweenness_map(&handle, &result_with_ep);
 
         // With endpoints, the sum of betweenness values should be >=
@@ -338,19 +309,17 @@ mod tests {
             }
         }
 
-        let src = device_array_from_host(&handle, &src_data, DataType::Int32).expect("src");
-        let dst = device_array_from_host(&handle, &dst_data, DataType::Int32).expect("dst");
-
-        let props = GraphProperties { is_symmetric: false, is_multigraph: false };
+        let src = DeviceArray::from_slice(&handle, &src_data).expect("src");
+        let dst = DeviceArray::from_slice(&handle, &dst_data).expect("dst");
 
         let mut graph =
-            GraphBuilder::new(props, &src.view(), &dst.view()).renumber(true).build_forward(&handle).expect("graph");
+            GraphBuilder::new(&src.view(), &dst.view()).renumber().build::<Forward>(&handle).expect("graph");
 
         let params = BetweennessCentralityParams::default();
-        let result = betweenness_centrality(&handle, &mut graph, None, &params).expect("betweenness");
+        let result = graph.betweenness_centrality_all(&handle, &params).expect("betweenness");
 
-        assert_eq!(result.vertices().len(), 5, "should have 5 vertices");
-        assert_eq!(result.values().len(), 5, "should have 5 values");
+        assert_eq!(result.vertex_ids().expect("vertex_ids").len(), 5, "should have 5 vertices");
+        assert_eq!(result.scores().expect("scores").len(), 5, "should have 5 values");
 
         // In a complete directed graph, all vertices should have equal
         // betweenness centrality (by symmetry).
