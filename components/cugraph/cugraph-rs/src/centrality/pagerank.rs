@@ -5,10 +5,12 @@ use std::ptr;
 use cugraph_sys::{bool_t, cugraph_centrality_result_t, cugraph_error_t, cugraph_pagerank};
 
 use super::CentralityResult;
-use crate::error::{check_error, Result};
-use crate::graph::Graph;
-use crate::handle::ResourceHandle;
-use crate::params::{ClosedUnitF64, IterationCount, NonNegativeF64};
+use crate::{
+    error::{Result, check_error},
+    graph::Graph,
+    handle::ResourceHandle,
+    params::{ClosedUnitF64, IterationCount, NonNegativeF64},
+};
 
 /// Parameters for the PageRank algorithm.
 ///
@@ -67,11 +69,7 @@ impl Default for PageRankParams {
 /// Returns a [`CentralityResult`] containing vertex ids and their PageRank
 /// values. The result must be kept alive as long as any
 /// [`crate::array::DeviceArrayView`] borrowed from it is in use.
-pub fn pagerank(
-    handle: &ResourceHandle,
-    graph: &mut Graph,
-    params: &PageRankParams,
-) -> Result<CentralityResult> {
+pub fn pagerank(handle: &ResourceHandle, graph: &mut Graph, params: &PageRankParams) -> Result<CentralityResult> {
     let mut result: *mut cugraph_centrality_result_t = ptr::null_mut();
     let mut error: *mut cugraph_error_t = ptr::null_mut();
 
@@ -102,8 +100,10 @@ pub type PageRankResult = CentralityResult;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::array::device_array_from_host;
-    use crate::types::{DataType, GraphProperties};
+    use crate::{
+        array::device_array_from_host,
+        types::{DataType, GraphProperties},
+    };
 
     #[test]
     fn test_pagerank_star_graph() {
@@ -116,10 +116,7 @@ mod tests {
         let src = device_array_from_host(&handle, &src_data, DataType::Int32).expect("src");
         let dst = device_array_from_host(&handle, &dst_data, DataType::Int32).expect("dst");
 
-        let props = GraphProperties {
-            is_symmetric: false,
-            is_multigraph: false,
-        };
+        let props = GraphProperties { is_symmetric: false, is_multigraph: false };
 
         let mut graph = Graph::from_edge_list(
             &handle,
@@ -137,14 +134,8 @@ mod tests {
         let params = PageRankParams::default();
         let result = pagerank(&handle, &mut graph, &params).expect("pagerank");
 
-        assert!(
-            result.converged().expect("converged"),
-            "PageRank should converge"
-        );
-        assert!(
-            result.num_iterations() > 0,
-            "should do at least 1 iteration"
-        );
+        assert!(result.converged().expect("converged"), "PageRank should converge");
+        assert!(result.num_iterations() > 0, "should do at least 1 iteration");
 
         let vertices_view = result.vertices();
         let values_view = result.values();
@@ -156,14 +147,10 @@ mod tests {
         let vert_bytes = vertices_view.to_host_vec(&handle).expect("vert copy");
         let val_bytes = values_view.to_host_vec(&handle).expect("val copy");
 
-        let vertices: Vec<i32> = vert_bytes
-            .chunks_exact(4)
-            .map(|c| i32::from_ne_bytes([c[0], c[1], c[2], c[3]]))
-            .collect();
-        let values: Vec<f32> = val_bytes
-            .chunks_exact(4)
-            .map(|c| f32::from_ne_bytes([c[0], c[1], c[2], c[3]]))
-            .collect();
+        let vertices: Vec<i32> =
+            vert_bytes.chunks_exact(4).map(|c| i32::from_ne_bytes([c[0], c[1], c[2], c[3]])).collect();
+        let values: Vec<f32> =
+            val_bytes.chunks_exact(4).map(|c| f32::from_ne_bytes([c[0], c[1], c[2], c[3]])).collect();
 
         // Find the PageRank of vertex 0 (hub) — should be highest
         let hub_idx = vertices.iter().position(|&v| v == 0).expect("hub vertex");

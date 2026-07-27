@@ -4,12 +4,12 @@
 //! optional source error. This makes it easy to diagnose failures without
 //! losing the underlying cause.
 
-use std::backtrace::{Backtrace, BacktraceStatus};
-use std::fmt;
-
-use cugraph_sys::{
-    cugraph_error_code_t, cugraph_error_free, cugraph_error_message, cugraph_error_t,
+use std::{
+    backtrace::{Backtrace, BacktraceStatus},
+    fmt,
 };
+
+use cugraph_sys::{cugraph_error_code_t, cugraph_error_free, cugraph_error_message, cugraph_error_t};
 
 /// Categorisation of cuGraph errors.
 ///
@@ -41,9 +41,7 @@ impl ErrorKind {
             cugraph_error_code_t::CUGRAPH_ALLOC_ERROR => ErrorKind::OutOfMemory,
             cugraph_error_code_t::CUGRAPH_INVALID_INPUT => ErrorKind::InvalidInput,
             cugraph_error_code_t::CUGRAPH_NOT_IMPLEMENTED => ErrorKind::NotImplemented,
-            cugraph_error_code_t::CUGRAPH_UNSUPPORTED_TYPE_COMBINATION => {
-                ErrorKind::UnsupportedType
-            }
+            cugraph_error_code_t::CUGRAPH_UNSUPPORTED_TYPE_COMBINATION => ErrorKind::UnsupportedType,
             _ => ErrorKind::Unexpected,
         }
     }
@@ -345,9 +343,7 @@ pub(crate) unsafe fn check_error(
     if !error_ptr.is_null() {
         let msg_ptr = cugraph_error_message(error_ptr);
         if !msg_ptr.is_null() {
-            let msg = std::ffi::CStr::from_ptr(msg_ptr)
-                .to_string_lossy()
-                .into_owned();
+            let msg = std::ffi::CStr::from_ptr(msg_ptr).to_string_lossy().into_owned();
             err = err.with_message(msg);
         }
         cugraph_error_free(error_ptr);
@@ -379,18 +375,9 @@ mod tests {
 
     #[test]
     fn test_error_kind_from_error_code() {
-        assert_eq!(
-            ErrorKind::from_error_code(cugraph_error_code_t::CUGRAPH_INVALID_HANDLE),
-            ErrorKind::InvalidHandle
-        );
-        assert_eq!(
-            ErrorKind::from_error_code(cugraph_error_code_t::CUGRAPH_ALLOC_ERROR),
-            ErrorKind::OutOfMemory
-        );
-        assert_eq!(
-            ErrorKind::from_error_code(cugraph_error_code_t::CUGRAPH_INVALID_INPUT),
-            ErrorKind::InvalidInput
-        );
+        assert_eq!(ErrorKind::from_error_code(cugraph_error_code_t::CUGRAPH_INVALID_HANDLE), ErrorKind::InvalidHandle);
+        assert_eq!(ErrorKind::from_error_code(cugraph_error_code_t::CUGRAPH_ALLOC_ERROR), ErrorKind::OutOfMemory);
+        assert_eq!(ErrorKind::from_error_code(cugraph_error_code_t::CUGRAPH_INVALID_INPUT), ErrorKind::InvalidInput);
         assert_eq!(
             ErrorKind::from_error_code(cugraph_error_code_t::CUGRAPH_NOT_IMPLEMENTED),
             ErrorKind::NotImplemented
@@ -431,10 +418,7 @@ mod tests {
     #[test]
     fn test_error_display_message_only() {
         let err = Error::new(ErrorKind::InvalidInput, "test_op").with_message("bad input");
-        assert_eq!(
-            err.to_string(),
-            "InvalidInput (permanent) at test_op => bad input"
-        );
+        assert_eq!(err.to_string(), "InvalidInput (permanent) at test_op => bad input");
     }
 
     #[test]
@@ -471,8 +455,7 @@ mod tests {
 
     #[test]
     fn test_error_debug_alternate() {
-        let err = Error::new(ErrorKind::OutOfMemory, "DeviceArray::new")
-            .with_message("allocation failed");
+        let err = Error::new(ErrorKind::OutOfMemory, "DeviceArray::new").with_message("allocation failed");
         let debug = format!("{:#?}", err);
         assert!(debug.contains("OutOfMemory"));
         assert!(debug.contains("Permanent"));
@@ -509,9 +492,7 @@ mod tests {
 
     #[test]
     fn test_error_temporary_display() {
-        let err = Error::new(ErrorKind::OutOfMemory, "DeviceArray::new")
-            .with_message("GPU OOM")
-            .set_temporary();
+        let err = Error::new(ErrorKind::OutOfMemory, "DeviceArray::new").with_message("GPU OOM").set_temporary();
         let display = err.to_string();
         assert!(display.contains("(temporary)"));
         assert!(display.contains("=> GPU OOM"));
@@ -519,9 +500,7 @@ mod tests {
 
     #[test]
     fn test_with_operation_stacking() {
-        let err = Error::new(ErrorKind::InvalidInput, "inner_op")
-            .with_message("bad data")
-            .with_operation("outer_op");
+        let err = Error::new(ErrorKind::InvalidInput, "inner_op").with_message("bad data").with_operation("outer_op");
 
         assert_eq!(err.operation(), "outer_op");
         let display = err.to_string();
@@ -532,11 +511,7 @@ mod tests {
     #[test]
     fn test_check_error_success() {
         unsafe {
-            let result = check_error(
-                cugraph_error_code_t::CUGRAPH_SUCCESS,
-                std::ptr::null_mut(),
-                "test",
-            );
+            let result = check_error(cugraph_error_code_t::CUGRAPH_SUCCESS, std::ptr::null_mut(), "test");
             assert!(result.is_ok());
         }
     }
@@ -544,11 +519,7 @@ mod tests {
     #[test]
     fn test_check_error_failure_null_ptr() {
         unsafe {
-            let result = check_error(
-                cugraph_error_code_t::CUGRAPH_INVALID_INPUT,
-                std::ptr::null_mut(),
-                "test_op",
-            );
+            let result = check_error(cugraph_error_code_t::CUGRAPH_INVALID_INPUT, std::ptr::null_mut(), "test_op");
             assert!(result.is_err());
             let err = result.unwrap_err();
             assert_eq!(err.kind(), ErrorKind::InvalidInput);
@@ -571,11 +542,7 @@ mod tests {
     #[test]
     fn test_check_error_out_of_memory_is_temporary() {
         unsafe {
-            let result = check_error(
-                cugraph_error_code_t::CUGRAPH_ALLOC_ERROR,
-                std::ptr::null_mut(),
-                "alloc_op",
-            );
+            let result = check_error(cugraph_error_code_t::CUGRAPH_ALLOC_ERROR, std::ptr::null_mut(), "alloc_op");
             assert!(result.is_err());
             let err = result.unwrap_err();
             assert_eq!(err.kind(), ErrorKind::OutOfMemory);

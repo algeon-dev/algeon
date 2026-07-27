@@ -3,17 +3,18 @@
 use std::ptr;
 
 use cugraph_sys::{
-    bool_t, cugraph_bfs, cugraph_error_t, cugraph_paths_result_free,
-    cugraph_paths_result_get_distances, cugraph_paths_result_get_predecessors,
-    cugraph_paths_result_get_vertices, cugraph_paths_result_t,
+    bool_t, cugraph_bfs, cugraph_error_t, cugraph_paths_result_free, cugraph_paths_result_get_distances,
+    cugraph_paths_result_get_predecessors, cugraph_paths_result_get_vertices, cugraph_paths_result_t,
 };
 
-use crate::array::DeviceArrayView;
-use crate::error::{check_error, Result};
-use crate::graph::Graph;
-use crate::handle::ResourceHandle;
-use crate::params::BfsDepthLimit;
-use crate::types::to_bool_t;
+use crate::{
+    array::DeviceArrayView,
+    error::{Result, check_error},
+    graph::Graph,
+    handle::ResourceHandle,
+    params::BfsDepthLimit,
+    types::to_bool_t,
+};
 
 /// Perform breadth-first search from one or more source vertices.
 ///
@@ -58,10 +59,7 @@ pub fn bfs(
         check_error(code, error, "bfs")?;
     }
 
-    Ok(BfsResult {
-        raw: result,
-        _nosend_nosync: std::marker::PhantomData,
-    })
+    Ok(BfsResult { raw: result, _nosend_nosync: std::marker::PhantomData })
 }
 
 /// Result of a BFS computation.
@@ -91,11 +89,53 @@ impl BfsResult {
     /// Returns `None` if `compute_predecessors` was `false` in the BFS call.
     pub fn predecessors(&self) -> Option<DeviceArrayView<'_>> {
         let view_ptr = unsafe { cugraph_paths_result_get_predecessors(self.raw) };
-        if view_ptr.is_null() {
-            None
-        } else {
-            Some(unsafe { DeviceArrayView::from_borrowed(view_ptr) })
-        }
+        if view_ptr.is_null() { None } else { Some(unsafe { DeviceArrayView::from_borrowed(view_ptr) }) }
+    }
+}
+
+#[cfg(feature = "cudf-interop")]
+impl BfsResult {
+    /// Convert this BFS result to a cudf DataFrame.
+    ///
+    /// Returns a DataFrame with columns:
+    /// - `"vertex"` — vertex ids
+    /// - `"distance"` — BFS distances (Int32, unreachable = i32::MAX)
+    /// - `"predecessor"` — predecessor vertex ids (only if predecessors
+    ///   were computed; column is omitted otherwise)
+    ///
+    /// Performs a device-to-device copy.
+    pub fn to_dataframe(&self) -> crate::error::Result<cudf::DataFrame> {
+        use crate::{
+            cudf_interop::DeviceArrayViewExt,
+            error::{Error, ErrorKind},
+        };
+
+        let vertices = self.vertices();
+        let distances = self.distances();
+        let expected_len = vertices.len();
+
+        let vert_col = vertices.to_cudf_column().map_err(|e| e.with_operation("BfsResult::to_dataframe"))?;
+        let dist_col = distances.to_cudf_column().map_err(|e| e.with_operation("BfsResult::to_dataframe"))?;
+
+        let (names, columns) = match self.predecessors() {
+            Some(preds) if preds.len() == expected_len => {
+                let pred_col = preds.to_cudf_column().map_err(|e| e.with_operation("BfsResult::to_dataframe"))?;
+                (vec!["vertex".into(), "distance".into(), "predecessor".into()], vec![vert_col, dist_col, pred_col])
+            },
+            Some(preds) => {
+                return Err(Error::new(ErrorKind::Unexpected, "BfsResult::to_dataframe").with_message(format!(
+                    "failed to build DataFrame: predecessor length {} does not match vertex length {}",
+                    preds.len(),
+                    expected_len
+                )));
+            },
+            None => (vec!["vertex".into(), "distance".into()], vec![vert_col, dist_col]),
+        };
+
+        cudf::DataFrame::new(names, columns).map_err(|e| {
+            Error::new(ErrorKind::Unexpected, "BfsResult::to_dataframe")
+                .with_message(format!("failed to build DataFrame: {}", e))
+        })
     }
 }
 
@@ -110,8 +150,10 @@ impl Drop for BfsResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::array::device_array_from_host;
-    use crate::types::{DataType, GraphProperties};
+    use crate::{
+        array::device_array_from_host,
+        types::{DataType, GraphProperties},
+    };
 
     #[test]
     fn test_bfs_directed_graph() {
@@ -127,10 +169,7 @@ mod tests {
         let dst = device_array_from_host(&handle, &dst_data, DataType::Int32).expect("dst");
         let wgt = device_array_from_host(&handle, &wgt_data, DataType::Float32).expect("wgt");
 
-        let props = GraphProperties {
-            is_symmetric: false,
-            is_multigraph: false,
-        };
+        let props = GraphProperties { is_symmetric: false, is_multigraph: false };
 
         let mut graph = Graph::from_edge_list(
             &handle,
@@ -146,8 +185,7 @@ mod tests {
         .expect("graph");
 
         // BFS from vertex 0
-        let sources_arr =
-            device_array_from_host(&handle, &[0i32], DataType::Int32).expect("sources");
+        let sources_arr = device_array_from_host(&handle, &[0i32], DataType::Int32).expect("sources");
         let mut sources_view = sources_arr.view();
 
         let result = bfs(&handle, &mut graph, &mut sources_view, None, true).expect("bfs");
@@ -162,14 +200,10 @@ mod tests {
         let vert_bytes = vert_view.to_host_vec(&handle).expect("vert copy");
         let dist_bytes = dist_view.to_host_vec(&handle).expect("dist copy");
 
-        let vertices: Vec<i32> = vert_bytes
-            .chunks_exact(4)
-            .map(|c| i32::from_ne_bytes([c[0], c[1], c[2], c[3]]))
-            .collect();
-        let distances: Vec<i32> = dist_bytes
-            .chunks_exact(4)
-            .map(|c| i32::from_ne_bytes([c[0], c[1], c[2], c[3]]))
-            .collect();
+        let vertices: Vec<i32> =
+            vert_bytes.chunks_exact(4).map(|c| i32::from_ne_bytes([c[0], c[1], c[2], c[3]])).collect();
+        let distances: Vec<i32> =
+            dist_bytes.chunks_exact(4).map(|c| i32::from_ne_bytes([c[0], c[1], c[2], c[3]])).collect();
 
         // Build a map of vertex -> distance
         let mut dist_map = std::collections::HashMap::new();
@@ -180,11 +214,7 @@ mod tests {
         // Expected: {0: 0, 1: 1, 2: unreachable, 3: 2, 4: 2, 5: 3}
         assert_eq!(dist_map[&0], 0, "source should have distance 0");
         assert_eq!(dist_map[&1], 1, "vertex 1 should have distance 1");
-        assert_eq!(
-            dist_map[&2],
-            i32::MAX,
-            "vertex 2 should be unreachable from 0"
-        );
+        assert_eq!(dist_map[&2], i32::MAX, "vertex 2 should be unreachable from 0");
         assert_eq!(dist_map[&3], 2, "vertex 3 should have distance 2");
         assert_eq!(dist_map[&4], 2, "vertex 4 should have distance 2");
         assert_eq!(dist_map[&5], 3, "vertex 5 should have distance 3");
@@ -205,10 +235,7 @@ mod tests {
         let src = device_array_from_host(&handle, &src_data, DataType::Int32).expect("src");
         let dst = device_array_from_host(&handle, &dst_data, DataType::Int32).expect("dst");
 
-        let props = GraphProperties {
-            is_symmetric: false,
-            is_multigraph: false,
-        };
+        let props = GraphProperties { is_symmetric: false, is_multigraph: false };
 
         let mut graph = Graph::from_edge_list(
             &handle,
@@ -223,30 +250,19 @@ mod tests {
         )
         .expect("graph");
 
-        let sources_arr =
-            device_array_from_host(&handle, &[0i32], DataType::Int32).expect("sources");
+        let sources_arr = device_array_from_host(&handle, &[0i32], DataType::Int32).expect("sources");
         let mut sources_view = sources_arr.view();
 
-        let result = bfs(
-            &handle,
-            &mut graph,
-            &mut sources_view,
-            Some(BfsDepthLimit::new(2).unwrap()),
-            false,
-        )
-        .expect("bfs");
+        let result =
+            bfs(&handle, &mut graph, &mut sources_view, Some(BfsDepthLimit::new(2).unwrap()), false).expect("bfs");
 
         let vert_bytes = result.vertices().to_host_vec(&handle).expect("vert copy");
         let dist_bytes = result.distances().to_host_vec(&handle).expect("dist copy");
 
-        let vertices: Vec<i32> = vert_bytes
-            .chunks_exact(4)
-            .map(|c| i32::from_ne_bytes([c[0], c[1], c[2], c[3]]))
-            .collect();
-        let distances: Vec<i32> = dist_bytes
-            .chunks_exact(4)
-            .map(|c| i32::from_ne_bytes([c[0], c[1], c[2], c[3]]))
-            .collect();
+        let vertices: Vec<i32> =
+            vert_bytes.chunks_exact(4).map(|c| i32::from_ne_bytes([c[0], c[1], c[2], c[3]])).collect();
+        let distances: Vec<i32> =
+            dist_bytes.chunks_exact(4).map(|c| i32::from_ne_bytes([c[0], c[1], c[2], c[3]])).collect();
 
         let mut dist_map = std::collections::HashMap::new();
         for (v, d) in vertices.iter().zip(distances.iter()) {
@@ -270,10 +286,7 @@ mod tests {
         let src = device_array_from_host(&handle, &src_data, DataType::Int32).expect("src");
         let dst = device_array_from_host(&handle, &dst_data, DataType::Int32).expect("dst");
 
-        let props = GraphProperties {
-            is_symmetric: false,
-            is_multigraph: false,
-        };
+        let props = GraphProperties { is_symmetric: false, is_multigraph: false };
 
         let mut graph = Graph::from_edge_list(
             &handle,
@@ -288,8 +301,7 @@ mod tests {
         )
         .expect("graph");
 
-        let sources_arr =
-            device_array_from_host(&handle, &[0i32], DataType::Int32).expect("sources");
+        let sources_arr = device_array_from_host(&handle, &[0i32], DataType::Int32).expect("sources");
         let mut sources_view = sources_arr.view();
 
         let result = bfs(&handle, &mut graph, &mut sources_view, None, false).expect("bfs");

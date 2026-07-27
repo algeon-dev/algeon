@@ -1,15 +1,11 @@
-use std::collections::HashSet;
-use std::fs;
-use std::path::PathBuf;
+use std::{collections::HashSet, fs, path::PathBuf};
 
 fn parse_wrapper_includes(wrapper: &str) -> HashSet<String> {
     wrapper
         .lines()
         .filter_map(|line| {
             let line = line.trim();
-            line.strip_prefix("#include <cugraph_c/")
-                .and_then(|rest| rest.strip_suffix('>'))
-                .map(|s| s.to_string())
+            line.strip_prefix("#include <cugraph_c/").and_then(|rest| rest.strip_suffix('>')).map(|s| s.to_string())
         })
         .collect()
 }

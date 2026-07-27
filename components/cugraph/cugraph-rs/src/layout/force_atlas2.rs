@@ -15,7 +15,7 @@
 //!     array::device_array_from_host,
 //!     graph::Graph,
 //!     handle::ResourceHandle,
-//!     layout::{force_atlas2, ForceAtlas2Params},
+//!     layout::{ForceAtlas2Params, force_atlas2},
 //!     params::IterationCount,
 //!     random::RngState,
 //!     types::{DataType, GraphProperties},
@@ -24,16 +24,32 @@
 //! let handle = ResourceHandle::new().unwrap();
 //! let mut rng = RngState::new(&handle, 42).unwrap();
 //!
-//! let src = device_array_from_host(&handle, &[0i32, 1, 2], DataType::Int32).unwrap();
-//! let dst = device_array_from_host(&handle, &[1i32, 2, 0], DataType::Int32).unwrap();
+//! let src = device_array_from_host(&handle, &[0i32, 1, 2], DataType::Int32)
+//!     .unwrap();
+//! let dst = device_array_from_host(&handle, &[1i32, 2, 0], DataType::Int32)
+//!     .unwrap();
 //!
 //! let props = GraphProperties { is_symmetric: false, is_multigraph: false };
 //! let mut graph = Graph::from_edge_list(
-//!     &handle, props, &src.view(), &dst.view(), None, None, None, false, true,
-//! ).unwrap();
+//!     &handle,
+//!     props,
+//!     &src.view(),
+//!     &dst.view(),
+//!     None,
+//!     None,
+//!     None,
+//!     false,
+//!     true,
+//! )
+//! .unwrap();
 //!
-//! let params = ForceAtlas2Params { max_iter: IterationCount::new(100).unwrap(), ..Default::default() };
-//! let result = force_atlas2(&handle, &mut rng, &mut graph, &params, None, None).unwrap();
+//! let params = ForceAtlas2Params {
+//!     max_iter: IterationCount::new(100).unwrap(),
+//!     ..Default::default()
+//! };
+//! let result =
+//!     force_atlas2(&handle, &mut rng, &mut graph, &params, None, None)
+//!         .unwrap();
 //!
 //! assert_eq!(result.vertices().len(), 3);
 //! assert_eq!(result.x().len(), 3);
@@ -43,18 +59,19 @@
 use std::ptr;
 
 use cugraph_sys::{
-    bool_t, cugraph_error_t, cugraph_force_atlas2, cugraph_layout_result_free,
-    cugraph_layout_result_get_vertices, cugraph_layout_result_get_x_axis,
-    cugraph_layout_result_get_y_axis, cugraph_layout_result_t,
+    bool_t, cugraph_error_t, cugraph_force_atlas2, cugraph_layout_result_free, cugraph_layout_result_get_vertices,
+    cugraph_layout_result_get_x_axis, cugraph_layout_result_get_y_axis, cugraph_layout_result_t,
 };
 
-use crate::array::DeviceArrayView;
-use crate::error::{check_error, Error, ErrorKind, Result};
-use crate::graph::Graph;
-use crate::handle::ResourceHandle;
-use crate::params::{ClosedUnitF64, IterationCount, NonNegativeF64, PositiveF64};
-use crate::random::RngState;
-use crate::types::to_bool_t;
+use crate::{
+    array::DeviceArrayView,
+    error::{Error, ErrorKind, Result, check_error},
+    graph::Graph,
+    handle::ResourceHandle,
+    params::{ClosedUnitF64, IterationCount, NonNegativeF64, PositiveF64},
+    random::RngState,
+    types::to_bool_t,
+};
 
 /// Parameters for the Force Atlas 2 layout algorithm.
 ///
@@ -170,9 +187,7 @@ pub struct LayoutResult {
 
 impl std::fmt::Debug for LayoutResult {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("LayoutResult")
-            .field("raw", &self.raw)
-            .finish()
+        f.debug_struct("LayoutResult").field("raw", &self.raw).finish()
     }
 }
 
@@ -184,10 +199,7 @@ impl LayoutResult {
     /// `raw` must be a valid, non-null pointer returned by the cuGraph layout
     /// C API. Ownership is transferred to this struct.
     unsafe fn from_raw(raw: *mut cugraph_layout_result_t) -> Self {
-        Self {
-            raw,
-            _nosend_nosync: std::marker::PhantomData,
-        }
+        Self { raw, _nosend_nosync: std::marker::PhantomData }
     }
 
     /// Get the vertex ids as a device array view.
@@ -212,6 +224,33 @@ impl LayoutResult {
     pub fn y(&self) -> DeviceArrayView<'_> {
         let view_ptr = unsafe { cugraph_layout_result_get_y_axis(self.raw) };
         unsafe { DeviceArrayView::from_borrowed(view_ptr) }
+    }
+}
+
+#[cfg(feature = "cudf-interop")]
+impl LayoutResult {
+    /// Convert this layout result to a cudf DataFrame.
+    ///
+    /// Returns a 3-column DataFrame:
+    /// - `"vertex"` — vertex ids
+    /// - `"x"` — x-axis coordinates (Float32)
+    /// - `"y"` — y-axis coordinates (Float32)
+    ///
+    /// Performs a device-to-device copy.
+    pub fn to_dataframe(&self) -> crate::error::Result<cudf::DataFrame> {
+        use crate::{
+            cudf_interop::DeviceArrayViewExt,
+            error::{Error, ErrorKind},
+        };
+
+        let vert_col = self.vertices().to_cudf_column().map_err(|e| e.with_operation("LayoutResult::to_dataframe"))?;
+        let x_col = self.x().to_cudf_column().map_err(|e| e.with_operation("LayoutResult::to_dataframe"))?;
+        let y_col = self.y().to_cudf_column().map_err(|e| e.with_operation("LayoutResult::to_dataframe"))?;
+
+        cudf::DataFrame::new(vec!["vertex".into(), "x".into(), "y".into()], vec![vert_col, x_col, y_col]).map_err(|e| {
+            Error::new(ErrorKind::Unexpected, "LayoutResult::to_dataframe")
+                .with_message(format!("failed to build DataFrame: {}", e))
+        })
     }
 }
 
@@ -361,24 +400,20 @@ pub fn force_atlas2(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::array::device_array_from_host;
-    use crate::params::{ClosedUnitF64, IterationCount, NonNegativeF64};
-    use crate::types::{DataType, GraphProperties};
+    use crate::{
+        array::device_array_from_host,
+        params::{ClosedUnitF64, IterationCount, NonNegativeF64},
+        types::{DataType, GraphProperties},
+    };
 
     /// Helper: decode device array bytes into Vec<i32>.
     fn to_i32_vec(bytes: &[u8]) -> Vec<i32> {
-        bytes
-            .chunks_exact(4)
-            .map(|c| i32::from_ne_bytes([c[0], c[1], c[2], c[3]]))
-            .collect()
+        bytes.chunks_exact(4).map(|c| i32::from_ne_bytes([c[0], c[1], c[2], c[3]])).collect()
     }
 
     /// Helper: decode device array bytes into Vec<f32>.
     fn to_f32_vec(bytes: &[u8]) -> Vec<f32> {
-        bytes
-            .chunks_exact(4)
-            .map(|c| f32::from_ne_bytes([c[0], c[1], c[2], c[3]]))
-            .collect()
+        bytes.chunks_exact(4).map(|c| f32::from_ne_bytes([c[0], c[1], c[2], c[3]])).collect()
     }
 
     #[test]
@@ -393,28 +428,12 @@ mod tests {
         let src = device_array_from_host(&handle, &src_data, DataType::Int32).expect("src");
         let dst = device_array_from_host(&handle, &dst_data, DataType::Int32).expect("dst");
 
-        let props = GraphProperties {
-            is_symmetric: true,
-            is_multigraph: false,
-        };
+        let props = GraphProperties { is_symmetric: true, is_multigraph: false };
 
-        let mut graph = Graph::from_edge_list(
-            &handle,
-            props,
-            &src.view(),
-            &dst.view(),
-            None,
-            None,
-            None,
-            false,
-            true,
-        )
-        .expect("graph");
+        let mut graph = Graph::from_edge_list(&handle, props, &src.view(), &dst.view(), None, None, None, false, true)
+            .expect("graph");
 
-        let params = ForceAtlas2Params {
-            max_iter: IterationCount::new(50).unwrap(),
-            ..Default::default()
-        };
+        let params = ForceAtlas2Params { max_iter: IterationCount::new(50).unwrap(), ..Default::default() };
 
         let result = force_atlas2(&handle, &mut rng, &mut graph, &params, None, None).expect("fa2");
 
@@ -448,53 +467,21 @@ mod tests {
         let src = device_array_from_host(&handle, &src_data, DataType::Int32).expect("src");
         let dst = device_array_from_host(&handle, &dst_data, DataType::Int32).expect("dst");
 
-        let props = GraphProperties {
-            is_symmetric: true,
-            is_multigraph: false,
-        };
+        let props = GraphProperties { is_symmetric: true, is_multigraph: false };
 
-        let mut graph = Graph::from_edge_list(
-            &handle,
-            props,
-            &src.view(),
-            &dst.view(),
-            None,
-            None,
-            None,
-            false,
-            true,
-        )
-        .expect("graph");
+        let mut graph = Graph::from_edge_list(&handle, props, &src.view(), &dst.view(), None, None, None, false, true)
+            .expect("graph");
 
         // First pass: 50 iterations, random initial positions
-        let params1 = ForceAtlas2Params {
-            max_iter: IterationCount::new(50).unwrap(),
-            ..Default::default()
-        };
-        let result1 =
-            force_atlas2(&handle, &mut rng, &mut graph, &params1, None, None).expect("fa2 pass 1");
+        let params1 = ForceAtlas2Params { max_iter: IterationCount::new(50).unwrap(), ..Default::default() };
+        let result1 = force_atlas2(&handle, &mut rng, &mut graph, &params1, None, None).expect("fa2 pass 1");
 
         assert_eq!(result1.vertices().len(), 4);
 
         // Second pass: 10 iterations, using first pass result as initial positions
-        let params2 = ForceAtlas2Params {
-            max_iter: IterationCount::new(10).unwrap(),
-            ..Default::default()
-        };
-        let init_pos = InitialPositions {
-            vertices: &result1.vertices(),
-            x: &result1.x(),
-            y: &result1.y(),
-        };
-        let result2 = force_atlas2(
-            &handle,
-            &mut rng,
-            &mut graph,
-            &params2,
-            None,
-            Some(&init_pos),
-        )
-        .expect("fa2 pass 2");
+        let params2 = ForceAtlas2Params { max_iter: IterationCount::new(10).unwrap(), ..Default::default() };
+        let init_pos = InitialPositions { vertices: &result1.vertices(), x: &result1.x(), y: &result1.y() };
+        let result2 = force_atlas2(&handle, &mut rng, &mut graph, &params2, None, Some(&init_pos)).expect("fa2 pass 2");
 
         assert_eq!(result2.vertices().len(), 4);
         assert_eq!(result2.x().len(), 4);
@@ -525,28 +512,12 @@ mod tests {
         let src = device_array_from_host(&handle, &src_data, DataType::Int32).expect("src");
         let dst = device_array_from_host(&handle, &dst_data, DataType::Int32).expect("dst");
 
-        let props = GraphProperties {
-            is_symmetric: true,
-            is_multigraph: false,
-        };
+        let props = GraphProperties { is_symmetric: true, is_multigraph: false };
 
-        let mut graph = Graph::from_edge_list(
-            &handle,
-            props,
-            &src.view(),
-            &dst.view(),
-            None,
-            None,
-            None,
-            false,
-            true,
-        )
-        .expect("graph");
+        let mut graph = Graph::from_edge_list(&handle, props, &src.view(), &dst.view(), None, None, None, false, true)
+            .expect("graph");
 
-        let params = ForceAtlas2Params {
-            max_iter: IterationCount::new(10).unwrap(),
-            ..Default::default()
-        };
+        let params = ForceAtlas2Params { max_iter: IterationCount::new(10).unwrap(), ..Default::default() };
 
         let result = force_atlas2(&handle, &mut rng, &mut graph, &params, None, None).expect("fa2");
 
@@ -576,23 +547,11 @@ mod tests {
         let dst = device_array_from_host(&handle, &dst_data, DataType::Int32).expect("dst");
         let wgt = device_array_from_host(&handle, &wgt_data, DataType::Float32).expect("wgt");
 
-        let props = GraphProperties {
-            is_symmetric: true,
-            is_multigraph: false,
-        };
+        let props = GraphProperties { is_symmetric: true, is_multigraph: false };
 
-        let mut graph = Graph::from_edge_list(
-            &handle,
-            props,
-            &src.view(),
-            &dst.view(),
-            Some(&wgt.view()),
-            None,
-            None,
-            false,
-            true,
-        )
-        .expect("graph");
+        let mut graph =
+            Graph::from_edge_list(&handle, props, &src.view(), &dst.view(), Some(&wgt.view()), None, None, false, true)
+                .expect("graph");
 
         let params = ForceAtlas2Params {
             max_iter: IterationCount::new(50).unwrap(),
@@ -619,23 +578,10 @@ mod tests {
         let src = device_array_from_host(&handle, &src_data, DataType::Int32).expect("src");
         let dst = device_array_from_host(&handle, &dst_data, DataType::Int32).expect("dst");
 
-        let props = GraphProperties {
-            is_symmetric: true,
-            is_multigraph: false,
-        };
+        let props = GraphProperties { is_symmetric: true, is_multigraph: false };
 
-        let mut graph = Graph::from_edge_list(
-            &handle,
-            props,
-            &src.view(),
-            &dst.view(),
-            None,
-            None,
-            None,
-            false,
-            true,
-        )
-        .expect("graph");
+        let mut graph = Graph::from_edge_list(&handle, props, &src.view(), &dst.view(), None, None, None, false, true)
+            .expect("graph");
 
         let params = ForceAtlas2Params {
             max_iter: IterationCount::new(50).unwrap(),
@@ -644,8 +590,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result =
-            force_atlas2(&handle, &mut rng, &mut graph, &params, None, None).expect("fa2 BH");
+        let result = force_atlas2(&handle, &mut rng, &mut graph, &params, None, None).expect("fa2 BH");
 
         assert_eq!(result.vertices().len(), 3);
 
@@ -671,23 +616,10 @@ mod tests {
         let src = device_array_from_host(&handle, &src_data, DataType::Int32).expect("src");
         let dst = device_array_from_host(&handle, &dst_data, DataType::Int32).expect("dst");
 
-        let props = GraphProperties {
-            is_symmetric: true,
-            is_multigraph: false,
-        };
+        let props = GraphProperties { is_symmetric: true, is_multigraph: false };
 
-        let mut graph = Graph::from_edge_list(
-            &handle,
-            props,
-            &src.view(),
-            &dst.view(),
-            None,
-            None,
-            None,
-            false,
-            true,
-        )
-        .expect("graph");
+        let mut graph = Graph::from_edge_list(&handle, props, &src.view(), &dst.view(), None, None, None, false, true)
+            .expect("graph");
 
         // Create mismatched initial position arrays
         let verts = device_array_from_host(&handle, &[0i32, 1], DataType::Int32).expect("verts");
@@ -695,11 +627,7 @@ mod tests {
         let y_pos = device_array_from_host(&handle, &[3.0f32], DataType::Float32).expect("y"); // wrong length
 
         let params = ForceAtlas2Params::default();
-        let init = InitialPositions {
-            vertices: &verts.view(),
-            x: &x_pos.view(),
-            y: &y_pos.view(),
-        };
+        let init = InitialPositions { vertices: &verts.view(), x: &x_pos.view(), y: &y_pos.view() };
 
         let err = force_atlas2(&handle, &mut rng, &mut graph, &params, None, Some(&init))
             .expect_err("should reject mismatched y length");
@@ -718,35 +646,18 @@ mod tests {
         let src = device_array_from_host(&handle, &src_data, DataType::Int32).expect("src");
         let dst = device_array_from_host(&handle, &dst_data, DataType::Int32).expect("dst");
 
-        let props = GraphProperties {
-            is_symmetric: true,
-            is_multigraph: false,
-        };
+        let props = GraphProperties { is_symmetric: true, is_multigraph: false };
 
-        let mut graph = Graph::from_edge_list(
-            &handle,
-            props,
-            &src.view(),
-            &dst.view(),
-            None,
-            None,
-            None,
-            false,
-            true,
-        )
-        .expect("graph");
+        let mut graph = Graph::from_edge_list(&handle, props, &src.view(), &dst.view(), None, None, None, false, true)
+            .expect("graph");
 
         // Create mismatched mass arrays
-        let mass_verts =
-            device_array_from_host(&handle, &[0i32, 1], DataType::Int32).expect("mass_verts");
-        let mass_vals =
-            device_array_from_host(&handle, &[1.0f32], DataType::Float32).expect("mass_vals"); // wrong length
+        let mass_verts = device_array_from_host(&handle, &[0i32, 1], DataType::Int32).expect("mass_verts");
+        let mass_vals = device_array_from_host(&handle, &[1.0f32], DataType::Float32).expect("mass_vals"); // wrong length
 
         let params = ForceAtlas2Params::default();
-        let attrs = ForceAtlas2VertexAttrs {
-            mass: Some((&mass_verts.view(), &mass_vals.view())),
-            ..Default::default()
-        };
+        let attrs =
+            ForceAtlas2VertexAttrs { mass: Some((&mass_verts.view(), &mass_vals.view())), ..Default::default() };
 
         let err = force_atlas2(&handle, &mut rng, &mut graph, &params, Some(&attrs), None)
             .expect_err("should reject mismatched mass array lengths");
@@ -766,23 +677,10 @@ mod tests {
         let src = device_array_from_host(&handle, &src_data, DataType::Int32).expect("src");
         let dst = device_array_from_host(&handle, &dst_data, DataType::Int32).expect("dst");
 
-        let props = GraphProperties {
-            is_symmetric: true,
-            is_multigraph: false,
-        };
+        let props = GraphProperties { is_symmetric: true, is_multigraph: false };
 
-        let mut graph = Graph::from_edge_list(
-            &handle,
-            props,
-            &src.view(),
-            &dst.view(),
-            None,
-            None,
-            None,
-            false,
-            true,
-        )
-        .expect("graph");
+        let mut graph = Graph::from_edge_list(&handle, props, &src.view(), &dst.view(), None, None, None, false, true)
+            .expect("graph");
 
         let params = ForceAtlas2Params {
             max_iter: IterationCount::new(30).unwrap(),

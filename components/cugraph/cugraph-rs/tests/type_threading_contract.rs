@@ -1,11 +1,12 @@
+use cugraph::{
+    array::{DeviceArray, DeviceArrayView, HostArrayView},
+    centrality::{CentralityResult, PageRankResult},
+    graph::Graph,
+    layout::LayoutResult,
+    random::RngState,
+    traversal::BfsResult,
+};
 use static_assertions::assert_not_impl_any;
-
-use cugraph::array::{DeviceArray, DeviceArrayView, HostArrayView};
-use cugraph::centrality::{CentralityResult, PageRankResult};
-use cugraph::graph::Graph;
-use cugraph::layout::LayoutResult;
-use cugraph::random::RngState;
-use cugraph::traversal::BfsResult;
 
 #[test]
 fn graph_and_result_types_are_not_send_or_sync() {
