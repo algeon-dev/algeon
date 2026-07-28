@@ -123,7 +123,7 @@ pub(crate) fn check_cudf_status_on_device(
             device,
             cudf::runtime::DeviceFaultKind::FatalDeviceOperation,
             operation,
-            Some(status),
+            Some(status as i32),
         );
     }
     check_cudf_status(status, operation)

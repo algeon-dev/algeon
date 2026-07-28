@@ -30,8 +30,10 @@ cuGraph, or a way to hide the native CUDA/RAPIDS deployment requirements.
 ## Building libcugraph locally
 
 `cugraph-nexus-sys` builds native cuGraph (`cugraph/cpp`) and resolves RMM and
-`rapids_logger` from the cudf install prefix (`CUDF_INSTALL_DIR`) 
-so cudf and cugraph share **one** RMM build.
+`rapids_logger` from the cudf install prefix (`CUDF_INSTALL_DIR`) and cuVS from
+`CUVS_INSTALL_DIR`, so cudf and cugraph share **one** RMM build and cuGraph
+cannot select a private `_deps` copy of `libcuvs.so`. This integration is based
+on cuVS release 26.06.00.
 
 Because `cugraph-nexus-sys` does a real `find_package(rmm)` against that prefix, the
 prefix must export RMM's full CMake dependency closure. The upstream libcudf
@@ -43,13 +45,18 @@ the `.so` files directly without a CMake configure.)
 Build native libcugraph with one command (needs `cmake`, `ninja`, `nvcc`):
 
 ```bash
-CUDF_INSTALL_DIR=/path/to/cudf-nexus/cudf-install scripts/build_libcugraph.sh
+CUDF_INSTALL_DIR=/path/to/cudf-nexus/cudf-install \
+CUVS_INSTALL_DIR=/path/to/cuvs-nexus/cuvs-install \
+scripts/build_libcugraph.sh
 ```
 
 `scripts/build_libcugraph.sh` is a thin wrapper around the upstream
 `cugraph/build.sh`: it makes the cudf prefix self-contained, forces cuGraph to
 resolve RMM and rapids_logger from it (one shared RMM), builds `libcugraph` into
-`cugraph/cpp/build`, and verifies no private RMM copy leaked. Set
+`cugraph/cpp/build`, forces `cuvs_ROOT` to the same `CUVS_INSTALL_DIR` used by
+Cargo auto-builds, and verifies CMake resolution, ELF dependency, and
+dynamic-loader path. It writes the resolved identity to
+`cugraph/cpp/build/cugraph-nexus-native-contract.env`. Set
 `CMAKE_CUDA_ARCHITECTURES` to override the default `NATIVE` arch.
 
 The self-contained step is also available standalone and is idempotent — it
@@ -65,7 +72,8 @@ and `DT_RUNPATH` does not cascade to dependencies-of-dependencies):
 
 ```bash
 CUDF_INSTALL_DIR=/path/to/cudf-nexus/cudf-install \
-LD_LIBRARY_PATH=/path/to/cudf-nexus/cudf-install/lib:/path/to/cugraph-nexus/cugraph/cpp/build \
+CUVS_INSTALL_DIR=/path/to/cuvs-nexus/cuvs-install \
+LD_LIBRARY_PATH=/path/to/cudf-nexus/cudf-install/lib:/path/to/cuvs-nexus/cuvs-install/lib:/path/to/cugraph-nexus/cugraph/cpp/build \
 cargo test --all-features --no-fail-fast
 ```
 
