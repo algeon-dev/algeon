@@ -7,6 +7,7 @@ use common::cudf::{
     assert_score_maps_close_f32, explicit_runtime, pagerank_score_map, python_weighted_reciprocal_expected_pagerank_map,
 };
 use cudf::testing::prelude::*;
+use cudf_sys::test_support;
 use cugraph::{
     cudf_interop::{
         GraphConstructionPolicy, SeriesGraphOptions, graph_from_borrowed_columns, graph_from_prepared_columns,
@@ -24,19 +25,19 @@ enum CurrentAllocatorProbeOutcome {
 }
 
 fn reset_exec_observation() {
-    unsafe { cudf_sys::cudf_test_exec_reset_observation() };
+    unsafe { test_support::cudf_test_exec_reset_observation() };
 }
 
 fn last_exec_stream_value() -> usize {
     let mut out = 0usize;
-    let status = unsafe { cudf_sys::cudf_test_exec_last_stream_value(&mut out) };
+    let status = unsafe { test_support::cudf_test_exec_last_stream_value(&mut out) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read last execution stream");
     out
 }
 
 fn last_exec_mr_value() -> usize {
     let mut out = ptr::null_mut();
-    let status = unsafe { cudf_sys::cudf_test_exec_last_mr_raw(&mut out) };
+    let status = unsafe { test_support::cudf_test_exec_last_mr_raw(&mut out) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read last execution memory resource");
     out as usize
 }

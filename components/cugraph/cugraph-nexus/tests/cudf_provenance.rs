@@ -23,6 +23,7 @@ use common::{
     },
 };
 use cudf::testing::prelude::*;
+use cudf_sys::test_support;
 use cugraph::{
     array::DeviceArray,
     centrality::PageRankParams,
@@ -40,23 +41,23 @@ use cugraph::{
 use rapids_interop::{BorrowedColumnView, CudaStreamHandle, ExecutionBinding};
 
 fn reset_exec_observation() {
-    unsafe { cudf_sys::cudf_test_exec_reset_observation() };
+    unsafe { test_support::cudf_test_exec_reset_observation() };
 }
 
 fn last_sync_stream_value() -> usize {
     let mut out = 0usize;
-    let status = unsafe { cudf_sys::cudf_test_exec_last_sync_stream_value(&mut out) };
+    let status = unsafe { test_support::cudf_test_exec_last_sync_stream_value(&mut out) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read last synchronized stream");
     out
 }
 
 fn reset_event_observation() {
-    unsafe { cudf_sys::cudf_test_event_reset_observation() };
+    unsafe { test_support::cudf_test_event_reset_observation() };
 }
 
 fn observed_stream_wait_call_count_for_stream_raw(stream_raw: usize) -> i32 {
     let mut out = -1;
-    let status = unsafe { cudf_sys::cudf_test_event_stream_wait_call_count_for_stream_raw(stream_raw, &mut out) };
+    let status = unsafe { test_support::cudf_test_event_stream_wait_call_count_for_stream_raw(stream_raw, &mut out) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read per-stream wait observation count");
     out
 }

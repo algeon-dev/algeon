@@ -13,6 +13,11 @@ fn generated_bindings() -> String {
     fs::read_to_string(&path).unwrap_or_else(|_| panic!("failed to read generated bindings at {}", path.display()))
 }
 
+fn contains_function(bindings: &str, symbol: &str) -> bool {
+    let marker = format!("pub fn {symbol}");
+    bindings.match_indices(&marker).any(|(offset, _)| bindings[offset + marker.len()..].trim_start().starts_with('('))
+}
+
 #[test]
 fn bindings_include_critical_core_symbols() {
     let bindings = generated_bindings();
@@ -183,7 +188,6 @@ fn bindings_include_critical_core_symbols() {
     ];
 
     for symbol in required_symbols {
-        let needle = format!("pub fn {symbol}(");
-        assert!(bindings.contains(&needle), "generated bindings missing critical symbol: {symbol}");
+        assert!(contains_function(&bindings, symbol), "generated bindings missing critical symbol: {symbol}");
     }
 }
