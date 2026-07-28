@@ -20,7 +20,7 @@ fn write_small_louvain_fixture(path: &PathBuf) {
     let src = runtime.series("src", LOUVAIN_GRAPH_SRC_I32).expect("src");
     let dst = runtime.series("dst", LOUVAIN_GRAPH_DST_I32).expect("dst");
     let weight = runtime.series("weight", LOUVAIN_GRAPH_WEIGHT_F32).expect("weight");
-    let df = DataFrame::from_series([src, dst, weight]).expect("dataframe");
+    let df = DataFrame::from_columns([("src", src), ("dst", dst), ("weight", weight)]).expect("dataframe");
     df.write_parquet(path).expect("write parquet");
 }
 
@@ -39,7 +39,8 @@ fn write_small_louvain_alias_string_fixture(path: &PathBuf) {
         )
         .expect("targetId");
     let weight = runtime.series("weight", LOUVAIN_GRAPH_WEIGHT_F32).expect("weight");
-    let df = DataFrame::from_series([subject, object, weight]).expect("dataframe");
+    let df =
+        DataFrame::from_columns([("sourceId", subject), ("targetId", object), ("weight", weight)]).expect("dataframe");
     df.write_parquet(path).expect("write parquet");
 }
 
@@ -80,7 +81,8 @@ fn write_small_louvain_alias_string_fixture_with_null_weights(path: &PathBuf) {
             ],
         )
         .expect("weight");
-    let df = DataFrame::from_series([subject, object, weight]).expect("dataframe");
+    let df =
+        DataFrame::from_columns([("sourceId", subject), ("targetId", object), ("weight", weight)]).expect("dataframe");
     df.write_parquet(path).expect("write parquet");
 }
 
@@ -139,11 +141,11 @@ fn small_generated_fixture_runs_end_to_end_without_environment_error() {
 
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).expect("stdout json");
     assert_eq!(json["case"], "louvain");
-    assert_eq!(output.status.code(), Some(1), "expected parity mismatch, got {:?}", output.status.code());
-    assert_eq!(json["verdict"], "mismatch");
+    assert_eq!(output.status.code(), Some(0), "expected parity pass, got {:?}", output.status.code());
+    assert_eq!(json["verdict"], "pass");
     assert!(json["python_summary"].is_object(), "python summary missing: {json}");
     assert_eq!(json["rust_summaries"].as_array().expect("rust summaries").len(), 3);
-    assert!(!json["diffs"].as_array().expect("diffs").is_empty(), "expected at least one structured diff: {json}");
+    assert!(json["diffs"].as_array().expect("diffs").is_empty(), "expected no structured diffs: {json}");
 }
 
 #[test]
@@ -172,11 +174,11 @@ fn aliased_string_fixture_runs_end_to_end() {
 
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).expect("stdout json");
     assert_eq!(json["case"], "louvain");
-    assert_eq!(output.status.code(), Some(1), "expected parity mismatch, got {:?}", output.status.code());
-    assert_eq!(json["verdict"], "mismatch");
+    assert_eq!(output.status.code(), Some(0), "expected parity pass, got {:?}", output.status.code());
+    assert_eq!(json["verdict"], "pass");
     assert!(json["python_summary"].is_object(), "python summary missing: {json}");
     assert_eq!(json["rust_summaries"].as_array().expect("rust summaries").len(), 3);
-    assert!(!json["diffs"].as_array().expect("diffs").is_empty(), "expected at least one structured diff: {json}");
+    assert!(json["diffs"].as_array().expect("diffs").is_empty(), "expected no structured diffs: {json}");
 }
 
 #[test]

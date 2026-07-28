@@ -24,8 +24,8 @@
 //!   typed cugraph array view without copying, with a runtime type check.
 //! - [`graph_from_borrowed_columns()`] — consumes the shared RAPIDS borrowed
 //!   ABI directly.
-//! - [`graph_from_table_view()`] — borrowed-compatibility construction from a
-//!   cudf table view.
+//! - [`graph_from_borrowed_table_view()`] — borrowed-compatibility
+//!   construction from an explicit RAPIDS borrowed table descriptor.
 //! - [`graph_from_series()`] and [`graph_from_dataframe()`] — convenience
 //!   producers that prepare device exports at the API boundary, then delegate
 //!   into the prepared-export graph construction path.
@@ -48,7 +48,7 @@
 //! | [`graph_from_borrowed_columns`] | Depends on policy | Borrowed descriptors must outlive build |
 //! | [`graph_from_series`] | No (input) | Series must outlive build |
 //! | [`graph_from_dataframe`] | No (input) | DataFrame must outlive build |
-//! | [`graph_from_table_view`] | Depends on policy | Table must outlive build |
+//! | [`graph_from_borrowed_table_view`] | Depends on policy | Borrowed descriptors must outlive build |
 //! | [`IntoSeries::to_series`] | Yes (D2D) | Series is independent |
 //! | [`graph_from_parquet`] | Yes | [`LoadedGraph`] owns both |
 //!
@@ -79,7 +79,7 @@ use std::{collections::BTreeSet, ffi::c_void};
 
 use cudf::{
     DropDuplicatesOptions, DuplicateKeepOption, Runtime, SortOptions, TypeId as CudfTypeId,
-    core::{Column, DeviceSlice, Table, TableView},
+    core::{Column, DeviceSlice, Table, table::TableView},
     io::parquet,
 };
 use rapids_interop::{
@@ -226,7 +226,7 @@ fn runtime_for_handle(handle: &ResourceHandle, operation: &'static str) -> Resul
 ///
 /// let runtime = cudf::Runtime::new().unwrap();
 /// let series = runtime.series("v", &[0i32, 1, 2]).unwrap();
-/// let col = series.as_column_view().unwrap();
+/// let col = series.as_column();
 /// let slice = col.device_slice::<i32>().unwrap();
 ///
 /// let view = device_array_view_from_slice::<i32>(&slice).unwrap();
@@ -334,16 +334,19 @@ fn named_series_from_column_result(
     named_series_from_column(column?, name, operation)
 }
 
-fn dataframe_from_named_series<const N: usize>(
-    series: [cudf::Series; N],
-    operation: &'static str,
-) -> Result<cudf::DataFrame> {
-    cudf::DataFrame::from_series(series).map_err(|error| {
+fn dataframe_from_named_series<I, S>(series: I, operation: &'static str) -> Result<cudf::DataFrame>
+where
+    I: IntoIterator<Item = (S, cudf::Series)>,
+    S: Into<String>,
+{
+    let series = series.into_iter();
+    let (series_count, _) = series.size_hint();
+    cudf::DataFrame::from_columns(series).map_err(|error| {
         map_cudf_error_with(
             error,
             operation,
             "failed to build cudf DataFrame from cugraph result columns",
-            [("series_count", N.to_string())],
+            [("series_count", series_count.to_string())],
         )
     })
 }
@@ -426,7 +429,10 @@ impl IntoSeries for DegreeValues<'_> {
 pub(crate) fn page_rank_result_to_dataframe(result: &PageRankResult, runtime: &Runtime) -> Result<cudf::DataFrame> {
     let operation = "page_rank_result_to_dataframe";
     dataframe_from_named_series(
-        [result.vertex_ids()?.to_series("vertex", runtime)?, result.scores()?.to_series("value", runtime)?],
+        [
+            ("vertex", result.vertex_ids()?.to_series("vertex", runtime)?),
+            ("value", result.scores()?.to_series("value", runtime)?),
+        ],
         operation,
     )
 }
@@ -437,7 +443,10 @@ pub(crate) fn betweenness_result_to_dataframe(
 ) -> Result<cudf::DataFrame> {
     let operation = "betweenness_result_to_dataframe";
     dataframe_from_named_series(
-        [result.vertex_ids()?.to_series("vertex", runtime)?, result.scores()?.to_series("value", runtime)?],
+        [
+            ("vertex", result.vertex_ids()?.to_series("vertex", runtime)?),
+            ("value", result.scores()?.to_series("value", runtime)?),
+        ],
         operation,
     )
 }
@@ -445,7 +454,10 @@ pub(crate) fn betweenness_result_to_dataframe(
 pub(crate) fn louvain_result_to_dataframe(result: &LouvainResult, runtime: &Runtime) -> Result<cudf::DataFrame> {
     let operation = "louvain_result_to_dataframe";
     dataframe_from_named_series(
-        [result.vertex_ids()?.to_series("vertex", runtime)?, result.clusters()?.to_series("partition", runtime)?],
+        [
+            ("vertex", result.vertex_ids()?.to_series("vertex", runtime)?),
+            ("partition", result.clusters()?.to_series("partition", runtime)?),
+        ],
         operation,
     )
 }
@@ -458,9 +470,12 @@ pub(crate) fn bfs_result_to_dataframe(result: &BfsResult, runtime: &Runtime) -> 
     match result.predecessors()? {
         Some(predecessors) => {
             let predecessor_series = predecessors.to_series("predecessor", runtime)?;
-            dataframe_from_named_series([vertex_series, distance_series, predecessor_series], operation)
+            dataframe_from_named_series(
+                [("vertex", vertex_series), ("distance", distance_series), ("predecessor", predecessor_series)],
+                operation,
+            )
         },
-        None => dataframe_from_named_series([vertex_series, distance_series], operation),
+        None => dataframe_from_named_series([("vertex", vertex_series), ("distance", distance_series)], operation),
     }
 }
 
@@ -470,16 +485,16 @@ pub(crate) fn layout_result_to_dataframe(result: &LayoutResult, runtime: &Runtim
     let x_series = result.x()?.to_series("x", runtime)?;
     let y_series = result.y()?.to_series("y", runtime)?;
 
-    dataframe_from_named_series([vertex_series, x_series, y_series], operation)
+    dataframe_from_named_series([("vertex", vertex_series), ("x", x_series), ("y", y_series)], operation)
 }
 
 pub(crate) fn degrees_result_to_dataframe(result: &DegreesResult, runtime: &Runtime) -> Result<cudf::DataFrame> {
     let operation = "degrees_result_to_dataframe";
     dataframe_from_named_series(
         [
-            result.vertex_ids()?.to_series("vertex", runtime)?,
-            result.in_degrees()?.to_series("in_degree", runtime)?,
-            result.out_degrees()?.to_series("out_degree", runtime)?,
+            ("vertex", result.vertex_ids()?.to_series("vertex", runtime)?),
+            ("in_degree", result.in_degrees()?.to_series("in_degree", runtime)?),
+            ("out_degree", result.out_degrees()?.to_series("out_degree", runtime)?),
         ],
         operation,
     )
@@ -488,7 +503,10 @@ pub(crate) fn degrees_result_to_dataframe(result: &DegreesResult, runtime: &Runt
 pub(crate) fn in_degrees_result_to_dataframe(result: &InDegreesResult, runtime: &Runtime) -> Result<cudf::DataFrame> {
     let operation = "in_degrees_result_to_dataframe";
     dataframe_from_named_series(
-        [result.vertex_ids()?.to_series("vertex", runtime)?, result.in_degrees()?.to_series("in_degree", runtime)?],
+        [
+            ("vertex", result.vertex_ids()?.to_series("vertex", runtime)?),
+            ("in_degree", result.in_degrees()?.to_series("in_degree", runtime)?),
+        ],
         operation,
     )
 }
@@ -496,7 +514,10 @@ pub(crate) fn in_degrees_result_to_dataframe(result: &InDegreesResult, runtime: 
 pub(crate) fn out_degrees_result_to_dataframe(result: &OutDegreesResult, runtime: &Runtime) -> Result<cudf::DataFrame> {
     let operation = "out_degrees_result_to_dataframe";
     dataframe_from_named_series(
-        [result.vertex_ids()?.to_series("vertex", runtime)?, result.out_degrees()?.to_series("out_degree", runtime)?],
+        [
+            ("vertex", result.vertex_ids()?.to_series("vertex", runtime)?),
+            ("out_degree", result.out_degrees()?.to_series("out_degree", runtime)?),
+        ],
         operation,
     )
 }
@@ -505,7 +526,7 @@ pub(crate) fn out_degrees_result_to_dataframe(result: &OutDegreesResult, runtime
 // Graph construction option types
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Options for building a graph from a cudf [`TableView`] using column indices.
+/// Options for building a graph from table-shaped cudf data using column indices.
 ///
 /// # Example
 ///
@@ -1268,14 +1289,8 @@ fn canonical_edge_dataframe_from_owned_series(
         pairs.push((NORMALIZED_WEIGHT_COL.to_string(), weights.rename(NORMALIZED_WEIGHT_COL)));
     }
 
-    cudf::DataFrame::from_named_pairs(pairs).map_err(|error| {
-        map_cudf_error_with(
-            error,
-            operation,
-            "failed to assemble canonical cudf edge DataFrame for graph normalization",
-            std::iter::empty(),
-        )
-    })
+    dataframe_from_named_series(pairs, operation)
+        .map_err(|error| error.with_message("failed to assemble canonical cudf edge DataFrame for graph normalization"))
 }
 
 fn validate_table_column_selection(
@@ -1313,8 +1328,7 @@ fn canonical_edge_dataframe_from_imported_table(
     operation: &'static str,
 ) -> Result<cudf::DataFrame> {
     let num_columns = table
-        .view()
-        .and_then(|view| view.num_columns())
+        .num_columns()
         .map_err(|error| map_cudf_error_with(error, operation, "failed to inspect imported cudf table schema", []))?;
     validate_table_column_selection(num_columns, options, "imported table", operation)?;
 
@@ -1736,7 +1750,7 @@ pub fn graph_from_prepared_table_export<T: Transposition>(
     finish_prepared_graph_result(graph_result, [lease_complete])
 }
 
-/// Build a cuGraph [`Graph`] from a cudf [`TableView`].
+/// Build a cuGraph [`Graph`] from a cudf low-level [`TableView`].
 ///
 /// **Borrowed compatibility path**: this entry point projects the cudf table
 /// view into the shared RAPIDS borrowed ABI and performs synchronous host-side
@@ -1746,7 +1760,8 @@ pub fn graph_from_prepared_table_export<T: Transposition>(
 /// [`graph_from_prepared_table_export()`], which keeps producer read-start,
 /// completion, and liveness explicit at the shared-contract layer. This
 /// function remains the supported compatibility path for callers that already
-/// operate on borrowed descriptors or only have a cudf [`TableView`] available.
+/// operate on low-level cudf table views and want an immediate bridge into the
+/// explicit RAPIDS borrowed ABI.
 ///
 /// **Raw-policy input path**: under [`GraphConstructionPolicy::RawLibcugraph`],
 /// cuGraph reads the edge data directly from the table's column device pointers
@@ -1764,7 +1779,7 @@ pub fn graph_from_prepared_table_export<T: Transposition>(
 /// - column types are incompatible with cugraph
 /// - graph construction fails
 ///
-/// [`TableView`]: cudf::core::TableView
+/// [`TableView`]: cudf::core::table::TableView
 pub fn graph_from_table_view<T: Transposition>(
     handle: &ResourceHandle,
     view: &TableView<'_>,

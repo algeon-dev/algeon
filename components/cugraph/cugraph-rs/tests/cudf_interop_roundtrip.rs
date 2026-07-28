@@ -8,12 +8,12 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use cudf::{DataFrame, Runtime, core::Table, io::parquet};
+use cudf::{DataFrame, Runtime, core::Table};
 use cugraph::{
     array::DeviceArray,
     cudf_interop::{
-        DataFrameGraphOptions, ParquetGraphOptions, TableGraphOptions, graph_from_dataframe, graph_from_parquet,
-        graph_from_table_view,
+        DataFrameGraphOptions, ParquetGraphOptions, TableGraphOptions, graph_from_borrowed_table_view,
+        graph_from_dataframe, graph_from_parquet,
     },
     graph::{Forward, GraphBuilder, Transposed},
     handle::ResourceHandle,
@@ -36,15 +36,12 @@ fn bfs_graph_table(runtime: &Runtime) -> Table {
     Table::from_columns(vec![src, dst, wgt]).expect("bfs graph table")
 }
 
-fn write_parquet_table(path: &Path, table: &Table, column_names: &[&str]) {
-    let view = table.view().expect("table view");
-    let write_opts = parquet::ParquetTableWriteOptions::builder().filepath(path).column_names(column_names).build();
-    parquet::write_parquet(&view, &write_opts).expect("write parquet");
+fn write_parquet_dataframe(path: &Path, df: &DataFrame) {
+    df.write_parquet(path).expect("write parquet");
 }
 
-fn read_parquet_table(runtime: &Runtime, path: &Path) -> Table {
-    let reader_opts = parquet::ParquetTableReadOptions::builder().filepath(path).with_runtime(runtime).build();
-    parquet::read_parquet_table(&reader_opts).expect("read parquet").table
+fn read_parquet_dataframe(runtime: &Runtime, path: &Path) -> DataFrame {
+    DataFrame::read_parquet(runtime, path).expect("read parquet")
 }
 
 fn df_i32(df: &DataFrame, name: &str) -> Vec<i32> {
@@ -71,8 +68,9 @@ impl TempParquetFixture {
         std::fs::create_dir_all(&dir).expect("create fixture dir");
 
         let path = dir.join("bfs_graph.parquet");
-        let table = bfs_graph_table(runtime);
-        write_parquet_table(&path, &table, &["src", "dst", "weight"]);
+        let df = DataFrame::from_table(bfs_graph_table(runtime), vec!["src".into(), "dst".into(), "weight".into()])
+            .expect("bfs graph dataframe");
+        write_parquet_dataframe(&path, &df);
 
         Self { dir, path }
     }
@@ -143,11 +141,12 @@ fn bfs_results_roundtrip_through_parquet() {
     let props = GraphProperties::directed();
     let fixture = TempParquetFixture::bfs_graph(&runtime);
 
-    let table = read_parquet_table(&runtime, fixture.path());
-    let view = table.view().expect("table view");
+    let input_df = read_parquet_dataframe(&runtime, fixture.path());
+    let borrowed = input_df.try_borrow_table_view().expect("borrowed table view");
 
     let opts = TableGraphOptions::new(0, 1).properties(props).renumber();
-    let mut graph = graph_from_table_view::<Forward>(&handle, &view, &opts).expect("graph_from_table_view");
+    let mut graph =
+        graph_from_borrowed_table_view::<Forward>(&handle, &borrowed, &opts).expect("graph_from_borrowed_table_view");
 
     // ── Run BFS ─────────────────────────────────────────────────────────
     let sources = DeviceArray::from_slice(&handle, &[0i32]).expect("sources");
@@ -163,25 +162,19 @@ fn bfs_results_roundtrip_through_parquet() {
     let expected_distances = df_i32(&df, "distance");
 
     // ── Write results to a temporary Parquet file ───────────────────────
-    let result_table = df.to_table_copy().expect("to_table");
-    let result_view = result_table.view().expect("result table view");
-
     let tmp_dir = std::env::temp_dir().join("cugraph_test_bfs_roundtrip");
     std::fs::create_dir_all(&tmp_dir).expect("create tmp dir");
     let out_path = tmp_dir.join("bfs_result.parquet");
 
-    let write_opts =
-        parquet::ParquetTableWriteOptions::builder().filepath(&out_path).column_names(&["vertex", "distance"]).build();
-    parquet::write_parquet(&result_view, &write_opts).expect("write parquet");
+    write_parquet_dataframe(&out_path, &df);
 
     // ── Read back and verify ────────────────────────────────────────────
-    let read_table = read_parquet_table(&runtime, &out_path);
-    let read_view = read_table.view().expect("read table view");
+    let read_df = read_parquet_dataframe(&runtime, &out_path);
 
-    assert_eq!(read_view.num_columns().expect("ncols"), 2);
+    assert_eq!(read_df.num_columns(), 2);
 
-    let read_verts: Vec<i32> = read_view.column(0).expect("col 0").to_vec().expect("col 0 vec");
-    let read_dists: Vec<i32> = read_view.column(1).expect("col 1").to_vec().expect("col 1 vec");
+    let read_verts = df_i32(&read_df, "vertex");
+    let read_dists = df_i32(&read_df, "distance");
 
     assert_eq!(read_verts, expected_vertices, "vertex column mismatch after Parquet round-trip");
     assert_eq!(read_dists, expected_distances, "distance column mismatch after Parquet round-trip");
@@ -299,7 +292,9 @@ fn graph_from_parquet_rejects_nulls_in_src_column() {
     std::fs::create_dir_all(&tmp_dir).expect("create tmp dir");
     let path = tmp_dir.join("edges_with_null_src.parquet");
 
-    write_parquet_table(&path, &table, &["column_0", "column_1", "column_2"]);
+    let df =
+        DataFrame::from_table(table, vec!["column_0".into(), "column_1".into(), "column_2".into()]).expect("dataframe");
+    write_parquet_dataframe(&path, &df);
     let props = GraphProperties::directed();
 
     let opts =
@@ -318,20 +313,21 @@ fn graph_from_parquet_rejects_nulls_in_src_column() {
     let _ = std::fs::remove_dir_all(&tmp_dir);
 }
 
-// ── Task 6: graph_from_table_view / graph_from_dataframe tests ──────────────
+// ── Task 6: borrowed-table-view / graph_from_dataframe tests ────────────────
 
-/// Load test Parquet into a cudf Table, call graph_from_table_view(),
+/// Load test Parquet into a cudf DataFrame, borrow its table view explicitly,
 /// run BFS from vertex 0, verify distances match expected topology.
 #[test]
-fn graph_from_table_view_then_bfs() {
+fn graph_from_borrowed_table_view_then_bfs() {
     let (runtime, handle) = test_runtime_and_handle();
     let fixture = TempParquetFixture::bfs_graph(&runtime);
 
-    let table = read_parquet_table(&runtime, fixture.path());
-    let view = table.view().expect("table view");
+    let df = read_parquet_dataframe(&runtime, fixture.path());
+    let borrowed = df.try_borrow_table_view().expect("borrowed table view");
 
     let opts = TableGraphOptions::new(0, 1).weight_col(2).properties(GraphProperties::directed()).renumber();
-    let mut graph = graph_from_table_view::<Forward>(&handle, &view, &opts).expect("graph_from_table_view");
+    let mut graph =
+        graph_from_borrowed_table_view::<Forward>(&handle, &borrowed, &opts).expect("graph_from_borrowed_table_view");
 
     let sources = DeviceArray::from_slice(&handle, &[0i32]).expect("sources");
     let sources_view = sources.view().expect("sources view");
@@ -347,18 +343,18 @@ fn graph_from_table_view_then_bfs() {
     assert_eq!(dist_map[&0], 0, "source vertex 0 should have distance 0");
 }
 
-/// Call graph_from_table_view without weights (wgt_col: None).
+/// Call graph_from_borrowed_table_view without weights (wgt_col: None).
 #[test]
-fn graph_from_table_view_without_weights() {
+fn graph_from_borrowed_table_view_without_weights() {
     let (runtime, handle) = test_runtime_and_handle();
     let fixture = TempParquetFixture::bfs_graph(&runtime);
 
-    let table = read_parquet_table(&runtime, fixture.path());
-    let view = table.view().expect("table view");
+    let df = read_parquet_dataframe(&runtime, fixture.path());
+    let borrowed = df.try_borrow_table_view().expect("borrowed table view");
 
     let opts = TableGraphOptions::new(0, 1).properties(GraphProperties::directed()).renumber();
-    let mut graph =
-        graph_from_table_view::<Forward>(&handle, &view, &opts).expect("graph_from_table_view without weights");
+    let mut graph = graph_from_borrowed_table_view::<Forward>(&handle, &borrowed, &opts)
+        .expect("graph_from_borrowed_table_view without weights");
 
     let sources = DeviceArray::from_slice(&handle, &[0i32]).expect("sources");
     let sources_view = sources.view().expect("sources view");
@@ -371,15 +367,15 @@ fn graph_from_table_view_without_weights() {
 
 /// Pass dst_col: 99 — should get ErrorKind::InvalidInput.
 #[test]
-fn graph_from_table_view_rejects_out_of_bounds_column() {
+fn graph_from_borrowed_table_view_rejects_out_of_bounds_column() {
     let (runtime, handle) = test_runtime_and_handle();
     let fixture = TempParquetFixture::bfs_graph(&runtime);
 
-    let table = read_parquet_table(&runtime, fixture.path());
-    let view = table.view().expect("table view");
+    let df = read_parquet_dataframe(&runtime, fixture.path());
+    let borrowed = df.try_borrow_table_view().expect("borrowed table view");
 
     let opts = TableGraphOptions::new(0, 99).properties(GraphProperties::directed()).renumber();
-    let result = graph_from_table_view::<Forward>(&handle, &view, &opts);
+    let result = graph_from_borrowed_table_view::<Forward>(&handle, &borrowed, &opts);
 
     let err = result.expect_err("should reject out-of-bounds column index");
     assert_eq!(err.kind(), cugraph::error::ErrorKind::InvalidInput);
@@ -388,19 +384,20 @@ fn graph_from_table_view_rejects_out_of_bounds_column() {
 /// Build a table with a nullable src column — should reject with error
 /// message containing "null".
 #[test]
-fn graph_from_table_view_rejects_nullable_column() {
+fn graph_from_borrowed_table_view_rejects_nullable_column() {
     let (runtime, handle) = test_runtime_and_handle();
     let src = runtime.column_from_slice_nullable(&[0i32, 1, 2], &[true, false, true]).expect("src");
     let dst = runtime.column_from_slice(&[1i32, 2, 0]).expect("dst");
     let wgt = runtime.column_from_slice(&[1.0f32, 2.0, 3.0]).expect("wgt");
 
     let table = Table::from_columns(vec![src, dst, wgt]).expect("table");
-    let view = table.view().expect("table view");
+    let df = DataFrame::from_table(table, vec!["src".into(), "dst".into(), "weight".into()]).expect("dataframe");
+    let borrowed = df.try_borrow_table_view().expect("borrowed table view");
 
     let props = GraphProperties::directed();
 
     let opts = TableGraphOptions::new(0, 1).weight_col(2).properties(props).renumber();
-    let result = graph_from_table_view::<Forward>(&handle, &view, &opts);
+    let result = graph_from_borrowed_table_view::<Forward>(&handle, &borrowed, &opts);
 
     let err = result.expect_err("should reject nullable column");
     assert_eq!(err.kind(), cugraph::error::ErrorKind::InvalidInput);
@@ -412,10 +409,10 @@ fn graph_from_table_view_rejects_nullable_column() {
 #[test]
 fn graph_from_dataframe_by_name() {
     let (runtime, handle) = test_runtime_and_handle();
-    let df = DataFrame::from_series([
-        runtime.series("src", &[0i32, 1, 1, 2, 2, 2, 3, 4]).expect("src"),
-        runtime.series("dst", &[1i32, 3, 4, 0, 1, 3, 5, 5]).expect("dst"),
-        runtime.series("weight", &[0.1f32, 2.1, 1.1, 5.1, 3.1, 4.1, 7.2, 3.2]).expect("weight"),
+    let df = DataFrame::from_columns([
+        ("src", runtime.series("src", &[0i32, 1, 1, 2, 2, 2, 3, 4]).expect("src")),
+        ("dst", runtime.series("dst", &[1i32, 3, 4, 0, 1, 3, 5, 5]).expect("dst")),
+        ("weight", runtime.series("weight", &[0.1f32, 2.1, 1.1, 5.1, 3.1, 4.1, 7.2, 3.2]).expect("weight")),
     ])
     .expect("dataframe");
 
@@ -441,9 +438,9 @@ fn graph_from_dataframe_by_name() {
 #[test]
 fn graph_from_dataframe_rejects_unknown_column_name() {
     let (runtime, handle) = test_runtime_and_handle();
-    let df = DataFrame::from_series([
-        runtime.series("src", &[0i32, 1]).expect("src"),
-        runtime.series("dst", &[1i32, 0]).expect("dst"),
+    let df = DataFrame::from_columns([
+        ("src", runtime.series("src", &[0i32, 1]).expect("src")),
+        ("dst", runtime.series("dst", &[1i32, 0]).expect("dst")),
     ])
     .expect("dataframe");
 
@@ -635,20 +632,15 @@ fn centrality_to_dataframe_write_parquet_roundtrip() {
     std::fs::create_dir_all(&tmp_dir).expect("create tmp dir");
     let out_path = tmp_dir.join("centrality.parquet");
 
-    let table = df.to_table_copy().expect("to_table");
-    let table_view = table.view().expect("table view");
-    let write_opts =
-        parquet::ParquetTableWriteOptions::builder().filepath(&out_path).column_names(&["vertex", "value"]).build();
-    parquet::write_parquet(&table_view, &write_opts).expect("write parquet");
+    write_parquet_dataframe(&out_path, &df);
 
     // Read back and verify
-    let read_table = read_parquet_table(&runtime, &out_path);
-    let read_view = read_table.view().expect("read table view");
+    let read_df = read_parquet_dataframe(&runtime, &out_path);
 
-    assert_eq!(read_view.num_columns().expect("ncols"), 2);
+    assert_eq!(read_df.num_columns(), 2);
 
-    let read_verts: Vec<i32> = read_view.column(0).expect("col 0").to_vec().expect("col 0 vec");
-    let read_vals: Vec<f32> = read_view.column(1).expect("col 1").to_vec().expect("col 1 vec");
+    let read_verts = df_i32(&read_df, "vertex");
+    let read_vals = df_f32(&read_df, "value");
 
     assert_eq!(read_verts, expected_vertices, "vertex column mismatch");
     assert_eq!(read_vals, expected_values, "value column mismatch");

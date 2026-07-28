@@ -46,7 +46,7 @@
 //!
 //! let src = runtime.series("src", &[0i32, 1, 2, 1, 2, 0])?;
 //! let dst = runtime.series("dst", &[1i32, 2, 0, 0, 1, 2])?;
-//! let edges = cudf::DataFrame::from_series([src, dst])?;
+//! let edges = cudf::DataFrame::from_columns([("src", src), ("dst", dst)])?;
 //!
 //! let opts = DataFrameGraphOptions::new("src", "dst")
 //!     .properties(GraphProperties::undirected())

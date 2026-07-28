@@ -13,8 +13,7 @@ use common::{
 };
 use cudf::interop::{
     prepared::InteropErrorKind,
-    runtime::RuntimeCompletionAuthority,
-    transfer::{ReleaseSynchronization, TransferCompletionRule},
+    transfer::{ReleaseSynchronization, TransferCompletionAuthority, TransferCompletionRule},
 };
 use cugraph::handle::ResourceHandle;
 
@@ -36,7 +35,7 @@ fn owned_transfer_zero_copy_import_preserves_device_buffers_and_bfs_semantics() 
     let dst_ptr = i32_series_device_ptr(&dst);
     let wgt_ptr = f32_series_device_ptr(&wgt);
 
-    let df = cudf::DataFrame::from_series([src, dst, wgt]).expect("dataframe");
+    let df = cudf::DataFrame::from_columns([("src", src), ("dst", dst), ("weight", wgt)]).expect("dataframe");
     let transfer = df.try_into_owned_transfer().expect("owned transfer");
     let imported_df = cudf::DataFrame::try_import_from_owned_device_table_transfer_into_runtime(transfer, &runtime)
         .expect("owned-transfer import");
@@ -71,7 +70,7 @@ fn owned_transfer_with_release_import_invalidates_releaser() {
     assert!(!dist_map.is_empty(), "imported owned-transfer graph should produce bfs results");
 
     let err = releaser
-        .release(RuntimeCompletionAuthority::same_device_stream(runtime.stream()))
+        .release(TransferCompletionAuthority::same_device_stream(runtime.stream()))
         .expect_err("releaser should be invalid after native import has already claimed the owned-transfer root");
     assert_eq!(err.kind(), InteropErrorKind::ProfileUnsupported);
     let err_text = format!("{}", err);
@@ -93,6 +92,6 @@ fn owned_transfer_with_release_accepts_same_device_stream_completion() {
 
     drop(transfer);
     releaser
-        .release(RuntimeCompletionAuthority::same_device_stream(runtime.stream()))
+        .release(TransferCompletionAuthority::same_device_stream(runtime.stream()))
         .expect("runtime-backed owned-transfer release should accept same-device stream completion");
 }

@@ -106,9 +106,7 @@ fn graph_from_borrowed_table_view_python_cugraph_accepts_undirected_multigraph()
     let handle = test_handle();
     let runtime = explicit_runtime();
     let df = python_undirected_multigraph_dataframe(&runtime);
-    let table = df.to_table_copy().expect("to_table_copy");
-    let view = table.view().expect("table view");
-    let borrowed = view.try_borrow_table_view().expect("borrowed table view");
+    let borrowed = df.try_borrow_table_view().expect("borrowed table view");
     let props = GraphProperties { is_symmetric: true, is_multigraph: true };
 
     let opts = TableGraphOptions::new(0, 1).properties(props).renumber();

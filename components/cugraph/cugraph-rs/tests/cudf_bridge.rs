@@ -28,7 +28,7 @@ use cugraph::{
 fn device_array_view_from_slice_i64() {
     let runtime = explicit_runtime();
     let series = runtime.series("v", &[100i64, 200, 300]).expect("series");
-    let col_view = series.as_column_view().expect("column view");
+    let col_view = series.as_column();
     let slice = col_view.device_slice::<i64>().expect("device_slice");
 
     let view = device_array_view_from_slice::<i64>(&slice).expect("type should match");
@@ -39,7 +39,7 @@ fn device_array_view_from_slice_i64() {
 fn device_array_view_from_slice_rejects_mismatch() {
     let runtime = explicit_runtime();
     let series = runtime.series("v", &[1i32, 2, 3]).expect("series");
-    let col_view = series.as_column_view().expect("column view");
+    let col_view = series.as_column();
     let slice = col_view.device_slice::<i32>().expect("device_slice");
 
     let err = device_array_view_from_slice::<f32>(&slice).expect_err("should reject i32 -> f32 mismatch");

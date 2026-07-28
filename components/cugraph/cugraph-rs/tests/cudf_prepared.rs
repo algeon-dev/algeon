@@ -172,7 +172,7 @@ fn graph_from_prepared_table_export_bfs() {
     let src = runtime.series("src", TRIANGLE_TAIL_SRC_I32).expect("src");
     let dst = runtime.series("dst", TRIANGLE_TAIL_DST_I32).expect("dst");
     let wgt = runtime.series("weight", TRIANGLE_TAIL_WEIGHT_F32).expect("weight");
-    let df = cudf::DataFrame::from_series([src, dst, wgt]).expect("dataframe");
+    let df = cudf::DataFrame::from_columns([("src", src), ("dst", dst), ("weight", wgt)]).expect("dataframe");
 
     let export = df.try_prepare_device_table_export().expect("table export");
     let opts = TableGraphOptions::new(0, 1).weight_col(2).renumber();
@@ -259,7 +259,7 @@ fn graph_from_prepared_table_export_rejects_host_exports() {
 
     let src = runtime.series("src", DIRECTED_TRIANGLE_CYCLE_SRC_I32).expect("src");
     let dst = runtime.series("dst", DIRECTED_TRIANGLE_CYCLE_DST_I32).expect("dst");
-    let df = cudf::DataFrame::from_series([src, dst]).expect("dataframe");
+    let df = cudf::DataFrame::from_columns([("src", src), ("dst", dst)]).expect("dataframe");
 
     let export = df.try_prepare_host_table_export().expect("host table export");
     let opts = TableGraphOptions::new(0, 1).renumber();

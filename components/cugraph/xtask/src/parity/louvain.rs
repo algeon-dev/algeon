@@ -404,7 +404,8 @@ fn normalize_fixture_dataframe(df: &DataFrame, schema: &EdgeSchema) -> anyhow::R
         EdgeSchemaKind::CanonicalNumeric => {
             let src = df.series("src").context("load src column")?;
             let dst = df.series("dst").context("load dst column")?;
-            Ok(DataFrame::from_series([src, dst, weight]).context("rebuild canonical numeric parity DataFrame")?)
+            Ok(DataFrame::from_columns([("src", src), ("dst", dst), ("weight", weight)])
+                .context("rebuild canonical numeric parity DataFrame")?)
         },
         EdgeSchemaKind::AliasNumeric => {
             let src = df
@@ -415,7 +416,8 @@ fn normalize_fixture_dataframe(df: &DataFrame, schema: &EdgeSchema) -> anyhow::R
                 .series(schema.columns.dst)
                 .with_context(|| format!("load {} column", schema.columns.dst))?
                 .rename("dst");
-            Ok(DataFrame::from_series([src, dst, weight]).context("rename aliased numeric edge columns")?)
+            Ok(DataFrame::from_columns([("src", src), ("dst", dst), ("weight", weight)])
+                .context("rename aliased numeric edge columns")?)
         },
         EdgeSchemaKind::AliasStringNeedsRenumbering => {
             let src = df.series(schema.columns.src).with_context(|| format!("load {} column", schema.columns.src))?;
@@ -427,7 +429,7 @@ fn normalize_fixture_dataframe(df: &DataFrame, schema: &EdgeSchema) -> anyhow::R
                 codebook.encode(&src).context("encode source string vertex ids")?.into_series().rename("src");
             let dst_codes =
                 codebook.encode(&dst).context("encode destination string vertex ids")?.into_series().rename("dst");
-            Ok(DataFrame::from_series([src_codes, dst_codes, weight])
+            Ok(DataFrame::from_columns([("src", src_codes), ("dst", dst_codes), ("weight", weight)])
                 .context("build normalized parity edge DataFrame")?)
         },
     }
@@ -553,9 +555,9 @@ where
     V: CudfType + CugraphElement,
     W: CudfType + CugraphElement,
 {
-    let src_column = src.as_column_view().context("borrow src column view")?;
-    let dst_column = dst.as_column_view().context("borrow dst column view")?;
-    let weight_column = weight.as_column_view().context("borrow weight column view")?;
+    let src_column = src.as_column();
+    let dst_column = dst.as_column();
+    let weight_column = weight.as_column();
 
     let src_slice = src_column.device_slice::<V>().context("borrow src device slice")?;
     let dst_slice = dst_column.device_slice::<V>().context("borrow dst device slice")?;

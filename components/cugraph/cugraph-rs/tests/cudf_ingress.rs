@@ -6,8 +6,8 @@ use std::collections::{BTreeMap, HashMap};
 use common::{
     cudf::{
         TempParquetFixture, assert_score_maps_close_f32, explicit_runtime, python_undirected_multigraph_dataframe,
-        python_weighted_reciprocal_dataframe, python_weighted_reciprocal_expected_pagerank_map, read_parquet_table,
-        unique_temp_dir, write_parquet_table,
+        python_weighted_reciprocal_dataframe, python_weighted_reciprocal_expected_pagerank_map, read_parquet_dataframe,
+        unique_temp_dir, write_parquet_dataframe,
     },
     support::{
         BFS_SOURCE_VERTEX_I32, LOUVAIN_GRAPH_DST_I32, LOUVAIN_GRAPH_SRC_I32, LOUVAIN_GRAPH_WEIGHT_F32,
@@ -20,8 +20,8 @@ use cugraph::{
     centrality::{BetweennessCentralityParams, PageRankParams},
     community::LouvainParams,
     cudf_interop::{
-        DataFrameGraphOptions, GraphConstructionPolicy, ParquetGraphOptions, TableGraphOptions, graph_from_dataframe,
-        graph_from_parquet, graph_from_table_view,
+        DataFrameGraphOptions, GraphConstructionPolicy, ParquetGraphOptions, TableGraphOptions,
+        graph_from_borrowed_table_view, graph_from_dataframe, graph_from_parquet,
     },
     graph::{Forward, GraphBuilder, Transposed},
     handle::ResourceHandle,
@@ -46,7 +46,7 @@ fn louvain_fixture_dataframe(runtime: &cudf::Runtime) -> cudf::DataFrame {
     let src = runtime.series("src", LOUVAIN_GRAPH_SRC_I32).expect("src");
     let dst = runtime.series("dst", LOUVAIN_GRAPH_DST_I32).expect("dst");
     let weight = runtime.series("weight", LOUVAIN_GRAPH_WEIGHT_F32).expect("weight");
-    cudf::DataFrame::from_series([src, dst, weight]).expect("louvain graph dataframe")
+    cudf::DataFrame::from_columns([("src", src), ("dst", dst), ("weight", weight)]).expect("louvain graph dataframe")
 }
 
 fn assert_python_weighted_ingress_scores_match_expected(
@@ -160,8 +160,8 @@ fn graph_from_parquet_rejects_nulls_in_src_column() {
     std::fs::create_dir_all(&tmp_dir).expect("create tmp dir");
     let path = tmp_dir.join("edges_with_null_src.parquet");
 
-    let table_view = table.view().expect("table view");
-    write_parquet_table(&table_view, &path, &["0", "1", "2"], &runtime);
+    let df = cudf::DataFrame::from_table(table, vec!["0".into(), "1".into(), "2".into()]).expect("dataframe");
+    write_parquet_dataframe(&df, &path);
 
     let handle = test_handle();
     let opts = ParquetGraphOptions::new(path.to_str().expect("utf8 path"), 0, 1)
@@ -178,16 +178,17 @@ fn graph_from_parquet_rejects_nulls_in_src_column() {
 }
 
 #[test]
-fn graph_from_table_view_then_bfs() {
+fn graph_from_borrowed_table_view_then_bfs() {
     let handle = test_handle();
     let runtime = explicit_runtime();
     let fixture = TempParquetFixture::bfs_graph();
 
-    let table = read_parquet_table(fixture.path(), &runtime);
-    let view = table.view().expect("table view");
+    let df = read_parquet_dataframe(fixture.path(), &runtime);
+    let borrowed = df.try_borrow_table_view().expect("borrowed table view");
 
     let opts = TableGraphOptions::new(0, 1).weight_col(2).properties(GraphProperties::directed()).renumber();
-    let mut graph = graph_from_table_view::<Forward>(&handle, &view, &opts).expect("graph_from_table_view");
+    let mut graph =
+        graph_from_borrowed_table_view::<Forward>(&handle, &borrowed, &opts).expect("graph_from_borrowed_table_view");
 
     let sources = DeviceArray::from_slice(&handle, &[BFS_SOURCE_VERTEX_I32]).expect("sources");
     let sources_view = sources.view().expect("sources_view");
@@ -202,17 +203,17 @@ fn graph_from_table_view_then_bfs() {
 }
 
 #[test]
-fn graph_from_table_view_without_weights() {
+fn graph_from_borrowed_table_view_without_weights() {
     let handle = test_handle();
     let runtime = explicit_runtime();
     let fixture = TempParquetFixture::bfs_graph();
 
-    let table = read_parquet_table(fixture.path(), &runtime);
-    let view = table.view().expect("table view");
+    let df = read_parquet_dataframe(fixture.path(), &runtime);
+    let borrowed = df.try_borrow_table_view().expect("borrowed table view");
 
     let opts = TableGraphOptions::new(0, 1).properties(GraphProperties::directed()).renumber();
-    let mut graph =
-        graph_from_table_view::<Forward>(&handle, &view, &opts).expect("graph_from_table_view without weights");
+    let mut graph = graph_from_borrowed_table_view::<Forward>(&handle, &borrowed, &opts)
+        .expect("graph_from_borrowed_table_view without weights");
 
     let sources = DeviceArray::from_slice(&handle, &[BFS_SOURCE_VERTEX_I32]).expect("sources");
     let sources_view = sources.view().expect("sources_view");
@@ -223,32 +224,35 @@ fn graph_from_table_view_without_weights() {
 }
 
 #[test]
-fn graph_from_table_view_rejects_out_of_bounds_column() {
+fn graph_from_borrowed_table_view_rejects_out_of_bounds_column() {
     let handle = test_handle();
     let runtime = explicit_runtime();
     let fixture = TempParquetFixture::bfs_graph();
 
-    let table = read_parquet_table(fixture.path(), &runtime);
-    let view = table.view().expect("table view");
+    let df = read_parquet_dataframe(fixture.path(), &runtime);
+    let borrowed = df.try_borrow_table_view().expect("borrowed table view");
 
     let opts = TableGraphOptions::new(0, 99).properties(GraphProperties::directed()).renumber();
-    let err = graph_from_table_view::<Forward>(&handle, &view, &opts).expect_err("should reject out-of-bounds column");
+    let err = graph_from_borrowed_table_view::<Forward>(&handle, &borrowed, &opts)
+        .expect_err("should reject out-of-bounds column");
     assert_eq!(err.kind(), cugraph::error::ErrorKind::InvalidInput);
 }
 
 #[test]
-fn graph_from_table_view_rejects_nullable_column() {
+fn graph_from_borrowed_table_view_rejects_nullable_column() {
     let runtime = explicit_runtime();
     let src = runtime.column_from_slice_nullable(&[0i32, 1, 2], &[true, false, true]).expect("src");
     let dst = runtime.column_from_slice(&[1i32, 2, 0]).expect("dst");
     let wgt = runtime.column_from_slice(&[1.0f32, 2.0, 3.0]).expect("wgt");
 
     let table = Table::from_columns(vec![src, dst, wgt]).expect("table");
-    let view = table.view().expect("table view");
+    let df = cudf::DataFrame::from_table(table, vec!["src".into(), "dst".into(), "weight".into()]).expect("dataframe");
+    let borrowed = df.try_borrow_table_view().expect("borrowed table view");
 
     let handle = test_handle();
     let opts = TableGraphOptions::new(0, 1).weight_col(2).properties(GraphProperties::directed()).renumber();
-    let err = graph_from_table_view::<Forward>(&handle, &view, &opts).expect_err("should reject nullable column");
+    let err = graph_from_borrowed_table_view::<Forward>(&handle, &borrowed, &opts)
+        .expect_err("should reject nullable column");
 
     assert_eq!(err.kind(), cugraph::error::ErrorKind::InvalidInput);
     assert!(err.message().contains("null"), "error message should mention null, got: {}", err.message());
@@ -283,7 +287,7 @@ fn graph_from_dataframe_rejects_unknown_column_name() {
     let runtime = explicit_runtime();
     let src = runtime.series("src", &[0i32, 1]).expect("src");
     let dst = runtime.series("dst", &[1i32, 0]).expect("dst");
-    let df = cudf::DataFrame::from_series([src, dst]).expect("dataframe");
+    let df = cudf::DataFrame::from_columns([("src", src), ("dst", dst)]).expect("dataframe");
 
     let handle = test_handle();
     let opts = DataFrameGraphOptions::new("nonexistent", "dst").properties(GraphProperties::directed()).renumber();
@@ -386,17 +390,16 @@ fn graph_from_dataframe_python_cugraph_weighted_undirected_simple_normalization_
     let mut dataframe_graph = graph_from_dataframe::<Transposed>(&handle, &df, &df_opts).expect("graph_from_dataframe");
     assert_python_weighted_ingress_scores_match_expected(&handle, "dataframe", &mut dataframe_graph);
 
-    let table = df.to_table_copy().expect("to_table_copy");
-    let view = table.view().expect("table view");
+    let borrowed = df.try_borrow_table_view().expect("borrowed table view");
     let table_opts = TableGraphOptions::new(0, 1).weight_col(2).properties(GraphProperties::undirected()).renumber();
-    let mut table_graph =
-        graph_from_table_view::<Transposed>(&handle, &view, &table_opts).expect("graph_from_table_view");
-    assert_python_weighted_ingress_scores_match_expected(&handle, "table_view", &mut table_graph);
+    let mut borrowed_graph = graph_from_borrowed_table_view::<Transposed>(&handle, &borrowed, &table_opts)
+        .expect("graph_from_borrowed_table_view");
+    assert_python_weighted_ingress_scores_match_expected(&handle, "borrowed_table", &mut borrowed_graph);
 
     let tmp_dir = unique_temp_dir("python_weighted_ingress");
     std::fs::create_dir_all(&tmp_dir).expect("create tmp dir");
     let parquet_path = tmp_dir.join("python_weighted_ingress.parquet");
-    write_parquet_table(&view, &parquet_path, &["src", "dst", "weight"], &runtime);
+    write_parquet_dataframe(&df, &parquet_path);
 
     let parquet_opts = ParquetGraphOptions::new(parquet_path.to_str().expect("utf8 path"), 0, 1)
         .weight_col(2)
@@ -420,16 +423,16 @@ fn graph_from_dataframe_python_cugraph_accepts_undirected_multigraph_properties_
     let mut dataframe_graph = graph_from_dataframe::<Forward>(&handle, &df, &df_opts).expect("graph_from_dataframe");
     assert_eq!(dataframe_graph.edge_count(&handle).expect("edge_count"), 3);
 
-    let table = df.to_table_copy().expect("to_table_copy");
-    let view = table.view().expect("table view");
+    let borrowed = df.try_borrow_table_view().expect("borrowed table view");
     let table_opts = TableGraphOptions::new(0, 1).properties(properties).renumber();
-    let mut table_graph = graph_from_table_view::<Forward>(&handle, &view, &table_opts).expect("graph_from_table_view");
-    assert_eq!(table_graph.edge_count(&handle).expect("edge_count"), 3);
+    let mut borrowed_graph = graph_from_borrowed_table_view::<Forward>(&handle, &borrowed, &table_opts)
+        .expect("graph_from_borrowed_table_view");
+    assert_eq!(borrowed_graph.edge_count(&handle).expect("edge_count"), 3);
 
     let tmp_dir = unique_temp_dir("python_multigraph_ingress");
     std::fs::create_dir_all(&tmp_dir).expect("create tmp dir");
     let parquet_path = tmp_dir.join("python_multigraph_ingress.parquet");
-    write_parquet_table(&view, &parquet_path, &["src", "dst"], &runtime);
+    write_parquet_dataframe(&df, &parquet_path);
 
     let parquet_opts =
         ParquetGraphOptions::new(parquet_path.to_str().expect("utf8 path"), 0, 1).properties(properties).renumber();
