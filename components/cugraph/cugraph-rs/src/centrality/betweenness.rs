@@ -44,6 +44,7 @@ use crate::{
 
 /// Parameters for the betweenness centrality algorithm.
 #[derive(Debug, Clone, Copy)]
+#[must_use]
 pub struct BetweennessCentralityParams {
     /// Whether to normalize the result. When `true`, values are scaled so that
     /// the maximum possible betweenness is 1.0 (default: `true`).

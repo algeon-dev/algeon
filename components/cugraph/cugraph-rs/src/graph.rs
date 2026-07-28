@@ -679,6 +679,8 @@ impl<'a> GraphBuilder<'a> {
     ///
     /// Returns an error if the C API reports an unrecognised type id.
     fn view_dtype(ptr: *mut cugraph_type_erased_device_array_view_t) -> Result<DataType> {
+        // SAFETY: callers pass a cuGraph-owned device-array view pointer that
+        // remains valid for the duration of this query.
         let c_type = unsafe { cugraph_type_erased_device_array_view_type(ptr) };
         DataType::try_from(c_type).map_err(|err| err.with_operation("view_dtype"))
     }
@@ -722,7 +724,7 @@ impl Graph<Transposed> {
     /// ```no_run
     /// # use cugraph::{
     /// #     ResourceHandle, Transposed,
-    /// #     centrality::PageRankOptions,
+    /// #     centrality::PageRankParams,
     /// #     cudf_interop::{DataFrameGraphOptions, graph_from_dataframe},
     /// # };
     /// # let runtime = cudf::Runtime::new().unwrap();
@@ -733,16 +735,16 @@ impl Graph<Transposed> {
     /// # let opts = DataFrameGraphOptions::new("src", "dst").renumber();
     /// # let mut graph = graph_from_dataframe::<Transposed>(&handle, &edges, &opts).unwrap();
     /// let result = graph
-    ///     .pagerank(&handle, &PageRankOptions::default())
+    ///     .pagerank(&handle, &PageRankParams::default())
     ///     .unwrap();
     /// let scores = result.scores().unwrap();
     /// ```
     pub fn pagerank(
         &mut self,
         handle: &ResourceHandle,
-        options: &crate::centrality::PageRankOptions,
+        params: &crate::centrality::PageRankParams,
     ) -> Result<crate::centrality::PageRankResult> {
-        crate::centrality::pagerank::pagerank::<i32, f32>(handle, self, options, None, None)
+        crate::centrality::pagerank::pagerank::<i32, f32>(handle, self, params, None, None)
     }
 
     /// Compute PageRank with optional precomputed weights and/or initial guess.
@@ -753,11 +755,11 @@ impl Graph<Transposed> {
     pub fn pagerank_with<V: CugraphElement, W: CugraphElement>(
         &mut self,
         handle: &ResourceHandle,
-        options: &crate::centrality::PageRankOptions,
+        params: &crate::centrality::PageRankParams,
         precomputed_weights: Option<&crate::centrality::PrecomputedWeights<'_, V, W>>,
         initial_guess: Option<&crate::centrality::InitialGuess<'_, V, W>>,
     ) -> Result<crate::centrality::PageRankResult> {
-        crate::centrality::pagerank::pagerank(handle, self, options, precomputed_weights, initial_guess)
+        crate::centrality::pagerank::pagerank(handle, self, params, precomputed_weights, initial_guess)
     }
 
     /// Compute both in-degrees and out-degrees for vertices in this graph.
@@ -943,7 +945,7 @@ impl<T: Transposition> Graph<T> {
     /// # use cugraph::{
     /// #     Forward, ResourceHandle,
     /// #     cudf_interop::{DataFrameGraphOptions, graph_from_dataframe},
-    /// #     layout::ForceAtlas2Options,
+    /// #     layout::ForceAtlas2Params,
     /// #     random::RngState,
     /// # };
     /// # let runtime = cudf::Runtime::new().unwrap();
@@ -954,17 +956,17 @@ impl<T: Transposition> Graph<T> {
     /// # let edges = cudf::DataFrame::from_series([src, dst]).unwrap();
     /// # let opts = DataFrameGraphOptions::new("src", "dst").renumber();
     /// # let mut graph = graph_from_dataframe::<Forward>(&handle, &edges, &opts).unwrap();
-    /// let options = ForceAtlas2Options::default();
-    /// let result = graph.force_atlas2(&handle, &mut rng, &options)?;
+    /// let params = ForceAtlas2Params::default();
+    /// let result = graph.force_atlas2(&handle, &mut rng, &params)?;
     /// # Ok::<(), cugraph::Error>(())
     /// ```
     pub fn force_atlas2(
         &mut self,
         handle: &ResourceHandle,
         rng_state: &mut crate::random::RngState,
-        options: &crate::layout::ForceAtlas2Options,
+        params: &crate::layout::ForceAtlas2Params,
     ) -> Result<crate::layout::LayoutResult> {
-        crate::layout::force_atlas2::force_atlas2::<T, i32, f32>(handle, rng_state, self, options, None, None)
+        crate::layout::force_atlas2::force_atlas2::<T, i32, f32>(handle, rng_state, self, params, None, None)
     }
 
     /// Compute a Force Atlas 2 layout with optional per-vertex attributes
@@ -977,11 +979,11 @@ impl<T: Transposition> Graph<T> {
         &mut self,
         handle: &ResourceHandle,
         rng_state: &mut crate::random::RngState,
-        options: &crate::layout::ForceAtlas2Options,
+        params: &crate::layout::ForceAtlas2Params,
         vertex_attrs: Option<&crate::layout::ForceAtlas2VertexAttrs<'_, V, W>>,
         initial_positions: Option<&crate::layout::InitialPositions<'_, V, W>>,
     ) -> Result<crate::layout::LayoutResult> {
-        crate::layout::force_atlas2::force_atlas2(handle, rng_state, self, options, vertex_attrs, initial_positions)
+        crate::layout::force_atlas2::force_atlas2(handle, rng_state, self, params, vertex_attrs, initial_positions)
     }
 
     /// Compute only out-degrees for vertices in this graph.
@@ -1031,9 +1033,9 @@ impl<T: Transposition> Graph<T> {
 impl<T> Drop for Graph<T> {
     fn drop(&mut self) {
         if !self.raw.is_null() {
+            let _guard = DeviceGuard::switch_to(self.device, "Graph::drop").ok();
             // SAFETY: `self.raw` is owned by this Graph instance and is freed
             // at most once here when the wrapper is dropped.
-            let _guard = DeviceGuard::switch_to(self.device, "Graph::drop").ok();
             unsafe { cugraph_graph_free(self.raw) };
         }
     }

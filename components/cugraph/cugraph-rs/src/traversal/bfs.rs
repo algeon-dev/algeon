@@ -38,6 +38,7 @@ use crate::{
 /// assert_eq!(params.depth_limit.unwrap().get(), 3);
 /// ```
 #[derive(Debug, Clone, Copy, Default)]
+#[must_use]
 pub struct BfsParams {
     /// Maximum BFS traversal depth. `None` means no depth limit.
     pub depth_limit: Option<BfsDepthLimit>,
@@ -140,6 +141,8 @@ impl std::fmt::Debug for BfsResult {
 
 impl BfsResult {
     fn normalized_predecessors_raw(&self) -> Option<RawDeviceArrayView<'_>> {
+        // SAFETY: `self.raw` is a live paths result owned by this wrapper for
+        // the duration of the call.
         let view_ptr = unsafe { cugraph_paths_result_get_predecessors(self.raw) };
         if view_ptr.is_null() {
             return None;
@@ -189,6 +192,8 @@ impl BfsResult {
 
     /// Get the raw vertices view.
     pub(crate) fn vertices_raw(&self) -> Result<RawDeviceArrayView<'_>> {
+        // SAFETY: `self.raw` is a live paths result owned by this wrapper for
+        // the duration of the call.
         let view_ptr = require_non_null(
             unsafe { cugraph_paths_result_get_vertices(self.raw) },
             "BfsResult::vertices_raw",
@@ -201,6 +206,8 @@ impl BfsResult {
 
     /// Get the raw distances view.
     pub(crate) fn distances_raw(&self) -> Result<RawDeviceArrayView<'_>> {
+        // SAFETY: `self.raw` is a live paths result owned by this wrapper for
+        // the duration of the call.
         let view_ptr = require_non_null(
             unsafe { cugraph_paths_result_get_distances(self.raw) },
             "BfsResult::distances_raw",
@@ -237,6 +244,8 @@ impl Drop for BfsResult {
     fn drop(&mut self) {
         if !self.raw.is_null() {
             let _guard = DeviceGuard::switch_to(self.device, "BfsResult::drop").ok();
+            // SAFETY: `self.raw` is owned by this wrapper and has not been
+            // freed yet.
             unsafe { cugraph_paths_result_free(self.raw) };
         }
     }

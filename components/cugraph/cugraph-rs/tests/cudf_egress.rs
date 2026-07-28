@@ -13,7 +13,7 @@ use common::{
 };
 use cugraph::{
     array::DeviceArray,
-    centrality::{BetweennessCentralityParams, PageRankOptions},
+    centrality::{BetweennessCentralityParams, PageRankParams},
     graph::{Forward, GraphBuilder, Transposed},
     handle::ResourceHandle,
     traversal::BfsParams,
@@ -22,11 +22,7 @@ use cugraph::{
 
 #[test]
 fn layout_result_to_dataframe() {
-    use cugraph::{
-        layout::{ForceAtlas2Options, ForceAtlas2Params},
-        params::IterationCount,
-        random::RngState,
-    };
+    use cugraph::{layout::ForceAtlas2Params, params::IterationCount, random::RngState};
 
     let handle = ResourceHandle::new().expect("handle");
     let mut rng = RngState::new(&handle, TEST_LAYOUT_PRIMARY_SEED).expect("rng");
@@ -42,14 +38,12 @@ fn layout_result_to_dataframe() {
         .build::<Forward>(&handle)
         .expect("graph");
 
-    let options = ForceAtlas2Options {
-        params: ForceAtlas2Params {
-            max_iter: IterationCount::new(TEST_LAYOUT_SETTLE_ITERATIONS).unwrap(),
-            ..Default::default()
-        },
+    let params = ForceAtlas2Params {
+        max_iter: IterationCount::new(TEST_LAYOUT_SETTLE_ITERATIONS).unwrap(),
+        ..Default::default()
     };
 
-    let df = graph.force_atlas2(&handle, &mut rng, &options).expect("fa2").to_dataframe().expect("to_dataframe");
+    let df = graph.force_atlas2(&handle, &mut rng, &params).expect("fa2").to_dataframe().expect("to_dataframe");
 
     assert_eq!(df.num_columns(), 3);
     assert_eq!(df.column_names()[0], "vertex");
@@ -107,7 +101,7 @@ fn centrality_to_dataframe_write_parquet_roundtrip() {
         .expect("graph");
 
     let df =
-        graph.pagerank(&handle, &PageRankOptions::default()).expect("pagerank").to_dataframe().expect("to_dataframe");
+        graph.pagerank(&handle, &PageRankParams::default()).expect("pagerank").to_dataframe().expect("to_dataframe");
     let expected_vertices: Vec<i32> = df.series("vertex").expect("v").to_vec_strict().expect("v vec");
     let expected_values: Vec<f32> = df.series("value").expect("val").to_vec_strict().expect("val vec");
 
