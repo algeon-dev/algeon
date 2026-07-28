@@ -537,6 +537,8 @@ mod tests {
 
     #[test]
     fn test_check_error_success() {
+        // SAFETY: Passing a success code with a null error pointer matches the C API contract;
+        // `check_error` will not dereference the pointer on success.
         unsafe {
             let result = check_error(cugraph_error_code_t::CUGRAPH_SUCCESS, std::ptr::null_mut(), "test");
             assert!(result.is_ok());
@@ -553,6 +555,8 @@ mod tests {
 
     #[test]
     fn test_check_error_failure_null_ptr() {
+        // SAFETY: `check_error` accepts a null error pointer for failure paths and degrades to a
+        // synthesized Rust error without dereferencing the pointer.
         unsafe {
             let result = check_error(cugraph_error_code_t::CUGRAPH_INVALID_INPUT, std::ptr::null_mut(), "test_op");
             assert!(result.is_err());
@@ -565,6 +569,8 @@ mod tests {
 
     #[test]
     fn test_check_error_failure_unknown_code_maps_to_unexpected() {
+        // SAFETY: The test intentionally passes an unknown status code and a null error pointer to
+        // verify `check_error`'s fallback mapping logic.
         unsafe {
             let result = check_error(cugraph_error_code_t(777), std::ptr::null_mut(), "test_op");
             assert!(result.is_err());
@@ -576,6 +582,8 @@ mod tests {
 
     #[test]
     fn test_check_error_out_of_memory_is_temporary() {
+        // SAFETY: The allocation failure code is exercised with a null error pointer to verify
+        // Rust-side status mapping; `check_error` handles this without dereferencing the pointer.
         unsafe {
             let result = check_error(cugraph_error_code_t::CUGRAPH_ALLOC_ERROR, std::ptr::null_mut(), "alloc_op");
             assert!(result.is_err());

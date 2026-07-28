@@ -257,7 +257,7 @@ where
 impl Drop for DecompressedEdgelist {
     fn drop(&mut self) {
         if !self.raw.is_null() {
-            let _guard = DeviceGuard::switch_to(self.device, "DecompressedEdgelist::drop").ok();
+            let _guard = DeviceGuard::switch_to_for_drop(self.device, "DecompressedEdgelist::drop").ok();
             // SAFETY: `self.raw` is owned by this wrapper and has not been
             // freed yet.
             unsafe { cugraph_edgelist_free(self.raw) };
@@ -1299,7 +1299,7 @@ impl<T: Transposition> Graph<T> {
 impl<T> Drop for Graph<T> {
     fn drop(&mut self) {
         if !self.raw.is_null() {
-            let _guard = DeviceGuard::switch_to(self.device, "Graph::drop").ok();
+            let _guard = DeviceGuard::switch_to_for_drop(self.device, "Graph::drop").ok();
             // SAFETY: `self.raw` is owned by this Graph instance and is freed
             // at most once here when the wrapper is dropped.
             unsafe { cugraph_graph_free(self.raw) };

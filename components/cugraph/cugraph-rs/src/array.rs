@@ -118,13 +118,13 @@ impl RawDeviceArray {
 impl Drop for RawDeviceArray {
     fn drop(&mut self) {
         if !self.raw_view.is_null() {
-            let _guard = DeviceGuard::switch_to(self.device, "RawDeviceArray::drop").ok();
+            let _guard = DeviceGuard::switch_to_for_drop(self.device, "RawDeviceArray::drop").ok();
             // SAFETY: `self.raw_view` is owned by this wrapper and is freed at
             // most once here.
             unsafe { cugraph_type_erased_device_array_view_free(self.raw_view) };
         }
         if !self.raw.is_null() {
-            let _guard = DeviceGuard::switch_to(self.device, "RawDeviceArray::drop").ok();
+            let _guard = DeviceGuard::switch_to_for_drop(self.device, "RawDeviceArray::drop").ok();
             // SAFETY: `self.raw` is owned by this wrapper and has not been
             // freed yet.
             unsafe { cugraph_type_erased_device_array_free(self.raw) };
@@ -707,6 +707,8 @@ mod tests {
             arr: &'a DeviceArray<T>,
         }
 
+        // SAFETY: `ExternalBuffer` forwards the pointer and length from a live `DeviceArray`
+        // borrow, so the reported device region remains valid for the lifetime of `self`.
         unsafe impl<T: CugraphElement> DeviceBuffer<T> for ExternalBuffer<'_, T> {
             fn device_ptr(&self) -> *mut std::ffi::c_void {
                 self.arr.view().expect("view").device_ptr()
@@ -735,6 +737,8 @@ mod tests {
             arr: &'a DeviceArray<T>,
         }
 
+        // SAFETY: `ExternalBuffer` forwards the pointer and length from a live `DeviceArray`
+        // borrow, so the reported device region remains valid for the lifetime of `self`.
         unsafe impl<T: CugraphElement> DeviceBuffer<T> for ExternalBuffer<'_, T> {
             fn device_ptr(&self) -> *mut std::ffi::c_void {
                 self.arr.view().expect("view").device_ptr()

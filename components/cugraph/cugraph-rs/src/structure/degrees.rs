@@ -233,7 +233,7 @@ impl DegreeResultInner {
 impl Drop for DegreeResultInner {
     fn drop(&mut self) {
         if !self.raw.is_null() {
-            let _guard = DeviceGuard::switch_to(self.device, "DegreeResultInner::drop").ok();
+            let _guard = DeviceGuard::switch_to_for_drop(self.device, "DegreeResultInner::drop").ok();
             // SAFETY: `self.raw` is owned by this wrapper and freed exactly
             // once here.
             unsafe { cugraph_degrees_result_free(self.raw) };
@@ -605,6 +605,8 @@ mod tests {
         let handle = ResourceHandle::new().expect("handle");
         let degrees = DeviceArray::from_slice(&handle, &[1.0f32, 2.0, 3.0]).expect("degrees");
         let view = degrees.view().expect("view");
+        // SAFETY: The pointer/length pair comes from a live `DeviceArrayView`, and the dtype is
+        // intentionally mismatched to exercise Rust-side validation in `DegreeValues::from_raw`.
         let raw = unsafe {
             RawDeviceArrayView::try_from_raw(view.device_ptr(), view.len(), DataType::Float32, "test_raw")
                 .expect("raw view")
