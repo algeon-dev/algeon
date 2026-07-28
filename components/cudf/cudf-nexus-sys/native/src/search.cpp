@@ -1,4 +1,4 @@
-#include "search.h"
+#include "cudf_rust/search.h"
 
 #include "execution_context_internal.hpp"
 #include "shim_common.h"
@@ -22,15 +22,15 @@ cudf_status_t cudf_contains_ex(cudf_column_view_handle haystack,
   CUDF_RUST_NULL_CHECK(needles, "needles is null");
   CUDF_RUST_TRY
   {
-    auto* haystack_view             = static_cast<cudf::column_view*>(haystack);
-    auto* needles_view              = static_cast<cudf::column_view*>(needles);
+    auto* haystack_view             = reinterpret_cast<cudf::column_view*>(haystack);
+    auto* needles_view              = reinterpret_cast<cudf::column_view*>(needles);
     auto exec                       = std::unique_ptr<cudf_exec_context>{};
     cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     {
       auto result = cudf::contains(*haystack_view, *needles_view, exec->stream, *exec->mr);
-      *out        = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
+      *out = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
     }
     return CUDF_SUCCESS;
   }

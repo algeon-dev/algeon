@@ -24,6 +24,8 @@ pub(crate) fn trigger_match_dictionaries_column_count_limit_error_for_test() -> 
     Err(super::errors::dictionary_column_count_limit_error("dictionary::match_dictionaries", usize::MAX))
 }
 
+/// Exercise malformed-result cleanup after test code has armed a native
+/// teardown failure through `cudf_sys::test_support`.
 pub(crate) fn trigger_match_dictionaries_fatal_malformed_cleanup_for_test() -> Result<()> {
     let runtime = crate::Runtime::new()?;
     let column = runtime.column_from_slice(&[7_i32])?;
@@ -31,10 +33,6 @@ pub(crate) fn trigger_match_dictionaries_fatal_malformed_cleanup_for_test() -> R
     let (handle, retained_owner) = column.into_raw_parts();
     drop(retained_owner);
 
-    // SAFETY: the one-shot native hook consumes only scalar thread-local test
-    // state. The raw column ownership was transferred above and is consumed
-    // exactly once by the malformed-result cleanup below.
-    unsafe { cudf_sys::cudf_test_fail_next_provenance_destroy(cudf_sys::CUDF_ERROR_FATAL_CUDA) };
     super::result_shape::validate_owned_handles_result_shape_for_test(
         &[handle],
         2,

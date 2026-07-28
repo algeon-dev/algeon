@@ -1,5 +1,5 @@
+#include "cudf_rust/io.h"
 #include "execution_context_internal.hpp"
-#include "io.h"
 #include "io_test_hooks.hpp"
 #include "shim_common.h"
 
@@ -72,12 +72,13 @@ cudf_status_t cudf_io_read_json_with_metadata_ex(const char* filepath,
       result       = cudf::io::read_json(options, exec->stream, *exec->mr);
     }
 
-    auto const fault = cudf_test_io_take_next_metadata_fault();
-    if (fault != CUDF_TEST_IO_METADATA_FAULT_NONE) {
+    auto const fault = cudf::rust::test_support::take_io_metadata_fault();
+    if (fault != 0) {
       cudf_status_t const fault_status =
-        cudf_test_io_apply_metadata_fault(fault, out_names, out_num_names);
+        cudf::rust::test_support::apply_io_metadata_fault(fault, out_names, out_num_names);
       if (fault_status != CUDF_SUCCESS) { return fault_status; }
-      *out_table = cudf_release_table_handle(std::move(result.tbl), cudf_capture_exec_provenance(*exec));
+      *out_table =
+        cudf_release_table_handle(std::move(result.tbl), cudf_capture_exec_provenance(*exec));
       return CUDF_SUCCESS;
     }
 
@@ -111,7 +112,8 @@ cudf_status_t cudf_io_read_json_with_metadata_ex(const char* filepath,
       *out_num_names = n;
     }
 
-    *out_table = cudf_release_table_handle(std::move(result.tbl), cudf_capture_exec_provenance(*exec));
+    *out_table =
+      cudf_release_table_handle(std::move(result.tbl), cudf_capture_exec_provenance(*exec));
     return CUDF_SUCCESS;
   }
   CUDF_RUST_IO_CATCH
@@ -138,7 +140,7 @@ cudf_status_t cudf_io_write_json_ex(cudf_table_view_handle table,
     cudf_status_t const exec_status = cudf_resolve_required_exec_options(exec_options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
-    auto* view = static_cast<cudf::table_view*>(table);
+    auto* view = reinterpret_cast<cudf::table_view*>(table);
 
     auto sink    = cudf::io::sink_info(std::string(filepath));
     auto builder = cudf::io::json_writer_options::builder(sink, *view)

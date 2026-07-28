@@ -111,10 +111,21 @@ impl Drop for D2hBenchmarkBuffer {
     }
 }
 
-/// Construct a malformed non-empty STRING column view without an offsets
-/// child so integration tests can lock down foreign-contract validation.
-pub fn synthetic_string_view_without_children(size: usize) -> Result<ColumnView<'static>> {
-    crate::core::column::synthetic_string_view_without_children(size)
+/// Adopt an owned test-created column-view handle with runtime provenance.
+///
+/// Test code must obtain the handle through `cudf_sys::test_support`; this
+/// adapter only transfers its ownership to the safe `ColumnView` wrapper.
+///
+/// # Safety
+///
+/// `raw` must be a non-null, uniquely owned column-view handle created for
+/// `runtime`'s device. No other owner may destroy or use the handle after this
+/// call, and borrowed views must not outlive the returned `ColumnView`.
+pub unsafe fn adopt_owned_column_view_for_test(
+    raw: cudf_sys::cudf_column_view_handle,
+    runtime: &crate::Runtime,
+) -> Result<ColumnView<'static>> {
+    unsafe { crate::core::column::adopt_owned_column_view_for_test(raw, runtime) }
 }
 
 /// Trigger the internal raw-byte materialization helper on a borrowed column

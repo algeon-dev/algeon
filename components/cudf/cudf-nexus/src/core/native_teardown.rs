@@ -25,7 +25,12 @@ pub(crate) fn drop_device_owned_handle<T>(
         return;
     };
     if status == cudf_sys::CUDF_ERROR_FATAL_CUDA {
-        crate::runtime::report_device_fault(device, DeviceFaultKind::FatalDeviceOperation, operation, Some(status));
+        crate::runtime::report_device_fault(
+            device,
+            DeviceFaultKind::FatalDeviceOperation,
+            operation,
+            Some(status as i32),
+        );
     }
     crate::runtime::device_health::record_teardown_failure(
         device,

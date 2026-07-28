@@ -1,9 +1,9 @@
 #ifndef CUDF_RUST_OWNING_HANDLE_FWD_HPP
 #define CUDF_RUST_OWNING_HANDLE_FWD_HPP
 
-#include "column.h"
+#include "cudf_rust/column.h"
+#include "cudf_rust/table.h"
 #include "handle_provenance.hpp"
-#include "table.h"
 
 #include <memory>
 

@@ -1,8 +1,7 @@
 #pragma once
 
-#include "join.h"
-
 #include "ast_handle.hpp"
+#include "cudf_rust/join.h"
 #include "execution_context_internal.hpp"
 #include "handle_provenance.hpp"
 #include "shim_common.h"
@@ -28,6 +27,7 @@
 
 #include <rmm/device_uvector.hpp>
 #include <rmm/mr/statistics_resource_adaptor.hpp>
+
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -52,7 +52,8 @@ inline cudf::table_view concat_views(const cudf::table_view& keys, const cudf::t
   return cudf::table_view(cols);
 }
 
-inline std::size_t checked_join_gather_map_size_bytes(std::size_t output_size, std::size_t map_count)
+inline std::size_t checked_join_gather_map_size_bytes(std::size_t output_size,
+                                                      std::size_t map_count)
 {
   constexpr auto size_type_bytes = sizeof(cudf::size_type);
   auto constexpr max_size        = std::numeric_limits<std::size_t>::max();
@@ -74,7 +75,7 @@ inline cudf::size_type checked_projected_cross_join_rows(std::size_t rows, char 
 }
 
 inline std::size_t checked_projected_cross_join_output_rows(std::size_t left_num_rows,
-                                                     std::size_t right_num_rows)
+                                                            std::size_t right_num_rows)
 {
   auto constexpr max_size = std::numeric_limits<std::size_t>::max();
   CUDF_EXPECTS(left_num_rows == 0 || right_num_rows <= max_size / left_num_rows,
@@ -84,12 +85,13 @@ inline std::size_t checked_projected_cross_join_output_rows(std::size_t left_num
   return output_rows;
 }
 
-inline std::unique_ptr<cudf::table> projected_cross_join_table(cudf::table_view const* left_selected,
-                                                        cudf::table_view const* right_selected,
-                                                        std::size_t left_num_rows,
-                                                        std::size_t right_num_rows,
-                                                        rmm::cuda_stream_view stream,
-                                                        rmm::device_async_resource_ref mr)
+inline std::unique_ptr<cudf::table> projected_cross_join_table(
+  cudf::table_view const* left_selected,
+  cudf::table_view const* right_selected,
+  std::size_t left_num_rows,
+  std::size_t right_num_rows,
+  rmm::cuda_stream_view stream,
+  rmm::device_async_resource_ref mr)
 {
   auto const left_rows_i32 =
     checked_projected_cross_join_rows(left_num_rows, "left projected cross join row count");
@@ -125,7 +127,9 @@ inline std::unique_ptr<cudf::table> projected_cross_join_table(cudf::table_view 
     return std::make_unique<cudf::table>(std::move(columns));
   }
 
-  if (left_columns > 0) { append_columns(cudf::repeat(*left_selected, right_rows_i32, stream, mr)); }
+  if (left_columns > 0) {
+    append_columns(cudf::repeat(*left_selected, right_rows_i32, stream, mr));
+  }
   if (right_columns > 0) { append_columns(cudf::tile(*right_selected, left_rows_i32, stream, mr)); }
   return std::make_unique<cudf::table>(std::move(columns));
 }
@@ -275,8 +279,8 @@ struct mixed_join_size_data_owner {
   std::optional<cudf::table_view> left_conditional;
   std::optional<cudf::table_view> right_conditional;
   cudf_ast_expression_owner_ref predicate;
-  cudf::null_equality null_equality = cudf::null_equality::EQUAL;
-  mixed_join_size_kind kind          = mixed_join_size_kind::inner;
+  cudf::null_equality null_equality       = cudf::null_equality::EQUAL;
+  mixed_join_size_kind kind               = mixed_join_size_kind::inner;
   rmm::mr::device_memory_resource* mr_raw = nullptr;
   std::size_t output_size                 = 0;
   std::size_t device_allocated_size_bytes = 0;
@@ -286,25 +290,26 @@ struct mixed_join_size_data_owner {
 template <typename Owner>
 cudf_handle_provenance cached_join_owner_provenance(Owner const& owner)
 {
-  return cudf_handle_provenance{owner.device, owner.stream_lifetime, owner.mr_raw, owner.upstream_mr_lifetime};
+  return cudf_handle_provenance{
+    owner.device, owner.stream_lifetime, owner.mr_raw, owner.upstream_mr_lifetime};
 }
 
 struct column_handle_deleter {
-  void operator()(void* handle) const noexcept { cudf_column_destroy(handle); }
+  void operator()(cudf_column_handle handle) const noexcept { cudf_column_destroy(handle); }
 };
 
-using unique_column_handle = std::unique_ptr<void, column_handle_deleter>;
+using unique_column_handle = std::unique_ptr<cudf_column_handle_state, column_handle_deleter>;
 
 inline unique_column_handle make_unique_column_handle(std::unique_ptr<cudf::column> column,
-                                               cudf_handle_provenance const& provenance)
+                                                      cudf_handle_provenance const& provenance)
 {
   return unique_column_handle{cudf_release_column_handle(std::move(column), provenance)};
 }
 
 inline void release_join_index_pair(join_index_pair indices,
-                             cudf_column_handle* out_left_indices,
-                             cudf_column_handle* out_right_indices,
-                             cudf_handle_provenance const& provenance)
+                                    cudf_column_handle* out_left_indices,
+                                    cudf_column_handle* out_right_indices,
+                                    cudf_handle_provenance const& provenance)
 {
   auto left_column  = release_join_index_column(std::move(indices.first));
   auto right_column = release_join_index_column(std::move(indices.second));
@@ -317,13 +322,13 @@ inline void release_join_index_pair(join_index_pair indices,
 }
 
 inline cudf_status_t conditional_pair_join_indices_impl(cudf_table_view_handle left,
-                                                 cudf_table_view_handle right,
-                                                 cudf_ast_expression_handle predicate,
-                                                 cudf_column_handle* out_left_indices,
-                                                 cudf_column_handle* out_right_indices,
-                                                 std::optional<std::size_t> output_size,
-                                                 cudf_exec_options_t const* options,
-                                                 pair_join_kind kind)
+                                                        cudf_table_view_handle right,
+                                                        cudf_ast_expression_handle predicate,
+                                                        cudf_column_handle* out_left_indices,
+                                                        cudf_column_handle* out_right_indices,
+                                                        std::optional<std::size_t> output_size,
+                                                        cudf_exec_options_t const* options,
+                                                        pair_join_kind kind)
 {
   CUDF_RUST_NULL_CHECK(out_left_indices, "out_left_indices is null");
   *out_left_indices = nullptr;
@@ -338,20 +343,20 @@ inline cudf_status_t conditional_pair_join_indices_impl(cudf_table_view_handle l
     cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
-    auto* left_view  = static_cast<cudf::table_view*>(left);
-    auto* right_view = static_cast<cudf::table_view*>(right);
+    auto* left_view  = reinterpret_cast<cudf::table_view*>(left);
+    auto* right_view = reinterpret_cast<cudf::table_view*>(right);
     auto const& pred = cudf_ast_expression_from_handle(predicate);
 
     {
       join_index_pair indices;
       switch (kind) {
         case pair_join_kind::inner:
-          indices =
-            cudf::conditional_inner_join(*left_view, *right_view, pred, output_size, exec->stream, *exec->mr);
+          indices = cudf::conditional_inner_join(
+            *left_view, *right_view, pred, output_size, exec->stream, *exec->mr);
           break;
         case pair_join_kind::left:
-          indices =
-            cudf::conditional_left_join(*left_view, *right_view, pred, output_size, exec->stream, *exec->mr);
+          indices = cudf::conditional_left_join(
+            *left_view, *right_view, pred, output_size, exec->stream, *exec->mr);
           break;
         case pair_join_kind::full:
           indices =
@@ -368,13 +373,14 @@ inline cudf_status_t conditional_pair_join_indices_impl(cudf_table_view_handle l
   CUDF_RUST_CATCH
 }
 
-inline cudf_status_t conditional_single_side_join_indices_impl(cudf_table_view_handle left,
-                                                        cudf_table_view_handle right,
-                                                        cudf_ast_expression_handle predicate,
-                                                        cudf_column_handle* out_indices,
-                                                        std::optional<std::size_t> output_size,
-                                                        cudf_exec_options_t const* options,
-                                                        single_side_join_kind kind)
+inline cudf_status_t conditional_single_side_join_indices_impl(
+  cudf_table_view_handle left,
+  cudf_table_view_handle right,
+  cudf_ast_expression_handle predicate,
+  cudf_column_handle* out_indices,
+  std::optional<std::size_t> output_size,
+  cudf_exec_options_t const* options,
+  single_side_join_kind kind)
 {
   CUDF_RUST_NULL_CHECK(out_indices, "out_indices is null");
   *out_indices = nullptr;
@@ -387,8 +393,8 @@ inline cudf_status_t conditional_single_side_join_indices_impl(cudf_table_view_h
     cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
-    auto* left_view  = static_cast<cudf::table_view*>(left);
-    auto* right_view = static_cast<cudf::table_view*>(right);
+    auto* left_view  = reinterpret_cast<cudf::table_view*>(left);
+    auto* right_view = reinterpret_cast<cudf::table_view*>(right);
     auto const& pred = cudf_ast_expression_from_handle(predicate);
 
     {
@@ -412,11 +418,11 @@ inline cudf_status_t conditional_single_side_join_indices_impl(cudf_table_view_h
 }
 
 inline cudf_status_t conditional_join_size_impl(cudf_table_view_handle left,
-                                         cudf_table_view_handle right,
-                                         cudf_ast_expression_handle predicate,
-                                         size_t* out,
-                                         cudf_exec_options_t const* options,
-                                         conditional_join_size_kind kind)
+                                                cudf_table_view_handle right,
+                                                cudf_ast_expression_handle predicate,
+                                                size_t* out,
+                                                cudf_exec_options_t const* options,
+                                                conditional_join_size_kind kind)
 {
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = 0;
@@ -429,23 +435,27 @@ inline cudf_status_t conditional_join_size_impl(cudf_table_view_handle left,
     cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
-    auto* left_view  = static_cast<cudf::table_view*>(left);
-    auto* right_view = static_cast<cudf::table_view*>(right);
+    auto* left_view  = reinterpret_cast<cudf::table_view*>(left);
+    auto* right_view = reinterpret_cast<cudf::table_view*>(right);
     auto const& pred = cudf_ast_expression_from_handle(predicate);
 
     {
       switch (kind) {
         case conditional_join_size_kind::inner:
-          *out = cudf::conditional_inner_join_size(*left_view, *right_view, pred, exec->stream, *exec->mr);
+          *out = cudf::conditional_inner_join_size(
+            *left_view, *right_view, pred, exec->stream, *exec->mr);
           break;
         case conditional_join_size_kind::left:
-          *out = cudf::conditional_left_join_size(*left_view, *right_view, pred, exec->stream, *exec->mr);
+          *out = cudf::conditional_left_join_size(
+            *left_view, *right_view, pred, exec->stream, *exec->mr);
           break;
         case conditional_join_size_kind::semi:
-          *out = cudf::conditional_left_semi_join_size(*left_view, *right_view, pred, exec->stream, *exec->mr);
+          *out = cudf::conditional_left_semi_join_size(
+            *left_view, *right_view, pred, exec->stream, *exec->mr);
           break;
         case conditional_join_size_kind::anti:
-          *out = cudf::conditional_left_anti_join_size(*left_view, *right_view, pred, exec->stream, *exec->mr);
+          *out = cudf::conditional_left_anti_join_size(
+            *left_view, *right_view, pred, exec->stream, *exec->mr);
           break;
       }
     }
@@ -455,15 +465,15 @@ inline cudf_status_t conditional_join_size_impl(cudf_table_view_handle left,
 }
 
 inline cudf_status_t mixed_pair_join_indices_impl(cudf_table_view_handle left_equality,
-                                           cudf_table_view_handle right_equality,
-                                           cudf_table_view_handle left_conditional,
-                                           cudf_table_view_handle right_conditional,
-                                           cudf_ast_expression_handle predicate,
-                                           cudf_null_equality_t null_equality,
-                                           cudf_column_handle* out_left_indices,
-                                           cudf_column_handle* out_right_indices,
-                                           cudf_exec_options_t const* options,
-                                           pair_join_kind kind)
+                                                  cudf_table_view_handle right_equality,
+                                                  cudf_table_view_handle left_conditional,
+                                                  cudf_table_view_handle right_conditional,
+                                                  cudf_ast_expression_handle predicate,
+                                                  cudf_null_equality_t null_equality,
+                                                  cudf_column_handle* out_left_indices,
+                                                  cudf_column_handle* out_right_indices,
+                                                  cudf_exec_options_t const* options,
+                                                  pair_join_kind kind)
 {
   CUDF_RUST_NULL_CHECK(out_left_indices, "out_left_indices is null");
   *out_left_indices = nullptr;
@@ -483,10 +493,10 @@ inline cudf_status_t mixed_pair_join_indices_impl(cudf_table_view_handle left_eq
     cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
-    auto* le         = static_cast<cudf::table_view*>(left_equality);
-    auto* re         = static_cast<cudf::table_view*>(right_equality);
-    auto* lc         = static_cast<cudf::table_view*>(left_conditional);
-    auto* rc         = static_cast<cudf::table_view*>(right_conditional);
+    auto* le         = reinterpret_cast<cudf::table_view*>(left_equality);
+    auto* re         = reinterpret_cast<cudf::table_view*>(right_equality);
+    auto* lc         = reinterpret_cast<cudf::table_view*>(left_conditional);
+    auto* rc         = reinterpret_cast<cudf::table_view*>(right_conditional);
     auto const& pred = cudf_ast_expression_from_handle(predicate);
 
     {
@@ -533,17 +543,17 @@ inline cudf_status_t conditional_full_join_size_data_impl(
     cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
-    auto* left_view    = static_cast<cudf::table_view*>(left);
-    auto* right_view   = static_cast<cudf::table_view*>(right);
-    auto const& pred   = cudf_ast_expression_from_handle(predicate);
-    auto owner         = std::make_unique<conditional_full_join_size_data_owner>();
-    owner->device      = exec->device;
+    auto* left_view             = reinterpret_cast<cudf::table_view*>(left);
+    auto* right_view            = reinterpret_cast<cudf::table_view*>(right);
+    auto const& pred            = cudf_ast_expression_from_handle(predicate);
+    auto owner                  = std::make_unique<conditional_full_join_size_data_owner>();
+    owner->device               = exec->device;
     owner->upstream_mr_lifetime = exec->mr_lifetime;
-    owner->stream_lifetime = exec->stream_lifetime;
-    owner->left        = *left_view;
-    owner->right       = *right_view;
-    owner->predicate   = cudf_ast_expression_owner_ref_from_handle(predicate);
-    owner->observed_mr = std::make_unique<statistics_resource_box>(
+    owner->stream_lifetime      = exec->stream_lifetime;
+    owner->left                 = *left_view;
+    owner->right                = *right_view;
+    owner->predicate            = cudf_ast_expression_owner_ref_from_handle(predicate);
+    owner->observed_mr          = std::make_unique<statistics_resource_box>(
       cuda::mr::any_resource<cuda::mr::device_accessible>{*exec->mr});
     owner->mr_raw = owner->observed_mr.get();
     owner->observed_mr_ref_storage =
@@ -555,11 +565,11 @@ inline cudf_status_t conditional_full_join_size_data_impl(
       // the per-device current resource is never swapped per operation).
       owner->size_data = cudf::conditional_full_join_size(
         *left_view, *right_view, pred, exec->stream, *owner->observed_mr_ref_storage);
-      owner->output_size = owner->size_data->output_size();
-      auto const bytes   = owner->observed_mr->resource().get_bytes_counter().value;
+      owner->output_size                 = owner->size_data->output_size();
+      auto const bytes                   = owner->observed_mr->resource().get_bytes_counter().value;
       owner->device_allocated_size_bytes = bytes > 0 ? static_cast<std::size_t>(bytes) : 0;
     }
-    *out = static_cast<cudf_conditional_full_join_size_data_handle>(owner.release());
+    *out = reinterpret_cast<cudf_conditional_full_join_size_data_handle>(owner.release());
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -582,7 +592,7 @@ inline cudf_status_t conditional_full_join_size_data_materialize_indices_impl(
     cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
-    auto* owner = static_cast<conditional_full_join_size_data_owner*>(size_data);
+    auto* owner = reinterpret_cast<conditional_full_join_size_data_owner*>(size_data);
     CUDF_EXPECTS(owner->device == exec->device,
                  "conditional full join size data must be materialized on its creation device");
     CUDF_EXPECTS(owner->size_data != nullptr, "conditional full join size data missing state");
@@ -599,14 +609,14 @@ inline cudf_status_t conditional_full_join_size_data_materialize_indices_impl(
 }
 
 inline cudf_status_t mixed_single_side_join_indices_impl(cudf_table_view_handle left_equality,
-                                                  cudf_table_view_handle right_equality,
-                                                  cudf_table_view_handle left_conditional,
-                                                  cudf_table_view_handle right_conditional,
-                                                  cudf_ast_expression_handle predicate,
-                                                  cudf_null_equality_t null_equality,
-                                                  cudf_column_handle* out_indices,
-                                                  cudf_exec_options_t const* options,
-                                                  single_side_join_kind kind)
+                                                         cudf_table_view_handle right_equality,
+                                                         cudf_table_view_handle left_conditional,
+                                                         cudf_table_view_handle right_conditional,
+                                                         cudf_ast_expression_handle predicate,
+                                                         cudf_null_equality_t null_equality,
+                                                         cudf_column_handle* out_indices,
+                                                         cudf_exec_options_t const* options,
+                                                         single_side_join_kind kind)
 {
   CUDF_RUST_NULL_CHECK(out_indices, "out_indices is null");
   *out_indices = nullptr;
@@ -624,10 +634,10 @@ inline cudf_status_t mixed_single_side_join_indices_impl(cudf_table_view_handle 
     cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
-    auto* le         = static_cast<cudf::table_view*>(left_equality);
-    auto* re         = static_cast<cudf::table_view*>(right_equality);
-    auto* lc         = static_cast<cudf::table_view*>(left_conditional);
-    auto* rc         = static_cast<cudf::table_view*>(right_conditional);
+    auto* le         = reinterpret_cast<cudf::table_view*>(left_equality);
+    auto* re         = reinterpret_cast<cudf::table_view*>(right_equality);
+    auto* lc         = reinterpret_cast<cudf::table_view*>(left_conditional);
+    auto* rc         = reinterpret_cast<cudf::table_view*>(right_conditional);
     auto const& pred = cudf_ast_expression_from_handle(predicate);
 
     {
@@ -651,14 +661,14 @@ inline cudf_status_t mixed_single_side_join_indices_impl(cudf_table_view_handle 
 }
 
 inline cudf_status_t mixed_join_size_data_impl(cudf_table_view_handle left_equality,
-                                        cudf_table_view_handle right_equality,
-                                        cudf_table_view_handle left_conditional,
-                                        cudf_table_view_handle right_conditional,
-                                        cudf_ast_expression_handle predicate,
-                                        cudf_null_equality_t null_equality,
-                                        cudf_mixed_join_size_data_handle* out,
-                                        cudf_exec_options_t const* options,
-                                        mixed_join_size_kind kind)
+                                               cudf_table_view_handle right_equality,
+                                               cudf_table_view_handle left_conditional,
+                                               cudf_table_view_handle right_conditional,
+                                               cudf_ast_expression_handle predicate,
+                                               cudf_null_equality_t null_equality,
+                                               cudf_mixed_join_size_data_handle* out,
+                                               cudf_exec_options_t const* options,
+                                               mixed_join_size_kind kind)
 {
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
@@ -676,10 +686,10 @@ inline cudf_status_t mixed_join_size_data_impl(cudf_table_view_handle left_equal
     cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
-    auto* le         = static_cast<cudf::table_view*>(left_equality);
-    auto* re         = static_cast<cudf::table_view*>(right_equality);
-    auto* lc         = static_cast<cudf::table_view*>(left_conditional);
-    auto* rc         = static_cast<cudf::table_view*>(right_conditional);
+    auto* le         = reinterpret_cast<cudf::table_view*>(left_equality);
+    auto* re         = reinterpret_cast<cudf::table_view*>(right_equality);
+    auto* lc         = reinterpret_cast<cudf::table_view*>(left_conditional);
+    auto* rc         = reinterpret_cast<cudf::table_view*>(right_conditional);
     auto const& pred = cudf_ast_expression_from_handle(predicate);
 
     auto owner                  = std::make_unique<mixed_join_size_data_owner>();
@@ -693,7 +703,7 @@ inline cudf_status_t mixed_join_size_data_impl(cudf_table_view_handle left_equal
     owner->predicate            = cudf_ast_expression_owner_ref_from_handle(predicate);
     owner->null_equality        = null_eq;
     owner->kind                 = kind;
-    owner->observed_mr = std::make_unique<statistics_resource_box>(
+    owner->observed_mr          = std::make_unique<statistics_resource_box>(
       cuda::mr::any_resource<cuda::mr::device_accessible>{*exec->mr});
     owner->mr_raw = owner->observed_mr.get();
     owner->observed_mr_ref_storage =
@@ -719,25 +729,25 @@ inline cudf_status_t mixed_join_size_data_impl(cudf_table_view_handle left_equal
           break;
         }
         case mixed_join_size_kind::full:
-          owner->full_size_data =
-            cudf::mixed_full_join_size(*le, *re, *lc, *rc, pred, null_eq, exec->stream, observed_mr_ref);
+          owner->full_size_data = cudf::mixed_full_join_size(
+            *le, *re, *lc, *rc, pred, null_eq, exec->stream, observed_mr_ref);
           owner->output_size = owner->full_size_data->output_size();
           break;
         case mixed_join_size_kind::semi:
-          owner->single_size_data =
-            cudf::mixed_left_semi_join_size(*le, *re, *lc, *rc, pred, null_eq, exec->stream, observed_mr_ref);
+          owner->single_size_data = cudf::mixed_left_semi_join_size(
+            *le, *re, *lc, *rc, pred, null_eq, exec->stream, observed_mr_ref);
           owner->output_size = owner->single_size_data->output_size();
           break;
         case mixed_join_size_kind::anti:
-          owner->single_size_data =
-            cudf::mixed_left_anti_join_size(*le, *re, *lc, *rc, pred, null_eq, exec->stream, observed_mr_ref);
+          owner->single_size_data = cudf::mixed_left_anti_join_size(
+            *le, *re, *lc, *rc, pred, null_eq, exec->stream, observed_mr_ref);
           owner->output_size = owner->single_size_data->output_size();
           break;
       }
-      auto const bytes = owner->observed_mr->resource().get_bytes_counter().value;
+      auto const bytes                   = owner->observed_mr->resource().get_bytes_counter().value;
       owner->device_allocated_size_bytes = bytes > 0 ? static_cast<std::size_t>(bytes) : 0;
     }
-    *out = static_cast<cudf_mixed_join_size_data_handle>(owner.release());
+    *out = reinterpret_cast<cudf_mixed_join_size_data_handle>(owner.release());
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -760,7 +770,7 @@ inline cudf_status_t mixed_join_size_data_materialize_indices_impl(
     cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
-    auto* owner = static_cast<mixed_join_size_data_owner*>(size_data);
+    auto* owner = reinterpret_cast<mixed_join_size_data_owner*>(size_data);
     CUDF_EXPECTS(owner->device == exec->device,
                  "mixed join size data must be materialized on its creation device");
     {
@@ -768,20 +778,23 @@ inline cudf_status_t mixed_join_size_data_materialize_indices_impl(
       switch (owner->kind) {
         case mixed_join_size_kind::inner:
         case mixed_join_size_kind::left: {
-          CUDF_EXPECTS(owner->left_equality.has_value(), "mixed join size data missing left equality view");
-          CUDF_EXPECTS(owner->right_equality.has_value(), "mixed join size data missing right equality view");
+          CUDF_EXPECTS(owner->left_equality.has_value(),
+                       "mixed join size data missing left equality view");
+          CUDF_EXPECTS(owner->right_equality.has_value(),
+                       "mixed join size data missing right equality view");
           CUDF_EXPECTS(owner->left_conditional.has_value(),
                        "mixed join size data missing left conditional view");
           CUDF_EXPECTS(owner->right_conditional.has_value(),
                        "mixed join size data missing right conditional view");
           CUDF_EXPECTS(owner->predicate != nullptr, "mixed join size data missing predicate");
-          CUDF_EXPECTS(owner->matches_per_row != nullptr, "mixed join size data missing per-row matches");
+          CUDF_EXPECTS(owner->matches_per_row != nullptr,
+                       "mixed join size data missing per-row matches");
           auto const& pred = *owner->predicate->expression;
           auto span = cudf::device_span<cudf::size_type const>{owner->matches_per_row->begin(),
                                                                owner->matches_per_row->size()};
           cudf::output_size_data_type output_size_data = std::make_pair(owner->output_size, span);
-          indices = owner->kind == mixed_join_size_kind::inner
-                      ? cudf::mixed_inner_join(*owner->left_equality,
+          indices                                      = owner->kind == mixed_join_size_kind::inner
+                                                           ? cudf::mixed_inner_join(*owner->left_equality,
                                                *owner->right_equality,
                                                *owner->left_conditional,
                                                *owner->right_conditional,
@@ -790,7 +803,7 @@ inline cudf_status_t mixed_join_size_data_materialize_indices_impl(
                                                output_size_data,
                                                exec->stream,
                                                *exec->mr)
-                      : cudf::mixed_left_join(*owner->left_equality,
+                                                           : cudf::mixed_left_join(*owner->left_equality,
                                               *owner->right_equality,
                                               *owner->left_conditional,
                                               *owner->right_conditional,
@@ -833,17 +846,18 @@ inline cudf_status_t mixed_join_size_data_materialize_single_indices_impl(
     cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
-    auto* owner = static_cast<mixed_join_size_data_owner*>(size_data);
+    auto* owner = reinterpret_cast<mixed_join_size_data_owner*>(size_data);
     CUDF_EXPECTS(owner->device == exec->device,
                  "mixed join size data must be materialized on its creation device");
-    CUDF_EXPECTS(owner->kind == mixed_join_size_kind::semi || owner->kind == mixed_join_size_kind::anti,
-                 "mixed pair join size data materializes two index columns");
-    CUDF_EXPECTS(owner->single_size_data != nullptr, "mixed semi/anti join size data missing state");
+    CUDF_EXPECTS(
+      owner->kind == mixed_join_size_kind::semi || owner->kind == mixed_join_size_kind::anti,
+      "mixed pair join size data materializes two index columns");
+    CUDF_EXPECTS(owner->single_size_data != nullptr,
+                 "mixed semi/anti join size data missing state");
     {
       auto indices = owner->single_size_data->materialize_indices(exec->stream, *exec->mr);
-      *out_indices =
-        cudf_release_column_handle(release_join_index_column(std::move(indices)),
-                                   cudf_capture_exec_provenance(*exec));
+      *out_indices = cudf_release_column_handle(release_join_index_column(std::move(indices)),
+                                                cudf_capture_exec_provenance(*exec));
     }
     return CUDF_SUCCESS;
   }
@@ -851,14 +865,14 @@ inline cudf_status_t mixed_join_size_data_materialize_single_indices_impl(
 }
 
 inline cudf_status_t filter_join_indices_impl(cudf_table_view_handle left,
-                                       cudf_table_view_handle right,
-                                       cudf_column_view_handle left_indices,
-                                       cudf_column_view_handle right_indices,
-                                       cudf_ast_expression_handle predicate,
-                                       cudf_join_kind_t join_kind,
-                                       cudf_column_handle* out_left_indices,
-                                       cudf_column_handle* out_right_indices,
-                                       cudf_exec_options_t const* options)
+                                              cudf_table_view_handle right,
+                                              cudf_column_view_handle left_indices,
+                                              cudf_column_view_handle right_indices,
+                                              cudf_ast_expression_handle predicate,
+                                              cudf_join_kind_t join_kind,
+                                              cudf_column_handle* out_left_indices,
+                                              cudf_column_handle* out_right_indices,
+                                              cudf_exec_options_t const* options)
 {
   CUDF_RUST_NULL_CHECK(out_left_indices, "out_left_indices is null");
   *out_left_indices = nullptr;
@@ -878,10 +892,10 @@ inline cudf_status_t filter_join_indices_impl(cudf_table_view_handle left,
     cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
-    auto* left_view          = static_cast<cudf::table_view*>(left);
-    auto* right_view         = static_cast<cudf::table_view*>(right);
-    auto* left_indices_view  = static_cast<cudf::column_view*>(left_indices);
-    auto* right_indices_view = static_cast<cudf::column_view*>(right_indices);
+    auto* left_view          = reinterpret_cast<cudf::table_view*>(left);
+    auto* right_view         = reinterpret_cast<cudf::table_view*>(right);
+    auto* left_indices_view  = reinterpret_cast<cudf::column_view*>(left_indices);
+    auto* right_indices_view = reinterpret_cast<cudf::column_view*>(right_indices);
     auto const& pred         = cudf_ast_expression_from_handle(predicate);
 
     CUDF_EXPECTS(left_indices_view->type().id() == cudf::type_id::INT32,
@@ -919,10 +933,10 @@ inline cudf_status_t filter_join_indices_impl(cudf_table_view_handle left,
 }
 
 inline cudf_status_t hash_join_size_impl(cudf_hash_join_handle join,
-                                  cudf_table_view_handle probe,
-                                  size_t* out,
-                                  cudf_exec_options_t const* options,
-                                  hash_join_probe_kind kind)
+                                         cudf_table_view_handle probe,
+                                         size_t* out,
+                                         cudf_exec_options_t const* options,
+                                         hash_join_probe_kind kind)
 {
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = 0;
@@ -934,14 +948,18 @@ inline cudf_status_t hash_join_size_impl(cudf_hash_join_handle join,
     cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
-    auto* owner      = static_cast<hash_join_owner*>(join);
+    auto* owner      = reinterpret_cast<hash_join_owner*>(join);
     auto* hash_join  = owner->join.get();
-    auto* probe_view = static_cast<cudf::table_view*>(probe);
+    auto* probe_view = reinterpret_cast<cudf::table_view*>(probe);
 
     {
       switch (kind) {
-        case hash_join_probe_kind::inner: *out = hash_join->inner_join_size(*probe_view, exec->stream); break;
-        case hash_join_probe_kind::left: *out = hash_join->left_join_size(*probe_view, exec->stream); break;
+        case hash_join_probe_kind::inner:
+          *out = hash_join->inner_join_size(*probe_view, exec->stream);
+          break;
+        case hash_join_probe_kind::left:
+          *out = hash_join->left_join_size(*probe_view, exec->stream);
+          break;
         case hash_join_probe_kind::full:
           *out = hash_join->full_join_size(*probe_view, exec->stream, *exec->mr);
           break;
@@ -953,10 +971,10 @@ inline cudf_status_t hash_join_size_impl(cudf_hash_join_handle join,
 }
 
 inline cudf_status_t filtered_join_create_impl(cudf_table_view_handle build,
-                                        cudf_null_equality_t null_equality,
-                                        double load_factor,
-                                        cudf_filtered_join_handle* out,
-                                        cudf_exec_options_t const* options)
+                                               cudf_null_equality_t null_equality,
+                                               double load_factor,
+                                               cudf_filtered_join_handle* out,
+                                               cudf_exec_options_t const* options)
 {
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
@@ -970,33 +988,33 @@ inline cudf_status_t filtered_join_create_impl(cudf_table_view_handle build,
     cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
-    auto* build_view = static_cast<cudf::table_view*>(build);
-    auto owner       = std::make_unique<filtered_join_owner>();
-    owner->device    = exec->device;
+    auto* build_view            = reinterpret_cast<cudf::table_view*>(build);
+    auto owner                  = std::make_unique<filtered_join_owner>();
+    owner->device               = exec->device;
     owner->upstream_mr_lifetime = exec->mr_lifetime;
     owner->stream_lifetime      = exec->stream_lifetime;
-    owner->mr_raw = exec->mr_raw;
+    owner->mr_raw               = exec->mr_raw;
     // The filtered-join build constructor takes no memory resource: its hash
     // table allocates through the device memory domain. Retained bytes are
     // derived from the pre-build sizing formula, mirroring cudf::hash_join.
     auto const reservation_size =
       cudf::filtered_join::pre_build_reservation_size(*build_view, load_factor);
     {
-      owner->join = std::make_unique<cudf::filtered_join>(
-        *build_view, null_eq, load_factor, exec->stream);
+      owner->join =
+        std::make_unique<cudf::filtered_join>(*build_view, null_eq, load_factor, exec->stream);
       owner->device_allocated_size_bytes = reservation_size;
     }
-    *out = static_cast<cudf_filtered_join_handle>(owner.release());
+    *out = reinterpret_cast<cudf_filtered_join_handle>(owner.release());
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
 }
 
 inline cudf_status_t filtered_join_size_impl(cudf_filtered_join_handle join,
-                                      cudf_table_view_handle probe,
-                                      size_t* out,
-                                      cudf_exec_options_t const* options,
-                                      filtered_join_probe_kind kind)
+                                             cudf_table_view_handle probe,
+                                             size_t* out,
+                                             cudf_exec_options_t const* options,
+                                             filtered_join_probe_kind kind)
 {
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = 0;
@@ -1008,13 +1026,13 @@ inline cudf_status_t filtered_join_size_impl(cudf_filtered_join_handle join,
     cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
-    auto* owner      = static_cast<filtered_join_owner*>(join);
-    auto* probe_view = static_cast<cudf::table_view*>(probe);
+    auto* owner      = reinterpret_cast<filtered_join_owner*>(join);
+    auto* probe_view = reinterpret_cast<cudf::table_view*>(probe);
     {
       auto indices = kind == filtered_join_probe_kind::semi
                        ? owner->join->semi_join(*probe_view, exec->stream, *exec->mr)
                        : owner->join->anti_join(*probe_view, exec->stream, *exec->mr);
-      *out = indices->size();
+      *out         = indices->size();
     }
     return CUDF_SUCCESS;
   }
@@ -1022,11 +1040,11 @@ inline cudf_status_t filtered_join_size_impl(cudf_filtered_join_handle join,
 }
 
 inline cudf_status_t filtered_join_indices_with_output_size_impl(cudf_filtered_join_handle join,
-                                                          cudf_table_view_handle probe,
-                                                          size_t output_size,
-                                                          cudf_column_handle* out_indices,
-                                                          cudf_exec_options_t const* options,
-                                                          filtered_join_probe_kind kind)
+                                                                 cudf_table_view_handle probe,
+                                                                 size_t output_size,
+                                                                 cudf_column_handle* out_indices,
+                                                                 cudf_exec_options_t const* options,
+                                                                 filtered_join_probe_kind kind)
 {
   CUDF_RUST_NULL_CHECK(out_indices, "out_indices is null");
   *out_indices = nullptr;
@@ -1038,8 +1056,8 @@ inline cudf_status_t filtered_join_indices_with_output_size_impl(cudf_filtered_j
     cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
-    auto* owner      = static_cast<filtered_join_owner*>(join);
-    auto* probe_view = static_cast<cudf::table_view*>(probe);
+    auto* owner      = reinterpret_cast<filtered_join_owner*>(join);
+    auto* probe_view = reinterpret_cast<cudf::table_view*>(probe);
     {
       auto indices = kind == filtered_join_probe_kind::semi
                        ? owner->join->semi_join(*probe_view, exec->stream, *exec->mr)
@@ -1056,10 +1074,10 @@ inline cudf_status_t filtered_join_indices_with_output_size_impl(cudf_filtered_j
 }
 
 inline cudf_status_t filtered_join_begin_probe_impl(cudf_filtered_join_handle join,
-                                             cudf_table_view_handle probe,
-                                             cudf_filtered_join_probe_handle* out,
-                                             cudf_exec_options_t const* options,
-                                             filtered_join_probe_kind kind)
+                                                    cudf_table_view_handle probe,
+                                                    cudf_filtered_join_probe_handle* out,
+                                                    cudf_exec_options_t const* options,
+                                                    filtered_join_probe_kind kind)
 {
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
@@ -1071,13 +1089,13 @@ inline cudf_status_t filtered_join_begin_probe_impl(cudf_filtered_join_handle jo
     cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
-    auto* owner      = static_cast<filtered_join_owner*>(join);
-    auto* probe_view = static_cast<cudf::table_view*>(probe);
-    auto probe_owner = std::make_unique<filtered_join_probe_owner>();
+    auto* owner                       = reinterpret_cast<filtered_join_owner*>(join);
+    auto* probe_view                  = reinterpret_cast<cudf::table_view*>(probe);
+    auto probe_owner                  = std::make_unique<filtered_join_probe_owner>();
     probe_owner->device               = exec->device;
     probe_owner->upstream_mr_lifetime = exec->mr_lifetime;
     probe_owner->stream_lifetime      = exec->stream_lifetime;
-    probe_owner->observed_mr = std::make_unique<statistics_resource_box>(
+    probe_owner->observed_mr          = std::make_unique<statistics_resource_box>(
       cuda::mr::any_resource<cuda::mr::device_accessible>{*exec->mr});
     probe_owner->mr_raw = probe_owner->observed_mr.get();
     probe_owner->observed_mr_ref_storage =
@@ -1087,13 +1105,14 @@ inline cudf_status_t filtered_join_begin_probe_impl(cudf_filtered_join_handle jo
       // Route retained probe-state allocations through the statistics box
       // explicitly (the per-device current resource is never swapped).
       auto& observed_mr_ref = *probe_owner->observed_mr_ref_storage;
-      probe_owner->probe = kind == filtered_join_probe_kind::semi
-                             ? owner->join->begin_left_semi_probe(*probe_view, exec->stream, observed_mr_ref)
-                             : owner->join->begin_left_anti_probe(*probe_view, exec->stream, observed_mr_ref);
+      probe_owner->probe =
+        kind == filtered_join_probe_kind::semi
+          ? owner->join->begin_left_semi_probe(*probe_view, exec->stream, observed_mr_ref)
+          : owner->join->begin_left_anti_probe(*probe_view, exec->stream, observed_mr_ref);
       auto const bytes = probe_owner->observed_mr->resource().get_bytes_counter().value;
       probe_owner->device_allocated_size_bytes = bytes > 0 ? static_cast<std::size_t>(bytes) : 0;
     }
-    *out = static_cast<cudf_filtered_join_probe_handle>(probe_owner.release());
+    *out = reinterpret_cast<cudf_filtered_join_probe_handle>(probe_owner.release());
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -1113,7 +1132,7 @@ inline cudf_status_t filtered_join_probe_materialize_indices_impl(
     cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
-    auto* owner = static_cast<filtered_join_probe_owner*>(handle);
+    auto* owner = reinterpret_cast<filtered_join_probe_owner*>(handle);
     {
       auto indices = owner->probe->materialize_indices(exec->stream, *exec->mr);
       *out_indices = cudf_release_column_handle(release_join_index_column(std::move(indices)),

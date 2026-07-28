@@ -25,13 +25,13 @@ fn fatal_native_owner_destroy_failures_never_abort_and_poison_is_sticky() {
             device: device.ordinal() as i32,
         }));
 
-    unsafe { cudf_sys::cudf_test_fail_next_provenance_destroy(cudf_sys::CUDF_ERROR_FATAL_CUDA) };
+    unsafe { cudf_sys::test_support::cudf_test_fail_next_provenance_destroy(cudf_sys::CUDF_ERROR_FATAL_CUDA) };
     drop(column);
-    unsafe { cudf_sys::cudf_test_fail_next_provenance_destroy(cudf_sys::CUDF_ERROR_FATAL_CUDA) };
+    unsafe { cudf_sys::test_support::cudf_test_fail_next_provenance_destroy(cudf_sys::CUDF_ERROR_FATAL_CUDA) };
     drop(table);
-    unsafe { cudf_sys::cudf_test_fail_next_provenance_destroy(cudf_sys::CUDF_ERROR_FATAL_CUDA) };
+    unsafe { cudf_sys::test_support::cudf_test_fail_next_provenance_destroy(cudf_sys::CUDF_ERROR_FATAL_CUDA) };
     drop(scalar);
-    unsafe { cudf_sys::cudf_test_fail_next_provenance_destroy(cudf_sys::CUDF_ERROR_FATAL_CUDA) };
+    unsafe { cudf_sys::test_support::cudf_test_fail_next_provenance_destroy(cudf_sys::CUDF_ERROR_FATAL_CUDA) };
     drop(buffer);
 
     let snapshot = scope.health_snapshot(device);
@@ -41,7 +41,7 @@ fn fatal_native_owner_destroy_failures_never_abort_and_poison_is_sticky() {
     let first = snapshot.first_fault().expect("fatal teardown records first fault");
     assert_eq!(first.kind(), DeviceFaultKind::FatalDeviceOperation);
     assert_eq!(first.operation(), "Column::drop");
-    assert_eq!(first.native_status(), Some(cudf_sys::CUDF_ERROR_FATAL_CUDA));
+    assert_eq!(first.native_status(), Some(cudf_sys::CUDF_ERROR_FATAL_CUDA as i32));
 
     let error = DeviceEntryGuard::enter(device, "native_teardown_contract::later_work")
         .expect_err("fatal teardown must permanently reject later device work");

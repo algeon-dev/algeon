@@ -2,6 +2,7 @@
 
 #include "interop_common.hpp"
 #include "shim_common.h"
+#include "test_support_internal.hpp"
 
 #include <cudf/column/column_factories.hpp>
 #include <cudf/strings/strings_column_view.hpp>
@@ -11,9 +12,9 @@
 
 #include <cstdint>
 #include <exception>
+#include <limits>
 #include <memory>
 #include <new>
-#include <limits>
 #include <stdexcept>
 #include <unordered_set>
 #include <utility>
@@ -28,18 +29,6 @@ using cudf_interop::require_non_negative_i32;
 using cudf_interop::require_size_type_from_size_t;
 
 namespace {
-thread_local int32_t g_fail_column_handle_release_countdown = -1;
-
-void maybe_fail_column_handle_release()
-{
-  if (g_fail_column_handle_release_countdown < 0) { return; }
-  if (g_fail_column_handle_release_countdown == 0) {
-    g_fail_column_handle_release_countdown = -1;
-    throw std::bad_alloc{};
-  }
-  --g_fail_column_handle_release_countdown;
-}
-
 bool column_parent_stores_direct_element_buffer(cudf::type_id id)
 {
   switch (id) {
@@ -75,9 +64,8 @@ std::size_t cudf_column_view_payload_size_bytes(cudf::column_view const& column,
 
   if (column.type().id() == cudf::type_id::STRING) {
     cudf::strings_column_view const strings{column};
-    total = checked_size_add(total,
-                             static_cast<std::size_t>(strings.chars_size(stream)),
-                             "sizing string characters");
+    total = checked_size_add(
+      total, static_cast<std::size_t>(strings.chars_size(stream)), "sizing string characters");
   } else if (column_parent_stores_direct_element_buffer(column.type().id())) {
     auto const values_bytes =
       checked_size_mul(static_cast<std::size_t>(column.size()),
@@ -87,11 +75,10 @@ std::size_t cudf_column_view_payload_size_bytes(cudf::column_view const& column,
   }
 
   if (column.nullable()) {
-    auto const mask_bytes =
-      checked_size_mul(static_cast<std::size_t>(
-                         cudf::num_bitmask_words(static_cast<cudf::size_type>(column.size()))),
-                       sizeof(cudf::bitmask_type),
-                       "sizing column validity mask");
+    auto const mask_bytes = checked_size_mul(static_cast<std::size_t>(cudf::num_bitmask_words(
+                                               static_cast<cudf::size_type>(column.size()))),
+                                             sizeof(cudf::bitmask_type),
+                                             "sizing column validity mask");
     total = checked_size_add(total, mask_bytes, "accumulating column validity mask");
   }
 
@@ -335,9 +322,8 @@ class foreign_fixed_width_column_handle_state final : public cudf_column_handle_
 
   [[nodiscard]] std::size_t device_allocated_size() const override
   {
-    return checked_size_add(_values_byte_len,
-                            _common.validity_byte_len,
-                            "sizing foreign fixed-width allocation");
+    return checked_size_add(
+      _values_byte_len, _common.validity_byte_len, "sizing foreign fixed-width allocation");
   }
 
  private:
@@ -399,12 +385,10 @@ class foreign_binary_like_column_handle_state final : public cudf_column_handle_
 
   [[nodiscard]] std::size_t device_allocated_size() const override
   {
-    auto total = checked_size_add(_chars_byte_len,
-                                  _offsets_byte_len,
-                                  "sizing foreign binary-like data and offsets");
-    return checked_size_add(total,
-                            _common.validity_byte_len,
-                            "sizing foreign binary-like validity");
+    auto total = checked_size_add(
+      _chars_byte_len, _offsets_byte_len, "sizing foreign binary-like data and offsets");
+    return checked_size_add(
+      total, _common.validity_byte_len, "sizing foreign binary-like validity");
   }
 
  private:
@@ -467,12 +451,10 @@ class foreign_list_column_handle_state final : public cudf_column_handle_state {
 
   [[nodiscard]] std::size_t device_allocated_size() const override
   {
-    auto total = checked_size_add(_offsets_byte_len,
-                                  _common.validity_byte_len,
-                                  "sizing foreign list offsets and validity");
-    return checked_size_add(total,
-                            _child->device_allocated_size(),
-                            "sizing foreign list child allocation");
+    auto total = checked_size_add(
+      _offsets_byte_len, _common.validity_byte_len, "sizing foreign list offsets and validity");
+    return checked_size_add(
+      total, _child->device_allocated_size(), "sizing foreign list child allocation");
   }
 
  private:
@@ -525,9 +507,8 @@ class foreign_struct_column_handle_state final : public cudf_column_handle_state
   {
     std::size_t total = _common.validity_byte_len;
     for (auto const& child : _children) {
-      total = checked_size_add(total,
-                               child->device_allocated_size(),
-                               "accumulating foreign struct child allocation");
+      total = checked_size_add(
+        total, child->device_allocated_size(), "accumulating foreign struct child allocation");
     }
     return total;
   }
@@ -592,9 +573,8 @@ class foreign_dictionary_column_handle_state final : public cudf_column_handle_s
     auto total = checked_size_add(_indices_byte_len,
                                   _common.validity_byte_len,
                                   "sizing foreign dictionary indices and validity");
-    return checked_size_add(total,
-                            _keys->device_allocated_size(),
-                            "sizing foreign dictionary keys allocation");
+    return checked_size_add(
+      total, _keys->device_allocated_size(), "sizing foreign dictionary keys allocation");
   }
 
  private:
@@ -748,9 +728,8 @@ class column_state_table_handle_state final : public cudf_table_handle_state {
   {
     std::size_t total = 0;
     for (auto const& column : _columns) {
-      total = checked_size_add(total,
-                               column->payload_size(stream),
-                               "accumulating foreign table column payload");
+      total = checked_size_add(
+        total, column->payload_size(stream), "accumulating foreign table column payload");
     }
     return total;
   }
@@ -759,9 +738,8 @@ class column_state_table_handle_state final : public cudf_table_handle_state {
   {
     std::size_t total = 0;
     for (auto const& column : _columns) {
-      total = checked_size_add(total,
-                               column->device_allocated_size(),
-                               "accumulating foreign table column allocation");
+      total = checked_size_add(
+        total, column->device_allocated_size(), "accumulating foreign table column allocation");
     }
     return total;
   }
@@ -792,39 +770,6 @@ class column_state_table_handle_state final : public cudf_table_handle_state {
   std::vector<std::unique_ptr<cudf_column_handle_state>> _columns;
 };
 }  // namespace
-
-extern "C" void cudf_test_fail_column_handle_release_after(int32_t successful_releases)
-{
-  g_fail_column_handle_release_countdown = successful_releases;
-}
-
-extern "C" cudf_status_t cudf_test_checked_owning_handle_size_add(std::size_t left,
-                                                                  std::size_t right,
-                                                                  std::size_t* out)
-{
-  CUDF_RUST_NULL_CHECK(out, "out is null");
-  *out = 0;
-  CUDF_RUST_TRY
-  {
-    *out = checked_size_add(left, right, "testing owning-handle checked addition");
-    return CUDF_SUCCESS;
-  }
-  CUDF_RUST_CATCH
-}
-
-extern "C" cudf_status_t cudf_test_checked_owning_handle_size_mul(std::size_t left,
-                                                                  std::size_t right,
-                                                                  std::size_t* out)
-{
-  CUDF_RUST_NULL_CHECK(out, "out is null");
-  *out = 0;
-  CUDF_RUST_TRY
-  {
-    *out = checked_size_mul(left, right, "testing owning-handle checked multiplication");
-    return CUDF_SUCCESS;
-  }
-  CUDF_RUST_CATCH
-}
 
 std::unique_ptr<cudf::column> cudf_column_handle_state::release_native_column()
 {
@@ -866,14 +811,14 @@ cudf_column_handle cudf_release_column_handle(std::unique_ptr<cudf::column> colu
 
 cudf_column_handle cudf_release_column_handle(std::unique_ptr<cudf_column_handle_state> column)
 {
-  maybe_fail_column_handle_release();
-  return static_cast<cudf_column_handle>(column.release());
+  if (cudf::rust::test_support::take_column_handle_release_failure()) { throw std::bad_alloc{}; }
+  return reinterpret_cast<cudf_column_handle>(column.release());
 }
 
 cudf_column_handle cudf_publish_column_handle(std::unique_ptr<cudf_column_handle_state>& column)
 {
-  maybe_fail_column_handle_release();
-  return static_cast<cudf_column_handle>(column.release());
+  if (cudf::rust::test_support::take_column_handle_release_failure()) { throw std::bad_alloc{}; }
+  return reinterpret_cast<cudf_column_handle>(column.release());
 }
 
 cudf_table_handle cudf_release_table_handle(std::unique_ptr<cudf::table> table)
@@ -890,7 +835,7 @@ cudf_table_handle cudf_release_table_handle(std::unique_ptr<cudf::table> table,
 
 cudf_table_handle cudf_release_table_handle(std::unique_ptr<cudf_table_handle_state> table)
 {
-  return static_cast<cudf_table_handle>(table.release());
+  return reinterpret_cast<cudf_table_handle>(table.release());
 }
 
 cudf_status_t cudf_destroy_column_handle_under_provenance(cudf_column_handle handle) noexcept

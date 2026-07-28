@@ -1,4 +1,4 @@
-#include "error.h"
+#include "cudf_rust/error.h"
 
 #include <cudf/utilities/error.hpp>
 
@@ -87,38 +87,6 @@ cudf_status_t translate_exception_impl(cudf_status_t runtime_error_status)
 cudf_status_t translate_exception() { return translate_exception_impl(CUDF_ERROR_UNKNOWN); }
 
 cudf_status_t translate_io_exception() { return translate_exception_impl(CUDF_ERROR_IO); }
-
-extern "C" {
-cudf_status_t cudf_test_throw_runtime_error()
-{
-  cudf_clear_error();
-  try {
-    throw std::runtime_error("non-io runtime failure");
-  } catch (...) {
-    return translate_exception();
-  }
-}
-
-cudf_status_t cudf_test_throw_bad_alloc()
-{
-  cudf_clear_error();
-  try {
-    throw std::bad_alloc();
-  } catch (...) {
-    return translate_exception();
-  }
-}
-
-cudf_status_t cudf_test_throw_invalid_argument()
-{
-  cudf_clear_error();
-  try {
-    throw std::invalid_argument("invalid argument from test shim");
-  } catch (...) {
-    return translate_exception();
-  }
-}
-}  // extern "C"
 
 // Macro used throughout the C shim to wrap function bodies.
 // Usage:

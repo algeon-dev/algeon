@@ -26,6 +26,7 @@ project(
 option(CUDF_USE_PER_THREAD_DEFAULT_STREAM "Build with per-thread default stream" OFF)
 option(CUDA_STATIC_RUNTIME "Statically link the CUDA runtime" OFF)
 option(CUDF_RUST_ENABLE_CLANG_TIDY "Run clang-tidy for cudf-nexus-sys/native while building" OFF)
+option(CUDF_RUST_ENABLE_TEST_HOOKS "Build the test-only cudf-rust hook ABI" OFF)
 
 # ##################################################################################################
 # * lint configuration ----------------------------------------------------------------------------
@@ -90,7 +91,7 @@ if(CUDF_RUST_HAS_CUDA_MEMPOOL_MAX_SIZE)
 else()
   add_compile_definitions(CUDF_RUST_HAS_CUDA_MEMPOOL_MAX_SIZE=0)
 endif()
-message(STATUS "CUDA private-pool hard ceiling support: ${CUDF_RUST_HAS_CUDA_MEMPOOL_MAX_SIZE}")
+message(STATUS "CUDA private-pool max-size API declarations: ${CUDF_RUST_HAS_CUDA_MEMPOOL_MAX_SIZE}")
 
 if(CUDF_USE_PER_THREAD_DEFAULT_STREAM)
   add_compile_definitions(CUDA_API_PER_THREAD_DEFAULT_STREAM CUDF_USE_PER_THREAD_DEFAULT_STREAM)
@@ -209,18 +210,6 @@ elseif(DEFINED KvikIO_REMOTE_SUPPORT)
   else()
     set(CUDF_RUST_LIBCUDF_KVIKIO_REMOTE_IO_STATUS "disabled")
   endif()
-elseif(DEFINED KvikIO_REMOTE_SUPPORT)
-  if(KvikIO_REMOTE_SUPPORT)
-    set(CUDF_RUST_LIBCUDF_KVIKIO_REMOTE_IO_STATUS "enabled")
-  else()
-    set(CUDF_RUST_LIBCUDF_KVIKIO_REMOTE_IO_STATUS "disabled")
-  endif()
-elseif(DEFINED KvikIO_REMOTE_SUPPORT)
-  if(KvikIO_REMOTE_SUPPORT)
-    set(CUDF_RUST_LIBCUDF_KVIKIO_REMOTE_IO_STATUS "enabled")
-  else()
-    set(CUDF_RUST_LIBCUDF_KVIKIO_REMOTE_IO_STATUS "disabled")
-  endif()
 endif()
 if(CUDF_RUST_LIBCUDF_KVIKIO_REMOTE_IO_STATUS STREQUAL "enabled" AND NOT TARGET kvikio::kvikio)
   message(
@@ -232,6 +221,36 @@ message(STATUS "libcudf KvikIO remote IO build status: ${CUDF_RUST_LIBCUDF_KVIKI
 
 # ##################################################################################################
 # * library target --------------------------------------------------------------------------------
+
+add_library(cudf_rust_rmm_interop SHARED src/rmm_interop_bridge.cpp)
+
+target_include_directories(
+  cudf_rust_rmm_interop
+  PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src"
+)
+
+set_target_properties(
+  cudf_rust_rmm_interop
+  PROPERTIES BUILD_RPATH "\$ORIGIN"
+             INSTALL_RPATH "\$ORIGIN"
+             CXX_STANDARD 20
+             CXX_STANDARD_REQUIRED ON
+             POSITION_INDEPENDENT_CODE ON
+)
+
+target_compile_options(
+  cudf_rust_rmm_interop
+  PRIVATE "$<$<COMPILE_LANGUAGE:CXX>:${CUDF_CXX_FLAGS}>"
+)
+
+target_compile_definitions(
+  cudf_rust_rmm_interop
+  PRIVATE "$<$<COMPILE_LANGUAGE:CXX>:${CUDF_CXX_DEFINITIONS}>"
+)
+
+target_link_libraries(cudf_rust_rmm_interop PRIVATE cudf::cudf)
+target_link_options(cudf_rust_rmm_interop PRIVATE "-Wl,--no-undefined")
 
 add_library(
   cudf_rust SHARED
@@ -249,12 +268,14 @@ add_library(
   src/scalar.cpp
   src/stream.cpp
   src/event.cpp
-  src/rmm.cpp
+  src/memory/resource.cpp
+  src/memory/manager.cpp
+  src/memory/reservation.cpp
+  src/memory/query_domain.cpp
   src/execution_context.cpp
   src/io_parquet.cpp
   src/io_csv.cpp
   src/io_json.cpp
-  src/io_test_hooks.cpp
   src/sorting.cpp
   src/partitioning.cpp
   src/filter.cpp
@@ -268,6 +289,9 @@ add_library(
   src/binary.cpp
   src/reduction.cpp
   src/concatenate.cpp
+  src/reshape.cpp
+  src/matrix_pack.cu
+  src/validation.cu
   src/dictionary.cpp
   src/datetime.cpp
   src/hashing.cpp
@@ -279,13 +303,29 @@ add_library(
   src/device.cpp
   src/abi_checks.cpp
   src/c_header_smoke.c
+  src/cpp_header_smoke.cpp
 )
+if(CUDF_RUST_ENABLE_TEST_HOOKS)
+  target_sources(
+    cudf_rust
+    PRIVATE src/test_support.cpp
+            src/memory/test_support.cpp
+            src/io_test_hooks.cpp
+  )
+  target_compile_definitions(cudf_rust PRIVATE CUDF_RUST_ENABLE_TEST_HOOKS=1)
+endif()
 if(CUDF_RUST_ENABLE_CLANG_TIDY)
+  enable_clang_tidy(cudf_rust_rmm_interop)
   enable_clang_tidy(cudf_rust)
 endif()
 
 target_include_directories(
-  cudf_rust PUBLIC "${CMAKE_SOURCE_DIR}/include" "${CMAKE_SOURCE_DIR}/src"
+  cudf_rust
+  PUBLIC
+    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+    "$<INSTALL_INTERFACE:include>"
+  PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src"
 )
 
 set_target_properties(
@@ -315,9 +355,16 @@ elseif(CUDF_RUST_LIBCUDF_KVIKIO_REMOTE_IO_STATUS STREQUAL "disabled")
   target_compile_definitions(cudf_rust PRIVATE CUDF_RUST_LIBCUDF_KVIKIO_REMOTE_IO_DISABLED)
 endif()
 
-target_link_options(cudf_rust PRIVATE "-Wl,--no-undefined")
+set(CUDF_RUST_VERSION_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/cmake/cudf-rust.map")
+set_property(TARGET cudf_rust APPEND PROPERTY LINK_DEPENDS "${CUDF_RUST_VERSION_SCRIPT}")
+target_link_options(
+  cudf_rust
+  PRIVATE
+    "-Wl,--no-undefined"
+    "-Wl,--version-script=${CUDF_RUST_VERSION_SCRIPT}"
+)
 
-target_link_libraries(cudf_rust PUBLIC cudf::cudf)
+target_link_libraries(cudf_rust PUBLIC cudf::cudf PRIVATE cudf_rust_rmm_interop)
 if(TARGET kvikio::kvikio)
   target_link_libraries(cudf_rust PUBLIC kvikio::kvikio)
 endif()
@@ -344,6 +391,26 @@ configure_file("${CMAKE_CURRENT_SOURCE_DIR}/cmake/cargo-link.txt.in" "${CUDF_RUS
 # ##################################################################################################
 # * install ---------------------------------------------------------------------------------------
 
-install(TARGETS cudf_rust LIBRARY DESTINATION lib)
-install(DIRECTORY include/ DESTINATION include)
+install(TARGETS cudf_rust cudf_rust_rmm_interop LIBRARY DESTINATION lib)
+# Remove headers installed by the former flat layout. CMake installs update
+# files but do not remove outputs that disappeared from the install manifest.
+install(
+  CODE [[
+    file(GLOB cudf_rust_legacy_public_headers "${CMAKE_INSTALL_PREFIX}/include/*.h")
+    if(cudf_rust_legacy_public_headers)
+      file(REMOVE ${cudf_rust_legacy_public_headers})
+    endif()
+  ]]
+)
+if(NOT CUDF_RUST_ENABLE_TEST_HOOKS)
+  install(
+    CODE [[
+      file(REMOVE "${CMAKE_INSTALL_PREFIX}/include/cudf_rust/test_support.h")
+    ]]
+  )
+endif()
+install(DIRECTORY include/cudf_rust/ DESTINATION include/cudf_rust PATTERN "test_support.h" EXCLUDE)
+if(CUDF_RUST_ENABLE_TEST_HOOKS)
+  install(FILES include/cudf_rust/test_support.h DESTINATION include/cudf_rust)
+endif()
 install(FILES "${CUDF_RUST_CARGO_LINK_MANIFEST}" DESTINATION share/cudf_rust)

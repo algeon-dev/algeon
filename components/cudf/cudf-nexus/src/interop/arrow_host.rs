@@ -126,6 +126,10 @@ impl ArrowHostSchema {
         Self { fields, row_count }
     }
 
+    pub(crate) fn with_row_count(&self, row_count: usize) -> Self {
+        Self { fields: self.fields.clone(), row_count }
+    }
+
     /// Validated fields in schema order.
     pub fn fields(&self) -> &[ArrowHostField] {
         &self.fields
@@ -162,9 +166,10 @@ impl ArrowHostSchema {
 /// This is a copy-free planner/schema helper. It follows the same support
 /// envelope as [`DataFrame::from_record_batch`]: numeric types, Boolean,
 /// Decimal128, Date32, timestamps, durations with Arrow time units, Utf8,
-/// LargeUtf8, Utf8View, and top-level `List` / `LargeList` with string-like
-/// children. Timestamp timezone metadata is accepted as an Arrow schema
-/// contract; cuDF stores the physical epoch values and resolution.
+/// LargeUtf8, Utf8View, top-level `List` / `LargeList` with string-like or
+/// numeric children, and positive-width `FixedSizeList` with numeric children.
+/// Timestamp timezone metadata is accepted as an Arrow schema contract; cuDF
+/// stores the physical epoch values and resolution.
 pub fn cudf_dtype_from_arrow_type(dt: &ArrowDataType) -> Result<DataType> {
     cudf_dtype_from_arrow_type_in(dt, "arrow_host::cudf_dtype_from_arrow_type")
 }
@@ -196,13 +201,20 @@ pub fn is_supported_arrow_numeric_type(dt: &ArrowDataType) -> bool {
 /// the same as Arrow import mapping: Decimal32, Decimal64, and Decimal128 all
 /// export as Arrow Decimal128 with the same scale because libcudf retains
 /// decimal scale but not Arrow precision metadata.
+///
+/// Nested cudf dtypes do not retain their child schema in [`DataType`], so
+/// this dtype-only predicate deliberately returns `false` for Arrow list
+/// types. Owners with a concrete column view, such as `GpuRecordBatch`, must
+/// validate the actual child dtype and any fixed-size shape contract.
 pub fn cudf_dtype_can_export_to_arrow_type(cudf_dtype: DataType, arrow_type: &ArrowDataType) -> bool {
     match arrow_type {
         ArrowDataType::Decimal128(_, scale) if cudf_dtype.id().is_decimal() => {
             cudf_dtype.scale() == arrow_decimal_scale_to_cudf_scale(*scale)
         },
-        ArrowDataType::List(field) | ArrowDataType::LargeList(field) if cudf_dtype.id() == TypeId::List => {
-            list_string_child_is_supported(field)
+        ArrowDataType::List(_) | ArrowDataType::LargeList(_) | ArrowDataType::FixedSizeList(_, _)
+            if cudf_dtype.id() == TypeId::List =>
+        {
+            false
         },
         _ => cudf_dtype_from_arrow_type(arrow_type)
             .map(|arrow_cudf_dtype| arrow_cudf_dtype == cudf_dtype)
@@ -323,6 +335,9 @@ fn estimate_empty_arrow_host_column_memory_bytes(arrow_type: &ArrowDataType, ope
             let child_buffers = estimate_empty_arrow_host_column_memory_bytes(child.data_type(), operation)?;
             checked_size_add(root_offsets, child_buffers, operation, "sizing empty Arrow list buffers")
         },
+        ArrowDataType::FixedSizeList(child, dimension) if *dimension > 0 => {
+            estimate_empty_arrow_host_column_memory_bytes(child.data_type(), operation)
+        },
         _ => Err(Error::new_with(
             ErrorCode::InvariantViolation,
             operation,
@@ -368,44 +383,84 @@ fn estimate_arrow_host_column_memory_bytes(
             let child_rows = child_view.len().map_err(|error| error.reanchor(operation))?;
             let child_nullable = child_view.nullable().map_err(|error| error.reanchor(operation))?;
 
-            let root_structural = checked_size_add(
-                cudf_offset_payload_bytes(rows, operation)?,
-                cudf_validity_payload_bytes(rows, nullable, operation)?,
-                operation,
-                "sizing cuDF list root structure",
-            )?;
-            let child_structural = checked_size_add(
-                cudf_offset_payload_bytes(child_rows, operation)?,
-                cudf_validity_payload_bytes(child_rows, child_nullable, operation)?,
-                operation,
-                "sizing cuDF list string child structure",
-            )?;
-            let structural = checked_size_add(
-                root_structural,
-                child_structural,
-                operation,
-                "sizing cuDF list and string child structure",
-            )?;
-            let chars_bytes = cudf_payload_bytes.checked_sub(structural).ok_or_else(|| {
-                Error::new_with(
-                    ErrorCode::InvariantViolation,
-                    operation,
-                    "cuDF List<String> payload is smaller than its structural buffers",
-                )
-                .with_detail("cudf_payload_bytes", cudf_payload_bytes.to_string())
-                .with_detail("structural_bytes", structural.to_string())
-            })?;
-
             let root_offset_width = if matches!(arrow_type, ArrowDataType::LargeList(_)) { 8 } else { 4 };
             let root_offsets = estimate_offset_capacity(rows, root_offset_width, operation)?;
-            let child_buffers = estimate_arrow_string_buffers(child_rows, chars_bytes, child.data_type(), operation)?;
+            if numeric_interop_dtype(child.data_type()).is_some() {
+                let child_values = estimate_arrow_numeric_values_capacity(child_rows, child.data_type(), operation)?;
+                let child_validity = estimate_arrow_validity_capacity(child_rows, child_nullable, operation)?;
+                checked_size_add(
+                    checked_size_add(root_offsets, child_values, operation, "sizing Arrow numeric list values")?,
+                    child_validity,
+                    operation,
+                    "sizing Arrow numeric list child validity",
+                )?
+            } else {
+                let root_structural = checked_size_add(
+                    cudf_offset_payload_bytes(rows, operation)?,
+                    cudf_validity_payload_bytes(rows, nullable, operation)?,
+                    operation,
+                    "sizing cuDF list root structure",
+                )?;
+                let child_structural = checked_size_add(
+                    cudf_offset_payload_bytes(child_rows, operation)?,
+                    cudf_validity_payload_bytes(child_rows, child_nullable, operation)?,
+                    operation,
+                    "sizing cuDF list string child structure",
+                )?;
+                let structural = checked_size_add(
+                    root_structural,
+                    child_structural,
+                    operation,
+                    "sizing cuDF list and string child structure",
+                )?;
+                let chars_bytes = cudf_payload_bytes.checked_sub(structural).ok_or_else(|| {
+                    Error::new_with(
+                        ErrorCode::InvariantViolation,
+                        operation,
+                        "cuDF List<String> payload is smaller than its structural buffers",
+                    )
+                    .with_detail("cudf_payload_bytes", cudf_payload_bytes.to_string())
+                    .with_detail("structural_bytes", structural.to_string())
+                })?;
+
+                let child_buffers =
+                    estimate_arrow_string_buffers(child_rows, chars_bytes, child.data_type(), operation)?;
+                let child_validity = estimate_arrow_validity_capacity(child_rows, child_nullable, operation)?;
+                checked_size_add(
+                    checked_size_add(root_offsets, child_buffers, operation, "sizing Arrow list child buffers")?,
+                    child_validity,
+                    operation,
+                    "sizing Arrow list child validity",
+                )?
+            }
+        },
+        ArrowDataType::FixedSizeList(child, dimension) if *dimension > 0 => {
+            let child_view = view.list_sliced_child().map_err(|error| error.reanchor(operation))?;
+            let child_rows = child_view.len().map_err(|error| error.reanchor(operation))?;
+            let child_nullable = child_view.nullable().map_err(|error| error.reanchor(operation))?;
+            let dimension = usize::try_from(*dimension).map_err(|_| {
+                Error::new_with(ErrorCode::ValueOutOfRange, operation, "FixedSizeList dimension must be positive")
+                    .with_detail("dimension", dimension.to_string())
+            })?;
+            let expected_child_rows = rows.checked_mul(dimension).ok_or_else(|| {
+                Error::new_with(ErrorCode::SizeOverflow, operation, "FixedSizeList child row count overflowed usize")
+                    .with_detail("rows", rows.to_string())
+                    .with_detail("dimension", dimension.to_string())
+            })?;
+            if child_rows != expected_child_rows {
+                return Err(Error::new_with(
+                    ErrorCode::ColumnLengthMismatch,
+                    operation,
+                    "cuDF list rows do not satisfy the requested FixedSizeList dimension",
+                )
+                .with_fact(crate::core::error::FACT_EXPECTED_ROWS, expected_child_rows)
+                .with_fact(crate::core::error::FACT_ACTUAL_ROWS, child_rows)
+                .with_detail("dimension", dimension.to_string())
+                .with_detail("reason", "fixed_size_list_dimension_mismatch"));
+            }
+            let child_values = estimate_arrow_numeric_values_capacity(child_rows, child.data_type(), operation)?;
             let child_validity = estimate_arrow_validity_capacity(child_rows, child_nullable, operation)?;
-            checked_size_add(
-                checked_size_add(root_offsets, child_buffers, operation, "sizing Arrow list child buffers")?,
-                child_validity,
-                operation,
-                "sizing Arrow list child validity",
-            )?
+            checked_size_add(child_values, child_validity, operation, "sizing Arrow FixedSizeList child buffers")?
         },
         _ => {
             return Err(Error::new_with(
@@ -461,6 +516,28 @@ fn estimate_arrow_string_buffers(
     };
     let chars = estimate_arrow_buffer_capacity(chars_bytes, operation)?;
     checked_size_add(descriptor, chars, operation, "sizing Arrow string descriptor and values buffers")
+}
+
+fn estimate_arrow_numeric_values_capacity(
+    rows: usize,
+    arrow_type: &ArrowDataType,
+    operation: &'static str,
+) -> Result<usize> {
+    let width = match arrow_type {
+        ArrowDataType::Int8 | ArrowDataType::UInt8 => 1,
+        ArrowDataType::Int16 | ArrowDataType::UInt16 => 2,
+        ArrowDataType::Int32 | ArrowDataType::UInt32 | ArrowDataType::Float32 => 4,
+        ArrowDataType::Int64 | ArrowDataType::UInt64 | ArrowDataType::Float64 => 8,
+        _ => {
+            return Err(Error::new_with(
+                ErrorCode::InvariantViolation,
+                operation,
+                "validated numeric list child has an unsupported Arrow type",
+            )
+            .with_detail("arrow_type", format!("{arrow_type:?}")));
+        },
+    };
+    estimate_fixed_width_capacity(rows, width, operation)
 }
 
 fn estimate_fixed_width_capacity(rows: usize, width: usize, operation: &'static str) -> Result<usize> {
@@ -552,7 +629,28 @@ fn cudf_dtype_from_arrow_type_in(dt: &ArrowDataType, operation: &'static str) ->
             DataType::fixed_point(TypeId::Decimal128, arrow_decimal_scale_to_cudf_scale(*scale))
         },
         ArrowDataType::Utf8 | ArrowDataType::LargeUtf8 | ArrowDataType::Utf8View => DataType::new(TypeId::String),
-        ArrowDataType::List(field) | ArrowDataType::LargeList(field) if list_string_child_is_supported(field) => {
+        ArrowDataType::List(field) | ArrowDataType::LargeList(field) if list_child_is_supported(field) => {
+            DataType::new(TypeId::List)
+        },
+        ArrowDataType::FixedSizeList(field, dimension) => {
+            if *dimension <= 0 {
+                return Err(Error::new_with(
+                    ErrorCode::ValueOutOfRange,
+                    operation,
+                    "Arrow FixedSizeList dimension must be positive for cudf conversion",
+                )
+                .with_detail("dimension", dimension.to_string())
+                .with_detail("reason", "non_positive_fixed_size_list_dimension"));
+            }
+            if !list_numeric_child_is_supported(field) {
+                return Err(Error::new_with(
+                    ErrorCode::UnsupportedDtype,
+                    operation,
+                    format!("unsupported Arrow FixedSizeList child type for cudf conversion: {:?}", field.data_type()),
+                )
+                .with_detail("arrow_type", format!("{:?}", dt))
+                .with_detail("reason", "unsupported_fixed_size_list_child_type"));
+            }
             DataType::new(TypeId::List)
         },
         _ => {
@@ -571,6 +669,14 @@ fn cudf_dtype_from_arrow_type_in(dt: &ArrowDataType, operation: &'static str) ->
 
 fn list_string_child_is_supported(field: &FieldRef) -> bool {
     matches!(field.data_type(), ArrowDataType::Utf8 | ArrowDataType::LargeUtf8 | ArrowDataType::Utf8View)
+}
+
+fn list_numeric_child_is_supported(field: &FieldRef) -> bool {
+    numeric_interop_dtype(field.data_type()).is_some()
+}
+
+fn list_child_is_supported(field: &FieldRef) -> bool {
+    list_string_child_is_supported(field) || list_numeric_child_is_supported(field)
 }
 
 fn cudf_timestamp_dtype(unit: &TimeUnit) -> DataType {
@@ -646,7 +752,7 @@ impl DataFrame {
     /// - `DurationSeconds`, `DurationMilliseconds`, `DurationMicroseconds`,
     ///   and `DurationNanoseconds` as Arrow durations.
     /// - `String` (converted to Arrow `Utf8`)
-    /// - `List` with `String` children (converted to Arrow `List<Utf8>`)
+    /// - `List` with `String` or numeric children (converted to Arrow `List`)
     ///
     /// # Errors
     ///
@@ -1355,11 +1461,11 @@ fn list_to_arrow(cv: &ColumnView<'_>) -> Result<Arc<dyn Array>> {
 
     let child_view = cv.list_sliced_child()?;
     let child_dtype = child_view.data_type()?;
-    if child_dtype.id() != TypeId::String {
+    if child_dtype.id() != TypeId::String && !child_dtype.id().is_numeric() {
         return Err(Error::new_with(
             ErrorCode::UnsupportedDtype,
             operation,
-            "Arrow host export currently supports only List<String> columns",
+            "Arrow host export supports only List<String> and List<numeric> columns",
         )
         .with_fact(FACT_TYPE_ID, child_dtype.id())
         .with_detail("reason", "unsupported_list_child_type"));
@@ -1584,7 +1690,7 @@ fn arrow_array_to_column(runtime: &Runtime, arr: &dyn Array, field_name: &str) -
             let dtype = DataType::fixed_point(TypeId::Decimal128, arrow_decimal_scale_to_cudf_scale(*scale));
             decimal128_array_to_column(runtime, arr, dtype)
         },
-        ArrowDataType::List(field) if list_string_child_is_supported(field) => {
+        ArrowDataType::List(field) if list_child_is_supported(field) => {
             let list = arr.as_any().downcast_ref::<ListArray>().ok_or_else(|| {
                 unexpected_arrow_array_layout_error(
                     "arrow::list_array_to_column",
@@ -1595,7 +1701,7 @@ fn arrow_array_to_column(runtime: &Runtime, arr: &dyn Array, field_name: &str) -
             })?;
             list_array_to_column(runtime, field, list.values().as_ref(), list.value_offsets(), list.nulls(), field_name)
         },
-        ArrowDataType::LargeList(field) if list_string_child_is_supported(field) => {
+        ArrowDataType::LargeList(field) if list_child_is_supported(field) => {
             let list = arr.as_any().downcast_ref::<LargeListArray>().ok_or_else(|| {
                 unexpected_arrow_array_layout_error(
                     "arrow::large_list_array_to_column",
@@ -1605,6 +1711,17 @@ fn arrow_array_to_column(runtime: &Runtime, arr: &dyn Array, field_name: &str) -
                 )
             })?;
             list_array_to_column(runtime, field, list.values().as_ref(), list.value_offsets(), list.nulls(), field_name)
+        },
+        ArrowDataType::FixedSizeList(field, dimension) if *dimension > 0 && list_numeric_child_is_supported(field) => {
+            let list = arr.as_any().downcast_ref::<FixedSizeListArray>().ok_or_else(|| {
+                unexpected_arrow_array_layout_error(
+                    "arrow::fixed_size_list_array_to_column",
+                    "expected FixedSizeListArray for FixedSizeList type",
+                    dt,
+                    arr.data_type(),
+                )
+            })?;
+            fixed_size_list_array_to_column(runtime, field, list, field_name)
         },
         ArrowDataType::Utf8 => string_array_to_column(runtime, arr),
         ArrowDataType::LargeUtf8 => large_string_array_to_column(runtime, arr),
@@ -1658,6 +1775,18 @@ where
     let operation = "arrow::list_array_to_column";
     let (normalized_offsets, child_start, child_len) = normalize_list_offsets(offsets, operation, field_name)?;
     let child_values = values.slice(child_start, child_len);
+    if list_numeric_child_is_supported(child_field) {
+        return numeric_list_array_to_column(
+            runtime,
+            child_field,
+            child_values.as_ref(),
+            normalized_offsets,
+            nulls,
+            field_name,
+            operation,
+        );
+    }
+
     let (child_offsets, child_data, child_validity) =
         string_like_array_host_buffers(child_values.as_ref(), child_field.data_type(), operation)?;
     let list_offsets = encode_host_i32_values(&normalized_offsets);
@@ -1694,6 +1823,154 @@ where
         child_validity.validity,
         if child_field.is_nullable() { SchemaNullability::Nullable } else { SchemaNullability::NonNullable },
         ColumnLayout::BinaryLike { offsets: BufferId::new(2), data: BufferId::new(3) },
+    );
+    let export = PreparedColumnExport::try_new_with_semantic_columns(
+        list_column.clone(),
+        vec![list_column, child_column],
+        bindings,
+        ProducerReadiness::HostVisible,
+        super::host_export_diagnostics(),
+    )
+    .map_err(|error| error::from_interop_in(error, operation))?
+    .with_retained_host_buffers(retained_buffers);
+
+    Column::try_import_from_prepared_column_export_into_runtime(&export, runtime)
+        .map_err(|error| error::from_interop_in(error, operation))
+}
+
+fn fixed_size_list_array_to_column(
+    runtime: &Runtime,
+    child_field: &FieldRef,
+    list: &FixedSizeListArray,
+    field_name: &str,
+) -> Result<Column> {
+    let operation = "arrow::fixed_size_list_array_to_column";
+    let dimension = usize::try_from(list.value_length()).map_err(|_| {
+        Error::new_with(ErrorCode::ValueOutOfRange, operation, "Arrow FixedSizeList dimension must be positive")
+            .with_detail("field_name", field_name.to_string())
+            .with_detail("dimension", list.value_length().to_string())
+            .with_detail("reason", "non_positive_fixed_size_list_dimension")
+    })?;
+    if dimension == 0 {
+        return Err(Error::new_with(
+            ErrorCode::ValueOutOfRange,
+            operation,
+            "Arrow FixedSizeList dimension must be positive",
+        )
+        .with_detail("field_name", field_name.to_string())
+        .with_detail("dimension", "0")
+        .with_detail("reason", "non_positive_fixed_size_list_dimension"));
+    }
+
+    let child_len = list.len().checked_mul(dimension).ok_or_else(|| {
+        Error::new_with(ErrorCode::SizeOverflow, operation, "Arrow FixedSizeList child length overflowed usize")
+            .with_detail("field_name", field_name.to_string())
+            .with_detail("row_count", list.len().to_string())
+            .with_detail("dimension", dimension.to_string())
+            .with_detail("reason", "fixed_size_list_child_len_overflow")
+    })?;
+    if list.values().len() != child_len {
+        return Err(error::foreign_invariant_violation(
+            operation,
+            "Arrow FixedSizeList values length does not match row count times dimension",
+            "arrow_array",
+            "fixed_size_list_child_length_mismatch",
+            "ensure the FixedSizeList array has a valid child values layout",
+        )
+        .with_detail("field_name", field_name.to_string())
+        .with_detail("child_len", list.values().len().to_string())
+        .with_detail("expected_child_len", child_len.to_string()));
+    }
+
+    let offset_count = list.len().checked_add(1).ok_or_else(|| {
+        Error::new_with(ErrorCode::SizeOverflow, operation, "Arrow FixedSizeList offset count overflowed usize")
+            .with_detail("field_name", field_name.to_string())
+            .with_detail("row_count", list.len().to_string())
+            .with_detail("reason", "fixed_size_list_offset_count_overflow")
+    })?;
+    let mut normalized_offsets = Vec::with_capacity(offset_count);
+    for row in 0..=list.len() {
+        let offset = row.checked_mul(dimension).ok_or_else(|| {
+            Error::new_with(ErrorCode::SizeOverflow, operation, "Arrow FixedSizeList offset overflowed usize")
+                .with_detail("field_name", field_name.to_string())
+                .with_detail("row_index", row.to_string())
+                .with_detail("dimension", dimension.to_string())
+                .with_detail("reason", "fixed_size_list_offset_overflow")
+        })?;
+        normalized_offsets.push(i32::try_from(offset).map_err(|_| {
+            Error::new_with(
+                ErrorCode::ValueOutOfRange,
+                operation,
+                "Arrow FixedSizeList offsets exceed cuDF's Int32 list offset range",
+            )
+            .with_detail("field_name", field_name.to_string())
+            .with_detail("row_index", row.to_string())
+            .with_detail("offset_value", offset.to_string())
+            .with_detail("reason", "fixed_size_list_offset_i32_overflow")
+        })?);
+    }
+
+    numeric_list_array_to_column(
+        runtime,
+        child_field,
+        list.values().as_ref(),
+        normalized_offsets,
+        list.nulls(),
+        field_name,
+        operation,
+    )
+}
+
+fn numeric_list_array_to_column(
+    runtime: &Runtime,
+    child_field: &FieldRef,
+    values: &dyn Array,
+    normalized_offsets: Vec<i32>,
+    nulls: Option<&NullBuffer>,
+    field_name: &str,
+    operation: &'static str,
+) -> Result<Column> {
+    let child_dtype = numeric_interop_dtype(child_field.data_type()).ok_or_else(|| {
+        Error::new_with(ErrorCode::UnsupportedDtype, operation, "Arrow list child must be a supported numeric type")
+            .with_detail("field_name", field_name.to_string())
+            .with_detail("arrow_type", format!("{:?}", child_field.data_type()))
+            .with_detail("reason", "unsupported_numeric_list_child_type")
+    })?;
+    let (child_data, child_validity_mask) =
+        fixed_width_numeric_array_host_buffers(values, child_field.data_type(), operation)?;
+    let child_len = values.len();
+    let list_offsets = encode_host_i32_values(&normalized_offsets);
+    let root_validity = physical_validity_from_nulls(nulls, BufferId::new(1));
+    let child_validity = physical_validity_from_optional_mask(child_validity_mask, BufferId::new(3));
+
+    let mut bindings = Vec::new();
+    let mut retained_buffers = Vec::new();
+    push_host_binding(operation, &mut bindings, &mut retained_buffers, BufferId::new(0), list_offsets)?;
+    if let Some((buffer, _null_count)) = root_validity.buffer.as_ref() {
+        push_host_binding(operation, &mut bindings, &mut retained_buffers, BufferId::new(1), Arc::clone(buffer))?;
+    }
+    push_host_binding(operation, &mut bindings, &mut retained_buffers, BufferId::new(2), child_data)?;
+    if let Some((buffer, _null_count)) = child_validity.buffer.as_ref() {
+        push_host_binding(operation, &mut bindings, &mut retained_buffers, BufferId::new(3), Arc::clone(buffer))?;
+    }
+
+    let list_column = SemanticColumn::new(
+        ColumnId::new(0),
+        InteropDataType::new(InteropTypeId::List),
+        normalized_offsets.len().saturating_sub(1),
+        0,
+        root_validity.validity,
+        if nulls.is_some() { SchemaNullability::Nullable } else { SchemaNullability::NonNullable },
+        ColumnLayout::List { offsets: BufferId::new(0), child: ColumnId::new(1) },
+    );
+    let child_column = SemanticColumn::new(
+        ColumnId::new(1),
+        child_dtype,
+        child_len,
+        0,
+        child_validity.validity,
+        if child_field.is_nullable() { SchemaNullability::Nullable } else { SchemaNullability::NonNullable },
+        ColumnLayout::FixedWidth { values: BufferId::new(2) },
     );
     let export = PreparedColumnExport::try_new_with_semantic_columns(
         list_column.clone(),
@@ -1824,6 +2101,81 @@ fn push_host_binding(
     bindings.push(binding);
     retained_buffers.push(buffer);
     Ok(())
+}
+
+fn numeric_interop_dtype(data_type: &ArrowDataType) -> Option<InteropDataType> {
+    let type_id = match data_type {
+        ArrowDataType::Int8 => InteropTypeId::Int8,
+        ArrowDataType::Int16 => InteropTypeId::Int16,
+        ArrowDataType::Int32 => InteropTypeId::Int32,
+        ArrowDataType::Int64 => InteropTypeId::Int64,
+        ArrowDataType::UInt8 => InteropTypeId::UInt8,
+        ArrowDataType::UInt16 => InteropTypeId::UInt16,
+        ArrowDataType::UInt32 => InteropTypeId::UInt32,
+        ArrowDataType::UInt64 => InteropTypeId::UInt64,
+        ArrowDataType::Float32 => InteropTypeId::Float32,
+        ArrowDataType::Float64 => InteropTypeId::Float64,
+        _ => return None,
+    };
+    Some(InteropDataType::new(type_id))
+}
+
+/// Host-side buffers for a numeric fixed-width array: `(values, validity)`.
+type FixedWidthNumericHostBuffers = (Arc<[u8]>, Option<Vec<bool>>);
+
+fn fixed_width_numeric_array_host_buffers(
+    arr: &dyn Array,
+    expected_type: &ArrowDataType,
+    operation: &'static str,
+) -> Result<FixedWidthNumericHostBuffers> {
+    if arr.data_type() != expected_type {
+        return Err(Error::new_with(
+            ErrorCode::TypeMismatch,
+            operation,
+            "Arrow numeric list child array type must match its child field type",
+        )
+        .with_detail("expected_arrow_type", format!("{expected_type:?}"))
+        .with_detail("actual_arrow_type", format!("{:?}", arr.data_type()))
+        .with_detail("reason", "list_child_type_mismatch"));
+    }
+
+    macro_rules! primitive_bytes {
+        ($arrow_type:ty) => {{
+            let values = arr.as_any().downcast_ref::<PrimitiveArray<$arrow_type>>().ok_or_else(|| {
+                unexpected_arrow_array_layout_error(
+                    operation,
+                    "numeric list child has an unexpected Arrow primitive layout",
+                    expected_type,
+                    arr.data_type(),
+                )
+            })?;
+            Arc::<[u8]>::from(native_slice_as_bytes(values.values().as_ref()))
+        }};
+    }
+
+    let data = match expected_type {
+        ArrowDataType::Int8 => primitive_bytes!(arrow::datatypes::Int8Type),
+        ArrowDataType::Int16 => primitive_bytes!(arrow::datatypes::Int16Type),
+        ArrowDataType::Int32 => primitive_bytes!(arrow::datatypes::Int32Type),
+        ArrowDataType::Int64 => primitive_bytes!(arrow::datatypes::Int64Type),
+        ArrowDataType::UInt8 => primitive_bytes!(arrow::datatypes::UInt8Type),
+        ArrowDataType::UInt16 => primitive_bytes!(arrow::datatypes::UInt16Type),
+        ArrowDataType::UInt32 => primitive_bytes!(arrow::datatypes::UInt32Type),
+        ArrowDataType::UInt64 => primitive_bytes!(arrow::datatypes::UInt64Type),
+        ArrowDataType::Float32 => primitive_bytes!(arrow::datatypes::Float32Type),
+        ArrowDataType::Float64 => primitive_bytes!(arrow::datatypes::Float64Type),
+        _ => {
+            return Err(Error::new_with(
+                ErrorCode::UnsupportedDtype,
+                operation,
+                "Arrow list host import supports only fixed-width numeric children on this path",
+            )
+            .with_detail("arrow_type", format!("{expected_type:?}"))
+            .with_detail("reason", "unsupported_numeric_list_child_type"));
+        },
+    };
+    let validity = (arr.null_count() > 0).then(|| (0..arr.len()).map(|index| arr.is_valid(index)).collect());
+    Ok((data, validity))
 }
 
 /// Host-side buffers for a string-like array: `(offsets, data, validity)`.

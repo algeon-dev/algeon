@@ -1,4 +1,4 @@
-#include "dictionary.h"
+#include "cudf_rust/dictionary.h"
 
 #include "execution_context_internal.hpp"
 #include "shim_common.h"
@@ -26,14 +26,14 @@ cudf_status_t cudf_dictionary_encode_ex(cudf_column_view_handle input,
   CUDF_RUST_NULL_CHECK(input, "input is null");
   CUDF_RUST_TRY
   {
-    auto* view                      = static_cast<cudf::column_view*>(input);
+    auto* view                      = reinterpret_cast<cudf::column_view*>(input);
     auto indices_type               = cudf::data_type(to_cudf_type_id(indices_type_id));
     auto exec                       = std::unique_ptr<cudf_exec_context>{};
     cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
     {
       auto result = cudf::dictionary::encode(*view, indices_type, exec->stream, *exec->mr);
-      *out        = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
+      *out = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
     }
     return CUDF_SUCCESS;
   }
@@ -49,14 +49,14 @@ cudf_status_t cudf_dictionary_decode_ex(cudf_column_view_handle dict_column,
   CUDF_RUST_NULL_CHECK(dict_column, "dict_column is null");
   CUDF_RUST_TRY
   {
-    auto* view = static_cast<cudf::column_view*>(dict_column);
+    auto* view = reinterpret_cast<cudf::column_view*>(dict_column);
     cudf::dictionary_column_view dict_view(*view);
     auto exec                       = std::unique_ptr<cudf_exec_context>{};
     cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
     {
       auto result = cudf::dictionary::decode(dict_view, exec->stream, *exec->mr);
-      *out        = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
+      *out = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
     }
     return CUDF_SUCCESS;
   }
@@ -71,10 +71,10 @@ cudf_status_t cudf_dictionary_keys(cudf_column_view_handle dict_column,
   CUDF_RUST_NULL_CHECK(dict_column, "dict_column is null");
   CUDF_RUST_TRY
   {
-    auto* view = static_cast<cudf::column_view*>(dict_column);
+    auto* view = reinterpret_cast<cudf::column_view*>(dict_column);
     cudf::dictionary_column_view dict_view(*view);
     auto* keys = new cudf::column_view(dict_view.keys());
-    *out       = static_cast<cudf_column_view_handle>(keys);
+    *out       = reinterpret_cast<cudf_column_view_handle>(keys);
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -88,10 +88,10 @@ cudf_status_t cudf_dictionary_indices(cudf_column_view_handle dict_column,
   CUDF_RUST_NULL_CHECK(dict_column, "dict_column is null");
   CUDF_RUST_TRY
   {
-    auto* view = static_cast<cudf::column_view*>(dict_column);
+    auto* view = reinterpret_cast<cudf::column_view*>(dict_column);
     cudf::dictionary_column_view dict_view(*view);
     auto* indices = new cudf::column_view(dict_view.get_indices_annotated());
-    *out          = static_cast<cudf_column_view_handle>(indices);
+    *out          = reinterpret_cast<cudf_column_view_handle>(indices);
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -108,15 +108,15 @@ cudf_status_t cudf_dictionary_set_keys_ex(cudf_column_view_handle dict_column,
   CUDF_RUST_NULL_CHECK(keys, "keys is null");
   CUDF_RUST_TRY
   {
-    auto* view = static_cast<cudf::column_view*>(dict_column);
+    auto* view = reinterpret_cast<cudf::column_view*>(dict_column);
     cudf::dictionary_column_view dict_view(*view);
-    auto* keys_view                 = static_cast<cudf::column_view*>(keys);
+    auto* keys_view                 = reinterpret_cast<cudf::column_view*>(keys);
     auto exec                       = std::unique_ptr<cudf_exec_context>{};
     cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
     {
       auto result = cudf::dictionary::set_keys(dict_view, *keys_view, exec->stream, *exec->mr);
-      *out        = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
+      *out = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
     }
     return CUDF_SUCCESS;
   }
@@ -144,7 +144,7 @@ cudf_status_t cudf_dictionary_match_dictionaries_ex(const cudf_column_view_handl
     dict_views.reserve(num_columns);
     for (int32_t i = 0; i < num_columns; ++i) {
       CUDF_RUST_NULL_CHECK(dict_columns[i], "dict column view handle is null");
-      auto* view = static_cast<cudf::column_view*>(dict_columns[i]);
+      auto* view = reinterpret_cast<cudf::column_view*>(dict_columns[i]);
       dict_views.emplace_back(*view);
     }
     auto exec                       = std::unique_ptr<cudf_exec_context>{};
@@ -162,7 +162,8 @@ cudf_status_t cudf_dictionary_match_dictionaries_ex(const cudf_column_view_handl
     }
 
     for (int32_t i = 0; i < num_columns; ++i) {
-      columns[i] = cudf_release_column_handle(std::move(results[i]), cudf_capture_exec_provenance(*exec));
+      columns[i] =
+        cudf_release_column_handle(std::move(results[i]), cudf_capture_exec_provenance(*exec));
     }
 
     *out_columns = columns;

@@ -163,7 +163,7 @@ fn test_dataframe_json_read_rejects_missing_schema_metadata_for_nonempty_table()
 
     std::fs::write(&path, "{\"id\":1,\"value\":10}\n{\"id\":2,\"value\":20}\n").unwrap();
 
-    arm_next_io_metadata_fault(cudf_sys::CUDF_TEST_IO_METADATA_FAULT_ZERO_NAME_COUNT);
+    arm_next_io_metadata_fault(cudf_sys::test_support::CUDF_TEST_IO_METADATA_FAULT_ZERO_NAME_COUNT);
     let err = DataFrame::read_json(&rt, &path).expect_err("missing schema metadata should fail");
 
     assert_eq!(err.kind(), ErrorKind::InvariantViolation);

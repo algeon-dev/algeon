@@ -33,16 +33,10 @@ pub enum DuplicateKeepOption {
 impl DuplicateKeepOption {
     pub(crate) fn to_raw(self) -> cudf_sys::cudf_duplicate_keep_option_t {
         match self {
-            DuplicateKeepOption::KeepAny => cudf_sys::cudf_duplicate_keep_option_t::CUDF_DUPLICATE_KEEP_OPTION_KEEP_ANY,
-            DuplicateKeepOption::KeepFirst => {
-                cudf_sys::cudf_duplicate_keep_option_t::CUDF_DUPLICATE_KEEP_OPTION_KEEP_FIRST
-            },
-            DuplicateKeepOption::KeepLast => {
-                cudf_sys::cudf_duplicate_keep_option_t::CUDF_DUPLICATE_KEEP_OPTION_KEEP_LAST
-            },
-            DuplicateKeepOption::KeepNone => {
-                cudf_sys::cudf_duplicate_keep_option_t::CUDF_DUPLICATE_KEEP_OPTION_KEEP_NONE
-            },
+            DuplicateKeepOption::KeepAny => cudf_sys::CUDF_DUPLICATE_KEEP_OPTION_KEEP_ANY,
+            DuplicateKeepOption::KeepFirst => cudf_sys::CUDF_DUPLICATE_KEEP_OPTION_KEEP_FIRST,
+            DuplicateKeepOption::KeepLast => cudf_sys::CUDF_DUPLICATE_KEEP_OPTION_KEEP_LAST,
+            DuplicateKeepOption::KeepNone => cudf_sys::CUDF_DUPLICATE_KEEP_OPTION_KEEP_NONE,
         }
     }
 }
@@ -60,12 +54,8 @@ pub enum NanEquality {
 impl NanEquality {
     pub(crate) fn to_raw(self) -> cudf_sys::cudf_stream_compaction_nan_equality_t {
         match self {
-            NanEquality::AllEqual => {
-                cudf_sys::cudf_stream_compaction_nan_equality_t::CUDF_STREAM_COMPACTION_NAN_EQUALITY_ALL_EQUAL
-            },
-            NanEquality::Unequal => {
-                cudf_sys::cudf_stream_compaction_nan_equality_t::CUDF_STREAM_COMPACTION_NAN_EQUALITY_UNEQUAL
-            },
+            NanEquality::AllEqual => cudf_sys::CUDF_STREAM_COMPACTION_NAN_EQUALITY_ALL_EQUAL,
+            NanEquality::Unequal => cudf_sys::CUDF_STREAM_COMPACTION_NAN_EQUALITY_UNEQUAL,
         }
     }
 }

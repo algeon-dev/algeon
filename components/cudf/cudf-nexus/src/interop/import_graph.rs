@@ -58,10 +58,8 @@ pub(super) fn checked_i32_from_usize(
 
 fn interop_binding_from_prepared_binding(binding: &BufferBinding<'_>) -> cudf_sys::cudf_interop_buffer_binding_t {
     let (placement_kind, device) = match binding.placement() {
-        Placement::Host => (cudf_sys::cudf_interop_placement_kind_t::CUDF_INTEROP_PLACEMENT_HOST, -1),
-        Placement::CudaDevice { device } => {
-            (cudf_sys::cudf_interop_placement_kind_t::CUDF_INTEROP_PLACEMENT_CUDA_DEVICE, *device)
-        },
+        Placement::Host => (cudf_sys::CUDF_INTEROP_PLACEMENT_HOST, -1),
+        Placement::CudaDevice { device } => (cudf_sys::CUDF_INTEROP_PLACEMENT_CUDA_DEVICE, *device),
     };
 
     cudf_sys::cudf_interop_buffer_binding_t {
@@ -79,11 +77,9 @@ fn interop_semantic_column_from_prepared_column(
     child_id_buffers: &mut Vec<Box<[u32]>>,
 ) -> Result<cudf_sys::cudf_interop_semantic_column_t, InteropError> {
     let (validity_kind, validity_buffer_id, null_count) = match column.validity() {
-        PhysicalValidity::NoValidityBuffer => {
-            (cudf_sys::cudf_interop_validity_kind_t::CUDF_INTEROP_VALIDITY_NONE, 0, 0)
-        },
+        PhysicalValidity::NoValidityBuffer => (cudf_sys::CUDF_INTEROP_VALIDITY_NONE, 0, 0),
         PhysicalValidity::ValidityMask { mask, null_count } => (
-            cudf_sys::cudf_interop_validity_kind_t::CUDF_INTEROP_VALIDITY_MASK,
+            cudf_sys::CUDF_INTEROP_VALIDITY_MASK,
             mask.get(),
             match null_count {
                 Some(count) => checked_i32_from_usize("null_count", *count, operation)?,
@@ -101,7 +97,7 @@ fn interop_semantic_column_from_prepared_column(
         validity_kind,
         validity_buffer_id,
         null_count,
-        layout_kind: cudf_sys::cudf_interop_layout_kind_t::CUDF_INTEROP_LAYOUT_FIXED_WIDTH,
+        layout_kind: cudf_sys::CUDF_INTEROP_LAYOUT_FIXED_WIDTH,
         values_buffer_id: 0,
         offsets_buffer_id: 0,
         data_buffer_id: 0,
@@ -114,28 +110,28 @@ fn interop_semantic_column_from_prepared_column(
 
     match column.layout() {
         ColumnLayout::FixedWidth { values } => {
-            ffi.layout_kind = cudf_sys::cudf_interop_layout_kind_t::CUDF_INTEROP_LAYOUT_FIXED_WIDTH;
+            ffi.layout_kind = cudf_sys::CUDF_INTEROP_LAYOUT_FIXED_WIDTH;
             ffi.values_buffer_id = values.get();
         },
         ColumnLayout::BinaryLike { offsets, data } => {
-            ffi.layout_kind = cudf_sys::cudf_interop_layout_kind_t::CUDF_INTEROP_LAYOUT_BINARY_LIKE;
+            ffi.layout_kind = cudf_sys::CUDF_INTEROP_LAYOUT_BINARY_LIKE;
             ffi.offsets_buffer_id = offsets.get();
             ffi.data_buffer_id = data.get();
         },
         ColumnLayout::List { offsets, child } => {
-            ffi.layout_kind = cudf_sys::cudf_interop_layout_kind_t::CUDF_INTEROP_LAYOUT_LIST;
+            ffi.layout_kind = cudf_sys::CUDF_INTEROP_LAYOUT_LIST;
             ffi.offsets_buffer_id = offsets.get();
             ffi.child_column_id = child.get();
         },
         ColumnLayout::Struct { children } => {
-            ffi.layout_kind = cudf_sys::cudf_interop_layout_kind_t::CUDF_INTEROP_LAYOUT_STRUCT;
+            ffi.layout_kind = cudf_sys::CUDF_INTEROP_LAYOUT_STRUCT;
             let child_ids: Box<[u32]> = children.iter().map(|child| child.get()).collect::<Vec<_>>().into_boxed_slice();
             ffi.num_child_column_ids = checked_i32_from_usize("num_child_column_ids", child_ids.len(), operation)?;
             ffi.child_column_ids = child_ids.as_ptr();
             child_id_buffers.push(child_ids);
         },
         ColumnLayout::Dictionary { indices, keys } => {
-            ffi.layout_kind = cudf_sys::cudf_interop_layout_kind_t::CUDF_INTEROP_LAYOUT_DICTIONARY;
+            ffi.layout_kind = cudf_sys::CUDF_INTEROP_LAYOUT_DICTIONARY;
             ffi.indices_buffer_id = indices.get();
             ffi.keys_column_id = keys.get();
         },

@@ -1,9 +1,9 @@
 #ifndef CUDF_RUST_SHIM_COMMON_H
 #define CUDF_RUST_SHIM_COMMON_H
 
-#include "error.h"
+#include "cudf_rust/error.h"
+#include "cudf_rust/types.h"
 #include "owning_handle_fwd.hpp"
-#include "types.h"
 
 #include <cudf/types.hpp>
 

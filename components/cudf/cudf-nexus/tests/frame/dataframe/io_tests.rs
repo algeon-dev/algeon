@@ -498,7 +498,7 @@ fn test_dataframe_read_parquet_rejects_missing_schema_metadata_for_nonempty_tabl
         cudf::io::parquet::ParquetTableWriteOptions::builder().filepath(&path).column_names(&["x"]).build();
     cudf::io::parquet::write_parquet(&table, &write_opts).unwrap();
 
-    arm_next_io_metadata_fault(cudf_sys::CUDF_TEST_IO_METADATA_FAULT_ZERO_NAME_COUNT);
+    arm_next_io_metadata_fault(cudf_sys::test_support::CUDF_TEST_IO_METADATA_FAULT_ZERO_NAME_COUNT);
     let err = DataFrame::read_parquet(&rt, &path).expect_err("missing schema metadata should fail");
 
     assert_eq!(err.kind(), ErrorKind::InvariantViolation);
@@ -528,7 +528,7 @@ fn test_dataframe_read_parquet_metadata_invalid_utf8_name_uses_canonical_fault_c
         cudf::io::parquet::ParquetTableWriteOptions::builder().filepath(&path).column_names(&["x"]).build();
     cudf::io::parquet::write_parquet(&table, &write_opts).unwrap();
 
-    arm_next_io_metadata_fault(cudf_sys::CUDF_TEST_IO_METADATA_FAULT_INVALID_UTF8_NAME);
+    arm_next_io_metadata_fault(cudf_sys::test_support::CUDF_TEST_IO_METADATA_FAULT_INVALID_UTF8_NAME);
     let err = DataFrame::read_parquet(&rt, &path).expect_err("invalid UTF-8 metadata should fail");
 
     assert_eq!(err.kind(), ErrorKind::InvariantViolation);

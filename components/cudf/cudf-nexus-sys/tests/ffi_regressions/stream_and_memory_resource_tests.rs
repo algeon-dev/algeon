@@ -7,7 +7,7 @@ use crate::support::{
 #[test]
 fn test_stream_is_ready_null_out_rejected() {
     let _shim_state = lock_shim_state();
-    let mut stream: *mut c_void = ptr::null_mut();
+    let mut stream: cudf_sys::cudf_stream_handle = ptr::null_mut();
     let st = unsafe { cudf_sys::cudf_stream_create(&mut stream) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     assert!(!stream.is_null());
@@ -21,7 +21,7 @@ fn test_stream_is_ready_null_out_rejected() {
 #[test]
 fn test_stream_create_is_ready_and_synchronize_smoke() {
     let _shim_state = lock_shim_state();
-    let mut stream: *mut c_void = ptr::null_mut();
+    let mut stream: cudf_sys::cudf_stream_handle = ptr::null_mut();
     let status = unsafe { cudf_sys::cudf_stream_create(&mut stream) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     assert!(!stream.is_null());
@@ -47,14 +47,14 @@ fn test_event_create_null_out_rejected() {
 #[test]
 fn test_event_create_record_wait_and_synchronize_smoke() {
     let _shim_state = lock_shim_state();
-    unsafe { cudf_sys::cudf_test_event_reset_observation() };
+    unsafe { cudf_sys::test_support::cudf_test_event_reset_observation() };
 
-    let mut stream: *mut c_void = ptr::null_mut();
+    let mut stream: cudf_sys::cudf_stream_handle = ptr::null_mut();
     let status = unsafe { cudf_sys::cudf_stream_create(&mut stream) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     assert!(!stream.is_null());
 
-    let mut event: *mut c_void = ptr::null_mut();
+    let mut event: cudf_sys::cudf_event_handle = ptr::null_mut();
     let status = unsafe { cudf_sys::cudf_event_create(&mut event) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     assert!(!event.is_null());
@@ -74,7 +74,7 @@ fn test_event_create_record_wait_and_synchronize_smoke() {
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
 
     let mut synchronize_calls = -1;
-    let status = unsafe { cudf_sys::cudf_test_event_synchronize_call_count(&mut synchronize_calls) };
+    let status = unsafe { cudf_sys::test_support::cudf_test_event_synchronize_call_count(&mut synchronize_calls) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     assert_eq!(synchronize_calls, 1);
 
@@ -116,7 +116,7 @@ fn test_raw_cuda_event_record_and_wait_smoke() {
 fn test_memory_resource_pool_create_destroy_smoke() {
     let _shim_state = lock_shim_state();
     let device = current_device();
-    let mut mr: *mut c_void = ptr::null_mut();
+    let mut mr: cudf_sys::cudf_memory_resource_handle = ptr::null_mut();
     let status = unsafe { cudf_sys::cudf_memory_resource_create_pool(1 << 20, 1 << 24, &mut mr) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     assert!(!mr.is_null());
@@ -129,7 +129,7 @@ fn test_memory_resource_pool_create_destroy_smoke() {
 fn test_memory_resource_cuda_create_destroy_smoke() {
     let _shim_state = lock_shim_state();
     let device = current_device();
-    let mut mr: *mut c_void = ptr::null_mut();
+    let mut mr: cudf_sys::cudf_memory_resource_handle = ptr::null_mut();
     let status = unsafe { cudf_sys::cudf_memory_resource_create_cuda(&mut mr) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     assert!(!mr.is_null());
@@ -151,7 +151,7 @@ fn test_memory_resource_destroy_restores_current_device() {
     let _restore = CurrentDeviceRestore::new();
     set_current_device(0);
 
-    let mut mr: *mut c_void = ptr::null_mut();
+    let mut mr: cudf_sys::cudf_memory_resource_handle = ptr::null_mut();
     let status = unsafe { cudf_sys::cudf_memory_resource_create_pool(1 << 20, 1 << 24, &mut mr) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     assert!(!mr.is_null());

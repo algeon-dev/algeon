@@ -12,8 +12,8 @@ use crate::{
     },
 };
 
-fn create_device_buffer(size: usize, exec: &cudf_sys::cudf_exec_options_t) -> *mut c_void {
-    let mut buffer: *mut c_void = ptr::null_mut();
+fn create_device_buffer(size: usize, exec: &cudf_sys::cudf_exec_options_t) -> cudf_sys::cudf_device_buffer_handle {
+    let mut buffer: cudf_sys::cudf_device_buffer_handle = ptr::null_mut();
     let st = unsafe { cudf_sys::cudf_device_buffer_create_ex(size, exec, &mut buffer) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     assert!(!buffer.is_null());
@@ -51,16 +51,9 @@ fn test_nullable_device_buffer_adoption_rejects_same_handle_for_data_and_mask() 
     let (_stream, _mr, exec) = device_buffer_exec_owners();
     let buffer = create_device_buffer(64, &exec);
 
-    let mut out: *mut c_void = ptr::null_mut();
+    let mut out: cudf_sys::cudf_column_handle = ptr::null_mut();
     let st = unsafe {
-        cudf_sys::cudf_column_adopt_device_buffer_nullable(
-            cudf_sys::cudf_type_id_t::CUDF_TYPE_INT8,
-            buffer,
-            buffer,
-            0,
-            64,
-            &mut out,
-        )
+        cudf_sys::cudf_column_adopt_device_buffer_nullable(cudf_sys::CUDF_TYPE_INT8, buffer, buffer, 0, 64, &mut out)
     };
     assert_eq!(st, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
     assert!(out.is_null());
@@ -85,17 +78,12 @@ fn test_device_buffer_adoption_publish_failure_leaves_buffer_handle_valid() {
     };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
 
-    let mut out: *mut c_void = ptr::null_mut();
-    unsafe { cudf_sys::cudf_test_fail_column_handle_release_after(0) };
+    let mut out: cudf_sys::cudf_column_handle = ptr::null_mut();
+    unsafe { cudf_sys::test_support::cudf_test_fail_column_handle_release_after(0) };
     let st = unsafe {
-        cudf_sys::cudf_column_adopt_device_buffer(
-            cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32,
-            buffer,
-            values.len() as i32,
-            &mut out,
-        )
+        cudf_sys::cudf_column_adopt_device_buffer(cudf_sys::CUDF_TYPE_INT32, buffer, values.len() as i32, &mut out)
     };
-    unsafe { cudf_sys::cudf_test_fail_column_handle_release_after(-1) };
+    unsafe { cudf_sys::test_support::cudf_test_fail_column_handle_release_after(-1) };
     assert_eq!(st, cudf_sys::CUDF_ERROR_OUT_OF_MEMORY);
     assert!(out.is_null());
 
@@ -105,12 +93,7 @@ fn test_device_buffer_adoption_publish_failure_leaves_buffer_handle_valid() {
     assert_eq!(size, std::mem::size_of_val(&values));
 
     let st = unsafe {
-        cudf_sys::cudf_column_adopt_device_buffer(
-            cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32,
-            buffer,
-            values.len() as i32,
-            &mut out,
-        )
+        cudf_sys::cudf_column_adopt_device_buffer(cudf_sys::CUDF_TYPE_INT32, buffer, values.len() as i32, &mut out)
     };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     assert!(!out.is_null());
@@ -136,11 +119,11 @@ fn test_nullable_device_buffer_adoption_publish_failure_leaves_both_handles_vali
     };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
 
-    let mut out: *mut c_void = ptr::null_mut();
-    unsafe { cudf_sys::cudf_test_fail_column_handle_release_after(0) };
+    let mut out: cudf_sys::cudf_column_handle = ptr::null_mut();
+    unsafe { cudf_sys::test_support::cudf_test_fail_column_handle_release_after(0) };
     let st = unsafe {
         cudf_sys::cudf_column_adopt_device_buffer_nullable(
-            cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32,
+            cudf_sys::CUDF_TYPE_INT32,
             data_buffer,
             mask_buffer,
             0,
@@ -148,7 +131,7 @@ fn test_nullable_device_buffer_adoption_publish_failure_leaves_both_handles_vali
             &mut out,
         )
     };
-    unsafe { cudf_sys::cudf_test_fail_column_handle_release_after(-1) };
+    unsafe { cudf_sys::test_support::cudf_test_fail_column_handle_release_after(-1) };
     assert_eq!(st, cudf_sys::CUDF_ERROR_OUT_OF_MEMORY);
     assert!(out.is_null());
 
@@ -163,7 +146,7 @@ fn test_nullable_device_buffer_adoption_publish_failure_leaves_both_handles_vali
 
     let st = unsafe {
         cudf_sys::cudf_column_adopt_device_buffer_nullable(
-            cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32,
+            cudf_sys::CUDF_TYPE_INT32,
             data_buffer,
             mask_buffer,
             0,
@@ -212,10 +195,10 @@ fn test_scalar_string_value_owned_output_survives_subsequent_shim_calls() {
     let st = unsafe { cudf_sys::cudf_scalar_string_value_ex(scalar, &mut ptr1, &mut len1, &exec) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
 
-    let mut type_id: i32 = cudf_sys::cudf_type_id_t::CUDF_TYPE_EMPTY as i32;
+    let mut type_id = cudf_sys::CUDF_TYPE_EMPTY;
     let st = unsafe { cudf_sys::cudf_scalar_type(scalar, &mut type_id) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
-    assert_eq!(type_id, cudf_sys::cudf_type_id_t::CUDF_TYPE_STRING as i32);
+    assert_eq!(type_id, cudf_sys::CUDF_TYPE_STRING);
 
     let mut ptr2: *mut c_char = ptr::null_mut();
     let mut len2: i32 = -1;
@@ -260,15 +243,9 @@ fn test_scalar_string_value_wrong_type_initializes_outputs_before_failure() {
 fn test_scalar_create_numeric_invalid_allows_null_value() {
     let _shim_state = lock_shim_state();
     let (_stream, _mr, exec) = strict_exec_owners();
-    let mut scalar: *mut c_void = ptr::null_mut();
+    let mut scalar: cudf_sys::cudf_scalar_handle = ptr::null_mut();
     let st = unsafe {
-        cudf_sys::cudf_scalar_create_numeric_ex(
-            cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32,
-            ptr::null(),
-            0,
-            &exec,
-            &mut scalar,
-        )
+        cudf_sys::cudf_scalar_create_numeric_ex(cudf_sys::CUDF_TYPE_INT32, ptr::null(), 0, &exec, &mut scalar)
     };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     assert!(!scalar.is_null());
@@ -285,44 +262,42 @@ fn test_scalar_create_numeric_invalid_allows_null_value() {
 fn test_scalar_create_numeric_valid_requires_value() {
     let _shim_state = lock_shim_state();
     let (_stream, _mr, exec) = strict_exec_owners();
-    let mut scalar: *mut c_void = ptr::null_mut();
+    let mut scalar: cudf_sys::cudf_scalar_handle = ptr::null_mut();
     let st = unsafe {
-        cudf_sys::cudf_scalar_create_numeric_ex(
-            cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32,
-            ptr::null(),
-            1,
-            &exec,
-            &mut scalar,
-        )
+        cudf_sys::cudf_scalar_create_numeric_ex(cudf_sys::CUDF_TYPE_INT32, ptr::null(), 1, &exec, &mut scalar)
     };
     assert_eq!(st, cudf_sys::CUDF_ERROR_NULL);
     assert!(scalar.is_null());
 }
 
-fn assert_scalar_data_type(scalar: *mut c_void, expected_type: cudf_sys::cudf_type_id_t, expected_scale: i32) {
-    let mut type_id: i32 = cudf_sys::cudf_type_id_t::CUDF_TYPE_EMPTY as i32;
+fn assert_scalar_data_type(
+    scalar: cudf_sys::cudf_scalar_handle,
+    expected_type: cudf_sys::cudf_type_id_t,
+    expected_scale: i32,
+) {
+    let mut type_id = cudf_sys::CUDF_TYPE_EMPTY;
     let mut scale = i32::MIN;
     let st = unsafe { cudf_sys::cudf_scalar_data_type(scalar, &mut type_id, &mut scale) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
-    assert_eq!(type_id, expected_type as i32);
+    assert_eq!(type_id, expected_type);
     assert_eq!(scale, expected_scale);
 }
 
-fn assert_scalar_validity(scalar: *mut c_void, exec: &cudf_sys::cudf_exec_options_t, expected: i32) {
+fn assert_scalar_validity(scalar: cudf_sys::cudf_scalar_handle, exec: &cudf_sys::cudf_exec_options_t, expected: i32) {
     let mut is_valid = -1;
     let st = unsafe { cudf_sys::cudf_scalar_is_valid_ex(scalar, &mut is_valid, exec) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     assert_eq!(is_valid, expected);
 }
 
-unsafe fn scalar_raw_value<T: Copy>(scalar: *mut c_void, exec: &cudf_sys::cudf_exec_options_t) -> T {
+unsafe fn scalar_raw_value<T: Copy>(scalar: cudf_sys::cudf_scalar_handle, exec: &cudf_sys::cudf_exec_options_t) -> T {
     let mut out = std::mem::MaybeUninit::<T>::uninit();
     let st = unsafe { cudf_sys::cudf_scalar_value_ex(scalar, out.as_mut_ptr() as *mut c_void, exec) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     unsafe { out.assume_init() }
 }
 
-fn scalar_string_value(scalar: *mut c_void, exec: &cudf_sys::cudf_exec_options_t) -> String {
+fn scalar_string_value(scalar: cudf_sys::cudf_scalar_handle, exec: &cudf_sys::cudf_exec_options_t) -> String {
     let mut out: *mut c_char = ptr::null_mut();
     let mut len: i32 = -1;
     let st = unsafe { cudf_sys::cudf_scalar_string_value_ex(scalar, &mut out, &mut len, exec) };
@@ -337,10 +312,10 @@ fn test_scalar_create_decimal_raw_round_trips_type_scale_validity_and_value() {
     let scale = -2;
 
     let raw32 = -12345_i32;
-    let mut decimal32: *mut c_void = ptr::null_mut();
+    let mut decimal32: cudf_sys::cudf_scalar_handle = ptr::null_mut();
     let st = unsafe {
         cudf_sys::cudf_scalar_create_decimal_raw_ex(
-            cudf_sys::cudf_type_id_t::CUDF_TYPE_DECIMAL32,
+            cudf_sys::CUDF_TYPE_DECIMAL32,
             &raw32 as *const i32 as *const c_void,
             scale,
             1,
@@ -349,15 +324,15 @@ fn test_scalar_create_decimal_raw_round_trips_type_scale_validity_and_value() {
         )
     };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
-    assert_scalar_data_type(decimal32, cudf_sys::cudf_type_id_t::CUDF_TYPE_DECIMAL32, scale);
+    assert_scalar_data_type(decimal32, cudf_sys::CUDF_TYPE_DECIMAL32, scale);
     assert_scalar_validity(decimal32, &exec, 1);
     assert_eq!(unsafe { scalar_raw_value::<i32>(decimal32, &exec) }, raw32);
 
     let raw64 = -9_876_543_210_i64;
-    let mut decimal64: *mut c_void = ptr::null_mut();
+    let mut decimal64: cudf_sys::cudf_scalar_handle = ptr::null_mut();
     let st = unsafe {
         cudf_sys::cudf_scalar_create_decimal_raw_ex(
-            cudf_sys::cudf_type_id_t::CUDF_TYPE_DECIMAL64,
+            cudf_sys::CUDF_TYPE_DECIMAL64,
             &raw64 as *const i64 as *const c_void,
             scale,
             1,
@@ -366,15 +341,15 @@ fn test_scalar_create_decimal_raw_round_trips_type_scale_validity_and_value() {
         )
     };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
-    assert_scalar_data_type(decimal64, cudf_sys::cudf_type_id_t::CUDF_TYPE_DECIMAL64, scale);
+    assert_scalar_data_type(decimal64, cudf_sys::CUDF_TYPE_DECIMAL64, scale);
     assert_scalar_validity(decimal64, &exec, 1);
     assert_eq!(unsafe { scalar_raw_value::<i64>(decimal64, &exec) }, raw64);
 
     let raw128 = -123_456_789_012_345_678_901_234_567_i128;
-    let mut decimal128: *mut c_void = ptr::null_mut();
+    let mut decimal128: cudf_sys::cudf_scalar_handle = ptr::null_mut();
     let st = unsafe {
         cudf_sys::cudf_scalar_create_decimal_raw_ex(
-            cudf_sys::cudf_type_id_t::CUDF_TYPE_DECIMAL128,
+            cudf_sys::CUDF_TYPE_DECIMAL128,
             &raw128 as *const i128 as *const c_void,
             scale,
             1,
@@ -383,7 +358,7 @@ fn test_scalar_create_decimal_raw_round_trips_type_scale_validity_and_value() {
         )
     };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
-    assert_scalar_data_type(decimal128, cudf_sys::cudf_type_id_t::CUDF_TYPE_DECIMAL128, scale);
+    assert_scalar_data_type(decimal128, cudf_sys::CUDF_TYPE_DECIMAL128, scale);
     assert_scalar_validity(decimal128, &exec, 1);
     assert_eq!(unsafe { scalar_raw_value::<i128>(decimal128, &exec) }, raw128);
 
@@ -399,20 +374,20 @@ fn test_scalar_create_timestamp_raw_round_trips_type_validity_and_value() {
     let _shim_state = lock_shim_state();
     let (_stream, _mr, exec) = strict_exec_owners();
     let cases = [
-        (cudf_sys::cudf_type_id_t::CUDF_TYPE_TIMESTAMP_DAYS, 19_118_i64),
-        (cudf_sys::cudf_type_id_t::CUDF_TYPE_TIMESTAMP_SECONDS, 1_651_795_200_i64),
-        (cudf_sys::cudf_type_id_t::CUDF_TYPE_TIMESTAMP_MILLISECONDS, 1_651_795_200_123_i64),
-        (cudf_sys::cudf_type_id_t::CUDF_TYPE_TIMESTAMP_MICROSECONDS, 1_651_795_200_123_456_i64),
-        (cudf_sys::cudf_type_id_t::CUDF_TYPE_TIMESTAMP_NANOSECONDS, 1_651_795_200_123_456_789_i64),
+        (cudf_sys::CUDF_TYPE_TIMESTAMP_DAYS, 19_118_i64),
+        (cudf_sys::CUDF_TYPE_TIMESTAMP_SECONDS, 1_651_795_200_i64),
+        (cudf_sys::CUDF_TYPE_TIMESTAMP_MILLISECONDS, 1_651_795_200_123_i64),
+        (cudf_sys::CUDF_TYPE_TIMESTAMP_MICROSECONDS, 1_651_795_200_123_456_i64),
+        (cudf_sys::CUDF_TYPE_TIMESTAMP_NANOSECONDS, 1_651_795_200_123_456_789_i64),
     ];
 
     for (type_id, raw) in cases {
-        let mut scalar: *mut c_void = ptr::null_mut();
+        let mut scalar: cudf_sys::cudf_scalar_handle = ptr::null_mut();
         let st = unsafe { cudf_sys::cudf_scalar_create_timestamp_raw_ex(type_id, raw, 1, &exec, &mut scalar) };
         assert_eq!(st, cudf_sys::CUDF_SUCCESS);
         assert_scalar_data_type(scalar, type_id, 0);
         assert_scalar_validity(scalar, &exec, 1);
-        if type_id == cudf_sys::cudf_type_id_t::CUDF_TYPE_TIMESTAMP_DAYS {
+        if type_id == cudf_sys::CUDF_TYPE_TIMESTAMP_DAYS {
             assert_eq!(unsafe { scalar_raw_value::<i32>(scalar, &exec) }, raw as i32);
         } else {
             assert_eq!(unsafe { scalar_raw_value::<i64>(scalar, &exec) }, raw);
@@ -426,20 +401,20 @@ fn test_scalar_create_duration_raw_round_trips_type_validity_and_value() {
     let _shim_state = lock_shim_state();
     let (_stream, _mr, exec) = strict_exec_owners();
     let cases = [
-        (cudf_sys::cudf_type_id_t::CUDF_TYPE_DURATION_DAYS, -7_i64),
-        (cudf_sys::cudf_type_id_t::CUDF_TYPE_DURATION_SECONDS, -123_i64),
-        (cudf_sys::cudf_type_id_t::CUDF_TYPE_DURATION_MILLISECONDS, -123_456_i64),
-        (cudf_sys::cudf_type_id_t::CUDF_TYPE_DURATION_MICROSECONDS, -123_456_789_i64),
-        (cudf_sys::cudf_type_id_t::CUDF_TYPE_DURATION_NANOSECONDS, -123_456_789_012_i64),
+        (cudf_sys::CUDF_TYPE_DURATION_DAYS, -7_i64),
+        (cudf_sys::CUDF_TYPE_DURATION_SECONDS, -123_i64),
+        (cudf_sys::CUDF_TYPE_DURATION_MILLISECONDS, -123_456_i64),
+        (cudf_sys::CUDF_TYPE_DURATION_MICROSECONDS, -123_456_789_i64),
+        (cudf_sys::CUDF_TYPE_DURATION_NANOSECONDS, -123_456_789_012_i64),
     ];
 
     for (type_id, raw) in cases {
-        let mut scalar: *mut c_void = ptr::null_mut();
+        let mut scalar: cudf_sys::cudf_scalar_handle = ptr::null_mut();
         let st = unsafe { cudf_sys::cudf_scalar_create_duration_raw_ex(type_id, raw, 1, &exec, &mut scalar) };
         assert_eq!(st, cudf_sys::CUDF_SUCCESS);
         assert_scalar_data_type(scalar, type_id, 0);
         assert_scalar_validity(scalar, &exec, 1);
-        if type_id == cudf_sys::cudf_type_id_t::CUDF_TYPE_DURATION_DAYS {
+        if type_id == cudf_sys::CUDF_TYPE_DURATION_DAYS {
             assert_eq!(unsafe { scalar_raw_value::<i32>(scalar, &exec) }, raw as i32);
         } else {
             assert_eq!(unsafe { scalar_raw_value::<i64>(scalar, &exec) }, raw);
@@ -463,12 +438,12 @@ fn test_scalar_create_raw_ex_constructors_round_trip_with_explicit_exec() {
     let raw_decimal64 = -9_876_543_i64;
     let raw_decimal128 = -123_456_789_012_345_678_901_234_567_i128;
     let decimal_cases = [
-        (cudf_sys::cudf_type_id_t::CUDF_TYPE_DECIMAL32, &raw_decimal32 as *const i32 as *const c_void, -2),
-        (cudf_sys::cudf_type_id_t::CUDF_TYPE_DECIMAL64, &raw_decimal64 as *const i64 as *const c_void, -4),
-        (cudf_sys::cudf_type_id_t::CUDF_TYPE_DECIMAL128, &raw_decimal128 as *const i128 as *const c_void, -6),
+        (cudf_sys::CUDF_TYPE_DECIMAL32, &raw_decimal32 as *const i32 as *const c_void, -2),
+        (cudf_sys::CUDF_TYPE_DECIMAL64, &raw_decimal64 as *const i64 as *const c_void, -4),
+        (cudf_sys::CUDF_TYPE_DECIMAL128, &raw_decimal128 as *const i128 as *const c_void, -6),
     ];
     for (type_id, raw_ptr, scale) in decimal_cases {
-        let mut scalar: *mut c_void = ptr::null_mut();
+        let mut scalar: cudf_sys::cudf_scalar_handle = ptr::null_mut();
         reset_exec_observation();
         let st = unsafe { cudf_sys::cudf_scalar_create_decimal_raw_ex(type_id, raw_ptr, scale, 1, &exec, &mut scalar) };
         assert_eq!(st, cudf_sys::CUDF_SUCCESS);
@@ -478,13 +453,13 @@ fn test_scalar_create_raw_ex_constructors_round_trip_with_explicit_exec() {
         assert_scalar_data_type(scalar, type_id, scale);
         assert_scalar_validity(scalar, &exec, 1);
         match type_id {
-            cudf_sys::cudf_type_id_t::CUDF_TYPE_DECIMAL32 => {
+            cudf_sys::CUDF_TYPE_DECIMAL32 => {
                 assert_eq!(unsafe { scalar_raw_value::<i32>(scalar, &exec) }, raw_decimal32)
             },
-            cudf_sys::cudf_type_id_t::CUDF_TYPE_DECIMAL64 => {
+            cudf_sys::CUDF_TYPE_DECIMAL64 => {
                 assert_eq!(unsafe { scalar_raw_value::<i64>(scalar, &exec) }, raw_decimal64)
             },
-            cudf_sys::cudf_type_id_t::CUDF_TYPE_DECIMAL128 => {
+            cudf_sys::CUDF_TYPE_DECIMAL128 => {
                 assert_eq!(unsafe { scalar_raw_value::<i128>(scalar, &exec) }, raw_decimal128)
             },
             _ => unreachable!(),
@@ -493,14 +468,14 @@ fn test_scalar_create_raw_ex_constructors_round_trip_with_explicit_exec() {
     }
 
     let timestamp_cases = [
-        (cudf_sys::cudf_type_id_t::CUDF_TYPE_TIMESTAMP_DAYS, -12_i64),
-        (cudf_sys::cudf_type_id_t::CUDF_TYPE_TIMESTAMP_SECONDS, 1_700_000_000_i64),
-        (cudf_sys::cudf_type_id_t::CUDF_TYPE_TIMESTAMP_MILLISECONDS, 1_700_000_000_123_i64),
-        (cudf_sys::cudf_type_id_t::CUDF_TYPE_TIMESTAMP_MICROSECONDS, 1_700_000_000_123_456_i64),
-        (cudf_sys::cudf_type_id_t::CUDF_TYPE_TIMESTAMP_NANOSECONDS, 1_700_000_000_123_456_789_i64),
+        (cudf_sys::CUDF_TYPE_TIMESTAMP_DAYS, -12_i64),
+        (cudf_sys::CUDF_TYPE_TIMESTAMP_SECONDS, 1_700_000_000_i64),
+        (cudf_sys::CUDF_TYPE_TIMESTAMP_MILLISECONDS, 1_700_000_000_123_i64),
+        (cudf_sys::CUDF_TYPE_TIMESTAMP_MICROSECONDS, 1_700_000_000_123_456_i64),
+        (cudf_sys::CUDF_TYPE_TIMESTAMP_NANOSECONDS, 1_700_000_000_123_456_789_i64),
     ];
     for (type_id, raw) in timestamp_cases {
-        let mut scalar: *mut c_void = ptr::null_mut();
+        let mut scalar: cudf_sys::cudf_scalar_handle = ptr::null_mut();
         reset_exec_observation();
         let st = unsafe { cudf_sys::cudf_scalar_create_timestamp_raw_ex(type_id, raw, 1, &exec, &mut scalar) };
         assert_eq!(st, cudf_sys::CUDF_SUCCESS);
@@ -509,7 +484,7 @@ fn test_scalar_create_raw_ex_constructors_round_trip_with_explicit_exec() {
         assert_eq!(last_exec_sync_stream_value(), NO_SYNC_RECORDED);
         assert_scalar_data_type(scalar, type_id, 0);
         assert_scalar_validity(scalar, &exec, 1);
-        if type_id == cudf_sys::cudf_type_id_t::CUDF_TYPE_TIMESTAMP_DAYS {
+        if type_id == cudf_sys::CUDF_TYPE_TIMESTAMP_DAYS {
             assert_eq!(unsafe { scalar_raw_value::<i32>(scalar, &exec) }, raw as i32);
         } else {
             assert_eq!(unsafe { scalar_raw_value::<i64>(scalar, &exec) }, raw);
@@ -518,14 +493,14 @@ fn test_scalar_create_raw_ex_constructors_round_trip_with_explicit_exec() {
     }
 
     let duration_cases = [
-        (cudf_sys::cudf_type_id_t::CUDF_TYPE_DURATION_DAYS, -7_i64),
-        (cudf_sys::cudf_type_id_t::CUDF_TYPE_DURATION_SECONDS, -42_i64),
-        (cudf_sys::cudf_type_id_t::CUDF_TYPE_DURATION_MILLISECONDS, -42_000_i64),
-        (cudf_sys::cudf_type_id_t::CUDF_TYPE_DURATION_MICROSECONDS, -42_000_000_i64),
-        (cudf_sys::cudf_type_id_t::CUDF_TYPE_DURATION_NANOSECONDS, -42_000_000_000_i64),
+        (cudf_sys::CUDF_TYPE_DURATION_DAYS, -7_i64),
+        (cudf_sys::CUDF_TYPE_DURATION_SECONDS, -42_i64),
+        (cudf_sys::CUDF_TYPE_DURATION_MILLISECONDS, -42_000_i64),
+        (cudf_sys::CUDF_TYPE_DURATION_MICROSECONDS, -42_000_000_i64),
+        (cudf_sys::CUDF_TYPE_DURATION_NANOSECONDS, -42_000_000_000_i64),
     ];
     for (type_id, raw) in duration_cases {
-        let mut scalar: *mut c_void = ptr::null_mut();
+        let mut scalar: cudf_sys::cudf_scalar_handle = ptr::null_mut();
         reset_exec_observation();
         let st = unsafe { cudf_sys::cudf_scalar_create_duration_raw_ex(type_id, raw, 1, &exec, &mut scalar) };
         assert_eq!(st, cudf_sys::CUDF_SUCCESS);
@@ -534,7 +509,7 @@ fn test_scalar_create_raw_ex_constructors_round_trip_with_explicit_exec() {
         assert_eq!(last_exec_sync_stream_value(), NO_SYNC_RECORDED);
         assert_scalar_data_type(scalar, type_id, 0);
         assert_scalar_validity(scalar, &exec, 1);
-        if type_id == cudf_sys::cudf_type_id_t::CUDF_TYPE_DURATION_DAYS {
+        if type_id == cudf_sys::CUDF_TYPE_DURATION_DAYS {
             assert_eq!(unsafe { scalar_raw_value::<i32>(scalar, &exec) }, raw as i32);
         } else {
             assert_eq!(unsafe { scalar_raw_value::<i64>(scalar, &exec) }, raw);
@@ -550,11 +525,11 @@ fn test_scalar_create_raw_ex_null_and_default_options_are_rejected() {
 
     for exec_options in [ptr::null(), default_exec.as_raw()] {
         let raw_decimal = 123_i64;
-        let mut decimal: *mut c_void = ptr::null_mut();
+        let mut decimal: cudf_sys::cudf_scalar_handle = ptr::null_mut();
         reset_exec_observation();
         let st = unsafe {
             cudf_sys::cudf_scalar_create_decimal_raw_ex(
-                cudf_sys::cudf_type_id_t::CUDF_TYPE_DECIMAL64,
+                cudf_sys::CUDF_TYPE_DECIMAL64,
                 &raw_decimal as *const i64 as *const c_void,
                 -2,
                 1,
@@ -565,10 +540,10 @@ fn test_scalar_create_raw_ex_null_and_default_options_are_rejected() {
         assert_eq!(st, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
         assert!(decimal.is_null());
 
-        let mut timestamp: *mut c_void = ptr::null_mut();
+        let mut timestamp: cudf_sys::cudf_scalar_handle = ptr::null_mut();
         let st = unsafe {
             cudf_sys::cudf_scalar_create_timestamp_raw_ex(
-                cudf_sys::cudf_type_id_t::CUDF_TYPE_TIMESTAMP_SECONDS,
+                cudf_sys::CUDF_TYPE_TIMESTAMP_SECONDS,
                 1_700_000_000,
                 1,
                 exec_options,
@@ -578,10 +553,10 @@ fn test_scalar_create_raw_ex_null_and_default_options_are_rejected() {
         assert_eq!(st, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
         assert!(timestamp.is_null());
 
-        let mut duration: *mut c_void = ptr::null_mut();
+        let mut duration: cudf_sys::cudf_scalar_handle = ptr::null_mut();
         let st = unsafe {
             cudf_sys::cudf_scalar_create_duration_raw_ex(
-                cudf_sys::cudf_type_id_t::CUDF_TYPE_DURATION_SECONDS,
+                cudf_sys::CUDF_TYPE_DURATION_SECONDS,
                 -42,
                 1,
                 exec_options,
@@ -599,10 +574,10 @@ fn test_scalar_create_raw_ex_propagates_exec_option_validation_errors() {
     let bad_exec = cudf_sys::cudf_exec_options_t { struct_size: 0, ..Default::default() };
     let raw_decimal = 123_i64;
 
-    let mut decimal: *mut c_void = ptr::null_mut();
+    let mut decimal: cudf_sys::cudf_scalar_handle = ptr::null_mut();
     let st = unsafe {
         cudf_sys::cudf_scalar_create_decimal_raw_ex(
-            cudf_sys::cudf_type_id_t::CUDF_TYPE_DECIMAL64,
+            cudf_sys::CUDF_TYPE_DECIMAL64,
             &raw_decimal as *const i64 as *const c_void,
             -2,
             1,
@@ -614,10 +589,10 @@ fn test_scalar_create_raw_ex_propagates_exec_option_validation_errors() {
     assert!(decimal.is_null());
     assert!(last_error_message().contains("struct_size"));
 
-    let mut timestamp: *mut c_void = ptr::null_mut();
+    let mut timestamp: cudf_sys::cudf_scalar_handle = ptr::null_mut();
     let st = unsafe {
         cudf_sys::cudf_scalar_create_timestamp_raw_ex(
-            cudf_sys::cudf_type_id_t::CUDF_TYPE_TIMESTAMP_SECONDS,
+            cudf_sys::CUDF_TYPE_TIMESTAMP_SECONDS,
             1_700_000_000,
             1,
             &bad_exec,
@@ -628,10 +603,10 @@ fn test_scalar_create_raw_ex_propagates_exec_option_validation_errors() {
     assert!(timestamp.is_null());
     assert!(last_error_message().contains("struct_size"));
 
-    let mut duration: *mut c_void = ptr::null_mut();
+    let mut duration: cudf_sys::cudf_scalar_handle = ptr::null_mut();
     let st = unsafe {
         cudf_sys::cudf_scalar_create_duration_raw_ex(
-            cudf_sys::cudf_type_id_t::CUDF_TYPE_DURATION_SECONDS,
+            cudf_sys::CUDF_TYPE_DURATION_SECONDS,
             -42,
             1,
             &bad_exec,
@@ -649,10 +624,10 @@ fn test_scalar_create_raw_rejects_wrong_family_type_ids() {
     let raw_decimal = 1_i64;
     let (_stream, _mr, exec) = strict_exec_owners();
 
-    let mut scalar: *mut c_void = ptr::null_mut();
+    let mut scalar: cudf_sys::cudf_scalar_handle = ptr::null_mut();
     let st = unsafe {
         cudf_sys::cudf_scalar_create_decimal_raw_ex(
-            cudf_sys::cudf_type_id_t::CUDF_TYPE_TIMESTAMP_SECONDS,
+            cudf_sys::CUDF_TYPE_TIMESTAMP_SECONDS,
             &raw_decimal as *const i64 as *const c_void,
             -2,
             1,
@@ -664,29 +639,17 @@ fn test_scalar_create_raw_rejects_wrong_family_type_ids() {
     assert!(scalar.is_null());
     assert!(last_error_message().contains("Unsupported type for decimal scalar"));
 
-    let mut scalar: *mut c_void = ptr::null_mut();
+    let mut scalar: cudf_sys::cudf_scalar_handle = ptr::null_mut();
     let st = unsafe {
-        cudf_sys::cudf_scalar_create_timestamp_raw_ex(
-            cudf_sys::cudf_type_id_t::CUDF_TYPE_DURATION_SECONDS,
-            1,
-            1,
-            &exec,
-            &mut scalar,
-        )
+        cudf_sys::cudf_scalar_create_timestamp_raw_ex(cudf_sys::CUDF_TYPE_DURATION_SECONDS, 1, 1, &exec, &mut scalar)
     };
     assert_eq!(st, cudf_sys::CUDF_ERROR_TYPE);
     assert!(scalar.is_null());
     assert!(last_error_message().contains("Unsupported type for timestamp scalar"));
 
-    let mut scalar: *mut c_void = ptr::null_mut();
+    let mut scalar: cudf_sys::cudf_scalar_handle = ptr::null_mut();
     let st = unsafe {
-        cudf_sys::cudf_scalar_create_duration_raw_ex(
-            cudf_sys::cudf_type_id_t::CUDF_TYPE_TIMESTAMP_SECONDS,
-            1,
-            1,
-            &exec,
-            &mut scalar,
-        )
+        cudf_sys::cudf_scalar_create_duration_raw_ex(cudf_sys::CUDF_TYPE_TIMESTAMP_SECONDS, 1, 1, &exec, &mut scalar)
     };
     assert_eq!(st, cudf_sys::CUDF_ERROR_TYPE);
     assert!(scalar.is_null());
@@ -698,14 +661,14 @@ fn test_scalar_create_temporal_days_rejects_i64_values_outside_i32_range() {
     let _shim_state = lock_shim_state();
     let (_stream, _mr, exec) = strict_exec_owners();
     let cases = [
-        (cudf_sys::cudf_type_id_t::CUDF_TYPE_TIMESTAMP_DAYS, i64::from(i32::MAX) + 1, true),
-        (cudf_sys::cudf_type_id_t::CUDF_TYPE_TIMESTAMP_DAYS, i64::from(i32::MIN) - 1, true),
-        (cudf_sys::cudf_type_id_t::CUDF_TYPE_DURATION_DAYS, i64::from(i32::MAX) + 1, false),
-        (cudf_sys::cudf_type_id_t::CUDF_TYPE_DURATION_DAYS, i64::from(i32::MIN) - 1, false),
+        (cudf_sys::CUDF_TYPE_TIMESTAMP_DAYS, i64::from(i32::MAX) + 1, true),
+        (cudf_sys::CUDF_TYPE_TIMESTAMP_DAYS, i64::from(i32::MIN) - 1, true),
+        (cudf_sys::CUDF_TYPE_DURATION_DAYS, i64::from(i32::MAX) + 1, false),
+        (cudf_sys::CUDF_TYPE_DURATION_DAYS, i64::from(i32::MIN) - 1, false),
     ];
 
     for (type_id, raw, is_timestamp) in cases {
-        let mut scalar: *mut c_void = ptr::null_mut();
+        let mut scalar: cudf_sys::cudf_scalar_handle = ptr::null_mut();
         let st = if is_timestamp {
             unsafe { cudf_sys::cudf_scalar_create_timestamp_raw_ex(type_id, raw, 1, &exec, &mut scalar) }
         } else {
@@ -721,14 +684,10 @@ fn test_scalar_create_temporal_days_rejects_i64_values_outside_i32_range() {
 fn test_scalar_create_raw_decimal_invalid_allows_null_value() {
     let _shim_state = lock_shim_state();
     let (_stream, _mr, exec) = strict_exec_owners();
-    let cases = [
-        cudf_sys::cudf_type_id_t::CUDF_TYPE_DECIMAL32,
-        cudf_sys::cudf_type_id_t::CUDF_TYPE_DECIMAL64,
-        cudf_sys::cudf_type_id_t::CUDF_TYPE_DECIMAL128,
-    ];
+    let cases = [cudf_sys::CUDF_TYPE_DECIMAL32, cudf_sys::CUDF_TYPE_DECIMAL64, cudf_sys::CUDF_TYPE_DECIMAL128];
 
     for type_id in cases {
-        let mut scalar: *mut c_void = ptr::null_mut();
+        let mut scalar: cudf_sys::cudf_scalar_handle = ptr::null_mut();
         let st =
             unsafe { cudf_sys::cudf_scalar_create_decimal_raw_ex(type_id, ptr::null(), -3, 0, &exec, &mut scalar) };
         assert_eq!(st, cudf_sys::CUDF_SUCCESS);
@@ -743,27 +702,27 @@ fn test_scalar_create_raw_temporal_invalid_preserves_dtype() {
     let _shim_state = lock_shim_state();
     let (_stream, _mr, exec) = strict_exec_owners();
     let cases = [
-        cudf_sys::cudf_type_id_t::CUDF_TYPE_TIMESTAMP_DAYS,
-        cudf_sys::cudf_type_id_t::CUDF_TYPE_TIMESTAMP_SECONDS,
-        cudf_sys::cudf_type_id_t::CUDF_TYPE_TIMESTAMP_MILLISECONDS,
-        cudf_sys::cudf_type_id_t::CUDF_TYPE_TIMESTAMP_MICROSECONDS,
-        cudf_sys::cudf_type_id_t::CUDF_TYPE_TIMESTAMP_NANOSECONDS,
-        cudf_sys::cudf_type_id_t::CUDF_TYPE_DURATION_DAYS,
-        cudf_sys::cudf_type_id_t::CUDF_TYPE_DURATION_SECONDS,
-        cudf_sys::cudf_type_id_t::CUDF_TYPE_DURATION_MILLISECONDS,
-        cudf_sys::cudf_type_id_t::CUDF_TYPE_DURATION_MICROSECONDS,
-        cudf_sys::cudf_type_id_t::CUDF_TYPE_DURATION_NANOSECONDS,
+        cudf_sys::CUDF_TYPE_TIMESTAMP_DAYS,
+        cudf_sys::CUDF_TYPE_TIMESTAMP_SECONDS,
+        cudf_sys::CUDF_TYPE_TIMESTAMP_MILLISECONDS,
+        cudf_sys::CUDF_TYPE_TIMESTAMP_MICROSECONDS,
+        cudf_sys::CUDF_TYPE_TIMESTAMP_NANOSECONDS,
+        cudf_sys::CUDF_TYPE_DURATION_DAYS,
+        cudf_sys::CUDF_TYPE_DURATION_SECONDS,
+        cudf_sys::CUDF_TYPE_DURATION_MILLISECONDS,
+        cudf_sys::CUDF_TYPE_DURATION_MICROSECONDS,
+        cudf_sys::CUDF_TYPE_DURATION_NANOSECONDS,
     ];
 
     for type_id in cases {
-        let mut scalar: *mut c_void = ptr::null_mut();
+        let mut scalar: cudf_sys::cudf_scalar_handle = ptr::null_mut();
         let st = if matches!(
             type_id,
-            cudf_sys::cudf_type_id_t::CUDF_TYPE_TIMESTAMP_DAYS
-                | cudf_sys::cudf_type_id_t::CUDF_TYPE_TIMESTAMP_SECONDS
-                | cudf_sys::cudf_type_id_t::CUDF_TYPE_TIMESTAMP_MILLISECONDS
-                | cudf_sys::cudf_type_id_t::CUDF_TYPE_TIMESTAMP_MICROSECONDS
-                | cudf_sys::cudf_type_id_t::CUDF_TYPE_TIMESTAMP_NANOSECONDS
+            cudf_sys::CUDF_TYPE_TIMESTAMP_DAYS
+                | cudf_sys::CUDF_TYPE_TIMESTAMP_SECONDS
+                | cudf_sys::CUDF_TYPE_TIMESTAMP_MILLISECONDS
+                | cudf_sys::CUDF_TYPE_TIMESTAMP_MICROSECONDS
+                | cudf_sys::CUDF_TYPE_TIMESTAMP_NANOSECONDS
         ) {
             unsafe { cudf_sys::cudf_scalar_create_timestamp_raw_ex(type_id, 0, 0, &exec, &mut scalar) }
         } else {
@@ -783,7 +742,7 @@ fn test_scalar_create_raw_rejects_null_out_and_valid_decimal_null_value() {
     let (_stream, _mr, exec) = strict_exec_owners();
     let st = unsafe {
         cudf_sys::cudf_scalar_create_decimal_raw_ex(
-            cudf_sys::cudf_type_id_t::CUDF_TYPE_DECIMAL32,
+            cudf_sys::CUDF_TYPE_DECIMAL32,
             &raw as *const i32 as *const c_void,
             -2,
             1,
@@ -793,10 +752,10 @@ fn test_scalar_create_raw_rejects_null_out_and_valid_decimal_null_value() {
     };
     assert_eq!(st, cudf_sys::CUDF_ERROR_NULL);
 
-    let mut scalar: *mut c_void = ptr::null_mut();
+    let mut scalar: cudf_sys::cudf_scalar_handle = ptr::null_mut();
     let st = unsafe {
         cudf_sys::cudf_scalar_create_decimal_raw_ex(
-            cudf_sys::cudf_type_id_t::CUDF_TYPE_DECIMAL32,
+            cudf_sys::CUDF_TYPE_DECIMAL32,
             ptr::null(),
             -2,
             1,
@@ -812,7 +771,7 @@ fn test_scalar_create_raw_rejects_null_out_and_valid_decimal_null_value() {
 fn test_scalar_create_string_valid_requires_value() {
     let _shim_state = lock_shim_state();
     let (_stream, _mr, exec) = strict_exec_owners();
-    let mut scalar: *mut c_void = ptr::null_mut();
+    let mut scalar: cudf_sys::cudf_scalar_handle = ptr::null_mut();
     let st = unsafe { cudf_sys::cudf_scalar_create_string_ex(ptr::null(), 1, &exec, &mut scalar) };
     assert_eq!(st, cudf_sys::CUDF_ERROR_NULL);
     assert!(scalar.is_null());
@@ -822,7 +781,7 @@ fn test_scalar_create_string_valid_requires_value() {
 fn test_scalar_create_string_invalid_allows_null_value() {
     let _shim_state = lock_shim_state();
     let (_stream, _mr, exec) = strict_exec_owners();
-    let mut scalar: *mut c_void = ptr::null_mut();
+    let mut scalar: cudf_sys::cudf_scalar_handle = ptr::null_mut();
     let st = unsafe { cudf_sys::cudf_scalar_create_string_ex(ptr::null(), 0, &exec, &mut scalar) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     assert!(!scalar.is_null());
@@ -842,7 +801,7 @@ fn test_column_view_slice_nested_nullable_preserves_logical_offset_in_null_count
     let base_view = make_column_view(col);
     let (_stream, _mr, exec) = strict_exec_owners();
 
-    let mut first_slice: *mut c_void = ptr::null_mut();
+    let mut first_slice: cudf_sys::cudf_column_view_handle = ptr::null_mut();
     let st = unsafe { cudf_sys::cudf_column_view_slice_ex(base_view, 1, 3, &exec, &mut first_slice) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     assert!(!first_slice.is_null());
@@ -856,7 +815,7 @@ fn test_column_view_slice_nested_nullable_preserves_logical_offset_in_null_count
     assert_eq!(first_offset, 1);
     assert_eq!(first_null_count, 2);
 
-    let mut second_slice: *mut c_void = ptr::null_mut();
+    let mut second_slice: cudf_sys::cudf_column_view_handle = ptr::null_mut();
     let st = unsafe { cudf_sys::cudf_column_view_slice_ex(first_slice, 1, 1, &exec, &mut second_slice) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     assert!(!second_slice.is_null());
@@ -881,10 +840,10 @@ fn test_column_view_slice_nested_nullable_preserves_logical_offset_in_null_count
 #[test]
 fn test_column_view_slice_rejects_active_offset_overflow() {
     let _shim_state = lock_shim_state();
-    let mut view: *mut c_void = ptr::null_mut();
+    let mut view: cudf_sys::cudf_column_view_handle = ptr::null_mut();
     let st = unsafe {
-        cudf_sys::cudf_test_column_view_create_synthetic_fixed_width(
-            cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32,
+        cudf_sys::test_support::cudf_test_column_view_create_synthetic_fixed_width(
+            cudf_sys::CUDF_TYPE_INT32,
             2,
             i32::MAX - 1,
             &mut view,
@@ -894,7 +853,7 @@ fn test_column_view_slice_rejects_active_offset_overflow() {
     assert!(!view.is_null());
 
     let (_stream, _mr, exec) = strict_exec_owners();
-    let mut slice: *mut c_void = ptr::null_mut();
+    let mut slice: cudf_sys::cudf_column_view_handle = ptr::null_mut();
     let st = unsafe { cudf_sys::cudf_column_view_slice_ex(view, 1, 1, &exec, &mut slice) };
 
     if !slice.is_null() {
@@ -910,8 +869,9 @@ fn test_column_view_slice_rejects_active_offset_overflow() {
 #[test]
 fn test_column_view_strings_to_host_ex_rejects_string_view_without_offsets_child() {
     let _shim_state = lock_shim_state();
-    let mut view: *mut c_void = ptr::null_mut();
-    let st = unsafe { cudf_sys::cudf_test_column_view_create_synthetic_string_without_children(1, &mut view) };
+    let mut view: cudf_sys::cudf_column_view_handle = ptr::null_mut();
+    let st =
+        unsafe { cudf_sys::test_support::cudf_test_column_view_create_synthetic_string_without_children(1, &mut view) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     assert!(!view.is_null());
 

@@ -1,4 +1,4 @@
-#include "copying.h"
+#include "cudf_rust/copying.h"
 
 #include "execution_context_internal.hpp"
 #include "handle_provenance.hpp"
@@ -38,15 +38,15 @@ cudf_status_t cudf_gather_ex(cudf_table_view_handle input,
 
   CUDF_RUST_TRY
   {
-    auto* view                      = static_cast<cudf::table_view*>(input);
-    auto* map_view                  = static_cast<cudf::column_view*>(gather_map);
+    auto* view                      = reinterpret_cast<cudf::table_view*>(input);
+    auto* map_view                  = reinterpret_cast<cudf::column_view*>(gather_map);
     auto exec                       = std::unique_ptr<cudf_exec_context>{};
     cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     {
       auto result = cudf::gather(*view, *map_view, policy, exec->stream, *exec->mr);
-      *out        = cudf_release_table_handle(std::move(result), cudf_capture_exec_provenance(*exec));
+      *out = cudf_release_table_handle(std::move(result), cudf_capture_exec_provenance(*exec));
     }
     return CUDF_SUCCESS;
   }
@@ -75,8 +75,8 @@ cudf_status_t cudf_gather_device_allocated_size_ex(cudf_table_view_handle input,
 
   CUDF_RUST_TRY
   {
-    auto* view                      = static_cast<cudf::table_view*>(input);
-    auto* map_view                  = static_cast<cudf::column_view*>(gather_map);
+    auto* view                      = reinterpret_cast<cudf::table_view*>(input);
+    auto* map_view                  = reinterpret_cast<cudf::column_view*>(gather_map);
     auto exec                       = std::unique_ptr<cudf_exec_context>{};
     cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
@@ -104,9 +104,9 @@ cudf_status_t cudf_scatter_ex(cudf_table_view_handle source,
 
   CUDF_RUST_TRY
   {
-    auto* source_view               = static_cast<cudf::table_view*>(source);
-    auto* map_view                  = static_cast<cudf::column_view*>(scatter_map);
-    auto* target_view               = static_cast<cudf::table_view*>(target);
+    auto* source_view               = reinterpret_cast<cudf::table_view*>(source);
+    auto* map_view                  = reinterpret_cast<cudf::column_view*>(scatter_map);
+    auto* target_view               = reinterpret_cast<cudf::table_view*>(target);
     auto exec                       = std::unique_ptr<cudf_exec_context>{};
     cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
@@ -133,16 +133,16 @@ cudf_status_t cudf_copy_if_else_vv_ex(cudf_column_view_handle lhs,
   CUDF_RUST_NULL_CHECK(boolean_mask, "boolean_mask is null");
   CUDF_RUST_TRY
   {
-    auto* lhs_view                  = static_cast<cudf::column_view*>(lhs);
-    auto* rhs_view                  = static_cast<cudf::column_view*>(rhs);
-    auto* mask_view                 = static_cast<cudf::column_view*>(boolean_mask);
+    auto* lhs_view                  = reinterpret_cast<cudf::column_view*>(lhs);
+    auto* rhs_view                  = reinterpret_cast<cudf::column_view*>(rhs);
+    auto* mask_view                 = reinterpret_cast<cudf::column_view*>(boolean_mask);
     auto exec                       = std::unique_ptr<cudf_exec_context>{};
     cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     {
       auto result = cudf::copy_if_else(*lhs_view, *rhs_view, *mask_view, exec->stream, *exec->mr);
-      *out        = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
+      *out = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
     }
     return CUDF_SUCCESS;
   }
@@ -162,18 +162,15 @@ cudf_status_t cudf_shift_ex(cudf_column_view_handle input,
 
   CUDF_RUST_TRY
   {
-    auto* input_view                = static_cast<cudf::column_view*>(input);
+    auto* input_view                = reinterpret_cast<cudf::column_view*>(input);
     auto const& fill_scalar         = cudf_scalar_from_handle_const(fill_value);
     auto exec                       = std::unique_ptr<cudf_exec_context>{};
     cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     {
-      auto result = cudf::shift(*input_view,
-                                static_cast<cudf::size_type>(offset),
-                                fill_scalar,
-                                exec->stream,
-                                *exec->mr);
+      auto result = cudf::shift(
+        *input_view, static_cast<cudf::size_type>(offset), fill_scalar, exec->stream, *exec->mr);
       *out = cudf_release_column_handle(std::move(result), cudf_capture_exec_provenance(*exec));
     }
     return CUDF_SUCCESS;

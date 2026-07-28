@@ -47,3 +47,35 @@ pub fn trigger_dataframe_row_range_overflow_error_for_test() -> Result<DataFrame
 pub fn trigger_concat_by_name_missing_planned_dtype_for_test() -> Result<()> {
     crate::frame::dataframe::trigger_concat_by_name_missing_planned_dtype_for_test()
 }
+
+/// Reset the thread-local count of successful FixedSizeList structural proof
+/// builds performed by `GpuRecordBatch::new`.
+pub fn reset_fixed_size_list_structural_proof_build_count_for_test() {
+    crate::frame::dataframe::reset_fixed_size_list_structural_proof_build_count_for_test();
+}
+
+/// Return the thread-local number of successful FixedSizeList structural
+/// proof builds since the last reset.
+pub fn fixed_size_list_structural_proof_build_count_for_test() -> usize {
+    crate::frame::dataframe::fixed_size_list_structural_proof_build_count_for_test()
+}
+
+/// Attempt to combine one batch's retained FixedSizeList proof with another
+/// batch's producer column. The production gate must reject the mismatch.
+pub fn trigger_fixed_size_list_proof_identity_mismatch_for_test(
+    producer: &crate::frame::dataframe::GpuRecordBatch,
+    proof_owner: &crate::frame::dataframe::GpuRecordBatch,
+    field_index: usize,
+) -> crate::Result<()> {
+    producer.trigger_fixed_size_list_proof_identity_mismatch_for_test(proof_owner, field_index)
+}
+
+/// Attempt to combine one batch's uniform-list proof with another batch's
+/// producer column. The production gate must reject the mismatch.
+pub fn trigger_uniform_list_proof_identity_mismatch_for_test(
+    producer: &crate::frame::dataframe::GpuRecordBatch,
+    proof_owner: &crate::frame::dataframe::GpuRecordBatch,
+    field_index: usize,
+) -> crate::Result<()> {
+    producer.trigger_uniform_list_proof_identity_mismatch_for_test(proof_owner, field_index)
+}

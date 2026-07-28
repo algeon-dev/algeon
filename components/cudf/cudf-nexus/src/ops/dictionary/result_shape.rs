@@ -4,7 +4,7 @@ use crate::{
     runtime::DeviceId,
 };
 
-unsafe fn destroy_returned_column_handles(returned: &[*mut std::ffi::c_void], device: DeviceId) {
+unsafe fn destroy_returned_column_handles(returned: &[cudf_sys::cudf_column_handle], device: DeviceId) {
     for &handle in returned {
         if !handle.is_null() {
             crate::core::native_teardown::drop_device_owned_handle(
@@ -17,7 +17,11 @@ unsafe fn destroy_returned_column_handles(returned: &[*mut std::ffi::c_void], de
     }
 }
 
-unsafe fn destroy_returned_columns_array(out_columns: *mut *mut std::ffi::c_void, out_count: i32, device: DeviceId) {
+unsafe fn destroy_returned_columns_array(
+    out_columns: *mut cudf_sys::cudf_column_handle,
+    out_count: i32,
+    device: DeviceId,
+) {
     if out_columns.is_null() {
         return;
     }
@@ -42,7 +46,7 @@ fn result_count_mismatch_error(out_count: i32, expected_count: i32, operation: &
 }
 
 pub(super) fn validate_match_dictionaries_result_shape(
-    out_columns: *mut *mut std::ffi::c_void,
+    out_columns: *mut cudf_sys::cudf_column_handle,
     out_count: i32,
     expected_count: i32,
     device: DeviceId,
@@ -68,7 +72,7 @@ pub(super) fn validate_match_dictionaries_result_shape(
 }
 
 pub(super) fn validate_owned_handles_result_shape_for_test(
-    handles: &[*mut std::ffi::c_void],
+    handles: &[cudf_sys::cudf_column_handle],
     expected_count: i32,
     device: DeviceId,
     operation: &'static str,

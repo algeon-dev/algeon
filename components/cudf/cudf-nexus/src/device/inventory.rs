@@ -50,7 +50,7 @@ pub(crate) fn pci_bus_id(device: DeviceId) -> Result<String> {
 pub(crate) fn multiprocessor_count(device: DeviceId) -> Result<u32> {
     let value = device_attribute(
         device,
-        cudf_sys::CUDF_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT,
+        cudf_sys::CUDF_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT as i32,
         "DeviceId::multiprocessor_count",
     )?;
     u32::try_from(value).map_err(|error| device_attribute_range_error("DeviceId::multiprocessor_count", value, error))

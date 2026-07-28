@@ -49,7 +49,6 @@
 
 use std::{
     fmt,
-    os::raw::c_void,
     ptr::{self, NonNull},
     sync::Arc,
 };
@@ -228,27 +227,27 @@ fn check_join_indices_status(
 }
 
 struct HashJoinHandle {
-    handle: NonNull<c_void>,
+    handle: NonNull<cudf_sys::cudf_hash_join_handle_state>,
     _domain: Arc<ExecutionDomain>,
 }
 
 struct FilteredJoinHandle {
-    handle: NonNull<c_void>,
+    handle: NonNull<cudf_sys::cudf_filtered_join_handle_state>,
     _domain: Arc<ExecutionDomain>,
 }
 
 struct FilteredJoinProbeHandle {
-    handle: NonNull<c_void>,
+    handle: NonNull<cudf_sys::cudf_filtered_join_probe_handle_state>,
     _domain: Arc<ExecutionDomain>,
 }
 
 struct ConditionalFullJoinSizeDataHandle {
-    handle: NonNull<c_void>,
+    handle: NonNull<cudf_sys::cudf_conditional_full_join_size_data_handle_state>,
     _domain: Arc<ExecutionDomain>,
 }
 
 struct MixedJoinSizeDataHandle {
-    handle: NonNull<c_void>,
+    handle: NonNull<cudf_sys::cudf_mixed_join_size_data_handle_state>,
     _domain: Arc<ExecutionDomain>,
 }
 

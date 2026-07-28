@@ -169,7 +169,7 @@ pub(crate) fn concatenate_columns_with_exec(
     exec_options: &cudf_sys::cudf_exec_options_t,
 ) -> Result<Column> {
     validate_column_types(columns, "concatenate::concatenate_columns")?;
-    let handles: Vec<*mut std::os::raw::c_void> = columns.iter().map(|c| c.raw_handle()).collect();
+    let handles: Vec<cudf_sys::cudf_column_view_handle> = columns.iter().map(|c| c.raw_handle()).collect();
     let num_columns = checked_len_to_i32(
         handles.len(),
         "concatenate::concatenate_columns",
@@ -204,7 +204,7 @@ pub(crate) fn concatenate_tables_with_exec(
     exec_options: &cudf_sys::cudf_exec_options_t,
 ) -> Result<Table> {
     validate_table_column_types(tables, "concatenate::concatenate_tables")?;
-    let handles: Vec<*mut std::os::raw::c_void> = tables.iter().map(|t| t.raw_handle()).collect();
+    let handles: Vec<cudf_sys::cudf_table_view_handle> = tables.iter().map(|t| t.raw_handle()).collect();
     let num_tables = checked_len_to_i32(
         handles.len(),
         "concatenate::concatenate_tables",

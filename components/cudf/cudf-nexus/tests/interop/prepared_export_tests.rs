@@ -56,26 +56,29 @@ fn first_two_test_devices() -> (DeviceId, DeviceId) {
 }
 
 fn reset_event_observation() {
-    unsafe { cudf_sys::cudf_test_event_reset_observation() };
+    unsafe { cudf_sys::test_support::cudf_test_event_reset_observation() };
 }
 
 fn observed_stream_wait_call_count_for_stream_raw(stream_raw: usize) -> i32 {
     let mut out = -1;
-    let status = unsafe { cudf_sys::cudf_test_event_stream_wait_call_count_for_stream_raw(stream_raw, &mut out) };
+    let status =
+        unsafe { cudf_sys::test_support::cudf_test_event_stream_wait_call_count_for_stream_raw(stream_raw, &mut out) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read per-stream wait observation count");
     out
 }
 
 fn observed_stream_wait_call_count_for_event_raw(event_raw: usize) -> i32 {
     let mut out = -1;
-    let status = unsafe { cudf_sys::cudf_test_event_stream_wait_call_count_for_event_raw(event_raw, &mut out) };
+    let status =
+        unsafe { cudf_sys::test_support::cudf_test_event_stream_wait_call_count_for_event_raw(event_raw, &mut out) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read per-event wait observation count");
     out
 }
 
 fn observed_raw_record_call_count_for_stream_raw(stream_raw: usize) -> i32 {
     let mut out = -1;
-    let status = unsafe { cudf_sys::cudf_test_event_raw_record_call_count_for_stream_raw(stream_raw, &mut out) };
+    let status =
+        unsafe { cudf_sys::test_support::cudf_test_event_raw_record_call_count_for_stream_raw(stream_raw, &mut out) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read per-stream raw event-record observation count");
     out
 }

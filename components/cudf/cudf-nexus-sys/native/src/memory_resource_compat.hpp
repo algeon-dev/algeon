@@ -19,9 +19,9 @@ namespace rmm::mr {
 /// needs a stable pointer identity for FFI tests and handle provenance.
 class device_memory_resource {
  public:
-  device_memory_resource()                                      = default;
-  virtual ~device_memory_resource()                             = default;
-  device_memory_resource(device_memory_resource const&)         = delete;
+  device_memory_resource()                                         = default;
+  virtual ~device_memory_resource()                                = default;
+  device_memory_resource(device_memory_resource const&)            = delete;
   device_memory_resource& operator=(device_memory_resource const&) = delete;
 
   void* allocate(cuda::stream_ref stream,
@@ -75,8 +75,7 @@ class device_memory_resource_pointer {
     return resource_->allocate(stream, bytes, alignment);
   }
 
-  void* allocate_sync(std::size_t bytes,
-                      std::size_t alignment = rmm::CUDA_ALLOCATION_ALIGNMENT)
+  void* allocate_sync(std::size_t bytes, std::size_t alignment = rmm::CUDA_ALLOCATION_ALIGNMENT)
   {
     auto* ptr = resource_->allocate(cuda::stream_ref{cudaStream_t{nullptr}}, bytes, alignment);
     cudaStreamSynchronize(cudaStream_t{nullptr});
@@ -132,13 +131,11 @@ class device_memory_resource_box final : public device_memory_resource {
   {
   }
 
-  Resource& resource() noexcept { return resource_; }
-  Resource const& resource() const noexcept { return resource_; }
+  [[nodiscard]] Resource& resource() noexcept { return resource_; }
+  [[nodiscard]] Resource const& resource() const noexcept { return resource_; }
 
  private:
-  void* do_allocate(std::size_t bytes,
-                    rmm::cuda_stream_view stream,
-                    std::size_t alignment) override
+  void* do_allocate(std::size_t bytes, rmm::cuda_stream_view stream, std::size_t alignment) override
   {
     return resource_.allocate(stream, bytes, alignment);
   }

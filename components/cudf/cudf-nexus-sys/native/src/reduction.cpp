@@ -1,4 +1,4 @@
-#include "reduction.h"
+#include "cudf_rust/reduction.h"
 
 #include "execution_context_internal.hpp"
 #include "scalar_handle.hpp"
@@ -60,7 +60,7 @@ cudf_status_t cudf_reduce_aggregation_create(cudf_reduce_aggregation_kind_t kind
       case CUDF_REDUCE_AGG_ALL: agg = cudf::make_all_aggregation<cudf::reduce_aggregation>(); break;
       default: set_error("unknown reduce aggregation kind"); return CUDF_ERROR_INVALID_OPERATION;
     }
-    *out = static_cast<cudf_reduce_aggregation_handle>(agg.release());
+    *out = reinterpret_cast<cudf_reduce_aggregation_handle>(agg.release());
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -74,7 +74,7 @@ cudf_status_t cudf_reduce_aggregation_create_variance(int32_t ddof,
   CUDF_RUST_TRY
   {
     auto agg = cudf::make_variance_aggregation<cudf::reduce_aggregation>(ddof);
-    *out     = static_cast<cudf_reduce_aggregation_handle>(agg.release());
+    *out     = reinterpret_cast<cudf_reduce_aggregation_handle>(agg.release());
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -87,7 +87,7 @@ cudf_status_t cudf_reduce_aggregation_create_std(int32_t ddof, cudf_reduce_aggre
   CUDF_RUST_TRY
   {
     auto agg = cudf::make_std_aggregation<cudf::reduce_aggregation>(ddof);
-    *out     = static_cast<cudf_reduce_aggregation_handle>(agg.release());
+    *out     = reinterpret_cast<cudf_reduce_aggregation_handle>(agg.release());
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -104,7 +104,7 @@ cudf_status_t cudf_reduce_aggregation_create_nunique(int32_t null_policy,
   CUDF_RUST_TRY
   {
     auto agg = cudf::make_nunique_aggregation<cudf::reduce_aggregation>(cudf_null_policy);
-    *out     = static_cast<cudf_reduce_aggregation_handle>(agg.release());
+    *out     = reinterpret_cast<cudf_reduce_aggregation_handle>(agg.release());
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -113,7 +113,7 @@ cudf_status_t cudf_reduce_aggregation_create_nunique(int32_t null_policy,
 cudf_status_t cudf_reduce_aggregation_destroy(cudf_reduce_aggregation_handle handle)
 {
   try {
-    delete static_cast<cudf::reduce_aggregation*>(handle);
+    delete reinterpret_cast<cudf::reduce_aggregation*>(handle);
     return CUDF_SUCCESS;
   } catch (...) {
     return cudf_translate_cleanup_exception_noexcept();
@@ -137,7 +137,7 @@ cudf_status_t cudf_scan_aggregation_create(cudf_reduce_aggregation_kind_t kind,
         break;
       default: set_error("unsupported scan aggregation kind"); return CUDF_ERROR_INVALID_OPERATION;
     }
-    *out = static_cast<cudf_scan_aggregation_handle>(agg.release());
+    *out = reinterpret_cast<cudf_scan_aggregation_handle>(agg.release());
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -146,7 +146,7 @@ cudf_status_t cudf_scan_aggregation_create(cudf_reduce_aggregation_kind_t kind,
 cudf_status_t cudf_scan_aggregation_destroy(cudf_scan_aggregation_handle handle)
 {
   try {
-    delete static_cast<cudf::scan_aggregation*>(handle);
+    delete reinterpret_cast<cudf::scan_aggregation*>(handle);
     return CUDF_SUCCESS;
   } catch (...) {
     return cudf_translate_cleanup_exception_noexcept();
@@ -170,9 +170,9 @@ cudf_status_t cudf_reduce_ex(cudf_column_view_handle input,
     cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
-    auto* view       = static_cast<cudf::column_view*>(input);
-    auto* reduce_agg = static_cast<cudf::reduce_aggregation*>(agg);
-    auto* dtype      = static_cast<cudf::data_type*>(output_type);
+    auto* view       = reinterpret_cast<cudf::column_view*>(input);
+    auto* reduce_agg = reinterpret_cast<cudf::reduce_aggregation*>(agg);
+    auto* dtype      = reinterpret_cast<cudf::data_type*>(output_type);
 
     {
       auto result = cudf::reduce(*view, *reduce_agg, *dtype, exec->stream, *exec->mr);
@@ -206,8 +206,8 @@ cudf_status_t cudf_scan_ex(cudf_column_view_handle input,
     cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
-    auto* view     = static_cast<cudf::column_view*>(input);
-    auto* scan_agg = static_cast<cudf::scan_aggregation*>(agg);
+    auto* view     = reinterpret_cast<cudf::column_view*>(input);
+    auto* scan_agg = reinterpret_cast<cudf::scan_aggregation*>(agg);
 
     {
       auto result =
@@ -235,7 +235,7 @@ cudf_status_t cudf_minmax_ex(cudf_column_view_handle input,
     cudf_status_t const exec_status = cudf_resolve_required_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
-    auto* view = static_cast<cudf::column_view*>(input);
+    auto* view = reinterpret_cast<cudf::column_view*>(input);
 
     {
       auto [min_scalar, max_scalar] = cudf::minmax(*view, exec->stream, *exec->mr);

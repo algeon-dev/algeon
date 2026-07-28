@@ -49,27 +49,30 @@ fn assert_exec_observation_matches_runtime(runtime: &Runtime) {
 }
 
 fn reset_event_observation() {
-    unsafe { cudf_sys::cudf_test_event_reset_observation() };
+    unsafe { cudf_sys::test_support::cudf_test_event_reset_observation() };
 }
 
 fn observed_event_synchronize_call_count_for_event_handle_raw(event_handle_raw: usize) -> i32 {
     let mut out = -1;
-    let status =
-        unsafe { cudf_sys::cudf_test_event_synchronize_call_count_for_event_handle_raw(event_handle_raw, &mut out) };
+    let status = unsafe {
+        cudf_sys::test_support::cudf_test_event_synchronize_call_count_for_event_handle_raw(event_handle_raw, &mut out)
+    };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read event synchronize observation count for event handle");
     out
 }
 
 fn observed_stream_wait_call_count_for_stream_raw(stream_raw: usize) -> i32 {
     let mut out = -1;
-    let status = unsafe { cudf_sys::cudf_test_event_stream_wait_call_count_for_stream_raw(stream_raw, &mut out) };
+    let status =
+        unsafe { cudf_sys::test_support::cudf_test_event_stream_wait_call_count_for_stream_raw(stream_raw, &mut out) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read stream-wait observation count");
     out
 }
 
 fn observed_raw_record_call_count_for_stream_raw(stream_raw: usize) -> i32 {
     let mut out = -1;
-    let status = unsafe { cudf_sys::cudf_test_event_raw_record_call_count_for_stream_raw(stream_raw, &mut out) };
+    let status =
+        unsafe { cudf_sys::test_support::cudf_test_event_raw_record_call_count_for_stream_raw(stream_raw, &mut out) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read raw event-record observation count");
     out
 }
@@ -1995,8 +1998,8 @@ fn device_arrow_import_rejects_non_cuda_device_type() {
     let raw_parts = series.try_prepare_device_arrow_export().unwrap().into_raw_parts();
 
     unsafe {
-        cudf::testing::interop::force_device_arrow_array_device_type_for_test(
-            raw_parts.device_array_ptr(),
+        cudf_sys::test_support::cudf_test_arrow_device_array_set_device_type(
+            raw_parts.device_array_ptr().cast(),
             cudf::testing::interop::arrow_device_cpu_type_for_test(),
         );
     }
@@ -2053,8 +2056,8 @@ fn device_arrow_import_accepts_cuda_host_device_type() {
     let raw_parts = series.try_prepare_device_arrow_export().unwrap().into_raw_parts();
 
     unsafe {
-        cudf::testing::interop::force_device_arrow_array_device_type_for_test(
-            raw_parts.device_array_ptr(),
+        cudf_sys::test_support::cudf_test_arrow_device_array_set_device_type(
+            raw_parts.device_array_ptr().cast(),
             cudf::testing::interop::arrow_device_cuda_host_type_for_test(),
         );
     }
@@ -2086,8 +2089,8 @@ fn table_device_arrow_import_accepts_cuda_managed_device_type() {
     let raw_parts = table.try_prepare_device_arrow_export().unwrap().into_raw_parts();
 
     unsafe {
-        cudf::testing::interop::force_device_arrow_array_device_type_for_test(
-            raw_parts.device_array_ptr(),
+        cudf_sys::test_support::cudf_test_arrow_device_array_set_device_type(
+            raw_parts.device_array_ptr().cast(),
             cudf::testing::interop::arrow_device_cuda_managed_type_for_test(),
         );
     }
@@ -2151,8 +2154,8 @@ fn table_device_arrow_import_rejects_non_cuda_device_type() {
     let raw_parts = table.try_prepare_device_arrow_export().unwrap().into_raw_parts();
 
     unsafe {
-        cudf::testing::interop::force_device_arrow_array_device_type_for_test(
-            raw_parts.device_array_ptr(),
+        cudf_sys::test_support::cudf_test_arrow_device_array_set_device_type(
+            raw_parts.device_array_ptr().cast(),
             cudf::testing::interop::arrow_device_cpu_type_for_test(),
         );
     }

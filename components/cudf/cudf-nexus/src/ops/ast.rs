@@ -7,7 +7,6 @@
 
 use std::{
     fmt,
-    os::raw::c_void,
     ptr::{self, NonNull},
     sync::Arc,
 };
@@ -77,58 +76,57 @@ pub enum AstOperator {
 
 impl AstOperator {
     fn to_raw(self) -> cudf_sys::cudf_ast_operator_t {
-        use cudf_sys::cudf_ast_operator_t as Raw;
         match self {
-            Self::Add => Raw::CUDF_AST_ADD,
-            Self::Sub => Raw::CUDF_AST_SUB,
-            Self::Mul => Raw::CUDF_AST_MUL,
-            Self::Div => Raw::CUDF_AST_DIV,
-            Self::TrueDiv => Raw::CUDF_AST_TRUE_DIV,
-            Self::FloorDiv => Raw::CUDF_AST_FLOOR_DIV,
-            Self::Mod => Raw::CUDF_AST_MOD,
-            Self::PyMod => Raw::CUDF_AST_PYMOD,
-            Self::Pow => Raw::CUDF_AST_POW,
-            Self::Equal => Raw::CUDF_AST_EQUAL,
-            Self::NullEqual => Raw::CUDF_AST_NULL_EQUAL,
-            Self::NotEqual => Raw::CUDF_AST_NOT_EQUAL,
-            Self::Less => Raw::CUDF_AST_LESS,
-            Self::Greater => Raw::CUDF_AST_GREATER,
-            Self::LessEqual => Raw::CUDF_AST_LESS_EQUAL,
-            Self::GreaterEqual => Raw::CUDF_AST_GREATER_EQUAL,
-            Self::BitwiseAnd => Raw::CUDF_AST_BITWISE_AND,
-            Self::BitwiseOr => Raw::CUDF_AST_BITWISE_OR,
-            Self::BitwiseXor => Raw::CUDF_AST_BITWISE_XOR,
-            Self::LogicalAnd => Raw::CUDF_AST_LOGICAL_AND,
-            Self::NullLogicalAnd => Raw::CUDF_AST_NULL_LOGICAL_AND,
-            Self::LogicalOr => Raw::CUDF_AST_LOGICAL_OR,
-            Self::NullLogicalOr => Raw::CUDF_AST_NULL_LOGICAL_OR,
-            Self::Identity => Raw::CUDF_AST_IDENTITY,
-            Self::IsNull => Raw::CUDF_AST_IS_NULL,
-            Self::Sin => Raw::CUDF_AST_SIN,
-            Self::Cos => Raw::CUDF_AST_COS,
-            Self::Tan => Raw::CUDF_AST_TAN,
-            Self::Arcsin => Raw::CUDF_AST_ARCSIN,
-            Self::Arccos => Raw::CUDF_AST_ARCCOS,
-            Self::Arctan => Raw::CUDF_AST_ARCTAN,
-            Self::Sinh => Raw::CUDF_AST_SINH,
-            Self::Cosh => Raw::CUDF_AST_COSH,
-            Self::Tanh => Raw::CUDF_AST_TANH,
-            Self::Arcsinh => Raw::CUDF_AST_ARCSINH,
-            Self::Arccosh => Raw::CUDF_AST_ARCCOSH,
-            Self::Arctanh => Raw::CUDF_AST_ARCTANH,
-            Self::Exp => Raw::CUDF_AST_EXP,
-            Self::Log => Raw::CUDF_AST_LOG,
-            Self::Sqrt => Raw::CUDF_AST_SQRT,
-            Self::Cbrt => Raw::CUDF_AST_CBRT,
-            Self::Ceil => Raw::CUDF_AST_CEIL,
-            Self::Floor => Raw::CUDF_AST_FLOOR,
-            Self::Abs => Raw::CUDF_AST_ABS,
-            Self::Rint => Raw::CUDF_AST_RINT,
-            Self::BitInvert => Raw::CUDF_AST_BIT_INVERT,
-            Self::Not => Raw::CUDF_AST_NOT,
-            Self::CastToInt64 => Raw::CUDF_AST_CAST_TO_INT64,
-            Self::CastToUint64 => Raw::CUDF_AST_CAST_TO_UINT64,
-            Self::CastToFloat64 => Raw::CUDF_AST_CAST_TO_FLOAT64,
+            Self::Add => cudf_sys::CUDF_AST_ADD,
+            Self::Sub => cudf_sys::CUDF_AST_SUB,
+            Self::Mul => cudf_sys::CUDF_AST_MUL,
+            Self::Div => cudf_sys::CUDF_AST_DIV,
+            Self::TrueDiv => cudf_sys::CUDF_AST_TRUE_DIV,
+            Self::FloorDiv => cudf_sys::CUDF_AST_FLOOR_DIV,
+            Self::Mod => cudf_sys::CUDF_AST_MOD,
+            Self::PyMod => cudf_sys::CUDF_AST_PYMOD,
+            Self::Pow => cudf_sys::CUDF_AST_POW,
+            Self::Equal => cudf_sys::CUDF_AST_EQUAL,
+            Self::NullEqual => cudf_sys::CUDF_AST_NULL_EQUAL,
+            Self::NotEqual => cudf_sys::CUDF_AST_NOT_EQUAL,
+            Self::Less => cudf_sys::CUDF_AST_LESS,
+            Self::Greater => cudf_sys::CUDF_AST_GREATER,
+            Self::LessEqual => cudf_sys::CUDF_AST_LESS_EQUAL,
+            Self::GreaterEqual => cudf_sys::CUDF_AST_GREATER_EQUAL,
+            Self::BitwiseAnd => cudf_sys::CUDF_AST_BITWISE_AND,
+            Self::BitwiseOr => cudf_sys::CUDF_AST_BITWISE_OR,
+            Self::BitwiseXor => cudf_sys::CUDF_AST_BITWISE_XOR,
+            Self::LogicalAnd => cudf_sys::CUDF_AST_LOGICAL_AND,
+            Self::NullLogicalAnd => cudf_sys::CUDF_AST_NULL_LOGICAL_AND,
+            Self::LogicalOr => cudf_sys::CUDF_AST_LOGICAL_OR,
+            Self::NullLogicalOr => cudf_sys::CUDF_AST_NULL_LOGICAL_OR,
+            Self::Identity => cudf_sys::CUDF_AST_IDENTITY,
+            Self::IsNull => cudf_sys::CUDF_AST_IS_NULL,
+            Self::Sin => cudf_sys::CUDF_AST_SIN,
+            Self::Cos => cudf_sys::CUDF_AST_COS,
+            Self::Tan => cudf_sys::CUDF_AST_TAN,
+            Self::Arcsin => cudf_sys::CUDF_AST_ARCSIN,
+            Self::Arccos => cudf_sys::CUDF_AST_ARCCOS,
+            Self::Arctan => cudf_sys::CUDF_AST_ARCTAN,
+            Self::Sinh => cudf_sys::CUDF_AST_SINH,
+            Self::Cosh => cudf_sys::CUDF_AST_COSH,
+            Self::Tanh => cudf_sys::CUDF_AST_TANH,
+            Self::Arcsinh => cudf_sys::CUDF_AST_ARCSINH,
+            Self::Arccosh => cudf_sys::CUDF_AST_ARCCOSH,
+            Self::Arctanh => cudf_sys::CUDF_AST_ARCTANH,
+            Self::Exp => cudf_sys::CUDF_AST_EXP,
+            Self::Log => cudf_sys::CUDF_AST_LOG,
+            Self::Sqrt => cudf_sys::CUDF_AST_SQRT,
+            Self::Cbrt => cudf_sys::CUDF_AST_CBRT,
+            Self::Ceil => cudf_sys::CUDF_AST_CEIL,
+            Self::Floor => cudf_sys::CUDF_AST_FLOOR,
+            Self::Abs => cudf_sys::CUDF_AST_ABS,
+            Self::Rint => cudf_sys::CUDF_AST_RINT,
+            Self::BitInvert => cudf_sys::CUDF_AST_BIT_INVERT,
+            Self::Not => cudf_sys::CUDF_AST_NOT,
+            Self::CastToInt64 => cudf_sys::CUDF_AST_CAST_TO_INT64,
+            Self::CastToUint64 => cudf_sys::CUDF_AST_CAST_TO_UINT64,
+            Self::CastToFloat64 => cudf_sys::CUDF_AST_CAST_TO_FLOAT64,
         }
     }
 }
@@ -140,7 +138,7 @@ impl AstOperator {
 /// expressions retain their child expressions, so building a larger predicate
 /// by value does not leave libcudf with dangling child references.
 pub struct AstExpression {
-    handle: NonNull<c_void>,
+    handle: NonNull<cudf_sys::cudf_ast_expression_handle_state>,
     children: Vec<AstExpression>,
     literals: Vec<Arc<Scalar>>,
 }
@@ -159,12 +157,12 @@ unsafe impl Sync for AstExpression {}
 impl AstExpression {
     /// Create a reference to a column in the left table passed to a join call.
     pub fn left_column(column_index: i32) -> Result<Self> {
-        Self::column(column_index, cudf_sys::cudf_ast_table_reference_t::CUDF_AST_TABLE_REFERENCE_LEFT)
+        Self::column(column_index, cudf_sys::CUDF_AST_TABLE_REFERENCE_LEFT)
     }
 
     /// Create a reference to a column in the right table passed to a join call.
     pub fn right_column(column_index: i32) -> Result<Self> {
-        Self::column(column_index, cudf_sys::cudf_ast_table_reference_t::CUDF_AST_TABLE_REFERENCE_RIGHT)
+        Self::column(column_index, cudf_sys::CUDF_AST_TABLE_REFERENCE_RIGHT)
     }
 
     fn column(column_index: i32, table: cudf_sys::cudf_ast_table_reference_t) -> Result<Self> {
@@ -267,7 +265,7 @@ impl AstExpression {
         Self::in_list(input, values, true)
     }
 
-    pub(crate) fn raw_handle(&self) -> *mut c_void {
+    pub(crate) fn raw_handle(&self) -> cudf_sys::cudf_ast_expression_handle {
         self.handle.as_ptr()
     }
 
@@ -279,7 +277,7 @@ impl AstExpression {
     }
 
     fn from_raw(
-        handle: *mut c_void,
+        handle: cudf_sys::cudf_ast_expression_handle,
         children: Vec<AstExpression>,
         literals: Vec<Arc<Scalar>>,
         operation: &'static str,
@@ -343,7 +341,7 @@ impl AstExpression {
         left: &AstExpression,
         right: &AstExpression,
         operation: &'static str,
-    ) -> Result<*mut c_void> {
+    ) -> Result<cudf_sys::cudf_ast_expression_handle> {
         let mut out = ptr::null_mut();
         error::check_status_in_with_details(
             unsafe {

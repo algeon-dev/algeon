@@ -2,9 +2,9 @@ use super::*;
 
 fn filter_join_kind_raw(join_type: JoinType) -> cudf_sys::cudf_join_kind_t {
     match join_type {
-        JoinType::Inner => cudf_sys::cudf_join_kind_t::CUDF_JOIN_KIND_INNER_JOIN,
-        JoinType::Left => cudf_sys::cudf_join_kind_t::CUDF_JOIN_KIND_LEFT_JOIN,
-        JoinType::Full => cudf_sys::cudf_join_kind_t::CUDF_JOIN_KIND_FULL_JOIN,
+        JoinType::Inner => cudf_sys::CUDF_JOIN_KIND_INNER_JOIN,
+        JoinType::Left => cudf_sys::CUDF_JOIN_KIND_LEFT_JOIN,
+        JoinType::Full => cudf_sys::CUDF_JOIN_KIND_FULL_JOIN,
     }
 }
 

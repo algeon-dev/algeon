@@ -16,25 +16,30 @@ use std::{
 
 use arrow::{
     array::{
-        Array, Int32Array, LargeListBuilder, LargeStringArray, LargeStringBuilder, ListBuilder, StringArray,
-        StringBuilder,
+        Array, FixedSizeListArray, Float32Array, Int32Array, Int64Array, LargeListBuilder, LargeStringArray,
+        LargeStringBuilder, ListArray, ListBuilder, StringArray, StringBuilder,
     },
+    buffer::{NullBuffer, OffsetBuffer, ScalarBuffer},
     datatypes::{DataType as ArrowDataType, Field, Schema},
     record_batch::RecordBatch,
 };
 use cudf::{
-    BoundaryKind, DataFrame, ExecutionOverrides, QueryExecutionContext, Runtime, TypeId,
-    core::error::{ErrorCode, ErrorKind, ErrorStatus, FactKeyName, FactValue},
+    BoundaryKind, DataFrame, DenseMatrixLayout, DeviceId, ExecutionOverrides, QueryExecutionContext, Runtime, TypeId,
+    core::{
+        DeviceMemoryResource,
+        error::{ErrorCode, ErrorKind, ErrorStatus, FactKeyName, FactValue},
+    },
     frame::dataframe::{GpuRecordBatch, HostBatchCursorConfig},
     ops::expr::col,
     runtime::QueryStageKind,
     testing::{self, prelude::*},
 };
+use cudf_sys::test_support;
 use rapids_interop::{CompletionAuthority, ReadStartAuthority};
 
 use crate::common::{
-    last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, lock_event_observation, reset_exec_observation,
-    reset_sync_observation, sample_runtime,
+    dependency_wait_call_count_for_stream, last_exec_mr_value, last_exec_stream_value, last_sync_stream_value,
+    lock_event_observation, reset_exec_observation, reset_sync_observation, sample_runtime,
 };
 
 fn assert_frame_residency(df: &DataFrame, expected_id: u64, expected_stream: usize, expected_mr: usize) {
@@ -42,6 +47,26 @@ fn assert_frame_residency(df: &DataFrame, expected_id: u64, expected_stream: usi
     assert_eq!(df.testing_execution_domain_id(), expected_id);
     assert_eq!(df.testing_execution_domain_stream_value(), expected_stream);
     assert_eq!(df.testing_execution_domain_mr_value(), expected_mr);
+}
+
+fn stats_memory_resource() -> DeviceMemoryResource {
+    let device = DeviceId::current().expect("failed to resolve device for stats memory resource");
+    let mut raw = std::ptr::null_mut();
+    let status = unsafe { test_support::cudf_test_memory_resource_create_stats(&mut raw) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to create stats memory resource");
+    // SAFETY: the hook returned one newly owned resource for the current
+    // device, and this test transfers its sole ownership to cudf.
+    unsafe { cudf::testing::core::adopt_owned_memory_resource_for_test(raw, device) }
+        .expect("failed to adopt stats memory resource")
+}
+
+fn allocation_count(resource: &DeviceMemoryResource) -> i64 {
+    let mut out = 0;
+    let status = unsafe {
+        test_support::cudf_test_memory_resource_allocation_count(resource.as_borrowed_sys().as_raw(), &mut out)
+    };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read allocation count");
+    out
 }
 
 fn int32_array(batch: &RecordBatch, index: usize) -> &Int32Array {
@@ -67,6 +92,36 @@ fn record_batch_buffer_memory_size(batch: &RecordBatch) -> usize {
     batch.columns().iter().fold(0usize, |total, column| {
         total.checked_add(column.get_buffer_memory_size()).expect("test RecordBatch buffer memory must fit usize")
     })
+}
+
+fn fixed_size_list_float32_gpu_batch(runtime: &Runtime, values: Vec<Option<f32>>) -> GpuRecordBatch {
+    assert_eq!(values.len() % 2, 0);
+    let item = Arc::new(Field::new("item", ArrowDataType::Float32, true));
+    let fixed = FixedSizeListArray::new(Arc::clone(&item), 2, Arc::new(Float32Array::from(values)), None);
+    let schema = Arc::new(Schema::new(vec![Field::new("values", ArrowDataType::FixedSizeList(item, 2), false)]));
+    let host = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(fixed)]).unwrap();
+    let frame = DataFrame::from_record_batch(runtime, &host).unwrap();
+    GpuRecordBatch::new(frame, schema).unwrap()
+}
+
+fn uniform_list_float32_gpu_batch(
+    runtime: &Runtime,
+    offsets: Vec<i32>,
+    values: Vec<Option<f32>>,
+    root_validity: Option<Vec<bool>>,
+) -> GpuRecordBatch {
+    assert!(!offsets.is_empty());
+    let element = Arc::new(Field::new("element", ArrowDataType::Float32, true));
+    let lists = ListArray::new(
+        Arc::clone(&element),
+        OffsetBuffer::new(ScalarBuffer::from(offsets)),
+        Arc::new(Float32Array::from(values)),
+        root_validity.map(NullBuffer::from),
+    );
+    let schema = Arc::new(Schema::new(vec![Field::new("features", ArrowDataType::List(element), true)]));
+    let host = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(lists)]).unwrap();
+    let frame = DataFrame::from_record_batch(runtime, &host).unwrap();
+    GpuRecordBatch::new(frame, schema).unwrap()
 }
 
 struct RetainedLifetimeDropCounter(Arc<AtomicUsize>);
@@ -1306,6 +1361,502 @@ fn host_batch_cursor_estimates_large_list_string_offsets_validity_and_children()
 
     assert_eq!(materialized.column(0).data_type(), host.column(0).data_type());
     assert!(actual <= estimate, "LargeList<LargeUtf8>: actual={actual} estimate={estimate}");
+}
+
+#[test]
+fn host_batch_cursor_estimates_numeric_list_and_fixed_size_list_buffers() {
+    let runtime = sample_runtime();
+    let list_item = Arc::new(Field::new("item", ArrowDataType::Int64, false));
+    let list = ListArray::new(
+        Arc::clone(&list_item),
+        OffsetBuffer::new(ScalarBuffer::from(vec![0, 2, 3, 6])),
+        Arc::new(Int64Array::from(vec![10, 20, 30, 40, 50, 60])),
+        None,
+    );
+    let list_schema = Arc::new(Schema::new(vec![Field::new("values", ArrowDataType::List(list_item), false)]));
+    let list_batch = RecordBatch::try_new(Arc::clone(&list_schema), vec![Arc::new(list)]).unwrap();
+
+    let fixed_item = Arc::new(Field::new("item", ArrowDataType::Float32, false));
+    let fixed = FixedSizeListArray::new(
+        Arc::clone(&fixed_item),
+        2,
+        Arc::new(Float32Array::from(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0])),
+        None,
+    );
+    let fixed_schema =
+        Arc::new(Schema::new(vec![Field::new("values", ArrowDataType::FixedSizeList(fixed_item, 2), false)]));
+    let fixed_batch = RecordBatch::try_new(Arc::clone(&fixed_schema), vec![Arc::new(fixed)]).unwrap();
+
+    for host in [list_batch, fixed_batch] {
+        let frame = DataFrame::from_record_batch(&runtime, &host).unwrap();
+        let mut cursor = GpuRecordBatch::new(frame, host.schema())
+            .unwrap()
+            .into_host_batch_cursor(HostBatchCursorConfig {
+                target_materialization_bytes: usize::MAX,
+                max_materialization_bytes: usize::MAX,
+                max_rows: usize::MAX,
+            })
+            .unwrap();
+        let prepared = cursor.prepare_next_batch().unwrap().unwrap();
+        let estimate = prepared.estimated_materialization_bytes();
+        let materialized = cursor.materialize_prepared_batch(prepared).unwrap();
+        let actual = record_batch_buffer_memory_size(&materialized);
+
+        assert_eq!(materialized.schema(), host.schema());
+        assert!(actual <= estimate, "{:?}: actual={actual} estimate={estimate}", host.column(0).data_type());
+    }
+}
+
+#[test]
+fn fixed_size_list_structural_proof_is_bounded_and_reused_by_cursor_slices() {
+    let runtime = sample_runtime();
+    let item = Arc::new(Field::new("item", ArrowDataType::Float32, false));
+    let fixed = FixedSizeListArray::new(
+        Arc::clone(&item),
+        2,
+        Arc::new(Float32Array::from(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0])),
+        None,
+    );
+    let schema = Arc::new(Schema::new(vec![Field::new("values", ArrowDataType::FixedSizeList(item, 2), false)]));
+    let host = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(fixed)]).unwrap();
+    let frame = DataFrame::from_record_batch(&runtime, &host).unwrap();
+
+    testing::dataframe::reset_fixed_size_list_structural_proof_build_count_for_test();
+    testing::boundary::reset_boundary_observation_for_test();
+    let gpu = GpuRecordBatch::new(frame, schema).unwrap();
+    assert_eq!(testing::dataframe::fixed_size_list_structural_proof_build_count_for_test(), 1);
+    let observation = testing::boundary::last_boundary_observation_for_test().unwrap();
+    assert_eq!(observation.kind, BoundaryKind::BoundedControlScalar);
+    assert_eq!(observation.rows, 4);
+    assert_eq!(observation.columns, 2);
+    assert!(observation.synchronized_for_host);
+    assert_eq!(observation.memory.downloaded_bytes, Some(2 * std::mem::size_of::<i32>()));
+
+    testing::boundary::reset_boundary_observation_for_test();
+    let mut cursor = gpu
+        .into_host_batch_cursor(HostBatchCursorConfig {
+            target_materialization_bytes: usize::MAX,
+            max_materialization_bytes: usize::MAX,
+            max_rows: 1,
+        })
+        .unwrap();
+    let first = cursor.prepare_next_batch().unwrap().unwrap();
+    assert_eq!(testing::dataframe::fixed_size_list_structural_proof_build_count_for_test(), 1);
+    assert!(testing::boundary::last_boundary_observation_for_test().is_none());
+    cursor.materialize_prepared_batch(first).unwrap();
+
+    testing::boundary::reset_boundary_observation_for_test();
+    let _second = cursor.prepare_next_batch().unwrap().unwrap();
+    assert_eq!(
+        testing::dataframe::fixed_size_list_structural_proof_build_count_for_test(),
+        1,
+        "cursor slices must retain the original structural proof instead of rebuilding it"
+    );
+    assert!(testing::boundary::last_boundary_observation_for_test().is_none());
+}
+
+#[test]
+fn fixed_size_list_float32_export_retains_proof_binding_range_and_lease_root() {
+    let runtime = sample_runtime();
+    let gpu = fixed_size_list_float32_gpu_batch(
+        &runtime,
+        vec![Some(1.0), Some(2.0), Some(3.0), Some(4.0), Some(5.0), Some(6.0)],
+    );
+
+    let validated = gpu.try_prepare_fixed_size_list_float32_export(0).unwrap();
+
+    assert_eq!(validated.field_index(), 0);
+    assert_eq!(validated.dimension(), 2);
+    assert_eq!(validated.rows(), 3);
+    assert_eq!(validated.child_len(), 6);
+    assert_eq!(validated.child_byte_offset(), validated.child_offset() * std::mem::size_of::<f32>());
+    assert_eq!(validated.binding_id(), runtime.binding_id());
+    assert_eq!(validated.placement(), runtime.placement());
+    let observation = validated.structural_observation().unwrap();
+    assert_eq!(observation.kind, BoundaryKind::BoundedControlScalar);
+    assert_eq!(observation.memory.downloaded_bytes, Some(2 * std::mem::size_of::<i32>()));
+    let finite_observation = validated.finite_observation();
+    assert_eq!(finite_observation.kind, BoundaryKind::BoundedControlScalar);
+    assert_eq!(finite_observation.rows, validated.child_len());
+    assert_eq!(finite_observation.columns, 1);
+    assert_eq!(finite_observation.placement, runtime.placement());
+    assert_eq!(finite_observation.memory.downloaded_bytes, Some(std::mem::size_of::<i32>()));
+    assert_eq!(validated.export().column().id(), validated.root_column_id());
+    assert!(validated.export().semantic_columns().iter().any(|column| column.id() == validated.child_column_id()));
+    let values = validated.child_values_binding();
+    assert_eq!(values.id(), validated.child_values_buffer_id());
+    assert!(!values.bytes().base_ptr().is_null());
+    assert!(values.bytes().byte_len() >= validated.child_byte_offset() + validated.child_len() * 4);
+
+    let lease = validated
+        .export()
+        .try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, CompletionAuthority::SynchronousByReturn)
+        .unwrap();
+    lease.complete().unwrap();
+}
+
+#[test]
+fn fixed_size_list_direct_pack_copies_only_active_child_once_on_target_runtime() {
+    let _event_observation = lock_event_observation();
+    let producer_runtime = sample_runtime();
+    let full = fixed_size_list_float32_gpu_batch(
+        &producer_runtime,
+        vec![Some(f32::NAN), Some(f32::INFINITY), Some(3.0), Some(4.0), Some(5.0), Some(6.0)],
+    );
+    let sliced_frame = full.frame().slice(1, 2).unwrap();
+    let sliced = GpuRecordBatch::new(sliced_frame, Arc::clone(full.schema())).unwrap();
+    let validated = sliced.try_prepare_fixed_size_list_float32_export(0).unwrap();
+
+    let stats = stats_memory_resource();
+    let target_runtime = Runtime::builder().with_memory_resource(stats.clone()).build().unwrap();
+    let producer_stream = producer_runtime.stream().testing_raw_handle_value();
+    let target_stream = target_runtime.stream().testing_raw_handle_value();
+    assert_ne!(producer_stream, target_stream, "test requires a cross-stream pack");
+    unsafe { test_support::cudf_test_event_reset_observation() };
+    reset_sync_observation();
+    let before = allocation_count(&stats);
+    let packed = validated.pack_active_child_into_runtime(&target_runtime, DenseMatrixLayout::RowMajor).unwrap();
+    let after = allocation_count(&stats);
+
+    assert_eq!(
+        after - before,
+        1,
+        "direct validated-child packing must allocate only the final matrix, not an imported list root, child copy, or gather map"
+    );
+    assert_eq!(packed.shape(), [2, 2]);
+    assert_eq!(packed.layout(), DenseMatrixLayout::RowMajor);
+    assert_eq!(packed.binding_id(), target_runtime.binding_id());
+    assert_eq!(packed.placement(), target_runtime.placement());
+    assert_eq!(
+        last_sync_stream_value(),
+        usize::MAX,
+        "successful direct packing must leave the reset no-synchronization sentinel unchanged"
+    );
+    assert!(
+        dependency_wait_call_count_for_stream(target_stream) >= 1,
+        "target stream must wait for the prepared producer"
+    );
+    assert!(
+        dependency_wait_call_count_for_stream(producer_stream) >= 1,
+        "producer stream must wait for direct-pack completion before source deallocation"
+    );
+    assert_eq!(packed.into_column().to_vec::<f32>().unwrap(), vec![3.0, 4.0, 5.0, 6.0]);
+}
+
+#[test]
+fn fixed_size_list_float32_export_rejects_non_finite_active_child_values() {
+    for invalid in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        let runtime = sample_runtime();
+        let gpu = fixed_size_list_float32_gpu_batch(&runtime, vec![Some(1.0), Some(invalid), Some(3.0), Some(4.0)]);
+
+        let error = gpu
+            .try_prepare_fixed_size_list_float32_export(0)
+            .expect_err("proof-bearing FixedSizeList export must reject non-finite child values");
+
+        assert_eq!(error.code(), ErrorCode::ValueOutOfRange);
+        assert_eq!(
+            error.fact_value(FactKeyName::ValidationReason),
+            Some(&FactValue::Str("non_finite_vector_value".into()))
+        );
+        assert_eq!(
+            error.fact_value(FactKeyName::ExecutionBindingId),
+            Some(&FactValue::U64(runtime.binding_id().get()))
+        );
+        assert_eq!(error.fact_value(FactKeyName::ControlPlaneScalarBytes), Some(&FactValue::Usize(4)));
+        assert_eq!(error.detail_value("non_finite_count"), Some("1"));
+        assert_eq!(error.detail_value("validated_values"), Some("4"));
+    }
+}
+
+#[test]
+fn fixed_size_list_float32_finite_validation_covers_only_the_active_child_range() {
+    let runtime = sample_runtime();
+    let item = Arc::new(Field::new("item", ArrowDataType::Float32, false));
+    let fixed = FixedSizeListArray::new(
+        Arc::clone(&item),
+        2,
+        Arc::new(Float32Array::from(vec![f32::NAN, f32::INFINITY, 3.0, 4.0])),
+        None,
+    );
+    let schema = Arc::new(Schema::new(vec![Field::new("values", ArrowDataType::FixedSizeList(item, 2), false)]));
+    let host = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(fixed)]).unwrap();
+    let frame = DataFrame::from_record_batch(&runtime, &host).unwrap().slice(1, 1).unwrap();
+    let gpu = GpuRecordBatch::new(frame, schema).unwrap();
+
+    let validated = gpu.try_prepare_fixed_size_list_float32_export(0).unwrap();
+
+    assert_eq!(validated.rows(), 1);
+    assert_eq!(validated.child_len(), 2);
+    assert_eq!(validated.finite_observation().rows, 2);
+}
+
+#[test]
+fn fixed_size_list_float32_export_rejects_detached_foreign_proof_identity() {
+    let runtime = sample_runtime();
+    let producer = fixed_size_list_float32_gpu_batch(&runtime, vec![Some(1.0), Some(2.0), Some(3.0), Some(4.0)]);
+    let foreign_proof_owner =
+        fixed_size_list_float32_gpu_batch(&runtime, vec![Some(10.0), Some(20.0), Some(30.0), Some(40.0)]);
+
+    let error = testing::dataframe::trigger_fixed_size_list_proof_identity_mismatch_for_test(
+        &producer,
+        &foreign_proof_owner,
+        0,
+    )
+    .expect_err("a structural proof must not detach from its producer column");
+
+    assert_eq!(error.code(), ErrorCode::InvariantViolation);
+    assert_eq!(error.detail_value("reason"), Some("fixed_size_list_proof_identity_mismatch"));
+}
+
+#[test]
+fn fixed_size_list_float32_export_rejects_null_child_values() {
+    let runtime = sample_runtime();
+    let gpu = fixed_size_list_float32_gpu_batch(&runtime, vec![Some(1.0), None, Some(3.0), Some(4.0)]);
+
+    let error = gpu
+        .try_prepare_fixed_size_list_float32_export(0)
+        .expect_err("dense vector export must reject nullable child values");
+
+    assert_eq!(error.code(), ErrorCode::NullUnexpected);
+    assert_eq!(error.detail_value("reason"), Some("null_vector_value"));
+}
+
+#[test]
+fn fixed_size_list_float32_export_rejects_null_vector_rows() {
+    let runtime = sample_runtime();
+    let item = Arc::new(Field::new("item", ArrowDataType::Float32, false));
+    let fixed = FixedSizeListArray::new(
+        Arc::clone(&item),
+        2,
+        Arc::new(Float32Array::from(vec![1.0, 2.0, 3.0, 4.0])),
+        Some(NullBuffer::from(vec![true, false])),
+    );
+    let schema = Arc::new(Schema::new(vec![Field::new("values", ArrowDataType::FixedSizeList(item, 2), true)]));
+    let host = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(fixed)]).unwrap();
+    let frame = DataFrame::from_record_batch(&runtime, &host).unwrap();
+    let gpu = GpuRecordBatch::new(frame, schema).unwrap();
+
+    let error = gpu
+        .try_prepare_fixed_size_list_float32_export(0)
+        .expect_err("dense vector export must reject null vector rows");
+
+    assert_eq!(error.code(), ErrorCode::NullUnexpected);
+    assert_eq!(error.detail_value("reason"), Some("null_vector_row"));
+}
+
+#[test]
+fn uniform_list_float32_arrow_ingress_exports_exact_proof_range_and_lease_root() {
+    let runtime = sample_runtime();
+    let gpu = uniform_list_float32_gpu_batch(
+        &runtime,
+        vec![0, 2, 4, 6],
+        vec![Some(1.0), Some(2.0), Some(3.0), Some(4.0), Some(5.0), Some(6.0)],
+        None,
+    );
+
+    let validated = gpu.try_prepare_uniform_list_float32_export(0).unwrap();
+
+    assert_eq!(validated.field_index(), 0);
+    assert_eq!(validated.dimension(), 2);
+    assert_eq!(validated.rows(), 3);
+    assert_eq!(validated.child_len(), 6);
+    assert_eq!(validated.child_byte_offset(), validated.child_offset() * std::mem::size_of::<f32>());
+    assert_eq!(validated.binding_id(), runtime.binding_id());
+    assert_eq!(validated.placement(), runtime.placement());
+    let offsets_observation = validated.offsets_observation();
+    assert_eq!(offsets_observation.kind, BoundaryKind::BoundedControlScalar);
+    assert_eq!(offsets_observation.rows, 3);
+    assert_eq!(offsets_observation.columns, 2);
+    assert_eq!(offsets_observation.memory.downloaded_bytes, Some(2 * std::mem::size_of::<i32>()));
+    let finite_observation = validated.finite_observation();
+    assert_eq!(finite_observation.kind, BoundaryKind::BoundedControlScalar);
+    assert_eq!(finite_observation.rows, 6);
+    assert_eq!(finite_observation.columns, 1);
+    assert_eq!(finite_observation.memory.downloaded_bytes, Some(std::mem::size_of::<i32>()));
+    assert_eq!(validated.export().column().id(), validated.root_column_id());
+    assert!(validated.export().bindings().iter().any(|binding| binding.id() == validated.offsets_buffer_id()));
+    assert!(validated.export().semantic_columns().iter().any(|column| column.id() == validated.child_column_id()));
+    assert_eq!(validated.child_values_binding().id(), validated.child_values_buffer_id());
+
+    let lease = validated
+        .export()
+        .try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, CompletionAuthority::SynchronousByReturn)
+        .unwrap();
+    lease.complete().unwrap();
+}
+
+#[test]
+fn uniform_list_direct_pack_reorders_active_child_with_one_target_allocation() {
+    let producer_runtime = sample_runtime();
+    let full = uniform_list_float32_gpu_batch(
+        &producer_runtime,
+        vec![0, 2, 4, 6],
+        vec![Some(f32::NAN), Some(f32::INFINITY), Some(3.0), Some(4.0), Some(5.0), Some(6.0)],
+        None,
+    );
+    let sliced_frame = full.frame().slice(1, 2).unwrap();
+    let sliced = GpuRecordBatch::new(sliced_frame, Arc::clone(full.schema())).unwrap();
+    let validated = sliced.try_prepare_uniform_list_float32_export(0).unwrap();
+
+    let stats = stats_memory_resource();
+    let target_runtime = Runtime::builder().with_memory_resource(stats.clone()).build().unwrap();
+    let before = allocation_count(&stats);
+    let packed = validated.pack_active_child_into_runtime(&target_runtime, DenseMatrixLayout::ColumnMajor).unwrap();
+    let after = allocation_count(&stats);
+
+    assert_eq!(
+        after - before,
+        1,
+        "column-major direct packing must allocate only its final output and no gather-index buffer"
+    );
+    assert_eq!(packed.shape(), [2, 2]);
+    assert_eq!(packed.layout(), DenseMatrixLayout::ColumnMajor);
+    assert_eq!(packed.binding_id(), target_runtime.binding_id());
+    assert_eq!(packed.placement(), target_runtime.placement());
+    assert_eq!(packed.into_column().to_vec::<f32>().unwrap(), vec![3.0, 5.0, 4.0, 6.0]);
+}
+
+#[test]
+fn uniform_list_float32_export_fails_closed_when_empty_dimension_is_unavailable() {
+    let runtime = sample_runtime();
+    let gpu = uniform_list_float32_gpu_batch(&runtime, vec![0], vec![], None);
+
+    testing::boundary::reset_boundary_observation_for_test();
+    let error = gpu
+        .try_prepare_uniform_list_float32_export(0)
+        .expect_err("empty variable-width List cannot prove a positive dimension");
+
+    assert_eq!(error.code(), ErrorCode::EmptyInput);
+    assert_eq!(
+        error.fact_value(FactKeyName::ValidationReason),
+        Some(&FactValue::Str("uniform_list_dimension_unavailable".into()))
+    );
+    assert!(testing::boundary::last_boundary_observation_for_test().is_none());
+}
+
+#[test]
+fn uniform_list_float32_export_rejects_zero_width_and_ragged_rows() {
+    let runtime = sample_runtime();
+    let zero_width = uniform_list_float32_gpu_batch(&runtime, vec![0, 0, 0], vec![], None);
+    let error = zero_width
+        .try_prepare_uniform_list_float32_export(0)
+        .expect_err("zero-width rows cannot establish a positive vector dimension");
+    assert_eq!(error.code(), ErrorCode::ValueOutOfRange);
+    assert_eq!(
+        error.fact_value(FactKeyName::ValidationReason),
+        Some(&FactValue::Str("non_positive_vector_dimension".into()))
+    );
+
+    let ragged = uniform_list_float32_gpu_batch(
+        &runtime,
+        vec![0, 2, 5],
+        vec![Some(1.0), Some(2.0), Some(3.0), Some(4.0), Some(5.0)],
+        None,
+    );
+    let error = ragged
+        .try_prepare_uniform_list_float32_export(0)
+        .expect_err("ragged rows cannot establish one uniform vector dimension");
+    assert_eq!(error.code(), ErrorCode::ColumnLengthMismatch);
+    assert_eq!(
+        error.fact_value(FactKeyName::ValidationReason),
+        Some(&FactValue::Str("non_uniform_vector_dimension".into()))
+    );
+    assert_eq!(error.detail_value("minimum_row_width"), Some("2"));
+    assert_eq!(error.detail_value("maximum_row_width"), Some("3"));
+}
+
+#[test]
+fn uniform_list_float32_export_rejects_root_and_child_nulls() {
+    let runtime = sample_runtime();
+    let root_null = uniform_list_float32_gpu_batch(
+        &runtime,
+        vec![0, 2, 4],
+        vec![Some(1.0), Some(2.0), Some(3.0), Some(4.0)],
+        Some(vec![true, false]),
+    );
+    let error = root_null
+        .try_prepare_uniform_list_float32_export(0)
+        .expect_err("dense vector export must reject null list rows");
+    assert_eq!(error.code(), ErrorCode::NullUnexpected);
+    assert_eq!(error.detail_value("reason"), Some("null_vector_row"));
+
+    let child_null =
+        uniform_list_float32_gpu_batch(&runtime, vec![0, 2, 4], vec![Some(1.0), None, Some(3.0), Some(4.0)], None);
+    let error = child_null
+        .try_prepare_uniform_list_float32_export(0)
+        .expect_err("dense vector export must reject null child values");
+    assert_eq!(error.code(), ErrorCode::NullUnexpected);
+    assert_eq!(error.detail_value("reason"), Some("null_vector_value"));
+}
+
+#[test]
+fn uniform_list_float32_export_rejects_non_finite_active_child_values() {
+    for invalid in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        let runtime = sample_runtime();
+        let gpu = uniform_list_float32_gpu_batch(
+            &runtime,
+            vec![0, 2, 4],
+            vec![Some(1.0), Some(invalid), Some(3.0), Some(4.0)],
+            None,
+        );
+
+        let error = gpu
+            .try_prepare_uniform_list_float32_export(0)
+            .expect_err("uniform-list proof must reject non-finite active child values");
+
+        assert_eq!(error.code(), ErrorCode::ValueOutOfRange);
+        assert_eq!(
+            error.fact_value(FactKeyName::ValidationReason),
+            Some(&FactValue::Str("non_finite_vector_value".into()))
+        );
+        assert_eq!(
+            error.fact_value(FactKeyName::ExecutionBindingId),
+            Some(&FactValue::U64(runtime.binding_id().get()))
+        );
+        assert_eq!(error.fact_value(FactKeyName::ControlPlaneScalarBytes), Some(&FactValue::Usize(4)));
+        assert_eq!(error.detail_value("non_finite_count"), Some("1"));
+        assert_eq!(error.detail_value("validated_values"), Some("4"));
+    }
+}
+
+#[test]
+fn uniform_list_float32_export_covers_only_the_sliced_active_child_range() {
+    let runtime = sample_runtime();
+    let full = uniform_list_float32_gpu_batch(
+        &runtime,
+        vec![0, 2, 4, 6],
+        vec![Some(f32::NAN), Some(f32::INFINITY), Some(3.0), Some(4.0), Some(5.0), Some(6.0)],
+        None,
+    );
+    let frame = full.frame().slice(1, 2).unwrap();
+    let sliced = GpuRecordBatch::new(frame, Arc::clone(full.schema())).unwrap();
+
+    let validated = sliced.try_prepare_uniform_list_float32_export(0).unwrap();
+
+    assert_eq!(validated.rows(), 2);
+    assert_eq!(validated.dimension(), 2);
+    assert_eq!(validated.child_len(), 4);
+    assert_eq!(validated.offsets_observation().rows, 2);
+    assert_eq!(validated.finite_observation().rows, 4);
+}
+
+#[test]
+fn uniform_list_float32_export_rejects_foreign_offset_proof_identity() {
+    let runtime = sample_runtime();
+    let producer =
+        uniform_list_float32_gpu_batch(&runtime, vec![0, 2, 4], vec![Some(1.0), Some(2.0), Some(3.0), Some(4.0)], None);
+    let proof_owner = uniform_list_float32_gpu_batch(
+        &runtime,
+        vec![0, 2, 4],
+        vec![Some(10.0), Some(20.0), Some(30.0), Some(40.0)],
+        None,
+    );
+
+    let error = testing::dataframe::trigger_uniform_list_proof_identity_mismatch_for_test(&producer, &proof_owner, 0)
+        .expect_err("uniform-list offset proof must not detach from its producer");
+
+    assert_eq!(error.code(), ErrorCode::InvariantViolation);
+    assert_eq!(error.detail_value("reason"), Some("uniform_list_proof_identity_mismatch"));
 }
 
 #[test]

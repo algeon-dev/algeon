@@ -1,6 +1,5 @@
 use std::{
     any::Any,
-    os::raw::c_void,
     ptr::{self, NonNull},
     sync::Arc,
 };
@@ -21,7 +20,7 @@ use crate::{
 /// A table is an ordered collection of columns of equal length. The
 /// underlying device memory is freed when this value is dropped.
 pub struct Table {
-    handle: NonNull<c_void>,
+    handle: NonNull<cudf_sys::cudf_table_handle_state>,
     domain: Arc<ExecutionDomain>,
     retained_owners: Option<Vec<Option<Arc<dyn Any + Send + Sync>>>>,
 }
@@ -68,12 +67,12 @@ impl Table {
         Ok(())
     }
 
-    fn from_handle_with_domain(handle: *mut c_void, domain: Arc<ExecutionDomain>) -> Result<Self> {
+    fn from_handle_with_domain(handle: cudf_sys::cudf_table_handle, domain: Arc<ExecutionDomain>) -> Result<Self> {
         Self::from_handle_with_domain_and_owners(handle, domain, None)
     }
 
     fn from_handle_with_domain_and_owners(
-        handle: *mut c_void,
+        handle: cudf_sys::cudf_table_handle,
         domain: Arc<ExecutionDomain>,
         retained_owners: Option<Vec<Option<Arc<dyn Any + Send + Sync>>>>,
     ) -> Result<Self> {
@@ -125,7 +124,8 @@ impl Table {
             table_column_count_limit_error(operation, "number of columns exceeds i32::MAX", columns.len())
         })?;
         let mut retained_owners = Vec::with_capacity(columns.len());
-        let mut handles: SmallVec<[*mut c_void; TABLE_HANDLE_INLINE_CAPACITY]> = SmallVec::with_capacity(columns.len());
+        let mut handles: SmallVec<[cudf_sys::cudf_column_handle; TABLE_HANDLE_INLINE_CAPACITY]> =
+            SmallVec::with_capacity(columns.len());
         for column in columns {
             let (handle, retained_owner) = column.into_raw_parts();
             handles.push(handle);
@@ -200,7 +200,10 @@ impl Table {
         TableView::from_raw_handle(view_handle, Arc::clone(&self.domain))
     }
 
-    pub(crate) unsafe fn from_raw_with_domain(handle: *mut c_void, domain: Arc<ExecutionDomain>) -> Result<Self> {
+    pub(crate) unsafe fn from_raw_with_domain(
+        handle: cudf_sys::cudf_table_handle,
+        domain: Arc<ExecutionDomain>,
+    ) -> Result<Self> {
         Self::from_handle_with_domain(handle, domain)
     }
 
@@ -210,7 +213,7 @@ impl Table {
     }
 
     pub(crate) unsafe fn from_raw_with_domain_and_owners(
-        handle: *mut c_void,
+        handle: cudf_sys::cudf_table_handle,
         domain: Arc<ExecutionDomain>,
         retained_owners: Vec<Option<Arc<dyn Any + Send + Sync>>>,
     ) -> Result<Self> {
@@ -235,7 +238,7 @@ impl Table {
         let domain = unsafe { std::ptr::read(&this.domain) };
         let retained_owners = unsafe { std::ptr::read(&this.retained_owners) };
 
-        let mut out_columns: *mut *mut c_void = ptr::null_mut();
+        let mut out_columns: *mut cudf_sys::cudf_column_handle = ptr::null_mut();
         let mut out_count: i32 = 0;
 
         // SAFETY: raw_handle is valid (we just read it from self before forget).

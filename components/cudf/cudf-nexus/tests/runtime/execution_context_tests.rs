@@ -27,7 +27,7 @@ use cudf::{
     runtime::{CudaEvent, CudaStream},
     testing::prelude::*,
 };
-use cudf_sys::{
+use cudf_sys::test_support::{
     cudf_test_current_device_resource_raw, cudf_test_default_stream_value, cudf_test_exec_last_device,
     cudf_test_exec_last_mr_raw, cudf_test_exec_last_stream_value, cudf_test_exec_last_sync_stream_value,
     cudf_test_exec_reset_observation, cudf_test_stream_handle_value,
@@ -85,7 +85,7 @@ fn obs_default_stream() -> usize {
 }
 
 /// Convert a stream handle to its raw uintptr value (for comparison).
-fn obs_stream_handle_value(handle: *mut c_void) -> usize {
+fn obs_stream_handle_value(handle: cudf_sys::cudf_stream_handle) -> usize {
     let mut out: usize = 0;
     let status = unsafe { cudf_test_stream_handle_value(handle, &mut out) };
     assert_eq!(status, 0, "cudf_test_stream_handle_value failed");
@@ -134,7 +134,7 @@ fn create_i32_column_raw(data: &[i32]) -> cudf_sys::cudf_column_handle {
     let (_stream, _mr, exec) = strict_exec_owners();
     let status = unsafe {
         cudf_sys::cudf_column_create_numeric_ex(
-            cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32,
+            cudf_sys::CUDF_TYPE_INT32,
             data.as_ptr() as *const c_void,
             data.len() as i32,
             ptr::null(), // no validity mask
@@ -154,7 +154,7 @@ fn create_i64_column_raw(data: &[i64]) -> cudf_sys::cudf_column_handle {
     let (_stream, _mr, exec) = strict_exec_owners();
     let status = unsafe {
         cudf_sys::cudf_column_create_numeric_ex(
-            cudf_sys::cudf_type_id_t::CUDF_TYPE_INT64,
+            cudf_sys::CUDF_TYPE_INT64,
             data.as_ptr() as *const c_void,
             data.len() as i32,
             ptr::null(),
@@ -174,7 +174,7 @@ fn create_bool_column_raw(data: &[bool]) -> cudf_sys::cudf_column_handle {
     let (_stream, _mr, exec) = strict_exec_owners();
     let status = unsafe {
         cudf_sys::cudf_column_create_numeric_ex(
-            cudf_sys::cudf_type_id_t::CUDF_TYPE_BOOL8,
+            cudf_sys::CUDF_TYPE_BOOL8,
             data.as_ptr() as *const c_void,
             data.len() as i32,
             ptr::null(),
@@ -196,7 +196,7 @@ fn create_i32_nullable_column_raw(data: &[i32], validity_bits: u8) -> cudf_sys::
     let (_stream, _mr, exec) = strict_exec_owners();
     let status = unsafe {
         cudf_sys::cudf_column_create_numeric_ex(
-            cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32,
+            cudf_sys::CUDF_TYPE_INT32,
             data.as_ptr() as *const c_void,
             data.len() as i32,
             mask.as_ptr(),
@@ -216,7 +216,7 @@ fn create_i32_scalar_raw(value: i32) -> cudf_sys::cudf_scalar_handle {
     let (_stream, _mr, exec) = strict_exec_owners();
     let status = unsafe {
         cudf_sys::cudf_scalar_create_numeric_ex(
-            cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32,
+            cudf_sys::CUDF_TYPE_INT32,
             &value as *const i32 as *const c_void,
             1,
             &exec,
@@ -401,7 +401,7 @@ fn assert_dataframe_i32_values(df: &cudf::DataFrame, column: &str, expected: &[i
 
 fn assert_exec_options_copy_validation_error(
     opts: cudf_sys::cudf_exec_options_t,
-    expected_status: i32,
+    expected_status: cudf_sys::cudf_status_t,
     expectation: &str,
 ) {
     let col = create_i32_column_raw(&[1, 2, 3]);
@@ -600,14 +600,14 @@ fn column_to_host_ex_reads_sliced_view_from_element_offset() {
 #[test]
 fn strings_to_host_ex_accounts_for_sliced_parent_view_offset() {
     let strings = [c"aa", c"bbb", c"c", c"dddd"];
-    let ptrs: Vec<*const c_char> = strings.iter().map(|s| s.as_ptr()).collect();
+    let mut ptrs: Vec<*const c_char> = strings.iter().map(|s| s.as_ptr()).collect();
     let lengths: Vec<i32> = strings.iter().map(|s| s.to_bytes().len() as i32).collect();
 
     let (_stream, _mr, exec) = strict_exec_owners();
     let mut col: cudf_sys::cudf_column_handle = ptr::null_mut();
     let status = unsafe {
         cudf_sys::cudf_column_create_strings_ex(
-            ptrs.as_ptr(),
+            ptrs.as_mut_ptr(),
             lengths.as_ptr(),
             strings.len() as i32,
             ptr::null(),
@@ -670,7 +670,7 @@ fn column_from_device_data_ex_uses_explicit_stream() {
     let mut out_handle: cudf_sys::cudf_column_handle = ptr::null_mut();
     let status = unsafe {
         cudf_sys::cudf_column_create_from_device_data_ex(
-            cudf_sys::cudf_type_id_t::CUDF_TYPE_INT64,
+            cudf_sys::CUDF_TYPE_INT64,
             device_ptr,
             4,
             &ctx,
@@ -790,7 +790,7 @@ fn gather_ex_uses_explicit_stream_and_mr() {
         cudf_sys::cudf_gather_ex(
             table_view,
             gather_map_view,
-            cudf_sys::cudf_out_of_bounds_policy_t::CUDF_OUT_OF_BOUNDS_POLICY_NULLIFY,
+            cudf_sys::CUDF_OUT_OF_BOUNDS_POLICY_NULLIFY,
             &mut out_table,
             &ctx,
         )
@@ -1323,7 +1323,7 @@ fn device_memory_resource_as_borrowed_sys_preserves_handle() {
     let mr = DeviceMemoryResource::cuda().unwrap();
     let borrowed = mr.as_borrowed_sys();
     let mut underlying = ptr::null_mut();
-    let status = unsafe { cudf_sys::cudf_test_memory_resource_raw(borrowed.as_raw(), &mut underlying) };
+    let status = unsafe { cudf_sys::test_support::cudf_test_memory_resource_raw(borrowed.as_raw(), &mut underlying) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     assert_eq!(mr.testing_raw_handle_value(), underlying as usize);
 }

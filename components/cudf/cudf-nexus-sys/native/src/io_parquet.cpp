@@ -1,17 +1,18 @@
-#include "execution_context_internal.hpp"
 #include "ast_handle.hpp"
-#include "io.h"
+#include "cudf_rust/io.h"
+#include "execution_context_internal.hpp"
 #include "io_test_hooks.hpp"
 #include "shim_common.h"
 
 #include <cudf/io/datasource.hpp>
 #include <cudf/io/parquet.hpp>
 #include <cudf/io/types.hpp>
-#include <cudf/utilities/span.hpp>
 #include <cudf/table/table.hpp>
 #include <cudf/table/table_view.hpp>
 #include <cudf/utilities/default_stream.hpp>
 #include <cudf/utilities/memory_resource.hpp>
+#include <cudf/utilities/span.hpp>
+
 #include <rmm/device_buffer.hpp>
 
 #include <algorithm>
@@ -19,8 +20,8 @@
 #include <atomic>
 #include <cstdlib>
 #include <cstring>
-#include <iostream>
 #include <future>
+#include <iostream>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -36,14 +37,14 @@
 #endif
 
 namespace {
-constexpr int32_t CUDF_IO_REMOTE_PARQUET_BACKEND_UNAVAILABLE = 0;
+constexpr int32_t CUDF_IO_REMOTE_PARQUET_BACKEND_UNAVAILABLE              = 0;
 constexpr int32_t CUDF_IO_REMOTE_PARQUET_BACKEND_KVIKIO_REMOTE_DATASOURCE = 1;
-constexpr int32_t CUDF_IO_REMOTE_PARQUET_FALLBACK_NONE = 0;
-constexpr int32_t CUDF_IO_REMOTE_PARQUET_FALLBACK_BACKEND_UNAVAILABLE = 1;
+constexpr int32_t CUDF_IO_REMOTE_PARQUET_FALLBACK_NONE                    = 0;
+constexpr int32_t CUDF_IO_REMOTE_PARQUET_FALLBACK_BACKEND_UNAVAILABLE     = 1;
 
 #ifdef CUDF_RUST_LIBCUDF_KVIKIO_REMOTE_IO_ENABLED
 constexpr unsigned int CUDF_IO_REMOTE_PARQUET_DEFAULT_KVIKIO_THREADS = 64;
-constexpr size_t CUDF_IO_REMOTE_PARQUET_DEFAULT_KVIKIO_TASK_SIZE      = 64 * 1024 * 1024;
+constexpr size_t CUDF_IO_REMOTE_PARQUET_DEFAULT_KVIKIO_TASK_SIZE     = 64 * 1024 * 1024;
 
 std::mutex kvikio_io_lifecycle_mutex;
 uint64_t kvikio_active_io = 0;
@@ -66,8 +67,7 @@ class kvikio_active_io_guard {
   kvikio_active_io_guard& operator=(kvikio_active_io_guard const&) = delete;
 };
 #else
-struct kvikio_active_io_guard {
-};
+struct kvikio_active_io_guard {};
 #endif
 
 template <typename Builder>
@@ -178,7 +178,9 @@ cudf_status_t validate_parquet_multi_reader_args(const char** filepaths,
       return CUDF_ERROR_INVALID_OPERATION;
     }
     if (num_row_groups != 0 || row_groups != nullptr) {
-      set_error("row_groups must be null and num_row_groups must be 0 when row_group_offsets are absent");
+      set_error(
+        "row_groups must be null and num_row_groups must be 0 when "
+        "row_group_offsets are absent");
       return CUDF_ERROR_INVALID_OPERATION;
     }
     return CUDF_SUCCESS;
@@ -287,7 +289,7 @@ void init_remote_read_evidence(cudf_io_remote_parquet_read_evidence_t* out)
 void init_parquet_pruning_evidence(cudf_io_parquet_pruning_evidence_t* out)
 {
   if (out == nullptr) { return; }
-  out->input_row_groups                   = -1;
+  out->input_row_groups                  = -1;
   out->has_row_groups_after_stats_filter = 0;
   out->row_groups_after_stats_filter     = -1;
   out->has_row_groups_after_bloom_filter = 0;
@@ -390,9 +392,10 @@ struct remote_read_counters {
 
 class counted_remote_parquet_source final : public cudf::io::datasource {
  public:
-  counted_remote_parquet_source(kvikio::RemoteHandle&& handle,
-                                std::shared_ptr<cuda::mr::any_resource<cuda::mr::device_accessible>> mr,
-                                std::shared_ptr<void> mr_lifetime)
+  counted_remote_parquet_source(
+    kvikio::RemoteHandle&& handle,
+    std::shared_ptr<cuda::mr::any_resource<cuda::mr::device_accessible>> mr,
+    std::shared_ptr<void> mr_lifetime)
     : handle_{std::move(handle)}, mr_{std::move(mr)}, mr_lifetime_{std::move(mr_lifetime)}
   {
     CUDF_EXPECTS(mr_ != nullptr, "remote datasource memory resource is null");
@@ -415,9 +418,8 @@ class counted_remote_parquet_source final : public cudf::io::datasource {
   std::future<std::unique_ptr<cudf::io::datasource::buffer>> host_read_async(size_t offset,
                                                                              size_t size) override
   {
-    return std::async(std::launch::deferred, [this, offset, size] {
-      return this->host_read(offset, size);
-    });
+    return std::async(std::launch::deferred,
+                      [this, offset, size] { return this->host_read(offset, size); });
   }
 
   size_t host_read(size_t offset, size_t size, uint8_t* dst) override
@@ -506,9 +508,7 @@ class counted_remote_parquet_source final : public cudf::io::datasource {
   bool fill_tail_cache_for_read(size_t offset, size_t size, std::vector<uint8_t>& out)
   {
     auto const tail_cache_bytes = remote_parquet_tail_cache_bytes();
-    if (tail_cache_bytes == 0 || size == 0 || offset + size != handle_.nbytes()) {
-      return false;
-    }
+    if (tail_cache_bytes == 0 || size == 0 || offset + size != handle_.nbytes()) { return false; }
     auto const tail_size   = std::min(tail_cache_bytes, handle_.nbytes());
     auto const tail_offset = handle_.nbytes() - tail_size;
     if (offset < tail_offset) { return false; }
@@ -552,28 +552,33 @@ void validate_remote_endpoint_url_no_secret(std::optional<std::string> const& en
   auto const& value = endpoint_url.value();
   if (value.find('@') != std::string::npos || value.find('?') != std::string::npos ||
       value.find('#') != std::string::npos) {
-    CUDF_FAIL("remote Parquet endpoint URL must not contain userinfo, query, or fragment components");
+    CUDF_FAIL(
+      "remote Parquet endpoint URL must not contain userinfo, query, "
+      "or fragment components");
   }
 }
 
 std::unique_ptr<kvikio::RemoteEndpoint> make_remote_endpoint(
-  const char* uri,
-  const cudf_io_remote_parquet_profile_t* profile)
+  const char* uri, const cudf_io_remote_parquet_profile_t* profile)
 {
   std::string url(uri);
-  if (url.size() < 5 || (url[0] != 's' && url[0] != 'S') || url[1] != '3' ||
-      url[2] != ':' || url[3] != '/' || url[4] != '/') {
+  if (url.size() < 5 || (url[0] != 's' && url[0] != 'S') || url[1] != '3' || url[2] != ':' ||
+      url[3] != '/' || url[4] != '/') {
     return nullptr;
   }
   url[0] = 's';
 
   auto const [bucket, object] = kvikio::S3Endpoint::parse_s3_url(url);
-  auto const region          = profile == nullptr ? std::nullopt : optional_c_string(profile->aws_region);
-  auto const access_key      = profile == nullptr ? std::nullopt : optional_c_string(profile->aws_access_key_id);
-  auto const secret_key      = profile == nullptr ? std::nullopt : optional_c_string(profile->aws_secret_access_key);
-  auto const session_token   = profile == nullptr ? std::nullopt : optional_c_string(profile->aws_session_token);
-  auto const endpoint_url    = profile == nullptr ? std::nullopt : optional_c_string(profile->aws_endpoint_url);
-  auto const unsigned_request = profile != nullptr && profile->unsigned_request != 0;
+  auto const region = profile == nullptr ? std::nullopt : optional_c_string(profile->aws_region);
+  auto const access_key =
+    profile == nullptr ? std::nullopt : optional_c_string(profile->aws_access_key_id);
+  auto const secret_key =
+    profile == nullptr ? std::nullopt : optional_c_string(profile->aws_secret_access_key);
+  auto const session_token =
+    profile == nullptr ? std::nullopt : optional_c_string(profile->aws_session_token);
+  auto const endpoint_url =
+    profile == nullptr ? std::nullopt : optional_c_string(profile->aws_endpoint_url);
+  auto const unsigned_request  = profile != nullptr && profile->unsigned_request != 0;
   auto const path_style_access = profile == nullptr ? -1 : profile->path_style_access;
   validate_remote_endpoint_url_no_secret(endpoint_url);
 
@@ -586,7 +591,9 @@ std::unique_ptr<kvikio::RemoteEndpoint> make_remote_endpoint(
 
   if (endpoint_url.has_value()) {
     if (path_style_access == 0) {
-      CUDF_FAIL("virtual-hosted custom S3 endpoints are not supported by the scoped remote Parquet datasource");
+      CUDF_FAIL(
+        "virtual-hosted custom S3 endpoints are not supported by the "
+        "scoped remote Parquet datasource");
     }
     return std::make_unique<kvikio::S3Endpoint>(
       std::pair{bucket, object}, region, access_key, secret_key, endpoint_url, session_token);
@@ -609,7 +616,8 @@ std::unique_ptr<counted_remote_parquet_source> make_counted_remote_source(
 {
   configure_remote_parquet_kvikio_defaults_once();
   auto endpoint = make_remote_endpoint(uri, profile);
-  CUDF_EXPECTS(endpoint != nullptr, "only s3:// remote Parquet URIs are supported by the scoped datasource");
+  CUDF_EXPECTS(endpoint != nullptr,
+               "only s3:// remote Parquet URIs are supported by the scoped datasource");
   if (profile != nullptr && profile->known_size_bytes >= 0) {
     return std::make_unique<counted_remote_parquet_source>(
       kvikio::RemoteHandle(std::move(endpoint), static_cast<size_t>(profile->known_size_bytes)),
@@ -679,8 +687,8 @@ cudf_status_t cudf_io_read_parquet_ex(const char* filepath,
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
   CUDF_RUST_NULL_CHECK(filepath, "filepath is null");
-  cudf_status_t const args_status =
-    validate_parquet_reader_args(columns, num_columns, skip_rows, num_rows, row_groups, num_row_groups);
+  cudf_status_t const args_status = validate_parquet_reader_args(
+    columns, num_columns, skip_rows, num_rows, row_groups, num_row_groups);
   if (args_status != CUDF_SUCCESS) { return args_status; }
   kvikio_active_io_guard const active_io;
   CUDF_RUST_TRY
@@ -719,11 +727,11 @@ cudf_status_t cudf_io_read_parquet_from_host_buffer_ex(const void* host_buffer,
                                                        cudf_exec_options_t const* exec_options)
 {
   CUDF_RUST_NULL_CHECK(out, "out is null");
-  *out = nullptr;
+  *out                              = nullptr;
   cudf_status_t const buffer_status = validate_host_parquet_buffer(host_buffer, host_buffer_len);
   if (buffer_status != CUDF_SUCCESS) { return buffer_status; }
-  cudf_status_t const args_status =
-    validate_parquet_reader_args(columns, num_columns, skip_rows, num_rows, row_groups, num_row_groups);
+  cudf_status_t const args_status = validate_parquet_reader_args(
+    columns, num_columns, skip_rows, num_rows, row_groups, num_row_groups);
   if (args_status != CUDF_SUCCESS) { return args_status; }
   CUDF_RUST_TRY
   {
@@ -731,8 +739,8 @@ cudf_status_t cudf_io_read_parquet_from_host_buffer_ex(const void* host_buffer,
     cudf_status_t const exec_status = cudf_resolve_required_exec_options(exec_options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
-    auto bytes = cudf::host_span<std::byte const>{
-      static_cast<std::byte const*>(host_buffer), host_buffer_len};
+    auto bytes =
+      cudf::host_span<std::byte const>{static_cast<std::byte const*>(host_buffer), host_buffer_len};
     auto source  = cudf::io::source_info(bytes);
     auto builder = cudf::io::parquet_reader_options::builder(source);
 
@@ -773,7 +781,7 @@ cudf_status_t cudf_io_write_parquet_ex(cudf_table_view_handle table,
     cudf_status_t const exec_status = cudf_resolve_required_exec_options(exec_options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
-    auto* view = static_cast<cudf::table_view*>(table);
+    auto* view = reinterpret_cast<cudf::table_view*>(table);
     auto sink  = cudf::io::sink_info(std::string(filepath));
 
     auto builder = cudf::io::parquet_writer_options::builder(sink, *view);
@@ -799,7 +807,9 @@ cudf_status_t cudf_io_write_parquet_ex(cudf_table_view_handle table,
       case 1: options.set_dictionary_policy(cudf::io::dictionary_policy::NEVER); break;
       case 2: options.set_dictionary_policy(cudf::io::dictionary_policy::ALWAYS); break;
       default:
-        set_error("dictionary_policy must be -1 (default), 0 (adaptive), 1 (never), or 2 (always)");
+        set_error(
+          "dictionary_policy must be -1 (default), 0 (adaptive), 1 "
+          "(never), or 2 (always)");
         return CUDF_ERROR_INVALID_OPERATION;
     }
     {
@@ -829,8 +839,8 @@ cudf_status_t cudf_io_read_parquet_with_metadata_ex(const char* filepath,
   CUDF_RUST_NULL_CHECK(out_num_names, "out_num_names is null");
   *out_num_names = 0;
   CUDF_RUST_NULL_CHECK(filepath, "filepath is null");
-  cudf_status_t const args_status =
-    validate_parquet_reader_args(columns, num_columns, skip_rows, num_rows, row_groups, num_row_groups);
+  cudf_status_t const args_status = validate_parquet_reader_args(
+    columns, num_columns, skip_rows, num_rows, row_groups, num_row_groups);
   if (args_status != CUDF_SUCCESS) { return args_status; }
   kvikio_active_io_guard const active_io;
   CUDF_RUST_TRY
@@ -852,38 +862,41 @@ cudf_status_t cudf_io_read_parquet_with_metadata_ex(const char* filepath,
       result       = cudf::io::read_parquet(options, exec->stream, *exec->mr);
     }
 
-    auto const fault = cudf_test_io_take_next_metadata_fault();
-    if (fault != CUDF_TEST_IO_METADATA_FAULT_NONE) {
+    auto const fault = cudf::rust::test_support::take_io_metadata_fault();
+    if (fault != 0) {
       cudf_status_t const fault_status =
-        cudf_test_io_apply_metadata_fault(fault, out_names, out_num_names);
+        cudf::rust::test_support::apply_io_metadata_fault(fault, out_names, out_num_names);
       if (fault_status != CUDF_SUCCESS) { return fault_status; }
-      *out_table = cudf_release_table_handle(std::move(result.tbl), cudf_capture_exec_provenance(*exec));
+      *out_table =
+        cudf_release_table_handle(std::move(result.tbl), cudf_capture_exec_provenance(*exec));
       return CUDF_SUCCESS;
     }
 
     char** names = copy_schema_names(result.metadata, out_num_names);
     if (*out_num_names > 0 && names == nullptr) { return CUDF_ERROR_OUT_OF_MEMORY; }
 
-    *out_table     = cudf_release_table_handle(std::move(result.tbl), cudf_capture_exec_provenance(*exec));
-    *out_names     = names;
+    *out_table =
+      cudf_release_table_handle(std::move(result.tbl), cudf_capture_exec_provenance(*exec));
+    *out_names = names;
     return CUDF_SUCCESS;
   }
   CUDF_RUST_IO_CATCH
 }
 
-cudf_status_t cudf_io_read_parquet_with_metadata_filter_ex(const char* filepath,
-                                                           const char** columns,
-                                                           int32_t num_columns,
-                                                           int64_t skip_rows,
-                                                           int64_t num_rows,
-                                                           const int32_t* row_groups,
-                                                           int32_t num_row_groups,
-                                                           cudf_ast_expression_handle predicate,
-                                                           cudf_table_handle* out_table,
-                                                           char*** out_names,
-                                                           int32_t* out_num_names,
-                                                           cudf_io_parquet_pruning_evidence_t* out_pruning_evidence,
-                                                           cudf_exec_options_t const* exec_options)
+cudf_status_t cudf_io_read_parquet_with_metadata_filter_ex(
+  const char* filepath,
+  const char** columns,
+  int32_t num_columns,
+  int64_t skip_rows,
+  int64_t num_rows,
+  const int32_t* row_groups,
+  int32_t num_row_groups,
+  cudf_ast_expression_handle predicate,
+  cudf_table_handle* out_table,
+  char*** out_names,
+  int32_t* out_num_names,
+  cudf_io_parquet_pruning_evidence_t* out_pruning_evidence,
+  cudf_exec_options_t const* exec_options)
 {
   CUDF_RUST_NULL_CHECK(out_table, "out_table is null");
   *out_table = nullptr;
@@ -894,8 +907,8 @@ cudf_status_t cudf_io_read_parquet_with_metadata_filter_ex(const char* filepath,
   init_parquet_pruning_evidence(out_pruning_evidence);
   CUDF_RUST_NULL_CHECK(out_pruning_evidence, "out_pruning_evidence is null");
   CUDF_RUST_NULL_CHECK(filepath, "filepath is null");
-  cudf_status_t const args_status =
-    validate_parquet_reader_args(columns, num_columns, skip_rows, num_rows, row_groups, num_row_groups);
+  cudf_status_t const args_status = validate_parquet_reader_args(
+    columns, num_columns, skip_rows, num_rows, row_groups, num_row_groups);
   if (args_status != CUDF_SUCCESS) { return args_status; }
   kvikio_active_io_guard const active_io;
   CUDF_RUST_TRY
@@ -920,20 +933,22 @@ cudf_status_t cudf_io_read_parquet_with_metadata_filter_ex(const char* filepath,
     }
     write_parquet_pruning_evidence(out_pruning_evidence, result.metadata);
 
-    auto const fault = cudf_test_io_take_next_metadata_fault();
-    if (fault != CUDF_TEST_IO_METADATA_FAULT_NONE) {
+    auto const fault = cudf::rust::test_support::take_io_metadata_fault();
+    if (fault != 0) {
       cudf_status_t const fault_status =
-        cudf_test_io_apply_metadata_fault(fault, out_names, out_num_names);
+        cudf::rust::test_support::apply_io_metadata_fault(fault, out_names, out_num_names);
       if (fault_status != CUDF_SUCCESS) { return fault_status; }
-      *out_table = cudf_release_table_handle(std::move(result.tbl), cudf_capture_exec_provenance(*exec));
+      *out_table =
+        cudf_release_table_handle(std::move(result.tbl), cudf_capture_exec_provenance(*exec));
       return CUDF_SUCCESS;
     }
 
     char** names = copy_schema_names(result.metadata, out_num_names);
     if (*out_num_names > 0 && names == nullptr) { return CUDF_ERROR_OUT_OF_MEMORY; }
 
-    *out_table     = cudf_release_table_handle(std::move(result.tbl), cudf_capture_exec_provenance(*exec));
-    *out_names     = names;
+    *out_table =
+      cudf_release_table_handle(std::move(result.tbl), cudf_capture_exec_provenance(*exec));
+    *out_names = names;
     return CUDF_SUCCESS;
   }
   CUDF_RUST_IO_CATCH
@@ -967,8 +982,8 @@ cudf_status_t cudf_io_read_remote_parquet_with_metadata_filter_ex(
   init_parquet_pruning_evidence(out_pruning_evidence);
   CUDF_RUST_NULL_CHECK(out_pruning_evidence, "out_pruning_evidence is null");
   CUDF_RUST_NULL_CHECK(uri, "uri is null");
-  cudf_status_t const args_status =
-    validate_parquet_reader_args(columns, num_columns, skip_rows, num_rows, row_groups, num_row_groups);
+  cudf_status_t const args_status = validate_parquet_reader_args(
+    columns, num_columns, skip_rows, num_rows, row_groups, num_row_groups);
   if (args_status != CUDF_SUCCESS) { return args_status; }
 #ifndef CUDF_RUST_LIBCUDF_KVIKIO_REMOTE_IO_ENABLED
   set_error("libcudf was not built with KvikIO remote IO");
@@ -986,7 +1001,7 @@ cudf_status_t cudf_io_read_remote_parquet_with_metadata_filter_ex(
     std::vector<std::unique_ptr<cudf::io::datasource>> sources;
     sources.push_back(cudf::io::datasource::create(remote_source.get()));
 
-    auto builder = cudf::io::parquet_reader_options::builder();
+    auto builder                      = cudf::io::parquet_reader_options::builder();
     cudf_status_t const config_status = configure_parquet_reader_builder(
       builder, columns, num_columns, skip_rows, num_rows, row_groups, num_row_groups);
     if (config_status != CUDF_SUCCESS) { return config_status; }
@@ -996,24 +1011,26 @@ cudf_status_t cudf_io_read_remote_parquet_with_metadata_filter_ex(
     cudf::io::table_with_metadata result;
     {
       auto options = builder.build();
-      result       = cudf::io::read_parquet(std::move(sources), {}, options, exec->stream, *exec->mr);
+      result = cudf::io::read_parquet(std::move(sources), {}, options, exec->stream, *exec->mr);
     }
     write_remote_read_evidence(out_evidence, evidence_sources);
     write_parquet_pruning_evidence(out_pruning_evidence, result.metadata);
 
-    auto const fault = cudf_test_io_take_next_metadata_fault();
-    if (fault != CUDF_TEST_IO_METADATA_FAULT_NONE) {
+    auto const fault = cudf::rust::test_support::take_io_metadata_fault();
+    if (fault != 0) {
       cudf_status_t const fault_status =
-        cudf_test_io_apply_metadata_fault(fault, out_names, out_num_names);
+        cudf::rust::test_support::apply_io_metadata_fault(fault, out_names, out_num_names);
       if (fault_status != CUDF_SUCCESS) { return fault_status; }
-      *out_table = cudf_release_table_handle(std::move(result.tbl), cudf_capture_exec_provenance(*exec));
+      *out_table =
+        cudf_release_table_handle(std::move(result.tbl), cudf_capture_exec_provenance(*exec));
       return CUDF_SUCCESS;
     }
 
     char** names = copy_schema_names(result.metadata, out_num_names);
     if (*out_num_names > 0 && names == nullptr) { return CUDF_ERROR_OUT_OF_MEMORY; }
 
-    *out_table = cudf_release_table_handle(std::move(result.tbl), cudf_capture_exec_provenance(*exec));
+    *out_table =
+      cudf_release_table_handle(std::move(result.tbl), cudf_capture_exec_provenance(*exec));
     *out_names = names;
     return CUDF_SUCCESS;
   }
@@ -1045,15 +1062,14 @@ cudf_status_t cudf_io_read_parquet_multi_with_metadata_filter_ex(
   *out_num_names = 0;
   init_parquet_pruning_evidence(out_pruning_evidence);
   CUDF_RUST_NULL_CHECK(out_pruning_evidence, "out_pruning_evidence is null");
-  cudf_status_t const args_status = validate_parquet_multi_reader_args(
-    filepaths,
-    num_files,
-    columns,
-    num_columns,
-    row_group_offsets,
-    num_row_group_offsets,
-    row_groups,
-    num_row_groups);
+  cudf_status_t const args_status = validate_parquet_multi_reader_args(filepaths,
+                                                                       num_files,
+                                                                       columns,
+                                                                       num_columns,
+                                                                       row_group_offsets,
+                                                                       num_row_group_offsets,
+                                                                       row_groups,
+                                                                       num_row_groups);
   if (args_status != CUDF_SUCCESS) { return args_status; }
   kvikio_active_io_guard const active_io;
   CUDF_RUST_TRY
@@ -1104,19 +1120,21 @@ cudf_status_t cudf_io_read_parquet_multi_with_metadata_filter_ex(
     }
     write_parquet_pruning_evidence(out_pruning_evidence, result.metadata);
 
-    auto const fault = cudf_test_io_take_next_metadata_fault();
-    if (fault != CUDF_TEST_IO_METADATA_FAULT_NONE) {
+    auto const fault = cudf::rust::test_support::take_io_metadata_fault();
+    if (fault != 0) {
       cudf_status_t const fault_status =
-        cudf_test_io_apply_metadata_fault(fault, out_names, out_num_names);
+        cudf::rust::test_support::apply_io_metadata_fault(fault, out_names, out_num_names);
       if (fault_status != CUDF_SUCCESS) { return fault_status; }
-      *out_table = cudf_release_table_handle(std::move(result.tbl), cudf_capture_exec_provenance(*exec));
+      *out_table =
+        cudf_release_table_handle(std::move(result.tbl), cudf_capture_exec_provenance(*exec));
       return CUDF_SUCCESS;
     }
 
     char** names = copy_schema_names(result.metadata, out_num_names);
     if (*out_num_names > 0 && names == nullptr) { return CUDF_ERROR_OUT_OF_MEMORY; }
 
-    *out_table = cudf_release_table_handle(std::move(result.tbl), cudf_capture_exec_provenance(*exec));
+    *out_table =
+      cudf_release_table_handle(std::move(result.tbl), cudf_capture_exec_provenance(*exec));
     *out_names = names;
     return CUDF_SUCCESS;
   }
@@ -1153,15 +1171,14 @@ cudf_status_t cudf_io_read_parquet_multi_mixed_with_metadata_filter_ex(
   init_parquet_pruning_evidence(out_pruning_evidence);
   CUDF_RUST_NULL_CHECK(out_pruning_evidence, "out_pruning_evidence is null");
   CUDF_RUST_NULL_CHECK(remote_source_flags, "remote_source_flags is null");
-  cudf_status_t const args_status = validate_parquet_multi_reader_args(
-    filepaths,
-    num_files,
-    columns,
-    num_columns,
-    row_group_offsets,
-    num_row_group_offsets,
-    row_groups,
-    num_row_groups);
+  cudf_status_t const args_status = validate_parquet_multi_reader_args(filepaths,
+                                                                       num_files,
+                                                                       columns,
+                                                                       num_columns,
+                                                                       row_group_offsets,
+                                                                       num_row_group_offsets,
+                                                                       row_groups,
+                                                                       num_row_groups);
   if (args_status != CUDF_SUCCESS) { return args_status; }
 
   bool has_remote_sources = false;
@@ -1173,19 +1190,19 @@ cudf_status_t cudf_io_read_parquet_multi_mixed_with_metadata_filter_ex(
   }
   if (!has_remote_sources) {
     return cudf_io_read_parquet_multi_with_metadata_filter_ex(filepaths,
-                                                             num_files,
-                                                             columns,
-                                                             num_columns,
-                                                             row_group_offsets,
-                                                             num_row_group_offsets,
-                                                             row_groups,
-                                                             num_row_groups,
-                                                             predicate,
-                                                             out_table,
-                                                             out_names,
-                                                             out_num_names,
-                                                             out_pruning_evidence,
-                                                             exec_options);
+                                                              num_files,
+                                                              columns,
+                                                              num_columns,
+                                                              row_group_offsets,
+                                                              num_row_group_offsets,
+                                                              row_groups,
+                                                              num_row_groups,
+                                                              predicate,
+                                                              out_table,
+                                                              out_names,
+                                                              out_num_names,
+                                                              out_pruning_evidence,
+                                                              exec_options);
   }
 
   CUDF_RUST_NULL_CHECK(profiles, "profiles is null");
@@ -1207,7 +1224,8 @@ cudf_status_t cudf_io_read_parquet_multi_mixed_with_metadata_filter_ex(
     sources.reserve(num_files);
     for (int32_t i = 0; i < num_files; ++i) {
       if (remote_source_flags[i] != 0) {
-        auto remote_source = make_counted_remote_source(filepaths[i], &profiles[i], exec->mr, exec->mr_lifetime);
+        auto remote_source =
+          make_counted_remote_source(filepaths[i], &profiles[i], exec->mr, exec->mr_lifetime);
         evidence_sources.push_back(remote_source.get());
         sources.push_back(cudf::io::datasource::create(remote_source.get()));
         remote_sources.push_back(std::move(remote_source));
@@ -1248,24 +1266,26 @@ cudf_status_t cudf_io_read_parquet_multi_mixed_with_metadata_filter_ex(
     cudf::io::table_with_metadata result;
     {
       auto options = builder.build();
-      result       = cudf::io::read_parquet(std::move(sources), {}, options, exec->stream, *exec->mr);
+      result = cudf::io::read_parquet(std::move(sources), {}, options, exec->stream, *exec->mr);
     }
     write_remote_read_evidence(out_evidence, evidence_sources);
     write_parquet_pruning_evidence(out_pruning_evidence, result.metadata);
 
-    auto const fault = cudf_test_io_take_next_metadata_fault();
-    if (fault != CUDF_TEST_IO_METADATA_FAULT_NONE) {
+    auto const fault = cudf::rust::test_support::take_io_metadata_fault();
+    if (fault != 0) {
       cudf_status_t const fault_status =
-        cudf_test_io_apply_metadata_fault(fault, out_names, out_num_names);
+        cudf::rust::test_support::apply_io_metadata_fault(fault, out_names, out_num_names);
       if (fault_status != CUDF_SUCCESS) { return fault_status; }
-      *out_table = cudf_release_table_handle(std::move(result.tbl), cudf_capture_exec_provenance(*exec));
+      *out_table =
+        cudf_release_table_handle(std::move(result.tbl), cudf_capture_exec_provenance(*exec));
       return CUDF_SUCCESS;
     }
 
     char** names = copy_schema_names(result.metadata, out_num_names);
     if (*out_num_names > 0 && names == nullptr) { return CUDF_ERROR_OUT_OF_MEMORY; }
 
-    *out_table = cudf_release_table_handle(std::move(result.tbl), cudf_capture_exec_provenance(*exec));
+    *out_table =
+      cudf_release_table_handle(std::move(result.tbl), cudf_capture_exec_provenance(*exec));
     *out_names = names;
     return CUDF_SUCCESS;
   }
@@ -1299,8 +1319,8 @@ cudf_status_t cudf_io_read_parquet_from_host_buffer_with_metadata_filter_ex(
   CUDF_RUST_NULL_CHECK(out_pruning_evidence, "out_pruning_evidence is null");
   cudf_status_t const buffer_status = validate_host_parquet_buffer(host_buffer, host_buffer_len);
   if (buffer_status != CUDF_SUCCESS) { return buffer_status; }
-  cudf_status_t const args_status =
-    validate_parquet_reader_args(columns, num_columns, skip_rows, num_rows, row_groups, num_row_groups);
+  cudf_status_t const args_status = validate_parquet_reader_args(
+    columns, num_columns, skip_rows, num_rows, row_groups, num_row_groups);
   if (args_status != CUDF_SUCCESS) { return args_status; }
   CUDF_RUST_TRY
   {
@@ -1308,8 +1328,8 @@ cudf_status_t cudf_io_read_parquet_from_host_buffer_with_metadata_filter_ex(
     cudf_status_t const exec_status = cudf_resolve_required_exec_options(exec_options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
-    auto bytes = cudf::host_span<std::byte const>{
-      static_cast<std::byte const*>(host_buffer), host_buffer_len};
+    auto bytes =
+      cudf::host_span<std::byte const>{static_cast<std::byte const*>(host_buffer), host_buffer_len};
     auto source  = cudf::io::source_info(bytes);
     auto builder = cudf::io::parquet_reader_options::builder(source);
 
@@ -1326,19 +1346,21 @@ cudf_status_t cudf_io_read_parquet_from_host_buffer_with_metadata_filter_ex(
     }
     write_parquet_pruning_evidence(out_pruning_evidence, result.metadata);
 
-    auto const fault = cudf_test_io_take_next_metadata_fault();
-    if (fault != CUDF_TEST_IO_METADATA_FAULT_NONE) {
+    auto const fault = cudf::rust::test_support::take_io_metadata_fault();
+    if (fault != 0) {
       cudf_status_t const fault_status =
-        cudf_test_io_apply_metadata_fault(fault, out_names, out_num_names);
+        cudf::rust::test_support::apply_io_metadata_fault(fault, out_names, out_num_names);
       if (fault_status != CUDF_SUCCESS) { return fault_status; }
-      *out_table = cudf_release_table_handle(std::move(result.tbl), cudf_capture_exec_provenance(*exec));
+      *out_table =
+        cudf_release_table_handle(std::move(result.tbl), cudf_capture_exec_provenance(*exec));
       return CUDF_SUCCESS;
     }
 
     char** names = copy_schema_names(result.metadata, out_num_names);
     if (*out_num_names > 0 && names == nullptr) { return CUDF_ERROR_OUT_OF_MEMORY; }
 
-    *out_table = cudf_release_table_handle(std::move(result.tbl), cudf_capture_exec_provenance(*exec));
+    *out_table =
+      cudf_release_table_handle(std::move(result.tbl), cudf_capture_exec_provenance(*exec));
     *out_names = names;
     return CUDF_SUCCESS;
   }
@@ -1379,9 +1401,7 @@ cudf_status_t cudf_io_kvikio_set_compat_mode(int32_t compat_mode)
       case CUDF_IO_KVIKIO_COMPAT_MODE_OFF:
         kvikio::defaults::set_compat_mode(kvikio::CompatMode::OFF);
         break;
-      default:
-        set_error("unknown KvikIO compatibility mode");
-        return CUDF_ERROR_INVALID_ARGUMENT;
+      default: set_error("unknown KvikIO compatibility mode"); return CUDF_ERROR_INVALID_ARGUMENT;
     }
     return CUDF_SUCCESS;
   }
@@ -1409,7 +1429,7 @@ cudf_status_t cudf_io_kvikio_drain_bounce_buffer_pools(uint64_t* out_cleared_byt
   CUDF_RUST_NULL_CHECK(out_cleared_bytes, "out_cleared_bytes is null");
   CUDF_RUST_NULL_CHECK(out_active_io, "out_active_io is null");
   *out_cleared_bytes = 0;
-  *out_active_io      = 0;
+  *out_active_io     = 0;
 #ifndef CUDF_RUST_LIBCUDF_KVIKIO_REMOTE_IO_ENABLED
   return CUDF_SUCCESS;
 #else
@@ -1427,7 +1447,8 @@ cudf_status_t cudf_io_kvikio_drain_bounce_buffer_pools(uint64_t* out_cleared_byt
 #endif
 }
 
-cudf_status_t cudf_test_io_kvikio_active_io_begin(void)
+#ifdef CUDF_RUST_ENABLE_TEST_HOOKS
+cudf_status_t cudf_rust_test_support_io_kvikio_active_io_begin(void)
 {
 #ifndef CUDF_RUST_LIBCUDF_KVIKIO_REMOTE_IO_ENABLED
   return CUDF_SUCCESS;
@@ -1438,7 +1459,7 @@ cudf_status_t cudf_test_io_kvikio_active_io_begin(void)
 #endif
 }
 
-cudf_status_t cudf_test_io_kvikio_active_io_end(void)
+cudf_status_t cudf_rust_test_support_io_kvikio_active_io_end(void)
 {
 #ifndef CUDF_RUST_LIBCUDF_KVIKIO_REMOTE_IO_ENABLED
   return CUDF_SUCCESS;
@@ -1452,16 +1473,17 @@ cudf_status_t cudf_test_io_kvikio_active_io_end(void)
   return CUDF_SUCCESS;
 #endif
 }
+#endif
 
 cudf_status_t cudf_io_probe_path_datasource(const char* filepath,
                                             int64_t preferred_read_size,
                                             cudf_io_datasource_probe_result_t* out)
 {
   CUDF_RUST_NULL_CHECK(out, "out is null");
-  out->can_open               = 0;
-  out->supports_device_read   = 0;
-  out->device_read_preferred  = 0;
-  out->size_bytes             = -1;
+  out->can_open              = 0;
+  out->supports_device_read  = 0;
+  out->device_read_preferred = 0;
+  out->size_bytes            = -1;
   CUDF_RUST_NULL_CHECK(filepath, "filepath is null");
   if (preferred_read_size < -1) {
     set_error("preferred_read_size must be >= -1");
@@ -1470,18 +1492,17 @@ cudf_status_t cudf_io_probe_path_datasource(const char* filepath,
   kvikio_active_io_guard const active_io;
   CUDF_RUST_TRY
   {
-    auto source              = cudf::io::datasource::create(std::string(filepath));
-    out->can_open            = 1;
+    auto source               = cudf::io::datasource::create(std::string(filepath));
+    out->can_open             = 1;
     out->supports_device_read = source->supports_device_read() ? 1 : 0;
     if (preferred_read_size >= 0) {
       out->device_read_preferred =
         source->is_device_read_preferred(static_cast<size_t>(preferred_read_size)) ? 1 : 0;
     }
     auto const source_size = source->size();
-    out->size_bytes =
-      source_size > static_cast<size_t>(std::numeric_limits<int64_t>::max())
-        ? std::numeric_limits<int64_t>::max()
-        : static_cast<int64_t>(source_size);
+    out->size_bytes        = source_size > static_cast<size_t>(std::numeric_limits<int64_t>::max())
+                               ? std::numeric_limits<int64_t>::max()
+                               : static_cast<int64_t>(source_size);
     return CUDF_SUCCESS;
   }
   CUDF_RUST_IO_CATCH
@@ -1519,10 +1540,9 @@ cudf_status_t cudf_io_probe_remote_parquet_datasource(
         source->is_device_read_preferred(static_cast<size_t>(preferred_read_size)) ? 1 : 0;
     }
     auto const source_size = source->size();
-    out->size_bytes =
-      source_size > static_cast<size_t>(std::numeric_limits<int64_t>::max())
-        ? std::numeric_limits<int64_t>::max()
-        : static_cast<int64_t>(source_size);
+    out->size_bytes        = source_size > static_cast<size_t>(std::numeric_limits<int64_t>::max())
+                               ? std::numeric_limits<int64_t>::max()
+                               : static_cast<int64_t>(source_size);
     return CUDF_SUCCESS;
   }
   CUDF_RUST_IO_CATCH

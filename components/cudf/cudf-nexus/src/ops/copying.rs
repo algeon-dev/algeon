@@ -104,7 +104,7 @@ pub fn gather(input: &TableView<'_>, gather_map: &ColumnView<'_>) -> Result<Tabl
     gather_impl(
         input,
         gather_map,
-        cudf_sys::cudf_out_of_bounds_policy_t::CUDF_OUT_OF_BOUNDS_POLICY_NULLIFY,
+        cudf_sys::CUDF_OUT_OF_BOUNDS_POLICY_NULLIFY,
         "nullify",
         execution.output_domain(),
         execution.exec_options(),
@@ -145,7 +145,7 @@ pub unsafe fn gather_unchecked(input: &TableView<'_>, gather_map: &ColumnView<'_
     gather_impl(
         input,
         gather_map,
-        cudf_sys::cudf_out_of_bounds_policy_t::CUDF_OUT_OF_BOUNDS_POLICY_DONT_CHECK,
+        cudf_sys::CUDF_OUT_OF_BOUNDS_POLICY_DONT_CHECK,
         "dont_check",
         execution.output_domain(),
         execution.exec_options(),

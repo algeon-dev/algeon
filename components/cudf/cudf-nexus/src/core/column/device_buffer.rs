@@ -6,7 +6,7 @@
 //! or [`Runtime::series`](crate::Runtime::series) instead.
 
 use std::{
-    mem,
+    fmt, mem,
     os::raw::c_void,
     ptr::{self, NonNull},
     sync::Arc,
@@ -17,7 +17,11 @@ use crate::{
         error::{self, Result},
         types::CudfType,
     },
-    runtime::{Runtime, execution_domain::ExecutionDomain},
+    ops::validation::{self, FiniteFloat32ValidationProof, Int64RangeValidationProof},
+    runtime::{
+        BoundaryObservation, DeviceId, ExecutionBindingId, ExecutionPlacement, Runtime,
+        execution_domain::ExecutionDomain,
+    },
 };
 
 /// An owned block of GPU device memory.
@@ -48,8 +52,111 @@ use crate::{
 /// let col = rt.column_from_device_buffer(buf, 3, TypeId::Int32).unwrap();
 /// ```
 pub struct DeviceBuffer {
-    handle: NonNull<c_void>,
+    handle: NonNull<cudf_sys::cudf_device_buffer_handle_state>,
     domain: Arc<ExecutionDomain>,
+}
+
+/// Borrowing proof that one entire [`DeviceBuffer`] is an aligned Float32
+/// allocation containing only finite values.
+///
+/// The shared borrow prevents safe mutable pointer access while the proof is
+/// live. The proof is bound to the allocation's exact retained execution
+/// binding and covers every byte in the buffer.
+pub struct ValidatedFloat32DeviceBuffer<'a> {
+    buffer: &'a DeviceBuffer,
+    proof: FiniteFloat32ValidationProof,
+}
+
+impl ValidatedFloat32DeviceBuffer<'_> {
+    /// Number of Float32 values covered by this whole-buffer proof.
+    pub fn len(&self) -> usize {
+        self.proof.validated_values()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Read-only pointer to the finite Float32 allocation.
+    pub fn as_ptr(&self) -> Result<*const c_void> {
+        self.buffer.as_ptr()
+    }
+
+    pub fn binding_id(&self) -> ExecutionBindingId {
+        self.proof.binding_id()
+    }
+
+    pub fn placement(&self) -> ExecutionPlacement {
+        self.proof.placement()
+    }
+
+    pub fn observation(&self) -> BoundaryObservation {
+        self.proof.observation()
+    }
+}
+
+impl fmt::Debug for ValidatedFloat32DeviceBuffer<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ValidatedFloat32DeviceBuffer")
+            .field("len", &self.len())
+            .field("binding_id", &self.binding_id())
+            .finish_non_exhaustive()
+    }
+}
+
+/// Borrowing proof that one entire [`DeviceBuffer`] is an aligned Int64
+/// allocation whose values all lie in one half-open range.
+pub struct ValidatedInt64DeviceBufferRange<'a> {
+    buffer: &'a DeviceBuffer,
+    proof: Int64RangeValidationProof,
+}
+
+impl ValidatedInt64DeviceBufferRange<'_> {
+    pub fn len(&self) -> usize {
+        self.proof.validated_values()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn min_inclusive(&self) -> i64 {
+        self.proof.min_inclusive()
+    }
+
+    pub fn max_exclusive(&self) -> i64 {
+        self.proof.max_exclusive()
+    }
+
+    /// Read-only pointer to the range-validated Int64 allocation.
+    pub fn as_ptr(&self) -> Result<*const c_void> {
+        self.buffer.as_ptr()
+    }
+
+    pub fn binding_id(&self) -> ExecutionBindingId {
+        self.proof.binding_id()
+    }
+
+    pub fn placement(&self) -> ExecutionPlacement {
+        self.proof.placement()
+    }
+
+    pub fn observation(&self) -> BoundaryObservation {
+        self.proof.observation()
+    }
+}
+
+impl fmt::Debug for ValidatedInt64DeviceBufferRange<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ValidatedInt64DeviceBufferRange")
+            .field("len", &self.len())
+            .field("min_inclusive", &self.min_inclusive())
+            .field("max_exclusive", &self.max_exclusive())
+            .field("binding_id", &self.binding_id())
+            .finish_non_exhaustive()
+    }
 }
 
 // SAFETY: DeviceBuffer owns a GPU device allocation via an opaque C++ handle.
@@ -145,20 +252,75 @@ impl DeviceBuffer {
         Ok(self.size_bytes()? == 0)
     }
 
-    /// Returns the raw device pointer.
+    /// Returns the raw device pointer for read-only access.
     ///
     /// The pointer refers to GPU memory and cannot be dereferenced from host
     /// code. It is intended for diagnostics and for passing to GPU libraries.
     ///
     /// For zero-size buffers this call still succeeds, but the returned
     /// pointer may be null because there is no addressable device range.
-    pub fn data_ptr(&self) -> Result<*mut c_void> {
+    pub fn as_ptr(&self) -> Result<*const c_void> {
         let mut out: *mut c_void = ptr::null_mut();
         error::check_status_in(
             unsafe { cudf_sys::cudf_device_buffer_data(self.handle.as_ptr(), &mut out) },
-            "device_buffer::data_ptr",
+            "device_buffer::as_ptr",
+        )?;
+        Ok(out.cast_const())
+    }
+
+    /// Returns the raw device pointer for mutable access.
+    ///
+    /// The pointer refers to GPU memory and cannot be dereferenced from host
+    /// code. The exclusive `&mut self` receiver prevents safe callers from
+    /// obtaining a mutation-capable pointer while aliases to this owner are
+    /// active.
+    ///
+    /// For zero-size buffers this call still succeeds, but the returned
+    /// pointer may be null because there is no addressable device range.
+    pub fn as_mut_ptr(&mut self) -> Result<*mut c_void> {
+        let mut out: *mut c_void = ptr::null_mut();
+        error::check_status_in(
+            unsafe { cudf_sys::cudf_device_buffer_data(self.handle.as_ptr(), &mut out) },
+            "device_buffer::as_mut_ptr",
         )?;
         Ok(out)
+    }
+
+    /// CUDA device on which this allocation resides.
+    pub fn device(&self) -> DeviceId {
+        self.domain.device_id()
+    }
+
+    /// Diagnostic summary of this allocation's retained execution placement.
+    pub fn placement(&self) -> ExecutionPlacement {
+        self.domain.placement()
+    }
+
+    /// Stable identity of the exact stream and memory-resource binding that
+    /// owns this allocation.
+    pub fn binding_id(&self) -> ExecutionBindingId {
+        self.domain.binding_id()
+    }
+
+    /// Validate this entire allocation as aligned Float32 values and return a
+    /// borrowing finite-value proof on the exact retained execution binding.
+    pub fn validate_finite_float32(&self) -> Result<ValidatedFloat32DeviceBuffer<'_>> {
+        let proof = validation::validate_finite_float32_buffer(self)
+            .map_err(|error| error.reanchor("device_buffer::validate_finite_float32"))?;
+        Ok(ValidatedFloat32DeviceBuffer { buffer: self, proof })
+    }
+
+    /// Validate this entire allocation as aligned Int64 values in
+    /// `[min_inclusive, max_exclusive)` and return a borrowing proof on the
+    /// exact retained execution binding.
+    pub fn validate_int64_range(
+        &self,
+        min_inclusive: i64,
+        max_exclusive: i64,
+    ) -> Result<ValidatedInt64DeviceBufferRange<'_>> {
+        let proof = validation::validate_int64_buffer_range(self, min_inclusive, max_exclusive)
+            .map_err(|error| error.reanchor("device_buffer::validate_int64_range"))?;
+        Ok(ValidatedInt64DeviceBufferRange { buffer: self, proof })
     }
 
     /// Consume this buffer and return the raw FFI handle **without** running
@@ -167,7 +329,7 @@ impl DeviceBuffer {
     /// The caller is responsible for either passing the handle to an FFI
     /// function that consumes it (e.g., `cudf_column_adopt_device_buffer`) or
     /// reconstructing a `DeviceBuffer` via [`from_raw_parts`](Self::from_raw_parts).
-    pub(crate) fn into_raw_parts(self) -> (*mut c_void, Arc<ExecutionDomain>) {
+    pub(crate) fn into_raw_parts(self) -> (cudf_sys::cudf_device_buffer_handle, Arc<ExecutionDomain>) {
         let this = mem::ManuallyDrop::new(self);
         let Self { handle: _, domain: _ } = &*this;
         let domain = unsafe { ptr::read(&this.domain) };
@@ -178,13 +340,20 @@ impl DeviceBuffer {
         self.domain.device_snapshot()
     }
 
+    pub(crate) fn execution_domain(&self) -> &Arc<ExecutionDomain> {
+        &self.domain
+    }
+
     /// Reconstruct a `DeviceBuffer` from raw FFI parts, taking ownership.
     ///
     /// # Safety
     ///
     /// The handle must be a valid `cudf_device_buffer_handle` that has not
     /// been consumed by another FFI call.
-    pub(crate) unsafe fn from_raw_parts(handle: *mut c_void, domain: Arc<ExecutionDomain>) -> Result<Self> {
+    pub(crate) unsafe fn from_raw_parts(
+        handle: cudf_sys::cudf_device_buffer_handle,
+        domain: Arc<ExecutionDomain>,
+    ) -> Result<Self> {
         Ok(Self { handle: error::require_non_null(handle, "device_buffer::from_raw_parts", "device buffer")?, domain })
     }
 }

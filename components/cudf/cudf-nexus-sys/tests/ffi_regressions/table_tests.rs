@@ -1,4 +1,4 @@
-use std::{os::raw::c_void, ptr};
+use std::ptr;
 
 use crate::{
     helpers::*,
@@ -12,7 +12,7 @@ fn test_table_create_failure_does_not_partially_consume_columns() {
     let c2 = make_i32_column(&[4, 5, 6]);
     let mut columns = [c1, ptr::null_mut(), c2];
 
-    let mut out: *mut c_void = ptr::null_mut();
+    let mut out: cudf_sys::cudf_table_handle = ptr::null_mut();
     let status = unsafe { cudf_sys::cudf_table_create(columns.as_mut_ptr(), columns.len() as i32, &mut out) };
 
     assert_eq!(status, cudf_sys::CUDF_ERROR_NULL);
@@ -29,7 +29,7 @@ fn test_table_create_failure_does_not_partially_consume_columns() {
     assert_eq!(data2, vec![4, 5, 6]);
 
     let mut valid_columns = [columns[0], columns[2]];
-    let mut tbl: *mut c_void = ptr::null_mut();
+    let mut tbl: cudf_sys::cudf_table_handle = ptr::null_mut();
     let st = unsafe { cudf_sys::cudf_table_create(valid_columns.as_mut_ptr(), valid_columns.len() as i32, &mut tbl) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     assert!(!tbl.is_null());
@@ -69,7 +69,7 @@ fn test_table_release_columns_multiple_columns() {
     let c1 = make_i32_column(&[1, 2, 3]);
     let c2 = make_i32_column(&[4, 5, 6]);
     let mut col_arr = [c1, c2];
-    let mut tbl: *mut c_void = ptr::null_mut();
+    let mut tbl: cudf_sys::cudf_table_handle = ptr::null_mut();
     let st = unsafe { cudf_sys::cudf_table_create(col_arr.as_mut_ptr(), 2, &mut tbl) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
 
@@ -98,7 +98,7 @@ fn test_table_release_columns_multiple_columns() {
 #[test]
 fn test_table_release_columns_empty_table() {
     let _shim_state = lock_shim_state();
-    let mut tbl: *mut c_void = ptr::null_mut();
+    let mut tbl: cudf_sys::cudf_table_handle = ptr::null_mut();
     let st = unsafe { cudf_sys::cudf_table_create(ptr::null_mut(), 0, &mut tbl) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
 
@@ -185,8 +185,8 @@ fn test_table_release_columns_allocation_failure_does_not_consume_table() {
     let _shim_state = lock_shim_state();
     const NUM_COLUMNS: usize = 2;
 
-    let mut columns: Vec<*mut c_void> = (0..NUM_COLUMNS).map(|_| make_empty_i32_column()).collect();
-    let mut tbl: *mut c_void = ptr::null_mut();
+    let mut columns: Vec<cudf_sys::cudf_column_handle> = (0..NUM_COLUMNS).map(|_| make_empty_i32_column()).collect();
+    let mut tbl: cudf_sys::cudf_table_handle = ptr::null_mut();
     let st = unsafe { cudf_sys::cudf_table_create(columns.as_mut_ptr(), NUM_COLUMNS as i32, &mut tbl) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     assert!(!tbl.is_null());
@@ -194,7 +194,7 @@ fn test_table_release_columns_allocation_failure_does_not_consume_table() {
 
     let mut out_columns: *mut cudf_sys::cudf_column_handle = ptr::null_mut();
     let mut out_count: i32 = -1;
-    unsafe { cudf_sys::cudf_test_fail_next_table_release_columns_handle_array_alloc() };
+    unsafe { cudf_sys::test_support::cudf_test_fail_next_table_release_columns_handle_array_alloc() };
     let status = unsafe { cudf_sys::cudf_table_release_columns(tbl, &mut out_columns, &mut out_count) };
 
     assert_eq!(status, cudf_sys::CUDF_ERROR_OUT_OF_MEMORY);
@@ -230,7 +230,7 @@ fn test_table_release_columns_allocation_failure_does_not_consume_table() {
 fn test_table_release_columns_publish_failure_does_not_consume_table() {
     let _shim_state = lock_shim_state();
     let mut columns = vec![make_i32_column(&[1, 2, 3]), make_i32_column(&[4, 5, 6])];
-    let mut tbl: *mut c_void = ptr::null_mut();
+    let mut tbl: cudf_sys::cudf_table_handle = ptr::null_mut();
     let st = unsafe { cudf_sys::cudf_table_create(columns.as_mut_ptr(), columns.len() as i32, &mut tbl) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     assert!(!tbl.is_null());
@@ -238,9 +238,9 @@ fn test_table_release_columns_publish_failure_does_not_consume_table() {
 
     let mut out_columns: *mut cudf_sys::cudf_column_handle = ptr::null_mut();
     let mut out_count: i32 = -1;
-    unsafe { cudf_sys::cudf_test_fail_column_handle_release_after(1) };
+    unsafe { cudf_sys::test_support::cudf_test_fail_column_handle_release_after(1) };
     let status = unsafe { cudf_sys::cudf_table_release_columns(tbl, &mut out_columns, &mut out_count) };
-    unsafe { cudf_sys::cudf_test_fail_column_handle_release_after(-1) };
+    unsafe { cudf_sys::test_support::cudf_test_fail_column_handle_release_after(-1) };
 
     assert_eq!(status, cudf_sys::CUDF_ERROR_OUT_OF_MEMORY);
     assert!(out_columns.is_null());
@@ -281,7 +281,7 @@ fn test_table_view_from_column_views_two_columns() {
     let cv2 = make_column_view(c2);
 
     let mut views = [cv1, cv2];
-    let mut out: *mut c_void = ptr::null_mut();
+    let mut out: cudf_sys::cudf_table_view_handle = ptr::null_mut();
     let status = unsafe { cudf_sys::cudf_table_view_from_column_views(views.as_mut_ptr(), 2, &mut out) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     assert!(!out.is_null());
@@ -312,7 +312,7 @@ fn test_table_view_from_column_views_single_column() {
     let cv = make_column_view(col);
 
     let mut views = [cv];
-    let mut out: *mut c_void = ptr::null_mut();
+    let mut out: cudf_sys::cudf_table_view_handle = ptr::null_mut();
     let status = unsafe { cudf_sys::cudf_table_view_from_column_views(views.as_mut_ptr(), 1, &mut out) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     assert!(!out.is_null());
@@ -353,7 +353,7 @@ fn test_table_view_from_column_views_null_out_rejected() {
 #[test]
 fn test_table_view_from_column_views_negative_count_rejected() {
     let _shim_state = lock_shim_state();
-    let mut out: *mut c_void = ptr::null_mut();
+    let mut out: cudf_sys::cudf_table_view_handle = ptr::null_mut();
     let status = unsafe { cudf_sys::cudf_table_view_from_column_views(ptr::null_mut(), -1, &mut out) };
     assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
     assert!(out.is_null());
@@ -362,7 +362,7 @@ fn test_table_view_from_column_views_negative_count_rejected() {
 #[test]
 fn test_table_view_from_column_views_null_array_with_nonzero_count_rejected() {
     let _shim_state = lock_shim_state();
-    let mut out: *mut c_void = ptr::null_mut();
+    let mut out: cudf_sys::cudf_table_view_handle = ptr::null_mut();
     let status = unsafe { cudf_sys::cudf_table_view_from_column_views(ptr::null_mut(), 2, &mut out) };
     assert_eq!(status, cudf_sys::CUDF_ERROR_NULL);
     assert!(out.is_null());
@@ -375,7 +375,7 @@ fn test_table_view_from_column_views_null_element_rejected() {
     let cv1 = make_column_view(c1);
 
     let mut views = [cv1, ptr::null_mut()];
-    let mut out: *mut c_void = ptr::null_mut();
+    let mut out: cudf_sys::cudf_table_view_handle = ptr::null_mut();
     let status = unsafe { cudf_sys::cudf_table_view_from_column_views(views.as_mut_ptr(), 2, &mut out) };
     assert_eq!(status, cudf_sys::CUDF_ERROR_NULL);
     assert!(out.is_null());
@@ -389,7 +389,7 @@ fn test_table_view_from_column_views_null_element_rejected() {
 #[test]
 fn test_table_view_from_column_views_zero_columns_succeeds() {
     let _shim_state = lock_shim_state();
-    let mut out: *mut c_void = ptr::null_mut();
+    let mut out: cudf_sys::cudf_table_view_handle = ptr::null_mut();
     let status = unsafe { cudf_sys::cudf_table_view_from_column_views(ptr::null_mut(), 0, &mut out) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     assert!(!out.is_null());

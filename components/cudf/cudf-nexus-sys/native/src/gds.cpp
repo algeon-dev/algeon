@@ -1,4 +1,5 @@
-#include "gds.h"
+#include "cudf_rust/gds.h"
+
 #include "shim_common.h"
 
 #include <dlfcn.h>
@@ -34,13 +35,14 @@ cudf_status_t cudf_gds_driver_available(void)
     void* library = dlopen("libcufile.so", RTLD_LAZY | RTLD_LOCAL);
     if (library == nullptr) {
       char const* error = dlerror();
-      set_error(std::string("failed to load libcufile.so: ") + (error == nullptr ? "unknown error" : error));
+      set_error(std::string("failed to load libcufile.so: ") +
+                (error == nullptr ? "unknown error" : error));
       return CUDF_ERROR_IO;
     }
 
     auto close_library = [&]() { dlclose(library); };
     dlerror();
-    auto* open_symbol = dlsym(library, "cuFileDriverOpen");
+    auto* open_symbol      = dlsym(library, "cuFileDriverOpen");
     char const* open_error = dlerror();
     if (open_error != nullptr || open_symbol == nullptr) {
       set_error(std::string("failed to resolve cuFileDriverOpen: ") +
@@ -50,7 +52,7 @@ cudf_status_t cudf_gds_driver_available(void)
     }
 
     dlerror();
-    auto* close_symbol = dlsym(library, "cuFileDriverClose");
+    auto* close_symbol      = dlsym(library, "cuFileDriverClose");
     char const* close_error = dlerror();
     if (close_error != nullptr || close_symbol == nullptr) {
       set_error(std::string("failed to resolve cuFileDriverClose: ") +

@@ -12,6 +12,8 @@ mod error_api_tests;
 mod error_path_tests;
 #[path = "../core/error_truthful_contract_tests.rs"]
 mod error_truthful_contract_tests;
+#[path = "../core/matrix_tests.rs"]
+mod matrix_tests;
 #[path = "../core/null_mask_contract_tests.rs"]
 mod null_mask_contract_tests;
 #[path = "../core/scalar_tests.rs"]

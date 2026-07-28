@@ -162,9 +162,9 @@ pub(crate) fn write_json_with_exec(
             })
         })
         .collect::<Result<_>>()?;
-    let c_name_ptrs: Vec<*const std::os::raw::c_char> = c_names.iter().map(|s| s.as_ptr()).collect();
+    let mut c_name_ptrs: Vec<*const std::os::raw::c_char> = c_names.iter().map(|s| s.as_ptr()).collect();
 
-    let names_ptr = if c_name_ptrs.is_empty() { ptr::null() } else { c_name_ptrs.as_ptr() };
+    let names_ptr = if c_name_ptrs.is_empty() { ptr::null_mut() } else { c_name_ptrs.as_mut_ptr() };
 
     error::check_status_in_with_details(
         unsafe {

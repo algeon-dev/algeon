@@ -33,12 +33,12 @@ fn required_test_exec() -> (OwnedStream, OwnedMemoryResource, cudf_sys::cudf_exe
     (stream, mr, options)
 }
 
-fn make_i32_column(data: &[i32]) -> *mut c_void {
+fn make_i32_column(data: &[i32]) -> cudf_sys::cudf_column_handle {
     let (_stream, _mr, options) = required_test_exec();
-    let mut out: *mut c_void = ptr::null_mut();
+    let mut out: cudf_sys::cudf_column_handle = ptr::null_mut();
     let status = unsafe {
         cudf_sys::cudf_column_create_numeric_ex(
-            cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32,
+            cudf_sys::CUDF_TYPE_INT32,
             data.as_ptr() as *const c_void,
             data.len() as i32,
             ptr::null(),
@@ -52,16 +52,16 @@ fn make_i32_column(data: &[i32]) -> *mut c_void {
     out
 }
 
-fn make_i32_column_nullable(data: &[i32], validity: &[bool]) -> *mut c_void {
+fn make_i32_column_nullable(data: &[i32], validity: &[bool]) -> cudf_sys::cudf_column_handle {
     assert_eq!(data.len(), validity.len());
     let mask = validity_to_bitmask(validity);
     let null_count = validity.iter().filter(|&&is_valid| !is_valid).count() as i32;
 
     let (_stream, _mr, options) = required_test_exec();
-    let mut out: *mut c_void = ptr::null_mut();
+    let mut out: cudf_sys::cudf_column_handle = ptr::null_mut();
     let status = unsafe {
         cudf_sys::cudf_column_create_numeric_ex(
-            cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32,
+            cudf_sys::CUDF_TYPE_INT32,
             data.as_ptr() as *const c_void,
             data.len() as i32,
             mask.as_ptr(),
@@ -75,16 +75,16 @@ fn make_i32_column_nullable(data: &[i32], validity: &[bool]) -> *mut c_void {
     out
 }
 
-fn make_string_column(data: &[&str]) -> *mut c_void {
+fn make_string_column(data: &[&str]) -> cudf_sys::cudf_column_handle {
     let c_strings: Vec<_> = data.iter().map(|value| CString::new(*value).unwrap()).collect();
-    let string_ptrs: Vec<_> = c_strings.iter().map(|value| value.as_ptr()).collect();
+    let mut string_ptrs: Vec<_> = c_strings.iter().map(|value| value.as_ptr()).collect();
     let lengths: Vec<_> = data.iter().map(|value| value.len() as i32).collect();
 
     let (_stream, _mr, options) = required_test_exec();
-    let mut out: *mut c_void = ptr::null_mut();
+    let mut out: cudf_sys::cudf_column_handle = ptr::null_mut();
     let status = unsafe {
         cudf_sys::cudf_column_create_strings_ex(
-            string_ptrs.as_ptr(),
+            string_ptrs.as_mut_ptr(),
             lengths.as_ptr(),
             data.len() as i32,
             ptr::null(),
@@ -98,28 +98,27 @@ fn make_string_column(data: &[&str]) -> *mut c_void {
     out
 }
 
-fn make_column_view(column: *mut c_void) -> *mut c_void {
-    let mut out: *mut c_void = ptr::null_mut();
+fn make_column_view(column: cudf_sys::cudf_column_handle) -> cudf_sys::cudf_column_view_handle {
+    let mut out: cudf_sys::cudf_column_view_handle = ptr::null_mut();
     let status = unsafe { cudf_sys::cudf_column_view(column, &mut out) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     assert!(!out.is_null());
     out
 }
 
-fn make_string_dictionary_i32_column(data: &[&str]) -> (*mut c_void, OwnedMemoryResource) {
+fn make_string_dictionary_i32_column(data: &[&str]) -> (cudf_sys::cudf_column_handle, OwnedMemoryResource) {
     let col = make_string_column(data);
     let view = make_column_view(col);
     let stream = OwnedStream::new();
     let mr = OwnedMemoryResource::new_cuda();
 
-    let mut out: *mut c_void = ptr::null_mut();
+    let mut out: cudf_sys::cudf_column_handle = ptr::null_mut();
     {
         let borrowed_stream = stream.borrowed();
         let borrowed_mr = mr.borrowed();
         let options = required_exec_options(&borrowed_stream, &borrowed_mr);
-        let status = unsafe {
-            cudf_sys::cudf_dictionary_encode_ex(view, cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32, &mut out, &options)
-        };
+        let status =
+            unsafe { cudf_sys::cudf_dictionary_encode_ex(view, cudf_sys::CUDF_TYPE_INT32, &mut out, &options) };
         assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     }
     assert!(!out.is_null());
@@ -133,15 +132,15 @@ fn make_string_dictionary_i32_column(data: &[&str]) -> (*mut c_void, OwnedMemory
     (out, mr)
 }
 
-fn make_table(columns: &mut [*mut c_void]) -> *mut c_void {
-    let mut out: *mut c_void = ptr::null_mut();
+fn make_table(columns: &mut [cudf_sys::cudf_column_handle]) -> cudf_sys::cudf_table_handle {
+    let mut out: cudf_sys::cudf_table_handle = ptr::null_mut();
     let status = unsafe { cudf_sys::cudf_table_create(columns.as_mut_ptr(), columns.len() as i32, &mut out) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     assert!(!out.is_null());
     out
 }
 
-fn column_payload_size(handle: *mut c_void) -> usize {
+fn column_payload_size(handle: cudf_sys::cudf_column_handle) -> usize {
     let (_stream, _mr, options) = required_test_exec();
     let mut out = 0usize;
     let status = unsafe { cudf_sys::cudf_column_payload_size_ex(handle, &options, &mut out) };
@@ -149,14 +148,14 @@ fn column_payload_size(handle: *mut c_void) -> usize {
     out
 }
 
-fn column_device_allocated_size(handle: *mut c_void) -> usize {
+fn column_device_allocated_size(handle: cudf_sys::cudf_column_handle) -> usize {
     let mut out = 0usize;
     let status = unsafe { cudf_sys::cudf_column_device_allocated_size(handle, &mut out) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     out
 }
 
-fn table_payload_size(handle: *mut c_void) -> usize {
+fn table_payload_size(handle: cudf_sys::cudf_table_handle) -> usize {
     let stream = OwnedStream::new();
     let mr = OwnedMemoryResource::new_cuda();
     let borrowed_stream = stream.borrowed();
@@ -169,7 +168,7 @@ fn table_payload_size(handle: *mut c_void) -> usize {
     out
 }
 
-fn table_device_allocated_size(handle: *mut c_void) -> usize {
+fn table_device_allocated_size(handle: cudf_sys::cudf_table_handle) -> usize {
     let mut out = 0usize;
     let status = unsafe { cudf_sys::cudf_table_device_allocated_size(handle, &mut out) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
@@ -249,7 +248,7 @@ fn table_size_hooks_sum_column_payloads() {
 
 #[test]
 fn empty_table_size_hooks_return_zero() {
-    let mut out: *mut c_void = ptr::null_mut();
+    let mut out: cudf_sys::cudf_table_handle = ptr::null_mut();
     let status = unsafe { cudf_sys::cudf_table_create(ptr::null_mut(), 0, &mut out) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     assert!(!out.is_null());

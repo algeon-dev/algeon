@@ -17,9 +17,11 @@ pub(crate) mod testing_hooks;
 
 pub use code::{ErrorCode, ErrorKind, ErrorStatus, kind_for_code, status_for_code};
 pub(crate) use facts::{
-    DeviceIdFact, FACT_ACTUAL_COUNT, FACT_ACTUAL_ROWS, FACT_COLUMN_INDEX, FACT_COLUMN_NAME, FACT_DISTINCT_KEYS_COUNT,
-    FACT_EXPECTED_COUNT, FACT_EXPECTED_ROWS, FACT_KEYS_COUNT, FACT_LEFT_DEVICE, FACT_LEFT_TYPE_ID, FACT_RIGHT_DEVICE,
-    FACT_RIGHT_TYPE_ID, FACT_TABLE_COLUMN_COUNT, FACT_TABLE_ROW_COUNT, FACT_TYPE_ID, FactKey, IntoFactValue,
+    DeviceIdFact, FACT_ACTUAL_COUNT, FACT_ACTUAL_ROWS, FACT_COLUMN_INDEX, FACT_COLUMN_NAME,
+    FACT_CONTROL_PLANE_SCALAR_BYTES, FACT_DISTINCT_KEYS_COUNT, FACT_EXECUTION_BINDING_ID, FACT_EXPECTED_COUNT,
+    FACT_EXPECTED_ROWS, FACT_KEYS_COUNT, FACT_LEFT_DEVICE, FACT_LEFT_TYPE_ID, FACT_RIGHT_DEVICE, FACT_RIGHT_TYPE_ID,
+    FACT_TABLE_COLUMN_COUNT, FACT_TABLE_ROW_COUNT, FACT_TYPE_ID, FACT_VALIDATION_DEVICE, FACT_VALIDATION_REASON,
+    FACT_VALIDATION_STREAM, FactKey, IntoFactValue,
 };
 pub use facts::{FactKeyName, FactValue, Facts};
 
@@ -708,7 +710,7 @@ pub(crate) fn check_status_in(status: cudf_sys::cudf_status_t, operation: &'stat
             device,
             crate::runtime::DeviceFaultKind::FatalDeviceOperation,
             operation,
-            Some(status),
+            Some(status as i32),
         );
     }
     check_status_in_without_device_report(status, operation)
@@ -902,6 +904,11 @@ fn foreign_context_detail_key(key: &'static str) -> Option<&'static str> {
         "keys_count" => "foreign_keys_count",
         "distinct_keys_count" => "foreign_distinct_keys_count",
         "type_id" => "foreign_type_id",
+        "execution_binding_id" => "foreign_execution_binding_id",
+        "validation_reason" => "foreign_validation_reason",
+        "validation_device" => "foreign_validation_device",
+        "validation_stream" => "foreign_validation_stream",
+        "control_plane_scalar_bytes" => "foreign_control_plane_scalar_bytes",
         // Unreachable unless a new canonical key is added. Use a safe
         // fallback rather than panicking inside a translator.
         _ => "foreign_canonical_context",

@@ -1,26 +1,23 @@
-#include "event.h"
+#include "cudf_rust/event.h"
 
 #include "shim_common.h"
+#include "test_support_internal.hpp"
 
 #include <rmm/cuda_stream_view.hpp>
 
 #include <cuda_runtime_api.h>
 
-#include <atomic>
-#include <condition_variable>
-#include <mutex>
 #include <string>
-#include <unordered_map>
 
 rmm::cuda_stream_view cudf_stream_view_from_handle(cudf_stream_handle handle);
 
 namespace {
 cudaEvent_t event_from_handle(cudf_event_handle handle)
 {
-  return *static_cast<cudaEvent_t*>(handle);
+  return *reinterpret_cast<cudaEvent_t*>(handle);
 }
 
-cudaEvent_t event_from_raw(void* raw_event) { return static_cast<cudaEvent_t>(raw_event); }
+cudaEvent_t event_from_raw(void* raw_event) { return reinterpret_cast<cudaEvent_t>(raw_event); }
 
 cudaStream_t stream_from_raw(void* raw_stream) { return static_cast<cudaStream_t>(raw_stream); }
 
@@ -32,22 +29,6 @@ cudf_status_t cuda_error_status(cudaError_t err, char const* operation)
   return CUDF_ERROR_CUDA;
 }
 
-std::atomic<int32_t> g_stream_wait_call_count{0};
-std::atomic<std::uintptr_t> g_last_wait_stream_raw{0};
-std::atomic<std::uintptr_t> g_last_wait_event_raw{0};
-std::atomic<int32_t> g_raw_record_call_count{0};
-std::atomic<std::uintptr_t> g_last_raw_record_stream_raw{0};
-std::atomic<std::uintptr_t> g_last_raw_record_event_raw{0};
-std::atomic<int32_t> g_event_synchronize_call_count{0};
-std::mutex g_synchronize_block_mutex;
-std::condition_variable g_synchronize_block_cv;
-bool g_block_event_synchronize = false;
-bool g_fail_event_synchronize  = false;
-std::mutex g_observation_mutex;
-std::unordered_map<std::uintptr_t, int32_t> g_stream_wait_counts_by_stream_raw;
-std::unordered_map<std::uintptr_t, int32_t> g_stream_wait_counts_by_event_raw;
-std::unordered_map<std::uintptr_t, int32_t> g_raw_record_counts_by_stream_raw;
-std::unordered_map<std::uintptr_t, int32_t> g_event_synchronize_counts_by_event_handle_raw;
 }  // namespace
 
 extern "C" {
@@ -63,7 +44,7 @@ cudf_status_t cudf_event_create(cudf_event_handle* out)
       delete event;
       return cuda_error_status(err, "cudaEventCreateWithFlags");
     }
-    *out = static_cast<cudf_event_handle>(event);
+    *out = reinterpret_cast<cudf_event_handle>(event);
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -72,7 +53,7 @@ cudf_status_t cudf_event_create(cudf_event_handle* out)
 cudf_status_t cudf_event_destroy(cudf_event_handle handle)
 {
   if (handle == nullptr) { return CUDF_SUCCESS; }
-  auto* event = static_cast<cudaEvent_t*>(handle);
+  auto* event       = reinterpret_cast<cudaEvent_t*>(handle);
   auto const status = cuda_error_status(cudaEventDestroy(*event), "cudaEventDestroy");
   // The host-side owner is consumed even if CUDA rejects device cleanup.
   delete event;
@@ -98,22 +79,12 @@ cudf_status_t cudf_event_synchronize(cudf_event_handle event)
   CUDF_RUST_TRY
   {
     auto const event_handle_raw = reinterpret_cast<std::uintptr_t>(event);
-    g_event_synchronize_call_count.fetch_add(1, std::memory_order_relaxed);
-    {
-      std::scoped_lock lock(g_observation_mutex);
-      g_event_synchronize_counts_by_event_handle_raw[event_handle_raw] += 1;
+    cudf::rust::test_support::record_event_synchronize(event_handle_raw);
+    if (cudf::rust::test_support::event_synchronize_should_fail()) {
+      set_error("forced cudaEventSynchronize failure for tests");
+      return CUDF_ERROR_CUDA;
     }
-    {
-      std::scoped_lock lock(g_synchronize_block_mutex);
-      if (g_fail_event_synchronize) {
-        set_error("forced cudaEventSynchronize failure for tests");
-        return CUDF_ERROR_CUDA;
-      }
-    }
-    {
-      std::unique_lock<std::mutex> lock(g_synchronize_block_mutex);
-      g_synchronize_block_cv.wait(lock, [] { return !g_block_event_synchronize; });
-    }
+    cudf::rust::test_support::wait_for_event_synchronize_release();
     auto err = cudaEventSynchronize(event_from_handle(event));
     return cuda_error_status(err, "cudaEventSynchronize");
   }
@@ -149,15 +120,8 @@ cudf_status_t cudf_stream_wait_event(cudf_stream_handle stream, cudf_event_handl
   {
     auto const stream_raw =
       reinterpret_cast<std::uintptr_t>(cudf_stream_view_from_handle(stream).value());
-    g_stream_wait_call_count.fetch_add(1, std::memory_order_relaxed);
-    g_last_wait_stream_raw.store(stream_raw, std::memory_order_relaxed);
     auto const event_raw = reinterpret_cast<std::uintptr_t>(event_from_handle(event));
-    g_last_wait_event_raw.store(event_raw, std::memory_order_relaxed);
-    {
-      std::scoped_lock lock(g_observation_mutex);
-      g_stream_wait_counts_by_stream_raw[stream_raw] += 1;
-      g_stream_wait_counts_by_event_raw[event_raw] += 1;
-    }
+    cudf::rust::test_support::record_stream_wait(stream_raw, event_raw);
     auto err = cudaStreamWaitEvent(
       cudf_stream_view_from_handle(stream).value(), event_from_handle(event), 0);
     return cuda_error_status(err, "cudaStreamWaitEvent");
@@ -172,14 +136,8 @@ cudf_status_t cudf_raw_cuda_event_record(void* raw_event, void* raw_stream)
   CUDF_RUST_TRY
   {
     auto const stream_raw = reinterpret_cast<std::uintptr_t>(raw_stream);
-    g_raw_record_call_count.fetch_add(1, std::memory_order_relaxed);
-    g_last_raw_record_event_raw.store(reinterpret_cast<std::uintptr_t>(raw_event),
-                                      std::memory_order_relaxed);
-    g_last_raw_record_stream_raw.store(stream_raw, std::memory_order_relaxed);
-    {
-      std::scoped_lock lock(g_observation_mutex);
-      g_raw_record_counts_by_stream_raw[stream_raw] += 1;
-    }
+    cudf::rust::test_support::record_raw_event_record(stream_raw,
+                                                      reinterpret_cast<std::uintptr_t>(raw_event));
     auto err = cudaEventRecord(event_from_raw(raw_event), stream_from_raw(raw_stream));
     return cuda_error_status(err, "cudaEventRecord");
   }
@@ -193,15 +151,8 @@ cudf_status_t cudf_raw_cuda_stream_wait_event(void* raw_stream, void* raw_event)
   CUDF_RUST_TRY
   {
     auto const stream_raw = reinterpret_cast<std::uintptr_t>(raw_stream);
-    g_stream_wait_call_count.fetch_add(1, std::memory_order_relaxed);
-    g_last_wait_stream_raw.store(stream_raw, std::memory_order_relaxed);
-    auto const event_raw = reinterpret_cast<std::uintptr_t>(raw_event);
-    g_last_wait_event_raw.store(event_raw, std::memory_order_relaxed);
-    {
-      std::scoped_lock lock(g_observation_mutex);
-      g_stream_wait_counts_by_stream_raw[stream_raw] += 1;
-      g_stream_wait_counts_by_event_raw[event_raw] += 1;
-    }
+    auto const event_raw  = reinterpret_cast<std::uintptr_t>(raw_event);
+    cudf::rust::test_support::record_stream_wait(stream_raw, event_raw);
     auto err = cudaStreamWaitEvent(stream_from_raw(raw_stream), event_from_raw(raw_event), 0);
     return cuda_error_status(err, "cudaStreamWaitEvent");
   }
@@ -221,141 +172,4 @@ cudf_status_t cudf_event_raw(cudf_event_handle handle, void** out)
   CUDF_RUST_CATCH
 }
 
-void cudf_test_event_reset_observation()
-{
-  g_stream_wait_call_count.store(0, std::memory_order_relaxed);
-  g_last_wait_stream_raw.store(0, std::memory_order_relaxed);
-  g_last_wait_event_raw.store(0, std::memory_order_relaxed);
-  g_raw_record_call_count.store(0, std::memory_order_relaxed);
-  g_last_raw_record_stream_raw.store(0, std::memory_order_relaxed);
-  g_last_raw_record_event_raw.store(0, std::memory_order_relaxed);
-  g_event_synchronize_call_count.store(0, std::memory_order_relaxed);
-  {
-    std::scoped_lock lock(g_synchronize_block_mutex);
-    g_block_event_synchronize = false;
-    g_fail_event_synchronize  = false;
-  }
-  g_synchronize_block_cv.notify_all();
-  std::scoped_lock lock(g_observation_mutex);
-  g_stream_wait_counts_by_stream_raw.clear();
-  g_stream_wait_counts_by_event_raw.clear();
-  g_raw_record_counts_by_stream_raw.clear();
-  g_event_synchronize_counts_by_event_handle_raw.clear();
-}
-
-void cudf_test_event_block_synchronize()
-{
-  std::scoped_lock lock(g_synchronize_block_mutex);
-  g_block_event_synchronize = true;
-}
-
-void cudf_test_event_unblock_synchronize()
-{
-  {
-    std::scoped_lock lock(g_synchronize_block_mutex);
-    g_block_event_synchronize = false;
-  }
-  g_synchronize_block_cv.notify_all();
-}
-
-void cudf_test_event_fail_synchronize()
-{
-  std::scoped_lock lock(g_synchronize_block_mutex);
-  g_fail_event_synchronize = true;
-}
-
-void cudf_test_event_allow_synchronize()
-{
-  std::scoped_lock lock(g_synchronize_block_mutex);
-  g_fail_event_synchronize = false;
-}
-
-cudf_status_t cudf_test_event_synchronize_call_count(int32_t* out)
-{
-  CUDF_RUST_NULL_CHECK(out, "out is null");
-  *out = g_event_synchronize_call_count.load(std::memory_order_relaxed);
-  return CUDF_SUCCESS;
-}
-
-cudf_status_t cudf_test_event_synchronize_call_count_for_event_handle_raw(
-  std::uintptr_t event_handle_raw, int32_t* out)
-{
-  CUDF_RUST_NULL_CHECK(out, "out is null");
-  std::scoped_lock lock(g_observation_mutex);
-  auto const it = g_event_synchronize_counts_by_event_handle_raw.find(event_handle_raw);
-  *out          = it == g_event_synchronize_counts_by_event_handle_raw.end() ? 0 : it->second;
-  return CUDF_SUCCESS;
-}
-
-cudf_status_t cudf_test_event_stream_wait_call_count(int32_t* out)
-{
-  CUDF_RUST_NULL_CHECK(out, "out is null");
-  *out = g_stream_wait_call_count.load(std::memory_order_relaxed);
-  return CUDF_SUCCESS;
-}
-
-cudf_status_t cudf_test_event_stream_wait_call_count_for_stream_raw(std::uintptr_t stream_raw,
-                                                                    int32_t* out)
-{
-  CUDF_RUST_NULL_CHECK(out, "out is null");
-  std::scoped_lock lock(g_observation_mutex);
-  auto const it = g_stream_wait_counts_by_stream_raw.find(stream_raw);
-  *out          = it == g_stream_wait_counts_by_stream_raw.end() ? 0 : it->second;
-  return CUDF_SUCCESS;
-}
-
-cudf_status_t cudf_test_event_stream_wait_call_count_for_event_raw(std::uintptr_t event_raw,
-                                                                   int32_t* out)
-{
-  CUDF_RUST_NULL_CHECK(out, "out is null");
-  std::scoped_lock lock(g_observation_mutex);
-  auto const it = g_stream_wait_counts_by_event_raw.find(event_raw);
-  *out          = it == g_stream_wait_counts_by_event_raw.end() ? 0 : it->second;
-  return CUDF_SUCCESS;
-}
-
-cudf_status_t cudf_test_event_last_wait_stream_raw(std::uintptr_t* out)
-{
-  CUDF_RUST_NULL_CHECK(out, "out is null");
-  *out = g_last_wait_stream_raw.load(std::memory_order_relaxed);
-  return CUDF_SUCCESS;
-}
-
-cudf_status_t cudf_test_event_last_wait_event_raw(std::uintptr_t* out)
-{
-  CUDF_RUST_NULL_CHECK(out, "out is null");
-  *out = g_last_wait_event_raw.load(std::memory_order_relaxed);
-  return CUDF_SUCCESS;
-}
-
-cudf_status_t cudf_test_event_raw_record_call_count(int32_t* out)
-{
-  CUDF_RUST_NULL_CHECK(out, "out is null");
-  *out = g_raw_record_call_count.load(std::memory_order_relaxed);
-  return CUDF_SUCCESS;
-}
-
-cudf_status_t cudf_test_event_raw_record_call_count_for_stream_raw(std::uintptr_t stream_raw,
-                                                                   int32_t* out)
-{
-  CUDF_RUST_NULL_CHECK(out, "out is null");
-  std::scoped_lock lock(g_observation_mutex);
-  auto const it = g_raw_record_counts_by_stream_raw.find(stream_raw);
-  *out          = it == g_raw_record_counts_by_stream_raw.end() ? 0 : it->second;
-  return CUDF_SUCCESS;
-}
-
-cudf_status_t cudf_test_event_last_raw_record_stream_raw(std::uintptr_t* out)
-{
-  CUDF_RUST_NULL_CHECK(out, "out is null");
-  *out = g_last_raw_record_stream_raw.load(std::memory_order_relaxed);
-  return CUDF_SUCCESS;
-}
-
-cudf_status_t cudf_test_event_last_raw_record_event_raw(std::uintptr_t* out)
-{
-  CUDF_RUST_NULL_CHECK(out, "out is null");
-  *out = g_last_raw_record_event_raw.load(std::memory_order_relaxed);
-  return CUDF_SUCCESS;
-}
 }  // extern "C"

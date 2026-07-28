@@ -1,35 +1,33 @@
-#include "cudf_rust.h"
+#include "cudf_rust/cudf_rust.h"
 
-int cudf_rust_c_header_smoke(void)
+static int cudf_rust_c_header_smoke(void)
 {
-  cudf_status_t (*f1)(cudf_stream_handle*)                    = &cudf_stream_create;
-  cudf_status_t (*f1_device_pci_bus_id)(int32_t, char*, size_t) =
-    &cudf_cuda_device_pci_bus_id;
-  cudf_status_t (*f1_device_memory)(int32_t, size_t*, size_t*) = &cudf_device_memory_info;
-  cudf_status_t (*f1_device_attr)(int32_t, int32_t, int32_t*)  = &cudf_device_attribute;
-  cudf_status_t (*f2)(cudf_stream_handle)                     = &cudf_stream_destroy;
-  cudf_status_t (*f2b)(cudf_stream_handle, void**)            = &cudf_stream_raw;
-  cudf_status_t (*f2b2)(void*)                                = &cudf_raw_cuda_stream_synchronize;
-  cudf_status_t (*f2c)(cudf_event_handle*)                    = &cudf_event_create;
-  cudf_status_t (*f2d)(cudf_event_handle)                     = &cudf_event_destroy;
-  cudf_status_t (*f2e)(cudf_event_handle, cudf_stream_handle) = &cudf_event_record;
-  cudf_status_t (*f2f)(cudf_event_handle)                     = &cudf_event_synchronize;
-  cudf_status_t (*f2g)(cudf_event_handle, int32_t*)           = &cudf_event_is_ready;
-  cudf_status_t (*f2h)(cudf_stream_handle, cudf_event_handle) = &cudf_stream_wait_event;
-  cudf_status_t (*f2i)(void*, void*)                          = &cudf_raw_cuda_event_record;
-  cudf_status_t (*f2j)(void*, void*)                          = &cudf_raw_cuda_stream_wait_event;
-  cudf_status_t (*f2k)(cudf_event_handle, void**)             = &cudf_event_raw;
-  cudf_status_t (*f3)(cudf_memory_resource_handle*)           = &cudf_memory_resource_create_cuda;
-  cudf_status_t (*f4)(cudf_memory_resource_handle, int32_t)   = &cudf_memory_resource_destroy;
-  cudf_status_t (*f4b)(cudf_memory_resource_handle, void**)   = &cudf_memory_resource_raw;
+  cudf_status_t (*f1)(cudf_stream_handle*)                      = &cudf_stream_create;
+  cudf_status_t (*f1_device_pci_bus_id)(int32_t, char*, size_t) = &cudf_cuda_device_pci_bus_id;
+  cudf_status_t (*f1_device_memory)(int32_t, size_t*, size_t*)  = &cudf_device_memory_info;
+  cudf_status_t (*f1_device_attr)(int32_t, int32_t, int32_t*)   = &cudf_device_attribute;
+  cudf_status_t (*f2)(cudf_stream_handle)                       = &cudf_stream_destroy;
+  cudf_status_t (*f2b)(cudf_stream_handle, void**)              = &cudf_stream_raw;
+  cudf_status_t (*f2b2)(void*)                                  = &cudf_raw_cuda_stream_synchronize;
+  cudf_status_t (*f2c)(cudf_event_handle*)                      = &cudf_event_create;
+  cudf_status_t (*f2d)(cudf_event_handle)                       = &cudf_event_destroy;
+  cudf_status_t (*f2e)(cudf_event_handle, cudf_stream_handle)   = &cudf_event_record;
+  cudf_status_t (*f2f)(cudf_event_handle)                       = &cudf_event_synchronize;
+  cudf_status_t (*f2g)(cudf_event_handle, int32_t*)             = &cudf_event_is_ready;
+  cudf_status_t (*f2h)(cudf_stream_handle, cudf_event_handle)   = &cudf_stream_wait_event;
+  cudf_status_t (*f2i)(void*, void*)                            = &cudf_raw_cuda_event_record;
+  cudf_status_t (*f2j)(void*, void*)                            = &cudf_raw_cuda_stream_wait_event;
+  cudf_status_t (*f2k)(cudf_event_handle, void**)               = &cudf_event_raw;
+  cudf_status_t (*f3)(cudf_memory_resource_handle*)             = &cudf_memory_resource_create_cuda;
+  cudf_status_t (*f4)(cudf_memory_resource_handle, int32_t)     = &cudf_memory_resource_destroy;
+  cudf_status_t (*f4b)(cudf_memory_resource_handle, void**)     = &cudf_memory_resource_raw;
   cudf_status_t (*f4c)(cudf_memory_resource_handle,
                        cudf_memory_failure_callback_t,
                        void*,
-                       cudf_memory_resource_handle*) = &cudf_memory_resource_create_failure_callback;
-  cudf_status_t (*f4c_manager)(int32_t,
-                               cudf_memory_failure_callback_t,
-                               void*,
-                               cudf_memory_manager_handle*) =
+                       cudf_memory_resource_handle*) =
+    &cudf_memory_resource_create_failure_callback;
+  cudf_status_t (*f4c_manager)(
+    int32_t, cudf_memory_failure_callback_t, void*, cudf_memory_manager_handle*) =
     &cudf_memory_manager_for_device_with_failure_callback;
   cudf_status_t (*f4c_manager_state)(int32_t, int32_t*, int32_t*) =
     &cudf_memory_manager_failure_callback_state;
@@ -44,14 +42,11 @@ int cudf_rust_c_header_smoke(void)
   cudf_status_t (*f9)(cudf_table_handle, cudf_table_view_handle*) = &cudf_table_view;
   cudf_status_t (*f10)(cudf_table_view_handle)                    = &cudf_table_view_destroy;
 
-  cudf_status_t (*f11)(cudf_column_view_handle,
-                       cudf_type_id_t,
-                       cudf_column_handle*,
-                       const cudf_exec_options_t*) = &cudf_dictionary_encode_ex;
-  cudf_status_t (*f12)(cudf_table_view_handle,
-                       uint32_t,
-                       cudf_column_handle*,
-                       const cudf_exec_options_t*) =
+  cudf_status_t (*f11)(
+    cudf_column_view_handle, cudf_type_id_t, cudf_column_handle*, const cudf_exec_options_t*) =
+    &cudf_dictionary_encode_ex;
+  cudf_status_t (*f12)(
+    cudf_table_view_handle, uint32_t, cudf_column_handle*, const cudf_exec_options_t*) =
     &cudf_hashing_murmurhash3_x86_32_ex;
   cudf_status_t (*f13)(cudf_column_handle, const cudf_exec_options_t*, cudf_column_handle*) =
     &cudf_column_copy_ex;
@@ -110,12 +105,12 @@ int cudf_rust_c_header_smoke(void)
                        cudf_column_view_handle,
                        cudf_column_handle*,
 
-                       const cudf_exec_options_t*)  = &cudf_replace_nulls_column_ex;
+                       const cudf_exec_options_t*)            = &cudf_replace_nulls_column_ex;
   cudf_status_t (*f21)(cudf_table_view_handle,
                        cudf_column_view_handle,
                        cudf_table_handle*,
 
-                       const cudf_exec_options_t*)  = &cudf_apply_boolean_mask_ex;
+                       const cudf_exec_options_t*)            = &cudf_apply_boolean_mask_ex;
   cudf_status_t (*f21b)(cudf_table_view_handle,
 
                         const cudf_row_predicate_node_t*,
@@ -123,13 +118,13 @@ int cudf_rust_c_header_smoke(void)
                         int32_t,
                         cudf_table_handle*,
 
-                        const cudf_exec_options_t*) = &cudf_filter_rows_by_predicate_ex;
+                        const cudf_exec_options_t*)           = &cudf_filter_rows_by_predicate_ex;
   cudf_status_t (*f22)(cudf_table_view_handle,
                        cudf_column_view_handle,
                        cudf_out_of_bounds_policy_t,
                        cudf_table_handle*,
 
-                       const cudf_exec_options_t*)  = &cudf_gather_ex;
+                       const cudf_exec_options_t*)            = &cudf_gather_ex;
   cudf_status_t (*f22_scatter_ex)(cudf_table_view_handle,
                                   cudf_column_view_handle,
                                   cudf_table_view_handle,
@@ -156,9 +151,8 @@ int cudf_rust_c_header_smoke(void)
     &cudf_conditional_full_join_size_data_device_allocated_size;
   cudf_status_t (*f22cfsd5)(cudf_conditional_full_join_size_data_handle, size_t*) =
     &cudf_conditional_full_join_size_data_gather_map_size;
-  cudf_join_kind_t f22fj_kind                         = CUDF_JOIN_KIND_INNER_JOIN;
-  cudf_status_t (*f22msd10)(cudf_mixed_join_size_data_handle) =
-    &cudf_mixed_join_size_data_destroy;
+  cudf_join_kind_t f22fj_kind                                 = CUDF_JOIN_KIND_INNER_JOIN;
+  cudf_status_t (*f22msd10)(cudf_mixed_join_size_data_handle) = &cudf_mixed_join_size_data_destroy;
   cudf_status_t (*f22msd11)(cudf_mixed_join_size_data_handle, size_t*) =
     &cudf_mixed_join_size_data_output_size;
   cudf_status_t (*f22msd12)(cudf_mixed_join_size_data_handle, size_t*) =
@@ -197,8 +191,8 @@ int cudf_rust_c_header_smoke(void)
     &cudf_scalar_copy_ex;
   cudf_status_t (*f22i)(int32_t, cudf_reduce_aggregation_handle*) =
     &cudf_reduce_aggregation_create_nunique;
-  cudf_exec_options_t opts = CUDF_EXEC_OPTIONS_INITIALIZER;
-  cudf_nullable_join_t j1  = CUDF_NULLABLE_JOIN_YES;
+  cudf_exec_options_t opts            = CUDF_EXEC_OPTIONS_INITIALIZER;
+  cudf_nullable_join_t j1             = CUDF_NULLABLE_JOIN_YES;
   cudf_device_attribute_t device_attr = CUDF_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT;
 
   cudf_status_t (*f24)(cudf_device_buffer_handle)          = &cudf_device_buffer_destroy;
@@ -249,7 +243,7 @@ int cudf_rust_c_header_smoke(void)
                        cudf_scalar_handle,
                        cudf_column_handle*,
 
-                       const cudf_exec_options_t*) = &cudf_strings_strip_ex;
+                       const cudf_exec_options_t*)  = &cudf_strings_strip_ex;
   cudf_status_t (*f43)(cudf_column_view_handle, cudf_column_handle*, const cudf_exec_options_t*) =
     &cudf_strings_count_characters_ex;
   cudf_status_t (*f45)(cudf_column_view_handle, cudf_column_handle*, const cudf_exec_options_t*) =
@@ -270,7 +264,8 @@ int cudf_rust_c_header_smoke(void)
                        cudf_column_handle*,
 
                        const cudf_exec_options_t*) = &cudf_datetime_extract_component_ex;
-  cudf_status_t (*f51)(cudf_column_view_handle, int32_t, cudf_column_handle*, const cudf_exec_options_t*) =
+  cudf_status_t (*f51)(
+    cudf_column_view_handle, int32_t, cudf_column_handle*, const cudf_exec_options_t*) =
     &cudf_datetime_add_calendrical_months_scalar_ex;
   cudf_datetime_component_t c1 = CUDF_DATETIME_COMPONENT_YEAR;
 

@@ -10,7 +10,7 @@
 //! between calls. Callers that need the input row order back should add a
 //! row-position column to their inputs and sort the result by that column.
 
-use std::{os::raw::c_void, ptr, sync::Arc};
+use std::{ptr, sync::Arc};
 
 use smallvec::SmallVec;
 
@@ -120,11 +120,11 @@ pub(crate) fn groupby_shift_impl(
         )
     })?;
 
-    let value_handles: SmallVec<[*mut c_void; GROUPBY_SHIFT_VALUE_HANDLE_INLINE_CAPACITY]> =
+    let value_handles: SmallVec<[cudf_sys::cudf_column_view_handle; GROUPBY_SHIFT_VALUE_HANDLE_INLINE_CAPACITY]> =
         requests.iter().map(|r| r.values.raw_handle()).collect();
     let offsets: SmallVec<[i32; GROUPBY_SHIFT_VALUE_HANDLE_INLINE_CAPACITY]> =
         requests.iter().map(|r| r.offset).collect();
-    let fill_handles: SmallVec<[*mut c_void; GROUPBY_SHIFT_VALUE_HANDLE_INLINE_CAPACITY]> =
+    let fill_handles: SmallVec<[cudf_sys::cudf_scalar_handle; GROUPBY_SHIFT_VALUE_HANDLE_INLINE_CAPACITY]> =
         requests.iter().map(|r| r.fill_value.raw_handle()).collect();
 
     let mut out_keys = ptr::null_mut();

@@ -6,16 +6,20 @@
 //! contract cannot drift back to ambient PATH invalidation.
 
 #[allow(dead_code)]
-#[path = "../build_support.rs"]
+#[path = "../build_support/mod.rs"]
 mod build_support;
 
 use std::path::{Path, PathBuf};
 
 const BUILD_RS: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/build.rs"));
+const BUILD_SUPPORT_MOD: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/build_support/mod.rs"));
+const BUILD_SUPPORT_CMAKE: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/build_support/cmake.rs"));
+const BUILD_SUPPORT_TOOLCHAIN: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/build_support/toolchain.rs"));
 
 #[test]
 fn path_is_not_a_native_fingerprint_input() {
-    assert!(!BUILD_RS.contains("cargo:rerun-if-env-changed=PATH"), "PATH-only churn must not rebuild cudf-sys");
+    assert!(BUILD_RS.contains("emit_build_fingerprints"), "build.rs must delegate the canonical fingerprint contract");
+    assert!(!build_support::NATIVE_BUILD_ENV_VARS.contains(&"PATH"), "PATH-only churn must not rebuild cudf-sys");
 }
 
 #[test]
@@ -39,13 +43,18 @@ fn explicit_toolchain_and_discovery_env_vars_are_tracked() {
         "CMAKE_CUDA_ARCHITECTURES",
         "CUDAARCHS",
         "CUDF_RUST_CLANG_LINT",
-        build_support::CLANG_FORMAT_EXE_ENV,
-        build_support::CLANG_TIDY_EXE_ENV,
-        build_support::CMAKE_EXE_ENV,
+        build_support::toolchain::CLANG_FORMAT_EXE_ENV,
+        build_support::toolchain::CLANG_TIDY_EXE_ENV,
+        build_support::toolchain::CMAKE_EXE_ENV,
+        "CUDF_RS_SKIP_STALENESS_CHECK",
+        "CARGO_FEATURE_TEST_HOOKS",
     ] {
-        let expected = format!("cargo:rerun-if-env-changed={env_var}");
-        assert!(BUILD_RS.contains(&expected), "expected explicit native fingerprint input `{expected}`");
+        assert!(
+            build_support::NATIVE_BUILD_ENV_VARS.contains(&env_var),
+            "expected explicit native fingerprint input `{env_var}"
+        );
     }
+    assert!(BUILD_SUPPORT_MOD.contains("for env_var in NATIVE_BUILD_ENV_VARS"));
 }
 
 #[test]
@@ -56,7 +65,7 @@ fn selected_runtime_libraries_remain_identity_tracked() {
         "\"librmm.so\"",
         "cargo:rerun-if-changed={}",
     ] {
-        assert!(BUILD_RS.contains(expected), "expected runtime identity tracking snippet `{expected}`");
+        assert!(BUILD_SUPPORT_CMAKE.contains(expected), "expected runtime identity tracking snippet `{expected}`");
     }
 }
 
@@ -67,11 +76,11 @@ fn fingerprint_matrix_install_prefix_ignores_unrelated_sibling_cache() {
     let other_build = PathBuf::from("/tmp/other-cpp-build");
 
     assert!(
-        build_support::active_cudf_cmake_cache(manifest_dir, Some(install), None).is_none(),
+        build_support::cmake::active_cudf_cmake_cache(manifest_dir, Some(install), None).is_none(),
         "CUDF_INSTALL_DIR discovery must leave an unrelated source-tree CMakeCache untracked"
     );
     assert!(
-        build_support::active_cudf_cmake_cache(manifest_dir, Some(install), Some(&other_build)).is_none(),
+        build_support::cmake::active_cudf_cmake_cache(manifest_dir, Some(install), Some(&other_build)).is_none(),
         "install-prefix mode must ignore every inactive build-dir cache"
     );
 }
@@ -83,17 +92,17 @@ fn fingerprint_matrix_build_tree_tracks_active_cache_only() {
     let other_build = manifest_dir.join("non-default-build");
 
     assert!(
-        build_support::active_cudf_cmake_cache(manifest_dir, None, None)
-            == Some(build_support::default_sibling_cudf_cmake_cache(manifest_dir)),
+        build_support::cmake::active_cudf_cmake_cache(manifest_dir, None, None)
+            == Some(build_support::cmake::default_sibling_cudf_cmake_cache(manifest_dir)),
         "no discovery override still admits the default sibling cache"
     );
     assert!(
-        build_support::active_cudf_cmake_cache(manifest_dir, None, Some(default_build.as_path()))
+        build_support::cmake::active_cudf_cmake_cache(manifest_dir, None, Some(default_build.as_path()))
             == Some(default_build.join("CMakeCache.txt")),
         "explicit default sibling build must stay tracked"
     );
     assert!(
-        build_support::active_cudf_cmake_cache(manifest_dir, None, Some(other_build.as_path()))
+        build_support::cmake::active_cudf_cmake_cache(manifest_dir, None, Some(other_build.as_path()))
             == Some(other_build.join("CMakeCache.txt")),
         "non-default explicit build must track only its own cache path"
     );
@@ -102,22 +111,19 @@ fn fingerprint_matrix_build_tree_tracks_active_cache_only() {
 #[test]
 fn explicit_cmake_pin_is_forwarded_to_cmake_rs() {
     assert!(
-        BUILD_RS.contains("env::set_var(\"CMAKE\", cmake)"),
+        BUILD_SUPPORT_TOOLCHAIN.contains("env::set_var(\"CMAKE\", cmake)"),
         "CUDF_RUST_CMAKE must select the executable that cmake-rs actually launches"
     );
 }
 
 #[test]
 fn fingerprinted_env_list_helper_matches_build_script_contract() {
-    let tracked = build_support::tracked_native_build_env_vars();
+    let tracked = build_support::NATIVE_BUILD_ENV_VARS;
     assert!(tracked.contains(&"CC"));
     assert!(tracked.contains(&"CXX"));
     assert!(tracked.contains(&"CUDF_INSTALL_DIR"));
     assert!(!tracked.contains(&"PATH"));
-    for env_var in tracked {
-        assert!(
-            BUILD_RS.contains(&format!("cargo:rerun-if-env-changed={env_var}")),
-            "build.rs must emit tracking for helper-listed env var {env_var}"
-        );
-    }
+    assert!(tracked.contains(&"CUDF_RS_SKIP_STALENESS_CHECK"));
+    assert!(tracked.contains(&"CARGO_FEATURE_TEST_HOOKS"));
+    assert!(BUILD_SUPPORT_MOD.contains("for env_var in NATIVE_BUILD_ENV_VARS"));
 }

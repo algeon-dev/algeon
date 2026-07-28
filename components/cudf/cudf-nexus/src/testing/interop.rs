@@ -1,5 +1,3 @@
-use std::ffi::c_void;
-
 /// Return the Arrow C Device ABI device_type code for CPU roots.
 pub fn arrow_device_cpu_type_for_test() -> i32 {
     crate::interop::arrow_device::testing_hooks::arrow_device_cpu_type_for_test()
@@ -67,22 +65,6 @@ pub fn trigger_interop_projection_struct_missing_child_for_test()
 /// Trigger the shared interop invalid-view column-index i32-limit contract.
 pub fn trigger_interop_column_index_limit_for_test() -> std::result::Result<(), rapids_interop::InteropError> {
     crate::interop::testing_hooks::trigger_column_index_limit_for_test()
-}
-
-/// Testing-only hook: overwrite one owned ArrowDeviceArray handle's
-/// `device_type` field in place.
-///
-/// # Safety
-///
-/// `raw_device_array` must be a valid ArrowDeviceArray handle produced by
-/// this crate's Arrow device bridge and still owned by a live Rust wrapper.
-pub unsafe fn force_device_arrow_array_device_type_for_test(raw_device_array: *mut c_void, device_type: i32) {
-    unsafe {
-        crate::interop::arrow_device::testing_hooks::force_device_arrow_array_device_type_for_test(
-            raw_device_array,
-            device_type,
-        )
-    }
 }
 
 /// Exercise owner-unknown Arrow device-array teardown with a pointer that must
