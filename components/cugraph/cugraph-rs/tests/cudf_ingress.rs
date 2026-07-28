@@ -20,9 +20,14 @@ use cugraph::{
     types::GraphProperties,
 };
 
+fn test_handle() -> ResourceHandle {
+    let runtime = explicit_runtime();
+    ResourceHandle::for_runtime_device(&runtime).expect("handle")
+}
+
 #[test]
 fn graph_from_parquet_then_bfs() {
-    let handle = ResourceHandle::new().expect("handle");
+    let handle = test_handle();
     let fixture = TempParquetFixture::bfs_graph();
 
     let opts = ParquetGraphOptions::new(fixture.path_str(), 0, 1)
@@ -46,7 +51,7 @@ fn graph_from_parquet_then_bfs() {
 
 #[test]
 fn graph_from_parquet_rejects_nonexistent_file() {
-    let handle = ResourceHandle::new().expect("handle");
+    let handle = test_handle();
     let opts = ParquetGraphOptions::new("/tmp/this_file_definitely_does_not_exist_12345.parquet", 0, 1)
         .properties(GraphProperties::directed())
         .renumber();
@@ -71,7 +76,7 @@ fn graph_from_parquet_rejects_nulls_in_src_column() {
     let table_view = table.view().expect("table view");
     write_parquet_table(&table_view, &path, &["0", "1", "2"], &runtime);
 
-    let handle = ResourceHandle::new().expect("handle");
+    let handle = test_handle();
     let opts = ParquetGraphOptions::new(path.to_str().expect("utf8 path"), 0, 1)
         .weight_col(2)
         .properties(GraphProperties::directed())
@@ -87,7 +92,7 @@ fn graph_from_parquet_rejects_nulls_in_src_column() {
 
 #[test]
 fn graph_from_table_view_then_bfs() {
-    let handle = ResourceHandle::new().expect("handle");
+    let handle = test_handle();
     let runtime = explicit_runtime();
     let fixture = TempParquetFixture::bfs_graph();
 
@@ -111,7 +116,7 @@ fn graph_from_table_view_then_bfs() {
 
 #[test]
 fn graph_from_table_view_without_weights() {
-    let handle = ResourceHandle::new().expect("handle");
+    let handle = test_handle();
     let runtime = explicit_runtime();
     let fixture = TempParquetFixture::bfs_graph();
 
@@ -132,7 +137,7 @@ fn graph_from_table_view_without_weights() {
 
 #[test]
 fn graph_from_table_view_rejects_out_of_bounds_column() {
-    let handle = ResourceHandle::new().expect("handle");
+    let handle = test_handle();
     let runtime = explicit_runtime();
     let fixture = TempParquetFixture::bfs_graph();
 
@@ -154,7 +159,7 @@ fn graph_from_table_view_rejects_nullable_column() {
     let table = Table::from_columns(vec![src, dst, wgt]).expect("table");
     let view = table.view().expect("table view");
 
-    let handle = ResourceHandle::new().expect("handle");
+    let handle = test_handle();
     let opts = TableGraphOptions::new(0, 1).weight_col(2).properties(GraphProperties::directed()).renumber();
     let err = graph_from_table_view::<Forward>(&handle, &view, &opts).expect_err("should reject nullable column");
 
@@ -164,7 +169,7 @@ fn graph_from_table_view_rejects_nullable_column() {
 
 #[test]
 fn graph_from_dataframe_by_name() {
-    let handle = ResourceHandle::new().expect("handle");
+    let handle = test_handle();
     let runtime = explicit_runtime();
     let df = bfs_graph_dataframe(&runtime);
 
@@ -193,7 +198,7 @@ fn graph_from_dataframe_rejects_unknown_column_name() {
     let dst = runtime.series("dst", &[1i32, 0]).expect("dst");
     let df = cudf::DataFrame::from_series([src, dst]).expect("dataframe");
 
-    let handle = ResourceHandle::new().expect("handle");
+    let handle = test_handle();
     let opts = DataFrameGraphOptions::new("nonexistent", "dst").properties(GraphProperties::directed()).renumber();
     let err = graph_from_dataframe::<Forward>(&handle, &df, &opts).expect_err("should reject unknown column name");
     assert_eq!(err.kind(), cugraph::error::ErrorKind::InvalidInput);

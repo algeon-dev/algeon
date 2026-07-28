@@ -214,7 +214,7 @@ impl DegreeResultInner {
     ) -> Result<RawDeviceArrayView<'_>> {
         // SAFETY: `self.raw` is a live cuGraph degrees result and `getter`
         // returns a borrowed child view tied to that result object.
-        unsafe { RawDeviceArrayView::from_borrowed(getter(self.raw), operation, pointer_name) }
+        unsafe { RawDeviceArrayView::from_borrowed(getter(self.raw), Some(self.device), operation, pointer_name) }
     }
 
     fn vertex_ids(&self, operation: &'static str) -> Result<VertexIds<'_>> {
@@ -275,6 +275,12 @@ impl DegreesResult {
     pub fn out_degrees(&self) -> Result<DegreeValues<'_>> {
         self.0.out_degrees("DegreesResult::out_degrees")
     }
+
+    /// Convert this degree result to a cudf DataFrame in the provided runtime.
+    pub fn to_dataframe(&self, runtime: &cudf::Runtime) -> Result<cudf::DataFrame> {
+        crate::cudf_interop::degrees_result_to_dataframe(self, runtime)
+            .map_err(|e| e.with_operation("DegreesResult::to_dataframe"))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -307,6 +313,12 @@ impl InDegreesResult {
     pub fn in_degrees(&self) -> Result<DegreeValues<'_>> {
         self.0.in_degrees("InDegreesResult::in_degrees")
     }
+
+    /// Convert this in-degree result to a cudf DataFrame in the provided runtime.
+    pub fn to_dataframe(&self, runtime: &cudf::Runtime) -> Result<cudf::DataFrame> {
+        crate::cudf_interop::in_degrees_result_to_dataframe(self, runtime)
+            .map_err(|e| e.with_operation("InDegreesResult::to_dataframe"))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -338,6 +350,12 @@ impl OutDegreesResult {
     /// Get the out-degrees as typed degree values.
     pub fn out_degrees(&self) -> Result<DegreeValues<'_>> {
         self.0.out_degrees("OutDegreesResult::out_degrees")
+    }
+
+    /// Convert this out-degree result to a cudf DataFrame in the provided runtime.
+    pub fn to_dataframe(&self, runtime: &cudf::Runtime) -> Result<cudf::DataFrame> {
+        crate::cudf_interop::out_degrees_result_to_dataframe(self, runtime)
+            .map_err(|e| e.with_operation("OutDegreesResult::to_dataframe"))
     }
 }
 

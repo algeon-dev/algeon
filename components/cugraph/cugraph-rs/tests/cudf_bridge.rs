@@ -45,8 +45,8 @@ fn device_array_view_from_slice_rejects_mismatch() {
 
 #[test]
 fn graph_from_series_weighted_pagerank() {
-    let handle = ResourceHandle::new().expect("handle");
     let runtime = explicit_runtime();
+    let handle = ResourceHandle::for_runtime_device(&runtime).expect("handle");
 
     let src = runtime.series("src", UNDIRECTED_TRIANGLE_SRC_I32).expect("src");
     let dst = runtime.series("dst", UNDIRECTED_TRIANGLE_DST_I32).expect("dst");
@@ -93,7 +93,8 @@ fn graph_bfs_host_slice_matches_typed_view_path() {
 
 #[test]
 fn into_series_bfs_results() {
-    let handle = ResourceHandle::new().expect("handle");
+    let runtime = explicit_runtime();
+    let handle = ResourceHandle::for_runtime_device(&runtime).expect("handle");
 
     let src = DeviceArray::from_slice(&handle, SIMPLE_CHAIN_SRC_I32).expect("src");
     let dst = DeviceArray::from_slice(&handle, SIMPLE_CHAIN_DST_I32).expect("dst");
@@ -105,8 +106,10 @@ fn into_series_bfs_results() {
     let sources_view = sources.view().expect("sources_view");
     let result = graph.bfs(&handle, &sources_view, &BfsParams::default()).expect("bfs");
 
-    let vertex_series = result.vertex_ids().expect("vids").to_series("my_vertex").expect("VertexIds::to_series");
-    let distance_series = result.distances().expect("dists").to_series("my_distance").expect("Distances::to_series");
+    let vertex_series =
+        result.vertex_ids().expect("vids").to_series("my_vertex", &runtime).expect("VertexIds::to_series");
+    let distance_series =
+        result.distances().expect("dists").to_series("my_distance", &runtime).expect("Distances::to_series");
 
     assert_eq!(vertex_series.name(), Some("my_vertex"));
     assert_eq!(distance_series.name(), Some("my_distance"));

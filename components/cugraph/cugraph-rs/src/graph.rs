@@ -25,8 +25,10 @@
 //! # Low-level builder example
 //!
 //! ```no_run
+//! # use cudf::Runtime;
 //! # use cugraph::{DeviceArray, GraphBuilder, ResourceHandle, Transposed};
-//! # let handle = ResourceHandle::for_current_device().unwrap();
+//! # let runtime = Runtime::new().unwrap();
+//! # let handle = ResourceHandle::for_runtime_device(&runtime).unwrap();
 //! # let src = DeviceArray::from_slice(&handle, &[0i32, 1, 2]).unwrap();
 //! # let dst = DeviceArray::from_slice(&handle, &[1i32, 2, 0]).unwrap();
 //! let src_view = src.view().unwrap();
@@ -213,8 +215,10 @@ impl<T> std::fmt::Debug for Graph<T> {
 /// # Example
 ///
 /// ```no_run
+/// # use cudf::Runtime;
 /// # use cugraph::{DeviceArray, GraphBuilder, ResourceHandle, Transposed};
-/// # let handle = ResourceHandle::for_current_device().unwrap();
+/// # let runtime = Runtime::new().unwrap();
+/// # let handle = ResourceHandle::for_runtime_device(&runtime).unwrap();
 /// # let src = DeviceArray::from_slice(&handle, &[0i32, 1, 2]).unwrap();
 /// # let dst = DeviceArray::from_slice(&handle, &[1i32, 2, 0]).unwrap();
 /// # let wgt = DeviceArray::from_slice(&handle, &[1.0f32, 2.0, 3.0]).unwrap();
@@ -268,8 +272,10 @@ impl<'a> GraphBuilder<'a> {
     /// # Example
     ///
     /// ```no_run
+    /// # use cudf::Runtime;
     /// # use cugraph::{DeviceArray, Forward, GraphBuilder, ResourceHandle};
-    /// # let handle = ResourceHandle::for_current_device().unwrap();
+    /// # let runtime = Runtime::new().unwrap();
+    /// # let handle = ResourceHandle::for_runtime_device(&runtime).unwrap();
     /// let src = DeviceArray::from_slice(&handle, &[0i32, 1, 2]).unwrap();
     /// let dst = DeviceArray::from_slice(&handle, &[1i32, 2, 0]).unwrap();
     ///

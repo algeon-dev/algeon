@@ -7,9 +7,11 @@
 //! # Example
 //!
 //! ```no_run
+//! use cudf::Runtime;
 //! use cugraph::{ResourceHandle, random::RngState};
 //!
-//! let handle = ResourceHandle::for_current_device().unwrap();
+//! let runtime = Runtime::new().unwrap();
+//! let handle = ResourceHandle::for_runtime_device(&runtime).unwrap();
 //! let rng = RngState::new(&handle, 42).unwrap();
 //! ```
 

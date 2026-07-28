@@ -18,9 +18,14 @@ use cudf::interop::{
 };
 use cugraph::handle::ResourceHandle;
 
+fn test_handle() -> ResourceHandle {
+    let runtime = explicit_runtime();
+    ResourceHandle::for_runtime_device(&runtime).expect("handle")
+}
+
 #[test]
 fn owned_transfer_zero_copy_import_preserves_device_buffers_and_bfs_semantics() {
-    let handle = ResourceHandle::new().expect("handle");
+    let handle = test_handle();
     let runtime = explicit_runtime();
 
     let src = runtime.series("src", BFS_GRAPH_SRC_I32).expect("src");
@@ -33,7 +38,8 @@ fn owned_transfer_zero_copy_import_preserves_device_buffers_and_bfs_semantics() 
 
     let df = cudf::DataFrame::from_series([src, dst, wgt]).expect("dataframe");
     let transfer = df.try_into_owned_transfer().expect("owned transfer");
-    let imported_df = cudf::DataFrame::try_from_owned_device_table_transfer(transfer).expect("owned-transfer import");
+    let imported_df = cudf::DataFrame::try_import_from_owned_device_table_transfer_into_runtime(transfer, &runtime)
+        .expect("owned-transfer import");
 
     assert_named_edge_columns(&imported_df);
     assert_eq!(i32_series_device_ptr(&imported_df.series("src").expect("src series")), src_ptr);
@@ -52,12 +58,13 @@ fn owned_transfer_zero_copy_import_preserves_device_buffers_and_bfs_semantics() 
 
 #[test]
 fn owned_transfer_with_release_import_invalidates_releaser() {
-    let handle = ResourceHandle::new().expect("handle");
+    let handle = test_handle();
     let runtime = explicit_runtime();
 
     let producer_df = bfs_graph_dataframe(&runtime);
     let (transfer, releaser) = producer_df.try_into_owned_transfer_with_release().expect("owned transfer with release");
-    let imported_df = cudf::DataFrame::try_from_owned_device_table_transfer(transfer).expect("owned-transfer import");
+    let imported_df = cudf::DataFrame::try_import_from_owned_device_table_transfer_into_runtime(transfer, &runtime)
+        .expect("owned-transfer import");
 
     let mut graph = build_directed_named_dataframe_graph(&handle, &imported_df).expect("graph_from_dataframe");
     let dist_map = bfs_distance_map(&handle, &mut graph, 0);

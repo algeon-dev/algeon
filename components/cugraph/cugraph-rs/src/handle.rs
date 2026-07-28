@@ -49,19 +49,15 @@ impl fmt::Debug for ResourceHandle {
 impl ResourceHandle {
     /// Create a new resource handle with default single-GPU cuGraph resources.
     ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// # use cugraph::ResourceHandle;
-    /// let handle =
-    ///     ResourceHandle::for_current_device().expect("GPU must be available");
-    /// ```
-    pub fn new() -> Result<Self> {
+    /// Internal helper for source-local tests and implementation plumbing.
+    #[allow(dead_code)]
+    pub(crate) fn new() -> Result<Self> {
         Self::for_current_device()
     }
 
     /// Create a new resource handle on the calling thread's current CUDA device.
-    pub fn for_current_device() -> Result<Self> {
+    #[allow(dead_code)]
+    pub(crate) fn for_current_device() -> Result<Self> {
         let device = DeviceId::current().map_err(|error| {
             Error::new(ErrorKind::Unexpected, "ResourceHandle::for_current_device")
                 .with_message(format!("failed to query current CUDA device: {}", error))
@@ -80,7 +76,7 @@ impl ResourceHandle {
     }
 
     /// Create a new resource handle on the specified CUDA device.
-    pub fn new_on_device(device: i32) -> Result<Self> {
+    pub(crate) fn new_on_device(device: i32) -> Result<Self> {
         if device < 0 {
             return Err(Error::new(ErrorKind::InvalidInput, "ResourceHandle::new_on_device")
                 .with_message(format!("device ordinal must be >= 0, got {}", device)));
@@ -236,9 +232,8 @@ impl ResourceHandle {
 
     /// The communicator rank carried by this handle.
     ///
-    /// Handles created through [`new`](Self::new),
-    /// [`for_current_device`](Self::for_current_device), or
-    /// [`new_on_device`](Self::new_on_device) always return `0`.
+    /// Handles created through [`for_runtime_device`](Self::for_runtime_device)
+    /// always return `0`.
     ///
     /// Externally wrapped handles query cuGraph's communicator metadata and
     /// are intended for MTMG/MG-native handles that already carry a valid
@@ -254,9 +249,8 @@ impl ResourceHandle {
 
     /// The communicator size carried by this handle.
     ///
-    /// Handles created through [`new`](Self::new),
-    /// [`for_current_device`](Self::for_current_device), or
-    /// [`new_on_device`](Self::new_on_device) always return `1`.
+    /// Handles created through [`for_runtime_device`](Self::for_runtime_device)
+    /// always return `1`.
     ///
     /// Externally wrapped handles query cuGraph's communicator metadata and
     /// are intended for MTMG/MG-native handles that already carry a valid

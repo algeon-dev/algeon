@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use common::cudf::explicit_runtime;
 use cugraph::{
     DeviceArray, Forward, GraphBuilder, ResourceHandle, Transposed,
     error::ErrorKind,
@@ -11,6 +12,11 @@ use common::support::{
     SELF_LOOP_DROP_DST_I32, SELF_LOOP_DROP_SRC_I32, TRIANGLE_TAIL_DST_I32, TRIANGLE_TAIL_SRC_I32,
     TRIANGLE_VERTEX_IDS_I32, TRIANGLE_VERTEX_IDS_I64, TWO_CYCLE_DST_I32, TWO_CYCLE_SRC_I32,
 };
+
+fn test_handle() -> ResourceHandle {
+    let runtime = explicit_runtime();
+    ResourceHandle::for_runtime_device(&runtime).expect("handle")
+}
 
 fn degree_map(
     graph: &mut cugraph::Graph<Transposed>,
@@ -27,7 +33,7 @@ fn degree_map(
 
 #[test]
 fn builder_rejects_mismatched_src_dst_lengths() {
-    let handle = ResourceHandle::new().expect("handle");
+    let handle = test_handle();
     let src = DeviceArray::from_slice(&handle, &[0i32, 1, 2]).expect("src");
     let dst = DeviceArray::from_slice(&handle, &[1i32, 2]).expect("dst");
     let src_view = src.view().expect("src_view");
@@ -41,7 +47,7 @@ fn builder_rejects_mismatched_src_dst_lengths() {
 
 #[test]
 fn builder_rejects_mismatched_weights_length() {
-    let handle = ResourceHandle::new().expect("handle");
+    let handle = test_handle();
     let src = DeviceArray::from_slice(&handle, TRIANGLE_TAIL_SRC_I32).expect("src");
     let dst = DeviceArray::from_slice(&handle, TRIANGLE_TAIL_DST_I32).expect("dst");
     let wgt = DeviceArray::from_slice(&handle, &[1.0f32, 2.0]).expect("wgt");
@@ -60,7 +66,7 @@ fn builder_rejects_mismatched_weights_length() {
 
 #[test]
 fn builder_rejects_symmetrize_with_edge_ids() {
-    let handle = ResourceHandle::new().expect("handle");
+    let handle = test_handle();
     let src = DeviceArray::from_slice(&handle, DIRECTED_TRIANGLE_CYCLE_SRC_I32).expect("src");
     let dst = DeviceArray::from_slice(&handle, DIRECTED_TRIANGLE_CYCLE_DST_I32).expect("dst");
     let edge_ids = DeviceArray::from_slice(&handle, &[10i32, 20, 30]).expect("edge_ids");
@@ -80,7 +86,7 @@ fn builder_rejects_symmetrize_with_edge_ids() {
 
 #[test]
 fn builder_rejects_mismatched_temporal_dtypes() {
-    let handle = ResourceHandle::new().expect("handle");
+    let handle = test_handle();
     let src = DeviceArray::from_slice(&handle, DIRECTED_TRIANGLE_CYCLE_SRC_I32).expect("src");
     let dst = DeviceArray::from_slice(&handle, DIRECTED_TRIANGLE_CYCLE_DST_I32).expect("dst");
     let start = DeviceArray::from_slice(&handle, TRIANGLE_VERTEX_IDS_I32).expect("start");
@@ -102,7 +108,7 @@ fn builder_rejects_mismatched_temporal_dtypes() {
 
 #[test]
 fn builder_rejects_vertices_dtype_mismatch_with_src_dst() {
-    let handle = ResourceHandle::new().expect("handle");
+    let handle = test_handle();
     let src = DeviceArray::from_slice(&handle, DIRECTED_TRIANGLE_CYCLE_SRC_I32).expect("src");
     let dst = DeviceArray::from_slice(&handle, DIRECTED_TRIANGLE_CYCLE_DST_I32).expect("dst");
     // vertices are i64 but src/dst are i32 — upstream would silently truncate
@@ -123,7 +129,7 @@ fn builder_rejects_vertices_dtype_mismatch_with_src_dst() {
 
 #[test]
 fn builder_accepts_vertices_matching_src_dst_dtype() {
-    let handle = ResourceHandle::new().expect("handle");
+    let handle = test_handle();
     let src = DeviceArray::from_slice(&handle, DIRECTED_TRIANGLE_CYCLE_SRC_I32).expect("src");
     let dst = DeviceArray::from_slice(&handle, DIRECTED_TRIANGLE_CYCLE_DST_I32).expect("dst");
     let verts = DeviceArray::from_slice(&handle, TRIANGLE_VERTEX_IDS_I32).expect("verts");
@@ -141,7 +147,7 @@ fn builder_accepts_vertices_matching_src_dst_dtype() {
 
 #[test]
 fn builder_chainable_setters_preserve_build_path() {
-    let handle = ResourceHandle::new().expect("handle");
+    let handle = test_handle();
     let src = DeviceArray::from_slice(&handle, TWO_CYCLE_SRC_I32).expect("src");
     let dst = DeviceArray::from_slice(&handle, TWO_CYCLE_DST_I32).expect("dst");
     let wgt = DeviceArray::from_slice(&handle, &[1.0f32, 2.0]).expect("wgt");
@@ -164,7 +170,7 @@ fn builder_chainable_setters_preserve_build_path() {
 
 #[test]
 fn drop_self_loops_removes_loop_degree_contribution() {
-    let handle = ResourceHandle::new().expect("handle");
+    let handle = test_handle();
     let src = DeviceArray::from_slice(&handle, SELF_LOOP_DROP_SRC_I32).expect("src");
     let dst = DeviceArray::from_slice(&handle, SELF_LOOP_DROP_DST_I32).expect("dst");
     let src_view = src.view().expect("src_view");
@@ -185,7 +191,7 @@ fn drop_self_loops_removes_loop_degree_contribution() {
 
 #[test]
 fn drop_multi_edges_collapses_duplicate_edges() {
-    let handle = ResourceHandle::new().expect("handle");
+    let handle = test_handle();
     let src = DeviceArray::from_slice(&handle, MULTI_EDGE_DROP_SRC_I32).expect("src");
     let dst = DeviceArray::from_slice(&handle, MULTI_EDGE_DROP_DST_I32).expect("dst");
     let src_view = src.view().expect("src_view");

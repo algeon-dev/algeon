@@ -24,7 +24,8 @@ use cugraph::{
 fn layout_result_to_dataframe() {
     use cugraph::{layout::ForceAtlas2Params, params::IterationCount, random::RngState};
 
-    let handle = ResourceHandle::new().expect("handle");
+    let runtime = explicit_runtime();
+    let handle = ResourceHandle::for_runtime_device(&runtime).expect("handle");
     let mut rng = RngState::new(&handle, TEST_LAYOUT_PRIMARY_SEED).expect("rng");
 
     let src = DeviceArray::from_slice(&handle, support::UNDIRECTED_TRIANGLE_SRC_I32).expect("src");
@@ -43,7 +44,7 @@ fn layout_result_to_dataframe() {
         ..Default::default()
     };
 
-    let df = graph.force_atlas2(&handle, &mut rng, &params).expect("fa2").to_dataframe().expect("to_dataframe");
+    let df = graph.force_atlas2(&handle, &mut rng, &params).expect("fa2").to_dataframe(&runtime).expect("to_dataframe");
 
     assert_eq!(df.num_columns(), 3);
     assert_eq!(df.column_names()[0], "vertex");
@@ -61,7 +62,8 @@ fn layout_result_to_dataframe() {
 
 #[test]
 fn bfs_result_to_dataframe_with_predecessors() {
-    let handle = ResourceHandle::new().expect("handle");
+    let runtime = explicit_runtime();
+    let handle = ResourceHandle::for_runtime_device(&runtime).expect("handle");
 
     let src = DeviceArray::from_slice(&handle, BFS_GRAPH_SRC_I32).expect("src");
     let dst = DeviceArray::from_slice(&handle, BFS_GRAPH_DST_I32).expect("dst");
@@ -72,7 +74,7 @@ fn bfs_result_to_dataframe_with_predecessors() {
     let sources = DeviceArray::from_slice(&handle, &[BFS_SOURCE_VERTEX_I32]).expect("sources");
     let params = BfsParams::default().with_predecessors();
     let sources_view = sources.view().expect("sources_view");
-    let df = graph.bfs(&handle, &sources_view, &params).expect("bfs").to_dataframe().expect("to_dataframe");
+    let df = graph.bfs(&handle, &sources_view, &params).expect("bfs").to_dataframe(&runtime).expect("to_dataframe");
 
     assert_eq!(df.num_columns(), 3, "should have 3 columns with predecessors");
     assert_eq!(df.column_names()[0], "vertex");
@@ -87,7 +89,8 @@ fn bfs_result_to_dataframe_with_predecessors() {
 
 #[test]
 fn centrality_to_dataframe_write_parquet_roundtrip() {
-    let handle = ResourceHandle::new().expect("handle");
+    let runtime = explicit_runtime();
+    let handle = ResourceHandle::for_runtime_device(&runtime).expect("handle");
 
     let src = DeviceArray::from_slice(&handle, support::UNDIRECTED_TRIANGLE_SRC_I32).expect("src");
     let dst = DeviceArray::from_slice(&handle, support::UNDIRECTED_TRIANGLE_DST_I32).expect("dst");
@@ -100,8 +103,11 @@ fn centrality_to_dataframe_write_parquet_roundtrip() {
         .build::<Transposed>(&handle)
         .expect("graph");
 
-    let df =
-        graph.pagerank(&handle, &PageRankParams::default()).expect("pagerank").to_dataframe().expect("to_dataframe");
+    let df = graph
+        .pagerank(&handle, &PageRankParams::default())
+        .expect("pagerank")
+        .to_dataframe(&runtime)
+        .expect("to_dataframe");
     let expected_vertices: Vec<i32> = df.series("vertex").expect("v").to_vec_strict().expect("v vec");
     let expected_values: Vec<f32> = df.series("value").expect("val").to_vec_strict().expect("val vec");
 
@@ -128,7 +134,8 @@ fn centrality_to_dataframe_write_parquet_roundtrip() {
 
 #[test]
 fn betweenness_result_to_dataframe() {
-    let handle = ResourceHandle::new().expect("handle");
+    let runtime = explicit_runtime();
+    let handle = ResourceHandle::for_runtime_device(&runtime).expect("handle");
 
     let src = DeviceArray::from_slice(&handle, DIRECTED_STAR_SRC_I32).expect("src");
     let dst = DeviceArray::from_slice(&handle, DIRECTED_STAR_DST_I32).expect("dst");
@@ -140,7 +147,7 @@ fn betweenness_result_to_dataframe() {
     let df = graph
         .betweenness_centrality_all(&handle, &BetweennessCentralityParams::default())
         .expect("betweenness")
-        .to_dataframe()
+        .to_dataframe(&runtime)
         .expect("to_dataframe");
 
     assert_eq!(df.num_columns(), 2);

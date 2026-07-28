@@ -5,14 +5,20 @@
 
 mod common;
 
-use common::support::{
-    FOUR_VERTEX_CHAIN_DST_I64, FOUR_VERTEX_CHAIN_SRC_I64, SIMPLE_CHAIN_DST_I32, SIMPLE_CHAIN_SRC_I32,
+use common::{
+    cudf::explicit_runtime,
+    support::{FOUR_VERTEX_CHAIN_DST_I64, FOUR_VERTEX_CHAIN_SRC_I64, SIMPLE_CHAIN_DST_I32, SIMPLE_CHAIN_SRC_I32},
 };
 use cugraph::{DeviceArray, Forward, GraphBuilder, ResourceHandle, structure::Distances, traversal::BfsParams};
 
+fn test_handle() -> ResourceHandle {
+    let runtime = explicit_runtime();
+    ResourceHandle::for_runtime_device(&runtime).expect("handle")
+}
+
 #[test]
 fn bfs_distances_i32_supports_runtime_decoding_and_widening() {
-    let handle = ResourceHandle::new().expect("handle");
+    let handle = test_handle();
     let src = DeviceArray::from_slice(&handle, SIMPLE_CHAIN_SRC_I32).expect("src");
     let dst = DeviceArray::from_slice(&handle, SIMPLE_CHAIN_DST_I32).expect("dst");
     let src_view = src.view().expect("src_view");
@@ -39,7 +45,7 @@ fn bfs_distances_i32_supports_runtime_decoding_and_widening() {
 
 #[test]
 fn bfs_distances_i64_graph_returns_i64() {
-    let handle = ResourceHandle::new().expect("handle");
+    let handle = test_handle();
     let src = DeviceArray::from_slice(&handle, FOUR_VERTEX_CHAIN_SRC_I64).expect("src");
     let dst = DeviceArray::from_slice(&handle, FOUR_VERTEX_CHAIN_DST_I64).expect("dst");
     let src_view = src.view().expect("src_view");

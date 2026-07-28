@@ -72,7 +72,7 @@
 use std::{collections::BTreeSet, ffi::c_void};
 
 use cudf::{
-    TypeId as CudfTypeId,
+    Runtime, TypeId as CudfTypeId,
     core::{Column, DeviceSlice, Table, TableView},
     io::parquet,
 };
@@ -154,6 +154,27 @@ pub fn cugraph_type_to_cudf(dtype: DataType) -> Option<CudfTypeId> {
     }
 }
 
+fn validate_runtime_result_device(
+    runtime: &Runtime,
+    source_device: Option<i32>,
+    operation: &'static str,
+    message: &'static str,
+) -> Result<()> {
+    let Some(source_device) = source_device else {
+        return Ok(());
+    };
+
+    let runtime_device = runtime.device().ordinal() as i32;
+    if runtime_device == source_device {
+        return Ok(());
+    }
+
+    Err(Error::new(ErrorKind::InvalidInput, operation)
+        .with_message(message)
+        .with_context("runtime_device", runtime_device.to_string())
+        .with_context("result_device", source_device.to_string()))
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Checked DeviceSlice → DeviceArrayView — zero-copy bridge
 // ═══════════════════════════════════════════════════════════════════════════
@@ -229,22 +250,29 @@ pub(crate) trait RawDeviceArrayViewExt {
     /// result memory and frees it on drop. Matches Python cudf/cugraph behavior.
     ///
     /// [`Column`]: cudf::Column
-    fn to_cudf_column(&self) -> Result<Column>;
+    fn to_cudf_column(&self, runtime: &Runtime) -> Result<Column>;
 }
 
 impl RawDeviceArrayViewExt for RawDeviceArrayView<'_> {
-    fn to_cudf_column(&self) -> Result<Column> {
+    fn to_cudf_column(&self, runtime: &Runtime) -> Result<Column> {
         let dtype = self.dtype()?;
         let cudf_type = cugraph_type_to_cudf(dtype).ok_or_else(|| {
             Error::new(ErrorKind::UnsupportedType, "RawDeviceArrayViewExt::to_cudf_column")
                 .with_message(format!("cugraph DataType {:?} has no cudf TypeId equivalent", dtype))
         })?;
 
+        validate_runtime_result_device(
+            runtime,
+            self.device(),
+            "RawDeviceArrayViewExt::to_cudf_column",
+            "runtime device must match the cugraph result device",
+        )?;
+
         // SAFETY: `self.device_ptr()` points to valid GPU memory containing
         // `self.len()` elements of `dtype`, which we have verified maps to
-        // `cudf_type`. `Column::from_device_ptr` performs a device-to-device
-        // copy, so the returned column is independent of this view.
-        let col = unsafe { Column::from_device_ptr(self.device_ptr() as *const c_void, self.len(), cudf_type) }
+        // `cudf_type`. The explicit runtime owns the destination allocation
+        // and execution domain for the device-to-device copy.
+        let col = unsafe { runtime.column_from_device_ptr(self.device_ptr() as *const c_void, self.len(), cudf_type) }
             .map_err(|error| {
                 map_cudf_error_with(
                     error,
@@ -280,9 +308,10 @@ fn named_series_from_column_result(
 fn named_series_from_raw_view(
     view: &RawDeviceArrayView<'_>,
     name: &str,
+    runtime: &Runtime,
     operation: &'static str,
 ) -> Result<cudf::Series> {
-    named_series_from_column_result(view.to_cudf_column(), name, operation)
+    named_series_from_column_result(view.to_cudf_column(runtime), name, operation)
 }
 
 fn dataframe_from_named_series<const N: usize>(
@@ -313,15 +342,15 @@ pub trait IntoSeries {
     /// Convert this GPU array to a named cudf [`Series`].
     ///
     /// [`Series`]: cudf::Series
-    fn to_series(&self, name: &str) -> Result<cudf::Series>;
+    fn to_series(&self, name: &str, runtime: &Runtime) -> Result<cudf::Series>;
 }
 
 impl IntoSeries for VertexIds<'_> {
-    fn to_series(&self, name: &str) -> Result<cudf::Series> {
+    fn to_series(&self, name: &str, runtime: &Runtime) -> Result<cudf::Series> {
         named_series_from_column_result(
             match self {
-                Self::I32(v) => v.raw_view().to_cudf_column(),
-                Self::I64(v) => v.raw_view().to_cudf_column(),
+                Self::I32(v) => v.raw_view().to_cudf_column(runtime),
+                Self::I64(v) => v.raw_view().to_cudf_column(runtime),
             },
             name,
             "VertexIds::to_series",
@@ -330,11 +359,11 @@ impl IntoSeries for VertexIds<'_> {
 }
 
 impl IntoSeries for ScoreValues<'_> {
-    fn to_series(&self, name: &str) -> Result<cudf::Series> {
+    fn to_series(&self, name: &str, runtime: &Runtime) -> Result<cudf::Series> {
         named_series_from_column_result(
             match self {
-                Self::F32(v) => v.raw_view().to_cudf_column(),
-                Self::F64(v) => v.raw_view().to_cudf_column(),
+                Self::F32(v) => v.raw_view().to_cudf_column(runtime),
+                Self::F64(v) => v.raw_view().to_cudf_column(runtime),
             },
             name,
             "ScoreValues::to_series",
@@ -343,13 +372,13 @@ impl IntoSeries for ScoreValues<'_> {
 }
 
 impl IntoSeries for Distances<'_> {
-    fn to_series(&self, name: &str) -> Result<cudf::Series> {
+    fn to_series(&self, name: &str, runtime: &Runtime) -> Result<cudf::Series> {
         named_series_from_column_result(
             match self {
-                Self::I32(v) => v.raw_view().to_cudf_column(),
-                Self::I64(v) => v.raw_view().to_cudf_column(),
-                Self::F32(v) => v.raw_view().to_cudf_column(),
-                Self::F64(v) => v.raw_view().to_cudf_column(),
+                Self::I32(v) => v.raw_view().to_cudf_column(runtime),
+                Self::I64(v) => v.raw_view().to_cudf_column(runtime),
+                Self::F32(v) => v.raw_view().to_cudf_column(runtime),
+                Self::F64(v) => v.raw_view().to_cudf_column(runtime),
             },
             name,
             "Distances::to_series",
@@ -358,11 +387,11 @@ impl IntoSeries for Distances<'_> {
 }
 
 impl IntoSeries for DegreeValues<'_> {
-    fn to_series(&self, name: &str) -> Result<cudf::Series> {
+    fn to_series(&self, name: &str, runtime: &Runtime) -> Result<cudf::Series> {
         named_series_from_column_result(
             match self {
-                Self::I32(v) => v.raw_view().to_cudf_column(),
-                Self::I64(v) => v.raw_view().to_cudf_column(),
+                Self::I32(v) => v.raw_view().to_cudf_column(runtime),
+                Self::I64(v) => v.raw_view().to_cudf_column(runtime),
             },
             name,
             "DegreeValues::to_series",
@@ -374,108 +403,83 @@ impl IntoSeries for DegreeValues<'_> {
 // TryFrom impls — result structs → cudf::DataFrame
 // ═══════════════════════════════════════════════════════════════════════════
 
-impl TryFrom<&PageRankResult> for cudf::DataFrame {
-    type Error = Error;
+pub(crate) fn page_rank_result_to_dataframe(result: &PageRankResult, runtime: &Runtime) -> Result<cudf::DataFrame> {
+    let operation = "page_rank_result_to_dataframe";
+    dataframe_from_named_series(
+        [result.vertex_ids()?.to_series("vertex", runtime)?, result.scores()?.to_series("value", runtime)?],
+        operation,
+    )
+}
 
-    fn try_from(result: &PageRankResult) -> Result<Self> {
-        let operation = "TryFrom<&PageRankResult>";
-        dataframe_from_named_series(
-            [result.vertex_ids()?.to_series("vertex")?, result.scores()?.to_series("value")?],
-            operation,
-        )
+pub(crate) fn betweenness_result_to_dataframe(
+    result: &BetweennessCentralityResult,
+    runtime: &Runtime,
+) -> Result<cudf::DataFrame> {
+    let operation = "betweenness_result_to_dataframe";
+    dataframe_from_named_series(
+        [result.vertex_ids()?.to_series("vertex", runtime)?, result.scores()?.to_series("value", runtime)?],
+        operation,
+    )
+}
+
+pub(crate) fn bfs_result_to_dataframe(result: &BfsResult, runtime: &Runtime) -> Result<cudf::DataFrame> {
+    let operation = "bfs_result_to_dataframe";
+    let vertices = result.vertices_raw()?;
+    let distances = result.distances_raw()?;
+    let expected_len = vertices.len();
+
+    let vertex_series = named_series_from_raw_view(&vertices, "vertex", runtime, operation)?;
+    let distance_series = named_series_from_raw_view(&distances, "distance", runtime, operation)?;
+
+    match result.predecessors_raw() {
+        Some(preds) if preds.len() == expected_len => {
+            let predecessor_series = named_series_from_raw_view(&preds, "predecessor", runtime, operation)?;
+            dataframe_from_named_series([vertex_series, distance_series, predecessor_series], operation)
+        },
+        Some(preds) => Err(Error::new(ErrorKind::Unexpected, operation).with_message(format!(
+            "predecessor length {} does not match vertex length {}",
+            preds.len(),
+            expected_len
+        ))),
+        None => dataframe_from_named_series([vertex_series, distance_series], operation),
     }
 }
 
-impl TryFrom<&BetweennessCentralityResult> for cudf::DataFrame {
-    type Error = Error;
+pub(crate) fn layout_result_to_dataframe(result: &LayoutResult, runtime: &Runtime) -> Result<cudf::DataFrame> {
+    let operation = "layout_result_to_dataframe";
+    let vertex_series = named_series_from_raw_view(&result.vertices_raw()?, "vertex", runtime, operation)?;
+    let x_series = named_series_from_raw_view(&result.x_raw()?, "x", runtime, operation)?;
+    let y_series = named_series_from_raw_view(&result.y_raw()?, "y", runtime, operation)?;
 
-    fn try_from(result: &BetweennessCentralityResult) -> Result<Self> {
-        let operation = "TryFrom<&BetweennessCentralityResult>";
-        dataframe_from_named_series(
-            [result.vertex_ids()?.to_series("vertex")?, result.scores()?.to_series("value")?],
-            operation,
-        )
-    }
+    dataframe_from_named_series([vertex_series, x_series, y_series], operation)
 }
 
-impl TryFrom<&BfsResult> for cudf::DataFrame {
-    type Error = Error;
-
-    fn try_from(result: &BfsResult) -> Result<Self> {
-        let operation = "TryFrom<&BfsResult>";
-        let vertices = result.vertices_raw()?;
-        let distances = result.distances_raw()?;
-        let expected_len = vertices.len();
-
-        let vertex_series = named_series_from_raw_view(&vertices, "vertex", operation)?;
-        let distance_series = named_series_from_raw_view(&distances, "distance", operation)?;
-
-        match result.predecessors_raw() {
-            Some(preds) if preds.len() == expected_len => {
-                let predecessor_series = named_series_from_raw_view(&preds, "predecessor", operation)?;
-                dataframe_from_named_series([vertex_series, distance_series, predecessor_series], operation)
-            },
-            Some(preds) => Err(Error::new(ErrorKind::Unexpected, operation).with_message(format!(
-                "predecessor length {} does not match vertex length {}",
-                preds.len(),
-                expected_len
-            ))),
-            None => dataframe_from_named_series([vertex_series, distance_series], operation),
-        }
-    }
+pub(crate) fn degrees_result_to_dataframe(result: &DegreesResult, runtime: &Runtime) -> Result<cudf::DataFrame> {
+    let operation = "degrees_result_to_dataframe";
+    dataframe_from_named_series(
+        [
+            result.vertex_ids()?.to_series("vertex", runtime)?,
+            result.in_degrees()?.to_series("in_degree", runtime)?,
+            result.out_degrees()?.to_series("out_degree", runtime)?,
+        ],
+        operation,
+    )
 }
 
-impl TryFrom<&LayoutResult> for cudf::DataFrame {
-    type Error = Error;
-
-    fn try_from(result: &LayoutResult) -> Result<Self> {
-        let operation = "TryFrom<&LayoutResult>";
-        let vertex_series = named_series_from_raw_view(&result.vertices_raw()?, "vertex", operation)?;
-        let x_series = named_series_from_raw_view(&result.x_raw()?, "x", operation)?;
-        let y_series = named_series_from_raw_view(&result.y_raw()?, "y", operation)?;
-
-        dataframe_from_named_series([vertex_series, x_series, y_series], operation)
-    }
+pub(crate) fn in_degrees_result_to_dataframe(result: &InDegreesResult, runtime: &Runtime) -> Result<cudf::DataFrame> {
+    let operation = "in_degrees_result_to_dataframe";
+    dataframe_from_named_series(
+        [result.vertex_ids()?.to_series("vertex", runtime)?, result.in_degrees()?.to_series("in_degree", runtime)?],
+        operation,
+    )
 }
 
-impl TryFrom<&DegreesResult> for cudf::DataFrame {
-    type Error = Error;
-
-    fn try_from(result: &DegreesResult) -> Result<Self> {
-        let operation = "TryFrom<&DegreesResult>";
-        dataframe_from_named_series(
-            [
-                result.vertex_ids()?.to_series("vertex")?,
-                result.in_degrees()?.to_series("in_degree")?,
-                result.out_degrees()?.to_series("out_degree")?,
-            ],
-            operation,
-        )
-    }
-}
-
-impl TryFrom<&InDegreesResult> for cudf::DataFrame {
-    type Error = Error;
-
-    fn try_from(result: &InDegreesResult) -> Result<Self> {
-        let operation = "TryFrom<&InDegreesResult>";
-        dataframe_from_named_series(
-            [result.vertex_ids()?.to_series("vertex")?, result.in_degrees()?.to_series("in_degree")?],
-            operation,
-        )
-    }
-}
-
-impl TryFrom<&OutDegreesResult> for cudf::DataFrame {
-    type Error = Error;
-
-    fn try_from(result: &OutDegreesResult) -> Result<Self> {
-        let operation = "TryFrom<&OutDegreesResult>";
-        dataframe_from_named_series(
-            [result.vertex_ids()?.to_series("vertex")?, result.out_degrees()?.to_series("out_degree")?],
-            operation,
-        )
-    }
+pub(crate) fn out_degrees_result_to_dataframe(result: &OutDegreesResult, runtime: &Runtime) -> Result<cudf::DataFrame> {
+    let operation = "out_degrees_result_to_dataframe";
+    dataframe_from_named_series(
+        [result.vertex_ids()?.to_series("vertex", runtime)?, result.out_degrees()?.to_series("out_degree", runtime)?],
+        operation,
+    )
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -715,7 +719,6 @@ fn map_interop_error(error: InteropError, operation: &'static str) -> Error {
         },
         InteropErrorKind::NotFound
         | InteropErrorKind::ExecutionBindingMismatch
-        | InteropErrorKind::AmbientInteropUnsupported
         | InteropErrorKind::InvalidView
         | InteropErrorKind::ReadinessMismatch
         | InteropErrorKind::LeaseAlreadyActive => Error::new(ErrorKind::InvalidState, operation),
@@ -1726,14 +1729,14 @@ mod tests {
     }
 
     #[test]
-    fn map_interop_error_ambient_interop_unsupported_is_invalid_state() {
+    fn map_interop_error_execution_binding_unavailable_is_temporary_unexpected() {
         let interop_err = InteropError::new(
-            InteropErrorKind::AmbientInteropUnsupported,
+            InteropErrorKind::ExecutionBindingUnavailable,
             "producer must provide explicit execution provenance",
         );
         let err = map_interop_error(interop_err, "test_op");
-        assert_eq!(err.kind(), ErrorKind::InvalidState);
-        assert!(err.is_permanent(), "ambient provenance rejection should be a permanent state failure");
+        assert_eq!(err.kind(), ErrorKind::Unexpected);
+        assert!(err.is_temporary(), "missing execution provenance should surface as a retryable unexpected failure");
     }
 
     #[test]
