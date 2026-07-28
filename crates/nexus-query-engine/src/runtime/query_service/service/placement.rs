@@ -23,25 +23,6 @@ pub(in crate::runtime::query_service::service) fn unhealthy_placement_device_err
     error
 }
 
-pub(in crate::runtime::query_service::service) fn resolve_fallback_placement_device(
-    device_ordinal: usize,
-) -> Result<cudf::DeviceId> {
-    #[cfg(test)]
-    if let Ok(raw_ordinal) = i32::try_from(device_ordinal)
-        && let Some(device) = cudf::testing::device_safety::injected_device_id(raw_ordinal)
-    {
-        return Ok(device);
-    }
-
-    cudf::DeviceId::new(device_ordinal).map_err(|error| {
-        QueryError::from_cudf(
-            "nexus_query_engine.query_service.placement",
-            "failed to resolve fallback CUDA device during query placement",
-            error,
-        )
-    })
-}
-
 impl QueryService {
     pub(in crate::runtime::query_service::service) fn try_grant_from_governor(
         &self,
@@ -82,11 +63,9 @@ impl QueryService {
         slot_notifications: &mut PendingDeviceSlotNotifications,
     ) -> Result<Option<PlacedQuery>> {
         let Some(resources) = &self.inner.resources else {
-            let fallback_device = resolve_fallback_placement_device(self.inner.config.device_ordinal)?;
-            let health = cudf::runtime::device_health_snapshot(fallback_device);
-            if health.status() == cudf::runtime::DeviceHealthStatus::Unhealthy {
-                return Err(unhealthy_placement_device_error(fallback_device, health));
-            }
+            // Admission-only services deliberately have no CUDA resources. The
+            // configured ordinal labels their ledger and must not be resolved
+            // through CUDA merely to admit a handle.
             if !self.fallback_active_query_cap_allows(active_queries) {
                 return Ok(None);
             }

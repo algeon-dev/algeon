@@ -288,3 +288,24 @@ fn query_service_assigns_fixed_per_tenant_bounded_budget() {
     assert!(large.admission_wait() <= Duration::from_secs(1));
     assert!(small.admission_wait() <= Duration::from_secs(1));
 }
+
+#[test]
+fn admission_only_query_service_never_resolves_the_configured_cuda_device() {
+    let configured_ledger_ordinal = usize::MAX;
+    let service = QueryService::new_for_admission_tests(
+        QueryServiceConfig {
+            device_ordinal: configured_ledger_ordinal,
+            device_capacity_bytes: Some(1024),
+            max_concurrent_queries: 1,
+            max_admission_queue_len: 1,
+            ..QueryServiceConfig::default()
+        },
+        vec![QueryServiceTenantConfig::new("tenant", 512)],
+        non_gds_deployment(),
+    )
+    .expect("admission-only service should only need its configured ledger capacity");
+
+    let handle = service.admit_query("tenant").expect("admission-only service must not resolve a CUDA device");
+    assert_eq!(handle.device_ordinal(), configured_ledger_ordinal);
+    assert_eq!(handle.device_budget_bytes(), 512);
+}

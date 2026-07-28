@@ -149,10 +149,7 @@ impl RealIcebergProviderFixture {
         let manifest_list1_location = metadata_dir.join("manifests_list_1.avro");
         let manifest_list2_location = metadata_dir.join("manifests_list_2.avro");
         let table_metadata1_location = metadata_dir.join("v1.json");
-        let template_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../iceberg-rust/crates/iceberg/testdata/example_table_metadata_v2.json");
-        let metadata_json = fs::read_to_string(template_path)
-            .unwrap()
+        let metadata_json = include_str!("../../../crates/nexus-iceberg/src/testdata/metadata_v2.json")
             .replace("{{ table_location }}", table_location.to_str().unwrap())
             .replace("{{ manifest_list_1_location }}", manifest_list1_location.to_str().unwrap())
             .replace("{{ manifest_list_2_location }}", manifest_list2_location.to_str().unwrap())
