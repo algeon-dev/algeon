@@ -3,7 +3,7 @@
 mod common;
 
 use common::{
-    cudf::explicit_runtime,
+    cudf::{assert_score_maps_close_f32, explicit_runtime, python_weighted_reciprocal_expected_pagerank_map},
     support::{
         BFS_SOURCE_VERTEX_I32, SIMPLE_CHAIN_DST_I32, SIMPLE_CHAIN_SRC_I32, TRIANGLE_TAIL_DST_I32,
         TRIANGLE_TAIL_SRC_I32, UNDIRECTED_TRIANGLE_DST_I32, UNDIRECTED_TRIANGLE_SRC_I32,
@@ -62,6 +62,23 @@ fn graph_from_series_weighted_pagerank() {
     for (i, &score) in scores.iter().enumerate() {
         assert!(score > 0.0 && score.is_finite(), "score[{i}] = {score} should be positive finite");
     }
+}
+
+#[test]
+fn graph_from_series_python_cugraph_weighted_undirected_simple_keeps_minimum_reciprocal_weight() {
+    let runtime = explicit_runtime();
+    let handle = ResourceHandle::for_runtime_device(&runtime).expect("handle");
+
+    let src = runtime.series("src", &[0i32, 1, 1, 2]).expect("src");
+    let dst = runtime.series("dst", &[1i32, 0, 2, 1]).expect("dst");
+    let wgt = runtime.series("wgt", &[5.0f32, 2.0, 1.0, 1.0]).expect("wgt");
+
+    let opts = SeriesGraphOptions::default().properties(GraphProperties::undirected()).renumber();
+    let mut graph = graph_from_series::<Transposed>(&handle, &src, &dst, Some(&wgt), &opts).expect("graph_from_series");
+
+    let actual = common::cudf::pagerank_score_map(&handle, &mut graph);
+    let expected = python_weighted_reciprocal_expected_pagerank_map(&handle);
+    assert_score_maps_close_f32(&actual, &expected, 1.0e-6, "graph_from_series");
 }
 
 #[test]

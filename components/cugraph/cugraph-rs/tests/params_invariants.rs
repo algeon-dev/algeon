@@ -6,6 +6,7 @@
 
 use cugraph::{
     centrality::PageRankParams,
+    community::LouvainParams,
     layout::ForceAtlas2Params,
     params::{ClosedUnitF64, IterationCount, NonNegativeF64, PositiveF64},
 };
@@ -37,6 +38,15 @@ fn force_atlas2_params_default_has_expected_values() {
 }
 
 #[test]
+fn louvain_params_default_has_expected_values() {
+    let params = LouvainParams::default();
+    assert_eq!(params.max_level.get(), 100);
+    assert_eq!(params.threshold.get(), 1e-7);
+    assert_eq!(params.resolution.get(), 1.0);
+    assert!(!params.do_expensive_check);
+}
+
+#[test]
 fn top_level_algorithm_params_are_ergonomic_to_construct() {
     let pagerank = PageRankParams {
         alpha: ClosedUnitF64::new(0.9).unwrap(),
@@ -54,10 +64,18 @@ fn top_level_algorithm_params_are_ergonomic_to_construct() {
         edge_weight_influence: NonNegativeF64::new(0.0).unwrap(),
         ..Default::default()
     };
+    let louvain = LouvainParams {
+        max_level: IterationCount::new(75).unwrap(),
+        threshold: NonNegativeF64::new(1e-6).unwrap(),
+        resolution: PositiveF64::new(1.25).unwrap(),
+        do_expensive_check: true,
+    };
 
     assert_eq!(pagerank.alpha.get(), 0.9);
     assert_eq!(pagerank.max_iterations.get(), 200);
     assert_eq!(force_atlas2.max_iter.get(), 100);
     assert!(force_atlas2.prevent_overlapping);
     assert!(force_atlas2.barnes_hut_optimize);
+    assert_eq!(louvain.max_level.get(), 75);
+    assert!(louvain.do_expensive_check);
 }

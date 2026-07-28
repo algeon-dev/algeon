@@ -8,8 +8,9 @@ use std::sync::{
 
 use common::{
     cudf::{
-        assert_named_edge_columns, build_undirected_named_dataframe_graph, build_undirected_prepared_graph,
-        explicit_runtime, pagerank_score_map,
+        assert_named_edge_columns, assert_score_maps_close_f32, build_undirected_named_dataframe_graph,
+        build_undirected_prepared_graph, explicit_runtime, pagerank_score_map, python_undirected_multigraph_dataframe,
+        python_weighted_reciprocal_expected_pagerank_map,
     },
     support::{
         BFS_SOURCE_VERTEX_I32, DIRECTED_TRIANGLE_CYCLE_DST_I32, DIRECTED_TRIANGLE_CYCLE_SRC_I32, TRIANGLE_TAIL_DST_I32,
@@ -183,6 +184,49 @@ fn graph_from_prepared_table_export_bfs() {
 
     let dist_map = bfs_distance_map_i32_result(&handle, &result);
     assert_eq!(dist_map[&3], 3);
+}
+
+#[test]
+fn graph_from_prepared_columns_python_cugraph_weighted_undirected_simple_keeps_minimum_reciprocal_weight() {
+    let handle = test_handle();
+    let runtime = explicit_runtime();
+
+    let src = runtime.series("src", &[0i32, 1, 1, 2]).expect("src");
+    let dst = runtime.series("dst", &[1i32, 0, 2, 1]).expect("dst");
+    let wgt = runtime.series("weight", &[5.0f32, 2.0, 1.0, 1.0]).expect("weight");
+
+    let src_export = src.try_prepare_device_column_export().expect("src export");
+    let dst_export = dst.try_prepare_device_column_export().expect("dst export");
+    let wgt_export = wgt.try_prepare_device_column_export().expect("weight export");
+
+    let opts = SeriesGraphOptions::default().properties(cugraph::types::GraphProperties::undirected()).renumber();
+    let mut graph = graph_from_prepared_columns::<cugraph::graph::Transposed>(
+        &handle,
+        &src_export,
+        &dst_export,
+        Some(&wgt_export),
+        &opts,
+    )
+    .expect("graph_from_prepared_columns");
+
+    let actual = pagerank_score_map(&handle, &mut graph);
+    let expected = python_weighted_reciprocal_expected_pagerank_map(&handle);
+    assert_score_maps_close_f32(&actual, &expected, 1.0e-6, "graph_from_prepared_columns");
+}
+
+#[test]
+fn graph_from_prepared_table_export_python_cugraph_accepts_undirected_multigraph() {
+    let handle = test_handle();
+    let runtime = explicit_runtime();
+    let df = python_undirected_multigraph_dataframe(&runtime);
+    let export = df.try_prepare_device_table_export().expect("table export");
+    let props = cugraph::types::GraphProperties { is_symmetric: true, is_multigraph: true };
+
+    let opts = TableGraphOptions::new(0, 1).properties(props).renumber();
+    let mut graph =
+        graph_from_prepared_table_export::<Forward>(&handle, &export, &opts).expect("graph_from_prepared_table_export");
+
+    assert_eq!(graph.edge_count(&handle).expect("edge_count"), 3);
 }
 
 #[test]

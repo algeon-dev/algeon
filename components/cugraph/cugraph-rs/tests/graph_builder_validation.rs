@@ -11,6 +11,7 @@ use common::support::{
     DIRECTED_TRIANGLE_CYCLE_DST_I32, DIRECTED_TRIANGLE_CYCLE_SRC_I32, MULTI_EDGE_DROP_DST_I32, MULTI_EDGE_DROP_SRC_I32,
     SELF_LOOP_DROP_DST_I32, SELF_LOOP_DROP_SRC_I32, TRIANGLE_TAIL_DST_I32, TRIANGLE_TAIL_SRC_I32,
     TRIANGLE_VERTEX_IDS_I32, TRIANGLE_VERTEX_IDS_I64, TWO_CYCLE_DST_I32, TWO_CYCLE_SRC_I32,
+    UNDIRECTED_TRIANGLE_DST_I32, UNDIRECTED_TRIANGLE_SRC_I32,
 };
 
 fn test_handle() -> ResourceHandle {
@@ -169,6 +170,21 @@ fn builder_chainable_setters_preserve_build_path() {
 }
 
 #[test]
+fn graph_properties_are_preserved_on_built_graph() {
+    let handle = test_handle();
+    let src = DeviceArray::from_slice(&handle, MULTI_EDGE_DROP_SRC_I32).expect("src");
+    let dst = DeviceArray::from_slice(&handle, MULTI_EDGE_DROP_DST_I32).expect("dst");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+    let properties = GraphProperties { is_symmetric: true, is_multigraph: true };
+
+    let graph =
+        GraphBuilder::new(&src_view, &dst_view).properties(properties).build::<Forward>(&handle).expect("graph");
+
+    assert_eq!(graph.properties(), properties);
+}
+
+#[test]
 fn drop_self_loops_removes_loop_degree_contribution() {
     let handle = test_handle();
     let src = DeviceArray::from_slice(&handle, SELF_LOOP_DROP_SRC_I32).expect("src");
@@ -208,4 +224,83 @@ fn drop_multi_edges_collapses_duplicate_edges() {
     assert_eq!(degrees[&0], (0, 1));
     assert_eq!(degrees[&1], (1, 1));
     assert_eq!(degrees[&2], (1, 0));
+}
+
+#[test]
+fn edge_count_matches_directed_input_rows() {
+    let handle = test_handle();
+    let src = DeviceArray::from_slice(&handle, TRIANGLE_TAIL_SRC_I32).expect("src");
+    let dst = DeviceArray::from_slice(&handle, TRIANGLE_TAIL_DST_I32).expect("dst");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+
+    let mut graph = GraphBuilder::new(&src_view, &dst_view).build::<Forward>(&handle).expect("graph");
+
+    assert_eq!(graph.edge_count(&handle).expect("edge_count"), TRIANGLE_TAIL_SRC_I32.len());
+}
+
+#[test]
+fn edge_count_respects_drop_self_loops() {
+    let handle = test_handle();
+    let src = DeviceArray::from_slice(&handle, SELF_LOOP_DROP_SRC_I32).expect("src");
+    let dst = DeviceArray::from_slice(&handle, SELF_LOOP_DROP_DST_I32).expect("dst");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+
+    let mut graph = GraphBuilder::new(&src_view, &dst_view)
+        .properties(GraphProperties { is_symmetric: false, is_multigraph: true })
+        .drop_self_loops()
+        .build::<Forward>(&handle)
+        .expect("graph");
+
+    assert_eq!(graph.edge_count(&handle).expect("edge_count"), 2);
+}
+
+#[test]
+fn edge_count_respects_drop_multi_edges() {
+    let handle = test_handle();
+    let src = DeviceArray::from_slice(&handle, MULTI_EDGE_DROP_SRC_I32).expect("src");
+    let dst = DeviceArray::from_slice(&handle, MULTI_EDGE_DROP_DST_I32).expect("dst");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+
+    let mut graph = GraphBuilder::new(&src_view, &dst_view)
+        .properties(GraphProperties { is_symmetric: false, is_multigraph: true })
+        .drop_multi_edges()
+        .build::<Forward>(&handle)
+        .expect("graph");
+
+    assert_eq!(graph.edge_count(&handle).expect("edge_count"), 2);
+}
+
+#[test]
+fn edge_count_matches_python_style_undirected_edges() {
+    let handle = test_handle();
+    let src = DeviceArray::from_slice(&handle, UNDIRECTED_TRIANGLE_SRC_I32).expect("src");
+    let dst = DeviceArray::from_slice(&handle, UNDIRECTED_TRIANGLE_DST_I32).expect("dst");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+
+    let mut graph = GraphBuilder::new(&src_view, &dst_view)
+        .properties(GraphProperties::undirected())
+        .build::<Forward>(&handle)
+        .expect("graph");
+
+    assert_eq!(graph.edge_count(&handle).expect("edge_count"), 3);
+}
+
+#[test]
+fn edge_count_counts_undirected_self_loops_once() {
+    let handle = test_handle();
+    let src = DeviceArray::from_slice(&handle, &[0i32, 0, 1]).expect("src");
+    let dst = DeviceArray::from_slice(&handle, &[0i32, 1, 0]).expect("dst");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+
+    let mut graph = GraphBuilder::new(&src_view, &dst_view)
+        .properties(GraphProperties::undirected())
+        .build::<Forward>(&handle)
+        .expect("graph");
+
+    assert_eq!(graph.edge_count(&handle).expect("edge_count"), 2);
 }

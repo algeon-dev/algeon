@@ -7,14 +7,16 @@ use common::{
     support::{
         DEGREE_QUERY_I64, DEGREE_SUBSET_DST_I64, DEGREE_SUBSET_SRC_I64, DIRECTED_STAR_DST_I64, DIRECTED_STAR_SRC_I64,
         DISCONNECTED_TWO_CYCLES_DST_I32, DISCONNECTED_TWO_CYCLES_SRC_I32, FOUR_VERTEX_CHAIN_DST_I32,
-        FOUR_VERTEX_CHAIN_DST_I64, FOUR_VERTEX_CHAIN_SRC_I32, FOUR_VERTEX_CHAIN_SRC_I64, TEST_LAYOUT_SECONDARY_SEED,
-        TEST_LAYOUT_SMOKE_ITERATIONS, TRIANGLE_VERTEX_IDS_I64, UNDIRECTED_TRIANGLE_DST_I64,
-        UNDIRECTED_TRIANGLE_SRC_I64, UNDIRECTED_TRIANGLE_UNIT_WEIGHT_F64, bfs_distance_map_i64_result,
+        FOUR_VERTEX_CHAIN_DST_I64, FOUR_VERTEX_CHAIN_SRC_I32, FOUR_VERTEX_CHAIN_SRC_I64, LOUVAIN_GRAPH_DST_I32,
+        LOUVAIN_GRAPH_SRC_I32, LOUVAIN_GRAPH_WEIGHT_F32, TEST_LAYOUT_SECONDARY_SEED, TEST_LAYOUT_SMOKE_ITERATIONS,
+        TRIANGLE_VERTEX_IDS_I64, UNDIRECTED_TRIANGLE_DST_I64, UNDIRECTED_TRIANGLE_SRC_I64,
+        UNDIRECTED_TRIANGLE_UNIT_WEIGHT_F64, bfs_distance_map_i64_result,
     },
 };
 use cugraph::{
     DeviceArray, Forward, GraphBuilder, ResourceHandle, Transposed, VertexSelection,
     centrality::{BetweennessCentralityParams, PageRankParams},
+    community::LouvainParams,
     layout::{ForceAtlas2Params, ForceAtlas2VertexAttrs, InitialPositions},
     params::IterationCount,
     random::RngState,
@@ -221,6 +223,83 @@ fn force_atlas2_accepts_i64_vertices_and_f32_helpers() {
     assert_eq!(y_values.len(), 3);
     assert!(x_values.iter().all(|v| v.is_finite()));
     assert!(y_values.iter().all(|v| v.is_finite()));
+}
+
+#[test]
+fn force_atlas2_rejects_sparse_mass_helpers() {
+    let handle = test_handle();
+    let mut rng = RngState::new(&handle, TEST_LAYOUT_SECONDARY_SEED).expect("rng");
+
+    let vertex_count = 128i32;
+    let mut src_data = Vec::with_capacity(((vertex_count - 1) * 2) as usize);
+    let mut dst_data = Vec::with_capacity(((vertex_count - 1) * 2) as usize);
+    for v in 0..(vertex_count - 1) {
+        src_data.push(v);
+        dst_data.push(v + 1);
+        src_data.push(v + 1);
+        dst_data.push(v);
+    }
+
+    let src = DeviceArray::from_slice(&handle, &src_data).expect("src");
+    let dst = DeviceArray::from_slice(&handle, &dst_data).expect("dst");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+
+    let mut graph = GraphBuilder::new(&src_view, &dst_view)
+        .properties(GraphProperties::undirected())
+        .renumber()
+        .build::<Forward>(&handle)
+        .expect("graph");
+
+    let sparse_mass_vertices = DeviceArray::from_slice(&handle, &[0i32, 1, 2]).expect("mass vertices");
+    let sparse_mass_values = DeviceArray::from_slice(&handle, &[1.0f32, 2.0, 3.0]).expect("mass values");
+    let sparse_mass_vertices_view = sparse_mass_vertices.view().expect("mass vertices view");
+    let sparse_mass_values_view = sparse_mass_values.view().expect("mass values view");
+
+    let params = ForceAtlas2Params { max_iter: IterationCount::new(1).expect("iter"), ..Default::default() };
+    let attrs = ForceAtlas2VertexAttrs {
+        mass: Some((&sparse_mass_vertices_view, &sparse_mass_values_view)),
+        ..Default::default()
+    };
+
+    let err = graph
+        .force_atlas2_with(&handle, &mut rng, &params, Some(&attrs), None)
+        .expect_err("sparse mass helper should be rejected before reaching CUDA");
+
+    assert_eq!(err.kind(), cugraph::ErrorKind::InvalidInput);
+    assert_eq!(err.operation(), "force_atlas2");
+    assert!(
+        err.to_string().contains("vertex mass must provide one value for each graph vertex"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn louvain_returns_vertex_partitions_and_finite_modularity() {
+    let handle = test_handle();
+    let src = DeviceArray::from_slice(&handle, LOUVAIN_GRAPH_SRC_I32).expect("src");
+    let dst = DeviceArray::from_slice(&handle, LOUVAIN_GRAPH_DST_I32).expect("dst");
+    let weights = DeviceArray::from_slice(&handle, LOUVAIN_GRAPH_WEIGHT_F32).expect("weights");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+    let weights_view = weights.view().expect("weights_view");
+
+    let mut graph = GraphBuilder::new(&src_view, &dst_view)
+        .weights(&weights_view)
+        .properties(GraphProperties::undirected())
+        .renumber()
+        .build::<Forward>(&handle)
+        .expect("graph");
+
+    let result = graph.louvain(&handle, &LouvainParams::default()).expect("louvain");
+
+    let vertex_ids = result.vertex_ids().expect("vertex_ids");
+    assert!(matches!(vertex_ids, VertexIds::I32(_)));
+    let clusters = result.clusters().expect("clusters");
+    assert!(matches!(clusters, VertexIds::I32(_)));
+    assert_eq!(vertex_ids.len(), clusters.len());
+    assert!(!vertex_ids.is_empty());
+    assert!(result.modularity().is_finite());
 }
 
 #[test]

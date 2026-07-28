@@ -53,11 +53,14 @@ use crate::{
     array::DeviceArrayView,
     cuda::DeviceGuard,
     error::{Error, ErrorKind, Result, check_error, require_non_null},
-    graph::Graph,
+    graph::{Graph, Transposition},
     handle::ResourceHandle,
     params::{ClosedUnitF64, IterationCount, NonNegativeF64, PositiveF64, defaults},
     random::RngState,
-    structure::typed_results::{ScoreValues, VertexIds},
+    structure::{
+        VertexSelection,
+        typed_results::{ScoreValues, VertexIds},
+    },
     types::{CugraphElement, DataType, to_bool_t},
 };
 
@@ -396,11 +399,17 @@ fn validate_force_atlas2_value_helper_dtype<T, W: CugraphElement>(
     Ok(())
 }
 
+fn graph_vertex_count<T: Transposition>(handle: &ResourceHandle, graph: &mut Graph<T>) -> Result<usize> {
+    let degrees = graph.out_degrees(handle, VertexSelection::<i32>::All)?;
+    let vertex_ids = degrees.vertex_ids()?;
+    Ok(vertex_ids.len())
+}
+
 /// Compute a Force Atlas 2 layout for a graph.
 ///
 /// Prefer using [`Graph::force_atlas2`](crate::graph::Graph::force_atlas2)
 /// instead of calling this function directly.
-pub(crate) fn force_atlas2<T, V: CugraphElement, W: CugraphElement>(
+pub(crate) fn force_atlas2<T: Transposition, V: CugraphElement, W: CugraphElement>(
     handle: &ResourceHandle,
     rng_state: &mut RngState,
     graph: &mut Graph<T>,
@@ -408,8 +417,12 @@ pub(crate) fn force_atlas2<T, V: CugraphElement, W: CugraphElement>(
     vertex_attrs: Option<&ForceAtlas2VertexAttrs<'_, V, W>>,
     initial_pos: Option<&InitialPositions<'_, V, W>>,
 ) -> Result<LayoutResult> {
+    let graph_vertex_count =
+        if initial_pos.is_some() || vertex_attrs.is_some() { Some(graph_vertex_count(handle, graph)?) } else { None };
+
     // Validate initial position arrays have consistent lengths.
     if let Some(pos) = initial_pos {
+        let graph_vertex_count = graph_vertex_count.expect("graph vertex count should exist for initial positions");
         let n = pos.vertices.len();
         if pos.x.len() != n {
             return Err(Error::new(ErrorKind::InvalidInput, "force_atlas2")
@@ -426,10 +439,18 @@ pub(crate) fn force_atlas2<T, V: CugraphElement, W: CugraphElement>(
 
         validate_force_atlas2_vertex_helper_dtype::<_, V>(graph, "initial positions")?;
         validate_force_atlas2_value_helper_dtype::<_, W>(graph, "initial positions")?;
+
+        if n != graph_vertex_count {
+            return Err(Error::new(ErrorKind::InvalidInput, "force_atlas2")
+                .with_message("initial positions must provide one coordinate pair for each graph vertex")
+                .with_context("graph_vertex_count", graph_vertex_count.to_string())
+                .with_context("vertices_len", n.to_string()));
+        }
     }
 
     // Validate vertex attribute array pairs have consistent lengths.
     if let Some(attrs) = vertex_attrs {
+        let graph_vertex_count = graph_vertex_count.expect("graph vertex count should exist for vertex attrs");
         let has_any_attrs = attrs.radius.is_some() || attrs.mobility.is_some() || attrs.mass.is_some();
         if has_any_attrs {
             validate_force_atlas2_vertex_helper_dtype::<_, V>(graph, "vertex attributes")?;
@@ -443,6 +464,12 @@ pub(crate) fn force_atlas2<T, V: CugraphElement, W: CugraphElement>(
                     .with_context("vertices_len", verts.len().to_string())
                     .with_context("values_len", vals.len().to_string()));
             }
+            if vals.len() != graph_vertex_count {
+                return Err(Error::new(ErrorKind::InvalidInput, "force_atlas2")
+                    .with_message("vertex radius must provide one value for each graph vertex")
+                    .with_context("graph_vertex_count", graph_vertex_count.to_string())
+                    .with_context("values_len", vals.len().to_string()));
+            }
         }
         if let Some((verts, vals)) = attrs.mobility {
             if verts.len() != vals.len() {
@@ -451,12 +478,24 @@ pub(crate) fn force_atlas2<T, V: CugraphElement, W: CugraphElement>(
                     .with_context("vertices_len", verts.len().to_string())
                     .with_context("values_len", vals.len().to_string()));
             }
+            if vals.len() != graph_vertex_count {
+                return Err(Error::new(ErrorKind::InvalidInput, "force_atlas2")
+                    .with_message("vertex mobility must provide one value for each graph vertex")
+                    .with_context("graph_vertex_count", graph_vertex_count.to_string())
+                    .with_context("values_len", vals.len().to_string()));
+            }
         }
         if let Some((verts, vals)) = attrs.mass {
             if verts.len() != vals.len() {
                 return Err(Error::new(ErrorKind::InvalidInput, "force_atlas2")
                     .with_message("vertex mass: vertices and values must have the same length")
                     .with_context("vertices_len", verts.len().to_string())
+                    .with_context("values_len", vals.len().to_string()));
+            }
+            if vals.len() != graph_vertex_count {
+                return Err(Error::new(ErrorKind::InvalidInput, "force_atlas2")
+                    .with_message("vertex mass must provide one value for each graph vertex")
+                    .with_context("graph_vertex_count", graph_vertex_count.to_string())
                     .with_context("values_len", vals.len().to_string()));
             }
         }
