@@ -373,6 +373,8 @@ mod tests {
         let handle = ResourceHandle::new().expect("handle");
         let ids = DeviceArray::from_slice(&handle, &[1i16, 2, 3]).expect("ids");
         let view = ids.view().expect("view");
+        // SAFETY: The pointer/length pair comes from a live `DeviceArrayView`, and the dtype is
+        // intentionally mismatched to verify `VertexIds::from_raw` rejects unsupported inputs.
         let raw = unsafe {
             RawDeviceArrayView::try_from_raw(view.device_ptr(), view.len(), DataType::Int16, "test_raw")
                 .expect("raw view")
@@ -388,6 +390,8 @@ mod tests {
         let handle = ResourceHandle::new().expect("handle");
         let scores = DeviceArray::from_slice(&handle, &[1i32, 2, 3]).expect("scores");
         let view = scores.view().expect("view");
+        // SAFETY: The pointer/length pair comes from a live `DeviceArrayView`, and the dtype is
+        // intentionally mismatched to verify `ScoreValues::from_raw` rejects unsupported inputs.
         let raw = unsafe {
             RawDeviceArrayView::try_from_raw(view.device_ptr(), view.len(), DataType::Int32, "test_raw")
                 .expect("raw view")
@@ -403,6 +407,8 @@ mod tests {
         let handle = ResourceHandle::new().expect("handle");
         let distances = DeviceArray::from_slice(&handle, &[1i16, 2, 3]).expect("distances");
         let view = distances.view().expect("view");
+        // SAFETY: The pointer/length pair comes from a live `DeviceArrayView`, and the dtype is
+        // intentionally mismatched to verify `Distances::from_raw` rejects unsupported inputs.
         let raw = unsafe {
             RawDeviceArrayView::try_from_raw(view.device_ptr(), view.len(), DataType::Int16, "test_raw")
                 .expect("raw view")

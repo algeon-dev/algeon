@@ -15,8 +15,8 @@ use cugraph::{
 
 const EDGE_COLUMN_NAMES: &[&str] = &["src", "dst", "weight"];
 
-use crate::common::bfs_graph::write_bfs_graph_parquet;
 pub use crate::common::fs::unique_temp_dir;
+use crate::common::support::write_bfs_graph_parquet;
 
 pub fn explicit_runtime() -> cudf::Runtime {
     cudf::Runtime::builder().build().expect("runtime")

@@ -17,6 +17,9 @@ use cugraph::{
     cudf_interop::{IntoSeries, SeriesGraphOptions, device_array_view_from_slice, graph_from_series},
     graph::{Forward, GraphBuilder, Transposed},
     handle::ResourceHandle,
+    layout::{ForceAtlas2Params, LayoutResult},
+    params::IterationCount,
+    random::RngState,
     traversal::BfsParams,
     types::GraphProperties,
 };
@@ -132,4 +135,42 @@ fn into_series_bfs_results() {
     assert_eq!(distance_series.name(), Some("my_distance"));
     assert_eq!(vertex_series.to_vec_strict::<i32>().expect("vertex vec").len(), 3);
     assert_eq!(distance_series.to_vec_strict::<i32>().expect("distance vec"), vec![0, 1, 2]);
+}
+
+#[test]
+fn into_series_layout_results() {
+    let runtime = explicit_runtime();
+    let handle = ResourceHandle::for_runtime_device(&runtime).expect("handle");
+    let mut rng = RngState::new(&handle, 42).expect("rng");
+
+    let src = DeviceArray::from_slice(&handle, UNDIRECTED_TRIANGLE_SRC_I32).expect("src");
+    let dst = DeviceArray::from_slice(&handle, UNDIRECTED_TRIANGLE_DST_I32).expect("dst");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+
+    let mut graph = GraphBuilder::new(&src_view, &dst_view)
+        .properties(GraphProperties::undirected())
+        .renumber()
+        .build::<Forward>(&handle)
+        .expect("graph");
+
+    let params = ForceAtlas2Params { max_iter: IterationCount::new(50).unwrap(), ..Default::default() };
+    let result: LayoutResult = graph.force_atlas2(&handle, &mut rng, &params).expect("fa2");
+
+    let vertex_series =
+        result.vertex_ids().expect("vertex_ids").to_series("my_vertex", &runtime).expect("VertexIds::to_series");
+    let x_series = result.x().expect("x").to_series("my_x", &runtime).expect("ScoreValues::to_series x");
+    let y_series = result.y().expect("y").to_series("my_y", &runtime).expect("ScoreValues::to_series y");
+
+    assert_eq!(vertex_series.name(), Some("my_vertex"));
+    assert_eq!(x_series.name(), Some("my_x"));
+    assert_eq!(y_series.name(), Some("my_y"));
+    assert_eq!(vertex_series.to_vec_strict::<i32>().expect("vertex vec").len(), 3);
+
+    let x_values = x_series.to_vec_strict::<f32>().expect("x vec");
+    let y_values = y_series.to_vec_strict::<f32>().expect("y vec");
+    assert_eq!(x_values.len(), 3);
+    assert_eq!(y_values.len(), 3);
+    assert!(x_values.iter().all(|value| value.is_finite()));
+    assert!(y_values.iter().all(|value| value.is_finite()));
 }

@@ -8,11 +8,7 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use cudf::{
-    core::Table,
-    io::parquet,
-    DataFrame, Runtime,
-};
+use cudf::{DataFrame, Runtime, core::Table, io::parquet};
 use cugraph::{
     array::DeviceArray,
     cudf_interop::{
@@ -419,9 +415,7 @@ fn graph_from_dataframe_by_name() {
     let df = DataFrame::from_series([
         runtime.series("src", &[0i32, 1, 1, 2, 2, 2, 3, 4]).expect("src"),
         runtime.series("dst", &[1i32, 3, 4, 0, 1, 3, 5, 5]).expect("dst"),
-        runtime
-            .series("weight", &[0.1f32, 2.1, 1.1, 5.1, 3.1, 4.1, 7.2, 3.2])
-            .expect("weight"),
+        runtime.series("weight", &[0.1f32, 2.1, 1.1, 5.1, 3.1, 4.1, 7.2, 3.2]).expect("weight"),
     ])
     .expect("dataframe");
 
@@ -511,11 +505,7 @@ fn centrality_result_to_dataframe() {
 /// 3 columns named "vertex", "x", "y", row count == 3.
 #[test]
 fn layout_result_to_dataframe() {
-    use cugraph::{
-        layout::ForceAtlas2Params,
-        params::IterationCount,
-        random::RngState,
-    };
+    use cugraph::{layout::ForceAtlas2Params, params::IterationCount, random::RngState};
 
     let (runtime, handle) = test_runtime_and_handle();
     let mut rng = RngState::new(&handle, 42).expect("rng");
