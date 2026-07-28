@@ -24,8 +24,8 @@
 //! let layout_seed = 42_u64;
 //! let mut rng = RngState::new(&handle, layout_seed).unwrap();
 //!
-//! let src = runtime.series("src", &[0i32, 1, 2]).unwrap();
-//! let dst = runtime.series("dst", &[1i32, 2, 0]).unwrap();
+//! let src = runtime.series(&[0i32, 1, 2]).unwrap();
+//! let dst = runtime.series(&[1i32, 2, 0]).unwrap();
 //! let edges =
 //!     cudf::DataFrame::from_columns([("src", src), ("dst", dst)]).unwrap();
 //! let opts = DataFrameGraphOptions::new("src", "dst").renumber();

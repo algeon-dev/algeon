@@ -410,9 +410,9 @@ fn graph_from_borrowed_table_view_rejects_nullable_column() {
 fn graph_from_dataframe_by_name() {
     let (runtime, handle) = test_runtime_and_handle();
     let df = DataFrame::from_columns([
-        ("src", runtime.series("src", &[0i32, 1, 1, 2, 2, 2, 3, 4]).expect("src")),
-        ("dst", runtime.series("dst", &[1i32, 3, 4, 0, 1, 3, 5, 5]).expect("dst")),
-        ("weight", runtime.series("weight", &[0.1f32, 2.1, 1.1, 5.1, 3.1, 4.1, 7.2, 3.2]).expect("weight")),
+        ("src", runtime.series(&[0i32, 1, 1, 2, 2, 2, 3, 4]).expect("src")),
+        ("dst", runtime.series(&[1i32, 3, 4, 0, 1, 3, 5, 5]).expect("dst")),
+        ("weight", runtime.series(&[0.1f32, 2.1, 1.1, 5.1, 3.1, 4.1, 7.2, 3.2]).expect("weight")),
     ])
     .expect("dataframe");
 
@@ -439,8 +439,8 @@ fn graph_from_dataframe_by_name() {
 fn graph_from_dataframe_rejects_unknown_column_name() {
     let (runtime, handle) = test_runtime_and_handle();
     let df = DataFrame::from_columns([
-        ("src", runtime.series("src", &[0i32, 1]).expect("src")),
-        ("dst", runtime.series("dst", &[1i32, 0]).expect("dst")),
+        ("src", runtime.series(&[0i32, 1]).expect("src")),
+        ("dst", runtime.series(&[1i32, 0]).expect("dst")),
     ])
     .expect("dataframe");
 

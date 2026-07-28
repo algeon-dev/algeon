@@ -17,8 +17,8 @@
 //! let runtime = cudf::Runtime::new().unwrap();
 //! let handle = ResourceHandle::for_runtime_device(&runtime).unwrap();
 //!
-//! let src = runtime.series("src", &[0i32, 1, 2, 3]).unwrap();
-//! let dst = runtime.series("dst", &[1i32, 2, 3, 0]).unwrap();
+//! let src = runtime.series(&[0i32, 1, 2, 3]).unwrap();
+//! let dst = runtime.series(&[1i32, 2, 3, 0]).unwrap();
 //! let edges =
 //!     cudf::DataFrame::from_columns([("src", src), ("dst", dst)]).unwrap();
 //! let opts = DataFrameGraphOptions::new("src", "dst").renumber();

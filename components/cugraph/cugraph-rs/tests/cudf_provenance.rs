@@ -35,8 +35,8 @@ fn graph_from_series_allows_mixed_explicit_runtimes_on_same_device() {
     let rt_a = explicit_runtime();
     let rt_b = explicit_runtime();
 
-    let src = rt_a.series("src", SIMPLE_CHAIN_SRC_I64).expect("src");
-    let dst = rt_b.series("dst", SIMPLE_CHAIN_DST_I64).expect("dst");
+    let src = rt_a.series(SIMPLE_CHAIN_SRC_I64).expect("src");
+    let dst = rt_b.series(SIMPLE_CHAIN_DST_I64).expect("dst");
 
     let opts = SeriesGraphOptions::default().renumber();
     let mut graph =
@@ -57,9 +57,9 @@ fn graph_from_borrowed_columns_allows_mixed_explicit_runtimes_on_same_device() {
     let rt_b = explicit_runtime();
     let rt_c = explicit_runtime();
 
-    let src = rt_a.series("src", TRIANGLE_TAIL_SRC_I32).expect("src");
-    let dst = rt_b.series("dst", TRIANGLE_TAIL_DST_I32).expect("dst");
-    let wgt = rt_c.series("wgt", TRIANGLE_TAIL_WEIGHT_F32).expect("wgt");
+    let src = rt_a.series(TRIANGLE_TAIL_SRC_I32).expect("src");
+    let dst = rt_b.series(TRIANGLE_TAIL_DST_I32).expect("dst");
+    let wgt = rt_c.series(TRIANGLE_TAIL_WEIGHT_F32).expect("wgt");
 
     let src_borrowed = src.try_borrow_column_view().expect("src borrowed");
     let dst_borrowed = dst.try_borrow_column_view().expect("dst borrowed");
@@ -83,9 +83,9 @@ fn graph_from_borrowed_columns_python_cugraph_weighted_undirected_simple_keeps_m
     let handle = test_handle();
     let runtime = explicit_runtime();
 
-    let src = runtime.series("src", &[0i32, 1, 1, 2]).expect("src");
-    let dst = runtime.series("dst", &[1i32, 0, 2, 1]).expect("dst");
-    let wgt = runtime.series("wgt", &[5.0f32, 2.0, 1.0, 1.0]).expect("wgt");
+    let src = runtime.series(&[0i32, 1, 1, 2]).expect("src");
+    let dst = runtime.series(&[1i32, 0, 2, 1]).expect("dst");
+    let wgt = runtime.series(&[5.0f32, 2.0, 1.0, 1.0]).expect("wgt");
 
     let src_borrowed = src.try_borrow_column_view().expect("src borrowed");
     let dst_borrowed = dst.try_borrow_column_view().expect("dst borrowed");
