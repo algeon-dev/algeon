@@ -321,7 +321,10 @@ fn fatal_malformed_result_cleanup_preserves_primary_error_and_closes_device_admi
     let first = snapshot.first_fault().expect("fatal cleanup fault");
     assert_eq!(first.kind(), cudf::runtime::DeviceFaultKind::FatalDeviceOperation);
     assert_eq!(first.operation(), "dictionary::match_dictionaries::cleanup_malformed_result");
-    assert_eq!(first.native_status(), Some(cudf_sys::CUDF_ERROR_FATAL_CUDA as i32));
+    assert_eq!(
+        first.native_status(),
+        Some(cudf::runtime::DeviceFaultNativeStatus::Cudf(cudf_sys::CUDF_ERROR_FATAL_CUDA))
+    );
 
     let admission = cudf::runtime::DeviceEntryGuard::enter(device, "dictionary_cleanup::later_work")
         .expect_err("fatal malformed-result cleanup must close later device admission");

@@ -710,7 +710,7 @@ pub(crate) fn check_status_in(status: cudf_sys::cudf_status_t, operation: &'stat
             device,
             crate::runtime::DeviceFaultKind::FatalDeviceOperation,
             operation,
-            Some(status as i32),
+            Some(crate::runtime::DeviceFaultNativeStatus::Cudf(status)),
         );
     }
     check_status_in_without_device_report(status, operation)

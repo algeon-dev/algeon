@@ -217,7 +217,7 @@ pub(crate) type DeviceGuard = DeviceEntryGuard;
 mod tests {
     use super::*;
     use crate::{
-        runtime::DeviceHealthStatus,
+        runtime::{DeviceFaultNativeStatus, DeviceHealthStatus},
         testing::device_safety::{DeviceEntryTestCall, DeviceSafetyTestScope, injected_device_id},
     };
 
@@ -275,7 +275,7 @@ mod tests {
         let first = snapshot.first_fault().expect("first get-device fault");
         assert_eq!(first.kind(), DeviceFaultKind::CurrentDeviceQueryFailed);
         assert_eq!(first.operation(), "get_device_failure");
-        assert_eq!(first.native_status(), Some(cudf_sys::CUDF_ERROR_FATAL_CUDA as i32));
+        assert_eq!(first.native_status(), Some(DeviceFaultNativeStatus::Cudf(cudf_sys::CUDF_ERROR_FATAL_CUDA)));
 
         let poisoned = DeviceEntryGuard::enter(owner, "after_get_device_failure")
             .expect_err("poisoned thread must reject entry before CUDA");
@@ -303,7 +303,7 @@ mod tests {
         let first = snapshot.first_fault().expect("first set-device fault");
         assert_eq!(first.kind(), DeviceFaultKind::OwnerDeviceEntryFailed);
         assert_eq!(first.operation(), "set_device_failure");
-        assert_eq!(first.native_status(), Some(cudf_sys::CUDF_ERROR_FATAL_CUDA as i32));
+        assert_eq!(first.native_status(), Some(DeviceFaultNativeStatus::Cudf(cudf_sys::CUDF_ERROR_FATAL_CUDA)));
         assert_eq!(scope.health_snapshot(ambient).fault_count(), 0);
 
         let poisoned = DeviceEntryGuard::enter(ambient, "after_set_device_failure")
@@ -336,7 +336,7 @@ mod tests {
         let first = snapshot.first_fault().expect("first restore fault");
         assert_eq!(first.kind(), DeviceFaultKind::AmbientDeviceRestoreFailed);
         assert_eq!(first.operation(), "runtime::DeviceEntryGuard::drop");
-        assert_eq!(first.native_status(), Some(cudf_sys::CUDF_ERROR_FATAL_CUDA as i32));
+        assert_eq!(first.native_status(), Some(DeviceFaultNativeStatus::Cudf(cudf_sys::CUDF_ERROR_FATAL_CUDA)));
         assert_eq!(scope.health_snapshot(owner).fault_count(), 0);
 
         let poisoned = DeviceEntryGuard::enter(owner, "after_restore_failure")

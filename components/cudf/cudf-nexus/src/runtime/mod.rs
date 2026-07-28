@@ -46,8 +46,8 @@ pub use budget::{
 pub use device::DeviceId;
 pub use device_guard::DeviceEntryGuard;
 pub use device_health::{
-    DeviceFault, DeviceFaultKind, DeviceHealthSnapshot, DeviceHealthStatus, device_health_snapshot,
-    drop_device_resource, quarantine_device_resource, report_device_fault,
+    DeviceFault, DeviceFaultKind, DeviceFaultNativeStatus, DeviceHealthSnapshot, DeviceHealthStatus,
+    device_health_snapshot, drop_device_resource, quarantine_device_resource, report_device_fault,
 };
 pub use event::CudaEvent;
 pub use execution_context::ExecutionOverrides;
