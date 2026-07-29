@@ -43,9 +43,15 @@ fn bindings_include_critical_core_symbols() {
         "cugraph_centrality_result_free",
         // Traversal
         "cugraph_bfs",
+        "cugraph_sssp",
         "cugraph_paths_result_get_vertices",
         "cugraph_paths_result_get_distances",
+        "cugraph_paths_result_get_predecessors",
         "cugraph_paths_result_free",
+        "cugraph_extract_paths",
+        "cugraph_extract_paths_result_get_max_path_length",
+        "cugraph_extract_paths_result_get_paths",
+        "cugraph_extract_paths_result_free",
         // Community
         "cugraph_louvain",
         "cugraph_hierarchical_clustering_result_get_vertices",

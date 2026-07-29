@@ -8,9 +8,10 @@ use common::{
         DEGREE_QUERY_I64, DEGREE_SUBSET_DST_I64, DEGREE_SUBSET_SRC_I64, DIRECTED_STAR_DST_I64, DIRECTED_STAR_SRC_I64,
         DISCONNECTED_TWO_CYCLES_DST_I32, DISCONNECTED_TWO_CYCLES_SRC_I32, FOUR_VERTEX_CHAIN_DST_I32,
         FOUR_VERTEX_CHAIN_DST_I64, FOUR_VERTEX_CHAIN_SRC_I32, FOUR_VERTEX_CHAIN_SRC_I64, LOUVAIN_GRAPH_DST_I32,
-        LOUVAIN_GRAPH_SRC_I32, LOUVAIN_GRAPH_WEIGHT_F32, TEST_LAYOUT_SECONDARY_SEED, TEST_LAYOUT_SMOKE_ITERATIONS,
-        TRIANGLE_VERTEX_IDS_I64, UNDIRECTED_TRIANGLE_DST_I64, UNDIRECTED_TRIANGLE_SRC_I64,
-        UNDIRECTED_TRIANGLE_UNIT_WEIGHT_F64, bfs_distance_map_i64_result,
+        LOUVAIN_GRAPH_SRC_I32, LOUVAIN_GRAPH_WEIGHT_F32, SSSP_GRAPH_DST_I32, SSSP_GRAPH_SRC_I32, SSSP_GRAPH_WEIGHT_F32,
+        SSSP_GRAPH_WEIGHT_F64, TEST_LAYOUT_SECONDARY_SEED, TEST_LAYOUT_SMOKE_ITERATIONS, TRIANGLE_VERTEX_IDS_I64,
+        UNDIRECTED_TRIANGLE_DST_I64, UNDIRECTED_TRIANGLE_SRC_I64, UNDIRECTED_TRIANGLE_UNIT_WEIGHT_F64,
+        bfs_distance_map_i64_result,
     },
 };
 use cugraph::{
@@ -18,10 +19,10 @@ use cugraph::{
     centrality::{BetweennessCentralityParams, PageRankParams},
     community::LouvainParams,
     layout::{ForceAtlas2Params, ForceAtlas2VertexAttrs, InitialPositions},
-    params::IterationCount,
+    params::{IterationCount, NonNegativeF64},
     random::RngState,
     structure::{Distances, ScoreValues, VertexIds},
-    traversal::BfsParams,
+    traversal::{BfsParams, SsspParams},
     types::GraphProperties,
 };
 
@@ -181,6 +182,158 @@ fn bfs_rejects_vertex_selection_all() {
 
     assert_eq!(err.kind(), cugraph::ErrorKind::InvalidInput);
     assert_eq!(err.operation(), "Graph::bfs");
+}
+
+#[test]
+fn sssp_weighted_graph_returns_float_distances_and_predecessors() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let handle = test_handle();
+    let entered = handle.enter("sssp_weighted_graph_returns_float_distances_and_predecessors").expect("entered");
+    let src = DeviceArray::from_slice(&entered, SSSP_GRAPH_SRC_I32).expect("src");
+    let dst = DeviceArray::from_slice(&entered, SSSP_GRAPH_DST_I32).expect("dst");
+    let wgt = DeviceArray::from_slice(&entered, SSSP_GRAPH_WEIGHT_F32).expect("wgt");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+    let wgt_view = wgt.view().expect("wgt_view");
+
+    let mut graph = GraphBuilder::new(&src_view, &dst_view)
+        .weights(&wgt_view)
+        .renumber()
+        .build::<Forward>(&entered)
+        .expect("graph");
+
+    let params = SsspParams::default().with_cutoff(NonNegativeF64::new(10.0).expect("cutoff")).with_predecessors();
+    let result = graph.sssp(&entered, 0i32, &params).expect("sssp");
+
+    assert!(matches!(result.distances().expect("distances"), Distances::F32(_)));
+    let vertices = result.vertex_ids().expect("vertex_ids").to_vec_i32(&entered).expect("vertices");
+    let distances = result.distances().expect("distances").to_vec_f32(&entered).expect("distances");
+    let predecessors = result
+        .predecessors()
+        .expect("predecessors")
+        .expect("predecessors should exist")
+        .to_vec_i32(&entered)
+        .expect("predecessors");
+
+    let distance_map: HashMap<i32, f32> = vertices.iter().copied().zip(distances).collect();
+    let predecessor_map: HashMap<i32, i32> = vertices.into_iter().zip(predecessors).collect();
+
+    assert!((distance_map[&0] - 0.0).abs() < 1.0e-5);
+    assert!((distance_map[&1] - 0.1).abs() < 1.0e-5);
+    assert!(distance_map[&2] > 1.0e30, "unreachable vertex should use f32::MAX sentinel");
+    assert!((distance_map[&3] - 2.2).abs() < 1.0e-5);
+    assert!((distance_map[&4] - 1.2).abs() < 1.0e-5);
+    assert!((distance_map[&5] - 4.4).abs() < 1.0e-5);
+    assert_eq!(predecessor_map[&0], -1);
+    assert_eq!(predecessor_map[&1], 0);
+    assert_eq!(predecessor_map[&2], -1);
+    assert_eq!(predecessor_map[&3], 1);
+    assert_eq!(predecessor_map[&4], 1);
+    assert_eq!(predecessor_map[&5], 4);
+}
+
+#[test]
+fn sssp_without_predecessors_omits_predecessor_column() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let handle = test_handle();
+    let entered = handle.enter("sssp_without_predecessors_omits_predecessor_column").expect("entered");
+    let src = DeviceArray::from_slice(&entered, SSSP_GRAPH_SRC_I32).expect("src");
+    let dst = DeviceArray::from_slice(&entered, SSSP_GRAPH_DST_I32).expect("dst");
+    let wgt = DeviceArray::from_slice(&entered, SSSP_GRAPH_WEIGHT_F64).expect("wgt");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+    let wgt_view = wgt.view().expect("wgt_view");
+
+    let mut graph = GraphBuilder::new(&src_view, &dst_view)
+        .weights(&wgt_view)
+        .renumber()
+        .build::<Forward>(&entered)
+        .expect("graph");
+
+    let result = graph.sssp(&entered, 0i32, &SsspParams::default()).expect("sssp");
+
+    assert!(matches!(result.distances().expect("distances"), Distances::F64(_)));
+    assert!(result.predecessors().expect("predecessors").is_none());
+}
+
+#[test]
+fn extract_paths_from_bfs_and_sssp_results() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let handle = test_handle();
+    let entered = handle.enter("extract_paths_from_bfs_and_sssp_results").expect("entered");
+    let src = DeviceArray::from_slice(&entered, SSSP_GRAPH_SRC_I32).expect("src");
+    let dst = DeviceArray::from_slice(&entered, SSSP_GRAPH_DST_I32).expect("dst");
+    let wgt = DeviceArray::from_slice(&entered, SSSP_GRAPH_WEIGHT_F32).expect("wgt");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+    let wgt_view = wgt.view().expect("wgt_view");
+
+    let mut graph =
+        GraphBuilder::new(&src_view, &dst_view).weights(&wgt_view).build::<Forward>(&entered).expect("graph");
+    let sources = DeviceArray::from_slice(&entered, &[0i32]).expect("sources");
+    let destinations = DeviceArray::from_slice(&entered, &[5i32]).expect("destinations");
+    let sources_view = sources.view().expect("sources_view");
+    let destinations_view = destinations.view().expect("destinations_view");
+
+    let bfs_result = graph.bfs(&entered, &sources_view, &BfsParams::default().with_predecessors()).expect("bfs");
+    let bfs_paths =
+        bfs_result.extract_paths(&entered, &mut graph, &sources_view, &destinations_view).expect("bfs extract paths");
+    assert_eq!(bfs_paths.max_path_length(), 4);
+    let bfs_path_values = bfs_paths.paths().expect("paths").to_vec_i32(&entered).expect("paths");
+    assert_eq!(bfs_path_values, vec![0, 1, 3, 5]);
+
+    let sssp_result = graph.sssp(&entered, 0i32, &SsspParams::default().with_predecessors()).expect("sssp");
+    let sssp_paths =
+        sssp_result.extract_paths(&entered, &mut graph, &sources_view, &destinations_view).expect("sssp extract paths");
+    assert_eq!(sssp_paths.max_path_length(), 4);
+    let sssp_path_values = sssp_paths.paths().expect("paths").to_vec_i32(&entered).expect("paths");
+    assert_eq!(sssp_path_values, vec![0, 1, 4, 5]);
+}
+
+#[test]
+fn extract_paths_rejects_results_without_predecessors() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let handle = test_handle();
+    let entered = handle.enter("extract_paths_rejects_results_without_predecessors").expect("entered");
+    let src = DeviceArray::from_slice(&entered, FOUR_VERTEX_CHAIN_SRC_I32).expect("src");
+    let dst = DeviceArray::from_slice(&entered, FOUR_VERTEX_CHAIN_DST_I32).expect("dst");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+
+    let mut graph = GraphBuilder::new(&src_view, &dst_view).build::<Forward>(&entered).expect("graph");
+    let sources = DeviceArray::from_slice(&entered, &[0i32]).expect("sources");
+    let destinations = DeviceArray::from_slice(&entered, &[3i32]).expect("destinations");
+    let sources_view = sources.view().expect("sources_view");
+    let destinations_view = destinations.view().expect("destinations_view");
+    let result = graph.bfs(&entered, &sources_view, &BfsParams::default()).expect("bfs");
+
+    let err = result
+        .extract_paths(&entered, &mut graph, &sources_view, &destinations_view)
+        .expect_err("extract paths should require predecessors");
+
+    assert_eq!(err.kind(), cugraph::ErrorKind::InvalidInput);
+    assert_eq!(err.operation(), "BfsResult::extract_paths");
+}
+
+#[test]
+fn sssp_rejects_source_dtype_mismatch() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let handle = test_handle();
+    let entered = handle.enter("sssp_rejects_source_dtype_mismatch").expect("entered");
+    let src = DeviceArray::from_slice(&entered, FOUR_VERTEX_CHAIN_SRC_I32).expect("src");
+    let dst = DeviceArray::from_slice(&entered, FOUR_VERTEX_CHAIN_DST_I32).expect("dst");
+    let wgt = DeviceArray::from_slice(&entered, &[1.0f32, 1.0, 1.0]).expect("wgt");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+    let wgt_view = wgt.view().expect("wgt_view");
+
+    let mut graph =
+        GraphBuilder::new(&src_view, &dst_view).weights(&wgt_view).build::<Forward>(&entered).expect("graph");
+
+    let err = graph.sssp(&entered, 0i64, &SsspParams::default()).expect_err("i64 source should not match i32 graph");
+
+    assert_eq!(err.kind(), cugraph::ErrorKind::UnsupportedType);
+    assert_eq!(err.operation(), "Graph::sssp");
 }
 
 #[test]

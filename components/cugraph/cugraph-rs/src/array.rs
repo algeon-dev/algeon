@@ -173,6 +173,25 @@ impl<'a> RawDeviceArrayView<'a> {
         RawDeviceArrayView { raw, owned: false, device, _lifetime: PhantomData, _nosend_nosync: PhantomData }
     }
 
+    /// Wrap a raw C view pointer whose metadata ownership transfers to this
+    /// Rust wrapper.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that:
+    /// - `raw` points to a live `cugraph_type_erased_device_array_view_t`
+    /// - only the view metadata is owned by this wrapper
+    /// - the backing device allocation remains valid for the returned lifetime
+    pub(crate) unsafe fn from_owned_view(
+        raw: *mut cugraph_type_erased_device_array_view_t,
+        device: Option<i32>,
+        operation: &'static str,
+        pointer_name: &'static str,
+    ) -> Result<Self> {
+        let raw = require_non_null(raw, operation, pointer_name)?;
+        Ok(RawDeviceArrayView { raw, owned: true, device, _lifetime: PhantomData, _nosend_nosync: PhantomData })
+    }
+
     /// Create a view from an existing raw device pointer.
     ///
     /// # Safety
