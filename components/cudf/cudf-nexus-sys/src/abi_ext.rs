@@ -6,6 +6,7 @@ use crate::{
     CUDF_MEMORY_FAILURE_INFO_RESERVED_SLOTS, CUDF_MEMORY_FAILURE_SOURCE_PHYSICAL, CUDF_MEMORY_MANAGER_BASE_CUDA_ASYNC,
     CUDF_MEMORY_MANAGER_OPTIONS_RESERVED_SLOTS, CUDF_MEMORY_POOL_USAGE_RESERVED_SLOTS,
     CUDF_MEMORY_RESOURCE_USAGE_RESERVED_SLOTS, cudf_exec_options_t, cudf_memory_failure_info_t,
+    cudf_memory_manager_installation_identity_t, cudf_memory_manager_installation_record_t,
     cudf_memory_manager_options_t, cudf_memory_pool_usage_t, cudf_memory_resource_usage_t,
 };
 
@@ -96,6 +97,7 @@ impl cudf_memory_manager_options_t {
             initial_pool_size_bytes: 0,
             maximum_pool_size_bytes: 0,
             release_threshold_bytes: u64::MAX,
+            allocation_limit_bytes: 0,
             reserved: [0; CUDF_MEMORY_MANAGER_OPTIONS_RESERVED_SLOTS as usize],
         }
     }
@@ -104,6 +106,31 @@ impl cudf_memory_manager_options_t {
 impl Default for cudf_memory_manager_options_t {
     fn default() -> Self {
         Self::defaults()
+    }
+}
+
+#[allow(clippy::derivable_impls)]
+impl Default for cudf_memory_manager_installation_identity_t {
+    fn default() -> Self {
+        Self { owner_fingerprint: [0; 16], callback_version: 0, reserved_padding: 0, partition_fingerprint: [0; 16] }
+    }
+}
+
+impl Default for cudf_memory_manager_installation_record_t {
+    fn default() -> Self {
+        Self {
+            struct_size: core::mem::size_of::<Self>(),
+            device_ordinal: -1,
+            flags: 0,
+            status: crate::CUDF_MEMORY_MANAGER_INSTALLATION_UNINSTALLED,
+            retry: crate::CUDF_MEMORY_MANAGER_INSTALLATION_INSTALLABLE,
+            cause: crate::CUDF_MEMORY_MANAGER_INSTALLATION_CAUSE_NONE,
+            reserved_padding: 0,
+            installation_generation: 0,
+            effective_options: cudf_memory_manager_options_t::default(),
+            identity: cudf_memory_manager_installation_identity_t::default(),
+            reserved: [0; 3],
+        }
     }
 }
 

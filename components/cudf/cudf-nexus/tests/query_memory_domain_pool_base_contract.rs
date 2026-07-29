@@ -11,6 +11,7 @@ fn query_memory_domain_rejects_pool_backed_manager() {
             initial_pool_size: 64 * 1024 * 1024,
             maximum_pool_size: Some(64 * 1024 * 1024),
         },
+        allocation_limit_bytes: None,
     };
     let manager = DeviceMemoryManager::install_for_device_with_options(device, pool_options).unwrap();
 

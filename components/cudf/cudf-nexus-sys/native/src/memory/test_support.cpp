@@ -4,6 +4,7 @@
 #include "handle_access.hpp"
 #include "memory/internal.hpp"
 #include "memory_resource_compat.hpp"
+#include "rmm_interop_bridge.hpp"
 #include "shim_common.h"
 
 #include <rmm/error.hpp>
@@ -27,6 +28,8 @@ extern "C" cudf_status_t cudf_rust_test_support_memory_resource_allocation_count
 extern "C" cudf_status_t cudf_rust_test_support_memory_resource_active_allocation_count(
   cudf_memory_resource_handle handle, int64_t* out);
 extern "C" cudf_status_t cudf_rust_test_support_memory_resource_set_current(
+  cudf_memory_resource_handle handle);
+extern "C" cudf_status_t cudf_rust_test_support_memory_resource_set_current_untracked(
   cudf_memory_resource_handle handle);
 extern "C" cudf_status_t cudf_rust_test_support_memory_resource_set_current_raw(void* raw_mr);
 
@@ -257,6 +260,19 @@ cudf_status_t cudf_rust_test_support_memory_resource_set_current(cudf_memory_res
   CUDF_RUST_CATCH
 }
 
+cudf_status_t cudf_rust_test_support_memory_resource_set_current_untracked(
+  cudf_memory_resource_handle handle)
+{
+  CUDF_RUST_NULL_CHECK(handle, "handle is null");
+  CUDF_RUST_TRY
+  {
+    auto& owner = memory_resource_owner_from_handle(handle);
+    cudf_rust_rmm_set_current_device_resource(owner.mr.get());
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
 cudf_status_t cudf_rust_test_support_memory_resource_set_current_raw(void* raw_mr)
 {
   CUDF_RUST_NULL_CHECK(raw_mr, "raw_mr is null");
@@ -310,6 +326,11 @@ cudf_status_t cudf_test_memory_resource_raw(cudf_memory_resource_handle handle, 
 cudf_status_t cudf_test_memory_resource_set_current(cudf_memory_resource_handle handle)
 {
   return cudf_rust_test_support_memory_resource_set_current(handle);
+}
+
+cudf_status_t cudf_test_memory_resource_set_current_untracked(cudf_memory_resource_handle handle)
+{
+  return cudf_rust_test_support_memory_resource_set_current_untracked(handle);
 }
 
 cudf_status_t cudf_test_memory_resource_set_current_raw(void* raw_mr)

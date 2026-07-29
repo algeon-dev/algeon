@@ -30,6 +30,8 @@ unsafe extern "C" {
     pub fn cudf_test_default_stream_value(out: *mut usize) -> cudf_status_t;
     pub fn cudf_test_stream_handle_value(handle: cudf_stream_handle, out: *mut usize) -> cudf_status_t;
     pub fn cudf_test_current_device_resource_raw(out: *mut *mut core::ffi::c_void) -> cudf_status_t;
+    pub fn cudf_test_memory_manager_fail_next_current_resource_install();
+    pub fn cudf_test_memory_manager_invoke_failure_callback_before_install_returns();
     pub fn cudf_test_row_predicate_reset_observation();
     pub fn cudf_test_row_predicate_filter_call_count(out: *mut i32) -> cudf_status_t;
     pub fn cudf_test_row_predicate_compute_mask_call_count(out: *mut i32) -> cudf_status_t;
@@ -98,6 +100,7 @@ unsafe extern "C" {
         out: *mut *mut core::ffi::c_void,
     ) -> cudf_status_t;
     pub fn cudf_test_memory_resource_set_current(handle: cudf_memory_resource_handle) -> cudf_status_t;
+    pub fn cudf_test_memory_resource_set_current_untracked(handle: cudf_memory_resource_handle) -> cudf_status_t;
     pub fn cudf_test_memory_resource_set_current_raw(raw_mr: *mut core::ffi::c_void) -> cudf_status_t;
     pub fn cudf_test_memory_manager_query_domain_pool_count_for_id(
         manager: cudf_memory_manager_handle,
