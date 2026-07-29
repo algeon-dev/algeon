@@ -1,7 +1,7 @@
 //! Common DataFusion-facing GPU function discovery and validation catalog.
 //!
 //! GPU SQL families provide descriptors and static validation through the
-//! crate-private [`GpuFunctionFamily`] trait. This module owns the immutable
+//! crate-private `GpuFunctionFamily` trait. This module owns the immutable
 //! cross-family catalog plus the stable `gpu_*` metadata UDTFs; it deliberately
 //! does not own execution or family-specific planning.
 

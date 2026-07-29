@@ -4,7 +4,7 @@ use super::*;
 fn bounded_global_count_distinct_counts_cross_chunk_duplicates_once() {
     let dir = unique_temp_dir("nexus-query-engine-bounded-global-count-distinct");
     let path = dir.join("input.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context();
     let input_schema = write_distinct_count_input_parquet(&path);
 
     let aggregated_schema = Arc::new(Schema::new(vec![Field::new("distinct_values", DataType::Int64, false)]));
@@ -27,7 +27,6 @@ fn bounded_global_count_distinct_counts_cross_chunk_duplicates_once() {
     let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&aggregated_schema));
     let plan = builder.finish_with_host_sink(aggregate);
 
-    let context = distinct_count_context(runtime);
     let result = execute_query_plan(&context, &plan).unwrap();
     assert_eq!(result.metrics().source_chunks_planned, 3);
 
@@ -44,7 +43,7 @@ fn bounded_global_count_distinct_counts_cross_chunk_duplicates_once() {
 fn bounded_global_nunique_casts_to_declared_count_dtype() {
     let dir = unique_temp_dir("nexus-query-engine-bounded-global-nunique-int32");
     let path = dir.join("input.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context();
     let input_schema = write_distinct_count_input_parquet(&path);
 
     let aggregated_schema = Arc::new(Schema::new(vec![Field::new("distinct_values", DataType::Int32, false)]));
@@ -67,7 +66,6 @@ fn bounded_global_nunique_casts_to_declared_count_dtype() {
     let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&aggregated_schema));
     let plan = builder.finish_with_host_sink(aggregate);
 
-    let context = distinct_count_context(runtime);
     let result = execute_query_plan(&context, &plan).unwrap();
     assert_eq!(result.metrics().source_chunks_planned, 3);
 
@@ -85,7 +83,7 @@ fn bounded_global_nunique_casts_to_declared_count_dtype() {
 fn bounded_grouped_count_distinct_ignores_null_values_and_keeps_null_groups() {
     let dir = unique_temp_dir("nexus-query-engine-bounded-grouped-count-distinct");
     let path = dir.join("input.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context();
     let input_schema = write_distinct_count_input_parquet(&path);
 
     let aggregated_schema = Arc::new(Schema::new(vec![
@@ -113,7 +111,6 @@ fn bounded_grouped_count_distinct_ignores_null_values_and_keeps_null_groups() {
     let sort = builder.add_sort(aggregate, sort, Arc::clone(&aggregated_schema));
     let plan = builder.finish_with_host_sink(sort);
 
-    let context = distinct_count_context(runtime);
     let result = execute_query_plan(&context, &plan).unwrap();
     assert_eq!(result.metrics().source_chunks_planned, 3);
 
@@ -151,7 +148,7 @@ fn bounded_grouped_count_distinct_with_count_star_across_multiple_files_is_corre
     let dir = unique_temp_dir("nexus-query-engine-bounded-multifile-distinct");
     let file1 = dir.join("part1.parquet");
     let file2 = dir.join("part2.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context();
     let input_schema = write_multi_file_distinct_count_files(&file1, &file2);
 
     let aggregated_schema = Arc::new(Schema::new(vec![
@@ -182,7 +179,6 @@ fn bounded_grouped_count_distinct_with_count_star_across_multiple_files_is_corre
     let sort_node = builder.add_sort(aggregate, sort, Arc::clone(&aggregated_schema));
     let plan = builder.finish_with_host_sink(sort_node);
 
-    let context = distinct_count_context(runtime);
     let result = execute_query_plan(&context, &plan).unwrap();
     assert!(
         result.metrics().source_chunks_planned >= 2,
@@ -218,7 +214,7 @@ fn bounded_grouped_count_distinct_only_across_multiple_files_is_correct() {
     let dir = unique_temp_dir("nexus-query-engine-bounded-multifile-distinct-only");
     let file1 = dir.join("part1.parquet");
     let file2 = dir.join("part2.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context();
     let input_schema = write_multi_file_distinct_count_files(&file1, &file2);
 
     let aggregated_schema = Arc::new(Schema::new(vec![
@@ -245,7 +241,6 @@ fn bounded_grouped_count_distinct_only_across_multiple_files_is_correct() {
     let sort_node = builder.add_sort(aggregate, sort, Arc::clone(&aggregated_schema));
     let plan = builder.finish_with_host_sink(sort_node);
 
-    let context = distinct_count_context(runtime);
     let result = execute_query_plan(&context, &plan).unwrap();
     assert!(
         result.metrics().source_chunks_planned >= 2,
@@ -299,20 +294,6 @@ fn write_multi_file_distinct_count_files(file1: &std::path::Path, file2: &std::p
     write_batch(file1, vec![Some(1), Some(1), Some(2)], vec![Some(10), Some(20), Some(30)]);
     write_batch(file2, vec![Some(1), Some(1), Some(2), Some(2)], vec![Some(10), Some(40), Some(30), Some(50)]);
     schema
-}
-
-fn distinct_count_context(runtime: Arc<cudf::Runtime>) -> ExecutionContext {
-    ExecutionContext::builder()
-        .with_shared_runtime(runtime)
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 8 * 1024 * 1024 * 1024,
-            max_source_chunk_bytes: 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap()
 }
 
 fn write_distinct_count_input_parquet(path: &Path) -> Arc<Schema> {

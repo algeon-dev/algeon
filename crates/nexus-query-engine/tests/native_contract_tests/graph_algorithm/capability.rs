@@ -26,57 +26,6 @@ fn graph_algorithm_capability_blocks_strict_bounded_on_lower_level_contract() {
     }));
 }
 
-#[cfg(not(feature = "cugraph"))]
-#[test]
-fn feature_disabled_graph_execution_rejects_before_gpu_input_lookup() {
-    let plan = graph_plan(
-        GraphAlgorithm::PageRank,
-        GraphAlgorithmParams::PageRank(Default::default()),
-        edge_schema(DataType::Int64, DataType::Float64, false),
-    );
-    let context = ExecutionContext::builder().build().expect("execution context");
-
-    let error = match execute_query_plan_with_gpu_inputs(&context, &plan, &GpuResidentInputMap::new()) {
-        Ok(_) => panic!("feature-disabled graph execution must reject before resolving its input"),
-        Err(error) => error,
-    };
-    assert_eq!(error.code(), QueryErrorCode::UnsupportedOperator);
-    assert_eq!(error.operation(), "nexus_query_engine.graph_algorithm.execute");
-    assert_eq!(error.fact_value("reason"), Some("required_feature_disabled"));
-    assert_eq!(error.fact_value("required_feature"), Some("cugraph"));
-    assert_eq!(error.fact_value("host_fallback"), Some("disabled"));
-}
-
-#[cfg(not(feature = "cugraph"))]
-#[test]
-fn feature_disabled_bounded_graph_execution_rejects_before_gpu_input_lookup() {
-    let plan = graph_plan(
-        GraphAlgorithm::PageRank,
-        GraphAlgorithmParams::PageRank(Default::default()),
-        edge_schema(DataType::Int64, DataType::Float64, false),
-    );
-    let context = ExecutionContext::builder()
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 1,
-            max_source_chunk_bytes: 1,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .expect("bounded execution context");
-
-    let error = match execute_query_plan_with_gpu_inputs(&context, &plan, &GpuResidentInputMap::new()) {
-        Ok(_) => panic!("feature-disabled bounded graph execution must reject before resolving its input"),
-        Err(error) => error,
-    };
-    assert_eq!(error.code(), QueryErrorCode::UnsupportedOperator);
-    assert_eq!(error.operation(), "nexus_query_engine.graph_algorithm.execute");
-    assert_eq!(error.fact_value("reason"), Some("required_feature_disabled"));
-    assert_eq!(error.fact_value("required_feature"), Some("cugraph"));
-    assert_eq!(error.fact_value("host_fallback"), Some("disabled"));
-}
-
 #[test]
 fn graph_algorithm_strict_bounded_contract_surface_lists_lower_level_gaps() {
     assert_eq!(GRAPH_ALGORITHM_STRICT_BOUNDED_MEMORY_BOUNDARY, "graph_algorithm");

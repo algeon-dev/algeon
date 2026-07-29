@@ -28,7 +28,7 @@ use datafusion::{
     prelude::{CsvReadOptions, SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
-    backend::{NexusAdmissionPolicy, NexusGpuBackend},
+    backend::{GpuMemoryOwnership, NexusAdmissionPolicy, NexusGpuBackend},
     cugraph_sql::{
         CUGRAPH_OPERATION_REGISTRY, CugraphAlgorithm, CugraphSqlConfig,
         parity::{CUGRAPH_PARITY_SPECS, OracleLookup, ParityTruthSource, data_root, load_ref_csv_vertex_list},
@@ -191,8 +191,7 @@ fn parity_data_root_lives_under_workspace_fixture_dir() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn all_registered_algorithms_execute_on_gpu_and_match_oracles() {
     let loaded = datasets::load_and_verify().expect("the committed cuGraph parity fixture must be available");
-    let state = parity_session_state();
-    let ctx = SessionContext::new_with_state(state);
+    let (_backend, ctx) = parity_session();
     register_datasets(&ctx, &loaded).await;
     register_personalization_table(&ctx);
     register_similarity_pairs(&ctx);
@@ -280,23 +279,25 @@ async fn all_registered_algorithms_execute_on_gpu_and_match_oracles() {
     assert_eq!(executed, registered, "the GPU parity run must cover every registered algorithm");
 }
 
-fn parity_session_state() -> datafusion::execution::SessionState {
+fn parity_session() -> (NexusGpuBackend, SessionContext) {
     let config = SessionConfig::new()
         .with_target_partitions(1)
         .with_repartition_file_scans(false)
         .with_repartition_aggregations(false)
         .with_repartition_sorts(false);
     let backend = NexusGpuBackend::builder()
+        .device_memory_ownership([(0, GpuMemoryOwnership::WholeDeviceExclusive)])
         .admission(NexusAdmissionPolicy::default().with_slot_guarantee(SlotGuarantee::Optimistic))
         .build()
         .expect("parity backend must build");
-    backend
+    let state = backend
         .install_on_with_cugraph_sql(
             SessionStateBuilder::new().with_config(config).with_default_features(),
             CugraphSqlConfig::default(),
         )
         .expect("cuGraph SQL must install")
-        .build()
+        .build();
+    (backend, SessionContext::new_with_state(state))
 }
 
 async fn register_datasets(ctx: &SessionContext, loaded: &datasets::LoadedDatasets) {

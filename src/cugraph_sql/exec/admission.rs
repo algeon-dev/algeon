@@ -223,7 +223,7 @@ pub(super) fn validate_standalone_bounded_cugraph_sources(
     edge_source: &dyn ExecutionPlan,
     predicate_sources: &[Arc<dyn ExecutionPlan>],
 ) -> Result<()> {
-    if !config.is_standalone_bounded() {
+    if !config.is_bounded_without_admission() {
         return Ok(());
     }
     validate_standalone_bounded_source_contains_no_native_child("edge", edge_source)?;
@@ -241,10 +241,11 @@ pub(super) fn validate_standalone_bounded_source_contains_no_native_child(
         return Err(Error::new(
             ErrorCode::InvalidExecutionPlan,
             "datafusion_nexus.cugraph_sql.admission",
-            "standalone bounded cuGraph execution cannot execute nexus native child plans without query-service admission",
+            "cuGraph execution with native child plans requires an installed NexusGpuBackend",
         )
+        .with_log_safe_fact("reason", "gpu_backend_required")
         .with_fact("source_kind", source_kind)
-        .with_fact("remediation", "use NexusGpuBackend::install_on_with_cugraph_sql or unbounded cuGraph execution")
+        .with_log_safe_fact("remediation", "install_nexus_gpu_backend")
         .into());
     }
     Ok(())

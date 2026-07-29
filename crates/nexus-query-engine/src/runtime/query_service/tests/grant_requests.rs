@@ -1,6 +1,6 @@
 #[test]
 fn requested_grant_bytes_override_tenant_want_for_one_admission() {
-    let service = QueryService::new_for_admission_tests(
+    let service = AdmissionTestController::new(
         QueryServiceConfig {
             device_capacity_bytes: Some(4096),
             max_concurrent_queries: 1,
@@ -35,7 +35,7 @@ fn requested_grant_bytes_override_tenant_want_for_one_admission() {
 }
 #[test]
 fn requested_grant_bytes_rejects_outside_tenant_band_and_capacity() {
-    let service = QueryService::new_for_admission_tests(
+    let service = AdmissionTestController::new(
         QueryServiceConfig {
             device_capacity_bytes: Some(2048),
             max_concurrent_queries: 1,
@@ -65,7 +65,7 @@ fn requested_grant_bytes_rejects_outside_tenant_band_and_capacity() {
 }
 #[test]
 fn requested_grant_min_bytes_raises_floor_for_one_admission() {
-    let service = QueryService::new_for_admission_tests(
+    let service = AdmissionTestController::new(
         QueryServiceConfig {
             device_capacity_bytes: Some(100),
             max_concurrent_queries: 2,
@@ -92,7 +92,7 @@ fn requested_grant_min_bytes_raises_floor_for_one_admission() {
 }
 #[test]
 fn requested_grant_min_bytes_queues_instead_of_admitting_below_floor() {
-    let service = QueryService::new_for_admission_tests(
+    let service = AdmissionTestController::new(
         QueryServiceConfig {
             device_capacity_bytes: Some(100),
             max_concurrent_queries: 2,
@@ -128,7 +128,7 @@ fn requested_grant_min_bytes_queues_instead_of_admitting_below_floor() {
 }
 #[test]
 fn requested_grant_min_bytes_preserves_configured_slot_minima() {
-    let service = QueryService::new_for_admission_tests(
+    let service = AdmissionTestController::new(
         QueryServiceConfig {
             device_capacity_bytes: Some(100),
             max_concurrent_queries: 4,
@@ -160,7 +160,7 @@ fn requested_grant_min_bytes_preserves_configured_slot_minima() {
 }
 #[test]
 fn requested_grant_min_bytes_rejects_above_guaranteed_min_idle_slot_ceiling() {
-    let service = QueryService::new_for_admission_tests(
+    let service = AdmissionTestController::new(
         QueryServiceConfig {
             device_capacity_bytes: Some(100),
             max_concurrent_queries: 4,
@@ -186,7 +186,7 @@ fn requested_grant_min_bytes_rejects_above_guaranteed_min_idle_slot_ceiling() {
 }
 #[test]
 fn requested_grant_min_bytes_timeout_error_carries_floor_and_band_facts() {
-    let service = QueryService::new_for_admission_tests(
+    let service = AdmissionTestController::new(
         QueryServiceConfig {
             device_capacity_bytes: Some(100),
             max_concurrent_queries: 2,
@@ -223,7 +223,7 @@ fn requested_grant_min_bytes_timeout_error_carries_floor_and_band_facts() {
 }
 #[test]
 fn requested_grant_min_bytes_rejects_outside_tenant_band_capacity_and_request_range() {
-    let service = QueryService::new_for_admission_tests(
+    let service = AdmissionTestController::new(
         QueryServiceConfig {
             device_capacity_bytes: Some(2048),
             max_concurrent_queries: 1,
@@ -292,7 +292,7 @@ fn query_service_assigns_fixed_per_tenant_bounded_budget() {
 #[test]
 fn admission_only_query_service_never_resolves_the_configured_cuda_device() {
     let configured_ledger_ordinal = usize::MAX;
-    let service = QueryService::new_for_admission_tests(
+    let service = AdmissionTestController::new(
         QueryServiceConfig {
             device_ordinal: configured_ledger_ordinal,
             device_capacity_bytes: Some(1024),

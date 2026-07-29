@@ -2,6 +2,7 @@
 async fn flight_sql_explain_gpu_reuses_coverage_schema_and_rejects_other_endpoints() {
     let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
     let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
     let mut client = connect_with_retry(addr).await;
@@ -36,10 +37,8 @@ async fn flight_sql_explain_gpu_reuses_coverage_schema_and_rejects_other_endpoin
     // FlightInfo carries the fixed coverage schema without planning the inner
     // statement. A missing relation is represented as terminal coverage only
     // when DoGet performs its single validate_query invocation.
-    let deferred_info = client
-        .execute("EXPLAIN GPU SELECT * FROM explain_gpu_missing_relation".to_string(), None)
-        .await
-        .unwrap();
+    let deferred_info =
+        client.execute("EXPLAIN GPU SELECT * FROM explain_gpu_missing_relation".to_string(), None).await.unwrap();
     let (deferred_schema, deferred_batches) = execute_flight_info_with_stream_schema(&mut client, deferred_info).await;
     let deferred_batch = &deferred_batches[0];
     let deferred_gpu_path = deferred_batch
@@ -99,19 +98,14 @@ async fn flight_sql_explain_gpu_reuses_coverage_schema_and_rejects_other_endpoin
 
     // The two SQL surfaces intentionally share validation evidence and the
     // row projection. Their only per-surface value is Flight's query id.
-    let udtf_info = client
-        .execute("SELECT * FROM nexus_explain_coverage('SELECT random() AS r')".to_string(), None)
-        .await
-        .unwrap();
+    let udtf_info =
+        client.execute("SELECT * FROM nexus_explain_coverage('SELECT random() AS r')".to_string(), None).await.unwrap();
     let (udtf_schema, udtf_batches) = execute_flight_info_with_stream_schema(&mut client, udtf_info).await;
     assert_eq!(udtf_schema, advertised_schema);
     assert_eq!(udtf_batches.len(), 1);
     let udtf = &udtf_batches[0];
-    let udtf_query_id = udtf
-        .column(udtf_schema.index_of("query_id").unwrap())
-        .as_any()
-        .downcast_ref::<StringArray>()
-        .unwrap();
+    let udtf_query_id =
+        udtf.column(udtf_schema.index_of("query_id").unwrap()).as_any().downcast_ref::<StringArray>().unwrap();
     assert!((0..udtf.num_rows()).all(|row| udtf_query_id.is_null(row)));
     assert_coverage_rows_equal_except_query_id(udtf, batch);
 
@@ -161,10 +155,9 @@ async fn flight_sql_explain_gpu_reuses_coverage_schema_and_rejects_other_endpoin
 async fn flight_sql_explain_gpu_reports_native_and_partial_native_local_parquet_paths() {
     let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
-    let backend = NexusGpuBackend::from_server_config(&config)
-        .unwrap()
-        .expect("default server config is bounded");
+    let backend = NexusGpuBackend::from_server_config(&config).unwrap().expect("default server config is bounded");
     // Match the certified P2a shape: a CPU ILIKE filter directly over the
     // local-Parquet native leaf. The server's normal multi-partition defaults
     // insert RepartitionExec and correctly make this candidate unsupported.
@@ -208,7 +201,8 @@ async fn flight_sql_explain_gpu_reports_native_and_partial_native_local_parquet_
         .await
         .unwrap();
 
-    let native_info = client.execute("EXPLAIN GPU SELECT label FROM explain_gpu_labels".to_string(), None).await.unwrap();
+    let native_info =
+        client.execute("EXPLAIN GPU SELECT label FROM explain_gpu_labels".to_string(), None).await.unwrap();
     let (native_schema, native_batches) = execute_flight_info_with_stream_schema(&mut client, native_info).await;
     let native = &native_batches[0];
     let native_summary = coverage_summary_row(native, &native_schema);
@@ -218,13 +212,8 @@ async fn flight_sql_explain_gpu_reports_native_and_partial_native_local_parquet_
     assert!(coverage_string_array(native, &native_schema, "post_native_plan_root").is_valid(native_summary));
     let native_physical_root = coverage_string(native, &native_schema, "physical_root", native_summary);
     let native_post_native_root = coverage_string(native, &native_schema, "post_native_plan_root", native_summary);
-    let native_coverage_json: serde_json::Value = serde_json::from_str(coverage_string(
-        native,
-        &native_schema,
-        "coverage_json",
-        native_summary,
-    ))
-    .unwrap();
+    let native_coverage_json: serde_json::Value =
+        serde_json::from_str(coverage_string(native, &native_schema, "coverage_json", native_summary)).unwrap();
     assert_eq!(native_coverage_json["input_physical_plan_root"], native_physical_root);
     assert_eq!(native_coverage_json["physical_plan_root"], native_post_native_root);
     let native_selected = coverage_candidate_row(native, &native_schema, "selected");
@@ -250,7 +239,8 @@ async fn flight_sql_explain_gpu_reports_native_and_partial_native_local_parquet_
     // The P2a certificate clears the duplicated Parquet pruning hint only
     // after keeping the exact CPU ILIKE filter. Execute the query as a
     // semantic regression check, not merely a coverage-shape assertion.
-    let result_batches = execute_batches(&mut client, "SELECT label FROM explain_gpu_labels WHERE label ILIKE 'al%'").await;
+    let result_batches =
+        execute_batches(&mut client, "SELECT label FROM explain_gpu_labels WHERE label ILIKE 'al%'").await;
     let mut labels = result_batches.iter().flat_map(|batch| utf8_values(batch.column(0))).collect::<Vec<_>>();
     labels.sort_unstable();
     assert_eq!(labels, ["ALMANAC", "Alpha"]);
@@ -264,6 +254,7 @@ async fn flight_sql_explain_gpu_reports_native_and_partial_native_local_parquet_
 async fn flight_sql_explain_gpu_cancel_before_do_get_records_cancelled_stats() {
     let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
     let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
     let mut client = connect_with_retry(addr).await;
@@ -284,11 +275,9 @@ async fn flight_sql_explain_gpu_cancel_before_do_get_records_cancelled_stats() {
 
 fn write_explain_gpu_labels_parquet(path: &Path) {
     let schema = Arc::new(Schema::new(vec![Field::new("label", DataType::Utf8, false)]));
-    let batch = RecordBatch::try_new(
-        Arc::clone(&schema),
-        vec![Arc::new(StringArray::from(vec!["Alpha", "beta", "ALMANAC"]))],
-    )
-    .unwrap();
+    let batch =
+        RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(StringArray::from(vec!["Alpha", "beta", "ALMANAC"]))])
+            .unwrap();
     let file = File::create(path).unwrap();
     let mut writer = ArrowWriter::try_new(file, schema, Some(WriterProperties::builder().build())).unwrap();
     writer.write(&batch).unwrap();
@@ -335,16 +324,10 @@ fn assert_coverage_rows_equal_except_query_id(expected: &RecordBatch, actual: &R
 
 fn utf8_values(array: &arrow::array::ArrayRef) -> Vec<String> {
     if let Some(values) = array.as_any().downcast_ref::<StringArray>() {
-        return values
-            .iter()
-            .map(|value| value.expect("fixture labels are non-null").to_string())
-            .collect();
+        return values.iter().map(|value| value.expect("fixture labels are non-null").to_string()).collect();
     }
     if let Some(values) = array.as_any().downcast_ref::<arrow::array::StringViewArray>() {
-        return values
-            .iter()
-            .map(|value| value.expect("fixture labels are non-null").to_string())
-            .collect();
+        return values.iter().map(|value| value.expect("fixture labels are non-null").to_string()).collect();
     }
     panic!("P2a result label must be a UTF-8 Arrow array, got {:?}", array.data_type());
 }

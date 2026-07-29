@@ -1,0 +1,11 @@
+error[E0603]: struct `QueryService` is private
+ --> tests/ui/public_api/forbidden_query_service.rs:1:35
+  |
+1 | use nexus_query_engine::runtime::{QueryService, QueryServiceConfig, QueryServiceTenantConfig};
+  |                                   ^^^^^^^^^^^^ private struct
+  |
+note: the struct `QueryService` is defined here
+ --> src/runtime.rs
+  |
+  | pub(crate) use query_service::QueryService;
+  |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^

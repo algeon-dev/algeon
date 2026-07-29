@@ -166,6 +166,7 @@ hex = "0.4"
 proptest = "1.7"
 sha2 = "0.11"
 tempfile = { workspace = true }
+trybuild = "1.0"
 
 [[bin]]
 name = "datafusion_nexus_server"

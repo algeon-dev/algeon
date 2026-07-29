@@ -5,7 +5,7 @@ fn native_query_executes_cross_join_with_explicit_output_projection() {
     let dir = unique_temp_dir("nexus-query-engine-native-cross-join");
     let left_path = dir.join("lineitem.parquet");
     let right_path = dir.join("orders.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let runtime = backend_runtime();
     let left_schema = write_join_left_parquet(&runtime, &left_path);
     let right_schema = write_join_right_parquet(&runtime, &right_path);
     let output_schema = Arc::new(Schema::new(vec![
@@ -46,7 +46,7 @@ fn native_query_executes_cross_join_with_explicit_output_projection() {
     );
     let plan = builder.finish_with_host_sink(sort);
 
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
+    let context = backend_context();
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     let join_metrics =
@@ -86,7 +86,7 @@ fn native_query_preserves_cross_join_right_then_left_projection_order() {
     let dir = unique_temp_dir("nexus-query-engine-native-cross-join-right-left-order");
     let left_path = dir.join("lineitem.parquet");
     let right_path = dir.join("orders.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let runtime = backend_runtime();
     let left_schema = write_join_left_parquet(&runtime, &left_path);
     let right_schema = write_join_right_parquet(&runtime, &right_path);
     let output_schema = Arc::new(Schema::new(vec![
@@ -127,7 +127,7 @@ fn native_query_preserves_cross_join_right_then_left_projection_order() {
     );
     let plan = builder.finish_with_host_sink(sort);
 
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
+    let context = backend_context();
     let result = execute_query_plan(&context, &plan).unwrap();
     let join_metrics =
         result.metrics().operators.iter().find_map(|operator| operator.join.as_ref()).expect("join metrics");
@@ -168,7 +168,7 @@ fn native_query_preserves_cross_join_interleaved_projection_order() {
     let dir = unique_temp_dir("nexus-query-engine-native-cross-join-interleaved-order");
     let left_path = dir.join("lineitem.parquet");
     let right_path = dir.join("orders.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let runtime = backend_runtime();
     let left_schema = write_join_left_parquet(&runtime, &left_path);
     let right_schema = write_join_right_parquet(&runtime, &right_path);
     let output_schema = Arc::new(Schema::new(vec![
@@ -221,7 +221,7 @@ fn native_query_preserves_cross_join_interleaved_projection_order() {
     );
     let plan = builder.finish_with_host_sink(sort);
 
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
+    let context = backend_context();
     let result = execute_query_plan(&context, &plan).unwrap();
     let join_metrics =
         result.metrics().operators.iter().find_map(|operator| operator.join.as_ref()).expect("join metrics");

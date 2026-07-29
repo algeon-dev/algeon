@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn bounded_native_query_executes_root_filtered_semi_anti_joins_with_ordered_reservations() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let runtime = backend_runtime();
     let dir = unique_temp_dir("nexus-query-engine-bounded-root-filtered-join");
     let left_path = dir.join("lineitem.parquet");
     let right_path = dir.join("orders.parquet");
@@ -29,7 +29,7 @@ fn bounded_native_query_executes_root_filtered_semi_anti_joins_with_ordered_rese
     let QueryOutput::HostArrow(semi_batch) = semi.output() else {
         panic!("left semi bounded filtered join should return host output");
     };
-    let mut semi_rows = int32_array(semi_batch, 0).values().iter().copied().collect::<Vec<_>>();
+    let mut semi_rows = int32_array(&semi_batch, 0).values().iter().copied().collect::<Vec<_>>();
     semi_rows.sort();
     assert_eq!(semi_rows, vec![20, 25, 30]);
     let semi_metrics = semi
@@ -72,7 +72,7 @@ fn bounded_native_query_executes_root_filtered_semi_anti_joins_with_ordered_rese
     let QueryOutput::HostArrow(anti_batch) = anti.output() else {
         panic!("left anti bounded filtered join should return host output");
     };
-    let anti_rows = int32_array(anti_batch, 0).values().iter().copied().collect::<Vec<_>>();
+    let anti_rows = int32_array(&anti_batch, 0).values().iter().copied().collect::<Vec<_>>();
     assert_eq!(anti_rows, vec![10]);
     let anti_metrics = anti
         .metrics()
@@ -115,7 +115,7 @@ fn bounded_native_query_executes_root_filtered_semi_anti_joins_with_ordered_rese
 
 #[test]
 fn bounded_native_query_executes_empty_root_filtered_left_semi_join_with_zero_gather_map() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let runtime = backend_runtime();
     let dir = unique_temp_dir("nexus-query-engine-bounded-root-filtered-semi-empty");
     let left_path = dir.join("lineitem.parquet");
     let right_path = dir.join("orders.parquet");
@@ -138,7 +138,7 @@ fn bounded_native_query_executes_empty_root_filtered_left_semi_join_with_zero_ga
 
 #[test]
 fn bounded_native_query_executes_empty_root_filtered_left_anti_join_with_zero_gather_map() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let runtime = backend_runtime();
     let dir = unique_temp_dir("nexus-query-engine-bounded-root-filtered-anti-empty");
     let left_path = dir.join("lineitem.parquet");
     let right_path = dir.join("orders.parquet");

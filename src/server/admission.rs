@@ -1,8 +1,8 @@
-use std::{fmt::Write, num::NonZeroUsize, sync::Arc};
+use std::{fmt::Write, sync::Arc};
 
-#[cfg(test)]
-use nexus_query_engine::runtime::QueryHandle;
 use nexus_query_engine::runtime::TenantId;
+#[cfg(test)]
+use nexus_query_engine::runtime::{QueryAdmissionRequest, QueryHandle};
 use tokio::sync::Semaphore;
 #[cfg(test)]
 use tokio::sync::{OwnedSemaphorePermit, TryAcquireError};
@@ -11,10 +11,7 @@ use super::{
     config::ServerConfig,
     error::{Result, ServerError},
 };
-use crate::{
-    backend::{NexusAdmissionPolicy, NexusGpuBackend},
-    native_exec::UnboundedNativeExecutionLimiter,
-};
+use crate::backend::{NexusAdmissionPolicy, NexusGpuBackend};
 
 const DEFAULT_SERVER_TENANT_ID: &str = "default";
 
@@ -41,12 +38,6 @@ impl QueryAdmission {
         })
     }
 
-    #[cfg(test)]
-    fn from_server_config_admission_only(config: &ServerConfig) -> Result<Self> {
-        let backend = server_backend_from_config_admission_only(config)?;
-        Self::from_backend_option(config.max_in_flight, backend)
-    }
-
     pub(crate) fn from_backend(backend: Option<&NexusGpuBackend>, config: &ServerConfig) -> Result<Self> {
         Self::from_backend_option(config.max_in_flight, backend.cloned())
     }
@@ -58,17 +49,14 @@ impl QueryAdmission {
         Ok(Self { backend: QueryAdmissionBackend::QueryService { backend: Box::new(backend) }, max_in_flight })
     }
 
-    pub fn max_in_flight(&self) -> usize {
-        self.max_in_flight
+    #[cfg(test)]
+    pub(crate) fn from_test_backend(backend: &NexusGpuBackend) -> Self {
+        Self::from_backend_option(backend.admission_policy().max_concurrent_queries(), Some(backend.clone()))
+            .expect("test backend admission policy is already validated")
     }
 
-    pub(crate) fn unbounded_native_execution_limiter(&self) -> Option<UnboundedNativeExecutionLimiter> {
-        let QueryAdmissionBackend::Semaphore { permits } = &self.backend else {
-            return None;
-        };
-        let max_concurrent_queries =
-            NonZeroUsize::new(self.max_in_flight).expect("QueryAdmission max_in_flight is validated nonzero");
-        Some(UnboundedNativeExecutionLimiter::from_shared_semaphore(Arc::clone(permits), max_concurrent_queries))
+    pub fn max_in_flight(&self) -> usize {
+        self.max_in_flight
     }
 
     /// Close the admission gate. After close, any pending or future
@@ -77,9 +65,7 @@ impl QueryAdmission {
     pub fn close(&self) {
         match &self.backend {
             QueryAdmissionBackend::QueryService { backend } => {
-                if let Err(error) = backend.query_service().close() {
-                    eprintln!("[datafusion-nexus] warning: failed to close query service admission: {error}");
-                }
+                backend.close();
             },
             QueryAdmissionBackend::Semaphore { permits } => permits.close(),
         }
@@ -88,7 +74,7 @@ impl QueryAdmission {
     fn close_and_wait_for_quiescence_blocking_until(&self, deadline: std::time::Instant) -> Result<()> {
         match &self.backend {
             QueryAdmissionBackend::QueryService { backend } => {
-                backend.query_service().close_and_wait_for_quiescence_until(deadline).map_err(|error| {
+                backend.close_and_wait_until(deadline).map(|_snapshot| ()).map_err(|error| {
                     ServerError::session("query service shutdown cleanup did not quiesce", error)
                         .with_fact("shutdown_component", "query_admission")
                 })
@@ -120,8 +106,8 @@ impl QueryAdmission {
     pub fn try_acquire(&self) -> Result<Option<QueryAdmissionPermit>> {
         match &self.backend {
             QueryAdmissionBackend::QueryService { backend } => backend
-                .query_service()
-                .try_admit_query(backend.tenant_id().clone())
+                .session_capability()
+                .try_admit_query_with_request(backend.tenant_id().clone(), QueryAdmissionRequest::new())
                 .map(|handle| {
                     handle.map(|handle| QueryAdmissionPermit {
                         inner: QueryAdmissionPermitInner::QueryService(Arc::new(handle)),
@@ -144,8 +130,8 @@ impl QueryAdmission {
         let QueryAdmissionBackend::QueryService { backend } = &self.backend else {
             return;
         };
-        let service = backend.query_service();
-        match service.admission_snapshot() {
+        let session = backend.session_capability();
+        match session.admission_snapshot() {
             Ok(snapshot) => {
                 tracing::info!(
                     query_id = query_id.unwrap_or(""),
@@ -164,7 +150,7 @@ impl QueryAdmission {
                 "failed to read query service admission snapshot"
             ),
         }
-        match service.memory_governor_reports() {
+        match session.memory_governor_reports() {
             Ok(reports) => {
                 for report in reports {
                     tracing::info!(
@@ -188,7 +174,7 @@ impl QueryAdmission {
                 "failed to read query service memory governor report"
             ),
         }
-        for snapshot in service.device_admission_snapshots() {
+        for snapshot in session.device_admission_snapshots().unwrap_or_default() {
             tracing::info!(
                 query_id = query_id.unwrap_or(""),
                 event,
@@ -197,7 +183,7 @@ impl QueryAdmission {
                 "query service device admission snapshot"
             );
         }
-        for snapshot in service.device_telemetry_snapshots() {
+        for snapshot in session.device_telemetry_snapshots().unwrap_or_default() {
             tracing::info!(
                 query_id = query_id.unwrap_or(""),
                 event,
@@ -216,7 +202,7 @@ impl QueryAdmission {
                 "query service device telemetry snapshot"
             );
         }
-        for report in service.device_memory_failure_reports() {
+        for report in session.device_memory_failure_reports().unwrap_or_default() {
             tracing::info!(
                 query_id = query_id.unwrap_or(""),
                 event,
@@ -242,8 +228,10 @@ impl QueryAdmission {
         let _ = writeln!(output, "# max_in_flight={}", self.max_in_flight);
         match &self.backend {
             QueryAdmissionBackend::QueryService { backend } => {
-                let service = backend.query_service();
-                let config = service.config();
+                let session = backend.session_capability();
+                let config = session
+                    .config()
+                    .map_err(|error| ServerError::session("failed to read backend controller config", error))?;
                 let _ = writeln!(output, "# backend=query_service");
                 let _ = writeln!(output, "# tenant_id={}", payload_value(backend.tenant_id().as_str()));
                 let _ = writeln!(output, "# device_ordinals={}", payload_value(&join_usize(backend.device_ordinals())));
@@ -251,7 +239,10 @@ impl QueryAdmission {
                 let _ = writeln!(
                     output,
                     "# max_queries_per_device={}",
-                    config.max_queries_per_device.map_or_else(|| "none".to_string(), |value| value.to_string())
+                    backend
+                        .admission_policy()
+                        .max_queries_per_device()
+                        .map_or_else(|| "none".to_string(), |value| value.to_string())
                 );
                 let _ = writeln!(output, "# placement_policy={}", config.placement_policy.as_str());
                 if let nexus_query_engine::runtime::QueryPlacementPolicy::Pinned { device_ordinal } =
@@ -284,7 +275,7 @@ impl QueryAdmission {
                         .map_or_else(|| "none".to_string(), |policy| policy.ceiling_multiplier.to_string())
                 );
 
-                let snapshot = service
+                let snapshot = session
                     .admission_snapshot()
                     .map_err(|error| ServerError::session("failed to read query service admission snapshot", error))?;
                 output.push_str("\n[admission]\n");
@@ -303,7 +294,7 @@ impl QueryAdmission {
                     let _ = writeln!(output, "{}\t{}", payload_value(depth.tenant_id.as_str()), depth.queued_queries);
                 }
 
-                let reports = service.memory_governor_reports().map_err(|error| {
+                let reports = session.memory_governor_reports().map_err(|error| {
                     ServerError::session("failed to read query service memory governor reports", error)
                 })?;
                 output.push_str("\n[memory_governor_reports]\n");
@@ -344,7 +335,10 @@ impl QueryAdmission {
                 output.push_str(
                     "device_ordinal\tcallback_installed\tcallback_install_unavailable\tallocation_failure_count\ttotal_failed_allocation_bytes\tlargest_failed_allocation_bytes\ttrim_retry_count\tpool_usage_observation_count\tlast_failed_allocation_bytes\tlast_pool_reserved_current_bytes\tlast_pool_used_current_bytes\n",
                 );
-                for report in service.device_memory_failure_reports() {
+                for report in session
+                    .device_memory_failure_reports()
+                    .map_err(|error| ServerError::session("failed to read device memory failure reports", error))?
+                {
                     let _ = writeln!(
                         output,
                         "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
@@ -362,7 +356,9 @@ impl QueryAdmission {
                     );
                 }
 
-                let query_execution = service.gpu_execution_query_report();
+                let query_execution = session
+                    .gpu_execution_query_report()
+                    .map_err(|error| ServerError::session("failed to read GPU execution report", error))?;
                 output.push_str("\n[gpu_execution]\n");
                 output.push_str("active_query_jobs\tpeak_active_query_jobs\n");
                 let _ = writeln!(
@@ -375,7 +371,10 @@ impl QueryAdmission {
                 output.push_str(
                     "device_ordinal\tworker_count\tactive_jobs\tpeak_active_jobs\tqueued_jobs\tpeak_queued_jobs\tactive_query_jobs\tpeak_active_query_jobs\n",
                 );
-                for report in service.gpu_execution_pool_reports() {
+                for report in session
+                    .gpu_execution_pool_reports()
+                    .map_err(|error| ServerError::session("failed to read GPU execution pool reports", error))?
+                {
                     let _ = writeln!(
                         output,
                         "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
@@ -392,7 +391,10 @@ impl QueryAdmission {
 
                 output.push_str("\n[device_admission_slots]\n");
                 output.push_str("device_ordinal\tprocess_active_query_slots\n");
-                for snapshot in service.device_admission_snapshots() {
+                for snapshot in session
+                    .device_admission_snapshots()
+                    .map_err(|error| ServerError::session("failed to read device admission snapshots", error))?
+                {
                     let _ = writeln!(output, "{}\t{}", snapshot.device_ordinal, snapshot.process_active_query_slots);
                 }
 
@@ -400,7 +402,10 @@ impl QueryAdmission {
                 output.push_str(
                     "sampled_at_unix_ms\tdevice_ordinal\tcuda_status\tcuda_total_bytes\tcuda_free_bytes\tnvml_status\tnvml_total_bytes\tnvml_reserved_bytes\tnvml_used_bytes\tnvml_free_bytes\tgpu_utilization_pct\tmemory_utilization_pct\n",
                 );
-                for snapshot in service.device_telemetry_snapshots() {
+                for snapshot in session
+                    .device_telemetry_snapshots()
+                    .map_err(|error| ServerError::session("failed to read device telemetry snapshots", error))?
+                {
                     let _ = writeln!(
                         output,
                         "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
@@ -423,7 +428,7 @@ impl QueryAdmission {
                 output.push_str(
                     "device_ordinal\tenabled\tentries\tresident_bytes\tin_use_bytes\thits\tmisses\tevictions\tbuilds_in_flight\tbuild_waits\n",
                 );
-                for snapshot in service
+                for snapshot in session
                     .resident_graph_cache_snapshots()
                     .map_err(|error| ServerError::session("failed to read resident graph cache snapshots", error))?
                 {
@@ -478,16 +483,6 @@ enum QueryAdmissionPermitInner {
 }
 
 #[cfg(test)]
-impl QueryAdmissionPermit {
-    pub fn query_service_handle(&self) -> Option<Arc<QueryHandle>> {
-        match &self.inner {
-            QueryAdmissionPermitInner::QueryService(handle) => Some(Arc::clone(handle)),
-            QueryAdmissionPermitInner::Semaphore { .. } => None,
-        }
-    }
-}
-
-#[cfg(test)]
 impl Drop for QueryAdmissionPermit {
     fn drop(&mut self) {
         if let QueryAdmissionPermitInner::QueryService(handle) = &self.inner {
@@ -499,12 +494,13 @@ impl Drop for QueryAdmissionPermit {
 impl NexusGpuBackend {
     /// Build the server's query-service backend from a validated server config.
     ///
-    /// Returns `None` for unbounded native memory policy; the Flight SQL server
-    /// then falls back to its legacy semaphore admission path.
+    /// Returns `None` for unbounded native memory policy. Phase 0 Flight SQL
+    /// construction rejects that policy before calling this projection.
     pub fn from_server_config(config: &ServerConfig) -> Result<Option<Self>> {
         Self::from_optimizer_config_for_admission(
             config.native_optimizer_config.clone(),
             config.gpu_devices.clone(),
+            config.gpu_memory_ownership.clone(),
             server_admission_policy(config),
             TenantId::new(DEFAULT_SERVER_TENANT_ID),
         )
@@ -513,14 +509,17 @@ impl NexusGpuBackend {
 }
 
 #[cfg(test)]
-fn server_backend_from_config_admission_only(config: &ServerConfig) -> Result<Option<NexusGpuBackend>> {
-    NexusGpuBackend::from_optimizer_config_for_admission_only(
+fn server_test_controller_projection_from_config(
+    config: &ServerConfig,
+) -> Result<Option<crate::backend::TestBackendControllerProjection>> {
+    crate::backend::test_controller_projection_from_optimizer_config(
         config.native_optimizer_config.clone(),
         config.gpu_devices.clone(),
+        config.gpu_memory_ownership.clone(),
         server_admission_policy(config),
         TenantId::new(DEFAULT_SERVER_TENANT_ID),
     )
-    .map_err(|error| ServerError::session("failed to initialize query service admission", error))
+    .map_err(|error| ServerError::session("failed to project query service admission policy", error))
 }
 
 pub(crate) fn server_admission_policy(config: &ServerConfig) -> NexusAdmissionPolicy {
@@ -557,48 +556,63 @@ fn payload_value(value: &str) -> String {
 mod tests {
     use super::*;
 
+    fn declare_test_gpu_ownership(mut config: ServerConfig) -> ServerConfig {
+        config.gpu_memory_ownership = config
+            .gpu_devices
+            .iter()
+            .copied()
+            .map(|ordinal| (ordinal, crate::backend::GpuMemoryOwnership::WholeDeviceExclusive))
+            .collect();
+        config
+    }
+
     #[test]
     fn server_backend_partitions_budget_and_sizes_stream_pool() {
-        let mut env = std::collections::BTreeMap::from([
+        let env = std::collections::BTreeMap::from([
             (super::super::config::NEXUS_SERVER_MAX_CONCURRENT_QUERIES_ENV, "3".to_string()),
             (super::super::config::NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV, "3072".to_string()),
             (super::super::config::NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, "1024".to_string()),
             (super::super::config::NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, "1".to_string()),
             (super::super::config::NEXUS_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV, "2".to_string()),
+        ]);
+        let config = declare_test_gpu_ownership(ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap());
+
+        let backend = server_test_controller_projection_from_config(&config)
+            .unwrap()
+            .expect("bounded native config should project QueryService admission");
+        let controller = backend.controller_config().unwrap();
+
+        assert_eq!(controller.max_concurrent_queries, 3);
+        assert_eq!(controller.max_queries_per_device, None);
+        assert_eq!(controller.placement_policy, nexus_query_engine::runtime::QueryPlacementPolicy::LeastLoaded);
+        assert_eq!(controller.device_ordinal, 0);
+        assert_eq!(controller.device_capacity_bytes, Some(3072));
+        assert_eq!(controller.stream_pool_size, Some(9));
+        assert_eq!(controller.source_scheduler_policy.max_source_reads_in_flight(), 2);
+        assert_eq!(controller.max_admission_queue_len, 192);
+        assert_eq!(controller.admission_wait_timeout, std::time::Duration::from_secs(60));
+        assert_eq!(controller.local_parquet_source_cache_max_retained_bytes, None);
+        assert_eq!(controller.resident_graph_cache_max_retained_bytes, None);
+        assert_eq!(backend.tenant_budget().unwrap(), 3072);
+
+        let permit = backend.admit().expect("first query should admit");
+        assert_eq!(permit.device_budget_bytes(), 2304);
+    }
+
+    #[test]
+    fn server_backend_rejects_phase_zero_cache_domains() {
+        let env = std::collections::BTreeMap::from([
+            (super::super::config::NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV, "3072".to_string()),
+            (super::super::config::NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, "1024".to_string()),
+            (super::super::config::NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, "1".to_string()),
             (super::super::config::NEXUS_SERVER_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES_ENV, "2048".to_string()),
         ]);
-        if cfg!(feature = "cugraph") {
-            env.insert(super::super::config::NEXUS_SERVER_CUGRAPH_ENABLED_ENV, "true".to_string());
-            env.insert(
-                super::super::config::NEXUS_SERVER_NATIVE_GRAPH_CACHE_MAX_RETAINED_BYTES_ENV,
-                "4096".to_string(),
-            );
-        }
-        let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+        let config = declare_test_gpu_ownership(ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap());
 
-        let admission = QueryAdmission::from_server_config_admission_only(&config).unwrap();
-        let QueryAdmissionBackend::QueryService { backend } = &admission.backend else {
-            panic!("bounded native config should use QueryService admission");
-        };
-        let service = backend.query_service();
+        let error = server_test_controller_projection_from_config(&config)
+            .expect_err("Phase 0 must reject source and graph cache domains before backend construction");
 
-        assert_eq!(service.config().max_concurrent_queries, 3);
-        assert_eq!(service.config().max_queries_per_device, None);
-        assert_eq!(service.config().placement_policy, nexus_query_engine::runtime::QueryPlacementPolicy::LeastLoaded);
-        assert_eq!(service.config().device_ordinal, 0);
-        assert_eq!(service.config().device_capacity_bytes, Some(3072));
-        assert_eq!(service.config().stream_pool_size, Some(9));
-        assert_eq!(service.config().source_scheduler_policy.max_source_reads_in_flight(), 2);
-        assert_eq!(service.config().max_admission_queue_len, 192);
-        assert_eq!(service.config().admission_wait_timeout, std::time::Duration::from_secs(60));
-        assert_eq!(service.config().local_parquet_source_cache_max_retained_bytes, Some(2048));
-        #[cfg(feature = "cugraph")]
-        assert_eq!(service.config().resident_graph_cache_max_retained_bytes, Some(4096));
-        assert_eq!(service.tenant_budget(backend.tenant_id()).unwrap(), 3072);
-
-        let permit = admission.try_acquire().unwrap().expect("first query should admit");
-        let handle = permit.query_service_handle().expect("query service admission should return a handle");
-        assert_eq!(handle.device_budget_bytes(), 2304);
+        assert_eq!(error.fact_value("reason"), Some("cache_domains_must_be_disabled"));
     }
 
     #[test]
@@ -609,14 +623,13 @@ mod tests {
             (super::super::config::NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, "1024".to_string()),
             (super::super::config::NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, "1".to_string()),
         ]);
-        let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+        let config = declare_test_gpu_ownership(ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap());
 
-        let admission = QueryAdmission::from_server_config_admission_only(&config).unwrap();
-        let QueryAdmissionBackend::QueryService { backend } = &admission.backend else {
-            panic!("bounded native config should use QueryService admission");
-        };
+        let backend = server_test_controller_projection_from_config(&config)
+            .unwrap()
+            .expect("bounded native config should project QueryService admission");
 
-        assert_eq!(backend.query_service().config().admission_wait_timeout, std::time::Duration::from_millis(250));
+        assert_eq!(backend.controller_config().unwrap().admission_wait_timeout, std::time::Duration::from_millis(250));
     }
 
     #[test]
@@ -628,41 +641,34 @@ mod tests {
             (super::super::config::NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, "1024".to_string()),
             (super::super::config::NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, "1".to_string()),
         ]);
-        let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+        let config = declare_test_gpu_ownership(ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap());
 
-        let admission = QueryAdmission::from_server_config_admission_only(&config).unwrap();
-        let QueryAdmissionBackend::QueryService { backend } = &admission.backend else {
-            panic!("bounded native config should use QueryService admission");
-        };
+        let backend = server_test_controller_projection_from_config(&config)
+            .unwrap()
+            .expect("bounded native config should project QueryService admission");
 
         assert_eq!(backend.device_ordinals(), &[0, 1]);
-        assert_eq!(backend.query_service().config().device_ordinal, 0);
-        let permit = admission.try_acquire().unwrap().expect("first query should admit");
-        let handle = permit.query_service_handle().expect("query service admission should return a handle");
-        assert_eq!(handle.device_ordinal(), 0);
-        assert_eq!(handle.device_budget_bytes(), 1792);
+        assert_eq!(backend.controller_config().unwrap().device_ordinal, 0);
+        let permit = backend.admit().expect("first query should admit");
+        assert_eq!(permit.device_ordinal(), 0);
+        assert_eq!(permit.device_budget_bytes(), 1792);
     }
 
     #[test]
     fn query_service_admission_diagnostics_payload_reports_snapshot_and_governors() {
-        let mut env = std::collections::BTreeMap::from([
+        let env = std::collections::BTreeMap::from([
             (super::super::config::NEXUS_SERVER_MAX_CONCURRENT_QUERIES_ENV, "2".to_string()),
             (super::super::config::NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV, "1024".to_string()),
             (super::super::config::NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, "512".to_string()),
             (super::super::config::NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, "1".to_string()),
             (super::super::config::NEXUS_SERVER_ADMISSION_GRANT_MIN_ENV, "256".to_string()),
             (super::super::config::NEXUS_SERVER_ADMISSION_GRANT_WANT_ENV, "512".to_string()),
-            (super::super::config::NEXUS_SERVER_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES_ENV, "2048".to_string()),
         ]);
-        if cfg!(feature = "cugraph") {
-            env.insert(super::super::config::NEXUS_SERVER_CUGRAPH_ENABLED_ENV, "true".to_string());
-            env.insert(
-                super::super::config::NEXUS_SERVER_NATIVE_GRAPH_CACHE_MAX_RETAINED_BYTES_ENV,
-                "4096".to_string(),
-            );
-        }
-        let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
-        let admission = QueryAdmission::from_server_config_admission_only(&config).unwrap();
+        let config = declare_test_gpu_ownership(ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap());
+        let backend = NexusGpuBackend::from_server_config(&config)
+            .unwrap()
+            .expect("bounded native config should build a runtime backend");
+        let admission = QueryAdmission::from_backend(Some(&backend), &config).unwrap();
         let permit = admission.try_acquire().unwrap().expect("first query should admit");
 
         let payload = admission.diagnostics_payload().unwrap();
@@ -674,10 +680,7 @@ mod tests {
         assert!(payload.contains("# max_queries_per_device=none\n"), "{payload}");
         assert!(payload.contains("# placement_policy=least_loaded\n"), "{payload}");
         assert!(payload.contains("# slot_guarantee=guaranteed_minimum\n"), "{payload}");
-        assert!(payload.contains("# local_parquet_source_cache_max_retained_bytes=2048\n"), "{payload}");
-        #[cfg(feature = "cugraph")]
-        assert!(payload.contains("# resident_graph_cache_max_retained_bytes=4096\n"), "{payload}");
-        #[cfg(not(feature = "cugraph"))]
+        assert!(payload.contains("# local_parquet_source_cache_max_retained_bytes=none\n"), "{payload}");
         assert!(payload.contains("# resident_graph_cache_max_retained_bytes=none\n"), "{payload}");
         assert!(
             payload.contains("[admission]\nactive_queries\tqueued_queries\tnext_tenant_id\n1\t0\tdefault\n"),
@@ -731,9 +734,8 @@ mod tests {
             ),
             "{payload}"
         );
-        #[cfg(feature = "cugraph")]
-        assert!(payload.contains("\n0\ttrue\t0\t0\t0\t0\t0\t0\t0\t0\n"), "{payload}");
-        #[cfg(not(feature = "cugraph"))]
+        // Compiling graph support does not allocate an unbounded resident
+        // cache. The cache remains disabled until a retention budget is set.
         assert!(payload.contains("\n0\tfalse\t0\t0\t0\t0\t0\t0\t0\t0\n"), "{payload}");
 
         drop(permit);

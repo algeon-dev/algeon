@@ -2,6 +2,7 @@
 async fn get_sql_info_advertises_core_server_capabilities() {
     let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
     let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
@@ -74,6 +75,7 @@ async fn get_sql_info_advertises_core_server_capabilities() {
 async fn flight_sql_get_catalogs_lists_default_catalog() {
     let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
     let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
@@ -92,6 +94,7 @@ async fn flight_sql_get_catalogs_lists_default_catalog() {
 async fn flight_sql_get_db_schemas_lists_default_schemas() {
     let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
     let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
@@ -117,6 +120,7 @@ async fn flight_sql_get_db_schemas_lists_default_schemas() {
 async fn flight_sql_get_tables_distinguishes_views_from_base_tables() {
     let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
     let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
@@ -163,6 +167,7 @@ async fn flight_sql_get_tables_distinguishes_views_from_base_tables() {
 async fn flight_sql_get_tables_respects_table_types_filter() {
     let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
     let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
@@ -195,6 +200,7 @@ async fn flight_sql_get_tables_respects_table_types_filter() {
 async fn flight_sql_get_tables_with_include_schema_emits_arrow_schema() {
     let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
     let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
@@ -245,6 +251,7 @@ async fn flight_sql_get_tables_with_include_schema_emits_arrow_schema() {
 async fn flight_sql_get_table_types_returns_table_and_view() {
     let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
     let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
@@ -263,6 +270,7 @@ async fn flight_sql_get_table_types_returns_table_and_view() {
 async fn flight_sql_get_primary_keys_returns_empty_with_schema() {
     let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
     let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
@@ -287,6 +295,7 @@ async fn flight_sql_get_primary_keys_returns_empty_with_schema() {
 async fn flight_sql_foreign_keys_rpcs_return_empty_with_shared_schema() {
     let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
     let server = tokio::spawn(async move { serve_with_listener(config, listener).await });

@@ -20,7 +20,7 @@ use nexus_query_engine::{
     exec::execute_query_plan_observed,
     observability::SealedRuntimeObservationSnapshot,
     plan::QueryPlanBuilder,
-    runtime::{ExecutionCancellation, ExecutionContext},
+    runtime::{ExecutionCancellation, ExecutionContext, QueryHandle, TenantQueryContext},
     source::{GpuResidentSource, LiteralBatchSource, SourceNode},
 };
 use nexus_query_engine::{
@@ -39,10 +39,35 @@ use super::{
     record::{NATIVE_NEXUS_RECORDING_DESCRIPTORS, NativeMetricRecordingKind},
 };
 #[cfg(feature = "server")]
+use crate::backend::{GpuMemoryOwnership, NexusGpuBackend};
+#[cfg(feature = "server")]
 use crate::native_exec::{
     NexusNativeComposedExec, NexusNativeExec, NexusNativeExecutionConfig, NexusNativeGpuProducerExec,
 };
 use crate::{native_exec::admission::QueryAdmissionFacts, native_report::NativeDataFusionExecutionMetrics};
+
+#[cfg(feature = "server")]
+struct AdmittedTestContext {
+    context: ExecutionContext,
+    cancellation: ExecutionCancellation,
+    _tenant_context: TenantQueryContext,
+    _handle: QueryHandle,
+    _backend: NexusGpuBackend,
+}
+
+#[cfg(feature = "server")]
+fn admitted_test_context(query_id: &'static str) -> AdmittedTestContext {
+    let backend = NexusGpuBackend::builder()
+        .device_memory_ownership([(0, GpuMemoryOwnership::WholeDeviceExclusive)])
+        .build()
+        .expect("test GPU backend builds");
+    let handle = backend.admit_query().expect("test query admits");
+    let cancellation = ExecutionCancellation::new();
+    let tenant_context =
+        handle.acquire_context_with_cancellation(cancellation.clone()).expect("admitted test context acquires");
+    let context = tenant_context.context().with_query_id(query_id).expect("test query id is valid");
+    AdmittedTestContext { context, cancellation, _tenant_context: tenant_context, _handle: handle, _backend: backend }
+}
 
 #[test]
 fn native_summary_metrics_set_datafusion_v54_categories() {
@@ -476,14 +501,9 @@ fn cancelled_native_outcome_retains_local_evidence_before_error_conversion() {
     let mut plan = QueryPlanBuilder::new();
     let source = plan.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(schema, vec![batch])));
     let plan = plan.finish_with_host_sink(source);
-    let cancellation = ExecutionCancellation::new();
-    cancellation.cancel();
-    let context = ExecutionContext::builder()
-        .with_query_id("capture-cancel")
-        .with_cancellation(cancellation)
-        .build()
-        .expect("cancelled context builds");
-    let outcome = execute_query_plan_observed(&context, &plan, RuntimeObservationConfig::native_execution());
+    let admitted = admitted_test_context("capture-cancel");
+    admitted.cancellation.cancel();
+    let outcome = execute_query_plan_observed(&admitted.context, &plan, RuntimeObservationConfig::native_execution());
 
     let error = match native_metrics.finalize_query_outcome(outcome) {
         Err(error) => error,
@@ -516,9 +536,8 @@ fn successful_native_outcome_retains_one_owned_snapshot_in_local_collector() {
     let mut plan = QueryPlanBuilder::new();
     let source = plan.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(schema, vec![batch])));
     let plan = plan.finish_with_host_sink(source);
-    let context =
-        ExecutionContext::builder().with_query_id("capture-success").build().expect("successful context builds");
-    let outcome = execute_query_plan_observed(&context, &plan, RuntimeObservationConfig::native_execution());
+    let admitted = admitted_test_context("capture-success");
+    let outcome = execute_query_plan_observed(&admitted.context, &plan, RuntimeObservationConfig::native_execution());
 
     native_metrics.finalize_query_outcome(outcome).expect("native execution succeeds");
 

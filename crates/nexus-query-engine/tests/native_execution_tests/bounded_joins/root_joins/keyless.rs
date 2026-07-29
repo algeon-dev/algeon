@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn bounded_native_query_executes_root_keyless_conditional_join_with_ordered_reservations() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let runtime = backend_runtime();
     let dir = unique_temp_dir("nexus-query-engine-bounded-root-conditional-join");
     let left_path = dir.join("lineitem.parquet");
     let right_path = dir.join("orders.parquet");
@@ -37,17 +37,7 @@ fn bounded_native_query_executes_root_keyless_conditional_join_with_ordered_rese
     let plan = builder.finish_with_host_sink(join);
     assert!(plan.capability_analysis().admits_root_join());
 
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 1024 * 1024,
-            max_source_chunk_bytes: 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
+    let context = backend_context_with_grant(1024 * 1024);
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
@@ -93,7 +83,7 @@ fn bounded_native_query_executes_root_keyless_conditional_join_with_ordered_rese
 
 #[test]
 fn bounded_native_query_executes_root_keyless_conditional_left_join_with_unmatched_left_rows() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let runtime = backend_runtime();
     let dir = unique_temp_dir("nexus-query-engine-bounded-root-conditional-left-join");
     let left_path = dir.join("lineitem.parquet");
     let right_path = dir.join("orders.parquet");
@@ -174,7 +164,7 @@ fn bounded_native_query_executes_root_keyless_conditional_left_join_with_unmatch
 
 #[test]
 fn bounded_native_query_executes_root_keyless_conditional_full_join_with_retained_size_data() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let runtime = backend_runtime();
     let dir = unique_temp_dir("nexus-query-engine-bounded-root-conditional-full-join");
     let left_path = dir.join("lineitem.parquet");
     let right_path = dir.join("orders.parquet");
@@ -288,7 +278,7 @@ fn bounded_native_query_executes_root_keyless_conditional_full_join_with_retaine
 
 #[test]
 fn bounded_native_query_executes_keyless_predicate_free_left_join_as_outer_cross() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let runtime = backend_runtime();
     let dir = unique_temp_dir("nexus-query-engine-bounded-keyless-left-outer-cross");
     let left_path = dir.join("lineitem.parquet");
     let right_path = dir.join("orders.parquet");
@@ -348,7 +338,7 @@ fn bounded_native_query_executes_keyless_predicate_free_left_join_as_outer_cross
 
 #[test]
 fn bounded_native_query_null_extends_keyless_predicate_free_left_join_when_right_is_empty() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let runtime = backend_runtime();
     let dir = unique_temp_dir("nexus-query-engine-bounded-keyless-left-outer-cross-empty-right");
     let left_path = dir.join("lineitem.parquet");
     let right_path = dir.join("orders.parquet");
@@ -388,7 +378,7 @@ fn bounded_native_query_null_extends_keyless_predicate_free_left_join_when_right
 
 #[test]
 fn bounded_native_query_null_extends_keyless_predicate_free_full_join_when_left_is_empty() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let runtime = backend_runtime();
     let dir = unique_temp_dir("nexus-query-engine-bounded-keyless-full-outer-cross-empty-left");
     let left_path = dir.join("lineitem.parquet");
     let right_path = dir.join("orders.parquet");

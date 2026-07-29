@@ -6,7 +6,7 @@ use super::*;
 /// service queue. This lets async servers wait without parking a blocking
 /// thread inside [`QueryService::admit_query`].
 #[derive(Debug)]
-pub struct QueryAdmissionWaiter {
+pub(crate) struct QueryAdmissionWaiter {
     pub(super) service: QueryService,
     pub(super) tenant_id: TenantId,
     pub(super) admission_request_id: AdmissionRequestId,
@@ -50,8 +50,7 @@ pub(super) struct AdaptiveGrowthCandidate {
 pub(super) struct AdmissionRequest {
     pub(super) admission_request_id: AdmissionRequestId,
     pub(super) observation: RuntimeObservationHandle,
-    pub(super) observation_owner: Option<RuntimeObservationOwner>,
-    pub(super) observation_activity: Option<QueryActivityLease>,
+    pub(super) completion: QueryCompletion,
     pub(super) tenant_id: TenantId,
     pub(super) grant_policy: TenantGrantPolicy,
     #[cfg(feature = "cugraph")]
@@ -59,6 +58,158 @@ pub(super) struct AdmissionRequest {
     pub(super) qos: QueryQos,
     pub(super) placement_hint: QueryPlacementHint,
     pub(super) deadline: Instant,
+}
+
+/// The one ownership boundary for terminal admission completion.
+///
+/// This payload starts at backend admission, remains with a queued request,
+/// and, once admitted, stays with the query handle until every GPU-bound
+/// resource has been torn down.  It deliberately owns the opaque activity
+/// lease so activity callbacks cannot run while admission or resource locks
+/// are held.
+#[derive(Debug)]
+pub(crate) struct QueryCompletion {
+    observation_owner: Option<RuntimeObservationOwner>,
+    observation_permit: Option<ObservationPermit>,
+    observation_activity: Option<QueryActivityLease>,
+    completion_dispatcher: Option<ObservationCompletionDispatcher>,
+    gpu_resource_permit: Option<GpuResourcePermit>,
+}
+
+impl QueryCompletion {
+    pub(super) fn new(
+        observation_owner: Option<RuntimeObservationOwner>,
+        observation_permit: Option<ObservationPermit>,
+        observation_activity: Option<QueryActivityLease>,
+        completion_dispatcher: Option<ObservationCompletionDispatcher>,
+        gpu_resource_permit: Option<GpuResourcePermit>,
+    ) -> Self {
+        Self { observation_owner, observation_permit, observation_activity, completion_dispatcher, gpu_resource_permit }
+    }
+
+    /// Transfers the GPU-generation permit into the handle's internal cleanup
+    /// owner. The remaining payload can only run after that owner has dropped
+    /// the permit and all CUDA-bound state.
+    pub(super) fn into_admitted(mut self) -> (Self, Option<GpuResourcePermit>) {
+        let gpu_resource_permit = self.gpu_resource_permit.take();
+        (self, gpu_resource_permit)
+    }
+
+    pub(super) fn observation_owner(&self) -> Option<RuntimeObservationOwner> {
+        self.observation_owner.clone()
+    }
+
+    pub(super) fn begin_query_cleanup(&self) {
+        if let Some(owner) = &self.observation_owner {
+            owner.begin_query_cleanup();
+        }
+    }
+
+    pub(super) fn finish_error(self, error: &QueryError) {
+        self.finish(RuntimeTerminalOutcome::Failed {
+            error_code: error.code().to_string(),
+            error_status: error.status().as_str().to_string(),
+        });
+    }
+
+    pub(super) fn finish_timeout(self, error: &QueryError) {
+        self.finish_error(error);
+    }
+
+    pub(super) fn finish_cancelled(self) {
+        self.finish(RuntimeTerminalOutcome::Cancelled);
+    }
+
+    pub(super) fn finish_after_gpu_cleanup(self, fallback: RuntimeTerminalOutcome) {
+        self.dispatch_after_gpu_cleanup(fallback);
+    }
+
+    fn finish(mut self, fallback: RuntimeTerminalOutcome) {
+        // A rejected or cancelled request has no handle cleanup owner. Release
+        // its backend generation before observer delivery so enqueue fallback
+        // cannot synchronously reenter backend close while retaining GPU state.
+        drop(self.gpu_resource_permit.take());
+        self.dispatch_after_gpu_cleanup(fallback);
+    }
+
+    fn dispatch_after_gpu_cleanup(mut self, fallback: RuntimeTerminalOutcome) {
+        debug_assert!(self.gpu_resource_permit.is_none(), "GPU permit must leave before observer completion");
+        if let Some(dispatcher) = self.completion_dispatcher.take() {
+            let activity_tail_dispatcher = dispatcher.clone();
+            dispatcher.dispatch(move || {
+                let activity = self.finish_observation(fallback);
+                if let Some(activity) = activity {
+                    activity_tail_dispatcher.dispatch_activity_tail(move || Self::finish_activity(Some(activity)));
+                }
+            });
+        } else {
+            self.finish_inline(fallback);
+        }
+    }
+
+    fn finish_inline(mut self, fallback: RuntimeTerminalOutcome) {
+        // Recorder sealing may invoke observer callbacks. It must happen after
+        // every GPU reference has been released and outside admission/resource
+        // locks. The recorder itself preserves a prior structured execution
+        // outcome over this fallback.
+        let activity = self.finish_observation(fallback);
+        Self::finish_activity(activity);
+    }
+
+    /// Seals and delivers the observation while its permit still fences that
+    /// work, then relinquishes the permit before returning the opaque activity
+    /// lease. The caller decides the activity lane so observer delivery cannot
+    /// be starved by a reentrant activity close.
+    fn finish_observation(&mut self, fallback: RuntimeTerminalOutcome) -> Option<QueryActivityLease> {
+        let owner = self.observation_owner.take();
+        let permit = self.observation_permit.take();
+        let activity = self.observation_activity.take();
+        if let Some(owner) = owner {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _ = owner.finish_query_cleanup(fallback);
+            }));
+        }
+        // The permit fences observer delivery but cannot include an opaque
+        // activity destructor: that destructor may synchronously reenter
+        // backend close and wait for unrelated observation permits.
+        drop(permit);
+        activity
+    }
+
+    fn finish_activity(activity: Option<QueryActivityLease>) {
+        // Keep activity last even if a recorder observer panicked. A panicking
+        // activity destructor is isolated here so Drop never double-panics.
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(activity)));
+    }
+}
+
+impl Drop for QueryCompletion {
+    fn drop(&mut self) {
+        if self.observation_owner.is_none()
+            && self.observation_permit.is_none()
+            && self.observation_activity.is_none()
+            && self.gpu_resource_permit.is_none()
+        {
+            return;
+        }
+
+        // Recover every terminal path that unwinds before it can explicitly
+        // finish. Do not let a cleanup panic turn an already-unwinding path
+        // into an abort; recorder sealing receives an explicit Panicked
+        // fallback in that case.
+        let fallback =
+            if std::thread::panicking() { RuntimeTerminalOutcome::Panicked } else { RuntimeTerminalOutcome::Dropped };
+        let recovered = Self {
+            observation_owner: self.observation_owner.take(),
+            observation_permit: self.observation_permit.take(),
+            observation_activity: self.observation_activity.take(),
+            completion_dispatcher: self.completion_dispatcher.take(),
+            gpu_resource_permit: self.gpu_resource_permit.take(),
+        };
+        // `finish` consumes the payload. Keep a local mutable binding only so
+        // its fields are emptied before this Drop implementation returns.
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| recovered.finish(fallback)));
+    }
 }
 
 #[derive(Debug)]
@@ -175,7 +326,29 @@ impl QueryAdmissionWaiter {
         }
 
         let mut slot_notifications = PendingDeviceSlotNotifications::default();
-        let mut state = self.service.lock_admission()?;
+        let mut state = match self.service.inner.admission.lock() {
+            Ok(state) => state,
+            Err(error) => {
+                self.queued = false;
+                return Err(self
+                    .service
+                    .recover_queued_request_after_admission_poison(error.into_inner(), self.admission_request_id));
+            },
+        };
+        let expired = self.service.sweep_expired_queued_requests_locked(&mut state);
+        if !expired.is_empty() {
+            drop(state);
+            finish_expired_queued_requests(expired);
+            state = match self.service.inner.admission.lock() {
+                Ok(state) => state,
+                Err(error) => {
+                    self.queued = false;
+                    return Err(self
+                        .service
+                        .recover_queued_request_after_admission_poison(error.into_inner(), self.admission_request_id));
+                },
+            };
+        }
         if self.service.admission_is_closed(&state) {
             let removed =
                 self.service.remove_queued_request_without_admission_locked(&mut state, self.admission_request_id);
@@ -192,7 +365,10 @@ impl QueryAdmissionWaiter {
                     None,
                 );
             }
-            return Err(service_closed_error(&self.tenant_id));
+            let error = service_closed_error(&self.tenant_id);
+            drop(state);
+            finish_removed_request_error(removed, &error);
+            return Err(error);
         }
         let request_is_admissible = match self.service.request_is_admissible(&mut state, self.admission_request_id) {
             Ok(admissible) => admissible,
@@ -210,6 +386,8 @@ impl QueryAdmissionWaiter {
                         None,
                     );
                 }
+                drop(state);
+                finish_removed_request_error(removed, &error);
                 return Err(error);
             },
         };
@@ -244,6 +422,8 @@ impl QueryAdmissionWaiter {
                             None,
                         );
                     }
+                    drop(state);
+                    finish_removed_request_error(removed, &error);
                     return Err(error);
                 },
             };
@@ -265,6 +445,8 @@ impl QueryAdmissionWaiter {
                             None,
                         );
                     }
+                    drop(state);
+                    finish_removed_request_error(removed, &error);
                     return Err(error);
                 }
                 if Instant::now() >= self.deadline {
@@ -281,11 +463,14 @@ impl QueryAdmissionWaiter {
                             None,
                         );
                     }
-                    return Err(self.service.memory_grant_wait_timeout_error(
+                    let error = self.service.memory_grant_wait_timeout_error(
                         &self.tenant_id,
                         self.grant_policy,
                         state.queued.len(),
-                    ));
+                    );
+                    drop(state);
+                    finish_removed_request_error(removed, &error);
+                    return Err(error);
                 }
                 return Ok(None);
             };
@@ -301,6 +486,9 @@ impl QueryAdmissionWaiter {
                     None,
                 );
                 self.queued = false;
+                drop(state);
+                drop(placed_query);
+                finish_removed_request_error(Some(admitted), &error);
                 return Err(error);
             }
             if let Err(error) = self.service.attach_admission_budget_decrease_wakeup(&placed_query.memory_grant) {
@@ -314,6 +502,9 @@ impl QueryAdmissionWaiter {
                     None,
                 );
                 self.queued = false;
+                drop(state);
+                drop(placed_query);
+                finish_removed_request_error(Some(admitted), &error);
                 return Err(error);
             }
             if self.service.admission_is_closed(&state) {
@@ -329,6 +520,9 @@ impl QueryAdmissionWaiter {
                 );
                 self.queued = false;
                 self.service.inner.notify_admission_available();
+                drop(state);
+                drop(placed_query);
+                finish_removed_request_error(Some(admitted), &error);
                 return Err(error);
             }
             state.active_queries = state.active_queries.saturating_add(1);
@@ -359,20 +553,21 @@ impl QueryAdmissionWaiter {
                 Some(device_ordinal),
                 Some(device_budget_bytes),
             );
+            let (completion, gpu_resource_permit) = admitted.completion.into_admitted();
             return Ok(Some(QueryHandle {
                 lifetime: QueryHandleLifetime::new(
                     Arc::clone(&service),
                     self.tenant_id.clone(),
                     self.admission_request_id,
                     admitted.observation,
-                    admitted.observation_owner,
-                    admitted.observation_activity,
+                    completion,
+                    gpu_resource_permit,
                     placed_query.memory_grant,
                     placed_query.device_slot,
                     #[cfg(feature = "cugraph")]
                     placed_query.warm_graph_reservation,
                 ),
-                service,
+                config: service.config.clone(),
                 tenant_id: self.tenant_id.clone(),
                 admission_request_id: self.admission_request_id,
                 admission_sequence,
@@ -396,12 +591,15 @@ impl QueryAdmissionWaiter {
                     None,
                 );
             }
-            return Err(service_overloaded_error(
+            let error = service_overloaded_error(
                 "admission_wait_timeout",
                 &self.tenant_id,
                 state.queued.len(),
                 self.service.inner.config.max_admission_queue_len,
-            ));
+            );
+            drop(state);
+            finish_removed_request_error(removed, &error);
+            return Err(error);
         }
 
         Ok(None)
@@ -418,7 +616,7 @@ impl Drop for QueryAdmissionWaiter {
         if !self.queued {
             return;
         }
-        match self.service.inner.admission.lock() {
+        let removed = match self.service.inner.admission.lock() {
             Ok(mut state) => {
                 let removed =
                     self.service.remove_queued_request_without_admission_locked(&mut state, self.admission_request_id);
@@ -443,11 +641,20 @@ impl Drop for QueryAdmissionWaiter {
                         None,
                     );
                 }
+                removed
             },
-            Err(_error) => {
-                eprintln!("[nexus-query-engine] warning: failed to remove queued query service admission request");
+            Err(error) => {
+                self.queued = false;
+                let error = self
+                    .service
+                    .recover_queued_request_after_admission_poison(error.into_inner(), self.admission_request_id);
+                eprintln!(
+                    "[nexus-query-engine] warning: recovered queued query service admission request after {error}"
+                );
+                return;
             },
-        }
+        };
+        finish_removed_request_cancelled(removed);
     }
 }
 
@@ -460,6 +667,41 @@ pub(super) fn remove_queued_request(
         state.queued.remove(position)
     } else {
         None
+    }
+}
+
+pub(super) fn finish_removed_request_error(request: Option<AdmissionRequest>, error: &QueryError) {
+    if let Some(request) = request {
+        request.completion.finish_error(error);
+    }
+}
+
+pub(super) fn finish_removed_request_cancelled(request: Option<AdmissionRequest>) {
+    if let Some(request) = request {
+        request.completion.finish_cancelled();
+    }
+}
+
+pub(super) fn finish_expired_queued_requests(expired: Vec<AdmissionRequest>) {
+    for request in expired {
+        let error = service_overloaded_error("admission_wait_timeout", &request.tenant_id, 0, 0);
+        request.completion.finish_timeout(&error);
+    }
+}
+
+pub(super) fn finish_closed_queued_requests(closed: Vec<AdmissionRequest>) {
+    for request in closed {
+        let error = service_closed_error(&request.tenant_id);
+        record_admission_lifecycle(
+            &request.observation,
+            request.admission_request_id,
+            &request.tenant_id,
+            AdmissionLifecycleState::Rejected { reason: "admission_closed".to_string() },
+            0,
+            None,
+            None,
+        );
+        finish_removed_request_error(Some(request), &error);
     }
 }
 

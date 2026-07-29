@@ -1,0 +1,10 @@
+error[E0624]: associated function `from_runtime` is private
+ --> tests/ui/public_api/forbidden_execution_context_from_runtime.rs:4:31
+  |
+4 |     let _ = ExecutionContext::from_runtime(runtime);
+  |                               ^^^^^^^^^^^^ private associated function
+  |
+ ::: src/runtime/context/mod.rs
+  |
+  |     pub(crate) fn from_runtime(runtime: cudf::Runtime) -> Result<Self> {
+  |     ------------------------------------------------------------------ private associated function defined here

@@ -47,18 +47,14 @@ fn native_grouped_aggregate_filter_masks_false_and_null_predicates() {
 
 #[test]
 fn bounded_native_grouped_filtered_aggregate_single_pass_reports_materialization() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 512 * 1024 * 1024,
-            max_source_chunk_bytes: 8 * 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+        device_budget_bytes: 512 * 1024 * 1024,
+        max_source_chunk_bytes: 8 * 1024 * 1024,
+        max_row_groups_per_chunk: 1,
+        max_retry_attempts: 1,
+        min_retry_chunk_row_groups: 1,
+    });
+    let runtime = Arc::new(context.runtime().unwrap());
     let schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int32, false),
         Field::new("payload", DataType::Int64, true),
@@ -120,18 +116,14 @@ fn bounded_native_grouped_filtered_aggregate_single_pass_reports_materialization
 
 #[test]
 fn bounded_native_grouped_filtered_aggregate_segments_low_cardinality_groups() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 32 * 1024 * 1024,
-            max_source_chunk_bytes: 8 * 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+        device_budget_bytes: 32 * 1024 * 1024,
+        max_source_chunk_bytes: 8 * 1024 * 1024,
+        max_row_groups_per_chunk: 1,
+        max_retry_attempts: 1,
+        min_retry_chunk_row_groups: 1,
+    });
+    let runtime = Arc::new(context.runtime().unwrap());
     let row_count = 100_000usize;
     let schema = Arc::new(
         Schema::new(vec![
@@ -248,7 +240,13 @@ fn bounded_native_grouped_filtered_aggregate_segments_low_cardinality_groups() {
 fn bounded_native_partial_grouped_filtered_aggregate_segments_high_cardinality_groups() {
     let dir = unique_temp_dir("nexus-query-engine-filtered-grouped-high-cardinality");
     let path = dir.join("input.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+        device_budget_bytes: 32 * 1024 * 1024,
+        max_source_chunk_bytes: 8 * 1024 * 1024,
+        max_row_groups_per_chunk: 1,
+        max_retry_attempts: 1,
+        min_retry_chunk_row_groups: 1,
+    });
     let row_count = 20_000usize;
     let schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int64, false),
@@ -307,17 +305,6 @@ fn bounded_native_partial_grouped_filtered_aggregate_segments_high_cardinality_g
     let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&output_schema));
     let sort = builder.add_sort(aggregate, sort, Arc::clone(&output_schema));
     let plan = builder.finish_with_host_sink(sort);
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 32 * 1024 * 1024,
-            max_source_chunk_bytes: 8 * 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -418,18 +405,14 @@ fn native_global_aggregate_filter_masks_count_distinct_inputs() {
 
 #[test]
 fn bounded_native_global_filtered_aggregate_segments_large_materialization() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 32 * 1024 * 1024,
-            max_source_chunk_bytes: 8 * 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+        device_budget_bytes: 32 * 1024 * 1024,
+        max_source_chunk_bytes: 8 * 1024 * 1024,
+        max_row_groups_per_chunk: 1,
+        max_retry_attempts: 1,
+        min_retry_chunk_row_groups: 1,
+    });
+    let runtime = Arc::new(context.runtime().unwrap());
     let schema = Arc::new(
         Schema::new(vec![
             Field::new("payload", DataType::Int64, false),
@@ -583,18 +566,14 @@ fn bounded_native_global_filtered_aggregate_segments_large_materialization() {
 
 #[test]
 fn bounded_native_global_filtered_aggregate_segments_q09_decimal_avg_shape() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 32 * 1024 * 1024,
-            max_source_chunk_bytes: 8 * 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+        device_budget_bytes: 32 * 1024 * 1024,
+        max_source_chunk_bytes: 8 * 1024 * 1024,
+        max_row_groups_per_chunk: 1,
+        max_retry_attempts: 1,
+        min_retry_chunk_row_groups: 1,
+    });
+    let runtime = Arc::new(context.runtime().unwrap());
     let repeats_per_quantity = 700usize;
     let row_count = 100 * repeats_per_quantity;
     let schema = Arc::new(
@@ -731,7 +710,13 @@ fn q09_quantity_between(lower: i32, upper: i32) -> Expr {
 fn bounded_native_partial_global_filtered_aggregate_segments_large_materialization() {
     let dir = unique_temp_dir("nexus-query-engine-filtered-global-partial-segmented");
     let path = dir.join("input.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+        device_budget_bytes: 8 * 1024 * 1024,
+        max_source_chunk_bytes: 8 * 1024 * 1024,
+        max_row_groups_per_chunk: 1,
+        max_retry_attempts: 1,
+        min_retry_chunk_row_groups: 1,
+    });
     let schema = Arc::new(
         Schema::new(vec![
             Field::new("payload", DataType::Int64, false),
@@ -824,17 +809,6 @@ fn bounded_native_partial_global_filtered_aggregate_segments_large_materializati
     let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&output_schema));
     let plan = builder.finish_with_host_sink(aggregate);
 
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 8 * 1024 * 1024,
-            max_source_chunk_bytes: 8 * 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
@@ -902,9 +876,9 @@ fn bounded_native_partial_global_filtered_aggregate_segments_large_materializati
     fs::remove_dir_all(dir).unwrap();
 }
 
-fn filtered_aggregate_input() -> (Arc<cudf::Runtime>, ExecutionContext, Arc<Schema>, GpuResidentInputMap) {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let context = ExecutionContext::builder().with_shared_runtime(Arc::clone(&runtime)).build().unwrap();
+fn filtered_aggregate_input() -> (Arc<cudf::Runtime>, BackendQueryContext, Arc<Schema>, GpuResidentInputMap) {
+    let context = backend_context();
+    let runtime = Arc::new(context.runtime().unwrap());
     let schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int32, false),
         Field::new("payload", DataType::Int64, true),

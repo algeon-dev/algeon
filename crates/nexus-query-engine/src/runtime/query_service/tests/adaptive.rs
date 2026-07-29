@@ -57,7 +57,7 @@ fn adaptive_query_memory_domain_follows_grant_growth() {
 }
 #[test]
 fn adaptive_query_service_grows_partial_active_grant_on_release() {
-    let service = QueryService::new_for_admission_tests(
+    let service = AdmissionTestController::new(
         QueryServiceConfig {
             device_capacity_bytes: Some(100),
             max_concurrent_queries: 2,
@@ -72,7 +72,7 @@ fn adaptive_query_service_grows_partial_active_grant_on_release() {
 
     let first = service.try_admit_query("tenant").unwrap().expect("first query should admit want");
     let second = service.try_admit_query("tenant").unwrap().expect("second query should admit remainder");
-    let second_grant = second.lifetime.memory_grant().unwrap();
+    let second_grant = second.memory_grant().unwrap();
 
     assert_eq!(first.device_budget_bytes(), 90);
     assert_eq!(second.device_budget_bytes(), 10);
@@ -87,7 +87,7 @@ fn adaptive_query_service_grows_partial_active_grant_on_release() {
 }
 #[test]
 fn strict_query_service_does_not_grow_partial_active_grant_on_release() {
-    let service = QueryService::new_for_admission_tests(
+    let service = AdmissionTestController::new(
         QueryServiceConfig {
             device_capacity_bytes: Some(100),
             max_concurrent_queries: 2,
@@ -102,7 +102,7 @@ fn strict_query_service_does_not_grow_partial_active_grant_on_release() {
 
     let first = service.try_admit_query("tenant").unwrap().expect("first query should admit want");
     let second = service.try_admit_query("tenant").unwrap().expect("second query should admit remainder");
-    let second_grant = second.lifetime.memory_grant().unwrap();
+    let second_grant = second.memory_grant().unwrap();
 
     drop(first);
 
@@ -113,7 +113,7 @@ fn strict_query_service_does_not_grow_partial_active_grant_on_release() {
 }
 #[test]
 fn adaptive_query_service_preserves_queued_minimum_before_growing_active_grants() {
-    let service = QueryService::new_for_admission_tests(
+    let service = AdmissionTestController::new(
         QueryServiceConfig {
             device_capacity_bytes: Some(100),
             max_concurrent_queries: 2,
@@ -128,7 +128,7 @@ fn adaptive_query_service_preserves_queued_minimum_before_growing_active_grants(
 
     let first = service.try_admit_query("tenant").unwrap().expect("first query should admit want");
     let second = service.try_admit_query("tenant").unwrap().expect("second query should admit remainder");
-    let second_grant = second.lifetime.memory_grant().unwrap();
+    let second_grant = second.memory_grant().unwrap();
     let mut queued = service.enqueue_admission("tenant").unwrap();
 
     drop(first);
@@ -140,7 +140,7 @@ fn adaptive_query_service_preserves_queued_minimum_before_growing_active_grants(
 }
 #[test]
 fn adaptive_query_service_grows_after_queue_drains_when_capacity_remains() {
-    let service = QueryService::new_for_admission_tests(
+    let service = AdmissionTestController::new(
         QueryServiceConfig {
             device_capacity_bytes: Some(100),
             max_concurrent_queries: 2,
@@ -155,7 +155,7 @@ fn adaptive_query_service_grows_after_queue_drains_when_capacity_remains() {
 
     let first = service.try_admit_query("wide").unwrap().expect("first wide query should admit want");
     let second = service.try_admit_query("wide").unwrap().expect("second wide query should admit remainder");
-    let second_grant = second.lifetime.memory_grant().unwrap();
+    let second_grant = second.memory_grant().unwrap();
     let mut queued = service.enqueue_admission("small").unwrap();
 
     drop(first);
@@ -183,7 +183,7 @@ fn adaptive_growth_allocations_cap_and_redistribute_by_weight() {
 }
 #[test]
 fn adaptive_query_service_grows_partial_grants_by_budget_weight() {
-    let service = QueryService::new_for_admission_tests(
+    let service = AdmissionTestController::new(
         QueryServiceConfig {
             device_capacity_bytes: Some(100),
             max_concurrent_queries: 4,
@@ -209,9 +209,9 @@ fn adaptive_query_service_grows_partial_grants_by_budget_weight() {
         .try_admit_query_with_qos("tenant", QueryQos::new(Priority::Normal).with_budget_weight(1))
         .unwrap()
         .expect("fourth query should admit minimum");
-    let high_grant = high.lifetime.memory_grant().unwrap();
-    let low_a_grant = low_a.lifetime.memory_grant().unwrap();
-    let low_b_grant = low_b.lifetime.memory_grant().unwrap();
+    let high_grant = high.memory_grant().unwrap();
+    let low_a_grant = low_a.memory_grant().unwrap();
+    let low_b_grant = low_b.memory_grant().unwrap();
 
     assert_eq!(first.device_budget_bytes(), 70);
     assert_eq!(high_grant.budget_bytes(), 10);
@@ -229,7 +229,7 @@ fn adaptive_query_service_grows_partial_grants_by_budget_weight() {
 }
 #[test]
 fn adaptive_blocking_query_service_grows_after_queue_drains_when_capacity_remains() {
-    let service = QueryService::new_for_admission_tests(
+    let service = AdmissionTestController::new(
         QueryServiceConfig {
             device_capacity_bytes: Some(100),
             max_concurrent_queries: 2,
@@ -245,7 +245,7 @@ fn adaptive_blocking_query_service_grows_after_queue_drains_when_capacity_remain
 
     let first = service.try_admit_query("wide").unwrap().expect("first wide query should admit want");
     let second = service.try_admit_query("wide").unwrap().expect("second wide query should admit remainder");
-    let second_grant = second.lifetime.memory_grant().unwrap();
+    let second_grant = second.memory_grant().unwrap();
     let queued_service = service.clone();
     let queued = std::thread::spawn(move || queued_service.admit_query("small").unwrap());
 
@@ -260,7 +260,7 @@ fn adaptive_blocking_query_service_grows_after_queue_drains_when_capacity_remain
 fn adaptive_optimistic_query_service_requests_shrink_for_memory_blocked_waiter() {
     let service = optimistic_shrink_test_service(NativePipelineExecutionMode::Adaptive);
     let first = service.try_admit_query("tenant").unwrap().expect("first query should admit");
-    let first_grant = first.lifetime.memory_grant().unwrap();
+    let first_grant = first.memory_grant().unwrap();
 
     assert_eq!(first.device_budget_bytes(), 100);
     assert_eq!(first_grant.requested_shrink_target_bytes().unwrap(), None);
@@ -290,7 +290,7 @@ fn adaptive_optimistic_query_service_respects_raised_active_floor_when_requestin
         )
         .unwrap()
         .expect("first query should admit");
-    let first_grant = first.lifetime.memory_grant().unwrap();
+    let first_grant = first.memory_grant().unwrap();
     let mut waiter = service.enqueue_admission("tenant").unwrap();
 
     assert_eq!(first.device_budget_bytes(), 100);
@@ -306,7 +306,7 @@ fn adaptive_optimistic_query_service_respects_raised_active_floor_when_requestin
 fn query_service_release_shrinks_retained_grant_to_live_bytes() {
     let service = optimistic_shrink_test_service(NativePipelineExecutionMode::Adaptive);
     let first = service.try_admit_query("tenant").unwrap().expect("first query should admit");
-    let first_grant = first.lifetime.memory_grant().unwrap();
+    let first_grant = first.memory_grant().unwrap();
     let _retained = first_grant.retain_live_reservation(40).expect("retention should be tracked");
 
     assert_eq!(first_grant.budget_bytes(), 100);
@@ -327,7 +327,7 @@ fn query_service_release_shrinks_retained_grant_to_live_bytes() {
 }
 #[test]
 fn adaptive_optimistic_query_service_requests_all_same_device_shrink_candidates() {
-    let service = QueryService::new_for_admission_tests(
+    let service = AdmissionTestController::new(
         QueryServiceConfig {
             device_capacity_bytes: Some(120),
             max_concurrent_queries: 3,
@@ -342,8 +342,8 @@ fn adaptive_optimistic_query_service_requests_all_same_device_shrink_candidates(
     .unwrap();
     let first = service.try_admit_query("tenant").unwrap().expect("first query should admit");
     let second = service.try_admit_query("tenant").unwrap().expect("second query should admit");
-    let first_grant = first.lifetime.memory_grant().unwrap();
-    let second_grant = second.lifetime.memory_grant().unwrap();
+    let first_grant = first.memory_grant().unwrap();
+    let second_grant = second.memory_grant().unwrap();
     let mut waiter = service.enqueue_admission("tenant").unwrap();
 
     assert_eq!(first.device_budget_bytes(), 60);
@@ -363,7 +363,7 @@ fn adaptive_optimistic_query_service_requests_all_same_device_shrink_candidates(
 fn adaptive_optimistic_query_service_rescinds_requested_shrink_when_waiter_drops() {
     let service = optimistic_shrink_test_service(NativePipelineExecutionMode::Adaptive);
     let first = service.try_admit_query("tenant").unwrap().expect("first query should admit");
-    let first_grant = first.lifetime.memory_grant().unwrap();
+    let first_grant = first.memory_grant().unwrap();
     let mut waiter = service.enqueue_admission("tenant").unwrap();
 
     assert!(waiter.try_admit().unwrap().is_none());
@@ -378,7 +378,7 @@ fn adaptive_optimistic_query_service_rescinds_requested_shrink_when_waiter_drops
 fn adaptive_optimistic_query_service_keeps_requested_shrink_for_remaining_waiter() {
     let service = optimistic_shrink_test_service(NativePipelineExecutionMode::Adaptive);
     let first = service.try_admit_query("tenant").unwrap().expect("first query should admit");
-    let first_grant = first.lifetime.memory_grant().unwrap();
+    let first_grant = first.memory_grant().unwrap();
     let mut first_waiter = service.enqueue_admission("tenant").unwrap();
     let second_waiter = service.enqueue_admission("tenant").unwrap();
 
@@ -395,7 +395,7 @@ fn adaptive_optimistic_query_service_keeps_requested_shrink_for_remaining_waiter
 }
 #[test]
 fn adaptive_optimistic_query_service_rescinds_requested_shrink_when_waiter_times_out() {
-    let service = QueryService::new_for_admission_tests(
+    let service = AdmissionTestController::new(
         QueryServiceConfig {
             device_capacity_bytes: Some(100),
             max_concurrent_queries: 2,
@@ -410,7 +410,7 @@ fn adaptive_optimistic_query_service_rescinds_requested_shrink_when_waiter_times
     )
     .unwrap();
     let first = service.try_admit_query("tenant").unwrap().expect("first query should admit");
-    let first_grant = first.lifetime.memory_grant().unwrap();
+    let first_grant = first.memory_grant().unwrap();
     let mut waiter = service.enqueue_admission("tenant").unwrap();
 
     assert!(waiter.try_admit().unwrap().is_none());
@@ -427,7 +427,7 @@ fn adaptive_optimistic_query_service_rescinds_requested_shrink_when_waiter_times
 fn adaptive_optimistic_query_service_rescinds_requested_shrink_when_waiter_admits() {
     let service = optimistic_shrink_test_service(NativePipelineExecutionMode::Adaptive);
     let first = service.try_admit_query("tenant").unwrap().expect("first query should admit");
-    let first_grant = first.lifetime.memory_grant().unwrap();
+    let first_grant = first.memory_grant().unwrap();
     let mut waiter = service.enqueue_admission("tenant").unwrap();
 
     assert!(waiter.try_admit().unwrap().is_none());
@@ -442,7 +442,7 @@ fn adaptive_optimistic_query_service_rescinds_requested_shrink_when_waiter_admit
 fn adaptive_blocking_query_service_wakes_after_requested_shrink_refunds_capacity() {
     let service = optimistic_shrink_test_service(NativePipelineExecutionMode::Adaptive);
     let first = service.admit_query("tenant").unwrap();
-    let first_grant = first.lifetime.memory_grant().unwrap();
+    let first_grant = first.memory_grant().unwrap();
     let queued_service = service.clone();
     let (started_sender, started_receiver) = std::sync::mpsc::channel();
     let (admitted_sender, admitted_receiver) = std::sync::mpsc::channel();
@@ -467,7 +467,7 @@ fn adaptive_blocking_query_service_wakes_after_requested_shrink_refunds_capacity
 fn strict_query_service_does_not_request_shrink_for_memory_blocked_waiter() {
     let service = optimistic_shrink_test_service(NativePipelineExecutionMode::StrictBounded);
     let first = service.try_admit_query("tenant").unwrap().expect("first query should admit");
-    let first_grant = first.lifetime.memory_grant().unwrap();
+    let first_grant = first.memory_grant().unwrap();
     let mut waiter = service.enqueue_admission("tenant").unwrap();
 
     assert_eq!(first.device_budget_bytes(), 100);

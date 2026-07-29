@@ -2,7 +2,8 @@ use super::*;
 
 #[test]
 fn bounded_native_query_executes_mixed_keyed_residual_join_with_grouped_aggregate_input() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = mixed_grouped_aggregate_execution_context(8 * 1024 * 1024 * 1024);
+    let runtime = Arc::new(context.runtime().unwrap());
     let dir = unique_temp_dir("nexus-query-engine-bounded-mixed-aggregate-input");
     let fact_path = dir.join("fact.parquet");
     let grouped_fact_path = dir.join("grouped_fact.parquet");
@@ -29,7 +30,6 @@ fn bounded_native_query_executes_mixed_keyed_residual_join_with_grouped_aggregat
             .is_none()
     );
 
-    let context = mixed_grouped_aggregate_execution_context(&runtime, 8 * 1024 * 1024 * 1024);
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.memory_control_policy.as_str(), "bounded");
@@ -122,7 +122,14 @@ fn bounded_native_query_executes_mixed_keyed_residual_join_with_grouped_aggregat
 
 #[test]
 fn bounded_native_query_denies_mixed_keyed_residual_grouped_aggregate_source_before_root_join() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let baseline_context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+        device_budget_bytes: 8 * 1024 * 1024 * 1024,
+        max_source_chunk_bytes: 16 * 1024 * 1024,
+        max_row_groups_per_chunk: 1,
+        max_retry_attempts: 1,
+        min_retry_chunk_row_groups: 1,
+    });
+    let runtime = Arc::new(baseline_context.runtime().unwrap());
     let dir = unique_temp_dir("nexus-query-engine-bounded-mixed-aggregate-input-source-denial");
     let fact_path = dir.join("fact.parquet");
     let grouped_fact_path = dir.join("grouped_fact.parquet");
@@ -139,22 +146,19 @@ fn bounded_native_query_denies_mixed_keyed_residual_grouped_aggregate_source_bef
         &dim_schema,
     );
 
-    let baseline =
-        execute_query_plan(&mixed_grouped_aggregate_execution_context(&runtime, 8 * 1024 * 1024 * 1024), &plan)
-            .unwrap();
+    let baseline = execute_query_plan(&baseline_context, &plan).unwrap();
     let retained_join_subtree_bytes =
         retained_bytes_before_grouped_aggregate_source_read(baseline.metrics()).saturating_add(8192);
-    let constrained_context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: retained_join_subtree_bytes,
-            max_source_chunk_bytes: 16 * 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
+    drop(baseline);
+    drop(runtime);
+    drop(baseline_context);
+    let constrained_context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+        device_budget_bytes: retained_join_subtree_bytes,
+        max_source_chunk_bytes: 16 * 1024 * 1024,
+        max_row_groups_per_chunk: 1,
+        max_retry_attempts: 1,
+        min_retry_chunk_row_groups: 1,
+    });
     let error = match execute_query_plan(&constrained_context, &plan) {
         Ok(_) => panic!("constrained mixed keyed residual grouped aggregate input should fail source reservation"),
         Err(error) => error,
@@ -176,7 +180,8 @@ fn bounded_native_query_denies_mixed_keyed_residual_grouped_aggregate_source_bef
 
 #[test]
 fn bounded_native_query_enforces_mixed_keyed_residual_grouped_aggregate_hard_budget_before_root_join() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let baseline_context = mixed_grouped_aggregate_execution_context(8 * 1024 * 1024 * 1024);
+    let runtime = Arc::new(baseline_context.runtime().unwrap());
     let dir = unique_temp_dir("nexus-query-engine-bounded-mixed-aggregate-input-hard-budget");
     let fact_path = dir.join("fact.parquet");
     let grouped_fact_path = dir.join("grouped_fact.parquet");
@@ -193,9 +198,7 @@ fn bounded_native_query_enforces_mixed_keyed_residual_grouped_aggregate_hard_bud
         &dim_schema,
     );
 
-    let baseline =
-        execute_query_plan(&mixed_grouped_aggregate_execution_context(&runtime, 8 * 1024 * 1024 * 1024), &plan)
-            .unwrap();
+    let baseline = execute_query_plan(&baseline_context, &plan).unwrap();
     let (retained_join_subtree_bytes, source_read_bytes, chunk_operator_bytes, retained_partial_state_bytes) =
         grouped_aggregate_chunk_budget_window(baseline.metrics());
     let operator_token_budget = chunk_operator_bytes.saturating_sub(1);
@@ -203,17 +206,10 @@ fn bounded_native_query_enforces_mixed_keyed_residual_grouped_aggregate_hard_bud
         .saturating_add(source_read_bytes)
         .saturating_add(retained_partial_state_bytes)
         .saturating_add(operator_token_budget);
-    let constrained_context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: constrained_budget,
-            max_source_chunk_bytes: 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
+    drop(baseline);
+    drop(runtime);
+    drop(baseline_context);
+    let constrained_context = mixed_grouped_aggregate_execution_context(constrained_budget);
     let error = match execute_query_plan(&constrained_context, &plan) {
         Ok(_) => panic!("constrained mixed keyed residual grouped aggregate input should fail aggregate hard budget"),
         Err(error) => error,
@@ -227,7 +223,7 @@ fn bounded_native_query_enforces_mixed_keyed_residual_grouped_aggregate_hard_bud
                 .and_then(|value| value.parse::<u64>().ok())
                 .expect("aggregate hard-budget failure should report budget bytes");
             assert!(budget_bytes >= operator_token_budget);
-            assert_eq!(error.fact_value("budget_enforcement"), Some("stream_bound_reservation"));
+            assert_eq!(error.fact_value("budget_enforcement"), Some("reservation_arena_member"));
             assert_eq!(error.fact_value("memory_boundary"), None);
             assert_eq!(error.fact_value("stage"), None);
             assert_eq!(error.fact_value("attempt"), None);
@@ -251,19 +247,12 @@ fn bounded_native_query_enforces_mixed_keyed_residual_grouped_aggregate_hard_bud
     fs::remove_dir_all(dir).unwrap();
 }
 
-fn mixed_grouped_aggregate_execution_context(
-    runtime: &Arc<cudf::Runtime>,
-    device_budget_bytes: u64,
-) -> ExecutionContext {
-    ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes,
-            max_source_chunk_bytes: 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap()
+fn mixed_grouped_aggregate_execution_context(device_budget_bytes: u64) -> BackendQueryContext {
+    backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+        device_budget_bytes,
+        max_source_chunk_bytes: 1024,
+        max_row_groups_per_chunk: 1,
+        max_retry_attempts: 1,
+        min_retry_chunk_row_groups: 1,
+    })
 }

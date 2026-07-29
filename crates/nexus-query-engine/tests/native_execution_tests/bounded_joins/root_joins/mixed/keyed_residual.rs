@@ -1,7 +1,7 @@
 use super::*;
 #[test]
 fn bounded_native_query_executes_root_mixed_inner_join_with_ordered_reservations() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let runtime = backend_runtime();
     let dir = unique_temp_dir("nexus-query-engine-bounded-root-mixed-inner-join");
     let left_path = dir.join("lineitem.parquet");
     let right_path = dir.join("orders.parquet");
@@ -78,7 +78,6 @@ fn bounded_native_query_executes_root_mixed_inner_join_with_ordered_reservations
 
 #[test]
 fn bounded_native_query_streams_chunked_probe_into_mixed_inner_residual_join() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let dir = unique_temp_dir("nexus-query-engine-bounded-root-mixed-inner-streamed-probe");
     let left_path = dir.join("lineitem.parquet");
     let right_path = dir.join("orders.parquet");
@@ -120,18 +119,7 @@ fn bounded_native_query_streams_chunked_probe_into_mixed_inner_residual_join() {
     let plan = builder.finish_with_host_sink(join);
     assert!(plan.capability_analysis().admits_root_join());
 
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 8 * 1024 * 1024 * 1024,
-            max_source_chunk_bytes: 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .with_source_scheduler_policy(SourceSchedulerPolicy::new(2))
-        .build()
-        .unwrap();
+    let context = backend_context_with_grant(8 * 1024 * 1024 * 1024);
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
@@ -186,7 +174,6 @@ fn bounded_native_query_streams_chunked_probe_into_mixed_inner_residual_join() {
 
 #[test]
 fn bounded_native_query_streams_right_probe_into_left_build_mixed_inner_residual_join() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let dir = unique_temp_dir("nexus-query-engine-bounded-root-mixed-inner-streamed-right-probe");
     let left_path = dir.join("lineitem.parquet");
     let right_path = dir.join("orders.parquet");
@@ -228,18 +215,7 @@ fn bounded_native_query_streams_right_probe_into_left_build_mixed_inner_residual
     let plan = builder.finish_with_host_sink(join);
     assert!(plan.capability_analysis().admits_root_join());
 
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 8 * 1024 * 1024 * 1024,
-            max_source_chunk_bytes: 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .with_source_scheduler_policy(SourceSchedulerPolicy::new(2))
-        .build()
-        .unwrap();
+    let context = backend_context_with_grant(8 * 1024 * 1024 * 1024);
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
@@ -296,7 +272,7 @@ fn bounded_native_query_streams_right_probe_into_left_build_mixed_inner_residual
 
 #[test]
 fn bounded_native_query_executes_root_mixed_left_join_with_unmatched_left_rows() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let runtime = backend_runtime();
     let dir = unique_temp_dir("nexus-query-engine-bounded-root-mixed-left-join");
     let left_path = dir.join("lineitem.parquet");
     let right_path = dir.join("orders.parquet");
@@ -362,7 +338,7 @@ fn bounded_native_query_executes_root_mixed_left_join_with_unmatched_left_rows()
 
 #[test]
 fn bounded_native_query_executes_root_mixed_full_join_with_pair_reservations() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let runtime = backend_runtime();
     let dir = unique_temp_dir("nexus-query-engine-bounded-root-mixed-full-join");
     let left_path = dir.join("lineitem.parquet");
     let right_path = dir.join("orders.parquet");
@@ -474,7 +450,7 @@ fn bounded_native_query_executes_root_mixed_full_join_with_pair_reservations() {
 
 #[test]
 fn bounded_native_query_executes_root_mixed_left_semi_and_anti_joins_with_single_gather_map() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let runtime = backend_runtime();
     let dir = unique_temp_dir("nexus-query-engine-bounded-root-mixed-semi-anti-join");
     let left_path = dir.join("lineitem.parquet");
     let right_path = dir.join("orders.parquet");
@@ -501,7 +477,7 @@ fn bounded_native_query_executes_root_mixed_left_semi_and_anti_joins_with_single
     let QueryOutput::HostArrow(semi_batch) = semi.output() else {
         panic!("left semi bounded mixed join should return host output");
     };
-    assert_eq!(int32_array(semi_batch, 0).values().as_ref(), &[25]);
+    assert_eq!(int32_array(&semi_batch, 0).values().as_ref(), &[25]);
     assert_bounded_mixed_left_only_join_metrics(semi.metrics(), "left_semi", 1);
     assert_eq!(
         granted_reservation_requested_bytes(semi.metrics(), ReservationKind::GatherMap, "join_gather_map"),
@@ -511,7 +487,7 @@ fn bounded_native_query_executes_root_mixed_left_semi_and_anti_joins_with_single
     let QueryOutput::HostArrow(anti_batch) = anti.output() else {
         panic!("left anti bounded mixed join should return host output");
     };
-    let mut anti_rows = int32_array(anti_batch, 0).values().iter().copied().collect::<Vec<_>>();
+    let mut anti_rows = int32_array(&anti_batch, 0).values().iter().copied().collect::<Vec<_>>();
     anti_rows.sort();
     assert_eq!(anti_rows, vec![10, 20, 30]);
     assert_bounded_mixed_left_only_join_metrics(anti.metrics(), "left_anti", 3);

@@ -2,6 +2,7 @@
 async fn statement_update_invalid_sql_uses_server_error_presentation() {
     let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
     let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
@@ -22,6 +23,7 @@ async fn statement_update_invalid_sql_uses_server_error_presentation() {
 async fn statement_update_rejects_transaction_id_with_structured_error() {
     let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
     let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
@@ -47,6 +49,7 @@ async fn statement_update_rejects_transaction_id_with_structured_error() {
 async fn statement_update_rejects_select_without_side_effect_path() {
     let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
     let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
@@ -68,6 +71,7 @@ async fn statement_update_rejects_select_without_side_effect_path() {
 async fn statement_query_rejects_sql_prepare_namespace() {
     let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
     let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
@@ -89,6 +93,7 @@ async fn statement_query_rejects_sql_prepare_namespace() {
 async fn statement_planning_errors_include_query_id_metadata() {
     let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
     let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
@@ -113,6 +118,7 @@ async fn statement_planning_errors_include_query_id_metadata() {
 async fn unknown_table_errors_are_not_found_with_structured_code() {
     let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
     let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
@@ -142,6 +148,7 @@ async fn feature_off_cugraph_ticket_returns_structured_capability_error() {
         (name == datafusion_nexus::server::NEXUS_SERVER_CUGRAPH_ENABLED_ENV).then(|| "true".to_string())
     })
     .unwrap();
+    declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
     let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
@@ -184,6 +191,7 @@ async fn feature_off_cugraph_ticket_returns_structured_capability_error() {
 async fn missing_column_errors_are_invalid_input_with_structured_code() {
     let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
     let server = tokio::spawn(async move { serve_with_listener(config, listener).await });

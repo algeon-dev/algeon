@@ -446,7 +446,7 @@ impl ExecutionPlan for CuvsAlgoExec {
                 .execution_context_async(Arc::clone(&task_context))
                 .await
                 .map_err(DataFusionError::from)?;
-            let gpu_execution_pool = context_lease.context().gpu_execution_pool().map_err(|error| {
+            let gpu_executor = context_lease.context().gpu_executor().map_err(|error| {
                 DataFusionError::from(Error::from_native(
                     "datafusion_nexus.cuvs_sql.gpu_execution_pool",
                     "query service closed before cuVS acquired its GPU execution pool",
@@ -455,7 +455,7 @@ impl ExecutionPlan for CuvsAlgoExec {
             })?;
             let observation = context_lease.context().runtime_observation().clone();
             run_gpu_execution_task(
-                gpu_execution_pool,
+                gpu_executor,
                 observation,
                 "datafusion_nexus.cuvs_sql.gpu_execution_pool",
                 move |gpu_stream_scope| async move {

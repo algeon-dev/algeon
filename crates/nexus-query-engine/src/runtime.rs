@@ -6,6 +6,8 @@
 //! adapter diagnostics. Treat those strings as stable diagnostic contracts:
 //! change them only with the same care as a report schema change.
 
+mod backend_core;
+mod backend_lifecycle;
 mod boundary;
 mod bounded_join;
 /// Runtime-owned GPU caches.
@@ -19,6 +21,10 @@ mod gpu_execution_pool;
 mod io_capability;
 mod io_lifecycle;
 mod memory_domain;
+#[cfg(test)]
+mod native_contract_runtime_observability_tests;
+#[cfg(test)]
+mod native_execution_tests;
 mod object_store;
 mod policy;
 mod query_service;
@@ -29,6 +35,12 @@ mod service_stream;
 #[cfg(test)]
 mod tests;
 
+pub use backend_core::{
+    GpuBackendCloseSnapshot, GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreBuilder, GpuBackendCoreDraft,
+    GpuBackendCoreIdentity, GpuBackendDeviceConfig, GpuBackendDeviceStartupRecord, GpuBackendMemoryShare,
+    GpuBackendSession, GpuBackendTenantDraft, GpuDeviceMemoryLimit, GpuMemoryFraction, GpuMemoryOwnership,
+};
+pub(crate) use backend_core::{GpuBackendConstructionCheckpoint, GpuBackendConstructionProbe};
 pub use boundary::{
     BuildMaterializationBoundary, ExecutionBoundaryPolicy, ProbeExecutionBoundary, ResultMaterializationBoundary,
     SourceReadBoundary,
@@ -44,23 +56,25 @@ pub use cache_fill::{
     DEFAULT_LAKEHOUSE_CACHE_FILL_MAX_CONCURRENT_OPS, LakehouseCacheFillConfig,
     default_lakehouse_cache_fill_budget_bytes,
 };
+#[cfg(test)]
+pub(crate) use context::ExecutionContextBuilder;
 pub use context::{
-    ExecutionCancellation, ExecutionContext, ExecutionContextBuilder, LeasedExecutionContext, QueryServiceStreamPool,
+    ExecutionCancellation, ExecutionContext, LeasedExecutionContext, QueryServiceStreamPool,
     RuntimeObservationBuildError, RuntimeObservedExecutionContext, RuntimeObservedExecutionContextBuilder,
     SourceSchedulerPolicy,
 };
+pub(crate) use gpu::{DeviceContext, DeviceRegistry, DeviceRegistryConfig, PlacementPolicy};
 pub use gpu::{
-    BestFitPlacement, DeviceContext, DeviceFacts, DeviceMemoryFailureReport, DeviceRegistry, DeviceRegistryConfig,
-    DeviceTelemetrySnapshot, DeviceTelemetryStatus, EvictableMemoryObserver, EvictableMemoryPressure, GpuComms,
-    GpuInventory, GpuTelemetry, GrantRequest, LeastLoadedPlacement, MemoryGovernor, MemoryGovernorGrantRow,
-    MemoryGovernorReport, MemoryGrant, NexusGpuInventory, NexusNvmlTelemetry, PinnedDevicePlacement, Placement,
-    PlacementPolicy, PlacementRequest, Priority, QueryPlacementHint, QueryPlacementPolicy, QueryQos, SingleDeviceComms,
+    DeviceFacts, DeviceMemoryFailureReport, DeviceTelemetrySnapshot, DeviceTelemetryStatus, EvictableMemoryObserver,
+    EvictableMemoryPressure, GpuComms, GpuInventory, GpuTelemetry, GrantRequest, MemoryGovernor,
+    MemoryGovernorGrantRow, MemoryGovernorReport, MemoryGrant, NexusGpuInventory, NexusNvmlTelemetry, Placement,
+    PlacementRequest, Priority, QueryPlacementHint, QueryPlacementPolicy, QueryQos, SingleDeviceComms,
     device_budget_bytes_from_facts,
 };
 pub use gpu_execution_pool::{
-    GpuExecutionJobKind, GpuExecutionPool, GpuExecutionPoolSnapshot, GpuExecutionQuerySnapshot,
-    GpuExecutionQueryTracker,
+    GpuExecutionJobKind, GpuExecutionPoolSnapshot, GpuExecutionQuerySnapshot, GpuExecutorLease,
 };
+pub(crate) use gpu_execution_pool::{GpuExecutionPool, GpuExecutionQueryTracker};
 pub use io_capability::{
     DeploymentIoCapability, GdsAvailabilityStatus, GdsDriverProbeStatus, KVIKIO_COMPAT_MODE_ENV,
     KvikioCompatModeStatus, NVIDIA_FS_PROC_PATH, NVIDIA_FS_SYSFS_PATH, NvidiaFsProbeStatus,
@@ -71,14 +85,13 @@ pub use object_store::{S3SourceStorageCredential, S3SourceStorageProfile, Source
 pub use policy::{
     DevicePlacement, MemoryControlPolicy, MemoryResourcePolicy, MemorySpaceId, ReservationKind, SourceChunkPlanningMode,
 };
+pub(crate) use query_service::QueryService;
 pub use query_service::{
-    QueryActivityLease, QueryAdmissionRequest, QueryAdmissionWaiter, QueryGrantBand, QueryGrantRequest, QueryHandle,
-    QueryMemoryDomainPolicy, QueryService, QueryServiceAdmissionSnapshot, QueryServiceConfig,
-    QueryServiceDeviceAdmissionSnapshot, QueryServiceGraphCacheSnapshot, QueryServiceTenantConfig, SlotGuarantee,
-    TenantId, TenantQueryContext, TenantQueueDepth,
+    QueryActivityLease, QueryAdmissionRequest, QueryGrantBand, QueryGrantRequest, QueryHandle, QueryMemoryDomainPolicy,
+    QueryServiceAdmissionSnapshot, QueryServiceConfig, QueryServiceDeviceAdmissionSnapshot,
+    QueryServiceGraphCacheSnapshot, QueryServiceTenantConfig, SlotGuarantee, TenantId, TenantQueryContext,
+    TenantQueueDepth,
 };
 pub use reservation::{MemoryReservationRequest, RetryFacts};
-pub(crate) use service_stream::SourceReadStreamLease;
-pub use service_stream::{
-    DEFAULT_SERVICE_STREAM_POOL_SIZE, ServiceStreamPool, StreamLease, default_service_stream_pool_size_for_device,
-};
+pub use service_stream::{DEFAULT_SERVICE_STREAM_POOL_SIZE, StreamLease, default_service_stream_pool_size_for_device};
+pub(crate) use service_stream::{ServiceStreamPool, SourceReadStreamLease};

@@ -928,6 +928,7 @@ fn resident_graph_cache_closed(operation: &'static str) -> QueryError {
 fn resident_graph_cache_drain_timeout(operation: &'static str) -> QueryError {
     QueryError::new(QueryErrorCode::ServiceOverloaded, operation, "timed out draining the resident graph cache")
         .with_fact("reason", "resident_graph_cache_drain_timeout")
+        .with_cleanup_deadline_elapsed()
 }
 
 #[cfg(feature = "cugraph")]

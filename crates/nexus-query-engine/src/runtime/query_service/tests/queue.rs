@@ -120,7 +120,7 @@ fn query_service_concurrent_budget_sum_never_exceeds_capacity() {
     let capacity_bytes = 12 * 1024 * 1024;
     let max_concurrent_queries = 4;
     let per_query_budget = capacity_bytes / u64::try_from(max_concurrent_queries).unwrap();
-    let service = QueryService::new_for_admission_tests(
+    let service = AdmissionTestController::new(
         QueryServiceConfig {
             device_capacity_bytes: Some(capacity_bytes),
             max_concurrent_queries,
@@ -136,13 +136,13 @@ fn query_service_concurrent_budget_sum_never_exceeds_capacity() {
         .map(|_| service.try_admit_query("tenant").unwrap().expect("capacity should admit query"))
         .collect::<Vec<_>>();
 
-    let admitted_budget_sum: u64 = handles.iter().map(QueryHandle::device_budget_bytes).sum();
+    let admitted_budget_sum: u64 = handles.iter().map(AdmissionTestHandle::device_budget_bytes).sum();
     assert_eq!(admitted_budget_sum, capacity_bytes);
     assert!(service.try_admit_query("tenant").unwrap().is_none());
 }
 #[test]
 fn query_service_uses_variable_memory_governor_grants() {
-    let service = QueryService::new_for_admission_tests(
+    let service = AdmissionTestController::new(
         QueryServiceConfig {
             device_capacity_bytes: Some(100),
             max_concurrent_queries: 4,
@@ -174,7 +174,7 @@ fn query_service_uses_variable_memory_governor_grants() {
 }
 #[test]
 fn query_service_waiting_on_memory_grant_wakes_after_grant_release() {
-    let service = QueryService::new_for_admission_tests(
+    let service = AdmissionTestController::new(
         QueryServiceConfig {
             device_capacity_bytes: Some(100),
             max_concurrent_queries: 2,
@@ -207,7 +207,7 @@ fn query_service_waiting_on_memory_grant_wakes_after_grant_release() {
 }
 #[test]
 fn query_service_waiting_on_memory_grant_wakes_after_retained_grant_release() {
-    let service = QueryService::new_for_admission_tests(
+    let service = AdmissionTestController::new(
         QueryServiceConfig {
             device_capacity_bytes: Some(100),
             max_concurrent_queries: 2,
@@ -221,7 +221,7 @@ fn query_service_waiting_on_memory_grant_wakes_after_retained_grant_release() {
     )
     .unwrap();
     let active = service.admit_query("tenant").unwrap();
-    let retained_grant = active.lifetime.memory_grant().unwrap();
+    let retained_grant = active.memory_grant().unwrap();
     drop(active);
     assert_eq!(first_memory_governor_report(&service).available_bytes, 0);
 
@@ -240,7 +240,7 @@ fn query_service_waiting_on_memory_grant_wakes_after_retained_grant_release() {
 }
 #[test]
 fn query_admission_waiter_times_out_while_selected_but_memory_blocked() {
-    let service = QueryService::new_for_admission_tests(
+    let service = AdmissionTestController::new(
         QueryServiceConfig {
             device_capacity_bytes: Some(100),
             max_concurrent_queries: 2,
@@ -264,7 +264,7 @@ fn query_admission_waiter_times_out_while_selected_but_memory_blocked() {
 }
 #[test]
 fn query_service_work_conserving_admission_skips_memory_blocked_head() {
-    let service = QueryService::new_for_admission_tests(
+    let service = AdmissionTestController::new(
         QueryServiceConfig {
             device_capacity_bytes: Some(100),
             max_concurrent_queries: 2,
@@ -298,7 +298,7 @@ fn query_service_work_conserving_admission_skips_memory_blocked_head() {
 }
 #[test]
 fn query_service_admission_priority_passes_lower_priority_queue_head() {
-    let service = QueryService::new_for_admission_tests(
+    let service = AdmissionTestController::new(
         QueryServiceConfig {
             device_capacity_bytes: Some(100),
             max_concurrent_queries: 1,
@@ -342,7 +342,7 @@ fn query_service_enqueued_waiter_counts_against_queue_limit_until_drop() {
 }
 #[test]
 fn query_service_sweeps_expired_unpolled_waiter_before_queue_and_try_admit_gates() {
-    let service = QueryService::new_for_admission_tests(
+    let service = AdmissionTestController::new(
         QueryServiceConfig {
             device_capacity_bytes: Some(100),
             max_concurrent_queries: 1,

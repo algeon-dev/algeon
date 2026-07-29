@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn native_query_rejects_duplicate_projection_output_names_generically_before_runtime_materialization() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context();
     let input_schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int32, false),
         Field::new("payload", DataType::Int64, false),
@@ -23,7 +23,6 @@ fn native_query_rejects_duplicate_projection_output_names_generically_before_run
         ),
     );
     let plan = builder.finish_with_host_sink(projection);
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
 
     let error = match execute_query_plan(&context, &plan) {
         Ok(_) => {
@@ -43,13 +42,8 @@ fn native_query_rejects_duplicate_projection_output_names_generically_before_run
 }
 
 #[test]
-fn native_query_restores_duplicate_host_sink_schema_without_swapping_columns() {
-    assert_duplicate_host_sink_schema_restoration(false);
-}
-
-#[test]
 fn bounded_native_query_restores_duplicate_host_sink_schema_without_swapping_columns() {
-    assert_duplicate_host_sink_schema_restoration(true);
+    assert_bounded_duplicate_host_sink_schema_restoration();
 }
 
 #[test]
@@ -88,7 +82,8 @@ fn native_query_rejects_host_sink_schema_metadata_drift_before_source_read() {
 fn native_gpu_result_handle_rejects_sink_schema_name_order_mismatch_before_host_materialization() {
     let dir = unique_temp_dir("nexus-query-engine-native-execution-schema-mismatch");
     let path = dir.join("input.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context();
+    let runtime = Arc::new(context.runtime().unwrap());
     let input_schema = write_input_parquet(&runtime, &path);
     let mismatched_schema = Arc::new(Schema::new(vec![
         Field::new("payload", DataType::Int64, false),
@@ -107,7 +102,6 @@ fn native_gpu_result_handle_rejects_sink_schema_name_order_mismatch_before_host_
     let limit = builder.add_limit(source, LimitSpec::fetch(2), mismatched_schema);
     let plan = builder.finish_with_host_sink(limit);
 
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
     let error = match execute_query_plan(&context, &plan) {
         Ok(_) => panic!("GPU result handle should reject sink schema name/order mismatches"),
         Err(error) => error,
@@ -122,7 +116,8 @@ fn native_gpu_result_handle_rejects_sink_schema_name_order_mismatch_before_host_
 
 #[test]
 fn native_projection_schema_coercion_rejects_unsupported_output_type_mismatch() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context();
+    let runtime = Arc::new(context.runtime().unwrap());
     let input_schema = Arc::new(Schema::new(vec![Field::new("key", DataType::Int32, false)]));
     let output_schema = Arc::new(Schema::new(vec![Field::new("bad_key", DataType::Utf8, false)]));
     let batch =
@@ -137,7 +132,7 @@ fn native_projection_schema_coercion_rejects_unsupported_output_type_mismatch() 
         projection_outputs(vec![Expr::column("key").alias("bad_key")], Arc::clone(&output_schema)),
     );
     let plan = builder.finish_gpu_resident(projection);
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
+
     let mut gpu_inputs = GpuResidentInputMap::new();
     gpu_inputs.insert(
         "int_input".to_string(),
@@ -162,7 +157,7 @@ fn native_projection_schema_coercion_rejects_unsupported_output_type_mismatch() 
 fn bounded_projection_schema_coercion_rejects_unsupported_output_type_mismatch_with_budget_facts() {
     let dir = unique_temp_dir("nexus-query-engine-bounded-projection-schema-coerce-reject");
     let path = dir.join("input.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context();
     let input_schema = write_row_grouped_input_parquet(&path);
     let aggregate_schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int32, false),
@@ -187,17 +182,6 @@ fn bounded_projection_schema_coercion_rejects_unsupported_output_type_mismatch_w
         projection_outputs(vec![Expr::column("key").alias("bad_key")], Arc::clone(&projection_schema)),
     );
     let plan = builder.finish_gpu_resident(projection);
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 8 * 1024 * 1024 * 1024,
-            max_source_chunk_bytes: 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
 
     let error = match execute_query_plan(&context, &plan) {
         Ok(_) => panic!("bounded projection schema coercion should reject unsupported Int32 to Utf8 mismatch"),
@@ -213,7 +197,7 @@ fn bounded_projection_schema_coercion_rejects_unsupported_output_type_mismatch_w
     assert_eq!(error.fact_value("expected_type"), Some("Utf8"));
     assert_eq!(error.fact_value("budget_boundary"), Some("post_aggregate_projection"));
     assert!(error.fact_value("budget_bytes").is_some());
-    assert_eq!(error.fact_value("budget_enforcement"), Some("stream_bound_reservation"));
+    assert_eq!(error.fact_value("budget_enforcement"), Some("reservation_arena_member"));
 
     fs::remove_dir_all(dir).unwrap();
 }

@@ -93,21 +93,10 @@ mod correlation_tests {
     };
 
     use super::*;
-    use crate::server::{
-        auth::{AuthMode, TokenStore},
-        coordinator::QueryTerminalOutcome,
-    };
+    use crate::server::coordinator::QueryTerminalOutcome;
 
-    pub(super) fn test_service() -> DatafusionNexusFlightSqlService {
-        DatafusionNexusFlightSqlService::new(
-            Arc::new(SessionContext::new()),
-            NexusNativeOptimizerConfig::default(),
-            Arc::new(QueryAdmission::new(1).expect("test admission limit")),
-            Duration::from_secs(30),
-            AuthInterceptor::new(AuthMode::Disabled, TokenStore::new()),
-            #[cfg(feature = "cugraph")]
-            None,
-        )
+    pub(super) fn test_service() -> super::super::service::BoundedTestFlightSqlService {
+        super::super::service::bounded_test_service(Duration::from_secs(30))
     }
 
     fn query_stats(service: &DatafusionNexusFlightSqlService, query_id: &str) -> String {
@@ -473,9 +462,13 @@ mod correlation_tests {
         let payload = String::from_utf8(results[0].body.to_vec()).unwrap();
 
         assert!(payload.contains("# datafusion_nexus_admission_stats=1\n"), "{payload}");
-        assert!(payload.contains("# backend=semaphore\n"), "{payload}");
-        assert!(payload.contains("[admission]\nactive_queries\tqueued_queries\tnext_tenant_id\n"), "{payload}");
-        assert!(payload.contains("[semaphore]\nmax_in_flight\tavailable_permits\n1\t1\n"), "{payload}");
+        assert!(payload.contains("# backend=query_service\n"), "{payload}");
+        assert!(payload.contains("# max_in_flight=2\n"), "{payload}");
+        assert!(
+            payload.contains("[admission]\nactive_queries\tqueued_queries\tnext_tenant_id\n0\t0\tdefault\n"),
+            "{payload}"
+        );
+        assert!(payload.contains("[tenant_queue_depths]\ntenant_id\tqueued_queries\ndefault\t0\n"), "{payload}");
     }
 
     #[tokio::test]

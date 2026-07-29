@@ -743,20 +743,51 @@ fn reject_request_grant_for_pre_admitted_query_handle(
 
 #[cfg(test)]
 mod tests {
-    use nexus_query_engine::runtime::{
-        DeploymentIoCapability, GdsDriverProbeStatus, KvikioCompatModeStatus, NvidiaFsProbeStatus, QueryService,
-        QueryServiceConfig, QueryServiceTenantConfig, TenantId,
-    };
+    use nexus_query_engine::runtime::{QueryServiceConfig, QueryServiceTenantConfig, TenantId};
 
     use super::*;
-    use crate::native_exec::QueryAdmissionSource;
+    use crate::native_exec::admission::TestAdmissionController;
 
-    fn nongds_deployment() -> DeploymentIoCapability {
-        DeploymentIoCapability::from_probe_inputs(
-            NvidiaFsProbeStatus::DriverMissing,
-            KvikioCompatModeStatus::Unset,
-            GdsDriverProbeStatus::ProbeUnimplemented,
-        )
+    fn pre_admitted_request_error(session_config: &DataFusionNexusSessionConfig) -> Box<Error> {
+        let error = reject_request_grant_for_pre_admitted_query_handle(session_config).unwrap_err();
+        match error {
+            DataFusionError::External(source) => source.downcast::<Error>().expect("expected adapter error"),
+            other => panic!("expected adapter error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pre_admitted_query_rejects_requested_grant_bytes() {
+        let base = NexusNativeOptimizerConfig::default();
+        let mut session_config = DataFusionNexusSessionConfig::from_optimizer_config(&base);
+        session_config.request_requested_grant_bytes = Some(1_048_576);
+
+        let error = pre_admitted_request_error(&session_config);
+
+        assert_eq!(error.code(), ErrorCode::InvalidRequest);
+        assert_eq!(error.fact_value("reason"), Some("request_grant_pre_admitted_query_handle"));
+        assert_eq!(error.fact_value("requested_grant_bytes"), Some("1048576"));
+    }
+
+    #[test]
+    fn pre_admitted_query_rejects_requested_grant_min_bytes() {
+        let base = NexusNativeOptimizerConfig::default();
+        let mut session_config = DataFusionNexusSessionConfig::from_optimizer_config(&base);
+        session_config.request_requested_grant_min_bytes = Some(1_048_576);
+
+        let error = pre_admitted_request_error(&session_config);
+
+        assert_eq!(error.code(), ErrorCode::InvalidRequest);
+        assert_eq!(error.fact_value("reason"), Some("request_grant_pre_admitted_query_handle"));
+        assert_eq!(error.fact_value("requested_grant_min_bytes"), Some("1048576"));
+    }
+
+    #[test]
+    fn pre_admitted_query_accepts_default_request_grant() {
+        let base = NexusNativeOptimizerConfig::default();
+        let session_config = DataFusionNexusSessionConfig::from_optimizer_config(&base);
+
+        reject_request_grant_for_pre_admitted_query_handle(&session_config).unwrap();
     }
 
     #[test]
@@ -786,7 +817,7 @@ mod tests {
     #[test]
     fn request_key_applies_to_backend_frozen_optimizer_config() {
         let tenant_id = TenantId::new("tenant");
-        let service = QueryService::new_admission_only(
+        let controller = TestAdmissionController::new(
             QueryServiceConfig {
                 device_capacity_bytes: Some(2048),
                 max_concurrent_queries: 1,
@@ -794,11 +825,10 @@ mod tests {
                 ..QueryServiceConfig::default()
             },
             vec![QueryServiceTenantConfig::with_grant_range(tenant_id.clone(), 512, 2048)],
-            nongds_deployment(),
         )
         .unwrap();
         let execution_config = NexusNativeExecutionConfig::bounded(512, 512, 1, 3, 1)
-            .with_query_admission_source(QueryAdmissionSource::new(service, tenant_id));
+            .with_query_admission_source(controller.source(tenant_id));
         let base = NexusNativeOptimizerConfig::default().with_native_execution_config(execution_config);
         let mut session_config =
             DataFusionNexusSessionConfig::from_optimizer_config(&base).frozen_for_backend_admission();

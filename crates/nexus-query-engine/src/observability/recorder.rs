@@ -1,6 +1,7 @@
 //! Query-scoped bounded synchronous runtime observation recorder.
 
 use std::{
+    cell::RefCell,
     collections::BTreeMap,
     fmt,
     sync::{
@@ -211,9 +212,58 @@ struct RuntimeObservationOwnerLifecycle {
 
 #[derive(Debug)]
 enum RuntimeObservationOwnerLifecycleState {
-    Open { cleanup_started: bool, pending_outcome: Option<RuntimeTerminalOutcome> },
-    Finishing,
+    Open {
+        cleanup_started: bool,
+        pending_outcome: Option<RuntimeTerminalOutcome>,
+    },
+    Finishing {
+        late_observers: Vec<RuntimeObservationSealObserver>,
+    },
+    Delivering {
+        snapshot: Option<SealedRuntimeObservationSnapshot>,
+        late_observers: Vec<RuntimeObservationSealObserver>,
+    },
     Sealed(Option<SealedRuntimeObservationSnapshot>),
+}
+
+thread_local! {
+    static RUNTIME_OBSERVATION_DELIVERY_STACK: RefCell<Vec<Option<*const RuntimeObservationOwnerLifecycle>>> =
+        const { RefCell::new(Vec::new()) };
+}
+
+/// Returns whether the current thread is synchronously delivering a runtime-observation seal observer.
+///
+/// Backend close-and-wait uses this to reject synchronous reentry, which would
+/// otherwise wait for the observer currently executing on this thread.
+pub(crate) fn in_runtime_observation_delivery() -> bool {
+    RUNTIME_OBSERVATION_DELIVERY_STACK.with(|stack| !stack.borrow().is_empty())
+}
+
+fn in_owner_observation_delivery(lifecycle: &Arc<RuntimeObservationOwnerLifecycle>) -> bool {
+    let lifecycle = Arc::as_ptr(lifecycle);
+    RUNTIME_OBSERVATION_DELIVERY_STACK
+        .with(|stack| stack.borrow().iter().any(|active| active.is_some_and(|active| active == lifecycle)))
+}
+
+struct RuntimeObservationDeliveryGuard {
+    lifecycle: Option<*const RuntimeObservationOwnerLifecycle>,
+}
+
+impl RuntimeObservationDeliveryGuard {
+    fn enter(lifecycle: Option<&Arc<RuntimeObservationOwnerLifecycle>>) -> Self {
+        let lifecycle = lifecycle.map(Arc::as_ptr);
+        RUNTIME_OBSERVATION_DELIVERY_STACK.with(|stack| stack.borrow_mut().push(lifecycle));
+        Self { lifecycle }
+    }
+}
+
+impl Drop for RuntimeObservationDeliveryGuard {
+    fn drop(&mut self) {
+        RUNTIME_OBSERVATION_DELIVERY_STACK.with(|stack| {
+            let active = stack.borrow_mut().pop();
+            debug_assert_eq!(active, Some(self.lifecycle));
+        });
+    }
 }
 
 impl Default for RuntimeObservationOwnerLifecycle {
@@ -258,6 +308,7 @@ impl fmt::Debug for RuntimeObservationSealObserver {
 
 impl RuntimeObservationSealObserver {
     fn invoke(&self, snapshot: SealedRuntimeObservationSnapshot) {
+        let _delivery = RuntimeObservationDeliveryGuard::enter(None);
         if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (self.notify)(snapshot))).is_err() {
             eprintln!("[nexus-query-engine] warning: runtime observation seal observer panicked");
         }
@@ -624,19 +675,17 @@ impl RuntimeObservationHandle {
         }
     }
 
-    fn register_seal_observer<F>(&self, observer: F)
-    where F: Fn(SealedRuntimeObservationSnapshot) + Send + Sync + 'static {
-        let Some(inner) = &self.inner else {
-            return;
-        };
-        let observer = RuntimeObservationSealObserver { notify: Box::new(observer) };
+    fn register_seal_observer(
+        &self,
+        observer: RuntimeObservationSealObserver,
+    ) -> Option<(RuntimeObservationSealObserver, SealedRuntimeObservationSnapshot)> {
+        let inner = self.inner.as_ref()?;
         let mut state = inner.lock_state();
         if let Some(snapshot) = &state.sealed_snapshot {
-            let snapshot = snapshot.clone();
-            drop(state);
-            observer.invoke(snapshot);
+            Some((observer, snapshot.clone()))
         } else {
             state.seal_observers.push(observer);
+            None
         }
     }
 
@@ -852,7 +901,38 @@ impl RuntimeObservationOwner {
 
     /// Fixes the first terminal and returns the shared sealed snapshot.
     pub fn seal(&self, outcome: RuntimeTerminalOutcome) -> Option<SealedRuntimeObservationSnapshot> {
-        self.session.seal(outcome)
+        let outcome = loop {
+            let mut lifecycle = self.lock_lifecycle();
+            match &mut *lifecycle {
+                RuntimeObservationOwnerLifecycleState::Open { .. } => {
+                    *lifecycle = RuntimeObservationOwnerLifecycleState::Finishing { late_observers: Vec::new() };
+                    break outcome;
+                },
+                RuntimeObservationOwnerLifecycleState::Finishing { .. } => {
+                    lifecycle = match self.lifecycle.finished.wait(lifecycle) {
+                        Ok(lifecycle) => lifecycle,
+                        Err(poisoned) => poisoned.into_inner(),
+                    };
+                    if let RuntimeObservationOwnerLifecycleState::Sealed(snapshot) = &*lifecycle {
+                        return snapshot.clone();
+                    }
+                },
+                RuntimeObservationOwnerLifecycleState::Delivering { snapshot, .. } => {
+                    if in_owner_observation_delivery(&self.lifecycle) {
+                        return snapshot.clone();
+                    }
+                    lifecycle = match self.lifecycle.finished.wait(lifecycle) {
+                        Ok(lifecycle) => lifecycle,
+                        Err(poisoned) => poisoned.into_inner(),
+                    };
+                    if let RuntimeObservationOwnerLifecycleState::Sealed(snapshot) = &*lifecycle {
+                        return snapshot.clone();
+                    }
+                },
+                RuntimeObservationOwnerLifecycleState::Sealed(snapshot) => return snapshot.clone(),
+            }
+        };
+        self.finish_owner_terminal(outcome, || {})
     }
 
     /// Retains one plan or admission outcome until the query owner completes cleanup.
@@ -879,7 +959,8 @@ impl RuntimeObservationOwner {
                     true
                 },
                 RuntimeObservationOwnerLifecycleState::Open { .. }
-                | RuntimeObservationOwnerLifecycleState::Finishing
+                | RuntimeObservationOwnerLifecycleState::Finishing { .. }
+                | RuntimeObservationOwnerLifecycleState::Delivering { .. }
                 | RuntimeObservationOwnerLifecycleState::Sealed(_) => false,
             }
         };
@@ -901,10 +982,22 @@ impl RuntimeObservationOwner {
             match &mut *lifecycle {
                 RuntimeObservationOwnerLifecycleState::Open { pending_outcome, .. } => {
                     let outcome = pending_outcome.take().unwrap_or_else(|| fallback.clone());
-                    *lifecycle = RuntimeObservationOwnerLifecycleState::Finishing;
+                    *lifecycle = RuntimeObservationOwnerLifecycleState::Finishing { late_observers: Vec::new() };
                     break outcome;
                 },
-                RuntimeObservationOwnerLifecycleState::Finishing => {
+                RuntimeObservationOwnerLifecycleState::Finishing { .. } => {
+                    lifecycle = match self.lifecycle.finished.wait(lifecycle) {
+                        Ok(lifecycle) => lifecycle,
+                        Err(poisoned) => poisoned.into_inner(),
+                    };
+                    if let RuntimeObservationOwnerLifecycleState::Sealed(snapshot) = &*lifecycle {
+                        return snapshot.clone();
+                    }
+                },
+                RuntimeObservationOwnerLifecycleState::Delivering { snapshot, .. } => {
+                    if in_owner_observation_delivery(&self.lifecycle) {
+                        return snapshot.clone();
+                    }
                     lifecycle = match self.lifecycle.finished.wait(lifecycle) {
                         Ok(lifecycle) => lifecycle,
                         Err(poisoned) => poisoned.into_inner(),
@@ -916,33 +1009,12 @@ impl RuntimeObservationOwner {
                 RuntimeObservationOwnerLifecycleState::Sealed(snapshot) => return snapshot.clone(),
             }
         };
-        let finishing = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        self.finish_owner_terminal(outcome.clone(), || {
             self.handle()
                 .record(|| RuntimeObservationPayload::QueryBoundary { boundary: QueryBoundaryKind::CleanupFinished });
             let boundary = query_terminal_boundary(&outcome);
             self.handle().record(|| RuntimeObservationPayload::QueryBoundary { boundary });
-            self.session.seal_deferred(outcome)
-        }));
-        let deferred = match finishing {
-            Ok(deferred) => deferred,
-            Err(panic) => {
-                self.handle().mark_degraded();
-                let deferred = self.session.seal_deferred(RuntimeTerminalOutcome::Panicked);
-                let snapshot = deferred.snapshot.clone();
-                let mut lifecycle = self.lock_lifecycle();
-                *lifecycle = RuntimeObservationOwnerLifecycleState::Sealed(snapshot);
-                self.lifecycle.finished.notify_all();
-                drop(lifecycle);
-                let _ = deferred.invoke_observers();
-                std::panic::resume_unwind(panic);
-            },
-        };
-        let snapshot = deferred.snapshot.clone();
-        let mut lifecycle = self.lock_lifecycle();
-        *lifecycle = RuntimeObservationOwnerLifecycleState::Sealed(snapshot.clone());
-        self.lifecycle.finished.notify_all();
-        drop(lifecycle);
-        deferred.invoke_observers()
+        })
     }
 
     /// Completes a query that has no admitted handle responsible for cleanup.
@@ -963,12 +1035,100 @@ impl RuntimeObservationOwner {
 
     /// Registers an infallible notification for this session's immutable seal.
     ///
-    /// The observer runs at most once for this registration, outside recorder
-    /// locks. A panic is isolated from query execution and cleanup. Registering
-    /// after the session sealed delivers the existing snapshot immediately.
+    /// The observer runs at most once for this registration and outside
+    /// recorder locks. Registrations racing terminal publication join the
+    /// owner's delivery fence; registrations after that fence has completed
+    /// deliver the existing snapshot immediately. A panic is isolated from
+    /// query execution and cleanup.
     pub fn register_seal_observer<F>(&self, observer: F)
     where F: Fn(SealedRuntimeObservationSnapshot) + Send + Sync + 'static {
-        self.handle().register_seal_observer(observer);
+        let mut observer = Some(RuntimeObservationSealObserver { notify: Box::new(observer) });
+        let immediate = {
+            let mut lifecycle = self.lock_lifecycle();
+            match &mut *lifecycle {
+                RuntimeObservationOwnerLifecycleState::Open { .. } => {
+                    self.handle().register_seal_observer(observer.take().expect("observer exists"))
+                },
+                RuntimeObservationOwnerLifecycleState::Finishing { late_observers }
+                | RuntimeObservationOwnerLifecycleState::Delivering { late_observers, .. } => {
+                    late_observers.push(observer.take().expect("observer exists"));
+                    None
+                },
+                RuntimeObservationOwnerLifecycleState::Sealed(snapshot) => {
+                    snapshot.clone().map(|snapshot| (observer.take().expect("observer exists"), snapshot))
+                },
+            }
+        };
+        if let Some((observer, snapshot)) = immediate {
+            observer.invoke(snapshot);
+        }
+    }
+
+    fn finish_owner_terminal<F>(
+        &self,
+        outcome: RuntimeTerminalOutcome,
+        before_seal: F,
+    ) -> Option<SealedRuntimeObservationSnapshot>
+    where
+        F: FnOnce(),
+    {
+        let finishing = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            before_seal();
+            self.session.seal_deferred(outcome)
+        }));
+        let deferred = match finishing {
+            Ok(deferred) => deferred,
+            Err(panic) => {
+                self.handle().mark_degraded();
+                let deferred = self.session.seal_deferred(RuntimeTerminalOutcome::Panicked);
+                let _ = self.complete_observer_delivery(deferred);
+                std::panic::resume_unwind(panic);
+            },
+        };
+        self.complete_observer_delivery(deferred)
+    }
+
+    fn complete_observer_delivery(
+        &self,
+        deferred: DeferredRuntimeObservationSeal,
+    ) -> Option<SealedRuntimeObservationSnapshot> {
+        let snapshot = deferred.snapshot.clone();
+        let mut observers = deferred.observers;
+        {
+            let mut lifecycle = self.lock_lifecycle();
+            let late_observers = match &mut *lifecycle {
+                RuntimeObservationOwnerLifecycleState::Finishing { late_observers } => std::mem::take(late_observers),
+                _ => unreachable!("terminal owner must publish before observer delivery"),
+            };
+            if snapshot.is_some() {
+                observers.extend(late_observers);
+            }
+            *lifecycle = RuntimeObservationOwnerLifecycleState::Delivering {
+                snapshot: snapshot.clone(),
+                late_observers: Vec::new(),
+            };
+        }
+        let _delivery = RuntimeObservationDeliveryGuard::enter(Some(&self.lifecycle));
+        loop {
+            if let Some(snapshot) = &snapshot {
+                for observer in observers.drain(..) {
+                    observer.invoke(snapshot.clone());
+                }
+            }
+            let mut lifecycle = self.lock_lifecycle();
+            let late_observers = match &mut *lifecycle {
+                RuntimeObservationOwnerLifecycleState::Delivering { late_observers, .. } => {
+                    std::mem::take(late_observers)
+                },
+                _ => unreachable!("observer delivery must retain terminal owner state"),
+            };
+            if late_observers.is_empty() || snapshot.is_none() {
+                *lifecycle = RuntimeObservationOwnerLifecycleState::Sealed(snapshot.clone());
+                self.lifecycle.finished.notify_all();
+                return snapshot;
+            }
+            observers = late_observers;
+        }
     }
 
     fn lock_lifecycle(&self) -> MutexGuard<'_, RuntimeObservationOwnerLifecycleState> {

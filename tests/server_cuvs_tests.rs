@@ -1,18 +1,19 @@
 #![cfg(all(feature = "server", feature = "cuvs"))]
 
-use std::{collections::BTreeMap, fs::File, net::TcpListener, path::Path, sync::OnceLock, time::Duration};
+use std::{fs::File, net::TcpListener, path::Path, sync::OnceLock, time::Duration};
 
 use arrow::{
-    array::{Array, ArrayRef, Float32Array, Int32Array, Int64Array},
+    array::{Array, ArrayRef, Float32Array, Int64Array},
     datatypes::{DataType, Field, Schema},
     record_batch::RecordBatch,
 };
 use arrow_flight::{error::FlightError, sql::client::FlightSqlServiceClient};
 use datafusion_nexus::{
+    backend::GpuMemoryOwnership,
     gpu_functions::GPU_LIST_FUNCTIONS_FUNCTION,
     server::{
-        ERROR_CODE_METADATA_KEY, ERROR_KIND_METADATA_KEY, ERROR_STATUS_METADATA_KEY,
-        NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV, Result as ServerResult, ServerConfig, serve_with_listener,
+        ERROR_CODE_METADATA_KEY, ERROR_KIND_METADATA_KEY, ERROR_STATUS_METADATA_KEY, Result as ServerResult,
+        ServerConfig, serve_with_listener,
     },
 };
 use futures::TryStreamExt;
@@ -38,11 +39,11 @@ const PCA_OPTIONS: &str = r#"{
 }"#;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn explicitly_unbounded_flight_sql_executes_all_cuvs_operations_over_relation_subqueries() {
+async fn bounded_flight_sql_lists_all_cuvs_operations_and_rejects_relation_subqueries() {
     let _guard = server_test_lock().lock().await;
     let (listener, addr) = free_local_addr();
-    let env = BTreeMap::from([(NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV, "unbounded".to_string())]);
-    let mut config = ServerConfig::from_env_get(|name| env.get(name).cloned()).expect("unbounded server config");
+    let mut config = ServerConfig::from_env_get(|_| None).expect("default bounded server config");
+    config.gpu_memory_ownership = vec![(0, GpuMemoryOwnership::WholeDeviceExclusive)];
     config.bind_addr = addr;
 
     let _server = ScopedServer::spawn(config, listener);
@@ -67,7 +68,7 @@ async fn explicitly_unbounded_flight_sql_executes_all_cuvs_operations_over_relat
         vec!["cuvs_brute_force_knn", "cuvs_kmeans", "cuvs_pca"],
     );
 
-    let knn = execute_batches(
+    let knn = bounded_cuvs_rejection(
         &mut client,
         &format!(
             "SELECT query_id, neighbor_id, rank \
@@ -77,12 +78,9 @@ async fn explicitly_unbounded_flight_sql_executes_all_cuvs_operations_over_relat
         ),
     )
     .await;
-    let knn = single_batch(&knn);
-    assert_eq!(int64_values(knn, 0), vec![99]);
-    assert_eq!(int64_values(knn, 1), vec![0]);
-    assert_eq!(u32_values(knn, 2), vec![0]);
+    assert_bounded_cuvs_status(&knn);
 
-    let kmeans = execute_batches(
+    let kmeans = bounded_cuvs_rejection(
         &mut client,
         &format!(
             "SELECT id, cluster_id \
@@ -92,15 +90,9 @@ async fn explicitly_unbounded_flight_sql_executes_all_cuvs_operations_over_relat
         ),
     )
     .await;
-    let kmeans = single_batch(&kmeans);
-    assert_eq!(int64_values(kmeans, 0), vec![0, 1, 2, 3]);
-    let clusters = int32_values(kmeans, 1);
-    assert_eq!(clusters.len(), 4);
-    assert_eq!(clusters[0], clusters[1], "the first two points form one cluster");
-    assert_eq!(clusters[2], clusters[3], "the last two points form one cluster");
-    assert_ne!(clusters[0], clusters[2], "the two well-separated groups must have distinct labels");
+    assert_bounded_cuvs_status(&kmeans);
 
-    let pca = execute_batches(
+    let pca = bounded_cuvs_rejection(
         &mut client,
         &format!(
             "SELECT id, pc_0 \
@@ -110,24 +102,19 @@ async fn explicitly_unbounded_flight_sql_executes_all_cuvs_operations_over_relat
         ),
     )
     .await;
-    let pca = single_batch(&pca);
-    assert_eq!(pca.schema().field(0).name(), "id");
-    assert_eq!(pca.schema().field(1).name(), "pc_0");
-    assert_eq!(int64_values(pca, 0), vec![0, 1, 2, 3]);
-    let components = pca.column(1).as_any().downcast_ref::<arrow::array::Float32Array>().expect("pc_0 must be Float32");
-    assert!((0..components.len()).all(|row| components.value(row).is_finite()));
+    assert_bounded_cuvs_status(&pca);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn explicitly_unbounded_flight_sql_executes_kmeans_and_pca_over_parquet_relation_subqueries() {
+async fn bounded_flight_sql_plans_parquet_cuvs_relations_then_rejects_execution() {
     let _guard = server_test_lock().lock().await;
     let temp_dir = tempfile::tempdir().expect("temporary Parquet directory");
     let parquet_path = temp_dir.path().join("vector_input.parquet");
     write_vector_parquet(&parquet_path);
 
     let (listener, addr) = free_local_addr();
-    let env = BTreeMap::from([(NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV, "unbounded".to_string())]);
-    let mut config = ServerConfig::from_env_get(|name| env.get(name).cloned()).expect("unbounded server config");
+    let mut config = ServerConfig::from_env_get(|_| None).expect("default bounded server config");
+    config.gpu_memory_ownership = vec![(0, GpuMemoryOwnership::WholeDeviceExclusive)];
     config.bind_addr = addr;
 
     let _server = ScopedServer::spawn(config, listener);
@@ -141,7 +128,7 @@ async fn explicitly_unbounded_flight_sql_executes_kmeans_and_pca_over_parquet_re
     )
     .await;
 
-    let kmeans = execute_batches(
+    let kmeans = bounded_cuvs_rejection(
         &mut client,
         &format!(
             "SELECT id, cluster_id \
@@ -151,14 +138,9 @@ async fn explicitly_unbounded_flight_sql_executes_kmeans_and_pca_over_parquet_re
         ),
     )
     .await;
-    let kmeans = single_batch(&kmeans);
-    assert_eq!(int64_values(kmeans, 0), vec![1, 2, 3, 4]);
-    let clusters = int32_values(kmeans, 1);
-    assert_eq!(clusters[0], clusters[1], "nearby low-valued rows must share a cluster");
-    assert_eq!(clusters[2], clusters[3], "nearby high-valued rows must share a cluster");
-    assert_ne!(clusters[0], clusters[2], "the separated groups must have distinct clusters");
+    assert_bounded_cuvs_status(&kmeans);
 
-    let pca = execute_batches(
+    let pca = bounded_cuvs_rejection(
         &mut client,
         &format!(
             "SELECT id, pc_0 \
@@ -168,10 +150,7 @@ async fn explicitly_unbounded_flight_sql_executes_kmeans_and_pca_over_parquet_re
         ),
     )
     .await;
-    let pca = single_batch(&pca);
-    assert_eq!(int64_values(pca, 0), vec![1, 2, 3, 4]);
-    let components = pca.column(1).as_any().downcast_ref::<Float32Array>().expect("pc_0 must be Float32");
-    assert!((0..components.len()).all(|row| components.value(row).is_finite()));
+    assert_bounded_cuvs_status(&pca);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -179,38 +158,21 @@ async fn default_bounded_flight_sql_rejects_cuvs_before_child_execution_with_str
     let _guard = server_test_lock().lock().await;
     let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).expect("default bounded server config");
+    config.gpu_memory_ownership = vec![(0, GpuMemoryOwnership::WholeDeviceExclusive)];
     config.bind_addr = addr;
 
     let _server = ScopedServer::spawn(config, listener);
     let mut client = connect_with_retry(addr).await;
     register_vector_views(&mut client).await;
-    let info = client
-        .execute(
-            format!(
-                "SELECT * FROM cuvs_brute_force_knn((SELECT * FROM dataset_vectors), (SELECT * FROM query_vectors), '{}')",
-                sql_literal(KNN_OPTIONS)
-            ),
-            None,
-        )
-        .await
-        .expect("bounded execution is rejected when Flight consumes the statement ticket");
-    let ticket = info.endpoint.first().and_then(|endpoint| endpoint.ticket.clone()).expect("statement ticket");
-    let error = client
-        .do_get(ticket)
-        .await
-        .expect("open bounded Flight result stream")
-        .try_collect::<Vec<_>>()
-        .await
-        .expect_err("bounded cuVS execution must be rejected");
-    let status = flight_status(error);
-
-    assert_eq!(status.code(), Code::Unimplemented);
-    assert_metadata(&status, "unsupported_operator", "unsupported", "permanent");
-    assert!(
-        status.message().contains("bounded cuVS execution requires a lower-level peak-memory preflight contract"),
-        "unexpected bounded cuVS message: {}",
-        status.message()
-    );
+    let status = bounded_cuvs_rejection(
+        &mut client,
+        &format!(
+            "SELECT * FROM cuvs_brute_force_knn((SELECT * FROM dataset_vectors), (SELECT * FROM query_vectors), '{}')",
+            sql_literal(KNN_OPTIONS)
+        ),
+    )
+    .await;
+    assert_bounded_cuvs_status(&status);
 }
 
 async fn register_vector_views(client: &mut FlightSqlServiceClient<tonic::transport::Channel>) {
@@ -324,20 +286,33 @@ fn single_batch(batches: &[RecordBatch]) -> &RecordBatch {
     &batches[0]
 }
 
-fn int64_values(batch: &RecordBatch, column: usize) -> Vec<i64> {
-    let values = batch.column(column).as_any().downcast_ref::<Int64Array>().expect("Int64 result column");
-    (0..values.len()).map(|row| values.value(row)).collect()
+async fn bounded_cuvs_rejection(
+    client: &mut FlightSqlServiceClient<tonic::transport::Channel>,
+    sql: &str,
+) -> tonic::Status {
+    let info = client
+        .execute(sql.to_string(), None)
+        .await
+        .expect("bounded execution is rejected when Flight consumes the statement ticket");
+    let ticket = info.endpoint.first().and_then(|endpoint| endpoint.ticket.clone()).expect("statement ticket");
+    let error = client
+        .do_get(ticket)
+        .await
+        .expect("open bounded Flight result stream")
+        .try_collect::<Vec<_>>()
+        .await
+        .expect_err("bounded cuVS execution must be rejected");
+    flight_status(error)
 }
 
-fn int32_values(batch: &RecordBatch, column: usize) -> Vec<i32> {
-    let values = batch.column(column).as_any().downcast_ref::<Int32Array>().expect("Int32 result column");
-    (0..values.len()).map(|row| values.value(row)).collect()
-}
-
-fn u32_values(batch: &RecordBatch, column: usize) -> Vec<u32> {
-    let values =
-        batch.column(column).as_any().downcast_ref::<arrow::array::UInt32Array>().expect("UInt32 result column");
-    (0..values.len()).map(|row| values.value(row)).collect()
+fn assert_bounded_cuvs_status(status: &tonic::Status) {
+    assert_eq!(status.code(), Code::Unimplemented);
+    assert_metadata(status, "unsupported_operator", "unsupported", "permanent");
+    assert!(
+        status.message().contains("bounded cuVS execution requires a lower-level peak-memory preflight contract"),
+        "unexpected bounded cuVS message: {}",
+        status.message()
+    );
 }
 
 fn flight_status(error: FlightError) -> tonic::Status {

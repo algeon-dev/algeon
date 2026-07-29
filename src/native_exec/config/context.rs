@@ -1,22 +1,6 @@
 use super::*;
 
 impl NexusNativeExecutionContext {
-    pub(super) fn standalone(context: ExecutionContext, task_context_owner: Option<usize>) -> Self {
-        #[cfg(debug_assertions)]
-        let standalone_bounded_context_guard = standalone_bounded_context_debug_guard(&context, task_context_owner);
-        #[cfg(not(debug_assertions))]
-        let _ = task_context_owner;
-        Self {
-            context,
-            admission_facts: None,
-            record_admission_facts: false,
-            _tenant_context: None,
-            ticket_context: None,
-            #[cfg(debug_assertions)]
-            _standalone_bounded_context_guard: standalone_bounded_context_guard,
-        }
-    }
-
     pub(super) fn tenant_bound(
         tenant_context: TenantQueryContext,
         admission_facts: QueryAdmissionFacts,
@@ -29,8 +13,6 @@ impl NexusNativeExecutionContext {
             record_admission_facts,
             _tenant_context: Some(tenant_context),
             ticket_context: None,
-            #[cfg(debug_assertions)]
-            _standalone_bounded_context_guard: None,
         }
     }
 
@@ -43,8 +25,6 @@ impl NexusNativeExecutionContext {
             record_admission_facts: ticket_context.should_record_admission_facts(),
             _tenant_context: None,
             ticket_context: Some(ticket_context),
-            #[cfg(debug_assertions)]
-            _standalone_bounded_context_guard: None,
         }
     }
 
@@ -82,96 +62,12 @@ impl NexusNativeExecutionContext {
     }
 }
 
-#[cfg(debug_assertions)]
-#[derive(Debug)]
-pub(in crate::native_exec) struct StandaloneBoundedContextDebugGuard {
-    pub(super) device_ordinal: usize,
-    pub(super) task_context_owner: Option<usize>,
-}
-
-#[cfg(debug_assertions)]
-pub(super) type StandaloneBoundedContextCounts =
-    std::sync::Mutex<std::collections::BTreeMap<usize, std::collections::BTreeMap<Option<usize>, usize>>>;
-
-#[cfg(debug_assertions)]
-pub(super) fn standalone_bounded_context_counts() -> &'static StandaloneBoundedContextCounts {
-    static COUNTS: OnceLock<StandaloneBoundedContextCounts> = OnceLock::new();
-    COUNTS.get_or_init(Default::default)
-}
-
-#[cfg(debug_assertions)]
-pub(super) fn standalone_bounded_context_debug_guard(
-    context: &ExecutionContext,
-    task_context_owner: Option<usize>,
-) -> Option<StandaloneBoundedContextDebugGuard> {
-    if !matches!(context.memory_control_policy(), MemoryControlPolicy::Bounded { .. }) {
-        return None;
-    }
-    let device_ordinal = match context.device_placement() {
-        nexus_query_engine::runtime::DevicePlacement::SingleDevice { device_ordinal } => device_ordinal,
-        _ => return None,
-    };
-    Some(StandaloneBoundedContextDebugGuard::new_with_owner(device_ordinal, task_context_owner))
-}
-
-#[cfg(debug_assertions)]
-impl StandaloneBoundedContextDebugGuard {
-    #[cfg(test)]
-    pub(super) fn new(device_ordinal: usize) -> Self {
-        Self::new_with_owner(device_ordinal, None)
-    }
-
-    pub(super) fn new_with_owner(device_ordinal: usize, task_context_owner: Option<usize>) -> Self {
-        let guard = Self { device_ordinal, task_context_owner };
-        let has_conflicting_owner = {
-            let mut counts = standalone_bounded_context_counts()
-                .lock()
-                .expect("standalone bounded native context debug registry poisoned");
-            let device_counts = counts.entry(device_ordinal).or_default();
-            let has_conflicting_owner = !device_counts.is_empty();
-            *device_counts.entry(task_context_owner).or_default() += 1;
-            has_conflicting_owner
-        };
-        debug_assert!(
-            !has_conflicting_owner,
-            "concurrent unadmitted bounded native contexts on CUDA device {device_ordinal}; use NexusGpuBackend to share QueryService admission"
-        );
-        guard
-    }
-}
-
-#[cfg(debug_assertions)]
-impl Drop for StandaloneBoundedContextDebugGuard {
-    fn drop(&mut self) {
-        if let Ok(mut counts) = standalone_bounded_context_counts().lock()
-            && let Some(device_counts) = counts.get_mut(&self.device_ordinal)
-        {
-            if let Some(count) = device_counts.get_mut(&self.task_context_owner) {
-                *count = count.saturating_sub(1);
-                if *count == 0 {
-                    device_counts.remove(&self.task_context_owner);
-                }
-            }
-            if device_counts.is_empty() {
-                counts.remove(&self.device_ordinal);
-            }
-        }
-    }
-}
-
 impl NexusNativeExecutionConfig {
     #[cfg(test)]
     pub(crate) fn execution_context(&self) -> crate::error::Result<NexusNativeExecutionContext> {
-        self.execution_context_with_standalone_owner(None)
-    }
-
-    pub(super) fn execution_context_with_standalone_owner(
-        &self,
-        standalone_owner: Option<usize>,
-    ) -> crate::error::Result<NexusNativeExecutionContext> {
         self.validate_query_policies()?;
         if let Some(handle) = &self.query_service_handle {
-            let admission_facts = QueryAdmissionFacts::from_handle(handle.as_ref());
+            let admission_facts = QueryAdmissionFacts::from_query_handle(handle.as_ref());
             let admission_facts_recorded = self.query_admission_facts_recorded.clone();
             return handle
                 .acquire_context_with_cancellation(self.cancellation.clone())
@@ -190,60 +86,7 @@ impl NexusNativeExecutionConfig {
                     )
                 });
         }
-
-        let mut builder = ExecutionContext::builder()
-            .with_memory_policy(self.memory_resource_policy)
-            .with_memory_control_policy(self.memory_control_policy)
-            .with_boundary_policy(self.boundary_policy)
-            .with_source_scheduler_policy(self.source_scheduler_policy)
-            .with_source_chunk_planning_mode(self.source_chunk_planning_mode)
-            .with_lakehouse_cache_fill_config(self.lakehouse_cache_fill_config.clone())
-            .with_cancellation(self.cancellation.clone())
-            .with_native_pipeline_execution_mode(self.native_pipeline_execution_mode)
-            .with_statistical_aggregate_execution_mode(self.stddev_samp_execution_mode)
-            .with_aggregate_strategy_execution_options(self.aggregate_strategy_execution_options)
-            .with_source_chunk_planning_options(self.source_chunk_planning_options)
-            .with_graph_memory_calibration_override(self.graph_memory_calibration_override)
-            .with_source_storage_profiles(self.source_storage_profiles.clone());
-        if let Some(lifecycle) = &self.io_lifecycle {
-            builder = builder.with_io_lifecycle(lifecycle.clone());
-        }
-        if let Some(pool) = &self.service_stream_pool {
-            builder = builder.with_service_stream_pool(pool.clone());
-        }
-        if let Some(pool_size) = self.service_stream_pool_size {
-            builder = builder.with_service_stream_pool_size(pool_size);
-        }
-        if let Some(runtime) = &self.runtime {
-            builder = builder.with_shared_runtime(Arc::clone(runtime));
-        }
-        if let Some(device_ordinal) = self.device_ordinal {
-            builder = builder.with_device_ordinal(device_ordinal);
-        }
-        if let Some(cache) = &self.hash_join_build_cache {
-            builder = builder.with_hash_join_build_cache(Arc::clone(cache));
-        }
-        if let Some(cache) = &self.local_parquet_source_cache {
-            builder = builder.with_local_parquet_source_cache(Arc::clone(cache));
-        }
-        if let Some(memory_history) = &self.adaptive_memory_history {
-            builder = builder.with_adaptive_memory_history(Arc::clone(memory_history));
-        }
-        if let Some(query_id) = &self.query_id {
-            builder = builder.with_query_id(query_id.clone());
-        }
-        if let Some(trace_id) = &self.trace_id {
-            builder = builder.with_trace_id(trace_id.clone());
-        }
-        builder.build().map(|context| NexusNativeExecutionContext::standalone(context, standalone_owner)).map_err(
-            |error| {
-                Error::from_native(
-                    "datafusion_nexus.native_exec.context",
-                    "failed to build nexus native execution context",
-                    self.stamp_native_error_correlation(error),
-                )
-            },
-        )
+        Err(self.gpu_backend_required_error())
     }
 
     pub(crate) async fn execution_context_async(
@@ -266,7 +109,7 @@ impl NexusNativeExecutionConfig {
                 });
         }
         if let Some(handle) = &self.query_service_handle {
-            let admission_facts = QueryAdmissionFacts::from_handle(handle.as_ref());
+            let admission_facts = QueryAdmissionFacts::from_query_handle(handle.as_ref());
             let admission_facts_recorded = self.query_admission_facts_recorded.clone();
             return Arc::clone(handle)
                 .acquire_context_with_cancellation_async(self.cancellation.clone())
@@ -287,72 +130,24 @@ impl NexusNativeExecutionConfig {
                 });
         }
 
-        let pool = if tokio::runtime::Handle::try_current().is_ok() {
-            let pool_config = self.clone();
-            tokio::task::spawn_blocking(move || pool_config.standalone_gpu_execution_pool()).await.map_err(
-                |error| {
-                    let (code, reason) = if error.is_cancelled() {
-                        (crate::error::ErrorCode::Cancelled, "discovery_task_cancelled")
-                    } else {
-                        (crate::error::ErrorCode::Internal, "discovery_task_panicked")
-                    };
-                    Error::new(
-                        code,
-                        "datafusion_nexus.native_exec.context_executor",
-                        "standalone GPU execution-pool discovery task failed",
-                    )
-                    .with_fact("reason", reason)
-                    .with_source(error)
-                },
-            )??
-        } else {
-            self.standalone_gpu_execution_pool()?
-        };
-        let config = self.clone();
-        let standalone_owner = Some(Arc::as_ptr(&task_context) as usize);
-        pool.run(GpuExecutionJobKind::ContextSetup, async move {
-            config.execution_context_with_standalone_owner(standalone_owner)
-        })
-        .await
-        .map_err(|error| {
-            Error::from_native(
-                "datafusion_nexus.native_exec.context_executor",
-                "failed to run nexus native context setup on the GPU execution pool",
-                self.stamp_native_error_correlation(error),
-            )
-        })?
+        Err(self.gpu_backend_required_error())
     }
 
-    pub(super) fn standalone_gpu_execution_pool(&self) -> crate::error::Result<GpuExecutionPool> {
-        let device = match &self.runtime {
-            Some(runtime) => runtime.device(),
-            None => cudf::DeviceId::new(self.device_ordinal.unwrap_or(cudf::DeviceId::DEFAULT.ordinal())).map_err(
-                |error| {
-                    Error::from_native(
-                        "datafusion_nexus.native_exec.context_executor",
-                        "failed to resolve the standalone GPU execution-pool device",
-                        nexus_query_engine::error::QueryError::from_cudf(
-                            "datafusion_nexus.native_exec.context_executor",
-                            "failed to resolve the standalone GPU execution-pool device",
-                            error,
-                        ),
-                    )
-                },
-            )?,
-        };
-        let worker_count = self
-            .service_stream_pool
-            .as_ref()
-            .map(ServiceStreamPool::pool_size)
-            .or(self.service_stream_pool_size)
-            .unwrap_or_else(|| default_service_stream_pool_size_for_device(device));
-        GpuExecutionPool::shared_for_device(device.ordinal(), worker_count).map_err(|error| {
-            Error::from_native(
-                "datafusion_nexus.native_exec.context_executor",
-                "failed to resolve the standalone GPU execution pool",
-                self.stamp_native_error_correlation(error),
-            )
-        })
+    fn gpu_backend_required_error(&self) -> Error {
+        let mut error = Error::new(
+            crate::error::ErrorCode::InvalidRequest,
+            "datafusion_nexus.native_exec.context",
+            "GPU native execution requires admission from an installed NexusGpuBackend",
+        )
+        .with_log_safe_fact("reason", "gpu_backend_required")
+        .with_log_safe_fact("remediation", "install_nexus_gpu_backend");
+        if let Some(query_id) = &self.query_id {
+            error = error.with_fact("query_id", query_id.as_str());
+        }
+        if let Some(trace_id) = &self.trace_id {
+            error = error.with_fact("trace_id", trace_id.as_str());
+        }
+        error
     }
 
     pub(super) fn stamp_acquired_service_context(

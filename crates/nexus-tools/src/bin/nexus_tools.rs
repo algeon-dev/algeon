@@ -8,6 +8,10 @@ use std::{env, error::Error};
 
 type ToolResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
 
+#[cfg(all(any(feature = "clickbench-stage-probe", feature = "cugraph-similarity-calibrate"), not(test)))]
+#[path = "../gpu_backend.rs"]
+mod gpu_backend;
+
 #[cfg(all(feature = "clickbench-stage-probe", not(test)))]
 #[path = "../clickbench_stage_probe.rs"]
 mod clickbench_stage_probe;

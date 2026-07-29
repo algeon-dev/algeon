@@ -3,7 +3,8 @@ fn native_local_parquet_source_applies_iceberg_position_deletes_before_output_an
     let dir = unique_temp_dir("nexus-query-engine-native-position-deletes");
     let data_path = dir.join("data.parquet");
     let delete_path = dir.join("delete.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context();
+    let runtime = Arc::new(context.runtime().unwrap());
     write_input_parquet(&runtime, &data_path);
     write_position_delete_parquet(&delete_path, data_path.display().to_string().as_str(), &[1, 3], &[0]);
 
@@ -29,7 +30,6 @@ fn native_local_parquet_source_applies_iceberg_position_deletes_before_output_an
     let mut builder = QueryPlanBuilder::new();
     let source_node = builder.add_source(SourceNode::LocalParquet(source));
     let plan = builder.finish_with_host_sink(source_node);
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -81,8 +81,9 @@ fn native_local_parquet_source_applies_iceberg_equality_deletes_before_output_li
     let delete_path = dir.join("delete.parquet");
     let limited_data_path = dir.join("limited-data.parquet");
     let limited_delete_path = dir.join("limited-delete.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
+    let context = backend_context();
+    let runtime = Arc::new(context.runtime().unwrap());
+
     let data_schema = write_nullable_key_payload_parquet(&runtime, &data_path);
     write_equality_delete_key_parquet(&runtime, &delete_path, &[Some(1), None]);
 
@@ -182,8 +183,9 @@ fn native_local_parquet_source_coerces_widened_equality_delete_keys_before_anti_
     let delete_path = dir.join("delete.parquet");
     let limited_data_path = dir.join("limited-data.parquet");
     let limited_delete_path = dir.join("limited-delete.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
+    let context = backend_context();
+    let runtime = Arc::new(context.runtime().unwrap());
+
     write_nullable_key_payload_parquet(&runtime, &data_path);
     write_equality_delete_i64_key_parquet(&runtime, &delete_path, &[Some(1), None]);
 
@@ -329,7 +331,7 @@ fn native_scan_limited_position_delete_source_reads_until_visible_row() {
     let mut builder = QueryPlanBuilder::new();
     let source_node = builder.add_source(SourceNode::LocalParquet(source));
     let plan = builder.finish_with_host_sink(source_node);
-    let context = ExecutionContext::from_shared_runtime(Arc::new(cudf::Runtime::new().unwrap())).unwrap();
+    let context = backend_context();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
@@ -377,7 +379,7 @@ fn native_position_delete_reader_predicate_prunes_delete_row_groups_for_scan_lim
     let mut builder = QueryPlanBuilder::new();
     let source_node = builder.add_source(SourceNode::LocalParquet(source));
     let plan = builder.finish_with_host_sink(source_node);
-    let context = ExecutionContext::from_shared_runtime(Arc::new(cudf::Runtime::new().unwrap())).unwrap();
+    let context = backend_context();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();

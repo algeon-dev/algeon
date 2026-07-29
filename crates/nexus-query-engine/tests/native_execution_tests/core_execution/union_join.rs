@@ -1,6 +1,7 @@
 #[test]
 fn native_query_executes_union_over_gpu_resident_inputs() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context();
+    let runtime = Arc::new(context.runtime().unwrap());
     let schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int32, false),
         Field::new("payload", DataType::Int64, false),
@@ -21,7 +22,7 @@ fn native_query_executes_union_over_gpu_resident_inputs() {
     let right = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("right", Arc::clone(&schema))));
     let union = builder.add_union(vec![left, right], Arc::clone(&schema));
     let plan = builder.finish_with_host_sink(union);
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
+
     let mut gpu_inputs = GpuResidentInputMap::new();
     gpu_inputs.insert(
         "left".to_string(),
@@ -53,7 +54,8 @@ fn native_query_executes_union_over_gpu_resident_inputs() {
 
 #[test]
 fn bounded_native_query_executes_union_over_gpu_resident_inputs() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context();
+    let runtime = Arc::new(context.runtime().unwrap());
     let schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int32, false),
         Field::new("payload", DataType::Int64, false),
@@ -74,17 +76,6 @@ fn bounded_native_query_executes_union_over_gpu_resident_inputs() {
     let right = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("right", Arc::clone(&schema))));
     let union = builder.add_union(vec![left, right], Arc::clone(&schema));
     let plan = builder.finish_with_host_sink(union);
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 64 * 1024 * 1024,
-            max_source_chunk_bytes: 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
     let mut gpu_inputs = GpuResidentInputMap::new();
     gpu_inputs.insert(
         "left".to_string(),
@@ -116,7 +107,8 @@ fn bounded_native_query_executes_union_over_gpu_resident_inputs() {
 
 #[test]
 fn bounded_native_query_executes_join_over_gpu_resident_inputs() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context();
+    let runtime = Arc::new(context.runtime().unwrap());
     let left_schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int32, false),
         Field::new("lval", DataType::Int64, false),
@@ -169,17 +161,6 @@ fn bounded_native_query_executes_join_over_gpu_resident_inputs() {
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(sort);
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 64 * 1024 * 1024,
-            max_source_chunk_bytes: 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
     let mut gpu_inputs = GpuResidentInputMap::new();
     gpu_inputs.insert(
         "left".to_string(),

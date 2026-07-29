@@ -2,6 +2,7 @@
 async fn get_query_stats_returns_completed_statement_observability() {
     let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
     let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
@@ -33,6 +34,7 @@ async fn get_query_stats_returns_completed_statement_observability() {
 async fn get_query_stats_returns_structured_error_after_planning_failure() {
     let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
     let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
@@ -62,6 +64,7 @@ async fn get_query_stats_returns_structured_error_after_planning_failure() {
 async fn get_query_stats_surfaces_complete_cpu_baseline_not_supported() {
     let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
     let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
@@ -102,11 +105,7 @@ async fn get_query_stats_surfaces_complete_cpu_baseline_not_supported() {
     assert_eq!(tsv_value(&planning_header, &planning_row, "rejected_before_execution"), "false", "{payload}");
 
     let (execution_header, execution_row) = query_stats_tsv_single_row(&payload, "execution");
-    assert_eq!(
-        tsv_value(&execution_header, &execution_row, "planning_outcome"),
-        "not_supported",
-        "{payload}"
-    );
+    assert_eq!(tsv_value(&execution_header, &execution_row, "planning_outcome"), "not_supported", "{payload}");
     assert_eq!(tsv_value(&execution_header, &execution_row, "post_native_execution_path"), "datafusion", "{payload}");
     assert_eq!(tsv_value(&execution_header, &execution_row, "native_runtime_started"), "false", "{payload}");
     assert_eq!(tsv_value(&execution_header, &execution_row, "runtime_outcome"), "not_started", "{payload}");
@@ -117,6 +116,7 @@ async fn get_query_stats_surfaces_complete_cpu_baseline_not_supported() {
 async fn get_query_stats_unknown_query_returns_not_found() {
     let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
     let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
@@ -139,6 +139,7 @@ async fn get_query_stats_unknown_query_returns_not_found() {
 async fn get_query_stats_returns_transaction_structured_error() {
     let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
     let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
@@ -165,6 +166,7 @@ async fn get_query_stats_returns_transaction_structured_error() {
 async fn get_query_stats_returns_cancelled_for_unconsumed_ticket() {
     let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
     let server = tokio::spawn(async move { serve_with_listener(config, listener).await });

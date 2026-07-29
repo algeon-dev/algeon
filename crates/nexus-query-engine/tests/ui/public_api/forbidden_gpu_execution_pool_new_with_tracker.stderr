@@ -1,0 +1,23 @@
+error[E0603]: struct `GpuExecutionPool` is private
+ --> tests/ui/public_api/forbidden_gpu_execution_pool_new_with_tracker.rs:1:35
+  |
+1 | use nexus_query_engine::runtime::{GpuExecutionPool, GpuExecutionQueryTracker};
+  |                                   ^^^^^^^^^^^^^^^^ private struct
+  |
+note: the struct `GpuExecutionPool` is defined here
+ --> src/runtime.rs
+  |
+  | pub(crate) use gpu_execution_pool::{GpuExecutionPool, GpuExecutionQueryTracker};
+  |                                     ^^^^^^^^^^^^^^^^
+
+error[E0603]: struct `GpuExecutionQueryTracker` is private
+ --> tests/ui/public_api/forbidden_gpu_execution_pool_new_with_tracker.rs:1:53
+  |
+1 | use nexus_query_engine::runtime::{GpuExecutionPool, GpuExecutionQueryTracker};
+  |                                                     ^^^^^^^^^^^^^^^^^^^^^^^^ private struct
+  |
+note: the struct `GpuExecutionQueryTracker` is defined here
+ --> src/runtime.rs
+  |
+  | pub(crate) use gpu_execution_pool::{GpuExecutionPool, GpuExecutionQueryTracker};
+  |                                                       ^^^^^^^^^^^^^^^^^^^^^^^^

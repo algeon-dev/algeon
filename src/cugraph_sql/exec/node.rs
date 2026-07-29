@@ -932,7 +932,7 @@ impl ExecutionPlan for CugraphAlgoExec {
             if let Some(admission_facts) = context_lease.admission_facts() {
                 metrics.record_admission_facts(admission_facts);
             }
-            let gpu_execution_pool = context_lease.context().gpu_execution_pool().map_err(|error| {
+            let gpu_executor = context_lease.context().gpu_executor().map_err(|error| {
                 DataFusionError::from(Error::from_native(
                     "datafusion_nexus.cugraph_sql.gpu_execution_pool",
                     "query service closed before cuGraph execution acquired its GPU pool",
@@ -941,7 +941,7 @@ impl ExecutionPlan for CugraphAlgoExec {
             })?;
             let observation = context_lease.context().runtime_observation().clone();
             run_gpu_execution_task(
-                gpu_execution_pool,
+                gpu_executor,
                 observation,
                 "datafusion_nexus.cugraph_sql.gpu_execution_pool",
                 move |gpu_stream_scope| async move {

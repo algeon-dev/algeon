@@ -1,8 +1,15 @@
+//! Public-route GPU integration coverage for native execution.
+//!
+//! Every execution context in this target is admitted through the process-owned
+//! backend core. Tests that specifically exercise raw context construction or
+//! caller-owned runtime/cache/governor injection remain crate-private.
+
 use std::{
     collections::HashMap,
     fs::{self, File},
+    ops::Deref,
     path::Path,
-    sync::Arc,
+    sync::{Arc, OnceLock},
 };
 
 use arrow::{
@@ -17,33 +24,6 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use cudf::DataFrame;
-#[cfg(feature = "cugraph")]
-use nexus_query_engine::exec::execute_query_plan_with_gpu_inputs_observed;
-#[cfg(feature = "cugraph")]
-use nexus_query_engine::observability::{
-    PlanExecutionBoundaryKind, RuntimeObservationConfig, RuntimeObservationPayload, RuntimeTerminalOutcome,
-};
-#[cfg(feature = "cugraph")]
-use nexus_query_engine::runtime::cache::resident_graph::GpuResidentGraphCache;
-#[cfg(feature = "cugraph")]
-use nexus_query_engine::{
-    adaptive_runtime::AdaptiveMemoryHistory, exec::force_next_graph_adaptive_chunk_attempt_resource_exhausted_for_test,
-    exec::force_next_graph_adaptive_full_attempt_resource_exhausted_for_test,
-    exec::force_next_graph_statistics_optional_resource_exhausted_for_test,
-    graph_memory::GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES, graph_memory::GRAPH_VERTEX_ESTIMATE_BOUNDARY,
-    graph_memory::GRAPH_VERTEX_ESTIMATE_PROBE_MIN_BYTES, graph_memory::GraphMemoryCalibrationOverride,
-    graph_memory::GraphMemoryModel, graph_memory::GraphMemoryModelInput, graph_memory::GraphReservationOutcome,
-    graph_memory::GraphSeedMode, graph_memory::GraphVertexEstimate, graph_memory::GraphVertexEstimateSource,
-    graph_memory::graph_vertex_estimate_probe_bytes, plan::GraphAlgorithm, plan::GraphAlgorithmParams,
-    plan::GraphAlgorithmSpec, plan::GraphBetweennessCentralityParams, plan::GraphBetweennessSeeds,
-    plan::GraphBfsEndpointPolicy, plan::GraphBfsParams, plan::GraphBfsPredicateInputs, plan::GraphConstructionOptions,
-    plan::GraphConstructionPolicy, plan::GraphEdgeBetweennessCentralityParams, plan::GraphEdgeColumnBindings,
-    plan::GraphEdgePredicateInput, plan::GraphPageRankParams, plan::GraphPageRankPersonalizationInput,
-    plan::GraphPersonalizedPageRankParams, plan::GraphPredicateInput, plan::GraphResidencyPlanAnalysis,
-    plan::GraphSimilarityParams, plan::GraphTriangleCountAllParams, plan::GraphVertexPairInput,
-    plan::graph_residency_descriptor_for_edge_plan, plan::planned_resident_graph_key, plan::stable_graph_result_schema,
-    runtime::QueryAdmissionRequest, runtime::QueryGrantRequest, runtime::QueryPlacementHint,
-};
 use nexus_query_engine::{
     chunk::{SourceChunkPlanningPolicy, plan_local_parquet_source_chunks},
     error::QueryErrorCode,
@@ -55,17 +35,16 @@ use nexus_query_engine::{
         SortExpr, SortSpec,
     },
     metrics::{MemoryReservationEventAction, QueryMetrics},
-    mode::{NativePipelineExecutionMode, StddevSampExecutionMode},
-    observability::AdmissionRequestId,
     plan::{
         JoinKey, JoinNullEquality, JoinOutputColumn, JoinSide, JoinSpec, JoinType, ProjectionOutput, QueryPlanBuilder,
         WindowFunction, WindowSpec,
     },
     runtime::{
-        BoundedJoinReservationContract, BuildMaterializationBoundary, ExecutionBoundaryPolicy, ExecutionContext,
-        GrantRequest, MemoryControlPolicy, MemoryGovernor, MemorySpaceId, QueryService, QueryServiceConfig,
-        QueryServiceTenantConfig, ReservationKind, SlotGuarantee, SourceSchedulerPolicy, TenantId,
-        cache::{hash_join::GpuHashJoinBuildCache, local_parquet::GpuLocalParquetSourceCache},
+        BoundedJoinReservationContract, DeploymentIoCapability, ExecutionBoundaryPolicy, ExecutionContext,
+        GdsDriverProbeStatus, GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft, GpuBackendDeviceConfig,
+        GpuBackendMemoryShare, GpuBackendTenantDraft, GpuMemoryOwnership, KvikioCompatModeStatus, MemoryControlPolicy,
+        MemorySpaceId, NvidiaFsProbeStatus, QueryAdmissionRequest, QueryGrantRequest, QueryHandle, QueryServiceConfig,
+        ReservationKind, SourceSchedulerPolicy, TenantId, TenantQueryContext,
         resident::{GpuDataFrame, GpuResidentInputMap, GpuResultHandle},
     },
     source::{
@@ -74,16 +53,202 @@ use nexus_query_engine::{
         ZERO_COLUMN_COUNT_COLUMN,
     },
 };
+#[cfg(feature = "cugraph")]
+use nexus_query_engine::{
+    exec::force_next_graph_statistics_optional_resource_exhausted_for_test,
+    graph_memory::GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES, graph_memory::GRAPH_VERTEX_ESTIMATE_BOUNDARY,
+    graph_memory::GRAPH_VERTEX_ESTIMATE_PROBE_MIN_BYTES, graph_memory::GraphMemoryModel,
+    graph_memory::GraphMemoryModelInput, graph_memory::GraphReservationOutcome, graph_memory::GraphSeedMode,
+    graph_memory::GraphVertexEstimate, graph_memory::GraphVertexEstimateSource,
+    graph_memory::graph_vertex_estimate_probe_bytes, plan::GraphAlgorithm, plan::GraphAlgorithmParams,
+    plan::GraphAlgorithmSpec, plan::GraphBetweennessCentralityParams, plan::GraphBetweennessSeeds,
+    plan::GraphBfsEndpointPolicy, plan::GraphBfsParams, plan::GraphBfsPredicateInputs, plan::GraphConstructionOptions,
+    plan::GraphConstructionPolicy, plan::GraphEdgeColumnBindings, plan::GraphEdgePredicateInput,
+    plan::GraphPageRankParams, plan::GraphPageRankPersonalizationInput, plan::GraphPersonalizedPageRankParams,
+    plan::GraphPredicateInput, plan::GraphResidencyPlanAnalysis, plan::GraphSimilarityParams,
+    plan::GraphTriangleCountAllParams, plan::GraphVertexPairInput, plan::graph_residency_descriptor_for_edge_plan,
+    plan::stable_graph_result_schema,
+};
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 
+const TEST_TENANT: &str = "native-execution-suite";
+const TEST_MINIMUM_GRANT_BYTES: u64 = 1;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BackendTestPolicy {
+    max_source_chunk_bytes: u64,
+    max_row_groups_per_chunk: usize,
+    max_retry_attempts: usize,
+    min_retry_chunk_row_groups: usize,
+    source_scheduler_policy: SourceSchedulerPolicy,
+}
+
+impl Default for BackendTestPolicy {
+    fn default() -> Self {
+        Self {
+            max_source_chunk_bytes: 1024 * 1024,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 3,
+            min_retry_chunk_row_groups: 1,
+            source_scheduler_policy: SourceSchedulerPolicy::default(),
+        }
+    }
+}
+
+impl BackendTestPolicy {
+    fn from_memory_control_policy(policy: MemoryControlPolicy) -> (Self, u64) {
+        let MemoryControlPolicy::Bounded {
+            device_budget_bytes,
+            max_source_chunk_bytes,
+            max_row_groups_per_chunk,
+            max_retry_attempts,
+            min_retry_chunk_row_groups,
+        } = policy
+        else {
+            panic!("the public backend test harness requires a bounded service policy");
+        };
+        (
+            Self {
+                max_source_chunk_bytes,
+                max_row_groups_per_chunk,
+                max_retry_attempts,
+                min_retry_chunk_row_groups,
+                source_scheduler_policy: SourceSchedulerPolicy::default(),
+            },
+            device_budget_bytes,
+        )
+    }
+
+    fn with_source_scheduler_policy(mut self, source_scheduler_policy: SourceSchedulerPolicy) -> Self {
+        self.source_scheduler_policy = source_scheduler_policy;
+        self
+    }
+}
+
+fn non_gds_deployment() -> DeploymentIoCapability {
+    DeploymentIoCapability::from_probe_inputs(
+        NvidiaFsProbeStatus::DriverMissing,
+        KvikioCompatModeStatus::Unset,
+        GdsDriverProbeStatus::ProbeUnimplemented,
+    )
+}
+
+fn suite_backend() -> &'static GpuBackendCore {
+    suite_backend_with_policy(BackendTestPolicy::default())
+}
+
+fn suite_backend_with_policy(policy: BackendTestPolicy) -> &'static GpuBackendCore {
+    static BACKEND: OnceLock<(BackendTestPolicy, GpuBackendCore)> = OnceLock::new();
+    let (installed_policy, backend) = BACKEND.get_or_init(|| {
+        let controller = GpuBackendControllerDraft::from_legacy_policy(
+            QueryServiceConfig {
+                max_concurrent_queries: 1,
+                max_source_chunk_bytes: policy.max_source_chunk_bytes,
+                max_row_groups_per_chunk: policy.max_row_groups_per_chunk,
+                max_retry_attempts: policy.max_retry_attempts,
+                min_retry_chunk_row_groups: policy.min_retry_chunk_row_groups,
+                source_scheduler_policy: policy.source_scheduler_policy,
+                ..QueryServiceConfig::default()
+            },
+            vec![GpuBackendTenantDraft::new(
+                TEST_TENANT,
+                GpuBackendMemoryShare::Bytes(TEST_MINIMUM_GRANT_BYTES),
+                GpuBackendMemoryShare::PolicyDefault,
+            )],
+        );
+        let device = GpuBackendDeviceConfig::new(0, GpuMemoryOwnership::WholeDeviceExclusive)
+            .with_max_active_queries(1)
+            .with_installation_bounds(4, 1, 1);
+        let backend = GpuBackendCore::builder(GpuBackendCoreDraft::new(vec![device], controller, non_gds_deployment()))
+            .build()
+            .expect("native execution suite backend");
+        (policy, backend)
+    });
+    assert_eq!(
+        *installed_policy, policy,
+        "one native-execution test process cannot install conflicting backend policies"
+    );
+    backend
+}
+
+struct BackendQueryContext {
+    context: TenantQueryContext,
+    _handle: QueryHandle,
+}
+
+impl Deref for BackendQueryContext {
+    type Target = ExecutionContext;
+
+    fn deref(&self) -> &Self::Target {
+        self.context.context()
+    }
+}
+
+fn backend_context() -> BackendQueryContext {
+    backend_context_with_grant(None)
+}
+
+fn backend_context_with_grant(requested_bytes: impl Into<Option<u64>>) -> BackendQueryContext {
+    backend_context_with_policy_and_grant(BackendTestPolicy::default(), requested_bytes.into())
+}
+
+fn backend_context_with_memory_control_policy(policy: MemoryControlPolicy) -> BackendQueryContext {
+    let (policy, device_budget_bytes) = BackendTestPolicy::from_memory_control_policy(policy);
+    backend_context_with_policy_and_grant(policy, Some(device_budget_bytes))
+}
+
+fn backend_context_with_memory_and_scheduler_policy(
+    memory_control_policy: MemoryControlPolicy,
+    source_scheduler_policy: SourceSchedulerPolicy,
+) -> BackendQueryContext {
+    let (policy, device_budget_bytes) = BackendTestPolicy::from_memory_control_policy(memory_control_policy);
+    backend_context_with_policy_and_grant(
+        policy.with_source_scheduler_policy(source_scheduler_policy),
+        Some(device_budget_bytes),
+    )
+}
+
+fn backend_context_with_policy_and_grant(
+    policy: BackendTestPolicy,
+    requested_bytes: Option<u64>,
+) -> BackendQueryContext {
+    let request = requested_bytes.map_or_else(QueryAdmissionRequest::new, |bytes| {
+        QueryAdmissionRequest::new().with_grant_request(QueryGrantRequest::with_requested_grant_bytes(bytes))
+    });
+    let handle = suite_backend_with_policy(policy)
+        .session_capability()
+        .admit_query_with_request(TenantId::new(TEST_TENANT), request)
+        .unwrap();
+    let context = handle.acquire_context().unwrap();
+    BackendQueryContext { context, _handle: handle }
+}
+
+fn backend_runtime() -> Arc<cudf::Runtime> {
+    // Fixture-only GPU work may use the backend's declared device after the
+    // process owner is installed. Never inject this runtime or its GPU objects
+    // into execution; admitted contexts provide the execution runtime.
+    let _ = suite_backend();
+    let device = cudf::DeviceId::new(0).expect("native execution suite fixture device");
+    Arc::new(cudf::Runtime::builder().with_device(device).build().expect("native execution suite fixture runtime"))
+}
+
+#[path = "native_execution_tests/aggregate_execution.rs"]
+mod aggregate_execution;
+#[path = "native_execution_tests/aggregate_join_pushdown.rs"]
+mod aggregate_join_pushdown;
 #[path = "native_execution_tests/aggregate_test_support.rs"]
 mod aggregate_test_support;
 #[path = "native_execution_tests/bounded_budgeting.rs"]
 mod bounded_budgeting;
 #[path = "native_execution_tests/bounded_joins.rs"]
 mod bounded_joins;
+#[path = "native_execution_tests/core_execution.rs"]
+mod core_execution;
 #[path = "native_execution_tests/dimension_pruning.rs"]
 mod dimension_pruning;
+#[cfg(feature = "cugraph")]
+#[path = "native_execution_tests/graph_algorithm_execution.rs"]
+mod graph_algorithm_execution;
 #[path = "native_execution_tests/join_test_support.rs"]
 mod join_test_support;
 #[path = "native_execution_tests/metrics_assertions.rs"]
@@ -92,31 +257,19 @@ mod metrics_assertions;
 mod native_join_execution;
 #[path = "native_execution_tests/parquet_fixtures.rs"]
 mod parquet_fixtures;
+#[path = "native_execution_tests/partition_execution.rs"]
+mod partition_execution;
 #[path = "native_execution_tests/projection_test_support.rs"]
 mod projection_test_support;
 #[path = "native_execution_tests/projection_validation.rs"]
 mod projection_validation;
-#[path = "native_execution_tests/semijoin_reduction.rs"]
-mod semijoin_reduction;
 #[path = "native_execution_tests/test_support.rs"]
 mod test_support;
-#[path = "native_execution_tests/window_execution.rs"]
-mod window_execution;
-
-#[path = "native_execution_tests/aggregate_execution.rs"]
-mod aggregate_execution;
-#[path = "native_execution_tests/aggregate_join_pushdown.rs"]
-mod aggregate_join_pushdown;
-#[path = "native_execution_tests/core_execution.rs"]
-mod core_execution;
-#[cfg(feature = "cugraph")]
-#[path = "native_execution_tests/graph_algorithm_execution.rs"]
-mod graph_algorithm_execution;
-#[path = "native_execution_tests/partition_execution.rs"]
-mod partition_execution;
 #[cfg(feature = "cuvs")]
 #[path = "native_execution_tests/vector_algorithm_execution.rs"]
 mod vector_algorithm_execution;
+#[path = "native_execution_tests/window_execution.rs"]
+mod window_execution;
 
 use aggregate_test_support::*;
 use join_test_support::*;
@@ -125,152 +278,40 @@ use parquet_fixtures::*;
 use projection_test_support::*;
 use test_support::*;
 
-fn assert_bounded_join_rejection_contract(error: &nexus_query_engine::error::QueryError) {
-    let contract = BoundedJoinReservationContract;
-    let expected_facts = contract.unsupported_shape_facts(ExecutionBoundaryPolicy::default());
+#[test]
+fn backend_session_executes_grouped_aggregate_from_literal_batches() {
+    let context = backend_context();
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("value", DataType::Int64, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(Int32Array::from(vec![1, 1, 2])), Arc::new(Int64Array::from(vec![10, 20, 7]))],
+    )
+    .unwrap();
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("total", DataType::Int64, true),
+    ]));
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(schema, vec![batch])));
+    let aggregate = builder.add_aggregate(
+        source,
+        AggregateSpec::new(
+            vec![Expr::column("key")],
+            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("value"), "total")],
+        ),
+        Arc::clone(&output_schema),
+    );
+    let sort = builder.add_sort(
+        aggregate,
+        SortSpec::new(vec![SortExpr::new(Expr::column("key"), false, false)]),
+        output_schema,
+    );
 
-    assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
-    assert_eq!(error.operation(), "nexus_query_engine.bounded.plan");
-    assert_eq!(error.fact_value("reason"), Some("bounded_join_plan_shape_unsupported"));
-
-    for (key, expected) in &expected_facts {
-        if matches!(
-            *key,
-            "bounded_join_reservation_kinds"
-                | "bounded_join_reservation_statuses"
-                | "blocked_reservations"
-                | "missing_reservations"
-                | "modeled_reservations"
-                | "bounded_join_lower_level_blockers"
-                | "bounded_join_reservation_requirements"
-        ) {
-            continue;
-        }
-        assert_eq!(
-            error.fact_value(key),
-            Some(expected.as_str()),
-            "bounded join unsupported-shape fact mismatch for {key}"
-        );
-    }
-
-    assert_eq!(error.fact_value("bounded_join_reservation_model"), Some(contract.model_status()));
-    assert_eq!(error.fact_value("bounded_join_execution_families"), None);
-    assert_eq!(error.fact_value("bounded_join_enabled"), Some("true"));
-    assert_eq!(
-        error.fact_value("boundary_policy"),
-        Some(
-            "source_read=direct_device_local_parquet,build_materialization=query_scoped_gpu_hash_join,probe_execution=reusable_gpu_hash_join,result_materialization=explicit_sink"
-        )
-    );
-    assert_eq!(error.fact_value("source_read_boundary"), Some("direct_device_local_parquet"));
-    assert_eq!(error.fact_value("build_materialization_boundary"), Some("query_scoped_gpu_hash_join"));
-    assert_eq!(error.fact_value("probe_execution_boundary"), Some("reusable_gpu_hash_join"));
-    assert_eq!(error.fact_value("result_materialization_boundary"), Some("explicit_sink"));
-    assert_bounded_join_rejection_reservation_facts_are_consistent(error);
-    assert_eq!(error.fact_value("deferred_reservations"), Some(contract.deferred_reservation_kinds_csv().as_str()));
-    assert_eq!(error.fact_value("cudf_rs_hash_table_observability"), Some("hash_table_device_allocated_size_bytes"));
-    assert_eq!(error.fact_value("cudf_rs_gather_map_observability"), Some("join_indices_device_allocated_size_bytes"));
-    assert_eq!(
-        error.fact_value("cudf_rs_hash_join_gather_map_reservation_contract"),
-        Some("hash_join_gather_map_reservation_size_bytes")
-    );
-    assert_eq!(error.fact_value("cudf_rs_hash_join_output_size_observability"), Some("hash_join_exact_output_size"));
-    assert_eq!(error.fact_value("cudf_rs_hash_join_probe_output_size_hint"), Some("hash_join_probe_with_output_size"));
-    assert_eq!(
-        error.fact_value("cudf_rs_conditional_join_output_size_observability"),
-        Some("conditional_join_exact_output_size")
-    );
-    assert_eq!(
-        error.fact_value("cudf_rs_conditional_join_output_size_hint"),
-        Some("conditional_join_indices_with_output_size")
-    );
-    assert_eq!(
-        error.fact_value("cudf_rs_hash_join_pre_build_reservation_contract"),
-        Some("hash_join_pre_build_reservation_size_bytes")
-    );
-    assert_eq!(
-        error.fact_value("cudf_rs_hash_join_pre_build_reservation_status"),
-        Some("available_exact_flat_hash_join_builds")
-    );
-    assert_eq!(
-        error.fact_value("cudf_rs_filtered_join_hash_table_observability"),
-        Some("filtered_join_device_allocated_size_bytes")
-    );
-    assert_eq!(
-        error.fact_value("cudf_rs_filtered_join_output_size_observability"),
-        Some("filtered_join_probe_state_output_size")
-    );
-    assert_eq!(
-        error.fact_value("cudf_rs_filtered_join_probe_state_contract"),
-        Some("filtered_join_retained_probe_state")
-    );
-    assert_eq!(
-        error.fact_value("cudf_rs_filtered_join_probe_state_observability"),
-        Some("filtered_join_probe_device_allocated_size_bytes")
-    );
-    assert_eq!(
-        error.fact_value("cudf_rs_filtered_join_probe_materialization_contract"),
-        Some("filtered_join_probe_state_materialize_indices")
-    );
-    assert_eq!(
-        error.fact_value("cudf_rs_dataframe_gather_output_reservation_contract"),
-        Some("dataframe_gather_output_reservation_size_bytes")
-    );
-    assert_eq!(error.fact_value("missing_lower_level_contract"), None);
-    assert_eq!(error.fact_value("missing_reservations"), Some(contract.blocking_reservation_kinds_csv().as_str()));
-    assert!(error.facts().iter().all(|(key, value)| !key.contains("estimate") && !value.contains("estimate")));
-    assert_eq!(error.fact_value("path"), None);
-    assert_eq!(error.fact_value("file_index"), None);
-    assert_eq!(error.fact_value("row_group_indexes"), None);
-    assert_eq!(error.fact_value("row_group_count"), None);
-    assert_eq!(error.fact_value("chunk_index"), None);
-    assert!(error.source_error().is_none());
-}
-
-fn assert_bounded_join_rejection_reservation_facts_are_consistent(error: &nexus_query_engine::error::QueryError) {
-    let modeled = error
-        .fact_value("modeled_reservations")
-        .map(csv_values)
-        .expect("bounded join rejection should include modeled reservations");
-    let statuses = error
-        .fact_value("bounded_join_reservation_statuses")
-        .map(csv_pairs)
-        .expect("bounded join rejection should include reservation statuses");
-    let requirements = error
-        .fact_value("bounded_join_reservation_requirements")
-        .map(csv_triples)
-        .expect("bounded join rejection should include reservation requirements");
-    let kinds = error
-        .fact_value("bounded_join_reservation_kinds")
-        .map(csv_values)
-        .expect("bounded join rejection should include reservation kinds");
-
-    assert_eq!(statuses.iter().map(|(kind, _)| *kind).collect::<Vec<_>>(), kinds);
-    assert_eq!(requirements.iter().map(|(kind, _, _)| *kind).collect::<Vec<_>>(), kinds);
-    assert_eq!(
-        modeled,
-        statuses.iter().filter_map(|(kind, status)| (*status == "modeled").then_some(*kind)).collect::<Vec<_>>()
-    );
-    assert_eq!(error.fact_value("blocked_reservations"), Some(""));
-    assert_eq!(error.fact_value("missing_reservations"), Some(""));
-    assert_eq!(error.fact_value("bounded_join_lower_level_blockers"), Some(""));
-}
-
-fn csv_values(value: &str) -> Vec<&str> {
-    value.split(',').filter(|value| !value.is_empty()).collect()
-}
-
-fn csv_pairs(value: &str) -> Vec<(&str, &str)> {
-    value.split(',').filter_map(|row| row.split_once(':')).collect()
-}
-
-fn csv_triples(value: &str) -> Vec<(&str, &str, &str)> {
-    value
-        .split(',')
-        .filter_map(|row| {
-            let (left, detail) = row.rsplit_once(':')?;
-            let (kind, contract) = left.split_once(':')?;
-            Some((kind, contract, detail))
-        })
-        .collect()
+    let result = execute_query_plan(&context, &builder.finish_with_host_sink(sort)).unwrap();
+    let QueryOutput::HostArrow(output) = result.output() else { panic!("host sink must return Arrow output") };
+    assert_eq!(int32_array(output, 0).values().as_ref(), &[1, 2]);
+    assert_eq!(int64_array(output, 1).values().as_ref(), &[30, 7]);
 }

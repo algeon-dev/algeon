@@ -5,12 +5,12 @@ fn native_query_executes_filter_projection_and_group_by_on_partition_columns() {
     let dir = unique_temp_dir("nexus-query-engine-native-execution-partitions");
     let first_path = dir.join("part-001.parquet");
     let second_path = dir.join("part-002.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context();
+    let runtime = Arc::new(context.runtime().unwrap());
     let file_schema = write_input_parquet(&runtime, &first_path);
     write_input_parquet(&runtime, &second_path);
     let plan = partition_column_query_plan(&first_path, &second_path, file_schema);
 
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
 
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -30,22 +30,12 @@ fn bounded_native_query_executes_partition_columns_per_source_chunk() {
     let dir = unique_temp_dir("nexus-query-engine-native-execution-bounded-partitions");
     let first_path = dir.join("part-001.parquet");
     let second_path = dir.join("part-002.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context();
+    let runtime = Arc::new(context.runtime().unwrap());
     let file_schema = write_input_parquet(&runtime, &first_path);
     write_input_parquet(&runtime, &second_path);
     let plan = partition_column_query_plan(&first_path, &second_path, file_schema);
 
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 8 * 1024 * 1024 * 1024,
-            max_source_chunk_bytes: 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
 
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -97,8 +87,7 @@ fn bounded_native_query_executes_typed_null_partition_columns_per_source_chunk()
         partition_columns,
         vec![null_values.clone(), null_values],
     );
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let context = bounded_source_chunk_context(Arc::clone(&runtime));
+    let context = backend_context();
     let result = execute_query_plan(&context, &plan).unwrap();
 
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -155,8 +144,7 @@ fn bounded_native_query_executes_extended_partition_columns_per_source_chunk() {
             ],
         ],
     );
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let context = bounded_source_chunk_context(Arc::clone(&runtime));
+    let context = backend_context();
     let result = execute_query_plan(&context, &plan).unwrap();
 
     let QueryOutput::HostArrow(batch) = result.output() else {

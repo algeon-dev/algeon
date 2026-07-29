@@ -4,7 +4,6 @@ use super::*;
 fn bounded_native_query_reports_reservation_failure_before_host_materialization() {
     let dir = unique_temp_dir("nexus-query-engine-bounded-materialization-reservation-failure");
     let path = dir.join("input.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let input_schema = write_single_row_group_final_sort_input_parquet(&path, 4096);
     let aggregated_schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int32, false),
@@ -34,17 +33,7 @@ fn bounded_native_query_reports_reservation_failure_before_host_materialization(
     );
     let plan = builder.finish_with_host_sink(projection);
 
-    let baseline_context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 8 * 1024 * 1024 * 1024,
-            max_source_chunk_bytes: 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
+    let baseline_context = backend_context_with_grant(8 * 1024 * 1024 * 1024);
     let baseline = execute_query_plan(&baseline_context, &plan).unwrap();
     let baseline_metrics = baseline.metrics();
     let source_read_bytes = baseline_metrics
@@ -68,17 +57,9 @@ fn bounded_native_query_reports_reservation_failure_before_host_materialization(
         "test data must leave a budget window where execution fits but materialization reservation fails"
     );
 
-    let constrained_context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: constrained_budget,
-            max_source_chunk_bytes: 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
+    drop(baseline_context);
+
+    let constrained_context = backend_context_with_grant(constrained_budget);
 
     let error = match execute_query_plan(&constrained_context, &plan) {
         Ok(_) => panic!("bounded execution should fail the host materialization reservation"),
@@ -102,7 +83,6 @@ fn bounded_native_query_reports_reservation_failure_before_host_materialization(
 fn bounded_native_query_executes_non_aggregate_source_plan() {
     let dir = unique_temp_dir("nexus-query-engine-bounded-source-only");
     let path = dir.join("input.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let schema = write_row_grouped_input_parquet(&path);
     let source = LocalParquetSource::from_files(
         vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
@@ -113,17 +93,7 @@ fn bounded_native_query_executes_non_aggregate_source_plan() {
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
     let plan = builder.finish_with_host_sink(source);
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 1024 * 1024,
-            max_source_chunk_bytes: 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
+    let context = backend_context_with_grant(1024 * 1024);
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -144,7 +114,6 @@ fn bounded_native_query_preserves_multi_file_source_order() {
     let first_path = dir.join("part-000.parquet");
     let second_path = dir.join("part-001.parquet");
     let third_path = dir.join("part-002.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let schema = write_i32_parquet_with_row_group_rows(&first_path, &[1, 2], 1);
     write_i32_parquet_with_row_group_rows(&second_path, &[10, 11], 1);
     write_i32_parquet_with_row_group_rows(&third_path, &[20], 1);
@@ -167,71 +136,7 @@ fn bounded_native_query_preserves_multi_file_source_order() {
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
     let plan = builder.finish_with_host_sink(source);
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 1024 * 1024,
-            max_source_chunk_bytes: 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
-
-    let result = execute_query_plan(&context, &plan).unwrap();
-    let QueryOutput::HostArrow(batch) = result.output() else {
-        panic!("host sink should return a RecordBatch");
-    };
-    assert_eq!(batch.num_rows(), 5);
-    assert_eq!(int32_array(batch, 0).values().as_ref(), &[10, 11, 1, 2, 20]);
-    assert_eq!(result.metrics().parquet_files, 3);
-    assert_eq!(result.metrics().source_chunks_committed, 5);
-
-    fs::remove_dir_all(dir).unwrap();
-}
-
-#[test]
-fn adaptive_native_query_preserves_multi_file_source_order() {
-    let dir = unique_temp_dir("nexus-query-engine-adaptive-multi-file-source-order");
-    let first_path = dir.join("part-000.parquet");
-    let second_path = dir.join("part-001.parquet");
-    let third_path = dir.join("part-002.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let schema = write_i32_parquet_with_row_group_rows(&first_path, &[1, 2], 1);
-    write_i32_parquet_with_row_group_rows(&second_path, &[10, 11], 1);
-    write_i32_parquet_with_row_group_rows(&third_path, &[20], 1);
-    let source = LocalParquetSource::from_files(
-        vec![
-            LocalParquetFile::new(&second_path)
-                .with_file_size_bytes(fs::metadata(&second_path).unwrap().len())
-                .with_row_group_rows(vec![1, 1]),
-            LocalParquetFile::new(&first_path)
-                .with_file_size_bytes(fs::metadata(&first_path).unwrap().len())
-                .with_row_group_rows(vec![1, 1]),
-            LocalParquetFile::new(&third_path)
-                .with_file_size_bytes(fs::metadata(&third_path).unwrap().len())
-                .with_row_group_rows(vec![1]),
-        ],
-        Arc::clone(&schema),
-        vec!["id".to_string()],
-    );
-
-    let mut builder = QueryPlanBuilder::new();
-    let source = builder.add_source(SourceNode::LocalParquet(source));
-    let plan = builder.finish_with_host_sink(source);
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 1024 * 1024,
-            max_source_chunk_bytes: 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .with_native_pipeline_execution_mode(NativePipelineExecutionMode::Adaptive)
-        .build()
-        .unwrap();
+    let context = backend_context_with_grant(1024 * 1024);
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -247,7 +152,8 @@ fn adaptive_native_query_preserves_multi_file_source_order() {
 
 #[test]
 fn bounded_native_query_executes_union_plan_without_legacy_aggregate_path() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context_with_grant(1024 * 1024);
+    let runtime = Arc::new(context.runtime().unwrap());
     let schema = Arc::new(Schema::new(vec![Field::new("key", DataType::Int32, false)]));
     let left_batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![1, 2]))]).unwrap();
     let right_batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![3, 4]))]).unwrap();
@@ -257,17 +163,6 @@ fn bounded_native_query_executes_union_plan_without_legacy_aggregate_path() {
     let right = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("right", Arc::clone(&schema))));
     let union = builder.add_union(vec![left, right], Arc::clone(&schema));
     let plan = builder.finish_with_host_sink(union);
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 1024 * 1024,
-            max_source_chunk_bytes: 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
     let mut gpu_inputs = GpuResidentInputMap::new();
     gpu_inputs.insert(
         "left".to_string(),

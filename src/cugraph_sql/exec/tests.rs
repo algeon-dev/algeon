@@ -17,17 +17,16 @@ use datafusion::{
 };
 use nexus_query_engine::{
     expr::{Expr, SortExpr, SortSpec},
-    observability::RuntimeTerminalOutcome,
     plan::ProjectionOutput,
-    runtime::{
-        DeploymentIoCapability, ExecutionCancellation, GdsDriverProbeStatus, KvikioCompatModeStatus,
-        NvidiaFsProbeStatus, QueryService, QueryServiceConfig, QueryServiceTenantConfig, TenantId,
-    },
+    runtime::{ExecutionCancellation, QueryServiceConfig, QueryServiceTenantConfig, TenantId},
     source::{LiteralBatchSource, LocalParquetFile, LocalParquetSource},
 };
 #[cfg(feature = "server")]
 use nexus_query_engine::{
-    observability::{RuntimeObservationConfig, RuntimeObservationSession, SealedRuntimeObservationSnapshot},
+    observability::{
+        PlanExecutionBoundaryKind, RuntimeObservationConfig, RuntimeObservationPayload, RuntimeObservationSession,
+        RuntimeTerminalOutcome, SealedRuntimeObservationSnapshot,
+    },
     runtime::LakehouseCacheFillEventSnapshot,
 };
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
@@ -38,6 +37,7 @@ use crate::native_exec::admission::QueryAdmissionFacts;
 #[cfg(feature = "server")]
 use crate::native_exec::{NativeMetricsCapture, NativeMetricsCaptureSink};
 use crate::{
+    backend::InstalledTestGpuBackend,
     cugraph_sql::{
         CugraphBfsOutputOptions, CugraphBfsParams, CugraphGraphOptions, CugraphGraphPredicateTable,
         CugraphPageRankParams, CugraphSqlConfig, CugraphTableReference, CugraphTriangleCountAllParams,
@@ -45,10 +45,19 @@ use crate::{
     },
     error::{DataFusionErrorExt, ErrorCode},
     native_exec::{
-        QueryAdmissionSource, task_context_with_query_admission_ticket, wrap_plan_with_query_admission_ticket,
+        QueryAdmissionSource, admission::TestAdmissionController, task_context_with_query_admission_ticket,
+        wrap_plan_with_query_admission_ticket,
     },
     session::NexusSessionStateBuilderExt,
 };
+
+fn test_gpu_backend() -> InstalledTestGpuBackend {
+    InstalledTestGpuBackend::new()
+}
+
+fn backend_execution_config(backend: &InstalledTestGpuBackend) -> NexusNativeExecutionConfig {
+    backend.optimizer_config().native_execution_config().clone()
+}
 
 fn admission_only_source() -> QueryAdmissionSource {
     admission_source_with_band(1024 * 1024, 1024 * 1024, 1024 * 1024)
@@ -56,22 +65,16 @@ fn admission_only_source() -> QueryAdmissionSource {
 
 fn admission_source_with_band(min_bytes: u64, want_bytes: u64, capacity_bytes: u64) -> QueryAdmissionSource {
     let tenant_id = TenantId::new("cugraph-test");
-    let deployment = DeploymentIoCapability::from_probe_inputs(
-        NvidiaFsProbeStatus::DriverMissing,
-        KvikioCompatModeStatus::Unset,
-        GdsDriverProbeStatus::ProbeUnimplemented,
-    );
-    let service = QueryService::new_admission_only(
+    let controller = TestAdmissionController::new(
         QueryServiceConfig {
             device_capacity_bytes: Some(capacity_bytes),
             max_concurrent_queries: 1,
             ..QueryServiceConfig::default()
         },
         vec![QueryServiceTenantConfig::with_grant_range(tenant_id.clone(), min_bytes, want_bytes)],
-        deployment,
     )
-    .expect("admission-only query service should build");
-    QueryAdmissionSource::new(service, tenant_id)
+    .expect("CUDA-free test admission controller should build");
+    controller.source(tenant_id)
 }
 
 fn edge_schema() -> Arc<Schema> {
@@ -527,8 +530,10 @@ async fn cugraph_producer_prepared_inputs_transfer_once_across_plan_clones() {
 async fn cugraph_input_upload_releases_the_host_reservation_before_graph_compute() {
     let runtime = Arc::new(RuntimeEnvBuilder::new().with_memory_limit(1024 * 1024, 1.0).build().unwrap());
     let task_context = Arc::new(TaskContext::default().with_runtime(Arc::clone(&runtime)));
-    let config = NexusNativeExecutionConfig::unbounded();
-    let context_lease = config.execution_context().expect("graph context builds");
+    let backend = test_gpu_backend();
+    let config = backend_execution_config(&backend).with_plan_query_admission_ticket();
+    let context_lease =
+        config.execution_context_async(Arc::clone(&task_context)).await.expect("backend-admitted graph context builds");
     let metrics_set = ExecutionPlanMetricsSet::new();
     let native_metrics = NexusNativeMetrics::new(&metrics_set, 0);
     let mut graph_metrics = GraphExecutionMetrics::new(&native_metrics, RuntimeObservationConfig::native_execution());
@@ -558,14 +563,15 @@ async fn cugraph_input_upload_releases_the_host_reservation_before_graph_compute
 }
 
 #[tokio::test]
-async fn cugraph_host_staging_completes_before_unbounded_gpu_admission() {
-    let limiter = crate::native_exec::UnboundedNativeExecutionLimiter::new(
-        std::num::NonZeroUsize::new(1).expect("one is non-zero"),
-    );
-    let held_permit = limiter.acquire().await.expect("test owns the only unbounded GPU permit");
+async fn cugraph_host_staging_completes_before_backend_gpu_admission() {
+    let backend = test_gpu_backend();
+    let held_queries = [
+        backend.admit_query().expect("test owns the first backend admission slot"),
+        backend.admit_query().expect("test owns the second backend admission slot"),
+    ];
     let execute_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let edge_source = Arc::new(CountingExec::new(memory_edge_source(16), Arc::clone(&execute_count)));
-    let config = NexusNativeExecutionConfig::unbounded().with_unbounded_native_execution_limiter(limiter.clone());
+    let config = backend_execution_config(&backend);
     let exec = Arc::new(
         CugraphAlgoExec::try_new(triangle_spec(), edge_source, vec![], None, None, config)
             .expect("cuGraph exec should build"),
@@ -579,13 +585,13 @@ async fn cugraph_host_staging_completes_before_unbounded_gpu_admission() {
         }
     })
     .await
-    .expect("host staging must run while unbounded GPU admission is occupied");
+    .expect("host staging must run while the backend GPU admission slots are occupied");
 
     assert_eq!(execute_count.load(std::sync::atomic::Ordering::SeqCst), 1);
-    assert!(!execution.is_finished(), "execution must wait for GPU admission only after staging completes");
+    assert!(!execution.is_finished(), "execution must wait for backend admission only after staging completes");
     execution.abort();
     assert!(execution.await.expect_err("aborted execution should not complete").is_cancelled());
-    drop(held_permit);
+    drop(held_queries);
 }
 
 #[tokio::test]
@@ -744,20 +750,19 @@ fn observed_graph_exec(
     query_id: &'static str,
     spec: CugraphAlgorithmSpec,
     cancellation: ExecutionCancellation,
-) -> (Arc<CugraphAlgoExec>, Arc<GraphCaptureSink>) {
+) -> (InstalledTestGpuBackend, Arc<CugraphAlgoExec>, Arc<GraphCaptureSink>) {
+    let backend = test_gpu_backend();
     let sink = Arc::new(GraphCaptureSink::default());
     let erased_sink: Arc<dyn NativeMetricsCaptureSink> = sink.clone();
-    let config = NexusNativeExecutionConfig::unbounded()
+    let config = backend_execution_config(&backend)
         .with_cancellation(cancellation)
-        .with_metrics_capture(NativeMetricsCapture::new(query_id, erased_sink));
+        .with_metrics_capture(NativeMetricsCapture::new(query_id, erased_sink))
+        .with_plan_query_admission_ticket();
     let edge_source = native_literal_edge_source(&config, false);
-    (
-        Arc::new(
-            CugraphAlgoExec::try_new(spec, edge_source, vec![], None, None, config)
-                .expect("observed graph exec builds"),
-        ),
-        sink,
-    )
+    let exec = Arc::new(
+        CugraphAlgoExec::try_new(spec, edge_source, vec![], None, None, config).expect("observed graph exec builds"),
+    );
+    (backend, exec, sink)
 }
 
 #[cfg(feature = "server")]
@@ -767,27 +772,58 @@ fn observed_graph_exec_with_edge_source(
     cancellation: ExecutionCancellation,
     edge_source: Arc<dyn ExecutionPlan>,
     host_boundary_config: GpuIslandHostBoundaryConfig,
-) -> (Arc<CugraphAlgoExec>, Arc<GraphCaptureSink>) {
+) -> (InstalledTestGpuBackend, Arc<CugraphAlgoExec>, Arc<GraphCaptureSink>) {
+    let backend = test_gpu_backend();
     let sink = Arc::new(GraphCaptureSink::default());
     let erased_sink: Arc<dyn NativeMetricsCaptureSink> = sink.clone();
-    let config = NexusNativeExecutionConfig::unbounded()
+    let config = backend_execution_config(&backend)
         .with_cancellation(cancellation)
-        .with_metrics_capture(NativeMetricsCapture::new(query_id, erased_sink));
-    (
-        Arc::new(
-            CugraphAlgoExec::try_new_with_host_boundary_config(
-                spec,
-                edge_source,
-                vec![],
-                None,
-                None,
-                config,
-                host_boundary_config,
+        .with_metrics_capture(NativeMetricsCapture::new(query_id, erased_sink))
+        .with_plan_query_admission_ticket();
+    let exec = Arc::new(
+        CugraphAlgoExec::try_new_with_host_boundary_config(
+            spec,
+            edge_source,
+            vec![],
+            None,
+            None,
+            config,
+            host_boundary_config,
+        )
+        .expect("observed graph exec builds"),
+    );
+    (backend, exec, sink)
+}
+
+#[cfg(feature = "server")]
+fn admitted_observed_graph_plan(exec: &Arc<CugraphAlgoExec>) -> Arc<dyn ExecutionPlan> {
+    let ticket = exec
+        .native_execution_config
+        .query_admission_ticket()
+        .expect("observed graph execution owns a plan admission ticket");
+    wrap_plan_with_query_admission_ticket(Arc::clone(exec) as Arc<dyn ExecutionPlan>, ticket)
+}
+
+#[cfg(feature = "server")]
+fn close_observed_graph_backend(backend: &InstalledTestGpuBackend) {
+    backend.backend().close_and_wait(Duration::from_secs(10)).expect("observed graph backend closes after execution");
+}
+
+#[cfg(feature = "server")]
+fn graph_plan_boundary_count(
+    snapshot: &SealedRuntimeObservationSnapshot,
+    expected: PlanExecutionBoundaryKind,
+) -> usize {
+    snapshot
+        .events()
+        .iter()
+        .filter(|event| {
+            matches!(
+                &event.payload,
+                RuntimeObservationPayload::PlanExecutionBoundary { boundary } if *boundary == expected
             )
-            .expect("observed graph exec builds"),
-        ),
-        sink,
-    )
+        })
+        .count()
 }
 
 #[cfg(feature = "server")]
@@ -867,20 +903,24 @@ fn graph_execution_accumulator_merges_stages_and_publishes_exactly_once() {
 #[cfg(feature = "server")]
 #[tokio::test]
 async fn graph_success_retains_every_drainable_sealed_observation_without_duplicate_metrics() {
-    let (exec, sink) = observed_graph_exec("graph-observation-success", triangle_spec(), ExecutionCancellation::new());
+    let (backend, exec, sink) =
+        observed_graph_exec("graph-observation-success", triangle_spec(), ExecutionCancellation::new());
     let owner = exec.metrics_capture.clone().expect("graph wrapper owns local evidence");
 
-    let batches = collect(exec.clone(), Arc::new(TaskContext::default())).await.expect("graph query succeeds");
+    let batches = collect(admitted_observed_graph_plan(&exec), Arc::new(TaskContext::default()))
+        .await
+        .expect("graph query succeeds");
+    close_observed_graph_backend(&backend);
 
     assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 3);
     let retained = owner.runtime_observations();
-    assert_eq!(retained.len(), 2, "native edge and graph stages each retain their sealed snapshot");
-    for snapshot in &retained {
-        assert_eq!(snapshot.manifest().query_id.as_str(), "graph-observation-success");
-        assert_eq!(snapshot.footer().terminal, Some(RuntimeTerminalOutcome::Succeeded));
-        assert!(snapshot.footer().complete);
-        assert!(!snapshot.events().is_empty());
-    }
+    assert_eq!(retained.len(), 1, "one admitted graph invocation retains one sealed observation");
+    let snapshot = &retained[0];
+    assert_eq!(snapshot.manifest().query_id.as_str(), "graph-observation-success");
+    assert_eq!(snapshot.footer().terminal, Some(RuntimeTerminalOutcome::Succeeded));
+    assert!(snapshot.footer().complete);
+    assert_eq!(graph_plan_boundary_count(snapshot, PlanExecutionBoundaryKind::Started), 2);
+    assert_eq!(graph_plan_boundary_count(snapshot, PlanExecutionBoundaryKind::Finished), 2);
     assert_eq!(sink.query_metrics.lock().unwrap().len(), 1, "successful graph execution publishes once");
     assert_eq!(
         exec.metrics()
@@ -894,9 +934,9 @@ async fn graph_success_retains_every_drainable_sealed_observation_without_duplic
     drop(retained);
 
     let drained = owner.drain_runtime_observations();
-    assert_eq!(drained.len(), 2);
+    assert_eq!(drained.len(), 1);
     assert!(owner.runtime_observations().is_empty());
-    assert_eq!(owner.retention_stats().drained_total, 2);
+    assert_eq!(owner.retention_stats().drained_total, 1);
 }
 
 #[cfg(feature = "server")]
@@ -905,12 +945,13 @@ async fn graph_native_failure_retains_failed_evidence_and_original_error() {
     let mut spec = pagerank_spec();
     let CugraphAlgorithmParams::PageRank(params) = &mut spec.params else { unreachable!("PageRank test spec") };
     params.alpha = 1.5;
-    let (exec, sink) = observed_graph_exec("graph-observation-failure", spec, ExecutionCancellation::new());
+    let (backend, exec, sink) = observed_graph_exec("graph-observation-failure", spec, ExecutionCancellation::new());
     let owner = exec.metrics_capture.clone().expect("graph wrapper owns local evidence");
 
-    let error = collect(exec.clone(), Arc::new(TaskContext::default()))
+    let error = collect(admitted_observed_graph_plan(&exec), Arc::new(TaskContext::default()))
         .await
         .expect_err("invalid native PageRank alpha remains a query failure");
+    close_observed_graph_backend(&backend);
 
     let nexus = error.find_nexus_error().expect("DataFusion boundary preserves the typed adapter error");
     assert_eq!(nexus.code(), ErrorCode::CudfInvalidInput);
@@ -918,18 +959,19 @@ async fn graph_native_failure_retains_failed_evidence_and_original_error() {
     assert_eq!(nexus.fact_value("native_code"), Some("cudf_invalid_input"));
     assert_eq!(nexus.fact_value("native_operation"), Some("nexus_query_engine.graph_algorithm.pagerank_params"));
     let retained = owner.runtime_observations();
-    assert_eq!(retained.len(), 2, "successful native edge and failed graph stages are both retained");
+    assert_eq!(retained.len(), 1, "the admitted graph invocation retains one sealed observation");
     assert_eq!(retained[0].manifest().query_id.as_str(), "graph-observation-failure");
-    assert_eq!(retained[0].footer().terminal, Some(RuntimeTerminalOutcome::Succeeded));
     assert_eq!(
-        retained[1].footer().terminal,
+        retained[0].footer().terminal,
         Some(RuntimeTerminalOutcome::Failed {
             error_code: "cudf_invalid_input".to_string(),
             error_status: ErrorCode::CudfInvalidInput.status().as_str().to_string(),
         })
     );
-    assert!(retained[1].footer().complete);
-    assert!(retained[1].events().len() >= 2, "failure retains query and plan start evidence");
+    assert!(retained[0].footer().complete);
+    assert_eq!(graph_plan_boundary_count(&retained[0], PlanExecutionBoundaryKind::Started), 2);
+    assert_eq!(graph_plan_boundary_count(&retained[0], PlanExecutionBoundaryKind::Finished), 1);
+    assert_eq!(graph_plan_boundary_count(&retained[0], PlanExecutionBoundaryKind::Failed), 1);
     assert_eq!(
         sink.query_metrics.lock().unwrap().len(),
         1,
@@ -954,7 +996,7 @@ async fn graph_failure_after_gpu_start_has_one_attempt_no_output_and_no_cpu_repl
     let host_boundary_config =
         GpuIslandHostBoundaryConfig::try_new(GpuIslandHostBoundaryConfig::DEFAULT_MAX_INPUT_STAGING_BYTES, 1)
             .expect("one-byte output staging cap is valid");
-    let (exec, sink) = observed_graph_exec_with_edge_source(
+    let (backend, exec, sink) = observed_graph_exec_with_edge_source(
         "graph-post-gpu-start-failure",
         triangle_spec(),
         ExecutionCancellation::new(),
@@ -962,7 +1004,8 @@ async fn graph_failure_after_gpu_start_has_one_attempt_no_output_and_no_cpu_repl
         host_boundary_config,
     );
     let owner = exec.metrics_capture.clone().expect("graph wrapper owns local evidence");
-    let mut stream = exec.execute(0, Arc::new(TaskContext::default())).expect("graph stream builds");
+    let mut stream =
+        admitted_observed_graph_plan(&exec).execute(0, Arc::new(TaskContext::default())).expect("graph stream builds");
     let mut output_batches = 0usize;
 
     let error = loop {
@@ -972,6 +1015,7 @@ async fn graph_failure_after_gpu_start_has_one_attempt_no_output_and_no_cpu_repl
             Err(error) => break error,
         }
     };
+    close_observed_graph_backend(&backend);
 
     let nexus = error.find_nexus_error().expect("post-start graph failure remains structured");
     assert_eq!(nexus.code(), ErrorCode::HostStagingLimitExceeded);
@@ -984,7 +1028,15 @@ async fn graph_failure_after_gpu_start_has_one_attempt_no_output_and_no_cpu_repl
     let retained = owner.runtime_observations();
     assert_eq!(retained.len(), 1, "exactly one native graph attempt is observed");
     assert_eq!(retained[0].manifest().query_id.as_str(), "graph-post-gpu-start-failure");
-    assert_eq!(retained[0].footer().terminal, Some(RuntimeTerminalOutcome::Succeeded));
+    assert_eq!(
+        retained[0].footer().terminal,
+        Some(RuntimeTerminalOutcome::Failed {
+            error_code: "host_staging_limit_exceeded".to_string(),
+            error_status: ErrorCode::HostStagingLimitExceeded.status().as_str().to_string(),
+        })
+    );
+    assert_eq!(graph_plan_boundary_count(&retained[0], PlanExecutionBoundaryKind::Started), 1);
+    assert_eq!(graph_plan_boundary_count(&retained[0], PlanExecutionBoundaryKind::Finished), 1);
     let published = sink.query_metrics.lock().unwrap();
     assert_eq!(published.len(), 1, "the failed GPU attempt publishes exactly once");
     assert_eq!(published[0].graph_algorithm_runtime_rows.len(), 1, "exactly one graph runtime row is retained");
@@ -996,36 +1048,51 @@ async fn graph_failure_after_gpu_start_has_one_attempt_no_output_and_no_cpu_repl
 async fn graph_pre_staging_cancellation_returns_without_a_graph_runtime_attempt() {
     let cancellation = ExecutionCancellation::new();
     cancellation.cancel();
-    let (exec, sink) = observed_graph_exec("graph-observation-cancelled", bfs_spec(), cancellation);
+    let (backend, exec, sink) = observed_graph_exec("graph-observation-cancelled", bfs_spec(), cancellation);
     let owner = exec.metrics_capture.clone().expect("graph wrapper owns local evidence");
 
-    let error =
-        collect(exec, Arc::new(TaskContext::default())).await.expect_err("pre-cancelled graph query remains cancelled");
+    let error = collect(admitted_observed_graph_plan(&exec), Arc::new(TaskContext::default()))
+        .await
+        .expect_err("pre-cancelled graph query remains cancelled");
+    close_observed_graph_backend(&backend);
 
     let nexus = error.find_nexus_error().expect("DataFusion boundary preserves the typed cancellation");
     assert_eq!(nexus.code(), ErrorCode::Cancelled);
     assert_eq!(nexus.fact_value("native_code"), Some("cancelled"));
     let retained = owner.runtime_observations();
-    assert!(retained.is_empty(), "cancellation before input staging must not start a graph runtime attempt");
+    assert_eq!(retained.len(), 1, "the admitted invocation retains its cancelled observation");
+    assert_eq!(retained[0].manifest().query_id.as_str(), "graph-observation-cancelled");
+    assert_eq!(retained[0].footer().terminal, Some(RuntimeTerminalOutcome::Cancelled));
+    assert!(retained[0].footer().complete);
+    assert_eq!(graph_plan_boundary_count(&retained[0], PlanExecutionBoundaryKind::Started), 0);
     assert_eq!(sink.query_metrics.lock().unwrap().len(), 0, "pre-staging cancellation publishes no graph metrics");
+    assert_eq!(
+        exec.metrics()
+            .expect("graph metrics registered")
+            .sum_by_name("native_graph_runtime_rows")
+            .map_or(0, |value| value.as_usize()),
+        0,
+        "cancellation before input staging must not start a graph runtime attempt",
+    );
 }
 
 #[cfg(feature = "server")]
 #[tokio::test]
 async fn graph_gpu_producer_rejects_unprepared_direct_spi_execution() {
-    let config = NexusNativeExecutionConfig::unbounded();
+    let backend = test_gpu_backend();
+    let config = backend_execution_config(&backend);
     let edge_source = native_literal_edge_source(&config, true);
     let exec = CugraphAlgoExec::try_new(bfs_utf8_spec(), edge_source, vec![], None, None, config)
         .expect("logical BFS graph exec builds");
-    let context_lease = exec.native_execution_config.execution_context().expect("graph context builds");
+    let task_context = Arc::new(TaskContext::default());
+    let context_lease = exec
+        .native_execution_config
+        .execution_context_async(Arc::clone(&task_context))
+        .await
+        .expect("backend-admitted graph context builds");
 
-    let result = GpuResidentProducer::execute_gpu_result_with_context(
-        &exec,
-        context_lease.context(),
-        0,
-        Arc::new(TaskContext::default()),
-    )
-    .await;
+    let result =
+        GpuResidentProducer::execute_gpu_result_with_context(&exec, context_lease.context(), 0, task_context).await;
     let error = match result {
         Ok(_) => panic!("direct GPU producer execution must reject unstaged inputs"),
         Err(error) => error,
@@ -1040,54 +1107,47 @@ async fn graph_gpu_producer_rejects_unprepared_direct_spi_execution() {
 #[tokio::test]
 async fn graph_logical_bfs_gpu_projection_retains_three_stages_and_publishes_once() {
     let server_observability = crate::server::ServerObservabilityConfig {
-        per_query_max_records: 17,
-        per_query_max_bytes: 2048,
-        active_logical_capture_max_bytes: 16 * 1024,
+        per_query_max_records: 256,
+        per_query_max_bytes: 256 * 1024,
+        active_logical_capture_max_bytes: 512 * 1024,
         global_sealed_max_count: 8,
-        global_sealed_max_bytes: 64 * 1024,
+        global_sealed_max_bytes: 2 * 1024 * 1024,
         sealed_ttl: Duration::from_secs(60),
         shutdown_grace: Duration::from_secs(30),
     };
     let observation_config = server_observability.runtime_observation_config();
     let sink = Arc::new(GraphCaptureSink::default());
     let erased_sink: Arc<dyn NativeMetricsCaptureSink> = sink.clone();
-    let config = NexusNativeExecutionConfig::unbounded().with_metrics_capture(
-        NativeMetricsCapture::new("graph-bfs-projection", erased_sink)
-            .with_runtime_observation_config(observation_config),
-    );
+    let backend = test_gpu_backend();
+    let config = backend_execution_config(&backend)
+        .with_metrics_capture(
+            NativeMetricsCapture::new("graph-bfs-projection", erased_sink)
+                .with_runtime_observation_config(observation_config),
+        )
+        .with_plan_query_admission_ticket();
     let edge_source = native_literal_edge_source(&config, true);
     let exec = Arc::new(
         CugraphAlgoExec::try_new(bfs_utf8_spec(), edge_source, vec![], Some(vec![0, 1]), Some(2), config)
             .expect("logical BFS projection graph exec builds"),
     );
     let owner = exec.metrics_capture.clone().expect("graph wrapper owns local evidence");
-    let task_context = Arc::new(TaskContext::default());
-    let plan = Arc::clone(&exec) as Arc<dyn ExecutionPlan>;
-    let prepared = GpuResidentProducer::prepare_execution_plan(exec.as_ref(), plan, Arc::clone(&task_context))
+    let batches = collect(admitted_observed_graph_plan(&exec), Arc::new(TaskContext::default()))
         .await
-        .expect("logical BFS producer inputs stage before native context acquisition");
-    let prepared = prepared.downcast_ref::<CugraphAlgoExec>().expect("prepared graph plan remains cuGraph");
-    let context_lease = prepared.native_execution_config.execution_context().expect("graph context builds");
+        .expect("logical BFS GPU projection succeeds");
+    close_observed_graph_backend(&backend);
 
-    let (_, handle) =
-        GpuResidentProducer::execute_gpu_result_with_context(prepared, context_lease.context(), 0, task_context)
-            .await
-            .expect("logical BFS GPU projection succeeds");
-    let batch = handle.to_host_record_batch().expect("projected graph result materializes");
-
-    assert_eq!(batch.num_rows(), 2);
-    assert_eq!(batch.num_columns(), 2);
+    assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 2);
+    assert!(batches.iter().all(|batch| batch.num_columns() == 2));
     let retained = owner.runtime_observations();
-    assert_eq!(retained.len(), 3, "native edge, graph, and BFS projection snapshots are retained");
-    assert!(retained.iter().all(|snapshot| {
-        snapshot.manifest().query_id.as_str() == "graph-bfs-projection"
-            && snapshot.footer().terminal == Some(RuntimeTerminalOutcome::Succeeded)
-            && snapshot.manifest().limits == observation_config.limits()
-    }));
+    assert_eq!(retained.len(), 1, "one admitted BFS invocation retains one sealed observation");
+    assert_eq!(retained[0].manifest().query_id.as_str(), "graph-bfs-projection");
+    assert_eq!(retained[0].footer().terminal, Some(RuntimeTerminalOutcome::Succeeded));
+    assert_eq!(retained[0].manifest().limits, observation_config.limits());
+    assert_eq!(graph_plan_boundary_count(&retained[0], PlanExecutionBoundaryKind::Started), 3);
+    assert_eq!(graph_plan_boundary_count(&retained[0], PlanExecutionBoundaryKind::Finished), 3);
     assert_eq!(sink.query_metrics.lock().unwrap().len(), 1, "BFS projection path publishes once");
     assert_eq!(
-        prepared
-            .metrics()
+        exec.metrics()
             .expect("graph metrics registered")
             .sum_by_name("native_graph_runtime_rows")
             .expect("graph runtime row metric registered")
@@ -1618,14 +1678,21 @@ fn standalone_bounded_cugraph_rejects_native_child_execution_without_admission()
 
     let error = validate_standalone_bounded_cugraph_sources(&config, native_exec.as_ref(), &[])
         .expect_err("standalone bounded cuGraph must not execute a native edge child without admission");
-    assert!(error.to_string().contains("cannot execute nexus native child plans"), "{error}");
+    let nexus = error.find_nexus_error().expect("missing backend rejection remains structured");
+    assert_eq!(nexus.code(), ErrorCode::InvalidExecutionPlan);
+    assert_eq!(nexus.fact_value("reason"), Some("gpu_backend_required"));
+    assert_eq!(nexus.fact_value("remediation"), Some("install_nexus_gpu_backend"));
+    assert_eq!(nexus.fact_value("source_kind"), Some("edge"));
 
     let repartitioned = Arc::new(RepartitionExec::try_new(native_exec, Partitioning::UnknownPartitioning(1)).unwrap())
         as Arc<dyn ExecutionPlan>;
     let error = validate_standalone_bounded_cugraph_sources(&config, repartitioned.as_ref(), &[])
         .expect_err("fallback collect over native children should be rejected");
-
-    assert!(error.to_string().contains("cannot execute nexus native child plans"), "{error}");
+    let nexus = error.find_nexus_error().expect("nested missing backend rejection remains structured");
+    assert_eq!(nexus.code(), ErrorCode::InvalidExecutionPlan);
+    assert_eq!(nexus.fact_value("reason"), Some("gpu_backend_required"));
+    assert_eq!(nexus.fact_value("remediation"), Some("install_nexus_gpu_backend"));
+    assert_eq!(nexus.fact_value("source_kind"), Some("edge"));
 }
 
 #[test]

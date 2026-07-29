@@ -38,10 +38,10 @@ use datafusion::{
     prelude::{SessionConfig, SessionContext},
 };
 #[cfg(feature = "cuvs")]
-use datafusion_nexus::native_exec::NexusNativeExecutionConfig;
+use datafusion_nexus::backend::{GpuMemoryOwnership, NexusGpuBackend, NexusMemoryPolicy};
 use datafusion_nexus::{
     capability::CapabilityReason,
-    error::{Error, ErrorCode, ErrorStatus},
+    error::{DataFusionErrorExt, Error, ErrorCode, ErrorStatus},
     native::lower_physical_plan_to_native,
     planner::NexusNativeOptimizerConfig,
     report::CandidateOutcome,

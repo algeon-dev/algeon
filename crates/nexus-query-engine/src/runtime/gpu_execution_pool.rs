@@ -6,21 +6,25 @@
 //! runtime and keeps that blocking work away from the serving runtime.
 
 use std::{
+    any::Any,
     cell::Cell,
     collections::HashMap,
     future::Future,
     panic::AssertUnwindSafe,
     pin::Pin,
     sync::{
-        Arc, Mutex, OnceLock, Weak,
-        atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering},
+        Arc, Condvar, Mutex, OnceLock, Weak,
+        atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering},
+        mpsc,
     },
     task::{Context, Poll},
+    thread,
+    time::Instant,
 };
 
 use futures::FutureExt;
 use tokio::{
-    runtime::{Handle, Runtime},
+    runtime::Handle,
     sync::{OwnedSemaphorePermit, Semaphore},
     task::{JoinError, JoinHandle},
 };
@@ -38,6 +42,7 @@ use crate::{
 const BUILD_OPERATION: &str = "nexus_query_engine.gpu_execution_pool.build";
 const RUN_OPERATION: &str = "nexus_query_engine.gpu_execution_pool.run";
 const SHARED_OPERATION: &str = "nexus_query_engine.gpu_execution_pool.shared";
+const SHUTDOWN_OPERATION: &str = "nexus_query_engine.gpu_execution_pool.shutdown";
 
 static NEXT_POOL_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -46,7 +51,7 @@ thread_local! {
     static CURRENT_WORKER_INDEX: Cell<Option<usize>> = const { Cell::new(None) };
 }
 
-/// Classifies work submitted to a [`GpuExecutionPool`].
+/// Classifies work submitted to the backend-owned GPU execution pool.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum GpuExecutionJobKind {
     /// CUDA and execution-context initialization.
@@ -71,6 +76,11 @@ impl GpuExecutionJobKind {
 /// Point-in-time counters for one device's GPU execution pool.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GpuExecutionPoolSnapshot {
+    /// Opaque process-local identity of the backend-owned pool instance.
+    ///
+    /// Clones of the same pool report the same value. A newly constructed pool
+    /// reports a distinct value, including after a backend generation changes.
+    pub pool_id: u64,
     /// CUDA device ordinal associated with the pool.
     pub device_ordinal: usize,
     /// Maximum number of concurrently active jobs.
@@ -105,18 +115,18 @@ pub struct GpuExecutionQuerySnapshot {
 /// Summing device-local peaks is not equivalent because those peaks may have
 /// occurred at different times.
 #[derive(Debug, Clone, Default)]
-pub struct GpuExecutionQueryTracker {
+pub(crate) struct GpuExecutionQueryTracker {
     counters: Arc<QueryCounters>,
 }
 
 impl GpuExecutionQueryTracker {
     /// Creates an empty aggregate query tracker.
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::default()
     }
 
     /// Returns the current and peak query concurrency across attached pools.
-    pub fn snapshot(&self) -> GpuExecutionQuerySnapshot {
+    pub(crate) fn snapshot(&self) -> GpuExecutionQuerySnapshot {
         let active_query_jobs = self.counters.active.load(Ordering::Acquire);
         let peak_active_query_jobs = self.counters.peak.load(Ordering::Acquire).max(active_query_jobs);
         GpuExecutionQuerySnapshot { active_query_jobs, peak_active_query_jobs }
@@ -131,21 +141,67 @@ impl GpuExecutionQueryTracker {
     }
 }
 
+/// Opaque lifecycle-bound capability for synchronous GPU work.
+///
+/// This lease deliberately exposes execution but not pool construction,
+/// detached spawning, shutdown, counters, or raw resource-epoch access.
+#[derive(Clone)]
+pub struct GpuExecutorLease {
+    pool: GpuExecutionPool,
+}
+
+impl GpuExecutorLease {
+    pub(crate) fn from_pool(pool: GpuExecutionPool) -> Self {
+        Self { pool }
+    }
+
+    /// Runs one job on the lease's dedicated device executor.
+    pub async fn run<F, T>(&self, kind: GpuExecutionJobKind, future: F) -> Result<T>
+    where
+        F: Future<Output = T> + Send + 'static,
+        T: Send + 'static,
+    {
+        self.pool.run(kind, future).await
+    }
+
+    /// Runs one observed job and provides explicit job/worker correlation to
+    /// work that may acquire a service-stream lease.
+    pub async fn run_observed_scoped<B, F, T>(
+        &self,
+        kind: GpuExecutionJobKind,
+        observation: RuntimeObservationHandle,
+        build_future: B,
+    ) -> Result<T>
+    where
+        B: FnOnce(RuntimeStreamLeaseScope) -> F + Send + 'static,
+        F: Future<Output = T> + Send + 'static,
+        T: Send + 'static,
+    {
+        self.pool.run_observed_scoped(kind, observation, build_future).await
+    }
+}
+
+impl std::fmt::Debug for GpuExecutorLease {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("GpuExecutorLease").finish_non_exhaustive()
+    }
+}
+
 /// Fixed-width, per-device executor for work that can block on the GPU.
 #[derive(Clone)]
-pub struct GpuExecutionPool {
+pub(crate) struct GpuExecutionPool {
     inner: Arc<GpuExecutionPoolInner>,
     resource_epoch: Option<Arc<QueryServiceResourceEpoch>>,
 }
 
 impl GpuExecutionPool {
     /// Creates a pool with an independent query-concurrency tracker.
-    pub fn new(device_ordinal: usize, worker_count: usize) -> Result<Self> {
+    pub(crate) fn new(device_ordinal: usize, worker_count: usize) -> Result<Self> {
         Self::new_with_tracker(device_ordinal, worker_count, GpuExecutionQueryTracker::new())
     }
 
     /// Creates a pool attached to a caller-provided aggregate query tracker.
-    pub fn new_with_tracker(
+    pub(crate) fn new_with_tracker(
         device_ordinal: usize,
         worker_count: usize,
         query_tracker: GpuExecutionQueryTracker,
@@ -154,35 +210,7 @@ impl GpuExecutionPool {
 
         let id = NEXT_POOL_ID.fetch_add(1, Ordering::Relaxed);
         let next_worker_index = Arc::new(AtomicUsize::new(0));
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(worker_count)
-            .thread_name(format!("nexus-gpu-{device_ordinal}"))
-            .on_thread_start({
-                let next_worker_index = Arc::clone(&next_worker_index);
-                move || {
-                    CURRENT_POOL_ID.with(|current| current.set(Some(id)));
-                    CURRENT_WORKER_INDEX
-                        .with(|current| current.set(Some(next_worker_index.fetch_add(1, Ordering::Relaxed))));
-                }
-            })
-            .on_thread_stop(move || {
-                CURRENT_WORKER_INDEX.with(|current| current.set(None));
-                CURRENT_POOL_ID.with(|current| current.set(None));
-            })
-            .enable_all()
-            .build()
-            .map_err(|error| {
-                QueryError::new(
-                    QueryErrorCode::Internal,
-                    BUILD_OPERATION,
-                    "failed to initialize the dedicated GPU execution runtime",
-                )
-                .with_fact("device_ordinal", device_ordinal)
-                .with_fact("worker_count", worker_count)
-                .with_fact("reason", "runtime_build_failed")
-                .with_source(error)
-            })?;
-        let handle = runtime.handle().clone();
+        let (handle, supervisor) = RuntimeSupervisor::start(device_ordinal, worker_count, id, next_worker_index)?;
 
         Ok(Self {
             inner: Arc::new(GpuExecutionPoolInner {
@@ -190,9 +218,12 @@ impl GpuExecutionPool {
                 device_ordinal,
                 worker_count,
                 handle,
-                runtime: Some(runtime),
+                supervisor,
+                submissions_closed: AtomicBool::new(false),
+                submission_gate: Mutex::new(()),
                 concurrency: Arc::new(Semaphore::new(worker_count)),
                 counters: Arc::new(PoolCounters::default()),
+                drain: Arc::new(PoolDrain::default()),
                 query_tracker,
                 next_job_id: AtomicU64::new(1),
             }),
@@ -206,7 +237,7 @@ impl GpuExecutionPool {
     /// different width is rejected rather than silently constructing another
     /// executor for the same device. Once the last clone is dropped, a later
     /// call may install a new width.
-    pub fn shared_for_device(device_ordinal: usize, worker_count: usize) -> Result<Self> {
+    pub(crate) fn shared_for_device(device_ordinal: usize, worker_count: usize) -> Result<Self> {
         validate_worker_count(device_ordinal, worker_count)?;
 
         static SHARED_POOLS: OnceLock<Mutex<HashMap<usize, Weak<GpuExecutionPoolInner>>>> = OnceLock::new();
@@ -307,17 +338,18 @@ impl GpuExecutionPool {
         let job_guard = JobCounterGuard::new(
             kind,
             Arc::clone(&self.inner.counters),
+            Arc::clone(&self.inner.drain),
             self.inner.query_tracker.clone(),
             Arc::clone(&job),
         );
         let concurrency = Arc::clone(&self.inner.concurrency);
         let resource_epoch = self.resource_epoch.clone();
-        let task = self.inner.handle.spawn(async move {
+        let task = self.inner.spawn_task(async move {
             let _resource_epoch = resource_epoch;
             let permit = concurrency.acquire_owned().await;
             let permit = permit.expect("GPU execution pool semaphore must remain open while jobs are live");
             run_counted_job_scoped(job_guard, permit, build_future).await
-        });
+        })?;
 
         match AbortOnDropJoinHandle::new(task, Arc::clone(&job)).await {
             Ok(Ok(value)) => Ok(value),
@@ -359,16 +391,21 @@ impl GpuExecutionPool {
     {
         self.check_resource_epoch(RUN_OPERATION)?;
         let job = self.new_job_observation(kind, observation);
-        let job_guard =
-            JobCounterGuard::new(kind, Arc::clone(&self.inner.counters), self.inner.query_tracker.clone(), job);
+        let job_guard = JobCounterGuard::new(
+            kind,
+            Arc::clone(&self.inner.counters),
+            Arc::clone(&self.inner.drain),
+            self.inner.query_tracker.clone(),
+            job,
+        );
         let concurrency = Arc::clone(&self.inner.concurrency);
         let resource_epoch = self.resource_epoch.clone();
-        self.inner.handle.spawn(async move {
+        self.inner.spawn_task(async move {
             let _resource_epoch = resource_epoch;
             let permit = concurrency.acquire_owned().await;
             let permit = permit.expect("GPU execution pool semaphore must remain open while jobs are live");
             let _ = run_counted_job(job_guard, permit, future).await;
-        });
+        })?;
         Ok(())
     }
 
@@ -388,13 +425,14 @@ impl GpuExecutionPool {
         let job_guard = JobCounterGuard::new_with_completion(
             kind,
             Arc::clone(&self.inner.counters),
+            Arc::clone(&self.inner.drain),
             self.inner.query_tracker.clone(),
             job,
             Box::new(completion),
         );
         let concurrency = Arc::clone(&self.inner.concurrency);
         let resource_epoch = self.resource_epoch.clone();
-        self.inner.handle.spawn(async move {
+        let _ = self.inner.spawn_task(async move {
             let _resource_epoch = resource_epoch;
             let permit = concurrency.acquire_owned().await;
             let permit = permit.expect("GPU execution pool semaphore must remain open while jobs are live");
@@ -426,6 +464,7 @@ impl GpuExecutionPool {
         let queued_jobs = counters.queued.load(Ordering::Acquire);
         let active_query_jobs = counters.active_queries.load(Ordering::Acquire);
         GpuExecutionPoolSnapshot {
+            pool_id: self.inner.id,
             device_ordinal: self.inner.device_ordinal,
             worker_count: self.inner.worker_count,
             active_jobs,
@@ -442,11 +481,78 @@ impl GpuExecutionPool {
         self.inner.query_tracker.clone()
     }
 
+    /// Prevents every later submission from being accepted by this pool.
+    ///
+    /// The submission gate makes the close transition linearizable with task
+    /// spawning: a task either enters the runtime before this call wins or is
+    /// rejected as closed.
+    pub(crate) fn close_submissions(&self) -> Result<()> {
+        self.inner.close_submissions()
+    }
+
+    /// Asks the owning supervisor to drop its runtime and cancel any async work
+    /// that did not drain after submissions were closed.
+    pub(crate) fn request_supervisor_exit(&self) -> Result<()> {
+        self.inner.request_supervisor_exit()
+    }
+
+    /// Waits for every accepted job guard to leave the queued or active state.
+    pub(crate) fn wait_for_drain_until(&self, deadline: Instant) -> Result<()> {
+        self.inner.wait_for_drain_until(deadline)
+    }
+
+    /// Waits for the runtime-owning supervisor to publish its terminal state.
+    pub(crate) fn wait_for_supervisor_exit_until(&self, deadline: Instant) -> Result<()> {
+        self.inner.supervisor.wait_for_exit_until(deadline)
+    }
+
+    /// Reclaims the exited supervisor thread and reports join failure as a
+    /// permanent cleanup failure.
+    pub(crate) fn join_supervisor(&self) -> Result<()> {
+        self.inner.supervisor.join()
+    }
+
+    /// Compatibility composition for cleanup coordinators that have not yet
+    /// split worker-pool cleanup into independently observed phases.
+    pub(crate) fn close_and_wait_until(&self, deadline: Instant) -> Result<()> {
+        self.close_submissions()?;
+        self.request_supervisor_exit()?;
+        let drain_result = self.wait_for_drain_until(deadline);
+        let exit_result = self.wait_for_supervisor_exit_until(deadline);
+        let exit_observed = match &exit_result {
+            Ok(()) => true,
+            Err(error) => matches!(
+                error.fact_value("reason"),
+                Some("runtime_supervisor_panicked" | "runtime_supervisor_build_failed")
+            ),
+        };
+        let join_result = if exit_observed { self.join_supervisor() } else { Ok(()) };
+
+        let mut first_deadline = None;
+        for result in [drain_result, exit_result, join_result] {
+            match result {
+                Ok(()) => {},
+                Err(error) if error.is_cleanup_deadline_elapsed() => {
+                    if first_deadline.is_none() {
+                        first_deadline = Some(error);
+                    }
+                },
+                Err(error) => return Err(error),
+            }
+        }
+        first_deadline.map_or(Ok(()), Err)
+    }
+
     pub(crate) fn with_resource_epoch(&self, resource_epoch: Arc<QueryServiceResourceEpoch>) -> Self {
         Self { inner: Arc::clone(&self.inner), resource_epoch: Some(resource_epoch) }
     }
 
     fn check_resource_epoch(&self, operation: &'static str) -> Result<()> {
+        if self.inner.submissions_closed.load(Ordering::Acquire) {
+            return Err(QueryError::new(QueryErrorCode::Cancelled, operation, "GPU execution pool is closing")
+                .with_fact("device_ordinal", self.inner.device_ordinal)
+                .with_fact("reason", "gpu_execution_pool_closing"));
+        }
         self.resource_epoch.as_ref().map_or(Ok(()), |epoch| epoch.check_open(operation))
     }
 }
@@ -462,22 +568,443 @@ struct GpuExecutionPoolInner {
     device_ordinal: usize,
     worker_count: usize,
     handle: Handle,
-    runtime: Option<Runtime>,
+    supervisor: RuntimeSupervisor,
+    submissions_closed: AtomicBool,
+    submission_gate: Mutex<()>,
     concurrency: Arc<Semaphore>,
     counters: Arc<PoolCounters>,
+    drain: Arc<PoolDrain>,
     query_tracker: GpuExecutionQueryTracker,
     next_job_id: AtomicU64,
 }
 
 impl Drop for GpuExecutionPoolInner {
     fn drop(&mut self) {
-        if let Some(runtime) = self.runtime.take() {
-            // Dropping a runtime can block and panics inside an asynchronous
-            // context. Final pool release is allowed from a request future, so
-            // always use Tokio's explicitly non-blocking shutdown path.
-            runtime.shutdown_background();
+        self.submissions_closed.store(true, Ordering::Release);
+        self.supervisor.request_exit_from_drop();
+    }
+}
+
+impl GpuExecutionPoolInner {
+    fn spawn_task<F>(&self, future: F) -> Result<JoinHandle<F::Output>>
+    where
+        F: Future + Send + 'static,
+        F::Output: Send + 'static,
+    {
+        let _submission = self.submission_gate.lock().map_err(|_| {
+            QueryError::new(QueryErrorCode::Internal, RUN_OPERATION, "GPU execution submission gate was poisoned")
+                .with_fact("device_ordinal", self.device_ordinal)
+                .with_fact("reason", "gpu_execution_pool_submission_gate_poisoned")
+        })?;
+        if self.submissions_closed.load(Ordering::Acquire) {
+            return Err(pool_closed_error(self.device_ordinal));
+        }
+        Ok(self.handle.spawn(future))
+    }
+
+    fn close_submissions(&self) -> Result<()> {
+        let _submission = self.submission_gate.lock().map_err(|_| {
+            QueryError::new(QueryErrorCode::Internal, SHUTDOWN_OPERATION, "GPU execution submission gate was poisoned")
+                .with_fact("device_ordinal", self.device_ordinal)
+                .with_fact("reason", "gpu_execution_pool_submission_gate_poisoned")
+        })?;
+        self.submissions_closed.store(true, Ordering::Release);
+        Ok(())
+    }
+
+    fn request_supervisor_exit(&self) -> Result<()> {
+        if !self.submissions_closed.load(Ordering::Acquire) {
+            return Err(QueryError::new(
+                QueryErrorCode::Internal,
+                SHUTDOWN_OPERATION,
+                "GPU execution supervisor exit was requested before submissions were closed",
+            )
+            .with_fact("device_ordinal", self.device_ordinal)
+            .with_fact("reason", "gpu_execution_pool_exit_before_close"));
+        }
+        self.supervisor.request_exit()
+    }
+
+    fn wait_for_drain_until(&self, deadline: Instant) -> Result<()> {
+        self.drain.wait_until(deadline, self.device_ordinal, self.counters.as_ref())
+    }
+}
+
+fn pool_closed_error(device_ordinal: usize) -> QueryError {
+    QueryError::new(QueryErrorCode::Cancelled, RUN_OPERATION, "GPU execution pool is closing")
+        .with_fact("device_ordinal", device_ordinal)
+        .with_fact("reason", "gpu_execution_pool_closing")
+}
+
+fn pool_drain_timeout(device_ordinal: usize, counters: &PoolCounters) -> QueryError {
+    QueryError::new(
+        QueryErrorCode::ServiceOverloaded,
+        SHUTDOWN_OPERATION,
+        "timed out waiting for accepted GPU execution jobs to drain",
+    )
+    .with_fact("device_ordinal", device_ordinal)
+    .with_fact("active_jobs", counters.active.load(Ordering::Acquire))
+    .with_fact("queued_jobs", counters.queued.load(Ordering::Acquire))
+    .with_fact("reason", "gpu_execution_pool_drain_timeout")
+    .with_cleanup_deadline_elapsed()
+}
+
+#[derive(Debug, Default)]
+struct PoolDrain {
+    changed: Mutex<()>,
+    wake: Condvar,
+}
+
+impl PoolDrain {
+    fn wait_until(&self, deadline: Instant, device_ordinal: usize, counters: &PoolCounters) -> Result<()> {
+        let mut state =
+            crate::runtime::deadline::mutex_lock_until(&self.changed, deadline).map_err(|error| match error {
+                crate::runtime::deadline::DeadlineMutexLockError::Poisoned => QueryError::new(
+                    QueryErrorCode::Internal,
+                    SHUTDOWN_OPERATION,
+                    "GPU execution pool drain mutex was poisoned",
+                )
+                .with_fact("device_ordinal", device_ordinal)
+                .with_fact("reason", "gpu_execution_pool_drain_poisoned"),
+                crate::runtime::deadline::DeadlineMutexLockError::TimedOut => {
+                    pool_drain_timeout(device_ordinal, counters)
+                },
+            })?;
+        while counters.active.load(Ordering::Acquire) != 0 || counters.queued.load(Ordering::Acquire) != 0 {
+            let Some(remaining) = crate::runtime::deadline::deadline_remaining(deadline) else {
+                return Err(pool_drain_timeout(device_ordinal, counters));
+            };
+            let (next, timeout) = self.wake.wait_timeout(state, remaining).map_err(|_| {
+                QueryError::new(
+                    QueryErrorCode::Internal,
+                    SHUTDOWN_OPERATION,
+                    "GPU execution pool drain condition variable was poisoned",
+                )
+                .with_fact("device_ordinal", device_ordinal)
+                .with_fact("reason", "gpu_execution_pool_drain_poisoned")
+            })?;
+            state = next;
+            if timeout.timed_out()
+                && (counters.active.load(Ordering::Acquire) != 0 || counters.queued.load(Ordering::Acquire) != 0)
+            {
+                return Err(pool_drain_timeout(device_ordinal, counters));
+            }
+        }
+        Ok(())
+    }
+}
+
+struct RuntimeSupervisor {
+    device_ordinal: usize,
+    control: Arc<RuntimeSupervisorControl>,
+    join: Mutex<Option<thread::JoinHandle<()>>>,
+    join_disposition: AtomicU8,
+}
+
+const SUPERVISOR_NOT_JOINED: u8 = 0;
+const SUPERVISOR_JOINED: u8 = 1;
+const SUPERVISOR_JOIN_FAILED: u8 = 2;
+
+#[derive(Debug, Default)]
+struct RuntimeSupervisorControl {
+    state: Mutex<RuntimeSupervisorState>,
+    changed: Condvar,
+    #[cfg(test)]
+    panic_during_teardown: AtomicBool,
+    #[cfg(test)]
+    panic_after_exit: AtomicBool,
+}
+
+#[derive(Debug, Default)]
+struct RuntimeSupervisorState {
+    exit_requested: bool,
+    exit: Option<RuntimeSupervisorExit>,
+}
+
+#[derive(Debug, Clone)]
+enum RuntimeSupervisorExit {
+    Clean,
+    Panicked { panic_message: String },
+    BuildFailed { message: String },
+}
+
+enum RuntimeSupervisorStartup {
+    Ready(Handle),
+    BuildFailed(String),
+}
+
+impl RuntimeSupervisor {
+    fn start(
+        device_ordinal: usize,
+        worker_count: usize,
+        pool_id: u64,
+        next_worker_index: Arc<AtomicUsize>,
+    ) -> Result<(Handle, Self)> {
+        let control = Arc::new(RuntimeSupervisorControl::default());
+        let thread_control = Arc::clone(&control);
+        let (startup_sender, startup_receiver) = mpsc::sync_channel(1);
+        let join = thread::Builder::new()
+            .name(format!("nexus-gpu-{device_ordinal}-supervisor"))
+            .spawn(move || {
+                let runtime = tokio::runtime::Builder::new_multi_thread()
+                    .worker_threads(worker_count)
+                    .thread_name(format!("nexus-gpu-{device_ordinal}"))
+                    .on_thread_start({
+                        let next_worker_index = Arc::clone(&next_worker_index);
+                        move || {
+                            CURRENT_POOL_ID.with(|current| current.set(Some(pool_id)));
+                            CURRENT_WORKER_INDEX.with(|current| {
+                                current.set(Some(next_worker_index.fetch_add(1, Ordering::Relaxed)));
+                            });
+                        }
+                    })
+                    .on_thread_stop(|| {
+                        CURRENT_WORKER_INDEX.with(|current| current.set(None));
+                        CURRENT_POOL_ID.with(|current| current.set(None));
+                    })
+                    .enable_all()
+                    .build();
+                let runtime = match runtime {
+                    Ok(runtime) => runtime,
+                    Err(error) => {
+                        let message = error.to_string();
+                        thread_control.publish_exit(RuntimeSupervisorExit::BuildFailed { message: message.clone() });
+                        let _ = startup_sender.send(RuntimeSupervisorStartup::BuildFailed(message));
+                        return;
+                    },
+                };
+                if startup_sender.send(RuntimeSupervisorStartup::Ready(runtime.handle().clone())).is_err() {
+                    drop(runtime);
+                    return;
+                }
+
+                let teardown = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                    thread_control.wait_for_exit_request();
+                    #[cfg(test)]
+                    if thread_control.panic_during_teardown.load(Ordering::Acquire) {
+                        panic!("injected GPU execution supervisor teardown panic");
+                    }
+                    drop(runtime);
+                }));
+                let exit = match teardown {
+                    Ok(()) => RuntimeSupervisorExit::Clean,
+                    Err(panic) => RuntimeSupervisorExit::Panicked { panic_message: panic_message(panic.as_ref()) },
+                };
+                thread_control.publish_exit(exit);
+
+                #[cfg(test)]
+                if thread_control.panic_after_exit.load(Ordering::Acquire) {
+                    panic!("injected GPU execution supervisor join panic");
+                }
+            })
+            .map_err(|error| {
+                QueryError::new(
+                    QueryErrorCode::Internal,
+                    BUILD_OPERATION,
+                    "failed to start the dedicated GPU execution runtime supervisor",
+                )
+                .with_fact("device_ordinal", device_ordinal)
+                .with_fact("worker_count", worker_count)
+                .with_fact("reason", "runtime_supervisor_spawn_failed")
+                .with_source(error)
+            })?;
+
+        let handle = match startup_receiver.recv() {
+            Ok(RuntimeSupervisorStartup::Ready(handle)) => handle,
+            Ok(RuntimeSupervisorStartup::BuildFailed(message)) => {
+                let join_failed = join.join().err().map(|panic| panic_message(panic.as_ref()));
+                let mut error = QueryError::new(
+                    QueryErrorCode::Internal,
+                    BUILD_OPERATION,
+                    "failed to initialize the dedicated GPU execution runtime",
+                )
+                .with_fact("device_ordinal", device_ordinal)
+                .with_fact("worker_count", worker_count)
+                .with_fact("reason", "runtime_build_failed")
+                .with_fact("runtime_error", message);
+                if let Some(join_panic) = join_failed {
+                    error = error.with_fact("supervisor_join_panic", join_panic);
+                }
+                return Err(error);
+            },
+            Err(error) => {
+                let join_failed = join.join().err().map(|panic| panic_message(panic.as_ref()));
+                let mut query_error = QueryError::new(
+                    QueryErrorCode::Internal,
+                    BUILD_OPERATION,
+                    "GPU execution runtime supervisor exited before publishing its handle",
+                )
+                .with_fact("device_ordinal", device_ordinal)
+                .with_fact("worker_count", worker_count)
+                .with_fact("reason", "runtime_supervisor_startup_disconnected")
+                .with_source(error);
+                if let Some(join_panic) = join_failed {
+                    query_error = query_error.with_fact("supervisor_join_panic", join_panic);
+                }
+                return Err(query_error);
+            },
+        };
+
+        Ok((
+            handle,
+            Self {
+                device_ordinal,
+                control,
+                join: Mutex::new(Some(join)),
+                join_disposition: AtomicU8::new(SUPERVISOR_NOT_JOINED),
+            },
+        ))
+    }
+
+    fn request_exit(&self) -> Result<()> {
+        let mut state = self.control.state.lock().map_err(|_| supervisor_state_poisoned(self.device_ordinal))?;
+        state.exit_requested = true;
+        self.control.changed.notify_all();
+        Ok(())
+    }
+
+    fn request_exit_from_drop(&self) {
+        let mut state = self.control.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.exit_requested = true;
+        self.control.changed.notify_all();
+    }
+
+    fn wait_for_exit_until(&self, deadline: Instant) -> Result<()> {
+        let mut state =
+            crate::runtime::deadline::mutex_lock_until(&self.control.state, deadline).map_err(|error| match error {
+                crate::runtime::deadline::DeadlineMutexLockError::Poisoned => {
+                    supervisor_state_poisoned(self.device_ordinal)
+                },
+                crate::runtime::deadline::DeadlineMutexLockError::TimedOut => {
+                    supervisor_exit_timeout(self.device_ordinal)
+                },
+            })?;
+        while state.exit.is_none() {
+            let Some(remaining) = crate::runtime::deadline::deadline_remaining(deadline) else {
+                return Err(supervisor_exit_timeout(self.device_ordinal));
+            };
+            let (next, timeout) = self
+                .control
+                .changed
+                .wait_timeout(state, remaining)
+                .map_err(|_| supervisor_state_poisoned(self.device_ordinal))?;
+            state = next;
+            if timeout.timed_out() && state.exit.is_none() {
+                return Err(supervisor_exit_timeout(self.device_ordinal));
+            }
+        }
+        match state.exit.as_ref().expect("exit checked above") {
+            RuntimeSupervisorExit::Clean => Ok(()),
+            RuntimeSupervisorExit::Panicked { panic_message } => {
+                Err(supervisor_panic_error(self.device_ordinal, "runtime_teardown", panic_message))
+            },
+            RuntimeSupervisorExit::BuildFailed { message } => Err(QueryError::new(
+                QueryErrorCode::Internal,
+                SHUTDOWN_OPERATION,
+                "GPU execution supervisor retained a runtime build failure",
+            )
+            .with_fact("device_ordinal", self.device_ordinal)
+            .with_fact("reason", "runtime_supervisor_build_failed")
+            .with_fact("runtime_error", message)),
         }
     }
+
+    fn join(&self) -> Result<()> {
+        {
+            let state = self.control.state.lock().map_err(|_| supervisor_state_poisoned(self.device_ordinal))?;
+            if state.exit.is_none() {
+                return Err(QueryError::new(
+                    QueryErrorCode::Internal,
+                    SHUTDOWN_OPERATION,
+                    "GPU execution supervisor cannot be joined before it publishes exit",
+                )
+                .with_fact("device_ordinal", self.device_ordinal)
+                .with_fact("reason", "runtime_supervisor_join_before_exit"));
+            }
+        }
+
+        let mut join = self.join.lock().map_err(|_| {
+            QueryError::new(
+                QueryErrorCode::Internal,
+                SHUTDOWN_OPERATION,
+                "GPU execution supervisor join mutex was poisoned",
+            )
+            .with_fact("device_ordinal", self.device_ordinal)
+            .with_fact("reason", "runtime_supervisor_join_poisoned")
+        })?;
+        if let Some(handle) = join.take() {
+            match handle.join() {
+                Ok(()) => self.join_disposition.store(SUPERVISOR_JOINED, Ordering::Release),
+                Err(panic) => {
+                    self.join_disposition.store(SUPERVISOR_JOIN_FAILED, Ordering::Release);
+                    return Err(supervisor_panic_error(
+                        self.device_ordinal,
+                        "thread_join",
+                        &panic_message(panic.as_ref()),
+                    ));
+                },
+            }
+        }
+        match self.join_disposition.load(Ordering::Acquire) {
+            SUPERVISOR_JOINED => Ok(()),
+            SUPERVISOR_JOIN_FAILED => Err(QueryError::new(
+                QueryErrorCode::Internal,
+                SHUTDOWN_OPERATION,
+                "GPU execution supervisor previously failed to join",
+            )
+            .with_fact("device_ordinal", self.device_ordinal)
+            .with_fact("reason", "runtime_supervisor_join_failed")),
+            unexpected => unreachable!("invalid GPU execution supervisor join disposition {unexpected}"),
+        }
+    }
+}
+
+impl RuntimeSupervisorControl {
+    fn wait_for_exit_request(&self) {
+        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        while !state.exit_requested {
+            state = self.changed.wait(state).unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+    }
+
+    fn publish_exit(&self, exit: RuntimeSupervisorExit) {
+        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.exit = Some(exit);
+        self.changed.notify_all();
+    }
+}
+
+fn supervisor_exit_timeout(device_ordinal: usize) -> QueryError {
+    QueryError::new(
+        QueryErrorCode::ServiceOverloaded,
+        SHUTDOWN_OPERATION,
+        "timed out waiting for the GPU execution runtime supervisor to exit",
+    )
+    .with_fact("device_ordinal", device_ordinal)
+    .with_fact("reason", "runtime_supervisor_exit_timeout")
+    .with_cleanup_deadline_elapsed()
+}
+
+fn supervisor_state_poisoned(device_ordinal: usize) -> QueryError {
+    QueryError::new(QueryErrorCode::Internal, SHUTDOWN_OPERATION, "GPU execution supervisor state was poisoned")
+        .with_fact("device_ordinal", device_ordinal)
+        .with_fact("reason", "runtime_supervisor_state_poisoned")
+}
+
+fn supervisor_panic_error(device_ordinal: usize, stage: &'static str, panic_message: &str) -> QueryError {
+    QueryError::new(QueryErrorCode::Internal, SHUTDOWN_OPERATION, "GPU execution runtime supervisor panicked")
+        .with_fact("device_ordinal", device_ordinal)
+        .with_fact("supervisor_stage", stage)
+        .with_fact("panic_message", panic_message)
+        .with_fact("reason", "runtime_supervisor_panicked")
+}
+
+fn panic_message(panic: &(dyn Any + Send)) -> String {
+    panic
+        .downcast_ref::<&'static str>()
+        .map(|message| (*message).to_string())
+        .or_else(|| panic.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "non-string panic payload".to_string())
 }
 
 struct JobObservation {
@@ -626,6 +1153,7 @@ enum JobCounterState {
 struct JobCounterGuard {
     kind: GpuExecutionJobKind,
     counters: Arc<PoolCounters>,
+    drain: Arc<PoolDrain>,
     query_tracker: GpuExecutionQueryTracker,
     state: JobCounterState,
     terminal: JobTerminalGuard,
@@ -636,6 +1164,7 @@ impl JobCounterGuard {
     fn new(
         kind: GpuExecutionJobKind,
         counters: Arc<PoolCounters>,
+        drain: Arc<PoolDrain>,
         query_tracker: GpuExecutionQueryTracker,
         observation: Arc<JobObservation>,
     ) -> Self {
@@ -643,6 +1172,7 @@ impl JobCounterGuard {
         Self {
             kind,
             counters,
+            drain,
             query_tracker,
             state: JobCounterState::Queued,
             terminal: JobTerminalGuard::spawned(observation),
@@ -653,11 +1183,12 @@ impl JobCounterGuard {
     fn new_with_completion(
         kind: GpuExecutionJobKind,
         counters: Arc<PoolCounters>,
+        drain: Arc<PoolDrain>,
         query_tracker: GpuExecutionQueryTracker,
         observation: Arc<JobObservation>,
         completion: Box<dyn FnOnce() + Send + 'static>,
     ) -> Self {
-        let mut guard = Self::new(kind, counters, query_tracker, observation);
+        let mut guard = Self::new(kind, counters, drain, query_tracker, observation);
         guard.completion = Some(completion);
         guard
     }
@@ -678,6 +1209,10 @@ impl JobCounterGuard {
 
 impl Drop for JobCounterGuard {
     fn drop(&mut self) {
+        // Synchronize the zero-counter transition with drain waiters. Without
+        // this lock, a waiter could observe zero between the decrement and the
+        // completion callback that releases the job's final resource anchors.
+        let _drain_state = self.drain.changed.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         // Publish the terminal transition before counters expose pool
         // quiescence. Callers use those counters as a completion fence and
         // must never observe an active count of zero with a nonterminal job.
@@ -695,6 +1230,7 @@ impl Drop for JobCounterGuard {
         if let Some(completion) = self.completion.take() {
             completion();
         }
+        self.drain.wake.notify_all();
     }
 }
 
@@ -965,6 +1501,26 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn opaque_executor_lease_forwards_only_awaited_execution() {
+        let pool = GpuExecutionPool::new(18, 1).unwrap();
+        let lease = GpuExecutorLease::from_pool(pool);
+        assert_eq!(lease.run(GpuExecutionJobKind::QueryExecution, async { 7_u8 }).await.unwrap(), 7);
+
+        let owner = crate::observability::RuntimeObservationOwner::new(
+            "gpu-executor-lease",
+            None,
+            crate::observability::RuntimeObservationConfig::bounded(32, 32 * 1024),
+        );
+        let scope_has_worker = lease
+            .run_observed_scoped(GpuExecutionJobKind::QueryExecution, owner.handle(), |scope| async move {
+                scope.gpu_job_id.is_some() && scope.gpu_worker_id.is_some()
+            })
+            .await
+            .unwrap();
+        assert!(scope_has_worker);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn observed_job_abort_records_one_cancel_terminal() {
         let pool = GpuExecutionPool::new(0, 1).unwrap();
         let owner = crate::observability::RuntimeObservationOwner::new(
@@ -1150,6 +1706,16 @@ mod tests {
         assert_eq!(error.fact_value("reason"), Some("zero"));
     }
 
+    #[test]
+    fn snapshots_identify_the_shared_pool_instance_across_clones() {
+        let pool = GpuExecutionPool::new(7, 1).unwrap();
+        let clone = pool.clone();
+        let distinct_pool = GpuExecutionPool::new(7, 1).unwrap();
+
+        assert_eq!(pool.snapshot().pool_id, clone.snapshot().pool_id);
+        assert_ne!(pool.snapshot().pool_id, distinct_pool.snapshot().pool_id);
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn fixed_width_tracks_peaks_without_starving_serving_runtime() {
         let pool = GpuExecutionPool::new(0, 2).unwrap();
@@ -1263,6 +1829,120 @@ mod tests {
         let pool = GpuExecutionPool::new(3, 1).unwrap();
         pool.run(GpuExecutionJobKind::Cleanup, async {}).await.unwrap();
         drop(pool);
+    }
+
+    #[test]
+    fn composed_cleanup_closes_drains_exits_and_joins() {
+        let pool = GpuExecutionPool::new(29, 1).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        pool.close_and_wait_until(deadline).unwrap();
+        pool.join_supervisor().unwrap();
+        let closed = pool.spawn(GpuExecutionJobKind::Cleanup, async {}).unwrap_err();
+        assert_eq!(closed.fact_value("reason"), Some("gpu_execution_pool_closing"));
+    }
+
+    #[test]
+    fn supervisor_shutdown_closes_cancels_drains_and_joins() {
+        let pool = GpuExecutionPool::new(30, 1).unwrap();
+        let dropped = Arc::new(AtomicBool::new(false));
+        let started = Arc::new(AtomicBool::new(false));
+        let future_started = Arc::clone(&started);
+        let future_dropped = Arc::clone(&dropped);
+        pool.spawn(GpuExecutionJobKind::Cleanup, async move {
+            let _probe = DropProbe(future_dropped);
+            future_started.store(true, Ordering::Release);
+            std::future::pending::<()>().await;
+        })
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !started.load(Ordering::Acquire) {
+            assert!(Instant::now() < deadline, "pool job did not start");
+            thread::yield_now();
+        }
+
+        pool.close_submissions().unwrap();
+        let closed = pool.spawn(GpuExecutionJobKind::Cleanup, async {}).unwrap_err();
+        assert_eq!(closed.code(), QueryErrorCode::Cancelled);
+        assert_eq!(closed.fact_value("reason"), Some("gpu_execution_pool_closing"));
+        pool.request_supervisor_exit().unwrap();
+        pool.wait_for_drain_until(deadline).unwrap();
+        pool.wait_for_supervisor_exit_until(deadline).unwrap();
+        pool.join_supervisor().unwrap();
+        pool.join_supervisor().unwrap();
+        assert!(dropped.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn blocked_worker_times_out_then_supervisor_joins_after_late_success() {
+        let pool = GpuExecutionPool::new(31, 1).unwrap();
+        let gate = Arc::new(BlockingGate::default());
+        let job_gate = Arc::clone(&gate);
+        let (started_sender, started_receiver) = mpsc::sync_channel(0);
+        pool.spawn(GpuExecutionJobKind::Cleanup, async move {
+            started_sender.send(()).unwrap();
+            job_gate.wait();
+        })
+        .unwrap();
+        started_receiver.recv().unwrap();
+
+        pool.close_submissions().unwrap();
+        pool.request_supervisor_exit().unwrap();
+        let timeout = pool.wait_for_drain_until(Instant::now() + Duration::from_millis(10)).unwrap_err();
+        assert!(timeout.is_cleanup_deadline_elapsed());
+        assert_eq!(timeout.fact_value("reason"), Some("gpu_execution_pool_drain_timeout"));
+        let timeout = pool.wait_for_supervisor_exit_until(Instant::now() + Duration::from_millis(10)).unwrap_err();
+        assert!(timeout.is_cleanup_deadline_elapsed());
+        assert_eq!(timeout.fact_value("reason"), Some("runtime_supervisor_exit_timeout"));
+
+        gate.release();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        pool.wait_for_drain_until(deadline).unwrap();
+        pool.wait_for_supervisor_exit_until(deadline).unwrap();
+        pool.join_supervisor().unwrap();
+    }
+
+    #[test]
+    fn supervisor_teardown_panic_is_permanent_and_still_joinable() {
+        let pool = GpuExecutionPool::new(32, 1).unwrap();
+        pool.inner.supervisor.control.panic_during_teardown.store(true, Ordering::Release);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let error = pool.close_and_wait_until(deadline).unwrap_err();
+        assert_eq!(error.code(), QueryErrorCode::Internal);
+        assert_eq!(error.status(), crate::error::QueryErrorStatus::Permanent);
+        assert_eq!(error.fact_value("reason"), Some("runtime_supervisor_panicked"));
+        assert_eq!(error.fact_value("supervisor_stage"), Some("runtime_teardown"));
+        pool.join_supervisor().unwrap();
+    }
+
+    #[test]
+    fn observed_join_panic_wins_after_an_earlier_cleanup_deadline() {
+        let pool = GpuExecutionPool::new(33, 1).unwrap();
+        let gate = Arc::new(BlockingGate::default());
+        let job_gate = Arc::clone(&gate);
+        let (started_sender, started_receiver) = mpsc::sync_channel(0);
+        pool.spawn(GpuExecutionJobKind::Cleanup, async move {
+            started_sender.send(()).unwrap();
+            job_gate.wait();
+        })
+        .unwrap();
+        started_receiver.recv().unwrap();
+        pool.inner.supervisor.control.panic_after_exit.store(true, Ordering::Release);
+        pool.close_submissions().unwrap();
+        pool.request_supervisor_exit().unwrap();
+        let deadline = pool.close_and_wait_until(Instant::now() + Duration::from_millis(10)).unwrap_err();
+        assert!(deadline.is_cleanup_deadline_elapsed());
+        assert_eq!(deadline.fact_value("reason"), Some("gpu_execution_pool_drain_timeout"));
+        assert_eq!(pool.inner.supervisor.join_disposition.load(Ordering::Acquire), SUPERVISOR_NOT_JOINED);
+
+        gate.release();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let error = pool.close_and_wait_until(deadline).unwrap_err();
+        assert_eq!(error.code(), QueryErrorCode::Internal);
+        assert_eq!(error.status(), crate::error::QueryErrorStatus::Permanent);
+        assert_eq!(error.fact_value("reason"), Some("runtime_supervisor_panicked"));
+        assert_eq!(error.fact_value("supervisor_stage"), Some("thread_join"));
+        let repeated = pool.join_supervisor().unwrap_err();
+        assert_eq!(repeated.fact_value("reason"), Some("runtime_supervisor_join_failed"));
     }
 
     #[tokio::test(flavor = "current_thread")]

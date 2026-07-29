@@ -1,0 +1,23 @@
+error[E0603]: struct `DeviceRegistry` is private
+ --> tests/ui/public_api/forbidden_custom_placement.rs:3:15
+  |
+3 |     runtime::{DeviceRegistry, PlacementPolicy, PlacementRequest},
+  |               ^^^^^^^^^^^^^^ private struct
+  |
+note: the struct `DeviceRegistry` is defined here
+ --> src/runtime.rs
+  |
+  | pub(crate) use gpu::{DeviceContext, DeviceRegistry, DeviceRegistryConfig, PlacementPolicy};
+  |                                     ^^^^^^^^^^^^^^
+
+error[E0603]: trait `PlacementPolicy` is private
+ --> tests/ui/public_api/forbidden_custom_placement.rs:3:31
+  |
+3 |     runtime::{DeviceRegistry, PlacementPolicy, PlacementRequest},
+  |                               ^^^^^^^^^^^^^^^ private trait
+  |
+note: the trait `PlacementPolicy` is defined here
+ --> src/runtime.rs
+  |
+  | pub(crate) use gpu::{DeviceContext, DeviceRegistry, DeviceRegistryConfig, PlacementPolicy};
+  |                                                                           ^^^^^^^^^^^^^^^

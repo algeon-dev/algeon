@@ -10,9 +10,9 @@ use nexus_query_engine::runtime::MemoryControlPolicy;
 use tokio_util::sync::CancellationToken;
 use tonic::transport::{Server, server::TcpIncoming};
 
-use crate::backend::NexusGpuBackend;
 #[cfg(feature = "iceberg")]
 use crate::table_format::scan::credential_free_endpoint_identity;
+use crate::{backend::NexusGpuBackend, planner::NexusNativeOptimizerConfig};
 
 mod admission;
 mod auth;
@@ -166,6 +166,17 @@ impl FlightSqlServerBuilder {
                 "server config is required to build Flight SQL server",
             )
         })?;
+        if !matches!(
+            config.native_optimizer_config.native_execution_config().memory_control_policy(),
+            MemoryControlPolicy::Bounded { .. }
+        ) {
+            return Err(ServerError::builder_validation(
+                "server_unbounded_backend_unsupported",
+                "Flight SQL server construction requires a bounded NexusGpuBackend",
+            )
+            .with_fact("config_field", config::NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV)
+            .with_fact("required_memory_policy", "bounded"));
+        }
         ensure_single_librmm_runtime_mapping()?;
         let listen = match self.listener {
             Some(listener) => Listen::Prebound(listener),
@@ -185,25 +196,25 @@ impl FlightSqlServerBuilder {
         let backend = match self.backend {
             Some(backend) => {
                 validate_injected_backend_matches_config(&backend, &config)?;
-                Some(backend)
+                backend
             },
-            None => NexusGpuBackend::from_server_config(&config)?,
+            None => NexusGpuBackend::from_server_config(&config)?.ok_or_else(|| {
+                ServerError::builder_validation(
+                    "server_bounded_backend_required",
+                    "bounded Flight SQL server configuration did not produce a NexusGpuBackend",
+                )
+            })?,
         };
 
         let admission_init_start = Instant::now();
-        let admission = Arc::new(admission::QueryAdmission::from_backend(backend.as_ref(), &config)?);
+        let admission = Arc::new(admission::QueryAdmission::from_backend(Some(&backend), &config)?);
         tracing::info!(
             elapsed_ms = u64::try_from(admission_init_start.elapsed().as_millis()).unwrap_or(u64::MAX),
             "query admission controller initialized"
         );
         admission.log_query_service_state(None, "server_startup");
 
-        let mut native_optimizer_config = backend
-            .as_ref()
-            .map_or_else(|| config.native_optimizer_config.clone(), |backend| backend.optimizer_config().clone());
-        if let Some(limiter) = admission.unbounded_native_execution_limiter() {
-            native_optimizer_config = native_optimizer_config.with_unbounded_native_execution_limiter(limiter);
-        }
+        let mut native_optimizer_config = backend.optimizer_config().clone();
         let io_lifecycle = Arc::new(io_lifecycle::ServerIoLifecycle::new());
         let native_execution_config = native_optimizer_config
             .native_execution_config()
@@ -214,14 +225,13 @@ impl FlightSqlServerBuilder {
 
         let ctx = match self.session_context {
             Some(ctx) => {
-                let backend = backend.as_ref().expect("injected session_context requires injected backend");
-                validate_injected_session_matches_server_config(&ctx, backend, &config)?;
+                validate_injected_session_matches_server_config(&ctx, &backend, &config)?;
                 ctx
             },
             None => {
                 let mut session_config = config.clone();
                 session_config.native_optimizer_config = native_optimizer_config.clone();
-                Arc::new(session::build_session_context_with_backend(&session_config, backend.as_ref()).await?)
+                Arc::new(session::build_session_context_with_backend(&session_config, &backend).await?)
             },
         };
 
@@ -240,7 +250,7 @@ impl FlightSqlServerBuilder {
         )
         .with_server_config_diagnostics(&config);
         let local_addr = matches!(&listen, Listen::Prebound(_)).then_some(addr);
-        Ok(FlightSqlServer { service, listen, shutdown: self.shutdown, ctx, backend, local_addr })
+        Ok(FlightSqlServer { service, listen, shutdown: self.shutdown, ctx, backend: Some(backend), local_addr })
     }
 }
 
@@ -573,6 +583,56 @@ fn after_closing_admission<T>(admission: &admission::QueryAdmission, action: imp
 }
 
 fn validate_injected_backend_matches_config(backend: &NexusGpuBackend, config: &ServerConfig) -> Result<()> {
+    let service_config = backend
+        .controller_config()
+        .map_err(|error| ServerError::session("failed to inspect injected backend controller config", error))?;
+    let backend_want = backend
+        .session_capability()
+        .requested_grant_band(backend.tenant_id(), nexus_query_engine::runtime::QueryGrantRequest::new())
+        .map(|grant| grant.want_bytes)
+        .map_err(|error| ServerError::session("failed to inspect injected backend tenant budget", error))?;
+    validate_backend_config_projection_matches(
+        &service_config,
+        backend.admission_policy(),
+        backend.device_ordinals(),
+        backend.device_memory_ownership(),
+        backend.optimizer_config(),
+        backend_want,
+        config,
+    )
+}
+
+#[cfg(test)]
+fn validate_test_controller_projection_matches_config(
+    backend: &crate::backend::TestBackendControllerProjection,
+    config: &ServerConfig,
+) -> Result<()> {
+    let service_config = backend
+        .controller_config()
+        .map_err(|error| ServerError::session("failed to inspect test backend controller projection", error))?;
+    let backend_want = backend
+        .tenant_budget()
+        .map_err(|error| ServerError::session("failed to inspect test backend tenant budget", error))?;
+    validate_backend_config_projection_matches(
+        &service_config,
+        backend.admission_policy(),
+        backend.device_ordinals(),
+        backend.device_memory_ownership(),
+        backend.optimizer_config(),
+        backend_want,
+        config,
+    )
+}
+
+fn validate_backend_config_projection_matches(
+    service_config: &nexus_query_engine::runtime::QueryServiceConfig,
+    backend_admission_policy: &crate::backend::NexusAdmissionPolicy,
+    backend_device_ordinals: &[usize],
+    backend_device_memory_ownership: &[(usize, crate::backend::GpuMemoryOwnership)],
+    backend_optimizer_config: &NexusNativeOptimizerConfig,
+    backend_want: u64,
+    config: &ServerConfig,
+) -> Result<()> {
     let MemoryControlPolicy::Bounded { device_budget_bytes: config_device_budget_bytes, .. } =
         config.native_optimizer_config.native_execution_config().memory_control_policy()
     else {
@@ -582,62 +642,75 @@ fn validate_injected_backend_matches_config(backend: &NexusGpuBackend, config: &
         ));
     };
 
-    let service_config = backend.query_service().config();
     let normalized_admission_policy = admission::server_admission_policy(config);
-    if config.max_in_flight != service_config.max_concurrent_queries {
+    if config.max_in_flight != backend_admission_policy.max_concurrent_queries() {
         return Err(ServerError::builder_conflict(
             "server_backend_admission_conflict",
             "max_in_flight",
             config.max_in_flight,
-            service_config.max_concurrent_queries,
+            backend_admission_policy.max_concurrent_queries(),
         ));
     }
-    if config.gpu_devices != backend.device_ordinals() {
+    if config.gpu_devices != backend_device_ordinals {
         return Err(ServerError::builder_conflict(
             "server_backend_admission_conflict",
             "gpu_devices",
             format_usize_list(&config.gpu_devices),
-            format_usize_list(backend.device_ordinals()),
+            format_usize_list(backend_device_ordinals),
         ));
     }
-    if normalized_admission_policy.slot_guarantee() != service_config.slot_guarantee {
+    let configured_ownership =
+        config.gpu_memory_ownership.iter().copied().collect::<std::collections::BTreeMap<_, _>>();
+    let backend_ownership =
+        backend_device_memory_ownership.iter().copied().collect::<std::collections::BTreeMap<_, _>>();
+    if config.gpu_memory_ownership.len() != backend_device_memory_ownership.len()
+        || configured_ownership != backend_ownership
+    {
+        return Err(ServerError::builder_conflict(
+            "server_backend_admission_conflict",
+            "gpu_memory_ownership",
+            format!("{configured_ownership:?}"),
+            format!("{backend_ownership:?}"),
+        ));
+    }
+    if normalized_admission_policy.slot_guarantee() != backend_admission_policy.slot_guarantee() {
         return Err(ServerError::builder_conflict(
             "server_backend_admission_conflict",
             "slot_guarantee",
             slot_guarantee_value(normalized_admission_policy.slot_guarantee()),
-            slot_guarantee_value(service_config.slot_guarantee),
+            slot_guarantee_value(backend_admission_policy.slot_guarantee()),
         ));
     }
-    if normalized_admission_policy.max_queries_per_device() != service_config.max_queries_per_device {
+    if normalized_admission_policy.max_queries_per_device() != backend_admission_policy.max_queries_per_device() {
         return Err(ServerError::builder_conflict(
             "server_backend_admission_conflict",
             "admission.max_queries_per_device",
             format_optional_usize(normalized_admission_policy.max_queries_per_device()),
-            format_optional_usize(service_config.max_queries_per_device),
+            format_optional_usize(backend_admission_policy.max_queries_per_device()),
         ));
     }
-    if normalized_admission_policy.placement_policy() != service_config.placement_policy {
+    if normalized_admission_policy.placement_policy() != backend_admission_policy.placement_policy() {
         return Err(ServerError::builder_conflict(
             "server_backend_admission_conflict",
             "admission.placement_policy",
             placement_policy_value(normalized_admission_policy.placement_policy()),
-            placement_policy_value(service_config.placement_policy),
+            placement_policy_value(backend_admission_policy.placement_policy()),
         ));
     }
-    if normalized_admission_policy.max_queued() != service_config.max_admission_queue_len {
+    if normalized_admission_policy.max_queued() != backend_admission_policy.max_queued() {
         return Err(ServerError::builder_conflict(
             "server_backend_admission_conflict",
             "admission.max_queued",
             normalized_admission_policy.max_queued(),
-            service_config.max_admission_queue_len,
+            backend_admission_policy.max_queued(),
         ));
     }
-    if normalized_admission_policy.wait_timeout() != service_config.admission_wait_timeout {
+    if normalized_admission_policy.wait_timeout() != backend_admission_policy.wait_timeout() {
         return Err(ServerError::builder_conflict(
             "server_backend_admission_conflict",
             "admission.wait_timeout",
             normalized_admission_policy.wait_timeout().as_millis(),
-            service_config.admission_wait_timeout.as_millis(),
+            backend_admission_policy.wait_timeout().as_millis(),
         ));
     }
     let backend_capacity = service_config.device_capacity_bytes.ok_or_else(|| {
@@ -668,17 +741,13 @@ fn validate_injected_backend_matches_config(backend: &NexusGpuBackend, config: &
         )
         .map_err(|error| ServerError::session("failed to resolve server admission grant band", error))?;
     let MemoryControlPolicy::Bounded { device_budget_bytes: backend_min, .. } =
-        backend.optimizer_config().native_execution_config().memory_control_policy()
+        backend_optimizer_config.native_execution_config().memory_control_policy()
     else {
         return Err(ServerError::builder_validation(
             "server_backend_admission_conflict",
             "injected backend native optimizer config is not bounded",
         ));
     };
-    let backend_want = backend
-        .query_service()
-        .tenant_budget(backend.tenant_id())
-        .map_err(|error| ServerError::session("failed to inspect injected backend tenant budget", error))?;
     if config_grant.min_bytes != backend_min {
         return Err(ServerError::builder_conflict(
             "server_backend_admission_conflict",
@@ -710,15 +779,10 @@ fn validate_injected_session_matches_server_config(
             "injected session_context does not have the datafusion-nexus native optimizer installed",
         ));
     };
-    if !optimizer_config
+    let source_matches = optimizer_config
         .native_execution_config()
-        .query_admission_source_matches(backend.query_service(), backend.tenant_id())
-    {
-        return Err(ServerError::builder_validation(
-            "server_session_backend_mismatch",
-            "injected session_context is not installed on the injected backend query service",
-        ));
-    }
+        .query_admission_source_matches(backend.session_capability(), backend.tenant_id());
+    validate_injected_session_backend_binding(source_matches)?;
     let installed_host_execution_qos = crate::session::installed_host_execution_qos_config(&state);
     let configured_host_execution_qos = config.host_execution_qos.as_ref();
     let host_execution_qos_matches = match (installed_host_execution_qos.as_ref(), configured_host_execution_qos) {
@@ -733,6 +797,16 @@ fn validate_injected_session_matches_server_config(
         return Err(ServerError::builder_validation(
             "server_session_host_execution_qos_mismatch",
             "injected session_context host execution QoS does not match server configuration",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_injected_session_backend_binding(source_matches: bool) -> Result<()> {
+    if !source_matches {
+        return Err(ServerError::builder_validation(
+            "server_session_backend_mismatch",
+            "injected session_context is not installed on the injected backend query service",
         ));
     }
     Ok(())

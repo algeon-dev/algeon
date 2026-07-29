@@ -387,16 +387,7 @@ async fn update_set_datafusion_nexus_key_is_rejected_loudly() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn update_set_plain_datafusion_key_still_succeeds() {
-    let ctx = Arc::new(SessionContext::new());
-    let service = DatafusionNexusFlightSqlService::new(
-        ctx,
-        NexusNativeOptimizerConfig::default(),
-        Arc::new(QueryAdmission::new(1).expect("test admission limit")),
-        Duration::from_secs(30),
-        AuthInterceptor::new(AuthMode::Disabled, TokenStore::new()),
-        #[cfg(feature = "cugraph")]
-        None,
-    );
+    let service = super::service::bounded_test_service(Duration::from_secs(30));
     let query_id = "plain-datafusion-set".to_string();
     let sql = "SET datafusion.execution.batch_size = '1024'".to_string();
     let planning_lease = service.register_query(query_id.clone(), sql.clone(), None).unwrap();

@@ -3,15 +3,22 @@
 use std::{io::Write, net::TcpListener, time::Duration};
 
 use arrow_flight::{error::FlightError, sql::client::FlightSqlServiceClient};
-use datafusion_nexus::server::{
-    AuthConfig, AuthMode, ServerConfig, StaticUserConfig, hash_password, serve_with_listener,
+use datafusion_nexus::{
+    backend::GpuMemoryOwnership,
+    server::{AuthConfig, AuthMode, ServerConfig, StaticUserConfig, hash_password, serve_with_listener},
 };
 use tonic::{Code, transport::Endpoint};
+
+fn declare_test_gpu_ownership(config: &mut ServerConfig) {
+    config.gpu_memory_ownership =
+        config.gpu_devices.iter().copied().map(|ordinal| (ordinal, GpuMemoryOwnership::WholeDeviceExclusive)).collect();
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn auth_disabled_passes_handshake_and_query_through() {
     let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
     // Default mode is Disabled — explicit for clarity.
     config.auth = AuthConfig { mode: AuthMode::Disabled };
@@ -33,6 +40,7 @@ async fn auth_disabled_passes_handshake_and_query_through() {
 async fn basic_bearer_happy_path() {
     let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
     config.auth = basic_bearer_config("alice", "s3cret", 3600);
 
@@ -53,6 +61,7 @@ async fn basic_bearer_happy_path() {
 async fn basic_handshake_rejects_wrong_password() {
     let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
     config.auth = basic_bearer_config("alice", "s3cret", 3600);
 
@@ -77,6 +86,7 @@ async fn basic_handshake_rejects_wrong_password() {
 async fn basic_handshake_rejects_unknown_user() {
     let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
     config.auth = basic_bearer_config("alice", "s3cret", 3600);
 
@@ -92,6 +102,7 @@ async fn basic_handshake_rejects_unknown_user() {
 async fn query_without_handshake_rejects_with_unauthenticated() {
     let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
     config.auth = basic_bearer_config("alice", "s3cret", 3600);
 

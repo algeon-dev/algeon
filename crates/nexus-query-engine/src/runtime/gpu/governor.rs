@@ -194,7 +194,7 @@ pub struct MemoryGovernorGrantRow {
 
 impl MemoryGovernor {
     /// Creates a per-device governor with fixed soft capacity.
-    pub fn new(device_ordinal: usize, capacity_bytes: u64) -> Result<Self> {
+    pub(crate) fn new(device_ordinal: usize, capacity_bytes: u64) -> Result<Self> {
         if capacity_bytes == 0 {
             return Err(QueryError::new(
                 QueryErrorCode::InvalidPlan,

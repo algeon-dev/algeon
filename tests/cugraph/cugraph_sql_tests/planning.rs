@@ -519,12 +519,7 @@ async fn cugraph_sql_planning_direct_table_louvain_physical_plan_preserves_edge_
     let path = dir.join("tiny_communities.parquet");
     write_tiny_communities(&path);
 
-    let state = SessionStateBuilder::new()
-        .with_default_features()
-        .with_nexus_native(NexusNativeOptimizerConfig::default())
-        .with_cugraph_sql(CugraphSqlConfig::default())
-        .build();
-    let ctx = SessionContext::new_with_state(state);
+    let (_backend, ctx) = backend_cugraph_sql_context(SessionStateBuilder::new().with_default_features());
     ctx.register_parquet("tiny_communities", path.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
 
     let df = ctx
@@ -581,12 +576,7 @@ async fn cugraph_sql_planning_skips_edge_normalize_for_precanonicalized_edge_vie
     write_tiny_directed_edges(&directed_path);
     write_tiny_communities(&undirected_path);
 
-    let state = SessionStateBuilder::new()
-        .with_default_features()
-        .with_nexus_native(NexusNativeOptimizerConfig::default())
-        .with_cugraph_sql(CugraphSqlConfig::default())
-        .build();
-    let ctx = SessionContext::new_with_state(state);
+    let (_backend, ctx) = backend_cugraph_sql_context(SessionStateBuilder::new().with_default_features());
     ctx.register_parquet("tiny_directed_edges", directed_path.to_str().unwrap(), ParquetReadOptions::default())
         .await
         .unwrap();

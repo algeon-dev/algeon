@@ -1,17 +1,29 @@
 //! Process-scoped GPU backend facade for embedded DataFusion sessions.
 
-use std::{collections::BTreeSet, sync::Arc, time::Duration};
+#[cfg(test)]
+use std::sync::{Mutex, MutexGuard};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+    time::Duration,
+};
 
 use datafusion::execution::SessionStateBuilder;
+pub use nexus_query_engine::runtime::GpuMemoryOwnership;
+#[cfg(test)]
+use nexus_query_engine::runtime::QueryServiceTenantConfig;
 use nexus_query_engine::{
     mode::NativePipelineExecutionMode,
     runtime::{
-        DeploymentIoCapability, GdsDriverProbeStatus, KvikioCompatModeStatus, MemoryControlPolicy, NvidiaFsProbeStatus,
-        QueryMemoryDomainPolicy, QueryPlacementPolicy, QueryService, QueryServiceConfig, QueryServiceTenantConfig,
-        SlotGuarantee, TenantId,
+        DeploymentIoCapability, GdsDriverProbeStatus, GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft,
+        GpuBackendDeviceConfig, GpuBackendMemoryShare, GpuBackendSession, GpuBackendTenantDraft, GpuDeviceMemoryLimit,
+        GpuMemoryFraction, KvikioCompatModeStatus, MemoryControlPolicy, NvidiaFsProbeStatus, QueryAdmissionRequest,
+        QueryGrantRequest, QueryMemoryDomainPolicy, QueryPlacementPolicy, QueryServiceConfig, SlotGuarantee, TenantId,
     },
 };
 
+#[cfg(test)]
+use crate::native_exec::admission::{TestAdmissionController, TestAdmissionPermit};
 use crate::{
     error::{Error, ErrorCode, Result},
     native_exec::{NexusNativeExecutionConfig, QueryAdmissionSource},
@@ -28,10 +40,13 @@ const DEFAULT_GRANT_WANT: MemoryShare = MemoryShare::PolicyDefault;
 /// Process-scoped native GPU backend shared by one or more DataFusion sessions.
 #[derive(Debug, Clone)]
 pub struct NexusGpuBackend {
-    query_service: QueryService,
+    core: GpuBackendCore,
+    session: GpuBackendSession,
     tenant_id: TenantId,
+    admission_policy: NexusAdmissionPolicy,
     optimizer_config: NexusNativeOptimizerConfig,
     device_ordinals: Vec<usize>,
+    device_memory_ownership: Vec<(usize, GpuMemoryOwnership)>,
 }
 
 /// Backend memory policy.
@@ -207,6 +222,7 @@ impl Default for GrantBand {
 #[derive(Debug, Clone)]
 pub struct NexusGpuBackendBuilder {
     memory_policy: NexusMemoryPolicy,
+    device_memory_ownership: Vec<(usize, GpuMemoryOwnership)>,
     admission_policy: NexusAdmissionPolicy,
     final_plan_requirements: Vec<FinalPlanRequirement>,
     query_service_local_parquet_source_cache_max_retained_bytes: Option<u64>,
@@ -223,31 +239,7 @@ impl NexusGpuBackend {
 
     /// Install this backend's native optimizer into a DataFusion session builder.
     pub fn install_on(&self, builder: SessionStateBuilder) -> Result<SessionStateBuilder> {
-        let builder = builder.try_with_cuvs_sql().map_err(|error| {
-            Error::new(
-                ErrorCode::InvalidRequest,
-                "datafusion_nexus.backend.install_on",
-                "failed to install the Nexus cuVS query planner",
-            )
-            .with_source(error)
-        })?;
-        let builder = {
-            let mut builder = builder;
-            reject_preexisting_cugraph_sql(&mut builder)?;
-            builder
-        };
-        let rule = Arc::new(NexusNativePhysicalOptimizerRule::new(self.optimizer_config.clone()));
-        let session_config =
-            DataFusionNexusSessionConfig::from_optimizer_config(&self.optimizer_config).frozen_for_backend_admission();
-        install_nexus_native_rule_with_session_config(builder, rule, session_config).map_err(|error| {
-            Error::new(
-                ErrorCode::InvalidRequest,
-                "datafusion_nexus.backend.install_on",
-                "pre-existing datafusion-nexus session config conflicts with backend admission",
-            )
-            .with_fact("reason", "session_config_conflicts_with_backend_admission")
-            .with_source(error)
-        })
+        install_backend_optimizer_config(builder, &self.optimizer_config)
     }
 
     pub fn install_on_with_cugraph_sql(
@@ -263,13 +255,119 @@ impl NexusGpuBackend {
         ))
     }
 
-    /// Shared query-service admission owner used by sessions installed from this backend.
-    pub fn query_service(&self) -> &QueryService {
-        &self.query_service
+    /// Opaque identity shared by every clone and installed session.
+    pub fn identity(&self) -> nexus_query_engine::runtime::GpuBackendCoreIdentity {
+        self.core.identity()
+    }
+
+    /// Immutable per-device construction records shared by every clone and
+    /// session installed from this backend.
+    pub fn device_startup_records(&self) -> &[nexus_query_engine::runtime::GpuBackendDeviceStartupRecord] {
+        self.core.device_startup_records()
+    }
+
+    pub fn close(&self) -> bool {
+        self.core.close()
+    }
+
+    pub fn close_and_wait(
+        &self,
+        timeout: Duration,
+    ) -> nexus_query_engine::error::Result<nexus_query_engine::runtime::GpuBackendCloseSnapshot> {
+        self.core.close_and_wait(timeout)
+    }
+
+    pub fn close_and_wait_until(
+        &self,
+        deadline: std::time::Instant,
+    ) -> nexus_query_engine::error::Result<nexus_query_engine::runtime::GpuBackendCloseSnapshot> {
+        self.core.close_and_wait_until(deadline)
+    }
+
+    pub fn admission_snapshot(
+        &self,
+    ) -> nexus_query_engine::error::Result<nexus_query_engine::runtime::QueryServiceAdmissionSnapshot> {
+        self.session.admission_snapshot()
+    }
+
+    pub fn controller_config(&self) -> nexus_query_engine::error::Result<QueryServiceConfig> {
+        self.session.config()
+    }
+
+    pub fn tenant_budget(&self) -> nexus_query_engine::error::Result<u64> {
+        self.session.tenant_budget(&self.tenant_id)
+    }
+
+    pub fn device_admission_snapshots(
+        &self,
+    ) -> nexus_query_engine::error::Result<Vec<nexus_query_engine::runtime::QueryServiceDeviceAdmissionSnapshot>> {
+        self.session.device_admission_snapshots()
+    }
+
+    pub fn memory_governor_reports(
+        &self,
+    ) -> nexus_query_engine::error::Result<Vec<nexus_query_engine::runtime::MemoryGovernorReport>> {
+        self.session.memory_governor_reports()
+    }
+
+    pub fn device_memory_failure_reports(
+        &self,
+    ) -> nexus_query_engine::error::Result<Vec<nexus_query_engine::runtime::DeviceMemoryFailureReport>> {
+        self.session.device_memory_failure_reports()
+    }
+
+    pub fn device_telemetry_snapshots(
+        &self,
+    ) -> nexus_query_engine::error::Result<Vec<nexus_query_engine::runtime::DeviceTelemetrySnapshot>> {
+        self.session.device_telemetry_snapshots()
+    }
+
+    pub fn gpu_execution_pool_reports(
+        &self,
+    ) -> nexus_query_engine::error::Result<Vec<nexus_query_engine::runtime::GpuExecutionPoolSnapshot>> {
+        self.session.gpu_execution_pool_reports()
+    }
+
+    pub fn gpu_execution_query_report(
+        &self,
+    ) -> nexus_query_engine::error::Result<nexus_query_engine::runtime::GpuExecutionQuerySnapshot> {
+        self.session.gpu_execution_query_report()
+    }
+
+    pub fn resident_graph_cache_snapshots(
+        &self,
+    ) -> nexus_query_engine::error::Result<Vec<nexus_query_engine::runtime::QueryServiceGraphCacheSnapshot>> {
+        self.session.resident_graph_cache_snapshots()
+    }
+
+    pub fn admit_query(&self) -> nexus_query_engine::error::Result<nexus_query_engine::runtime::QueryHandle> {
+        self.session.admit_query(self.tenant_id.clone())
+    }
+
+    pub fn try_admit_query(
+        &self,
+    ) -> nexus_query_engine::error::Result<Option<nexus_query_engine::runtime::QueryHandle>> {
+        self.session.try_admit_query_with_request(self.tenant_id.clone(), QueryAdmissionRequest::new())
+    }
+
+    pub async fn admit_async(&self) -> nexus_query_engine::error::Result<nexus_query_engine::runtime::QueryHandle> {
+        self.session.admit_async_with_request(self.tenant_id.clone(), QueryAdmissionRequest::new()).await
+    }
+
+    pub fn same_backend(&self, other: &Self) -> bool {
+        self.identity() == other.identity()
+    }
+
+    pub(crate) fn session_capability(&self) -> &GpuBackendSession {
+        &self.session
     }
 
     pub fn tenant_id(&self) -> &TenantId {
         &self.tenant_id
+    }
+
+    pub(crate) fn admission_policy(&self) -> &NexusAdmissionPolicy {
+        &self.admission_policy
     }
 
     pub fn optimizer_config(&self) -> &NexusNativeOptimizerConfig {
@@ -292,33 +390,35 @@ impl NexusGpuBackend {
         &self.device_ordinals
     }
 
+    /// Exact deployment ownership declaration for every selected device.
+    pub fn device_memory_ownership(&self) -> &[(usize, GpuMemoryOwnership)] {
+        &self.device_memory_ownership
+    }
+
     #[cfg(feature = "server")]
     pub(crate) fn from_optimizer_config_for_admission(
         optimizer_config: NexusNativeOptimizerConfig,
         device_ordinals: Vec<usize>,
+        device_memory_ownership: Vec<(usize, GpuMemoryOwnership)>,
         admission_policy: NexusAdmissionPolicy,
         tenant_id: TenantId,
     ) -> Result<Option<Self>> {
-        Self::from_optimizer_config_inner(optimizer_config, device_ordinals, admission_policy, tenant_id, false)
-    }
-
-    #[cfg(all(test, feature = "server"))]
-    pub(crate) fn from_optimizer_config_for_admission_only(
-        optimizer_config: NexusNativeOptimizerConfig,
-        device_ordinals: Vec<usize>,
-        admission_policy: NexusAdmissionPolicy,
-        tenant_id: TenantId,
-    ) -> Result<Option<Self>> {
-        Self::from_optimizer_config_inner(optimizer_config, device_ordinals, admission_policy, tenant_id, true)
+        Self::from_optimizer_config_inner(
+            optimizer_config,
+            device_ordinals,
+            device_memory_ownership,
+            admission_policy,
+            tenant_id,
+        )
     }
 
     #[cfg(feature = "server")]
     fn from_optimizer_config_inner(
         optimizer_config: NexusNativeOptimizerConfig,
         device_ordinals: Vec<usize>,
+        device_memory_ownership: Vec<(usize, GpuMemoryOwnership)>,
         admission_policy: NexusAdmissionPolicy,
         tenant_id: TenantId,
-        admission_only: bool,
     ) -> Result<Option<Self>> {
         let Some(resolved) = ResolvedBackendMemoryPolicy::from_execution_config(
             device_ordinals,
@@ -327,70 +427,273 @@ impl NexusGpuBackend {
         else {
             return Ok(None);
         };
-        Self::build_bounded(optimizer_config, resolved, admission_policy, tenant_id, admission_only).map(Some)
+        Self::build_bounded(optimizer_config, resolved, device_memory_ownership, admission_policy, tenant_id).map(Some)
     }
 
     fn build_bounded(
         optimizer_config: NexusNativeOptimizerConfig,
         resolved: ResolvedBackendMemoryPolicy,
+        device_memory_ownership: Vec<(usize, GpuMemoryOwnership)>,
         admission_policy: NexusAdmissionPolicy,
         tenant_id: TenantId,
-        admission_only: bool,
     ) -> Result<Self> {
+        let ownership_by_ordinal =
+            validate_device_memory_ownership(&resolved.device_ordinals, &device_memory_ownership)?;
+        let device_memory_ownership =
+            ownership_by_ordinal.iter().map(|(&ordinal, &ownership)| (ordinal, ownership)).collect();
         validate_admission_policy(&admission_policy, &resolved.device_ordinals)?;
-        let grant_band = admission_policy.resolve_grant_band_bytes(
-            resolved.planning_device_budget_bytes,
-            resolved.device_ordinals.len(),
-            resolved.execution_config.native_pipeline_execution_mode(),
-        )?;
-        validate_grant_band_slot_guarantee(
-            resolved.planning_device_budget_bytes,
-            resolved.device_ordinals.len(),
-            admission_policy.max_concurrent_queries,
-            admission_policy.slot_guarantee,
-            grant_band,
-            admission_policy.max_queries_per_device,
-            admission_policy.placement_policy,
-        )?;
-        let min_budget = grant_band.min_bytes;
-        let mut execution_config =
-            resolved.execution_config.clone().with_memory_control_policy(MemoryControlPolicy::Bounded {
-                device_budget_bytes: min_budget,
-                max_source_chunk_bytes: resolved.max_source_chunk_bytes,
-                max_row_groups_per_chunk: resolved.max_row_groups_per_chunk,
-                max_retry_attempts: resolved.max_retry_attempts,
-                min_retry_chunk_row_groups: resolved.min_retry_chunk_row_groups,
-            });
-
+        let execution_config = resolved.execution_config.clone();
         let service_config = backend_query_service_config(
             &execution_config,
             &admission_policy,
             &resolved,
             admission_policy.max_concurrent_queries,
         );
-        let tenant_config =
-            QueryServiceTenantConfig::with_grant_range(tenant_id.clone(), min_budget, grant_band.want_bytes);
-        let device_ordinals = resolved.device_ordinals.clone();
-        let query_service = if admission_only {
-            QueryService::new_admission_only(service_config, vec![tenant_config], nongds_deployment())
-        } else {
-            QueryService::new_with_device_ordinals(
-                service_config,
-                resolved.device_ordinals.clone(),
-                vec![tenant_config],
-            )
-        }
-        .map_err(|error| {
+        let tenant = GpuBackendTenantDraft::new(
+            tenant_id.clone(),
+            gpu_backend_memory_share("grant.min", admission_policy.grant().min, false)?,
+            gpu_backend_memory_share("grant.want", admission_policy.grant().want, true)?,
+        );
+        let controller = GpuBackendControllerDraft::from_legacy_policy(service_config, vec![tenant]);
+        let active_limits = distributed_active_query_limits(&admission_policy, resolved.device_ordinals.len())?;
+        let source_reads = execution_config.source_scheduler_policy().max_source_reads_in_flight();
+        let devices = resolved
+            .device_ordinals
+            .iter()
+            .copied()
+            .zip(active_limits)
+            .map(|(device_ordinal, active_limit)| {
+                let stream_pool_size = backend_stream_pool_size(active_limit, source_reads);
+                GpuBackendDeviceConfig::new(device_ordinal, ownership_by_ordinal[&device_ordinal])
+                    .with_memory_limit(resolved.device_memory_limit)
+                    .with_max_active_queries(active_limit)
+                    .with_installation_bounds(stream_pool_size, active_limit, active_limit)
+            })
+            .collect::<Vec<_>>();
+        let core = GpuBackendCore::builder(GpuBackendCoreDraft::new(devices, controller, nongds_deployment()))
+            .build()
+            .map_err(|error| {
+                Error::from_native(
+                    "datafusion_nexus.backend.gpu_core",
+                    "failed to initialize ownership-enforcing GPU backend core",
+                    error,
+                )
+            })?;
+        let session = core.session_capability();
+        let grant_band = session.requested_grant_band(&tenant_id, QueryGrantRequest::new()).map_err(|error| {
             Error::from_native(
-                "datafusion_nexus.backend.query_service",
-                "failed to initialize backend query service admission",
+                "datafusion_nexus.backend.grant_projection",
+                "failed to read the resolved backend grant projection",
                 error,
             )
         })?;
-        execution_config = execution_config
-            .with_query_admission_source(QueryAdmissionSource::new(query_service.clone(), tenant_id.clone()));
+        let min_budget = grant_band.min_bytes;
+        let projection_device = core
+            .device_startup_records()
+            .iter()
+            .max_by_key(|record| (record.capacity_bytes, std::cmp::Reverse(record.device_ordinal)))
+            .map(|record| record.device_ordinal)
+            .ok_or_else(|| invalid_backend_config("device_ordinals", "backend core returned no startup records"))?;
+        let mut execution_config = execution_config
+            .with_device_ordinal(match admission_policy.placement_policy {
+                QueryPlacementPolicy::Pinned { device_ordinal } => device_ordinal,
+                _ => projection_device,
+            })
+            .with_memory_control_policy(MemoryControlPolicy::Bounded {
+                device_budget_bytes: min_budget,
+                max_source_chunk_bytes: resolved.max_source_chunk_bytes,
+                max_row_groups_per_chunk: resolved.max_row_groups_per_chunk,
+                max_retry_attempts: resolved.max_retry_attempts,
+                min_retry_chunk_row_groups: resolved.min_retry_chunk_row_groups,
+            });
+        let device_ordinals = resolved.device_ordinals.clone();
+        let max_device_total_memory_bytes = session.max_device_total_memory_bytes().map_err(|error| {
+            Error::from_native(
+                "datafusion_nexus.backend.device_projection",
+                "failed to read backend device facts",
+                error,
+            )
+        })?;
+        execution_config = execution_config.with_query_admission_source(QueryAdmissionSource::new(
+            session.clone(),
+            tenant_id.clone(),
+            max_device_total_memory_bytes,
+        ));
         let optimizer_config = optimizer_config.with_native_execution_config(execution_config);
-        Ok(NexusGpuBackend { query_service, tenant_id, optimizer_config, device_ordinals })
+        Ok(NexusGpuBackend {
+            core,
+            session,
+            tenant_id,
+            admission_policy,
+            optimizer_config,
+            device_ordinals,
+            device_memory_ownership,
+        })
+    }
+}
+
+fn install_backend_optimizer_config(
+    builder: SessionStateBuilder,
+    optimizer_config: &NexusNativeOptimizerConfig,
+) -> Result<SessionStateBuilder> {
+    let builder = builder.try_with_cuvs_sql().map_err(|error| {
+        Error::new(
+            ErrorCode::InvalidRequest,
+            "datafusion_nexus.backend.install_on",
+            "failed to install the Nexus cuVS query planner",
+        )
+        .with_source(error)
+    })?;
+    let builder = {
+        let mut builder = builder;
+        reject_preexisting_cugraph_sql(&mut builder)?;
+        builder
+    };
+    let rule = Arc::new(NexusNativePhysicalOptimizerRule::new(optimizer_config.clone()));
+    let session_config =
+        DataFusionNexusSessionConfig::from_optimizer_config(optimizer_config).frozen_for_backend_admission();
+    install_nexus_native_rule_with_session_config(builder, rule, session_config).map_err(|error| {
+        Error::new(
+            ErrorCode::InvalidRequest,
+            "datafusion_nexus.backend.install_on",
+            "pre-existing datafusion-nexus session config conflicts with backend admission",
+        )
+        .with_fact("reason", "session_config_conflicts_with_backend_admission")
+        .with_source(error)
+    })
+}
+
+/// Pure CUDA-free projection used only by root unit tests.
+///
+/// This is intentionally not a `NexusGpuBackend`: it owns no engine resources,
+/// cannot create a runtime context, and exists only to exercise product-policy
+/// lowering before the ownership-enforcing core is constructed.
+#[cfg(test)]
+#[derive(Debug, Clone)]
+pub(crate) struct TestBackendControllerProjection {
+    controller: TestAdmissionController,
+    controller_config: QueryServiceConfig,
+    tenant_id: TenantId,
+    admission_policy: NexusAdmissionPolicy,
+    optimizer_config: NexusNativeOptimizerConfig,
+    device_ordinals: Vec<usize>,
+    device_memory_ownership: Vec<(usize, GpuMemoryOwnership)>,
+}
+
+#[cfg(test)]
+impl TestBackendControllerProjection {
+    pub(crate) fn controller_config(&self) -> nexus_query_engine::error::Result<QueryServiceConfig> {
+        Ok(self.controller_config.clone())
+    }
+
+    pub(crate) fn tenant_budget(&self) -> nexus_query_engine::error::Result<u64> {
+        self.controller.requested_grant_band(&self.tenant_id, QueryGrantRequest::new()).map(|grant| grant.want_bytes)
+    }
+
+    pub(crate) fn admission_policy(&self) -> &NexusAdmissionPolicy {
+        &self.admission_policy
+    }
+
+    pub(crate) fn admit(&self) -> nexus_query_engine::error::Result<TestAdmissionPermit> {
+        self.controller.admit_for_projection(&self.tenant_id)
+    }
+
+    pub(crate) fn admitted_grant_bytes(&self) -> nexus_query_engine::error::Result<u64> {
+        self.controller.admitted_grant_bytes(&self.tenant_id)
+    }
+
+    pub(crate) fn optimizer_config(&self) -> &NexusNativeOptimizerConfig {
+        &self.optimizer_config
+    }
+
+    pub(crate) fn device_ordinals(&self) -> &[usize] {
+        &self.device_ordinals
+    }
+
+    pub(crate) fn device_memory_ownership(&self) -> &[(usize, GpuMemoryOwnership)] {
+        &self.device_memory_ownership
+    }
+
+    pub(crate) fn install_on(&self, builder: SessionStateBuilder) -> Result<SessionStateBuilder> {
+        install_backend_optimizer_config(builder, &self.optimizer_config)
+    }
+
+    fn install_on_with_cugraph_sql(
+        &self,
+        builder: SessionStateBuilder,
+        cugraph_config: crate::cugraph_sql::CugraphSqlConfig,
+    ) -> Result<SessionStateBuilder> {
+        use crate::session::NexusSessionStateBuilderExt;
+
+        let builder = self.install_on(builder)?;
+        Ok(builder.with_cugraph_sql(
+            cugraph_config.with_native_execution_config(self.optimizer_config.native_execution_config().clone()),
+        ))
+    }
+}
+
+/// Root-unit-test fixture for paths that genuinely execute an installed GPU
+/// backend. The process lease remains production-exclusive; tests serialize
+/// construction and deterministically close the backend before releasing the
+/// fixture lock.
+#[cfg(test)]
+pub(crate) struct InstalledTestGpuBackend {
+    backend: Option<NexusGpuBackend>,
+    _serial: MutexGuard<'static, ()>,
+}
+
+#[cfg(test)]
+impl InstalledTestGpuBackend {
+    pub(crate) fn new() -> Self {
+        static SERIAL: Mutex<()> = Mutex::new(());
+
+        let serial = SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let backend = NexusGpuBackend::builder()
+            .memory_policy(NexusMemoryPolicy::Bounded {
+                device_ordinals: vec![0],
+                device_budget_bytes: 256 * 1024 * 1024,
+                max_source_chunk_bytes: 64 * 1024 * 1024,
+                max_row_groups_per_chunk: 2,
+                max_retry_attempts: 3,
+                min_retry_chunk_row_groups: 1,
+            })
+            .device_memory_ownership([(0, GpuMemoryOwnership::WholeDeviceExclusive)])
+            .admission(NexusAdmissionPolicy::default())
+            .build()
+            .expect("root GPU unit test backend must build");
+        Self { backend: Some(backend), _serial: serial }
+    }
+
+    pub(crate) fn backend(&self) -> &NexusGpuBackend {
+        self.backend.as_ref().expect("test backend remains live until fixture drop")
+    }
+
+    pub(crate) fn optimizer_config(&self) -> &NexusNativeOptimizerConfig {
+        self.backend().optimizer_config()
+    }
+
+    pub(crate) fn admit_query(&self) -> nexus_query_engine::error::Result<nexus_query_engine::runtime::QueryHandle> {
+        self.backend().admit_query()
+    }
+
+    pub(crate) fn install_on(&self, builder: SessionStateBuilder) -> Result<SessionStateBuilder> {
+        self.backend().install_on(builder)
+    }
+}
+
+#[cfg(test)]
+impl Drop for InstalledTestGpuBackend {
+    fn drop(&mut self) {
+        let Some(backend) = self.backend.take() else {
+            return;
+        };
+        let close = backend.close_and_wait(Duration::from_secs(10));
+        drop(backend);
+        if let Err(error) = close
+            && !std::thread::panicking()
+        {
+            panic!("root GPU unit test backend failed to close: {error}");
+        }
     }
 }
 
@@ -398,6 +701,7 @@ impl Default for NexusGpuBackendBuilder {
     fn default() -> Self {
         Self {
             memory_policy: NexusMemoryPolicy::default(),
+            device_memory_ownership: Vec::new(),
             admission_policy: NexusAdmissionPolicy::default(),
             final_plan_requirements: Vec::new(),
             query_service_local_parquet_source_cache_max_retained_bytes: None,
@@ -426,6 +730,17 @@ impl NexusGpuBackendBuilder {
 
     pub fn memory_policy(mut self, memory_policy: NexusMemoryPolicy) -> Self {
         self.memory_policy = memory_policy;
+        self
+    }
+
+    /// Declare deployment ownership for exactly the devices selected by the
+    /// memory policy. Missing, extra, and duplicate ordinals are rejected
+    /// before the engine begins backend construction.
+    pub fn device_memory_ownership(
+        mut self,
+        device_memory_ownership: impl IntoIterator<Item = (usize, GpuMemoryOwnership)>,
+    ) -> Self {
+        self.device_memory_ownership = device_memory_ownership.into_iter().collect();
         self
     }
 
@@ -472,15 +787,39 @@ impl NexusGpuBackendBuilder {
     }
 
     pub fn build(self) -> Result<NexusGpuBackend> {
-        self.build_inner(false)
+        self.build_inner()
     }
 
     #[cfg(test)]
-    pub(crate) fn build_admission_only(self) -> Result<NexusGpuBackend> {
-        self.build_inner(true)
+    pub(crate) fn build_test_controller_projection(self) -> Result<TestBackendControllerProjection> {
+        let mut resolved = ResolvedBackendMemoryPolicy::resolve(&self.memory_policy)?;
+        resolved.execution_config =
+            resolved.execution_config.with_query_service_local_parquet_source_cache_max_retained_bytes(
+                self.query_service_local_parquet_source_cache_max_retained_bytes,
+            );
+        #[cfg(feature = "cugraph")]
+        {
+            resolved.execution_config =
+                resolved.execution_config.with_query_service_resident_graph_cache_max_retained_bytes(
+                    self.query_service_resident_graph_cache_max_retained_bytes,
+                );
+        }
+        resolved.execution_config =
+            resolved.execution_config.with_query_service_query_memory_domain(self.query_service_query_memory_domain);
+        let optimizer_config = self.final_plan_requirements.into_iter().fold(
+            NexusNativeOptimizerConfig::default().with_native_execution_config(resolved.execution_config.clone()),
+            |optimizer_config, requirement| optimizer_config.with_final_plan_requirement(requirement),
+        );
+        build_test_controller_projection(
+            optimizer_config,
+            resolved,
+            self.device_memory_ownership,
+            self.admission_policy,
+            self.tenant_id,
+        )
     }
 
-    fn build_inner(self, admission_only: bool) -> Result<NexusGpuBackend> {
+    fn build_inner(self) -> Result<NexusGpuBackend> {
         let mut resolved = ResolvedBackendMemoryPolicy::resolve(&self.memory_policy)?;
         resolved.execution_config =
             resolved.execution_config.with_query_service_local_parquet_source_cache_max_retained_bytes(
@@ -502,9 +841,9 @@ impl NexusGpuBackendBuilder {
         NexusGpuBackend::build_bounded(
             optimizer_config,
             resolved,
+            self.device_memory_ownership,
             self.admission_policy,
             self.tenant_id,
-            admission_only,
         )
     }
 }
@@ -512,7 +851,7 @@ impl NexusGpuBackendBuilder {
 #[derive(Debug)]
 struct ResolvedBackendMemoryPolicy {
     device_ordinals: Vec<usize>,
-    planning_device_budget_bytes: u64,
+    device_memory_limit: GpuDeviceMemoryLimit,
     execution_config: NexusNativeExecutionConfig,
     max_source_chunk_bytes: u64,
     max_row_groups_per_chunk: usize,
@@ -545,7 +884,7 @@ impl ResolvedBackendMemoryPolicy {
         Ok(Some(Self {
             execution_config: execution_config.with_device_ordinal(device_ordinals[0]),
             device_ordinals,
-            planning_device_budget_bytes: device_budget_bytes,
+            device_memory_limit: GpuDeviceMemoryLimit::Explicit { limit_bytes: device_budget_bytes },
             max_source_chunk_bytes,
             max_row_groups_per_chunk,
             max_retry_attempts,
@@ -557,22 +896,29 @@ impl ResolvedBackendMemoryPolicy {
         match policy {
             NexusMemoryPolicy::BoundedAuto { device_ordinals, budget_fraction } => {
                 validate_device_ordinals(device_ordinals)?;
-                if let Some(fraction) = budget_fraction {
-                    validate_budget_fraction(*fraction)?;
-                }
+                let fraction = budget_fraction
+                    .map(|fraction| {
+                        GpuMemoryFraction::new(fraction).map_err(|error| {
+                            Error::from_native(
+                                "datafusion_nexus.backend.config",
+                                "invalid automatic backend memory fraction",
+                                error,
+                            )
+                        })
+                    })
+                    .transpose()?;
                 let first_device = device_ordinals[0];
-                let budget = budget_fraction.map_or_else(
-                    || NexusNativeExecutionConfig::auto_sized_device_budget_bytes_for_device(first_device),
-                    |fraction| {
-                        NexusNativeExecutionConfig::auto_sized_device_budget_bytes_for_device_with_fraction(
-                            first_device,
-                            fraction,
-                        )
-                    },
-                );
+                // This value is only a pure construction placeholder for
+                // policy fields. The engine resolves every device after the
+                // exclusive claim and replaces it before publication.
+                let budget = 1;
                 Ok(Self {
                     device_ordinals: device_ordinals.clone(),
-                    planning_device_budget_bytes: budget,
+                    device_memory_limit: GpuDeviceMemoryLimit::Automatic {
+                        headroom_bytes: NexusNativeExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_HEADROOM_BYTES,
+                        fallback_bytes: NexusNativeExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_FALLBACK_BYTES,
+                        fraction,
+                    },
                     execution_config: NexusNativeExecutionConfig::bounded(
                         budget,
                         NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_SOURCE_CHUNK_BYTES,
@@ -611,7 +957,7 @@ impl ResolvedBackendMemoryPolicy {
                 .with_device_ordinal(device_ordinals[0]);
                 Ok(Self {
                     device_ordinals: device_ordinals.clone(),
-                    planning_device_budget_bytes: *device_budget_bytes,
+                    device_memory_limit: GpuDeviceMemoryLimit::Explicit { limit_bytes: *device_budget_bytes },
                     execution_config,
                     max_source_chunk_bytes: *max_source_chunk_bytes,
                     max_row_groups_per_chunk: *max_row_groups_per_chunk,
@@ -625,6 +971,148 @@ impl ResolvedBackendMemoryPolicy {
             },
         }
     }
+}
+
+#[cfg(test)]
+fn build_test_controller_projection(
+    optimizer_config: NexusNativeOptimizerConfig,
+    resolved: ResolvedBackendMemoryPolicy,
+    device_memory_ownership: Vec<(usize, GpuMemoryOwnership)>,
+    admission_policy: NexusAdmissionPolicy,
+    tenant_id: TenantId,
+) -> Result<TestBackendControllerProjection> {
+    let ownership_by_ordinal = validate_device_memory_ownership(&resolved.device_ordinals, &device_memory_ownership)?;
+    let device_memory_ownership =
+        ownership_by_ordinal.iter().map(|(&ordinal, &ownership)| (ordinal, ownership)).collect();
+    validate_admission_policy(&admission_policy, &resolved.device_ordinals)?;
+    let execution_config = resolved.execution_config.clone();
+    let mut controller_config = backend_query_service_config(
+        &execution_config,
+        &admission_policy,
+        &resolved,
+        admission_policy.max_concurrent_queries,
+    );
+    let tenant_draft = GpuBackendTenantDraft::new(
+        tenant_id.clone(),
+        gpu_backend_memory_share("grant.min", admission_policy.grant().min, false)?,
+        gpu_backend_memory_share("grant.want", admission_policy.grant().want, true)?,
+    );
+    let controller_draft = GpuBackendControllerDraft::from_legacy_policy(controller_config.clone(), vec![tenant_draft]);
+    let active_limits = distributed_active_query_limits(&admission_policy, resolved.device_ordinals.len())?;
+    let source_reads = execution_config.source_scheduler_policy().max_source_reads_in_flight();
+    let devices = resolved
+        .device_ordinals
+        .iter()
+        .copied()
+        .zip(active_limits)
+        .map(|(device_ordinal, active_limit)| {
+            GpuBackendDeviceConfig::new(device_ordinal, ownership_by_ordinal[&device_ordinal])
+                .with_memory_limit(resolved.device_memory_limit)
+                .with_max_active_queries(active_limit)
+                .with_installation_bounds(
+                    backend_stream_pool_size(active_limit, source_reads),
+                    active_limit,
+                    active_limit,
+                )
+        })
+        .collect::<Vec<_>>();
+    GpuBackendCoreDraft::new(devices, controller_draft, nongds_deployment()).validate().map_err(|error| {
+        Error::from_native(
+            "datafusion_nexus.backend.gpu_core",
+            "invalid ownership-enforcing GPU backend core configuration",
+            error,
+        )
+    })?;
+
+    let capacity_bytes = match resolved.device_memory_limit {
+        GpuDeviceMemoryLimit::Explicit { limit_bytes } => limit_bytes,
+        GpuDeviceMemoryLimit::Automatic { fallback_bytes, fraction, .. } => {
+            fraction.map_or(fallback_bytes, |value| ((fallback_bytes as f64 * value.value()).floor() as u64).max(1))
+        },
+        _ => {
+            return Err(invalid_backend_config(
+                "device_memory_limit",
+                "test projection does not support this device memory limit",
+            ));
+        },
+    };
+    let grant_band = admission_policy.resolve_grant_band_bytes(
+        capacity_bytes,
+        resolved.device_ordinals.len(),
+        execution_config.native_pipeline_execution_mode(),
+    )?;
+    validate_grant_band_slot_guarantee(
+        capacity_bytes,
+        resolved.device_ordinals.len(),
+        admission_policy.max_concurrent_queries,
+        admission_policy.slot_guarantee,
+        grant_band,
+        admission_policy.max_queries_per_device,
+        admission_policy.placement_policy,
+    )?;
+    controller_config.device_capacity_bytes = Some(capacity_bytes);
+    controller_config.stream_pool_size = Some(backend_stream_pool_size(
+        admission_policy.max_concurrent_queries,
+        execution_config.source_scheduler_policy().max_source_reads_in_flight(),
+    ));
+    let controller = TestAdmissionController::new(
+        controller_config.clone(),
+        vec![QueryServiceTenantConfig::with_grant_range(
+            tenant_id.clone(),
+            grant_band.min_bytes,
+            grant_band.want_bytes,
+        )],
+    )
+    .map_err(|error| {
+        Error::from_native(
+            "datafusion_nexus.backend.test_controller",
+            "failed to initialize CUDA-free test admission controller",
+            error,
+        )
+    })?;
+    let projection_device = match admission_policy.placement_policy {
+        QueryPlacementPolicy::Pinned { device_ordinal } => device_ordinal,
+        _ => resolved.device_ordinals[0],
+    };
+    let execution_config = execution_config
+        .with_device_ordinal(projection_device)
+        .with_memory_control_policy(MemoryControlPolicy::Bounded {
+            device_budget_bytes: grant_band.min_bytes,
+            max_source_chunk_bytes: resolved.max_source_chunk_bytes,
+            max_row_groups_per_chunk: resolved.max_row_groups_per_chunk,
+            max_retry_attempts: resolved.max_retry_attempts,
+            min_retry_chunk_row_groups: resolved.min_retry_chunk_row_groups,
+        })
+        .with_query_admission_source(controller.source(tenant_id.clone()));
+    let optimizer_config = optimizer_config.with_native_execution_config(execution_config);
+    Ok(TestBackendControllerProjection {
+        controller,
+        controller_config,
+        tenant_id,
+        admission_policy,
+        optimizer_config,
+        device_ordinals: resolved.device_ordinals,
+        device_memory_ownership,
+    })
+}
+
+#[cfg(all(test, feature = "server"))]
+pub(crate) fn test_controller_projection_from_optimizer_config(
+    optimizer_config: NexusNativeOptimizerConfig,
+    device_ordinals: Vec<usize>,
+    device_memory_ownership: Vec<(usize, GpuMemoryOwnership)>,
+    admission_policy: NexusAdmissionPolicy,
+    tenant_id: TenantId,
+) -> Result<Option<TestBackendControllerProjection>> {
+    let Some(resolved) = ResolvedBackendMemoryPolicy::from_execution_config(
+        device_ordinals,
+        optimizer_config.native_execution_config().clone(),
+    )?
+    else {
+        return Ok(None);
+    };
+    build_test_controller_projection(optimizer_config, resolved, device_memory_ownership, admission_policy, tenant_id)
+        .map(Some)
 }
 
 fn backend_query_service_config(
@@ -657,11 +1145,8 @@ fn backend_query_service_config(
             .query_service_resident_graph_cache_max_retained_bytes(),
         query_memory_domain: execution_config.query_service_query_memory_domain(),
         device_memory_manager_base: cudf::DeviceMemoryManagerBase::default(),
-        stream_pool_size: Some(backend_stream_pool_size(
-            max_concurrent_queries,
-            execution_config.source_scheduler_policy().max_source_reads_in_flight(),
-        )),
-        device_capacity_bytes: Some(resolved.planning_device_budget_bytes),
+        stream_pool_size: None,
+        device_capacity_bytes: None,
         max_concurrent_queries,
         max_queries_per_device: admission_policy.max_queries_per_device(),
         placement_policy: admission_policy.placement_policy(),
@@ -680,12 +1165,71 @@ fn backend_stream_pool_size(max_concurrent_queries: usize, max_source_reads_in_f
     max_concurrent_queries.saturating_mul(per_query_streams).max(max_concurrent_queries)
 }
 
+fn gpu_backend_memory_share(
+    field: &'static str,
+    share: MemoryShare,
+    allow_default: bool,
+) -> Result<GpuBackendMemoryShare> {
+    match share {
+        MemoryShare::Bytes(bytes) => {
+            validate_positive_u64(field, bytes)?;
+            Ok(GpuBackendMemoryShare::Bytes(bytes))
+        },
+        MemoryShare::Fraction(fraction) => {
+            GpuMemoryFraction::new(fraction).map(GpuBackendMemoryShare::Fraction).map_err(|error| {
+                Error::from_native("datafusion_nexus.backend.config", "invalid backend memory share", error)
+                    .with_fact("field", field)
+            })
+        },
+        MemoryShare::PolicyDefault if allow_default => Ok(GpuBackendMemoryShare::PolicyDefault),
+        MemoryShare::PolicyDefault => Err(invalid_backend_config(field, "policy default is not a concrete share")),
+    }
+}
+
+fn distributed_active_query_limits(policy: &NexusAdmissionPolicy, device_count: usize) -> Result<Vec<usize>> {
+    validate_positive_usize("device_count", device_count)?;
+    if policy.max_concurrent_queries < device_count {
+        return Err(invalid_backend_config(
+            "max_concurrent_queries",
+            "must be at least the number of configured devices",
+        )
+        .with_fact("reason", "below_device_count")
+        .with_fact("max_concurrent_queries", policy.max_concurrent_queries)
+        .with_fact("device_count", device_count));
+    }
+    let target = policy.max_concurrent_queries;
+    let base = target / device_count;
+    let remainder = target % device_count;
+    let limits = (0..device_count).map(|index| base + usize::from(index < remainder)).collect::<Vec<_>>();
+    if let Some(cap) = policy.max_queries_per_device
+        && limits.iter().any(|limit| *limit > cap)
+    {
+        return Err(invalid_backend_config(
+            "max_queries_per_device",
+            "cannot cover the requested global concurrency across configured devices",
+        )
+        .with_fact("device_count", device_count)
+        .with_fact("max_concurrent_queries", policy.max_concurrent_queries)
+        .with_fact("max_queries_per_device", cap));
+    }
+    Ok(limits)
+}
+
 fn admission_queue_len(max_concurrent_queries: usize) -> usize {
     max_concurrent_queries.saturating_mul(DEFAULT_ADMISSION_QUEUE_MULTIPLIER).max(DEFAULT_ADMISSION_QUEUE_MULTIPLIER)
 }
 
 fn validate_admission_policy(policy: &NexusAdmissionPolicy, device_ordinals: &[usize]) -> Result<()> {
     validate_positive_usize("max_concurrent_queries", policy.max_concurrent_queries)?;
+    if policy.max_concurrent_queries < device_ordinals.len() {
+        return Err(invalid_backend_config(
+            "max_concurrent_queries",
+            "must be at least the number of configured devices",
+        )
+        .with_fact("reason", "below_device_count")
+        .with_fact("max_concurrent_queries", policy.max_concurrent_queries)
+        .with_fact("device_count", device_ordinals.len()));
+    }
     if let Some(max_queries_per_device) = policy.max_queries_per_device {
         validate_positive_usize("max_queries_per_device", max_queries_per_device)?;
     }
@@ -852,6 +1396,49 @@ fn validate_device_ordinals(device_ordinals: &[usize]) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn validate_device_memory_ownership(
+    device_ordinals: &[usize],
+    declarations: &[(usize, GpuMemoryOwnership)],
+) -> Result<BTreeMap<usize, GpuMemoryOwnership>> {
+    let selected = device_ordinals.iter().copied().collect::<BTreeSet<_>>();
+    let mut ownership_by_ordinal = BTreeMap::new();
+    for (device_ordinal, ownership) in declarations.iter().copied() {
+        if ownership_by_ordinal.insert(device_ordinal, ownership).is_some() {
+            return Err(invalid_backend_config(
+                "device_memory_ownership",
+                "must contain exactly one declaration for each selected device",
+            )
+            .with_fact("reason", "duplicate_device")
+            .with_fact("device_ordinal", device_ordinal));
+        }
+    }
+
+    let declared = ownership_by_ordinal.keys().copied().collect::<BTreeSet<_>>();
+    let missing = selected.difference(&declared).copied().collect::<Vec<_>>();
+    if !missing.is_empty() {
+        return Err(invalid_backend_config(
+            "device_memory_ownership",
+            "must declare ownership for every selected device",
+        )
+        .with_fact("reason", "missing_devices")
+        .with_fact("device_ordinals", format_device_ordinals(&missing)));
+    }
+    let extra = declared.difference(&selected).copied().collect::<Vec<_>>();
+    if !extra.is_empty() {
+        return Err(invalid_backend_config(
+            "device_memory_ownership",
+            "must not declare ownership for an unselected device",
+        )
+        .with_fact("reason", "extra_devices")
+        .with_fact("device_ordinals", format_device_ordinals(&extra)));
+    }
+    Ok(ownership_by_ordinal)
+}
+
+fn format_device_ordinals(device_ordinals: &[usize]) -> String {
+    device_ordinals.iter().map(usize::to_string).collect::<Vec<_>>().join(",")
 }
 
 fn validate_budget_fraction(fraction: f64) -> Result<()> {

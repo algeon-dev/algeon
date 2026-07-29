@@ -160,7 +160,7 @@ async fn connect_with_retry(addr: std::net::SocketAddr) -> FlightSqlServiceClien
 async fn wait_for_shared_ledger_queue(backend: &NexusGpuBackend, expected_queued_queries: usize) {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        let snapshot = backend.query_service().admission_snapshot().unwrap();
+        let snapshot = backend.admission_snapshot().unwrap();
         if snapshot.active_queries == 1 && snapshot.queued_queries == expected_queued_queries {
             return;
         }
@@ -181,7 +181,7 @@ async fn wait_for_shared_ledger_queue(backend: &NexusGpuBackend, expected_queued
 async fn wait_for_empty_gpu_ledger(backend: &NexusGpuBackend) {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        let snapshot = backend.query_service().admission_snapshot().unwrap();
+        let snapshot = backend.admission_snapshot().unwrap();
         if snapshot.active_queries == 0 && snapshot.queued_queries == 0 {
             return;
         }

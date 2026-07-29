@@ -7,16 +7,17 @@ use super::{
     },
     *,
 };
+use crate::runtime::GpuExecutorLease;
 
 #[derive(Debug)]
 pub(super) struct QueryHandleLifetime {
-    pub(super) service: Arc<QueryServiceInner>,
+    service: Mutex<Option<Arc<QueryServiceInner>>>,
     pub(super) tenant_id: TenantId,
     pub(super) admission_request_id: AdmissionRequestId,
     observation: RuntimeObservationHandle,
-    observation_owner: Option<RuntimeObservationOwner>,
-    observation_activity: Mutex<Option<QueryActivityLease>>,
+    completion: Mutex<Option<QueryCompletion>>,
     service_epoch_user: Mutex<Option<QueryServiceEpochUser>>,
+    gpu_resource_permit: Mutex<Option<GpuResourcePermit>>,
     device_ordinal: usize,
     release_requested: AtomicBool,
     released: AtomicBool,
@@ -36,8 +37,8 @@ impl QueryHandleLifetime {
         tenant_id: TenantId,
         admission_request_id: AdmissionRequestId,
         observation: RuntimeObservationHandle,
-        observation_owner: Option<RuntimeObservationOwner>,
-        observation_activity: Option<QueryActivityLease>,
+        completion: QueryCompletion,
+        gpu_resource_permit: Option<GpuResourcePermit>,
         memory_grant: MemoryGrant,
         device_slot: Option<DeviceActiveQuerySlot>,
         #[cfg(feature = "cugraph")] warm_graph_reservation: Option<WarmGraphReservation>,
@@ -55,13 +56,13 @@ impl QueryHandleLifetime {
                 }
             });
             Self {
-                service,
+                service: Mutex::new(Some(service)),
                 tenant_id,
                 admission_request_id,
                 observation,
-                observation_owner,
-                observation_activity: Mutex::new(observation_activity),
+                completion: Mutex::new(Some(completion)),
                 service_epoch_user: Mutex::new(Some(service_epoch_user)),
+                gpu_resource_permit: Mutex::new(gpu_resource_permit),
                 device_ordinal,
                 release_requested: AtomicBool::new(false),
                 released: AtomicBool::new(false),
@@ -116,43 +117,55 @@ impl QueryHandleLifetime {
         let root_context = take_owned_for_cleanup(&self.root_context, "root context");
         let memory_grant = take_owned_for_cleanup(&self.memory_grant, "memory grant");
         let device_slot = take_owned_for_cleanup(&self.device_slot, "device slot");
-        let observation_activity = take_owned_for_cleanup(&self.observation_activity, "observation activity");
+        let completion = take_owned_for_cleanup(&self.completion, "query completion");
         let service_epoch_user = take_owned_for_cleanup(&self.service_epoch_user, "service epoch user");
+        let gpu_resource_permit = take_owned_for_cleanup(&self.gpu_resource_permit, "GPU resource permit");
+        let service = take_owned_for_cleanup(&self.service, "query service")
+            .expect("query handle lifetime retains its service until the one release path");
         #[cfg(feature = "cugraph")]
         let warm_graph_reservation = take_owned_for_cleanup(&self.warm_graph_reservation, "warm graph reservation");
         let release = QueryHandleRelease {
-            service: Arc::clone(&self.service),
+            service: Some(service),
             tenant_id: self.tenant_id.clone(),
             admission_request_id: self.admission_request_id,
             observation: self.observation.clone(),
-            observation_owner: self.observation_owner.clone(),
-            observation_activity,
+            completion,
             service_epoch_user,
+            gpu_resource_permit,
             device_ordinal: self.device_ordinal,
             root_context,
             memory_grant,
             device_slot,
             #[cfg(feature = "cugraph")]
             warm_graph_reservation,
+            release_started: false,
+            cleanup_accounting_started: false,
+            internal_cleanup_finished: false,
         };
-        if let Some(owner) = &release.observation_owner {
-            owner.begin_query_cleanup();
-        }
+        release.begin_query_cleanup();
+        let requires_gpu_cleanup = release.requires_gpu_cleanup();
+        let pool = if requires_gpu_cleanup {
+            release
+                .service
+                .as_ref()
+                .expect("query handle release retains its service until cleanup completion")
+                .resources
+                .as_ref()
+                .and_then(|resources| resources.gpu_execution_pool_for_device(self.device_ordinal).ok())
+        } else {
+            None
+        };
+        let release = QueryHandleReleaseGuard::new(release);
         // An admitted query that never acquired a runtime context owns no
         // CUDA-bound state. Its grant and device slot are ledger resources,
         // so returning them must not wait behind unrelated GPU execution.
         // This is important for callers that reserve admission before
         // execution: releasing such a reservation is itself the event that
         // unblocks the next query.
-        if !release.requires_gpu_cleanup() {
+        if !requires_gpu_cleanup {
             release.finish();
             return;
         }
-        let pool = self
-            .service
-            .resources
-            .as_ref()
-            .and_then(|resources| resources.gpu_execution_pool_for_device(self.device_ordinal).ok());
         match pool {
             Some(pool) => {
                 let observation = self.observation.clone();
@@ -179,6 +192,29 @@ impl QueryHandleLifetime {
         .with_fact("admission_request_id", self.admission_request_id)
         .with_fact("reason", "query_handle_released")
     }
+
+    fn service(&self) -> Result<Arc<QueryServiceInner>> {
+        self.service
+            .lock()
+            .map_err(|_error| {
+                QueryError::new(
+                    QueryErrorCode::Internal,
+                    "nexus_query_engine.query_service.context",
+                    "query service handle mutex was poisoned",
+                )
+                .with_fact("reason", "query_service_handle_poisoned")
+            })?
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| self.released_error())
+    }
+
+    fn observation_owner(&self) -> Option<RuntimeObservationOwner> {
+        match self.completion.lock() {
+            Ok(completion) => completion.as_ref().and_then(QueryCompletion::observation_owner),
+            Err(error) => error.into_inner().as_ref().and_then(QueryCompletion::observation_owner),
+        }
+    }
 }
 
 fn take_owned_for_cleanup<T>(owned: &Mutex<Option<T>>, resource: &'static str) -> Option<T> {
@@ -200,19 +236,49 @@ fn require_warm_graph_reservation<T>(reservation: Option<T>, warm_graph_priced: 
 }
 
 struct QueryHandleRelease {
-    service: Arc<QueryServiceInner>,
+    service: Option<Arc<QueryServiceInner>>,
     tenant_id: TenantId,
     admission_request_id: AdmissionRequestId,
     observation: RuntimeObservationHandle,
-    observation_owner: Option<RuntimeObservationOwner>,
-    observation_activity: Option<QueryActivityLease>,
+    completion: Option<QueryCompletion>,
     service_epoch_user: Option<QueryServiceEpochUser>,
+    gpu_resource_permit: Option<GpuResourcePermit>,
     device_ordinal: usize,
     root_context: Option<ExecutionContext>,
     memory_grant: Option<MemoryGrant>,
     device_slot: Option<DeviceActiveQuerySlot>,
     #[cfg(feature = "cugraph")]
     warm_graph_reservation: Option<WarmGraphReservation>,
+    release_started: bool,
+    cleanup_accounting_started: bool,
+    internal_cleanup_finished: bool,
+}
+
+/// Owns a release until either CUDA cleanup starts or a submission/cancellation
+/// path drops the task. The fallback is deliberately consuming: a rejected GPU
+/// executor submission cannot strand an admitted handle in the active count.
+struct QueryHandleReleaseGuard {
+    release: Option<QueryHandleRelease>,
+}
+
+impl QueryHandleReleaseGuard {
+    fn new(release: QueryHandleRelease) -> Self {
+        Self { release: Some(release) }
+    }
+
+    fn finish(mut self) {
+        if let Some(release) = self.release.take() {
+            release.finish();
+        }
+    }
+}
+
+impl Drop for QueryHandleReleaseGuard {
+    fn drop(&mut self) {
+        if let Some(release) = self.release.take() {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| release.finish()));
+        }
+    }
 }
 
 impl QueryHandleRelease {
@@ -233,19 +299,41 @@ impl QueryHandleRelease {
         }
     }
 
+    fn begin_query_cleanup(&self) {
+        if let Some(completion) = &self.completion {
+            completion.begin_query_cleanup();
+        }
+    }
+
     fn finish(mut self) {
+        self.start_release();
+    }
+
+    fn start_release(&mut self) {
+        if self.release_started {
+            self.complete_without_stream_cleanup();
+            return;
+        }
+        self.release_started = true;
         // Remove the adaptive-growth clone before dropping our grant, while
         // retaining the active slot until every GPU-owned resource is gone.
         // The final MemoryGrant drop invokes observers that reacquire this
         // mutex, so it must never happen while the mutex is held.
-        match self.service.admission.lock() {
-            Ok(mut state) => {
-                state.active_adaptive_grants.remove(&self.admission_request_id);
-                state.cleanup_in_progress = state.cleanup_in_progress.saturating_add(1);
-            },
-            Err(_error) => {
-                eprintln!("[nexus-query-engine] warning: failed to remove poisoned query service adaptive grant state");
-            },
+        if !self.cleanup_accounting_started {
+            self.cleanup_accounting_started = true;
+            if let Some(service) = self.service.as_ref() {
+                match service.admission.lock() {
+                    Ok(mut state) => {
+                        state.active_adaptive_grants.remove(&self.admission_request_id);
+                        state.cleanup_in_progress = state.cleanup_in_progress.saturating_add(1);
+                    },
+                    Err(_error) => {
+                        eprintln!(
+                            "[nexus-query-engine] warning: failed to remove poisoned query service adaptive grant state"
+                        );
+                    },
+                }
+            }
         }
         if let Some(grant) = self.memory_grant.as_ref() {
             let live_reserved_bytes = grant.live_reserved_bytes();
@@ -260,34 +348,107 @@ impl QueryHandleRelease {
         let root_context = self.root_context.take();
         if root_context.as_ref().is_some_and(ExecutionContext::has_root_stream_lease) {
             let root_context = root_context.expect("root context with a stream lease is present");
-            let installed = root_context.install_root_stream_cleanup_completion(move || {
-                self.complete_after_stream_cleanup();
-            });
-            debug_assert!(installed, "root stream cleanup completion is installed exactly once");
-            drop(root_context);
+            let external_completion = self.take_external_completion();
+            let internal_cleanup =
+                QueryHandleReleaseGuard::new(std::mem::replace(self, Self::empty_recovered_release()));
+            let installed = root_context.install_root_stream_cleanup_completion(
+                move || internal_cleanup.finish(),
+                move || Self::finish_external_completion(external_completion),
+            );
+            if !installed {
+                eprintln!("[nexus-query-engine] warning: root stream cleanup completion was already installed");
+            }
+            drop_recovering(Some(root_context), "root execution context");
             return;
         }
         drop(root_context);
-        self.complete_after_stream_cleanup();
+        // A warm-priced admission can own a stream without ever producing a
+        // root execution context. Destroy its graph pin on the GPU cleanup
+        // worker, then use the stream cleanup completion as the same
+        // post-accounting fence used by the root-context path. Publishing
+        // external activity from the GPU job itself would let a reentrant
+        // backend close wait on that still-active job.
+        #[cfg(feature = "cugraph")]
+        if let Some(WarmGraphReservation { stream_lease, preparation_pin }) = self.warm_graph_reservation.take() {
+            drop(preparation_pin);
+            let external_completion = self.take_external_completion();
+            let internal_cleanup =
+                QueryHandleReleaseGuard::new(std::mem::replace(self, Self::empty_recovered_release()));
+            let installed = stream_lease.install_cleanup_completion(
+                move || internal_cleanup.finish(),
+                move || Self::finish_external_completion(external_completion),
+            );
+            if !installed {
+                eprintln!("[nexus-query-engine] warning: warm graph stream cleanup completion was already installed");
+            }
+            drop_recovering(Some(stream_lease), "warm graph stream lease");
+            return;
+        }
+        let external_completion = self.take_external_completion();
+        self.complete_without_stream_cleanup();
+        Self::finish_external_completion(external_completion);
     }
 
-    fn complete_after_stream_cleanup(mut self) {
+    fn empty_recovered_release() -> Self {
+        Self {
+            service: None,
+            tenant_id: TenantId::from("released"),
+            admission_request_id: AdmissionRequestId::new(0),
+            observation: RuntimeObservationHandle::disabled(),
+            completion: None,
+            service_epoch_user: None,
+            gpu_resource_permit: None,
+            device_ordinal: 0,
+            root_context: None,
+            memory_grant: None,
+            device_slot: None,
+            #[cfg(feature = "cugraph")]
+            warm_graph_reservation: None,
+            release_started: true,
+            cleanup_accounting_started: true,
+            internal_cleanup_finished: true,
+        }
+    }
+
+    fn take_external_completion(&mut self) -> Option<QueryCompletion> {
+        self.completion.take()
+    }
+
+    fn finish_external_completion(completion: Option<QueryCompletion>) {
+        if let Some(completion) = completion {
+            completion.finish_after_gpu_cleanup(RuntimeTerminalOutcome::Dropped);
+        }
+    }
+
+    fn complete_without_stream_cleanup(&mut self) {
+        self.complete_internal_cleanup();
+    }
+
+    fn complete_internal_cleanup(&mut self) {
+        if self.internal_cleanup_finished {
+            return;
+        }
         #[cfg(feature = "cugraph")]
-        drop(self.warm_graph_reservation.take());
-        drop(self.memory_grant.take());
-        drop(self.device_slot.take());
+        drop_recovering(self.warm_graph_reservation.take(), "warm graph reservation");
+        drop_recovering(self.memory_grant.take(), "memory grant");
+        drop_recovering(self.device_slot.take(), "device active-query slot");
         // Publish query quiescence only after this handle no longer retains
         // the service epoch. `close_and_wait_for_quiescence` uses the active
         // query count as its completion fence, so waking it earlier could let
         // a replacement race the final governor-claim release.
-        drop(self.service_epoch_user.take());
+        drop_recovering(self.service_epoch_user.take(), "query service epoch user");
 
-        let queue_depth = match self.service.admission.lock() {
+        let Some(service) = self.service.take() else {
+            drop_recovering(self.gpu_resource_permit.take(), "GPU resource permit");
+            self.internal_cleanup_finished = true;
+            return;
+        };
+        let queue_depth = match service.admission.lock() {
             Ok(mut state) => {
                 state.active_queries = state.active_queries.saturating_sub(1);
                 state.cleanup_in_progress = state.cleanup_in_progress.saturating_sub(1);
                 if state.queued.is_empty() {
-                    QueryService { inner: Arc::clone(&self.service) }.grow_active_adaptive_grants_locked(&mut state);
+                    QueryService { inner: Arc::clone(&service) }.grow_active_adaptive_grants_locked(&mut state);
                 }
                 state.queued.len()
             },
@@ -297,7 +458,7 @@ impl QueryHandleRelease {
             },
         };
         notify_shared_device_admission_available(self.device_ordinal);
-        self.service.notify_admission_available();
+        service.notify_admission_available();
         record_admission_lifecycle(
             &self.observation,
             self.admission_request_id,
@@ -307,17 +468,40 @@ impl QueryHandleRelease {
             Some(self.device_ordinal),
             None,
         );
-        drop(self.observation_activity.take());
-        if let Some(owner) = self.observation_owner.take() {
-            let _ = owner.finish_query_cleanup(RuntimeTerminalOutcome::Dropped);
+        // Finished handles retain only their immutable policy snapshot. Drop
+        // the last query-owned service/resource reference before the backend
+        // generation permit. Stream cleanup cannot publish quiescence until
+        // both are gone.
+        drop_recovering(Some(service), "query service");
+        drop_recovering(self.gpu_resource_permit.take(), "GPU resource permit");
+        self.internal_cleanup_finished = true;
+    }
+}
+
+impl Drop for QueryHandleRelease {
+    fn drop(&mut self) {
+        if self.internal_cleanup_finished {
+            return;
         }
+
+        // A cancellation or panic can drop a queued GPU/stream callback before
+        // it invokes its body. Recover the ledger and GPU-generation release
+        // here, then terminalize the external completion only after that work.
+        self.complete_internal_cleanup();
+        Self::finish_external_completion(self.take_external_completion());
+    }
+}
+
+fn drop_recovering<T>(value: Option<T>, resource: &'static str) {
+    if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(value))).is_err() {
+        eprintln!("[nexus-query-engine] warning: query service {resource} drop panicked during cleanup recovery");
     }
 }
 
 /// RAII admission handle for one tenant query.
 #[derive(Debug)]
 pub struct QueryHandle {
-    pub(super) service: Arc<QueryServiceInner>,
+    pub(super) config: QueryServiceConfig,
     pub(super) tenant_id: TenantId,
     pub(super) admission_request_id: AdmissionRequestId,
     pub(super) admission_sequence: u64,
@@ -360,37 +544,37 @@ impl QueryHandle {
 
     /// Bounded memory policy this handle will use for native execution.
     pub fn memory_control_policy(&self) -> MemoryControlPolicy {
-        self.service.config.memory_policy_for_tenant(self.device_budget_bytes)
+        self.config.memory_policy_for_tenant(self.device_budget_bytes)
     }
 
     /// Boundary policy copied into the tenant execution context.
     pub fn boundary_policy(&self) -> ExecutionBoundaryPolicy {
-        self.service.config.boundary_policy
+        self.config.boundary_policy
     }
 
     /// Source scheduler policy copied into the tenant execution context.
     pub fn source_scheduler_policy(&self) -> SourceSchedulerPolicy {
-        self.service.config.source_scheduler_policy
+        self.config.source_scheduler_policy
     }
 
     /// Source chunk planning mode copied into the tenant execution context.
     pub fn source_chunk_planning_mode(&self) -> SourceChunkPlanningMode {
-        self.service.config.source_chunk_planning_mode
+        self.config.source_chunk_planning_mode
     }
 
     /// Lakehouse cache-fill resource policy assigned to this admitted query.
     pub fn lakehouse_cache_fill_config(&self) -> LakehouseCacheFillConfig {
-        self.service.config.lakehouse_cache_fill.clone()
+        self.config.lakehouse_cache_fill.clone()
     }
 
     /// Native bounded-pipeline mode copied into the tenant execution context.
     pub fn native_pipeline_execution_mode(&self) -> NativePipelineExecutionMode {
-        self.service.config.native_pipeline_execution_mode
+        self.config.native_pipeline_execution_mode
     }
 
     /// Floating statistical aggregate execution contract assigned to this admitted query.
     pub fn statistical_aggregate_execution_mode(&self) -> StddevSampExecutionMode {
-        self.service.config.stddev_samp_execution_mode
+        self.config.stddev_samp_execution_mode
     }
 
     /// Floating statistical aggregate contract returned through the legacy
@@ -401,22 +585,22 @@ impl QueryHandle {
 
     /// Dynamic-filter execution policy assigned to this admitted query.
     pub fn dynamic_filter_execution_options(&self) -> DynamicFilterExecutionOptions {
-        self.service.config.dynamic_filter_execution_options
+        self.config.dynamic_filter_execution_options
     }
 
     /// Keyed-hash join strategy policy assigned to this admitted query.
     pub fn keyed_hash_join_strategy_options(&self) -> KeyedHashJoinStrategyOptions {
-        self.service.config.keyed_hash_join_strategy_options
+        self.config.keyed_hash_join_strategy_options
     }
 
     /// Grouped aggregate strategy execution policy assigned to this admitted query.
     pub fn aggregate_strategy_execution_options(&self) -> AggregateStrategyExecutionOptions {
-        self.service.config.aggregate_strategy_execution_options
+        self.config.aggregate_strategy_execution_options
     }
 
     /// Expert source chunk planning policy assigned to this admitted query.
     pub fn source_chunk_planning_options(&self) -> SourceChunkPlanningOptions {
-        self.service.config.source_chunk_planning_options
+        self.config.source_chunk_planning_options
     }
 
     /// Acquires a tenant-bound execution context from the service stream pool.
@@ -443,11 +627,17 @@ impl QueryHandle {
         .await?
     }
 
-    /// Dedicated executor for synchronous GPU work on this query's selected device.
-    pub fn gpu_execution_pool(&self) -> Result<GpuExecutionPool> {
+    /// Opaque lifecycle-bound executor for synchronous GPU work on this
+    /// query's selected device.
+    pub fn gpu_executor(&self) -> Result<GpuExecutorLease> {
+        self.gpu_execution_pool().map(GpuExecutorLease::from_pool)
+    }
+
+    pub(crate) fn gpu_execution_pool(&self) -> Result<GpuExecutionPool> {
         let operation = "nexus_query_engine.query_service.gpu_execution_pool";
         let query_anchor = self.lifetime.acquire_resource_anchor(operation)?;
-        let Some(resources) = &self.service.resources else {
+        let service = self.lifetime.service()?;
+        let Some(resources) = &service.resources else {
             return Err(QueryError::new(
                 QueryErrorCode::InvalidPlan,
                 operation,
@@ -456,7 +646,7 @@ impl QueryHandle {
         };
         let pool = resources.gpu_execution_pool_for_device(self.device_ordinal)?;
         let resource_epoch =
-            QueryServiceResourceEpoch::acquire(&self.service.service_epoch, Some(&query_anchor), operation)?;
+            QueryServiceResourceEpoch::acquire(&service.service_epoch, Some(&query_anchor), operation)?;
         Ok(pool.with_resource_epoch(resource_epoch))
     }
 
@@ -476,7 +666,8 @@ impl QueryHandle {
     ) -> Result<TenantQueryContext> {
         let operation = "nexus_query_engine.query_service.context";
         let query_anchor = self.lifetime.acquire_resource_anchor(operation)?;
-        let Some(resources) = &self.service.resources else {
+        let service = self.lifetime.service()?;
+        let Some(resources) = &service.resources else {
             return Err(QueryError::new(
                 QueryErrorCode::InvalidPlan,
                 "nexus_query_engine.query_service.context",
@@ -498,7 +689,7 @@ impl QueryHandle {
             // service stream while preserving the shared grant/domain.
             drop(root_context);
             let stream_acquire_deadline =
-                Instant::now().checked_add(self.service.config.admission_wait_timeout).unwrap_or_else(Instant::now);
+                Instant::now().checked_add(service.config.admission_wait_timeout).unwrap_or_else(Instant::now);
             let stream_lease = device.stream_pool().acquire_observed_with_cancellation_deadline(
                 &cancellation,
                 stream_acquire_deadline,
@@ -513,7 +704,7 @@ impl QueryHandle {
             return Ok(TenantQueryContext { context });
         }
         let stream_acquire_deadline =
-            Instant::now().checked_add(self.service.config.admission_wait_timeout).unwrap_or_else(Instant::now);
+            Instant::now().checked_add(service.config.admission_wait_timeout).unwrap_or_else(Instant::now);
         #[cfg(feature = "cugraph")]
         let warm_graph_reservation = require_warm_graph_reservation(
             take_owned_for_cleanup(
@@ -554,7 +745,7 @@ impl QueryHandle {
         let grant_memory_domain = create_grant_memory_domain(
             runtime.as_ref(),
             Some(&memory_grant),
-            self.service.config.query_memory_domain,
+            service.config.query_memory_domain,
             device.capacity_bytes(),
         )?;
         let grant_reservation_arena = if grant_memory_domain.is_some() {
@@ -562,13 +753,13 @@ impl QueryHandle {
         } else {
             create_grant_reservation_arena(runtime.as_ref(), Some(&memory_grant))?
         };
-        let observation_owner = self.lifetime.observation_owner.clone();
+        let observation_owner = self.lifetime.observation_owner();
         let query_id = self.lifetime.observation.query_id().map(|query_id| QueryId::new(query_id.as_str()));
         let trace_id =
             self.lifetime.observation.trace_id().map(|trace_id| crate::metrics::TraceId::new(trace_id.as_str()));
         let runtime_observation = self.lifetime.observation.clone();
         let context = ExecutionContext::from_parts(ExecutionContextParts {
-            service_epoch: Some(self.service.service_epoch.clone()),
+            service_epoch: Some(service.service_epoch.clone()),
             query_epoch: Some(self.lifetime.query_epoch.clone()),
             query_anchor: None,
             io_lifecycle: None,
@@ -585,10 +776,10 @@ impl QueryHandle {
             memory_grant: Some(memory_grant),
             grant_reservation_arena,
             grant_memory_domain,
-            boundary_policy: self.service.config.boundary_policy,
-            source_scheduler_policy: self.service.config.source_scheduler_policy,
-            source_chunk_planning_mode: self.service.config.source_chunk_planning_mode,
-            lakehouse_cache_fill_config: self.service.config.lakehouse_cache_fill.clone(),
+            boundary_policy: service.config.boundary_policy,
+            source_scheduler_policy: service.config.source_scheduler_policy,
+            source_chunk_planning_mode: service.config.source_chunk_planning_mode,
+            lakehouse_cache_fill_config: service.config.lakehouse_cache_fill.clone(),
             service_stream_pool: device.stream_pool().clone(),
             lakehouse_cache_fill_budget: resources.lakehouse_cache_fill_budget.clone(),
             lakehouse_cache_fill_concurrency: resources.lakehouse_cache_fill_concurrency.clone(),
@@ -597,11 +788,11 @@ impl QueryHandle {
             source_object_stores: Arc::clone(&resources.source_object_stores),
             deployment_io_capability: resources.deployment_io_capability.clone(),
             cancellation,
-            native_pipeline_execution_mode: self.service.config.native_pipeline_execution_mode,
-            stddev_samp_execution_mode: self.service.config.stddev_samp_execution_mode,
-            aggregate_strategy_execution_options: self.service.config.aggregate_strategy_execution_options,
-            source_chunk_planning_options: self.service.config.source_chunk_planning_options,
-            graph_memory_calibration_override: self.service.config.graph_memory_calibration_override,
+            native_pipeline_execution_mode: service.config.native_pipeline_execution_mode,
+            stddev_samp_execution_mode: service.config.stddev_samp_execution_mode,
+            aggregate_strategy_execution_options: service.config.aggregate_strategy_execution_options,
+            source_chunk_planning_options: service.config.source_chunk_planning_options,
+            graph_memory_calibration_override: service.config.graph_memory_calibration_override,
             adaptive_memory_history: Some(Arc::new(AdaptiveMemoryHistory::default())),
             hash_join_build_cache: None,
             local_parquet_source_cache: resources.local_parquet_source_cache_for_device(self.device_ordinal),

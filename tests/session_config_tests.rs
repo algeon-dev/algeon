@@ -1,12 +1,9 @@
-use std::sync::Arc;
-
 use datafusion::{
-    common::{DataFusionError, config::ConfigOptions},
+    common::config::ConfigOptions,
     execution::SessionStateBuilder,
-    prelude::SessionContext,
+    prelude::{SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
-    error::{Error, ErrorCode},
     native_exec::NexusNativeExecutionConfig,
     planner::NexusNativeOptimizerConfig,
     session::NexusSessionStateBuilderExt,
@@ -14,10 +11,7 @@ use datafusion_nexus::{
 };
 use nexus_query_engine::{
     mode::{NativePipelineExecutionMode, StatisticalAggregateExecutionMode},
-    runtime::{
-        MemoryControlPolicy, QueryService, QueryServiceConfig, QueryServiceTenantConfig, SlotGuarantee,
-        SourceChunkPlanningMode, SourceSchedulerPolicy,
-    },
+    runtime::{MemoryControlPolicy, SourceChunkPlanningMode, SourceSchedulerPolicy},
 };
 
 #[test]
@@ -139,88 +133,6 @@ fn datafusion_nexus_session_config_rejects_bounded_settings_while_unbounded() {
 }
 
 #[test]
-fn datafusion_nexus_request_grant_rejects_pre_admitted_query_handle() {
-    let service = QueryService::new(
-        QueryServiceConfig {
-            max_concurrent_queries: 1,
-            stream_pool_size: Some(3),
-            slot_guarantee: SlotGuarantee::Optimistic,
-            ..QueryServiceConfig::default()
-        },
-        vec![QueryServiceTenantConfig::new("tenant", 3 * 1024 * 1024)],
-    )
-    .unwrap();
-    let handle = Arc::new(service.try_admit_query("tenant").unwrap().expect("query should admit"));
-    let base = NexusNativeOptimizerConfig::default().with_native_execution_config(
-        NexusNativeExecutionConfig::bounded_auto_sized().with_query_service_handle(handle),
-    );
-    let mut options = options_with_nexus_extension(&base);
-
-    options.set("datafusion_nexus.request.requested_grant_bytes", "1048576").unwrap();
-    let error = base.with_datafusion_config_options(&options).unwrap_err();
-    let adapter_error = adapter_error(&error);
-
-    assert_eq!(adapter_error.code(), ErrorCode::InvalidRequest);
-    assert_eq!(adapter_error.fact_value("reason"), Some("request_grant_pre_admitted_query_handle"));
-    assert_eq!(adapter_error.fact_value("requested_grant_bytes"), Some("1048576"));
-}
-
-#[test]
-fn datafusion_nexus_request_grant_min_rejects_pre_admitted_query_handle() {
-    let service = QueryService::new(
-        QueryServiceConfig {
-            max_concurrent_queries: 1,
-            stream_pool_size: Some(3),
-            slot_guarantee: SlotGuarantee::Optimistic,
-            ..QueryServiceConfig::default()
-        },
-        vec![QueryServiceTenantConfig::new("tenant", 3 * 1024 * 1024)],
-    )
-    .unwrap();
-    let handle = Arc::new(service.try_admit_query("tenant").unwrap().expect("query should admit"));
-    let base = NexusNativeOptimizerConfig::default().with_native_execution_config(
-        NexusNativeExecutionConfig::bounded_auto_sized().with_query_service_handle(handle),
-    );
-    let mut options = options_with_nexus_extension(&base);
-
-    options.set("datafusion_nexus.request.requested_grant_min_bytes", "1048576").unwrap();
-    let error = base.with_datafusion_config_options(&options).unwrap_err();
-    let adapter_error = adapter_error(&error);
-
-    assert_eq!(adapter_error.code(), ErrorCode::InvalidRequest);
-    assert_eq!(adapter_error.fact_value("reason"), Some("request_grant_pre_admitted_query_handle"));
-    assert_eq!(adapter_error.fact_value("requested_grant_min_bytes"), Some("1048576"));
-}
-
-#[test]
-fn datafusion_nexus_pre_admitted_query_handle_without_request_grant_is_unchanged() {
-    let service = QueryService::new(
-        QueryServiceConfig {
-            max_concurrent_queries: 1,
-            stream_pool_size: Some(3),
-            slot_guarantee: SlotGuarantee::Optimistic,
-            ..QueryServiceConfig::default()
-        },
-        vec![QueryServiceTenantConfig::new("tenant", 3 * 1024 * 1024)],
-    )
-    .unwrap();
-    let handle = Arc::new(service.try_admit_query("tenant").unwrap().expect("query should admit"));
-    let base = NexusNativeOptimizerConfig::default().with_native_execution_config(
-        NexusNativeExecutionConfig::bounded_auto_sized().with_query_service_handle(handle),
-    );
-    let options = options_with_nexus_extension(&base);
-
-    let effective = base.with_datafusion_config_options(&options).unwrap();
-
-    assert_eq!(effective.native_execution_config().requested_grant_min_bytes(), None);
-    assert_eq!(effective.native_execution_config().requested_grant_bytes(), None);
-    assert_eq!(
-        effective.native_execution_config().memory_control_policy(),
-        base.native_execution_config().memory_control_policy()
-    );
-}
-
-#[test]
 fn datafusion_nexus_session_config_ignores_direct_bounded_fields_while_unbounded() {
     let base = NexusNativeOptimizerConfig::default();
     let mut session_config = DataFusionNexusSessionConfig::from_optimizer_config(&base);
@@ -304,8 +216,7 @@ fn datafusion_nexus_session_config_option_descriptors_document_scope_and_types()
 
 #[tokio::test]
 async fn datafusion_nexus_session_config_can_be_set_through_sql() {
-    let state = SessionStateBuilder::new().with_nexus_native(NexusNativeOptimizerConfig::default()).build();
-    let ctx = SessionContext::new_with_state(state);
+    let ctx = config_only_session_context(&NexusNativeOptimizerConfig::default());
 
     ctx.sql("SET datafusion_nexus.native.memory_policy = 'unbounded'").await.unwrap().collect().await.unwrap();
 
@@ -320,8 +231,7 @@ async fn datafusion_nexus_session_config_can_be_set_through_sql() {
 
 #[tokio::test]
 async fn datafusion_nexus_request_config_can_be_set_and_reset_through_sql() {
-    let state = SessionStateBuilder::new().with_nexus_native(NexusNativeOptimizerConfig::default()).build();
-    let ctx = SessionContext::new_with_state(state);
+    let ctx = config_only_session_context(&NexusNativeOptimizerConfig::default());
 
     ctx.sql("SET datafusion_nexus.request.requested_grant_min_bytes = '1024'").await.unwrap().collect().await.unwrap();
     ctx.sql("SET datafusion_nexus.request.requested_grant_bytes = '1536'").await.unwrap().collect().await.unwrap();
@@ -352,8 +262,7 @@ async fn datafusion_nexus_request_config_can_be_set_and_reset_through_sql() {
 
 #[tokio::test]
 async fn datafusion_nexus_removed_graph_topology_config_key_is_rejected_through_sql() {
-    let state = SessionStateBuilder::new().with_nexus_native(NexusNativeOptimizerConfig::default()).build();
-    let ctx = SessionContext::new_with_state(state);
+    let ctx = config_only_session_context(&NexusNativeOptimizerConfig::default());
     let removed_key = ["datafusion_nexus.request.graph_topology_", "family"].concat();
 
     let error = ctx.sql(&format!("SET {removed_key} = 'citation_like_sparse'")).await.unwrap_err();
@@ -368,9 +277,8 @@ fn options_with_nexus_extension(config: &NexusNativeOptimizerConfig) -> ConfigOp
     options
 }
 
-fn adapter_error(error: &DataFusionError) -> &Error {
-    match error {
-        DataFusionError::External(source) => source.downcast_ref::<Error>().expect("expected adapter error"),
-        other => panic!("expected adapter error, got {other:?}"),
-    }
+fn config_only_session_context(config: &NexusNativeOptimizerConfig) -> SessionContext {
+    let mut session_config = SessionConfig::new();
+    session_config.options_mut().extensions.insert(DataFusionNexusSessionConfig::from_optimizer_config(config));
+    SessionContext::new_with_config(session_config)
 }

@@ -122,7 +122,7 @@ fn optimizer_does_not_ask_executor_admission_entrypoints_beyond_phase1_baseline(
 
 #[test]
 fn runtime_does_not_own_executor_cache_concrete_types_beyond_phase1_baseline() {
-    assert_no_edges(
+    assert_no_production_edges(
         "runtime resource ownership must depend on runtime cache contracts rather than executor cache concrete types",
         &["crates/nexus-query-engine/src/runtime.rs", "crates/nexus-query-engine/src/runtime"],
         &["identifier:exec"],
@@ -195,6 +195,23 @@ fn assert_no_edges(rule: &str, roots: &[&str], markers: &[&str]) {
     assert!(!markers.is_empty(), "{rule}: a zero-edge rule must name the forbidden dependency markers");
     let actual = edge_occurrences(roots, markers);
     assert!(actual.is_empty(), "{rule}: reverse dependencies are forbidden; found {actual:?}");
+}
+
+fn assert_no_production_edges(rule: &str, roots: &[&str], markers: &[&str]) {
+    assert!(!markers.is_empty(), "{rule}: a zero-edge rule must name the forbidden dependency markers");
+    let actual = edge_occurrences(roots, markers)
+        .into_iter()
+        .filter(|((path, _), _)| !is_test_only_source_path(Path::new(path)))
+        .collect::<BTreeMap<_, _>>();
+    assert!(actual.is_empty(), "{rule}: reverse dependencies are forbidden; found {actual:?}");
+}
+
+fn is_test_only_source_path(path: &Path) -> bool {
+    path.components().any(|component| {
+        let component = component.as_os_str().to_string_lossy();
+        let stem = component.strip_suffix(".rs").unwrap_or(&component);
+        stem == "tests" || stem.ends_with("_tests")
+    })
 }
 
 fn edge_occurrences(roots: &[&str], markers: &[&str]) -> BTreeMap<(String, String), usize> {

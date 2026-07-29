@@ -24,7 +24,7 @@ use super::{
 #[cfg(feature = "iceberg")]
 use crate::table_format::scan::{DEFAULT_TABLE_FORMAT_S3_SOURCE_STORAGE_PROFILE_ID, credential_free_endpoint_identity};
 use crate::{
-    backend::{MemoryShare, NexusAdmissionPolicy},
+    backend::{GpuMemoryOwnership, MemoryShare, NexusAdmissionPolicy},
     cugraph_sql::{CugraphGraphConstructionPolicy, CugraphGraphOptions},
     native_exec::NexusNativeExecutionConfig,
     planner::{HostExecutionQosConfig, NexusNativeOptimizerConfig},
@@ -127,6 +127,10 @@ pub struct ServerConfig {
     /// relational native selection and GPU query admission.
     pub host_execution_qos: Option<HostExecutionQosConfig>,
     pub gpu_devices: Vec<usize>,
+    /// Exact deployment ownership declaration consumed when a bounded GPU
+    /// backend is constructed. Configuration loading intentionally leaves this
+    /// empty; the embedding/launch profile must make the ownership promise.
+    pub gpu_memory_ownership: Vec<(usize, GpuMemoryOwnership)>,
     pub device_budget_fraction: Option<f64>,
     /// Wall-clock time a planned Flight SQL statement ticket may wait for
     /// `DoGet`. Expired tickets are dropped; GPU admission is acquired later
@@ -148,6 +152,17 @@ pub struct ServerConfig {
     pub cugraph: Option<CugraphServerConfig>,
 }
 impl ServerConfig {
+    /// Attach the deployment ownership promise required by bounded backend
+    /// construction. The backend validates this declaration against
+    /// [`Self::gpu_devices`] before acquiring any device lease.
+    pub fn with_gpu_memory_ownership(
+        mut self,
+        ownership: impl IntoIterator<Item = (usize, GpuMemoryOwnership)>,
+    ) -> Self {
+        self.gpu_memory_ownership = ownership.into_iter().collect();
+        self
+    }
+
     pub fn from_env() -> Result<Self> {
         Self::from_env_get(|name| std::env::var(name).ok())
     }
@@ -255,6 +270,7 @@ impl ServerConfig {
             admission_policy,
             host_execution_qos,
             gpu_devices,
+            gpu_memory_ownership: Vec::new(),
             device_budget_fraction,
             statement_ticket_ttl,
             observability,

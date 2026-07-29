@@ -205,16 +205,10 @@ fn list_string_null_predicates_are_rejected_in_native_post_join_residuals() {
 }
 
 fn native_validation_error_for_plan(build_root: impl FnOnce(&mut QueryPlanBuilder) -> NodeId) -> QueryError {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let context = ExecutionContext::from_shared_runtime(runtime).unwrap();
     let mut builder = QueryPlanBuilder::new();
     let root = build_root(&mut builder);
     let plan = builder.finish_with_host_sink(root);
-
-    match nexus_query_engine::exec::execute_query_plan(&context, &plan) {
-        Ok(_) => panic!("plan validation should reject before execution"),
-        Err(error) => error,
-    }
+    nexus_query_engine::exec::preflight_query_plan(&plan).unwrap_err()
 }
 
 #[test]

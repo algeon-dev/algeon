@@ -428,28 +428,19 @@ mod host_execution_qos_tests {
 
 #[cfg(all(test, feature = "cugraph"))]
 mod tests {
-    use nexus_query_engine::runtime::{
-        DeploymentIoCapability, GdsDriverProbeStatus, KvikioCompatModeStatus, NvidiaFsProbeStatus, QueryService,
-        QueryServiceConfig, QueryServiceTenantConfig, TenantId,
-    };
+    use nexus_query_engine::runtime::{QueryServiceConfig, QueryServiceTenantConfig, TenantId};
 
     use super::*;
-    use crate::native_exec::QueryAdmissionSource;
+    use crate::native_exec::{QueryAdmissionSource, admission::TestAdmissionController};
 
     fn admission_only_source() -> QueryAdmissionSource {
         let tenant_id = TenantId::new("session-cugraph-test");
-        let deployment = DeploymentIoCapability::from_probe_inputs(
-            NvidiaFsProbeStatus::DriverMissing,
-            KvikioCompatModeStatus::Unset,
-            GdsDriverProbeStatus::ProbeUnimplemented,
-        );
-        let service = QueryService::new_admission_only(
-            QueryServiceConfig::default(),
+        let controller = TestAdmissionController::new(
+            QueryServiceConfig { device_capacity_bytes: Some(1024 * 1024), ..QueryServiceConfig::default() },
             vec![QueryServiceTenantConfig::new(tenant_id.clone(), 1024 * 1024)],
-            deployment,
         )
-        .expect("admission-only query service should build");
-        QueryAdmissionSource::new(service, tenant_id)
+        .expect("CUDA-free test admission controller should build");
+        controller.source(tenant_id)
     }
 
     #[test]

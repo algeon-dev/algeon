@@ -22,3 +22,11 @@ include!("tests/contexts.rs");
 include!("tests/queue.rs");
 include!("tests/adaptive.rs");
 include!("tests/placement.rs");
+#[cfg(feature = "cugraph")]
+include!("tests/warm_graph_pricing.rs");
+
+// This exercises registry-backed admission as a child of the private service
+// module. Keeping the state-machine coverage here prevents the integration
+// test crate from becoming an alternative public construction client.
+#[path = "../../../tests/native_contract_tests/multi_device_registry.rs"]
+mod multi_device_registry;

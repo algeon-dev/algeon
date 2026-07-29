@@ -25,7 +25,7 @@ use datafusion_nexus::{
 use nexus_query_engine::{
     error::QueryError,
     harness::StableFnv1a64,
-    runtime::{QueryService, QueryServiceConfig, QueryServiceTenantConfig, SlotGuarantee, TenantId},
+    runtime::{GpuBackendSession, QueryServiceConfig, QueryServiceTenantConfig, SlotGuarantee, TenantId},
 };
 use nexus_workloads::tpcds::{
     NEXUS_PARQUET_DIR_ENV, NEXUS_TPCDS_GENERATION_COMMAND_ENV, NEXUS_TPCDS_SCALE_FACTOR_ENV, TPCDS_QUERIES,
@@ -34,6 +34,7 @@ use nexus_workloads::tpcds::{
 use tokio::{sync::Barrier, time::timeout};
 
 use crate::{
+    gpu_backend::GpuBackendOwner,
     report_workload::tpcds::{
         register_tpcds_tables_with_native_metadata, tpcds_native_report_session_config, tpcds_report_session_config,
     },
@@ -459,22 +460,22 @@ async fn run_stress(
     config: &StressConfig,
     cpu_baselines: Arc<HashMap<String, CpuBaseline>>,
 ) -> DataFusionResult<StressRun> {
-    let service = Arc::new(
-        QueryService::new(
-            config.service_config(),
-            vec![
-                tenant_config("bulk", config),
-                tenant_config("interactive_a", config),
-                tenant_config("interactive_b", config),
-            ],
-        )
-        .map_err(native_error)?,
-    );
+    let backend = GpuBackendOwner::build(
+        config.service_config(),
+        vec![0],
+        vec![
+            tenant_config("bulk", config),
+            tenant_config("interactive_a", config),
+            tenant_config("interactive_b", config),
+        ],
+    )
+    .map_err(native_error)?;
+    let service = backend.session();
     let requests = build_requests(config);
     let barrier = Arc::new(Barrier::new(requests.len().max(1)));
     let mut tasks = Vec::with_capacity(requests.len());
     for request in requests {
-        let service = Arc::clone(&service);
+        let service = service.clone();
         let config = config.clone();
         let cpu_baselines = Arc::clone(&cpu_baselines);
         let barrier = Arc::clone(&barrier);
@@ -492,19 +493,20 @@ async fn run_stress(
         );
     }
     rows.sort_by_key(|row| row.request_index);
-    let effective_active_max = service.gpu_execution_query_report().peak_active_query_jobs;
+    let effective_active_max = service.gpu_execution_query_report().map_err(native_error)?.peak_active_query_jobs;
+    backend.close_and_wait(Duration::from_secs(30)).map_err(native_error)?;
     Ok(StressRun { rows, effective_active_max })
 }
 
 async fn run_native_request(
     config: &StressConfig,
-    service: Arc<QueryService>,
+    service: GpuBackendSession,
     cpu_baselines: Arc<HashMap<String, CpuBaseline>>,
     request: StressRequest,
 ) -> DataFusionResult<StressRow> {
     let total_started = Instant::now();
     let tenant_for_admission = request.tenant_id.clone();
-    let service_for_admission = Arc::clone(&service);
+    let service_for_admission = service.clone();
     let handle = match tokio::task::spawn_blocking(move || service_for_admission.admit_query(tenant_for_admission))
         .await
         .map_err(|error| plan_error(format!("query service admission task join failed: {error}")))?
@@ -703,23 +705,28 @@ fn run_overload_probe(config: &StressConfig) -> DataFusionResult<StressRow> {
         admission_wait_timeout: Duration::from_millis(50),
         ..config.service_config()
     };
-    let service =
-        QueryService::new(probe_config, vec![tenant_config("bulk", config), tenant_config("interactive_a", config)])
-            .map_err(native_error)?;
-    let active = service.admit_query("bulk").map_err(native_error)?;
+    let backend = GpuBackendOwner::build(
+        probe_config,
+        vec![0],
+        vec![tenant_config("bulk", config), tenant_config("interactive_a", config)],
+    )
+    .map_err(native_error)?;
+    let service = backend.session();
+    let active = service.admit_query(TenantId::new("bulk")).map_err(native_error)?;
     let queued_service = service.clone();
     let (ready_sender, ready_receiver) = std::sync::mpsc::channel();
     let waiter = std::thread::spawn(move || {
         ready_sender.send(()).expect("overload probe ready signal should send");
-        let _queued = queued_service.admit_query("bulk");
+        let _queued = queued_service.admit_query(TenantId::new("bulk"));
     });
     ready_receiver.recv().map_err(|error| plan_error(format!("overload probe setup failed: {error}")))?;
     wait_for_queued_len(&service, 1)?;
     let started = Instant::now();
-    let error = service.admit_query("interactive_a").expect_err("filled admission queue must reject next query");
+    let error =
+        service.admit_query(TenantId::new("interactive_a")).expect_err("filled admission queue must reject next query");
     drop(active);
     waiter.join().map_err(|_| plan_error("overload probe waiter thread panicked"))?;
-    Ok(StressRow {
+    let row = StressRow {
         row_type: "overload_probe",
         request_index: 0,
         tenant_id: "interactive_a".to_string(),
@@ -739,10 +746,12 @@ fn run_overload_probe(config: &StressConfig) -> DataFusionResult<StressRow> {
         cpu_output_fingerprint: None,
         native_output_fingerprint: None,
         error: StructuredFailure::from_query_error(&error),
-    })
+    };
+    backend.close_and_wait(Duration::from_secs(30)).map_err(native_error)?;
+    Ok(row)
 }
 
-fn wait_for_queued_len(service: &QueryService, expected: usize) -> DataFusionResult<()> {
+fn wait_for_queued_len(service: &GpuBackendSession, expected: usize) -> DataFusionResult<()> {
     let deadline = Instant::now() + Duration::from_secs(1);
     while Instant::now() < deadline {
         let snapshot = service.admission_snapshot().map_err(native_error)?;

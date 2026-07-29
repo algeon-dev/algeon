@@ -32,13 +32,18 @@ use datafusion::{
 #[cfg(not(feature = "cugraph"))]
 use datafusion_nexus::server::ERROR_OPERATION_METADATA_KEY;
 use datafusion_nexus::{
-    backend::NexusGpuBackend,
+    backend::{GpuMemoryOwnership, NexusGpuBackend},
     server::{
         ERROR_CODE_METADATA_KEY, ERROR_KIND_METADATA_KEY, ERROR_STATUS_METADATA_KEY, FlightSqlServer, ServerConfig,
         ServerShutdown, serve_with_listener,
     },
     session::NexusSessionStateBuilderExt,
 };
+
+fn declare_test_gpu_ownership(config: &mut ServerConfig) {
+    config.gpu_memory_ownership =
+        config.gpu_devices.iter().copied().map(|ordinal| (ordinal, GpuMemoryOwnership::WholeDeviceExclusive)).collect();
+}
 use futures::TryStreamExt;
 use nexus_query_engine::runtime::SlotGuarantee;
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};

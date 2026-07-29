@@ -62,7 +62,7 @@ use iceberg::{TableIdent, io::FileIO, table::StaticTable};
 use iceberg_datafusion::IcebergStaticTableProvider;
 use nexus_query_engine::{
     mode::{NativePipelineExecutionMode, StatisticalAggregateExecutionMode},
-    runtime::SourceSchedulerPolicy,
+    runtime::{MemoryControlPolicy, QueryServiceConfig, QueryServiceTenantConfig, SourceSchedulerPolicy, TenantId},
     source::ParquetReadStrategy,
 };
 use nexus_workloads::{
@@ -71,9 +71,12 @@ use nexus_workloads::{
 };
 use object_store::aws::AmazonS3Builder;
 
-use crate::report_workload::{
-    tpcds::tpcds_native_report_session_config,
-    tpch::{tpch_report_session_config, tpch_tuned_cpu_session_config},
+use crate::{
+    gpu_backend::GpuBackendOwner,
+    report_workload::{
+        tpcds::tpcds_native_report_session_config,
+        tpch::{tpch_report_session_config, tpch_tuned_cpu_session_config},
+    },
 };
 
 type SmokeResult<T> = Result<T, Box<dyn StdError + Send + Sync>>;

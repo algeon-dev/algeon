@@ -80,6 +80,40 @@ fn opaque_activity_token_lives_until_query_service_release_finishes() {
 
     assert_eq!(drops.load(Ordering::SeqCst), 1, "final query-service cleanup releases the activity exactly once");
 }
+
+#[test]
+fn finished_handle_releases_runtime_service_ownership_before_activity_drop() {
+    struct ReplacementProbe(Arc<std::sync::Mutex<Option<std::result::Result<(), String>>>>);
+
+    impl Drop for ReplacementProbe {
+        fn drop(&mut self) {
+            let result = try_guaranteed_runtime_test_service().map(drop).map_err(|error| error.to_string());
+            *self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(result);
+        }
+    }
+
+    let service = try_guaranteed_runtime_test_service().expect("first guaranteed service");
+    let replacement = Arc::new(std::sync::Mutex::new(None));
+    let handle = service
+        .admit_query_with_request(
+            "tenant",
+            QueryAdmissionRequest::new()
+                .with_runtime_observation_activity(QueryActivityLease::new(ReplacementProbe(Arc::clone(&replacement)))),
+        )
+        .expect("activity-bearing query admits");
+    drop(service);
+
+    handle.finish();
+
+    replacement
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take()
+        .expect("activity probe ran")
+        .expect("finished handle released the old service owner before activity completion");
+    drop(handle);
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn fallible_activity_acquisition_rejects_without_entering_admission() {
     let service = test_service(1, 8);
@@ -151,7 +185,7 @@ async fn async_capacity_contention_uses_one_id_without_false_rejection() {
     });
 
     loop {
-        if service.inner.admission.lock().unwrap().queued.len() == 1 {
+        if service.queued_len() == 1 {
             break;
         }
         tokio::task::yield_now().await;
@@ -258,7 +292,7 @@ fn query_service_observes_queued_waiter_drop_as_cancellation() {
             QueryAdmissionRequest::new().with_runtime_observation_owner(owner.clone()),
         )
         .expect("second query queues");
-    let admission_request_id = waiter.admission_request_id;
+    let admission_request_id = waiter.admission_request_id();
 
     drop(waiter);
 
@@ -273,6 +307,98 @@ fn query_service_observes_queued_waiter_drop_as_cancellation() {
     assert_eq!(service.admission_snapshot().expect("snapshot").queued_queries, 0);
     drop(active);
 }
+
+#[test]
+fn queued_waiter_drop_recovers_a_poisoned_admission_guard_before_terminal_completion() {
+    let service = test_service(1, 8);
+    let owner = RuntimeObservationOwner::new(
+        "poisoned-waiter-drop-query",
+        None,
+        RuntimeObservationConfig::bounded(32, 32 * 1024),
+    );
+    let waiter = service
+        .enqueue_admission_with_request(
+            "small",
+            QueryAdmissionRequest::new().with_runtime_observation_owner(owner.clone()),
+        )
+        .expect("admission enqueues");
+    let admission_request_id = waiter.admission_request_id();
+
+    service.poison_admission();
+    drop(waiter);
+
+    assert_eq!(service.queued_len_recovering_poison(), 0, "poison recovery removes the owned queue entry");
+    assert_eq!(
+        observed_admission_events(&owner),
+        vec![
+            (admission_request_id, AdmissionLifecycleState::Enqueued),
+            (
+                admission_request_id,
+                AdmissionLifecycleState::Rejected { reason: "admission_mutex_poisoned".to_string() },
+            ),
+        ]
+    );
+    assert!(matches!(
+        &wait_for_sealed_observation(&owner).footer().terminal,
+        Some(RuntimeTerminalOutcome::Failed { error_code, .. }) if error_code == QueryErrorCode::Internal.as_str()
+    ));
+}
+
+#[test]
+fn close_drains_queued_completion_from_a_poisoned_admission_guard() {
+    let service = test_service(1, 8);
+    let owner =
+        RuntimeObservationOwner::new("poisoned-close-query", None, RuntimeObservationConfig::bounded(32, 32 * 1024));
+    let waiter = service
+        .enqueue_admission_with_request(
+            "small",
+            QueryAdmissionRequest::new().with_runtime_observation_owner(owner.clone()),
+        )
+        .expect("admission enqueues");
+
+    service.poison_admission();
+    let error = service.close().expect_err("poisoned admission remains a structured close failure");
+
+    assert_eq!(error.code(), QueryErrorCode::Internal);
+    assert_eq!(error.fact_value("reason"), Some("admission_mutex_poisoned"));
+    assert_eq!(service.queued_len_recovering_poison(), 0, "close drains queued completion despite poison");
+    assert!(matches!(
+        &wait_for_sealed_observation(&owner).footer().terminal,
+        Some(RuntimeTerminalOutcome::Failed { error_code, .. }) if error_code == QueryErrorCode::Cancelled.as_str()
+    ));
+    drop(waiter);
+}
+
+#[test]
+fn close_and_wait_drains_queued_completion_from_a_poisoned_admission_guard() {
+    let service = test_service(1, 8);
+    let owner = RuntimeObservationOwner::new(
+        "poisoned-close-and-wait-query",
+        None,
+        RuntimeObservationConfig::bounded(32, 32 * 1024),
+    );
+    let waiter = service
+        .enqueue_admission_with_request(
+            "small",
+            QueryAdmissionRequest::new().with_runtime_observation_owner(owner.clone()),
+        )
+        .expect("admission enqueues");
+
+    service.poison_admission();
+    let error = service
+        .close_and_wait_for_quiescence(Duration::from_secs(1))
+        .expect_err("poisoned admission remains a structured close-and-wait failure");
+
+    assert_eq!(error.code(), QueryErrorCode::Internal);
+    assert_eq!(error.fact_value("reason"), Some("admission_mutex_poisoned"));
+    assert_eq!(service.queued_len_recovering_poison(), 0, "close-and-wait drains queued completion despite poison");
+    assert!(matches!(
+        &wait_for_sealed_observation(&owner).footer().terminal,
+        Some(RuntimeTerminalOutcome::Failed { error_code, .. }) if error_code == QueryErrorCode::Cancelled.as_str()
+    ));
+    drop(waiter);
+}
+
 #[test]
 fn query_service_observes_pre_enqueue_rejection_without_reclassifying_error() {
     let service = test_service(1, 8);
@@ -305,19 +431,8 @@ fn query_service_observes_deterministic_queued_timeout_once() {
             QueryAdmissionRequest::new().with_runtime_observation_owner(owner.clone()),
         )
         .expect("second query queues");
-    let admission_request_id = waiter.admission_request_id;
-    let expired = Instant::now();
-    waiter.deadline = expired;
-    service
-        .inner
-        .admission
-        .lock()
-        .expect("admission state")
-        .queued
-        .iter_mut()
-        .find(|request| request.admission_request_id == admission_request_id)
-        .expect("queued request")
-        .deadline = expired;
+    let admission_request_id = waiter.admission_request_id();
+    service.expire_waiter(&mut waiter);
 
     let error = waiter.try_admit().expect_err("expired query times out");
 

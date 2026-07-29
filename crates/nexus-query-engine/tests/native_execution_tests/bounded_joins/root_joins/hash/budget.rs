@@ -45,17 +45,13 @@ fn bounded_native_query_splits_join_leaf_source_read_after_reservation_denial() 
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(join);
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::new(cudf::Runtime::new().unwrap()))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 2_500_000,
-            max_source_chunk_bytes: 16 * 1024 * 1024,
-            max_row_groups_per_chunk: 4,
-            max_retry_attempts: 4,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+        device_budget_bytes: 2_500_000,
+        max_source_chunk_bytes: 16 * 1024 * 1024,
+        max_row_groups_per_chunk: 4,
+        max_retry_attempts: 4,
+        min_retry_chunk_row_groups: 1,
+    });
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
@@ -140,17 +136,7 @@ fn bounded_native_query_reports_join_leaf_source_read_hard_budget_failure() {
         output_schema,
     );
     let plan = builder.finish_with_host_sink(join);
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::new(cudf::Runtime::new().unwrap()))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: admitted_budget,
-            max_source_chunk_bytes: 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
+    let context = backend_context_with_grant(admitted_budget);
 
     let error = match execute_query_plan(&context, &plan) {
         Ok(_) => panic!("bounded join source read budget should fail"),

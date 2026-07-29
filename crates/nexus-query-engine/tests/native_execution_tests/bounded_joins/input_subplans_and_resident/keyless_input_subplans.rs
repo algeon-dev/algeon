@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn bounded_native_query_executes_keyless_conditional_join_with_resident_input_subplans() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let runtime = backend_runtime();
     let dir = unique_temp_dir("nexus-query-engine-bounded-keyless-input-subplans");
     let lineitem_path = dir.join("lineitem.parquet");
     let anti_path = dir.join("anti_orders.parquet");
@@ -123,18 +123,10 @@ fn bounded_native_query_executes_keyless_conditional_join_with_resident_input_su
     assert_eq!(int32_array(&gpu_batch, 2).values().as_ref(), &[15, 15, 15]);
     assert_eq!(gpu_result.metrics().compiled_pipeline_attempts, 1);
     assert_eq!(gpu_result.metrics().compiled_pipeline_host_arrow_sinks, 0);
+    drop(gpu_result);
+    drop(context);
 
-    let constrained_context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 1,
-            max_source_chunk_bytes: 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
+    let constrained_context = backend_context_with_grant(1);
     let error = match execute_query_plan(&constrained_context, &plan) {
         Ok(_) => panic!("constrained keyless input-subplan pipeline should fail reservation"),
         Err(error) => error,

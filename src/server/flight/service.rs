@@ -354,9 +354,41 @@ impl DatafusionNexusFlightSqlService {
     pub(crate) fn shutdown_token(&self) -> &CancellationToken {
         &self.shutdown_token
     }
+}
 
-    #[cfg(test)]
-    pub(crate) fn native_optimizer_config(&self) -> &NexusNativeOptimizerConfig {
-        &self.native_optimizer_config
+#[cfg(test)]
+pub(super) struct BoundedTestFlightSqlService {
+    service: DatafusionNexusFlightSqlService,
+    _backend: crate::backend::InstalledTestGpuBackend,
+}
+
+#[cfg(test)]
+impl std::ops::Deref for BoundedTestFlightSqlService {
+    type Target = DatafusionNexusFlightSqlService;
+
+    fn deref(&self) -> &Self::Target {
+        &self.service
     }
+}
+
+#[cfg(test)]
+pub(super) fn bounded_test_service(statement_ticket_ttl: Duration) -> BoundedTestFlightSqlService {
+    let backend = crate::backend::InstalledTestGpuBackend::new();
+    let state = backend
+        .install_on(SessionStateBuilder::new_with_default_features())
+        .expect("bounded Flight SQL test backend should install")
+        .build();
+    let ctx = Arc::new(SessionContext::new_with_state(state));
+    let native_optimizer_config = backend.optimizer_config().clone();
+    let admission = Arc::new(QueryAdmission::from_test_backend(backend.backend()));
+    let service = DatafusionNexusFlightSqlService::new(
+        ctx,
+        native_optimizer_config,
+        admission,
+        statement_ticket_ttl,
+        AuthInterceptor::new(crate::server::auth::AuthMode::Disabled, crate::server::auth::TokenStore::new()),
+        #[cfg(feature = "cugraph")]
+        None,
+    );
+    BoundedTestFlightSqlService { service, _backend: backend }
 }

@@ -8,7 +8,7 @@ use std::{env, net::SocketAddr, process::ExitCode};
 use anyhow::{Context, anyhow};
 use axum::Router;
 use datafusion_nexus::{
-    backend::NexusGpuBackend,
+    backend::{GpuMemoryOwnership, NexusGpuBackend},
     server::{ServerConfig, init_cuda_device},
 };
 use nexus_examples::{AppState, BindAddrs, flight, rest};
@@ -31,6 +31,13 @@ async fn main() -> ExitCode {
 
 async fn run() -> anyhow::Result<()> {
     let config = ServerConfig::from_env().context("failed to load server config from environment")?;
+    let ownership = config
+        .gpu_devices
+        .iter()
+        .copied()
+        .map(|ordinal| (ordinal, GpuMemoryOwnership::WholeDeviceExclusive))
+        .collect::<Vec<_>>();
+    let config = config.with_gpu_memory_ownership(ownership);
     init_tracing(&config.log_filter);
 
     init_cuda_device(0).context("failed to initialize CUDA device 0")?;

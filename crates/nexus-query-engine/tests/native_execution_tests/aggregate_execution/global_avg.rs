@@ -4,7 +4,13 @@ use super::*;
 fn bounded_native_query_executes_global_avg_from_sum_count_state() {
     let dir = unique_temp_dir("nexus-query-engine-bounded-native-global-avg");
     let path = dir.join("input.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+        device_budget_bytes: 8 * 1024 * 1024 * 1024,
+        max_source_chunk_bytes: 1024 * 1024,
+        max_row_groups_per_chunk: 1,
+        max_retry_attempts: 1,
+        min_retry_chunk_row_groups: 1,
+    });
     let input_schema = write_uneven_global_avg_input_parquet(&path);
 
     let aggregated_schema = Arc::new(Schema::new(vec![Field::new("avg_m00", DataType::Float64, true)]));
@@ -23,17 +29,6 @@ fn bounded_native_query_executes_global_avg_from_sum_count_state() {
     let aggregate = builder.add_aggregate(source, aggregate, aggregated_schema);
     let plan = builder.finish_with_host_sink(aggregate);
 
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 8 * 1024 * 1024 * 1024,
-            max_source_chunk_bytes: 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.source_chunks_planned, 2);
@@ -57,7 +52,13 @@ fn bounded_native_query_executes_global_avg_from_sum_count_state() {
 fn bounded_native_query_executes_global_avg_with_wide_sum_state_for_narrow_integer_input() {
     let dir = unique_temp_dir("nexus-query-engine-bounded-native-global-avg-int8");
     let path = dir.join("input.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+        device_budget_bytes: 8 * 1024 * 1024 * 1024,
+        max_source_chunk_bytes: 1024 * 1024,
+        max_row_groups_per_chunk: 1,
+        max_retry_attempts: 1,
+        min_retry_chunk_row_groups: 1,
+    });
     let input_schema = write_narrow_global_avg_input_parquet(&path);
 
     let aggregated_schema = Arc::new(Schema::new(vec![Field::new("avg_m00", DataType::Float64, true)]));
@@ -76,17 +77,6 @@ fn bounded_native_query_executes_global_avg_with_wide_sum_state_for_narrow_integ
     let aggregate = builder.add_aggregate(source, aggregate, aggregated_schema);
     let plan = builder.finish_with_host_sink(aggregate);
 
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 8 * 1024 * 1024 * 1024,
-            max_source_chunk_bytes: 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
     assert_eq!(result.metrics().source_chunks_planned, 2);
     assert_eq!(result.metrics().partial_aggregate_count, 2);
@@ -105,21 +95,16 @@ fn bounded_native_query_executes_global_avg_with_wide_sum_state_for_narrow_integ
 fn bounded_native_query_executes_global_null_on_empty_sum_avg_for_all_null_input() {
     let dir = unique_temp_dir("nexus-query-engine-bounded-native-global-all-null");
     let path = dir.join("input.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+        device_budget_bytes: 8 * 1024 * 1024 * 1024,
+        max_source_chunk_bytes: 1024 * 1024,
+        max_row_groups_per_chunk: 1,
+        max_retry_attempts: 1,
+        min_retry_chunk_row_groups: 1,
+    });
     let input_schema = write_nullable_global_aggregate_input_parquet(&path);
 
     let plan = nullable_global_aggregate_plan(&path, Arc::clone(&input_schema), None);
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 8 * 1024 * 1024 * 1024,
-            max_source_chunk_bytes: 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.source_chunks_planned, 2);
@@ -152,22 +137,17 @@ fn bounded_native_query_executes_global_null_on_empty_sum_avg_for_all_null_input
 fn bounded_native_query_executes_global_null_on_empty_sum_avg_for_filtered_empty_input() {
     let dir = unique_temp_dir("nexus-query-engine-bounded-native-global-filtered-empty");
     let path = dir.join("input.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+        device_budget_bytes: 8 * 1024 * 1024 * 1024,
+        max_source_chunk_bytes: 1024 * 1024,
+        max_row_groups_per_chunk: 1,
+        max_retry_attempts: 1,
+        min_retry_chunk_row_groups: 1,
+    });
     let input_schema = write_nullable_global_aggregate_input_parquet(&path);
     let filter = Expr::binary(Expr::column("payload"), BinaryOp::Gt, Expr::literal(LiteralValue::Int64(100)));
 
     let plan = nullable_global_aggregate_plan(&path, Arc::clone(&input_schema), Some(filter));
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 8 * 1024 * 1024 * 1024,
-            max_source_chunk_bytes: 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.source_chunks_planned, 2);
@@ -200,7 +180,13 @@ fn bounded_native_query_executes_global_null_on_empty_sum_avg_for_filtered_empty
 fn bounded_native_query_executes_decimal_global_avg_from_sum_count_state() {
     let dir = unique_temp_dir("nexus-query-engine-bounded-native-decimal-global-avg");
     let path = dir.join("input.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+        device_budget_bytes: 8 * 1024 * 1024 * 1024,
+        max_source_chunk_bytes: 1024 * 1024,
+        max_row_groups_per_chunk: 1,
+        max_retry_attempts: 1,
+        min_retry_chunk_row_groups: 1,
+    });
     let input_schema = write_decimal_avg_input_parquet(&path);
 
     let aggregated_schema = Arc::new(Schema::new(vec![Field::new("avg_amount", DataType::Decimal128(19, 6), true)]));
@@ -219,17 +205,6 @@ fn bounded_native_query_executes_decimal_global_avg_from_sum_count_state() {
     let aggregate = builder.add_aggregate(source, aggregate, aggregated_schema);
     let plan = builder.finish_with_host_sink(aggregate);
 
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 8 * 1024 * 1024 * 1024,
-            max_source_chunk_bytes: 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.source_chunks_planned, 3);
@@ -253,7 +228,13 @@ fn bounded_native_query_executes_decimal_global_avg_from_sum_count_state() {
 fn bounded_native_query_executes_fractional_decimal_global_avg_at_output_scale() {
     let dir = unique_temp_dir("nexus-query-engine-bounded-native-fractional-decimal-global-avg");
     let path = dir.join("input.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+        device_budget_bytes: 8 * 1024 * 1024 * 1024,
+        max_source_chunk_bytes: 1024 * 1024,
+        max_row_groups_per_chunk: 1,
+        max_retry_attempts: 1,
+        min_retry_chunk_row_groups: 1,
+    });
     let input_schema = write_fractional_decimal_avg_input_parquet(&path);
 
     let aggregated_schema = Arc::new(Schema::new(vec![Field::new("avg_amount", DataType::Decimal128(19, 6), true)]));
@@ -272,17 +253,6 @@ fn bounded_native_query_executes_fractional_decimal_global_avg_at_output_scale()
     let aggregate = builder.add_aggregate(source, aggregate, aggregated_schema);
     let plan = builder.finish_with_host_sink(aggregate);
 
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 8 * 1024 * 1024 * 1024,
-            max_source_chunk_bytes: 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.source_chunks_planned, 3);

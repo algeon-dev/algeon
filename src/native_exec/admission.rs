@@ -1,7 +1,7 @@
 //! Plan-scoped query-service admission tickets for backend-managed execution.
 
 #[cfg(test)]
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::{
     any::Any,
     collections::{HashMap, HashSet},
@@ -25,13 +25,22 @@ use datafusion::{
 use futures::Stream;
 #[cfg(test)]
 use nexus_query_engine::metrics::QueryId;
+#[cfg(test)]
+use nexus_query_engine::{
+    error::{QueryError, QueryErrorCode},
+    observability::{
+        AdmissionLifecycleState, AdmissionRequestId, RuntimeAdmissionObservation, RuntimeObservationHandle,
+        RuntimeObservationPayload,
+    },
+    runtime::{QueryActivityLease, QueryServiceAdmissionSnapshot, QueryServiceConfig, QueryServiceTenantConfig},
+};
 use nexus_query_engine::{
     observability::{
         RuntimeObservationConfig, RuntimeObservationOwner, RuntimeQueryId, RuntimeTerminalOutcome, RuntimeTraceId,
     },
     runtime::{
-        ExecutionCancellation, QueryAdmissionRequest, QueryGrantBand, QueryGrantRequest, QueryHandle,
-        QueryPlacementHint, QueryQos, QueryService, TenantId, TenantQueryContext,
+        ExecutionCancellation, GpuBackendSession, QueryAdmissionRequest, QueryGrantBand, QueryGrantRequest,
+        QueryHandle, QueryPlacementHint, QueryQos, TenantId, TenantQueryContext,
     },
 };
 use tokio::sync::Notify;
@@ -39,26 +48,43 @@ use tokio::sync::Notify;
 #[cfg(test)]
 use crate::native_exec::metrics::NativeMetricsCapture;
 use crate::{
-    error::Error,
+    error::{DataFusionErrorExt, Error, ErrorCode},
     native_exec::metrics::{NativeExecutionMetricsCapture, NativeRuntimeObservation},
 };
 
 /// Backend-owned service admission source copied into optimizer configs.
 #[derive(Debug, Clone)]
 pub(crate) struct QueryAdmissionSource {
-    service: QueryService,
+    capability: QueryAdmissionCapability,
     tenant_id: TenantId,
     qos: QueryQos,
+    max_device_total_memory_bytes: u64,
+}
+
+#[derive(Debug, Clone)]
+enum QueryAdmissionCapability {
+    Backend(GpuBackendSession),
+    #[cfg(test)]
+    Test(TestAdmissionController),
 }
 
 impl QueryAdmissionSource {
-    pub(crate) fn new(service: QueryService, tenant_id: TenantId) -> Self {
-        Self { service, tenant_id, qos: QueryQos::default() }
+    pub(crate) fn new(session: GpuBackendSession, tenant_id: TenantId, max_device_total_memory_bytes: u64) -> Self {
+        Self {
+            capability: QueryAdmissionCapability::Backend(session),
+            tenant_id,
+            qos: QueryQos::default(),
+            max_device_total_memory_bytes,
+        }
     }
 
     #[cfg(feature = "server")]
-    pub(crate) fn service_matches(&self, service: &QueryService) -> bool {
-        self.service.same_service(service)
+    pub(crate) fn backend_matches(&self, session: &GpuBackendSession) -> bool {
+        match &self.capability {
+            QueryAdmissionCapability::Backend(backend) => backend.same_backend(session),
+            #[cfg(test)]
+            QueryAdmissionCapability::Test(_) => false,
+        }
     }
 
     #[cfg(feature = "server")]
@@ -70,12 +96,362 @@ impl QueryAdmissionSource {
         &self,
         request: QueryGrantRequest,
     ) -> nexus_query_engine::error::Result<QueryGrantBand> {
-        self.service.tenant_requested_grant_band_with_grant_request(&self.tenant_id, request)
+        match &self.capability {
+            QueryAdmissionCapability::Backend(session) => session.requested_grant_band(&self.tenant_id, request),
+            #[cfg(test)]
+            QueryAdmissionCapability::Test(controller) => controller.requested_grant_band(&self.tenant_id, request),
+        }
     }
 
     pub(crate) fn max_device_total_memory_bytes(&self) -> u64 {
-        self.service.max_device_total_memory_bytes()
+        self.max_device_total_memory_bytes
     }
+}
+
+/// CUDA-free admission ledger used only by root-crate state-machine tests.
+///
+/// It deliberately cannot create an engine [`QueryHandle`] or execution
+/// context. Keeping it in the adapter test build preserves pure admission
+/// coverage without reopening a production resource-construction seam.
+#[cfg(test)]
+#[derive(Debug, Clone)]
+pub(crate) struct TestAdmissionController {
+    inner: Arc<TestAdmissionControllerInner>,
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+struct TestAdmissionControllerInner {
+    config: QueryServiceConfig,
+    tenants: HashMap<TenantId, TestTenantGrantBand>,
+    state: Mutex<TestAdmissionState>,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy)]
+struct TestTenantGrantBand {
+    min_bytes: u64,
+    want_bytes: u64,
+}
+
+#[cfg(test)]
+#[derive(Debug, Default)]
+struct TestAdmissionState {
+    active_queries: usize,
+    active_grant_bytes: u64,
+    next_admission_sequence: u64,
+}
+
+#[cfg(test)]
+impl TestAdmissionController {
+    pub(crate) fn new(
+        config: QueryServiceConfig,
+        tenants: Vec<QueryServiceTenantConfig>,
+    ) -> nexus_query_engine::error::Result<Self> {
+        let capacity_bytes = config.device_capacity_bytes.ok_or_else(|| {
+            QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "datafusion_nexus.native_exec.test_admission_controller",
+                "test admission controller requires an explicit device capacity",
+            )
+            .with_fact("field", "device_capacity_bytes")
+            .with_fact("reason", "missing")
+        })?;
+        if capacity_bytes == 0 || config.max_concurrent_queries == 0 {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "datafusion_nexus.native_exec.test_admission_controller",
+                "test admission controller requires positive capacity and concurrency",
+            )
+            .with_fact("reason", "zero_bound"));
+        }
+        let mut by_tenant = HashMap::with_capacity(tenants.len());
+        for tenant in tenants {
+            if tenant.tenant_id.as_str().trim().is_empty()
+                || tenant.min_device_budget_bytes == 0
+                || tenant.device_budget_bytes < tenant.min_device_budget_bytes
+                || tenant.device_budget_bytes > capacity_bytes
+            {
+                return Err(QueryError::new(
+                    QueryErrorCode::InvalidPlan,
+                    "datafusion_nexus.native_exec.test_admission_controller",
+                    "invalid test tenant admission grant band",
+                )
+                .with_fact("tenant_id", tenant.tenant_id.as_str())
+                .with_fact("reason", "invalid_tenant_grant_band"));
+            }
+            let tenant_id = tenant.tenant_id;
+            if by_tenant
+                .insert(
+                    tenant_id.clone(),
+                    TestTenantGrantBand {
+                        min_bytes: tenant.min_device_budget_bytes,
+                        want_bytes: tenant.device_budget_bytes,
+                    },
+                )
+                .is_some()
+            {
+                return Err(QueryError::new(
+                    QueryErrorCode::InvalidPlan,
+                    "datafusion_nexus.native_exec.test_admission_controller",
+                    "duplicate test admission tenant",
+                )
+                .with_fact("tenant_id", tenant_id.as_str())
+                .with_fact("reason", "duplicate_tenant"));
+            }
+        }
+        Ok(Self {
+            inner: Arc::new(TestAdmissionControllerInner {
+                config,
+                tenants: by_tenant,
+                state: Mutex::new(TestAdmissionState::default()),
+            }),
+        })
+    }
+
+    pub(crate) fn source(&self, tenant_id: TenantId) -> QueryAdmissionSource {
+        QueryAdmissionSource {
+            capability: QueryAdmissionCapability::Test(self.clone()),
+            tenant_id,
+            qos: QueryQos::default(),
+            max_device_total_memory_bytes: self
+                .inner
+                .config
+                .device_capacity_bytes
+                .expect("validated test controller has an explicit device capacity"),
+        }
+    }
+
+    pub(crate) fn admission_snapshot(&self) -> QueryServiceAdmissionSnapshot {
+        let state = self.inner.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        QueryServiceAdmissionSnapshot {
+            active_queries: state.active_queries,
+            queued_queries: 0,
+            queued_by_tenant: Vec::new(),
+            next_tenant_id: None,
+        }
+    }
+
+    pub(crate) fn requested_grant_band(
+        &self,
+        tenant_id: &TenantId,
+        request: QueryGrantRequest,
+    ) -> nexus_query_engine::error::Result<QueryGrantBand> {
+        let configured = self.inner.tenants.get(tenant_id).ok_or_else(|| {
+            QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "datafusion_nexus.native_exec.test_admission_controller",
+                "tenant is not configured for test admission",
+            )
+            .with_fact("tenant_id", tenant_id.as_str())
+            .with_fact("reason", "unknown_tenant")
+        })?;
+        let min_bytes = request.requested_grant_min_bytes.unwrap_or(configured.min_bytes);
+        let want_bytes = request.requested_grant_bytes.unwrap_or(configured.want_bytes);
+        if min_bytes < configured.min_bytes || want_bytes < min_bytes || want_bytes > configured.want_bytes {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "datafusion_nexus.native_exec.test_admission_controller",
+                "requested test admission grant is outside the configured tenant band",
+            )
+            .with_fact("tenant_id", tenant_id.as_str())
+            .with_fact("reason", "requested_grant_out_of_range"));
+        }
+        Ok(QueryGrantBand { min_bytes, want_bytes })
+    }
+
+    fn admit(
+        &self,
+        tenant_id: &TenantId,
+        request: QueryAdmissionRequest,
+        observation: RuntimeObservationHandle,
+        activity: Option<QueryActivityLease>,
+    ) -> nexus_query_engine::error::Result<TestAdmissionHandle> {
+        let grant = self.requested_grant_band(tenant_id, request.grant_request)?;
+        let capacity_bytes =
+            self.inner.config.device_capacity_bytes.expect("validated test controller has an explicit device capacity");
+        let (admission_sequence, admitted_grant_bytes) = {
+            let mut state = self.inner.state.lock().map_err(|_error| {
+                QueryError::new(
+                    QueryErrorCode::Internal,
+                    "datafusion_nexus.native_exec.test_admission_controller",
+                    "test admission state mutex was poisoned",
+                )
+            })?;
+            if state.active_queries >= self.inner.config.max_concurrent_queries {
+                return Err(QueryError::new(
+                    QueryErrorCode::ServiceOverloaded,
+                    "datafusion_nexus.native_exec.test_admission_controller",
+                    "test admission controller has no available slot",
+                )
+                .with_fact("reason", "capacity_exhausted"));
+            }
+            let remaining_slots =
+                self.inner.config.max_concurrent_queries.saturating_sub(state.active_queries.saturating_add(1));
+            let reserved_bytes = match self.inner.config.slot_guarantee {
+                nexus_query_engine::runtime::SlotGuarantee::GuaranteedMinimum => self
+                    .inner
+                    .tenants
+                    .values()
+                    .map(|tenant| tenant.min_bytes)
+                    .max()
+                    .unwrap_or(0)
+                    .saturating_mul(remaining_slots as u64),
+                nexus_query_engine::runtime::SlotGuarantee::Optimistic => 0,
+            };
+            let available_bytes =
+                capacity_bytes.saturating_sub(state.active_grant_bytes).saturating_sub(reserved_bytes);
+            let admitted_grant_bytes = grant.want_bytes.min(available_bytes);
+            if admitted_grant_bytes < grant.min_bytes {
+                return Err(QueryError::new(
+                    QueryErrorCode::ServiceOverloaded,
+                    "datafusion_nexus.native_exec.test_admission_controller",
+                    "test admission controller has insufficient grant capacity",
+                )
+                .with_fact("reason", "grant_capacity_exhausted"));
+            }
+            state.next_admission_sequence = state.next_admission_sequence.saturating_add(1);
+            let admission_sequence = state.next_admission_sequence;
+            state.active_queries = state.active_queries.saturating_add(1);
+            state.active_grant_bytes = state.active_grant_bytes.saturating_add(admitted_grant_bytes);
+            (admission_sequence, admitted_grant_bytes)
+        };
+        record_test_admission_lifecycle(
+            &observation,
+            admission_sequence,
+            tenant_id,
+            AdmissionLifecycleState::Admitted,
+            Some(self.inner.config.device_ordinal),
+            Some(admitted_grant_bytes),
+        );
+        Ok(TestAdmissionHandle {
+            controller: self.clone(),
+            tenant_id: tenant_id.clone(),
+            admission_sequence,
+            device_ordinal: self.inner.config.device_ordinal,
+            grant_bytes: admitted_grant_bytes,
+            observation,
+            activity: Mutex::new(activity),
+            released: AtomicBool::new(false),
+        })
+    }
+
+    fn admit_for_test(&self, tenant_id: &TenantId) -> nexus_query_engine::error::Result<TicketQueryHandle> {
+        let observation =
+            RuntimeObservationOwner::new("test-admission-controller", None, RuntimeObservationConfig::disabled())
+                .handle();
+        self.admit(tenant_id, QueryAdmissionRequest::new(), observation, None).map(TicketQueryHandle::Test)
+    }
+
+    pub(crate) fn admitted_grant_bytes(&self, tenant_id: &TenantId) -> nexus_query_engine::error::Result<u64> {
+        let observation =
+            RuntimeObservationOwner::new("test-admission-projection", None, RuntimeObservationConfig::disabled())
+                .handle();
+        let handle = self.admit(tenant_id, QueryAdmissionRequest::new(), observation, None)?;
+        let grant_bytes = handle.grant_bytes;
+        handle.finish();
+        Ok(grant_bytes)
+    }
+
+    pub(crate) fn admit_for_projection(
+        &self,
+        tenant_id: &TenantId,
+    ) -> nexus_query_engine::error::Result<TestAdmissionPermit> {
+        let observation =
+            RuntimeObservationOwner::new("test-admission-projection", None, RuntimeObservationConfig::disabled())
+                .handle();
+        self.admit(tenant_id, QueryAdmissionRequest::new(), observation, None)
+            .map(|handle| TestAdmissionPermit { handle })
+    }
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+pub(crate) struct TestAdmissionPermit {
+    handle: TestAdmissionHandle,
+}
+
+#[cfg(test)]
+impl TestAdmissionPermit {
+    pub(crate) fn device_ordinal(&self) -> usize {
+        self.handle.device_ordinal
+    }
+
+    pub(crate) fn device_budget_bytes(&self) -> u64 {
+        self.handle.grant_bytes
+    }
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+struct TestAdmissionHandle {
+    controller: TestAdmissionController,
+    tenant_id: TenantId,
+    admission_sequence: u64,
+    device_ordinal: usize,
+    grant_bytes: u64,
+    observation: RuntimeObservationHandle,
+    activity: Mutex<Option<QueryActivityLease>>,
+    released: AtomicBool,
+}
+
+#[cfg(test)]
+impl TestAdmissionHandle {
+    fn acquire_context(&self) -> nexus_query_engine::error::Result<TenantQueryContext> {
+        Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "datafusion_nexus.native_exec.test_admission_controller",
+            "CUDA-free test admission cannot create a runtime execution context",
+        )
+        .with_fact("reason", "test_controller_has_no_runtime_context"))
+    }
+
+    fn finish(&self) {
+        if self.released.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        self.activity.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+        let mut state = self.controller.inner.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.active_queries = state.active_queries.saturating_sub(1);
+        state.active_grant_bytes = state.active_grant_bytes.saturating_sub(self.grant_bytes);
+        drop(state);
+        record_test_admission_lifecycle(
+            &self.observation,
+            self.admission_sequence,
+            &self.tenant_id,
+            AdmissionLifecycleState::Released,
+            Some(self.device_ordinal),
+            Some(self.grant_bytes),
+        );
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestAdmissionHandle {
+    fn drop(&mut self) {
+        self.finish();
+    }
+}
+
+#[cfg(test)]
+fn record_test_admission_lifecycle(
+    observation: &RuntimeObservationHandle,
+    admission_sequence: u64,
+    tenant_id: &TenantId,
+    lifecycle: AdmissionLifecycleState,
+    device_ordinal: Option<usize>,
+    grant_bytes: Option<u64>,
+) {
+    observation.record(|| {
+        RuntimeObservationPayload::Admission(Box::new(RuntimeAdmissionObservation {
+            admission_request_id: AdmissionRequestId::new(admission_sequence),
+            tenant_id: tenant_id.as_str().to_string(),
+            lifecycle,
+            queue_depth: 0,
+            device_ordinal: device_ordinal.and_then(|ordinal| u32::try_from(ordinal).ok()),
+            grant_bytes,
+        }))
+    });
 }
 
 /// Immutable facts assigned when query-service admission succeeds.
@@ -88,12 +464,84 @@ pub(crate) struct QueryAdmissionFacts {
 }
 
 impl QueryAdmissionFacts {
-    pub(crate) fn from_handle(handle: &QueryHandle) -> Self {
+    pub(crate) fn from_query_handle(handle: &QueryHandle) -> Self {
         Self {
             admission_sequence: handle.admission_sequence(),
             admission_wait: handle.admission_wait(),
             device_ordinal: handle.device_ordinal(),
             query_grant_bytes: handle.device_budget_bytes(),
+        }
+    }
+
+    fn from_handle(handle: &TicketQueryHandle) -> Self {
+        Self {
+            admission_sequence: handle.admission_sequence(),
+            admission_wait: handle.admission_wait(),
+            device_ordinal: handle.device_ordinal(),
+            query_grant_bytes: handle.device_budget_bytes(),
+        }
+    }
+}
+
+#[derive(Debug)]
+enum TicketQueryHandle {
+    Backend(Arc<QueryHandle>),
+    #[cfg(test)]
+    Test(TestAdmissionHandle),
+}
+
+impl TicketQueryHandle {
+    fn admission_sequence(&self) -> u64 {
+        match self {
+            Self::Backend(handle) => handle.admission_sequence(),
+            #[cfg(test)]
+            Self::Test(handle) => handle.admission_sequence,
+        }
+    }
+
+    fn admission_wait(&self) -> Duration {
+        match self {
+            Self::Backend(handle) => handle.admission_wait(),
+            #[cfg(test)]
+            Self::Test(_) => Duration::ZERO,
+        }
+    }
+
+    fn device_ordinal(&self) -> usize {
+        match self {
+            Self::Backend(handle) => handle.device_ordinal(),
+            #[cfg(test)]
+            Self::Test(handle) => handle.device_ordinal,
+        }
+    }
+
+    fn device_budget_bytes(&self) -> u64 {
+        match self {
+            Self::Backend(handle) => handle.device_budget_bytes(),
+            #[cfg(test)]
+            Self::Test(handle) => handle.grant_bytes,
+        }
+    }
+
+    async fn acquire_context_with_cancellation_async(
+        &self,
+        cancellation: ExecutionCancellation,
+    ) -> nexus_query_engine::error::Result<TenantQueryContext> {
+        match self {
+            Self::Backend(handle) => handle.acquire_context_with_cancellation_async(cancellation).await,
+            #[cfg(test)]
+            Self::Test(handle) => {
+                drop(cancellation);
+                handle.acquire_context()
+            },
+        }
+    }
+
+    fn finish(&self) {
+        match self {
+            Self::Backend(handle) => handle.finish(),
+            #[cfg(test)]
+            Self::Test(handle) => handle.finish(),
         }
     }
 }
@@ -166,11 +614,12 @@ struct TicketState {
 #[derive(Debug)]
 struct TicketRound {
     _task_context: Arc<TaskContext>,
-    handle: Option<Arc<QueryHandle>>,
+    handle: Option<Arc<TicketQueryHandle>>,
     active_contexts: usize,
     active_streams: usize,
     epoch: u64,
     admission_facts_recorded: bool,
+    terminal_outcome: Option<RuntimeTerminalOutcome>,
     observation: NativeRuntimeObservation,
 }
 
@@ -215,6 +664,7 @@ pub(crate) struct QueryAdmissionExecutionRoundGuard {
     ticket: Arc<QueryAdmissionTicket>,
     task_key: usize,
     epoch: u64,
+    terminal_outcome_recorded: bool,
     released: bool,
 }
 
@@ -422,6 +872,7 @@ impl QueryAdmissionTicket {
                     active_streams: 1,
                     epoch,
                     admission_facts_recorded: false,
+                    terminal_outcome: None,
                     observation,
                 },
             );
@@ -429,7 +880,13 @@ impl QueryAdmissionTicket {
         };
         drop(state);
         self.finish_orphaned_rounds(stale_rounds);
-        Ok(QueryAdmissionExecutionRoundGuard { ticket: Arc::clone(self), task_key, epoch, released: false })
+        Ok(QueryAdmissionExecutionRoundGuard {
+            ticket: Arc::clone(self),
+            task_key,
+            epoch,
+            terminal_outcome_recorded: false,
+            released: false,
+        })
     }
 
     pub(crate) async fn acquire_context(
@@ -470,6 +927,7 @@ impl QueryAdmissionTicket {
                                     active_streams: 0,
                                     epoch,
                                     admission_facts_recorded: false,
+                                    terminal_outcome: None,
                                     observation,
                                 },
                             );
@@ -542,11 +1000,37 @@ impl QueryAdmissionTicket {
             NativeRuntimeObservation::Local(owner) => request.with_runtime_observation_owner(owner.clone()),
             NativeRuntimeObservation::Coordinated(handle) => request.with_runtime_observation_handle(handle.clone()),
         };
-        let request =
-            match self.observation_capture.as_ref().and_then(NativeExecutionMetricsCapture::new_observation_activity) {
-                Some(activity) => request.with_runtime_observation_activity_result(activity),
-                None => request,
-            };
+        let observation_activity =
+            self.observation_capture.as_ref().and_then(NativeExecutionMetricsCapture::new_observation_activity);
+        #[cfg(test)]
+        let (request, test_activity) = match (&self.source.capability, observation_activity) {
+            (QueryAdmissionCapability::Test(_), Some(Ok(activity))) => (request, Some(activity)),
+            (QueryAdmissionCapability::Test(_), Some(Err(error))) => {
+                record_test_admission_lifecycle(
+                    &observation.handle(),
+                    0,
+                    &self.source.tenant_id,
+                    AdmissionLifecycleState::Rejected {
+                        reason: error.fact_value("reason").unwrap_or_else(|| error.code().as_str()).to_string(),
+                    },
+                    None,
+                    None,
+                );
+                self.finish_observation_for_error(&observation, &error);
+                reset_guard.reset();
+                return Err(error);
+            },
+            (QueryAdmissionCapability::Test(_), None) => (request, None),
+            (QueryAdmissionCapability::Backend(_), Some(activity)) => {
+                (request.with_runtime_observation_activity_result(activity), None)
+            },
+            (QueryAdmissionCapability::Backend(_), None) => (request, None),
+        };
+        #[cfg(not(test))]
+        let request = match observation_activity {
+            Some(activity) => request.with_runtime_observation_activity_result(activity),
+            None => request,
+        };
         #[cfg(feature = "cugraph")]
         let request = match self.warm_graph_requested_grant_bytes {
             Some(requested_grant_bytes) => request.with_warm_graph_grant_request(QueryGrantRequest {
@@ -555,9 +1039,32 @@ impl QueryAdmissionTicket {
             }),
             None => request,
         };
-        let handle = match self.source.service.admit_async_with_request(self.source.tenant_id.clone(), request).await {
+        let handle_result = match &self.source.capability {
+            QueryAdmissionCapability::Backend(session) => session
+                .admit_async_with_request(self.source.tenant_id.clone(), request)
+                .await
+                .map(|handle| TicketQueryHandle::Backend(Arc::new(handle))),
+            #[cfg(test)]
+            QueryAdmissionCapability::Test(controller) => controller
+                .admit(&self.source.tenant_id, request, observation.handle(), test_activity)
+                .map(TicketQueryHandle::Test),
+        };
+        let handle = match handle_result {
             Ok(handle) => Arc::new(handle),
             Err(error) => {
+                #[cfg(test)]
+                if matches!(&self.source.capability, QueryAdmissionCapability::Test(_)) {
+                    record_test_admission_lifecycle(
+                        &observation.handle(),
+                        0,
+                        &self.source.tenant_id,
+                        AdmissionLifecycleState::Rejected {
+                            reason: error.fact_value("reason").unwrap_or_else(|| error.code().as_str()).to_string(),
+                        },
+                        None,
+                        None,
+                    );
+                }
                 self.finish_observation_for_error(&observation, &error);
                 reset_guard.reset();
                 return Err(error);
@@ -612,7 +1119,7 @@ impl QueryAdmissionTicket {
 
     async fn acquire_from_handle(
         self: &Arc<Self>,
-        handle: Arc<QueryHandle>,
+        handle: Arc<TicketQueryHandle>,
         task_key: usize,
         epoch: u64,
         task_context: Arc<TaskContext>,
@@ -710,7 +1217,10 @@ impl QueryAdmissionTicket {
         let Some(round) = round else { return };
         match round.handle {
             Some(handle) => handle.finish(),
-            None => self.finish_observation(&round.observation, Self::drop_outcome(RuntimeTerminalOutcome::Dropped)),
+            None => self.finish_observation(
+                &round.observation,
+                round.terminal_outcome.unwrap_or_else(|| Self::drop_outcome(RuntimeTerminalOutcome::Dropped)),
+            ),
         }
     }
 
@@ -832,7 +1342,7 @@ impl Drop for QueryAdmissionTicket {
 }
 
 enum TicketAcquireAction {
-    Reuse { handle: Arc<QueryHandle>, epoch: u64, observation: NativeRuntimeObservation },
+    Reuse { handle: Arc<TicketQueryHandle>, epoch: u64, observation: NativeRuntimeObservation },
     Admit { epoch: u64, observation: NativeRuntimeObservation },
     Wait,
 }
@@ -861,6 +1371,36 @@ impl Drop for QueryAdmissionPendingContextGuard {
 }
 
 impl QueryAdmissionExecutionRoundGuard {
+    fn record_terminal_outcome(&mut self, outcome: RuntimeTerminalOutcome) {
+        self.terminal_outcome_recorded = true;
+        let observation = self.ticket.state.lock().ok().and_then(|mut state| {
+            let round = state.rounds.get_mut(&self.task_key).filter(|round| round.epoch == self.epoch)?;
+            round.terminal_outcome = Some(match round.terminal_outcome.take() {
+                None | Some(RuntimeTerminalOutcome::Succeeded) => outcome.clone(),
+                Some(existing) => existing,
+            });
+            Some(round.observation.clone())
+        });
+        if let Some(NativeRuntimeObservation::Local(owner)) = observation {
+            owner.record_terminal_outcome(outcome);
+        }
+    }
+
+    fn record_datafusion_error(&mut self, error: &DataFusionError) {
+        let outcome = match error.find_nexus_error() {
+            Some(error) if error.code() == ErrorCode::Cancelled => RuntimeTerminalOutcome::Cancelled,
+            Some(error) => RuntimeTerminalOutcome::Failed {
+                error_code: error.code().as_str().to_string(),
+                error_status: error.status().as_str().to_string(),
+            },
+            None => RuntimeTerminalOutcome::Failed {
+                error_code: "datafusion_error".to_string(),
+                error_status: "permanent".to_string(),
+            },
+        };
+        self.record_terminal_outcome(outcome);
+    }
+
     #[cfg(test)]
     fn epoch(&self) -> u64 {
         self.epoch
@@ -886,6 +1426,9 @@ impl Drop for QueryAdmissionExecutionRoundGuard {
     fn drop(&mut self) {
         if self.released {
             return;
+        }
+        if !self.terminal_outcome_recorded {
+            self.record_terminal_outcome(QueryAdmissionTicket::drop_outcome(RuntimeTerminalOutcome::Dropped));
         }
         self.released = true;
         self.ticket.release_execution_round(self.task_key, self.epoch);
@@ -999,14 +1542,20 @@ impl ExecutionPlan for NativeAdmissionExec {
     fn execute(&self, partition: usize, context: Arc<TaskContext>) -> DataFusionResult<SendableRecordBatchStream> {
         let ticket = query_admission_ticket_from_task_context(&context).unwrap_or_else(|| Arc::clone(&self.ticket));
         let context = task_context_with_query_admission_ticket(context, Arc::clone(&ticket));
-        let round_guard = ticket.begin_execution_round(Arc::clone(&context)).map_err(|error| {
+        let mut round_guard = ticket.begin_execution_round(Arc::clone(&context)).map_err(|error| {
             DataFusionError::from(Error::from_native(
                 "datafusion_nexus.native_exec.admission_round",
                 "failed to begin backend query-service admission execution round",
                 error,
             ))
         })?;
-        let stream = self.input.execute(partition, context)?;
+        let stream = match self.input.execute(partition, context) {
+            Ok(stream) => stream,
+            Err(error) => {
+                round_guard.record_datafusion_error(&error);
+                return Err(error);
+            },
+        };
         Ok(Box::pin(NativeAdmissionRoundStream::new(stream, round_guard)))
     }
 
@@ -1039,10 +1588,16 @@ impl Stream for NativeAdmissionRoundStream {
         let this = self.get_mut();
         match this.inner.as_mut().poll_next(cx) {
             Poll::Ready(None) => {
+                if let Some(round_guard) = &mut this.round_guard {
+                    round_guard.record_terminal_outcome(RuntimeTerminalOutcome::Succeeded);
+                }
                 this.round_guard = None;
                 Poll::Ready(None)
             },
             Poll::Ready(Some(Err(error))) => {
+                if let Some(round_guard) = &mut this.round_guard {
+                    round_guard.record_datafusion_error(&error);
+                }
                 this.round_guard = None;
                 Poll::Ready(Some(Err(error)))
             },

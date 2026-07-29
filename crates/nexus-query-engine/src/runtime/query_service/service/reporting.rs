@@ -3,6 +3,34 @@
 use super::*;
 
 impl QueryService {
+    pub(crate) fn backend_device_startup_facts(
+        &self,
+    ) -> Vec<(
+        crate::runtime::DeviceFacts,
+        u64,
+        cudf::DeviceMemoryManagerInstallationState,
+        crate::runtime::gpu::registry::EngineDeviceHealthIdentity,
+    )> {
+        self.inner
+            .resources
+            .as_ref()
+            .map(|resources| {
+                resources
+                    .devices
+                    .contexts()
+                    .map(|device| {
+                        (
+                            device.facts().clone(),
+                            device.capacity_bytes(),
+                            device.memory_manager_installation(),
+                            device.engine_health_identity(),
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     pub fn memory_governor_reports(&self) -> Result<Vec<MemoryGovernorReport>> {
         let Some(resources) = &self.inner.resources else {
             return Ok(vec![self.inner.fallback_memory_governor.report()?]);
@@ -186,7 +214,7 @@ impl QueryService {
     /// Returns a point-in-time admission snapshot for service reports.
     pub fn admission_snapshot(&self) -> Result<QueryServiceAdmissionSnapshot> {
         let mut state = self.lock_admission()?;
-        self.sweep_expired_queued_requests_locked(&mut state);
+        let expired = self.sweep_expired_queued_requests_locked(&mut state);
         let queued_by_tenant = self
             .inner
             .tenant_order
@@ -196,11 +224,14 @@ impl QueryService {
                 queued_queries: state.queued.iter().filter(|request| &request.tenant_id == tenant_id).count(),
             })
             .collect();
-        Ok(QueryServiceAdmissionSnapshot {
+        let snapshot = QueryServiceAdmissionSnapshot {
             active_queries: state.active_queries,
             queued_queries: state.queued.len(),
             queued_by_tenant,
             next_tenant_id: self.inner.tenant_order.get(state.next_tenant_index).cloned(),
-        })
+        };
+        drop(state);
+        finish_expired_queued_requests(expired);
+        Ok(snapshot)
     }
 }

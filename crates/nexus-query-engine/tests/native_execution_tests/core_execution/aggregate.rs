@@ -2,7 +2,8 @@
 fn native_query_executes_group_only_aggregate_as_distinct_keys() {
     let dir = unique_temp_dir("nexus-query-engine-native-group-only-aggregate");
     let path = dir.join("input.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context();
+    let runtime = Arc::new(context.runtime().unwrap());
     let input_schema = write_input_parquet(&runtime, &path);
     let output_schema = Arc::new(Schema::new(vec![Field::new("key", DataType::Int32, false)]));
 
@@ -20,7 +21,6 @@ fn native_query_executes_group_only_aggregate_as_distinct_keys() {
     let sort = builder.add_sort(aggregate, sort, Arc::clone(&output_schema));
     let plan = builder.finish_with_host_sink(sort);
 
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
@@ -36,7 +36,7 @@ fn native_query_executes_group_only_aggregate_as_distinct_keys() {
 fn bounded_native_query_executes_group_only_aggregate_with_budgeted_distinct() {
     let dir = unique_temp_dir("nexus-query-engine-bounded-group-only-aggregate");
     let path = dir.join("input.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context();
     let input_schema = write_final_merge_retry_input_parquet(&path, 4);
     let output_schema = Arc::new(Schema::new(vec![Field::new("key", DataType::Int32, false)]));
 
@@ -54,17 +54,6 @@ fn bounded_native_query_executes_group_only_aggregate_with_budgeted_distinct() {
     let sort = builder.add_sort(aggregate, sort, Arc::clone(&output_schema));
     let plan = builder.finish_with_host_sink(sort);
 
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 8 * 1024 * 1024 * 1024,
-            max_source_chunk_bytes: 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.source_chunks_committed, 3);
@@ -82,7 +71,7 @@ fn bounded_native_query_executes_group_only_aggregate_with_budgeted_distinct() {
 
 #[test]
 fn native_query_executes_group_only_aggregate_when_output_key_name_already_exists() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context();
     let schema = Arc::new(Schema::new(vec![
         Field::new("i_item_id", DataType::Utf8, false),
         Field::new("__nexus_native_group_expr_0_i_item_id", DataType::Utf8, false),
@@ -121,7 +110,6 @@ fn native_query_executes_group_only_aggregate_when_output_key_name_already_exist
     let sort = builder.add_sort(aggregate, sort, Arc::clone(&output_schema));
     let plan = builder.finish_with_host_sink(sort);
 
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");

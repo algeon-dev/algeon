@@ -699,31 +699,64 @@ pub fn tpcds_glue_table_name(table_name: &str, scale_factor: &str) -> String {
     table_name.to_string()
 }
 
-/// Shared cuDF runtime for Iceberg native smoke/benchmark runs.
-///
-/// Avoids charging each query for CUDA/runtime setup in
-/// `native_runtime_elapsed_ms`, matching the non-Iceberg benchmark path.
-fn shared_native_runtime() -> SmokeResult<Arc<cudf::Runtime>> {
-    static SHARED_RUNTIME: std::sync::OnceLock<Result<Arc<cudf::Runtime>, String>> = std::sync::OnceLock::new();
-    SHARED_RUNTIME
-        .get_or_init(|| {
-            cudf::Runtime::new()
-                .map(Arc::new)
-                .map_err(|error| format!("failed to initialize shared native Iceberg benchmark runtime: {error}"))
-        })
-        .clone()
-        .map_err(smoke_error)
-}
-
 pub(crate) async fn native_session_context(
     source_storage_profile: Option<nexus_query_engine::runtime::SourceStorageProfile>,
     native_execution_profile: NativeExecutionProfile,
-) -> SmokeResult<(SessionContext, Arc<NexusNativePhysicalOptimizerRule>)> {
+) -> SmokeResult<(SessionContext, Arc<NexusNativePhysicalOptimizerRule>, GpuBackendOwner)> {
     let mut execution_config = native_session_execution_config_from_env(native_execution_profile)?;
-    execution_config = execution_config.with_shared_runtime(shared_native_runtime()?);
     if let Some(profile) = resolve_default_chain_source_storage_profile(source_storage_profile).await? {
         execution_config = execution_config.with_source_storage_profile(profile);
     }
+    let MemoryControlPolicy::Bounded {
+        device_budget_bytes,
+        max_source_chunk_bytes,
+        max_row_groups_per_chunk,
+        max_retry_attempts,
+        min_retry_chunk_row_groups,
+    } = execution_config.memory_control_policy()
+    else {
+        return Err(Box::new(
+            nexus_query_engine::error::QueryError::new(
+                nexus_query_engine::error::QueryErrorCode::InvalidPlan,
+                "nexus_bench.iceberg_smoke.gpu_backend",
+                "Iceberg native execution requires an ownership-enforcing GPU backend",
+            )
+            .with_fact("reason", "gpu_backend_required"),
+        ));
+    };
+    let service_config = QueryServiceConfig {
+        lakehouse_cache_fill: execution_config.lakehouse_cache_fill_config().clone(),
+        source_storage_profiles: execution_config.source_storage_profiles().to_vec(),
+        boundary_policy: execution_config.boundary_policy(),
+        source_scheduler_policy: execution_config.source_scheduler_policy(),
+        source_chunk_planning_mode: execution_config.source_chunk_planning_mode(),
+        native_pipeline_execution_mode: execution_config.native_pipeline_execution_mode(),
+        stddev_samp_execution_mode: execution_config.stddev_samp_execution_mode(),
+        dynamic_filter_execution_options: execution_config.dynamic_filter_execution_options(),
+        keyed_hash_join_strategy_options: execution_config.keyed_hash_join_strategy_options(),
+        aggregate_strategy_execution_options: execution_config.aggregate_strategy_execution_options(),
+        source_chunk_planning_options: execution_config.source_chunk_planning_options(),
+        graph_memory_calibration_override: execution_config.graph_memory_calibration_override(),
+        local_parquet_source_cache_max_retained_bytes: execution_config
+            .query_service_local_parquet_source_cache_max_retained_bytes(),
+        resident_graph_cache_max_retained_bytes: execution_config
+            .query_service_resident_graph_cache_max_retained_bytes(),
+        query_memory_domain: execution_config.query_service_query_memory_domain(),
+        device_capacity_bytes: Some(device_budget_bytes),
+        max_concurrent_queries: 1,
+        max_source_chunk_bytes,
+        max_row_groups_per_chunk,
+        max_retry_attempts,
+        min_retry_chunk_row_groups,
+        ..QueryServiceConfig::default()
+    };
+    let backend = GpuBackendOwner::build(
+        service_config,
+        vec![0],
+        vec![QueryServiceTenantConfig::new("iceberg_benchmark", device_budget_bytes)],
+    )?;
+    let query_handle = Arc::new(backend.session().admit_query(TenantId::new("iceberg_benchmark"))?);
+    execution_config = execution_config.with_query_service_handle(query_handle);
     let native_optimizer_options = native_optimizer_options_for_profile(native_execution_profile, &execution_config);
     let optimizer_config = crate::report_workload::RelationalExecutionSelection::strict_native()
         .configure_native_optimizer(
@@ -737,7 +770,7 @@ pub(crate) async fn native_session_context(
         .with_config(native_session_config_for_profile(native_execution_profile))
         .with_nexus_native_rule(Arc::clone(&native_rule))
         .build();
-    Ok((SessionContext::new_with_state(state), native_rule))
+    Ok((SessionContext::new_with_state(state), native_rule, backend))
 }
 
 pub fn native_session_config_for_profile(profile: NativeExecutionProfile) -> SessionConfig {

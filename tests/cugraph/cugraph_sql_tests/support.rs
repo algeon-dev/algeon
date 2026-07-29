@@ -81,16 +81,18 @@ fn append_plan_metrics(
     }
 }
 
-pub(super) fn backend_cugraph_sql_state(builder: SessionStateBuilder) -> datafusion::execution::SessionState {
+pub(super) fn backend_cugraph_sql_context(builder: SessionStateBuilder) -> (NexusGpuBackend, SessionContext) {
     let backend = NexusGpuBackend::builder()
+        .device_memory_ownership([(0, GpuMemoryOwnership::WholeDeviceExclusive)])
         .admission(NexusAdmissionPolicy::default().with_slot_guarantee(SlotGuarantee::Optimistic))
         .build()
         .unwrap();
-    backend.install_on_with_cugraph_sql(builder, CugraphSqlConfig::default()).unwrap().build()
+    let state = backend.install_on_with_cugraph_sql(builder, CugraphSqlConfig::default()).unwrap().build();
+    (backend, SessionContext::new_with_state(state))
 }
 
-pub(super) fn default_backend_cugraph_sql_state() -> datafusion::execution::SessionState {
-    backend_cugraph_sql_state(SessionStateBuilder::new_with_default_features())
+pub(super) fn default_backend_cugraph_sql_context() -> (NexusGpuBackend, SessionContext) {
+    backend_cugraph_sql_context(SessionStateBuilder::new_with_default_features())
 }
 
 pub(super) async fn drop_session_context_on_blocking_thread(ctx: SessionContext) {

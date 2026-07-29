@@ -26,14 +26,17 @@ use datafusion_nexus::{
     planner::{NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule},
     session::NexusSessionStateBuilderExt,
 };
-use nexus_query_engine::mode::NativePipelineExecutionMode;
+use nexus_query_engine::{
+    mode::NativePipelineExecutionMode,
+    runtime::{QueryServiceConfig, QueryServiceTenantConfig, TenantId},
+};
 use nexus_workloads::tpch::{
     NEXUS_PARQUET_DIR_ENV, NEXUS_TPCH_GENERATION_COMMAND_ENV, NEXUS_TPCH_SCALE_FACTOR_ENV, TPCH_QUERIES, TPCH_TABLES,
     TpchDatasetMetadata, TpchQuery, TpchTableLayout, TpchWorkloadError, default_tpch_dataset_with_fingerprint,
     describe_tpch_dataset_with_content_fingerprint, prepare_tpch_report_dataset, register_tpch_table_layout,
 };
 
-use crate::report_workload::tpch::tpch_report_session_config;
+use crate::{gpu_backend::GpuBackendOwner, report_workload::tpch::tpch_report_session_config};
 
 mod case_runner;
 mod config;

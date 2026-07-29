@@ -14,8 +14,9 @@ use bytes::Bytes;
 
 use super::{
     CacheFillByteBudget, CacheFillBytePermit, DeploymentIoCapability, DevicePlacement, ExecutionBoundaryPolicy,
-    GpuExecutionPool, LakehouseCacheFillConfig, MemoryControlPolicy, MemoryGrant, MemoryResourcePolicy, MemorySpaceId,
-    ServiceStreamPool, SourceChunkPlanningMode, SourceReadStreamLease, SourceStorageProfile, StreamLease, cache,
+    GpuExecutionPool, GpuExecutorLease, LakehouseCacheFillConfig, MemoryControlPolicy, MemoryGrant,
+    MemoryResourcePolicy, MemorySpaceId, ServiceStreamPool, SourceChunkPlanningMode, SourceReadStreamLease,
+    SourceStorageProfile, StreamLease, cache,
     cache_events::{LakehouseCacheFillEventSink, LakehouseCacheFillEventSnapshot},
     cache_fill::{CacheFillConcurrencyGate, CacheFillOperationPermit},
     default_service_stream_pool_size_for_device,
@@ -41,8 +42,9 @@ use crate::{
 
 mod builder;
 
+pub(crate) use builder::ExecutionContextBuilder;
 pub(super) use builder::validate_service_stream_pool_device;
-pub use builder::{ExecutionContextBuilder, RuntimeObservationBuildError, RuntimeObservedExecutionContextBuilder};
+pub use builder::{RuntimeObservationBuildError, RuntimeObservedExecutionContextBuilder};
 
 /// Shared cooperative cancellation flag for native query execution.
 ///
@@ -265,6 +267,7 @@ fn query_service_epoch_idle_timeout(operation: &'static str, active_users: usize
     )
     .with_fact("reason", "query_service_resource_epoch_timeout")
     .with_fact("active_resource_users", active_users)
+    .with_cleanup_deadline_elapsed()
 }
 
 #[cfg(test)]
@@ -539,7 +542,8 @@ impl SourceSchedulerPolicy {
         self.max_source_reads_in_flight > 1
     }
 
-    pub(super) fn validate(self) -> Result<()> {
+    /// Validates the scheduler bound without constructing runtime resources.
+    pub fn validate(self) -> Result<()> {
         if self.max_source_reads_in_flight == 0 {
             return Err(QueryError::new(
                 crate::error::QueryErrorCode::InvalidPlan,
@@ -803,7 +807,7 @@ impl ReservedResidentGraphHit {
 
 impl ExecutionContext {
     /// Starts a builder for an [`ExecutionContext`].
-    pub fn builder() -> ExecutionContextBuilder {
+    pub(crate) fn builder() -> ExecutionContextBuilder {
         ExecutionContextBuilder::default()
     }
 
@@ -812,7 +816,7 @@ impl ExecutionContext {
     /// The resulting context records [`MemoryResourcePolicy::ExternalRuntime`]
     /// because the runtime, including its allocator and stream, has already been
     /// constructed by the caller.
-    pub fn from_runtime(runtime: cudf::Runtime) -> Result<Self> {
+    pub(crate) fn from_runtime(runtime: cudf::Runtime) -> Result<Self> {
         Self::from_shared_runtime(Arc::new(runtime))
     }
 
@@ -820,7 +824,7 @@ impl ExecutionContext {
     ///
     /// Use this when multiple plans or adapter layers must share the same CUDA
     /// stream, device placement, allocator policy, or boundary observer state.
-    pub fn from_shared_runtime(runtime: Arc<cudf::Runtime>) -> Result<Self> {
+    pub(crate) fn from_shared_runtime(runtime: Arc<cudf::Runtime>) -> Result<Self> {
         let service_stream_pool =
             ServiceStreamPool::new(runtime.device(), default_service_stream_pool_size_for_device(runtime.device()))
                 .expect("default service stream pool size is non-zero");
@@ -1071,8 +1075,13 @@ impl ExecutionContext {
         self.runtime().map(Arc::new)
     }
 
-    /// Returns the dedicated executor for synchronous GPU work on this context's device.
-    pub fn gpu_execution_pool(&self) -> Result<GpuExecutionPool> {
+    /// Returns an opaque lifecycle-bound executor for synchronous GPU work on
+    /// this context's device.
+    pub fn gpu_executor(&self) -> Result<GpuExecutorLease> {
+        self.gpu_execution_pool().map(GpuExecutorLease::from_pool)
+    }
+
+    pub(crate) fn gpu_execution_pool(&self) -> Result<GpuExecutionPool> {
         let resource_epoch = self.acquire_resource_epoch("nexus_query_engine.runtime.context.gpu_execution_pool")?;
         Ok(match resource_epoch {
             Some(resource_epoch) => self.gpu_execution_pool.with_resource_epoch(resource_epoch),
@@ -1270,11 +1279,15 @@ impl ExecutionContext {
         self.query_service_admitted
     }
 
-    pub(super) fn install_root_stream_cleanup_completion(&self, completion: impl FnOnce() + Send + 'static) -> bool {
+    pub(super) fn install_root_stream_cleanup_completion(
+        &self,
+        before_quiescence: impl FnOnce() + Send + 'static,
+        after_quiescence: impl FnOnce() + Send + 'static,
+    ) -> bool {
         let Some(stream_lease) = &self.stream_lease_guard else {
             return false;
         };
-        stream_lease.install_cleanup_completion(completion)
+        stream_lease.install_cleanup_completion(before_quiescence, after_quiescence)
     }
 
     pub(super) fn has_root_stream_lease(&self) -> bool {

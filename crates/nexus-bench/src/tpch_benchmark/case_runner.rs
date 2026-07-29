@@ -16,6 +16,8 @@ pub(super) async fn run_native_tpch_benchmark(
         rows.push(run_query(config, &metadata, query, &runtime_resources).await);
     }
 
+    runtime_resources.shutdown()?;
+
     Ok(NativeTpchBenchmarkReport { metadata, config: config.clone(), rows })
 }
 

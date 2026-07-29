@@ -14,9 +14,8 @@ use nexus_query_engine::{
     metrics::{MemoryReservationEventAction, MetricAggregation, MetricUnit, QueryId, QueryMetrics, TraceId},
     plan::QueryPlanBuilder,
     runtime::{
-        ExecutionContext, MemoryControlPolicy, MemoryReservationRequest, MemorySpaceId, ReservationKind,
-        SourceChunkPlanningMode,
-        cache::local_parquet::{GpuLocalParquetSourceCache, GpuLocalParquetSourceCacheKey},
+        MemoryReservationRequest, MemorySpaceId, ReservationKind, SourceChunkPlanningMode,
+        cache::local_parquet::GpuLocalParquetSourceCacheKey,
     },
     source::{LocalParquetFile, LocalParquetSource, SourceNode},
 };
@@ -464,24 +463,6 @@ fn local_parquet_source_cache_key_ignores_bounded_planner_identity() {
         GpuLocalParquetSourceCacheKey::from_source_chunk(&source, &same_contract_different_plan_identity),
         "bounded source cache keys must be based on the reusable scan contract, not local planner ids"
     );
-}
-
-#[test]
-fn bounded_context_accepts_source_cache_with_reservation_accounting() {
-    let cache = Arc::new(GpuLocalParquetSourceCache::new(1024));
-    let context = ExecutionContext::builder()
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 1024,
-            max_source_chunk_bytes: 512,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .with_local_parquet_source_cache(cache)
-        .build()
-        .expect("bounded source cache retained bytes are represented in the reservation ledger");
-
-    assert!(context.local_parquet_source_cache().is_some());
 }
 
 #[test]

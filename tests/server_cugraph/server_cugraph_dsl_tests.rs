@@ -14,12 +14,18 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use arrow_flight::sql::client::FlightSqlServiceClient;
-use datafusion_nexus::server::{
-    NEXUS_SERVER_CUGRAPH_ENABLED_ENV, Result as ServerResult, ServerConfig, serve_with_listener,
+use datafusion_nexus::{
+    backend::GpuMemoryOwnership,
+    server::{NEXUS_SERVER_CUGRAPH_ENABLED_ENV, Result as ServerResult, ServerConfig, serve_with_listener},
 };
 use futures::TryStreamExt;
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 use tonic::transport::Endpoint;
+
+fn declare_test_gpu_ownership(config: &mut ServerConfig) {
+    config.gpu_memory_ownership =
+        config.gpu_devices.iter().copied().map(|ordinal| (ordinal, GpuMemoryOwnership::WholeDeviceExclusive)).collect();
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cugraph_dsl_metadata_and_dry_run_work_over_flight_sql_view() {
@@ -27,6 +33,7 @@ async fn cugraph_dsl_metadata_and_dry_run_work_over_flight_sql_view() {
     let (listener, addr) = free_local_addr();
     let env = BTreeMap::from([(NEXUS_SERVER_CUGRAPH_ENABLED_ENV, "true".to_string())]);
     let mut config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+    declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
     let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
@@ -102,6 +109,7 @@ async fn cugraph_dsl_nullable_parquet_edge_schema_validates_over_flight_sql() {
     let (listener, addr) = free_local_addr();
     let env = BTreeMap::from([(NEXUS_SERVER_CUGRAPH_ENABLED_ENV, "true".to_string())]);
     let mut config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+    declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
     let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
@@ -149,6 +157,7 @@ async fn cugraph_bfs_path_uses_gpu_resident_join_side_inputs_over_flight_sql() {
     let (listener, addr) = free_local_addr();
     let env = BTreeMap::from([(NEXUS_SERVER_CUGRAPH_ENABLED_ENV, "true".to_string())]);
     let mut config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+    declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
     let _server = ScopedServer::spawn(config, listener);

@@ -20,10 +20,9 @@ impl NexusNativeExecutionConfig {
     /// handle releases the service admission slot.
     ///
     /// Source storage profiles are service-owned on this path. Register them
-    /// on `QueryServiceConfig::source_storage_profiles`; profiles attached to
-    /// this per-plan config are used only for standalone execution contexts.
+    /// on the backend configuration; per-plan config cannot inject a second
+    /// runtime-owned registry.
     pub fn with_query_service_handle(mut self, handle: Arc<QueryHandle>) -> Self {
-        self.memory_resource_policy = MemoryResourcePolicy::ExternalRuntime;
         self.memory_control_policy = handle.memory_control_policy();
         self.boundary_policy = handle.boundary_policy();
         self.source_scheduler_policy = handle.source_scheduler_policy();
@@ -271,16 +270,16 @@ impl NexusNativeExecutionConfig {
     #[cfg(feature = "server")]
     pub(crate) fn query_admission_source_matches(
         &self,
-        service: &nexus_query_engine::runtime::QueryService,
+        session: &nexus_query_engine::runtime::GpuBackendSession,
         tenant_id: &nexus_query_engine::runtime::TenantId,
     ) -> bool {
         self.query_admission_source
             .as_ref()
-            .is_some_and(|source| source.service_matches(service) && source.tenant_id() == tenant_id)
+            .is_some_and(|source| source.backend_matches(session) && source.tenant_id() == tenant_id)
     }
 
     #[cfg(feature = "cugraph")]
-    pub(crate) fn is_standalone_bounded(&self) -> bool {
+    pub(crate) fn is_bounded_without_admission(&self) -> bool {
         matches!(self.memory_control_policy, MemoryControlPolicy::Bounded { .. })
             && !self.has_query_admission_authority()
     }

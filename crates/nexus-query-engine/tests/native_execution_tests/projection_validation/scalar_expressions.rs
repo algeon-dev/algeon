@@ -2,7 +2,8 @@ use super::*;
 
 #[test]
 fn native_query_projects_date64_and_time_types() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context();
+    let runtime = Arc::new(context.runtime().unwrap());
     let input_schema = Arc::new(Schema::new(vec![
         Field::new("event_date64", DataType::Date64, false),
         Field::new("event_time_ms", DataType::Time32(TimeUnit::Millisecond), false),
@@ -34,7 +35,7 @@ fn native_query_projects_date64_and_time_types() {
         ),
     );
     let plan = builder.finish_with_host_sink(projection);
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
+
     let mut gpu_inputs = GpuResidentInputMap::new();
     gpu_inputs.insert(
         "input".to_string(),
@@ -71,7 +72,8 @@ fn native_query_projects_date64_and_time_types() {
 fn native_query_executes_scalar_expression_families() {
     let dir = unique_temp_dir("nexus-query-engine-native-execution-scalar_expression-scalars");
     let path = dir.join("tpch-like.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context();
+    let runtime = Arc::new(context.runtime().unwrap());
     let input_schema = write_scalar_expression_parquet(&runtime, &path);
     let projected_schema = Arc::new(Schema::new(vec![
         Field::new("orderkey", DataType::Int64, false),
@@ -158,7 +160,6 @@ fn native_query_executes_scalar_expression_families() {
     let projection = builder.add_projection(filter, projection_outputs(projection, projected_schema));
     let plan = builder.finish_with_host_sink(projection);
 
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
@@ -214,7 +215,8 @@ fn native_query_executes_scalar_expression_families() {
 fn native_query_executes_bitwise_scalar_expressions() {
     let dir = unique_temp_dir("nexus-query-engine-native-execution-bitwise-scalars");
     let path = dir.join("input.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context();
+    let runtime = Arc::new(context.runtime().unwrap());
     let input_schema = write_scalar_expression_parquet(&runtime, &path);
     let output_schema = Arc::new(Schema::new(vec![
         Field::new("flags", DataType::Int64, false),
@@ -258,7 +260,6 @@ fn native_query_executes_bitwise_scalar_expressions() {
     let projection = builder.add_projection(source, projection_outputs(projection, output_schema));
     let plan = builder.finish_with_host_sink(projection);
 
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
@@ -278,7 +279,7 @@ fn native_query_executes_bitwise_scalar_expressions() {
 fn native_query_executes_float64_to_int64_cast_with_datafusion_truncation_semantics() {
     let dir = unique_temp_dir("nexus-query-engine-native-execution-f64-i64-cast");
     let path = dir.join("input.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context();
     let input_schema = Arc::new(Schema::new(vec![Field::new("score", DataType::Float64, true)]));
     let batch = RecordBatch::try_new(
         Arc::clone(&input_schema),
@@ -303,7 +304,6 @@ fn native_query_executes_float64_to_int64_cast_with_datafusion_truncation_semant
     let projection = builder.add_projection(source, projection_outputs(projection, output_schema));
     let plan = builder.finish_with_host_sink(projection);
 
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
@@ -321,7 +321,7 @@ fn native_query_executes_float64_to_int64_cast_with_datafusion_truncation_semant
 fn native_query_rejects_invalid_float64_to_int64_cast_inputs() {
     let dir = unique_temp_dir("nexus-query-engine-native-execution-f64-i64-cast-invalid");
     let path = dir.join("input.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context();
     let input_schema = Arc::new(Schema::new(vec![Field::new("score", DataType::Float64, true)]));
     let batch = RecordBatch::try_new(
         Arc::clone(&input_schema),
@@ -346,7 +346,6 @@ fn native_query_rejects_invalid_float64_to_int64_cast_inputs() {
     let projection = builder.add_projection(source, projection_outputs(projection, output_schema));
     let plan = builder.finish_with_host_sink(projection);
 
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
     let error = match execute_query_plan(&context, &plan) {
         Ok(_) => panic!("invalid Float64 -> Int64 casts must fail"),
         Err(error) => error,
@@ -370,7 +369,7 @@ fn native_query_rejects_invalid_float64_to_int64_cast_inputs() {
 fn native_query_executes_regexp_replace_projection_with_backrefs() {
     let dir = unique_temp_dir("nexus-query-engine-native-execution-regexp-replace");
     let path = dir.join("referers.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context();
     let input_schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int64, false),
         Field::new("referer", DataType::Utf8, true),
@@ -413,7 +412,6 @@ fn native_query_executes_regexp_replace_projection_with_backrefs() {
     let projection = builder.add_projection(source, projection_outputs(projection, output_schema));
     let plan = builder.finish_with_host_sink(projection);
 
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
@@ -431,7 +429,8 @@ fn native_query_executes_regexp_replace_projection_with_backrefs() {
 fn native_query_rejects_scalar_type_mismatch_before_cudf_execution() {
     let dir = unique_temp_dir("nexus-query-engine-native-execution-scalar_expression-type-reject");
     let path = dir.join("tpch-like.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context();
+    let runtime = Arc::new(context.runtime().unwrap());
     let input_schema = write_scalar_expression_parquet(&runtime, &path);
     let output_schema = Arc::new(Schema::new(vec![Field::new("bad_like", DataType::Boolean, true)]));
     let source = LocalParquetSource::from_files(
@@ -447,7 +446,6 @@ fn native_query_rejects_scalar_type_mismatch_before_cudf_execution() {
         projection_outputs(vec![Expr::like(Expr::column("orderkey"), "1%").alias("bad_like")], output_schema),
     );
     let plan = builder.finish_with_host_sink(projection);
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
 
     let error = match execute_query_plan(&context, &plan) {
         Ok(_) => panic!("native plan validation should reject LIKE over an integral input before cuDF execution"),
@@ -464,7 +462,8 @@ fn native_query_rejects_scalar_type_mismatch_before_cudf_execution() {
 fn native_query_rejects_date_trunc_output_unit_mismatch_before_cudf_execution() {
     let dir = unique_temp_dir("nexus-query-engine-native-execution-date-trunc-output-unit-reject");
     let path = dir.join("tpch-like.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context();
+    let runtime = Arc::new(context.runtime().unwrap());
     let input_schema = write_scalar_expression_parquet(&runtime, &path);
     let output_schema =
         Arc::new(Schema::new(vec![Field::new("bad_trunc", DataType::Timestamp(TimeUnit::Millisecond, None), false)]));
@@ -491,7 +490,6 @@ fn native_query_rejects_date_trunc_output_unit_mismatch_before_cudf_execution() 
         ),
     );
     let plan = builder.finish_with_host_sink(projection);
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
 
     let error = match execute_query_plan(&context, &plan) {
         Ok(_) => panic!("native plan validation should reject DATE_TRUNC output unit mismatches"),
@@ -510,7 +508,8 @@ fn native_query_rejects_date_trunc_output_unit_mismatch_before_cudf_execution() 
 fn native_query_rejects_implicit_decimal_float_arithmetic_before_cudf_execution() {
     let dir = unique_temp_dir("nexus-query-engine-native-execution-decimal-float-implicit-reject");
     let path = dir.join("tpch-like.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context();
+    let runtime = Arc::new(context.runtime().unwrap());
     let input_schema = write_tpch_like_types_parquet(&runtime, &path);
     let output_schema = Arc::new(Schema::new(vec![Field::new("bad_amount", DataType::Decimal128(15, 2), true)]));
     let source = LocalParquetSource::from_files(
@@ -532,7 +531,6 @@ fn native_query_rejects_implicit_decimal_float_arithmetic_before_cudf_execution(
         ),
     );
     let plan = builder.finish_with_host_sink(projection);
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
 
     let error = match execute_query_plan(&context, &plan) {
         Ok(_) => panic!("native plan validation should reject implicit Decimal128/Float64 arithmetic"),
@@ -552,7 +550,7 @@ fn native_query_rejects_implicit_decimal_float_arithmetic_before_cudf_execution(
 fn native_query_rejects_untyped_decimal_division_before_cudf_execution() {
     let dir = unique_temp_dir("nexus-query-engine-native-execution-untyped-decimal-divide-reject");
     let path = dir.join("input.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context();
     let input_schema = write_decimal_ratio_parquet(&path);
     let source = LocalParquetSource::from_files(
         vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
@@ -569,7 +567,6 @@ fn native_query_rejects_untyped_decimal_division_before_cudf_execution() {
     let source = builder.add_source(SourceNode::LocalParquet(source));
     let filter = builder.add_filter(source, untyped_divide, Arc::clone(&input_schema));
     let plan = builder.finish_with_host_sink(filter);
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
 
     let error = match execute_query_plan(&context, &plan) {
         Ok(_) => panic!("native plan validation should reject decimal division without a declared output type"),
@@ -588,7 +585,7 @@ fn native_query_rejects_untyped_decimal_division_before_cudf_execution() {
 fn native_query_executes_round_scalar_expression() {
     let dir = unique_temp_dir("nexus-query-engine-native-execution-round-scalar");
     let path = dir.join("input.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context();
     let input_schema = write_decimal_ratio_parquet(&path);
     let output_schema = Arc::new(Schema::new(vec![
         Field::new("rounded_literal", DataType::Float64, false),
@@ -619,7 +616,6 @@ fn native_query_executes_round_scalar_expression() {
         ),
     );
     let plan = builder.finish_with_host_sink(projection);
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -638,7 +634,7 @@ fn native_query_executes_round_scalar_expression() {
 fn native_query_executes_round_decimal_cast_to_integral_expression() {
     let dir = unique_temp_dir("nexus-query-engine-native-execution-round-decimal-integral-cast");
     let path = dir.join("input.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context();
     let input_schema = write_decimal_ratio_parquet(&path);
     let output_schema = Arc::new(Schema::new(vec![Field::new("rounded_segment", DataType::Int32, false)]));
     let source = LocalParquetSource::from_files(
@@ -659,7 +655,6 @@ fn native_query_executes_round_decimal_cast_to_integral_expression() {
     let source = builder.add_source(SourceNode::LocalParquet(source));
     let projection = builder.add_projection(source, projection_outputs(vec![rounded_segment], output_schema));
     let plan = builder.finish_with_host_sink(projection);
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -673,7 +668,7 @@ fn native_query_executes_round_decimal_cast_to_integral_expression() {
 
 #[test]
 fn native_query_rejects_date64_temporal_scalars_before_source_read() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context();
     let input_schema = Arc::new(Schema::new(vec![Field::new("event_date64", DataType::Date64, true)]));
 
     let cases = [
@@ -713,7 +708,6 @@ fn native_query_rejects_date64_temporal_scalars_before_source_read() {
         let source = builder.add_source(SourceNode::LocalParquet(source));
         let projection = builder.add_projection(source, projection_outputs(projection, output_schema));
         let plan = builder.finish_with_host_sink(projection);
-        let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
 
         let error = match execute_query_plan(&context, &plan) {
             Ok(_) => panic!("{name} should reject Date64 before source read"),
@@ -726,7 +720,7 @@ fn native_query_rejects_date64_temporal_scalars_before_source_read() {
 
 #[test]
 fn native_query_rejects_out_of_envelope_substring_before_source_read() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context();
     let input_schema = Arc::new(Schema::new(vec![
         Field::new("orderkey", DataType::Int64, false),
         Field::new("status", DataType::Utf8, true),
@@ -771,7 +765,6 @@ fn native_query_rejects_out_of_envelope_substring_before_source_read() {
         let source = builder.add_source(SourceNode::LocalParquet(source));
         let projection = builder.add_projection(source, projection_outputs(vec![expr], output_schema));
         let plan = builder.finish_with_host_sink(projection);
-        let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
 
         let error = match execute_query_plan(&context, &plan) {
             Ok(_) => panic!("{name} should reject before source read"),
@@ -788,7 +781,8 @@ fn native_query_rejects_out_of_envelope_substring_before_source_read() {
 fn native_query_rejects_unread_source_column_in_nested_scalar_before_cudf_execution() {
     let dir = unique_temp_dir("nexus-query-engine-native-execution-scalar_expression-source-column-reject");
     let path = dir.join("tpch-like.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context();
+    let runtime = Arc::new(context.runtime().unwrap());
     let input_schema = write_scalar_expression_parquet(&runtime, &path);
     let output_schema = Arc::new(Schema::new(vec![Field::new("status_label", DataType::Utf8, true)]));
     let source = LocalParquetSource::from_files(
@@ -809,7 +803,6 @@ fn native_query_rejects_unread_source_column_in_nested_scalar_before_cudf_execut
     let source = builder.add_source(SourceNode::LocalParquet(source));
     let projection = builder.add_projection(source, projection_outputs(vec![label], output_schema));
     let plan = builder.finish_with_host_sink(projection);
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
 
     let error = match execute_query_plan(&context, &plan) {
         Ok(_) => panic!("native plan validation should reject unread nested scalar columns before cuDF execution"),

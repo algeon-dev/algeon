@@ -41,10 +41,9 @@ use nexus_query_engine::{
     },
     runtime::{
         BoundedJoinReservationContract, BoundedJoinReservationStatus, BuildMaterializationBoundary,
-        ExecutionBoundaryPolicy, ExecutionCancellation, ExecutionContext, MemoryControlPolicy,
-        MemoryReservationRequest, MemorySpaceId, ProbeExecutionBoundary, ReservationKind,
-        ResultMaterializationBoundary, RetryFacts, SourceReadBoundary, SourceSchedulerPolicy,
-        cache::local_parquet::GpuLocalParquetSourceCacheKey,
+        ExecutionBoundaryPolicy, ExecutionCancellation, MemoryControlPolicy, MemoryReservationRequest, MemorySpaceId,
+        ProbeExecutionBoundary, ReservationKind, ResultMaterializationBoundary, RetryFacts, SourceReadBoundary,
+        SourceSchedulerPolicy, cache::local_parquet::GpuLocalParquetSourceCacheKey,
     },
     source::{
         ByteRangeDisposition, CredentialMode, GpuResidentSource, LakehouseCacheFillMode, LakehouseCacheReadMode,
@@ -135,8 +134,6 @@ mod dependency_direction;
 mod expr_contracts;
 #[path = "native_contract_tests/graph_algorithm.rs"]
 mod graph_algorithm;
-#[path = "native_contract_tests/multi_device_registry.rs"]
-mod multi_device_registry;
 #[path = "native_contract_tests/optimizer_contracts.rs"]
 mod optimizer_contracts;
 #[path = "native_contract_tests/partial_aggregate_sizing.rs"]
@@ -216,35 +213,6 @@ fn query_error_correlation_stamping_replaces_existing_correlation_facts() {
     assert_eq!(error.trace_id().map(TraceId::as_str), Some("request-trace"));
     assert_eq!(error.fact_value("query_id"), Some("request-query"));
     assert_eq!(error.fact_value("trace_id"), Some("request-trace"));
-}
-
-#[test]
-fn execute_query_plan_stamps_correlation_on_early_errors() {
-    let schema = Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false)]));
-    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![1]))]).unwrap();
-    let mut builder = QueryPlanBuilder::new();
-    let source =
-        builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![batch])));
-    let plan = builder.finish_with_host_sink(source);
-
-    let cancellation = ExecutionCancellation::new();
-    cancellation.cancel();
-    let context = ExecutionContext::builder()
-        .with_cancellation(cancellation)
-        .with_query_id(QueryId::new("query-exec"))
-        .with_trace_id(TraceId::new("trace-exec"))
-        .build()
-        .unwrap();
-
-    let error = match nexus_query_engine::exec::execute_query_plan(&context, &plan) {
-        Ok(_) => panic!("cancelled context should fail before execution"),
-        Err(error) => error,
-    };
-    assert_eq!(error.code(), QueryErrorCode::Cancelled);
-    assert_eq!(error.query_id().map(QueryId::as_str), Some("query-exec"));
-    assert_eq!(error.trace_id().map(TraceId::as_str), Some("trace-exec"));
-    assert_eq!(error.fact_value("query_id"), Some("query-exec"));
-    assert_eq!(error.fact_value("trace_id"), Some("trace-exec"));
 }
 
 #[test]
@@ -385,20 +353,10 @@ fn source_scheduler_policy_defaults_to_prefetch_and_rejects_zero_in_flight() {
     assert_eq!(serialized.max_source_reads_in_flight(), 1);
     assert!(!serialized.enables_prefetch());
 
-    let error =
-        ExecutionContext::builder().with_source_scheduler_policy(SourceSchedulerPolicy::new(0)).build().unwrap_err();
+    let error = SourceSchedulerPolicy::new(0).validate().unwrap_err();
     assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
     assert_eq!(error.operation(), "nexus_query_engine.source_scheduler_policy.validate");
     assert_eq!(error.fact_value("field"), Some("max_source_reads_in_flight"));
-    assert_eq!(error.fact_value("reason"), Some("zero"));
-}
-
-#[test]
-fn service_stream_pool_rejects_zero_capacity_before_runtime_initialization() {
-    let error = ExecutionContext::builder().with_service_stream_pool_size(0).build().unwrap_err();
-    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
-    assert_eq!(error.operation(), "nexus_query_engine.service_stream_pool.validate");
-    assert_eq!(error.fact_value("field"), Some("service_stream_pool_size"));
     assert_eq!(error.fact_value("reason"), Some("zero"));
 }
 
@@ -456,7 +414,7 @@ fn bounded_memory_control_policy_rejects_zero_fields_before_runtime_initializati
             },
         ),
     ] {
-        let error = ExecutionContext::builder().with_memory_control_policy(policy).build().unwrap_err();
+        let error = policy.validate().unwrap_err();
 
         assert_eq!(error.code(), QueryErrorCode::InvalidPlan, "{field}");
         assert_eq!(error.operation(), "nexus_query_engine.memory_policy.validate", "{field}");
@@ -471,7 +429,7 @@ fn durable_hash_join_boundary_requires_explicit_cache() {
     let policy =
         ExecutionBoundaryPolicy::default().with_build_materialization(BuildMaterializationBoundary::DurableGpuHashJoin);
 
-    let error = ExecutionContext::builder().with_boundary_policy(policy).build().unwrap_err();
+    let error = policy.validate(false).unwrap_err();
 
     assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
     assert_eq!(error.operation(), "nexus_query_engine.boundary_policy.validate");

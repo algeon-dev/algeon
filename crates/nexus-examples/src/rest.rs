@@ -92,10 +92,9 @@ async fn plan_pipeline(State(state): State<AppState>, Path(name): Path<String>) 
 }
 
 async fn gpu(State(state): State<AppState>) -> Result<Json<Value>, AppError> {
-    let service = state.backend.query_service();
-    let snapshot = service.admission_snapshot().map_err(AppError::from_native)?;
-    let memory_governors = service.memory_governor_reports().map_err(AppError::from_native)?;
-    let memory_failures = service.device_memory_failure_reports();
+    let snapshot = state.backend.admission_snapshot().map_err(AppError::from_native)?;
+    let memory_governors = state.backend.memory_governor_reports().map_err(AppError::from_native)?;
+    let memory_failures = state.backend.device_memory_failure_reports().map_err(AppError::from_native)?;
     Ok(Json(json!({
         "admission": {
             "active_queries": snapshot.active_queries,

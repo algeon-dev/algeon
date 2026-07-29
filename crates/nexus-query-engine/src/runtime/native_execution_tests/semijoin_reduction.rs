@@ -1,8 +1,8 @@
 use super::*;
 
 #[test]
-fn optimized_semijoin_reduction_matches_original_execution_on_small_fixture() {
-    let dir = unique_temp_dir("nexus-query-engine-semijoin-reduction-parity");
+fn unbounded_semijoin_reduction_matches_original_execution_on_small_fixture() {
+    let dir = unique_temp_dir("nexus-query-engine-unbounded-semijoin-reduction-parity");
     let a_path = dir.join("a.parquet");
     let b_path = dir.join("b.parquet");
     let keyset_path = dir.join("keyset.parquet");
@@ -38,6 +38,7 @@ fn optimized_semijoin_reduction_matches_original_execution_on_small_fixture() {
     assert_eq!(optimizer_result.diagnostics.semijoin_reduction.applied_count, 1);
 
     let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
+    assert_eq!(context.memory_control_policy(), MemoryControlPolicy::Unbounded);
     let original = execute_query_plan(&context, &plan).unwrap();
     let optimized = execute_query_plan(&context, &optimizer_result.plan).unwrap();
 

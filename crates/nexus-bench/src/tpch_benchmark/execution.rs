@@ -80,13 +80,7 @@ pub(super) async fn plan_native_query(
     query: &TpchQuery,
     config: &NativeTpchBenchmarkConfig,
 ) -> DataFusionResult<PlannedNativeQuery> {
-    plan_native_query_with_resources(
-        metadata,
-        query,
-        config,
-        &NativeTpchRuntimeResources { runtime: None, source_cache: None },
-    )
-    .await
+    plan_native_query_with_resources(metadata, query, config, &NativeTpchRuntimeResources::unavailable()).await
 }
 
 async fn plan_native_query_with_resources(

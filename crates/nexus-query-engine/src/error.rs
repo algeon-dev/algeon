@@ -338,6 +338,12 @@ pub struct QueryError {
     message: String,
     facts: Box<Facts>,
     source: Option<BoxedSourceError>,
+    cleanup_disposition: Option<CleanupDisposition>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CleanupDisposition {
+    DeadlineElapsed,
 }
 
 impl QueryError {
@@ -350,7 +356,31 @@ impl QueryError {
         let message = message.into();
         assert!(!operation.is_empty(), "nexus-query-engine error operation must not be empty");
         assert!(!message.is_empty(), "nexus-query-engine error message must not be empty");
-        Self { query_id: None, trace_id: None, code, operation, message, facts: Box::new(Facts::new()), source: None }
+        Self {
+            query_id: None,
+            trace_id: None,
+            code,
+            operation,
+            message,
+            facts: Box::new(Facts::new()),
+            source: None,
+            cleanup_disposition: None,
+        }
+    }
+
+    /// Marks an owner-reported cleanup wait as an elapsed deadline.
+    ///
+    /// This internal typed bit is deliberately separate from the public error
+    /// code: `ServiceOverloaded` is also used by ordinary admission and cannot
+    /// by itself authorize indefinite cleanup retries.
+    #[must_use]
+    pub(crate) fn with_cleanup_deadline_elapsed(mut self) -> Self {
+        self.cleanup_disposition = Some(CleanupDisposition::DeadlineElapsed);
+        self
+    }
+
+    pub(crate) fn is_cleanup_deadline_elapsed(&self) -> bool {
+        self.cleanup_disposition == Some(CleanupDisposition::DeadlineElapsed)
     }
 
     /// Adds one machine-readable fact.
