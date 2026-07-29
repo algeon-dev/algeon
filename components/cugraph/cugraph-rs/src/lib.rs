@@ -41,8 +41,8 @@
 //! };
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
-//! let runtime = Runtime::new()?;
-//! let handle = ResourceHandle::for_runtime_device(&runtime)?;
+//! let runtime = std::sync::Arc::new(Runtime::new()?);
+//! let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime))?;
 //!
 //! let src = runtime.series(&[0i32, 1, 2, 1, 2, 0])?;
 //! let dst = runtime.series(&[1i32, 2, 0, 0, 1, 2])?;

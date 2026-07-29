@@ -21,8 +21,9 @@ use crate::{
 ///     structure::VertexSelection,
 /// };
 ///
-/// let runtime = cudf::Runtime::new().unwrap();
-/// let handle = ResourceHandle::for_runtime_device(&runtime).unwrap();
+/// let runtime = std::sync::Arc::new(cudf::Runtime::new().unwrap());
+/// let handle =
+///     ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).unwrap();
 ///
 /// let device_vertices = runtime.series(&[0i32, 1]).unwrap();
 /// let column = device_vertices.as_column();

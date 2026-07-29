@@ -15,8 +15,8 @@ use common::support::{
 };
 
 fn test_handle() -> ResourceHandle {
-    let runtime = explicit_runtime();
-    ResourceHandle::for_runtime_device(&runtime).expect("handle")
+    let runtime = std::sync::Arc::new(explicit_runtime());
+    ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).expect("handle")
 }
 
 fn degree_map(

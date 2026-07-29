@@ -19,8 +19,9 @@
 //!     random::RngState,
 //! };
 //!
-//! let runtime = cudf::Runtime::new().unwrap();
-//! let handle = ResourceHandle::for_runtime_device(&runtime).unwrap();
+//! let runtime = std::sync::Arc::new(cudf::Runtime::new().unwrap());
+//! let handle =
+//!     ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).unwrap();
 //! let layout_seed = 42_u64;
 //! let mut rng = RngState::new(&handle, layout_seed).unwrap();
 //!

@@ -5,6 +5,7 @@ use std::{
     io::ErrorKind as IoErrorKind,
     path::{Path, PathBuf},
     process::{Command, Output},
+    sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -261,9 +262,10 @@ fn environment_failure_from_error(error: anyhow::Error) -> HarnessFailure {
 
 fn execute_louvain_harness(fixture: &Path) -> Result<LouvainParityReport, HarnessFailure> {
     let fixture = prepare_fixture_path(fixture).map_err(environment_failure_from_error)?;
-    let runtime =
-        Runtime::new().context("build cudf runtime for parity harness").map_err(environment_failure_from_error)?;
-    let handle = ResourceHandle::for_runtime_device(&runtime)
+    let runtime = Arc::new(
+        Runtime::new().context("build cudf runtime for parity harness").map_err(environment_failure_from_error)?,
+    );
+    let handle = ResourceHandle::for_runtime(Arc::clone(&runtime))
         .context("build cuGraph resource handle for parity harness")
         .map_err(environment_failure_from_error)?;
     let prepared = prepare_parity_fixture(&runtime, &fixture).map_err(environment_failure_from_error)?;
