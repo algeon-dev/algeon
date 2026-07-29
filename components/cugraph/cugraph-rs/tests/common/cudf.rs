@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeSet, HashMap},
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use cugraph::{
@@ -20,6 +21,14 @@ use crate::common::support::write_bfs_graph_parquet;
 
 pub fn explicit_runtime() -> cudf::Runtime {
     cudf::Runtime::builder().build().expect("runtime")
+}
+
+pub fn explicit_runtime_owner() -> Arc<cudf::Runtime> {
+    Arc::new(explicit_runtime())
+}
+
+pub fn runtime_bound_handle(runtime: &Arc<cudf::Runtime>) -> ResourceHandle {
+    ResourceHandle::for_runtime(Arc::clone(runtime)).expect("runtime-bound handle")
 }
 
 pub fn i32_series_device_ptr(series: &cudf::Series) -> usize {

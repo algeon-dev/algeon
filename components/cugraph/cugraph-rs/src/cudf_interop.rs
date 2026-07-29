@@ -60,7 +60,9 @@
 //!
 //! The borrowed graph-construction entry points remain supported as
 //! compatibility zero-copy paths, especially for callers that already operate
-//! on explicit borrowed descriptors and only need synchronous host-side fencing.
+//! on explicit borrowed descriptors. Runtime-bound borrowed paths use
+//! device-side ordering; non-runtime-bound compatibility paths may still rely
+//! on host fencing.
 //!
 //! # Borrowed compatibility policy
 //!
@@ -70,12 +72,15 @@
 //! - ambient/default-only cudf objects are rejected
 //! - all borrowed inputs must live on the same CUDA device
 //! - that device must match the [`ResourceHandle`] device
-//! - mixed producer streams on one device are allowed, but they are fenced
-//!   conservatively on the host before cuGraph reads borrowed memory
+//! - on runtime-bound handles, same-device different-stream producers insert
+//!   device-side ordering into the runtime stream before cuGraph reads
+//!   borrowed memory
+//! - on non-runtime-bound handles, compatibility borrowed imports may still
+//!   fence producer streams on the host before cuGraph reads borrowed memory
 //!
 //! [`DeviceSlice`]: cudf::core::DeviceSlice
 
-use std::{collections::BTreeSet, ffi::c_void};
+use std::{any::Any, collections::BTreeSet, error::Error as StdError, ffi::c_void, sync::Arc};
 
 use cudf::{
     DuplicateKeepOption, Runtime, SortOptions, TypeId as CudfTypeId,
@@ -94,8 +99,8 @@ use crate::{
     centrality::{BetweennessCentralityResult, PageRankResult},
     community::LouvainResult,
     cuda::{DeviceGuard, check_cudf_status},
-    error::{Error, ErrorKind, Result},
-    graph::{Graph, GraphBuilder, Transposition},
+    error::{Error, ErrorKind, ErrorStatus, Result},
+    graph::{DeferredInputCompletion, Graph, GraphBuilder, Transposition},
     handle::ResourceHandle,
     layout::LayoutResult,
     structure::{
@@ -225,7 +230,7 @@ fn runtime_for_handle(handle: &ResourceHandle, operation: &'static str) -> Resul
 /// ```no_run
 /// use cugraph::cudf_interop::device_array_view_from_slice;
 ///
-/// let runtime = cudf::Runtime::new().unwrap();
+/// let runtime = std::sync::Arc::new(cudf::Runtime::new().unwrap());
 /// let series = runtime.series(&[0i32, 1, 2]).unwrap();
 /// let col = series.as_column();
 /// let slice = col.device_slice::<i32>().unwrap();
@@ -813,32 +818,326 @@ struct PreparedEdgeList<'a> {
     weights: Option<PreparedEdgeColumn<'a>>,
 }
 
-fn map_interop_error(error: InteropError, operation: &'static str) -> Error {
-    let mut mapped = match error.kind() {
+struct RetainedPreparedCompletion {
+    owner: Arc<dyn Any + Send + Sync>,
+    witness: rapids_interop::CompletionWitness,
+}
+
+/// Testing-only borrowed-input ordering plan.
+///
+/// This captures the intended runtime-bound ordering contract before the
+/// native runtime-bound cuGraph handle lands. It is intentionally narrower
+/// than the eventual execution implementation and exists so Phase 1 can lock
+/// the contract in executable tests without pretending the old handle is
+/// already bound to the runtime stream.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BorrowedInputOrderingPlan {
+    CompatibilityHostFence { unique_streams: usize },
+    RuntimeNoHostFence,
+    RuntimeDeviceSideDependencies { dependency_count: usize },
+}
+
+fn borrowed_unique_stream_count(edge_list: &BorrowedEdgeList<'_>) -> usize {
+    let mut seen = BTreeSet::new();
+
+    for stream in [
+        edge_list.src.execution().cuda_stream().as_raw(),
+        edge_list.dst.execution().cuda_stream().as_raw(),
+        edge_list
+            .weights
+            .as_ref()
+            .map(|column| column.execution().cuda_stream().as_raw())
+            .unwrap_or(std::ptr::null_mut()),
+    ] {
+        if stream.is_null() {
+            continue;
+        }
+        seen.insert(stream as usize);
+    }
+
+    seen.len()
+}
+
+fn borrowed_input_ordering_plan(
+    handle: &ResourceHandle,
+    edge_list: &BorrowedEdgeList<'_>,
+    operation: &'static str,
+) -> Result<BorrowedInputOrderingPlan> {
+    validate_edge_list_policy(handle, edge_list, operation)?;
+
+    let Some(runtime) = handle.runtime() else {
+        return Ok(BorrowedInputOrderingPlan::CompatibilityHostFence {
+            unique_streams: borrowed_unique_stream_count(edge_list),
+        });
+    };
+
+    let consumer_stream = cudf::interop::cuda_stream_handle(runtime.stream())
+        .map_err(|error| map_runtime_ordering_interop_error(error, operation))?;
+    let mut seen = BTreeSet::new();
+    let mut dependency_count = 0usize;
+
+    let mut executions = vec![edge_list.src.execution(), edge_list.dst.execution()];
+    if let Some(weights) = edge_list.weights.as_ref() {
+        executions.push(weights.execution());
+    }
+
+    for execution in executions {
+        if execution.device() != runtime.device().ordinal() as i32 {
+            return Err(Error::new(ErrorKind::InvalidInput, operation)
+                .with_message("borrowed graph inputs must match the runtime-bound handle CUDA device")
+                .with_context("producer_device", execution.device().to_string())
+                .with_context("runtime_device", runtime.device().ordinal().to_string()));
+        }
+
+        let producer_stream = execution.cuda_stream().as_raw();
+        if producer_stream.is_null() || !seen.insert(producer_stream as usize) {
+            continue;
+        }
+        if producer_stream != consumer_stream.as_raw() {
+            dependency_count += 1;
+        }
+    }
+
+    if dependency_count == 0 {
+        Ok(BorrowedInputOrderingPlan::RuntimeNoHostFence)
+    } else {
+        Ok(BorrowedInputOrderingPlan::RuntimeDeviceSideDependencies { dependency_count })
+    }
+}
+
+fn order_runtime_after_execution_bindings<'a>(
+    runtime: &Runtime,
+    executions: impl IntoIterator<Item = rapids_interop::ExecutionBinding<'a>>,
+    operation: &'static str,
+) -> Result<Vec<cudf::runtime::CudaEvent>> {
+    let mut seen = BTreeSet::new();
+    let mut barriers = Vec::new();
+
+    for execution in executions {
+        let stream_raw = execution.cuda_stream().as_raw();
+        if stream_raw.is_null() || !seen.insert(stream_raw as usize) {
+            continue;
+        }
+
+        match runtime
+            .order_after_execution_binding(execution, operation)
+            .map_err(|error| map_runtime_ordering_interop_error(error, operation))?
+        {
+            cudf::StreamDependencyOutcome::NoOp => {},
+            cudf::StreamDependencyOutcome::Barrier(barrier) => barriers.push(barrier),
+        }
+    }
+
+    Ok(barriers)
+}
+
+fn order_runtime_after_borrowed_edge_list(
+    runtime: &Runtime,
+    edge_list: &BorrowedEdgeList<'_>,
+    operation: &'static str,
+) -> Result<Vec<cudf::runtime::CudaEvent>> {
+    let mut executions = vec![edge_list.src.execution(), edge_list.dst.execution()];
+    if let Some(weights) = edge_list.weights.as_ref() {
+        executions.push(weights.execution());
+    }
+
+    order_runtime_after_execution_bindings(runtime, executions, operation)
+}
+
+#[doc(hidden)]
+pub mod testing {
+    use rapids_interop::BorrowedColumnView;
+
+    use super::{BorrowedEdgeList, BorrowedInputOrderingPlan, borrowed_input_ordering_plan};
+    use crate::{error::Result, handle::ResourceHandle};
+
+    /// Compute the Phase 1 borrowed-input ordering plan for explicit borrowed
+    /// columns.
+    pub fn borrowed_columns_ordering_plan(
+        handle: &ResourceHandle,
+        src: &BorrowedColumnView<'_>,
+        dst: &BorrowedColumnView<'_>,
+        weights: Option<&BorrowedColumnView<'_>>,
+    ) -> Result<BorrowedInputOrderingPlan> {
+        let edge_list = BorrowedEdgeList { src: src.clone(), dst: dst.clone(), weights: weights.cloned() };
+        borrowed_input_ordering_plan(handle, &edge_list, "cudf_interop::testing::borrowed_columns_ordering_plan")
+    }
+}
+
+fn map_runtime_ordering_interop_error(error: InteropError, operation: &'static str) -> Error {
+    map_interop_boundary_error(
+        error,
+        operation,
+        "failed to establish runtime-stream ordering for cudf interop input",
+        classify_runtime_ordering_interop_error,
+    )
+}
+
+fn map_prepared_lease_activation_interop_error(error: InteropError, operation: &'static str) -> Error {
+    map_interop_boundary_error(
+        error,
+        operation,
+        "failed to activate prepared export read lease",
+        classify_prepared_lease_interop_error,
+    )
+}
+
+fn map_prepared_lease_completion_interop_error(error: InteropError, operation: &'static str) -> Error {
+    map_interop_boundary_error(
+        error,
+        operation,
+        "failed to complete prepared export read lease",
+        classify_prepared_lease_interop_error,
+    )
+}
+
+fn map_owned_import_interop_error(error: InteropError, operation: &'static str) -> Error {
+    map_interop_boundary_error(
+        error,
+        operation,
+        "failed to import shared interop input into the consumer cudf runtime",
+        classify_owned_import_interop_error,
+    )
+}
+
+fn map_borrowed_projection_interop_error(error: InteropError, operation: &'static str) -> Error {
+    map_interop_boundary_error(
+        error,
+        operation,
+        "failed to project cudf table view into borrowed RAPIDS interop",
+        classify_projection_interop_error,
+    )
+}
+
+fn map_prepared_projection_interop_error(error: InteropError, operation: &'static str) -> Error {
+    map_interop_boundary_error(
+        error,
+        operation,
+        "failed to prepare cudf-owned input for prepared device export",
+        classify_projection_interop_error,
+    )
+}
+
+fn classify_runtime_ordering_interop_error(kind: InteropErrorKind) -> (ErrorKind, Option<ErrorStatus>) {
+    match kind {
         InteropErrorKind::UnsupportedType
         | InteropErrorKind::UnsupportedLayout
         | InteropErrorKind::PlacementUnsupported
-        | InteropErrorKind::ProfileUnsupported => Error::new(ErrorKind::UnsupportedType, operation),
-        InteropErrorKind::ExecutionBindingUnavailable | InteropErrorKind::ReadinessUnavailable => {
-            Error::new(ErrorKind::Unexpected, operation).set_temporary()
-        },
-        InteropErrorKind::NotFound
-        | InteropErrorKind::ExecutionBindingMismatch
+        | InteropErrorKind::ProfileUnsupported => (ErrorKind::UnsupportedType, Some(ErrorStatus::Permanent)),
+        InteropErrorKind::ExecutionBindingMismatch
+        | InteropErrorKind::MixedDeviceUnsupported
+        | InteropErrorKind::NullMaskUnsupported => (ErrorKind::InvalidInput, Some(ErrorStatus::Permanent)),
+        InteropErrorKind::ExecutionBindingUnavailable
+        | InteropErrorKind::NotFound
         | InteropErrorKind::InvalidView
         | InteropErrorKind::ReadinessMismatch
-        | InteropErrorKind::LeaseAlreadyActive => Error::new(ErrorKind::InvalidState, operation),
-        InteropErrorKind::MixedDeviceUnsupported | InteropErrorKind::NullMaskUnsupported => {
-            Error::new(ErrorKind::InvalidInput, operation)
-        },
+        | InteropErrorKind::LeaseAlreadyActive => (ErrorKind::InvalidState, Some(ErrorStatus::Permanent)),
+        InteropErrorKind::ReadinessUnavailable => (ErrorKind::Unexpected, None),
     }
-    .with_message(error.to_string())
-    .set_source(error.clone());
+}
+
+fn classify_prepared_lease_interop_error(kind: InteropErrorKind) -> (ErrorKind, Option<ErrorStatus>) {
+    match kind {
+        InteropErrorKind::UnsupportedType
+        | InteropErrorKind::UnsupportedLayout
+        | InteropErrorKind::PlacementUnsupported
+        | InteropErrorKind::ProfileUnsupported => (ErrorKind::UnsupportedType, Some(ErrorStatus::Permanent)),
+        InteropErrorKind::ExecutionBindingMismatch
+        | InteropErrorKind::MixedDeviceUnsupported
+        | InteropErrorKind::NullMaskUnsupported => (ErrorKind::InvalidInput, Some(ErrorStatus::Permanent)),
+        InteropErrorKind::ExecutionBindingUnavailable
+        | InteropErrorKind::NotFound
+        | InteropErrorKind::InvalidView
+        | InteropErrorKind::ReadinessMismatch
+        | InteropErrorKind::LeaseAlreadyActive => (ErrorKind::InvalidState, Some(ErrorStatus::Permanent)),
+        InteropErrorKind::ReadinessUnavailable => (ErrorKind::Unexpected, None),
+    }
+}
+
+fn classify_owned_import_interop_error(kind: InteropErrorKind) -> (ErrorKind, Option<ErrorStatus>) {
+    match kind {
+        InteropErrorKind::UnsupportedType
+        | InteropErrorKind::UnsupportedLayout
+        | InteropErrorKind::PlacementUnsupported
+        | InteropErrorKind::ProfileUnsupported => (ErrorKind::UnsupportedType, Some(ErrorStatus::Permanent)),
+        InteropErrorKind::ExecutionBindingMismatch
+        | InteropErrorKind::MixedDeviceUnsupported
+        | InteropErrorKind::NullMaskUnsupported => (ErrorKind::InvalidInput, Some(ErrorStatus::Permanent)),
+        InteropErrorKind::ExecutionBindingUnavailable
+        | InteropErrorKind::NotFound
+        | InteropErrorKind::InvalidView
+        | InteropErrorKind::ReadinessMismatch
+        | InteropErrorKind::LeaseAlreadyActive => (ErrorKind::InvalidState, Some(ErrorStatus::Permanent)),
+        InteropErrorKind::ReadinessUnavailable => (ErrorKind::Unexpected, None),
+    }
+}
+
+fn classify_projection_interop_error(kind: InteropErrorKind) -> (ErrorKind, Option<ErrorStatus>) {
+    match kind {
+        InteropErrorKind::UnsupportedType
+        | InteropErrorKind::UnsupportedLayout
+        | InteropErrorKind::PlacementUnsupported
+        | InteropErrorKind::ProfileUnsupported => (ErrorKind::UnsupportedType, Some(ErrorStatus::Permanent)),
+        InteropErrorKind::ExecutionBindingMismatch
+        | InteropErrorKind::MixedDeviceUnsupported
+        | InteropErrorKind::NullMaskUnsupported => (ErrorKind::InvalidInput, Some(ErrorStatus::Permanent)),
+        InteropErrorKind::ExecutionBindingUnavailable
+        | InteropErrorKind::NotFound
+        | InteropErrorKind::InvalidView
+        | InteropErrorKind::ReadinessMismatch
+        | InteropErrorKind::LeaseAlreadyActive => (ErrorKind::InvalidState, Some(ErrorStatus::Permanent)),
+        InteropErrorKind::ReadinessUnavailable => (ErrorKind::Unexpected, None),
+    }
+}
+
+fn map_interop_boundary_error(
+    error: InteropError,
+    operation: &'static str,
+    message: &'static str,
+    classify: fn(InteropErrorKind) -> (ErrorKind, Option<ErrorStatus>),
+) -> Error {
+    let (kind, explicit_status) = classify(error.kind());
+    let mut mapped = Error::new(kind, operation).with_message(interop_boundary_message(message, error.message()));
+    if let Some(status) = explicit_status.or_else(|| interop_error_source_status(&error)) {
+        mapped = apply_error_status(mapped, status);
+    }
+    mapped = mapped.with_context("interop_kind", format!("{:?}", error.kind()));
+    mapped = mapped.with_context("interop_message", error.message().to_string());
 
     for (key, value) in error.context() {
         mapped = mapped.with_context(key, value.clone());
     }
 
-    mapped
+    mapped.set_source(error)
+}
+
+fn interop_boundary_message(boundary_message: &'static str, leaf_message: &str) -> String {
+    let leaf_message = leaf_message.trim();
+    if leaf_message.is_empty() { boundary_message.to_string() } else { format!("{boundary_message}: {leaf_message}") }
+}
+
+fn interop_error_source_status(error: &InteropError) -> Option<ErrorStatus> {
+    let mut source = error.source();
+    while let Some(current) = source {
+        if let Some(cudf_error) = current.downcast_ref::<cudf::Error>() {
+            return Some(match cudf_error.status() {
+                cudf::ErrorStatus::Permanent => ErrorStatus::Permanent,
+                cudf::ErrorStatus::Temporary => ErrorStatus::Temporary,
+                cudf::ErrorStatus::Persistent => ErrorStatus::Persistent,
+            });
+        }
+        source = current.source();
+    }
+    None
+}
+
+fn apply_error_status(mapped: Error, status: ErrorStatus) -> Error {
+    match status {
+        ErrorStatus::Permanent => mapped.set_permanent(),
+        ErrorStatus::Temporary => mapped.set_temporary(),
+        ErrorStatus::Persistent => mapped.set_persistent(),
+    }
 }
 
 fn map_cudf_error_code(code: cudf::ErrorCode) -> ErrorKind {
@@ -1014,7 +1313,7 @@ fn validate_edge_list_devices<'a>(
 ) -> Result<()> {
     for (name, device) in columns {
         if device != producer_device {
-            return Err(Error::new(ErrorKind::InvalidState, operation)
+            return Err(Error::new(ErrorKind::InvalidInput, operation)
                 .with_message(format!("{input_kind} graph inputs must all reside on the same CUDA device"))
                 .with_context("producer_device", producer_device.to_string())
                 .with_context("column_name", name.to_string())
@@ -1023,7 +1322,7 @@ fn validate_edge_list_devices<'a>(
     }
 
     if producer_device != handle.device() {
-        return Err(Error::new(ErrorKind::InvalidState, operation)
+        return Err(Error::new(ErrorKind::InvalidInput, operation)
             .with_message(format!("{input_kind} graph inputs must match the consumer handle device"))
             .with_context("producer_device", producer_device.to_string())
             .with_context("handle_device", handle.device().to_string()));
@@ -1267,6 +1566,34 @@ fn fence_producer_streams(edge_list: &BorrowedEdgeList<'_>, operation: &'static 
     Ok(())
 }
 
+fn order_borrowed_inputs_for_handle(
+    handle: &ResourceHandle,
+    edge_list: &BorrowedEdgeList<'_>,
+    operation: &'static str,
+) -> Result<Vec<cudf::runtime::CudaEvent>> {
+    match handle.runtime() {
+        Some(runtime) => order_runtime_after_borrowed_edge_list(runtime, edge_list, operation),
+        None => {
+            fence_producer_streams(edge_list, operation)?;
+            Ok(Vec::new())
+        },
+    }
+}
+
+fn prepared_lease_authorities<'a>(
+    handle: &'a ResourceHandle,
+    operation: &'static str,
+) -> Result<(ReadStartAuthority<'a>, CompletionAuthority<'a>)> {
+    match handle.runtime() {
+        Some(runtime) => {
+            let stream = cudf::interop::cuda_stream_handle(runtime.stream())
+                .map_err(|error| map_prepared_lease_activation_interop_error(error, operation))?;
+            Ok((ReadStartAuthority::ConsumerStream { stream }, CompletionAuthority::SameDeviceStream { stream }))
+        },
+        None => Ok((ReadStartAuthority::SynchronousByReturn, CompletionAuthority::SynchronousByReturn)),
+    }
+}
+
 fn build_graph_from_borrowed_edge_list_raw<'a, T: Transposition>(
     handle: &ResourceHandle,
     edge_list: &BorrowedEdgeList<'a>,
@@ -1278,7 +1605,7 @@ fn build_graph_from_borrowed_edge_list_raw<'a, T: Transposition>(
     let src = borrowed_column_to_raw(&edge_list.src, "src", operation)?;
     let dst = borrowed_column_to_raw(&edge_list.dst, "dst", operation)?;
     let wgt = edge_list.weights.as_ref().map(|column| borrowed_column_to_raw(column, "wgt", operation)).transpose()?;
-    fence_producer_streams(edge_list, operation)?;
+    let _barriers = order_borrowed_inputs_for_handle(handle, edge_list, operation)?;
 
     let mut builder = GraphBuilder::from_raw_views(properties, &src, &dst)?.renumber_flag(renumber);
     if let Some(ref weights) = wgt {
@@ -1289,38 +1616,63 @@ fn build_graph_from_borrowed_edge_list_raw<'a, T: Transposition>(
 
 fn complete_prepared_lease(
     result: std::result::Result<LeaseCompletionResult, InteropError>,
+    retained_owner: Option<Arc<dyn Any + Send + Sync>>,
     operation: &'static str,
-) -> Result<()> {
-    match result.map_err(|error| map_interop_error(error, operation))? {
-        LeaseCompletionResult::FallbackSynchronized => Ok(()),
-        LeaseCompletionResult::Completed(witness) => {
-            witness.synchronize().map_err(|error| map_interop_error(error, operation))
+) -> Result<Option<RetainedPreparedCompletion>> {
+    match result.map_err(|error| map_prepared_lease_completion_interop_error(error, operation))? {
+        LeaseCompletionResult::FallbackSynchronized => Ok(None),
+        LeaseCompletionResult::Completed(witness) => match retained_owner {
+            Some(owner) => Ok(Some(RetainedPreparedCompletion { owner, witness })),
+            None => witness
+                .synchronize()
+                .map_err(|error| map_prepared_lease_completion_interop_error(error, operation))
+                .map(|()| None),
         },
     }
 }
 
 fn finish_prepared_graph_result<T: Transposition>(
     graph_result: Result<Graph<T>>,
-    completions: impl IntoIterator<Item = Result<()>>,
+    completions: impl IntoIterator<Item = Result<Option<RetainedPreparedCompletion>>>,
 ) -> Result<Graph<T>> {
     let mut completion_error = None;
+    let mut retained_owners = Vec::new();
+    let mut retained_witnesses = Vec::new();
     for completion in completions {
-        if let Err(error) = completion {
-            if completion_error.is_none() {
-                completion_error = Some(error);
-            }
+        match completion {
+            Ok(Some(retained)) => {
+                retained_owners.push(retained.owner);
+                retained_witnesses.push(retained.witness);
+            },
+            Ok(None) => {},
+            Err(error) => {
+                if completion_error.is_none() {
+                    completion_error = Some(error);
+                }
+            },
         }
     }
+    let pending_input_completion = DeferredInputCompletion::new(retained_owners, retained_witnesses);
 
     match graph_result {
         Ok(graph) => {
             if let Some(error) = completion_error {
+                if let Some(pending) = pending_input_completion {
+                    pending.synchronize();
+                }
                 Err(error)
+            } else if let Some(pending) = pending_input_completion {
+                Ok(graph.with_pending_input_completion(pending))
             } else {
                 Ok(graph)
             }
         },
-        Err(error) => Err(error),
+        Err(error) => {
+            if let Some(pending) = pending_input_completion {
+                pending.synchronize();
+            }
+            Err(error)
+        },
     }
 }
 
@@ -1500,10 +1852,14 @@ fn build_graph_from_owned_dataframe_raw<T: Transposition>(
     has_weights: bool,
     operation: &'static str,
 ) -> Result<Graph<T>> {
-    let export = df.try_prepare_device_table_export().map_err(|error| map_interop_error(error, operation))?;
+    let export = df
+        .try_prepare_device_table_export()
+        .map_err(|error| map_prepared_projection_interop_error(error, operation))?;
+    let retained_owner = export.clone_retained_owner();
+    let (read_start, completion) = prepared_lease_authorities(handle, operation)?;
     let lease = export
-        .try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, CompletionAuthority::SynchronousByReturn)
-        .map_err(|error| map_interop_error(error, operation))?;
+        .try_activate_read_lease(read_start, completion)
+        .map_err(|error| map_prepared_lease_activation_interop_error(error, operation))?;
 
     let columns = lease.export().columns();
     let bindings = lease.export().bindings();
@@ -1514,7 +1870,7 @@ fn build_graph_from_owned_dataframe_raw<T: Transposition>(
     };
 
     let graph_result = build_graph_from_prepared_edge_list_raw(handle, &edge_list, properties, renumber, operation);
-    let lease_complete = complete_prepared_lease(lease.complete(), operation);
+    let lease_complete = complete_prepared_lease(lease.complete(), retained_owner, operation);
 
     finish_prepared_graph_result(graph_result, [lease_complete])
 }
@@ -1557,19 +1913,25 @@ fn canonical_edge_dataframe_from_borrowed_edge_list(
     operation: &'static str,
 ) -> Result<cudf::DataFrame> {
     validate_edge_list_policy(handle, edge_list, operation)?;
-    fence_producer_streams(edge_list, operation)?;
+    let _barriers = order_borrowed_inputs_for_handle(handle, edge_list, operation)?;
 
-    let runtime = runtime_for_handle(handle, operation)?;
-    let src = cudf::Series::try_import_from_borrowed_column_view_into_runtime(&edge_list.src, &runtime)
-        .map_err(|error| map_interop_error(error, operation))?;
-    let dst = cudf::Series::try_import_from_borrowed_column_view_into_runtime(&edge_list.dst, &runtime)
-        .map_err(|error| map_interop_error(error, operation))?;
+    let owned_runtime;
+    let runtime = if let Some(runtime) = handle.runtime() {
+        runtime
+    } else {
+        owned_runtime = runtime_for_handle(handle, operation)?;
+        &owned_runtime
+    };
+    let src = cudf::Series::try_import_from_borrowed_column_view_into_runtime(&edge_list.src, runtime)
+        .map_err(|error| map_owned_import_interop_error(error, operation))?;
+    let dst = cudf::Series::try_import_from_borrowed_column_view_into_runtime(&edge_list.dst, runtime)
+        .map_err(|error| map_owned_import_interop_error(error, operation))?;
     let weights = edge_list
         .weights
         .as_ref()
         .map(|column| {
-            cudf::Series::try_import_from_borrowed_column_view_into_runtime(column, &runtime)
-                .map_err(|error| map_interop_error(error, operation))
+            cudf::Series::try_import_from_borrowed_column_view_into_runtime(column, runtime)
+                .map_err(|error| map_owned_import_interop_error(error, operation))
         })
         .transpose()?;
 
@@ -1583,15 +1945,21 @@ fn canonical_edge_dataframe_from_prepared_exports(
     weights: Option<&PreparedColumnExport<'_>>,
     operation: &'static str,
 ) -> Result<cudf::DataFrame> {
-    let runtime = runtime_for_handle(handle, operation)?;
-    let src = cudf::Series::try_import_from_prepared_column_export_into_runtime(src, &runtime)
-        .map_err(|error| map_interop_error(error, operation))?;
-    let dst = cudf::Series::try_import_from_prepared_column_export_into_runtime(dst, &runtime)
-        .map_err(|error| map_interop_error(error, operation))?;
+    let owned_runtime;
+    let runtime = if let Some(runtime) = handle.runtime() {
+        runtime
+    } else {
+        owned_runtime = runtime_for_handle(handle, operation)?;
+        &owned_runtime
+    };
+    let src = cudf::Series::try_import_from_prepared_column_export_into_runtime(src, runtime)
+        .map_err(|error| map_owned_import_interop_error(error, operation))?;
+    let dst = cudf::Series::try_import_from_prepared_column_export_into_runtime(dst, runtime)
+        .map_err(|error| map_owned_import_interop_error(error, operation))?;
     let weights = weights
         .map(|column| {
-            cudf::Series::try_import_from_prepared_column_export_into_runtime(column, &runtime)
-                .map_err(|error| map_interop_error(error, operation))
+            cudf::Series::try_import_from_prepared_column_export_into_runtime(column, runtime)
+                .map_err(|error| map_owned_import_interop_error(error, operation))
         })
         .transpose()?;
 
@@ -1659,9 +2027,10 @@ pub fn graph_from_borrowed_table_view<T: Transposition>(
 
 /// Build a cuGraph [`Graph`] directly from prepared-device RAPIDS column exports.
 ///
-/// This is the primary single-GPU shared-contract path. The function activates
-/// one read lease per input export with conservative synchronous-by-return
-/// authorities, builds the graph, then completes the leases before returning.
+/// This is the primary single-GPU shared-contract path. Runtime-bound handles
+/// activate one read lease per input export on the consumer stream and retain
+/// same-device completion ordering explicitly. Non-runtime-bound handles fall
+/// back to synchronous-by-return lease authorities.
 ///
 /// When [`GraphConstructionPolicy::PythonCugraph`] is selected, this function
 /// may first import the edge columns into owned cudf objects on the consumer
@@ -1692,22 +2061,27 @@ pub fn graph_from_prepared_columns<T: Transposition>(
         );
     }
 
-    let read_start = ReadStartAuthority::SynchronousByReturn;
-    let completion = CompletionAuthority::SynchronousByReturn;
-    let mut src_lease =
-        Some(src.try_activate_read_lease(read_start, completion).map_err(|error| map_interop_error(error, operation))?);
+    let (read_start, completion) = prepared_lease_authorities(handle, operation)?;
+    let src_retained_owner = src.clone_retained_owner();
+    let dst_retained_owner = dst.clone_retained_owner();
+    let wgt_retained_owner = weights.and_then(|weights| weights.clone_retained_owner());
+    let mut src_lease = Some(
+        src.try_activate_read_lease(read_start, completion)
+            .map_err(|error| map_prepared_lease_activation_interop_error(error, operation))?,
+    );
     let mut dst_lease = None;
     let mut wgt_lease = None;
 
     let graph_result = (|| {
         dst_lease = Some(
-            dst.try_activate_read_lease(read_start, completion).map_err(|error| map_interop_error(error, operation))?,
+            dst.try_activate_read_lease(read_start, completion)
+                .map_err(|error| map_prepared_lease_activation_interop_error(error, operation))?,
         );
         wgt_lease = weights
             .map(|weights| {
                 weights
                     .try_activate_read_lease(read_start, completion)
-                    .map_err(|error| map_interop_error(error, operation))
+                    .map_err(|error| map_prepared_lease_activation_interop_error(error, operation))
             })
             .transpose()?;
 
@@ -1729,12 +2103,18 @@ pub fn graph_from_prepared_columns<T: Transposition>(
         build_graph_from_prepared_edge_list_raw(handle, &edge_list, options.properties, options.renumber, operation)
     })();
 
-    let src_complete =
-        src_lease.take().map(|lease| complete_prepared_lease(lease.complete(), operation)).unwrap_or(Ok(()));
-    let dst_complete =
-        dst_lease.take().map(|lease| complete_prepared_lease(lease.complete(), operation)).unwrap_or(Ok(()));
-    let wgt_complete =
-        wgt_lease.take().map(|lease| complete_prepared_lease(lease.complete(), operation)).unwrap_or(Ok(()));
+    let src_complete = src_lease
+        .take()
+        .map(|lease| complete_prepared_lease(lease.complete(), src_retained_owner, operation))
+        .unwrap_or(Ok(None));
+    let dst_complete = dst_lease
+        .take()
+        .map(|lease| complete_prepared_lease(lease.complete(), dst_retained_owner, operation))
+        .unwrap_or(Ok(None));
+    let wgt_complete = wgt_lease
+        .take()
+        .map(|lease| complete_prepared_lease(lease.complete(), wgt_retained_owner, operation))
+        .unwrap_or(Ok(None));
 
     finish_prepared_graph_result(graph_result, [src_complete, dst_complete, wgt_complete])
 }
@@ -1763,9 +2143,15 @@ pub fn graph_from_prepared_table_export<T: Transposition>(
     validate_prepared_table_column_selection(export.columns().len(), options, operation)?;
 
     if options.construction_policy == GraphConstructionPolicy::PythonCugraph {
-        let runtime = runtime_for_handle(handle, operation)?;
-        let imported = Table::try_import_from_prepared_table_export_into_runtime(export, &runtime)
-            .map_err(|error| map_interop_error(error, operation))?;
+        let owned_runtime;
+        let runtime = if let Some(runtime) = handle.runtime() {
+            runtime
+        } else {
+            owned_runtime = runtime_for_handle(handle, operation)?;
+            &owned_runtime
+        };
+        let imported = Table::try_import_from_prepared_table_export_into_runtime(export, runtime)
+            .map_err(|error| map_owned_import_interop_error(error, operation))?;
         let canonical = canonical_edge_dataframe_from_imported_table(imported, options, operation)?;
         return build_python_normalized_graph_from_dataframe(
             handle,
@@ -1777,9 +2163,11 @@ pub fn graph_from_prepared_table_export<T: Transposition>(
         );
     }
 
+    let (read_start, completion) = prepared_lease_authorities(handle, operation)?;
+    let retained_owner = export.clone_retained_owner();
     let lease = export
-        .try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, CompletionAuthority::SynchronousByReturn)
-        .map_err(|error| map_interop_error(error, operation))?;
+        .try_activate_read_lease(read_start, completion)
+        .map_err(|error| map_prepared_lease_activation_interop_error(error, operation))?;
 
     let columns = lease.export().columns();
     let bindings = lease.export().bindings();
@@ -1791,7 +2179,7 @@ pub fn graph_from_prepared_table_export<T: Transposition>(
 
     let graph_result =
         build_graph_from_prepared_edge_list_raw(handle, &edge_list, options.properties, options.renumber, operation);
-    let lease_complete = complete_prepared_lease(lease.complete(), operation);
+    let lease_complete = complete_prepared_lease(lease.complete(), retained_owner, operation);
 
     finish_prepared_graph_result(graph_result, [lease_complete])
 }
@@ -1799,8 +2187,10 @@ pub fn graph_from_prepared_table_export<T: Transposition>(
 /// Build a cuGraph [`Graph`] from a cudf low-level [`TableView`].
 ///
 /// **Borrowed compatibility path**: this entry point projects the cudf table
-/// view into the shared RAPIDS borrowed ABI and performs synchronous host-side
-/// fencing before cuGraph reads the borrowed device buffers.
+/// view into the shared RAPIDS borrowed ABI. Runtime-bound handles order the
+/// consumer stream after same-device producer streams with device-side CUDA
+/// dependencies; non-runtime-bound handles may still perform synchronous
+/// host-side fencing before cuGraph reads the borrowed device buffers.
 ///
 /// For new single-GPU integrations, prefer
 /// [`graph_from_prepared_table_export()`], which keeps producer read-start,
@@ -1832,7 +2222,8 @@ pub fn graph_from_table_view<T: Transposition>(
     options: &TableGraphOptions,
 ) -> Result<Graph<T>> {
     let operation = "graph_from_table_view";
-    let borrowed = view.try_borrow_table_view().map_err(|error| map_interop_error(error, operation))?;
+    let borrowed =
+        view.try_borrow_table_view().map_err(|error| map_borrowed_projection_interop_error(error, operation))?;
     let edge_list = borrowed_table_to_edge_list(&borrowed, options, operation)?;
     if options.construction_policy == GraphConstructionPolicy::PythonCugraph {
         let canonical = canonical_edge_dataframe_from_borrowed_edge_list(handle, &edge_list, operation)?;
@@ -1928,7 +2319,9 @@ pub fn graph_from_dataframe<T: Transposition>(
         );
     }
 
-    let export = df.try_prepare_device_table_export().map_err(|error| map_interop_error(error, operation))?;
+    let export = df
+        .try_prepare_device_table_export()
+        .map_err(|error| map_prepared_projection_interop_error(error, operation))?;
     graph_from_prepared_table_export(handle, &export, &table_options)
 }
 
@@ -1948,8 +2341,9 @@ pub fn graph_from_dataframe<T: Transposition>(
 ///     cudf_interop::{SeriesGraphOptions, graph_from_series},
 /// };
 ///
-/// let runtime = cudf::Runtime::new().unwrap();
-/// let handle = ResourceHandle::for_runtime_device(&runtime).unwrap();
+/// let runtime = std::sync::Arc::new(cudf::Runtime::new().unwrap());
+/// let handle =
+///     ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).unwrap();
 /// let src = runtime.series(&[0i32, 1, 2]).unwrap();
 /// let dst = runtime.series(&[1i32, 2, 0]).unwrap();
 ///
@@ -1967,10 +2361,18 @@ pub fn graph_from_series<T: Transposition>(
     options: &SeriesGraphOptions,
 ) -> Result<Graph<T>> {
     let operation = "graph_from_series";
-    let src_export = src.try_prepare_device_column_export().map_err(|error| map_interop_error(error, operation))?;
-    let dst_export = dst.try_prepare_device_column_export().map_err(|error| map_interop_error(error, operation))?;
+    let src_export = src
+        .try_prepare_device_column_export()
+        .map_err(|error| map_prepared_projection_interop_error(error, operation))?;
+    let dst_export = dst
+        .try_prepare_device_column_export()
+        .map_err(|error| map_prepared_projection_interop_error(error, operation))?;
     let wgt_export = weights
-        .map(|column| column.try_prepare_device_column_export().map_err(|error| map_interop_error(error, operation)))
+        .map(|column| {
+            column
+                .try_prepare_device_column_export()
+                .map_err(|error| map_prepared_projection_interop_error(error, operation))
+        })
         .transpose()?;
 
     if options.construction_policy == GraphConstructionPolicy::PythonCugraph {
@@ -2051,9 +2453,15 @@ pub fn graph_from_parquet<T: Transposition>(
     options: &ParquetGraphOptions<'_>,
 ) -> Result<LoadedGraph<T>> {
     let operation = "graph_from_parquet";
-    let runtime = runtime_for_handle(handle, operation)?;
+    let owned_runtime;
+    let runtime = if let Some(runtime) = handle.runtime() {
+        runtime
+    } else {
+        owned_runtime = runtime_for_handle(handle, operation)?;
+        &owned_runtime
+    };
 
-    let reader_opts = parquet::ParquetTableReadOptions::builder().filepath(options.path).with_runtime(&runtime).build();
+    let reader_opts = parquet::ParquetTableReadOptions::builder().filepath(options.path).with_runtime(runtime).build();
 
     let result = parquet::read_parquet_table(&reader_opts).map_err(|error| {
         map_cudf_error_with(
@@ -2096,8 +2504,9 @@ pub fn graph_from_parquet<T: Transposition>(
                 operation,
             )?
         } else {
-            let export =
-                table.try_prepare_device_table_export().map_err(|error| map_interop_error(error, operation))?;
+            let export = table
+                .try_prepare_device_table_export()
+                .map_err(|error| map_prepared_projection_interop_error(error, operation))?;
             graph_from_prepared_table_export::<T>(handle, &export, &table_opts)?
         }
     };
@@ -2284,62 +2693,130 @@ mod tests {
     }
 
     #[test]
-    fn map_interop_error_readiness_mismatch_is_invalid_state() {
-        let interop_err = InteropError::new(InteropErrorKind::ReadinessMismatch, "producer readiness does not match");
-        let err = map_interop_error(interop_err, "test_op");
-        assert_eq!(err.kind(), ErrorKind::InvalidState);
-        assert!(err.is_permanent(), "state mismatches should be permanent");
-    }
-
-    #[test]
-    fn map_interop_error_invalid_view_is_invalid_state() {
-        let interop_err =
-            InteropError::new(InteropErrorKind::InvalidView, "prepared export is internally inconsistent");
-        let err = map_interop_error(interop_err, "test_op");
-        assert_eq!(err.kind(), ErrorKind::InvalidState);
-        assert!(err.is_permanent(), "invalid exported views should be permanent state failures");
-    }
-
-    #[test]
-    fn map_interop_error_not_found_is_invalid_state() {
-        let interop_err =
-            InteropError::new(InteropErrorKind::NotFound, "prepared export referenced a missing buffer binding");
-        let err = map_interop_error(interop_err, "test_op");
-        assert_eq!(err.kind(), ErrorKind::InvalidState);
-        assert!(err.is_permanent(), "missing interop bindings should be permanent state failures");
-    }
-
-    #[test]
-    fn map_interop_error_execution_binding_unavailable_is_temporary_unexpected() {
+    fn runtime_ordering_interop_execution_binding_unavailable_is_invalid_state() {
         let interop_err = InteropError::new(
             InteropErrorKind::ExecutionBindingUnavailable,
             "producer must provide explicit execution provenance",
         );
-        let err = map_interop_error(interop_err, "test_op");
-        assert_eq!(err.kind(), ErrorKind::Unexpected);
-        assert!(err.is_temporary(), "missing execution provenance should surface as a retryable unexpected failure");
+        let err = map_runtime_ordering_interop_error(interop_err, "test_op");
+        assert_eq!(err.kind(), ErrorKind::InvalidState);
+        assert!(err.is_permanent(), "missing runtime ordering provenance is a contract failure, not a retryable one");
     }
 
     #[test]
-    fn map_interop_error_readiness_unavailable_is_temporary_unexpected() {
+    fn runtime_ordering_interop_readiness_unavailable_uses_cudf_source_status() {
+        let interop_err = InteropError::new(InteropErrorKind::ReadinessUnavailable, "failed to query producer event")
+            .set_source(cudf::testing::error::new_with_for_test(
+                cudf::ErrorCode::CudaRuntime,
+                "cudf::testing::cuda_runtime",
+                "device launch failed",
+            ));
+        let err = map_runtime_ordering_interop_error(interop_err, "test_op");
+        assert_eq!(err.kind(), ErrorKind::Unexpected);
+        assert!(err.is_temporary(), "runtime ordering should inherit retryability from the underlying CUDA failure");
+    }
+
+    #[test]
+    fn runtime_ordering_interop_readiness_unavailable_without_source_is_permanent() {
         let interop_err = InteropError::new(InteropErrorKind::ReadinessUnavailable, "failed to query producer event");
-        let err = map_interop_error(interop_err, "test_op");
+        let err = map_runtime_ordering_interop_error(interop_err, "test_op");
         assert_eq!(err.kind(), ErrorKind::Unexpected);
-        assert!(err.is_temporary(), "readiness availability failures remain retryable");
+        assert!(
+            err.is_permanent(),
+            "runtime ordering must not invent retryability when the interop boundary did not prove it"
+        );
     }
 
     #[test]
-    fn validate_edge_list_devices_mixed_devices_is_invalid_state() {
+    fn prepared_lease_activation_interop_lease_already_active_is_invalid_state() {
+        let interop_err = InteropError::new(
+            InteropErrorKind::LeaseAlreadyActive,
+            "prepared export lease activation requires an inactive export root",
+        );
+        let err = map_prepared_lease_activation_interop_error(interop_err, "test_op");
+        assert_eq!(err.kind(), ErrorKind::InvalidState);
+        assert!(err.is_permanent(), "lease lifecycle violations should remain permanent invalid-state failures");
+    }
+
+    #[test]
+    fn prepared_lease_activation_interop_preserves_leaf_failure_message() {
+        let interop_err = InteropError::new(InteropErrorKind::InvalidView, "test backend forced activation failure");
+        let err = map_prepared_lease_activation_interop_error(interop_err, "test_op");
+        assert_eq!(err.kind(), ErrorKind::InvalidState);
+        assert!(
+            err.message().contains("test backend forced activation failure"),
+            "top-level error message should preserve the leaf failure reason for fast diagnosis"
+        );
+    }
+
+    #[test]
+    fn prepared_lease_activation_interop_without_leaf_message_keeps_boundary_message_clean() {
+        let interop_err = InteropError::new(InteropErrorKind::InvalidView, "");
+        let err = map_prepared_lease_activation_interop_error(interop_err, "test_op");
+        assert_eq!(err.kind(), ErrorKind::InvalidState);
+        assert_eq!(err.message(), "failed to activate prepared export read lease");
+    }
+
+    #[test]
+    fn prepared_lease_completion_interop_readiness_unavailable_uses_persistent_source_status() {
+        let interop_err =
+            InteropError::new(InteropErrorKind::ReadinessUnavailable, "failed to finalize producer lease").set_source(
+                cudf::testing::error::new_with_for_test(
+                    cudf::ErrorCode::FatalCuda,
+                    "cudf::testing::fatal_cuda",
+                    "device entered fatal state",
+                ),
+            );
+        let err = map_prepared_lease_completion_interop_error(interop_err, "test_op");
+        assert_eq!(err.kind(), ErrorKind::Unexpected);
+        assert!(err.is_persistent(), "lease completion should preserve persistent dependency failure semantics");
+    }
+
+    #[test]
+    fn owned_import_interop_execution_binding_mismatch_is_invalid_input() {
+        let interop_err = InteropError::new(
+            InteropErrorKind::ExecutionBindingMismatch,
+            "prepared export import requires the destination runtime to use the same CUDA device",
+        );
+        let err = map_owned_import_interop_error(interop_err, "test_op");
+        assert_eq!(err.kind(), ErrorKind::InvalidInput);
+        assert!(err.is_permanent(), "cross-device import mismatches are caller input failures");
+    }
+
+    #[test]
+    fn borrowed_projection_interop_invalid_view_is_invalid_state() {
+        let interop_err =
+            InteropError::new(InteropErrorKind::InvalidView, "borrowed table view is internally inconsistent");
+        let err = map_borrowed_projection_interop_error(interop_err, "test_op");
+        assert_eq!(err.kind(), ErrorKind::InvalidState);
+        assert!(err.is_permanent(), "borrowed projection invariants should surface as invalid-state failures");
+    }
+
+    #[test]
+    fn prepared_projection_interop_readiness_unavailable_uses_temporary_source_status() {
+        let interop_err = InteropError::new(InteropErrorKind::ReadinessUnavailable, "failed to project device export")
+            .set_source(cudf::testing::error::new_with_for_test(
+                cudf::ErrorCode::OutOfMemory,
+                "cudf::testing::oom",
+                "allocation failed",
+            ));
+        let err = map_prepared_projection_interop_error(interop_err, "test_op");
+        assert_eq!(err.kind(), ErrorKind::Unexpected);
+        assert!(err.is_temporary(), "projection should preserve temporary source failures instead of flattening them");
+    }
+
+    #[test]
+    fn validate_edge_list_devices_mixed_devices_is_invalid_input() {
         let handle = ResourceHandle::new().expect("handle");
         let err =
             validate_edge_list_devices(&handle, handle.device(), [("dst", handle.device() + 1)], "borrowed", "test_op")
                 .expect_err("mixed-device inputs should be rejected");
-        assert_eq!(err.kind(), ErrorKind::InvalidState);
+        assert_eq!(err.kind(), ErrorKind::InvalidInput);
         assert_eq!(err.operation(), "test_op");
     }
 
     #[test]
-    fn validate_edge_list_devices_handle_mismatch_is_invalid_state() {
+    fn validate_edge_list_devices_handle_mismatch_is_invalid_input() {
         let handle = ResourceHandle::new().expect("handle");
         let err = validate_edge_list_devices(
             &handle,
@@ -2349,7 +2826,7 @@ mod tests {
             "test_op",
         )
         .expect_err("producer and consumer device mismatch should be rejected");
-        assert_eq!(err.kind(), ErrorKind::InvalidState);
+        assert_eq!(err.kind(), ErrorKind::InvalidInput);
         assert_eq!(err.operation(), "test_op");
     }
 

@@ -5,7 +5,10 @@
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
 use cudf::{DataFrame, Runtime, core::Table};
@@ -23,9 +26,9 @@ use cugraph::{
 
 static NEXT_TEMP_FIXTURE_ID: AtomicUsize = AtomicUsize::new(0);
 
-fn test_runtime_and_handle() -> (Runtime, ResourceHandle) {
-    let runtime = Runtime::new().expect("runtime");
-    let handle = ResourceHandle::for_runtime_device(&runtime).expect("handle");
+fn test_runtime_and_handle() -> (Arc<Runtime>, ResourceHandle) {
+    let runtime = Arc::new(Runtime::new().expect("runtime"));
+    let handle = ResourceHandle::for_runtime(Arc::clone(&runtime)).expect("handle");
     (runtime, handle)
 }
 

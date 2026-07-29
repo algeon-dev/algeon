@@ -2,21 +2,22 @@
 mod common;
 
 use std::sync::{
-    Arc,
+    Arc, Mutex, MutexGuard, OnceLock,
     atomic::{AtomicUsize, Ordering},
 };
 
 use common::{
     cudf::{
         assert_named_edge_columns, assert_score_maps_close_f32, build_undirected_named_dataframe_graph,
-        build_undirected_prepared_graph, explicit_runtime, pagerank_score_map, python_undirected_multigraph_dataframe,
-        python_weighted_reciprocal_expected_pagerank_map,
+        build_undirected_prepared_graph, explicit_runtime, explicit_runtime_owner, pagerank_score_map,
+        python_undirected_multigraph_dataframe, python_weighted_reciprocal_expected_pagerank_map, runtime_bound_handle,
     },
     support::{
         BFS_SOURCE_VERTEX_I32, DIRECTED_TRIANGLE_CYCLE_DST_I32, DIRECTED_TRIANGLE_CYCLE_SRC_I32, TRIANGLE_TAIL_DST_I32,
         TRIANGLE_TAIL_SRC_I32, TRIANGLE_TAIL_WEIGHT_F32, bfs_distance_map_i32_result, triangle_graph_dataframe,
     },
 };
+use cudf::testing::prelude::*;
 use cugraph::{
     array::DeviceArray,
     cudf_interop::{
@@ -33,8 +34,24 @@ use rapids_interop::{
 };
 
 fn test_handle() -> ResourceHandle {
-    let runtime = explicit_runtime();
-    ResourceHandle::for_runtime_device(&runtime).expect("handle")
+    let runtime = std::sync::Arc::new(explicit_runtime());
+    ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).expect("handle")
+}
+
+fn reset_event_observation() {
+    unsafe { cudf_sys::cudf_test_event_reset_observation() };
+}
+
+fn event_synchronize_call_count() -> i32 {
+    let mut out = -1;
+    let status = unsafe { cudf_sys::cudf_test_event_synchronize_call_count(&mut out) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read event synchronize observation count");
+    out
+}
+
+fn lock_event_observation() -> MutexGuard<'static, ()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(())).lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 #[derive(Clone)]
@@ -102,8 +119,92 @@ impl ActiveLeaseBackend for FailingActivationBackend {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RecordedReadStartBinding {
+    SynchronousByReturn,
+    ConsumerStream { raw: usize, device: i32 },
+}
+
+impl From<ReadStartBinding> for RecordedReadStartBinding {
+    fn from(value: ReadStartBinding) -> Self {
+        match value {
+            ReadStartBinding::SynchronousByReturn => Self::SynchronousByReturn,
+            ReadStartBinding::ConsumerStream { raw, device } => Self::ConsumerStream { raw: raw as usize, device },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RecordedCompletionBinding {
+    SynchronousByReturn,
+    SameDeviceStream { raw: usize, device: i32 },
+    CrossDeviceEvent { raw: usize, device: i32 },
+}
+
+impl From<CompletionBinding> for RecordedCompletionBinding {
+    fn from(value: CompletionBinding) -> Self {
+        match value {
+            CompletionBinding::SynchronousByReturn => Self::SynchronousByReturn,
+            CompletionBinding::SameDeviceStream { raw, device } => Self::SameDeviceStream { raw: raw as usize, device },
+            CompletionBinding::CrossDeviceEvent { raw, device } => Self::CrossDeviceEvent { raw: raw as usize, device },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RecordedLeaseBindings {
+    activate_read_start: RecordedReadStartBinding,
+    activate_completion: RecordedCompletionBinding,
+    complete_completion: RecordedCompletionBinding,
+}
+
+#[derive(Clone)]
+struct RecordingLeaseBackend {
+    recorded: Arc<Mutex<Vec<RecordedLeaseBindings>>>,
+}
+
+impl ActiveLeaseBackend for RecordingLeaseBackend {
+    fn activate(
+        &self,
+        _export: &LeaseExportContext,
+        read_start: ReadStartBinding,
+        completion: CompletionBinding,
+    ) -> rapids_interop::Result<LeaseActivation> {
+        self.recorded.lock().expect("recorded").push(RecordedLeaseBindings {
+            activate_read_start: read_start.into(),
+            activate_completion: completion.into(),
+            complete_completion: RecordedCompletionBinding::SynchronousByReturn,
+        });
+        Ok(LeaseActivation::noop())
+    }
+
+    fn incomplete_drop_behavior(&self) -> IncompleteDropBehavior {
+        IncompleteDropBehavior::GuaranteedFallback
+    }
+
+    fn complete(
+        &self,
+        _export: &LeaseExportContext,
+        completion: CompletionBinding,
+    ) -> rapids_interop::Result<LeaseCompletionResult> {
+        let mut recorded = self.recorded.lock().expect("recorded");
+        let last = recorded.last_mut().expect("activate should run before complete");
+        last.complete_completion = completion.into();
+        Ok(LeaseCompletionResult::FallbackSynchronized)
+    }
+
+    fn drop_incomplete(
+        &self,
+        _export: &LeaseExportContext,
+        _completion: CompletionBinding,
+    ) -> rapids_interop::Result<()> {
+        Ok(())
+    }
+}
+
 #[test]
 fn graph_from_prepared_columns_i32_bfs() {
+    let _event_observation = lock_event_observation();
     let handle = test_handle();
     let runtime = explicit_runtime();
 
@@ -130,6 +231,7 @@ fn graph_from_prepared_columns_i32_bfs() {
 
 #[test]
 fn graph_from_prepared_columns_completes_earlier_leases_when_later_activation_fails() {
+    let _event_observation = lock_event_observation();
     let handle = test_handle();
     let runtime = explicit_runtime();
 
@@ -165,7 +267,78 @@ fn graph_from_prepared_columns_completes_earlier_leases_when_later_activation_fa
 }
 
 #[test]
+fn graph_from_prepared_columns_runtime_bound_handle_uses_consumer_stream_authorities() {
+    let _event_observation = lock_event_observation();
+    let runtime = std::sync::Arc::new(explicit_runtime());
+    let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).expect("handle");
+    let src = runtime.series(TRIANGLE_TAIL_SRC_I32).expect("src");
+    let dst = runtime.series(TRIANGLE_TAIL_DST_I32).expect("dst");
+    let recorded = Arc::new(Mutex::new(Vec::new()));
+
+    let src_export = src
+        .try_prepare_device_column_export()
+        .expect("src export")
+        .with_lease_backend(LeaseBackend::new(RecordingLeaseBackend { recorded: Arc::clone(&recorded) }));
+    let dst_export = dst.try_prepare_device_column_export().expect("dst export");
+    let opts = SeriesGraphOptions::default().renumber();
+
+    let _graph = graph_from_prepared_columns::<Forward>(&handle, &src_export, &dst_export, None, &opts).expect("graph");
+
+    let expected_stream_raw = runtime.stream().testing_raw_handle_value() as *mut std::ffi::c_void;
+    let expected_device = runtime.device().ordinal() as i32;
+    let recorded = recorded.lock().expect("recorded");
+    assert_eq!(recorded.len(), 1, "src export should record one activation/completion pair");
+    assert_eq!(
+        recorded[0],
+        RecordedLeaseBindings {
+            activate_read_start: RecordedReadStartBinding::ConsumerStream {
+                raw: expected_stream_raw as usize,
+                device: expected_device,
+            },
+            activate_completion: RecordedCompletionBinding::SameDeviceStream {
+                raw: expected_stream_raw as usize,
+                device: expected_device,
+            },
+            complete_completion: RecordedCompletionBinding::SameDeviceStream {
+                raw: expected_stream_raw as usize,
+                device: expected_device,
+            },
+        }
+    );
+}
+
+#[test]
+fn graph_from_prepared_columns_runtime_bound_handle_defers_completion_sync_until_graph_drop() {
+    let _event_observation = lock_event_observation();
+    let runtime = explicit_runtime_owner();
+    let handle = runtime_bound_handle(&runtime);
+    let src = runtime.series(TRIANGLE_TAIL_SRC_I32).expect("src");
+    let dst = runtime.series(TRIANGLE_TAIL_DST_I32).expect("dst");
+
+    let src_export = src.try_prepare_device_column_export().expect("src export");
+    let dst_export = dst.try_prepare_device_column_export().expect("dst export");
+    assert!(src_export.clone_retained_owner().is_some(), "series prepared export should retain its producer owner");
+    assert!(dst_export.clone_retained_owner().is_some(), "series prepared export should retain its producer owner");
+    let opts = SeriesGraphOptions::default().renumber();
+
+    reset_event_observation();
+    let _ = event_synchronize_call_count();
+
+    let graph = graph_from_prepared_columns::<Forward>(&handle, &src_export, &dst_export, None, &opts).expect("graph");
+    let before_drop = event_synchronize_call_count();
+
+    drop(graph);
+    let after_drop = event_synchronize_call_count();
+
+    assert!(
+        after_drop > before_drop,
+        "dropping the graph should perform deferred prepared-column completion synchronization"
+    );
+}
+
+#[test]
 fn graph_from_prepared_table_export_bfs() {
+    let _event_observation = lock_event_observation();
     let handle = test_handle();
     let runtime = explicit_runtime();
 
@@ -187,7 +360,140 @@ fn graph_from_prepared_table_export_bfs() {
 }
 
 #[test]
+fn graph_from_prepared_table_export_runtime_bound_handle_uses_consumer_stream_authorities() {
+    let _event_observation = lock_event_observation();
+    let runtime = std::sync::Arc::new(explicit_runtime());
+    let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).expect("handle");
+    let src = runtime.series(TRIANGLE_TAIL_SRC_I32).expect("src");
+    let dst = runtime.series(TRIANGLE_TAIL_DST_I32).expect("dst");
+    let df = cudf::DataFrame::from_columns([("src", src), ("dst", dst)]).expect("dataframe");
+    let recorded = Arc::new(Mutex::new(Vec::new()));
+
+    let export = df
+        .try_prepare_device_table_export()
+        .expect("table export")
+        .with_lease_backend(LeaseBackend::new(RecordingLeaseBackend { recorded: Arc::clone(&recorded) }));
+    let opts = TableGraphOptions::new(0, 1).renumber();
+
+    let _graph = graph_from_prepared_table_export::<Forward>(&handle, &export, &opts).expect("graph");
+
+    let expected_stream_raw = runtime.stream().testing_raw_handle_value() as *mut std::ffi::c_void;
+    let expected_device = runtime.device().ordinal() as i32;
+    let recorded = recorded.lock().expect("recorded");
+    assert_eq!(recorded.len(), 1, "table export should record one activation/completion pair");
+    assert_eq!(
+        recorded[0],
+        RecordedLeaseBindings {
+            activate_read_start: RecordedReadStartBinding::ConsumerStream {
+                raw: expected_stream_raw as usize,
+                device: expected_device,
+            },
+            activate_completion: RecordedCompletionBinding::SameDeviceStream {
+                raw: expected_stream_raw as usize,
+                device: expected_device,
+            },
+            complete_completion: RecordedCompletionBinding::SameDeviceStream {
+                raw: expected_stream_raw as usize,
+                device: expected_device,
+            },
+        }
+    );
+}
+
+#[test]
+fn graph_from_prepared_table_export_runtime_bound_handle_defers_completion_sync_until_graph_drop() {
+    let _event_observation = lock_event_observation();
+    let runtime = explicit_runtime_owner();
+    let handle = runtime_bound_handle(&runtime);
+    let src = runtime.series(TRIANGLE_TAIL_SRC_I32).expect("src");
+    let dst = runtime.series(TRIANGLE_TAIL_DST_I32).expect("dst");
+    let df = cudf::DataFrame::from_columns([("src", src), ("dst", dst)]).expect("dataframe");
+
+    let export = df.try_prepare_device_table_export().expect("table export");
+    assert!(export.clone_retained_owner().is_some(), "dataframe prepared export should retain its producer owner");
+    let opts = TableGraphOptions::new(0, 1).renumber();
+
+    reset_event_observation();
+    let _ = event_synchronize_call_count();
+
+    let graph = graph_from_prepared_table_export::<Forward>(&handle, &export, &opts).expect("graph");
+    let before_drop = event_synchronize_call_count();
+
+    drop(graph);
+    let after_drop = event_synchronize_call_count();
+
+    assert!(
+        after_drop > before_drop,
+        "dropping the graph should perform deferred prepared-table completion synchronization"
+    );
+}
+
+#[test]
+fn graph_from_prepared_columns_runtime_bound_owned_column_export_defers_completion_sync_until_graph_drop() {
+    let _event_observation = lock_event_observation();
+    let runtime = explicit_runtime_owner();
+    let handle = runtime_bound_handle(&runtime);
+    let src = runtime.column_from_slice(TRIANGLE_TAIL_SRC_I32).expect("src");
+    let dst = runtime.column_from_slice(TRIANGLE_TAIL_DST_I32).expect("dst");
+
+    let src_export = src.try_into_prepared_device_column_export().expect("src export");
+    let dst_export = dst.try_into_prepared_device_column_export().expect("dst export");
+    assert!(
+        src_export.clone_retained_owner().is_some(),
+        "owned column prepared export should retain its producer owner"
+    );
+    assert!(
+        dst_export.clone_retained_owner().is_some(),
+        "owned column prepared export should retain its producer owner"
+    );
+    let opts = SeriesGraphOptions::default().renumber();
+
+    reset_event_observation();
+    let _ = event_synchronize_call_count();
+
+    let graph = graph_from_prepared_columns::<Forward>(&handle, &src_export, &dst_export, None, &opts).expect("graph");
+    let before_drop = event_synchronize_call_count();
+
+    drop(graph);
+    let after_drop = event_synchronize_call_count();
+
+    assert!(
+        after_drop > before_drop,
+        "dropping the graph should perform deferred completion synchronization for owned low-level column exports"
+    );
+}
+
+#[test]
+fn graph_from_prepared_table_export_runtime_bound_owned_table_export_defers_completion_sync_until_graph_drop() {
+    let _event_observation = lock_event_observation();
+    let runtime = explicit_runtime_owner();
+    let handle = runtime_bound_handle(&runtime);
+    let src = runtime.column_from_slice(TRIANGLE_TAIL_SRC_I32).expect("src");
+    let dst = runtime.column_from_slice(TRIANGLE_TAIL_DST_I32).expect("dst");
+    let table = cudf::core::Table::from_columns(vec![src, dst]).expect("table");
+
+    let export = table.try_into_prepared_device_table_export().expect("table export");
+    assert!(export.clone_retained_owner().is_some(), "owned table prepared export should retain its producer owner");
+    let opts = TableGraphOptions::new(0, 1).renumber();
+
+    reset_event_observation();
+    let _ = event_synchronize_call_count();
+
+    let graph = graph_from_prepared_table_export::<Forward>(&handle, &export, &opts).expect("graph");
+    let before_drop = event_synchronize_call_count();
+
+    drop(graph);
+    let after_drop = event_synchronize_call_count();
+
+    assert!(
+        after_drop > before_drop,
+        "dropping the graph should perform deferred completion synchronization for owned low-level table exports"
+    );
+}
+
+#[test]
 fn graph_from_prepared_columns_python_cugraph_weighted_undirected_simple_keeps_minimum_reciprocal_weight() {
+    let _event_observation = lock_event_observation();
     let handle = test_handle();
     let runtime = explicit_runtime();
 
@@ -216,6 +522,7 @@ fn graph_from_prepared_columns_python_cugraph_weighted_undirected_simple_keeps_m
 
 #[test]
 fn graph_from_prepared_table_export_python_cugraph_accepts_undirected_multigraph() {
+    let _event_observation = lock_event_observation();
     let handle = test_handle();
     let runtime = explicit_runtime();
     let df = python_undirected_multigraph_dataframe(&runtime);
@@ -231,6 +538,7 @@ fn graph_from_prepared_table_export_python_cugraph_accepts_undirected_multigraph
 
 #[test]
 fn graph_from_prepared_columns_rejects_host_exports() {
+    let _event_observation = lock_event_observation();
     let handle = test_handle();
     let runtime = explicit_runtime();
 
@@ -254,6 +562,7 @@ fn graph_from_prepared_columns_rejects_host_exports() {
 
 #[test]
 fn graph_from_prepared_table_export_rejects_host_exports() {
+    let _event_observation = lock_event_observation();
     let handle = test_handle();
     let runtime = explicit_runtime();
 
@@ -276,6 +585,7 @@ fn graph_from_prepared_table_export_rejects_host_exports() {
 
 #[test]
 fn prepared_export_vs_deep_copy_import_pagerank_equivalence() {
+    let _event_observation = lock_event_observation();
     let handle = test_handle();
     let producer_runtime = explicit_runtime();
     let consumer_runtime = explicit_runtime();
@@ -307,6 +617,7 @@ fn prepared_export_vs_deep_copy_import_pagerank_equivalence() {
 
 #[test]
 fn prepared_host_export_import_pagerank_matches_prepared_device_path() {
+    let _event_observation = lock_event_observation();
     let handle = test_handle();
     let producer_runtime = explicit_runtime();
     let consumer_runtime = explicit_runtime();

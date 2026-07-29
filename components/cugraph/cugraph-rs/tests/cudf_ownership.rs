@@ -3,8 +3,8 @@ mod common;
 
 use common::{
     cudf::{
-        assert_named_edge_columns, build_directed_named_dataframe_graph, explicit_runtime, f32_series_device_ptr,
-        i32_series_device_ptr,
+        assert_named_edge_columns, build_directed_named_dataframe_graph, explicit_runtime, explicit_runtime_owner,
+        f32_series_device_ptr, i32_series_device_ptr, runtime_bound_handle,
     },
     support::{
         BFS_GRAPH_DST_I32, BFS_GRAPH_SRC_I32, BFS_GRAPH_WEIGHT_F32, bfs_distance_map_i32_graph as bfs_distance_map,
@@ -16,8 +16,8 @@ use cugraph::handle::ResourceHandle;
 use rapids_interop::{InteropErrorKind, ReleaseSynchronization, TransferCompletionRule};
 
 fn test_handle() -> ResourceHandle {
-    let runtime = explicit_runtime();
-    ResourceHandle::for_runtime_device(&runtime).expect("handle")
+    let runtime = explicit_runtime_owner();
+    runtime_bound_handle(&runtime)
 }
 
 #[test]
