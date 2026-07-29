@@ -97,15 +97,17 @@ use rapids_interop::{
 use crate::{
     array::RawDeviceArrayView,
     centrality::{BetweennessCentralityResult, PageRankResult},
-    community::LouvainResult,
+    community::{LouvainResult, TriangleCountResult},
     cuda::{DeviceGuard, check_cudf_status},
     error::{Error, ErrorKind, ErrorStatus, Result},
     graph::{DeferredInputCompletion, Graph, GraphBuilder, Transposition},
     handle::EnteredContext,
+    labeling::{StronglyConnectedComponentsResult, WeaklyConnectedComponentsResult},
     layout::LayoutResult,
     structure::{
+        CoreNumberResult,
         degrees::{DegreeValues, DegreesResult, InDegreesResult, OutDegreesResult},
-        typed_results::{Distances, ScoreValues, VertexIds},
+        typed_results::{Distances, IntegerValues, ScoreValues, VertexIds},
     },
     traversal::{bfs::BfsResult, sssp::SsspResult},
     types::{CugraphElement, DataType, GraphProperties},
@@ -420,6 +422,18 @@ impl IntoSeries for DegreeValues<'_> {
     }
 }
 
+impl IntoSeries for IntegerValues<'_> {
+    fn to_series(&self, runtime: &Runtime) -> Result<cudf::Series> {
+        series_from_column_result(
+            match self {
+                Self::I32(v) => v.raw_view().to_cudf_column(runtime),
+                Self::I64(v) => v.raw_view().to_cudf_column(runtime),
+            },
+            "IntegerValues::to_series",
+        )
+    }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // TryFrom impls — result structs → cudf::DataFrame
 // ═══════════════════════════════════════════════════════════════════════════
@@ -520,6 +534,53 @@ pub(crate) fn out_degrees_result_to_dataframe(result: &OutDegreesResult, runtime
         [
             ("vertex", result.vertex_ids()?.to_series(runtime)?),
             ("out_degree", result.out_degrees()?.to_series(runtime)?),
+        ],
+        operation,
+    )
+}
+
+pub(crate) fn weakly_connected_components_result_to_dataframe(
+    result: &WeaklyConnectedComponentsResult,
+    runtime: &Runtime,
+) -> Result<cudf::DataFrame> {
+    let operation = "weakly_connected_components_result_to_dataframe";
+    dataframe_from_named_series(
+        [("vertex", result.vertex_ids()?.to_series(runtime)?), ("label", result.labels()?.to_series(runtime)?)],
+        operation,
+    )
+}
+
+pub(crate) fn strongly_connected_components_result_to_dataframe(
+    result: &StronglyConnectedComponentsResult,
+    runtime: &Runtime,
+) -> Result<cudf::DataFrame> {
+    let operation = "strongly_connected_components_result_to_dataframe";
+    dataframe_from_named_series(
+        [("vertex", result.vertex_ids()?.to_series(runtime)?), ("label", result.labels()?.to_series(runtime)?)],
+        operation,
+    )
+}
+
+pub(crate) fn core_number_result_to_dataframe(result: &CoreNumberResult, runtime: &Runtime) -> Result<cudf::DataFrame> {
+    let operation = "core_number_result_to_dataframe";
+    dataframe_from_named_series(
+        [
+            ("vertex", result.vertex_ids()?.to_series(runtime)?),
+            ("core_number", result.core_numbers()?.to_series(runtime)?),
+        ],
+        operation,
+    )
+}
+
+pub(crate) fn triangle_count_result_to_dataframe(
+    result: &TriangleCountResult,
+    runtime: &Runtime,
+) -> Result<cudf::DataFrame> {
+    let operation = "triangle_count_result_to_dataframe";
+    dataframe_from_named_series(
+        [
+            ("vertex", result.vertex_ids()?.to_series(runtime)?),
+            ("triangle_count", result.counts()?.to_series(runtime)?),
         ],
         operation,
     )

@@ -94,6 +94,7 @@ pub mod cudf_interop;
 pub mod error;
 pub mod graph;
 pub mod handle;
+pub mod labeling;
 pub mod layout;
 pub mod params;
 pub mod random;

@@ -31,6 +31,88 @@ pub enum VertexIds<'a> {
     I64(DeviceArrayView<'a, i64>),
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// IntegerValues — typed enum for runtime-width integer value arrays
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Runtime-typed integer values from algorithm results.
+///
+/// This is used for integer-valued outputs that are not necessarily graph
+/// vertex IDs, such as component labels, core numbers, and triangle counts.
+#[derive(Debug)]
+pub enum IntegerValues<'a> {
+    /// Values stored as 32-bit signed integers.
+    I32(DeviceArrayView<'a, i32>),
+    /// Values stored as 64-bit signed integers.
+    I64(DeviceArrayView<'a, i64>),
+}
+
+impl<'a> IntegerValues<'a> {
+    /// Construct from a type-erased raw view after checking the dtype.
+    ///
+    /// Returns an error if the dtype is neither `Int32` nor `Int64`.
+    pub(crate) fn from_raw(raw: RawDeviceArrayView<'a>) -> Result<Self> {
+        match raw.dtype()? {
+            DataType::Int32 => Ok(Self::I32(DeviceArrayView::from_raw_unchecked(raw))),
+            DataType::Int64 => Ok(Self::I64(DeviceArrayView::from_raw_unchecked(raw))),
+            other => Err(Error::new(ErrorKind::InvalidState, "IntegerValues::from_raw")
+                .with_message(format!("unexpected integer value dtype: {other}"))),
+        }
+    }
+
+    /// Number of elements in the value array.
+    pub fn len(&self) -> usize {
+        match self {
+            Self::I32(v) => v.len(),
+            Self::I64(v) => v.len(),
+        }
+    }
+
+    /// Whether the value array is empty.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Copy to host as `Vec<i64>`, widening `i32` values if needed.
+    pub fn to_vec_i64(&self, handle: &EnteredContext<'_>) -> Result<Vec<i64>> {
+        match self {
+            Self::I32(v) => {
+                let vals = v.to_vec(handle)?;
+                Ok(vals.into_iter().map(|x| x as i64).collect())
+            },
+            Self::I64(v) => v.to_vec(handle),
+        }
+    }
+
+    /// Copy to host as `Vec<i32>`.
+    ///
+    /// Returns an error if the underlying values are `i64`, since narrowing
+    /// could lose data.
+    pub fn to_vec_i32(&self, handle: &EnteredContext<'_>) -> Result<Vec<i32>> {
+        match self {
+            Self::I32(v) => v.to_vec(handle),
+            Self::I64(_) => Err(Error::new(ErrorKind::InvalidState, "IntegerValues::to_vec_i32")
+                .with_message("integer values are i64; use to_vec_i64() to avoid data loss")),
+        }
+    }
+
+    /// Get the inner view as `&DeviceArrayView<i32>`, or `None` if `i64`.
+    pub fn as_i32(&self) -> Option<&DeviceArrayView<'a, i32>> {
+        match self {
+            Self::I32(v) => Some(v),
+            Self::I64(_) => None,
+        }
+    }
+
+    /// Get the inner view as `&DeviceArrayView<i64>`, or `None` if `i32`.
+    pub fn as_i64(&self) -> Option<&DeviceArrayView<'a, i64>> {
+        match self {
+            Self::I32(_) => None,
+            Self::I64(v) => Some(v),
+        }
+    }
+}
+
 impl<'a> VertexIds<'a> {
     /// Construct from a type-erased raw view after checking the dtype.
     ///

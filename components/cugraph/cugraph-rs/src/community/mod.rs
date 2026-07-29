@@ -6,6 +6,8 @@
 
 pub mod louvain;
 mod result;
+pub mod triangle_count;
 
 pub use louvain::LouvainParams;
 pub use result::LouvainResult;
+pub use triangle_count::{TriangleCountParams, TriangleCountResult};

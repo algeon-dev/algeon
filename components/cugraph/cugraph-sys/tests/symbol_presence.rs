@@ -58,6 +58,21 @@ fn bindings_include_critical_core_symbols() {
         "cugraph_hierarchical_clustering_result_get_clusters",
         "cugraph_hierarchical_clustering_result_get_modularity",
         "cugraph_hierarchical_clustering_result_free",
+        "cugraph_triangle_count",
+        "cugraph_triangle_count_result_get_vertices",
+        "cugraph_triangle_count_result_get_counts",
+        "cugraph_triangle_count_result_free",
+        // Labeling
+        "cugraph_weakly_connected_components",
+        "cugraph_strongly_connected_components",
+        "cugraph_labeling_result_get_vertices",
+        "cugraph_labeling_result_get_labels",
+        "cugraph_labeling_result_free",
+        // Core
+        "cugraph_core_number",
+        "cugraph_core_result_get_vertices",
+        "cugraph_core_result_get_core_numbers",
+        "cugraph_core_result_free",
     ];
 
     for symbol in required_symbols {

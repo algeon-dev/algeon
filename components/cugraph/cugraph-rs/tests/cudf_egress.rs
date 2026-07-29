@@ -15,9 +15,11 @@ use common::{
 use cugraph::{
     array::DeviceArray,
     centrality::{BetweennessCentralityParams, PageRankParams},
-    community::LouvainParams,
+    community::{LouvainParams, TriangleCountParams},
     graph::{Forward, GraphBuilder, Transposed},
     handle::ResourceHandle,
+    labeling::ConnectedComponentsParams,
+    structure::{CoreNumberParams, KCoreDegreeType},
     traversal::{BfsParams, SsspParams},
     types::GraphProperties,
 };
@@ -265,6 +267,108 @@ fn louvain_result_to_dataframe() {
     assert_eq!(df.column_names()[0], "vertex");
     assert_eq!(df.column_names()[1], "partition");
     assert_eq!(df.num_rows(), expected_rows);
+}
+
+#[test]
+fn connected_components_results_to_dataframe() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let runtime = std::sync::Arc::new(explicit_runtime());
+    let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).expect("handle");
+    let handle = handle.enter("connected_components_results_to_dataframe").expect("entered");
+
+    let src = DeviceArray::from_slice(&handle, support::DISCONNECTED_TWO_CYCLES_SRC_I32).expect("src");
+    let dst = DeviceArray::from_slice(&handle, support::DISCONNECTED_TWO_CYCLES_DST_I32).expect("dst");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+
+    let mut graph = GraphBuilder::new(&src_view, &dst_view)
+        .properties(GraphProperties::undirected())
+        .renumber()
+        .build::<Forward>(&handle)
+        .expect("graph");
+
+    let params = ConnectedComponentsParams::default();
+    let wcc = graph.weakly_connected_components(&handle, &params).expect("wcc");
+    let expected_vertices = wcc.vertex_ids().expect("vertices").to_vec_i32(&handle).expect("vertices");
+    let expected_labels = wcc.labels().expect("labels").to_vec_i32(&handle).expect("labels");
+    let df = wcc.to_dataframe(&runtime).expect("wcc dataframe");
+
+    assert_eq!(df.num_columns(), 2);
+    assert_eq!(df.column_names()[0], "vertex");
+    assert_eq!(df.column_names()[1], "label");
+    assert_eq!(df.series("vertex").expect("vertex").to_vec_strict::<i32>().expect("vertex"), expected_vertices);
+    assert_eq!(df.series("label").expect("label").to_vec_strict::<i32>().expect("label"), expected_labels);
+
+    let scc = graph.strongly_connected_components(&handle, &params).expect("scc");
+    let scc_df = scc.to_dataframe(&runtime).expect("scc dataframe");
+    assert_eq!(scc_df.num_columns(), 2);
+    assert_eq!(scc_df.column_names()[0], "vertex");
+    assert_eq!(scc_df.column_names()[1], "label");
+}
+
+#[test]
+fn core_number_result_to_dataframe() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let runtime = std::sync::Arc::new(explicit_runtime());
+    let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).expect("handle");
+    let handle = handle.enter("core_number_result_to_dataframe").expect("entered");
+
+    let src = DeviceArray::from_slice(&handle, &[0i32, 1, 2, 1, 2, 0, 2, 3]).expect("src");
+    let dst = DeviceArray::from_slice(&handle, &[1i32, 2, 0, 0, 1, 2, 3, 2]).expect("dst");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+    let mut graph = GraphBuilder::new(&src_view, &dst_view)
+        .properties(GraphProperties::undirected())
+        .renumber()
+        .build::<Forward>(&handle)
+        .expect("graph");
+
+    let params = CoreNumberParams { degree_type: KCoreDegreeType::Out, do_expensive_check: false };
+    let result = graph.core_number(&handle, &params).expect("core_number");
+    let expected_vertices = result.vertex_ids().expect("vertices").to_vec_i32(&handle).expect("vertices");
+    let expected_core_numbers = result.core_numbers().expect("core_numbers").to_vec_i32(&handle).expect("core numbers");
+    let df = result.to_dataframe(&runtime).expect("to_dataframe");
+
+    assert_eq!(df.num_columns(), 2);
+    assert_eq!(df.column_names()[0], "vertex");
+    assert_eq!(df.column_names()[1], "core_number");
+    assert_eq!(df.series("vertex").expect("vertex").to_vec_strict::<i32>().expect("vertex"), expected_vertices);
+    assert_eq!(
+        df.series("core_number").expect("core_number").to_vec_strict::<i32>().expect("core_number"),
+        expected_core_numbers
+    );
+}
+
+#[test]
+fn triangle_count_result_to_dataframe() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let runtime = std::sync::Arc::new(explicit_runtime());
+    let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).expect("handle");
+    let handle = handle.enter("triangle_count_result_to_dataframe").expect("entered");
+
+    let src = DeviceArray::from_slice(&handle, support::UNDIRECTED_TRIANGLE_SRC_I32).expect("src");
+    let dst = DeviceArray::from_slice(&handle, support::UNDIRECTED_TRIANGLE_DST_I32).expect("dst");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+    let mut graph = GraphBuilder::new(&src_view, &dst_view)
+        .properties(GraphProperties::undirected())
+        .renumber()
+        .build::<Forward>(&handle)
+        .expect("graph");
+
+    let result = graph.triangle_count_all(&handle, &TriangleCountParams::default()).expect("triangle_count");
+    let expected_vertices = result.vertex_ids().expect("vertices").to_vec_i32(&handle).expect("vertices");
+    let expected_counts = result.counts().expect("counts").to_vec_i32(&handle).expect("counts");
+    let df = result.to_dataframe(&runtime).expect("to_dataframe");
+
+    assert_eq!(df.num_columns(), 2);
+    assert_eq!(df.column_names()[0], "vertex");
+    assert_eq!(df.column_names()[1], "triangle_count");
+    assert_eq!(df.series("vertex").expect("vertex").to_vec_strict::<i32>().expect("vertex"), expected_vertices);
+    assert_eq!(
+        df.series("triangle_count").expect("triangle_count").to_vec_strict::<i32>().expect("triangle_count"),
+        expected_counts
+    );
 }
 
 #[test]
