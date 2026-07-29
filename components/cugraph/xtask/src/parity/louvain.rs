@@ -394,10 +394,7 @@ fn classify_schema_kind(
 }
 
 fn normalize_fixture_dataframe(df: &DataFrame, schema: &EdgeSchema) -> anyhow::Result<DataFrame> {
-    let weight = df
-        .series(schema.columns.weight)
-        .with_context(|| format!("load {} column", schema.columns.weight))?
-        .rename("weight");
+    let weight = df.series(schema.columns.weight).with_context(|| format!("load {} column", schema.columns.weight))?;
     let weight = normalize_weight_series(&weight)?;
 
     match schema.kind {
@@ -408,27 +405,18 @@ fn normalize_fixture_dataframe(df: &DataFrame, schema: &EdgeSchema) -> anyhow::R
                 .context("rebuild canonical numeric parity DataFrame")?)
         },
         EdgeSchemaKind::AliasNumeric => {
-            let src = df
-                .series(schema.columns.src)
-                .with_context(|| format!("load {} column", schema.columns.src))?
-                .rename("src");
-            let dst = df
-                .series(schema.columns.dst)
-                .with_context(|| format!("load {} column", schema.columns.dst))?
-                .rename("dst");
+            let src = df.series(schema.columns.src).with_context(|| format!("load {} column", schema.columns.src))?;
+            let dst = df.series(schema.columns.dst).with_context(|| format!("load {} column", schema.columns.dst))?;
             Ok(DataFrame::from_columns([("src", src), ("dst", dst), ("weight", weight)])
                 .context("rename aliased numeric edge columns")?)
         },
         EdgeSchemaKind::AliasStringNeedsRenumbering => {
             let src = df.series(schema.columns.src).with_context(|| format!("load {} column", schema.columns.src))?;
             let dst = df.series(schema.columns.dst).with_context(|| format!("load {} column", schema.columns.dst))?;
-            let all_vertices =
-                Series::concat(&[&src, &dst]).context("concatenate string vertex columns")?.rename("vertex");
+            let all_vertices = Series::concat(&[&src, &dst]).context("concatenate string vertex columns")?;
             let codebook = all_vertices.codebook().context("build vertex codebook for string edge list")?;
-            let src_codes =
-                codebook.encode(&src).context("encode source string vertex ids")?.into_series().rename("src");
-            let dst_codes =
-                codebook.encode(&dst).context("encode destination string vertex ids")?.into_series().rename("dst");
+            let src_codes = codebook.encode(&src).context("encode source string vertex ids")?.into_series();
+            let dst_codes = codebook.encode(&dst).context("encode destination string vertex ids")?.into_series();
             Ok(DataFrame::from_columns([("src", src_codes), ("dst", dst_codes), ("weight", weight)])
                 .context("build normalized parity edge DataFrame")?)
         },
