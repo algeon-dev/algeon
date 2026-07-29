@@ -32,6 +32,7 @@ fn test_handle() -> ResourceHandle {
 
 #[test]
 fn bfs_accepts_i64_sources_for_i64_graphs() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
     let entered = handle.enter("bfs_accepts_i64_sources_for_i64_graphs").expect("entered");
     let src = DeviceArray::from_slice(&entered, FOUR_VERTEX_CHAIN_SRC_I64).expect("src");
@@ -62,6 +63,7 @@ fn bfs_accepts_i64_sources_for_i64_graphs() {
 
 #[test]
 fn betweenness_accepts_i64_seed_vertices() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
     let entered = handle.enter("betweenness_accepts_i64_seed_vertices").expect("entered");
     let src = DeviceArray::from_slice(&entered, DIRECTED_STAR_SRC_I64).expect("src");
@@ -89,6 +91,7 @@ fn betweenness_accepts_i64_seed_vertices() {
 
 #[test]
 fn degrees_accept_i64_vertex_subsets() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
     let entered = handle.enter("degrees_accept_i64_vertex_subsets").expect("entered");
     let src = DeviceArray::from_slice(&entered, DEGREE_SUBSET_SRC_I64).expect("src");
@@ -116,6 +119,7 @@ fn degrees_accept_i64_vertex_subsets() {
 
 #[test]
 fn in_degrees_checked_accepts_all_vertices() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
     let entered = handle.enter("in_degrees_checked_accepts_all_vertices").expect("entered");
     let src = DeviceArray::from_slice(&entered, DIRECTED_STAR_SRC_I64).expect("src");
@@ -139,6 +143,7 @@ fn in_degrees_checked_accepts_all_vertices() {
 
 #[test]
 fn out_degrees_checked_accepts_all_vertices() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
     let entered = handle.enter("out_degrees_checked_accepts_all_vertices").expect("entered");
     let src = DeviceArray::from_slice(&entered, DIRECTED_STAR_SRC_I64).expect("src");
@@ -162,6 +167,7 @@ fn out_degrees_checked_accepts_all_vertices() {
 
 #[test]
 fn bfs_rejects_vertex_selection_all() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
     let entered = handle.enter("bfs_rejects_vertex_selection_all").expect("entered");
     let src = DeviceArray::from_slice(&entered, FOUR_VERTEX_CHAIN_SRC_I32).expect("src");
@@ -179,6 +185,7 @@ fn bfs_rejects_vertex_selection_all() {
 
 #[test]
 fn force_atlas2_accepts_i64_vertices_and_f32_helpers() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
     let entered = handle.enter("force_atlas2_accepts_i64_vertices_and_f32_helpers").expect("entered");
     let mut rng = RngState::new(&entered, TEST_LAYOUT_SECONDARY_SEED).expect("rng");
@@ -234,6 +241,7 @@ fn force_atlas2_accepts_i64_vertices_and_f32_helpers() {
 
 #[test]
 fn force_atlas2_rejects_sparse_mass_helpers() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
     let entered = handle.enter("force_atlas2_rejects_sparse_mass_helpers").expect("entered");
     let mut rng = RngState::new(&entered, TEST_LAYOUT_SECONDARY_SEED).expect("rng");
@@ -284,6 +292,7 @@ fn force_atlas2_rejects_sparse_mass_helpers() {
 
 #[test]
 fn louvain_returns_vertex_partitions_and_finite_modularity() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
     let entered = handle.enter("louvain_returns_vertex_partitions_and_finite_modularity").expect("entered");
     let src = DeviceArray::from_slice(&entered, LOUVAIN_GRAPH_SRC_I32).expect("src");
@@ -313,6 +322,7 @@ fn louvain_returns_vertex_partitions_and_finite_modularity() {
 
 #[test]
 fn pagerank_on_single_vertex_graph_returns_score_one() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
     let entered = handle.enter("pagerank_on_single_vertex_graph_returns_score_one").expect("entered");
     let empty: [i32; 0] = [];
@@ -338,6 +348,7 @@ fn pagerank_on_single_vertex_graph_returns_score_one() {
 
 #[test]
 fn pagerank_on_disconnected_graph_returns_normalized_positive_scores() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
     let entered = handle.enter("pagerank_on_disconnected_graph_returns_normalized_positive_scores").expect("entered");
     let src = DeviceArray::from_slice(&entered, DISCONNECTED_TWO_CYCLES_SRC_I32).expect("src");
@@ -363,6 +374,7 @@ fn pagerank_on_disconnected_graph_returns_normalized_positive_scores() {
 
 #[test]
 fn degrees_all_on_empty_graph_returns_empty_results() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
     let entered = handle.enter("degrees_all_on_empty_graph_returns_empty_results").expect("entered");
     let empty: [i32; 0] = [];

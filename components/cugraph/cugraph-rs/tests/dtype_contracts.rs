@@ -19,6 +19,7 @@ fn test_handle() -> ResourceHandle {
 
 #[test]
 fn graph_reports_i64_vertex_and_f64_weight_dtypes() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
     let handle = handle.enter("graph_reports_i64_vertex_and_f64_weight_dtypes").expect("entered");
     let src = DeviceArray::from_slice(&handle, DIRECTED_TRIANGLE_CYCLE_SRC_I64).expect("src");
@@ -36,6 +37,7 @@ fn graph_reports_i64_vertex_and_f64_weight_dtypes() {
 
 #[test]
 fn typed_results_refuse_lossy_narrowing() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
     let handle = handle.enter("typed_results_refuse_lossy_narrowing").expect("entered");
     let src = DeviceArray::from_slice(&handle, DIRECTED_STAR_SRC_I64).expect("src");

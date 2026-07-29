@@ -343,7 +343,7 @@ where
 {
     let series = series.into_iter();
     let (series_count, _) = series.size_hint();
-    cudf::DataFrame::from_columns(series).map_err(|error| {
+    cudf::DataFrame::from_series(series).map_err(|error| {
         map_cudf_error_with(
             error,
             operation,

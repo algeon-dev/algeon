@@ -987,7 +987,7 @@ impl Graph<Transposed> {
     /// # let entered = handle.enter("Graph::pagerank docs").unwrap();
     /// # let src = runtime.series(&[0i32, 1, 2]).unwrap();
     /// # let dst = runtime.series(&[1i32, 2, 0]).unwrap();
-    /// # let edges = cudf::DataFrame::from_columns([("src", src), ("dst", dst)]).unwrap();
+    /// # let edges = cudf::DataFrame::from_series([("src", src), ("dst", dst)]).unwrap();
     /// # let opts = DataFrameGraphOptions::new("src", "dst").renumber();
     /// # let mut graph = graph_from_dataframe::<Transposed>(&entered, &edges, &opts).unwrap();
     /// let result = graph
@@ -1129,7 +1129,7 @@ impl Graph<Forward> {
     /// # let entered = handle.enter("Graph::bfs docs").unwrap();
     /// # let src = runtime.series(&[0i32, 1, 2]).unwrap();
     /// # let dst = runtime.series(&[1i32, 2, 0]).unwrap();
-    /// # let edges = cudf::DataFrame::from_columns([("src", src), ("dst", dst)]).unwrap();
+    /// # let edges = cudf::DataFrame::from_series([("src", src), ("dst", dst)]).unwrap();
     /// # let opts = DataFrameGraphOptions::new("src", "dst").renumber();
     /// # let mut graph = graph_from_dataframe::<Forward>(&entered, &edges, &opts).unwrap();
     /// let sources = runtime.series(&[0i32]).unwrap();
@@ -1179,7 +1179,7 @@ impl Graph<Forward> {
     /// # let src = runtime.series(&[0i32, 1, 1, 2]).unwrap();
     /// # let dst = runtime.series(&[1i32, 0, 2, 1]).unwrap();
     /// # let weight = runtime.series(&[1.0f32, 1.0, 1.0, 1.0]).unwrap();
-    /// # let edges = cudf::DataFrame::from_columns([("src", src), ("dst", dst), ("weight", weight)]).unwrap();
+    /// # let edges = cudf::DataFrame::from_series([("src", src), ("dst", dst), ("weight", weight)]).unwrap();
     /// let opts = DataFrameGraphOptions::new("src", "dst")
     ///     .weight_col("weight")
     ///     .properties(GraphProperties::undirected())
@@ -1256,7 +1256,7 @@ impl<T: Transposition> Graph<T> {
     /// # let mut rng = RngState::new(&entered, 42).unwrap();
     /// # let src = runtime.series(&[0i32, 1, 2]).unwrap();
     /// # let dst = runtime.series(&[1i32, 2, 0]).unwrap();
-    /// # let edges = cudf::DataFrame::from_columns([("src", src), ("dst", dst)]).unwrap();
+    /// # let edges = cudf::DataFrame::from_series([("src", src), ("dst", dst)]).unwrap();
     /// # let opts = DataFrameGraphOptions::new("src", "dst").renumber();
     /// # let mut graph = graph_from_dataframe::<Forward>(&entered, &edges, &opts).unwrap();
     /// let params = ForceAtlas2Params::default();

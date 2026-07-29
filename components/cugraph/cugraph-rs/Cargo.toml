@@ -19,7 +19,6 @@ rapids-interop = { path = "../../cudf-rs/rapids-interop" }
 
 [dev-dependencies]
 anyhow = "1"
-criterion = "0.5"
 static_assertions = "1"
 
 [build-dependencies]

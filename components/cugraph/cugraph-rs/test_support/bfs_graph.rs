@@ -21,7 +21,7 @@ pub fn bfs_graph_dataframe(runtime: &Runtime) -> DataFrame {
     let src = runtime.series(BFS_GRAPH_SRC_I32).expect("src");
     let dst = runtime.series(BFS_GRAPH_DST_I32).expect("dst");
     let wgt = runtime.series(BFS_GRAPH_WEIGHT_F32).expect("weight");
-    DataFrame::from_columns([("src", src), ("dst", dst), ("weight", wgt)]).expect("bfs graph dataframe")
+    DataFrame::from_series([("src", src), ("dst", dst), ("weight", wgt)]).expect("bfs graph dataframe")
 }
 
 pub fn write_bfs_graph_parquet(path: &Path) -> anyhow::Result<()> {

@@ -26,6 +26,7 @@ use cugraph::{
 fn layout_result_to_dataframe() {
     use cugraph::{layout::ForceAtlas2Params, params::IterationCount, random::RngState};
 
+    let _guard = common::cudf::cuda_test_serial_guard();
     let runtime = std::sync::Arc::new(explicit_runtime());
     let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).expect("handle");
     let handle = handle.enter("layout_result_to_dataframe").expect("entered");
@@ -73,6 +74,7 @@ fn layout_result_to_dataframe() {
 
 #[test]
 fn bfs_result_to_dataframe_with_predecessors() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let runtime = std::sync::Arc::new(explicit_runtime());
     let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).expect("handle");
     let handle = handle.enter("bfs_result_to_dataframe_with_predecessors").expect("entered");
@@ -115,6 +117,7 @@ fn bfs_result_to_dataframe_with_predecessors() {
 
 #[test]
 fn centrality_to_dataframe_write_parquet_roundtrip() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let runtime = std::sync::Arc::new(explicit_runtime());
     let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).expect("handle");
     let handle = handle.enter("centrality_to_dataframe_write_parquet_roundtrip").expect("entered");
@@ -158,6 +161,7 @@ fn centrality_to_dataframe_write_parquet_roundtrip() {
 
 #[test]
 fn betweenness_result_to_dataframe() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let runtime = std::sync::Arc::new(explicit_runtime());
     let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).expect("handle");
     let handle = handle.enter("betweenness_result_to_dataframe").expect("entered");
@@ -190,6 +194,7 @@ fn betweenness_result_to_dataframe() {
 
 #[test]
 fn louvain_result_to_dataframe() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let runtime = std::sync::Arc::new(explicit_runtime());
     let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).expect("handle");
     let handle = handle.enter("louvain_result_to_dataframe").expect("entered");
@@ -220,6 +225,7 @@ fn louvain_result_to_dataframe() {
 
 #[test]
 fn pagerank_result_preserves_external_vertex_ids_for_renumbered_graphs() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let runtime = std::sync::Arc::new(explicit_runtime());
     let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).expect("handle");
     let handle = handle.enter("pagerank_result_preserves_external_vertex_ids_for_renumbered_graphs").expect("entered");
@@ -253,6 +259,7 @@ fn pagerank_result_preserves_external_vertex_ids_for_renumbered_graphs() {
 
 #[test]
 fn louvain_result_preserves_external_vertex_ids_for_renumbered_graphs() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let runtime = std::sync::Arc::new(explicit_runtime());
     let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).expect("handle");
     let handle = handle.enter("louvain_result_preserves_external_vertex_ids_for_renumbered_graphs").expect("entered");
@@ -292,6 +299,7 @@ fn louvain_result_preserves_external_vertex_ids_for_renumbered_graphs() {
 fn layout_result_preserves_external_vertex_ids_for_renumbered_graphs() {
     use cugraph::{layout::ForceAtlas2Params, params::IterationCount, random::RngState};
 
+    let _guard = common::cudf::cuda_test_serial_guard();
     let runtime = std::sync::Arc::new(explicit_runtime());
     let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).expect("handle");
     let handle = handle.enter("layout_result_preserves_external_vertex_ids_for_renumbered_graphs").expect("entered");

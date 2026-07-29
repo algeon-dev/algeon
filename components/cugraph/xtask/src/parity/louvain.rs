@@ -404,13 +404,13 @@ fn normalize_fixture_dataframe(df: &DataFrame, schema: &EdgeSchema) -> anyhow::R
         EdgeSchemaKind::CanonicalNumeric => {
             let src = df.series("src").context("load src column")?;
             let dst = df.series("dst").context("load dst column")?;
-            Ok(DataFrame::from_columns([("src", src), ("dst", dst), ("weight", weight)])
+            Ok(DataFrame::from_series([("src", src), ("dst", dst), ("weight", weight)])
                 .context("rebuild canonical numeric parity DataFrame")?)
         },
         EdgeSchemaKind::AliasNumeric => {
             let src = df.series(schema.columns.src).with_context(|| format!("load {} column", schema.columns.src))?;
             let dst = df.series(schema.columns.dst).with_context(|| format!("load {} column", schema.columns.dst))?;
-            Ok(DataFrame::from_columns([("src", src), ("dst", dst), ("weight", weight)])
+            Ok(DataFrame::from_series([("src", src), ("dst", dst), ("weight", weight)])
                 .context("rename aliased numeric edge columns")?)
         },
         EdgeSchemaKind::AliasStringNeedsRenumbering => {
@@ -420,7 +420,7 @@ fn normalize_fixture_dataframe(df: &DataFrame, schema: &EdgeSchema) -> anyhow::R
             let codebook = all_vertices.codebook().context("build vertex codebook for string edge list")?;
             let src_codes = codebook.encode(&src).context("encode source string vertex ids")?.into_series();
             let dst_codes = codebook.encode(&dst).context("encode destination string vertex ids")?.into_series();
-            Ok(DataFrame::from_columns([("src", src_codes), ("dst", dst_codes), ("weight", weight)])
+            Ok(DataFrame::from_series([("src", src_codes), ("dst", dst_codes), ("weight", weight)])
                 .context("build normalized parity edge DataFrame")?)
         },
     }

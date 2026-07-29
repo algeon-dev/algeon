@@ -13,6 +13,7 @@ fn test_handle() -> ResourceHandle {
 
 #[test]
 fn bfs_predecessors_are_none_when_not_requested() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
     let entered = handle.enter("bfs_predecessors_are_none_when_not_requested").expect("entered");
     let src = DeviceArray::from_slice(&entered, FOUR_VERTEX_CHAIN_SRC_I32).expect("src");

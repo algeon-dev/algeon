@@ -34,6 +34,7 @@ fn degree_map(
 
 #[test]
 fn builder_rejects_mismatched_src_dst_lengths() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
     let handle = handle.enter("builder_rejects_mismatched_src_dst_lengths").expect("entered");
     let src = DeviceArray::from_slice(&handle, &[0i32, 1, 2]).expect("src");
@@ -49,6 +50,7 @@ fn builder_rejects_mismatched_src_dst_lengths() {
 
 #[test]
 fn builder_rejects_mismatched_weights_length() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
     let handle = handle.enter("builder_rejects_mismatched_weights_length").expect("entered");
     let src = DeviceArray::from_slice(&handle, TRIANGLE_TAIL_SRC_I32).expect("src");
@@ -69,6 +71,7 @@ fn builder_rejects_mismatched_weights_length() {
 
 #[test]
 fn builder_rejects_symmetrize_with_edge_ids() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
     let handle = handle.enter("builder_rejects_symmetrize_with_edge_ids").expect("entered");
     let src = DeviceArray::from_slice(&handle, DIRECTED_TRIANGLE_CYCLE_SRC_I32).expect("src");
@@ -90,6 +93,7 @@ fn builder_rejects_symmetrize_with_edge_ids() {
 
 #[test]
 fn builder_rejects_mismatched_temporal_dtypes() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
     let handle = handle.enter("builder_rejects_mismatched_temporal_dtypes").expect("entered");
     let src = DeviceArray::from_slice(&handle, DIRECTED_TRIANGLE_CYCLE_SRC_I32).expect("src");
@@ -113,6 +117,7 @@ fn builder_rejects_mismatched_temporal_dtypes() {
 
 #[test]
 fn builder_rejects_vertices_dtype_mismatch_with_src_dst() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
     let handle = handle.enter("builder_rejects_vertices_dtype_mismatch_with_src_dst").expect("entered");
     let src = DeviceArray::from_slice(&handle, DIRECTED_TRIANGLE_CYCLE_SRC_I32).expect("src");
@@ -135,6 +140,7 @@ fn builder_rejects_vertices_dtype_mismatch_with_src_dst() {
 
 #[test]
 fn builder_accepts_vertices_matching_src_dst_dtype() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
     let handle = handle.enter("builder_accepts_vertices_matching_src_dst_dtype").expect("entered");
     let src = DeviceArray::from_slice(&handle, DIRECTED_TRIANGLE_CYCLE_SRC_I32).expect("src");
@@ -154,6 +160,7 @@ fn builder_accepts_vertices_matching_src_dst_dtype() {
 
 #[test]
 fn builder_chainable_setters_preserve_build_path() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
     let handle = handle.enter("builder_chainable_setters_preserve_build_path").expect("entered");
     let src = DeviceArray::from_slice(&handle, TWO_CYCLE_SRC_I32).expect("src");
@@ -178,6 +185,7 @@ fn builder_chainable_setters_preserve_build_path() {
 
 #[test]
 fn graph_properties_are_preserved_on_built_graph() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
     let handle = handle.enter("graph_properties_are_preserved_on_built_graph").expect("entered");
     let src = DeviceArray::from_slice(&handle, MULTI_EDGE_DROP_SRC_I32).expect("src");
@@ -194,6 +202,7 @@ fn graph_properties_are_preserved_on_built_graph() {
 
 #[test]
 fn drop_self_loops_removes_loop_degree_contribution() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
     let handle = handle.enter("drop_self_loops_removes_loop_degree_contribution").expect("entered");
     let src = DeviceArray::from_slice(&handle, SELF_LOOP_DROP_SRC_I32).expect("src");
@@ -216,6 +225,7 @@ fn drop_self_loops_removes_loop_degree_contribution() {
 
 #[test]
 fn drop_multi_edges_collapses_duplicate_edges() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
     let handle = handle.enter("drop_multi_edges_collapses_duplicate_edges").expect("entered");
     let src = DeviceArray::from_slice(&handle, MULTI_EDGE_DROP_SRC_I32).expect("src");
@@ -238,6 +248,7 @@ fn drop_multi_edges_collapses_duplicate_edges() {
 
 #[test]
 fn edge_count_matches_directed_input_rows() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
     let handle = handle.enter("edge_count_matches_directed_input_rows").expect("entered");
     let src = DeviceArray::from_slice(&handle, TRIANGLE_TAIL_SRC_I32).expect("src");
@@ -252,6 +263,7 @@ fn edge_count_matches_directed_input_rows() {
 
 #[test]
 fn edge_count_respects_drop_self_loops() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
     let handle = handle.enter("edge_count_respects_drop_self_loops").expect("entered");
     let src = DeviceArray::from_slice(&handle, SELF_LOOP_DROP_SRC_I32).expect("src");
@@ -270,6 +282,7 @@ fn edge_count_respects_drop_self_loops() {
 
 #[test]
 fn edge_count_respects_drop_multi_edges() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
     let handle = handle.enter("edge_count_respects_drop_multi_edges").expect("entered");
     let src = DeviceArray::from_slice(&handle, MULTI_EDGE_DROP_SRC_I32).expect("src");
@@ -288,6 +301,7 @@ fn edge_count_respects_drop_multi_edges() {
 
 #[test]
 fn edge_count_matches_python_style_undirected_edges() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
     let handle = handle.enter("edge_count_matches_python_style_undirected_edges").expect("entered");
     let src = DeviceArray::from_slice(&handle, UNDIRECTED_TRIANGLE_SRC_I32).expect("src");
@@ -305,6 +319,7 @@ fn edge_count_matches_python_style_undirected_edges() {
 
 #[test]
 fn edge_count_counts_undirected_self_loops_once() {
+    let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
     let handle = handle.enter("edge_count_counts_undirected_self_loops_once").expect("entered");
     let src = DeviceArray::from_slice(&handle, &[0i32, 0, 1]).expect("src");
