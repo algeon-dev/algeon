@@ -25,8 +25,8 @@ pub(crate) fn resolve_shim_compile_layout(
     }
 
     Ok(ShimCompileLayout {
-        source_file: manifest_dir.join("cpp").join("runtime_resource_handle.cpp"),
-        local_include_dir: manifest_dir.join("cpp"),
+        source_file: manifest_dir.join("shim").join("runtime_resource_handle.cpp"),
+        local_include_dir: manifest_dir.join("shim"),
         native_include_dirs,
     })
 }

@@ -33,16 +33,17 @@ fn test_handle() -> ResourceHandle {
 #[test]
 fn bfs_accepts_i64_sources_for_i64_graphs() {
     let handle = test_handle();
-    let src = DeviceArray::from_slice(&handle, FOUR_VERTEX_CHAIN_SRC_I64).expect("src");
-    let dst = DeviceArray::from_slice(&handle, FOUR_VERTEX_CHAIN_DST_I64).expect("dst");
+    let entered = handle.enter("bfs_accepts_i64_sources_for_i64_graphs").expect("entered");
+    let src = DeviceArray::from_slice(&entered, FOUR_VERTEX_CHAIN_SRC_I64).expect("src");
+    let dst = DeviceArray::from_slice(&entered, FOUR_VERTEX_CHAIN_DST_I64).expect("dst");
     let src_view = src.view().expect("src_view");
     let dst_view = dst.view().expect("dst_view");
 
-    let mut graph = GraphBuilder::new(&src_view, &dst_view).renumber().build::<Forward>(&handle).expect("graph");
-    let sources = DeviceArray::from_slice(&handle, &[0i64]).expect("sources");
+    let mut graph = GraphBuilder::new(&src_view, &dst_view).renumber().build::<Forward>(&entered).expect("graph");
+    let sources = DeviceArray::from_slice(&entered, &[0i64]).expect("sources");
     let sources_view = sources.view().expect("sources_view");
 
-    let result = graph.bfs(&handle, &sources_view, &BfsParams::default().with_predecessors()).expect("bfs");
+    let result = graph.bfs(&entered, &sources_view, &BfsParams::default().with_predecessors()).expect("bfs");
 
     let vertex_ids = result.vertex_ids().expect("vertex_ids");
     assert!(matches!(vertex_ids, VertexIds::I64(_)));
@@ -51,7 +52,7 @@ fn bfs_accepts_i64_sources_for_i64_graphs() {
     let predecessors = result.predecessors().expect("predecessors").expect("predecessor values");
     assert!(matches!(predecessors, VertexIds::I64(_)));
 
-    let distance_map = bfs_distance_map_i64_result(&handle, &result);
+    let distance_map = bfs_distance_map_i64_result(&entered, &result);
 
     assert_eq!(distance_map[&0], 0);
     assert_eq!(distance_map[&1], 1);
@@ -62,17 +63,18 @@ fn bfs_accepts_i64_sources_for_i64_graphs() {
 #[test]
 fn betweenness_accepts_i64_seed_vertices() {
     let handle = test_handle();
-    let src = DeviceArray::from_slice(&handle, DIRECTED_STAR_SRC_I64).expect("src");
-    let dst = DeviceArray::from_slice(&handle, DIRECTED_STAR_DST_I64).expect("dst");
+    let entered = handle.enter("betweenness_accepts_i64_seed_vertices").expect("entered");
+    let src = DeviceArray::from_slice(&entered, DIRECTED_STAR_SRC_I64).expect("src");
+    let dst = DeviceArray::from_slice(&entered, DIRECTED_STAR_DST_I64).expect("dst");
     let src_view = src.view().expect("src_view");
     let dst_view = dst.view().expect("dst_view");
 
-    let mut graph = GraphBuilder::new(&src_view, &dst_view).renumber().build::<Forward>(&handle).expect("graph");
-    let seeds = DeviceArray::from_slice(&handle, &[0i64, 1]).expect("seeds");
+    let mut graph = GraphBuilder::new(&src_view, &dst_view).renumber().build::<Forward>(&entered).expect("graph");
+    let seeds = DeviceArray::from_slice(&entered, &[0i64, 1]).expect("seeds");
     let seeds_view = seeds.view().expect("seeds_view");
 
     let result = graph
-        .betweenness_centrality(&handle, &seeds_view, &BetweennessCentralityParams::default())
+        .betweenness_centrality(&entered, &seeds_view, &BetweennessCentralityParams::default())
         .expect("betweenness");
 
     let vertex_ids = result.vertex_ids().expect("vertex_ids");
@@ -80,7 +82,7 @@ fn betweenness_accepts_i64_seed_vertices() {
     assert_eq!(vertex_ids.len(), 4);
 
     let scores = result.scores().expect("scores");
-    let values = scores.to_vec_f64(&handle).expect("score copy");
+    let values = scores.to_vec_f64(&entered).expect("score copy");
     assert_eq!(values.len(), 4);
     assert!(values.iter().all(|v| v.is_finite() && *v >= 0.0));
 }
@@ -88,20 +90,21 @@ fn betweenness_accepts_i64_seed_vertices() {
 #[test]
 fn degrees_accept_i64_vertex_subsets() {
     let handle = test_handle();
-    let src = DeviceArray::from_slice(&handle, DEGREE_SUBSET_SRC_I64).expect("src");
-    let dst = DeviceArray::from_slice(&handle, DEGREE_SUBSET_DST_I64).expect("dst");
+    let entered = handle.enter("degrees_accept_i64_vertex_subsets").expect("entered");
+    let src = DeviceArray::from_slice(&entered, DEGREE_SUBSET_SRC_I64).expect("src");
+    let dst = DeviceArray::from_slice(&entered, DEGREE_SUBSET_DST_I64).expect("dst");
     let src_view = src.view().expect("src_view");
     let dst_view = dst.view().expect("dst_view");
 
-    let mut graph = GraphBuilder::new(&src_view, &dst_view).renumber().build::<Transposed>(&handle).expect("graph");
-    let query = DeviceArray::from_slice(&handle, DEGREE_QUERY_I64).expect("query");
+    let mut graph = GraphBuilder::new(&src_view, &dst_view).renumber().build::<Transposed>(&entered).expect("graph");
+    let query = DeviceArray::from_slice(&entered, DEGREE_QUERY_I64).expect("query");
     let query_view = query.view().expect("query_view");
 
-    let result = graph.degrees(&handle, &query_view).expect("degrees");
+    let result = graph.degrees(&entered, &query_view).expect("degrees");
 
-    let vertices = result.vertex_ids().expect("vertex_ids").to_vec_i64(&handle).expect("vertex copy");
-    let in_degrees = result.in_degrees().expect("in_degrees").to_vec_i64(&handle).expect("in copy");
-    let out_degrees = result.out_degrees().expect("out_degrees").to_vec_i64(&handle).expect("out copy");
+    let vertices = result.vertex_ids().expect("vertex_ids").to_vec_i64(&entered).expect("vertex copy");
+    let in_degrees = result.in_degrees().expect("in_degrees").to_vec_i64(&entered).expect("in copy");
+    let out_degrees = result.out_degrees().expect("out_degrees").to_vec_i64(&entered).expect("out copy");
 
     let degree_map: HashMap<i64, (i64, i64)> =
         vertices.into_iter().zip(in_degrees.into_iter().zip(out_degrees)).collect();
@@ -114,17 +117,18 @@ fn degrees_accept_i64_vertex_subsets() {
 #[test]
 fn in_degrees_checked_accepts_all_vertices() {
     let handle = test_handle();
-    let src = DeviceArray::from_slice(&handle, DIRECTED_STAR_SRC_I64).expect("src");
-    let dst = DeviceArray::from_slice(&handle, DIRECTED_STAR_DST_I64).expect("dst");
+    let entered = handle.enter("in_degrees_checked_accepts_all_vertices").expect("entered");
+    let src = DeviceArray::from_slice(&entered, DIRECTED_STAR_SRC_I64).expect("src");
+    let dst = DeviceArray::from_slice(&entered, DIRECTED_STAR_DST_I64).expect("dst");
     let src_view = src.view().expect("src_view");
     let dst_view = dst.view().expect("dst_view");
 
-    let mut graph = GraphBuilder::new(&src_view, &dst_view).renumber().build::<Transposed>(&handle).expect("graph");
+    let mut graph = GraphBuilder::new(&src_view, &dst_view).renumber().build::<Transposed>(&entered).expect("graph");
 
-    let result = graph.in_degrees_checked(&handle, VertexSelection::<i64>::All, true).expect("in_degrees_checked");
+    let result = graph.in_degrees_checked(&entered, VertexSelection::<i64>::All, true).expect("in_degrees_checked");
 
-    let vertices = result.vertex_ids().expect("vertex_ids").to_vec_i64(&handle).expect("vertex copy");
-    let in_degrees = result.in_degrees().expect("in_degrees").to_vec_i64(&handle).expect("in copy");
+    let vertices = result.vertex_ids().expect("vertex_ids").to_vec_i64(&entered).expect("vertex copy");
+    let in_degrees = result.in_degrees().expect("in_degrees").to_vec_i64(&entered).expect("in copy");
     let degree_map: HashMap<i64, i64> = vertices.into_iter().zip(in_degrees).collect();
 
     assert_eq!(degree_map[&0], 3);
@@ -136,17 +140,18 @@ fn in_degrees_checked_accepts_all_vertices() {
 #[test]
 fn out_degrees_checked_accepts_all_vertices() {
     let handle = test_handle();
-    let src = DeviceArray::from_slice(&handle, DIRECTED_STAR_SRC_I64).expect("src");
-    let dst = DeviceArray::from_slice(&handle, DIRECTED_STAR_DST_I64).expect("dst");
+    let entered = handle.enter("out_degrees_checked_accepts_all_vertices").expect("entered");
+    let src = DeviceArray::from_slice(&entered, DIRECTED_STAR_SRC_I64).expect("src");
+    let dst = DeviceArray::from_slice(&entered, DIRECTED_STAR_DST_I64).expect("dst");
     let src_view = src.view().expect("src_view");
     let dst_view = dst.view().expect("dst_view");
 
-    let mut graph = GraphBuilder::new(&src_view, &dst_view).renumber().build::<Forward>(&handle).expect("graph");
+    let mut graph = GraphBuilder::new(&src_view, &dst_view).renumber().build::<Forward>(&entered).expect("graph");
 
-    let result = graph.out_degrees_checked(&handle, VertexSelection::<i64>::All, true).expect("out_degrees_checked");
+    let result = graph.out_degrees_checked(&entered, VertexSelection::<i64>::All, true).expect("out_degrees_checked");
 
-    let vertices = result.vertex_ids().expect("vertex_ids").to_vec_i64(&handle).expect("vertex copy");
-    let out_degrees = result.out_degrees().expect("out_degrees").to_vec_i64(&handle).expect("out copy");
+    let vertices = result.vertex_ids().expect("vertex_ids").to_vec_i64(&entered).expect("vertex copy");
+    let out_degrees = result.out_degrees().expect("out_degrees").to_vec_i64(&entered).expect("out copy");
     let degree_map: HashMap<i64, i64> = vertices.into_iter().zip(out_degrees).collect();
 
     assert_eq!(degree_map[&0], 3);
@@ -158,14 +163,15 @@ fn out_degrees_checked_accepts_all_vertices() {
 #[test]
 fn bfs_rejects_vertex_selection_all() {
     let handle = test_handle();
-    let src = DeviceArray::from_slice(&handle, FOUR_VERTEX_CHAIN_SRC_I32).expect("src");
-    let dst = DeviceArray::from_slice(&handle, FOUR_VERTEX_CHAIN_DST_I32).expect("dst");
+    let entered = handle.enter("bfs_rejects_vertex_selection_all").expect("entered");
+    let src = DeviceArray::from_slice(&entered, FOUR_VERTEX_CHAIN_SRC_I32).expect("src");
+    let dst = DeviceArray::from_slice(&entered, FOUR_VERTEX_CHAIN_DST_I32).expect("dst");
     let src_view = src.view().expect("src_view");
     let dst_view = dst.view().expect("dst_view");
 
-    let mut graph = GraphBuilder::new(&src_view, &dst_view).renumber().build::<Forward>(&handle).expect("graph");
+    let mut graph = GraphBuilder::new(&src_view, &dst_view).renumber().build::<Forward>(&entered).expect("graph");
     let err =
-        graph.bfs(&handle, VertexSelection::<i32>::All, &BfsParams::default()).expect_err("bfs should reject All");
+        graph.bfs(&entered, VertexSelection::<i32>::All, &BfsParams::default()).expect_err("bfs should reject All");
 
     assert_eq!(err.kind(), cugraph::ErrorKind::InvalidInput);
     assert_eq!(err.operation(), "Graph::bfs");
@@ -174,11 +180,12 @@ fn bfs_rejects_vertex_selection_all() {
 #[test]
 fn force_atlas2_accepts_i64_vertices_and_f32_helpers() {
     let handle = test_handle();
-    let mut rng = RngState::new(&handle, TEST_LAYOUT_SECONDARY_SEED).expect("rng");
+    let entered = handle.enter("force_atlas2_accepts_i64_vertices_and_f32_helpers").expect("entered");
+    let mut rng = RngState::new(&entered, TEST_LAYOUT_SECONDARY_SEED).expect("rng");
 
-    let src = DeviceArray::from_slice(&handle, UNDIRECTED_TRIANGLE_SRC_I64).expect("src");
-    let dst = DeviceArray::from_slice(&handle, UNDIRECTED_TRIANGLE_DST_I64).expect("dst");
-    let wgt = DeviceArray::from_slice(&handle, UNDIRECTED_TRIANGLE_UNIT_WEIGHT_F64).expect("wgt");
+    let src = DeviceArray::from_slice(&entered, UNDIRECTED_TRIANGLE_SRC_I64).expect("src");
+    let dst = DeviceArray::from_slice(&entered, UNDIRECTED_TRIANGLE_DST_I64).expect("dst");
+    let wgt = DeviceArray::from_slice(&entered, UNDIRECTED_TRIANGLE_UNIT_WEIGHT_F64).expect("wgt");
     let src_view = src.view().expect("src_view");
     let dst_view = dst.view().expect("dst_view");
     let wgt_view = wgt.view().expect("wgt_view");
@@ -187,13 +194,13 @@ fn force_atlas2_accepts_i64_vertices_and_f32_helpers() {
         .weights(&wgt_view)
         .properties(GraphProperties::undirected())
         .renumber()
-        .build::<Forward>(&handle)
+        .build::<Forward>(&entered)
         .expect("graph");
 
-    let pos_vertices = DeviceArray::from_slice(&handle, TRIANGLE_VERTEX_IDS_I64).expect("pos vertices");
-    let x = DeviceArray::from_slice(&handle, &[0.0f32, 1.0, -1.0]).expect("x");
-    let y = DeviceArray::from_slice(&handle, &[0.0f32, 0.5, -0.5]).expect("y");
-    let mass_values = DeviceArray::from_slice(&handle, &[1.0f32, 1.5, 2.0]).expect("mass");
+    let pos_vertices = DeviceArray::from_slice(&entered, TRIANGLE_VERTEX_IDS_I64).expect("pos vertices");
+    let x = DeviceArray::from_slice(&entered, &[0.0f32, 1.0, -1.0]).expect("x");
+    let y = DeviceArray::from_slice(&entered, &[0.0f32, 0.5, -0.5]).expect("y");
+    let mass_values = DeviceArray::from_slice(&entered, &[1.0f32, 1.5, 2.0]).expect("mass");
     let pos_vertices_view = pos_vertices.view().expect("pos_vertices_view");
     let x_view = x.view().expect("x_view");
     let y_view = y.view().expect("y_view");
@@ -207,7 +214,7 @@ fn force_atlas2_accepts_i64_vertices_and_f32_helpers() {
     let attrs = ForceAtlas2VertexAttrs { mass: Some((&pos_vertices_view, &mass_values_view)), ..Default::default() };
 
     let result =
-        graph.force_atlas2_with(&handle, &mut rng, &params, Some(&attrs), Some(&init_pos)).expect("force_atlas2");
+        graph.force_atlas2_with(&entered, &mut rng, &params, Some(&attrs), Some(&init_pos)).expect("force_atlas2");
 
     let vertex_ids = result.vertex_ids().expect("vertex_ids");
     assert!(matches!(vertex_ids, VertexIds::I64(_)));
@@ -217,8 +224,8 @@ fn force_atlas2_accepts_i64_vertices_and_f32_helpers() {
     assert!(matches!(x_coords, ScoreValues::F32(_)));
     assert!(matches!(y_coords, ScoreValues::F32(_)));
 
-    let x_values = x_coords.to_vec_f32(&handle).expect("x copy");
-    let y_values = y_coords.to_vec_f32(&handle).expect("y copy");
+    let x_values = x_coords.to_vec_f32(&entered).expect("x copy");
+    let y_values = y_coords.to_vec_f32(&entered).expect("y copy");
     assert_eq!(x_values.len(), 3);
     assert_eq!(y_values.len(), 3);
     assert!(x_values.iter().all(|v| v.is_finite()));
@@ -228,7 +235,8 @@ fn force_atlas2_accepts_i64_vertices_and_f32_helpers() {
 #[test]
 fn force_atlas2_rejects_sparse_mass_helpers() {
     let handle = test_handle();
-    let mut rng = RngState::new(&handle, TEST_LAYOUT_SECONDARY_SEED).expect("rng");
+    let entered = handle.enter("force_atlas2_rejects_sparse_mass_helpers").expect("entered");
+    let mut rng = RngState::new(&entered, TEST_LAYOUT_SECONDARY_SEED).expect("rng");
 
     let vertex_count = 128i32;
     let mut src_data = Vec::with_capacity(((vertex_count - 1) * 2) as usize);
@@ -240,19 +248,19 @@ fn force_atlas2_rejects_sparse_mass_helpers() {
         dst_data.push(v);
     }
 
-    let src = DeviceArray::from_slice(&handle, &src_data).expect("src");
-    let dst = DeviceArray::from_slice(&handle, &dst_data).expect("dst");
+    let src = DeviceArray::from_slice(&entered, &src_data).expect("src");
+    let dst = DeviceArray::from_slice(&entered, &dst_data).expect("dst");
     let src_view = src.view().expect("src_view");
     let dst_view = dst.view().expect("dst_view");
 
     let mut graph = GraphBuilder::new(&src_view, &dst_view)
         .properties(GraphProperties::undirected())
         .renumber()
-        .build::<Forward>(&handle)
+        .build::<Forward>(&entered)
         .expect("graph");
 
-    let sparse_mass_vertices = DeviceArray::from_slice(&handle, &[0i32, 1, 2]).expect("mass vertices");
-    let sparse_mass_values = DeviceArray::from_slice(&handle, &[1.0f32, 2.0, 3.0]).expect("mass values");
+    let sparse_mass_vertices = DeviceArray::from_slice(&entered, &[0i32, 1, 2]).expect("mass vertices");
+    let sparse_mass_values = DeviceArray::from_slice(&entered, &[1.0f32, 2.0, 3.0]).expect("mass values");
     let sparse_mass_vertices_view = sparse_mass_vertices.view().expect("mass vertices view");
     let sparse_mass_values_view = sparse_mass_values.view().expect("mass values view");
 
@@ -263,7 +271,7 @@ fn force_atlas2_rejects_sparse_mass_helpers() {
     };
 
     let err = graph
-        .force_atlas2_with(&handle, &mut rng, &params, Some(&attrs), None)
+        .force_atlas2_with(&entered, &mut rng, &params, Some(&attrs), None)
         .expect_err("sparse mass helper should be rejected before reaching CUDA");
 
     assert_eq!(err.kind(), cugraph::ErrorKind::InvalidInput);
@@ -277,9 +285,10 @@ fn force_atlas2_rejects_sparse_mass_helpers() {
 #[test]
 fn louvain_returns_vertex_partitions_and_finite_modularity() {
     let handle = test_handle();
-    let src = DeviceArray::from_slice(&handle, LOUVAIN_GRAPH_SRC_I32).expect("src");
-    let dst = DeviceArray::from_slice(&handle, LOUVAIN_GRAPH_DST_I32).expect("dst");
-    let weights = DeviceArray::from_slice(&handle, LOUVAIN_GRAPH_WEIGHT_F32).expect("weights");
+    let entered = handle.enter("louvain_returns_vertex_partitions_and_finite_modularity").expect("entered");
+    let src = DeviceArray::from_slice(&entered, LOUVAIN_GRAPH_SRC_I32).expect("src");
+    let dst = DeviceArray::from_slice(&entered, LOUVAIN_GRAPH_DST_I32).expect("dst");
+    let weights = DeviceArray::from_slice(&entered, LOUVAIN_GRAPH_WEIGHT_F32).expect("weights");
     let src_view = src.view().expect("src_view");
     let dst_view = dst.view().expect("dst_view");
     let weights_view = weights.view().expect("weights_view");
@@ -288,10 +297,10 @@ fn louvain_returns_vertex_partitions_and_finite_modularity() {
         .weights(&weights_view)
         .properties(GraphProperties::undirected())
         .renumber()
-        .build::<Forward>(&handle)
+        .build::<Forward>(&entered)
         .expect("graph");
 
-    let result = graph.louvain(&handle, &LouvainParams::default()).expect("louvain");
+    let result = graph.louvain(&entered, &LouvainParams::default()).expect("louvain");
 
     let vertex_ids = result.vertex_ids().expect("vertex_ids");
     assert!(matches!(vertex_ids, VertexIds::I32(_)));
@@ -305,20 +314,21 @@ fn louvain_returns_vertex_partitions_and_finite_modularity() {
 #[test]
 fn pagerank_on_single_vertex_graph_returns_score_one() {
     let handle = test_handle();
+    let entered = handle.enter("pagerank_on_single_vertex_graph_returns_score_one").expect("entered");
     let empty: [i32; 0] = [];
-    let src = DeviceArray::from_slice(&handle, &empty).expect("src");
-    let dst = DeviceArray::from_slice(&handle, &empty).expect("dst");
-    let vertices = DeviceArray::from_slice(&handle, &[0i32]).expect("vertices");
+    let src = DeviceArray::from_slice(&entered, &empty).expect("src");
+    let dst = DeviceArray::from_slice(&entered, &empty).expect("dst");
+    let vertices = DeviceArray::from_slice(&entered, &[0i32]).expect("vertices");
     let src_view = src.view().expect("src_view");
     let dst_view = dst.view().expect("dst_view");
     let vertices_view = vertices.view().expect("vertices_view");
 
     let mut graph =
-        GraphBuilder::new(&src_view, &dst_view).vertices(&vertices_view).build::<Transposed>(&handle).expect("graph");
+        GraphBuilder::new(&src_view, &dst_view).vertices(&vertices_view).build::<Transposed>(&entered).expect("graph");
 
-    let result = graph.pagerank(&handle, &PageRankParams::default()).expect("pagerank");
-    let returned_vertices = result.vertex_ids().expect("vertex_ids").to_vec_i32(&handle).expect("vertex copy");
-    let scores = result.scores().expect("scores").to_vec_f32(&handle).expect("score copy");
+    let result = graph.pagerank(&entered, &PageRankParams::default()).expect("pagerank");
+    let returned_vertices = result.vertex_ids().expect("vertex_ids").to_vec_i32(&entered).expect("vertex copy");
+    let scores = result.scores().expect("scores").to_vec_f32(&entered).expect("score copy");
 
     assert_eq!(returned_vertices, vec![0]);
     assert_eq!(scores.len(), 1);
@@ -329,16 +339,17 @@ fn pagerank_on_single_vertex_graph_returns_score_one() {
 #[test]
 fn pagerank_on_disconnected_graph_returns_normalized_positive_scores() {
     let handle = test_handle();
-    let src = DeviceArray::from_slice(&handle, DISCONNECTED_TWO_CYCLES_SRC_I32).expect("src");
-    let dst = DeviceArray::from_slice(&handle, DISCONNECTED_TWO_CYCLES_DST_I32).expect("dst");
+    let entered = handle.enter("pagerank_on_disconnected_graph_returns_normalized_positive_scores").expect("entered");
+    let src = DeviceArray::from_slice(&entered, DISCONNECTED_TWO_CYCLES_SRC_I32).expect("src");
+    let dst = DeviceArray::from_slice(&entered, DISCONNECTED_TWO_CYCLES_DST_I32).expect("dst");
     let src_view = src.view().expect("src_view");
     let dst_view = dst.view().expect("dst_view");
 
-    let mut graph = GraphBuilder::new(&src_view, &dst_view).build::<Transposed>(&handle).expect("graph");
+    let mut graph = GraphBuilder::new(&src_view, &dst_view).build::<Transposed>(&entered).expect("graph");
 
-    let result = graph.pagerank(&handle, &PageRankParams::default()).expect("pagerank");
-    let vertices = result.vertex_ids().expect("vertex_ids").to_vec_i32(&handle).expect("vertex copy");
-    let scores = result.scores().expect("scores").to_vec_f32(&handle).expect("score copy");
+    let result = graph.pagerank(&entered, &PageRankParams::default()).expect("pagerank");
+    let vertices = result.vertex_ids().expect("vertex_ids").to_vec_i32(&entered).expect("vertex copy");
+    let scores = result.scores().expect("scores").to_vec_f32(&entered).expect("score copy");
 
     let score_map: HashMap<i32, f32> = vertices.into_iter().zip(scores.iter().copied()).collect();
     let total_score: f32 = scores.iter().sum();
@@ -353,21 +364,22 @@ fn pagerank_on_disconnected_graph_returns_normalized_positive_scores() {
 #[test]
 fn degrees_all_on_empty_graph_returns_empty_results() {
     let handle = test_handle();
+    let entered = handle.enter("degrees_all_on_empty_graph_returns_empty_results").expect("entered");
     let empty: [i32; 0] = [];
-    let src = DeviceArray::from_slice(&handle, &empty).expect("src");
-    let dst = DeviceArray::from_slice(&handle, &empty).expect("dst");
-    let vertices = DeviceArray::from_slice(&handle, &empty).expect("vertices");
+    let src = DeviceArray::from_slice(&entered, &empty).expect("src");
+    let dst = DeviceArray::from_slice(&entered, &empty).expect("dst");
+    let vertices = DeviceArray::from_slice(&entered, &empty).expect("vertices");
     let src_view = src.view().expect("src_view");
     let dst_view = dst.view().expect("dst_view");
     let vertices_view = vertices.view().expect("vertices_view");
 
     let mut graph =
-        GraphBuilder::new(&src_view, &dst_view).vertices(&vertices_view).build::<Transposed>(&handle).expect("graph");
+        GraphBuilder::new(&src_view, &dst_view).vertices(&vertices_view).build::<Transposed>(&entered).expect("graph");
 
-    let result = graph.degrees_all(&handle).expect("degrees");
-    let returned_vertices = result.vertex_ids().expect("vertex_ids").to_vec_i32(&handle).expect("vertex copy");
-    let in_degrees = result.in_degrees().expect("in_degrees").to_vec_i64(&handle).expect("in copy");
-    let out_degrees = result.out_degrees().expect("out_degrees").to_vec_i64(&handle).expect("out copy");
+    let result = graph.degrees_all(&entered).expect("degrees");
+    let returned_vertices = result.vertex_ids().expect("vertex_ids").to_vec_i32(&entered).expect("vertex copy");
+    let in_degrees = result.in_degrees().expect("in_degrees").to_vec_i64(&entered).expect("in copy");
+    let out_degrees = result.out_degrees().expect("out_degrees").to_vec_i64(&entered).expect("out copy");
 
     assert!(returned_vertices.is_empty());
     assert!(in_degrees.is_empty());

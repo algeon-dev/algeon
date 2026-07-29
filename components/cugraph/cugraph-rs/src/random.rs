@@ -13,7 +13,8 @@
 //! let runtime = std::sync::Arc::new(Runtime::new().unwrap());
 //! let handle =
 //!     ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).unwrap();
-//! let rng = RngState::new(&handle, 42).unwrap();
+//! let entered = handle.enter("RngState docs").unwrap();
+//! let rng = RngState::new(&entered, 42).unwrap();
 //! ```
 
 use std::{marker::PhantomData, ptr};
@@ -23,7 +24,7 @@ use cugraph_sys::{cugraph_error_t, cugraph_rng_state_create, cugraph_rng_state_f
 use crate::{
     cuda::DeviceGuard,
     error::{Result, check_error, require_non_null},
-    handle::ResourceHandle,
+    handle::EnteredContext,
 };
 
 /// RAII wrapper around `cugraph_rng_state_t`.
@@ -48,14 +49,14 @@ impl RngState {
     ///
     /// Different seeds produce different random sequences. In multi-GPU
     /// settings, each GPU should use a different seed.
-    pub fn new(handle: &ResourceHandle, seed: u64) -> Result<Self> {
+    pub fn new(handle: &EnteredContext<'_>, seed: u64) -> Result<Self> {
         let mut raw: *mut cugraph_rng_state_t = ptr::null_mut();
         let mut error: *mut cugraph_error_t = ptr::null_mut();
 
         // SAFETY: `handle` outlives the call and `raw`/`error` are valid
         // out-pointers for cuGraph to initialize.
         unsafe {
-            let code = cugraph_rng_state_create(handle.as_ptr(), seed, &mut raw, &mut error);
+            let code = cugraph_rng_state_create(handle.handle_ptr(), seed, &mut raw, &mut error);
             check_error(code, error, "RngState::new")?;
         }
 
@@ -86,19 +87,22 @@ mod tests {
     use static_assertions::assert_not_impl_any;
 
     use super::*;
+    use crate::ResourceHandle;
 
     #[test]
     fn test_rng_state_creation() {
         let handle = ResourceHandle::new().expect("handle");
-        let rng = RngState::new(&handle, 42).expect("rng state");
+        let entered = handle.enter("test_rng_state_creation").expect("entered");
+        let rng = RngState::new(&entered, 42).expect("rng state");
         assert!(!rng.raw.is_null());
     }
 
     #[test]
     fn test_rng_state_different_seeds() {
         let handle = ResourceHandle::new().expect("handle");
-        let _rng1 = RngState::new(&handle, 0).expect("rng state 0");
-        let _rng2 = RngState::new(&handle, u64::MAX).expect("rng state max");
+        let entered = handle.enter("test_rng_state_different_seeds").expect("entered");
+        let _rng1 = RngState::new(&entered, 0).expect("rng state 0");
+        let _rng2 = RngState::new(&entered, u64::MAX).expect("rng state max");
     }
 
     #[test]

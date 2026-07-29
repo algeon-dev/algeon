@@ -99,6 +99,7 @@ fn run_current_allocator_probe(mode: &str) -> CurrentAllocatorProbeOutcome {
 fn runtime_bound_borrowed_python_imports_use_runtime_execution_context() {
     let runtime = runtime_with_explicit_pool_memory_resource();
     let handle = ResourceHandle::for_runtime(Arc::clone(&runtime)).expect("runtime-bound handle");
+    let handle = handle.enter("runtime_bound_borrowed_python_imports_use_runtime_execution_context").expect("entered");
     let expected = python_weighted_reciprocal_expected_pagerank_map(&handle);
 
     let src_runtime = explicit_runtime();
@@ -140,6 +141,7 @@ fn runtime_bound_borrowed_python_imports_use_runtime_execution_context() {
 fn runtime_bound_prepared_python_imports_use_runtime_execution_context() {
     let runtime = runtime_with_explicit_pool_memory_resource();
     let handle = ResourceHandle::for_runtime(Arc::clone(&runtime)).expect("runtime-bound handle");
+    let handle = handle.enter("runtime_bound_prepared_python_imports_use_runtime_execution_context").expect("entered");
     let expected = python_weighted_reciprocal_expected_pagerank_map(&handle);
 
     let src_runtime = explicit_runtime();

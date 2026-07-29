@@ -1,7 +1,7 @@
 use crate::{
     array::{DeviceArray, DeviceArrayView},
     error::Result,
-    handle::ResourceHandle,
+    handle::EnteredContext,
     types::CugraphElement,
 };
 
@@ -60,7 +60,7 @@ impl<'a, V: CugraphElement> From<&'a [V]> for VertexSelection<'a, V> {
 }
 
 impl<'a, V: CugraphElement> VertexSelection<'a, V> {
-    pub(crate) fn resolve(self, handle: &ResourceHandle) -> Result<ResolvedVertexSelection<'a, V>> {
+    pub(crate) fn resolve(self, handle: &EnteredContext<'_>) -> Result<ResolvedVertexSelection<'a, V>> {
         match self {
             Self::All => Ok(ResolvedVertexSelection::All),
             Self::Device(view) => Ok(ResolvedVertexSelection::Borrowed(view)),

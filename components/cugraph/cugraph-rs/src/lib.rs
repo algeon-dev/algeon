@@ -17,9 +17,11 @@
 //! - **[`cudf_interop`]** — preferred graph-ingestion path for cudf-backed
 //!   applications. Includes `graph_from_series`, `graph_from_dataframe`, and
 //!   Parquet helpers.
-//! - **[`ResourceHandle`]** — manages GPU resources (CUDA stream and cuGraph
-//!   resource handle).
-//!   Required by every cuGraph operation. Not thread-safe.
+//! - **[`ResourceHandle`]** — long-lived owner of GPU execution provenance
+//!   (bound device, retained runtime, cuGraph resource handle). Not
+//!   thread-safe.
+//! - **[`EnteredContext`]** — short-lived execution session created by
+//!   [`ResourceHandle::enter`]. GPU-capable APIs require this token.
 //! - **[`DeviceArray<T>`]** — owning GPU array with compile-time element type.
 //!   Freed on drop. Create views via [`DeviceArray::view()`].
 //! - **[`GraphBuilder`]** — low-level builder for constructing a [`Graph`] from
@@ -43,6 +45,7 @@
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let runtime = std::sync::Arc::new(Runtime::new()?);
 //! let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime))?;
+//! let entered = handle.enter("quick_start")?;
 //!
 //! let src = runtime.series(&[0i32, 1, 2, 1, 2, 0])?;
 //! let dst = runtime.series(&[1i32, 2, 0, 0, 1, 2])?;
@@ -51,9 +54,10 @@
 //! let opts = DataFrameGraphOptions::new("src", "dst")
 //!     .properties(GraphProperties::undirected())
 //!     .renumber();
-//! let mut graph = graph_from_dataframe::<Transposed>(&handle, &edges, &opts)?;
+//! let mut graph =
+//!     graph_from_dataframe::<Transposed>(&entered, &edges, &opts)?;
 //!
-//! let result = graph.pagerank(&handle, &PageRankParams::default())?;
+//! let result = graph.pagerank(&entered, &PageRankParams::default())?;
 //! let df = result.to_dataframe(&runtime)?;
 //! let vertices: Vec<i32> = df.series("vertex")?.to_vec_strict()?;
 //! let scores: Vec<f32> = df.series("value")?.to_vec_strict()?;
@@ -108,6 +112,6 @@ pub use error::{Error, ErrorKind, ErrorStatus};
 // Graph construction and type-state
 pub use graph::{Forward, Graph, GraphBuilder, Transposed, Transposition};
 // Infrastructure
-pub use handle::ResourceHandle;
+pub use handle::{EnteredContext, ResourceHandle};
 // Unified cross-module vertex input model
 pub use structure::VertexSelection;

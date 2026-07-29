@@ -8,7 +8,7 @@ use super::LouvainResult;
 use crate::{
     error::{Result, check_error, require_non_null},
     graph::{Forward, Graph},
-    handle::ResourceHandle,
+    handle::EnteredContext,
     params::{IterationCount, NonNegativeF64, PositiveF64, defaults},
     types::to_bool_t,
 };
@@ -70,7 +70,7 @@ impl Default for LouvainParams {
 /// Prefer using [`Graph::louvain`](crate::graph::Graph::louvain) instead of
 /// calling this function directly.
 pub(crate) fn louvain(
-    handle: &ResourceHandle,
+    handle: &EnteredContext<'_>,
     graph: &mut Graph<Forward>,
     params: &LouvainParams,
 ) -> Result<LouvainResult> {
@@ -81,7 +81,7 @@ pub(crate) fn louvain(
     // forward-layout requirement, and `result`/`error` are valid out-pointers.
     unsafe {
         let code = cugraph_louvain(
-            handle.as_ptr(),
+            handle.handle_ptr(),
             graph.as_ptr(),
             usize::from(params.max_level),
             params.threshold.get(),

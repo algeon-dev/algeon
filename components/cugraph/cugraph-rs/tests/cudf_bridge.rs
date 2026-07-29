@@ -50,6 +50,7 @@ fn device_array_view_from_slice_rejects_mismatch() {
 fn graph_from_series_weighted_pagerank() {
     let runtime = std::sync::Arc::new(explicit_runtime());
     let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).expect("handle");
+    let handle = handle.enter("graph_from_series_weighted_pagerank").expect("entered");
 
     let src = runtime.series(UNDIRECTED_TRIANGLE_SRC_I32).expect("src");
     let dst = runtime.series(UNDIRECTED_TRIANGLE_DST_I32).expect("dst");
@@ -71,6 +72,9 @@ fn graph_from_series_weighted_pagerank() {
 fn graph_from_series_python_cugraph_weighted_undirected_simple_keeps_minimum_reciprocal_weight() {
     let runtime = std::sync::Arc::new(explicit_runtime());
     let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).expect("handle");
+    let handle = handle
+        .enter("graph_from_series_python_cugraph_weighted_undirected_simple_keeps_minimum_reciprocal_weight")
+        .expect("entered");
 
     let src = runtime.series(&[0i32, 1, 1, 2]).expect("src");
     let dst = runtime.series(&[1i32, 0, 2, 1]).expect("dst");
@@ -88,6 +92,7 @@ fn graph_from_series_python_cugraph_weighted_undirected_simple_keeps_minimum_rec
 fn graph_bfs_host_slice_matches_typed_view_path() {
     let runtime = std::sync::Arc::new(explicit_runtime());
     let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).expect("handle");
+    let handle = handle.enter("graph_bfs_host_slice_matches_typed_view_path").expect("entered");
 
     let src = runtime.series(TRIANGLE_TAIL_SRC_I32).expect("src");
     let dst = runtime.series(TRIANGLE_TAIL_DST_I32).expect("dst");
@@ -115,6 +120,7 @@ fn graph_bfs_host_slice_matches_typed_view_path() {
 fn into_series_bfs_results() {
     let runtime = std::sync::Arc::new(explicit_runtime());
     let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).expect("handle");
+    let handle = handle.enter("into_series_bfs_results").expect("entered");
 
     let src = DeviceArray::from_slice(&handle, SIMPLE_CHAIN_SRC_I32).expect("src");
     let dst = DeviceArray::from_slice(&handle, SIMPLE_CHAIN_DST_I32).expect("dst");
@@ -137,6 +143,7 @@ fn into_series_bfs_results() {
 fn into_series_layout_results() {
     let runtime = std::sync::Arc::new(explicit_runtime());
     let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).expect("handle");
+    let handle = handle.enter("into_series_layout_results").expect("entered");
     let mut rng = RngState::new(&handle, 42).expect("rng");
 
     let src = DeviceArray::from_slice(&handle, UNDIRECTED_TRIANGLE_SRC_I32).expect("src");

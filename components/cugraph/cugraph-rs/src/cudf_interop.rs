@@ -101,7 +101,7 @@ use crate::{
     cuda::{DeviceGuard, check_cudf_status},
     error::{Error, ErrorKind, ErrorStatus, Result},
     graph::{DeferredInputCompletion, Graph, GraphBuilder, Transposition},
-    handle::ResourceHandle,
+    handle::EnteredContext,
     layout::LayoutResult,
     structure::{
         degrees::{DegreeValues, DegreesResult, InDegreesResult, OutDegreesResult},
@@ -192,7 +192,7 @@ const NORMALIZED_SRC_COL: &str = "src";
 const NORMALIZED_DST_COL: &str = "dst";
 const NORMALIZED_WEIGHT_COL: &str = "weight";
 
-fn runtime_for_handle(handle: &ResourceHandle, operation: &'static str) -> Result<Runtime> {
+fn runtime_for_handle(handle: &EnteredContext<'_>, operation: &'static str) -> Result<Runtime> {
     Runtime::builder()
         .with_device(cudf::DeviceId::new(handle.device() as usize).map_err(|error| {
             Error::new(ErrorKind::InvalidInput, operation)
@@ -634,8 +634,7 @@ pub struct DataFrameGraphOptions<'a> {
     pub properties: GraphProperties,
     /// Whether to renumber vertices.
     pub renumber: bool,
-    /// High-level graph-construction semantics to apply before crossing into
-    /// libcugraph.
+    /// High-level graph-construction semantics to apply before crossing into libcugraph.
     pub construction_policy: GraphConstructionPolicy,
 }
 
@@ -860,7 +859,7 @@ fn borrowed_unique_stream_count(edge_list: &BorrowedEdgeList<'_>) -> usize {
 }
 
 fn borrowed_input_ordering_plan(
-    handle: &ResourceHandle,
+    handle: &EnteredContext<'_>,
     edge_list: &BorrowedEdgeList<'_>,
     operation: &'static str,
 ) -> Result<BorrowedInputOrderingPlan> {
@@ -950,12 +949,12 @@ pub mod testing {
     use rapids_interop::BorrowedColumnView;
 
     use super::{BorrowedEdgeList, BorrowedInputOrderingPlan, borrowed_input_ordering_plan};
-    use crate::{error::Result, handle::ResourceHandle};
+    use crate::{error::Result, handle::EnteredContext};
 
     /// Compute the Phase 1 borrowed-input ordering plan for explicit borrowed
     /// columns.
     pub fn borrowed_columns_ordering_plan(
-        handle: &ResourceHandle,
+        handle: &EnteredContext<'_>,
         src: &BorrowedColumnView<'_>,
         dst: &BorrowedColumnView<'_>,
         weights: Option<&BorrowedColumnView<'_>>,
@@ -1305,7 +1304,7 @@ fn offset_device_ptr(base_ptr: *const u8, byte_offset: usize, active_len: usize)
 }
 
 fn validate_edge_list_devices<'a>(
-    handle: &ResourceHandle,
+    handle: &EnteredContext<'_>,
     producer_device: i32,
     columns: impl IntoIterator<Item = (&'a str, i32)>,
     input_kind: &str,
@@ -1515,7 +1514,7 @@ fn borrowed_table_to_edge_list<'a>(
 }
 
 fn validate_edge_list_policy(
-    handle: &ResourceHandle,
+    handle: &EnteredContext<'_>,
     edge_list: &BorrowedEdgeList<'_>,
     operation: &'static str,
 ) -> Result<()> {
@@ -1529,7 +1528,7 @@ fn validate_edge_list_policy(
 }
 
 fn validate_prepared_edge_list_policy(
-    handle: &ResourceHandle,
+    handle: &EnteredContext<'_>,
     edge_list: &PreparedEdgeList<'_>,
     operation: &'static str,
 ) -> Result<()> {
@@ -1567,7 +1566,7 @@ fn fence_producer_streams(edge_list: &BorrowedEdgeList<'_>, operation: &'static 
 }
 
 fn order_borrowed_inputs_for_handle(
-    handle: &ResourceHandle,
+    handle: &EnteredContext<'_>,
     edge_list: &BorrowedEdgeList<'_>,
     operation: &'static str,
 ) -> Result<Vec<cudf::runtime::CudaEvent>> {
@@ -1581,7 +1580,7 @@ fn order_borrowed_inputs_for_handle(
 }
 
 fn prepared_lease_authorities<'a>(
-    handle: &'a ResourceHandle,
+    handle: &'a EnteredContext<'_>,
     operation: &'static str,
 ) -> Result<(ReadStartAuthority<'a>, CompletionAuthority<'a>)> {
     match handle.runtime() {
@@ -1595,7 +1594,7 @@ fn prepared_lease_authorities<'a>(
 }
 
 fn build_graph_from_borrowed_edge_list_raw<'a, T: Transposition>(
-    handle: &ResourceHandle,
+    handle: &EnteredContext<'_>,
     edge_list: &BorrowedEdgeList<'a>,
     properties: GraphProperties,
     renumber: bool,
@@ -1845,7 +1844,7 @@ fn normalize_python_cugraph_dataframe(
 }
 
 fn build_graph_from_owned_dataframe_raw<T: Transposition>(
-    handle: &ResourceHandle,
+    handle: &EnteredContext<'_>,
     df: &cudf::DataFrame,
     properties: GraphProperties,
     renumber: bool,
@@ -1876,7 +1875,7 @@ fn build_graph_from_owned_dataframe_raw<T: Transposition>(
 }
 
 fn build_python_normalized_graph_from_dataframe<T: Transposition>(
-    handle: &ResourceHandle,
+    handle: &EnteredContext<'_>,
     df: &cudf::DataFrame,
     properties: GraphProperties,
     renumber: bool,
@@ -1888,7 +1887,7 @@ fn build_python_normalized_graph_from_dataframe<T: Transposition>(
 }
 
 fn build_graph_from_prepared_edge_list_raw<'a, T: Transposition>(
-    handle: &ResourceHandle,
+    handle: &EnteredContext<'_>,
     edge_list: &PreparedEdgeList<'a>,
     properties: GraphProperties,
     renumber: bool,
@@ -1908,7 +1907,7 @@ fn build_graph_from_prepared_edge_list_raw<'a, T: Transposition>(
 }
 
 fn canonical_edge_dataframe_from_borrowed_edge_list(
-    handle: &ResourceHandle,
+    handle: &EnteredContext<'_>,
     edge_list: &BorrowedEdgeList<'_>,
     operation: &'static str,
 ) -> Result<cudf::DataFrame> {
@@ -1939,7 +1938,7 @@ fn canonical_edge_dataframe_from_borrowed_edge_list(
 }
 
 fn canonical_edge_dataframe_from_prepared_exports(
-    handle: &ResourceHandle,
+    handle: &EnteredContext<'_>,
     src: &PreparedColumnExport<'_>,
     dst: &PreparedColumnExport<'_>,
     weights: Option<&PreparedColumnExport<'_>>,
@@ -1972,7 +1971,7 @@ fn canonical_edge_dataframe_from_prepared_exports(
 
 /// Build a cuGraph [`Graph`] directly from borrowed RAPIDS column descriptors.
 pub fn graph_from_borrowed_columns<T: Transposition>(
-    handle: &ResourceHandle,
+    handle: &EnteredContext<'_>,
     src: &BorrowedColumnView<'_>,
     dst: &BorrowedColumnView<'_>,
     weights: Option<&BorrowedColumnView<'_>>,
@@ -2004,7 +2003,7 @@ pub fn graph_from_borrowed_columns<T: Transposition>(
 
 /// Build a cuGraph [`Graph`] directly from a borrowed RAPIDS table descriptor.
 pub fn graph_from_borrowed_table_view<T: Transposition>(
-    handle: &ResourceHandle,
+    handle: &EnteredContext<'_>,
     view: &BorrowedTableView<'_>,
     options: &TableGraphOptions,
 ) -> Result<Graph<T>> {
@@ -2036,7 +2035,7 @@ pub fn graph_from_borrowed_table_view<T: Transposition>(
 /// may first import the edge columns into owned cudf objects on the consumer
 /// device so Python-style normalization can run before raw graph construction.
 pub fn graph_from_prepared_columns<T: Transposition>(
-    handle: &ResourceHandle,
+    handle: &EnteredContext<'_>,
     src: &PreparedColumnExport<'_>,
     dst: &PreparedColumnExport<'_>,
     weights: Option<&PreparedColumnExport<'_>>,
@@ -2134,7 +2133,7 @@ fn validate_prepared_table_column_selection(
 /// consumer device so Python-style normalization can run before raw graph
 /// construction.
 pub fn graph_from_prepared_table_export<T: Transposition>(
-    handle: &ResourceHandle,
+    handle: &EnteredContext<'_>,
     export: &PreparedTableExport<'_>,
     options: &TableGraphOptions,
 ) -> Result<Graph<T>> {
@@ -2217,7 +2216,7 @@ pub fn graph_from_prepared_table_export<T: Transposition>(
 ///
 /// [`TableView`]: cudf::core::table::TableView
 pub fn graph_from_table_view<T: Transposition>(
-    handle: &ResourceHandle,
+    handle: &EnteredContext<'_>,
     view: &TableView<'_>,
     options: &TableGraphOptions,
 ) -> Result<Graph<T>> {
@@ -2253,7 +2252,7 @@ pub fn graph_from_table_view<T: Transposition>(
 ///
 /// [`DataFrame`]: cudf::DataFrame
 pub fn graph_from_dataframe<T: Transposition>(
-    handle: &ResourceHandle,
+    handle: &EnteredContext<'_>,
     df: &cudf::DataFrame,
     options: &DataFrameGraphOptions<'_>,
 ) -> Result<Graph<T>> {
@@ -2344,17 +2343,18 @@ pub fn graph_from_dataframe<T: Transposition>(
 /// let runtime = std::sync::Arc::new(cudf::Runtime::new().unwrap());
 /// let handle =
 ///     ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).unwrap();
+/// let entered = handle.enter("graph_from_series docs").unwrap();
 /// let src = runtime.series(&[0i32, 1, 2]).unwrap();
 /// let dst = runtime.series(&[1i32, 2, 0]).unwrap();
 ///
 /// let opts = SeriesGraphOptions::default().renumber();
-/// let graph =
-///     graph_from_series::<Forward>(&handle, &src, &dst, None, &opts).unwrap();
+/// let graph = graph_from_series::<Forward>(&entered, &src, &dst, None, &opts)
+///     .unwrap();
 /// ```
 ///
 /// [`Series`]: cudf::Series
 pub fn graph_from_series<T: Transposition>(
-    handle: &ResourceHandle,
+    handle: &EnteredContext<'_>,
     src: &cudf::Series,
     dst: &cudf::Series,
     weights: Option<&cudf::Series>,
@@ -2449,7 +2449,7 @@ impl<T: Transposition> std::fmt::Debug for LoadedGraph<T> {
 /// - column types are incompatible with cugraph
 /// - graph construction fails
 pub fn graph_from_parquet<T: Transposition>(
-    handle: &ResourceHandle,
+    handle: &EnteredContext<'_>,
     options: &ParquetGraphOptions<'_>,
 ) -> Result<LoadedGraph<T>> {
     let operation = "graph_from_parquet";
@@ -2523,6 +2523,7 @@ mod tests {
     use rapids_interop::SemanticColumn;
 
     use super::*;
+    use crate::ResourceHandle;
 
     /// All cugraph DataType variants that have a cudf equivalent (everything except SizeT).
     const MAPPED_DATA_TYPES: &[DataType] = &[
@@ -2808,9 +2809,15 @@ mod tests {
     #[test]
     fn validate_edge_list_devices_mixed_devices_is_invalid_input() {
         let handle = ResourceHandle::new().expect("handle");
-        let err =
-            validate_edge_list_devices(&handle, handle.device(), [("dst", handle.device() + 1)], "borrowed", "test_op")
-                .expect_err("mixed-device inputs should be rejected");
+        let entered = handle.enter("validate_edge_list_devices_mixed_devices_is_invalid_input").expect("entered");
+        let err = validate_edge_list_devices(
+            &entered,
+            handle.device(),
+            [("dst", handle.device() + 1)],
+            "borrowed",
+            "test_op",
+        )
+        .expect_err("mixed-device inputs should be rejected");
         assert_eq!(err.kind(), ErrorKind::InvalidInput);
         assert_eq!(err.operation(), "test_op");
     }
@@ -2818,8 +2825,9 @@ mod tests {
     #[test]
     fn validate_edge_list_devices_handle_mismatch_is_invalid_input() {
         let handle = ResourceHandle::new().expect("handle");
+        let entered = handle.enter("validate_edge_list_devices_handle_mismatch_is_invalid_input").expect("entered");
         let err = validate_edge_list_devices(
-            &handle,
+            &entered,
             handle.device() + 1,
             std::iter::empty::<(&str, i32)>(),
             "prepared",

@@ -1,20 +1,40 @@
 #[path = "../build_support.rs"]
 mod build_support;
 
-use std::path::{Path, PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use build_support::{CompilerFamily, external_warning_control_args, resolve_shim_compile_layout, system_include_args};
 
+fn read_build_rs() -> String {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    fs::read_to_string(manifest_dir.join("build.rs")).expect("failed to read build.rs")
+}
+
 #[test]
-fn local_cpp_dir_stays_project_owned_include_root() {
+fn local_shim_dir_stays_project_owned_include_root() {
     let manifest_dir = Path::new("/tmp/cugraph-rs");
     let native_include_dirs = vec![PathBuf::from("/opt/cugraph/include")];
 
     let layout = resolve_shim_compile_layout(manifest_dir, native_include_dirs).expect("compile layout");
 
-    assert_eq!(layout.source_file, manifest_dir.join("cpp").join("runtime_resource_handle.cpp"));
-    assert_eq!(layout.local_include_dir, manifest_dir.join("cpp"));
+    assert_eq!(layout.source_file, manifest_dir.join("shim").join("runtime_resource_handle.cpp"));
+    assert_eq!(layout.local_include_dir, manifest_dir.join("shim"));
     assert_eq!(layout.native_include_dirs, vec![PathBuf::from("/opt/cugraph/include")]);
+}
+
+#[test]
+fn build_rs_tracks_project_owned_shim_sources() {
+    let build_rs = read_build_rs();
+
+    assert!(build_rs.contains(r#"join("shim").join("runtime_resource_handle.cpp")"#));
+    assert!(build_rs.contains(r#"join("shim").join("runtime_resource_handle.h")"#));
+    assert!(
+        !build_rs.contains(r#"join("cpp").join("runtime_resource_handle"#),
+        "runtime resource shim sources should stay under cugraph-rs/shim, not cugraph-rs/cpp"
+    );
 }
 
 #[test]

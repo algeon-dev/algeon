@@ -16,7 +16,7 @@ use crate::{
     cuda::DeviceGuard,
     error::{Error, ErrorKind, Result, check_error, require_non_null},
     graph::{Graph, Transposed},
-    handle::ResourceHandle,
+    handle::EnteredContext,
     structure::typed_results::VertexIds,
     types::{CugraphElement, DataType, to_bool_t},
 };
@@ -26,7 +26,7 @@ use crate::{
 /// Prefer using [`Graph::degrees`](crate::graph::Graph::degrees) instead
 /// of calling this function directly.
 pub(crate) fn degrees<V: CugraphElement>(
-    handle: &ResourceHandle,
+    handle: &EnteredContext<'_>,
     graph: &mut Graph<Transposed>,
     vertices: Option<&DeviceArrayView<'_, V>>,
     do_expensive_check: bool,
@@ -41,7 +41,7 @@ pub(crate) fn degrees<V: CugraphElement>(
     // output locations.
     unsafe {
         let code = cugraph_degrees(
-            handle.as_ptr(),
+            handle.handle_ptr(),
             graph.as_ptr(),
             vertices_ptr,
             to_bool_t(do_expensive_check),
@@ -59,7 +59,7 @@ pub(crate) fn degrees<V: CugraphElement>(
 /// Prefer using [`Graph::in_degrees`](crate::graph::Graph::in_degrees)
 /// instead of calling this function directly.
 pub(crate) fn in_degrees<V: CugraphElement>(
-    handle: &ResourceHandle,
+    handle: &EnteredContext<'_>,
     graph: &mut Graph<Transposed>,
     vertices: Option<&DeviceArrayView<'_, V>>,
     do_expensive_check: bool,
@@ -74,7 +74,7 @@ pub(crate) fn in_degrees<V: CugraphElement>(
     // output locations.
     unsafe {
         let code = cugraph_in_degrees(
-            handle.as_ptr(),
+            handle.handle_ptr(),
             graph.as_ptr(),
             vertices_ptr,
             to_bool_t(do_expensive_check),
@@ -92,7 +92,7 @@ pub(crate) fn in_degrees<V: CugraphElement>(
 /// Prefer using [`Graph::out_degrees`](crate::graph::Graph::out_degrees)
 /// instead of calling this function directly.
 pub(crate) fn out_degrees<T, V: CugraphElement>(
-    handle: &ResourceHandle,
+    handle: &EnteredContext<'_>,
     graph: &mut Graph<T>,
     vertices: Option<&DeviceArrayView<'_, V>>,
     do_expensive_check: bool,
@@ -107,7 +107,7 @@ pub(crate) fn out_degrees<T, V: CugraphElement>(
     // output locations.
     unsafe {
         let code = cugraph_out_degrees(
-            handle.as_ptr(),
+            handle.handle_ptr(),
             graph.as_ptr(),
             vertices_ptr,
             to_bool_t(do_expensive_check),
@@ -167,7 +167,7 @@ impl<'a> DegreeValues<'a> {
     }
 
     /// Copy to host as `Vec<i64>`, widening `i32` values if needed.
-    pub fn to_vec_i64(&self, handle: &ResourceHandle) -> Result<Vec<i64>> {
+    pub fn to_vec_i64(&self, handle: &EnteredContext<'_>) -> Result<Vec<i64>> {
         match self {
             Self::I32(v) => {
                 let vals = v.to_vec(handle)?;
@@ -181,7 +181,7 @@ impl<'a> DegreeValues<'a> {
     ///
     /// Returns an error if the underlying values are `i64`, since narrowing
     /// could lose data.
-    pub fn to_vec_i32(&self, handle: &ResourceHandle) -> Result<Vec<i32>> {
+    pub fn to_vec_i32(&self, handle: &EnteredContext<'_>) -> Result<Vec<i32>> {
         match self {
             Self::I32(v) => v.to_vec(handle),
             Self::I64(_) => Err(Error::new(ErrorKind::InvalidState, "DegreeValues::to_vec_i32")
@@ -363,15 +363,17 @@ impl OutDegreesResult {
 mod tests {
     use super::*;
     use crate::{
+        ResourceHandle,
         array::{DeviceArray, RawDeviceArrayView},
         error::ErrorKind,
         graph::{GraphBuilder, Transposed},
+        handle::EnteredContext,
         types::{DataType, GraphProperties},
     };
 
     /// Helper: create a star graph where vertices 1,2,3 all point to vertex 0.
     /// With store_transposed=true and renumber=true (needed for degree computation).
-    fn make_star_graph(handle: &ResourceHandle) -> Graph<Transposed> {
+    fn make_star_graph(handle: &EnteredContext<'_>) -> Graph<Transposed> {
         // Directed star: 1->0, 2->0, 3->0
         let src_data: Vec<i32> = vec![1, 2, 3];
         let dst_data: Vec<i32> = vec![0, 0, 0];
@@ -387,7 +389,7 @@ mod tests {
 
     /// Helper: build a vertex -> (in_degree, out_degree) map from a DegreesResult
     /// using the DegreeValues API.
-    fn degree_map(handle: &ResourceHandle, result: &DegreesResult) -> std::collections::HashMap<i32, (i64, i64)> {
+    fn degree_map(handle: &EnteredContext<'_>, result: &DegreesResult) -> std::collections::HashMap<i32, (i64, i64)> {
         let vertices: Vec<i32> = result.vertex_ids().expect("vertex_ids").to_vec_i32(handle).expect("vert copy");
         let in_degs = result.in_degrees().expect("in_degrees").to_vec_i64(handle).expect("in copy");
         let out_degs = result.out_degrees().expect("out_degrees").to_vec_i64(handle).expect("out copy");
@@ -402,9 +404,10 @@ mod tests {
     #[test]
     fn test_degrees_star_graph() {
         let handle = ResourceHandle::new().expect("handle");
-        let mut graph = make_star_graph(&handle);
+        let entered = handle.enter("test_degrees_star_graph").expect("entered");
+        let mut graph = make_star_graph(&entered);
 
-        let result = graph.degrees_all(&handle).expect("degrees");
+        let result = graph.degrees_all(&entered).expect("degrees");
 
         let vert_view = result.vertex_ids().expect("vertex_ids");
         let in_vals = result.in_degrees().expect("in_degrees");
@@ -415,7 +418,7 @@ mod tests {
         assert_eq!(in_vals.len(), 4);
         assert_eq!(out_vals.len(), 4);
 
-        let map = degree_map(&handle, &result);
+        let map = degree_map(&entered, &result);
 
         // Vertex 0: hub — receives edges from 1,2,3 → in=3, out=0
         assert_eq!(map[&0], (3, 0), "hub should have in=3, out=0");
@@ -429,9 +432,10 @@ mod tests {
     #[test]
     fn test_in_degrees_star_graph() {
         let handle = ResourceHandle::new().expect("handle");
-        let mut graph = make_star_graph(&handle);
+        let entered = handle.enter("test_in_degrees_star_graph").expect("entered");
+        let mut graph = make_star_graph(&entered);
 
-        let result = graph.in_degrees_all(&handle).expect("in_degrees");
+        let result = graph.in_degrees_all(&entered).expect("in_degrees");
 
         let vert_ids = result.vertex_ids().expect("vertex_ids");
         let in_vals = result.in_degrees().expect("in_degrees");
@@ -439,8 +443,8 @@ mod tests {
         assert_eq!(vert_ids.len(), 4);
         assert_eq!(in_vals.len(), 4);
 
-        let vertices: Vec<i32> = vert_ids.to_vec_i32(&handle).expect("vert copy");
-        let in_degs = in_vals.to_vec_i64(&handle).expect("in copy");
+        let vertices: Vec<i32> = vert_ids.to_vec_i32(&entered).expect("vert copy");
+        let in_degs = in_vals.to_vec_i64(&entered).expect("in copy");
 
         let mut map = std::collections::HashMap::new();
         for i in 0..vertices.len() {
@@ -457,9 +461,10 @@ mod tests {
     #[test]
     fn test_out_degrees_star_graph() {
         let handle = ResourceHandle::new().expect("handle");
-        let mut graph = make_star_graph(&handle);
+        let entered = handle.enter("test_out_degrees_star_graph").expect("entered");
+        let mut graph = make_star_graph(&entered);
 
-        let result = graph.out_degrees_all(&handle).expect("out_degrees");
+        let result = graph.out_degrees_all(&entered).expect("out_degrees");
 
         let vert_ids = result.vertex_ids().expect("vertex_ids");
         let out_vals = result.out_degrees().expect("out_degrees");
@@ -467,8 +472,8 @@ mod tests {
         assert_eq!(vert_ids.len(), 4);
         assert_eq!(out_vals.len(), 4);
 
-        let vertices: Vec<i32> = vert_ids.to_vec_i32(&handle).expect("vert copy");
-        let out_degs = out_vals.to_vec_i64(&handle).expect("out copy");
+        let vertices: Vec<i32> = vert_ids.to_vec_i32(&entered).expect("vert copy");
+        let out_degs = out_vals.to_vec_i64(&entered).expect("out copy");
 
         let mut map = std::collections::HashMap::new();
         for i in 0..vertices.len() {
@@ -486,20 +491,22 @@ mod tests {
     #[test]
     fn test_degrees_cycle_graph() {
         let handle = ResourceHandle::new().expect("handle");
+        let entered = handle.enter("test_degrees_cycle_graph").expect("entered");
 
         // Directed cycle: 0->1, 1->2, 2->3, 3->0
         let src_data: Vec<i32> = vec![0, 1, 2, 3];
         let dst_data: Vec<i32> = vec![1, 2, 3, 0];
 
-        let src = DeviceArray::from_slice(&handle, &src_data).expect("src");
-        let dst = DeviceArray::from_slice(&handle, &dst_data).expect("dst");
+        let src = DeviceArray::from_slice(&entered, &src_data).expect("src");
+        let dst = DeviceArray::from_slice(&entered, &dst_data).expect("dst");
 
         let src_view = src.view().expect("src_view");
         let dst_view = dst.view().expect("dst_view");
-        let mut graph = GraphBuilder::new(&src_view, &dst_view).renumber().build::<Transposed>(&handle).expect("graph");
+        let mut graph =
+            GraphBuilder::new(&src_view, &dst_view).renumber().build::<Transposed>(&entered).expect("graph");
 
-        let result = graph.degrees_all(&handle).expect("degrees");
-        let map = degree_map(&handle, &result);
+        let result = graph.degrees_all(&entered).expect("degrees");
+        let map = degree_map(&entered, &result);
 
         // Every vertex in a directed cycle has in=1, out=1
         assert_eq!(map.len(), 4);
@@ -511,18 +518,19 @@ mod tests {
     #[test]
     fn test_degrees_with_source_vertices_subset() {
         let handle = ResourceHandle::new().expect("handle");
-        let mut graph = make_star_graph(&handle);
+        let entered = handle.enter("test_degrees_with_source_vertices_subset").expect("entered");
+        let mut graph = make_star_graph(&entered);
 
         // Only query degrees for vertices 0 and 1
-        let query = DeviceArray::from_slice(&handle, &[0i32, 1]).expect("query");
+        let query = DeviceArray::from_slice(&entered, &[0i32, 1]).expect("query");
         let query_view = query.view().expect("query_view");
 
-        let result = graph.degrees(&handle, &query_view).expect("degrees subset");
+        let result = graph.degrees(&entered, &query_view).expect("degrees subset");
 
         let vert_view = result.vertex_ids().expect("vertex_ids");
         assert_eq!(vert_view.len(), 2, "should return degrees for 2 vertices");
 
-        let map = degree_map(&handle, &result);
+        let map = degree_map(&entered, &result);
         assert!(map.contains_key(&0), "should contain vertex 0");
         assert!(map.contains_key(&1), "should contain vertex 1");
         assert_eq!(map[&0], (3, 0), "hub should have in=3, out=0");
@@ -532,21 +540,23 @@ mod tests {
     #[test]
     fn test_degrees_isolated_vertex() {
         let handle = ResourceHandle::new().expect("handle");
+        let entered = handle.enter("test_degrees_isolated_vertex").expect("entered");
 
         // Graph: 0->1, 3->4 — vertices 0,1,3,4 appear, and we check
         // that all degrees are correct.
         let src_data: Vec<i32> = vec![0, 3];
         let dst_data: Vec<i32> = vec![1, 4];
 
-        let src = DeviceArray::from_slice(&handle, &src_data).expect("src");
-        let dst = DeviceArray::from_slice(&handle, &dst_data).expect("dst");
+        let src = DeviceArray::from_slice(&entered, &src_data).expect("src");
+        let dst = DeviceArray::from_slice(&entered, &dst_data).expect("dst");
 
         let src_view = src.view().expect("src_view");
         let dst_view = dst.view().expect("dst_view");
-        let mut graph = GraphBuilder::new(&src_view, &dst_view).renumber().build::<Transposed>(&handle).expect("graph");
+        let mut graph =
+            GraphBuilder::new(&src_view, &dst_view).renumber().build::<Transposed>(&entered).expect("graph");
 
-        let result = graph.degrees_all(&handle).expect("degrees");
-        let map = degree_map(&handle, &result);
+        let result = graph.degrees_all(&entered).expect("degrees");
+        let map = degree_map(&entered, &result);
 
         // Vertex 0: out=1, in=0
         assert_eq!(map[&0], (0, 1), "vertex 0 should have in=0, out=1");
@@ -561,24 +571,25 @@ mod tests {
     #[test]
     fn test_degrees_symmetric_graph() {
         let handle = ResourceHandle::new().expect("handle");
+        let entered = handle.enter("test_degrees_symmetric_graph").expect("entered");
 
         // Symmetric (undirected) triangle: 0<->1, 1<->2, 2<->0
         let src_data: Vec<i32> = vec![0, 1, 1, 2, 2, 0];
         let dst_data: Vec<i32> = vec![1, 0, 2, 1, 0, 2];
 
-        let src = DeviceArray::from_slice(&handle, &src_data).expect("src");
-        let dst = DeviceArray::from_slice(&handle, &dst_data).expect("dst");
+        let src = DeviceArray::from_slice(&entered, &src_data).expect("src");
+        let dst = DeviceArray::from_slice(&entered, &dst_data).expect("dst");
 
         let src_view = src.view().expect("src_view");
         let dst_view = dst.view().expect("dst_view");
         let mut graph = GraphBuilder::new(&src_view, &dst_view)
             .properties(GraphProperties::undirected())
             .renumber()
-            .build::<Transposed>(&handle)
+            .build::<Transposed>(&entered)
             .expect("graph");
 
-        let result = graph.degrees_all(&handle).expect("degrees");
-        let map = degree_map(&handle, &result);
+        let result = graph.degrees_all(&entered).expect("degrees");
+        let map = degree_map(&entered, &result);
 
         // Symmetric graph: in_degree == out_degree for every vertex
         assert_eq!(map.len(), 3);
@@ -592,10 +603,11 @@ mod tests {
     #[test]
     fn degree_values_i64_to_vec_i32_is_invalid_state() {
         let handle = ResourceHandle::new().expect("handle");
-        let degrees = DeviceArray::from_slice(&handle, &[1i64, 2, 3]).expect("degrees");
+        let entered = handle.enter("degree_values_i64_to_vec_i32_is_invalid_state").expect("entered");
+        let degrees = DeviceArray::from_slice(&entered, &[1i64, 2, 3]).expect("degrees");
         let values = DegreeValues::I64(degrees.view().expect("view"));
 
-        let err = values.to_vec_i32(&handle).expect_err("i64 degree values should reject i32 copy");
+        let err = values.to_vec_i32(&entered).expect_err("i64 degree values should reject i32 copy");
         assert_eq!(err.kind(), ErrorKind::InvalidState);
         assert_eq!(err.operation(), "DegreeValues::to_vec_i32");
     }
@@ -603,7 +615,8 @@ mod tests {
     #[test]
     fn degree_values_from_raw_unexpected_dtype_is_invalid_state() {
         let handle = ResourceHandle::new().expect("handle");
-        let degrees = DeviceArray::from_slice(&handle, &[1.0f32, 2.0, 3.0]).expect("degrees");
+        let entered = handle.enter("degree_values_from_raw_unexpected_dtype_is_invalid_state").expect("entered");
+        let degrees = DeviceArray::from_slice(&entered, &[1.0f32, 2.0, 3.0]).expect("degrees");
         let view = degrees.view().expect("view");
         // SAFETY: The pointer/length pair comes from a live `DeviceArrayView`, and the dtype is
         // intentionally mismatched to exercise Rust-side validation in `DegreeValues::from_raw`.

@@ -1,8 +1,9 @@
 //! GPU resource handle for cuGraph operations.
 //!
-//! Every cuGraph operation requires a [`ResourceHandle`] which manages the
-//! underlying CUDA stream and cuGraph resource handle. The handle is **not**
-//! `Send` or `Sync` because GPU state is thread-local.
+//! [`ResourceHandle`] owns cuGraph execution provenance while
+//! [`EnteredContext`] is the short-lived execution capability used for GPU
+//! work on the current thread. Both types are **not** `Send` or `Sync`
+//! because GPU state is thread-local.
 
 use std::{fmt, marker::PhantomData, mem::ManuallyDrop, ptr, ptr::NonNull, sync::Arc};
 
@@ -201,6 +202,41 @@ pub struct ResourceHandle {
     _nosend_nosync: PhantomData<*mut ()>,
 }
 
+/// Thread-scoped execution capability for GPU work on a [`ResourceHandle`].
+///
+/// Values of this type are created only through [`ResourceHandle::enter`].
+/// Holding an `EnteredContext` guarantees that the current thread is entered
+/// on the owning CUDA device for the lifetime of the borrow.
+pub struct EnteredContext<'a> {
+    owner: &'a ResourceHandle,
+    #[allow(dead_code)]
+    guard: DeviceGuard,
+    _nosend_nosync: PhantomData<*mut ()>,
+}
+
+impl fmt::Debug for EnteredContext<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("EnteredContext").field("device", &self.device()).finish_non_exhaustive()
+    }
+}
+
+impl<'a> EnteredContext<'a> {
+    /// Borrow the entered raw cuGraph resource-handle pointer.
+    pub fn handle_ptr(&self) -> *mut cugraph_resource_handle_t {
+        self.owner.state.raw()
+    }
+
+    /// The CUDA device this execution session is entered on.
+    pub fn device(&self) -> i32 {
+        self.owner.device()
+    }
+
+    /// The retained cudf runtime, if this owner is runtime-bound.
+    pub fn runtime(&self) -> Option<&cudf::Runtime> {
+        self.owner.runtime()
+    }
+}
+
 impl fmt::Debug for ResourceHandle {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ResourceHandle").finish_non_exhaustive()
@@ -346,6 +382,7 @@ impl ResourceHandle {
     }
 
     /// Get the raw C pointer. For internal use by other modules.
+    #[allow(dead_code)]
     pub(crate) fn as_ptr(&self) -> *mut cugraph_resource_handle_t {
         self.state.raw()
     }
@@ -355,7 +392,8 @@ impl ResourceHandle {
     /// This does not transfer ownership. The returned pointer is valid only
     /// while `self` remains alive, and callers must not free it unless
     /// ownership has been transferred separately.
-    pub fn as_raw_resource_handle(&self) -> *mut cugraph_resource_handle_t {
+    #[allow(dead_code)]
+    pub(crate) fn as_raw_resource_handle(&self) -> *mut cugraph_resource_handle_t {
         self.state.raw()
     }
 
@@ -388,7 +426,7 @@ impl ResourceHandle {
         self.state.device()
     }
 
-    pub(crate) fn runtime(&self) -> Option<&cudf::Runtime> {
+    pub fn runtime(&self) -> Option<&cudf::Runtime> {
         self.state.runtime()
     }
 
@@ -427,6 +465,13 @@ impl ResourceHandle {
             1
         }
     }
+
+    /// Enter the owner device on the current thread and create an execution
+    /// session for GPU-capable work.
+    pub fn enter(&self, operation: &'static str) -> Result<EnteredContext<'_>> {
+        let guard = DeviceGuard::switch_to(self.device(), operation)?;
+        Ok(EnteredContext { owner: self, guard, _nosend_nosync: PhantomData })
+    }
 }
 
 impl Drop for ResourceHandle {
@@ -447,6 +492,7 @@ mod tests {
     use static_assertions::assert_not_impl_any;
 
     use super::*;
+    use crate::cuda::{TestCudaCall, TestCudaHooks};
 
     fn state_variant_name(state: &ResourceHandleState) -> &'static str {
         match state {
@@ -474,6 +520,11 @@ mod tests {
     #[test]
     fn test_resource_handle_not_send_sync() {
         assert_not_impl_any!(ResourceHandle: Send, Sync);
+    }
+
+    #[test]
+    fn test_entered_context_not_send_sync() {
+        assert_not_impl_any!(EnteredContext<'static>: Send, Sync);
     }
 
     #[test]
@@ -601,9 +652,57 @@ mod tests {
     }
 
     #[test]
-    fn test_as_raw_resource_handle_exposes_pointer() {
-        let handle = ResourceHandle::new().expect("resource handle");
-        assert_eq!(handle.as_raw_resource_handle(), handle.as_ptr());
+    fn test_enter_switches_to_owner_device_and_restores_previous_device() {
+        let raw = std::ptr::NonNull::<cugraph_resource_handle_t>::dangling().as_ptr();
+        let handle = ResourceHandle {
+            state: ResourceHandleState::ExternalBorrowed { raw, device: 1 },
+            _nosend_nosync: PhantomData,
+        };
+        let _reset = TestCudaHooks::install(vec![
+            TestCudaCall::GetDevice { status: cudf_sys::CUDF_SUCCESS, device: 0 },
+            TestCudaCall::SetDevice { expected_target: 1, status: cudf_sys::CUDF_SUCCESS },
+            TestCudaCall::SetDevice { expected_target: 0, status: cudf_sys::CUDF_SUCCESS },
+        ]);
+
+        {
+            let entered = handle.enter("ResourceHandle::enter").expect("entered context");
+            assert_eq!(entered.device(), 1);
+            assert_eq!(entered.handle_ptr(), raw);
+            assert!(entered.runtime().is_none());
+        }
+    }
+
+    #[test]
+    fn test_enter_propagates_device_guard_poison() {
+        let raw = std::ptr::NonNull::<cugraph_resource_handle_t>::dangling().as_ptr();
+        let handle = ResourceHandle {
+            state: ResourceHandleState::ExternalBorrowed { raw, device: 1 },
+            _nosend_nosync: PhantomData,
+        };
+        let _reset = TestCudaHooks::install(vec![
+            TestCudaCall::GetDevice { status: cudf_sys::CUDF_SUCCESS, device: 0 },
+            TestCudaCall::SetDevice { expected_target: 1, status: cudf_sys::CUDF_SUCCESS },
+            TestCudaCall::SetDevice { expected_target: 0, status: cudf_sys::CUDF_ERROR_FATAL_CUDA },
+        ]);
+
+        {
+            let _entered = handle.enter("first_enter").expect("entered context");
+        }
+
+        let err = handle.enter("poisoned_enter").expect_err("poisoned guard should fail later enter");
+        assert_eq!(err.kind(), ErrorKind::InvalidState);
+        assert_eq!(err.operation(), "poisoned_enter");
+        assert!(err.is_persistent());
+    }
+
+    #[test]
+    fn test_entered_context_exposes_runtime_provenance() {
+        let runtime = Arc::new(cudf::Runtime::builder().build().expect("runtime"));
+        let handle = ResourceHandle::for_runtime(Arc::clone(&runtime)).expect("resource handle");
+
+        let entered = handle.enter("ResourceHandle::enter").expect("entered context");
+        let session_runtime = entered.runtime().expect("runtime-bound handle should expose runtime");
+        assert_eq!(session_runtime.device().ordinal(), runtime.device().ordinal());
     }
 
     #[test]

@@ -28,6 +28,7 @@ fn layout_result_to_dataframe() {
 
     let runtime = std::sync::Arc::new(explicit_runtime());
     let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).expect("handle");
+    let handle = handle.enter("layout_result_to_dataframe").expect("entered");
     let mut rng = RngState::new(&handle, TEST_LAYOUT_PRIMARY_SEED).expect("rng");
 
     let src = DeviceArray::from_slice(&handle, support::UNDIRECTED_TRIANGLE_SRC_I32).expect("src");
@@ -74,6 +75,7 @@ fn layout_result_to_dataframe() {
 fn bfs_result_to_dataframe_with_predecessors() {
     let runtime = std::sync::Arc::new(explicit_runtime());
     let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).expect("handle");
+    let handle = handle.enter("bfs_result_to_dataframe_with_predecessors").expect("entered");
 
     let src = DeviceArray::from_slice(&handle, BFS_GRAPH_SRC_I32).expect("src");
     let dst = DeviceArray::from_slice(&handle, BFS_GRAPH_DST_I32).expect("dst");
@@ -115,6 +117,7 @@ fn bfs_result_to_dataframe_with_predecessors() {
 fn centrality_to_dataframe_write_parquet_roundtrip() {
     let runtime = std::sync::Arc::new(explicit_runtime());
     let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).expect("handle");
+    let handle = handle.enter("centrality_to_dataframe_write_parquet_roundtrip").expect("entered");
 
     let src = DeviceArray::from_slice(&handle, support::UNDIRECTED_TRIANGLE_SRC_I32).expect("src");
     let dst = DeviceArray::from_slice(&handle, support::UNDIRECTED_TRIANGLE_DST_I32).expect("dst");
@@ -157,6 +160,7 @@ fn centrality_to_dataframe_write_parquet_roundtrip() {
 fn betweenness_result_to_dataframe() {
     let runtime = std::sync::Arc::new(explicit_runtime());
     let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).expect("handle");
+    let handle = handle.enter("betweenness_result_to_dataframe").expect("entered");
 
     let src = DeviceArray::from_slice(&handle, DIRECTED_STAR_SRC_I32).expect("src");
     let dst = DeviceArray::from_slice(&handle, DIRECTED_STAR_DST_I32).expect("dst");
@@ -188,6 +192,7 @@ fn betweenness_result_to_dataframe() {
 fn louvain_result_to_dataframe() {
     let runtime = std::sync::Arc::new(explicit_runtime());
     let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).expect("handle");
+    let handle = handle.enter("louvain_result_to_dataframe").expect("entered");
 
     let src = DeviceArray::from_slice(&handle, LOUVAIN_GRAPH_SRC_I32).expect("src");
     let dst = DeviceArray::from_slice(&handle, LOUVAIN_GRAPH_DST_I32).expect("dst");
@@ -217,6 +222,7 @@ fn louvain_result_to_dataframe() {
 fn pagerank_result_preserves_external_vertex_ids_for_renumbered_graphs() {
     let runtime = std::sync::Arc::new(explicit_runtime());
     let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).expect("handle");
+    let handle = handle.enter("pagerank_result_preserves_external_vertex_ids_for_renumbered_graphs").expect("entered");
 
     let expected_vertices = vec![10_i32, 20, 40, 80];
     let src_data = vec![10_i32, 20, 40, 80, 20, 40, 80, 10];
@@ -249,6 +255,7 @@ fn pagerank_result_preserves_external_vertex_ids_for_renumbered_graphs() {
 fn louvain_result_preserves_external_vertex_ids_for_renumbered_graphs() {
     let runtime = std::sync::Arc::new(explicit_runtime());
     let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).expect("handle");
+    let handle = handle.enter("louvain_result_preserves_external_vertex_ids_for_renumbered_graphs").expect("entered");
 
     let expected_vertices = vec![10_i32, 20, 40, 80];
     let src_data = vec![10_i32, 20, 40, 80, 20, 40, 80, 10];
@@ -287,6 +294,7 @@ fn layout_result_preserves_external_vertex_ids_for_renumbered_graphs() {
 
     let runtime = std::sync::Arc::new(explicit_runtime());
     let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).expect("handle");
+    let handle = handle.enter("layout_result_preserves_external_vertex_ids_for_renumbered_graphs").expect("entered");
     let mut rng = RngState::new(&handle, TEST_LAYOUT_PRIMARY_SEED).expect("rng");
 
     let expected_vertices = vec![10_i32, 20, 40, 80];

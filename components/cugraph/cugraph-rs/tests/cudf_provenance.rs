@@ -74,6 +74,8 @@ fn borrowed_with_device<'a>(column: &BorrowedColumnView<'a>, device: i32) -> Bor
 fn runtime_bound_handle_same_provenance_borrowed_columns_plan_has_no_host_fence() {
     let runtime = explicit_runtime_owner();
     let handle = runtime_bound_handle(&runtime);
+    let handle =
+        handle.enter("runtime_bound_handle_same_provenance_borrowed_columns_plan_has_no_host_fence").expect("entered");
 
     let src = runtime.series(TRIANGLE_TAIL_SRC_I32).expect("src");
     let dst = runtime.series(TRIANGLE_TAIL_DST_I32).expect("dst");
@@ -89,6 +91,9 @@ fn runtime_bound_handle_same_provenance_borrowed_columns_plan_has_no_host_fence(
 fn runtime_bound_handle_same_device_different_stream_plan_uses_device_dependencies() {
     let handle_runtime = explicit_runtime_owner();
     let handle = runtime_bound_handle(&handle_runtime);
+    let handle = handle
+        .enter("runtime_bound_handle_same_device_different_stream_plan_uses_device_dependencies")
+        .expect("entered");
     let rt_a = explicit_runtime();
     let rt_b = explicit_runtime();
 
@@ -106,6 +111,7 @@ fn runtime_bound_handle_same_device_different_stream_plan_uses_device_dependenci
 fn runtime_bound_handle_cross_device_borrowed_columns_are_rejected() {
     let runtime = explicit_runtime_owner();
     let handle = runtime_bound_handle(&runtime);
+    let handle = handle.enter("runtime_bound_handle_cross_device_borrowed_columns_are_rejected").expect("entered");
 
     let src = runtime.series(TRIANGLE_TAIL_SRC_I32).expect("src");
     let dst = runtime.series(TRIANGLE_TAIL_DST_I32).expect("dst");
@@ -125,6 +131,7 @@ fn runtime_bound_handle_cross_device_borrowed_columns_are_rejected() {
 #[test]
 fn graph_from_series_allows_mixed_explicit_runtimes_on_same_device() {
     let handle = test_handle();
+    let handle = handle.enter("graph_from_series_allows_mixed_explicit_runtimes_on_same_device").expect("entered");
     let rt_a = explicit_runtime();
     let rt_b = explicit_runtime();
 
@@ -146,6 +153,8 @@ fn graph_from_series_allows_mixed_explicit_runtimes_on_same_device() {
 #[test]
 fn graph_from_borrowed_columns_allows_mixed_explicit_runtimes_on_same_device() {
     let handle = test_handle();
+    let handle =
+        handle.enter("graph_from_borrowed_columns_allows_mixed_explicit_runtimes_on_same_device").expect("entered");
     let rt_a = explicit_runtime();
     let rt_b = explicit_runtime();
     let rt_c = explicit_runtime();
@@ -175,6 +184,9 @@ fn graph_from_borrowed_columns_allows_mixed_explicit_runtimes_on_same_device() {
 fn graph_from_borrowed_columns_runtime_bound_same_device_different_stream_avoids_host_fence() {
     let runtime = explicit_runtime_owner();
     let handle = runtime_bound_handle(&runtime);
+    let handle = handle
+        .enter("graph_from_borrowed_columns_runtime_bound_same_device_different_stream_avoids_host_fence")
+        .expect("entered");
     let rt_a = explicit_runtime();
     let rt_b = explicit_runtime();
 
@@ -209,6 +221,8 @@ fn graph_from_borrowed_columns_runtime_bound_same_device_different_stream_avoids
 fn graph_from_borrowed_columns_python_cugraph_runtime_bound_avoids_host_fence() {
     let runtime = explicit_runtime_owner();
     let handle = runtime_bound_handle(&runtime);
+    let handle =
+        handle.enter("graph_from_borrowed_columns_python_cugraph_runtime_bound_avoids_host_fence").expect("entered");
     let rt_a = explicit_runtime();
     let rt_b = explicit_runtime();
     let rt_c = explicit_runtime();
@@ -249,6 +263,9 @@ fn graph_from_borrowed_columns_python_cugraph_runtime_bound_avoids_host_fence() 
 #[test]
 fn graph_from_borrowed_columns_python_cugraph_weighted_undirected_simple_keeps_minimum_reciprocal_weight() {
     let handle = test_handle();
+    let handle = handle
+        .enter("graph_from_borrowed_columns_python_cugraph_weighted_undirected_simple_keeps_minimum_reciprocal_weight")
+        .expect("entered");
     let runtime = explicit_runtime();
 
     let src = runtime.series(&[0i32, 1, 1, 2]).expect("src");
@@ -272,6 +289,8 @@ fn graph_from_borrowed_columns_python_cugraph_weighted_undirected_simple_keeps_m
 #[test]
 fn graph_from_borrowed_table_view_python_cugraph_accepts_undirected_multigraph() {
     let handle = test_handle();
+    let handle =
+        handle.enter("graph_from_borrowed_table_view_python_cugraph_accepts_undirected_multigraph").expect("entered");
     let runtime = explicit_runtime();
     let df = python_undirected_multigraph_dataframe(&runtime);
     let borrowed = df.try_borrow_table_view().expect("borrowed table view");

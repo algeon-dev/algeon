@@ -12,7 +12,7 @@ use crate::{
     cuda::DeviceGuard,
     error::{Error, Result, check_error, require_non_null},
     graph::{Forward, Graph},
-    handle::ResourceHandle,
+    handle::EnteredContext,
     params::BfsDepthLimit,
     structure::typed_results::{Distances, VertexIds},
     types::{CugraphElement, to_bool_t},
@@ -88,7 +88,7 @@ impl BfsParams {
 /// Prefer using [`Graph::bfs`](Graph::bfs) instead of calling
 /// this function directly.
 pub(crate) fn bfs<V: CugraphElement>(
-    handle: &ResourceHandle,
+    handle: &EnteredContext<'_>,
     graph: &mut Graph<Forward>,
     sources: &DeviceArrayView<'_, V>,
     params: &BfsParams,
@@ -105,7 +105,7 @@ pub(crate) fn bfs<V: CugraphElement>(
     // `result`/`error` are valid out-pointers.
     unsafe {
         let code = cugraph_bfs(
-            handle.as_ptr(),
+            handle.handle_ptr(),
             graph.as_ptr(),
             sources.as_ptr(),
             to_bool_t(false), // direction_optimizing
@@ -257,11 +257,13 @@ impl Drop for BfsResult {
 mod tests {
     use super::*;
     use crate::{
+        ResourceHandle,
         array::DeviceArray,
         graph::{Forward, GraphBuilder},
+        handle::EnteredContext,
     };
 
-    fn bfs_distance_map(handle: &ResourceHandle, result: &BfsResult) -> std::collections::HashMap<i32, i32> {
+    fn bfs_distance_map(handle: &EnteredContext<'_>, result: &BfsResult) -> std::collections::HashMap<i32, i32> {
         let vertices = result.vertex_ids().expect("vertex_ids").to_vec_i32(handle).expect("vertices");
         let distances = result.distances().expect("distances").to_vec_i32(handle).expect("distances");
         vertices.into_iter().zip(distances).collect()
@@ -270,6 +272,7 @@ mod tests {
     #[test]
     fn test_bfs_directed_graph() {
         let handle = ResourceHandle::new().expect("handle");
+        let entered = handle.enter("test_bfs_directed_graph").expect("entered");
 
         // Directed graph matching the C API test pattern:
         // 0->1, 1->3, 1->4, 2->0, 2->1, 2->3, 3->5, 4->5
@@ -277,9 +280,9 @@ mod tests {
         let dst_data: Vec<i32> = vec![1, 3, 4, 0, 1, 3, 5, 5];
         let wgt_data: Vec<f32> = vec![0.1, 2.1, 1.1, 5.1, 3.1, 4.1, 7.2, 3.2];
 
-        let src = DeviceArray::from_slice(&handle, &src_data).expect("src");
-        let dst = DeviceArray::from_slice(&handle, &dst_data).expect("dst");
-        let wgt = DeviceArray::from_slice(&handle, &wgt_data).expect("wgt");
+        let src = DeviceArray::from_slice(&entered, &src_data).expect("src");
+        let dst = DeviceArray::from_slice(&entered, &dst_data).expect("dst");
+        let wgt = DeviceArray::from_slice(&entered, &wgt_data).expect("wgt");
         let src_view = src.view().expect("src_view");
         let dst_view = dst.view().expect("dst_view");
         let wgt_view = wgt.view().expect("wgt_view");
@@ -287,22 +290,22 @@ mod tests {
         let mut graph = GraphBuilder::new(&src_view, &dst_view)
             .weights(&wgt_view)
             .renumber()
-            .build::<Forward>(&handle)
+            .build::<Forward>(&entered)
             .expect("graph");
 
         // BFS from vertex 0
-        let sources_arr = DeviceArray::from_slice(&handle, &[0i32]).expect("sources");
+        let sources_arr = DeviceArray::from_slice(&entered, &[0i32]).expect("sources");
         let sources_view = sources_arr.view().expect("sources_view");
 
         let params = BfsParams::default().with_predecessors();
-        let result = graph.bfs(&handle, &sources_view, &params).expect("bfs");
+        let result = graph.bfs(&entered, &sources_view, &params).expect("bfs");
 
         let vids = result.vertex_ids().expect("vertex_ids");
         let dists = result.distances().expect("distances");
         assert_eq!(vids.len(), 6, "should have 6 vertices");
         assert_eq!(dists.len(), 6, "should have 6 distances");
 
-        let dist_map = bfs_distance_map(&handle, &result);
+        let dist_map = bfs_distance_map(&entered, &result);
 
         // Expected: {0: 0, 1: 1, 2: unreachable, 3: 2, 4: 2, 5: 3}
         assert_eq!(dist_map[&0], 0, "source should have distance 0");
@@ -320,25 +323,26 @@ mod tests {
     #[test]
     fn test_bfs_depth_limit_works() {
         let handle = ResourceHandle::new().expect("handle");
+        let entered = handle.enter("test_bfs_depth_limit_works").expect("entered");
 
         // Path graph 0->1->2->3->4
         let src_data: Vec<i32> = vec![0, 1, 2, 3];
         let dst_data: Vec<i32> = vec![1, 2, 3, 4];
 
-        let src = DeviceArray::from_slice(&handle, &src_data).expect("src");
-        let dst = DeviceArray::from_slice(&handle, &dst_data).expect("dst");
+        let src = DeviceArray::from_slice(&entered, &src_data).expect("src");
+        let dst = DeviceArray::from_slice(&entered, &dst_data).expect("dst");
         let src_view = src.view().expect("src_view");
         let dst_view = dst.view().expect("dst_view");
 
-        let mut graph = GraphBuilder::new(&src_view, &dst_view).build::<Forward>(&handle).expect("graph");
+        let mut graph = GraphBuilder::new(&src_view, &dst_view).build::<Forward>(&entered).expect("graph");
 
-        let sources_arr = DeviceArray::from_slice(&handle, &[0i32]).expect("sources");
+        let sources_arr = DeviceArray::from_slice(&entered, &[0i32]).expect("sources");
         let sources_view = sources_arr.view().expect("sources_view");
 
         let params = BfsParams::default().with_depth_limit(BfsDepthLimit::new(2).unwrap());
-        let result = graph.bfs(&handle, &sources_view, &params).expect("bfs");
+        let result = graph.bfs(&entered, &sources_view, &params).expect("bfs");
 
-        let dist_map = bfs_distance_map(&handle, &result);
+        let dist_map = bfs_distance_map(&entered, &result);
 
         assert_eq!(dist_map[&0], 0);
         assert_eq!(dist_map[&1], 1);
@@ -350,22 +354,23 @@ mod tests {
     #[test]
     fn test_bfs_no_predecessors() {
         let handle = ResourceHandle::new().expect("handle");
+        let entered = handle.enter("test_bfs_no_predecessors").expect("entered");
 
         let src_data: Vec<i32> = vec![0, 1];
         let dst_data: Vec<i32> = vec![1, 2];
 
-        let src = DeviceArray::from_slice(&handle, &src_data).expect("src");
-        let dst = DeviceArray::from_slice(&handle, &dst_data).expect("dst");
+        let src = DeviceArray::from_slice(&entered, &src_data).expect("src");
+        let dst = DeviceArray::from_slice(&entered, &dst_data).expect("dst");
         let src_view = src.view().expect("src_view");
         let dst_view = dst.view().expect("dst_view");
 
-        let mut graph = GraphBuilder::new(&src_view, &dst_view).build::<Forward>(&handle).expect("graph");
+        let mut graph = GraphBuilder::new(&src_view, &dst_view).build::<Forward>(&entered).expect("graph");
 
-        let sources_arr = DeviceArray::from_slice(&handle, &[0i32]).expect("sources");
+        let sources_arr = DeviceArray::from_slice(&entered, &[0i32]).expect("sources");
         let sources_view = sources_arr.view().expect("sources_view");
 
         let params = BfsParams::default();
-        let result = graph.bfs(&handle, &sources_view, &params).expect("bfs");
+        let result = graph.bfs(&entered, &sources_view, &params).expect("bfs");
         assert!(result.predecessors().expect("predecessors").is_none(), "predecessors should be omitted");
     }
 
@@ -388,7 +393,8 @@ mod tests {
     #[test]
     fn test_normalize_optional_raw_view_treats_empty_view_as_none() {
         let handle = ResourceHandle::new().expect("handle");
-        let empty = DeviceArray::<i32>::new(&handle, 0).expect("empty");
+        let entered = handle.enter("test_normalize_optional_raw_view_treats_empty_view_as_none").expect("entered");
+        let empty = DeviceArray::<i32>::new(&entered, 0).expect("empty");
         let view_ptr = empty.view().expect("view").raw_view().as_ptr();
 
         // SAFETY: `view_ptr` comes from a live empty device array view and
@@ -408,7 +414,8 @@ mod tests {
     #[test]
     fn test_normalize_optional_raw_view_keeps_non_empty_view() {
         let handle = ResourceHandle::new().expect("handle");
-        let preds = DeviceArray::from_slice(&handle, &[1i32, 2, 3]).expect("preds");
+        let entered = handle.enter("test_normalize_optional_raw_view_keeps_non_empty_view").expect("entered");
+        let preds = DeviceArray::from_slice(&entered, &[1i32, 2, 3]).expect("preds");
         let view_ptr = preds.view().expect("view").raw_view().as_ptr();
 
         // SAFETY: `view_ptr` comes from a live non-empty device array view and
