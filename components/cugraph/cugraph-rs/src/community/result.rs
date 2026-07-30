@@ -1,8 +1,8 @@
 //! Result types for community-detection algorithms.
 //!
-//! Louvain currently returns a `cugraph_hierarchical_clustering_result_t`.
+//! Louvain, Leiden, and ECG return `cugraph_hierarchical_clustering_result_t`.
 //! This module keeps ownership and raw accessor logic in an internal wrapper so
-//! future hierarchical community algorithms can reuse it.
+//! hierarchical community algorithms can reuse it.
 
 use std::marker::PhantomData;
 
@@ -46,10 +46,11 @@ impl HierarchicalClusteringResult {
             "HierarchicalClusteringResult::vertices_raw",
             "vertices",
         )?;
-        // SAFETY: `view_ptr` belongs to the live result object and was checked
-        // for null above.
+        // SAFETY: cuGraph hierarchical clustering getters allocate view
+        // metadata for the caller. The backing device allocation remains owned
+        // by `self.raw`.
         unsafe {
-            RawDeviceArrayView::from_borrowed(
+            RawDeviceArrayView::from_owned_view(
                 view_ptr,
                 Some(self.device),
                 "HierarchicalClusteringResult::vertices_raw",
@@ -66,10 +67,11 @@ impl HierarchicalClusteringResult {
             "HierarchicalClusteringResult::clusters_raw",
             "clusters",
         )?;
-        // SAFETY: `view_ptr` belongs to the live result object and was checked
-        // for null above.
+        // SAFETY: cuGraph hierarchical clustering getters allocate view
+        // metadata for the caller. The backing device allocation remains owned
+        // by `self.raw`.
         unsafe {
-            RawDeviceArrayView::from_borrowed(
+            RawDeviceArrayView::from_owned_view(
                 view_ptr,
                 Some(self.device),
                 "HierarchicalClusteringResult::clusters_raw",
@@ -96,66 +98,77 @@ impl Drop for HierarchicalClusteringResult {
     }
 }
 
-/// Result of a Louvain computation.
-///
-/// Provides access to vertex ids, community assignments, and the scalar
-/// modularity score. Freed on drop.
-pub struct LouvainResult(HierarchicalClusteringResult);
+macro_rules! define_hierarchical_result {
+    ($name:ident, $modularity_doc:literal, $df_fn:ident) => {
+        /// Result of a hierarchical community-detection computation.
+        ///
+        /// Provides access to vertex ids, community assignments, and the
+        /// scalar modularity score. Freed on drop.
+        pub struct $name(HierarchicalClusteringResult);
 
-impl std::fmt::Debug for LouvainResult {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("LouvainResult").finish_non_exhaustive()
-    }
+        impl std::fmt::Debug for $name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.debug_struct(stringify!($name)).finish_non_exhaustive()
+            }
+        }
+
+        impl $name {
+            /// Wrap a raw hierarchical clustering result pointer.
+            ///
+            /// # Safety
+            ///
+            /// `raw` must be a valid, non-null pointer returned by the
+            /// matching cuGraph C API. Ownership is transferred to this struct.
+            pub(crate) unsafe fn from_raw(
+                raw: *mut cugraph_hierarchical_clustering_result_t,
+                device: i32,
+            ) -> Result<Self> {
+                // SAFETY: the caller transfers ownership of a live cuGraph
+                // result to this wrapper on success.
+                Ok(Self(unsafe { HierarchicalClusteringResult::from_raw(raw, device) }?))
+            }
+
+            /// Get the vertex ids as a runtime-typed device array view.
+            ///
+            /// Returns [`VertexIds::I32`] or [`VertexIds::I64`] depending on
+            /// the graph's vertex type.
+            pub fn vertex_ids(&self) -> Result<VertexIds<'_>> {
+                VertexIds::from_raw(self.0.vertices_raw()?)
+            }
+
+            /// Get the per-vertex cluster assignments as a runtime-typed
+            /// device array view.
+            ///
+            /// Returns [`VertexIds::I32`] or [`VertexIds::I64`] depending on
+            /// the graph's vertex type.
+            pub fn clusters(&self) -> Result<VertexIds<'_>> {
+                VertexIds::from_raw(self.0.clusters_raw()?)
+            }
+
+            #[doc = $modularity_doc]
+            pub fn modularity(&self) -> f64 {
+                self.0.modularity()
+            }
+
+            /// Convert this result to a cudf DataFrame.
+            ///
+            /// Returns a 2-column DataFrame:
+            /// - `"vertex"` — vertex ids with the underlying result dtype
+            /// - `"partition"` — cluster assignments with the underlying result dtype
+            ///
+            /// Device-to-device copy: unavoidable because the cugraph C API
+            /// owns result memory and frees it on drop. Matches Python
+            /// cudf/cugraph behavior.
+            pub fn to_dataframe(&self, runtime: &cudf::Runtime) -> Result<cudf::DataFrame> {
+                crate::cudf_interop::$df_fn(self, runtime)
+                    .map_err(|e: Error| e.with_operation(concat!(stringify!($name), "::to_dataframe")))
+            }
+        }
+    };
 }
 
-impl LouvainResult {
-    /// Wrap a raw hierarchical clustering result pointer as a `LouvainResult`.
-    ///
-    /// # Safety
-    ///
-    /// `raw` must be a valid, non-null pointer returned by `cugraph_louvain`.
-    /// Ownership is transferred to this struct.
-    pub(crate) unsafe fn from_raw(raw: *mut cugraph_hierarchical_clustering_result_t, device: i32) -> Result<Self> {
-        // SAFETY: the caller transfers ownership of a live cuGraph result to
-        // this wrapper on success.
-        Ok(Self(unsafe { HierarchicalClusteringResult::from_raw(raw, device) }?))
-    }
-
-    /// Get the vertex ids as a runtime-typed device array view.
-    ///
-    /// Returns [`VertexIds::I32`] or [`VertexIds::I64`] depending on the
-    /// graph's vertex type.
-    pub fn vertex_ids(&self) -> Result<VertexIds<'_>> {
-        VertexIds::from_raw(self.0.vertices_raw()?)
-    }
-
-    /// Get the per-vertex cluster assignments as a runtime-typed device array view.
-    ///
-    /// Returns [`VertexIds::I32`] or [`VertexIds::I64`] depending on the
-    /// graph's vertex type.
-    pub fn clusters(&self) -> Result<VertexIds<'_>> {
-        VertexIds::from_raw(self.0.clusters_raw()?)
-    }
-
-    /// Modularity score returned by Louvain.
-    pub fn modularity(&self) -> f64 {
-        self.0.modularity()
-    }
-
-    /// Convert this Louvain result to a cudf DataFrame.
-    ///
-    /// Returns a 2-column DataFrame:
-    /// - `"vertex"` — vertex ids with the underlying result dtype (`Int32` or `Int64`)
-    /// - `"partition"` — cluster assignments with the underlying result dtype
-    ///
-    /// Device-to-device copy: unavoidable because the cugraph C API owns
-    /// result memory and frees it on drop. Matches Python cudf/cugraph
-    /// behavior.
-    pub fn to_dataframe(&self, runtime: &cudf::Runtime) -> Result<cudf::DataFrame> {
-        crate::cudf_interop::louvain_result_to_dataframe(self, runtime)
-            .map_err(|e: Error| e.with_operation("LouvainResult::to_dataframe"))
-    }
-}
+define_hierarchical_result!(LouvainResult, "Modularity score returned by Louvain.", louvain_result_to_dataframe);
+define_hierarchical_result!(LeidenResult, "Modularity score returned by Leiden.", leiden_result_to_dataframe);
 
 #[cfg(test)]
 mod tests {

@@ -20,7 +20,7 @@ use common::{
 use cugraph::{
     DeviceArray, Forward, Graph, GraphBuilder, ResourceHandle, Transposed, VertexSelection,
     centrality::{BetweennessCentralityParams, PageRankParams},
-    community::{ExtractEgoParams, KTrussSubgraphParams, LouvainParams, TriangleCountParams},
+    community::{ExtractEgoParams, KTrussSubgraphParams, LeidenParams, LouvainParams, TriangleCountParams},
     labeling::ConnectedComponentsParams,
     layout::{ForceAtlas2Params, ForceAtlas2VertexAttrs, InitialPositions},
     params::{IterationCount, NonNegativeF64},
@@ -566,6 +566,37 @@ fn louvain_returns_vertex_partitions_and_finite_modularity() {
         .expect("graph");
 
     let result = graph.louvain(&entered, &LouvainParams::default()).expect("louvain");
+
+    let vertex_ids = result.vertex_ids().expect("vertex_ids");
+    assert!(matches!(vertex_ids, VertexIds::I32(_)));
+    let clusters = result.clusters().expect("clusters");
+    assert!(matches!(clusters, VertexIds::I32(_)));
+    assert_eq!(vertex_ids.len(), clusters.len());
+    assert!(!vertex_ids.is_empty());
+    assert!(result.modularity().is_finite());
+}
+
+#[test]
+fn leiden_returns_vertex_partitions_and_finite_modularity() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let handle = test_handle();
+    let entered = handle.enter("leiden_returns_vertex_partitions_and_finite_modularity").expect("entered");
+    let mut rng = RngState::new(&entered, 0).expect("rng");
+    let src = DeviceArray::from_slice(&entered, LOUVAIN_GRAPH_SRC_I32).expect("src");
+    let dst = DeviceArray::from_slice(&entered, LOUVAIN_GRAPH_DST_I32).expect("dst");
+    let weights = DeviceArray::from_slice(&entered, LOUVAIN_GRAPH_WEIGHT_F32).expect("weights");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+    let weights_view = weights.view().expect("weights_view");
+
+    let mut graph = GraphBuilder::new(&src_view, &dst_view)
+        .weights(&weights_view)
+        .properties(GraphProperties::undirected())
+        .renumber()
+        .build::<Forward>(&entered)
+        .expect("graph");
+
+    let result = graph.leiden(&entered, &mut rng, &LeidenParams::default()).expect("leiden");
 
     let vertex_ids = result.vertex_ids().expect("vertex_ids");
     assert!(matches!(vertex_ids, VertexIds::I32(_)));
