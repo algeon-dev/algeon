@@ -1,7 +1,7 @@
 use cugraph::{
     array::{DeviceArray, DeviceArrayView},
     centrality::{BetweennessCentralityResult, PageRankResult},
-    community::{LeidenResult, LouvainResult},
+    community::{EcgResult, LeidenResult, LouvainResult},
     graph::{Forward, Graph, Transposed},
     layout::LayoutResult,
     random::RngState,
@@ -24,6 +24,7 @@ fn graph_and_result_types_are_not_send_or_sync() {
     assert_not_impl_any!(BetweennessCentralityResult: Send, Sync);
     assert_not_impl_any!(LouvainResult: Send, Sync);
     assert_not_impl_any!(LeidenResult: Send, Sync);
+    assert_not_impl_any!(EcgResult: Send, Sync);
     assert_not_impl_any!(BfsResult: Send, Sync);
     assert_not_impl_any!(SsspResult: Send, Sync);
     assert_not_impl_any!(ExtractPathsResult: Send, Sync);
