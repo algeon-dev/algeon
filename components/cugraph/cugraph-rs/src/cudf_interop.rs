@@ -97,7 +97,7 @@ use rapids_interop::{
 use crate::{
     array::RawDeviceArrayView,
     centrality::{BetweennessCentralityResult, PageRankResult},
-    community::{LouvainResult, TriangleCountResult},
+    community::{ExtractEgoResult, KTrussSubgraphResult, LouvainResult, TriangleCountResult},
     cuda::{DeviceGuard, check_cudf_status},
     error::{Error, ErrorKind, ErrorStatus, Result},
     graph::{DeferredInputCompletion, Graph, GraphBuilder, Transposition},
@@ -105,11 +105,12 @@ use crate::{
     labeling::{StronglyConnectedComponentsResult, WeaklyConnectedComponentsResult},
     layout::LayoutResult,
     structure::{
-        CoreNumberResult,
+        CoreNumberResult, KCoreResult,
         degrees::{DegreeValues, DegreesResult, InDegreesResult, OutDegreesResult},
         typed_results::{Distances, IntegerValues, ScoreValues, VertexIds},
     },
     traversal::{bfs::BfsResult, sssp::SsspResult},
+    tree::MinimumSpanningTreeResult,
     types::{CugraphElement, DataType, GraphProperties},
 };
 
@@ -583,6 +584,91 @@ pub(crate) fn triangle_count_result_to_dataframe(
             ("triangle_count", result.counts()?.to_series(runtime)?),
         ],
         operation,
+    )
+}
+
+fn edge_result_to_dataframe(
+    sources: VertexIds<'_>,
+    destinations: VertexIds<'_>,
+    weights: Option<ScoreValues<'_>>,
+    edge_ids: Option<IntegerValues<'_>>,
+    edge_type_ids: Option<IntegerValues<'_>>,
+    runtime: &Runtime,
+    operation: &'static str,
+) -> Result<cudf::DataFrame> {
+    let source_series = sources.to_series(runtime)?;
+    let destination_series = destinations.to_series(runtime)?;
+    let weight_series = weights.map(|values| values.to_series(runtime)).transpose()?;
+    let edge_id_series = edge_ids.map(|values| values.to_series(runtime)).transpose()?;
+    let edge_type_series = edge_type_ids.map(|values| values.to_series(runtime)).transpose()?;
+
+    let mut series = Vec::with_capacity(5);
+    series.push(("source", source_series));
+    series.push(("destination", destination_series));
+    if let Some(weight) = weight_series {
+        series.push(("weight", weight));
+    }
+    if let Some(edge_id) = edge_id_series {
+        series.push(("edge_id", edge_id));
+    }
+    if let Some(edge_type) = edge_type_series {
+        series.push(("edge_type", edge_type));
+    }
+
+    dataframe_from_named_series(series, operation)
+}
+
+pub(crate) fn k_core_result_to_dataframe(result: &KCoreResult, runtime: &Runtime) -> Result<cudf::DataFrame> {
+    edge_result_to_dataframe(
+        result.sources()?,
+        result.destinations()?,
+        result.weights()?,
+        None,
+        None,
+        runtime,
+        "k_core_result_to_dataframe",
+    )
+}
+
+pub(crate) fn minimum_spanning_tree_result_to_dataframe(
+    result: &MinimumSpanningTreeResult,
+    runtime: &Runtime,
+) -> Result<cudf::DataFrame> {
+    edge_result_to_dataframe(
+        result.sources()?,
+        result.destinations()?,
+        result.weights()?,
+        result.edge_ids()?,
+        result.edge_type_ids()?,
+        runtime,
+        "minimum_spanning_tree_result_to_dataframe",
+    )
+}
+
+pub(crate) fn k_truss_subgraph_result_to_dataframe(
+    result: &KTrussSubgraphResult,
+    runtime: &Runtime,
+) -> Result<cudf::DataFrame> {
+    edge_result_to_dataframe(
+        result.sources()?,
+        result.destinations()?,
+        result.weights()?,
+        result.edge_ids()?,
+        result.edge_type_ids()?,
+        runtime,
+        "k_truss_subgraph_result_to_dataframe",
+    )
+}
+
+pub(crate) fn extract_ego_result_to_dataframe(result: &ExtractEgoResult, runtime: &Runtime) -> Result<cudf::DataFrame> {
+    edge_result_to_dataframe(
+        result.sources()?,
+        result.destinations()?,
+        result.weights()?,
+        result.edge_ids()?,
+        result.edge_type_ids()?,
+        runtime,
+        "extract_ego_result_to_dataframe",
     )
 }
 

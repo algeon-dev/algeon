@@ -1,6 +1,6 @@
 mod common;
 
-use std::collections::HashMap;
+use std::{collections::HashMap, num::NonZeroUsize};
 
 use common::{
     cudf::explicit_runtime,
@@ -17,13 +17,14 @@ use common::{
 use cugraph::{
     DeviceArray, Forward, GraphBuilder, ResourceHandle, Transposed, VertexSelection,
     centrality::{BetweennessCentralityParams, PageRankParams},
-    community::{LouvainParams, TriangleCountParams},
+    community::{ExtractEgoParams, KTrussSubgraphParams, LouvainParams, TriangleCountParams},
     labeling::ConnectedComponentsParams,
     layout::{ForceAtlas2Params, ForceAtlas2VertexAttrs, InitialPositions},
     params::{IterationCount, NonNegativeF64},
     random::RngState,
-    structure::{CoreNumberParams, Distances, IntegerValues, KCoreDegreeType, ScoreValues, VertexIds},
+    structure::{CoreNumberParams, Distances, IntegerValues, KCoreDegreeType, KCoreParams, ScoreValues, VertexIds},
     traversal::{BfsParams, SsspParams},
+    tree::MinimumSpanningTreeParams,
     types::GraphProperties,
 };
 
@@ -595,6 +596,146 @@ fn triangle_count_all_and_start_vertices_return_expected_counts() {
     assert_eq!(subset_map.len(), 2);
     assert_eq!(subset_map[&0], 1);
     assert_eq!(subset_map[&2], 1);
+}
+
+#[test]
+fn k_core_with_and_without_precomputed_core_numbers_returns_triangle_edges() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let handle = test_handle();
+    let entered =
+        handle.enter("k_core_with_and_without_precomputed_core_numbers_returns_triangle_edges").expect("entered");
+    let src = DeviceArray::from_slice(&entered, &[0i32, 1, 2, 1, 2, 0, 2, 3]).expect("src");
+    let dst = DeviceArray::from_slice(&entered, &[1i32, 2, 0, 0, 1, 2, 3, 2]).expect("dst");
+    let wgt = DeviceArray::from_slice(&entered, &[1.0f32; 8]).expect("wgt");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+    let wgt_view = wgt.view().expect("wgt_view");
+
+    let mut graph = GraphBuilder::new(&src_view, &dst_view)
+        .weights(&wgt_view)
+        .properties(GraphProperties::undirected())
+        .renumber()
+        .build::<Forward>(&entered)
+        .expect("graph");
+
+    let params = KCoreParams {
+        k: NonZeroUsize::new(2).expect("k"),
+        degree_type: KCoreDegreeType::Out,
+        do_expensive_check: false,
+    };
+    let result = graph.k_core(&entered, &params).expect("k_core");
+    assert!(result.weights().expect("weights").is_some());
+    let sources = result.sources().expect("sources").to_vec_i32(&entered).expect("sources");
+    let destinations = result.destinations().expect("destinations").to_vec_i32(&entered).expect("destinations");
+    assert_eq!(sources.len(), destinations.len());
+    assert!(sources.iter().zip(&destinations).all(|(src, dst)| *src < 3 && *dst < 3));
+
+    let core_numbers = graph
+        .core_number(&entered, &CoreNumberParams { degree_type: KCoreDegreeType::Out, do_expensive_check: false })
+        .expect("core_number");
+    let precomputed =
+        graph.k_core_with_core_numbers(&entered, &params, &core_numbers).expect("k_core with core numbers");
+    assert_eq!(precomputed.sources().expect("sources").len(), result.sources().expect("sources").len());
+}
+
+#[test]
+fn minimum_spanning_tree_returns_weighted_edge_result() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let handle = test_handle();
+    let entered = handle.enter("minimum_spanning_tree_returns_weighted_edge_result").expect("entered");
+    let src = DeviceArray::from_slice(&entered, LOUVAIN_GRAPH_SRC_I32).expect("src");
+    let dst = DeviceArray::from_slice(&entered, LOUVAIN_GRAPH_DST_I32).expect("dst");
+    let weights = DeviceArray::from_slice(&entered, LOUVAIN_GRAPH_WEIGHT_F32).expect("weights");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+    let weights_view = weights.view().expect("weights_view");
+
+    let mut graph = GraphBuilder::new(&src_view, &dst_view)
+        .weights(&weights_view)
+        .properties(GraphProperties::undirected())
+        .renumber()
+        .build::<Forward>(&entered)
+        .expect("graph");
+
+    let result =
+        graph.minimum_spanning_tree(&entered, &MinimumSpanningTreeParams::default()).expect("minimum_spanning_tree");
+    let sources = result.sources().expect("sources").to_vec_i32(&entered).expect("sources");
+    let destinations = result.destinations().expect("destinations").to_vec_i32(&entered).expect("destinations");
+    let weights = result.weights().expect("weights").expect("weight column").to_vec_f32(&entered).expect("weights");
+    let offsets =
+        result.subgraph_offsets().expect("offsets").expect("offset column").to_vec_usize(&entered).expect("offsets");
+
+    assert_eq!(sources.len(), destinations.len());
+    assert_eq!(sources.len(), weights.len());
+    assert_eq!(sources.len(), 10);
+    assert_eq!(offsets, vec![0, sources.len()]);
+    assert!(result.edge_ids().expect("edge ids").is_none());
+    assert!(result.edge_type_ids().expect("edge type ids").is_none());
+}
+
+#[test]
+fn k_truss_subgraph_returns_expected_offsets_and_edges() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let handle = test_handle();
+    let entered = handle.enter("k_truss_subgraph_returns_expected_offsets_and_edges").expect("entered");
+    let src = DeviceArray::from_slice(&entered, LOUVAIN_GRAPH_SRC_I32).expect("src");
+    let dst = DeviceArray::from_slice(&entered, LOUVAIN_GRAPH_DST_I32).expect("dst");
+    let weights = DeviceArray::from_slice(&entered, LOUVAIN_GRAPH_WEIGHT_F32).expect("weights");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+    let weights_view = weights.view().expect("weights_view");
+
+    let mut graph = GraphBuilder::new(&src_view, &dst_view)
+        .weights(&weights_view)
+        .properties(GraphProperties::undirected())
+        .renumber()
+        .build::<Forward>(&entered)
+        .expect("graph");
+
+    let params = KTrussSubgraphParams { k: NonZeroUsize::new(3).expect("k"), do_expensive_check: false };
+    let result = graph.k_truss_subgraph(&entered, &params).expect("k_truss_subgraph");
+    let sources = result.sources().expect("sources").to_vec_i32(&entered).expect("sources");
+    let destinations = result.destinations().expect("destinations").to_vec_i32(&entered).expect("destinations");
+    let offsets =
+        result.subgraph_offsets().expect("offsets").expect("offset column").to_vec_usize(&entered).expect("offsets");
+
+    assert_eq!(sources.len(), destinations.len());
+    assert_eq!(sources.len(), 10);
+    assert_eq!(offsets, vec![0, sources.len()]);
+    assert!(result.weights().expect("weights").is_some());
+}
+
+#[test]
+fn extract_ego_returns_per_seed_offsets() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let handle = test_handle();
+    let entered = handle.enter("extract_ego_returns_per_seed_offsets").expect("entered");
+    let src = DeviceArray::from_slice(&entered, &[0i32, 1, 1, 2, 2, 2, 3, 3, 4]).expect("src");
+    let dst = DeviceArray::from_slice(&entered, &[1i32, 3, 4, 0, 1, 3, 4, 5, 5]).expect("dst");
+    let weights =
+        DeviceArray::from_slice(&entered, &[0.1f32, 2.1, 1.1, 5.1, 3.1, 4.1, 7.2, 3.2, 6.1]).expect("weights");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+    let weights_view = weights.view().expect("weights_view");
+
+    let mut graph = GraphBuilder::new(&src_view, &dst_view)
+        .weights(&weights_view)
+        .renumber()
+        .build::<Forward>(&entered)
+        .expect("graph");
+    let seeds = DeviceArray::from_slice(&entered, &[0i32, 1]).expect("seeds");
+    let seeds_view = seeds.view().expect("seeds_view");
+    let params = ExtractEgoParams { radius: NonZeroUsize::new(2).expect("radius"), do_expensive_check: false };
+
+    let result = graph.extract_ego(&entered, &seeds_view, &params).expect("extract_ego");
+    let sources = result.sources().expect("sources").to_vec_i32(&entered).expect("sources");
+    let destinations = result.destinations().expect("destinations").to_vec_i32(&entered).expect("destinations");
+    let offsets =
+        result.subgraph_offsets().expect("offsets").expect("offset column").to_vec_usize(&entered).expect("offsets");
+
+    assert_eq!(sources.len(), destinations.len());
+    assert_eq!(offsets, vec![0, 4, 9]);
+    assert_eq!(sources.len(), *offsets.last().expect("last offset"));
 }
 
 #[test]

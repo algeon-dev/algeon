@@ -100,6 +100,7 @@ pub mod params;
 pub mod random;
 pub mod structure;
 pub mod traversal;
+pub mod tree;
 pub mod types;
 
 // ═══════════════════════════════════════════════════════════════════════════

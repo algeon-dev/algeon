@@ -180,6 +180,47 @@ impl<'a> VertexIds<'a> {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// SizeValues — typed enum for runtime-width size_t arrays
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Runtime-typed `size_t` values from algorithm results.
+///
+/// cuGraph uses `size_t` for offsets such as per-ego subgraph edge offsets.
+#[derive(Debug)]
+pub struct SizeValues<'a>(DeviceArrayView<'a, usize>);
+
+impl<'a> SizeValues<'a> {
+    /// Construct from a type-erased raw view after checking the dtype.
+    pub(crate) fn from_raw(raw: RawDeviceArrayView<'a>) -> Result<Self> {
+        match raw.dtype()? {
+            DataType::SizeT => Ok(Self(DeviceArrayView::from_raw_unchecked(raw))),
+            other => Err(Error::new(ErrorKind::InvalidState, "SizeValues::from_raw")
+                .with_message(format!("unexpected size_t value dtype: {other}"))),
+        }
+    }
+
+    /// Number of elements in the value array.
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Whether the value array is empty.
+    pub fn is_empty(&self) -> bool {
+        self.0.len() == 0
+    }
+
+    /// Copy to host as `Vec<usize>`.
+    pub fn to_vec_usize(&self, handle: &EnteredContext<'_>) -> Result<Vec<usize>> {
+        self.0.to_vec(handle)
+    }
+
+    /// Get the inner device array view.
+    pub fn as_usize(&self) -> &DeviceArrayView<'a, usize> {
+        &self.0
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // ScoreValues — typed enum for runtime-width float score arrays
 // ═══════════════════════════════════════════════════════════════════════════
 
