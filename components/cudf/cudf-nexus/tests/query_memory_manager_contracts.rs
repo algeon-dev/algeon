@@ -1975,3 +1975,66 @@ fn explicit_output_memory_resource_routing_survives_lock_removal() {
         "running on an owned-pool runtime must not install its pool as the device current resource"
     );
 }
+
+#[test]
+fn shared_member_lease_keeps_member_attached_until_last_clone_drops() {
+    let runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
+    let manager = runtime.device_memory_manager().unwrap();
+    let domain = manager
+        .query_memory_domain(40_020, QueryMemoryDomainOptions::new(8 * 1024 * 1024).with_ceiling_bytes(8 * 1024 * 1024))
+        .unwrap();
+
+    let lease = domain.reserve_stream(runtime.stream(), 9_001, 8 * 1024 * 1024).unwrap();
+    let clone = lease.clone();
+    drop(lease);
+    let still_attached = domain.reserve_stream(runtime.stream(), 9_002, 8 * 1024 * 1024).unwrap_err();
+    assert_eq!(
+        still_attached.kind(),
+        ErrorKind::InvalidInput,
+        "a live clone must keep the member attached: {still_attached}"
+    );
+    drop(clone);
+    domain
+        .reserve_stream(runtime.stream(), 9_003, 8 * 1024 * 1024)
+        .expect("member detaches once the final shared lease drops");
+}
+
+#[test]
+fn budget_token_from_shared_lease_allocates_without_a_second_attach() {
+    let runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
+    let manager = runtime.device_memory_manager().unwrap();
+    let domain = manager
+        .query_memory_domain(
+            40_021,
+            QueryMemoryDomainOptions::new(64 * 1024 * 1024).with_ceiling_bytes(64 * 1024 * 1024),
+        )
+        .unwrap();
+    let lease = domain.reserve_stream(runtime.stream(), 9_101, 64 * 1024 * 1024).unwrap();
+
+    let first = cudf::ExecutionBudgetToken::from_shared_lease(
+        &runtime,
+        ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("first_shared_stage"),
+        lease.clone(),
+        ExecutionBudgetEnforcement::QueryDomainMember,
+    );
+    let second = cudf::ExecutionBudgetToken::from_shared_lease(
+        &runtime,
+        ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("second_shared_stage"),
+        lease.clone(),
+        ExecutionBudgetEnforcement::QueryDomainMember,
+    );
+    let first_outcome = runtime.series_from_value_with_budget(3i32, 1_000_000, &first).unwrap();
+    let second_outcome = runtime.series_from_value_with_budget(5i32, 1_000_000, &second).unwrap();
+
+    assert_eq!(first_outcome.report().status(), ExecutionBudgetStatus::ReservationEnforced);
+    assert_eq!(second_outcome.report().status(), ExecutionBudgetStatus::ReservationEnforced);
+    drop(first);
+    drop(second);
+    let usage = lease.usage().unwrap();
+    assert!(usage.current_bytes > 0, "shared member tracks both stage allocations");
+    let domain_usage = domain.usage().unwrap();
+    assert_eq!(domain_usage.domain_id, 40_021);
+    assert!(domain_usage.active_members >= 1);
+    drop(first_outcome);
+    drop(second_outcome);
+}

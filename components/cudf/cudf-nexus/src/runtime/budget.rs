@@ -284,6 +284,24 @@ impl ExecutionBudgetToken {
         Ok(Self::new(runtime, request, lease, ExecutionBudgetEnforcement::ReservationArenaMember))
     }
 
+    /// Create a budget token over an existing shared stream reservation lease.
+    ///
+    /// Unlike the `from_runtime*` constructors, this does not attach a new
+    /// member: the token shares the member already attached to the lease's
+    /// stream. Callers use this to keep one member per stream for an entire
+    /// attempt while issuing per-stage tokens with their own request
+    /// metadata. The member's own allocation limit remains the hard cap; the
+    /// request's `budget_bytes` is stage-level evidence and never resizes the
+    /// member.
+    pub fn from_shared_lease(
+        runtime: &Runtime,
+        request: ExecutionBudgetRequest,
+        lease: StreamReservationLease,
+        enforcement: ExecutionBudgetEnforcement,
+    ) -> Self {
+        Self::new(runtime, request, lease, enforcement)
+    }
+
     /// Create a budget token by attaching a member reservation under a query
     /// memory domain.
     ///
