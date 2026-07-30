@@ -206,6 +206,9 @@ impl EigenvectorCentralityResult {
     /// `cugraph_eigenvector_centrality`. Ownership is transferred to this
     /// struct.
     pub(crate) unsafe fn from_raw(raw: *mut cugraph_centrality_result_t, device: i32) -> Result<Self> {
+        // SAFETY: caller upholds the contract documented on this fn, which matches
+        // `CentralityResult::from_raw`'s requirements (valid non-null pointer with
+        // transferred ownership).
         Ok(Self(unsafe { CentralityResult::from_raw(raw, device) }?))
     }
 
@@ -223,6 +226,18 @@ impl EigenvectorCentralityResult {
     pub fn to_dataframe(&self, runtime: &cudf::Runtime) -> Result<cudf::DataFrame> {
         crate::cudf_interop::eigenvector_centrality_result_to_dataframe(self, runtime)
             .map_err(|e: Error| e.with_operation("EigenvectorCentralityResult::to_dataframe"))
+    }
+
+    /// Number of power-iteration steps performed by the eigenvector
+    /// centrality solver.
+    pub fn num_iterations(&self) -> usize {
+        self.0.num_iterations()
+    }
+
+    /// Whether the eigenvector centrality solver converged within the
+    /// configured `max_iterations`.
+    pub fn converged(&self) -> Result<bool> {
+        self.0.converged()
     }
 }
 
@@ -247,6 +262,9 @@ impl KatzCentralityResult {
     /// `raw` must be a valid, non-null pointer returned by
     /// `cugraph_katz_centrality`. Ownership is transferred to this struct.
     pub(crate) unsafe fn from_raw(raw: *mut cugraph_centrality_result_t, device: i32) -> Result<Self> {
+        // SAFETY: caller upholds the contract documented on this fn, which matches
+        // `CentralityResult::from_raw`'s requirements (valid non-null pointer with
+        // transferred ownership).
         Ok(Self(unsafe { CentralityResult::from_raw(raw, device) }?))
     }
 
@@ -264,6 +282,18 @@ impl KatzCentralityResult {
     pub fn to_dataframe(&self, runtime: &cudf::Runtime) -> Result<cudf::DataFrame> {
         crate::cudf_interop::katz_centrality_result_to_dataframe(self, runtime)
             .map_err(|e: Error| e.with_operation("KatzCentralityResult::to_dataframe"))
+    }
+
+    /// Number of power-iteration steps performed by the Katz centrality
+    /// solver.
+    pub fn num_iterations(&self) -> usize {
+        self.0.num_iterations()
+    }
+
+    /// Whether the Katz centrality solver converged within the configured
+    /// `max_iterations`.
+    pub fn converged(&self) -> Result<bool> {
+        self.0.converged()
     }
 }
 
@@ -386,6 +416,9 @@ impl EdgeBetweennessCentralityResult {
         device: i32,
         has_edge_ids: bool,
     ) -> Result<Self> {
+        // SAFETY: caller upholds the contract documented on this fn, which matches
+        // `EdgeCentralityResult::from_raw`'s requirements (valid non-null pointer
+        // with transferred ownership).
         Ok(Self(unsafe { EdgeCentralityResult::from_raw(raw, device, has_edge_ids) }?))
     }
 
