@@ -12,6 +12,7 @@ use cugraph::{
     community::{EcgParams, LeidenParams, LouvainParams, SpectralClusteringParams},
     layout::ForceAtlas2Params,
     params::{ClosedUnitF64, IterationCount, NonNegativeF64, PositiveF64},
+    sampling::{Node2VecRandomWalkParams, RandomWalkParams},
     similarity::{AllPairsSimilarityParams, SimilarityParams},
 };
 
@@ -111,6 +112,17 @@ fn spectral_clustering_params_default_has_expected_values() {
     assert_eq!(params.k_means_tolerance.get(), 0.001);
     assert_eq!(params.k_means_max_iterations.get(), 100);
     assert!(!params.do_expensive_check);
+}
+
+#[test]
+fn random_walk_params_default_has_expected_values() {
+    let params = RandomWalkParams::default();
+    assert_eq!(params.max_length.get(), 1);
+
+    let node2vec = Node2VecRandomWalkParams::default();
+    assert_eq!(node2vec.max_length.get(), 1);
+    assert_eq!(node2vec.p.get(), 1.0);
+    assert_eq!(node2vec.q.get(), 1.0);
 }
 
 #[test]

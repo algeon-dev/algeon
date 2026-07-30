@@ -29,8 +29,9 @@ use cugraph::{
     },
     labeling::ConnectedComponentsParams,
     layout::{ForceAtlas2Params, ForceAtlas2VertexAttrs, InitialPositions},
-    params::{IterationCount, NonNegativeF64},
+    params::{IterationCount, NonNegativeF64, PositiveF64},
     random::RngState,
+    sampling::{Node2VecRandomWalkParams, RandomWalkParams},
     similarity::{AllPairsSimilarityParams, SimilarityParams},
     structure::{CoreNumberParams, Distances, IntegerValues, KCoreDegreeType, KCoreParams, ScoreValues, VertexIds},
     traversal::{BfsParams, SsspParams},
@@ -273,6 +274,125 @@ fn vertex_pairs_rejects_mismatched_pair_lengths() {
         .expect_err("mismatched pair lengths should be rejected");
     assert_eq!(err.kind(), cugraph::ErrorKind::InvalidInput);
     assert_eq!(err.operation(), "Graph::vertex_pairs");
+}
+
+fn random_walk_fixture(handle: &cugraph::EnteredContext<'_>) -> (Graph<Forward>, DeviceArray<i32>) {
+    let src = DeviceArray::from_slice(handle, &[0i32, 1, 1, 2, 2, 2, 3, 4]).expect("src");
+    let dst = DeviceArray::from_slice(handle, &[1i32, 3, 4, 0, 1, 3, 5, 5]).expect("dst");
+    let weights = DeviceArray::from_slice(handle, &[1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]).expect("weights");
+    let starts = DeviceArray::from_slice(handle, &[2i32, 2]).expect("starts");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+    let weights_view = weights.view().expect("weights_view");
+    let graph = GraphBuilder::new(&src_view, &dst_view)
+        .weights(&weights_view)
+        .renumber()
+        .build::<Forward>(handle)
+        .expect("graph");
+
+    (graph, starts)
+}
+
+fn assert_random_walk_shape(
+    handle: &cugraph::EnteredContext<'_>,
+    result: &cugraph::sampling::RandomWalkResult,
+    starts: &[i32],
+    max_length: usize,
+) {
+    assert_eq!(result.max_path_length(), max_length);
+    let paths = result.paths().expect("paths");
+    let path_values = match paths {
+        VertexIds::I32(paths) => paths.to_vec(handle).expect("path copy"),
+        _ => panic!("expected i32 random-walk paths"),
+    };
+    assert_eq!(path_values.len(), starts.len() * (max_length + 1));
+    for (row, &start) in starts.iter().enumerate() {
+        assert_eq!(path_values[row * (max_length + 1)], start);
+    }
+
+    let weights = result.weights().expect("weights").expect("weighted graph should produce weights");
+    assert_eq!(weights.len(), starts.len() * max_length);
+    let weight_values = match weights {
+        ScoreValues::F32(weights) => weights.to_vec(handle).expect("weight copy"),
+        _ => panic!("expected f32 random-walk weights"),
+    };
+    assert_eq!(weight_values.len(), starts.len() * max_length);
+}
+
+#[test]
+fn random_walk_algorithms_return_dense_paths_and_weights() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let handle = test_handle();
+    let entered = handle.enter("random_walk_algorithms_return_dense_paths_and_weights").expect("entered");
+    let starts_data = [2i32, 2];
+    let params = RandomWalkParams { max_length: NonZeroUsize::new(3).expect("max length") };
+
+    let (mut graph, starts) = random_walk_fixture(&entered);
+    let starts_view = starts.view().expect("starts_view");
+    let mut rng = RngState::new(&entered, 0).expect("rng");
+    let result = graph.uniform_random_walks(&entered, &mut rng, &starts_view, &params).expect("uniform walks");
+    assert_random_walk_shape(&entered, &result, &starts_data, params.max_length.get());
+
+    let (mut graph, starts) = random_walk_fixture(&entered);
+    let starts_view = starts.view().expect("starts_view");
+    let mut rng = RngState::new(&entered, 0).expect("rng");
+    let result = graph.biased_random_walks(&entered, &mut rng, &starts_view, &params).expect("biased walks");
+    assert_random_walk_shape(&entered, &result, &starts_data, params.max_length.get());
+
+    let (mut graph, starts) = random_walk_fixture(&entered);
+    let starts_view = starts.view().expect("starts_view");
+    let mut rng = RngState::new(&entered, 0).expect("rng");
+    let node2vec_params = Node2VecRandomWalkParams {
+        max_length: params.max_length,
+        p: PositiveF64::new(5.0).expect("p"),
+        q: PositiveF64::new(9.0).expect("q"),
+    };
+    let result =
+        graph.node2vec_random_walks(&entered, &mut rng, &starts_view, &node2vec_params).expect("node2vec walks");
+    assert_random_walk_shape(&entered, &result, &starts_data, node2vec_params.max_length.get());
+}
+
+#[test]
+fn unweighted_random_walks_omit_weights() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let handle = test_handle();
+    let entered = handle.enter("unweighted_random_walks_omit_weights").expect("entered");
+    let src = DeviceArray::from_slice(&entered, &[0i32, 1, 1, 2]).expect("src");
+    let dst = DeviceArray::from_slice(&entered, &[1i32, 2, 3, 0]).expect("dst");
+    let starts = DeviceArray::from_slice(&entered, &[0i32]).expect("starts");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+    let starts_view = starts.view().expect("starts_view");
+    let mut graph = GraphBuilder::new(&src_view, &dst_view).renumber().build::<Forward>(&entered).expect("graph");
+    let mut rng = RngState::new(&entered, 0).expect("rng");
+    let params = RandomWalkParams { max_length: NonZeroUsize::new(2).expect("max length") };
+
+    let result = graph.uniform_random_walks(&entered, &mut rng, &starts_view, &params).expect("uniform walks");
+
+    assert_eq!(result.max_path_length(), 2);
+    assert!(result.weights().expect("weights").is_none());
+    assert_eq!(result.paths().expect("paths").len(), 3);
+}
+
+#[test]
+fn select_random_vertices_returns_owned_device_array() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let handle = test_handle();
+    let entered = handle.enter("select_random_vertices_returns_owned_device_array").expect("entered");
+    let src = DeviceArray::from_slice(&entered, &[0i32, 1, 1, 2, 2, 2, 3, 4]).expect("src");
+    let dst = DeviceArray::from_slice(&entered, &[1i32, 3, 4, 0, 1, 3, 5, 5]).expect("dst");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+    let graph = GraphBuilder::new(&src_view, &dst_view).renumber().build::<Forward>(&entered).expect("graph");
+    let mut rng = RngState::new(&entered, 0).expect("rng");
+
+    let vertices: DeviceArray<i32> = graph.select_random_vertices(&entered, &mut rng, 3).expect("sample vertices");
+    let values = vertices.view().expect("sample view").to_vec(&entered).expect("sample copy");
+
+    assert_eq!(values.len(), 3);
+    for vertex in values {
+        assert!((0..=5).contains(&vertex), "sampled vertex {vertex} should belong to the graph");
+    }
 }
 
 #[test]

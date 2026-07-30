@@ -98,6 +98,7 @@ pub mod labeling;
 pub mod layout;
 pub mod params;
 pub mod random;
+pub mod sampling;
 pub mod similarity;
 pub mod structure;
 pub mod traversal;
