@@ -533,11 +533,11 @@ fn spectral_clustering_result_to_dataframe() {
 }
 
 #[test]
-fn connected_components_results_to_dataframe() {
+fn weakly_connected_components_result_to_dataframe() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let runtime = std::sync::Arc::new(explicit_runtime());
     let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).expect("handle");
-    let handle = handle.enter("connected_components_results_to_dataframe").expect("entered");
+    let handle = handle.enter("weakly_connected_components_result_to_dataframe").expect("entered");
 
     let src = DeviceArray::from_slice(&handle, support::DISCONNECTED_TWO_CYCLES_SRC_I32).expect("src");
     let dst = DeviceArray::from_slice(&handle, support::DISCONNECTED_TWO_CYCLES_DST_I32).expect("dst");
@@ -561,8 +561,24 @@ fn connected_components_results_to_dataframe() {
     assert_eq!(df.column_names()[1], "label");
     assert_eq!(df.series("vertex").expect("vertex").to_vec_strict::<i32>().expect("vertex"), expected_vertices);
     assert_eq!(df.series("label").expect("label").to_vec_strict::<i32>().expect("label"), expected_labels);
+}
 
-    let scc = graph.strongly_connected_components(&handle, &params).expect("scc");
+#[test]
+fn strongly_connected_components_result_to_dataframe() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let runtime = std::sync::Arc::new(explicit_runtime());
+    let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).expect("handle");
+    let handle = handle.enter("strongly_connected_components_result_to_dataframe").expect("entered");
+
+    let params = ConnectedComponentsParams::default();
+    let scc_src = DeviceArray::from_slice(&handle, &[0i32, 1, 1, 2, 3]).expect("scc src");
+    let scc_dst = DeviceArray::from_slice(&handle, &[1i32, 0, 2, 3, 2]).expect("scc dst");
+    let scc_src_view = scc_src.view().expect("scc src_view");
+    let scc_dst_view = scc_dst.view().expect("scc dst_view");
+    let mut scc_graph =
+        GraphBuilder::new(&scc_src_view, &scc_dst_view).renumber().build::<Forward>(&handle).expect("scc graph");
+
+    let scc = scc_graph.strongly_connected_components(&handle, &params).expect("scc");
     let scc_df = scc.to_dataframe(&runtime).expect("scc dataframe");
     assert_eq!(scc_df.num_columns(), 2);
     assert_eq!(scc_df.column_names()[0], "vertex");

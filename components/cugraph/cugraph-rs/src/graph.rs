@@ -1157,8 +1157,8 @@ impl Graph<Transposed> {
     /// Compute Katz centrality using a scalar beta value.
     ///
     /// The local cuGraph C API accepts a per-vertex beta array parameter, but
-    /// the v26.04 implementation does not currently forward it to the native
-    /// algorithm. This safe method therefore exposes only the scalar-beta path.
+    /// the current implementation does not forward it to the native algorithm.
+    /// This safe method therefore exposes only the scalar-beta path.
     pub fn katz_centrality(
         &mut self,
         handle: &EnteredContext<'_>,

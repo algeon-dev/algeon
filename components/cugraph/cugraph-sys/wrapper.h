@@ -1,3 +1,4 @@
+#include <cugraph_c/export.h>
 #include <cugraph_c/error.h>
 #include <cugraph_c/types.h>
 #include <cugraph_c/resource_handle.h>
@@ -23,7 +24,7 @@
 extern "C" {
 #endif
 
-cugraph_error_code_t cugraph_force_atlas2(
+CUGRAPH_EXPORT cugraph_error_code_t cugraph_force_atlas2(
   const cugraph_resource_handle_t* handle,
   cugraph_rng_state_t* rng_state,
   cugraph_graph_t* graph,
@@ -53,16 +54,16 @@ cugraph_error_code_t cugraph_force_atlas2(
   cugraph_layout_result_t** result,
   cugraph_error_t** error);
 
-cugraph_type_erased_device_array_view_t* cugraph_layout_result_get_vertices(
+CUGRAPH_EXPORT cugraph_type_erased_device_array_view_t* cugraph_layout_result_get_vertices(
   cugraph_layout_result_t* result);
 
-cugraph_type_erased_device_array_view_t* cugraph_layout_result_get_x_axis(
+CUGRAPH_EXPORT cugraph_type_erased_device_array_view_t* cugraph_layout_result_get_x_axis(
   cugraph_layout_result_t* result);
 
-cugraph_type_erased_device_array_view_t* cugraph_layout_result_get_y_axis(
+CUGRAPH_EXPORT cugraph_type_erased_device_array_view_t* cugraph_layout_result_get_y_axis(
   cugraph_layout_result_t* result);
 
-void cugraph_layout_result_free(cugraph_layout_result_t* result);
+CUGRAPH_EXPORT void cugraph_layout_result_free(cugraph_layout_result_t* result);
 
 #ifdef __cplusplus
 }
