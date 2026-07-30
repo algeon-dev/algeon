@@ -16,7 +16,10 @@ use common::{
 use cugraph::{
     array::DeviceArray,
     centrality::{BetweennessCentralityParams, EdgeBetweennessCentralityParams, HitsParams, PageRankParams},
-    community::{EcgParams, ExtractEgoParams, KTrussSubgraphParams, LeidenParams, LouvainParams, TriangleCountParams},
+    community::{
+        EcgParams, ExtractEgoParams, KTrussSubgraphParams, LeidenParams, LouvainParams, SpectralClusteringParams,
+        TriangleCountParams,
+    },
     graph::{Forward, GraphBuilder, Transposed},
     handle::ResourceHandle,
     labeling::ConnectedComponentsParams,
@@ -430,6 +433,51 @@ fn ecg_result_to_dataframe() {
     assert_eq!(df.column_names()[0], "vertex");
     assert_eq!(df.column_names()[1], "partition");
     assert_eq!(df.num_rows(), expected_rows);
+}
+
+#[test]
+fn spectral_clustering_result_to_dataframe() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let runtime = std::sync::Arc::new(explicit_runtime());
+    let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).expect("handle");
+    let handle = handle.enter("spectral_clustering_result_to_dataframe").expect("entered");
+    let src_data = [0i32, 0, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 5, 5];
+    let dst_data = [1i32, 2, 0, 2, 0, 1, 3, 2, 4, 5, 3, 5, 3, 4];
+    let weights_data = [0.1f32, 0.2, 0.1, 1.2, 0.2, 1.2, 2.3, 2.3, 3.4, 3.5, 3.4, 4.5, 3.5, 4.5];
+    let src = DeviceArray::from_slice(&handle, &src_data).expect("src");
+    let dst = DeviceArray::from_slice(&handle, &dst_data).expect("dst");
+    let weights = DeviceArray::from_slice(&handle, &weights_data).expect("weights");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+    let weights_view = weights.view().expect("weights_view");
+    let params = SpectralClusteringParams::default();
+    let mut last_error = None;
+
+    for seed in 10..20 {
+        let mut graph = GraphBuilder::new(&src_view, &dst_view)
+            .weights(&weights_view)
+            .properties(GraphProperties::undirected())
+            .renumber()
+            .build::<Forward>(&handle)
+            .expect("graph");
+        let mut rng = RngState::new(&handle, seed).expect("rng");
+
+        match graph.spectral_modularity_maximization(&handle, &mut rng, &params) {
+            Ok(result) => {
+                let expected_rows = result.vertex_ids().expect("vertex_ids").len();
+                let df = result.to_dataframe(&runtime).expect("to_dataframe");
+
+                assert_eq!(df.num_columns(), 2);
+                assert_eq!(df.column_names()[0], "vertex");
+                assert_eq!(df.column_names()[1], "partition");
+                assert_eq!(df.num_rows(), expected_rows);
+                return;
+            },
+            Err(err) => last_error = Some(err),
+        }
+    }
+
+    panic!("spectral clustering did not converge in retry window: {last_error:?}");
 }
 
 #[test]

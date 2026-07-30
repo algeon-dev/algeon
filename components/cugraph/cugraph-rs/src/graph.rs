@@ -40,7 +40,7 @@
 //!     .unwrap();
 //! ```
 
-use std::{any::Any, marker::PhantomData, ptr, sync::Arc};
+use std::{any::Any, marker::PhantomData, num::NonZeroUsize, ptr, sync::Arc};
 
 use cugraph_sys::{
     cugraph_decompress_to_edgelist, cugraph_edgelist_free, cugraph_edgelist_get_destinations,
@@ -1374,6 +1374,65 @@ impl Graph<Forward> {
         params: &crate::community::EcgParams,
     ) -> Result<crate::community::EcgResult> {
         crate::community::ecg::ecg(handle, rng_state, self, params)
+    }
+
+    /// Compute legacy spectral modularity maximization clusters.
+    ///
+    /// cuGraph requires a symmetric graph for this algorithm. This wrapper
+    /// keeps that validation in the native library, matching the rest of the
+    /// community-detection surface.
+    pub fn spectral_modularity_maximization(
+        &mut self,
+        handle: &EnteredContext<'_>,
+        rng_state: &mut crate::random::RngState,
+        params: &crate::community::SpectralClusteringParams,
+    ) -> Result<crate::community::SpectralClusteringResult> {
+        crate::community::clustering::spectral_modularity_maximization(handle, rng_state, self, params)
+    }
+
+    /// Compute deprecated balanced-cut clustering.
+    #[allow(deprecated)]
+    #[deprecated(note = "cuGraph deprecates balanced cut clustering; use spectral_modularity_maximization instead")]
+    pub fn balanced_cut_clustering(
+        &mut self,
+        handle: &EnteredContext<'_>,
+        rng_state: &mut crate::random::RngState,
+        params: &crate::community::BalancedCutClusteringParams,
+    ) -> Result<crate::community::BalancedCutClusteringResult> {
+        crate::community::clustering::balanced_cut_clustering(handle, rng_state, self, params)
+    }
+
+    /// Compute modularity for explicit clustering columns.
+    pub fn analyze_clustering_modularity<V: CugraphElement>(
+        &mut self,
+        handle: &EnteredContext<'_>,
+        n_clusters: NonZeroUsize,
+        vertices: &DeviceArrayView<'_, V>,
+        clusters: &DeviceArrayView<'_, V>,
+    ) -> Result<f64> {
+        crate::community::clustering::analyze_clustering_modularity(handle, self, n_clusters, vertices, clusters)
+    }
+
+    /// Compute edge cut for explicit clustering columns.
+    pub fn analyze_clustering_edge_cut<V: CugraphElement>(
+        &mut self,
+        handle: &EnteredContext<'_>,
+        n_clusters: NonZeroUsize,
+        vertices: &DeviceArrayView<'_, V>,
+        clusters: &DeviceArrayView<'_, V>,
+    ) -> Result<f64> {
+        crate::community::clustering::analyze_clustering_edge_cut(handle, self, n_clusters, vertices, clusters)
+    }
+
+    /// Compute ratio cut for explicit clustering columns.
+    pub fn analyze_clustering_ratio_cut<V: CugraphElement>(
+        &mut self,
+        handle: &EnteredContext<'_>,
+        n_clusters: NonZeroUsize,
+        vertices: &DeviceArrayView<'_, V>,
+        clusters: &DeviceArrayView<'_, V>,
+    ) -> Result<f64> {
+        crate::community::clustering::analyze_clustering_ratio_cut(handle, self, n_clusters, vertices, clusters)
     }
 }
 

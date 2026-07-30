@@ -9,7 +9,7 @@ use cugraph::{
         EdgeBetweennessCentralityParams, EigenvectorCentralityParams, HitsParams, KatzCentralityParams, PageRankParams,
         PersonalizedPageRankParams,
     },
-    community::{EcgParams, LeidenParams, LouvainParams},
+    community::{EcgParams, LeidenParams, LouvainParams, SpectralClusteringParams},
     layout::ForceAtlas2Params,
     params::{ClosedUnitF64, IterationCount, NonNegativeF64, PositiveF64},
     similarity::{AllPairsSimilarityParams, SimilarityParams},
@@ -98,6 +98,18 @@ fn ecg_params_default_has_expected_values() {
     assert_eq!(params.max_level.get(), 100);
     assert_eq!(params.threshold.get(), 1e-7);
     assert_eq!(params.resolution.get(), 1.0);
+    assert!(!params.do_expensive_check);
+}
+
+#[test]
+fn spectral_clustering_params_default_has_expected_values() {
+    let params = SpectralClusteringParams::default();
+    assert_eq!(params.n_clusters.get(), 2);
+    assert_eq!(params.n_eigenvectors.get(), 2);
+    assert_eq!(params.evs_tolerance.get(), 0.01);
+    assert_eq!(params.evs_max_iterations.get(), 500);
+    assert_eq!(params.k_means_tolerance.get(), 0.001);
+    assert_eq!(params.k_means_max_iterations.get(), 100);
     assert!(!params.do_expensive_check);
 }
 
