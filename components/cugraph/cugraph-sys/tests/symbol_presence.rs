@@ -89,6 +89,22 @@ fn bindings_include_critical_core_symbols() {
         "cugraph_induced_subgraph_get_edge_type_ids",
         "cugraph_induced_subgraph_get_subgraph_offsets",
         "cugraph_induced_subgraph_result_free",
+        // Similarity / vertex pairs
+        "cugraph_create_vertex_pairs",
+        "cugraph_vertex_pairs_get_first",
+        "cugraph_vertex_pairs_get_second",
+        "cugraph_vertex_pairs_free",
+        "cugraph_similarity_result_get_vertex_pairs",
+        "cugraph_similarity_result_get_similarity",
+        "cugraph_similarity_result_free",
+        "cugraph_jaccard_coefficients",
+        "cugraph_sorensen_coefficients",
+        "cugraph_overlap_coefficients",
+        "cugraph_cosine_similarity_coefficients",
+        "cugraph_all_pairs_jaccard_coefficients",
+        "cugraph_all_pairs_sorensen_coefficients",
+        "cugraph_all_pairs_overlap_coefficients",
+        "cugraph_all_pairs_cosine_similarity_coefficients",
     ];
 
     for symbol in required_symbols {

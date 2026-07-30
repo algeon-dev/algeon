@@ -55,6 +55,19 @@ pub const LOUVAIN_GRAPH_SRC_I32: &[i32] = &[0, 1, 1, 2, 2, 2, 3, 4, 1, 3, 4, 0, 
 pub const LOUVAIN_GRAPH_DST_I32: &[i32] = &[1, 3, 4, 0, 1, 3, 5, 5, 0, 1, 1, 2, 2, 2, 3, 4];
 pub const LOUVAIN_GRAPH_WEIGHT_F32: &[f32] =
     &[0.1, 2.1, 1.1, 5.1, 3.1, 4.1, 7.2, 3.2, 0.1, 2.1, 1.1, 5.1, 3.1, 4.1, 7.2, 3.2];
+pub const SIMILARITY_PAIR_FIRST_I32: &[i32] = &[0, 0, 0, 1, 1, 1, 2, 2, 2, 3];
+pub const SIMILARITY_PAIR_SECOND_I32: &[i32] = &[1, 3, 4, 2, 3, 5, 3, 4, 5, 4];
+pub const SIMILARITY_JACCARD_F32: &[f32] = &[0.2, 0.666667, 0.333333, 0.4, 0.166667, 0.5, 0.2, 0.25, 0.25, 0.666667];
+pub const SIMILARITY_SORENSEN_F32: &[f32] =
+    &[0.333333, 0.8, 0.5, 0.571429, 0.285714, 0.666667, 0.333333, 0.4, 0.4, 0.8];
+pub const SIMILARITY_OVERLAP_F32: &[f32] = &[0.5, 1.0, 0.5, 0.666667, 0.333333, 1.0, 0.333333, 0.5, 0.5, 1.0];
+pub const SIMILARITY_COSINE_F32: &[f32] = &[1.0; 10];
+pub const ALL_PAIRS_JACCARD_FIRST_I32: &[i32] = &[0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 5, 5];
+pub const ALL_PAIRS_JACCARD_SECOND_I32: &[i32] = &[1, 2, 3, 4, 0, 2, 3, 5, 0, 1, 3, 4, 5, 0, 1, 2, 4, 0, 2, 3, 1, 2];
+pub const ALL_PAIRS_JACCARD_F32: &[f32] = &[
+    0.2, 0.25, 0.666667, 0.333333, 0.2, 0.4, 0.166667, 0.5, 0.25, 0.4, 0.2, 0.25, 0.25, 0.666667, 0.166667, 0.2,
+    0.666667, 0.333333, 0.25, 0.666667, 0.5, 0.25,
+];
 
 pub const UNDIRECTED_TRIANGLE_SRC_I32: &[i32] = &[0, 1, 2, 1, 2, 0];
 pub const UNDIRECTED_TRIANGLE_DST_I32: &[i32] = &[1, 2, 0, 0, 1, 2];
