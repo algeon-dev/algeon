@@ -12,7 +12,10 @@ use cugraph::{
     community::{EcgParams, LeidenParams, LouvainParams, SpectralClusteringParams},
     layout::ForceAtlas2Params,
     params::{ClosedUnitF64, IterationCount, NonNegativeF64, PositiveF64},
-    sampling::{Node2VecRandomWalkParams, RandomWalkParams},
+    sampling::{
+        NeighborSamplingParams, Node2VecRandomWalkParams, PriorSourcesBehavior, RandomWalkParams, SamplingCompression,
+        SamplingOptions, TemporalSamplingComparison,
+    },
     similarity::{AllPairsSimilarityParams, SimilarityParams},
 };
 
@@ -123,6 +126,26 @@ fn random_walk_params_default_has_expected_values() {
     assert_eq!(node2vec.max_length.get(), 1);
     assert_eq!(node2vec.p.get(), 1.0);
     assert_eq!(node2vec.q.get(), 1.0);
+}
+
+#[test]
+fn neighbor_sampling_params_default_has_expected_values() {
+    let params = NeighborSamplingParams::default();
+    assert_eq!(params.fan_out, vec![1]);
+    assert_eq!(params.options, SamplingOptions::default());
+    assert!(!params.do_expensive_check);
+
+    let options = SamplingOptions::default();
+    assert!(!options.retain_seeds);
+    assert!(!options.renumber_results);
+    assert!(!options.compress_per_hop);
+    assert!(!options.with_replacement);
+    assert!(!options.return_hops);
+    assert_eq!(options.compression, SamplingCompression::Coo);
+    assert_eq!(options.prior_sources_behavior, PriorSourcesBehavior::Default);
+    assert!(!options.dedupe_sources);
+    assert_eq!(options.temporal_sampling_comparison, TemporalSamplingComparison::StrictlyIncreasing);
+    assert!(!options.disjoint_sampling);
 }
 
 #[test]

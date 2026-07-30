@@ -10,7 +10,7 @@ use cugraph::{
     graph::{Forward, Graph, Transposed},
     layout::LayoutResult,
     random::RngState,
-    sampling::RandomWalkResult,
+    sampling::{RandomWalkResult, SampleResult},
     similarity::{
         CosineSimilarityResult, JaccardSimilarityResult, OverlapSimilarityResult, SorensenSimilarityResult, VertexPairs,
     },
@@ -44,6 +44,7 @@ fn graph_and_result_types_are_not_send_or_sync() {
     assert_not_impl_any!(SsspResult: Send, Sync);
     assert_not_impl_any!(ExtractPathsResult: Send, Sync);
     assert_not_impl_any!(RandomWalkResult: Send, Sync);
+    assert_not_impl_any!(SampleResult: Send, Sync);
     assert_not_impl_any!(LayoutResult: Send, Sync);
     assert_not_impl_any!(VertexPairs: Send, Sync);
     assert_not_impl_any!(JaccardSimilarityResult: Send, Sync);
