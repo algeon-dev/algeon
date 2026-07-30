@@ -403,8 +403,8 @@ impl ResourceHandle {
     /// `cugraph_free_resource_handle` call will occur after this returns.
     ///
     /// Ownership semantics are preserved from the source wrapper:
-    /// - if `self` owned the handle, the caller becomes responsible for
-    ///   eventually freeing it
+    /// - if `self` owned the handle, the caller becomes responsible for freeing
+    ///   it according to the cuGraph resource-handle ownership contract
     /// - if `self` only borrowed the handle, the caller still does not own it
     ///   and must follow the original external destruction contract
     ///

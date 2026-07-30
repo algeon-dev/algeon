@@ -73,7 +73,8 @@ fn native_include_dirs_must_contain_cugraph_headers() {
     let include_dir = root.path().join("include");
     fs::create_dir_all(&include_dir).expect("create include dir");
 
-    let err = build_support::resolve_native_include_dirs(Some(join_paths(std::slice::from_ref(&include_dir)))).unwrap_err();
+    let err =
+        build_support::resolve_native_include_dirs(Some(join_paths(std::slice::from_ref(&include_dir)))).unwrap_err();
 
     assert!(err.contains("CUGRAPH_NATIVE_INCLUDE_DIRS"));
     assert!(err.contains("cugraph_c"));
@@ -116,7 +117,8 @@ fn runtime_lib_dirs_must_contain_cugraph_libraries() {
     let runtime_dir = root.path().join("runtime");
     fs::create_dir_all(&runtime_dir).expect("create runtime dir");
 
-    let err = build_support::resolve_runtime_lib_dirs(Some(join_paths(std::slice::from_ref(&runtime_dir)))).unwrap_err();
+    let err =
+        build_support::resolve_runtime_lib_dirs(Some(join_paths(std::slice::from_ref(&runtime_dir)))).unwrap_err();
 
     assert!(err.contains("CUGRAPH_RUNTIME_LIB_DIRS"));
     assert!(err.contains("libcugraph"));

@@ -1170,11 +1170,9 @@ struct RetainedPreparedCompletion {
 
 /// Testing-only borrowed-input ordering plan.
 ///
-/// This captures the intended runtime-bound ordering contract before the
-/// native runtime-bound cuGraph handle lands. It is intentionally narrower
-/// than the eventual execution implementation and exists so Phase 1 can lock
-/// the contract in executable tests without pretending the old handle is
-/// already bound to the runtime stream.
+/// This captures the observable runtime-bound ordering contract for borrowed
+/// cudf inputs while preserving compatibility with handles that are not bound
+/// to a cudf runtime stream.
 #[doc(hidden)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BorrowedInputOrderingPlan {
@@ -1297,8 +1295,7 @@ pub mod testing {
     use super::{BorrowedEdgeList, BorrowedInputOrderingPlan, borrowed_input_ordering_plan};
     use crate::{error::Result, handle::EnteredContext};
 
-    /// Compute the Phase 1 borrowed-input ordering plan for explicit borrowed
-    /// columns.
+    /// Compute the borrowed-input ordering plan for explicit borrowed columns.
     pub fn borrowed_columns_ordering_plan(
         handle: &EnteredContext<'_>,
         src: &BorrowedColumnView<'_>,

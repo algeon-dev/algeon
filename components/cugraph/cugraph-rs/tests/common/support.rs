@@ -2,7 +2,6 @@
 
 use std::collections::HashMap;
 
-#[path = "../test_support/bfs_graph.rs"]
 mod bfs_graph;
 
 #[allow(unused_imports)]
