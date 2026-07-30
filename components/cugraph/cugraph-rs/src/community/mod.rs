@@ -1,8 +1,7 @@
 //! Community-detection algorithms.
 //!
-//! Louvain is currently exposed here. The module layout leaves room for
-//! additional hierarchical community algorithms, such as Leiden and ECG, to
-//! share internal result ownership without changing the public surface.
+//! This module exposes hierarchical community detection, clustering analysis,
+//! triangle counting, and community-oriented subgraph algorithms.
 
 pub mod clustering;
 pub mod ecg;

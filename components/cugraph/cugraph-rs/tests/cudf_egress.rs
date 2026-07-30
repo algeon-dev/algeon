@@ -24,7 +24,7 @@ use cugraph::{
     handle::ResourceHandle,
     labeling::ConnectedComponentsParams,
     random::RngState,
-    similarity::SimilarityParams,
+    similarity::{SimilarityParams, VertexPairs},
     structure::{CoreNumberParams, KCoreDegreeType, KCoreParams},
     traversal::{BfsParams, SsspParams},
     tree::MinimumSpanningTreeParams,
@@ -319,14 +319,15 @@ fn similarity_result_to_dataframe() {
 
     let pairs =
         graph.vertex_pairs(&handle, SIMILARITY_PAIR_FIRST_I32, SIMILARITY_PAIR_SECOND_I32).expect("vertex_pairs");
-    let result = graph.jaccard_coefficients(&handle, pairs, &SimilarityParams::default()).expect("jaccard");
-    let df = result.to_dataframe(&runtime).expect("to_dataframe");
+    assert_vertex_pairs_dataframe(&runtime, &handle, &pairs, SIMILARITY_JACCARD_F32.len());
 
-    assert_eq!(df.num_columns(), 3);
-    assert_eq!(df.column_names()[0], "first");
-    assert_eq!(df.column_names()[1], "second");
-    assert_eq!(df.column_names()[2], "similarity");
-    assert_eq!(df.num_rows(), SIMILARITY_JACCARD_F32.len());
+    let pairs =
+        graph.vertex_pairs(&handle, SIMILARITY_PAIR_FIRST_I32, SIMILARITY_PAIR_SECOND_I32).expect("vertex_pairs");
+    let result = graph.jaccard_coefficients(&handle, pairs, &SimilarityParams::default()).expect("jaccard");
+    let df = assert_similarity_dataframe_shape(
+        result.to_dataframe(&runtime).expect("jaccard df"),
+        SIMILARITY_JACCARD_F32.len(),
+    );
 
     let first: Vec<i32> = df.series("first").expect("first column").to_vec_strict().expect("first to_vec");
     let second: Vec<i32> = df.series("second").expect("second column").to_vec_strict().expect("second to_vec");
@@ -338,6 +339,57 @@ fn similarity_result_to_dataframe() {
     for (index, (&actual, &expected)) in scores.iter().zip(SIMILARITY_JACCARD_F32).enumerate() {
         assert!((actual - expected).abs() < 1.0e-4, "similarity[{index}] expected {expected}, got {actual}");
     }
+
+    let pairs =
+        graph.vertex_pairs(&handle, SIMILARITY_PAIR_FIRST_I32, SIMILARITY_PAIR_SECOND_I32).expect("vertex_pairs");
+    let sorensen = graph.sorensen_coefficients(&handle, pairs, &SimilarityParams::default()).expect("sorensen");
+    assert_similarity_dataframe_shape(
+        sorensen.to_dataframe(&runtime).expect("sorensen df"),
+        SIMILARITY_JACCARD_F32.len(),
+    );
+
+    let pairs =
+        graph.vertex_pairs(&handle, SIMILARITY_PAIR_FIRST_I32, SIMILARITY_PAIR_SECOND_I32).expect("vertex_pairs");
+    let overlap = graph.overlap_coefficients(&handle, pairs, &SimilarityParams::default()).expect("overlap");
+    assert_similarity_dataframe_shape(
+        overlap.to_dataframe(&runtime).expect("overlap df"),
+        SIMILARITY_JACCARD_F32.len(),
+    );
+
+    let pairs =
+        graph.vertex_pairs(&handle, SIMILARITY_PAIR_FIRST_I32, SIMILARITY_PAIR_SECOND_I32).expect("vertex_pairs");
+    let cosine = graph.cosine_similarity_coefficients(&handle, pairs, &SimilarityParams::default()).expect("cosine");
+    assert_similarity_dataframe_shape(cosine.to_dataframe(&runtime).expect("cosine df"), SIMILARITY_JACCARD_F32.len());
+}
+
+fn assert_vertex_pairs_dataframe(
+    runtime: &cudf::Runtime,
+    handle: &cugraph::EnteredContext<'_>,
+    pairs: &VertexPairs,
+    expected_rows: usize,
+) {
+    let df = pairs.to_dataframe(runtime).expect("vertex pairs dataframe");
+    assert_eq!(df.num_columns(), 2);
+    assert_eq!(df.column_names()[0], "first");
+    assert_eq!(df.column_names()[1], "second");
+    assert_eq!(df.num_rows(), expected_rows);
+    assert_eq!(
+        df.series("first").expect("first column").to_vec_strict::<i32>().expect("first to_vec"),
+        pairs.first().expect("first").to_vec_i32(handle).expect("first copy")
+    );
+    assert_eq!(
+        df.series("second").expect("second column").to_vec_strict::<i32>().expect("second to_vec"),
+        pairs.second().expect("second").to_vec_i32(handle).expect("second copy")
+    );
+}
+
+fn assert_similarity_dataframe_shape(df: cudf::DataFrame, expected_rows: usize) -> cudf::DataFrame {
+    assert_eq!(df.num_columns(), 3);
+    assert_eq!(df.column_names()[0], "first");
+    assert_eq!(df.column_names()[1], "second");
+    assert_eq!(df.column_names()[2], "similarity");
+    assert_eq!(df.num_rows(), expected_rows);
+    df
 }
 
 #[test]
@@ -633,6 +685,46 @@ fn subgraph_edge_results_to_dataframe() {
     assert_eq!(k_truss_df.column_names()[0], "source");
     assert_eq!(k_truss_df.column_names()[1], "destination");
     assert_eq!(k_truss_df.column_names()[2], "weight");
+}
+
+#[test]
+fn unweighted_subgraph_edge_results_to_dataframe_omit_weight_column() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let runtime = std::sync::Arc::new(explicit_runtime());
+    let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).expect("handle");
+    let handle = handle.enter("unweighted_subgraph_edge_results_to_dataframe_omit_weight_column").expect("entered");
+
+    let src = DeviceArray::from_slice(&handle, support::UNDIRECTED_TRIANGLE_SRC_I32).expect("src");
+    let dst = DeviceArray::from_slice(&handle, support::UNDIRECTED_TRIANGLE_DST_I32).expect("dst");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+    let mut graph = GraphBuilder::new(&src_view, &dst_view)
+        .properties(GraphProperties::undirected())
+        .renumber()
+        .build::<Forward>(&handle)
+        .expect("graph");
+
+    let k_core_params = KCoreParams {
+        k: NonZeroUsize::new(2).expect("k"),
+        degree_type: KCoreDegreeType::Out,
+        do_expensive_check: false,
+    };
+    let k_core_df = graph.k_core(&handle, &k_core_params).expect("k_core").to_dataframe(&runtime).expect("k_core df");
+    assert_eq!(k_core_df.num_columns(), 2);
+    assert_eq!(k_core_df.column_names()[0], "source");
+    assert_eq!(k_core_df.column_names()[1], "destination");
+
+    let k_truss_df = graph
+        .k_truss_subgraph(
+            &handle,
+            &KTrussSubgraphParams { k: NonZeroUsize::new(3).expect("k"), do_expensive_check: false },
+        )
+        .expect("k_truss")
+        .to_dataframe(&runtime)
+        .expect("k_truss df");
+    assert_eq!(k_truss_df.num_columns(), 2);
+    assert_eq!(k_truss_df.column_names()[0], "source");
+    assert_eq!(k_truss_df.column_names()[1], "destination");
 }
 
 #[test]

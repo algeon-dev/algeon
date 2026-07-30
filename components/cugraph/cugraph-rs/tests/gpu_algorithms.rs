@@ -263,6 +263,33 @@ fn all_pairs_jaccard_returns_generated_vertex_pairs() {
 }
 
 #[test]
+fn all_pairs_similarity_methods_return_consistent_columns() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let handle = test_handle();
+    let entered = handle.enter("all_pairs_similarity_methods_return_consistent_columns").expect("entered");
+    let mut graph = similarity_fixture_graph(&entered);
+    let params = AllPairsSimilarityParams::default();
+
+    macro_rules! assert_all_pairs_shape {
+        ($method:ident) => {{
+            let result = graph.$method(&entered, VertexSelection::<i32>::All, &params).expect(stringify!($method));
+            let first = result.first().expect("first");
+            let second = result.second().expect("second");
+            let scores = result.scores().expect("scores");
+            assert_eq!(first.len(), second.len());
+            assert_eq!(first.len(), scores.len());
+            assert!(!scores.is_empty(), "{} should return at least one score", stringify!($method));
+            let scores = scores.to_vec_f32(&entered).expect("score copy");
+            assert!(scores.iter().all(|score| score.is_finite() && *score >= 0.0 && *score <= 1.0));
+        }};
+    }
+
+    assert_all_pairs_shape!(all_pairs_sorensen_coefficients);
+    assert_all_pairs_shape!(all_pairs_overlap_coefficients);
+    assert_all_pairs_shape!(all_pairs_cosine_similarity_coefficients);
+}
+
+#[test]
 fn vertex_pairs_rejects_mismatched_pair_lengths() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
