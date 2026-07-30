@@ -19,7 +19,10 @@ use common::{
 };
 use cugraph::{
     DeviceArray, Forward, Graph, GraphBuilder, ResourceHandle, Transposed, VertexSelection,
-    centrality::{BetweennessCentralityParams, PageRankParams},
+    centrality::{
+        BetweennessCentralityParams, EdgeBetweennessCentralityParams, EigenvectorCentralityParams, HitsParams,
+        KatzCentralityParams, PageRankParams, PersonalizationVector, PersonalizedPageRankParams,
+    },
     community::{EcgParams, ExtractEgoParams, KTrussSubgraphParams, LeidenParams, LouvainParams, TriangleCountParams},
     labeling::ConnectedComponentsParams,
     layout::{ForceAtlas2Params, ForceAtlas2VertexAttrs, InitialPositions},
@@ -951,6 +954,167 @@ fn pagerank_on_disconnected_graph_returns_normalized_positive_scores() {
     assert!((total_score - 1.0).abs() < 1e-5, "scores should be normalized, got sum {}", total_score);
     assert!((score_map[&0] - score_map[&1]).abs() < 1e-6);
     assert!((score_map[&2] - score_map[&3]).abs() < 1e-6);
+}
+
+#[test]
+fn pagerank_strict_reports_nonconvergence() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let handle = test_handle();
+    let entered = handle.enter("pagerank_strict_reports_nonconvergence").expect("entered");
+    let src = DeviceArray::from_slice(&entered, &[0i32, 1, 2]).expect("src");
+    let dst = DeviceArray::from_slice(&entered, &[1i32, 2, 0]).expect("dst");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+    let mut allow_graph = GraphBuilder::new(&src_view, &dst_view).build::<Transposed>(&entered).expect("allow graph");
+    let mut strict_graph = GraphBuilder::new(&src_view, &dst_view).build::<Transposed>(&entered).expect("strict graph");
+    let params = PageRankParams {
+        epsilon: NonNegativeF64::new(0.0).expect("zero epsilon"),
+        max_iterations: IterationCount::new(1).expect("one iteration"),
+        ..Default::default()
+    };
+
+    let allow = allow_graph.pagerank(&entered, &params).expect("allow nonconvergence");
+    assert!(!allow.converged().expect("converged flag"));
+    strict_graph.pagerank_strict(&entered, &params).expect_err("strict pagerank should reject nonconvergence");
+}
+
+#[test]
+fn personalized_pagerank_accepts_personalization_vector() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let handle = test_handle();
+    let entered = handle.enter("personalized_pagerank_accepts_personalization_vector").expect("entered");
+    let src = DeviceArray::from_slice(&entered, &[0i32, 1, 2]).expect("src");
+    let dst = DeviceArray::from_slice(&entered, &[1i32, 2, 0]).expect("dst");
+    let vertices = DeviceArray::from_slice(&entered, &[0i32, 1, 2]).expect("vertices");
+    let values = DeviceArray::from_slice(&entered, &[1.0f32, 0.0, 0.0]).expect("values");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+    let vertices_view = vertices.view().expect("vertices_view");
+    let values_view = values.view().expect("values_view");
+    let personalization = PersonalizationVector { vertices: &vertices_view, values: &values_view };
+    let mut graph = GraphBuilder::new(&src_view, &dst_view).build::<Transposed>(&entered).expect("graph");
+
+    let result = graph
+        .personalized_pagerank(&entered, &PersonalizedPageRankParams::default(), &personalization)
+        .expect("personalized pagerank");
+    let vertices = result.vertex_ids().expect("vertex_ids").to_vec_i32(&entered).expect("vertex copy");
+    let scores = result.scores().expect("scores").to_vec_f32(&entered).expect("score copy");
+
+    assert_eq!(vertices.len(), 3);
+    assert_eq!(scores.len(), 3);
+    assert!(scores.iter().all(|score| score.is_finite() && *score >= 0.0));
+    assert!((scores.iter().sum::<f32>() - 1.0).abs() < 1e-5);
+}
+
+#[test]
+fn personalized_pagerank_rejects_mismatched_personalization_lengths() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let handle = test_handle();
+    let entered = handle.enter("personalized_pagerank_rejects_mismatched_personalization_lengths").expect("entered");
+    let src = DeviceArray::from_slice(&entered, &[0i32, 1, 2]).expect("src");
+    let dst = DeviceArray::from_slice(&entered, &[1i32, 2, 0]).expect("dst");
+    let vertices = DeviceArray::from_slice(&entered, &[0i32, 1, 2]).expect("vertices");
+    let values = DeviceArray::from_slice(&entered, &[1.0f32, 0.0]).expect("values");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+    let vertices_view = vertices.view().expect("vertices_view");
+    let values_view = values.view().expect("values_view");
+    let personalization = PersonalizationVector { vertices: &vertices_view, values: &values_view };
+    let mut graph = GraphBuilder::new(&src_view, &dst_view).build::<Transposed>(&entered).expect("graph");
+
+    let err = graph
+        .personalized_pagerank(&entered, &PersonalizedPageRankParams::default(), &personalization)
+        .expect_err("mismatched personalization must be rejected");
+    assert_eq!(err.kind(), cugraph::error::ErrorKind::InvalidInput);
+}
+
+#[test]
+fn vertex_centrality_expansion_algorithms_return_vertex_scores() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let handle = test_handle();
+    let entered = handle.enter("vertex_centrality_expansion_algorithms_return_vertex_scores").expect("entered");
+    let src = DeviceArray::from_slice(&entered, UNDIRECTED_TRIANGLE_SRC_I32).expect("src");
+    let dst = DeviceArray::from_slice(&entered, UNDIRECTED_TRIANGLE_DST_I32).expect("dst");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+
+    let mut eigen_graph = GraphBuilder::new(&src_view, &dst_view)
+        .properties(GraphProperties::undirected())
+        .renumber()
+        .build::<Transposed>(&entered)
+        .expect("eigen graph");
+    let eigen =
+        eigen_graph.eigenvector_centrality(&entered, &EigenvectorCentralityParams::default()).expect("eigenvector");
+    assert_eq!(eigen.vertex_ids().expect("eigen vertices").len(), 3);
+    assert_eq!(eigen.scores().expect("eigen scores").len(), 3);
+
+    let mut katz_graph = GraphBuilder::new(&src_view, &dst_view)
+        .properties(GraphProperties::undirected())
+        .renumber()
+        .build::<Transposed>(&entered)
+        .expect("katz graph");
+    let katz = katz_graph.katz_centrality(&entered, &KatzCentralityParams::default()).expect("katz");
+    assert_eq!(katz.vertex_ids().expect("katz vertices").len(), 3);
+    assert_eq!(katz.scores().expect("katz scores").len(), 3);
+}
+
+#[test]
+fn hits_returns_hub_authority_scores_and_metadata() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let handle = test_handle();
+    let entered = handle.enter("hits_returns_hub_authority_scores_and_metadata").expect("entered");
+    let src = DeviceArray::from_slice(&entered, &[0i32, 0, 1, 2]).expect("src");
+    let dst = DeviceArray::from_slice(&entered, &[1i32, 2, 2, 3]).expect("dst");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+    let mut graph = GraphBuilder::new(&src_view, &dst_view).renumber().build::<Transposed>(&entered).expect("graph");
+
+    let result = graph.hits(&entered, &HitsParams::default()).expect("hits");
+    let vertices = result.vertex_ids().expect("vertices");
+    let hubs = result.hub_scores().expect("hubs");
+    let authorities = result.authority_scores().expect("authorities");
+
+    assert_eq!(vertices.len(), 4);
+    assert_eq!(hubs.len(), 4);
+    assert_eq!(authorities.len(), 4);
+    assert!(result.hub_score_differences().is_finite());
+    assert!(result.number_of_iterations() > 0);
+}
+
+#[test]
+fn edge_betweenness_exposes_edge_shaped_scores_and_optional_edge_ids() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let handle = test_handle();
+    let entered = handle.enter("edge_betweenness_exposes_edge_shaped_scores_and_optional_edge_ids").expect("entered");
+    let src = DeviceArray::from_slice(&entered, FOUR_VERTEX_CHAIN_SRC_I32).expect("src");
+    let dst = DeviceArray::from_slice(&entered, FOUR_VERTEX_CHAIN_DST_I32).expect("dst");
+    let edge_ids = DeviceArray::from_slice(&entered, &[10i32, 11, 12]).expect("edge_ids");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+    let edge_ids_view = edge_ids.view().expect("edge_ids_view");
+
+    let mut graph = GraphBuilder::new(&src_view, &dst_view)
+        .edge_ids(&edge_ids_view)
+        .renumber()
+        .build::<Forward>(&entered)
+        .expect("graph");
+    let result = graph
+        .edge_betweenness_centrality_all(&entered, &EdgeBetweennessCentralityParams::default())
+        .expect("edge betweenness");
+
+    assert_eq!(result.sources().expect("sources").len(), 3);
+    assert_eq!(result.destinations().expect("destinations").len(), 3);
+    assert_eq!(result.scores().expect("scores").len(), 3);
+    let returned_edge_ids =
+        result.edge_ids().expect("edge ids").expect("edge id column").to_vec_i32(&entered).expect("edge ids copy");
+    assert_eq!(returned_edge_ids.len(), 3);
+
+    let mut graph_without_ids =
+        GraphBuilder::new(&src_view, &dst_view).renumber().build::<Forward>(&entered).expect("graph");
+    let result_without_ids = graph_without_ids
+        .edge_betweenness_centrality_all(&entered, &EdgeBetweennessCentralityParams::default())
+        .expect("edge betweenness without ids");
+    assert!(result_without_ids.edge_ids().expect("edge ids").is_none());
 }
 
 #[test]

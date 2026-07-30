@@ -5,7 +5,10 @@
 //! smoke for public params types.
 
 use cugraph::{
-    centrality::PageRankParams,
+    centrality::{
+        EdgeBetweennessCentralityParams, EigenvectorCentralityParams, HitsParams, KatzCentralityParams, PageRankParams,
+        PersonalizedPageRankParams,
+    },
     community::{EcgParams, LeidenParams, LouvainParams},
     layout::ForceAtlas2Params,
     params::{ClosedUnitF64, IterationCount, NonNegativeF64, PositiveF64},
@@ -18,6 +21,37 @@ fn pagerank_params_default_has_expected_values() {
     assert_eq!(params.alpha.get(), 0.85);
     assert_eq!(params.epsilon.get(), 1e-5);
     assert_eq!(params.max_iterations.get(), 100);
+}
+
+#[test]
+fn centrality_expansion_params_default_has_expected_values() {
+    let ppr = PersonalizedPageRankParams::default();
+    assert_eq!(ppr.alpha.get(), 0.85);
+    assert_eq!(ppr.epsilon.get(), 1e-5);
+    assert_eq!(ppr.max_iterations.get(), 100);
+    assert!(!ppr.do_expensive_check);
+
+    let eigenvector = EigenvectorCentralityParams::default();
+    assert_eq!(eigenvector.epsilon.get(), 1e-6);
+    assert_eq!(eigenvector.max_iterations.get(), 200);
+    assert!(!eigenvector.do_expensive_check);
+
+    let katz = KatzCentralityParams::default();
+    assert_eq!(katz.alpha.get(), 0.01);
+    assert_eq!(katz.beta.get(), 1.0);
+    assert_eq!(katz.epsilon.get(), 1e-6);
+    assert_eq!(katz.max_iterations.get(), 1000);
+    assert!(!katz.do_expensive_check);
+
+    let hits = HitsParams::default();
+    assert_eq!(hits.epsilon.get(), 1e-5);
+    assert_eq!(hits.max_iterations.get(), 100);
+    assert!(!hits.normalize);
+    assert!(!hits.do_expensive_check);
+
+    let edge = EdgeBetweennessCentralityParams::default();
+    assert!(edge.normalized);
+    assert!(!edge.do_expensive_check);
 }
 
 #[test]

@@ -96,7 +96,10 @@ use rapids_interop::{
 
 use crate::{
     array::RawDeviceArrayView,
-    centrality::{BetweennessCentralityResult, PageRankResult},
+    centrality::{
+        BetweennessCentralityResult, EdgeBetweennessCentralityResult, EigenvectorCentralityResult, HitsResult,
+        KatzCentralityResult, PageRankResult,
+    },
     community::{EcgResult, ExtractEgoResult, KTrussSubgraphResult, LeidenResult, LouvainResult, TriangleCountResult},
     cuda::{DeviceGuard, check_cudf_status},
     error::{Error, ErrorKind, ErrorStatus, Result},
@@ -459,6 +462,61 @@ pub(crate) fn betweenness_result_to_dataframe(
         [("vertex", result.vertex_ids()?.to_series(runtime)?), ("value", result.scores()?.to_series(runtime)?)],
         operation,
     )
+}
+
+pub(crate) fn eigenvector_centrality_result_to_dataframe(
+    result: &EigenvectorCentralityResult,
+    runtime: &Runtime,
+) -> Result<cudf::DataFrame> {
+    let operation = "eigenvector_centrality_result_to_dataframe";
+    dataframe_from_named_series(
+        [("vertex", result.vertex_ids()?.to_series(runtime)?), ("value", result.scores()?.to_series(runtime)?)],
+        operation,
+    )
+}
+
+pub(crate) fn katz_centrality_result_to_dataframe(
+    result: &KatzCentralityResult,
+    runtime: &Runtime,
+) -> Result<cudf::DataFrame> {
+    let operation = "katz_centrality_result_to_dataframe";
+    dataframe_from_named_series(
+        [("vertex", result.vertex_ids()?.to_series(runtime)?), ("value", result.scores()?.to_series(runtime)?)],
+        operation,
+    )
+}
+
+pub(crate) fn hits_result_to_dataframe(result: &HitsResult, runtime: &Runtime) -> Result<cudf::DataFrame> {
+    let operation = "hits_result_to_dataframe";
+    dataframe_from_named_series(
+        [
+            ("vertex", result.vertex_ids()?.to_series(runtime)?),
+            ("hub", result.hub_scores()?.to_series(runtime)?),
+            ("authority", result.authority_scores()?.to_series(runtime)?),
+        ],
+        operation,
+    )
+}
+
+pub(crate) fn edge_betweenness_centrality_result_to_dataframe(
+    result: &EdgeBetweennessCentralityResult,
+    runtime: &Runtime,
+) -> Result<cudf::DataFrame> {
+    let operation = "edge_betweenness_centrality_result_to_dataframe";
+    let source_series = result.sources()?.to_series(runtime)?;
+    let destination_series = result.destinations()?.to_series(runtime)?;
+    let edge_id_series = result.edge_ids()?.map(|values| values.to_series(runtime)).transpose()?;
+    let score_series = result.scores()?.to_series(runtime)?;
+
+    let mut series = Vec::with_capacity(4);
+    series.push(("source", source_series));
+    series.push(("destination", destination_series));
+    if let Some(edge_id) = edge_id_series {
+        series.push(("edge_id", edge_id));
+    }
+    series.push(("score", score_series));
+
+    dataframe_from_named_series(series, operation)
 }
 
 pub(crate) fn louvain_result_to_dataframe(result: &LouvainResult, runtime: &Runtime) -> Result<cudf::DataFrame> {
