@@ -67,6 +67,15 @@ impl CudaStream {
         self.handle.device
     }
 
+    /// Process-unique identity of this stream's native handle.
+    ///
+    /// This is an opaque key for maps keyed by stream identity (for example,
+    /// one query-domain member per stream); it is not stable across process
+    /// runs and must not be persisted.
+    pub fn identity(&self) -> usize {
+        self.handle.raw() as usize
+    }
+
     /// Block the calling thread until all operations already enqueued on this
     /// stream complete.
     pub fn synchronize(&self) -> Result<()> {
