@@ -473,14 +473,14 @@ std::unique_ptr<rmm::mr::device_memory_resource> make_bounded_failure_callback_r
 
 std::mutex& memory_resource_registry_mutex()
 {
-  static std::mutex mutex;
+  static auto& mutex = *new std::mutex;
   return mutex;
 }
 
 std::unordered_map<rmm::mr::device_memory_resource*, std::weak_ptr<void>>&
 memory_resource_registry()
 {
-  static std::unordered_map<rmm::mr::device_memory_resource*, std::weak_ptr<void>> registry;
+  static auto& registry = *new std::unordered_map<rmm::mr::device_memory_resource*, std::weak_ptr<void>>;
   return registry;
 }
 
@@ -782,7 +782,7 @@ cudf_status_t cudf_memory_resource_destroy(cudf_memory_resource_handle handle, i
     if (status != CUDF_SUCCESS) { return status; }
     auto* state = reinterpret_cast<memory_resource_handle_state*>(handle);
     auto& owner = *state->owner;
-    if (!state->non_owning_alias && cudf_tracked_current_device_resource_raw() == owner.mr.get()) {
+    if (!state->non_owning_alias && cudf_tracked_current_device_resource_if_installed_raw() == owner.mr.get()) {
       set_error(
         "cannot destroy a memory resource while it is installed as the "
         "current device resource");

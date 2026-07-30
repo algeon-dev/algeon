@@ -49,13 +49,16 @@ cudf_memory_manager_options_t default_memory_manager_options()
 std::unordered_map<int32_t, std::shared_ptr<rmm::mr::device_memory_resource>>&
 default_memory_resources()
 {
-  static std::unordered_map<int32_t, std::shared_ptr<rmm::mr::device_memory_resource>> resources;
+  // Deliberately leaked: device-resource destruction can still run while a
+  // process unwinds worker threads at exit; these registries must outlive
+  // static destruction.
+  static auto& resources = *new std::unordered_map<int32_t, std::shared_ptr<rmm::mr::device_memory_resource>>;
   return resources;
 }
 
 std::unordered_map<int32_t, rmm::mr::device_memory_resource*>& current_memory_resource_identities()
 {
-  static std::unordered_map<int32_t, rmm::mr::device_memory_resource*> identities;
+  static auto& identities = *new std::unordered_map<int32_t, rmm::mr::device_memory_resource*>;
   return identities;
 }
 
@@ -64,7 +67,7 @@ std::unordered_map<int32_t, rmm::mr::device_memory_resource*>& current_memory_re
 // call. rmm's own set_current_device_resource carries per-device locking.
 std::mutex& current_memory_resource_identity_mutex()
 {
-  static std::mutex mutex;
+  static auto& mutex = *new std::mutex;
   return mutex;
 }
 
@@ -117,13 +120,13 @@ rmm::mr::device_memory_resource* default_memory_resource_for_device(int32_t devi
 
 std::mutex& memory_manager_registry_mutex()
 {
-  static std::mutex mutex;
+  static auto& mutex = *new std::mutex;
   return mutex;
 }
 
 std::unordered_map<int32_t, std::shared_ptr<device_memory_manager_state>>& memory_manager_registry()
 {
-  static std::unordered_map<int32_t, std::shared_ptr<device_memory_manager_state>> registry;
+  static auto& registry = *new std::unordered_map<int32_t, std::shared_ptr<device_memory_manager_state>>;
   return registry;
 }
 
@@ -593,6 +596,15 @@ rmm::mr::device_memory_resource* cudf_tracked_current_device_resource_raw()
   if (found != identities.end()) { return found->second; }
 
   return set_current_device_resource_raw_locked(device, default_memory_resource_for_device(device));
+}
+
+rmm::mr::device_memory_resource* cudf_tracked_current_device_resource_if_installed_raw()
+{
+  auto const device = current_cuda_device();
+  std::scoped_lock lock{current_memory_resource_identity_mutex()};
+  auto& identities = current_memory_resource_identities();
+  auto const found = identities.find(device);
+  return found != identities.end() ? found->second : nullptr;
 }
 
 void cudf_set_current_device_resource_raw(rmm::mr::device_memory_resource* target)

@@ -65,6 +65,7 @@ class cudf_device_guard {
 // identity map behind these helpers carries its own internal lock.
 
 rmm::mr::device_memory_resource* cudf_tracked_current_device_resource_raw();
+rmm::mr::device_memory_resource* cudf_tracked_current_device_resource_if_installed_raw();
 
 void cudf_set_current_device_resource_raw(rmm::mr::device_memory_resource* target);
 
