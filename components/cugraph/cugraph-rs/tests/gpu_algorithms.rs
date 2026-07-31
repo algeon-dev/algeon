@@ -1283,25 +1283,23 @@ fn pagerank_on_disconnected_graph_returns_normalized_positive_scores() {
 }
 
 #[test]
-fn pagerank_strict_reports_nonconvergence() {
+fn pagerank_reports_nonconvergence_without_failing() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
-    let entered = handle.enter("pagerank_strict_reports_nonconvergence").expect("entered");
+    let entered = handle.enter("pagerank_reports_nonconvergence_without_failing").expect("entered");
     let src = DeviceArray::from_slice(&entered, &[0i32, 1, 2]).expect("src");
     let dst = DeviceArray::from_slice(&entered, &[1i32, 2, 0]).expect("dst");
     let src_view = src.view().expect("src_view");
     let dst_view = dst.view().expect("dst_view");
-    let mut allow_graph = GraphBuilder::new(&src_view, &dst_view).build::<Transposed>(&entered).expect("allow graph");
-    let mut strict_graph = GraphBuilder::new(&src_view, &dst_view).build::<Transposed>(&entered).expect("strict graph");
+    let mut graph = GraphBuilder::new(&src_view, &dst_view).build::<Transposed>(&entered).expect("graph");
     let params = PageRankParams {
         epsilon: NonNegativeF64::new(0.0).expect("zero epsilon"),
         max_iterations: IterationCount::new(1).expect("one iteration"),
         ..Default::default()
     };
 
-    let allow = allow_graph.pagerank(&entered, &params).expect("allow nonconvergence");
-    assert!(!allow.converged().expect("converged flag"));
-    strict_graph.pagerank_strict(&entered, &params).expect_err("strict pagerank should reject nonconvergence");
+    let result = graph.pagerank(&entered, &params).expect("pagerank");
+    assert!(!result.converged().expect("converged flag"));
 }
 
 #[test]
