@@ -524,13 +524,17 @@ impl<'a, T: CugraphElement> DeviceArrayView<'a, T> {
     /// of the returned view is tied to `buffer`, preventing accidental use
     /// after the external allocation is dropped.
     pub fn from_device_buffer<B>(buffer: &'a B) -> Result<Self>
-    where B: DeviceBuffer<T> + ?Sized {
+    where
+        B: DeviceBuffer<T> + ?Sized,
+    {
         Self::try_from_device_buffer(buffer)
     }
 
     /// Fallible variant of [`from_device_buffer`](Self::from_device_buffer).
     pub fn try_from_device_buffer<B>(buffer: &'a B) -> Result<Self>
-    where B: DeviceBuffer<T> + ?Sized {
+    where
+        B: DeviceBuffer<T> + ?Sized,
+    {
         // SAFETY: `DeviceBuffer` implementors guarantee that the returned
         // device pointer and length describe a valid contiguous buffer of `T`
         // that lives for `'a`.
