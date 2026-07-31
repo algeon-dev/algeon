@@ -196,6 +196,107 @@ fn cmake_export_dir_uses_workspace_local_build_tree_when_available() {
 }
 
 #[test]
+fn prepare_workspace_cmake_export_dir_reuses_existing_canonical_build() {
+    let root = TestDir::new();
+    let manifest_dir = root.path().join("repo").join("cugraph-sys");
+    let cpp_dir = root.path().join("repo").join("cugraph").join("cpp");
+    let build_dir = cpp_dir.join("build");
+    let cudf_install = root.path().join("cudf-rs").join("cudf-install");
+    let rmm_dir = cudf_install.join("lib").join("cmake").join("rmm");
+    let logger_dir = cudf_install.join("lib").join("cmake").join("rapids_logger");
+
+    fs::create_dir_all(&manifest_dir).expect("create manifest dir");
+    fs::create_dir_all(&cpp_dir).expect("create cpp dir");
+    fs::create_dir_all(&build_dir).expect("create build dir");
+    fs::create_dir_all(&rmm_dir).expect("create rmm cmake dir");
+    fs::create_dir_all(&logger_dir).expect("create rapids_logger cmake dir");
+    fs::write(cpp_dir.join("CMakeLists.txt"), []).expect("write cmake lists");
+    fs::write(build_dir.join("cugraph-config.cmake"), []).expect("write cugraph config");
+    fs::write(
+        build_dir.join("CMakeCache.txt"),
+        format!(
+            "CMAKE_CUDA_ARCHITECTURES:STRING=NATIVE\nrmm_DIR:PATH={}\nrapids_logger_DIR:PATH={}\n",
+            rmm_dir.display(),
+            logger_dir.display()
+        ),
+    )
+    .expect("write cache");
+    fs::write(rmm_dir.join("rmm-config.cmake"), []).expect("write rmm config");
+    fs::write(logger_dir.join("rapids_logger-config.cmake"), []).expect("write logger config");
+
+    let resolved = build_support::prepare_workspace_cmake_export_dir(&manifest_dir, None, None, None, None)
+        .expect("reuse existing canonical native build");
+
+    assert_eq!(resolved, build_dir.canonicalize().expect("canonical build dir"));
+}
+
+#[test]
+fn prepare_workspace_cmake_export_dir_honors_auto_build_opt_out() {
+    let root = TestDir::new();
+    let manifest_dir = root.path().join("repo").join("cugraph-sys");
+    let cpp_dir = root.path().join("repo").join("cugraph").join("cpp");
+    let cudf_install = root.path().join("cudf-rs").join("cudf-install");
+    let rmm_dir = cudf_install.join("lib").join("cmake").join("rmm");
+    let logger_dir = cudf_install.join("lib").join("cmake").join("rapids_logger");
+
+    fs::create_dir_all(&manifest_dir).expect("create manifest dir");
+    fs::create_dir_all(&cpp_dir).expect("create cpp dir");
+    fs::create_dir_all(&rmm_dir).expect("create rmm cmake dir");
+    fs::create_dir_all(&logger_dir).expect("create rapids_logger cmake dir");
+    fs::write(cpp_dir.join("CMakeLists.txt"), []).expect("write cmake lists");
+    fs::write(rmm_dir.join("rmm-config.cmake"), []).expect("write rmm config");
+    fs::write(logger_dir.join("rapids_logger-config.cmake"), []).expect("write logger config");
+
+    let err = build_support::prepare_workspace_cmake_export_dir(&manifest_dir, None, None, Some("0".into()), None)
+        .unwrap_err();
+
+    assert!(err.contains("CUGRAPH_SYS_AUTO_BUILD"));
+    assert!(err.contains("disabled"));
+}
+
+#[test]
+fn prepare_workspace_cmake_export_dir_rejects_stale_cuda_arch_when_auto_build_is_disabled() {
+    let root = TestDir::new();
+    let manifest_dir = root.path().join("repo").join("cugraph-sys");
+    let cpp_dir = root.path().join("repo").join("cugraph").join("cpp");
+    let build_dir = cpp_dir.join("build");
+    let cudf_install = root.path().join("cudf-rs").join("cudf-install");
+    let rmm_dir = cudf_install.join("lib").join("cmake").join("rmm");
+    let logger_dir = cudf_install.join("lib").join("cmake").join("rapids_logger");
+
+    fs::create_dir_all(&manifest_dir).expect("create manifest dir");
+    fs::create_dir_all(&cpp_dir).expect("create cpp dir");
+    fs::create_dir_all(&build_dir).expect("create build dir");
+    fs::create_dir_all(&rmm_dir).expect("create rmm cmake dir");
+    fs::create_dir_all(&logger_dir).expect("create rapids_logger cmake dir");
+    fs::write(cpp_dir.join("CMakeLists.txt"), []).expect("write cmake lists");
+    fs::write(build_dir.join("cugraph-config.cmake"), []).expect("write cugraph config");
+    fs::write(
+        build_dir.join("CMakeCache.txt"),
+        format!(
+            "CMAKE_CUDA_ARCHITECTURES:STRING=80\nrmm_DIR:PATH={}\nrapids_logger_DIR:PATH={}\n",
+            rmm_dir.display(),
+            logger_dir.display()
+        ),
+    )
+    .expect("write cache");
+    fs::write(rmm_dir.join("rmm-config.cmake"), []).expect("write rmm config");
+    fs::write(logger_dir.join("rapids_logger-config.cmake"), []).expect("write logger config");
+
+    let err = build_support::prepare_workspace_cmake_export_dir(
+        &manifest_dir,
+        None,
+        None,
+        Some("0".into()),
+        Some("90".into()),
+    )
+    .unwrap_err();
+
+    assert!(err.contains("CMAKE_CUDA_ARCHITECTURES"));
+    assert!(err.contains("CUGRAPH_SYS_AUTO_BUILD"));
+}
+
+#[test]
 fn cmake_package_prefixes_replay_native_build_roots() {
     let root = TestDir::new();
     let build_dir = root.path().join("build");

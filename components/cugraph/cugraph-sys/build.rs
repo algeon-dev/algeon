@@ -39,22 +39,44 @@ fn emit_native_link_metadata(paths: &[PathBuf]) {
 fn main() {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let cmake_build_dir_env = env::var_os("CUGRAPH_CMAKE_BUILD_DIR");
-    if let Ok(cmake_export_dir) = build_support::resolve_cmake_export_dir(&manifest_dir, cmake_build_dir_env.clone()) {
-        for path in build_support::tracked_cmake_export_files(&cmake_export_dir) {
-            if path.exists() {
-                println!("cargo:rerun-if-changed={}", path.display());
-            }
-        }
-    }
+    let explicit_contract_count = build_support::explicit_native_contract_count(
+        env::var_os("CUGRAPH_NATIVE_INCLUDE_DIRS").as_ref(),
+        env::var_os("CUGRAPH_NATIVE_LINK_DIRS").as_ref(),
+        env::var_os("CUGRAPH_RUNTIME_LIB_DIRS").as_ref(),
+    );
+    let effective_cmake_build_dir_env = if explicit_contract_count == 0 && cmake_build_dir_env.is_none() {
+        Some(
+            build_support::prepare_workspace_cmake_export_dir(
+                &manifest_dir,
+                env::var_os("CUGRAPH_CPP_BUILD_DIR"),
+                env::var_os("CUDF_INSTALL_DIR"),
+                env::var_os("CUGRAPH_SYS_AUTO_BUILD"),
+                env::var_os("CMAKE_CUDA_ARCHITECTURES"),
+            )
+            .unwrap_or_else(|err| panic!("{err}"))
+            .into_os_string(),
+        )
+    } else {
+        cmake_build_dir_env.clone()
+    };
 
     let contract = build_support::resolve_native_build_contract(
         &manifest_dir,
         env::var_os("CUGRAPH_NATIVE_INCLUDE_DIRS"),
         env::var_os("CUGRAPH_NATIVE_LINK_DIRS"),
         env::var_os("CUGRAPH_RUNTIME_LIB_DIRS"),
-        cmake_build_dir_env,
+        effective_cmake_build_dir_env.clone(),
     )
     .unwrap_or_else(|err| panic!("{err}"));
+    if let Ok(cmake_export_dir) =
+        build_support::resolve_cmake_export_dir(&manifest_dir, effective_cmake_build_dir_env.clone())
+    {
+        for path in build_support::tracked_cmake_export_files(&cmake_export_dir) {
+            if path.exists() {
+                println!("cargo:rerun-if-changed={}", path.display());
+            }
+        }
+    }
 
     for library_dir in &contract.native_link_dirs {
         println!("cargo:rustc-link-search=native={}", library_dir.display());
@@ -73,6 +95,10 @@ fn main() {
     println!("cargo:rerun-if-env-changed=CUGRAPH_NATIVE_LINK_DIRS");
     println!("cargo:rerun-if-env-changed=CUGRAPH_RUNTIME_LIB_DIRS");
     println!("cargo:rerun-if-env-changed=CUGRAPH_CMAKE_BUILD_DIR");
+    println!("cargo:rerun-if-env-changed=CUGRAPH_CPP_BUILD_DIR");
+    println!("cargo:rerun-if-env-changed=CUGRAPH_SYS_AUTO_BUILD");
+    println!("cargo:rerun-if-env-changed=CUDF_INSTALL_DIR");
+    println!("cargo:rerun-if-env-changed=CMAKE_CUDA_ARCHITECTURES");
     println!("cargo:rerun-if-changed=wrapper.h");
 
     // layout_algorithms.h is excluded from wrapper.h to avoid a generated type
