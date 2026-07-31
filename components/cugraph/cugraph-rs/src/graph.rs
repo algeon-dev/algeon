@@ -535,13 +535,13 @@ pub struct GraphBuilder<'a> {
     _lifetime: PhantomData<&'a ()>,
 }
 
-impl<'a> Clone for GraphBuilder<'a> {
+impl Clone for GraphBuilder<'_> {
     fn clone(&self) -> Self {
         *self
     }
 }
 
-impl<'a> Copy for GraphBuilder<'a> {}
+impl Copy for GraphBuilder<'_> {}
 
 impl<'a> GraphBuilder<'a> {
     /// Create a new builder with the required edge arrays.

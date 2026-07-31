@@ -107,7 +107,7 @@ pub struct BfsPredicateParams<'a, V: CugraphElement, E: CugraphElement = i32> {
     pub stop_when_any_target_found: bool,
 }
 
-impl<'a, V: CugraphElement, E: CugraphElement> Default for BfsPredicateParams<'a, V, E> {
+impl<V: CugraphElement, E: CugraphElement> Default for BfsPredicateParams<'_, V, E> {
     fn default() -> Self {
         Self {
             include_vertices: None,

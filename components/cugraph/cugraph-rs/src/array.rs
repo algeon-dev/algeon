@@ -176,7 +176,7 @@ impl fmt::Debug for RawDeviceArrayView<'_> {
     }
 }
 
-impl<'a> RawDeviceArrayView<'a> {
+impl RawDeviceArrayView<'_> {
     /// Wrap a raw C view pointer that is NOT owned by us.
     ///
     /// # Safety
@@ -313,7 +313,7 @@ impl<'a> RawDeviceArrayView<'a> {
     }
 }
 
-impl<'a> Drop for RawDeviceArrayView<'a> {
+impl Drop for RawDeviceArrayView<'_> {
     fn drop(&mut self) {
         if self.owned && !self.raw.is_null() {
             // SAFETY: owned views created by this module are freed exactly once
@@ -630,7 +630,7 @@ unsafe impl<T: CugraphElement> DeviceBuffer<T> for DeviceArray<T> {
 // SAFETY: `DeviceArrayView<'a, T>` is a borrowed view over a contiguous GPU
 // allocation of `T` elements, and its lifetime ensures the underlying memory
 // outlives the trait accessors.
-unsafe impl<'a, T: CugraphElement> DeviceBuffer<T> for DeviceArrayView<'a, T> {
+unsafe impl<T: CugraphElement> DeviceBuffer<T> for DeviceArrayView<'_, T> {
     fn device_ptr(&self) -> *mut std::ffi::c_void {
         self.inner.device_ptr()
     }
@@ -704,7 +704,7 @@ impl<'a> HostArrayView<'a> {
     }
 }
 
-impl<'a> Drop for HostArrayView<'a> {
+impl Drop for HostArrayView<'_> {
     fn drop(&mut self) {
         if !self.raw.is_null() {
             // SAFETY: `self.raw` is owned by this wrapper and is freed exactly

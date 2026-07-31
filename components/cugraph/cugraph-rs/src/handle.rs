@@ -220,7 +220,7 @@ impl fmt::Debug for EnteredContext<'_> {
     }
 }
 
-impl<'a> EnteredContext<'a> {
+impl EnteredContext<'_> {
     /// Borrow the entered raw cuGraph resource-handle pointer.
     pub fn handle_ptr(&self) -> *mut cugraph_resource_handle_t {
         self.owner.state.raw()
