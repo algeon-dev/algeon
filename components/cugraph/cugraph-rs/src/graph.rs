@@ -543,7 +543,7 @@ impl<T> Graph<T> {
                 .with_message("graph runtime-bound resource-handle lease ledger is already borrowed")
         })?;
 
-        if !leases.iter().any(|existing| existing.same_owner(&lease)) {
+        if !leases.iter().any(|existing| existing.same_runtime_owner(&lease)) {
             leases.push(lease);
         }
 
@@ -2475,6 +2475,29 @@ mod tests {
         let err = graph.park(&local_entered).expect_err("park should reject non-runtime-bound handle");
         assert_eq!(err.kind(), ErrorKind::InvalidState);
         assert_eq!(err.operation(), "Graph::park");
+    }
+
+    #[test]
+    fn test_graph_runtime_bound_handle_leases_dedup_by_runtime_owner() {
+        let runtime = Arc::new(cudf::Runtime::builder().build().expect("runtime"));
+        let build_handle = ResourceHandle::for_runtime(Arc::clone(&runtime)).expect("build handle");
+        let build_entered =
+            build_handle.enter("test_graph_runtime_bound_handle_leases_dedup_by_runtime_owner_build").expect("entered");
+        let graph = dummy_runtime_bound_graph(&build_entered, None);
+        assert_eq!(graph.resource_handle_leases.borrow().len(), 1);
+
+        let algorithm_handle = ResourceHandle::for_runtime(Arc::clone(&runtime)).expect("algorithm handle");
+        let algorithm_entered = algorithm_handle
+            .enter("test_graph_runtime_bound_handle_leases_dedup_by_runtime_owner_algorithm")
+            .expect("entered");
+        graph
+            .retain_runtime_bound_handle(
+                &algorithm_entered,
+                "test_graph_runtime_bound_handle_leases_dedup_by_runtime_owner",
+            )
+            .expect("retain runtime handle");
+
+        assert_eq!(graph.resource_handle_leases.borrow().len(), 1);
     }
 
     #[test]
