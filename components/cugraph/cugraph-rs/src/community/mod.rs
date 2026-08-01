@@ -11,8 +11,6 @@ mod result;
 pub mod subgraph;
 pub mod triangle_count;
 
-#[allow(deprecated)]
-pub use clustering::{BalancedCutClusteringParams, BalancedCutClusteringResult};
 pub use clustering::{SpectralClusteringParams, SpectralClusteringResult};
 pub use ecg::EcgParams;
 pub use leiden::LeidenParams;

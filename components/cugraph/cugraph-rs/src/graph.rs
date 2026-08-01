@@ -1855,18 +1855,6 @@ impl Graph<Forward> {
         crate::community::clustering::spectral_modularity_maximization(handle, rng_state, self, params)
     }
 
-    /// Compute deprecated balanced-cut clustering.
-    #[allow(deprecated)]
-    #[deprecated(note = "cuGraph deprecates balanced cut clustering; use spectral_modularity_maximization instead")]
-    pub fn balanced_cut_clustering(
-        &mut self,
-        handle: &EnteredContext<'_>,
-        rng_state: &mut crate::random::RngState,
-        params: &crate::community::BalancedCutClusteringParams,
-    ) -> Result<crate::community::BalancedCutClusteringResult> {
-        crate::community::clustering::balanced_cut_clustering(handle, rng_state, self, params)
-    }
-
     /// Compute modularity for explicit clustering columns.
     pub fn analyze_clustering_modularity<V: CugraphElement>(
         &mut self,

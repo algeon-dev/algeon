@@ -15,8 +15,8 @@ readme = "README.md"
 anyhow = "1"
 bindgen = "0.72"
 cc = "1.2"
-cudf = { path = "../cudf-rs/cudf-rs", version = "0.2.0" }
-cudf-sys = { path = "../cudf-rs/cudf-sys", version = "0.2.0" }
+cudf = { path = "../cudf-rs/cudf-rs", version = "0.1.0" }
+cudf-sys = { path = "../cudf-rs/cudf-sys", version = "0.1.0" }
+rapids-interop = { path = "../cudf-rs/rapids-interop", version = "0.1.0" }
 cugraph-sys = { path = "cugraph-sys", version = "0.1.0" }
-rapids-interop = { path = "../cudf-rs/rapids-interop", version = "0.2.0" }
 static_assertions = "1"

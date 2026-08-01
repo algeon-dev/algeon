@@ -30,8 +30,8 @@ cuGraph, or a way to hide the native CUDA/RAPIDS deployment requirements.
 ## Building libcugraph locally
 
 `cugraph-sys` builds native cuGraph (`cugraph/cpp`) and resolves RMM and
-`rapids_logger` from the cudf install prefix (`CUDF_INSTALL_DIR`, default
-`../cudf-rs/cudf-install`) so cudf and cugraph share **one** RMM build.
+`rapids_logger` from the cudf install prefix (`CUDF_INSTALL_DIR`) 
+so cudf and cugraph share **one** RMM build.
 
 Because `cugraph-sys` does a real `find_package(rmm)` against that prefix, the
 prefix must export RMM's full CMake dependency closure. The upstream libcudf
@@ -68,15 +68,6 @@ CUDF_INSTALL_DIR=/path/to/cudf-rs/cudf-install \
 LD_LIBRARY_PATH=/path/to/cudf-rs/cudf-install/lib:/path/to/cugraph-rs/cugraph/cpp/build \
 cargo test --all-features --no-fail-fast
 ```
-
-## Known SCC failure (cugraph#5543)
-
-Locally source-built `libcugraph` v26.06 fails inside
-`cugraph_strongly_connected_components` with a CUB `DeviceSelect` launch error
-(`copy_if ... cudaErrorInvalidDeviceFunction`). This fork detects that specific
-failure and transparently falls back to a host-side SCC. The full analysis and
-fallback behavior are documented in the submodule: see
-[`cugraph/README.md`](cugraph/README.md) ("Known SCC failure").
 
 ## Status
 
