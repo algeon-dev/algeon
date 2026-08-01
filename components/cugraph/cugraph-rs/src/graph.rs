@@ -40,7 +40,15 @@
 //!     .unwrap();
 //! ```
 
-use std::{any::Any, cell::RefCell, marker::PhantomData, num::NonZeroUsize, ptr, sync::Arc};
+use std::{
+    any::Any,
+    cell::{Cell, RefCell},
+    marker::PhantomData,
+    mem::ManuallyDrop,
+    num::NonZeroUsize,
+    ptr,
+    sync::Arc,
+};
 
 use cugraph_sys::{
     cugraph_decompress_to_edgelist, cugraph_edgelist_free, cugraph_edgelist_get_destinations,
@@ -48,7 +56,7 @@ use cugraph_sys::{
     cugraph_graph_free, cugraph_graph_t, cugraph_type_erased_device_array_view_t,
     cugraph_type_erased_device_array_view_type,
 };
-use rapids_interop::CompletionWitness;
+use rapids_interop::{CompletionWitness, InteropError};
 
 use crate::{
     array::{DeviceArray, DeviceArrayView, RawDeviceArrayView},
@@ -133,9 +141,42 @@ pub struct Graph<T = Forward> {
     // can own native state referenced during cugraph_graph_free. Keep these
     // leases alive until after Graph::drop runs.
     resource_handle_leases: RefCell<Vec<ResourceHandleLease>>,
+    // A graph touched through local or external handles has work whose stream
+    // is not represented by the runtime-bound lease ledger. Such a graph
+    // cannot be parked because one runtime event cannot fence those uses.
+    untracked_resource_handle_use: Cell<bool>,
     _nosend_nosync: PhantomData<*mut ()>,
     _transposition: PhantomData<T>,
 }
+
+/// A parked cuGraph graph that can be moved across Rust threads.
+///
+/// `Graph<T>` itself remains `!Send`/`!Sync` because native cuGraph operations
+/// require a thread-local entered execution context. `ParkedGraph<T>` is the
+/// transfer state for an idle graph: it owns the native graph pointer, retains
+/// runtime-bound handle leases needed for teardown, and carries a CUDA event
+/// recorded after tracked work on the graph's runtime stream. Resume requires
+/// an entered context for the same cudf runtime owner that parked the graph.
+pub struct ParkedGraph<T = Forward> {
+    raw: *mut cugraph_graph_t,
+    device: i32,
+    properties: GraphProperties,
+    vertex_dtype: DataType,
+    weight_dtype: DataType,
+    has_weights: bool,
+    has_edge_ids: bool,
+    edge_id_dtype: Option<DataType>,
+    park_event: cudf::runtime::CudaEvent,
+    resource_handle_leases: Vec<ResourceHandleLease>,
+    _not_sync: PhantomData<Cell<()>>,
+    _transposition: PhantomData<T>,
+}
+
+// SAFETY: parked graphs do not permit native graph use. The raw graph pointer
+// is only resumed into a non-Send `Graph<T>` under a matching entered runtime
+// context, or freed after the park event completes. Runtime-bound leases are
+// retention-only metadata and are Send under their own safety contract.
+unsafe impl<T: Send> Send for ParkedGraph<T> {}
 
 pub(crate) struct DeferredInputCompletion {
     owners: Vec<Arc<dyn Any + Send + Sync>>,
@@ -151,12 +192,68 @@ impl DeferredInputCompletion {
         Some(Self { owners, witnesses })
     }
 
+    pub(crate) fn synchronize_witnesses(&self, operation: &'static str) -> Result<()> {
+        for witness in &self.witnesses {
+            witness.synchronize().map_err(|error| map_completion_witness_error(error, operation))?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn synchronize(self) {
         for witness in &self.witnesses {
             let _ = witness.synchronize();
         }
         drop(self.owners);
     }
+}
+
+fn map_completion_witness_error(error: InteropError, operation: &'static str) -> Error {
+    let mut mapped = Error::new(ErrorKind::InvalidState, operation)
+        .with_message("failed to synchronize graph input completion witness")
+        .with_context("interop_kind", format!("{:?}", error.kind()))
+        .with_context("interop_message", error.message().to_string());
+
+    for (key, value) in error.context() {
+        mapped = mapped.with_context(key, value.clone());
+    }
+
+    mapped.set_source(error)
+}
+
+fn map_cudf_runtime_error(error: cudf::Error, operation: &'static str, message: &'static str) -> Error {
+    let kind = match error.code() {
+        cudf::ErrorCode::OutOfMemory | cudf::ErrorCode::ForeignResourceExhausted => ErrorKind::OutOfMemory,
+        cudf::ErrorCode::CudaRuntime
+        | cudf::ErrorCode::FatalCuda
+        | cudf::ErrorCode::ReadinessUnavailable
+        | cudf::ErrorCode::ForeignTransientDependencyFailure
+        | cudf::ErrorCode::ForeignPersistentDependencyFailure => ErrorKind::Unexpected,
+        cudf::ErrorCode::RuntimeBindingMismatch
+        | cudf::ErrorCode::ExecutionBindingUnavailable
+        | cudf::ErrorCode::InvariantViolation
+        | cudf::ErrorCode::ForeignInvariantViolation => ErrorKind::InvalidState,
+        cudf::ErrorCode::CrossDeviceInputs | cudf::ErrorCode::CrossProvenanceInputs => ErrorKind::InvalidInput,
+        cudf::ErrorCode::UnsupportedDtype
+        | cudf::ErrorCode::UnsupportedLayout
+        | cudf::ErrorCode::UnsupportedOperation => ErrorKind::UnsupportedType,
+        _ => ErrorKind::Unexpected,
+    };
+
+    let source_status = error.status();
+    let mut mapped = Error::new(kind, operation)
+        .with_message(message)
+        .with_context("cudf_code", error.code().to_string())
+        .with_context("cudf_kind", error.kind().to_string())
+        .with_context("cudf_status", source_status.to_string())
+        .with_context("cudf_operation", error.operation().to_string());
+
+    mapped = match source_status {
+        cudf::ErrorStatus::Permanent => mapped.set_permanent(),
+        cudf::ErrorStatus::Temporary => mapped.set_temporary(),
+        cudf::ErrorStatus::Persistent => mapped.set_persistent(),
+    };
+
+    mapped.set_source(error)
 }
 
 struct DecompressedEdgelist {
@@ -341,6 +438,93 @@ impl<T> Graph<T> {
         self
     }
 
+    /// Park this graph for transfer to another Rust thread.
+    ///
+    /// Parking consumes the non-Send [`Graph`] and returns a [`ParkedGraph`]
+    /// that is `Send` but not `Sync`. The graph must have been built and used
+    /// only through runtime-bound handles for the same cudf [`Runtime`]
+    /// owner as `handle`; otherwise a single park event cannot prove all
+    /// graph work is ordered on one stream.
+    ///
+    /// Prepared-input completion witnesses are synchronized before parking so
+    /// cached graphs do not retain their input column owners indefinitely.
+    /// The ordering proof relies on runtime-bound cuGraph handles using the
+    /// cudf runtime stream directly rather than a RAFT stream pool.
+    ///
+    /// If this method returns an error, the consumed graph is dropped.
+    pub fn park(mut self, handle: &EnteredContext<'_>) -> Result<ParkedGraph<T>>
+    where T: Send {
+        let operation = "Graph::park";
+        self.validate_runtime_bound_transfer(handle, operation)?;
+
+        if let Some(pending) = self.pending_input_completion.as_ref() {
+            pending.synchronize_witnesses(operation)?;
+        }
+        drop(self.pending_input_completion.take());
+
+        let _guard = DeviceGuard::switch_to(self.device, operation)?;
+        let event = cudf::runtime::CudaEvent::new()
+            .map_err(|error| map_cudf_runtime_error(error, operation, "failed to create graph park CUDA event"))?;
+        let runtime = handle.runtime().expect("validated runtime-bound handle");
+        event
+            .record(runtime.stream())
+            .map_err(|error| map_cudf_runtime_error(error, operation, "failed to record graph park CUDA event"))?;
+
+        let this = ManuallyDrop::new(self);
+        // SAFETY: `this` will not run `Graph::drop`, so moving the lease
+        // ledger out here transfers the only owned `RefCell`.
+        let resource_handle_leases = unsafe { ptr::read(&this.resource_handle_leases).into_inner() };
+
+        Ok(ParkedGraph {
+            raw: this.raw,
+            device: this.device,
+            properties: this.properties,
+            vertex_dtype: this.vertex_dtype,
+            weight_dtype: this.weight_dtype,
+            has_weights: this.has_weights,
+            has_edge_ids: this.has_edge_ids,
+            edge_id_dtype: this.edge_id_dtype,
+            park_event: event,
+            resource_handle_leases,
+            _not_sync: PhantomData,
+            _transposition: PhantomData,
+        })
+    }
+
+    fn validate_runtime_bound_transfer(&self, handle: &EnteredContext<'_>, operation: &'static str) -> Result<()> {
+        if handle.device() != self.device {
+            return Err(Error::new(ErrorKind::InvalidInput, operation)
+                .with_message("graph and resource handle must be on the same CUDA device")
+                .with_context("graph_device", self.device.to_string())
+                .with_context("handle_device", handle.device().to_string()));
+        }
+
+        let Some(handle_lease) = handle.runtime_bound_lease() else {
+            return Err(Error::new(ErrorKind::InvalidState, operation)
+                .with_message("parked graph transfer requires a runtime-bound resource handle"));
+        };
+        if self.untracked_resource_handle_use.get() {
+            return Err(Error::new(ErrorKind::InvalidState, operation)
+                .with_message("graph was used with a non-runtime-bound resource handle and cannot be parked"));
+        }
+
+        let leases = self.resource_handle_leases.try_borrow().map_err(|_| {
+            Error::new(ErrorKind::InvalidState, operation)
+                .with_message("graph runtime-bound resource-handle lease ledger is already borrowed")
+        })?;
+        if leases.is_empty() {
+            return Err(Error::new(ErrorKind::InvalidState, operation)
+                .with_message("graph has no runtime-bound handle leases to prove park stream ownership"));
+        }
+        if !leases.iter().all(|lease| lease.same_runtime_owner(&handle_lease)) {
+            return Err(Error::new(ErrorKind::InvalidState, operation)
+                .with_message("graph has runtime-bound handle leases from multiple cudf runtime owners")
+                .with_context("lease_count", leases.len().to_string()));
+        }
+
+        Ok(())
+    }
+
     fn retain_runtime_bound_handle(&self, handle: &EnteredContext<'_>, operation: &'static str) -> Result<()> {
         if handle.device() != self.device {
             return Err(Error::new(ErrorKind::InvalidInput, operation)
@@ -350,6 +534,7 @@ impl<T> Graph<T> {
         }
 
         let Some(lease) = handle.runtime_bound_lease() else {
+            self.untracked_resource_handle_use.set(true);
             return Ok(());
         };
 
@@ -508,6 +693,109 @@ impl<T> Graph<T> {
 impl<T> std::fmt::Debug for Graph<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Graph")
+            .field("properties", &self.properties)
+            .field("vertex_dtype", &self.vertex_dtype)
+            .field("weight_dtype", &self.weight_dtype)
+            .field("has_weights", &self.has_weights)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<T> ParkedGraph<T> {
+    /// The CUDA device this parked graph resides on.
+    pub fn device(&self) -> i32 {
+        self.device
+    }
+
+    /// Structural properties declared when this graph was constructed.
+    pub fn properties(&self) -> GraphProperties {
+        self.properties
+    }
+
+    /// The data type of vertex IDs in this graph.
+    pub fn vertex_dtype(&self) -> DataType {
+        self.vertex_dtype
+    }
+
+    /// The data type of edge weights in this graph.
+    pub fn weight_dtype(&self) -> DataType {
+        self.weight_dtype
+    }
+
+    /// Resume this parked graph under a runtime-bound entered context.
+    ///
+    /// V1 resume is same-runtime by construction: `handle` must use the same
+    /// cudf `Runtime` owner as every lease retained by the parked graph. The
+    /// runtime stream waits on the park event before the live [`Graph`] is
+    /// returned to the caller.
+    ///
+    /// If this method returns an error, the consumed parked graph is dropped.
+    pub fn resume(self, handle: &EnteredContext<'_>) -> Result<Graph<T>> {
+        let operation = "ParkedGraph::resume";
+        self.validate_resume_handle(handle, operation)?;
+
+        let runtime = handle.runtime().expect("validated runtime-bound handle");
+        runtime
+            .stream()
+            .wait_event(&self.park_event)
+            .map_err(|error| map_cudf_runtime_error(error, operation, "failed to wait on graph park CUDA event"))?;
+
+        let this = ManuallyDrop::new(self);
+        // SAFETY: `this` will not run `ParkedGraph::drop`, so moving fields
+        // out here transfers native graph ownership to the returned Graph.
+        let resource_handle_leases = unsafe { ptr::read(&this.resource_handle_leases) };
+        // SAFETY: the park event is no longer needed once the runtime stream
+        // has been ordered after it. Drop the moved event normally.
+        let park_event = unsafe { ptr::read(&this.park_event) };
+        drop(park_event);
+
+        Ok(Graph {
+            raw: this.raw,
+            device: this.device,
+            properties: this.properties,
+            vertex_dtype: this.vertex_dtype,
+            weight_dtype: this.weight_dtype,
+            has_weights: this.has_weights,
+            has_edge_ids: this.has_edge_ids,
+            edge_id_dtype: this.edge_id_dtype,
+            pending_input_completion: None,
+            resource_handle_leases: RefCell::new(resource_handle_leases),
+            untracked_resource_handle_use: Cell::new(false),
+            _nosend_nosync: PhantomData,
+            _transposition: PhantomData,
+        })
+    }
+
+    fn validate_resume_handle(&self, handle: &EnteredContext<'_>, operation: &'static str) -> Result<()> {
+        if handle.device() != self.device {
+            return Err(Error::new(ErrorKind::InvalidInput, operation)
+                .with_message("parked graph and resource handle must be on the same CUDA device")
+                .with_context("graph_device", self.device.to_string())
+                .with_context("handle_device", handle.device().to_string()));
+        }
+
+        let Some(handle_lease) = handle.runtime_bound_lease() else {
+            return Err(Error::new(ErrorKind::InvalidState, operation)
+                .with_message("parked graph resume requires a runtime-bound resource handle"));
+        };
+        if self.resource_handle_leases.is_empty() {
+            return Err(Error::new(ErrorKind::InvalidState, operation)
+                .with_message("parked graph has no runtime-bound handle leases"));
+        }
+        if !self.resource_handle_leases.iter().all(|lease| lease.same_runtime_owner(&handle_lease)) {
+            return Err(Error::new(ErrorKind::InvalidState, operation)
+                .with_message("parked graph runtime owner does not match the resume handle")
+                .with_context("lease_count", self.resource_handle_leases.len().to_string()));
+        }
+
+        Ok(())
+    }
+}
+
+impl<T> std::fmt::Debug for ParkedGraph<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ParkedGraph")
+            .field("device", &self.device)
             .field("properties", &self.properties)
             .field("vertex_dtype", &self.vertex_dtype)
             .field("weight_dtype", &self.weight_dtype)
@@ -816,6 +1104,7 @@ impl<'a> GraphBuilder<'a> {
             edge_id_dtype,
             pending_input_completion: None,
             resource_handle_leases: RefCell::new(handle.runtime_bound_lease().into_iter().collect()),
+            untracked_resource_handle_use: Cell::new(false),
             _nosend_nosync: PhantomData,
             _transposition: PhantomData,
         })
@@ -2036,24 +2325,82 @@ impl<T: Transposition> Graph<T> {
     }
 }
 
+fn free_graph_raw(raw: &mut *mut cugraph_graph_t, device: i32, operation: &'static str) {
+    if !raw.is_null() {
+        let _guard = DeviceGuard::switch_to_for_drop(device, operation).ok();
+        // SAFETY: `raw` is owned by the caller and is freed at most once. The
+        // pointer is nulled immediately after free to make repeated best-effort
+        // cleanup paths harmless.
+        unsafe { cugraph_graph_free(*raw) };
+        *raw = ptr::null_mut();
+    }
+}
+
 impl<T> Drop for Graph<T> {
     fn drop(&mut self) {
         if let Some(pending) = self.pending_input_completion.take() {
             pending.synchronize();
         }
-        if !self.raw.is_null() {
-            let _guard = DeviceGuard::switch_to_for_drop(self.device, "Graph::drop").ok();
-            // SAFETY: `self.raw` is owned by this Graph instance and is freed
-            // at most once here when the wrapper is dropped.
-            unsafe { cugraph_graph_free(self.raw) };
+        free_graph_raw(&mut self.raw, self.device, "Graph::drop");
+    }
+}
+
+impl<T> Drop for ParkedGraph<T> {
+    fn drop(&mut self) {
+        {
+            let _guard = DeviceGuard::switch_to_for_drop(self.device, "ParkedGraph::drop").ok();
+            let _ = self.park_event.synchronize();
         }
+        free_graph_raw(&mut self.raw, self.device, "ParkedGraph::drop");
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use rapids_interop::{CompletionWitnessBackend, CompletionWitnessKind};
+
     use super::*;
     use crate::{array::DeviceArray, error::ErrorKind, handle::ResourceHandle};
+
+    #[derive(Debug)]
+    struct FailingCompletionWitness;
+
+    impl CompletionWitnessBackend for FailingCompletionWitness {
+        fn is_ready(&self) -> rapids_interop::Result<bool> {
+            Ok(false)
+        }
+
+        fn synchronize(&self) -> rapids_interop::Result<()> {
+            Err(InteropError::new(rapids_interop::InteropErrorKind::ReadinessUnavailable, "injected sync failure"))
+        }
+
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+    }
+
+    fn dummy_runtime_bound_graph(
+        handle: &EnteredContext<'_>,
+        pending_input_completion: Option<DeferredInputCompletion>,
+    ) -> Graph<Forward> {
+        Graph {
+            raw: ptr::null_mut(),
+            device: handle.device(),
+            properties: GraphProperties::default(),
+            vertex_dtype: DataType::Int32,
+            weight_dtype: DataType::Float32,
+            has_weights: false,
+            has_edge_ids: false,
+            edge_id_dtype: None,
+            pending_input_completion,
+            resource_handle_leases: RefCell::new(handle.runtime_bound_lease().into_iter().collect()),
+            untracked_resource_handle_use: Cell::new(false),
+            _nosend_nosync: PhantomData,
+            _transposition: PhantomData,
+        }
+    }
 
     #[test]
     fn test_graph_creation_triangle() {
@@ -2067,6 +2414,91 @@ mod tests {
 
         let graph = GraphBuilder::new(&src_view, &dst_view).build::<Forward>(&entered);
         assert!(graph.is_ok(), "graph creation failed: {:?}", graph.err());
+    }
+
+    #[test]
+    fn test_graph_park_releases_pending_input_owner() {
+        let runtime = Arc::new(cudf::Runtime::builder().build().expect("runtime"));
+        let handle = ResourceHandle::for_runtime(Arc::clone(&runtime)).expect("handle");
+        let entered = handle.enter("test_graph_park_releases_pending_input_owner").expect("entered");
+
+        let owner = Arc::new(());
+        let retained_owner: Arc<dyn Any + Send + Sync> = owner.clone();
+        let pending = DeferredInputCompletion::new(
+            vec![retained_owner],
+            vec![CompletionWitness::new(CompletionWitnessKind::ConsumerStream)],
+        )
+        .expect("pending");
+        let graph = dummy_runtime_bound_graph(&entered, Some(pending));
+
+        assert_eq!(Arc::strong_count(&owner), 2, "graph should retain the prepared input owner before park");
+        let parked = graph.park(&entered).expect("park");
+        assert_eq!(Arc::strong_count(&owner), 1, "park should release prepared input owners");
+        drop(parked);
+    }
+
+    #[test]
+    fn test_graph_park_surfaces_pending_input_completion_error() {
+        let runtime = Arc::new(cudf::Runtime::builder().build().expect("runtime"));
+        let handle = ResourceHandle::for_runtime(Arc::clone(&runtime)).expect("handle");
+        let entered = handle.enter("test_graph_park_surfaces_pending_input_completion_error").expect("entered");
+
+        let owner = Arc::new(());
+        let retained_owner: Arc<dyn Any + Send + Sync> = owner.clone();
+        let pending = DeferredInputCompletion::new(
+            vec![retained_owner],
+            vec![CompletionWitness::with_backend(
+                CompletionWitnessKind::ConsumerStream,
+                Arc::new(FailingCompletionWitness),
+            )],
+        )
+        .expect("pending");
+        let graph = dummy_runtime_bound_graph(&entered, Some(pending));
+
+        let err = graph.park(&entered).expect_err("park should fail");
+        assert_eq!(err.kind(), ErrorKind::InvalidState);
+        assert_eq!(err.operation(), "Graph::park");
+        assert_eq!(Arc::strong_count(&owner), 1, "failed park should drop graph and retained input owner");
+    }
+
+    #[test]
+    fn test_graph_park_rejects_non_runtime_bound_transfer_handle() {
+        let runtime = Arc::new(cudf::Runtime::builder().build().expect("runtime"));
+        let build_handle = ResourceHandle::for_runtime(Arc::clone(&runtime)).expect("build handle");
+        let build_entered =
+            build_handle.enter("test_graph_park_rejects_non_runtime_bound_transfer_handle_build").expect("entered");
+        let local_handle = ResourceHandle::new().expect("local handle");
+        let local_entered =
+            local_handle.enter("test_graph_park_rejects_non_runtime_bound_transfer_handle_local").expect("entered");
+        let graph = dummy_runtime_bound_graph(&build_entered, None);
+
+        let err = graph.park(&local_entered).expect_err("park should reject non-runtime-bound handle");
+        assert_eq!(err.kind(), ErrorKind::InvalidState);
+        assert_eq!(err.operation(), "Graph::park");
+    }
+
+    #[test]
+    fn test_graph_park_rejects_graph_tainted_by_non_runtime_bound_use() {
+        let runtime = Arc::new(cudf::Runtime::builder().build().expect("runtime"));
+        let runtime_handle = ResourceHandle::for_runtime(Arc::clone(&runtime)).expect("runtime handle");
+        let runtime_entered = runtime_handle
+            .enter("test_graph_park_rejects_graph_tainted_by_non_runtime_bound_use_runtime")
+            .expect("entered");
+        let local_handle = ResourceHandle::new().expect("local handle");
+        let local_entered = local_handle
+            .enter("test_graph_park_rejects_graph_tainted_by_non_runtime_bound_use_local")
+            .expect("entered");
+        let graph = dummy_runtime_bound_graph(&runtime_entered, None);
+
+        graph
+            .retain_runtime_bound_handle(
+                &local_entered,
+                "test_graph_park_rejects_graph_tainted_by_non_runtime_bound_use",
+            )
+            .expect("taint graph");
+        let err = graph.park(&runtime_entered).expect_err("park should reject tainted graph");
+        assert_eq!(err.kind(), ErrorKind::InvalidState);
+        assert_eq!(err.operation(), "Graph::park");
     }
 
     #[test]
