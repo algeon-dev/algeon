@@ -35,6 +35,7 @@ pub(crate) fn degrees<V: CugraphElement>(
     let mut error: *mut cugraph_error_t = ptr::null_mut();
 
     let vertices_ptr = vertices.map(|v| v.as_ptr() as *const _).unwrap_or(ptr::null());
+    let graph_ptr = graph.as_ptr(handle, "degrees")?;
 
     // SAFETY: `graph` and `handle` outlive the call, `vertices_ptr` is either
     // null or borrowed from a live device view, and `result`/`error` are valid
@@ -42,7 +43,7 @@ pub(crate) fn degrees<V: CugraphElement>(
     unsafe {
         let code = cugraph_degrees(
             handle.handle_ptr(),
-            graph.as_ptr(),
+            graph_ptr,
             vertices_ptr,
             to_bool_t(do_expensive_check),
             &mut result,
@@ -68,6 +69,7 @@ pub(crate) fn in_degrees<V: CugraphElement>(
     let mut error: *mut cugraph_error_t = ptr::null_mut();
 
     let vertices_ptr = vertices.map(|v| v.as_ptr() as *const _).unwrap_or(ptr::null());
+    let graph_ptr = graph.as_ptr(handle, "in_degrees")?;
 
     // SAFETY: `graph` and `handle` outlive the call, `vertices_ptr` is either
     // null or borrowed from a live device view, and `result`/`error` are valid
@@ -75,7 +77,7 @@ pub(crate) fn in_degrees<V: CugraphElement>(
     unsafe {
         let code = cugraph_in_degrees(
             handle.handle_ptr(),
-            graph.as_ptr(),
+            graph_ptr,
             vertices_ptr,
             to_bool_t(do_expensive_check),
             &mut result,
@@ -101,6 +103,7 @@ pub(crate) fn out_degrees<T, V: CugraphElement>(
     let mut error: *mut cugraph_error_t = ptr::null_mut();
 
     let vertices_ptr = vertices.map(|v| v.as_ptr() as *const _).unwrap_or(ptr::null());
+    let graph_ptr = graph.as_ptr(handle, "out_degrees")?;
 
     // SAFETY: `graph` and `handle` outlive the call, `vertices_ptr` is either
     // null or borrowed from a live device view, and `result`/`error` are valid
@@ -108,7 +111,7 @@ pub(crate) fn out_degrees<T, V: CugraphElement>(
     unsafe {
         let code = cugraph_out_degrees(
             handle.handle_ptr(),
-            graph.as_ptr(),
+            graph_ptr,
             vertices_ptr,
             to_bool_t(do_expensive_check),
             &mut result,

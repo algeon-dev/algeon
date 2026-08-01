@@ -472,6 +472,7 @@ pub(crate) fn force_atlas2<T: Transposition, V: CugraphElement, W: CugraphElemen
 
     let mut result: *mut cugraph_layout_result_t = ptr::null_mut();
     let mut error: *mut cugraph_error_t = ptr::null_mut();
+    let graph_ptr = graph.as_ptr(handle, "force_atlas2")?;
 
     // SAFETY: every optional pointer is either null or borrowed from a live
     // device array view whose dtype/length was validated above, and
@@ -480,7 +481,7 @@ pub(crate) fn force_atlas2<T: Transposition, V: CugraphElement, W: CugraphElemen
         let code = cugraph_force_atlas2(
             handle.handle_ptr(),
             rng_state.as_ptr(),
-            graph.as_ptr(),
+            graph_ptr,
             i32::try_from(params.max_iter)?,
             start_verts_ptr,
             x_start_ptr,

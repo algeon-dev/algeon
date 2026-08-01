@@ -87,13 +87,14 @@ pub(crate) fn core_number<T>(
 ) -> Result<CoreNumberResult> {
     let mut result: *mut cugraph_core_result_t = ptr::null_mut();
     let mut error: *mut cugraph_error_t = ptr::null_mut();
+    let graph_ptr = graph.as_ptr(handle, "core_number")?;
 
     // SAFETY: `graph` and `handle` are live for the duration of the call, and
     // `result`/`error` are valid out-pointers.
     unsafe {
         let code = cugraph_core_number(
             handle.handle_ptr(),
-            graph.as_ptr(),
+            graph_ptr,
             params.degree_type.into(),
             to_bool_t(params.do_expensive_check),
             &mut result,
@@ -118,13 +119,14 @@ pub(crate) fn k_core<T>(
     let mut result: *mut cugraph_k_core_result_t = ptr::null_mut();
     let mut error: *mut cugraph_error_t = ptr::null_mut();
     let core_result_ptr = core_numbers.map(CoreNumberResult::as_ptr).unwrap_or(ptr::null());
+    let graph_ptr = graph.as_ptr(handle, "k_core")?;
 
     // SAFETY: `graph` and optional `core_result_ptr` are live for the call,
     // and `result`/`error` are valid out-pointers.
     unsafe {
         let code = cugraph_k_core(
             handle.handle_ptr(),
-            graph.as_ptr(),
+            graph_ptr,
             params.k.get(),
             params.degree_type.into(),
             core_result_ptr,

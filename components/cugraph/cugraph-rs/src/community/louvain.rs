@@ -76,13 +76,14 @@ pub(crate) fn louvain(
 ) -> Result<LouvainResult> {
     let mut result: *mut cugraph_hierarchical_clustering_result_t = ptr::null_mut();
     let mut error: *mut cugraph_error_t = ptr::null_mut();
+    let graph_ptr = graph.as_ptr(handle, "louvain")?;
 
     // SAFETY: `graph` is a live cuGraph graph object matching Louvain's
     // forward-layout requirement, and `result`/`error` are valid out-pointers.
     unsafe {
         let code = cugraph_louvain(
             handle.handle_ptr(),
-            graph.as_ptr(),
+            graph_ptr,
             usize::from(params.max_level),
             params.threshold.get(),
             params.resolution.get(),

@@ -77,6 +77,7 @@ pub(crate) fn hits<V: CugraphElement, W: CugraphElement>(
 
     let mut result: *mut cugraph_hits_result_t = ptr::null_mut();
     let mut error: *mut cugraph_error_t = ptr::null_mut();
+    let graph_ptr = graph.as_ptr(handle, "hits")?;
 
     // SAFETY: optional input pointers are either null or borrowed from live
     // device views validated above. Non-null initial hub vertices force
@@ -85,7 +86,7 @@ pub(crate) fn hits<V: CugraphElement, W: CugraphElement>(
     unsafe {
         let code = cugraph_hits(
             handle.handle_ptr(),
-            graph.as_ptr(),
+            graph_ptr,
             params.epsilon.get(),
             usize::from(params.max_iterations),
             initial_vertices_ptr,

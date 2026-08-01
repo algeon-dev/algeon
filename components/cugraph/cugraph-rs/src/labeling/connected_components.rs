@@ -35,13 +35,14 @@ pub(crate) fn weakly_connected_components<T>(
 ) -> Result<WeaklyConnectedComponentsResult> {
     let mut result: *mut cugraph_labeling_result_t = ptr::null_mut();
     let mut error: *mut cugraph_error_t = ptr::null_mut();
+    let graph_ptr = graph.as_ptr(handle, "weakly_connected_components")?;
 
     // SAFETY: `graph` and `handle` are live for the duration of the call, and
     // `result`/`error` are valid out-pointers.
     unsafe {
         let code = cugraph_weakly_connected_components(
             handle.handle_ptr(),
-            graph.as_ptr(),
+            graph_ptr,
             to_bool_t(params.do_expensive_check),
             &mut result,
             &mut error,
@@ -63,13 +64,14 @@ pub(crate) fn strongly_connected_components<T>(
 ) -> Result<StronglyConnectedComponentsResult> {
     let mut result: *mut cugraph_labeling_result_t = ptr::null_mut();
     let mut error: *mut cugraph_error_t = ptr::null_mut();
+    let graph_ptr = graph.as_ptr(handle, "strongly_connected_components")?;
 
     // SAFETY: `graph` and `handle` are live for the duration of the call, and
     // `result`/`error` are valid out-pointers.
     unsafe {
         let code = cugraph_strongly_connected_components(
             handle.handle_ptr(),
-            graph.as_ptr(),
+            graph_ptr,
             to_bool_t(params.do_expensive_check),
             &mut result,
             &mut error,

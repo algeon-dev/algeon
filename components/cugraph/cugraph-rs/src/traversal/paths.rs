@@ -232,6 +232,7 @@ pub(crate) fn extract_paths<'a, V: CugraphElement + 'a>(
 
     let mut result: *mut cugraph_extract_paths_result_t = ptr::null_mut();
     let mut error: *mut cugraph_error_t = ptr::null_mut();
+    let graph_ptr = graph.as_ptr(handle, operation)?;
 
     // SAFETY: `graph`, `paths`, `sources_view`, and `destinations_view` stay
     // valid for the duration of the call, and `result`/`error` are valid
@@ -239,7 +240,7 @@ pub(crate) fn extract_paths<'a, V: CugraphElement + 'a>(
     unsafe {
         let code = cugraph_extract_paths(
             handle.handle_ptr(),
-            graph.as_ptr(),
+            graph_ptr,
             sources_view.as_ptr(),
             paths.raw,
             destinations_view.as_ptr(),

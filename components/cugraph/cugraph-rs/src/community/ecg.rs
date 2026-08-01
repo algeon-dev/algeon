@@ -55,6 +55,7 @@ pub(crate) fn ecg(
 ) -> Result<EcgResult> {
     let mut result: *mut cugraph_hierarchical_clustering_result_t = ptr::null_mut();
     let mut error: *mut cugraph_error_t = ptr::null_mut();
+    let graph_ptr = graph.as_ptr(handle, "ecg")?;
 
     // SAFETY: `graph` is a live cuGraph graph object matching ECG's
     // forward-layout requirement, `rng_state` is a live cuGraph RNG state, and
@@ -63,7 +64,7 @@ pub(crate) fn ecg(
         let code = cugraph_ecg(
             handle.handle_ptr(),
             rng_state.as_ptr(),
-            graph.as_ptr(),
+            graph_ptr,
             params.min_weight.get(),
             usize::from(params.ensemble_size),
             usize::from(params.max_level),

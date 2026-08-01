@@ -261,6 +261,7 @@ fn run_clustering(
     let k_means_max_iterations = i32::try_from(params.k_means_max_iterations)?;
     let mut result: *mut cugraph_clustering_result_t = ptr::null_mut();
     let mut error: *mut cugraph_error_t = ptr::null_mut();
+    let graph_ptr = graph.as_ptr(handle, operation)?;
 
     // SAFETY: `graph` and `rng_state` are live cuGraph objects, and
     // `result`/`error` are valid out-pointers.
@@ -268,7 +269,7 @@ fn run_clustering(
         let code = function(
             handle.handle_ptr(),
             rng_state.as_ptr(),
-            graph.as_ptr(),
+            graph_ptr,
             params.n_clusters.get(),
             params.n_eigenvectors.get(),
             params.evs_tolerance.get(),
@@ -368,6 +369,7 @@ fn analyze_clustering<V: CugraphElement>(
 
     let mut score = 0.0f64;
     let mut error: *mut cugraph_error_t = ptr::null_mut();
+    let graph_ptr = graph.as_ptr(handle, operation)?;
 
     // SAFETY: `vertices` and `clusters` are live device views matching the
     // graph vertex dtype, `graph` is live, and `score`/`error` are valid
@@ -375,7 +377,7 @@ fn analyze_clustering<V: CugraphElement>(
     unsafe {
         let code = function(
             handle.handle_ptr(),
-            graph.as_ptr(),
+            graph_ptr,
             n_clusters.get(),
             vertices.as_ptr(),
             clusters.as_ptr(),

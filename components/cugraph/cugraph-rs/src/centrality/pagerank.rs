@@ -262,6 +262,7 @@ fn pagerank_impl<V: CugraphElement, W: CugraphElement>(
 
     let mut result: *mut cugraph_centrality_result_t = ptr::null_mut();
     let mut error: *mut cugraph_error_t = ptr::null_mut();
+    let graph_ptr = graph.as_ptr(handle, operation)?;
 
     // SAFETY: all optional input pointers are either null or borrowed from
     // validated device views that outlive the call. Non-null user vertex
@@ -271,7 +272,7 @@ fn pagerank_impl<V: CugraphElement, W: CugraphElement>(
         let code = match call {
             PageRankCall::Standard => cugraph_pagerank_allow_nonconvergence(
                 handle.handle_ptr(),
-                graph.as_ptr(),
+                graph_ptr,
                 pw_verts_ptr,
                 pw_sums_ptr,
                 ig_verts_ptr,
@@ -285,7 +286,7 @@ fn pagerank_impl<V: CugraphElement, W: CugraphElement>(
             ),
             PageRankCall::Personalized => cugraph_personalized_pagerank_allow_nonconvergence(
                 handle.handle_ptr(),
-                graph.as_ptr(),
+                graph_ptr,
                 pw_verts_ptr,
                 pw_sums_ptr,
                 ig_verts_ptr,

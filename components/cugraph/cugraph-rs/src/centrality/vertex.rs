@@ -73,13 +73,14 @@ pub(crate) fn eigenvector_centrality(
 ) -> Result<EigenvectorCentralityResult> {
     let mut result: *mut cugraph_centrality_result_t = ptr::null_mut();
     let mut error: *mut cugraph_error_t = ptr::null_mut();
+    let graph_ptr = graph.as_ptr(handle, "eigenvector_centrality")?;
 
     // SAFETY: `graph` is a live cuGraph handle and `result`/`error` are valid
     // out-pointers.
     unsafe {
         let code = cugraph_eigenvector_centrality(
             handle.handle_ptr(),
-            graph.as_ptr(),
+            graph_ptr,
             params.epsilon.get(),
             usize::from(params.max_iterations),
             to_bool_t(params.do_expensive_check),
@@ -101,6 +102,7 @@ pub(crate) fn katz_centrality(
 ) -> Result<KatzCentralityResult> {
     let mut result: *mut cugraph_centrality_result_t = ptr::null_mut();
     let mut error: *mut cugraph_error_t = ptr::null_mut();
+    let graph_ptr = graph.as_ptr(handle, "katz_centrality")?;
 
     // SAFETY: this safe wrapper intentionally exposes the scalar-beta path, so
     // the optional beta vector pointer is null. `result`/`error` are valid
@@ -108,7 +110,7 @@ pub(crate) fn katz_centrality(
     unsafe {
         let code = cugraph_katz_centrality(
             handle.handle_ptr(),
-            graph.as_ptr(),
+            graph_ptr,
             ptr::null(),
             params.alpha.get(),
             params.beta.get(),

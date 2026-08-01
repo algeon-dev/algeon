@@ -31,13 +31,14 @@ pub(crate) fn minimum_spanning_tree<T>(
 ) -> Result<MinimumSpanningTreeResult> {
     let mut result: *mut cugraph_induced_subgraph_result_t = ptr::null_mut();
     let mut error: *mut cugraph_error_t = ptr::null_mut();
+    let graph_ptr = graph.as_ptr(handle, "minimum_spanning_tree")?;
 
     // SAFETY: `graph` and `handle` are live for the duration of the call, and
     // `result`/`error` are valid out-pointers.
     unsafe {
         let code = cugraph_minimum_spanning_tree(
             handle.handle_ptr(),
-            graph.as_ptr(),
+            graph_ptr,
             to_bool_t(params.do_expensive_check),
             &mut result,
             &mut error,

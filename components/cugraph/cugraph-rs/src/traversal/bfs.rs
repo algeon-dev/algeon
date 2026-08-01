@@ -148,6 +148,7 @@ pub(crate) fn bfs<V: CugraphElement>(
     // The C++ BFS defaults to std::numeric_limits<vertex_t>::max() for unlimited
     // depth. Since vertex_t is typically int32_t, we use i32::MAX.
     let limit = params.depth_limit.map(usize::from).unwrap_or(i32::MAX as usize);
+    let graph_ptr = graph.as_ptr(handle, "bfs")?;
 
     // SAFETY: `graph` and `sources` stay valid for the duration of the call,
     // `sources` matches the graph vertex dtype by prior validation, and
@@ -155,7 +156,7 @@ pub(crate) fn bfs<V: CugraphElement>(
     unsafe {
         let code = cugraph_bfs(
             handle.handle_ptr(),
-            graph.as_ptr(),
+            graph_ptr,
             sources.as_ptr(),
             to_bool_t(false), // direction_optimizing
             limit,
@@ -281,6 +282,7 @@ pub(crate) fn bfs_with_predicates<V: CugraphElement, E: CugraphElement>(
 
     let predicate_result_out: *mut *mut cugraph_bfs_predicate_result_t =
         if predicates.target_vertices.is_some() { &mut predicate_result } else { ptr::null_mut() };
+    let graph_ptr = graph.as_ptr(handle, "bfs_with_predicates")?;
 
     // SAFETY: `graph`, `sources`, and all optional predicate views stay valid
     // for the duration of the call. The public graph method validated source
@@ -288,7 +290,7 @@ pub(crate) fn bfs_with_predicates<V: CugraphElement, E: CugraphElement>(
     unsafe {
         let code = cugraph_bfs_with_predicates(
             handle.handle_ptr(),
-            graph.as_ptr(),
+            graph_ptr,
             sources.as_ptr(),
             optional_view_ptr(predicates.include_vertices),
             optional_view_ptr(predicates.exclude_vertices),

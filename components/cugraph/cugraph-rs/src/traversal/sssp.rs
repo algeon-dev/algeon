@@ -83,13 +83,14 @@ where
 
     let mut result: *mut cugraph_paths_result_t = ptr::null_mut();
     let mut error: *mut cugraph_error_t = ptr::null_mut();
+    let graph_ptr = graph.as_ptr(handle, "sssp")?;
 
     // SAFETY: `graph` stays valid for the duration of the call, `source` was
     // validated by `Graph::sssp`, and `result`/`error` are valid out-pointers.
     unsafe {
         let code = cugraph_sssp(
             handle.handle_ptr(),
-            graph.as_ptr(),
+            graph_ptr,
             source,
             cutoff,
             to_bool_t(params.compute_predecessors),
