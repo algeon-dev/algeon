@@ -1,3 +1,5 @@
+use std::{fs, path::PathBuf};
+
 use cugraph::{
     DeviceArray, EnteredContext, Forward, Graph, GraphBuilder, ResourceHandle, Transposed,
     centrality::{PageRankParams, PageRankResult},
@@ -57,4 +59,24 @@ fn cudf_graph_ingress_entry_points_require_entered_context() {
     let _: GraphFromDataFrameForward = graph_from_dataframe::<Forward>;
     let _: GraphFromSeriesForward = graph_from_series::<Forward>;
     let _: GraphFromParquetForward = graph_from_parquet::<Forward>;
+}
+
+#[test]
+fn runtime_bound_resource_handle_uses_no_secondary_stream_pool() {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let shim = manifest_dir.join("shim").join("runtime_resource_handle.cpp");
+    let source = fs::read_to_string(&shim).unwrap_or_else(|err| panic!("read {}: {err}", shim.display()));
+    let normalized_source = source.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    assert!(
+        normalized_source.contains(
+            "std::make_unique<raft::handle_t>( stream, std::shared_ptr<rmm::cuda_stream_pool>{}, raft::mr::device_resource{rmm::mr::any_device_resource_from_raw(mr)})"
+        ),
+        "runtime-bound cuGraph handle should pass an empty RAFT stream pool so graph work remains on the runtime stream"
+    );
+    assert_eq!(
+        source.matches("cuda_stream_pool").count(),
+        1,
+        "runtime-bound cuGraph handle must not introduce a secondary RAFT stream pool"
+    );
 }
