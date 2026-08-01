@@ -20,8 +20,9 @@ use common::{
 use cugraph::{
     DeviceArray, Forward, Graph, GraphBuilder, ResourceHandle, Transposed, VertexSelection,
     centrality::{
-        BetweennessCentralityParams, EdgeBetweennessCentralityParams, EigenvectorCentralityParams, HitsParams,
-        KatzCentralityParams, PageRankParams, PersonalizationVector, PersonalizedPageRankParams,
+        BetweennessCentralityParams, EdgeBetweennessCentralityParams, EigenvectorCentralityParams, HitsInitialHubs,
+        HitsParams, InitialGuess, KatzCentralityParams, PageRankParams, PersonalizationVector,
+        PersonalizedPageRankParams, PrecomputedWeights,
     },
     community::{
         EcgParams, ExtractEgoParams, KTrussSubgraphParams, LeidenParams, LouvainParams, SpectralClusteringParams,
@@ -120,6 +121,27 @@ fn betweenness_accepts_i64_seed_vertices() {
     let values = scores.to_vec_f64(&entered).expect("score copy");
     assert_eq!(values.len(), 4);
     assert!(values.iter().all(|v| v.is_finite() && *v >= 0.0));
+}
+
+#[test]
+fn betweenness_rejects_out_of_range_seed_vertex_with_default_params() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let handle = test_handle();
+    let entered = handle.enter("betweenness_rejects_out_of_range_seed_vertex_with_default_params").expect("entered");
+    let src = DeviceArray::from_slice(&entered, &[0i32, 1, 2]).expect("src");
+    let dst = DeviceArray::from_slice(&entered, &[1i32, 2, 0]).expect("dst");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+    let mut graph = GraphBuilder::new(&src_view, &dst_view).renumber().build::<Forward>(&entered).expect("graph");
+    let seeds = DeviceArray::from_slice(&entered, &[999i32]).expect("seeds");
+    let seeds_view = seeds.view().expect("seeds_view");
+
+    let err = graph
+        .betweenness_centrality(&entered, &seeds_view, &BetweennessCentralityParams::default())
+        .expect_err("out-of-range seed must be rejected");
+
+    assert_eq!(err.kind(), cugraph::ErrorKind::InvalidInput);
+    assert_eq!(err.operation(), "betweenness_centrality");
 }
 
 #[test]
@@ -1353,6 +1375,82 @@ fn personalized_pagerank_rejects_mismatched_personalization_lengths() {
 }
 
 #[test]
+fn personalized_pagerank_rejects_out_of_range_personalization_vertex_with_default_params() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let handle = test_handle();
+    let entered = handle
+        .enter("personalized_pagerank_rejects_out_of_range_personalization_vertex_with_default_params")
+        .expect("entered");
+    let src = DeviceArray::from_slice(&entered, &[0i32, 1, 2]).expect("src");
+    let dst = DeviceArray::from_slice(&entered, &[1i32, 2, 0]).expect("dst");
+    let vertices = DeviceArray::from_slice(&entered, &[999i32]).expect("vertices");
+    let values = DeviceArray::from_slice(&entered, &[1.0f32]).expect("values");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+    let vertices_view = vertices.view().expect("vertices_view");
+    let values_view = values.view().expect("values_view");
+    let personalization = PersonalizationVector { vertices: &vertices_view, values: &values_view };
+    let mut graph = GraphBuilder::new(&src_view, &dst_view).build::<Transposed>(&entered).expect("graph");
+
+    let err = graph
+        .personalized_pagerank(&entered, &PersonalizedPageRankParams::default(), &personalization)
+        .expect_err("out-of-range personalization vertex must be rejected");
+
+    assert_eq!(err.kind(), cugraph::ErrorKind::InvalidInput);
+    assert_eq!(err.operation(), "personalized_pagerank");
+}
+
+#[test]
+fn pagerank_rejects_out_of_range_precomputed_weight_vertex_with_default_params() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let handle = test_handle();
+    let entered =
+        handle.enter("pagerank_rejects_out_of_range_precomputed_weight_vertex_with_default_params").expect("entered");
+    let src = DeviceArray::from_slice(&entered, &[0i32, 1, 2]).expect("src");
+    let dst = DeviceArray::from_slice(&entered, &[1i32, 2, 0]).expect("dst");
+    let vertices = DeviceArray::from_slice(&entered, &[999i32]).expect("vertices");
+    let sums = DeviceArray::from_slice(&entered, &[1.0f32]).expect("sums");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+    let vertices_view = vertices.view().expect("vertices_view");
+    let sums_view = sums.view().expect("sums_view");
+    let precomputed = PrecomputedWeights { vertices: &vertices_view, sums: &sums_view };
+    let mut graph = GraphBuilder::new(&src_view, &dst_view).renumber().build::<Transposed>(&entered).expect("graph");
+
+    let err = graph
+        .pagerank_with(&entered, &PageRankParams::default(), Some(&precomputed), None)
+        .expect_err("out-of-range precomputed weight vertex must be rejected");
+
+    assert_eq!(err.kind(), cugraph::ErrorKind::InvalidInput);
+    assert_eq!(err.operation(), "pagerank");
+}
+
+#[test]
+fn pagerank_rejects_out_of_range_initial_guess_vertex_with_default_params() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let handle = test_handle();
+    let entered =
+        handle.enter("pagerank_rejects_out_of_range_initial_guess_vertex_with_default_params").expect("entered");
+    let src = DeviceArray::from_slice(&entered, &[0i32, 1, 2]).expect("src");
+    let dst = DeviceArray::from_slice(&entered, &[1i32, 2, 0]).expect("dst");
+    let vertices = DeviceArray::from_slice(&entered, &[999i32]).expect("vertices");
+    let values = DeviceArray::from_slice(&entered, &[1.0f32]).expect("values");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+    let vertices_view = vertices.view().expect("vertices_view");
+    let values_view = values.view().expect("values_view");
+    let initial_guess = InitialGuess { vertices: &vertices_view, values: &values_view };
+    let mut graph = GraphBuilder::new(&src_view, &dst_view).renumber().build::<Transposed>(&entered).expect("graph");
+
+    let err = graph
+        .pagerank_with(&entered, &PageRankParams::default(), None, Some(&initial_guess))
+        .expect_err("out-of-range initial guess vertex must be rejected");
+
+    assert_eq!(err.kind(), cugraph::ErrorKind::InvalidInput);
+    assert_eq!(err.operation(), "pagerank");
+}
+
+#[test]
 fn vertex_centrality_expansion_algorithms_return_vertex_scores() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -1406,6 +1504,30 @@ fn hits_returns_hub_authority_scores_and_metadata() {
 }
 
 #[test]
+fn hits_rejects_out_of_range_initial_hub_vertex_with_default_params() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let handle = test_handle();
+    let entered = handle.enter("hits_rejects_out_of_range_initial_hub_vertex_with_default_params").expect("entered");
+    let src = DeviceArray::from_slice(&entered, &[0i32, 0, 1, 2]).expect("src");
+    let dst = DeviceArray::from_slice(&entered, &[1i32, 2, 2, 3]).expect("dst");
+    let vertices = DeviceArray::from_slice(&entered, &[999i32]).expect("vertices");
+    let values = DeviceArray::from_slice(&entered, &[1.0f32]).expect("values");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+    let vertices_view = vertices.view().expect("vertices_view");
+    let values_view = values.view().expect("values_view");
+    let initial_hubs = HitsInitialHubs { vertices: &vertices_view, values: &values_view };
+    let mut graph = GraphBuilder::new(&src_view, &dst_view).renumber().build::<Transposed>(&entered).expect("graph");
+
+    let err = graph
+        .hits_with_initial_hubs(&entered, &HitsParams::default(), Some(&initial_hubs))
+        .expect_err("out-of-range initial hub vertex must be rejected");
+
+    assert_eq!(err.kind(), cugraph::ErrorKind::InvalidInput);
+    assert_eq!(err.operation(), "hits");
+}
+
+#[test]
 fn edge_betweenness_exposes_edge_shaped_scores_and_optional_edge_ids() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -1439,6 +1561,28 @@ fn edge_betweenness_exposes_edge_shaped_scores_and_optional_edge_ids() {
         .edge_betweenness_centrality_all(&entered, &EdgeBetweennessCentralityParams::default())
         .expect("edge betweenness without ids");
     assert!(result_without_ids.edge_ids().expect("edge ids").is_none());
+}
+
+#[test]
+fn edge_betweenness_rejects_out_of_range_seed_vertex_with_default_params() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let handle = test_handle();
+    let entered =
+        handle.enter("edge_betweenness_rejects_out_of_range_seed_vertex_with_default_params").expect("entered");
+    let src = DeviceArray::from_slice(&entered, FOUR_VERTEX_CHAIN_SRC_I32).expect("src");
+    let dst = DeviceArray::from_slice(&entered, FOUR_VERTEX_CHAIN_DST_I32).expect("dst");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+    let mut graph = GraphBuilder::new(&src_view, &dst_view).renumber().build::<Forward>(&entered).expect("graph");
+    let seeds = DeviceArray::from_slice(&entered, &[999i32]).expect("seeds");
+    let seeds_view = seeds.view().expect("seeds_view");
+
+    let err = graph
+        .edge_betweenness_centrality(&entered, &seeds_view, &EdgeBetweennessCentralityParams::default())
+        .expect_err("out-of-range seed must be rejected");
+
+    assert_eq!(err.kind(), cugraph::ErrorKind::InvalidInput);
+    assert_eq!(err.operation(), "edge_betweenness_centrality");
 }
 
 #[test]

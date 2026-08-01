@@ -189,9 +189,7 @@ impl Error {
     /// Accepts any source error that is safe to store and report from this
     /// library's public error type.
     pub fn set_source<E>(mut self, source: E) -> Self
-    where
-        E: StdError + Send + Sync + 'static,
-    {
+    where E: StdError + Send + Sync + 'static {
         debug_assert!(self.source.is_none(), "the source error has been set");
         self.source = Some(Box::new(source));
         self
