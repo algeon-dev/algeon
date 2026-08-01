@@ -11,6 +11,7 @@ use crate::{
     array::RawDeviceArrayView,
     cuda::DeviceGuard,
     error::{Error, ErrorKind, Result, require_non_null},
+    handle::ResourceHandleLease,
     structure::typed_results::VertexIds,
 };
 
@@ -22,6 +23,8 @@ use crate::{
 pub struct VertexPairs {
     raw: *mut cugraph_vertex_pairs_t,
     device: i32,
+    // Keeps a runtime-bound cuGraph handle alive until after Drop frees `raw`.
+    _resource_handle_lease: Option<ResourceHandleLease>,
     _nosend_nosync: PhantomData<*mut ()>,
 }
 
@@ -42,9 +45,10 @@ impl VertexPairs {
         raw: *mut cugraph_vertex_pairs_t,
         device: i32,
         operation: &'static str,
+        resource_handle_lease: Option<ResourceHandleLease>,
     ) -> Result<Self> {
         let raw = require_non_null(raw, operation, "vertex_pairs")?;
-        Ok(Self { raw, device, _nosend_nosync: PhantomData })
+        Ok(Self { raw, device, _resource_handle_lease: resource_handle_lease, _nosend_nosync: PhantomData })
     }
 
     pub(crate) fn as_ptr_const(&self) -> *const cugraph_vertex_pairs_t {
@@ -127,7 +131,7 @@ mod tests {
     #[test]
     fn vertex_pairs_from_raw_rejects_null() {
         // SAFETY: this exercises the constructor's null guard only.
-        let err = match unsafe { VertexPairs::from_raw(ptr::null_mut(), 0, "test_vertex_pairs") } {
+        let err = match unsafe { VertexPairs::from_raw(ptr::null_mut(), 0, "test_vertex_pairs", None) } {
             Err(err) => err,
             Ok(_) => panic!("null must be rejected"),
         };

@@ -16,6 +16,7 @@ use crate::{
     array::RawDeviceArrayView,
     cuda::DeviceGuard,
     error::{Error, Result, require_non_null},
+    handle::ResourceHandleLease,
     structure::typed_results::VertexIds,
 };
 
@@ -23,6 +24,8 @@ use crate::{
 pub(crate) struct HierarchicalClusteringResult {
     raw: *mut cugraph_hierarchical_clustering_result_t,
     device: i32,
+    // Keeps a runtime-bound cuGraph handle alive until after Drop frees `raw`.
+    _resource_handle_lease: Option<ResourceHandleLease>,
     _nosend_nosync: PhantomData<*mut ()>,
 }
 
@@ -33,9 +36,13 @@ impl HierarchicalClusteringResult {
     ///
     /// `raw` must be a valid, non-null pointer returned by a cuGraph
     /// hierarchical clustering C API. Ownership is transferred to this struct.
-    pub(crate) unsafe fn from_raw(raw: *mut cugraph_hierarchical_clustering_result_t, device: i32) -> Result<Self> {
+    pub(crate) unsafe fn from_raw(
+        raw: *mut cugraph_hierarchical_clustering_result_t,
+        device: i32,
+        resource_handle_lease: Option<ResourceHandleLease>,
+    ) -> Result<Self> {
         let raw = require_non_null(raw, "HierarchicalClusteringResult::from_raw", "hierarchical_clustering_result")?;
-        Ok(Self { raw, device, _nosend_nosync: PhantomData })
+        Ok(Self { raw, device, _resource_handle_lease: resource_handle_lease, _nosend_nosync: PhantomData })
     }
 
     pub(crate) fn vertices_raw(&self) -> Result<RawDeviceArrayView<'_>> {
@@ -122,10 +129,11 @@ macro_rules! define_hierarchical_result {
             pub(crate) unsafe fn from_raw(
                 raw: *mut cugraph_hierarchical_clustering_result_t,
                 device: i32,
+                resource_handle_lease: Option<ResourceHandleLease>,
             ) -> Result<Self> {
                 // SAFETY: the caller transfers ownership of a live cuGraph
                 // result to this wrapper on success.
-                Ok(Self(unsafe { HierarchicalClusteringResult::from_raw(raw, device) }?))
+                Ok(Self(unsafe { HierarchicalClusteringResult::from_raw(raw, device, resource_handle_lease) }?))
             }
 
             /// Get the vertex ids as a runtime-typed device array view.
@@ -181,7 +189,7 @@ mod tests {
     #[test]
     fn hierarchical_clustering_result_from_raw_rejects_null() {
         // SAFETY: this exercises the constructor's null guard only.
-        let err = match unsafe { HierarchicalClusteringResult::from_raw(ptr::null_mut(), 0) } {
+        let err = match unsafe { HierarchicalClusteringResult::from_raw(ptr::null_mut(), 0, None) } {
             Err(err) => err,
             Ok(_) => panic!("null must be rejected"),
         };

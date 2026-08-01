@@ -162,13 +162,19 @@ impl DeferredInputCompletion {
 struct DecompressedEdgelist {
     raw: *mut cugraph_edgelist_t,
     device: i32,
+    // Keeps a runtime-bound cuGraph handle alive until after Drop frees `raw`.
+    _resource_handle_lease: Option<ResourceHandleLease>,
     _nosend_nosync: PhantomData<*mut ()>,
 }
 
 impl DecompressedEdgelist {
-    unsafe fn from_raw(raw: *mut cugraph_edgelist_t, device: i32) -> Result<Self> {
+    unsafe fn from_raw(
+        raw: *mut cugraph_edgelist_t,
+        device: i32,
+        resource_handle_lease: Option<ResourceHandleLease>,
+    ) -> Result<Self> {
         let raw = require_non_null(raw, "DecompressedEdgelist::from_raw", "edgelist")?;
-        Ok(Self { raw, device, _nosend_nosync: PhantomData })
+        Ok(Self { raw, device, _resource_handle_lease: resource_handle_lease, _nosend_nosync: PhantomData })
     }
 
     fn raw_view(
@@ -438,7 +444,8 @@ impl<T> Graph<T> {
 
         // SAFETY: on success, cuGraph transfers ownership of the edgelist
         // pointer to the caller.
-        let edgelist = unsafe { DecompressedEdgelist::from_raw(edgelist, handle.device()) }?;
+        let edgelist =
+            unsafe { DecompressedEdgelist::from_raw(edgelist, handle.device(), handle.runtime_bound_lease()) }?;
         edgelist.edge_count(handle, self.properties, operation)
     }
 

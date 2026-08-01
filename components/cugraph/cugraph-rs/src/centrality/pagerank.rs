@@ -312,7 +312,7 @@ fn pagerank_impl<V: CugraphElement, W: CugraphElement>(
     let result = require_non_null(result, operation, "centrality_result")?;
 
     // SAFETY: on success, cuGraph returns ownership of `result` to the caller.
-    unsafe { PageRankResult::from_raw(result, handle.device()) }
+    unsafe { PageRankResult::from_raw(result, handle.device(), handle.runtime_bound_lease()) }
 }
 
 fn validate_vertex_dtype<V: CugraphElement>(

@@ -53,7 +53,7 @@ pub(crate) fn weakly_connected_components<T>(
     let result = require_non_null(result, "weakly_connected_components", "labeling_result")?;
 
     // SAFETY: on success, cuGraph transfers ownership of the result pointer.
-    unsafe { WeaklyConnectedComponentsResult::from_raw(result, handle.device()) }
+    unsafe { WeaklyConnectedComponentsResult::from_raw(result, handle.device(), handle.runtime_bound_lease()) }
 }
 
 /// Compute strongly connected components.
@@ -82,5 +82,5 @@ pub(crate) fn strongly_connected_components<T>(
     let result = require_non_null(result, "strongly_connected_components", "labeling_result")?;
 
     // SAFETY: on success, cuGraph transfers ownership of the result pointer.
-    unsafe { StronglyConnectedComponentsResult::from_raw(result, handle.device()) }
+    unsafe { StronglyConnectedComponentsResult::from_raw(result, handle.device(), handle.runtime_bound_lease()) }
 }

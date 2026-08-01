@@ -83,7 +83,9 @@ pub(crate) fn k_truss_subgraph<T>(
     let result = require_non_null(result, "k_truss_subgraph", "induced_subgraph_result")?;
 
     // SAFETY: on success, cuGraph transfers ownership of the result pointer.
-    let inner = unsafe { InducedSubgraphResult::from_raw(result, handle.device(), "k_truss_subgraph") }?;
+    let inner = unsafe {
+        InducedSubgraphResult::from_raw(result, handle.device(), "k_truss_subgraph", handle.runtime_bound_lease())
+    }?;
     Ok(KTrussSubgraphResult(inner))
 }
 
@@ -116,7 +118,9 @@ pub(crate) fn extract_ego<T, V: CugraphElement>(
     let result = require_non_null(result, "extract_ego", "induced_subgraph_result")?;
 
     // SAFETY: on success, cuGraph transfers ownership of the result pointer.
-    let inner = unsafe { InducedSubgraphResult::from_raw(result, handle.device(), "extract_ego") }?;
+    let inner = unsafe {
+        InducedSubgraphResult::from_raw(result, handle.device(), "extract_ego", handle.runtime_bound_lease())
+    }?;
     Ok(ExtractEgoResult(inner))
 }
 

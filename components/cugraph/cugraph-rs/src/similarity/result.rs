@@ -11,6 +11,7 @@ use crate::{
     array::RawDeviceArrayView,
     cuda::DeviceGuard,
     error::{Error, Result, require_non_null},
+    handle::ResourceHandleLease,
     similarity::VertexPairs,
     structure::typed_results::{ScoreValues, VertexIds},
 };
@@ -19,6 +20,8 @@ pub(crate) struct SimilarityResultInner {
     raw: *mut cugraph_similarity_result_t,
     pairs: VertexPairs,
     device: i32,
+    // Keeps a runtime-bound cuGraph handle alive until after Drop frees `raw`.
+    _resource_handle_lease: Option<ResourceHandleLease>,
     _nosend_nosync: PhantomData<*mut ()>,
 }
 
@@ -28,15 +31,17 @@ impl SimilarityResultInner {
         pairs: VertexPairs,
         device: i32,
         operation: &'static str,
+        resource_handle_lease: Option<ResourceHandleLease>,
     ) -> Result<Self> {
         let raw = require_non_null(raw, operation, "similarity_result")?;
-        Ok(Self { raw, pairs, device, _nosend_nosync: PhantomData })
+        Ok(Self { raw, pairs, device, _resource_handle_lease: resource_handle_lease, _nosend_nosync: PhantomData })
     }
 
     pub(crate) unsafe fn from_all_pairs_raw(
         raw: *mut cugraph_similarity_result_t,
         device: i32,
         operation: &'static str,
+        resource_handle_lease: Option<ResourceHandleLease>,
     ) -> Result<Self> {
         let raw = require_non_null(raw, operation, "similarity_result")?;
         let pairs_raw = match require_non_null(
@@ -56,8 +61,8 @@ impl SimilarityResultInner {
         // SAFETY: all-pairs similarity transfers ownership of the nested
         // vertex-pairs object, but `cugraph_similarity_result_free` does not
         // release it. Wrapping it here closes that native ownership gap.
-        let pairs = unsafe { VertexPairs::from_raw(pairs_raw, device, operation) }?;
-        Ok(Self { raw, pairs, device, _nosend_nosync: PhantomData })
+        let pairs = unsafe { VertexPairs::from_raw(pairs_raw, device, operation, resource_handle_lease.clone()) }?;
+        Ok(Self { raw, pairs, device, _resource_handle_lease: resource_handle_lease, _nosend_nosync: PhantomData })
     }
 
     fn raw_view(
@@ -174,10 +179,11 @@ mod tests {
     #[test]
     fn similarity_result_from_raw_rejects_null() {
         // SAFETY: this exercises the constructor's null guard only.
-        let err = match unsafe { SimilarityResultInner::from_all_pairs_raw(ptr::null_mut(), 0, "test_similarity") } {
-            Err(err) => err,
-            Ok(_) => panic!("null must be rejected"),
-        };
+        let err =
+            match unsafe { SimilarityResultInner::from_all_pairs_raw(ptr::null_mut(), 0, "test_similarity", None) } {
+                Err(err) => err,
+                Ok(_) => panic!("null must be rejected"),
+            };
         assert_eq!(err.kind(), ErrorKind::Unexpected);
         assert_eq!(err.operation(), "test_similarity");
     }

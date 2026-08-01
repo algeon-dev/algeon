@@ -10,9 +10,10 @@ use cugraph_sys::{
 
 use crate::{
     array::DeviceArrayView,
+    cuda::DeviceGuard,
     error::{Error, ErrorKind, Result, check_error, require_non_null},
     graph::{Forward, Graph},
-    handle::EnteredContext,
+    handle::{EnteredContext, ResourceHandleLease},
     params::BfsDepthLimit,
     structure::{
         VertexSelection,
@@ -170,7 +171,7 @@ pub(crate) fn bfs<V: CugraphElement>(
 
     // SAFETY: on success, cuGraph transfers ownership of the paths result to
     // the caller.
-    let paths = unsafe { PathsResult::from_raw(result, handle.device(), "bfs") }?;
+    let paths = unsafe { PathsResult::from_raw(result, handle.device(), "bfs", handle.runtime_bound_lease()) }?;
 
     Ok(BfsResult { paths, target_info: None })
 }
@@ -225,12 +226,19 @@ fn validate_predicates<V: CugraphElement, E: CugraphElement>(
 
 struct BfsPredicateResult {
     raw: *mut cugraph_bfs_predicate_result_t,
+    device: i32,
+    // Keeps a runtime-bound cuGraph handle alive until after Drop frees `raw`.
+    _resource_handle_lease: Option<ResourceHandleLease>,
 }
 
 impl BfsPredicateResult {
-    unsafe fn from_raw(raw: *mut cugraph_bfs_predicate_result_t) -> Result<Self> {
+    unsafe fn from_raw(
+        raw: *mut cugraph_bfs_predicate_result_t,
+        device: i32,
+        resource_handle_lease: Option<ResourceHandleLease>,
+    ) -> Result<Self> {
         let raw = require_non_null(raw, "bfs_with_predicates", "predicate_result")?;
-        Ok(Self { raw })
+        Ok(Self { raw, device, _resource_handle_lease: resource_handle_lease })
     }
 
     fn target_info(&self) -> Result<BfsTargetInfo> {
@@ -260,6 +268,7 @@ impl BfsPredicateResult {
 impl Drop for BfsPredicateResult {
     fn drop(&mut self) {
         if !self.raw.is_null() {
+            let _guard = DeviceGuard::switch_to_for_drop(self.device, "BfsPredicateResult::drop").ok();
             // SAFETY: `self.raw` is owned by this wrapper and freed at most once.
             unsafe { cugraph_bfs_predicate_result_free(self.raw) };
         }
@@ -311,7 +320,7 @@ pub(crate) fn bfs_with_predicates<V: CugraphElement, E: CugraphElement>(
     let predicate_result = if predicates.target_vertices.is_some() {
         // SAFETY: `predicate_result` is initialized on successful calls when
         // a predicate result out-pointer was supplied.
-        Some(unsafe { BfsPredicateResult::from_raw(predicate_result) }?)
+        Some(unsafe { BfsPredicateResult::from_raw(predicate_result, handle.device(), handle.runtime_bound_lease()) }?)
     } else {
         None
     };
@@ -319,7 +328,8 @@ pub(crate) fn bfs_with_predicates<V: CugraphElement, E: CugraphElement>(
 
     // SAFETY: on success, cuGraph transfers ownership of the paths result to
     // the caller.
-    let paths = unsafe { PathsResult::from_raw(result, handle.device(), "bfs_with_predicates") }?;
+    let paths =
+        unsafe { PathsResult::from_raw(result, handle.device(), "bfs_with_predicates", handle.runtime_bound_lease()) }?;
 
     Ok(BfsResult { paths, target_info })
 }

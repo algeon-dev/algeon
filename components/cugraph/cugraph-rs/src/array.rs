@@ -17,7 +17,7 @@ use cugraph_sys::*;
 use crate::{
     cuda::DeviceGuard,
     error::{Error, ErrorKind, Result, check_error, require_non_null},
-    handle::EnteredContext,
+    handle::{EnteredContext, ResourceHandleLease},
     types::{CugraphElement, DataType},
 };
 
@@ -30,6 +30,8 @@ pub(crate) struct RawDeviceArray {
     raw: *mut cugraph_type_erased_device_array_t,
     raw_view: *mut cugraph_type_erased_device_array_view_t,
     device: i32,
+    // Keeps a runtime-bound cuGraph handle alive until after Drop frees `raw`.
+    _resource_handle_lease: Option<ResourceHandleLease>,
     _nosend_nosync: PhantomData<*mut ()>,
 }
 
@@ -56,6 +58,7 @@ impl RawDeviceArray {
         device: i32,
         operation: &'static str,
         pointer_name: &'static str,
+        resource_handle_lease: Option<ResourceHandleLease>,
     ) -> Result<Self> {
         let raw = require_non_null(raw, operation, pointer_name)?;
         // SAFETY: `raw` is a live cuGraph device-array handle transferred to
@@ -72,7 +75,7 @@ impl RawDeviceArray {
             },
         };
 
-        Ok(Self { raw, raw_view, device, _nosend_nosync: PhantomData })
+        Ok(Self { raw, raw_view, device, _resource_handle_lease: resource_handle_lease, _nosend_nosync: PhantomData })
     }
 
     pub(crate) fn new(handle: &EnteredContext<'_>, len: usize, dtype: DataType) -> Result<Self> {
@@ -102,7 +105,13 @@ impl RawDeviceArray {
             },
         };
 
-        Ok(Self { raw, raw_view, device: handle.device(), _nosend_nosync: PhantomData })
+        Ok(Self {
+            raw,
+            raw_view,
+            device: handle.device(),
+            _resource_handle_lease: handle.runtime_bound_lease(),
+            _nosend_nosync: PhantomData,
+        })
     }
 
     pub(crate) fn raw_view(&self) -> Result<RawDeviceArrayView<'_>> {
@@ -378,9 +387,10 @@ impl<T: CugraphElement> DeviceArray<T> {
         device: i32,
         operation: &'static str,
         pointer_name: &'static str,
+        resource_handle_lease: Option<ResourceHandleLease>,
     ) -> Result<Self> {
         // SAFETY: the caller transfers ownership of the native array handle.
-        let inner = unsafe { RawDeviceArray::from_raw(raw, device, operation, pointer_name) }?;
+        let inner = unsafe { RawDeviceArray::from_raw(raw, device, operation, pointer_name, resource_handle_lease) }?;
         let dtype = inner.raw_view()?.dtype()?;
         if dtype != T::data_type() {
             return Err(Error::new(ErrorKind::InvalidState, operation).with_message(format!(

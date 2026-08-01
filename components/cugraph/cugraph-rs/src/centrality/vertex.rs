@@ -92,7 +92,7 @@ pub(crate) fn eigenvector_centrality(
 
     let result = require_non_null(result, "eigenvector_centrality", "centrality_result")?;
     // SAFETY: on success, cuGraph returns ownership of `result` to the caller.
-    unsafe { EigenvectorCentralityResult::from_raw(result, handle.device()) }
+    unsafe { EigenvectorCentralityResult::from_raw(result, handle.device(), handle.runtime_bound_lease()) }
 }
 
 pub(crate) fn katz_centrality(
@@ -125,5 +125,5 @@ pub(crate) fn katz_centrality(
 
     let result = require_non_null(result, "katz_centrality", "centrality_result")?;
     // SAFETY: on success, cuGraph returns ownership of `result` to the caller.
-    unsafe { KatzCentralityResult::from_raw(result, handle.device()) }
+    unsafe { KatzCentralityResult::from_raw(result, handle.device(), handle.runtime_bound_lease()) }
 }

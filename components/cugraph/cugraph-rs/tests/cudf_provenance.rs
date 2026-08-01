@@ -18,6 +18,7 @@ use common::{
 use cudf::testing::prelude::*;
 use cugraph::{
     array::DeviceArray,
+    centrality::PageRankParams,
     cudf_interop::{
         BorrowedInputOrderingPlan, SeriesGraphOptions, TableGraphOptions, graph_from_borrowed_columns,
         graph_from_borrowed_table_view, graph_from_series, testing::borrowed_columns_ordering_plan,
@@ -275,6 +276,98 @@ fn graph_built_on_one_runtime_runs_transposed_algorithms_on_same_device_runtime(
     }
 
     drop(graph);
+}
+
+#[test]
+fn result_built_on_one_runtime_decodes_after_producer_runtime_drops() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let build_runtime = explicit_runtime_owner();
+    let build_handle = runtime_bound_handle(&build_runtime);
+    let build_entered = build_handle
+        .enter("result_built_on_one_runtime_decodes_after_producer_runtime_drops_build")
+        .expect("build entered");
+
+    let src = build_runtime.series(DISCONNECTED_TWO_CYCLES_SRC_I32).expect("src");
+    let dst = build_runtime.series(DISCONNECTED_TWO_CYCLES_DST_I32).expect("dst");
+    let opts = SeriesGraphOptions::default().properties(GraphProperties::undirected()).renumber();
+    let mut graph = graph_from_series::<Transposed>(&build_entered, &src, &dst, None, &opts).expect("build graph");
+
+    drop(build_entered);
+    let build_device = build_handle.device();
+
+    let result = {
+        let producer_runtime = explicit_runtime_owner();
+        let producer_handle = runtime_bound_handle(&producer_runtime);
+        let producer_entered = producer_handle
+            .enter("result_built_on_one_runtime_decodes_after_producer_runtime_drops_produce")
+            .expect("producer entered");
+        assert_eq!(build_device, producer_handle.device());
+
+        graph.pagerank(&producer_entered, &PageRankParams::default()).expect("pagerank")
+    };
+
+    drop(graph);
+
+    let consumer_runtime = explicit_runtime_owner();
+    let consumer_handle = runtime_bound_handle(&consumer_runtime);
+    let consumer_entered = consumer_handle
+        .enter("result_built_on_one_runtime_decodes_after_producer_runtime_drops_decode")
+        .expect("consumer entered");
+
+    let vertices = result.vertex_ids().expect("vertex_ids").to_vec_i32(&consumer_entered).expect("vertices");
+    let scores = result.scores().expect("scores").to_vec_f32(&consumer_entered).expect("scores");
+    assert_eq!(vertices.len(), scores.len());
+    assert!(!vertices.is_empty());
+
+    drop(result);
+}
+
+#[test]
+fn path_result_built_on_one_runtime_decodes_after_producer_runtime_drops() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let build_runtime = explicit_runtime_owner();
+    let build_handle = runtime_bound_handle(&build_runtime);
+    let build_entered = build_handle
+        .enter("path_result_built_on_one_runtime_decodes_after_producer_runtime_drops_build")
+        .expect("build entered");
+
+    let src = build_runtime.series(SSSP_GRAPH_SRC_I32).expect("src");
+    let dst = build_runtime.series(SSSP_GRAPH_DST_I32).expect("dst");
+    let weight = build_runtime.series(SSSP_GRAPH_WEIGHT_F32).expect("weight");
+    let opts = SeriesGraphOptions::default().renumber();
+    let mut graph =
+        graph_from_series::<Forward>(&build_entered, &src, &dst, Some(&weight), &opts).expect("build graph");
+
+    drop(build_entered);
+    let build_device = build_handle.device();
+
+    let result = {
+        let producer_runtime = explicit_runtime_owner();
+        let producer_handle = runtime_bound_handle(&producer_runtime);
+        let producer_entered = producer_handle
+            .enter("path_result_built_on_one_runtime_decodes_after_producer_runtime_drops_produce")
+            .expect("producer entered");
+        assert_eq!(build_device, producer_handle.device());
+
+        let sources = DeviceArray::from_slice(&producer_entered, &[BFS_SOURCE_VERTEX_I32]).expect("sources");
+        let sources_view = sources.view().expect("sources view");
+        graph.bfs(&producer_entered, &sources_view, &BfsParams::default()).expect("bfs")
+    };
+
+    drop(graph);
+
+    let consumer_runtime = explicit_runtime_owner();
+    let consumer_handle = runtime_bound_handle(&consumer_runtime);
+    let consumer_entered = consumer_handle
+        .enter("path_result_built_on_one_runtime_decodes_after_producer_runtime_drops_decode")
+        .expect("consumer entered");
+
+    let vertices = result.vertex_ids().expect("vertex_ids").to_vec_i32(&consumer_entered).expect("vertices");
+    let distances = result.distances().expect("distances").to_vec_i32(&consumer_entered).expect("distances");
+    assert_eq!(vertices.len(), distances.len());
+    assert!(!vertices.is_empty());
+
+    drop(result);
 }
 
 #[test]

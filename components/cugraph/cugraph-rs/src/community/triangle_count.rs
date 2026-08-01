@@ -13,7 +13,7 @@ use crate::{
     cuda::DeviceGuard,
     error::{Error, Result, check_error, require_non_null},
     graph::Graph,
-    handle::EnteredContext,
+    handle::{EnteredContext, ResourceHandleLease},
     structure::typed_results::{IntegerValues, VertexIds},
     types::{CugraphElement, to_bool_t},
 };
@@ -58,7 +58,7 @@ pub(crate) fn triangle_count<T, V: CugraphElement>(
     let result = require_non_null(result, "triangle_count", "triangle_count_result")?;
 
     // SAFETY: on success, cuGraph transfers ownership of the result pointer.
-    unsafe { TriangleCountResult::from_raw(result, handle.device()) }
+    unsafe { TriangleCountResult::from_raw(result, handle.device(), handle.runtime_bound_lease()) }
 }
 
 /// Result of a triangle-count computation.
@@ -68,6 +68,8 @@ pub(crate) fn triangle_count<T, V: CugraphElement>(
 pub struct TriangleCountResult {
     raw: *mut cugraph_triangle_count_result_t,
     device: i32,
+    // Keeps a runtime-bound cuGraph handle alive until after Drop frees `raw`.
+    _resource_handle_lease: Option<ResourceHandleLease>,
     _nosend_nosync: PhantomData<*mut ()>,
 }
 
@@ -84,9 +86,13 @@ impl TriangleCountResult {
     ///
     /// `raw` must be a valid, non-null pointer returned by
     /// `cugraph_triangle_count`. Ownership is transferred to this struct.
-    pub(crate) unsafe fn from_raw(raw: *mut cugraph_triangle_count_result_t, device: i32) -> Result<Self> {
+    pub(crate) unsafe fn from_raw(
+        raw: *mut cugraph_triangle_count_result_t,
+        device: i32,
+        resource_handle_lease: Option<ResourceHandleLease>,
+    ) -> Result<Self> {
         let raw = require_non_null(raw, "TriangleCountResult::from_raw", "triangle_count_result")?;
-        Ok(Self { raw, device, _nosend_nosync: PhantomData })
+        Ok(Self { raw, device, _resource_handle_lease: resource_handle_lease, _nosend_nosync: PhantomData })
     }
 
     fn raw_view(
@@ -153,7 +159,7 @@ mod tests {
     #[test]
     fn triangle_count_result_from_raw_rejects_null() {
         // SAFETY: this exercises the constructor's null guard only.
-        let err = match unsafe { TriangleCountResult::from_raw(ptr::null_mut(), 0) } {
+        let err = match unsafe { TriangleCountResult::from_raw(ptr::null_mut(), 0, None) } {
             Err(err) => err,
             Ok(_) => panic!("null must be rejected"),
         };

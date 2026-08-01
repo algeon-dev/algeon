@@ -37,7 +37,7 @@ use crate::{
     cuda::DeviceGuard,
     error::{Error, ErrorKind, Result, check_error, require_non_null},
     graph::{Forward, Graph},
-    handle::EnteredContext,
+    handle::{EnteredContext, ResourceHandleLease},
     params::PositiveF64,
     random::RngState,
     structure::{IntegerValues, ScoreValues, SizeValues, VertexIds},
@@ -241,6 +241,8 @@ pub struct RandomWalkResult {
     raw: *mut cugraph_random_walk_result_t,
     device: i32,
     has_weights: bool,
+    // Keeps a runtime-bound cuGraph handle alive until after Drop frees `raw`.
+    _resource_handle_lease: Option<ResourceHandleLease>,
     _nosend_nosync: std::marker::PhantomData<*mut ()>,
 }
 
@@ -262,9 +264,16 @@ impl RandomWalkResult {
         raw: *mut cugraph_random_walk_result_t,
         device: i32,
         has_weights: bool,
+        resource_handle_lease: Option<ResourceHandleLease>,
     ) -> Result<Self> {
         let raw = require_non_null(raw, "RandomWalkResult::from_raw", "random_walk_result")?;
-        Ok(Self { raw, device, has_weights, _nosend_nosync: std::marker::PhantomData })
+        Ok(Self {
+            raw,
+            device,
+            has_weights,
+            _resource_handle_lease: resource_handle_lease,
+            _nosend_nosync: std::marker::PhantomData,
+        })
     }
 
     /// Maximum number of edges requested per walk.
@@ -331,6 +340,8 @@ impl Drop for RandomWalkResult {
 pub struct SampleResult {
     raw: *mut cugraph_sample_result_t,
     device: i32,
+    // Keeps a runtime-bound cuGraph handle alive until after Drop frees `raw`.
+    _resource_handle_lease: Option<ResourceHandleLease>,
     _nosend_nosync: std::marker::PhantomData<*mut ()>,
 }
 
@@ -345,9 +356,18 @@ impl SampleResult {
     ///
     /// `raw` must be a valid, non-null pointer returned by a cuGraph sampling
     /// C API. Ownership is transferred to this struct.
-    pub(crate) unsafe fn from_raw(raw: *mut cugraph_sample_result_t, device: i32) -> Result<Self> {
+    pub(crate) unsafe fn from_raw(
+        raw: *mut cugraph_sample_result_t,
+        device: i32,
+        resource_handle_lease: Option<ResourceHandleLease>,
+    ) -> Result<Self> {
         let raw = require_non_null(raw, "SampleResult::from_raw", "sample_result")?;
-        Ok(Self { raw, device, _nosend_nosync: std::marker::PhantomData })
+        Ok(Self {
+            raw,
+            device,
+            _resource_handle_lease: resource_handle_lease,
+            _nosend_nosync: std::marker::PhantomData,
+        })
     }
 
     /// Sampled major vertices, or `None` when the output is compressed.
@@ -573,7 +593,7 @@ fn run_random_walks<V: CugraphElement>(
     }
 
     // SAFETY: on success, cuGraph transfers ownership of the result pointer.
-    unsafe { RandomWalkResult::from_raw(result, handle.device(), graph.has_weights()) }
+    unsafe { RandomWalkResult::from_raw(result, handle.device(), graph.has_weights(), handle.runtime_bound_lease()) }
 }
 
 pub(crate) fn node2vec_random_walks<V: CugraphElement>(
@@ -606,7 +626,7 @@ pub(crate) fn node2vec_random_walks<V: CugraphElement>(
     }
 
     // SAFETY: on success, cuGraph transfers ownership of the result pointer.
-    unsafe { RandomWalkResult::from_raw(result, handle.device(), graph.has_weights()) }
+    unsafe { RandomWalkResult::from_raw(result, handle.device(), graph.has_weights(), handle.runtime_bound_lease()) }
 }
 
 pub(crate) fn select_random_vertices<T, V>(
@@ -638,7 +658,15 @@ where
     }
 
     // SAFETY: on success, cuGraph transfers ownership of the device array.
-    unsafe { DeviceArray::from_raw(vertices, handle.device(), "select_random_vertices", "vertices") }
+    unsafe {
+        DeviceArray::from_raw(
+            vertices,
+            handle.device(),
+            "select_random_vertices",
+            "vertices",
+            handle.runtime_bound_lease(),
+        )
+    }
 }
 
 fn fan_out_view(params: &NeighborSamplingParams) -> Result<HostArrayView<'_>> {
@@ -689,7 +717,7 @@ pub(crate) fn homogeneous_uniform_neighbor_sample<V: CugraphElement>(
     }
 
     // SAFETY: on success, cuGraph transfers ownership of the result pointer.
-    unsafe { SampleResult::from_raw(result, handle.device()) }
+    unsafe { SampleResult::from_raw(result, handle.device(), handle.runtime_bound_lease()) }
 }
 
 pub(crate) fn homogeneous_biased_neighbor_sample<V: CugraphElement>(
@@ -731,7 +759,7 @@ pub(crate) fn homogeneous_biased_neighbor_sample<V: CugraphElement>(
     }
 
     // SAFETY: on success, cuGraph transfers ownership of the result pointer.
-    unsafe { SampleResult::from_raw(result, handle.device()) }
+    unsafe { SampleResult::from_raw(result, handle.device(), handle.runtime_bound_lease()) }
 }
 
 pub(crate) fn homogeneous_uniform_temporal_neighbor_sample<V, Tm>(
@@ -796,7 +824,7 @@ where
     }
 
     // SAFETY: on success, cuGraph transfers ownership of the result pointer.
-    unsafe { SampleResult::from_raw(result, handle.device()) }
+    unsafe { SampleResult::from_raw(result, handle.device(), handle.runtime_bound_lease()) }
 }
 
 pub(crate) fn homogeneous_biased_temporal_neighbor_sample<V, Tm>(
@@ -863,7 +891,7 @@ where
     }
 
     // SAFETY: on success, cuGraph transfers ownership of the result pointer.
-    unsafe { SampleResult::from_raw(result, handle.device()) }
+    unsafe { SampleResult::from_raw(result, handle.device(), handle.runtime_bound_lease()) }
 }
 
 #[cfg(test)]
@@ -876,7 +904,7 @@ mod tests {
     #[test]
     fn random_walk_result_from_raw_rejects_null() {
         // SAFETY: this exercises the constructor's null guard only.
-        let err = match unsafe { RandomWalkResult::from_raw(ptr::null_mut(), 0, false) } {
+        let err = match unsafe { RandomWalkResult::from_raw(ptr::null_mut(), 0, false, None) } {
             Err(err) => err,
             Ok(_) => panic!("null must be rejected"),
         };
@@ -887,7 +915,7 @@ mod tests {
     #[test]
     fn sample_result_from_raw_rejects_null() {
         // SAFETY: this exercises the constructor's null guard only.
-        let err = match unsafe { SampleResult::from_raw(ptr::null_mut(), 0) } {
+        let err = match unsafe { SampleResult::from_raw(ptr::null_mut(), 0, None) } {
             Err(err) => err,
             Ok(_) => panic!("null must be rejected"),
         };
