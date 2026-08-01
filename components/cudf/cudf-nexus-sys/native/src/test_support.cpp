@@ -34,6 +34,10 @@ constexpr std::size_t k_exec_mr_observation_capacity = 64;
 thread_local std::uintptr_t g_last_exec_stream_value = std::numeric_limits<std::uintptr_t>::max();
 thread_local std::uintptr_t g_last_exec_sync_stream_value =
   std::numeric_limits<std::uintptr_t>::max();
+thread_local std::uint64_t g_exec_observation_sequence = 0;
+thread_local std::uint64_t g_last_exec_sync_sequence = 0;
+thread_local void* g_last_memory_resource_destroy_raw = nullptr;
+thread_local std::uint64_t g_last_memory_resource_destroy_sequence = 0;
 thread_local void* g_last_exec_mr_raw   = nullptr;
 thread_local int32_t g_last_exec_device = -1;
 thread_local std::array<void*, k_exec_mr_observation_capacity> g_exec_mr_observations{};
@@ -93,6 +97,10 @@ void reset_exec_observation()
 {
   g_last_exec_stream_value      = std::numeric_limits<std::uintptr_t>::max();
   g_last_exec_sync_stream_value = std::numeric_limits<std::uintptr_t>::max();
+  g_exec_observation_sequence = 0;
+  g_last_exec_sync_sequence = 0;
+  g_last_memory_resource_destroy_raw = nullptr;
+  g_last_memory_resource_destroy_sequence = 0;
   g_last_exec_mr_raw            = nullptr;
   g_last_exec_device            = -1;
   g_exec_mr_observations.fill(nullptr);
@@ -140,6 +148,13 @@ void record_exec_context(std::uintptr_t stream_raw, void* mr_raw)
 void record_synchronized_stream(std::uintptr_t stream_raw)
 {
   g_last_exec_sync_stream_value = stream_raw;
+  g_last_exec_sync_sequence = ++g_exec_observation_sequence;
+}
+
+void record_memory_resource_destroy(void* mr_raw)
+{
+  g_last_memory_resource_destroy_raw = mr_raw;
+  g_last_memory_resource_destroy_sequence = ++g_exec_observation_sequence;
 }
 
 bool take_column_view_metadata_read_failure()
@@ -356,6 +371,27 @@ cudf_status_t cudf_test_exec_last_sync_stream_value(uintptr_t* out)
 {
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = g_last_exec_sync_stream_value;
+  return CUDF_SUCCESS;
+}
+
+cudf_status_t cudf_test_exec_last_sync_sequence(uint64_t* out)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = g_last_exec_sync_sequence;
+  return CUDF_SUCCESS;
+}
+
+cudf_status_t cudf_test_exec_last_memory_resource_destroy_raw(void** out)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = g_last_memory_resource_destroy_raw;
+  return CUDF_SUCCESS;
+}
+
+cudf_status_t cudf_test_exec_last_memory_resource_destroy_sequence(uint64_t* out)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = g_last_memory_resource_destroy_sequence;
   return CUDF_SUCCESS;
 }
 
