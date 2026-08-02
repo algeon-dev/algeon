@@ -16,6 +16,7 @@
 #include <cuda/memory_resource>
 #include <cuda_runtime_api.h>
 
+#include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -47,6 +48,63 @@ struct memory_failure_domain_identity {
   cudf_memory_failure_domain_t kind = CUDF_MEMORY_FAILURE_DOMAIN_NONE;
   std::uint64_t primary_id          = 0;
   std::uint64_t secondary_id        = 0;
+  /// Monotonically minted by the native query-domain owner. It is never a
+  /// pointer identity and is required before the engine may correlate an
+  /// event to an attempt.
+  std::uint64_t generation          = 0;
+};
+
+/// Per-device, multi-producer fixed allocator-event ring.
+///
+/// Writers run inside allocation-failure handling. They use only atomics and
+/// preallocated slots; consumers copy a sequence only after its publication
+/// stamp is stable. A reader never infers a missing record from zero-valued
+/// payload fields.
+class allocator_event_ring final {
+ public:
+  allocator_event_ring() = default;
+
+  allocator_event_ring(allocator_event_ring const&)            = delete;
+  allocator_event_ring& operator=(allocator_event_ring const&) = delete;
+
+  void record(cudf_memory_failure_info_t const& info,
+              memory_failure_domain_identity identity,
+              cudf_memory_failure_action_t action) noexcept;
+
+  [[nodiscard]] cudf_allocator_event_ring_bounds_t bounds() const noexcept;
+
+  [[nodiscard]] cudf_allocator_event_read_status_t read(
+    std::uint64_t sequence, cudf_allocator_event_t& out) const noexcept;
+
+ private:
+  struct slot {
+    // Writers never wait for this flag. A contending callback leaves its
+    // sequence without a stable record; consumers must treat that as
+    // unavailable rather than risking a mixed payload.
+    std::atomic_flag writer_active = ATOMIC_FLAG_INIT;
+    std::atomic<std::uint64_t> published_sequence{0};
+    std::atomic<std::uint64_t> monotonic_time_ns{0};
+    std::atomic<std::int32_t> device_ordinal{-1};
+    std::atomic<std::uint32_t> completeness{0};
+    std::atomic<std::uint32_t> domain_kind{CUDF_MEMORY_FAILURE_DOMAIN_NONE};
+    std::atomic<std::uint32_t> failure_source{CUDF_MEMORY_FAILURE_SOURCE_PHYSICAL};
+    std::atomic<std::int32_t> action{CUDF_MEMORY_FAILURE_ACTION_DECLINE};
+    std::atomic<std::uint32_t> callback_attempt{0};
+    std::atomic<std::uint32_t> trim_retry_count{0};
+    std::atomic<std::uint64_t> domain_id{0};
+    std::atomic<std::uint64_t> domain_generation{0};
+    std::atomic<std::uint64_t> domain_member_id{0};
+    std::atomic<std::uint64_t> requested_bytes{0};
+    std::atomic<std::uint64_t> pool_reserved_current_bytes{0};
+    std::atomic<std::uint64_t> pool_reserved_high_bytes{0};
+    std::atomic<std::uint64_t> pool_used_current_bytes{0};
+    std::atomic<std::uint64_t> pool_used_high_bytes{0};
+  };
+
+  static constexpr std::size_t k_capacity = CUDF_ALLOCATOR_EVENT_RING_CAPACITY;
+
+  std::atomic<std::uint64_t> next_sequence_{1};
+  std::array<slot, k_capacity> slots_{};
 };
 
 class attributed_out_of_memory final : public rmm::out_of_memory {
@@ -172,6 +230,7 @@ class query_domain_resource final : public rmm::mr::device_memory_resource {
 
   query_domain_resource(cudaMemPool_t pool,
                         std::uint64_t domain_id,
+                        std::uint64_t domain_generation,
                         std::size_t grant_bytes,
                         std::size_t requested_ceiling_bytes,
                         std::size_t effective_ceiling_bytes);
@@ -254,6 +313,7 @@ class query_domain_resource final : public rmm::mr::device_memory_resource {
 
   rmm::mr::cuda_async_view_memory_resource view_;
   std::uint64_t domain_id_;
+  std::uint64_t domain_generation_;
   std::atomic<std::size_t> grant_bytes_{0};
   std::size_t requested_ceiling_bytes_;
   std::size_t effective_ceiling_bytes_;
@@ -272,6 +332,7 @@ class query_domain_resource final : public rmm::mr::device_memory_resource {
 
 struct query_domain_state {
   std::uint64_t id = 0;
+  std::uint64_t generation = 0;
   int32_t device   = -1;
   cudaMemPool_t pool{};
   std::size_t ceiling_bytes           = 0;
@@ -589,6 +650,9 @@ struct device_memory_manager_state {
   bool has_installation_identity                        = false;
   cudf_memory_manager_installation_identity_t installation_identity{};
   std::uint64_t installation_generation                 = 0;
+  /// Constructed before any allocator callback can be reached and retained for
+  /// the process lifetime of this device manager.
+  std::unique_ptr<allocator_event_ring> allocator_events;
 };
 
 struct reservation_handle_state {
@@ -625,6 +689,7 @@ std::unique_ptr<rmm::mr::device_memory_resource> make_bounded_failure_callback_r
   void* callback_arg,
   cudaMemPool_t pool,
   int32_t device_ordinal,
+  allocator_event_ring* allocator_events,
   std::atomic<bool>* callback_panicked = nullptr);
 std::unique_ptr<rmm::mr::device_memory_resource> make_bounded_failure_callback_resource(
   rmm::mr::device_memory_resource* upstream,
@@ -632,6 +697,7 @@ std::unique_ptr<rmm::mr::device_memory_resource> make_bounded_failure_callback_r
   void* callback_arg,
   cudaMemPool_t pool,
   int32_t device_ordinal,
+  allocator_event_ring* allocator_events,
   std::atomic<bool>* callback_panicked = nullptr);
 
 }  // namespace cudf::rust::memory

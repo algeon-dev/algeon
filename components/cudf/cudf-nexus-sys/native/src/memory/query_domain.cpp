@@ -11,6 +11,16 @@
 
 namespace cudf::rust::memory {
 
+namespace {
+
+std::atomic<std::uint64_t>& next_query_domain_generation()
+{
+  static std::atomic<std::uint64_t> next{1};
+  return next;
+}
+
+}  // namespace
+
 query_domain_state::~query_domain_state()
 {
   resource.reset();
@@ -30,11 +40,13 @@ query_domain_state::~query_domain_state()
 
 query_domain_resource::query_domain_resource(cudaMemPool_t pool,
                                              std::uint64_t domain_id,
+                                             std::uint64_t domain_generation,
                                              std::size_t grant_bytes,
                                              std::size_t requested_ceiling_bytes,
                                              std::size_t effective_ceiling_bytes)
   : view_{pool},
     domain_id_{domain_id},
+    domain_generation_{domain_generation},
     grant_bytes_{grant_bytes},
     requested_ceiling_bytes_{requested_ceiling_bytes},
     effective_ceiling_bytes_{effective_ceiling_bytes}
@@ -210,6 +222,7 @@ bool query_domain_resource::would_exceed_pool_ceiling(std::size_t aligned_bytes)
     CUDF_MEMORY_FAILURE_DOMAIN_QUERY_MEMORY_DOMAIN,
     domain_id_,
     member == nullptr ? 0 : member->id,
+    domain_generation_,
   };
 }
 
@@ -521,13 +534,19 @@ std::shared_ptr<query_domain_state> reservation_aware_resource_adaptor::create_q
     auto state                     = std::make_shared<query_domain_state>();
     auto* domain_pool              = pool;
     state->id                      = domain_id;
+    state->generation              = next_query_domain_generation().fetch_add(1, std::memory_order_relaxed);
     state->device                  = device;
     state->pool                    = domain_pool;
     pool                           = nullptr;
     state->ceiling_bytes           = ceiling_bytes;
     state->effective_ceiling_bytes = static_cast<std::size_t>(effective_ceiling);
     state->resource                = std::make_shared<query_domain_resource>(
-      domain_pool, domain_id, grant_bytes, state->ceiling_bytes, state->effective_ceiling_bytes);
+      domain_pool,
+      domain_id,
+      state->generation,
+      grant_bytes,
+      state->ceiling_bytes,
+      state->effective_ceiling_bytes);
     {
       std::unique_lock lock{query_domain_mutex_};
       query_domains_by_pool_[domain_pool] = state;
@@ -829,6 +848,7 @@ std::unique_ptr<memory_resource_handle_state> make_query_domain_member_resource_
                                                       manager->failure_callback_arg,
                                                       member->domain->pool,
                                                       manager->device,
+                                                      manager->allocator_events.get(),
                                                       &manager->failure_callback_panicked);
   } else if (manager->failure_callback != nullptr) {
     owner.reservation_mr = std::move(direct);
@@ -837,6 +857,7 @@ std::unique_ptr<memory_resource_handle_state> make_query_domain_member_resource_
                                                       manager->failure_callback_arg,
                                                       member->domain->pool,
                                                       manager->device,
+                                                      manager->allocator_events.get(),
                                                       &manager->failure_callback_panicked);
   } else {
     owner.mr = std::move(direct);
@@ -986,6 +1007,28 @@ cudf_status_t cudf_query_memory_domain_usage(cudf_query_memory_domain_handle dom
       return CUDF_ERROR_INVALID_OPERATION;
     }
     *out = adaptor->query_domain_usage(state.domain);
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_query_memory_domain_identity(cudf_query_memory_domain_handle domain,
+                                                cudf_query_memory_domain_identity_t* out)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = {};
+  CUDF_RUST_NULL_CHECK(domain, "query memory domain is null");
+  CUDF_RUST_TRY
+  {
+    auto const& state = *reinterpret_cast<query_domain_handle_state*>(domain);
+    if (state.manager == nullptr || state.domain == nullptr) {
+      set_error("query memory domain identity is unavailable");
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
+    out->struct_size    = sizeof(cudf_query_memory_domain_identity_t);
+    out->device_ordinal = state.manager->device;
+    out->domain_id      = state.domain->id;
+    out->generation     = state.domain->generation;
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH

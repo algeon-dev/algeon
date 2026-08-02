@@ -221,7 +221,11 @@ void fill_installation_record(device_memory_manager_state* manager,
     out.status = CUDF_MEMORY_MANAGER_INSTALLATION_OWNED;
     out.retry  = CUDF_MEMORY_MANAGER_INSTALLATION_REUSABLE;
   }
-  if (out.cause == CUDF_MEMORY_MANAGER_INSTALLATION_CAUSE_NONE) {
+  // A rejected installation reports the reason this request was rejected,
+  // rather than a pre-existing health issue that happens to coexist with it.
+  // In particular, immutable option conflicts must not be masked by an
+  // allocator that was also installed without a failure callback.
+  if (requested_cause != CUDF_MEMORY_MANAGER_INSTALLATION_CAUSE_NONE) {
     out.cause = requested_cause;
   }
 }
@@ -307,6 +311,7 @@ std::shared_ptr<device_memory_manager_state> make_memory_manager_for_current_dev
 {
   auto manager                  = std::make_shared<device_memory_manager_state>();
   manager->device               = device;
+  manager->allocator_events     = std::make_unique<allocator_event_ring>();
   manager->options              = options;
   manager->failure_callback     = failure_callback;
   manager->failure_callback_v2  = failure_callback_v2;
@@ -363,6 +368,7 @@ std::shared_ptr<device_memory_manager_state> make_memory_manager_for_current_dev
                                                       failure_callback_arg,
                                                       async_pool_handle(owner.async_pool),
                                                       device,
+                                                      manager->allocator_events.get(),
                                                       &manager->failure_callback_panicked);
   } else if (failure_callback != nullptr) {
     owner.reservation_mr = std::move(adaptor);
@@ -371,6 +377,7 @@ std::shared_ptr<device_memory_manager_state> make_memory_manager_for_current_dev
                                                       failure_callback_arg,
                                                       async_pool_handle(owner.async_pool),
                                                       device,
+                                                      manager->allocator_events.get(),
                                                       &manager->failure_callback_panicked);
   } else {
     owner.mr = std::move(adaptor);
@@ -867,6 +874,49 @@ cudf_status_t cudf_memory_manager_trim_to(cudf_memory_manager_handle manager, ui
       return CUDF_ERROR_INVALID_OPERATION;
     }
     trim_async_pool_to(manager_state->owner->async_pool, keep_bytes);
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_memory_manager_allocator_event_ring_bounds(
+  cudf_memory_manager_handle manager, cudf_allocator_event_ring_bounds_t* out)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = {};
+  CUDF_RUST_NULL_CHECK(manager, "manager is null");
+  CUDF_RUST_TRY
+  {
+    auto manager_state = memory_manager_from_handle(manager);
+    if (manager_state == nullptr || manager_state->allocator_events == nullptr) {
+      set_error("memory manager allocator event ring is unavailable");
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
+    *out = manager_state->allocator_events->bounds();
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_memory_manager_read_allocator_event(
+  cudf_memory_manager_handle manager,
+  uint64_t sequence,
+  cudf_allocator_event_t* out,
+  cudf_allocator_event_read_status_t* status)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = {};
+  CUDF_RUST_NULL_CHECK(status, "status is null");
+  *status = CUDF_ALLOCATOR_EVENT_READ_NOT_YET_RECORDED;
+  CUDF_RUST_NULL_CHECK(manager, "manager is null");
+  CUDF_RUST_TRY
+  {
+    auto manager_state = memory_manager_from_handle(manager);
+    if (manager_state == nullptr || manager_state->allocator_events == nullptr) {
+      set_error("memory manager allocator event ring is unavailable");
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
+    *status = manager_state->allocator_events->read(sequence, *out);
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH

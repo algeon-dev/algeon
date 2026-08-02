@@ -67,11 +67,20 @@ fn memory_runtime_split_keeps_owner_state_local() {
     memory_units.sort();
     assert_eq!(
         memory_units,
-        ["internal.hpp", "manager.cpp", "query_domain.cpp", "reservation.cpp", "resource.cpp", "test_support.cpp"],
+        [
+            "allocator_event.cpp",
+            "internal.hpp",
+            "manager.cpp",
+            "query_domain.cpp",
+            "reservation.cpp",
+            "resource.cpp",
+            "test_support.cpp"
+        ],
         "the memory runtime must remain a shallow ownership-oriented split"
     );
 
     for (symbol, owner) in [
+        ("allocator_event_ring::record(", "allocator_event.cpp"),
         ("memory_resource_registry(", "resource.cpp"),
         ("memory_manager_registry(", "manager.cpp"),
         ("current_memory_resource_identities(", "manager.cpp"),
