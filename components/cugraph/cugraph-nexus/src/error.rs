@@ -443,7 +443,7 @@ unsafe fn check_error_with_cuda_failure(
                         device_id,
                         cudf::runtime::DeviceFaultKind::FatalDeviceOperation,
                         operation,
-                        Some(cuda_status),
+                        Some(cudf::runtime::DeviceFaultNativeStatus::Cuda(cuda_status)),
                     );
                 }
                 err = err
@@ -718,6 +718,6 @@ mod tests {
         let first = snapshot.first_fault().expect("fatal fault");
         assert_eq!(first.kind(), cudf::runtime::DeviceFaultKind::FatalDeviceOperation);
         assert_eq!(first.operation(), "test_fatal_cugraph_call");
-        assert_eq!(first.native_status(), Some(700));
+        assert_eq!(first.native_status(), Some(cudf::runtime::DeviceFaultNativeStatus::Cuda(700)));
     }
 }

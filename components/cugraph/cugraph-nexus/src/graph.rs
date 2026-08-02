@@ -2611,7 +2611,9 @@ mod tests {
 
         let snapshot = scope.health_snapshot(device);
         assert_eq!(snapshot.status(), cudf::runtime::DeviceHealthStatus::Unhealthy);
-        assert_eq!(snapshot.first_fault().expect("fatal graph destroy fault").operation(), "Graph::drop");
+        let first = snapshot.first_fault().expect("fatal graph destroy fault");
+        assert_eq!(first.operation(), "Graph::drop");
+        assert_eq!(first.native_status(), Some(cudf::runtime::DeviceFaultNativeStatus::Cuda(700)));
         assert!(snapshot.quarantined_teardown_count() >= 1);
         let error = cudf::runtime::DeviceEntryGuard::enter(device, "later_cugraph_owner_work")
             .expect_err("fatal graph teardown must reject later owner-device work");

@@ -123,7 +123,7 @@ pub(crate) fn check_cudf_status_on_device(
             device,
             cudf::runtime::DeviceFaultKind::FatalDeviceOperation,
             operation,
-            Some(status as i32),
+            Some(cudf::runtime::DeviceFaultNativeStatus::Cudf(status)),
         );
     }
     check_cudf_status(status, operation)
@@ -175,7 +175,7 @@ pub(crate) fn drop_device_resource<T>(
                 device,
                 cudf::runtime::DeviceFaultKind::FatalDeviceOperation,
                 operation,
-                Some(cuda_status),
+                Some(cudf::runtime::DeviceFaultNativeStatus::Cuda(cuda_status)),
             );
         }
         quarantine_device_resource(device, operation, &NativeDestroyFailure { status, cuda_status });
