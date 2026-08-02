@@ -35,6 +35,12 @@ fn emit_native_link_metadata(paths: &[PathBuf]) {
     println!("cargo:metadata=native-link-dirs={}", joined.to_string_lossy());
 }
 
+fn emit_cuvs_metadata(cuvs: &build_support::CanonicalCuvsContract) {
+    println!("cargo::metadata=cuvs-install-dir={}", cuvs.install_dir.display());
+    println!("cargo::metadata=cuvs-library-path={}", cuvs.library_path.display());
+    println!("cargo::metadata=cuvs-runtime-lib-dir={}", cuvs.runtime_lib_dir.display());
+}
+
 fn main() {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let cmake_build_dir_env = env::var_os("CUGRAPH_CMAKE_BUILD_DIR");
@@ -49,6 +55,7 @@ fn main() {
                 &manifest_dir,
                 env::var_os("CUGRAPH_CPP_BUILD_DIR"),
                 env::var_os("CUDF_INSTALL_DIR"),
+                env::var_os("CUVS_INSTALL_DIR"),
                 env::var_os("CUGRAPH_SYS_AUTO_BUILD"),
                 env::var_os("CMAKE_CUDA_ARCHITECTURES"),
             )
@@ -59,7 +66,7 @@ fn main() {
         cmake_build_dir_env.clone()
     };
 
-    let contract = build_support::resolve_native_build_contract(
+    let mut contract = build_support::resolve_native_build_contract(
         &manifest_dir,
         env::var_os("CUGRAPH_NATIVE_INCLUDE_DIRS"),
         env::var_os("CUGRAPH_NATIVE_LINK_DIRS"),
@@ -67,6 +74,21 @@ fn main() {
         effective_cmake_build_dir_env.clone(),
     )
     .unwrap_or_else(|err| panic!("{err}"));
+    let cuvs = build_support::resolve_canonical_cuvs_contract(&manifest_dir, env::var_os("CUVS_INSTALL_DIR"))
+        .unwrap_or_else(|err| panic!("{err}"));
+    let validated_loader =
+        build_support::validate_cugraph_cuvs_loader(&contract.native_link_dirs, &contract.runtime_lib_dirs, &cuvs)
+            .unwrap_or_else(|err| panic!("{err}"));
+    if validated_loader.cuvs_library_path != cuvs.library_path {
+        panic!(
+            "The validated libcuvs identity '{}' changed from the canonical contract '{}'.",
+            validated_loader.cuvs_library_path.display(),
+            cuvs.library_path.display()
+        );
+    }
+    if !contract.runtime_lib_dirs.iter().any(|path| path == &cuvs.runtime_lib_dir) {
+        contract.runtime_lib_dirs.push(cuvs.runtime_lib_dir.clone());
+    }
     if let Ok(cmake_export_dir) =
         build_support::resolve_cmake_export_dir(&manifest_dir, effective_cmake_build_dir_env.clone())
     {
@@ -88,6 +110,7 @@ fn main() {
     emit_runtime_metadata(&contract.runtime_lib_dirs);
     emit_native_include_metadata(&contract.native_include_dirs);
     emit_native_link_metadata(&contract.native_link_dirs);
+    emit_cuvs_metadata(&cuvs);
 
     println!("cargo:rerun-if-env-changed=CC");
     println!("cargo:rerun-if-env-changed=CUGRAPH_NATIVE_INCLUDE_DIRS");
@@ -97,8 +120,15 @@ fn main() {
     println!("cargo:rerun-if-env-changed=CUGRAPH_CPP_BUILD_DIR");
     println!("cargo:rerun-if-env-changed=CUGRAPH_SYS_AUTO_BUILD");
     println!("cargo:rerun-if-env-changed=CUDF_INSTALL_DIR");
+    println!("cargo:rerun-if-env-changed=CUVS_INSTALL_DIR");
+    println!("cargo:rerun-if-env-changed=LD_LIBRARY_PATH");
     println!("cargo:rerun-if-env-changed=CMAKE_CUDA_ARCHITECTURES");
     println!("cargo:rerun-if-changed=wrapper.h");
+    println!("cargo:rerun-if-changed={}", cuvs.cmake_config_dir.join("cuvs-config.cmake").display());
+    println!("cargo:rerun-if-changed={}", cuvs.library_selector_path.display());
+    println!("cargo:rerun-if-changed={}", cuvs.library_path.display());
+    println!("cargo:rerun-if-changed={}", validated_loader.cugraph_library_selector_path.display());
+    println!("cargo:rerun-if-changed={}", validated_loader.cugraph_library_path.display());
 
     // layout_algorithms.h is excluded from wrapper.h to avoid a generated type
     // collision, so CargoCallbacks cannot track it. Track it explicitly so

@@ -40,6 +40,14 @@ fn create_required_library_files(dir: &Path) {
     }
 }
 
+fn create_cuvs_install(prefix: &Path) -> PathBuf {
+    let config_dir = prefix.join("lib/cmake/cuvs");
+    fs::create_dir_all(&config_dir).expect("create cuVS CMake package dir");
+    fs::write(config_dir.join("cuvs-config.cmake"), []).expect("write cuVS CMake package config");
+    fs::write(prefix.join("lib/libcuvs.so"), []).expect("write libcuvs.so");
+    prefix.to_path_buf()
+}
+
 fn join_paths(paths: &[PathBuf]) -> std::ffi::OsString {
     env::join_paths(paths).expect("join test path list")
 }
@@ -202,8 +210,10 @@ fn prepare_workspace_cmake_export_dir_reuses_existing_canonical_build() {
     let cpp_dir = root.path().join("repo").join("cugraph").join("cpp");
     let build_dir = cpp_dir.join("build");
     let cudf_install = root.path().join("cudf-nexus").join("cudf-install");
+    let cuvs_install = create_cuvs_install(&root.path().join("cuvs-nexus").join("cuvs-install"));
     let rmm_dir = cudf_install.join("lib").join("cmake").join("rmm");
     let logger_dir = cudf_install.join("lib").join("cmake").join("rapids_logger");
+    let cuvs_dir = cuvs_install.join("lib/cmake/cuvs");
 
     fs::create_dir_all(&manifest_dir).expect("create manifest dir");
     fs::create_dir_all(&cpp_dir).expect("create cpp dir");
@@ -215,16 +225,17 @@ fn prepare_workspace_cmake_export_dir_reuses_existing_canonical_build() {
     fs::write(
         build_dir.join("CMakeCache.txt"),
         format!(
-            "CMAKE_CUDA_ARCHITECTURES:STRING=NATIVE\nrmm_DIR:PATH={}\nrapids_logger_DIR:PATH={}\n",
+            "CMAKE_CUDA_ARCHITECTURES:STRING=NATIVE\nrmm_DIR:PATH={}\nrapids_logger_DIR:PATH={}\ncuvs_DIR:PATH={}\n",
             rmm_dir.display(),
-            logger_dir.display()
+            logger_dir.display(),
+            cuvs_dir.display()
         ),
     )
     .expect("write cache");
     fs::write(rmm_dir.join("rmm-config.cmake"), []).expect("write rmm config");
     fs::write(logger_dir.join("rapids_logger-config.cmake"), []).expect("write logger config");
 
-    let resolved = build_support::prepare_workspace_cmake_export_dir(&manifest_dir, None, None, None, None)
+    let resolved = build_support::prepare_workspace_cmake_export_dir(&manifest_dir, None, None, None, None, None)
         .expect("reuse existing canonical native build");
 
     assert_eq!(resolved, build_dir.canonicalize().expect("canonical build dir"));
@@ -236,6 +247,7 @@ fn prepare_workspace_cmake_export_dir_honors_auto_build_opt_out() {
     let manifest_dir = root.path().join("repo").join("cugraph-nexus-sys");
     let cpp_dir = root.path().join("repo").join("cugraph").join("cpp");
     let cudf_install = root.path().join("cudf-nexus").join("cudf-install");
+    create_cuvs_install(&root.path().join("cuvs-nexus").join("cuvs-install"));
     let rmm_dir = cudf_install.join("lib").join("cmake").join("rmm");
     let logger_dir = cudf_install.join("lib").join("cmake").join("rapids_logger");
 
@@ -247,8 +259,9 @@ fn prepare_workspace_cmake_export_dir_honors_auto_build_opt_out() {
     fs::write(rmm_dir.join("rmm-config.cmake"), []).expect("write rmm config");
     fs::write(logger_dir.join("rapids_logger-config.cmake"), []).expect("write logger config");
 
-    let err = build_support::prepare_workspace_cmake_export_dir(&manifest_dir, None, None, Some("0".into()), None)
-        .unwrap_err();
+    let err =
+        build_support::prepare_workspace_cmake_export_dir(&manifest_dir, None, None, None, Some("0".into()), None)
+            .unwrap_err();
 
     assert!(err.contains("CUGRAPH_SYS_AUTO_BUILD"));
     assert!(err.contains("disabled"));
@@ -261,8 +274,10 @@ fn prepare_workspace_cmake_export_dir_rejects_stale_cuda_arch_when_auto_build_is
     let cpp_dir = root.path().join("repo").join("cugraph").join("cpp");
     let build_dir = cpp_dir.join("build");
     let cudf_install = root.path().join("cudf-nexus").join("cudf-install");
+    let cuvs_install = create_cuvs_install(&root.path().join("cuvs-nexus").join("cuvs-install"));
     let rmm_dir = cudf_install.join("lib").join("cmake").join("rmm");
     let logger_dir = cudf_install.join("lib").join("cmake").join("rapids_logger");
+    let cuvs_dir = cuvs_install.join("lib/cmake/cuvs");
 
     fs::create_dir_all(&manifest_dir).expect("create manifest dir");
     fs::create_dir_all(&cpp_dir).expect("create cpp dir");
@@ -274,9 +289,10 @@ fn prepare_workspace_cmake_export_dir_rejects_stale_cuda_arch_when_auto_build_is
     fs::write(
         build_dir.join("CMakeCache.txt"),
         format!(
-            "CMAKE_CUDA_ARCHITECTURES:STRING=80\nrmm_DIR:PATH={}\nrapids_logger_DIR:PATH={}\n",
+            "CMAKE_CUDA_ARCHITECTURES:STRING=80\nrmm_DIR:PATH={}\nrapids_logger_DIR:PATH={}\ncuvs_DIR:PATH={}\n",
             rmm_dir.display(),
-            logger_dir.display()
+            logger_dir.display(),
+            cuvs_dir.display()
         ),
     )
     .expect("write cache");
@@ -285,6 +301,7 @@ fn prepare_workspace_cmake_export_dir_rejects_stale_cuda_arch_when_auto_build_is
 
     let err = build_support::prepare_workspace_cmake_export_dir(
         &manifest_dir,
+        None,
         None,
         None,
         Some("0".into()),
@@ -401,6 +418,185 @@ fn primary_cugraph_include_dir_returns_the_path_with_cugraph_headers() {
     let resolved = build_support::primary_cugraph_include_dir(&include_dirs).expect("primary include dir");
 
     assert_eq!(resolved, cugraph_include.canonicalize().expect("canonical cugraph include"));
+}
+
+#[test]
+fn canonical_cuvs_contract_resolves_cmake_package_and_library_identity() {
+    let root = TestDir::new();
+    let manifest_dir = root.path().join("repo/cugraph-nexus-sys");
+    let cuvs_install = create_cuvs_install(&root.path().join("canonical-cuvs"));
+    fs::create_dir_all(&manifest_dir).expect("create manifest dir");
+
+    let contract =
+        build_support::resolve_canonical_cuvs_contract(&manifest_dir, Some(cuvs_install.as_os_str().to_os_string()))
+            .expect("resolve canonical cuVS contract");
+
+    assert_eq!(contract.install_dir, cuvs_install.canonicalize().expect("canonical cuVS prefix"));
+    assert_eq!(contract.cmake_config_dir, cuvs_install.join("lib/cmake/cuvs"));
+    assert_eq!(contract.runtime_lib_dir, cuvs_install.join("lib"));
+    assert_eq!(contract.library_selector_path, cuvs_install.join("lib/libcuvs.so"));
+    assert_eq!(contract.library_path, cuvs_install.join("lib/libcuvs.so"));
+}
+
+#[test]
+fn canonical_cuvs_contract_rejects_missing_shared_library() {
+    let root = TestDir::new();
+    let manifest_dir = root.path().join("repo/cugraph-nexus-sys");
+    let cuvs_install = create_cuvs_install(&root.path().join("missing-lib"));
+    fs::create_dir_all(&manifest_dir).expect("create manifest dir");
+    fs::remove_file(cuvs_install.join("lib/libcuvs.so")).expect("remove libcuvs fixture");
+
+    let err =
+        build_support::resolve_canonical_cuvs_contract(&manifest_dir, Some(cuvs_install.as_os_str().to_os_string()))
+            .unwrap_err();
+
+    assert!(err.contains("libcuvs.so"));
+    assert!(err.contains("CUVS_INSTALL_DIR"));
+}
+
+#[cfg(unix)]
+#[test]
+fn canonical_cuvs_contract_preserves_selector_and_refreshes_symlink_identity() {
+    use std::os::unix::fs::symlink;
+
+    let root = TestDir::new();
+    let manifest_dir = root.path().join("repo/cugraph-nexus-sys");
+    let cuvs_install = create_cuvs_install(&root.path().join("external-cuvs"));
+    fs::create_dir_all(&manifest_dir).expect("create manifest dir");
+    let selector = cuvs_install.join("lib/libcuvs.so");
+    let version_one = cuvs_install.join("lib/libcuvs.so.one");
+    let version_two = cuvs_install.join("lib/libcuvs.so.two");
+    fs::remove_file(&selector).expect("replace fixture with symlink");
+    fs::write(&version_one, []).expect("create first libcuvs identity");
+    fs::write(&version_two, []).expect("create second libcuvs identity");
+    symlink(&version_one, &selector).expect("link first libcuvs identity");
+
+    let first =
+        build_support::resolve_canonical_cuvs_contract(&manifest_dir, Some(cuvs_install.as_os_str().to_os_string()))
+            .expect("resolve first identity");
+    fs::remove_file(&selector).expect("remove first selector");
+    symlink(&version_two, &selector).expect("link second libcuvs identity");
+    let second =
+        build_support::resolve_canonical_cuvs_contract(&manifest_dir, Some(cuvs_install.as_os_str().to_os_string()))
+            .expect("resolve second identity");
+
+    assert_eq!(first.library_selector_path, selector);
+    assert_eq!(second.library_selector_path, selector);
+    assert_eq!(first.library_path, version_one.canonicalize().unwrap());
+    assert_eq!(second.library_path, version_two.canonicalize().unwrap());
+}
+
+#[test]
+fn loader_contract_accepts_exact_canonical_cuvs_identity() {
+    let root = TestDir::new();
+    let canonical_lib = root.path().join("canonical/lib/libcuvs.so.26");
+    fs::create_dir_all(canonical_lib.parent().unwrap()).expect("create canonical lib dir");
+    fs::write(&canonical_lib, []).expect("create canonical libcuvs");
+    let readelf = " 0x0000000000000001 (NEEDED) Shared library: [libcuvs.so]\n";
+    let ldd = format!("libcuvs.so => {} (0x0000)\n", canonical_lib.display());
+
+    let resolved = build_support::validate_cuvs_loader_outputs(readelf, &ldd, &canonical_lib)
+        .expect("validate exact canonical loader identity");
+
+    assert_eq!(resolved, canonical_lib.canonicalize().expect("canonical libcuvs"));
+}
+
+#[test]
+fn loader_contract_rejects_private_cuvs_and_unresolved_dependencies() {
+    let root = TestDir::new();
+    let canonical_lib = root.path().join("canonical/lib/libcuvs.so");
+    let private_lib = root.path().join("build/_deps/cuvs-build/libcuvs.so");
+    fs::create_dir_all(canonical_lib.parent().unwrap()).expect("create canonical lib dir");
+    fs::create_dir_all(private_lib.parent().unwrap()).expect("create private lib dir");
+    fs::write(&canonical_lib, []).expect("create canonical libcuvs");
+    fs::write(&private_lib, []).expect("create private libcuvs");
+
+    let private_readelf = format!(
+        " 0x1 (NEEDED) Shared library: [libcuvs.so]\n 0x1 (RUNPATH) Library runpath: [{}]\n",
+        private_lib.parent().unwrap().display()
+    );
+    let private_ldd = format!("libcuvs.so => {} (0x0000)\n", private_lib.display());
+    let err = build_support::validate_cuvs_loader_outputs(&private_readelf, &private_ldd, &canonical_lib).unwrap_err();
+    assert!(err.contains("private _deps"));
+
+    let clean_readelf = " 0x1 (NEEDED) Shared library: [libcuvs.so]\n";
+    let unresolved_ldd = "libcuvs.so => not found\nlibraft.so => not found\n";
+    let err = build_support::validate_cuvs_loader_outputs(clean_readelf, unresolved_ldd, &canonical_lib).unwrap_err();
+    assert!(err.contains("unresolved loader dependencies"));
+    assert!(err.contains("libraft.so"));
+}
+
+#[test]
+fn loader_contract_allows_non_cuvs_deps_under_a_build_path_named_cuvs() {
+    let root = TestDir::new();
+    let canonical_lib = root.path().join("canonical/lib/libcuvs.so");
+    fs::create_dir_all(canonical_lib.parent().unwrap()).expect("create canonical lib dir");
+    fs::write(&canonical_lib, []).expect("create canonical libcuvs");
+    let runpath = root.path().join("build-canonical-cuvs/_deps/raft-build");
+    let readelf = format!(
+        " 0x1 (NEEDED) Shared library: [libcuvs.so]\n 0x1 (RUNPATH) Library runpath: [{}]\n",
+        runpath.display()
+    );
+    let ldd = format!("libcuvs.so => {} (0x0)\n", canonical_lib.display());
+
+    let resolved = build_support::validate_cuvs_loader_outputs(&readelf, &ldd, &canonical_lib)
+        .expect("RAFT _deps path must not be conflated with private cuVS");
+
+    assert_eq!(resolved, canonical_lib.canonicalize().unwrap());
+}
+
+#[test]
+fn loader_contract_rejects_noncanonical_resolution() {
+    let root = TestDir::new();
+    let canonical_lib = root.path().join("canonical/lib/libcuvs.so");
+    let other_lib = root.path().join("other/lib/libcuvs.so");
+    fs::create_dir_all(canonical_lib.parent().unwrap()).expect("create canonical lib dir");
+    fs::create_dir_all(other_lib.parent().unwrap()).expect("create other lib dir");
+    fs::write(&canonical_lib, []).expect("create canonical libcuvs");
+    fs::write(&other_lib, []).expect("create other libcuvs");
+    let readelf = " 0x1 (NEEDED) Shared library: [libcuvs.so]\n";
+    let ldd = format!("libcuvs.so => {} (0x0000)\n", other_lib.display());
+
+    let err = build_support::validate_cuvs_loader_outputs(readelf, &ldd, &canonical_lib).unwrap_err();
+
+    assert!(err.contains("instead of canonical"));
+    assert!(err.contains(&other_lib.display().to_string()));
+}
+
+#[test]
+fn controlled_loader_search_path_prepends_declared_contract_and_preserves_ambient_paths() {
+    let root = TestDir::new();
+    let runtime_a = root.path().join("runtime-a");
+    let runtime_b = root.path().join("runtime-b");
+    let cuvs_runtime = root.path().join("cuvs-runtime");
+    let ambient = root.path().join("ambient");
+    let ambient_value = join_paths(&[ambient.clone(), runtime_a.clone()]);
+
+    let encoded = build_support::controlled_loader_search_path(
+        &[runtime_a.clone(), runtime_b.clone()],
+        &cuvs_runtime,
+        Some(ambient_value),
+    )
+    .expect("construct controlled loader path");
+
+    assert_eq!(env::split_paths(&encoded).collect::<Vec<_>>(), vec![runtime_a, runtime_b, cuvs_runtime, ambient]);
+}
+
+#[test]
+fn ambient_loader_check_allows_missing_cuvs_but_rejects_shadowing() {
+    let root = TestDir::new();
+    let canonical_lib = root.path().join("canonical/libcuvs.so");
+    let shadow_lib = root.path().join("shadow/libcuvs.so");
+    fs::create_dir_all(canonical_lib.parent().unwrap()).expect("create canonical dir");
+    fs::create_dir_all(shadow_lib.parent().unwrap()).expect("create shadow dir");
+    fs::write(&canonical_lib, []).expect("create canonical libcuvs");
+    fs::write(&shadow_lib, []).expect("create shadow libcuvs");
+
+    build_support::validate_ambient_cuvs_resolution("libcuvs.so => not found\n", &canonical_lib)
+        .expect("ambient absence is allowed because controlled closure is authoritative");
+    let shadow_output = format!("libcuvs.so => {} (0x0)\n", shadow_lib.display());
+    let err = build_support::validate_ambient_cuvs_resolution(&shadow_output, &canonical_lib).unwrap_err();
+    assert!(err.contains("shadows canonical libcuvs"));
 }
 
 #[test]

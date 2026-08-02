@@ -16,6 +16,9 @@ build = "build.rs"
 [lib]
 name = "cugraph"
 
+[features]
+test-hooks = ["cudf-sys/test-hooks"]
+
 [dependencies]
 cudf.workspace = true
 cudf-sys.workspace = true
@@ -24,7 +27,6 @@ rapids-interop.workspace = true
 
 [dev-dependencies]
 anyhow.workspace = true
-cudf-sys = { workspace = true, features = ["test-hooks"] }
 static_assertions.workspace = true
 
 [build-dependencies]
@@ -33,3 +35,19 @@ cc.workspace = true
 [[bin]]
 name = "allocator_routing_probe"
 path = "tests/bin/allocator_routing_probe.rs"
+required-features = ["test-hooks"]
+
+[[test]]
+name = "cudf_allocator_routing"
+path = "tests/cudf_allocator_routing.rs"
+required-features = ["test-hooks"]
+
+[[test]]
+name = "cudf_prepared"
+path = "tests/cudf_prepared.rs"
+required-features = ["test-hooks"]
+
+[[test]]
+name = "cudf_provenance"
+path = "tests/cudf_provenance.rs"
+required-features = ["test-hooks"]

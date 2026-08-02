@@ -20,6 +20,18 @@ fn read_downstream_build_rs() -> String {
     fs::read_to_string(manifest_dir.join("../cugraph-nexus/build.rs")).expect("failed to read downstream build.rs")
 }
 
+fn read_manual_build_script() -> String {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    fs::read_to_string(manifest_dir.join("../scripts/build_libcugraph.sh"))
+        .expect("failed to read scripts/build_libcugraph.sh")
+}
+
+fn read_upstream_cugraph_file(path: &str) -> String {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    fs::read_to_string(manifest_dir.join("../cugraph/cpp").join(path))
+        .unwrap_or_else(|_| panic!("failed to read upstream cuGraph file {path}"))
+}
+
 fn read_test_source(path: &str) -> String {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     fs::read_to_string(manifest_dir.join(path)).unwrap_or_else(|_| panic!("failed to read {path}"))
@@ -108,6 +120,8 @@ fn build_rs_tracks_explicit_native_contract_env_changes() {
         "CUGRAPH_CPP_BUILD_DIR",
         "CUGRAPH_SYS_AUTO_BUILD",
         "CUDF_INSTALL_DIR",
+        "CUVS_INSTALL_DIR",
+        "LD_LIBRARY_PATH",
         "CMAKE_CUDA_ARCHITECTURES",
     ] {
         assert!(
@@ -155,6 +169,68 @@ fn build_rs_emits_runtime_library_metadata_for_downstream_consumers() {
         build_rs.contains("cargo:metadata=native-link-dirs="),
         "build.rs should emit native link metadata for downstream shim dependencies"
     );
+    for key in ["cuvs-install-dir", "cuvs-library-path", "cuvs-runtime-lib-dir"] {
+        assert!(
+            build_rs.contains(&format!("cargo::metadata={key}=")),
+            "build.rs should export canonical cuVS identity metadata key {key}"
+        );
+    }
+}
+
+#[test]
+fn manual_and_cargo_builds_share_canonical_cuvs_contract() {
+    let build_rs = read_build_rs();
+    let build_support = read_build_support_rs();
+    let manual_script = read_manual_build_script();
+
+    assert!(build_rs.contains("env::var_os(\"CUVS_INSTALL_DIR\")"));
+    assert!(build_support.contains("-Dcuvs_ROOT={}"));
+    assert!(manual_script.contains("CUVS_INSTALL_DIR"));
+    assert!(manual_script.contains("-Dcuvs_ROOT=${cuvs_install_dir}"));
+    assert!(build_support.contains("cuvs_DIR"));
+    assert!(manual_script.contains("check_package_dir cuvs_DIR"));
+    assert!(build_support.contains("libcuvs.so"));
+    assert!(manual_script.contains("libcuvs.so"));
+    assert!(build_support.contains("-DCUGRAPH_USE_CUVS_STATIC=OFF"));
+    assert!(manual_script.contains("-DCUGRAPH_USE_CUVS_STATIC=OFF"));
+}
+
+#[test]
+fn build_rs_tracks_cuvs_selectors_and_native_identity_inputs() {
+    let build_rs = read_build_rs();
+
+    for tracked in [
+        "cuvs.library_selector_path",
+        "cuvs.library_path",
+        "validated_loader.cugraph_library_selector_path",
+        "validated_loader.cugraph_library_path",
+    ] {
+        assert!(
+            build_rs.contains(&format!("cargo:rerun-if-changed={{}}\", {tracked}.display()")),
+            "build.rs must track {tracked} so native identity metadata cannot become stale"
+        );
+    }
+}
+
+#[test]
+fn loader_validation_uses_controlled_and_ambient_environments() {
+    let build_support = read_build_support_rs();
+
+    assert!(build_support.contains("controlled_loader_search_path("));
+    assert!(build_support.contains(".env(\"LD_LIBRARY_PATH\", &loader_search_path)"));
+    assert!(build_support.contains("inspect ambient libcugraph loader resolution"));
+    assert!(build_support.contains("validate_ambient_cuvs_resolution"));
+}
+
+#[test]
+fn upstream_cugraph_consumer_contract_links_the_shared_cuvs_cpp_target() {
+    let get_cuvs = read_upstream_cugraph_file("cmake/thirdparty/get_cuvs.cmake");
+    let cmake_lists = read_upstream_cugraph_file("CMakeLists.txt");
+
+    assert!(get_cuvs.contains("GLOBAL_TARGETS      cuvs::cuvs"));
+    assert!(get_cuvs.contains("rapids_cpm_find(cuvs ${PKG_VERSION}"));
+    assert!(cmake_lists.contains("cuvs::cuvs"));
+    assert!(cmake_lists.contains("$<IF:$<BOOL:${CUGRAPH_USE_CUVS_STATIC}>,cuvs::cuvs_static,cuvs::cuvs>"));
 }
 
 #[test]

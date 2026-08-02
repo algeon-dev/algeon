@@ -18,6 +18,7 @@ struct WorkspaceNativeBuildLayout {
     src_dir: PathBuf,
     build_dir: PathBuf,
     cudf_install_dir: PathBuf,
+    cuvs: CanonicalCuvsContract,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,6 +26,22 @@ pub(crate) struct NativeBuildContract {
     pub(crate) native_include_dirs: Vec<PathBuf>,
     pub(crate) native_link_dirs: Vec<PathBuf>,
     pub(crate) runtime_lib_dirs: Vec<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CanonicalCuvsContract {
+    pub(crate) install_dir: PathBuf,
+    pub(crate) cmake_config_dir: PathBuf,
+    pub(crate) library_selector_path: PathBuf,
+    pub(crate) library_path: PathBuf,
+    pub(crate) runtime_lib_dir: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ValidatedCuvsLoader {
+    pub(crate) cugraph_library_selector_path: PathBuf,
+    pub(crate) cugraph_library_path: PathBuf,
+    pub(crate) cuvs_library_path: PathBuf,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,10 +62,12 @@ pub(crate) fn prepare_workspace_cmake_export_dir(
     manifest_dir: &Path,
     cpp_build_dir_env: Option<OsString>,
     cudf_install_dir_env: Option<OsString>,
+    cuvs_install_dir_env: Option<OsString>,
     auto_build_env: Option<OsString>,
     cuda_architectures_env: Option<OsString>,
 ) -> Result<PathBuf, String> {
-    let layout = workspace_native_build_layout(manifest_dir, cpp_build_dir_env, cudf_install_dir_env)?;
+    let layout =
+        workspace_native_build_layout(manifest_dir, cpp_build_dir_env, cudf_install_dir_env, cuvs_install_dir_env)?;
     let cuda_architectures = resolved_cuda_architectures(cuda_architectures_env.as_deref());
     let auto_build_enabled = auto_native_build_enabled(auto_build_env.as_deref())?;
     if layout.build_dir.join("cugraph-config.cmake").is_file() {
@@ -164,6 +183,74 @@ pub(crate) fn resolve_cmake_export_dir(manifest_dir: &Path, env_val: Option<OsSt
     ))
 }
 
+pub(crate) fn resolve_canonical_cuvs_contract(
+    manifest_dir: &Path,
+    cuvs_install_dir_env: Option<OsString>,
+) -> Result<CanonicalCuvsContract, String> {
+    let repo_root = manifest_dir.parent().ok_or_else(|| {
+        format!("Could not determine the repository root from CARGO_MANIFEST_DIR='{}'.", manifest_dir.display())
+    })?;
+    let workspace_parent = repo_root.parent().unwrap_or(repo_root);
+    let default_install_dir = workspace_parent.join("cuvs-nexus/cuvs-install");
+    let requested_install_dir = cuvs_install_dir_env.map(PathBuf::from).unwrap_or_else(|| default_install_dir.clone());
+    let install_dir = requested_install_dir.canonicalize().map_err(|error| {
+        format!(
+            "The canonical cuVS install prefix CUVS_INSTALL_DIR='{}' does not exist or is not accessible: {error}. \
+             Build/install cuVS first, or set CUVS_INSTALL_DIR to that canonical prefix.",
+            requested_install_dir.display()
+        )
+    })?;
+    if !install_dir.is_dir() {
+        return Err(format!(
+            "The canonical cuVS install prefix CUVS_INSTALL_DIR='{}' is not a directory.",
+            install_dir.display()
+        ));
+    }
+
+    let cmake_config_dir = [install_dir.join("lib/cmake/cuvs"), install_dir.join("lib64/cmake/cuvs")]
+        .into_iter()
+        .find(|dir| dir.join("cuvs-config.cmake").is_file())
+        .ok_or_else(|| {
+            format!(
+                "CUVS_INSTALL_DIR='{}' does not export a cuVS CMake package. Expected \
+                 lib/cmake/cuvs/cuvs-config.cmake or lib64/cmake/cuvs/cuvs-config.cmake.",
+                install_dir.display()
+            )
+        })?;
+    let cmake_config_dir = cmake_config_dir.canonicalize().map_err(|error| {
+        format!("Failed to canonicalize the cuVS CMake package directory '{}': {error}", cmake_config_dir.display())
+    })?;
+
+    let library_selector_path = [install_dir.join("lib/libcuvs.so"), install_dir.join("lib64/libcuvs.so")]
+        .into_iter()
+        .find(|path| path.is_file())
+        .ok_or_else(|| {
+            format!(
+                "CUVS_INSTALL_DIR='{}' does not contain the required shared library lib/libcuvs.so or \
+                 lib64/libcuvs.so.",
+                install_dir.display()
+            )
+        })?;
+    let runtime_lib_dir =
+        library_selector_path.parent().expect("libcuvs.so must have a parent directory").canonicalize().map_err(
+            |error| {
+                format!("Failed to canonicalize cuVS runtime directory '{}': {error}", library_selector_path.display())
+            },
+        )?;
+    let library_path = library_selector_path.canonicalize().map_err(|error| {
+        format!("Failed to resolve canonical libcuvs identity '{}': {error}", library_selector_path.display())
+    })?;
+    if !library_path.starts_with(&install_dir) {
+        return Err(format!(
+            "CUVS_INSTALL_DIR='{}' contains libcuvs.so resolving outside the canonical prefix to '{}'.",
+            install_dir.display(),
+            library_path.display()
+        ));
+    }
+
+    Ok(CanonicalCuvsContract { install_dir, cmake_config_dir, library_selector_path, library_path, runtime_lib_dir })
+}
+
 #[cfg_attr(test, allow(dead_code))]
 pub(crate) fn tracked_cmake_export_files(cmake_build_dir: &Path) -> Vec<PathBuf> {
     vec![
@@ -184,6 +271,7 @@ fn workspace_native_build_layout(
     manifest_dir: &Path,
     cpp_build_dir_env: Option<OsString>,
     cudf_install_dir_env: Option<OsString>,
+    cuvs_install_dir_env: Option<OsString>,
 ) -> Result<WorkspaceNativeBuildLayout, String> {
     let repo_root = manifest_dir.parent().ok_or_else(|| {
         format!("Could not determine the repository root from CARGO_MANIFEST_DIR='{}'.", manifest_dir.display())
@@ -218,7 +306,9 @@ fn workspace_native_build_layout(
         ));
     }
 
-    Ok(WorkspaceNativeBuildLayout { src_dir, build_dir, cudf_install_dir })
+    let cuvs = resolve_canonical_cuvs_contract(manifest_dir, cuvs_install_dir_env)?;
+
+    Ok(WorkspaceNativeBuildLayout { src_dir, build_dir, cudf_install_dir, cuvs })
 }
 
 fn auto_native_build_enabled(env_val: Option<&std::ffi::OsStr>) -> Result<bool, String> {
@@ -242,6 +332,7 @@ fn build_workspace_cugraph_cpp(
 
     let rmm_root = layout.cudf_install_dir.as_os_str();
     let rapids_logger_root = layout.cudf_install_dir.as_os_str();
+    let cuvs_root = layout.cuvs.install_dir.as_os_str();
 
     let mut configure_command = Command::new("cmake");
     configure_command
@@ -251,9 +342,11 @@ fn build_workspace_cugraph_cpp(
         .arg(&layout.build_dir)
         .arg("-GNinja")
         .arg("-DCMAKE_BUILD_TYPE=Release")
+        .arg("-DCMAKE_FIND_PACKAGE_PREFER_CONFIG=ON")
         .arg(format!("-DCMAKE_CUDA_ARCHITECTURES={}", cuda_architectures.to_string_lossy()))
         .arg("-DBUILD_TESTS=OFF")
         .arg("-DBUILD_CUGRAPH_MG_TESTS=OFF")
+        .arg("-DCUGRAPH_USE_CUVS_STATIC=OFF")
         .args([
             "-U",
             "rmm_DIR",
@@ -275,9 +368,28 @@ fn build_workspace_cugraph_cpp(
             "FETCHCONTENT_SOURCE_DIR_RAPIDS_LOGGER",
             "-U",
             "FETCHCONTENT_UPDATES_DISCONNECTED_RAPIDS_LOGGER",
+            "-U",
+            "cuvs_DIR",
+            "-U",
+            "CPM_PACKAGE_cuvs_*",
+            "-U",
+            "CPM_cuvs_SOURCE",
+            "-U",
+            "CPM_DOWNLOAD_cuvs",
+            "-U",
+            "cuvs_SOURCE_DIR",
+            "-U",
+            "cuvs_BINARY_DIR",
+            "-U",
+            "CUVS_*",
+            "-U",
+            "FETCHCONTENT_SOURCE_DIR_CUVS",
+            "-U",
+            "FETCHCONTENT_UPDATES_DISCONNECTED_CUVS",
         ])
         .arg(format!("-Drmm_ROOT={}", Path::new(rmm_root).display()))
-        .arg(format!("-Drapids_logger_ROOT={}", Path::new(rapids_logger_root).display()));
+        .arg(format!("-Drapids_logger_ROOT={}", Path::new(rapids_logger_root).display()))
+        .arg(format!("-Dcuvs_ROOT={}", Path::new(cuvs_root).display()));
 
     run_command_capture("configure native cuGraph with CMake", &mut configure_command)?;
     validate_workspace_runtime_packages(layout)?;
@@ -295,6 +407,7 @@ fn validate_workspace_runtime_packages(layout: &WorkspaceNativeBuildLayout) -> R
         "rapids_logger_DIR",
         &layout.cudf_install_dir.join("lib/cmake/rapids_logger"),
     )?;
+    validate_cmake_cache_package_dir(&layout.build_dir, "cuvs_DIR", &layout.cuvs.cmake_config_dir)?;
 
     reject_stale_private_runtime_artifacts(&layout.build_dir)
 }
@@ -335,6 +448,7 @@ fn workspace_build_reconfigure_reason(
     for (cache_key, expected_dir) in [
         ("rmm_DIR", layout.cudf_install_dir.join("lib/cmake/rmm")),
         ("rapids_logger_DIR", layout.cudf_install_dir.join("lib/cmake/rapids_logger")),
+        ("cuvs_DIR", layout.cuvs.cmake_config_dir.clone()),
     ] {
         let Some(cached) = cmake_cache_value(&cache, cache_key) else {
             return Ok(Some(format!("{cache_key} is missing from {}", cache_path.display())));
@@ -354,7 +468,7 @@ fn validate_cmake_cache_package_dir(build_dir: &Path, cache_key: &str, expected_
     let resolved = cmake_cache_value(&cache, cache_key).ok_or_else(|| {
         format!(
             "The cuGraph native CMake cache '{}' does not contain {cache_key}. Reconfigure native cuGraph with the \
-             canonical cudf install prefix.",
+             canonical external RAPIDS package prefixes.",
             cache_path.display()
         )
     })?;
@@ -365,7 +479,7 @@ fn validate_cmake_cache_package_dir(build_dir: &Path, cache_key: &str, expected_
 
     Err(format!(
         "The cuGraph native build resolved {cache_key}='{}' instead of '{}'. Reconfigure native cuGraph with \
-         CUDF_INSTALL_DIR pointing at the canonical cudf install prefix so cudf and cugraph share one RMM build.",
+         CUDF_INSTALL_DIR and CUVS_INSTALL_DIR pointing at the canonical prefixes.",
         resolved.display(),
         expected_dir.display()
     ))
@@ -378,7 +492,7 @@ fn reject_stale_private_runtime_artifacts(build_dir: &Path) -> Result<(), String
     }
 
     Err(format!(
-        "Stale private RMM/rapids_logger artifacts remain under '{}':\n{}\nRemove the stale build tree and rerun \
+        "Stale private RMM/rapids_logger/cuVS artifacts remain under '{}':\n{}\nRemove the stale build tree and rerun \
          cargo build so the loader cannot resolve a private RAPIDS runtime copy.",
         build_dir.join("_deps").display(),
         stale_artifacts.iter().map(|path| format!("  {}", path.display())).collect::<Vec<_>>().join("\n")
@@ -407,13 +521,223 @@ fn stale_private_runtime_artifacts(build_dir: &Path) -> Vec<PathBuf> {
             let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
                 continue;
             };
-            if name.starts_with("librmm.so") || name.starts_with("librapids_logger.so") {
+            if name.starts_with("librmm.so")
+                || name.starts_with("librapids_logger.so")
+                || name.starts_with("libcuvs.so")
+            {
                 artifacts.push(path);
             }
         }
     }
     artifacts.sort();
     artifacts
+}
+
+pub(crate) fn validate_cugraph_cuvs_loader(
+    native_link_dirs: &[PathBuf],
+    runtime_lib_dirs: &[PathBuf],
+    cuvs: &CanonicalCuvsContract,
+) -> Result<ValidatedCuvsLoader, String> {
+    let cugraph_library_selector_path =
+        native_link_dirs.iter().map(|dir| dir.join("libcugraph.so")).find(|path| path.is_file()).ok_or_else(|| {
+            format!(
+                "Could not locate libcugraph.so in the resolved native link directories: {}.",
+                display_paths(native_link_dirs)
+            )
+        })?;
+    let cugraph_library_path = cugraph_library_selector_path.canonicalize().map_err(|error| {
+        format!(
+            "Failed to resolve canonical libcugraph identity '{}': {error}",
+            cugraph_library_selector_path.display()
+        )
+    })?;
+
+    let readelf_output = command_stdout(
+        "inspect libcugraph ELF dependencies",
+        Command::new("readelf").arg("-d").arg(&cugraph_library_selector_path),
+    )?;
+    let loader_search_path =
+        controlled_loader_search_path(runtime_lib_dirs, &cuvs.runtime_lib_dir, env::var_os("LD_LIBRARY_PATH"))?;
+    let ldd_output = command_stdout(
+        "resolve libcugraph loader closure",
+        Command::new("ldd").arg(&cugraph_library_selector_path).env("LD_LIBRARY_PATH", &loader_search_path),
+    )?;
+    let cuvs_library_path = validate_cuvs_loader_outputs(&readelf_output, &ldd_output, &cuvs.library_path)?;
+    let ambient_ldd_output = command_stdout(
+        "inspect ambient libcugraph loader resolution",
+        Command::new("ldd").arg(&cugraph_library_selector_path),
+    )?;
+    validate_ambient_cuvs_resolution(&ambient_ldd_output, &cuvs.library_path)?;
+    Ok(ValidatedCuvsLoader { cugraph_library_selector_path, cugraph_library_path, cuvs_library_path })
+}
+
+pub(crate) fn controlled_loader_search_path(
+    runtime_lib_dirs: &[PathBuf],
+    cuvs_runtime_lib_dir: &Path,
+    ambient_loader_path: Option<OsString>,
+) -> Result<OsString, String> {
+    let mut paths = Vec::new();
+    for path in runtime_lib_dirs {
+        if !paths.iter().any(|existing| existing == path) {
+            paths.push(path.clone());
+        }
+    }
+    if !paths.iter().any(|existing| existing == cuvs_runtime_lib_dir) {
+        paths.push(cuvs_runtime_lib_dir.to_path_buf());
+    }
+    if let Some(ambient) = ambient_loader_path {
+        for path in env::split_paths(&ambient) {
+            if !path.as_os_str().is_empty() && !paths.iter().any(|existing| existing == &path) {
+                paths.push(path);
+            }
+        }
+    }
+    env::join_paths(&paths).map_err(|error| format!("Failed to construct controlled LD_LIBRARY_PATH: {error}"))
+}
+
+pub(crate) fn validate_ambient_cuvs_resolution(ldd_output: &str, expected_library_path: &Path) -> Result<(), String> {
+    if contains_private_cuvs_path(ldd_output) {
+        return Err("The ambient dynamic loader resolves libcuvs from a private _deps cuVS build.".to_string());
+    }
+    let resolved_cuvs = ldd_output.lines().filter_map(ldd_resolved_cuvs_path).collect::<Vec<_>>();
+    if resolved_cuvs.is_empty() {
+        return Ok(());
+    }
+    if resolved_cuvs.len() != 1 {
+        return Err(format!(
+            "The ambient loader must resolve at most one libcuvs.so identity, but ldd reported {}.",
+            resolved_cuvs.len()
+        ));
+    }
+    let resolved = resolved_cuvs[0].canonicalize().map_err(|error| {
+        format!(
+            "Failed to canonicalize the ambient libcuvs path reported by ldd '{}': {error}",
+            resolved_cuvs[0].display()
+        )
+    })?;
+    let expected = expected_library_path.canonicalize().map_err(|error| {
+        format!(
+            "Failed to canonicalize the expected canonical libcuvs path '{}': {error}",
+            expected_library_path.display()
+        )
+    })?;
+    if resolved != expected {
+        return Err(format!(
+            "The ambient dynamic loader shadows canonical libcuvs '{}' with '{}'. Remove the conflicting \
+             LD_LIBRARY_PATH entry.",
+            expected.display(),
+            resolved.display()
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_cuvs_loader_outputs(
+    readelf_output: &str,
+    ldd_output: &str,
+    expected_library_path: &Path,
+) -> Result<PathBuf, String> {
+    let needed_cuvs = readelf_output
+        .lines()
+        .filter(|line| {
+            line.contains("(NEEDED)") && elf_needed_name(line).is_some_and(|name| name.starts_with("libcuvs.so"))
+        })
+        .count();
+    if needed_cuvs != 1 {
+        return Err(format!(
+            "libcugraph must declare exactly one libcuvs.so ELF dependency, but readelf reported {needed_cuvs}."
+        ));
+    }
+    if contains_private_cuvs_path(readelf_output) {
+        return Err("libcugraph contains an RPATH/RUNPATH into a private _deps cuVS build.".to_string());
+    }
+
+    let unresolved = ldd_output.lines().filter(|line| line.contains("=> not found")).collect::<Vec<_>>();
+    if !unresolved.is_empty() {
+        return Err(format!(
+            "libcugraph has unresolved loader dependencies:\n{}",
+            unresolved.iter().map(|line| format!("  {}", line.trim())).collect::<Vec<_>>().join("\n")
+        ));
+    }
+    if contains_private_cuvs_path(ldd_output) {
+        return Err("The dynamic loader resolved libcuvs from a private _deps cuVS build.".to_string());
+    }
+
+    let resolved_cuvs = ldd_output.lines().filter_map(ldd_resolved_cuvs_path).collect::<Vec<_>>();
+    if resolved_cuvs.len() != 1 {
+        return Err(format!(
+            "The libcugraph loader closure must resolve exactly one libcuvs.so, but ldd reported {}.",
+            resolved_cuvs.len()
+        ));
+    }
+    let resolved = resolved_cuvs[0].canonicalize().map_err(|error| {
+        format!("Failed to canonicalize the libcuvs path reported by ldd '{}': {error}", resolved_cuvs[0].display())
+    })?;
+    let expected = expected_library_path.canonicalize().map_err(|error| {
+        format!(
+            "Failed to canonicalize the expected canonical libcuvs path '{}': {error}",
+            expected_library_path.display()
+        )
+    })?;
+    if resolved != expected {
+        return Err(format!(
+            "The dynamic loader resolved libcuvs to '{}' instead of canonical CUVS_INSTALL_DIR library '{}'.",
+            resolved.display(),
+            expected.display()
+        ));
+    }
+
+    Ok(resolved)
+}
+
+fn elf_needed_name(line: &str) -> Option<&str> {
+    let start = line.find("Shared library: [")? + "Shared library: [".len();
+    let remainder = &line[start..];
+    let end = remainder.find(']')?;
+    Some(&remainder[..end])
+}
+
+fn contains_private_cuvs_path(output: &str) -> bool {
+    output.lines().any(|line| {
+        let normalized = line.replace('\\', "/");
+        normalized.match_indices("/_deps/").any(|(start, marker)| {
+            let tail = &normalized[start + marker.len()..];
+            let path_end = tail.find([':', ']', ' ', '\t']).unwrap_or(tail.len());
+            tail[..path_end].contains("cuvs")
+        })
+    })
+}
+
+fn ldd_resolved_cuvs_path(line: &str) -> Option<PathBuf> {
+    let trimmed = line.trim();
+    let (name, resolution) = trimmed.split_once("=>")?;
+    if !name.trim().starts_with("libcuvs.so") {
+        return None;
+    }
+    let path = resolution.split_whitespace().next()?;
+    if path == "not" {
+        return None;
+    }
+    Some(PathBuf::from(path))
+}
+
+fn command_stdout(action: &str, command: &mut Command) -> Result<String, String> {
+    let command_display = format_command(command);
+    let output = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|error| format!("Failed to {action} using `{command_display}`: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "Failed to {action} using `{command_display}`; status {}.\nstdout:\n{}\nstderr:\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 fn run_command_capture(action: &str, command: &mut Command) -> Result<(), String> {
