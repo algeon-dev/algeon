@@ -17,7 +17,7 @@ fn read_cargo_toml() -> String {
 
 fn read_downstream_build_rs() -> String {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    fs::read_to_string(manifest_dir.join("../cugraph-rs/build.rs")).expect("failed to read downstream build.rs")
+    fs::read_to_string(manifest_dir.join("../cugraph-nexus/build.rs")).expect("failed to read downstream build.rs")
 }
 
 fn read_test_source(path: &str) -> String {
@@ -163,28 +163,28 @@ fn downstream_build_rs_consumes_runtime_library_metadata_without_native_guessing
 
     assert!(
         build_rs.contains("DEP_CUGRAPH_RUNTIME_LIB_DIRS"),
-        "cugraph-rs/build.rs should consume the multi-path runtime metadata from cugraph-sys"
+        "cugraph-nexus/build.rs should consume the multi-path runtime metadata from cugraph-sys"
     );
     assert!(
         build_rs.contains("env::split_paths"),
-        "cugraph-rs/build.rs should parse DEP_CUGRAPH_RUNTIME_LIB_DIRS as an OS-native path list"
+        "cugraph-nexus/build.rs should parse DEP_CUGRAPH_RUNTIME_LIB_DIRS as an OS-native path list"
     );
     assert!(
         build_rs.contains("DEP_CUGRAPH_NATIVE_INCLUDE_DIRS"),
-        "cugraph-rs/build.rs should consume the native include metadata exported by cugraph-sys"
+        "cugraph-nexus/build.rs should consume the native include metadata exported by cugraph-sys"
     );
     assert!(
         build_rs.contains("DEP_CUGRAPH_NATIVE_LINK_DIRS"),
-        "cugraph-rs/build.rs should consume the native link metadata exported by cugraph-sys"
+        "cugraph-nexus/build.rs should consume the native link metadata exported by cugraph-sys"
     );
     assert!(
         !build_rs.contains("DEP_CUGRAPH_METADATA"),
-        "cugraph-rs/build.rs should consume the formal metadata keys directly instead of reparsing ad hoc metadata blobs"
+        "cugraph-nexus/build.rs should consume the formal metadata keys directly instead of reparsing ad hoc metadata blobs"
     );
     for forbidden in ["CONDA_PREFIX", "LIBRARY_PREFIX", "PREFIX", "CUDA_HOME", "CUDA_PATH"] {
         assert!(
             !build_rs.contains(forbidden),
-            "cugraph-rs/build.rs should not compensate for missing native metadata via {forbidden}"
+            "cugraph-nexus/build.rs should not compensate for missing native metadata via {forbidden}"
         );
     }
 }
@@ -243,6 +243,6 @@ fn cargo_toml_declares_links_metadata_for_native_provider() {
 
     assert!(
         cargo_toml.contains("links = \"cugraph\""),
-        "cugraph-sys/Cargo.toml should declare links = \"cugraph\" so Cargo can coordinate the native library provider"
+        "cugraph-nexus-sys/Cargo.toml should declare links = \"cugraph\" so Cargo can coordinate the native library provider"
     );
 }

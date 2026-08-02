@@ -1,5 +1,5 @@
 [workspace]
-members = ["cugraph-sys", "cugraph-rs"]
+members = ["cugraph-nexus-sys", "cugraph-nexus"]
 resolver = "3"
 
 [workspace.package]
@@ -7,16 +7,16 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.94.0"
 license = "Apache-2.0"
-repository = "https://github.com/DataFusion-Nexus/cugraph-rs"
-homepage = "https://github.com/DataFusion-Nexus/cugraph-rs"
+repository = "https://github.com/DataFusion-Nexus/cugraph-nexus"
+homepage = "https://github.com/DataFusion-Nexus/cugraph-nexus"
 readme = "README.md"
 
 [workspace.dependencies]
 anyhow = "1"
 bindgen = "0.72"
 cc = "1.2"
-cudf = { path = "../cudf-rs/cudf-rs", version = "0.1.0" }
-cudf-sys = { path = "../cudf-rs/cudf-sys", version = "0.1.0" }
-rapids-interop = { path = "../cudf-rs/rapids-interop", version = "0.1.0" }
-cugraph-sys = { path = "cugraph-sys", version = "0.1.0" }
+cudf = { package = "cudf-nexus", path = "../cudf-nexus/cudf-nexus", version = "0.1.0" }
+cudf-sys = { package = "cudf-nexus-sys", path = "../cudf-nexus/cudf-nexus-sys", version = "0.1.0" }
+rapids-interop = { path = "../cudf-nexus/rapids-interop", version = "0.1.0" }
+cugraph-sys = { package = "cugraph-nexus-sys", path = "cugraph-nexus-sys", version = "0.1.0" }
 static_assertions = "1"

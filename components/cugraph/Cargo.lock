@@ -434,14 +434,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "cudf"
+name = "cudf-nexus"
 version = "0.1.0"
 dependencies = [
  "ahash",
  "arrow",
  "bitflags",
  "csv",
- "cudf-sys",
+ "cudf-nexus-sys",
  "indexmap",
  "parquet",
  "rapids-interop",
@@ -451,27 +451,27 @@ dependencies = [
 ]
 
 [[package]]
-name = "cudf-sys"
+name = "cudf-nexus-sys"
 version = "0.1.0"
 dependencies = [
  "cmake",
 ]
 
 [[package]]
-name = "cugraph"
+name = "cugraph-nexus"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "cc",
- "cudf",
- "cudf-sys",
- "cugraph-sys",
+ "cudf-nexus",
+ "cudf-nexus-sys",
+ "cugraph-nexus-sys",
  "rapids-interop",
  "static_assertions",
 ]
 
 [[package]]
-name = "cugraph-sys"
+name = "cugraph-nexus-sys"
 version = "0.1.0"
 dependencies = [
  "bindgen",

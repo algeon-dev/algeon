@@ -92,7 +92,7 @@ impl BfsParams {
 ///
 /// This type intentionally accepts only device array views. SQL expressions,
 /// table names, logical-id mapping, and relation-backed edge alignment belong
-/// in higher query-engine layers before they call into `cugraph-rs`.
+/// in higher query-engine layers before they call into `cugraph`.
 #[derive(Debug, Clone, Copy)]
 #[must_use]
 pub struct BfsPredicateParams<'a, V: CugraphElement, E: CugraphElement = i32> {

@@ -15,7 +15,10 @@ pub(crate) fn resolve_shim_compile_layout(
     native_include_dirs: Vec<PathBuf>,
 ) -> Result<ShimCompileLayout, String> {
     if native_include_dirs.is_empty() {
-        return Err("cugraph-rs/build.rs did not receive DEP_CUGRAPH_NATIVE_INCLUDE_DIRS from cugraph-sys".to_string());
+        return Err(
+            "cugraph-nexus build script (cugraph-nexus/build.rs) did not receive DEP_CUGRAPH_NATIVE_INCLUDE_DIRS from cugraph-sys"
+                .to_string(),
+        );
     }
 
     Ok(ShimCompileLayout {

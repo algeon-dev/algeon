@@ -1,5 +1,5 @@
 [package]
-name = "cugraph"
+name = "cugraph-nexus"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,10 +8,13 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 readme.workspace = true
-documentation = "https://docs.rs/cugraph"
+documentation = "https://docs.rs/cugraph-nexus"
 categories = ["algorithms", "api-bindings", "science"]
 keywords = ["cugraph", "cuda", "gpu", "graph", "rapids"]
 build = "build.rs"
+
+[lib]
+name = "cugraph"
 
 [dependencies]
 cudf.workspace = true

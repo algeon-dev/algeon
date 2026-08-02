@@ -6,7 +6,7 @@
 # `find_dependency(rapids_logger)` (which in turn needs fmt + spdlog). The
 # upstream libcudf install only ships cudf + rmm + cccl + gtest; it does NOT
 # install nvtx3 / rapids_logger / fmt / spdlog, so a downstream consumer using
-# the installed prefix cannot satisfy rmm's dependency closure. cudf-rs never
+# the installed prefix cannot satisfy rmm's dependency closure. cudf never
 # hits this because cudf-sys links the .so files directly without a CMake
 # configure.
 #
@@ -16,12 +16,12 @@
 # building libcudf and before building cugraph-sys.
 #
 # Env:
-#   CUDF_INSTALL_DIR    cudf install prefix (default: ../cudf-rs/cudf-install)
+#   CUDF_INSTALL_DIR    cudf install prefix (default: ../cudf-nexus/cudf-install)
 #   CUDF_CPP_BUILD_DIR  cudf C++ build dir   (default: <prefix>/../cudf/cpp/build)
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cudf_install_dir="${CUDF_INSTALL_DIR:-$(cd "${repo_root}/.." && pwd)/cudf-rs/cudf-install}"
+cudf_install_dir="${CUDF_INSTALL_DIR:-$(cd "${repo_root}/.." && pwd)/cudf-nexus/cudf-install}"
 
 if [[ ! -d "${cudf_install_dir}" ]]; then
     echo "error: cudf install prefix '${cudf_install_dir}' does not exist." >&2

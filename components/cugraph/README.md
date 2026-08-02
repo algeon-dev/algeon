@@ -1,9 +1,9 @@
-# cugraph-rs
+# cugraph-nexus
 
-`cugraph-rs` is a Rust GPU graph layer built on NVIDIA [cuGraph](https://github.com/DataFusion-Nexus/cugraph).
+`cugraph-nexus` is a Rust GPU graph layer built on NVIDIA [cuGraph](https://github.com/DataFusion-Nexus/cugraph).
 
 This repository is not meant to be only a thin set of `libcugraph` bindings. The
-raw C API bindings exist in `cugraph-sys`, but the main goal is to provide the
+raw C API bindings live in `cugraph-nexus-sys/` and publish as `cugraph-nexus-sys`, but the main goal is to provide the
 service-facing pieces needed by backend systems, including DataFusion-Nexus:
 
 - safe Rust ownership around cuGraph resources and GPU execution context
@@ -13,8 +13,8 @@ service-facing pieces needed by backend systems, including DataFusion-Nexus:
 
 ## Workspace
 
-- `cugraph-sys` - raw bindgen output for the cuGraph C API
-- `cugraph-rs` - safe Rust crate published as `cugraph`
+- `cugraph-nexus-sys/` - raw bindgen output for the cuGraph C API, published as `cugraph-nexus-sys` (import `cugraph_sys`)
+- `cugraph-nexus/` - safe Rust crate published as `cugraph-nexus` (import `cugraph`)
 - `cugraph/` - upstream NVIDIA cuGraph source submodule used for local native builds
 
 ## Scope
@@ -29,21 +29,21 @@ cuGraph, or a way to hide the native CUDA/RAPIDS deployment requirements.
 
 ## Building libcugraph locally
 
-`cugraph-sys` builds native cuGraph (`cugraph/cpp`) and resolves RMM and
+`cugraph-nexus-sys` builds native cuGraph (`cugraph/cpp`) and resolves RMM and
 `rapids_logger` from the cudf install prefix (`CUDF_INSTALL_DIR`) 
 so cudf and cugraph share **one** RMM build.
 
-Because `cugraph-sys` does a real `find_package(rmm)` against that prefix, the
+Because `cugraph-nexus-sys` does a real `find_package(rmm)` against that prefix, the
 prefix must export RMM's full CMake dependency closure. The upstream libcudf
 install ships only `cudf` + `rmm` (+ `cccl`, `gtest`); it does **not** install
 `nvtx3`, `rapids_logger`, `fmt`, or `spdlog`, which `rmm-dependencies.cmake`
-`find_dependency()`s. (cudf-rs itself never trips on this because cudf-sys links
+`find_dependency()`s. (`cudf-nexus` itself never trips on this because `cudf-nexus-sys` links
 the `.so` files directly without a CMake configure.)
 
 Build native libcugraph with one command (needs `cmake`, `ninja`, `nvcc`):
 
 ```bash
-CUDF_INSTALL_DIR=/path/to/cudf-rs/cudf-install scripts/build_libcugraph.sh
+CUDF_INSTALL_DIR=/path/to/cudf-nexus/cudf-install scripts/build_libcugraph.sh
 ```
 
 `scripts/build_libcugraph.sh` is a thin wrapper around the upstream
@@ -57,15 +57,15 @@ installs the missing CMake packages from the cudf C++ build tree
 (`cudf/cpp/build/_deps/*-build`):
 
 ```bash
-CUDF_INSTALL_DIR=/path/to/cudf-rs/cudf-install scripts/bootstrap_cudf_install.sh
+CUDF_INSTALL_DIR=/path/to/cudf-nexus/cudf-install scripts/bootstrap_cudf_install.sh
 ```
 
 Run the tests with both env vars set (`libcudf.so` is a transitive dependency,
 and `DT_RUNPATH` does not cascade to dependencies-of-dependencies):
 
 ```bash
-CUDF_INSTALL_DIR=/path/to/cudf-rs/cudf-install \
-LD_LIBRARY_PATH=/path/to/cudf-rs/cudf-install/lib:/path/to/cugraph-rs/cugraph/cpp/build \
+CUDF_INSTALL_DIR=/path/to/cudf-nexus/cudf-install \
+LD_LIBRARY_PATH=/path/to/cudf-nexus/cudf-install/lib:/path/to/cugraph-nexus/cugraph/cpp/build \
 cargo test --all-features --no-fail-fast
 ```
 

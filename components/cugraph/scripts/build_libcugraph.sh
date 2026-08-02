@@ -14,7 +14,7 @@
 #      build tree where it could shadow the canonical one through stale rpaths.
 #
 # Env:
-#   CUDF_INSTALL_DIR          cudf install prefix (default: ../cudf-rs/cudf-install)
+#   CUDF_INSTALL_DIR          cudf install prefix (default: ../cudf-nexus/cudf-install)
 #   CUGRAPH_CPP_BUILD_DIR     cuGraph build dir   (default: cugraph/cpp/build)
 #   CMAKE_CUDA_ARCHITECTURES  CUDA arch list (default: NATIVE, cugraph/build.sh's default)
 set -euo pipefail
@@ -22,7 +22,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 upstream_build="${repo_root}/cugraph/build.sh"
 build_dir="${CUGRAPH_CPP_BUILD_DIR:-${repo_root}/cugraph/cpp/build}"
-cudf_install_dir="${CUDF_INSTALL_DIR:-$(cd "${repo_root}/.." && pwd)/cudf-rs/cudf-install}"
+cudf_install_dir="${CUDF_INSTALL_DIR:-$(cd "${repo_root}/.." && pwd)/cudf-nexus/cudf-install}"
 
 if [[ ! -x "${upstream_build}" ]]; then
     echo "error: upstream cuGraph build script '${upstream_build}' not found." >&2

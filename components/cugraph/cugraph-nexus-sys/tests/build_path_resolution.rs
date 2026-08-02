@@ -183,7 +183,7 @@ fn cmake_export_dir_uses_explicit_override_when_present() {
 #[test]
 fn cmake_export_dir_uses_workspace_local_build_tree_when_available() {
     let root = TestDir::new();
-    let manifest_dir = root.path().join("repo").join("cugraph-sys");
+    let manifest_dir = root.path().join("repo").join("cugraph-nexus-sys");
     let build_dir = root.path().join("repo").join("cugraph").join("cpp").join("build");
 
     fs::create_dir_all(&manifest_dir).expect("create manifest dir");
@@ -198,10 +198,10 @@ fn cmake_export_dir_uses_workspace_local_build_tree_when_available() {
 #[test]
 fn prepare_workspace_cmake_export_dir_reuses_existing_canonical_build() {
     let root = TestDir::new();
-    let manifest_dir = root.path().join("repo").join("cugraph-sys");
+    let manifest_dir = root.path().join("repo").join("cugraph-nexus-sys");
     let cpp_dir = root.path().join("repo").join("cugraph").join("cpp");
     let build_dir = cpp_dir.join("build");
-    let cudf_install = root.path().join("cudf-rs").join("cudf-install");
+    let cudf_install = root.path().join("cudf-nexus").join("cudf-install");
     let rmm_dir = cudf_install.join("lib").join("cmake").join("rmm");
     let logger_dir = cudf_install.join("lib").join("cmake").join("rapids_logger");
 
@@ -233,9 +233,9 @@ fn prepare_workspace_cmake_export_dir_reuses_existing_canonical_build() {
 #[test]
 fn prepare_workspace_cmake_export_dir_honors_auto_build_opt_out() {
     let root = TestDir::new();
-    let manifest_dir = root.path().join("repo").join("cugraph-sys");
+    let manifest_dir = root.path().join("repo").join("cugraph-nexus-sys");
     let cpp_dir = root.path().join("repo").join("cugraph").join("cpp");
-    let cudf_install = root.path().join("cudf-rs").join("cudf-install");
+    let cudf_install = root.path().join("cudf-nexus").join("cudf-install");
     let rmm_dir = cudf_install.join("lib").join("cmake").join("rmm");
     let logger_dir = cudf_install.join("lib").join("cmake").join("rapids_logger");
 
@@ -257,10 +257,10 @@ fn prepare_workspace_cmake_export_dir_honors_auto_build_opt_out() {
 #[test]
 fn prepare_workspace_cmake_export_dir_rejects_stale_cuda_arch_when_auto_build_is_disabled() {
     let root = TestDir::new();
-    let manifest_dir = root.path().join("repo").join("cugraph-sys");
+    let manifest_dir = root.path().join("repo").join("cugraph-nexus-sys");
     let cpp_dir = root.path().join("repo").join("cugraph").join("cpp");
     let build_dir = cpp_dir.join("build");
-    let cudf_install = root.path().join("cudf-rs").join("cudf-install");
+    let cudf_install = root.path().join("cudf-nexus").join("cudf-install");
     let rmm_dir = cudf_install.join("lib").join("cmake").join("rmm");
     let logger_dir = cudf_install.join("lib").join("cmake").join("rapids_logger");
 
