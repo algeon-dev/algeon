@@ -15,16 +15,21 @@ use super::{
         map_borrowed_projection_interop_error, map_cudf_error_with, map_owned_import_interop_error,
         map_prepared_lease_activation_interop_error, map_prepared_projection_interop_error,
     },
-    options::{DataFrameGraphOptions, GraphConstructionPolicy, SeriesGraphOptions, TableGraphOptions},
+    options::{
+        DataFrameGraphOptions, GraphConstructionPolicy, SeriesGraphOptions, TableGraphOptions, TableVertexPairOptions,
+    },
     prepared::{
-        PreparedEdgeColumn, PreparedEdgeList, build_graph_from_prepared_edge_list_raw, complete_prepared_lease,
-        finish_prepared_graph_result, prepared_lease_authorities, prepared_profile_supported,
+        PreparedEdgeColumn, PreparedEdgeList, PreparedVertexPairList, build_graph_from_prepared_edge_list_raw,
+        complete_prepared_lease, finish_prepared_graph_result, finish_prepared_vertex_pairs_result,
+        prepared_lease_authorities, prepared_profile_supported,
+        vertex_pairs_from_prepared_columns as build_vertex_pairs_from_prepared_columns,
     },
 };
 use crate::{
     error::{Error, ErrorKind, Result},
     graph::{Graph, Transposition},
     handle::EnteredContext,
+    similarity::VertexPairs,
     types::GraphProperties,
 };
 
@@ -473,12 +478,139 @@ pub fn graph_from_prepared_columns<T: Transposition>(
     finish_prepared_graph_result(graph_result, [src_complete, dst_complete, wgt_complete])
 }
 
+/// Create explicit cuGraph [`VertexPairs`] directly from two prepared-device
+/// cudf column exports.
+///
+/// This is the zero-copy pairwise-similarity ingress path.  Both columns must
+/// have equal active row counts, the same `Int32` or `Int64` physical dtype,
+/// no nulls in their active ranges, and device placement matching `handle`.
+/// The graph vertex domain is then validated through [`Graph::vertex_pairs`].
+///
+/// Runtime-bound handles activate one read lease per export on the consumer
+/// stream.  On successful asynchronous completion, the returned
+/// [`VertexPairs`] retains both producer owners and completion witnesses until
+/// it is dropped (or consumed by a similarity result).  No host round trip is
+/// used to materialize or order the pair columns.
+pub fn vertex_pairs_from_prepared_columns<T: Transposition>(
+    handle: &EnteredContext<'_>,
+    graph: &mut Graph<T>,
+    first: &PreparedColumnExport<'_>,
+    second: &PreparedColumnExport<'_>,
+) -> Result<VertexPairs> {
+    let operation = "vertex_pairs_from_prepared_columns";
+    prepared_profile_supported(first.diagnostics().profile(), operation)?;
+    prepared_profile_supported(second.diagnostics().profile(), operation)?;
+
+    let (read_start, completion) = prepared_lease_authorities(handle, operation)?;
+    let first_retained_owner = first.clone_retained_owner();
+    let second_retained_owner = second.clone_retained_owner();
+    let mut first_lease = Some(
+        first
+            .try_activate_read_lease(read_start, completion)
+            .map_err(|error| map_prepared_lease_activation_interop_error(error, operation))?,
+    );
+    let mut second_lease = None;
+
+    let pairs_result = (|| {
+        second_lease = Some(
+            second
+                .try_activate_read_lease(read_start, completion)
+                .map_err(|error| map_prepared_lease_activation_interop_error(error, operation))?,
+        );
+
+        let pairs = PreparedVertexPairList {
+            first: PreparedEdgeColumn {
+                column: first_lease.as_ref().expect("first lease should be active").export().column(),
+                bindings: first_lease.as_ref().expect("first lease should be active").export().bindings(),
+            },
+            second: PreparedEdgeColumn {
+                column: second_lease.as_ref().expect("second lease should be active").export().column(),
+                bindings: second_lease.as_ref().expect("second lease should be active").export().bindings(),
+            },
+        };
+
+        build_vertex_pairs_from_prepared_columns(handle, graph, &pairs, operation)
+            .map_err(|error| error.with_operation(operation))
+    })();
+
+    let first_complete = first_lease
+        .take()
+        .map(|lease| complete_prepared_lease(lease.complete(), first_retained_owner, operation))
+        .unwrap_or(Ok(None));
+    let second_complete = second_lease
+        .take()
+        .map(|lease| complete_prepared_lease(lease.complete(), second_retained_owner, operation))
+        .unwrap_or(Ok(None));
+
+    finish_prepared_vertex_pairs_result(pairs_result, [first_complete, second_complete])
+}
+
 fn validate_prepared_table_column_selection(
     num_cols: usize,
     options: &TableGraphOptions,
     operation: &'static str,
 ) -> Result<()> {
     validate_table_column_selection(num_cols, options, "prepared table export", operation)
+}
+
+fn validate_prepared_vertex_pair_table_column_selection(
+    num_cols: usize,
+    options: &TableVertexPairOptions,
+    operation: &'static str,
+) -> Result<()> {
+    let validate_col_index = |idx: usize, role: &str| -> Result<()> {
+        if idx >= num_cols {
+            return Err(Error::new(ErrorKind::InvalidInput, operation)
+                .with_message(format!(
+                    "{} vertex-pair column index {} is out of bounds (prepared table export has {} columns)",
+                    role, idx, num_cols
+                ))
+                .with_context("column_role", role.to_string())
+                .with_context("column_index", idx.to_string())
+                .with_context("num_columns", num_cols.to_string()));
+        }
+        Ok(())
+    };
+
+    validate_col_index(options.first_col, "first")?;
+    validate_col_index(options.second_col, "second")?;
+    Ok(())
+}
+
+/// Create explicit cuGraph [`VertexPairs`] from two selected columns of a
+/// prepared-device cudf table export.
+///
+/// `options` selects the first and second vertex columns without copying or
+/// reordering the table.  The selected columns obey the same equal-row-count,
+/// equal-`Int32`/`Int64`, null-free, device-placement, and lease-lifetime
+/// contract as [`vertex_pairs_from_prepared_columns`].
+pub fn vertex_pairs_from_prepared_table_export<T: Transposition>(
+    handle: &EnteredContext<'_>,
+    graph: &mut Graph<T>,
+    export: &PreparedTableExport<'_>,
+    options: &TableVertexPairOptions,
+) -> Result<VertexPairs> {
+    let operation = "vertex_pairs_from_prepared_table_export";
+    prepared_profile_supported(export.diagnostics().profile(), operation)?;
+    validate_prepared_vertex_pair_table_column_selection(export.columns().len(), options, operation)?;
+
+    let (read_start, completion) = prepared_lease_authorities(handle, operation)?;
+    let retained_owner = export.clone_retained_owner();
+    let lease = export
+        .try_activate_read_lease(read_start, completion)
+        .map_err(|error| map_prepared_lease_activation_interop_error(error, operation))?;
+
+    let columns = lease.export().columns();
+    let bindings = lease.export().bindings();
+    let pairs = PreparedVertexPairList {
+        first: PreparedEdgeColumn { column: &columns[options.first_col], bindings },
+        second: PreparedEdgeColumn { column: &columns[options.second_col], bindings },
+    };
+    let pairs_result = build_vertex_pairs_from_prepared_columns(handle, graph, &pairs, operation)
+        .map_err(|error| error.with_operation(operation));
+    let lease_complete = complete_prepared_lease(lease.complete(), retained_owner, operation);
+
+    finish_prepared_vertex_pairs_result(pairs_result, [lease_complete])
 }
 
 /// Build a cuGraph [`Graph`] directly from a prepared-device RAPIDS table export.

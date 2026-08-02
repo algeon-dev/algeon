@@ -17,6 +17,10 @@
 //!   exports via explicit read-lease activation.
 //! - [`graph_from_prepared_table_export()`] — same as above for a prepared
 //!   table export plus explicit column selection.
+//! - [`vertex_pairs_from_prepared_columns()`] — creates explicit pairwise
+//!   similarity input directly from two prepared device columns.
+//! - [`vertex_pairs_from_prepared_table_export()`] — same as above for a
+//!   prepared table export plus explicit pair-column selection.
 //!
 //! ## Compatibility zero-copy view paths
 //!
@@ -45,6 +49,8 @@
 //! | [`device_array_view_from_slice`] | No | View borrows slice |
 //! | [`graph_from_prepared_columns`] | Depends on policy | Producer export stays alive until explicit lease completion |
 //! | [`graph_from_prepared_table_export`] | Depends on policy | Producer export stays alive until explicit lease completion |
+//! | [`vertex_pairs_from_prepared_columns`] | No | Pair object retains producer owners until explicit lease completion |
+//! | [`vertex_pairs_from_prepared_table_export`] | No | Pair object retains producer owner until explicit lease completion |
 //! | [`graph_from_borrowed_columns`] | Depends on policy | Borrowed descriptors must outlive build |
 //! | [`graph_from_series`] | No (input) | Series must outlive build |
 //! | [`graph_from_dataframe`] | No (input) | DataFrame must outlive build |
@@ -108,10 +114,12 @@ pub(crate) use egress::{
 };
 pub use ingress::{
     graph_from_borrowed_columns, graph_from_borrowed_table_view, graph_from_dataframe, graph_from_prepared_columns,
-    graph_from_prepared_table_export, graph_from_series, graph_from_table_view,
+    graph_from_prepared_table_export, graph_from_series, graph_from_table_view, vertex_pairs_from_prepared_columns,
+    vertex_pairs_from_prepared_table_export,
 };
 pub use options::{
     DataFrameGraphOptions, GraphConstructionPolicy, ParquetGraphOptions, SeriesGraphOptions, TableGraphOptions,
+    TableVertexPairOptions,
 };
 pub use parquet::{LoadedGraph, graph_from_parquet};
 pub use types::{cudf_type_to_cugraph, cugraph_type_to_cudf};

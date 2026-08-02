@@ -254,6 +254,114 @@ fn pairwise_similarity_coefficients_match_reference_values() {
 }
 
 #[test]
+fn pairwise_similarity_preserves_explicit_pair_multisets_and_rejects_invalid_endpoints() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let handle = test_handle();
+    let entered = handle
+        .enter("pairwise_similarity_preserves_explicit_pair_multisets_and_rejects_invalid_endpoints")
+        .expect("entered");
+    let mut graph = similarity_fixture_graph(&entered);
+    let checked = SimilarityParams { use_weight: false, do_expensive_check: true };
+
+    let first = [0i32, 0, 1, 0];
+    let second = [1i32, 1, 0, 0];
+    let pairs = graph.vertex_pairs(&entered, first.as_slice(), second.as_slice()).expect("vertex pairs");
+    let result = graph.jaccard_coefficients(&entered, pairs, &checked).expect("Jaccard");
+    assert_eq!(result.first().expect("first").to_vec_i32(&entered).expect("first copy"), first);
+    assert_eq!(result.second().expect("second").to_vec_i32(&entered).expect("second copy"), second);
+
+    let invalid_first = [99i32];
+    let invalid_second = [0i32];
+    let invalid_pairs = graph
+        .vertex_pairs(&entered, invalid_first.as_slice(), invalid_second.as_slice())
+        .expect("vertex-pair container");
+    let error = graph
+        .jaccard_coefficients(&entered, invalid_pairs, &checked)
+        .expect_err("expensive pairwise validation must reject an endpoint absent from the graph");
+    assert_eq!(error.kind(), cugraph::ErrorKind::InvalidInput);
+    assert_eq!(error.operation(), "jaccard_coefficients");
+}
+
+#[test]
+fn pairwise_jaccard_consumes_weights_and_rejects_weighted_calls_without_a_weight_binding() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let handle = test_handle();
+    let entered = handle
+        .enter("pairwise_jaccard_consumes_weights_and_rejects_weighted_calls_without_a_weight_binding")
+        .expect("entered");
+    let src = DeviceArray::from_slice(&entered, &[0i32, 0, 1, 2]).expect("src");
+    let dst = DeviceArray::from_slice(&entered, &[1i32, 2, 2, 3]).expect("dst");
+    let weights = DeviceArray::from_slice(&entered, &[1.0f32, 2.0, 7.0, 5.0]).expect("weights");
+    let src_view = src.view().expect("src view");
+    let dst_view = dst.view().expect("dst view");
+    let weights_view = weights.view().expect("weights view");
+    let mut weighted_graph = GraphBuilder::new(&src_view, &dst_view)
+        .weights(&weights_view)
+        .properties(GraphProperties::undirected())
+        .renumber()
+        .build::<Forward>(&entered)
+        .expect("weighted graph");
+    // `(0, 1)` shares vertex 2.  Its deliberately unequal incident weights
+    // make weighted and unweighted Jaccard scores observably distinct.
+    let weighted_pair_first = [0i32];
+    let weighted_pair_second = [1i32];
+    let weighted_pairs = weighted_graph
+        .vertex_pairs(&entered, weighted_pair_first.as_slice(), weighted_pair_second.as_slice())
+        .expect("weighted pairs");
+    let weighted = weighted_graph
+        .jaccard_coefficients(
+            &entered,
+            weighted_pairs,
+            &SimilarityParams { use_weight: true, do_expensive_check: true },
+        )
+        .expect("weighted Jaccard")
+        .scores()
+        .expect("weighted scores")
+        .to_vec_f32(&entered)
+        .expect("weighted score copy");
+    assert_f32_close(&weighted, &[0.25]);
+
+    let mut unweighted_graph = GraphBuilder::new(&src_view, &dst_view)
+        .properties(GraphProperties::undirected())
+        .renumber()
+        .build::<Forward>(&entered)
+        .expect("unweighted graph");
+    let unweighted_pair_first = [0i32];
+    let unweighted_pair_second = [1i32];
+    let unweighted_pairs = unweighted_graph
+        .vertex_pairs(&entered, unweighted_pair_first.as_slice(), unweighted_pair_second.as_slice())
+        .expect("unweighted pairs");
+    let unweighted = unweighted_graph
+        .jaccard_coefficients(
+            &entered,
+            unweighted_pairs,
+            &SimilarityParams { use_weight: false, do_expensive_check: true },
+        )
+        .expect("unweighted Jaccard")
+        .scores()
+        .expect("unweighted scores")
+        .to_vec_f32(&entered)
+        .expect("unweighted score copy");
+    assert_f32_close(&unweighted, &[0.5]);
+    assert!((weighted[0] - unweighted[0]).abs() > 1.0e-4, "weighted Jaccard must not silently use unit weights");
+
+    let missing_weight_pair_first = [0i32];
+    let missing_weight_pair_second = [1i32];
+    let missing_weight_pairs = unweighted_graph
+        .vertex_pairs(&entered, missing_weight_pair_first.as_slice(), missing_weight_pair_second.as_slice())
+        .expect("missing-weight pairs");
+    let error = unweighted_graph
+        .jaccard_coefficients(
+            &entered,
+            missing_weight_pairs,
+            &SimilarityParams { use_weight: true, do_expensive_check: true },
+        )
+        .expect_err("weighted Jaccard requires a graph weight binding");
+    assert_eq!(error.kind(), cugraph::ErrorKind::InvalidInput);
+    assert_eq!(error.operation(), "jaccard_coefficients");
+}
+
+#[test]
 fn all_pairs_jaccard_returns_generated_vertex_pairs() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();

@@ -13,10 +13,11 @@ use super::{
     errors::{map_prepared_lease_activation_interop_error, map_prepared_lease_completion_interop_error},
 };
 use crate::{
-    array::RawDeviceArrayView,
+    array::{DeviceArrayView, RawDeviceArrayView},
     error::{Error, ErrorKind, Result},
     graph::{DeferredInputCompletion, Graph, GraphBuilder, Transposition},
     handle::EnteredContext,
+    similarity::VertexPairs,
     types::GraphProperties,
 };
 
@@ -30,6 +31,14 @@ pub(super) struct PreparedEdgeList<'a> {
     pub(super) src: PreparedEdgeColumn<'a>,
     pub(super) dst: PreparedEdgeColumn<'a>,
     pub(super) weights: Option<PreparedEdgeColumn<'a>>,
+}
+
+/// Prepared explicit vertex-pair columns supplied to a pairwise cuGraph
+/// algorithm.  These are zero-copy views; their device completion witnesses
+/// are retained by the resulting [`VertexPairs`] object.
+pub(super) struct PreparedVertexPairList<'a> {
+    pub(super) first: PreparedEdgeColumn<'a>,
+    pub(super) second: PreparedEdgeColumn<'a>,
 }
 
 pub(super) struct RetainedPreparedCompletion {
@@ -59,7 +68,7 @@ fn prepared_fixed_width_values_binding<'a>(
         layout => {
             return Err(Error::new(ErrorKind::UnsupportedType, operation)
                 .with_message(format!(
-                    "{} column uses layout {:?}; graph inputs currently require fixed-width prepared exports",
+                    "{} column uses layout {:?}; prepared cuGraph ingress requires fixed-width exports",
                     name, layout
                 ))
                 .with_context("column_name", name.to_string()));
@@ -89,7 +98,7 @@ fn prepared_device_binding<'a>(
     let Placement::CudaDevice { .. } = binding.placement() else {
         return Err(Error::new(ErrorKind::UnsupportedType, operation)
             .with_message(format!(
-                "{} column prepared export is host-materialized; graph construction requires device-resident prepared export inputs",
+                "{} column prepared export is host-materialized; prepared cuGraph ingress requires device-resident inputs",
                 name
             ))
             .with_context("column_name", name.to_string()));
@@ -119,7 +128,7 @@ fn prepared_column_to_raw<'a>(
         PhysicalValidity::ValidityMask { null_count: Some(null_count), .. } => {
             return Err(Error::new(ErrorKind::InvalidInput, operation)
                 .with_message(format!(
-                    "{} column contains {} null value(s); nulls are not supported for edge lists",
+                    "{} column contains {} null value(s); nulls are not supported for prepared cuGraph inputs",
                     name, null_count
                 ))
                 .with_context("column_name", name.to_string())
@@ -128,7 +137,7 @@ fn prepared_column_to_raw<'a>(
         PhysicalValidity::ValidityMask { null_count: None, .. } => {
             return Err(Error::new(ErrorKind::InvalidState, operation)
                 .with_message(format!(
-                    "{} column prepared export does not make null count explicit; graph inputs must prove a null-free active range",
+                    "{} column prepared export does not make null count explicit; prepared cuGraph inputs must prove a null-free active range",
                     name
                 ))
                 .with_context("column_name", name.to_string()));
@@ -173,6 +182,56 @@ fn validate_prepared_edge_list_policy(
     }
 
     validate_edge_list_devices(handle, producer_device, columns, "prepared", operation)
+}
+
+fn validate_prepared_vertex_pair_policy(
+    handle: &EnteredContext<'_>,
+    pairs: &PreparedVertexPairList<'_>,
+    operation: &'static str,
+) -> Result<()> {
+    let first_device = prepared_column_device(pairs.first, "first", operation)?;
+    let second_device = prepared_column_device(pairs.second, "second", operation)?;
+
+    validate_edge_list_devices(handle, first_device, [("second", second_device)], "prepared vertex-pair", operation)
+}
+
+fn validate_prepared_vertex_pair_shape(
+    first: &RawDeviceArrayView<'_>,
+    second: &RawDeviceArrayView<'_>,
+    operation: &'static str,
+) -> Result<crate::types::DataType> {
+    let first_dtype = first.dtype()?;
+    let second_dtype = second.dtype()?;
+
+    if !first_dtype.is_supported_index_type() {
+        return Err(Error::new(ErrorKind::UnsupportedType, operation)
+            .with_message(format!("first vertex-pair column must use Int32 or Int64 vertex ids, got {first_dtype}"))
+            .with_context("column_role", "first")
+            .with_context("column_dtype", first_dtype.to_string()));
+    }
+
+    if !second_dtype.is_supported_index_type() {
+        return Err(Error::new(ErrorKind::UnsupportedType, operation)
+            .with_message(format!("second vertex-pair column must use Int32 or Int64 vertex ids, got {second_dtype}"))
+            .with_context("column_role", "second")
+            .with_context("column_dtype", second_dtype.to_string()));
+    }
+
+    if first_dtype != second_dtype {
+        return Err(Error::new(ErrorKind::InvalidInput, operation)
+            .with_message("first and second vertex-pair columns must have the same dtype")
+            .with_context("first_dtype", first_dtype.to_string())
+            .with_context("second_dtype", second_dtype.to_string()));
+    }
+
+    if first.len() != second.len() {
+        return Err(Error::new(ErrorKind::InvalidInput, operation)
+            .with_message("first and second vertex-pair columns must have the same row count")
+            .with_context("first_len", first.len().to_string())
+            .with_context("second_len", second.len().to_string()));
+    }
+
+    Ok(first_dtype)
 }
 
 pub(super) fn prepared_lease_authorities<'a>(
@@ -251,6 +310,55 @@ pub(super) fn finish_prepared_graph_result<T: Transposition>(
     }
 }
 
+/// Finish prepared pair ingress without introducing a host-side fence on the
+/// successful runtime-bound path.  Completed read leases retain both their
+/// producer owner and completion witness on `VertexPairs`; dropping the pairs
+/// synchronizes that witness before cuGraph releases the native pair object.
+pub(super) fn finish_prepared_vertex_pairs_result(
+    pairs_result: Result<VertexPairs>,
+    completions: impl IntoIterator<Item = Result<Option<RetainedPreparedCompletion>>>,
+) -> Result<VertexPairs> {
+    let mut completion_error = None;
+    let mut retained_owners = Vec::new();
+    let mut retained_witnesses = Vec::new();
+    for completion in completions {
+        match completion {
+            Ok(Some(retained)) => {
+                retained_owners.push(retained.owner);
+                retained_witnesses.push(retained.witness);
+            },
+            Ok(None) => {},
+            Err(error) => {
+                if completion_error.is_none() {
+                    completion_error = Some(error);
+                }
+            },
+        }
+    }
+    let pending_input_completion = DeferredInputCompletion::new(retained_owners, retained_witnesses);
+
+    match pairs_result {
+        Ok(pairs) => {
+            if let Some(error) = completion_error {
+                if let Some(pending) = pending_input_completion {
+                    pending.synchronize();
+                }
+                Err(error)
+            } else if let Some(pending) = pending_input_completion {
+                Ok(pairs.with_pending_input_completion(pending))
+            } else {
+                Ok(pairs)
+            }
+        },
+        Err(error) => {
+            if let Some(pending) = pending_input_completion {
+                pending.synchronize();
+            }
+            Err(error)
+        },
+    }
+}
+
 pub(super) fn build_graph_from_prepared_edge_list_raw<T: Transposition>(
     handle: &EnteredContext<'_>,
     edge_list: &PreparedEdgeList<'_>,
@@ -269,6 +377,39 @@ pub(super) fn build_graph_from_prepared_edge_list_raw<T: Transposition>(
         builder = builder.weights_raw(weights)?;
     }
     builder.build_inner(handle, T::store_transposed())
+}
+
+/// Create cuGraph vertex pairs directly from two prepared device columns.
+///
+/// This path deliberately dispatches through [`Graph::vertex_pairs`] after
+/// checking the shared runtime dtype.  That keeps graph-domain validation and
+/// native pair construction in the owning graph API while prepared ingress
+/// owns the cuDF placement, active-range, and lease contracts.
+pub(super) fn vertex_pairs_from_prepared_columns<T: Transposition>(
+    handle: &EnteredContext<'_>,
+    graph: &mut Graph<T>,
+    pairs: &PreparedVertexPairList<'_>,
+    operation: &'static str,
+) -> Result<VertexPairs> {
+    validate_prepared_vertex_pair_policy(handle, pairs, operation)?;
+
+    let first = prepared_column_to_raw(pairs.first, "first", operation)?;
+    let second = prepared_column_to_raw(pairs.second, "second", operation)?;
+    let dtype = validate_prepared_vertex_pair_shape(&first, &second, operation)?;
+
+    match dtype {
+        crate::types::DataType::Int32 => {
+            let first = DeviceArrayView::<i32>::from_raw_unchecked(first.raw_view());
+            let second = DeviceArrayView::<i32>::from_raw_unchecked(second.raw_view());
+            graph.vertex_pairs(handle, &first, &second)
+        },
+        crate::types::DataType::Int64 => {
+            let first = DeviceArrayView::<i64>::from_raw_unchecked(first.raw_view());
+            let second = DeviceArrayView::<i64>::from_raw_unchecked(second.raw_view());
+            graph.vertex_pairs(handle, &first, &second)
+        },
+        _ => unreachable!("prepared vertex-pair shape validation only permits Int32 and Int64"),
+    }
 }
 
 #[cfg(test)]
