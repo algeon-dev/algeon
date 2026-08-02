@@ -9,18 +9,18 @@
 use std::marker::PhantomData;
 
 use cugraph_sys::{
-    cugraph_centrality_result_converged, cugraph_centrality_result_free, cugraph_centrality_result_get_num_iterations,
+    cugraph_centrality_result_converged, cugraph_centrality_result_get_num_iterations,
     cugraph_centrality_result_get_values, cugraph_centrality_result_get_vertices, cugraph_centrality_result_t,
-    cugraph_edge_centrality_result_free, cugraph_edge_centrality_result_get_dst_vertices,
-    cugraph_edge_centrality_result_get_edge_ids, cugraph_edge_centrality_result_get_src_vertices,
-    cugraph_edge_centrality_result_get_values, cugraph_edge_centrality_result_t, cugraph_hits_result_free,
-    cugraph_hits_result_get_authorities, cugraph_hits_result_get_hub_score_differences, cugraph_hits_result_get_hubs,
+    cugraph_edge_centrality_result_get_dst_vertices, cugraph_edge_centrality_result_get_edge_ids,
+    cugraph_edge_centrality_result_get_src_vertices, cugraph_edge_centrality_result_get_values,
+    cugraph_edge_centrality_result_t, cugraph_hits_result_get_authorities,
+    cugraph_hits_result_get_hub_score_differences, cugraph_hits_result_get_hubs,
     cugraph_hits_result_get_number_of_iterations, cugraph_hits_result_get_vertices, cugraph_hits_result_t,
 };
 
 use crate::{
     array::RawDeviceArrayView,
-    cuda::DeviceGuard,
+    cuda::{DeviceResourceKind, drop_device_resource},
     error::{Error, ErrorKind, Result, require_non_null},
     handle::ResourceHandleLease,
     structure::typed_results::{IntegerValues, ScoreValues, VertexIds},
@@ -110,12 +110,12 @@ impl CentralityResult {
 
 impl Drop for CentralityResult {
     fn drop(&mut self) {
-        if !self.raw.is_null() {
-            let _guard = DeviceGuard::switch_to_for_drop(self.device, "CentralityResult::drop").ok();
-            // SAFETY: `self.raw` is owned by this wrapper and has not been
-            // freed yet.
-            unsafe { cugraph_centrality_result_free(self.raw) };
-        }
+        drop_device_resource(
+            &mut self.raw,
+            self.device,
+            "CentralityResult::drop",
+            DeviceResourceKind::CentralityResult,
+        );
     }
 }
 
@@ -415,12 +415,12 @@ impl EdgeCentralityResult {
 
 impl Drop for EdgeCentralityResult {
     fn drop(&mut self) {
-        if !self.raw.is_null() {
-            let _guard = DeviceGuard::switch_to_for_drop(self.device, "EdgeCentralityResult::drop").ok();
-            // SAFETY: `self.raw` is owned by this wrapper and has not been
-            // freed yet.
-            unsafe { cugraph_edge_centrality_result_free(self.raw) };
-        }
+        drop_device_resource(
+            &mut self.raw,
+            self.device,
+            "EdgeCentralityResult::drop",
+            DeviceResourceKind::EdgeCentralityResult,
+        );
     }
 }
 
@@ -571,12 +571,7 @@ impl HitsResult {
 
 impl Drop for HitsResult {
     fn drop(&mut self) {
-        if !self.raw.is_null() {
-            let _guard = DeviceGuard::switch_to_for_drop(self.device, "HitsResult::drop").ok();
-            // SAFETY: `self.raw` is owned by this wrapper and has not been
-            // freed yet.
-            unsafe { cugraph_hits_result_free(self.raw) };
-        }
+        drop_device_resource(&mut self.raw, self.device, "HitsResult::drop", DeviceResourceKind::HitsResult);
     }
 }
 

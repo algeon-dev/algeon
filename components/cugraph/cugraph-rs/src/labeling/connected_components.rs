@@ -47,7 +47,7 @@ pub(crate) fn weakly_connected_components<T>(
             &mut result,
             &mut error,
         );
-        check_error(code, error, "weakly_connected_components")?;
+        check_error(code, error, handle.device(), "weakly_connected_components")?;
     }
 
     let result = require_non_null(result, "weakly_connected_components", "labeling_result")?;
@@ -76,7 +76,7 @@ pub(crate) fn strongly_connected_components<T>(
             &mut result,
             &mut error,
         );
-        check_error(code, error, "strongly_connected_components")?;
+        check_error(code, error, handle.device(), "strongly_connected_components")?;
     }
 
     let result = require_non_null(result, "strongly_connected_components", "labeling_result")?;

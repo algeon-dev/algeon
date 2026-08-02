@@ -67,7 +67,7 @@ pub(crate) fn leiden(
             &mut result,
             &mut error,
         );
-        check_error(code, error, "leiden")?;
+        check_error(code, error, handle.device(), "leiden")?;
     }
 
     let result = require_non_null(result, "leiden", "hierarchical_clustering_result")?;

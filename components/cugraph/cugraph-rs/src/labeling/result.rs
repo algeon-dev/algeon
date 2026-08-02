@@ -3,13 +3,13 @@
 use std::marker::PhantomData;
 
 use cugraph_sys::{
-    cugraph_labeling_result_free, cugraph_labeling_result_get_labels, cugraph_labeling_result_get_vertices,
-    cugraph_labeling_result_t, cugraph_type_erased_device_array_view_t,
+    cugraph_labeling_result_get_labels, cugraph_labeling_result_get_vertices, cugraph_labeling_result_t,
+    cugraph_type_erased_device_array_view_t,
 };
 
 use crate::{
     array::RawDeviceArrayView,
-    cuda::DeviceGuard,
+    cuda::{DeviceResourceKind, drop_device_resource},
     error::{Error, Result, require_non_null},
     handle::ResourceHandleLease,
     structure::typed_results::{IntegerValues, VertexIds},
@@ -60,11 +60,7 @@ impl LabelingResult {
 
 impl Drop for LabelingResult {
     fn drop(&mut self) {
-        if !self.raw.is_null() {
-            let _guard = DeviceGuard::switch_to_for_drop(self.device, "LabelingResult::drop").ok();
-            // SAFETY: `self.raw` is owned by this wrapper and freed exactly once.
-            unsafe { cugraph_labeling_result_free(self.raw) };
-        }
+        drop_device_resource(&mut self.raw, self.device, "LabelingResult::drop", DeviceResourceKind::LabelingResult);
     }
 }
 

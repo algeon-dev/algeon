@@ -87,7 +87,7 @@ pub(crate) fn eigenvector_centrality(
             &mut result,
             &mut error,
         );
-        check_error(code, error, "eigenvector_centrality")?;
+        check_error(code, error, handle.device(), "eigenvector_centrality")?;
     }
 
     let result = require_non_null(result, "eigenvector_centrality", "centrality_result")?;
@@ -120,7 +120,7 @@ pub(crate) fn katz_centrality(
             &mut result,
             &mut error,
         );
-        check_error(code, error, "katz_centrality")?;
+        check_error(code, error, handle.device(), "katz_centrality")?;
     }
 
     let result = require_non_null(result, "katz_centrality", "centrality_result")?;

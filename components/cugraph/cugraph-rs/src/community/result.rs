@@ -7,14 +7,13 @@
 use std::marker::PhantomData;
 
 use cugraph_sys::{
-    cugraph_hierarchical_clustering_result_free, cugraph_hierarchical_clustering_result_get_clusters,
-    cugraph_hierarchical_clustering_result_get_modularity, cugraph_hierarchical_clustering_result_get_vertices,
-    cugraph_hierarchical_clustering_result_t,
+    cugraph_hierarchical_clustering_result_get_clusters, cugraph_hierarchical_clustering_result_get_modularity,
+    cugraph_hierarchical_clustering_result_get_vertices, cugraph_hierarchical_clustering_result_t,
 };
 
 use crate::{
     array::RawDeviceArrayView,
-    cuda::DeviceGuard,
+    cuda::{DeviceResourceKind, drop_device_resource},
     error::{Error, Result, require_non_null},
     handle::ResourceHandleLease,
     structure::typed_results::VertexIds,
@@ -96,12 +95,12 @@ impl HierarchicalClusteringResult {
 
 impl Drop for HierarchicalClusteringResult {
     fn drop(&mut self) {
-        if !self.raw.is_null() {
-            let _guard = DeviceGuard::switch_to_for_drop(self.device, "HierarchicalClusteringResult::drop").ok();
-            // SAFETY: `self.raw` is owned by this wrapper and has not been
-            // freed yet.
-            unsafe { cugraph_hierarchical_clustering_result_free(self.raw) };
-        }
+        drop_device_resource(
+            &mut self.raw,
+            self.device,
+            "HierarchicalClusteringResult::drop",
+            DeviceResourceKind::HierarchicalClusteringResult,
+        );
     }
 }
 

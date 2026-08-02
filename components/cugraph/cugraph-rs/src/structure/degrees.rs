@@ -6,14 +6,14 @@
 use std::{marker::PhantomData, ptr};
 
 use cugraph_sys::{
-    cugraph_degrees, cugraph_degrees_result_free, cugraph_degrees_result_get_in_degrees,
-    cugraph_degrees_result_get_out_degrees, cugraph_degrees_result_get_vertices, cugraph_degrees_result_t,
-    cugraph_error_t, cugraph_in_degrees, cugraph_out_degrees, cugraph_type_erased_device_array_view_t,
+    cugraph_degrees, cugraph_degrees_result_get_in_degrees, cugraph_degrees_result_get_out_degrees,
+    cugraph_degrees_result_get_vertices, cugraph_degrees_result_t, cugraph_error_t, cugraph_in_degrees,
+    cugraph_out_degrees, cugraph_type_erased_device_array_view_t,
 };
 
 use crate::{
     array::{DeviceArrayView, RawDeviceArrayView},
-    cuda::DeviceGuard,
+    cuda::{DeviceResourceKind, drop_device_resource},
     error::{Error, ErrorKind, Result, check_error, require_non_null},
     graph::{Graph, Transposed},
     handle::{EnteredContext, ResourceHandleLease},
@@ -49,7 +49,7 @@ pub(crate) fn degrees<V: CugraphElement>(
             &mut result,
             &mut error,
         );
-        check_error(code, error, "degrees")?;
+        check_error(code, error, handle.device(), "degrees")?;
     }
 
     DegreesResult::from_raw(result, handle.device(), handle.runtime_bound_lease())
@@ -83,7 +83,7 @@ pub(crate) fn in_degrees<V: CugraphElement>(
             &mut result,
             &mut error,
         );
-        check_error(code, error, "in_degrees")?;
+        check_error(code, error, handle.device(), "in_degrees")?;
     }
 
     InDegreesResult::from_raw(result, handle.device(), handle.runtime_bound_lease())
@@ -117,7 +117,7 @@ pub(crate) fn out_degrees<T, V: CugraphElement>(
             &mut result,
             &mut error,
         );
-        check_error(code, error, "out_degrees")?;
+        check_error(code, error, handle.device(), "out_degrees")?;
     }
 
     OutDegreesResult::from_raw(result, handle.device(), handle.runtime_bound_lease())
@@ -242,12 +242,7 @@ impl DegreeResultInner {
 
 impl Drop for DegreeResultInner {
     fn drop(&mut self) {
-        if !self.raw.is_null() {
-            let _guard = DeviceGuard::switch_to_for_drop(self.device, "DegreeResultInner::drop").ok();
-            // SAFETY: `self.raw` is owned by this wrapper and freed exactly
-            // once here.
-            unsafe { cugraph_degrees_result_free(self.raw) };
-        }
+        drop_device_resource(&mut self.raw, self.device, "DegreeResultInner::drop", DeviceResourceKind::DegreesResult);
     }
 }
 

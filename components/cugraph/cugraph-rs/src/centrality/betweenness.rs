@@ -99,7 +99,7 @@ pub(crate) fn betweenness_centrality<T, V: CugraphElement>(
             &mut result,
             &mut error,
         );
-        check_error(code, error, "betweenness_centrality")?;
+        check_error(code, error, handle.device(), "betweenness_centrality")?;
     }
 
     let result = require_non_null(result, "betweenness_centrality", "centrality_result")?;

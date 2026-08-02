@@ -77,7 +77,7 @@ pub(crate) fn k_truss_subgraph<T>(
             &mut result,
             &mut error,
         );
-        check_error(code, error, "k_truss_subgraph")?;
+        check_error(code, error, handle.device(), "k_truss_subgraph")?;
     }
 
     let result = require_non_null(result, "k_truss_subgraph", "induced_subgraph_result")?;
@@ -112,7 +112,7 @@ pub(crate) fn extract_ego<T, V: CugraphElement>(
             &mut result,
             &mut error,
         );
-        check_error(code, error, "extract_ego")?;
+        check_error(code, error, handle.device(), "extract_ego")?;
     }
 
     let result = require_non_null(result, "extract_ego", "induced_subgraph_result")?;

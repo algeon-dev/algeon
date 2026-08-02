@@ -4,13 +4,13 @@ use std::{num::NonZeroUsize, ptr};
 
 use cugraph_sys::{
     cugraph_analyze_clustering_edge_cut, cugraph_analyze_clustering_modularity, cugraph_analyze_clustering_ratio_cut,
-    cugraph_clustering_result_free, cugraph_clustering_result_get_clusters, cugraph_clustering_result_get_vertices,
-    cugraph_clustering_result_t, cugraph_error_t, cugraph_spectral_modularity_maximization,
+    cugraph_clustering_result_get_clusters, cugraph_clustering_result_get_vertices, cugraph_clustering_result_t,
+    cugraph_error_t, cugraph_spectral_modularity_maximization,
 };
 
 use crate::{
     array::{DeviceArrayView, RawDeviceArrayView},
-    cuda::DeviceGuard,
+    cuda::{DeviceResourceKind, drop_device_resource},
     error::{Error, ErrorKind, Result, check_error, require_non_null},
     graph::{Forward, Graph},
     handle::{EnteredContext, ResourceHandleLease},
@@ -112,12 +112,12 @@ impl ClusteringResult {
 
 impl Drop for ClusteringResult {
     fn drop(&mut self) {
-        if !self.raw.is_null() {
-            let _guard = DeviceGuard::switch_to_for_drop(self.device, "ClusteringResult::drop").ok();
-            // SAFETY: `self.raw` is owned by this wrapper and has not been
-            // freed yet.
-            unsafe { cugraph_clustering_result_free(self.raw) };
-        }
+        drop_device_resource(
+            &mut self.raw,
+            self.device,
+            "ClusteringResult::drop",
+            DeviceResourceKind::ClusteringResult,
+        );
     }
 }
 
@@ -234,7 +234,7 @@ fn run_clustering(
             &mut result,
             &mut error,
         );
-        check_error(code, error, operation)?;
+        check_error(code, error, handle.device(), operation)?;
     }
 
     require_non_null(result, operation, "clustering_result")
@@ -338,7 +338,7 @@ fn analyze_clustering<V: CugraphElement>(
             &mut score,
             &mut error,
         );
-        check_error(code, error, operation)?;
+        check_error(code, error, handle.device(), operation)?;
     }
 
     Ok(score)

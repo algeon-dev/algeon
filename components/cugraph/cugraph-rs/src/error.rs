@@ -12,6 +12,21 @@ use std::{
 
 use cugraph_sys::{cugraph_error_code_t, cugraph_error_free, cugraph_error_message, cugraph_error_t};
 
+const CUGRAPH_RS_CUDA_FAILURE_NONE: i32 = 0;
+const CUGRAPH_RS_CUDA_FAILURE_RECOVERABLE: i32 = 1;
+const CUGRAPH_RS_CUDA_FAILURE_FATAL: i32 = 2;
+
+unsafe extern "C" {
+    fn cugraph_rs_classify_cuda_failure_after_error(cuda_status: *mut i32) -> i32;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeCudaFailure {
+    None,
+    Recoverable(i32),
+    Fatal(i32),
+}
+
 /// Categorisation of cuGraph and library-level errors.
 ///
 /// Each variant describes **what the caller should do**, not which dependency
@@ -332,7 +347,7 @@ pub(crate) fn require_non_null<T>(ptr: *mut T, operation: &'static str, pointer_
     if ptr.is_null() { Err(unexpected_null_pointer(operation, pointer_name)) } else { Ok(ptr) }
 }
 
-/// Check a C API return code and convert to a Rust `Result`.
+/// Check a GPU-capable C API return code and convert to a Rust `Result`.
 ///
 /// On success (`CUGRAPH_SUCCESS`), returns `Ok(())`. Otherwise extracts the
 /// error message from the C error object, frees it, and returns an appropriate
@@ -343,10 +358,34 @@ pub(crate) fn require_non_null<T>(ptr: *mut T, operation: &'static str, pointer_
 ///
 /// # Safety
 ///
-/// `error_ptr` must be a valid pointer to a `*mut cugraph_error_t` that was
-/// populated by the C API call. This function is intended to be called
-/// immediately after a C API call in unsafe blocks within this crate.
+/// `error_ptr` must be null or a valid `cugraph_error_t` populated by the C API
+/// call. The caller must still hold owner-device entry for `device` so the
+/// native typed CUDA failure probe inspects the same immutable device binding.
 pub(crate) unsafe fn check_error(
+    code: cugraph_error_code_t,
+    error_ptr: *mut cugraph_error_t,
+    device: i32,
+    operation: &'static str,
+) -> Result<()> {
+    if code == cugraph_error_code_t::CUGRAPH_SUCCESS {
+        return Ok(());
+    }
+
+    // SAFETY: owner-device entry remains live and the native probe accepts no
+    // borrowed resource other than its valid stack out-pointer.
+    let cuda_failure = unsafe { native_cuda_failure_after_error() };
+    // SAFETY: this forwards the caller's error-pointer contract and consumes
+    // the pointer exactly once on the failure path.
+    unsafe { check_error_with_cuda_failure(code, error_ptr, Some((device, cuda_failure)), operation) }
+}
+
+/// Check a host-only cuGraph C API call that cannot execute CUDA work.
+///
+/// # Safety
+///
+/// `error_ptr` must be null or a valid `cugraph_error_t` populated by the C API
+/// call and consumed exactly once by this function on failure.
+pub(crate) unsafe fn check_host_error(
     code: cugraph_error_code_t,
     error_ptr: *mut cugraph_error_t,
     operation: &'static str,
@@ -354,13 +393,66 @@ pub(crate) unsafe fn check_error(
     if code == cugraph_error_code_t::CUGRAPH_SUCCESS {
         return Ok(());
     }
+    // SAFETY: this forwards the caller's error-pointer contract and consumes
+    // the pointer exactly once on the failure path.
+    unsafe { check_error_with_cuda_failure(code, error_ptr, None, operation) }
+}
 
+unsafe fn native_cuda_failure_after_error() -> NativeCudaFailure {
+    let mut cuda_status = 0;
+    // SAFETY: `cuda_status` is a valid writable out-pointer and the shim does
+    // not retain it after returning.
+    let classification = unsafe { cugraph_rs_classify_cuda_failure_after_error(&mut cuda_status) };
+    match classification {
+        CUGRAPH_RS_CUDA_FAILURE_NONE => NativeCudaFailure::None,
+        CUGRAPH_RS_CUDA_FAILURE_FATAL => NativeCudaFailure::Fatal(cuda_status),
+        CUGRAPH_RS_CUDA_FAILURE_RECOVERABLE => NativeCudaFailure::Recoverable(cuda_status),
+        _ => NativeCudaFailure::Recoverable(cuda_status),
+    }
+}
+
+unsafe fn check_error_with_cuda_failure(
+    code: cugraph_error_code_t,
+    error_ptr: *mut cugraph_error_t,
+    device_failure: Option<(i32, NativeCudaFailure)>,
+    operation: &'static str,
+) -> Result<()> {
     let kind = ErrorKind::from_error_code(code);
     let mut err = Error::new(kind, operation);
 
     // OutOfMemory is typically transient — GPU memory may free up.
     if kind == ErrorKind::OutOfMemory {
         err = err.set_temporary();
+    }
+
+    if let Some((device, cuda_failure)) = device_failure {
+        match cuda_failure {
+            NativeCudaFailure::None => {},
+            NativeCudaFailure::Recoverable(cuda_status) => {
+                err = err
+                    .with_context("cuda_failure_classification", "recoverable")
+                    .with_context("cuda_status_code", cuda_status.to_string());
+            },
+            NativeCudaFailure::Fatal(cuda_status) => {
+                if let Some(device_id) = usize::try_from(device)
+                    .ok()
+                    .and_then(|ordinal| cudf::DeviceId::new(ordinal).ok())
+                    .or_else(|| cudf::testing::device_safety::injected_device_id(device))
+                {
+                    cudf::runtime::report_device_fault(
+                        device_id,
+                        cudf::runtime::DeviceFaultKind::FatalDeviceOperation,
+                        operation,
+                        Some(cuda_status),
+                    );
+                }
+                err = err
+                    .set_persistent()
+                    .with_context("cuda_failure_classification", "fatal")
+                    .with_context("cuda_status_code", cuda_status.to_string())
+                    .with_context("device", device.to_string());
+            },
+        }
     }
 
     if !error_ptr.is_null() {
@@ -374,7 +466,8 @@ pub(crate) unsafe fn check_error(
             err = err.with_message(msg);
         }
         // SAFETY: `error_ptr` is a live cuGraph error object and this function
-        // consumes it exactly once on the failure path.
+        // consumes it exactly once on the failure path. Upstream owns only a
+        // host `std::string`; no CUDA resource is touched by this destructor.
         unsafe { cugraph_error_free(error_ptr) };
     }
 
@@ -546,7 +639,7 @@ mod tests {
         // SAFETY: Passing a success code with a null error pointer matches the C API contract;
         // `check_error` will not dereference the pointer on success.
         unsafe {
-            let result = check_error(cugraph_error_code_t::CUGRAPH_SUCCESS, std::ptr::null_mut(), "test");
+            let result = check_host_error(cugraph_error_code_t::CUGRAPH_SUCCESS, std::ptr::null_mut(), "test");
             assert!(result.is_ok());
         }
     }
@@ -564,7 +657,7 @@ mod tests {
         // SAFETY: `check_error` accepts a null error pointer for failure paths and degrades to a
         // synthesized Rust error without dereferencing the pointer.
         unsafe {
-            let result = check_error(cugraph_error_code_t::CUGRAPH_INVALID_INPUT, std::ptr::null_mut(), "test_op");
+            let result = check_host_error(cugraph_error_code_t::CUGRAPH_INVALID_INPUT, std::ptr::null_mut(), "test_op");
             assert!(result.is_err());
             let err = result.unwrap_err();
             assert_eq!(err.kind(), ErrorKind::InvalidInput);
@@ -578,7 +671,7 @@ mod tests {
         // SAFETY: The test intentionally passes an unknown status code and a null error pointer to
         // verify `check_error`'s fallback mapping logic.
         unsafe {
-            let result = check_error(cugraph_error_code_t(777), std::ptr::null_mut(), "test_op");
+            let result = check_host_error(cugraph_error_code_t(777), std::ptr::null_mut(), "test_op");
             assert!(result.is_err());
             let err = result.unwrap_err();
             assert_eq!(err.kind(), ErrorKind::Unexpected);
@@ -591,11 +684,40 @@ mod tests {
         // SAFETY: The allocation failure code is exercised with a null error pointer to verify
         // Rust-side status mapping; `check_error` handles this without dereferencing the pointer.
         unsafe {
-            let result = check_error(cugraph_error_code_t::CUGRAPH_ALLOC_ERROR, std::ptr::null_mut(), "alloc_op");
+            let result = check_host_error(cugraph_error_code_t::CUGRAPH_ALLOC_ERROR, std::ptr::null_mut(), "alloc_op");
             assert!(result.is_err());
             let err = result.unwrap_err();
             assert_eq!(err.kind(), ErrorKind::OutOfMemory);
             assert!(err.is_temporary());
         }
+    }
+
+    #[test]
+    fn fatal_native_cuda_classification_quarantines_the_explicit_owner_device() {
+        let scope = cudf::testing::device_safety::DeviceSafetyTestScope::install([]);
+        let device = cudf::testing::device_safety::injected_device_id(7).expect("injected owner device");
+
+        // SAFETY: the null error pointer is permitted on failure and the typed
+        // CUDA classification is injected directly into the Rust translation
+        // layer, without crossing the production CUDA probe.
+        let error = unsafe {
+            check_error_with_cuda_failure(
+                cugraph_error_code_t::CUGRAPH_UNKNOWN_ERROR,
+                std::ptr::null_mut(),
+                Some((7, NativeCudaFailure::Fatal(700))),
+                "test_fatal_cugraph_call",
+            )
+        }
+        .expect_err("fatal CUDA classification must fail");
+
+        assert!(error.is_persistent());
+        assert!(error.to_string().contains("cuda_failure_classification: fatal"));
+        let snapshot = scope.health_snapshot(device);
+        assert_eq!(snapshot.status(), cudf::runtime::DeviceHealthStatus::Unhealthy);
+        assert_eq!(snapshot.fault_count(), 1);
+        let first = snapshot.first_fault().expect("fatal fault");
+        assert_eq!(first.kind(), cudf::runtime::DeviceFaultKind::FatalDeviceOperation);
+        assert_eq!(first.operation(), "test_fatal_cugraph_call");
+        assert_eq!(first.native_status(), Some(700));
     }
 }

@@ -74,7 +74,7 @@ pub(crate) fn ecg(
             &mut result,
             &mut error,
         );
-        check_error(code, error, "ecg")?;
+        check_error(code, error, handle.device(), "ecg")?;
     }
 
     let result = require_non_null(result, "ecg", "hierarchical_clustering_result")?;

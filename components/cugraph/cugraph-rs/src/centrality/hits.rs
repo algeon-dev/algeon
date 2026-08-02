@@ -96,7 +96,7 @@ pub(crate) fn hits<V: CugraphElement, W: CugraphElement>(
             &mut result,
             &mut error,
         );
-        check_error(code, error, "hits")?;
+        check_error(code, error, handle.device(), "hits")?;
     }
 
     let result = require_non_null(result, "hits", "hits_result")?;

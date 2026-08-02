@@ -91,7 +91,7 @@ pub(crate) fn louvain(
             &mut result,
             &mut error,
         );
-        check_error(code, error, "louvain")?;
+        check_error(code, error, handle.device(), "louvain")?;
     }
 
     let result = require_non_null(result, "louvain", "hierarchical_clustering_result")?;

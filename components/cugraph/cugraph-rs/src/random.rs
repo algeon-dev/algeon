@@ -19,10 +19,10 @@
 
 use std::{marker::PhantomData, ptr};
 
-use cugraph_sys::{cugraph_error_t, cugraph_rng_state_create, cugraph_rng_state_free, cugraph_rng_state_t};
+use cugraph_sys::{cugraph_error_t, cugraph_rng_state_create, cugraph_rng_state_t};
 
 use crate::{
-    cuda::DeviceGuard,
+    cuda::{DeviceResourceKind, drop_device_resource},
     error::{Result, check_error, require_non_null},
     handle::EnteredContext,
 };
@@ -57,7 +57,7 @@ impl RngState {
         // out-pointers for cuGraph to initialize.
         unsafe {
             let code = cugraph_rng_state_create(handle.handle_ptr(), seed, &mut raw, &mut error);
-            check_error(code, error, "RngState::new")?;
+            check_error(code, error, handle.device(), "RngState::new")?;
         }
 
         let raw = require_non_null(raw, "RngState::new", "rng_state")?;
@@ -73,12 +73,7 @@ impl RngState {
 
 impl Drop for RngState {
     fn drop(&mut self) {
-        if !self.raw.is_null() {
-            let _guard = DeviceGuard::switch_to_for_drop(self.device, "RngState::drop").ok();
-            // SAFETY: `self.raw` is owned by this wrapper and has not been
-            // freed yet.
-            unsafe { cugraph_rng_state_free(self.raw) };
-        }
+        drop_device_resource(&mut self.raw, self.device, "RngState::drop", DeviceResourceKind::RngState);
     }
 }
 

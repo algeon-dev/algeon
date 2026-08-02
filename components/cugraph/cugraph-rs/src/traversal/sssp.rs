@@ -98,7 +98,7 @@ where
             &mut result,
             &mut error,
         );
-        check_error(code, error, "sssp")?;
+        check_error(code, error, handle.device(), "sssp")?;
     }
 
     // SAFETY: on success, cuGraph transfers ownership of the paths result to

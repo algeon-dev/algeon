@@ -48,13 +48,13 @@
 use std::{marker::PhantomData, ptr};
 
 use cugraph_sys::{
-    cugraph_error_t, cugraph_force_atlas2, cugraph_layout_result_free, cugraph_layout_result_get_vertices,
-    cugraph_layout_result_get_x_axis, cugraph_layout_result_get_y_axis, cugraph_layout_result_t,
+    cugraph_error_t, cugraph_force_atlas2, cugraph_layout_result_get_vertices, cugraph_layout_result_get_x_axis,
+    cugraph_layout_result_get_y_axis, cugraph_layout_result_t,
 };
 
 use crate::{
     array::DeviceArrayView,
-    cuda::DeviceGuard,
+    cuda::{DeviceResourceKind, drop_device_resource},
     error::{Error, ErrorKind, Result, check_error, require_non_null},
     graph::{Graph, Transposition},
     handle::{EnteredContext, ResourceHandleLease},
@@ -307,12 +307,7 @@ impl LayoutResult {
 
 impl Drop for LayoutResult {
     fn drop(&mut self) {
-        if !self.raw.is_null() {
-            let _guard = DeviceGuard::switch_to_for_drop(self.device, "LayoutResult::drop").ok();
-            // SAFETY: `self.raw` is owned by this wrapper and has not been
-            // freed yet.
-            unsafe { cugraph_layout_result_free(self.raw) };
-        }
+        drop_device_resource(&mut self.raw, self.device, "LayoutResult::drop", DeviceResourceKind::LayoutResult);
     }
 }
 
@@ -514,7 +509,7 @@ pub(crate) fn force_atlas2<T: Transposition, V: CugraphElement, W: CugraphElemen
             &mut result,
             &mut error,
         );
-        check_error(code, error, "force_atlas2")?;
+        check_error(code, error, handle.device(), "force_atlas2")?;
     }
 
     let result = require_non_null(result, "force_atlas2", "layout_result")?;
