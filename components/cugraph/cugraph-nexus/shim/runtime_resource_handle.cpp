@@ -12,11 +12,13 @@
 #include <cugraph_c/random.h>
 #include <raft/core/handle.hpp>
 #include <rmm/cuda_stream_view.hpp>
+#include <rmm/mr/per_device_resource.hpp>
 #include <rmm/resource_ref.hpp>
 
 #include <cuda_runtime_api.h>
 
 #include <memory>
+#include <mutex>
 #include <new>
 
 // algorithms.h provides the opaque layout-result type through the tree API,
@@ -40,11 +42,54 @@ cugraph_rs_destroy_status_t typed_cuda_destroy_status(int32_t *cuda_status) {
              ? CUGRAPH_RS_DESTROY_FATAL_CUDA
              : CUGRAPH_RS_DESTROY_CUDA_ERROR;
 }
+
+// `cugraph_graph_create_with_times_sg` constructs retained device_uvectors
+// without accepting an explicit allocator.  Its only allocator input is the
+// RMM current resource, so contain that legacy/global contract in one native
+// boundary.  This lock spans the call and restoration: RMM serializes each
+// setter independently, but cannot make the desired resource stable across
+// the upstream graph-construction call.
+std::mutex &runtime_graph_creation_memory_resource_mutex() {
+  static auto &mutex = *new std::mutex;
+  return mutex;
+}
+
+class runtime_graph_creation_memory_resource_scope {
+ public:
+  explicit runtime_graph_creation_memory_resource_scope(
+      rmm::mr::device_memory_resource *memory_resource)
+      : lock_{runtime_graph_creation_memory_resource_mutex()},
+        previous_{rmm::mr::set_current_device_resource(
+            rmm::mr::any_device_resource_from_raw(memory_resource))} {}
+
+  runtime_graph_creation_memory_resource_scope(
+      runtime_graph_creation_memory_resource_scope const &) = delete;
+  runtime_graph_creation_memory_resource_scope &operator=(
+      runtime_graph_creation_memory_resource_scope const &) = delete;
+
+  ~runtime_graph_creation_memory_resource_scope() noexcept {
+    try {
+      // A failed restoration leaves RMM's process-wide allocator state
+      // unknown. Continuing would misroute later allocations, so fail closed
+      // at the native boundary rather than returning into Rust with a corrupt
+      // allocator binding.
+      [[maybe_unused]] auto discarded = rmm::mr::set_current_device_resource(
+          std::move(previous_));
+    } catch (...) {
+      std::terminate();
+    }
+  }
+
+ private:
+  std::unique_lock<std::mutex> lock_;
+  cuda::mr::any_resource<cuda::mr::device_accessible> previous_;
+};
 } // namespace
 
 struct cugraph_rs_runtime_resource_handle {
   std::unique_ptr<raft::handle_t> raft_handle;
   cugraph_resource_handle_t *cugraph_handle{nullptr};
+  rmm::mr::device_memory_resource *device_memory_resource{nullptr};
 
   cugraph_rs_runtime_resource_handle(void *cuda_stream,
                                      void *device_memory_resource) {
@@ -52,6 +97,7 @@ struct cugraph_rs_runtime_resource_handle {
         rmm::cuda_stream_view{reinterpret_cast<cudaStream_t>(cuda_stream)};
     auto *mr = reinterpret_cast<rmm::mr::device_memory_resource *>(
         device_memory_resource);
+    this->device_memory_resource = mr;
     // Borrow the cudf-owned resource; this wrapper does not take ownership.
     raft_handle = std::make_unique<raft::handle_t>(
         stream, std::shared_ptr<rmm::cuda_stream_pool>{},
@@ -94,6 +140,39 @@ extern "C" cugraph_resource_handle_t *cugraph_rs_runtime_resource_handle_get(
     return nullptr;
   }
   return handle->cugraph_handle;
+}
+
+extern "C" cugraph_error_code_t
+cugraph_rs_runtime_resource_handle_graph_create_with_times_sg(
+    cugraph_rs_runtime_resource_handle_t *handle,
+    const cugraph_graph_properties_t *properties,
+    const cugraph_type_erased_device_array_view_t *vertices,
+    const cugraph_type_erased_device_array_view_t *src,
+    const cugraph_type_erased_device_array_view_t *dst,
+    const cugraph_type_erased_device_array_view_t *weights,
+    const cugraph_type_erased_device_array_view_t *edge_ids,
+    const cugraph_type_erased_device_array_view_t *edge_type_ids,
+    const cugraph_type_erased_device_array_view_t *edge_start_times,
+    const cugraph_type_erased_device_array_view_t *edge_end_times,
+    bool_t store_transposed, bool_t renumber, bool_t drop_self_loops,
+    bool_t drop_multi_edges, bool_t symmetrize, bool_t do_expensive_check,
+    cugraph_graph_t **graph, cugraph_error_t **error) {
+  if (handle == nullptr || handle->cugraph_handle == nullptr ||
+      handle->device_memory_resource == nullptr) {
+    return CUGRAPH_INVALID_HANDLE;
+  }
+
+  try {
+    runtime_graph_creation_memory_resource_scope scope{
+        handle->device_memory_resource};
+    return cugraph_graph_create_with_times_sg(
+        handle->cugraph_handle, properties, vertices, src, dst, weights,
+        edge_ids, edge_type_ids, edge_start_times, edge_end_times,
+        store_transposed, renumber, drop_self_loops, drop_multi_edges,
+        symmetrize, do_expensive_check, graph, error);
+  } catch (...) {
+    return CUGRAPH_UNKNOWN_ERROR;
+  }
 }
 
 extern "C" cugraph_rs_cuda_failure_classification_t

@@ -4,6 +4,7 @@
 // while cugraph needs to build a raft::handle_t from a cudf Runtime stream
 // and RMM memory resource before handing it to cugraph_create_resource_handle().
 
+#include <cugraph_c/graph.h>
 #include <cugraph_c/resource_handle.h>
 
 #ifdef __cplusplus
@@ -61,6 +62,26 @@ cugraph_rs_runtime_resource_handle_create(void *cuda_stream,
 
 cugraph_resource_handle_t *cugraph_rs_runtime_resource_handle_get(
     cugraph_rs_runtime_resource_handle_t *handle);
+
+// cuGraph's graph C API allocates its retained device_uvectors through RMM's
+// per-device current resource instead of the RAFT handle's explicit resource.
+// Runtime-bound callers must use this bridge so those retained allocations use
+// the exact cudf runtime memory resource for the duration of construction.
+cugraph_error_code_t
+cugraph_rs_runtime_resource_handle_graph_create_with_times_sg(
+    cugraph_rs_runtime_resource_handle_t *handle,
+    const cugraph_graph_properties_t *properties,
+    const cugraph_type_erased_device_array_view_t *vertices,
+    const cugraph_type_erased_device_array_view_t *src,
+    const cugraph_type_erased_device_array_view_t *dst,
+    const cugraph_type_erased_device_array_view_t *weights,
+    const cugraph_type_erased_device_array_view_t *edge_ids,
+    const cugraph_type_erased_device_array_view_t *edge_type_ids,
+    const cugraph_type_erased_device_array_view_t *edge_start_times,
+    const cugraph_type_erased_device_array_view_t *edge_end_times,
+    bool_t store_transposed, bool_t renumber, bool_t drop_self_loops,
+    bool_t drop_multi_edges, bool_t symmetrize, bool_t do_expensive_check,
+    cugraph_graph_t **graph, cugraph_error_t **error);
 
 // Inspect CUDA's typed thread/context status after a failed cuGraph C API call.
 // This deliberately avoids classifying failures from human-readable messages.

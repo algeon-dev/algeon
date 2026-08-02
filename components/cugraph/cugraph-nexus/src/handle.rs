@@ -148,6 +148,10 @@ impl RuntimeResourceHandleOwner {
             )
         }
     }
+
+    fn raw(&self) -> *mut cugraph_rs_runtime_resource_handle_t {
+        self.raw.expect("runtime resource-handle owner is live while entered").as_ptr()
+    }
 }
 
 impl Drop for RuntimeResourceHandleOwner {
@@ -317,6 +321,14 @@ impl EnteredContext<'_> {
 
     pub(crate) fn runtime_bound_lease(&self) -> Option<ResourceHandleLease> {
         self.owner.runtime_bound_lease()
+    }
+
+    /// Borrow the native runtime-bound owner for an API that must carry the
+    /// exact runtime memory resource through an upstream global-RMM boundary.
+    /// The pointer is valid only while this entered context holds its binding
+    /// extension guard.
+    pub(crate) fn runtime_resource_handle_raw(&self) -> Option<*mut std::ffi::c_void> {
+        self.runtime_extension.as_ref().map(|extension| extension.value().raw().cast::<std::ffi::c_void>())
     }
 }
 
