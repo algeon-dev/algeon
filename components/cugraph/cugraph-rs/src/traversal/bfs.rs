@@ -212,12 +212,12 @@ fn validate_predicates<V: CugraphElement, E: CugraphElement>(
                 .with_message(format!("include_edge_ids dtype must be Int32 or Int64, got {dtype}")));
         }
 
-        if let Some(edge_id_dtype) = graph.edge_id_dtype() {
-            if dtype != edge_id_dtype {
-                return Err(Error::new(ErrorKind::UnsupportedType, operation).with_message(format!(
-                    "include_edge_ids dtype {dtype} does not match graph edge-id dtype {edge_id_dtype}"
-                )));
-            }
+        if let Some(edge_id_dtype) = graph.edge_id_dtype()
+            && dtype != edge_id_dtype
+        {
+            return Err(Error::new(ErrorKind::UnsupportedType, operation).with_message(format!(
+                "include_edge_ids dtype {dtype} does not match graph edge-id dtype {edge_id_dtype}"
+            )));
         }
     }
 

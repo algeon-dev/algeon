@@ -781,13 +781,13 @@ where
         "homogeneous_uniform_temporal_neighbor_sample",
         "start_vertices",
     )?;
-    if let Some(times) = starting_vertex_times {
-        if times.len() != start_vertices.len() {
-            return Err(Error::new(ErrorKind::InvalidInput, "homogeneous_uniform_temporal_neighbor_sample")
-                .with_message("starting_vertex_times length must match start_vertices length")
-                .with_context("start_vertices_len", start_vertices.len().to_string())
-                .with_context("starting_vertex_times_len", times.len().to_string()));
-        }
+    if let Some(times) = starting_vertex_times
+        && times.len() != start_vertices.len()
+    {
+        return Err(Error::new(ErrorKind::InvalidInput, "homogeneous_uniform_temporal_neighbor_sample")
+            .with_message("starting_vertex_times length must match start_vertices length")
+            .with_context("start_vertices_len", start_vertices.len().to_string())
+            .with_context("starting_vertex_times_len", times.len().to_string()));
     }
 
     let temporal_property_name = CString::new(temporal_property_name).map_err(|_| {
@@ -846,13 +846,13 @@ where
         "homogeneous_biased_temporal_neighbor_sample",
         "start_vertices",
     )?;
-    if let Some(times) = starting_vertex_times {
-        if times.len() != start_vertices.len() {
-            return Err(Error::new(ErrorKind::InvalidInput, "homogeneous_biased_temporal_neighbor_sample")
-                .with_message("starting_vertex_times length must match start_vertices length")
-                .with_context("start_vertices_len", start_vertices.len().to_string())
-                .with_context("starting_vertex_times_len", times.len().to_string()));
-        }
+    if let Some(times) = starting_vertex_times
+        && times.len() != start_vertices.len()
+    {
+        return Err(Error::new(ErrorKind::InvalidInput, "homogeneous_biased_temporal_neighbor_sample")
+            .with_message("starting_vertex_times length must match start_vertices length")
+            .with_context("start_vertices_len", start_vertices.len().to_string())
+            .with_context("starting_vertex_times_len", times.len().to_string()));
     }
 
     let temporal_property_name = CString::new(temporal_property_name).map_err(|_| {

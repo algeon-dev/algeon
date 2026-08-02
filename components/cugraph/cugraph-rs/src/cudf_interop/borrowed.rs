@@ -247,16 +247,16 @@ pub(super) fn borrowed_column_to_raw<'a>(
 ) -> Result<RawDeviceArrayView<'a>> {
     let cugraph_dtype = edge_list_dtype(column.type_id(), name, operation)?;
 
-    if let NullMaskKind::Present { null_count, .. } = column.null_mask().kind() {
-        if *null_count != 0 {
-            return Err(Error::new(ErrorKind::InvalidInput, operation)
-                .with_message(format!(
-                    "{} column contains {} null value(s); nulls are not supported for edge lists",
-                    name, null_count
-                ))
-                .with_context("column_name", name.to_string())
-                .with_context("null_count", null_count.to_string()));
-        }
+    if let NullMaskKind::Present { null_count, .. } = column.null_mask().kind()
+        && *null_count != 0
+    {
+        return Err(Error::new(ErrorKind::InvalidInput, operation)
+            .with_message(format!(
+                "{} column contains {} null value(s); nulls are not supported for edge lists",
+                name, null_count
+            ))
+            .with_context("column_name", name.to_string())
+            .with_context("null_count", null_count.to_string()));
     }
 
     let byte_offset = checked_column_offset_bytes(column.offset(), cugraph_dtype, name, operation)?;

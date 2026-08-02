@@ -364,12 +364,18 @@ pub(crate) unsafe fn check_error(
     }
 
     if !error_ptr.is_null() {
-        let msg_ptr = cugraph_error_message(error_ptr);
+        // SAFETY: the caller guarantees that a failed C API call populated
+        // `error_ptr` with a valid cuGraph error object.
+        let msg_ptr = unsafe { cugraph_error_message(error_ptr) };
         if !msg_ptr.is_null() {
-            let msg = std::ffi::CStr::from_ptr(msg_ptr).to_string_lossy().into_owned();
+            // SAFETY: cuGraph returns a NUL-terminated message owned by the
+            // live error object, which is freed only after copying below.
+            let msg = unsafe { std::ffi::CStr::from_ptr(msg_ptr) }.to_string_lossy().into_owned();
             err = err.with_message(msg);
         }
-        cugraph_error_free(error_ptr);
+        // SAFETY: `error_ptr` is a live cuGraph error object and this function
+        // consumes it exactly once on the failure path.
+        unsafe { cugraph_error_free(error_ptr) };
     }
 
     Err(err)

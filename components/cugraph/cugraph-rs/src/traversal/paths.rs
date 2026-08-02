@@ -217,13 +217,13 @@ impl ExtractPathsResult {
 
 impl Drop for ExtractPathsResult {
     fn drop(&mut self) {
-        if let ExtractPathsStorage::Native { raw, device } = &mut self.storage {
-            if !raw.is_null() {
-                let _guard = DeviceGuard::switch_to_for_drop(*device, "ExtractPathsResult::drop").ok();
-                // SAFETY: `raw` is owned by this wrapper and has not been
-                // freed yet.
-                unsafe { cugraph_extract_paths_result_free(*raw) };
-            }
+        if let ExtractPathsStorage::Native { raw, device } = &mut self.storage
+            && !raw.is_null()
+        {
+            let _guard = DeviceGuard::switch_to_for_drop(*device, "ExtractPathsResult::drop").ok();
+            // SAFETY: `raw` is owned by this wrapper and has not been
+            // freed yet.
+            unsafe { cugraph_extract_paths_result_free(*raw) };
         }
     }
 }

@@ -7,10 +7,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use build_support::{
-    CompilerFamily, external_warning_control_args, prioritize_rapids_cccl_include_dirs, resolve_shim_compile_layout,
-    system_include_args,
-};
+use build_support::{prioritize_rapids_cccl_include_dirs, resolve_shim_compile_layout, system_include_args};
 
 fn read_build_rs() -> String {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -128,30 +125,9 @@ fn compile_layout_rejects_missing_native_include_dirs() {
 }
 
 #[test]
-fn gnu_like_compilers_use_isystem_for_native_include_roots() {
-    let args = system_include_args(CompilerFamily::GnuLike, Path::new("/opt/cugraph/include"));
+fn native_include_roots_use_isystem() {
+    let args = system_include_args(Path::new("/opt/cugraph/include"));
     let rendered = args.iter().map(|arg| arg.to_string_lossy().into_owned()).collect::<Vec<_>>();
 
     assert_eq!(rendered, vec!["-isystem".to_string(), "/opt/cugraph/include".to_string()]);
-}
-
-#[test]
-fn msvc_compilers_use_external_include_mode_for_native_include_roots() {
-    let args = system_include_args(CompilerFamily::Msvc, Path::new(r"C:\rapids\include"));
-    let rendered = args.iter().map(|arg| arg.to_string_lossy().into_owned()).collect::<Vec<_>>();
-
-    assert_eq!(rendered, vec![r"/external:IC:\rapids\include".to_string()]);
-}
-
-#[test]
-fn msvc_external_warning_control_is_global_not_per_include_dir() {
-    let args = external_warning_control_args(CompilerFamily::Msvc);
-    let rendered = args.iter().map(|arg| arg.to_string_lossy().into_owned()).collect::<Vec<_>>();
-
-    assert_eq!(rendered, vec!["/external:W0".to_string()]);
-}
-
-#[test]
-fn gnu_like_compilers_do_not_need_global_external_warning_control() {
-    assert!(external_warning_control_args(CompilerFamily::GnuLike).is_empty());
 }

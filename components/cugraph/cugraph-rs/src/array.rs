@@ -203,7 +203,10 @@ impl RawDeviceArrayView<'_> {
         pointer_name: &'static str,
     ) -> Result<Self> {
         let raw = require_non_null(raw, operation, pointer_name)?;
-        Ok(Self::from_borrowed_unchecked(raw, device))
+        // SAFETY: the caller guarantees that `raw` is a live borrowed view
+        // whose backing allocation remains valid for the returned lifetime;
+        // the null check above establishes the remaining constructor precondition.
+        Ok(unsafe { Self::from_borrowed_unchecked(raw, device) })
     }
 
     pub(crate) unsafe fn from_borrowed_unchecked(
@@ -500,7 +503,10 @@ impl<'a, T: CugraphElement> DeviceArrayView<'a, T> {
     /// - the memory must outlive `'a`
     #[allow(dead_code)] // kept for potential direct use in typed algorithm paths
     pub(crate) unsafe fn from_borrowed(raw: *mut cugraph_type_erased_device_array_view_t) -> Self {
-        DeviceArrayView { inner: RawDeviceArrayView::from_borrowed_unchecked(raw, None), _element: PhantomData }
+        // SAFETY: the caller guarantees that `raw` is a valid borrowed view of
+        // `T` and that its backing allocation outlives the returned wrapper.
+        let inner = unsafe { RawDeviceArrayView::from_borrowed_unchecked(raw, None) };
+        DeviceArrayView { inner, _element: PhantomData }
     }
 
     /// Create a view from an existing raw device pointer.

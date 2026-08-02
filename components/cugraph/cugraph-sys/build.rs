@@ -4,7 +4,6 @@ use std::{env, path::PathBuf};
 mod build_support;
 
 fn emit_runtime_search_path(path: &std::path::Path) {
-    #[cfg(target_os = "linux")]
     println!("cargo:rustc-link-arg=-Wl,-rpath,{}", path.display());
 }
 

@@ -3,12 +3,6 @@ use std::{
     path::{Path, PathBuf},
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CompilerFamily {
-    GnuLike,
-    Msvc,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ShimCompileLayout {
     pub(crate) source_file: PathBuf,
@@ -61,16 +55,6 @@ fn is_cuda_toolkit_include_dir(dir: &Path) -> bool {
         || rendered.contains("/cuda/include/")
 }
 
-pub(crate) fn system_include_args(family: CompilerFamily, dir: &Path) -> Vec<OsString> {
-    match family {
-        CompilerFamily::GnuLike => vec![OsString::from("-isystem"), dir.as_os_str().to_owned()],
-        CompilerFamily::Msvc => vec![OsString::from(format!("/external:I{}", dir.display()))],
-    }
-}
-
-pub(crate) fn external_warning_control_args(family: CompilerFamily) -> Vec<OsString> {
-    match family {
-        CompilerFamily::GnuLike => Vec::new(),
-        CompilerFamily::Msvc => vec![OsString::from("/external:W0")],
-    }
+pub(crate) fn system_include_args(dir: &Path) -> Vec<OsString> {
+    vec![OsString::from("-isystem"), dir.as_os_str().to_owned()]
 }
