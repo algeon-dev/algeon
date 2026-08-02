@@ -10,7 +10,10 @@ use std::{
     fmt,
 };
 
-use cugraph_sys::{cugraph_error_code_t, cugraph_error_free, cugraph_error_message, cugraph_error_t};
+use cugraph_sys::{
+    cugraph_allocation_source_t, cugraph_error_allocation_source, cugraph_error_code_t, cugraph_error_free,
+    cugraph_error_message, cugraph_error_t,
+};
 
 const CUGRAPH_RS_CUDA_FAILURE_NONE: i32 = 0;
 const CUGRAPH_RS_CUDA_FAILURE_RECOVERABLE: i32 = 1;
@@ -97,6 +100,60 @@ impl fmt::Display for ErrorKind {
     }
 }
 
+/// Which allocation-failure exception type produced a cuGraph allocation error.
+///
+/// These variants record the C++ exception type that cuGraph caught, nothing
+/// more. Note that `rmm::out_of_memory` derives from `rmm::bad_alloc`, which in
+/// turn derives from `std::bad_alloc`, so the most-derived matching variant is
+/// reported. `Unknown` is fail-closed: it covers non-allocation errors, missing
+/// error objects, and unrecognized native values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum AllocationSource {
+    /// The C error object did not explicitly report a known allocation path.
+    #[default]
+    Unknown,
+    /// `rmm::out_of_memory`.
+    RmmOutOfMemory,
+    /// `rmm::bad_alloc`.
+    RmmBadAlloc,
+    /// `std::bad_alloc`.
+    StdBadAlloc,
+}
+
+impl AllocationSource {
+    fn from_native(value: cugraph_allocation_source_t) -> Self {
+        match value {
+            cugraph_allocation_source_t::CUGRAPH_ALLOCATION_SOURCE_RMM_OUT_OF_MEMORY => Self::RmmOutOfMemory,
+            cugraph_allocation_source_t::CUGRAPH_ALLOCATION_SOURCE_RMM_BAD_ALLOC => Self::RmmBadAlloc,
+            cugraph_allocation_source_t::CUGRAPH_ALLOCATION_SOURCE_STD_BAD_ALLOC => Self::StdBadAlloc,
+            _ => Self::Unknown,
+        }
+    }
+
+    unsafe fn from_error(error: *const cugraph_error_t) -> Self {
+        // SAFETY: the caller guarantees that `error` is either null or a live
+        // cuGraph error object for the duration of this call.
+        let value = unsafe { cugraph_error_allocation_source(error) };
+        Self::from_native(value)
+    }
+
+    /// Returns the stable fact value for this allocation source.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::RmmOutOfMemory => "rmm_out_of_memory",
+            Self::RmmBadAlloc => "rmm_bad_alloc",
+            Self::StdBadAlloc => "std_bad_alloc",
+        }
+    }
+}
+
+impl fmt::Display for AllocationSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// Retry semantics for an error.
 ///
 /// Separates retryability from error categorisation so callers can make
@@ -145,6 +202,7 @@ impl fmt::Display for ErrorStatus {
 pub struct Error {
     kind: ErrorKind,
     status: ErrorStatus,
+    allocation_source: AllocationSource,
     operation: &'static str,
     message: String,
     context: Vec<(&'static str, String)>,
@@ -162,6 +220,7 @@ impl Error {
         Self {
             kind,
             status: ErrorStatus::Permanent,
+            allocation_source: AllocationSource::Unknown,
             operation,
             message: String::new(),
             context: Vec::new(),
@@ -238,6 +297,15 @@ impl Error {
         self.status
     }
 
+    /// Which allocation-failure exception type produced this error.
+    ///
+    /// This is `Unknown` unless the C error object explicitly classified an
+    /// allocation failure. It reports only the caught exception type and is
+    /// never inferred from message text or error status.
+    pub fn allocation_source(&self) -> AllocationSource {
+        self.allocation_source
+    }
+
     /// Whether this error is temporary (retryable).
     pub fn is_temporary(&self) -> bool {
         self.status == ErrorStatus::Temporary
@@ -271,6 +339,7 @@ impl fmt::Debug for Error {
             let mut d = f.debug_struct("Error");
             d.field("kind", &self.kind);
             d.field("status", &self.status);
+            d.field("allocation_source", &self.allocation_source);
             d.field("operation", &self.operation);
             if !self.message.is_empty() {
                 d.field("message", &self.message);
@@ -418,7 +487,15 @@ unsafe fn check_error_with_cuda_failure(
     operation: &'static str,
 ) -> Result<()> {
     let kind = ErrorKind::from_error_code(code);
+    let allocation_source = if error_ptr.is_null() {
+        AllocationSource::Unknown
+    } else {
+        // SAFETY: `error_ptr` is live until it is freed below on this failure
+        // path, and the accessor does not retain the pointer.
+        unsafe { AllocationSource::from_error(error_ptr) }
+    };
     let mut err = Error::new(kind, operation);
+    err.allocation_source = allocation_source;
 
     // OutOfMemory is typically transient — GPU memory may free up.
     if kind == ErrorKind::OutOfMemory {
@@ -488,6 +565,35 @@ mod tests {
         assert_eq!(ErrorKind::InvalidState.to_string(), "InvalidState");
         assert_eq!(ErrorKind::NotImplemented.to_string(), "NotImplemented");
         assert_eq!(ErrorKind::UnsupportedType.to_string(), "UnsupportedType");
+    }
+
+    #[test]
+    fn allocation_source_maps_native_values_and_fails_closed() {
+        assert_eq!(
+            AllocationSource::from_native(cugraph_allocation_source_t::CUGRAPH_ALLOCATION_SOURCE_UNKNOWN),
+            AllocationSource::Unknown
+        );
+        assert_eq!(
+            AllocationSource::from_native(cugraph_allocation_source_t::CUGRAPH_ALLOCATION_SOURCE_RMM_OUT_OF_MEMORY),
+            AllocationSource::RmmOutOfMemory
+        );
+        assert_eq!(
+            AllocationSource::from_native(cugraph_allocation_source_t::CUGRAPH_ALLOCATION_SOURCE_RMM_BAD_ALLOC),
+            AllocationSource::RmmBadAlloc
+        );
+        assert_eq!(
+            AllocationSource::from_native(cugraph_allocation_source_t::CUGRAPH_ALLOCATION_SOURCE_STD_BAD_ALLOC),
+            AllocationSource::StdBadAlloc
+        );
+        assert_eq!(AllocationSource::from_native(cugraph_allocation_source_t(999)), AllocationSource::Unknown);
+    }
+
+    #[test]
+    fn allocation_source_fact_values_are_stable() {
+        assert_eq!(AllocationSource::Unknown.as_str(), "unknown");
+        assert_eq!(AllocationSource::RmmOutOfMemory.as_str(), "rmm_out_of_memory");
+        assert_eq!(AllocationSource::RmmBadAlloc.as_str(), "rmm_bad_alloc");
+        assert_eq!(AllocationSource::StdBadAlloc.as_str(), "std_bad_alloc");
     }
 
     #[test]
@@ -689,6 +795,7 @@ mod tests {
             let err = result.unwrap_err();
             assert_eq!(err.kind(), ErrorKind::OutOfMemory);
             assert!(err.is_temporary());
+            assert_eq!(err.allocation_source(), AllocationSource::Unknown);
         }
     }
 
