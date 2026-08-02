@@ -148,12 +148,20 @@ fn actual_api_from_generated_bindings() -> BTreeSet<String> {
         .unwrap_or_else(|_| panic!("failed to read generated bindings for coverage test: {}", bindings_path.display()));
 
     let mut actual = BTreeSet::new();
-    for line in content.lines() {
-        if let Some(rest) = line.trim().strip_prefix("pub fn cugraph_")
-            && let Some(name) = rest.split('(').next()
-        {
-            actual.insert(format!("cugraph_{name}"));
+    let marker = "pub fn cugraph_";
+    let mut remaining = content.as_str();
+    while let Some(offset) = remaining.find(marker) {
+        let after_marker = &remaining[offset + marker.len()..];
+        let name_end = after_marker.find(|character: char| character == '(' || character.is_whitespace());
+        let Some(name_end) = name_end else {
+            break;
+        };
+
+        if name_end != 0 {
+            actual.insert(format!("cugraph_{}", &after_marker[..name_end]));
         }
+
+        remaining = &after_marker[name_end..];
     }
 
     actual

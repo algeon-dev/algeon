@@ -18,6 +18,7 @@ use common::{
     },
 };
 use cudf::testing::prelude::*;
+use cudf_sys::test_support;
 use cugraph::{
     array::DeviceArray,
     cudf_interop::{
@@ -52,12 +53,12 @@ fn pair_test_graph(handle: &cugraph::EnteredContext<'_>) -> Graph<Forward> {
 }
 
 fn reset_event_observation() {
-    unsafe { cudf_sys::cudf_test_event_reset_observation() };
+    unsafe { test_support::cudf_test_event_reset_observation() };
 }
 
 fn event_synchronize_call_count() -> i32 {
     let mut out = -1;
-    let status = unsafe { cudf_sys::cudf_test_event_synchronize_call_count(&mut out) };
+    let status = unsafe { test_support::cudf_test_event_synchronize_call_count(&mut out) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read event synchronize observation count");
     out
 }

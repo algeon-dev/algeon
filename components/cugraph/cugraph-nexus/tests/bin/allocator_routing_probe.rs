@@ -1,6 +1,7 @@
 use std::{ffi::c_void, ptr, sync::Arc};
 
 use cudf::testing::prelude::*;
+use cudf_sys::test_support;
 use cugraph::{
     centrality::PageRankParams,
     cudf_interop::{
@@ -17,14 +18,14 @@ struct CurrentDeviceResourceRestore {
 
 impl Drop for CurrentDeviceResourceRestore {
     fn drop(&mut self) {
-        unsafe { cudf_sys::test_set_current_device_resource_raw(self.previous_raw) }
-            .expect("failed to restore previous current device resource");
+        let status = unsafe { test_support::cudf_test_memory_resource_set_current_raw(self.previous_raw) };
+        assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to restore previous current device resource");
     }
 }
 
 fn current_device_resource_raw() -> *mut c_void {
     let mut out = ptr::null_mut();
-    let status = unsafe { cudf_sys::cudf_test_current_device_resource_raw(&mut out) };
+    let status = unsafe { test_support::cudf_test_current_device_resource_raw(&mut out) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read current device resource");
     out
 }
@@ -32,8 +33,29 @@ fn current_device_resource_raw() -> *mut c_void {
 fn install_current_device_resource(mr: &cudf::core::memory::DeviceMemoryResource) -> CurrentDeviceResourceRestore {
     let previous_raw = current_device_resource_raw();
     let borrowed = mr.as_borrowed_sys();
-    cudf_sys::test_set_current_device_resource(&borrowed).expect("failed to install current device resource");
+    let status = unsafe { test_support::cudf_test_memory_resource_set_current(borrowed.as_raw()) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to install current device resource");
     CurrentDeviceResourceRestore { previous_raw }
+}
+
+fn stats_memory_resource() -> cudf::DeviceMemoryResource {
+    let device = cudf::DeviceId::current().expect("failed to resolve device for stats memory resource");
+    let mut raw = ptr::null_mut();
+    let status = unsafe { test_support::cudf_test_memory_resource_create_stats(&mut raw) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to create stats memory resource");
+    // SAFETY: the test hook returns a fresh, uniquely owned handle for the
+    // current device, and this probe transfers its sole ownership to cuDF.
+    unsafe { cudf::testing::core::adopt_owned_memory_resource_for_test(raw, device) }
+        .expect("failed to adopt stats memory resource")
+}
+
+fn allocation_count(resource: &cudf::DeviceMemoryResource) -> i64 {
+    let mut out = 0_i64;
+    let status = unsafe {
+        test_support::cudf_test_memory_resource_allocation_count(resource.as_borrowed_sys().as_raw(), &mut out)
+    };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read allocation count");
+    out
 }
 
 fn explicit_runtime() -> cudf::Runtime {
@@ -108,7 +130,7 @@ fn main() {
     let runtime = runtime_with_explicit_pool_memory_resource();
     let handle = ResourceHandle::for_runtime(Arc::clone(&runtime)).expect("runtime-bound handle");
     let entered = handle.enter("allocator_routing_probe").expect("entered");
-    let current_stats_mr = cudf::testing::core::stats_memory_resource().expect("current stats memory resource");
+    let current_stats_mr = stats_memory_resource();
     assert_ne!(
         current_stats_mr.testing_raw_handle_value(),
         runtime.memory_resource().testing_raw_handle_value(),
@@ -116,7 +138,7 @@ fn main() {
     );
 
     let _restore = install_current_device_resource(&current_stats_mr);
-    let baseline = current_stats_mr.testing_allocation_count().expect("current allocation count");
+    let baseline = allocation_count(&current_stats_mr);
 
     match mode.as_str() {
         "borrowed" => run_borrowed_probe(&entered),
@@ -128,7 +150,7 @@ fn main() {
     }
 
     runtime.synchronize().expect("runtime synchronize");
-    let delta = current_stats_mr.testing_allocation_count().expect("current allocation count after") - baseline;
+    let delta = allocation_count(&current_stats_mr) - baseline;
     if delta == 0 {
         println!("unobserved");
     } else {
