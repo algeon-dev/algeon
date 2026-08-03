@@ -168,6 +168,34 @@ impl DeviceResourceProfile {
         worker_job_capacity: usize,
         device_capabilities: DeviceCapabilities,
     ) -> Result<Self> {
+        Self::resolve_with_capabilities_and_cache_cap(
+            device_ordinal,
+            configured_limit_bytes,
+            headroom_bytes,
+            backend_reserve_bytes,
+            attempt_floor_bytes,
+            max_active_attempts,
+            source_work_per_attempt,
+            stream_pool_size,
+            worker_job_capacity,
+            device_capabilities,
+            0,
+        )
+    }
+
+    pub fn resolve_with_capabilities_and_cache_cap(
+        device_ordinal: usize,
+        configured_limit_bytes: u64,
+        headroom_bytes: u64,
+        backend_reserve_bytes: u64,
+        attempt_floor_bytes: u64,
+        max_active_attempts: usize,
+        source_work_per_attempt: usize,
+        stream_pool_size: usize,
+        worker_job_capacity: usize,
+        device_capabilities: DeviceCapabilities,
+        cache_cap_bytes: u64,
+    ) -> Result<Self> {
         let usable_capacity_bytes = configured_limit_bytes.checked_sub(headroom_bytes).ok_or_else(|| {
             invalid(device_ordinal, "headroom_bytes", "configured limit is below reserved headroom")
                 .with_fact("reason", "configured_limit_below_headroom")
@@ -213,6 +241,21 @@ impl DeviceResourceProfile {
                 .with_fact("attempt_floor_total_bytes", required_floor)
                 .with_fact("managed_capacity_bytes", managed_capacity_bytes));
         }
+        let cache_attempt_floor = cache_cap_bytes.checked_add(required_floor).ok_or_else(|| {
+            invalid(device_ordinal, "cache_cap_bytes", "cache cap and attempt floors overflow capacity arithmetic")
+                .with_fact("reason", "cache_cap_overflow")
+        })?;
+        if cache_attempt_floor > managed_capacity_bytes {
+            return Err(invalid(
+                device_ordinal,
+                "cache_cap_bytes",
+                "cache cap plus attempt floors exceed managed capacity",
+            )
+            .with_fact("reason", "cache_cap_exceeds_managed_capacity")
+            .with_fact("cache_cap_bytes", cache_cap_bytes)
+            .with_fact("attempt_floor_total_bytes", required_floor)
+            .with_fact("managed_capacity_bytes", managed_capacity_bytes));
+        }
         let aux_source_work_capacity = max_active_attempts.checked_mul(source_work_per_attempt).ok_or_else(|| {
             invalid(device_ordinal, "source_work_per_attempt", "auxiliary source-work capacity overflowed")
                 .with_fact("reason", "aux_source_work_overflow")
@@ -245,7 +288,7 @@ impl DeviceResourceProfile {
             aux_source_work_capacity,
             stream_pool_size,
             worker_job_capacity,
-            cache_cap_bytes: 0,
+            cache_cap_bytes,
         })
     }
 }
@@ -283,6 +326,40 @@ mod tests {
         }
         let error = DeviceResourceProfile::resolve(7, u64::MAX, 0, 0, u64::MAX, 2, 1, 4, 4).unwrap_err();
         assert_eq!(error.fact_value("reason"), Some("attempt_floor_overflow"));
+    }
+
+    #[test]
+    fn validates_cache_cap_against_managed_capacity_and_floor() {
+        let profile = DeviceResourceProfile::resolve_with_capabilities_and_cache_cap(
+            0,
+            1_000,
+            0,
+            0,
+            100,
+            2,
+            1,
+            4,
+            4,
+            DeviceCapabilities::default(),
+            800,
+        )
+        .unwrap();
+        assert_eq!(profile.cache_cap_bytes, 800);
+        let error = DeviceResourceProfile::resolve_with_capabilities_and_cache_cap(
+            0,
+            1_000,
+            0,
+            0,
+            100,
+            2,
+            1,
+            4,
+            4,
+            DeviceCapabilities::default(),
+            801,
+        )
+        .unwrap_err();
+        assert_eq!(error.fact_value("reason"), Some("cache_cap_exceeds_managed_capacity"));
     }
 
     #[test]

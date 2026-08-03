@@ -514,6 +514,9 @@ impl ExecutionContextBuilder {
                 boundary_policy: self.boundary_policy,
                 source_scheduler_policy: self.source_scheduler_policy,
                 source_chunk_planning_mode: self.source_chunk_planning_mode,
+                resident_source_cache: None,
+                #[cfg(feature = "cugraph")]
+                resident_graph_cache: None,
                 lakehouse_cache_fill_config,
                 service_stream_pool,
                 lakehouse_cache_fill_budget,
@@ -595,6 +598,9 @@ impl ExecutionContextBuilder {
             boundary_policy: self.boundary_policy,
             source_scheduler_policy: self.source_scheduler_policy,
             source_chunk_planning_mode: self.source_chunk_planning_mode,
+            resident_source_cache: None,
+            #[cfg(feature = "cugraph")]
+            resident_graph_cache: None,
             lakehouse_cache_fill_config,
             service_stream_pool,
             lakehouse_cache_fill_budget,

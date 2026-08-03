@@ -108,6 +108,33 @@ fn query_service_context_carries_graph_calibration_override() {
 
     assert_eq!(admitted_context.context().graph_memory_calibration_override(), graph_memory_calibration_override);
 }
+
+#[cfg(feature = "cugraph")]
+#[test]
+fn cache_enabled_context_exposes_source_and_graph_leases_from_one_domain() {
+    const CACHE_CAP_BYTES: u64 = 16 * 1024 * 1024;
+
+    let service = runtime_test_service_with_profiles(
+        QueryExecutionConfig::default(),
+        QueueBounds::default(),
+        vec![runtime_test_device_profile_with_limits(0, 64 * 1024 * 1024, 8 * 1024 * 1024, 1, 3, 1, 1)
+            .with_cache_cap_bytes(CACHE_CAP_BYTES)],
+    )
+    .expect("cache-enabled runtime service");
+    let handle = service.admit_query().expect("admission");
+    let context = handle.acquire_context().expect("admitted context");
+    let source = context.context().resident_source_cache().expect("source cache lease is installed");
+    let graph = context.context().resident_graph_cache().expect("graph cache lease is installed");
+
+    assert_eq!(source.allocation_domain_id(), graph.cache_allocation_domain_id());
+    assert_eq!(source.allocation_domain_id(), graph.cache_allocation_domain().id());
+    assert_eq!(graph.cache_allocation_domain().capacity_bytes(), CACHE_CAP_BYTES);
+
+    drop(context);
+    handle.finish();
+    drop(handle);
+    service.close_and_wait_for_quiescence(Duration::from_secs(10)).expect("cache-enabled service drains");
+}
 #[test]
 fn query_service_released_handle_rejects_context_acquisition() {
     let service = runtime_test_service(1, 8);

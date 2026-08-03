@@ -15,6 +15,8 @@ pub(super) fn execute_pagerank(
         .with_fact("algorithm", spec.algorithm.as_str()));
     };
 
+    let resident_key =
+        input.graph_residency().and_then(|descriptor| crate::plan::planned_resident_graph_key(descriptor, spec));
     let input = input.into_frame();
     let (edges, _) = project_edge_list(&input, spec)?;
     let options = table_graph_options(spec);
@@ -39,11 +41,12 @@ pub(super) fn execute_pagerank(
         })
     };
     {
-        run_with_cugraph_graph::<cugraph::Transposed, _>(
+        run_with_accounted_resident_cugraph_graph::<cugraph::Transposed, _>(
             context,
             inputs.graph_memory_limit_bytes,
             edges,
             options,
+            resident_key,
             "datafusion_nexus_cugraph_pagerank",
             run_pagerank,
         )

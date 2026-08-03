@@ -477,7 +477,7 @@ fn bounded_native_query_executes_root_mixed_left_semi_and_anti_joins_with_single
     let QueryOutput::HostArrow(semi_batch) = semi.output() else {
         panic!("left semi bounded mixed join should return host output");
     };
-    assert_eq!(int32_array(&semi_batch, 0).values().as_ref(), &[25]);
+    assert_eq!(int32_array(semi_batch, 0).values().as_ref(), &[25]);
     assert_bounded_mixed_left_only_join_metrics(semi.metrics(), "left_semi", 1);
     assert_eq!(
         granted_reservation_requested_bytes(semi.metrics(), ReservationKind::GatherMap, "join_gather_map"),
@@ -487,7 +487,7 @@ fn bounded_native_query_executes_root_mixed_left_semi_and_anti_joins_with_single
     let QueryOutput::HostArrow(anti_batch) = anti.output() else {
         panic!("left anti bounded mixed join should return host output");
     };
-    let mut anti_rows = int32_array(&anti_batch, 0).values().iter().copied().collect::<Vec<_>>();
+    let mut anti_rows = int32_array(anti_batch, 0).values().iter().copied().collect::<Vec<_>>();
     anti_rows.sort();
     assert_eq!(anti_rows, vec![10, 20, 30]);
     assert_bounded_mixed_left_only_join_metrics(anti.metrics(), "left_anti", 3);

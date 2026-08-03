@@ -50,6 +50,7 @@ pub struct NexusGpuDeviceProfile {
     device_ordinal: usize,
     memory_limit: GpuDeviceMemoryLimit,
     backend_reserve_bytes: u64,
+    cache_cap_bytes: u64,
     attempt_floor_bytes: Option<u64>,
     source_work_per_attempt: usize,
     max_active_attempts: usize,
@@ -80,6 +81,7 @@ impl NexusGpuDeviceProfile {
             device_ordinal: defaults.device_ordinal(),
             memory_limit: defaults.memory_limit(),
             backend_reserve_bytes: defaults.backend_reserve_bytes(),
+            cache_cap_bytes: 0,
             attempt_floor_bytes: defaults.attempt_floor_bytes(),
             // Source work is a device-local controller capacity, not an
             // execution/session tuning default. Keep the profile concrete
@@ -101,6 +103,11 @@ impl NexusGpuDeviceProfile {
 
     pub fn with_backend_reserve_bytes(mut self, backend_reserve_bytes: u64) -> Self {
         self.backend_reserve_bytes = backend_reserve_bytes;
+        self
+    }
+
+    pub fn with_cache_cap_bytes(mut self, cache_cap_bytes: u64) -> Self {
+        self.cache_cap_bytes = cache_cap_bytes;
         self
     }
 
@@ -185,6 +192,7 @@ impl NexusGpuDeviceProfile {
             .with_memory_limit(self.memory_limit)
             .with_device_capabilities(self.device_capabilities.clone())
             .with_backend_reserve_bytes(self.backend_reserve_bytes)
+            .with_cache_cap_bytes(self.cache_cap_bytes)
             .with_source_work_per_attempt(self.source_work_per_attempt)
             .with_max_active_queries(self.max_active_attempts)
             .with_telemetry(self.install_telemetry)
@@ -196,6 +204,10 @@ impl NexusGpuDeviceProfile {
             device = device.with_installation_bounds(bounds.stream_pool_size, bounds.worker_count, bounds.lane_count);
         }
         device
+    }
+
+    pub fn cache_cap_bytes(&self) -> u64 {
+        self.cache_cap_bytes
     }
 }
 

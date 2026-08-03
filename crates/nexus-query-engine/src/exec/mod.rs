@@ -919,7 +919,7 @@ mod tests {
         };
         assert_eq!(failure.code(), QueryErrorCode::InvalidPlan);
         assert_eq!(failure.fact_value("reason"), Some("runtime_observation_query_id_mismatch"));
-        assert_key_unavailable_evidence(&failed, RuntimeTerminalOutcome::from_query_error(&failure));
+        assert_key_unavailable_evidence(&failed, RuntimeTerminalOutcome::from_query_error(failure));
 
         let cancellation = ExecutionCancellation::new();
         cancellation.cancel();

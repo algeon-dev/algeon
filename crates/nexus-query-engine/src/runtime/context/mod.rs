@@ -892,6 +892,13 @@ pub struct ExecutionContext {
     source_scheduler_policy: SourceSchedulerPolicy,
     /// Source chunk planning mode for bounded local Parquet reads.
     source_chunk_planning_mode: SourceChunkPlanningMode,
+    /// Backend-owned source cache for this context's device, when the
+    /// ordinal profile opted into resident caching.
+    resident_source_cache: Option<crate::runtime::cache::local_parquet::GpuLocalParquetSourceCache>,
+    /// Backend-owned graph cache for this context's device, when the ordinal
+    /// profile opted into resident caching.
+    #[cfg(feature = "cugraph")]
+    resident_graph_cache: Option<crate::runtime::cache::resident_graph::GpuResidentGraphCache>,
     /// Service-level lakehouse cache-fill resource configuration.
     lakehouse_cache_fill_config: LakehouseCacheFillConfig,
     /// Service-level pool used by bounded source-read workers.
@@ -1009,6 +1016,9 @@ pub(super) struct ExecutionContextParts {
     pub(super) boundary_policy: ExecutionBoundaryPolicy,
     pub(super) source_scheduler_policy: SourceSchedulerPolicy,
     pub(super) source_chunk_planning_mode: SourceChunkPlanningMode,
+    pub(super) resident_source_cache: Option<crate::runtime::cache::local_parquet::GpuLocalParquetSourceCache>,
+    #[cfg(feature = "cugraph")]
+    pub(super) resident_graph_cache: Option<crate::runtime::cache::resident_graph::GpuResidentGraphCache>,
     pub(super) lakehouse_cache_fill_config: LakehouseCacheFillConfig,
     pub(super) service_stream_pool: ServiceStreamPool,
     pub(super) lakehouse_cache_fill_budget: CacheFillByteBudget,
@@ -1078,6 +1088,9 @@ impl ExecutionContext {
             boundary_policy: ExecutionBoundaryPolicy::default(),
             source_scheduler_policy: SourceSchedulerPolicy::default(),
             source_chunk_planning_mode: SourceChunkPlanningMode::default(),
+            resident_source_cache: None,
+            #[cfg(feature = "cugraph")]
+            resident_graph_cache: None,
             lakehouse_cache_fill_config,
             service_stream_pool,
             lakehouse_cache_fill_budget: CacheFillByteBudget::default(),
@@ -1135,6 +1148,9 @@ impl ExecutionContext {
             boundary_policy: parts.boundary_policy,
             source_scheduler_policy: parts.source_scheduler_policy,
             source_chunk_planning_mode: parts.source_chunk_planning_mode,
+            resident_source_cache: parts.resident_source_cache,
+            #[cfg(feature = "cugraph")]
+            resident_graph_cache: parts.resident_graph_cache,
             lakehouse_cache_fill_config: parts.lakehouse_cache_fill_config,
             service_stream_pool: parts.service_stream_pool,
             lakehouse_cache_fill_budget: parts.lakehouse_cache_fill_budget,
@@ -1384,6 +1400,9 @@ impl ExecutionContext {
             boundary_policy: self.boundary_policy,
             source_scheduler_policy: self.source_scheduler_policy,
             source_chunk_planning_mode: self.source_chunk_planning_mode,
+            resident_source_cache: self.resident_source_cache.clone(),
+            #[cfg(feature = "cugraph")]
+            resident_graph_cache: self.resident_graph_cache.clone(),
             lakehouse_cache_fill_config: self.lakehouse_cache_fill_config.clone(),
             service_stream_pool: self.service_stream_pool.clone(),
             lakehouse_cache_fill_budget: self.lakehouse_cache_fill_budget.clone(),
@@ -1441,6 +1460,21 @@ impl ExecutionContext {
     /// Returns whether this context is backed by a QueryService admission slot.
     pub fn is_query_service_admitted(&self) -> bool {
         self.query_service_admitted
+    }
+
+    /// Returns the backend-owned local-Parquet cache for this context's
+    /// ordinal, if its device profile enabled resident caching.
+    pub(crate) fn resident_source_cache(
+        &self,
+    ) -> Option<crate::runtime::cache::local_parquet::GpuLocalParquetSourceCache> {
+        self.resident_source_cache.clone()
+    }
+
+    /// Returns the backend-owned resident graph cache for this context's
+    /// ordinal, if its device profile enabled resident caching.
+    #[cfg(feature = "cugraph")]
+    pub(crate) fn resident_graph_cache(&self) -> Option<crate::runtime::cache::resident_graph::GpuResidentGraphCache> {
+        self.resident_graph_cache.clone()
     }
 
     /// Rejects execution when this admitted context's proof does not cover the

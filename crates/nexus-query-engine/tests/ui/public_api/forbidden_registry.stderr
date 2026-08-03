@@ -7,7 +7,7 @@ error[E0603]: struct `DeviceRegistry` is private
 note: the struct `DeviceRegistry` is defined here
  --> src/runtime.rs
   |
-  | pub(crate) use gpu::{DeviceContext, DeviceRegistry, DeviceRegistryConfig, PlacementPolicy, PlacementRequest};
+  | pub(crate) use gpu::{DeviceContext, DeviceRegistry, DeviceRegistryConfig, PlacementRequest};
   |                                     ^^^^^^^^^^^^^^
 
 error[E0603]: struct `DeviceRegistryConfig` is private
@@ -19,5 +19,5 @@ error[E0603]: struct `DeviceRegistryConfig` is private
 note: the struct `DeviceRegistryConfig` is defined here
  --> src/runtime.rs
   |
-  | pub(crate) use gpu::{DeviceContext, DeviceRegistry, DeviceRegistryConfig, PlacementPolicy, PlacementRequest};
+  | pub(crate) use gpu::{DeviceContext, DeviceRegistry, DeviceRegistryConfig, PlacementRequest};
   |                                                     ^^^^^^^^^^^^^^^^^^^^

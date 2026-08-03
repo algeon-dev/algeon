@@ -141,12 +141,6 @@ pub(crate) fn rank_placement_candidates(
     candidates.into_iter().map(|candidate| candidate.ordinal).collect()
 }
 
-/// Policy that returns ordered candidate devices, most preferred first.
-pub(crate) trait PlacementPolicy: Send + Sync {
-    /// Ordered placement candidates for `request`.
-    fn candidates(&self, registry: &DeviceRegistry, request: &PlacementRequest) -> Result<Vec<cudf::DeviceId>>;
-}
-
 /// Captures candidate ranking evidence from one ledger snapshot per ordinal.
 ///
 /// Queue selection passes a protected ordinal when its finite-overtake
@@ -223,27 +217,6 @@ fn profile_supports_placement_request(
     required_capabilities: &[ReservationRequirement],
 ) -> bool {
     profile.is_some_and(|profile| profile.device_capabilities.supports_all(required_capabilities))
-}
-
-/// Places queries on the device with the most spare capacity after admission.
-#[derive(Debug, Default, Clone, Copy)]
-pub(crate) struct LeastLoadedPlacement;
-
-impl PlacementPolicy for LeastLoadedPlacement {
-    fn candidates(&self, registry: &DeviceRegistry, request: &PlacementRequest) -> Result<Vec<cudf::DeviceId>> {
-        let candidates = ordered_placement_candidate_snapshots(
-            registry,
-            request,
-            registry.contexts().map(|context| context.device().ordinal()),
-            None,
-        )?;
-        Ok(candidates
-            .into_iter()
-            .filter_map(|candidate| {
-                registry.context_by_ordinal(candidate.candidate.ordinal).ok().map(|context| context.device())
-            })
-            .collect())
-    }
 }
 
 #[cfg(test)]
@@ -343,7 +316,7 @@ mod tests {
         )
         .unwrap();
 
-        assert!(!profile_supports_placement_request(Some(&incapable), &[requirement.clone()]));
+        assert!(!profile_supports_placement_request(Some(&incapable), std::slice::from_ref(&requirement)));
         assert!(profile_supports_placement_request(Some(&capable), &[requirement]));
     }
 }

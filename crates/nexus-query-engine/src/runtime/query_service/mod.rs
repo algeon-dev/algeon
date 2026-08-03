@@ -175,6 +175,34 @@ impl QueryServiceDrainOutcome {
     }
 }
 
+fn record_admission_lifecycle(
+    observation: &RuntimeObservationHandle,
+    admission_request_id: AdmissionRequestId,
+    lifecycle: AdmissionLifecycleState,
+    queue_depth: usize,
+    device_ordinal: Option<usize>,
+    grant_bytes: Option<u64>,
+) {
+    if !observation.is_enabled() {
+        return;
+    }
+    observation.record(|| {
+        RuntimeObservationPayload::Admission(Box::new(RuntimeAdmissionObservation {
+            admission_request_id,
+            lifecycle,
+            queue_depth,
+            device_ordinal: device_ordinal.and_then(|value| u32::try_from(value).ok()),
+            grant_bytes,
+        }))
+    });
+}
+
+fn admission_rejection(error: &QueryError) -> AdmissionLifecycleState {
+    AdmissionLifecycleState::Rejected {
+        reason: error.fact_value("reason").unwrap_or_else(|| error.code().as_str()).to_string(),
+    }
+}
+
 #[cfg(test)]
 mod drain_outcome_tests {
     use super::*;
@@ -215,33 +243,5 @@ mod drain_outcome_tests {
             QueryServiceDrainPhaseOutcome::from_result(QueryServiceDrainPhase::AdmissionQuiescence, Err(overloaded));
 
         assert!(matches!(outcome, QueryServiceDrainPhaseOutcome::PermanentFailure { .. }));
-    }
-}
-
-fn record_admission_lifecycle(
-    observation: &RuntimeObservationHandle,
-    admission_request_id: AdmissionRequestId,
-    lifecycle: AdmissionLifecycleState,
-    queue_depth: usize,
-    device_ordinal: Option<usize>,
-    grant_bytes: Option<u64>,
-) {
-    if !observation.is_enabled() {
-        return;
-    }
-    observation.record(|| {
-        RuntimeObservationPayload::Admission(Box::new(RuntimeAdmissionObservation {
-            admission_request_id,
-            lifecycle,
-            queue_depth,
-            device_ordinal: device_ordinal.and_then(|value| u32::try_from(value).ok()),
-            grant_bytes,
-        }))
-    });
-}
-
-fn admission_rejection(error: &QueryError) -> AdmissionLifecycleState {
-    AdmissionLifecycleState::Rejected {
-        reason: error.fact_value("reason").unwrap_or_else(|| error.code().as_str()).to_string(),
     }
 }

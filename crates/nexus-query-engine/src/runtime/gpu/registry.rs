@@ -10,7 +10,7 @@ use std::{
 
 use super::{
     DeviceCapabilities, DeviceContext, DeviceLedger, DeviceMemoryFailureReport, DeviceMemoryFailureTracker,
-    DeviceOwnerToken, DeviceResourceProfile, GpuInventory, PlacementPolicy, PlacementRequest,
+    DeviceOwnerToken, DeviceResourceProfile, GpuInventory,
 };
 use crate::{
     error::{QueryError, QueryErrorCode, Result},
@@ -61,6 +61,7 @@ pub(crate) struct DeviceRegistryInstallProfile {
     pub(crate) max_active_queries: Option<usize>,
     pub(crate) capacity_policy: DeviceRegistryCapacityPolicy,
     pub(crate) backend_reserve_bytes: u64,
+    pub(crate) cache_cap_bytes: u64,
     pub(crate) attempt_floor_bytes: Option<u64>,
     pub(crate) source_work_per_attempt: usize,
     pub(crate) worker_job_capacity: usize,
@@ -80,6 +81,7 @@ impl DeviceRegistryInstallProfile {
             max_active_queries: Some(GpuBackendDeviceConfig::DEFAULT_MAX_ACTIVE_QUERIES),
             capacity_policy,
             backend_reserve_bytes: 0,
+            cache_cap_bytes: 0,
             attempt_floor_bytes: GpuBackendDeviceConfig::DEFAULT_ATTEMPT_FLOOR_BYTES,
             source_work_per_attempt: GpuBackendDeviceConfig::DEFAULT_SOURCE_WORK_PER_ATTEMPT,
             worker_job_capacity: stream_pool_size,
@@ -90,6 +92,10 @@ impl DeviceRegistryInstallProfile {
 
     fn resolved_max_active_queries(&self) -> usize {
         self.max_active_queries.unwrap_or(GpuBackendDeviceConfig::DEFAULT_MAX_ACTIVE_QUERIES)
+    }
+
+    fn cache_cap_bytes(&self) -> u64 {
+        self.cache_cap_bytes
     }
 }
 
@@ -287,7 +293,7 @@ impl DeviceRegistry {
                     floor
                 },
             };
-            let resource_profile = DeviceResourceProfile::resolve_with_capabilities(
+            let resource_profile = DeviceResourceProfile::resolve_with_capabilities_and_cache_cap(
                 *ordinal,
                 configured_limit_bytes,
                 0,
@@ -298,6 +304,7 @@ impl DeviceRegistry {
                 profile.stream_pool_size,
                 profile.worker_job_capacity,
                 profile.device_capabilities.clone(),
+                profile.cache_cap_bytes(),
             )?;
             if profile.lane_count < resource_profile.max_active_attempts {
                 return Err(QueryError::new(
@@ -505,23 +512,6 @@ impl DeviceRegistry {
     /// Returns whether the registry has no installed devices.
     pub fn is_empty(&self) -> bool {
         self.device_ordinals.is_empty()
-    }
-
-    /// Returns whether any candidate device has enough configured capacity for
-    /// this query budget, ignoring current active grants.
-    pub(crate) fn can_fit_query_budget(
-        &self,
-        policy: &dyn PlacementPolicy,
-        request: &PlacementRequest,
-    ) -> Result<bool> {
-        for device in policy.candidates(self, request)? {
-            let context = self.context(device)?;
-            let required_floor_bytes = request.required_floor_bytes_for(context.ledger())?;
-            if context.ledger().can_ever_fit_required_floor_bytes(required_floor_bytes)? {
-                return Ok(true);
-            }
-        }
-        Ok(false)
     }
 }
 
@@ -1095,6 +1085,7 @@ mod tests {
                 maximum_bytes: None,
             },
             backend_reserve_bytes: 100,
+            cache_cap_bytes: 0,
             attempt_floor_bytes: floor,
             source_work_per_attempt: 1,
             worker_job_capacity: 4,
@@ -1141,6 +1132,7 @@ mod tests {
                 maximum_bytes: None,
             },
             backend_reserve_bytes: 50,
+            cache_cap_bytes: 0,
             attempt_floor_bytes: None,
             source_work_per_attempt: 1,
             worker_job_capacity: 2,
@@ -1159,6 +1151,7 @@ mod tests {
                 maximum_bytes: None,
             },
             backend_reserve_bytes: 25,
+            cache_cap_bytes: 0,
             attempt_floor_bytes: None,
             source_work_per_attempt: 1,
             worker_job_capacity: 7,
@@ -1172,6 +1165,7 @@ mod tests {
             max_active_queries: None,
             capacity_policy: DeviceRegistryCapacityPolicy::Explicit { limit_bytes: 700 },
             backend_reserve_bytes: 10,
+            cache_cap_bytes: 0,
             attempt_floor_bytes: None,
             source_work_per_attempt: 1,
             worker_job_capacity: 3,
@@ -1209,6 +1203,7 @@ mod tests {
                 maximum_bytes: None,
             },
             backend_reserve_bytes: 0,
+            cache_cap_bytes: 0,
             attempt_floor_bytes: None,
             source_work_per_attempt: 1,
             worker_job_capacity: 1,

@@ -55,6 +55,59 @@ pub(crate) fn estimated_output_rows(plan: &QueryPlan, node_id: NodeId) -> Option
     }
 }
 
+/// Returns a conservative byte estimate for a plan node when available.
+///
+/// Source estimates prefer projected uncompressed bytes because that is the
+/// closest retained-output signal available during planning.
+pub(crate) fn estimated_output_bytes(plan: &QueryPlan, node_id: NodeId) -> Option<u64> {
+    match &plan.node(node_id)?.kind {
+        PlanNode::Source(source) => match source.as_ref() {
+            SourceNode::LocalParquet(source) => source
+                .diagnostics
+                .selected_row_group_stats
+                .as_ref()
+                .and_then(|stats| stats.selected_source_bytes())
+                .or(source.diagnostics.known_bytes),
+            SourceNode::GpuResident(_) => None,
+            SourceNode::LiteralBatch(source) => source
+                .batches
+                .iter()
+                .try_fold(0_u64, |sum, batch| sum.checked_add(batch.get_array_memory_size() as u64)),
+        },
+        PlanNode::Projection(projection) => estimated_output_bytes(plan, projection.input),
+        PlanNode::Filter(filter) => estimated_output_bytes(plan, filter.input),
+        PlanNode::Window(_) => None,
+        PlanNode::Sort(sort) => estimated_output_bytes(plan, sort.input),
+        PlanNode::Union(union) => {
+            union.inputs.iter().try_fold(0_u64, |total, input| total.checked_add(estimated_output_bytes(plan, *input)?))
+        },
+        PlanNode::Join(join)
+            if matches!(join.spec.join_type, JoinType::LeftSemi | JoinType::LeftAnti)
+                && !join.spec.output_projection.is_empty()
+                && join.spec.output_projection.iter().all(|column| column.side == JoinSide::Left)
+                && left_output_columns_are_unique(join) =>
+        {
+            // A left semi/anti join retains at most one copy of each left row.
+            // With a unique all-left projection, the left source estimate
+            // remains a descriptive upper bound for the result. Repeated
+            // aliases can duplicate a physical left column, so their output
+            // has no similarly trustworthy byte estimate.
+            estimated_output_bytes(plan, join.inputs[0])
+        },
+        PlanNode::Limit(_)
+        | PlanNode::Aggregate(_)
+        | PlanNode::Join(_)
+        | PlanNode::EdgeNormalize(_)
+        | PlanNode::GraphAlgorithm(_)
+        | PlanNode::VectorAlgorithm(_) => None,
+    }
+}
+
+fn left_output_columns_are_unique(join: &JoinNode) -> bool {
+    let mut physical_column_names = HashSet::with_capacity(join.spec.output_projection.len());
+    join.spec.output_projection.iter().all(|column| physical_column_names.insert(column.column.name()))
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -168,57 +221,4 @@ mod tests {
 
         assert_eq!(estimated_output_bytes(&plan, join), None);
     }
-}
-
-/// Returns a conservative byte estimate for a plan node when available.
-///
-/// Source estimates prefer projected uncompressed bytes because that is the
-/// closest retained-output signal available during planning.
-pub(crate) fn estimated_output_bytes(plan: &QueryPlan, node_id: NodeId) -> Option<u64> {
-    match &plan.node(node_id)?.kind {
-        PlanNode::Source(source) => match source.as_ref() {
-            SourceNode::LocalParquet(source) => source
-                .diagnostics
-                .selected_row_group_stats
-                .as_ref()
-                .and_then(|stats| stats.selected_source_bytes())
-                .or(source.diagnostics.known_bytes),
-            SourceNode::GpuResident(_) => None,
-            SourceNode::LiteralBatch(source) => source
-                .batches
-                .iter()
-                .try_fold(0_u64, |sum, batch| sum.checked_add(batch.get_array_memory_size() as u64)),
-        },
-        PlanNode::Projection(projection) => estimated_output_bytes(plan, projection.input),
-        PlanNode::Filter(filter) => estimated_output_bytes(plan, filter.input),
-        PlanNode::Window(_) => None,
-        PlanNode::Sort(sort) => estimated_output_bytes(plan, sort.input),
-        PlanNode::Union(union) => {
-            union.inputs.iter().try_fold(0_u64, |total, input| total.checked_add(estimated_output_bytes(plan, *input)?))
-        },
-        PlanNode::Join(join)
-            if matches!(join.spec.join_type, JoinType::LeftSemi | JoinType::LeftAnti)
-                && !join.spec.output_projection.is_empty()
-                && join.spec.output_projection.iter().all(|column| column.side == JoinSide::Left)
-                && left_output_columns_are_unique(join) =>
-        {
-            // A left semi/anti join retains at most one copy of each left row.
-            // With a unique all-left projection, the left source estimate
-            // remains a descriptive upper bound for the result. Repeated
-            // aliases can duplicate a physical left column, so their output
-            // has no similarly trustworthy byte estimate.
-            estimated_output_bytes(plan, join.inputs[0])
-        },
-        PlanNode::Limit(_)
-        | PlanNode::Aggregate(_)
-        | PlanNode::Join(_)
-        | PlanNode::EdgeNormalize(_)
-        | PlanNode::GraphAlgorithm(_)
-        | PlanNode::VectorAlgorithm(_) => None,
-    }
-}
-
-fn left_output_columns_are_unique(join: &JoinNode) -> bool {
-    let mut physical_column_names = HashSet::with_capacity(join.spec.output_projection.len());
-    join.spec.output_projection.iter().all(|column| physical_column_names.insert(column.column.name()))
 }

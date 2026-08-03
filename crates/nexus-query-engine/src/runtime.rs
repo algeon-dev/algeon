@@ -14,6 +14,7 @@ mod backend_lifecycle;
 mod backend_metrics;
 mod boundary;
 mod bounded_join;
+pub(crate) mod cache;
 mod cache_events;
 mod cache_fill;
 mod context;
@@ -36,6 +37,7 @@ mod reservation;
 /// Frontend-neutral GPU-resident data and reusable build handles.
 pub mod resident;
 mod service_stream;
+pub(crate) mod source_identity;
 mod stream_cleanup;
 #[cfg(test)]
 mod tests;
@@ -81,12 +83,12 @@ pub use context::{
 };
 pub use gpu::{
     DeviceCapabilities, DeviceCapability, DeviceFacts, DeviceLedger, DeviceLedgerGrantRow, DeviceLedgerReport,
-    DeviceMemoryFailureReport, DeviceResourceProfile, DeviceTelemetrySnapshot, DeviceTelemetryStatus,
-    EvictableMemoryObserver, EvictableMemoryPressure, GpuInventory, GpuTelemetry, LedgerSnapshot, MemoryGrant,
-    NexusGpuInventory, NexusNvmlTelemetry, Placement, device_budget_bytes_from_facts,
+    DeviceMemoryFailureReport, DeviceResourceProfile, DeviceTelemetrySnapshot, DeviceTelemetryStatus, GpuInventory,
+    GpuTelemetry, LedgerSnapshot, MemoryGrant, NexusGpuInventory, NexusNvmlTelemetry, Placement,
+    device_budget_bytes_from_facts,
 };
 #[allow(unused_imports)]
-pub(crate) use gpu::{DeviceContext, DeviceRegistry, DeviceRegistryConfig, PlacementPolicy, PlacementRequest};
+pub(crate) use gpu::{DeviceContext, DeviceRegistry, DeviceRegistryConfig, PlacementRequest};
 pub use gpu_execution_pool::{
     GpuExecutionJobKind, GpuExecutionPoolSnapshot, GpuExecutionQuerySnapshot, GpuExecutorLease,
 };

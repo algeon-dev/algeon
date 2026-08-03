@@ -316,9 +316,9 @@ pub struct BackendAdmissionMetricsSnapshot {
     pub live_grant_bytes: u64,
     pub live_reserved_bytes: u64,
     pub max_live_reserved_bytes: u64,
-    /// P5-owned cache accounting remains disabled throughout P4.
+    /// Evictable cache residency from the device ledger's current snapshot.
     pub cache_evictable_resident_bytes: u64,
-    /// P5-owned cache accounting remains disabled throughout P4.
+    /// Pinned cache residency from the device ledger's current snapshot.
     pub cache_pinned_in_use_bytes: u64,
     pub health: BackendAdmissionHealth,
 }
@@ -794,9 +794,10 @@ impl DeviceMetricsState {
         self.admission.live_reserved_bytes = snapshot.live_reserved_bytes;
         self.admission.max_live_reserved_bytes =
             self.admission.max_live_reserved_bytes.max(snapshot.live_reserved_bytes);
-        // Cache accounting belongs to P5. P4 reserves the descriptor surface,
-        // but every P4 snapshot must continue to project its cache gauges as
-        // zero even when an underlying ledger has cache state.
+        // P3 evidence, admission TSV, and P4 descriptors all project this
+        // exact ledger transition; resident caches do not own a second gauge.
+        self.admission.cache_evictable_resident_bytes = snapshot.cache_evictable_resident_bytes;
+        self.admission.cache_pinned_in_use_bytes = snapshot.cache_pinned_in_use_bytes;
         self.admission.health = match snapshot.health {
             DeviceAdmissionHealth::Open => BackendAdmissionHealth::Open,
             DeviceAdmissionHealth::Closed { .. } => BackendAdmissionHealth::Closed,
@@ -1094,7 +1095,7 @@ mod tests {
     }
 
     #[test]
-    fn ledger_transitions_update_exact_gauges_keep_maxima_monotonic_and_leave_p4_cache_gauges_zero() {
+    fn ledger_transitions_update_exact_gauges_and_project_cache_residency() {
         let store = BackendMetricsStore::new(42, &[3]).unwrap();
         store.record_ledger_transition(&ledger_transition(9, 2, 500, 400, 333));
         store.record_ledger_transition(&ledger_transition(10, 1, 200, 100, 999));
@@ -1106,8 +1107,8 @@ mod tests {
         assert_eq!(device.admission.live_grant_bytes, 200);
         assert_eq!(device.admission.live_reserved_bytes, 450);
         assert_eq!(device.admission.max_live_reserved_bytes, 450);
-        assert_eq!(device.admission.cache_evictable_resident_bytes, 0);
-        assert_eq!(device.admission.cache_pinned_in_use_bytes, 0);
+        assert_eq!(device.admission.cache_evictable_resident_bytes, 777);
+        assert_eq!(device.admission.cache_pinned_in_use_bytes, 777);
     }
 
     #[test]
@@ -1328,7 +1329,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_projection_covers_the_descriptor_table_and_keeps_p4_cache_metrics_zero() {
+    fn initial_snapshot_projection_covers_the_descriptor_table_and_keeps_cache_metrics_zero() {
         let snapshot = BackendMetricsStore::new(49, &[3]).unwrap().snapshot();
         for descriptor in backend_metric_descriptors() {
             let samples = snapshot.project_backend_metric(descriptor).expect("canonical descriptor projects");

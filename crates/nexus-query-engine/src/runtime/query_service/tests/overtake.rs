@@ -377,9 +377,8 @@ fn service_close_ends_every_protection_without_reusable_capacity() {
 
     service.close().unwrap();
 
-    assert_eq!(
-        service.device_ledger_reports().unwrap().remove(0).protected_slot,
-        false,
+    assert!(
+        !service.device_ledger_reports().unwrap().remove(0).protected_slot,
         "close must end the protection rather than withholding capacity forever"
     );
 }

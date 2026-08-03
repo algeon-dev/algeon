@@ -146,3 +146,146 @@ fn graph_gpu_input_from_another_admitted_attempt_is_relocated_into_the_consumer_
         .close_and_wait_for_quiescence(std::time::Duration::from_secs(10))
         .expect("query service cleanup after cross-attempt graph handoff");
 }
+
+#[test]
+fn cache_enabled_pagerank_promotes_one_graph_into_the_ledger_owned_domain() {
+    const CACHE_CAP_BYTES: u64 = 16 * 1024 * 1024;
+
+    let service = runtime_test_service_with_profiles(
+        QueryExecutionConfig::default(),
+        QueueBounds::default(),
+        vec![runtime_test_device_profile_with_limits(
+            0,
+            128 * 1024 * 1024,
+            8 * 1024 * 1024,
+            8,
+            24,
+            8,
+            8,
+        )
+        .with_cache_cap_bytes(CACHE_CAP_BYTES)],
+    )
+    .expect("cache-enabled runtime service");
+    let backend_lifecycle = crate::runtime::BackendLifecycle::new();
+    let counters = std::sync::Arc::new(crate::attempt::AttemptBackendCounters::default());
+    let observed_attempt = crate::attempt::AttemptOwner::begin(
+        crate::attempt::BeginAttemptRequest {
+            observation: crate::observability::RuntimeObservationConfig::bounded(32, 32 * 1024),
+            ..crate::attempt::BeginAttemptRequest::default()
+        },
+        backend_lifecycle.try_begin_observation().expect("attempt observation permit"),
+        std::sync::Arc::clone(&counters),
+        None,
+    );
+    let attempt_owner = observed_attempt.owner;
+    let completion = observed_attempt.completion;
+    let attempt_handle = attempt_owner.handle();
+    attempt_handle.record_planning_started().expect("planning starts");
+    attempt_handle.record_planning_finished().expect("planning finishes");
+    attempt_handle.set_disposition(crate::observability::AttemptDisposition::Native).expect("native disposition");
+    attempt_handle.record_admission_requested().expect("admission requested");
+    let attempt = service
+        .admit_query_with_request(QueryAdmissionRequest::new().with_attempt_binding(attempt_owner.admission_binding()))
+        .expect("admission");
+    attempt_handle
+        .record_admitted(crate::observability::AttemptAdmissionFact {
+            admission_sequence: attempt.admission_sequence(),
+            admission_wait_ns: attempt.admission_wait().as_nanos().try_into().unwrap_or(u64::MAX),
+            device_ordinal: attempt.device_ordinal(),
+            grant_bytes: attempt.device_budget_bytes(),
+        })
+        .expect("attempt admission fact");
+    let admitted = attempt.acquire_context().expect("admitted context");
+    let context = admitted.context();
+    let runtime = context.runtime().expect("attempt runtime");
+    let edge_schema = std::sync::Arc::new(arrow::datatypes::Schema::new(vec![
+        arrow::datatypes::Field::new("src", arrow::datatypes::DataType::Int32, false),
+        arrow::datatypes::Field::new("dst", arrow::datatypes::DataType::Int32, false),
+    ]));
+    let edge_batch = arrow::record_batch::RecordBatch::try_new(
+        std::sync::Arc::clone(&edge_schema),
+        vec![
+            std::sync::Arc::new(arrow::array::Int32Array::from(vec![0, 1, 2, 2])),
+            std::sync::Arc::new(arrow::array::Int32Array::from(vec![1, 2, 0, 3])),
+        ],
+    )
+    .expect("valid edge batch");
+    let descriptor = crate::plan::GraphResidencyDescriptor::for_content_identity(
+        "p5-accounted-pagerank-graph-v1",
+        arrow::datatypes::DataType::Int32,
+        None,
+        None,
+    )
+    .expect("stable graph source identity");
+    let input = crate::runtime::resident::GpuResultHandle::new(
+        context,
+        crate::runtime::resident::GpuDataFrame::new(
+            cudf::DataFrame::from_record_batch(&runtime, &edge_batch).expect("attempt edge upload"),
+        )
+        .with_graph_residency(descriptor),
+        std::sync::Arc::clone(&edge_schema),
+    )
+    .expect("resident graph input");
+    let mut inputs = crate::runtime::resident::GpuResidentInputMap::new();
+    inputs.insert("edges".to_string(), input);
+    let mut builder = crate::plan::QueryPlanBuilder::new();
+    let edges = builder.add_source(crate::source::SourceNode::GpuResident(crate::source::GpuResidentSource::new(
+        "edges",
+        std::sync::Arc::clone(&edge_schema),
+    )));
+    let spec = crate::plan::GraphAlgorithmSpec::with_stable_schema(
+        crate::plan::GraphAlgorithm::PageRank,
+        crate::plan::GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
+        crate::plan::GraphConstructionOptions {
+            directed: true,
+            renumber: true,
+            policy: crate::plan::GraphConstructionPolicy::RawLibcugraph,
+        },
+        crate::plan::GraphAlgorithmParams::PageRank(crate::plan::GraphPageRankParams::default()),
+    );
+    let graph = builder.add_graph_algorithm(edges, spec);
+    let plan = builder.finish_with_host_sink_schema(
+        graph,
+        crate::plan::stable_graph_result_schema(crate::plan::GraphAlgorithm::PageRank),
+    );
+
+    let result = crate::exec::execute_query_plan_with_gpu_inputs(context, &plan, &inputs)
+        .expect("cache-enabled PageRank execution");
+    let ledger_report = service.device_ledger_reports().expect("ledger report").remove(0);
+    assert!(ledger_report.cache_evictable_resident_bytes > 0, "the parked graph remains ledger-owned after execution");
+    assert_eq!(ledger_report.cache_pinned_in_use_bytes, 0, "the graph checkout releases its pin after execution");
+    assert!(ledger_report.cache_evictable_resident_bytes <= CACHE_CAP_BYTES);
+
+    drop(result);
+    drop(inputs);
+    drop(runtime);
+    drop(admitted);
+    attempt_handle.record_physical_execution_started().expect("physical execution starts");
+    attempt_handle.record_gpu_execution_started().expect("GPU execution starts");
+    attempt_owner
+        .commit_terminal(crate::observability::RuntimeTerminalOutcome::Succeeded)
+        .expect("primary attempt outcome commits before release");
+    attempt.finish();
+    drop(attempt);
+    let sealed = completion.wait_timeout(std::time::Duration::from_secs(10)).expect("sealed attempt report");
+    let evidence = sealed.resource_evidence.expect("admitted cache attempt retains P3 resource evidence");
+    assert_eq!(
+        evidence.cache_evictable_resident_bytes.value,
+        Some(ledger_report.cache_evictable_resident_bytes),
+        "sealed P3 evidence projects the same ledger snapshot that owns the parked graph"
+    );
+    assert_eq!(
+        evidence.cache_pinned_in_use_bytes.value,
+        Some(ledger_report.cache_pinned_in_use_bytes),
+        "sealed P3 evidence projects the same ledger snapshot that owns the cache pin state"
+    );
+    assert_eq!(
+        evidence.ledger_sequence.value,
+        Some(ledger_report.sequence),
+        "all cache evidence fields retain the ledger snapshot sequence"
+    );
+    service.close_and_wait_for_quiescence(std::time::Duration::from_secs(10)).expect("service drains cache entries");
+    let drained_report = service.device_ledger_reports().expect("drained ledger report").remove(0);
+    assert_eq!(drained_report.cache_evictable_resident_bytes, 0);
+    assert_eq!(drained_report.cache_pinned_in_use_bytes, 0);
+}

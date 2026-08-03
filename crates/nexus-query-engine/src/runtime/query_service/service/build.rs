@@ -53,19 +53,20 @@ impl QueryService {
         validate_runtime_service_preflight(&config, &queue_bounds, &device_ordinals, &deployment_io_capability)?;
         let device_ordinals = normalize_device_ordinals(&device_ordinals)?;
         let owner_lease = claim_live_backend(&device_ordinals)?;
-        let token = owner_lease.token();
-        let mut resources = Self::install_runtime_resources(
-            &config,
-            device_ordinals,
-            deployment_io_capability,
-            &token,
-            None,
-            None,
-            None,
-            None,
-            None,
-        )?;
-        drop(token);
+        let mut resources = {
+            let token = owner_lease.token();
+            Self::install_runtime_resources(
+                &config,
+                device_ordinals,
+                deployment_io_capability,
+                &token,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )?
+        };
         resources.owner_lease = Some(owner_lease);
         Self::build(config, queue_bounds, Some(resources))
     }
@@ -82,19 +83,20 @@ impl QueryService {
         validate_runtime_service_preflight(&config, &queue_bounds, &device_ordinals, &deployment_io_capability)?;
         let device_ordinals = normalize_device_ordinals(&device_ordinals)?;
         let owner_lease = claim_live_backend(&device_ordinals)?;
-        let token = owner_lease.token();
-        let mut resources = Self::install_runtime_resources(
-            &config,
-            device_ordinals,
-            deployment_io_capability,
-            &token,
-            Some(&device_profiles),
-            None,
-            None,
-            None,
-            None,
-        )?;
-        drop(token);
+        let mut resources = {
+            let token = owner_lease.token();
+            Self::install_runtime_resources(
+                &config,
+                device_ordinals,
+                deployment_io_capability,
+                &token,
+                Some(&device_profiles),
+                None,
+                None,
+                None,
+                None,
+            )?
+        };
         resources.owner_lease = Some(owner_lease);
         Self::build(config, queue_bounds, Some(resources))
     }
@@ -204,9 +206,15 @@ impl QueryService {
                 Ok((device_ordinal, pool))
             })
             .collect::<Result<HashMap<_, _>>>()?;
+        // This allocation owner is constructed only after the registry has
+        // created its authoritative per-device ledgers.  It intentionally
+        // lives in `QueryServiceResources`, which the backend resource
+        // generation owns through close and destruction.
+        let resident_caches = QueryServiceResources::install_resident_caches(&devices)?;
         Ok(QueryServiceResources {
             devices,
             gpu_execution_pools,
+            resident_caches,
             gpu_execution_query_tracker,
             lakehouse_cache_fill_budget: CacheFillByteBudget::new(
                 config.lakehouse_cache_fill.budget_bytes.unwrap_or_else(default_lakehouse_cache_fill_budget_bytes),
@@ -463,6 +471,7 @@ fn device_registry_config(
                     max_active_queries: Some(profile.max_active_queries()),
                     capacity_policy,
                     backend_reserve_bytes: profile.backend_reserve_bytes(),
+                    cache_cap_bytes: profile.cache_cap_bytes(),
                     attempt_floor_bytes: profile.attempt_floor_bytes(),
                     source_work_per_attempt: profile.source_work_per_attempt(),
                     // Logical worker job-slot capacity follows the frozen
@@ -552,6 +561,7 @@ mod phase0_tests {
             max_active_queries: Some(1),
             capacity_policy: DeviceRegistryCapacityPolicy::Explicit { limit_bytes },
             backend_reserve_bytes: 0,
+            cache_cap_bytes: 0,
             attempt_floor_bytes: floor,
             source_work_per_attempt: 1,
             worker_job_capacity: 2,

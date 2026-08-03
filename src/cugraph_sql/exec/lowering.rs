@@ -345,108 +345,6 @@ pub(super) fn native_graph_spec(
     )
 }
 
-#[cfg(test)]
-mod tests {
-    use std::sync::Arc;
-
-    use arrow::datatypes::{DataType, Field, Schema};
-
-    use super::*;
-    use crate::cugraph_sql::{
-        CugraphBfsOutputMode, CugraphBfsOutputOptions, CugraphBfsParams, CugraphBfsSource,
-        CugraphGraphConstructionPolicy, CugraphGraphOptions, CugraphTableReference, result_schema_for_params,
-    };
-
-    fn bfs_spec(source: CugraphBfsSource, output_mode: CugraphBfsOutputMode) -> CugraphAlgorithmSpec {
-        let params = CugraphAlgorithmParams::Bfs(Box::new(CugraphBfsParams {
-            source,
-            depth_limit: Some(3),
-            predicates: Default::default(),
-            output: CugraphBfsOutputOptions { mode: output_mode, return_target_info: false },
-        }));
-        CugraphAlgorithmSpec {
-            algorithm: CugraphAlgorithm::Bfs,
-            table_name: CugraphTableReference::parse("edges").expect("static table identifier is valid"),
-            src_col: "src".to_string(),
-            dst_col: "dst".to_string(),
-            weight_col: None,
-            edge_id_col: None,
-            graph_options: CugraphGraphOptions {
-                directed: true,
-                renumber: true,
-                construction_policy: CugraphGraphConstructionPolicy::RawLibcugraph,
-            },
-            output_schema: result_schema_for_params(CugraphAlgorithm::Bfs, &params),
-            params,
-        }
-    }
-
-    fn edge_schema(vertex_type: DataType) -> SchemaRef {
-        Arc::new(Schema::new(vec![
-            Field::new("src", vertex_type.clone(), false),
-            Field::new("dst", vertex_type, false),
-        ]))
-    }
-
-    fn assert_admission_proof_matches_runtime_prepared_plan(
-        spec: &CugraphAlgorithmSpec,
-        edge_schema: SchemaRef,
-        projection: Option<&Vec<usize>>,
-        limit: Option<usize>,
-    ) {
-        let predicate_row_upper_bounds = Vec::new();
-        let admission_proof = cugraph_execution_capability_proof(
-            spec,
-            Arc::clone(&edge_schema),
-            Vec::new(),
-            &predicate_row_upper_bounds,
-            projection,
-            limit,
-            false,
-        )
-        .expect("cuGraph plan must expose a capability proof");
-
-        let prepared =
-            prepare_bfs_logical_input_schemas(spec, edge_schema, Vec::new()).expect("BFS input schemas must prepare");
-        let defer_final_projection = prepared.logical_mapping || is_bfs_path_output(spec);
-        let runtime_plan = cugraph_execution_plan_from_prepared_schemas(
-            &prepared.execution_spec,
-            prepared.edge_schema,
-            prepared.predicate_schemas,
-            &predicate_row_upper_bounds,
-            if defer_final_projection { None } else { projection },
-            if defer_final_projection { None } else { limit },
-            false,
-        )
-        .expect("prepared runtime graph plan must build");
-        let runtime_proof =
-            nexus_query_engine::admission::QueryPlanCapabilityProof::for_cugraph_graph_execution_plan(&runtime_plan)
-                .expect("prepared runtime graph plan must expose a capability proof");
-
-        assert_eq!(
-            admission_proof, runtime_proof,
-            "admission must attest the exact prepared graph fragment runtime executes"
-        );
-    }
-
-    #[test]
-    fn admission_proof_matches_runtime_bfs_logical_and_path_prepared_shapes() {
-        let projection = vec![0];
-        assert_admission_proof_matches_runtime_prepared_plan(
-            &bfs_spec(CugraphBfsSource::scalar_utf8("alice"), CugraphBfsOutputMode::Normalized),
-            edge_schema(DataType::Utf8),
-            Some(&projection),
-            Some(2),
-        );
-        assert_admission_proof_matches_runtime_prepared_plan(
-            &bfs_spec(CugraphBfsSource::scalar_i64(0), CugraphBfsOutputMode::Path),
-            edge_schema(DataType::Int64),
-            Some(&projection),
-            Some(2),
-        );
-    }
-}
-
 pub(super) fn native_graph_spec_for_placement_hint(
     spec: &CugraphAlgorithmSpec,
     edge_normalize_inserted: bool,
@@ -778,5 +676,107 @@ pub(super) fn sql_degree_type_to_native(degree_type: CugraphKCoreDegreeType) -> 
         CugraphKCoreDegreeType::In => GraphKCoreDegreeType::In,
         CugraphKCoreDegreeType::Out => GraphKCoreDegreeType::Out,
         CugraphKCoreDegreeType::InOut => GraphKCoreDegreeType::InOut,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use arrow::datatypes::{DataType, Field, Schema};
+
+    use super::*;
+    use crate::cugraph_sql::{
+        CugraphBfsOutputMode, CugraphBfsOutputOptions, CugraphBfsParams, CugraphBfsSource,
+        CugraphGraphConstructionPolicy, CugraphGraphOptions, CugraphTableReference, result_schema_for_params,
+    };
+
+    fn bfs_spec(source: CugraphBfsSource, output_mode: CugraphBfsOutputMode) -> CugraphAlgorithmSpec {
+        let params = CugraphAlgorithmParams::Bfs(Box::new(CugraphBfsParams {
+            source,
+            depth_limit: Some(3),
+            predicates: Default::default(),
+            output: CugraphBfsOutputOptions { mode: output_mode, return_target_info: false },
+        }));
+        CugraphAlgorithmSpec {
+            algorithm: CugraphAlgorithm::Bfs,
+            table_name: CugraphTableReference::parse("edges").expect("static table identifier is valid"),
+            src_col: "src".to_string(),
+            dst_col: "dst".to_string(),
+            weight_col: None,
+            edge_id_col: None,
+            graph_options: CugraphGraphOptions {
+                directed: true,
+                renumber: true,
+                construction_policy: CugraphGraphConstructionPolicy::RawLibcugraph,
+            },
+            output_schema: result_schema_for_params(CugraphAlgorithm::Bfs, &params),
+            params,
+        }
+    }
+
+    fn edge_schema(vertex_type: DataType) -> SchemaRef {
+        Arc::new(Schema::new(vec![
+            Field::new("src", vertex_type.clone(), false),
+            Field::new("dst", vertex_type, false),
+        ]))
+    }
+
+    fn assert_admission_proof_matches_runtime_prepared_plan(
+        spec: &CugraphAlgorithmSpec,
+        edge_schema: SchemaRef,
+        projection: Option<&Vec<usize>>,
+        limit: Option<usize>,
+    ) {
+        let predicate_row_upper_bounds = Vec::new();
+        let admission_proof = cugraph_execution_capability_proof(
+            spec,
+            Arc::clone(&edge_schema),
+            Vec::new(),
+            &predicate_row_upper_bounds,
+            projection,
+            limit,
+            false,
+        )
+        .expect("cuGraph plan must expose a capability proof");
+
+        let prepared =
+            prepare_bfs_logical_input_schemas(spec, edge_schema, Vec::new()).expect("BFS input schemas must prepare");
+        let defer_final_projection = prepared.logical_mapping || is_bfs_path_output(spec);
+        let runtime_plan = cugraph_execution_plan_from_prepared_schemas(
+            &prepared.execution_spec,
+            prepared.edge_schema,
+            prepared.predicate_schemas,
+            &predicate_row_upper_bounds,
+            if defer_final_projection { None } else { projection },
+            if defer_final_projection { None } else { limit },
+            false,
+        )
+        .expect("prepared runtime graph plan must build");
+        let runtime_proof =
+            nexus_query_engine::admission::QueryPlanCapabilityProof::for_cugraph_graph_execution_plan(&runtime_plan)
+                .expect("prepared runtime graph plan must expose a capability proof");
+
+        assert_eq!(
+            admission_proof, runtime_proof,
+            "admission must attest the exact prepared graph fragment runtime executes"
+        );
+    }
+
+    #[test]
+    fn admission_proof_matches_runtime_bfs_logical_and_path_prepared_shapes() {
+        let projection = vec![0];
+        assert_admission_proof_matches_runtime_prepared_plan(
+            &bfs_spec(CugraphBfsSource::scalar_utf8("alice"), CugraphBfsOutputMode::Normalized),
+            edge_schema(DataType::Utf8),
+            Some(&projection),
+            Some(2),
+        );
+        assert_admission_proof_matches_runtime_prepared_plan(
+            &bfs_spec(CugraphBfsSource::scalar_i64(0), CugraphBfsOutputMode::Path),
+            edge_schema(DataType::Int64),
+            Some(&projection),
+            Some(2),
+        );
     }
 }

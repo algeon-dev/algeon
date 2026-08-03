@@ -207,7 +207,7 @@ struct CoordinatorExecutionTerminalState {
 
 enum CoordinatorExecutionTerminalOutcome {
     Succeeded { stage: &'static str },
-    Captured { stage: &'static str, status: Status, captured: CapturedError },
+    Captured { stage: &'static str, status: Status, captured: Box<CapturedError> },
     Dropped { stage: &'static str },
     Panicked { stage: &'static str },
 }
@@ -272,7 +272,11 @@ impl CoordinatorExecutionTerminal {
             // The attempt can seal before the Flight RPC has selected its
             // transport outcome. In that ordering there is no pending
             // outcome yet, so retain the lease for the later `finish_*` call.
-            state.pending.take().and_then(|outcome| state.lease.take().map(|lease| (lease, outcome)))
+            if let Some(outcome) = state.pending.take() {
+                state.lease.take().map(|lease| (lease, outcome))
+            } else {
+                None
+            }
         };
         if let Some((lease, outcome)) = completion {
             self.finish_lease(lease, outcome);
@@ -302,7 +306,11 @@ impl CoordinatorExecutionTerminal {
             state.pending = None;
             (
                 lease,
-                CoordinatorExecutionTerminalOutcome::Captured { stage: "attempt_report_delivery", status, captured },
+                CoordinatorExecutionTerminalOutcome::Captured {
+                    stage: "attempt_report_delivery",
+                    status,
+                    captured: Box::new(captured),
+                },
             )
         };
         self.finish_attempt_report_delivery_lease(completion.0, completion.1, attempt_outcome);
@@ -314,7 +322,11 @@ impl CoordinatorExecutionTerminal {
     }
 
     pub(super) fn finish_captured(&self, stage: &'static str, status: &Status, captured: CapturedError) {
-        self.finish(CoordinatorExecutionTerminalOutcome::Captured { stage, status: status.clone(), captured });
+        self.finish(CoordinatorExecutionTerminalOutcome::Captured {
+            stage,
+            status: status.clone(),
+            captured: Box::new(captured),
+        });
     }
 
     /// Records that the client dropped its response stream. This remains
@@ -359,7 +371,7 @@ impl CoordinatorExecutionTerminal {
                 );
             },
             CoordinatorExecutionTerminalOutcome::Captured { stage, status, captured } => {
-                lease.finish_captured(stage, &status, captured);
+                lease.finish_captured(stage, &status, *captured);
                 log_statement_status(&self.query_id, stage, self.started_at, &status);
             },
             CoordinatorExecutionTerminalOutcome::Dropped { stage } => {
@@ -393,7 +405,7 @@ impl CoordinatorExecutionTerminal {
     ) {
         match outcome {
             CoordinatorExecutionTerminalOutcome::Captured { stage, status, captured } => {
-                lease.finish_attempt_report_delivery_failed(stage, &status, captured, attempt_outcome);
+                lease.finish_attempt_report_delivery_failed(stage, &status, *captured, attempt_outcome);
                 log_statement_status(&self.query_id, stage, self.started_at, &status);
             },
             // This private path is constructed only by

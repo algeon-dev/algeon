@@ -117,6 +117,7 @@ fn profile_from_file(raw: &super::file::ServerAdmissionDeviceProfileFileConfig) 
     for (field, value) in [
         ("admission.device_profiles.memory_limit_bytes", raw.memory_limit_bytes),
         ("admission.device_profiles.attempt_floor_bytes", raw.attempt_floor_bytes),
+        ("admission.device_profiles.cache_cap_bytes", raw.cache_cap_bytes),
     ] {
         if value == Some(0) {
             return Err(ServerError::invalid_config(field, "must be greater than zero"));
@@ -143,6 +144,9 @@ fn profile_from_file(raw: &super::file::ServerAdmissionDeviceProfileFileConfig) 
     }
     if let Some(backend_reserve_bytes) = raw.backend_reserve_bytes {
         profile = profile.with_backend_reserve_bytes(backend_reserve_bytes);
+    }
+    if let Some(cache_cap_bytes) = raw.cache_cap_bytes {
+        profile = profile.with_cache_cap_bytes(cache_cap_bytes);
     }
     if let Some(attempt_floor_bytes) = raw.attempt_floor_bytes {
         profile = profile.with_attempt_floor_bytes(Some(attempt_floor_bytes));

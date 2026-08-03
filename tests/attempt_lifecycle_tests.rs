@@ -61,10 +61,10 @@ impl Drop for BackendFixture {
         };
         let close = backend.close_and_wait(std::time::Duration::from_secs(10));
         drop(backend);
-        if let Err(error) = close {
-            if !std::thread::panicking() {
-                panic!("attempt lifecycle backend closes before releasing ownership: {error}");
-            }
+        if let Err(error) = close
+            && !std::thread::panicking()
+        {
+            panic!("attempt lifecycle backend closes before releasing ownership: {error}");
         }
     }
 }

@@ -44,6 +44,7 @@ pub(super) struct ServerAdmissionDeviceProfileFileConfig {
     pub(super) device_ordinal: usize,
     pub(super) memory_limit_bytes: Option<u64>,
     pub(super) backend_reserve_bytes: Option<u64>,
+    pub(super) cache_cap_bytes: Option<u64>,
     pub(super) attempt_floor_bytes: Option<u64>,
     pub(super) source_work_per_attempt: Option<usize>,
     pub(super) max_active_attempts: Option<usize>,
