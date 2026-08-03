@@ -43,7 +43,6 @@
 use std::{
     any::Any,
     cell::{Cell, RefCell},
-    ffi::c_void,
     marker::PhantomData,
     mem::ManuallyDrop,
     num::NonZeroUsize,
@@ -53,8 +52,8 @@ use std::{
 
 use cugraph_sys::{
     cugraph_decompress_to_edgelist, cugraph_edgelist_get_destinations, cugraph_edgelist_get_sources,
-    cugraph_edgelist_t, cugraph_error_t, cugraph_graph_create_with_times_sg, cugraph_graph_properties_t,
-    cugraph_graph_t, cugraph_type_erased_device_array_view_t, cugraph_type_erased_device_array_view_type,
+    cugraph_edgelist_t, cugraph_error_t, cugraph_graph_create_with_times_sg, cugraph_graph_t,
+    cugraph_type_erased_device_array_view_t, cugraph_type_erased_device_array_view_type,
 };
 use rapids_interop::{CompletionWitness, InteropError};
 
@@ -66,29 +65,6 @@ use crate::{
     structure::{ResolvedVertexSelection, VertexIds, VertexSelection},
     types::{CugraphElement, DataType, GraphProperties, to_bool_t},
 };
-
-unsafe extern "C" {
-    fn cugraph_rs_runtime_resource_handle_graph_create_with_times_sg(
-        handle: *mut c_void,
-        properties: *const cugraph_graph_properties_t,
-        vertices: *const cugraph_type_erased_device_array_view_t,
-        src: *const cugraph_type_erased_device_array_view_t,
-        dst: *const cugraph_type_erased_device_array_view_t,
-        weights: *const cugraph_type_erased_device_array_view_t,
-        edge_ids: *const cugraph_type_erased_device_array_view_t,
-        edge_type_ids: *const cugraph_type_erased_device_array_view_t,
-        edge_start_times: *const cugraph_type_erased_device_array_view_t,
-        edge_end_times: *const cugraph_type_erased_device_array_view_t,
-        store_transposed: cugraph_sys::bool_t,
-        renumber: cugraph_sys::bool_t,
-        drop_self_loops: cugraph_sys::bool_t,
-        drop_multi_edges: cugraph_sys::bool_t,
-        symmetrize: cugraph_sys::bool_t,
-        do_expensive_check: cugraph_sys::bool_t,
-        graph: *mut *mut cugraph_graph_t,
-        error: *mut *mut cugraph_error_t,
-    ) -> cugraph_sys::cugraph_error_code_t;
-}
 
 mod sealed {
     pub trait Sealed {}
@@ -1111,49 +1087,26 @@ impl<'a> GraphBuilder<'a> {
         // device array view with a validated length and dtype; `graph`/`error`
         // are valid out-pointers owned by this stack frame.
         unsafe {
-            let code = if let Some(runtime_handle) = handle.runtime_resource_handle_raw() {
-                cugraph_rs_runtime_resource_handle_graph_create_with_times_sg(
-                    runtime_handle,
-                    &c_props,
-                    vertices_ptr,
-                    self.src,
-                    self.dst,
-                    weights_ptr,
-                    edge_ids_ptr,
-                    edge_type_ids_ptr,
-                    start_times_ptr,
-                    end_times_ptr,
-                    to_bool_t(store_transposed),
-                    to_bool_t(self.renumber),
-                    to_bool_t(self.drop_self_loops),
-                    to_bool_t(self.drop_multi_edges),
-                    to_bool_t(self.symmetrize),
-                    to_bool_t(self.do_expensive_check),
-                    &mut graph,
-                    &mut error,
-                )
-            } else {
-                cugraph_graph_create_with_times_sg(
-                    handle.handle_ptr(),
-                    &c_props,
-                    vertices_ptr,
-                    self.src,
-                    self.dst,
-                    weights_ptr,
-                    edge_ids_ptr,
-                    edge_type_ids_ptr,
-                    start_times_ptr,
-                    end_times_ptr,
-                    to_bool_t(store_transposed),
-                    to_bool_t(self.renumber),
-                    to_bool_t(self.drop_self_loops),
-                    to_bool_t(self.drop_multi_edges),
-                    to_bool_t(self.symmetrize),
-                    to_bool_t(self.do_expensive_check),
-                    &mut graph,
-                    &mut error,
-                )
-            };
+            let code = cugraph_graph_create_with_times_sg(
+                handle.handle_ptr(),
+                &c_props,
+                vertices_ptr,
+                self.src,
+                self.dst,
+                weights_ptr,
+                edge_ids_ptr,
+                edge_type_ids_ptr,
+                start_times_ptr,
+                end_times_ptr,
+                to_bool_t(store_transposed),
+                to_bool_t(self.renumber),
+                to_bool_t(self.drop_self_loops),
+                to_bool_t(self.drop_multi_edges),
+                to_bool_t(self.symmetrize),
+                to_bool_t(self.do_expensive_check),
+                &mut graph,
+                &mut error,
+            );
             check_error(code, error, handle.device(), "GraphBuilder::build")?;
         }
 

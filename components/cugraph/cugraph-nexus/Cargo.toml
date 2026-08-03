@@ -32,11 +32,6 @@ static_assertions.workspace = true
 [build-dependencies]
 cc.workspace = true
 
-[[bin]]
-name = "allocator_routing_probe"
-path = "tests/bin/allocator_routing_probe.rs"
-required-features = ["test-hooks"]
-
 [[test]]
 name = "cudf_allocator_routing"
 path = "tests/cudf_allocator_routing.rs"

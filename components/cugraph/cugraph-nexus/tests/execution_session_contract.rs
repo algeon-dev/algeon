@@ -90,6 +90,20 @@ fn runtime_bound_resource_handle_uses_no_secondary_stream_pool() {
         1,
         "runtime-bound cuGraph handle must not introduce a secondary RAFT stream pool"
     );
+    assert!(
+        !source.contains("set_current_device_resource"),
+        "runtime-bound graph work must not swap RMM's process-wide current resource"
+    );
+    assert!(
+        !source.contains("runtime_graph_creation_memory_resource"),
+        "the legacy global-RMM graph-construction bridge must stay removed"
+    );
+
+    let handle_source = fs::read_to_string(manifest_dir.join("src/handle.rs")).expect("runtime handle source");
+    assert!(
+        handle_source.contains("route_current_resource(runtime.stream(), runtime.memory_resource())"),
+        "runtime-bound handles must register their explicit resource through cuDF's stable current-resource route"
+    );
 }
 
 #[test]
