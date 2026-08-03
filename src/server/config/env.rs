@@ -27,11 +27,6 @@ impl<T> NativeConfigValue<T> {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-pub(super) enum DurationZeroPolicy {
-    Reject,
-    Indefinite,
-}
 pub(super) struct EnvValues<'a> {
     get: &'a mut dyn FnMut(&str) -> Option<String>,
     cache: BTreeMap<&'static str, Option<String>>,
@@ -90,20 +85,6 @@ impl<'a> EnvValues<'a> {
             .map(|raw| {
                 raw.parse::<u64>()
                     .map_err(|error| ServerError::invalid_config_with_source(name, "must be an integer", error))
-            })
-            .transpose()
-    }
-
-    pub(super) fn optional_f64(&mut self, name: &'static str) -> Result<Option<f64>> {
-        self.string(name)
-            .map(|raw| {
-                let value = raw.parse::<f64>().map_err(|error| {
-                    ServerError::invalid_config_with_source(name, "must be a decimal number", error)
-                })?;
-                if !value.is_finite() || !(0.0..=1.0).contains(&value) || value == 0.0 {
-                    return Err(ServerError::invalid_config(name, "must be greater than 0 and at most 1"));
-                }
-                Ok(value)
             })
             .transpose()
     }

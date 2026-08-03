@@ -10,7 +10,7 @@ fn shared_runtime(runtime: cudf::Runtime) -> Arc<cudf::Runtime> {
 #[test]
 fn compiled_gpu_executor_runs_root_hash_join_build_probe_materialize() {
     let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
-    let dir = unique_temp_dir("nexus-query-engine-compiled-d14");
+    let dir = unique_temp_dir("nexus-query-engine-compiled-root-hash-join");
     let left_path = dir.join("left.parquet");
     let right_path = dir.join("right.parquet");
     write_join_parquets(&left_path, &right_path);
@@ -63,7 +63,7 @@ fn compiled_gpu_executor_runs_root_hash_join_build_probe_materialize() {
 #[test]
 fn compiled_gpu_executor_runs_shared_source_hash_join_without_rereading() {
     let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
-    let dir = unique_temp_dir("nexus-query-engine-compiled-d32-shared-source");
+    let dir = unique_temp_dir("nexus-query-engine-compiled-shared-source");
     let path = dir.join("shared.parquet");
     write_self_join_parquet(&path);
 
@@ -115,7 +115,7 @@ fn compiled_gpu_executor_runs_shared_source_hash_join_without_rereading() {
 #[test]
 fn execute_query_plan_rejects_grouped_aggregate_join_build_input_without_strict_envelope() {
     let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
-    let dir = unique_temp_dir("nexus-query-engine-compiled-d33-aggregate-join-input");
+    let dir = unique_temp_dir("nexus-query-engine-compiled-aggregate-join-input");
     let left_path = dir.join("left.parquet");
     let right_path = dir.join("right.parquet");
     write_aggregate_join_input_parquets(&left_path, &right_path);
@@ -137,7 +137,7 @@ fn execute_query_plan_rejects_grouped_aggregate_join_build_input_without_strict_
     let context = bounded_context(shared_runtime(runtime));
 
     let error = match execute_query_plan(&context, &plan) {
-        Ok(_) => panic!("D.3.3 grouped aggregate join-build input needs explicit strict envelope admission"),
+        Ok(_) => panic!("grouped aggregate join-build input needs explicit bounded admission"),
         Err(error) => error,
     };
     assert_eq!(error.code(), nexus_query_engine::error::QueryErrorCode::UnsupportedPlanShape);
@@ -245,10 +245,10 @@ fn compiled_gpu_executor_streams_shared_source_for_join_build_and_grouped_aggreg
 }
 
 #[test]
-fn execute_query_plan_routes_d3_6_nonlinear_topk_and_subquery_filter_paths_through_compiled_pipeline() {
+fn execute_query_plan_routes_nonlinear_topk_and_subquery_filter_paths_through_compiled_pipeline() {
     let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
     let runtime = shared_runtime(runtime);
-    write_d3_6_contract_parquets();
+    write_nonlinear_topk_contract_parquets();
 
     for (label, plan) in [
         ("aggregate-over-join-subplan TopK", aggregate_over_join_subplan_topk_plan()),
@@ -261,13 +261,13 @@ fn execute_query_plan_routes_d3_6_nonlinear_topk_and_subquery_filter_paths_throu
         assert_eq!(
             compiled_bounded_query_plan_support(&plan, &pipeline).expect("plan-aware support check should not fail"),
             CompiledBoundedPipelineSupport::Supported,
-            "{label}: D.3.6 plan should be admitted by compiled support"
+            "{label}: non-linear plan should be admitted by compiled support"
         );
         let context = bounded_context(Arc::clone(&runtime));
 
         let result = execute_query_plan(&context, &plan)
-            .unwrap_or_else(|error| panic!("{label}: D.3.6 compiled execution failed: {error}"));
-        let batch = result.output().as_host_arrow().expect("D.3.6 output should be host Arrow");
+            .unwrap_or_else(|error| panic!("{label}: compiled execution failed: {error}"));
+        let batch = result.output().as_host_arrow().expect("compiled output should be host Arrow");
         let metrics = result.metrics();
 
         assert!(batch.num_rows() > 0, "{label}: compiled execution should produce rows");
@@ -280,13 +280,13 @@ fn execute_query_plan_routes_d3_6_nonlinear_topk_and_subquery_filter_paths_throu
         assert_eq!(metrics.compiled_pipeline_host_arrow_sinks, 1, "{label}: expected one host Arrow sink");
     }
 
-    remove_d3_6_contract_parquets();
+    remove_nonlinear_topk_contract_parquets();
 }
 
 #[test]
 fn execute_query_plan_routes_root_hash_join_through_compiled_pipeline() {
     let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
-    let dir = unique_temp_dir("nexus-query-engine-compiled-d15-root");
+    let dir = unique_temp_dir("nexus-query-engine-compiled-root-join");
     let left_path = dir.join("left.parquet");
     let right_path = dir.join("right.parquet");
     write_join_parquets(&left_path, &right_path);
@@ -401,7 +401,7 @@ fn observed_compiled_root_join_replays_typed_reservations_with_registered_tasks(
 #[test]
 fn execute_query_plan_routes_keyless_root_join_strategy_through_compiled_pipeline() {
     let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
-    let dir = unique_temp_dir("nexus-query-engine-compiled-d34-keyless-root");
+    let dir = unique_temp_dir("nexus-query-engine-compiled-keyless-root-join");
     let left_path = dir.join("left.parquet");
     let right_path = dir.join("right.parquet");
     write_join_parquets(&left_path, &right_path);
@@ -415,7 +415,7 @@ fn execute_query_plan_routes_keyless_root_join_strategy_through_compiled_pipelin
     );
     let context = bounded_context(shared_runtime(runtime));
 
-    let result = execute_query_plan(&context, &plan).expect("D.3.4 keyless root join should execute");
+    let result = execute_query_plan(&context, &plan).expect("keyless root join should execute");
     let batch = result.output().as_host_arrow().expect("compiled output should be host Arrow");
     let metrics = result.metrics();
 
@@ -436,7 +436,7 @@ fn execute_query_plan_routes_keyless_root_join_strategy_through_compiled_pipelin
 #[test]
 fn execute_query_plan_routes_root_hash_join_with_unary_inputs_through_compiled_pipeline() {
     let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
-    let dir = unique_temp_dir("nexus-query-engine-compiled-d15-unary-join");
+    let dir = unique_temp_dir("nexus-query-engine-compiled-unary-root-join");
     let left_path = dir.join("left.parquet");
     let right_path = dir.join("right.parquet");
     write_join_parquets(&left_path, &right_path);
@@ -465,14 +465,13 @@ fn execute_query_plan_routes_root_hash_join_with_unary_inputs_through_compiled_p
 #[test]
 fn execute_query_plan_leaves_unsupported_compiled_graphs_on_legacy_fallback() {
     let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
-    let dir = unique_temp_dir("nexus-query-engine-compiled-d15-fallback");
+    let dir = unique_temp_dir("nexus-query-engine-compiled-fallback");
     let path = dir.join("input.parquet");
     let source_schema = write_source_unary_parquet(&path);
     let plan = aggregate_sort_limit_data_plan(&path, source_schema);
     let context = bounded_context(shared_runtime(runtime));
 
-    let result =
-        execute_query_plan(&context, &plan).expect("unsupported D.1 compiled graph should use legacy fallback");
+    let result = execute_query_plan(&context, &plan).expect("unsupported compiled graph should use legacy fallback");
     let batch = result.output().as_host_arrow().expect("fallback output should be host Arrow");
     let metrics = result.metrics();
 
@@ -485,7 +484,7 @@ fn execute_query_plan_leaves_unsupported_compiled_graphs_on_legacy_fallback() {
 #[test]
 fn execute_query_plan_routes_gpu_resident_sink_join_through_compiled_pipeline() {
     let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
-    let dir = unique_temp_dir("nexus-query-engine-compiled-d37-required");
+    let dir = unique_temp_dir("nexus-query-engine-compiled-gpu-sink");
     let left_path = dir.join("left.parquet");
     let right_path = dir.join("right.parquet");
     write_join_parquets(&left_path, &right_path);
@@ -710,7 +709,7 @@ fn single_sink_output_pipeline(
 #[test]
 fn execute_query_plan_routes_root_hash_join_aggregate_through_compiled_pipeline() {
     let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
-    let dir = unique_temp_dir("nexus-query-engine-compiled-d23-aggregate");
+    let dir = unique_temp_dir("nexus-query-engine-compiled-single-join-aggregate");
     let customers_path = dir.join("customers.parquet");
     let orders_path = dir.join("orders.parquet");
     write_single_join_post_root_parquets(&customers_path, &orders_path);
@@ -727,8 +726,7 @@ fn execute_query_plan_routes_root_hash_join_aggregate_through_compiled_pipeline(
     );
     let context = bounded_context(shared_runtime(runtime));
 
-    let result =
-        execute_query_plan(&context, &plan).expect("D.2.3 aggregate graph should execute through compiled path");
+    let result = execute_query_plan(&context, &plan).expect("aggregate graph should execute through compiled path");
     let batch = result.output().as_host_arrow().expect("compiled output should be host Arrow");
     let metrics = result.metrics();
 
@@ -821,7 +819,7 @@ fn assert_compiled_final_merge_uses_partitioned_strategy(metrics: &QueryMetrics)
 #[test]
 fn execute_query_plan_routes_root_hash_join_final_sort_limit_through_compiled_pipeline() {
     let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
-    let dir = unique_temp_dir("nexus-query-engine-compiled-d24-sort-limit");
+    let dir = unique_temp_dir("nexus-query-engine-compiled-root-sort-limit");
     let left_path = dir.join("left.parquet");
     let right_path = dir.join("right.parquet");
     write_join_parquets(&left_path, &right_path);
@@ -842,7 +840,7 @@ fn execute_query_plan_routes_root_hash_join_final_sort_limit_through_compiled_pi
     assert_eq!(final_sort_gate.quality(), ContractQuality::HardBudgetedReportWithUnresolvedPreflight);
     let context = bounded_context(shared_runtime(runtime));
 
-    let result = execute_query_plan(&context, &plan).expect("D.2.4 final-sort/limit graph should execute");
+    let result = execute_query_plan(&context, &plan).expect("final-sort/limit graph should execute");
     let batch = result.output().as_host_arrow().expect("compiled output should be host Arrow");
     let metrics = result.metrics();
 
@@ -856,9 +854,9 @@ fn execute_query_plan_routes_root_hash_join_final_sort_limit_through_compiled_pi
 }
 
 #[test]
-fn execute_query_plan_routes_single_join_post_root_d2_graph_through_compiled_pipeline() {
+fn execute_query_plan_routes_single_join_post_root_graph_through_compiled_pipeline() {
     let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
-    let dir = unique_temp_dir("nexus-query-engine-compiled-d22-single-join");
+    let dir = unique_temp_dir("nexus-query-engine-compiled-single-join-post-root");
     let customers_path = dir.join("customers.parquet");
     let orders_path = dir.join("orders.parquet");
     write_single_join_post_root_parquets(&customers_path, &orders_path);
@@ -872,7 +870,8 @@ fn execute_query_plan_routes_single_join_post_root_d2_graph_through_compiled_pip
     );
     let context = bounded_context(shared_runtime(runtime));
 
-    let result = execute_query_plan(&context, &plan).expect("D.2 graph should execute through compiled path");
+    let result =
+        execute_query_plan(&context, &plan).expect("single-join post-root graph should execute through compiled path");
     let batch = result.output().as_host_arrow().expect("compiled output should be host Arrow");
     let metrics = result.metrics();
 
@@ -888,7 +887,7 @@ fn execute_query_plan_routes_single_join_post_root_d2_graph_through_compiled_pip
 #[test]
 fn execute_query_plan_routes_simple_multi_join_tree_through_compiled_pipeline() {
     let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
-    let dir = unique_temp_dir("nexus-query-engine-compiled-d26-multi-join");
+    let dir = unique_temp_dir("nexus-query-engine-compiled-multi-join");
     let a_path = dir.join("a.parquet");
     let b_path = dir.join("b.parquet");
     let c_path = dir.join("c.parquet");
@@ -903,7 +902,7 @@ fn execute_query_plan_routes_simple_multi_join_tree_through_compiled_pipeline() 
     );
     let context = bounded_context(shared_runtime(runtime));
 
-    let result = execute_query_plan(&context, &plan).expect("D.2.6 multi-join graph should execute");
+    let result = execute_query_plan(&context, &plan).expect("multi-join graph should execute");
     let batch = result.output().as_host_arrow().expect("compiled output should be host Arrow");
     let metrics = result.metrics();
 

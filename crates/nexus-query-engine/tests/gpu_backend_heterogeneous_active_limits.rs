@@ -10,7 +10,6 @@ use nexus_query_engine::runtime::{
 };
 
 const DEVICE_CAPACITY_BYTES: u64 = 64 * 1024 * 1024;
-const QUERY_GRANT_BYTES: u64 = 4 * 1024 * 1024;
 
 fn live_backend_test_guard() -> MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();

@@ -1,8 +1,6 @@
 use std::{collections::BTreeMap, time::Duration};
 
 use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, MetricCategory};
-#[cfg(feature = "server")]
-use nexus_query_engine::runtime::{AdmittedQueryContext, ExecutionCancellation, ExecutionContext, QueryHandle};
 use nexus_query_engine::{
     metrics::{
         JoinOperatorMetrics, OperatorMetrics, QueryMetrics, SourceReadParquetEvidenceMetrics, SourceReadRuntimeMetrics,
@@ -16,39 +14,7 @@ use super::{
     contract::{NATIVE_NEXUS_METRIC_DESCRIPTORS, NativeMetricKind},
     record::{NATIVE_NEXUS_RECORDING_DESCRIPTORS, NativeMetricRecordingKind},
 };
-#[cfg(feature = "server")]
-use crate::backend::{GpuMemoryOwnership, NexusGpuBackend, NexusGpuDeviceProfile};
 use crate::{native_exec::admission::QueryAdmissionFacts, native_report::NativeDataFusionExecutionMetrics};
-
-#[cfg(feature = "server")]
-struct AdmittedTestContext {
-    context: ExecutionContext,
-    cancellation: ExecutionCancellation,
-    _admission_context: AdmittedQueryContext,
-    _handle: QueryHandle,
-    _backend: NexusGpuBackend,
-}
-
-#[cfg(feature = "server")]
-fn admitted_test_context(query_id: &'static str) -> AdmittedTestContext {
-    let backend = NexusGpuBackend::builder()
-        .device_profiles([NexusGpuDeviceProfile::new(0)])
-        .device_memory_ownership([(0, GpuMemoryOwnership::WholeDeviceExclusive)])
-        .build()
-        .expect("test GPU backend builds");
-    let handle = backend.admit_query().expect("test query admits");
-    let cancellation = ExecutionCancellation::new();
-    let admission_context =
-        handle.acquire_context_with_cancellation(cancellation.clone()).expect("admitted test context acquires");
-    let context = admission_context.context().with_query_id(query_id).expect("test query id is valid");
-    AdmittedTestContext {
-        context,
-        cancellation,
-        _admission_context: admission_context,
-        _handle: handle,
-        _backend: backend,
-    }
-}
 
 #[test]
 fn native_summary_metrics_set_datafusion_v54_categories() {

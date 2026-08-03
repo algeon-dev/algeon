@@ -106,7 +106,7 @@ fn finished_handle_releases_runtime_service_ownership_before_activity_drop() {
 
     handle.finish();
 
-    // The admitted envelope owns GPU resources (P2.6), so the release —
+    // The admitted envelope owns GPU resources, so the release —
     // including the activity drop — completes on the device executor. Wait
     // for the probe instead of expecting synchronous completion.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);

@@ -560,7 +560,8 @@ pub(super) fn write_ilike_parquet_file_with_labels(path: &std::path::Path, label
         Field::new("id", DataType::Int32, false),
         Field::new("label", DataType::Utf8View, true),
     ]));
-    let ids = (1..=i32::try_from(labels.len()).expect("P2a fixture row count must fit i32")).collect::<Vec<_>>();
+    let ids =
+        (1..=i32::try_from(labels.len()).expect("mixed-boundary fixture row count must fit i32")).collect::<Vec<_>>();
     let labels = labels.iter().map(|label| label.as_deref()).collect::<Vec<_>>();
     let batch = RecordBatch::try_new(
         Arc::clone(&schema),

@@ -27,7 +27,7 @@ const ENV_CUDA_PROFILER_CAPTURE: &str = "NEXUS_CUGRAPH_ADMISSION_CUDA_PROFILER_C
 
 impl HarnessConfig {
     pub(super) fn from_env() -> Result<Self, Box<dyn Error>> {
-        reject_p2_cache_profile_env()?;
+        reject_retired_cache_profile_env()?;
         let workload_raw = std::env::var(ENV_WORKLOAD).unwrap_or_else(|_| "catalog_smoke".to_string());
         let workload = parse_workload(&workload_raw)?;
         let out_dir = PathBuf::from(std::env::var(ENV_OUT_DIR).unwrap_or_else(|_| ".".to_string()));
@@ -63,10 +63,10 @@ impl HarnessConfig {
     }
 }
 
-fn reject_p2_cache_profile_env() -> Result<(), Box<dyn Error>> {
+fn reject_retired_cache_profile_env() -> Result<(), Box<dyn Error>> {
     for name in [REMOVED_ENV_SOURCE_CACHE_MAX_RETAINED_BYTES, REMOVED_ENV_GRAPH_CACHE_MAX_RETAINED_BYTES] {
         if std::env::var_os(name).is_some() {
-            return Err(format!("{name} is unavailable in P2; remove this setting").into());
+            return Err(format!("{name} is no longer supported; remove this setting").into());
         }
     }
     Ok(())

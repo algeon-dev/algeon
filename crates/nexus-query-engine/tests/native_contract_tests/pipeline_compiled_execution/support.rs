@@ -1,18 +1,18 @@
 use super::*;
 
-pub(super) fn d5_test_gate_row(
+pub(super) fn test_contract_gate_row(
     reservation_kind: ReservationKind,
     memory_boundary: &'static str,
     required_contract: &'static str,
     contract_quality: ContractQuality,
     unresolved_preflight_gap: Option<&'static str>,
 ) -> CapabilityContractGateRow {
-    let contract_scope = d5_test_scope_for_reservation_kind(reservation_kind);
+    let contract_scope = test_contract_scope_for_reservation_kind(reservation_kind);
     CapabilityContractGateRow {
         execution_mode: CapabilityEnvelopeStatus::Admitted,
         contract_scope,
         gate_id: CapabilityContractGateId::Compiled(ReservationGateId::new(reservation_kind as usize)),
-        owner: d5_test_owner_for_scope(contract_scope),
+        owner: test_contract_owner_for_scope(contract_scope),
         reservation_kind,
         memory_boundary,
         required_contract,
@@ -22,7 +22,7 @@ pub(super) fn d5_test_gate_row(
     }
 }
 
-pub(super) fn d5_test_scope_for_reservation_kind(reservation_kind: ReservationKind) -> ReservationRequirementScope {
+pub(super) fn test_contract_scope_for_reservation_kind(reservation_kind: ReservationKind) -> ReservationRequirementScope {
     match reservation_kind {
         ReservationKind::OperatorOutput
         | ReservationKind::HashTable
@@ -43,7 +43,7 @@ pub(super) fn d5_test_scope_for_reservation_kind(reservation_kind: ReservationKi
     }
 }
 
-pub(super) fn d5_test_owner_for_scope(scope: ReservationRequirementScope) -> CapabilityContractOwner {
+pub(super) fn test_contract_owner_for_scope(scope: ReservationRequirementScope) -> CapabilityContractOwner {
     match scope {
         ReservationRequirementScope::Node => {
             CapabilityContractOwner::Compiled(ReservationGateOwner::Task(PipelineTaskId::new(0)))
@@ -57,8 +57,8 @@ pub(super) fn d5_test_owner_for_scope(scope: ReservationRequirementScope) -> Cap
     }
 }
 
-// Expected support row for the D3.1 compiled-pipeline inventory tests.
-pub(super) struct D31InventoryCase {
+// Expected support row for compiled-pipeline inventory tests.
+pub(super) struct CompiledPipelineInventoryCase {
     pub(super) label: &'static str,
     pub(super) plan: QueryPlan,
     pub(super) admits: fn(&nexus_query_engine::capability::CapabilityAnalysis) -> bool,
@@ -67,9 +67,9 @@ pub(super) struct D31InventoryCase {
     pub(super) render_fragments: &'static [&'static str],
 }
 
-pub(super) fn d3_1_inventory_cases() -> Vec<D31InventoryCase> {
+pub(super) fn compiled_pipeline_inventory_cases() -> Vec<CompiledPipelineInventoryCase> {
     vec![
-        D31InventoryCase {
+        CompiledPipelineInventoryCase {
             label: "shared resident producer fan-out",
             plan: keyed_hash_join_resident_subplan_pipeline_plan(
                 KeyedHashJoinResidentSubplanPipelineVariant::BlockedFamily,
@@ -85,7 +85,7 @@ pub(super) fn d3_1_inventory_cases() -> Vec<D31InventoryCase> {
                 "gates=g",
             ],
         },
-        D31InventoryCase {
+        CompiledPipelineInventoryCase {
             label: "keyless conditional join input-subplan pipeline",
             plan: keyless_conditional_join_input_subplan_plan(KeylessInputSubplanVariant::Admitted),
             admits:
@@ -100,7 +100,7 @@ pub(super) fn d3_1_inventory_cases() -> Vec<D31InventoryCase> {
                 "kind=sink_boundary",
             ],
         },
-        D31InventoryCase {
+        CompiledPipelineInventoryCase {
             label: "keyless aggregate-over-join subplan inputs",
             plan: keyless_conditional_aggregate_over_join_subplan_inputs_plan(
                 AggregateOverJoinSubplanInputsVariant::Admitted,
@@ -115,7 +115,7 @@ pub(super) fn d3_1_inventory_cases() -> Vec<D31InventoryCase> {
                 "kind=join_build_before_probe",
             ],
         },
-        D31InventoryCase {
+        CompiledPipelineInventoryCase {
             label: "resident grouped aggregate input",
             plan: resident_grouped_aggregate_input_post_join_aggregate_topk_plan(),
             admits: nexus_query_engine::capability::CapabilityAnalysis::admits_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline,
@@ -129,7 +129,7 @@ pub(super) fn d3_1_inventory_cases() -> Vec<D31InventoryCase> {
                 "kind=sort_boundary",
             ],
         },
-        D31InventoryCase {
+        CompiledPipelineInventoryCase {
             label: "mixed keyed-residual grouped aggregate input",
             plan: residual_resident_grouped_aggregate_input_plan(
                 ResidualResidentGroupedAggregateInputVariant::BlockedFamily,
@@ -145,7 +145,7 @@ pub(super) fn d3_1_inventory_cases() -> Vec<D31InventoryCase> {
                 "kind=aggregate_boundary",
             ],
         },
-        D31InventoryCase {
+        CompiledPipelineInventoryCase {
             label: "filtered left-semi join strategy",
             plan: root_filtered_left_only_join_plan(JoinType::LeftSemi),
             admits: nexus_query_engine::capability::CapabilityAnalysis::admits_root_join,
@@ -159,7 +159,7 @@ pub(super) fn d3_1_inventory_cases() -> Vec<D31InventoryCase> {
                 "kind=join_materialization",
             ],
         },
-        D31InventoryCase {
+        CompiledPipelineInventoryCase {
             label: "filtered left-anti join strategy",
             plan: root_filtered_left_only_join_plan(JoinType::LeftAnti),
             admits: nexus_query_engine::capability::CapabilityAnalysis::admits_root_join,
@@ -173,7 +173,7 @@ pub(super) fn d3_1_inventory_cases() -> Vec<D31InventoryCase> {
                 "kind=join_materialization",
             ],
         },
-        D31InventoryCase {
+        CompiledPipelineInventoryCase {
             label: "mixed residual multi-join strategy",
             plan: admitted_mixed_residual_multi_join_plan(),
             admits: nexus_query_engine::capability::CapabilityAnalysis::admits_closed_multi_join_subgraph,
@@ -187,7 +187,7 @@ pub(super) fn d3_1_inventory_cases() -> Vec<D31InventoryCase> {
                 "kind=join_materialization",
             ],
         },
-        D31InventoryCase {
+        CompiledPipelineInventoryCase {
             label: "large keyed partitioned equality join strategy",
             plan: large_keyed_join_strategy_plan(JoinType::Inner),
             admits: nexus_query_engine::capability::CapabilityAnalysis::admits_root_join,
@@ -201,7 +201,7 @@ pub(super) fn d3_1_inventory_cases() -> Vec<D31InventoryCase> {
                 "quality=hard_budgeted_report_with_unresolved_preflight",
             ],
         },
-        D31InventoryCase {
+        CompiledPipelineInventoryCase {
             label: "broad multi-join TopK with aggregate-over-join input",
             plan: aggregate_over_join_subplan_topk_plan(),
             admits: nexus_query_engine::capability::CapabilityAnalysis::admits_multi_join_aggregate_over_join_subplan_topk_pipeline,
@@ -215,7 +215,7 @@ pub(super) fn d3_1_inventory_cases() -> Vec<D31InventoryCase> {
                 "kind=sort_boundary",
             ],
         },
-        D31InventoryCase {
+        CompiledPipelineInventoryCase {
             label: "rank-window branches feed sink-path union",
             plan: union_of_ranked_join_branches_plan(),
             admits: nexus_query_engine::capability::CapabilityAnalysis::admits_bounded_join,
@@ -229,7 +229,7 @@ pub(super) fn d3_1_inventory_cases() -> Vec<D31InventoryCase> {
                 "kind=aggregate_boundary",
             ],
         },
-        D31InventoryCase {
+        CompiledPipelineInventoryCase {
             label: "resident grouped aggregate subquery-filter TopK path",
             plan: resident_grouped_aggregate_subquery_filter_plan(),
             admits: nexus_query_engine::capability::CapabilityAnalysis::admits_multi_join_resident_grouped_aggregate_subquery_filter_pipeline,
@@ -261,7 +261,7 @@ pub(super) fn assert_compiled_graph_inventory(label: &str, pipeline: &CompiledPi
 }
 
 pub(super) fn assert_no_legacy_execution_selection_terms(label: &str, rendered: &str) {
-    for forbidden in D5_FORBIDDEN_FAMILY_PATH_REPORT_TERMS {
+    for forbidden in FORBIDDEN_FAMILY_PATH_REPORT_TERMS {
         assert!(
             !rendered.contains(forbidden),
             "{label}: compiled graph diagnostics must not contain legacy execution selection term {forbidden}"
@@ -269,25 +269,25 @@ pub(super) fn assert_no_legacy_execution_selection_terms(label: &str, rendered: 
     }
 }
 
-pub(super) fn assert_d5_contract_gate_row_is_family_path_free(label: &str, row: &str) {
-    for forbidden in D5_FORBIDDEN_FAMILY_PATH_REPORT_TERMS {
+pub(super) fn assert_contract_gate_row_is_family_path_free(label: &str, row: &str) {
+    for forbidden in FORBIDDEN_FAMILY_PATH_REPORT_TERMS {
         assert!(
             !row.contains(forbidden),
-            "{label}: D.5 strict bounded contract gate rows must not contain legacy family/path report term {forbidden}"
+            "{label}: bounded contract gate rows must not contain legacy family/path report term {forbidden}"
         );
     }
 }
 
-pub(super) fn assert_d5_contract_gate_row_excludes_adaptive_terms(label: &str, row: &str) {
-    for forbidden in D5_FORBIDDEN_ADAPTIVE_REPORT_TERMS {
+pub(super) fn assert_contract_gate_row_excludes_adaptive_terms(label: &str, row: &str) {
+    for forbidden in FORBIDDEN_ADAPTIVE_REPORT_TERMS {
         assert!(
             !row.contains(forbidden),
-            "{label}: D.5 strict bounded contract gate rows must not contain adaptive-only term {forbidden}"
+            "{label}: bounded contract gate rows must not contain adaptive-only term {forbidden}"
         );
     }
 }
 
-pub(super) const D5_FORBIDDEN_FAMILY_PATH_REPORT_TERMS: &[&str] = &[
+pub(super) const FORBIDDEN_FAMILY_PATH_REPORT_TERMS: &[&str] = &[
     "BoundedJoinExecutionFamily",
     "BoundedJoinExecutionPath",
     "bounded_join_execution_family",
@@ -314,7 +314,7 @@ pub(super) const D5_FORBIDDEN_FAMILY_PATH_REPORT_TERMS: &[&str] = &[
     "keyed_hash_join_resident_subplan_pipeline",
 ];
 
-pub(super) const D5_FORBIDDEN_ADAPTIVE_REPORT_TERMS: &[&str] =
+pub(super) const FORBIDDEN_ADAPTIVE_REPORT_TERMS: &[&str] =
     &["retry", "spill", "downgrade", "memory_history", "memory-history", "memory history"];
 
 // Scheduler test double that records resource lifecycle and injected failures.

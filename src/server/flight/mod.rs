@@ -103,8 +103,6 @@ use frame_limiter::encode_flight_data_stream;
 use metadata::*;
 use prepared::PreparedStatementEntry;
 pub use service::DatafusionNexusFlightSqlService;
-#[cfg(all(test, feature = "iceberg"))]
-use service::ServerCatalogDiagnostics;
 use status::*;
 use tickets::*;
 

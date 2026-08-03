@@ -706,8 +706,8 @@ impl QueryService {
         })
     }
 
-    /// Shared admission-commit tail (P2.6). The caller has selected and
-    /// placed the request, removed it from the queue, and provisionally
+    /// Shared admission-commit tail. The caller has selected and placed the
+    /// request, removed it from the queue, and provisionally
     /// counted it as admitting; the admission mutex is not held. Builds the
     /// admission envelope — lane, root stream, allocation domain, root
     /// member, worker scope — while the mutex is released, then publishes

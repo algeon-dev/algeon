@@ -1,4 +1,4 @@
-//! Transactional admission envelope (P2.6).
+//! Transactional admission envelope.
 //!
 //! One admitted attempt owns its ledger grant, attempt lane, root stream
 //! (Root permit class), allocation domain with the root stream member, and

@@ -59,7 +59,7 @@ pub(super) fn select_partial_aggregate_strategy_decision_with_options(
     if !encoded_key_partial_available && !prepared_sort_groupby_available {
         return decision;
     }
-    // Source-adjacent parcel facts remain an admissibility envelope (D4). They must
+    // Source-adjacent parcel facts remain an admissibility envelope. They must
     // not, by themselves, select prepared sort-groupby. Prior completed partial
     // evidence remains the only reused cardinality path allowed to pick prepared.
     let prepared_sort_groupby_runtime_candidate = prepared_sort_groupby_available;

@@ -986,10 +986,6 @@ impl CapturedError {
             let _ = writeln!(output, "fact.{}={}", StableValue(key), StableValue(value));
         }
     }
-
-    fn fact_value(&self, key: &str) -> Option<&str> {
-        self.facts.iter().find_map(|(fact_key, value)| (fact_key == key).then_some(value.as_str()))
-    }
 }
 
 /// Projects the local DataFusion metrics of every native execution wrapper in

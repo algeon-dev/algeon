@@ -188,8 +188,8 @@ pub(super) fn write_string_group_join_post_root_parquets(customers_path: &Path, 
     write_parquet(orders_path, Arc::clone(&orders_schema), &orders_batch);
 }
 
-pub(super) fn write_d3_6_contract_parquets() {
-    remove_d3_6_contract_parquets();
+pub(super) fn write_nonlinear_topk_contract_parquets() {
+    remove_nonlinear_topk_contract_parquets();
     for label in [
         "aggregate-over-join-topk-a",
         "aggregate-over-join-topk-b",
@@ -212,7 +212,7 @@ pub(super) fn write_d3_6_contract_parquets() {
     }
 }
 
-pub(super) fn remove_d3_6_contract_parquets() {
+pub(super) fn remove_nonlinear_topk_contract_parquets() {
     for label in [
         "aggregate-over-join-topk-a",
         "aggregate-over-join-topk-b",

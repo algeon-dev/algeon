@@ -105,8 +105,8 @@ impl DeviceCapabilities {
 
 /// Frozen capacity and execution-slot bounds for one CUDA device.
 ///
-/// `cache_cap_bytes` is deliberately zero: P2.1 does not allocate a cache
-/// domain from the managed capacity.
+/// `cache_cap_bytes` reserves a bounded per-device cache share alongside the
+/// active-attempt floors within managed capacity.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceResourceProfile {
     pub device_ordinal: usize,

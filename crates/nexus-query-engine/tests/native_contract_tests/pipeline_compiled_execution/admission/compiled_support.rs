@@ -24,7 +24,7 @@ fn compiled_bounded_support_accepts_root_join_graph_without_legacy_routing_terms
 }
 
 #[test]
-fn compiled_bounded_support_rejects_non_d1_task_envelope_before_execution() {
+fn compiled_bounded_support_rejects_unsupported_task_envelope_before_execution() {
     let plan = aggregate_sort_limit_plan();
     let analysis = plan.capability_analysis();
     let pipeline = compile_pipeline(&plan, &analysis).expect("aggregate sort limit plan should compile");
@@ -36,7 +36,7 @@ fn compiled_bounded_support_rejects_non_d1_task_envelope_before_execution() {
 }
 
 #[test]
-fn compiled_bounded_support_accepts_single_join_post_root_d2_tasks_without_legacy_routing_terms() {
+fn compiled_bounded_support_accepts_single_join_post_root_tasks_without_legacy_routing_terms() {
     let plan = single_join_post_root_aggregate_sort_limit_plan();
     let analysis = plan.capability_analysis();
     assert!(analysis.admits_single_join_post_root_pipeline());
@@ -86,9 +86,9 @@ fn compiled_bounded_support_accepts_single_join_post_root_d2_tasks_without_legac
 #[test]
 fn compiled_bounded_support_accepts_simple_multi_join_tree_without_legacy_routing_terms() {
     let plan = simple_multi_join_plan(
-        Path::new("/tmp/compiled-d26-a.parquet"),
-        Path::new("/tmp/compiled-d26-b.parquet"),
-        Path::new("/tmp/compiled-d26-c.parquet"),
+        Path::new("/tmp/compiled-multi-join-a.parquet"),
+        Path::new("/tmp/compiled-multi-join-b.parquet"),
+        Path::new("/tmp/compiled-multi-join-c.parquet"),
     );
     let analysis = plan.capability_analysis();
     assert!(analysis.admits_closed_multi_join_subgraph());
@@ -128,8 +128,8 @@ fn compiled_bounded_support_rejects_post_root_aggregate_without_output_gate_befo
 #[test]
 fn compiled_bounded_support_rejects_post_root_final_sort_without_gate_before_execution() {
     let plan = root_join_sort_limit_data_plan(
-        Path::new("/tmp/compiled-d24-final-sort-left.parquet"),
-        Path::new("/tmp/compiled-d24-final-sort-right.parquet"),
+        Path::new("/tmp/compiled-root-sort-left.parquet"),
+        Path::new("/tmp/compiled-root-sort-right.parquet"),
     );
     let analysis = plan.capability_analysis();
     let pipeline = compile_pipeline(&plan, &analysis).expect("single-join final-sort plan should compile");
@@ -300,15 +300,15 @@ fn compiled_bounded_query_plan_support_accepts_keyless_outer_cross_root_join_str
 }
 
 #[test]
-fn compiled_bounded_support_records_d3_inventory_migration_boundaries_before_scheduler_execution() {
-    for case in d3_1_inventory_cases() {
+fn compiled_bounded_support_records_inventory_boundaries_before_scheduler_execution() {
+    for case in compiled_pipeline_inventory_cases() {
         let analysis = case.plan.capability_analysis();
         assert!(
             !analysis.has_rejections(),
             "{}: compiler should still receive locally satisfied capability facts",
             case.label
         );
-        assert!((case.admits)(&analysis), "{}: expected D.3 target admission to be satisfied", case.label);
+        assert!((case.admits)(&analysis), "{}: expected target admission to be satisfied", case.label);
         let pipeline = compile_pipeline(&case.plan, &analysis)
             .unwrap_or_else(|error| panic!("{}: compile failed: {error}", case.label));
         pipeline
@@ -318,7 +318,7 @@ fn compiled_bounded_support_records_d3_inventory_migration_boundaries_before_sch
         assert_eq!(
             compiled_bounded_pipeline_support(&pipeline).expect("graph-only support check should not fail"),
             case.graph_support,
-            "{}: graph-only support status should match the current D.3 migration boundary",
+            "{}: graph-only support status should match the current capability boundary",
             case.label
         );
         let plan_support = compiled_bounded_query_plan_support(&case.plan, &pipeline)
@@ -425,7 +425,7 @@ fn compiled_bounded_support_accepts_shared_grouped_aggregate_fanout_without_scal
 }
 
 #[test]
-fn compiled_bounded_support_accepts_d3_6_nonlinear_topk_and_subquery_filter_paths() {
+fn compiled_bounded_support_accepts_nonlinear_topk_and_subquery_filter_paths() {
     for (label, plan, admits, expected_aggregate_barriers) in [
         (
             "aggregate-over-join-subplan TopK",
@@ -484,12 +484,12 @@ fn compiled_bounded_support_accepts_d3_6_nonlinear_topk_and_subquery_filter_path
         assert_eq!(
             compiled_bounded_pipeline_support(&pipeline).expect("graph support check should not fail"),
             CompiledBoundedPipelineSupport::Supported,
-            "{label}: graph-only compiled support should admit the D.3.6 path"
+            "{label}: graph-only compiled support should admit the non-linear path"
         );
         assert_eq!(
             compiled_bounded_query_plan_support(&plan, &pipeline).expect("plan-aware support check should not fail"),
             CompiledBoundedPipelineSupport::Supported,
-            "{label}: plan-aware compiled support should admit the D.3.6 path"
+            "{label}: plan-aware compiled support should admit the non-linear path"
         );
         assert_eq!(sink_input_edge_count(&pipeline), 1, "{label}: expected one explicit host sink path");
         assert!(
@@ -503,7 +503,7 @@ fn compiled_bounded_support_accepts_d3_6_nonlinear_topk_and_subquery_filter_path
         );
         let final_sort_gate =
             runtime_visible_gate_for_task_kind(&pipeline, PipelineTaskKind::FinalSort, ReservationKind::FinalSort)
-                .expect("D.3.6 path should retain its final-sort reservation gate");
+                .expect("non-linear path should retain its final-sort reservation gate");
         assert_eq!(final_sort_gate.status(), ContractStatus::Modeled);
         assert_eq!(final_sort_gate.quality(), ContractQuality::HardBudgetedReportWithUnresolvedPreflight);
         assert_no_legacy_execution_selection_terms(label, &pipeline.debug_render());

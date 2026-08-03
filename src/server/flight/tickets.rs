@@ -116,13 +116,6 @@ impl UpdateStatementKind {
             Self::PreparedStatement => "datafusion_nexus.server.flight.do_put_prepared_statement_update.sql",
         }
     }
-
-    pub(super) const fn collect_operation(self) -> &'static str {
-        match self {
-            Self::Statement => "datafusion_nexus.server.flight.do_put_statement_update.collect",
-            Self::PreparedStatement => "datafusion_nexus.server.flight.do_put_prepared_statement_update.collect",
-        }
-    }
 }
 
 /// Owns the resources that must live exactly as long as a lazy DoGet stream.
@@ -213,6 +206,7 @@ enum CoordinatorExecutionTerminalOutcome {
 }
 
 impl CoordinatorExecutionTerminal {
+    #[cfg(test)]
     pub(super) fn new(lease: QueryExecutionLease, query_id: String, started_at: Instant) -> Arc<Self> {
         Self::new_with_attempt_report(lease, query_id, started_at, false)
     }

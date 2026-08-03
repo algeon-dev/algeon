@@ -29,7 +29,6 @@ use crate::{
 pub struct NexusGpuBackend {
     core: GpuBackendCore,
     session: GpuBackendSession,
-    queue_policy: NexusGpuQueuePolicy,
     optimizer_config: NexusNativeOptimizerConfig,
     device_ordinals: Vec<usize>,
     device_profiles: Vec<NexusGpuDeviceProfile>,
@@ -427,10 +426,6 @@ impl NexusGpuBackend {
         &self.session
     }
 
-    pub(crate) fn queue_policy(&self) -> &NexusGpuQueuePolicy {
-        &self.queue_policy
-    }
-
     pub fn optimizer_config(&self) -> &NexusNativeOptimizerConfig {
         &self.optimizer_config
     }
@@ -533,7 +528,6 @@ impl NexusGpuBackend {
         Ok(NexusGpuBackend {
             core,
             session,
-            queue_policy,
             optimizer_config,
             device_ordinals,
             device_profiles,
@@ -584,7 +578,6 @@ fn install_backend_optimizer_config(
 pub(crate) struct TestBackendValidationProjection {
     query_execution_config: QueryExecutionConfig,
     queue_bounds: QueueBounds,
-    queue_policy: NexusGpuQueuePolicy,
     optimizer_config: NexusNativeOptimizerConfig,
     device_ordinals: Vec<usize>,
     device_profiles: Vec<NexusGpuDeviceProfile>,
@@ -599,10 +592,6 @@ impl TestBackendValidationProjection {
 
     pub(crate) fn queue_bounds(&self) -> nexus_query_engine::error::Result<QueueBounds> {
         Ok(self.queue_bounds.clone())
-    }
-
-    pub(crate) fn queue_policy(&self) -> &NexusGpuQueuePolicy {
-        &self.queue_policy
     }
 
     pub(crate) fn optimizer_config(&self) -> &NexusNativeOptimizerConfig {
@@ -879,7 +868,6 @@ fn build_test_validation_projection(
     Ok(TestBackendValidationProjection {
         query_execution_config,
         queue_bounds,
-        queue_policy,
         optimizer_config,
         device_ordinals,
         device_profiles,

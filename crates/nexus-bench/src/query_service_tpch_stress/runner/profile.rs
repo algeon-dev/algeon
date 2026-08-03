@@ -167,7 +167,7 @@ async fn execute_prepared_profile_request(
                 Some(_) => "mismatched",
                 None => "cpu_missing",
             };
-            let row = StressRow {
+            StressRow {
                 row_type: "query",
                 request_index: request.request_index,
                 client_id: request.client_id.to_string(),
@@ -191,43 +191,36 @@ async fn execute_prepared_profile_request(
                 cpu_output_fingerprint: cpu.map(|cpu| cpu.output_fingerprint.clone()),
                 native_output_fingerprint: Some(native.output_fingerprint),
                 error: StructuredFailure::default(),
-            };
-            row
+            }
         },
-        Ok(NativeCollectOutcome::RuntimeFailed { planning_row, error }) => {
-            let row = failure_row(
-                &request,
-                total_started.elapsed(),
-                Some(admission_sequence),
-                admission_wait_ms,
-                admission_facts,
-                planning_row.outcome.map_or("none", NativeDataFusionPlanningOutcome::as_str),
-                planning_row.final_disposition.as_str(),
-                "failed",
-                "native_failed",
-                StructuredFailure::from_datafusion_error(&error),
-                cpu,
-                None,
-            );
-            row
-        },
-        Err(error) => {
-            let row = failure_row(
-                &request,
-                total_started.elapsed(),
-                Some(admission_sequence),
-                admission_wait_ms,
-                admission_facts,
-                "unknown",
-                "unknown",
-                "failed",
-                "native_failed",
-                StructuredFailure::from_datafusion_error(&error),
-                cpu,
-                None,
-            );
-            row
-        },
+        Ok(NativeCollectOutcome::RuntimeFailed { planning_row, error }) => failure_row(
+            &request,
+            total_started.elapsed(),
+            Some(admission_sequence),
+            admission_wait_ms,
+            admission_facts,
+            planning_row.outcome.map_or("none", NativeDataFusionPlanningOutcome::as_str),
+            planning_row.final_disposition.as_str(),
+            "failed",
+            "native_failed",
+            StructuredFailure::from_datafusion_error(&error),
+            cpu,
+            None,
+        ),
+        Err(error) => failure_row(
+            &request,
+            total_started.elapsed(),
+            Some(admission_sequence),
+            admission_wait_ms,
+            admission_facts,
+            "unknown",
+            "unknown",
+            "failed",
+            "native_failed",
+            StructuredFailure::from_datafusion_error(&error),
+            cpu,
+            None,
+        ),
     };
 
     let evidence = ProfileEvidenceRow {

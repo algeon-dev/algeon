@@ -40,7 +40,7 @@ fn strict_admission_rejects_root_full_sort_join_aggregate_with_local_envelope_re
 
     assert!(
         bounded_pipeline_admission(&plan).expect("strict admission should not fail").is_none(),
-        "{label}: Phase 1 owns and rejects the full-sort shape before whole-native execution"
+        "{label}: capability admission rejects the full-sort shape before whole-native execution"
     );
 
     let report = CapabilityContractReport::from_capability_analysis(&analysis)

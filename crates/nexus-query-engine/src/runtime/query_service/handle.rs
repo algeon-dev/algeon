@@ -578,8 +578,8 @@ struct QueryHandleRelease {
     internal_cleanup_finished: bool,
 }
 
-/// The P2.7 report commit: disposition decision, health commit, and
-/// observation seal, always before capacity release.
+/// The report commit: disposition decision, health commit, and observation
+/// seal, always before capacity release.
 struct QueryHandleReportCommit {
     service: Option<Arc<QueryServiceInner>>,
     admission_request_id: AdmissionRequestId,
@@ -660,9 +660,9 @@ impl QueryHandleReportCommit {
             native_fault_evidence,
             allocator_event_evidence.as_ref(),
         );
-        // This is the sole P2 projection of the exact final usage sample and
-        // health transition above. P3 extends this commit with bounded typed
-        // fault/retry evidence; it must not resample these terminal facts.
+        // This is the sole projection of the exact final usage sample and
+        // health transition above. Typed fault and retry evidence shares this
+        // commit and must not resample terminal facts.
         let terminal_commit = match (&disposition, evidence) {
             (CapacityCommitDisposition::HealthyReuse, CleanupEvidence::Completed) => {
                 crate::observability::AttemptTerminalCommit::new(
@@ -878,8 +878,8 @@ impl QueryHandleReportCommit {
         AttemptAlternateDeviceEligibility::NoEligibleAlternate
     }
 
-    /// Constructs the one bounded P3.4 resource block. Immutable grant/domain
-    /// facts remain attempt-exact even if cleanup lost device isolation; every
+    /// Constructs the one bounded resource block. Immutable grant/domain facts
+    /// remain attempt-exact even if cleanup lost device isolation; every
     /// device-local snapshot and allocator record stays unavailable in that
     /// case instead of being associated with a guessed device.
     fn resource_evidence(
@@ -1046,8 +1046,8 @@ impl QueryHandleRelease {
             return true;
         }
         // A device-backed admission envelope owns the root stream and
-        // allocation domain from admission time (P2.6). Their destruction
-        // must run on the device executor even when execution never reached
+        // allocation domain from admission time. Their destruction must run on
+        // the device executor even when execution never reached
         // context acquisition. Ledger-only envelopes own no CUDA state.
         self.envelope.as_ref().is_some_and(super::service::transaction::AdmissionEnvelope::holds_gpu_resources)
     }
@@ -1103,8 +1103,8 @@ impl QueryHandleRelease {
             let terminal_outcome = self.terminal_outcome.clone();
             let internal_cleanup =
                 QueryHandleReleaseGuard::new(std::mem::replace(self, Self::empty_recovered_release()));
-            // P2.7 report-before-reuse: the health commit, usage sample, and
-            // observation seal run BEFORE the capacity release callback.
+            // The health commit, usage sample, and observation seal run before
+            // the capacity release callback.
             let activity_tail = Arc::new(Mutex::new(None));
             let activity_tail_slot = Arc::clone(&activity_tail);
             let installed = root_context.install_root_stream_cleanup_completion(
@@ -1595,8 +1595,8 @@ impl QueryHandle {
         }
         debug_assert!(attempt_auxiliary_permit.is_none(), "root context setup cannot carry an auxiliary permit");
         // The admission transaction already owns the root stream, allocation
-        // domain, and root stream member (P2.6). Consume that binding; no
-        // stream or domain is created after admission.
+        // domain, and root stream member. Consume that binding; no stream or
+        // domain is created after admission.
         let gpu_execution_pool = resources.gpu_execution_pool_for_device(self.device_ordinal)?;
         let (stream_lease_guard, memory_grant, runtime, attempt_allocation_domain, attempt_member_lease) = {
             let envelope = self.lifetime.lock_envelope()?;

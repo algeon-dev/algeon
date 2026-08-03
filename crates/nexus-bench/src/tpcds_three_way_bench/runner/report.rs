@@ -632,7 +632,7 @@ mod tests {
             "source_cache_retained_bytes",
             "source_cache_lookup_time_ms",
         ] {
-            assert!(!TSV_COLUMNS.contains(&removed), "P2 report must not project {removed}");
+            assert!(!TSV_COLUMNS.contains(&removed), "report must not project removed field {removed}");
         }
     }
 

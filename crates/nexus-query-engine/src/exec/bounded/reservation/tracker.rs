@@ -46,15 +46,6 @@ impl ReservationBudget {
             Self::GrantBackedStatic { grant, .. } => grant.try_reserve_live_bytes(bytes),
         }
     }
-
-    fn release_live_bytes(&self, bytes: u64) {
-        match self {
-            Self::Static(_) => {},
-            Self::GrantBackedStatic { grant, .. } => {
-                grant.release_live_bytes(bytes);
-            },
-        }
-    }
 }
 
 impl ReservationTracker {
@@ -665,11 +656,6 @@ impl ReservationTracker {
         }
         self.reserved_bytes.set(self.raw_reserved_bytes().saturating_add(bytes));
         Ok(true)
-    }
-
-    fn release_live_bytes(&self, bytes: u64) {
-        self.reserved_bytes.set(self.raw_reserved_bytes().saturating_sub(bytes));
-        self.budget.release_live_bytes(bytes);
     }
 
     fn reservation_belongs_to_tracker(&self, reservation: &ActiveReservation) -> bool {

@@ -1,8 +1,8 @@
 #[test]
 fn compiled_bounded_support_rejects_multiple_explicit_sink_candidates() {
     let plan = root_join_sort_limit_data_plan(
-        Path::new("/tmp/compiled-d36-multiple-sink-left.parquet"),
-        Path::new("/tmp/compiled-d36-multiple-sink-right.parquet"),
+        Path::new("/tmp/compiled-multiple-sink-left.parquet"),
+        Path::new("/tmp/compiled-multiple-sink-right.parquet"),
     );
     let analysis = plan.capability_analysis();
     let pipeline = compile_pipeline(&plan, &analysis).expect("root join TopK plan should compile");
@@ -17,8 +17,8 @@ fn compiled_bounded_support_rejects_multiple_explicit_sink_candidates() {
 #[test]
 fn compiled_bounded_support_rejects_post_root_data_fanout() {
     let plan = root_join_sort_limit_data_plan(
-        Path::new("/tmp/compiled-d36-post-root-fanout-left.parquet"),
-        Path::new("/tmp/compiled-d36-post-root-fanout-right.parquet"),
+        Path::new("/tmp/compiled-post-root-fanout-left.parquet"),
+        Path::new("/tmp/compiled-post-root-fanout-right.parquet"),
     );
     let analysis = plan.capability_analysis();
     let pipeline = compile_pipeline(&plan, &analysis).expect("root join TopK plan should compile");

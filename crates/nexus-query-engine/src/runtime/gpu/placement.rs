@@ -2,7 +2,7 @@
 //!
 //! Placement consumes one atomic ledger snapshot per device. It never reads
 //! NVML or live CUDA memory samples: configured capacity, immutable grants,
-//! reservations, cache residency (zero in P2), and ledger health drive
+//! reservations, cache residency, and ledger health drive
 //! admission. Native-health reconciliation belongs to the query-service
 //! boundary before queue maintenance or direct placement begins; this module
 //! only reads the resulting ledger state.

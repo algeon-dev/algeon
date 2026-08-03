@@ -7,7 +7,7 @@
 //! cache substrate; never part of the admission equation while cache caps are
 //! zero).
 //!
-//! The admission equation is normative (phase-2 resource equations):
+//! The admission equation is normative:
 //!
 //! ```text
 //! active_attempts + 1 <= max_active_attempts
@@ -168,8 +168,8 @@ pub struct DeviceLedgerReport {
     /// Immediately grantable bytes: managed minus live grants minus
     /// cache-internal evictable charges.
     pub free_bytes: u64,
-    /// Cache-internal evictable accounting (P5 substrate; reported separately
-    /// from the always-zero admission cache residency fields).
+    /// Cache-internal evictable accounting, reported separately from active
+    /// grants and pinned cache bytes.
     pub evictable_bytes: u64,
     pub protected_slot: bool,
     pub protected_reserve_bytes: u64,
@@ -202,15 +202,9 @@ pub(crate) enum LedgerTransitionKind {
     ProtectionInstalled,
     ProtectionRemoved,
     GrantReleased,
-    /// Reserved for P5's accounted resident-cache charge transition.
-    ///
-    /// The disabled-cache baseline has no production caller yet; P5 must add
-    /// its cache state-machine transition and emitter together.
+    /// An evictable resident-cache charge was added.
     EvictableCharged,
-    /// Reserved for P5's accounted resident-cache release transition.
-    ///
-    /// The disabled-cache baseline has no production caller yet; P5 must add
-    /// its cache state-machine transition and emitter together.
+    /// An evictable resident-cache charge was released.
     EvictableReleased,
     /// A resident-cache entry became in-use and therefore non-evictable.
     CachePinned,
@@ -634,8 +628,7 @@ impl DeviceLedger {
             protected_reserve_bytes: state
                 .protection
                 .map_or(0, |protection| protection.liveness_bytes.max(configured_floor)),
-            // P2 has no resident-cache owner, but any bounded evictable-cache
-            // charge is already ledger-owned and must share this atomic
+            // Resident-cache charges are ledger-owned and share this atomic
             // snapshot sequence with grants and reservations.
             cache_evictable_resident_bytes: state.evictable_bytes,
             cache_pinned_in_use_bytes: state.pinned_bytes,
@@ -750,8 +743,8 @@ impl DeviceLedger {
     /// `[required_floor, max_new_grant]`. Admitting the protected waiter
     /// consumes its protection atomically: the immutable grant replaces the
     /// protected reserve and is never subtracted twice. Cache-internal
-    /// evictable bytes reduce the immediately grantable headroom (the P5
-    /// substrate; always zero when caches are disabled).
+    /// evictable bytes reduce the immediately grantable headroom whenever a
+    /// resident cache is configured.
     pub(crate) fn try_admit(
         &self,
         waiter_id: AdmissionRequestId,
@@ -922,8 +915,7 @@ impl DeviceLedger {
         }
     }
 
-    // ---- Cache-internal evictable accounting (P5 substrate; never part of
-    // the admission equation while cache caps are zero). ----
+    // ---- Cache-internal evictable accounting. ----
 
     /// Attempts to charge bytes retained by an evictable cache.
     pub(crate) fn try_reserve_evictable_bytes(&self, bytes: u64) -> Result<bool> {
@@ -961,7 +953,7 @@ impl DeviceLedger {
     /// Moves one exact resident-cache charge from evictable to pinned.
     ///
     /// The aggregate cache charge is unchanged. This narrow transition is
-    /// deliberately private to the shared P5 residency state machine: callers
+    /// deliberately private to the shared residency state machine: callers
     /// must not maintain independent pinned counters beside the ledger.
     pub(crate) fn pin_cache_residency_charge(&self, bytes: u64) -> Result<()> {
         if bytes == 0 {

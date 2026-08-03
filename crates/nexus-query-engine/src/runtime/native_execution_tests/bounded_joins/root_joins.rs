@@ -1,1 +1,1 @@
-// The cache-backed root hash-join scenario is retained as private P5 substrate.
+// The cache-backed root hash-join scenario belongs to its dedicated cache suite.

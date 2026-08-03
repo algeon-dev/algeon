@@ -43,7 +43,8 @@ pub(super) struct CertifiedMixedFilterBoundary {
 }
 
 impl CertifiedMixedFilterBoundary {
-    /// Finds the one P2a boundary shape and proves its input-side contracts.
+    /// Finds the one local-Parquet mixed boundary shape and proves its
+    /// input-side contracts.
     pub(super) fn certify(plan: Arc<dyn ExecutionPlan>) -> Option<Self> {
         let (filter_plan, has_cooperative_wrapper) = if let Some(cooperative) = plan.downcast_ref::<CooperativeExec>() {
             (Arc::clone(cooperative.input()), true)
@@ -107,7 +108,7 @@ impl CertifiedMixedFilterBoundary {
     }
 }
 
-/// Returns true only for a P2a plan this module can fully re-certify.
+/// Returns true only for a mixed plan this module can fully re-certify.
 ///
 /// The native optimizer uses this as an idempotence guard. Without it, a
 /// repeated optimizer invocation would try to lower the retained CPU filter
@@ -151,7 +152,7 @@ fn root_filter_is_eligible(filter: &FilterExec, source: &dyn ExecutionPlan) -> b
         && source.schema().as_ref() == filter.schema().as_ref()
         && simple_boundary_schema(source.schema().as_ref())
         && source_properties_are_certified(source)
-        // This P2a family replaces only a stable local filesystem scan. The
+        // This boundary replaces only a stable local filesystem scan. The
         // broader native source lowering also admits remote Parquet, but a
         // remote object store has independent replay, credential, and
         // side-effect contracts that this root-only certificate does not own.
@@ -166,14 +167,14 @@ fn root_filter_is_eligible(filter: &FilterExec, source: &dyn ExecutionPlan) -> b
         && file_scan.expr_adapter_factory.is_none()
         && crate::native::native_parquet_file_reader_factory_is_supported(parquet_source)
         // DataFusion retains a source-level copy of filters it can use for
-        // Parquet pruning. P2a may clear that hint only when it exactly
+        // Parquet pruning. This boundary may clear that hint only when it exactly
         // matches the retained CPU ILIKE filter, which remains the sole
         // predicate evaluator after the source is replaced.
         && source_predicate_is_absent_or_matches_filter(parquet_source, filter)
         // ParquetSource always carries a source-level projection, including
         // for an ordinary unprojected scan. Allow only the canonical identity
         // form; a projection with different columns, aliases, or expressions
-        // remains outside this P2a boundary.
+        // remains outside this boundary.
         && file_source_projection_is_identity(file_scan.file_source().as_ref())
 }
 
@@ -182,7 +183,7 @@ fn source_predicate_is_absent_or_matches_filter(parquet_source: &ParquetSource, 
         || crate::native::scan_predicate_exactly_matches_filter(parquet_source, Some(filter))
 }
 
-/// Rebuild a P2a source without a source-level copy of the CPU predicate.
+/// Rebuild a mixed source without a source-level copy of the CPU predicate.
 ///
 /// The caller has already certified that the retained root filter evaluates
 /// the exact same expression. Keeping a second predicate on the native source

@@ -1,4 +1,4 @@
-// P2.6 transactional admission: fault-injection rollback and envelope
+// Transactional admission: fault-injection rollback and envelope
 // identity evidence.
 
 /// Wait for the controller's complete cleanup boundary: returning streams are

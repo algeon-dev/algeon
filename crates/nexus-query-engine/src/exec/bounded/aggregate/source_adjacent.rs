@@ -406,7 +406,7 @@ fn source_adjacent_aggregate_partitioner(
         return SourceAdjacentAggregatePartitioner::RowBalanced;
     }
     // Variable-width keys always hash-partition by group key. Chunk-count no longer
-    // demotes the path to row-balanced (D5 streaming partition).
+    // demotes the path to a row-balanced streaming partition.
     SourceAdjacentAggregatePartitioner::GroupKey { key_columns: lowered_keys.key_columns }
 }
 

@@ -87,16 +87,6 @@ impl DeviceMemoryFailureTracker {
         }
     }
 
-    /// Returns the process-global tracker for one CUDA device ordinal.
-    ///
-    /// cudf installs at most one callback-bearing device manager per
-    /// process/device, so the Nexus counters must have the same lifetime and
-    /// sharing semantics. Multiple QueryServices for one device therefore
-    /// report the same callback counters.
-    pub(crate) fn for_device(device_ordinal: usize) -> Result<Self> {
-        Self::for_device_in_registry(device_ordinal, device_memory_failure_trackers())
-    }
-
     /// Recovers the tracker referenced by an already-installed callback, or
     /// creates an unbound candidate only while the process manager is still
     /// uninstalled. This prevents a fresh counter from being substituted for
@@ -202,6 +192,7 @@ impl DeviceMemoryFailureTracker {
         }
     }
 
+    #[cfg(test)]
     fn for_device_in_registry(device_ordinal: usize, trackers: &DeviceMemoryFailureTrackerRegistry) -> Result<Self> {
         let mut trackers = trackers.lock().map_err(|_error| tracker_registry_poisoned(device_ordinal))?;
         if let Some(tracker) = trackers

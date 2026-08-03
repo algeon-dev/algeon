@@ -40,19 +40,6 @@ mod reservation_tracker_contracts;
 #[path = "../tests/native_contract_tests/yielded_frame.rs"]
 mod yielded_frame;
 
-#[cfg(test)]
-fn projection_outputs(
-    expressions: Vec<expr::Expr>,
-    schema: std::sync::Arc<arrow::datatypes::Schema>,
-) -> Vec<plan::ProjectionOutput> {
-    assert_eq!(expressions.len(), schema.fields().len(), "projection outputs must match schema");
-    expressions
-        .into_iter()
-        .zip(schema.fields().iter())
-        .map(|(expression, field)| plan::ProjectionOutput::new(expression, field.as_ref().clone()))
-        .collect()
-}
-
 pub mod admission;
 /// Execution-attempt ownership, cancellation, lifecycle, and completion delivery.
 pub mod attempt;

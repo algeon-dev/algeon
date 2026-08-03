@@ -14,12 +14,12 @@ pub(super) fn root_join_plan() -> QueryPlan {
 
     let mut builder = QueryPlanBuilder::new();
     let left = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
-        "/tmp/compiled-d1-left.parquet",
+        "/tmp/compiled-root-join-left.parquet",
         left_schema,
         vec!["left_id".into(), "left_value".into()],
     )));
     let right = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
-        "/tmp/compiled-d1-right.parquet",
+        "/tmp/compiled-root-join-right.parquet",
         right_schema,
         vec!["right_id".into(), "right_value".into()],
     )));
@@ -42,15 +42,15 @@ pub(super) fn root_join_plan() -> QueryPlan {
 
 pub(super) fn keyless_root_join_plan() -> QueryPlan {
     keyless_root_join_data_plan(
-        Path::new("/tmp/compiled-d1-keyless-left.parquet"),
-        Path::new("/tmp/compiled-d1-keyless-right.parquet"),
+        Path::new("/tmp/compiled-keyless-root-join-left.parquet"),
+        Path::new("/tmp/compiled-keyless-root-join-right.parquet"),
     )
 }
 
 pub(super) fn keyless_outer_cross_root_join_plan() -> QueryPlan {
     keyless_outer_cross_root_join_data_plan(
-        Path::new("/tmp/compiled-d1-keyless-outer-cross-left.parquet"),
-        Path::new("/tmp/compiled-d1-keyless-outer-cross-right.parquet"),
+        Path::new("/tmp/compiled-keyless-outer-cross-root-join-left.parquet"),
+        Path::new("/tmp/compiled-keyless-outer-cross-root-join-right.parquet"),
     )
 }
 
@@ -154,12 +154,12 @@ pub(super) fn aggregate_join_input_plan() -> QueryPlan {
 
     let mut builder = QueryPlanBuilder::new();
     let left = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
-        "/tmp/compiled-d24-aggregate-join-input-left.parquet",
+        "/tmp/compiled-aggregate-join-input-left.parquet",
         Arc::clone(&left_schema),
         vec!["id".into(), "amount".into()],
     )));
     let right = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
-        "/tmp/compiled-d24-aggregate-join-input-right.parquet",
+        "/tmp/compiled-aggregate-join-input-right.parquet",
         Arc::clone(&right_schema),
         vec!["id".into()],
     )));
@@ -349,12 +349,12 @@ pub(super) fn root_filtered_left_only_join_plan(join_type: JoinType) -> QueryPla
 
     let mut builder = QueryPlanBuilder::new();
     let left = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
-        "/tmp/compiled-d31-filtered-left.parquet",
+        "/tmp/compiled-filtered-root-join-left.parquet",
         left_schema,
         vec!["left_id".into(), "left_value".into()],
     )));
     let right = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
-        "/tmp/compiled-d31-filtered-right.parquet",
+        "/tmp/compiled-filtered-root-join-right.parquet",
         right_schema,
         vec!["right_id".into(), "right_value".into()],
     )));

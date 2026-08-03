@@ -259,7 +259,7 @@ fn benchmark_report_schema_v4_rows_match_header_columns() {
     ] {
         assert!(
             !NATIVE_TPCH_BENCHMARK_TSV_HEADER.split('\t').any(|column| column == removed),
-            "P2 report must not project {removed}"
+            "report must not project removed field {removed}"
         );
     }
     // This frozen column name carries the current final-plan disposition value.

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run the P2 QueryService admission matrix:
+# Run the QueryService admission matrix:
 #   {sf10, sf100} x configured per-device active-attempt limits.
 #
 # Each GPU workload invocation is wrapped in /tmp/cudf-gpu.lock by default.

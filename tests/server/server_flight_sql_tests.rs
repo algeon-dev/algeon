@@ -39,7 +39,6 @@ use datafusion_nexus::{
         ERROR_CODE_METADATA_KEY, ERROR_KIND_METADATA_KEY, ERROR_STATUS_METADATA_KEY, FlightSqlServer, ServerConfig,
         ServerShutdown, serve_with_listener,
     },
-    session::NexusSessionStateBuilderExt,
 };
 
 fn declare_test_gpu_ownership(config: &mut ServerConfig) {

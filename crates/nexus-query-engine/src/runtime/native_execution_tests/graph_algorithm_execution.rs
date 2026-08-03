@@ -1,7 +1,7 @@
 use super::*;
 
 include!("graph_algorithm_execution/support.rs");
-// Durable graph-cache scenarios are P5 substrate, not P2 validation.  P2
+// Durable graph-cache scenarios belong to the dedicated cache suite. These
 // graph tests execute with cache injection disabled.
 include!("graph_algorithm_execution/memory_and_statistics.rs");
 include!("graph_algorithm_execution/betweenness.rs");

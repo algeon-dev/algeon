@@ -1,5 +1,4 @@
-//! Capacity-commit disposition for the report-before-reuse release commit
-//! (P2.7).
+//! Capacity-commit disposition for the report-before-reuse release commit.
 //!
 //! At cleanup completion the release samples the attempt domain, decides the
 //! disposition, and commits health BEFORE the observation seal publishes the

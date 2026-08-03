@@ -28,7 +28,7 @@ pub(crate) enum DeviceRegistryCapacityPolicy {
         fallback_bytes: u64,
         fraction: Option<GpuMemoryFraction>,
         /// Legacy uniform construction may additionally cap the automatic
-        /// result. P0 backend profiles leave this unset.
+        /// result. Legacy backend profiles leave this unset.
         maximum_bytes: Option<u64>,
     },
     Explicit {
@@ -135,12 +135,6 @@ impl DeviceRegistryConfig {
     pub fn with_capacity_policy(mut self, headroom_bytes: u64, fallback_bytes: u64) -> Self {
         self.capacity_headroom_bytes = headroom_bytes;
         self.fallback_capacity_bytes = fallback_bytes;
-        self
-    }
-
-    /// Sets a maximum governor capacity for every installed device.
-    pub fn with_device_capacity_bytes(mut self, device_capacity_bytes: u64) -> Self {
-        self.device_capacity_bytes = Some(device_capacity_bytes);
         self
     }
 
@@ -754,7 +748,7 @@ fn device_memory_manager_options_conflict(
     .with_fact("requested_options", format!("{requested_options:?}"))
 }
 
-/// P2 hard query domains require cuDF's canonical stream-ordered async base.
+/// Hard query domains require cuDF's canonical stream-ordered async base.
 /// This stays in the registry because allocation-manager installation is a
 /// process-owned backend concern, not a caller-selectable execution policy.
 fn canonical_device_memory_manager_options(allocation_limit_bytes: Option<usize>) -> cudf::DeviceMemoryManagerOptions {

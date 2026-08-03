@@ -1,5 +1,5 @@
 #[test]
-fn d5_contract_gate_rows_are_inventory_backed_and_family_path_free() {
+fn contract_gate_rows_are_inventory_backed_and_family_path_free() {
     let mut hard_budgeted_unresolved_rows = 0;
     let mut source_unresolved_rows = 0;
     let mut aggregate_unresolved_rows = 0;
@@ -9,9 +9,9 @@ fn d5_contract_gate_rows_are_inventory_backed_and_family_path_free() {
     let mut mixed_retained_state_rows = 0;
     let mut observed_retained_state_rows = 0;
 
-    for case in d3_1_inventory_cases() {
+    for case in compiled_pipeline_inventory_cases() {
         let analysis = case.plan.capability_analysis();
-        assert!((case.admits)(&analysis), "{}: expected D.5 inventory case to remain admitted", case.label);
+        assert!((case.admits)(&analysis), "{}: expected inventory case to remain admitted", case.label);
         let pipeline = compile_pipeline(&case.plan, &analysis)
             .unwrap_or_else(|error| panic!("{}: compile failed: {error}", case.label));
 
@@ -33,8 +33,8 @@ fn d5_contract_gate_rows_are_inventory_backed_and_family_path_free() {
 
         for row in report.gate_rows() {
             let rendered = row.to_stable_kv_row();
-            assert_d5_contract_gate_row_is_family_path_free(case.label, &rendered);
-            assert_d5_contract_gate_row_excludes_adaptive_terms(case.label, &rendered);
+            assert_contract_gate_row_is_family_path_free(case.label, &rendered);
+            assert_contract_gate_row_excludes_adaptive_terms(case.label, &rendered);
             assert!(rendered.contains("contract_status="), "{}: row must serialize contract status", case.label);
             assert!(rendered.contains("contract_quality="), "{}: row must serialize contract quality", case.label);
             assert!(
@@ -116,17 +116,17 @@ fn d5_contract_gate_rows_are_inventory_backed_and_family_path_free() {
         }
     }
 
-    assert!(hard_budgeted_unresolved_rows > 0, "D.5 inventory should cover unresolved hard-budgeted gates");
-    assert!(source_unresolved_rows > 0, "D.5 inventory should cover source unresolved preflight gates");
-    assert!(aggregate_unresolved_rows > 0, "D.5 inventory should cover aggregate unresolved preflight gates");
-    assert!(final_sort_unresolved_rows > 0, "D.5 inventory should cover final-sort unresolved preflight gates");
+    assert!(hard_budgeted_unresolved_rows > 0, "inventory should cover unresolved hard-budgeted gates");
+    assert!(source_unresolved_rows > 0, "inventory should cover source unresolved preflight gates");
+    assert!(aggregate_unresolved_rows > 0, "inventory should cover aggregate unresolved preflight gates");
+    assert!(final_sort_unresolved_rows > 0, "inventory should cover final-sort unresolved preflight gates");
     assert!(
         one_shot_output_exact_rows > 0,
-        "D.5 inventory should cover one-shot equality join output-size preflight gates"
+        "inventory should cover one-shot equality join output-size preflight gates"
     );
-    assert!(filtered_retained_state_rows > 0, "D.5 inventory should cover filtered semi/anti retained state");
-    assert!(mixed_retained_state_rows > 0, "D.5 inventory should cover mixed residual retained state");
-    assert!(observed_retained_state_rows > 0, "D.5 inventory should cover observed retained-state gates");
+    assert!(filtered_retained_state_rows > 0, "inventory should cover filtered semi/anti retained state");
+    assert!(mixed_retained_state_rows > 0, "inventory should cover mixed residual retained state");
+    assert!(observed_retained_state_rows > 0, "inventory should cover observed retained-state gates");
 }
 
 #[test]
@@ -169,7 +169,7 @@ fn strict_preflight_gap_strict_preflight_gap_registry_tracks_current_retirement_
 }
 
 #[test]
-fn d5_contract_report_rejects_unresolved_preflight_gate_labeled_exact() {
+fn contract_report_rejects_unresolved_preflight_gate_labeled_exact() {
     let plan = root_join_plan();
     let analysis = plan.capability_analysis();
     let pipeline = compile_pipeline(&plan, &analysis).expect("root join should compile");
@@ -199,7 +199,7 @@ fn d5_contract_report_rejects_unresolved_preflight_gate_labeled_exact() {
     );
 
     let error = CapabilityContractReport::from_compiled_pipeline(&analysis, &malformed)
-        .expect_err("D.5 report construction should reject mislabeled unresolved preflight");
+        .expect_err("report construction should reject mislabeled unresolved preflight");
 
     assert_eq!(error.code(), nexus_query_engine::error::QueryErrorCode::InvalidPlan);
     assert_eq!(error.fact_value("reservation_kind"), Some("source_read"));
@@ -208,7 +208,7 @@ fn d5_contract_report_rejects_unresolved_preflight_gate_labeled_exact() {
 
 #[test]
 fn strict_preflight_gap_contract_report_rejects_hard_budgeted_quality_without_tracked_gap() {
-    let invalid = d5_test_gate_row(
+    let invalid = test_contract_gate_row(
         ReservationKind::SourceRead,
         "source_read",
         "libcudf_decoded_output_preflight_contract_after_api_lands",
@@ -228,44 +228,44 @@ fn strict_preflight_gap_contract_report_rejects_hard_budgeted_quality_without_tr
 }
 
 #[test]
-fn d5_contract_report_rejects_public_gate_rows_with_invalid_quality_accounting() {
+fn contract_report_rejects_public_gate_rows_with_invalid_quality_accounting() {
     for invalid in [
-        d5_test_gate_row(
+        test_contract_gate_row(
             ReservationKind::SourceRead,
             "source_read",
             "source_contract",
             ContractQuality::HardBudgetedReportWithUnresolvedPreflight,
             None,
         ),
-        d5_test_gate_row(
+        test_contract_gate_row(
             ReservationKind::FilteredProbeState,
             "join_filtered_probe_state",
             "filtered_join_retained_probe_state",
             ContractQuality::ExactPreflight,
             None,
         ),
-        d5_test_gate_row(
+        test_contract_gate_row(
             ReservationKind::MixedSizeData,
             "join_mixed_size_data",
             "mixed_keyed_residual_or_conditional_full_retained_size_data",
             ContractQuality::ExactPreflight,
             None,
         ),
-        d5_test_gate_row(
+        test_contract_gate_row(
             ReservationKind::HashTable,
             "join_hash_table",
             "adapter_guessed_hash_table_bytes",
             ContractQuality::ExactPreflight,
             None,
         ),
-        d5_test_gate_row(
+        test_contract_gate_row(
             ReservationKind::GatherMap,
             "join_gather_map",
             "adapter_guessed_gather_map_bytes",
             ContractQuality::ExactPreflight,
             None,
         ),
-        d5_test_gate_row(
+        test_contract_gate_row(
             ReservationKind::JoinOutput,
             "join_output",
             "adapter_guessed_join_output_bytes",
@@ -283,7 +283,7 @@ fn d5_contract_report_rejects_public_gate_rows_with_invalid_quality_accounting()
 }
 
 #[test]
-fn d5_contract_report_rejects_public_unresolved_preflight_rows_with_non_hard_budgeted_quality() {
+fn contract_report_rejects_public_unresolved_preflight_rows_with_non_hard_budgeted_quality() {
     let unresolved_contracts = [
         (ReservationKind::SourceRead, "source_read", "source_contract"),
         (ReservationKind::OperatorOutput, "aggregate_output", "aggregate_contract"),
@@ -301,7 +301,7 @@ fn d5_contract_report_rejects_public_unresolved_preflight_rows_with_non_hard_bud
     for (reservation_kind, memory_boundary, required_contract) in unresolved_contracts {
         for contract_quality in non_hard_budgeted_qualities {
             let invalid =
-                d5_test_gate_row(reservation_kind, memory_boundary, required_contract, contract_quality, None);
+                test_contract_gate_row(reservation_kind, memory_boundary, required_contract, contract_quality, None);
             let error =
                 CapabilityContractReport::from_gate_rows(CapabilityEnvelopeStatus::Admitted, vec![invalid])
                     .unwrap_err();
@@ -314,10 +314,10 @@ fn d5_contract_report_rejects_public_unresolved_preflight_rows_with_non_hard_bud
 }
 
 #[test]
-fn d5_contract_report_rejects_public_rows_with_inconsistent_execution_modes_and_scope_owners() {
+fn contract_report_rejects_public_rows_with_inconsistent_execution_modes_and_scope_owners() {
     let strict_with_blocked = CapabilityContractGateRow {
         contract_status: ContractStatus::BlockedByLowerLevel,
-        ..d5_test_gate_row(
+        ..test_contract_gate_row(
             ReservationKind::HashTable,
             "join_hash_table",
             "hash_join_pre_build_reservation_size_bytes",
@@ -332,7 +332,7 @@ fn d5_contract_report_rejects_public_rows_with_inconsistent_execution_modes_and_
     .unwrap_err();
     assert_eq!(error.fact_value("report_execution_mode"), Some("strict_bounded"));
 
-    let unsupported_with_modeled = d5_test_gate_row(
+    let unsupported_with_modeled = test_contract_gate_row(
         ReservationKind::HashTable,
         "join_hash_table",
         "hash_join_pre_build_reservation_size_bytes",
@@ -348,7 +348,7 @@ fn d5_contract_report_rejects_public_rows_with_inconsistent_execution_modes_and_
 
     let edge_owned_node_scope = CapabilityContractGateRow {
         owner: CapabilityContractOwner::Compiled(ReservationGateOwner::Edge(PipelineEdgeId::new(0))),
-        ..d5_test_gate_row(
+        ..test_contract_gate_row(
             ReservationKind::HashTable,
             "join_hash_table",
             "hash_join_pre_build_reservation_size_bytes",

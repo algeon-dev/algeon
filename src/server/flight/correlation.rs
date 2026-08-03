@@ -73,17 +73,6 @@ pub(in crate::server) fn attach_query_response_metadata<T>(
     }
 }
 
-pub(super) fn finish_adapter_error_status_with_correlation_id(
-    _coordinator: &QueryCoordinator,
-    query_id: &str,
-    correlation_id: Option<&str>,
-    stage: &'static str,
-    error: Error,
-) -> Status {
-    let _ = stage;
-    status_with_query_id_and_correlation_id(adapter_error_status(error), query_id, correlation_id)
-}
-
 #[cfg(test)]
 mod correlation_tests {
     use nexus_query_engine::observability::{

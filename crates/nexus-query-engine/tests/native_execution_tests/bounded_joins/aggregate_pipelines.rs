@@ -484,7 +484,7 @@ fn bounded_native_query_executes_rollup_rank_topk_after_aggregate_join_pushdown_
     let analysis = plan.capability_analysis();
     assert!(
         analysis.admits_rollup_rank_topk_after_aggregate_join_pushdown_pipeline(),
-        "rollup/rank/top-k optimized shape should select the Phase 2 envelope; first_rejection={:?}",
+        "rollup/rank/top-k optimized shape should select the bounded capability envelope; first_rejection={:?}",
         analysis.first_rejection_projection()
     );
 

@@ -668,7 +668,7 @@ async fn query_handle_gpu_pool_is_counted_and_rejects_work_after_finish() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn admission_without_runtime_context_releases_through_the_device_executor() {
-    // P2.6: every device-backed admission owns its root stream and domain
+    // Every device-backed admission owns its root stream and domain
     // from admission time, so a handle that never acquired a context still
     // releases through the device executor.
     let service = try_guaranteed_runtime_test_service().expect("single-worker guaranteed service");

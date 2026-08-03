@@ -135,51 +135,12 @@ fn validate_nonzero_config_field(field: &'static str, is_zero: bool) -> Result<(
     Ok(())
 }
 
-pub(super) fn admission_capacity_bounds(
-    resources: Option<&QueryServiceResources>,
-    fallback_capacity_bytes: u64,
-) -> (u64, u64) {
-    let Some(resources) = resources else {
-        return (fallback_capacity_bytes, fallback_capacity_bytes);
-    };
-    let mut max_device_capacity = 0u64;
-    let mut total_capacity = 0u64;
-    for context in resources.devices.contexts() {
-        let capacity = context.capacity_bytes();
-        max_device_capacity = max_device_capacity.max(capacity);
-        total_capacity = total_capacity.saturating_add(capacity);
-    }
-    (max_device_capacity, total_capacity)
-}
-
 pub(super) fn minimum_stream_pool_size(
     max_active_attempts_per_device: usize,
     max_source_reads_in_flight: usize,
 ) -> usize {
     let streams_per_query = 1usize.saturating_add(max_source_reads_in_flight.max(1));
     max_active_attempts_per_device.saturating_mul(streams_per_query).max(max_active_attempts_per_device)
-}
-
-pub(super) fn validate_stream_pool_admission_capacity(
-    stream_pool_size: usize,
-    max_active_attempts_per_device: usize,
-    max_source_reads_in_flight: usize,
-) -> Result<()> {
-    let minimum_stream_pool_size = minimum_stream_pool_size(max_active_attempts_per_device, max_source_reads_in_flight);
-    if stream_pool_size < minimum_stream_pool_size {
-        return Err(QueryError::new(
-            QueryErrorCode::InvalidPlan,
-            "nexus_query_engine.query_service.config.validate",
-            "service stream pool size must cover root and source-read streams for every admitted query",
-        )
-        .with_fact("field", "stream_pool_size")
-        .with_fact("stream_pool_size", stream_pool_size)
-        .with_fact("max_active_attempts_per_device", max_active_attempts_per_device)
-        .with_fact("max_source_reads_in_flight", max_source_reads_in_flight)
-        .with_fact("minimum_stream_pool_size", minimum_stream_pool_size)
-        .with_fact("reason", "stream_pool_smaller_than_admission_limit"));
-    }
-    Ok(())
 }
 
 pub(super) fn default_stream_pool_size_for_ordinals(device_ordinals: &[usize]) -> Result<usize> {

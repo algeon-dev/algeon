@@ -159,8 +159,9 @@ are locally supported.
 Adapter-side `NexusNativeExecutionConfig` stores the DataFusion-facing knobs and
 builds the native `ExecutionContext` at the DataFusion/native boundary. The
 engine context then owns execution-time memory control, boundary policy,
-reservation, source scheduling, and retry evidence. P2 exposes no cross-query
-GPU cache capacity.
+reservation, source scheduling, retry evidence, and any enabled resident-cache
+capacity. Resident-cache capacity is an explicit per-device ledger allocation,
+not a query-level execution option.
 
 :::warning[One bounded-controller evidence model]
 There is one capability-first bounded controller. Native reports expose its

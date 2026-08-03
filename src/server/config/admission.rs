@@ -1,5 +1,5 @@
 use super::{
-    env::{DurationZeroPolicy, EnvValues},
+    env::EnvValues,
     file::ServerAdmissionFileConfig,
     native::{duration_millis_from_value, optional_duration_millis_value, optional_native_u64, optional_native_usize},
     *,
@@ -47,8 +47,7 @@ pub(super) fn server_queue_policy(
         policy = policy.with_max_queued_attempts(value.value);
     }
     if let Some(value) = wait {
-        policy = policy
-            .with_max_queue_wait(duration_millis_from_value(value, DurationZeroPolicy::Reject)?.expect("rejects zero"));
+        policy = policy.with_max_queue_wait(duration_millis_from_value(value)?);
     }
     if let Some(value) = overtakes {
         policy = policy.with_max_overtakes_per_waiter(value.value as u32);

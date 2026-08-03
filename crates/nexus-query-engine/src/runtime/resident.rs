@@ -183,10 +183,6 @@ impl GpuDataFrame {
             _ => 0,
         }
     }
-
-    pub(crate) fn source_cache_pin(&self) -> Option<GpuLocalParquetSourceCachePin> {
-        self.source_cache_pin.clone()
-    }
 }
 
 /// GPU-resident query result bound to an Arrow schema and runtime.
@@ -209,7 +205,7 @@ pub struct GpuResultHandle {
 /// The allocation is owned by the cache allocation lease, never by the
 /// attempt whose decoded frame was copied into the cache. The lease keeps the
 /// device-scoped cache allocation domain alive until the concrete frame has
-/// been destroyed and the P5 residency charge can be released.
+/// been destroyed and its residency charge can be released.
 pub(crate) struct GpuLocalParquetCachedResult {
     batch: GpuRecordBatch,
     allocation_lease: Arc<cudf::CacheAllocationLease>,
