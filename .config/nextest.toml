@@ -44,7 +44,6 @@ filter = '''
 | (package(datafusion-nexus) & binary(session_config_tests))
 | (package(nexus-query-engine) & kind(lib))
 | (package(nexus-query-engine) & binary(gpu_backend_heterogeneous_active_limits))
-| (package(nexus-query-engine) & binary(native_execution_tests))
 | (package(nexus-query-engine) & binary(native_pipeline_execution_tests))
 '''
 test-group = "gpu"

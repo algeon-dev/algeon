@@ -9,7 +9,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
-    capability::{ContractQuality, ContractStatus, ReservationRequirementScope, strict_unresolved_preflight_gap},
+    capability::{ContractQuality, ContractStatus, ReservationRequirementScope, unresolved_preflight_gap},
     error::{QueryError, QueryErrorCode},
     pipeline::model::{
         CompiledPipeline, PipelineBarrierId, PipelineBarrierKind, PipelineEdgeId, PipelineEdgeKind, PipelineTaskId,
@@ -827,7 +827,7 @@ fn validate_unresolved_preflight_label(
     status: ContractStatus,
     quality: ContractQuality,
 ) -> crate::error::Result<()> {
-    let unresolved_gap = strict_unresolved_preflight_gap(kind, required_contract);
+    let unresolved_gap = unresolved_preflight_gap(kind, required_contract);
     if quality == ContractQuality::HardBudgetedReportWithUnresolvedPreflight {
         if status != ContractStatus::Modeled {
             return Err(invalid("pipeline hard-budgeted unresolved-preflight gate must remain modeled")

@@ -2,7 +2,7 @@
 use std::sync::Barrier;
 use std::{
     sync::{
-        Arc,
+        Arc, Condvar, Mutex,
         atomic::{AtomicU64, Ordering},
     },
     thread::{self, JoinHandle},
@@ -25,6 +25,10 @@ use crate::{
         RuntimeSourceReadObservation, RuntimeSpanId, RuntimeTaskId, RuntimeTopologyRecord, RuntimeWorkerId,
         SourceReadLifecycleState, TaskDefinitionRow, WorkerDefinitionRow,
     },
+    runtime::{
+        ExecutionCancellation, ProcessExitPhase, ProcessExitRegistration, ProcessExitShutdown,
+        register_cuda_process_exit_shutdown,
+    },
 };
 
 static NEXT_SOURCE_READ_SPAN_ID: AtomicU64 = AtomicU64::new(10_000);
@@ -37,10 +41,9 @@ pub(in crate::exec) struct ScheduledLocalParquetRead {
 }
 
 enum ScheduledLocalParquetReadState {
-    Ready(Box<ScheduledLocalParquetReadOutput>),
     Running {
         reservation: Box<ActiveReservation>,
-        handle: JoinHandle<ScheduledLocalParquetReadResult>,
+        worker: SourceReadWorker<ScheduledLocalParquetReadResult>,
         source_read_lease: Box<crate::runtime::SourceReadStreamLease>,
         source: Box<LocalParquetSource>,
         attempt: usize,
@@ -62,6 +65,174 @@ struct ScheduledLocalParquetReadResult {
     metrics: QueryMetrics,
     observed_row_group_count: Option<u64>,
     queue_wait: Duration,
+}
+
+/// Owns one detached source-read worker until it has been joined.
+///
+/// The normal scheduler consumer owns this wrapper, but process exit also
+/// retains the same supervisor through the process-exit registry. That closes
+/// the gap where `std::process::exit` skips the consumer's `finish` or
+/// `abandon` call while the worker is still synchronizing a leased CUDA stream.
+struct SourceReadWorker<T> {
+    supervisor: Arc<SourceReadWorkerSupervisor<T>>,
+}
+
+struct SourceReadWorkerSupervisor<T> {
+    cancellation: ExecutionCancellation,
+    state: Mutex<SourceReadWorkerSupervisorState<T>>,
+    state_changed: Condvar,
+    process_exit_registration: Mutex<Option<ProcessExitRegistration>>,
+}
+
+struct SourceReadWorkerSupervisorState<T> {
+    process_exit_started: bool,
+    worker: Option<JoinHandle<T>>,
+    joining: bool,
+    joined: bool,
+}
+
+impl<T> SourceReadWorkerSupervisor<T> {
+    fn new(cancellation: ExecutionCancellation) -> Arc<Self> {
+        Arc::new(Self {
+            cancellation,
+            state: Mutex::new(SourceReadWorkerSupervisorState {
+                process_exit_started: false,
+                worker: None,
+                joining: false,
+                joined: false,
+            }),
+            state_changed: Condvar::new(),
+            process_exit_registration: Mutex::new(None),
+        })
+    }
+
+    fn request_process_exit(&self) {
+        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.process_exit_started = true;
+        drop(state);
+        // Source reads check this token before entering the local-Parquet
+        // boundary. It cannot interrupt a CUDA call already in flight, so the
+        // subsequent join remains the terminal safety boundary.
+        self.cancellation.cancel();
+    }
+
+    fn unregister_process_exit(&self) {
+        let registration =
+            self.process_exit_registration.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+        if let Some(registration) = registration {
+            registration.unregister();
+        }
+    }
+
+    fn finish_join(&self) {
+        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.joining = false;
+        state.joined = true;
+        self.state_changed.notify_all();
+        drop(state);
+        // Keep the registry entry live until the OS thread has stopped. This
+        // is also safe when the process-exit snapshot already owns the entry.
+        self.unregister_process_exit();
+    }
+
+    fn take_or_wait_for_join(&self) -> Option<JoinHandle<T>> {
+        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        loop {
+            if let Some(worker) = state.worker.take() {
+                state.joining = true;
+                return Some(worker);
+            }
+            if state.joining {
+                state = self.state_changed.wait(state).unwrap_or_else(std::sync::PoisonError::into_inner);
+                continue;
+            }
+            return None;
+        }
+    }
+
+    fn join(&self) -> Option<std::thread::Result<T>> {
+        let worker = self.take_or_wait_for_join()?;
+        let joined = worker.join();
+        self.finish_join();
+        Some(joined)
+    }
+
+    #[cfg(test)]
+    fn joined_for_test(&self) -> bool {
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).joined
+    }
+}
+
+impl<T: Send + 'static> SourceReadWorkerSupervisor<T> {
+    fn activate_process_exit(self: &Arc<Self>) {
+        let shutdown: Arc<dyn ProcessExitShutdown> = self.clone();
+        let registration = register_cuda_process_exit_shutdown(shutdown);
+        *self.process_exit_registration.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = registration;
+    }
+
+    fn spawn<F>(
+        self: &Arc<Self>,
+        queue_start: SourceReadQueueStart,
+        observation: Option<Arc<SourceReadObservation>>,
+        worker: F,
+    ) -> Result<SourceReadWorker<T>>
+    where
+        F: FnOnce(Duration, Option<Arc<SourceReadObservation>>) -> T + Send + 'static,
+    {
+        // Hold this mutex across `thread::spawn` and handle publication. A
+        // process-exit callback either observes the fully owned JoinHandle or
+        // sets the terminal boundary first, in which case no CUDA-capable
+        // worker may begin.
+        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.process_exit_started {
+            drop(state);
+            self.unregister_process_exit();
+            return Err(QueryError::new(
+                QueryErrorCode::Cancelled,
+                "nexus_query_engine.source_scheduler.spawn",
+                "source read worker cannot start after process exit begins",
+            )
+            .with_fact("reason", "process_exit_started"));
+        }
+        let handle =
+            match thread::Builder::new().spawn(move || run_source_read_worker(queue_start, observation, worker)) {
+                Ok(handle) => handle,
+                Err(error) => {
+                    drop(state);
+                    self.unregister_process_exit();
+                    return Err(QueryError::new(
+                        QueryErrorCode::Internal,
+                        "nexus_query_engine.source_scheduler.spawn",
+                        "failed to spawn source read worker",
+                    )
+                    .with_fact("io_error", error));
+                },
+            };
+        state.worker = Some(handle);
+        drop(state);
+        Ok(SourceReadWorker { supervisor: Arc::clone(self) })
+    }
+}
+
+impl<T> SourceReadWorker<T> {
+    fn join(self) -> Option<std::thread::Result<T>> {
+        self.supervisor.join()
+    }
+}
+
+impl<T: Send + 'static> ProcessExitShutdown for SourceReadWorkerSupervisor<T> {
+    fn phase(&self) -> ProcessExitPhase {
+        ProcessExitPhase::SourceReadWorker
+    }
+
+    fn shutdown_for_process_exit(&self) {
+        self.request_process_exit();
+        let _ = self.join();
+        // `join` unregisters after an owned worker stops. If exit won the
+        // race before spawning, there is no worker to join but the terminal
+        // boundary still makes removing this registration safe.
+        self.unregister_process_exit();
+    }
 }
 
 struct SourceReadObservation {
@@ -195,6 +366,18 @@ struct SourceReadSpawnTestHook {
     release: Arc<Barrier>,
 }
 
+fn run_source_read_worker<T, F>(
+    queue_start: SourceReadQueueStart,
+    observation: Option<Arc<SourceReadObservation>>,
+    worker: F,
+) -> T
+where
+    F: FnOnce(Duration, Option<Arc<SourceReadObservation>>) -> T,
+{
+    let queue_wait = queue_start.worker_started(observation.as_deref());
+    worker(queue_wait, observation)
+}
+
 fn spawn_source_read_worker<T, F>(
     queue_start: SourceReadQueueStart,
     observation: Option<Arc<SourceReadObservation>>,
@@ -210,10 +393,24 @@ where
         before_spawn.entered.wait();
         before_spawn.release.wait();
     }
-    thread::spawn(move || {
-        let queue_wait = queue_start.worker_started(observation.as_deref());
-        worker(queue_wait, observation)
-    })
+    thread::spawn(move || run_source_read_worker(queue_start, observation, worker))
+}
+
+fn spawn_registered_source_read_worker<T, F>(
+    queue_start: SourceReadQueueStart,
+    observation: Option<Arc<SourceReadObservation>>,
+    cancellation: ExecutionCancellation,
+    worker: F,
+) -> Result<SourceReadWorker<T>>
+where
+    T: Send + 'static,
+    F: FnOnce(Duration, Option<Arc<SourceReadObservation>>) -> T + Send + 'static,
+{
+    let supervisor = SourceReadWorkerSupervisor::new(cancellation);
+    // Register before spawning, not after: `std::process::exit` may otherwise
+    // take its registry snapshot while this worker is already executing CUDA.
+    supervisor.activate_process_exit();
+    supervisor.spawn(queue_start, observation, worker)
 }
 
 struct SourceReadWorkerGuard {
@@ -272,11 +469,11 @@ impl ScheduledLocalParquetRead {
         let thread_context = source_read_lease.context().clone();
         let thread_source = source.clone();
         let thread_observation = observation.clone();
-        let handle = spawn_source_read_worker(
+        let worker_cancellation = thread_context.cancellation().clone();
+        let worker = spawn_registered_source_read_worker(
             queue_start,
             thread_observation,
-            #[cfg(test)]
-            None,
+            worker_cancellation,
             move |queue_wait, thread_observation| {
                 let read_started_at = Instant::now();
                 let mut observation_guard = SourceReadWorkerGuard::new(thread_observation);
@@ -317,12 +514,12 @@ impl ScheduledLocalParquetRead {
                 }
                 ScheduledLocalParquetReadResult { frame, metrics, observed_row_group_count, queue_wait }
             },
-        );
+        )?;
         Ok(Self {
             chunk,
             state: ScheduledLocalParquetReadState::Running {
                 reservation: Box::new(reservation),
-                handle,
+                worker,
                 source_read_lease: Box::new(source_read_lease),
                 source: Box::new(source),
                 attempt,
@@ -334,19 +531,6 @@ impl ScheduledLocalParquetRead {
         })
     }
 
-    pub(in crate::exec) fn ready(
-        output: ScheduledLocalParquetReadOutput,
-        budget_boundary: &'static str,
-        prefetch: bool,
-    ) -> Self {
-        Self {
-            chunk: output.chunk.clone(),
-            state: ScheduledLocalParquetReadState::Ready(Box::new(output)),
-            budget_boundary,
-            prefetch,
-        }
-    }
-
     pub(in crate::exec) fn is_prefetch(&self) -> bool {
         self.prefetch
     }
@@ -356,10 +540,8 @@ impl ScheduledLocalParquetRead {
     }
 
     pub(in crate::exec) fn reservation_bytes(&self) -> u64 {
-        match &self.state {
-            ScheduledLocalParquetReadState::Ready(output) => output.reservation.bytes(),
-            ScheduledLocalParquetReadState::Running { reservation, .. } => reservation.bytes(),
-        }
+        let ScheduledLocalParquetReadState::Running { reservation, .. } = &self.state;
+        reservation.bytes()
     }
 
     pub(in crate::exec) fn finish(
@@ -368,38 +550,50 @@ impl ScheduledLocalParquetRead {
         metrics: &mut QueryMetrics,
     ) -> Result<ScheduledLocalParquetReadOutput> {
         let ScheduledLocalParquetRead { chunk, state, budget_boundary, prefetch: _ } = self;
-        let (mut reservation, handle, retry_context, observation) = match state {
-            ScheduledLocalParquetReadState::Ready(output) => return Ok(*output),
+        let (mut reservation, worker, retry_context, observation) = match state {
             ScheduledLocalParquetReadState::Running {
                 reservation,
-                handle,
+                worker,
                 source_read_lease,
                 source,
                 attempt,
                 max_attempts,
                 observation,
-            } => (*reservation, handle, Some((*source_read_lease, *source, attempt, max_attempts)), observation),
+            } => (*reservation, worker, Some((*source_read_lease, *source, attempt, max_attempts)), observation),
         };
         if let Some(observation) = &observation {
             observation.record(SourceReadLifecycleState::ConsumerJoinStarted);
         }
         let join_started_at = Instant::now();
-        let joined = handle.join();
+        let joined = worker.join();
         let join_duration_ns = u64::try_from(join_started_at.elapsed().as_nanos()).unwrap_or(u64::MAX);
         if let Some(observation) = &observation {
             observation.record(SourceReadLifecycleState::ConsumerJoinFinished { join_duration_ns });
         }
-        let result = joined.map_err(|_panic| {
-            QueryError::new(
-                QueryErrorCode::Internal,
-                "nexus_query_engine.source_scheduler.join",
-                "native source scheduler read worker panicked",
-            )
-            .with_fact("chunk_index", chunk.chunk_index)
-            .with_fact("file_index", chunk.file_index)
-            .with_fact("path", parquet_chunk_path_fact(&chunk))
-            .with_row_group_facts(&chunk)
-        })?;
+        let result = joined
+            .ok_or_else(|| {
+                QueryError::new(
+                    QueryErrorCode::Cancelled,
+                    "nexus_query_engine.source_scheduler.join",
+                    "source read worker was stopped by process exit before consumer join",
+                )
+                .with_fact("reason", "source_worker_process_exit")
+                .with_fact("chunk_index", chunk.chunk_index)
+                .with_fact("file_index", chunk.file_index)
+                .with_fact("path", parquet_chunk_path_fact(&chunk))
+                .with_row_group_facts(&chunk)
+            })?
+            .map_err(|_panic| {
+                QueryError::new(
+                    QueryErrorCode::Internal,
+                    "nexus_query_engine.source_scheduler.join",
+                    "native source scheduler read worker panicked",
+                )
+                .with_fact("chunk_index", chunk.chunk_index)
+                .with_fact("file_index", chunk.file_index)
+                .with_fact("path", parquet_chunk_path_fact(&chunk))
+                .with_row_group_facts(&chunk)
+            })?;
         metrics.record_source_read_queue_wait(result.queue_wait);
         metrics.merge_from(result.metrics);
         match result.frame {
@@ -442,18 +636,12 @@ impl ScheduledLocalParquetRead {
     pub(in crate::exec) fn abandon(self, reservations: &mut ReservationTracker, metrics: &mut QueryMetrics) {
         let ScheduledLocalParquetRead { state, .. } = self;
         let result = match state {
-            ScheduledLocalParquetReadState::Ready(output) => {
-                let output = *output;
-                reservations.release(output.reservation, metrics);
-                metrics.record_source_read_prefetch_abandoned();
-                return;
-            },
-            ScheduledLocalParquetReadState::Running { reservation, handle, observation, .. } => {
+            ScheduledLocalParquetReadState::Running { reservation, worker, observation, .. } => {
                 if let Some(observation) = &observation {
                     observation.record(SourceReadLifecycleState::ConsumerJoinStarted);
                 }
                 let join_started_at = Instant::now();
-                let result = handle.join();
+                let result = worker.join();
                 if let Some(observation) = &observation {
                     observation.record(SourceReadLifecycleState::ConsumerJoinFinished {
                         join_duration_ns: u64::try_from(join_started_at.elapsed().as_nanos()).unwrap_or(u64::MAX),
@@ -464,7 +652,7 @@ impl ScheduledLocalParquetRead {
             },
         };
         metrics.record_source_read_prefetch_abandoned();
-        if let Ok(result) = result {
+        if let Some(Ok(result)) = result {
             metrics.record_source_read_queue_wait(result.queue_wait);
             metrics.merge_from(result.metrics);
         }
@@ -554,6 +742,7 @@ mod observation_tests {
     use std::{
         panic::{AssertUnwindSafe, catch_unwind},
         sync::{Barrier, mpsc},
+        thread,
         time::Duration,
     };
 
@@ -669,6 +858,38 @@ mod observation_tests {
             })
             .count();
         assert_eq!(panic_count, 1);
+    }
+
+    #[test]
+    fn process_exit_joins_source_worker_and_prevents_late_spawn() {
+        let cancellation = ExecutionCancellation::new();
+        let supervisor = SourceReadWorkerSupervisor::new(cancellation.clone());
+        let (started_sender, started_receiver) = mpsc::sync_channel(0);
+        let worker_cancellation = cancellation.clone();
+        let worker = supervisor
+            .spawn(SourceReadQueueStart::new(None), None, move |_queue_wait, _observation| {
+                started_sender.send(()).unwrap();
+                while !worker_cancellation.is_cancelled() {
+                    thread::yield_now();
+                }
+                7_u8
+            })
+            .unwrap();
+        started_receiver.recv_timeout(Duration::from_secs(5)).unwrap();
+
+        supervisor.shutdown_for_process_exit();
+
+        assert!(cancellation.is_cancelled());
+        assert!(supervisor.joined_for_test());
+        assert!(worker.join().is_none(), "process-exit owner already joined the worker");
+
+        let late_spawn = supervisor.spawn(SourceReadQueueStart::new(None), None, |_queue_wait, _observation| 9_u8);
+        let error = match late_spawn {
+            Ok(_) => panic!("source worker unexpectedly spawned after process exit"),
+            Err(error) => error,
+        };
+        assert_eq!(error.code(), QueryErrorCode::Cancelled);
+        assert_eq!(error.fact_value("reason"), Some("process_exit_started"));
     }
 
     #[test]

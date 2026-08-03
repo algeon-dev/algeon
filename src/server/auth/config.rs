@@ -4,6 +4,7 @@ use std::{collections::BTreeSet, time::Duration};
 
 use serde::{Deserialize, Serialize};
 
+use super::password::validate_password_hash;
 use crate::server::error::{Result, ServerError};
 
 /// Top-level auth section of the server TOML config.
@@ -93,10 +94,10 @@ impl AuthMode {
                             user.username
                         )));
                     }
-                    if !user.password_hash.starts_with("$argon2") {
+                    if let Err(error) = validate_password_hash(&user.password_hash) {
                         return Err(ServerError::configuration(format!(
-                            "auth user `{}` password_hash must be an Argon2 PHC string starting with `$argon2`",
-                            user.username
+                            "auth user `{}` password_hash must be a valid Argon2 PHC string: {error}",
+                            user.username,
                         )));
                     }
                 }

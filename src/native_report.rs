@@ -37,11 +37,7 @@ use datafusion::{
     },
 };
 use nexus_query_engine::{
-    adaptive_report::{
-        ADAPTIVE_DIAGNOSTIC_CONSTRUCTION_FAILED_REASON, AdaptivePipelineReport, AdaptivePipelineReportRow,
-    },
-    contract_report::StrictBoundedContractGateRow,
-    datatypes::is_supported_arrow_type,
+    contract_report::CapabilityContractGateRow, datatypes::is_supported_arrow_type,
     source::SourceDiagnostics as NativeSourceDiagnostics,
 };
 
@@ -186,7 +182,7 @@ fn report_rows_for_item(
 fn report_rows_for_plan(
     query_id: String,
     plan: Arc<dyn ExecutionPlan>,
-    execution_config: &NexusNativeExecutionConfig,
+    _execution_config: &NexusNativeExecutionConfig,
 ) -> Vec<NativeFallbackPressureRow> {
     let physical_root = plan.name().to_string();
     let physical_shape = physical_plan_shape(plan.as_ref());
@@ -194,45 +190,24 @@ fn report_rows_for_plan(
     let source_diagnostics_plan = Arc::clone(&plan);
     let result = lower_physical_plan_to_native(plan);
     let source_diagnostics = result.source_diagnostics.iter().map(summarize_source_diagnostics).collect::<Vec<_>>();
-    let adaptive_pipeline = fallback_pressure_adaptive_pipeline_rows(&result, execution_config);
 
     result
         .report
         .outcomes()
         .iter()
         .map(|outcome| match outcome {
-            CandidateOutcome::Selected { candidate } => {
-                let adaptive_pipeline_rows = adaptive_pipeline_rows_for_candidate(&adaptive_pipeline, candidate);
-                let adaptive_rejected = adaptive_pipeline_rows.iter().any(|row| {
-                    row.candidate_status == nexus_query_engine::adaptive_report::AdaptiveCandidateStatus::Rejected
-                });
-                NativeFallbackPressureRow {
-                    query_id: query_id.clone(),
-                    physical_root: physical_root.clone(),
-                    physical_shape: physical_shape.clone(),
-                    native_candidate_shape: Some(candidate.shape.to_string()),
-                    native_candidate_shape_family: Some(candidate_shape_family(candidate)),
-                    outcome: Some(if adaptive_rejected {
-                        NativeFallbackPressureOutcome::NotSupported
-                    } else {
-                        NativeFallbackPressureOutcome::Selected
-                    }),
-                    reason_code: adaptive_rejected
-                        .then(|| CapabilityReason::NativeAdaptivePipelineUnsupported.code().to_string()),
-                    unsupported_category: adaptive_rejected
-                        .then(|| {
-                            unsupported_category(
-                                source_diagnostics_plan.as_ref(),
-                                candidate,
-                                CapabilityReason::NativeAdaptivePipelineUnsupported,
-                            )
-                        })
-                        .flatten(),
-                    adaptive_pipeline_rows,
-                    join_diagnostics: join_diagnostics.clone(),
-                    source_diagnostics: source_diagnostics.clone(),
-                    rejected_before_execution: false,
-                }
+            CandidateOutcome::Selected { candidate } => NativeFallbackPressureRow {
+                query_id: query_id.clone(),
+                physical_root: physical_root.clone(),
+                physical_shape: physical_shape.clone(),
+                native_candidate_shape: Some(candidate.shape.to_string()),
+                native_candidate_shape_family: Some(candidate_shape_family(candidate)),
+                outcome: Some(NativeFallbackPressureOutcome::Selected),
+                reason_code: None,
+                unsupported_category: None,
+                join_diagnostics: join_diagnostics.clone(),
+                source_diagnostics: source_diagnostics.clone(),
+                rejected_before_execution: false,
             },
             CandidateOutcome::NotSupported { candidate, capability_reason } => NativeFallbackPressureRow {
                 query_id: query_id.clone(),
@@ -247,7 +222,6 @@ fn report_rows_for_plan(
                     candidate,
                     *capability_reason,
                 ),
-                adaptive_pipeline_rows: Vec::new(),
                 join_diagnostics: join_diagnostics.clone(),
                 source_diagnostics: source_diagnostics.clone(),
                 rejected_before_execution: false,
@@ -269,41 +243,9 @@ fn report_row_for_planning_failure(query_id: String, failure: NativePlanningFail
         outcome: None,
         reason_code: Some(failure.reason_code),
         unsupported_category: Some("planning".to_string()),
-        adaptive_pipeline_rows: Vec::new(),
         join_diagnostics: Vec::new(),
         source_diagnostics: Vec::new(),
         rejected_before_execution: true,
-    }
-}
-
-fn fallback_pressure_adaptive_pipeline_rows(
-    lowering: &crate::native::NativeLoweringResult,
-    execution_config: &NexusNativeExecutionConfig,
-) -> crate::planner::NativeAdaptivePipelineDiagnostics {
-    if execution_config.native_pipeline_execution_mode()
-        != nexus_query_engine::mode::NativePipelineExecutionMode::Adaptive
-    {
-        return crate::planner::NativeAdaptivePipelineDiagnostics::default();
-    }
-    let Some(plan) = lowering.plans.first() else {
-        return crate::planner::NativeAdaptivePipelineDiagnostics::default();
-    };
-    let Some(candidate) = lowering.report.single_selected_candidate().cloned() else {
-        return crate::planner::NativeAdaptivePipelineDiagnostics::default();
-    };
-    let memory_history = execution_config.adaptive_memory_history();
-    match nexus_query_engine::admission::adaptive_bounded_pipeline_admission_with_memory_history(
-        plan,
-        memory_history.as_deref(),
-    ) {
-        Ok(Some(admission)) => {
-            crate::planner::NativeAdaptivePipelineDiagnostics::single(candidate, admission.report().clone())
-        },
-        Ok(None) => crate::planner::NativeAdaptivePipelineDiagnostics::default(),
-        Err(_) => crate::planner::NativeAdaptivePipelineDiagnostics::single(
-            candidate,
-            AdaptivePipelineReport::diagnostic_failure(plan, ADAPTIVE_DIAGNOSTIC_CONSTRUCTION_FAILED_REASON),
-        ),
     }
 }
 
@@ -373,19 +315,15 @@ fn datafusion_planning_rows_for_item(item: NativeDataFusionPlanningWorkloadItem)
                 outcome: Some(NativeDataFusionPlanningOutcome::Selected),
                 reason_code: None,
                 unsupported_category: None,
-                strict_bounded_contract_rows: strict_bounded_contract_rows_for_candidate(
-                    &native_diagnostics.strict_bounded_contract,
+                capability_contract_rows: capability_contract_rows_for_candidate(
+                    &native_diagnostics.capability_contract,
                     candidate,
                     None,
                 ),
-                strict_bounded_compiled_graphs: strict_bounded_compiled_graphs_for_candidate(
-                    &native_diagnostics.strict_bounded_contract,
+                capability_compiled_graphs: capability_compiled_graphs_for_candidate(
+                    &native_diagnostics.capability_contract,
                     candidate,
                     None,
-                ),
-                adaptive_pipeline_rows: adaptive_pipeline_rows_for_candidate(
-                    &native_diagnostics.adaptive_pipeline,
-                    candidate,
                 ),
                 native_optimizer: native_diagnostics.native_optimizer.clone(),
                 edge_normalize_inserted,
@@ -410,19 +348,15 @@ fn datafusion_planning_rows_for_item(item: NativeDataFusionPlanningWorkloadItem)
                 outcome: Some(NativeDataFusionPlanningOutcome::NotSupported),
                 reason_code: Some(capability_reason.code().to_string()),
                 unsupported_category: unsupported_category(planned_plan.as_ref(), candidate, *capability_reason),
-                strict_bounded_contract_rows: strict_bounded_contract_rows_for_candidate(
-                    &native_diagnostics.strict_bounded_contract,
+                capability_contract_rows: capability_contract_rows_for_candidate(
+                    &native_diagnostics.capability_contract,
                     candidate,
                     Some(*capability_reason),
                 ),
-                strict_bounded_compiled_graphs: strict_bounded_compiled_graphs_for_candidate(
-                    &native_diagnostics.strict_bounded_contract,
+                capability_compiled_graphs: capability_compiled_graphs_for_candidate(
+                    &native_diagnostics.capability_contract,
                     candidate,
                     Some(*capability_reason),
-                ),
-                adaptive_pipeline_rows: adaptive_pipeline_rows_for_candidate(
-                    &native_diagnostics.adaptive_pipeline,
-                    candidate,
                 ),
                 native_optimizer: native_diagnostics.native_optimizer.clone(),
                 edge_normalize_inserted,
@@ -443,12 +377,8 @@ fn datafusion_planning_rows_for_item(item: NativeDataFusionPlanningWorkloadItem)
                 outcome: Some(NativeDataFusionPlanningOutcome::NotSelectedByCost),
                 reason_code: Some(cost_reason.code().to_string()),
                 unsupported_category: None,
-                strict_bounded_contract_rows: Vec::new(),
-                strict_bounded_compiled_graphs: Vec::new(),
-                adaptive_pipeline_rows: adaptive_pipeline_rows_for_candidate(
-                    &native_diagnostics.adaptive_pipeline,
-                    candidate,
-                ),
+                capability_contract_rows: Vec::new(),
+                capability_compiled_graphs: Vec::new(),
                 native_optimizer: native_diagnostics.native_optimizer.clone(),
                 edge_normalize_inserted,
                 join_diagnostics: input_join_diagnostics.clone(),
@@ -494,19 +424,15 @@ fn datafusion_execution_rows_for_item(
                 planning_outcome: Some(NativeDataFusionPlanningOutcome::Selected),
                 reason_code: None,
                 unsupported_category: None,
-                strict_bounded_contract_rows: strict_bounded_contract_rows_for_candidate(
-                    &native_diagnostics.strict_bounded_contract,
+                capability_contract_rows: capability_contract_rows_for_candidate(
+                    &native_diagnostics.capability_contract,
                     candidate,
                     None,
                 ),
-                strict_bounded_compiled_graphs: strict_bounded_compiled_graphs_for_candidate(
-                    &native_diagnostics.strict_bounded_contract,
+                capability_compiled_graphs: capability_compiled_graphs_for_candidate(
+                    &native_diagnostics.capability_contract,
                     candidate,
                     None,
-                ),
-                adaptive_pipeline_rows: adaptive_pipeline_rows_for_candidate(
-                    &native_diagnostics.adaptive_pipeline,
-                    candidate,
                 ),
                 source_diagnostics: source_diagnostics.clone(),
                 post_native_plan_root: post_native_plan_root.clone(),
@@ -531,19 +457,15 @@ fn datafusion_execution_rows_for_item(
                 planning_outcome: Some(NativeDataFusionPlanningOutcome::NotSupported),
                 reason_code: Some(capability_reason.code().to_string()),
                 unsupported_category: unsupported_category(planned_plan.as_ref(), candidate, *capability_reason),
-                strict_bounded_contract_rows: strict_bounded_contract_rows_for_candidate(
-                    &native_diagnostics.strict_bounded_contract,
+                capability_contract_rows: capability_contract_rows_for_candidate(
+                    &native_diagnostics.capability_contract,
                     candidate,
                     Some(*capability_reason),
                 ),
-                strict_bounded_compiled_graphs: strict_bounded_compiled_graphs_for_candidate(
-                    &native_diagnostics.strict_bounded_contract,
+                capability_compiled_graphs: capability_compiled_graphs_for_candidate(
+                    &native_diagnostics.capability_contract,
                     candidate,
                     Some(*capability_reason),
-                ),
-                adaptive_pipeline_rows: adaptive_pipeline_rows_for_candidate(
-                    &native_diagnostics.adaptive_pipeline,
-                    candidate,
                 ),
                 source_diagnostics: source_diagnostics.clone(),
                 post_native_plan_root: post_native_plan_root.clone(),
@@ -568,12 +490,8 @@ fn datafusion_execution_rows_for_item(
                 planning_outcome: Some(NativeDataFusionPlanningOutcome::NotSelectedByCost),
                 reason_code: Some(cost_reason.code().to_string()),
                 unsupported_category: None,
-                strict_bounded_contract_rows: Vec::new(),
-                strict_bounded_compiled_graphs: Vec::new(),
-                adaptive_pipeline_rows: adaptive_pipeline_rows_for_candidate(
-                    &native_diagnostics.adaptive_pipeline,
-                    candidate,
-                ),
+                capability_contract_rows: Vec::new(),
+                capability_compiled_graphs: Vec::new(),
                 source_diagnostics: source_diagnostics.clone(),
                 post_native_plan_root: post_native_plan_root.clone(),
                 final_disposition: post_native_coverage.final_disposition,
@@ -623,9 +541,8 @@ fn datafusion_planning_row_for_planning_failure(
         outcome: None,
         reason_code: Some(failure.reason_code),
         unsupported_category: Some("planning".to_string()),
-        strict_bounded_contract_rows: Vec::new(),
-        strict_bounded_compiled_graphs: Vec::new(),
-        adaptive_pipeline_rows: Vec::new(),
+        capability_contract_rows: Vec::new(),
+        capability_compiled_graphs: Vec::new(),
         native_optimizer: nexus_query_engine::optimizer::NativeOptimizerDiagnostics::default(),
         edge_normalize_inserted: false,
         join_diagnostics: Vec::new(),
@@ -651,9 +568,8 @@ fn datafusion_execution_row_for_planning_failure(
         planning_outcome: None,
         reason_code: Some(failure.reason_code),
         unsupported_category: Some("planning".to_string()),
-        strict_bounded_contract_rows: Vec::new(),
-        strict_bounded_compiled_graphs: Vec::new(),
-        adaptive_pipeline_rows: Vec::new(),
+        capability_contract_rows: Vec::new(),
+        capability_compiled_graphs: Vec::new(),
         source_diagnostics: Vec::new(),
         post_native_plan_root: "PlanningFailure".to_string(),
         final_disposition: FinalPlanDisposition::Rejected,
@@ -670,12 +586,12 @@ fn datafusion_execution_row_for_planning_failure(
     }
 }
 
-fn strict_bounded_contract_rows_for_candidate(
-    diagnostics: &crate::planner::NativeStrictBoundedContractDiagnostics,
+fn capability_contract_rows_for_candidate(
+    diagnostics: &crate::planner::NativeCapabilityContractDiagnostics,
     candidate: &GpuCandidate,
     reason: Option<CapabilityReason>,
-) -> Vec<StrictBoundedContractGateRow> {
-    if !strict_bounded_contract_is_candidate_scoped(candidate, reason) {
+) -> Vec<CapabilityContractGateRow> {
+    if !capability_contract_is_candidate_scoped(candidate, reason) {
         return Vec::new();
     }
     if reason == Some(CapabilityReason::NativeBoundedJoinUnsupported) {
@@ -695,12 +611,12 @@ fn strict_bounded_contract_rows_for_candidate(
         .collect()
 }
 
-fn strict_bounded_compiled_graphs_for_candidate(
-    diagnostics: &crate::planner::NativeStrictBoundedContractDiagnostics,
+fn capability_compiled_graphs_for_candidate(
+    diagnostics: &crate::planner::NativeCapabilityContractDiagnostics,
     candidate: &GpuCandidate,
     reason: Option<CapabilityReason>,
-) -> Vec<crate::planner::NativeStrictBoundedCompiledGraphDiagnostics> {
-    if reason.is_some() || !strict_bounded_contract_is_candidate_scoped(candidate, reason) {
+) -> Vec<crate::planner::NativeCapabilityCompiledGraphDiagnostics> {
+    if reason.is_some() || !capability_contract_is_candidate_scoped(candidate, reason) {
         return Vec::new();
     }
     diagnostics
@@ -711,13 +627,6 @@ fn strict_bounded_compiled_graphs_for_candidate(
         .collect()
 }
 
-fn adaptive_pipeline_rows_for_candidate(
-    diagnostics: &crate::planner::NativeAdaptivePipelineDiagnostics,
-    candidate: &GpuCandidate,
-) -> Vec<AdaptivePipelineReportRow> {
-    diagnostics.rows_for_candidate(candidate)
-}
-
-fn strict_bounded_contract_is_candidate_scoped(candidate: &GpuCandidate, reason: Option<CapabilityReason>) -> bool {
+fn capability_contract_is_candidate_scoped(candidate: &GpuCandidate, reason: Option<CapabilityReason>) -> bool {
     reason == Some(CapabilityReason::NativeBoundedJoinUnsupported) || candidate.shape.contains("JoinExec")
 }

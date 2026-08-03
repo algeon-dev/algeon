@@ -34,10 +34,7 @@ use datafusion_nexus::{
     report::CandidateOutcome,
     session::NexusSessionStateBuilderExt,
 };
-use nexus_query_engine::{
-    harness::max_option as max_optional_usize,
-    mode::{NativePipelineExecutionMode, StatisticalAggregateExecutionMode},
-};
+use nexus_query_engine::{harness::max_option as max_optional_usize, mode::StatisticalAggregateExecutionMode};
 use nexus_workloads::tpcds::{TPCDS_QUERIES, TpcdsQuery};
 
 use crate::report_workload::{
@@ -59,7 +56,7 @@ use report::{NativeTimingMetrics, TSV_HEADER, print_metadata, print_progress, pr
 pub async fn run() -> Result<(), Box<dyn Error>> {
     let cfg = BenchConfig::from_env()?;
     eprintln!(
-        "[tpcds_three_way_bench] engine={} root={} queries={} warmups={} iterations={} native_profile={} native_device_budget_bytes={} native_max_source_chunk_bytes={} native_max_row_groups_per_chunk={} native_source_chunk_planning_mode={} relational_execution={} native_pipeline_execution_mode={}",
+        "[tpcds_three_way_bench] engine={} root={} queries={} warmups={} iterations={} native_profile={} native_device_budget_bytes={} native_max_source_chunk_bytes={} native_max_row_groups_per_chunk={} native_source_chunk_planning_mode={} relational_execution={}",
         cfg.engine.as_str(),
         cfg.root.display(),
         cfg.queries.iter().map(|q| q.id).collect::<Vec<_>>().join(","),
@@ -71,7 +68,6 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
         cfg.native_profile.max_row_groups_per_chunk,
         cfg.native_profile.source_chunk_planning_mode.as_str(),
         cfg.relational_execution.as_str(),
-        cfg.native_pipeline_execution_mode.as_str(),
     );
 
     let runtime = build_runtime(&cfg).await?;
@@ -132,7 +128,6 @@ struct BenchConfig {
     iterations: usize,
     native_profile: TpcdsNativeProfileSettings,
     relational_execution: RelationalExecutionSelection,
-    native_pipeline_execution_mode: NativePipelineExecutionMode,
 }
 
 struct IterOutcome {

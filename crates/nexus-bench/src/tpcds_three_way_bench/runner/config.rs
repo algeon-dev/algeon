@@ -31,9 +31,6 @@ impl BenchConfig {
             Engine::CpuDataFusion => tpcds_native_profile_settings_with_env(|_| None),
             Engine::NativeGpu | Engine::CostDeclinedDataFusion => tpcds_native_profile_settings_from_env(),
         };
-        let native_pipeline_execution_mode =
-            tpcds_native_analytics_optimizer_config_with_profile_settings(&native_profile)
-                .native_pipeline_execution_mode();
         Ok(Self {
             engine,
             root,
@@ -46,7 +43,6 @@ impl BenchConfig {
                 Engine::NativeGpu => RelationalExecutionSelection::strict_native(),
                 Engine::CostDeclinedDataFusion => RelationalExecutionSelection::native(),
             },
-            native_pipeline_execution_mode,
         })
     }
 }
@@ -82,10 +78,9 @@ pub(super) async fn build_runtime(cfg: &BenchConfig) -> Result<BenchRuntime, Box
         Engine::NativeGpu => {
             let optimizer_config = cfg
                 .relational_execution
-                .configure_native_optimizer(
-                    tpcds_native_analytics_optimizer_config_with_profile_settings(&cfg.native_profile)
-                        .with_native_pipeline_execution_mode(cfg.native_pipeline_execution_mode),
-                )
+                .configure_native_optimizer(tpcds_native_analytics_optimizer_config_with_profile_settings(
+                    &cfg.native_profile,
+                ))
                 .expect("native GPU benchmark installs the native rule");
             let rule = Arc::new(NexusNativePhysicalOptimizerRule::new(optimizer_config));
             let state = SessionStateBuilder::new_with_default_features()
@@ -104,13 +99,8 @@ pub(super) async fn build_runtime(cfg: &BenchConfig) -> Result<BenchRuntime, Box
         Engine::CostDeclinedDataFusion => {
             let cpu_ctx = SessionContext::new_with_config(tuned_cpu_session_config());
             register_tpcds_tables_with_native_metadata(&cpu_ctx, &cfg.root).await?;
-            let (native_ctx, optimizer) = build_native_planning_context(
-                &cfg.root,
-                &cfg.native_profile,
-                cfg.relational_execution,
-                cfg.native_pipeline_execution_mode,
-            )
-            .await?;
+            let (native_ctx, optimizer) =
+                build_native_planning_context(&cfg.root, &cfg.native_profile, cfg.relational_execution).await?;
             Ok(BenchRuntime {
                 execution_ctx: cpu_ctx,
                 optimizer: None,
@@ -125,13 +115,11 @@ async fn build_native_planning_context(
     root: &Path,
     native_profile: &TpcdsNativeProfileSettings,
     relational_execution: RelationalExecutionSelection,
-    native_pipeline_execution_mode: NativePipelineExecutionMode,
 ) -> Result<(SessionContext, Arc<NexusNativePhysicalOptimizerRule>), Box<dyn Error>> {
     let optimizer_config = relational_execution
-        .configure_native_optimizer(
-            tpcds_native_analytics_optimizer_config_with_cost_selection_and_profile_settings(native_profile)
-                .with_native_pipeline_execution_mode(native_pipeline_execution_mode),
-        )
+        .configure_native_optimizer(tpcds_native_analytics_optimizer_config_with_cost_selection_and_profile_settings(
+            native_profile,
+        ))
         .expect("cost-decision planning session installs the native rule");
     let rule = Arc::new(NexusNativePhysicalOptimizerRule::new(optimizer_config));
     let state = SessionStateBuilder::new_with_default_features()

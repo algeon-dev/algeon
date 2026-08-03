@@ -1,16 +1,15 @@
 //! Per-device service runtime context.
 
-use std::sync::{
-    Arc,
-    atomic::{AtomicUsize, Ordering},
-};
+use std::sync::Arc;
 
 use super::{
-    DeviceFacts, DeviceMemoryFailureReport, DeviceMemoryFailureTracker, GrantRequest, MemoryGovernor, MemoryGrant,
+    DeviceFacts, DeviceLedger, DeviceMemoryFailureReport, DeviceMemoryFailureTracker, MemoryGrant,
     registry::EngineDeviceHealthIdentity,
 };
 use crate::{
+    admission::AttemptRequirement,
     error::{QueryError, QueryErrorCode, Result},
+    observability::AdmissionRequestId,
     runtime::ServiceStreamPool,
 };
 
@@ -21,30 +20,6 @@ pub(crate) struct DeviceContext {
 }
 
 #[derive(Debug)]
-pub(crate) struct DeviceActiveQuerySlot {
-    device_ordinal: usize,
-    active_queries: Arc<AtomicUsize>,
-}
-
-impl DeviceActiveQuerySlot {
-    /// CUDA device ordinal whose per-device admission slot is held.
-    pub(crate) fn device_ordinal(&self) -> usize {
-        self.device_ordinal
-    }
-
-    #[cfg(test)]
-    pub(crate) fn new_for_test(device_ordinal: usize, active_queries: Arc<AtomicUsize>) -> Self {
-        Self { device_ordinal, active_queries }
-    }
-}
-
-impl Drop for DeviceActiveQuerySlot {
-    fn drop(&mut self) {
-        self.active_queries.fetch_sub(1, Ordering::AcqRel);
-    }
-}
-
-#[derive(Debug)]
 struct DeviceContextInner {
     device: cudf::DeviceId,
     stream_pool: ServiceStreamPool,
@@ -52,10 +27,10 @@ struct DeviceContextInner {
     memory_manager_installation: cudf::DeviceMemoryManagerInstallationState,
     engine_health_identity: EngineDeviceHealthIdentity,
     memory_failure_tracker: DeviceMemoryFailureTracker,
-    governor: MemoryGovernor,
+    ledger: Arc<DeviceLedger>,
     facts: DeviceFacts,
-    active_queries: Arc<AtomicUsize>,
     max_active_queries: Option<usize>,
+    lane_permits: std::sync::Arc<super::lanes::DeviceLanePermits>,
 }
 
 impl DeviceContext {
@@ -67,9 +42,8 @@ impl DeviceContext {
         memory_manager_installation: cudf::DeviceMemoryManagerInstallationState,
         engine_health_identity: EngineDeviceHealthIdentity,
         memory_failure_tracker: DeviceMemoryFailureTracker,
-        governor: MemoryGovernor,
+        ledger: Arc<DeviceLedger>,
         facts: DeviceFacts,
-        active_queries: Arc<AtomicUsize>,
         max_active_queries: Option<usize>,
     ) -> Result<Self> {
         if device.ordinal() != facts.device {
@@ -136,14 +110,14 @@ impl DeviceContext {
             .with_fact("device_ordinal", device.ordinal())
             .with_fact("memory_failure_tracker_device_ordinal", memory_failure_tracker.device_ordinal()));
         }
-        if governor.device_ordinal() != device.ordinal() {
+        if ledger.device_ordinal() != device.ordinal() {
             return Err(QueryError::new(
                 QueryErrorCode::InvalidPlan,
                 "nexus_query_engine.gpu.device_context",
-                "device context memory governor must match the context device",
+                "device context memory ledger must match the context device",
             )
             .with_fact("device_ordinal", device.ordinal())
-            .with_fact("memory_governor_device_ordinal", governor.device_ordinal()));
+            .with_fact("device_ledger_ordinal", ledger.device_ordinal()));
         }
         if max_active_queries == Some(0) {
             return Err(QueryError::new(
@@ -155,6 +129,24 @@ impl DeviceContext {
             .with_fact("field", "max_active_queries")
             .with_fact("reason", "zero"));
         }
+        if let Some(max_active_queries) = max_active_queries
+            && max_active_queries != ledger.profile().max_active_attempts
+        {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "nexus_query_engine.gpu.device_context",
+                "device active-query limit must match the ledger profile",
+            )
+            .with_fact("device_ordinal", device.ordinal())
+            .with_fact("field", "max_active_queries")
+            .with_fact("reason", "active_limit_mismatches_ledger_profile")
+            .with_fact("max_active_queries", max_active_queries)
+            .with_fact("ledger_max_active_attempts", ledger.profile().max_active_attempts));
+        }
+        let lane_permits = std::sync::Arc::new(super::lanes::DeviceLanePermits::new(
+            device.ordinal(),
+            ledger.profile().max_active_attempts,
+        ));
         Ok(Self {
             inner: Arc::new(DeviceContextInner {
                 device,
@@ -163,10 +155,10 @@ impl DeviceContext {
                 memory_manager_installation,
                 engine_health_identity,
                 memory_failure_tracker,
-                governor,
+                ledger,
                 facts,
-                active_queries,
                 max_active_queries,
+                lane_permits,
             }),
         })
     }
@@ -201,9 +193,14 @@ impl DeviceContext {
         self.inner.memory_failure_tracker.report()
     }
 
-    /// Per-device soft memory grant ledger.
-    pub fn memory_governor(&self) -> &MemoryGovernor {
-        &self.inner.governor
+    /// Per-device versioned immutable-grant ledger.
+    pub(crate) fn ledger(&self) -> &Arc<DeviceLedger> {
+        &self.inner.ledger
+    }
+
+    /// Per-device attempt lane array (`A_d` lanes, one per admitted attempt).
+    pub(crate) fn lane_permits(&self) -> &std::sync::Arc<super::lanes::DeviceLanePermits> {
+        &self.inner.lane_permits
     }
 
     /// Stable inventory facts captured when the registry was installed.
@@ -211,15 +208,14 @@ impl DeviceContext {
         &self.inner.facts
     }
 
-    /// Device capacity used for service-level granted accounting.
+    /// Device managed capacity used for granted accounting.
     pub fn capacity_bytes(&self) -> u64 {
-        self.inner.governor.capacity_bytes()
+        self.inner.ledger.managed_capacity_bytes()
     }
 
-    /// Number of currently admitted queries on this CUDA device ordinal across
-    /// every `QueryService` in this process.
+    /// Number of currently admitted attempts on this CUDA device ordinal.
     pub fn active_queries(&self) -> usize {
-        self.inner.active_queries.load(Ordering::Acquire)
+        self.inner.ledger.snapshot().map_or(0, |snapshot| snapshot.active_attempts)
     }
 
     /// Immutable backend-owned active-query limit for this device, falling
@@ -228,44 +224,37 @@ impl DeviceContext {
         self.inner.max_active_queries.or(legacy_limit)
     }
 
-    /// Attempts to acquire one per-device active-query slot.
-    pub(crate) fn try_acquire_query_slot(
-        &self,
-        max_queries_per_device: Option<usize>,
-    ) -> Option<DeviceActiveQuerySlot> {
-        let mut current = self.inner.active_queries.load(Ordering::Acquire);
-        loop {
-            if self.active_query_limit(max_queries_per_device).is_some_and(|cap| current >= cap) {
-                return None;
-            }
-            match self.inner.active_queries.compare_exchange_weak(
-                current,
-                current.saturating_add(1),
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
-                Ok(_) => {
-                    return Some(DeviceActiveQuerySlot {
-                        device_ordinal: self.inner.device.ordinal(),
-                        active_queries: Arc::clone(&self.inner.active_queries),
-                    });
-                },
-                Err(actual) => current = actual,
-            }
-        }
-    }
-
-    /// Bytes grantable to admitted queries, including evictable cache bytes
-    /// that can be synchronously released by the device memory governor.
-    pub fn available_bytes(&self) -> Result<u64> {
-        self.inner.governor.available_bytes()
-    }
-
-    /// Attempts to grant a query budget against this device's governor.
+    /// Folds a persistent native CUDA fault into the owning admission ledger.
     ///
-    /// This only updates the memory-governor ledger. Per-device active-query
-    /// slots are tracked separately by `try_acquire_query_slot`.
-    pub fn try_grant_query(&self, request: GrantRequest) -> Result<Option<MemoryGrant>> {
-        self.inner.governor.try_request(request)
+    /// The ledger remains the scheduler's only health authority. This method
+    /// is its device-context boundary: it samples the sibling runtime's
+    /// process-lifetime fault state and synchronously closes this device's
+    /// ledger before placement can issue another grant.
+    pub(crate) fn synchronize_native_admission_health(&self) -> Result<bool> {
+        let health = cudf::runtime::device_health_snapshot(self.inner.device);
+        if health.status() != cudf::runtime::DeviceHealthStatus::Unhealthy {
+            return Ok(false);
+        }
+        self.inner.ledger.close_admission_if_open(format!(
+            "persistent CUDA fault on device {} (fault_count={}, first_fault={:?})",
+            self.inner.device.ordinal(),
+            health.fault_count(),
+            health.first_fault()
+        ))
+    }
+
+    /// Attempts one immutable grant admission against this device's ledger.
+    ///
+    /// The ledger transaction owns both the active-attempt count and the
+    /// grant bytes; there is no separate slot to acquire.
+    pub(crate) fn try_admit_attempt(
+        &self,
+        waiter_id: AdmissionRequestId,
+        requirement: &AttemptRequirement,
+    ) -> Result<Option<MemoryGrant>> {
+        if self.synchronize_native_admission_health()? {
+            return Ok(None);
+        }
+        self.inner.ledger.try_admit(waiter_id, requirement)
     }
 }

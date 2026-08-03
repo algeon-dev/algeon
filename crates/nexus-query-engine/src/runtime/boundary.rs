@@ -1,5 +1,3 @@
-use crate::error::{QueryError, Result};
-
 /// Boundary contract for how native execution crosses source, build, probe, and
 /// result ownership boundaries.
 ///
@@ -65,29 +63,6 @@ impl ExecutionBoundaryPolicy {
         self
     }
 
-    /// Validates cross-field boundary requirements.
-    ///
-    /// Durable hash-join builds require a configured build cache. The fact key
-    /// `reason=missing_hash_join_build_cache` is report-facing.
-    pub fn validate(self, has_hash_join_build_cache: bool) -> Result<()> {
-        match self.build_materialization {
-            BuildMaterializationBoundary::QueryScopedGpuHashJoin => {},
-            BuildMaterializationBoundary::DurableGpuHashJoin if has_hash_join_build_cache => {},
-            BuildMaterializationBoundary::DurableGpuHashJoin => {
-                return Err(QueryError::new(
-                    crate::error::QueryErrorCode::InvalidPlan,
-                    "nexus_query_engine.boundary_policy.validate",
-                    "durable GPU hash-join build materialization requires a hash-join build cache",
-                )
-                .with_fact("build_materialization_boundary", self.build_materialization)
-                .with_fact("reason", "missing_hash_join_build_cache"));
-            },
-        }
-        match self.probe_execution {
-            ProbeExecutionBoundary::ReusableGpuHashJoin => {},
-        }
-        Ok(())
-    }
 }
 
 impl std::fmt::Display for ExecutionBoundaryPolicy {
@@ -127,8 +102,6 @@ impl std::fmt::Display for SourceReadBoundary {
 pub enum BuildMaterializationBoundary {
     /// Build artifacts are scoped to one query execution.
     QueryScopedGpuHashJoin,
-    /// Build artifacts may be retained in the configured durable build cache.
-    DurableGpuHashJoin,
 }
 
 impl BuildMaterializationBoundary {
@@ -136,7 +109,6 @@ impl BuildMaterializationBoundary {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::QueryScopedGpuHashJoin => "query_scoped_gpu_hash_join",
-            Self::DurableGpuHashJoin => "durable_gpu_hash_join",
         }
     }
 }

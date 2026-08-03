@@ -6,7 +6,7 @@ use nexus_query_engine::{
         CapabilityAnalysis, CapabilityDecision, ContractQuality, ContractStatus, ReservationRequirement,
         ReservationRequirementScope, SubgraphInvariantKind,
     },
-    contract_report::StrictBoundedContractReport,
+    contract_report::CapabilityContractReport,
     error::QueryError,
     expr::{AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, ColumnRef, Expr, LimitSpec, SortExpr, SortSpec},
     pipeline::{
@@ -803,7 +803,7 @@ fn compile_pipeline_reports_exact_source_read_preflight_when_lower_layer_covers_
     assert_eq!(source_gate.required_contract(), "parquet_source_read_exact_preflight");
     assert_eq!(source_gate.quality(), ContractQuality::ExactPreflight);
 
-    let report = StrictBoundedContractReport::from_compiled_pipeline(&analysis, &pipeline)
+    let report = CapabilityContractReport::from_compiled_pipeline(&analysis, &pipeline)
         .expect("exact source preflight should be valid strict contract evidence");
     let source_row = report
         .gate_rows()

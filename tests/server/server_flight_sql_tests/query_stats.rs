@@ -1,7 +1,7 @@
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn get_query_stats_returns_completed_statement_observability() {
     let (listener, addr) = free_local_addr();
-    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    let mut config = test_server_config();
     declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
@@ -22,6 +22,10 @@ async fn get_query_stats_returns_completed_statement_observability() {
     assert!(payload.contains(&format!("# query_id={query_id}")), "{payload}");
     assert!(payload.contains("# outcome=succeeded"), "{payload}");
     assert!(payload.contains("[physical_plan]"), "{payload}");
+    assert!(payload.contains("# attempt_id=attempt-"), "{payload}");
+    assert!(payload.contains("# attempt_disposition=native"), "{payload}");
+    assert!(payload.contains("# attempt_outcome=succeeded"), "{payload}");
+    assert_single_sealed_attempt_report(&payload);
 
     let (header, row) = query_stats_tsv_single_row(&payload, "execution");
     assert_eq!(tsv_value(&header, &row, "runtime_outcome"), "succeeded", "{payload}");
@@ -33,7 +37,7 @@ async fn get_query_stats_returns_completed_statement_observability() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn get_query_stats_returns_structured_error_after_planning_failure() {
     let (listener, addr) = free_local_addr();
-    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    let mut config = test_server_config();
     declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
@@ -58,12 +62,13 @@ async fn get_query_stats_returns_structured_error_after_planning_failure() {
     );
     assert!(payload.contains("missing"), "{payload}");
     assert!(payload.contains("one"), "{payload}");
+    assert_single_sealed_attempt_report(&payload);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn get_query_stats_surfaces_complete_cpu_baseline_not_supported() {
     let (listener, addr) = free_local_addr();
-    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    let mut config = test_server_config();
     declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
@@ -115,7 +120,7 @@ async fn get_query_stats_surfaces_complete_cpu_baseline_not_supported() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn get_query_stats_unknown_query_returns_not_found() {
     let (listener, addr) = free_local_addr();
-    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    let mut config = test_server_config();
     declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
@@ -138,7 +143,7 @@ async fn get_query_stats_unknown_query_returns_not_found() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn get_query_stats_returns_transaction_structured_error() {
     let (listener, addr) = free_local_addr();
-    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    let mut config = test_server_config();
     declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
@@ -165,7 +170,7 @@ async fn get_query_stats_returns_transaction_structured_error() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn get_query_stats_returns_cancelled_for_unconsumed_ticket() {
     let (listener, addr) = free_local_addr();
-    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    let mut config = test_server_config();
     declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
@@ -186,4 +191,5 @@ async fn get_query_stats_returns_cancelled_for_unconsumed_ticket() {
     assert!(payload.contains("[structured_error]"), "{payload}");
     assert!(payload.contains("code=cancelled"), "{payload}");
     assert!(payload.contains("operation=datafusion_nexus.server.flight.cancel_query"), "{payload}");
+    assert_single_sealed_attempt_report(&payload);
 }

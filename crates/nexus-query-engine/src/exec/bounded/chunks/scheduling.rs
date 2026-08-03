@@ -30,10 +30,6 @@ pub(in crate::exec::bounded) fn execute_bounded_chunks_with_source_scheduler(
                 },
             };
             partials.extend(chunk_partials);
-            if let Err(error) = reservations.acknowledge_requested_grant_shrink() {
-                release_committed_partials_reverse(reservations, partials, metrics);
-                return Err(error);
-            }
         }
         return Ok(partials);
     }
@@ -89,7 +85,7 @@ pub(in crate::exec::bounded) fn execute_bounded_chunks_with_source_scheduler(
             metrics,
             1,
             max_attempts,
-            retain_decoded_source_for_cache(context, bounded),
+            retain_decoded_source(bounded),
         ) {
             Ok(source) => source,
             Err(error) if is_prefetch_chunk_error(&error) && is_retryable_chunk_error(&error) => {
@@ -104,7 +100,6 @@ pub(in crate::exec::bounded) fn execute_bounded_chunks_with_source_scheduler(
                         },
                     };
                 partials.extend(chunk_partials);
-                acknowledge_chunk_boundary_or_release(&mut queue, index + 1, reservations, &mut partials, metrics)?;
                 if let Err(error) =
                     queue.ensure_current_required(context, bounded.source, chunks, reservations, metrics, max_attempts)
                 {
@@ -152,7 +147,6 @@ pub(in crate::exec::bounded) fn execute_bounded_chunks_with_source_scheduler(
                     },
                 };
                 partials.extend(chunk_partials);
-                acknowledge_chunk_boundary_or_release(&mut queue, index + 1, reservations, &mut partials, metrics)?;
                 if let Err(error) =
                     queue.ensure_current_required(context, bounded.source, chunks, reservations, metrics, max_attempts)
                 {
@@ -227,7 +221,6 @@ pub(in crate::exec::bounded) fn execute_bounded_chunks_with_source_scheduler(
                     },
                 };
                 partials.extend(chunk_partials);
-                acknowledge_chunk_boundary_or_release(&mut queue, index + 1, reservations, &mut partials, metrics)?;
                 if let Err(error) =
                     queue.ensure_current_required(context, bounded.source, chunks, reservations, metrics, max_attempts)
                 {
@@ -261,7 +254,6 @@ pub(in crate::exec::bounded) fn execute_bounded_chunks_with_source_scheduler(
                 return Err(error);
             },
         }
-        acknowledge_chunk_boundary_or_release(&mut queue, index + 1, reservations, &mut partials, metrics)?;
         if let Err(error) =
             queue.ensure_current_required(context, bounded.source, chunks, reservations, metrics, max_attempts)
         {
@@ -292,21 +284,6 @@ pub(in crate::exec::bounded) fn execute_bounded_chunks_with_source_scheduler(
     Ok(partials)
 }
 
-fn acknowledge_chunk_boundary_or_release(
-    queue: &mut OrderedSourceReadQueue,
-    next_chunk_index: usize,
-    reservations: &mut ReservationTracker,
-    partials: &mut Vec<CommittedPartial>,
-    metrics: &mut QueryMetrics,
-) -> Result<()> {
-    if let Err(error) = reservations.acknowledge_requested_grant_shrink() {
-        queue.abandon_all(next_chunk_index, reservations, metrics);
-        release_committed_partials_reverse(reservations, std::mem::take(partials), metrics);
-        return Err(error);
-    }
-    Ok(())
-}
-
 fn execute_remaining_chunks_serial_after_scheduler_error(
     context: &ExecutionContext,
     bounded: &BoundedPlan<'_>,
@@ -333,12 +310,9 @@ fn execute_remaining_chunks_serial_after_scheduler_error(
         max_attempts,
         min_retry_chunk_row_groups,
     )?);
-    reservations.acknowledge_requested_grant_shrink()?;
-
     for chunk in &chunks[next_chunk_index + 1..] {
         context.check_cancellation("nexus_query_engine.exec.bounded.chunk_scheduler")?;
         partials.extend(execute_bounded_chunk_with_retry(context, bounded, chunk, reservations, metrics)?);
-        reservations.acknowledge_requested_grant_shrink()?;
     }
     Ok(())
 }
@@ -517,9 +491,6 @@ fn start_scheduled_source_read(
 ) -> Result<ScheduledLocalParquetRead> {
     context.check_cancellation("nexus_query_engine.exec.bounded.source_scheduler_start")?;
     metrics.record_source_chunk_attempt();
-    if let Some(output) = try_read_cached_local_parquet_chunk(context, source, chunk, reservations, metrics)? {
-        return Ok(ScheduledLocalParquetRead::ready(output, budget_boundary, prefetch));
-    }
     let contract = source_read_reservation_contract(context.memory_control_policy(), chunk);
     let request = chunk_reservation_request(
         ReservationKind::SourceRead,
@@ -570,19 +541,6 @@ fn finish_scheduled_source_read(
             memory_boundary,
             attempt,
             max_attempts,
-        )?;
-        insert_bounded_local_parquet_source_cache(
-            context,
-            source,
-            &output.chunk,
-            &output.frame,
-            &mut output.reservation,
-            reservations,
-            metrics,
-            memory_boundary,
-            attempt,
-            max_attempts,
-            output.observed_bytes,
         )?;
     } else {
         output.observed_bytes = match shrink_source_reservation_to_observed_without_grow(

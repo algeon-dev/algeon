@@ -6,7 +6,7 @@
 //! - [`session`] wires the native physical optimizer into a
 //!   `SessionStateBuilder` while preserving DataFusion's final validation rule.
 //! - [`planner`] owns native rewrite policy, fallback behavior, and the
-//!   strict/adaptive planning diagnostics consumed by reports.
+//!   bounded-contract planning diagnostics consumed by reports.
 //! - [`native_exec`] contains the `ExecutionPlan` wrappers that either
 //!   materialize native GPU results back to Arrow or pass GPU-resident
 //!   fragments between native subplans.

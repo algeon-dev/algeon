@@ -1,7 +1,7 @@
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn create_view_statement_executes_once_and_persists_across_statements() {
     let (listener, addr) = free_local_addr();
-    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    let mut config = test_server_config();
     declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
@@ -34,7 +34,7 @@ async fn create_view_statement_executes_once_and_persists_across_statements() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn prepared_create_view_query_advertises_empty_schema_and_persists() {
     let (listener, addr) = free_local_addr();
-    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    let mut config = test_server_config();
     declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
@@ -74,7 +74,7 @@ async fn prepared_create_view_query_advertises_empty_schema_and_persists() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn drop_table_on_view_reports_object_type_mismatch() {
     let (listener, addr) = free_local_addr();
-    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    let mut config = test_server_config();
     declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
@@ -126,7 +126,7 @@ async fn drop_table_on_view_reports_object_type_mismatch() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn drop_view_on_table_reports_object_type_mismatch() {
     let (listener, addr) = free_local_addr();
-    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    let mut config = test_server_config();
     declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
@@ -165,7 +165,7 @@ async fn drop_view_on_table_reports_object_type_mismatch() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn statement_update_create_external_table_executes_and_persists() {
     let (listener, addr) = free_local_addr();
-    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    let mut config = test_server_config();
     declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
@@ -197,7 +197,7 @@ async fn statement_update_create_external_table_executes_and_persists() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn prepared_statement_update_create_external_table_executes_and_persists() {
     let (listener, addr) = free_local_addr();
-    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    let mut config = test_server_config();
     declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
@@ -233,7 +233,7 @@ async fn prepared_statement_update_create_external_table_executes_and_persists()
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn prepared_ddl_create_action_omits_dataset_schema_bytes() {
     let (listener, addr) = free_local_addr();
-    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    let mut config = test_server_config();
     declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
@@ -264,7 +264,7 @@ async fn prepared_ddl_create_action_omits_dataset_schema_bytes() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn prepared_create_action_handle_resolves_query_stats() {
     let (listener, addr) = free_local_addr();
-    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    let mut config = test_server_config();
     declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
@@ -291,7 +291,7 @@ async fn prepared_statement_query_create_external_table_executes_and_persists() 
     // never `execute_update()`. DDL must therefore execute on the prepared
     // query path the same way a non-prepared statement does.
     let (listener, addr) = free_local_addr();
-    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    let mut config = test_server_config();
     declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
@@ -317,10 +317,13 @@ async fn prepared_statement_query_create_external_table_executes_and_persists() 
     // than the `execute_update` rejection that used to block DataGrip-class
     // clients.
     let flight_info = prepared.execute().await.unwrap();
+    let query_id = query_id_from_statement_flight_info(&flight_info);
     let ticket = flight_info.endpoint.first().and_then(|endpoint| endpoint.ticket.clone()).unwrap();
     let ddl_batches = client.do_get(ticket).await.unwrap().try_collect::<Vec<_>>().await.unwrap();
     let ddl_rows: usize = ddl_batches.iter().map(|batch| batch.num_rows()).sum();
     assert_eq!(ddl_rows, 0, "DDL executed through the query channel returns no rows");
+    let payload = get_query_stats_raw(&mut client, &query_id).await;
+    assert_single_sealed_attempt_report(&payload);
 
     prepared.close().await.unwrap();
     let batches = execute_batches(&mut client, "SELECT COUNT(*) AS edge_count FROM query_edges_prepared").await;
@@ -338,7 +341,7 @@ async fn prepared_statement_query_create_external_table_executes_and_persists() 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn prepared_ddl_update_then_query_double_send_is_deduplicated() {
     let (listener, addr) = free_local_addr();
-    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    let mut config = test_server_config();
     declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
@@ -382,7 +385,7 @@ async fn prepared_ddl_update_then_query_double_send_is_deduplicated() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn prepared_ddl_double_execute_is_deduplicated_on_update_channel() {
     let (listener, addr) = free_local_addr();
-    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    let mut config = test_server_config();
     declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
@@ -424,7 +427,7 @@ async fn prepared_ddl_double_execute_is_deduplicated_on_update_channel() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn prepared_ddl_double_execute_is_deduplicated_on_query_channel() {
     let (listener, addr) = free_local_addr();
-    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    let mut config = test_server_config();
     declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 

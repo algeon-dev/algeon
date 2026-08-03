@@ -61,8 +61,8 @@ use futures::future::BoxFuture;
 use iceberg::{TableIdent, io::FileIO, table::StaticTable};
 use iceberg_datafusion::IcebergStaticTableProvider;
 use nexus_query_engine::{
-    mode::{NativePipelineExecutionMode, StatisticalAggregateExecutionMode},
-    runtime::{MemoryControlPolicy, QueryServiceConfig, QueryServiceTenantConfig, SourceSchedulerPolicy, TenantId},
+    mode::StatisticalAggregateExecutionMode,
+    runtime::{QueryExecutionConfig, SourceSchedulerPolicy},
     source::ParquetReadStrategy,
 };
 use nexus_workloads::{
@@ -188,9 +188,8 @@ fn native_session_execution_config_from_env(
 ) -> SmokeResult<NexusNativeExecutionConfig> {
     let execution_config = native_execution_config_for_profile_with_env(profile, |name| std::env::var(name).ok())?;
     eprintln!(
-        "[native_iceberg_smoke_report] stage=native_session_config relational_execution={} native_pipeline_execution_mode={}",
+        "[native_iceberg_smoke_report] stage=native_session_config relational_execution={}",
         crate::report_workload::RelationalExecutionSelection::strict_native().as_str(),
-        execution_config.native_pipeline_execution_mode().as_str(),
     );
     Ok(execution_config)
 }

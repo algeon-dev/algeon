@@ -178,12 +178,12 @@ executes the returned plan or performs GPU admission.
 
 | Code | Meaning |
 | --- | --- |
-| `runtime_gpu_admission_unknown` | Query-service grants are acquired only at execution time and can wait, shrink, or fail under concurrency. |
+| `runtime_gpu_admission_unknown` | Query-service grants are acquired only at execution time and can wait or fail under concurrency; once admitted, each grant is immutable. |
 | `device_memory_runtime_unknown` | Allocation, reservation, and retry outcomes depend on data and concurrency. |
 | `native_runtime_failure_has_no_cpu_rescue` | Once native GPU execution starts, a native failure is terminal; Nexus does not replay it on CPU. |
 | `host_output_materialization` | Query output is materialized back to host Arrow outside the GPU-execution promise. |
 | `cugraph_runtime_validation_unknown` | cuGraph seed, personalization, weight, and device-side checks can still fail at runtime. |
-| `execution_mode_plan_time_only` | Strict or adaptive runtime gates still execute later under the stamped native pipeline mode. |
+| `execution_mode_plan_time_only` | Coverage does not acquire a device grant; capability-first admission and bounded execution happen later for the selected native plan. |
 
 ## Relationship to `gpu_validate_call`
 

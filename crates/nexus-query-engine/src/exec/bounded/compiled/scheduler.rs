@@ -79,19 +79,7 @@ pub trait CompiledTaskExecutor {
 /// Scheduler behavior selected by an executor at a scheduling-cycle boundary.
 #[doc(hidden)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct CompiledSchedulingCycle {
-    admit_one_overbudget_task: bool,
-}
-
-impl CompiledSchedulingCycle {
-    pub fn after_cooperative_shrink_applied() -> Self {
-        Self { admit_one_overbudget_task: true }
-    }
-
-    pub fn admits_one_overbudget_task(self) -> bool {
-        self.admit_one_overbudget_task
-    }
-}
+pub struct CompiledSchedulingCycle;
 
 /// A conservative scheduler-level task admission decision.
 ///
@@ -327,7 +315,7 @@ impl<'a> CompiledPipelineScheduler<'a> {
         &self,
         state: &CompiledPipelineState<E::Resource>,
         executor: &E,
-        cycle: CompiledSchedulingCycle,
+        _cycle: CompiledSchedulingCycle,
     ) -> Result<&'a PipelineTask>
     where
         E: CompiledTaskExecutor,
@@ -361,13 +349,6 @@ impl<'a> CompiledPipelineScheduler<'a> {
         {
             return Ok(*task);
         }
-        if cycle.admits_one_overbudget_task()
-            && let Some((task, _)) =
-                admissions.iter().min_by_key(|(task, _)| self.runnable_task_priority(task, state, live_reserved_bytes))
-        {
-            return Ok(*task);
-        }
-
         Err(resource_not_ready_error(&admissions, state, self.pipeline))
     }
 

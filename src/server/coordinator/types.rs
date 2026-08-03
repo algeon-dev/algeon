@@ -12,7 +12,10 @@ use std::{
 use nexus_query_engine::{observability::RuntimeTerminalOutcome, runtime::ExecutionCancellation};
 
 use super::super::observability::CapturedError;
-use crate::error::{Error, ErrorCode};
+use crate::{
+    attempt::NexusAttempt,
+    error::{Error, ErrorCode},
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(in crate::server) struct QueryKey {
@@ -298,13 +301,16 @@ pub(in crate::server) struct QueryHotCounterSnapshot {
     pub(in crate::server) overflow: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(in crate::server) struct CoordinatorTicketPayload {
     pub(in crate::server) sql: String,
     pub(in crate::server) correlation_id: Option<String>,
     pub(in crate::server) prepared_handle: Option<String>,
     pub(in crate::server) kind: u8,
     pub(in crate::server) native_cancellation: ExecutionCancellation,
+    /// The sole attempt for a Flight SQL result-stream invocation. It begins
+    /// before logical planning and moves exactly once into DoGet.
+    pub(in crate::server) attempt: Option<NexusAttempt>,
     pub(in crate::server) started_at: Instant,
     pub(in crate::server) deadline: Instant,
 }

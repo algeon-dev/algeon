@@ -7,7 +7,7 @@ use super::{
     churn::ChurnReport,
     flight::QueryEvidence,
     probe::{PROBE_TIMEOUT, ProbeReport, SATURATION_FLOOR},
-    server::{MAX_CONCURRENT_QUERIES, MAX_QUERIES_PER_DEVICE, Params},
+    server::{CONCURRENT_CLIENTS, MAX_ACTIVE_ATTEMPTS_PER_DEVICE, Params},
     validation::{parse_u64_field, parse_usize_field, tsv_section, tsv_section_single_row},
 };
 
@@ -20,8 +20,8 @@ pub(super) fn write_run_metadata(params: &Params) -> E2eResult<()> {
     let metadata = format!(
         "git_sha={git_sha}\ngit_dirty={git_dirty}\nserver_binary={}\nserver_features=server,iceberg,nvml\n\
          server_binary_sha256={server_sha256}\ndriver_binary_sha256={driver_sha256}\n\
-         tokio_worker_threads=1\ndevice_ordinals={}\nmax_concurrent_queries={MAX_CONCURRENT_QUERIES}\n\
-         max_queries_per_device={MAX_QUERIES_PER_DEVICE}\nrest_uri={}\nwarehouse={}\nnamespace={}\n",
+         tokio_worker_threads=1\ndevice_ordinals={}\nconcurrent_clients={CONCURRENT_CLIENTS}\n\
+         max_active_attempts_per_device={MAX_ACTIVE_ATTEMPTS_PER_DEVICE}\nrest_uri={}\nwarehouse={}\nnamespace={}\n",
         params.server_binary.display(),
         params.device_csv(),
         params.rest_uri,
@@ -105,20 +105,16 @@ pub(super) fn write_query_artifacts(
     churn: &ChurnReport,
 ) -> E2eResult<()> {
     let mut output = String::from(
-        "phase\tworkload\tquery_id\tdevice_ordinal\toutput_rows\tsource_cache_hits\tsource_cache_misses\t\
-         source_cache_inserts\td2h_count\td2h_bytes\tparity_mode\tcpu_fingerprint\tnative_fingerprint\n",
+        "phase\tworkload\tquery_id\tdevice_ordinal\toutput_rows\td2h_count\td2h_bytes\tparity_mode\tcpu_fingerprint\tnative_fingerprint\n",
     );
     for row in successful {
         output.push_str(&format!(
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
             tsv_escape(&row.phase),
             row.workload,
             tsv_escape(&row.query_id),
             row.device_ordinal,
             row.output_rows,
-            row.source_cache_hits,
-            row.source_cache_misses,
-            row.source_cache_inserts,
             row.d2h_count,
             row.d2h_bytes,
             row.parity_mode,
@@ -163,7 +159,8 @@ pub(super) fn write_summary(
 ) -> E2eResult<()> {
     let gpu = tsv_section_single_row(after, "gpu_execution")?;
     let pools = tsv_section(after, "gpu_execution_pools")?;
-    let governors = tsv_section(after, "memory_governor_reports")?;
+    let ledgers = tsv_section(after, "device_ledger_reports")?;
+    let ledger_grants = tsv_section(after, "device_ledger_grants")?;
     let telemetry = tsv_section(after, "device_telemetry")?;
     let device_peaks = pools
         .iter()
@@ -175,12 +172,28 @@ pub(super) fn write_summary(
             }))
         })
         .collect::<E2eResult<Vec<_>>>()?;
-    let capacities = governors
+    let device_ledger_reports = ledgers
         .iter()
         .map(|row| {
             Ok(json!({
-                "device_ordinal": parse_usize_field(row, "device_ordinal", "summary governor")?,
-                "capacity_bytes": parse_u64_field(row, "capacity_bytes", "summary governor")?,
+                "device_ordinal": parse_usize_field(row, "device_ordinal", "summary device ledger")?,
+                "managed_capacity_bytes": parse_u64_field(row, "managed_capacity_bytes", "summary device ledger")?,
+                "live_grants_bytes": parse_u64_field(row, "live_grants_bytes", "summary device ledger")?,
+                "available_bytes": parse_u64_field(row, "available_bytes", "summary device ledger")?,
+                "active_grants": parse_u64_field(row, "active_grants", "summary device ledger")?,
+                "evictable_bytes": parse_u64_field(row, "evictable_bytes", "summary device ledger")?,
+            }))
+        })
+        .collect::<E2eResult<Vec<_>>>()?;
+    let device_ledger_grants = ledger_grants
+        .iter()
+        .map(|row| {
+            Ok(json!({
+                "device_ordinal": parse_usize_field(row, "device_ordinal", "summary device ledger grant")?,
+                "grant_id": parse_u64_field(row, "grant_id", "summary device ledger grant")?,
+                "admission_request_id": parse_u64_field(row, "admission_request_id", "summary device ledger grant")?,
+                "grant_bytes": parse_u64_field(row, "grant_bytes", "summary device ledger grant")?,
+                "live_reserved_bytes": parse_u64_field(row, "live_reserved_bytes", "summary device ledger grant")?,
             }))
         })
         .collect::<E2eResult<Vec<_>>>()?;
@@ -195,33 +208,18 @@ pub(super) fn write_summary(
         })
         .collect::<E2eResult<Vec<_>>>()?;
     let observed_devices = successful.iter().map(|row| row.device_ordinal).collect::<BTreeSet<_>>();
-    let cache_by_device = params
+    let disabled_cache_by_device = params
         .devices
         .iter()
-        .map(|device| {
-            let rows = successful.iter().filter(|row| row.device_ordinal == *device);
-            let (hits, misses, inserts) = rows.fold((0_u64, 0_u64, 0_u64), |totals, row| {
-                (
-                    totals.0.saturating_add(row.source_cache_hits),
-                    totals.1.saturating_add(row.source_cache_misses),
-                    totals.2.saturating_add(row.source_cache_inserts),
-                )
-            });
-            json!({
-                "device_ordinal": device,
-                "hits": hits,
-                "misses": misses,
-                "inserts": inserts,
-            })
-        })
+        .map(|device| json!({ "device_ordinal": device, "hits": 0_u64, "misses": 0_u64, "inserts": 0_u64 }))
         .collect::<Vec<_>>();
     let summary = json!({
         "status": "passed",
         "topology": {
             "tokio_worker_threads": 1,
             "device_ordinals": params.devices,
-            "max_concurrent_queries": MAX_CONCURRENT_QUERIES,
-            "max_queries_per_device": MAX_QUERIES_PER_DEVICE,
+            "concurrent_clients": CONCURRENT_CLIENTS,
+            "max_active_attempts_per_device": MAX_ACTIVE_ATTEMPTS_PER_DEVICE,
         },
         "queries": {
             "successful": successful.len(),
@@ -245,11 +243,14 @@ pub(super) fn write_summary(
             "peak_active_query_jobs": parse_u64_field(&gpu, "peak_active_query_jobs", "summary GPU")?,
             "pools": device_peaks,
         },
-        "memory_governors": capacities,
+        "device_ledgers": {
+            "reports": device_ledger_reports,
+            "grants": device_ledger_grants,
+        },
         "decoded_source_cache": {
-            "configured_max_retained_bytes_per_device": 8_u64 * 1024 * 1024 * 1024,
-            "rest_source_identity": "stable_remote_uri",
-            "devices": cache_by_device,
+            "enabled": false,
+            "configured_max_retained_bytes_per_device": 0_u64,
+            "devices": disabled_cache_by_device,
         },
         "telemetry": device_totals,
         "allocation_failures": 0,

@@ -1,62 +1,66 @@
+#[cfg(test)]
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::{fmt::Write, sync::Arc};
 
-use nexus_query_engine::runtime::TenantId;
 #[cfg(test)]
 use nexus_query_engine::runtime::{QueryAdmissionRequest, QueryHandle};
-use tokio::sync::Semaphore;
-#[cfg(test)]
-use tokio::sync::{OwnedSemaphorePermit, TryAcquireError};
 
 use super::{
     config::ServerConfig,
     error::{Result, ServerError},
 };
-use crate::backend::{NexusAdmissionPolicy, NexusGpuBackend};
-
-const DEFAULT_SERVER_TENANT_ID: &str = "default";
+use crate::{
+    attempt::{AttemptOptions, NexusAttempt},
+    backend::{NexusGpuBackend, NexusGpuQueuePolicy},
+};
 
 #[derive(Clone, Debug)]
 enum QueryAdmissionBackend {
-    QueryService { backend: Box<NexusGpuBackend> },
-    Semaphore { permits: Arc<Semaphore> },
+    QueryService {
+        backend: Box<NexusGpuBackend>,
+    },
+    #[cfg(test)]
+    TestOnly {
+        closed: Arc<AtomicBool>,
+    },
 }
 
 #[derive(Debug)]
 pub struct QueryAdmission {
     backend: QueryAdmissionBackend,
-    max_in_flight: usize,
 }
 
 impl QueryAdmission {
-    pub fn new(max_in_flight: usize) -> Result<Self> {
-        if max_in_flight == 0 {
-            return Err(ServerError::invalid_config("max_in_flight", "must be greater than zero"));
-        }
-        Ok(Self {
-            backend: QueryAdmissionBackend::Semaphore { permits: Arc::new(Semaphore::new(max_in_flight)) },
-            max_in_flight,
-        })
-    }
-
-    pub(crate) fn from_backend(backend: Option<&NexusGpuBackend>, config: &ServerConfig) -> Result<Self> {
-        Self::from_backend_option(config.max_in_flight, backend.cloned())
-    }
-
-    fn from_backend_option(max_in_flight: usize, backend: Option<NexusGpuBackend>) -> Result<Self> {
-        let Some(backend) = backend else {
-            return Self::new(max_in_flight);
-        };
-        Ok(Self { backend: QueryAdmissionBackend::QueryService { backend: Box::new(backend) }, max_in_flight })
+    pub(crate) fn from_backend(backend: &NexusGpuBackend) -> Self {
+        Self { backend: QueryAdmissionBackend::QueryService { backend: Box::new(backend.clone()) } }
     }
 
     #[cfg(test)]
     pub(crate) fn from_test_backend(backend: &NexusGpuBackend) -> Self {
-        Self::from_backend_option(backend.admission_policy().max_concurrent_queries(), Some(backend.clone()))
-            .expect("test backend admission policy is already validated")
+        Self::from_backend(backend)
     }
 
-    pub fn max_in_flight(&self) -> usize {
-        self.max_in_flight
+    #[cfg(test)]
+    pub(crate) fn new_for_tests() -> Self {
+        Self { backend: QueryAdmissionBackend::TestOnly { closed: Arc::new(AtomicBool::new(false)) } }
+    }
+
+    /// Begin the single execution attempt owned by a production Flight
+    /// invocation. The test-only admission projection intentionally has no
+    /// runtime backend, so legacy CPU-only unit fixtures return `None`; every
+    /// server-built admission facade returns one concrete attempt.
+    pub(crate) fn begin_attempt(&self, options: AttemptOptions) -> crate::error::Result<Option<NexusAttempt>> {
+        match &self.backend {
+            QueryAdmissionBackend::QueryService { backend } => backend.begin_attempt(options).map(Some),
+            #[cfg(test)]
+            QueryAdmissionBackend::TestOnly { .. } => Ok(None),
+        }
+    }
+
+    /// Whether this facade owns a real backend and therefore must route Flight
+    /// execution through `NexusAttempt` rather than the CPU-only test seam.
+    pub(crate) fn has_attempt_backend(&self) -> bool {
+        matches!(self.backend, QueryAdmissionBackend::QueryService { .. })
     }
 
     /// Close the admission gate. After close, any pending or future
@@ -67,7 +71,10 @@ impl QueryAdmission {
             QueryAdmissionBackend::QueryService { backend } => {
                 backend.close();
             },
-            QueryAdmissionBackend::Semaphore { permits } => permits.close(),
+            #[cfg(test)]
+            QueryAdmissionBackend::TestOnly { closed } => {
+                closed.store(true, Ordering::Release);
+            },
         }
     }
 
@@ -79,8 +86,9 @@ impl QueryAdmission {
                         .with_fact("shutdown_component", "query_admission")
                 })
             },
-            QueryAdmissionBackend::Semaphore { permits } => {
-                permits.close();
+            #[cfg(test)]
+            QueryAdmissionBackend::TestOnly { closed } => {
+                closed.store(true, Ordering::Release);
                 Ok(())
             },
         }
@@ -107,21 +115,18 @@ impl QueryAdmission {
         match &self.backend {
             QueryAdmissionBackend::QueryService { backend } => backend
                 .session_capability()
-                .try_admit_query_with_request(backend.tenant_id().clone(), QueryAdmissionRequest::new())
+                .try_admit_query_with_request(QueryAdmissionRequest::new())
                 .map(|handle| {
                     handle.map(|handle| QueryAdmissionPermit {
                         inner: QueryAdmissionPermitInner::QueryService(Arc::new(handle)),
                     })
                 })
                 .map_err(|error| ServerError::session("query service admission failed", error)),
-            QueryAdmissionBackend::Semaphore { permits } => match permits.clone().try_acquire_owned() {
-                Ok(permit) => {
-                    Ok(Some(QueryAdmissionPermit { inner: QueryAdmissionPermitInner::Semaphore { _permit: permit } }))
-                },
-                Err(TryAcquireError::NoPermits) => Ok(None),
-                Err(error @ TryAcquireError::Closed) => {
-                    Err(ServerError::session("query admission queue closed", error))
-                },
+            QueryAdmissionBackend::TestOnly { closed } => {
+                if closed.load(Ordering::Acquire) {
+                    return Err(ServerError::shutdown("query_admission_closed", "query admission is closed"));
+                }
+                Ok(Some(QueryAdmissionPermit { inner: QueryAdmissionPermitInner::TestOnly }))
             },
         }
     }
@@ -138,8 +143,6 @@ impl QueryAdmission {
                     event,
                     active_queries = snapshot.active_queries,
                     queued_queries = snapshot.queued_queries,
-                    next_tenant_id = snapshot.next_tenant_id.as_ref().map(TenantId::as_str).unwrap_or(""),
-                    tenant_queue_depths = %format_tenant_queue_depths(&snapshot.queued_by_tenant),
                     "query service admission snapshot"
                 );
             },
@@ -150,20 +153,19 @@ impl QueryAdmission {
                 "failed to read query service admission snapshot"
             ),
         }
-        match session.memory_governor_reports() {
+        match session.device_ledger_reports() {
             Ok(reports) => {
                 for report in reports {
                     tracing::info!(
                         query_id = query_id.unwrap_or(""),
                         event,
                         device_ordinal = report.device_ordinal,
-                        capacity_bytes = report.capacity_bytes,
-                        outstanding_bytes = report.outstanding_bytes,
+                        managed_capacity_bytes = report.managed_capacity_bytes,
+                        live_grants_bytes = report.live_grants_bytes,
                         evictable_bytes = report.evictable_bytes,
-                        free_bytes = report.free_bytes,
                         available_bytes = report.available_bytes,
                         active_grants = report.grants.len(),
-                        "query service memory governor report"
+                        "query service device ledger report"
                     );
                 }
             },
@@ -171,7 +173,7 @@ impl QueryAdmission {
                 query_id = query_id.unwrap_or(""),
                 event,
                 %error,
-                "failed to read query service memory governor report"
+                "failed to read query service device ledger report"
             ),
         }
         for snapshot in session.device_admission_snapshots().unwrap_or_default() {
@@ -225,98 +227,57 @@ impl QueryAdmission {
     pub fn diagnostics_payload(&self) -> Result<String> {
         let mut output = String::new();
         let _ = writeln!(output, "# datafusion_nexus_admission_stats=1");
-        let _ = writeln!(output, "# max_in_flight={}", self.max_in_flight);
         match &self.backend {
             QueryAdmissionBackend::QueryService { backend } => {
                 let session = backend.session_capability();
-                let config = session
-                    .config()
-                    .map_err(|error| ServerError::session("failed to read backend controller config", error))?;
+                let queue_bounds = session
+                    .queue_bounds()
+                    .map_err(|error| ServerError::session("failed to read backend queue policy", error))?;
                 let _ = writeln!(output, "# backend=query_service");
-                let _ = writeln!(output, "# tenant_id={}", payload_value(backend.tenant_id().as_str()));
                 let _ = writeln!(output, "# device_ordinals={}", payload_value(&join_usize(backend.device_ordinals())));
-                let _ = writeln!(output, "# max_concurrent_queries={}", config.max_concurrent_queries);
-                let _ = writeln!(
-                    output,
-                    "# max_queries_per_device={}",
-                    backend
-                        .admission_policy()
-                        .max_queries_per_device()
-                        .map_or_else(|| "none".to_string(), |value| value.to_string())
-                );
-                let _ = writeln!(output, "# placement_policy={}", config.placement_policy.as_str());
-                if let nexus_query_engine::runtime::QueryPlacementPolicy::Pinned { device_ordinal } =
-                    config.placement_policy
-                {
-                    let _ = writeln!(output, "# pinned_device_ordinal={device_ordinal}");
+                let _ = writeln!(output, "# device_profile_count={}", backend.device_profiles().len());
+                for profile in backend.device_profiles() {
+                    let ordinal = profile.device_ordinal();
+                    let _ =
+                        writeln!(output, "# device_{ordinal}_max_active_attempts={}", profile.max_active_attempts());
+                    let _ = writeln!(
+                        output,
+                        "# device_{ordinal}_attempt_floor_bytes={}",
+                        profile.attempt_floor_bytes().map_or_else(|| "none".to_string(), |value| value.to_string())
+                    );
                 }
-                let _ = writeln!(output, "# max_admission_queue_len={}", config.max_admission_queue_len);
-                let _ = writeln!(output, "# admission_wait_timeout_ms={}", config.admission_wait_timeout.as_millis());
-                let _ = writeln!(output, "# slot_guarantee={}", slot_guarantee_name(config.slot_guarantee));
-                let _ = writeln!(
-                    output,
-                    "# local_parquet_source_cache_max_retained_bytes={}",
-                    config
-                        .local_parquet_source_cache_max_retained_bytes
-                        .map_or_else(|| "none".to_string(), |value| value.to_string())
-                );
-                let _ = writeln!(
-                    output,
-                    "# resident_graph_cache_max_retained_bytes={}",
-                    config
-                        .resident_graph_cache_max_retained_bytes
-                        .map_or_else(|| "none".to_string(), |value| value.to_string())
-                );
-                let _ = writeln!(
-                    output,
-                    "# query_memory_domain_ceiling_multiplier={}",
-                    config
-                        .query_memory_domain
-                        .map_or_else(|| "none".to_string(), |policy| policy.ceiling_multiplier.to_string())
-                );
+                let _ = writeln!(output, "# max_queued_attempts={}", queue_bounds.max_waiters);
+                let _ = writeln!(output, "# max_queue_wait_ms={}", queue_bounds.max_wait.as_millis());
 
                 let snapshot = session
                     .admission_snapshot()
                     .map_err(|error| ServerError::session("failed to read query service admission snapshot", error))?;
                 output.push_str("\n[admission]\n");
-                output.push_str("active_queries\tqueued_queries\tnext_tenant_id\n");
-                let _ = writeln!(
-                    output,
-                    "{}\t{}\t{}",
-                    snapshot.active_queries,
-                    snapshot.queued_queries,
-                    payload_value(snapshot.next_tenant_id.as_ref().map(TenantId::as_str).unwrap_or(""))
-                );
+                output.push_str("active_queries\tqueued_queries\n");
+                let _ = writeln!(output, "{}\t{}", snapshot.active_queries, snapshot.queued_queries);
 
-                output.push_str("\n[tenant_queue_depths]\n");
-                output.push_str("tenant_id\tqueued_queries\n");
-                for depth in snapshot.queued_by_tenant {
-                    let _ = writeln!(output, "{}\t{}", payload_value(depth.tenant_id.as_str()), depth.queued_queries);
-                }
-
-                let reports = session.memory_governor_reports().map_err(|error| {
-                    ServerError::session("failed to read query service memory governor reports", error)
+                let reports = session.device_ledger_reports().map_err(|error| {
+                    ServerError::session("failed to read query service device ledger reports", error)
                 })?;
-                output.push_str("\n[memory_governor_reports]\n");
+                output.push_str("\n[device_ledger_reports]\n");
                 output.push_str(
-                    "device_ordinal\tcapacity_bytes\toutstanding_bytes\tavailable_bytes\tactive_grants\tevictable_bytes\tfree_bytes\n",
+                    "device_ordinal\tmanaged_capacity_bytes\tlive_grants_bytes\tavailable_bytes\tactive_grants\tevictable_bytes\n",
                 );
                 for report in &reports {
                     let _ = writeln!(
                         output,
-                        "{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                        "{}\t{}\t{}\t{}\t{}\t{}",
                         report.device_ordinal,
-                        report.capacity_bytes,
-                        report.outstanding_bytes,
+                        report.managed_capacity_bytes,
+                        report.live_grants_bytes,
                         report.available_bytes,
                         report.grants.len(),
-                        report.evictable_bytes,
-                        report.free_bytes
+                        report.evictable_bytes
                     );
                 }
 
-                output.push_str("\n[memory_governor_grants]\n");
-                output.push_str("device_ordinal\tgrant_id\tadmission_request_id\tpriority\tbudget_bytes\n");
+                output.push_str("\n[device_ledger_grants]\n");
+                output.push_str("device_ordinal\tgrant_id\tadmission_request_id\tgrant_bytes\tlive_reserved_bytes\n");
                 for report in &reports {
                     for grant in &report.grants {
                         let _ = writeln!(
@@ -325,8 +286,8 @@ impl QueryAdmission {
                             report.device_ordinal,
                             grant.grant_id,
                             grant.admission_request_id,
-                            payload_value(grant.priority),
-                            grant.budget_bytes
+                            grant.grant_bytes,
+                            grant.live_reserved_bytes
                         );
                     }
                 }
@@ -423,42 +384,10 @@ impl QueryAdmission {
                         optional_payload_value(snapshot.memory_utilization_pct),
                     );
                 }
-
-                output.push_str("\n[graph_cache]\n");
-                output.push_str(
-                    "device_ordinal\tenabled\tentries\tresident_bytes\tin_use_bytes\thits\tmisses\tevictions\tbuilds_in_flight\tbuild_waits\n",
-                );
-                for snapshot in session
-                    .resident_graph_cache_snapshots()
-                    .map_err(|error| ServerError::session("failed to read resident graph cache snapshots", error))?
-                {
-                    let _ = writeln!(
-                        output,
-                        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-                        snapshot.device_ordinal,
-                        snapshot.enabled,
-                        snapshot.entries,
-                        snapshot.resident_bytes,
-                        snapshot.in_use_bytes,
-                        snapshot.hits,
-                        snapshot.misses,
-                        snapshot.evictions,
-                        snapshot.builds_in_flight,
-                        snapshot.build_waits,
-                    );
-                }
             },
-            QueryAdmissionBackend::Semaphore { permits } => {
-                let available_permits = permits.available_permits();
-                let active_queries = self.max_in_flight.saturating_sub(available_permits);
-                let _ = writeln!(output, "# backend=semaphore");
-                output.push_str("\n[admission]\n");
-                output.push_str("active_queries\tqueued_queries\tnext_tenant_id\n");
-                let _ = writeln!(output, "{active_queries}\t\t");
-
-                output.push_str("\n[semaphore]\n");
-                output.push_str("max_in_flight\tavailable_permits\n");
-                let _ = writeln!(output, "{}\t{}", self.max_in_flight, available_permits);
+            #[cfg(test)]
+            QueryAdmissionBackend::TestOnly { .. } => {
+                let _ = writeln!(output, "# backend=test_only");
             },
         }
         Ok(output)
@@ -479,7 +408,7 @@ pub struct QueryAdmissionPermit {
 #[derive(Debug)]
 enum QueryAdmissionPermitInner {
     QueryService(Arc<QueryHandle>),
-    Semaphore { _permit: OwnedSemaphorePermit },
+    TestOnly,
 }
 
 #[cfg(test)]
@@ -494,15 +423,14 @@ impl Drop for QueryAdmissionPermit {
 impl NexusGpuBackend {
     /// Build the server's query-service backend from a validated server config.
     ///
-    /// Returns `None` for unbounded native memory policy. Phase 0 Flight SQL
-    /// construction rejects that policy before calling this projection.
+    /// Builds the server's mandatory bounded query-service backend.
     pub fn from_server_config(config: &ServerConfig) -> Result<Option<Self>> {
+        config.validate_gpu_device_profiles()?;
         Self::from_optimizer_config_for_admission(
             config.native_optimizer_config.clone(),
-            config.gpu_devices.clone(),
+            config.gpu_device_profiles.clone(),
             config.gpu_memory_ownership.clone(),
-            server_admission_policy(config),
-            TenantId::new(DEFAULT_SERVER_TENANT_ID),
+            server_queue_policy(config),
         )
         .map_err(|error| ServerError::session("failed to initialize query service admission", error))
     }
@@ -512,36 +440,18 @@ impl NexusGpuBackend {
 fn server_test_controller_projection_from_config(
     config: &ServerConfig,
 ) -> Result<Option<crate::backend::TestBackendControllerProjection>> {
+    config.validate_gpu_device_profiles()?;
     crate::backend::test_controller_projection_from_optimizer_config(
         config.native_optimizer_config.clone(),
-        config.gpu_devices.clone(),
+        config.gpu_device_profiles.clone(),
         config.gpu_memory_ownership.clone(),
-        server_admission_policy(config),
-        TenantId::new(DEFAULT_SERVER_TENANT_ID),
+        server_queue_policy(config),
     )
     .map_err(|error| ServerError::session("failed to project query service admission policy", error))
 }
 
-pub(crate) fn server_admission_policy(config: &ServerConfig) -> NexusAdmissionPolicy {
-    // `ServerConfig` keeps the legacy public `max_in_flight` field beside the
-    // richer admission policy. Normalize here so direct test/operator config
-    // mutation still controls the QueryService concurrency gate.
-    config.admission_policy.clone().with_max_concurrent_queries(config.max_in_flight)
-}
-
-fn format_tenant_queue_depths(depths: &[nexus_query_engine::runtime::TenantQueueDepth]) -> String {
-    depths
-        .iter()
-        .map(|depth| format!("{}:{}", depth.tenant_id.as_str(), depth.queued_queries))
-        .collect::<Vec<_>>()
-        .join(",")
-}
-
-fn slot_guarantee_name(slot_guarantee: nexus_query_engine::runtime::SlotGuarantee) -> &'static str {
-    match slot_guarantee {
-        nexus_query_engine::runtime::SlotGuarantee::GuaranteedMinimum => "guaranteed_minimum",
-        nexus_query_engine::runtime::SlotGuarantee::Optimistic => "optimistic",
-    }
+pub(crate) fn server_queue_policy(config: &ServerConfig) -> NexusGpuQueuePolicy {
+    config.queue_policy.clone()
 }
 
 fn join_usize(values: &[usize]) -> String {
@@ -556,6 +466,25 @@ fn payload_value(value: &str) -> String {
 mod tests {
     use super::*;
 
+    fn server_config_with_test_device_profile(
+        mut env: std::collections::BTreeMap<&'static str, String>,
+        memory_limit_bytes: Option<u64>,
+    ) -> crate::server::Result<ServerConfig> {
+        let config_file = tempfile::NamedTempFile::new().expect("create server config fixture");
+        let profile = match memory_limit_bytes {
+            Some(memory_limit_bytes) => format!(
+                "[[admission.device_profiles]]\ndevice_ordinal = 0\nmemory_limit_bytes = {memory_limit_bytes}\n"
+            ),
+            None => "[[admission.device_profiles]]\ndevice_ordinal = 0\n".to_string(),
+        };
+        std::fs::write(config_file.path(), profile).expect("write server config fixture");
+        env.insert(
+            super::super::config::NEXUS_SERVER_CONFIG_FILE_ENV,
+            config_file.path().to_string_lossy().into_owned(),
+        );
+        ServerConfig::from_env_get(|name| env.get(name).cloned())
+    }
+
     fn declare_test_gpu_ownership(mut config: ServerConfig) -> ServerConfig {
         config.gpu_memory_ownership = config
             .gpu_devices
@@ -569,124 +498,121 @@ mod tests {
     #[test]
     fn server_backend_partitions_budget_and_sizes_stream_pool() {
         let env = std::collections::BTreeMap::from([
-            (super::super::config::NEXUS_SERVER_MAX_CONCURRENT_QUERIES_ENV, "3".to_string()),
             (super::super::config::NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV, "3072".to_string()),
             (super::super::config::NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, "1024".to_string()),
             (super::super::config::NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, "1".to_string()),
             (super::super::config::NEXUS_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV, "2".to_string()),
         ]);
-        let config = declare_test_gpu_ownership(ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap());
+        let config = declare_test_gpu_ownership(server_config_with_test_device_profile(env, Some(3072)).unwrap());
 
         let backend = server_test_controller_projection_from_config(&config)
             .unwrap()
             .expect("bounded native config should project QueryService admission");
         let controller = backend.controller_config().unwrap();
 
-        assert_eq!(controller.max_concurrent_queries, 3);
-        assert_eq!(controller.max_queries_per_device, None);
-        assert_eq!(controller.placement_policy, nexus_query_engine::runtime::QueryPlacementPolicy::LeastLoaded);
-        assert_eq!(controller.device_ordinal, 0);
-        assert_eq!(controller.device_capacity_bytes, Some(3072));
-        assert_eq!(controller.stream_pool_size, Some(9));
+        let profile = &backend.device_profiles()[0];
+        assert_eq!(profile.max_active_attempts(), 1);
+        assert_eq!(profile.device_ordinal(), 0);
+        assert_eq!(profile.memory_limit(), crate::backend::GpuDeviceMemoryLimit::Explicit { limit_bytes: 3072 });
         assert_eq!(controller.source_scheduler_policy.max_source_reads_in_flight(), 2);
-        assert_eq!(controller.max_admission_queue_len, 192);
-        assert_eq!(controller.admission_wait_timeout, std::time::Duration::from_secs(60));
-        assert_eq!(controller.local_parquet_source_cache_max_retained_bytes, None);
-        assert_eq!(controller.resident_graph_cache_max_retained_bytes, None);
-        assert_eq!(backend.tenant_budget().unwrap(), 3072);
+        assert_eq!(backend.controller_queue_bounds().unwrap().max_waiters, 64);
+        assert_eq!(backend.controller_queue_bounds().unwrap().max_wait, std::time::Duration::from_secs(30));
+        // Floor defaults to managed / max(8, A_d) = 3072 / 8.
+        assert_eq!(backend.configured_floor_bytes().unwrap(), 384);
 
         let permit = backend.admit().expect("first query should admit");
-        assert_eq!(permit.device_budget_bytes(), 2304);
+        // A hint-less grant takes the full candidate maximum.
+        assert_eq!(permit.device_budget_bytes(), 3072);
     }
 
     #[test]
-    fn server_backend_rejects_phase_zero_cache_domains() {
+    fn server_config_rejects_removed_p2_cache_profile_env_before_backend_projection() {
         let env = std::collections::BTreeMap::from([
             (super::super::config::NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV, "3072".to_string()),
             (super::super::config::NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, "1024".to_string()),
             (super::super::config::NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, "1".to_string()),
-            (super::super::config::NEXUS_SERVER_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES_ENV, "2048".to_string()),
+            ("NEXUS_SERVER_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES", "2048".to_string()),
         ]);
-        let config = declare_test_gpu_ownership(ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap());
+        let error = server_config_with_test_device_profile(env, None)
+            .expect_err("P2 must reject cache profile configuration before backend construction");
 
-        let error = server_test_controller_projection_from_config(&config)
-            .expect_err("Phase 0 must reject source and graph cache domains before backend construction");
-
-        assert_eq!(error.fact_value("reason"), Some("cache_domains_must_be_disabled"));
+        assert_eq!(error.code(), crate::error::ErrorCode::InvalidRequest);
+        assert_eq!(error.operation(), "datafusion_nexus.server.config");
+        assert_eq!(error.fact_value("config_field"), Some("NEXUS_SERVER_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES"));
+        assert!(error.message().contains("removed by the P2 resource-only admission cutover"));
     }
 
     #[test]
-    fn server_backend_honors_admission_wait_timeout_env() {
+    fn server_backend_honors_queue_wait_bound_env() {
         let env = std::collections::BTreeMap::from([
-            (super::super::config::NEXUS_SERVER_ADMISSION_WAIT_TIMEOUT_MS_ENV, "250".to_string()),
+            (super::super::config::NEXUS_SERVER_ADMISSION_MAX_QUEUE_WAIT_MS_ENV, "250".to_string()),
             (super::super::config::NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV, "3072".to_string()),
             (super::super::config::NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, "1024".to_string()),
             (super::super::config::NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, "1".to_string()),
         ]);
-        let config = declare_test_gpu_ownership(ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap());
+        let config = declare_test_gpu_ownership(server_config_with_test_device_profile(env, Some(3072)).unwrap());
 
         let backend = server_test_controller_projection_from_config(&config)
             .unwrap()
             .expect("bounded native config should project QueryService admission");
 
-        assert_eq!(backend.controller_config().unwrap().admission_wait_timeout, std::time::Duration::from_millis(250));
+        assert_eq!(backend.controller_queue_bounds().unwrap().max_wait, std::time::Duration::from_millis(250));
     }
 
     #[test]
     fn server_backend_preserves_multi_gpu_device_subset() {
         let env = std::collections::BTreeMap::from([
-            (super::super::config::NEXUS_SERVER_GPU_DEVICES_ENV, "0,1".to_string()),
-            (super::super::config::NEXUS_SERVER_MAX_CONCURRENT_QUERIES_ENV, "2".to_string()),
             (super::super::config::NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV, "2048".to_string()),
             (super::super::config::NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, "1024".to_string()),
             (super::super::config::NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, "1".to_string()),
         ]);
-        let config = declare_test_gpu_ownership(ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap());
+        let mut config = server_config_with_test_device_profile(env, Some(2048)).unwrap();
+        config.gpu_devices = vec![0, 1];
+        config.gpu_device_profiles = vec![
+            crate::backend::NexusGpuDeviceProfile::new(0)
+                .with_memory_limit(crate::backend::GpuDeviceMemoryLimit::Explicit { limit_bytes: 2048 }),
+            crate::backend::NexusGpuDeviceProfile::new(1)
+                .with_memory_limit(crate::backend::GpuDeviceMemoryLimit::Explicit { limit_bytes: 4096 }),
+        ];
+        let config = declare_test_gpu_ownership(config);
 
         let backend = server_test_controller_projection_from_config(&config)
             .unwrap()
             .expect("bounded native config should project QueryService admission");
 
         assert_eq!(backend.device_ordinals(), &[0, 1]);
-        assert_eq!(backend.controller_config().unwrap().device_ordinal, 0);
+        assert_eq!(
+            backend.device_profiles().iter().map(|profile| profile.device_ordinal()).collect::<Vec<_>>(),
+            vec![0, 1]
+        );
         let permit = backend.admit().expect("first query should admit");
         assert_eq!(permit.device_ordinal(), 0);
-        assert_eq!(permit.device_budget_bytes(), 1792);
+        assert_eq!(permit.device_budget_bytes(), 2048);
     }
 
     #[test]
     fn query_service_admission_diagnostics_payload_reports_snapshot_and_governors() {
         let env = std::collections::BTreeMap::from([
-            (super::super::config::NEXUS_SERVER_MAX_CONCURRENT_QUERIES_ENV, "2".to_string()),
             (super::super::config::NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV, "1024".to_string()),
             (super::super::config::NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, "512".to_string()),
             (super::super::config::NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, "1".to_string()),
-            (super::super::config::NEXUS_SERVER_ADMISSION_GRANT_MIN_ENV, "256".to_string()),
-            (super::super::config::NEXUS_SERVER_ADMISSION_GRANT_WANT_ENV, "512".to_string()),
         ]);
-        let config = declare_test_gpu_ownership(ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap());
+        let mut config = declare_test_gpu_ownership(server_config_with_test_device_profile(env, Some(1024)).unwrap());
+        config.gpu_device_profiles[0] = config.gpu_device_profiles[0].clone().with_attempt_floor_bytes(Some(256));
         let backend = NexusGpuBackend::from_server_config(&config)
             .unwrap()
             .expect("bounded native config should build a runtime backend");
-        let admission = QueryAdmission::from_backend(Some(&backend), &config).unwrap();
+        let admission = QueryAdmission::from_backend(&backend);
         let permit = admission.try_acquire().unwrap().expect("first query should admit");
 
         let payload = admission.diagnostics_payload().unwrap();
 
         assert!(payload.contains("# datafusion_nexus_admission_stats=1\n"), "{payload}");
         assert!(payload.contains("# backend=query_service\n"), "{payload}");
-        assert!(payload.contains("# max_in_flight=2\n"), "{payload}");
-        assert!(payload.contains("# max_concurrent_queries=2\n"), "{payload}");
-        assert!(payload.contains("# max_queries_per_device=none\n"), "{payload}");
-        assert!(payload.contains("# placement_policy=least_loaded\n"), "{payload}");
-        assert!(payload.contains("# slot_guarantee=guaranteed_minimum\n"), "{payload}");
-        assert!(payload.contains("# local_parquet_source_cache_max_retained_bytes=none\n"), "{payload}");
-        assert!(payload.contains("# resident_graph_cache_max_retained_bytes=none\n"), "{payload}");
-        assert!(
-            payload.contains("[admission]\nactive_queries\tqueued_queries\tnext_tenant_id\n1\t0\tdefault\n"),
-            "{payload}"
-        );
-        assert!(payload.contains("[tenant_queue_depths]\ntenant_id\tqueued_queries\ndefault\t0\n"), "{payload}");
+        assert!(payload.contains("# device_profile_count=1\n"), "{payload}");
+        assert!(payload.contains("# device_0_max_active_attempts=1\n"), "{payload}");
+        assert!(payload.contains("# device_0_attempt_floor_bytes=256\n"), "{payload}");
+        assert!(payload.contains("[admission]\nactive_queries\tqueued_queries\n1\t0\n"), "{payload}");
         assert!(payload.contains("[gpu_execution]\nactive_query_jobs\tpeak_active_query_jobs\n0\t0\n"), "{payload}");
         assert!(
             payload.contains(
@@ -696,12 +622,12 @@ mod tests {
         );
         assert!(
             payload.contains(
-                "[memory_governor_reports]\ndevice_ordinal\tcapacity_bytes\toutstanding_bytes\tavailable_bytes\tactive_grants\tevictable_bytes\tfree_bytes\n0\t1024\t512\t512\t1\t0\t512\n"
+                "[device_ledger_reports]\ndevice_ordinal\tmanaged_capacity_bytes\tlive_grants_bytes\tavailable_bytes\tactive_grants\tevictable_bytes\n0\t1024\t1024\t0\t1\t0\n"
             ),
             "{payload}"
         );
-        assert!(payload.contains("[memory_governor_grants]\n"), "{payload}");
-        assert!(payload.contains("\t1\tnormal\t512\n"), "{payload}");
+        assert!(payload.contains("[device_ledger_grants]\n"), "{payload}");
+        assert!(payload.contains("\t1\t1024\t"), "{payload}");
         assert!(
             payload.contains(
                 "[device_memory_failure_reports]\ndevice_ordinal\tcallback_installed\tcallback_install_unavailable\tallocation_failure_count\ttotal_failed_allocation_bytes\tlargest_failed_allocation_bytes\ttrim_retry_count\tpool_usage_observation_count\tlast_failed_allocation_bytes\tlast_pool_reserved_current_bytes\tlast_pool_used_current_bytes\n"
@@ -724,34 +650,21 @@ mod tests {
         );
         assert!(
             payload.find("[gpu_execution_pools]").unwrap() < payload.find("[device_admission_slots]").unwrap()
-                && payload.find("[device_admission_slots]").unwrap() < payload.find("[device_telemetry]").unwrap()
-                && payload.find("[device_telemetry]").unwrap() < payload.find("[graph_cache]").unwrap(),
+                && payload.find("[device_admission_slots]").unwrap() < payload.find("[device_telemetry]").unwrap(),
             "appended diagnostics sections must follow every pre-existing section: {payload}"
         );
-        assert!(
-            payload.contains(
-                "[graph_cache]\ndevice_ordinal\tenabled\tentries\tresident_bytes\tin_use_bytes\thits\tmisses\tevictions\tbuilds_in_flight\tbuild_waits\n"
-            ),
-            "{payload}"
-        );
-        // Compiling graph support does not allocate an unbounded resident
-        // cache. The cache remains disabled until a retention budget is set.
-        assert!(payload.contains("\n0\tfalse\t0\t0\t0\t0\t0\t0\t0\t0\n"), "{payload}");
 
         drop(permit);
     }
 
     #[test]
     fn semaphore_admission_diagnostics_payload_reports_permit_counts() {
-        let admission = QueryAdmission::new(2).unwrap();
-        let _permit = admission.try_acquire().unwrap().expect("first query should admit");
+        let admission = QueryAdmission::new_for_tests();
+        let _permit = admission.try_acquire().unwrap().expect("test-only admission should construct a permit");
 
         let payload = admission.diagnostics_payload().unwrap();
 
         assert!(payload.contains("# datafusion_nexus_admission_stats=1\n"), "{payload}");
-        assert!(payload.contains("# backend=semaphore\n"), "{payload}");
-        assert!(payload.contains("# max_in_flight=2\n"), "{payload}");
-        assert!(payload.contains("[admission]\nactive_queries\tqueued_queries\tnext_tenant_id\n1\t\t\n"), "{payload}");
-        assert!(payload.contains("[semaphore]\nmax_in_flight\tavailable_permits\n2\t1\n"), "{payload}");
+        assert!(payload.contains("# backend=test_only\n"), "{payload}");
     }
 }

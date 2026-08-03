@@ -52,10 +52,11 @@ fn pagerank_python_cugraph_reports_edge_normalize_in_graph_reservation() {
 #[test]
 fn graph_budget_uses_grant_arena_member_stream_reservation() {
     let runtime = Arc::new(cudf::Runtime::builder().with_device_memory_manager().build().unwrap());
-    let governor = MemoryGovernor::new(runtime.device().ordinal(), 512 * 1024 * 1024).unwrap();
+    let governor = DeviceLedger::for_test(runtime.device().ordinal(), 512 * 1024 * 1024, 2);
     let grant = governor
-        .request(GrantRequest::new(AdmissionRequestId::new(10_001), 256 * 1024 * 1024, 256 * 1024 * 1024))
-        .unwrap();
+        .admit_for_test(AdmissionRequestId::new(10_001), 256 * 1024 * 1024, 256 * 1024 * 1024)
+        .unwrap()
+        .expect("grant within the envelope admits");
     let context = ExecutionContext::builder()
         .with_shared_runtime(Arc::clone(&runtime))
         .with_memory_grant(grant)

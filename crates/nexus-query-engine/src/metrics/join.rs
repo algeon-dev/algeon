@@ -88,21 +88,6 @@ impl QueryMetrics {
         self.hash_join_cache_misses = self.hash_join_cache_misses.saturating_add(1);
     }
 
-    /// Records one durable hash-join cache hit.
-    pub fn record_hash_join_durable_cache_hit(&mut self) {
-        self.hash_join_durable_cache_hits = self.hash_join_durable_cache_hits.saturating_add(1);
-    }
-
-    /// Records one durable hash-join cache miss.
-    pub fn record_hash_join_durable_cache_miss(&mut self) {
-        self.hash_join_durable_cache_misses = self.hash_join_durable_cache_misses.saturating_add(1);
-    }
-
-    /// Records one durable hash-join cache insertion.
-    pub fn record_hash_join_durable_cache_insert(&mut self) {
-        self.hash_join_durable_cache_inserts = self.hash_join_durable_cache_inserts.saturating_add(1);
-    }
-
     /// Records one reusable hash-join build.
     pub fn record_hash_join_build(&mut self) {
         self.hash_join_build_count = self.hash_join_build_count.saturating_add(1);

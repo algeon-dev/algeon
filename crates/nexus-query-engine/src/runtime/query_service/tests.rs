@@ -3,7 +3,7 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-use super::{super::memory_domain::grant_memory_domain_creation_locks, *};
+use super::{admission::AdmissionTicket, *};
 use crate::{
     graph_memory::GraphMemoryCalibrationOverride,
     observability::{
@@ -11,7 +11,7 @@ use crate::{
         RuntimeObservationOwner, RuntimeObservationPayload, RuntimePlanExecutionLifecycle, RuntimeTerminalOutcome,
         RuntimeTraceId, StreamLeaseLifecycleState,
     },
-    runtime::{GdsDriverProbeStatus, KvikioCompatModeStatus, NvidiaFsProbeStatus},
+    runtime::{DeviceResourceProfile, GdsDriverProbeStatus, KvikioCompatModeStatus, NvidiaFsProbeStatus},
 };
 
 include!("tests/support.rs");
@@ -20,10 +20,12 @@ include!("tests/grant_requests.rs");
 include!("tests/config_resources.rs");
 include!("tests/contexts.rs");
 include!("tests/queue.rs");
-include!("tests/adaptive.rs");
+include!("tests/overtake.rs");
+include!("tests/transaction.rs");
+include!("tests/release_commit.rs");
 include!("tests/placement.rs");
 #[cfg(feature = "cugraph")]
-include!("tests/warm_graph_pricing.rs");
+include!("tests/cross_attempt_gpu_resident.rs");
 
 // This exercises registry-backed admission as a child of the private service
 // module. Keeping the state-machine coverage here prevents the integration

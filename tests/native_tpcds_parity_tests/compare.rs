@@ -13,7 +13,7 @@ use datafusion_nexus::{
         ParityComparisonMode, ParityFloatTolerance, ParityStatus, compare_record_batches, sql_has_top_level_order_by,
         sql_top_level_order_by_covers_output_columns,
     },
-    planner::{NativeAdaptivePipelineDiagnostics, NativePlanningDiagnostics, NativeStrictBoundedContractDiagnostics},
+    planner::{NativeCapabilityContractDiagnostics, NativePlanningDiagnostics},
     report::{GpuCandidate, PlanningReport},
 };
 
@@ -369,8 +369,7 @@ fn accepted_native_planning(schema: &Arc<Schema>) -> NativeTpcdsParityNativePlan
             report,
             native_optimizer: nexus_query_engine::optimizer::NativeOptimizerDiagnostics::default(),
             source_diagnostics: Vec::new(),
-            strict_bounded_contract: NativeStrictBoundedContractDiagnostics::default(),
-            adaptive_pipeline: NativeAdaptivePipelineDiagnostics::default(),
+            capability_contract: NativeCapabilityContractDiagnostics::default(),
         }),
     }
 }

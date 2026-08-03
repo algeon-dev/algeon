@@ -1,0 +1,46 @@
+error[E0603]: struct `AttemptCapabilityEvidence` is private
+ --> tests/ui/public_api/forbidden_caller_selected_admission_requirement.rs:2:17
+  |
+2 |     admission::{AttemptCapabilityEvidence, EstimateQuality},
+  |                 ^^^^^^^^^^^^^^^^^^^^^^^^^ private struct
+  |
+note: the struct `AttemptCapabilityEvidence` is defined here
+ --> src/admission.rs
+  |
+  |     AttemptCapabilityEvidence as AttemptRequirement, AttemptCapabilityEvidence, EstimateQuality,
+  |                                                      ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0603]: enum `EstimateQuality` is private
+ --> tests/ui/public_api/forbidden_caller_selected_admission_requirement.rs:2:44
+  |
+2 |     admission::{AttemptCapabilityEvidence, EstimateQuality},
+  |                                            ^^^^^^^^^^^^^^^ private enum
+  |
+note: the enum `EstimateQuality` is defined here
+ --> src/admission.rs
+  |
+  |     AttemptCapabilityEvidence as AttemptRequirement, AttemptCapabilityEvidence, EstimateQuality,
+  |                                                                                 ^^^^^^^^^^^^^^^
+
+error[E0603]: struct `AttemptRequirement` is private
+ --> tests/ui/public_api/forbidden_caller_selected_admission_requirement.rs:7:40
+  |
+7 |     use nexus_query_engine::admission::AttemptRequirement;
+  |                                        ^^^^^^^^^^^^^^^^^^ private struct
+  |
+note: the struct `AttemptRequirement` is defined here
+ --> src/admission.rs
+  |
+  |     AttemptCapabilityEvidence as AttemptRequirement, AttemptCapabilityEvidence, EstimateQuality,
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0624]: method `with_attempt_requirement` is private
+  --> tests/ui/public_api/forbidden_caller_selected_admission_requirement.rs:24:42
+   |
+24 |     let _ = QueryAdmissionRequest::new().with_attempt_requirement(AttemptCapabilityEvidence::graph_execution());
+   |                                          ^^^^^^^^^^^^^^^^^^^^^^^^ private method
+   |
+  ::: src/runtime/query_service/service/api.rs
+   |
+   |     pub(crate) fn with_attempt_requirement(mut self, attempt_requirement: AttemptRequirement) -> Self {
+   |     ------------------------------------------------------------------------------------------------- private method defined here

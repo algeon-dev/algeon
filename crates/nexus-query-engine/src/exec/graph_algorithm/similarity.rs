@@ -46,7 +46,6 @@ pub(super) fn execute_similarity(
     }
 
     let input = inputs.edge_list;
-    let resident_graph_key = resident_graph_key_for_input::<cugraph::Forward>(&input, spec);
     let input = input.into_frame();
     let (edges, _) = project_edge_list(&input, spec)?;
     let graph_options = table_graph_options(spec);
@@ -210,24 +209,10 @@ pub(super) fn execute_similarity(
         })
     };
 
-    if let Some(preparation_pin_id) = inputs.preparation_pin_id {
-        run_with_cugraph_graph_cache_hit::<cugraph::Forward, _>(
-            context,
-            inputs.graph_memory_limit_bytes,
-            spec,
-            resident_graph_key,
-            edges,
-            graph_options,
-            "datafusion_nexus_cugraph_similarity",
-            preparation_pin_id,
-            run_similarity,
-        )
-    } else {
+    {
         run_with_cugraph_graph::<cugraph::Forward, _>(
             context,
             inputs.graph_memory_limit_bytes,
-            spec,
-            resident_graph_key,
             edges,
             graph_options,
             "datafusion_nexus_cugraph_similarity",

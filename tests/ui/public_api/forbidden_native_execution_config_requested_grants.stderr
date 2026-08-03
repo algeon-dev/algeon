@@ -1,0 +1,11 @@
+error[E0599]: no method named `with_requested_grant_min_bytes` found for struct `NexusNativeExecutionConfig` in the current scope
+ --> tests/ui/public_api/forbidden_native_execution_config_requested_grants.rs:4:59
+  |
+4 |     let _ = NexusNativeExecutionConfig::bounded_default().with_requested_grant_min_bytes(Some(1024));
+  |                                                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ method not found in `NexusNativeExecutionConfig`
+
+error[E0599]: no method named `with_requested_grant_bytes` found for struct `NexusNativeExecutionConfig` in the current scope
+ --> tests/ui/public_api/forbidden_native_execution_config_requested_grants.rs:5:59
+  |
+5 |     let _ = NexusNativeExecutionConfig::bounded_default().with_requested_grant_bytes(Some(2048));
+  |                                                           ^^^^^^^^^^^^^^^^^^^^^^^^^^ method not found in `NexusNativeExecutionConfig`

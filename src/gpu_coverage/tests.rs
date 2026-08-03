@@ -1,8 +1,11 @@
-use std::sync::Arc;
+use std::{any::Any, sync::Arc};
 
 use arrow::datatypes::{DataType, Field, Schema};
 use datafusion::{
-    common::DataFusionError,
+    common::{
+        DataFusionError, Result as DataFusionResult,
+        config::{ConfigEntry, ConfigExtension, ExtensionOptions},
+    },
     execution::SessionStateBuilder,
     physical_expr::expressions::col,
     physical_plan::{
@@ -37,13 +40,44 @@ fn test_execution_config() -> NexusNativeExecutionConfig {
     NexusNativeExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 1, 3, 1)
 }
 
-fn unbounded_optimizer_config() -> NexusNativeOptimizerConfig {
-    NexusNativeOptimizerConfig::default().with_native_execution_config(NexusNativeExecutionConfig::unbounded())
+fn bounded_optimizer_config() -> NexusNativeOptimizerConfig {
+    NexusNativeOptimizerConfig::default().with_native_execution_config(NexusNativeExecutionConfig::bounded_default())
 }
 
 fn validation_context(config: NexusNativeOptimizerConfig) -> SessionContext {
     let state = SessionStateBuilder::new_with_default_features().with_nexus_native(config).build();
     SessionContext::new_with_state(state)
+}
+
+/// Mimics an invocation-only adapter extension such as an attempt admission
+/// binding. It deliberately exposes no declarative configuration entries.
+#[derive(Debug, Clone)]
+struct InvocationOnlyExtension;
+
+impl ConfigExtension for InvocationOnlyExtension {
+    const PREFIX: &'static str = "datafusion_nexus_test_invocation";
+}
+
+impl ExtensionOptions for InvocationOnlyExtension {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+
+    fn cloned(&self) -> Box<dyn ExtensionOptions> {
+        Box::new(self.clone())
+    }
+
+    fn set(&mut self, _key: &str, _value: &str) -> DataFusionResult<()> {
+        unreachable!("invocation-only extensions expose no settings")
+    }
+
+    fn entries(&self) -> Vec<ConfigEntry> {
+        Vec::new()
+    }
 }
 
 fn one_column_schema() -> Arc<Schema> {
@@ -196,7 +230,7 @@ async fn validate_query_preflight_uses_session_sql_dialect() {
 
 #[tokio::test]
 async fn validate_query_reports_capability_misses_without_terminal_rejection() {
-    let ctx = validation_context(unbounded_optimizer_config());
+    let ctx = validation_context(bounded_optimizer_config());
 
     let cpu = validate_query(&ctx, "SELECT random() AS r").await.unwrap();
     assert_eq!(cpu.overall, QueryGpuCoverageOverall::CpuOnly);
@@ -290,7 +324,7 @@ fn candidate_outcomes_retain_shape_families_for_unsupported_candidates() {
 
 #[tokio::test]
 async fn validate_query_preserves_the_installed_final_plan_requirement() {
-    let ctx = validation_context(unbounded_optimizer_config().with_no_datafusion_cpu_requirement());
+    let ctx = validation_context(bounded_optimizer_config().with_no_datafusion_cpu_requirement());
     let coverage = validate_query(&ctx, "SELECT random() AS r").await.unwrap();
 
     assert!(
@@ -338,7 +372,9 @@ async fn validate_query_metadata_uses_effective_session_optimizer_options() {
         .options_mut()
         .extensions
         .insert(DataFusionNexusSessionConfig::from_optimizer_config(&optimizer_config));
-    session_config.options_mut().set("datafusion_nexus.native.pipeline_execution_mode", "adaptive").unwrap();
+    // The deleted pipeline-mode session key is rejected; the single bounded
+    // path projects the canonical execution-mode label.
+    assert!(session_config.options_mut().set("datafusion_nexus.native.pipeline_execution_mode", "adaptive").is_err());
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(session_config)
         .with_nexus_native(optimizer_config)
@@ -347,13 +383,37 @@ async fn validate_query_metadata_uses_effective_session_optimizer_options() {
 
     let coverage = validate_query(&ctx, "SELECT 1 AS value").await.unwrap();
 
-    assert_eq!(coverage.validated_under.execution_mode.as_deref(), Some("adaptive"));
+    assert_eq!(coverage.validated_under.execution_mode.as_deref(), Some("bounded"));
     assert_eq!(coverage.validated_under.final_plan_requirements, ["no_datafusion_cpu"]);
 }
 
 #[tokio::test]
+async fn validate_query_session_fingerprint_ignores_invocation_local_extensions() {
+    let state = SessionStateBuilder::new_with_default_features().with_nexus_native(bounded_optimizer_config()).build();
+    let baseline =
+        validate_query(&SessionContext::new_with_state(state.clone()), "SELECT random() AS r").await.unwrap();
+
+    let mut invocation_builder = SessionStateBuilder::new_from_existing(state);
+    invocation_builder
+        .config()
+        .get_or_insert_with(Default::default)
+        .options_mut()
+        .extensions
+        .insert(InvocationOnlyExtension);
+    let invocation =
+        validate_query(&SessionContext::new_with_state(invocation_builder.build()), "SELECT random() AS r")
+            .await
+            .unwrap();
+
+    assert_eq!(
+        baseline.validated_under.session_config_fingerprint, invocation.validated_under.session_config_fingerprint,
+        "opaque invocation state must not change coverage evidence"
+    );
+}
+
+#[tokio::test]
 async fn validate_query_concurrent_calls_do_not_share_retained_rule_state() {
-    let ctx = validation_context(unbounded_optimizer_config());
+    let ctx = validation_context(bounded_optimizer_config());
 
     let (native, cpu) =
         tokio::join!(validate_query(&ctx, "SELECT 1 AS value"), validate_query(&ctx, "SELECT random() AS r"));

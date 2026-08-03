@@ -16,8 +16,7 @@ requests use the backend-installed session's plan-scoped admission tickets.
 Flight SQL statements issue Flight tickets first and acquire GPU admission only
 when a native plan starts executing. Native work from both paths draws slots and
 memory grants from the same query-service ledger, which is exposed by
-`GET /api/gpu`. Completed DataFusion and mixed statements are bounded
-separately by the server's host-execution QoS rule.
+`GET /api/gpu`.
 
 ```text
                                    one backend process
@@ -94,19 +93,13 @@ The example consumes the same server configuration contract as the
 (`/healthz`, `/api/pipelines`, `/api/gpu`). It is not the Iceberg REST catalog
 endpoint; the Iceberg REST catalog endpoint is `NEXUS_ICEBERG_REST_URI`.
 
-It requires bounded native memory admission; an unbounded server memory policy
-is rejected because the demo is about one shared query-service ledger.
-
-That makes this particular embedded example intentionally unsuitable for
-current `cuvs_*` execution: cuVS requires unbounded native execution until its
-lower-level peak-memory preflight exists. Use the direct, single-query embedded
-setup in [DataFusion Session](./datafusion-session.mdx#cuvs-sql-functions) for
-cuVS; do not weaken this example's bounded admission contract.
+It uses the one bounded native admission contract and is intentionally
+unsuitable for current `cuvs_*` execution: until its lower-level peak-memory
+preflight exists, cuVS rejects locally with `unsupported_operator`.
 
 ```bash
 EXAMPLE_REST_BIND=127.0.0.1:8080 \
 NEXUS_SERVER_BIND=127.0.0.1:50051 \
-NEXUS_SERVER_MAX_CONCURRENT_QUERIES=1 \
 NEXUS_SERVER_CUGRAPH_ENABLED=true \
 DATAFUSION_CATALOG_DEFAULT_CATALOG=datafusion \
 DATAFUSION_CATALOG_DEFAULT_SCHEMA=public \

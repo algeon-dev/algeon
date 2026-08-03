@@ -12,49 +12,34 @@ pub(super) fn direct_friendly_sql_session_config() -> SessionConfig {
     config
 }
 
-pub(super) async fn native_datafusion_sql_plan(
-    path: &std::path::Path,
-    sql: &str,
-    native_config: NexusNativeExecutionConfig,
-) -> Arc<dyn ExecutionPlan> {
+pub(super) async fn native_datafusion_sql_plan(path: &std::path::Path, sql: &str) -> Arc<dyn ExecutionPlan> {
     let state = pruning_test_backend()
         .install_on(SessionStateBuilder::new_with_default_features())
         .expect("pruning backend must install on the DataFusion session")
         .build();
     let ctx = SessionContext::new_with_state(state);
-    apply_request_grant_options(&ctx, &native_config).await;
     ctx.register_parquet("bench", path.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
     let df = ctx.sql(sql).await.unwrap();
     df.create_physical_plan().await.unwrap()
 }
 
-pub(super) async fn native_datafusion_lineitem_sql_plan(
-    path: &std::path::Path,
-    sql: &str,
-    native_config: NexusNativeExecutionConfig,
-) -> Arc<dyn ExecutionPlan> {
+pub(super) async fn native_datafusion_lineitem_sql_plan(path: &std::path::Path, sql: &str) -> Arc<dyn ExecutionPlan> {
     let state = pruning_test_backend()
         .install_on(SessionStateBuilder::new_with_default_features().with_config(tpch_report_session_config()))
         .expect("pruning backend must install on the DataFusion session")
         .build();
     let ctx = SessionContext::new_with_state(state);
-    apply_request_grant_options(&ctx, &native_config).await;
     ctx.register_parquet("lineitem", path.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
     let df = ctx.sql(sql).await.unwrap();
     df.create_physical_plan().await.unwrap()
 }
 
-pub(super) async fn native_datafusion_tpch_sql_plan(
-    root: &std::path::Path,
-    sql: &str,
-    native_config: NexusNativeExecutionConfig,
-) -> Arc<dyn ExecutionPlan> {
+pub(super) async fn native_datafusion_tpch_sql_plan(root: &std::path::Path, sql: &str) -> Arc<dyn ExecutionPlan> {
     let state = pruning_test_backend()
         .install_on(SessionStateBuilder::new_with_default_features().with_config(tpch_report_session_config()))
         .expect("pruning backend must install on the DataFusion session")
         .build();
     let ctx = SessionContext::new_with_state(state);
-    apply_request_grant_options(&ctx, &native_config).await;
     register_tiny_tpch_tables(&ctx, root).await;
     let df = ctx.sql(sql).await.unwrap();
     df.create_physical_plan().await.unwrap()
@@ -67,22 +52,6 @@ pub(super) async fn register_tiny_tpch_tables(ctx: &SessionContext, root: &std::
     }
 }
 
-async fn apply_request_grant_options(ctx: &SessionContext, native_config: &NexusNativeExecutionConfig) {
-    for (key, value) in [
-        ("requested_grant_min_bytes", native_config.requested_grant_min_bytes()),
-        ("requested_grant_bytes", native_config.requested_grant_bytes()),
-    ] {
-        if let Some(value) = value {
-            ctx.sql(&format!("SET datafusion_nexus.request.{key} = '{value}'"))
-                .await
-                .expect("request-scoped grant option must parse")
-                .collect()
-                .await
-                .expect("request-scoped grant option must apply");
-        }
-    }
-}
-
 const TEST_DEVICE_BUDGET_BYTES: u64 = 512 * 1024 * 1024;
 const TEST_MAX_SOURCE_CHUNK_BYTES: u64 = 256 * 1024 * 1024;
 
@@ -91,47 +60,25 @@ fn pruning_test_backend() -> &'static NexusGpuBackend {
 
     BACKEND.get_or_init(|| {
         NexusGpuBackend::builder()
-            .memory_policy(NexusMemoryPolicy::Bounded {
-                device_ordinals: vec![0],
-                device_budget_bytes: TEST_DEVICE_BUDGET_BYTES,
-                max_source_chunk_bytes: TEST_MAX_SOURCE_CHUNK_BYTES,
-                max_row_groups_per_chunk: 1,
-                max_retry_attempts: 3,
-                min_retry_chunk_row_groups: 1,
-            })
+            .with_native_execution_config(NexusNativeExecutionConfig::bounded(
+                TEST_DEVICE_BUDGET_BYTES,
+                TEST_MAX_SOURCE_CHUNK_BYTES,
+                1,
+                3,
+                1,
+            ))
+            .device_profiles([NexusGpuDeviceProfile::new(0)
+                .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: TEST_DEVICE_BUDGET_BYTES })
+                .with_attempt_floor_bytes(Some(1))])
             .device_memory_ownership([(0, GpuMemoryOwnership::WholeDeviceExclusive)])
-            .admission(
-                NexusAdmissionPolicy::default()
-                    .with_grant_band(GrantBand {
-                        min: MemoryShare::Bytes(1),
-                        want: MemoryShare::Bytes(TEST_DEVICE_BUDGET_BYTES),
-                    })
-                    .with_slot_guarantee(SlotGuarantee::Optimistic),
-            )
+            .queue_policy(NexusGpuQueuePolicy::default())
             .build()
             .expect("pruning test backend must initialize")
     })
 }
 
-fn admitted_native_datafusion_config(device_budget_bytes: u64) -> NexusNativeExecutionConfig {
-    pruning_test_backend()
-        .optimizer_config()
-        .native_execution_config()
-        .clone()
-        .with_requested_grant_min_bytes(Some(device_budget_bytes))
-        .with_requested_grant_bytes(Some(device_budget_bytes))
-}
-
-pub(super) fn native_datafusion_config() -> NexusNativeExecutionConfig {
-    admitted_native_datafusion_config(TEST_DEVICE_BUDGET_BYTES)
-}
-
-pub(super) fn constrained_native_datafusion_config() -> NexusNativeExecutionConfig {
-    admitted_native_datafusion_config(1)
-}
-
 pub(super) struct AdmittedExecutionContext {
-    context: TenantQueryContext,
+    context: AdmittedQueryContext,
     _handle: QueryHandle,
 }
 

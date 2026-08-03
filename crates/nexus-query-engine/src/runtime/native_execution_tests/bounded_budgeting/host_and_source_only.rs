@@ -1,8 +1,8 @@
 use super::*;
 
 #[test]
-fn adaptive_native_query_preserves_multi_file_source_order() {
-    let dir = unique_temp_dir("nexus-query-engine-adaptive-multi-file-source-order");
+fn native_query_preserves_multi_file_source_order() {
+    let dir = unique_temp_dir("nexus-query-engine-multi-file-source-order");
     let first_path = dir.join("part-000.parquet");
     let second_path = dir.join("part-001.parquet");
     let third_path = dir.join("part-002.parquet");
@@ -38,7 +38,6 @@ fn adaptive_native_query_preserves_multi_file_source_order() {
             max_retry_attempts: 1,
             min_retry_chunk_row_groups: 1,
         })
-        .with_native_pipeline_execution_mode(NativePipelineExecutionMode::Adaptive)
         .build()
         .unwrap();
 

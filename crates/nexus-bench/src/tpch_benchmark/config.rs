@@ -18,7 +18,10 @@ pub(super) const DEFAULT_NATIVE_MAX_ROW_GROUPS_PER_CHUNK: usize = 1;
 pub(super) const DEFAULT_NATIVE_MAX_RETRY_ATTEMPTS: usize = 4;
 pub(super) const DEFAULT_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS: usize = 1;
 pub(super) const DEFAULT_NATIVE_MAX_SOURCE_READS_IN_FLIGHT: usize = 2;
-pub(super) const DEFAULT_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+const REMOVED_NATIVE_SOURCE_CACHE_POLICY_ENV: &str = "NEXUS_TPCH_BENCH_NATIVE_SOURCE_CACHE_POLICY";
+const REMOVED_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES_ENV: &str =
+    "NEXUS_TPCH_BENCH_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES";
+const REMOVED_NATIVE_MEMORY_POLICY_ENV: &str = "NEXUS_TPCH_BENCH_NATIVE_MEMORY_POLICY";
 
 pub(super) const TPCH_NATIVE_PROFILE_CONSERVATIVE: &str = "conservative";
 pub(super) const TPCH_NATIVE_PROFILE_SF100_GPU_THROUGHPUT: &str = "sf100_gpu_throughput";
@@ -36,9 +39,7 @@ pub(super) struct NativeTpchBenchmarkConfig {
     pub(super) parquet_pushdown_filters: Option<bool>,
     pub(super) native_execution: crate::report_workload::RelationalExecutionSelection,
     pub(super) native_memory_policy: NativeTpchMemoryPolicy,
-    pub(super) native_pipeline_execution_mode: NativePipelineExecutionMode,
     pub(super) max_source_reads_in_flight: usize,
-    pub(super) native_source_cache_policy: NativeTpchSourceCachePolicy,
 }
 
 #[derive(Debug)]
@@ -63,6 +64,8 @@ impl NativeTpchRuntimeResources {
 
 impl NativeTpchBenchmarkConfig {
     pub(super) fn from_env() -> DataFusionResult<Self> {
+        reject_p2_source_cache_env()?;
+        reject_p2_memory_policy_env()?;
         let config = Self {
             query_ids: query_ids_from_env("NEXUS_TPCH_BENCH_QUERY_IDS")?,
             warmup_iterations: env_usize("NEXUS_TPCH_BENCH_WARMUPS", 0)?,
@@ -70,16 +73,12 @@ impl NativeTpchBenchmarkConfig {
             dataset_mode: NativeTpchDatasetMode::from_env("NEXUS_TPCH_BENCH_DATASET_MODE")?,
             parquet_pushdown_filters: optional_env_bool("NEXUS_TPCH_BENCH_PARQUET_PUSHDOWN_FILTERS")?,
             native_execution: crate::report_workload::RelationalExecutionSelection::strict_native(),
-            native_memory_policy: NativeTpchMemoryPolicy::from_env("NEXUS_TPCH_BENCH_NATIVE_MEMORY_POLICY")?,
-            native_pipeline_execution_mode: native_pipeline_execution_mode_from_env(
-                "NEXUS_TPCH_BENCH_NATIVE_PIPELINE_EXECUTION_MODE",
-            )?,
+            native_memory_policy: NativeTpchMemoryPolicy::bounded_from_profile_settings(
+                native_tpch_profile_settings_from_env()?,
+            ),
             max_source_reads_in_flight: env_usize(
                 "NEXUS_TPCH_BENCH_NATIVE_MAX_SOURCE_READS_IN_FLIGHT",
                 DEFAULT_NATIVE_MAX_SOURCE_READS_IN_FLIGHT,
-            )?,
-            native_source_cache_policy: NativeTpchSourceCachePolicy::from_env(
-                "NEXUS_TPCH_BENCH_NATIVE_SOURCE_CACHE_POLICY",
             )?,
         };
         config.validate()?;
@@ -90,9 +89,6 @@ impl NativeTpchBenchmarkConfig {
         validate_nonzero("NEXUS_TPCH_BENCH_ITERATIONS", self.iterations)?;
         validate_query_ids(&self.query_ids)?;
         validate_nonzero("NEXUS_TPCH_BENCH_NATIVE_MAX_SOURCE_READS_IN_FLIGHT", self.max_source_reads_in_flight)?;
-        if let Some(max_retained_bytes) = self.native_source_cache_policy.max_retained_bytes() {
-            validate_nonzero("NEXUS_TPCH_BENCH_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES", max_retained_bytes)?;
-        }
         self.native_memory_policy.validate()
     }
 
@@ -112,31 +108,18 @@ impl NativeTpchBenchmarkConfig {
         &self,
         resources: &NativeTpchRuntimeResources,
     ) -> NexusNativeExecutionConfig {
-        let config = match self.native_memory_policy {
-            // Explicit benchmark override used to compare legacy whole-plan
-            // execution against the bounded production profile.
-            NativeTpchMemoryPolicy::Unbounded => NexusNativeExecutionConfig::unbounded(),
-            NativeTpchMemoryPolicy::Bounded {
-                device_budget_bytes,
-                max_source_chunk_bytes,
-                max_row_groups_per_chunk,
-                max_retry_attempts,
-                min_retry_chunk_row_groups,
-                source_chunk_planning_mode,
-                ..
-            } => NexusNativeExecutionConfig::bounded(
-                device_budget_bytes,
-                max_source_chunk_bytes,
-                max_row_groups_per_chunk,
-                max_retry_attempts,
-                min_retry_chunk_row_groups,
-            )
-            .with_source_scheduler_policy(nexus_query_engine::runtime::SourceSchedulerPolicy::new(
-                self.max_source_reads_in_flight,
-            ))
-            .with_source_chunk_planning_mode(source_chunk_planning_mode),
-        };
-        let config = config.with_native_pipeline_execution_mode(self.native_pipeline_execution_mode);
+        let policy = self.native_memory_policy;
+        let config = NexusNativeExecutionConfig::bounded(
+            policy.device_budget_bytes,
+            policy.max_source_chunk_bytes,
+            policy.max_row_groups_per_chunk,
+            policy.max_retry_attempts,
+            policy.min_retry_chunk_row_groups,
+        )
+        .with_source_scheduler_policy(nexus_query_engine::runtime::SourceSchedulerPolicy::new(
+            self.max_source_reads_in_flight,
+        ))
+        .with_source_chunk_planning_mode(policy.source_chunk_planning_mode);
         match resources.query_handle.as_ref() {
             Some(handle) => config.with_query_service_handle(Arc::clone(handle)),
             None => config,
@@ -144,45 +127,25 @@ impl NativeTpchBenchmarkConfig {
     }
 
     pub(super) fn new_runtime_resources(&self) -> DataFusionResult<NativeTpchRuntimeResources> {
-        let NativeTpchMemoryPolicy::Bounded {
-            device_budget_bytes,
-            max_source_chunk_bytes,
-            max_row_groups_per_chunk,
-            max_retry_attempts,
-            min_retry_chunk_row_groups,
-            source_chunk_planning_mode,
-            ..
-        } = self.native_memory_policy
-        else {
-            // Unbounded execution has no ownership-safe public backend contract.
-            // Execution will return the adapter's structured
-            // `reason=gpu_backend_required` error rather than constructing a
-            // raw runtime outside the backend owner.
-            return Ok(NativeTpchRuntimeResources::unavailable());
-        };
-        let service_config = QueryServiceConfig {
+        let policy = self.native_memory_policy;
+        let service_config = QueryExecutionConfig {
             source_scheduler_policy: nexus_query_engine::runtime::SourceSchedulerPolicy::new(
                 self.max_source_reads_in_flight,
             ),
-            source_chunk_planning_mode,
-            native_pipeline_execution_mode: self.native_pipeline_execution_mode,
-            local_parquet_source_cache_max_retained_bytes: self.native_source_cache_policy.max_retained_bytes(),
-            device_capacity_bytes: Some(device_budget_bytes),
-            max_concurrent_queries: 1,
-            max_source_chunk_bytes,
-            max_row_groups_per_chunk,
-            max_retry_attempts,
-            min_retry_chunk_row_groups,
-            ..QueryServiceConfig::default()
+            source_chunk_planning_mode: policy.source_chunk_planning_mode,
+            max_source_chunk_bytes: policy.max_source_chunk_bytes,
+            max_row_groups_per_chunk: policy.max_row_groups_per_chunk,
+            max_retry_attempts: policy.max_retry_attempts,
+            min_retry_chunk_row_groups: policy.min_retry_chunk_row_groups,
+            ..QueryExecutionConfig::default()
         };
         let owner = GpuBackendOwner::build(
             service_config,
-            vec![0],
-            vec![QueryServiceTenantConfig::new("tpch_benchmark", device_budget_bytes)],
+            nexus_query_engine::runtime::QueueBounds::default(),
+            vec![GpuBackendOwner::device_config(0, policy.device_budget_bytes, 1, 1)],
         )
         .map_err(native_error)?;
-        let query_handle =
-            Arc::new(owner.session().admit_query(TenantId::new("tpch_benchmark")).map_err(native_error)?);
+        let query_handle = Arc::new(owner.session().admit_query().map_err(native_error)?);
         Ok(NativeTpchRuntimeResources { owner: Some(owner), query_handle: Some(query_handle) })
     }
 }
@@ -197,9 +160,7 @@ impl Default for NativeTpchBenchmarkConfig {
             parquet_pushdown_filters: None,
             native_execution: crate::report_workload::RelationalExecutionSelection::strict_native(),
             native_memory_policy: NativeTpchMemoryPolicy::default(),
-            native_pipeline_execution_mode: NativePipelineExecutionMode::default(),
             max_source_reads_in_flight: DEFAULT_NATIVE_MAX_SOURCE_READS_IN_FLIGHT,
-            native_source_cache_policy: NativeTpchSourceCachePolicy::Disabled,
         }
     }
 }
@@ -269,33 +230,18 @@ impl NativeTpchScaleFactor {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum NativeTpchMemoryPolicy {
-    Unbounded,
-    Bounded {
-        profile_name: &'static str,
-        profile_source: &'static str,
-        device_budget_bytes: u64,
-        max_source_chunk_bytes: u64,
-        max_row_groups_per_chunk: usize,
-        max_retry_attempts: usize,
-        min_retry_chunk_row_groups: usize,
-        source_chunk_planning_mode: nexus_query_engine::runtime::SourceChunkPlanningMode,
-    },
+pub(super) struct NativeTpchMemoryPolicy {
+    pub(super) profile_name: &'static str,
+    pub(super) profile_source: &'static str,
+    pub(super) device_budget_bytes: u64,
+    pub(super) max_source_chunk_bytes: u64,
+    pub(super) max_row_groups_per_chunk: usize,
+    pub(super) max_retry_attempts: usize,
+    pub(super) min_retry_chunk_row_groups: usize,
+    pub(super) source_chunk_planning_mode: nexus_query_engine::runtime::SourceChunkPlanningMode,
 }
 
 impl NativeTpchMemoryPolicy {
-    fn from_env(name: &'static str) -> DataFusionResult<Self> {
-        let policy = match std::env::var_os(name) {
-            None => "bounded".to_string(),
-            Some(value) => value.to_string_lossy().to_ascii_lowercase(),
-        };
-        match policy.as_str() {
-            "unbounded" => Ok(Self::Unbounded),
-            "bounded" => Ok(Self::bounded_from_profile_settings(native_tpch_profile_settings_from_env()?)),
-            other => Err(plan_error(format!("invalid {name}: {other}; expected bounded or unbounded"))),
-        }
-    }
-
     #[cfg(test)]
     pub(super) const fn bounded_custom(
         device_budget_bytes: u64,
@@ -305,7 +251,7 @@ impl NativeTpchMemoryPolicy {
         min_retry_chunk_row_groups: usize,
         source_chunk_planning_mode: nexus_query_engine::runtime::SourceChunkPlanningMode,
     ) -> Self {
-        Self::Bounded {
+        Self {
             profile_name: TPCH_NATIVE_PROFILE_CUSTOM,
             profile_source: "direct_config",
             device_budget_bytes,
@@ -318,7 +264,7 @@ impl NativeTpchMemoryPolicy {
     }
 
     pub(super) fn bounded_from_profile_settings(profile: NativeTpchProfileSettings) -> Self {
-        Self::Bounded {
+        Self {
             profile_name: profile.profile_name,
             profile_source: profile.profile_source,
             device_budget_bytes: profile.device_budget_bytes,
@@ -331,36 +277,22 @@ impl NativeTpchMemoryPolicy {
     }
 
     pub(super) const fn as_str(self) -> &'static str {
-        match self {
-            Self::Unbounded => "unbounded",
-            Self::Bounded { .. } => "bounded",
-        }
+        "bounded"
     }
 
     fn validate(self) -> DataFusionResult<()> {
-        let Self::Bounded {
-            device_budget_bytes,
-            max_source_chunk_bytes,
-            max_row_groups_per_chunk,
-            max_retry_attempts,
-            min_retry_chunk_row_groups,
-            ..
-        } = self
-        else {
-            return Ok(());
-        };
-        validate_nonzero(NEXUS_TPCH_BENCH_NATIVE_DEVICE_BUDGET_BYTES_ENV, device_budget_bytes)?;
-        validate_nonzero(NEXUS_TPCH_BENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, max_source_chunk_bytes)?;
-        validate_nonzero(NEXUS_TPCH_BENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, max_row_groups_per_chunk)?;
-        validate_nonzero(NEXUS_TPCH_BENCH_NATIVE_MAX_RETRY_ATTEMPTS_ENV, max_retry_attempts)?;
-        validate_nonzero(NEXUS_TPCH_BENCH_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV, min_retry_chunk_row_groups)?;
+        validate_nonzero(NEXUS_TPCH_BENCH_NATIVE_DEVICE_BUDGET_BYTES_ENV, self.device_budget_bytes)?;
+        validate_nonzero(NEXUS_TPCH_BENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, self.max_source_chunk_bytes)?;
+        validate_nonzero(NEXUS_TPCH_BENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, self.max_row_groups_per_chunk)?;
+        validate_nonzero(NEXUS_TPCH_BENCH_NATIVE_MAX_RETRY_ATTEMPTS_ENV, self.max_retry_attempts)?;
+        validate_nonzero(NEXUS_TPCH_BENCH_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV, self.min_retry_chunk_row_groups)?;
         Ok(())
     }
 }
 
 impl Default for NativeTpchMemoryPolicy {
     fn default() -> Self {
-        Self::Bounded {
+        Self {
             profile_name: TPCH_NATIVE_PROFILE_CONSERVATIVE,
             profile_source: "default",
             device_budget_bytes: DEFAULT_NATIVE_DEVICE_BUDGET_BYTES,
@@ -536,43 +468,22 @@ fn same_tpch_profile_values(profile: &NativeTpchProfileSettings, base: NativeTpc
         && profile.source_chunk_planning_mode == base.source_chunk_planning_mode
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum NativeTpchSourceCachePolicy {
-    Disabled,
-    GpuResident { max_retained_bytes: u64 },
+fn reject_p2_source_cache_env() -> DataFusionResult<()> {
+    for name in [REMOVED_NATIVE_SOURCE_CACHE_POLICY_ENV, REMOVED_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES_ENV] {
+        if std::env::var_os(name).is_some() {
+            return Err(plan_error(format!("{name} is unavailable in P2; remove this setting")));
+        }
+    }
+    Ok(())
 }
 
-impl NativeTpchSourceCachePolicy {
-    fn from_env(name: &'static str) -> DataFusionResult<Self> {
-        let policy = match std::env::var_os(name) {
-            None => "disabled".to_string(),
-            Some(value) => value.to_string_lossy().to_ascii_lowercase(),
-        };
-        match policy.as_str() {
-            "disabled" | "off" | "none" => Ok(Self::Disabled),
-            "gpu_resident" | "gpu-resident" | "enabled" => Ok(Self::GpuResident {
-                max_retained_bytes: env_u64(
-                    "NEXUS_TPCH_BENCH_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES",
-                    DEFAULT_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES,
-                )?,
-            }),
-            other => Err(plan_error(format!("invalid {name}: {other}; expected disabled or gpu_resident"))),
-        }
+fn reject_p2_memory_policy_env() -> DataFusionResult<()> {
+    if std::env::var_os(REMOVED_NATIVE_MEMORY_POLICY_ENV).is_some() {
+        return Err(plan_error(format!(
+            "{REMOVED_NATIVE_MEMORY_POLICY_ENV} is unavailable in P2; the TPC-H benchmark always uses bounded backend admission"
+        )));
     }
-
-    pub(super) const fn as_str(self) -> &'static str {
-        match self {
-            Self::Disabled => "disabled",
-            Self::GpuResident { .. } => "gpu_resident",
-        }
-    }
-
-    pub(super) const fn max_retained_bytes(self) -> Option<u64> {
-        match self {
-            Self::Disabled => None,
-            Self::GpuResident { max_retained_bytes } => Some(max_retained_bytes),
-        }
-    }
+    Ok(())
 }
 
 fn query_ids_from_env(name: &'static str) -> DataFusionResult<Vec<String>> {
@@ -617,13 +528,6 @@ fn env_usize(name: &'static str, default: usize) -> DataFusionResult<usize> {
     value.to_string_lossy().parse::<usize>().map_err(|error| plan_error(format!("invalid {name}: {error}")))
 }
 
-fn env_u64(name: &'static str, default: u64) -> DataFusionResult<u64> {
-    let Some(value) = std::env::var_os(name) else {
-        return Ok(default);
-    };
-    value.to_string_lossy().parse::<u64>().map_err(|error| plan_error(format!("invalid {name}: {error}")))
-}
-
 fn parse_env_usize_value(name: &'static str, value: String) -> DataFusionResult<usize> {
     let value = value.trim();
     value.parse::<usize>().map_err(|error| plan_error(format!("invalid {name}: {error}")))
@@ -657,15 +561,6 @@ fn optional_env_bool(name: &'static str) -> DataFusionResult<Option<bool>> {
         "false" | "0" | "no" | "off" => Ok(Some(false)),
         other => Err(plan_error(format!("invalid {name}: {other}; expected true or false"))),
     }
-}
-
-fn native_pipeline_execution_mode_from_env(name: &'static str) -> DataFusionResult<NativePipelineExecutionMode> {
-    let mode = match std::env::var_os(name) {
-        None => "strict_bounded".to_string(),
-        Some(value) => value.to_string_lossy().to_ascii_lowercase(),
-    };
-    mode.parse::<NativePipelineExecutionMode>()
-        .map_err(|error| plan_error(format!("invalid {name}: {}; expected strict_bounded or adaptive", error.value())))
 }
 
 fn validate_nonzero<T>(name: &'static str, value: T) -> DataFusionResult<()>

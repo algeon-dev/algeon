@@ -1170,8 +1170,8 @@ fn node_local_requirements(plan: &QueryPlan, node: &QueryNode) -> Vec<Reservatio
         )],
         PlanNode::GraphAlgorithm(_) => vec![ReservationRequirement::blocked_by_lower_level(
             ReservationKind::OperatorOutput,
-            crate::plan::GRAPH_ALGORITHM_STRICT_BOUNDED_MEMORY_BOUNDARY,
-            crate::plan::GRAPH_ALGORITHM_STRICT_BOUNDED_REQUIRED_CONTRACT,
+            crate::plan::GRAPH_ALGORITHM_CAPABILITY_MEMORY_BOUNDARY,
+            crate::plan::GRAPH_ALGORITHM_CAPABILITY_REQUIRED_CONTRACT,
             ContractQuality::ExactPreflight,
         )],
         PlanNode::VectorAlgorithm(_) => vec![ReservationRequirement::blocked_by_lower_level(

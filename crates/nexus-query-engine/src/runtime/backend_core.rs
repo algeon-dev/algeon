@@ -1,12 +1,13 @@
 //! Ownership-enforcing GPU backend construction and lifecycle facade.
 
 use std::{
+    any::Any,
     collections::BTreeMap,
     fmt,
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{
         Arc, Condvar, Mutex, OnceLock, Weak,
-        atomic::{AtomicU8, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering},
         mpsc,
     },
     thread,
@@ -14,14 +15,17 @@ use std::{
 };
 
 use super::{
-    DeploymentIoCapability, DeviceFacts, DeviceMemoryFailureReport, DeviceTelemetrySnapshot, GpuExecutionPoolSnapshot,
-    GpuExecutionQuerySnapshot, MemoryGovernorReport, QueryAdmissionRequest, QueryGrantBand, QueryGrantRequest,
-    QueryHandle, QueryService, QueryServiceAdmissionSnapshot, QueryServiceConfig, QueryServiceDeviceAdmissionSnapshot,
-    QueryServiceGraphCacheSnapshot, TenantId,
+    DeploymentIoCapability, DeviceCapabilities, DeviceFacts, DeviceLedgerReport, DeviceMemoryFailureReport,
+    DeviceTelemetrySnapshot, GpuExecutionPoolSnapshot, GpuExecutionQuerySnapshot, QueryAdmissionRequest,
+    QueryExecutionConfig, QueryHandle, QueryService, QueryServiceAdmissionSnapshot,
+    QueryServiceDeviceAdmissionSnapshot, QueueBounds,
     backend_lifecycle::{
         BackendLifecycle, GpuLifecyclePermit, ObservationPermit, PublicHandleLease, PublicHandleTracker,
     },
     gpu::{LiveBackendLease, claim_live_backend, normalize_device_ordinals},
+    process_exit::{
+        ProcessExitPhase, ProcessExitRegistration, ProcessExitShutdown, register_cuda_process_exit_shutdown,
+    },
     query_service::{QueryServiceDrainOutcome, QueryServiceDrainPhaseOutcome},
 };
 use crate::{
@@ -105,13 +109,17 @@ impl fmt::Debug for GpuMemoryFraction {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GpuBackendDeviceConfig {
     device_ordinal: usize,
+    device_capabilities: DeviceCapabilities,
     memory_ownership: GpuMemoryOwnership,
     memory_limit: GpuDeviceMemoryLimit,
     backend_reserve_bytes: u64,
+    attempt_floor_bytes: Option<u64>,
+    source_work_per_attempt: usize,
     max_active_queries: usize,
     stream_pool_size: usize,
     worker_count: usize,
     lane_count: usize,
+    installation_bounds_set: bool,
     install_telemetry: bool,
     install_diagnostics: bool,
 }
@@ -120,13 +128,17 @@ impl GpuBackendDeviceConfig {
     pub fn new(device_ordinal: usize, memory_ownership: GpuMemoryOwnership) -> Self {
         Self {
             device_ordinal,
+            device_capabilities: DeviceCapabilities::default(),
             memory_ownership,
             memory_limit: GpuDeviceMemoryLimit::default(),
             backend_reserve_bytes: 0,
+            attempt_floor_bytes: None,
+            source_work_per_attempt: 1,
             max_active_queries: 1,
             stream_pool_size: 1,
             worker_count: 1,
             lane_count: 1,
+            installation_bounds_set: false,
             install_telemetry: true,
             install_diagnostics: true,
         }
@@ -137,8 +149,36 @@ impl GpuBackendDeviceConfig {
         self
     }
 
+    /// Freezes the native execution capabilities available on this device.
+    ///
+    /// The default accepts every capability with a modeled native contract.
+    /// Supplying an exact profile is useful for heterogeneous deployments and
+    /// is consumed by admission before any waiter is queued.
+    pub fn with_device_capabilities(mut self, device_capabilities: DeviceCapabilities) -> Self {
+        self.device_capabilities = device_capabilities;
+        self
+    }
+
     pub fn with_backend_reserve_bytes(mut self, backend_reserve_bytes: u64) -> Self {
         self.backend_reserve_bytes = backend_reserve_bytes;
+        self
+    }
+
+    /// Sets the immutable minimum managed-memory floor for each active attempt.
+    /// When unset, it resolves per device to
+    /// `managed_capacity_bytes / max(8, max_active_queries)` so the frozen
+    /// floor-times-active-limit invariant always holds by default.
+    pub fn with_attempt_floor_bytes(mut self, attempt_floor_bytes: u64) -> Self {
+        self.attempt_floor_bytes = Some(attempt_floor_bytes);
+        self
+    }
+
+    /// Sets source work reserved per active attempt.
+    ///
+    /// This is part of the immutable device envelope; execution/session
+    /// source scheduling controls must not change controller capacity.
+    pub fn with_source_work_per_attempt(mut self, source_work_per_attempt: usize) -> Self {
+        self.source_work_per_attempt = source_work_per_attempt;
         self
     }
 
@@ -151,6 +191,7 @@ impl GpuBackendDeviceConfig {
         self.stream_pool_size = stream_pool_size;
         self.worker_count = worker_count;
         self.lane_count = lane_count;
+        self.installation_bounds_set = true;
         self
     }
 
@@ -168,6 +209,11 @@ impl GpuBackendDeviceConfig {
         self.device_ordinal
     }
 
+    /// Immutable native execution capabilities selected for this device.
+    pub fn device_capabilities(&self) -> &DeviceCapabilities {
+        &self.device_capabilities
+    }
+
     pub fn memory_ownership(&self) -> GpuMemoryOwnership {
         self.memory_ownership
     }
@@ -178,6 +224,14 @@ impl GpuBackendDeviceConfig {
 
     pub fn backend_reserve_bytes(&self) -> u64 {
         self.backend_reserve_bytes
+    }
+
+    pub fn attempt_floor_bytes(&self) -> Option<u64> {
+        self.attempt_floor_bytes
+    }
+
+    pub fn source_work_per_attempt(&self) -> usize {
+        self.source_work_per_attempt
     }
 
     pub fn max_active_queries(&self) -> usize {
@@ -197,81 +251,41 @@ impl GpuBackendDeviceConfig {
     }
 }
 
-/// Unresolved memory share used by the private legacy controller draft.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[non_exhaustive]
-pub enum GpuBackendMemoryShare {
-    Bytes(u64),
-    Fraction(GpuMemoryFraction),
-    PolicyDefault,
-}
-
-/// Pure tenant policy retained unresolved until every device install plan has
-/// been frozen. This is a P0 compatibility projection, not the P2 public
-/// resource-controller contract.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GpuBackendTenantDraft {
-    tenant_id: TenantId,
-    minimum: GpuBackendMemoryShare,
-    preferred: GpuBackendMemoryShare,
-}
-
-impl GpuBackendTenantDraft {
-    pub fn new(
-        tenant_id: impl Into<TenantId>,
-        minimum: GpuBackendMemoryShare,
-        preferred: GpuBackendMemoryShare,
-    ) -> Self {
-        Self { tenant_id: tenant_id.into(), minimum, preferred }
-    }
-
-    pub fn tenant_id(&self) -> &TenantId {
-        &self.tenant_id
-    }
-
-    pub(crate) fn into_parts(self) -> (TenantId, GpuBackendMemoryShare, GpuBackendMemoryShare) {
-        (self.tenant_id, self.minimum, self.preferred)
-    }
-}
-
-/// Pure, resource-independent policy for the private P0 legacy controller.
+/// Pure, resource-independent policy for the bounded controller.
 ///
-/// Resource-derived fields in the supplied legacy policy are deliberately
-/// cleared. The engine resolves them from immutable post-claim device plans;
-/// root code cannot feed an ordinal-zero or common-minimum capacity back into
+/// Resource-derived fields in the supplied policy are deliberately cleared.
+/// The engine resolves them from immutable post-claim device plans; root
+/// code cannot feed an ordinal-zero or common-minimum capacity back into
 /// construction.
 #[derive(Debug, Clone)]
 pub struct GpuBackendControllerDraft {
-    legacy_policy: QueryServiceConfig,
-    tenants: Vec<GpuBackendTenantDraft>,
+    execution_config: QueryExecutionConfig,
+    queue_bounds: QueueBounds,
 }
 
 impl GpuBackendControllerDraft {
-    pub fn from_legacy_policy(mut legacy_policy: QueryServiceConfig, tenants: Vec<GpuBackendTenantDraft>) -> Self {
-        legacy_policy.device_ordinal = 0;
-        legacy_policy.stream_pool_size = None;
-        legacy_policy.device_capacity_bytes = None;
-        legacy_policy.max_queries_per_device = None;
-        Self { legacy_policy, tenants }
+    /// Creates a controller draft from independent execution and queue policy.
+    pub fn new(execution_config: QueryExecutionConfig, queue_bounds: QueueBounds) -> Self {
+        Self { execution_config, queue_bounds }
     }
 
-    pub fn tenants(&self) -> &[GpuBackendTenantDraft] {
-        &self.tenants
+    pub(crate) fn execution_config(&self) -> &QueryExecutionConfig {
+        &self.execution_config
     }
 
-    pub(crate) fn legacy_policy(&self) -> &QueryServiceConfig {
-        &self.legacy_policy
+    pub(crate) fn queue_bounds(&self) -> &QueueBounds {
+        &self.queue_bounds
     }
 
-    pub(crate) fn into_parts(self) -> (QueryServiceConfig, Vec<GpuBackendTenantDraft>) {
-        (self.legacy_policy, self.tenants)
+    pub(crate) fn into_parts(self) -> (QueryExecutionConfig, QueueBounds) {
+        (self.execution_config, self.queue_bounds)
     }
 }
 
 /// Complete pure P0 construction draft.
 ///
 /// The fields stay private so validation cannot be bypassed with a struct
-/// literal. Automatic values and tenant shares remain unresolved until the
+/// literal. Automatic values and device-local resource profiles remain unresolved until the
 /// engine owns the complete device set and has frozen every device fact.
 #[derive(Debug, Clone)]
 pub struct GpuBackendCoreDraft {
@@ -308,84 +322,81 @@ impl GpuBackendCoreDraft {
         })
     }
 
+    /// Resolves derived installation bounds before validation.
+    ///
+    /// Devices without explicit installation bounds inherit the frozen
+    /// `A_d * (1 + S_d)` stream/job-slot formula with `A_d` root lanes;
+    /// explicit bounds are validated against that formula instead.
+    pub(crate) fn normalize_installation_bounds(&mut self) -> Result<()> {
+        for device in &mut self.devices {
+            let source_work = device.source_work_per_attempt;
+            let aux = device.max_active_queries.checked_mul(source_work).ok_or_else(|| {
+                invalid_device_config(device.device_ordinal, "source_work_per_attempt", "overflowed")
+                    .with_fact("reason", "aux_source_work_overflow")
+            })?;
+            let required = device.max_active_queries.checked_add(aux).ok_or_else(|| {
+                invalid_device_config(device.device_ordinal, "stream_pool_size", "overflowed")
+                    .with_fact("reason", "required_slot_overflow")
+            })?;
+            if device.installation_bounds_set {
+                if device.stream_pool_size < required {
+                    return Err(invalid_device_config(
+                        device.device_ordinal,
+                        "stream_pool_size",
+                        "must cover root and auxiliary source work for every active attempt",
+                    )
+                    .with_fact("reason", "stream_pool_below_required_formula")
+                    .with_fact("stream_pool_size", device.stream_pool_size)
+                    .with_fact("required_slot_capacity", required)
+                    .with_fact("max_active_queries", device.max_active_queries)
+                    .with_fact("source_work_per_attempt", source_work));
+                }
+            } else {
+                device.stream_pool_size = required;
+                device.lane_count = device.max_active_queries;
+                // One root worker scope exists for every concurrently
+                // admitted attempt. Auxiliary work remains bounded by its
+                // class permits and stream slots; leaving the constructor's
+                // single-worker default here would make a public `A_d > 1`
+                // profile fail validation after automatic derivation.
+                device.worker_count = device.max_active_queries;
+            }
+        }
+        Ok(())
+    }
+
     pub fn validate(&self) -> Result<()> {
         let ordinals = self.devices.iter().map(|device| device.device_ordinal).collect::<Vec<_>>();
         normalize_device_ordinals(&ordinals)?;
-        if self.controller.legacy_policy.local_parquet_source_cache_max_retained_bytes.is_some()
-            || self.controller.legacy_policy.resident_graph_cache_max_retained_bytes.is_some()
-        {
-            return Err(invalid_config("cache_domains", "P0 backend cache domains must remain disabled")
-                .with_fact("reason", "cache_domains_must_be_disabled"));
-        }
-        if self.controller.legacy_policy.query_memory_domain.is_some()
-            && self
-                .devices
-                .iter()
-                .any(|device| matches!(device.memory_ownership, GpuMemoryOwnership::StaticPartition { .. }))
-        {
-            return Err(invalid_config(
-                "query_memory_domain",
-                "private query memory domains cannot bypass an enforced static partition",
-            )
-            .with_fact("reason", "query_memory_domain_incompatible_with_static_partition"));
-        }
         for device in &self.devices {
-            validate_device_config(device, self.controller.legacy_policy.device_memory_manager_base)?;
+            validate_device_config(device)?;
         }
         let derived = self.derived_global_max_active_queries()?;
         if derived == 0 {
             return Err(invalid_config("max_active_queries", "derived global maximum must be positive")
                 .with_fact("reason", "zero"));
         }
-        validate_controller_draft(&self.controller, &ordinals, derived, &self.deployment_io_capability)
+        validate_controller_draft(&self.controller, &ordinals, &self.deployment_io_capability)
     }
 }
 
 fn validate_controller_draft(
     controller: &GpuBackendControllerDraft,
     ordinals: &[usize],
-    derived_global_max_active_queries: usize,
     deployment: &DeploymentIoCapability,
 ) -> Result<()> {
-    if controller.tenants.is_empty() {
-        return Err(
-            invalid_config("tenants", "backend controller requires at least one tenant").with_fact("reason", "empty")
-        );
-    }
-    let mut tenant_ids = std::collections::BTreeSet::new();
-    for tenant in &controller.tenants {
-        if tenant.tenant_id.as_str().trim().is_empty() {
-            return Err(invalid_config("tenant_id", "tenant id must not be empty").with_fact("reason", "empty"));
-        }
-        if !tenant_ids.insert(tenant.tenant_id.as_str()) {
-            return Err(invalid_config("tenant_id", "tenant ids must be unique").with_fact("reason", "duplicate"));
-        }
-        validate_memory_share("tenant.minimum", tenant.minimum, false)?;
-        validate_memory_share("tenant.preferred", tenant.preferred, true)?;
-    }
-    let mut policy = controller.legacy_policy.clone();
-    policy.max_concurrent_queries = derived_global_max_active_queries;
-    QueryService::validate_controller_policy_for_backend(&policy, ordinals, deployment)
+    QueryService::validate_controller_policy_for_backend(
+        controller.execution_config(),
+        controller.queue_bounds(),
+        ordinals,
+        deployment,
+    )
 }
 
-fn validate_memory_share(field: &'static str, share: GpuBackendMemoryShare, allow_default: bool) -> Result<()> {
-    match share {
-        GpuBackendMemoryShare::Bytes(0) => {
-            Err(invalid_config(field, "memory share must be greater than zero").with_fact("reason", "zero"))
-        },
-        GpuBackendMemoryShare::PolicyDefault if !allow_default => {
-            Err(invalid_config(field, "minimum memory share must be concrete").with_fact("reason", "policy_default"))
-        },
-        _ => Ok(()),
-    }
-}
-
-fn validate_device_config(
-    device: &GpuBackendDeviceConfig,
-    device_memory_manager_base: cudf::DeviceMemoryManagerBase,
-) -> Result<()> {
+fn validate_device_config(device: &GpuBackendDeviceConfig) -> Result<()> {
     for (field, value) in [
         ("max_active_queries", device.max_active_queries),
+        ("source_work_per_attempt", device.source_work_per_attempt),
         ("stream_pool_size", device.stream_pool_size),
         ("worker_count", device.worker_count),
         ("lane_count", device.lane_count),
@@ -394,6 +405,10 @@ fn validate_device_config(
             return Err(invalid_device_config(device.device_ordinal, field, "must be greater than zero")
                 .with_fact("reason", "zero"));
         }
+    }
+    if device.attempt_floor_bytes == Some(0) {
+        return Err(invalid_device_config(device.device_ordinal, "attempt_floor_bytes", "must be greater than zero")
+            .with_fact("reason", "zero"));
     }
     for (field, value) in [
         ("stream_pool_size", device.stream_pool_size),
@@ -480,7 +495,7 @@ fn validate_device_config(
         }
     }
     let allocation_limit_bytes = native_allocation_limit_bytes(device)?;
-    cudf::DeviceMemoryManagerOptions { base: device_memory_manager_base, allocation_limit_bytes }.validate().map_err(
+    cudf::DeviceMemoryManagerOptions { allocation_limit_bytes, ..Default::default() }.validate().map_err(
         |error| {
             QueryError::from_cudf(BUILD_OPERATION, "invalid per-device memory manager installation options", error)
                 .with_fact("field", "device_memory_manager_options")
@@ -521,50 +536,16 @@ fn invalid_config(field: &'static str, message: &'static str) -> QueryError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub(crate) enum GpuBackendConstructionCheckpoint {
-    BeforeDeviceDiscovery {
-        device_ordinal: usize,
-    },
-    AfterDeviceDiscovery {
-        device_ordinal: usize,
-    },
-    BeforeMemoryManager {
-        device_ordinal: usize,
-    },
-    AfterMemoryManager {
-        device_ordinal: usize,
-    },
-    BeforeStreamPool {
-        device_ordinal: usize,
-    },
-    AfterStreamPool {
-        device_ordinal: usize,
-    },
-    BeforeDeviceContext {
-        device_ordinal: usize,
-    },
-    AfterDeviceContext {
-        device_ordinal: usize,
-    },
-    BeforeWorkerPool {
-        device_ordinal: usize,
-    },
-    AfterWorkerPool {
-        device_ordinal: usize,
-    },
-    BeforeLocalParquetCache {
-        device_ordinal: usize,
-    },
-    AfterLocalParquetCache {
-        device_ordinal: usize,
-    },
-    #[cfg(feature = "cugraph")]
-    BeforeResidentGraphCache {
-        device_ordinal: usize,
-    },
-    #[cfg(feature = "cugraph")]
-    AfterResidentGraphCache {
-        device_ordinal: usize,
-    },
+    BeforeDeviceDiscovery { device_ordinal: usize },
+    AfterDeviceDiscovery { device_ordinal: usize },
+    BeforeMemoryManager { device_ordinal: usize },
+    AfterMemoryManager { device_ordinal: usize },
+    BeforeStreamPool { device_ordinal: usize },
+    AfterStreamPool { device_ordinal: usize },
+    BeforeDeviceContext { device_ordinal: usize },
+    AfterDeviceContext { device_ordinal: usize },
+    BeforeWorkerPool { device_ordinal: usize },
+    AfterWorkerPool { device_ordinal: usize },
     BeforeStartupRecords,
     AfterStartupRecords,
     BeforeCleanupWorker,
@@ -632,7 +613,8 @@ impl GpuBackendCoreBuilder {
         self.build_with_construction_journal(Arc::new(ConstructionResourceJournal::default()))
     }
 
-    fn build_with_construction_journal(self, journal: Arc<ConstructionResourceJournal>) -> Result<GpuBackendCore> {
+    fn build_with_construction_journal(mut self, journal: Arc<ConstructionResourceJournal>) -> Result<GpuBackendCore> {
+        self.draft.normalize_installation_bounds()?;
         self.draft.validate()?;
         #[cfg(test)]
         let observation_completion_executor_factory = Arc::clone(&self.observation_completion_executor_factory);
@@ -696,6 +678,11 @@ impl GpuBackendCoreBuilder {
                 )
                 .with_fact("reason", "duplicate_resource_generation_install")
             })?;
+            // CUDA has been initialized while installing the service-owned
+            // device resources. Register the coordinator only now so its
+            // `atexit` handler runs before libcudart's finalizer.
+            observation_core.completion_executor.activate_process_exit();
+            coordinator.activate_process_exit();
 
             let service =
                 generation.service().expect("resource service is available immediately after successful installation");
@@ -715,9 +702,9 @@ impl GpuBackendCoreBuilder {
             }
             let mut startup_records = Vec::with_capacity(devices.len());
             for profile in &devices {
-                let (facts, capacity_bytes, installation, health_identity) = observed
+                let (facts, capacity_bytes, installation, health_identity, resource_profile) = observed
                     .iter()
-                    .find(|(facts, _, _, _)| facts.device == profile.device_ordinal)
+                    .find(|(facts, _, _, _, _)| facts.device == profile.device_ordinal)
                     .cloned()
                     .ok_or_else(|| {
                         QueryError::new(
@@ -769,6 +756,7 @@ impl GpuBackendCoreBuilder {
                     device_ordinal: facts.device,
                     facts,
                     capacity_bytes,
+                    resource_profile,
                     memory_ownership: profile.memory_ownership,
                     memory_limit: profile.memory_limit,
                     backend_reserve_bytes: profile.backend_reserve_bytes,
@@ -827,6 +815,8 @@ pub struct GpuBackendDeviceStartupRecord {
     pub device_ordinal: usize,
     pub facts: DeviceFacts,
     pub capacity_bytes: u64,
+    /// Full ordinal-local resource-controller profile frozen after discovery.
+    pub resource_profile: crate::runtime::DeviceResourceProfile,
     pub memory_ownership: GpuMemoryOwnership,
     pub memory_limit: GpuDeviceMemoryLimit,
     pub backend_reserve_bytes: u64,
@@ -925,18 +915,15 @@ impl GpuBackendCore {
 
     pub fn close_and_wait_until(&self, deadline: Instant) -> Result<GpuBackendCloseSnapshot> {
         reject_reentrant_observation_close()?;
-        self.coordinator.signal();
-        self.coordinator.state.wait_until(deadline, &self.observation_core.lifecycle)
+        self.coordinator.close_and_wait_until(deadline)
     }
 
     pub async fn close_and_wait_async(&self, timeout: Duration) -> Result<GpuBackendCloseSnapshot> {
         reject_reentrant_observation_close()?;
         let coordinator = Arc::clone(&self.coordinator);
-        let lifecycle = self.observation_core.lifecycle.clone();
         tokio::task::spawn_blocking(move || {
-            coordinator.signal();
             let deadline = Instant::now().checked_add(timeout).unwrap_or_else(Instant::now);
-            coordinator.state.wait_until(deadline, &lifecycle)
+            coordinator.close_and_wait_until(deadline)
         })
         .await
         .map_err(|error| {
@@ -1004,42 +991,26 @@ impl GpuBackendSession {
         ))
     }
 
-    pub fn admit_query_with_request(&self, tenant_id: TenantId, request: QueryAdmissionRequest) -> Result<QueryHandle> {
+    pub fn admit_query_with_request(&self, request: QueryAdmissionRequest) -> Result<QueryHandle> {
         let (observation, resource, completion_dispatcher) = self.acquire_resource()?;
         let service = resource.generation.service().cloned().ok_or_else(resource_generation_unpublished_error)?;
-        service.admit_query_with_backend_permits(tenant_id, request, observation, resource, completion_dispatcher)
+        service.admit_query_with_backend_permits(request, observation, resource, completion_dispatcher)
     }
 
-    pub fn admit_query(&self, tenant_id: TenantId) -> Result<QueryHandle> {
-        self.admit_query_with_request(tenant_id, QueryAdmissionRequest::new())
+    pub fn admit_query(&self) -> Result<QueryHandle> {
+        self.admit_query_with_request(QueryAdmissionRequest::new())
     }
 
-    pub fn try_admit_query_with_request(
-        &self,
-        tenant_id: TenantId,
-        request: QueryAdmissionRequest,
-    ) -> Result<Option<QueryHandle>> {
+    pub fn try_admit_query_with_request(&self, request: QueryAdmissionRequest) -> Result<Option<QueryHandle>> {
         let (observation, resource, completion_dispatcher) = self.acquire_resource()?;
         let service = resource.generation.service().cloned().ok_or_else(resource_generation_unpublished_error)?;
-        service.try_admit_query_with_backend_permits(tenant_id, request, observation, resource, completion_dispatcher)
+        service.try_admit_query_with_backend_permits(request, observation, resource, completion_dispatcher)
     }
 
-    pub async fn admit_async_with_request(
-        &self,
-        tenant_id: TenantId,
-        request: QueryAdmissionRequest,
-    ) -> Result<QueryHandle> {
+    pub async fn admit_async_with_request(&self, request: QueryAdmissionRequest) -> Result<QueryHandle> {
         let (observation, resource, completion_dispatcher) = self.acquire_resource()?;
         let service = resource.generation.service().cloned().ok_or_else(resource_generation_unpublished_error)?;
-        service.admit_async_with_backend_permits(tenant_id, request, observation, resource, completion_dispatcher).await
-    }
-
-    pub fn requested_grant_band(&self, tenant_id: &TenantId, request: QueryGrantRequest) -> Result<QueryGrantBand> {
-        self.with_service(|service| service.tenant_requested_grant_band_with_grant_request(tenant_id, request))
-    }
-
-    pub fn tenant_budget(&self, tenant_id: &TenantId) -> Result<u64> {
-        self.with_service(|service| service.tenant_budget(tenant_id))
+        service.admit_async_with_backend_permits(request, observation, resource, completion_dispatcher).await
     }
 
     pub fn max_device_total_memory_bytes(&self) -> Result<u64> {
@@ -1050,8 +1021,12 @@ impl GpuBackendSession {
         self.identities == other.identities
     }
 
-    pub fn config(&self) -> Result<QueryServiceConfig> {
+    pub fn config(&self) -> Result<QueryExecutionConfig> {
         self.with_service(|service| Ok(service.config().clone()))
+    }
+
+    pub fn queue_bounds(&self) -> Result<QueueBounds> {
+        self.with_service(|service| Ok(service.queue_bounds().clone()))
     }
 
     pub fn admission_snapshot(&self) -> Result<QueryServiceAdmissionSnapshot> {
@@ -1062,8 +1037,8 @@ impl GpuBackendSession {
         self.with_service(|service| Ok(service.device_admission_snapshots()))
     }
 
-    pub fn memory_governor_reports(&self) -> Result<Vec<MemoryGovernorReport>> {
-        self.with_service(QueryService::memory_governor_reports)
+    pub fn device_ledger_reports(&self) -> Result<Vec<DeviceLedgerReport>> {
+        self.with_service(QueryService::device_ledger_reports)
     }
 
     pub fn device_memory_failure_reports(&self) -> Result<Vec<DeviceMemoryFailureReport>> {
@@ -1080,10 +1055,6 @@ impl GpuBackendSession {
 
     pub fn gpu_execution_query_report(&self) -> Result<GpuExecutionQuerySnapshot> {
         self.with_service(|service| Ok(service.gpu_execution_query_report()))
-    }
-
-    pub fn resident_graph_cache_snapshots(&self) -> Result<Vec<QueryServiceGraphCacheSnapshot>> {
-        self.with_service(QueryService::resident_graph_cache_snapshots)
     }
 
     fn with_service<T>(&self, operation: impl FnOnce(&QueryService) -> Result<T>) -> Result<T> {
@@ -1186,10 +1157,18 @@ impl ObservationCompletionWorkerLane {
             Self::ActivityTail => "nexus-observation-completion-activity-tail",
         }
     }
+
+    const fn slot(self) -> usize {
+        match self {
+            Self::Observation => 0,
+            Self::ActivityTail => 1,
+        }
+    }
 }
 
 const OBSERVATION_COMPLETION_WORKER_RUNNING: u8 = 0;
 const OBSERVATION_COMPLETION_WORKER_STOPPED: u8 = 1;
+const OBSERVATION_COMPLETION_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 /// Supervisor-visible state for the detached completion worker.
 ///
@@ -1201,6 +1180,7 @@ const OBSERVATION_COMPLETION_WORKER_STOPPED: u8 = 1;
 struct ObservationCompletionExecutorState {
     worker_terminal: AtomicU8,
     worker_fault_count: AtomicU64,
+    shutdown_requested: AtomicBool,
 }
 
 impl ObservationCompletionExecutorState {
@@ -1208,11 +1188,17 @@ impl ObservationCompletionExecutorState {
         Self {
             worker_terminal: AtomicU8::new(OBSERVATION_COMPLETION_WORKER_RUNNING),
             worker_fault_count: AtomicU64::new(0),
+            shutdown_requested: AtomicBool::new(false),
         }
     }
 
     fn accepts_dispatch(&self) -> bool {
-        self.worker_terminal.load(Ordering::Acquire) == OBSERVATION_COMPLETION_WORKER_RUNNING
+        !self.shutdown_requested.load(Ordering::Acquire)
+            && self.worker_terminal.load(Ordering::Acquire) == OBSERVATION_COMPLETION_WORKER_RUNNING
+    }
+
+    fn request_shutdown(&self) {
+        self.shutdown_requested.store(true, Ordering::Release);
     }
 
     fn mark_stopped(&self) {
@@ -1226,6 +1212,150 @@ impl ObservationCompletionExecutorState {
     #[cfg(test)]
     fn worker_fault_count(&self) -> u64 {
         self.worker_fault_count.load(Ordering::Acquire)
+    }
+}
+
+/// Retains the completion-worker join handles until their final owner either
+/// drains naturally or the process-exit registry stops them. Completion work
+/// is host-side, but activity-tail destructors can reenter backend lifecycle
+/// code, so their workers must not outlive CUDA's process finalizer either.
+#[derive(Debug)]
+struct ObservationCompletionSupervisor {
+    observation_state: Arc<ObservationCompletionExecutorState>,
+    activity_tail_state: Arc<ObservationCompletionExecutorState>,
+    join: Mutex<[Option<thread::JoinHandle<()>>; 2]>,
+    active_workers: AtomicUsize,
+    process_exit_registration: Mutex<Option<ProcessExitRegistration>>,
+}
+
+impl ObservationCompletionSupervisor {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            observation_state: Arc::new(ObservationCompletionExecutorState::new()),
+            activity_tail_state: Arc::new(ObservationCompletionExecutorState::new()),
+            join: Mutex::new([None, None]),
+            active_workers: AtomicUsize::new(0),
+            process_exit_registration: Mutex::new(None),
+        })
+    }
+
+    fn state(&self, lane: ObservationCompletionWorkerLane) -> Arc<ObservationCompletionExecutorState> {
+        match lane {
+            ObservationCompletionWorkerLane::Observation => Arc::clone(&self.observation_state),
+            ObservationCompletionWorkerLane::ActivityTail => Arc::clone(&self.activity_tail_state),
+        }
+    }
+
+    fn spawn_worker(
+        self: &Arc<Self>,
+        lane: ObservationCompletionWorkerLane,
+        state: Arc<ObservationCompletionExecutorState>,
+    ) -> Result<mpsc::Sender<ObservationCompletionMessage>> {
+        let (sender, receiver) = mpsc::channel::<ObservationCompletionMessage>();
+        self.active_workers.fetch_add(1, Ordering::AcqRel);
+        let worker_supervisor = Arc::clone(self);
+        let failed_supervisor = Arc::clone(self);
+        let name = lane.thread_name();
+        let worker = thread::Builder::new()
+            .name(name.to_string())
+            .spawn(move || {
+                run_observation_completion_worker(receiver, state, name);
+                worker_supervisor.worker_stopped();
+            })
+            .map_err(|error| {
+                failed_supervisor.active_workers.fetch_sub(1, Ordering::AcqRel);
+                QueryError::new(
+                    QueryErrorCode::Internal,
+                    BUILD_OPERATION,
+                    "failed to create backend observation completion worker",
+                )
+                .with_fact("reason", "observation_completion_worker_spawn_failed")
+                .with_fact("worker_lane", lane.as_str())
+                .with_fact("io_error", error.to_string())
+            })?;
+        self.join.lock().unwrap_or_else(std::sync::PoisonError::into_inner)[lane.slot()] = Some(worker);
+        Ok(sender)
+    }
+
+    fn activate_process_exit(self: &Arc<Self>) {
+        self.activate_process_exit_with(register_cuda_process_exit_shutdown);
+    }
+
+    /// Registers outside the slot mutex. Process-exit registration may invoke
+    /// the supplied shutdown owner synchronously when global exit has already
+    /// begun; that owner joins workers and re-enters `unregister_process_exit`.
+    /// Keeping the mutex out of that callback path prevents a self-deadlock.
+    fn activate_process_exit_with(
+        self: &Arc<Self>,
+        register: impl FnOnce(Arc<dyn ProcessExitShutdown>) -> Option<ProcessExitRegistration>,
+    ) {
+        {
+            let registration = self.process_exit_registration.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            if registration.is_some() || self.active_workers.load(Ordering::Acquire) == 0 {
+                return;
+            }
+        }
+
+        let shutdown: Arc<dyn ProcessExitShutdown> = self.clone();
+        let registration = register(shutdown);
+        let registration_to_unregister = {
+            let mut slot = self.process_exit_registration.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            if self.active_workers.load(Ordering::Acquire) == 0 || slot.is_some() {
+                registration
+            } else {
+                *slot = registration;
+                None
+            }
+        };
+        if let Some(registration) = registration_to_unregister {
+            registration.unregister();
+        }
+    }
+
+    fn unregister_process_exit(&self) {
+        let registration =
+            self.process_exit_registration.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+        if let Some(registration) = registration {
+            registration.unregister();
+        }
+    }
+
+    fn worker_stopped(&self) {
+        if self.active_workers.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.unregister_process_exit();
+        }
+    }
+
+    fn request_shutdown(&self) {
+        self.observation_state.request_shutdown();
+        self.activity_tail_state.request_shutdown();
+    }
+
+    fn join_for_process_exit(&self) {
+        self.request_shutdown();
+        let mut join = self.join.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        for slot in join.iter_mut() {
+            let Some(handle) = slot.take() else {
+                continue;
+            };
+            if handle.thread().id() == thread::current().id() {
+                *slot = Some(handle);
+                continue;
+            }
+            let _ = handle.join();
+        }
+        drop(join);
+        self.unregister_process_exit();
+    }
+}
+
+impl ProcessExitShutdown for ObservationCompletionSupervisor {
+    fn phase(&self) -> ProcessExitPhase {
+        ProcessExitPhase::ObservationCompletion
+    }
+
+    fn shutdown_for_process_exit(&self) {
+        self.join_for_process_exit();
     }
 }
 
@@ -1314,33 +1444,43 @@ impl ObservationCompletionDispatcher {
 #[derive(Debug)]
 struct ObservationCompletionExecutor {
     dispatcher: ObservationCompletionDispatcher,
+    supervisor: Arc<ObservationCompletionSupervisor>,
 }
 
 impl ObservationCompletionExecutor {
     fn spawn() -> Result<Self> {
-        Self::spawn_with_lane_spawner(|lane, state| Self::spawn_worker(lane, state))
+        Self::spawn_with_lane_spawner(|lane, state, supervisor| supervisor.spawn_worker(lane, state))
     }
 
     fn spawn_with_lane_spawner(
         spawn_lane: impl Fn(
             ObservationCompletionWorkerLane,
             Arc<ObservationCompletionExecutorState>,
+            Arc<ObservationCompletionSupervisor>,
         ) -> Result<mpsc::Sender<ObservationCompletionMessage>>,
     ) -> Result<Self> {
-        let observation_state = Arc::new(ObservationCompletionExecutorState::new());
-        let observation_sender =
-            spawn_lane(ObservationCompletionWorkerLane::Observation, Arc::clone(&observation_state))?;
-        let activity_tail_state = Arc::new(ObservationCompletionExecutorState::new());
-        let activity_tail_sender =
-            match spawn_lane(ObservationCompletionWorkerLane::ActivityTail, Arc::clone(&activity_tail_state)) {
-                Ok(sender) => sender,
-                Err(error) => {
-                    // Explicitly disconnect the already-started observation
-                    // lane before returning an unpublished construction error.
-                    drop(observation_sender);
-                    return Err(error);
-                },
-            };
+        let supervisor = ObservationCompletionSupervisor::new();
+        let observation_state = supervisor.state(ObservationCompletionWorkerLane::Observation);
+        let observation_sender = spawn_lane(
+            ObservationCompletionWorkerLane::Observation,
+            Arc::clone(&observation_state),
+            Arc::clone(&supervisor),
+        )?;
+        let activity_tail_state = supervisor.state(ObservationCompletionWorkerLane::ActivityTail);
+        let activity_tail_sender = match spawn_lane(
+            ObservationCompletionWorkerLane::ActivityTail,
+            Arc::clone(&activity_tail_state),
+            Arc::clone(&supervisor),
+        ) {
+            Ok(sender) => sender,
+            Err(error) => {
+                // Explicitly disconnect the already-started observation
+                // lane before returning an unpublished construction error.
+                drop(observation_sender);
+                supervisor.join_for_process_exit();
+                return Err(error);
+            },
+        };
         Ok(Self {
             dispatcher: ObservationCompletionDispatcher {
                 observation_sender,
@@ -1348,62 +1488,20 @@ impl ObservationCompletionExecutor {
                 activity_tail_sender,
                 activity_tail_state,
             },
+            supervisor,
         })
     }
 
-    fn spawn_worker(
-        lane: ObservationCompletionWorkerLane,
-        state: Arc<ObservationCompletionExecutorState>,
-    ) -> Result<mpsc::Sender<ObservationCompletionMessage>> {
-        let (sender, receiver) = mpsc::channel::<ObservationCompletionMessage>();
-        let worker_state = Arc::clone(&state);
-        let name = lane.thread_name();
-        thread::Builder::new()
-            .name(name.to_string())
-            .spawn(move || loop {
-                let received = catch_unwind(AssertUnwindSafe(|| match receiver.recv() {
-                    Ok(message) => {
-                        match message {
-                            ObservationCompletionMessage::Completion(completion) => completion.run(),
-                            #[cfg(test)]
-                            ObservationCompletionMessage::InjectWorkerFaultForTest => {
-                                panic!("injected observation completion worker fault");
-                            },
-                        }
-                        true
-                    },
-                    Err(_disconnected) => false,
-                }));
-                match received {
-                    Ok(true) => {},
-                    Ok(false) => {
-                        worker_state.mark_stopped();
-                        return;
-                    },
-                    Err(_) => {
-                        worker_state.record_fault();
-                        eprintln!(
-                            "[nexus-query-engine] warning: backend observation completion worker {name} recovered from a fault"
-                        );
-                    },
-                }
-            })
-            .map_err(|error| {
-                QueryError::new(
-                    QueryErrorCode::Internal,
-                    BUILD_OPERATION,
-                    "failed to create backend observation completion worker",
-                )
-                .with_fact("reason", "observation_completion_worker_spawn_failed")
-                .with_fact("worker_lane", lane.as_str())
-                .with_fact("io_error", error.to_string())
-            })?;
-        Ok(sender)
+    /// Registers both lanes only after backend service construction has
+    /// entered CUDA. This keeps the engine's `atexit` callback ahead of
+    /// libcudart while preserving the executor's detached delivery contract.
+    fn activate_process_exit(&self) {
+        self.supervisor.activate_process_exit();
     }
 
     #[cfg(test)]
     fn spawn_with_lane_failure_for_test(failing_lane: ObservationCompletionWorkerLane) -> Result<Self> {
-        Self::spawn_with_lane_spawner(|lane, state| {
+        Self::spawn_with_lane_spawner(|lane, state, supervisor| {
             if lane == failing_lane {
                 return Err(QueryError::new(
                     QueryErrorCode::Internal,
@@ -1413,7 +1511,7 @@ impl ObservationCompletionExecutor {
                 .with_fact("reason", "observation_completion_worker_spawn_failed")
                 .with_fact("worker_lane", lane.as_str()));
             }
-            Self::spawn_worker(lane, state)
+            supervisor.spawn_worker(lane, state)
         })
     }
 
@@ -1432,6 +1530,47 @@ impl ObservationCompletionExecutor {
     #[cfg(test)]
     fn observation_worker_fault_count(&self) -> u64 {
         self.dispatcher.observation_state.worker_fault_count()
+    }
+}
+
+fn run_observation_completion_worker(
+    receiver: mpsc::Receiver<ObservationCompletionMessage>,
+    state: Arc<ObservationCompletionExecutorState>,
+    name: &'static str,
+) {
+    loop {
+        if state.shutdown_requested.load(Ordering::Acquire) {
+            state.mark_stopped();
+            return;
+        }
+        let received =
+            catch_unwind(AssertUnwindSafe(|| match receiver.recv_timeout(OBSERVATION_COMPLETION_POLL_INTERVAL) {
+                Ok(message) => {
+                    match message {
+                        ObservationCompletionMessage::Completion(completion) => completion.run(),
+                        #[cfg(test)]
+                        ObservationCompletionMessage::InjectWorkerFaultForTest => {
+                            panic!("injected observation completion worker fault");
+                        },
+                    }
+                    true
+                },
+                Err(mpsc::RecvTimeoutError::Timeout) => true,
+                Err(mpsc::RecvTimeoutError::Disconnected) => false,
+            }));
+        match received {
+            Ok(true) => {},
+            Ok(false) => {
+                state.mark_stopped();
+                return;
+            },
+            Err(_) => {
+                state.record_fault();
+                eprintln!(
+                    "[nexus-query-engine] warning: backend observation completion worker {name} recovered from a fault"
+                );
+            },
+        }
     }
 }
 
@@ -1477,9 +1616,6 @@ enum ConstructionResource {
     StreamPool(super::ServiceStreamPool),
     DeviceContext(super::DeviceContext),
     ExecutionPool(super::GpuExecutionPool),
-    LocalParquetCache(Arc<super::cache::local_parquet::GpuLocalParquetSourceCache>),
-    #[cfg(feature = "cugraph")]
-    ResidentGraphCache(Arc<super::cache::resident_graph::GpuResidentGraphCache>),
     StartupRecords(Arc<[GpuBackendDeviceStartupRecord]>),
 }
 
@@ -1503,21 +1639,6 @@ impl ConstructionResourceJournal {
 
     pub(crate) fn record_execution_pool(&self, pool: super::GpuExecutionPool) -> Result<()> {
         self.record(ConstructionResource::ExecutionPool(pool))
-    }
-
-    pub(crate) fn record_local_parquet_cache(
-        &self,
-        cache: Arc<super::cache::local_parquet::GpuLocalParquetSourceCache>,
-    ) -> Result<()> {
-        self.record(ConstructionResource::LocalParquetCache(cache))
-    }
-
-    #[cfg(feature = "cugraph")]
-    pub(crate) fn record_resident_graph_cache(
-        &self,
-        cache: Arc<super::cache::resident_graph::GpuResidentGraphCache>,
-    ) -> Result<()> {
-        self.record(ConstructionResource::ResidentGraphCache(cache))
     }
 
     fn record_startup_records(&self, records: Arc<[GpuBackendDeviceStartupRecord]>) -> Result<()> {
@@ -1547,9 +1668,6 @@ impl ConstructionResourceJournal {
                     let _ = context.device();
                     Ok(())
                 },
-                ConstructionResource::LocalParquetCache(cache) => cache.close_and_drain_until(deadline),
-                #[cfg(feature = "cugraph")]
-                ConstructionResource::ResidentGraphCache(cache) => cache.close_and_drain_until(deadline),
                 ConstructionResource::StartupRecords(records) => {
                     let _ = records.len();
                     Ok(())
@@ -1596,9 +1714,8 @@ impl ConstructionRollback {
         let Some(coordinator) = self.coordinator.take() else {
             return error.with_fact("rollback_cleanup", "not_armed");
         };
-        coordinator.signal();
         let deadline = Instant::now().checked_add(CLEANUP_SLICE).unwrap_or_else(Instant::now);
-        match coordinator.state.wait_until(deadline, &coordinator.lifecycle) {
+        match coordinator.close_and_wait_until(deadline) {
             Ok(snapshot) => error
                 .with_fact("rollback_cleanup", "quiescent")
                 .with_fact("rollback_gpu_resource_quiescent", snapshot.gpu_resource_quiescent)
@@ -1624,21 +1741,34 @@ struct CloseCoordinator {
     sender: Mutex<Option<mpsc::Sender<()>>>,
     state: Arc<CloseCompletion>,
     lifecycle: BackendLifecycle,
+    join: Mutex<Option<thread::JoinHandle<()>>>,
+    process_exit_requested: Arc<AtomicBool>,
+    process_exit_registration: Mutex<Option<ProcessExitRegistration>>,
 }
 
 impl CloseCoordinator {
     fn spawn(resource: Arc<ResourceCore>, observation: Arc<ObservationCore>) -> Result<Arc<Self>> {
         let (sender, receiver) = mpsc::channel();
         let state = Arc::new(CloseCompletion::new());
+        let process_exit_requested = Arc::new(AtomicBool::new(false));
+        let coordinator = Arc::new(Self {
+            sender: Mutex::new(Some(sender)),
+            state: Arc::clone(&state),
+            lifecycle: observation.lifecycle.clone(),
+            join: Mutex::new(None),
+            process_exit_requested: Arc::clone(&process_exit_requested),
+            process_exit_registration: Mutex::new(None),
+        });
         let worker_state = Arc::clone(&state);
         let worker_lifecycle = observation.lifecycle.clone();
         let resource_for_panic = Arc::clone(&resource);
-        thread::Builder::new()
+        let worker_coordinator = Arc::clone(&coordinator);
+        let join = thread::Builder::new()
             .name("nexus-gpu-close".to_string())
             .spawn(move || {
                 let result = catch_unwind(AssertUnwindSafe(|| {
                     let _ = receiver.recv();
-                    run_cleanup(resource, worker_lifecycle.clone(), Arc::clone(&worker_state));
+                    run_cleanup(resource, worker_lifecycle.clone(), Arc::clone(&worker_state), &process_exit_requested);
                 }));
                 if result.is_err() {
                     worker_state.fail("cleanup_worker", "cleanup worker panicked");
@@ -1646,13 +1776,29 @@ impl CloseCoordinator {
                     // generation and release its owner lease.
                     std::mem::forget(resource_for_panic);
                 }
+                worker_coordinator.unregister_process_exit();
             })
             .map_err(|error| {
                 QueryError::new(QueryErrorCode::Internal, BUILD_OPERATION, "failed to create backend cleanup worker")
                     .with_fact("reason", "cleanup_worker_spawn_failed")
                     .with_fact("io_error", error.to_string())
             })?;
-        Ok(Arc::new(Self { sender: Mutex::new(Some(sender)), state, lifecycle: observation.lifecycle.clone() }))
+        *coordinator.join.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(join);
+        Ok(coordinator)
+    }
+
+    fn activate_process_exit(self: &Arc<Self>) {
+        let shutdown: Arc<dyn ProcessExitShutdown> = self.clone();
+        let registration = register_cuda_process_exit_shutdown(shutdown);
+        *self.process_exit_registration.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = registration;
+    }
+
+    fn unregister_process_exit(&self) {
+        let registration =
+            self.process_exit_registration.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+        if let Some(registration) = registration {
+            registration.unregister();
+        }
     }
 
     fn signal(&self) -> bool {
@@ -1667,9 +1813,79 @@ impl CloseCoordinator {
         }
         true
     }
+
+    fn close_and_wait_until(&self, deadline: Instant) -> Result<GpuBackendCloseSnapshot> {
+        self.signal();
+        let snapshot = self.state.wait_until(deadline, &self.lifecycle)?;
+        self.join_after_quiescence()?;
+        Ok(snapshot)
+    }
+
+    fn join_after_quiescence(&self) -> Result<()> {
+        let mut join = self.join.lock().map_err(|_| {
+            QueryError::new(QueryErrorCode::Internal, CLOSE_OPERATION, "backend cleanup worker join mutex was poisoned")
+                .with_fact("reason", "cleanup_worker_join_poisoned")
+        })?;
+        let Some(handle) = join.take() else {
+            return Ok(());
+        };
+        if handle.thread().id() == thread::current().id() {
+            // A reentrant close invoked by the cleanup worker itself cannot
+            // join its own entry point. The worker will unregister only after
+            // it has completed all GPU and observation teardown.
+            *join = Some(handle);
+            return Ok(());
+        }
+        let joined = handle.join();
+        drop(join);
+        self.unregister_process_exit();
+        joined.map_err(|panic| {
+            QueryError::new(QueryErrorCode::Internal, CLOSE_OPERATION, "backend cleanup worker panicked during join")
+                .with_fact("reason", "cleanup_worker_join_panicked")
+                .with_fact("panic_message", panic_message(panic.as_ref()))
+        })
+    }
+
+    fn join_for_process_exit(&self) {
+        // `std::process::exit` does not unwind the caller's stack. An admitted
+        // handle owned by that stack can therefore never participate in the
+        // ordinary quiescence protocol. Tell the cleanup worker to stop at its
+        // next bounded phase boundary and leak the resource generation; the
+        // separately registered execution/stream supervisors then terminate
+        // their workers without allowing CUDA destructors to run after this
+        // process-exit hook returns.
+        self.process_exit_requested.store(true, Ordering::Release);
+        self.signal();
+        let mut join = self.join.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(handle) = join.take() else {
+            return;
+        };
+        if handle.thread().id() == thread::current().id() {
+            *join = Some(handle);
+            return;
+        }
+        let _ = handle.join();
+        drop(join);
+        self.unregister_process_exit();
+    }
 }
 
-fn run_cleanup(resource: Arc<ResourceCore>, lifecycle: BackendLifecycle, state: Arc<CloseCompletion>) {
+impl ProcessExitShutdown for CloseCoordinator {
+    fn phase(&self) -> ProcessExitPhase {
+        ProcessExitPhase::BackendCoordinator
+    }
+
+    fn shutdown_for_process_exit(&self) {
+        self.join_for_process_exit();
+    }
+}
+
+fn run_cleanup(
+    resource: Arc<ResourceCore>,
+    lifecycle: BackendLifecycle,
+    state: Arc<CloseCompletion>,
+    process_exit_requested: &AtomicBool,
+) {
     lifecycle.close();
     let generation = match resource.generation.lock() {
         Ok(mut generation) => generation.take(),
@@ -1681,7 +1897,7 @@ fn run_cleanup(resource: Arc<ResourceCore>, lifecycle: BackendLifecycle, state: 
     };
     let Some(generation) = generation else {
         state.mark_gpu_quiescent();
-        wait_for_observation_forever(&lifecycle, &state);
+        wait_for_observation_forever(&lifecycle, &state, process_exit_requested);
         return;
     };
     let generation = FailClosedGeneration::new(generation);
@@ -1689,6 +1905,9 @@ fn run_cleanup(resource: Arc<ResourceCore>, lifecycle: BackendLifecycle, state: 
         service.close().unwrap_or_else(|error| {
             eprintln!("[nexus-query-engine] backend close signal returned an error: {error}");
         });
+        if process_exit_requested.load(Ordering::Acquire) {
+            return;
+        }
         loop {
             let deadline = Instant::now().checked_add(CLEANUP_SLICE).unwrap_or_else(Instant::now);
             let outcome: QueryServiceDrainOutcome = service.close_drain_step_until(deadline);
@@ -1718,6 +1937,9 @@ fn run_cleanup(resource: Arc<ResourceCore>, lifecycle: BackendLifecycle, state: 
             if all_quiescent {
                 break;
             }
+            if process_exit_requested.load(Ordering::Acquire) {
+                return;
+            }
         }
     }
     // The service first closes admission and drains work using the resources
@@ -1739,6 +1961,9 @@ fn run_cleanup(resource: Arc<ResourceCore>, lifecycle: BackendLifecycle, state: 
                 return;
             },
         }
+        if process_exit_requested.load(Ordering::Acquire) {
+            return;
+        }
     }
     loop {
         let deadline = Instant::now().checked_add(CLEANUP_SLICE).unwrap_or_else(Instant::now);
@@ -1755,14 +1980,21 @@ fn run_cleanup(resource: Arc<ResourceCore>, lifecycle: BackendLifecycle, state: 
                 return;
             },
         }
+        if process_exit_requested.load(Ordering::Acquire) {
+            return;
+        }
     }
     generation.release();
     drop(resource);
     state.mark_gpu_quiescent();
-    wait_for_observation_forever(&lifecycle, &state);
+    wait_for_observation_forever(&lifecycle, &state, process_exit_requested);
 }
 
-fn wait_for_observation_forever(lifecycle: &BackendLifecycle, state: &CloseCompletion) {
+fn wait_for_observation_forever(
+    lifecycle: &BackendLifecycle,
+    state: &CloseCompletion,
+    process_exit_requested: &AtomicBool,
+) {
     loop {
         let deadline = Instant::now().checked_add(CLEANUP_SLICE).unwrap_or_else(Instant::now);
         match lifecycle.wait_for_observation_quiescence_until(deadline) {
@@ -1778,6 +2010,9 @@ fn wait_for_observation_forever(lifecycle: &BackendLifecycle, state: &CloseCompl
                 state.fail("observation_quiescence", error);
                 return;
             },
+        }
+        if process_exit_requested.load(Ordering::Acquire) {
+            return;
         }
     }
 }
@@ -1959,7 +2194,14 @@ impl CloseCompletion {
                 self.changed.wait_timeout(wait, remaining).map_err(|_error| close_wait_poisoned_error())?;
             wait = next;
             if timeout.timed_out() {
-                return Err(close_timeout_error(self.snapshot(lifecycle)));
+                // A notify that lands between the deadline expiring and the
+                // waiter rescheduling must not be reported as a timeout: take
+                // one final snapshot before failing.
+                let snapshot = self.snapshot(lifecycle);
+                if snapshot.observation_quiescent {
+                    return Ok(snapshot);
+                }
+                return Err(close_timeout_error(snapshot));
             }
         }
     }
@@ -1993,6 +2235,14 @@ fn close_timeout_error(snapshot: GpuBackendCloseSnapshot) -> QueryError {
 fn close_wait_poisoned_error() -> QueryError {
     QueryError::new(QueryErrorCode::Internal, CLOSE_OPERATION, "backend close completion mutex was poisoned")
         .with_fact("reason", "close_wait_poisoned")
+}
+
+fn panic_message(panic: &(dyn Any + Send)) -> String {
+    panic
+        .downcast_ref::<&'static str>()
+        .map(|message| (*message).to_string())
+        .or_else(|| panic.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "non-string panic payload".to_string())
 }
 
 fn reject_reentrant_observation_close() -> Result<()> {
@@ -2111,6 +2361,18 @@ mod tests {
     }
 
     #[test]
+    fn close_and_wait_reclaims_the_backend_cleanup_worker() {
+        let backend = inert_backend_for_observation_delivery_test();
+        let coordinator = Arc::clone(&backend.coordinator);
+
+        let close = backend.close_and_wait(Duration::from_secs(2)).expect("inert backend closes");
+
+        assert!(close.gpu_resource_quiescent);
+        assert!(close.observation_quiescent);
+        assert!(coordinator.join.lock().unwrap().is_none(), "close must reclaim its cleanup worker handle");
+    }
+
+    #[test]
     fn observation_completion_executor_runs_detached_callbacks_and_isolates_panics() {
         let executor = ObservationCompletionExecutor::spawn().expect("test creates observation executor");
         let dispatcher = executor.dispatcher();
@@ -2155,6 +2417,85 @@ mod tests {
             observation_worker, activity_tail_worker,
             "activity drops must not occupy observation delivery capacity"
         );
+    }
+
+    #[test]
+    fn process_exit_joins_observation_completion_workers_and_closes_dispatch() {
+        let executor = ObservationCompletionExecutor::spawn().expect("test creates observation executor");
+        let dispatcher = executor.dispatcher();
+
+        executor.supervisor.join_for_process_exit();
+
+        assert_eq!(executor.supervisor.active_workers.load(Ordering::Acquire), 0);
+        assert!(executor.supervisor.join.lock().unwrap().iter().all(Option::is_none));
+        let caller = thread::current().id();
+        let (sender, receiver) = mpsc::sync_channel(1);
+        dispatcher.dispatch(move || sender.send(thread::current().id()).expect("fallback dispatch runs"));
+        assert_eq!(receiver.recv_timeout(Duration::from_secs(2)).expect("fallback completion runs"), caller);
+    }
+
+    #[test]
+    fn process_exit_with_live_admitted_handle_does_not_hang() {
+        const CHILD_ENV: &str = "NEXUS_TEST_PROCESS_EXIT_WITH_LIVE_ADMISSION";
+        const TEST_NAME: &str = "runtime::backend_core::tests::process_exit_with_live_admitted_handle_does_not_hang";
+
+        if std::env::var_os(CHILD_ENV).is_some() {
+            let backend =
+                GpuBackendCore::builder(one_device_backend_draft(0)).build().expect("child process builds a backend");
+            let session = backend.session_capability();
+            let _live_handle = session.admit_query().expect("child process retains one admitted handle");
+            // This intentionally skips every stack destructor. The registered
+            // process-exit owners must still terminate without waiting for the
+            // live handle above to release its admission slot.
+            std::process::exit(0);
+        }
+
+        let executable = std::env::current_exe().expect("current test executable is available");
+        let mut child = std::process::Command::new(executable)
+            .arg(TEST_NAME)
+            .arg("--exact")
+            .arg("--nocapture")
+            .env(CHILD_ENV, "1")
+            .spawn()
+            .expect("spawn process-exit regression child");
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            if let Some(status) = child.try_wait().expect("poll process-exit regression child") {
+                assert!(status.success(), "process-exit regression child failed with {status}");
+                break;
+            }
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("process exit hung while an admitted handle remained live");
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn late_process_exit_registration_runs_callback_without_holding_registration_slot_mutex() {
+        let supervisor = ObservationCompletionSupervisor::new();
+        // The injected registration path models a global process-exit race:
+        // registry registration synchronously invokes the owner, which in
+        // turn calls `unregister_process_exit`.
+        supervisor.active_workers.store(1, Ordering::Release);
+        let callback_supervisor = Arc::clone(&supervisor);
+        let callback_ran = Arc::new(AtomicBool::new(false));
+        let callback_ran_slot = Arc::clone(&callback_ran);
+
+        supervisor.activate_process_exit_with(move |shutdown| {
+            assert!(
+                callback_supervisor.process_exit_registration.try_lock().is_ok(),
+                "registration slot mutex must be unlocked while registry registration calls back"
+            );
+            shutdown.shutdown_for_process_exit();
+            callback_ran_slot.store(true, Ordering::Release);
+            None
+        });
+
+        assert!(callback_ran.load(Ordering::Acquire));
+        supervisor.active_workers.store(0, Ordering::Release);
     }
 
     #[test]
@@ -2261,9 +2602,6 @@ mod tests {
                 ConstructionResource::StreamPool(_) => "stream_pool",
                 ConstructionResource::DeviceContext(_) => "device_context",
                 ConstructionResource::ExecutionPool(_) => "execution_pool",
-                ConstructionResource::LocalParquetCache(_) => "local_parquet_cache",
-                #[cfg(feature = "cugraph")]
-                ConstructionResource::ResidentGraphCache(_) => "resident_graph_cache",
                 ConstructionResource::StartupRecords(_) => "startup_records",
             })
             .collect())
@@ -2387,21 +2725,14 @@ mod tests {
         )
     }
 
-    fn controller(policy: QueryServiceConfig) -> GpuBackendControllerDraft {
-        GpuBackendControllerDraft::from_legacy_policy(
-            policy,
-            vec![GpuBackendTenantDraft::new(
-                TenantId::new("test"),
-                GpuBackendMemoryShare::Bytes(1),
-                GpuBackendMemoryShare::Bytes(1),
-            )],
-        )
+    fn controller(policy: QueryExecutionConfig) -> GpuBackendControllerDraft {
+        GpuBackendControllerDraft::new(policy, QueueBounds::default())
     }
 
     fn one_device_backend_draft(device_ordinal: usize) -> GpuBackendCoreDraft {
         GpuBackendCoreDraft::new(
             vec![GpuBackendDeviceConfig::new(device_ordinal, GpuMemoryOwnership::WholeDeviceExclusive)],
-            controller(QueryServiceConfig::default()),
+            controller(QueryExecutionConfig::default()),
             deployment(),
         )
     }
@@ -2428,11 +2759,25 @@ mod tests {
     fn pure_config_rejects_invalid_device_profiles_before_construction() {
         let config = GpuBackendCoreDraft::new(
             vec![GpuBackendDeviceConfig::new(0, GpuMemoryOwnership::WholeDeviceExclusive).with_max_active_queries(0)],
-            controller(QueryServiceConfig::default()),
+            controller(QueryExecutionConfig::default()),
             deployment(),
         );
         let error = config.validate().unwrap_err();
         assert_eq!(error.fact_value("field"), Some("max_active_queries"));
+        assert_eq!(error.fact_value("reason"), Some("zero"));
+    }
+
+    #[test]
+    fn pure_config_rejects_explicit_zero_attempt_floor_before_construction() {
+        let config = GpuBackendCoreDraft::new(
+            vec![GpuBackendDeviceConfig::new(0, GpuMemoryOwnership::WholeDeviceExclusive).with_attempt_floor_bytes(0)],
+            controller(QueryExecutionConfig::default()),
+            deployment(),
+        );
+
+        let error = config.validate().unwrap_err();
+
+        assert_eq!(error.fact_value("field"), Some("attempt_floor_bytes"));
         assert_eq!(error.fact_value("reason"), Some("zero"));
     }
 
@@ -2467,7 +2812,7 @@ mod tests {
                 GpuBackendDeviceConfig::new(0, GpuMemoryOwnership::WholeDeviceExclusive)
                     .with_backend_reserve_bytes(256 * 1024 * 1024),
             ],
-            controller(QueryServiceConfig::default()),
+            controller(QueryExecutionConfig::default()),
             deployment(),
         );
         let probe = Arc::new(CountingProbe::default());
@@ -2479,60 +2824,52 @@ mod tests {
     }
 
     #[test]
-    fn pure_config_rejects_manager_pool_larger_than_static_partition() {
-        let service = QueryServiceConfig {
-            device_memory_manager_base: cudf::DeviceMemoryManagerBase::Pool {
-                initial_pool_size: 2_048,
-                maximum_pool_size: Some(4_096),
-            },
-            ..QueryServiceConfig::default()
-        };
-        let config = GpuBackendCoreDraft::new(
-            vec![
-                GpuBackendDeviceConfig::new(0, GpuMemoryOwnership::StaticPartition { allocation_limit_bytes: 1_024 })
-                    .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 1_024 }),
-            ],
-            controller(service),
-            deployment(),
-        );
-
-        let error = config.validate().unwrap_err();
-
-        assert_eq!(error.fact_value("field"), Some("device_memory_manager_options"));
-        assert_eq!(error.fact_value("reason"), Some("invalid_device_memory_manager_options"));
-    }
-
-    #[test]
-    fn pure_config_rejects_query_memory_domain_with_static_partition_before_construction() {
-        let service = QueryServiceConfig {
-            query_memory_domain: Some(super::super::QueryMemoryDomainPolicy::new()),
-            ..QueryServiceConfig::default()
-        };
-        let config = GpuBackendCoreDraft::new(
-            vec![GpuBackendDeviceConfig::new(0, GpuMemoryOwnership::StaticPartition { allocation_limit_bytes: 1_024 })],
-            controller(service),
-            deployment(),
-        );
-        let probe = Arc::new(CountingProbe::default());
-
-        let error = GpuBackendCore::builder(config).with_construction_probe(probe.clone()).build().unwrap_err();
-
-        assert_eq!(error.fact_value("field"), Some("query_memory_domain"));
-        assert_eq!(error.fact_value("reason"), Some("query_memory_domain_incompatible_with_static_partition"));
-        assert_eq!(probe.0.load(Ordering::Relaxed), 0);
-    }
-
-    #[test]
     fn derived_global_limit_is_checked_and_defaults_to_one_per_device() {
         let config = GpuBackendCoreDraft::new(
             vec![
                 GpuBackendDeviceConfig::new(0, GpuMemoryOwnership::WholeDeviceExclusive),
                 GpuBackendDeviceConfig::new(1, GpuMemoryOwnership::WholeDeviceExclusive),
             ],
-            controller(QueryServiceConfig::default()),
+            controller(QueryExecutionConfig::default()),
             deployment(),
         );
         assert_eq!(config.derived_global_max_active_queries().unwrap(), 2);
+    }
+
+    #[test]
+    fn automatic_installation_bounds_cover_every_active_attempt() {
+        let mut draft = GpuBackendCoreDraft::new(
+            vec![GpuBackendDeviceConfig::new(0, GpuMemoryOwnership::WholeDeviceExclusive).with_max_active_queries(2)],
+            controller(QueryExecutionConfig::default()),
+            deployment(),
+        );
+
+        draft.normalize_installation_bounds().expect("automatic bounds derive");
+        let device = draft.devices().first().expect("one device profile");
+        assert_eq!(device.lane_count(), 2);
+        assert_eq!(device.worker_count(), 2);
+        assert!(device.stream_pool_size() >= 2);
+        draft.validate().expect("derived multi-attempt installation profile validates");
+    }
+
+    #[test]
+    fn automatic_bounds_keep_device_source_work_independent_of_execution_prefetch() {
+        let execution = QueryExecutionConfig {
+            source_scheduler_policy: crate::runtime::SourceSchedulerPolicy::new(7),
+            ..QueryExecutionConfig::default()
+        };
+        let mut draft = GpuBackendCoreDraft::new(
+            vec![GpuBackendDeviceConfig::new(0, GpuMemoryOwnership::WholeDeviceExclusive).with_max_active_queries(2)],
+            controller(execution),
+            deployment(),
+        );
+
+        draft.normalize_installation_bounds().expect("automatic bounds derive");
+
+        let device = draft.devices().first().expect("one device profile");
+        assert_eq!(device.source_work_per_attempt(), 1);
+        assert_eq!(device.stream_pool_size(), 4);
+        draft.validate().expect("device-local default remains valid");
     }
 
     fn assert_query_activity_allows_close_and_replacement_after_release(acquire_context: bool) {
@@ -2551,7 +2888,7 @@ mod tests {
             completion,
         });
         let request = QueryAdmissionRequest::new().with_runtime_observation_activity(activity);
-        let handle = backend.session_capability().admit_query_with_request(TenantId::new("test"), request).unwrap();
+        let handle = backend.session_capability().admit_query_with_request(request).unwrap();
         assert_eq!(lifecycle.snapshot().active_gpu_permits, 1);
         if acquire_context {
             let context = handle.acquire_context().expect("query acquires a service-stream context");
@@ -2606,10 +2943,7 @@ mod tests {
         });
         let handle = backend
             .session_capability()
-            .admit_query_with_request(
-                TenantId::new("test"),
-                QueryAdmissionRequest::new().with_runtime_observation_owner(owner),
-            )
+            .admit_query_with_request(QueryAdmissionRequest::new().with_runtime_observation_owner(owner))
             .unwrap();
         drop(handle.acquire_context().expect("query acquires a service-stream context"));
         handle.finish();
@@ -2643,9 +2977,9 @@ mod tests {
             vec![
                 GpuBackendDeviceConfig::new(0, GpuMemoryOwnership::WholeDeviceExclusive)
                     .with_max_active_queries(2)
-                    .with_installation_bounds(2, 2, 2),
+                    .with_installation_bounds(6, 2, 2),
             ],
-            controller(QueryServiceConfig::default()),
+            controller(QueryExecutionConfig::default()),
             deployment(),
         ))
         .build()
@@ -2654,21 +2988,15 @@ mod tests {
         let (completion_sender, completion_receiver) = mpsc::sync_channel(1);
         let first = backend
             .session_capability()
-            .admit_query_with_request(
-                TenantId::new("test"),
-                QueryAdmissionRequest::new().with_runtime_observation_activity(
-                    crate::runtime::QueryActivityLease::new(ReentrantCloseActivityProbe {
-                        backend: backend.clone(),
-                        entered: entered_sender,
-                        completion: completion_sender,
-                    }),
-                ),
-            )
+            .admit_query_with_request(QueryAdmissionRequest::new().with_runtime_observation_activity(
+                crate::runtime::QueryActivityLease::new(ReentrantCloseActivityProbe {
+                    backend: backend.clone(),
+                    entered: entered_sender,
+                    completion: completion_sender,
+                }),
+            ))
             .unwrap();
-        let second = backend
-            .session_capability()
-            .admit_query_with_request(TenantId::new("test"), QueryAdmissionRequest::new())
-            .unwrap();
+        let second = backend.session_capability().admit_query_with_request(QueryAdmissionRequest::new()).unwrap();
         drop(first.acquire_context().expect("first query acquires a service-stream context"));
         drop(second.acquire_context().expect("second query acquires a service-stream context"));
 
@@ -2748,27 +3076,6 @@ mod tests {
     }
 
     #[test]
-    fn journal_owns_enabled_cache_resources() {
-        let journal = ConstructionResourceJournal::default();
-        journal
-            .record_local_parquet_cache(Arc::new(super::super::cache::local_parquet::GpuLocalParquetSourceCache::new(
-                1,
-            )))
-            .unwrap();
-        #[cfg(feature = "cugraph")]
-        journal
-            .record_resident_graph_cache(Arc::new(super::super::cache::resident_graph::GpuResidentGraphCache::new(1)))
-            .unwrap();
-
-        let labels = journal_resource_labels(&journal).unwrap();
-        #[cfg(not(feature = "cugraph"))]
-        assert_eq!(labels, ["local_parquet_cache"]);
-        #[cfg(feature = "cugraph")]
-        assert_eq!(labels, ["local_parquet_cache", "resident_graph_cache"]);
-        journal.close_and_drain_until(Instant::now() + Duration::from_secs(1)).unwrap();
-    }
-
-    #[test]
     fn owner_is_retained_until_blocked_execution_runtime_drains_and_joins() {
         let _owner_test = live_backend_test_lock();
         let ordinal = usize::MAX - 2;
@@ -2823,9 +3130,7 @@ mod tests {
         let lifecycle = BackendLifecycle::new();
         let phases = [
             QueryServiceDrainPhase::StreamPoolClose.as_str(),
-            QueryServiceDrainPhase::LocalSourceCache.as_str(),
             QueryServiceDrainPhase::AdmissionQuiescence.as_str(),
-            QueryServiceDrainPhase::ResidentGraphCache.as_str(),
             QueryServiceDrainPhase::ExecutionPoolQuiescence.as_str(),
             QueryServiceDrainPhase::StreamPoolQuiescence.as_str(),
             QueryServiceDrainPhase::ResourceEpoch.as_str(),

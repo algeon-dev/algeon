@@ -19,8 +19,14 @@ fn query_id_from_statement_flight_info(flight_info: &arrow_flight::FlightInfo) -
 
     let ticket = flight_info.endpoint.first().and_then(|endpoint| endpoint.ticket.as_ref()).unwrap();
     let any = Any::decode(&*ticket.ticket).unwrap();
-    let ticket = any.unpack::<TicketStatementQuery>().unwrap().expect("statement ticket");
-    String::from_utf8(ticket.statement_handle.to_vec()).unwrap()
+    let query_id = if let Some(ticket) = any.unpack::<TicketStatementQuery>().unwrap() {
+        ticket.statement_handle
+    } else if let Some(ticket) = any.unpack::<CommandPreparedStatementQuery>().unwrap() {
+        ticket.prepared_statement_handle
+    } else {
+        panic!("statement FlightInfo ticket must encode a statement or prepared-statement query")
+    };
+    String::from_utf8(query_id.to_vec()).unwrap()
 }
 
 async fn get_query_stats_raw(client: &mut FlightSqlServiceClient<tonic::transport::Channel>, query_id: &str) -> String {
@@ -30,6 +36,28 @@ async fn get_query_stats_raw(client: &mut FlightSqlServiceClient<tonic::transpor
     let result = stream.message().await.unwrap().expect("GetQueryStats action must return one result");
     assert!(stream.message().await.unwrap().is_none(), "GetQueryStats action returns exactly one result");
     String::from_utf8(result.body.to_vec()).unwrap()
+}
+
+/// A completed native Flight attempt publishes exactly one immutable report.
+/// `GetQueryStats` is a retained projection of that report, so duplicate
+/// headers would expose a second publication path rather than more telemetry.
+fn assert_single_sealed_attempt_report(payload: &str) {
+    let values = |key: &str| {
+        payload
+            .lines()
+            .filter_map(|line| line.strip_prefix(key))
+            .collect::<Vec<_>>()
+    };
+    let attempt_ids = values("# attempt_id=");
+    assert_eq!(attempt_ids.len(), 1, "expected exactly one published attempt report:\n{payload}");
+    assert!(!attempt_ids[0].is_empty(), "attempt report identity must be non-empty:\n{payload}");
+    assert_eq!(values("# attempt_outcome=").len(), 1, "attempt report has one terminal outcome:\n{payload}");
+    assert_eq!(values("# attempt_capacity_disposition=").len(), 1, "attempt report has one capacity commit:\n{payload}");
+    assert!(payload.contains("# sealed=true"), "attempt report is available only after its observation seals:\n{payload}");
+    assert!(
+        !payload.contains("# attempt_capacity_disposition=pending_release"),
+        "a retained attempt report must include its release commit:\n{payload}"
+    );
 }
 
 fn query_stats_tsv_single_row<'a>(payload: &'a str, section: &str) -> (Vec<&'a str>, Vec<&'a str>) {

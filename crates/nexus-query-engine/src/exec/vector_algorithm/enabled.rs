@@ -35,6 +35,31 @@ pub(in crate::exec) fn execute_vector_algorithm(
 ) -> Result<GpuDataFrame> {
     context.check_cancellation(EXECUTE_OPERATION)?;
     validate_vector_algorithm_execution(node_id, node)?;
+    // Vector operators do not have an independent workspace estimate. Use
+    // the immutable context grant for the boundary: the live member makes
+    // cuVS's device-current temporaries domain-accounted before resources are
+    // constructed, and remains attached through all cuVS calls below.
+    let _domain_token = context
+        .attempt_allocation_domain_id()
+        .map(|_| {
+            let budget_bytes = context.bounded_device_budget_bytes().ok_or_else(|| {
+                QueryError::new(
+                    QueryErrorCode::CudfInvariantViolation,
+                    EXECUTE_OPERATION,
+                    "admitted vector execution is missing its bounded device budget",
+                )
+            })?;
+            let budget = usize::try_from(budget_bytes).map_err(|_error| {
+                QueryError::new(
+                    QueryErrorCode::InvalidPlan,
+                    EXECUTE_OPERATION,
+                    "vector execution budget exceeds platform usize range",
+                )
+                .with_fact("budget_bytes", budget_bytes)
+            })?;
+            context.execution_budget_token(cudf::ExecutionBudgetRequest::new(budget).with_boundary("vector_algorithm"))
+        })
+        .transpose()?;
     let runtime = context.shared_runtime()?;
     let resources = CuvsResources::for_runtime(runtime).map_err(|error| {
         QueryError::from_cuvs(EXECUTE_OPERATION, "failed to create query-local cuVS resources", error)

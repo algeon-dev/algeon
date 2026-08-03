@@ -33,14 +33,15 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
-    backend::{GpuMemoryOwnership, MemoryShare, NexusAdmissionPolicy, NexusGpuBackend, NexusMemoryPolicy},
+    backend::{GpuDeviceMemoryLimit, GpuMemoryOwnership, NexusGpuBackend, NexusGpuDeviceProfile, NexusGpuQueuePolicy},
     cugraph_sql::CugraphSqlConfig,
+    native_exec::NexusNativeExecutionConfig,
     native_report::NativeDataFusionExecutionMetrics,
     planner::NexusNativePhysicalOptimizerRule,
     report::CandidateOutcome,
     session::NexusSessionStateBuilderExt,
 };
-use nexus_query_engine::{harness::StableFnv1a64, runtime::SlotGuarantee};
+use nexus_query_engine::harness::StableFnv1a64;
 use tokio::sync::Barrier;
 
 mod config;
@@ -70,15 +71,11 @@ struct HarnessConfig {
     workload: Vec<(String, usize)>,
     iterations: usize,
     stagger_ms: u64,
-    max_concurrent_queries: usize,
-    slot_guarantee: SlotGuarantee,
-    grant_min: Option<MemoryShare>,
-    grant_want: Option<MemoryShare>,
-    wait_timeout_ms: u64,
+    max_active_attempts_per_device: usize,
+    attempt_floor_bytes: Option<u64>,
+    max_queue_wait_ms: u64,
     budget_fraction: Option<f64>,
     device_budget_bytes: Option<u64>,
-    requested_grant_min_bytes: Option<u64>,
-    requested_grant_bytes: Option<u64>,
     raw_input_edges: Option<u64>,
     sample_interval_ms: u64,
     query_timeout_ms: u64,
@@ -87,8 +84,6 @@ struct HarnessConfig {
     bfs_seed: Option<i64>,
     batch_size: Option<usize>,
     device_ordinals: Vec<usize>,
-    source_cache_max_retained_bytes: Option<u64>,
-    graph_cache_max_retained_bytes: Option<u64>,
     warmup_iterations: usize,
     cuda_profiler_capture: bool,
 }
@@ -251,42 +246,34 @@ struct WorkerRows {
 }
 
 fn build_backend(config: &HarnessConfig) -> Result<NexusGpuBackend, Box<dyn Error>> {
-    let memory_policy = match config.device_budget_bytes {
-        Some(bytes) => NexusMemoryPolicy::Bounded {
-            device_ordinals: config.device_ordinals.clone(),
-            device_budget_bytes: bytes,
-            max_source_chunk_bytes: 256 * 1024 * 1024,
-            max_row_groups_per_chunk: 1024,
-            max_retry_attempts: 3,
-            min_retry_chunk_row_groups: 1,
-        },
-        None => NexusMemoryPolicy::BoundedAuto {
-            device_ordinals: config.device_ordinals.clone(),
-            budget_fraction: config.budget_fraction,
+    let execution_config = NexusNativeExecutionConfig::bounded(
+        config.device_budget_bytes.unwrap_or(NexusNativeExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_FALLBACK_BYTES),
+        256 * 1024 * 1024,
+        1024,
+        3,
+        1,
+    );
+    let memory_limit = match config.device_budget_bytes {
+        Some(limit_bytes) => GpuDeviceMemoryLimit::Explicit { limit_bytes },
+        None => GpuDeviceMemoryLimit::Automatic {
+            headroom_bytes: NexusNativeExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_HEADROOM_BYTES,
+            fallback_bytes: NexusNativeExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_FALLBACK_BYTES,
+            fraction: config.budget_fraction.map(nexus_query_engine::runtime::GpuMemoryFraction::new).transpose()?,
         },
     };
-    let mut admission = NexusAdmissionPolicy::default()
-        .with_max_concurrent_queries(config.max_concurrent_queries)
-        .with_slot_guarantee(config.slot_guarantee)
-        .with_wait_timeout(Duration::from_millis(config.wait_timeout_ms));
-    if let Some(min) = config.grant_min {
-        admission = admission.with_grant_min(min);
-    }
-    if let Some(want) = config.grant_want {
-        admission = admission.with_grant_want(want);
-    }
-    let mut builder = NexusGpuBackend::builder()
+    let admission = NexusGpuQueuePolicy::default().with_max_queue_wait(Duration::from_millis(config.max_queue_wait_ms));
+    let builder = NexusGpuBackend::builder()
         .device_memory_ownership(
             config.device_ordinals.iter().copied().map(|ordinal| (ordinal, GpuMemoryOwnership::WholeDeviceExclusive)),
         )
-        .memory_policy(memory_policy)
-        .admission(admission);
-    if let Some(max_retained_bytes) = config.source_cache_max_retained_bytes {
-        builder = builder.query_service_local_parquet_source_cache_max_retained_bytes(Some(max_retained_bytes));
-    }
-    if let Some(max_retained_bytes) = config.graph_cache_max_retained_bytes {
-        builder = builder.query_service_resident_graph_cache_max_retained_bytes(Some(max_retained_bytes));
-    }
+        .with_native_execution_config(execution_config)
+        .queue_policy(admission)
+        .device_profiles(config.device_ordinals.iter().copied().map(|ordinal| {
+            NexusGpuDeviceProfile::new(ordinal)
+                .with_memory_limit(memory_limit)
+                .with_attempt_floor_bytes(config.attempt_floor_bytes)
+                .with_max_active_attempts(config.max_active_attempts_per_device)
+        }));
     Ok(builder.build()?)
 }
 
@@ -326,12 +313,6 @@ async fn build_session(
     if request.spec.needs_fos {
         let path = config.fos_parquet.as_deref().ok_or_else(|| format!("{} requires {ENV_FOS}", request.spec.label))?;
         ctx.register_parquet("paper_fos", path, ParquetReadOptions::default()).await?;
-    }
-    if let Some(bytes) = config.requested_grant_min_bytes {
-        ctx.sql(&format!("SET datafusion_nexus.request.requested_grant_min_bytes = {bytes}")).await?.collect().await?;
-    }
-    if let Some(bytes) = config.requested_grant_bytes {
-        ctx.sql(&format!("SET datafusion_nexus.request.requested_grant_bytes = {bytes}")).await?.collect().await?;
     }
     if let Some(raw_input_edges) = config.raw_input_edges {
         ctx.sql(&format!("SET datafusion_nexus.request.graph_raw_input_edges = {raw_input_edges}"))
@@ -518,11 +499,6 @@ struct QueryRow {
     allocator_high_water_bytes: Option<usize>,
     max_task_observed_peak_bytes: Option<usize>,
     max_task_reservation_bytes: usize,
-    source_cache_hits: usize,
-    source_cache_misses: usize,
-    source_cache_inserts: usize,
-    source_cache_insert_skipped: usize,
-    source_cache_retained_bytes: usize,
     graph_algorithm: Option<String>,
     graph_class: Option<String>,
     graph_outcome: Option<String>,
@@ -552,7 +528,6 @@ struct QueryRow {
     graph_statistics_sum_out_degree: Option<usize>,
     graph_peak_bytes: Option<usize>,
     graph_reason: Option<String>,
-    graph_cache: Option<String>,
     graph_elapsed_ms: Option<f64>,
     graph_output_device_bytes: Option<usize>,
     output_rows: Option<usize>,
@@ -617,14 +592,6 @@ fn fmt_opt<T: ToString>(value: Option<T>) -> String {
 
 fn fmt_opt_str(value: &Option<String>) -> String {
     value.clone().unwrap_or_else(|| "none".to_string())
-}
-
-fn graph_cache_metadata_value(metadata: &str) -> Option<String> {
-    metadata
-        .split(',')
-        .find_map(|part| part.trim().strip_prefix("graph_cache="))
-        .filter(|value| !value.is_empty())
-        .map(ToString::to_string)
 }
 
 fn tsv_field(value: &str) -> String {

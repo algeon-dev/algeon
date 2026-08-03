@@ -1,17 +1,11 @@
-use std::{
-    cell::RefCell,
-    collections::{BTreeMap, HashSet, VecDeque},
-    sync::Arc,
-};
+use std::cell::RefCell;
 
 use super::*;
 use crate::{
-    adaptive_runtime::{AdaptiveMemoryHistory, AdaptiveTaskMemoryHistoryShape},
     metrics::{
         CompiledTaskId, MemoryReservationEvent, MemoryReservationEventAction, MemoryReservationEventOutcome,
         PlanNodeId, QueryId, ReservationProjectionLedgerHandle,
     },
-    mode::NativePipelineExecutionMode,
     observability::{
         RuntimeEventContext, RuntimeExecutionObservationScope, RuntimeObservationPayload, RuntimeReservationAction,
         RuntimeReservationDisposition, RuntimeReservationId, RuntimeSpanId, TaskAttemptId,
@@ -19,8 +13,7 @@ use crate::{
     pipeline::CompiledPipeline,
     plan::QueryPlan,
     runtime::{
-        ExecutionContext, MemoryGrant, MemorySpaceId, cache::local_parquet::*,
-        gpu::governor::MemoryGrantLiveReservation,
+        ExecutionContext, MemoryGrant, MemorySpaceId, gpu::ledger::MemoryGrantLiveReservation,
     },
 };
 

@@ -1,4 +1,3 @@
 use super::*;
 
-#[path = "root_joins/hash.rs"]
-mod hash;
+// The cache-backed root hash-join scenario is retained as private P5 substrate.

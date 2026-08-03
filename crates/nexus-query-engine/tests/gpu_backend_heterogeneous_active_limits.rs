@@ -1,13 +1,21 @@
-use std::time::Duration;
+use std::{
+    sync::{Mutex, MutexGuard, OnceLock},
+    time::Duration,
+};
 
 use nexus_query_engine::runtime::{
     DeploymentIoCapability, GdsDriverProbeStatus, GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft,
-    GpuBackendDeviceConfig, GpuBackendMemoryShare, GpuBackendTenantDraft, GpuDeviceMemoryLimit, GpuMemoryOwnership,
-    KvikioCompatModeStatus, NvidiaFsProbeStatus, QueryAdmissionRequest, QueryServiceConfig, SlotGuarantee, TenantId,
+    GpuBackendDeviceConfig, GpuDeviceMemoryLimit, GpuMemoryOwnership, KvikioCompatModeStatus, NvidiaFsProbeStatus,
+    QueryAdmissionRequest, QueryExecutionConfig, QueueBounds,
 };
 
 const DEVICE_CAPACITY_BYTES: u64 = 64 * 1024 * 1024;
 const QUERY_GRANT_BYTES: u64 = 4 * 1024 * 1024;
+
+fn live_backend_test_guard() -> MutexGuard<'static, ()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(())).lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 
 fn non_gds_deployment() -> DeploymentIoCapability {
     DeploymentIoCapability::from_probe_inputs(
@@ -19,28 +27,19 @@ fn non_gds_deployment() -> DeploymentIoCapability {
 
 #[test]
 fn heterogeneous_device_active_limits_are_not_collapsed_to_the_largest_cap() {
-    if cudf::DeviceId::count().unwrap_or(0) < 2 {
-        return;
-    }
+    let device_count = cudf::DeviceId::count().expect("CUDA device enumeration for heterogeneous backend coverage");
+    assert!(device_count >= 2, "heterogeneous backend coverage requires at least two CUDA devices");
+    let _guard = live_backend_test_guard();
 
-    let controller = GpuBackendControllerDraft::from_legacy_policy(
-        QueryServiceConfig {
-            slot_guarantee: SlotGuarantee::Optimistic,
-            max_admission_queue_len: 8,
-            admission_wait_timeout: Duration::from_millis(250),
-            ..QueryServiceConfig::default()
-        },
-        vec![GpuBackendTenantDraft::new(
-            "tenant",
-            GpuBackendMemoryShare::Bytes(QUERY_GRANT_BYTES),
-            GpuBackendMemoryShare::Bytes(QUERY_GRANT_BYTES),
-        )],
+    let controller = GpuBackendControllerDraft::new(
+        QueryExecutionConfig::default(),
+        QueueBounds { max_waiters: 8, max_wait: Duration::from_millis(250), max_overtakes_per_waiter: 4 },
     );
     let device = |device_ordinal, max_active_queries| {
         GpuBackendDeviceConfig::new(device_ordinal, GpuMemoryOwnership::WholeDeviceExclusive)
             .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: DEVICE_CAPACITY_BYTES })
             .with_max_active_queries(max_active_queries)
-            .with_installation_bounds(max_active_queries, max_active_queries, max_active_queries)
+            .with_installation_bounds(max_active_queries.saturating_mul(3), max_active_queries, max_active_queries)
     };
     let core = GpuBackendCore::builder(GpuBackendCoreDraft::new(
         vec![device(0, 2), device(1, 1)],
@@ -50,23 +49,16 @@ fn heterogeneous_device_active_limits_are_not_collapsed_to_the_largest_cap() {
     .build()
     .unwrap();
     let session = core.session_capability();
-    let tenant = TenantId::new("tenant");
 
-    let first = session
-        .try_admit_query_with_request(tenant.clone(), QueryAdmissionRequest::new())
-        .unwrap()
-        .expect("first query admits");
-    let second = session
-        .try_admit_query_with_request(tenant.clone(), QueryAdmissionRequest::new())
-        .unwrap()
-        .expect("second query admits");
-    let third = session
-        .try_admit_query_with_request(tenant.clone(), QueryAdmissionRequest::new())
-        .unwrap()
-        .expect("third query admits");
-    assert_eq!((first.device_ordinal(), second.device_ordinal(), third.device_ordinal()), (0, 1, 0));
+    let first =
+        session.try_admit_query_with_request(QueryAdmissionRequest::new()).unwrap().expect("first query admits");
+    let second =
+        session.try_admit_query_with_request(QueryAdmissionRequest::new()).unwrap().expect("second query admits");
+    let third =
+        session.try_admit_query_with_request(QueryAdmissionRequest::new()).unwrap().expect("third query admits");
+    assert_eq!((first.device_ordinal(), second.device_ordinal(), third.device_ordinal()), (1, 0, 0));
     assert!(
-        session.try_admit_query_with_request(tenant, QueryAdmissionRequest::new()).unwrap().is_none(),
+        session.try_admit_query_with_request(QueryAdmissionRequest::new()).unwrap().is_none(),
         "the device-1 cap remains one instead of inheriting device 0's cap of two",
     );
 
@@ -76,5 +68,53 @@ fn heterogeneous_device_active_limits_are_not_collapsed_to_the_largest_cap() {
     first.finish();
     second.finish();
     third.finish();
+    core.close_and_wait(Duration::from_secs(5)).unwrap();
+}
+
+#[test]
+fn device_startup_records_carry_ordinal_local_resource_profiles() {
+    let device_count = cudf::DeviceId::count().expect("CUDA device enumeration for per-device startup records");
+    assert!(device_count >= 2, "per-device startup record coverage requires at least two CUDA devices");
+    let _guard = live_backend_test_guard();
+
+    const DEVICE_ONE_LIMIT_BYTES: u64 = 2 * DEVICE_CAPACITY_BYTES;
+    let controller = GpuBackendControllerDraft::new(QueryExecutionConfig::default(), QueueBounds::default());
+    let device = |device_ordinal, limit_bytes, max_active_queries| {
+        GpuBackendDeviceConfig::new(device_ordinal, GpuMemoryOwnership::WholeDeviceExclusive)
+            .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes })
+            .with_max_active_queries(max_active_queries)
+            .with_installation_bounds(max_active_queries.saturating_mul(3), max_active_queries, max_active_queries)
+    };
+    let core = GpuBackendCore::builder(GpuBackendCoreDraft::new(
+        vec![device(0, DEVICE_CAPACITY_BYTES, 2), device(1, DEVICE_ONE_LIMIT_BYTES, 1)],
+        controller,
+        non_gds_deployment(),
+    ))
+    .build()
+    .unwrap();
+
+    let records = core.device_startup_records();
+    assert_eq!(records.len(), 2);
+    let first = &records[0].resource_profile;
+    let second = &records[1].resource_profile;
+    assert_eq!(first.device_ordinal, 0);
+    assert_eq!(second.device_ordinal, 1);
+    assert_eq!(first.managed_capacity_bytes, DEVICE_CAPACITY_BYTES);
+    assert_eq!(second.managed_capacity_bytes, DEVICE_ONE_LIMIT_BYTES);
+    assert_eq!(first.max_active_attempts, 2);
+    assert_eq!(second.max_active_attempts, 1);
+    assert_eq!(first.root_lane_count, 2);
+    assert_eq!(second.root_lane_count, 1);
+    assert_eq!(first.stream_pool_size, 2 * 3);
+    assert_eq!(second.stream_pool_size, 3);
+    assert_eq!(first.worker_job_capacity, 2 * 3);
+    assert_eq!(second.worker_job_capacity, 3);
+    // Default floors are ordinal-local: derived from each device's own
+    // managed capacity rather than inherited from device 0.
+    assert_eq!(first.attempt_floor_bytes, DEVICE_CAPACITY_BYTES / 8);
+    assert_eq!(second.attempt_floor_bytes, DEVICE_ONE_LIMIT_BYTES / 8);
+    assert_eq!(first.cache_cap_bytes, 0);
+    assert_eq!(second.cache_cap_bytes, 0);
+
     core.close_and_wait(Duration::from_secs(5)).unwrap();
 }

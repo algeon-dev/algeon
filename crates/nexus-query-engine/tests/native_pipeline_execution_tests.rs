@@ -5,7 +5,7 @@
 //! target is CPU-only.
 
 use std::{
-    cell::{Cell, RefCell},
+    cell::RefCell,
     collections::BTreeSet,
     fs::{self, File},
     ops::Deref,
@@ -20,10 +20,9 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use nexus_query_engine::{
-    adaptive_runtime::{AdaptiveMemoryHistory, AdaptiveMemoryHistoryKey, AdaptiveMemoryObservation},
     admission::{
-        CompiledBoundedPipelineSupport, compiled_bounded_pipeline_support, compiled_bounded_query_plan_support,
-        strict_bounded_pipeline_admission,
+        CompiledBoundedPipelineSupport, bounded_pipeline_admission, compiled_bounded_pipeline_support,
+        compiled_bounded_query_plan_support,
     },
     capability::{ContractQuality, ContractStatus, ReservationRequirementScope},
     dynamic_filter::DynamicFilterProducer,
@@ -38,7 +37,6 @@ use nexus_query_engine::{
         LimitSpec, LiteralValue, SortExpr, SortSpec,
     },
     metrics::{MemoryReservationEventAction, QueryMetrics},
-    mode::NativePipelineExecutionMode,
     optimizer::{JoinBuildSideSelectionOptions, NativeOptimizerOptions, optimize_query_plan},
     pipeline::{
         CompiledPipeline, PipelineBarrier, PipelineBarrierId, PipelineBarrierKind, PipelineEdge, PipelineEdgeId,
@@ -51,17 +49,14 @@ use nexus_query_engine::{
         QueryPlanBuilder, WindowFunction, WindowSpec,
     },
     runtime::{
-        DeploymentIoCapability, ExecutionContext, GdsDriverProbeStatus, GpuBackendControllerDraft, GpuBackendCore,
-        GpuBackendCoreDraft, GpuBackendDeviceConfig, GpuBackendMemoryShare, GpuBackendTenantDraft, GpuMemoryOwnership,
-        KvikioCompatModeStatus, NvidiaFsProbeStatus, QueryHandle, QueryServiceConfig, ReservationKind, TenantId,
-        TenantQueryContext, resident::GpuResidentInputMap,
+        AdmittedQueryContext, DeploymentIoCapability, ExecutionContext, GdsDriverProbeStatus,
+        GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft, GpuBackendDeviceConfig, GpuMemoryOwnership,
+        KvikioCompatModeStatus, NvidiaFsProbeStatus, QueryExecutionConfig, QueryHandle, QueueBounds, ReservationKind,
+        resident::GpuResidentInputMap,
     },
     source::{GpuResidentSource, LocalParquetFile, LocalParquetSource, PartitionColumn, SourceNode},
 };
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
-
-const PIPELINE_TENANT: &str = "compiled-pipeline-tests";
-const PIPELINE_MINIMUM_GRANT_BYTES: u64 = 64 * 1024 * 1024;
 
 fn projection_outputs(expressions: Vec<Expr>, schema: Arc<Schema>) -> Vec<ProjectionOutput> {
     assert_eq!(expressions.len(), schema.fields().len(), "projection outputs must match schema");
@@ -94,50 +89,37 @@ use remaining_topologies::{
 };
 
 struct SuiteBackend {
-    mode: NativePipelineExecutionMode,
     core: GpuBackendCore,
 }
 
 static PIPELINE_BACKEND: Mutex<Option<SuiteBackend>> = Mutex::new(None);
 
-fn build_suite_backend(mode: NativePipelineExecutionMode) -> Result<GpuBackendCore> {
+fn build_suite_backend() -> Result<GpuBackendCore> {
     let deployment = DeploymentIoCapability::from_probe_inputs(
         NvidiaFsProbeStatus::DriverMissing,
         KvikioCompatModeStatus::Unset,
         GdsDriverProbeStatus::ProbeUnimplemented,
     );
-    let policy = QueryServiceConfig {
-        native_pipeline_execution_mode: mode,
+    let policy = QueryExecutionConfig {
         max_source_chunk_bytes: 1024 * 1024,
         max_row_groups_per_chunk: 1,
         max_retry_attempts: 1,
         min_retry_chunk_row_groups: 1,
-        ..QueryServiceConfig::default()
+        ..QueryExecutionConfig::default()
     };
-    let controller = GpuBackendControllerDraft::from_legacy_policy(
-        policy,
-        vec![GpuBackendTenantDraft::new(
-            PIPELINE_TENANT,
-            GpuBackendMemoryShare::Bytes(PIPELINE_MINIMUM_GRANT_BYTES),
-            GpuBackendMemoryShare::PolicyDefault,
-        )],
-    );
+    let controller = GpuBackendControllerDraft::new(policy, QueueBounds::default());
     // One admitted query owns the suite, while two service streams allow the
     // adaptive-history regression to compare two live contexts from that same
     // admitted handle.
     let device =
-        GpuBackendDeviceConfig::new(0, GpuMemoryOwnership::WholeDeviceExclusive).with_installation_bounds(2, 1, 1);
+        GpuBackendDeviceConfig::new(0, GpuMemoryOwnership::WholeDeviceExclusive).with_installation_bounds(3, 1, 1);
     GpuBackendCore::builder(GpuBackendCoreDraft::new(vec![device], controller, deployment)).build()
 }
 
-fn ensure_suite_backend(backend: &mut Option<SuiteBackend>, mode: NativePipelineExecutionMode) -> Result<()> {
-    if backend.as_ref().is_some_and(|backend| backend.mode == mode) {
-        return Ok(());
+fn ensure_suite_backend(backend: &mut Option<SuiteBackend>) -> Result<()> {
+    if backend.is_none() {
+        *backend = Some(SuiteBackend { core: build_suite_backend()? });
     }
-    if let Some(previous) = backend.take() {
-        previous.core.close_and_wait(Duration::from_secs(30))?;
-    }
-    *backend = Some(SuiteBackend { mode, core: build_suite_backend(mode)? });
     Ok(())
 }
 
@@ -151,46 +133,29 @@ mod cudf {
 
     pub(super) struct Runtime {
         backend: RefCell<MutexGuard<'static, Option<SuiteBackend>>>,
-        mode: Cell<Option<NativePipelineExecutionMode>>,
         handle: RefCell<Option<Arc<QueryHandle>>>,
     }
 
     impl Runtime {
         pub(super) fn new() -> std::result::Result<Self, String> {
             let backend = PIPELINE_BACKEND.lock().map_err(|_| "pipeline backend lock poisoned".to_string())?;
-            Ok(Self { backend: RefCell::new(backend), mode: Cell::new(None), handle: RefCell::new(None) })
+            Ok(Self { backend: RefCell::new(backend), handle: RefCell::new(None) })
         }
 
-        pub(super) fn acquire_context(
-            self: &Arc<Self>,
-            mode: NativePipelineExecutionMode,
-            external_history: Option<Arc<AdaptiveMemoryHistory>>,
-        ) -> Result<PipelineTestContext> {
-            if let Some(installed_mode) = self.mode.get()
-                && installed_mode != mode
-            {
-                panic!("one compiled-pipeline suite request cannot mix {installed_mode:?} and {mode:?}");
-            }
-            self.mode.set(Some(mode));
-
+        pub(super) fn acquire_context(self: &Arc<Self>) -> Result<PipelineTestContext> {
             let handle = if let Some(handle) = self.handle.borrow().as_ref() {
                 Arc::clone(handle)
             } else {
                 let mut backend = self.backend.borrow_mut();
-                ensure_suite_backend(&mut backend, mode)?;
+                ensure_suite_backend(&mut backend)?;
                 let handle = Arc::new(
-                    backend
-                        .as_ref()
-                        .expect("suite backend is installed")
-                        .core
-                        .session_capability()
-                        .admit_query(TenantId::new(PIPELINE_TENANT))?,
+                    backend.as_ref().expect("suite backend is installed").core.session_capability().admit_query()?,
                 );
                 *self.handle.borrow_mut() = Some(Arc::clone(&handle));
                 handle
             };
             let context = handle.acquire_context()?;
-            Ok(PipelineTestContext { context, _request: Arc::clone(self), external_history })
+            Ok(PipelineTestContext { context, _request: Arc::clone(self) })
         }
     }
 
@@ -204,29 +169,8 @@ mod cudf {
 }
 
 struct PipelineTestContext {
-    context: TenantQueryContext,
+    context: AdmittedQueryContext,
     _request: Arc<cudf::Runtime>,
-    external_history: Option<Arc<AdaptiveMemoryHistory>>,
-}
-
-impl PipelineTestContext {
-    fn install_query_history(&self, plan: &QueryPlan) {
-        let Some(source) = &self.external_history else {
-            return;
-        };
-        let Some(summary) = source.lookup_query_plan(plan) else {
-            return;
-        };
-        let target = self.context.context().adaptive_memory_history().expect("adaptive service context owns history");
-        target.record_observation(
-            AdaptiveMemoryHistoryKey::for_query_plan(plan),
-            AdaptiveMemoryObservation {
-                resident_dataframe_peak_bytes: summary.max_resident_dataframe_peak_bytes,
-                reservation_granted_bytes: summary.max_reservation_granted_bytes,
-                source_chunks_committed: summary.max_source_chunks_committed,
-            },
-        );
-    }
 }
 
 impl Deref for PipelineTestContext {
@@ -238,7 +182,6 @@ impl Deref for PipelineTestContext {
 }
 
 fn execute_query_plan(context: &PipelineTestContext, plan: &QueryPlan) -> Result<QueryExecutionResult> {
-    context.install_query_history(plan);
     nexus_query_engine::exec::execute_query_plan(context.context.context(), plan)
 }
 
@@ -273,18 +216,6 @@ fn runtime_visible_gate_for_task_kind(
         .find_map(|gate_id| {
             pipeline.gates().iter().find(|gate| gate.id() == *gate_id && gate.reservation_kind() == reservation_kind)
         })
-}
-
-// `fixtures_plans::adaptive` is shared with the CPU contract target. The
-// compiled GPU target still type-checks that fixture but does not invoke it.
-fn literal_expr_for_type(data_type: &DataType) -> Expr {
-    let literal = match data_type {
-        DataType::Decimal128(precision, scale) => {
-            LiteralValue::Decimal128 { raw: 12_345, precision: *precision, scale: *scale }
-        },
-        _ => LiteralValue::Int32(12_345),
-    };
-    Expr::literal(literal).alias("secret_literal")
 }
 
 fn int32_values(batch: &RecordBatch, column: usize) -> Vec<Option<i32>> {
@@ -365,19 +296,7 @@ fn assert_task_kind_count(pipeline: &CompiledPipeline, kind: PipelineTaskKind, e
 }
 
 fn bounded_context(runtime: Arc<cudf::Runtime>) -> PipelineTestContext {
-    bounded_context_with_mode(runtime, NativePipelineExecutionMode::StrictBounded)
-}
-
-fn bounded_context_with_mode(runtime: Arc<cudf::Runtime>, mode: NativePipelineExecutionMode) -> PipelineTestContext {
-    runtime.acquire_context(mode, None).unwrap()
-}
-
-fn bounded_context_with_mode_and_memory_history(
-    runtime: Arc<cudf::Runtime>,
-    mode: NativePipelineExecutionMode,
-    memory_history: Arc<AdaptiveMemoryHistory>,
-) -> PipelineTestContext {
-    runtime.acquire_context(mode, Some(memory_history)).unwrap()
+    runtime.acquire_context().unwrap()
 }
 
 fn unique_temp_dir(prefix: &str) -> PathBuf {

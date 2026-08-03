@@ -6,12 +6,12 @@ pub(super) fn d5_test_gate_row(
     required_contract: &'static str,
     contract_quality: ContractQuality,
     unresolved_preflight_gap: Option<&'static str>,
-) -> StrictBoundedContractGateRow {
+) -> CapabilityContractGateRow {
     let contract_scope = d5_test_scope_for_reservation_kind(reservation_kind);
-    StrictBoundedContractGateRow {
-        execution_mode: StrictBoundedExecutionMode::StrictBounded,
+    CapabilityContractGateRow {
+        execution_mode: CapabilityEnvelopeStatus::Admitted,
         contract_scope,
-        gate_id: StrictBoundedContractGateId::Compiled(ReservationGateId::new(reservation_kind as usize)),
+        gate_id: CapabilityContractGateId::Compiled(ReservationGateId::new(reservation_kind as usize)),
         owner: d5_test_owner_for_scope(contract_scope),
         reservation_kind,
         memory_boundary,
@@ -28,7 +28,6 @@ pub(super) fn d5_test_scope_for_reservation_kind(reservation_kind: ReservationKi
         | ReservationKind::HashTable
         | ReservationKind::FilteredProbeState
         | ReservationKind::MixedSizeData
-        | ReservationKind::SourceCacheRetained
         | ReservationKind::ChunkOperator
         | ReservationKind::GraphAlgorithm
         | ReservationKind::PartialState
@@ -44,16 +43,16 @@ pub(super) fn d5_test_scope_for_reservation_kind(reservation_kind: ReservationKi
     }
 }
 
-pub(super) fn d5_test_owner_for_scope(scope: ReservationRequirementScope) -> StrictBoundedContractOwner {
+pub(super) fn d5_test_owner_for_scope(scope: ReservationRequirementScope) -> CapabilityContractOwner {
     match scope {
         ReservationRequirementScope::Node => {
-            StrictBoundedContractOwner::Compiled(ReservationGateOwner::Task(PipelineTaskId::new(0)))
+            CapabilityContractOwner::Compiled(ReservationGateOwner::Task(PipelineTaskId::new(0)))
         },
         ReservationRequirementScope::Edge => {
-            StrictBoundedContractOwner::Compiled(ReservationGateOwner::Edge(PipelineEdgeId::new(0)))
+            CapabilityContractOwner::Compiled(ReservationGateOwner::Edge(PipelineEdgeId::new(0)))
         },
         ReservationRequirementScope::Subgraph => {
-            StrictBoundedContractOwner::Compiled(ReservationGateOwner::Barrier(PipelineBarrierId::new(0)))
+            CapabilityContractOwner::Compiled(ReservationGateOwner::Barrier(PipelineBarrierId::new(0)))
         },
     }
 }
@@ -219,7 +218,7 @@ pub(super) fn d3_1_inventory_cases() -> Vec<D31InventoryCase> {
         D31InventoryCase {
             label: "rank-window branches feed sink-path union",
             plan: union_of_ranked_join_branches_plan(),
-            admits: nexus_query_engine::capability::CapabilityAnalysis::admits_strict_bounded_join,
+            admits: nexus_query_engine::capability::CapabilityAnalysis::admits_bounded_join,
             graph_support: CompiledBoundedPipelineSupport::Supported,
             plan_support: CompiledBoundedPipelineSupport::Supported,
             render_fragments: &[
@@ -337,8 +336,6 @@ pub(super) struct MockExecutor {
     pub(super) simulated_remaining_bytes: Option<u64>,
     pub(super) task_admission_required_bytes: Vec<(PipelineTaskId, u64)>,
     pub(super) remaining_bytes_after_tasks: Vec<(PipelineTaskId, u64)>,
-    pub(super) cooperative_shrink_cycles_remaining: usize,
-    pub(super) cooperative_shrink_release_resources: Vec<ResidentResourceId>,
 }
 
 impl MockExecutor {
@@ -361,8 +358,6 @@ impl MockExecutor {
             simulated_remaining_bytes: None,
             task_admission_required_bytes: Vec::new(),
             remaining_bytes_after_tasks: Vec::new(),
-            cooperative_shrink_cycles_remaining: 0,
-            cooperative_shrink_release_resources: Vec::new(),
         }
     }
 
@@ -413,16 +408,6 @@ impl MockExecutor {
 
     pub(super) fn with_remaining_bytes_after_task(mut self, task: PipelineTaskId, remaining_bytes: u64) -> Self {
         self.remaining_bytes_after_tasks.push((task, remaining_bytes));
-        self
-    }
-
-    pub(super) fn with_cooperative_shrink_applied_cycles(mut self, cycles: usize) -> Self {
-        self.cooperative_shrink_cycles_remaining = cycles;
-        self
-    }
-
-    pub(super) fn with_cooperative_shrink_after_release_for(mut self, resource: ResidentResourceId) -> Self {
-        self.cooperative_shrink_release_resources.push(resource);
         self
     }
 
@@ -504,9 +489,6 @@ impl CompiledTaskExecutor for MockExecutor {
             )
             .with_fact("resident_resource_id", resource));
         }
-        if self.cooperative_shrink_release_resources.contains(&resource) {
-            self.cooperative_shrink_cycles_remaining = self.cooperative_shrink_cycles_remaining.saturating_add(1);
-        }
         Ok(())
     }
 
@@ -514,14 +496,6 @@ impl CompiledTaskExecutor for MockExecutor {
         self.cleanup_calls = self.cleanup_calls.saturating_add(1);
         self.task_local_released.extend(self.task_local_live.drain(..).rev());
         Ok(())
-    }
-
-    fn before_scheduling_cycle(&mut self) -> nexus_query_engine::error::Result<CompiledSchedulingCycle> {
-        if self.cooperative_shrink_cycles_remaining == 0 {
-            return Ok(CompiledSchedulingCycle::default());
-        }
-        self.cooperative_shrink_cycles_remaining -= 1;
-        Ok(CompiledSchedulingCycle::after_cooperative_shrink_applied())
     }
 
     fn live_reserved_bytes(&self) -> Option<u64> {
@@ -691,28 +665,6 @@ pub(super) fn sink_input_edge_count(pipeline: &CompiledPipeline) -> usize {
 }
 
 pub(super) fn bounded_context(runtime: Arc<cudf::Runtime>) -> ExecutionContext {
-    bounded_context_with_mode(runtime, NativePipelineExecutionMode::StrictBounded)
-}
-
-pub(super) fn bounded_context_with_mode(
-    runtime: Arc<cudf::Runtime>,
-    mode: NativePipelineExecutionMode,
-) -> ExecutionContext {
-    bounded_context_builder(runtime, mode).build().unwrap()
-}
-
-pub(super) fn bounded_context_with_mode_and_memory_history(
-    runtime: Arc<cudf::Runtime>,
-    mode: NativePipelineExecutionMode,
-    memory_history: Arc<AdaptiveMemoryHistory>,
-) -> ExecutionContext {
-    bounded_context_builder(runtime, mode).with_adaptive_memory_history(memory_history).build().unwrap()
-}
-
-pub(super) fn bounded_context_builder(
-    runtime: Arc<cudf::Runtime>,
-    mode: NativePipelineExecutionMode,
-) -> nexus_query_engine::runtime::ExecutionContextBuilder {
     ExecutionContext::builder()
         .with_shared_runtime(runtime)
         .with_memory_control_policy(MemoryControlPolicy::Bounded {
@@ -722,7 +674,8 @@ pub(super) fn bounded_context_builder(
             max_retry_attempts: 1,
             min_retry_chunk_row_groups: 1,
         })
-        .with_native_pipeline_execution_mode(mode)
+        .build()
+        .unwrap()
 }
 
 pub(super) fn unique_temp_dir(prefix: &str) -> PathBuf {

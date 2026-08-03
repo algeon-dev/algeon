@@ -37,13 +37,9 @@ fi
 # Server core
 # NEXUS_SERVER_BIND              host:port to listen on (default: 0.0.0.0:50051)
 # NEXUS_SERVER_LOG               tracing filter — "info", "debug", "warn,datafusion=info"
-# NEXUS_SERVER_MAX_CONCURRENT_QUERIES
-#                                  max admitted statements (default: 2)
-# NEXUS_SERVER_MAX_IN_FLIGHT     compatibility alias for max admitted statements
 # ---------------------------------------------------------------------------
 export NEXUS_SERVER_BIND="${NEXUS_SERVER_BIND:-0.0.0.0:50051}"
 export NEXUS_SERVER_LOG="${NEXUS_SERVER_LOG:-info}"
-export NEXUS_SERVER_MAX_CONCURRENT_QUERIES="${NEXUS_SERVER_MAX_CONCURRENT_QUERIES:-${NEXUS_SERVER_MAX_IN_FLIGHT:-2}}"
 
 # ---------------------------------------------------------------------------
 # cuGraph SQL DSL
@@ -67,16 +63,9 @@ export NEXUS_SERVER_MAX_CONCURRENT_QUERIES="${NEXUS_SERVER_MAX_CONCURRENT_QUERIE
 # ---------------------------------------------------------------------------
 # Native GPU execution controls
 #
-# NEXUS_SERVER_NATIVE_MEMORY_POLICY
-#   bounded | unbounded (default: bounded). Use unbounded only for explicitly
-#   labelled graph-result or cuVS smoke tests while their lower-level bounded
-#   memory contracts are still missing. cuVS calls reject under bounded
-#   admission; this is never a CPU fallback.
-#
 # NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES
-#   Hard cap on live GPU memory reservations. Leave unset with the two chunk
-#   knobs below to use the server's cudf inventory based auto-sized bounded
-#   profile.
+#   Explicit hard cap on live GPU memory reservations. Leave it and the two
+#   chunk controls unset for automatic per-device bounded capacity.
 #
 # NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES
 #   Max bytes read per Parquet source chunk (4 GiB = rg1024/32GiB profile).
@@ -94,28 +83,13 @@ export NEXUS_SERVER_MAX_CONCURRENT_QUERIES="${NEXUS_SERVER_MAX_CONCURRENT_QUERIE
 # NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE
 #   conservative | local_parquet_throughput
 #
-# NEXUS_SERVER_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES
-#   Opt-in per-device decoded local-Parquet source cache capacity in bytes.
-#
-# NEXUS_SERVER_NATIVE_GRAPH_CACHE_MAX_RETAINED_BYTES
-#   Opt-in per-device parked cuGraph cache capacity in bytes (requires a binary
-#   built with the cugraph feature).
-#
-# NEXUS_SERVER_NATIVE_PIPELINE_EXECUTION_MODE
-#   strict_bounded | adaptive
-#
 # NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE
 #   datafusion_exact_host_welford | gpu_native_tolerant
 # ---------------------------------------------------------------------------
-export NEXUS_SERVER_NATIVE_MEMORY_POLICY="${NEXUS_SERVER_NATIVE_MEMORY_POLICY:-bounded}"
-NEXUS_SERVER_NATIVE_MEMORY_POLICY_NORMALIZED="${NEXUS_SERVER_NATIVE_MEMORY_POLICY,,}"
-if [[ "${NEXUS_SERVER_NATIVE_MEMORY_POLICY_NORMALIZED}" != "unbounded" ]]; then
-    export NEXUS_SERVER_NATIVE_MAX_RETRY_ATTEMPTS="${NEXUS_SERVER_NATIVE_MAX_RETRY_ATTEMPTS:-3}"
-    export NEXUS_SERVER_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS="${NEXUS_SERVER_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS:-1}"
-    export NEXUS_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT="${NEXUS_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT:-2}"
-    export NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE="${NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE:-conservative}"
-    export NEXUS_SERVER_NATIVE_PIPELINE_EXECUTION_MODE="${NEXUS_SERVER_NATIVE_PIPELINE_EXECUTION_MODE:-strict_bounded}"
-fi
+export NEXUS_SERVER_NATIVE_MAX_RETRY_ATTEMPTS="${NEXUS_SERVER_NATIVE_MAX_RETRY_ATTEMPTS:-3}"
+export NEXUS_SERVER_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS="${NEXUS_SERVER_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS:-1}"
+export NEXUS_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT="${NEXUS_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT:-2}"
+export NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE="${NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE:-conservative}"
 export NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE="${NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE:-datafusion_exact_host_welford}"
 
 # ---------------------------------------------------------------------------

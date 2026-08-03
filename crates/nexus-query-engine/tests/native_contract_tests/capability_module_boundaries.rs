@@ -4,8 +4,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const STRICT_BOUNDED_MODULES: &[&str] = &["strict"];
-const ADAPTIVE_BOUNDED_MODULES: &[&str] = &["adaptive"];
+const CAPABILITY_ENVELOPE_BOUNDED_MODULES: &[&str] = &["pipeline"];
+const ADAPTIVE_BOUNDED_MODULES: &[&str] = &[];
 const SHARED_BOUNDED_RUNTIME_MODULES: &[&str] = &[
     "aggregate",
     "chunks",
@@ -21,8 +21,6 @@ const SHARED_BOUNDED_RUNTIME_MODULES: &[&str] = &[
 ];
 
 const RETIRED_TOPOLOGY_EXECUTOR_BRIDGES: &[&str] = &[
-    "crates/nexus-query-engine/src/exec/bounded/pipeline.rs",
-    "crates/nexus-query-engine/src/exec/bounded/pipeline",
     "crates/nexus-query-engine/src/exec/bounded/multi_join.rs",
     "crates/nexus-query-engine/src/exec/bounded/join/filtered.rs",
     "crates/nexus-query-engine/src/exec/bounded/join/keyless.rs",
@@ -50,13 +48,23 @@ const RETIRED_DISPATCH_ENTRYPOINTS: &[&str] = &[
     "execute_bounded_multi_join_resident_grouped_aggregate_subquery_filter_pipeline_query_plan",
 ];
 
-const STRICT_SOURCE_ROOTS: &[&str] = &[
+const CAPABILITY_ENVELOPE_SOURCE_ROOTS: &[&str] = &[
     "crates/nexus-query-engine/src/contract_report.rs",
-    "crates/nexus-query-engine/src/admission/strict.rs",
-    "crates/nexus-query-engine/src/exec/bounded/strict.rs",
+    "crates/nexus-query-engine/src/admission/bounded.rs",
+    "crates/nexus-query-engine/src/exec/bounded/pipeline.rs",
     "crates/nexus-query-engine/src/exec/bounded/join/compiled.rs",
-    "src/planner/native/strict_bounded.rs",
+    "src/planner/native/capability_envelope.rs",
 ];
+
+const ACTIVE_CAPABILITY_ADMISSION_AND_PLANNING_SOURCE_ROOTS: &[&str] = &[
+    "crates/nexus-query-engine/src/admission",
+    "src/native_exec",
+    "src/planner/native.rs",
+    "src/planner/native/capability_envelope.rs",
+];
+
+const RETIRED_STRICT_ADMISSION_FACADES: &[&str] =
+    &["StrictBoundedEnvelope", "strict_bounded_envelope_admission", "admits_strict_bounded_join"];
 
 const SHARED_MODE_AGNOSTIC_ROOTS: &[&str] = &[
     "crates/nexus-query-engine/src/admission/diagnostics.rs",
@@ -91,6 +99,11 @@ const ADAPTIVE_RUNTIME_TERM_NEEDLES: &[(&str, &[&str])] = &[
     ("partial admission", &["partial admission", "partial-admission", "partial_admission"]),
 ];
 
+const BOUNDED_RETRY_SOURCE_ROOTS: &[&str] = &[
+    "crates/nexus-query-engine/src/exec/graph_algorithm",
+    "crates/nexus-query-engine/src/exec/bounded/join/compiled/partitioned",
+];
+
 #[test]
 fn bounded_direct_modules_have_explicit_ownership() {
     let bounded_dir = repo_root().join("crates/nexus-query-engine/src/exec/bounded");
@@ -100,7 +113,7 @@ fn bounded_direct_modules_have_explicit_ownership() {
 
     assert_eq!(
         discovered, owned,
-        "every direct bounded execution module must be explicitly classified as strict, adaptive, or shared runtime"
+        "every direct bounded execution module must be explicitly classified as capability-envelope, adaptive, or shared runtime"
     );
 }
 
@@ -140,22 +153,22 @@ fn adaptive_diagnostics_retired_whole_query_dispatch_entrypoints_do_not_reappear
 }
 
 #[test]
-fn strict_exports_use_strict_boundary_facade() {
+fn capability_envelope_exports_use_single_boundary_facade() {
     let exec_mod = read_repo_file("crates/nexus-query-engine/src/exec/mod.rs");
 
     assert!(
-        exec_mod.contains("pub use bounded::strict::"),
-        "strict compiled exports must pass through the strict boundary facade"
+        exec_mod.contains("pub use bounded::pipeline::"),
+        "bounded compiled exports must pass through the single bounded pipeline boundary"
     );
     assert!(
         !exec_mod.contains("pub use bounded::compiled::"),
-        "exec/mod.rs must not publicly re-export strict compiled items directly from bounded::compiled"
+        "exec/mod.rs must not publicly re-export bounded compiled items directly from bounded::compiled"
     );
 }
 
 #[test]
-fn strict_modules_do_not_import_adaptive_modules() {
-    for file in source_files(STRICT_SOURCE_ROOTS) {
+fn capability_envelope_modules_do_not_import_adaptive_modules() {
+    for file in source_files(CAPABILITY_ENVELOPE_SOURCE_ROOTS) {
         let source = read_file(&file);
         for needle in ADAPTIVE_IMPORT_NEEDLES {
             assert!(
@@ -168,8 +181,8 @@ fn strict_modules_do_not_import_adaptive_modules() {
 }
 
 #[test]
-fn strict_and_shared_graph_modules_do_not_use_adaptive_runtime_contract_terms() {
-    let mut checked_files = source_files(STRICT_SOURCE_ROOTS);
+fn capability_envelope_and_shared_graph_modules_do_not_use_adaptive_runtime_contract_terms() {
+    let mut checked_files = source_files(CAPABILITY_ENVELOPE_SOURCE_ROOTS);
     checked_files.extend(source_files(SHARED_MODE_AGNOSTIC_ROOTS));
     checked_files.sort();
     checked_files.dedup();
@@ -206,9 +219,22 @@ fn strict_and_shared_graph_modules_do_not_use_adaptive_runtime_contract_terms() 
 }
 
 #[test]
-fn capability_first_admission_strict_and_adaptive_facades_enter_through_capability_first_admission() {
-    let strict = read_repo_file("crates/nexus-query-engine/src/admission/strict.rs");
-    let adaptive = read_repo_file("crates/nexus-query-engine/src/admission/adaptive.rs");
+fn active_capability_admission_and_planning_do_not_reintroduce_strict_facades() {
+    for file in source_files(ACTIVE_CAPABILITY_ADMISSION_AND_PLANNING_SOURCE_ROOTS) {
+        let source = read_file(&file);
+        for facade in RETIRED_STRICT_ADMISSION_FACADES {
+            assert!(
+                !source.contains(facade),
+                "{} must use the capability-envelope contract, not retired strict facade {facade:?}",
+                display_repo_path(&file),
+            );
+        }
+    }
+}
+
+#[test]
+fn capability_first_admission_is_the_single_bounded_facade() {
+    let bounded = read_repo_file("crates/nexus-query-engine/src/admission/bounded.rs");
     let admission = read_repo_file("crates/nexus-query-engine/src/admission/shared.rs");
 
     assert!(
@@ -216,17 +242,38 @@ fn capability_first_admission_strict_and_adaptive_facades_enter_through_capabili
         "capability-first shared admission result must stay explicit"
     );
     assert!(
-        strict.contains("capability_first_bounded_pipeline_admission"),
-        "strict bounded admission must enter through the capability-first facade"
+        bounded.contains("capability_first_bounded_pipeline_admission"),
+        "the single bounded admission must enter through the capability-first facade"
     );
     assert!(
-        adaptive.contains("capability_first_bounded_pipeline_admission"),
-        "adaptive bounded admission must enter through the capability-first facade"
+        !repo_root().join("crates/nexus-query-engine/src/admission/adaptive.rs").exists(),
+        "the adaptive admission facade was deleted with the product mode"
     );
     assert!(
-        !adaptive.contains("admits_strict_bounded_join"),
-        "adaptive admission must not consume the retired strict-family admission predicate"
+        !repo_root().join("crates/nexus-query-engine/src/adaptive_runtime.rs").exists(),
+        "the adaptive runtime history store was deleted with the product mode"
     );
+}
+
+#[test]
+fn graph_and_bounded_retry_paths_have_no_adaptive_product_producers() {
+    assert!(
+        !repo_root().join("crates/nexus-query-engine/src/exec/graph_algorithm/adaptive_betweenness.rs").exists(),
+        "the graph retry implementation must keep its bounded seed-chunk identity"
+    );
+
+    for file in source_files(BOUNDED_RETRY_SOURCE_ROOTS) {
+        for (line_number, line) in read_file(&file).lines().enumerate() {
+            if !line.to_ascii_lowercase().contains("adaptive") {
+                continue;
+            }
+            panic!(
+                "{}:{} reintroduces an adaptive product producer or label: {line}",
+                display_repo_path(&file),
+                line_number + 1
+            );
+        }
+    }
 }
 
 #[test]
@@ -341,8 +388,12 @@ fn canonical_rejection_fact_rejection_facts_do_not_reintroduce_family_blocker_pr
 
 fn bounded_module_ownership() -> BTreeMap<String, &'static str> {
     let mut ownership = BTreeMap::new();
-    for name in STRICT_BOUNDED_MODULES {
-        assert_eq!(ownership.insert((*name).to_owned(), "strict"), None, "duplicate bounded ownership for {name}");
+    for name in CAPABILITY_ENVELOPE_BOUNDED_MODULES {
+        assert_eq!(
+            ownership.insert((*name).to_owned(), "capability-envelope"),
+            None,
+            "duplicate bounded ownership for {name}"
+        );
     }
     for name in ADAPTIVE_BOUNDED_MODULES {
         assert_eq!(ownership.insert((*name).to_owned(), "adaptive"), None, "duplicate bounded ownership for {name}");

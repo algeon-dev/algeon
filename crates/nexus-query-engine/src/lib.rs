@@ -22,6 +22,14 @@
 #[cfg(test)]
 extern crate self as nexus_query_engine;
 
+// This public-route execution suite needs synthetic admission and fault
+// injection fixtures that must remain crate-private. Keeping its source under
+// `tests/` preserves its focused fixture layout while compiling it only as a
+// unit-test module prevents Cargo consumers from enabling those hooks.
+#[cfg(test)]
+#[path = "../tests/native_execution_tests.rs"]
+mod native_execution_integration_tests;
+
 #[cfg(test)]
 fn projection_outputs(
     expressions: Vec<expr::Expr>,
@@ -35,9 +43,6 @@ fn projection_outputs(
         .collect()
 }
 
-pub mod adaptive_report;
-pub mod adaptive_runtime;
-/// Strict and adaptive bounded-pipeline admission and diagnostics.
 pub mod admission;
 /// Execution-attempt ownership, cancellation, lifecycle, and completion delivery.
 pub mod attempt;

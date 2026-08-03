@@ -1,0 +1,5 @@
+error[E0599]: no method named `tenant_id` found for struct `NexusGpuBackendBuilder` in the current scope
+ --> tests/ui/public_api/forbidden_backend_tenant_builder.rs:4:40
+  |
+4 |     let _ = NexusGpuBackend::builder().tenant_id("tenant");
+  |                                        ^^^^^^^^^ method not found in `NexusGpuBackendBuilder`

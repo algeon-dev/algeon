@@ -133,18 +133,16 @@ impl DisplayAs for NexusNativeExec {
         match t {
             DisplayFormatType::Default => write!(
                 f,
-                "NexusNativeExec: native_nodes={}, sink=host_arrow, native_pipeline_execution_mode={}, memory_control_policy={}, boundary_policy={}, output_boundary=device_to_host, edge_normalize_inserted={}",
+                "NexusNativeExec: native_nodes={}, sink=host_arrow, native_pipeline_execution_mode=bounded, memory_control_policy={}, boundary_policy={}, output_boundary=device_to_host, edge_normalize_inserted={}",
                 self.plan.node_count(),
-                self.execution_config.native_pipeline_execution_mode(),
                 self.execution_config.memory_control_policy(),
                 self.execution_config.boundary_policy(),
                 self.plan.contains_edge_normalize(),
             ),
             DisplayFormatType::Verbose => write!(
                 f,
-                "NexusNativeExec: native_nodes={}, sink=host_arrow, native_pipeline_execution_mode={}, memory_control_policy={}, boundary_policy={}, output_boundary=device_to_host, edge_normalize_inserted={}, native_plan={}",
+                "NexusNativeExec: native_nodes={}, sink=host_arrow, native_pipeline_execution_mode=bounded, memory_control_policy={}, boundary_policy={}, output_boundary=device_to_host, edge_normalize_inserted={}, native_plan={}",
                 self.plan.node_count(),
-                self.execution_config.native_pipeline_execution_mode(),
                 self.execution_config.memory_control_policy(),
                 self.execution_config.boundary_policy(),
                 self.plan.contains_edge_normalize(),
@@ -153,11 +151,7 @@ impl DisplayAs for NexusNativeExec {
             DisplayFormatType::TreeRender => {
                 writeln!(f, "native_nodes={}", self.plan.node_count())?;
                 writeln!(f, "sink=host_arrow")?;
-                writeln!(
-                    f,
-                    "native_pipeline_execution_mode={}",
-                    self.execution_config.native_pipeline_execution_mode()
-                )?;
+                writeln!(f, "native_pipeline_execution_mode=bounded")?;
                 writeln!(f, "memory_control_policy={}", self.execution_config.memory_control_policy())?;
                 writeln!(f, "boundary_policy={}", self.execution_config.boundary_policy())?;
                 writeln!(f, "output_boundary=device_to_host")?;

@@ -89,13 +89,10 @@ impl CugraphAlgoExec {
         )?;
         let graph_residency =
             cugraph_graph_residency_descriptor(&spec, Arc::clone(&edge_source), edge_normalize_inserted);
-        let placement_hint =
-            cugraph_graph_placement_hint(&spec, graph_residency.as_ref(), edge_normalize_inserted, &predicate_sources);
         let native_execution_config = cugraph_execution_config_with_graph_aware_ticket(
             &spec,
             edge_source.as_ref(),
             edge_normalize_inserted,
-            placement_hint,
             native_execution_config,
         )?;
         let metrics_capture = native_execution_config.new_metrics_capture();
@@ -133,15 +130,6 @@ impl CugraphAlgoExec {
             self.edge_source.as_ref(),
             self.edge_normalize_inserted(),
             &self.native_execution_config,
-        )
-    }
-
-    pub(crate) fn graph_placement_hint_for_admission_ticket(&self) -> QueryPlacementHint {
-        cugraph_graph_placement_hint(
-            &self.spec,
-            self.graph_residency.as_ref(),
-            self.edge_normalize_inserted(),
-            &self.predicate_sources,
         )
     }
 
@@ -209,7 +197,6 @@ impl CugraphAlgoExec {
     pub(super) fn bfs_singleflight_key(&self, device_ordinal: usize) -> Option<GraphBfsSingleflightKey> {
         if !self.native_execution_config.graph_execution_services().bfs_singleflight_enabled()
             || !self.native_execution_config.has_query_admission_authority()
-            || self.native_execution_config.query_service_resident_graph_cache_max_retained_bytes().is_none()
             || !self.predicate_sources.is_empty()
         {
             return None;
@@ -376,7 +363,7 @@ impl CugraphAlgoExec {
             directed: self.spec.graph_options.directed,
             renumber: self.spec.graph_options.renumber,
             algorithm_parameters: format!("source_vertex={}", key.source_vertex),
-            algorithm_metadata: "graph_cache=singleflight_follower,bfs_singleflight=follower".to_string(),
+            algorithm_metadata: "bfs_singleflight=follower".to_string(),
             output_rows,
             output_columns,
             output_device_bytes,
@@ -554,7 +541,7 @@ impl CugraphAlgoExec {
         graph_metrics.finish(result)
     }
 
-    fn record_bfs_singleflight_host_follower_metrics(
+    pub(super) fn record_bfs_singleflight_host_follower_metrics(
         &self,
         metrics: &NexusNativeMetrics,
         key: &GraphBfsSingleflightKey,
@@ -579,7 +566,7 @@ impl CugraphAlgoExec {
             directed: self.spec.graph_options.directed,
             renumber: self.spec.graph_options.renumber,
             algorithm_parameters: format!("source_vertex={}", key.source_vertex),
-            algorithm_metadata: "graph_cache=singleflight_follower,bfs_singleflight=follower".to_string(),
+            algorithm_metadata: "bfs_singleflight=follower".to_string(),
             output_rows,
             output_columns,
             elapsed_ns: u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX),
@@ -790,10 +777,6 @@ impl GraphExecutionPlan for CugraphAlgoExec {
     fn graph_model_ask_for_admission(&self) -> Result<Option<GraphAdmissionModelAsk>> {
         self.graph_model_ask_bytes_for_admission_ticket()
     }
-
-    fn graph_placement_hint_for_admission(&self) -> QueryPlacementHint {
-        self.graph_placement_hint_for_admission_ticket()
-    }
 }
 
 impl DisplayAs for CugraphAlgoExec {
@@ -912,13 +895,6 @@ impl ExecutionPlan for CugraphAlgoExec {
                 exec.host_boundary_config.max_input_staging_bytes(),
             )
             .await?;
-            let _unbounded_native_execution_permit = match execution_config.memory_control_policy() {
-                MemoryControlPolicy::Unbounded => match execution_config.unbounded_native_execution_limiter() {
-                    Some(limiter) => Some(limiter.acquire().await?),
-                    None => None,
-                },
-                MemoryControlPolicy::Bounded { .. } => None,
-            };
             let context_lease =
                 execution_config.execution_context_async(Arc::clone(&task_context)).await.map_err(|error| {
                     DataFusionError::from(

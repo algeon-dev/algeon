@@ -30,15 +30,11 @@ fn query_tsv_row_contract_matches_columns() {
         workload: vec![("pagerank".into(), 1)],
         iterations: 1,
         stagger_ms: 0,
-        max_concurrent_queries: 2,
-        slot_guarantee: SlotGuarantee::GuaranteedMinimum,
-        grant_min: None,
-        grant_want: None,
-        wait_timeout_ms: 1000,
+        max_active_attempts_per_device: 2,
+        attempt_floor_bytes: None,
+        max_queue_wait_ms: 1000,
         budget_fraction: None,
         device_budget_bytes: None,
-        requested_grant_min_bytes: None,
-        requested_grant_bytes: None,
         raw_input_edges: None,
         sample_interval_ms: 100,
         query_timeout_ms: 1000,
@@ -47,8 +43,6 @@ fn query_tsv_row_contract_matches_columns() {
         bfs_seed: None,
         batch_size: None,
         device_ordinals: vec![0],
-        source_cache_max_retained_bytes: Some(1024),
-        graph_cache_max_retained_bytes: Some(2048),
         warmup_iterations: 0,
         cuda_profiler_capture: false,
     };
@@ -59,17 +53,19 @@ fn query_tsv_row_contract_matches_columns() {
     let row = QueryRow::new(&config, &request, 0, 0).finish_failed(Instant::now(), "x\ty".into());
     assert_eq!(row.to_tsv().split('\t').count(), QUERY_COLUMNS.len());
     assert_eq!(QUERY_COLUMNS.first(), Some(&"run_id"));
-    assert!(QUERY_COLUMNS.contains(&"source_cache_hits"));
-    assert!(QUERY_COLUMNS.contains(&"source_cache_retained_bytes"));
     let error_index = QUERY_COLUMNS.iter().position(|column| *column == "error").expect("error column is present");
-    let source_cache_index = QUERY_COLUMNS
-        .iter()
-        .position(|column| *column == "source_cache_hits")
-        .expect("source cache columns are present");
     assert_eq!(QUERY_COLUMNS[error_index.saturating_sub(1)], "native_lowered");
     assert!(
-        source_cache_index > error_index,
-        "new source-cache columns must append after the legacy query row columns"
+        [
+            "source_cache_hits",
+            "source_cache_misses",
+            "source_cache_inserts",
+            "source_cache_insert_skipped",
+            "source_cache_retained_bytes",
+        ]
+        .iter()
+        .all(|column| !QUERY_COLUMNS.contains(column)),
+        "P2 reports must not project source-cache counters"
     );
 }
 
@@ -172,15 +168,11 @@ fn query_row_absorbs_graph_calibration_fields() {
         workload: vec![("pagerank".into(), 1)],
         iterations: 1,
         stagger_ms: 0,
-        max_concurrent_queries: 2,
-        slot_guarantee: SlotGuarantee::GuaranteedMinimum,
-        grant_min: None,
-        grant_want: None,
-        wait_timeout_ms: 1000,
+        max_active_attempts_per_device: 2,
+        attempt_floor_bytes: None,
+        max_queue_wait_ms: 1000,
         budget_fraction: None,
         device_budget_bytes: None,
-        requested_grant_min_bytes: None,
-        requested_grant_bytes: None,
         raw_input_edges: None,
         sample_interval_ms: 100,
         query_timeout_ms: 1000,
@@ -189,8 +181,6 @@ fn query_row_absorbs_graph_calibration_fields() {
         bfs_seed: None,
         batch_size: None,
         device_ordinals: vec![0],
-        source_cache_max_retained_bytes: None,
-        graph_cache_max_retained_bytes: None,
         warmup_iterations: 0,
         cuda_profiler_capture: false,
     };
@@ -200,11 +190,6 @@ fn query_row_absorbs_graph_calibration_fields() {
     };
     let mut row = QueryRow::new(&config, &request, 0, 0);
     row.absorb_metrics(&NativeDataFusionExecutionMetrics {
-        source_cache_hits: 2,
-        source_cache_misses: 1,
-        source_cache_inserts: 1,
-        source_cache_insert_skipped: 0,
-        source_cache_retained_bytes: 8192,
         graph_reservation_rows: vec![NativeGraphReservationMetricRow {
             node_id: "g0".into(),
             algorithm: "triangle_count_all".into(),
@@ -248,7 +233,7 @@ fn query_row_absorbs_graph_calibration_fields() {
             algorithm: "triangle_count_all".into(),
             elapsed_ns: 1_000_000,
             graph_peak_bytes: Some(1024),
-            algorithm_metadata: "iterations=1,graph_cache=hit".into(),
+            algorithm_metadata: "iterations=1".into(),
             ..Default::default()
         }],
         ..Default::default()
@@ -257,11 +242,6 @@ fn query_row_absorbs_graph_calibration_fields() {
     let tsv = row.to_tsv();
     let fields = tsv.split('\t').collect::<Vec<_>>();
     let field = |name: &str| fields[QUERY_COLUMNS.iter().position(|column| *column == name).unwrap()];
-    assert_eq!(field("source_cache_hits"), "2");
-    assert_eq!(field("source_cache_misses"), "1");
-    assert_eq!(field("source_cache_inserts"), "1");
-    assert_eq!(field("source_cache_insert_skipped"), "0");
-    assert_eq!(field("source_cache_retained_bytes"), "8192");
     assert_eq!(field("graph_raw_input_edges"), "45");
     assert_eq!(field("graph_vertex_width_bytes"), "8");
     assert_eq!(field("graph_weight_width_bytes"), "8");
@@ -279,22 +259,10 @@ fn query_row_absorbs_graph_calibration_fields() {
     assert_eq!(field("graph_statistics_peak_chunk_min_degree_sum"), "45");
     assert_eq!(field("graph_statistics_sum_out_degree"), "90");
     assert_eq!(field("graph_peak_bytes"), "1024");
-    assert_eq!(field("graph_cache"), "hit");
 }
 
 #[test]
 fn workload_parsing_accepts_counts_and_bare_labels() {
     let parsed = parse_workload("pagerank:4, louvain:2 ,bfs").unwrap();
     assert_eq!(parsed, vec![("pagerank".into(), 4), ("louvain".into(), 2), ("bfs".into(), 1)]);
-}
-
-#[test]
-fn graph_cache_metadata_value_extracts_optional_token() {
-    assert_eq!(graph_cache_metadata_value("graph_cache=miss_inserted"), Some("miss_inserted".into()));
-    assert_eq!(
-        graph_cache_metadata_value("depth_limit=3,graph_cache=hit;retained_device_bytes=1024,null_edge_rows_dropped=0"),
-        Some("hit;retained_device_bytes=1024".into())
-    );
-    assert_eq!(graph_cache_metadata_value("depth_limit=3"), None);
-    assert_eq!(graph_cache_metadata_value("graph_cache="), None);
 }

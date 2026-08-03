@@ -1,7 +1,7 @@
 use super::*;
 #[cfg(feature = "cugraph")]
 use crate::exec::graph_algorithm::{
-    adaptive_betweenness::*, diagnostics::*, graph_empty_input_prevalidated, memory::*, statistics::*,
+    bounded_betweenness::*, diagnostics::*, graph_empty_input_prevalidated, memory::*, statistics::*,
 };
 use crate::exec::source::{ScheduledLocalParquetReadOutput, record_bounded_parquet_source_metrics};
 
@@ -22,12 +22,12 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_query_plan(
     };
     let mut reservations =
         ReservationTracker::new_for_context(context, device_budget_bytes, metrics, observation_scope)?;
-    let committed =
+    let mut committed =
         execute_bounded_generic_node(context, plan, plan.sink().input(), gpu_inputs, &mut reservations, metrics)?;
 
     match plan.sink() {
         ResultSink::GpuResident { .. } => {
-            let live_reservation = committed.reservation.retain_grant_live_reservation();
+            let live_reservation = committed.reservation.transfer_grant_live_reservation();
             let handle = match GpuResultHandle::new_with_live_reservation(
                 context,
                 committed.frame,
@@ -206,7 +206,7 @@ fn execute_bounded_generic_node(
         PlanNode::VectorAlgorithm(vector) => Err(QueryError::new(
             QueryErrorCode::UnsupportedPlanShape,
             "nexus_query_engine.bounded.generic_vector_algorithm",
-            "bounded vector algorithms must be rejected by strict or adaptive admission before generic execution",
+            "bounded vector algorithms must be rejected by capability-first admission before generic execution",
         )
         .with_fact("node_id", id)
         .with_fact("algorithm", vector.spec.algorithm.as_str())
@@ -415,35 +415,24 @@ fn execute_bounded_generic_graph_algorithm(
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
 ) -> Result<ResidentGpuFrame> {
-    let (input, mut preparation_pin) = if let Some(raw_input_id) = graph_preparation_bypass_input(plan, graph) {
+    let input = if let Some(raw_input_id) = graph_preparation_bypass_input(plan, graph) {
         let raw_input = execute_bounded_generic_node(context, plan, raw_input_id, gpu_inputs, reservations, metrics)?;
-        if let Some(pin) = resident_graph_cache_preparation_pin(context, &raw_input.frame, &graph.spec)? {
-            (raw_input, Some(pin))
-        } else {
-            let PlanNode::EdgeNormalize(edge_normalize) =
-                &plan.node(graph.input).expect("preparation bypass validated graph input").kind
-            else {
-                unreachable!("preparation bypass requires an edge-normalize input")
-            };
-            (
-                execute_bounded_generic_edge_normalize_from_input(
-                    context,
-                    graph.input,
-                    edge_normalize,
-                    raw_input,
-                    reservations,
-                    metrics,
-                )?,
-                None,
-            )
-        }
+        let PlanNode::EdgeNormalize(edge_normalize) =
+            &plan.node(graph.input).expect("preparation bypass validated graph input").kind
+        else {
+            unreachable!("preparation bypass requires an edge-normalize input")
+        };
+        execute_bounded_generic_edge_normalize_from_input(
+            context,
+            graph.input,
+            edge_normalize,
+            raw_input,
+            reservations,
+            metrics,
+        )?
     } else {
-        (execute_bounded_generic_node(context, plan, graph.input, gpu_inputs, reservations, metrics)?, None)
+        execute_bounded_generic_node(context, plan, graph.input, gpu_inputs, reservations, metrics)?
     };
-    if preparation_pin.is_none() {
-        preparation_pin = resident_graph_cache_preparation_pin(context, &input.frame, &graph.spec)?;
-    }
-    let preparation_pin_id = preparation_pin.as_ref().map(|pin| pin.pin_id());
     let ResidentGpuFrame { frame: input_frame, reservation: input_reservation } = input;
     let input_rows = input_frame.num_rows() as u64;
     let input_columns = input_frame.num_columns() as u64;
@@ -477,22 +466,16 @@ fn execute_bounded_generic_graph_algorithm(
     {
         filtered_input = filtered_input.with_graph_residency(graph_residency);
     }
-    // Strict bounded admission must prove the candidate-pair cardinality from
-    // the plan before it evaluates the side-input relation.  Adaptive mode
-    // intentionally obtains its count from the materialized preflight frame.
-    let strict_pair_cardinality =
-        if context.native_pipeline_execution_mode() == crate::mode::NativePipelineExecutionMode::StrictBounded {
-            match crate::graph_memory::strict_similarity_pair_cardinality_for_plan(plan, graph) {
-                Ok(evidence) => evidence,
-                Err(error) => {
-                    drop(filtered_input);
-                    reservations.release(input_reservation, metrics);
-                    return Err(error.with_fact_if_absent("node_id", node_id));
-                },
-            }
-        } else {
-            None
-        };
+    // Bounded admission must prove the candidate-pair cardinality from the
+    // plan before it evaluates the side-input relation.
+    let strict_pair_cardinality = match crate::graph_memory::strict_similarity_pair_cardinality_for_plan(plan, graph) {
+        Ok(evidence) => evidence,
+        Err(error) => {
+            drop(filtered_input);
+            reservations.release(input_reservation, metrics);
+            return Err(error.with_fact_if_absent("node_id", node_id));
+        },
+    };
     let mut live_reservations = vec![input_reservation];
     let mut side_inputs = std::collections::BTreeMap::new();
     let mut side_input_accounted_bytes = std::collections::BTreeMap::new();
@@ -682,7 +665,6 @@ fn execute_bounded_generic_graph_algorithm(
         input_rows,
         input_columns,
         null_edge_rows_dropped,
-        preparation_pin_id,
         empty_input_prevalidated,
         metrics,
     ) {
@@ -695,7 +677,6 @@ fn execute_bounded_generic_graph_algorithm(
             return Err(error.with_fact_if_absent("node_id", node_id));
         },
     };
-    drop(preparation_pin);
 
     let output_bytes = match observe_device_memory_bytes(&output, metrics) {
         Ok(bytes) => bytes,
@@ -936,7 +917,7 @@ fn execute_bounded_generic_local_parquet_source_with_stages(
         source,
         &chunk_plan.chunks,
         stages,
-        context.local_parquet_source_cache().is_some(),
+        false,
         reservations,
         metrics,
     )?;

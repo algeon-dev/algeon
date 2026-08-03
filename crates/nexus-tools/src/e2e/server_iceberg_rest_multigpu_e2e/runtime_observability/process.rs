@@ -18,19 +18,24 @@ pub(super) async fn spawn_server(
     let addr = reserve_loopback_addr()?;
     let stdout_log = suffixed_log_path(&params.server_log_path, label, "stdout");
     let stderr_log = suffixed_log_path(&params.server_log_path, label, "stderr");
-    let mut env = BTreeMap::from([
+    let config_path = params.server_log_path.with_file_name(format!("{label}.server.toml"));
+    ensure_parent(&config_path)?;
+    std::fs::write(
+        &config_path,
+        format!(
+            "[admission]\nmax_queue_wait_ms = {}\n\n[[admission.device_profiles]]\ndevice_ordinal = {}\nmax_active_attempts = {}\n",
+            params.query_timeout.as_millis(),
+            params.device,
+            params.concurrency
+        ),
+    )?;
+    let env = BTreeMap::from([
         ("TOKIO_WORKER_THREADS".to_string(), "1".to_string()),
         ("NEXUS_SERVER_BIND".to_string(), addr.to_string()),
         ("NEXUS_SERVER_LOG".to_string(), "info".to_string()),
         ("NEXUS_SERVER_GPU_DEVICES".to_string(), params.device.to_string()),
-        ("NEXUS_SERVER_MAX_CONCURRENT_QUERIES".to_string(), params.concurrency.to_string()),
-        ("NEXUS_SERVER_ADMISSION_MAX_QUERIES_PER_DEVICE".to_string(), params.concurrency.to_string()),
-        ("NEXUS_SERVER_ADMISSION_PLACEMENT_POLICY".to_string(), "least_loaded".to_string()),
-        ("NEXUS_SERVER_ADMISSION_WAIT_TIMEOUT_MS".to_string(), params.query_timeout.as_millis().to_string()),
-        ("NEXUS_SERVER_NATIVE_MEMORY_POLICY".to_string(), "bounded".to_string()),
-        ("NEXUS_SERVER_NATIVE_PIPELINE_EXECUTION_MODE".to_string(), params.bounded_mode.clone()),
-        ("NEXUS_SERVER_HOST_EXECUTION_QOS_MAX_CONCURRENT_STATEMENTS".to_string(), params.concurrency.to_string()),
-        ("NEXUS_SERVER_HOST_EXECUTION_QOS_WAIT_TIMEOUT_MS".to_string(), params.query_timeout.as_millis().to_string()),
+        ("NEXUS_SERVER_CONFIG_FILE".to_string(), config_path.to_string_lossy().into_owned()),
+        ("NEXUS_SERVER_ADMISSION_MAX_QUEUE_WAIT_MS".to_string(), params.query_timeout.as_millis().to_string()),
         ("NEXUS_SERVER_STATEMENT_TICKET_TTL_SECS".to_string(), params.poll_timeout.as_secs().to_string()),
         (OBS_RECORDS_ENV.to_string(), params.observability.per_query_records.to_string()),
         (OBS_QUERY_BYTES_ENV.to_string(), params.observability.per_query_bytes.to_string()),

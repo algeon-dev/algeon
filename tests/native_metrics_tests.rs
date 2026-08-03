@@ -1,6 +1,3 @@
-use std::sync::Arc;
-
-use arrow::datatypes::{DataType, Field, Schema};
 use datafusion_nexus::{
     native_exec::NATIVE_NEXUS_DATAFUSION_METRIC_NAMES,
     native_report::{
@@ -10,14 +7,8 @@ use datafusion_nexus::{
     },
 };
 use nexus_query_engine::{
-    chunk::SourceChunk,
     metrics::{MemoryReservationEventAction, MetricAggregation, MetricUnit, QueryId, QueryMetrics, TraceId},
-    plan::QueryPlanBuilder,
-    runtime::{
-        MemoryReservationRequest, MemorySpaceId, ReservationKind, SourceChunkPlanningMode,
-        cache::local_parquet::GpuLocalParquetSourceCacheKey,
-    },
-    source::{LocalParquetFile, LocalParquetSource, SourceNode},
+    runtime::{MemoryReservationRequest, MemorySpaceId, ReservationKind},
 };
 
 #[test]
@@ -46,9 +37,6 @@ fn query_metrics_memory_control_defaults_are_unbounded() {
     assert_eq!(metrics.source_chunks_attempted, 0);
     assert_eq!(metrics.source_chunks_committed, 0);
     assert_eq!(metrics.source_chunks_retried, 0);
-    assert_eq!(metrics.source_cache_hits, 0);
-    assert_eq!(metrics.source_cache_misses, 0);
-    assert_eq!(metrics.source_cache_retained_bytes, 0);
     assert_eq!(metrics.source_metadata_load_time, std::time::Duration::ZERO);
     assert_eq!(metrics.retry_count, 0);
     assert_eq!(metrics.partial_aggregate_input_rows, 0);
@@ -326,146 +314,6 @@ fn query_metrics_reservation_events_retain_legacy_bounded_task_context() {
 }
 
 #[test]
-fn local_parquet_source_cache_key_tracks_scan_contract() {
-    let schema = Arc::new(Schema::new(vec![Field::new("payload", DataType::Int32, true)]));
-    let file = LocalParquetFile::new("/tmp/source-cache-key.parquet")
-        .with_stable_id("file-id")
-        .with_file_size_bytes(128)
-        .with_row_groups(vec![0, 1])
-        .with_row_group_rows(vec![10, 20]);
-    let source = LocalParquetSource::from_files(vec![file], Arc::clone(&schema), vec!["payload".to_string()]);
-    let limited = source.clone().with_scan_limit(Some(10));
-
-    assert_ne!(
-        GpuLocalParquetSourceCacheKey::from_source(&source),
-        GpuLocalParquetSourceCacheKey::from_source(&limited),
-        "source cache key must distinguish source-level scan limits"
-    );
-}
-
-#[test]
-fn local_parquet_source_cache_key_tracks_bounded_chunk_contract() {
-    let schema = Arc::new(Schema::new(vec![Field::new("payload", DataType::Int32, true)]));
-    let file = LocalParquetFile::new("/tmp/source-cache-chunk-key.parquet")
-        .with_stable_id("file-id")
-        .with_file_size_bytes(512)
-        .with_row_groups(vec![0, 1])
-        .with_row_group_rows(vec![10, 20]);
-    let source = LocalParquetSource::from_files(vec![file], Arc::clone(&schema), vec!["payload".to_string()]);
-    let mut builder = QueryPlanBuilder::new();
-    let source_node_id = builder.add_source(SourceNode::LocalParquet(source.clone()));
-    let first = SourceChunk {
-        source_node_id,
-        chunk_index: 0,
-        file_index: 0,
-        location: source.files[0].location.clone(),
-        resolved_source: source.files[0].resolved_source.clone(),
-        path: "/tmp/source-cache-chunk-key.parquet".into(),
-        stable_id: "file-id".into(),
-        row_group_indexes: vec![0],
-        reads_all_row_groups: false,
-        known_file_bytes: Some(512),
-        known_row_group_bytes: Some(128),
-        known_projected_compressed_bytes: Some(64),
-        known_projected_uncompressed_bytes: Some(128),
-        known_pure_filter_compressed_bytes: Some(0),
-        known_pure_filter_uncompressed_bytes: Some(0),
-        estimated_chunk_bytes: Some(128),
-        estimated_source_read_bytes: Some(128),
-        exact_source_read_preflight_bytes: None,
-        source_file_row_groups: Some(vec![0, 1]),
-        source_file_row_group_bytes: Some(vec![128, 384]),
-        source_file_projected_compressed_bytes: Some(vec![64, 192]),
-        source_file_projected_uncompressed_bytes: Some(vec![128, 384]),
-        source_file_pure_filter_compressed_bytes: Some(vec![0, 0]),
-        source_file_pure_filter_uncompressed_bytes: Some(vec![0, 0]),
-        source_file_row_group_rows: Some(vec![10, 20]),
-        reader_decimal_types: Vec::new(),
-        reader_decimal_types_footer_verified: false,
-        read_columns: vec!["payload".to_string()],
-        partition_values: vec![],
-        zero_column_count: false,
-        known_row_count: Some(10),
-        scan_limit_rows: None,
-        size_estimate_based: false,
-        source_batching_reason: None,
-        source_chunk_planning_mode: SourceChunkPlanningMode::Conservative,
-        source_chunk_planning_reason: "test_policy".to_string(),
-    };
-    let mut second = first.clone();
-    second.chunk_index = 1;
-    second.row_group_indexes = vec![1];
-    second.known_row_count = Some(20);
-
-    assert_ne!(
-        GpuLocalParquetSourceCacheKey::from_source_chunk(&source, &first),
-        GpuLocalParquetSourceCacheKey::from_source_chunk(&source, &second),
-        "source cache key must distinguish bounded source chunks"
-    );
-}
-
-#[test]
-fn local_parquet_source_cache_key_ignores_bounded_planner_identity() {
-    let schema = Arc::new(Schema::new(vec![Field::new("payload", DataType::Int32, true)]));
-    let file = LocalParquetFile::new("/tmp/source-cache-planner-identity.parquet")
-        .with_stable_id("file-id")
-        .with_file_size_bytes(512)
-        .with_row_groups(vec![0, 1])
-        .with_row_group_rows(vec![10, 20]);
-    let source = LocalParquetSource::from_files(vec![file], Arc::clone(&schema), vec!["payload".to_string()]);
-    let mut builder = QueryPlanBuilder::new();
-    let first_source_node_id = builder.add_source(SourceNode::LocalParquet(source.clone()));
-    let second_source_node_id = builder.add_source(SourceNode::LocalParquet(source.clone()));
-    let first = SourceChunk {
-        source_node_id: first_source_node_id,
-        chunk_index: 0,
-        file_index: 0,
-        location: source.files[0].location.clone(),
-        resolved_source: source.files[0].resolved_source.clone(),
-        path: "/tmp/source-cache-planner-identity.parquet".into(),
-        stable_id: "file-id".into(),
-        row_group_indexes: vec![0],
-        reads_all_row_groups: false,
-        known_file_bytes: Some(512),
-        known_row_group_bytes: Some(128),
-        known_projected_compressed_bytes: Some(64),
-        known_projected_uncompressed_bytes: Some(128),
-        known_pure_filter_compressed_bytes: Some(0),
-        known_pure_filter_uncompressed_bytes: Some(0),
-        estimated_chunk_bytes: Some(128),
-        estimated_source_read_bytes: Some(128),
-        exact_source_read_preflight_bytes: None,
-        source_file_row_groups: Some(vec![0, 1]),
-        source_file_row_group_bytes: Some(vec![128, 384]),
-        source_file_projected_compressed_bytes: Some(vec![64, 192]),
-        source_file_projected_uncompressed_bytes: Some(vec![128, 384]),
-        source_file_pure_filter_compressed_bytes: Some(vec![0, 0]),
-        source_file_pure_filter_uncompressed_bytes: Some(vec![0, 0]),
-        source_file_row_group_rows: Some(vec![10, 20]),
-        reader_decimal_types: Vec::new(),
-        reader_decimal_types_footer_verified: false,
-        read_columns: vec!["payload".to_string()],
-        partition_values: vec![],
-        zero_column_count: false,
-        known_row_count: Some(10),
-        scan_limit_rows: None,
-        size_estimate_based: false,
-        source_batching_reason: None,
-        source_chunk_planning_mode: SourceChunkPlanningMode::Conservative,
-        source_chunk_planning_reason: "test_policy".to_string(),
-    };
-    let mut same_contract_different_plan_identity = first.clone();
-    same_contract_different_plan_identity.source_node_id = second_source_node_id;
-    same_contract_different_plan_identity.chunk_index = 7;
-
-    assert_eq!(
-        GpuLocalParquetSourceCacheKey::from_source_chunk(&source, &first),
-        GpuLocalParquetSourceCacheKey::from_source_chunk(&source, &same_contract_different_plan_identity),
-        "bounded source cache keys must be based on the reusable scan contract, not local planner ids"
-    );
-}
-
-#[test]
 fn native_datafusion_metric_names_cover_bounded_runtime_contract() {
     let names = NATIVE_NEXUS_DATAFUSION_METRIC_NAMES;
     let mut sorted = names.to_vec();
@@ -481,7 +329,6 @@ fn native_datafusion_metric_names_cover_bounded_runtime_contract() {
         "device_to_host_materialized_bytes",
         "source_read_boundary_direct_device",
         "build_materialization_boundary_query_scoped",
-        "build_materialization_boundary_durable",
         "probe_execution_boundary_reusable",
         "result_materialization_boundary_explicit",
         "source_chunks_planned",
@@ -492,11 +339,6 @@ fn native_datafusion_metric_names_cover_bounded_runtime_contract() {
         "source_read_prefetches_completed",
         "source_read_prefetches_skipped",
         "source_read_prefetches_abandoned",
-        "source_cache_hits",
-        "source_cache_misses",
-        "source_cache_inserts",
-        "source_cache_insert_skipped",
-        "source_cache_retained_bytes",
         "row_groups_planned",
         "row_groups_committed",
         "partial_aggregate_input_rows",
@@ -524,12 +366,6 @@ fn native_datafusion_metric_names_cover_bounded_runtime_contract() {
         "compiled_pipeline_host_arrow_sinks",
         "retry_resource_exhausted_count",
         "retry_reservation_failure_count",
-        "adaptive_retry_count",
-        "adaptive_spill_count",
-        "adaptive_downgrade_count",
-        "adaptive_memory_history_lookup_count",
-        "adaptive_memory_history_hit_count",
-        "adaptive_memory_history_miss_count",
         "dynamic_filter_produced_count",
         "dynamic_filter_skipped_count",
         "dynamic_filter_applied_count",
@@ -549,9 +385,6 @@ fn native_datafusion_metric_names_cover_bounded_runtime_contract() {
         "one_shot_join_count",
         "hash_join_cache_hits",
         "hash_join_cache_misses",
-        "hash_join_durable_cache_hits",
-        "hash_join_durable_cache_misses",
-        "hash_join_durable_cache_inserts",
         "hash_join_hash_table_bytes",
         "filtered_join_hash_table_bytes",
         "filtered_join_probe_state_bytes",
@@ -564,7 +397,6 @@ fn native_datafusion_metric_names_cover_bounded_runtime_contract() {
         "native_join_strategy_rows",
         "source_metadata_load_time",
         "source_read_queue_wait_time",
-        "source_cache_lookup_time",
         "parquet_read_time",
         "operator_time",
         "final_merge_time",
@@ -572,6 +404,21 @@ fn native_datafusion_metric_names_cover_bounded_runtime_contract() {
         "materialization_time",
     ] {
         assert!(names.contains(&expected), "missing native DataFusion metric: {expected}");
+    }
+
+    for removed in [
+        "build_materialization_boundary_durable",
+        "source_cache_hits",
+        "source_cache_misses",
+        "source_cache_inserts",
+        "source_cache_insert_skipped",
+        "source_cache_retained_bytes",
+        "source_cache_lookup_time",
+        "hash_join_durable_cache_hits",
+        "hash_join_durable_cache_misses",
+        "hash_join_durable_cache_inserts",
+    ] {
+        assert!(!names.contains(&removed), "P5-only metric must not remain public: {removed}");
     }
 }
 

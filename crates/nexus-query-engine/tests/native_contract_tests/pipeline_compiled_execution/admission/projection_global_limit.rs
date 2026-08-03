@@ -4,19 +4,19 @@ fn strict_admission_accepts_projection_root_global_limit_join_aggregate_with_mod
     let analysis = plan.capability_analysis();
 
     assert!(analysis.admits_projection_global_limit_pipeline());
-    let CapabilityEnvelopeAdmission::Admitted { envelope } = analysis.strict_bounded_envelope_admission() else {
+    let CapabilityEnvelopeAdmission::Admitted { envelope } = analysis.capability_envelope_admission() else {
         panic!(
             "expected projection/global-limit selected envelope, got {:?}",
-            analysis.strict_bounded_envelope_admission()
+            analysis.capability_envelope_admission()
         );
     };
-    assert_eq!(envelope, StrictBoundedEnvelope::ProjectionGlobalLimit);
+    assert_eq!(envelope, CapabilityEnvelope::ProjectionGlobalLimit);
     assert_eq!(envelope.as_str(), "projection_global_limit");
 
-    let admission = strict_bounded_pipeline_admission(&plan)
+    let admission = bounded_pipeline_admission(&plan)
         .expect("strict admission should not fail")
         .expect("projection/global-limit join aggregate should be admitted");
-    assert_eq!(admission.envelope(), StrictBoundedEnvelope::ProjectionGlobalLimit);
+    assert_eq!(admission.envelope(), CapabilityEnvelope::ProjectionGlobalLimit);
 
     let pipeline = admission.pipeline();
     assert_task_kind_count(pipeline, PipelineTaskKind::JoinMaterialize, 1);
@@ -29,9 +29,9 @@ fn strict_admission_accepts_projection_root_global_limit_join_aggregate_with_mod
         CompiledBoundedPipelineSupport::Supported
     );
 
-    let report = StrictBoundedContractReport::from_compiled_pipeline(admission.analysis(), pipeline)
+    let report = CapabilityContractReport::from_compiled_pipeline(admission.analysis(), pipeline)
         .expect("compiled projection/global-limit report should be valid");
-    assert_eq!(report.execution_mode(), StrictBoundedExecutionMode::StrictBounded);
+    assert_eq!(report.execution_mode(), CapabilityEnvelopeStatus::Admitted);
     assert_modeled_gate_row("projection/global-limit", &report, ReservationKind::OperatorOutput, "aggregate_contract");
     assert_modeled_gate_row(
         "projection/global-limit",
@@ -58,18 +58,18 @@ fn strict_admission_accepts_limit_root_projected_global_hash_join_aggregate_with
         analysis.projection_global_limit_admission
     );
     assert!(!analysis.admits_root_join(), "limit-root sibling shape must not admit through generic root-join");
-    let CapabilityEnvelopeAdmission::Admitted { envelope } = analysis.strict_bounded_envelope_admission() else {
+    let CapabilityEnvelopeAdmission::Admitted { envelope } = analysis.capability_envelope_admission() else {
         panic!(
             "expected projection/global-limit selected envelope, got {:?}",
-            analysis.strict_bounded_envelope_admission()
+            analysis.capability_envelope_admission()
         );
     };
-    assert_eq!(envelope, StrictBoundedEnvelope::ProjectionGlobalLimit);
+    assert_eq!(envelope, CapabilityEnvelope::ProjectionGlobalLimit);
 
-    let admission = strict_bounded_pipeline_admission(&plan)
+    let admission = bounded_pipeline_admission(&plan)
         .expect("strict admission should not fail")
         .expect("limit-root projection/global-limit sibling shape should be admitted");
-    assert_eq!(admission.envelope(), StrictBoundedEnvelope::ProjectionGlobalLimit);
+    assert_eq!(admission.envelope(), CapabilityEnvelope::ProjectionGlobalLimit);
     let pipeline = admission.pipeline();
     assert_task_kind_count(pipeline, PipelineTaskKind::JoinMaterialize, 4);
     assert_task_kind_count(pipeline, PipelineTaskKind::Aggregate, 2);
@@ -80,7 +80,7 @@ fn strict_admission_accepts_limit_root_projected_global_hash_join_aggregate_with
         CompiledBoundedPipelineSupport::Supported
     );
 
-    let report = StrictBoundedContractReport::from_compiled_pipeline(admission.analysis(), pipeline)
+    let report = CapabilityContractReport::from_compiled_pipeline(admission.analysis(), pipeline)
         .expect("compiled limit-root projection/global-limit report should be valid");
     assert_modeled_gate_row(
         "limit-root projection/global-limit sibling",
@@ -126,12 +126,12 @@ fn assert_projection_global_limit_distinct_or_dedup_admission(plan: QueryPlan, l
         "{label}: projection/global-limit admission rejected with {:?}",
         analysis.projection_global_limit_admission
     );
-    let admission = strict_bounded_pipeline_admission(&plan)
+    let admission = bounded_pipeline_admission(&plan)
         .expect("strict admission should not fail")
         .unwrap_or_else(|| panic!("{label}: distinct/dedup aggregate state should be admitted"));
-    assert_eq!(admission.envelope(), StrictBoundedEnvelope::ProjectionGlobalLimit, "{label}");
+    assert_eq!(admission.envelope(), CapabilityEnvelope::ProjectionGlobalLimit, "{label}");
 
-    let report = StrictBoundedContractReport::from_compiled_pipeline(admission.analysis(), admission.pipeline())
+    let report = CapabilityContractReport::from_compiled_pipeline(admission.analysis(), admission.pipeline())
         .unwrap_or_else(|error| panic!("{label}: compiled report should be valid: {error}"));
     assert_modeled_gate_row(
         label,
@@ -163,7 +163,7 @@ fn strict_admission_accepts_projection_root_global_limit_filtered_distinct_count
         "filtered count-distinct is modeled by masked inputs before exact NUnique/count-distinct state"
     );
     assert!(
-        strict_bounded_pipeline_admission(&filtered).expect("strict admission should not fail").is_some(),
+        bounded_pipeline_admission(&filtered).expect("strict admission should not fail").is_some(),
         "filtered count-distinct should compile through projection/global-limit admission"
     );
 
@@ -180,7 +180,7 @@ fn strict_admission_accepts_projection_root_global_limit_filtered_distinct_count
         Some("distinct_aggregate_requires_count")
     );
     assert!(
-        strict_bounded_pipeline_admission(&non_count).expect("strict admission should not fail").is_none(),
+        bounded_pipeline_admission(&non_count).expect("strict admission should not fail").is_none(),
         "non-count distinct must stay rejected by local aggregate expression capability"
     );
 }
@@ -220,7 +220,7 @@ fn projection_global_limit_recognizer_rejects_boundary_variants() {
         assert_eq!(analysis.projection_global_limit_admission.rejection_reason(), Some(expected_reason), "{label}");
         assert!(
             matches!(
-                analysis.strict_bounded_envelope_admission(),
+                analysis.capability_envelope_admission(),
                 CapabilityEnvelopeAdmission::Rejected {
                     projection: nexus_query_engine::capability::CapabilityRejectionProjection {
                         owner: nexus_query_engine::capability::CapabilityRejectionOwner::Admission(
@@ -233,7 +233,7 @@ fn projection_global_limit_recognizer_rejects_boundary_variants() {
             "{label}: projection/global-limit boundary miss must not fall through to generic strict admission"
         );
         assert!(
-            strict_bounded_pipeline_admission(&build_plan()).expect("strict admission should not fail").is_none(),
+            bounded_pipeline_admission(&build_plan()).expect("strict admission should not fail").is_none(),
             "{label}: projection/global-limit boundary miss must not compile through generic strict admission"
         );
     }

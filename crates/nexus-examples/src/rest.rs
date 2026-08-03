@@ -93,30 +93,24 @@ async fn plan_pipeline(State(state): State<AppState>, Path(name): Path<String>) 
 
 async fn gpu(State(state): State<AppState>) -> Result<Json<Value>, AppError> {
     let snapshot = state.backend.admission_snapshot().map_err(AppError::from_native)?;
-    let memory_governors = state.backend.memory_governor_reports().map_err(AppError::from_native)?;
+    let device_ledgers = state.backend.device_ledger_reports().map_err(AppError::from_native)?;
     let memory_failures = state.backend.device_memory_failure_reports().map_err(AppError::from_native)?;
     Ok(Json(json!({
         "admission": {
             "active_queries": snapshot.active_queries,
-            "queued_queries": snapshot.queued_queries,
-            "queued_by_tenant": snapshot.queued_by_tenant.into_iter().map(|tenant| json!({
-                "tenant_id": tenant.tenant_id.as_str(),
-                "queued_queries": tenant.queued_queries
-            })).collect::<Vec<_>>(),
-            "next_tenant_id": snapshot.next_tenant_id.map(|tenant| tenant.as_str().to_string())
+            "queued_queries": snapshot.queued_queries
         },
-        "memory_governors": memory_governors.into_iter().map(|report| json!({
+        "device_ledgers": device_ledgers.into_iter().map(|report| json!({
             "device_ordinal": report.device_ordinal,
-            "capacity_bytes": report.capacity_bytes,
-            "outstanding_bytes": report.outstanding_bytes,
+            "managed_capacity_bytes": report.managed_capacity_bytes,
+            "live_grants_bytes": report.live_grants_bytes,
             "available_bytes": report.available_bytes,
             "evictable_bytes": report.evictable_bytes,
-            "free_bytes": report.free_bytes,
             "grants": report.grants.into_iter().map(|grant| json!({
                 "grant_id": grant.grant_id,
                 "admission_request_id": grant.admission_request_id,
-                "priority": grant.priority,
-                "budget_bytes": grant.budget_bytes
+                "grant_bytes": grant.grant_bytes,
+                "live_reserved_bytes": grant.live_reserved_bytes
             })).collect::<Vec<_>>()
         })).collect::<Vec<_>>(),
         "device_memory_failures": memory_failures.into_iter().map(|report| json!({

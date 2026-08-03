@@ -58,7 +58,7 @@ fn assert_rejection_facts_are_family_free(facts: &std::collections::BTreeMap<&'s
 }
 
 fn assert_strict_report_has_modeled_subcontract(
-    report: &StrictBoundedContractReport,
+    report: &CapabilityContractReport,
     expected_contract: &'static str,
     label: &str,
 ) {
@@ -75,7 +75,7 @@ fn assert_strict_report_has_modeled_subcontract(
 }
 
 fn assert_strict_report_lacks_modeled_subcontract(
-    report: &StrictBoundedContractReport,
+    report: &CapabilityContractReport,
     unexpected_contract: &'static str,
     label: &str,
 ) {

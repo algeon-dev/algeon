@@ -15,11 +15,11 @@ fn admission_gate_keeps_not_yet_admitted_rewrite_but_protects_admitted_original(
         mode_admission_gate_decision(
             Some(false),
             Some(false),
-            SemijoinReductionAdmissionDecision::StrictBoundedKept,
-            SemijoinReductionAdmissionDecision::StrictBoundedRejectedRewrite,
+            SemijoinReductionAdmissionDecision::BoundedKept,
+            SemijoinReductionAdmissionDecision::BoundedRejectedRewrite,
         ),
         AdmissionGateDecision::Keep {
-            decision: SemijoinReductionAdmissionDecision::StrictBoundedKept,
+            decision: SemijoinReductionAdmissionDecision::BoundedKept,
             original_admitted: Some(false),
             rewritten_admitted: Some(false),
         }
@@ -28,11 +28,11 @@ fn admission_gate_keeps_not_yet_admitted_rewrite_but_protects_admitted_original(
         mode_admission_gate_decision(
             Some(true),
             Some(false),
-            SemijoinReductionAdmissionDecision::StrictBoundedKept,
-            SemijoinReductionAdmissionDecision::StrictBoundedRejectedRewrite,
+            SemijoinReductionAdmissionDecision::BoundedKept,
+            SemijoinReductionAdmissionDecision::BoundedRejectedRewrite,
         ),
         AdmissionGateDecision::Reject {
-            decision: SemijoinReductionAdmissionDecision::StrictBoundedRejectedRewrite,
+            decision: SemijoinReductionAdmissionDecision::BoundedRejectedRewrite,
             original_admitted: Some(true),
             rewritten_admitted: Some(false),
         }
@@ -41,11 +41,11 @@ fn admission_gate_keeps_not_yet_admitted_rewrite_but_protects_admitted_original(
         mode_admission_gate_decision(
             None,
             Some(true),
-            SemijoinReductionAdmissionDecision::StrictBoundedKept,
-            SemijoinReductionAdmissionDecision::StrictBoundedRejectedRewrite,
+            SemijoinReductionAdmissionDecision::BoundedKept,
+            SemijoinReductionAdmissionDecision::BoundedRejectedRewrite,
         ),
         AdmissionGateDecision::Reject {
-            decision: SemijoinReductionAdmissionDecision::StrictBoundedRejectedRewrite,
+            decision: SemijoinReductionAdmissionDecision::BoundedRejectedRewrite,
             original_admitted: None,
             rewritten_admitted: Some(true),
         }

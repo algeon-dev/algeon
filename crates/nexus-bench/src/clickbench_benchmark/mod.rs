@@ -16,7 +16,6 @@ use datafusion::{
     prelude::{SessionConfig, SessionContext},
 };
 use datafusion_nexus::{planner::NexusNativePhysicalOptimizerRule, session::NexusSessionStateBuilderExt};
-use nexus_query_engine::mode::NativePipelineExecutionMode;
 use nexus_workloads::clickbench::{
     CLICKBENCH_QUERIES, ClickbenchDatasetMetadata, ClickbenchLayout, ClickbenchQuery, ClickbenchWorkloadError,
     ClickbenchWorkloadResult, discover_clickbench_layout, prepare_clickbench_report_dataset, register_clickbench_table,
@@ -134,7 +133,6 @@ const ITERATIONS_ENV: &str = "NEXUS_CLICKBENCH_BENCH_ITERATIONS";
 const SKIP_CPU_ENV: &str = "NEXUS_CLICKBENCH_BENCH_SKIP_CPU";
 const SKIP_NATIVE_ENV: &str = "NEXUS_CLICKBENCH_BENCH_SKIP_NATIVE";
 const CPU_PROFILE_ENV: &str = "NEXUS_CLICKBENCH_BENCH_CPU_PROFILE";
-const PIPELINE_MODE_ENV: &str = "NEXUS_NATIVE_PIPELINE_EXECUTION_MODE";
 const PROGRESS_ENV: &str = "NEXUS_CLICKBENCH_BENCH_PROGRESS";
 const DUMP_ROWS_DIR_ENV: &str = "NEXUS_CLICKBENCH_BENCH_DUMP_ROWS_DIR";
 const KVIKIO_COMPAT_MODE_ENV: &str = "KVIKIO_COMPAT_MODE";
@@ -174,7 +172,6 @@ struct BenchmarkConfig {
     cpu_profile: CpuProfile,
     native_execution: RelationalExecutionSelection,
     native_profile: ClickbenchNativeProfileSettings,
-    native_pipeline_execution_mode: NativePipelineExecutionMode,
     progress: bool,
     dump_rows_dir: Option<PathBuf>,
 }
@@ -224,12 +221,6 @@ impl BenchmarkConfig {
                 )));
             },
         };
-        let native_pipeline_execution_mode = match std::env::var(PIPELINE_MODE_ENV) {
-            Ok(value) => value
-                .parse::<NativePipelineExecutionMode>()
-                .map_err(|error| invalid_env(format!("unsupported {PIPELINE_MODE_ENV}: {error}")))?,
-            Err(_) => NativePipelineExecutionMode::StrictBounded,
-        };
         let native_profile = clickbench_native_profile_settings_from_env();
         let query_ids = query_ids_from_env(QUERY_IDS_ENV)?;
         Ok(Self {
@@ -241,7 +232,6 @@ impl BenchmarkConfig {
             cpu_profile,
             native_execution: RelationalExecutionSelection::strict_native(),
             native_profile,
-            native_pipeline_execution_mode,
             progress: env_truthy(PROGRESS_ENV),
             dump_rows_dir: env_path(DUMP_ROWS_DIR_ENV),
         })
@@ -307,10 +297,7 @@ async fn build_native_ctx(
 ) -> ClickbenchWorkloadResult<(SessionContext, Arc<NexusNativePhysicalOptimizerRule>)> {
     let optimizer_config = config
         .native_execution
-        .configure_native_optimizer(
-            clickbench_native_optimizer_config_with_profile_settings(&config.native_profile)
-                .with_native_pipeline_execution_mode(config.native_pipeline_execution_mode),
-        )
+        .configure_native_optimizer(clickbench_native_optimizer_config_with_profile_settings(&config.native_profile))
         .expect("native ClickBench session installs the native rule");
     let native_rule = Arc::new(NexusNativePhysicalOptimizerRule::new(optimizer_config));
     let state = SessionStateBuilder::new_with_default_features()
@@ -818,12 +805,6 @@ impl BenchmarkReport {
         writeln!(output, "# clickbench_benchmark_cpu_profile={}", self.config.cpu_profile.as_str()).unwrap();
         writeln!(output, "# clickbench_benchmark_skip_cpu={}", self.config.skip_cpu).unwrap();
         writeln!(output, "# clickbench_benchmark_skip_native={}", self.config.skip_native).unwrap();
-        writeln!(
-            output,
-            "# clickbench_benchmark_native_pipeline_execution_mode={}",
-            self.config.native_pipeline_execution_mode.as_str()
-        )
-        .unwrap();
         writeln!(output, "# clickbench_benchmark_relational_execution={}", self.config.native_execution.as_str())
             .unwrap();
         writeln!(output, "# clickbench_benchmark_native_profile_name={}", self.config.native_profile.profile_name)
@@ -1123,7 +1104,6 @@ mod tests {
                 source_chunk_planning_mode:
                     nexus_query_engine::runtime::SourceChunkPlanningMode::LocalParquetThroughput,
             },
-            native_pipeline_execution_mode: NativePipelineExecutionMode::StrictBounded,
             progress: false,
             dump_rows_dir: None,
         }

@@ -10,6 +10,7 @@ impl QueryService {
         u64,
         cudf::DeviceMemoryManagerInstallationState,
         crate::runtime::gpu::registry::EngineDeviceHealthIdentity,
+        crate::runtime::DeviceResourceProfile,
     )> {
         self.inner
             .resources
@@ -24,6 +25,11 @@ impl QueryService {
                             device.capacity_bytes(),
                             device.memory_manager_installation(),
                             device.engine_health_identity(),
+                            resources
+                                .devices
+                                .resource_profile(device.device().ordinal())
+                                .cloned()
+                                .expect("installed device has its immutable resource profile"),
                         )
                     })
                     .collect()
@@ -31,60 +37,47 @@ impl QueryService {
             .unwrap_or_default()
     }
 
-    pub fn memory_governor_reports(&self) -> Result<Vec<MemoryGovernorReport>> {
+    pub fn device_ledger_reports(&self) -> Result<Vec<DeviceLedgerReport>> {
         let Some(resources) = &self.inner.resources else {
-            return Ok(vec![self.inner.fallback_memory_governor.report()?]);
+            return self
+                .inner
+                .fallback_device_ledger
+                .as_ref()
+                .map(|ledger| ledger.report())
+                .transpose()
+                .map(|report| report.into_iter().collect());
         };
-        resources.devices.contexts().map(|context| context.memory_governor().report()).collect()
+        resources.devices.contexts().map(|context| context.ledger().report()).collect()
     }
 
     /// Returns process-wide active-query slot counts for each service device.
     pub fn device_admission_snapshots(&self) -> Vec<QueryServiceDeviceAdmissionSnapshot> {
         let Some(resources) = &self.inner.resources else {
-            return Vec::new();
-        };
-        resources
-            .devices
-            .contexts()
-            .map(|context| QueryServiceDeviceAdmissionSnapshot {
-                device_ordinal: context.device().ordinal(),
-                process_active_query_slots: context.active_queries(),
-            })
-            .collect()
-    }
-
-    /// Returns one resident graph cache row per configured service device,
-    /// including disabled all-zero rows.
-    pub fn resident_graph_cache_snapshots(&self) -> Result<Vec<QueryServiceGraphCacheSnapshot>> {
-        let Some(resources) = &self.inner.resources else {
-            return Ok(vec![QueryServiceGraphCacheSnapshot {
-                device_ordinal: self.inner.config.device_ordinal,
-                enabled: self.inner.config.resident_graph_cache_max_retained_bytes.is_some(),
-                ..QueryServiceGraphCacheSnapshot::default()
-            }]);
+            return self
+                .inner
+                .fallback_device_ledger
+                .as_ref()
+                .map(|ledger| {
+                    let snapshot = ledger.snapshot().ok();
+                    vec![QueryServiceDeviceAdmissionSnapshot {
+                        device_ordinal: ledger.device_ordinal(),
+                        process_active_query_slots: snapshot.as_ref().map_or(0, |snapshot| snapshot.active_attempts),
+                        has_protection: snapshot.as_ref().is_some_and(|snapshot| snapshot.protected_slot),
+                    }]
+                })
+                .unwrap_or_default();
         };
         resources
             .devices
             .contexts()
             .map(|context| {
                 let device_ordinal = context.device().ordinal();
-                #[cfg(feature = "cugraph")]
-                if let Some(cache) = resources.resident_graph_cache_for_device(device_ordinal) {
-                    let snapshot = cache.snapshot()?;
-                    return Ok(QueryServiceGraphCacheSnapshot {
-                        device_ordinal,
-                        enabled: true,
-                        entries: snapshot.entries,
-                        resident_bytes: snapshot.resident_bytes,
-                        in_use_bytes: snapshot.in_use_bytes,
-                        hits: snapshot.hits,
-                        misses: snapshot.misses,
-                        evictions: snapshot.evictions,
-                        builds_in_flight: snapshot.builds_in_flight,
-                        build_waits: snapshot.build_waits,
-                    });
+                let snapshot = context.ledger().snapshot();
+                QueryServiceDeviceAdmissionSnapshot {
+                    device_ordinal,
+                    process_active_query_slots: snapshot.as_ref().map_or(0, |snapshot| snapshot.active_attempts),
+                    has_protection: snapshot.as_ref().is_ok_and(|snapshot| snapshot.protected_slot),
                 }
-                Ok(QueryServiceGraphCacheSnapshot { device_ordinal, ..QueryServiceGraphCacheSnapshot::default() })
             })
             .collect()
     }
@@ -143,7 +136,9 @@ impl QueryService {
     ///
     /// This provides an explicit quiescence boundary for warmup/capture and
     /// graceful drain. It does not require unused lazy pool slots to be
-    /// created. Active queries cause the call to wait until `timeout` expires.
+    /// created. Active queries and rejected provisional envelopes whose
+    /// rollback still retains a lane or immutable grant cause the call to wait
+    /// until `timeout` expires.
     pub fn wait_for_stream_pools_idle(&self, timeout: Duration) -> Result<()> {
         let Some(resources) = &self.inner.resources else {
             return Ok(());
@@ -154,7 +149,53 @@ impl QueryService {
                 .stream_pool()
                 .wait_until_idle(deadline, "nexus_query_engine.query_service.wait_for_stream_pools_idle")?;
         }
-        Ok(())
+        self.wait_for_release_commits_until(deadline)
+    }
+
+    /// Waits for the release or provisional-rollback callback that follows
+    /// stream-pool cleanup.
+    ///
+    /// A returned root stream can make a pool look idle before its cleanup
+    /// completion commits the report and drops the immutable grant. The same
+    /// ordering applies when an unpublished envelope rolls back. Capacity
+    /// remains unavailable until that callback clears the admission counters,
+    /// so the public idle fence must include both phases.
+    fn wait_for_release_commits_until(&self, deadline: Instant) -> Result<()> {
+        let operation = "nexus_query_engine.query_service.wait_for_stream_pools_idle";
+        let mut state = match crate::runtime::deadline::mutex_lock_until(&self.inner.admission, deadline) {
+            Ok(state) => state,
+            Err(crate::runtime::deadline::DeadlineMutexLockError::Poisoned) => {
+                return Err(QueryError::new(
+                    QueryErrorCode::Internal,
+                    operation,
+                    "query service admission mutex was poisoned while waiting for stream cleanup",
+                )
+                .with_fact("reason", "admission_mutex_poisoned"));
+            },
+            Err(crate::runtime::deadline::DeadlineMutexLockError::TimedOut) => {
+                return Err(stream_pool_release_commit_timeout(operation, None));
+            },
+        };
+        loop {
+            if state.lifecycle.is_quiescent() {
+                return Ok(());
+            }
+            let Some(remaining) = crate::runtime::deadline::deadline_remaining(deadline) else {
+                return Err(stream_pool_release_commit_timeout(operation, Some(&state)));
+            };
+            let (next, timeout) = self.inner.admission_available.wait_timeout(state, remaining).map_err(|_error| {
+                QueryError::new(
+                    QueryErrorCode::Internal,
+                    operation,
+                    "query service admission condition variable was poisoned while waiting for stream cleanup",
+                )
+                .with_fact("reason", "admission_condition_poisoned")
+            })?;
+            state = next;
+            if timeout.timed_out() && !state.lifecycle.is_quiescent() {
+                return Err(stream_pool_release_commit_timeout(operation, Some(&state)));
+            }
+        }
     }
 
     /// Blocks until each pool has only its declared long-lived runtime leases
@@ -201,37 +242,76 @@ impl QueryService {
         Ok(())
     }
 
-    /// Returns the service configuration.
-    pub fn config(&self) -> &QueryServiceConfig {
+    /// Returns the execution policy copied into admitted query contexts.
+    pub fn config(&self) -> &QueryExecutionConfig {
         &self.inner.config
     }
 
-    /// Returns tenant ids in their admission rotation order.
-    pub fn tenant_order(&self) -> &[TenantId] {
-        &self.inner.tenant_order
+    /// Returns the controller-owned bounded admission queue policy.
+    pub fn queue_bounds(&self) -> &QueueBounds {
+        &self.inner.queue_bounds
     }
 
     /// Returns a point-in-time admission snapshot for service reports.
     pub fn admission_snapshot(&self) -> Result<QueryServiceAdmissionSnapshot> {
         let mut state = self.lock_admission()?;
         let expired = self.sweep_expired_queued_requests_locked(&mut state);
-        let queued_by_tenant = self
-            .inner
-            .tenant_order
-            .iter()
-            .map(|tenant_id| TenantQueueDepth {
-                tenant_id: tenant_id.clone(),
-                queued_queries: state.queued.iter().filter(|request| &request.tenant_id == tenant_id).count(),
-            })
-            .collect();
+        // A ledger grant becomes provisional before the complete physical
+        // envelope can publish, so provisional transactions stay hidden.
+        // A published handle in terminal cleanup still owns its immutable
+        // grant, however; include it until the report commit and mechanical
+        // capacity release complete.
+        let lifecycle = state.lifecycle.snapshot();
+        let active_queries = lifecycle.active.saturating_add(lifecycle.published_cleanup);
         let snapshot = QueryServiceAdmissionSnapshot {
-            active_queries: state.active_queries,
+            active_queries,
             queued_queries: state.queued.len(),
-            queued_by_tenant,
-            next_tenant_id: self.inner.tenant_order.get(state.next_tenant_index).cloned(),
+            protected_devices: self
+                .device_ledger_snapshots()
+                .map(|snapshots| {
+                    snapshots
+                        .iter()
+                        .filter(|snapshot| snapshot.protected_slot)
+                        .map(|snapshot| snapshot.device_ordinal)
+                        .collect()
+                })
+                .unwrap_or_default(),
         };
         drop(state);
-        finish_expired_queued_requests(expired);
+        expired.finish();
         Ok(snapshot)
+    }
+}
+
+fn stream_pool_release_commit_timeout(operation: &'static str, state: Option<&AdmissionState>) -> QueryError {
+    let mut error = QueryError::new(
+        QueryErrorCode::ServiceOverloaded,
+        operation,
+        "timed out waiting for query-service stream cleanup to commit capacity release",
+    )
+    .with_fact("reason", "stream_pool_idle_timeout")
+    .with_fact("cleanup_stage", "release_commit");
+    if let Some(state) = state {
+        let lifecycle = state.lifecycle.snapshot();
+        error = error
+            .with_fact("active_queries", lifecycle.active)
+            .with_fact("admitting_queries", lifecycle.provisional)
+            .with_fact("cleanup_in_progress", lifecycle.cleanup);
+    }
+    error
+}
+
+impl QueryService {
+    /// Test hook: closes new admission on one device ledger, driving the
+    /// queue's protection retarget path without a real device fault.
+    #[cfg(test)]
+    pub(in crate::runtime::query_service) fn close_device_admission_for_test(
+        &self,
+        device_ordinal: usize,
+        reason: &str,
+    ) -> Result<()> {
+        self.ledger_for_ordinal(device_ordinal)?.close_admission(reason)?;
+        self.inner.notify_admission_available();
+        Ok(())
     }
 }

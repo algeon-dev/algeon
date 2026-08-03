@@ -229,6 +229,22 @@ fn benchmark_report_schema_v4_rows_match_header_columns() {
     let bounded_status_index = header_index(&header_fields, "bounded_status");
     assert!(NATIVE_TPCH_BENCHMARK_TSV_HEADER.contains("\tpost_native_execution_path\t"));
     assert!(!NATIVE_TPCH_BENCHMARK_TSV_HEADER.contains("\tfinal_disposition\t"));
+    for removed in [
+        "source_cache_hits",
+        "source_cache_misses",
+        "source_cache_inserts",
+        "source_cache_insert_skipped",
+        "source_cache_retained_bytes",
+        "source_cache_lookup_time_ms",
+        "hash_join_durable_cache_hits",
+        "hash_join_durable_cache_misses",
+        "hash_join_durable_cache_inserts",
+    ] {
+        assert!(
+            !NATIVE_TPCH_BENCHMARK_TSV_HEADER.split('\t').any(|column| column == removed),
+            "P2 report must not project {removed}"
+        );
+    }
     // This frozen column name carries the current final-plan disposition value.
     let final_disposition_index = header_index(&header_fields, "post_native_execution_path");
     let rejected_before_execution_index = header_index(&header_fields, "rejected_before_execution");
@@ -432,9 +448,8 @@ fn accepted_planning_row(query_id: &str) -> NativeDataFusionPlanningRow {
         outcome: Some(NativeDataFusionPlanningOutcome::Selected),
         reason_code: None,
         unsupported_category: None,
-        strict_bounded_contract_rows: Vec::new(),
-        strict_bounded_compiled_graphs: Vec::new(),
-        adaptive_pipeline_rows: Vec::new(),
+        capability_contract_rows: Vec::new(),
+        capability_compiled_graphs: Vec::new(),
         native_optimizer: Default::default(),
         edge_normalize_inserted: false,
         join_diagnostics: Vec::new(),
@@ -457,9 +472,8 @@ fn not_supported_planning_row(query_id: &str) -> NativeDataFusionPlanningRow {
         outcome: Some(NativeDataFusionPlanningOutcome::NotSupported),
         reason_code: Some("native_bounded_join_unsupported".to_string()),
         unsupported_category: Some("operator_hashjoin".to_string()),
-        strict_bounded_contract_rows: Vec::new(),
-        strict_bounded_compiled_graphs: Vec::new(),
-        adaptive_pipeline_rows: Vec::new(),
+        capability_contract_rows: Vec::new(),
+        capability_compiled_graphs: Vec::new(),
         native_optimizer: Default::default(),
         edge_normalize_inserted: false,
         join_diagnostics: Vec::new(),
@@ -476,14 +490,14 @@ fn strict_bounded_gate_row(
     kind: nexus_query_engine::runtime::ReservationKind,
     quality: nexus_query_engine::capability::ContractQuality,
     unresolved_preflight_gap: Option<&'static str>,
-) -> nexus_query_engine::contract_report::StrictBoundedContractGateRow {
-    nexus_query_engine::contract_report::StrictBoundedContractGateRow {
-        execution_mode: nexus_query_engine::mode::StrictBoundedExecutionMode::StrictBounded,
+) -> nexus_query_engine::contract_report::CapabilityContractGateRow {
+    nexus_query_engine::contract_report::CapabilityContractGateRow {
+        execution_mode: nexus_query_engine::mode::CapabilityEnvelopeStatus::Admitted,
         contract_scope: nexus_query_engine::capability::ReservationRequirementScope::Edge,
-        gate_id: nexus_query_engine::contract_report::StrictBoundedContractGateId::Compiled(
+        gate_id: nexus_query_engine::contract_report::CapabilityContractGateId::Compiled(
             nexus_query_engine::pipeline::ReservationGateId::new(kind as usize),
         ),
-        owner: nexus_query_engine::contract_report::StrictBoundedContractOwner::Compiled(
+        owner: nexus_query_engine::contract_report::CapabilityContractOwner::Compiled(
             nexus_query_engine::pipeline::ReservationGateOwner::SinkBoundary,
         ),
         reservation_kind: kind,
@@ -503,7 +517,7 @@ fn strict_bounded_gate_row(
     }
 }
 
-fn accepted_strict_bounded_contract_rows() -> Vec<nexus_query_engine::contract_report::StrictBoundedContractGateRow> {
+fn accepted_capability_contract_rows() -> Vec<nexus_query_engine::contract_report::CapabilityContractGateRow> {
     vec![
         strict_bounded_gate_row(
             nexus_query_engine::runtime::ReservationKind::SourceRead,
@@ -528,9 +542,8 @@ fn accepted_strict_bounded_contract_rows() -> Vec<nexus_query_engine::contract_r
     ]
 }
 
-fn accepted_strict_bounded_compiled_graphs()
--> Vec<datafusion_nexus::planner::NativeStrictBoundedCompiledGraphDiagnostics> {
-    vec![datafusion_nexus::planner::NativeStrictBoundedCompiledGraphDiagnostics {
+fn accepted_capability_compiled_graphs() -> Vec<datafusion_nexus::planner::NativeCapabilityCompiledGraphDiagnostics> {
+    vec![datafusion_nexus::planner::NativeCapabilityCompiledGraphDiagnostics {
         task_count: 3,
         edge_count: 2,
         barrier_count: 0,

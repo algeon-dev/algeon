@@ -21,8 +21,8 @@ const DEVICE_LIST_ENV: &str = "NEXUS_PRODUCTION_ACCEPTANCE_GPU_DEVICES";
 const ARTIFACT_ROOT_ENV: &str = "NEXUS_PRODUCTION_ACCEPTANCE_ARTIFACT_ROOT";
 const EXPECTED_DEVICE_COUNT: usize = 4;
 
-pub(super) const MAX_CONCURRENT_QUERIES: usize = 16;
-pub(super) const MAX_QUERIES_PER_DEVICE: usize = 4;
+pub(super) const CONCURRENT_CLIENTS: usize = 16;
+pub(super) const MAX_ACTIVE_ATTEMPTS_PER_DEVICE: usize = 4;
 
 #[derive(Clone)]
 pub(super) struct Params {
@@ -202,17 +202,22 @@ pub(super) struct ProcessExit {
 
 impl ServerChild {
     pub(super) fn spawn(params: &Params) -> E2eResult<Self> {
+        std::fs::create_dir_all(&params.artifact_dir)?;
+        let config_path = params.artifact_dir.join("server.toml");
+        let mut config = String::from("[admission]\nmax_queue_wait_ms = 120000\n\n");
+        for device in &params.devices {
+            config.push_str(&format!(
+                "[[admission.device_profiles]]\ndevice_ordinal = {device}\nmax_active_attempts = {MAX_ACTIVE_ATTEMPTS_PER_DEVICE}\n\n"
+            ));
+        }
+        std::fs::write(&config_path, config)?;
         let env = BTreeMap::from([
             ("TOKIO_WORKER_THREADS", "1".to_string()),
             ("NEXUS_SERVER_BIND", params.server_addr.to_string()),
             ("NEXUS_SERVER_LOG", "info".to_string()),
             ("NEXUS_SERVER_GPU_DEVICES", params.device_csv()),
-            ("NEXUS_SERVER_MAX_CONCURRENT_QUERIES", MAX_CONCURRENT_QUERIES.to_string()),
-            ("NEXUS_SERVER_ADMISSION_MAX_QUERIES_PER_DEVICE", MAX_QUERIES_PER_DEVICE.to_string()),
-            ("NEXUS_SERVER_ADMISSION_PLACEMENT_POLICY", "least_loaded".to_string()),
-            ("NEXUS_SERVER_ADMISSION_WAIT_TIMEOUT_MS", "120000".to_string()),
-            ("NEXUS_SERVER_NATIVE_MEMORY_POLICY", "bounded".to_string()),
-            ("NEXUS_SERVER_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES", (8_u64 * 1024 * 1024 * 1024).to_string()),
+            ("NEXUS_SERVER_CONFIG_FILE", config_path.to_string_lossy().into_owned()),
+            ("NEXUS_SERVER_ADMISSION_MAX_QUEUE_WAIT_MS", "120000".to_string()),
             ("NEXUS_SERVER_STATEMENT_TICKET_TTL_SECS", "60".to_string()),
             ("NEXUS_ICEBERG_CATALOG_KIND", "rest".to_string()),
             ("NEXUS_ICEBERG_CATALOG_NAME", "lake".to_string()),

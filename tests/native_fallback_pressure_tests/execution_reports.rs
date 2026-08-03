@@ -19,12 +19,10 @@ fn native_datafusion_execution_report_records_runtime_boundaries() {
     assert_eq!(report.rejected_before_execution_count(), 0);
     let row = &report.rows[0];
     assert_eq!(row.planning_outcome, Some(NativeDataFusionPlanningOutcome::Selected));
-    assert_eq!(row.strict_bounded_contract_rows.len(), 2);
-    assert_eq!(row.strict_bounded_compiled_graphs.len(), 1);
-    assert!(
-        row.strict_bounded_contract_rows.iter().any(|gate| gate.reservation_kind == ReservationKind::Materialization
-            && gate.contract_quality == ContractQuality::QueryEngineOwnedBoundary)
-    );
+    assert_eq!(row.capability_contract_rows.len(), 2);
+    assert_eq!(row.capability_compiled_graphs.len(), 1);
+    assert!(row.capability_contract_rows.iter().any(|gate| gate.reservation_kind == ReservationKind::Materialization
+        && gate.contract_quality == ContractQuality::QueryEngineOwnedBoundary));
     assert_eq!(row.post_native_plan_root, "NexusNativeExec");
     assert_eq!(row.final_disposition, FinalPlanDisposition::Native);
     assert!(!row.rejected_before_execution);
@@ -90,11 +88,6 @@ fn native_datafusion_execution_report_records_runtime_boundaries() {
     assert_eq!(row.metrics.source_read_prefetches_completed, 2);
     assert_eq!(row.metrics.source_read_prefetches_skipped, 1);
     assert_eq!(row.metrics.source_read_prefetches_abandoned, 1);
-    assert_eq!(row.metrics.source_cache_hits, 4);
-    assert_eq!(row.metrics.source_cache_misses, 5);
-    assert_eq!(row.metrics.source_cache_inserts, 3);
-    assert_eq!(row.metrics.source_cache_insert_skipped, 2);
-    assert_eq!(row.metrics.source_cache_retained_bytes, 65536);
     assert_eq!(row.metrics.row_groups_planned, 8);
     assert_eq!(row.metrics.row_groups_committed, 4);
     assert_eq!(row.metrics.partial_aggregate_count, 5);
@@ -107,12 +100,6 @@ fn native_datafusion_execution_report_records_runtime_boundaries() {
     assert_eq!(row.metrics.retry_count, 3);
     assert_eq!(row.metrics.retry_resource_exhausted_count, 1);
     assert_eq!(row.metrics.retry_reservation_failure_count, 2);
-    assert_eq!(row.metrics.adaptive_retry_count, 10);
-    assert_eq!(row.metrics.adaptive_spill_count, 11);
-    assert_eq!(row.metrics.adaptive_downgrade_count, 12);
-    assert_eq!(row.metrics.adaptive_memory_history_lookup_count, 13);
-    assert_eq!(row.metrics.adaptive_memory_history_hit_count, 8);
-    assert_eq!(row.metrics.adaptive_memory_history_miss_count, 5);
     assert_eq!(row.metrics.dynamic_filter_produced_count, 1);
     assert_eq!(row.metrics.dynamic_filter_skipped_count, 1);
     assert_eq!(row.metrics.dynamic_filter_applied_count, 1);
@@ -143,9 +130,6 @@ fn native_datafusion_execution_report_records_runtime_boundaries() {
     assert_eq!(row.metrics.one_shot_join_count, 7);
     assert_eq!(row.metrics.hash_join_cache_hits, 2);
     assert_eq!(row.metrics.hash_join_cache_misses, 1);
-    assert_eq!(row.metrics.hash_join_durable_cache_hits, 3);
-    assert_eq!(row.metrics.hash_join_durable_cache_misses, 4);
-    assert_eq!(row.metrics.hash_join_durable_cache_inserts, 5);
     assert_eq!(row.metrics.hash_join_hash_table_bytes, 16384);
     assert_eq!(row.metrics.filtered_join_hash_table_bytes, 8192);
     assert_eq!(row.metrics.filtered_join_probe_state_bytes, 1024);
@@ -228,14 +212,17 @@ fn native_datafusion_execution_report_records_runtime_boundaries() {
     assert_eq!(row.metrics.graph_reservation_rows[0].graph_statistics_exact_vertices, None);
 
     let text = report.to_tsv();
-    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.split('\t').count(), 130);
+    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.split('\t').count(), 115);
     assert!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.contains(
         "\trejected_before_execution\tadmission_sequence\tadmission_wait_ms\tdevice_ordinal\tquery_grant_bytes\tnative_runtime_started\t"
     ));
     assert!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.contains(
         "\treservation_requested_bytes\treservation_granted_bytes\treservation_live_peak_bytes\treservation_denied_count\t"
     ));
-    assert!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.contains("\tsource_cache_hits\tsource_cache_misses\tsource_cache_inserts\tsource_cache_insert_skipped\tsource_cache_retained_bytes\t"));
+    assert!(
+        NATIVE_DATAFUSION_EXECUTION_TSV_HEADER
+            .contains("\tcapability_contract_rows\tcapability_compiled_graphs\tpost_native_plan_root\t")
+    );
     assert!(text.starts_with(&format!("{NATIVE_DATAFUSION_EXECUTION_TSV_HEADER}\n")));
     assert!(text.contains(&format!("{NATIVE_DATAFUSION_EXECUTION_TSV_HEADER}\n")));
     assert!(
@@ -262,6 +249,15 @@ fn native_datafusion_execution_report_records_runtime_boundaries() {
     );
     assert!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.contains("\taggregate_strategy_rows\tjoin_strategy_rows\t"));
     for removed in [
+        "source_cache_hits",
+        "source_cache_misses",
+        "source_cache_inserts",
+        "source_cache_insert_skipped",
+        "source_cache_retained_bytes",
+        "source_cache_lookup_time_ms",
+        "hash_join_durable_cache_hits",
+        "hash_join_durable_cache_misses",
+        "hash_join_durable_cache_inserts",
         concat!("source_", "fetch_bytes"),
         concat!("source_", "fetch_count"),
         concat!("host_", "fetch_budget_wait_time_ms"),
@@ -668,8 +664,7 @@ fn capability_and_cost_declined_diagnostics() -> NativePlanningDiagnostics {
         report,
         native_optimizer: Default::default(),
         source_diagnostics: Vec::new(),
-        strict_bounded_contract: Default::default(),
-        adaptive_pipeline: Default::default(),
+        capability_contract: Default::default(),
     }
 }
 
@@ -691,8 +686,7 @@ fn native_datafusion_reports_scope_strict_contract_rows_to_join_candidates() {
         report,
         native_optimizer: Default::default(),
         source_diagnostics: Vec::new(),
-        strict_bounded_contract: accepted_strict_bounded_contract_diagnostics(),
-        adaptive_pipeline: Default::default(),
+        capability_contract: accepted_capability_contract_diagnostics(),
     };
     let planning = NativeDataFusionPlanningReport::collect([NativeDataFusionPlanningWorkloadItem::new(
         "mixed",
@@ -715,14 +709,14 @@ fn native_datafusion_reports_scope_strict_contract_rows_to_join_candidates() {
         })
         .expect("non-join candidate row should exist");
 
-    assert_eq!(join_row.strict_bounded_contract_rows.len(), 2);
-    assert_eq!(join_row.strict_bounded_compiled_graphs.len(), 1);
+    assert_eq!(join_row.capability_contract_rows.len(), 2);
+    assert_eq!(join_row.capability_compiled_graphs.len(), 1);
     assert!(
-        non_join_row.strict_bounded_contract_rows.is_empty(),
+        non_join_row.capability_contract_rows.is_empty(),
         "strict bounded contract rows must not bleed into unrelated candidate rows"
     );
     assert!(
-        non_join_row.strict_bounded_compiled_graphs.is_empty(),
+        non_join_row.capability_compiled_graphs.is_empty(),
         "strict bounded graph diagnostics must not bleed into unrelated candidate rows"
     );
 }
@@ -742,7 +736,7 @@ fn native_datafusion_reports_keep_multiple_accepted_join_candidates_separated() 
         report,
         native_optimizer: Default::default(),
         source_diagnostics: Vec::new(),
-        strict_bounded_contract: NativeStrictBoundedContractDiagnostics {
+        capability_contract: NativeCapabilityContractDiagnostics {
             accepted_candidates: vec![
                 accepted_candidate_contract_entry(
                     first_candidate.clone(),
@@ -765,7 +759,6 @@ fn native_datafusion_reports_keep_multiple_accepted_join_candidates_separated() 
             non_join_bounded_plan_count: 0,
             non_join_bounded_plan_reason: None,
         },
-        adaptive_pipeline: Default::default(),
     };
 
     let planning = NativeDataFusionPlanningReport::collect([NativeDataFusionPlanningWorkloadItem::new(
@@ -785,59 +778,18 @@ fn native_datafusion_reports_keep_multiple_accepted_join_candidates_separated() 
         .find(|row| row.native_candidate_shape.as_deref() == Some(second_candidate.shape.as_str()))
         .expect("second join row should exist");
 
-    assert_eq!(first_row.strict_bounded_contract_rows.len(), 1);
+    assert_eq!(first_row.capability_contract_rows.len(), 1);
     assert_eq!(
-        first_row.strict_bounded_contract_rows[0].gate_id,
-        StrictBoundedContractGateId::Compiled(ReservationGateId::new(11))
+        first_row.capability_contract_rows[0].gate_id,
+        CapabilityContractGateId::Compiled(ReservationGateId::new(11))
     );
-    assert_eq!(first_row.strict_bounded_compiled_graphs[0].task_count, 11);
-    assert_eq!(second_row.strict_bounded_contract_rows.len(), 1);
+    assert_eq!(first_row.capability_compiled_graphs[0].task_count, 11);
+    assert_eq!(second_row.capability_contract_rows.len(), 1);
     assert_eq!(
-        second_row.strict_bounded_contract_rows[0].gate_id,
-        StrictBoundedContractGateId::Compiled(ReservationGateId::new(22))
+        second_row.capability_contract_rows[0].gate_id,
+        CapabilityContractGateId::Compiled(ReservationGateId::new(22))
     );
-    assert_eq!(second_row.strict_bounded_compiled_graphs[0].task_count, 22);
-}
-
-#[test]
-fn native_datafusion_reports_project_adaptive_rows_without_strict_contract_rows() {
-    let candidate = GpuCandidate::new("HashJoinExec(LocalParquetScan,LocalParquetScan)", 1);
-    let mut report = PlanningReport::new();
-    report.push_selected(candidate.clone());
-    let diagnostics = NativePlanningDiagnostics {
-        input_plan_root: "HashJoinExec".to_string(),
-        input_plan_shape: "HashJoinExec(LocalParquetScan,LocalParquetScan)".to_string(),
-        input_join_diagnostics: Vec::new(),
-        report,
-        native_optimizer: Default::default(),
-        source_diagnostics: Vec::new(),
-        strict_bounded_contract: NativeStrictBoundedContractDiagnostics::default(),
-        adaptive_pipeline: NativeAdaptivePipelineDiagnostics {
-            candidates: vec![NativeAdaptivePipelineCandidateDiagnostics {
-                candidate,
-                report: adaptive_report_for_projection_test(),
-            }],
-        },
-    };
-
-    let planning = NativeDataFusionPlanningReport::collect([NativeDataFusionPlanningWorkloadItem::new(
-        "adaptive",
-        native_exec_leaf_for_report(),
-        diagnostics,
-    )]);
-    let row = &planning.rows[0];
-    assert!(row.strict_bounded_contract_rows.is_empty());
-    assert!(row.strict_bounded_compiled_graphs.is_empty());
-    assert_eq!(row.adaptive_pipeline_rows.len(), 1);
-
-    let rendered = row.adaptive_pipeline_rows[0].to_stable_kv_row();
-    assert!(rendered.contains("execution_mode=adaptive"));
-    assert!(!rendered.contains("execution_mode=strict_bounded"));
-
-    let text = planning.to_tsv();
-    assert!(text.contains("adaptive_pipeline_rows"));
-    assert!(text.contains("execution_mode=adaptive"));
-    assert!(!text.contains("execution_mode=strict_bounded"));
+    assert_eq!(second_row.capability_compiled_graphs[0].task_count, 22);
 }
 
 #[test]
@@ -855,8 +807,7 @@ fn native_datafusion_planning_report_projects_native_optimizer_diagnostics() {
         report,
         native_optimizer: optimizer_result.diagnostics,
         source_diagnostics: Vec::new(),
-        strict_bounded_contract: NativeStrictBoundedContractDiagnostics::default(),
-        adaptive_pipeline: NativeAdaptivePipelineDiagnostics::default(),
+        capability_contract: NativeCapabilityContractDiagnostics::default(),
     };
 
     let planning = NativeDataFusionPlanningReport::collect([NativeDataFusionPlanningWorkloadItem::new(
@@ -898,8 +849,7 @@ fn native_datafusion_planning_report_projects_projection_simplification_diagnost
         report,
         native_optimizer: optimizer_result.diagnostics,
         source_diagnostics: Vec::new(),
-        strict_bounded_contract: NativeStrictBoundedContractDiagnostics::default(),
-        adaptive_pipeline: NativeAdaptivePipelineDiagnostics::default(),
+        capability_contract: NativeCapabilityContractDiagnostics::default(),
     };
 
     let planning = NativeDataFusionPlanningReport::collect([NativeDataFusionPlanningWorkloadItem::new(
@@ -937,8 +887,7 @@ fn native_datafusion_planning_report_projects_dynamic_filter_route_diagnostics()
         report,
         native_optimizer: optimizer_result.diagnostics,
         source_diagnostics: Vec::new(),
-        strict_bounded_contract: NativeStrictBoundedContractDiagnostics::default(),
-        adaptive_pipeline: NativeAdaptivePipelineDiagnostics::default(),
+        capability_contract: NativeCapabilityContractDiagnostics::default(),
     };
 
     let planning = NativeDataFusionPlanningReport::collect([NativeDataFusionPlanningWorkloadItem::new(
@@ -980,8 +929,7 @@ fn native_datafusion_planning_report_uses_native_optimizer_stable_rule_rows() {
             ..Default::default()
         },
         source_diagnostics: Vec::new(),
-        strict_bounded_contract: NativeStrictBoundedContractDiagnostics::default(),
-        adaptive_pipeline: NativeAdaptivePipelineDiagnostics::default(),
+        capability_contract: NativeCapabilityContractDiagnostics::default(),
     };
 
     let planning = NativeDataFusionPlanningReport::collect([NativeDataFusionPlanningWorkloadItem::new(
@@ -1162,28 +1110,6 @@ fn semijoin_schema(fields: &[&str]) -> Arc<Schema> {
     Arc::new(Schema::new(fields.iter().map(|name| Field::new(*name, DataType::Int32, false)).collect::<Vec<_>>()))
 }
 
-fn adaptive_report_for_projection_test() -> AdaptivePipelineReport {
-    let schema = Arc::new(Schema::new(vec![Field::new("key", DataType::Int32, false)]));
-    let mut builder = QueryPlanBuilder::new();
-    let source = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
-        "/tmp/native-adaptive-report-source-not-read.parquet",
-        schema,
-        vec!["key".to_string()],
-    )));
-    let plan = builder.finish_with_host_sink(source);
-    let analysis = plan.capability_analysis();
-    AdaptivePipelineReport::from_admission_parts(
-        &analysis,
-        &plan,
-        AdaptiveCandidateStatus::Admitted,
-        AdaptiveStrategy::ConservativeCompiledPipeline,
-        nexus_query_engine::adaptive_report::AdaptiveAdmissionRuntimeEvidence::default(),
-        None,
-        None,
-    )
-    .expect("adaptive projection report should be valid")
-}
-
 fn accepted_candidate_contract_entry(
     candidate: GpuCandidate,
     gate_id: ReservationGateId,
@@ -1191,23 +1117,23 @@ fn accepted_candidate_contract_entry(
     memory_boundary: &'static str,
     required_contract: &'static str,
     task_count: usize,
-) -> NativeStrictBoundedAcceptedCandidateDiagnostics {
+) -> NativeCapabilityAcceptedCandidateDiagnostics {
     let contract_scope = ReservationRequirementScope::Edge;
     let owner = if reservation_kind == ReservationKind::Materialization {
-        StrictBoundedContractOwner::Compiled(ReservationGateOwner::SinkBoundary)
+        CapabilityContractOwner::Compiled(ReservationGateOwner::SinkBoundary)
     } else {
-        StrictBoundedContractOwner::Compiled(ReservationGateOwner::Edge(
+        CapabilityContractOwner::Compiled(ReservationGateOwner::Edge(
             nexus_query_engine::pipeline::PipelineEdgeId::new(gate_id.index()),
         ))
     };
-    NativeStrictBoundedAcceptedCandidateDiagnostics {
+    NativeCapabilityAcceptedCandidateDiagnostics {
         candidate,
-        report: StrictBoundedContractReport::from_gate_rows(
-            StrictBoundedExecutionMode::StrictBounded,
-            vec![StrictBoundedContractGateRow {
-                execution_mode: StrictBoundedExecutionMode::StrictBounded,
+        report: CapabilityContractReport::from_gate_rows(
+            CapabilityEnvelopeStatus::Admitted,
+            vec![CapabilityContractGateRow {
+                execution_mode: CapabilityEnvelopeStatus::Admitted,
                 contract_scope,
-                gate_id: StrictBoundedContractGateId::Compiled(gate_id),
+                gate_id: CapabilityContractGateId::Compiled(gate_id),
                 owner,
                 reservation_kind,
                 memory_boundary,
@@ -1222,7 +1148,7 @@ fn accepted_candidate_contract_entry(
             }],
         )
         .unwrap(),
-        compiled_graph: NativeStrictBoundedCompiledGraphDiagnostics {
+        compiled_graph: NativeCapabilityCompiledGraphDiagnostics {
             task_count,
             edge_count: 1,
             barrier_count: 0,
@@ -1250,8 +1176,8 @@ fn native_datafusion_execution_report_marks_terminal_planning_failure_before_run
     assert_eq!(row.planning_outcome, None);
     assert_eq!(row.reason_code.as_deref(), Some("native_planning_failed"));
     assert_eq!(row.final_disposition, FinalPlanDisposition::Rejected);
-    assert!(row.strict_bounded_contract_rows.is_empty());
-    assert!(row.strict_bounded_compiled_graphs.is_empty());
+    assert!(row.capability_contract_rows.is_empty());
+    assert!(row.capability_compiled_graphs.is_empty());
     assert!(row.rejected_before_execution);
     assert!(!row.native_runtime_started);
     assert_eq!(row.runtime_outcome, NativeDataFusionRuntimeOutcome::NotStarted);

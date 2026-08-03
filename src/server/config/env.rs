@@ -8,7 +8,8 @@ pub const NEXUS_SERVER_LOG_ENV: &str = "NEXUS_SERVER_LOG";
 /// before it expires. Defaults to `300`.
 pub const NEXUS_SERVER_STATEMENT_TICKET_TTL_SECS_ENV: &str = "NEXUS_SERVER_STATEMENT_TICKET_TTL_SECS";
 /// Path to a TOML server config file. The file supplies durable server config
-/// such as `[auth]` and `[native]`; scalar env vars remain bootstrap overrides.
+/// such as `[auth]`, `[admission]`, `[native]`, and `[observability]`; scalar
+/// env vars remain bootstrap overrides.
 pub const NEXUS_SERVER_CONFIG_FILE_ENV: &str = "NEXUS_SERVER_CONFIG_FILE";
 pub(super) const DEFAULT_BIND_ADDR: &str = "0.0.0.0:50051";
 pub(super) const DEFAULT_LOG_FILTER: &str = "info";

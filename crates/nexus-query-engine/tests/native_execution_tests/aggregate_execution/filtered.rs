@@ -116,8 +116,10 @@ fn bounded_native_grouped_filtered_aggregate_single_pass_reports_materialization
 
 #[test]
 fn bounded_native_grouped_filtered_aggregate_segments_low_cardinality_groups() {
+    // The aligned domain pool charge (~8x raw bytes for many small
+    // allocations) sizes the pressure point above the legacy arena path.
     let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
-        device_budget_bytes: 32 * 1024 * 1024,
+        device_budget_bytes: 48 * 1024 * 1024,
         max_source_chunk_bytes: 8 * 1024 * 1024,
         max_row_groups_per_chunk: 1,
         max_retry_attempts: 1,
@@ -405,8 +407,10 @@ fn native_global_aggregate_filter_masks_count_distinct_inputs() {
 
 #[test]
 fn bounded_native_global_filtered_aggregate_segments_large_materialization() {
+    // The aligned domain pool charge (~8x raw bytes for many small
+    // allocations) sizes the pressure point above the legacy arena path.
     let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
-        device_budget_bytes: 32 * 1024 * 1024,
+        device_budget_bytes: 40 * 1024 * 1024,
         max_source_chunk_bytes: 8 * 1024 * 1024,
         max_row_groups_per_chunk: 1,
         max_retry_attempts: 1,

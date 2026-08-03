@@ -1,18 +1,35 @@
 //! Public request/snapshot DTOs for query-service admission.
 
 use super::*;
+use crate::{
+    admission::{AttemptRequirement, QueryPlanCapabilityProof},
+    attempt::{AttemptAdmissionBinding, AttemptReleaseCommit},
+};
 
-/// Point-in-time service admission state for fairness and overload reports.
+#[derive(Debug)]
+enum RuntimeObservationAttachment {
+    Disabled,
+    StandaloneOwner(RuntimeObservationOwner),
+    Handle(RuntimeObservationHandle),
+    Attempt(AttemptAdmissionBinding),
+}
+
+impl Default for RuntimeObservationAttachment {
+    fn default() -> Self {
+        Self::Disabled
+    }
+}
+
+/// Point-in-time service admission state for bounded-queue and overload reports.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueryServiceAdmissionSnapshot {
     /// Number of currently admitted query handles.
     pub active_queries: usize,
     /// Number of admissions currently waiting in the service queue.
     pub queued_queries: usize,
-    /// Queue depth by configured tenant, in admission rotation order.
-    pub queued_by_tenant: Vec<TenantQueueDepth>,
-    /// Tenant that will be considered first on the next admission decision.
-    pub next_tenant_id: Option<TenantId>,
+    /// Devices currently withholding one future slot and liveness bytes for
+    /// an overtake-limited waiter.
+    pub protected_devices: Vec<usize>,
 }
 
 /// Process-wide active-query slots currently held on one service device.
@@ -22,101 +39,32 @@ pub struct QueryServiceDeviceAdmissionSnapshot {
     pub device_ordinal: usize,
     /// Slots held across every `QueryService` in this process.
     pub process_active_query_slots: usize,
-}
-
-/// Per-device resident graph cache state for service diagnostics.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct QueryServiceGraphCacheSnapshot {
-    /// CUDA device ordinal.
-    pub device_ordinal: usize,
-    /// Whether a positive resident graph cache cap configured this device.
-    pub enabled: bool,
-    /// Available plus checked-out entries.
-    pub entries: usize,
-    /// Device bytes retained by all entries.
-    pub resident_bytes: u64,
-    /// Device bytes held by checked-out entries.
-    pub in_use_bytes: u64,
-    /// Successful exact-runtime checkouts.
-    pub hits: u64,
-    /// Cold graph executions elected by the build coordinator.
-    pub misses: u64,
-    /// Entries evicted under capacity or governor pressure.
-    pub evictions: u64,
-    /// Graph-build generations currently in flight.
-    pub builds_in_flight: usize,
-    /// Follower waits joined since service creation.
-    pub build_waits: u64,
-}
-
-/// Per-tenant queue depth in a [`QueryServiceAdmissionSnapshot`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TenantQueueDepth {
-    /// Tenant identifier.
-    pub tenant_id: TenantId,
-    /// Number of queued admission requests for this tenant.
-    pub queued_queries: usize,
-}
-
-/// Request-scoped query-service grant overrides.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct QueryGrantRequest {
-    /// Optional per-request minimum grant floor in bytes.
-    pub requested_grant_min_bytes: Option<u64>,
-    /// Optional per-request preferred grant in bytes.
-    pub requested_grant_bytes: Option<u64>,
-}
-
-impl QueryGrantRequest {
-    /// Creates an empty request that uses the tenant grant band unchanged.
-    pub const fn new() -> Self {
-        Self { requested_grant_min_bytes: None, requested_grant_bytes: None }
-    }
-
-    /// Creates a request with only a preferred grant override.
-    pub const fn with_requested_grant_bytes(requested_grant_bytes: u64) -> Self {
-        Self { requested_grant_min_bytes: None, requested_grant_bytes: Some(requested_grant_bytes) }
-    }
-
-    /// Creates a request with only a minimum grant floor override.
-    pub const fn with_requested_grant_min_bytes(requested_grant_min_bytes: u64) -> Self {
-        Self { requested_grant_min_bytes: Some(requested_grant_min_bytes), requested_grant_bytes: None }
-    }
-
-    /// Sets the per-request preferred grant override.
-    #[must_use]
-    pub const fn prefer(mut self, requested_grant_bytes: u64) -> Self {
-        self.requested_grant_bytes = Some(requested_grant_bytes);
-        self
-    }
-
-    /// Sets the per-request minimum grant floor override.
-    #[must_use]
-    pub const fn floor(mut self, requested_grant_min_bytes: u64) -> Self {
-        self.requested_grant_min_bytes = Some(requested_grant_min_bytes);
-        self
-    }
+    /// Whether this device currently protects a future slot for a waiter.
+    pub has_protection: bool,
 }
 
 /// Complete request-scoped metadata for one query-service admission attempt.
 #[derive(Debug, Default)]
 #[non_exhaustive]
 pub struct QueryAdmissionRequest {
-    /// Priority and adaptive budget-growth metadata.
-    pub qos: QueryQos,
-    /// Optional request-specific memory grant overrides.
-    pub grant_request: QueryGrantRequest,
-    /// Optional placement hints used only to order candidate devices.
-    pub placement_hint: QueryPlacementHint,
-    /// Optional exact-runtime graph-cache hit price.
+    /// Opaque capability proof emitted by planning.
     ///
-    /// QueryService uses this grant request only after it has reserved both an
-    /// idle stream-pool runtime and the matching resident graph cache entry.
-    /// Device-level cache presence alone never selects this price.
-    #[cfg(feature = "cugraph")]
-    pub warm_graph_grant_request: Option<QueryGrantRequest>,
-    runtime_observation: RuntimeObservationHandle,
-    runtime_observation_owner: Option<RuntimeObservationOwner>,
+    /// Request callers provide lifecycle and correlation metadata only;
+    /// raw floors, working-set hints, placement choices, and capability sets are not a public
+    /// admission input.  When absent, admission uses empty evidence only when
+    /// every installed profile accepts every modeled capability.
+    pub(in crate::runtime::query_service) attempt_requirement: Option<AttemptRequirement>,
+    /// Public proof retained for diagnostic inspection until submission.
+    planned_capability_proof: Option<QueryPlanCapabilityProof>,
+    /// Caller-provided bound for queueing this attempt. The service combines it
+    /// with its configured queue bound, choosing the earlier instant.
+    pub queue_deadline: Option<Instant>,
+    /// Attempt-wide cancellation shared by queueing and transactional resource
+    /// acquisition. The same token must remain attached until the admission
+    /// either publishes a complete envelope or rolls every provisional
+    /// resource back.
+    pub execution_cancellation: ExecutionCancellation,
+    runtime_observation: RuntimeObservationAttachment,
     runtime_observation_activity: Option<Result<QueryActivityLease>>,
 }
 
@@ -125,6 +73,7 @@ pub(in crate::runtime::query_service::service) struct AdmissionObservation {
     pub(in crate::runtime::query_service::service) owner: Option<RuntimeObservationOwner>,
     pub(in crate::runtime::query_service::service) activity: Option<QueryActivityLease>,
     pub(in crate::runtime::query_service::service) activity_error: Option<QueryError>,
+    pub(in crate::runtime::query_service::service) attempt_release_commit: Option<AttemptReleaseCommit>,
 }
 
 impl AdmissionObservation {
@@ -135,20 +84,11 @@ impl AdmissionObservation {
     pub(in crate::runtime::query_service::service) fn reject_activity_error(
         &mut self,
         admission_request_id: AdmissionRequestId,
-        tenant_id: &TenantId,
     ) -> Result<()> {
         let Some(error) = self.activity_error.take() else {
             return Ok(());
         };
-        record_admission_lifecycle(
-            &self.handle,
-            admission_request_id,
-            tenant_id,
-            admission_rejection(&error),
-            0,
-            None,
-            None,
-        );
+        record_admission_lifecycle(&self.handle, admission_request_id, admission_rejection(&error), 0, None, None);
         Err(error)
     }
 }
@@ -175,40 +115,79 @@ impl std::fmt::Debug for QueryActivityLease {
 }
 
 impl QueryAdmissionRequest {
-    /// Creates a request with default QoS, tenant-default grants, and no placement hint.
+    /// Creates a request with no explicit capability requirement.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Sets caller-supplied QoS metadata.
-    pub fn with_qos(mut self, qos: QueryQos) -> Self {
-        self.qos = qos;
+    /// Borrows the engine-issued capability proof, if planning attached one.
+    /// This is diagnostic/read-only and cannot manufacture a new proof.
+    pub fn planned_capability_proof(&self) -> Option<&QueryPlanCapabilityProof> {
+        self.planned_capability_proof.as_ref()
+    }
+
+    /// Attaches an opaque proof computed by capability-first planning.
+    ///
+    /// A public request may prove required device capabilities, but it cannot
+    /// carry a model byte target into grant selection. The installed device
+    /// profile therefore remains the sole authority for the immutable grant.
+    pub fn with_query_plan_capability_proof(mut self, proof: QueryPlanCapabilityProof) -> Self {
+        self.planned_capability_proof = Some(proof);
         self
     }
 
-    /// Sets request-scoped minimum/preferred grant overrides.
-    pub fn with_grant_request(mut self, grant_request: QueryGrantRequest) -> Self {
-        self.grant_request = grant_request;
+    /// Crate-test counterpart that preserves a synthetic planner hint.
+    #[cfg(test)]
+    pub(crate) fn with_test_planned_capability_evidence(mut self, attempt_requirement: AttemptRequirement) -> Self {
+        self.attempt_requirement = Some(attempt_requirement);
         self
     }
 
-    /// Sets optional placement metadata.
-    pub fn with_placement_hint(mut self, placement_hint: QueryPlacementHint) -> Self {
-        self.placement_hint = placement_hint;
+    /// Internal controller/test constructor for synthetic capability evidence.
+    pub(crate) fn with_attempt_requirement(mut self, attempt_requirement: AttemptRequirement) -> Self {
+        self.attempt_requirement = Some(attempt_requirement);
+        self
+    }
+
+    pub(in crate::runtime::query_service) fn resolved_attempt_requirement(&self) -> Option<AttemptRequirement> {
+        self.planned_capability_proof
+            .as_ref()
+            .map(|proof| proof.as_requirement().clone())
+            .or_else(|| self.attempt_requirement.clone())
+    }
+
+    /// Sets an attempt-bound queue deadline.
+    pub fn with_queue_deadline(mut self, queue_deadline: Instant) -> Self {
+        self.queue_deadline = Some(queue_deadline);
+        self
+    }
+
+    /// Carries the attempt-wide cancellation token into admission.
+    pub fn with_execution_cancellation(mut self, execution_cancellation: ExecutionCancellation) -> Self {
+        self.execution_cancellation = execution_cancellation;
         self
     }
 
     /// Attaches the query observation owner created by the adapter before enqueue.
     pub fn with_runtime_observation_owner(mut self, owner: RuntimeObservationOwner) -> Self {
-        self.runtime_observation = owner.handle();
-        self.runtime_observation_owner = Some(owner);
+        self.runtime_observation = RuntimeObservationAttachment::StandaloneOwner(owner);
+        self
+    }
+
+    /// Attaches the one engine-minted observation/cleanup binding for an
+    /// execution attempt.
+    ///
+    /// The binding is the only request path that carries attempt cleanup
+    /// authority. It is minted atomically by [`crate::attempt::AttemptOwner`],
+    /// so request callers cannot create incomplete or cross-attempt pairings.
+    pub fn with_attempt_binding(mut self, binding: AttemptAdmissionBinding) -> Self {
+        self.runtime_observation = RuntimeObservationAttachment::Attempt(binding);
         self
     }
 
     /// Attaches coordinator-owned recording access without query-seal authority.
     pub fn with_runtime_observation_handle(mut self, observation: RuntimeObservationHandle) -> Self {
-        self.runtime_observation = observation;
-        self.runtime_observation_owner = None;
+        self.runtime_observation = RuntimeObservationAttachment::Handle(observation);
         self
     }
 
@@ -233,28 +212,75 @@ impl QueryAdmissionRequest {
             Some(Err(error)) => (None, Some(error)),
             None => (None, None),
         };
-        AdmissionObservation {
-            handle: self.runtime_observation,
-            owner: self.runtime_observation_owner,
-            activity,
-            activity_error,
-        }
-    }
-
-    /// Sets the grant request that is valid only for a reserved exact-runtime
-    /// resident graph cache hit.
-    #[cfg(feature = "cugraph")]
-    pub fn with_warm_graph_grant_request(mut self, grant_request: QueryGrantRequest) -> Self {
-        self.warm_graph_grant_request = Some(grant_request);
-        self
+        let (handle, owner, attempt_release_commit) = match self.runtime_observation {
+            RuntimeObservationAttachment::Disabled => (RuntimeObservationHandle::disabled(), None, None),
+            RuntimeObservationAttachment::StandaloneOwner(owner) => (owner.handle(), Some(owner), None),
+            RuntimeObservationAttachment::Handle(handle) => (handle, None, None),
+            RuntimeObservationAttachment::Attempt(binding) => {
+                let (owner, release_commit) = binding.into_parts();
+                (owner.handle(), Some(owner), Some(release_commit))
+            },
+        };
+        AdmissionObservation { handle, owner, activity, activity_error, attempt_release_commit }
     }
 }
 
-/// Effective grant band for one query-service tenant request.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct QueryGrantBand {
-    /// Minimum grant bytes admission must provide before the query can run.
-    pub min_bytes: u64,
-    /// Preferred grant bytes admission tries to provide when capacity allows.
-    pub want_bytes: u64,
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::observability::RuntimeObservationConfig;
+
+    #[test]
+    fn public_capability_attachment_retains_only_an_engine_issued_proof() {
+        let proof = QueryPlanCapabilityProof::for_cugraph_graph_execution();
+        let request = QueryAdmissionRequest::new().with_query_plan_capability_proof(proof.clone());
+
+        assert_eq!(request.planned_capability_proof(), Some(&proof));
+        assert_eq!(request.resolved_attempt_requirement(), Some(proof.into_requirement()));
+    }
+
+    #[cfg(test)]
+    #[test]
+    fn explicit_test_hook_retains_synthetic_working_set_hint() {
+        let request = QueryAdmissionRequest::new().with_test_planned_capability_evidence(
+            AttemptRequirement::from_parts(0, 0, Some(4096), crate::admission::EstimateQuality::Modeled, Vec::new()),
+        );
+        let evidence = request.resolved_attempt_requirement().expect("test evidence is retained");
+
+        assert_eq!(evidence.soft_working_set_hint_bytes(), Some(4096));
+        assert_eq!(evidence.estimate_quality(), crate::admission::EstimateQuality::Modeled);
+    }
+
+    #[test]
+    fn standalone_observation_owner_carries_no_attempt_release_capability() {
+        let owner = RuntimeObservationOwner::new(
+            "standalone-observation",
+            None,
+            RuntimeObservationConfig::bounded(8, 8 * 1024),
+        );
+        let observation = QueryAdmissionRequest::new().with_runtime_observation_owner(owner).into_runtime_observation();
+
+        assert!(observation.owner.is_some());
+        assert!(observation.attempt_release_commit.is_none());
+    }
+
+    #[test]
+    fn attempt_binding_attaches_observation_and_release_together() {
+        let lifecycle = crate::runtime::BackendLifecycle::new();
+        let attempt = crate::attempt::AttemptOwner::begin(
+            crate::attempt::BeginAttemptRequest {
+                observation: RuntimeObservationConfig::bounded(8, 8 * 1024),
+                ..crate::attempt::BeginAttemptRequest::default()
+            },
+            lifecycle.try_begin_observation().expect("attempt observation permit"),
+            std::sync::Arc::new(crate::attempt::AttemptBackendCounters::default()),
+            None,
+        );
+        let observation = QueryAdmissionRequest::new()
+            .with_attempt_binding(attempt.owner.admission_binding())
+            .into_runtime_observation();
+
+        assert!(observation.owner.is_some());
+        assert!(observation.attempt_release_commit.is_some());
+    }
 }

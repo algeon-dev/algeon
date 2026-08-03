@@ -204,9 +204,7 @@ pub(super) fn validate_sf100_bounded_reservation_gate_for_config(
     let NativeTpchDatasetMode::External(NativeTpchScaleFactor::Sf100) = config.dataset_mode else {
         return Ok(None);
     };
-    let NativeTpchMemoryPolicy::Bounded { device_budget_bytes, .. } = config.native_memory_policy else {
-        return Ok(None);
-    };
+    let device_budget_bytes = config.native_memory_policy.device_budget_bytes;
     let query_ids = SF100_BOUNDED_RESERVATION_GATE_QUERY_IDS
         .iter()
         .filter(|query_id| config.query_ids.iter().any(|selected| selected == **query_id))
@@ -244,9 +242,7 @@ pub(super) fn validate_sf100_full_reservation_health_gate_for_config(
     let NativeTpchDatasetMode::External(NativeTpchScaleFactor::Sf100) = config.dataset_mode else {
         return Ok(None);
     };
-    let NativeTpchMemoryPolicy::Bounded { device_budget_bytes, .. } = config.native_memory_policy else {
-        return Ok(None);
-    };
+    let device_budget_bytes = config.native_memory_policy.device_budget_bytes;
     validate_sf100_full_reservation_health_gate_tsv(tsv, &config.query_ids, device_budget_bytes).map(Some)
 }
 

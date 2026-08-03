@@ -196,13 +196,12 @@ fn unbounded_context_executes_multi_file_direct_parquet_source() {
 #[test]
 fn grant_backed_budget_tokens_share_arena_across_stream_leases() {
     let runtime = Arc::new(cudf::Runtime::builder().with_device_memory_manager().build().unwrap());
-    let governor = MemoryGovernor::new(runtime.device().ordinal(), 64 * 1024 * 1024).unwrap();
-    let grant =
-        governor.request(GrantRequest::new(AdmissionRequestId::new(1), 12 * 1024 * 1024, 12 * 1024 * 1024)).unwrap();
+    let ledger = DeviceLedger::for_test(runtime.device().ordinal(), 64 * 1024 * 1024, 1);
+    let grant = ledger.admit_for_test(AdmissionRequestId::new(1), 12 * 1024 * 1024, 12 * 1024 * 1024).unwrap().unwrap();
     let context =
         ExecutionContext::builder().with_shared_runtime(Arc::clone(&runtime)).with_memory_grant(grant).build().unwrap();
 
-    assert_eq!(governor.report().unwrap().outstanding_bytes, 12 * 1024 * 1024);
+    assert_eq!(ledger.report().unwrap().live_grants_bytes, 12 * 1024 * 1024);
 
     let grant = context.memory_grant().unwrap().unwrap();
     let probe_token = context
@@ -214,20 +213,10 @@ fn grant_backed_budget_tokens_share_arena_across_stream_leases() {
             .unwrap()
             .expect("grant-backed token should expose arena usage")
             .allocation_limit_bytes,
-        governor.report().unwrap().outstanding_bytes
+        ledger.report().unwrap().live_grants_bytes
     );
-    assert!(grant.try_grow(4 * 1024 * 1024).unwrap());
-    assert_eq!(governor.report().unwrap().outstanding_bytes, 16 * 1024 * 1024);
-    assert_eq!(
-        probe_token
-            .reservation_arena_usage()
-            .unwrap()
-            .expect("grant-backed token should expose arena usage")
-            .allocation_limit_bytes,
-        16 * 1024 * 1024
-    );
-    assert!(grant.try_shrink_to(12 * 1024 * 1024).unwrap());
-    assert_eq!(governor.report().unwrap().outstanding_bytes, 12 * 1024 * 1024);
+    assert_eq!(grant.budget_bytes(), 12 * 1024 * 1024, "ledger grants are immutable");
+    assert_eq!(ledger.report().unwrap().live_grants_bytes, 12 * 1024 * 1024);
     assert_eq!(
         probe_token
             .reservation_arena_usage()
@@ -262,12 +251,12 @@ fn grant_backed_budget_tokens_share_arena_across_stream_leases() {
 }
 
 #[test]
-fn shared_memory_grant_contexts_reuse_one_arena_parent() {
+fn cloned_direct_memory_grants_share_one_arena_parent() {
     let left_runtime = Arc::new(cudf::Runtime::builder().with_device_memory_manager().build().unwrap());
     let right_runtime = Arc::new(cudf::Runtime::builder().with_device_memory_manager().build().unwrap());
-    let governor = MemoryGovernor::new(left_runtime.device().ordinal(), 64 * 1024 * 1024).unwrap();
+    let governor = DeviceLedger::for_test(left_runtime.device().ordinal(), 64 * 1024 * 1024, 1);
     let grant =
-        governor.request(GrantRequest::new(AdmissionRequestId::new(2), 12 * 1024 * 1024, 12 * 1024 * 1024)).unwrap();
+        governor.admit_for_test(AdmissionRequestId::new(2), 12 * 1024 * 1024, 12 * 1024 * 1024).unwrap().unwrap();
     let left_context = ExecutionContext::builder()
         .with_shared_runtime(Arc::clone(&left_runtime))
         .with_memory_grant(grant.clone())
@@ -291,6 +280,14 @@ fn shared_memory_grant_contexts_reuse_one_arena_parent() {
     );
 
     let left_buffer = left_context.runtime().unwrap().device_buffer(8 * 1024 * 1024).unwrap();
+    // Cloned grants share the one grant-local arena capability.  The second
+    // context therefore observes the first context's live bytes and cannot
+    // create an independent full-budget arena.
+    let left_usage = left_token.reservation_arena_usage().unwrap().unwrap();
+    let right_usage = right_token.reservation_arena_usage().unwrap().unwrap();
+    assert_eq!(left_usage.arena_id, right_usage.arena_id);
+    assert_eq!(left_usage.current_bytes, 8 * 1024 * 1024);
+    assert_eq!(right_usage.current_bytes, 8 * 1024 * 1024);
     let err = expect_device_buffer_error(right_context.runtime().unwrap().device_buffer(8 * 1024 * 1024));
     assert_eq!(err.kind(), cudf::ErrorKind::ResourceExhausted);
     drop(left_buffer);

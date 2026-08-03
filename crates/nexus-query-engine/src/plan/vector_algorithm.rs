@@ -744,7 +744,7 @@ fn option_error(code: &'static str, message: impl Into<String>) -> CuvsOptionVal
     CuvsOptionValidationError { code, message: message.into() }
 }
 
-/// Strict/adaptive bounded memory boundary blocked on lower-level cuVS sizing.
+/// Bounded memory boundary blocked on lower-level cuVS sizing.
 pub const VECTOR_ALGORITHM_BOUNDED_MEMORY_BOUNDARY: &str = "vector_algorithm_peak_memory";
 
 /// Lower-level contract required before bounded vector execution can be admitted.

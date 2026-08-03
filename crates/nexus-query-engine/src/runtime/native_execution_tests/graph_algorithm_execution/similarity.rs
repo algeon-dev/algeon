@@ -64,7 +64,7 @@ fn assert_similarity_stable_output(batch: &RecordBatch, expected_pairs: &[(i64, 
     assert!((0..batch.num_rows()).all(|row| float64_array(batch, 2).value(row).is_finite()));
 }
 
-fn assert_bounded_similarity_pair_input_overlap_is_credited(mode: NativePipelineExecutionMode) {
+fn assert_bounded_similarity_pair_input_overlap_is_credited() {
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let (edge_schema, edge_batch) = symmetric_similarity_edges_i32(false);
     let pair_schema = similarity_pair_schema(DataType::Int32, false);
@@ -92,7 +92,6 @@ fn assert_bounded_similarity_pair_input_overlap_is_credited(mode: NativePipeline
                 max_retry_attempts: 1,
                 min_retry_chunk_row_groups: 1,
             })
-            .with_native_pipeline_execution_mode(mode)
             .build()
             .unwrap()
     };
@@ -145,7 +144,7 @@ fn assert_bounded_similarity_pair_input_overlap_is_credited(mode: NativePipeline
     let context = context_with_budget(pair_source_bytes.saturating_add(graph_capacity));
     let gpu_inputs = gpu_inputs_for(&context);
     let result = execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs).unwrap_or_else(|error| {
-        panic!("{mode:?} bounded similarity must admit its live pair input exactly once: {error:#?}")
+        panic!("bounded similarity must admit its live pair input exactly once: {error:#?}")
     });
     assert_eq!(result.metrics().graph_reservation_rows.len(), 1);
     let report = &result.metrics().graph_reservation_rows[0];
@@ -155,84 +154,6 @@ fn assert_bounded_similarity_pair_input_overlap_is_credited(mode: NativePipeline
 }
 
 #[test]
-fn adaptive_bounded_similarity_credits_live_literal_pair_input_once() {
-    assert_bounded_similarity_pair_input_overlap_is_credited(NativePipelineExecutionMode::Adaptive);
-}
-
-#[test]
-fn pairwise_similarity_reuses_a_resident_graph_between_cold_and_warm_execution() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let cache = Arc::new(GpuResidentGraphCache::new(64 * 1024 * 1024));
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_resident_graph_cache(Arc::clone(&cache))
-        .build()
-        .unwrap();
-    let (edge_schema, edge_batch) = symmetric_similarity_edges_i32(false);
-    let pair_schema = similarity_pair_schema(DataType::Int32, false);
-    let pair_batch = RecordBatch::try_new(
-        Arc::clone(&pair_schema),
-        vec![Arc::new(Int32Array::from(vec![0])), Arc::new(Int32Array::from(vec![1]))],
-    )
-    .unwrap();
-
-    let descriptor_source = LocalParquetSource::from_files(
-        vec![
-            LocalParquetFile::new("/tmp/pairwise-similarity-cache.parquet")
-                .with_file_size_bytes(1)
-                .with_stable_id("local:/tmp/pairwise-similarity-cache.parquet:1:mtime=test"),
-        ],
-        Arc::clone(&edge_schema),
-        vec!["src".to_string(), "dst".to_string()],
-    );
-    let mut descriptor_builder = QueryPlanBuilder::new();
-    let descriptor_edges = descriptor_builder.add_source(SourceNode::LocalParquet(descriptor_source));
-    let descriptor_plan = descriptor_builder.finish_with_host_sink(descriptor_edges);
-
-    let mut builder = QueryPlanBuilder::new();
-    let edges = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("edges", Arc::clone(&edge_schema))));
-    let pairs = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("pairs", Arc::clone(&pair_schema))));
-    let spec = similarity_spec(GraphAlgorithm::Jaccard, pairs, false);
-    let GraphResidencyPlanAnalysis::Keyable(descriptor) =
-        graph_residency_descriptor_for_edge_plan(&descriptor_plan, &spec)
-    else {
-        panic!("local pairwise-similarity edge relation must be keyable for the resident graph cache")
-    };
-    let graph = builder.add_graph_algorithm(edges, spec);
-    let plan = builder.finish_with_host_sink_schema(graph, stable_graph_result_schema(GraphAlgorithm::Jaccard));
-
-    let gpu_inputs = || {
-        let mut inputs = GpuResidentInputMap::new();
-        inputs.insert(
-            "edges".to_string(),
-            GpuResultHandle::new(
-                &context,
-                GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &edge_batch).unwrap())
-                    .with_graph_residency(descriptor.clone()),
-                Arc::clone(&edge_schema),
-            )
-            .unwrap(),
-        );
-        inputs
-            .insert("pairs".to_string(), graph_input_handle(&context, &runtime, Arc::clone(&pair_schema), &pair_batch));
-        inputs
-    };
-
-    let cold_inputs = gpu_inputs();
-    let cold = execute_query_plan_with_gpu_inputs(&context, &plan, &cold_inputs).unwrap();
-    assert!(
-        cold.metrics().graph_algorithm_runtime_rows[0].algorithm_metadata.contains("graph_cache=miss_inserted"),
-        "{}",
-        cold.metrics().graph_algorithm_runtime_rows[0].algorithm_metadata
-    );
-    drop(cold);
-    drop(cold_inputs);
-
-    let warm_inputs = gpu_inputs();
-    let warm = execute_query_plan_with_gpu_inputs(&context, &plan, &warm_inputs).unwrap();
-    assert!(warm.metrics().graph_algorithm_runtime_rows[0].algorithm_metadata.contains("graph_cache=hit;"));
-    let QueryOutput::HostArrow(batch) = warm.output() else { panic!("host result expected") };
-    assert_similarity_stable_output(batch, &[(0, 1)]);
-    assert_eq!(cache.len().unwrap(), 1);
-    assert_eq!(cache.checked_out_len().unwrap(), 0);
+fn bounded_similarity_credits_live_literal_pair_input_once() {
+    assert_bounded_similarity_pair_input_overlap_is_credited();
 }

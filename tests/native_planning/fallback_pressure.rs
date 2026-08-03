@@ -45,21 +45,19 @@ use datafusion_nexus::{
         NativeFallbackPressureWorkloadItem,
     },
     planner::{
-        NativeAdaptivePipelineCandidateDiagnostics, NativeAdaptivePipelineDiagnostics, NativePlanningDiagnostics,
-        NativeStrictBoundedAcceptedCandidateDiagnostics, NativeStrictBoundedCompiledGraphDiagnostics,
-        NativeStrictBoundedContractDiagnostics, NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule,
+        NativeCapabilityAcceptedCandidateDiagnostics, NativeCapabilityCompiledGraphDiagnostics,
+        NativeCapabilityContractDiagnostics, NativePlanningDiagnostics, NexusNativeOptimizerConfig,
+        NexusNativePhysicalOptimizerRule,
     },
     report::{GpuCandidate, PlanningReport},
     session::NexusSessionStateBuilderExt,
 };
 use nexus_query_engine::{
-    adaptive_report::{AdaptiveCandidateStatus, AdaptivePipelineReport, AdaptiveStrategy},
     capability::{ContractQuality, ContractStatus, ReservationRequirementScope},
     contract_report::{
-        StrictBoundedContractGateId, StrictBoundedContractGateRow, StrictBoundedContractOwner,
-        StrictBoundedContractReport,
+        CapabilityContractGateId, CapabilityContractGateRow, CapabilityContractOwner, CapabilityContractReport,
     },
-    mode::{NativePipelineExecutionMode, StrictBoundedExecutionMode},
+    mode::CapabilityEnvelopeStatus,
     pipeline::{ReservationGateId, ReservationGateOwner},
     plan::QueryPlanBuilder,
     runtime::ReservationKind,
@@ -76,12 +74,10 @@ mod tpch_report;
 
 use analytical_olap_planning::{
     ANALYTICAL_OLAP_STRICT_ADMISSION_EXPECTATIONS, AnalyticalOlapCurrentStrictAdmission,
-    analytical_olap_datafusion_planning_workload_items,
-    analytical_olap_datafusion_planning_workload_items_with_optimizer_config, analytical_olap_strict_admission,
+    analytical_olap_datafusion_planning_workload_items, analytical_olap_strict_admission,
 };
 use tpch_report::{
-    TestReportDatasetMetadataExt, tpch_datafusion_planning_workload_items, tpch_native_optimizer_config,
-    tpch_scalar_fallback_pressure_workload_items,
+    TestReportDatasetMetadataExt, tpch_datafusion_planning_workload_items, tpch_scalar_fallback_pressure_workload_items,
 };
 
 use crate::{
@@ -267,7 +263,7 @@ async fn native_fallback_pressure_report_summarizes_workload_outcomes() {
     let text = report.to_tsv();
     assert_eq!(
         NATIVE_FALLBACK_PRESSURE_TSV_HEADER,
-        "query_id\tphysical_root\tphysical_shape\tnative_candidate_shape\tnative_candidate_shape_family\toutcome\treason_code\tunsupported_category\tadaptive_pipeline_rows\tjoin_diagnostics\tsource_diagnostics\trejected_before_execution"
+        "query_id\tphysical_root\tphysical_shape\tnative_candidate_shape\tnative_candidate_shape_family\toutcome\treason_code\tunsupported_category\tjoin_diagnostics\tsource_diagnostics\trejected_before_execution"
     );
     assert!(text.starts_with(&format!("{NATIVE_FALLBACK_PRESSURE_TSV_HEADER}\n")));
     assert!(text.contains(&format!("{NATIVE_FALLBACK_PRESSURE_TSV_HEADER}\n")));
@@ -281,7 +277,9 @@ async fn native_fallback_pressure_report_summarizes_workload_outcomes() {
     assert!(text.contains("\tselected\tnone\tnone\t"));
     assert!(text.contains("\tunsupported_expression\texpression_try_cast_int64_to_int32\t"));
     assert!(!text.contains("\taggregate_filter\t"));
-    assert!(text.contains("q00_planning_failure\tPlanningFailure\tsql_to_logical_plan\tnone\tnone\tnone\tsql_planning_failed\tplanning\tnone\tnone\tnone\ttrue"));
+    assert!(text.contains(
+        "q00_planning_failure\tPlanningFailure\tsql_to_logical_plan\tnone\tnone\tnone\tsql_planning_failed\tplanning\tnone\tnone\ttrue"
+    ));
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -311,8 +309,7 @@ async fn native_datafusion_planning_report_does_not_blame_supported_topk_wrapper
         report: planning_report,
         native_optimizer: Default::default(),
         source_diagnostics: Vec::new(),
-        strict_bounded_contract: Default::default(),
-        adaptive_pipeline: Default::default(),
+        capability_contract: Default::default(),
     };
 
     let report = NativeDataFusionPlanningReport::collect([NativeDataFusionPlanningWorkloadItem::new(
@@ -324,35 +321,6 @@ async fn native_datafusion_planning_report_does_not_blame_supported_topk_wrapper
 
     assert_eq!(row.reason_code.as_deref(), Some("unsupported_operator"));
     assert_eq!(row.unsupported_category.as_deref(), Some("operator_crossjoin"));
-
-    fs::remove_dir_all(dir).unwrap();
-}
-
-#[tokio::test]
-async fn adaptive_fallback_pressure_report_projects_adaptive_rows_only_when_selected() {
-    let dir = unique_temp_dir("datafusion-nexus-native-fallback-pressure-adaptive");
-    let left = dir.join("left.parquet");
-    let right = dir.join("right.parquet");
-    write_numeric_parquet_file(&left);
-    write_numeric_parquet_file(&right);
-    let plan = join_aggregate_sort_limit_sql_plan(&left, &right).await;
-    let item = NativeFallbackPressureWorkloadItem::new("join_adaptive", Arc::clone(&plan));
-
-    let strict = NativeFallbackPressureReport::collect([item.clone()]);
-    assert!(report_row(&strict, "join_adaptive").adaptive_pipeline_rows.is_empty());
-
-    let adaptive_config = NexusNativeExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 1, 3, 1)
-        .with_native_pipeline_execution_mode(NativePipelineExecutionMode::Adaptive);
-    let adaptive = NativeFallbackPressureReport::collect_with_native_execution_config([item], &adaptive_config);
-    let row = report_row(&adaptive, "join_adaptive");
-
-    assert_eq!(row.outcome, Some(NativeFallbackPressureOutcome::Selected));
-    assert_eq!(row.reason_code, None);
-    assert_eq!(row.adaptive_pipeline_rows.len(), 1);
-    let rendered = row.adaptive_pipeline_rows[0].to_stable_kv_row();
-    assert!(rendered.contains("execution_mode=adaptive"));
-    assert!(!rendered.contains("execution_mode=strict_bounded"));
-    assert!(adaptive.to_tsv().contains("execution_mode=adaptive"));
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -486,7 +454,7 @@ async fn native_datafusion_planning_report_summarizes_session_optimizer_outcomes
     let text = accepted.to_tsv();
     assert_eq!(
         NATIVE_DATAFUSION_PLANNING_TSV_HEADER,
-        "query_id\tphysical_root\tphysical_shape\tnative_candidate_shape\tnative_candidate_shape_family\toutcome\treason_code\tunsupported_category\tstrict_bounded_contract_rows\tstrict_bounded_compiled_graphs\tadaptive_pipeline_rows\tnative_optimizer\tedge_normalize_inserted\tjoin_diagnostics\tsource_diagnostics\tpost_native_plan_root\tpost_native_execution_path\tnative_plan_fragment_count\thost_datafusion_boundary_count\trejected_before_execution"
+        "query_id\tphysical_root\tphysical_shape\tnative_candidate_shape\tnative_candidate_shape_family\toutcome\treason_code\tunsupported_category\tcapability_contract_rows\tcapability_compiled_graphs\tnative_optimizer\tedge_normalize_inserted\tjoin_diagnostics\tsource_diagnostics\tpost_native_plan_root\tpost_native_execution_path\tnative_plan_fragment_count\thost_datafusion_boundary_count\trejected_before_execution"
     );
     assert!(text.starts_with(&format!("{NATIVE_DATAFUSION_PLANNING_TSV_HEADER}\n")));
     assert!(text.contains(&format!("{NATIVE_DATAFUSION_PLANNING_TSV_HEADER}\n")));

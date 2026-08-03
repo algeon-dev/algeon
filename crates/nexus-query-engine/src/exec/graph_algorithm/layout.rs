@@ -24,8 +24,6 @@ pub(super) fn execute_force_atlas2(
     run_with_cugraph_graph::<cugraph::Forward, _>(
         context,
         inputs.graph_memory_limit_bytes,
-        spec,
-        None,
         edges,
         options,
         "datafusion_nexus_cugraph_force_atlas2",

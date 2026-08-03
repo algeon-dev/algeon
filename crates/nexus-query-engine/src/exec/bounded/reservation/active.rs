@@ -19,11 +19,20 @@ pub(in crate::exec) enum ActiveReservationSemantics {
 pub(super) struct ActiveReservationLineage {
     pub(super) alias_count: Cell<usize>,
     pub(super) deferred_charged_release_bytes: Cell<u64>,
+    /// Portion of a deferred charged release whose ledger ownership was
+    /// transferred to an escaping result handle. The tracker must still emit
+    /// the historical release event, but that portion must not decrement the
+    /// grant until the result handle drops.
+    pub(super) deferred_transferred_live_charge_bytes: Cell<u64>,
 }
 
 impl ActiveReservationLineage {
     pub(super) fn new() -> Self {
-        Self { alias_count: Cell::new(0), deferred_charged_release_bytes: Cell::new(0) }
+        Self {
+            alias_count: Cell::new(0),
+            deferred_charged_release_bytes: Cell::new(0),
+            deferred_transferred_live_charge_bytes: Cell::new(0),
+        }
     }
 }
 
@@ -31,9 +40,6 @@ pub(in crate::exec) struct ActiveReservation {
     pub(super) memory_space: MemorySpaceId,
     pub(super) reserved_bytes: Rc<Cell<u64>>,
     pub(super) live_accounting: Option<MemoryGrant>,
-    pub(super) protected_source_cache_keys: Rc<RefCell<HashMap<GpuLocalParquetSourceCacheKey, usize>>>,
-    pub(super) source_cache_key: Option<GpuLocalParquetSourceCacheKey>,
-    pub(super) source_cache_pin: Option<GpuLocalParquetSourceCachePin>,
     pub(super) event_context: ActiveReservationEventContext,
     pub(super) reservation_projection_ledger: ReservationProjectionLedgerHandle,
     pub(super) observation: Option<ReservationObservation>,
@@ -42,6 +48,9 @@ pub(in crate::exec) struct ActiveReservation {
     pub(super) release_action: MemoryReservationEventAction,
     pub(super) bytes: u64,
     pub(super) charged_bytes: u64,
+    /// Bytes in `charged_bytes` whose ledger charge now belongs to a
+    /// [`MemoryGrantLiveReservation`].
+    pub(super) transferred_live_charge_bytes: u64,
     pub(super) released: bool,
 }
 
@@ -50,7 +59,6 @@ impl ActiveReservation {
         memory_space: MemorySpaceId,
         reserved_bytes: Rc<Cell<u64>>,
         live_accounting: Option<MemoryGrant>,
-        protected_source_cache_keys: Rc<RefCell<HashMap<GpuLocalParquetSourceCacheKey, usize>>>,
         bytes: u64,
         request: &MemoryReservationRequest,
         reservation_projection_ledger: ReservationProjectionLedgerHandle,
@@ -60,7 +68,6 @@ impl ActiveReservation {
             memory_space,
             reserved_bytes,
             live_accounting,
-            protected_source_cache_keys,
             bytes,
             request,
             reservation_projection_ledger,
@@ -73,7 +80,6 @@ impl ActiveReservation {
         memory_space: MemorySpaceId,
         reserved_bytes: Rc<Cell<u64>>,
         live_accounting: Option<MemoryGrant>,
-        protected_source_cache_keys: Rc<RefCell<HashMap<GpuLocalParquetSourceCacheKey, usize>>>,
         bytes: u64,
         request: &MemoryReservationRequest,
         reservation_projection_ledger: ReservationProjectionLedgerHandle,
@@ -83,7 +89,6 @@ impl ActiveReservation {
             memory_space,
             reserved_bytes,
             live_accounting,
-            protected_source_cache_keys,
             bytes,
             request,
             reservation_projection_ledger,
@@ -96,7 +101,6 @@ impl ActiveReservation {
         memory_space: MemorySpaceId,
         reserved_bytes: Rc<Cell<u64>>,
         live_accounting: Option<MemoryGrant>,
-        protected_source_cache_keys: Rc<RefCell<HashMap<GpuLocalParquetSourceCacheKey, usize>>>,
         bytes: u64,
         request: &MemoryReservationRequest,
         reservation_projection_ledger: ReservationProjectionLedgerHandle,
@@ -107,9 +111,6 @@ impl ActiveReservation {
             memory_space,
             reserved_bytes,
             live_accounting,
-            protected_source_cache_keys,
-            source_cache_key: None,
-            source_cache_pin: None,
             event_context: ActiveReservationEventContext::from_request(request),
             reservation_projection_ledger,
             observation,
@@ -118,41 +119,7 @@ impl ActiveReservation {
             release_action: MemoryReservationEventAction::Release,
             bytes,
             charged_bytes: bytes,
-            released: false,
-        }
-    }
-
-    pub(super) fn borrowed_source_cache(
-        memory_space: MemorySpaceId,
-        reserved_bytes: Rc<Cell<u64>>,
-        protected_source_cache_keys: Rc<RefCell<HashMap<GpuLocalParquetSourceCacheKey, usize>>>,
-        source_cache_key: GpuLocalParquetSourceCacheKey,
-        source_cache_pin: Option<GpuLocalParquetSourceCachePin>,
-        bytes: u64,
-        request: &MemoryReservationRequest,
-        reservation_projection_ledger: ReservationProjectionLedgerHandle,
-        observation: Option<ReservationObservation>,
-    ) -> Self {
-        {
-            let mut protected = protected_source_cache_keys.borrow_mut();
-            let count = protected.entry(source_cache_key.clone()).or_insert(0);
-            *count = count.saturating_add(1);
-        }
-        Self {
-            memory_space,
-            reserved_bytes,
-            live_accounting: None,
-            protected_source_cache_keys,
-            source_cache_key: Some(source_cache_key),
-            source_cache_pin,
-            event_context: ActiveReservationEventContext::from_request(request).with_alias(),
-            reservation_projection_ledger,
-            observation,
-            semantics: ActiveReservationSemantics::Alias,
-            lineage: Some(Rc::new(ActiveReservationLineage::new())),
-            release_action: MemoryReservationEventAction::AliasRelease,
-            bytes,
-            charged_bytes: 0,
+            transferred_live_charge_bytes: 0,
             released: false,
         }
     }
@@ -160,7 +127,6 @@ impl ActiveReservation {
     pub(super) fn borrowed_resident(
         memory_space: MemorySpaceId,
         reserved_bytes: Rc<Cell<u64>>,
-        protected_source_cache_keys: Rc<RefCell<HashMap<GpuLocalParquetSourceCacheKey, usize>>>,
         bytes: u64,
         request: &MemoryReservationRequest,
         reservation_projection_ledger: ReservationProjectionLedgerHandle,
@@ -170,9 +136,6 @@ impl ActiveReservation {
             memory_space,
             reserved_bytes,
             live_accounting: None,
-            protected_source_cache_keys,
-            source_cache_key: None,
-            source_cache_pin: None,
             event_context: ActiveReservationEventContext::from_request(request).with_alias(),
             reservation_projection_ledger,
             observation,
@@ -181,6 +144,7 @@ impl ActiveReservation {
             release_action: MemoryReservationEventAction::AliasRelease,
             bytes,
             charged_bytes: 0,
+            transferred_live_charge_bytes: 0,
             released: false,
         }
     }
@@ -189,8 +153,6 @@ impl ActiveReservation {
         memory_space: MemorySpaceId,
         reserved_bytes: Rc<Cell<u64>>,
         live_accounting: Option<MemoryGrant>,
-        protected_source_cache_keys: Rc<RefCell<HashMap<GpuLocalParquetSourceCacheKey, usize>>>,
-        source_cache_pin: Option<GpuLocalParquetSourceCachePin>,
         lineage: Rc<ActiveReservationLineage>,
         bytes: u64,
         request: &MemoryReservationRequest,
@@ -202,9 +164,6 @@ impl ActiveReservation {
             memory_space,
             reserved_bytes,
             live_accounting,
-            protected_source_cache_keys,
-            source_cache_key: None,
-            source_cache_pin,
             event_context: ActiveReservationEventContext::from_request(request).with_alias(),
             reservation_projection_ledger,
             observation,
@@ -213,6 +172,7 @@ impl ActiveReservation {
             release_action: MemoryReservationEventAction::AliasRelease,
             bytes,
             charged_bytes: 0,
+            transferred_live_charge_bytes: 0,
             released: false,
         }
     }
@@ -229,8 +189,18 @@ impl ActiveReservation {
         self.charged_bytes
     }
 
-    pub(in crate::exec) fn retain_grant_live_reservation(&self) -> Option<MemoryGrantLiveReservation> {
-        self.live_accounting.as_ref().and_then(|grant| grant.retain_live_reservation(self.charged_bytes))
+    /// Moves this reservation's existing grant charge into an escaping result
+    /// lifetime. The ledger remains charged exactly once throughout the
+    /// transfer; releasing this tracker still emits its normal historical
+    /// release event but leaves the transferred bytes for the result handle.
+    pub(in crate::exec) fn transfer_grant_live_reservation(&mut self) -> Option<MemoryGrantLiveReservation> {
+        if self.released || self.charged_bytes == 0 || self.transferred_live_charge_bytes != 0 {
+            return None;
+        }
+        let retained =
+            self.live_accounting.as_ref().and_then(|grant| grant.transfer_live_reservation(self.charged_bytes))?;
+        self.transferred_live_charge_bytes = self.charged_bytes;
+        Some(retained)
     }
 
     pub(in crate::exec) fn is_alias(&self) -> bool {
@@ -241,16 +211,15 @@ impl ActiveReservation {
         assert!(!self.released, "cannot transfer a released reservation");
         assert!(!self.is_alias(), "cannot transfer an alias reservation");
         let charged_bytes = self.charged_bytes;
+        let transferred_live_charge_bytes = self.transferred_live_charge_bytes;
         let semantics = self.semantics;
         self.charged_bytes = 0;
+        self.transferred_live_charge_bytes = 0;
         self.released = true;
         Self {
             memory_space: self.memory_space,
             reserved_bytes: Rc::clone(&self.reserved_bytes),
             live_accounting: self.live_accounting.clone(),
-            protected_source_cache_keys: Rc::clone(&self.protected_source_cache_keys),
-            source_cache_key: None,
-            source_cache_pin: None,
             event_context: ActiveReservationEventContext::from_request(request),
             reservation_projection_ledger: self.reservation_projection_ledger.clone(),
             observation: self.observation.clone(),
@@ -259,6 +228,7 @@ impl ActiveReservation {
             release_action: MemoryReservationEventAction::Release,
             bytes: request.requested_bytes,
             charged_bytes,
+            transferred_live_charge_bytes,
             released: false,
         }
     }
@@ -266,17 +236,12 @@ impl ActiveReservation {
     pub(super) fn relabeled_alias(mut self, request: &MemoryReservationRequest) -> Self {
         assert!(!self.released, "cannot relabel a released reservation");
         assert!(self.is_alias(), "cannot relabel a non-alias reservation as an alias");
-        let source_cache_key = self.source_cache_key.take();
-        let source_cache_pin = self.source_cache_pin.take();
         let lineage = self.lineage.clone();
         self.released = true;
         Self {
             memory_space: self.memory_space,
             reserved_bytes: Rc::clone(&self.reserved_bytes),
             live_accounting: self.live_accounting.clone(),
-            protected_source_cache_keys: Rc::clone(&self.protected_source_cache_keys),
-            source_cache_key,
-            source_cache_pin,
             event_context: ActiveReservationEventContext::from_request(request).with_alias(),
             reservation_projection_ledger: self.reservation_projection_ledger.clone(),
             observation: self.observation.clone(),
@@ -285,6 +250,7 @@ impl ActiveReservation {
             release_action: MemoryReservationEventAction::AliasRelease,
             bytes: request.requested_bytes,
             charged_bytes: 0,
+            transferred_live_charge_bytes: 0,
             released: false,
         }
     }
@@ -293,30 +259,22 @@ impl ActiveReservation {
         if self.released {
             return None;
         }
-        if let Some(source_cache_key) = self.source_cache_key.take() {
-            let mut protected = self.protected_source_cache_keys.borrow_mut();
-            if let Some(count) = protected.get_mut(&source_cache_key) {
-                *count = count.saturating_sub(1);
-                if *count == 0 {
-                    protected.remove(&source_cache_key);
-                }
-            }
-        }
-        self.source_cache_pin.take();
-        if self.source_cache_key.is_none() {
-            match (self.semantics, self.lineage.as_ref()) {
+        match (self.semantics, self.lineage.as_ref()) {
                 (ActiveReservationSemantics::Alias, Some(lineage)) => {
                     lineage.alias_count.set(lineage.alias_count.get().saturating_sub(1));
-                    let deferred_release = if lineage.alias_count.get() == 0 {
+                    let (deferred_release, deferred_transferred_live_charge) = if lineage.alias_count.get() == 0 {
                         let bytes = lineage.deferred_charged_release_bytes.get();
                         lineage.deferred_charged_release_bytes.set(0);
-                        bytes
+                        let transferred = lineage.deferred_transferred_live_charge_bytes.get().min(bytes);
+                        lineage.deferred_transferred_live_charge_bytes.set(0);
+                        (bytes, transferred)
                     } else {
-                        0
+                        (0, 0)
                     };
                     if deferred_release > 0 {
                         self.reserved_bytes.set(self.reserved_bytes.get().saturating_sub(deferred_release));
-                        self.record_live_delta(-i128::from(deferred_release));
+                        let ledger_release = deferred_release.saturating_sub(deferred_transferred_live_charge);
+                        self.record_live_delta(-i128::from(ledger_release));
                         self.released = true;
                         if let Some(observation) = &self.observation {
                             observation.record(
@@ -339,18 +297,26 @@ impl ActiveReservation {
                 },
                 (_, Some(lineage)) => {
                     if lineage.alias_count.get() > 0 {
+                        let transferred_live_charge = self.transferred_live_charge_bytes.min(self.charged_bytes);
                         lineage
                             .deferred_charged_release_bytes
                             .set(lineage.deferred_charged_release_bytes.get().saturating_add(self.charged_bytes));
+                        lineage.deferred_transferred_live_charge_bytes.set(
+                            lineage
+                                .deferred_transferred_live_charge_bytes
+                                .get()
+                                .saturating_add(transferred_live_charge),
+                        );
                         self.charged_bytes = 0;
+                        self.transferred_live_charge_bytes = 0;
                     }
                 },
                 (_, None) => {},
-            }
         }
         let charged_delta_bytes = -i128::from(self.charged_bytes);
         self.reserved_bytes.set(self.reserved_bytes.get().saturating_sub(self.charged_bytes));
-        self.record_live_delta(charged_delta_bytes);
+        let ledger_release = self.charged_bytes.saturating_sub(self.transferred_live_charge_bytes);
+        self.record_live_delta(-i128::from(ledger_release));
         self.released = true;
         if let Some(observation) = &self.observation {
             let disposition = if charged_delta_bytes == 0
@@ -401,9 +367,11 @@ impl ActiveReservation {
         assert!(!self.released, "cannot shrink a released reservation");
         let refunded = (self.bytes - bytes).min(self.charged_bytes);
         self.reserved_bytes.set(self.reserved_bytes.get().saturating_sub(refunded));
-        self.record_live_delta(-i128::from(refunded));
+        let transferred_refund = refunded.min(self.transferred_live_charge_bytes);
+        self.record_live_delta(-i128::from(refunded.saturating_sub(transferred_refund)));
         self.bytes = bytes;
         self.charged_bytes = self.charged_bytes.saturating_sub(refunded);
+        self.transferred_live_charge_bytes = self.transferred_live_charge_bytes.saturating_sub(transferred_refund);
         refunded
     }
 
@@ -414,6 +382,7 @@ impl ActiveReservation {
         assert!(!self.released, "cannot promote a released reservation");
         let promoted_charged_bytes = promoted_bytes.min(self.charged_bytes);
         self.charged_bytes = self.charged_bytes.saturating_sub(promoted_charged_bytes);
+        self.transferred_live_charge_bytes = self.transferred_live_charge_bytes.min(self.charged_bytes);
     }
 
     pub(super) fn record_live_delta(&self, delta_bytes: i128) {

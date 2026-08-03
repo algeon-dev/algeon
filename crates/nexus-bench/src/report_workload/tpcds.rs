@@ -419,7 +419,7 @@ fn native_profile_base(profile: Option<&str>) -> NativeProfileBase {
         TPCDS_NATIVE_PROFILE_CONSERVATIVE => NativeProfileBase {
             name: TPCDS_NATIVE_PROFILE_CONSERVATIVE,
             source: "default",
-            device_budget_bytes: NexusNativeExecutionConfig::auto_sized_device_budget_bytes(),
+            device_budget_bytes: NexusNativeExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_FALLBACK_BYTES,
             max_source_chunk_bytes: NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_SOURCE_CHUNK_BYTES,
             max_row_groups_per_chunk: NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_ROW_GROUPS_PER_CHUNK,
             max_retry_attempts: NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS,

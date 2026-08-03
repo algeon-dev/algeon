@@ -94,12 +94,9 @@ fn assert_strict_bounded_vector_rejection(
     };
 
     assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
-    assert_eq!(error.operation(), "nexus_query_engine.bounded.strict_vector_algorithm");
-    assert_eq!(
-        error.message(),
-        "strict bounded vector execution requires a lower-level cuVS peak-memory preflight contract"
-    );
-    assert_eq!(error.fact_value("execution_mode"), Some("strict_bounded"));
+    assert_eq!(error.operation(), "nexus_query_engine.bounded.vector_algorithm");
+    assert_eq!(error.message(), "bounded vector execution requires a lower-level cuVS peak-memory preflight contract");
+    assert_eq!(error.fact_value("execution_mode"), Some("bounded"));
     assert_eq!(error.fact_value("node_id"), Some(plan.root_id().to_string().as_str()));
     assert_eq!(error.fact_value("operator"), Some("vector_algorithm"));
     assert_eq!(error.fact_value("algorithm"), Some(algorithm.as_str()));

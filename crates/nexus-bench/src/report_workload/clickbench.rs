@@ -24,9 +24,9 @@ use nexus_workloads::clickbench::{
 /// Device-byte budget for bounded native ClickBench execution.
 ///
 /// When unset, the selected native profile supplies the budget. The
-/// conservative profile uses CUDA/cudf inventory total memory minus 500 MiB,
-/// with a 256 MiB fallback if GPU memory cannot be detected. Invalid values
-/// panic during profile construction.
+/// conservative profile uses the bounded planning fallback. Deployments that
+/// need per-device capacity install a backend; this profile never derives all
+/// devices' budgets from GPU 0. Invalid values panic during profile construction.
 pub const NEXUS_CLICKBENCH_NATIVE_DEVICE_BUDGET_BYTES_ENV: &str = "NEXUS_CLICKBENCH_NATIVE_DEVICE_BUDGET_BYTES";
 /// Named native memory/source profile used by ClickBench benchmark/report
 /// surfaces. Accepts `conservative` (default) or `clickbench_gpu_throughput`;
@@ -271,7 +271,7 @@ fn native_profile_base(profile: Option<&str>) -> NativeProfileBase {
         CLICKBENCH_NATIVE_PROFILE_CONSERVATIVE => NativeProfileBase {
             name: CLICKBENCH_NATIVE_PROFILE_CONSERVATIVE,
             source: "default",
-            device_budget_bytes: NexusNativeExecutionConfig::auto_sized_device_budget_bytes(),
+            device_budget_bytes: NexusNativeExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_FALLBACK_BYTES,
             max_source_chunk_bytes: NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_SOURCE_CHUNK_BYTES,
             max_row_groups_per_chunk: NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_ROW_GROUPS_PER_CHUNK,
             max_retry_attempts: NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS,

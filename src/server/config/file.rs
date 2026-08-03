@@ -7,7 +7,6 @@ use super::*;
 pub(super) struct ServerFileOverlay {
     pub(super) auth: AuthConfig,
     pub(super) admission: ServerAdmissionFileConfig,
-    pub(super) host_execution_qos: ServerHostExecutionQosFileConfig,
     pub(super) native: ServerNativeFileConfig,
     pub(super) observability: ServerObservabilityFileConfig,
 }
@@ -27,46 +26,37 @@ pub(super) struct ServerObservabilityFileConfig {
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub(super) struct ServerAdmissionFileConfig {
-    pub(super) workload_profile: Option<String>,
-    pub(super) max_concurrent_queries: Option<usize>,
-    pub(super) max_queries_per_device: Option<usize>,
-    pub(super) placement_policy: Option<String>,
-    pub(super) pinned_device_ordinal: Option<usize>,
-    pub(super) grant_min: Option<ServerMemoryShareFileValue>,
-    pub(super) grant_want: Option<ServerMemoryShareFileValue>,
-    pub(super) slot_guarantee: Option<String>,
-    pub(super) wait_timeout_ms: Option<u64>,
+    #[serde(default)]
+    pub(super) device_profiles: Vec<ServerAdmissionDeviceProfileFileConfig>,
+    pub(super) max_queued_attempts: Option<usize>,
+    pub(super) max_queue_wait_ms: Option<u64>,
+    pub(super) max_overtakes_per_waiter: Option<u64>,
 }
 
-#[derive(Debug, Default, Deserialize)]
-#[serde(deny_unknown_fields, default)]
-pub(super) struct ServerHostExecutionQosFileConfig {
-    pub(super) max_concurrent_statements: Option<usize>,
-    pub(super) wait_timeout_ms: Option<u64>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(untagged)]
-pub(super) enum ServerMemoryShareFileValue {
-    Integer(u64),
-    Float(f64),
-    String(String),
-}
-
-impl ServerMemoryShareFileValue {
-    pub(super) fn as_raw(&self) -> String {
-        match self {
-            Self::Integer(value) => value.to_string(),
-            Self::Float(value) => value.to_string(),
-            Self::String(value) => value.clone(),
-        }
-    }
+/// One explicit ordinal-keyed device envelope in `[admission]`.
+///
+/// It intentionally contains resource inputs only.  Deployment ownership and
+/// exact capability restrictions are supplied by the embedding process via
+/// `ServerConfig`, never invented by TOML parsing.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ServerAdmissionDeviceProfileFileConfig {
+    pub(super) device_ordinal: usize,
+    pub(super) memory_limit_bytes: Option<u64>,
+    pub(super) backend_reserve_bytes: Option<u64>,
+    pub(super) attempt_floor_bytes: Option<u64>,
+    pub(super) source_work_per_attempt: Option<usize>,
+    pub(super) max_active_attempts: Option<usize>,
+    pub(super) stream_pool_size: Option<usize>,
+    pub(super) worker_count: Option<usize>,
+    pub(super) lane_count: Option<usize>,
+    pub(super) install_telemetry: Option<bool>,
+    pub(super) install_diagnostics: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub(super) struct ServerNativeFileConfig {
-    pub(super) memory_policy: Option<String>,
     pub(super) device_budget_bytes: Option<u64>,
     pub(super) max_source_chunk_bytes: Option<u64>,
     pub(super) max_row_groups_per_chunk: Option<usize>,
@@ -74,10 +64,6 @@ pub(super) struct ServerNativeFileConfig {
     pub(super) min_retry_chunk_row_groups: Option<usize>,
     pub(super) max_source_reads_in_flight: Option<usize>,
     pub(super) source_chunk_planning_mode: Option<String>,
-    pub(super) source_cache_max_retained_bytes: Option<u64>,
-    pub(super) graph_cache_max_retained_bytes: Option<u64>,
-    pub(super) query_memory_domain_ceiling_multiplier: Option<u64>,
-    pub(super) pipeline_execution_mode: Option<String>,
     pub(super) statistical_aggregate_execution_mode: Option<String>,
 }
 pub(super) fn load_overlay(path: &std::path::Path) -> Result<ServerFileOverlay> {
@@ -85,8 +71,11 @@ pub(super) fn load_overlay(path: &std::path::Path) -> Result<ServerFileOverlay> 
         ServerError::configuration_with_source(format!("failed to read server config file `{}`", path.display()), error)
     })?;
     toml::from_str::<ServerFileOverlay>(&raw).map_err(|error| {
+        // The structured source is retained for diagnostics, while the parser
+        // detail remains in the operator-facing configuration error.
+        let detail = error.to_string();
         ServerError::configuration_with_source(
-            format!("failed to parse server config file `{}`", path.display()),
+            format!("failed to parse server config file `{}`: {detail}", path.display()),
             error,
         )
     })

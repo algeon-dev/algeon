@@ -6,7 +6,6 @@ pub(in crate::exec::bounded::chunks) fn bounded_source_adjacent_chunk_batching_e
     chunks: &[SourceChunk],
 ) -> bool {
     bounded.has_source_adjacent_stages()
-        && context.local_parquet_source_cache().is_none()
         && bounded.source.partition_columns.is_empty()
         && !bounded.source.files.iter().any(LocalParquetFile::has_row_delete_files)
         && bounded.source.scan_limit.is_none()
@@ -93,10 +92,6 @@ pub(in crate::exec::bounded::chunks) fn execute_bounded_source_adjacent_chunk_ba
         match execute_bounded_source_adjacent_chunk_batch_or_split(context, bounded, batch, reservations, metrics) {
             Ok(mut batch_partials) => {
                 partials.append(&mut batch_partials);
-                if let Err(error) = reservations.acknowledge_requested_grant_shrink() {
-                    release_committed_partials_reverse(reservations, partials, metrics);
-                    return Err(error);
-                }
             },
             Err(error) => {
                 release_committed_partials_reverse(reservations, partials, metrics);

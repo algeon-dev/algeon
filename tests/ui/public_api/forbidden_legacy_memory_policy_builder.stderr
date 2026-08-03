@@ -1,0 +1,5 @@
+error[E0599]: no method named `memory_policy` found for struct `NexusGpuBackendBuilder` in the current scope
+ --> tests/ui/public_api/forbidden_legacy_memory_policy_builder.rs:4:40
+  |
+4 |     let _ = NexusGpuBackend::builder().memory_policy(());
+  |                                        ^^^^^^^^^^^^^ method not found in `NexusGpuBackendBuilder`

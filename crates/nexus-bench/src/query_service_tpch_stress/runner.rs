@@ -16,7 +16,7 @@ use datafusion_nexus::{
     error::{DataFusionErrorExt, Error as AdapterError},
     native_exec::NexusNativeExecutionConfig,
     native_report::{
-        FinalPlanDisposition, NativeDataFusionExecutionMetrics, NativeDataFusionPlanningOutcome,
+        FinalPlanDisposition, NativeDataFusionPlanningOutcome,
         NativeDataFusionPlanningReport, NativeDataFusionPlanningRow,
     },
     planner::{NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule},
@@ -25,11 +25,7 @@ use datafusion_nexus::{
 use nexus_query_engine::{
     error::QueryError,
     harness::StableFnv1a64,
-    mode::NativePipelineExecutionMode,
-    runtime::{
-        GpuBackendSession, QueryMemoryDomainPolicy, QueryServiceConfig, QueryServiceTenantConfig, SlotGuarantee,
-        TenantId,
-    },
+    runtime::{GpuBackendSession, QueryExecutionConfig, QueueBounds},
 };
 use nexus_workloads::tpch::{
     NEXUS_PARQUET_DIR_ENV, NEXUS_TPCH_GENERATION_COMMAND_ENV, NEXUS_TPCH_SCALE_FACTOR_ENV, TPCH_QUERIES, TPCH_TABLES,
@@ -95,18 +91,13 @@ struct StressConfig {
     bulk_iterations: usize,
     interactive_iterations: usize,
     device_capacity_bytes: u64,
-    tenant_min_grant_bytes: u64,
-    tenant_want_grant_bytes: u64,
-    slot_guarantee: SlotGuarantee,
-    max_concurrent_queries: usize,
-    max_admission_queue_len: usize,
-    admission_wait_timeout: Duration,
+    attempt_floor_bytes: u64,
+    soft_working_set_hint_bytes: u64,
+    max_active_attempts_per_device: usize,
+    max_queued_attempts: usize,
+    max_queue_wait: Duration,
     max_source_chunk_bytes: u64,
     max_row_groups_per_chunk: usize,
-    source_cache_max_retained_bytes: Option<u64>,
-    memory_manager_pool_initial_bytes: Option<u64>,
-    native_pipeline_execution_mode: NativePipelineExecutionMode,
-    query_memory_domain_ceiling_multiplier: Option<u64>,
     warmup_rounds: usize,
     stream_idle_timeout: Duration,
     cuda_profiler_capture: bool,
@@ -133,7 +124,7 @@ struct CpuBaseline {
 #[derive(Debug, Clone)]
 struct StressRequest {
     request_index: usize,
-    tenant_id: TenantId,
+    client_id: String,
     workload_class: &'static str,
     query_id: String,
     iteration: usize,
@@ -143,7 +134,7 @@ struct StressRequest {
 struct StressRow {
     row_type: &'static str,
     request_index: usize,
-    tenant_id: String,
+    client_id: String,
     workload_class: &'static str,
     query_id: String,
     iteration: usize,
@@ -186,12 +177,10 @@ enum NativeCollectOutcome {
     Succeeded {
         planning_row: NativeDataFusionPlanningRow,
         measurement: CpuBaseline,
-        metrics: NativeDataFusionExecutionMetrics,
     },
     RuntimeFailed {
         planning_row: NativeDataFusionPlanningRow,
         error: DataFusionError,
-        metrics: NativeDataFusionExecutionMetrics,
     },
 }
 
@@ -218,11 +207,6 @@ struct ProfileEvidenceRow {
     query_id: String,
     native_runtime_outcome: &'static str,
     parity_status: &'static str,
-    source_cache_hits: usize,
-    source_cache_misses: usize,
-    source_cache_inserts: usize,
-    source_cache_insert_skipped: usize,
-    source_cache_retained_bytes: usize,
     native_wall_ms: Option<f64>,
 }
 
@@ -328,16 +312,20 @@ async fn compute_cpu_baselines(config: &StressConfig) -> DataFusionResult<HashMa
 }
 
 fn build_query_backend(config: &StressConfig) -> DataFusionResult<GpuBackendOwner> {
-    GpuBackendOwner::build(
-        config.service_config(),
-        config.device_ordinals.clone(),
-        vec![
-            tenant_config("bulk", config),
-            tenant_config("interactive_a", config),
-            tenant_config("interactive_b", config),
-        ],
-    )
-    .map_err(native_error)
+    let devices = config
+        .device_ordinals
+        .iter()
+        .copied()
+        .map(|ordinal| {
+            GpuBackendOwner::device_config(
+                ordinal,
+                config.device_capacity_bytes,
+                config.max_active_attempts_per_device,
+                1,
+            )
+        })
+        .collect();
+    GpuBackendOwner::build(config.service_config(), config.queue_bounds(), devices).map_err(native_error)
 }
 
 async fn run_warmup(
@@ -424,9 +412,8 @@ async fn run_native_request(
     request: StressRequest,
 ) -> DataFusionResult<StressRow> {
     let total_started = Instant::now();
-    let tenant_for_admission = request.tenant_id.clone();
     let service_for_admission = service.clone();
-    let handle = match tokio::task::spawn_blocking(move || service_for_admission.admit_query(tenant_for_admission))
+    let handle = match tokio::task::spawn_blocking(move || service_for_admission.admit_query())
         .await
         .map_err(|error| plan_error(format!("query service admission task join failed: {error}")))?
     {
@@ -466,7 +453,7 @@ async fn run_native_request(
             Ok(StressRow {
                 row_type: "query",
                 request_index: request.request_index,
-                tenant_id: request.tenant_id.to_string(),
+                client_id: request.client_id.to_string(),
                 workload_class: request.workload_class,
                 query_id: request.query_id,
                 iteration: request.iteration,
@@ -534,9 +521,8 @@ async fn prepare_native_with_handle(
     query: &TpchQuery,
     handle: Arc<nexus_query_engine::runtime::QueryHandle>,
 ) -> DataFusionResult<PreparedNativeQuery> {
-    let optimizer_config = NexusNativeOptimizerConfig::default().with_native_execution_config(
-        NexusNativeExecutionConfig::bounded_auto_sized().with_query_service_handle(handle),
-    );
+    let optimizer_config = NexusNativeOptimizerConfig::default()
+        .with_native_execution_config(NexusNativeExecutionConfig::bounded_default().with_query_service_handle(handle));
     let native_rule = Arc::new(NexusNativePhysicalOptimizerRule::new(optimizer_config));
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(tpch_report_session_config())
@@ -572,33 +558,27 @@ async fn collect_prepared_native(prepared: PreparedNativeQuery) -> DataFusionRes
     let batches = match collect_plan_once(Arc::clone(&plan)).await {
         Ok(batches) => batches,
         Err(error) => {
-            let metrics = native_execution_metrics(&plan);
-            return Ok(NativeCollectOutcome::RuntimeFailed { planning_row, error, metrics });
+            return Ok(NativeCollectOutcome::RuntimeFailed { planning_row, error });
         },
     };
     let measurement = measure_output(&schema, &batches)?;
-    let metrics = native_execution_metrics(&plan);
-    Ok(NativeCollectOutcome::Succeeded { planning_row, measurement, metrics })
-}
-
-fn native_execution_metrics(plan: &Arc<dyn ExecutionPlan>) -> NativeDataFusionExecutionMetrics {
-    plan.metrics().as_ref().map(NativeDataFusionExecutionMetrics::from_metrics).unwrap_or_default()
+    Ok(NativeCollectOutcome::Succeeded { planning_row, measurement })
 }
 
 fn admission_facts(
     service: &GpuBackendSession,
     handle: &nexus_query_engine::runtime::QueryHandle,
 ) -> DataFusionResult<AdmissionFacts> {
-    let reports = service.memory_governor_reports().map_err(native_error)?;
+    let reports = service.device_ledger_reports().map_err(native_error)?;
     let report = reports
         .into_iter()
         .find(|report| report.device_ordinal == handle.device_ordinal())
-        .expect("query service should expose a memory governor report for the handle's device");
+        .expect("query service should expose a device ledger report for the handle's device");
     Ok(AdmissionFacts {
         device_ordinal: Some(handle.device_ordinal()),
         query_grant_bytes: Some(handle.device_budget_bytes()),
-        service_capacity_bytes: Some(report.capacity_bytes),
-        service_outstanding_bytes_snapshot: Some(report.outstanding_bytes),
+        service_capacity_bytes: Some(report.managed_capacity_bytes),
+        service_outstanding_bytes_snapshot: Some(report.live_grants_bytes),
         service_available_bytes_snapshot: Some(report.available_bytes),
     })
 }
@@ -608,37 +588,33 @@ async fn collect_plan_once(plan: Arc<dyn ExecutionPlan>) -> DataFusionResult<Vec
 }
 
 fn run_overload_probe(config: &StressConfig) -> DataFusionResult<StressRow> {
-    let probe_config = QueryServiceConfig {
-        max_concurrent_queries: 1,
-        max_admission_queue_len: 1,
-        admission_wait_timeout: Duration::from_millis(50),
-        ..config.service_config()
-    };
+    let probe_config = config.service_config();
+    let probe_queue_bounds =
+        QueueBounds { max_waiters: 1, max_wait: Duration::from_millis(50), max_overtakes_per_waiter: 4 };
     let backend = GpuBackendOwner::build(
         probe_config,
-        vec![config.device_ordinals[0]],
-        vec![tenant_config("bulk", config), tenant_config("interactive_a", config)],
+        probe_queue_bounds,
+        vec![GpuBackendOwner::device_config(config.device_ordinals[0], config.device_capacity_bytes, 1, 1)],
     )
     .map_err(native_error)?;
     let service = backend.session();
-    let active = service.admit_query(TenantId::new("bulk")).map_err(native_error)?;
+    let active = service.admit_query().map_err(native_error)?;
     let queued_service = service.clone();
     let (ready_sender, ready_receiver) = std::sync::mpsc::channel();
     let waiter = std::thread::spawn(move || {
         ready_sender.send(()).expect("overload probe ready signal should send");
-        let _queued = queued_service.admit_query(TenantId::new("bulk"));
+        let _queued = queued_service.admit_query();
     });
     ready_receiver.recv().map_err(|error| plan_error(format!("overload probe setup failed: {error}")))?;
     wait_for_queued_len(&service, 1)?;
     let started = Instant::now();
-    let error =
-        service.admit_query(TenantId::new("interactive_a")).expect_err("filled admission queue must reject next query");
+    let error = service.admit_query().expect_err("filled admission queue must reject next query");
     drop(active);
     waiter.join().map_err(|_| plan_error("overload probe waiter thread panicked"))?;
     let row = StressRow {
         row_type: "overload_probe",
         request_index: 0,
-        tenant_id: "interactive_a".to_string(),
+        client_id: "interactive_a".to_string(),
         workload_class: "synthetic",
         query_id: "none".to_string(),
         iteration: 0,
@@ -673,10 +649,6 @@ fn wait_for_queued_len(service: &GpuBackendSession, expected: usize) -> DataFusi
     Err(plan_error("timed out waiting for overload probe admission queue"))
 }
 
-fn tenant_config(tenant_id: impl Into<TenantId>, config: &StressConfig) -> QueryServiceTenantConfig {
-    QueryServiceTenantConfig::with_grant_range(tenant_id, config.tenant_min_grant_bytes, config.tenant_want_grant_bytes)
-}
-
 fn build_requests(config: &StressConfig) -> Vec<StressRequest> {
     let mut requests = Vec::new();
     let mut next_index = 1;
@@ -684,7 +656,7 @@ fn build_requests(config: &StressConfig) -> Vec<StressRequest> {
         for query_id in &config.bulk_queries {
             requests.push(StressRequest {
                 request_index: next_index,
-                tenant_id: TenantId::new("bulk"),
+                client_id: "bulk".to_string(),
                 workload_class: "bulk",
                 query_id: query_id.clone(),
                 iteration,
@@ -692,12 +664,12 @@ fn build_requests(config: &StressConfig) -> Vec<StressRequest> {
             next_index += 1;
         }
     }
-    for tenant_id in ["interactive_a", "interactive_b"] {
+    for client_id in ["interactive_a", "interactive_b"] {
         for iteration in 1..=config.interactive_iterations {
             for query_id in &config.interactive_queries {
                 requests.push(StressRequest {
                     request_index: next_index,
-                    tenant_id: TenantId::new(tenant_id),
+                    client_id: client_id.to_string(),
                     workload_class: "interactive",
                     query_id: query_id.clone(),
                     iteration,
@@ -726,7 +698,7 @@ fn failure_row(
     StressRow {
         row_type: "query",
         request_index: request.request_index,
-        tenant_id: request.tenant_id.to_string(),
+        client_id: request.client_id.to_string(),
         workload_class: request.workload_class,
         query_id: request.query_id.clone(),
         iteration: request.iteration,

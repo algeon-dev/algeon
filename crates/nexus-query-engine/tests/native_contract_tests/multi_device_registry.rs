@@ -3,9 +3,12 @@ use std::{
     time::Duration,
 };
 
-use crate::runtime::{
-    DeploymentIoCapability, GdsDriverProbeStatus, KvikioCompatModeStatus, NvidiaFsProbeStatus, QueryGrantRequest,
-    QueryPlacementPolicy, QueryService, QueryServiceConfig, QueryServiceTenantConfig, SlotGuarantee, TenantId,
+use crate::{
+    admission::{AttemptRequirement, EstimateQuality},
+    runtime::{
+        DeploymentIoCapability, GdsDriverProbeStatus, GpuBackendDeviceConfig, GpuDeviceMemoryLimit, GpuMemoryOwnership,
+        KvikioCompatModeStatus, NvidiaFsProbeStatus, QueryExecutionConfig, QueryService, QueueBounds,
+    },
 };
 
 const TEST_DEVICE_CAPACITY_BYTES: u64 = 64 * 1024 * 1024;
@@ -23,31 +26,75 @@ fn service_claim_test_guard() -> MutexGuard<'static, ()> {
     LOCK.get_or_init(|| Mutex::new(())).lock().expect("multi-device registry test lock poisoned")
 }
 
+/// Tests that construct real CUDA backends are unsupported on hosts without
+/// the required inventory. Rust's test harness has no runtime `skip` result,
+/// so make that outcome explicit rather than silently returning.
+#[track_caller]
+fn has_required_device_inventory(required: usize) -> bool {
+    let location = std::panic::Location::caller();
+    match cudf::DeviceId::count() {
+        Ok(available) if available >= required => true,
+        Ok(available) => {
+            eprintln!(
+                "SKIP unsupported_gpu_inventory at {location}: requires {required} GPU device(s), found {available}"
+            );
+            false
+        },
+        Err(error) => {
+            eprintln!("SKIP unsupported_gpu_inventory at {location}: could not enumerate GPUs: {error}");
+            false
+        },
+    }
+}
+
+fn test_device_profiles(
+    device_ordinals: &[usize],
+    max_active_attempts: usize,
+    stream_pool_size: usize,
+    attempt_floor_bytes: u64,
+) -> Vec<GpuBackendDeviceConfig> {
+    device_ordinals
+        .iter()
+        .copied()
+        .map(|device_ordinal| {
+            GpuBackendDeviceConfig::new(device_ordinal, GpuMemoryOwnership::WholeDeviceExclusive)
+                .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: TEST_DEVICE_CAPACITY_BYTES })
+                .with_attempt_floor_bytes(attempt_floor_bytes)
+                .with_source_work_per_attempt(1)
+                .with_max_active_queries(max_active_attempts)
+                .with_installation_bounds(stream_pool_size, max_active_attempts, max_active_attempts)
+        })
+        .collect()
+}
+
+fn runtime_test_service(
+    config: QueryExecutionConfig,
+    queue_bounds: QueueBounds,
+    device_profiles: Vec<GpuBackendDeviceConfig>,
+) -> QueryService {
+    QueryService::new_with_device_profiles_and_deployment_for_test(
+        config,
+        queue_bounds,
+        device_profiles,
+        non_gds_deployment(),
+    )
+    .expect("explicit multi-device runtime test profiles must install")
+}
+
 #[test]
 fn query_service_places_concurrent_runtime_handles_on_distinct_devices_when_available() {
-    if cudf::DeviceId::count().unwrap_or(0) < 2 {
+    if !has_required_device_inventory(2) {
         return;
     }
     let _guard = service_claim_test_guard();
-    let config = QueryServiceConfig {
-        max_concurrent_queries: 2,
-        max_admission_queue_len: 8,
-        stream_pool_size: Some(6),
-        device_capacity_bytes: Some(TEST_DEVICE_CAPACITY_BYTES),
-        admission_wait_timeout: Duration::from_millis(500),
-        slot_guarantee: SlotGuarantee::Optimistic,
-        ..QueryServiceConfig::default()
-    };
-    let service = QueryService::new_with_device_ordinals_and_deployment(
-        config,
-        vec![0, 1],
-        vec![QueryServiceTenantConfig::new("tenant", TEST_DEVICE_CAPACITY_BYTES)],
-        non_gds_deployment(),
-    )
-    .unwrap();
+    let service = runtime_test_service(
+        QueryExecutionConfig::default(),
+        QueueBounds { max_waiters: 8, max_wait: Duration::from_millis(500), max_overtakes_per_waiter: 4 },
+        test_device_profiles(&[0, 1], 1, 6, TEST_DEVICE_CAPACITY_BYTES),
+    );
 
-    let first = service.try_admit_query("tenant").unwrap().expect("first query should admit");
-    let second = service.try_admit_query("tenant").unwrap().expect("second query should admit");
+    let first = service.try_admit_query().unwrap().expect("first query should admit");
+    let second = service.try_admit_query().unwrap().expect("second query should admit");
 
     assert_eq!(first.device_ordinal(), 0);
     assert_eq!(second.device_ordinal(), 1);
@@ -56,43 +103,31 @@ fn query_service_places_concurrent_runtime_handles_on_distinct_devices_when_avai
     assert_eq!(first_context.context().runtime().unwrap().device().ordinal(), first.device_ordinal());
     assert_eq!(second_context.context().runtime().unwrap().device().ordinal(), second.device_ordinal());
 
-    let reports = service.memory_governor_reports().unwrap();
+    let reports = service.device_ledger_reports().unwrap();
     assert_eq!(reports.len(), 2);
     assert_eq!(reports[0].device_ordinal, 0);
     assert_eq!(reports[1].device_ordinal, 1);
-    assert_eq!(reports[0].capacity_bytes, TEST_DEVICE_CAPACITY_BYTES);
-    assert_eq!(reports[1].capacity_bytes, TEST_DEVICE_CAPACITY_BYTES);
-    assert_eq!(reports[0].outstanding_bytes, first.device_budget_bytes());
-    assert_eq!(reports[1].outstanding_bytes, second.device_budget_bytes());
+    assert_eq!(reports[0].managed_capacity_bytes, TEST_DEVICE_CAPACITY_BYTES);
+    assert_eq!(reports[1].managed_capacity_bytes, TEST_DEVICE_CAPACITY_BYTES);
+    assert_eq!(reports[0].live_grants_bytes, first.device_budget_bytes());
+    assert_eq!(reports[1].live_grants_bytes, second.device_budget_bytes());
 }
 
 #[test]
 fn alternating_multi_device_stream_cleanup_returns_each_pool_before_reuse() {
-    if cudf::DeviceId::count().unwrap_or(0) < 2 {
+    if !has_required_device_inventory(2) {
         return;
     }
     let _guard = service_claim_test_guard();
-    let config = QueryServiceConfig {
-        max_concurrent_queries: 2,
-        max_queries_per_device: Some(1),
-        max_admission_queue_len: 8,
-        stream_pool_size: Some(6),
-        device_capacity_bytes: Some(TEST_DEVICE_CAPACITY_BYTES),
-        admission_wait_timeout: Duration::from_millis(500),
-        slot_guarantee: SlotGuarantee::Optimistic,
-        ..QueryServiceConfig::default()
-    };
-    let service = QueryService::new_with_device_ordinals_and_deployment(
-        config,
-        vec![0, 1],
-        vec![QueryServiceTenantConfig::new("tenant", TEST_DEVICE_CAPACITY_BYTES)],
-        non_gds_deployment(),
-    )
-    .unwrap();
+    let service = runtime_test_service(
+        QueryExecutionConfig::default(),
+        QueueBounds { max_waiters: 8, max_wait: Duration::from_millis(500), max_overtakes_per_waiter: 4 },
+        test_device_profiles(&[0, 1], 1, 6, TEST_DEVICE_CAPACITY_BYTES),
+    );
 
-    let first = service.admit_query("tenant").unwrap();
+    let first = service.admit_query().unwrap();
     let first_context = first.acquire_context().unwrap();
-    let second = service.admit_query("tenant").unwrap();
+    let second = service.admit_query().unwrap();
     let second_context = second.acquire_context().unwrap();
     assert_eq!((first.device_ordinal(), second.device_ordinal()), (0, 1));
     let mut active = [Some((first, first_context)), Some((second, second_context))];
@@ -107,7 +142,7 @@ fn alternating_multi_device_stream_cleanup_returns_each_pool_before_reuse() {
             .wait_for_stream_pools_quiescent(&[(retained_ordinal, 1)], Duration::from_secs(5))
             .expect("released device cleanup completes while the other root lease remains checked out");
 
-        let replacement = service.admit_query("tenant").expect("released device admits replacement");
+        let replacement = service.admit_query().expect("released device admits replacement");
         assert_eq!(replacement.device_ordinal(), released_ordinal);
         let replacement_context = replacement.acquire_context().unwrap();
         assert_eq!(replacement_context.context().runtime().unwrap().device().ordinal(), released_ordinal);
@@ -125,203 +160,137 @@ fn alternating_multi_device_stream_cleanup_returns_each_pool_before_reuse() {
 }
 
 #[test]
-fn best_fit_placement_packs_before_spreading() {
-    if cudf::DeviceId::count().unwrap_or(0) < 2 {
+fn per_device_active_limit_forces_spread_and_then_blocks() {
+    if !has_required_device_inventory(2) {
         return;
     }
     let _guard = service_claim_test_guard();
-    let query_budget = TEST_DEVICE_CAPACITY_BYTES / 4;
-    let config = QueryServiceConfig {
-        max_concurrent_queries: 2,
-        max_admission_queue_len: 8,
-        stream_pool_size: Some(6),
-        device_capacity_bytes: Some(TEST_DEVICE_CAPACITY_BYTES),
-        admission_wait_timeout: Duration::from_millis(500),
-        slot_guarantee: SlotGuarantee::Optimistic,
-        placement_policy: QueryPlacementPolicy::BestFit,
-        ..QueryServiceConfig::default()
-    };
-    let service = QueryService::new_with_device_ordinals_and_deployment(
-        config,
-        vec![0, 1],
-        vec![QueryServiceTenantConfig::new("tenant", query_budget)],
-        non_gds_deployment(),
-    )
-    .unwrap();
+    let service = runtime_test_service(
+        QueryExecutionConfig::default(),
+        QueueBounds { max_waiters: 8, max_wait: Duration::from_millis(500), max_overtakes_per_waiter: 4 },
+        test_device_profiles(&[0, 1], 1, 9, TEST_DEVICE_CAPACITY_BYTES),
+    );
 
-    let first = service.try_admit_query("tenant").unwrap().expect("first query should admit");
-    let second = service.try_admit_query("tenant").unwrap().expect("second query should admit");
-
-    assert_eq!(first.device_ordinal(), 0);
-    assert_eq!(second.device_ordinal(), 0);
-}
-
-#[test]
-fn max_queries_per_device_forces_spread_and_then_blocks() {
-    if cudf::DeviceId::count().unwrap_or(0) < 2 {
-        return;
-    }
-    let _guard = service_claim_test_guard();
-    let query_budget = TEST_DEVICE_CAPACITY_BYTES / 4;
-    let config = QueryServiceConfig {
-        max_concurrent_queries: 3,
-        max_queries_per_device: Some(1),
-        max_admission_queue_len: 8,
-        stream_pool_size: Some(9),
-        device_capacity_bytes: Some(TEST_DEVICE_CAPACITY_BYTES),
-        admission_wait_timeout: Duration::from_millis(500),
-        slot_guarantee: SlotGuarantee::Optimistic,
-        placement_policy: QueryPlacementPolicy::BestFit,
-        ..QueryServiceConfig::default()
-    };
-    let service = QueryService::new_with_device_ordinals_and_deployment(
-        config,
-        vec![0, 1],
-        vec![QueryServiceTenantConfig::new("tenant", query_budget)],
-        non_gds_deployment(),
-    )
-    .unwrap();
-
-    let first = service.try_admit_query("tenant").unwrap().expect("first query should admit");
-    let second = service.try_admit_query("tenant").unwrap().expect("second query should admit");
+    let first = service.try_admit_query().unwrap().expect("first query should admit");
+    let second = service.try_admit_query().unwrap().expect("second query should admit");
 
     assert_eq!(first.device_ordinal(), 0);
     assert_eq!(second.device_ordinal(), 1);
-    assert!(service.try_admit_query("tenant").unwrap().is_none());
+    assert!(service.try_admit_query().unwrap().is_none());
 }
 
 #[test]
-fn pinned_placement_uses_selected_device() {
-    if cudf::DeviceId::count().unwrap_or(0) < 2 {
+fn least_loaded_placement_spreads_across_identical_devices() {
+    if !has_required_device_inventory(2) {
         return;
     }
     let _guard = service_claim_test_guard();
-    let query_budget = TEST_DEVICE_CAPACITY_BYTES / 4;
-    let config = QueryServiceConfig {
-        max_concurrent_queries: 2,
-        max_admission_queue_len: 8,
-        stream_pool_size: Some(6),
-        device_capacity_bytes: Some(TEST_DEVICE_CAPACITY_BYTES),
-        admission_wait_timeout: Duration::from_millis(500),
-        slot_guarantee: SlotGuarantee::Optimistic,
-        placement_policy: QueryPlacementPolicy::Pinned { device_ordinal: 1 },
-        ..QueryServiceConfig::default()
-    };
-    let service = QueryService::new_with_device_ordinals_and_deployment(
-        config,
-        vec![0, 1],
-        vec![QueryServiceTenantConfig::new("tenant", query_budget)],
-        non_gds_deployment(),
-    )
-    .unwrap();
+    let service = runtime_test_service(
+        QueryExecutionConfig::default(),
+        QueueBounds { max_waiters: 8, max_wait: Duration::from_millis(500), max_overtakes_per_waiter: 4 },
+        test_device_profiles(&[0, 1], 2, 6, TEST_DEVICE_CAPACITY_BYTES / 2),
+    );
 
-    let first = service.try_admit_query("tenant").unwrap().expect("first query should admit");
-    let second = service.try_admit_query("tenant").unwrap().expect("second query should admit");
+    let first = service.try_admit_query().unwrap().expect("first query should admit");
+    let second = service.try_admit_query().unwrap().expect("second query should admit");
 
-    assert_eq!(first.device_ordinal(), 1);
-    assert_eq!(second.device_ordinal(), 1);
-}
-
-#[test]
-fn pinned_guaranteed_minimum_reserves_future_slots_on_pinned_device() {
-    if cudf::DeviceId::count().unwrap_or(0) < 2 {
-        return;
-    }
-    let _guard = service_claim_test_guard();
-    let min_budget = TEST_DEVICE_CAPACITY_BYTES / 2;
-    let config = QueryServiceConfig {
-        max_concurrent_queries: 2,
-        max_admission_queue_len: 8,
-        stream_pool_size: Some(6),
-        device_capacity_bytes: Some(TEST_DEVICE_CAPACITY_BYTES),
-        admission_wait_timeout: Duration::from_millis(500),
-        placement_policy: QueryPlacementPolicy::Pinned { device_ordinal: 0 },
-        ..QueryServiceConfig::default()
-    };
-    let service = QueryService::new_with_device_ordinals_and_deployment(
-        config,
-        vec![0, 1],
-        vec![QueryServiceTenantConfig::with_grant_range("tenant", min_budget, TEST_DEVICE_CAPACITY_BYTES)],
-        non_gds_deployment(),
-    )
-    .unwrap();
-
-    let first = service.try_admit_query("tenant").unwrap().expect("first query should admit");
-    let second = service.try_admit_query("tenant").unwrap().expect("second query should admit");
-
+    // The normative spare-capacity ranking spreads across identical devices.
     assert_eq!(first.device_ordinal(), 0);
-    assert_eq!(second.device_ordinal(), 0);
-    assert_eq!(first.device_budget_bytes(), min_budget);
-    assert_eq!(second.device_budget_bytes(), min_budget);
-}
-
-#[test]
-fn pinned_placement_rejects_device_outside_registry() {
-    if cudf::DeviceId::count().unwrap_or(0) < 1 {
-        return;
-    }
-    let _guard = service_claim_test_guard();
-    let config = QueryServiceConfig {
-        max_concurrent_queries: 1,
-        max_admission_queue_len: 2,
-        stream_pool_size: Some(3),
-        device_capacity_bytes: Some(TEST_DEVICE_CAPACITY_BYTES),
-        admission_wait_timeout: Duration::from_millis(500),
-        slot_guarantee: SlotGuarantee::Optimistic,
-        placement_policy: QueryPlacementPolicy::Pinned { device_ordinal: 1 },
-        ..QueryServiceConfig::default()
-    };
-
-    let error = QueryService::new_with_device_ordinals_and_deployment(
-        config,
-        vec![0],
-        vec![QueryServiceTenantConfig::new("tenant", TEST_DEVICE_CAPACITY_BYTES)],
-        non_gds_deployment(),
-    )
-    .unwrap_err();
-
-    assert_eq!(error.fact_value("reason"), Some("pinned_device_not_configured"));
+    assert_eq!(second.device_ordinal(), 1);
 }
 
 #[test]
 fn query_service_memory_failure_callback_ignores_budget_failures() {
-    if cudf::DeviceId::count().unwrap_or(0) < 1 {
+    if !has_required_device_inventory(1) {
         return;
     }
     let _guard = service_claim_test_guard();
-    let config = QueryServiceConfig {
-        max_concurrent_queries: 1,
-        max_admission_queue_len: 2,
-        stream_pool_size: Some(3),
-        device_capacity_bytes: Some(TEST_DEVICE_CAPACITY_BYTES),
-        admission_wait_timeout: Duration::from_millis(500),
-        slot_guarantee: SlotGuarantee::Optimistic,
-        ..QueryServiceConfig::default()
-    };
-    let service = QueryService::new_with_device_ordinals_and_deployment(
-        config,
-        vec![0],
-        vec![QueryServiceTenantConfig::new("tenant", TEST_DEVICE_CAPACITY_BYTES)],
-        non_gds_deployment(),
-    )
-    .unwrap();
+    let service = runtime_test_service(
+        QueryExecutionConfig::default(),
+        QueueBounds { max_waiters: 2, max_wait: Duration::from_millis(500), max_overtakes_per_waiter: 4 },
+        test_device_profiles(&[0], 1, 3, 64 * 1024),
+    );
 
     let initial_report = service.device_memory_failure_reports().into_iter().next().unwrap();
     if initial_report.callback_install_unavailable {
+        eprintln!("SKIP unsupported_memory_failure_callback: CUDA allocation failure callback is unavailable");
         return;
     }
     assert!(initial_report.callback_installed);
 
-    let handle = service.try_admit_query("tenant").unwrap().expect("query should admit");
+    const GRANT_BYTES: u64 = 64 * 1024;
+
+    // An explicit 64 KiB working set makes the immutable attempt grant the
+    // domain ceiling and the root member's hard limit; the 4 MiB allocation
+    // must fail locally rather than becoming a device-health failure.
+    let handle = service
+        .try_admit_query_with_request(crate::runtime::QueryAdmissionRequest::new().with_attempt_requirement(
+            AttemptRequirement {
+                configured_floor_bytes: GRANT_BYTES,
+                capability_floor_raise_bytes: 0,
+                soft_working_set_hint_bytes: Some(GRANT_BYTES),
+                estimate_quality: EstimateQuality::Modeled,
+                required_capabilities: Vec::new(),
+            },
+        ))
+        .unwrap()
+        .expect("query should admit");
+    assert_eq!(handle.device_budget_bytes(), GRANT_BYTES, "the ledger publishes the forced immutable grant");
     let context = handle.acquire_context().unwrap();
+    let execution = context.context();
+    let grant = execution.memory_grant().unwrap().expect("admitted context carries the immutable grant");
+    assert_eq!(grant.budget_bytes(), GRANT_BYTES);
+    let grant_id = grant.grant_id();
+    assert_eq!(execution.attempt_allocation_domain_id(), Some(grant_id));
+
+    let domain_before = execution
+        .attempt_allocation_domain_usage()
+        .unwrap()
+        .expect("admitted context carries the query allocation domain");
+    assert_eq!(domain_before.domain_id, grant_id);
+    assert_eq!(domain_before.ceiling_bytes, GRANT_BYTES);
+    assert_eq!(domain_before.allocation_limit_bytes, GRANT_BYTES);
+    assert_eq!(domain_before.active_members, 1, "the root runtime is the domain's sole member");
+
     let token = context
         .context()
-        .runtime()
-        .unwrap()
-        .execution_budget_token(cudf::ExecutionBudgetRequest::new(1).with_boundary("nexus_failure_callback"))
+        .execution_budget_token(
+            cudf::ExecutionBudgetRequest::new(GRANT_BYTES as usize).with_boundary("nexus_failure_callback"),
+        )
         .unwrap();
-    let error = context.context().runtime().unwrap().series_from_value_with_budget(1i32, 1024, &token).unwrap_err();
+    let member_before = token.reservation_usage().unwrap();
+    assert_eq!(member_before.allocation_limit_bytes, GRANT_BYTES);
+    let error = execution.runtime().unwrap().series_from_value_with_budget(1i32, 1024 * 1024, &token).unwrap_err();
     assert_eq!(error.kind(), cudf::ErrorKind::ResourceExhausted);
+    assert_eq!(error.detail_value("budget_enforcement"), Some("query_domain_member"));
+    let grant_bytes_text = GRANT_BYTES.to_string();
+    assert_eq!(error.detail_value("budget_bytes"), Some(grant_bytes_text.as_str()));
+
+    let member_after = token.reservation_usage().unwrap();
+    assert_eq!(member_after.allocation_limit_bytes, GRANT_BYTES, "the member limit is immutable");
+    assert!(member_after.failed_allocation_count > member_before.failed_allocation_count);
+    assert!(member_after.largest_failed_allocation_bytes > 0);
+    let failed_count_text = member_after.failed_allocation_count.to_string();
+    assert_eq!(
+        error.detail_value("budget_failed_allocation_count"),
+        Some(failed_count_text.as_str()),
+        "the structured failure reports the same member counter"
+    );
+
+    let domain_after = execution.attempt_allocation_domain_usage().unwrap().unwrap();
+    assert_eq!(domain_after.domain_id, grant_id);
+    assert_eq!(domain_after.ceiling_bytes, GRANT_BYTES);
+    assert_eq!(domain_after.allocation_limit_bytes, GRANT_BYTES);
+    assert_eq!(domain_after.active_members, 1);
+    assert_eq!(domain_after.current_bytes, member_after.current_bytes);
+    assert_eq!(domain_after.peak_bytes, member_after.peak_bytes);
+    assert_eq!(domain_after.current_allocations, member_after.current_allocations);
+    assert_eq!(domain_after.peak_allocations, member_after.peak_allocations);
+    // The member rejects before an over-limit allocation reaches the parent
+    // domain, so the domain's failed counters remain zero while its live-use
+    // counters exactly mirror the sole attached member.
+    assert_eq!(domain_after.failed_allocation_count, 0);
+    assert_eq!(domain_after.largest_failed_allocation_bytes, 0);
 
     let report = service.device_memory_failure_reports().into_iter().next().unwrap();
     assert!(report.callback_installed);
@@ -334,30 +303,19 @@ fn query_service_memory_failure_callback_ignores_budget_failures() {
 
 #[test]
 fn second_query_service_on_same_device_is_rejected_while_backend_is_live() {
-    if cudf::DeviceId::count().unwrap_or(0) < 1 {
+    if !has_required_device_inventory(1) {
         return;
     }
     let _guard = service_claim_test_guard();
-    let config = QueryServiceConfig {
-        max_concurrent_queries: 1,
-        max_admission_queue_len: 2,
-        stream_pool_size: Some(3),
-        device_capacity_bytes: Some(TEST_DEVICE_CAPACITY_BYTES),
-        admission_wait_timeout: Duration::from_millis(500),
-        slot_guarantee: SlotGuarantee::Optimistic,
-        ..QueryServiceConfig::default()
-    };
-    let first_service = QueryService::new_with_device_ordinals_and_deployment(
-        config.clone(),
-        vec![0],
-        vec![QueryServiceTenantConfig::new("tenant", TEST_DEVICE_CAPACITY_BYTES)],
-        non_gds_deployment(),
-    )
-    .unwrap();
-    let error = QueryService::new_with_device_ordinals_and_deployment(
+    let config = QueryExecutionConfig::default();
+    let queue_bounds =
+        QueueBounds { max_waiters: 2, max_wait: Duration::from_millis(500), max_overtakes_per_waiter: 4 };
+    let profiles = test_device_profiles(&[0], 1, 3, TEST_DEVICE_CAPACITY_BYTES);
+    let first_service = runtime_test_service(config.clone(), queue_bounds.clone(), profiles.clone());
+    let error = QueryService::new_with_device_profiles_and_deployment_for_test(
         config,
-        vec![0],
-        vec![QueryServiceTenantConfig::new("tenant", TEST_DEVICE_CAPACITY_BYTES)],
+        queue_bounds,
+        profiles,
         non_gds_deployment(),
     )
     .expect_err("one process-owned backend must reject a second live service");
@@ -368,71 +326,43 @@ fn second_query_service_on_same_device_is_rejected_while_backend_is_live() {
 }
 
 #[test]
-fn max_queries_per_device_cap_is_enforced_within_one_backend() {
-    if cudf::DeviceId::count().unwrap_or(0) < 1 {
+fn per_device_active_limit_is_enforced_within_one_backend() {
+    if !has_required_device_inventory(1) {
         return;
     }
     let _guard = service_claim_test_guard();
-    let query_budget = TEST_DEVICE_CAPACITY_BYTES / 4;
-    let config = QueryServiceConfig {
-        max_concurrent_queries: 1,
-        max_queries_per_device: Some(1),
-        max_admission_queue_len: 2,
-        stream_pool_size: Some(3),
-        device_capacity_bytes: Some(TEST_DEVICE_CAPACITY_BYTES),
-        admission_wait_timeout: Duration::from_millis(500),
-        slot_guarantee: SlotGuarantee::Optimistic,
-        ..QueryServiceConfig::default()
-    };
-    let service = QueryService::new_with_device_ordinals_and_deployment(
-        config,
-        vec![0],
-        vec![QueryServiceTenantConfig::new("tenant", query_budget)],
-        non_gds_deployment(),
-    )
-    .unwrap();
+    let service = runtime_test_service(
+        QueryExecutionConfig::default(),
+        QueueBounds { max_waiters: 2, max_wait: Duration::from_millis(500), max_overtakes_per_waiter: 4 },
+        test_device_profiles(&[0], 1, 3, TEST_DEVICE_CAPACITY_BYTES),
+    );
 
-    let first = service.try_admit_query("tenant").unwrap().expect("first query should admit");
+    let first = service.try_admit_query().unwrap().expect("first query should admit");
 
-    assert!(service.try_admit_query("tenant").unwrap().is_none());
+    assert!(service.try_admit_query().unwrap().is_none());
 
     drop(first);
-    let _second = service.admit_query("tenant").expect("ordered cleanup should wake per-device admission");
+    let _second = service.admit_query().expect("ordered cleanup should wake per-device admission");
 }
 
 #[test]
-fn max_queries_per_device_release_wakes_waiter_in_same_backend() {
-    if cudf::DeviceId::count().unwrap_or(0) < 1 {
+fn per_device_active_limit_release_wakes_waiter_in_same_backend() {
+    if !has_required_device_inventory(1) {
         return;
     }
     let _guard = service_claim_test_guard();
-    let query_budget = TEST_DEVICE_CAPACITY_BYTES / 4;
-    let config = QueryServiceConfig {
-        max_concurrent_queries: 1,
-        max_queries_per_device: Some(1),
-        max_admission_queue_len: 2,
-        stream_pool_size: Some(3),
-        device_capacity_bytes: Some(TEST_DEVICE_CAPACITY_BYTES),
-        admission_wait_timeout: Duration::from_secs(2),
-        slot_guarantee: SlotGuarantee::Optimistic,
-        ..QueryServiceConfig::default()
-    };
-    let service = QueryService::new_with_device_ordinals_and_deployment(
-        config,
-        vec![0],
-        vec![QueryServiceTenantConfig::new("tenant", query_budget)],
-        non_gds_deployment(),
-    )
-    .unwrap();
+    let service = runtime_test_service(
+        QueryExecutionConfig::default(),
+        QueueBounds { max_waiters: 2, max_wait: Duration::from_secs(2), max_overtakes_per_waiter: 4 },
+        test_device_profiles(&[0], 1, 3, TEST_DEVICE_CAPACITY_BYTES),
+    );
 
-    let first = service.try_admit_query("tenant").unwrap().expect("first query should admit");
+    let first = service.try_admit_query().unwrap().expect("first query should admit");
     let waiting_service = service.clone();
     let (sender, receiver) = mpsc::channel();
     let waiter = std::thread::spawn(move || {
-        let result = waiting_service
-            .admit_query("tenant")
-            .map(|handle| handle.device_ordinal())
-            .map_err(|error| error.to_string());
+        let result =
+            waiting_service.admit_query().map(|handle| handle.device_ordinal()).map_err(|error| error.to_string());
         sender.send(result).expect("main thread should receive waiter result");
     });
 
@@ -449,257 +379,210 @@ fn max_queries_per_device_release_wakes_waiter_in_same_backend() {
 }
 
 #[test]
-fn max_queries_per_device_waits_for_escaped_context_after_handle_finish() {
-    if cudf::DeviceId::count().unwrap_or(0) < 1 {
+fn per_device_active_limit_waits_for_escaped_context_after_handle_finish() {
+    if !has_required_device_inventory(1) {
         return;
     }
     let _guard = service_claim_test_guard();
-    let query_budget = TEST_DEVICE_CAPACITY_BYTES / 4;
-    let config = QueryServiceConfig {
-        max_concurrent_queries: 2,
-        max_queries_per_device: Some(1),
-        max_admission_queue_len: 2,
-        stream_pool_size: Some(6),
-        device_capacity_bytes: Some(TEST_DEVICE_CAPACITY_BYTES),
-        admission_wait_timeout: Duration::from_millis(500),
-        slot_guarantee: SlotGuarantee::Optimistic,
-        ..QueryServiceConfig::default()
-    };
-    let service = QueryService::new_with_device_ordinals_and_deployment(
-        config,
-        vec![0],
-        vec![QueryServiceTenantConfig::new("tenant", query_budget)],
-        non_gds_deployment(),
-    )
-    .unwrap();
+    let service = runtime_test_service(
+        QueryExecutionConfig::default(),
+        QueueBounds { max_waiters: 2, max_wait: Duration::from_millis(500), max_overtakes_per_waiter: 4 },
+        test_device_profiles(&[0], 1, 6, TEST_DEVICE_CAPACITY_BYTES),
+    );
 
-    let first = service.try_admit_query("tenant").unwrap().expect("first query should admit");
-    let tenant_context = first.acquire_context().unwrap();
-    let retained_context = tenant_context.context().clone();
-    drop(tenant_context);
+    let first = service.try_admit_query().unwrap().expect("first query should admit");
+    let admitted_context = first.acquire_context().unwrap();
+    let retained_context = admitted_context.context().clone();
+    drop(admitted_context);
     first.finish();
 
     assert_eq!(service.admission_snapshot().unwrap().active_queries, 1);
     assert!(
-        service.try_admit_query("tenant").unwrap().is_none(),
+        service.try_admit_query().unwrap().is_none(),
         "the escaped context must retain the first query's device slot and grant"
     );
     drop(retained_context);
-    let second = service.admit_query("tenant").expect("the final context anchor should wake admission");
+    let second = service.admit_query().expect("the final context anchor should wake admission");
     assert_eq!(second.device_ordinal(), 0);
 }
 
 #[test]
 fn escaped_query_anchor_blocks_only_its_selected_device() {
-    if cudf::DeviceId::count().unwrap_or(0) < 2 {
+    if !has_required_device_inventory(2) {
         return;
     }
     let _guard = service_claim_test_guard();
-    let query_budget = TEST_DEVICE_CAPACITY_BYTES / 4;
-    let config = QueryServiceConfig {
-        max_concurrent_queries: 3,
-        max_queries_per_device: Some(1),
-        max_admission_queue_len: 3,
-        stream_pool_size: Some(9),
-        device_capacity_bytes: Some(TEST_DEVICE_CAPACITY_BYTES),
-        admission_wait_timeout: Duration::from_millis(500),
-        slot_guarantee: SlotGuarantee::Optimistic,
-        placement_policy: QueryPlacementPolicy::BestFit,
-        ..QueryServiceConfig::default()
-    };
-    let service = QueryService::new_with_device_ordinals_and_deployment(
-        config,
-        vec![0, 1],
-        vec![QueryServiceTenantConfig::new("tenant", query_budget)],
-        non_gds_deployment(),
-    )
-    .unwrap();
+    let service = runtime_test_service(
+        QueryExecutionConfig::default(),
+        QueueBounds { max_waiters: 3, max_wait: Duration::from_millis(500), max_overtakes_per_waiter: 4 },
+        test_device_profiles(&[0, 1], 1, 9, TEST_DEVICE_CAPACITY_BYTES),
+    );
 
-    let first = service.try_admit_query("tenant").unwrap().expect("first query should admit");
+    let first = service.try_admit_query().unwrap().expect("first query should admit");
     assert_eq!(first.device_ordinal(), 0);
-    let tenant_context = first.acquire_context().unwrap();
-    let escaped_context = tenant_context.context().clone();
-    drop(tenant_context);
+    let admitted_context = first.acquire_context().unwrap();
+    let escaped_context = admitted_context.context().clone();
+    drop(admitted_context);
     first.finish();
 
-    let second = service.try_admit_query("tenant").unwrap().expect("other device remains available");
+    let second = service.try_admit_query().unwrap().expect("other device remains available");
     assert_eq!(second.device_ordinal(), 1);
-    assert!(service.try_admit_query("tenant").unwrap().is_none());
+    assert!(service.try_admit_query().unwrap().is_none());
 
     drop(escaped_context);
-    let third = service.admit_query("tenant").expect("the escaped device-zero anchor eventually drains");
+    let third = service.admit_query().expect("the escaped device-zero anchor eventually drains");
     assert_eq!(third.device_ordinal(), 0);
 }
 
 #[test]
-fn guaranteed_min_requested_floor_validation_uses_idle_capacity_not_live_device_slots() {
-    if cudf::DeviceId::count().unwrap_or(0) < 1 {
-        return;
-    }
-    let _guard = service_claim_test_guard();
-    let min_budget = TEST_DEVICE_CAPACITY_BYTES / 16;
-    let requested_floor = TEST_DEVICE_CAPACITY_BYTES / 2;
-    let config = QueryServiceConfig {
-        max_concurrent_queries: 4,
-        max_queries_per_device: Some(4),
-        max_admission_queue_len: 8,
-        stream_pool_size: Some(12),
-        device_capacity_bytes: Some(TEST_DEVICE_CAPACITY_BYTES),
-        admission_wait_timeout: Duration::from_millis(500),
-        slot_guarantee: SlotGuarantee::GuaranteedMinimum,
-        ..QueryServiceConfig::default()
-    };
-    let service = QueryService::new_with_device_ordinals_and_deployment(
-        config,
-        vec![0],
-        vec![QueryServiceTenantConfig::with_grant_range("tenant", min_budget, TEST_DEVICE_CAPACITY_BYTES)],
-        non_gds_deployment(),
-    )
-    .unwrap();
-
-    let _first = service.try_admit_query("tenant").unwrap().expect("first query should admit");
-    let _second = service.try_admit_query("tenant").unwrap().expect("second query should admit");
-    let _third = service.try_admit_query("tenant").unwrap().expect("third query should admit");
-
-    let band = service
-        .tenant_requested_grant_band_with_grant_request(
-            &TenantId::new("tenant"),
-            QueryGrantRequest::with_requested_grant_min_bytes(requested_floor),
-        )
-        .expect("live active slots must not collapse the idle guaranteed-minimum ceiling");
-
-    assert_eq!(band.min_bytes, requested_floor);
-}
-
-#[test]
-fn multi_device_variable_grants_do_not_reserve_every_future_slot_on_one_device() {
-    if cudf::DeviceId::count().unwrap_or(0) < 2 {
+fn multi_device_variable_grants_preserve_the_empty_slot_floor_on_one_device() {
+    if !has_required_device_inventory(2) {
         return;
     }
     let _guard = service_claim_test_guard();
     let want_budget = TEST_DEVICE_CAPACITY_BYTES;
     let min_budget = want_budget / 2;
     assert!(min_budget > 0);
-    let config = QueryServiceConfig {
-        max_concurrent_queries: 2,
-        max_admission_queue_len: 8,
-        stream_pool_size: Some(6),
-        device_capacity_bytes: Some(TEST_DEVICE_CAPACITY_BYTES),
-        admission_wait_timeout: Duration::from_millis(500),
-        slot_guarantee: SlotGuarantee::Optimistic,
-        ..QueryServiceConfig::default()
-    };
-    let service = QueryService::new_with_device_ordinals_and_deployment(
-        config,
-        vec![0, 1],
-        vec![QueryServiceTenantConfig::with_grant_range("tenant", min_budget, want_budget)],
-        non_gds_deployment(),
-    )
-    .unwrap();
+    let service = runtime_test_service(
+        QueryExecutionConfig::default(),
+        QueueBounds { max_waiters: 8, max_wait: Duration::from_millis(500), max_overtakes_per_waiter: 4 },
+        test_device_profiles(&[0, 1], 2, 6, TEST_DEVICE_CAPACITY_BYTES / 2),
+    );
 
-    let first = service.try_admit_query("tenant").unwrap().expect("first query should admit");
-    let second = service.try_admit_query("tenant").unwrap().expect("second query should admit");
+    let first = service.try_admit_query().unwrap().expect("first query should admit");
+    let second = service.try_admit_query().unwrap().expect("second query should admit");
 
     assert_eq!(first.device_ordinal(), 0);
     assert_eq!(second.device_ordinal(), 1);
-    assert_eq!(first.device_budget_bytes(), want_budget);
-    assert_eq!(second.device_budget_bytes(), want_budget);
+    // The immutable ledger always preserves the configured floor for the
+    // still-empty slot on the same device, so neither grant reaches the
+    // preferred want even though the other device is idle.
+    assert_eq!(first.device_budget_bytes(), min_budget);
+    assert_eq!(second.device_budget_bytes(), min_budget);
 }
 
 #[test]
 fn multi_device_variable_grants_reserve_when_remaining_slots_exceed_other_device_capacity() {
-    if cudf::DeviceId::count().unwrap_or(0) < 2 {
+    if !has_required_device_inventory(2) {
         return;
     }
     let _guard = service_claim_test_guard();
     let want_budget = TEST_DEVICE_CAPACITY_BYTES;
     let min_budget = want_budget / 2;
     assert!(min_budget > 0);
-    let config = QueryServiceConfig {
-        max_concurrent_queries: 3,
-        max_admission_queue_len: 8,
-        stream_pool_size: Some(9),
-        device_capacity_bytes: Some(TEST_DEVICE_CAPACITY_BYTES),
-        admission_wait_timeout: Duration::from_millis(500),
-        ..QueryServiceConfig::default()
-    };
-    let service = QueryService::new_with_device_ordinals_and_deployment(
-        config,
-        vec![0, 1],
-        vec![QueryServiceTenantConfig::with_grant_range("tenant", min_budget, want_budget)],
-        non_gds_deployment(),
-    )
-    .unwrap();
+    let service = runtime_test_service(
+        QueryExecutionConfig::default(),
+        QueueBounds { max_waiters: 8, max_wait: Duration::from_millis(500), max_overtakes_per_waiter: 4 },
+        test_device_profiles(&[0, 1], 2, 9, TEST_DEVICE_CAPACITY_BYTES / 2),
+    );
 
-    let first = service.try_admit_query("tenant").unwrap().expect("first query should admit");
-    let second = service.try_admit_query("tenant").unwrap().expect("second query should admit");
-    let third = service.try_admit_query("tenant").unwrap().expect("third query should admit");
+    let first = service.try_admit_query().unwrap().expect("first query should admit");
+    let second = service.try_admit_query().unwrap().expect("second query should admit");
+    let third = service.try_admit_query().unwrap().expect("third query should admit");
 
-    assert_eq!(first.device_budget_bytes(), want_budget);
-    assert!(second.device_budget_bytes() >= min_budget);
-    assert!(third.device_budget_bytes() >= min_budget);
+    // Every admission receives exactly the configured floor: the immutable
+    // empty-slot reserve keeps one floor for the still-empty slot per device.
+    assert_eq!(first.device_budget_bytes(), min_budget);
+    assert_eq!(second.device_budget_bytes(), min_budget);
+    assert_eq!(third.device_budget_bytes(), min_budget);
 }
 
 #[test]
 fn query_service_treats_transient_device_capacity_exhaustion_as_busy_not_rejected() {
-    if cudf::DeviceId::count().unwrap_or(0) < 1 {
+    if !has_required_device_inventory(1) {
         return;
     }
     let _guard = service_claim_test_guard();
-    let query_budget = (TEST_DEVICE_CAPACITY_BYTES / 2).saturating_add(1);
-    let config = QueryServiceConfig {
-        max_concurrent_queries: 2,
-        max_admission_queue_len: 8,
-        stream_pool_size: Some(6),
-        device_capacity_bytes: Some(TEST_DEVICE_CAPACITY_BYTES),
-        admission_wait_timeout: Duration::from_millis(500),
-        slot_guarantee: SlotGuarantee::Optimistic,
-        ..QueryServiceConfig::default()
-    };
-    let service = QueryService::new_with_device_ordinals_and_deployment(
-        config,
-        vec![0],
-        vec![QueryServiceTenantConfig::new("tenant", query_budget)],
-        non_gds_deployment(),
-    )
-    .unwrap();
+    let service = runtime_test_service(
+        QueryExecutionConfig::default(),
+        QueueBounds { max_waiters: 8, max_wait: Duration::from_millis(500), max_overtakes_per_waiter: 4 },
+        test_device_profiles(&[0], 1, 6, TEST_DEVICE_CAPACITY_BYTES),
+    );
 
-    let first = service.try_admit_query("tenant").unwrap().expect("first query should admit");
+    let first = service.try_admit_query().unwrap().expect("first query should admit");
 
-    assert!(service.try_admit_query("tenant").unwrap().is_none());
+    assert!(service.try_admit_query().unwrap().is_none());
     drop(first);
-    let _second = service.admit_query("tenant").expect("ordered cleanup should wake capacity admission");
+    let _second = service.admit_query().expect("ordered cleanup should wake capacity admission");
 }
 
 #[test]
 fn queued_query_service_admission_times_out_while_device_capacity_is_busy() {
-    if cudf::DeviceId::count().unwrap_or(0) < 1 {
+    if !has_required_device_inventory(1) {
         return;
     }
     let _guard = service_claim_test_guard();
-    let query_budget = (TEST_DEVICE_CAPACITY_BYTES / 2).saturating_add(1);
-    let config = QueryServiceConfig {
-        max_concurrent_queries: 2,
-        max_admission_queue_len: 8,
-        stream_pool_size: Some(6),
-        device_capacity_bytes: Some(TEST_DEVICE_CAPACITY_BYTES),
-        admission_wait_timeout: Duration::from_millis(1),
-        slot_guarantee: SlotGuarantee::Optimistic,
-        ..QueryServiceConfig::default()
-    };
-    let service = QueryService::new_with_device_ordinals_and_deployment(
-        config,
-        vec![0],
-        vec![QueryServiceTenantConfig::new("tenant", query_budget)],
-        non_gds_deployment(),
-    )
-    .unwrap();
-    let _active = service.try_admit_query("tenant").unwrap().expect("first query should admit");
-    let mut waiter = service.enqueue_admission("tenant").unwrap();
+    let service = runtime_test_service(
+        QueryExecutionConfig::default(),
+        QueueBounds { max_waiters: 8, max_wait: Duration::from_millis(1), max_overtakes_per_waiter: 4 },
+        test_device_profiles(&[0], 1, 6, TEST_DEVICE_CAPACITY_BYTES),
+    );
+    let _active = service.try_admit_query().unwrap().expect("first query should admit");
+    let mut waiter = service.enqueue_admission().unwrap();
 
     std::thread::sleep(Duration::from_millis(5));
     let error = waiter.try_admit().unwrap_err();
 
     assert_eq!(error.code(), crate::error::QueryErrorCode::ServiceOverloaded);
-    assert_eq!(error.fact_value("reason"), Some("admission_wait_timeout"));
+    assert_eq!(error.fact_value("reason"), Some("queue_wait_elapsed"));
+}
+
+#[test]
+fn protection_retargets_on_health_close_and_unrelated_devices_stay_work_conserving() {
+    if !has_required_device_inventory(2) {
+        return;
+    }
+    let _guard = service_claim_test_guard();
+    let floor = 48 * 1024 * 1024;
+    let service = runtime_test_service(
+        QueryExecutionConfig::default(),
+        QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(5), max_overtakes_per_waiter: 1 },
+        test_device_profiles(&[0, 1], 2, 12, TEST_DEVICE_CAPACITY_BYTES / 8),
+    );
+
+    let active_zero = service.try_admit_query().unwrap().expect("first admits");
+    let active_one = service.try_admit_query().unwrap().expect("second admits");
+    let (zero_device, one_device) = (active_zero.device_ordinal(), active_one.device_ordinal());
+    assert_ne!(zero_device, one_device);
+
+    // A floor-raised waiter cannot fit anywhere behind the two grants.
+    let mut big = service
+        .enqueue_admission_with_request(crate::runtime::QueryAdmissionRequest::new().with_attempt_requirement(
+            AttemptRequirement {
+                configured_floor_bytes: floor,
+                capability_floor_raise_bytes: 0,
+                soft_working_set_hint_bytes: Some(floor),
+                estimate_quality: EstimateQuality::Modeled,
+                required_capabilities: Vec::new(),
+            },
+        ))
+        .unwrap();
+    assert!(big.try_admit().unwrap().is_none(), "raised floor is capacity-blocked on both devices");
+
+    // A later floor-level waiter admitted on the same device counts the one
+    // allowed overtake and installs protection on the selected device.
+    let admitted_small = service.admit_query().expect("later waiter bypasses the capacity-blocked head");
+    assert_eq!(admitted_small.device_ordinal(), zero_device);
+    let protected = service.admission_snapshot().unwrap().protected_devices;
+    assert_eq!(protected, vec![one_device], "protection targets the deficit-ordered compatible device");
+
+    // Closing the protected device retargets the protection deterministically.
+    service.close_device_admission_for_test(one_device, "test_quarantine").unwrap();
+    let retargeted = service.admission_snapshot().unwrap().protected_devices;
+    assert_eq!(retargeted, vec![zero_device], "protection retargets to the next compatible device");
+
+    // The unrelated healthy device remains work-conserving: releases there
+    // bank the protected waiter's liveness until it is admitted. Cleanup
+    // commits asynchronously, so poll the waiter within its queue deadline.
+    drop(active_zero);
+    drop(active_one);
+    drop(admitted_small);
+    let admitted_big = loop {
+        if let Some(handle) = big.try_admit().unwrap() {
+            break handle;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    assert_eq!(admitted_big.device_ordinal(), zero_device);
+    assert_eq!(service.admission_snapshot().unwrap().protected_devices, Vec::<usize>::new());
 }

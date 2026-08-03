@@ -55,7 +55,6 @@ fn native_clickbench_execution_report_records_normal_native_selection() {
     for required in [
         "NEXUS_CLICKBENCH_EXECUTION_QUERY_IDS",
         "NEXUS_CLICKBENCH_EXECUTION_PROGRESS",
-        "NEXUS_NATIVE_PIPELINE_EXECUTION_MODE",
         "RelationalExecutionSelection::native()",
     ] {
         assert!(src.contains(required), "binary source missing env var {required}");

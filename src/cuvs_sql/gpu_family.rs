@@ -20,7 +20,6 @@ use crate::{
     gpu_functions::{
         GpuCallRequest, GpuCallValidation, GpuFunctionAvailability, GpuFunctionDescriptor, GpuFunctionFamily,
     },
-    session_config::{DataFusionNexusSessionConfig, NativeMemoryPolicyConfig},
 };
 
 const CUVS_FAMILY_ID: &str = "cuvs";
@@ -46,17 +45,11 @@ impl CuvsGpuFunctionFamily {
 /// installable for planning contracts. The catalog must nevertheless advertise
 /// that execution cannot be planned. cuVS also intentionally has no bounded
 /// execution contract until lower-level peak-memory preflight exists.
-pub(crate) fn cuvs_gpu_function_availability(config: Option<&SessionConfig>) -> GpuFunctionAvailability {
+pub(crate) fn cuvs_gpu_function_availability(_config: Option<&SessionConfig>) -> GpuFunctionAvailability {
     if !cfg!(feature = "cuvs") {
         return GpuFunctionAvailability::Unavailable { reason: "required_feature_disabled".to_string() };
     }
-    if config
-        .and_then(|config| config.options().extensions.get::<DataFusionNexusSessionConfig>())
-        .is_some_and(|config| config.native_memory_policy == NativeMemoryPolicyConfig::Bounded)
-    {
-        return GpuFunctionAvailability::Unavailable { reason: "bounded_execution_unavailable".to_string() };
-    }
-    GpuFunctionAvailability::Available
+    GpuFunctionAvailability::Unavailable { reason: "bounded_execution_unavailable".to_string() }
 }
 
 #[async_trait::async_trait]
@@ -477,7 +470,7 @@ mod tests {
     fn no_cuvs_feature_is_never_reported_as_available() {
         let availability = cuvs_gpu_function_availability(None);
         if cfg!(feature = "cuvs") {
-            assert!(availability.is_available());
+            assert_eq!(availability.unavailable_reason(), Some("bounded_execution_unavailable"));
         } else {
             assert_eq!(availability.unavailable_reason(), Some("required_feature_disabled"));
         }

@@ -157,11 +157,11 @@ fn semijoin_reduction_accepts_filtered_left_semi_dimension_keyset_for_transitive
 }
 
 #[test]
-fn semijoin_reduction_strict_gate_allows_later_passes_to_route_dimension_keyset_filter() {
+fn semijoin_reduction_bounded_gate_allows_later_passes_to_route_dimension_keyset_filter() {
     let plan = root_semijoin_over_fact_date_dimension_plan();
     let options = NativeOptimizerOptions {
         semijoin_reduction: SemijoinReductionOptions::default()
-            .with_admission_mode(SemijoinReductionAdmissionMode::StrictBounded),
+            .with_admission_mode(SemijoinReductionAdmissionMode::Bounded),
         ..NativeOptimizerOptions::default()
     };
 
@@ -175,7 +175,7 @@ fn semijoin_reduction_strict_gate_allows_later_passes_to_route_dimension_keyset_
     assert_eq!(candidate.rejected_reason, None);
     assert_eq!(
         candidate.admission_decision,
-        Some(nexus_query_engine::optimizer::SemijoinReductionAdmissionDecision::StrictBoundedKept)
+        Some(nexus_query_engine::optimizer::SemijoinReductionAdmissionDecision::BoundedKept)
     );
     assert_eq!(candidate.original_admitted, Some(true));
     assert_eq!(candidate.rewritten_admitted, Some(true));
@@ -207,10 +207,10 @@ fn semijoin_reduction_rejects_unestimated_non_keyset_shape() {
 }
 
 #[test]
-fn semijoin_reduction_strict_admission_gate_keeps_rewrite_when_original_is_not_yet_admitted() {
+fn semijoin_reduction_bounded_admission_gate_keeps_rewrite_when_original_is_not_yet_admitted() {
     let plan = root_semijoin_over_inner_join_plan(SemijoinTarget::Right);
     let options = semijoin_reduction_only_options(
-        SemijoinReductionOptions::default().with_admission_mode(SemijoinReductionAdmissionMode::StrictBounded),
+        SemijoinReductionOptions::default().with_admission_mode(SemijoinReductionAdmissionMode::Bounded),
     );
 
     let result = optimize_query_plan(plan, &options);
@@ -223,7 +223,7 @@ fn semijoin_reduction_strict_admission_gate_keeps_rewrite_when_original_is_not_y
     assert_eq!(candidate.rejected_reason, None);
     assert_eq!(
         candidate.admission_decision,
-        Some(nexus_query_engine::optimizer::SemijoinReductionAdmissionDecision::StrictBoundedKept)
+        Some(nexus_query_engine::optimizer::SemijoinReductionAdmissionDecision::BoundedKept)
     );
     assert_eq!(candidate.original_admitted, Some(false));
     assert_eq!(candidate.rewritten_admitted, Some(false));

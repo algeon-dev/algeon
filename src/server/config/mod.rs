@@ -9,11 +9,8 @@ use std::{
 };
 
 use nexus_query_engine::{
-    mode::{NativePipelineExecutionMode, StatisticalAggregateExecutionMode},
-    runtime::{
-        MemoryControlPolicy, QueryMemoryDomainPolicy, QueryPlacementPolicy, SlotGuarantee, SourceChunkPlanningMode,
-        SourceSchedulerPolicy,
-    },
+    mode::StatisticalAggregateExecutionMode,
+    runtime::{MemoryControlPolicy, SourceChunkPlanningMode, SourceSchedulerPolicy},
 };
 use serde::Deserialize;
 
@@ -24,10 +21,10 @@ use super::{
 #[cfg(feature = "iceberg")]
 use crate::table_format::scan::{DEFAULT_TABLE_FORMAT_S3_SOURCE_STORAGE_PROFILE_ID, credential_free_endpoint_identity};
 use crate::{
-    backend::{GpuMemoryOwnership, MemoryShare, NexusAdmissionPolicy},
+    backend::{GpuMemoryOwnership, NexusGpuDeviceProfile, NexusGpuQueuePolicy},
     cugraph_sql::{CugraphGraphConstructionPolicy, CugraphGraphOptions},
     native_exec::NexusNativeExecutionConfig,
-    planner::{HostExecutionQosConfig, NexusNativeOptimizerConfig},
+    planner::NexusNativeOptimizerConfig,
 };
 #[cfg(feature = "iceberg")]
 use crate::{
@@ -48,20 +45,10 @@ mod observability;
 mod workspace;
 
 pub use admission::{
-    NEXUS_SERVER_ADMISSION_GRANT_MIN_ENV, NEXUS_SERVER_ADMISSION_GRANT_WANT_ENV,
-    NEXUS_SERVER_ADMISSION_MAX_QUERIES_PER_DEVICE_ENV, NEXUS_SERVER_ADMISSION_PINNED_DEVICE_ENV,
-    NEXUS_SERVER_ADMISSION_PLACEMENT_POLICY_ENV, NEXUS_SERVER_ADMISSION_SLOT_GUARANTEE_ENV,
-    NEXUS_SERVER_ADMISSION_WAIT_TIMEOUT_MS_ENV, NEXUS_SERVER_ADMISSION_WORKLOAD_PROFILE_ENV,
-    NEXUS_SERVER_DEVICE_BUDGET_FRACTION_ENV, NEXUS_SERVER_GPU_DEVICES_ENV,
-    NEXUS_SERVER_HOST_EXECUTION_QOS_MAX_CONCURRENT_STATEMENTS_ENV, NEXUS_SERVER_HOST_EXECUTION_QOS_WAIT_TIMEOUT_MS_ENV,
-    NEXUS_SERVER_MAX_CONCURRENT_QUERIES_ENV, NEXUS_SERVER_MAX_IN_FLIGHT_ENV,
+    NEXUS_SERVER_ADMISSION_MAX_OVERTAKES_PER_WAITER_ENV, NEXUS_SERVER_ADMISSION_MAX_QUEUE_WAIT_MS_ENV,
+    NEXUS_SERVER_ADMISSION_MAX_QUEUED_ATTEMPTS_ENV, NEXUS_SERVER_GPU_DEVICES_ENV,
 };
-use admission::{
-    first_non_neutral_unbounded_admission_field, server_admission_placement_config, server_admission_policy,
-    server_admission_workload_profile, server_gpu_devices, server_host_execution_qos_max_concurrent_statements,
-    server_host_execution_qos_wait_timeout, server_max_concurrent_queries, server_placement_eligible_device_count,
-    validate_admission_grant_min_capacity,
-};
+use admission::{server_device_profiles, server_gpu_devices, server_queue_policy};
 use cugraph::cugraph_config;
 pub use cugraph::{
     CugraphServerConfig, NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV, NEXUS_SERVER_CUGRAPH_DIRECTED_ENV,
@@ -93,12 +80,9 @@ use iceberg::{iceberg_config, iceberg_source_storage_profile};
 use native::native_optimizer_config;
 pub use native::{
     NEXUS_SERVER_NATIVE_CONFIG_OPTIONS, NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV,
-    NEXUS_SERVER_NATIVE_GRAPH_CACHE_MAX_RETAINED_BYTES_ENV, NEXUS_SERVER_NATIVE_MAX_RETRY_ATTEMPTS_ENV,
-    NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV,
-    NEXUS_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV, NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV,
-    NEXUS_SERVER_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV, NEXUS_SERVER_NATIVE_PIPELINE_EXECUTION_MODE_ENV,
-    NEXUS_SERVER_NATIVE_QUERY_MEMORY_DOMAIN_CEILING_MULTIPLIER_ENV,
-    NEXUS_SERVER_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES_ENV, NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV,
+    NEXUS_SERVER_NATIVE_MAX_RETRY_ATTEMPTS_ENV, NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV,
+    NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, NEXUS_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV,
+    NEXUS_SERVER_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV, NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV,
     NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV, NexusServerNativeConfigOption,
     ServerNativeConfigScope,
 };
@@ -117,21 +101,48 @@ pub use workspace::{
     WorkspaceOverlayConfig,
 };
 
+// P2 has one resource-only admission contract. These historical environment
+// switches must fail closed instead of silently starting a deployment with
+// different defaults. Keep this list centrally adjacent to the first env
+// read so every server configuration path applies the same migration gate.
+const REMOVED_P2_SERVER_ENVIRONMENT_VARIABLES: &[&str] = &[
+    "NEXUS_SERVER_ADMISSION_MAX_ACTIVE_ATTEMPTS_PER_DEVICE",
+    "NEXUS_SERVER_ADMISSION_ATTEMPT_FLOOR_BYTES",
+    "NEXUS_SERVER_ADMISSION_SOURCE_WORK_PER_ATTEMPT",
+    "NEXUS_SERVER_ADMISSION_WORKLOAD_PROFILE",
+    "NEXUS_SERVER_ADMISSION_GRANT_MIN",
+    "NEXUS_SERVER_ADMISSION_GRANT_WANT",
+    "NEXUS_SERVER_ADMISSION_SLOT_GUARANTEE",
+    "NEXUS_SERVER_ADMISSION_PLACEMENT_POLICY",
+    "NEXUS_SERVER_ADMISSION_PINNED_DEVICE",
+    "NEXUS_SERVER_ADMISSION_MAX_QUERIES_PER_DEVICE",
+    "NEXUS_SERVER_ADMISSION_WAIT_TIMEOUT_MS",
+    "NEXUS_SERVER_MAX_CONCURRENT_QUERIES",
+    "NEXUS_SERVER_MAX_IN_FLIGHT",
+    "NEXUS_SERVER_NATIVE_MEMORY_POLICY",
+    "NEXUS_SERVER_NATIVE_PIPELINE_EXECUTION_MODE",
+    "NEXUS_SERVER_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES",
+    "NEXUS_SERVER_NATIVE_GRAPH_CACHE_MAX_RETAINED_BYTES",
+    "NEXUS_SERVER_NATIVE_QUERY_MEMORY_DOMAIN_CEILING_MULTIPLIER",
+    "NEXUS_SERVER_DEVICE_BUDGET_FRACTION",
+];
+
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
     pub bind_addr: SocketAddr,
     pub log_filter: String,
-    pub max_in_flight: usize,
-    pub admission_policy: NexusAdmissionPolicy,
-    /// Optional host-side statement execution bound. This is separate from
-    /// relational native selection and GPU query admission.
-    pub host_execution_qos: Option<HostExecutionQosConfig>,
+    /// Queue-only admission policy. Device-local bounds live in
+    /// `gpu_device_profiles` and are never duplicated here.
+    pub queue_policy: NexusGpuQueuePolicy,
+    /// Complete ordinal-keyed resource envelopes for the selected GPUs.
+    /// The server never broadcasts a scalar admission setting across this
+    /// collection.
+    pub gpu_device_profiles: Vec<NexusGpuDeviceProfile>,
     pub gpu_devices: Vec<usize>,
     /// Exact deployment ownership declaration consumed when a bounded GPU
     /// backend is constructed. Configuration loading intentionally leaves this
     /// empty; the embedding/launch profile must make the ownership promise.
     pub gpu_memory_ownership: Vec<(usize, GpuMemoryOwnership)>,
-    pub device_budget_fraction: Option<f64>,
     /// Wall-clock time a planned Flight SQL statement ticket may wait for
     /// `DoGet`. Expired tickets are dropped; GPU admission is acquired later
     /// by native plan execution.
@@ -139,10 +150,8 @@ pub struct ServerConfig {
     /// Bounded native runtime-artifact capture and sealed retention policy.
     pub observability: ServerObservabilityConfig,
     pub native_optimizer_config: NexusNativeOptimizerConfig,
-    /// Authentication mode applied to incoming Flight SQL RPCs. Loaded
-    /// from the TOML overlay pointed to by
-    /// [`NEXUS_SERVER_CONFIG_FILE_ENV`]; defaults to
-    /// [`crate::server::AuthMode::Disabled`] when no file is provided.
+    /// Authentication mode applied to incoming Flight SQL RPCs. Loaded from
+    /// the optional TOML overlay and disabled by default.
     pub auth: AuthConfig,
     /// Optional mutable workspace overlay that can read through to a
     /// configured source schema while keeping all DDL local to the workspace.
@@ -169,6 +178,7 @@ impl ServerConfig {
 
     pub fn from_env_get(mut get: impl FnMut(&str) -> Option<String>) -> Result<Self> {
         let mut values = EnvValues::new(&mut get);
+        reject_removed_p2_server_environment(&mut values)?;
         let bind_addr = values.socket_addr(NEXUS_SERVER_BIND_ENV, DEFAULT_BIND_ADDR)?;
         let log_filter = values.string(NEXUS_SERVER_LOG_ENV).unwrap_or_else(|| DEFAULT_LOG_FILTER.to_string());
         let overlay_path = values.string(NEXUS_SERVER_CONFIG_FILE_ENV).map(PathBuf::from);
@@ -176,44 +186,15 @@ impl ServerConfig {
             Some(path) => load_overlay(&path)?,
             None => ServerFileOverlay::default(),
         };
-        let admission_limit_explicit = values
-            .any_present([NEXUS_SERVER_MAX_CONCURRENT_QUERIES_ENV, NEXUS_SERVER_MAX_IN_FLIGHT_ENV])
-            || overlay.admission.max_concurrent_queries.is_some();
         let gpu_devices = server_gpu_devices(&mut values)?;
-        let admission_workload_profile = server_admission_workload_profile(&mut values, &overlay.admission)?;
-        let admission_placement = server_admission_placement_config(&mut values, &overlay.admission, &gpu_devices)?;
-        let max_concurrent_queries = server_max_concurrent_queries(
-            &mut values,
-            &overlay.admission,
-            admission_workload_profile.value,
-            server_placement_eligible_device_count(gpu_devices.len(), admission_placement.placement_policy),
-        )?;
-        let mut max_in_flight = max_concurrent_queries.value;
-        let admission = server_admission_policy(
-            &mut values,
-            &overlay.admission,
-            max_in_flight,
-            admission_workload_profile,
-            admission_placement,
-        )?;
-        let mut admission_policy = admission.policy.clone();
-        let host_execution_qos_max_concurrent_statements =
-            server_host_execution_qos_max_concurrent_statements(&mut values, &overlay.host_execution_qos)?;
-        let host_execution_qos_wait_timeout =
-            server_host_execution_qos_wait_timeout(&mut values, &overlay.host_execution_qos)?;
-        let device_budget_fraction = values.optional_f64(NEXUS_SERVER_DEVICE_BUDGET_FRACTION_ENV)?;
+        let queue_policy = server_queue_policy(&mut values, &overlay.admission)?;
         let statement_ticket_ttl = checked_config_duration(
             NEXUS_SERVER_STATEMENT_TICKET_TTL_SECS_ENV,
             values.positive_u64(NEXUS_SERVER_STATEMENT_TICKET_TTL_SECS_ENV, DEFAULT_STATEMENT_TICKET_TTL_SECS)?,
         )?;
         let observability = server_observability_config(&mut values, &overlay.observability)?;
-        let native_optimizer_config =
-            native_optimizer_config(&mut values, &overlay.native, &gpu_devices, device_budget_fraction)?;
-        validate_admission_grant_min_capacity(&admission, &native_optimizer_config)?;
-        let host_execution_qos = host_execution_qos_max_concurrent_statements.map(|limit| {
-            let config = HostExecutionQosConfig::new(limit);
-            host_execution_qos_wait_timeout.map_or(config.clone(), |timeout| config.with_wait_timeout(timeout))
-        });
+        let native_optimizer_config = native_optimizer_config(&mut values, &overlay.native)?;
+        let gpu_device_profiles = server_device_profiles(&overlay.admission, &gpu_devices)?;
         #[cfg(feature = "iceberg")]
         let mut native_optimizer_config = native_optimizer_config;
 
@@ -240,38 +221,14 @@ impl ServerConfig {
         let workspace = workspace_overlay_config(&mut values)?;
 
         overlay.auth.mode.validate()?;
-        if matches!(
-            native_optimizer_config.native_execution_config().memory_control_policy(),
-            MemoryControlPolicy::Unbounded
-        ) && max_in_flight > 1
-        {
-            if admission_limit_explicit {
-                return Err(ServerError::invalid_config(
-                    max_concurrent_queries.field,
-                    "requires bounded native memory policy when greater than one",
-                ));
-            }
-            max_in_flight = 1;
-            admission_policy = admission_policy.with_max_concurrent_queries(max_in_flight);
-        }
-        if matches!(
-            native_optimizer_config.native_execution_config().memory_control_policy(),
-            MemoryControlPolicy::Unbounded
-        ) && let Some(field) =
-            first_non_neutral_unbounded_admission_field(admission_workload_profile, &admission, admission_placement)
-        {
-            return Err(ServerError::invalid_config(field, "requires bounded native memory policy"));
-        }
 
-        Ok(Self {
+        let config = Self {
             bind_addr,
             log_filter,
-            max_in_flight,
-            admission_policy,
-            host_execution_qos,
+            queue_policy,
+            gpu_device_profiles,
             gpu_devices,
             gpu_memory_ownership: Vec::new(),
-            device_budget_fraction,
             statement_ticket_ttl,
             observability,
             native_optimizer_config,
@@ -280,8 +237,70 @@ impl ServerConfig {
             #[cfg(feature = "iceberg")]
             iceberg,
             cugraph,
-        })
+        };
+        config.validate_gpu_device_profiles()?;
+        Ok(config)
     }
+
+    /// Prove that the public config struct still carries one profile for each
+    /// selected ordinal.  `from_env_get` already applies this check while
+    /// parsing TOML, but callers can construct `ServerConfig` directly before
+    /// injecting or constructing a Flight backend.
+    pub(crate) fn validate_gpu_device_profiles(&self) -> Result<()> {
+        let selected = self.gpu_devices.iter().copied().collect::<std::collections::BTreeSet<_>>();
+        if selected.len() != self.gpu_devices.len() {
+            return Err(ServerError::invalid_config(
+                NEXUS_SERVER_GPU_DEVICES_ENV,
+                "must not contain duplicate device ordinals",
+            ));
+        }
+        let mut configured = std::collections::BTreeSet::new();
+        for profile in &self.gpu_device_profiles {
+            if !configured.insert(profile.device_ordinal()) {
+                return Err(ServerError::invalid_config(
+                    "admission.device_profiles",
+                    format!("contains duplicate profile for device ordinal {}", profile.device_ordinal()),
+                )
+                .with_fact("reason", "duplicate_device")
+                .with_fact("device_ordinal", profile.device_ordinal()));
+            }
+        }
+        let missing = selected.difference(&configured).copied().collect::<Vec<_>>();
+        if !missing.is_empty() {
+            return Err(ServerError::invalid_config(
+                "admission.device_profiles",
+                "must configure every device selected by NEXUS_SERVER_GPU_DEVICES",
+            )
+            .with_fact("reason", "missing_devices")
+            .with_fact("device_ordinals", format_device_ordinals(&missing)));
+        }
+        let extra = configured.difference(&selected).copied().collect::<Vec<_>>();
+        if !extra.is_empty() {
+            return Err(ServerError::invalid_config(
+                "admission.device_profiles",
+                "must not configure a device outside NEXUS_SERVER_GPU_DEVICES",
+            )
+            .with_fact("reason", "unconfigured_devices")
+            .with_fact("device_ordinals", format_device_ordinals(&extra)));
+        }
+        Ok(())
+    }
+}
+
+fn format_device_ordinals(device_ordinals: &[usize]) -> String {
+    device_ordinals.iter().map(usize::to_string).collect::<Vec<_>>().join(",")
+}
+
+fn reject_removed_p2_server_environment(values: &mut EnvValues<'_>) -> Result<()> {
+    for name in REMOVED_P2_SERVER_ENVIRONMENT_VARIABLES {
+        if values.string(name).is_some() {
+            return Err(ServerError::invalid_config(
+                name,
+                "this server setting was removed by the P2 resource-only admission cutover; remove it",
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn checked_config_duration(field: &'static str, seconds: u64) -> Result<Duration> {

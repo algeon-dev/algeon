@@ -190,10 +190,6 @@ fn materialize_partitioned_hash_equi_join_partition(
         },
     };
     txn.set_output_reservation(output_reservation);
-    if let Err(error) = reservations.reclaim_source_cache_for_external_working_set(reservations.budget(), metrics) {
-        txn.rollback(reservations, metrics);
-        return Err(error);
-    }
     let (left, right) = txn.sides();
     let output = match txn.indices().materialize_output(
         &left.frame,

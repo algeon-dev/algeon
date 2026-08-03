@@ -169,8 +169,6 @@ fn spawn_example(params: &RunParams) -> E2eResult<Child> {
         .stderr(Stdio::inherit())
         .env("EXAMPLE_REST_BIND", params.rest_bind.to_string())
         .env("NEXUS_SERVER_BIND", params.flight_bind.to_string())
-        .env("NEXUS_SERVER_MAX_CONCURRENT_QUERIES", "1")
-        .env_remove("NEXUS_SERVER_MAX_IN_FLIGHT")
         .env_remove("NEXUS_SERVER_CONFIG_FILE")
         .env("NEXUS_SERVER_CUGRAPH_ENABLED", "true")
         .env("NEXUS_ICEBERG_CATALOG_KIND", "rest")

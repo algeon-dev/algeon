@@ -1,10 +1,9 @@
-//! Multi-tenant service admission harness for native execution.
+//! Bounded native query-service admission harness.
 
 #[cfg(test)]
 use std::sync::atomic::AtomicUsize;
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
-    fmt,
+    collections::{BTreeMap, HashMap, VecDeque},
     sync::{
         Arc, Condvar, Mutex, OnceLock, Weak,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -14,26 +13,23 @@ use std::{
 
 use tokio::{sync::Notify, time};
 
-#[cfg(feature = "cugraph")]
-use super::StreamLease;
-#[cfg(feature = "cugraph")]
-use super::gpu::placement::rank_cache_affine_candidates;
+#[cfg(test)]
+use super::gpu::claim_live_backend;
 use super::{
-    CacheFillByteBudget, DeploymentIoCapability, DeviceContext, DeviceMemoryFailureReport, DeviceRegistry,
-    DeviceRegistryConfig, DeviceTelemetrySnapshot, ExecutionBoundaryPolicy, ExecutionCancellation, ExecutionContext,
-    GdsDriverProbeStatus, GpuBackendConstructionCheckpoint, GpuBackendConstructionProbe, GpuBackendControllerDraft,
-    GpuBackendDeviceConfig, GpuBackendMemoryShare, GpuBackendTenantDraft, GpuDeviceMemoryLimit, GpuExecutionJobKind,
-    GpuExecutionPool, GpuExecutionPoolSnapshot, GpuExecutionQuerySnapshot, GpuExecutionQueryTracker, GpuInventory,
-    GpuMemoryOwnership, GpuTelemetry, GrantRequest, KvikioCompatModeStatus, LakehouseCacheFillConfig,
-    MemoryControlPolicy, MemoryGovernor, MemoryGovernorReport, MemoryGrant, MemoryResourcePolicy, NexusGpuInventory,
-    NexusNvmlTelemetry, NvidiaFsProbeStatus, PlacementPolicy, PlacementRequest, Priority, QueryPlacementHint,
-    QueryPlacementPolicy, QueryQos, SourceChunkPlanningMode, SourceSchedulerPolicy, SourceStorageProfile,
+    CacheFillByteBudget, DeploymentIoCapability, DeviceLedger, DeviceLedgerReport, DeviceMemoryFailureReport,
+    DeviceRegistry, DeviceRegistryConfig, DeviceTelemetrySnapshot, ExecutionBoundaryPolicy, ExecutionCancellation,
+    ExecutionContext, GdsDriverProbeStatus, GpuBackendConstructionCheckpoint, GpuBackendConstructionProbe,
+    GpuBackendControllerDraft, GpuBackendDeviceConfig, GpuDeviceMemoryLimit, GpuExecutionJobKind, GpuExecutionPool,
+    GpuExecutionPoolSnapshot, GpuExecutionQuerySnapshot, GpuExecutionQueryTracker, GpuInventory, GpuMemoryOwnership,
+    GpuTelemetry, KvikioCompatModeStatus, LakehouseCacheFillConfig, MemoryControlPolicy, MemoryGrant,
+    MemoryResourcePolicy, NexusGpuInventory, NexusNvmlTelemetry, NvidiaFsProbeStatus, PlacementPolicy,
+    PlacementRequest, SourceChunkPlanningMode, SourceSchedulerPolicy, SourceStorageProfile,
     cache_events::LakehouseCacheFillEventSink,
     cache_fill::{CacheFillConcurrencyGate, default_lakehouse_cache_fill_budget_bytes},
     context::{ExecutionContextParts, QueryServiceEpoch, QueryServiceEpochUser, validate_service_stream_pool_device},
     default_service_stream_pool_size_for_device, gpu,
     gpu::{
-        DeviceActiveQuerySlot, DeviceOwnerToken, LiveBackendLease, claim_live_backend, normalize_device_ordinals,
+        DeviceOwnerToken, LiveBackendLease, normalize_device_ordinals,
         registry::{
             DeviceRegistryCapacityPolicy, DeviceRegistryInstallProfile, DeviceRegistryMemoryPartition,
             ResolvedDeviceInstallPlans,
@@ -42,13 +38,13 @@ use super::{
     object_store::{SourceObjectStoreRegistry, default_object_store_control_runtime},
 };
 use crate::{
-    adaptive_runtime::AdaptiveMemoryHistory,
+    admission::AttemptRequirement,
     capability::{AggregateStrategyExecutionOptions, KeyedHashJoinStrategyOptions},
     chunk::SourceChunkPlanningOptions,
     dynamic_filter::DynamicFilterExecutionOptions,
     error::{QueryError, QueryErrorCode, Result},
     metrics::QueryId,
-    mode::{NativePipelineExecutionMode, StddevSampExecutionMode},
+    mode::StddevSampExecutionMode,
     observability::{
         AdmissionLifecycleState, AdmissionRequestId, RuntimeAdmissionObservation, RuntimeObservationHandle,
         RuntimeObservationOwner, RuntimeObservationPayload, RuntimeTerminalOutcome,
@@ -56,7 +52,6 @@ use crate::{
     runtime::{
         backend_core::{ConstructionResourceJournal, GpuResourcePermit, ObservationCompletionDispatcher},
         backend_lifecycle::ObservationPermit,
-        cache::local_parquet::GpuLocalParquetSourceCache,
     },
 };
 
@@ -71,48 +66,31 @@ mod tests;
 
 pub(crate) use admission::QueryAdmissionWaiter;
 use admission::{
-    ActiveAdaptiveGrant, AdaptiveGrowthCandidate, AdmissionRequest, AdmissionState, PlacedQuery, QueryCompletion,
-    finish_closed_queued_requests, finish_expired_queued_requests, finish_removed_request_error, remove_queued_request,
-    service_closed_error, service_overloaded_error, weighted_adaptive_growth_allocations,
+    AdmissionRequest, AdmissionState, PlacedQuery, QueryCompletion, QueuedAdmissionTerminal,
+    admission_cancellation_error, finish_closed_queued_requests, finish_expired_queued_requests,
+    finish_removed_request_cancelled, finish_removed_request_error, remove_queued_request, service_closed_error,
+    service_overloaded_error,
 };
-#[cfg(test)]
-use config::guaranteed_min_slot_capacity_for_capacities;
-pub use config::{QueryMemoryDomainPolicy, QueryServiceConfig, QueryServiceTenantConfig, SlotGuarantee, TenantId};
-use config::{
-    admission_capacity_bounds, default_stream_pool_size_for_ordinals, guaranteed_min_slot_capacity,
-    minimum_stream_pool_size, placement_policy_admits_ordinal, validate_stream_pool_admission_capacity,
-};
+pub use config::{QueryExecutionConfig, QueueBounds};
+use config::{default_stream_pool_size_for_ordinals, minimum_stream_pool_size};
 use device_waiters::{
     PendingDeviceSlotNotifications, notify_shared_device_admission_available, register_shared_device_admission_waiters,
 };
 #[cfg(test)]
 use device_waiters::{prune_dead_shared_device_admission_waiters, shared_device_admission_waiters};
 use handle::QueryHandleLifetime;
-pub use handle::{QueryHandle, TenantQueryContext};
-#[cfg(test)]
-use resources::local_parquet_source_caches_for_ordinals;
-#[cfg(feature = "cugraph")]
-use resources::resident_graph_caches_for_devices;
-#[cfg(all(test, feature = "cugraph"))]
-use resources::resident_graph_caches_for_ordinals;
-use resources::{
-    QueryServiceResources, gpu_execution_worker_count_per_device, local_parquet_source_caches_for_devices,
-};
-#[cfg(feature = "cugraph")]
-use resources::{WarmGraphReservation, resident_graph_cache_max_copies_per_key};
+pub use handle::{AdmittedQueryContext, QueryHandle};
+use resources::{QueryServiceResources, gpu_execution_worker_count_per_device};
 pub(crate) use service::QueryService;
+use service::QueryServiceInner;
 pub use service::{
-    QueryActivityLease, QueryAdmissionRequest, QueryGrantBand, QueryGrantRequest, QueryServiceAdmissionSnapshot,
-    QueryServiceDeviceAdmissionSnapshot, QueryServiceGraphCacheSnapshot, TenantQueueDepth,
+    QueryActivityLease, QueryAdmissionRequest, QueryServiceAdmissionSnapshot, QueryServiceDeviceAdmissionSnapshot,
 };
-use service::{QueryServiceInner, TenantGrantPolicy};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum QueryServiceDrainPhase {
     StreamPoolClose,
-    LocalSourceCache,
     AdmissionQuiescence,
-    ResidentGraphCache,
     ExecutionPoolQuiescence,
     StreamPoolQuiescence,
     ResourceEpoch,
@@ -123,9 +101,7 @@ impl QueryServiceDrainPhase {
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::StreamPoolClose => "stream_pool_close",
-            Self::LocalSourceCache => "local_source_cache",
             Self::AdmissionQuiescence => "admission_quiescence",
-            Self::ResidentGraphCache => "resident_graph_cache",
             Self::ExecutionPoolQuiescence => "execution_pool_quiescence",
             Self::StreamPoolQuiescence => "stream_pool_quiescence",
             Self::ResourceEpoch => "resource_epoch",
@@ -219,7 +195,7 @@ mod drain_outcome_tests {
         )
         .with_fact("reason", "injected_permanent_failure");
         let outcome = QueryServiceDrainOutcome::new(vec![
-            QueryServiceDrainPhaseOutcome::from_result(QueryServiceDrainPhase::LocalSourceCache, Err(deadline)),
+            QueryServiceDrainPhaseOutcome::from_result(QueryServiceDrainPhase::StreamPoolClose, Err(deadline)),
             QueryServiceDrainPhaseOutcome::from_result(QueryServiceDrainPhase::StreamPoolQuiescence, Err(permanent)),
         ]);
 
@@ -245,7 +221,6 @@ mod drain_outcome_tests {
 fn record_admission_lifecycle(
     observation: &RuntimeObservationHandle,
     admission_request_id: AdmissionRequestId,
-    tenant_id: &TenantId,
     lifecycle: AdmissionLifecycleState,
     queue_depth: usize,
     device_ordinal: Option<usize>,
@@ -257,7 +232,6 @@ fn record_admission_lifecycle(
     observation.record(|| {
         RuntimeObservationPayload::Admission(Box::new(RuntimeAdmissionObservation {
             admission_request_id,
-            tenant_id: tenant_id.as_str().to_string(),
             lifecycle,
             queue_depth,
             device_ordinal: device_ordinal.and_then(|value| u32::try_from(value).ok()),

@@ -132,9 +132,6 @@ fn native_execution_config_with_request_options(
     let Some(session_config) = session_state.config_options().extensions.get::<DataFusionNexusSessionConfig>() else {
         return native_execution_config;
     };
-    let native_execution_config = native_execution_config
-        .with_requested_grant_min_bytes(session_config.request_requested_grant_min_bytes)
-        .with_requested_grant_bytes(session_config.request_requested_grant_bytes);
     session_config.apply_graph_memory_calibration_request_options(native_execution_config)
 }
 
@@ -654,12 +651,10 @@ mod tests {
 
     #[cfg(feature = "cugraph")]
     #[test]
-    fn native_execution_config_with_request_options_reads_session_request_grant() {
+    fn native_execution_config_with_request_options_reads_graph_calibration() {
         let mut builder = SessionStateBuilder::new();
         let session_config = builder.config().get_or_insert_with(Default::default);
         let mut nexus_config = DataFusionNexusSessionConfig::default();
-        nexus_config.request_requested_grant_min_bytes = Some(384);
-        nexus_config.request_requested_grant_bytes = Some(512);
         nexus_config.set_request_graph_raw_input_edges(Some(45_564_149));
         session_config.options_mut().extensions.insert(nexus_config);
         let state = builder.build();
@@ -669,8 +664,6 @@ mod tests {
             NexusNativeExecutionConfig::bounded(1024, 512, 1, 3, 1),
         );
 
-        assert_eq!(execution_config.requested_grant_min_bytes(), Some(384));
-        assert_eq!(execution_config.requested_grant_bytes(), Some(512));
         let graph_calibration = execution_config.graph_memory_calibration_override();
         assert_eq!(graph_calibration.raw_input_edges, Some(45_564_149));
     }

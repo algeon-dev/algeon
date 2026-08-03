@@ -14,10 +14,21 @@ fn declare_test_gpu_ownership(config: &mut ServerConfig) {
         config.gpu_devices.iter().copied().map(|ordinal| (ordinal, GpuMemoryOwnership::WholeDeviceExclusive)).collect();
 }
 
+fn test_server_config() -> ServerConfig {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("server.toml");
+    std::fs::write(&path, "[[admission.device_profiles]]\ndevice_ordinal = 0\n").expect("write server config");
+    let path = path.to_string_lossy().into_owned();
+    ServerConfig::from_env_get(|name| {
+        (name == datafusion_nexus::server::NEXUS_SERVER_CONFIG_FILE_ENV).then(|| path.clone())
+    })
+    .expect("explicit test device profile")
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn auth_disabled_passes_handshake_and_query_through() {
     let (listener, addr) = free_local_addr();
-    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    let mut config = test_server_config();
     declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
     // Default mode is Disabled — explicit for clarity.
@@ -39,7 +50,7 @@ async fn auth_disabled_passes_handshake_and_query_through() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn basic_bearer_happy_path() {
     let (listener, addr) = free_local_addr();
-    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    let mut config = test_server_config();
     declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
     config.auth = basic_bearer_config("alice", "s3cret", 3600);
@@ -60,7 +71,7 @@ async fn basic_bearer_happy_path() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn basic_handshake_rejects_wrong_password() {
     let (listener, addr) = free_local_addr();
-    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    let mut config = test_server_config();
     declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
     config.auth = basic_bearer_config("alice", "s3cret", 3600);
@@ -85,7 +96,7 @@ async fn basic_handshake_rejects_wrong_password() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn basic_handshake_rejects_unknown_user() {
     let (listener, addr) = free_local_addr();
-    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    let mut config = test_server_config();
     declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
     config.auth = basic_bearer_config("alice", "s3cret", 3600);
@@ -101,7 +112,7 @@ async fn basic_handshake_rejects_unknown_user() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn query_without_handshake_rejects_with_unauthenticated() {
     let (listener, addr) = free_local_addr();
-    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    let mut config = test_server_config();
     declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
     config.auth = basic_bearer_config("alice", "s3cret", 3600);
@@ -131,6 +142,9 @@ token_ttl_secs = 600
 username = "alice"
 password_hash = "{alice_hash}"
 roles = ["reader"]
+
+[[admission.device_profiles]]
+device_ordinal = 0
 "#,
     );
     let dir = tempfile::tempdir().expect("tempdir");
@@ -165,6 +179,9 @@ kind = "basic_bearer"
 [[auth.mode.users]]
 username = "alice"
 password_hash = "plaintext-not-allowed"
+
+[[admission.device_profiles]]
+device_ordinal = 0
 "#;
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("server.toml");

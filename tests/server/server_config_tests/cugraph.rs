@@ -8,7 +8,7 @@ fn server_cugraph_config_accepts_enabled_env() {
         (NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV, "raw_libcugraph".to_string()),
     ]);
 
-    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+    let config = server_config_with_default_device_profile(env).unwrap();
     let cugraph = config.cugraph.expect("enabled env must materialize cuGraph server config");
 
     assert!(!cugraph.default_graph_options.directed);
@@ -20,7 +20,7 @@ fn server_cugraph_config_accepts_enabled_env() {
 #[test]
 fn server_feature_off_cugraph_config_is_retained_for_unavailable_registration() {
     let env = BTreeMap::from([(NEXUS_SERVER_CUGRAPH_ENABLED_ENV, "true".to_string())]);
-    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+    let config = server_config_with_default_device_profile(env).unwrap();
 
     assert!(
         config.cugraph.is_some(),
@@ -32,7 +32,7 @@ fn server_feature_off_cugraph_config_is_retained_for_unavailable_registration() 
 #[test]
 fn server_cugraph_config_rejects_settings_without_enabled_true() {
     let env = BTreeMap::from([(NEXUS_SERVER_CUGRAPH_DIRECTED_ENV, "false".to_string())]);
-    let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
+    let error = server_config_with_default_device_profile(env).unwrap_err();
 
     assert!(error.to_string().contains(NEXUS_SERVER_CUGRAPH_ENABLED_ENV));
 }
@@ -41,7 +41,7 @@ fn server_cugraph_config_rejects_settings_without_enabled_true() {
 #[test]
 fn server_cugraph_config_materializes_when_enabled() {
     let env = BTreeMap::from([(NEXUS_SERVER_CUGRAPH_ENABLED_ENV, "true".to_string())]);
-    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+    let config = server_config_with_default_device_profile(env).unwrap();
 
     assert!(config.cugraph.is_some());
 }
@@ -50,7 +50,7 @@ fn server_cugraph_config_materializes_when_enabled() {
 #[test]
 fn server_cugraph_config_remains_absent_when_disabled() {
     let env: BTreeMap<&'static str, String> = BTreeMap::new();
-    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+    let config = server_config_with_default_device_profile(env).unwrap();
 
     assert!(config.cugraph.is_none());
 }

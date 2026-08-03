@@ -23,7 +23,7 @@ use nexus_query_engine::{
     exec::{execute_query_plan_with_gpu_inputs_observed, output::QueryOutput},
     metrics::QueryMetrics,
     plan::QueryPlan,
-    runtime::{ExecutionContext, MemoryControlPolicy, resident::GpuResultHandle},
+    runtime::{ExecutionContext, resident::GpuResultHandle},
 };
 
 use super::{
@@ -183,17 +183,11 @@ impl CuvsAlgoExec {
             .collect()
     }
 
-    fn reject_unavailable_execution(&self, memory_control_policy: MemoryControlPolicy) -> Result<()> {
-        if matches!(memory_control_policy, MemoryControlPolicy::Bounded { .. }) {
-            return Err(bounded_execution_unsupported(
-                self.operation,
-                self.native_execution_config.native_pipeline_execution_mode(),
-            ));
-        }
+    fn reject_unavailable_execution(&self) -> Result<()> {
         if !cfg!(feature = "cuvs") {
             return Err(feature_disabled(self.operation));
         }
-        Ok(())
+        Err(bounded_execution_unsupported(self.operation, "bounded"))
     }
 
     fn take_prepared_staged_inputs(&self) -> Result<StagedNativeChildren> {
@@ -239,7 +233,7 @@ impl CuvsAlgoExec {
         sink: CuvsPlanSink,
         metrics: &NexusNativeMetrics,
     ) -> Result<QueryOutput> {
-        self.reject_unavailable_execution(native_context.memory_control_policy())?;
+        self.reject_unavailable_execution()?;
         let uploaded = staged.upload(native_context, task_context).await?;
         let host_to_device_uploads = uploaded.host_to_device_uploads.clone();
         let plan = lower_cuvs_query_plan(
@@ -314,7 +308,7 @@ impl GpuResidentProducer for CuvsAlgoExec {
         task_context: Arc<TaskContext>,
     ) -> BoxFuture<'a, Result<Arc<dyn ExecutionPlan>>> {
         Box::pin(async move {
-            self.reject_unavailable_execution(self.native_execution_config.memory_control_policy())?;
+            self.reject_unavailable_execution()?;
             let staged = stage_native_children(
                 self.child_specs(),
                 task_context,
@@ -421,7 +415,7 @@ impl ExecutionPlan for CuvsAlgoExec {
             .with_fact("partition", partition)
             .into());
         }
-        self.reject_unavailable_execution(self.native_execution_config.memory_control_policy())?;
+        self.reject_unavailable_execution()?;
 
         let schema = Arc::clone(&self.output_schema);
         let exec = self.clone();
@@ -435,13 +429,6 @@ impl ExecutionPlan for CuvsAlgoExec {
                 DEFAULT_MULTI_CHILD_HOST_STAGING_BYTES,
             )
             .await?;
-            let _unbounded_permit = match execution_config.memory_control_policy() {
-                MemoryControlPolicy::Unbounded => match execution_config.unbounded_native_execution_limiter() {
-                    Some(limiter) => Some(limiter.acquire().await?),
-                    None => None,
-                },
-                MemoryControlPolicy::Bounded { .. } => None,
-            };
             let context_lease = execution_config
                 .execution_context_async(Arc::clone(&task_context))
                 .await

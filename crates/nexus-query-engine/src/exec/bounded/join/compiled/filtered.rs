@@ -174,11 +174,6 @@ fn deduplicate_filtered_join_build_keys(
             return Err(error);
         },
     };
-    if let Err(error) = reservations.reclaim_source_cache_for_external_working_set(reservations.budget(), metrics) {
-        reservations.release(output_reservation, metrics);
-        release_bounded_join_side_frame(build, reservations, metrics);
-        return Err(error);
-    }
     let token = match execution_budget_token_for_boundary(
         context,
         reservations.available_bytes_including(&output_reservation),

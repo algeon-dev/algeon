@@ -74,7 +74,7 @@ pub fn cuvs_cugraph_context() -> SessionContext {
 pub fn cuvs_cugraph_native_context() -> SessionContext {
     use datafusion_nexus::cugraph_sql::CugraphSqlConfig;
 
-    let native_execution_config = NexusNativeExecutionConfig::unbounded();
+    let native_execution_config = NexusNativeExecutionConfig::bounded_default();
     let state = SessionStateBuilder::new_with_default_features()
         .with_nexus_native(
             NexusNativeOptimizerConfig::default().with_native_execution_config(native_execution_config.clone()),

@@ -22,7 +22,7 @@ pub fn bounded_join_unsupported_shape_facts(
         return None;
     }
 
-    match super::strict_bounded_pipeline_rejection_projection(plan) {
+    match super::bounded_pipeline_rejection_projection(plan) {
         Ok(Some(projection)) => {
             Some(bounded_join_unsupported_shape_facts_with_projection(plan, boundary_policy, Some(&projection)))
         },
@@ -43,7 +43,7 @@ pub fn bounded_join_modeled_facts(
     if !plan.contains_join() {
         return None;
     }
-    matches!(super::strict_bounded_pipeline_rejection_projection(plan), Ok(None))
+    matches!(super::bounded_pipeline_rejection_projection(plan), Ok(None))
         .then(|| bounded_join_modeled_facts_unchecked(plan, boundary_policy))
 }
 
@@ -173,11 +173,11 @@ fn insert_local_rejection_facts(
     }
 
     facts.insert("bounded_join_rejection_scope", "subgraph".to_string());
-    facts.insert("bounded_join_rejection_owner", "strict_bounded_admission".to_string());
-    facts.insert("bounded_join_rejection_boundary", "strict_bounded_admission".to_string());
+    facts.insert("bounded_join_rejection_owner", "capability_envelope_admission".to_string());
+    facts.insert("bounded_join_rejection_boundary", "capability_envelope_admission".to_string());
     facts.insert("bounded_join_rejection_category", "missing_subgraph_invariant".to_string());
-    facts.insert("bounded_join_rejection_reason", "strict_bounded_capability_admission_not_satisfied".to_string());
-    facts.insert("bounded_join_rejection_facts", "strict_bounded_admission=false".to_string());
+    facts.insert("bounded_join_rejection_reason", "capability_envelope_not_satisfied".to_string());
+    facts.insert("bounded_join_rejection_facts", "capability_envelope_admission=false".to_string());
 }
 
 fn rejection_owner_fact(owner: &CapabilityRejectionOwner) -> String {

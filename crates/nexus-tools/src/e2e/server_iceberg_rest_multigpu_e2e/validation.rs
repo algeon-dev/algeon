@@ -8,7 +8,7 @@ use tonic::transport::Channel;
 use super::{
     E2eResult,
     flight::{QueryEvidence, get_admission_stats},
-    server::{MAX_CONCURRENT_QUERIES, MAX_QUERIES_PER_DEVICE},
+    server::MAX_ACTIVE_ATTEMPTS_PER_DEVICE,
 };
 
 pub(super) type TsvRow = BTreeMap<String, String>;
@@ -91,15 +91,14 @@ pub(super) fn validate_static_topology(payload: &str, devices: &[usize]) -> E2eR
             "# device_ordinals={}\n",
             devices.iter().map(usize::to_string).collect::<Vec<_>>().join(",")
         ))
-        || !payload.contains(&format!("# max_concurrent_queries={MAX_CONCURRENT_QUERIES}\n"))
-        || !payload.contains(&format!("# max_queries_per_device={MAX_QUERIES_PER_DEVICE}\n"))
+        || !payload.contains(&format!("# max_active_attempts_per_device={MAX_ACTIVE_ATTEMPTS_PER_DEVICE}\n"))
         || !payload.contains("# placement_policy=least_loaded\n")
     {
         return Err(format!("admission payload does not describe the requested production topology:\n{payload}").into());
     }
     let expected = expected_device_set(devices);
     for section in [
-        "memory_governor_reports",
+        "device_ledger_reports",
         "device_memory_failure_reports",
         "gpu_execution_pools",
         "device_admission_slots",
@@ -111,10 +110,10 @@ pub(super) fn validate_static_topology(payload: &str, devices: &[usize]) -> E2eR
         }
     }
 
-    let governors = tsv_section(payload, "memory_governor_reports")?;
-    let capacities = governors
+    let ledgers = tsv_section(payload, "device_ledger_reports")?;
+    let capacities = ledgers
         .iter()
-        .map(|row| parse_u64_field(row, "capacity_bytes", "memory governor"))
+        .map(|row| parse_u64_field(row, "managed_capacity_bytes", "device ledger"))
         .collect::<E2eResult<BTreeSet<_>>>()?;
     if capacities.len() != 1 {
         return Err(format!("heterogeneous GPU capacities are unsupported by this acceptance: {capacities:?}").into());
@@ -137,7 +136,7 @@ pub(super) fn validate_static_topology(payload: &str, devices: &[usize]) -> E2eR
     Ok(())
 }
 
-pub(super) fn validate_cold_and_warm_cache(
+pub(super) fn validate_cold_and_warm_waves(
     cold: &[QueryEvidence],
     warm: &[QueryEvidence],
     devices: &[usize],
@@ -145,23 +144,11 @@ pub(super) fn validate_cold_and_warm_cache(
     for device in devices {
         let cold_rows = cold.iter().filter(|row| row.device_ordinal == *device).collect::<Vec<_>>();
         let warm_rows = warm.iter().filter(|row| row.device_ordinal == *device).collect::<Vec<_>>();
-        let cold_misses = cold_rows.iter().map(|row| row.source_cache_misses).sum::<u64>();
-        let cold_inserts = cold_rows.iter().map(|row| row.source_cache_inserts).sum::<u64>();
-        let warm_hits = warm_rows.iter().map(|row| row.source_cache_hits).sum::<u64>();
-        let warm_misses = warm_rows.iter().map(|row| row.source_cache_misses).sum::<u64>();
-        if cold_rows.is_empty() || cold_misses == 0 || cold_inserts == 0 {
+        if cold_rows.is_empty() || warm_rows.is_empty() {
             return Err(format!(
-                "device {device} lacks cold decoded-source-cache evidence: rows={} misses={cold_misses} inserts={cold_inserts}",
-                cold_rows.len()
-            )
-            .into());
-        }
-        // Remote KvikIO retains the stable object URI as the reader identity,
-        // so a repeated warm wave must reuse at least one decoded source.
-        if warm_rows.is_empty() || warm_hits == 0 {
-            return Err(format!(
-                "device {device} lacks warm Q06 decoded-cache lookup evidence: rows={} hits={warm_hits} misses={warm_misses}",
-                warm_rows.len()
+                "device {device} must execute both synchronized Q06 waves: cold_rows={} warm_rows={}",
+                cold_rows.len(),
+                warm_rows.len(),
             )
             .into());
         }
@@ -201,7 +188,7 @@ fn diagnostics_are_idle(payload: &str) -> E2eResult<bool> {
     {
         return Ok(false);
     }
-    if !tsv_section(payload, "memory_governor_grants")?.is_empty() {
+    if !tsv_section(payload, "device_ledger_grants")?.is_empty() {
         return Ok(false);
     }
     let gpu = tsv_section_single_row(payload, "gpu_execution")?;
@@ -230,13 +217,24 @@ pub(super) fn validate_final_diagnostics(payload: &str, devices: &[usize]) -> E2
     }
 
     let gpu = tsv_section_single_row(payload, "gpu_execution")?;
-    let peak = parse_u64_field(&gpu, "peak_active_query_jobs", "global GPU execution")?;
-    if peak != MAX_CONCURRENT_QUERIES as u64 {
-        return Err(format!("global GPU executor peak must be exactly {MAX_CONCURRENT_QUERIES}, got {peak}").into());
+    let peak = parse_u64_field(&gpu, "peak_active_query_jobs", "derived GPU execution total")?;
+    let expected_peak = u64::try_from(
+        devices
+            .len()
+            .checked_mul(MAX_ACTIVE_ATTEMPTS_PER_DEVICE)
+            .ok_or("derived per-device active-limit sum overflow")?,
+    )?;
+    if peak != expected_peak {
+        return Err(format!("derived GPU execution peak must be exactly {expected_peak}, got {peak}").into());
     }
     for row in tsv_section(payload, "gpu_execution_pools")? {
-        require_value(&row, "worker_count", &MAX_QUERIES_PER_DEVICE.to_string(), "GPU execution pool")?;
-        require_value(&row, "peak_active_query_jobs", &MAX_QUERIES_PER_DEVICE.to_string(), "GPU execution pool")?;
+        require_value(&row, "worker_count", &MAX_ACTIVE_ATTEMPTS_PER_DEVICE.to_string(), "GPU execution pool")?;
+        require_value(
+            &row,
+            "peak_active_query_jobs",
+            &MAX_ACTIVE_ATTEMPTS_PER_DEVICE.to_string(),
+            "GPU execution pool",
+        )?;
     }
     for row in tsv_section(payload, "device_memory_failure_reports")? {
         for field_name in

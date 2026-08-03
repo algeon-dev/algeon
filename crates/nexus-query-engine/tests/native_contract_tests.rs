@@ -22,7 +22,7 @@ use nexus_query_engine::{
         SourceChunkPlanningPolicy, SourceMetadataCache, SourceTaskMemoryModel, plan_local_parquet_source_chunks,
         plan_local_parquet_source_chunks_with_metadata_cache,
     },
-    contract_report::{StrictBoundedContractOwner, StrictBoundedContractReport},
+    contract_report::{CapabilityContractOwner, CapabilityContractReport},
     datatypes::{
         cudf_dtype_from_arrow_type, is_supported_arrow_cast, is_supported_arrow_implicit_cast, is_supported_arrow_type,
         is_supported_list_carry_type,
@@ -33,7 +33,7 @@ use nexus_query_engine::{
         LiteralValue, SortExpr, SortSpec,
     },
     metrics::{BoundaryMetrics, JoinOperatorMetrics, OperatorMetrics, QueryId, QueryMetrics, TraceId},
-    mode::StrictBoundedExecutionMode,
+    mode::CapabilityEnvelopeStatus,
     optimizer::NativeOptimizerOptions,
     plan::{
         DataPlacement, JoinKey, JoinNullEquality, JoinOutputColumn, JoinSide, JoinSpec, JoinType, NodeId, PlanNode,
@@ -43,7 +43,7 @@ use nexus_query_engine::{
         BoundedJoinReservationContract, BoundedJoinReservationStatus, BuildMaterializationBoundary,
         ExecutionBoundaryPolicy, ExecutionCancellation, MemoryControlPolicy, MemoryReservationRequest, MemorySpaceId,
         ProbeExecutionBoundary, ReservationKind, ResultMaterializationBoundary, RetryFacts, SourceReadBoundary,
-        SourceSchedulerPolicy, cache::local_parquet::GpuLocalParquetSourceCacheKey,
+        SourceSchedulerPolicy,
     },
     source::{
         ByteRangeDisposition, CredentialMode, GpuResidentSource, LakehouseCacheFillMode, LakehouseCacheReadMode,
@@ -298,7 +298,6 @@ fn memory_control_policy_names_bounded_and_unbounded_modes() {
     assert_eq!(bounded.as_str(), "bounded");
     assert!(bounded.is_bounded());
     assert_eq!(ReservationKind::SourceRead.as_str(), "source_read");
-    assert_eq!(ReservationKind::SourceCacheRetained.as_str(), "source_cache_retained");
     assert_eq!(ReservationKind::ChunkOperator.as_str(), "chunk_operator");
     assert_eq!(ReservationKind::OperatorOutput.as_str(), "operator_output");
     assert_eq!(ReservationKind::FinalMerge.as_str(), "final_merge");
@@ -342,7 +341,6 @@ fn execution_boundary_policy_defaults_to_native_gpu_direct_contract() {
         ResultMaterializationBoundary::ExplicitSink,
     );
     assert_eq!(explicit, policy);
-    explicit.validate(false).unwrap();
 }
 
 #[test]
@@ -424,19 +422,6 @@ fn bounded_memory_control_policy_rejects_zero_fields_before_runtime_initializati
         assert_eq!(error.fact_value("field"), Some(field), "{field}");
         assert_eq!(error.fact_value("reason"), Some("zero"), "{field}");
     }
-}
-
-#[test]
-fn durable_hash_join_boundary_requires_explicit_cache() {
-    let policy =
-        ExecutionBoundaryPolicy::default().with_build_materialization(BuildMaterializationBoundary::DurableGpuHashJoin);
-
-    let error = policy.validate(false).unwrap_err();
-
-    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
-    assert_eq!(error.operation(), "nexus_query_engine.boundary_policy.validate");
-    assert_eq!(error.fact_value("build_materialization_boundary"), Some("durable_gpu_hash_join"));
-    assert_eq!(error.fact_value("reason"), Some("missing_hash_join_build_cache"));
 }
 
 #[test]
@@ -553,17 +538,11 @@ fn query_metrics_have_join_operator_contract() {
     metrics.record_one_shot_join_materialization_bytes(256);
     metrics.record_one_shot_join_output_bytes(384);
     metrics.record_hash_join_cache_hit();
-    metrics.record_hash_join_durable_cache_miss();
-    metrics.record_hash_join_durable_cache_insert();
-    metrics.record_hash_join_durable_cache_hit();
     assert_eq!(metrics.hash_join_cache_misses, 1);
     assert_eq!(metrics.hash_join_build_count, 1);
     assert_eq!(metrics.filtered_join_build_count, 1);
     assert_eq!(metrics.one_shot_join_count, 1);
     assert_eq!(metrics.hash_join_cache_hits, 1);
-    assert_eq!(metrics.hash_join_durable_cache_misses, 1);
-    assert_eq!(metrics.hash_join_durable_cache_inserts, 1);
-    assert_eq!(metrics.hash_join_durable_cache_hits, 1);
     assert_eq!(metrics.hash_join_hash_table_bytes, 4096);
     assert_eq!(metrics.filtered_join_hash_table_bytes, 2048);
     assert_eq!(metrics.filtered_join_probe_state_bytes, 1024);

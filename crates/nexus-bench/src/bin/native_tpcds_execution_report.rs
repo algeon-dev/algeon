@@ -15,10 +15,8 @@ use nexus_bench::{
         },
     },
 };
-use nexus_query_engine::mode::NativePipelineExecutionMode;
 use nexus_workloads::tpcds::{TpcdsDatasetMetadata, TpcdsWorkloadResult, prepare_tpcds_report_dataset};
 
-const NEXUS_NATIVE_PIPELINE_EXECUTION_MODE_ENV: &str = "NEXUS_NATIVE_PIPELINE_EXECUTION_MODE";
 const NEXUS_TPCDS_EXECUTION_QUERY_IDS_ENV: &str = "NEXUS_TPCDS_EXECUTION_QUERY_IDS";
 const NEXUS_TPCDS_EXECUTION_PROGRESS_ENV: &str = "NEXUS_TPCDS_EXECUTION_PROGRESS";
 
@@ -32,18 +30,13 @@ async fn main() {
 
 async fn tpcds_report(dir: &std::path::Path) -> TpcdsWorkloadResult<TpcdsExecutionReport> {
     let relational_execution = RelationalExecutionSelection::native();
-    let native_pipeline_execution_mode = native_pipeline_execution_mode_from_env();
     eprintln!(
-        "[native_tpcds_execution_report] stage=run_config relational_execution={} native_pipeline_execution_mode={}",
+        "[native_tpcds_execution_report] stage=run_config relational_execution={}",
         relational_execution.as_str(),
-        native_pipeline_execution_mode.as_str(),
     );
     let (root, metadata) = prepare_tpcds_report_dataset(dir)?;
     let optimizer_config = relational_execution
-        .configure_native_optimizer(
-            tpcds_native_analytics_optimizer_config()
-                .with_native_pipeline_execution_mode(native_pipeline_execution_mode),
-        )
+        .configure_native_optimizer(tpcds_native_analytics_optimizer_config())
         .expect("native execution report installs the native rule");
     let statistical_aggregate_execution_mode = optimizer_config.statistical_aggregate_execution_mode();
     let query_filter = query_filter_from_env();
@@ -97,17 +90,6 @@ fn unique_temp_dir(prefix: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("{prefix}-{id}"));
     fs::create_dir_all(&dir).unwrap();
     dir
-}
-
-fn native_pipeline_execution_mode_from_env() -> NativePipelineExecutionMode {
-    let mode = std::env::var(NEXUS_NATIVE_PIPELINE_EXECUTION_MODE_ENV)
-        .unwrap_or_else(|_| NativePipelineExecutionMode::StrictBounded.as_str().to_string());
-    mode.parse::<NativePipelineExecutionMode>().unwrap_or_else(|error| {
-        panic!(
-            "unsupported {NEXUS_NATIVE_PIPELINE_EXECUTION_MODE_ENV}={}; expected strict_bounded or adaptive",
-            error.value()
-        )
-    })
 }
 
 fn query_filter_from_env() -> Option<Vec<String>> {

@@ -26,9 +26,7 @@ Both frontends use the same `NexusGpuBackend` and the same base
 `SessionContext`. REST requests use plan-scoped admission from the shared
 session. Flight SQL issues statement tickets first and acquires GPU admission
 only when a native plan starts executing. Native work from both paths draws
-from one `QueryService` ledger, visible at `GET /api/gpu`. Completed
-DataFusion and mixed statements are governed separately by the server's
-host-execution QoS bound.
+from one `QueryService` ledger, visible at `GET /api/gpu`.
 
 ```text
                                    one backend process
@@ -63,9 +61,7 @@ This topology is useful when an application has a small set of product-owned
 workflows but still needs an expert SQL side door for operators, notebooks, or
 BI tools. The important property is not the REST framework; it is that every
 frontend in the process shares one backend and one catalog view. GPU-native
-execution shares one admission ledger. The host-execution QoS rule separately
-bounds completed DataFusion and mixed statements without consuming a GPU
-admission slot.
+execution shares one admission ledger.
 
 ## Data
 
@@ -116,9 +112,8 @@ own axum HTTP API (`/healthz`, `/api/pipelines`, `/api/gpu`). It is not the
 Iceberg REST catalog endpoint; the Iceberg REST catalog endpoint is
 `NEXUS_ICEBERG_REST_URI`.
 
-Use a bounded native memory policy; the default server profile is bounded, and
-the example rejects an unbounded policy because the point of the demo is shared
-query-service admission. The manual run command assumes the local Iceberg
+The server has one bounded native admission contract; the example uses that
+shared query-service ledger. The manual run command assumes the local Iceberg
 REST/RustFS stack is already running and the `citation_network` tables have
 been loaded. A quick preflight:
 
@@ -129,7 +124,6 @@ curl --fail http://localhost:8181/v1/config
 ```bash
 EXAMPLE_REST_BIND=127.0.0.1:8080 \
 NEXUS_SERVER_BIND=127.0.0.1:50051 \
-NEXUS_SERVER_MAX_CONCURRENT_QUERIES=1 \
 NEXUS_SERVER_CUGRAPH_ENABLED=true \
 DATAFUSION_CATALOG_DEFAULT_CATALOG=datafusion \
 DATAFUSION_CATALOG_DEFAULT_SCHEMA=public \

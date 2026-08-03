@@ -1,0 +1,13 @@
+error[E0603]: module `cache` is private
+ --> tests/ui/public_api/forbidden_p2_cache_substrate.rs:1:34
+  |
+1 | use nexus_query_engine::runtime::cache::hash_join::GpuHashJoinBuildCache;
+  |                                  ^^^^^             --------------------- struct `GpuHashJoinBuildCache` is not publicly re-exported
+  |                                  |
+  |                                  private module
+  |
+note: the module `cache` is defined here
+ --> src/runtime.rs
+  |
+  | pub(crate) mod cache;
+  | ^^^^^^^^^^^^^^^^^^^^

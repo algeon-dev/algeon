@@ -20,7 +20,7 @@
 //! reaches the native flag through the planning `shutdown_token` arm.
 
 use dashmap::DashMap;
-use nexus_query_engine::runtime::ExecutionCancellation;
+use nexus_query_engine::{attempt::AttemptCancellation, runtime::ExecutionCancellation};
 use tokio_util::sync::CancellationToken;
 
 /// Registry of in-flight statement cancellation handles, keyed by query id.
@@ -37,6 +37,7 @@ pub struct QueryCancellation {
 struct QueryCancellationEntry {
     flight_token: CancellationToken,
     native_cancellation: ExecutionCancellation,
+    attempt_cancellation: Option<AttemptCancellation>,
 }
 
 impl QueryCancellation {
@@ -47,8 +48,10 @@ impl QueryCancellation {
         query_id: String,
         flight_token: CancellationToken,
         native_cancellation: ExecutionCancellation,
+        attempt_cancellation: Option<AttemptCancellation>,
     ) {
-        self.tokens.insert(query_id, QueryCancellationEntry { flight_token, native_cancellation });
+        self.tokens
+            .insert(query_id, QueryCancellationEntry { flight_token, native_cancellation, attempt_cancellation });
     }
 
     /// Cancel the registered statement, if any.
@@ -60,6 +63,9 @@ impl QueryCancellation {
             .get(query_id)
             .map(|entry| {
                 entry.native_cancellation.cancel();
+                if let Some(attempt_cancellation) = &entry.attempt_cancellation {
+                    attempt_cancellation.cancel();
+                }
                 entry.flight_token.cancel();
             })
             .is_some()

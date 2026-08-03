@@ -1,0 +1,25 @@
+error[E0432]: unresolved import `nexus_query_engine::admission::bounded_pipeline_attempt_requirement`
+ --> tests/ui/public_api/test_hooks_only_planner_byte_hint_admission_evidence.rs:1:26
+  |
+1 | use nexus_query_engine::{admission::bounded_pipeline_attempt_requirement, runtime::QueryAdmissionRequest};
+  |                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ no `bounded_pipeline_attempt_requirement` in `admission`
+  |
+note: found an item that was configured out
+ --> src/admission.rs
+  |
+  | #[cfg(test)]
+  |       ---- the item is gated here
+  | pub(crate) use bounded::bounded_pipeline_attempt_requirement;
+  |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no associated function or constant named `with_test_planned_capability_evidence` found for struct `QueryAdmissionRequest` in the current scope
+ --> tests/ui/public_api/test_hooks_only_planner_byte_hint_admission_evidence.rs:5:36
+  |
+5 |     let _ = QueryAdmissionRequest::with_test_planned_capability_evidence;
+  |                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ associated function or constant not found in `QueryAdmissionRequest`
+  |
+help: there is a method `planned_capability_proof` with a similar name
+ --> src/runtime/query_service/service/api.rs
+  |
+  |     pub fn planned_capability_proof(&self) -> Option<&QueryPlanCapabilityProof> {
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

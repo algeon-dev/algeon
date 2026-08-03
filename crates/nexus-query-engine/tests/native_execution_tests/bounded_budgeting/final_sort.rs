@@ -301,7 +301,7 @@ fn bounded_native_query_reports_retry_facts_when_final_sort_without_limit_fails(
         assert_eq!(error.fact_value("reservation_kind"), Some("final_sort"));
     } else {
         assert_eq!(error.fact_value("budget_boundary"), Some("final_sort"));
-        assert_eq!(error.fact_value("budget_enforcement"), Some("reservation_arena_member"));
+        assert_eq!(error.fact_value("budget_enforcement"), Some("query_domain_member"));
     }
 
     fs::remove_dir_all(dir).unwrap();

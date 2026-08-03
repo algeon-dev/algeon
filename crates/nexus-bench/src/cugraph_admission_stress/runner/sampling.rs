@@ -78,11 +78,11 @@ pub(super) fn collect_sample(
         .map(|ordinal| (ordinal, DeviceSampleFacts::default()))
         .collect::<BTreeMap<_, _>>();
 
-    if let Ok(reports) = backend.memory_governor_reports() {
+    if let Ok(reports) = backend.device_ledger_reports() {
         for report in reports {
             if let Some(facts) = facts_by_device.get_mut(&report.device_ordinal) {
-                facts.governor_capacity_bytes = report.capacity_bytes;
-                facts.governor_outstanding_bytes = report.outstanding_bytes;
+                facts.governor_capacity_bytes = report.managed_capacity_bytes;
+                facts.governor_outstanding_bytes = report.live_grants_bytes;
                 facts.governor_available_bytes = report.available_bytes;
                 facts.active_grants = report.grants.len();
             }

@@ -27,31 +27,18 @@ pub(super) fn benchmark_query_progress_line(
     query_index: usize,
     query_count: usize,
 ) -> String {
-    let (profile_name, source_chunk_planning_mode, max_row_groups_per_chunk, max_source_chunk_bytes) =
-        match config.native_memory_policy {
-            NativeTpchMemoryPolicy::Bounded {
-                profile_name,
-                source_chunk_planning_mode,
-                max_row_groups_per_chunk,
-                max_source_chunk_bytes,
-                ..
-            } => (
-                profile_name.to_string(),
-                source_chunk_planning_mode.as_str().to_string(),
-                max_row_groups_per_chunk.to_string(),
-                max_source_chunk_bytes.to_string(),
-            ),
-            NativeTpchMemoryPolicy::Unbounded => {
-                ("none".to_string(), "none".to_string(), "unbounded".to_string(), "unbounded".to_string())
-            },
-        };
+    let policy = config.native_memory_policy;
+    let profile_name = policy.profile_name;
+    let source_chunk_planning_mode = policy.source_chunk_planning_mode.as_str();
+    let max_row_groups_per_chunk = policy.max_row_groups_per_chunk;
+    let max_source_chunk_bytes = policy.max_source_chunk_bytes;
     format!(
         "[native_tpch_benchmark] stage=query_start query={} index={}/{} dataset_mode={} execution_mode={} relational_execution={} memory_policy={} native_profile={} source_chunk_planning_mode={} max_row_groups_per_chunk={} max_source_chunk_bytes={} skip_cpu={}",
         query.id,
         query_index.saturating_add(1),
         query_count,
         config.dataset_mode.as_str(),
-        config.native_pipeline_execution_mode.as_str(),
+        "strict_bounded",
         config.native_execution.as_str(),
         config.native_memory_policy.as_str(),
         profile_name,

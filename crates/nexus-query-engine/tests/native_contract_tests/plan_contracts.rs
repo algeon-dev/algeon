@@ -173,7 +173,7 @@ fn aggregate_strategy_capability_analysis_records_grouped_aggregate_without_node
         Some("prepared_sort_groupby_requires_runtime_cardinality_evidence")
     );
 
-    let report = StrictBoundedContractReport::from_capability_analysis(&analysis)
+    let report = CapabilityContractReport::from_capability_analysis(&analysis)
         .expect("modeled aggregate capability should produce a strict contract report");
     assert!(report.gate_rows().iter().any(|row| {
         row.required_contract == "aggregate_contract" && row.contract_status == ContractStatus::Modeled

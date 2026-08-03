@@ -3,7 +3,7 @@
 //! Fact keys here are part of the public report/test contract: changing or
 //! removing one is a downstream-visible break. Most values document the
 //! lower-level `cudf` / `libcudf` reservation and observability hooks
-//! that strict bounded join admission depends on.
+//! that bounded join capability admission depends on.
 
 use std::collections::BTreeMap;
 
@@ -12,7 +12,7 @@ use super::*;
 impl BoundedJoinReservationContract {
     /// Human/report-facing unsupported-shape requirement text.
     pub fn supported_shape_requirement(self) -> String {
-        "requires_strict_bounded_capability_admission".to_string()
+        "requires_bounded_capability_admission".to_string()
     }
 
     /// CSV of all reservation kinds in requirement order.

@@ -27,12 +27,20 @@ fn declare_test_gpu_ownership(config: &mut ServerConfig) {
         config.gpu_devices.iter().copied().map(|ordinal| (ordinal, GpuMemoryOwnership::WholeDeviceExclusive)).collect();
 }
 
+fn test_server_config(mut env: BTreeMap<&'static str, String>) -> ServerConfig {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("server.toml");
+    fs::write(&path, "[[admission.device_profiles]]\ndevice_ordinal = 0\n").expect("write server config");
+    env.insert(datafusion_nexus::server::NEXUS_SERVER_CONFIG_FILE_ENV, path.to_string_lossy().into_owned());
+    ServerConfig::from_env_get(|name| env.get(name).cloned()).expect("explicit test device profile")
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cugraph_dsl_metadata_and_dry_run_work_over_flight_sql_view() {
     let _guard = server_test_lock().lock().await;
     let (listener, addr) = free_local_addr();
     let env = BTreeMap::from([(NEXUS_SERVER_CUGRAPH_ENABLED_ENV, "true".to_string())]);
-    let mut config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+    let mut config = test_server_config(env);
     declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
@@ -108,7 +116,7 @@ async fn cugraph_dsl_nullable_parquet_edge_schema_validates_over_flight_sql() {
     let _guard = server_test_lock().lock().await;
     let (listener, addr) = free_local_addr();
     let env = BTreeMap::from([(NEXUS_SERVER_CUGRAPH_ENABLED_ENV, "true".to_string())]);
-    let mut config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+    let mut config = test_server_config(env);
     declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 
@@ -156,7 +164,7 @@ async fn cugraph_bfs_path_uses_gpu_resident_join_side_inputs_over_flight_sql() {
     let _guard = server_test_lock().lock().await;
     let (listener, addr) = free_local_addr();
     let env = BTreeMap::from([(NEXUS_SERVER_CUGRAPH_ENABLED_ENV, "true".to_string())]);
-    let mut config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+    let mut config = test_server_config(env);
     declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
 

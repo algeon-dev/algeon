@@ -18,23 +18,22 @@ pub struct NativeFallbackPressureReport {
 }
 
 impl NativeFallbackPressureReport {
-    /// Collects diagnostic fallback-pressure rows using the unbounded native
-    /// execution config.
+    /// Collects diagnostic fallback-pressure rows using the canonical bounded
+    /// native execution config.
     ///
     /// This convenience path is for legacy shape-pressure diagnostics only.
     /// Production report surfaces should use
     /// [`Self::collect_with_native_execution_config`] with an explicit bounded
-    /// or adaptive config so bounded diagnostics affect fallback-pressure rows.
+    /// config when its precise planning settings matter to the report.
     pub fn collect(items: impl IntoIterator<Item = NativeFallbackPressureWorkloadItem>) -> Self {
-        let execution_config = NexusNativeExecutionConfig::unbounded();
+        let execution_config = NexusNativeExecutionConfig::bounded_default();
         Self::collect_with_native_execution_config(items, &execution_config)
     }
 
     /// Collects fallback-pressure rows using an explicit native execution config.
     ///
-    /// Adaptive mode can add adaptive pipeline diagnostics to otherwise
-    /// rewritten candidates; strict-only evidence remains on strict report
-    /// surfaces.
+    /// Capability-contract evidence is emitted by the canonical planning
+    /// report surfaces.
     pub fn collect_with_native_execution_config(
         items: impl IntoIterator<Item = NativeFallbackPressureWorkloadItem>,
         execution_config: &NexusNativeExecutionConfig,
@@ -242,7 +241,7 @@ struct NativeDataFusionExecutionTsvTemplateRow {
 
 #[cfg(feature = "server")]
 impl NativeDataFusionExecutionTsvTemplate {
-    const RUNTIME_FIELD_START: usize = 16;
+    const RUNTIME_FIELD_START: usize = 15;
 
     pub(crate) fn from_report(report: NativeDataFusionExecutionReport) -> Self {
         let rows = report
@@ -317,9 +316,8 @@ fn runtime_fields(query_id: &str, summary: NativeDataFusionRuntimeSummary) -> Ve
         planning_outcome: Some(NativeDataFusionPlanningOutcome::Selected),
         reason_code: None,
         unsupported_category: None,
-        strict_bounded_contract_rows: Vec::new(),
-        strict_bounded_compiled_graphs: Vec::new(),
-        adaptive_pipeline_rows: Vec::new(),
+        capability_contract_rows: Vec::new(),
+        capability_compiled_graphs: Vec::new(),
         source_diagnostics: Vec::new(),
         post_native_plan_root: String::new(),
         final_disposition: FinalPlanDisposition::DataFusion,
@@ -335,4 +333,65 @@ fn runtime_fields(query_id: &str, summary: NativeDataFusionRuntimeSummary) -> Ve
         metrics: summary.metrics,
     };
     row.fields().into_iter().skip(NativeDataFusionExecutionTsvTemplate::RUNTIME_FIELD_START).collect()
+}
+
+#[cfg(all(test, feature = "server"))]
+mod tests {
+    use datafusion::physical_plan::metrics::MetricsSet;
+
+    use super::*;
+
+    #[test]
+    fn server_execution_template_preserves_runtime_column_alignment() {
+        let report = NativeDataFusionExecutionReport {
+            rows: vec![NativeDataFusionExecutionRow {
+                query_id: "server-template".to_string(),
+                physical_root: "Root".to_string(),
+                physical_shape: "Root(Source)".to_string(),
+                native_candidate_shape: None,
+                native_candidate_shape_family: None,
+                planning_outcome: Some(NativeDataFusionPlanningOutcome::Selected),
+                reason_code: None,
+                unsupported_category: None,
+                capability_contract_rows: Vec::new(),
+                capability_compiled_graphs: Vec::new(),
+                source_diagnostics: Vec::new(),
+                post_native_plan_root: "NexusNativeExec".to_string(),
+                final_disposition: FinalPlanDisposition::Native,
+                native_plan_fragment_count: 1,
+                host_datafusion_boundary_count: 0,
+                rejected_before_execution: false,
+                native_runtime_started: false,
+                runtime_outcome: NativeDataFusionRuntimeOutcome::NotStarted,
+                runtime_failure: None,
+                output_batches: None,
+                output_rows: None,
+                output_bytes: None,
+                metrics: NativeDataFusionExecutionMetrics::default(),
+            }],
+            workload_dataset: None,
+            statistical_aggregate_execution_mode: None,
+        };
+
+        let template = NativeDataFusionExecutionTsvTemplate::from_report(report);
+        let tsv = template.to_tsv(NativeDataFusionRuntime::Succeeded {
+            output_batches: 1,
+            output_rows: 2,
+            output_bytes: 3,
+            metrics: MetricsSet::new(),
+        });
+        let mut lines = tsv.lines();
+        let header = lines.next().expect("TSV header").split('\t').collect::<Vec<_>>();
+        let row = lines.next().expect("TSV row").split('\t').collect::<Vec<_>>();
+
+        assert_eq!(header.len(), row.len(), "server template row must preserve the execution TSV width");
+        assert_eq!(
+            NativeDataFusionExecutionTsvTemplate::RUNTIME_FIELD_START,
+            header.iter().position(|column| *column == "admission_sequence").expect("runtime segment start column")
+        );
+        let native_runtime_started =
+            header.iter().position(|column| *column == "native_runtime_started").expect("native runtime start column");
+        assert_eq!(native_runtime_started, NativeDataFusionExecutionTsvTemplate::RUNTIME_FIELD_START + 4);
+        assert_eq!(row[native_runtime_started], "true");
+    }
 }

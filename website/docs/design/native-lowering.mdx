@@ -11,7 +11,7 @@ import {SystemDiagram} from '@site/src/components/design/Diagram';
 This page covers the *plan-time* native boundary: how a DataFusion physical
 plan candidate becomes a native `QueryPlan`, what happens when it is not
 selected, and what evidence every decision leaves behind. Process-wide runtime admission
-— concurrency slots, grant bands, and device-memory governance — is a separate
+— immutable device grants, per-device attempt bounds, and device-memory governance — is a separate
 contract described in [Admission & Memory Governance](./admission.mdx). The
 architecture overview and layering rules live on the [Design](./index.mdx)
 page.
@@ -153,20 +153,21 @@ are locally supported.
 | --- | --- | --- |
 | Adapter candidate selection | `src/native/normalize.rs`, `src/native/validate.rs`, `src/native/lowering/` | `PlanningReport` rows with `CandidateOutcome::Selected`, `NotSupported { capability_reason }`, or `NotSelectedByCost { cost_reason, evidence }`. |
 | Engine capability analysis | `crates/nexus-query-engine/src/capability/entry.rs` | Per-node, edge, invariant, aggregate-strategy, and envelope-admission decisions. |
-| Strict bounded execution | `crates/nexus-query-engine/src/exec/bounded/strict.rs` | `StrictBoundedContractReport`; every `ReservationRequirement` is satisfied before execution. |
-| Adaptive bounded execution | `crates/nexus-query-engine/src/exec/bounded/adaptive.rs` | `AdaptivePipelineReport`; runtime-action counts and optional memory-history evidence stay adaptive-only. |
+| Bounded controller execution | `crates/nexus-query-engine/src/runtime/query_service/`, `exec/bounded/` | Capability-first admission, a per-device immutable grant, and reservation evidence. |
 | Runtime execution | `execute_query_plan` / `execute_query_plan_with_gpu_inputs` | `QueryMetrics`, DataFusion metrics, and native TSV reports, not printed plans. |
 
 Adapter-side `NexusNativeExecutionConfig` stores the DataFusion-facing knobs and
 builds the native `ExecutionContext` at the DataFusion/native boundary. The
 engine context then owns execution-time memory control, boundary policy,
-reservation, cache, source scheduling, and retry evidence.
+reservation, source scheduling, and retry evidence. P2 exposes no cross-query
+GPU cache capacity.
 
-:::warning[Keep strict and adaptive evidence separate]
-Strict and adaptive bounded execution are separate by design. Do not project
-adaptive memory-history rows into strict reports, and do not treat strict
-preflight gaps as adapter-side estimates. Unresolved strict gaps are lower-level
-`cudf-nexus` / `libcudf` contract work.
+:::warning[One bounded-controller evidence model]
+There is one capability-first bounded controller. Native reports expose its
+concrete `capability_contract_rows` and `capability_compiled_graphs` evidence;
+deleted adaptive row/counter families are not emitted. Do not add a second
+decision path or treat an unsupported capability as an adapter-side estimate;
+unresolved GPU capability gaps belong in `cudf-nexus` / `libcudf`.
 :::
 
 Aggregates follow the same rule: state must be explicit in the engine. AVG is

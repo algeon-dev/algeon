@@ -36,7 +36,12 @@ use crate::{
         RuntimeObservationPayload, RuntimeStreamLeaseScope, RuntimeTopologyRecord, RuntimeWorkerId,
         WorkerDefinitionRow,
     },
-    runtime::context::QueryServiceResourceEpoch,
+    runtime::{
+        context::QueryServiceResourceEpoch,
+        process_exit::{
+            ProcessExitPhase, ProcessExitRegistration, ProcessExitShutdown, register_cuda_process_exit_shutdown,
+        },
+    },
 };
 
 const BUILD_OPERATION: &str = "nexus_query_engine.gpu_execution_pool.build";
@@ -62,6 +67,31 @@ pub enum GpuExecutionJobKind {
     Cleanup,
 }
 
+/// Resource class partitioning for bounded worker admission.
+///
+/// For active-attempt limit `A_d` and per-attempt source-work bound `S_d`,
+/// each device reserves `A_d` root job slots and `A_d * S_d` auxiliary job
+/// slots. Child work can never consume a future root slot: class permits are
+/// acquired before a job occupies a worker thread, and no hidden fallback
+/// pool exists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum GpuExecutionJobClass {
+    /// Per-attempt lifecycle work: context setup and cleanup.
+    Root,
+    /// Bounded execution and child work.
+    Auxiliary,
+}
+
+impl GpuExecutionJobClass {
+    /// Stable diagnostic label for this job class.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Root => "root",
+            Self::Auxiliary => "auxiliary",
+        }
+    }
+}
+
 impl GpuExecutionJobKind {
     /// Stable diagnostic label for this job kind.
     pub const fn as_str(self) -> &'static str {
@@ -69,6 +99,14 @@ impl GpuExecutionJobKind {
             Self::ContextSetup => "context_setup",
             Self::QueryExecution => "query_execution",
             Self::Cleanup => "cleanup",
+        }
+    }
+
+    /// Resource class admitted for this job kind.
+    pub(crate) const fn job_class(self) -> GpuExecutionJobClass {
+        match self {
+            Self::ContextSetup | Self::Cleanup => GpuExecutionJobClass::Root,
+            Self::QueryExecution => GpuExecutionJobClass::Auxiliary,
         }
     }
 }
@@ -97,6 +135,14 @@ pub struct GpuExecutionPoolSnapshot {
     pub active_query_jobs: usize,
     /// Highest observed device-local query-execution concurrency.
     pub peak_active_query_jobs: usize,
+    /// Configured root-class job slots (lifecycle work: context setup/cleanup).
+    pub root_job_capacity: usize,
+    /// Configured auxiliary-class job slots (bounded execution/child work).
+    pub aux_job_capacity: usize,
+    /// Root-class job slots currently free.
+    pub root_jobs_available: usize,
+    /// Auxiliary-class job slots currently free.
+    pub aux_jobs_available: usize,
 }
 
 /// Point-in-time counters shared by a group of GPU execution pools.
@@ -201,34 +247,110 @@ impl GpuExecutionPool {
     }
 
     /// Creates a pool attached to a caller-provided aggregate query tracker.
+    ///
+    /// Direct constructors use the documented default class partition:
+    /// `worker_count` root job slots and `worker_count` auxiliary job slots.
+    /// Backend-owned pools pass explicit `A_d`/`A_d * S_d` capacities from
+    /// the device resource profile via [`Self::new_with_tracker_and_classes`].
     pub(crate) fn new_with_tracker(
         device_ordinal: usize,
         worker_count: usize,
         query_tracker: GpuExecutionQueryTracker,
     ) -> Result<Self> {
+        Self::new_with_tracker_and_classes(device_ordinal, worker_count, worker_count, worker_count, query_tracker)
+    }
+
+    /// Creates a pool with explicit root/auxiliary job-slot capacities.
+    pub(crate) fn new_with_tracker_and_classes(
+        device_ordinal: usize,
+        worker_count: usize,
+        root_job_capacity: usize,
+        aux_job_capacity: usize,
+        query_tracker: GpuExecutionQueryTracker,
+    ) -> Result<Self> {
         validate_worker_count(device_ordinal, worker_count)?;
+        for (field, capacity) in [("root_job_capacity", root_job_capacity), ("aux_job_capacity", aux_job_capacity)] {
+            if capacity == 0 {
+                return Err(QueryError::new(
+                    QueryErrorCode::InvalidPlan,
+                    "nexus_query_engine.gpu.execution_pool",
+                    "GPU execution pool job-class capacity must be greater than zero",
+                )
+                .with_fact("device_ordinal", device_ordinal)
+                .with_fact("field", field)
+                .with_fact("reason", "zero"));
+            }
+        }
 
         let id = NEXT_POOL_ID.fetch_add(1, Ordering::Relaxed);
         let next_worker_index = Arc::new(AtomicUsize::new(0));
         let (handle, supervisor) = RuntimeSupervisor::start(device_ordinal, worker_count, id, next_worker_index)?;
 
-        Ok(Self {
-            inner: Arc::new(GpuExecutionPoolInner {
-                id,
-                device_ordinal,
-                worker_count,
-                handle,
-                supervisor,
-                submissions_closed: AtomicBool::new(false),
-                submission_gate: Mutex::new(()),
-                concurrency: Arc::new(Semaphore::new(worker_count)),
-                counters: Arc::new(PoolCounters::default()),
-                drain: Arc::new(PoolDrain::default()),
-                query_tracker,
-                next_job_id: AtomicU64::new(1),
-            }),
-            resource_epoch: None,
-        })
+        let inner = Arc::new(GpuExecutionPoolInner {
+            id,
+            device_ordinal,
+            worker_count,
+            handle,
+            supervisor: Arc::clone(&supervisor),
+            submissions_closed: AtomicBool::new(false),
+            submission_gate: Mutex::new(()),
+            concurrency: Arc::new(Semaphore::new(worker_count)),
+            root_job_permits: Arc::new(Semaphore::new(root_job_capacity)),
+            aux_job_permits: Arc::new(Semaphore::new(aux_job_capacity)),
+            // Every admitted attempt can transition to exactly one release
+            // cleanup. Keep that bounded lifecycle tail separate from
+            // caller-submitted root jobs so an unrelated saturated root job
+            // cannot force CUDA-bound envelope destruction onto its caller.
+            // The task still uses the same fixed-width device runtime.
+            release_cleanup_permits: Arc::new(Semaphore::new(root_job_capacity)),
+            root_job_capacity,
+            aux_job_capacity,
+            counters: Arc::new(PoolCounters::default()),
+            drain: Arc::new(PoolDrain::default()),
+            query_tracker,
+            next_job_id: AtomicU64::new(1),
+        });
+        supervisor.register_process_exit(Arc::downgrade(&inner));
+        Ok(Self { inner, resource_epoch: None })
+    }
+
+    fn class_semaphore(&self, kind: GpuExecutionJobKind) -> &Arc<Semaphore> {
+        self.class_semaphore_for_class(kind.job_class())
+    }
+
+    fn class_semaphore_for_class(&self, class: GpuExecutionJobClass) -> &Arc<Semaphore> {
+        match class {
+            GpuExecutionJobClass::Root => &self.inner.root_job_permits,
+            GpuExecutionJobClass::Auxiliary => &self.inner.aux_job_permits,
+        }
+    }
+
+    fn class_saturated_error(&self, kind: GpuExecutionJobKind) -> QueryError {
+        self.class_saturated_error_for_class(kind, kind.job_class())
+    }
+
+    fn class_saturated_error_for_class(&self, kind: GpuExecutionJobKind, class: GpuExecutionJobClass) -> QueryError {
+        QueryError::new(
+            QueryErrorCode::ServiceOverloaded,
+            "nexus_query_engine.gpu.execution_pool",
+            "GPU execution pool job-class capacity is saturated",
+        )
+        .with_fact("device_ordinal", self.inner.device_ordinal)
+        .with_fact("job_kind", kind.as_str())
+        .with_fact("job_class", class.as_str())
+        .with_fact("reason", "gpu_execution_pool_class_saturated")
+    }
+
+    fn release_cleanup_saturated_error(&self) -> QueryError {
+        QueryError::new(
+            QueryErrorCode::ServiceOverloaded,
+            "nexus_query_engine.gpu.execution_pool",
+            "GPU execution pool bounded release-cleanup capacity is saturated",
+        )
+        .with_fact("device_ordinal", self.inner.device_ordinal)
+        .with_fact("job_kind", GpuExecutionJobKind::Cleanup.as_str())
+        .with_fact("job_class", "release_cleanup")
+        .with_fact("reason", "gpu_execution_pool_release_cleanup_saturated")
     }
 
     /// Returns the process-global fallback pool for one CUDA device.
@@ -317,9 +439,41 @@ impl GpuExecutionPool {
         F: Future<Output = T> + Send + 'static,
         T: Send + 'static,
     {
+        self.run_observed_scoped_in_class(kind, kind.job_class(), observation, build_future).await
+    }
+
+    /// Runs one observed job through an explicit bounded resource class.
+    ///
+    /// Context setup retains its stable observation kind even when a later
+    /// fragment uses an auxiliary stream; its class is selected by the
+    /// admitted attempt's root-context reservation rather than inferred from
+    /// that observability label.
+    pub(crate) async fn run_observed_scoped_in_class<B, F, T>(
+        &self,
+        kind: GpuExecutionJobKind,
+        class: GpuExecutionJobClass,
+        observation: RuntimeObservationHandle,
+        build_future: B,
+    ) -> Result<T>
+    where
+        B: FnOnce(RuntimeStreamLeaseScope) -> F + Send + 'static,
+        F: Future<Output = T> + Send + 'static,
+        T: Send + 'static,
+    {
         self.check_resource_epoch(RUN_OPERATION)?;
+        // A job-class permit bounds every accepted awaited submission, not
+        // only detached `spawn` work. Acquiring asynchronously here would
+        // create an unbounded semaphore waiter queue containing arbitrary
+        // caller futures. Same-pool composition uses the same bounded permit
+        // below and executes inline only after that accounting succeeds.
+        let class_permit = self
+            .class_semaphore_for_class(class)
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_error| self.class_saturated_error_for_class(kind, class))?;
         let job = self.new_job_observation(kind, observation);
         if current_pool_id() == Some(self.inner.id) {
+            let _class_permit = class_permit;
             let worker_id = job.started(current_worker_index());
             let mut terminal = JobTerminalGuard::inline(Arc::clone(&job));
             let scope = RuntimeStreamLeaseScope::default().with_gpu_worker(job.job_id.clone(), worker_id);
@@ -335,6 +489,11 @@ impl GpuExecutionPool {
             };
         }
 
+        // The class permit is held before the job enters the worker runtime,
+        // so bounded child work can never consume a future root slot while it
+        // waits. Once accepted, a job may wait only behind the fixed-width
+        // worker semaphore; the number of such accepted jobs is bounded by
+        // its class capacity.
         let job_guard = JobCounterGuard::new(
             kind,
             Arc::clone(&self.inner.counters),
@@ -346,6 +505,7 @@ impl GpuExecutionPool {
         let resource_epoch = self.resource_epoch.clone();
         let task = self.inner.spawn_task(async move {
             let _resource_epoch = resource_epoch;
+            let _class_permit = class_permit;
             let permit = concurrency.acquire_owned().await;
             let permit = permit.expect("GPU execution pool semaphore must remain open while jobs are live");
             run_counted_job_scoped(job_guard, permit, build_future).await
@@ -390,6 +550,11 @@ impl GpuExecutionPool {
         F: Future<Output = ()> + Send + 'static,
     {
         self.check_resource_epoch(RUN_OPERATION)?;
+        let class_permit = self
+            .class_semaphore(kind)
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_error| self.class_saturated_error(kind))?;
         let job = self.new_job_observation(kind, observation);
         let job_guard = JobCounterGuard::new(
             kind,
@@ -402,6 +567,7 @@ impl GpuExecutionPool {
         let resource_epoch = self.resource_epoch.clone();
         self.inner.spawn_task(async move {
             let _resource_epoch = resource_epoch;
+            let _class_permit = class_permit;
             let permit = concurrency.acquire_owned().await;
             let permit = permit.expect("GPU execution pool semaphore must remain open while jobs are live");
             let _ = run_counted_job(job_guard, permit, future).await;
@@ -417,10 +583,17 @@ impl GpuExecutionPool {
         observation: RuntimeObservationHandle,
         future: F,
         completion: C,
-    ) where
+    ) -> Result<()>
+    where
         F: Future<Output = ()> + Send + 'static,
         C: FnOnce() + Send + 'static,
     {
+        self.check_resource_epoch(RUN_OPERATION)?;
+        let class_permit = self
+            .class_semaphore(kind)
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_error| self.class_saturated_error(kind))?;
         let job = self.new_job_observation(kind, observation);
         let job_guard = JobCounterGuard::new_with_completion(
             kind,
@@ -432,12 +605,59 @@ impl GpuExecutionPool {
         );
         let concurrency = Arc::clone(&self.inner.concurrency);
         let resource_epoch = self.resource_epoch.clone();
-        let _ = self.inner.spawn_task(async move {
+        self.inner.spawn_task(async move {
             let _resource_epoch = resource_epoch;
+            let _class_permit = class_permit;
             let permit = concurrency.acquire_owned().await;
             let permit = permit.expect("GPU execution pool semaphore must remain open while jobs are live");
             let _ = run_counted_job(job_guard, permit, future).await;
-        });
+        })?;
+        Ok(())
+    }
+
+    /// Detaches one admission-owned CUDA cleanup task onto this device pool.
+    ///
+    /// A live admitted attempt has exactly one release path, so this uses a
+    /// dedicated `A_d`-sized permit set rather than waiting in an unbounded
+    /// semaphore queue or competing with arbitrary root submissions. The
+    /// cleanup still waits only behind the fixed-width device runtime.
+    pub(crate) fn spawn_release_cleanup_observed_with_completion<F, C>(
+        &self,
+        observation: RuntimeObservationHandle,
+        future: F,
+        completion: C,
+    ) -> Result<()>
+    where
+        F: Future<Output = ()> + Send + 'static,
+        C: FnOnce() + Send + 'static,
+    {
+        self.check_resource_epoch(RUN_OPERATION)?;
+        let release_permit = self
+            .inner
+            .release_cleanup_permits
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_error| self.release_cleanup_saturated_error())?;
+        let kind = GpuExecutionJobKind::Cleanup;
+        let job = self.new_job_observation(kind, observation);
+        let job_guard = JobCounterGuard::new_with_completion(
+            kind,
+            Arc::clone(&self.inner.counters),
+            Arc::clone(&self.inner.drain),
+            self.inner.query_tracker.clone(),
+            job,
+            Box::new(completion),
+        );
+        let concurrency = Arc::clone(&self.inner.concurrency);
+        let resource_epoch = self.resource_epoch.clone();
+        self.inner.spawn_task(async move {
+            let _resource_epoch = resource_epoch;
+            let _release_permit = release_permit;
+            let permit = concurrency.acquire_owned().await;
+            let permit = permit.expect("GPU execution pool semaphore must remain open while jobs are live");
+            let _ = run_counted_job(job_guard, permit, future).await;
+        })?;
+        Ok(())
     }
 
     fn new_job_observation(
@@ -467,6 +687,10 @@ impl GpuExecutionPool {
             pool_id: self.inner.id,
             device_ordinal: self.inner.device_ordinal,
             worker_count: self.inner.worker_count,
+            root_job_capacity: self.inner.root_job_capacity,
+            aux_job_capacity: self.inner.aux_job_capacity,
+            root_jobs_available: self.inner.root_job_permits.available_permits(),
+            aux_jobs_available: self.inner.aux_job_permits.available_permits(),
             active_jobs,
             peak_active_jobs: counters.peak_active.load(Ordering::Acquire).max(active_jobs),
             queued_jobs,
@@ -543,6 +767,27 @@ impl GpuExecutionPool {
         first_deadline.map_or(Ok(()), Err)
     }
 
+    /// Terminal process-exit path. It has no timeout because returning while
+    /// the Tokio runtime can still execute a CUDA-owning job would hand that
+    /// job to libcudart teardown.
+    fn close_and_join_for_process_exit(&self) {
+        // Use the same gate as ordinary shutdown. Otherwise a submitter that
+        // already checked `submissions_closed` could still enqueue a task
+        // after this terminal path starts draining the runtime.
+        let submission = self.inner.submission_gate.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.inner.submissions_closed.store(true, Ordering::Release);
+        drop(submission);
+        self.inner.supervisor.request_exit_from_drop();
+        let mut state = self.inner.drain.changed.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        while self.inner.counters.active.load(Ordering::Acquire) != 0
+            || self.inner.counters.queued.load(Ordering::Acquire) != 0
+        {
+            state = self.inner.drain.wake.wait(state).unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+        drop(state);
+        self.inner.supervisor.join_for_process_exit();
+    }
+
     pub(crate) fn with_resource_epoch(&self, resource_epoch: Arc<QueryServiceResourceEpoch>) -> Self {
         Self { inner: Arc::clone(&self.inner), resource_epoch: Some(resource_epoch) }
     }
@@ -568,10 +813,15 @@ struct GpuExecutionPoolInner {
     device_ordinal: usize,
     worker_count: usize,
     handle: Handle,
-    supervisor: RuntimeSupervisor,
+    supervisor: Arc<RuntimeSupervisor>,
     submissions_closed: AtomicBool,
     submission_gate: Mutex<()>,
     concurrency: Arc<Semaphore>,
+    root_job_permits: Arc<Semaphore>,
+    aux_job_permits: Arc<Semaphore>,
+    release_cleanup_permits: Arc<Semaphore>,
+    root_job_capacity: usize,
+    aux_job_capacity: usize,
     counters: Arc<PoolCounters>,
     drain: Arc<PoolDrain>,
     query_tracker: GpuExecutionQueryTracker,
@@ -699,6 +949,17 @@ struct RuntimeSupervisor {
     control: Arc<RuntimeSupervisorControl>,
     join: Mutex<Option<thread::JoinHandle<()>>>,
     join_disposition: AtomicU8,
+    process_exit_registration: Mutex<Option<ProcessExitRegistration>>,
+}
+
+/// Keeps only a weak pool pointer plus the runtime-owning supervisor alive for
+/// process teardown. The registry does not retain query state or CUDA objects;
+/// the supervisor is enough to request runtime shutdown and join every Tokio
+/// worker if the final ordinary pool reference vanished on one of those
+/// workers.
+struct ProcessExitGpuExecutionPool {
+    inner: Weak<GpuExecutionPoolInner>,
+    supervisor: Arc<RuntimeSupervisor>,
 }
 
 const SUPERVISOR_NOT_JOINED: u8 = 0;
@@ -739,63 +1000,75 @@ impl RuntimeSupervisor {
         worker_count: usize,
         pool_id: u64,
         next_worker_index: Arc<AtomicUsize>,
-    ) -> Result<(Handle, Self)> {
+    ) -> Result<(Handle, Arc<Self>)> {
         let control = Arc::new(RuntimeSupervisorControl::default());
-        let thread_control = Arc::clone(&control);
+        let supervisor = Arc::new(Self {
+            device_ordinal,
+            control,
+            join: Mutex::new(None),
+            join_disposition: AtomicU8::new(SUPERVISOR_NOT_JOINED),
+            process_exit_registration: Mutex::new(None),
+        });
+        let thread_control = Arc::clone(&supervisor.control);
+        let worker_supervisor = Arc::clone(&supervisor);
         let (startup_sender, startup_receiver) = mpsc::sync_channel(1);
         let join = thread::Builder::new()
             .name(format!("nexus-gpu-{device_ordinal}-supervisor"))
             .spawn(move || {
-                let runtime = tokio::runtime::Builder::new_multi_thread()
-                    .worker_threads(worker_count)
-                    .thread_name(format!("nexus-gpu-{device_ordinal}"))
-                    .on_thread_start({
-                        let next_worker_index = Arc::clone(&next_worker_index);
-                        move || {
-                            CURRENT_POOL_ID.with(|current| current.set(Some(pool_id)));
-                            CURRENT_WORKER_INDEX.with(|current| {
-                                current.set(Some(next_worker_index.fetch_add(1, Ordering::Relaxed)));
-                            });
-                        }
-                    })
-                    .on_thread_stop(|| {
-                        CURRENT_WORKER_INDEX.with(|current| current.set(None));
-                        CURRENT_POOL_ID.with(|current| current.set(None));
-                    })
-                    .enable_all()
-                    .build();
-                let runtime = match runtime {
-                    Ok(runtime) => runtime,
-                    Err(error) => {
-                        let message = error.to_string();
-                        thread_control.publish_exit(RuntimeSupervisorExit::BuildFailed { message: message.clone() });
-                        let _ = startup_sender.send(RuntimeSupervisorStartup::BuildFailed(message));
+                (|| {
+                    let runtime = tokio::runtime::Builder::new_multi_thread()
+                        .worker_threads(worker_count)
+                        .thread_name(format!("nexus-gpu-{device_ordinal}"))
+                        .on_thread_start({
+                            let next_worker_index = Arc::clone(&next_worker_index);
+                            move || {
+                                CURRENT_POOL_ID.with(|current| current.set(Some(pool_id)));
+                                CURRENT_WORKER_INDEX.with(|current| {
+                                    current.set(Some(next_worker_index.fetch_add(1, Ordering::Relaxed)));
+                                });
+                            }
+                        })
+                        .on_thread_stop(|| {
+                            CURRENT_WORKER_INDEX.with(|current| current.set(None));
+                            CURRENT_POOL_ID.with(|current| current.set(None));
+                        })
+                        .enable_all()
+                        .build();
+                    let runtime = match runtime {
+                        Ok(runtime) => runtime,
+                        Err(error) => {
+                            let message = error.to_string();
+                            thread_control
+                                .publish_exit(RuntimeSupervisorExit::BuildFailed { message: message.clone() });
+                            let _ = startup_sender.send(RuntimeSupervisorStartup::BuildFailed(message));
+                            return;
+                        },
+                    };
+                    if startup_sender.send(RuntimeSupervisorStartup::Ready(runtime.handle().clone())).is_err() {
+                        drop(runtime);
                         return;
-                    },
-                };
-                if startup_sender.send(RuntimeSupervisorStartup::Ready(runtime.handle().clone())).is_err() {
-                    drop(runtime);
-                    return;
-                }
-
-                let teardown = std::panic::catch_unwind(AssertUnwindSafe(|| {
-                    thread_control.wait_for_exit_request();
-                    #[cfg(test)]
-                    if thread_control.panic_during_teardown.load(Ordering::Acquire) {
-                        panic!("injected GPU execution supervisor teardown panic");
                     }
-                    drop(runtime);
-                }));
-                let exit = match teardown {
-                    Ok(()) => RuntimeSupervisorExit::Clean,
-                    Err(panic) => RuntimeSupervisorExit::Panicked { panic_message: panic_message(panic.as_ref()) },
-                };
-                thread_control.publish_exit(exit);
 
-                #[cfg(test)]
-                if thread_control.panic_after_exit.load(Ordering::Acquire) {
-                    panic!("injected GPU execution supervisor join panic");
-                }
+                    let teardown = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                        thread_control.wait_for_exit_request();
+                        #[cfg(test)]
+                        if thread_control.panic_during_teardown.load(Ordering::Acquire) {
+                            panic!("injected GPU execution supervisor teardown panic");
+                        }
+                        drop(runtime);
+                    }));
+                    let exit = match teardown {
+                        Ok(()) => RuntimeSupervisorExit::Clean,
+                        Err(panic) => RuntimeSupervisorExit::Panicked { panic_message: panic_message(panic.as_ref()) },
+                    };
+                    thread_control.publish_exit(exit);
+
+                    #[cfg(test)]
+                    if thread_control.panic_after_exit.load(Ordering::Acquire) {
+                        panic!("injected GPU execution supervisor join panic");
+                    }
+                })();
+                worker_supervisor.unregister_process_exit();
             })
             .map_err(|error| {
                 QueryError::new(
@@ -845,15 +1118,23 @@ impl RuntimeSupervisor {
             },
         };
 
-        Ok((
-            handle,
-            Self {
-                device_ordinal,
-                control,
-                join: Mutex::new(Some(join)),
-                join_disposition: AtomicU8::new(SUPERVISOR_NOT_JOINED),
-            },
-        ))
+        *supervisor.join.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(join);
+        Ok((handle, supervisor))
+    }
+
+    fn register_process_exit(self: &Arc<Self>, inner: Weak<GpuExecutionPoolInner>) {
+        let shutdown: Arc<dyn ProcessExitShutdown> =
+            Arc::new(ProcessExitGpuExecutionPool { inner, supervisor: Arc::clone(self) });
+        let registration = register_cuda_process_exit_shutdown(shutdown);
+        *self.process_exit_registration.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = registration;
+    }
+
+    fn unregister_process_exit(&self) {
+        let registration =
+            self.process_exit_registration.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+        if let Some(registration) = registration {
+            registration.unregister();
+        }
     }
 
     fn request_exit(&self) -> Result<()> {
@@ -933,6 +1214,16 @@ impl RuntimeSupervisor {
             .with_fact("reason", "runtime_supervisor_join_poisoned")
         })?;
         if let Some(handle) = join.take() {
+            if handle.thread().id() == thread::current().id() {
+                *join = Some(handle);
+                return Err(QueryError::new(
+                    QueryErrorCode::Internal,
+                    SHUTDOWN_OPERATION,
+                    "GPU execution supervisor cannot join itself",
+                )
+                .with_fact("device_ordinal", self.device_ordinal)
+                .with_fact("reason", "runtime_supervisor_self_join"));
+            }
             match handle.join() {
                 Ok(()) => self.join_disposition.store(SUPERVISOR_JOINED, Ordering::Release),
                 Err(panic) => {
@@ -945,7 +1236,7 @@ impl RuntimeSupervisor {
                 },
             }
         }
-        match self.join_disposition.load(Ordering::Acquire) {
+        let result = match self.join_disposition.load(Ordering::Acquire) {
             SUPERVISOR_JOINED => Ok(()),
             SUPERVISOR_JOIN_FAILED => Err(QueryError::new(
                 QueryErrorCode::Internal,
@@ -955,6 +1246,39 @@ impl RuntimeSupervisor {
             .with_fact("device_ordinal", self.device_ordinal)
             .with_fact("reason", "runtime_supervisor_join_failed")),
             unexpected => unreachable!("invalid GPU execution supervisor join disposition {unexpected}"),
+        };
+        self.unregister_process_exit();
+        result
+    }
+
+    fn join_for_process_exit(&self) {
+        self.request_exit_from_drop();
+        let mut join = self.join.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(handle) = join.take() else {
+            return;
+        };
+        if handle.thread().id() == thread::current().id() {
+            *join = Some(handle);
+            return;
+        }
+        let joined = handle.join();
+        self.join_disposition
+            .store(if joined.is_ok() { SUPERVISOR_JOINED } else { SUPERVISOR_JOIN_FAILED }, Ordering::Release);
+        drop(join);
+        self.unregister_process_exit();
+    }
+}
+
+impl ProcessExitShutdown for ProcessExitGpuExecutionPool {
+    fn phase(&self) -> ProcessExitPhase {
+        ProcessExitPhase::ExecutionPool
+    }
+
+    fn shutdown_for_process_exit(&self) {
+        if let Some(inner) = self.inner.upgrade() {
+            GpuExecutionPool { inner, resource_epoch: None }.close_and_join_for_process_exit();
+        } else {
+            self.supervisor.join_for_process_exit();
         }
     }
 }
@@ -1474,6 +1798,17 @@ mod tests {
             .collect()
     }
 
+    #[test]
+    fn process_exit_joins_an_orphaned_gpu_execution_supervisor() {
+        let pool = GpuExecutionPool::new(usize::MAX - 4, 1).unwrap();
+        let supervisor = Arc::clone(&pool.inner.supervisor);
+
+        drop(pool);
+        supervisor.join_for_process_exit();
+
+        assert_eq!(supervisor.join_disposition.load(Ordering::Acquire), SUPERVISOR_JOINED);
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn observed_job_defines_worker_and_records_host_lifecycle() {
         let pool = GpuExecutionPool::new(0, 1).unwrap();
@@ -1498,6 +1833,57 @@ mod tests {
             snapshot.topology().filter(|row| matches!(row, RuntimeTopologyRecord::WorkerDefinition(_))).count(),
             1
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn auxiliary_context_setup_uses_auxiliary_capacity_without_changing_its_observation_kind() {
+        let pool =
+            GpuExecutionPool::new_with_tracker_and_classes(usize::MAX - 8, 2, 1, 1, GpuExecutionQueryTracker::new())
+                .unwrap();
+        let release = Arc::new(tokio::sync::Semaphore::new(0));
+        let task_release = Arc::clone(&release);
+        let (started_sender, started_receiver) = tokio::sync::oneshot::channel();
+        let first = {
+            let pool = pool.clone();
+            tokio::spawn(async move {
+                pool.run_observed_scoped_in_class(
+                    GpuExecutionJobKind::ContextSetup,
+                    GpuExecutionJobClass::Auxiliary,
+                    RuntimeObservationHandle::disabled(),
+                    move |_scope| async move {
+                        let _ = started_sender.send(());
+                        let _permit = task_release.acquire_owned().await.expect("test release semaphore remains open");
+                    },
+                )
+                .await
+            })
+        };
+        started_receiver.await.expect("first auxiliary context setup starts");
+
+        let saturated = pool
+            .run_observed_scoped_in_class(
+                GpuExecutionJobKind::ContextSetup,
+                GpuExecutionJobClass::Auxiliary,
+                RuntimeObservationHandle::disabled(),
+                |_scope| async {},
+            )
+            .await
+            .expect_err("second auxiliary setup must respect auxiliary capacity");
+        assert_eq!(saturated.code(), QueryErrorCode::ServiceOverloaded);
+        assert_eq!(saturated.fact_value("job_kind"), Some("context_setup"));
+        assert_eq!(saturated.fact_value("job_class"), Some("auxiliary"));
+
+        pool.run_observed_scoped_in_class(
+            GpuExecutionJobKind::ContextSetup,
+            GpuExecutionJobClass::Root,
+            RuntimeObservationHandle::disabled(),
+            |_scope| async {},
+        )
+        .await
+        .expect("root setup stays admissible while auxiliary capacity is full");
+
+        release.add_permits(1);
+        first.await.expect("auxiliary setup task must not panic").expect("auxiliary setup completes after release");
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1718,7 +2104,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn fixed_width_tracks_peaks_without_starving_serving_runtime() {
-        let pool = GpuExecutionPool::new(0, 2).unwrap();
+        let pool = GpuExecutionPool::new_with_tracker_and_classes(0, 2, 2, 4, GpuExecutionQueryTracker::new()).unwrap();
         let gate = Arc::new(BlockingGate::default());
         let heartbeat = Arc::new(AtomicUsize::new(0));
         let stop_heartbeat = Arc::new(AtomicBool::new(false));
@@ -1747,16 +2133,24 @@ mod tests {
             }));
         }
 
+        wait_until(|| pool.snapshot().aux_jobs_available == 0).await;
+
+        let saturated = pool
+            .run(GpuExecutionJobKind::QueryExecution, async {})
+            .await
+            .expect_err("the fifth awaited job must not join an unbounded class waiter queue");
+        assert_eq!(saturated.fact_value("reason"), Some("gpu_execution_pool_class_saturated"));
+
         wait_until(|| {
             let snapshot = pool.snapshot();
             snapshot.active_jobs == 2 && snapshot.queued_jobs == 2 && snapshot.active_query_jobs == 2
         })
         .await;
         assert!(heartbeat.load(Ordering::Relaxed) > 0);
-        let saturated = pool.snapshot();
-        assert_eq!(saturated.active_query_jobs, 2);
-        assert_eq!(saturated.peak_active_jobs, 2);
-        assert_eq!(saturated.peak_active_query_jobs, 2);
+        let snapshot = pool.snapshot();
+        assert_eq!(snapshot.active_query_jobs, 2);
+        assert_eq!(snapshot.peak_active_jobs, 2);
+        assert_eq!(snapshot.peak_active_query_jobs, 2);
 
         gate.release();
         for job in jobs {
@@ -1795,6 +2189,24 @@ mod tests {
         assert_eq!(outer_thread, inner_thread);
         assert_eq!(pool.snapshot().peak_active_jobs, 1);
         assert_eq!(pool.snapshot().peak_active_query_jobs, 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn reentrant_same_class_submission_is_bounded_instead_of_bypassing_the_pool() {
+        let pool = GpuExecutionPool::new(1, 1).unwrap();
+        let nested_pool = pool.clone();
+
+        let nested = pool
+            .run(GpuExecutionJobKind::QueryExecution, async move {
+                nested_pool.run(GpuExecutionJobKind::QueryExecution, async { 7_u8 }).await
+            })
+            .await
+            .expect("outer job runs");
+
+        let error = nested.expect_err("nested auxiliary work cannot bypass the outer class permit");
+        assert_eq!(error.code(), QueryErrorCode::ServiceOverloaded);
+        assert_eq!(error.fact_value("reason"), Some("gpu_execution_pool_class_saturated"));
+        assert_eq!(pool.snapshot().peak_active_jobs, 1);
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1987,5 +2399,81 @@ mod tests {
         second_job.await.unwrap().unwrap();
         assert_eq!(tracker.snapshot().active_query_jobs, 0);
         assert_eq!(tracker.snapshot().peak_active_query_jobs, 2);
+    }
+}
+
+#[cfg(test)]
+mod job_class_tests {
+    use std::sync::{Barrier, mpsc};
+
+    use super::*;
+
+    #[test]
+    fn auxiliary_spawn_is_rejected_when_its_class_is_saturated() {
+        if cudf::DeviceId::count().unwrap_or(0) == 0 {
+            return;
+        }
+        let pool = GpuExecutionPool::new_with_tracker_and_classes(
+            cudf::DeviceId::DEFAULT.ordinal(),
+            2,
+            1,
+            1,
+            GpuExecutionQueryTracker::new(),
+        )
+        .unwrap();
+        let barrier = std::sync::Arc::new(Barrier::new(2));
+        let (entered_sender, entered_receiver) = mpsc::channel();
+        let running_barrier = std::sync::Arc::clone(&barrier);
+        pool.spawn(GpuExecutionJobKind::QueryExecution, async move {
+            let _ = entered_sender.send(());
+            running_barrier.wait();
+        })
+        .unwrap();
+        entered_receiver.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+
+        let error = pool.spawn(GpuExecutionJobKind::QueryExecution, async {}).unwrap_err();
+        assert_eq!(error.code(), QueryErrorCode::ServiceOverloaded);
+        assert_eq!(error.fact_value("reason"), Some("gpu_execution_pool_class_saturated"));
+        assert_eq!(error.fact_value("job_class"), Some("auxiliary"));
+
+        // Lifecycle work still admits: the root class is untouched.
+        pool.spawn(GpuExecutionJobKind::Cleanup, async {}).unwrap();
+        barrier.wait();
+    }
+
+    #[test]
+    fn class_capacities_are_reported_and_release_on_completion() {
+        if cudf::DeviceId::count().unwrap_or(0) == 0 {
+            return;
+        }
+        let pool = GpuExecutionPool::new_with_tracker_and_classes(
+            cudf::DeviceId::DEFAULT.ordinal(),
+            4,
+            2,
+            6,
+            GpuExecutionQueryTracker::new(),
+        )
+        .unwrap();
+        let snapshot = pool.snapshot();
+        assert_eq!(snapshot.root_job_capacity, 2);
+        assert_eq!(snapshot.aux_job_capacity, 6);
+        assert_eq!(snapshot.root_jobs_available, 2);
+        assert_eq!(snapshot.aux_jobs_available, 6);
+        pool.spawn(GpuExecutionJobKind::Cleanup, async {}).unwrap();
+        pool.spawn(GpuExecutionJobKind::QueryExecution, async {}).unwrap();
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        pool.wait_for_drain_until(deadline).unwrap();
+        // The class permit drops after the job counters, so poll for the
+        // permits to return instead of racing the task teardown.
+        while Instant::now() < deadline {
+            let snapshot = pool.snapshot();
+            if snapshot.root_jobs_available == 2 && snapshot.aux_jobs_available == 6 {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let snapshot = pool.snapshot();
+        assert_eq!(snapshot.root_jobs_available, 2);
+        assert_eq!(snapshot.aux_jobs_available, 6);
     }
 }

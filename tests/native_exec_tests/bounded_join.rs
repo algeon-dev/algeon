@@ -107,38 +107,6 @@ fn native_optimizer_rule_rewrites_and_executes_bounded_join_aggregate_pipeline()
 }
 
 #[test]
-fn native_optimizer_rule_adaptive_mode_rewrites_join_with_adaptive_diagnostics() {
-    let dir = unique_temp_dir("datafusion-nexus-native-exec-adaptive-join-planning");
-    let left = dir.join("left.parquet");
-    let right = dir.join("right.parquet");
-    write_parquet_file(&left);
-    write_parquet_file(&right);
-    let plan = join_aggregate_sort_limit_sql_plan(&left, &right);
-    let config = NexusNativeExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 2, 3, 1)
-        .with_native_pipeline_execution_mode(NativePipelineExecutionMode::Adaptive);
-    let rule = NexusNativePhysicalOptimizerRule::new(
-        NexusNativeOptimizerConfig::default().with_native_execution_config(config),
-    );
-
-    let optimized = rule.optimize(plan, &ConfigOptions::default()).unwrap();
-
-    let native = optimized
-        .downcast_ref::<NexusNativeExec>()
-        .expect("adaptive mode should still present a NexusNativeExec DataFusion boundary");
-    assert!(displayable(native).one_line().to_string().contains("native_pipeline_execution_mode=adaptive"));
-    let diagnostics = rule.last_planning_diagnostics().expect("native optimizer should retain diagnostics");
-    assert!(diagnostics.strict_bounded_contract.is_empty());
-    assert_eq!(diagnostics.adaptive_pipeline.candidates.len(), 1);
-    let row = diagnostics.adaptive_pipeline.candidates[0].report.row();
-    assert_eq!(row.execution_mode.as_str(), "adaptive");
-    assert_eq!(row.candidate_status.as_str(), "admitted");
-    assert_eq!(diagnostics.report.selected_count(), 1);
-    assert_eq!(diagnostics.report.not_selected_count(), 0);
-
-    fs::remove_dir_all(dir).unwrap();
-}
-
-#[test]
 fn native_optimizer_rule_rewrites_bounded_q11_aggregate_over_join_subplan_inputs() {
     let dir = unique_temp_dir("datafusion-nexus-native-exec-bounded-q11-admission");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
@@ -154,15 +122,15 @@ fn native_optimizer_rule_rewrites_bounded_q11_aggregate_over_join_subplan_inputs
         lowering.plans[0]
     );
     let nexus_query_engine::capability::CapabilityEnvelopeAdmission::Admitted { envelope } =
-        analysis.strict_bounded_envelope_admission()
+        analysis.capability_envelope_admission()
     else {
         panic!(
             "direct Q11 lowering should be bounded executable: {:?}\n{}",
-            analysis.strict_bounded_envelope_admission(),
+            analysis.capability_envelope_admission(),
             lowering.plans[0]
         );
     };
-    assert_eq!(envelope, nexus_query_engine::capability::StrictBoundedEnvelope::RootFullSortJoinAggregate);
+    assert_eq!(envelope, nexus_query_engine::capability::CapabilityEnvelope::RootFullSortJoinAggregate);
     let rule = NexusNativePhysicalOptimizerRule::new(native_optimizer_config());
 
     let optimized = rule.optimize(plan, &ConfigOptions::default()).unwrap();
@@ -178,15 +146,15 @@ fn native_optimizer_rule_rewrites_bounded_q11_aggregate_over_join_subplan_inputs
     assert!(matches!(report.outcomes()[0], CandidateOutcome::Selected { .. }));
 
     let diagnostics = rule.last_planning_diagnostics().expect("native optimizer should retain diagnostics");
-    assert_eq!(diagnostics.strict_bounded_contract.accepted_candidates.len(), 1);
-    assert!(diagnostics.strict_bounded_contract.rejected_candidates.is_empty());
-    let accepted = &diagnostics.strict_bounded_contract.accepted_candidates[0];
+    assert_eq!(diagnostics.capability_contract.accepted_candidates.len(), 1);
+    assert!(diagnostics.capability_contract.rejected_candidates.is_empty());
+    let accepted = &diagnostics.capability_contract.accepted_candidates[0];
     assert_eq!(accepted.compiled_graph.sink_kind, "host_arrow_materialization");
     assert!(accepted.compiled_graph.gate_count > 0);
     assert!(accepted.compiled_graph.sink_gate_count > 0);
     let strict_report = &accepted.report;
-    assert_eq!(strict_report.execution_mode(), StrictBoundedExecutionMode::StrictBounded);
-    assert!(strict_report.is_strict_bounded_ready());
+    assert_eq!(strict_report.execution_mode(), CapabilityEnvelopeStatus::Admitted);
+    assert!(strict_report.is_ready());
     assert_strict_report_has_host_sink_boundary(strict_report);
     assert_strict_report_has_join_path_gates(strict_report);
     assert!(
@@ -200,9 +168,7 @@ fn native_optimizer_rule_rewrites_bounded_q11_aggregate_over_join_subplan_inputs
     fs::remove_dir_all(dir).unwrap();
 }
 
-fn assert_strict_report_has_host_sink_boundary(
-    report: &nexus_query_engine::contract_report::StrictBoundedContractReport,
-) {
+fn assert_strict_report_has_host_sink_boundary(report: &nexus_query_engine::contract_report::CapabilityContractReport) {
     assert!(
         report.gate_rows().iter().any(|row| {
             row.owner.to_string() == "sink_boundary"
@@ -215,7 +181,7 @@ fn assert_strict_report_has_host_sink_boundary(
     );
 }
 
-fn assert_strict_report_has_join_path_gates(report: &nexus_query_engine::contract_report::StrictBoundedContractReport) {
+fn assert_strict_report_has_join_path_gates(report: &nexus_query_engine::contract_report::CapabilityContractReport) {
     for kind in [
         ReservationKind::SourceRead,
         ReservationKind::BuildSide,
@@ -435,22 +401,27 @@ fn strict_bounded_planner_rows_cover_supported_join_path_while_runtime_rejection
     let right = dir.join("right.parquet");
     write_join_left_parquet_file(&left);
     write_join_right_parquet_file(&right);
-    let plan = root_nested_loop_join_plan(&left, &right);
-    let rule = NexusNativePhysicalOptimizerRule::new(native_optimizer_config());
-    let _ = rule.optimize(plan, &ConfigOptions::default()).unwrap();
-    let diagnostics = rule.last_planning_diagnostics().expect("native optimizer should retain diagnostics");
+    let expected_unsupported_shape = {
+        // Scoped: the shared test backend admits one attempt per device by
+        // default, so the planner-path admission handle must release before
+        // the runtime path admits below.
+        let plan = root_nested_loop_join_plan(&left, &right);
+        let rule = NexusNativePhysicalOptimizerRule::new(native_optimizer_config());
+        let _ = rule.optimize(plan, &ConfigOptions::default()).unwrap();
+        let diagnostics = rule.last_planning_diagnostics().expect("native optimizer should retain diagnostics");
 
-    assert_eq!(diagnostics.strict_bounded_contract.accepted_candidates.len(), 1);
-    assert!(diagnostics.strict_bounded_contract.rejected_candidates.is_empty());
-    let strict_rows = diagnostics.strict_bounded_contract.accepted_candidates[0].report.gate_rows();
-    assert!(strict_rows.iter().any(|row| row.reservation_kind == ReservationKind::Materialization));
-    assert!(
-        strict_rows
-            .iter()
-            .map(|row| row.to_stable_kv_row())
-            .all(|row| !row.contains("bounded_join_execution_family") && !row.contains("BoundedJoinExecutionPath"))
-    );
-    let expected_unsupported_shape = BoundedJoinReservationContract.supported_shape_requirement();
+        assert_eq!(diagnostics.capability_contract.accepted_candidates.len(), 1);
+        assert!(diagnostics.capability_contract.rejected_candidates.is_empty());
+        let strict_rows = diagnostics.capability_contract.accepted_candidates[0].report.gate_rows();
+        assert!(strict_rows.iter().any(|row| row.reservation_kind == ReservationKind::Materialization));
+        assert!(
+            strict_rows
+                .iter()
+                .map(|row| row.to_stable_kv_row())
+                .all(|row| !row.contains("bounded_join_execution_family") && !row.contains("BoundedJoinExecutionPath"))
+        );
+        BoundedJoinReservationContract.supported_shape_requirement()
+    };
 
     fs::remove_dir_all(dir).unwrap();
 

@@ -37,7 +37,6 @@ use nexus_bench::{
         },
     },
 };
-use nexus_query_engine::mode::NativePipelineExecutionMode;
 use nexus_workloads::{
     clickbench::{
         ClickbenchDatasetMetadata, ClickbenchWorkloadError, ClickbenchWorkloadResult, prepare_clickbench_report_dataset,
@@ -47,7 +46,6 @@ use nexus_workloads::{
 };
 
 const NEXUS_NATIVE_DATAFUSION_PLANNING_WORKLOAD_ENV: &str = "NEXUS_NATIVE_DATAFUSION_PLANNING_WORKLOAD";
-const NEXUS_NATIVE_PIPELINE_EXECUTION_MODE_ENV: &str = "NEXUS_NATIVE_PIPELINE_EXECUTION_MODE";
 const NEXUS_TPCH_PLANNING_PARQUET_PUSHDOWN_FILTERS_ENV: &str = "NEXUS_TPCH_PLANNING_PARQUET_PUSHDOWN_FILTERS";
 const NEXUS_TPCDS_PLANNING_PARQUET_PUSHDOWN_FILTERS_ENV: &str = "NEXUS_TPCDS_PLANNING_PARQUET_PUSHDOWN_FILTERS";
 
@@ -111,8 +109,7 @@ async fn synthetic_report(dir: &std::path::Path) -> NativeDataFusionPlanningRepo
 
 async fn tpch_report(dir: &std::path::Path) -> TpchWorkloadResult<TpchPlanningReport> {
     let (root, metadata) = prepare_tpch_report_dataset(dir)?;
-    let optimizer_config =
-        tpch_native_optimizer_config().with_native_pipeline_execution_mode(native_pipeline_execution_mode_from_env());
+    let optimizer_config = tpch_native_optimizer_config();
     let mut session_config = tpch_report_session_config();
     if let Some(pushdown_filters) = optional_env_bool(NEXUS_TPCH_PLANNING_PARQUET_PUSHDOWN_FILTERS_ENV) {
         session_config.options_mut().execution.parquet.pushdown_filters = pushdown_filters;
@@ -130,8 +127,7 @@ struct TpchPlanningReport {
 
 async fn tpcds_report(dir: &std::path::Path) -> TpcdsWorkloadResult<TpcdsPlanningReport> {
     let (root, metadata) = prepare_tpcds_report_dataset(dir)?;
-    let optimizer_config =
-        tpcds_native_optimizer_config().with_native_pipeline_execution_mode(native_pipeline_execution_mode_from_env());
+    let optimizer_config = tpcds_native_optimizer_config();
     let mut session_config = tpcds_report_session_config();
     if let Some(pushdown_filters) = optional_env_bool(NEXUS_TPCDS_PLANNING_PARQUET_PUSHDOWN_FILTERS_ENV) {
         session_config.options_mut().execution.parquet.pushdown_filters = pushdown_filters;
@@ -155,8 +151,7 @@ async fn clickbench_report() -> ClickbenchWorkloadResult<ClickbenchPlanningRepor
                 .to_string(),
         )
     })?;
-    let optimizer_config = clickbench_native_optimizer_config()
-        .with_native_pipeline_execution_mode(native_pipeline_execution_mode_from_env());
+    let optimizer_config = clickbench_native_optimizer_config();
     let items = clickbench_datafusion_planning_workload_items_with_optimizer_config(
         &root,
         clickbench_report_session_config(),
@@ -187,8 +182,7 @@ async fn native_datafusion_planning_report_with_session(
     session_config: SessionConfig,
 ) -> NativeDataFusionPlanningReport {
     let optimizer_config = NexusNativeOptimizerConfig::default().with_native_execution_config(
-        NexusNativeExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 1, 3, 1)
-            .with_native_pipeline_execution_mode(native_pipeline_execution_mode_from_env()),
+        NexusNativeExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 1, 3, 1),
     );
     let native_rule = Arc::new(NexusNativePhysicalOptimizerRule::new(optimizer_config.clone()));
     let state = SessionStateBuilder::new_with_default_features()
@@ -200,17 +194,6 @@ async fn native_datafusion_planning_report_with_session(
     let df = ctx.sql(sql).await.unwrap();
     let plan = df.create_physical_plan().await.unwrap();
     NativeDataFusionPlanningReport::from_retained_rule(query_id, plan, native_rule.as_ref())
-}
-
-fn native_pipeline_execution_mode_from_env() -> NativePipelineExecutionMode {
-    let mode = std::env::var(NEXUS_NATIVE_PIPELINE_EXECUTION_MODE_ENV)
-        .unwrap_or_else(|_| NativePipelineExecutionMode::StrictBounded.as_str().to_string());
-    mode.parse::<NativePipelineExecutionMode>().unwrap_or_else(|error| {
-        panic!(
-            "unsupported {NEXUS_NATIVE_PIPELINE_EXECUTION_MODE_ENV}={}; expected strict_bounded or adaptive",
-            error.value()
-        )
-    })
 }
 
 fn optional_env_bool(name: &'static str) -> Option<bool> {

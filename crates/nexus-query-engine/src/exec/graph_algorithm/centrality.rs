@@ -5,7 +5,6 @@ pub(super) fn execute_pagerank(
     spec: &crate::plan::GraphAlgorithmSpec,
     inputs: GraphAlgorithmExecutionInputs,
 ) -> Result<GraphAlgorithmExecutionResult> {
-    let preparation_pin_id = inputs.preparation_pin_id;
     let input = inputs.edge_list;
     let crate::plan::GraphAlgorithmParams::PageRank(params) = &spec.params else {
         return Err(QueryError::new(
@@ -16,7 +15,6 @@ pub(super) fn execute_pagerank(
         .with_fact("algorithm", spec.algorithm.as_str()));
     };
 
-    let resident_graph_key = resident_graph_key_for_input::<cugraph::Transposed>(&input, spec);
     let input = input.into_frame();
     let (edges, _) = project_edge_list(&input, spec)?;
     let options = table_graph_options(spec);
@@ -40,24 +38,10 @@ pub(super) fn execute_pagerank(
             budget_observations: Vec::new(),
         })
     };
-    if let Some(preparation_pin_id) = preparation_pin_id {
-        run_with_cugraph_graph_cache_hit::<cugraph::Transposed, _>(
-            context,
-            inputs.graph_memory_limit_bytes,
-            spec,
-            resident_graph_key,
-            edges,
-            options,
-            "datafusion_nexus_cugraph_pagerank",
-            preparation_pin_id,
-            run_pagerank,
-        )
-    } else {
+    {
         run_with_cugraph_graph::<cugraph::Transposed, _>(
             context,
             inputs.graph_memory_limit_bytes,
-            spec,
-            resident_graph_key,
             edges,
             options,
             "datafusion_nexus_cugraph_pagerank",
@@ -99,8 +83,6 @@ pub(super) fn execute_personalized_pagerank(
     run_with_cugraph_graph::<cugraph::Transposed, _>(
         context,
         inputs.graph_memory_limit_bytes,
-        spec,
-        None,
         edges,
         options,
         "datafusion_nexus_cugraph_personalized_pagerank",
@@ -180,8 +162,6 @@ pub(super) fn execute_eigenvector_centrality(
     run_with_cugraph_graph::<cugraph::Transposed, _>(
         context,
         inputs.graph_memory_limit_bytes,
-        spec,
-        None,
         edges,
         options,
         "datafusion_nexus_cugraph_eigenvector_centrality",
@@ -228,8 +208,6 @@ pub(super) fn execute_hits(
     run_with_cugraph_graph::<cugraph::Transposed, _>(
         context,
         inputs.graph_memory_limit_bytes,
-        spec,
-        None,
         edges,
         options,
         "datafusion_nexus_cugraph_hits",
@@ -289,8 +267,6 @@ pub(super) fn execute_betweenness_centrality(
     run_with_cugraph_graph::<cugraph::Forward, _>(
         context,
         inputs.graph_memory_limit_bytes,
-        spec,
-        None,
         edges,
         options,
         "datafusion_nexus_cugraph_betweenness_centrality",
@@ -361,8 +337,6 @@ pub(super) fn execute_edge_betweenness_centrality(
     run_with_cugraph_graph::<cugraph::Forward, _>(
         context,
         inputs.graph_memory_limit_bytes,
-        spec,
-        None,
         edges,
         options,
         "datafusion_nexus_cugraph_edge_betweenness_centrality",
@@ -464,8 +438,6 @@ pub(super) fn execute_katz_centrality(
     run_with_cugraph_graph::<cugraph::Transposed, _>(
         context,
         inputs.graph_memory_limit_bytes,
-        spec,
-        None,
         edges,
         options,
         "datafusion_nexus_cugraph_katz_centrality",

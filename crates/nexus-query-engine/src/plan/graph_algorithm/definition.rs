@@ -2,40 +2,40 @@
 
 use super::*;
 
-/// Strict bounded memory-boundary label for graph algorithm rejection facts.
-pub const GRAPH_ALGORITHM_STRICT_BOUNDED_MEMORY_BOUNDARY: &str = "graph_algorithm";
-/// Strict bounded required-contract label for graph algorithm rejection facts.
-pub const GRAPH_ALGORITHM_STRICT_BOUNDED_REQUIRED_CONTRACT: &str = "unsupported_graph_algorithm_reservation_contract";
+/// Capability-envelope memory-boundary label for graph algorithm rejection facts.
+pub const GRAPH_ALGORITHM_CAPABILITY_MEMORY_BOUNDARY: &str = "graph_algorithm";
+/// Capability-envelope required-contract label for graph algorithm rejection facts.
+pub const GRAPH_ALGORITHM_CAPABILITY_REQUIRED_CONTRACT: &str = "unsupported_graph_algorithm_reservation_contract";
 
 /// Lower-level cuGraph/cudf contracts required before graph algorithms can
-/// be admitted under strict bounded execution.
+/// be admitted by the capability envelope.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct GraphAlgorithmStrictBoundedLowerLevelContract {
+pub struct GraphAlgorithmLowerLevelContract {
     /// Stable short contract name.
     pub name: &'static str,
-    /// Required lower-level cudf/libcugraph surface before strict admission.
+    /// Required lower-level cudf/libcugraph surface before capability admission.
     pub required_surface: &'static str,
 }
 
-/// Lower-level graph contracts that currently block strict bounded admission.
-pub const GRAPH_ALGORITHM_STRICT_BOUNDED_LOWER_LEVEL_CONTRACTS: &[GraphAlgorithmStrictBoundedLowerLevelContract] = &[
-    GraphAlgorithmStrictBoundedLowerLevelContract {
+/// Lower-level graph contracts that currently block capability admission.
+pub const GRAPH_ALGORITHM_CAPABILITY_LOWER_LEVEL_CONTRACTS: &[GraphAlgorithmLowerLevelContract] = &[
+    GraphAlgorithmLowerLevelContract {
         name: "graph_construction_memory",
         required_surface: "preflight or hard upper-bound bytes for cuGraph graph construction from cudf table input",
     },
-    GraphAlgorithmStrictBoundedLowerLevelContract {
+    GraphAlgorithmLowerLevelContract {
         name: "renumbering_memory",
         required_surface: "preflight or hard upper-bound bytes for optional cuGraph vertex renumbering",
     },
-    GraphAlgorithmStrictBoundedLowerLevelContract {
+    GraphAlgorithmLowerLevelContract {
         name: "algorithm_workspace_memory",
         required_surface: "preflight or hard upper-bound bytes for algorithm-specific cuGraph workspace",
     },
-    GraphAlgorithmStrictBoundedLowerLevelContract {
+    GraphAlgorithmLowerLevelContract {
         name: "result_table_memory",
         required_surface: "preflight or hard upper-bound rows and bytes for the cuGraph result table",
     },
-    GraphAlgorithmStrictBoundedLowerLevelContract {
+    GraphAlgorithmLowerLevelContract {
         name: "retained_resource_lifetime_boundaries",
         required_surface: "deterministic ownership and release boundaries for graph and algorithm retained resources",
     },

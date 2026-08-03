@@ -1,7 +1,7 @@
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn flight_sql_explain_gpu_reuses_coverage_schema_and_rejects_other_endpoints() {
     let (listener, addr) = free_local_addr();
-    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    let mut config = test_server_config();
     declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
     let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
@@ -32,7 +32,8 @@ async fn flight_sql_explain_gpu_reuses_coverage_schema_and_rejects_other_endpoin
     let native_query_id = native_query_id.value(0).to_string();
     let native_stats = get_query_stats_raw(&mut client, &native_query_id).await;
     assert!(native_stats.contains("# outcome=succeeded"), "{native_stats}");
-    assert!(native_stats.contains("# sealed=true"), "{native_stats}");
+    assert!(native_stats.contains("# attempt_outcome=succeeded"), "{native_stats}");
+    assert_single_sealed_attempt_report(&native_stats);
 
     // FlightInfo carries the fixed coverage schema without planning the inner
     // statement. A missing relation is represented as terminal coverage only
@@ -154,10 +155,10 @@ async fn flight_sql_explain_gpu_reuses_coverage_schema_and_rejects_other_endpoin
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn flight_sql_explain_gpu_reports_native_and_partial_native_local_parquet_paths() {
     let (listener, addr) = free_local_addr();
-    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    let mut config = test_server_config();
     declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
-    let backend = NexusGpuBackend::from_server_config(&config).unwrap().expect("default server config is bounded");
+    let backend = build_injected_test_backend(&mut config);
     // Match the certified P2a shape: a CPU ILIKE filter directly over the
     // local-Parquet native leaf. The server's normal multi-partition defaults
     // insert RepartitionExec and correctly make this candidate unsupported.
@@ -170,10 +171,6 @@ async fn flight_sql_explain_gpu_reports_native_and_partial_native_local_parquet_
     let state_builder = backend
         .install_on(SessionStateBuilder::new_with_default_features().with_config(single_partition_config))
         .unwrap();
-    let state_builder = match &config.host_execution_qos {
-        Some(qos) => state_builder.with_host_execution_qos(qos.clone()),
-        None => state_builder,
-    };
     let state = state_builder.build();
     let shutdown = CancellationToken::new();
     let server = FlightSqlServer::builder()
@@ -253,7 +250,7 @@ async fn flight_sql_explain_gpu_reports_native_and_partial_native_local_parquet_
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn flight_sql_explain_gpu_cancel_before_do_get_records_cancelled_stats() {
     let (listener, addr) = free_local_addr();
-    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    let mut config = test_server_config();
     declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
     let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
@@ -269,8 +266,10 @@ async fn flight_sql_explain_gpu_cancel_before_do_get_records_cancelled_stats() {
 
     assert!(payload.contains("# outcome=failed"), "{payload}");
     assert!(payload.contains("# sealed=true"), "{payload}");
+    assert!(payload.contains("# attempt_outcome=cancelled"), "{payload}");
     assert!(payload.contains("code=cancelled"), "{payload}");
     assert!(payload.contains("operation=datafusion_nexus.server.flight.cancel_query"), "{payload}");
+    assert_single_sealed_attempt_report(&payload);
 }
 
 fn write_explain_gpu_labels_parquet(path: &Path) {

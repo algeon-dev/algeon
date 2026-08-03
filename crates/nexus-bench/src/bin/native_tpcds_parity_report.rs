@@ -16,14 +16,13 @@ use nexus_bench::{
         tpcds_parity_report_rows_with_external_oracles, tpcds_report_session_config,
     },
 };
-use nexus_query_engine::mode::{NativePipelineExecutionMode, StatisticalAggregateExecutionMode};
+use nexus_query_engine::mode::StatisticalAggregateExecutionMode;
 use nexus_workloads::tpcds::{TpcdsWorkloadResult, prepare_tpcds_report_dataset};
 
 const NEXUS_TPCDS_PARITY_QUERY_IDS_ENV: &str = "NEXUS_TPCDS_PARITY_QUERY_IDS";
 const NEXUS_TPCDS_PARITY_FLOAT_ABS_TOLERANCE_ENV: &str = "NEXUS_TPCDS_PARITY_FLOAT_ABS_TOLERANCE";
 const NEXUS_TPCDS_PARITY_FLOAT_REL_TOLERANCE_ENV: &str = "NEXUS_TPCDS_PARITY_FLOAT_REL_TOLERANCE";
 const NEXUS_TPCDS_PARITY_DUCKDB_BIN_ENV: &str = "NEXUS_TPCDS_PARITY_DUCKDB_BIN";
-const NEXUS_NATIVE_PIPELINE_EXECUTION_MODE_ENV: &str = "NEXUS_NATIVE_PIPELINE_EXECUTION_MODE";
 
 #[tokio::main]
 async fn main() {
@@ -76,19 +75,8 @@ fn unique_temp_dir(prefix: &str) -> std::path::PathBuf {
     dir
 }
 
-fn native_pipeline_execution_mode_from_env() -> NativePipelineExecutionMode {
-    let mode = std::env::var(NEXUS_NATIVE_PIPELINE_EXECUTION_MODE_ENV)
-        .unwrap_or_else(|_| NativePipelineExecutionMode::StrictBounded.as_str().to_string());
-    mode.parse::<NativePipelineExecutionMode>().unwrap_or_else(|error| {
-        panic!(
-            "unsupported {NEXUS_NATIVE_PIPELINE_EXECUTION_MODE_ENV}={}; expected strict_bounded or adaptive",
-            error.value()
-        )
-    })
-}
-
 fn native_optimizer_config_from_env() -> NexusNativeOptimizerConfig {
-    tpcds_native_optimizer_config().with_native_pipeline_execution_mode(native_pipeline_execution_mode_from_env())
+    tpcds_native_optimizer_config()
 }
 
 fn query_filter_from_env() -> Option<Vec<String>> {

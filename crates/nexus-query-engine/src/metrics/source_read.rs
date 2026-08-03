@@ -232,37 +232,4 @@ impl QueryMetrics {
         self.source_read_queue_wait_time += elapsed;
     }
 
-    /// Records a source cache hit and retained byte peak.
-    pub fn record_source_cache_hit(&mut self, retained_bytes: u64) {
-        self.source_cache_hits = self.source_cache_hits.saturating_add(1);
-        self.record_source_cache_retained_bytes(retained_bytes);
-    }
-
-    /// Records a source cache miss and retained byte peak.
-    pub fn record_source_cache_miss(&mut self, retained_bytes: u64) {
-        self.source_cache_misses = self.source_cache_misses.saturating_add(1);
-        self.record_source_cache_retained_bytes(retained_bytes);
-    }
-
-    /// Records a source cache insertion and retained byte peak.
-    pub fn record_source_cache_insert(&mut self, retained_bytes: u64) {
-        self.source_cache_inserts = self.source_cache_inserts.saturating_add(1);
-        self.record_source_cache_retained_bytes(retained_bytes);
-    }
-
-    /// Records a skipped source cache insertion and retained byte peak.
-    pub fn record_source_cache_insert_skipped(&mut self, retained_bytes: u64) {
-        self.source_cache_insert_skipped = self.source_cache_insert_skipped.saturating_add(1);
-        self.record_source_cache_retained_bytes(retained_bytes);
-    }
-
-    /// Adds source cache lookup time.
-    pub fn record_source_cache_lookup_time(&mut self, elapsed: Duration) {
-        self.source_cache_lookup_time += elapsed;
-    }
-
-    /// Updates the peak retained source-cache bytes.
-    pub fn record_source_cache_retained_bytes(&mut self, retained_bytes: u64) {
-        self.source_cache_retained_bytes = self.source_cache_retained_bytes.max(retained_bytes);
-    }
 }

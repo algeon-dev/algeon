@@ -10,10 +10,9 @@ use crate::{
     },
     exec::{
         bounded::chunks::{
-            SourceReadReservationContractQuality, insert_bounded_local_parquet_source_cache,
-            source_read_batch_reservation_contract, source_read_budget_correction_from_error,
-            source_read_reservation_contract, try_grow_source_read_reservation_for_budget_correction,
-            try_read_cached_local_parquet_chunk,
+            SourceReadReservationContractQuality, source_read_batch_reservation_contract,
+            source_read_budget_correction_from_error, source_read_reservation_contract,
+            try_grow_source_read_reservation_for_budget_correction,
         },
         source::{
             ScheduledLocalParquetRead, SourceChunkRowGroupFacts, read_local_parquet_chunk_batch,
@@ -252,35 +251,12 @@ impl BoundedJoinLeafLocalParquetSourcePrefetch {
             reservations.release(output.reservation, metrics);
             return Err(error);
         }
-        let retained_device_bytes = output.reservation.bytes();
-        if let Err(error) = insert_bounded_local_parquet_source_cache(
-            context,
-            &self.source,
-            &output.chunk,
-            &output.frame,
-            &mut output.reservation,
-            reservations,
-            metrics,
-            "join_source_read_prefetch",
-            1,
-            self.max_attempts,
-            retained_device_bytes,
-        ) {
-            drop(output.frame);
-            reservations.release(output.reservation, metrics);
-            return Err(error);
-        }
         metrics.record_source_chunk_commit(
             output
                 .observed_row_group_count
                 .or_else(|| output.chunk.known_read_row_group_count().map(|row_groups| row_groups as u64))
                 .unwrap_or_else(|| output.chunk.row_group_count() as u64),
         );
-        if let Err(error) = reservations.acknowledge_requested_grant_shrink() {
-            drop(output.frame);
-            reservations.release(output.reservation, metrics);
-            return Err(error);
-        }
         Ok(ResidentGpuFrame { frame: output.frame, reservation: output.reservation })
     }
 
@@ -456,7 +432,6 @@ where
             metrics,
             &mut consume,
         )?;
-        reservations.acknowledge_requested_grant_shrink()?;
     }
     Ok(())
 }
@@ -500,8 +475,8 @@ fn read_join_leaf_source_stream_chunks(
         return Ok(vec![(empty.frame, empty.reservation)]);
     }
 
-    let grow_source_to_observed = retain_decoded_source_for_cache(context, stream);
-    let materialized_batches = cache_preserving_materialized_source_chunk_batches(context, stream);
+    let grow_source_to_observed = retain_decoded_source(stream);
+    let materialized_batches = materialized_source_chunk_batches_for_execution(stream);
     let mut chunks = if materialized_batches.iter().any(|batch| batch.chunk_count() > 1) {
         read_join_leaf_source_batches_serial(
             context,
@@ -583,11 +558,8 @@ fn read_join_leaf_source_stream_chunks(
     Ok(chunks)
 }
 
-fn retain_decoded_source_for_cache(
-    context: &ExecutionContext,
-    stream: &BoundedJoinLeafLocalParquetSourceStream,
-) -> bool {
-    context.local_parquet_source_cache().is_some() || stream.stages.is_empty()
+fn retain_decoded_source(stream: &BoundedJoinLeafLocalParquetSourceStream) -> bool {
+    stream.stages.is_empty()
 }
 
 fn empty_join_leaf_source_frame(

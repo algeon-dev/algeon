@@ -20,7 +20,11 @@ use arrow::{
 use datafusion::physical_plan::{empty::EmptyExec, union::UnionExec};
 use nexus_query_engine::{
     metrics::QueryMetrics,
-    observability::RuntimeObservationConfig,
+    observability::{
+        AttemptCapacityDisposition, AttemptCleanupDisposition, AttemptDisposition, AttemptId, AttemptQueryId,
+        AttemptTimestamps, QUERY_ATTEMPT_REPORT_SCHEMA_V1, QueryAttemptReport, RuntimeObservationConfig,
+        RuntimeObservationOwner, RuntimeQueryId, RuntimeTerminalOutcome,
+    },
     plan::QueryPlanBuilder,
     runtime::ExecutionCancellation,
     source::{GpuResidentSource, LiteralBatchSource, SourceNode},
@@ -115,6 +119,103 @@ fn register(coordinator: &Arc<QueryCoordinator>, query_id: &str) -> QueryPlannin
     coordinator.register_with_id(query_id, "select 1", None, None, RuntimeObservationConfig::bounded(16, 4096)).unwrap()
 }
 
+fn cpu_attempt_report(query_id: &str) -> QueryAttemptReport {
+    QueryAttemptReport {
+        schema: QUERY_ATTEMPT_REPORT_SCHEMA_V1.to_string(),
+        attempt_id: AttemptId::mint(),
+        query_id: Some(AttemptQueryId::new(query_id).expect("test query id is a valid attempt correlation")),
+        trace_context: None,
+        disposition: AttemptDisposition::CpuFallback,
+        outcome: RuntimeTerminalOutcome::Succeeded,
+        device_ordinal: None,
+        admission: None,
+        timestamps: AttemptTimestamps {
+            submitted_ns: 1,
+            planning_started_ns: Some(2),
+            planning_finished_ns: Some(3),
+            admission_requested_ns: None,
+            admitted_ns: None,
+            physical_execution_started_ns: Some(4),
+            gpu_execution_started_ns: None,
+            outcome_terminal_ns: 5,
+            cleanup_complete_ns: None,
+            report_ready_ns: Some(6),
+        },
+        cleanup_disposition: AttemptCleanupDisposition::NotRequired,
+        cleanup_failure_count: 0,
+        capacity_disposition: AttemptCapacityDisposition::NotAdmitted,
+        final_domain_usage: None,
+        health_transition: None,
+        observation_lost_records: 0,
+        observation_retained_records: 0,
+        observation_retained_bytes: 0,
+        observation_truncated: false,
+        observation_degraded: false,
+        unix_epoch_ns: None,
+    }
+}
+
+#[test]
+fn attempt_owned_snapshot_is_retained_without_a_second_observation_owner() {
+    let coordinator = QueryCoordinator::new(config());
+    let (query_id, planning) = coordinator
+        .register_new_with_attempt_observation("select 1", None, None, RuntimeObservationConfig::bounded(16, 4096))
+        .expect("attempt-owned registration succeeds");
+    let sealed_report = cpu_attempt_report(&query_id);
+    let owner = RuntimeObservationOwner::new(
+        RuntimeQueryId::new(query_id.clone()),
+        None,
+        RuntimeObservationConfig::bounded(16, 4096),
+    )
+    .with_attempt_report_provider(Arc::new(move || sealed_report.clone()));
+    let snapshot = owner
+        .finish_query(RuntimeTerminalOutcome::Succeeded)
+        .expect("attempt observation seals before its report is handed off");
+    let report = snapshot.attempt_report().expect("snapshot carries its sealed attempt report").clone();
+    assert_eq!(snapshot.attempt_report(), Some(&report));
+    assert_eq!(snapshot.footer().terminal.as_ref(), Some(&RuntimeTerminalOutcome::Succeeded));
+
+    coordinator
+        .attach_attempt_report(&query_id, Arc::new(report.clone()), Some(snapshot))
+        .expect("the matching sealed attempt snapshot is accepted");
+    planning.into_execution().expect("planning promotes to execution").succeed();
+
+    let (control, jsonl) = coordinator.artifact_frames(&query_id).expect("retained attempt artifact");
+    assert_eq!(serde_json::from_slice::<serde_json::Value>(&control).unwrap()["state"], "sealed");
+    let jsonl = jsonl.expect("attempt snapshot remains available as JSONL");
+    let jsonl = std::str::from_utf8(&jsonl).unwrap();
+    assert!(jsonl.contains("\"record_type\":\"manifest\""), "{jsonl}");
+    assert!(jsonl.contains("\"record_type\":\"footer\""), "{jsonl}");
+    let stats = coordinator.query_stats(&query_id).expect("attempt stats retained");
+    let stats = std::str::from_utf8(&stats).unwrap();
+    assert!(stats.contains(&format!("# attempt_id={}", report.attempt_id)), "{stats}");
+}
+
+#[test]
+fn attempt_owned_snapshot_rejects_a_nonidentical_completion_report() {
+    let coordinator = QueryCoordinator::new(config());
+    let (query_id, _planning) = coordinator
+        .register_new_with_attempt_observation("select 1", None, None, RuntimeObservationConfig::bounded(16, 4096))
+        .expect("attempt-owned registration succeeds");
+    let sealed_report = cpu_attempt_report(&query_id);
+    let owner = RuntimeObservationOwner::new(
+        RuntimeQueryId::new(query_id.clone()),
+        None,
+        RuntimeObservationConfig::bounded(16, 4096),
+    )
+    .with_attempt_report_provider(Arc::new(move || sealed_report.clone()));
+    let snapshot = owner
+        .finish_query(RuntimeTerminalOutcome::Succeeded)
+        .expect("attempt observation seals before its report is handed off");
+
+    let mut mismatched = snapshot.attempt_report().expect("snapshot carries its sealed attempt report").clone();
+    mismatched.timestamps.report_ready_ns = None;
+    let error = coordinator
+        .attach_attempt_report(&query_id, Arc::new(mismatched), Some(snapshot))
+        .expect_err("coordinator rejects a pre-ready report that only shares the attempt identity");
+    assert_eq!(error.kind(), QueryCoordinatorErrorKind::InvalidTransition);
+}
+
 fn accepted_native_diagnostics() -> NativePlanningDiagnostics {
     let mut report = PlanningReport::new();
     report.push_selected(GpuCandidate::new("test_native_plan", 1));
@@ -125,8 +226,7 @@ fn accepted_native_diagnostics() -> NativePlanningDiagnostics {
         report,
         native_optimizer: Default::default(),
         source_diagnostics: Vec::new(),
-        strict_bounded_contract: Default::default(),
-        adaptive_pipeline: Default::default(),
+        capability_contract: Default::default(),
     }
 }
 
@@ -151,6 +251,7 @@ fn ticket_payload(started_at: Instant, deadline: Instant) -> CoordinatorTicketPa
         prepared_handle: None,
         kind: 0,
         native_cancellation: ExecutionCancellation::new(),
+        attempt: None,
         started_at,
         deadline,
     }
@@ -692,9 +793,12 @@ fn coordinator_stats_project_producer_only_composed_metrics_exactly_once() {
     let mut consumer_builder = QueryPlanBuilder::new();
     let source = consumer_builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("producer-only", schema)));
     let consumer = consumer_builder.finish_with_host_sink(source);
-    let composed =
-        NexusNativeComposedExec::try_new(consumer, vec![Arc::new(producer)], NexusNativeExecutionConfig::unbounded())
-            .unwrap();
+    let composed = NexusNativeComposedExec::try_new(
+        consumer,
+        vec![Arc::new(producer)],
+        NexusNativeExecutionConfig::bounded_default(),
+    )
+    .unwrap();
     let plan = Arc::new(composed) as Arc<dyn ExecutionPlan>;
 
     let payload = capture_successful_plan(&coordinator, "producer-composed-metrics", plan);

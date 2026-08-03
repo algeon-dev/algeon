@@ -12,10 +12,10 @@ use arrow::datatypes::{DataType, Field, Schema};
 use datafusion_nexus::cugraph_sql::{CUGRAPH_OPERATION_REGISTRY, CugraphAlgorithm, stable_result_schema};
 use nexus_query_engine::{
     capability::{CapabilityDecision, ContractQuality, ContractStatus, NodeOperator},
-    contract_report::StrictBoundedContractReport,
-    mode::StrictBoundedExecutionMode,
+    contract_report::CapabilityContractReport,
+    mode::CapabilityEnvelopeStatus,
     plan::{
-        GRAPH_ALGORITHM_STRICT_BOUNDED_MEMORY_BOUNDARY, GRAPH_ALGORITHM_STRICT_BOUNDED_REQUIRED_CONTRACT,
+        GRAPH_ALGORITHM_CAPABILITY_MEMORY_BOUNDARY, GRAPH_ALGORITHM_CAPABILITY_REQUIRED_CONTRACT,
         GRAPH_OPERATION_REGISTRY, GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec,
         GraphBetweennessCentralityParams, GraphBfsParams, GraphConstructionOptions, GraphCoreNumberParams,
         GraphDegreesAllParams, GraphEcgParams, GraphEdgeBetweennessCentralityParams, GraphEdgeColumnBindings,
@@ -199,23 +199,23 @@ fn registry_algorithms_admit_under_capability_with_strict_bounded_gate() {
             node.local_requirements.len(),
         );
         let requirement = &node.local_requirements[0];
-        assert_eq!(requirement.memory_boundary, GRAPH_ALGORITHM_STRICT_BOUNDED_MEMORY_BOUNDARY);
-        assert_eq!(requirement.required_contract, GRAPH_ALGORITHM_STRICT_BOUNDED_REQUIRED_CONTRACT);
+        assert_eq!(requirement.memory_boundary, GRAPH_ALGORITHM_CAPABILITY_MEMORY_BOUNDARY);
+        assert_eq!(requirement.required_contract, GRAPH_ALGORITHM_CAPABILITY_REQUIRED_CONTRACT);
         assert_eq!(requirement.status, ContractStatus::BlockedByLowerLevel);
         assert_eq!(requirement.quality, ContractQuality::ExactPreflight);
 
-        let report = StrictBoundedContractReport::from_capability_analysis(&analysis)
+        let report = CapabilityContractReport::from_capability_analysis(&analysis)
             .unwrap_or_else(|error| panic!("strict bounded report build failed for {}: {error}", entry.name));
         assert_eq!(
             report.execution_mode(),
-            StrictBoundedExecutionMode::UnsupportedStrictBounded,
+            CapabilityEnvelopeStatus::Rejected,
             "strict bounded execution must stay rejected until lower-level memory contracts land for {}",
             entry.name,
         );
         assert!(
             report.gate_rows().iter().any(|row| {
-                row.memory_boundary == GRAPH_ALGORITHM_STRICT_BOUNDED_MEMORY_BOUNDARY
-                    && row.required_contract == GRAPH_ALGORITHM_STRICT_BOUNDED_REQUIRED_CONTRACT
+                row.memory_boundary == GRAPH_ALGORITHM_CAPABILITY_MEMORY_BOUNDARY
+                    && row.required_contract == GRAPH_ALGORITHM_CAPABILITY_REQUIRED_CONTRACT
                     && row.contract_status == ContractStatus::BlockedByLowerLevel
             }),
             "strict bounded report must carry the graph algorithm gate row for {}",

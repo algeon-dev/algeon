@@ -122,11 +122,6 @@ def main() -> None:
                 "peakMemoryOperatorClass": r.get("peak_memory_operator_class", "") or "",
                 "peakMemoryOperatorClassBytes": inum(r.get("peak_memory_operator_class_bytes")),
                 "reservationLivePeakBytes": inum(r.get("reservation_live_peak_bytes")),
-                "sourceCacheHits": inum(r.get("source_cache_hits")),
-                "sourceCacheMisses": inum(r.get("source_cache_misses")),
-                "sourceCacheInserts": inum(r.get("source_cache_inserts")),
-                "sourceCacheInsertSkipped": inum(r.get("source_cache_insert_skipped")),
-                "sourceCacheRetainedBytes": inum(r.get("source_cache_retained_bytes")),
                 "sourcePredicatePushdownStatus": r.get("source_predicate_pushdown_status", "") or "",
                 "partitionedJoinCount": inum(r.get("partitioned_join_count")),
                 "joinPartitioningStatus": r.get("join_partitioning_status", "") or "",
@@ -146,11 +141,6 @@ def main() -> None:
         "allPlanningAccepted": all(r.get("planning_outcome") == "selected" for r in rows),
         "allRuntimeSucceeded": all(r.get("runtime_outcome") == "succeeded" for r in rows),
         "allParityMatched": all(r.get("parity_status") == "matched" for r in rows),
-        "sourceCacheHits": sum(inum(r.get("source_cache_hits")) for r in rows),
-        "sourceCacheMisses": sum(inum(r.get("source_cache_misses")) for r in rows),
-        "sourceCacheInserts": sum(inum(r.get("source_cache_inserts")) for r in rows),
-        "sourceCacheInsertSkipped": sum(inum(r.get("source_cache_insert_skipped")) for r in rows),
-        "sourceCacheRetainedBytes": max((inum(r.get("source_cache_retained_bytes")) for r in rows), default=0),
         "maxPeakMemoryOperatorClassBytes": max(
             (inum(r.get("peak_memory_operator_class_bytes")) for r in rows), default=0
         ),

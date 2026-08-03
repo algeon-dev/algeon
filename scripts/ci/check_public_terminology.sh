@@ -86,6 +86,48 @@ RULES = (
             re.IGNORECASE,
         ),
     ),
+    Rule("NexusGpuResourcePolicy", re.compile(r"\bNexusGpuResourcePolicy\b")),
+    Rule("legacy resource_policy builder accessor", re.compile(r"\.resource_policy\s*\(")),
+    Rule(
+        "removed server bounded-controller environment variable",
+        re.compile(
+            r"\b(?:NEXUS_SERVER_ADMISSION_(?:MAX_ACTIVE_ATTEMPTS_PER_DEVICE|ATTEMPT_FLOOR_BYTES|"
+            r"SOURCE_WORK_PER_ATTEMPT|WORKLOAD_PROFILE|GRANT_MIN|GRANT_WANT|SLOT_GUARANTEE|"
+            r"PLACEMENT_POLICY|PINNED_DEVICE|MAX_QUERIES_PER_DEVICE|WAIT_TIMEOUT_MS)|"
+            r"NEXUS_SERVER_(?:MAX_CONCURRENT_QUERIES|MAX_IN_FLIGHT|NATIVE_MEMORY_POLICY|"
+            r"NATIVE_PIPELINE_EXECUTION_MODE|NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES|"
+            r"NATIVE_GRAPH_CACHE_MAX_RETAINED_BYTES|NATIVE_QUERY_MEMORY_DOMAIN_CEILING_MULTIPLIER|"
+            r"DEVICE_BUDGET_FRACTION))\b"
+        ),
+    ),
+    Rule(
+        "removed benchmark pipeline-mode environment variable",
+        re.compile(
+            r"\b(?:CUDF_NATIVE_PIPELINE_EXECUTION_MODE|(?:NEXUS|CUDF)_(?:TPCH_BENCH|TPCDS|"
+            r"CLICKBENCH|QUERY_SERVICE_(?:TPCH|TPCDS|ICEBERG))_NATIVE_PIPELINE_EXECUTION_MODE)\b"
+        ),
+    ),
+    Rule("removed adaptive report module", re.compile(r"\badaptive_report(?:\.rs|::)?\b")),
+    Rule("removed adaptive report row", re.compile(r"\badaptive_pipeline_rows\b")),
+    Rule(
+        "removed adaptive compatibility projection prose",
+        re.compile(
+            r"\badaptive[- ]named rows and counters are canonical empty or zero values\b",
+            re.IGNORECASE,
+        ),
+    ),
+    Rule(
+        "removed adaptive report row or counter",
+        re.compile(
+            r"\badaptive_(?:retry_count|spill_count|downgrade_count|memory_history_(?:lookup|hit|miss)_count)\b"
+        ),
+    ),
+    Rule(
+        "removed strict report projection",
+        re.compile(r"\b(?:strict_bounded_contract_rows|strict_bounded_compiled_graphs)\b"),
+    ),
+    Rule("removed tenant queue diagnostic", re.compile(r"\b(?:queued_by_tenant|next_tenant_id|TenantQueueDepth)\b")),
+    Rule("removed resident graph cache snapshot", re.compile(r"\b(?:QueryServiceGraphCacheSnapshot|resident_graph_cache_snapshots)\b")),
 )
 
 
@@ -210,6 +252,13 @@ def public_source_files(root: Path) -> list[Path]:
     for candidate in (root / "crates").glob("*/README.md"):
         if candidate.is_file():
             files.add(candidate)
+
+    # Contributor guides are an active architecture contract. Planning and
+    # evidence artifacts remain excluded: they intentionally retain historical
+    # vocabulary needed to explain the migration.
+    guide_directory = root / "docs/guide"
+    if guide_directory.is_dir():
+        files.update(text_files(guide_directory))
 
     # Public runnable examples, not library tests.
     files.update(text_files(root / "crates/nexus-examples"))

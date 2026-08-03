@@ -177,11 +177,11 @@ fn reject_flight_datafusion_nexus_session_key(variable: &str, operation: &'stati
     Err(Error::new(
         ErrorCode::InvalidRequest,
         operation,
-        "Flight SQL does not support session-scoped datafusion-nexus keys; configure datafusion-nexus request policy through server or tenant defaults",
+        "Flight SQL does not support session-scoped datafusion-nexus keys; configure datafusion-nexus request policy through server configuration or admission defaults",
     )
     .with_log_safe_fact("reason", "flight_session_scoped_datafusion_nexus_keys_unsupported")
     .with_fact("config_key", variable)
-    .with_log_safe_fact("configuration_scope", "server_or_tenant_defaults"))
+    .with_log_safe_fact("configuration_scope", "server_or_admission_defaults"))
 }
 
 pub(super) fn verify_update_ddl(ddl: &DdlStatement, operation: &'static str) -> crate::error::Result<()> {

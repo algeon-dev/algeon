@@ -134,56 +134,145 @@ pub(super) struct QueryExecutionGuard {
     pub(super) cancellations: Arc<QueryCancellation>,
     pub(super) flight_token: CancellationToken,
     pub(super) native_cancellation: ExecutionCancellation,
-    pub(super) native_cancel_bridge: tokio::task::JoinHandle<()>,
+    pub(super) attempt_cancellation: Option<nexus_query_engine::attempt::AttemptCancellation>,
     pub(super) shutdown_token: CancellationToken,
     pub(super) terminal: Arc<CoordinatorExecutionTerminal>,
 }
 
 pub(super) struct CoordinatorExecutionTerminal {
-    lease: Mutex<Option<QueryExecutionLease>>,
+    state: Mutex<CoordinatorExecutionTerminalState>,
+    finished: Notify,
     query_id: String,
     started_at: Instant,
 }
 
+struct CoordinatorExecutionTerminalState {
+    lease: Option<QueryExecutionLease>,
+    requires_attempt_report: bool,
+    attempt_report_attached: bool,
+    pending: Option<CoordinatorExecutionTerminalOutcome>,
+}
+
+enum CoordinatorExecutionTerminalOutcome {
+    Succeeded { stage: &'static str },
+    Captured { stage: &'static str, status: Status, captured: CapturedError },
+    Panicked { stage: &'static str },
+}
+
 impl CoordinatorExecutionTerminal {
     pub(super) fn new(lease: QueryExecutionLease, query_id: String, started_at: Instant) -> Arc<Self> {
-        Arc::new(Self { lease: Mutex::new(Some(lease)), query_id, started_at })
+        Self::new_with_attempt_report(lease, query_id, started_at, false)
+    }
+
+    /// Creates a terminal lease that cannot be released until the attempt
+    /// owner has attached its immutable report. The coordinator's report gate
+    /// remains the final fail-closed check; this ordering prevents consumers
+    /// from observing a completed-but-unsealed Flight record in between.
+    pub(super) fn new_with_attempt_report(
+        lease: QueryExecutionLease,
+        query_id: String,
+        started_at: Instant,
+        requires_attempt_report: bool,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            state: Mutex::new(CoordinatorExecutionTerminalState {
+                lease: Some(lease),
+                requires_attempt_report,
+                attempt_report_attached: !requires_attempt_report,
+                pending: None,
+            }),
+            finished: Notify::new(),
+            query_id,
+            started_at,
+        })
     }
 
     pub(super) fn is_finished(&self) -> bool {
-        self.lease.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_none()
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).lease.is_none()
+    }
+
+    /// Waits for the coordinator lease to be released after the attempt's
+    /// immutable report has been retained. Flight holds this at stream EOF so
+    /// a completed DoGet cannot race an immediately following GetQueryStats.
+    pub(super) async fn wait_finished(&self) {
+        loop {
+            let notified = self.finished.notified();
+            if self.is_finished() {
+                return;
+            }
+            notified.await;
+        }
+    }
+
+    /// Releases a terminal outcome deferred until the attempt-owned sealed
+    /// snapshot was retained by the coordinator.
+    pub(super) fn mark_attempt_report_attached(&self) {
+        let completion = {
+            let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.attempt_report_attached = true;
+            state.pending.take().and_then(|outcome| state.lease.take().map(|lease| (lease, outcome)))
+        };
+        if let Some((lease, outcome)) = completion {
+            self.finish_lease(lease, outcome);
+            self.finished.notify_waiters();
+        }
     }
 
     pub(super) fn finish_success(&self, stage: &'static str) {
-        if let Some(lease) = self.lease.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
-            lease.succeed();
-            tracing::info!(
-                query_id = self.query_id,
-                outcome = "succeeded",
-                stage,
-                elapsed_ms = self.started_at.elapsed().as_millis(),
-                "finished Flight SQL statement"
-            );
-        }
+        self.finish(CoordinatorExecutionTerminalOutcome::Succeeded { stage });
     }
 
     pub(super) fn finish_captured(&self, stage: &'static str, status: &Status, captured: CapturedError) {
-        if let Some(mut lease) = self.lease.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
-            lease.finish_captured(stage, status, captured);
-            log_statement_status(&self.query_id, stage, self.started_at, status);
-        }
+        self.finish(CoordinatorExecutionTerminalOutcome::Captured { stage, status: status.clone(), captured });
     }
 
     pub(super) fn finish_panicked(&self, stage: &'static str) {
-        if let Some(mut lease) = self.lease.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
-            lease.finish_panicked();
-            tracing::error!(
-                query_id = self.query_id,
-                outcome = "panicked",
-                stage,
-                elapsed_ms = self.started_at.elapsed().as_millis(),
-                "Flight SQL statement panicked"
-            );
+        self.finish(CoordinatorExecutionTerminalOutcome::Panicked { stage });
+    }
+
+    fn finish(&self, outcome: CoordinatorExecutionTerminalOutcome) {
+        let completion = {
+            let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            if state.lease.is_none() || state.pending.is_some() {
+                return;
+            }
+            if state.requires_attempt_report && !state.attempt_report_attached {
+                state.pending = Some(outcome);
+                return;
+            }
+            let lease = state.lease.take().expect("unfinished Flight terminal retains its coordinator lease");
+            (lease, outcome)
+        };
+        self.finish_lease(completion.0, completion.1);
+        self.finished.notify_waiters();
+    }
+
+    fn finish_lease(&self, mut lease: QueryExecutionLease, outcome: CoordinatorExecutionTerminalOutcome) {
+        match outcome {
+            CoordinatorExecutionTerminalOutcome::Succeeded { stage } => {
+                lease.succeed();
+                tracing::info!(
+                    query_id = self.query_id,
+                    outcome = "succeeded",
+                    stage,
+                    elapsed_ms = self.started_at.elapsed().as_millis(),
+                    "finished Flight SQL statement"
+                );
+            },
+            CoordinatorExecutionTerminalOutcome::Captured { stage, status, captured } => {
+                lease.finish_captured(stage, &status, captured);
+                log_statement_status(&self.query_id, stage, self.started_at, &status);
+            },
+            CoordinatorExecutionTerminalOutcome::Panicked { stage } => {
+                lease.finish_panicked();
+                tracing::error!(
+                    query_id = self.query_id,
+                    outcome = "panicked",
+                    stage,
+                    elapsed_ms = self.started_at.elapsed().as_millis(),
+                    "Flight SQL statement panicked"
+                );
+            },
         }
     }
 }
@@ -200,9 +289,11 @@ impl Drop for QueryExecutionGuard {
                 self.terminal.finish_captured("stream", &status, captured);
             }
             self.native_cancellation.cancel();
+            if let Some(attempt_cancellation) = &self.attempt_cancellation {
+                attempt_cancellation.cancel();
+            }
             self.flight_token.cancel();
         }
-        self.native_cancel_bridge.abort();
         self.cancellations.remove(&self.query_id);
     }
 }

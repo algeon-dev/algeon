@@ -64,26 +64,6 @@ pub(super) fn read_join_leaf_source_chunks_with_scheduler(
                 release_join_source_chunks_reverse(reservations, chunks, metrics);
                 return Err(error);
             }
-            let retained_device_bytes = output.reservation.bytes();
-            if let Err(error) = insert_bounded_local_parquet_source_cache(
-                context,
-                source,
-                chunk,
-                &output.frame,
-                &mut output.reservation,
-                reservations,
-                metrics,
-                "join_source_read",
-                1,
-                max_attempts,
-                retained_device_bytes,
-            ) {
-                drop(output.frame);
-                reservations.release(output.reservation, metrics);
-                abandon_join_leaf_reads(pending, reservations, metrics);
-                release_join_source_chunks_reverse(reservations, chunks, metrics);
-                return Err(error);
-            }
         } else if let Err(error) = observe_device_memory_bytes(&output.frame, metrics) {
             drop(output.frame);
             reservations.release(output.reservation, metrics);
@@ -99,11 +79,6 @@ pub(super) fn read_join_leaf_source_chunks_with_scheduler(
                 .unwrap_or_else(|| chunk.row_group_count() as u64),
         );
         chunks.push((output.frame, output.reservation));
-        if let Err(error) = reservations.acknowledge_requested_grant_shrink() {
-            abandon_join_leaf_reads(pending, reservations, metrics);
-            release_join_source_chunks_reverse(reservations, chunks, metrics);
-            return Err(error);
-        }
 
         if let Err(error) = fill_optional_join_leaf_reads(
             context,
@@ -236,9 +211,6 @@ pub(super) fn start_join_leaf_scheduled_source_read(
 ) -> Result<ScheduledLocalParquetRead> {
     context.check_cancellation("nexus_query_engine.exec.bounded.join_leaf_source_scheduler_start")?;
     metrics.record_source_chunk_attempt();
-    if let Some(output) = try_read_cached_local_parquet_chunk(context, source, chunk, reservations, metrics)? {
-        return Ok(ScheduledLocalParquetRead::ready(output, memory_boundary, prefetch));
-    }
     let request = join_source_read_reservation_request_for_boundary(
         context.memory_control_policy(),
         requested_bytes,

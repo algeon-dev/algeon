@@ -1,8 +1,5 @@
-use datafusion_nexus::planner::NativeStrictBoundedCompiledGraphDiagnostics;
-use nexus_query_engine::{
-    adaptive_report::AdaptivePipelineReportRow, contract_report::StrictBoundedContractGateRow,
-    harness::max_option as max_optional_usize,
-};
+use datafusion_nexus::planner::NativeCapabilityCompiledGraphDiagnostics;
+use nexus_query_engine::{contract_report::CapabilityContractGateRow, harness::max_option as max_optional_usize};
 
 use super::*;
 
@@ -11,16 +8,15 @@ mod formatting;
 
 use formatting::*;
 
-pub(super) const NATIVE_TPCH_BENCHMARK_TSV_HEADER: &str = "query_id\tplanning_outcome\tbounded_status\treason_code\tunsupported_category\tstrict_bounded_contract_rows\tstrict_bounded_compiled_graphs\tadaptive_pipeline_rows\tnative_candidate_shape_family\tpost_native_execution_path\trejected_before_execution\tcpu_runtime_started\tnative_runtime_started\truntime_outcome\tcpu_failure\tcpu_failure_code\tcpu_failure_kind\tcpu_failure_status\tcpu_failure_operation\tcpu_failure_facts\truntime_failure\truntime_failure_code\truntime_failure_kind\truntime_failure_status\truntime_failure_operation\truntime_failure_facts\tparity_status\tcpu_wall_ms\tnative_wall_ms\tspeedup_vs_cpu\tcpu_output_batches\tnative_output_batches\tcpu_output_rows\tnative_output_rows\tcpu_output_bytes\tnative_output_bytes\tcpu_output_fingerprint\tnative_output_fingerprint\toutput_fingerprint\tgpu_resident_input_handoffs\thost_to_device_uploads\thost_to_device_uploaded_rows\thost_to_device_uploaded_bytes\tdevice_to_host_materializations\tdevice_to_host_materialized_rows\tdevice_to_host_materialized_bytes\tdevice_to_device_copies\tdevice_to_device_copied_bytes\tparquet_files\tparquet_bytes_known\trow_groups_selected\tread_columns\tresident_dataframe_peak_bytes\tallocator_high_water_bytes\treservation_requested_bytes\treservation_granted_bytes\treservation_live_peak_bytes\treservation_denied_count\tmax_task_reservation_bytes\tmax_task_observed_peak_bytes\tmax_task_retained_bytes\tgraph_reservation_rows\tgraph_runtime_rows\ttask_operator_rows\ttask_runtime_rows\tdynamic_filter_produced_count\tdynamic_filter_skipped_count\tdynamic_filter_applied_count\tdynamic_filter_row_groups_pruned\tdynamic_filter_source_bytes_pruned\tdynamic_filter_reader_predicate_rows_before\tdynamic_filter_reader_predicate_rows_after\tdynamic_filter_reader_predicate_rows_filtered\tdynamic_filter_post_decode_rows_before\tdynamic_filter_post_decode_rows_after\tdynamic_filter_post_decode_rows_filtered\tdynamic_filter_source_post_decode_rows_filtered\tdynamic_filter_filter_post_decode_rows_filtered\tdynamic_filter_join_probe_post_decode_rows_filtered\tdynamic_filter_post_decode_reduction_stage\tdynamic_filter_measured_reduction_status\tdynamic_filter_work_avoidance_status\tdynamic_filter_runtime_rows\ttask_high_water_rows\tpeak_memory_operator_class\tpeak_memory_operator_class_bytes\ttask_reservation_operator_class\ttask_reservation_operator_class_bytes\truntime_operator_class\truntime_operator_class_ms\tsource_predicate_pushdown_status\tpartitioned_join_count\tjoin_partitioning_status\taggregate_merge_status\tsource_chunks_planned\tsource_chunks_attempted\tsource_chunks_committed\tsource_chunks_retried\tsource_read_prefetches_started\tsource_read_prefetches_completed\tsource_read_prefetches_skipped\tsource_read_prefetches_abandoned\tsource_cache_hits\tsource_cache_misses\tsource_cache_inserts\tsource_cache_insert_skipped\tsource_cache_retained_bytes\trow_groups_planned\trow_groups_committed\tpartial_aggregate_count\tpartial_aggregate_input_rows\tpartial_aggregate_rows\tpartial_aggregate_retained_bytes\tfinal_merge_attempts\tfinal_merge_levels\tfinal_merge_max_fan_in\taggregate_libcudf_runtime_probe_count\taggregate_libcudf_runtime_probe_elapsed_ns\taggregate_libcudf_runtime_probe_input_rows\taggregate_exact_cardinality_probe_count\taggregate_exact_cardinality_probe_elapsed_ns\taggregate_exact_cardinality_probe_input_rows\taggregate_prepared_sort_groupby_elapsed_ns\taggregate_encoded_key_partial_elapsed_ns\tretry_count\tretry_resource_exhausted_count\tretry_reservation_failure_count\tadaptive_retry_count\tadaptive_spill_count\tadaptive_downgrade_count\tadaptive_memory_history_lookup_count\tadaptive_memory_history_hit_count\tadaptive_memory_history_miss_count\thash_join_build_count\tfiltered_join_build_count\tone_shot_join_count\thash_join_cache_hits\thash_join_cache_misses\thash_join_durable_cache_hits\thash_join_durable_cache_misses\thash_join_durable_cache_inserts\thash_join_hash_table_bytes\tfiltered_join_hash_table_bytes\tfiltered_join_probe_state_bytes\tmixed_join_size_data_bytes\tone_shot_join_index_bytes\tone_shot_join_materialization_bytes\tone_shot_join_output_bytes\tjoin_gather_map_bytes\taggregate_strategy_rows\tjoin_strategy_rows\tparquet_read_time_ms\tsource_read_time_ms\tsource_read_queue_wait_time_ms\tsource_cache_lookup_time_ms\toperator_time_ms\tchunk_operator_time_ms\tfinal_merge_time_ms\tfinal_sort_time_ms\tmaterialization_time_ms";
+pub(super) const NATIVE_TPCH_BENCHMARK_TSV_HEADER: &str = "query_id\tplanning_outcome\tbounded_status\treason_code\tunsupported_category\tcapability_contract_rows\tcapability_compiled_graphs\tnative_candidate_shape_family\tpost_native_execution_path\trejected_before_execution\tcpu_runtime_started\tnative_runtime_started\truntime_outcome\tcpu_failure\tcpu_failure_code\tcpu_failure_kind\tcpu_failure_status\tcpu_failure_operation\tcpu_failure_facts\truntime_failure\truntime_failure_code\truntime_failure_kind\truntime_failure_status\truntime_failure_operation\truntime_failure_facts\tparity_status\tcpu_wall_ms\tnative_wall_ms\tspeedup_vs_cpu\tcpu_output_batches\tnative_output_batches\tcpu_output_rows\tnative_output_rows\tcpu_output_bytes\tnative_output_bytes\tcpu_output_fingerprint\tnative_output_fingerprint\toutput_fingerprint\tgpu_resident_input_handoffs\thost_to_device_uploads\thost_to_device_uploaded_rows\thost_to_device_uploaded_bytes\tdevice_to_host_materializations\tdevice_to_host_materialized_rows\tdevice_to_host_materialized_bytes\tdevice_to_device_copies\tdevice_to_device_copied_bytes\tparquet_files\tparquet_bytes_known\trow_groups_selected\tread_columns\tresident_dataframe_peak_bytes\tallocator_high_water_bytes\treservation_requested_bytes\treservation_granted_bytes\treservation_live_peak_bytes\treservation_denied_count\tmax_task_reservation_bytes\tmax_task_observed_peak_bytes\tmax_task_retained_bytes\tgraph_reservation_rows\tgraph_runtime_rows\ttask_operator_rows\ttask_runtime_rows\tdynamic_filter_produced_count\tdynamic_filter_skipped_count\tdynamic_filter_applied_count\tdynamic_filter_row_groups_pruned\tdynamic_filter_source_bytes_pruned\tdynamic_filter_reader_predicate_rows_before\tdynamic_filter_reader_predicate_rows_after\tdynamic_filter_reader_predicate_rows_filtered\tdynamic_filter_post_decode_rows_before\tdynamic_filter_post_decode_rows_after\tdynamic_filter_post_decode_rows_filtered\tdynamic_filter_source_post_decode_rows_filtered\tdynamic_filter_filter_post_decode_rows_filtered\tdynamic_filter_join_probe_post_decode_rows_filtered\tdynamic_filter_post_decode_reduction_stage\tdynamic_filter_measured_reduction_status\tdynamic_filter_work_avoidance_status\tdynamic_filter_runtime_rows\ttask_high_water_rows\tpeak_memory_operator_class\tpeak_memory_operator_class_bytes\ttask_reservation_operator_class\ttask_reservation_operator_class_bytes\truntime_operator_class\truntime_operator_class_ms\tsource_predicate_pushdown_status\tpartitioned_join_count\tjoin_partitioning_status\taggregate_merge_status\tsource_chunks_planned\tsource_chunks_attempted\tsource_chunks_committed\tsource_chunks_retried\tsource_read_prefetches_started\tsource_read_prefetches_completed\tsource_read_prefetches_skipped\tsource_read_prefetches_abandoned\trow_groups_planned\trow_groups_committed\tpartial_aggregate_count\tpartial_aggregate_input_rows\tpartial_aggregate_rows\tpartial_aggregate_retained_bytes\tfinal_merge_attempts\tfinal_merge_levels\tfinal_merge_max_fan_in\taggregate_libcudf_runtime_probe_count\taggregate_libcudf_runtime_probe_elapsed_ns\taggregate_libcudf_runtime_probe_input_rows\taggregate_exact_cardinality_probe_count\taggregate_exact_cardinality_probe_elapsed_ns\taggregate_exact_cardinality_probe_input_rows\taggregate_prepared_sort_groupby_elapsed_ns\taggregate_encoded_key_partial_elapsed_ns\tretry_count\tretry_resource_exhausted_count\tretry_reservation_failure_count\thash_join_build_count\tfiltered_join_build_count\tone_shot_join_count\thash_join_cache_hits\thash_join_cache_misses\thash_join_hash_table_bytes\tfiltered_join_hash_table_bytes\tfiltered_join_probe_state_bytes\tmixed_join_size_data_bytes\tone_shot_join_index_bytes\tone_shot_join_materialization_bytes\tone_shot_join_output_bytes\tjoin_gather_map_bytes\taggregate_strategy_rows\tjoin_strategy_rows\tparquet_read_time_ms\tsource_read_time_ms\tsource_read_queue_wait_time_ms\toperator_time_ms\tchunk_operator_time_ms\tfinal_merge_time_ms\tfinal_sort_time_ms\tmaterialization_time_ms";
 const NATIVE_TPCH_BENCHMARK_TSV_COLUMNS: &[&str] = &[
     "query_id",
     "planning_outcome",
     "bounded_status",
     "reason_code",
     "unsupported_category",
-    "strict_bounded_contract_rows",
-    "strict_bounded_compiled_graphs",
-    "adaptive_pipeline_rows",
+    "capability_contract_rows",
+    "capability_compiled_graphs",
     "native_candidate_shape_family",
     "post_native_execution_path",
     "rejected_before_execution",
@@ -115,11 +111,6 @@ const NATIVE_TPCH_BENCHMARK_TSV_COLUMNS: &[&str] = &[
     "source_read_prefetches_completed",
     "source_read_prefetches_skipped",
     "source_read_prefetches_abandoned",
-    "source_cache_hits",
-    "source_cache_misses",
-    "source_cache_inserts",
-    "source_cache_insert_skipped",
-    "source_cache_retained_bytes",
     "row_groups_planned",
     "row_groups_committed",
     "partial_aggregate_count",
@@ -140,20 +131,11 @@ const NATIVE_TPCH_BENCHMARK_TSV_COLUMNS: &[&str] = &[
     "retry_count",
     "retry_resource_exhausted_count",
     "retry_reservation_failure_count",
-    "adaptive_retry_count",
-    "adaptive_spill_count",
-    "adaptive_downgrade_count",
-    "adaptive_memory_history_lookup_count",
-    "adaptive_memory_history_hit_count",
-    "adaptive_memory_history_miss_count",
     "hash_join_build_count",
     "filtered_join_build_count",
     "one_shot_join_count",
     "hash_join_cache_hits",
     "hash_join_cache_misses",
-    "hash_join_durable_cache_hits",
-    "hash_join_durable_cache_misses",
-    "hash_join_durable_cache_inserts",
     "hash_join_hash_table_bytes",
     "filtered_join_hash_table_bytes",
     "filtered_join_probe_state_bytes",
@@ -167,7 +149,6 @@ const NATIVE_TPCH_BENCHMARK_TSV_COLUMNS: &[&str] = &[
     "parquet_read_time_ms",
     "source_read_time_ms",
     "source_read_queue_wait_time_ms",
-    "source_cache_lookup_time_ms",
     "operator_time_ms",
     "chunk_operator_time_ms",
     "final_merge_time_ms",
@@ -216,11 +197,7 @@ impl NativeTpchBenchmarkReport {
                     .map_or_else(|| "session_default".to_string(), |value| value.to_string())
             ),
         );
-        write_native_execution_policy_metadata(
-            &mut output,
-            self.config.native_pipeline_execution_mode,
-            self.config.native_execution,
-        );
+        write_native_execution_policy_metadata(&mut output, self.config.native_execution);
         push_line(
             &mut output,
             format_args!("# tpch_benchmark_native_memory_policy={}", self.config.native_memory_policy.as_str()),
@@ -229,7 +206,6 @@ impl NativeTpchBenchmarkReport {
             &mut output,
             self.config.native_memory_policy,
             self.config.max_source_reads_in_flight,
-            self.config.native_source_cache_policy,
         );
         debug_assert_eq!(NativeTpchBenchmarkTsvRow::COLUMNS.join("\t"), NATIVE_TPCH_BENCHMARK_TSV_HEADER);
         output.push_str(NATIVE_TPCH_BENCHMARK_TSV_HEADER);
@@ -245,9 +221,8 @@ impl NativeTpchBenchmarkReport {
 pub(super) struct NativeTpchBenchmarkRow {
     pub(super) query_id: String,
     pub(super) planning_outcome: Option<NativeDataFusionPlanningOutcome>,
-    pub(super) strict_bounded_contract_rows: Vec<StrictBoundedContractGateRow>,
-    pub(super) strict_bounded_compiled_graphs: Vec<NativeStrictBoundedCompiledGraphDiagnostics>,
-    pub(super) adaptive_pipeline_rows: Vec<AdaptivePipelineReportRow>,
+    pub(super) capability_contract_rows: Vec<CapabilityContractGateRow>,
+    pub(super) capability_compiled_graphs: Vec<NativeCapabilityCompiledGraphDiagnostics>,
     pub(super) reason_code: Option<String>,
     pub(super) unsupported_category: Option<String>,
     pub(super) native_candidate_shape_family: Option<String>,
@@ -284,9 +259,8 @@ impl NativeTpchBenchmarkRow {
         Self {
             query_id: query_id.to_string(),
             planning_outcome: planning_row.outcome,
-            strict_bounded_contract_rows: planning_row.strict_bounded_contract_rows,
-            strict_bounded_compiled_graphs: planning_row.strict_bounded_compiled_graphs,
-            adaptive_pipeline_rows: planning_row.adaptive_pipeline_rows,
+            capability_contract_rows: planning_row.capability_contract_rows,
+            capability_compiled_graphs: planning_row.capability_compiled_graphs,
             reason_code: planning_row.reason_code,
             unsupported_category: planning_row.unsupported_category,
             native_candidate_shape_family: planning_row.native_candidate_shape_family,
@@ -323,9 +297,8 @@ impl NativeTpchBenchmarkRow {
         Self {
             query_id: query_id.to_string(),
             planning_outcome: None,
-            strict_bounded_contract_rows: Vec::new(),
-            strict_bounded_compiled_graphs: Vec::new(),
-            adaptive_pipeline_rows: Vec::new(),
+            capability_contract_rows: Vec::new(),
+            capability_compiled_graphs: Vec::new(),
             reason_code: Some("physical_planning_failed".to_string()),
             unsupported_category: Some("planning".to_string()),
             native_candidate_shape_family: None,
@@ -397,9 +370,8 @@ impl NativeTpchBenchmarkRow {
         Self {
             query_id: query_id.to_string(),
             planning_outcome: planning_row.outcome,
-            strict_bounded_contract_rows: planning_row.strict_bounded_contract_rows,
-            strict_bounded_compiled_graphs: planning_row.strict_bounded_compiled_graphs,
-            adaptive_pipeline_rows: planning_row.adaptive_pipeline_rows,
+            capability_contract_rows: planning_row.capability_contract_rows,
+            capability_compiled_graphs: planning_row.capability_compiled_graphs,
             reason_code: planning_row.reason_code,
             unsupported_category: planning_row.unsupported_category,
             native_candidate_shape_family: planning_row.native_candidate_shape_family,
@@ -450,9 +422,8 @@ impl NativeTpchBenchmarkRow {
             bounded_status(memory_policy, self).to_string(),
             optional_text(self.reason_code.as_deref(), "none"),
             optional_text(self.unsupported_category.as_deref(), "none"),
-            format_strict_bounded_contract_rows(&self.strict_bounded_contract_rows),
-            format_strict_bounded_compiled_graphs(&self.strict_bounded_compiled_graphs),
-            format_adaptive_pipeline_rows(&self.adaptive_pipeline_rows),
+            format_capability_contract_rows(&self.capability_contract_rows),
+            format_capability_compiled_graphs(&self.capability_compiled_graphs),
             optional_text(self.native_candidate_shape_family.as_deref(), "none"),
             self.final_disposition.as_str().to_string(),
             self.rejected_before_execution.to_string(),
@@ -547,11 +518,6 @@ impl NativeTpchBenchmarkRow {
             self.metrics.source_read_prefetches_completed.to_string(),
             self.metrics.source_read_prefetches_skipped.to_string(),
             self.metrics.source_read_prefetches_abandoned.to_string(),
-            self.metrics.source_cache_hits.to_string(),
-            self.metrics.source_cache_misses.to_string(),
-            self.metrics.source_cache_inserts.to_string(),
-            self.metrics.source_cache_insert_skipped.to_string(),
-            self.metrics.source_cache_retained_bytes.to_string(),
             self.metrics.row_groups_planned.to_string(),
             self.metrics.row_groups_committed.to_string(),
             self.metrics.partial_aggregate_count.to_string(),
@@ -572,20 +538,11 @@ impl NativeTpchBenchmarkRow {
             self.metrics.retry_count.to_string(),
             self.metrics.retry_resource_exhausted_count.to_string(),
             self.metrics.retry_reservation_failure_count.to_string(),
-            self.metrics.adaptive_retry_count.to_string(),
-            self.metrics.adaptive_spill_count.to_string(),
-            self.metrics.adaptive_downgrade_count.to_string(),
-            self.metrics.adaptive_memory_history_lookup_count.to_string(),
-            self.metrics.adaptive_memory_history_hit_count.to_string(),
-            self.metrics.adaptive_memory_history_miss_count.to_string(),
             self.metrics.hash_join_build_count.to_string(),
             self.metrics.filtered_join_build_count.to_string(),
             self.metrics.one_shot_join_count.to_string(),
             self.metrics.hash_join_cache_hits.to_string(),
             self.metrics.hash_join_cache_misses.to_string(),
-            self.metrics.hash_join_durable_cache_hits.to_string(),
-            self.metrics.hash_join_durable_cache_misses.to_string(),
-            self.metrics.hash_join_durable_cache_inserts.to_string(),
             self.metrics.hash_join_hash_table_bytes.to_string(),
             self.metrics.filtered_join_hash_table_bytes.to_string(),
             self.metrics.filtered_join_probe_state_bytes.to_string(),
@@ -599,7 +556,6 @@ impl NativeTpchBenchmarkRow {
             optional_f64_text(self.timing_metrics.parquet_read_time_ms),
             optional_f64_text(self.timing_metrics.source_read_time_ms),
             optional_f64_text(self.timing_metrics.source_read_queue_wait_time_ms),
-            optional_f64_text(self.timing_metrics.source_cache_lookup_time_ms),
             optional_f64_text(self.timing_metrics.operator_time_ms),
             optional_f64_text(self.timing_metrics.chunk_operator_time_ms),
             optional_f64_text(self.timing_metrics.final_merge_time_ms),
@@ -864,7 +820,6 @@ pub(super) struct NativeTpchTimingMetrics {
     pub(super) parquet_read_time_ms: Option<f64>,
     pub(super) source_read_time_ms: Option<f64>,
     pub(super) source_read_queue_wait_time_ms: Option<f64>,
-    pub(super) source_cache_lookup_time_ms: Option<f64>,
     pub(super) operator_time_ms: Option<f64>,
     pub(super) chunk_operator_time_ms: Option<f64>,
     pub(super) final_merge_time_ms: Option<f64>,
@@ -878,7 +833,6 @@ impl NativeTpchTimingMetrics {
             parquet_read_time_ms: metric_duration_ms(metrics, "parquet_read_time"),
             source_read_time_ms: metric_duration_ms(metrics, "source_read_time"),
             source_read_queue_wait_time_ms: metric_duration_ms(metrics, "source_read_queue_wait_time"),
-            source_cache_lookup_time_ms: metric_duration_ms(metrics, "source_cache_lookup_time"),
             operator_time_ms: metric_duration_ms(metrics, "operator_time"),
             chunk_operator_time_ms: metric_duration_ms(metrics, "chunk_operator_time"),
             final_merge_time_ms: metric_duration_ms(metrics, "final_merge_time"),
@@ -895,9 +849,6 @@ impl NativeTpchTimingMetrics {
             source_read_queue_wait_time_ms: mean_optional_f64(
                 values.iter().map(|metrics| metrics.source_read_queue_wait_time_ms),
             ),
-            source_cache_lookup_time_ms: mean_optional_f64(
-                values.iter().map(|metrics| metrics.source_cache_lookup_time_ms),
-            ),
             operator_time_ms: mean_optional_f64(values.iter().map(|metrics| metrics.operator_time_ms)),
             chunk_operator_time_ms: mean_optional_f64(values.iter().map(|metrics| metrics.chunk_operator_time_ms)),
             final_merge_time_ms: mean_optional_f64(values.iter().map(|metrics| metrics.final_merge_time_ms)),
@@ -908,42 +859,18 @@ impl NativeTpchTimingMetrics {
 }
 
 pub(super) fn bounded_status(memory_policy: NativeTpchMemoryPolicy, row: &NativeTpchBenchmarkRow) -> &'static str {
+    let _ = memory_policy;
     let accepted =
         row.planning_outcome == Some(NativeDataFusionPlanningOutcome::Selected) && !row.rejected_before_execution;
     let planning_failed = row.unsupported_category.as_deref() == Some("planning")
         || row.reason_code.as_deref() == Some("physical_planning_failed");
-    match (memory_policy, accepted, planning_failed, row.parity_status) {
-        (NativeTpchMemoryPolicy::Bounded { .. }, false, true, _) => "bounded_planning_failed",
-        (NativeTpchMemoryPolicy::Unbounded, false, true, _) => "unbounded_planning_failed",
-        (NativeTpchMemoryPolicy::Bounded { .. }, false, false, _) => "bounded_rejected",
-        (NativeTpchMemoryPolicy::Unbounded, false, false, _) => "unbounded_rejected",
-        (NativeTpchMemoryPolicy::Bounded { .. }, true, _, validation::ParityStatus::Matched) => {
-            "bounded_accepted_parity_matched"
-        },
-        (NativeTpchMemoryPolicy::Bounded { .. }, true, _, validation::ParityStatus::Mismatched) => {
-            "bounded_accepted_parity_mismatched"
-        },
-        (NativeTpchMemoryPolicy::Bounded { .. }, true, _, validation::ParityStatus::CpuFailed) => {
-            "bounded_accepted_cpu_failed"
-        },
-        (NativeTpchMemoryPolicy::Bounded { .. }, true, _, validation::ParityStatus::NativeFailed) => {
-            "bounded_accepted_native_failed"
-        },
-        (NativeTpchMemoryPolicy::Bounded { .. }, true, _, validation::ParityStatus::NotRun) => {
-            "bounded_accepted_not_run"
-        },
-        (NativeTpchMemoryPolicy::Unbounded, true, _, validation::ParityStatus::Matched) => {
-            "unbounded_accepted_parity_matched"
-        },
-        (NativeTpchMemoryPolicy::Unbounded, true, _, validation::ParityStatus::Mismatched) => {
-            "unbounded_accepted_parity_mismatched"
-        },
-        (NativeTpchMemoryPolicy::Unbounded, true, _, validation::ParityStatus::CpuFailed) => {
-            "unbounded_accepted_cpu_failed"
-        },
-        (NativeTpchMemoryPolicy::Unbounded, true, _, validation::ParityStatus::NativeFailed) => {
-            "unbounded_accepted_native_failed"
-        },
-        (NativeTpchMemoryPolicy::Unbounded, true, _, validation::ParityStatus::NotRun) => "unbounded_accepted_not_run",
+    match (accepted, planning_failed, row.parity_status) {
+        (false, true, _) => "bounded_planning_failed",
+        (false, false, _) => "bounded_rejected",
+        (true, _, validation::ParityStatus::Matched) => "bounded_accepted_parity_matched",
+        (true, _, validation::ParityStatus::Mismatched) => "bounded_accepted_parity_mismatched",
+        (true, _, validation::ParityStatus::CpuFailed) => "bounded_accepted_cpu_failed",
+        (true, _, validation::ParityStatus::NativeFailed) => "bounded_accepted_native_failed",
+        (true, _, validation::ParityStatus::NotRun) => "bounded_accepted_not_run",
     }
 }

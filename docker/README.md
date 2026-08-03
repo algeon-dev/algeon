@@ -70,16 +70,8 @@ Use a `server,cuvs` image for `cuvs_brute_force_knn`, `cuvs_kmeans`, and
 `cuvs_pca`. Their relation arguments are parenthesized SQL subqueries, so the
 same call shape works over normal tables, Parquet, Iceberg, or cuGraph-derived
 relations. Until the lower-level vector peak-memory preflight contract exists,
-the default bounded server rejects those operations with a structured
-`unsupported_operator` response. Run an explicitly unbounded vector-serving
-container instead; this admits GPU execution and does not select a CPU
-fallback.
-
-```bash
-docker run --gpus all --rm -p 50051:50051 \
-  -e NEXUS_SERVER_NATIVE_MEMORY_POLICY=unbounded \
-  datafusion-nexus-server:x86-64-v2
-```
+the bounded server rejects execution with a structured `unsupported_operator`
+response. It never selects a CPU fallback or an unadmitted GPU path.
 
 ## Image size
 
@@ -178,15 +170,16 @@ docker run --rm --gpus all -p 50051:50051 datafusion-nexus-server:x86-64-v2
 ```
 
 `docker/run.sh` is a fuller launcher that wires the common env vars (catalog,
-memory policy, cuGraph) and forwards host AWS credentials. The complete,
+bounded resource profile, cuGraph) and forwards host AWS credentials. The complete,
 code-verified env-var reference lives in the Dockerfile header. It defaults to
 the portable `:x86-64-v2` tag; set `NEXUS_SERVER_IMAGE` explicitly to run a
 tuned tag. Highlights:
 
 - `NEXUS_SERVER_BIND` (default `0.0.0.0:50051`), `NEXUS_SERVER_LOG`,
-  `NEXUS_SERVER_MAX_CONCURRENT_QUERIES`, `NEXUS_SERVER_GPU_DEVICES`.
-- Native memory: `NEXUS_SERVER_NATIVE_MEMORY_POLICY` plus the bounded
-  `NEXUS_SERVER_NATIVE_*` knobs.
+  `NEXUS_SERVER_GPU_DEVICES`.
+- Native memory: automatic bounded capacity is resolved per selected GPU;
+  set the three explicit `NEXUS_SERVER_NATIVE_*` profile knobs together only
+  for a fixed experiment.
 - Iceberg: `NEXUS_ICEBERG_CATALOG_KIND` (`glue`|`rest`) + `NEXUS_ICEBERG_*`,
   `AWS_DEFAULT_REGION` (**required** for KvikIO S3).
 - cuGraph: `NEXUS_SERVER_CUGRAPH_ENABLED=true` requires an image built with

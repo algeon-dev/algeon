@@ -25,9 +25,8 @@ const OPERATION: &str = "nexus_query_engine.pipeline.compile";
 ///
 /// `analysis` must cover the same reachable plan graph. Any local node, edge,
 /// or invariant rejection is returned as an error instead of being converted to
-/// a report-family fallback. The resulting graph is mode-agnostic; strict and
-/// adaptive execution apply their own admission and runtime policy after this
-/// step.
+/// a report-family fallback. The resulting graph is consumed by the one
+/// capability-first bounded executor.
 pub fn compile_pipeline(plan: &QueryPlan, analysis: &CapabilityAnalysis) -> crate::error::Result<CompiledPipeline> {
     reject_local_capability_rejections(analysis)?;
 
@@ -496,7 +495,6 @@ fn join_node_requirement_task(
         ReservationKind::HashTable => build,
         ReservationKind::FilteredProbeState | ReservationKind::MixedSizeData => materialize,
         ReservationKind::OperatorOutput
-        | ReservationKind::SourceCacheRetained
         | ReservationKind::ChunkOperator
         | ReservationKind::GraphAlgorithm
         | ReservationKind::PartialState

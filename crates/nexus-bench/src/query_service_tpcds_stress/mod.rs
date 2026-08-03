@@ -25,7 +25,7 @@ use datafusion_nexus::{
 use nexus_query_engine::{
     error::QueryError,
     harness::StableFnv1a64,
-    runtime::{GpuBackendSession, QueryServiceConfig, QueryServiceTenantConfig, SlotGuarantee, TenantId},
+    runtime::{GpuBackendSession, QueryExecutionConfig, QueueBounds},
 };
 use nexus_workloads::tpcds::{
     NEXUS_PARQUET_DIR_ENV, NEXUS_TPCDS_GENERATION_COMMAND_ENV, NEXUS_TPCDS_SCALE_FACTOR_ENV, TPCDS_QUERIES,
@@ -43,7 +43,7 @@ use crate::{
 const TSV_COLUMNS: &[&str] = &[
     "row_type",
     "request_index",
-    "tenant_id",
+    "client_id",
     "workload_class",
     "query_id",
     "iteration",
@@ -71,14 +71,10 @@ const BULK_QUERIES_ENV: &str = "NEXUS_QUERY_SERVICE_TPCDS_BULK_QUERY_IDS";
 const INTERACTIVE_QUERIES_ENV: &str = "NEXUS_QUERY_SERVICE_TPCDS_INTERACTIVE_QUERY_IDS";
 const BULK_ITERATIONS_ENV: &str = "NEXUS_QUERY_SERVICE_TPCDS_BULK_ITERATIONS";
 const INTERACTIVE_ITERATIONS_ENV: &str = "NEXUS_QUERY_SERVICE_TPCDS_INTERACTIVE_ITERATIONS";
-const TENANT_BUDGET_BYTES_ENV: &str = "NEXUS_QUERY_SERVICE_TPCDS_TENANT_BUDGET_BYTES";
 const DEVICE_CAPACITY_BYTES_ENV: &str = "NEXUS_QUERY_SERVICE_TPCDS_DEVICE_CAPACITY_BYTES";
-const TENANT_MIN_GRANT_BYTES_ENV: &str = "NEXUS_QUERY_SERVICE_TPCDS_TENANT_MIN_GRANT_BYTES";
-const TENANT_WANT_GRANT_BYTES_ENV: &str = "NEXUS_QUERY_SERVICE_TPCDS_TENANT_WANT_GRANT_BYTES";
-const SLOT_GUARANTEE_ENV: &str = "NEXUS_QUERY_SERVICE_TPCDS_SLOT_GUARANTEE";
-const MAX_CONCURRENT_QUERIES_ENV: &str = "NEXUS_QUERY_SERVICE_TPCDS_MAX_CONCURRENT_QUERIES";
-const MAX_ADMISSION_QUEUE_LEN_ENV: &str = "NEXUS_QUERY_SERVICE_TPCDS_MAX_ADMISSION_QUEUE_LEN";
-const ADMISSION_WAIT_TIMEOUT_MS_ENV: &str = "NEXUS_QUERY_SERVICE_TPCDS_ADMISSION_WAIT_TIMEOUT_MS";
+const MAX_ACTIVE_ATTEMPTS_PER_DEVICE_ENV: &str = "NEXUS_QUERY_SERVICE_TPCDS_MAX_ACTIVE_ATTEMPTS_PER_DEVICE";
+const MAX_QUEUED_ATTEMPTS_ENV: &str = "NEXUS_QUERY_SERVICE_TPCDS_MAX_QUEUED_ATTEMPTS";
+const MAX_QUEUE_WAIT_MS_ENV: &str = "NEXUS_QUERY_SERVICE_TPCDS_MAX_QUEUE_WAIT_MS";
 const MAX_SOURCE_CHUNK_BYTES_ENV: &str = "NEXUS_QUERY_SERVICE_TPCDS_MAX_SOURCE_CHUNK_BYTES";
 const MAX_ROW_GROUPS_PER_CHUNK_ENV: &str = "NEXUS_QUERY_SERVICE_TPCDS_MAX_ROW_GROUPS_PER_CHUNK";
 const QUERY_TIMEOUT_MS_ENV: &str = "NEXUS_QUERY_SERVICE_TPCDS_QUERY_TIMEOUT_MS";
@@ -111,12 +107,9 @@ struct StressConfig {
     bulk_iterations: usize,
     interactive_iterations: usize,
     device_capacity_bytes: u64,
-    tenant_min_grant_bytes: u64,
-    tenant_want_grant_bytes: u64,
-    slot_guarantee: SlotGuarantee,
-    max_concurrent_queries: usize,
-    max_admission_queue_len: usize,
-    admission_wait_timeout: Duration,
+    max_active_attempts_per_device: usize,
+    max_queued_attempts: usize,
+    max_queue_wait: Duration,
     max_source_chunk_bytes: u64,
     max_row_groups_per_chunk: usize,
     query_timeout: Duration,
@@ -129,23 +122,8 @@ impl StressConfig {
             Some(value) => PathBuf::from(value),
             None => default_tpcds_sf1_parquet_root().into(),
         };
-        let max_concurrent_queries = env_usize(MAX_CONCURRENT_QUERIES_ENV, 1)?;
-        let legacy_tenant_budget_bytes = optional_env_u64(TENANT_BUDGET_BYTES_ENV)?;
-        let tenant_min_grant_bytes = optional_env_u64(TENANT_MIN_GRANT_BYTES_ENV)?;
-        let tenant_want_grant_bytes = optional_env_u64(TENANT_WANT_GRANT_BYTES_ENV)?;
-        if legacy_tenant_budget_bytes.is_some()
-            && (tenant_min_grant_bytes.is_some() || tenant_want_grant_bytes.is_some())
-        {
-            return Err(plan_error(format!(
-                "{TENANT_BUDGET_BYTES_ENV} cannot be combined with {TENANT_MIN_GRANT_BYTES_ENV} or {TENANT_WANT_GRANT_BYTES_ENV}"
-            )));
-        }
-        let device_capacity_bytes = env_u64(
-            DEVICE_CAPACITY_BYTES_ENV,
-            default_device_capacity_bytes(legacy_tenant_budget_bytes, max_concurrent_queries),
-        )?;
-        let default_min_grant_bytes = grant_fraction_bytes(device_capacity_bytes, 1, 8);
-        let default_want_grant_bytes = grant_fraction_bytes(device_capacity_bytes, 1, 2);
+        let max_active_attempts_per_device = env_usize(MAX_ACTIVE_ATTEMPTS_PER_DEVICE_ENV, 1)?;
+        let device_capacity_bytes = env_u64(DEVICE_CAPACITY_BYTES_ENV, default_device_capacity_bytes())?;
         let config = Self {
             dataset_root,
             bulk_queries: query_ids_from_env(
@@ -159,16 +137,9 @@ impl StressConfig {
             bulk_iterations: env_usize(BULK_ITERATIONS_ENV, 1)?,
             interactive_iterations: env_usize(INTERACTIVE_ITERATIONS_ENV, 2)?,
             device_capacity_bytes,
-            tenant_min_grant_bytes: tenant_min_grant_bytes
-                .or(legacy_tenant_budget_bytes)
-                .unwrap_or(default_min_grant_bytes),
-            tenant_want_grant_bytes: tenant_want_grant_bytes
-                .or(legacy_tenant_budget_bytes)
-                .unwrap_or(default_want_grant_bytes),
-            slot_guarantee: env_slot_guarantee(SLOT_GUARANTEE_ENV, SlotGuarantee::GuaranteedMinimum)?,
-            max_concurrent_queries,
-            max_admission_queue_len: env_usize(MAX_ADMISSION_QUEUE_LEN_ENV, 96)?,
-            admission_wait_timeout: Duration::from_millis(env_u64(ADMISSION_WAIT_TIMEOUT_MS_ENV, 60_000)?),
+            max_active_attempts_per_device,
+            max_queued_attempts: env_usize(MAX_QUEUED_ATTEMPTS_ENV, 96)?,
+            max_queue_wait: Duration::from_millis(env_u64(MAX_QUEUE_WAIT_MS_ENV, 60_000)?),
             max_source_chunk_bytes: env_u64(MAX_SOURCE_CHUNK_BYTES_ENV, 64 * 1024 * 1024)?,
             max_row_groups_per_chunk: env_usize(MAX_ROW_GROUPS_PER_CHUNK_ENV, 1)?,
             query_timeout: Duration::from_millis(env_u64(QUERY_TIMEOUT_MS_ENV, 300_000)?),
@@ -182,34 +153,12 @@ impl StressConfig {
         validate_nonzero(BULK_ITERATIONS_ENV, self.bulk_iterations)?;
         validate_nonzero(INTERACTIVE_ITERATIONS_ENV, self.interactive_iterations)?;
         validate_nonzero(DEVICE_CAPACITY_BYTES_ENV, self.device_capacity_bytes)?;
-        validate_nonzero(TENANT_MIN_GRANT_BYTES_ENV, self.tenant_min_grant_bytes)?;
-        validate_nonzero(TENANT_WANT_GRANT_BYTES_ENV, self.tenant_want_grant_bytes)?;
-        if self.tenant_want_grant_bytes < self.tenant_min_grant_bytes {
-            return Err(plan_error(format!(
-                "{TENANT_WANT_GRANT_BYTES_ENV} must be at least {TENANT_MIN_GRANT_BYTES_ENV}"
-            )));
-        }
-        if self.tenant_min_grant_bytes > self.device_capacity_bytes {
-            return Err(plan_error(format!(
-                "{TENANT_MIN_GRANT_BYTES_ENV} must not exceed {DEVICE_CAPACITY_BYTES_ENV}"
-            )));
-        }
-        if self.slot_guarantee == SlotGuarantee::GuaranteedMinimum {
-            let required_min_capacity = self
-                .tenant_min_grant_bytes
-                .saturating_mul(u64::try_from(self.max_concurrent_queries).unwrap_or(u64::MAX));
-            if required_min_capacity > self.device_capacity_bytes {
-                return Err(plan_error(format!(
-                    "{TENANT_MIN_GRANT_BYTES_ENV} must fit {MAX_CONCURRENT_QUERIES_ENV} within {DEVICE_CAPACITY_BYTES_ENV} when {SLOT_GUARANTEE_ENV}=guaranteed_minimum"
-                )));
-            }
-        }
-        validate_nonzero(MAX_CONCURRENT_QUERIES_ENV, self.max_concurrent_queries)?;
-        validate_nonzero(MAX_ADMISSION_QUEUE_LEN_ENV, self.max_admission_queue_len)?;
+        validate_nonzero(MAX_ACTIVE_ATTEMPTS_PER_DEVICE_ENV, self.max_active_attempts_per_device)?;
+        validate_nonzero(MAX_QUEUED_ATTEMPTS_ENV, self.max_queued_attempts)?;
         validate_nonzero(MAX_SOURCE_CHUNK_BYTES_ENV, self.max_source_chunk_bytes)?;
         validate_nonzero(MAX_ROW_GROUPS_PER_CHUNK_ENV, self.max_row_groups_per_chunk)?;
-        if self.admission_wait_timeout.is_zero() {
-            return Err(plan_error(format!("{ADMISSION_WAIT_TIMEOUT_MS_ENV} must be greater than zero")));
+        if self.max_queue_wait.is_zero() {
+            return Err(plan_error(format!("{MAX_QUEUE_WAIT_MS_ENV} must be greater than zero")));
         }
         if self.query_timeout.is_zero() {
             return Err(plan_error(format!("{QUERY_TIMEOUT_MS_ENV} must be greater than zero")));
@@ -217,8 +166,8 @@ impl StressConfig {
         validate_query_ids(&self.bulk_queries)?;
         validate_query_ids(&self.interactive_queries)?;
         validate_synchronized_admission_queue(
-            MAX_ADMISSION_QUEUE_LEN_ENV,
-            self.max_admission_queue_len,
+            MAX_QUEUED_ATTEMPTS_ENV,
+            self.max_queued_attempts,
             self.synchronized_request_count(),
         )
         .map_err(plan_error)?;
@@ -231,16 +180,19 @@ impl StressConfig {
         )
     }
 
-    fn service_config(&self) -> QueryServiceConfig {
-        QueryServiceConfig {
-            device_capacity_bytes: Some(self.device_capacity_bytes),
-            max_concurrent_queries: self.max_concurrent_queries,
-            slot_guarantee: self.slot_guarantee,
-            max_admission_queue_len: self.max_admission_queue_len,
-            admission_wait_timeout: self.admission_wait_timeout,
+    fn service_config(&self) -> QueryExecutionConfig {
+        QueryExecutionConfig {
             max_source_chunk_bytes: self.max_source_chunk_bytes,
             max_row_groups_per_chunk: self.max_row_groups_per_chunk,
-            ..QueryServiceConfig::default()
+            ..QueryExecutionConfig::default()
+        }
+    }
+
+    fn queue_bounds(&self) -> QueueBounds {
+        QueueBounds {
+            max_waiters: self.max_queued_attempts,
+            max_wait: self.max_queue_wait,
+            max_overtakes_per_waiter: 4,
         }
     }
 }
@@ -254,7 +206,8 @@ struct CpuBaseline {
 #[derive(Debug, Clone)]
 struct StressRequest {
     request_index: usize,
-    tenant_id: TenantId,
+    // Stable TSV workload label; this is not an admission identity.
+    client_id: String,
     workload_class: &'static str,
     query_id: String,
     iteration: usize,
@@ -264,7 +217,7 @@ struct StressRequest {
 struct StressRow {
     row_type: &'static str,
     request_index: usize,
-    tenant_id: String,
+    client_id: String,
     workload_class: &'static str,
     query_id: String,
     iteration: usize,
@@ -362,17 +315,15 @@ impl StressReport {
         output.push_str(&format!("# dataset_root={}\n", self.config.dataset_root.display()));
         output.push_str(&format!("# dataset_metadata_fingerprint={}\n", self.dataset.metadata_fingerprint));
         output.push_str(&format!("# device_capacity_bytes={}\n", self.config.device_capacity_bytes));
-        output.push_str(&format!("# tenant_min_grant_bytes={}\n", self.config.tenant_min_grant_bytes));
-        output.push_str(&format!("# tenant_want_grant_bytes={}\n", self.config.tenant_want_grant_bytes));
-        output.push_str(&format!("# slot_guarantee={}\n", slot_guarantee_name(self.config.slot_guarantee)));
-        output.push_str(&format!("# max_concurrent_queries={}\n", self.config.max_concurrent_queries));
+        output.push_str(&format!("# max_active_attempts_per_device={}\n", self.config.max_active_attempts_per_device));
         output.push_str(&format!("# effective_active_max={}\n", self.effective_active_max));
-        output.push_str(&format!("# max_admission_queue_len={}\n", self.config.max_admission_queue_len));
+        output.push_str(&format!("# max_queued_attempts={}\n", self.config.max_queued_attempts));
+        output.push_str(&format!("# max_queue_wait_ms={}\n", self.config.max_queue_wait.as_millis()));
         output.push_str(&format!("# query_timeout_ms={}\n", self.config.query_timeout.as_millis()));
-        for summary in tenant_summaries(&self.rows) {
+        for summary in client_summaries(&self.rows) {
             output.push_str(&format!(
-                "# tenant_summary tenant_id={} succeeded={} overloaded={} timed_out={} failed={} max_total_wall_ms={} p95_total_wall_ms={}\n",
-                summary.tenant_id,
+                "# client_summary client_id={} succeeded={} overloaded={} timed_out={} failed={} max_total_wall_ms={} p95_total_wall_ms={}\n",
+                summary.client_id,
                 summary.succeeded,
                 summary.overloaded,
                 summary.timed_out,
@@ -396,7 +347,7 @@ impl StressRow {
         let fields = [
             self.row_type.to_string(),
             self.request_index.to_string(),
-            self.tenant_id.clone(),
+            self.client_id.clone(),
             self.workload_class.to_string(),
             self.query_id.clone(),
             self.iteration.to_string(),
@@ -425,8 +376,8 @@ impl StressRow {
 }
 
 #[derive(Debug, Clone)]
-struct TenantSummary {
-    tenant_id: String,
+struct ClientSummary {
+    client_id: String,
     succeeded: usize,
     overloaded: usize,
     timed_out: usize,
@@ -462,12 +413,8 @@ async fn run_stress(
 ) -> DataFusionResult<StressRun> {
     let backend = GpuBackendOwner::build(
         config.service_config(),
-        vec![0],
-        vec![
-            tenant_config("bulk", config),
-            tenant_config("interactive_a", config),
-            tenant_config("interactive_b", config),
-        ],
+        config.queue_bounds(),
+        vec![GpuBackendOwner::device_config(0, config.device_capacity_bytes, config.max_active_attempts_per_device, 1)],
     )
     .map_err(native_error)?;
     let service = backend.session();
@@ -505,9 +452,8 @@ async fn run_native_request(
     request: StressRequest,
 ) -> DataFusionResult<StressRow> {
     let total_started = Instant::now();
-    let tenant_for_admission = request.tenant_id.clone();
     let service_for_admission = service.clone();
-    let handle = match tokio::task::spawn_blocking(move || service_for_admission.admit_query(tenant_for_admission))
+    let handle = match tokio::task::spawn_blocking(move || service_for_admission.admit_query())
         .await
         .map_err(|error| plan_error(format!("query service admission task join failed: {error}")))?
     {
@@ -535,8 +481,8 @@ async fn run_native_request(
     let cpu = cpu_baselines.get(&request.query_id);
     let native_started = Instant::now();
     eprintln!(
-        "[query-service-tpcds] native start tenant={} query={} iteration={} admission_sequence={}",
-        request.tenant_id,
+        "[query-service-tpcds] native start client={} query={} iteration={} admission_sequence={}",
+        request.client_id,
         request.query_id,
         request.iteration,
         handle.admission_sequence()
@@ -551,8 +497,8 @@ async fn run_native_request(
                 _ => "not_run",
             };
             eprintln!(
-                "[query-service-tpcds] native finish tenant={} query={} iteration={} elapsed_ms={} outcome=succeeded parity={parity}",
-                request.tenant_id,
+                "[query-service-tpcds] native finish client={} query={} iteration={} elapsed_ms={} outcome=succeeded parity={parity}",
+                request.client_id,
                 request.query_id,
                 request.iteration,
                 native_started.elapsed().as_millis()
@@ -560,7 +506,7 @@ async fn run_native_request(
             Ok(StressRow {
                 row_type: "query",
                 request_index: request.request_index,
-                tenant_id: request.tenant_id.to_string(),
+                client_id: request.client_id.to_string(),
                 workload_class: request.workload_class,
                 query_id: request.query_id,
                 iteration: request.iteration,
@@ -584,8 +530,8 @@ async fn run_native_request(
         },
         Ok(Ok(NativeCollectOutcome::RuntimeFailed { planning_row, error })) => {
             eprintln!(
-                "[query-service-tpcds] native finish tenant={} query={} iteration={} elapsed_ms={} outcome=failed",
-                request.tenant_id,
+                "[query-service-tpcds] native finish client={} query={} iteration={} elapsed_ms={} outcome=failed",
+                request.client_id,
                 request.query_id,
                 request.iteration,
                 native_started.elapsed().as_millis()
@@ -606,8 +552,8 @@ async fn run_native_request(
         },
         Ok(Err(error)) => {
             eprintln!(
-                "[query-service-tpcds] native finish tenant={} query={} iteration={} elapsed_ms={} outcome=failed",
-                request.tenant_id,
+                "[query-service-tpcds] native finish client={} query={} iteration={} elapsed_ms={} outcome=failed",
+                request.client_id,
                 request.query_id,
                 request.iteration,
                 native_started.elapsed().as_millis()
@@ -628,8 +574,8 @@ async fn run_native_request(
         },
         Err(_) => {
             eprintln!(
-                "[query-service-tpcds] native finish tenant={} query={} iteration={} elapsed_ms={} outcome=timed_out",
-                request.tenant_id,
+                "[query-service-tpcds] native finish client={} query={} iteration={} elapsed_ms={} outcome=timed_out",
+                request.client_id,
                 request.query_id,
                 request.iteration,
                 native_started.elapsed().as_millis()
@@ -656,9 +602,8 @@ async fn collect_native_with_handle(
     query: &TpcdsQuery,
     handle: Arc<nexus_query_engine::runtime::QueryHandle>,
 ) -> DataFusionResult<NativeCollectOutcome> {
-    let optimizer_config = NexusNativeOptimizerConfig::default().with_native_execution_config(
-        NexusNativeExecutionConfig::bounded_auto_sized().with_query_service_handle(handle),
-    );
+    let optimizer_config = NexusNativeOptimizerConfig::default()
+        .with_native_execution_config(NexusNativeExecutionConfig::bounded_default().with_query_service_handle(handle));
     let native_rule = Arc::new(NexusNativePhysicalOptimizerRule::new(optimizer_config));
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(tpcds_native_report_session_config())
@@ -699,37 +644,33 @@ async fn collect_plan_once(plan: Arc<dyn ExecutionPlan>) -> DataFusionResult<Vec
 }
 
 fn run_overload_probe(config: &StressConfig) -> DataFusionResult<StressRow> {
-    let probe_config = QueryServiceConfig {
-        max_concurrent_queries: 1,
-        max_admission_queue_len: 1,
-        admission_wait_timeout: Duration::from_millis(50),
-        ..config.service_config()
-    };
+    let probe_config = config.service_config();
+    let probe_queue_bounds =
+        QueueBounds { max_waiters: 1, max_wait: Duration::from_millis(50), max_overtakes_per_waiter: 4 };
     let backend = GpuBackendOwner::build(
         probe_config,
-        vec![0],
-        vec![tenant_config("bulk", config), tenant_config("interactive_a", config)],
+        probe_queue_bounds,
+        vec![GpuBackendOwner::device_config(0, config.device_capacity_bytes, 1, 1)],
     )
     .map_err(native_error)?;
     let service = backend.session();
-    let active = service.admit_query(TenantId::new("bulk")).map_err(native_error)?;
+    let active = service.admit_query().map_err(native_error)?;
     let queued_service = service.clone();
     let (ready_sender, ready_receiver) = std::sync::mpsc::channel();
     let waiter = std::thread::spawn(move || {
         ready_sender.send(()).expect("overload probe ready signal should send");
-        let _queued = queued_service.admit_query(TenantId::new("bulk"));
+        let _queued = queued_service.admit_query();
     });
     ready_receiver.recv().map_err(|error| plan_error(format!("overload probe setup failed: {error}")))?;
     wait_for_queued_len(&service, 1)?;
     let started = Instant::now();
-    let error =
-        service.admit_query(TenantId::new("interactive_a")).expect_err("filled admission queue must reject next query");
+    let error = service.admit_query().expect_err("filled admission queue must reject next query");
     drop(active);
     waiter.join().map_err(|_| plan_error("overload probe waiter thread panicked"))?;
     let row = StressRow {
         row_type: "overload_probe",
         request_index: 0,
-        tenant_id: "interactive_a".to_string(),
+        client_id: "interactive_a".to_string(),
         workload_class: "synthetic",
         query_id: "none".to_string(),
         iteration: 0,
@@ -763,10 +704,6 @@ fn wait_for_queued_len(service: &GpuBackendSession, expected: usize) -> DataFusi
     Err(plan_error("timed out waiting for overload probe admission queue"))
 }
 
-fn tenant_config(tenant_id: impl Into<TenantId>, config: &StressConfig) -> QueryServiceTenantConfig {
-    QueryServiceTenantConfig::with_grant_range(tenant_id, config.tenant_min_grant_bytes, config.tenant_want_grant_bytes)
-}
-
 fn build_requests(config: &StressConfig) -> Vec<StressRequest> {
     let mut requests = Vec::new();
     let mut next_index = 1;
@@ -774,7 +711,7 @@ fn build_requests(config: &StressConfig) -> Vec<StressRequest> {
         for query_id in &config.bulk_queries {
             requests.push(StressRequest {
                 request_index: next_index,
-                tenant_id: TenantId::new("bulk"),
+                client_id: "bulk".to_string(),
                 workload_class: "bulk",
                 query_id: query_id.clone(),
                 iteration,
@@ -782,12 +719,12 @@ fn build_requests(config: &StressConfig) -> Vec<StressRequest> {
             next_index += 1;
         }
     }
-    for tenant_id in ["interactive_a", "interactive_b"] {
+    for client_id in ["interactive_a", "interactive_b"] {
         for iteration in 1..=config.interactive_iterations {
             for query_id in &config.interactive_queries {
                 requests.push(StressRequest {
                     request_index: next_index,
-                    tenant_id: TenantId::new(tenant_id),
+                    client_id: client_id.to_string(),
                     workload_class: "interactive",
                     query_id: query_id.clone(),
                     iteration,
@@ -815,7 +752,7 @@ fn failure_row(
     StressRow {
         row_type: "query",
         request_index: request.request_index,
-        tenant_id: request.tenant_id.to_string(),
+        client_id: request.client_id.to_string(),
         workload_class: request.workload_class,
         query_id: request.query_id.clone(),
         iteration: request.iteration,
@@ -835,22 +772,22 @@ fn failure_row(
     }
 }
 
-fn tenant_summaries(rows: &[StressRow]) -> Vec<TenantSummary> {
-    let mut by_tenant: BTreeMap<String, Vec<&StressRow>> = BTreeMap::new();
+fn client_summaries(rows: &[StressRow]) -> Vec<ClientSummary> {
+    let mut by_client: BTreeMap<String, Vec<&StressRow>> = BTreeMap::new();
     for row in rows.iter().filter(|row| row.row_type == "query") {
-        by_tenant.entry(row.tenant_id.clone()).or_default().push(row);
+        by_client.entry(row.client_id.clone()).or_default().push(row);
     }
-    by_tenant
+    by_client
         .into_iter()
-        .map(|(tenant_id, rows)| {
+        .map(|(client_id, rows)| {
             let mut latencies = rows.iter().map(|row| row.total_wall_ms).collect::<Vec<_>>();
             latencies.sort_by(f64::total_cmp);
             let succeeded = rows.iter().filter(|row| row.native_runtime_outcome == "succeeded").count();
             let overloaded = rows.iter().filter(|row| row.error.code.as_deref() == Some("service_overloaded")).count();
             let timed_out = rows.iter().filter(|row| row.native_runtime_outcome == "timed_out").count();
             let failed = rows.len().saturating_sub(succeeded + overloaded + timed_out);
-            TenantSummary {
-                tenant_id,
+            ClientSummary {
+                client_id,
                 succeeded,
                 overloaded,
                 timed_out,
@@ -991,41 +928,6 @@ fn env_u64(name: &'static str, default: u64) -> DataFusionResult<u64> {
     }
 }
 
-fn optional_env_u64(name: &'static str) -> DataFusionResult<Option<u64>> {
-    std::env::var_os(name)
-        .map(|value| {
-            value
-                .to_string_lossy()
-                .parse()
-                .map_err(|error| plan_error(format!("failed to parse {name} as u64: {error}")))
-        })
-        .transpose()
-}
-
-fn env_slot_guarantee(name: &'static str, default: SlotGuarantee) -> DataFusionResult<SlotGuarantee> {
-    match std::env::var_os(name) {
-        Some(value) => parse_slot_guarantee(name, &value.to_string_lossy()),
-        None => Ok(default),
-    }
-}
-
-fn parse_slot_guarantee(name: &'static str, value: &str) -> DataFusionResult<SlotGuarantee> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "guaranteed_minimum" => Ok(SlotGuarantee::GuaranteedMinimum),
-        "optimistic" => Ok(SlotGuarantee::Optimistic),
-        other => {
-            Err(plan_error(format!("failed to parse {name}: expected guaranteed_minimum or optimistic, got {other}")))
-        },
-    }
-}
-
-fn slot_guarantee_name(slot_guarantee: SlotGuarantee) -> &'static str {
-    match slot_guarantee {
-        SlotGuarantee::GuaranteedMinimum => "guaranteed_minimum",
-        SlotGuarantee::Optimistic => "optimistic",
-    }
-}
-
 fn env_bool(name: &'static str, default: bool) -> DataFusionResult<bool> {
     match std::env::var_os(name) {
         Some(value) => match value.to_string_lossy().to_ascii_lowercase().as_str() {
@@ -1045,15 +947,10 @@ where T: PartialEq + From<u8> {
     Ok(())
 }
 
-fn default_device_capacity_bytes(legacy_tenant_budget_bytes: Option<u64>, max_concurrent_queries: usize) -> u64 {
-    if let Some(tenant_budget_bytes) = legacy_tenant_budget_bytes {
-        return tenant_budget_bytes.saturating_mul(u64::try_from(max_concurrent_queries).unwrap_or(u64::MAX));
-    }
-    NexusNativeExecutionConfig::auto_sized_device_budget_bytes()
-}
-
-fn grant_fraction_bytes(device_capacity_bytes: u64, numerator: u64, denominator: u64) -> u64 {
-    device_capacity_bytes.saturating_mul(numerator) / denominator
+fn default_device_capacity_bytes() -> u64 {
+    // This standalone benchmark profile must not probe GPU 0 and reuse that
+    // capacity for every selected device. Server backends resolve each device.
+    NexusNativeExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_FALLBACK_BYTES
 }
 
 fn format_facts(facts: &BTreeMap<String, String>) -> String {
@@ -1095,12 +992,9 @@ mod tests {
             bulk_iterations: 1,
             interactive_iterations: 1,
             device_capacity_bytes: 100,
-            tenant_min_grant_bytes: 25,
-            tenant_want_grant_bytes: 50,
-            slot_guarantee: SlotGuarantee::GuaranteedMinimum,
-            max_concurrent_queries: 2,
-            max_admission_queue_len: 2,
-            admission_wait_timeout: Duration::from_secs(1),
+            max_active_attempts_per_device: 2,
+            max_queued_attempts: 2,
+            max_queue_wait: Duration::from_secs(1),
             max_source_chunk_bytes: 1,
             max_row_groups_per_chunk: 1,
             query_timeout: Duration::from_secs(1),
@@ -1126,7 +1020,7 @@ mod tests {
         let row = StressRow {
             row_type: "query",
             request_index: 1,
-            tenant_id: "interactive".to_string(),
+            client_id: "interactive".to_string(),
             workload_class: "interactive",
             query_id: "q10".to_string(),
             iteration: 1,
@@ -1153,7 +1047,7 @@ mod tests {
 
         let error = config.validate().unwrap_err();
 
-        assert!(error.to_string().contains(MAX_ADMISSION_QUEUE_LEN_ENV));
+        assert!(error.to_string().contains(MAX_QUEUED_ATTEMPTS_ENV));
         assert!(error.to_string().contains("synchronized request count (3)"));
     }
 }

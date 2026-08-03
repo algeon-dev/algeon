@@ -38,18 +38,6 @@ pub(super) fn runtime_visible_gate_for_task_kind(
         })
 }
 
-// `fixtures_plans::adaptive` is shared with the CPU contract target.  The
-// compiled GPU target still type-checks that fixture but does not invoke it.
-pub(super) fn literal_expr_for_type(data_type: &DataType) -> Expr {
-    let literal = match data_type {
-        DataType::Decimal128(precision, scale) => {
-            LiteralValue::Decimal128 { raw: 12_345, precision: *precision, scale: *scale }
-        },
-        _ => LiteralValue::Int32(12_345),
-    };
-    Expr::literal(literal).alias("secret_literal")
-}
-
 pub(super) fn int32_values(batch: &RecordBatch, column: usize) -> Vec<Option<i32>> {
     let array = batch.column(column).as_any().downcast_ref::<Int32Array>().unwrap();
     (0..array.len()).map(|index| if array.is_null(index) { None } else { Some(array.value(index)) }).collect()
@@ -128,28 +116,6 @@ pub(super) fn assert_task_kind_count(pipeline: &CompiledPipeline, kind: Pipeline
 }
 
 pub(super) fn bounded_context(runtime: Arc<cudf::Runtime>) -> ExecutionContext {
-    bounded_context_with_mode(runtime, NativePipelineExecutionMode::StrictBounded)
-}
-
-pub(super) fn bounded_context_with_mode(
-    runtime: Arc<cudf::Runtime>,
-    mode: NativePipelineExecutionMode,
-) -> ExecutionContext {
-    bounded_context_builder(runtime, mode).build().unwrap()
-}
-
-pub(super) fn bounded_context_with_mode_and_memory_history(
-    runtime: Arc<cudf::Runtime>,
-    mode: NativePipelineExecutionMode,
-    memory_history: Arc<AdaptiveMemoryHistory>,
-) -> ExecutionContext {
-    bounded_context_builder(runtime, mode).with_adaptive_memory_history(memory_history).build().unwrap()
-}
-
-fn bounded_context_builder(
-    runtime: Arc<cudf::Runtime>,
-    mode: NativePipelineExecutionMode,
-) -> nexus_query_engine::runtime::ExecutionContextBuilder {
     ExecutionContext::builder()
         .with_shared_runtime(runtime)
         .with_memory_control_policy(MemoryControlPolicy::Bounded {
@@ -159,7 +125,8 @@ fn bounded_context_builder(
             max_retry_attempts: 1,
             min_retry_chunk_row_groups: 1,
         })
-        .with_native_pipeline_execution_mode(mode)
+        .build()
+        .unwrap()
 }
 
 pub(super) fn unique_temp_dir(prefix: &str) -> PathBuf {

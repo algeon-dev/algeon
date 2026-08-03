@@ -114,7 +114,9 @@ pub(crate) struct RuntimeObservationSnapshotData {
     pub(crate) topology: Vec<RetainedTopologyRecord>,
     pub(crate) events: Vec<RuntimeTimelineEvent>,
     pub(crate) footer: RuntimeObservationFooter,
-    pub(crate) attempt_report: Option<QueryAttemptReport>,
+    /// The one report sealed for an attempt. Completion receivers clone this
+    /// exact allocation instead of rebuilding a post-seal projection.
+    pub(crate) attempt_report: Option<Arc<QueryAttemptReport>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -148,12 +150,11 @@ macro_rules! snapshot_accessors {
 
             /// Fixed execution-attempt summary, when this observation belongs to an attempt.
             ///
-            /// The embedded report is projected at seal time: its
-            /// `report_ready_ns` is always `None` here. The delivered report
-            /// (via `AttemptCompletion`) is the same envelope with
-            /// report-ready recorded; both project one lifecycle state.
+            /// The embedded report is the same immutable value delivered by
+            /// the attempt completion. In particular, `report_ready_ns` is
+            /// fixed before this snapshot is published.
             pub fn attempt_report(&self) -> Option<&QueryAttemptReport> {
-                self.data.attempt_report.as_ref()
+                self.data.attempt_report.as_deref()
             }
         }
     };
@@ -205,7 +206,22 @@ pub struct RuntimeObservationSession {
 }
 
 /// Construction-time provider of the fixed execution-attempt summary embedded at seal.
+///
+/// This compatibility hook is retained for recorder-only owners. Attempt
+/// owners use the crate-private seal provider below so the embedded value and
+/// completion delivery share the same immutable allocation.
 pub type AttemptReportProvider = Arc<dyn Fn() -> QueryAttemptReport + Send + Sync>;
+
+/// Attempt-owned report construction after the recorder has computed its
+/// complete footer.
+type AttemptReportSealProvider = Arc<dyn Fn(&RuntimeObservationFooter) -> Arc<QueryAttemptReport> + Send + Sync>;
+
+/// Crate-internal authority that selects the canonical attempt outcome before
+/// the recorder fixes the footer. Attempt-owned observations use this to
+/// collapse recorder-local pending outcomes into the attempt lifecycle's one
+/// terminal state.
+type RuntimeObservationTerminalOutcomeResolver =
+    Arc<dyn Fn(RuntimeTerminalOutcome) -> RuntimeTerminalOutcome + Send + Sync>;
 
 /// Cloneable shared ownership of one query observation session.
 ///
@@ -217,12 +233,39 @@ pub struct RuntimeObservationOwner {
     session: Arc<RuntimeObservationSession>,
     lifecycle: Arc<RuntimeObservationOwnerLifecycle>,
     attempt_report_provider: Option<AttemptReportProvider>,
+    attempt_report_seal_provider: Option<AttemptReportSealProvider>,
+    terminal_outcome_resolver: Option<RuntimeObservationTerminalOutcomeResolver>,
+    #[cfg(test)]
+    deferred_delivery_gate: Arc<Mutex<Option<Arc<RuntimeObservationDeliveryGate>>>>,
 }
 
 #[derive(Debug)]
 struct RuntimeObservationOwnerLifecycle {
     state: Mutex<RuntimeObservationOwnerLifecycleState>,
     finished: Condvar,
+}
+
+/// Test-only barrier at the start of ordinary deferred observer delivery.
+///
+/// The terminal seal commit deliberately runs before this barrier. It lets
+/// lifecycle tests prove that report-ready does not depend on observer
+/// delivery or capacity reuse.
+#[cfg(test)]
+#[derive(Debug)]
+pub(crate) struct RuntimeObservationDeliveryGate {
+    entered: AtomicBool,
+    gate: std::sync::Barrier,
+}
+
+#[cfg(test)]
+impl RuntimeObservationDeliveryGate {
+    pub(crate) fn entered(&self) -> bool {
+        self.entered.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn open(&self) {
+        self.gate.wait();
+    }
 }
 
 #[derive(Debug)]
@@ -327,6 +370,31 @@ impl RuntimeObservationSealObserver {
         if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (self.notify)(snapshot))).is_err() {
             eprintln!("[nexus-query-engine] warning: runtime observation seal observer panicked");
         }
+    }
+}
+
+/// Deferred observer delivery for an already-sealed query cleanup (P2.7).
+/// The seal has published the report; delivery runs after capacity release
+/// and never gates reuse.
+pub(crate) struct QueryCleanupSealDelivery {
+    owner: Option<RuntimeObservationOwner>,
+    deferred: Option<DeferredRuntimeObservationSeal>,
+    already_sealed: Option<SealedRuntimeObservationSnapshot>,
+}
+
+impl QueryCleanupSealDelivery {
+    fn already_sealed(snapshot: Option<SealedRuntimeObservationSnapshot>) -> Self {
+        Self { owner: None, deferred: None, already_sealed: snapshot }
+    }
+
+    /// Runs observer delivery, returning the sealed snapshot.
+    pub(crate) fn deliver(self) -> Option<SealedRuntimeObservationSnapshot> {
+        if let Some(owner) = self.owner
+            && let Some(deferred) = self.deferred
+        {
+            return owner.complete_observer_delivery(deferred);
+        }
+        self.already_sealed
     }
 }
 
@@ -671,7 +739,7 @@ impl RuntimeObservationHandle {
     fn seal_owned_deferred(
         &self,
         outcome: RuntimeTerminalOutcome,
-        attempt_report: Option<QueryAttemptReport>,
+        attempt_report_provider: Option<&AttemptReportSealProvider>,
     ) -> DeferredRuntimeObservationSeal {
         let Some(inner) = self.inner.as_ref() else {
             return DeferredRuntimeObservationSeal { snapshot: None, observers: Vec::new() };
@@ -682,7 +750,7 @@ impl RuntimeObservationHandle {
         }
         inner.sealed.store(true, Ordering::Release);
         let snapshot = SealedRuntimeObservationSnapshot {
-            data: Arc::new(inner.take_sealed_snapshot_data(&mut state, outcome, attempt_report)),
+            data: Arc::new(inner.take_sealed_snapshot_data(&mut state, outcome, attempt_report_provider)),
         };
         state.sealed_snapshot = Some(snapshot.clone());
         let observers = std::mem::take(&mut state.seal_observers);
@@ -869,9 +937,9 @@ impl RuntimeObservationSession {
     fn seal_deferred(
         &self,
         outcome: RuntimeTerminalOutcome,
-        attempt_report: Option<QueryAttemptReport>,
+        attempt_report_provider: Option<&AttemptReportSealProvider>,
     ) -> DeferredRuntimeObservationSeal {
-        self.handle.seal_owned_deferred(outcome, attempt_report)
+        self.handle.seal_owned_deferred(outcome, attempt_report_provider)
     }
 
     /// Returns the sealed immutable snapshot when a terminal outcome already won.
@@ -906,6 +974,10 @@ impl RuntimeObservationOwner {
             session: Arc::new(session),
             lifecycle: Arc::new(RuntimeObservationOwnerLifecycle::default()),
             attempt_report_provider: None,
+            attempt_report_seal_provider: None,
+            terminal_outcome_resolver: None,
+            #[cfg(test)]
+            deferred_delivery_gate: Arc::new(Mutex::new(None)),
         };
         owner.handle().record(|| RuntimeObservationPayload::QueryBoundary { boundary: QueryBoundaryKind::Started });
         owner
@@ -915,6 +987,38 @@ impl RuntimeObservationOwner {
     pub fn with_attempt_report_provider(mut self, provider: AttemptReportProvider) -> Self {
         self.attempt_report_provider = Some(provider);
         self
+    }
+
+    /// Installs attempt-owned report construction at the sole seal point.
+    /// This remains internal so no adapter can manufacture a second report for
+    /// a live attempt.
+    pub(crate) fn with_attempt_report_seal_provider<F>(mut self, provider: F) -> Self
+    where F: Fn(&RuntimeObservationFooter) -> Arc<QueryAttemptReport> + Send + Sync + 'static {
+        self.attempt_report_seal_provider = Some(Arc::new(provider));
+        self
+    }
+
+    /// Installs the attempt-owned terminal outcome resolver. It runs after
+    /// cleanup evidence is recorded but before the recorder seals, so the
+    /// footer and attempt report cannot disagree on the terminal outcome.
+    pub(crate) fn with_terminal_outcome_resolver<F>(mut self, resolver: F) -> Self
+    where F: Fn(RuntimeTerminalOutcome) -> RuntimeTerminalOutcome + Send + Sync + 'static {
+        self.terminal_outcome_resolver = Some(Arc::new(resolver));
+        self
+    }
+
+    /// Blocks ordinary observer delivery after the terminal commit. This is
+    /// test-only and scoped to this observation owner.
+    #[cfg(test)]
+    pub(crate) fn arm_deferred_delivery_gate(&self) -> Arc<RuntimeObservationDeliveryGate> {
+        let gate = Arc::new(RuntimeObservationDeliveryGate {
+            entered: AtomicBool::new(false),
+            gate: std::sync::Barrier::new(2),
+        });
+        let mut slot = self.deferred_delivery_gate.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(slot.is_none(), "an observation owner can arm only one deferred-delivery gate");
+        *slot = Some(Arc::clone(&gate));
+        gate
     }
 
     /// Creates a disabled shared owner.
@@ -975,7 +1079,7 @@ impl RuntimeObservationOwner {
                 RuntimeObservationOwnerLifecycleState::Sealed(snapshot) => return snapshot.clone(),
             }
         };
-        self.finish_owner_terminal(outcome, || {})
+        self.finish_owner_terminal(outcome, |_| {})
     }
 
     /// Retains one plan or admission outcome until the query owner completes cleanup.
@@ -989,6 +1093,33 @@ impl RuntimeObservationOwner {
                 None | Some(RuntimeTerminalOutcome::Succeeded) => outcome,
                 Some(existing) => existing,
             });
+        }
+    }
+
+    /// Returns the terminal outcome that a cleanup release must establish
+    /// before it commits its capacity facts. A recorded execution outcome
+    /// wins over the mechanical fallback; a seal already in progress is
+    /// allowed to finish so its immutable terminal outcome remains canonical.
+    pub(crate) fn terminal_outcome_for_cleanup(&self, fallback: RuntimeTerminalOutcome) -> RuntimeTerminalOutcome {
+        let mut lifecycle = self.lock_lifecycle();
+        loop {
+            match &*lifecycle {
+                RuntimeObservationOwnerLifecycleState::Open { pending_outcome, .. } => {
+                    return pending_outcome.clone().unwrap_or(fallback);
+                },
+                RuntimeObservationOwnerLifecycleState::Finishing { .. }
+                | RuntimeObservationOwnerLifecycleState::Delivering { snapshot: None, .. } => {
+                    lifecycle = match self.lifecycle.finished.wait(lifecycle) {
+                        Ok(lifecycle) => lifecycle,
+                        Err(poisoned) => poisoned.into_inner(),
+                    };
+                },
+                RuntimeObservationOwnerLifecycleState::Delivering { snapshot: Some(snapshot), .. }
+                | RuntimeObservationOwnerLifecycleState::Sealed(Some(snapshot)) => {
+                    return snapshot.footer().terminal.clone().unwrap_or(fallback);
+                },
+                RuntimeObservationOwnerLifecycleState::Sealed(None) => return fallback,
+            }
         }
     }
 
@@ -1019,6 +1150,15 @@ impl RuntimeObservationOwner {
         &self,
         fallback: RuntimeTerminalOutcome,
     ) -> Option<SealedRuntimeObservationSnapshot> {
+        self.seal_query_cleanup(fallback).deliver()
+    }
+
+    /// Phase one of the cleanup commit (P2.7): records cleanup completion and
+    /// seals the recorder state so the report is published, returning the
+    /// deferred observer delivery. Capacity release may proceed once this
+    /// returns; [`QueryCleanupSealDelivery::deliver`] runs afterwards and
+    /// never gates reuse.
+    pub(crate) fn seal_query_cleanup(&self, fallback: RuntimeTerminalOutcome) -> QueryCleanupSealDelivery {
         self.begin_query_cleanup();
         let outcome = loop {
             let mut lifecycle = self.lock_lifecycle();
@@ -1034,30 +1174,33 @@ impl RuntimeObservationOwner {
                         Err(poisoned) => poisoned.into_inner(),
                     };
                     if let RuntimeObservationOwnerLifecycleState::Sealed(snapshot) = &*lifecycle {
-                        return snapshot.clone();
+                        return QueryCleanupSealDelivery::already_sealed(snapshot.clone());
                     }
                 },
                 RuntimeObservationOwnerLifecycleState::Delivering { snapshot, .. } => {
                     if in_owner_observation_delivery(&self.lifecycle) {
-                        return snapshot.clone();
+                        return QueryCleanupSealDelivery::already_sealed(snapshot.clone());
                     }
                     lifecycle = match self.lifecycle.finished.wait(lifecycle) {
                         Ok(lifecycle) => lifecycle,
                         Err(poisoned) => poisoned.into_inner(),
                     };
                     if let RuntimeObservationOwnerLifecycleState::Sealed(snapshot) = &*lifecycle {
-                        return snapshot.clone();
+                        return QueryCleanupSealDelivery::already_sealed(snapshot.clone());
                     }
                 },
-                RuntimeObservationOwnerLifecycleState::Sealed(snapshot) => return snapshot.clone(),
+                RuntimeObservationOwnerLifecycleState::Sealed(snapshot) => {
+                    return QueryCleanupSealDelivery::already_sealed(snapshot.clone());
+                },
             }
         };
-        self.finish_owner_terminal(outcome.clone(), || {
+        let deferred = self.seal_owner_terminal(outcome, |outcome| {
             self.handle()
                 .record(|| RuntimeObservationPayload::QueryBoundary { boundary: QueryBoundaryKind::CleanupFinished });
-            let boundary = query_terminal_boundary(&outcome);
+            let boundary = query_terminal_boundary(outcome);
             self.handle().record(|| RuntimeObservationPayload::QueryBoundary { boundary });
-        })
+        });
+        QueryCleanupSealDelivery { owner: Some(self.clone()), deferred: Some(deferred), already_sealed: None }
     }
 
     /// Completes a query that has no admitted handle responsible for cleanup.
@@ -1113,14 +1256,40 @@ impl RuntimeObservationOwner {
         before_seal: F,
     ) -> Option<SealedRuntimeObservationSnapshot>
     where
-        F: FnOnce(),
+        F: FnOnce(&RuntimeTerminalOutcome),
+    {
+        let deferred = self.seal_owner_terminal(outcome, before_seal);
+        self.complete_observer_delivery(deferred)
+    }
+
+    /// Seals the recorder state and returns the deferred observer delivery.
+    fn seal_owner_terminal<F>(
+        &self,
+        outcome: RuntimeTerminalOutcome,
+        before_seal: F,
+    ) -> DeferredRuntimeObservationSeal
+    where
+        F: FnOnce(&RuntimeTerminalOutcome),
     {
         let finishing = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            before_seal();
-            let attempt_report = self.attempt_report_provider.as_ref().map(|provider| provider());
-            self.session.seal_deferred(outcome, attempt_report)
+            let outcome = match &self.terminal_outcome_resolver {
+                Some(resolver) => resolver(outcome),
+                None => outcome,
+            };
+            before_seal(&outcome);
+            let attempt_report_provider = self.attempt_report_seal_provider.clone().or_else(|| {
+                self.attempt_report_provider.as_ref().map(|provider| {
+                    let provider = Arc::clone(provider);
+                    Arc::new(move |footer: &RuntimeObservationFooter| {
+                        let mut report = provider();
+                        report.set_observation_completeness(footer);
+                        Arc::new(report)
+                    }) as AttemptReportSealProvider
+                })
+            });
+            self.session.seal_deferred(outcome, attempt_report_provider.as_ref())
         }));
-        let deferred = match finishing {
+        match finishing {
             Ok(deferred) => deferred,
             Err(panic) => {
                 self.handle().mark_degraded();
@@ -1128,8 +1297,7 @@ impl RuntimeObservationOwner {
                 let _ = self.complete_observer_delivery(deferred);
                 std::panic::resume_unwind(panic);
             },
-        };
-        self.complete_observer_delivery(deferred)
+        }
     }
 
     fn complete_observer_delivery(
@@ -1151,6 +1319,14 @@ impl RuntimeObservationOwner {
                 snapshot: snapshot.clone(),
                 late_observers: Vec::new(),
             };
+        }
+        // The test gate deliberately sits before every ordinary observer. The
+        // terminal seal commit has already run by this point.
+        #[cfg(test)]
+        if let Some(gate) = self.deferred_delivery_gate.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take()
+        {
+            gate.entered.store(true, Ordering::Release);
+            gate.gate.wait();
         }
         let _delivery = RuntimeObservationDeliveryGuard::enter(Some(&self.lifecycle));
         loop {
@@ -1390,7 +1566,7 @@ impl RuntimeObservationSessionInner {
         &self,
         state: &mut RuntimeObservationRecorderState,
         outcome: RuntimeTerminalOutcome,
-        attempt_report: Option<QueryAttemptReport>,
+        attempt_report_provider: Option<&AttemptReportSealProvider>,
     ) -> RuntimeObservationSnapshotData {
         let mut topology = std::mem::take(&mut state.topology);
         topology.sort_by(|left, right| left.record.cmp(&right.record).then(left.sequence.cmp(&right.sequence)));
@@ -1420,13 +1596,13 @@ impl RuntimeObservationSessionInner {
             poison_recoveries: state.poison_recoveries,
             counter_overflow: state.counter_overflow,
         };
-        // The fixed attempt summary is loss-independent: its completeness
-        // fields project the exact footer computed at this seal, never the
-        // bounded event retention.
-        let attempt_report = attempt_report.map(|mut report| {
-            report.set_observation_completeness(&footer);
-            report
-        });
+        // The provider runs only after the complete footer exists. It returns
+        // the exact immutable report that completion receivers publish, rather
+        // than a pre-seal report which would be missing report-ready facts.
+        let attempt_report = attempt_report_provider.map(|provider| provider(&footer));
+        debug_assert!(
+            attempt_report.as_ref().is_none_or(|report| { footer.terminal.as_ref() == Some(&report.outcome) })
+        );
         RuntimeObservationSnapshotData { manifest: self.manifest.clone(), topology, events, attempt_report, footer }
     }
 }

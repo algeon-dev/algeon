@@ -325,7 +325,6 @@ mod get_tables_prefilter_tests {
     };
 
     use super::*;
-    use crate::server::auth::{AuthMode, TokenStore};
 
     #[derive(Debug)]
     struct CountingCatalog {
@@ -416,9 +415,8 @@ mod get_tables_prefilter_tests {
         DatafusionNexusFlightSqlService::new(
             ctx,
             NexusNativeOptimizerConfig::default(),
-            Arc::new(QueryAdmission::new(1).expect("test admission limit")),
+            Arc::new(QueryAdmission::new_for_tests()),
             Duration::from_secs(30),
-            AuthInterceptor::new(AuthMode::Disabled, TokenStore::new()),
             #[cfg(feature = "cugraph")]
             None,
         )

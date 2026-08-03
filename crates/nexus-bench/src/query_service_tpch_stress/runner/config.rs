@@ -5,22 +5,16 @@ const BULK_QUERIES_ENV: &str = "NEXUS_QUERY_SERVICE_TPCH_BULK_QUERY_IDS";
 const INTERACTIVE_QUERIES_ENV: &str = "NEXUS_QUERY_SERVICE_TPCH_INTERACTIVE_QUERY_IDS";
 const BULK_ITERATIONS_ENV: &str = "NEXUS_QUERY_SERVICE_TPCH_BULK_ITERATIONS";
 const INTERACTIVE_ITERATIONS_ENV: &str = "NEXUS_QUERY_SERVICE_TPCH_INTERACTIVE_ITERATIONS";
-const TENANT_BUDGET_BYTES_ENV: &str = "NEXUS_QUERY_SERVICE_TPCH_TENANT_BUDGET_BYTES";
 const DEVICE_CAPACITY_BYTES_ENV: &str = "NEXUS_QUERY_SERVICE_TPCH_DEVICE_CAPACITY_BYTES";
-const TENANT_MIN_GRANT_BYTES_ENV: &str = "NEXUS_QUERY_SERVICE_TPCH_TENANT_MIN_GRANT_BYTES";
-const TENANT_WANT_GRANT_BYTES_ENV: &str = "NEXUS_QUERY_SERVICE_TPCH_TENANT_WANT_GRANT_BYTES";
-pub(super) const SLOT_GUARANTEE_ENV: &str = "NEXUS_QUERY_SERVICE_TPCH_SLOT_GUARANTEE";
-const MAX_CONCURRENT_QUERIES_ENV: &str = "NEXUS_QUERY_SERVICE_TPCH_MAX_CONCURRENT_QUERIES";
+pub(super) const ATTEMPT_FLOOR_BYTES_ENV: &str = "NEXUS_QUERY_SERVICE_TPCH_ATTEMPT_FLOOR_BYTES";
+const SOFT_WORKING_SET_HINT_BYTES_ENV: &str = "NEXUS_QUERY_SERVICE_TPCH_SOFT_WORKING_SET_HINT_BYTES";
+const MAX_ACTIVE_ATTEMPTS_PER_DEVICE_ENV: &str = "NEXUS_QUERY_SERVICE_TPCH_MAX_ACTIVE_ATTEMPTS_PER_DEVICE";
 const DEVICE_ORDINALS_ENV: &str = "NEXUS_QUERY_SERVICE_TPCH_DEVICE_ORDINALS";
-pub(super) const MAX_ADMISSION_QUEUE_LEN_ENV: &str = "NEXUS_QUERY_SERVICE_TPCH_MAX_ADMISSION_QUEUE_LEN";
-const ADMISSION_WAIT_TIMEOUT_MS_ENV: &str = "NEXUS_QUERY_SERVICE_TPCH_ADMISSION_WAIT_TIMEOUT_MS";
+pub(super) const MAX_QUEUED_ATTEMPTS_ENV: &str = "NEXUS_QUERY_SERVICE_TPCH_MAX_QUEUED_ATTEMPTS";
+const MAX_QUEUE_WAIT_MS_ENV: &str = "NEXUS_QUERY_SERVICE_TPCH_MAX_QUEUE_WAIT_MS";
 const MAX_SOURCE_CHUNK_BYTES_ENV: &str = "NEXUS_QUERY_SERVICE_TPCH_MAX_SOURCE_CHUNK_BYTES";
 const MAX_ROW_GROUPS_PER_CHUNK_ENV: &str = "NEXUS_QUERY_SERVICE_TPCH_MAX_ROW_GROUPS_PER_CHUNK";
-const SOURCE_CACHE_MAX_RETAINED_BYTES_ENV: &str = "NEXUS_QUERY_SERVICE_TPCH_SOURCE_CACHE_MAX_RETAINED_BYTES";
-const MEMORY_MANAGER_POOL_INITIAL_BYTES_ENV: &str = "NEXUS_QUERY_SERVICE_TPCH_MEMORY_MANAGER_POOL_INITIAL_BYTES";
-const NATIVE_PIPELINE_EXECUTION_MODE_ENV: &str = "NEXUS_QUERY_SERVICE_TPCH_NATIVE_PIPELINE_EXECUTION_MODE";
-const QUERY_MEMORY_DOMAIN_CEILING_MULTIPLIER_ENV: &str =
-    "NEXUS_QUERY_SERVICE_TPCH_QUERY_MEMORY_DOMAIN_CEILING_MULTIPLIER";
+const REMOVED_SOURCE_CACHE_MAX_RETAINED_BYTES_ENV: &str = "NEXUS_QUERY_SERVICE_TPCH_SOURCE_CACHE_MAX_RETAINED_BYTES";
 const WARMUP_ROUNDS_ENV: &str = "NEXUS_QUERY_SERVICE_TPCH_WARMUP_ROUNDS";
 const STREAM_IDLE_TIMEOUT_MS_ENV: &str = "NEXUS_QUERY_SERVICE_TPCH_STREAM_IDLE_TIMEOUT_MS";
 const CUDA_PROFILER_CAPTURE_ENV: &str = "NEXUS_QUERY_SERVICE_TPCH_CUDA_PROFILER_CAPTURE";
@@ -32,25 +26,15 @@ const PROFILE_EVIDENCE_PATH_ENV: &str = "NEXUS_QUERY_SERVICE_TPCH_PROFILE_EVIDEN
 const OVERLOAD_PROBE_ENV: &str = "NEXUS_QUERY_SERVICE_TPCH_OVERLOAD_PROBE";
 impl StressConfig {
     pub(super) fn from_env() -> DataFusionResult<Self> {
+        reject_p2_source_cache_env()?;
         let dataset_root = match std::env::var_os(DATASET_ROOT_ENV) {
             Some(value) => PathBuf::from(value),
             None => default_tpch_parquet_root(TpchDefaultScale::Sf1).into(),
         };
-        let max_concurrent_queries = env_usize(MAX_CONCURRENT_QUERIES_ENV, 1)?;
-        let legacy_tenant_budget_bytes = optional_env_u64(TENANT_BUDGET_BYTES_ENV)?;
-        let tenant_min_grant_bytes = optional_env_u64(TENANT_MIN_GRANT_BYTES_ENV)?;
-        let tenant_want_grant_bytes = optional_env_u64(TENANT_WANT_GRANT_BYTES_ENV)?;
-        if legacy_tenant_budget_bytes.is_some()
-            && (tenant_min_grant_bytes.is_some() || tenant_want_grant_bytes.is_some())
-        {
-            return Err(plan_error(format!(
-                "{TENANT_BUDGET_BYTES_ENV} cannot be combined with {TENANT_MIN_GRANT_BYTES_ENV} or {TENANT_WANT_GRANT_BYTES_ENV}"
-            )));
-        }
-        let device_capacity_bytes = env_u64(
-            DEVICE_CAPACITY_BYTES_ENV,
-            default_device_capacity_bytes(legacy_tenant_budget_bytes, max_concurrent_queries),
-        )?;
+        let max_active_attempts_per_device = env_usize(MAX_ACTIVE_ATTEMPTS_PER_DEVICE_ENV, 1)?;
+        let attempt_floor_bytes = optional_env_u64(ATTEMPT_FLOOR_BYTES_ENV)?;
+        let soft_working_set_hint_bytes = optional_env_u64(SOFT_WORKING_SET_HINT_BYTES_ENV)?;
+        let device_capacity_bytes = env_u64(DEVICE_CAPACITY_BYTES_ENV, default_device_capacity_bytes())?;
         let default_min_grant_bytes = grant_fraction_bytes(device_capacity_bytes, 1, 8);
         let default_want_grant_bytes = grant_fraction_bytes(device_capacity_bytes, 1, 2);
         let profile = StressProfileConfig::from_env()?;
@@ -61,25 +45,13 @@ impl StressConfig {
             bulk_iterations: env_usize(BULK_ITERATIONS_ENV, 1)?,
             interactive_iterations: env_usize(INTERACTIVE_ITERATIONS_ENV, 4)?,
             device_capacity_bytes,
-            tenant_min_grant_bytes: tenant_min_grant_bytes
-                .or(legacy_tenant_budget_bytes)
-                .unwrap_or(default_min_grant_bytes),
-            tenant_want_grant_bytes: tenant_want_grant_bytes
-                .or(legacy_tenant_budget_bytes)
-                .unwrap_or(default_want_grant_bytes),
-            slot_guarantee: env_slot_guarantee(SLOT_GUARANTEE_ENV, SlotGuarantee::GuaranteedMinimum)?,
-            max_concurrent_queries,
-            max_admission_queue_len: env_usize(MAX_ADMISSION_QUEUE_LEN_ENV, 64)?,
-            admission_wait_timeout: Duration::from_millis(env_u64(ADMISSION_WAIT_TIMEOUT_MS_ENV, 30_000)?),
+            attempt_floor_bytes: attempt_floor_bytes.unwrap_or(default_min_grant_bytes),
+            soft_working_set_hint_bytes: soft_working_set_hint_bytes.unwrap_or(default_want_grant_bytes),
+            max_active_attempts_per_device,
+            max_queued_attempts: env_usize(MAX_QUEUED_ATTEMPTS_ENV, 64)?,
+            max_queue_wait: Duration::from_millis(env_u64(MAX_QUEUE_WAIT_MS_ENV, 30_000)?),
             max_source_chunk_bytes: env_u64(MAX_SOURCE_CHUNK_BYTES_ENV, 64 * 1024 * 1024)?,
             max_row_groups_per_chunk: env_usize(MAX_ROW_GROUPS_PER_CHUNK_ENV, 1)?,
-            source_cache_max_retained_bytes: optional_env_u64(SOURCE_CACHE_MAX_RETAINED_BYTES_ENV)?,
-            memory_manager_pool_initial_bytes: optional_env_u64(MEMORY_MANAGER_POOL_INITIAL_BYTES_ENV)?,
-            native_pipeline_execution_mode: env_native_pipeline_execution_mode(
-                NATIVE_PIPELINE_EXECUTION_MODE_ENV,
-                NativePipelineExecutionMode::StrictBounded,
-            )?,
-            query_memory_domain_ceiling_multiplier: optional_env_u64(QUERY_MEMORY_DOMAIN_CEILING_MULTIPLIER_ENV)?,
             warmup_rounds: env_usize(WARMUP_ROUNDS_ENV, 0)?,
             stream_idle_timeout: Duration::from_millis(env_u64(STREAM_IDLE_TIMEOUT_MS_ENV, 30_000)?),
             cuda_profiler_capture: env_bool(CUDA_PROFILER_CAPTURE_ENV, false)?,
@@ -95,63 +67,40 @@ impl StressConfig {
         validate_nonzero(BULK_ITERATIONS_ENV, self.bulk_iterations)?;
         validate_nonzero(INTERACTIVE_ITERATIONS_ENV, self.interactive_iterations)?;
         validate_nonzero(DEVICE_CAPACITY_BYTES_ENV, self.device_capacity_bytes)?;
-        validate_nonzero(TENANT_MIN_GRANT_BYTES_ENV, self.tenant_min_grant_bytes)?;
-        validate_nonzero(TENANT_WANT_GRANT_BYTES_ENV, self.tenant_want_grant_bytes)?;
-        if self.tenant_want_grant_bytes < self.tenant_min_grant_bytes {
+        validate_nonzero(ATTEMPT_FLOOR_BYTES_ENV, self.attempt_floor_bytes)?;
+        validate_nonzero(SOFT_WORKING_SET_HINT_BYTES_ENV, self.soft_working_set_hint_bytes)?;
+        if self.soft_working_set_hint_bytes < self.attempt_floor_bytes {
             return Err(plan_error(format!(
-                "{TENANT_WANT_GRANT_BYTES_ENV} must be at least {TENANT_MIN_GRANT_BYTES_ENV}"
+                "{SOFT_WORKING_SET_HINT_BYTES_ENV} must be at least {ATTEMPT_FLOOR_BYTES_ENV}"
             )));
         }
-        if self.tenant_min_grant_bytes > self.device_capacity_bytes {
+        if self.attempt_floor_bytes > self.device_capacity_bytes {
+            return Err(plan_error(format!("{ATTEMPT_FLOOR_BYTES_ENV} must not exceed {DEVICE_CAPACITY_BYTES_ENV}")));
+        }
+        let floor_total = self
+            .attempt_floor_bytes
+            .saturating_mul(u64::try_from(self.max_active_attempts_per_device).unwrap_or(u64::MAX));
+        if floor_total > self.device_capacity_bytes {
             return Err(plan_error(format!(
-                "{TENANT_MIN_GRANT_BYTES_ENV} must not exceed {DEVICE_CAPACITY_BYTES_ENV}"
+                "{ATTEMPT_FLOOR_BYTES_ENV} times {MAX_ACTIVE_ATTEMPTS_PER_DEVICE_ENV} must not exceed {DEVICE_CAPACITY_BYTES_ENV}"
             )));
         }
-        if self.slot_guarantee == SlotGuarantee::GuaranteedMinimum {
-            let required_min_capacity = self
-                .tenant_min_grant_bytes
-                .saturating_mul(u64::try_from(self.max_concurrent_queries).unwrap_or(u64::MAX));
-            if required_min_capacity > self.device_capacity_bytes {
-                return Err(plan_error(format!(
-                    "{TENANT_MIN_GRANT_BYTES_ENV} must fit {MAX_CONCURRENT_QUERIES_ENV} within {DEVICE_CAPACITY_BYTES_ENV} when {SLOT_GUARANTEE_ENV}=guaranteed_minimum"
-                )));
-            }
-        }
-        validate_nonzero(MAX_CONCURRENT_QUERIES_ENV, self.max_concurrent_queries)?;
-        validate_nonzero(MAX_ADMISSION_QUEUE_LEN_ENV, self.max_admission_queue_len)?;
+        validate_nonzero(MAX_ACTIVE_ATTEMPTS_PER_DEVICE_ENV, self.max_active_attempts_per_device)?;
+        validate_nonzero(MAX_QUEUED_ATTEMPTS_ENV, self.max_queued_attempts)?;
         validate_nonzero(MAX_SOURCE_CHUNK_BYTES_ENV, self.max_source_chunk_bytes)?;
         validate_nonzero(MAX_ROW_GROUPS_PER_CHUNK_ENV, self.max_row_groups_per_chunk)?;
-        if let Some(max_retained_bytes) = self.source_cache_max_retained_bytes {
-            validate_nonzero(SOURCE_CACHE_MAX_RETAINED_BYTES_ENV, max_retained_bytes)?;
-        }
-        if let Some(initial_pool_bytes) = self.memory_manager_pool_initial_bytes {
-            validate_nonzero(MEMORY_MANAGER_POOL_INITIAL_BYTES_ENV, initial_pool_bytes)?;
-            if initial_pool_bytes > self.device_capacity_bytes {
-                return Err(plan_error(format!(
-                    "{MEMORY_MANAGER_POOL_INITIAL_BYTES_ENV} must not exceed {DEVICE_CAPACITY_BYTES_ENV}"
-                )));
-            }
-            usize::try_from(initial_pool_bytes).map_err(|_| {
-                plan_error(format!("{MEMORY_MANAGER_POOL_INITIAL_BYTES_ENV} exceeds the platform usize range"))
-            })?;
-            usize::try_from(self.device_capacity_bytes)
-                .map_err(|_| plan_error(format!("{DEVICE_CAPACITY_BYTES_ENV} exceeds the platform usize range")))?;
-        }
-        if let Some(multiplier) = self.query_memory_domain_ceiling_multiplier {
-            validate_nonzero(QUERY_MEMORY_DOMAIN_CEILING_MULTIPLIER_ENV, multiplier)?;
-        }
         if self.stream_idle_timeout.is_zero() {
             return Err(plan_error(format!("{STREAM_IDLE_TIMEOUT_MS_ENV} must be greater than zero")));
         }
-        if self.admission_wait_timeout.is_zero() {
-            return Err(plan_error(format!("{ADMISSION_WAIT_TIMEOUT_MS_ENV} must be greater than zero")));
+        if self.max_queue_wait.is_zero() {
+            return Err(plan_error(format!("{MAX_QUEUE_WAIT_MS_ENV} must be greater than zero")));
         }
         validate_query_ids(&self.bulk_queries)?;
         validate_query_ids(&self.interactive_queries)?;
         if self.profile.is_none() {
             validate_synchronized_admission_queue(
-                MAX_ADMISSION_QUEUE_LEN_ENV,
-                self.max_admission_queue_len,
+                MAX_QUEUED_ATTEMPTS_ENV,
+                self.max_queued_attempts,
                 self.synchronized_request_count(),
             )
             .map_err(plan_error)?;
@@ -160,13 +109,10 @@ impl StressConfig {
             validate_nonzero(PROFILE_LANES_ENV, profile.lanes)?;
             validate_nonzero(PROFILE_WARMUP_ITERATIONS_ENV, profile.warmup_iterations)?;
             validate_nonzero(PROFILE_MEASURED_ITERATIONS_ENV, profile.measured_iterations)?;
-            if self.source_cache_max_retained_bytes.is_some() && profile.warmup_iterations < 2 {
+            if profile.lanes > self.max_active_attempts_per_device {
                 return Err(plan_error(format!(
-                    "{PROFILE_WARMUP_ITERATIONS_ENV} must be at least 2 so the final warmup iteration can verify a cache-only path"
+                    "{PROFILE_LANES_ENV} must not exceed {MAX_ACTIVE_ATTEMPTS_PER_DEVICE_ENV}"
                 )));
-            }
-            if profile.lanes > self.max_concurrent_queries {
-                return Err(plan_error(format!("{PROFILE_LANES_ENV} must not exceed {MAX_CONCURRENT_QUERIES_ENV}")));
             }
             if self.warmup_rounds != 0 {
                 return Err(plan_error(format!(
@@ -184,33 +130,30 @@ impl StressConfig {
         )
     }
 
-    pub(super) fn service_config(&self) -> QueryServiceConfig {
-        QueryServiceConfig {
-            device_capacity_bytes: Some(self.device_capacity_bytes),
-            max_concurrent_queries: self.max_concurrent_queries,
-            slot_guarantee: self.slot_guarantee,
-            max_admission_queue_len: self.max_admission_queue_len,
-            admission_wait_timeout: self.admission_wait_timeout,
+    pub(super) fn service_config(&self) -> QueryExecutionConfig {
+        QueryExecutionConfig {
             max_source_chunk_bytes: self.max_source_chunk_bytes,
             max_row_groups_per_chunk: self.max_row_groups_per_chunk,
-            local_parquet_source_cache_max_retained_bytes: self.source_cache_max_retained_bytes,
-            native_pipeline_execution_mode: self.native_pipeline_execution_mode,
-            query_memory_domain: self
-                .query_memory_domain_ceiling_multiplier
-                .map(|multiplier| QueryMemoryDomainPolicy::new().with_ceiling_multiplier(multiplier)),
-            device_memory_manager_base: self.memory_manager_pool_initial_bytes.map_or_else(
-                cudf::DeviceMemoryManagerBase::default,
-                |initial_pool_bytes| cudf::DeviceMemoryManagerBase::Pool {
-                    initial_pool_size: usize::try_from(initial_pool_bytes)
-                        .expect("validated pool initial bytes fit usize"),
-                    maximum_pool_size: Some(
-                        usize::try_from(self.device_capacity_bytes).expect("validated device capacity fits usize"),
-                    ),
-                },
-            ),
-            ..QueryServiceConfig::default()
+            ..QueryExecutionConfig::default()
         }
     }
+
+    pub(super) fn queue_bounds(&self) -> QueueBounds {
+        QueueBounds {
+            max_waiters: self.max_queued_attempts,
+            max_wait: self.max_queue_wait,
+            max_overtakes_per_waiter: 4,
+        }
+    }
+}
+
+fn reject_p2_source_cache_env() -> DataFusionResult<()> {
+    if std::env::var_os(REMOVED_SOURCE_CACHE_MAX_RETAINED_BYTES_ENV).is_some() {
+        return Err(plan_error(format!(
+            "{REMOVED_SOURCE_CACHE_MAX_RETAINED_BYTES_ENV} is unavailable in P2; remove this setting"
+        )));
+    }
+    Ok(())
 }
 
 impl StressProfileConfig {
@@ -311,53 +254,6 @@ fn optional_env_u64(name: &'static str) -> DataFusionResult<Option<u64>> {
         .transpose()
 }
 
-fn env_slot_guarantee(name: &'static str, default: SlotGuarantee) -> DataFusionResult<SlotGuarantee> {
-    match std::env::var_os(name) {
-        Some(value) => parse_slot_guarantee(name, &value.to_string_lossy()),
-        None => Ok(default),
-    }
-}
-
-fn env_native_pipeline_execution_mode(
-    name: &'static str,
-    default: NativePipelineExecutionMode,
-) -> DataFusionResult<NativePipelineExecutionMode> {
-    match std::env::var_os(name) {
-        Some(value) => match value.to_string_lossy().trim().to_ascii_lowercase().as_str() {
-            "strict_bounded" => Ok(NativePipelineExecutionMode::StrictBounded),
-            "adaptive" => Ok(NativePipelineExecutionMode::Adaptive),
-            other => {
-                Err(plan_error(format!("failed to parse {name}: expected strict_bounded or adaptive, got {other}")))
-            },
-        },
-        None => Ok(default),
-    }
-}
-
-fn parse_slot_guarantee(name: &'static str, value: &str) -> DataFusionResult<SlotGuarantee> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "guaranteed_minimum" => Ok(SlotGuarantee::GuaranteedMinimum),
-        "optimistic" => Ok(SlotGuarantee::Optimistic),
-        other => {
-            Err(plan_error(format!("failed to parse {name}: expected guaranteed_minimum or optimistic, got {other}")))
-        },
-    }
-}
-
-pub(super) fn slot_guarantee_name(slot_guarantee: SlotGuarantee) -> &'static str {
-    match slot_guarantee {
-        SlotGuarantee::GuaranteedMinimum => "guaranteed_minimum",
-        SlotGuarantee::Optimistic => "optimistic",
-    }
-}
-
-pub(super) fn native_pipeline_execution_mode_name(mode: NativePipelineExecutionMode) -> &'static str {
-    match mode {
-        NativePipelineExecutionMode::StrictBounded => "strict_bounded",
-        NativePipelineExecutionMode::Adaptive => "adaptive",
-    }
-}
-
 fn env_bool(name: &'static str, default: bool) -> DataFusionResult<bool> {
     match std::env::var_os(name) {
         Some(value) => match value.to_string_lossy().to_ascii_lowercase().as_str() {
@@ -377,11 +273,10 @@ where T: PartialEq + From<u8> {
     Ok(())
 }
 
-fn default_device_capacity_bytes(legacy_tenant_budget_bytes: Option<u64>, max_concurrent_queries: usize) -> u64 {
-    if let Some(tenant_budget_bytes) = legacy_tenant_budget_bytes {
-        return tenant_budget_bytes.saturating_mul(u64::try_from(max_concurrent_queries).unwrap_or(u64::MAX));
-    }
-    NexusNativeExecutionConfig::auto_sized_device_budget_bytes()
+fn default_device_capacity_bytes() -> u64 {
+    // This standalone benchmark profile must not probe GPU 0 and reuse that
+    // capacity for every selected device. Server backends resolve each device.
+    NexusNativeExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_FALLBACK_BYTES
 }
 
 fn grant_fraction_bytes(device_capacity_bytes: u64, numerator: u64, denominator: u64) -> u64 {

@@ -1128,12 +1128,6 @@ impl NexusNativeMetrics {
         ) {
             self.build_materialization_boundary_query_scoped.add(1);
         }
-        if matches!(
-            policy.build_materialization(),
-            nexus_query_engine::runtime::BuildMaterializationBoundary::DurableGpuHashJoin
-        ) {
-            self.build_materialization_boundary_durable.add(1);
-        }
         if matches!(policy.probe_execution(), nexus_query_engine::runtime::ProbeExecutionBoundary::ReusableGpuHashJoin)
         {
             self.probe_execution_boundary_reusable.add(1);

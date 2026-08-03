@@ -12,27 +12,27 @@ fn graph_algorithm_capability_blocks_strict_bounded_on_lower_level_contract() {
     assert_eq!(graph_capability.executable, CapabilityDecision::Satisfied);
     assert_eq!(graph_capability.local_requirements.len(), 1);
     let requirement = &graph_capability.local_requirements[0];
-    assert_eq!(requirement.memory_boundary, GRAPH_ALGORITHM_STRICT_BOUNDED_MEMORY_BOUNDARY);
-    assert_eq!(requirement.required_contract, GRAPH_ALGORITHM_STRICT_BOUNDED_REQUIRED_CONTRACT);
+    assert_eq!(requirement.memory_boundary, GRAPH_ALGORITHM_CAPABILITY_MEMORY_BOUNDARY);
+    assert_eq!(requirement.required_contract, GRAPH_ALGORITHM_CAPABILITY_REQUIRED_CONTRACT);
     assert_eq!(requirement.status, ContractStatus::BlockedByLowerLevel);
     assert_eq!(requirement.quality, ContractQuality::ExactPreflight);
 
-    let report = StrictBoundedContractReport::from_capability_analysis(&analysis).unwrap();
-    assert_eq!(report.execution_mode(), StrictBoundedExecutionMode::UnsupportedStrictBounded);
+    let report = CapabilityContractReport::from_capability_analysis(&analysis).unwrap();
+    assert_eq!(report.execution_mode(), CapabilityEnvelopeStatus::Rejected);
     assert!(report.gate_rows().iter().any(|row| {
-        row.memory_boundary == GRAPH_ALGORITHM_STRICT_BOUNDED_MEMORY_BOUNDARY
-            && row.required_contract == GRAPH_ALGORITHM_STRICT_BOUNDED_REQUIRED_CONTRACT
+        row.memory_boundary == GRAPH_ALGORITHM_CAPABILITY_MEMORY_BOUNDARY
+            && row.required_contract == GRAPH_ALGORITHM_CAPABILITY_REQUIRED_CONTRACT
             && row.contract_status == ContractStatus::BlockedByLowerLevel
     }));
 }
 
 #[test]
 fn graph_algorithm_strict_bounded_contract_surface_lists_lower_level_gaps() {
-    assert_eq!(GRAPH_ALGORITHM_STRICT_BOUNDED_MEMORY_BOUNDARY, "graph_algorithm");
-    assert_eq!(GRAPH_ALGORITHM_STRICT_BOUNDED_REQUIRED_CONTRACT, "unsupported_graph_algorithm_reservation_contract");
+    assert_eq!(GRAPH_ALGORITHM_CAPABILITY_MEMORY_BOUNDARY, "graph_algorithm");
+    assert_eq!(GRAPH_ALGORITHM_CAPABILITY_REQUIRED_CONTRACT, "unsupported_graph_algorithm_reservation_contract");
 
     let gaps: Vec<_> =
-        GRAPH_ALGORITHM_STRICT_BOUNDED_LOWER_LEVEL_CONTRACTS.iter().map(|contract| contract.name).collect();
+        GRAPH_ALGORITHM_CAPABILITY_LOWER_LEVEL_CONTRACTS.iter().map(|contract| contract.name).collect();
     assert_eq!(
         gaps,
         vec![
@@ -44,7 +44,7 @@ fn graph_algorithm_strict_bounded_contract_surface_lists_lower_level_gaps() {
         ]
     );
     assert!(
-        GRAPH_ALGORITHM_STRICT_BOUNDED_LOWER_LEVEL_CONTRACTS
+        GRAPH_ALGORITHM_CAPABILITY_LOWER_LEVEL_CONTRACTS
             .iter()
             .all(|contract| !contract.required_surface.contains("estimate")),
         "graph strict bounded support must wait for lower-level contract surfaces, not adapter estimates"

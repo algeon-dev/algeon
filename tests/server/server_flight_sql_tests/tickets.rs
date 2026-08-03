@@ -1,10 +1,9 @@
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn unconsumed_statement_ticket_does_not_block_get_flight_info() {
     let (listener, addr) = free_local_addr();
-    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    let mut config = test_server_config();
     declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
-    config.max_in_flight = 1;
     config.statement_ticket_ttl = Duration::from_secs(30);
 
     let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
@@ -35,10 +34,9 @@ async fn unconsumed_statement_ticket_does_not_block_get_flight_info() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn abandoned_statement_ticket_expires_and_invalidates_do_get() {
     let (listener, addr) = free_local_addr();
-    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    let mut config = test_server_config();
     declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
-    config.max_in_flight = 1;
     config.statement_ticket_ttl = Duration::from_millis(50);
 
     let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
@@ -60,8 +58,6 @@ async fn abandoned_statement_ticket_expires_and_invalidates_do_get() {
     tokio::time::sleep(Duration::from_millis(75)).await;
     let error = first_client.do_get(first_ticket).await.unwrap_err();
 
-    server.abort();
-
     let FlightError::Tonic(status) = error else {
         panic!("expected tonic status, got {error:?}");
     };
@@ -71,4 +67,8 @@ async fn abandoned_statement_ticket_expires_and_invalidates_do_get() {
     let query_id = status.metadata().get(QUERY_ID_METADATA_KEY).expect("query_id metadata must be present");
     let query_id = query_id.to_str().expect("query_id metadata must be ASCII");
     assert!(!status.message().contains(query_id), "query id must stay in metadata, not message");
+    let payload = get_query_stats_raw(&mut first_client, query_id).await;
+    assert_single_sealed_attempt_report(&payload);
+
+    server.abort();
 }

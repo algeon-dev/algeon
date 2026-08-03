@@ -15,10 +15,10 @@ fn d5_contract_gate_rows_are_inventory_backed_and_family_path_free() {
         let pipeline = compile_pipeline(&case.plan, &analysis)
             .unwrap_or_else(|error| panic!("{}: compile failed: {error}", case.label));
 
-        let report = StrictBoundedContractReport::from_compiled_pipeline(&analysis, &pipeline)
+        let report = CapabilityContractReport::from_compiled_pipeline(&analysis, &pipeline)
             .unwrap_or_else(|error| panic!("{}: strict bounded contract report failed: {error}", case.label));
-        assert_eq!(report.execution_mode(), StrictBoundedExecutionMode::StrictBounded);
-        assert!(report.is_strict_bounded_ready(), "{}: compiled gate report should be strict-ready", case.label);
+        assert_eq!(report.execution_mode(), CapabilityEnvelopeStatus::Admitted);
+        assert!(report.is_ready(), "{}: compiled gate report should be strict-ready", case.label);
         assert_eq!(
             report.gate_rows().len(),
             pipeline.gates().len(),
@@ -26,10 +26,10 @@ fn d5_contract_gate_rows_are_inventory_backed_and_family_path_free() {
             case.label
         );
 
-        let capability_report = StrictBoundedContractReport::from_capability_analysis(&analysis)
+        let capability_report = CapabilityContractReport::from_capability_analysis(&analysis)
             .unwrap_or_else(|error| panic!("{}: capability contract report failed: {error}", case.label));
-        assert_eq!(capability_report.execution_mode(), StrictBoundedExecutionMode::StrictBounded);
-        assert!(capability_report.is_strict_bounded_ready());
+        assert_eq!(capability_report.execution_mode(), CapabilityEnvelopeStatus::Admitted);
+        assert!(capability_report.is_ready());
 
         for row in report.gate_rows() {
             let rendered = row.to_stable_kv_row();
@@ -132,14 +132,14 @@ fn d5_contract_gate_rows_are_inventory_backed_and_family_path_free() {
 #[test]
 fn strict_preflight_gap_strict_preflight_gap_registry_tracks_current_retirement_protocol() {
     assert_eq!(
-        STRICT_UNRESOLVED_PREFLIGHT_GAPS.len(),
+        UNRESOLVED_PREFLIGHT_GAPS.len(),
         7,
         "strict unresolved preflight gap retirement must remove entries from this registry"
     );
 
     let mut markers = BTreeSet::new();
     let mut requirements = BTreeSet::new();
-    for gap in STRICT_UNRESOLVED_PREFLIGHT_GAPS {
+    for gap in UNRESOLVED_PREFLIGHT_GAPS {
         assert!(
             markers.insert(gap.unresolved_gap),
             "unresolved preflight markers should be unique: {}",
@@ -198,7 +198,7 @@ fn d5_contract_report_rejects_unresolved_preflight_gate_labeled_exact() {
         pipeline.sink().clone(),
     );
 
-    let error = StrictBoundedContractReport::from_compiled_pipeline(&analysis, &malformed)
+    let error = CapabilityContractReport::from_compiled_pipeline(&analysis, &malformed)
         .expect_err("D.5 report construction should reject mislabeled unresolved preflight");
 
     assert_eq!(error.code(), nexus_query_engine::error::QueryErrorCode::InvalidPlan);
@@ -216,7 +216,7 @@ fn strict_preflight_gap_contract_report_rejects_hard_budgeted_quality_without_tr
         None,
     );
 
-    let error = StrictBoundedContractReport::from_gate_rows(StrictBoundedExecutionMode::StrictBounded, vec![invalid])
+    let error = CapabilityContractReport::from_gate_rows(CapabilityEnvelopeStatus::Admitted, vec![invalid])
         .expect_err("F.6 should reject unresolved quality after the placeholder contract is replaced");
 
     assert_eq!(error.code(), nexus_query_engine::error::QueryErrorCode::InvalidPlan);
@@ -275,7 +275,7 @@ fn d5_contract_report_rejects_public_gate_rows_with_invalid_quality_accounting()
     ] {
         let kind = invalid.reservation_kind;
         let error =
-            StrictBoundedContractReport::from_gate_rows(StrictBoundedExecutionMode::StrictBounded, vec![invalid])
+            CapabilityContractReport::from_gate_rows(CapabilityEnvelopeStatus::Admitted, vec![invalid])
                 .unwrap_err();
         assert_eq!(error.code(), nexus_query_engine::error::QueryErrorCode::InvalidPlan);
         assert_eq!(error.fact_value("reservation_kind"), Some(kind.as_str()));
@@ -303,7 +303,7 @@ fn d5_contract_report_rejects_public_unresolved_preflight_rows_with_non_hard_bud
             let invalid =
                 d5_test_gate_row(reservation_kind, memory_boundary, required_contract, contract_quality, None);
             let error =
-                StrictBoundedContractReport::from_gate_rows(StrictBoundedExecutionMode::StrictBounded, vec![invalid])
+                CapabilityContractReport::from_gate_rows(CapabilityEnvelopeStatus::Admitted, vec![invalid])
                     .unwrap_err();
             assert_eq!(error.code(), nexus_query_engine::error::QueryErrorCode::InvalidPlan);
             assert_eq!(error.fact_value("reservation_kind"), Some(reservation_kind.as_str()));
@@ -315,7 +315,7 @@ fn d5_contract_report_rejects_public_unresolved_preflight_rows_with_non_hard_bud
 
 #[test]
 fn d5_contract_report_rejects_public_rows_with_inconsistent_execution_modes_and_scope_owners() {
-    let strict_with_blocked = StrictBoundedContractGateRow {
+    let strict_with_blocked = CapabilityContractGateRow {
         contract_status: ContractStatus::BlockedByLowerLevel,
         ..d5_test_gate_row(
             ReservationKind::HashTable,
@@ -325,8 +325,8 @@ fn d5_contract_report_rejects_public_rows_with_inconsistent_execution_modes_and_
             None,
         )
     };
-    let error = StrictBoundedContractReport::from_gate_rows(
-        StrictBoundedExecutionMode::StrictBounded,
+    let error = CapabilityContractReport::from_gate_rows(
+        CapabilityEnvelopeStatus::Admitted,
         vec![strict_with_blocked],
     )
     .unwrap_err();
@@ -339,15 +339,15 @@ fn d5_contract_report_rejects_public_rows_with_inconsistent_execution_modes_and_
         ContractQuality::ExactPreflight,
         None,
     );
-    let error = StrictBoundedContractReport::from_gate_rows(
-        StrictBoundedExecutionMode::UnsupportedStrictBounded,
+    let error = CapabilityContractReport::from_gate_rows(
+        CapabilityEnvelopeStatus::Rejected,
         vec![unsupported_with_modeled],
     )
     .unwrap_err();
     assert_eq!(error.fact_value("report_execution_mode"), Some("unsupported_strict_bounded"));
 
-    let edge_owned_node_scope = StrictBoundedContractGateRow {
-        owner: StrictBoundedContractOwner::Compiled(ReservationGateOwner::Edge(PipelineEdgeId::new(0))),
+    let edge_owned_node_scope = CapabilityContractGateRow {
+        owner: CapabilityContractOwner::Compiled(ReservationGateOwner::Edge(PipelineEdgeId::new(0))),
         ..d5_test_gate_row(
             ReservationKind::HashTable,
             "join_hash_table",
@@ -356,8 +356,8 @@ fn d5_contract_report_rejects_public_rows_with_inconsistent_execution_modes_and_
             None,
         )
     };
-    let error = StrictBoundedContractReport::from_gate_rows(
-        StrictBoundedExecutionMode::StrictBounded,
+    let error = CapabilityContractReport::from_gate_rows(
+        CapabilityEnvelopeStatus::Admitted,
         vec![edge_owned_node_scope],
     )
     .unwrap_err();

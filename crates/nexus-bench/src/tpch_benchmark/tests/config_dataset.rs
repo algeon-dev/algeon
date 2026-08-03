@@ -9,17 +9,13 @@ fn default_config_selects_all_tpch_queries() {
     assert_eq!(config.dataset_mode.as_str(), "sf1_external");
     assert_eq!(NativeTpchDatasetMode::External(NativeTpchScaleFactor::Sf10).as_str(), "sf10_external");
     assert_eq!(config.native_memory_policy.as_str(), "bounded");
-    let NativeTpchMemoryPolicy::Bounded { profile_name, profile_source, source_chunk_planning_mode, .. } =
-        config.native_memory_policy
-    else {
-        panic!("default native TPC-H config must use bounded memory");
-    };
-    assert_eq!(profile_name, TPCH_NATIVE_PROFILE_CONSERVATIVE);
-    assert_eq!(profile_source, "default");
-    assert_eq!(source_chunk_planning_mode, nexus_query_engine::runtime::SourceChunkPlanningMode::Conservative);
-    assert_eq!(config.native_pipeline_execution_mode, NativePipelineExecutionMode::StrictBounded);
+    assert_eq!(config.native_memory_policy.profile_name, TPCH_NATIVE_PROFILE_CONSERVATIVE);
+    assert_eq!(config.native_memory_policy.profile_source, "default");
+    assert_eq!(
+        config.native_memory_policy.source_chunk_planning_mode,
+        nexus_query_engine::runtime::SourceChunkPlanningMode::Conservative
+    );
     assert_eq!(config.native_execution, crate::report_workload::RelationalExecutionSelection::strict_native());
-    assert_eq!(config.native_source_cache_policy.as_str(), "disabled");
     config.validate().unwrap();
 }
 

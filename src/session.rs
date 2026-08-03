@@ -21,8 +21,7 @@ use crate::{
     gpu_coverage_sql::gpu_coverage_table_function,
     gpu_functions::{GpuFunctionCatalog, gpu_metadata_table_functions, install_gpu_function_family},
     planner::{
-        HostExecutionQosConfig, NEXUS_FINAL_PLAN_REQUIREMENT_RULE_NAME, NEXUS_HOST_EXECUTION_QOS_RULE_NAME,
-        NexusFinalPlanRequirementRule, NexusHostExecutionQosRule, NexusNativeOptimizerConfig,
+        NEXUS_FINAL_PLAN_REQUIREMENT_RULE_NAME, NexusFinalPlanRequirementRule, NexusNativeOptimizerConfig,
         NexusNativePhysicalOptimizerRule,
     },
     session_config::DataFusionNexusSessionConfig,
@@ -44,17 +43,6 @@ pub fn nexus_native_physical_optimizer_rules(config: NexusNativeOptimizerConfig)
     nexus_native_physical_optimizer_rules_with_rule(rule)
 }
 
-/// Return DataFusion's default physical optimizer rules with host execution
-/// QoS inserted as the outer statement-final rule.
-pub fn nexus_host_execution_qos_physical_optimizer_rules(config: HostExecutionQosConfig) -> PhysicalOptimizerRules {
-    let mut rules = PhysicalOptimizer::new().rules;
-    insert_nexus_host_execution_qos_rule_before_final_validation(
-        &mut rules,
-        Arc::new(NexusHostExecutionQosRule::new(config)),
-    );
-    rules
-}
-
 /// Return DataFusion's default physical optimizer rules with a caller-retained
 /// nexus native rule inserted before DataFusion's final plan validation rule.
 pub fn nexus_native_physical_optimizer_rules_with_rule(
@@ -70,10 +58,6 @@ pub trait NexusSessionStateBuilderExt {
     /// Register nexus native rewriting before DataFusion's final physical-plan
     /// validation rule.
     fn with_nexus_native(self, config: NexusNativeOptimizerConfig) -> Self;
-
-    /// Register host-side statement QoS independently of relational native
-    /// selection. The rule wraps final DataFusion and mixed plans once.
-    fn with_host_execution_qos(self, config: HostExecutionQosConfig) -> Self;
 
     /// Install relation-aware cuVS SQL, metadata, and typed physical planning.
     /// Existing opaque query planners are rejected; callers that need other
@@ -92,15 +76,6 @@ pub trait NexusSessionStateBuilderExt {
 impl NexusSessionStateBuilderExt for SessionStateBuilder {
     fn with_nexus_native(self, config: NexusNativeOptimizerConfig) -> Self {
         self.with_nexus_native_rule(Arc::new(NexusNativePhysicalOptimizerRule::new(config)))
-    }
-
-    fn with_host_execution_qos(mut self, config: HostExecutionQosConfig) -> Self {
-        let mut rules = take_physical_optimizer_rules(&mut self);
-        insert_nexus_host_execution_qos_rule_before_final_validation(
-            &mut rules,
-            Arc::new(NexusHostExecutionQosRule::new(config)),
-        );
-        self.with_physical_optimizer_rules(rules)
     }
 
     fn try_with_cuvs_sql(mut self) -> DataFusionResult<Self> {
@@ -191,14 +166,6 @@ pub(crate) fn session_state_with_native_execution_config(
 
 pub(crate) fn installed_nexus_native_optimizer_config(state: &SessionState) -> Option<NexusNativeOptimizerConfig> {
     installed_nexus_native_optimizer_config_from_rules(state.physical_optimizers())
-}
-
-#[cfg(feature = "server")]
-pub(crate) fn installed_host_execution_qos_config(state: &SessionState) -> Option<HostExecutionQosConfig> {
-    state.physical_optimizers().iter().find_map(|rule| {
-        let rule = rule.as_ref() as &dyn std::any::Any;
-        rule.downcast_ref::<NexusHostExecutionQosRule>().map(|host_execution_qos| host_execution_qos.config().clone())
-    })
 }
 
 #[cfg(feature = "cugraph")]
@@ -306,12 +273,9 @@ fn insert_nexus_native_rules_before_final_validation(
     rules: &mut PhysicalOptimizerRules,
     native_rule: Arc<NexusNativePhysicalOptimizerRule>,
 ) {
-    let host_execution_qos_rule =
-        rules.iter().find(|existing| existing.name() == NEXUS_HOST_EXECUTION_QOS_RULE_NAME).cloned();
     rules.retain(|existing| {
         existing.name() != NEXUS_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME
             && existing.name() != NEXUS_NATIVE_COUNT_ONLY_PHYSICAL_OPTIMIZER_RULE_NAME
-            && existing.name() != NEXUS_HOST_EXECUTION_QOS_RULE_NAME
             && existing.name() != NEXUS_FINAL_PLAN_REQUIREMENT_RULE_NAME
     });
     let count_only_rule = Arc::new(native_rule.count_only_probe_rule());
@@ -327,33 +291,7 @@ fn insert_nexus_native_rules_before_final_validation(
         Arc::clone(&native_rule),
     ));
     rules.push(native_rule);
-    if let Some(host_execution_qos_rule) = host_execution_qos_rule {
-        rules.push(host_execution_qos_rule);
-    }
     rules.push(final_plan_requirement);
-    if let Some(final_validation) = final_validation {
-        rules.push(final_validation);
-    }
-}
-
-fn insert_nexus_host_execution_qos_rule_before_final_validation(
-    rules: &mut PhysicalOptimizerRules,
-    host_execution_qos_rule: Arc<NexusHostExecutionQosRule>,
-) {
-    let final_plan_requirement =
-        rules.iter().find(|existing| existing.name() == NEXUS_FINAL_PLAN_REQUIREMENT_RULE_NAME).cloned();
-    rules.retain(|existing| {
-        existing.name() != NEXUS_HOST_EXECUTION_QOS_RULE_NAME
-            && existing.name() != NEXUS_FINAL_PLAN_REQUIREMENT_RULE_NAME
-    });
-    let final_validation = rules
-        .iter()
-        .rposition(|existing| existing.name() == DATAFUSION_FINAL_VALIDATION_RULE_NAME)
-        .map(|position| rules.remove(position));
-    rules.push(host_execution_qos_rule);
-    if let Some(final_plan_requirement) = final_plan_requirement {
-        rules.push(final_plan_requirement);
-    }
     if let Some(final_validation) = final_validation {
         rules.push(final_validation);
     }
@@ -367,7 +305,6 @@ fn insert_nexus_native_rules_for_cugraph_subplan(
     rules.retain(|existing| {
         existing.name() != NEXUS_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME
             && existing.name() != NEXUS_NATIVE_COUNT_ONLY_PHYSICAL_OPTIMIZER_RULE_NAME
-            && existing.name() != NEXUS_HOST_EXECUTION_QOS_RULE_NAME
             && existing.name() != NEXUS_FINAL_PLAN_REQUIREMENT_RULE_NAME
     });
     let count_only_rule = Arc::new(native_rule.count_only_probe_rule());
@@ -384,63 +321,19 @@ fn insert_nexus_native_rules_for_cugraph_subplan(
     }
 }
 
-#[cfg(test)]
-mod host_execution_qos_tests {
-    use std::num::NonZeroUsize;
-
-    use super::*;
-    use crate::planner::{HostExecutionQosConfig, NEXUS_HOST_EXECUTION_QOS_RULE_NAME};
-
-    #[test]
-    fn host_execution_qos_installs_without_relational_native_selection() {
-        let state = SessionStateBuilder::new()
-            .with_host_execution_qos(HostExecutionQosConfig::new(NonZeroUsize::new(1).unwrap()))
-            .build();
-        let rules = state.physical_optimizers();
-
-        assert!(rules.iter().any(|rule| rule.name() == NEXUS_HOST_EXECUTION_QOS_RULE_NAME));
-        assert!(!rules.iter().any(|rule| rule.name() == NEXUS_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME));
-    }
-
-    #[test]
-    fn host_execution_qos_is_between_native_selection_and_final_requirements() {
-        let state = SessionStateBuilder::new()
-            .with_host_execution_qos(HostExecutionQosConfig::new(NonZeroUsize::new(1).unwrap()))
-            .with_nexus_native(NexusNativeOptimizerConfig::default().with_no_datafusion_cpu_requirement())
-            .build();
-        let rules = state.physical_optimizers();
-        let native = rules
-            .iter()
-            .position(|rule| rule.name() == NEXUS_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME)
-            .expect("native selection must be installed");
-        let host_qos = rules
-            .iter()
-            .position(|rule| rule.name() == NEXUS_HOST_EXECUTION_QOS_RULE_NAME)
-            .expect("host QoS must be installed");
-        let requirement = rules
-            .iter()
-            .position(|rule| rule.name() == NEXUS_FINAL_PLAN_REQUIREMENT_RULE_NAME)
-            .expect("final-plan requirement must be installed");
-
-        assert!(native < host_qos && host_qos < requirement);
-    }
-}
-
 #[cfg(all(test, feature = "cugraph"))]
 mod tests {
-    use nexus_query_engine::runtime::{QueryServiceConfig, QueryServiceTenantConfig, TenantId};
-
     use super::*;
-    use crate::native_exec::{QueryAdmissionSource, admission::TestAdmissionController};
+    use crate::native_exec::{
+        QueryAdmissionSource,
+        admission::{TestAdmissionController, TestAdmissionDeviceProfile},
+    };
 
     fn admission_only_source() -> QueryAdmissionSource {
-        let tenant_id = TenantId::new("session-cugraph-test");
-        let controller = TestAdmissionController::new(
-            QueryServiceConfig { device_capacity_bytes: Some(1024 * 1024), ..QueryServiceConfig::default() },
-            vec![QueryServiceTenantConfig::new(tenant_id.clone(), 1024 * 1024)],
-        )
-        .expect("CUDA-free test admission controller should build");
-        controller.source(tenant_id)
+        let controller =
+            TestAdmissionController::new(TestAdmissionDeviceProfile::new(0, 1024 * 1024, 1, 1024 * 1024), None)
+                .expect("CUDA-free test admission controller should build");
+        controller.source()
     }
 
     #[test]
@@ -462,23 +355,15 @@ mod tests {
     }
 
     #[test]
-    fn cugraph_subplanning_omits_outer_statement_final_rules() {
-        use std::num::NonZeroUsize;
-
-        use crate::planner::{HostExecutionQosConfig, NEXUS_HOST_EXECUTION_QOS_RULE_NAME};
-
+    fn cugraph_subplanning_omits_final_plan_requirement_rule() {
         let optimizer_config = NexusNativeOptimizerConfig::default().with_no_datafusion_cpu_requirement();
-        let state = SessionStateBuilder::new()
-            .with_nexus_native(optimizer_config.clone())
-            .with_host_execution_qos(HostExecutionQosConfig::new(NonZeroUsize::new(1).unwrap()))
-            .build();
+        let state = SessionStateBuilder::new().with_nexus_native(optimizer_config.clone()).build();
         let nested =
             session_state_with_native_execution_config(&state, optimizer_config.native_execution_config().clone())
                 .expect("nested cuGraph planning requires installed native selection");
         let rules = nested.physical_optimizers();
 
         assert!(rules.iter().any(|rule| rule.name() == NEXUS_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME));
-        assert!(!rules.iter().any(|rule| rule.name() == NEXUS_HOST_EXECUTION_QOS_RULE_NAME));
         assert!(!rules.iter().any(|rule| rule.name() == NEXUS_FINAL_PLAN_REQUIREMENT_RULE_NAME));
     }
 }

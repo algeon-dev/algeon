@@ -1,11 +1,11 @@
 use nexus_query_engine::{
     error::Result,
-    runtime::{ExecutionContext, GpuBackendSession, TenantId, TenantQueryContext},
+    runtime::{ExecutionContext, GpuBackendSession, AdmittedQueryContext},
 };
 
 fn acquire_admitted_context(session: &GpuBackendSession) -> Result<()> {
-    let handle = session.admit_query(TenantId::from("tenant"))?;
-    let admitted: TenantQueryContext = handle.acquire_context()?;
+    let handle = session.admit_query()?;
+    let admitted: AdmittedQueryContext = handle.acquire_context()?;
     let _context: &ExecutionContext = admitted.context();
     Ok(())
 }

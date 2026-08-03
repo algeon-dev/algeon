@@ -4,7 +4,6 @@ use arrow::datatypes::{Field, Schema, SchemaRef as ArrowSchemaRef};
 
 use super::{rewrite, simple_projection_column_single_alias, source_target_policy::OptimizerSourceTargetPolicy};
 use crate::{
-    adaptive_report::AdaptiveCandidateStatus,
     error::{QueryError, QueryErrorCode},
     expr::{ColumnQualifier, ColumnRef, Expr},
     plan::{
@@ -85,14 +84,10 @@ impl Default for SemijoinReductionOptions {
 /// Mode-specific admission gate to use after a tentative semijoin rewrite.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SemijoinReductionAdmissionMode {
-    /// Do not run a post-rewrite admission gate.
+    /// The admission gate was not evaluated for this pass.
     NotEvaluated,
-    /// Reject only when strict bounded admission would regress an already
-    /// admitted original plan.
-    StrictBounded,
-    /// Reject only when adaptive admission would regress an already admitted
-    /// original plan.
-    Adaptive,
+    /// The single capability-first bounded admission gate.
+    Bounded,
 }
 
 /// Result for one semijoin-reduction optimizer pass invocation.
@@ -234,14 +229,10 @@ pub enum SemijoinReductionCostSignal {
 pub enum SemijoinReductionAdmissionDecision {
     /// No admission gate was evaluated.
     NotEvaluated,
-    /// Strict bounded admission gate kept the rewritten plan.
-    StrictBoundedKept,
-    /// Strict bounded admission rejected the rewritten plan.
-    StrictBoundedRejectedRewrite,
-    /// Adaptive admission gate kept the rewritten plan.
-    AdaptiveKept,
-    /// Adaptive admission rejected the rewritten plan.
-    AdaptiveRejectedRewrite,
+    /// Bounded admission gate kept the rewritten plan.
+    BoundedKept,
+    /// Bounded admission rejected the rewritten plan.
+    BoundedRejectedRewrite,
 }
 
 /// Generic semijoin-reduction rejection reasons.
@@ -1102,17 +1093,11 @@ fn evaluate_admission_gate(
             original_admitted: None,
             rewritten_admitted: None,
         },
-        SemijoinReductionAdmissionMode::StrictBounded => mode_admission_gate_decision(
-            strict_bounded_admitted(original),
-            strict_bounded_admitted(rewritten),
-            SemijoinReductionAdmissionDecision::StrictBoundedKept,
-            SemijoinReductionAdmissionDecision::StrictBoundedRejectedRewrite,
-        ),
-        SemijoinReductionAdmissionMode::Adaptive => mode_admission_gate_decision(
-            adaptive_admitted(original),
-            adaptive_admitted(rewritten),
-            SemijoinReductionAdmissionDecision::AdaptiveKept,
-            SemijoinReductionAdmissionDecision::AdaptiveRejectedRewrite,
+        SemijoinReductionAdmissionMode::Bounded => mode_admission_gate_decision(
+            bounded_admitted(original),
+            bounded_admitted(rewritten),
+            SemijoinReductionAdmissionDecision::BoundedKept,
+            SemijoinReductionAdmissionDecision::BoundedRejectedRewrite,
         ),
     }
 }
@@ -1131,19 +1116,11 @@ fn mode_admission_gate_decision(
     }
 }
 
-fn strict_bounded_admitted(plan: &QueryPlan) -> Option<bool> {
-    match crate::admission::strict_bounded_pipeline_admission(plan) {
+fn bounded_admitted(plan: &QueryPlan) -> Option<bool> {
+    match crate::admission::bounded_pipeline_admission(plan) {
         Ok(Some(_)) => Some(true),
         Ok(None) => Some(false),
         Err(error) if error.code() == crate::error::QueryErrorCode::UnsupportedPlanShape => Some(false),
-        Err(_) => None,
-    }
-}
-
-fn adaptive_admitted(plan: &QueryPlan) -> Option<bool> {
-    match crate::admission::adaptive_bounded_pipeline_admission(plan) {
-        Ok(Some(admission)) => Some(admission.report().row().candidate_status == AdaptiveCandidateStatus::Admitted),
-        Ok(None) => Some(false),
         Err(_) => None,
     }
 }

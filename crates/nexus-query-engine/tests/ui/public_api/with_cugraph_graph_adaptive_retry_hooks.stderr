@@ -1,0 +1,37 @@
+error[E0432]: unresolved imports `nexus_query_engine::exec::force_next_graph_adaptive_chunk_attempt_resource_exhausted_for_test`, `nexus_query_engine::exec::force_next_graph_adaptive_full_attempt_resource_exhausted_for_test`, `nexus_query_engine::exec::force_next_graph_seed_chunk_retry_chunk_attempt_resource_exhausted_for_test`, `nexus_query_engine::exec::force_next_graph_seed_chunk_retry_full_attempt_resource_exhausted_for_test`, `nexus_query_engine::exec::force_next_graph_statistics_optional_resource_exhausted_for_test`
+ --> tests/ui/public_api/with_cugraph_graph_adaptive_retry_hooks.rs:2:5
+  |
+2 |     force_next_graph_adaptive_chunk_attempt_resource_exhausted_for_test,
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ no `force_next_graph_adaptive_chunk_attempt_resource_exhausted_for_test` in `exec`
+3 |     force_next_graph_adaptive_full_attempt_resource_exhausted_for_test,
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ no `force_next_graph_adaptive_full_attempt_resource_exhausted_for_test` in `exec`
+4 |     force_next_graph_seed_chunk_retry_chunk_attempt_resource_exhausted_for_test,
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ no `force_next_graph_seed_chunk_retry_chunk_attempt_resource_exhausted_for_test` in `exec`
+5 |     force_next_graph_seed_chunk_retry_full_attempt_resource_exhausted_for_test,
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ no `force_next_graph_seed_chunk_retry_full_attempt_resource_exhausted_for_test` in `exec`
+6 |     force_next_graph_statistics_optional_resource_exhausted_for_test,
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ no `force_next_graph_statistics_optional_resource_exhausted_for_test` in `exec`
+  |
+note: found an item that was configured out
+ --> src/exec/mod.rs
+  |
+  | #[cfg(all(test, feature = "cugraph"))]
+  |           ---- the item is gated here
+...
+  |     force_next_graph_seed_chunk_retry_chunk_attempt_resource_exhausted_for_test,
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+note: found an item that was configured out
+ --> src/exec/mod.rs
+  |
+  | #[cfg(all(test, feature = "cugraph"))]
+  |           ---- the item is gated here
+...
+  |     force_next_graph_seed_chunk_retry_full_attempt_resource_exhausted_for_test,
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+note: found an item that was configured out
+ --> src/exec/mod.rs
+  |
+  | #[cfg(all(test, feature = "cugraph"))]
+  |           ---- the item is gated here
+  | pub(crate) use graph_algorithm::force_next_graph_statistics_optional_resource_exhausted_for_test;
+  |                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

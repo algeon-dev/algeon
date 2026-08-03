@@ -12,6 +12,10 @@ use datafusion::{
         metrics::{Metric, MetricsSet},
     },
 };
+use nexus_query_engine::observability::{
+    AttemptCapacityDisposition, AttemptCleanupDisposition, AttemptDisposition, QueryAttemptReport,
+    RuntimeTerminalOutcome,
+};
 
 use crate::{
     error::{Error, ErrorCode, ErrorSourceDiagnostics, Facts},
@@ -295,6 +299,9 @@ pub(super) struct CapturedQuery {
     sealed: bool,
     capture: CaptureBudget,
     max_metric_records: usize,
+    /// Immutable attempt-completion projection. The coordinator never owns
+    /// this lifecycle; it only retains the sealed report for Flight stats.
+    attempt_report: Option<Arc<QueryAttemptReport>>,
 }
 
 impl CapturedQuery {
@@ -325,6 +332,7 @@ impl CapturedQuery {
             sealed: false,
             capture,
             max_metric_records: usize::try_from(max_metric_records).unwrap_or(usize::MAX),
+            attempt_report: None,
         }
     }
 
@@ -343,6 +351,11 @@ impl CapturedQuery {
         {
             self.capture.replace_optional_text(&mut self.correlation_id, Some(correlation_id));
         }
+        self.last_touched_at = Instant::now();
+    }
+
+    pub(super) fn set_attempt_report(&mut self, report: Arc<QueryAttemptReport>) {
+        self.attempt_report = Some(report);
         self.last_touched_at = Instant::now();
     }
 
@@ -517,6 +530,27 @@ impl CapturedQuery {
         if !self.sql.is_empty() {
             let _ = writeln!(output, "# sql={}", StableValue(&self.sql));
         }
+        if let Some(report) = &self.attempt_report {
+            let _ = writeln!(output, "# attempt_id={}", report.attempt_id);
+            let _ = writeln!(output, "# attempt_disposition={}", attempt_disposition_label(report.disposition));
+            let _ = writeln!(output, "# attempt_outcome={}", attempt_outcome_label(&report.outcome));
+            let _ = writeln!(
+                output,
+                "# attempt_device_ordinal={}",
+                report.device_ordinal.map_or_else(|| "none".to_string(), |value| value.to_string())
+            );
+            let _ = writeln!(
+                output,
+                "# attempt_cleanup_disposition={}",
+                attempt_cleanup_disposition_label(report.cleanup_disposition)
+            );
+            let _ = writeln!(output, "# attempt_cleanup_failure_count={}", report.cleanup_failure_count);
+            let _ = writeln!(
+                output,
+                "# attempt_capacity_disposition={}",
+                attempt_capacity_disposition_label(report.capacity_disposition)
+            );
+        }
 
         let mut metric_projection_truncated = false;
         if let Some(planning) = &self.planning {
@@ -625,6 +659,42 @@ impl CapturedQuery {
 
     fn elapsed_ms(&self) -> u128 {
         self.completed_at.unwrap_or_else(Instant::now).saturating_duration_since(self.started_at).as_millis()
+    }
+}
+
+fn attempt_disposition_label(disposition: AttemptDisposition) -> &'static str {
+    match disposition {
+        AttemptDisposition::Unplanned => "unplanned",
+        AttemptDisposition::CpuFallback => "cpu_fallback",
+        AttemptDisposition::PartialNative => "partial_native",
+        AttemptDisposition::Native => "native",
+    }
+}
+
+fn attempt_outcome_label(outcome: &RuntimeTerminalOutcome) -> &'static str {
+    match outcome {
+        RuntimeTerminalOutcome::Succeeded => "succeeded",
+        RuntimeTerminalOutcome::Failed { .. } => "failed",
+        RuntimeTerminalOutcome::Cancelled => "cancelled",
+        RuntimeTerminalOutcome::Dropped => "dropped",
+        RuntimeTerminalOutcome::Panicked => "panicked",
+    }
+}
+
+fn attempt_cleanup_disposition_label(disposition: AttemptCleanupDisposition) -> &'static str {
+    match disposition {
+        AttemptCleanupDisposition::NotRequired => "not_required",
+        AttemptCleanupDisposition::Completed => "completed",
+        AttemptCleanupDisposition::CompletedWithFailures => "completed_with_failures",
+    }
+}
+
+fn attempt_capacity_disposition_label(disposition: AttemptCapacityDisposition) -> &'static str {
+    match disposition {
+        AttemptCapacityDisposition::NotAdmitted => "not_admitted",
+        AttemptCapacityDisposition::PendingRelease => "pending_release",
+        AttemptCapacityDisposition::Released => "released",
+        AttemptCapacityDisposition::RetainedQuarantine => "retained_quarantine",
     }
 }
 

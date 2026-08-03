@@ -123,16 +123,6 @@ pub struct NativeDataFusionExecutionMetrics {
     pub source_read_prefetches_skipped: usize,
     /// Count of source-read prefetches abandoned.
     pub source_read_prefetches_abandoned: usize,
-    /// Query-scoped source cache hits.
-    pub source_cache_hits: usize,
-    /// Query-scoped source cache misses.
-    pub source_cache_misses: usize,
-    /// Query-scoped source cache insertions.
-    pub source_cache_inserts: usize,
-    /// Query-scoped skipped source cache insertions.
-    pub source_cache_insert_skipped: usize,
-    /// Peak retained source-cache bytes.
-    pub source_cache_retained_bytes: usize,
     /// Row groups planned across source chunks.
     pub row_groups_planned: usize,
     /// Row groups committed across source chunks.
@@ -157,18 +147,6 @@ pub struct NativeDataFusionExecutionMetrics {
     pub retry_resource_exhausted_count: usize,
     /// Retries caused by reservation failure.
     pub retry_reservation_failure_count: usize,
-    /// Adaptive executor retry actions.
-    pub adaptive_retry_count: usize,
-    /// Adaptive executor spill actions.
-    pub adaptive_spill_count: usize,
-    /// Adaptive executor downgrade actions.
-    pub adaptive_downgrade_count: usize,
-    /// Adaptive memory-history lookups.
-    pub adaptive_memory_history_lookup_count: usize,
-    /// Adaptive memory-history lookup hits.
-    pub adaptive_memory_history_hit_count: usize,
-    /// Adaptive memory-history lookup misses.
-    pub adaptive_memory_history_miss_count: usize,
     /// Dynamic-filter payloads successfully produced.
     pub dynamic_filter_produced_count: usize,
     /// Dynamic-filter routes whose producers completed without a usable payload.
@@ -227,12 +205,6 @@ pub struct NativeDataFusionExecutionMetrics {
     pub hash_join_cache_hits: usize,
     /// Query-scoped reusable hash-join cache misses.
     pub hash_join_cache_misses: usize,
-    /// Durable reusable hash-join cache hits.
-    pub hash_join_durable_cache_hits: usize,
-    /// Durable reusable hash-join cache misses.
-    pub hash_join_durable_cache_misses: usize,
-    /// Durable reusable hash-join cache insertions.
-    pub hash_join_durable_cache_inserts: usize,
     /// Unique device bytes retained by reusable hash-join build artifacts.
     pub hash_join_hash_table_bytes: usize,
     /// Unique device bytes retained by reusable filtered-join build artifacts.
@@ -298,11 +270,6 @@ impl NativeDataFusionExecutionMetrics {
             source_read_prefetches_completed: metric_count(metrics, "source_read_prefetches_completed"),
             source_read_prefetches_skipped: metric_count(metrics, "source_read_prefetches_skipped"),
             source_read_prefetches_abandoned: metric_count(metrics, "source_read_prefetches_abandoned"),
-            source_cache_hits: metric_count(metrics, "source_cache_hits"),
-            source_cache_misses: metric_count(metrics, "source_cache_misses"),
-            source_cache_inserts: metric_count(metrics, "source_cache_inserts"),
-            source_cache_insert_skipped: metric_count(metrics, "source_cache_insert_skipped"),
-            source_cache_retained_bytes: metric_count(metrics, "source_cache_retained_bytes"),
             row_groups_planned: metric_count(metrics, "row_groups_planned"),
             row_groups_committed: metric_count(metrics, "row_groups_committed"),
             partial_aggregate_count: metric_count(metrics, "partial_aggregate_count"),
@@ -315,12 +282,6 @@ impl NativeDataFusionExecutionMetrics {
             retry_count: metric_count(metrics, "retry_count"),
             retry_resource_exhausted_count: metric_count(metrics, "retry_resource_exhausted_count"),
             retry_reservation_failure_count: metric_count(metrics, "retry_reservation_failure_count"),
-            adaptive_retry_count: metric_count(metrics, "adaptive_retry_count"),
-            adaptive_spill_count: metric_count(metrics, "adaptive_spill_count"),
-            adaptive_downgrade_count: metric_count(metrics, "adaptive_downgrade_count"),
-            adaptive_memory_history_lookup_count: metric_count(metrics, "adaptive_memory_history_lookup_count"),
-            adaptive_memory_history_hit_count: metric_count(metrics, "adaptive_memory_history_hit_count"),
-            adaptive_memory_history_miss_count: metric_count(metrics, "adaptive_memory_history_miss_count"),
             dynamic_filter_produced_count: metric_count(metrics, "dynamic_filter_produced_count"),
             dynamic_filter_skipped_count: metric_count(metrics, "dynamic_filter_skipped_count"),
             dynamic_filter_applied_count: metric_count(metrics, "dynamic_filter_applied_count"),
@@ -361,9 +322,6 @@ impl NativeDataFusionExecutionMetrics {
             one_shot_join_count: metric_count(metrics, "one_shot_join_count"),
             hash_join_cache_hits: metric_count(metrics, "hash_join_cache_hits"),
             hash_join_cache_misses: metric_count(metrics, "hash_join_cache_misses"),
-            hash_join_durable_cache_hits: metric_count(metrics, "hash_join_durable_cache_hits"),
-            hash_join_durable_cache_misses: metric_count(metrics, "hash_join_durable_cache_misses"),
-            hash_join_durable_cache_inserts: metric_count(metrics, "hash_join_durable_cache_inserts"),
             hash_join_hash_table_bytes: metric_count(metrics, "hash_join_hash_table_bytes"),
             filtered_join_hash_table_bytes: metric_count(metrics, "filtered_join_hash_table_bytes"),
             filtered_join_probe_state_bytes: metric_count(metrics, "filtered_join_probe_state_bytes"),

@@ -369,6 +369,9 @@ mod correlation_tests {
         assert_eq!(service.cancellations.len(), 0);
         let payload = query_stats(&service, &query_id);
         assert!(payload.contains("# outcome=dropped\n"), "{payload}");
+        assert_eq!(payload.matches("# attempt_id=attempt-").count(), 1, "{payload}");
+        assert_eq!(payload.matches("# attempt_outcome=").count(), 1, "{payload}");
+        assert!(payload.contains("# attempt_outcome=panicked"), "{payload}");
         assert!(!payload.contains("code=cancelled"), "panic must not be downgraded to cancellation: {payload}");
     }
 
@@ -463,12 +466,7 @@ mod correlation_tests {
 
         assert!(payload.contains("# datafusion_nexus_admission_stats=1\n"), "{payload}");
         assert!(payload.contains("# backend=query_service\n"), "{payload}");
-        assert!(payload.contains("# max_in_flight=2\n"), "{payload}");
-        assert!(
-            payload.contains("[admission]\nactive_queries\tqueued_queries\tnext_tenant_id\n0\t0\tdefault\n"),
-            "{payload}"
-        );
-        assert!(payload.contains("[tenant_queue_depths]\ntenant_id\tqueued_queries\ndefault\t0\n"), "{payload}");
+        assert!(payload.contains("[admission]\nactive_queries\tqueued_queries\n0\t0\n"), "{payload}");
     }
 
     #[tokio::test]

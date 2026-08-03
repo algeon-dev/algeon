@@ -76,7 +76,6 @@ impl RunEvidence {
                 "waves": params.waves,
                 "restart_iterations": params.restart_iterations,
                 "scenario_selection": params.scenario_selection.label(),
-                "bounded_mode": params.bounded_mode,
                 "native_once": params.native_once,
                 "timeouts_secs": {
                     "connect": params.connect_timeout.as_secs(),

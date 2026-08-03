@@ -21,7 +21,7 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
-    backend::{GpuMemoryOwnership, NexusAdmissionPolicy, NexusGpuBackend},
+    backend::{GpuMemoryOwnership, NexusGpuBackend},
     cugraph_sql::{
         CUGRAPH_OPERATION_REGISTRY, CugraphAlgorithm, CugraphAlgorithmParams, CugraphBfsOutputMode, CugraphBfsSource,
         CugraphBfsSourceVertex, CugraphGraphConstructionPolicy, CugraphSqlConfig, parse_cugraph_algorithm_spec,
@@ -33,7 +33,6 @@ use datafusion_nexus::{
     planner::NexusNativeOptimizerConfig,
     session::NexusSessionStateBuilderExt,
 };
-use nexus_query_engine::runtime::SlotGuarantee;
 
 fn typed_nexus_error(error: &DataFusionError) -> &Error {
     error.find_nexus_error().expect("cuGraph DataFusion error must preserve the typed Nexus error")

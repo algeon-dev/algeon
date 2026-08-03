@@ -29,8 +29,11 @@
   `nexus_query_engine::QueryPlan` and emits structured `PlanningReport`s. Assert
   reports, not printed plans.
 - Admission is capability-first: reject locally with structured reasons.
-- Strict and adaptive bounded execution have separate admission, evidence, and
-  report APIs. Do not project one mode's evidence into the other.
+- There is one bounded admission contract: the per-device ledger, immutable
+  grants, and transactional envelopes. There is no strict/adaptive product
+  mode, tenant policy, grant band, or slot guarantee; preserved strict-named
+  and adaptive-named wire fields are canonical projections of the one
+  contract, not separate producers.
 - Model aggregate partial/final state explicitly. AVG is SUM + COUNT followed by
   final SUM/SUM, never average-of-averages.
 

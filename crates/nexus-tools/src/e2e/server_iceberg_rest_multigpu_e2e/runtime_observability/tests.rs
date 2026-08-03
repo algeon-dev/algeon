@@ -127,7 +127,6 @@ fn runtime_params_fixture() -> RuntimeParams {
         waves: 1,
         restart_iterations: 0,
         scenario_selection: ScenarioSelection::Matrix,
-        bounded_mode: "strict_bounded".to_string(),
         evidence_path: PathBuf::from("/evidence.json"),
         server_log_path: PathBuf::from("/server.log"),
         connect_timeout: Duration::from_secs(1),
@@ -147,9 +146,9 @@ fn runtime_params_fixture() -> RuntimeParams {
 }
 
 #[test]
-fn evidence_v4_pins_datafusion_baseline_payload_shape() {
-    assert_eq!(EVIDENCE_SCHEMA, "datafusion_nexus.server_runtime_observability_e2e.v4");
-    assert_eq!(EVIDENCE_VERSION, 4);
+fn evidence_v5_pins_datafusion_baseline_payload_shape() {
+    assert_eq!(EVIDENCE_SCHEMA, "datafusion_nexus.server_runtime_observability_e2e.v5");
+    assert_eq!(EVIDENCE_VERSION, 5);
     const {
         assert!(GLOBAL_BYTE_PRESSURE_PER_QUERY_BYTES < GLOBAL_BYTE_PRESSURE_RETAINED_BYTES);
         assert!(
@@ -198,6 +197,7 @@ fn evidence_v4_pins_datafusion_baseline_payload_shape() {
     assert_eq!(config.get("scenario_selection"), Some(&json!("matrix")));
     assert_eq!(config.get("native_once"), Some(&json!(false)));
     assert!(!config.contains_key("profile"));
+    assert!(!config.contains_key("bounded_mode"));
     let scenario = payload["scenarios"][0].as_object().unwrap();
     assert_eq!(scenario.get("scenario"), Some(&json!("datafusion_baseline")));
     assert_eq!(scenario.get("execution_path"), Some(&json!("datafusion")));

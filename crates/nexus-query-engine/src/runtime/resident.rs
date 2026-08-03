@@ -24,7 +24,7 @@ use crate::{
     runtime::{
         DevicePlacement, ExecutionCancellation, ExecutionContext,
         cache::local_parquet::GpuLocalParquetSourceCachePin,
-        gpu::governor::{MemoryGrant, MemoryGrantLiveReservation},
+        gpu::ledger::{MemoryGrant, MemoryGrantLiveReservation},
     },
 };
 
@@ -886,7 +886,7 @@ mod tests {
     use crate::{
         error::{QueryErrorCode, QueryErrorKind, QueryErrorStatus},
         observability::AdmissionRequestId,
-        runtime::gpu::governor::{GrantRequest, MemoryGovernor, MemoryGrant},
+        runtime::gpu::ledger::{DeviceLedger, MemoryGrant},
     };
 
     fn single_i32_frame(runtime: &Arc<cudf::Runtime>, name: &str, values: Vec<i32>) -> DataFrame {
@@ -903,22 +903,19 @@ mod tests {
     ) -> (GpuDataFrame, u64) {
         let frame = single_i32_frame(runtime, name, values);
         let observed_bytes = GpuDataFrame::new(frame.clone()).device_allocated_size_bytes().unwrap();
-        let live_reservation = grant.retain_live_reservation(observed_bytes);
+        let live_reservation =
+            grant.retain_live_reservation(observed_bytes).expect("test frame retention fits the immutable grant");
         (GpuDataFrame::new_with_live_reservation(frame, live_reservation), observed_bytes)
     }
 
     #[test]
     fn gpu_frame_counts_live_reservation_only_for_the_owning_grant() {
         let runtime = Arc::new(cudf::Runtime::new().unwrap());
-        let governor = MemoryGovernor::new(runtime.device().ordinal(), 2048).unwrap();
-        let owner = governor
-            .try_request(GrantRequest::new(AdmissionRequestId::new(1), 1, 1024))
-            .unwrap()
-            .expect("owner grant must fit");
-        let foreign = governor
-            .try_request(GrantRequest::new(AdmissionRequestId::new(2), 1, 1024))
-            .unwrap()
-            .expect("foreign grant must fit");
+        let governor = DeviceLedger::for_test(runtime.device().ordinal(), 2048, 4);
+        let owner =
+            governor.admit_for_test(AdmissionRequestId::new(1), 1, 1024).unwrap().expect("owner grant must fit");
+        let foreign =
+            governor.admit_for_test(AdmissionRequestId::new(2), 1, 1024).unwrap().expect("foreign grant must fit");
         let (frame, bytes) = frame_with_live_reservation(&runtime, &owner, "id", vec![1, 2, 3]);
 
         assert_eq!(frame.live_reservation_bytes_for(Some(&owner)), bytes);
@@ -1013,11 +1010,9 @@ mod tests {
     #[test]
     fn source_residency_clones_live_reservation_for_pure_alias_output() {
         let runtime = Arc::new(cudf::Runtime::new().unwrap());
-        let governor = MemoryGovernor::new(runtime.device().ordinal(), 128 * 1024 * 1024).unwrap();
-        let grant = governor
-            .try_request(GrantRequest::new(AdmissionRequestId::new(1), 64 * 1024 * 1024, 64 * 1024 * 1024))
-            .unwrap()
-            .unwrap();
+        let governor = DeviceLedger::for_test(runtime.device().ordinal(), 128 * 1024 * 1024, 4);
+        let grant =
+            governor.admit_for_test(AdmissionRequestId::new(1), 64 * 1024 * 1024, 64 * 1024 * 1024).unwrap().unwrap();
         let (source, source_bytes) = frame_with_live_reservation(&runtime, &grant, "id", vec![1, 2, 3]);
         assert!(source_bytes > 0);
         assert_eq!(grant.live_reserved_bytes(), source_bytes);
@@ -1035,11 +1030,9 @@ mod tests {
     #[test]
     fn source_residency_retains_derived_live_reservation_for_fresh_output() {
         let runtime = Arc::new(cudf::Runtime::new().unwrap());
-        let governor = MemoryGovernor::new(runtime.device().ordinal(), 128 * 1024 * 1024).unwrap();
-        let grant = governor
-            .try_request(GrantRequest::new(AdmissionRequestId::new(2), 64 * 1024 * 1024, 64 * 1024 * 1024))
-            .unwrap()
-            .unwrap();
+        let governor = DeviceLedger::for_test(runtime.device().ordinal(), 128 * 1024 * 1024, 4);
+        let grant =
+            governor.admit_for_test(AdmissionRequestId::new(2), 64 * 1024 * 1024, 64 * 1024 * 1024).unwrap().unwrap();
         let (source, source_bytes) = frame_with_live_reservation(&runtime, &grant, "id", vec![1, 2, 3]);
         let fresh = single_i32_frame(&runtime, "fresh", vec![10, 20, 30]);
         let fresh_bytes = GpuDataFrame::new(fresh.clone()).device_allocated_size_bytes().unwrap();
@@ -1057,11 +1050,9 @@ mod tests {
     #[test]
     fn source_residency_retains_full_output_for_mixed_alias_output() {
         let runtime = Arc::new(cudf::Runtime::new().unwrap());
-        let governor = MemoryGovernor::new(runtime.device().ordinal(), 128 * 1024 * 1024).unwrap();
-        let grant = governor
-            .try_request(GrantRequest::new(AdmissionRequestId::new(3), 64 * 1024 * 1024, 64 * 1024 * 1024))
-            .unwrap()
-            .unwrap();
+        let governor = DeviceLedger::for_test(runtime.device().ordinal(), 128 * 1024 * 1024, 4);
+        let grant =
+            governor.admit_for_test(AdmissionRequestId::new(3), 64 * 1024 * 1024, 64 * 1024 * 1024).unwrap().unwrap();
         let (source, source_bytes) = frame_with_live_reservation(&runtime, &grant, "id", vec![1, 2, 3]);
         let mixed = source.frame().with_columns([("fresh", col("id") + 1i32)]).unwrap();
         let fresh_only = mixed.select(["fresh"]).unwrap();

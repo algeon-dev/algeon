@@ -5,6 +5,9 @@ version = { workspace = true }
 edition = "2024"
 rust-version = { workspace = true }
 build = "build.rs"
+# The native-execution fixture is compiled as a crate unit-test module so its
+# synthetic admission hooks never need a caller-enableable public feature.
+autotests = false
 
 [features]
 default = []
@@ -40,3 +43,23 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "ti
 [dev-dependencies]
 async-trait = "0.1"
 trybuild = "1"
+
+[[test]]
+name = "gpu_backend_heterogeneous_active_limits"
+path = "tests/gpu_backend_heterogeneous_active_limits.rs"
+
+[[test]]
+name = "native_contract_tests"
+path = "tests/native_contract_tests.rs"
+
+[[test]]
+name = "native_pipeline_execution_tests"
+path = "tests/native_pipeline_execution_tests.rs"
+
+[[test]]
+name = "public_api_boundary"
+path = "tests/public_api_boundary.rs"
+
+[[test]]
+name = "query_service_allocator_lifecycle"
+path = "tests/query_service_allocator_lifecycle.rs"

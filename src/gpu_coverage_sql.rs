@@ -275,7 +275,8 @@ mod tests {
     };
 
     fn test_optimizer_config() -> NexusNativeOptimizerConfig {
-        NexusNativeOptimizerConfig::default().with_native_execution_config(NexusNativeExecutionConfig::unbounded())
+        NexusNativeOptimizerConfig::default()
+            .with_native_execution_config(NexusNativeExecutionConfig::bounded_default())
     }
 
     fn string_value(batch: &RecordBatch, column: usize, row: usize) -> &str {

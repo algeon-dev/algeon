@@ -663,16 +663,13 @@ pub(crate) async fn run_query_with_registered_native_tables(
         if let Some(metrics) = physical_plan.metrics() {
             let native_metrics = NativeDataFusionExecutionMetrics::from_metrics(&metrics);
             eprintln!(
-                "[native_iceberg_smoke_report] stage=native_runtime_metrics query_id={} parquet_files={} row_groups_selected={} read_columns={} source_chunks_planned={} source_chunks_committed={} source_cache_hits={} source_cache_misses={} source_cache_inserts={} hash_join_build_count={} one_shot_join_count={} task_runtime_row_count={} task_operator_row_count={} aggregate_strategy_row_count={} join_strategy_row_count={} source_metadata_load_time_ms={} source_read_queue_wait_time_ms={} parquet_read_time_ms={} source_read_time_ms={} operator_time_ms={} chunk_operator_time_ms={} final_merge_time_ms={} final_sort_time_ms={} materialization_time_ms={}",
+                "[native_iceberg_smoke_report] stage=native_runtime_metrics query_id={} parquet_files={} row_groups_selected={} read_columns={} source_chunks_planned={} source_chunks_committed={} hash_join_build_count={} one_shot_join_count={} task_runtime_row_count={} task_operator_row_count={} aggregate_strategy_row_count={} join_strategy_row_count={} source_metadata_load_time_ms={} source_read_queue_wait_time_ms={} parquet_read_time_ms={} source_read_time_ms={} operator_time_ms={} chunk_operator_time_ms={} final_merge_time_ms={} final_sort_time_ms={} materialization_time_ms={}",
                 row.query_id,
                 native_metrics.parquet_files,
                 native_metrics.row_groups_selected,
                 native_metrics.read_columns,
                 native_metrics.source_chunks_planned,
                 native_metrics.source_chunks_committed,
-                native_metrics.source_cache_hits,
-                native_metrics.source_cache_misses,
-                native_metrics.source_cache_inserts,
                 native_metrics.hash_join_build_count,
                 native_metrics.one_shot_join_count,
                 native_metrics.task_runtime_rows.len(),

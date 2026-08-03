@@ -16,7 +16,8 @@ use super::{
     CacheFillByteBudget, CacheFillBytePermit, DeploymentIoCapability, DevicePlacement, ExecutionBoundaryPolicy,
     GpuExecutionPool, GpuExecutorLease, LakehouseCacheFillConfig, MemoryControlPolicy, MemoryGrant,
     MemoryResourcePolicy, MemorySpaceId, ServiceStreamPool, SourceChunkPlanningMode, SourceReadStreamLease,
-    SourceStorageProfile, StreamLease, cache,
+    SourceStorageProfile, StreamLease,
+    attempt_domain::AttemptAllocationDomain,
     cache_events::{LakehouseCacheFillEventSink, LakehouseCacheFillEventSnapshot},
     cache_fill::{CacheFillConcurrencyGate, CacheFillOperationPermit},
     default_service_stream_pool_size_for_device,
@@ -27,17 +28,18 @@ use super::{
     },
 };
 use crate::{
-    adaptive_runtime::AdaptiveMemoryHistory,
+    admission::AttemptRequirement,
     capability::AggregateStrategyExecutionOptions,
     chunk::SourceChunkPlanningOptions,
     error::{QueryError, QueryErrorCode, Result},
     graph_memory::GraphMemoryCalibrationOverride,
     metrics::{QueryId, TraceId},
-    mode::{NativePipelineExecutionMode, StddevSampExecutionMode},
+    mode::StddevSampExecutionMode,
     observability::{
         RuntimeObservationHandle, RuntimeObservationSession, RuntimeStreamLeaseScope, RuntimeTaskId, RuntimeTraceId,
         RuntimeWorkerId,
     },
+    plan::QueryPlan,
 };
 
 mod builder;
@@ -90,6 +92,237 @@ impl ExecutionCancellation {
 impl Default for ExecutionCancellation {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+const ATTEMPT_AUXILIARY_SLOT_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(10);
+
+/// Attempt-owned capacity for streams outside the admission envelope's root
+/// binding.
+///
+/// The device ledger reserves `source_work_per_attempt` auxiliary slots for
+/// every admitted attempt. This gate materializes that reservation locally so
+/// one attempt cannot retain another attempt's share of the global auxiliary
+/// stream pool.
+#[derive(Debug)]
+pub(crate) struct AttemptAuxiliarySlots {
+    device_ordinal: usize,
+    capacity: usize,
+    state: Mutex<AttemptAuxiliarySlotState>,
+    available: Condvar,
+    async_available: tokio::sync::Notify,
+}
+
+#[derive(Debug)]
+struct AttemptAuxiliarySlotState {
+    in_use: usize,
+}
+
+/// RAII ownership of one admitted attempt's auxiliary stream allowance.
+#[derive(Debug)]
+pub(crate) struct AttemptAuxiliaryPermit {
+    slots: Arc<AttemptAuxiliarySlots>,
+}
+
+impl AttemptAuxiliarySlots {
+    pub(crate) fn new(device_ordinal: usize, capacity: usize) -> Arc<Self> {
+        debug_assert!(capacity > 0, "admission profiles normalize auxiliary slot capacity to at least one");
+        Arc::new(Self {
+            device_ordinal,
+            capacity: capacity.max(1),
+            state: Mutex::new(AttemptAuxiliarySlotState { in_use: 0 }),
+            available: Condvar::new(),
+            async_available: tokio::sync::Notify::new(),
+        })
+    }
+
+    pub(crate) fn acquire_with_cancellation(
+        self: &Arc<Self>,
+        cancellation: &ExecutionCancellation,
+        operation: &'static str,
+    ) -> Result<AttemptAuxiliaryPermit> {
+        self.acquire_inner(Some(cancellation), None, operation)
+    }
+
+    pub(crate) fn acquire_with_cancellation_deadline(
+        self: &Arc<Self>,
+        cancellation: &ExecutionCancellation,
+        deadline: Instant,
+        operation: &'static str,
+    ) -> Result<AttemptAuxiliaryPermit> {
+        self.acquire_inner(Some(cancellation), Some(deadline), operation)
+    }
+
+    /// Asynchronously acquires one attempt-local auxiliary slot without
+    /// parking the caller's Tokio worker while another fragment owns it.
+    pub(crate) async fn acquire_with_cancellation_deadline_async(
+        self: &Arc<Self>,
+        cancellation: &ExecutionCancellation,
+        deadline: Instant,
+        operation: &'static str,
+    ) -> Result<AttemptAuxiliaryPermit> {
+        loop {
+            cancellation.check(operation)?;
+            // Register before observing availability so a permit return in
+            // this interval cannot be lost.
+            let available = self.async_available.notified();
+            let in_use = {
+                let mut state = self.state.lock().map_err(|_error| {
+                    QueryError::new(QueryErrorCode::Internal, operation, "attempt auxiliary-slot mutex was poisoned")
+                        .with_fact("device_ordinal", self.device_ordinal)
+                        .with_fact("reason", "attempt_auxiliary_slots_poisoned")
+                })?;
+                if state.in_use < self.capacity {
+                    state.in_use += 1;
+                    return Ok(AttemptAuxiliaryPermit { slots: Arc::clone(self) });
+                }
+                state.in_use
+            };
+            if Instant::now() >= deadline {
+                return Err(self.exhausted_error(operation, in_use, true));
+            }
+            let wait =
+                deadline.saturating_duration_since(Instant::now()).min(ATTEMPT_AUXILIARY_SLOT_WAIT_POLL_INTERVAL);
+            let _ = tokio::time::timeout(wait, available).await;
+        }
+    }
+
+    fn acquire_inner(
+        self: &Arc<Self>,
+        cancellation: Option<&ExecutionCancellation>,
+        deadline: Option<Instant>,
+        operation: &'static str,
+    ) -> Result<AttemptAuxiliaryPermit> {
+        loop {
+            if let Some(cancellation) = cancellation {
+                cancellation.check(operation)?;
+            }
+            let mut state = self.state.lock().map_err(|_error| {
+                QueryError::new(QueryErrorCode::Internal, operation, "attempt auxiliary-slot mutex was poisoned")
+                    .with_fact("device_ordinal", self.device_ordinal)
+                    .with_fact("reason", "attempt_auxiliary_slots_poisoned")
+            })?;
+            if state.in_use < self.capacity {
+                state.in_use += 1;
+                return Ok(AttemptAuxiliaryPermit { slots: Arc::clone(self) });
+            }
+            if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                return Err(self.exhausted_error(operation, state.in_use, true));
+            }
+            let wait = deadline.map_or(ATTEMPT_AUXILIARY_SLOT_WAIT_POLL_INTERVAL, |deadline| {
+                deadline.saturating_duration_since(Instant::now()).min(ATTEMPT_AUXILIARY_SLOT_WAIT_POLL_INTERVAL)
+            });
+            let (_state, _timeout) = self.available.wait_timeout(state, wait).map_err(|_error| {
+                QueryError::new(
+                    QueryErrorCode::Internal,
+                    operation,
+                    "attempt auxiliary-slot mutex was poisoned while waiting for capacity",
+                )
+                .with_fact("device_ordinal", self.device_ordinal)
+                .with_fact("reason", "attempt_auxiliary_slots_poisoned")
+            })?;
+        }
+    }
+
+    fn exhausted_error(&self, operation: &'static str, in_use: usize, deadline_elapsed: bool) -> QueryError {
+        QueryError::new(
+            QueryErrorCode::ServiceOverloaded,
+            operation,
+            "admitted attempt auxiliary-stream capacity is exhausted",
+        )
+        .with_fact("device_ordinal", self.device_ordinal)
+        .with_fact("attempt_auxiliary_capacity", self.capacity)
+        .with_fact("attempt_auxiliary_in_use", in_use)
+        .with_fact("deadline_elapsed", deadline_elapsed)
+        .with_fact(
+            "reason",
+            if deadline_elapsed { "attempt_auxiliary_slot_wait_timeout" } else { "attempt_auxiliary_slots_exhausted" },
+        )
+    }
+
+    #[cfg(test)]
+    fn in_use_for_test(&self) -> usize {
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).in_use
+    }
+}
+
+impl Drop for AttemptAuxiliaryPermit {
+    fn drop(&mut self) {
+        let mut state = self.slots.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        debug_assert!(state.in_use > 0, "attempt auxiliary-slot permit underflow");
+        state.in_use = state.in_use.saturating_sub(1);
+        self.slots.available.notify_one();
+        self.slots.async_available.notify_one();
+    }
+}
+
+#[cfg(test)]
+mod attempt_auxiliary_slots_tests {
+    use super::*;
+
+    #[test]
+    fn held_slot_rejects_cancelled_and_expired_waiters_then_releases() {
+        let slots = AttemptAuxiliarySlots::new(7, 1);
+        let active = ExecutionCancellation::new();
+        let held = slots
+            .acquire_with_cancellation(&active, "nexus_query_engine.test.attempt_auxiliary_slots")
+            .expect("first auxiliary permit fits the attempt envelope");
+        assert_eq!(slots.in_use_for_test(), 1);
+
+        let cancelled = ExecutionCancellation::new();
+        cancelled.cancel();
+        let cancelled_error = slots
+            .acquire_with_cancellation(&cancelled, "nexus_query_engine.test.attempt_auxiliary_slots")
+            .expect_err("cancelled waiter must not exceed the attempt envelope");
+        assert_eq!(cancelled_error.code(), QueryErrorCode::Cancelled);
+
+        let deadline_error = slots
+            .acquire_with_cancellation_deadline(
+                &active,
+                Instant::now(),
+                "nexus_query_engine.test.attempt_auxiliary_slots",
+            )
+            .expect_err("expired waiter must not exceed the attempt envelope");
+        assert_eq!(deadline_error.code(), QueryErrorCode::ServiceOverloaded);
+        assert_eq!(deadline_error.fact_value("reason"), Some("attempt_auxiliary_slot_wait_timeout"));
+        assert_eq!(deadline_error.fact_value("attempt_auxiliary_capacity"), Some("1"));
+        assert_eq!(deadline_error.fact_value("attempt_auxiliary_in_use"), Some("1"));
+        assert_eq!(deadline_error.fact_value("deadline_elapsed"), Some("true"));
+
+        drop(held);
+        let released = slots
+            .acquire_with_cancellation(&active, "nexus_query_engine.test.attempt_auxiliary_slots")
+            .expect("dropping the permit returns this attempt's capacity");
+        assert_eq!(slots.in_use_for_test(), 1);
+        drop(released);
+        assert_eq!(slots.in_use_for_test(), 0);
+    }
+
+    #[test]
+    fn each_attempt_keeps_its_own_auxiliary_share() {
+        let first_attempt = AttemptAuxiliarySlots::new(3, 1);
+        let second_attempt = AttemptAuxiliarySlots::new(3, 1);
+        let cancellation = ExecutionCancellation::new();
+        let first = first_attempt
+            .acquire_with_cancellation(&cancellation, "nexus_query_engine.test.attempt_auxiliary_slots")
+            .expect("first attempt reserves its only slot");
+
+        let first_exhausted = first_attempt
+            .acquire_with_cancellation_deadline(
+                &cancellation,
+                Instant::now(),
+                "nexus_query_engine.test.attempt_auxiliary_slots",
+            )
+            .expect_err("one attempt cannot borrow another attempt's auxiliary share");
+        assert_eq!(first_exhausted.fact_value("reason"), Some("attempt_auxiliary_slot_wait_timeout"));
+
+        let second = second_attempt
+            .acquire_with_cancellation(&cancellation, "nexus_query_engine.test.attempt_auxiliary_slots")
+            .expect("second attempt retains its independently admitted share");
+        assert_eq!(first_attempt.in_use_for_test(), 1);
+        assert_eq!(second_attempt.in_use_for_test(), 1);
+        drop(first);
+        drop(second);
     }
 }
 
@@ -612,12 +845,29 @@ pub struct ExecutionContext {
     /// retry/fan-in decisions. Source chunk byte and row-group settings are
     /// planning thresholds where row-group metadata permits exact splitting.
     memory_control_policy: MemoryControlPolicy,
-    /// Optional soft per-query memory grant backing bounded execution.
-    memory_grant: Option<MemoryGrant>,
     /// Optional native arena that mirrors the current grant budget.
     grant_reservation_arena: Option<Arc<cudf::ReservationArena>>,
     /// Optional native query memory domain that mirrors the current grant budget.
     grant_memory_domain: Option<Arc<cudf::QueryMemoryDomain>>,
+    /// Authoritative domain for this service-admitted attempt.
+    attempt_allocation_domain: Option<AttemptAllocationDomain>,
+    /// Optional soft per-query memory grant backing bounded execution.
+    ///
+    /// This field is declared after native grant-backed resources so those
+    /// resources are dropped before the final grant clone returns capacity to
+    /// the ledger.
+    memory_grant: Option<MemoryGrant>,
+    /// Attempt-owned auxiliary stream allowance installed by query-service admission.
+    attempt_auxiliary_slots: Option<Arc<AttemptAuxiliarySlots>>,
+    /// Immutable capability requirement resolved before this service admission.
+    ///
+    /// Direct contexts have no admission proof. Service-admitted contexts retain
+    /// the resolved requirement so execution can reject a plan whose actual
+    /// capability contracts were not present at admission.
+    admitted_capability_evidence: Option<AttemptRequirement>,
+    /// This context's shared member lease on its execution stream. One
+    /// member per stream for the attempt; per-stage tokens clone it.
+    attempt_member_lease: Option<cudf::StreamReservationLease>,
     /// Execution boundary contract used by source reads, build/probe reuse, and
     /// result materialization.
     boundary_policy: ExecutionBoundaryPolicy,
@@ -643,8 +893,6 @@ pub struct ExecutionContext {
     deployment_io_capability: DeploymentIoCapability,
     /// Cooperative cancellation flag observed at native execution boundaries.
     cancellation: ExecutionCancellation,
-    /// Selected native bounded-pipeline execution mode.
-    native_pipeline_execution_mode: NativePipelineExecutionMode,
     /// Selected execution contract for floating statistical aggregates.
     stddev_samp_execution_mode: StddevSampExecutionMode,
     /// Runtime threshold policy for grouped aggregate strategy selection.
@@ -653,27 +901,10 @@ pub struct ExecutionContext {
     source_chunk_planning_options: SourceChunkPlanningOptions,
     /// Optional graph calibration metadata supplied by fixture/config.
     graph_memory_calibration_override: GraphMemoryCalibrationOverride,
-    /// Optional adaptive-only memory history store.
-    adaptive_memory_history: Option<Arc<AdaptiveMemoryHistory>>,
-    /// Optional durable GPU hash-join build cache.
-    ///
-    /// Required when the boundary policy asks for durable build
-    /// materialization. Query-scoped build materialization does not use this
-    /// cache.
-    hash_join_build_cache: Option<Arc<cache::hash_join::GpuHashJoinBuildCache>>,
-    /// Optional durable GPU local-Parquet source cache.
-    ///
-    /// Bounded execution charges retained cache bytes to the reservation ledger
-    /// before admitting source or operator work.
-    local_parquet_source_cache: Option<Arc<cache::local_parquet::GpuLocalParquetSourceCache>>,
-    /// Optional durable GPU resident graph cache.
-    #[cfg(feature = "cugraph")]
-    resident_graph_cache: Option<Arc<cache::resident_graph::GpuResidentGraphCache>>,
-    /// Exact-runtime graph entry reserved during warm-priced admission.
-    #[cfg(feature = "cugraph")]
-    reserved_resident_graph_hit: Option<Arc<ReservedResidentGraphHit>>,
     /// Optional owned stream lease kept alive by contexts derived from it.
     stream_lease_guard: Option<Arc<StreamLease>>,
+    /// Auxiliary envelope ownership paired with an owned auxiliary stream.
+    auxiliary_stream_permit_guard: Option<Arc<AttemptAuxiliaryPermit>>,
     /// Whether this context was created from a QueryService admission handle.
     query_service_admitted: bool,
 }
@@ -754,6 +985,10 @@ pub(super) struct ExecutionContextParts {
     pub(super) memory_grant: Option<MemoryGrant>,
     pub(super) grant_reservation_arena: Option<Arc<cudf::ReservationArena>>,
     pub(super) grant_memory_domain: Option<Arc<cudf::QueryMemoryDomain>>,
+    pub(super) attempt_allocation_domain: Option<AttemptAllocationDomain>,
+    pub(super) attempt_auxiliary_slots: Option<Arc<AttemptAuxiliarySlots>>,
+    pub(super) admitted_capability_evidence: Option<AttemptRequirement>,
+    pub(super) attempt_member_lease: Option<cudf::StreamReservationLease>,
     pub(super) boundary_policy: ExecutionBoundaryPolicy,
     pub(super) source_scheduler_policy: SourceSchedulerPolicy,
     pub(super) source_chunk_planning_mode: SourceChunkPlanningMode,
@@ -766,46 +1001,21 @@ pub(super) struct ExecutionContextParts {
     pub(super) source_object_stores: Arc<SourceObjectStoreRegistry>,
     pub(super) deployment_io_capability: DeploymentIoCapability,
     pub(super) cancellation: ExecutionCancellation,
-    pub(super) native_pipeline_execution_mode: NativePipelineExecutionMode,
     pub(super) stddev_samp_execution_mode: StddevSampExecutionMode,
     pub(super) aggregate_strategy_execution_options: AggregateStrategyExecutionOptions,
     pub(super) source_chunk_planning_options: SourceChunkPlanningOptions,
     pub(super) graph_memory_calibration_override: GraphMemoryCalibrationOverride,
-    pub(super) adaptive_memory_history: Option<Arc<AdaptiveMemoryHistory>>,
-    pub(super) hash_join_build_cache: Option<Arc<cache::hash_join::GpuHashJoinBuildCache>>,
-    pub(super) local_parquet_source_cache: Option<Arc<cache::local_parquet::GpuLocalParquetSourceCache>>,
-    #[cfg(feature = "cugraph")]
-    pub(super) resident_graph_cache: Option<Arc<cache::resident_graph::GpuResidentGraphCache>>,
-    #[cfg(feature = "cugraph")]
-    pub(super) reserved_resident_graph_hit: Option<Arc<ReservedResidentGraphHit>>,
     pub(super) stream_lease_guard: Option<Arc<StreamLease>>,
+    pub(super) auxiliary_stream_permit_guard: Option<Arc<AttemptAuxiliaryPermit>>,
     pub(super) query_service_admitted: bool,
 }
 
-#[cfg(feature = "cugraph")]
-pub(super) struct ReservedResidentGraphHit {
-    resident_key: crate::plan::ResidentGraphKey,
-    preparation_pin: Mutex<Option<cache::resident_graph::GpuResidentGraphPreparationPin>>,
-}
-
-#[cfg(feature = "cugraph")]
-impl std::fmt::Debug for ReservedResidentGraphHit {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ReservedResidentGraphHit").field("resident_key", &self.resident_key).finish_non_exhaustive()
-    }
-}
-
-#[cfg(feature = "cugraph")]
-impl ReservedResidentGraphHit {
-    pub(super) fn new(preparation_pin: cache::resident_graph::GpuResidentGraphPreparationPin) -> Self {
-        Self {
-            resident_key: preparation_pin.resident_key().clone(),
-            preparation_pin: Mutex::new(Some(preparation_pin)),
-        }
-    }
-}
-
 impl ExecutionContext {
+    #[cfg(feature = "cugraph")]
+    pub(super) fn resident_graph_cache_owner_runtime(&self, operation: &'static str) -> Result<Arc<cudf::Runtime>> {
+        self.check_service_epoch(operation)?;
+        Ok(Arc::clone(&self.runtime))
+    }
     /// Starts a builder for an [`ExecutionContext`].
     pub(crate) fn builder() -> ExecutionContextBuilder {
         ExecutionContextBuilder::default()
@@ -849,6 +1059,10 @@ impl ExecutionContext {
             memory_grant: None,
             grant_reservation_arena: None,
             grant_memory_domain: None,
+            attempt_allocation_domain: None,
+            attempt_auxiliary_slots: None,
+            admitted_capability_evidence: None,
+            attempt_member_lease: None,
             boundary_policy: ExecutionBoundaryPolicy::default(),
             source_scheduler_policy: SourceSchedulerPolicy::default(),
             source_chunk_planning_mode: SourceChunkPlanningMode::default(),
@@ -864,19 +1078,12 @@ impl ExecutionContext {
             source_object_stores: Arc::new(SourceObjectStoreRegistry::new()),
             deployment_io_capability: DeploymentIoCapability::cached_current_host(),
             cancellation: ExecutionCancellation::new(),
-            native_pipeline_execution_mode: NativePipelineExecutionMode::default(),
             stddev_samp_execution_mode: StddevSampExecutionMode::default(),
             aggregate_strategy_execution_options: AggregateStrategyExecutionOptions::default(),
             source_chunk_planning_options: SourceChunkPlanningOptions::default(),
             graph_memory_calibration_override: GraphMemoryCalibrationOverride::default(),
-            adaptive_memory_history: None,
-            hash_join_build_cache: None,
-            local_parquet_source_cache: None,
-            #[cfg(feature = "cugraph")]
-            resident_graph_cache: None,
-            #[cfg(feature = "cugraph")]
-            reserved_resident_graph_hit: None,
             stream_lease_guard: None,
+            auxiliary_stream_permit_guard: None,
             query_service_admitted: false,
         }))
     }
@@ -885,6 +1092,10 @@ impl ExecutionContext {
         debug_assert!(
             parts.grant_reservation_arena.is_none() || parts.grant_memory_domain.is_none(),
             "execution context cannot carry both grant reservation arena and query memory domain"
+        );
+        debug_assert!(
+            !parts.query_service_admitted || parts.grant_reservation_arena.is_none(),
+            "admitted contexts must use an attempt domain, never a reservation arena"
         );
         Self {
             service_epoch: parts.service_epoch,
@@ -899,11 +1110,16 @@ impl ExecutionContext {
             runtime_stream_lease_scope: parts.runtime_stream_lease_scope,
             runtime: parts.runtime,
             gpu_execution_pool: parts.gpu_execution_pool,
+            stream_lease_guard: parts.stream_lease_guard,
             memory_policy: parts.memory_policy,
             memory_control_policy: parts.memory_control_policy,
             memory_grant: parts.memory_grant,
             grant_reservation_arena: parts.grant_reservation_arena,
             grant_memory_domain: parts.grant_memory_domain,
+            attempt_allocation_domain: parts.attempt_allocation_domain,
+            attempt_auxiliary_slots: parts.attempt_auxiliary_slots,
+            admitted_capability_evidence: parts.admitted_capability_evidence,
+            attempt_member_lease: parts.attempt_member_lease,
             boundary_policy: parts.boundary_policy,
             source_scheduler_policy: parts.source_scheduler_policy,
             source_chunk_planning_mode: parts.source_chunk_planning_mode,
@@ -916,19 +1132,11 @@ impl ExecutionContext {
             source_object_stores: parts.source_object_stores,
             deployment_io_capability: parts.deployment_io_capability,
             cancellation: parts.cancellation,
-            native_pipeline_execution_mode: parts.native_pipeline_execution_mode,
             stddev_samp_execution_mode: parts.stddev_samp_execution_mode,
             aggregate_strategy_execution_options: parts.aggregate_strategy_execution_options,
             source_chunk_planning_options: parts.source_chunk_planning_options,
             graph_memory_calibration_override: parts.graph_memory_calibration_override,
-            adaptive_memory_history: parts.adaptive_memory_history,
-            hash_join_build_cache: parts.hash_join_build_cache,
-            local_parquet_source_cache: parts.local_parquet_source_cache,
-            #[cfg(feature = "cugraph")]
-            resident_graph_cache: parts.resident_graph_cache,
-            #[cfg(feature = "cugraph")]
-            reserved_resident_graph_hit: parts.reserved_resident_graph_hit,
-            stream_lease_guard: parts.stream_lease_guard,
+            auxiliary_stream_permit_guard: parts.auxiliary_stream_permit_guard,
             query_service_admitted: parts.query_service_admitted,
         }
     }
@@ -992,51 +1200,6 @@ impl ExecutionContext {
         let retained: Arc<dyn Send + Sync> = resource_epoch;
         cache_runtime.with_retained_lifetime(retained).map(Arc::new).map_err(|error| {
             QueryError::from_cudf(operation, "failed to derive query-scoped local Parquet cache runtime", error)
-        })
-    }
-
-    /// Derives the service-only runtime used to own resident graph cache state.
-    ///
-    /// This is intentionally visible only inside `runtime`: cache-owned native
-    /// state must retain the service execution domain without inheriting the
-    /// admitted query anchor carried by the outward context.
-    #[cfg(feature = "cugraph")]
-    pub(super) fn resident_graph_cache_owner_runtime(&self, operation: &'static str) -> Result<Arc<cudf::Runtime>> {
-        self.check_service_epoch(operation)?;
-        let Some(service_epoch) = &self.service_epoch else {
-            return Ok(Arc::clone(&self.runtime));
-        };
-        let resource_epoch = QueryServiceResourceEpoch::acquire(service_epoch, None, operation)?;
-        let retained: Arc<dyn Send + Sync> = resource_epoch;
-        self.runtime.with_retained_lifetime(retained).map(Arc::new).map_err(|error| {
-            QueryError::from_cudf(operation, "failed to derive resident graph cache owner runtime", error)
-        })
-    }
-
-    /// Attaches the current query anchor to a query-neutral resident-cache runtime.
-    #[cfg(feature = "cugraph")]
-    pub(super) fn resident_graph_query_runtime(
-        &self,
-        cache_runtime: &Arc<cudf::Runtime>,
-        operation: &'static str,
-    ) -> Result<Arc<cudf::Runtime>> {
-        self.check_service_epoch(operation)?;
-        if !cudf::Runtime::shares_affinity(&self.runtime, cache_runtime) {
-            return Err(QueryError::new(
-                QueryErrorCode::InvalidPlan,
-                operation,
-                "resident graph cache runtime does not share the current query runtime affinity",
-            )
-            .with_fact("reason", "resident_graph_cache_runtime_affinity_mismatch")
-            .with_fact("query_runtime_affinity_id", self.runtime.affinity_id().get())
-            .with_fact("cache_runtime_affinity_id", cache_runtime.affinity_id().get()));
-        }
-        let Some(resource_epoch) = self.acquire_resource_epoch(operation)? else {
-            return Ok(Arc::clone(cache_runtime));
-        };
-        let retained: Arc<dyn Send + Sync> = resource_epoch;
-        cache_runtime.with_retained_lifetime(retained).map(Arc::new).map_err(|error| {
-            QueryError::from_cudf(operation, "failed to derive query-scoped resident graph execution runtime", error)
         })
     }
 
@@ -1105,7 +1268,10 @@ impl ExecutionContext {
     }
 
     /// Returns the shared observation owner carried from query admission.
-    pub fn runtime_observation_owner(&self) -> Option<crate::observability::RuntimeObservationOwner> {
+    ///
+    /// Only engine execution may retain terminal-seal authority. Public
+    /// callers receive the record-only [`RuntimeObservationHandle`] above.
+    pub(crate) fn runtime_observation_owner(&self) -> Option<crate::observability::RuntimeObservationOwner> {
         self.runtime_observation_owner.clone()
     }
 
@@ -1186,6 +1352,19 @@ impl ExecutionContext {
         if let Some((task_id, worker_id)) = source_worker {
             stream_scope = stream_scope.with_source_worker(task_id, worker_id);
         }
+        // Admission reserves this bounded auxiliary share per attempt. Hold
+        // the local permit for the exact lifetime of the derived stream lease,
+        // so another attempt's reservation remains physically reachable.
+        let attempt_auxiliary_permit = self
+            .attempt_auxiliary_slots
+            .as_ref()
+            .map(|slots| {
+                slots.acquire_with_cancellation(
+                    &self.cancellation,
+                    "nexus_query_engine.runtime.source_read_stream.attempt_auxiliary_acquire",
+                )
+            })
+            .transpose()?;
         let stream_lease = self.service_stream_pool().acquire_observed_with_cancellation(
             &self.cancellation,
             "nexus_query_engine.runtime.source_read_stream.acquire",
@@ -1193,7 +1372,7 @@ impl ExecutionContext {
             stream_scope,
         )?;
         let context = self.with_stream_lease(&stream_lease)?;
-        Ok(SourceReadStreamLease::new(context, stream_lease))
+        Ok(SourceReadStreamLease::new(context, stream_lease, attempt_auxiliary_permit))
     }
 
     /// Builds a short-lived execution context from a borrowed stream lease.
@@ -1205,6 +1384,10 @@ impl ExecutionContext {
     pub fn with_stream_lease(&self, stream_lease: &StreamLease) -> Result<Self> {
         self.check_service_epoch("nexus_query_engine.runtime.context.with_stream_lease")?;
         validate_service_stream_pool_device(stream_lease.pool(), self.runtime.device())?;
+        let attempt_member_lease = match self.attempt_allocation_domain.as_ref() {
+            Some(domain) => Some(domain.create_member(stream_lease.runtime()?.stream())?),
+            None => None,
+        };
         Ok(Self::from_parts(ExecutionContextParts {
             service_epoch: self.service_epoch.clone(),
             query_epoch: self.query_epoch.clone(),
@@ -1223,6 +1406,10 @@ impl ExecutionContext {
             memory_grant: self.memory_grant.clone(),
             grant_reservation_arena: self.grant_reservation_arena.clone(),
             grant_memory_domain: self.grant_memory_domain.clone(),
+            attempt_allocation_domain: self.attempt_allocation_domain.clone(),
+            attempt_auxiliary_slots: self.attempt_auxiliary_slots.as_ref().map(Arc::clone),
+            admitted_capability_evidence: self.admitted_capability_evidence.clone(),
+            attempt_member_lease,
             boundary_policy: self.boundary_policy,
             source_scheduler_policy: self.source_scheduler_policy,
             source_chunk_planning_mode: self.source_chunk_planning_mode,
@@ -1235,21 +1422,12 @@ impl ExecutionContext {
             source_object_stores: Arc::clone(&self.source_object_stores),
             deployment_io_capability: self.deployment_io_capability.clone(),
             cancellation: self.cancellation.clone(),
-            native_pipeline_execution_mode: self.native_pipeline_execution_mode,
             stddev_samp_execution_mode: self.stddev_samp_execution_mode,
             aggregate_strategy_execution_options: self.aggregate_strategy_execution_options,
             source_chunk_planning_options: self.source_chunk_planning_options,
             graph_memory_calibration_override: self.graph_memory_calibration_override,
-            adaptive_memory_history: self.adaptive_memory_history.as_ref().map(Arc::clone),
-            hash_join_build_cache: self.hash_join_build_cache.as_ref().map(Arc::clone),
-            local_parquet_source_cache: self.local_parquet_source_cache.as_ref().map(Arc::clone),
-            #[cfg(feature = "cugraph")]
-            resident_graph_cache: self.resident_graph_cache.as_ref().map(Arc::clone),
-            // Source-read worker runtimes cannot consume a root-runtime graph
-            // reservation. Keep it only on the admitted root context.
-            #[cfg(feature = "cugraph")]
-            reserved_resident_graph_hit: None,
             stream_lease_guard: None,
+            auxiliary_stream_permit_guard: None,
             query_service_admitted: self.query_service_admitted,
         }))
     }
@@ -1262,13 +1440,28 @@ impl ExecutionContext {
         Ok(LeasedExecutionContext::new(context))
     }
 
+    /// Pairs one admitted auxiliary permit with this context's owned stream.
+    ///
+    /// The permit is reference-counted with the stream guard, so cloning an
+    /// outward context cannot retain the stream while releasing its attempt
+    /// envelope share early.
+    pub(crate) fn with_auxiliary_stream_permit_guard(mut self, permit: AttemptAuxiliaryPermit) -> Self {
+        debug_assert!(self.stream_lease_guard.is_some(), "auxiliary permit must be paired with an owned stream lease");
+        debug_assert!(
+            self.auxiliary_stream_permit_guard.is_none(),
+            "an owned auxiliary stream has exactly one attempt permit"
+        );
+        self.auxiliary_stream_permit_guard = Some(Arc::new(permit));
+        self
+    }
+
     /// Returns a context for an internal fragment that must bypass bounded admission.
     ///
     /// Query-local and service-scoped state is preserved; only the engine-level
     /// memory-control policy is relaxed. This is intentionally narrower than
     /// rebuilding from the shared cudf runtime, which would drop cancellation,
     /// source IO profiles, cache handles, and event sinks.
-    pub fn for_unbounded_fragment(&self) -> Self {
+    pub(crate) fn for_unbounded_fragment(&self) -> Self {
         let mut context = self.clone();
         context.memory_control_policy = MemoryControlPolicy::Unbounded;
         context
@@ -1279,9 +1472,16 @@ impl ExecutionContext {
         self.query_service_admitted
     }
 
+    /// Rejects execution when this admitted context's proof does not cover the
+    /// actual native plan. This is intentionally evaluated at execution as a
+    /// defense against callers reusing a handle with a different plan.
+    pub(crate) fn validate_admitted_plan_capabilities(&self, plan: &QueryPlan) -> Result<()> {
+        self.admitted_capability_evidence.as_ref().map_or(Ok(()), |evidence| evidence.validate_covers_plan(plan))
+    }
+
     pub(super) fn install_root_stream_cleanup_completion(
         &self,
-        before_quiescence: impl FnOnce() + Send + 'static,
+        before_quiescence: impl FnOnce(crate::runtime::service_stream::StreamCleanupOutcome) + Send + 'static,
         after_quiescence: impl FnOnce() + Send + 'static,
     ) -> bool {
         let Some(stream_lease) = &self.stream_lease_guard else {
@@ -1364,11 +1564,25 @@ impl ExecutionContext {
 
     /// Creates a hard execution-budget token for this context's runtime stream.
     ///
-    /// Contexts carrying a memory grant attach the token as a member of the
-    /// grant-backed arena. Other contexts use the runtime's standalone stream
-    /// reservation path.
+    /// Service-admitted contexts attach a member of their immutable attempt
+    /// domain. Non-service contexts may use the legacy grant-backed arena;
+    /// contexts without either use the runtime's standalone reservation path.
     pub fn execution_budget_token(&self, request: cudf::ExecutionBudgetRequest) -> Result<cudf::ExecutionBudgetToken> {
         let runtime = self.runtime()?;
+        debug_assert!(
+            !self.query_service_admitted || self.grant_reservation_arena.is_none(),
+            "admitted contexts must use an attempt domain, never a reservation arena"
+        );
+        if let Some(lease) = self.attempt_member_lease.as_ref() {
+            // One member per stream for the attempt's lifetime; per-stage
+            // tokens share it rather than attaching a second member.
+            return Ok(cudf::ExecutionBudgetToken::from_shared_lease(
+                &runtime,
+                request,
+                lease.clone(),
+                cudf::ExecutionBudgetEnforcement::QueryDomainMember,
+            ));
+        }
         match (self.grant_memory_domain.as_ref(), self.grant_reservation_arena.as_ref()) {
             (Some(domain), None) | (Some(domain), Some(_)) => {
                 cudf::ExecutionBudgetToken::from_runtime_in_query_domain(&runtime, request, domain.as_ref()).map_err(
@@ -1381,14 +1595,16 @@ impl ExecutionContext {
                     },
                 )
             },
-            (None, Some(arena)) => cudf::ExecutionBudgetToken::from_runtime_in_arena(&runtime, request, arena.as_ref())
-                .map_err(|error| {
+            (None, Some(arena)) => {
+                debug_assert!(!self.query_service_admitted, "admitted context cannot create an arena budget token");
+                cudf::ExecutionBudgetToken::from_runtime_in_arena(&runtime, request, arena.as_ref()).map_err(|error| {
                     QueryError::from_cudf(
                         "nexus_query_engine.runtime.context.execution_budget_token",
                         "failed to create arena execution budget token",
                         error,
                     )
-                }),
+                })
+            },
             _ => runtime.execution_budget_token(request).map_err(|error| {
                 QueryError::from_cudf(
                     "nexus_query_engine.runtime.context.execution_budget_token",
@@ -1397,6 +1613,16 @@ impl ExecutionContext {
                 )
             }),
         }
+    }
+
+    /// Returns the immutable domain id for this admitted attempt.
+    pub fn attempt_allocation_domain_id(&self) -> Option<u64> {
+        self.attempt_allocation_domain.as_ref().map(AttemptAllocationDomain::domain_id)
+    }
+
+    /// Samples the allocation-domain current and peak usage.
+    pub fn attempt_allocation_domain_usage(&self) -> Result<Option<cudf::QueryMemoryDomainUsage>> {
+        self.attempt_allocation_domain.as_ref().map(AttemptAllocationDomain::usage).transpose()
     }
 
     /// Returns the effective bounded device budget used by reservation tracking.
@@ -1647,11 +1873,6 @@ impl ExecutionContext {
         });
     }
 
-    /// Returns the selected bounded-pipeline execution mode.
-    pub fn native_pipeline_execution_mode(&self) -> NativePipelineExecutionMode {
-        self.native_pipeline_execution_mode
-    }
-
     /// Returns the selected execution contract for floating statistical aggregates.
     pub fn statistical_aggregate_execution_mode(&self) -> StddevSampExecutionMode {
         self.stddev_samp_execution_mode
@@ -1685,62 +1906,6 @@ impl ExecutionContext {
         context
     }
 
-    /// Returns the adaptive-only memory history store, when configured.
-    pub fn adaptive_memory_history(&self) -> Option<Arc<AdaptiveMemoryHistory>> {
-        self.adaptive_memory_history.as_ref().map(Arc::clone)
-    }
-
-    /// Returns the durable GPU hash-join build cache, when configured.
-    ///
-    /// A clone of the `Arc` is returned so callers can retain the cache without
-    /// borrowing the context.
-    pub fn hash_join_build_cache(&self) -> Option<Arc<cache::hash_join::GpuHashJoinBuildCache>> {
-        self.hash_join_build_cache.as_ref().map(Arc::clone)
-    }
-
-    /// Returns the durable GPU local-Parquet source cache, when configured.
-    pub fn local_parquet_source_cache(&self) -> Option<Arc<cache::local_parquet::GpuLocalParquetSourceCache>> {
-        self.local_parquet_source_cache.as_ref().map(Arc::clone)
-    }
-
-    /// Returns the durable GPU resident graph cache, when configured.
-    #[cfg(feature = "cugraph")]
-    pub fn resident_graph_cache(&self) -> Option<Arc<cache::resident_graph::GpuResidentGraphCache>> {
-        self.resident_graph_cache.as_ref().map(Arc::clone)
-    }
-
-    #[cfg(feature = "cugraph")]
-    pub(crate) fn has_reserved_resident_graph_price(&self) -> bool {
-        self.reserved_resident_graph_hit.is_some()
-    }
-
-    #[cfg(feature = "cugraph")]
-    pub(crate) fn reject_unmatched_reserved_resident_graph_price(&self, reason: &'static str) -> Result<()> {
-        if self.has_reserved_resident_graph_price() {
-            return Err(warm_graph_reservation_error(reason));
-        }
-        Ok(())
-    }
-
-    #[cfg(feature = "cugraph")]
-    pub(crate) fn take_reserved_resident_graph_pin(
-        &self,
-        resident_key: &crate::plan::ResidentGraphKey,
-    ) -> Result<Option<cache::resident_graph::GpuResidentGraphPreparationPin>> {
-        let Some(reservation) = &self.reserved_resident_graph_hit else {
-            return Ok(None);
-        };
-        if &reservation.resident_key != resident_key {
-            return Err(warm_graph_reservation_error("resident_graph_key_mismatch")
-                .with_fact("reserved_resident_graph_key", format!("{:?}", reservation.resident_key))
-                .with_fact("requested_resident_graph_key", format!("{resident_key:?}")));
-        }
-        let mut pin = reservation
-            .preparation_pin
-            .lock()
-            .map_err(|_error| warm_graph_reservation_error("preparation_pin_lock_poisoned"))?;
-        pin.take().map(Some).ok_or_else(|| warm_graph_reservation_error("preparation_pin_already_consumed"))
-    }
 }
 
 fn validate_runtime_observation_query_id(observation: &RuntimeObservationHandle, query_id: &QueryId) -> Result<()> {
@@ -1776,15 +1941,4 @@ fn validate_runtime_observation_trace_id(observation: &RuntimeObservationHandle,
     .with_fact("reason", "runtime_observation_trace_id_mismatch")
     .with_fact("context_trace_id", trace_id)
     .with_fact("observation_trace_id", observation_trace_id.unwrap_or("none")))
-}
-
-#[cfg(feature = "cugraph")]
-pub(super) fn warm_graph_reservation_error(reason: &'static str) -> QueryError {
-    QueryError::new(
-        QueryErrorCode::ServiceOverloaded,
-        "nexus_query_engine.query_service.warm_graph_reservation",
-        "warm-priced resident graph reservation is no longer available",
-    )
-    .with_fact("reason", reason)
-    .with_fact("retry_action", "readmit_query")
 }

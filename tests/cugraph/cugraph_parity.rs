@@ -28,13 +28,12 @@ use datafusion::{
     prelude::{CsvReadOptions, SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
-    backend::{GpuMemoryOwnership, NexusAdmissionPolicy, NexusGpuBackend},
+    backend::{GpuMemoryOwnership, NexusGpuBackend, NexusGpuDeviceProfile},
     cugraph_sql::{
         CUGRAPH_OPERATION_REGISTRY, CugraphAlgorithm, CugraphSqlConfig,
         parity::{CUGRAPH_PARITY_SPECS, OracleLookup, ParityTruthSource, data_root, load_ref_csv_vertex_list},
     },
 };
-use nexus_query_engine::runtime::SlotGuarantee;
 use serde_json::{Map, Value};
 
 #[test]
@@ -287,7 +286,7 @@ fn parity_session() -> (NexusGpuBackend, SessionContext) {
         .with_repartition_sorts(false);
     let backend = NexusGpuBackend::builder()
         .device_memory_ownership([(0, GpuMemoryOwnership::WholeDeviceExclusive)])
-        .admission(NexusAdmissionPolicy::default().with_slot_guarantee(SlotGuarantee::Optimistic))
+        .device_profiles([NexusGpuDeviceProfile::new(0)])
         .build()
         .expect("parity backend must build");
     let state = backend

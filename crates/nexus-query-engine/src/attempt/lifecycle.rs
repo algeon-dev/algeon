@@ -1,5 +1,9 @@
 //! Pure fixed execution-attempt lifecycle state.
-use crate::observability::{AttemptAdmissionFact, AttemptDisposition, AttemptTimestamps, RuntimeTerminalOutcome};
+use crate::observability::{
+    AttemptAdmissionFact, AttemptDisposition, AttemptTerminalCommit, AttemptTimestamps, RuntimeTerminalOutcome,
+};
+#[cfg(test)]
+use crate::observability::{AttemptCapacityDisposition, AttemptFinalDomainUsage, AttemptHealthTransition};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AttemptLifecycleError {
@@ -8,6 +12,7 @@ pub enum AttemptLifecycleError {
     DispositionConflict,
     ReportBeforeTerminal,
     CleanupWithoutAdmission,
+    TerminalCommitConflict,
 }
 
 impl std::fmt::Display for AttemptLifecycleError {
@@ -32,6 +37,7 @@ pub(crate) struct AttemptLifecycle {
     pub ready: Option<u64>,
     pub disposition: Option<AttemptDisposition>,
     pub cleanup_failures: u64,
+    pub terminal_commit: Option<AttemptTerminalCommit>,
 }
 
 fn first(slot: &mut Option<u64>, at: u64, previous: u64, boundary: &'static str) -> Result<(), AttemptLifecycleError> {
@@ -60,6 +66,7 @@ impl AttemptLifecycle {
             ready: None,
             disposition: None,
             cleanup_failures: 0,
+            terminal_commit: None,
         }
     }
 
@@ -208,8 +215,73 @@ impl AttemptLifecycle {
         Ok(())
     }
 
+    /// Terminalizes an admission request that failed before it received a
+    /// grant. This boundary deliberately excludes an admitted or physically
+    /// executing attempt, which remains owned by its attempt owner and
+    /// release-commit path.
+    pub(crate) fn terminalize_admission_rejection(
+        &mut self,
+        outcome: RuntimeTerminalOutcome,
+        at: u64,
+    ) -> Result<(), AttemptLifecycleError> {
+        if self.admission_requested.is_none() {
+            return Err(AttemptLifecycleError::InvalidOrder {
+                boundary: "admission_rejection",
+                reason: "admission_not_requested",
+            });
+        }
+        if self.admitted.is_some() || self.physical.is_some() || self.gpu.is_some() {
+            return Err(AttemptLifecycleError::InvalidOrder {
+                boundary: "admission_rejection",
+                reason: "admission_already_granted",
+            });
+        }
+        if !matches!(outcome, RuntimeTerminalOutcome::Failed { .. } | RuntimeTerminalOutcome::Cancelled) {
+            return Err(AttemptLifecycleError::InvalidOrder {
+                boundary: "admission_rejection",
+                reason: "outcome_not_rejection",
+            });
+        }
+        self.terminalize(outcome, at)
+    }
+
     pub(crate) fn cleanup_failure(&mut self) {
         self.cleanup_failures = self.cleanup_failures.saturating_add(1)
+    }
+
+    /// Commits the cleanup and capacity outcome observed by the admitting
+    /// query service. It must happen after the primary outcome but before the
+    /// report-ready boundary; first-wins preserves exactly one release fact.
+    pub(crate) fn terminal_commit(
+        &mut self,
+        commit: AttemptTerminalCommit,
+        at: u64,
+    ) -> Result<(), AttemptLifecycleError> {
+        if self.ready.is_some() {
+            return Err(AttemptLifecycleError::InvalidOrder {
+                boundary: "terminal_commit",
+                reason: "report_ready_already_recorded",
+            });
+        }
+        if let Some(current) = self.terminal_commit {
+            return if current == commit { Ok(()) } else { Err(AttemptLifecycleError::TerminalCommitConflict) };
+        }
+        if !commit.has_consistent_capacity_health_transition() {
+            return Err(AttemptLifecycleError::InvalidOrder {
+                boundary: "terminal_commit",
+                reason: "capacity_health_mismatch",
+            });
+        }
+        if !commit.is_admitted_cleanup_commit() {
+            return Err(AttemptLifecycleError::InvalidOrder {
+                boundary: "terminal_commit",
+                reason: "invalid_admitted_cleanup_fact",
+            });
+        }
+        self.cleanup(at)?;
+        self.cleanup_failures = self.cleanup_failures.saturating_add(commit.cleanup_failure_count());
+        self.terminal_commit = Some(commit);
+        Ok(())
     }
 
     pub(crate) fn cleanup(&mut self, at: u64) -> Result<(), AttemptLifecycleError> {
@@ -466,6 +538,188 @@ mod tests {
             lifecycle.cleanup(3),
             Err(AttemptLifecycleError::InvalidOrder { boundary: "cleanup_complete", .. })
         ));
+    }
+
+    #[test]
+    fn terminal_commit_requires_a_terminal_admission_and_is_first_wins() {
+        let mut lifecycle = AttemptLifecycle::new(0);
+        lifecycle.disposition(AttemptDisposition::Native).unwrap();
+        lifecycle.admission_requested(1).unwrap();
+        lifecycle.admitted(fact(), 2).unwrap();
+        assert!(matches!(
+            lifecycle.terminal_commit(
+                AttemptTerminalCommit::completed(
+                    AttemptCapacityDisposition::Released,
+                    None,
+                    AttemptHealthTransition::HealthyReuse,
+                ),
+                3,
+            ),
+            Err(AttemptLifecycleError::InvalidOrder { boundary: "cleanup_complete", reason: "not_terminal" })
+        ));
+        lifecycle.terminalize(RuntimeTerminalOutcome::Succeeded, 3).unwrap();
+        let released = AttemptTerminalCommit::completed(
+            AttemptCapacityDisposition::Released,
+            Some(AttemptFinalDomainUsage {
+                domain_id: 7,
+                active: false,
+                active_members: 0,
+                ceiling_bytes: 8,
+                effective_driver_ceiling_bytes: 9,
+                driver_ceiling_verified: true,
+                allocation_limit_bytes: 10,
+                current_bytes: 0,
+                peak_bytes: 11,
+                total_bytes: 12,
+                current_aligned_bytes: 0,
+                peak_aligned_bytes: 13,
+                total_allocations: 14,
+                current_allocations: 0,
+                peak_allocations: 15,
+                failed_allocation_count: 16,
+                largest_failed_allocation_bytes: 17,
+            }),
+            AttemptHealthTransition::HealthyReuse,
+        );
+        lifecycle.terminal_commit(released, 4).unwrap();
+        assert_eq!(lifecycle.cleanup, Some(4));
+        assert_eq!(lifecycle.terminal_commit, Some(released));
+        lifecycle.terminal_commit(released, 5).unwrap();
+        assert_eq!(
+            lifecycle.terminal_commit(
+                AttemptTerminalCommit::failed_cleanup(
+                    AttemptCapacityDisposition::RetainedQuarantine,
+                    None,
+                    AttemptHealthTransition::DeviceQuarantined,
+                ),
+                5,
+            ),
+            Err(AttemptLifecycleError::TerminalCommitConflict)
+        );
+    }
+
+    #[test]
+    fn terminal_commit_conflicts_when_only_exact_final_usage_or_health_differs() {
+        let mut lifecycle = AttemptLifecycle::new(0);
+        lifecycle.disposition(AttemptDisposition::Native).unwrap();
+        lifecycle.admission_requested(1).unwrap();
+        lifecycle.admitted(fact(), 2).unwrap();
+        lifecycle.terminalize(RuntimeTerminalOutcome::Succeeded, 3).unwrap();
+        let committed = AttemptTerminalCommit::completed(
+            AttemptCapacityDisposition::Released,
+            Some(AttemptFinalDomainUsage {
+                domain_id: 1,
+                active: false,
+                active_members: 0,
+                ceiling_bytes: 2,
+                effective_driver_ceiling_bytes: 3,
+                driver_ceiling_verified: true,
+                allocation_limit_bytes: 4,
+                current_bytes: 0,
+                peak_bytes: 5,
+                total_bytes: 6,
+                current_aligned_bytes: 0,
+                peak_aligned_bytes: 7,
+                total_allocations: 8,
+                current_allocations: 0,
+                peak_allocations: 9,
+                failed_allocation_count: 10,
+                largest_failed_allocation_bytes: 11,
+            }),
+            AttemptHealthTransition::HealthyReuse,
+        );
+        lifecycle.terminal_commit(committed, 4).unwrap();
+        assert_eq!(
+            lifecycle.terminal_commit(
+                AttemptTerminalCommit::completed(
+                    AttemptCapacityDisposition::Released,
+                    Some(AttemptFinalDomainUsage {
+                        domain_id: 99,
+                        ..committed.final_domain_usage().expect("committed usage")
+                    }),
+                    AttemptHealthTransition::HealthyReuse,
+                ),
+                5,
+            ),
+            Err(AttemptLifecycleError::TerminalCommitConflict)
+        );
+    }
+
+    #[test]
+    fn terminal_commit_rejects_inconsistent_capacity_and_health_transition() {
+        let invalid = [
+            AttemptTerminalCommit::completed(
+                AttemptCapacityDisposition::RetainedQuarantine,
+                None,
+                AttemptHealthTransition::HealthyReuse,
+            ),
+            AttemptTerminalCommit::completed(
+                AttemptCapacityDisposition::Released,
+                None,
+                AttemptHealthTransition::DeviceQuarantined,
+            ),
+            AttemptTerminalCommit::failed_cleanup(
+                AttemptCapacityDisposition::Released,
+                None,
+                AttemptHealthTransition::BackendUnhealthy,
+            ),
+        ];
+        for commit in invalid {
+            let mut lifecycle = AttemptLifecycle::new(0);
+            lifecycle.disposition(AttemptDisposition::Native).unwrap();
+            lifecycle.admission_requested(1).unwrap();
+            lifecycle.admitted(fact(), 2).unwrap();
+            lifecycle.terminalize(RuntimeTerminalOutcome::Succeeded, 3).unwrap();
+            assert_eq!(
+                lifecycle.terminal_commit(commit, 4),
+                Err(AttemptLifecycleError::InvalidOrder {
+                    boundary: "terminal_commit",
+                    reason: "capacity_health_mismatch"
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn admission_rejection_is_limited_to_pre_grant_failure_or_cancellation() {
+        let mut lifecycle = AttemptLifecycle::new(0);
+        lifecycle.disposition(AttemptDisposition::Native).unwrap();
+        assert!(matches!(
+            lifecycle.terminalize_admission_rejection(RuntimeTerminalOutcome::Cancelled, 1),
+            Err(AttemptLifecycleError::InvalidOrder {
+                boundary: "admission_rejection",
+                reason: "admission_not_requested"
+            })
+        ));
+        lifecycle.admission_requested(1).unwrap();
+        lifecycle
+            .terminalize_admission_rejection(
+                RuntimeTerminalOutcome::Failed {
+                    error_code: "admission_rejected".to_string(),
+                    error_status: "permanent".to_string(),
+                },
+                2,
+            )
+            .unwrap();
+        assert_eq!(
+            lifecycle.terminalize_admission_rejection(RuntimeTerminalOutcome::Succeeded, 3),
+            Err(AttemptLifecycleError::InvalidOrder {
+                boundary: "admission_rejection",
+                reason: "outcome_not_rejection"
+            })
+        );
+
+        let mut admitted = AttemptLifecycle::new(0);
+        admitted.disposition(AttemptDisposition::Native).unwrap();
+        admitted.admission_requested(1).unwrap();
+        admitted.admitted(fact(), 2).unwrap();
+        assert_eq!(
+            admitted.terminalize_admission_rejection(RuntimeTerminalOutcome::Cancelled, 3),
+            Err(AttemptLifecycleError::InvalidOrder {
+                boundary: "admission_rejection",
+                reason: "admission_already_granted"
+            })
+        );
     }
 
     #[test]

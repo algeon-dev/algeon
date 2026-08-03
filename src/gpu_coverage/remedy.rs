@@ -31,14 +31,9 @@ pub(super) const fn capability_remedy(reason: CapabilityReason) -> QueryGpuRemed
             "Use a native-friendly session profile or rewrite distributed ordering and aggregate stages into a shape native lowering supports.",
         ),
         CapabilityReason::NativeBoundedJoinUnsupported => QueryGpuRemedy::new(
-            "strict_bounded_contract_gap",
+            "capability_contract_gap",
             QueryGpuRemedyKind::CudfRsGap,
-            "Strict bounded admission lacks a required lower-level reservation contract for this join shape.",
-        ),
-        CapabilityReason::NativeAdaptivePipelineUnsupported => QueryGpuRemedy::new(
-            "adaptive_pipeline_gap",
-            QueryGpuRemedyKind::EngineGap,
-            "Adaptive admission rejected this shape; inspect the adaptive diagnostics or use a different execution profile.",
+            "Bounded capability admission lacks a required lower-level reservation contract for this join shape.",
         ),
         CapabilityReason::NativeSourceNonLocalObjectStore | CapabilityReason::IcebergObjectStoreReadUnsupported => {
             QueryGpuRemedy::new(
@@ -132,10 +127,7 @@ mod tests {
                     ("use_native_friendly_session_profile", QueryGpuRemedyKind::ConfigAction)
                 },
                 CapabilityReason::NativeBoundedJoinUnsupported => {
-                    ("strict_bounded_contract_gap", QueryGpuRemedyKind::CudfRsGap)
-                },
-                CapabilityReason::NativeAdaptivePipelineUnsupported => {
-                    ("adaptive_pipeline_gap", QueryGpuRemedyKind::EngineGap)
+                    ("capability_contract_gap", QueryGpuRemedyKind::CudfRsGap)
                 },
                 CapabilityReason::NativeSourceNonLocalObjectStore
                 | CapabilityReason::IcebergObjectStoreReadUnsupported => {

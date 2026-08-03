@@ -21,19 +21,22 @@ datafusion-nexus = { version = "0.1", features = ["cugraph", "cuvs", "iceberg"] 
 
 For production-style embedded use, build one process-scoped `NexusGpuBackend`
 and install it on every `SessionStateBuilder` that should share GPU admission.
-The backend owns the native QueryService queue, device-memory governor, stream
+The backend owns the native QueryService queue, per-device immutable-grant ledger, stream
 pools, and plan-scoped admission tickets.
 
 ```rust
 use datafusion::execution::SessionStateBuilder;
 use datafusion::prelude::{ParquetReadOptions, SessionContext};
 use datafusion_nexus::{
-    backend::NexusGpuBackend,
+    backend::{GpuMemoryOwnership, NexusGpuBackend, NexusGpuDeviceProfile},
     cugraph_sql::CugraphSqlConfig,
 };
 
 async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let backend = NexusGpuBackend::builder().build()?;
+    let backend = NexusGpuBackend::builder()
+        .device_profiles([NexusGpuDeviceProfile::new(0).with_max_active_attempts(1)])
+        .device_memory_ownership([(0, GpuMemoryOwnership::WholeDeviceExclusive)])
+        .build()?;
 
     let state = backend
         .install_on_with_cugraph_sql(
@@ -61,9 +64,11 @@ execution, use a final-plan requirement rather than a separate candidate
 policy:
 
 ```rust
-use datafusion_nexus::backend::NexusGpuBackend;
+use datafusion_nexus::backend::{GpuMemoryOwnership, NexusGpuBackend, NexusGpuDeviceProfile};
 
 let backend = NexusGpuBackend::builder()
+    .device_profiles([NexusGpuDeviceProfile::new(0).with_max_active_attempts(1)])
+    .device_memory_ownership([(0, GpuMemoryOwnership::WholeDeviceExclusive)])
     .with_no_datafusion_cpu_requirement()
     .build()?;
 ```
@@ -72,41 +77,11 @@ Nexus plans once, evaluates that exact completed plan, and returns terminal
 `Rejected` if the requirement is not satisfied. It never retries a native
 runtime failure on CPU after execution has started.
 
-## Host execution QoS
-
-`HostExecutionQosConfig` is an independent outer statement bound. It wraps
-completed DataFusion and mixed plans once, but not fully native plans, and it
-does not consume a GPU query-service admission slot. Install it with the
-session extension trait:
-
-```rust
-use std::{num::NonZeroUsize, time::Duration};
-
-use datafusion::execution::SessionStateBuilder;
-use datafusion_nexus::{
-    backend::NexusGpuBackend,
-    planner::HostExecutionQosConfig,
-    session::NexusSessionStateBuilderExt,
-};
-
-let backend = NexusGpuBackend::builder().build()?;
-let state = backend
-    .install_on(SessionStateBuilder::new().with_default_features())?
-    .with_host_execution_qos(
-        HostExecutionQosConfig::new(NonZeroUsize::new(2).unwrap())
-            .with_wait_timeout(Duration::from_secs(30)),
-    )
-    .build();
-```
-
-Use `Duration::ZERO` for an indefinite wait. To leave host execution
-unbounded in an embedded session, do not install this rule.
-
-`NexusGpuBackend::builder().build()` uses bounded device memory, two admitted
-queries, `grant_min = 1/8`, a policy-derived `grant_want`, and
-`SlotGuarantee::GuaranteedMinimum` by default. Sessions installed from the same
-backend share one admission ledger; with the default guarantee, a lone query
-can use the device budget that is not reserved for remaining slot floors.
+Backend construction requires explicit device profiles and a matching ownership
+declaration for every configured ordinal. The controller derives each
+per-device attempt floor from that immutable resource profile; the usable
+global attempt capacity is the checked sum of those per-device limits. Sessions
+installed from the same backend share that one controller.
 
 For a complete multi-frontend service shape built on that same backend, see
 the [Embedded Backend Example](./embedded-backend-example.mdx). It runs REST
@@ -123,63 +98,45 @@ silently diverging from the shared ledger.
 ```rust
 use std::time::Duration;
 
-use datafusion_nexus::backend::{GrantBand, MemoryShare, NexusAdmissionPolicy, NexusGpuBackend};
-use nexus_query_engine::runtime::SlotGuarantee;
+use datafusion_nexus::backend::{
+    GpuMemoryOwnership, NexusGpuBackend, NexusGpuDeviceProfile, NexusGpuQueuePolicy,
+};
 
 let backend = NexusGpuBackend::builder()
-    .admission(
-        NexusAdmissionPolicy::default()
-            .with_max_concurrent_queries(2)
-            .with_grant_band(GrantBand {
-                min: MemoryShare::Fraction(1.0 / 8.0),  // capability floor
-                want: MemoryShare::Fraction(1.0),       // explicit full-capacity target
-            })
-            .with_slot_guarantee(SlotGuarantee::GuaranteedMinimum)
-            .with_wait_timeout(Duration::from_secs(60)),
+    .device_profiles([
+        NexusGpuDeviceProfile::new(0)
+            .with_max_active_attempts(2)
+            .with_attempt_floor_bytes(Some(512 * 1024 * 1024)),
+    ])
+    .device_memory_ownership([(0, GpuMemoryOwnership::WholeDeviceExclusive)])
+    .queue_policy(
+        NexusGpuQueuePolicy::default()
+            .with_max_queued_attempts(64)
+            .with_max_queue_wait(Duration::from_secs(30))
+            .with_max_overtakes_per_waiter(4),
     )
     .build()?;
 ```
 
-For per-statement sizing, use the request namespace instead of mutating backend
-policy in embedded DataFusion sessions:
-
-```sql
-SET datafusion_nexus.request.requested_grant_bytes = '1073741824';
-SET datafusion_nexus.request.requested_grant_min_bytes = '536870912';
-SELECT ...;
-SET datafusion_nexus.request.requested_grant_bytes = 'none';
-SET datafusion_nexus.request.requested_grant_min_bytes = 'none';
-```
-
-`datafusion_nexus.request.requested_grant_bytes` is read when the optimizer
-creates the plan ticket. It changes only the preferred grant for that optimized
-statement; it does not change the tenant minimum, slot guarantee, queue limit, or
-backend policy. `datafusion_nexus.request.requested_grant_min_bytes` is the
-matching request-scoped floor: admission returns a grant at least that large or
-keeps the statement queued until `wait_timeout`, instead of admitting it into a
-leftover grant it would only fail on. Both values are allowed even on
-backend-managed frozen sessions, but query-service admission rejects them if
-they fall outside the tenant band (`grant_min`..`grant_want`) or exceed device
-capacity. Flight SQL rejects
-`SET datafusion_nexus.*` because request policy is lowered from server or tenant
-defaults there, not mutable session state.
+Attempt grants are selected only from capability evidence and the immutable
+per-device ledger equation. Embedded sessions do not expose caller-selected
+grant bytes or a request-scoped floor; use planner-visible graph evidence such
+as `datafusion_nexus.request.graph_raw_input_edges` when exact source statistics
+are unavailable. Flight SQL rejects `SET datafusion_nexus.*`; configure its
+ordinal device profiles and queue policy at the server boundary.
 
 Two runtime behaviors to plan for in your service layer:
 
 - **Admission is lazy and per query.** Planning admits nothing; the first
-  native stream poll admits, and all native work in one plan shares one slot
-  and one grant. Under load a query may wait up to `wait_timeout` for its
-  grant; a full queue or an expired wait surfaces as a structured
+  native stream poll admits, and all native work in one plan shares one
+  per-device attempt and immutable grant. Under load a query may wait up to
+  `max_queue_wait` for capacity; a full queue or elapsed wait surfaces as a structured
   `service_overloaded` (`resource_exhausted`) error — treat it as retryable
   backpressure, not a query bug.
-- **Build exactly one backend per process per device set.** With the default
-  `GuaranteedMinimum` guarantee, a second backend on the same device is
-  rejected loudly at build time
-  (`shared_governor_guaranteed_minimum_conflict`), and the claim frees only
-  after the first backend's last query handle drains. Two `Optimistic`
-  backends may coexist but share only the byte ledger, not admission queues or
-  slot guarantees. Share the one backend across every `SessionStateBuilder`
-  instead.
+- **Build exactly one backend per process per device set.** A second backend
+  on an owned device is rejected at build time, and the claim frees only after
+  the first backend's last query handle drains. Share one backend across every
+  `SessionStateBuilder` instead.
 
 Admission evidence for dashboards and debugging comes from the backend handle,
 alongside the per-query `admission_*`, `query_grant_bytes`,
@@ -187,13 +144,13 @@ alongside the per-query `admission_*`, `query_grant_bytes`,
 retry metrics on the native execution nodes:
 
 ```rust
-let queue = backend.query_service().admission_snapshot()?;
-let governors = backend.query_service().memory_governor_reports()?;
-let device_failures = backend.query_service().device_memory_failure_reports();
+let queue = backend.admission_snapshot()?;
+let ledgers = backend.device_ledger_reports()?;
+let device_failures = backend.device_memory_failure_reports()?;
 ```
 
-The model behind these knobs — plan-scoped tickets, grant bands, slot
-guarantees, and the layered memory stack — is specified in
+The model behind these knobs — capability-first plan tickets, immutable grants,
+per-device active limits, and bounded queues — is specified in
 [Admission & Memory Governance](../design/admission.mdx).
 
 ## cuGraph SQL functions
@@ -214,39 +171,18 @@ backend-managed processes.
 `install_on` installs the relation-aware cuVS planner and the common GPU
 function metadata surface. Build with the `cuvs` feature to execute
 `cuvs_*` calls. Unlike cuGraph, there is no server-style enable flag for cuVS:
-the Cargo feature and the session memory policy determine availability.
+the Cargo feature determines whether its metadata is registered.
 
 `NexusGpuBackend` currently owns bounded QueryService admission, while cuVS has
 no lower-level bounded peak-memory preflight. A backend-managed bounded session
 therefore rejects cuVS execution with structured `unsupported_operator`; it
-never falls back to CPU. For local single-query embedded work, install the
-planner with an explicitly unbounded direct configuration:
-
-```rust
-use datafusion::execution::SessionStateBuilder;
-use datafusion_nexus::{
-    native_exec::NexusNativeExecutionConfig,
-    planner::NexusNativeOptimizerConfig,
-    session::NexusSessionStateBuilderExt,
-};
-
-let state = SessionStateBuilder::new()
-    .with_default_features()
-    .with_nexus_native(
-        NexusNativeOptimizerConfig::default()
-            .with_native_execution_config(NexusNativeExecutionConfig::unbounded()),
-    )
-    .try_with_cuvs_sql()?
-    .build();
-```
-
-Use this mode only when the process and GPU are dedicated to the work. See
-[Vector Inputs](../cuvs/vector-inputs.mdx) for the relation contract and
+never falls back to CPU or an unadmitted GPU path. See [Vector
+Inputs](../cuvs/vector-inputs.mdx) for the relation contract and
 [cuVS Functions](../cuvs/operations/index.mdx) for operation lifecycles.
 
 ## Direct optimizer install
 
-For local single-query experiments, you can still install the raw optimizer rule
+For planning-only experiments, you can still install the raw optimizer rule
 directly:
 
 ```rust
@@ -262,13 +198,10 @@ let state = SessionStateBuilder::new()
     .build();
 ```
 
-That direct path does not create a shared admission owner. If multiple
-`SessionContext`s or concurrent queries use independent bounded configs on the
-same GPU, each config has its own device budget. On such a session, graph SQL
-also refuses native relational work inside a `cugraph_*` call (a structured
-error at execute time) rather than stack a second full-budget
-ledger. Use `NexusGpuBackend` whenever the embedding process can run more than
-one GPU query at a time or mixes cuGraph with native execution.
+That direct path does not create an admission owner, so native GPU execution
+fails locally with `gpu_backend_required`. Use `NexusGpuBackend` for every
+native execution; it is the process-scoped owner of per-device grants,
+allocation domains, and lifecycle cleanup.
 
 The same metadata functions work in-process. Follow
 [Discover & Validate GPU Functions](../guides/gpu-function-discovery.mdx)

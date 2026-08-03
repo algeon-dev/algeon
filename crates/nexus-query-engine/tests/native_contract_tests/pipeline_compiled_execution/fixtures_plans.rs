@@ -10,4 +10,3 @@ include!("fixtures_plans/pipelines.rs");
 include!("fixtures_plans/root_topk.rs");
 include!("fixtures_plans/projection_global_limit.rs");
 include!("fixtures_plans/projection_scalar_setop.rs");
-include!("fixtures_plans/adaptive.rs");

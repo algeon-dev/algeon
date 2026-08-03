@@ -2,6 +2,8 @@
 
 #[cfg(feature = "cugraph")]
 use std::sync::TryLockError;
+#[cfg(feature = "cugraph")]
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::{
     collections::HashMap,
     marker::PhantomData,
@@ -14,13 +16,18 @@ use crate::{
     plan::ResidentGraphKey,
     runtime::{
         ExecutionContext,
-        gpu::governor::{EvictableMemoryPressure, MemoryGovernor, MemoryGrant},
+        gpu::ledger::{DeviceLedger, EvictableMemoryPressure, MemoryGrant},
     },
 };
 
 /// Default bound on same-graph replicas retained across service stream-pool
 /// runtimes.
 pub const DEFAULT_RESIDENT_GRAPH_CACHE_MAX_COPIES_PER_KEY: usize = 4;
+
+/// Cache companions use a process-local high id range so their durable stream
+/// reservations remain distinguishable from short-lived query reservations.
+#[cfg(feature = "cugraph")]
+static NEXT_RESIDENT_GRAPH_CACHE_RESERVATION_ID: AtomicU64 = AtomicU64::new(1 << 63);
 
 /// Point-in-time resident graph cache state and monotonic activity counters.
 #[cfg(feature = "cugraph")]
@@ -146,6 +153,9 @@ struct GpuResidentGraphCheckedOut {
 
 #[cfg(feature = "cugraph")]
 struct GpuResidentGraphCompanionRuntime {
+    // The companion stream must remain attached to its cache-owned reservation
+    // for as long as cache entries can retain allocations made on that stream.
+    stream_reservation: cudf::StreamReservationLease,
     pooled_runtime_lease: cudf::runtime::RuntimeLeaseAnchor,
     companion: Weak<cudf::Runtime>,
 }
@@ -185,7 +195,7 @@ struct GpuResidentGraphCacheState {
 struct GpuResidentGraphCacheInner {
     max_retained_device_bytes: u64,
     max_copies_per_key: usize,
-    governor: Option<MemoryGovernor>,
+    governor: Option<DeviceLedger>,
     state: Mutex<GpuResidentGraphCacheState>,
     #[cfg(test)]
     close_and_drain_delay: Mutex<Option<Duration>>,
@@ -245,7 +255,7 @@ impl GpuResidentGraphCache {
 
     /// Create an empty resident graph cache charged to a device memory
     /// governor's evictable ledger.
-    pub fn new_governor_backed(max_retained_device_bytes: u64, governor: MemoryGovernor) -> Self {
+    pub fn new_governor_backed(max_retained_device_bytes: u64, governor: DeviceLedger) -> Self {
         Self::new_with_governor(
             max_retained_device_bytes,
             DEFAULT_RESIDENT_GRAPH_CACHE_MAX_COPIES_PER_KEY,
@@ -261,7 +271,7 @@ impl GpuResidentGraphCache {
     fn new_with_governor(
         max_retained_device_bytes: u64,
         max_copies_per_key: usize,
-        governor: Option<MemoryGovernor>,
+        governor: Option<DeviceLedger>,
     ) -> Self {
         Self {
             inner: Arc::new(GpuResidentGraphCacheInner {
@@ -439,9 +449,11 @@ impl GpuResidentGraphCache {
                 return Ok(companion);
             }
         }
+        // A parked graph outlives the admitted attempt that populated it.
+        // Reusing that attempt's stream would leave cache-owned allocations in
+        // its query-memory domain and quarantine the device at release.
         let companion_runtime = cudf::Runtime::builder()
             .with_device(pooled_runtime.device())
-            .with_stream(pooled_runtime.stream().clone())
             .with_device_memory_manager()
             .build()
             .map_err(|error| {
@@ -471,6 +483,16 @@ impl GpuResidentGraphCache {
                 .with_fact("device_ordinal", device_ordinal)
             })?;
         let companion = Arc::new(companion_runtime);
+        let reservation_id = NEXT_RESIDENT_GRAPH_CACHE_RESERVATION_ID.fetch_add(1, Ordering::Relaxed);
+        let stream_reservation = companion.stream_reservation(reservation_id, usize::MAX).map_err(|error| {
+            QueryError::from_cudf(
+                operation,
+                "failed to attach a cache-owned stream reservation to the resident graph companion runtime",
+                error,
+            )
+            .with_fact("device_ordinal", device_ordinal)
+            .with_fact("reservation_id", reservation_id)
+        })?;
         let mut state = self.lock()?;
         if state.closed {
             return Err(resident_graph_cache_closed(operation));
@@ -484,6 +506,7 @@ impl GpuResidentGraphCache {
         state.companion_runtimes.insert(
             runtime_key,
             GpuResidentGraphCompanionRuntime {
+                stream_reservation,
                 pooled_runtime_lease: pooled_runtime.lease_anchor(),
                 companion: Arc::downgrade(&companion),
             },
@@ -491,16 +514,58 @@ impl GpuResidentGraphCache {
         Ok(companion)
     }
 
-    /// Resolves the query-neutral cache owner and a same-binding execution
-    /// runtime that retains only the current query's outward work.
-    pub(crate) fn runtimes_for_context(
+    /// Snapshot live allocations routed through a cache companion stream.
+    ///
+    /// Native cuGraph allocations resolve through the device manager's current
+    /// resource, which charges them to the stream-bound reservation rather
+    /// than to a runtime's explicit output allocator. The cache uses this
+    /// before/after delta around graph construction so retained graph state is
+    /// charged to the durable cache rather than to a query attempt.
+    pub(crate) fn companion_runtime_live_bytes(
         &self,
-        context: &ExecutionContext,
+        companion_runtime: &Arc<cudf::Runtime>,
         operation: &'static str,
-    ) -> Result<(Arc<cudf::Runtime>, Arc<cudf::Runtime>)> {
-        let cache_runtime = self.companion_runtime_for_context(context, operation)?;
-        let query_runtime = context.resident_graph_query_runtime(&cache_runtime, operation)?;
-        Ok((cache_runtime, query_runtime))
+    ) -> Result<u64> {
+        let runtime_key = companion_runtime.affinity_id().get();
+        let stream_reservation = {
+            let state = self.lock()?;
+            let Some(companion) = state.companion_runtimes.get(&runtime_key) else {
+                return Err(QueryError::new(
+                    QueryErrorCode::CudfInvariantViolation,
+                    operation,
+                    "resident graph cache companion is missing its stream-reservation accounting lease",
+                )
+                .with_fact("reason", "resident_graph_companion_reservation_missing")
+                .with_fact("device_ordinal", companion_runtime.device().ordinal()));
+            };
+            let Some(registered_runtime) = companion.companion.upgrade() else {
+                return Err(QueryError::new(
+                    QueryErrorCode::CudfInvariantViolation,
+                    operation,
+                    "resident graph cache companion runtime expired before its allocation usage could be sampled",
+                )
+                .with_fact("reason", "resident_graph_companion_runtime_expired")
+                .with_fact("device_ordinal", companion_runtime.device().ordinal()));
+            };
+            if !Arc::ptr_eq(&registered_runtime, companion_runtime) {
+                return Err(QueryError::new(
+                    QueryErrorCode::CudfInvariantViolation,
+                    operation,
+                    "resident graph cache companion runtime does not match its allocation accounting lease",
+                )
+                .with_fact("reason", "resident_graph_companion_reservation_mismatch")
+                .with_fact("device_ordinal", companion_runtime.device().ordinal()));
+            }
+            companion.stream_reservation.clone()
+        };
+        stream_reservation.usage().map(|usage| usage.current_bytes).map_err(|error| {
+            QueryError::from_cudf(
+                operation,
+                "failed to snapshot resident graph cache companion stream reservation",
+                error,
+            )
+            .with_fact("device_ordinal", companion_runtime.device().ordinal())
+        })
     }
 
     pub(crate) fn checkout<T>(
@@ -1130,6 +1195,5 @@ where T: GpuResidentGraphTransposition
     }
 }
 
-#[cfg(test)]
-#[path = "resident_graph_tests.rs"]
-mod tests;
+// Cache behavior is retained as private P5 substrate. P2 test targets do not
+// construct durable cache instances.

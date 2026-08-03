@@ -36,7 +36,7 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
-    backend::{GpuMemoryOwnership, GrantBand, MemoryShare, NexusAdmissionPolicy, NexusGpuBackend, NexusMemoryPolicy},
+    backend::{GpuDeviceMemoryLimit, GpuMemoryOwnership, NexusGpuBackend, NexusGpuDeviceProfile, NexusGpuQueuePolicy},
     error::{DataFusionErrorExt, ErrorCode},
     native_exec::NexusNativeExecutionConfig,
     native_report::{FinalPlanDisposition, NativeDataFusionPlanningReport},
@@ -50,7 +50,6 @@ use datafusion_nexus::{
     },
 };
 use futures::future::BoxFuture;
-use nexus_query_engine::runtime::SlotGuarantee;
 use serde::Serialize;
 
 type ToolResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
@@ -143,10 +142,7 @@ pub async fn run(args: Vec<String>) -> ToolResult<()> {
     let nullable = fixture.join("nullable.parquet");
     write_nullable_parquet(&nullable, 128)?;
 
-    let backend = build_backend(GrantBand {
-        min: MemoryShare::Bytes(64 * 1024 * 1024),
-        want: MemoryShare::Bytes(128 * 1024 * 1024),
-    })?;
+    let backend = build_backend(64 * 1024 * 1024)?;
 
     let mut cases: Vec<CaseResult> = Vec::new();
 
@@ -850,7 +846,7 @@ async fn run_runtime_no_rescue_constrained(bench: &Path) -> ToolResult<CaseResul
     let id = "runtime_failure_no_datafusion_replay";
     // Mirror tests/native_runtime_pruning_tests::constrained_native_datafusion_config:
     // device_budget_bytes=1 forces a memory reservation failure after native start.
-    let backend = build_backend(GrantBand { min: MemoryShare::Bytes(1), want: MemoryShare::Bytes(1) })?;
+    let backend = build_backend(1)?;
     let work = async {
     let handle = Arc::new(backend.admit_query()?);
     let exec_config = NexusNativeExecutionConfig::bounded(1, 1024 * 1024, 1, 1, 1).with_query_service_handle(handle);
@@ -1187,23 +1183,14 @@ impl TableFormatPlanner for FixedPlanner {
     }
 }
 
-fn build_backend(grant_band: GrantBand) -> ToolResult<NexusGpuBackend> {
+fn build_backend(attempt_floor_bytes: u64) -> ToolResult<NexusGpuBackend> {
     Ok(NexusGpuBackend::builder()
         .device_memory_ownership([(0, GpuMemoryOwnership::WholeDeviceExclusive)])
-        .memory_policy(NexusMemoryPolicy::Bounded {
-            device_ordinals: vec![0],
-            device_budget_bytes: 256 * 1024 * 1024,
-            max_source_chunk_bytes: 64 * 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 3,
-            min_retry_chunk_row_groups: 1,
-        })
-        .admission(
-            NexusAdmissionPolicy::default()
-                .with_max_concurrent_queries(1)
-                .with_slot_guarantee(SlotGuarantee::Optimistic)
-                .with_grant_band(grant_band),
-        )
+        .with_native_execution_config(NexusNativeExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 1, 3, 1))
+        .queue_policy(NexusGpuQueuePolicy::default())
+        .device_profiles([NexusGpuDeviceProfile::new(0)
+            .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 256 * 1024 * 1024 })
+            .with_attempt_floor_bytes(Some(attempt_floor_bytes))])
         .build()?)
 }
 

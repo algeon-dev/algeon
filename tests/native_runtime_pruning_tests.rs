@@ -41,15 +41,15 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
-    backend::{GpuMemoryOwnership, GrantBand, MemoryShare, NexusAdmissionPolicy, NexusGpuBackend, NexusMemoryPolicy},
-    error::{Error, ErrorCode},
+    backend::{GpuDeviceMemoryLimit, GpuMemoryOwnership, NexusGpuBackend, NexusGpuDeviceProfile, NexusGpuQueuePolicy},
+    error::Error,
     native::lower_physical_plan_to_native,
     native_exec::{NexusNativeExec, NexusNativeExecutionConfig},
 };
 use nexus_query_engine::{
     exec::{execute_query_plan, output::QueryOutput},
     plan::PlanNode,
-    runtime::{ExecutionContext, QueryHandle, SlotGuarantee, TenantQueryContext},
+    runtime::{AdmittedQueryContext, ExecutionContext, QueryHandle},
     source::SourceNode,
 };
 use nexus_workloads::tpch::{TPCH_QUERIES, TPCH_TABLES, write_tiny_tpch_parquet_dataset};
@@ -334,7 +334,7 @@ async fn native_runtime_physically_empty_parquet_files_match_cpu_without_replay(
     for path in [&zero_row_file, &zero_row_group_file] {
         for sql in [SQL_COUNT_ONLY_QUERY, SQL_COUNT_STAR_QUERY] {
             let cpu_batches = cpu_sql_output(path, sql).await;
-            let native_plan = native_datafusion_sql_plan(path, sql, native_datafusion_config()).await;
+            let native_plan = native_datafusion_sql_plan(path, sql).await;
             assert_nexus_native_exec(&native_plan, "physical empty parquet aggregate should lower to NexusNativeExec");
             let native_batches = collect(native_plan, Arc::new(TaskContext::default())).await.unwrap();
             assert_batches_equal_allow_empty(&cpu_batches, &native_batches);
@@ -357,8 +357,7 @@ async fn native_runtime_filtered_empty_rollup_grand_total_matches_cpu() {
         "CPU DataFusion must emit the ROLLUP grand-total row over filtered-empty input"
     );
 
-    let native_physical_plan =
-        native_datafusion_sql_plan(&path, SQL_FILTERED_EMPTY_ROLLUP_SUM_QUERY, native_datafusion_config()).await;
+    let native_physical_plan = native_datafusion_sql_plan(&path, SQL_FILTERED_EMPTY_ROLLUP_SUM_QUERY).await;
     assert_nexus_native_exec(&native_physical_plan, "runtime-filtered empty ROLLUP should lower to NexusNativeExec");
 
     let task_ctx = Arc::new(TaskContext::default());
@@ -598,8 +597,7 @@ async fn native_runtime_parquet_sorting_columns_scan_matches_cpu() {
     );
     let cpu_batches =
         collect(Arc::clone(&cpu_plan), Arc::new(datafusion::execution::context::TaskContext::default())).await.unwrap();
-    let native_plan =
-        native_datafusion_sql_plan(&path, "SELECT key, payload FROM bench LIMIT 3", native_datafusion_config()).await;
+    let native_plan = native_datafusion_sql_plan(&path, "SELECT key, payload FROM bench LIMIT 3").await;
     assert_nexus_native_exec(&native_plan, "sorting_columns scan should optimize to native exec");
     assert_eq!(native_plan.properties().output_ordering(), cpu_plan.properties().output_ordering());
 

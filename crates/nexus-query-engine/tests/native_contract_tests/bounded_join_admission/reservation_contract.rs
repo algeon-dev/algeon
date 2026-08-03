@@ -87,7 +87,7 @@ fn bounded_join_reservation_kinds_are_modeled_without_estimates() {
     assert_eq!(requirements.len(), expected.len());
     assert_eq!(contract.model_status(), "modeled");
     assert_eq!(contract.execution_status(), "enabled");
-    assert_eq!(contract.supported_shape_requirement(), "requires_strict_bounded_capability_admission");
+    assert_eq!(contract.supported_shape_requirement(), "requires_bounded_capability_admission");
     assert!(contract.enabled());
 
     for (requirement, (kind, expected_name, expected_boundary, expected_status, expected_detail)) in
@@ -164,7 +164,7 @@ fn bounded_join_rejection_facts_are_shared_and_estimate_free() {
     );
     assert_eq!(
         unsupported_shape_facts.get("bounded_join_unsupported_shape").map(String::as_str),
-        Some("requires_strict_bounded_capability_admission")
+        Some("requires_bounded_capability_admission")
     );
     assert_eq!(facts.get("bounded_join_reservation_model").map(String::as_str), Some(contract.model_status()));
     assert_eq!(facts.get("bounded_join_execution_status").map(String::as_str), Some(contract.execution_status()));

@@ -12,7 +12,6 @@ use crate::{
     runtime::{ExecutionBoundaryPolicy, MemoryControlPolicy},
 };
 
-mod adaptive;
 mod aggregate;
 mod boundary;
 mod correlation;
@@ -126,16 +125,6 @@ pub struct QueryMetrics {
     pub source_read_prefetches_completed: u64,
     pub source_read_prefetches_skipped: u64,
     pub source_read_prefetches_abandoned: u64,
-    /// Query-scoped source cache hits.
-    pub source_cache_hits: u64,
-    /// Query-scoped source cache misses.
-    pub source_cache_misses: u64,
-    /// Query-scoped source cache insertions.
-    pub source_cache_inserts: u64,
-    /// Query-scoped skipped source cache insertions.
-    pub source_cache_insert_skipped: u64,
-    /// Peak retained source-cache bytes.
-    pub source_cache_retained_bytes: u64,
     /// Row groups planned across source chunks.
     pub row_groups_planned: u64,
     /// Row groups committed across source chunks.
@@ -167,12 +156,6 @@ pub struct QueryMetrics {
     pub hash_join_cache_hits: u64,
     /// Query-scoped reusable hash-join cache misses.
     pub hash_join_cache_misses: u64,
-    /// Durable reusable hash-join build-artifact cache hits.
-    pub hash_join_durable_cache_hits: u64,
-    /// Durable reusable hash-join build-artifact cache misses.
-    pub hash_join_durable_cache_misses: u64,
-    /// Durable reusable hash-join build artifacts inserted by this query.
-    pub hash_join_durable_cache_inserts: u64,
     /// Unique device bytes retained by reusable cuDF hash-join build artifacts.
     ///
     /// This is recorded when an artifact is constructed, not when it is reused.
@@ -203,8 +186,6 @@ pub struct QueryMetrics {
     pub source_metadata_load_time: Duration,
     /// Time spent waiting in the source-read queue.
     pub source_read_queue_wait_time: Duration,
-    /// Time spent looking up source cache entries.
-    pub source_cache_lookup_time: Duration,
     /// Time spent inside Parquet read calls.
     pub parquet_read_time: Duration,
     /// Time spent in source-read orchestration.
@@ -226,18 +207,6 @@ pub struct QueryMetrics {
     pub compiled_pipeline_tasks_executed: u64,
     /// Host Arrow sink boundaries materialized by the compiled-pipeline executor.
     pub compiled_pipeline_host_arrow_sinks: u64,
-    /// Adaptive executor retry actions taken by this query.
-    pub adaptive_retry_count: u64,
-    /// Adaptive executor spill actions taken by this query.
-    pub adaptive_spill_count: u64,
-    /// Adaptive executor downgrade actions taken by this query.
-    pub adaptive_downgrade_count: u64,
-    /// Adaptive memory-history lookups performed during admission/execution.
-    pub adaptive_memory_history_lookup_count: u64,
-    /// Adaptive memory-history lookups with a prior observation.
-    pub adaptive_memory_history_hit_count: u64,
-    /// Adaptive memory-history lookups without a prior observation.
-    pub adaptive_memory_history_miss_count: u64,
     /// Dynamic-filter payloads successfully produced.
     pub dynamic_filter_produced_count: u64,
     /// Dynamic-filter routes whose producers completed without a usable payload.
@@ -439,12 +408,6 @@ impl QueryMetrics {
             self.source_read_prefetches_skipped.saturating_add(other.source_read_prefetches_skipped);
         self.source_read_prefetches_abandoned =
             self.source_read_prefetches_abandoned.saturating_add(other.source_read_prefetches_abandoned);
-        self.source_cache_hits = self.source_cache_hits.saturating_add(other.source_cache_hits);
-        self.source_cache_misses = self.source_cache_misses.saturating_add(other.source_cache_misses);
-        self.source_cache_inserts = self.source_cache_inserts.saturating_add(other.source_cache_inserts);
-        self.source_cache_insert_skipped =
-            self.source_cache_insert_skipped.saturating_add(other.source_cache_insert_skipped);
-        self.source_cache_retained_bytes = self.source_cache_retained_bytes.max(other.source_cache_retained_bytes);
         self.row_groups_planned = self.row_groups_planned.saturating_add(other.row_groups_planned);
         self.row_groups_committed = self.row_groups_committed.saturating_add(other.row_groups_committed);
         self.partial_aggregate_count = self.partial_aggregate_count.saturating_add(other.partial_aggregate_count);
@@ -466,12 +429,6 @@ impl QueryMetrics {
         self.one_shot_join_count = self.one_shot_join_count.saturating_add(other.one_shot_join_count);
         self.hash_join_cache_hits = self.hash_join_cache_hits.saturating_add(other.hash_join_cache_hits);
         self.hash_join_cache_misses = self.hash_join_cache_misses.saturating_add(other.hash_join_cache_misses);
-        self.hash_join_durable_cache_hits =
-            self.hash_join_durable_cache_hits.saturating_add(other.hash_join_durable_cache_hits);
-        self.hash_join_durable_cache_misses =
-            self.hash_join_durable_cache_misses.saturating_add(other.hash_join_durable_cache_misses);
-        self.hash_join_durable_cache_inserts =
-            self.hash_join_durable_cache_inserts.saturating_add(other.hash_join_durable_cache_inserts);
         self.hash_join_hash_table_bytes =
             self.hash_join_hash_table_bytes.saturating_add(other.hash_join_hash_table_bytes);
         self.filtered_join_hash_table_bytes =
@@ -491,7 +448,6 @@ impl QueryMetrics {
         self.read_columns = self.read_columns.saturating_add(other.read_columns);
         self.source_metadata_load_time += other.source_metadata_load_time;
         self.source_read_queue_wait_time += other.source_read_queue_wait_time;
-        self.source_cache_lookup_time += other.source_cache_lookup_time;
         self.parquet_read_time += other.parquet_read_time;
         self.source_read_time += other.source_read_time;
         self.operator_time += other.operator_time;
@@ -505,15 +461,6 @@ impl QueryMetrics {
             self.compiled_pipeline_tasks_executed.saturating_add(other.compiled_pipeline_tasks_executed);
         self.compiled_pipeline_host_arrow_sinks =
             self.compiled_pipeline_host_arrow_sinks.saturating_add(other.compiled_pipeline_host_arrow_sinks);
-        self.adaptive_retry_count = self.adaptive_retry_count.saturating_add(other.adaptive_retry_count);
-        self.adaptive_spill_count = self.adaptive_spill_count.saturating_add(other.adaptive_spill_count);
-        self.adaptive_downgrade_count = self.adaptive_downgrade_count.saturating_add(other.adaptive_downgrade_count);
-        self.adaptive_memory_history_lookup_count =
-            self.adaptive_memory_history_lookup_count.saturating_add(other.adaptive_memory_history_lookup_count);
-        self.adaptive_memory_history_hit_count =
-            self.adaptive_memory_history_hit_count.saturating_add(other.adaptive_memory_history_hit_count);
-        self.adaptive_memory_history_miss_count =
-            self.adaptive_memory_history_miss_count.saturating_add(other.adaptive_memory_history_miss_count);
         self.dynamic_filter_produced_count =
             self.dynamic_filter_produced_count.saturating_add(other.dynamic_filter_produced_count);
         self.dynamic_filter_skipped_count =

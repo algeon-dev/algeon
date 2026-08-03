@@ -220,15 +220,11 @@ ENV LD_LIBRARY_PATH=/app/lib \
 # ── Server core ─────────────────────────────────────────────────────────────
 #   NEXUS_SERVER_BIND                  listen addr           (default 0.0.0.0:50051)
 #   NEXUS_SERVER_LOG                   tracing filter        (default info)
-#   NEXUS_SERVER_MAX_CONCURRENT_QUERIES  concurrent stmts    (default 1; preferred)
-#   NEXUS_SERVER_MAX_IN_FLIGHT         legacy alias of the above
 #   NEXUS_SERVER_GPU_DEVICES           CUDA ordinals, csv    (default 0)
-#   NEXUS_SERVER_DEVICE_BUDGET_FRACTION  0<f<=1 of GPU mem for native budgets
 #   NEXUS_SERVER_STATEMENT_TICKET_TTL_SECS                   (default 300)
-#   NEXUS_SERVER_CONFIG_FILE           optional TOML overlay ([auth],[native])
+#   NEXUS_SERVER_CONFIG_FILE           optional TOML overlay ([admission],[native],[observability])
 #
-# ── Native GPU execution (bounded mode) ─────────────────────────────────────
-#   NEXUS_SERVER_NATIVE_MEMORY_POLICY                bounded | unbounded
+# ── Native GPU execution (bounded per-device admission) ─────────────────────
 #   NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES          ┐ set all three together,
 #   NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES       │ or omit all (auto-sized)
 #   NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK     ┘
@@ -236,7 +232,6 @@ ENV LD_LIBRARY_PATH=/app/lib \
 #   NEXUS_SERVER_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS
 #   NEXUS_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT
 #   NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE   conservative | local_parquet_throughput
-#   NEXUS_SERVER_NATIVE_PIPELINE_EXECUTION_MODE      strict_bounded | adaptive
 #   NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE
 #                                      datafusion_exact_host_welford | gpu_native_tolerant
 #
@@ -263,8 +258,6 @@ ENV LD_LIBRARY_PATH=/app/lib \
 #   NEXUS_SERVER_CUGRAPH_DIRECTED  NEXUS_SERVER_CUGRAPH_RENUMBER
 #   NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY   python_cugraph | raw_libcugraph
 #
-# NOTE: NEXUS_NATIVE_PIPELINE_EXECUTION_MODE is a BENCHMARK env var only; the
-# server uses NEXUS_SERVER_NATIVE_PIPELINE_EXECUTION_MODE.
 # ===========================================================================
 
 EXPOSE 50051

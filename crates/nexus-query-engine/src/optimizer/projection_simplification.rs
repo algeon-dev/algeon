@@ -133,7 +133,7 @@ impl<'a> ProjectionSimplificationRewriter<'a> {
             original,
             nodes: Vec::new(),
             memo: BTreeMap::new(),
-            protected_projection_ids: crate::capability::strict_bounded_shape_contract_projection_ids(original),
+            protected_projection_ids: crate::capability::capability_shape_contract_projection_ids(original),
             diagnostics: ProjectionSimplificationDiagnostics::default(),
             changed: false,
         }
