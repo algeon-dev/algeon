@@ -122,6 +122,8 @@ fn execution_cancellation_default_is_independent_of_other_instances() {
     two.check("nexus_query_engine.test.independent_default").expect("uncancelled instance check passes");
 }
 
+#[path = "native_contract_tests/attempt_lifecycle.rs"]
+mod attempt_lifecycle;
 #[path = "native_contract_tests/bounded_join_admission.rs"]
 pub(crate) mod bounded_join_admission;
 #[path = "native_contract_tests/bounded_join_sizing.rs"]

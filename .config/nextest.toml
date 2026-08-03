@@ -30,6 +30,7 @@ max-threads = 1
 [[profile.default.overrides]]
 filter = '''
 (package(datafusion-nexus) & kind(lib))
+| (package(datafusion-nexus) & binary(attempt_lifecycle_tests))
 | (package(datafusion-nexus) & binary(cugraph_tests))
 | (package(datafusion-nexus) & binary(cuvs_sql_gpu_tests))
 | (package(datafusion-nexus) & binary(iceberg_tests))

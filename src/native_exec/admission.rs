@@ -25,6 +25,17 @@ use datafusion::{
 use futures::Stream;
 #[cfg(test)]
 use nexus_query_engine::metrics::QueryId;
+use nexus_query_engine::{
+    attempt::{AttemptCancellation, AttemptHandle},
+    observability::{
+        AttemptAdmissionFact, RuntimeObservationConfig, RuntimeObservationOwner, RuntimeQueryId,
+        RuntimeTerminalOutcome, RuntimeTraceId,
+    },
+    runtime::{
+        ExecutionCancellation, GpuBackendSession, QueryAdmissionRequest, QueryGrantBand, QueryGrantRequest,
+        QueryHandle, QueryPlacementHint, QueryQos, TenantId, TenantQueryContext,
+    },
+};
 #[cfg(test)]
 use nexus_query_engine::{
     error::{QueryError, QueryErrorCode},
@@ -33,15 +44,6 @@ use nexus_query_engine::{
         RuntimeObservationPayload,
     },
     runtime::{QueryActivityLease, QueryServiceAdmissionSnapshot, QueryServiceConfig, QueryServiceTenantConfig},
-};
-use nexus_query_engine::{
-    observability::{
-        RuntimeObservationConfig, RuntimeObservationOwner, RuntimeQueryId, RuntimeTerminalOutcome, RuntimeTraceId,
-    },
-    runtime::{
-        ExecutionCancellation, GpuBackendSession, QueryAdmissionRequest, QueryGrantBand, QueryGrantRequest,
-        QueryHandle, QueryPlacementHint, QueryQos, TenantId, TenantQueryContext,
-    },
 };
 use tokio::sync::Notify;
 
@@ -549,6 +551,7 @@ impl TicketQueryHandle {
 /// Lazy admission ticket shared by every native node emitted in one optimize pass.
 #[derive(Debug)]
 pub(crate) struct QueryAdmissionTicket {
+    attempt: Option<AttemptTicketBinding>,
     #[cfg(test)]
     id: u64,
     source: QueryAdmissionSource,
@@ -578,6 +581,14 @@ pub(crate) fn query_admission_ticket_from_task_context(
         .session_config()
         .get_extension::<ActiveQueryAdmissionTicket>()
         .map(|extension| Arc::clone(&extension.ticket))
+}
+
+/// Invocation-scoped attempt state attached to an admission ticket.
+#[derive(Debug, Clone)]
+pub(crate) struct AttemptTicketBinding {
+    pub(crate) handle: AttemptHandle,
+    pub(crate) cancellation: AttemptCancellation,
+    pub(crate) observation_owner: RuntimeObservationOwner,
 }
 
 pub(crate) fn task_context_with_query_admission_ticket(
@@ -772,6 +783,7 @@ impl QueryAdmissionTicket {
         let observation_trace_id = observation_handle.trace_id().cloned();
         let observation_config = observation_handle.config();
         Arc::new(Self {
+            attempt: None,
             #[cfg(test)]
             id: NEXT_TICKET_ID.fetch_add(1, Ordering::Relaxed),
             source,
@@ -794,6 +806,81 @@ impl QueryAdmissionTicket {
         })
     }
 
+    /// Creates a ticket bound to one explicit adapter invocation.
+    pub(crate) fn new_attempt_bound(
+        source: QueryAdmissionSource,
+        requested_grant_min_bytes: Option<u64>,
+        requested_grant_bytes: Option<u64>,
+        placement_hint: QueryPlacementHint,
+        #[cfg(feature = "cugraph")] warm_graph_requested_grant_bytes: Option<u64>,
+        binding: AttemptTicketBinding,
+        observation_capture: Option<NativeExecutionMetricsCapture>,
+    ) -> Arc<Self> {
+        let mut ticket = Self::new_with_placement_hint_and_warm_graph_grant_and_observation_and_capture(
+            source,
+            requested_grant_min_bytes,
+            requested_grant_bytes,
+            placement_hint,
+            #[cfg(feature = "cugraph")]
+            warm_graph_requested_grant_bytes,
+            NativeRuntimeObservation::Local(binding.observation_owner.clone()),
+            observation_capture,
+        );
+        Arc::get_mut(&mut ticket).expect("new admission ticket is uniquely owned").attempt = Some(binding);
+        ticket
+    }
+
+    pub(crate) fn source(&self) -> QueryAdmissionSource {
+        self.source.clone()
+    }
+
+    pub(crate) fn requested_grant_min_bytes_for_rebind(&self) -> Option<u64> {
+        self.requested_grant_min_bytes
+    }
+
+    pub(crate) fn requested_grant_bytes_for_rebind(&self) -> Option<u64> {
+        self.requested_grant_bytes
+    }
+
+    pub(crate) fn placement_hint_for_rebind(&self) -> QueryPlacementHint {
+        self.placement_hint.clone()
+    }
+
+    pub(crate) fn is_attempt_bound(&self) -> bool {
+        self.attempt.is_some()
+    }
+
+    pub(crate) fn record_attempt_gpu_execution_started(&self) {
+        if let Some(binding) = &self.attempt {
+            let _ = binding.handle.record_gpu_execution_started();
+        }
+    }
+
+    fn attempt_cancellation(&self, fallback: ExecutionCancellation) -> ExecutionCancellation {
+        self.attempt.as_ref().map(|binding| binding.cancellation.execution_cancellation()).unwrap_or(fallback)
+    }
+
+    fn terminalize_attempt_admission_error(&self, error: &nexus_query_engine::error::QueryError) {
+        let Some(binding) = &self.attempt else { return };
+        let outcome = if error.fact_value("reason") == Some("backend_closing") {
+            // Close and caller cancellation are independent typed causes.
+            RuntimeTerminalOutcome::Failed {
+                error_code: "backend_closing".to_string(),
+                error_status: "permanent".to_string(),
+            }
+        } else if binding.cancellation.is_cancelled()
+            || error.code() == nexus_query_engine::error::QueryErrorCode::Cancelled
+        {
+            RuntimeTerminalOutcome::Cancelled
+        } else {
+            RuntimeTerminalOutcome::Failed {
+                error_code: error.code().as_str().to_string(),
+                error_status: error.status().as_str().to_string(),
+            }
+        };
+        let _ = binding.handle.terminalize(outcome);
+    }
+
     #[cfg(test)]
     pub(crate) fn id(&self) -> u64 {
         self.id
@@ -804,9 +891,14 @@ impl QueryAdmissionTicket {
         self.requested_grant_bytes
     }
 
+    #[cfg(feature = "cugraph")]
+    pub(crate) fn warm_graph_requested_grant_bytes_for_rebind(&self) -> Option<u64> {
+        self.warm_graph_requested_grant_bytes
+    }
+
     #[cfg(all(test, feature = "cugraph"))]
     pub(crate) fn warm_graph_requested_grant_bytes(&self) -> Option<u64> {
-        self.warm_graph_requested_grant_bytes
+        self.warm_graph_requested_grant_bytes_for_rebind()
     }
 
     #[cfg(all(test, feature = "cugraph"))]
@@ -983,6 +1075,10 @@ impl QueryAdmissionTicket {
         cancellation: ExecutionCancellation,
         observation: NativeRuntimeObservation,
     ) -> nexus_query_engine::error::Result<TicketTenantQueryContext> {
+        let cancellation = self.attempt_cancellation(cancellation);
+        if let Some(binding) = &self.attempt {
+            let _ = binding.handle.record_admission_requested();
+        }
         let mut reset_guard = TicketAdmitResetGuard {
             ticket: Arc::clone(self),
             task_key,
@@ -1016,6 +1112,7 @@ impl QueryAdmissionTicket {
                     None,
                     None,
                 );
+                self.terminalize_attempt_admission_error(&error);
                 self.finish_observation_for_error(&observation, &error);
                 reset_guard.reset();
                 return Err(error);
@@ -1065,6 +1162,7 @@ impl QueryAdmissionTicket {
                         None,
                     );
                 }
+                self.terminalize_attempt_admission_error(&error);
                 self.finish_observation_for_error(&observation, &error);
                 reset_guard.reset();
                 return Err(error);
@@ -1133,13 +1231,23 @@ impl QueryAdmissionTicket {
             released: false,
             observation: observation.clone(),
         };
-        match handle.acquire_context_with_cancellation_async(cancellation).await {
+        match handle.acquire_context_with_cancellation_async(self.attempt_cancellation(cancellation)).await {
             Ok(tenant_context) => {
                 pending_guard.released = true;
+                let admission_facts = QueryAdmissionFacts::from_handle(handle.as_ref());
+                if let Some(binding) = &self.attempt {
+                    let _ = binding.handle.record_admitted(AttemptAdmissionFact {
+                        admission_sequence: admission_facts.admission_sequence,
+                        admission_wait_ns: admission_facts.admission_wait.as_nanos().min(u128::from(u64::MAX)) as u64,
+                        device_ordinal: admission_facts.device_ordinal,
+                        grant_bytes: admission_facts.query_grant_bytes,
+                    });
+                    let _ = binding.handle.record_physical_execution_started();
+                }
                 Ok(TicketTenantQueryContext {
                     tenant_context,
                     task_context,
-                    admission_facts: QueryAdmissionFacts::from_handle(handle.as_ref()),
+                    admission_facts,
                     record_admission_facts: self.mark_admission_facts_recorded(task_key, epoch),
                     _guard: QueryAdmissionTicketContextGuard {
                         ticket: Arc::clone(self),
@@ -1150,6 +1258,7 @@ impl QueryAdmissionTicket {
                 })
             },
             Err(error) => {
+                self.terminalize_attempt_admission_error(&error);
                 self.record_observation_outcome_for_error(&observation, &error);
                 Err(error)
             },
@@ -1467,6 +1576,10 @@ impl NativeAdmissionExec {
     pub(crate) fn new(input: Arc<dyn ExecutionPlan>, ticket: Arc<QueryAdmissionTicket>) -> Self {
         Self { input, ticket }
     }
+
+    pub(crate) fn ticket(&self) -> &Arc<QueryAdmissionTicket> {
+        &self.ticket
+    }
 }
 
 pub(crate) fn wrap_plan_with_query_admission_ticket(
@@ -1540,7 +1653,18 @@ impl ExecutionPlan for NativeAdmissionExec {
     }
 
     fn execute(&self, partition: usize, context: Arc<TaskContext>) -> DataFusionResult<SendableRecordBatchStream> {
-        let ticket = query_admission_ticket_from_task_context(&context).unwrap_or_else(|| Arc::clone(&self.ticket));
+        let task_ticket = query_admission_ticket_from_task_context(&context);
+        if task_ticket.is_none() && self.ticket.is_attempt_bound() {
+            return Err(DataFusionError::from(
+                Error::new(
+                    ErrorCode::InvalidExecutionPlan,
+                    "datafusion_nexus.native_exec.attempt_required",
+                    "attempt-bound native admission requires an invocation task context",
+                )
+                .with_fact("reason", "attempt_execution_required"),
+            ));
+        }
+        let ticket = task_ticket.unwrap_or_else(|| Arc::clone(&self.ticket));
         let context = task_context_with_query_admission_ticket(context, Arc::clone(&ticket));
         let mut round_guard = ticket.begin_execution_round(Arc::clone(&context)).map_err(|error| {
             DataFusionError::from(Error::from_native(

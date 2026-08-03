@@ -25,6 +25,10 @@ use super::{
     query_service::{QueryServiceDrainOutcome, QueryServiceDrainPhaseOutcome},
 };
 use crate::{
+    attempt::{
+        AttemptBackendCounters, AttemptBackendCountersSnapshot, AttemptBegin, AttemptCompletionQueue, AttemptOwner,
+        BeginAttemptRequest,
+    },
     error::{QueryError, QueryErrorCode, Result},
     observability::in_runtime_observation_delivery,
 };
@@ -274,6 +278,7 @@ pub struct GpuBackendCoreDraft {
     devices: Vec<GpuBackendDeviceConfig>,
     controller: GpuBackendControllerDraft,
     deployment_io_capability: DeploymentIoCapability,
+    attempt_completion_queue_capacity: Option<usize>,
 }
 
 impl GpuBackendCoreDraft {
@@ -282,7 +287,12 @@ impl GpuBackendCoreDraft {
         controller: GpuBackendControllerDraft,
         deployment_io_capability: DeploymentIoCapability,
     ) -> Self {
-        Self { devices, controller, deployment_io_capability }
+        Self { devices, controller, deployment_io_capability, attempt_completion_queue_capacity: None }
+    }
+
+    pub fn with_attempt_completion_queue_capacity(mut self, capacity: usize) -> Self {
+        self.attempt_completion_queue_capacity = Some(capacity);
+        self
     }
 
     pub fn devices(&self) -> &[GpuBackendDeviceConfig] {
@@ -626,7 +636,8 @@ impl GpuBackendCoreBuilder {
         self.draft.validate()?;
         #[cfg(test)]
         let observation_completion_executor_factory = Arc::clone(&self.observation_completion_executor_factory);
-        let GpuBackendCoreDraft { devices, controller, deployment_io_capability } = self.draft;
+        let GpuBackendCoreDraft { devices, controller, deployment_io_capability, attempt_completion_queue_capacity } =
+            self.draft;
         let ordinals = devices.iter().map(|device| device.device_ordinal).collect::<Vec<_>>();
         let owner_lease = claim_live_backend(&ordinals)?;
 
@@ -643,6 +654,10 @@ impl GpuBackendCoreBuilder {
         let observation_core = Arc::new(ObservationCore {
             identity: next_backend_identity(),
             lifecycle: BackendLifecycle::new(),
+            attempt_counters: Arc::new(AttemptBackendCounters::default()),
+            attempt_completion_queue: attempt_completion_queue_capacity
+                .and_then(AttemptCompletionQueue::new)
+                .map(Arc::new),
             completion_executor: {
                 #[cfg(test)]
                 {
@@ -890,6 +905,10 @@ impl GpuBackendCore {
         }
     }
 
+    pub fn begin_attempt(&self, request: BeginAttemptRequest) -> Result<AttemptBegin> {
+        self.session_capability().begin_attempt(request)
+    }
+
     pub fn close(&self) -> bool {
         self.coordinator.signal()
     }
@@ -942,6 +961,34 @@ pub struct GpuBackendSession {
 impl GpuBackendSession {
     pub fn identity(&self) -> GpuBackendCoreIdentity {
         self.identities
+    }
+
+    /// Returns whether the backend close gate has been signalled.
+    ///
+    /// An attempt that won the begin gate observes this to terminalize
+    /// `unplanned` with `backend_closing` evidence instead of starting
+    /// planning; the begin gate itself remains the only linearization point.
+    pub fn is_closing(&self) -> bool {
+        self.observation_core.lifecycle.is_closing()
+    }
+
+    pub fn begin_attempt(&self, request: BeginAttemptRequest) -> Result<AttemptBegin> {
+        let permit = self.observation_core.lifecycle.try_begin_observation()?;
+        self.observation_core.attempt_counters.attempts_begun.fetch_add(1, Ordering::AcqRel);
+        Ok(AttemptOwner::begin(
+            request,
+            permit,
+            Arc::clone(&self.observation_core.attempt_counters),
+            self.observation_core.attempt_completion_queue.clone(),
+        ))
+    }
+
+    pub fn take_abandoned_attempt_reports(&self, max: usize) -> Vec<Arc<crate::observability::QueryAttemptReport>> {
+        self.observation_core.attempt_completion_queue.as_ref().map_or_else(Vec::new, |queue| queue.drain(max))
+    }
+
+    pub fn attempt_counters_snapshot(&self) -> AttemptBackendCountersSnapshot {
+        self.observation_core.attempt_counters.snapshot()
     }
 
     fn acquire_resource(&self) -> Result<(ObservationPermit, GpuResourcePermit, ObservationCompletionDispatcher)> {
@@ -1075,6 +1122,8 @@ struct ResourceCore {
 struct ObservationCore {
     identity: u64,
     lifecycle: BackendLifecycle,
+    attempt_counters: Arc<AttemptBackendCounters>,
+    attempt_completion_queue: Option<Arc<AttemptCompletionQueue>>,
     completion_executor: ObservationCompletionExecutor,
 }
 
@@ -2040,6 +2089,8 @@ mod tests {
         let observation_core = Arc::new(ObservationCore {
             identity: next_backend_identity(),
             lifecycle: BackendLifecycle::new(),
+            attempt_counters: Arc::new(AttemptBackendCounters::default()),
+            attempt_completion_queue: None,
             completion_executor: ObservationCompletionExecutor::spawn().expect("test creates observation executor"),
         });
         let coordinator = CloseCoordinator::spawn(Arc::clone(&resource_core), Arc::clone(&observation_core))
@@ -2741,6 +2792,8 @@ mod tests {
         let observation_core = Arc::new(ObservationCore {
             identity: next_backend_identity(),
             lifecycle: BackendLifecycle::new(),
+            attempt_counters: Arc::new(AttemptBackendCounters::default()),
+            attempt_completion_queue: None,
             completion_executor: ObservationCompletionExecutor::spawn().unwrap(),
         });
         let coordinator = CloseCoordinator::spawn(Arc::clone(&resource_core), Arc::clone(&observation_core)).unwrap();
@@ -2821,5 +2874,76 @@ mod tests {
         assert!(snapshot.gpu_resource_quiescent);
         assert!(!snapshot.observation_quiescent);
         assert!(snapshot.cleanup_failed);
+    }
+
+    #[test]
+    fn begin_attempt_after_close_is_rejected_without_creating_an_attempt() {
+        let _owner_test = live_backend_test_lock();
+        if cudf::DeviceId::count().unwrap_or(0) == 0 {
+            return;
+        }
+        let backend = GpuBackendCore::builder(one_device_backend_draft(0)).build().unwrap();
+        let session = backend.session_capability();
+        assert!(backend.close());
+        let before = session.attempt_counters_snapshot();
+        let error = session.begin_attempt(BeginAttemptRequest::default()).unwrap_err();
+        assert_eq!(error.code(), QueryErrorCode::Cancelled);
+        assert_eq!(error.fact_value("reason"), Some("backend_closing"));
+        let after = session.attempt_counters_snapshot();
+        assert_eq!(before.attempts_begun, after.attempts_begun, "a losing begin creates no counted attempt");
+        backend.close_and_wait(Duration::from_secs(10)).unwrap();
+    }
+
+    #[test]
+    fn begin_attempt_winning_the_close_gate_is_counted_until_report_ready() {
+        let _owner_test = live_backend_test_lock();
+        if cudf::DeviceId::count().unwrap_or(0) == 0 {
+            return;
+        }
+        let backend = GpuBackendCore::builder(one_device_backend_draft(0)).build().unwrap();
+        let session = backend.session_capability();
+        let begin = session.begin_attempt(BeginAttemptRequest::default()).unwrap();
+        assert_eq!(session.attempt_counters_snapshot().attempts_begun, 1);
+
+        assert!(backend.close());
+        let snapshot = backend.close_snapshot();
+        assert!(!snapshot.observation_quiescent, "an open attempt holds observation scope open");
+
+        // A CPU-only attempt terminalizes without GPU cleanup and publishes
+        // its report; only then may observation quiescence complete.
+        begin.owner.commit_terminal(crate::observability::RuntimeTerminalOutcome::Succeeded).unwrap();
+        let report = begin
+            .completion
+            .wait_timeout(Duration::from_secs(5))
+            .expect("the attempt publishes its report during close");
+        assert!(matches!(report.outcome, crate::observability::RuntimeTerminalOutcome::Succeeded));
+        drop(begin);
+        assert_eq!(session.attempt_counters_snapshot().reports_ready, 1);
+        let close = backend.close_and_wait(Duration::from_secs(10)).unwrap();
+        assert!(close.observation_quiescent);
+    }
+
+    #[test]
+    fn abandoned_attempt_reports_land_in_the_bounded_completion_queue() {
+        let _owner_test = live_backend_test_lock();
+        if cudf::DeviceId::count().unwrap_or(0) == 0 {
+            return;
+        }
+        let draft = one_device_backend_draft(0).with_attempt_completion_queue_capacity(2);
+        let backend = GpuBackendCore::builder(draft).build().unwrap();
+        let session = backend.session_capability();
+
+        let begin = session.begin_attempt(BeginAttemptRequest::default()).unwrap();
+        drop(begin.completion);
+        begin.owner.commit_terminal(crate::observability::RuntimeTerminalOutcome::Dropped).unwrap();
+        drop(begin.owner);
+
+        let drained = session.take_abandoned_attempt_reports(8);
+        assert_eq!(drained.len(), 1);
+        assert!(matches!(drained[0].outcome, crate::observability::RuntimeTerminalOutcome::Dropped));
+        let counters = session.attempt_counters_snapshot();
+        assert_eq!(counters.completion_queue_pushed, 1);
+        assert_eq!(counters.completion_queue_overflowed, 0);
+        backend.close_and_wait(Duration::from_secs(10)).unwrap();
     }
 }

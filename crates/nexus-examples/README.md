@@ -1,4 +1,20 @@
-# Embedded Backend Example
+# Embedded Backend Examples
+
+## Attempt lifecycle (`attempt_lifecycle`)
+
+The minimal supported embedding path: one bounded backend installed into two
+sessions, with every invocation driven through the explicit execution-attempt
+adapter. It begins an attempt before planning, consumes the result stream,
+and awaits the independent `AttemptCompletion` report for CPU-only,
+native, and stream-drop paths:
+
+```bash
+cargo run -p nexus-examples --bin attempt_lifecycle
+```
+
+Requires one CUDA device; exits with a clear message when none is present.
+
+## Embedded backend (`embedded_backend`)
 
 This crate is a runnable embedding example for a real-world process that
 serves two frontends over one GPU backend:

@@ -39,6 +39,8 @@ pub mod adaptive_report;
 pub mod adaptive_runtime;
 /// Strict and adaptive bounded-pipeline admission and diagnostics.
 pub mod admission;
+/// Execution-attempt ownership, cancellation, lifecycle, and completion delivery.
+pub mod attempt;
 /// Capability-analysis model and admission helpers for native execution.
 pub mod capability;
 pub mod chunk;

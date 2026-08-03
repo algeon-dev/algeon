@@ -11,11 +11,11 @@ use std::{
 };
 
 use super::{
-    LogicalRetainedBytes, ObservationSequence, PlanExecutionId, QueryBoundaryKind, RuntimeObservationClassLoss,
-    RuntimeObservationClock, RuntimeObservationFooter, RuntimeObservationLimits, RuntimeObservationLossReason,
-    RuntimeObservationManifest, RuntimeObservationPayload, RuntimeObservationReasonLoss, RuntimeObservationRecordClass,
-    RuntimeQueryId, RuntimeSourceLocationId, RuntimeSpanId, RuntimeTerminalOutcome, RuntimeTimelineEvent,
-    RuntimeTopologyRecord, RuntimeTraceId, SystemRuntimeObservationClock,
+    LogicalRetainedBytes, ObservationSequence, PlanExecutionId, QueryAttemptReport, QueryBoundaryKind,
+    RuntimeObservationClassLoss, RuntimeObservationClock, RuntimeObservationFooter, RuntimeObservationLimits,
+    RuntimeObservationLossReason, RuntimeObservationManifest, RuntimeObservationPayload, RuntimeObservationReasonLoss,
+    RuntimeObservationRecordClass, RuntimeQueryId, RuntimeSourceLocationId, RuntimeSpanId, RuntimeTerminalOutcome,
+    RuntimeTimelineEvent, RuntimeTopologyRecord, RuntimeTraceId, SystemRuntimeObservationClock,
 };
 use crate::observability::{RUNTIME_OBSERVATION_JSONL_SCHEMA, RuntimeClockDomain};
 
@@ -114,6 +114,7 @@ pub(crate) struct RuntimeObservationSnapshotData {
     pub(crate) topology: Vec<RetainedTopologyRecord>,
     pub(crate) events: Vec<RuntimeTimelineEvent>,
     pub(crate) footer: RuntimeObservationFooter,
+    pub(crate) attempt_report: Option<QueryAttemptReport>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -143,6 +144,16 @@ macro_rules! snapshot_accessors {
             /// Completeness, terminal, loss, and degradation metadata.
             pub fn footer(&self) -> &RuntimeObservationFooter {
                 &self.data.footer
+            }
+
+            /// Fixed execution-attempt summary, when this observation belongs to an attempt.
+            ///
+            /// The embedded report is projected at seal time: its
+            /// `report_ready_ns` is always `None` here. The delivered report
+            /// (via `AttemptCompletion`) is the same envelope with
+            /// report-ready recorded; both project one lifecycle state.
+            pub fn attempt_report(&self) -> Option<&QueryAttemptReport> {
+                self.data.attempt_report.as_ref()
             }
         }
     };
@@ -193,6 +204,9 @@ pub struct RuntimeObservationSession {
     handle: RuntimeObservationHandle,
 }
 
+/// Construction-time provider of the fixed execution-attempt summary embedded at seal.
+pub type AttemptReportProvider = Arc<dyn Fn() -> QueryAttemptReport + Send + Sync>;
+
 /// Cloneable shared ownership of one query observation session.
 ///
 /// Clones carry the same terminal authority and the recorder's first-terminal
@@ -202,6 +216,7 @@ pub struct RuntimeObservationSession {
 pub struct RuntimeObservationOwner {
     session: Arc<RuntimeObservationSession>,
     lifecycle: Arc<RuntimeObservationOwnerLifecycle>,
+    attempt_report_provider: Option<AttemptReportProvider>,
 }
 
 #[derive(Debug)]
@@ -650,10 +665,14 @@ impl RuntimeObservationHandle {
     }
 
     fn seal_owned(&self, outcome: RuntimeTerminalOutcome) -> Option<SealedRuntimeObservationSnapshot> {
-        self.seal_owned_deferred(outcome).invoke_observers()
+        self.seal_owned_deferred(outcome, None).invoke_observers()
     }
 
-    fn seal_owned_deferred(&self, outcome: RuntimeTerminalOutcome) -> DeferredRuntimeObservationSeal {
+    fn seal_owned_deferred(
+        &self,
+        outcome: RuntimeTerminalOutcome,
+        attempt_report: Option<QueryAttemptReport>,
+    ) -> DeferredRuntimeObservationSeal {
         let Some(inner) = self.inner.as_ref() else {
             return DeferredRuntimeObservationSeal { snapshot: None, observers: Vec::new() };
         };
@@ -662,8 +681,9 @@ impl RuntimeObservationHandle {
             return DeferredRuntimeObservationSeal { snapshot: Some(snapshot.clone()), observers: Vec::new() };
         }
         inner.sealed.store(true, Ordering::Release);
-        let snapshot =
-            SealedRuntimeObservationSnapshot { data: Arc::new(inner.take_sealed_snapshot_data(&mut state, outcome)) };
+        let snapshot = SealedRuntimeObservationSnapshot {
+            data: Arc::new(inner.take_sealed_snapshot_data(&mut state, outcome, attempt_report)),
+        };
         state.sealed_snapshot = Some(snapshot.clone());
         let observers = std::mem::take(&mut state.seal_observers);
         DeferredRuntimeObservationSeal { snapshot: Some(snapshot), observers }
@@ -846,8 +866,12 @@ impl RuntimeObservationSession {
         self.handle.seal_owned(outcome)
     }
 
-    fn seal_deferred(&self, outcome: RuntimeTerminalOutcome) -> DeferredRuntimeObservationSeal {
-        self.handle.seal_owned_deferred(outcome)
+    fn seal_deferred(
+        &self,
+        outcome: RuntimeTerminalOutcome,
+        attempt_report: Option<QueryAttemptReport>,
+    ) -> DeferredRuntimeObservationSeal {
+        self.handle.seal_owned_deferred(outcome, attempt_report)
     }
 
     /// Returns the sealed immutable snapshot when a terminal outcome already won.
@@ -866,12 +890,31 @@ impl RuntimeObservationOwner {
         Self::from_session(RuntimeObservationSession::new(query_id, trace_id, config))
     }
 
+    /// Creates shared owner authority with an injected monotonic clock.
+    pub fn with_clock(
+        query_id: impl Into<RuntimeQueryId>,
+        trace_id: Option<RuntimeTraceId>,
+        config: RuntimeObservationConfig,
+        clock: Arc<dyn RuntimeObservationClock>,
+    ) -> Self {
+        Self::from_session(RuntimeObservationSession::with_clock(query_id, trace_id, config, clock))
+    }
+
     /// Wraps an existing unique session in shared one-shot ownership.
     pub fn from_session(session: RuntimeObservationSession) -> Self {
-        let owner =
-            Self { session: Arc::new(session), lifecycle: Arc::new(RuntimeObservationOwnerLifecycle::default()) };
+        let owner = Self {
+            session: Arc::new(session),
+            lifecycle: Arc::new(RuntimeObservationOwnerLifecycle::default()),
+            attempt_report_provider: None,
+        };
         owner.handle().record(|| RuntimeObservationPayload::QueryBoundary { boundary: QueryBoundaryKind::Started });
         owner
+    }
+
+    /// Installs a construction-time fixed attempt-summary provider.
+    pub fn with_attempt_report_provider(mut self, provider: AttemptReportProvider) -> Self {
+        self.attempt_report_provider = Some(provider);
+        self
     }
 
     /// Creates a disabled shared owner.
@@ -1074,13 +1117,14 @@ impl RuntimeObservationOwner {
     {
         let finishing = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             before_seal();
-            self.session.seal_deferred(outcome)
+            let attempt_report = self.attempt_report_provider.as_ref().map(|provider| provider());
+            self.session.seal_deferred(outcome, attempt_report)
         }));
         let deferred = match finishing {
             Ok(deferred) => deferred,
             Err(panic) => {
                 self.handle().mark_degraded();
-                let deferred = self.session.seal_deferred(RuntimeTerminalOutcome::Panicked);
+                let deferred = self.session.seal_deferred(RuntimeTerminalOutcome::Panicked, None);
                 let _ = self.complete_observer_delivery(deferred);
                 std::panic::resume_unwind(panic);
             },
@@ -1324,6 +1368,7 @@ impl RuntimeObservationSessionInner {
             manifest: self.manifest.clone(),
             topology,
             events,
+            attempt_report: None,
             footer: RuntimeObservationFooter {
                 complete,
                 terminal,
@@ -1345,6 +1390,7 @@ impl RuntimeObservationSessionInner {
         &self,
         state: &mut RuntimeObservationRecorderState,
         outcome: RuntimeTerminalOutcome,
+        attempt_report: Option<QueryAttemptReport>,
     ) -> RuntimeObservationSnapshotData {
         let mut topology = std::mem::take(&mut state.topology);
         topology.sort_by(|left, right| left.record.cmp(&right.record).then(left.sequence.cmp(&right.sequence)));
@@ -1360,25 +1406,28 @@ impl RuntimeObservationSessionInner {
             .iter()
             .map(|(reason, count)| RuntimeObservationReasonLoss { reason: *reason, count: *count })
             .collect();
-        RuntimeObservationSnapshotData {
-            manifest: self.manifest.clone(),
-            topology,
-            events,
-            footer: RuntimeObservationFooter {
-                complete: true,
-                terminal: Some(outcome),
-                retained_records: state.retained_records,
-                retained_bytes: state.retained_bytes,
-                first_dropped_sequence: state.first_dropped_sequence,
-                last_attempted_sequence: state.last_attempted_sequence,
-                dropped_by_class,
-                dropped_by_reason,
-                truncated: state.first_dropped_sequence.is_some(),
-                degraded: state.degraded,
-                poison_recoveries: state.poison_recoveries,
-                counter_overflow: state.counter_overflow,
-            },
-        }
+        let footer = RuntimeObservationFooter {
+            complete: true,
+            terminal: Some(outcome),
+            retained_records: state.retained_records,
+            retained_bytes: state.retained_bytes,
+            first_dropped_sequence: state.first_dropped_sequence,
+            last_attempted_sequence: state.last_attempted_sequence,
+            dropped_by_class,
+            dropped_by_reason,
+            truncated: state.first_dropped_sequence.is_some(),
+            degraded: state.degraded,
+            poison_recoveries: state.poison_recoveries,
+            counter_overflow: state.counter_overflow,
+        };
+        // The fixed attempt summary is loss-independent: its completeness
+        // fields project the exact footer computed at this seal, never the
+        // bounded event retention.
+        let attempt_report = attempt_report.map(|mut report| {
+            report.set_observation_completeness(&footer);
+            report
+        });
+        RuntimeObservationSnapshotData { manifest: self.manifest.clone(), topology, events, attempt_report, footer }
     }
 }
 

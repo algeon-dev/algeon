@@ -83,6 +83,12 @@ resource_class = "shared"
 reason = "Iceberg native execution tests reach cuDF on bounded test fixtures."
 
 [[binary]]
+id = "datafusion-nexus::attempt_lifecycle_tests"
+lane = "gpu"
+resource_class = "shared"
+reason = "Execution-attempt lifecycle integration tests create bounded cuDF runtimes and require serialized shared GPU access."
+
+[[binary]]
 id = "datafusion-nexus::native_exec_tests"
 lane = "gpu"
 resource_class = "shared"

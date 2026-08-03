@@ -230,6 +230,7 @@ pub struct NexusGpuBackendBuilder {
     query_service_resident_graph_cache_max_retained_bytes: Option<u64>,
     query_service_query_memory_domain: Option<QueryMemoryDomainPolicy>,
     tenant_id: TenantId,
+    attempt_completion_queue_capacity: Option<usize>,
 }
 
 impl NexusGpuBackend {
@@ -427,7 +428,8 @@ impl NexusGpuBackend {
         else {
             return Ok(None);
         };
-        Self::build_bounded(optimizer_config, resolved, device_memory_ownership, admission_policy, tenant_id).map(Some)
+        Self::build_bounded(optimizer_config, resolved, device_memory_ownership, admission_policy, tenant_id, None)
+            .map(Some)
     }
 
     fn build_bounded(
@@ -436,6 +438,7 @@ impl NexusGpuBackend {
         device_memory_ownership: Vec<(usize, GpuMemoryOwnership)>,
         admission_policy: NexusAdmissionPolicy,
         tenant_id: TenantId,
+        attempt_completion_queue_capacity: Option<usize>,
     ) -> Result<Self> {
         let ownership_by_ordinal =
             validate_device_memory_ownership(&resolved.device_ordinals, &device_memory_ownership)?;
@@ -470,15 +473,18 @@ impl NexusGpuBackend {
                     .with_installation_bounds(stream_pool_size, active_limit, active_limit)
             })
             .collect::<Vec<_>>();
-        let core = GpuBackendCore::builder(GpuBackendCoreDraft::new(devices, controller, nongds_deployment()))
-            .build()
-            .map_err(|error| {
-                Error::from_native(
-                    "datafusion_nexus.backend.gpu_core",
-                    "failed to initialize ownership-enforcing GPU backend core",
-                    error,
-                )
-            })?;
+        let draft = GpuBackendCoreDraft::new(devices, controller, nongds_deployment());
+        let draft = match attempt_completion_queue_capacity {
+            Some(capacity) => draft.with_attempt_completion_queue_capacity(capacity),
+            None => draft,
+        };
+        let core = GpuBackendCore::builder(draft).build().map_err(|error| {
+            Error::from_native(
+                "datafusion_nexus.backend.gpu_core",
+                "failed to initialize ownership-enforcing GPU backend core",
+                error,
+            )
+        })?;
         let session = core.session_capability();
         let grant_band = session.requested_grant_band(&tenant_id, QueryGrantRequest::new()).map_err(|error| {
             Error::from_native(
@@ -709,11 +715,18 @@ impl Default for NexusGpuBackendBuilder {
             query_service_resident_graph_cache_max_retained_bytes: None,
             query_service_query_memory_domain: None,
             tenant_id: TenantId::new(DEFAULT_BACKEND_TENANT_ID),
+            attempt_completion_queue_capacity: None,
         }
     }
 }
 
 impl NexusGpuBackendBuilder {
+    /// Retain bounded reports whose completion receivers were abandoned.
+    pub fn with_attempt_completion_queue_capacity(mut self, capacity: usize) -> Self {
+        self.attempt_completion_queue_capacity = Some(capacity);
+        self
+    }
+
     /// Require each completed backend-installed physical plan to satisfy this
     /// native execution constraint.
     pub fn with_final_plan_requirement(mut self, requirement: FinalPlanRequirement) -> Self {
@@ -844,6 +857,7 @@ impl NexusGpuBackendBuilder {
             self.device_memory_ownership,
             self.admission_policy,
             self.tenant_id,
+            self.attempt_completion_queue_capacity,
         )
     }
 }

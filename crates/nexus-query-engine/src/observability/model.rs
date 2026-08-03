@@ -1,6 +1,9 @@
 //! Typed runtime observation identities and records.
 
-use std::fmt;
+use std::{
+    fmt,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -8,6 +11,226 @@ use crate::metrics::QueryId;
 
 /// JSONL schema emitted by sealed runtime observation snapshots.
 pub const RUNTIME_OBSERVATION_JSONL_SCHEMA: &str = "nexus_query_engine.runtime_observation.v2";
+/// Schema label for the fixed execution-attempt report envelope.
+pub const QUERY_ATTEMPT_REPORT_SCHEMA_V1: &str = "nexus_query_engine.query_attempt_report.v1";
+/// Maximum UTF-8 byte length for caller-supplied attempt query correlation.
+pub const MAX_ATTEMPT_QUERY_ID_BYTES: usize = 256;
+/// Maximum UTF-8 byte length for caller-supplied opaque trace context.
+pub const MAX_ATTEMPT_TRACE_CONTEXT_BYTES: usize = 1024;
+
+static NEXT_ATTEMPT_ID: AtomicU64 = AtomicU64::new(1);
+
+fn attempt_id_seed() -> u64 {
+    static SEED: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *SEED.get_or_init(|| {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos() as u64)
+            .unwrap_or(0);
+        // TODO: better implementation
+        nanos ^ ((std::process::id() as u64) << 32) ^ 0x9e37_79b9_7f4a_7c15
+    })
+}
+
+/// Opaque engine-minted identity for one physical execution attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct AttemptId([u8; 16]);
+
+impl AttemptId {
+    pub fn as_bytes(&self) -> &[u8; 16] {
+        &self.0
+    }
+
+    /// Mints a fresh process-unique attempt identity.
+    ///
+    /// Callers never supply an [`AttemptId`] when beginning an attempt; the
+    /// backend mints one per physical execution invocation.
+    pub fn mint() -> Self {
+        let counter = NEXT_ATTEMPT_ID.fetch_add(1, Ordering::Relaxed).to_be_bytes();
+        let seed = attempt_id_seed().to_be_bytes();
+        let mut bytes = [0; 16];
+        bytes[..8].copy_from_slice(&counter);
+        bytes[8..].copy_from_slice(&seed);
+        Self(bytes)
+    }
+}
+
+impl fmt::Display for AttemptId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "attempt-")?;
+        for byte in self.0 {
+            write!(formatter, "{byte:02x}")?;
+        }
+        Ok(())
+    }
+}
+
+impl Serialize for AttemptId {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where S: serde::Serializer {
+        serializer.collect_str(self)
+    }
+}
+
+impl<'de> Deserialize<'de> for AttemptId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where D: serde::Deserializer<'de> {
+        let value = String::deserialize(deserializer)?;
+        let hex = value.strip_prefix("attempt-").ok_or_else(|| serde::de::Error::custom("attempt id prefix"))?;
+        if hex.len() != 32 {
+            return Err(serde::de::Error::custom("attempt id length"));
+        }
+        let mut bytes = [0; 16];
+        for (index, byte) in bytes.iter_mut().enumerate() {
+            *byte = u8::from_str_radix(&hex[index * 2..index * 2 + 2], 16).map_err(serde::de::Error::custom)?;
+        }
+        Ok(Self(bytes))
+    }
+}
+
+macro_rules! attempt_correlation {
+    ($name:ident, $limit:ident, $field:literal) => {
+        #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+        #[serde(transparent)]
+        pub struct $name(String);
+        impl $name {
+            pub fn new(value: impl Into<String>) -> crate::error::Result<Self> {
+                let value = value.into();
+                if value.trim().is_empty() || value.len() > $limit {
+                    return Err(crate::error::QueryError::new(
+                        crate::error::QueryErrorCode::InvalidAttemptCorrelation,
+                        "nexus_query_engine.attempt.correlation",
+                        "attempt correlation must be non-blank and within its byte limit",
+                    )
+                    .with_fact("field", $field)
+                    .with_fact("max_bytes", $limit)
+                    .with_fact("reason", if value.trim().is_empty() { "blank" } else { "too_long" }));
+                }
+                Ok(Self(value))
+            }
+            pub fn as_str(&self) -> &str {
+                &self.0
+            }
+        }
+        impl fmt::Display for $name {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str(&self.0)
+            }
+        }
+        impl<'de> Deserialize<'de> for $name {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where D: serde::Deserializer<'de> {
+                // Validation is part of the value contract on every
+                // construction path, including report decoding.
+                let value = String::deserialize(deserializer)?;
+                Self::new(value).map_err(serde::de::Error::custom)
+            }
+        }
+    };
+}
+attempt_correlation!(AttemptQueryId, MAX_ATTEMPT_QUERY_ID_BYTES, "query_id");
+attempt_correlation!(AttemptTraceContext, MAX_ATTEMPT_TRACE_CONTEXT_BYTES, "trace_context");
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AttemptDisposition {
+    Unplanned,
+    CpuFallback,
+    PartialNative,
+    Native,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AttemptCleanupDisposition {
+    NotRequired,
+    Completed,
+    CompletedWithFailures,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AttemptCapacityDisposition {
+    NotAdmitted,
+    PendingRelease,
+    Released,
+    RetainedQuarantine,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttemptAdmissionFact {
+    pub admission_sequence: u64,
+    pub admission_wait_ns: u64,
+    pub device_ordinal: usize,
+    pub grant_bytes: u64,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttemptTimestamps {
+    pub submitted_ns: u64,
+    pub planning_started_ns: Option<u64>,
+    pub planning_finished_ns: Option<u64>,
+    pub admission_requested_ns: Option<u64>,
+    pub admitted_ns: Option<u64>,
+    pub physical_execution_started_ns: Option<u64>,
+    pub gpu_execution_started_ns: Option<u64>,
+    pub outcome_terminal_ns: u64,
+    pub cleanup_complete_ns: Option<u64>,
+    pub report_ready_ns: Option<u64>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QueryAttemptReport {
+    pub schema: String,
+    pub attempt_id: AttemptId,
+    pub query_id: Option<AttemptQueryId>,
+    pub trace_context: Option<AttemptTraceContext>,
+    pub disposition: AttemptDisposition,
+    pub outcome: RuntimeTerminalOutcome,
+    pub device_ordinal: Option<usize>,
+    pub admission: Option<AttemptAdmissionFact>,
+    pub timestamps: AttemptTimestamps,
+    pub cleanup_disposition: AttemptCleanupDisposition,
+    pub cleanup_failure_count: u64,
+    pub capacity_disposition: AttemptCapacityDisposition,
+    pub observation_lost_records: u64,
+    pub observation_retained_records: u64,
+    pub observation_retained_bytes: u64,
+    pub observation_truncated: bool,
+    pub observation_degraded: bool,
+    pub unix_epoch_ns: Option<u64>,
+}
+
+impl QueryAttemptReport {
+    /// Projects the sealed observation footer's completeness facts into the report.
+    pub(crate) fn set_observation_completeness(&mut self, footer: &RuntimeObservationFooter) {
+        self.observation_lost_records = footer.dropped_by_class.iter().map(|loss| loss.count).sum();
+        self.observation_retained_records = footer.retained_records;
+        self.observation_retained_bytes = footer.retained_bytes;
+        self.observation_truncated = footer.truncated;
+        self.observation_degraded = footer.degraded;
+    }
+}
+impl QueryAttemptReport {
+    pub fn total_ns(&self) -> Option<u64> {
+        self.timestamps.report_ready_ns.map(|ready| ready.saturating_sub(self.timestamps.submitted_ns))
+    }
+    pub fn planning_ns(&self) -> Option<u64> {
+        self.timestamps
+            .planning_started_ns
+            .zip(self.timestamps.planning_finished_ns)
+            .map(|(start, end)| end.saturating_sub(start))
+    }
+    pub fn queue_wait_ns(&self) -> Option<u64> {
+        self.timestamps
+            .admission_requested_ns
+            .zip(self.timestamps.admitted_ns)
+            .map(|(start, end)| end.saturating_sub(start))
+    }
+    pub fn physical_execution_ns(&self) -> Option<u64> {
+        self.timestamps
+            .physical_execution_started_ns
+            .map(|start| self.timestamps.outcome_terminal_ns.saturating_sub(start))
+    }
+    pub fn cleanup_ns(&self) -> Option<u64> {
+        self.timestamps.cleanup_complete_ns.map(|end| end.saturating_sub(self.timestamps.outcome_terminal_ns))
+    }
+}
 
 macro_rules! string_id {
     ($name:ident, $doc:literal) => {
