@@ -639,7 +639,17 @@ mod correlation_tests {
 
         assert!(payload.contains("# datafusion_nexus_admission_stats=1\n"), "{payload}");
         assert!(payload.contains("# backend=query_service\n"), "{payload}");
-        assert!(payload.contains("[admission]\nactive_queries\tqueued_queries\n0\t0\n"), "{payload}");
+        assert!(payload.contains("# backend_metrics_backend_generation=1\n"), "{payload}");
+        assert!(
+            payload.contains("[backend_metrics]\nbackend_generation\tgeneration\tconfigured_devices\n1\t0\t1\n"),
+            "{payload}"
+        );
+        assert!(
+            payload.contains(
+                "[backend_device_admission]\ndevice_ordinal\tledger_sequence\tactive_attempts\tlive_grant_bytes\tlive_reserved_bytes\tmax_live_reserved_bytes\tcache_evictable_resident_bytes\tcache_pinned_in_use_bytes\thealth\n0\t0\t0\t0\t0\t0\t0\t0\tOpen\n"
+            ),
+            "{payload}"
+        );
     }
 
     #[tokio::test]

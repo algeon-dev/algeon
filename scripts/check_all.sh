@@ -368,6 +368,7 @@ PHASE_ORDER=(
   iceberg-clippy
   tools-check
   examples-check
+  examples-otlp-tests
   bench-check
   iceberg-check
 )
@@ -407,7 +408,8 @@ define_phase clippy "cargo clippy --all-targets ${FEATURE_ARGS[*]}"
 define_phase bench-clippy "cargo clippy -p nexus-bench --all-targets --all-features"
 define_phase iceberg-clippy "cargo clippy -p nexus-iceberg --all-targets --all-features"
 define_phase tools-check "cargo check -p nexus-tools --all-targets --all-features"
-define_phase examples-check "cargo check -p nexus-examples --all-targets"
+define_phase examples-check "cargo check -p nexus-examples --all-targets --features otlp-metrics"
+define_phase examples-otlp-tests "cargo test -p nexus-examples --test otlp_metrics_exporter --features otlp-metrics"
 define_phase bench-check "cargo check -p nexus-bench --all-targets --all-features"
 define_phase iceberg-check "cargo check -p nexus-iceberg --all-targets --all-features"
 PHASE_FEATURES[bench-tests]='all(fixed)'
@@ -750,7 +752,8 @@ if [[ "${mode}" == full ]]; then
   run_phase bench-clippy none - - cargo clippy -p nexus-bench --all-targets --all-features || true
   run_phase iceberg-clippy none - - cargo clippy -p nexus-iceberg --all-targets --all-features || true
   run_phase tools-check none - - cargo check -p nexus-tools --all-targets --all-features || true
-  run_phase examples-check none - - cargo check -p nexus-examples --all-targets || true
+  run_phase examples-check none - - cargo check -p nexus-examples --all-targets --features otlp-metrics || true
+  run_phase examples-otlp-tests cargo - - cargo test -p nexus-examples --test otlp_metrics_exporter --features otlp-metrics || true
   run_phase bench-check none - - cargo check -p nexus-bench --all-targets --all-features || true
   run_phase iceberg-check none - - cargo check -p nexus-iceberg --all-targets --all-features || true
 fi

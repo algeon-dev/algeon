@@ -92,6 +92,11 @@ if [[ "${1:-}" == "test" && " $* " == *" --doc "* ]]; then
       ;;
   esac
 fi
+if [[ "${1:-}" == "test" ]]; then
+  echo "running 2 tests"
+  echo "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+  exit 0
+fi
 if [[ "${1:-}" == "doc" ]]; then
   exit "${FAKE_RUSTDOC_STATUS:-0}"
 fi

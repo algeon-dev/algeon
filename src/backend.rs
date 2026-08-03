@@ -334,6 +334,15 @@ impl NexusGpuBackend {
         self.core.close_and_wait_until(deadline)
     }
 
+    /// Returns one coherent, fixed-cardinality backend metrics snapshot.
+    ///
+    /// Applications own any exporter or retention policy.  This facade only
+    /// exposes the backend generation snapshot produced by the engine; it
+    /// does not install an exporter or create an HTTP metrics endpoint.
+    pub fn backend_metrics_snapshot(&self) -> nexus_query_engine::runtime::BackendMetricsSnapshot {
+        self.session.backend_metrics_snapshot()
+    }
+
     pub fn admission_snapshot(
         &self,
     ) -> nexus_query_engine::error::Result<nexus_query_engine::runtime::QueryServiceAdmissionSnapshot> {

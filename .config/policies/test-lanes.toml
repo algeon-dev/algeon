@@ -158,6 +158,11 @@ resource_class = "shared"
 reason = "Native engine library tests include cuDF runtime and kernel execution on small fixtures."
 
 [[binary]]
+id = "nexus-query-engine::backend_metric_descriptor_tests"
+lane = "cpu"
+reason = "Backend metric descriptor golden and cardinality contracts are pure catalog checks and do not initialize CUDA."
+
+[[binary]]
 id = "datafusion-nexus::datafusion_public_api_boundary"
 lane = "cpu"
 reason = "Trybuild coverage verifies the adapter runtime-injection boundary without constructing a CUDA runtime."

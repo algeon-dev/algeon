@@ -13,6 +13,12 @@ workspace = true
 [features]
 default = []
 cuvs = ["dep:cuvs-sys", "datafusion-nexus/server-cuvs", "nexus-query-engine/cuvs"]
+# The reference OTLP exporter is deliberately opt-in: it adds a tonic transport
+# stack that ordinary embedding examples do not need.
+otlp-metrics = [
+  "dep:opentelemetry",
+  "dep:opentelemetry-proto",
+]
 
 [dependencies]
 anyhow = { workspace = true }
@@ -26,6 +32,8 @@ datafusion = { workspace = true }
 futures = { workspace = true }
 datafusion-nexus = { workspace = true, features = ["server-cugraph", "iceberg"] }
 nexus-query-engine = { workspace = true }
+opentelemetry = { version = "0.32.0", default-features = false, features = ["metrics"], optional = true }
+opentelemetry-proto = { version = "0.32.0", default-features = false, features = ["gen-tonic-messages", "metrics", "gen-tonic"], optional = true }
 parquet = { workspace = true }
 tempfile = { workspace = true }
 serde = { workspace = true }
@@ -45,3 +53,14 @@ doctest = false
 name = "embedded_backend"
 path = "src/bin/embedded_backend.rs"
 test = false
+
+[[bin]]
+name = "otlp_metrics_exporter"
+path = "src/bin/otlp_metrics_exporter.rs"
+test = false
+required-features = ["otlp-metrics"]
+
+[[test]]
+name = "otlp_metrics_exporter"
+path = "tests/otlp_metrics_exporter.rs"
+required-features = ["otlp-metrics"]

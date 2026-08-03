@@ -1,6 +1,7 @@
 //! QueryService constructors and config preflight validation.
 
 use super::*;
+use crate::runtime::backend_metrics::BackendMetricsStore;
 
 impl QueryService {
     pub(crate) fn validate_controller_policy_for_backend(
@@ -62,6 +63,7 @@ impl QueryService {
             None,
             None,
             None,
+            None,
         )?;
         drop(token);
         resources.owner_lease = Some(owner_lease);
@@ -90,6 +92,7 @@ impl QueryService {
             None,
             None,
             None,
+            None,
         )?;
         drop(token);
         resources.owner_lease = Some(owner_lease);
@@ -108,6 +111,7 @@ impl QueryService {
         device_profiles: &[GpuBackendDeviceConfig],
         probe: &dyn GpuBackendConstructionProbe,
         construction_journal: &Arc<ConstructionResourceJournal>,
+        backend_metrics: &BackendMetricsStore,
     ) -> Result<Self> {
         let device_ordinals = normalize_device_ordinals(&device_ordinals)?;
         let (config, queue_bounds) = controller.into_parts();
@@ -123,6 +127,7 @@ impl QueryService {
             Some(probe),
             Some(resolved_plans),
             Some(construction_journal),
+            Some(backend_metrics),
         )?;
         Self::build(config, queue_bounds, Some(resources))
     }
@@ -136,14 +141,22 @@ impl QueryService {
         probe: Option<&dyn GpuBackendConstructionProbe>,
         resolved_plans: Option<ResolvedDeviceInstallPlans>,
         construction_journal: Option<&Arc<ConstructionResourceJournal>>,
+        backend_metrics: Option<&BackendMetricsStore>,
     ) -> Result<QueryServiceResources> {
         let devices = match resolved_plans {
             Some(resolved_plans) => {
-                DeviceRegistry::install_resolved(resolved_plans, owner, probe, construction_journal)?
+                DeviceRegistry::install_resolved(resolved_plans, owner, probe, construction_journal, backend_metrics)?
             },
             None => {
                 let registry_config = device_registry_config(device_ordinals, device_profiles)?;
-                DeviceRegistry::install(&NexusGpuInventory, &registry_config, owner, probe, construction_journal)?
+                DeviceRegistry::install(
+                    &NexusGpuInventory,
+                    &registry_config,
+                    owner,
+                    probe,
+                    construction_journal,
+                    backend_metrics,
+                )?
             },
         };
         let gpu_execution_query_tracker = GpuExecutionQueryTracker::new();

@@ -6,7 +6,7 @@ use std::{
         Arc, Mutex, OnceLock, Weak,
         atomic::{AtomicU64, Ordering},
     },
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 #[cfg(test)]
 use std::{
@@ -24,6 +24,10 @@ use super::{
     backend_close::{CloseCoordinator, ConstructionRollback, reject_reentrant_observation_close},
     backend_lifecycle::{
         BackendLifecycle, GpuLifecyclePermit, ObservationPermit, PublicHandleLease, PublicHandleTracker,
+    },
+    backend_metrics::{
+        BackendAttemptDurations, BackendMemoryFailureTelemetry, BackendMetricsSnapshot, BackendMetricsStore,
+        BackendTelemetryAvailability, BackendTelemetryRefresh, BackendTelemetryRefreshSnapshot, BackendTelemetrySource,
     },
     gpu::{LiveBackendLease, claim_live_backend, normalize_device_ordinals},
     observation_completion::ObservationCompletionExecutor,
@@ -638,13 +642,14 @@ impl GpuBackendCoreBuilder {
         let GpuBackendCoreDraft { devices, controller, deployment_io_capability, attempt_completion_queue_capacity } =
             self.draft;
         let ordinals = devices.iter().map(|device| device.device_ordinal).collect::<Vec<_>>();
+        let generation_id = next_backend_identity();
+        let backend_metrics = BackendMetricsStore::new(generation_id, &ordinals)?;
         let owner_lease = claim_live_backend(&ordinals)?;
 
         // The generation shell and cleanup worker are the rollback journal for
         // every post-claim construction step. In particular, the live owner
         // lease is never held only by this builder's stack while GPU resources
         // are being installed.
-        let generation_id = next_backend_identity();
         let generation = Arc::new(ResourceGeneration::new(generation_id, owner_lease, Arc::clone(&journal)));
         let resource_core = Arc::new(ResourceCore {
             identity: next_backend_identity(),
@@ -657,6 +662,7 @@ impl GpuBackendCoreBuilder {
             attempt_completion_queue: attempt_completion_queue_capacity
                 .and_then(AttemptCompletionQueue::new)
                 .map(Arc::new),
+            backend_metrics: backend_metrics.clone(),
             completion_executor: {
                 #[cfg(test)]
                 {
@@ -684,6 +690,7 @@ impl GpuBackendCoreBuilder {
                 &devices,
                 self.probe.as_ref(),
                 &journal,
+                &backend_metrics,
             )?;
             generation.service.set(service).map_err(|_service| {
                 QueryError::new(
@@ -914,6 +921,68 @@ impl GpuBackendCore {
         self.session_capability().begin_attempt(request)
     }
 
+    /// Returns one coherent pull snapshot for this backend resource generation.
+    ///
+    /// The snapshot has a monotonic store generation so a consumer can detect
+    /// whether it combined observations from different points in time.
+    pub fn backend_metrics_snapshot(&self) -> BackendMetricsSnapshot {
+        self.observation_core.backend_metrics.snapshot()
+    }
+
+    /// Records one explicit control-plane telemetry sample.
+    ///
+    /// This is deliberately separate from admission: it updates only the
+    /// backend metrics telemetry region and returns the source, sample time,
+    /// availability, and caller-measured age that were retained.
+    pub fn refresh_backend_telemetry(
+        &self,
+        refresh: BackendTelemetryRefresh,
+    ) -> Result<BackendTelemetryRefreshSnapshot> {
+        self.observation_core.backend_metrics.refresh_telemetry(refresh)
+    }
+
+    /// Samples the installed allocation-failure trackers into telemetry-class
+    /// backend metrics.
+    ///
+    /// The frozen memory-manager installation generation binds each callback
+    /// report to this backend generation. Admission never consults this data.
+    pub fn refresh_memory_failure_telemetry(&self) -> Result<Vec<BackendTelemetryRefreshSnapshot>> {
+        const OPERATION: &str = "nexus_query_engine.gpu_backend_core.refresh_memory_failure_telemetry";
+        let sampled_at_unix_ms = backend_telemetry_sampled_at_unix_ms(OPERATION)?;
+        let reports = self.session_capability().device_memory_failure_reports()?;
+        let mut refreshed = Vec::with_capacity(reports.len());
+        for report in reports {
+            let source_generation = self
+                .startup_records
+                .iter()
+                .find(|record| record.device_ordinal == report.device_ordinal)
+                .and_then(|record| record.memory_manager_installation.installation_generation)
+                .ok_or_else(|| {
+                    QueryError::new(
+                        QueryErrorCode::Internal,
+                        OPERATION,
+                        "installed device has no memory-manager generation for failure telemetry",
+                    )
+                    .with_fact("device_ordinal", report.device_ordinal)
+                    .with_fact("reason", "memory_failure_telemetry_generation_missing")
+                })?;
+            let age_ms = backend_telemetry_sampled_at_unix_ms(OPERATION)?.saturating_sub(sampled_at_unix_ms);
+            refreshed.push(self.refresh_backend_telemetry(BackendTelemetryRefresh {
+                device_ordinal: report.device_ordinal,
+                source: BackendTelemetrySource::DeviceMemoryFailureTracker,
+                sampled_at_unix_ms,
+                age_ms,
+                availability: if report.callback_installed {
+                    BackendTelemetryAvailability::Available
+                } else {
+                    BackendTelemetryAvailability::Unavailable
+                },
+                memory_failures: Some(BackendMemoryFailureTelemetry::from_report(source_generation, &report)),
+            })?);
+        }
+        Ok(refreshed)
+    }
+
     pub fn close(&self) -> bool {
         self.coordinator.signal()
     }
@@ -977,12 +1046,28 @@ impl GpuBackendSession {
     pub fn begin_attempt(&self, request: BeginAttemptRequest) -> Result<AttemptBegin> {
         let permit = self.observation_core.lifecycle.try_begin_observation()?;
         self.observation_core.attempt_counters.attempts_begun.fetch_add(1, Ordering::AcqRel);
-        Ok(AttemptOwner::begin(
+        let begin = AttemptOwner::begin(
             request,
             permit,
             Arc::clone(&self.observation_core.attempt_counters),
             self.observation_core.attempt_completion_queue.clone(),
-        ))
+        );
+        register_backend_attempt_metrics_sink(&begin.owner, self.observation_core.backend_metrics.clone());
+        Ok(begin)
+    }
+
+    /// Returns the same coherent generation snapshot exposed by the owning
+    /// backend core without requiring access to live GPU resources.
+    pub fn backend_metrics_snapshot(&self) -> BackendMetricsSnapshot {
+        self.observation_core.backend_metrics.snapshot()
+    }
+
+    /// Records one explicit telemetry refresh through this session capability.
+    pub fn refresh_backend_telemetry(
+        &self,
+        refresh: BackendTelemetryRefresh,
+    ) -> Result<BackendTelemetryRefreshSnapshot> {
+        self.observation_core.backend_metrics.refresh_telemetry(refresh)
     }
 
     pub fn take_abandoned_attempt_reports(&self, max: usize) -> Vec<Arc<crate::observability::QueryAttemptReport>> {
@@ -1079,6 +1164,36 @@ impl GpuBackendSession {
     }
 }
 
+fn register_backend_attempt_metrics_sink(owner: &AttemptOwner, backend_metrics: BackendMetricsStore) {
+    owner.register_sealed_report_sink(move |report| {
+        let projection = report.sealed_projection();
+        backend_metrics.record_sealed_attempt(
+            &projection,
+            BackendAttemptDurations {
+                total_ns: report.total_ns(),
+                planning_ns: report.planning_ns(),
+                queue_wait_ns: report.queue_wait_ns(),
+                physical_execution_ns: report.physical_execution_ns(),
+            },
+        );
+    });
+}
+
+fn backend_telemetry_sampled_at_unix_ms(operation: &'static str) -> Result<u64> {
+    let elapsed = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|_error| {
+        QueryError::new(QueryErrorCode::Internal, operation, "backend telemetry sample time predates the Unix epoch")
+            .with_fact("reason", "telemetry_clock_before_unix_epoch")
+    })?;
+    u64::try_from(elapsed.as_millis()).map_err(|_error| {
+        QueryError::new(
+            QueryErrorCode::Internal,
+            operation,
+            "backend telemetry sample time exceeds the supported millisecond range",
+        )
+        .with_fact("reason", "telemetry_sample_time_overflow")
+    })
+}
+
 /// Permit required by private service admission.
 ///
 /// The resource generation field is declared before the lifecycle count so it
@@ -1110,6 +1225,7 @@ pub(crate) struct ObservationCore {
     pub(crate) lifecycle: BackendLifecycle,
     attempt_counters: Arc<AttemptBackendCounters>,
     attempt_completion_queue: Option<Arc<AttemptCompletionQueue>>,
+    backend_metrics: BackendMetricsStore,
     completion_executor: ObservationCompletionExecutor,
 }
 
@@ -1311,11 +1427,14 @@ mod tests {
 
     fn inert_backend_for_observation_delivery_test() -> GpuBackendCore {
         let resource_core = Arc::new(ResourceCore { identity: next_backend_identity(), generation: Mutex::new(None) });
+        let generation_id = next_backend_identity();
         let observation_core = Arc::new(ObservationCore {
             identity: next_backend_identity(),
             lifecycle: BackendLifecycle::new(),
             attempt_counters: Arc::new(AttemptBackendCounters::default()),
             attempt_completion_queue: None,
+            backend_metrics: BackendMetricsStore::new(generation_id, &[])
+                .expect("test backend metrics store accepts the inert generation"),
             completion_executor: ObservationCompletionExecutor::spawn().expect("test creates observation executor"),
         });
         let coordinator = CloseCoordinator::spawn(Arc::clone(&resource_core), Arc::clone(&observation_core))
@@ -1331,7 +1450,7 @@ mod tests {
             coordinator,
             public_handle,
             startup_records: Arc::from([]),
-            generation_id: next_backend_identity(),
+            generation_id,
         }
     }
 
@@ -1345,6 +1464,32 @@ mod tests {
         assert!(close.gpu_resource_quiescent);
         assert!(close.observation_quiescent);
         assert!(coordinator.worker_join_is_reclaimed_for_test(), "close must reclaim its cleanup worker handle");
+    }
+
+    #[test]
+    fn engine_begin_records_one_sealed_projection_despite_a_panicking_peer_sink() {
+        use crate::runtime::backend_metrics::{BackendAttemptDisposition, BackendAttemptOutcome};
+
+        let backend = inert_backend_for_observation_delivery_test();
+        let begin = backend.begin_attempt(BeginAttemptRequest::default()).expect("inert backend begins an attempt");
+        begin.owner.register_sealed_report_sink(|_| panic!("injected peer sink panic"));
+
+        begin.owner.commit_terminal(crate::observability::RuntimeTerminalOutcome::Succeeded).unwrap();
+        let first = backend.backend_metrics_snapshot();
+        assert_eq!(first.attempts.completed(BackendAttemptDisposition::Unplanned, BackendAttemptOutcome::Succeeded), 1,);
+
+        // The owner drop is idempotent after report-ready: a peer sink panic
+        // cannot duplicate or lose the engine-owned exact terminal update.
+        drop(begin);
+        let second = backend.backend_metrics_snapshot();
+        assert_eq!(second.generation, first.generation);
+        assert_eq!(
+            second.attempts.completed(BackendAttemptDisposition::Unplanned, BackendAttemptOutcome::Succeeded),
+            1,
+        );
+
+        let close = backend.close_and_wait(Duration::from_secs(2)).expect("inert backend closes");
+        assert!(close.observation_quiescent);
     }
 
     #[test]
@@ -1611,7 +1756,9 @@ mod tests {
     #[test]
     fn observation_completion_executor_spawn_failure_never_publishes_or_retains_live_owner() {
         let _owner_test = live_backend_test_lock();
-        let device_ordinal = usize::MAX - 3;
+        // This fails before device installation, so use a bounded synthetic
+        // ordinal that the fixed-cardinality backend metrics store accepts.
+        let device_ordinal = super::super::BACKEND_METRIC_DEVICE_CAPACITY - 3;
         for failing_lane in
             [ObservationCompletionWorkerLane::Observation, ObservationCompletionWorkerLane::ActivityTail]
         {
@@ -1847,7 +1994,9 @@ mod tests {
     #[test]
     fn post_worker_failure_transfers_owner_release_to_cleanup_coordinator() {
         let _owner_test = live_backend_test_lock();
-        let ordinal = usize::MAX - 1;
+        // The probe stops before device installation; keep the ordinal inside
+        // the backend metrics store's frozen device-label domain.
+        let ordinal = super::super::BACKEND_METRIC_DEVICE_CAPACITY - 1;
         let config = one_device_backend_draft(ordinal);
 
         let error = GpuBackendCore::builder(config)
@@ -1928,6 +2077,8 @@ mod tests {
             lifecycle: BackendLifecycle::new(),
             attempt_counters: Arc::new(AttemptBackendCounters::default()),
             attempt_completion_queue: None,
+            backend_metrics: BackendMetricsStore::new(next_backend_identity(), &[])
+                .expect("test backend metrics store accepts an empty device set"),
             completion_executor: ObservationCompletionExecutor::spawn().unwrap(),
         });
         let coordinator = CloseCoordinator::spawn(Arc::clone(&resource_core), Arc::clone(&observation_core)).unwrap();

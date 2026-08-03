@@ -16,7 +16,7 @@ use crate::{
     error::{QueryError, QueryErrorCode, Result},
     runtime::{
         GpuBackendConstructionCheckpoint, GpuBackendConstructionProbe, GpuBackendDeviceConfig, GpuMemoryFraction,
-        ServiceStreamPool, backend_core::ConstructionResourceJournal,
+        ServiceStreamPool, backend_core::ConstructionResourceJournal, backend_metrics::BackendMetricsStore,
     },
 };
 
@@ -325,6 +325,7 @@ impl DeviceRegistry {
         owner: &DeviceOwnerToken<'_>,
         probe: Option<&dyn GpuBackendConstructionProbe>,
         construction_journal: Option<&Arc<ConstructionResourceJournal>>,
+        backend_metrics: Option<&BackendMetricsStore>,
     ) -> Result<Self> {
         let _owner_generation = owner.generation();
         let ResolvedDeviceInstallPlans { plans: discovered, device_ordinals: ordinals, max_ordinal } = resolved;
@@ -403,6 +404,12 @@ impl DeviceRegistry {
             checkpoint(probe, GpuBackendConstructionCheckpoint::AfterStreamPool { device_ordinal: ordinal })?;
             checkpoint(probe, GpuBackendConstructionCheckpoint::BeforeDeviceContext { device_ordinal: ordinal })?;
             let ledger = Arc::new(DeviceLedger::new(managed.discovered.resource_profile.clone()));
+            if let Some(backend_metrics) = backend_metrics {
+                let backend_metrics = backend_metrics.clone();
+                ledger.register_transition_observer(Arc::new(move |transition| {
+                    backend_metrics.record_ledger_transition(transition);
+                }))?;
+            }
             let context = DeviceContext::new(
                 managed.discovered.device,
                 stream_pool,
@@ -436,9 +443,10 @@ impl DeviceRegistry {
         owner: &DeviceOwnerToken<'_>,
         probe: Option<&dyn GpuBackendConstructionProbe>,
         construction_journal: Option<&Arc<ConstructionResourceJournal>>,
+        backend_metrics: Option<&BackendMetricsStore>,
     ) -> Result<Self> {
         let resolved = Self::resolve_install_plans(inventory, config, probe)?;
-        Self::install_resolved(resolved, owner, probe, construction_journal)
+        Self::install_resolved(resolved, owner, probe, construction_journal, backend_metrics)
     }
 
     /// Looks up a context by CUDA device ordinal.
