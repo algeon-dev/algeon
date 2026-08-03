@@ -15,6 +15,7 @@ mod affinity;
 mod binding_extension;
 mod boundary;
 mod budget;
+mod cache_allocation;
 pub mod device;
 pub mod device_guard;
 pub mod device_health;
@@ -43,6 +44,7 @@ pub use budget::{
     BudgetedExecutionOutcome, ExecutionBudgetEnforcement, ExecutionBudgetReport, ExecutionBudgetRequest,
     ExecutionBudgetStatus, ExecutionBudgetToken,
 };
+pub use cache_allocation::{CacheAllocationDomain, CacheAllocationDomainId, CacheAllocationLease};
 pub use device::DeviceId;
 pub use device_guard::DeviceEntryGuard;
 pub use device_health::{
