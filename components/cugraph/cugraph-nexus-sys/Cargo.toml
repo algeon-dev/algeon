@@ -3,6 +3,7 @@ name = "cugraph-nexus-sys"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+build = "build.rs"
 links = "cugraph"
 description = "Raw FFI bindings to the cuGraph C API"
 license.workspace = true
@@ -15,6 +16,9 @@ keywords = ["cugraph", "cuda", "ffi", "gpu", "rapids"]
 
 [lib]
 name = "cugraph_sys"
+
+[lints]
+workspace = true
 
 [build-dependencies]
 bindgen.workspace = true

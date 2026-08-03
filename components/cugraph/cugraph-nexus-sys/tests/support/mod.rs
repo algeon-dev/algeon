@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-#[path = "../build_support.rs"]
+#[path = "../../build_support.rs"]
 mod build_support;
 
 pub fn manifest_dir() -> PathBuf {

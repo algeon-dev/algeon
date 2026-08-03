@@ -93,6 +93,7 @@ mod errors;
 mod ingress;
 mod options;
 mod parquet;
+mod preflight;
 mod prepared;
 mod types;
 
@@ -122,4 +123,10 @@ pub use options::{
     TableVertexPairOptions,
 };
 pub use parquet::{LoadedGraph, graph_from_parquet};
+pub use preflight::{
+    BfsSideInputPreflight, BfsSideInputPreflightInput, EdgelistSortPreflightInput,
+    PersonalizedPageRankSideInputPreflight, PersonalizedPageRankSideInputPreflightInput,
+    bfs_side_input_workspace_preflight, edgelist_sort_workspace_preflight,
+    personalized_pagerank_side_input_workspace_preflight,
+};
 pub use types::{cudf_type_to_cugraph, cugraph_type_to_cudf};

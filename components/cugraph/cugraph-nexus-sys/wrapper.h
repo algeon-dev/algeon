@@ -65,6 +65,50 @@ CUGRAPH_EXPORT cugraph_type_erased_device_array_view_t* cugraph_layout_result_ge
 
 CUGRAPH_EXPORT void cugraph_layout_result_free(cugraph_layout_result_t* result);
 
+// Host-only preflight for the temporary workspace used by raw single-GPU
+// edgelist construction sorting. graph.h owns this public declaration; keep
+// the explicit wrapper mirror covered by the sys ABI contract test.
+CUGRAPH_EXPORT cugraph_error_code_t cugraph_edgelist_sort_workspace_preflight(
+  cugraph_data_type_id_t vertex_type,
+  cugraph_data_type_id_t edge_type,
+  bool_t has_edge_weights,
+  cugraph_data_type_id_t weight_type,
+  bool_t has_edge_ids,
+  bool_t store_transposed,
+  size_t num_edges,
+  size_t* workspace_bytes_out,
+  cugraph_error_t** error);
+
+CUGRAPH_EXPORT cugraph_error_code_t cugraph_bfs_side_input_workspace_preflight(
+  cugraph_data_type_id_t vertex_type,
+  cugraph_data_type_id_t edge_type,
+  size_t num_vertices,
+  size_t num_edges,
+  bool_t has_sources,
+  size_t source_rows,
+  bool_t has_include_vertices,
+  size_t include_vertices_rows,
+  bool_t has_exclude_vertices,
+  size_t exclude_vertices_rows,
+  bool_t has_target_vertices,
+  size_t target_vertices_rows,
+  bool_t has_include_edge_ids,
+  size_t include_edge_ids_rows,
+  size_t* source_copy_bytes_out,
+  size_t* predicate_bitmap_bytes_out,
+  size_t* edge_mask_bytes_out,
+  size_t* workspace_bytes_out,
+  cugraph_error_t** error);
+
+CUGRAPH_EXPORT cugraph_error_code_t cugraph_personalized_pagerank_side_input_workspace_preflight(
+  cugraph_data_type_id_t vertex_type,
+  cugraph_data_type_id_t weight_type,
+  bool_t has_personalization,
+  size_t personalization_rows,
+  size_t* copy_bytes_out,
+  size_t* workspace_bytes_out,
+  cugraph_error_t** error);
+
 #ifdef __cplusplus
 }
 #endif

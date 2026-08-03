@@ -5,7 +5,7 @@ resolver = "3"
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.94.0"
+rust-version = "1.94"
 license = "Apache-2.0"
 repository = "https://github.com/DataFusion-Nexus/cugraph-nexus"
 homepage = "https://github.com/DataFusion-Nexus/cugraph-nexus"
@@ -20,3 +20,7 @@ cudf-sys = { package = "cudf-nexus-sys", path = "../cudf-nexus/cudf-nexus-sys", 
 rapids-interop = { path = "../cudf-nexus/rapids-interop", version = "0.1.0" }
 cugraph-sys = { package = "cugraph-nexus-sys", path = "cugraph-nexus-sys", version = "0.1.0" }
 static_assertions = "1"
+
+[workspace.lints.rustdoc]
+broken_intra_doc_links = "deny"
+bare_urls = "deny"
