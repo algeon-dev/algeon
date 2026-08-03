@@ -332,6 +332,7 @@ impl QueryService {
             admission: Mutex::new(AdmissionState::default()),
             admission_available: Condvar::new(),
             admission_notify: Notify::new(),
+            allocator_event_correlation: Mutex::new(AllocatorEventCorrelationIndex::default()),
             #[cfg(test)]
             shutdown_waiters: AtomicUsize::new(0),
             admission_transaction_probe: Mutex::new(None),

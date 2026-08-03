@@ -41,13 +41,17 @@ impl DatafusionNexusFlightSqlService {
                 },
             },
         };
+        // Keep this exact-generation callback before `into_execution` moves
+        // the planning lease. Its error arm may seal the attempt only after
+        // that move has already terminalized the coordinator record.
+        let planning_report_handoff = CoordinatorReportHandoffTerminal::planning(&planning_lease);
         let execution_lease = match planning_lease.into_execution() {
             Ok(execution_lease) => execution_lease,
             Err(error) => {
                 let error = error.adapter_error(statement_kind.into_execution_operation());
                 if let Some(attempt) = attempt.as_ref() {
+                    self.register_attempt_report_handoff(attempt, planning_report_handoff);
                     attempt.planning_failed_adapter(&error);
-                    self.register_attempt_report_handoff(query_id.clone(), attempt, None);
                 }
                 let status = adapter_error_status(error);
                 return Err(status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref()));
@@ -61,7 +65,10 @@ impl DatafusionNexusFlightSqlService {
             attempt.is_some(),
         );
         if let Some(attempt) = attempt.as_ref() {
-            self.register_attempt_report_handoff(query_id.clone(), attempt, Some(Arc::clone(&coordinator_terminal)));
+            self.register_attempt_report_handoff(
+                attempt,
+                CoordinatorReportHandoffTerminal::execution(Arc::clone(&coordinator_terminal)),
+            );
         }
         let query_span = Self::query_span(&query_id, correlation_id.as_deref(), "update_statement");
         let _query_enter = query_span.enter();
@@ -171,7 +178,7 @@ impl DatafusionNexusFlightSqlService {
             return Err(status);
         }
         let plan_for_error = plan.clone();
-        let df = tokio::select! {
+        let _result = tokio::select! {
             result = query_ctx.execute_logical_plan(plan)
                 .instrument(Self::query_stage_span(Some(&query_span), &query_id, correlation_id.as_deref(), "planning")) => match result {
                 Ok(df) => df,
@@ -232,43 +239,14 @@ impl DatafusionNexusFlightSqlService {
             },
         };
 
-        let _batches = tokio::select! {
-            result = async {
-                if let Some(attempt) = attempt.as_ref() {
-                    attempt.execute_dataframe(df).await?.try_collect::<Vec<_>>().await
-                } else {
-                    df.collect().await
-                }
-            }
-                .instrument(Self::query_stage_span(Some(&query_span), &query_id, correlation_id.as_deref(), "native_execution")) => match result {
-                Ok(batches) => batches,
-                Err(error) => {
-                    let captured = datafusion_error_to_captured_error(&error, statement_kind.collect_operation());
-                    let status = status_with_query_id(
-                        datafusion_error_to_status_for_operation(error, statement_kind.collect_operation()),
-                        &query_id,
-                    );
-                    let status =
-                        status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
-                    coordinator_terminal.finish_captured("collect", &status, captured);
-                    return Err(status);
-                },
-            },
-            _ = self.shutdown_token.cancelled() => {
-                native_cancellation.cancel();
-                if let Some(attempt) = attempt.as_ref() {
-                    attempt.cancel_before_stream();
-                }
-                let (status, captured) = adapter_error_to_status_and_capture(server_shutdown_error());
-                let status = status_with_query_id_and_correlation_id(
-                    status,
-                    &query_id,
-                    correlation_id.as_deref(),
-                );
-                coordinator_terminal.finish_captured("collect", &status, captured);
-                return Err(status);
-            },
-        };
+        // `execute_logical_plan` has already completed every supported update
+        // action. In particular, DataFusion materializes CTAS input there and
+        // returns an empty DataFrame. Re-executing that placeholder under the
+        // same attempt would create a second native admission after the CTAS
+        // handle consumed the attempt's one post-cleanup finalizer.
+        if let Some(attempt) = attempt.as_ref() {
+            attempt.complete_without_result_stream();
+        }
 
         coordinator_terminal.finish_success("collect");
         coordinator_terminal.wait_finished().await;
@@ -304,14 +282,15 @@ impl DatafusionNexusFlightSqlService {
                 return Err(status);
             },
         };
+        let planning_report_handoff = CoordinatorReportHandoffTerminal::planning(&planning_lease);
         let execution_lease = match planning_lease.into_execution() {
             Ok(execution_lease) => execution_lease,
             Err(error) => {
                 let error = error
                     .adapter_error("datafusion_nexus.server.flight.do_put_prepared_statement_update.into_execution");
                 if let Some(attempt) = attempt.as_ref() {
+                    self.register_attempt_report_handoff(attempt, planning_report_handoff);
                     attempt.planning_failed_adapter(&error);
-                    self.register_attempt_report_handoff(query_id.clone(), attempt, None);
                 }
                 let status = adapter_error_status(error);
                 return Err(status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref()));
@@ -324,7 +303,10 @@ impl DatafusionNexusFlightSqlService {
             attempt.is_some(),
         );
         if let Some(attempt) = attempt.as_ref() {
-            self.register_attempt_report_handoff(query_id, attempt, Some(Arc::clone(&coordinator_terminal)));
+            self.register_attempt_report_handoff(
+                attempt,
+                CoordinatorReportHandoffTerminal::execution(Arc::clone(&coordinator_terminal)),
+            );
             attempt.complete_without_result_stream();
         }
         coordinator_terminal.finish_success("deduplicated_update");

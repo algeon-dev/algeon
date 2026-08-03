@@ -327,11 +327,19 @@ impl DeviceRegistry {
                     .with_fact("device_ordinal", ordinal)
                     .with_fact("reason", "device_memory_manager_inspection_failed")
                 })?;
+            let allocation_limit_bytes = discovered.profile.memory_partition.allocation_limit_bytes();
+            let requested_options = canonical_device_memory_manager_options(allocation_limit_bytes);
+            if installation_before.effective_options.is_some_and(|existing| existing != requested_options) {
+                return Err(device_memory_manager_options_conflict(
+                    discovered.device,
+                    installation_before,
+                    requested_options,
+                ));
+            }
             let memory_failure_tracker =
                 DeviceMemoryFailureTracker::for_installation_state(ordinal, installation_before)?;
-            let allocation_limit_bytes = discovered.profile.memory_partition.allocation_limit_bytes();
             let (mr_manager, memory_manager_installation) =
-                install_device_memory_manager(discovered.device, &memory_failure_tracker, allocation_limit_bytes)?;
+                install_device_memory_manager(discovered.device, &memory_failure_tracker, requested_options)?;
             if let Some(journal) = construction_journal {
                 journal.record_memory_manager(mr_manager.clone())?;
             }
@@ -628,9 +636,8 @@ fn managed_capacity_bytes(
 fn install_device_memory_manager(
     device: cudf::DeviceId,
     memory_failure_tracker: &DeviceMemoryFailureTracker,
-    allocation_limit_bytes: Option<usize>,
+    options: cudf::DeviceMemoryManagerOptions,
 ) -> Result<(cudf::DeviceMemoryManager, cudf::DeviceMemoryManagerInstallationState)> {
-    let options = canonical_device_memory_manager_options(allocation_limit_bytes);
     let callback_was_installed = memory_failure_tracker.report().callback_installed;
     let identity = cudf::DeviceMemoryManagerInstallationIdentity::new(
         *b"nexus-query-eng\0",
@@ -663,23 +670,8 @@ fn install_device_memory_manager(
                 if let Some(state) = installation_state
                     && state.cause == cudf::DeviceMemoryManagerInstallationCause::OptionsMismatch
                 {
-                    let existing_options = state
-                        .effective_options
-                        .map(|existing| format!("{existing:?}"))
-                        .unwrap_or_else(|| "unavailable".to_owned());
-                    return Err(QueryError::new(
-                        QueryErrorCode::InvalidPlan,
-                        "nexus_query_engine.gpu.device_registry.memory_manager",
-                        "device memory manager already exists with different immutable options",
-                    )
-                    .with_fact("reason", "device_memory_manager_options_conflict")
-                    .with_fact("device_ordinal", device.ordinal())
-                    .with_fact("installation_status", format!("{:?}", state.status))
-                    .with_fact("installation_retry", format!("{:?}", state.retry))
-                    .with_fact("installation_cause", format!("{:?}", state.cause))
-                    .with_fact("existing_options", existing_options)
-                    .with_fact("requested_options", format!("{options:?}"))
-                    .with_source(failure.into_error()));
+                    return Err(device_memory_manager_options_conflict(device, state, options)
+                        .with_source(failure.into_error()));
                 }
 
                 let error = QueryError::from_cudf(
@@ -716,6 +708,33 @@ fn install_device_memory_manager(
     }
     memory_failure_tracker.mark_callback_installed();
     Ok((manager, outcome.state))
+}
+
+/// Immutable allocator options are the first process-level compatibility
+/// boundary. Check them before recovering the callback-owned tracker: a
+/// foreign allocator can be both callback-unrecoverable and incompatible, but
+/// only the latter tells the caller why its requested backend cannot start.
+fn device_memory_manager_options_conflict(
+    device: cudf::DeviceId,
+    installation: cudf::DeviceMemoryManagerInstallationState,
+    requested_options: cudf::DeviceMemoryManagerOptions,
+) -> QueryError {
+    let existing_options = installation
+        .effective_options
+        .map(|existing| format!("{existing:?}"))
+        .unwrap_or_else(|| "unavailable".to_owned());
+    QueryError::new(
+        QueryErrorCode::InvalidPlan,
+        "nexus_query_engine.gpu.device_registry.memory_manager",
+        "device memory manager already exists with different immutable options",
+    )
+    .with_fact("reason", "device_memory_manager_options_conflict")
+    .with_fact("device_ordinal", device.ordinal())
+    .with_fact("installation_status", format!("{:?}", installation.status))
+    .with_fact("installation_retry", format!("{:?}", installation.retry))
+    .with_fact("installation_cause", "OptionsMismatch")
+    .with_fact("existing_options", existing_options)
+    .with_fact("requested_options", format!("{requested_options:?}"))
 }
 
 /// P2 hard query domains require cuDF's canonical stream-ordered async base.
@@ -834,18 +853,18 @@ fn validate_registry_config(config: &DeviceRegistryConfig) -> Result<()> {
             },
             _ => {},
         }
-        canonical_device_memory_manager_options(profile.memory_partition.allocation_limit_bytes())
-        .validate()
-        .map_err(|error| {
-            QueryError::from_cudf(
-                "nexus_query_engine.gpu.device_registry.config",
-                "invalid per-device memory manager options",
-                error,
-            )
-            .with_fact("field", "device_profiles.device_memory_manager_options")
-            .with_fact("device_ordinal", *ordinal)
-            .with_fact("reason", "invalid_device_memory_manager_options")
-        })?;
+        canonical_device_memory_manager_options(profile.memory_partition.allocation_limit_bytes()).validate().map_err(
+            |error| {
+                QueryError::from_cudf(
+                    "nexus_query_engine.gpu.device_registry.config",
+                    "invalid per-device memory manager options",
+                    error,
+                )
+                .with_fact("field", "device_profiles.device_memory_manager_options")
+                .with_fact("device_ordinal", *ordinal)
+                .with_fact("reason", "invalid_device_memory_manager_options")
+            },
+        )?;
     }
     Ok(())
 }

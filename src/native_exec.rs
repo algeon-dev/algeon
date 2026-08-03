@@ -34,7 +34,9 @@ pub(crate) use self::metrics::{
 };
 pub(crate) use self::{
     admission::{QueryAdmissionSource, plan_is_query_admission_wrapped, wrap_plan_with_query_admission_ticket},
-    metrics::{NativeExecutionMetricsCapture, NativeRuntimeObservation, NexusNativeMetrics},
+    metrics::{
+        NativeExecutionMetricsCapture, NativeRuntimeObservation, NexusNativeMetrics, SealedAttemptMetricsTarget,
+    },
 };
 pub use self::{
     composed::{NexusNativeComposedExec, NexusNativeComposedGpuProducerExec},
@@ -52,4 +54,25 @@ pub use self::{
 /// wrapped input from `children()`.
 pub(crate) fn transparent_root_wrapper_input(plan: &dyn ExecutionPlan) -> Option<&Arc<dyn ExecutionPlan>> {
     admission::query_admission_wrapped_input(plan)
+}
+
+/// Finds the single native execution wrapper closest to an invocation root
+/// and returns its post-seal attempt-metric target. Transparent root wrappers
+/// are skipped, and mixed DataFusion plans elect their first native subtree in
+/// stable child order. The target is deliberately chosen before execution and
+/// receives only the already-sealed report.
+pub(crate) fn sealed_attempt_metrics_target(plan: &dyn ExecutionPlan) -> Option<SealedAttemptMetricsTarget> {
+    if let Some(exec) = plan.downcast_ref::<NexusNativeExec>() {
+        return Some(exec.sealed_attempt_metrics_target());
+    }
+    if let Some(exec) = plan.downcast_ref::<NexusNativeComposedExec>() {
+        return Some(exec.sealed_attempt_metrics_target());
+    }
+    if let Some(exec) = graph::graph_execution_plan(plan) {
+        return Some(exec.sealed_attempt_metrics_target());
+    }
+    if let Some(input) = transparent_root_wrapper_input(plan) {
+        return sealed_attempt_metrics_target(input.as_ref());
+    }
+    plan.children().into_iter().find_map(|child| sealed_attempt_metrics_target(child.as_ref()))
 }

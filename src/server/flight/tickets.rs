@@ -1,4 +1,6 @@
 use super::*;
+use crate::server::coordinator::QueryKey;
+use nexus_query_engine::observability::RuntimeTerminalOutcome;
 
 /// Preserves which Flight SQL query path issued a ticket after the ticket bytes
 /// have collapsed to a per-execution `query_id`.
@@ -142,8 +144,54 @@ pub(super) struct QueryExecutionGuard {
 pub(super) struct CoordinatorExecutionTerminal {
     state: Mutex<CoordinatorExecutionTerminalState>,
     finished: Notify,
+    key: QueryKey,
     query_id: String,
     started_at: Instant,
+}
+
+/// Completion target retained by a sealed attempt-report observer.
+///
+/// Planning does not keep an execution lease, but it does retain an exact
+/// coordinator generation through `QueryPlanningReportDeliveryTerminal`. That
+/// lets a planning-stage handoff failure remove only its own report gate after
+/// the planning lease has either terminalized or moved into a ticket.
+pub(super) enum CoordinatorReportHandoffTerminal {
+    Planning(QueryPlanningReportDeliveryTerminal),
+    Execution(Arc<CoordinatorExecutionTerminal>),
+}
+
+impl CoordinatorReportHandoffTerminal {
+    pub(super) fn planning(lease: &QueryPlanningLease) -> Self {
+        Self::Planning(lease.attempt_report_delivery_terminal())
+    }
+
+    pub(super) fn execution(terminal: Arc<CoordinatorExecutionTerminal>) -> Self {
+        Self::Execution(terminal)
+    }
+
+    pub(super) fn finish_attempt_report_delivery_failed(
+        &self,
+        error: QueryCoordinatorError,
+        attempt_outcome: Option<RuntimeTerminalOutcome>,
+    ) {
+        match self {
+            Self::Planning(terminal) => terminal.finish_attempt_report_delivery_failed(attempt_outcome),
+            Self::Execution(terminal) => terminal.finish_attempt_report_delivery_failed(error, attempt_outcome),
+        }
+    }
+
+    pub(super) fn key(&self) -> &QueryKey {
+        match self {
+            Self::Planning(terminal) => terminal.key(),
+            Self::Execution(terminal) => terminal.key(),
+        }
+    }
+
+    pub(super) fn mark_attempt_report_attached(&self) {
+        if let Self::Execution(terminal) = self {
+            terminal.mark_attempt_report_attached();
+        }
+    }
 }
 
 struct CoordinatorExecutionTerminalState {
@@ -174,6 +222,7 @@ impl CoordinatorExecutionTerminal {
         started_at: Instant,
         requires_attempt_report: bool,
     ) -> Arc<Self> {
+        let key = lease.key.clone();
         Arc::new(Self {
             state: Mutex::new(CoordinatorExecutionTerminalState {
                 lease: Some(lease),
@@ -182,6 +231,7 @@ impl CoordinatorExecutionTerminal {
                 pending: None,
             }),
             finished: Notify::new(),
+            key,
             query_id,
             started_at,
         })
@@ -189,6 +239,10 @@ impl CoordinatorExecutionTerminal {
 
     pub(super) fn is_finished(&self) -> bool {
         self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).lease.is_none()
+    }
+
+    pub(super) fn key(&self) -> &QueryKey {
+        &self.key
     }
 
     /// Waits for the coordinator lease to be released after the attempt's
@@ -216,6 +270,35 @@ impl CoordinatorExecutionTerminal {
             self.finish_lease(lease, outcome);
             self.finished.notify_waiters();
         }
+    }
+
+    /// Completes a terminal whose sealed attempt report could not be retained
+    /// by the coordinator. Unlike an execution outcome, this must bypass the
+    /// report gate: waiting for a report that was just rejected would retain
+    /// the execution lease indefinitely.
+    pub(super) fn finish_attempt_report_delivery_failed(
+        &self,
+        error: QueryCoordinatorError,
+        attempt_outcome: Option<RuntimeTerminalOutcome>,
+    ) {
+        let (status, captured) = adapter_error_to_status_and_capture(
+            error.adapter_error("datafusion_nexus.server.flight.attempt_report_handoff"),
+        );
+        let status = status_with_query_id(status, &self.query_id);
+        let completion = {
+            let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let Some(lease) = state.lease.take() else { return };
+            // Any normal terminal outcome was waiting on the same report gate.
+            // Delivery failure is the truthful completion for this coordinator
+            // record, so it replaces that deferred outcome atomically.
+            state.pending = None;
+            (
+                lease,
+                CoordinatorExecutionTerminalOutcome::Captured { stage: "attempt_report_delivery", status, captured },
+            )
+        };
+        self.finish_attempt_report_delivery_lease(completion.0, completion.1, attempt_outcome);
+        self.finished.notify_waiters();
     }
 
     pub(super) fn finish_success(&self, stage: &'static str) {
@@ -272,6 +355,26 @@ impl CoordinatorExecutionTerminal {
                     elapsed_ms = self.started_at.elapsed().as_millis(),
                     "Flight SQL statement panicked"
                 );
+            },
+        }
+    }
+
+    fn finish_attempt_report_delivery_lease(
+        &self,
+        mut lease: QueryExecutionLease,
+        outcome: CoordinatorExecutionTerminalOutcome,
+        attempt_outcome: Option<RuntimeTerminalOutcome>,
+    ) {
+        match outcome {
+            CoordinatorExecutionTerminalOutcome::Captured { stage, status, captured } => {
+                lease.finish_attempt_report_delivery_failed(stage, &status, captured, attempt_outcome);
+                log_statement_status(&self.query_id, stage, self.started_at, &status);
+            },
+            // This private path is constructed only by
+            // `finish_attempt_report_delivery_failed` above.
+            CoordinatorExecutionTerminalOutcome::Succeeded { .. }
+            | CoordinatorExecutionTerminalOutcome::Panicked { .. } => {
+                unreachable!("attempt report delivery failure must retain a structured captured error")
             },
         }
     }

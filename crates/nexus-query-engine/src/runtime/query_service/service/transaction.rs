@@ -31,9 +31,10 @@ use super::{
 };
 use crate::{
     error::{QueryError, QueryErrorCode, Result},
-    observability::{RuntimeObservationHandle, RuntimeStreamLeaseScope},
+    observability::{AttemptId, RuntimeObservationHandle, RuntimeStreamLeaseScope},
     runtime::{
         ExecutionCancellation, StreamLease, StreamPermitClass,
+        allocator_correlation::{AllocatorDomainAttempt, discard_admitted_domain, register_admitted_domain},
         attempt_domain::AttemptAllocationDomain,
         backend_core::GpuResourcePermit,
         gpu::{DeviceLanePermit, DeviceWorkerScope, MemoryGrant},
@@ -401,6 +402,9 @@ pub(crate) struct AdmissionEnvelope {
     /// Final close/drain fence. This remains with the envelope so it cannot
     /// outlive or be released before the admission resources it represents.
     lifecycle_ticket: Option<AdmissionTicket>,
+    /// Present only for an engine-owned attempt after the native domain and
+    /// its post-install ring watermark have both been observed.
+    allocator_domain_attempt: Option<AllocatorDomainAttempt>,
     /// Idempotence guard for the provisional-to-cleanup transition.
     rollback_cleanup_started: bool,
 }
@@ -418,6 +422,12 @@ impl std::fmt::Debug for AdmissionEnvelope {
 
 impl Drop for AdmissionEnvelope {
     fn drop(&mut self) {
+        if let Some(binding) = self.allocator_domain_attempt.take() {
+            // This is either an unpublished rollback or a recovery path that
+            // could not prove cleanup completion. Neither may retain a window
+            // that could attribute a later callback to this attempt.
+            discard_admitted_domain(&self.service.allocator_event_correlation, binding);
+        }
         let Some(physical) = self.physical.take() else {
             // Keep the ticket in its field. Rust drops fields after this
             // destructor in declaration order, so the grant and generation
@@ -652,6 +662,7 @@ impl AdmissionEnvelope {
                 memory_grant: builder.memory_grant.take().expect("grant present"),
                 gpu_resource_permit: None,
                 lifecycle_ticket: builder.lifecycle_ticket.take(),
+                allocator_domain_attempt: None,
                 rollback_cleanup_started: false,
             });
         };
@@ -741,6 +752,7 @@ impl AdmissionEnvelope {
             memory_grant: builder.memory_grant.take().expect("grant present"),
             gpu_resource_permit: None,
             lifecycle_ticket: builder.lifecycle_ticket.take(),
+            allocator_domain_attempt: None,
             rollback_cleanup_started: false,
         })
     }
@@ -780,6 +792,28 @@ impl AdmissionEnvelope {
                 )
             })?
             .transition_to_active()
+    }
+
+    /// Records the exact native domain identity after its admission envelope
+    /// is complete but before the query can execute. Diagnostic registration
+    /// failure leaves later events explicitly unattributed and never changes
+    /// admission or the immutable grant.
+    pub(crate) fn register_allocator_domain_attempt(&mut self, attempt_id: AttemptId) {
+        if self.allocator_domain_attempt.is_some() {
+            return;
+        }
+        let Some(domain) = self.domain() else {
+            return;
+        };
+        self.allocator_domain_attempt =
+            register_admitted_domain(&self.service.allocator_event_correlation, domain.as_cudf(), attempt_id);
+    }
+
+    /// Moves the binding to the post-cleanup report commit. The binding is
+    /// consumed exactly once, so envelope destruction cannot discard an
+    /// already-retired attempt window.
+    pub(crate) fn take_allocator_domain_attempt(&mut self) -> Option<AllocatorDomainAttempt> {
+        self.allocator_domain_attempt.take()
     }
 
     /// Records the active-to-cleanup transition while retaining the ticket

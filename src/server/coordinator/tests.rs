@@ -19,11 +19,13 @@ use arrow::{
 };
 use datafusion::physical_plan::{empty::EmptyExec, union::UnionExec};
 use nexus_query_engine::{
+    error::{QueryError, QueryErrorCode},
     metrics::QueryMetrics,
     observability::{
-        AttemptCapacityDisposition, AttemptCleanupDisposition, AttemptDisposition, AttemptId, AttemptQueryId,
-        AttemptTimestamps, QUERY_ATTEMPT_REPORT_SCHEMA_V1, QueryAttemptReport, RuntimeObservationConfig,
-        RuntimeObservationOwner, RuntimeQueryId, RuntimeTerminalOutcome,
+        AttemptCapacityDisposition, AttemptCleanupDisposition, AttemptDisposition, AttemptFailureSummary, AttemptId,
+        AttemptQueryId, AttemptRetryAdvice, AttemptRetryPrerequisite, AttemptRetryRecovery, AttemptTimestamps,
+        QUERY_ATTEMPT_REPORT_SCHEMA_V1, QueryAttemptReport, RuntimeObservationConfig, RuntimeObservationOwner,
+        RuntimeQueryId, RuntimeTerminalOutcome, SealedRuntimeObservationSnapshot,
     },
     plan::QueryPlanBuilder,
     runtime::ExecutionCancellation,
@@ -34,8 +36,8 @@ use super::{
     super::observability::{CapturedError, QueryStatsPayload},
     artifacts::{
         FinalizationTestGate, LiveStatsCache, LiveStatsRead, LiveStatsWaitResult, QUERY_STATS_HEADER_LINE,
-        RUNTIME_ARTIFACT_CONTROL_SCHEMA, compose_terminal_artifact, incomplete_runtime_control,
-        install_coordinator_render_probe,
+        RUNTIME_ARTIFACT_CONTROL_SCHEMA, RUNTIME_ARTIFACT_CONTROL_SCHEMA_V2, compose_terminal_artifact,
+        incomplete_runtime_control, install_coordinator_render_probe,
     },
     maintenance::{CoordinatorMaintenanceClock, QueryCoordinatorMaintenance},
     retention::checked_deadline,
@@ -127,6 +129,8 @@ fn cpu_attempt_report(query_id: &str) -> QueryAttemptReport {
         trace_context: None,
         disposition: AttemptDisposition::CpuFallback,
         outcome: RuntimeTerminalOutcome::Succeeded,
+        primary_failure: None,
+        retry_advice: AttemptRetryAdvice::no_retry_needed(),
         device_ordinal: None,
         admission: None,
         timestamps: AttemptTimestamps {
@@ -143,9 +147,13 @@ fn cpu_attempt_report(query_id: &str) -> QueryAttemptReport {
         },
         cleanup_disposition: AttemptCleanupDisposition::NotRequired,
         cleanup_failure_count: 0,
+        cleanup_failure_count_complete: true,
+        first_cleanup_failure: None,
         capacity_disposition: AttemptCapacityDisposition::NotAdmitted,
         final_domain_usage: None,
         health_transition: None,
+        native_fault_evidence: None,
+        resource_evidence: None,
         observation_lost_records: 0,
         observation_retained_records: 0,
         observation_retained_bytes: 0,
@@ -153,6 +161,62 @@ fn cpu_attempt_report(query_id: &str) -> QueryAttemptReport {
         observation_degraded: false,
         unix_epoch_ns: None,
     }
+}
+
+fn queue_backoff_attempt_report(query_id: &str) -> QueryAttemptReport {
+    let mut report = cpu_attempt_report(query_id);
+    let failure = AttemptFailureSummary::from_native_error(
+        &QueryError::new(
+            QueryErrorCode::ServiceOverloaded,
+            "nexus_query_engine.test.admission",
+            "bounded admission queue is full",
+        )
+        .with_fact("reason", "admission_queue_full"),
+    );
+    report.outcome = RuntimeTerminalOutcome::failed(&failure);
+    report.primary_failure = Some(failure);
+    report.retry_advice = AttemptRetryAdvice {
+        recovery: AttemptRetryRecovery::Backoff,
+        prerequisite: AttemptRetryPrerequisite::CapacityAvailable,
+    };
+    report
+}
+
+fn cancelled_attempt_report_snapshot(query_id: &str) -> (QueryAttemptReport, SealedRuntimeObservationSnapshot) {
+    let mut report = cpu_attempt_report(query_id);
+    report.outcome = RuntimeTerminalOutcome::Cancelled;
+    report.retry_advice = AttemptRetryAdvice::do_not_retry();
+    let snapshot_report = report.clone();
+    let owner =
+        RuntimeObservationOwner::new(RuntimeQueryId::new(query_id), None, RuntimeObservationConfig::bounded(16, 4096))
+            .with_attempt_report_provider(Arc::new(move || snapshot_report.clone()));
+    let snapshot = owner
+        .finish_query(RuntimeTerminalOutcome::Cancelled)
+        .expect("cancelled attempt observation seals before coordinator handoff");
+    // The sealed snapshot owns the immutable report projection accepted by the
+    // coordinator. Return that exact projection rather than a pre-seal test
+    // template, whose completeness footer may have been filled during sealing.
+    let report = snapshot.attempt_report().expect("sealed snapshot carries its attempt report").clone();
+    (report, snapshot)
+}
+
+fn attach_cancelled_attempt_then_fail_delivery(
+    coordinator: &Arc<QueryCoordinator>,
+    query_id: &str,
+    config: RuntimeObservationConfig,
+) {
+    let planning = coordinator
+        .register_with_id_with_attempt_observation(query_id, "select 1", None, None, config)
+        .expect("attempt-owned query registers");
+    let (report, snapshot) = cancelled_attempt_report_snapshot(query_id);
+    coordinator
+        .attach_attempt_report(planning.key(), Arc::new(report), Some(snapshot))
+        .expect("sealed attempt report attaches to its exact coordinator generation");
+    let delivery = tonic::Status::internal("Flight delivery failed after the attempt sealed");
+    planning
+        .into_execution()
+        .expect("planning promotes to execution")
+        .fail("delivery", CapturedError::from_status(&delivery));
 }
 
 #[test]
@@ -176,19 +240,87 @@ fn attempt_owned_snapshot_is_retained_without_a_second_observation_owner() {
     assert_eq!(snapshot.footer().terminal.as_ref(), Some(&RuntimeTerminalOutcome::Succeeded));
 
     coordinator
-        .attach_attempt_report(&query_id, Arc::new(report.clone()), Some(snapshot))
+        .attach_attempt_report(planning.key(), Arc::new(report.clone()), Some(snapshot))
         .expect("the matching sealed attempt snapshot is accepted");
     planning.into_execution().expect("planning promotes to execution").succeed();
 
     let (control, jsonl) = coordinator.artifact_frames(&query_id).expect("retained attempt artifact");
-    assert_eq!(serde_json::from_slice::<serde_json::Value>(&control).unwrap()["state"], "sealed");
+    let control: serde_json::Value = serde_json::from_slice(&control).unwrap();
+    assert_eq!(control["schema"], RUNTIME_ARTIFACT_CONTROL_SCHEMA_V2);
+    assert_eq!(control["version"], 2);
+    assert_eq!(control["state"], "sealed");
+    assert_eq!(control["retryable"], false, "delivery retryability remains distinct from attempt advice");
+    assert_eq!(control["attempt"]["attempt_id"], report.attempt_id.to_string());
+    assert_eq!(control["attempt"]["retry_advice"]["recovery"], "no_retry_needed");
+    assert_eq!(control["attempt"]["retry_advice"]["prerequisite"], "none");
     let jsonl = jsonl.expect("attempt snapshot remains available as JSONL");
-    let jsonl = std::str::from_utf8(&jsonl).unwrap();
-    assert!(jsonl.contains("\"record_type\":\"manifest\""), "{jsonl}");
-    assert!(jsonl.contains("\"record_type\":\"footer\""), "{jsonl}");
+    let records = std::str::from_utf8(&jsonl)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("retained JSONL record is valid"))
+        .collect::<Vec<_>>();
+    assert!(records.iter().any(|record| record["record_type"] == "manifest"), "{records:#?}");
+    let retained_report = records
+        .iter()
+        .find(|record| record["record_type"] == "footer")
+        .and_then(|record| record["data"].get("attempt_report"))
+        .expect("sealed JSONL footer carries the canonical attempt report");
+    assert_eq!(retained_report["attempt_id"], report.attempt_id.to_string());
+    assert_eq!(retained_report["retry_advice"], control["attempt"]["retry_advice"]);
     let stats = coordinator.query_stats(&query_id).expect("attempt stats retained");
     let stats = std::str::from_utf8(&stats).unwrap();
     assert!(stats.contains(&format!("# attempt_id={}", report.attempt_id)), "{stats}");
+    assert!(stats.contains("# attempt_retry_recovery=no_retry_needed"), "{stats}");
+    assert!(stats.contains("# attempt_retry_prerequisite=none"), "{stats}");
+}
+
+#[test]
+fn sealed_queue_backoff_advice_agrees_across_flight_jsonl_and_stats() {
+    let coordinator = QueryCoordinator::new(config());
+    let (query_id, planning) = coordinator
+        .register_new_with_attempt_observation("select 1", None, None, RuntimeObservationConfig::bounded(16, 4096))
+        .expect("attempt-owned registration succeeds");
+    let sealed_report = queue_backoff_attempt_report(&query_id);
+    let terminal = sealed_report.outcome.clone();
+    let owner = RuntimeObservationOwner::new(
+        RuntimeQueryId::new(query_id.clone()),
+        None,
+        RuntimeObservationConfig::bounded(16, 4096),
+    )
+    .with_attempt_report_provider(Arc::new(move || sealed_report.clone()));
+    let snapshot = owner.finish_query(terminal).expect("failed attempt observation seals before handoff");
+    let report = snapshot.attempt_report().expect("snapshot carries its sealed attempt report").clone();
+
+    coordinator
+        .attach_attempt_report(planning.key(), Arc::new(report.clone()), Some(snapshot))
+        .expect("the matching sealed attempt snapshot is accepted");
+    let delivery = tonic::Status::resource_exhausted("attempt failed after sealed report publication");
+    planning
+        .into_execution()
+        .expect("planning promotes to execution")
+        .fail("execution", CapturedError::from_status(&delivery));
+
+    let (control, jsonl) = coordinator.artifact_frames(&query_id).expect("retained attempt artifact");
+    let control: serde_json::Value = serde_json::from_slice(&control).unwrap();
+    let jsonl = jsonl.expect("sealed attempt JSONL is retained");
+    let retained_report = std::str::from_utf8(&jsonl)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("retained JSONL record is valid"))
+        .find(|record| record["record_type"] == "footer")
+        .and_then(|record| record["data"].get("attempt_report").cloned())
+        .expect("sealed JSONL footer carries the canonical attempt report");
+    let stats_payload = coordinator.query_stats(&query_id).expect("attempt stats retained");
+    let stats = std::str::from_utf8(&stats_payload).unwrap();
+
+    let expected_advice = serde_json::json!({
+        "recovery": "backoff",
+        "prerequisite": "capacity_available",
+    });
+    assert_eq!(control["attempt"]["retry_advice"], expected_advice);
+    assert_eq!(retained_report["retry_advice"], control["attempt"]["retry_advice"]);
+    assert!(stats.contains("# attempt_retry_recovery=backoff\n"), "{stats}");
+    assert!(stats.contains("# attempt_retry_prerequisite=capacity_available\n"), "{stats}");
 }
 
 #[test]
@@ -211,9 +343,50 @@ fn attempt_owned_snapshot_rejects_a_nonidentical_completion_report() {
     let mut mismatched = snapshot.attempt_report().expect("snapshot carries its sealed attempt report").clone();
     mismatched.timestamps.report_ready_ns = None;
     let error = coordinator
-        .attach_attempt_report(&query_id, Arc::new(mismatched), Some(snapshot))
+        .attach_attempt_report(_planning.key(), Arc::new(mismatched), Some(snapshot))
         .expect_err("coordinator rejects a pre-ready report that only shares the attempt identity");
     assert_eq!(error.kind(), QueryCoordinatorErrorKind::InvalidTransition);
+}
+
+#[test]
+fn unavailable_projection_keeps_canonical_attempt_outcome_separate_from_delivery_failure() {
+    let mut bounded = config();
+    // The sealed observation JSONL cannot fit, but the bounded unavailable
+    // stats control payload still can. This exercises the post-handoff
+    // unavailable projection rather than the normal captured-query formatter.
+    bounded.per_query_artifact_max_bytes = 512;
+    let coordinator = QueryCoordinator::new(bounded);
+    attach_cancelled_attempt_then_fail_delivery(
+        &coordinator,
+        "cancelled-attempt-unavailable",
+        RuntimeObservationConfig::bounded(16, 4096),
+    );
+
+    let stats = String::from_utf8(coordinator.query_stats("cancelled-attempt-unavailable").unwrap().to_vec()).unwrap();
+    assert!(stats.contains("# outcome=cancelled\n"), "{stats}");
+    assert!(stats.contains("# delivery_outcome=failed\n"), "{stats}");
+    assert!(stats.contains("# incomplete=true\n"), "{stats}");
+}
+
+#[test]
+fn tombstone_projection_keeps_canonical_attempt_outcome_separate_from_delivery_failure() {
+    let mut bounded = config();
+    bounded.retained_max_count = 0;
+    let coordinator = QueryCoordinator::new(bounded);
+    attach_cancelled_attempt_then_fail_delivery(
+        &coordinator,
+        "cancelled-attempt-tombstone",
+        RuntimeObservationConfig::bounded(16, 4096),
+    );
+
+    assert!(matches!(
+        coordinator.artifact("cancelled-attempt-tombstone"),
+        Some(CoordinatorArtifact::Unavailable(reason)) if reason.as_str() == "evicted"
+    ));
+    let stats = String::from_utf8(coordinator.query_stats("cancelled-attempt-tombstone").unwrap().to_vec()).unwrap();
+    assert!(stats.contains("# outcome=cancelled\n"), "{stats}");
+    assert!(stats.contains("# delivery_outcome=failed\n"), "{stats}");
+    assert!(stats.contains("# unavailable_reason=evicted\n"), "{stats}");
 }
 
 fn accepted_native_diagnostics() -> NativePlanningDiagnostics {
@@ -524,15 +697,89 @@ fn stats_reader_after_cache_close_waits_for_terminal_publication() {
 #[test]
 fn stale_generation_and_observation_identity_cannot_mutate_replacement() {
     let coordinator = QueryCoordinator::new(config());
-    let first = register(&coordinator, "same-id");
+    let first = coordinator
+        .register_with_id_with_attempt_observation(
+            "same-id",
+            "select 1",
+            None,
+            None,
+            RuntimeObservationConfig::bounded(16, 4096),
+        )
+        .expect("first attempt-owned generation registers");
     let first_key = first.key().clone();
     let first_observation = first.observation_id().clone();
     drop(first);
-    let second = register(&coordinator, "same-id");
+    let second = coordinator
+        .register_with_id_with_attempt_observation(
+            "same-id",
+            "select 2",
+            None,
+            None,
+            RuntimeObservationConfig::bounded(16, 4096),
+        )
+        .expect("replacement attempt-owned generation registers");
 
     let error = coordinator.acquire_activity(&first_key, &first_observation).unwrap_err();
     assert_eq!(error.kind(), QueryCoordinatorErrorKind::StaleGeneration);
+    let error = coordinator
+        .attach_attempt_report(&first_key, Arc::new(cpu_attempt_report("same-id")), None)
+        .expect_err("a delayed report cannot attach to a reused query id");
+    assert_eq!(error.kind(), QueryCoordinatorErrorKind::StaleGeneration);
+    assert!(
+        coordinator
+            .state
+            .lock()
+            .unwrap()
+            .records
+            .get(second.key())
+            .expect("replacement record remains present")
+            .attempt_report
+            .is_none(),
+        "stale report must not become the replacement generation's canonical outcome"
+    );
     assert_ne!(first_observation, *second.observation_id());
+}
+
+#[test]
+fn planning_report_handoff_keeps_attempt_owned_record_live_until_the_sealed_report_arrives() {
+    let coordinator = QueryCoordinator::new(config());
+    let planning = coordinator
+        .register_with_id_with_attempt_observation(
+            "planning-handoff-gate",
+            "select 1",
+            None,
+            None,
+            RuntimeObservationConfig::bounded(16, 4096),
+        )
+        .expect("attempt-owned generation registers");
+    let key = planning.key().clone();
+    let _handoff = planning.attempt_report_delivery_terminal();
+    drop(planning);
+
+    let error = coordinator
+        .register_with_id_with_attempt_observation(
+            "planning-handoff-gate",
+            "select 2",
+            None,
+            None,
+            RuntimeObservationConfig::bounded(16, 4096),
+        )
+        .expect_err("a registered handoff must keep its generation live until the sealed report arrives");
+    assert_eq!(error.kind(), QueryCoordinatorErrorKind::DuplicateLiveQueryId);
+
+    let (report, snapshot) = cancelled_attempt_report_snapshot("planning-handoff-gate");
+    coordinator
+        .attach_attempt_report(&key, Arc::new(report), Some(snapshot))
+        .expect("the registered handoff accepts its exact sealed report");
+    coordinator
+        .register_with_id_with_attempt_observation(
+            "planning-handoff-gate",
+            "select 2",
+            None,
+            None,
+            RuntimeObservationConfig::bounded(16, 4096),
+        )
+        .expect("the terminal planning generation releases its query id after report finalization");
 }
 
 #[test]
@@ -1043,7 +1290,7 @@ async fn maintenance_shutdown_timeout_retains_bounded_incomplete_diagnostic_and_
         Arc::<TestMaintenanceClock>::clone(&clock),
     );
     let planning = coordinator
-        .register_with_id(
+        .register_with_id_with_attempt_observation(
             "forced-shutdown",
             "select secret_literal",
             Some("correlation".to_string()),
@@ -1051,6 +1298,10 @@ async fn maintenance_shutdown_timeout_retains_bounded_incomplete_diagnostic_and_
             RuntimeObservationConfig::bounded(16, 4096),
         )
         .unwrap();
+    let (report, snapshot) = cancelled_attempt_report_snapshot("forced-shutdown");
+    coordinator
+        .attach_attempt_report(planning.key(), Arc::new(report), Some(snapshot))
+        .expect("sealed cancelled attempt report attaches before shutdown delivery times out");
     let execution = planning.into_execution().unwrap();
     execution.hot_counters().record_output(3, 64);
     let activity = execution.activity_factory()().expect("activity lease");
@@ -1067,6 +1318,8 @@ async fn maintenance_shutdown_timeout_retains_bounded_incomplete_diagnostic_and_
         Some(CoordinatorArtifact::Unavailable(RetainedUnavailableReason::ShutdownTimeout))
     ));
     let stats = String::from_utf8(coordinator.query_stats("forced-shutdown").unwrap().to_vec()).unwrap();
+    assert!(stats.contains("# outcome=cancelled\n"), "{stats}");
+    assert!(stats.contains("# delivery_outcome=dropped\n"), "{stats}");
     assert!(stats.contains("# incomplete=true"), "{stats}");
     assert!(stats.contains("# unavailable_reason=shutdown_timeout"), "{stats}");
     assert!(stats.contains("# output_batches=1"), "{stats}");
@@ -1635,10 +1888,10 @@ fn artifact_egress_lease_bounds_concurrency_and_releases_on_response_drop() {
 }
 
 #[test]
-fn retained_unavailable_runtime_artifact_egress_is_one_control_frame() {
+fn retained_unavailable_runtime_artifact_v2_keeps_attempt_projection_when_capture_truncates() {
     let coordinator = QueryCoordinator::new(config());
     let planning = coordinator
-        .register_with_id(
+        .register_with_id_with_attempt_observation(
             "bounded-capture",
             "x".repeat(128 * 1024),
             None,
@@ -1646,6 +1899,10 @@ fn retained_unavailable_runtime_artifact_egress_is_one_control_frame() {
             RuntimeObservationConfig::bounded(16, 4096),
         )
         .unwrap();
+    let (report, snapshot) = cancelled_attempt_report_snapshot("bounded-capture");
+    coordinator
+        .attach_attempt_report(planning.key(), Arc::new(report.clone()), Some(snapshot))
+        .expect("capture-truncated query accepts its canonical sealed report");
     planning.into_execution().unwrap().succeed();
 
     {
@@ -1662,8 +1919,12 @@ fn retained_unavailable_runtime_artifact_egress_is_one_control_frame() {
 
     let (control, jsonl) = coordinator.artifact_frames("bounded-capture").unwrap();
     let control: serde_json::Value = serde_json::from_slice(&control).unwrap();
+    assert_eq!(control["schema"], RUNTIME_ARTIFACT_CONTROL_SCHEMA_V2);
+    assert_eq!(control["version"], 2);
     assert_eq!(control["state"], "unavailable");
     assert_eq!(control["reason"], "capture_budget");
+    assert_eq!(control["attempt"]["attempt_id"], report.attempt_id.to_string());
+    assert_eq!(control["attempt"]["retry_advice"]["recovery"], "do_not_retry");
     assert!(jsonl.is_none(), "unavailable artifacts must not expose a JSONL frame");
 
     let mut response = coordinator.lease_runtime_artifact("bounded-capture").unwrap().unwrap();

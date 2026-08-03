@@ -84,11 +84,6 @@ fn every_adapter_code_has_the_expected_retry_status() {
 
         assert_eq!(code.status(), expected_status, "unexpected status for {code}");
         assert_eq!(error.status(), expected_status, "Error disagrees with its code for {code}");
-        assert_eq!(
-            error.is_retryable(),
-            expected_status == ErrorStatus::Temporary,
-            "is_retryable must be an exact Temporary alias for {code}"
-        );
     }
 }
 
@@ -100,16 +95,10 @@ fn every_native_status_is_preserved_at_the_adapter_boundary() {
         let native = QueryError::new(native_code, "nexus_query_engine.test.retry_policy", "retry policy test");
         assert_eq!(native_code.status(), expected_native_status, "unexpected native status for {native_code}");
         assert_eq!(native.status(), expected_native_status, "QueryError disagrees with its code for {native_code}");
-        assert_eq!(
-            native.is_retryable(),
-            expected_native_status == QueryErrorStatus::Temporary,
-            "native is_retryable must be an exact Temporary alias for {native_code}"
-        );
 
         let adapter = Error::from_native("datafusion_nexus.test.retry_policy", "wrapped native failure", native);
         assert_eq!(adapter.code(), expected_adapter_code, "unexpected adapter mapping for {native_code}");
         assert_eq!(adapter.status().as_str(), expected_native_status.as_str(), "status changed for {native_code}");
-        assert_eq!(adapter.is_retryable(), expected_native_status == QueryErrorStatus::Temporary);
         assert_eq!(adapter.fact_value("native_status"), Some(expected_native_status.as_str()));
     }
 }

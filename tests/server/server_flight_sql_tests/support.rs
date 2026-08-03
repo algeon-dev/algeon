@@ -42,18 +42,24 @@ async fn get_query_stats_raw(client: &mut FlightSqlServiceClient<tonic::transpor
 /// `GetQueryStats` is a retained projection of that report, so duplicate
 /// headers would expose a second publication path rather than more telemetry.
 fn assert_single_sealed_attempt_report(payload: &str) {
-    let values = |key: &str| {
-        payload
-            .lines()
-            .filter_map(|line| line.strip_prefix(key))
-            .collect::<Vec<_>>()
-    };
+    let values = |key: &str| payload.lines().filter_map(|line| line.strip_prefix(key)).collect::<Vec<_>>();
     let attempt_ids = values("# attempt_id=");
     assert_eq!(attempt_ids.len(), 1, "expected exactly one published attempt report:\n{payload}");
     assert!(!attempt_ids[0].is_empty(), "attempt report identity must be non-empty:\n{payload}");
-    assert_eq!(values("# attempt_outcome=").len(), 1, "attempt report has one terminal outcome:\n{payload}");
-    assert_eq!(values("# attempt_capacity_disposition=").len(), 1, "attempt report has one capacity commit:\n{payload}");
-    assert!(payload.contains("# sealed=true"), "attempt report is available only after its observation seals:\n{payload}");
+    let attempt_outcomes = values("# attempt_outcome=");
+    assert_eq!(attempt_outcomes.len(), 1, "attempt report has one terminal outcome:\n{payload}");
+    let outcomes = values("# outcome=");
+    assert_eq!(outcomes.len(), 1, "attempt report has one canonical outcome:\n{payload}");
+    assert_eq!(outcomes[0], attempt_outcomes[0], "attempt report owns the canonical outcome:\n{payload}");
+    assert_eq!(
+        values("# attempt_capacity_disposition=").len(),
+        1,
+        "attempt report has one capacity commit:\n{payload}"
+    );
+    assert!(
+        payload.contains("# sealed=true"),
+        "attempt report is available only after its observation seals:\n{payload}"
+    );
     assert!(
         !payload.contains("# attempt_capacity_disposition=pending_release"),
         "a retained attempt report must include its release commit:\n{payload}"
@@ -213,10 +219,7 @@ async fn wait_for_empty_gpu_ledger(backend: &NexusGpuBackend) {
         if snapshot.active_queries == 0 && snapshot.queued_queries == 0 {
             return;
         }
-        assert!(
-            Instant::now() < deadline,
-            "backend GPU admission ledger did not become empty: snapshot={snapshot:?}"
-        );
+        assert!(Instant::now() < deadline, "backend GPU admission ledger did not become empty: snapshot={snapshot:?}");
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
 }

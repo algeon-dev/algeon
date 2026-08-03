@@ -6,6 +6,7 @@ use std::{
 };
 
 use super::{
+    super::observability::attempt_outcome_label,
     QueryCoordinator,
     artifacts::{TOMBSTONE_STATS_MAX_BYTES, unavailable_tombstone_stats},
     registry::QueryRegistryState,
@@ -77,7 +78,9 @@ impl QueryCoordinator {
         if record.phase != QueryPhase::Retained {
             return;
         }
-        let terminal_outcome = record.terminal_outcome.map_or("unknown", QueryTerminalOutcome::stats_outcome);
+        let delivery_outcome = record.terminal_outcome.map_or("unknown", QueryTerminalOutcome::stats_outcome);
+        let terminal_outcome = record.attempt_outcome.as_ref().map(attempt_outcome_label).unwrap_or(delivery_outcome);
+        let delivery_outcome = (terminal_outcome != delivery_outcome).then_some(delivery_outcome);
         if let Some(bundle) = record.retained.take() {
             state.retained_bytes = state
                 .retained_bytes
@@ -91,6 +94,7 @@ impl QueryCoordinator {
         record.tombstone_stats = unavailable_tombstone_stats(
             key.query_id(),
             terminal_outcome,
+            delivery_outcome,
             RetainedUnavailableReason::Evicted,
             config.per_query_artifact_max_bytes,
         );

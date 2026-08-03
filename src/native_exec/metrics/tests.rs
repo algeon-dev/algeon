@@ -146,11 +146,14 @@ fn ordered_descriptors_drive_names_registration_and_legacy_categories() {
 fn every_ordered_descriptor_has_a_compile_time_recording_mapping() {
     let recording_names = NATIVE_NEXUS_RECORDING_DESCRIPTORS.iter().map(|(name, _kind)| *name).collect::<Vec<_>>();
     assert_eq!(recording_names, NATIVE_NEXUS_DATAFUSION_METRIC_NAMES);
-    assert_eq!(recording_names.len(), 110, "the stable public metric count must not change");
+    assert_eq!(recording_names.len(), 111, "the ordered public metric count must include the sealed-attempt row");
 
-    for expected_kind in
-        [NativeMetricRecordingKind::Query, NativeMetricRecordingKind::Admission, NativeMetricRecordingKind::CacheEvents]
-    {
+    for expected_kind in [
+        NativeMetricRecordingKind::Query,
+        NativeMetricRecordingKind::Admission,
+        NativeMetricRecordingKind::CacheEvents,
+        NativeMetricRecordingKind::Attempt,
+    ] {
         assert!(
             NATIVE_NEXUS_RECORDING_DESCRIPTORS.iter().any(|(_name, kind)| *kind == expected_kind),
             "recording contract must exercise {expected_kind:?} mappings"

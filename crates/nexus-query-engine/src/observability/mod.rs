@@ -17,14 +17,21 @@ pub use lifecycle::{
     task_attempt_id,
 };
 pub use model::{
-    AdmissionLifecycleState, AdmissionRequestId, AttemptAdmissionFact, AttemptCapacityDisposition,
-    AttemptCleanupDisposition, AttemptDisposition, AttemptFinalDomainUsage, AttemptHealthTransition, AttemptId,
-    AttemptQueryId, AttemptTimestamps, AttemptTraceContext, BarrierDefinitionRow, CompiledEdgeRow,
-    GpuJobLifecycleState, JobDefinitionRow, MAX_ATTEMPT_QUERY_ID_BYTES, MAX_ATTEMPT_TRACE_CONTEXT_BYTES,
-    ObservationSequence, PlanEdgeRow, PlanExecutionBoundaryKind, PlanExecutionId, PlanNodeRow,
-    QUERY_ATTEMPT_REPORT_SCHEMA_V1, QueryAttemptReport, QueryBoundaryKind, RUNTIME_OBSERVATION_JSONL_SCHEMA,
-    ReservationGateRow, RuntimeAdmissionObservation, RuntimeAttemptId, RuntimeBarrierId,
-    RuntimeCleanupFailureObservation, RuntimeClockDomain, RuntimeGpuJobObservation, RuntimeJobId,
+    AdmissionLifecycleState, AdmissionRequestId, AttemptAdmissionFact, AttemptAllocatorEvent,
+    AttemptAllocatorEventAction, AttemptAllocatorEventSource, AttemptAllocatorPoolUsage, AttemptCapacityDisposition,
+    AttemptCleanupDisposition, AttemptDeviceHealth, AttemptDeviceHealthStatus, AttemptDisposition,
+    AttemptEvidenceField, AttemptEvidenceProvenance, AttemptFailureCode, AttemptFailureFact, AttemptFailureFactKey,
+    AttemptFailureFactValue, AttemptFailureOperation, AttemptFailureOrigin, AttemptFailureStatus,
+    AttemptFailureSummary, AttemptFailureText, AttemptFaultIsolation, AttemptFinalDomainUsage, AttemptHealthTransition,
+    AttemptId, AttemptNativeFault, AttemptNativeFaultEvidence, AttemptNativeFaultKind, AttemptNativeStatus,
+    AttemptQueryId, AttemptResourceEvidence, AttemptRetryAdvice, AttemptRetryPrerequisite, AttemptRetryRecovery,
+    AttemptTeardownHealth, AttemptTimedDomainUsage, AttemptTimestamps, AttemptTraceContext,
+    AttemptUnattributedAllocatorEvent, BarrierDefinitionRow, CleanupFailurePhase, CleanupFailureSummary,
+    CompiledEdgeRow, GpuJobLifecycleState, JobDefinitionRow, MAX_ATTEMPT_QUERY_ID_BYTES,
+    MAX_ATTEMPT_TRACE_CONTEXT_BYTES, ObservationSequence, PlanEdgeRow, PlanExecutionBoundaryKind, PlanExecutionId,
+    PlanNodeRow, QUERY_ATTEMPT_REPORT_SCHEMA_V1, QueryAttemptReport, QueryBoundaryKind,
+    RUNTIME_OBSERVATION_JSONL_SCHEMA, ReservationGateRow, RuntimeAdmissionObservation, RuntimeAttemptId,
+    RuntimeBarrierId, RuntimeCleanupFailureObservation, RuntimeClockDomain, RuntimeGpuJobObservation, RuntimeJobId,
     RuntimeMeasurementQuality, RuntimeMeasurementScope, RuntimeMeasurementSource, RuntimeObservationClassLoss,
     RuntimeObservationFooter, RuntimeObservationLimits, RuntimeObservationLossReason, RuntimeObservationManifest,
     RuntimeObservationPayload, RuntimeObservationReasonLoss, RuntimeObservationRecord, RuntimeObservationRecordClass,
@@ -34,11 +41,14 @@ pub use model::{
     RuntimeResourceId, RuntimeResourceMeasurementObservation, RuntimeResourceRow, RuntimeSinkId,
     RuntimeSourceLocationId, RuntimeSourceReadObservation, RuntimeSpanId, RuntimeStreamLeaseObservation,
     RuntimeStreamLeaseScope, RuntimeTaskId, RuntimeTaskLifecycleObservation, RuntimeTerminalOutcome,
-    RuntimeTimelineEvent, RuntimeTopologyRecord, RuntimeTraceId, RuntimeWorkerId, SinkDefinitionRow,
-    SourceReadLifecycleState, StreamLeaseAcquisition, StreamLeaseLifecycleState, TaskAttemptId, TaskDefinitionRow,
-    TaskLifecycleState, WorkerDefinitionRow,
+    RuntimeTimelineEvent, RuntimeTopologyRecord, RuntimeTraceId, RuntimeWorkerId, SEALED_ATTEMPT_PROJECTION_SCHEMA_V1,
+    SealedAttemptProjection, SinkDefinitionRow, SourceReadLifecycleState, StreamLeaseAcquisition,
+    StreamLeaseLifecycleState, TaskAttemptId, TaskDefinitionRow, TaskLifecycleState, WorkerDefinitionRow,
 };
-pub(crate) use model::{AttemptTerminalCommit, LogicalRetainedBytes};
+pub(crate) use model::{
+    AttemptAlternateDeviceEligibility, AttemptTerminalCommit, LogicalRetainedBytes,
+    has_proven_device_local_fault_evidence,
+};
 pub use operator_stage::{
     RuntimeOperatorStageGuard, RuntimeOperatorStageIdentity, observe_operator_stage, stage_context_from_execution,
 };

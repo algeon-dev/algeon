@@ -219,32 +219,41 @@ pub(super) struct AdmissionState {
 /// deadline. Store the one owned error before releasing the admission mutex.
 /// A queue sweep separately retains the immutable completion disposition, so
 /// handing this error to the waiter cannot suppress terminal completion.
+#[derive(Debug, Default)]
+struct QueuedAdmissionTerminalState {
+    error: Option<QueryError>,
+    primary_failure: Option<crate::observability::AttemptFailureSummary>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub(super) struct QueuedAdmissionTerminal {
-    error: Arc<Mutex<Option<QueryError>>>,
+    state: Arc<Mutex<QueuedAdmissionTerminalState>>,
 }
 
 impl QueuedAdmissionTerminal {
     /// Records the waiter-visible error and returns the independent
     /// disposition that must finish the removed request's completion payload.
     pub(super) fn record(&self, error: QueryError) -> RuntimeTerminalOutcome {
-        let disposition = if error.code() == QueryErrorCode::Cancelled {
-            RuntimeTerminalOutcome::Cancelled
-        } else {
-            RuntimeTerminalOutcome::Failed {
-                error_code: error.code().to_string(),
-                error_status: error.status().as_str().to_string(),
-            }
-        };
-        let mut terminal = self.error.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if terminal.is_none() {
-            *terminal = Some(error);
+        let disposition = RuntimeTerminalOutcome::from_query_error(&error);
+        let primary_failure = (error.code() != QueryErrorCode::Cancelled)
+            .then(|| crate::observability::AttemptFailureSummary::from_native_error(&error));
+        let mut terminal = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if terminal.error.is_none() {
+            terminal.primary_failure = primary_failure;
+            terminal.error = Some(error);
         }
         disposition
     }
 
     pub(super) fn take(&self) -> Option<QueryError> {
-        self.error.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take()
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).error.take()
+    }
+
+    /// Transfers the borrowed-error summary captured by queue maintenance to
+    /// the completion path. The waiter may already have taken its full error,
+    /// so the stable report must not reconstruct a generic fallback.
+    pub(super) fn take_primary_failure(&self) -> Option<crate::observability::AttemptFailureSummary> {
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).primary_failure.take()
     }
 }
 
@@ -252,6 +261,9 @@ impl QueuedAdmissionTerminal {
 pub(super) struct AdmissionRequest {
     pub(super) admission_request_id: AdmissionRequestId,
     pub(super) observation: RuntimeObservationHandle,
+    /// Engine-minted attempt identity, retained only for allocator-event
+    /// correlation once this request owns a physical allocation domain.
+    pub(super) attempt_id: Option<crate::observability::AttemptId>,
     pub(super) completion: QueryCompletion,
     pub(super) requirement: AttemptRequirement,
     /// Monotonic FIFO identity retained independently from admission order.
@@ -281,7 +293,8 @@ pub(super) struct AdmissionRequest {
 #[derive(Debug)]
 pub(crate) struct QueryCompletion {
     observation_owner: Option<RuntimeObservationOwner>,
-    attempt_release_commit: Option<crate::attempt::AttemptReleaseCommit>,
+    attempt_finalizer_slot: Option<crate::attempt::AttemptFinalizerSlot>,
+    attempt_finalizer: Option<crate::attempt::AttemptFinalizer>,
     observation_permit: Option<ObservationPermit>,
     observation_activity: Option<QueryActivityLease>,
     completion_dispatcher: Option<ObservationCompletionDispatcher>,
@@ -291,7 +304,7 @@ pub(crate) struct QueryCompletion {
 impl QueryCompletion {
     pub(super) fn new(
         observation_owner: Option<RuntimeObservationOwner>,
-        attempt_release_commit: Option<crate::attempt::AttemptReleaseCommit>,
+        attempt_finalizer_slot: Option<crate::attempt::AttemptFinalizerSlot>,
         observation_permit: Option<ObservationPermit>,
         observation_activity: Option<QueryActivityLease>,
         completion_dispatcher: Option<ObservationCompletionDispatcher>,
@@ -299,7 +312,8 @@ impl QueryCompletion {
     ) -> Self {
         Self {
             observation_owner,
-            attempt_release_commit,
+            attempt_finalizer_slot,
+            attempt_finalizer: None,
             observation_permit,
             observation_activity,
             completion_dispatcher,
@@ -311,13 +325,37 @@ impl QueryCompletion {
     /// by the admission envelope. The envelope is the one owner of every
     /// admission resource through terminal cleanup; observer completion may
     /// only run after that owner has released the permit.
-    pub(super) fn into_admitted(mut self, envelope: &mut super::service::transaction::AdmissionEnvelope) -> Self {
+    pub(super) fn into_admitted(
+        mut self,
+        envelope: &mut super::service::transaction::AdmissionEnvelope,
+    ) -> Result<Self> {
+        if let Some(slot) = self.attempt_finalizer_slot.as_ref() {
+            let finalizer = slot.take_for_admission().map_err(|error| {
+                QueryError::new(
+                    crate::error::QueryErrorCode::Internal,
+                    "nexus_query_engine.query_service.attempt_finalizer",
+                    "attempt finalizer was unavailable while publishing admission",
+                )
+                .with_fact("reason", "attempt_finalizer_unavailable")
+                .with_fact("lifecycle_error", error.to_string())
+            })?;
+            self.attempt_finalizer_slot.take();
+            self.attempt_finalizer = Some(finalizer);
+        }
         envelope.retain_gpu_resource_permit(self.gpu_resource_permit.take());
-        self
+        Ok(self)
     }
 
     pub(super) fn observation_owner(&self) -> Option<RuntimeObservationOwner> {
         self.observation_owner.clone()
+    }
+
+    /// Samples the query-relative attempt clock only when this completion
+    /// owns the admitted attempt finalizer. A missing binding stays
+    /// unavailable in stable resource evidence rather than receiving a
+    /// fabricated wall-clock timestamp.
+    pub(super) fn attempt_monotonic_ns(&self) -> Option<u64> {
+        self.attempt_finalizer.as_ref().map(crate::attempt::AttemptFinalizer::monotonic_ns)
     }
 
     pub(super) fn begin_query_cleanup(&self) {
@@ -327,10 +365,22 @@ impl QueryCompletion {
     }
 
     pub(super) fn finish_error(self, error: &QueryError) {
-        self.finish(RuntimeTerminalOutcome::Failed {
-            error_code: error.code().to_string(),
-            error_status: error.status().as_str().to_string(),
-        });
+        // Retain the bounded engine-owned summary while the original error is
+        // still borrowed. `finish` deliberately consumes only its closed
+        // terminal projection, so doing this afterwards would lose operation,
+        // allowlisted facts, and redacted text from an attempt report.
+        if error.code() != QueryErrorCode::Cancelled {
+            self.record_primary_failure(crate::observability::AttemptFailureSummary::from_native_error(error));
+        }
+        self.finish(RuntimeTerminalOutcome::from_query_error(error));
+    }
+
+    fn record_primary_failure(&self, summary: crate::observability::AttemptFailureSummary) {
+        if let Some(finalizer) = &self.attempt_finalizer {
+            finalizer.record_primary_failure(summary);
+        } else if let Some(slot) = &self.attempt_finalizer_slot {
+            let _ = slot.record_primary_failure(summary);
+        }
     }
 
     pub(super) fn finish_timeout(self, error: &QueryError) {
@@ -344,7 +394,14 @@ impl QueryCompletion {
     /// Finishes a queue-removed request from the disposition captured by its
     /// sweep. This must not consult the waiter-facing terminal error: the
     /// waiter may already have consumed that error before the sweep runs.
-    pub(super) fn finish_terminal_disposition(self, disposition: RuntimeTerminalOutcome) {
+    pub(super) fn finish_terminal_disposition(
+        self,
+        disposition: RuntimeTerminalOutcome,
+        primary_failure: Option<crate::observability::AttemptFailureSummary>,
+    ) {
+        if let Some(summary) = primary_failure {
+            self.record_primary_failure(summary);
+        }
         self.finish(disposition);
     }
 
@@ -363,8 +420,8 @@ impl QueryCompletion {
             .observation_owner
             .as_ref()
             .map_or_else(|| fallback.clone(), |owner| owner.terminal_outcome_for_cleanup(fallback.clone()));
-        self.attempt_release_commit.as_ref().map_or(observed_outcome.clone(), |attempt_release_commit| {
-            match attempt_release_commit.terminalize_for_release(observed_outcome.clone()) {
+        self.attempt_finalizer.as_ref().map_or(observed_outcome.clone(), |attempt_finalizer| {
+            match attempt_finalizer.terminalize_for_release(observed_outcome.clone()) {
                 Ok(outcome) => outcome,
                 Err(error) => {
                     eprintln!(
@@ -383,20 +440,13 @@ impl QueryCompletion {
     /// The opaque activity lease still runs last on the dispatcher tail lane:
     /// its destructor may reenter backend close and must observe the released
     /// backend GPU permit.
-    pub(super) fn seal_after_gpu_cleanup(
-        mut self,
-        outcome: RuntimeTerminalOutcome,
-        terminal_commit: crate::observability::AttemptTerminalCommit,
-    ) -> QueryCompletionActivityTail {
+    pub(super) fn seal_after_gpu_cleanup(mut self, outcome: RuntimeTerminalOutcome) -> QueryCompletionActivityTail {
         debug_assert!(self.gpu_resource_permit.is_none(), "GPU permit must leave before observer completion");
-        if let Some(attempt_release_commit) = &self.attempt_release_commit
-            && let Err(error) = attempt_release_commit.commit(terminal_commit)
-        {
-            eprintln!(
-                "[nexus-query-engine] warning: failed to commit attempt cleanup/capacity facts before seal: {error}"
-            );
-        }
-        self.attempt_release_commit.take();
+        debug_assert!(self.attempt_finalizer.is_none(), "attempt finalizer must be consumed before report seal");
+        debug_assert!(
+            self.attempt_finalizer_slot.is_none(),
+            "admitted completion cannot retain owner finalizer routing"
+        );
         let dispatcher = self.completion_dispatcher.take();
         let owner = self.observation_owner.take();
         let permit = self.observation_permit.take();
@@ -408,6 +458,36 @@ impl QueryCompletion {
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| owner.seal_query_cleanup(outcome))).ok()
         });
         QueryCompletionActivityTail { activity, dispatcher, delivery, permit }
+    }
+
+    /// Drops an admitted attempt's unpublishable observation after finalizer
+    /// failure. The capacity owner has already selected fail-closed health;
+    /// fabricating a second finalization or sealing an incomplete disposition would be
+    /// less truthful than explicit publication loss. Keep the activity tail's
+    /// ordering identical to normal sealing.
+    pub(super) fn discard_unfinalized_after_gpu_cleanup(mut self) -> QueryCompletionActivityTail {
+        debug_assert!(self.gpu_resource_permit.is_none(), "GPU permit must leave before observer completion");
+        self.attempt_finalizer.take();
+        self.attempt_finalizer_slot.take();
+        drop(self.observation_owner.take());
+        let dispatcher = self.completion_dispatcher.take();
+        let permit = self.observation_permit.take();
+        let activity = self.observation_activity.take();
+        QueryCompletionActivityTail { activity, dispatcher, delivery: None, permit }
+    }
+
+    /// Consumes the linear post-cleanup finalizer before the report seal.
+    pub(super) fn finalize_attempt_after_gpu_cleanup(
+        &mut self,
+        terminal_commit: crate::observability::AttemptTerminalCommit,
+    ) -> std::result::Result<(), crate::attempt::AttemptLifecycleError> {
+        match self.attempt_finalizer.take() {
+            Some(finalizer) => finalizer.finalize_admitted(terminal_commit),
+            None if self.attempt_finalizer_slot.is_some() => {
+                Err(crate::attempt::AttemptLifecycleError::FinalizationUnavailable)
+            },
+            None => Ok(()),
+        }
     }
 
     fn finish(mut self, fallback: RuntimeTerminalOutcome) {
@@ -450,7 +530,33 @@ impl QueryCompletion {
         let owner = self.observation_owner.take();
         let permit = self.observation_permit.take();
         let activity = self.observation_activity.take();
-        if let Some(owner) = owner {
+        let finalized = if self.attempt_finalizer.is_some() {
+            // This completion was already admitted but reached a recovery path
+            // before its post-cleanup finalizer ran. Publishing would invent
+            // admitted cleanup/capacity facts, so fail publication instead.
+            eprintln!(
+                "[nexus-query-engine] warning: admitted completion dropped before finalization; suppressing report publication"
+            );
+            false
+        } else if let Some(slot) = self.attempt_finalizer_slot.take() {
+            match slot.finalize_not_admitted(fallback.clone()) {
+                Ok(_) => true,
+                Err(crate::attempt::AttemptLifecycleError::FinalizationUnavailable)
+                    if owner.as_ref().is_some_and(|owner| owner.sealed_snapshot().is_some()) =>
+                {
+                    true
+                },
+                Err(error) => {
+                    eprintln!(
+                        "[nexus-query-engine] warning: failed to finalize unadmitted attempt before seal; suppressing report publication: {error}"
+                    );
+                    false
+                },
+            }
+        } else {
+            true
+        };
+        if finalized && let Some(owner) = owner {
             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let _ = owner.finish_query_cleanup(fallback);
             }));
@@ -516,6 +622,8 @@ impl QueryCompletionActivityTail {
 impl Drop for QueryCompletion {
     fn drop(&mut self) {
         if self.observation_owner.is_none()
+            && self.attempt_finalizer_slot.is_none()
+            && self.attempt_finalizer.is_none()
             && self.observation_permit.is_none()
             && self.observation_activity.is_none()
             && self.gpu_resource_permit.is_none()
@@ -531,7 +639,8 @@ impl Drop for QueryCompletion {
             if std::thread::panicking() { RuntimeTerminalOutcome::Panicked } else { RuntimeTerminalOutcome::Dropped };
         let recovered = Self {
             observation_owner: self.observation_owner.take(),
-            attempt_release_commit: self.attempt_release_commit.take(),
+            attempt_finalizer_slot: self.attempt_finalizer_slot.take(),
+            attempt_finalizer: self.attempt_finalizer.take(),
             observation_permit: self.observation_permit.take(),
             observation_activity: self.observation_activity.take(),
             completion_dispatcher: self.completion_dispatcher.take(),
@@ -766,7 +875,9 @@ impl QueryAdmissionWaiter {
                 .commit_placed_admission(
                     placed_query,
                     admitted.requirement.clone(),
+                    admitted.compatible_devices.clone(),
                     admitted.observation,
+                    admitted.attempt_id,
                     admitted.completion,
                     self.admission_request_id,
                     self.requested_at.elapsed(),
@@ -895,7 +1006,8 @@ pub(super) fn finish_removed_request_cancelled(request: Option<AdmissionRequest>
 
 pub(super) fn finish_expired_queued_requests(expired: Vec<(AdmissionRequest, RuntimeTerminalOutcome)>) {
     for (request, disposition) in expired {
-        request.completion.finish_terminal_disposition(disposition);
+        let primary_failure = request.terminal.take_primary_failure();
+        request.completion.finish_terminal_disposition(disposition, primary_failure);
     }
 }
 
@@ -932,4 +1044,63 @@ pub(super) fn service_closed_error() -> QueryError {
         "query service admission is closed",
     )
     .with_fact("reason", "admission_closed")
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{sync::Arc, time::Duration};
+
+    use super::*;
+    use crate::{
+        attempt::{AttemptBackendCounters, AttemptOwner, BeginAttemptRequest},
+        observability::{
+            AttemptFailureCode, AttemptFailureFactKey, AttemptFailureFactValue, AttemptFailureOperation,
+            RuntimeObservationConfig,
+        },
+        runtime::BackendLifecycle,
+    };
+
+    #[test]
+    fn queued_admission_terminal_preserves_borrowed_primary_failure_after_waiter_consumes_error() {
+        let backend_lifecycle = BackendLifecycle::new();
+        let attempt = AttemptOwner::begin(
+            BeginAttemptRequest {
+                observation: RuntimeObservationConfig::bounded(8, 8 * 1024),
+                ..BeginAttemptRequest::default()
+            },
+            backend_lifecycle.try_begin_observation().expect("attempt observation permit"),
+            Arc::new(AttemptBackendCounters::default()),
+            None,
+        );
+        let owner = attempt.owner;
+        let completion = attempt.completion;
+        let (observation_owner, finalizer_slot) = owner.admission_binding().into_parts();
+        let query_completion =
+            QueryCompletion::new(Some(observation_owner), Some(finalizer_slot), None, None, None, None);
+        let error = QueryError::new(
+            QueryErrorCode::MemoryReservationFailed,
+            "nexus_query_engine.query_service.admission.test",
+            "admission failure with retained primary evidence",
+        )
+        .with_fact("reason", "backend_closing");
+
+        let queued_terminal = QueuedAdmissionTerminal::default();
+        let disposition = queued_terminal.record(error);
+        let waiter_error = queued_terminal.take().expect("queue waiter receives its full terminal error first");
+
+        // The waiter keeps the full error, including the original source
+        // chain. Queue maintenance then consumes only the independently
+        // captured bounded summary for the attempt completion.
+        assert_eq!(waiter_error.fact_value("reason"), Some("backend_closing"));
+        query_completion.finish_terminal_disposition(disposition, queued_terminal.take_primary_failure());
+
+        let report = completion.wait_timeout(Duration::from_secs(1)).expect("attempt report publishes");
+        let summary = report.primary_failure.as_ref().expect("borrowed primary failure is retained");
+        assert_eq!(summary.code(), AttemptFailureCode::MemoryReservationFailed);
+        assert_eq!(summary.operation(), AttemptFailureOperation::Admission);
+        assert_eq!(
+            summary.facts().iter().map(|fact| (fact.key(), fact.value())).collect::<Vec<_>>(),
+            vec![(AttemptFailureFactKey::Reason, AttemptFailureFactValue::BackendClosing)]
+        );
+    }
 }

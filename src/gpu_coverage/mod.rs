@@ -25,7 +25,8 @@ pub(crate) use self::explain_gpu::parse_explain_gpu;
 pub use self::model::{
     QueryGpuCandidateOutcome, QueryGpuCandidateReasonKind, QueryGpuCandidateSelectionOutcome, QueryGpuCoverage,
     QueryGpuCoverageConfidence, QueryGpuCoverageDomains, QueryGpuCoverageOverall, QueryGpuCugraphCall,
-    QueryGpuRejectionPhase, QueryGpuRemedy, QueryGpuRemedyKind, QueryGpuRuntimeCaveat, QueryGpuValidatedUnder,
+    QueryGpuRejectionPhase, QueryGpuRemedy, QueryGpuRemedyKind, QueryGpuRetryAdviceAvailability, QueryGpuRuntimeCaveat,
+    QueryGpuValidatedUnder,
 };
 use self::{
     physical::{candidate_outcomes_from_report, cugraph_calls, planning_diagnostics_did_io},

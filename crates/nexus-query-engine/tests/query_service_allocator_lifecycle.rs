@@ -56,8 +56,10 @@ fn rejected_configs_and_unidentified_allocator_do_not_mutate_the_allocator() {
     assert_eq!(empty_profile.fact_value("reason"), Some("empty_profile_id"));
 
     let profile = SourceStorageProfile::s3("duplicate", S3SourceStorageProfile::default_chain());
-    let duplicate_profile_config =
-        QueryExecutionConfig { source_storage_profiles: vec![profile.clone(), profile], ..QueryExecutionConfig::default() };
+    let duplicate_profile_config = QueryExecutionConfig {
+        source_storage_profiles: vec![profile.clone(), profile],
+        ..QueryExecutionConfig::default()
+    };
     let duplicate_profile = backend_draft(duplicate_profile_config).validate().unwrap_err();
     assert_eq!(duplicate_profile.code(), QueryErrorCode::InvalidPlan);
     assert_eq!(duplicate_profile.fact_value("reason"), Some("duplicate_profile_id"));

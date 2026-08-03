@@ -15,7 +15,10 @@ use nexus_query_engine::{
     error::QueryError,
     exec::output::{QueryExecutionOutcome, QueryOutput},
     metrics::{JoinOperatorMetrics, QueryMetrics},
-    observability::SealedRuntimeObservationSnapshot,
+    observability::{
+        AttemptCapacityDisposition, AttemptCleanupDisposition, AttemptDisposition, AttemptHealthTransition,
+        QueryAttemptReport, RuntimeTerminalOutcome, SealedRuntimeObservationSnapshot,
+    },
     runtime::{ExecutionBoundaryPolicy, LakehouseCacheFillEventSnapshot},
 };
 
@@ -29,6 +32,100 @@ mod mapping;
 
 #[cfg(test)]
 pub(super) use mapping::{NATIVE_NEXUS_RECORDING_DESCRIPTORS, NativeMetricRecordingKind};
+
+/// A root-native-wrapper target that can receive one attempt projection after
+/// its owner has sealed the immutable report. It does not retain the report,
+/// own attempt lifecycle state, or expose unbounded labels.
+#[derive(Debug, Clone)]
+pub(crate) struct SealedAttemptMetricsTarget {
+    metrics: ExecutionPlanMetricsSet,
+}
+
+impl SealedAttemptMetricsTarget {
+    pub(crate) fn new(metrics: &ExecutionPlanMetricsSet) -> Self {
+        Self { metrics: metrics.clone() }
+    }
+
+    /// Emit the single fixed-cardinality DataFusion row for this attempt.
+    ///
+    /// The caller elects exactly one root wrapper before execution. All labels
+    /// are closed report facts; in particular, the attempt id and device
+    /// ordinal deliberately never become metric labels.
+    pub(crate) fn record(self, report: &QueryAttemptReport) {
+        MetricBuilder::new(&self.metrics)
+            .with_type(MetricType::Summary)
+            .with_new_label("disposition", attempt_disposition_label(report.disposition).to_string())
+            .with_new_label("outcome", attempt_outcome_label(&report.outcome).to_string())
+            .with_new_label(
+                "cleanup_disposition",
+                attempt_cleanup_disposition_label(report.cleanup_disposition).to_string(),
+            )
+            .with_new_label("cleanup_failure_count_complete", report.cleanup_failure_count_complete.to_string())
+            .with_new_label(
+                "capacity_disposition",
+                attempt_capacity_disposition_label(report.capacity_disposition).to_string(),
+            )
+            .with_new_label(
+                "health_transition",
+                report.health_transition.map_or_else(|| "none".to_string(), attempt_health_transition_label),
+            )
+            .with_new_label("retry_recovery", report.retry_advice.recovery.as_str().to_string())
+            .with_new_label("retry_prerequisite", report.retry_advice.prerequisite.as_str().to_string())
+            .with_new_label("observation_truncated", report.observation_truncated.to_string())
+            .with_new_label("observation_degraded", report.observation_degraded.to_string())
+            .with_new_label("native_fault_evidence", presence_label(report.native_fault_evidence.is_some()).to_string())
+            .with_new_label("resource_evidence", presence_label(report.resource_evidence.is_some()).to_string())
+            .global_counter(metric_name::attempt_report_rows())
+            .add(1);
+    }
+}
+
+const fn presence_label(present: bool) -> &'static str {
+    if present { "present" } else { "absent" }
+}
+
+const fn attempt_disposition_label(disposition: AttemptDisposition) -> &'static str {
+    match disposition {
+        AttemptDisposition::Unplanned => "unplanned",
+        AttemptDisposition::CpuFallback => "cpu_fallback",
+        AttemptDisposition::PartialNative => "partial_native",
+        AttemptDisposition::Native => "native",
+    }
+}
+
+const fn attempt_outcome_label(outcome: &RuntimeTerminalOutcome) -> &'static str {
+    match outcome {
+        RuntimeTerminalOutcome::Succeeded => "succeeded",
+        RuntimeTerminalOutcome::Failed { .. } => "failed",
+        RuntimeTerminalOutcome::Cancelled => "cancelled",
+        RuntimeTerminalOutcome::Dropped => "dropped",
+        RuntimeTerminalOutcome::Panicked => "panicked",
+    }
+}
+
+const fn attempt_cleanup_disposition_label(disposition: AttemptCleanupDisposition) -> &'static str {
+    match disposition {
+        AttemptCleanupDisposition::NotRequired => "not_required",
+        AttemptCleanupDisposition::Completed => "completed",
+        AttemptCleanupDisposition::CompletedWithFailures => "completed_with_failures",
+    }
+}
+
+const fn attempt_capacity_disposition_label(disposition: AttemptCapacityDisposition) -> &'static str {
+    match disposition {
+        AttemptCapacityDisposition::NotAdmitted => "not_admitted",
+        AttemptCapacityDisposition::Released => "released",
+        AttemptCapacityDisposition::RetainedQuarantine => "retained_quarantine",
+    }
+}
+
+fn attempt_health_transition_label(transition: AttemptHealthTransition) -> String {
+    match transition {
+        AttemptHealthTransition::HealthyReuse => "healthy_reuse".to_string(),
+        AttemptHealthTransition::DeviceQuarantined => "device_quarantined".to_string(),
+        AttemptHealthTransition::BackendUnhealthy => "backend_unhealthy".to_string(),
+    }
+}
 
 /// Private translation layer from native QueryMetrics into DataFusion metrics.
 #[derive(Debug, Clone)]

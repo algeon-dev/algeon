@@ -186,7 +186,8 @@ async fn get_query_stats_returns_cancelled_for_unconsumed_ticket() {
 
     server.abort();
 
-    assert!(payload.contains("# outcome=failed"), "{payload}");
+    assert!(payload.contains("# outcome=cancelled"), "{payload}");
+    assert!(payload.contains("# delivery_outcome=failed"), "{payload}");
     assert!(payload.contains("# sealed=true"), "{payload}");
     assert!(payload.contains("[structured_error]"), "{payload}");
     assert!(payload.contains("code=cancelled"), "{payload}");

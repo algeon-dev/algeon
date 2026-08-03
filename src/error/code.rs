@@ -224,21 +224,21 @@ impl fmt::Display for ErrorKind {
 
 /// Retry and remediation status for adapter errors.
 ///
-/// Only [`Self::Temporary`] is automatically retryable.
+/// This is a coarse source classification, not attempt retry advice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ErrorStatus {
     /// The same request will not succeed without changing its query, input,
     /// configuration, or code. Do not retry it automatically.
     Permanent,
-    /// The failure may clear without external repair. Automatic retry, backoff,
-    /// or smaller resource admission may succeed.
+    /// The failure may clear without external repair. A sealed attempt report
+    /// still needs terminal evidence before it can advise backoff or retry.
     Temporary,
     /// A dependency/runtime failure has been observed to recur or is known to
     /// continue. Stop automatic retries and escalate or wait for intervention.
     ///
     /// This remains distinct from [`Self::Permanent`] because it records a
     /// continuing dependency failure rather than a request that must change;
-    /// neither status is automatically retryable.
+    /// neither status alone is retry advice.
     Persistent,
 }
 
@@ -304,7 +304,7 @@ pub const fn kind_for_code(code: ErrorCode) -> ErrorKind {
 
 /// Maps each adapter error code to its stable retry/remediation status.
 ///
-/// Only [`ErrorStatus::Temporary`] is automatically retryable.
+/// Attempt retry advice is derived only after terminal evidence is sealed.
 /// [`ErrorStatus::Persistent`] means a repeated or known-continuing dependency
 /// failure that requires escalation or intervention, while
 /// [`ErrorStatus::Permanent`] means the request, input, configuration, or code

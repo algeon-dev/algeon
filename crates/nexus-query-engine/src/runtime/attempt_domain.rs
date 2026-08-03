@@ -113,6 +113,11 @@ impl AttemptAllocationDomain {
         self.domain_id
     }
 
+    /// Immutable allocation cap copied from the admitted memory grant.
+    pub const fn cap_bytes(&self) -> u64 {
+        self.member_limit_bytes
+    }
+
     pub fn device_ordinal(&self) -> usize {
         self.domain.device().ordinal()
     }

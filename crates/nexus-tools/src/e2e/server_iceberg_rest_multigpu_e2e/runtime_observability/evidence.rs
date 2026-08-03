@@ -1,6 +1,7 @@
 use super::*;
 
 pub(super) const CONTROL_SCHEMA: &str = "datafusion_nexus.query_runtime_artifact.control.v1";
+pub(super) const CONTROL_SCHEMA_V2: &str = "datafusion_nexus.query_runtime_artifact.control.v2";
 pub(super) const JSONL_SCHEMA: &str = nexus_query_engine::observability::RUNTIME_OBSERVATION_JSONL_SCHEMA;
 pub(super) const QUERY_ID_METADATA: &str = "x-datafusion-nexus-query-id";
 pub(super) const CORRELATION_HEADER: &str = "x-datafusion-nexus-correlation-id";
@@ -377,10 +378,13 @@ pub(super) fn parse_artifact(
     let wire_bytes = frames.iter().map(Vec::len).sum();
     let control_frame = frames.first().ok_or("runtime artifact action returned no frames")?;
     let control: Value = serde_json::from_slice(control_frame)?;
-    if control.get("schema").and_then(Value::as_str) != Some(CONTROL_SCHEMA)
-        || control.get("version").and_then(Value::as_u64) != Some(1)
-        || control.get("query_id").and_then(Value::as_str) != Some(query_id)
-    {
+    let control_schema = control.get("schema").and_then(Value::as_str);
+    let control_version = control.get("version").and_then(Value::as_u64);
+    let valid_schema = matches!(
+        (control_schema, control_version),
+        (Some(CONTROL_SCHEMA), Some(1)) | (Some(CONTROL_SCHEMA_V2), Some(2))
+    );
+    if !valid_schema || control.get("query_id").and_then(Value::as_str) != Some(query_id) {
         return Err(format!("invalid runtime artifact control frame for {query_id}: {control}").into());
     }
     let state = control
@@ -412,6 +416,21 @@ pub(super) fn parse_artifact(
     }
     if state == "unavailable" && reason.is_none() {
         return Err(format!("runtime artifact {query_id} unavailable control lacks reason").into());
+    }
+    if control_schema == Some(CONTROL_SCHEMA_V2) && state == "sealed" {
+        let attempt = control
+            .get("attempt")
+            .and_then(Value::as_object)
+            .ok_or_else(|| format!("sealed v2 runtime artifact control lacks attempt projection: {control}"))?;
+        let retry_advice = attempt
+            .get("retry_advice")
+            .and_then(Value::as_object)
+            .ok_or_else(|| format!("sealed v2 runtime artifact control lacks retry advice: {control}"))?;
+        if retry_advice.get("recovery").and_then(Value::as_str).is_none()
+            || retry_advice.get("prerequisite").and_then(Value::as_str).is_none()
+        {
+            return Err(format!("sealed v2 runtime artifact control has incomplete retry advice: {control}").into());
+        }
     }
     if state != "sealed" {
         if expected_terminal.is_some() {

@@ -383,10 +383,10 @@ async fn assert_overload_contract(http: &reqwest::Client, params: &RunParams, ye
         consume_flight_info(&mut active_client, held).await?;
         return Err(format!("overflow REST request should return 429, got {status}: {body}").into());
     }
-    if !response.headers().contains_key(header::RETRY_AFTER) {
+    if response.headers().contains_key(header::RETRY_AFTER) {
         abort_queued(queued).await;
         consume_flight_info(&mut active_client, held).await?;
-        return Err("overflow REST request returned 429 without Retry-After".into());
+        return Err("overflow REST request fabricated Retry-After without sealed attempt advice".into());
     }
 
     let mut overflow_client = connect_flight_sql(&params.flight_url, Duration::from_secs(30)).await?;

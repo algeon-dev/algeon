@@ -12,7 +12,7 @@ use datafusion_nexus::{
     native_exec::NexusNativeExecutionConfig,
 };
 use futures::StreamExt;
-use nexus_query_engine::observability::{AttemptDisposition, RuntimeTerminalOutcome};
+use nexus_query_engine::observability::{AttemptDisposition, AttemptFailureCode, RuntimeTerminalOutcome};
 
 static BACKEND_SERIAL: Mutex<()> = Mutex::new(());
 
@@ -253,6 +253,10 @@ async fn reused_plans_mint_fresh_attempts_and_never_observe_plan_lifetime_attemp
     let planner = backend.begin_attempt(AttemptOptions::default()).unwrap();
     let plan = planner.plan_sql(&ctx, "SELECT k, SUM(v) FROM native_rows GROUP BY k ORDER BY k").await.unwrap();
     let planner_id = planner.attempt_id();
+    assert!(
+        plan.metrics().is_none_or(|metrics| metrics.sum_by_name("attempt_report_rows").is_none()),
+        "retry advice cannot appear in DataFusion metrics before the attempt seals"
+    );
 
     // The planning attempt executes its own plan.
     let mut stream = planner.execute_physical_plan(std::sync::Arc::clone(&plan), &ctx).unwrap();
@@ -261,6 +265,23 @@ async fn reused_plans_mint_fresh_attempts_and_never_observe_plan_lifetime_attemp
     }
     let report = planner.completion().await;
     assert!(matches!(report.outcome, RuntimeTerminalOutcome::Succeeded));
+    let metrics = plan.metrics().expect("native root exposes DataFusion metrics");
+    assert_eq!(metrics.sum_by_name("attempt_report_rows").unwrap().as_usize(), 1);
+    let sealed_rows = metrics
+        .iter()
+        .filter(|metric| metric.value().name() == "attempt_report_rows")
+        .filter(|metric| metric.labels().iter().any(|label| label.name() == "retry_recovery"))
+        .collect::<Vec<_>>();
+    assert_eq!(sealed_rows.len(), 1, "one elected root publishes one post-seal row per attempt");
+    let labels = sealed_rows[0]
+        .labels()
+        .iter()
+        .map(|label| (label.name(), label.value()))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(labels.get("retry_recovery"), Some(&"no_retry_needed"));
+    assert_eq!(labels.get("retry_prerequisite"), Some(&"none"));
+    assert!(!labels.contains_key("attempt_id"));
+    assert!(!labels.contains_key("device_ordinal"));
 
     // A second attempt reuses the same plan and receives a fresh identity and
     // its own admission facts; nothing records into the first attempt.
@@ -275,6 +296,11 @@ async fn reused_plans_mint_fresh_attempts_and_never_observe_plan_lifetime_attemp
     assert_eq!(report.attempt_id, second_id);
     assert!(matches!(report.outcome, RuntimeTerminalOutcome::Succeeded));
     assert!(report.admission.is_some(), "reused plan admits under the new attempt");
+    assert_eq!(
+        plan.metrics().unwrap().sum_by_name("attempt_report_rows").unwrap().as_usize(),
+        2,
+        "reused wrappers project one counter row per sealed attempt rather than sharing terminal state"
+    );
     assert!(
         report.timestamps.planning_started_ns.is_none(),
         "an execute-only attempt does not synthesize planning boundaries"
@@ -574,7 +600,7 @@ async fn admission_rejection_reports_the_typed_rejection_not_a_synthetic_drop() 
     assert!(
         matches!(
             &report.outcome,
-            RuntimeTerminalOutcome::Failed { error_code, .. } if error_code == "service_overloaded"
+            RuntimeTerminalOutcome::Failed { error_code, .. } if *error_code == AttemptFailureCode::ServiceOverloaded
         ),
         "the report carries the typed rejection, not a synthetic drop: {:?}",
         report.outcome

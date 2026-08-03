@@ -33,7 +33,10 @@ use nexus_query_engine::{
 };
 use tokio::sync::watch;
 
-use crate::error::{Error, ErrorCode, Result};
+use crate::{
+    error::{Error, ErrorCode, Result},
+    native_exec::SealedAttemptMetricsTarget,
+};
 
 const OPERATION: &str = "datafusion_nexus.graph_execution.bfs_singleflight";
 const DEFAULT_MAX_BATCH_WIDTH: usize = 32;
@@ -85,6 +88,11 @@ impl GraphAdmissionModelAsk {
 /// caller-controlled proof SPI.
 pub(crate) trait GraphExecutionPlan: Send + Sync {
     fn graph_model_ask_for_admission(&self) -> DataFusionResult<Option<GraphAdmissionModelAsk>>;
+
+    /// Returns the one fixed-cardinality post-seal metric target for this
+    /// graph execution root. The adapter discovers it through this neutral
+    /// SPI, so core execution does not depend on a graph frontend.
+    fn sealed_attempt_metrics_target(&self) -> SealedAttemptMetricsTarget;
 }
 
 /// A graph frontend hook that recognizes one of its DataFusion execution nodes.

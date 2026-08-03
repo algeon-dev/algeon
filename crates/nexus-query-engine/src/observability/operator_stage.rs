@@ -446,12 +446,7 @@ mod tests {
         )
         .expect_err("body fails");
         assert_eq!(err.code(), QueryErrorCode::CudfResourceExhausted);
-        let snapshot = session
-            .seal(RuntimeTerminalOutcome::Failed {
-                error_code: "cudf_resource_exhausted".to_string(),
-                error_status: QueryErrorCode::CudfResourceExhausted.status().as_str().to_string(),
-            })
-            .expect("seal");
+        let snapshot = session.seal(RuntimeTerminalOutcome::from_query_error(&err)).expect("seal");
         let states: Vec<_> = snapshot
             .events()
             .iter()

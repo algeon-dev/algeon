@@ -1322,7 +1322,8 @@ fn nexus_facts_from_df_error(error: &DataFusionError) -> BTreeMap<String, String
     out.insert("debug".into(), debug.chars().take(2000).collect());
     if let Some(nexus) = error.find_nexus_error() {
         out.insert("error_code".into(), format!("{:?}", nexus.code()));
-        out.insert("retryable".into(), nexus.is_retryable().to_string());
+        out.insert("source_error_status".into(), nexus.status().as_str().to_string());
+        out.insert("retry_advice".into(), "unavailable_no_sealed_attempt_report".to_string());
         out.insert("status".into(), format!("{:?}", nexus.status()));
         out.insert("kind".into(), format!("{:?}", nexus.kind()));
         out.insert("operation".into(), nexus.operation().to_string());
@@ -1353,7 +1354,8 @@ fn walk_df_error(error: &DataFusionError, out: &mut BTreeMap<String, String>, de
         DataFusionError::External(boxed) => {
             if let Some(nexus) = boxed.downcast_ref::<datafusion_nexus::error::Error>() {
                 out.insert("error_code".into(), format!("{:?}", nexus.code()));
-                out.insert("retryable".into(), nexus.is_retryable().to_string());
+                out.insert("source_error_status".into(), nexus.status().as_str().to_string());
+                out.insert("retry_advice".into(), "unavailable_no_sealed_attempt_report".to_string());
                 out.insert("status".into(), format!("{:?}", nexus.status()));
                 out.insert("kind".into(), format!("{:?}", nexus.kind()));
                 out.insert("operation".into(), nexus.operation().to_string());

@@ -6,7 +6,7 @@ use tokio::{sync::futures::Notified, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    super::observability::{CapturedError, CapturedQuery},
+    super::observability::{CapturedError, CapturedQuery, attempt_outcome_label},
     QueryCoordinator,
     artifacts::{
         compose_terminal_artifact, incomplete_runtime_control, unavailable_stats_payload, unavailable_tombstone_stats,
@@ -338,6 +338,7 @@ impl QueryCoordinator {
                 .map(|(key, record)| ShutdownTimeoutSnapshot {
                     key: key.clone(),
                     captured: record.captured.as_ref().map(CapturedQuery::shutdown_snapshot),
+                    attempt_outcome: record.attempt_outcome.clone(),
                     hot: record.hot.snapshot(),
                     artifact_max_bytes: record.artifact_max_bytes,
                     live_stats_cache: {
@@ -359,16 +360,27 @@ impl QueryCoordinator {
             .map(|snapshot| {
                 snapshot.live_stats_cache.wait_drained();
                 let reason = RetainedUnavailableReason::ShutdownTimeout;
+                let outcome = snapshot.attempt_outcome.as_ref().map(attempt_outcome_label).unwrap_or("dropped");
+                let shutdown_delivery_outcome = QueryTerminalOutcome::ShutdownTimeout.stats_outcome();
+                let delivery_outcome = (outcome != shutdown_delivery_outcome).then_some(shutdown_delivery_outcome);
                 let control = incomplete_runtime_control(snapshot.key.query_id(), reason);
                 let composed = compose_terminal_artifact(control, None, snapshot.artifact_max_bytes, |remaining| {
                     snapshot.captured.as_ref().map_or_else(
-                        || unavailable_stats_payload(snapshot.key.query_id(), "dropped", reason, remaining),
+                        || unavailable_stats_payload(
+                            snapshot.key.query_id(),
+                            outcome,
+                            delivery_outcome,
+                            reason,
+                            remaining,
+                        ),
                         |captured| {
                             captured.to_query_stats_payload(
                                 now,
                                 snapshot.hot.output_batches,
                                 snapshot.hot.output_rows,
                                 snapshot.hot.output_bytes,
+                                outcome,
+                                delivery_outcome,
                                 remaining,
                             )
                         },
@@ -380,7 +392,8 @@ impl QueryCoordinator {
                     .then(|| {
                         unavailable_tombstone_stats(
                             snapshot.key.query_id(),
-                            "dropped",
+                            outcome,
+                            delivery_outcome,
                             reason,
                             snapshot.artifact_max_bytes,
                         )

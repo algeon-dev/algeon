@@ -29,7 +29,7 @@ use super::{
         properties_with_equivalence, run_gpu_execution_task, write_native_plan_tree,
     },
     config::NexusNativeExecutionConfig,
-    metrics::{NativeExecutionMetricsCapture, NexusNativeMetrics},
+    metrics::{NativeExecutionMetricsCapture, NexusNativeMetrics, SealedAttemptMetricsTarget},
 };
 use crate::error::{Error, ErrorCode};
 
@@ -98,6 +98,13 @@ impl NexusNativeExec {
     #[cfg(test)]
     pub(crate) fn metrics_capture(&self) -> Option<NativeExecutionMetricsCapture> {
         self.metrics_capture.clone()
+    }
+
+    /// Returns the one post-seal attempt projection target for this wrapper.
+    /// The attempt owner elects it before execution; the wrapper itself never
+    /// reads or retains terminal attempt state.
+    pub(crate) fn sealed_attempt_metrics_target(&self) -> SealedAttemptMetricsTarget {
+        SealedAttemptMetricsTarget::new(&self.metrics)
     }
 
     pub(crate) async fn prepare_lakehouse_metadata(&self, task_context: &TaskContext) -> Self {

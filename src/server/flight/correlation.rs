@@ -330,7 +330,8 @@ mod correlation_tests {
         assert!(native_cancellation.is_cancelled(), "dropping the DoGet stream must cancel native execution");
         assert_eq!(service.cancellations.len(), 0, "dropped streams must leave no cancellable registry entry");
         let payload = query_stats(&service, &query_id);
-        assert!(payload.contains("# outcome=failed"), "{payload}");
+        assert!(payload.contains("# outcome=cancelled"), "{payload}");
+        assert!(payload.contains("# delivery_outcome=failed"), "{payload}");
         assert!(payload.contains("# sealed=true"), "{payload}");
         assert!(payload.contains("[structured_error]"), "{payload}");
         assert!(payload.contains("code=cancelled"), "{payload}");
@@ -368,7 +369,8 @@ mod correlation_tests {
         assert!(native_cancellation.is_cancelled(), "panic cleanup still cancels native execution");
         assert_eq!(service.cancellations.len(), 0);
         let payload = query_stats(&service, &query_id);
-        assert!(payload.contains("# outcome=dropped\n"), "{payload}");
+        assert!(payload.contains("# outcome=panicked\n"), "{payload}");
+        assert!(payload.contains("# delivery_outcome=dropped\n"), "{payload}");
         assert_eq!(payload.matches("# attempt_id=attempt-").count(), 1, "{payload}");
         assert_eq!(payload.matches("# attempt_outcome=").count(), 1, "{payload}");
         assert!(payload.contains("# attempt_outcome=panicked"), "{payload}");
@@ -408,7 +410,8 @@ mod correlation_tests {
         assert!(native_cancellation.is_cancelled(), "dropping a partially polled stream must cancel native work");
         assert_eq!(service.cancellations.len(), 0, "midstream drops must remove cancellation registration");
         let payload = query_stats(&service, &query_id);
-        assert!(payload.contains("# outcome=failed"), "{payload}");
+        assert!(payload.contains("# outcome=cancelled"), "{payload}");
+        assert!(payload.contains("# delivery_outcome=failed"), "{payload}");
         assert!(payload.contains("code=cancelled"), "{payload}");
         assert!(payload.contains("operation=datafusion_nexus.server.flight.cancel_query"), "{payload}");
     }
@@ -437,6 +440,152 @@ mod correlation_tests {
         assert!(payload.contains("kind=internal"), "{payload}");
         assert!(payload.contains("status=permanent"), "{payload}");
         assert!(payload.contains("operation=datafusion_nexus.server.flight.test_stream"), "{payload}");
+    }
+
+    #[tokio::test]
+    async fn rejected_attempt_report_handoff_keeps_cancelled_attempt_outcome_separate_from_delivery_failure() {
+        const QUERY_ID: &str = "attempt-report-handoff-rejection";
+        let service = test_service();
+        let planning = service
+            .register_query(QUERY_ID.to_string(), "SELECT 1 AS one".to_string(), None)
+            .expect("query registration should create the coordinator record");
+        let execution = planning.into_execution().expect("planning record should promote to execution");
+        let terminal = CoordinatorExecutionTerminal::new_with_attempt_report(
+            execution,
+            QUERY_ID.to_string(),
+            Instant::now(),
+            true,
+        );
+        let attempt = service
+            .admission
+            .begin_attempt(crate::attempt::AttemptOptions {
+                query_id: Some(QUERY_ID.to_string()),
+                trace_context: None,
+                deadline: None,
+                observation: service.runtime_observation_config,
+            })
+            .expect("test backend should begin the attempt")
+            .expect("test backend always owns a native attempt");
+
+        // Route the observer to a missing coordinator record. This simulates
+        // a handoff rejection while preserving the real terminal's lease and
+        // ensures the failure cannot remain blocked on the report gate.
+        let mut missing_key = terminal.key().clone();
+        missing_key.generation = u64::MAX;
+        service.register_attempt_report_handoff_for_test(
+            missing_key,
+            &attempt,
+            CoordinatorReportHandoffTerminal::execution(Arc::clone(&terminal)),
+        );
+        terminal.finish_success("stream");
+        attempt.cancel_before_stream();
+
+        tokio::time::timeout(Duration::from_secs(1), terminal.wait_finished())
+            .await
+            .expect("rejected report handoff must release the terminal lease");
+        assert!(terminal.is_finished());
+        assert!(matches!(
+            service.coordinator.artifact(QUERY_ID),
+            Some(CoordinatorArtifact::Unavailable(reason))
+                if reason.as_str() == "attempt_report_delivery_failed"
+        ));
+        let payload = query_stats(&service, QUERY_ID);
+        assert!(payload.contains("# outcome=cancelled\n"), "{payload}");
+        assert!(payload.contains("# delivery_outcome=failed\n"), "{payload}");
+        assert!(payload.contains("# incomplete=true\n"), "{payload}");
+        assert!(payload.contains("# unavailable_reason=attempt_report_delivery_failed\n"), "{payload}");
+    }
+
+    #[tokio::test]
+    async fn missing_attempt_report_handoff_releases_the_flight_report_gate() {
+        const QUERY_ID: &str = "attempt-report-missing";
+        let service = test_service();
+        let planning = service
+            .register_query(QUERY_ID.to_string(), "SELECT 1 AS one".to_string(), None)
+            .expect("query registration should create the coordinator record");
+        let execution = planning.into_execution().expect("planning record should promote to execution");
+        let terminal = CoordinatorExecutionTerminal::new_with_attempt_report(
+            execution,
+            QUERY_ID.to_string(),
+            Instant::now(),
+            true,
+        );
+        let handoff = CoordinatorReportHandoffTerminal::execution(Arc::clone(&terminal));
+
+        // This drives the observer's invariant-failure branch directly. A
+        // real attempt can never reach it without violating report-before-
+        // snapshot publication, so constructing a malformed attempt would
+        // test an impossible public contract instead of the Flight gate.
+        terminal.finish_success("stream");
+        DatafusionNexusFlightSqlService::finish_missing_attempt_report_handoff(&handoff, QUERY_ID);
+
+        tokio::time::timeout(Duration::from_secs(1), terminal.wait_finished())
+            .await
+            .expect("missing report handoff must release the terminal lease");
+        assert!(terminal.is_finished());
+        assert!(matches!(
+            service.coordinator.artifact(QUERY_ID),
+            Some(CoordinatorArtifact::Unavailable(reason))
+                if reason.as_str() == "attempt_report_delivery_failed"
+        ));
+        let payload = query_stats(&service, QUERY_ID);
+        assert!(payload.contains("# outcome=failed\n"), "{payload}");
+        assert!(payload.contains("# incomplete=true\n"), "{payload}");
+        assert!(payload.contains("# unavailable_reason=attempt_report_delivery_failed\n"), "{payload}");
+    }
+
+    #[tokio::test]
+    async fn rejected_planning_attempt_report_handoff_releases_report_gate() {
+        const QUERY_ID: &str = "planning-attempt-report-handoff-rejection";
+        let service = test_service();
+        let mut planning = service
+            .register_query(QUERY_ID.to_string(), "SELECT 1 AS one".to_string(), None)
+            .expect("query registration should create the coordinator record");
+        let attempt = service
+            .admission
+            .begin_attempt(crate::attempt::AttemptOptions {
+                query_id: Some(QUERY_ID.to_string()),
+                trace_context: None,
+                deadline: None,
+                observation: service.runtime_observation_config,
+            })
+            .expect("test backend should begin the attempt")
+            .expect("test backend always owns a native attempt");
+
+        // A planning failure seals before any execution terminal exists. Route
+        // that observer to a missing record and verify its generation-bound
+        // planning callback clears the real record's report gate.
+        let mut missing_key = planning.key().clone();
+        missing_key.generation = u64::MAX;
+        service.register_attempt_report_handoff_for_test(
+            missing_key,
+            &attempt,
+            CoordinatorReportHandoffTerminal::planning(&planning),
+        );
+        attempt.complete_without_result_stream();
+        let status = Status::internal("planning failed after report handoff rejection");
+        planning.finish_captured("planning", &status, CapturedError::from_status(&status));
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if matches!(
+                    service.coordinator.artifact(QUERY_ID),
+                    Some(CoordinatorArtifact::Unavailable(reason))
+                        if reason.as_str() == "attempt_report_delivery_failed"
+                ) {
+                    return;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("planning report handoff failure must not leave finalization waiting on its report gate");
+
+        let payload = query_stats(&service, QUERY_ID);
+        assert!(payload.contains("# outcome=succeeded\n"), "{payload}");
+        assert!(payload.contains("# delivery_outcome=failed\n"), "{payload}");
+        assert!(payload.contains("# incomplete=true\n"), "{payload}");
+        assert!(payload.contains("# unavailable_reason=attempt_report_delivery_failed\n"), "{payload}");
     }
 
     #[tokio::test]

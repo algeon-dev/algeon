@@ -44,12 +44,13 @@ impl QueryService {
         let execution_cancellation = request.execution_cancellation.clone();
         let attempt_requirement = request.resolved_attempt_requirement();
         let mut observation_owner = request.into_runtime_observation();
+        let attempt_id = observation_owner.attempt_id;
         let admission_request_id =
             AdmissionRequestId::new(self.inner.next_admission_request_id.fetch_add(1, Ordering::Relaxed));
         let activity_error = observation_owner.activity_error.take();
         let completion = QueryCompletion::new(
             observation_owner.owner.take(),
-            observation_owner.attempt_release_commit.take(),
+            observation_owner.attempt_finalizer_slot.take(),
             observation_permit,
             observation_owner.activity.take(),
             completion_dispatcher,
@@ -125,6 +126,7 @@ impl QueryService {
         let request = AdmissionRequest {
             admission_request_id,
             observation: observation_owner.handle.clone(),
+            attempt_id,
             completion,
             requirement: requirement.clone(),
             submission_seq: self.inner.next_submission_seq.fetch_add(1, Ordering::Relaxed),
@@ -360,7 +362,9 @@ impl QueryService {
                 return self.commit_placed_admission(
                     placed_query,
                     admitted.requirement.clone(),
+                    admitted.compatible_devices.clone(),
                     admitted.observation,
+                    admitted.attempt_id,
                     admitted.completion,
                     admission_request_id,
                     requested_at.elapsed(),
@@ -510,12 +514,13 @@ impl QueryService {
         let execution_cancellation = request.execution_cancellation.clone();
         let attempt_requirement = request.resolved_attempt_requirement();
         let mut observation_owner = request.into_runtime_observation();
+        let attempt_id = observation_owner.attempt_id;
         let admission_request_id =
             AdmissionRequestId::new(self.inner.next_admission_request_id.fetch_add(1, Ordering::Relaxed));
         let activity_error = observation_owner.activity_error.take();
         let completion = QueryCompletion::new(
             observation_owner.owner.take(),
-            observation_owner.attempt_release_commit.take(),
+            observation_owner.attempt_finalizer_slot.take(),
             observation_permit,
             observation_owner.activity.take(),
             completion_dispatcher,
@@ -642,6 +647,7 @@ impl QueryService {
         state.queued.push_back(AdmissionRequest {
             admission_request_id,
             observation: observation_owner.handle.clone(),
+            attempt_id,
             completion,
             requirement: requirement.clone(),
             submission_seq: self.inner.next_submission_seq.fetch_add(1, Ordering::Relaxed),
@@ -687,7 +693,9 @@ impl QueryService {
         &self,
         placed_query: PlacedQuery,
         admitted_capability_evidence: AttemptRequirement,
+        admitted_compatible_devices: Vec<usize>,
         observation: RuntimeObservationHandle,
+        attempt_id: Option<crate::observability::AttemptId>,
         completion: QueryCompletion,
         admission_request_id: AdmissionRequestId,
         admission_wait: Duration,
@@ -762,6 +770,9 @@ impl QueryService {
                 return Err(primary);
             },
         };
+        if let Some(attempt_id) = attempt_id {
+            envelope.register_allocator_domain_attempt(attempt_id);
+        }
         if let Err(error) =
             execution_cancellation.check("nexus_query_engine.query_service.admission_transaction.publish")
         {
@@ -869,7 +880,30 @@ impl QueryService {
             completion.finish_error(&error);
             return Err(error);
         }
-        let completion = completion.into_admitted(&mut envelope);
+        let completion = match completion.into_admitted(&mut envelope) {
+            Ok(completion) => completion,
+            Err(error) => {
+                // A duplicate binding cannot manufacture a second post-cleanup
+                // finalizer. The provisional envelope must roll back and the
+                // fleet closes before its grant can wake another admission.
+                envelope.preaccount_rollback_cleanup(&mut state);
+                record_admission_lifecycle(
+                    &observation,
+                    admission_request_id,
+                    admission_rejection(&error),
+                    state.queued.len(),
+                    None,
+                    None,
+                );
+                self.inner.notify_admission_available();
+                drop(state);
+                self.inner.close_unknown_isolation_admission("attempt finalizer unavailable during admission publish");
+                super::transaction::pause_after_rollback_accounting(probe.as_deref());
+                drop(envelope);
+                self.inner.notify_admission_available();
+                return Err(error);
+            },
+        };
         let admission_sequence = self.inner.next_admission_sequence.fetch_add(1, Ordering::Relaxed);
         let device_ordinal = envelope.device_ordinal();
         let device_budget_bytes = envelope.memory_grant().budget_bytes();
@@ -889,6 +923,8 @@ impl QueryService {
                 observation,
                 completion,
                 envelope,
+                admitted_capability_evidence.clone(),
+                admitted_compatible_devices,
             ),
             config: self.inner.config.clone(),
             queue_bounds: self.inner.queue_bounds.clone(),
@@ -940,12 +976,13 @@ impl QueryService {
         let execution_cancellation = request.execution_cancellation.clone();
         let attempt_requirement = request.resolved_attempt_requirement();
         let mut observation_owner = request.into_runtime_observation();
+        let attempt_id = observation_owner.attempt_id;
         let admission_request_id =
             AdmissionRequestId::new(self.inner.next_admission_request_id.fetch_add(1, Ordering::Relaxed));
         let activity_error = observation_owner.activity_error.take();
         let completion = QueryCompletion::new(
             observation_owner.owner.take(),
-            observation_owner.attempt_release_commit.take(),
+            observation_owner.attempt_finalizer_slot.take(),
             observation_permit,
             observation_owner.activity.take(),
             completion_dispatcher,
@@ -1099,7 +1136,9 @@ impl QueryService {
         self.commit_placed_admission(
             placed_query,
             requirement,
+            compatible_devices,
             observation_owner.handle,
+            attempt_id,
             completion,
             admission_request_id,
             Duration::ZERO,

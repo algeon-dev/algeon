@@ -9,7 +9,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use nexus_query_engine::{observability::RuntimeTerminalOutcome, runtime::ExecutionCancellation};
+use nexus_query_engine::{
+    observability::{AttemptFailureCode, AttemptFailureStatus, RuntimeTerminalOutcome},
+    runtime::ExecutionCancellation,
+};
 
 use super::super::observability::CapturedError;
 use crate::{
@@ -183,8 +186,8 @@ impl QueryTerminal {
             Self::Succeeded => RuntimeTerminalOutcome::Succeeded,
             Self::Cancelled { .. } => RuntimeTerminalOutcome::Cancelled,
             Self::Failed { runtime_error_code, runtime_error_status, .. } => RuntimeTerminalOutcome::Failed {
-                error_code: runtime_error_code.clone(),
-                error_status: runtime_error_status.clone(),
+                error_code: AttemptFailureCode::from_label(runtime_error_code),
+                error_status: AttemptFailureStatus::from_label(runtime_error_status),
             },
             Self::Dropped => RuntimeTerminalOutcome::Dropped,
             Self::Panicked => RuntimeTerminalOutcome::Panicked,
@@ -326,6 +329,7 @@ pub(in crate::server) struct RetainedQueryBundle {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::server) enum RetainedUnavailableReason {
     CaptureDisabled,
+    AttemptReportDeliveryFailed,
     TooLarge,
     EncodeFailed,
     Evicted,
@@ -340,6 +344,7 @@ impl RetainedUnavailableReason {
     pub(in crate::server) const fn as_str(self) -> &'static str {
         match self {
             Self::CaptureDisabled => "capture_disabled",
+            Self::AttemptReportDeliveryFailed => "attempt_report_delivery_failed",
             Self::TooLarge => "global_budget",
             Self::EncodeFailed => "encode_failed",
             Self::Evicted => "evicted",

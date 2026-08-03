@@ -1,6 +1,7 @@
 //! Bounded admission, placement, and query-service orchestration.
 
 use super::*;
+use crate::runtime::allocator_correlation::AllocatorEventCorrelationIndex;
 
 mod api;
 mod build;
@@ -38,6 +39,9 @@ pub(in crate::runtime::query_service) struct QueryServiceInner {
     pub(in crate::runtime::query_service) admission: Mutex<AdmissionState>,
     pub(in crate::runtime::query_service) admission_available: Condvar,
     pub(in crate::runtime::query_service) admission_notify: Notify,
+    /// Bounded domain-to-attempt state used only after allocator callbacks
+    /// return. Callback writers never acquire this engine lock.
+    pub(in crate::runtime::query_service) allocator_event_correlation: Mutex<AllocatorEventCorrelationIndex>,
     #[cfg(test)]
     pub(in crate::runtime::query_service) shutdown_waiters: AtomicUsize,
     pub(in crate::runtime::query_service) admission_transaction_probe:

@@ -6,6 +6,7 @@
 //! adapter diagnostics. Treat those strings as stable diagnostic contracts:
 //! change them only with the same care as a report schema change.
 
+mod allocator_correlation;
 mod attempt_domain;
 mod backend_core;
 mod backend_lifecycle;

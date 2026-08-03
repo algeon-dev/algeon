@@ -3,7 +3,8 @@
 // capacity release — plus health disposition coverage.
 
 use super::service::disposition::{
-    CapacityCommitDisposition, CleanupEvidence, decide_capacity_disposition,
+    CapacityCommitDisposition, CleanupEvidence, decide_capacity_commit,
+    decide_capacity_commit_with_terminal_usage_for_test, decide_capacity_disposition,
     decide_capacity_disposition_with_terminal_usage_for_test,
 };
 use crate::{
@@ -49,9 +50,7 @@ async fn cleanup_complete_without_report_ready_cannot_admit_replacement() {
     attempt_handle.set_disposition(AttemptDisposition::Native).expect("native disposition");
     attempt_handle.record_admission_requested().expect("admission requested");
     let first = service
-        .admit_query_with_request(
-            QueryAdmissionRequest::new().with_attempt_binding(attempt_owner.admission_binding()),
-        )
+        .admit_query_with_request(QueryAdmissionRequest::new().with_attempt_binding(attempt_owner.admission_binding()))
         .expect("first admission");
     attempt_handle
         .record_admitted(AttemptAdmissionFact {
@@ -132,7 +131,7 @@ async fn cleanup_complete_without_report_ready_cannot_admit_replacement() {
 /// An admitted attempt can reach query-handle release without an EOF or an
 /// outer wrapper terminalizing it first. The release capability must establish
 /// the fallback outcome before its cleanup/capacity commit, otherwise the
-/// report would retain the default `PendingRelease` projection.
+/// report would lack finalization facts.
 #[test]
 fn unterminalized_admitted_release_commits_fallback_before_report() {
     let service = QueryService::new_for_admission_tests(
@@ -161,9 +160,7 @@ fn unterminalized_admitted_release_commits_fallback_before_report() {
     attempt_handle.set_disposition(AttemptDisposition::Native).expect("native disposition");
     attempt_handle.record_admission_requested().expect("admission requested");
     let handle = service
-        .admit_query_with_request(
-            QueryAdmissionRequest::new().with_attempt_binding(attempt_owner.admission_binding()),
-        )
+        .admit_query_with_request(QueryAdmissionRequest::new().with_attempt_binding(attempt_owner.admission_binding()))
         .expect("admission succeeds");
     attempt_handle
         .record_admitted(AttemptAdmissionFact {
@@ -359,9 +356,7 @@ fn residual_terminal_domain_usage_quarantines_before_report_and_capacity_release
     attempt_handle.record_admission_requested().expect("admission requested");
     let owner = attempt_owner.observation_owner_for_test();
     let first = service
-        .admit_query_with_request(
-            QueryAdmissionRequest::new().with_attempt_binding(attempt_owner.admission_binding()),
-        )
+        .admit_query_with_request(QueryAdmissionRequest::new().with_attempt_binding(attempt_owner.admission_binding()))
         .expect("admission");
     drop(first.acquire_context().expect("context"));
     attempt_handle
@@ -441,6 +436,60 @@ fn residual_terminal_domain_usage_quarantines_before_report_and_capacity_release
     );
 }
 
+/// The finalizer is a one-time transfer from its owner into the admitted
+/// envelope. A second admission binding can carry observation identity but
+/// cannot manufacture competing cleanup/capacity facts.
+#[test]
+fn admitted_finalizer_transfers_once_and_publishes_no_pending_capacity() {
+    let service = QueryService::new_for_admission_tests(
+        QueryExecutionConfig::default(),
+        QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(10), max_overtakes_per_waiter: 4 },
+        non_gds_deployment(),
+        test_ledger(64 * 1024 * 1024, 1, Default::default()),
+    )
+    .expect("admission-only service");
+    let backend_lifecycle = BackendLifecycle::new();
+    let counters = std::sync::Arc::new(AttemptBackendCounters::default());
+    let attempt = AttemptOwner::begin(
+        BeginAttemptRequest {
+            observation: RuntimeObservationConfig::bounded(32, 32 * 1024),
+            ..BeginAttemptRequest::default()
+        },
+        backend_lifecycle.try_begin_observation().expect("attempt observation permit"),
+        counters,
+        None,
+    );
+    let attempt_owner = attempt.owner;
+    let completion = attempt.completion;
+    let attempt_handle = attempt_owner.handle();
+    attempt_handle.record_planning_started().expect("planning starts");
+    attempt_handle.record_planning_finished().expect("planning finishes");
+    attempt_handle.set_disposition(AttemptDisposition::Native).expect("native disposition");
+    attempt_handle.record_admission_requested().expect("admission requested");
+    let handle = service
+        .admit_query_with_request(QueryAdmissionRequest::new().with_attempt_binding(attempt_owner.admission_binding()))
+        .expect("admission");
+    attempt_handle
+        .record_admitted(AttemptAdmissionFact {
+            admission_sequence: handle.admission_sequence(),
+            admission_wait_ns: handle.admission_wait().as_nanos().try_into().unwrap_or(u64::MAX),
+            device_ordinal: handle.device_ordinal(),
+            grant_bytes: handle.device_budget_bytes(),
+        })
+        .expect("attempt admission fact");
+    assert!(matches!(
+        attempt_owner.admission_binding().into_parts().1.take_for_admission(),
+        Err(crate::attempt::AttemptLifecycleError::FinalizationUnavailable)
+    ));
+
+    attempt_owner.commit_terminal(RuntimeTerminalOutcome::Succeeded).expect("primary outcome commits first");
+    handle.finish();
+    drop(handle);
+    let report = completion.wait_timeout(Duration::from_secs(1)).expect("finalized report publishes");
+    assert_eq!(report.capacity_disposition, crate::observability::AttemptCapacityDisposition::Released);
+    assert!(report.timestamps.report_ready_ns.is_some());
+}
+
 /// A stream synchronization failure during cleanup is device-local fault
 /// evidence: the device closes before report publication and the attempt's
 /// capacity is never reusable, while the report still publishes.
@@ -485,6 +534,100 @@ async fn failed_cleanup_quarantines_device_and_never_returns_capacity() {
     assert_eq!(error.fact_value("device_admission_health"), Some("closed"));
 }
 
+/// A failed attempt with device-local cleanup evidence can recommend another
+/// device only after the failed ledger is quarantined and the immutable
+/// compatible set proves an alternate remains healthy and can fit its floor.
+#[test]
+fn device_local_cleanup_fault_seals_retry_on_a_frozen_eligible_alternate() {
+    let visible_devices = cudf::DeviceId::count().expect("enumerate CUDA devices for alternate retry coverage");
+    assert!(
+        visible_devices >= 2,
+        "alternate retry coverage requires at least two visible CUDA devices; found {visible_devices}"
+    );
+
+    const CAPACITY_BYTES: u64 = 64 * 1024 * 1024;
+    const ATTEMPT_FLOOR_BYTES: u64 = CAPACITY_BYTES / 8;
+    let service = runtime_test_service_with_profiles(
+        QueryExecutionConfig::default(),
+        QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(5), max_overtakes_per_waiter: 4 },
+        vec![
+            runtime_test_device_profile_with_limits(0, CAPACITY_BYTES, ATTEMPT_FLOOR_BYTES, 1, 3, 1, 1),
+            runtime_test_device_profile_with_limits(1, CAPACITY_BYTES, ATTEMPT_FLOOR_BYTES, 1, 3, 1, 1),
+        ],
+    )
+    .expect("two-device runtime-backed service for alternate retry advice");
+    let resources = service.inner.resources.as_ref().expect("runtime-backed service");
+    let device_zero = resources.devices.context_by_ordinal(0).expect("device zero context");
+    let device_one = resources.devices.context_by_ordinal(1).expect("device one context");
+    let backend_lifecycle = BackendLifecycle::new();
+    let counters = std::sync::Arc::new(AttemptBackendCounters::default());
+    let attempt = AttemptOwner::begin(
+        BeginAttemptRequest {
+            observation: RuntimeObservationConfig::bounded(32, 32 * 1024),
+            ..BeginAttemptRequest::default()
+        },
+        backend_lifecycle.try_begin_observation().expect("attempt observation permit"),
+        counters,
+        None,
+    );
+    let attempt_owner = attempt.owner;
+    let completion = attempt.completion;
+    let attempt_handle = attempt_owner.handle();
+    attempt_handle.record_planning_started().expect("planning starts");
+    attempt_handle.record_planning_finished().expect("planning finishes");
+    attempt_handle.set_disposition(AttemptDisposition::Native).expect("native disposition");
+    attempt_handle.record_admission_requested().expect("admission requested");
+    let handle = service
+        .admit_query_with_request(QueryAdmissionRequest::new().with_attempt_binding(attempt_owner.admission_binding()))
+        .expect("first admission");
+    assert_eq!(handle.device_ordinal(), 0, "equal-profile placement uses ordinal zero deterministically");
+    attempt_handle
+        .record_admitted(AttemptAdmissionFact {
+            admission_sequence: handle.admission_sequence(),
+            admission_wait_ns: handle.admission_wait().as_nanos().try_into().unwrap_or(u64::MAX),
+            device_ordinal: handle.device_ordinal(),
+            grant_bytes: handle.device_budget_bytes(),
+        })
+        .expect("attempt admission fact");
+    drop(handle.acquire_context().expect("root context"));
+    device_zero.stream_pool().fail_next_synchronization_for_test();
+    let execution_error = QueryError::new(
+        QueryErrorCode::CudfTemporaryFailure,
+        "nexus_query_engine.query_service.alternate_retry_test",
+        "injected execution failure before device-local cleanup fault",
+    );
+    attempt_owner.commit_query_error(&execution_error).expect("attempt failure records before cleanup");
+    handle.finish();
+    drop(handle);
+
+    let report = completion.wait_timeout(Duration::from_secs(10)).expect("faulted attempt report seals");
+    assert_eq!(
+        report.retry_advice,
+        crate::observability::AttemptRetryAdvice {
+            recovery: crate::observability::AttemptRetryRecovery::RetryAnotherEligibleDevice,
+            prerequisite: crate::observability::AttemptRetryPrerequisite::QuarantinedDeviceAndEligibleAlternate,
+        },
+        "retry advice requires the post-quarantine alternate proof"
+    );
+    let fault = report.native_fault_evidence.expect("device-local cleanup failure retains native evidence");
+    assert_eq!(fault.isolation, crate::observability::AttemptFaultIsolation::DeviceLocal);
+    assert_eq!(fault.teardown_health, crate::observability::AttemptTeardownHealth::StreamSynchronizationFailed);
+    assert!(
+        matches!(device_zero.ledger().health(), Ok(crate::runtime::gpu::DeviceAdmissionHealth::Closed { .. })),
+        "the failed device is quarantined before retry advice is published"
+    );
+    assert!(
+        matches!(device_one.ledger().health(), Ok(crate::runtime::gpu::DeviceAdmissionHealth::Open)),
+        "the alternate proof retains only a currently healthy ledger"
+    );
+
+    let replacement = service.admit_query().expect("healthy alternate admits a new attempt");
+    assert_eq!(replacement.device_ordinal(), 1, "the quarantined device cannot be selected again");
+    replacement.finish();
+    drop(replacement);
+    service.close_and_wait_for_quiescence(Duration::from_secs(10)).expect("two-device service drains");
+}
+
 /// A duplicate stream-cleanup handoff is an internal ownership violation. It
 /// must still run the release report path as `CallbackAbandoned` before
 /// dropping the immutable grant, so the service becomes fail-closed instead
@@ -492,14 +635,35 @@ async fn failed_cleanup_quarantines_device_and_never_returns_capacity() {
 #[test]
 fn duplicate_root_cleanup_handoff_marks_backend_unhealthy_before_capacity_release() {
     let service = try_guaranteed_runtime_test_service().expect("runtime-backed service for cleanup collision");
-    let owner = RuntimeObservationOwner::new(
-        "duplicate-root-cleanup-handoff",
+    let backend_lifecycle = BackendLifecycle::new();
+    let counters = std::sync::Arc::new(AttemptBackendCounters::default());
+    let attempt = AttemptOwner::begin(
+        BeginAttemptRequest {
+            observation: RuntimeObservationConfig::bounded(32, 32 * 1024),
+            ..BeginAttemptRequest::default()
+        },
+        backend_lifecycle.try_begin_observation().expect("attempt observation permit"),
+        std::sync::Arc::clone(&counters),
         None,
-        RuntimeObservationConfig::bounded(32, 32 * 1024),
     );
+    let attempt_owner = attempt.owner;
+    let completion = attempt.completion;
+    let attempt_handle = attempt_owner.handle();
+    attempt_handle.record_planning_started().expect("planning starts");
+    attempt_handle.record_planning_finished().expect("planning finishes");
+    attempt_handle.set_disposition(AttemptDisposition::Native).expect("native disposition");
+    attempt_handle.record_admission_requested().expect("admission requested");
     let handle = service
-        .admit_query_with_request(QueryAdmissionRequest::new().with_runtime_observation_owner(owner.clone()))
+        .admit_query_with_request(QueryAdmissionRequest::new().with_attempt_binding(attempt_owner.admission_binding()))
         .expect("admission");
+    attempt_handle
+        .record_admitted(AttemptAdmissionFact {
+            admission_sequence: handle.admission_sequence(),
+            admission_wait_ns: handle.admission_wait().as_nanos().try_into().unwrap_or(u64::MAX),
+            device_ordinal: handle.device_ordinal(),
+            grant_bytes: handle.device_budget_bytes(),
+        })
+        .expect("attempt admission fact");
     let context = handle.acquire_context().expect("root context");
     handle.lifetime.install_foreign_root_stream_cleanup_completion_for_test();
     drop(context);
@@ -507,8 +671,39 @@ fn duplicate_root_cleanup_handoff_marks_backend_unhealthy_before_capacity_releas
     handle.finish();
     drop(handle);
 
-    let deadline = Instant::now() + Duration::from_secs(10);
-    wait_until(deadline, || owner.sealed_snapshot().is_some(), "abandoned-handoff report seals");
+    let report = completion.wait_timeout(Duration::from_secs(10)).expect("abandoned-handoff report seals");
+    assert_eq!(
+        report.retry_advice,
+        crate::observability::AttemptRetryAdvice {
+            recovery: crate::observability::AttemptRetryRecovery::RecoverBackend,
+            prerequisite: crate::observability::AttemptRetryPrerequisite::BackendRecovered,
+        },
+        "unknown isolation is sealed as backend-recovery advice rather than a device retry"
+    );
+    let resource_evidence = report.resource_evidence.expect("admitted attempt retains its immutable resource evidence");
+    assert_eq!(
+        resource_evidence.grant_cap_bytes.provenance,
+        crate::observability::AttemptEvidenceProvenance::AttemptExact
+    );
+    assert!(resource_evidence.grant_cap_bytes.value.is_some());
+    assert_eq!(
+        resource_evidence.domain_cap_bytes.provenance,
+        crate::observability::AttemptEvidenceProvenance::AttemptExact
+    );
+    assert!(resource_evidence.domain_cap_bytes.value.is_some());
+    for (name, provenance) in [
+        ("ledger sequence", resource_evidence.ledger_sequence.provenance),
+        ("ledger sample time", resource_evidence.ledger_sample_ns.provenance),
+        ("device profile", resource_evidence.configured_limit_bytes.provenance),
+        ("allocator event", resource_evidence.allocator_event.provenance),
+        ("unattributed allocator event", resource_evidence.unattributed_device_allocator_event.provenance),
+    ] {
+        assert_eq!(
+            provenance,
+            crate::observability::AttemptEvidenceProvenance::Unavailable,
+            "unknown isolation must not project a {name}"
+        );
+    }
     assert!(
         matches!(
             service
@@ -583,8 +778,8 @@ async fn oom_outcome_keeps_device_open_and_capacity_reusable_after_report() {
         .expect("admission");
     drop(first.acquire_context().expect("context"));
     owner.record_terminal_outcome(RuntimeTerminalOutcome::Failed {
-        error_code: QueryErrorCode::CudfResourceExhausted.to_string(),
-        error_status: "temporary".to_string(),
+        error_code: AttemptFailureCode::CudfResourceExhausted,
+        error_status: AttemptFailureStatus::Temporary,
     });
     first.finish();
     drop(first);
@@ -607,6 +802,117 @@ async fn oom_outcome_keeps_device_open_and_capacity_reusable_after_report() {
     let second = service.admit_query().expect("capacity is reusable after the OOM report");
     second.finish();
     drop(second);
+}
+
+/// A reservation-limit callback produces an exactly joined allocator record in
+/// the terminal resource block. The release commit keeps that record distinct
+/// from immutable attempt facts, the atomic ledger snapshot, and separately
+/// timed usage samples.
+#[test]
+fn oom_release_projects_truthful_resource_evidence() {
+    let service = try_guaranteed_runtime_test_service().expect("runtime-backed service for OOM resource evidence");
+    let backend_lifecycle = BackendLifecycle::new();
+    let counters = std::sync::Arc::new(AttemptBackendCounters::default());
+    let attempt = AttemptOwner::begin(
+        BeginAttemptRequest {
+            observation: RuntimeObservationConfig::bounded(32, 32 * 1024),
+            ..BeginAttemptRequest::default()
+        },
+        backend_lifecycle.try_begin_observation().expect("attempt observation permit"),
+        std::sync::Arc::clone(&counters),
+        None,
+    );
+    let attempt_owner = attempt.owner;
+    let completion = attempt.completion;
+    let attempt_handle = attempt_owner.handle();
+    attempt_handle.record_planning_started().expect("planning starts");
+    attempt_handle.record_planning_finished().expect("planning finishes");
+    attempt_handle.set_disposition(AttemptDisposition::Native).expect("native disposition");
+    attempt_handle.record_admission_requested().expect("admission requested");
+    let handle = service
+        .admit_query_with_request(QueryAdmissionRequest::new().with_attempt_binding(attempt_owner.admission_binding()))
+        .expect("admission");
+    let grant_bytes = handle.device_budget_bytes();
+    attempt_handle
+        .record_admitted(AttemptAdmissionFact {
+            admission_sequence: handle.admission_sequence(),
+            admission_wait_ns: handle.admission_wait().as_nanos().try_into().unwrap_or(u64::MAX),
+            device_ordinal: handle.device_ordinal(),
+            grant_bytes,
+        })
+        .expect("attempt admission fact");
+    let requested_bytes = grant_bytes.checked_add(1).expect("grant leaves one byte above its immutable cap");
+    let requested_bytes = usize::try_from(requested_bytes).expect("test device allocation size fits usize");
+    let context = handle.acquire_context().expect("context");
+    let allocation_error = match context.context().runtime().expect("query runtime").device_buffer(requested_bytes) {
+        Ok(_) => panic!("allocation above the immutable grant limit is rejected"),
+        Err(error) => error,
+    };
+    assert_eq!(allocation_error.kind(), cudf::ErrorKind::ResourceExhausted);
+    drop(context);
+    let terminal_error = crate::error::QueryError::from_cudf(
+        "nexus_query_engine.query_service.release_commit_test",
+        "attempt allocation exceeded its immutable grant limit",
+        allocation_error,
+    );
+    assert_eq!(terminal_error.code(), QueryErrorCode::CudfResourceExhausted);
+    attempt_owner.commit_query_error(&terminal_error).expect("terminal OOM outcome");
+    handle.finish();
+    drop(handle);
+
+    let report = completion.wait_timeout(Duration::from_secs(10)).expect("OOM report publishes");
+    assert_eq!(
+        report.retry_advice,
+        crate::observability::AttemptRetryAdvice {
+            recovery: crate::observability::AttemptRetryRecovery::ChangeConfiguration,
+            prerequisite: crate::observability::AttemptRetryPrerequisite::ConfigurationChanged,
+        },
+        "an exactly joined reservation-limit callback requires a configuration change"
+    );
+    let evidence = report.resource_evidence.expect("device-backed OOM has resource evidence");
+    assert_eq!(evidence.ledger_sequence.provenance, crate::observability::AttemptEvidenceProvenance::DeviceSnapshot);
+    assert!(evidence.ledger_sequence.value.is_some(), "one atomic ledger sequence is retained");
+    assert_eq!(
+        evidence.configured_limit_bytes.provenance,
+        crate::observability::AttemptEvidenceProvenance::AttemptExact
+    );
+    assert_eq!(evidence.grant_cap_bytes.value, Some(grant_bytes));
+    assert_eq!(evidence.grant_cap_bytes.provenance, crate::observability::AttemptEvidenceProvenance::AttemptExact);
+    assert_eq!(evidence.domain_cap_bytes.provenance, crate::observability::AttemptEvidenceProvenance::AttemptExact);
+    let terminal_usage = evidence.outcome_terminal_usage.value.expect("usage sampled before cleanup");
+    let post_cleanup_usage = evidence.post_cleanup_usage.value.expect("usage sampled after cleanup");
+    assert!(
+        terminal_usage.sampled_ns <= post_cleanup_usage.sampled_ns,
+        "usage samples retain their independent release ordering"
+    );
+    assert_eq!(
+        evidence.outcome_terminal_usage.provenance,
+        crate::observability::AttemptEvidenceProvenance::SampledAfterFailure
+    );
+    assert_eq!(
+        evidence.post_cleanup_usage.provenance,
+        crate::observability::AttemptEvidenceProvenance::SampledAfterFailure
+    );
+    assert_eq!(
+        evidence.allocator_event.provenance,
+        crate::observability::AttemptEvidenceProvenance::AttemptExact,
+        "the reservation-limit callback is joined through the completed domain-generation interval"
+    );
+    let allocator_event = evidence.allocator_event.value.expect("exact callback record is retained");
+    assert_eq!(allocator_event.requested_bytes, u64::try_from(requested_bytes).expect("usize fits u64"));
+    assert_eq!(allocator_event.source, crate::observability::AttemptAllocatorEventSource::ReservationLimit);
+    assert_eq!(
+        allocator_event.action,
+        crate::observability::AttemptEvidenceField::attempt_exact(
+            crate::observability::AttemptAllocatorEventAction::Decline
+        )
+    );
+    assert_eq!(
+        evidence.unattributed_device_allocator_event.provenance,
+        crate::observability::AttemptEvidenceProvenance::Unavailable,
+        "the exact attempt record takes precedence over unrelated device samples"
+    );
+    service.close_and_wait_for_quiescence(Duration::from_secs(10)).expect("service drains");
 }
 
 /// The backend-unhealthy latch rejects new submissions with a structured
@@ -694,17 +1000,75 @@ fn disposition_mapping_matches_isolation_rules() {
 
     let abandonment = CleanupEvidence::from(crate::runtime::service_stream::StreamCleanupOutcome::CallbackAbandoned);
     assert_eq!(abandonment, CleanupEvidence::CallbackAbandoned);
-    let (disposition, _) = decide_capacity_disposition(0, Some(&domain), abandonment);
+    let abandonment_decision = decide_capacity_commit(0, Some(&domain), abandonment);
+    let disposition = abandonment_decision.disposition;
     assert!(
         matches!(disposition, CapacityCommitDisposition::BackendUnhealthy { .. }),
         "abandoned cleanup has unknown isolation: {disposition:?}"
     );
+    let abandonment_evidence =
+        abandonment_decision.native_fault_evidence.expect("unknown isolation has terminal evidence");
+    assert_eq!(abandonment_evidence.isolation, crate::observability::AttemptFaultIsolation::Unknown);
+    assert_eq!(abandonment_evidence.teardown_health, crate::observability::AttemptTeardownHealth::CallbackAbandoned);
+    assert!(abandonment_evidence.device_health.is_none(), "unknown isolation must not fabricate a device-local sample");
 
-    let (disposition, _) = decide_capacity_disposition(0, Some(&domain), CleanupEvidence::StreamSynchronizationFailed);
+    let synchronization_decision =
+        decide_capacity_commit(0, Some(&domain), CleanupEvidence::StreamSynchronizationFailed);
+    let disposition = synchronization_decision.disposition;
     assert!(
         matches!(disposition, CapacityCommitDisposition::DeviceQuarantine { .. }),
         "sync failure is device-local: {disposition:?}"
     );
+    let synchronization_evidence = synchronization_decision
+        .native_fault_evidence
+        .expect("device-local synchronization failure has terminal evidence");
+    assert_eq!(synchronization_evidence.isolation, crate::observability::AttemptFaultIsolation::DeviceLocal);
+    assert_eq!(
+        synchronization_evidence.teardown_health,
+        crate::observability::AttemptTeardownHealth::StreamSynchronizationFailed
+    );
+
+    // cuDF's same-thread test registry makes the sibling-owned health
+    // snapshot deterministic without poisoning the process-wide registry
+    // used by the asynchronous GPU cleanup worker. The decision consumes the
+    // snapshot directly, preserving each native status ABI family.
+    let device = cudf::DeviceId::new(0).expect("runtime service established device zero");
+    for (native_status, expected_status) in [
+        (
+            cudf::runtime::DeviceFaultNativeStatus::Cudf(cudf_sys::CUDF_ERROR_FATAL_CUDA),
+            crate::observability::AttemptNativeStatus::Cudf(cudf_sys::CUDF_ERROR_FATAL_CUDA),
+        ),
+        (cudf::runtime::DeviceFaultNativeStatus::Cuda(700), crate::observability::AttemptNativeStatus::Cuda(700)),
+    ] {
+        let _device_safety = cudf::testing::device_safety::DeviceSafetyTestScope::install([]);
+        cudf::runtime::report_device_fault(
+            device,
+            cudf::runtime::DeviceFaultKind::FatalDeviceOperation,
+            "p3_3_test_native_fault",
+            Some(native_status),
+        );
+        let native_fault_decision = decide_capacity_commit_with_terminal_usage_for_test(
+            0,
+            Some(&domain),
+            CleanupEvidence::Completed,
+            cleared_usage,
+        );
+        assert!(
+            matches!(native_fault_decision.disposition, CapacityCommitDisposition::DeviceQuarantine { .. }),
+            "a native device fault quarantines capacity before report publication"
+        );
+        let evidence =
+            native_fault_decision.native_fault_evidence.expect("device-local native fault retains terminal evidence");
+        assert_eq!(evidence.isolation, crate::observability::AttemptFaultIsolation::DeviceLocal);
+        assert_eq!(evidence.teardown_health, crate::observability::AttemptTeardownHealth::Completed);
+        assert_eq!(
+            evidence.device_health.expect("device-local evidence retains health snapshot").status,
+            crate::observability::AttemptDeviceHealthStatus::Unhealthy
+        );
+        let fault = evidence.first_fault.expect("fault snapshot retains the first structured native fault");
+        assert_eq!(fault.kind, crate::observability::AttemptNativeFaultKind::FatalDeviceOperation);
+        assert_eq!(fault.status, Some(expected_status));
+    }
 
     // Ledger-only releases carry no domain and always healthy-reuse without
     // touching CUDA FFI.
@@ -714,4 +1078,5 @@ fn disposition_mapping_matches_isolation_rules() {
 
     handle.finish();
     drop(handle);
+    service.close_and_wait_for_quiescence(Duration::from_secs(10)).expect("service drains");
 }

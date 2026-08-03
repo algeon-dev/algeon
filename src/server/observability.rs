@@ -13,8 +13,8 @@ use datafusion::{
     },
 };
 use nexus_query_engine::observability::{
-    AttemptCapacityDisposition, AttemptCleanupDisposition, AttemptDisposition, QueryAttemptReport,
-    RuntimeTerminalOutcome,
+    AttemptCapacityDisposition, AttemptCleanupDisposition, AttemptDisposition, AttemptHealthTransition,
+    QueryAttemptReport, RuntimeTerminalOutcome,
 };
 
 use crate::{
@@ -524,7 +524,19 @@ impl CapturedQuery {
         if let Some(correlation_id) = &self.correlation_id {
             let _ = writeln!(output, "# correlation_id={}", StableValue(correlation_id));
         }
-        let _ = writeln!(output, "# outcome={}", self.outcome.as_str());
+        let delivery_outcome = self.outcome.as_str();
+        let outcome = self
+            .attempt_report
+            .as_ref()
+            .map(|report| attempt_outcome_label(&report.outcome))
+            .unwrap_or(delivery_outcome);
+        let _ = writeln!(output, "# outcome={outcome}");
+        // A Flight coordinator may report how response delivery ended, but it
+        // never owns the attempt lifecycle. Keep that distinct from the
+        // canonical, sealed attempt outcome.
+        if outcome != delivery_outcome {
+            let _ = writeln!(output, "# delivery_outcome={delivery_outcome}");
+        }
         let _ = writeln!(output, "# sealed={}", self.sealed);
         let _ = writeln!(output, "# elapsed_ms={}", self.elapsed_ms());
         if !self.sql.is_empty() {
@@ -549,6 +561,27 @@ impl CapturedQuery {
                 output,
                 "# attempt_capacity_disposition={}",
                 attempt_capacity_disposition_label(report.capacity_disposition)
+            );
+            let _ = writeln!(output, "# attempt_retry_recovery={}", report.retry_advice.recovery.as_str());
+            let _ = writeln!(output, "# attempt_retry_prerequisite={}", report.retry_advice.prerequisite.as_str());
+            let _ =
+                writeln!(output, "# attempt_cleanup_failure_count_complete={}", report.cleanup_failure_count_complete);
+            let _ = writeln!(
+                output,
+                "# attempt_health_transition={}",
+                report.health_transition.map_or("none", attempt_health_transition_label)
+            );
+            let _ = writeln!(output, "# attempt_observation_truncated={}", report.observation_truncated);
+            let _ = writeln!(output, "# attempt_observation_degraded={}", report.observation_degraded);
+            let _ = writeln!(
+                output,
+                "# attempt_native_fault_evidence={}",
+                if report.native_fault_evidence.is_some() { "present" } else { "absent" }
+            );
+            let _ = writeln!(
+                output,
+                "# attempt_resource_evidence={}",
+                if report.resource_evidence.is_some() { "present" } else { "absent" }
             );
         }
 
@@ -671,7 +704,7 @@ fn attempt_disposition_label(disposition: AttemptDisposition) -> &'static str {
     }
 }
 
-fn attempt_outcome_label(outcome: &RuntimeTerminalOutcome) -> &'static str {
+pub(super) fn attempt_outcome_label(outcome: &RuntimeTerminalOutcome) -> &'static str {
     match outcome {
         RuntimeTerminalOutcome::Succeeded => "succeeded",
         RuntimeTerminalOutcome::Failed { .. } => "failed",
@@ -692,9 +725,16 @@ fn attempt_cleanup_disposition_label(disposition: AttemptCleanupDisposition) -> 
 fn attempt_capacity_disposition_label(disposition: AttemptCapacityDisposition) -> &'static str {
     match disposition {
         AttemptCapacityDisposition::NotAdmitted => "not_admitted",
-        AttemptCapacityDisposition::PendingRelease => "pending_release",
         AttemptCapacityDisposition::Released => "released",
         AttemptCapacityDisposition::RetainedQuarantine => "retained_quarantine",
+    }
+}
+
+fn attempt_health_transition_label(transition: AttemptHealthTransition) -> &'static str {
+    match transition {
+        AttemptHealthTransition::HealthyReuse => "healthy_reuse",
+        AttemptHealthTransition::DeviceQuarantined => "device_quarantined",
+        AttemptHealthTransition::BackendUnhealthy => "backend_unhealthy",
     }
 }
 
@@ -717,6 +757,8 @@ impl ShutdownCaptureSnapshot {
         output_batches: usize,
         output_rows: usize,
         output_bytes: usize,
+        outcome: &str,
+        delivery_outcome: Option<&str>,
         max_bytes: usize,
     ) -> QueryStatsPayload {
         let mut output = BoundedText::new(max_bytes);
@@ -727,8 +769,11 @@ impl ShutdownCaptureSnapshot {
         if let Some(correlation_id) = &self.correlation_id {
             lines.push(format!("# correlation_id={}\n", StableValue(correlation_id)));
         }
+        lines.push(format!("# outcome={outcome}\n"));
+        if let Some(delivery_outcome) = delivery_outcome {
+            lines.push(format!("# delivery_outcome={delivery_outcome}\n"));
+        }
         lines.extend([
-            "# outcome=dropped\n".to_string(),
             "# sealed=true\n".to_string(),
             "# incomplete=true\n".to_string(),
             "# unavailable_reason=shutdown_timeout\n".to_string(),
@@ -1146,6 +1191,50 @@ fn metadata_value<'a>(metadata: &'a tonic::metadata::MetadataMap, key: &'static 
 mod tests {
     use super::*;
 
+    fn cancelled_attempt_report() -> QueryAttemptReport {
+        use nexus_query_engine::observability::{AttemptId, AttemptTimestamps, QUERY_ATTEMPT_REPORT_SCHEMA_V1};
+
+        QueryAttemptReport {
+            schema: QUERY_ATTEMPT_REPORT_SCHEMA_V1.to_string(),
+            attempt_id: AttemptId::mint(),
+            query_id: None,
+            trace_context: None,
+            disposition: AttemptDisposition::Native,
+            outcome: RuntimeTerminalOutcome::Cancelled,
+            primary_failure: None,
+            retry_advice: nexus_query_engine::observability::AttemptRetryAdvice::do_not_retry(),
+            device_ordinal: Some(0),
+            admission: None,
+            timestamps: AttemptTimestamps {
+                submitted_ns: 1,
+                planning_started_ns: Some(2),
+                planning_finished_ns: Some(3),
+                admission_requested_ns: Some(4),
+                admitted_ns: Some(5),
+                physical_execution_started_ns: Some(6),
+                gpu_execution_started_ns: Some(7),
+                outcome_terminal_ns: 8,
+                cleanup_complete_ns: Some(9),
+                report_ready_ns: Some(10),
+            },
+            cleanup_disposition: AttemptCleanupDisposition::Completed,
+            cleanup_failure_count: 0,
+            cleanup_failure_count_complete: true,
+            first_cleanup_failure: None,
+            capacity_disposition: AttemptCapacityDisposition::Released,
+            final_domain_usage: None,
+            health_transition: None,
+            native_fault_evidence: None,
+            resource_evidence: None,
+            observation_lost_records: 0,
+            observation_retained_records: 0,
+            observation_retained_bytes: 0,
+            observation_truncated: false,
+            observation_degraded: false,
+            unix_epoch_ns: None,
+        }
+    }
+
     #[test]
     fn bounded_tsv_never_writes_partial_header_or_row() {
         let header = "a\tb\tc\n";
@@ -1180,5 +1269,34 @@ mod tests {
         assert_eq!(row_limited.text, header, "rows after the first failed row must not be appended");
         assert!(row_limited.truncated);
         assert_eq!(row_limited.discarded_bytes, long_row.len());
+    }
+
+    #[test]
+    fn attempt_report_outcome_is_canonical_over_delivery_outcome() {
+        let now = Instant::now();
+        let mut captured =
+            CapturedQuery::new("attempt-canonical".to_string(), "select 1".to_string(), None, now, 4096, 64);
+        captured.finish_failed(
+            "delivery",
+            Arc::new(CapturedError {
+                code: "cancelled".to_string(),
+                kind: "cancelled".to_string(),
+                status: "permanent".to_string(),
+                operation: "datafusion_nexus.server.flight.cancel_query".to_string(),
+                message: "statement was cancelled".to_string(),
+                facts: Vec::new(),
+                diagnostic: "statement was cancelled".to_string(),
+                source_chain: None,
+                root_cause: None,
+            }),
+            now,
+        );
+        captured.set_attempt_report(Arc::new(cancelled_attempt_report()));
+        captured.seal(now);
+
+        let payload = String::from_utf8(captured.to_query_stats_payload(4096).bytes.to_vec()).unwrap();
+        assert!(payload.contains("# outcome=cancelled\n"), "{payload}");
+        assert!(payload.contains("# delivery_outcome=failed\n"), "{payload}");
+        assert!(payload.contains("# attempt_outcome=cancelled\n"), "{payload}");
     }
 }

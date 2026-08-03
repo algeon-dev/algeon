@@ -10,6 +10,7 @@ use std::{
 };
 
 use bytes::Bytes;
+use nexus_query_engine::observability::{QueryAttemptReport, SealedAttemptProjection};
 use serde::Serialize;
 
 use super::{
@@ -23,6 +24,11 @@ use super::{
 
 pub(in crate::server) const RUNTIME_ARTIFACT_CONTROL_SCHEMA: &str =
     "datafusion_nexus.query_runtime_artifact.control.v1";
+/// Control frames that embed a compact sealed-attempt projection use a new
+/// schema/version so v1 consumers never mistake delivery `retryable` for
+/// attempt retry advice.
+pub(in crate::server) const RUNTIME_ARTIFACT_CONTROL_SCHEMA_V2: &str =
+    "datafusion_nexus.query_runtime_artifact.control.v2";
 pub(in crate::server) const TOMBSTONE_STATS_MAX_BYTES: u64 = 1024;
 pub(in crate::server) const QUERY_STATS_HEADER_LINE: &str = "# datafusion_nexus_query_stats=1\n";
 pub(in crate::server) type QueryArtifactFrames = (Arc<[u8]>, Option<Arc<[u8]>>);
@@ -102,6 +108,10 @@ pub(in crate::server) struct RuntimeArtifactControl<'a> {
     pub(in crate::server) reason: Option<&'static str>,
     #[serde(skip_serializing_if = "is_false")]
     pub(in crate::server) incomplete: bool,
+    /// Present only in v2 sealed (or sealed-but-incomplete) controls. The
+    /// complete immutable report remains in the paired runtime JSONL frame.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(in crate::server) attempt: Option<SealedAttemptProjection>,
 }
 
 pub(in crate::server) const fn is_false(value: &bool) -> bool {
@@ -123,6 +133,7 @@ pub(in crate::server) fn runtime_control(
             retryable,
             reason,
             incomplete: false,
+            attempt: None,
         })
         .expect("runtime artifact control contains only infallibly serializable fields"),
     )
@@ -138,6 +149,34 @@ pub(in crate::server) fn incomplete_runtime_control(query_id: &str, reason: Reta
             retryable: false,
             reason: Some(reason.as_str()),
             incomplete: true,
+            attempt: None,
+        })
+        .expect("runtime artifact control contains only infallibly serializable fields"),
+    )
+}
+
+/// Encodes a terminal control frame from the same immutable report paired
+/// with a retained snapshot. Live delivery frames continue to use v1; only a
+/// sealed attempt gets v2's explicit bounded attempt projection.
+pub(in crate::server) fn sealed_runtime_control(
+    query_id: &str,
+    report: Option<&QueryAttemptReport>,
+    incomplete_reason: Option<RetainedUnavailableReason>,
+) -> Arc<[u8]> {
+    let attempt = report.map(QueryAttemptReport::sealed_projection);
+    let (schema, version) =
+        if attempt.is_some() { (RUNTIME_ARTIFACT_CONTROL_SCHEMA_V2, 2) } else { (RUNTIME_ARTIFACT_CONTROL_SCHEMA, 1) };
+    Arc::from(
+        serde_json::to_vec(&RuntimeArtifactControl {
+            schema,
+            version,
+            query_id,
+            state: incomplete_reason.map_or("sealed", |_| "unavailable"),
+            // This remains delivery/frame retryability, never retry advice.
+            retryable: false,
+            reason: incomplete_reason.map(RetainedUnavailableReason::as_str),
+            incomplete: incomplete_reason.is_some(),
+            attempt,
         })
         .expect("runtime artifact control contains only infallibly serializable fields"),
     )
@@ -146,19 +185,26 @@ pub(in crate::server) fn incomplete_runtime_control(query_id: &str, reason: Reta
 pub(in crate::server) fn unavailable_stats_payload(
     query_id: &str,
     outcome: &str,
+    delivery_outcome: Option<&str>,
     reason: RetainedUnavailableReason,
     max_bytes: usize,
 ) -> QueryStatsPayload {
     let max_bytes = max_bytes.min(usize::try_from(TOMBSTONE_STATS_MAX_BYTES).unwrap_or(usize::MAX));
     let mut bytes = Vec::with_capacity(max_bytes.min(1024));
-    for line in [
+    let mut lines = vec![
         QUERY_STATS_HEADER_LINE.to_string(),
         format!("# query_id={}\n", StableValue(query_id)),
         format!("# outcome={outcome}\n"),
+    ];
+    if let Some(delivery_outcome) = delivery_outcome {
+        lines.push(format!("# delivery_outcome={delivery_outcome}\n"));
+    }
+    lines.extend([
         "# sealed=true\n".to_string(),
         "# incomplete=true\n".to_string(),
         format!("# unavailable_reason={}\n", reason.as_str()),
-    ] {
+    ]);
+    for line in lines {
         if line.len() > max_bytes.saturating_sub(bytes.len()) {
             break;
         }
@@ -211,12 +257,13 @@ where
 pub(in crate::server) fn unavailable_tombstone_stats(
     query_id: &str,
     outcome: &str,
+    delivery_outcome: Option<&str>,
     reason: RetainedUnavailableReason,
     artifact_max_bytes: u64,
 ) -> Option<Arc<[u8]>> {
     let control = incomplete_runtime_control(query_id, reason);
     compose_terminal_artifact(control, None, artifact_max_bytes, |remaining| {
-        unavailable_stats_payload(query_id, outcome, reason, remaining)
+        unavailable_stats_payload(query_id, outcome, delivery_outcome, reason, remaining)
     })
     .map(|artifact| Arc::clone(&artifact.bundle.stats))
 }

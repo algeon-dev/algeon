@@ -9,9 +9,9 @@ pub use cancellation::{
 };
 pub(crate) use lifecycle::AttemptLifecycle;
 pub use lifecycle::AttemptLifecycleError;
-pub(crate) use owner::AttemptReleaseCommit;
 pub use owner::{
     AttemptAdmissionBinding, AttemptAdmissionRejection, AttemptBegin, AttemptCompletion, AttemptHandle, AttemptOwner,
     BeginAttemptRequest,
 };
+pub(crate) use owner::{AttemptFinalizer, AttemptFinalizerSlot};
 pub use queue::{AttemptBackendCounters, AttemptBackendCountersSnapshot, AttemptCompletionQueue};

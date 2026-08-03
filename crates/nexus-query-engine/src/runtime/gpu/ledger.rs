@@ -445,7 +445,10 @@ impl DeviceLedger {
             protected_reserve_bytes: state
                 .protection
                 .map_or(0, |protection| protection.liveness_bytes.max(configured_floor)),
-            cache_evictable_resident_bytes: 0,
+            // P2 has no resident-cache owner, but any bounded evictable-cache
+            // charge is already ledger-owned and must share this atomic
+            // snapshot sequence with grants and reservations.
+            cache_evictable_resident_bytes: state.evictable_bytes,
             cache_pinned_in_use_bytes: 0,
             health: state.health.clone(),
         }

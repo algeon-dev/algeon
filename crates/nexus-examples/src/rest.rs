@@ -19,12 +19,12 @@ use datafusion::{
     execution::SessionStateBuilder,
 };
 use datafusion_nexus::{
-    error::{DataFusionErrorExt, Error, ErrorCode, ErrorKind},
+    error::{DataFusionErrorExt, Error, ErrorCode, ErrorKind, ErrorStatus},
     planner::NexusNativePhysicalOptimizerRule,
     report::PlanningReport,
     session::NexusSessionStateBuilderExt,
 };
-use nexus_query_engine::error::{QueryError, QueryErrorKind};
+use nexus_query_engine::error::{QueryError, QueryErrorKind, QueryErrorStatus};
 use serde::Serialize;
 use serde_json::{Value, json};
 
@@ -220,7 +220,10 @@ impl AppError {
                 status: StatusCode::TOO_MANY_REQUESTS,
                 code: "resource_exhausted".to_string(),
                 message: error.to_string(),
-                retry_after_secs: Some(1),
+                // A returned error is pre-seal and has no immutable retry
+                // advice. Never manufacture Retry-After from a coarse
+                // resource status.
+                retry_after_secs: None,
                 facts: Vec::new(),
             };
         }
@@ -234,17 +237,19 @@ impl AppError {
     }
 
     fn from_native(error: QueryError) -> Self {
-        let status = if error.kind() == QueryErrorKind::ResourceExhausted && error.is_retryable() {
-            StatusCode::TOO_MANY_REQUESTS
-        } else {
-            StatusCode::INTERNAL_SERVER_ERROR
-        };
-        let retry_after_secs = (status == StatusCode::TOO_MANY_REQUESTS).then_some(1);
+        let status =
+            if error.kind() == QueryErrorKind::ResourceExhausted && error.status() == QueryErrorStatus::Temporary {
+                StatusCode::TOO_MANY_REQUESTS
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
         Self {
             status,
             code: error.code().as_str().to_string(),
             message: error.message().to_string(),
-            retry_after_secs,
+            // A pre-seal error has no retry advice. Do not emit Retry-After
+            // until an immutable attempt report can prove it.
+            retry_after_secs: None,
             // Native facts are raw in-process diagnostics, not an HTTP
             // disclosure contract. Select client fields explicitly instead.
             facts: Vec::new(),
@@ -253,7 +258,7 @@ impl AppError {
 
     fn from_adapter_error(error: &Error) -> Self {
         let status = match error.kind() {
-            ErrorKind::ResourceExhausted if error.is_retryable() => StatusCode::TOO_MANY_REQUESTS,
+            ErrorKind::ResourceExhausted if error.status() == ErrorStatus::Temporary => StatusCode::TOO_MANY_REQUESTS,
             ErrorKind::Planning | ErrorKind::InvalidInput | ErrorKind::Unsupported | ErrorKind::NotFound => {
                 StatusCode::BAD_REQUEST
             },
@@ -263,7 +268,7 @@ impl AppError {
             status,
             code: error.code().as_str().to_string(),
             message: error.message().to_string(),
-            retry_after_secs: (status == StatusCode::TOO_MANY_REQUESTS).then_some(1),
+            retry_after_secs: None,
             // Error facts remain available to trusted typed policy through
             // `error.facts()`. This example does not forward them wholesale.
             facts: Vec::new(),

@@ -19,11 +19,11 @@ use nexus_query_engine::{
 #[cfg(test)]
 use super::artifacts::{FinalizationTestGate, run_coordinator_render_probe};
 use super::{
-    super::observability::{CapturedQuery, ShutdownCaptureSnapshot},
+    super::observability::{CapturedQuery, ShutdownCaptureSnapshot, attempt_outcome_label},
     QueryCoordinator,
     artifacts::{
-        LimitedVecWriter, LiveStatsCache, compose_terminal_artifact, incomplete_runtime_control, runtime_control,
-        unavailable_stats_payload, unavailable_tombstone_stats,
+        LimitedVecWriter, LiveStatsCache, compose_terminal_artifact, incomplete_runtime_control,
+        sealed_runtime_control, unavailable_stats_payload, unavailable_tombstone_stats,
     },
     retention::checked_deadline,
     types::{
@@ -36,6 +36,7 @@ pub(in crate::server) struct FinalizationInputs {
     pub(in crate::server) key: QueryKey,
     pub(in crate::server) claim: u64,
     pub(in crate::server) terminal_outcome: QueryTerminalOutcome,
+    pub(in crate::server) attempt_outcome: Option<RuntimeTerminalOutcome>,
     pub(in crate::server) runtime_outcome: RuntimeTerminalOutcome,
     pub(in crate::server) captured: CapturedQuery,
     pub(in crate::server) observation_owner: Option<RuntimeObservationOwner>,
@@ -54,17 +55,20 @@ pub(in crate::server) struct FinalizationFailureContext {
     pub(in crate::server) claim: u64,
     pub(in crate::server) live_stats_cache: Arc<LiveStatsCache>,
     pub(in crate::server) outcome: &'static str,
+    pub(in crate::server) delivery_outcome: Option<&'static str>,
     pub(in crate::server) artifact_max_bytes: u64,
 }
 
 impl FinalizationFailureContext {
     pub(in crate::server) fn from_inputs(inputs: &FinalizationInputs) -> Self {
-        let outcome = inputs.terminal_outcome.stats_outcome();
+        let delivery_outcome = inputs.terminal_outcome.stats_outcome();
+        let outcome = inputs.attempt_outcome.as_ref().map(attempt_outcome_label).unwrap_or(delivery_outcome);
         Self {
             key: inputs.key.clone(),
             claim: inputs.claim,
             live_stats_cache: Arc::clone(&inputs.live_stats_cache),
             outcome,
+            delivery_outcome: (outcome != delivery_outcome).then_some(delivery_outcome),
             artifact_max_bytes: inputs.artifact_max_bytes,
         }
     }
@@ -73,6 +77,7 @@ impl FinalizationFailureContext {
 pub(in crate::server) struct ShutdownTimeoutSnapshot {
     pub(in crate::server) key: QueryKey,
     pub(in crate::server) captured: Option<ShutdownCaptureSnapshot>,
+    pub(in crate::server) attempt_outcome: Option<RuntimeTerminalOutcome>,
     pub(in crate::server) hot: QueryHotCounterSnapshot,
     pub(in crate::server) artifact_max_bytes: u64,
     pub(in crate::server) live_stats_cache: Arc<LiveStatsCache>,
@@ -108,17 +113,18 @@ impl FinalizationOutput {
         claim: u64,
         live_stats_cache: Arc<LiveStatsCache>,
         outcome: &'static str,
+        delivery_outcome: Option<&'static str>,
         reason: RetainedUnavailableReason,
         artifact_max_bytes: u64,
     ) -> Self {
         let control = incomplete_runtime_control(key.query_id(), reason);
         let composed = compose_terminal_artifact(control, None, artifact_max_bytes, |remaining| {
-            unavailable_stats_payload(key.query_id(), outcome, reason, remaining)
+            unavailable_stats_payload(key.query_id(), outcome, delivery_outcome, reason, remaining)
         });
         let bundle = composed.map(|artifact| artifact.bundle);
         let tombstone_stats = bundle
             .is_none()
-            .then(|| unavailable_tombstone_stats(key.query_id(), outcome, reason, artifact_max_bytes))
+            .then(|| unavailable_tombstone_stats(key.query_id(), outcome, delivery_outcome, reason, artifact_max_bytes))
             .flatten();
         Self { key, claim, live_stats_cache, bundle, unavailable: Some(reason), tombstone_stats }
     }
@@ -129,6 +135,7 @@ impl FinalizationOutput {
             context.claim,
             context.live_stats_cache,
             context.outcome,
+            context.delivery_outcome,
             RetainedUnavailableReason::FinalizationPanicked,
             context.artifact_max_bytes,
         )
@@ -175,6 +182,7 @@ impl QueryCoordinator {
             key,
             claim,
             terminal_outcome,
+            attempt_outcome: record.attempt_outcome.clone(),
             runtime_outcome,
             captured: record.captured.take().expect("finalizing live query retains captured stats inputs"),
             observation_owner: record.observation_owner.take(),
@@ -206,7 +214,9 @@ impl QueryCoordinator {
             inputs.hot.overflow,
         );
         inputs.captured.seal(Instant::now());
-        let stats_outcome = inputs.terminal_outcome.stats_outcome();
+        let delivery_outcome = inputs.terminal_outcome.stats_outcome();
+        let stats_outcome = inputs.attempt_outcome.as_ref().map(attempt_outcome_label).unwrap_or(delivery_outcome);
+        let stats_delivery_outcome = (stats_outcome != delivery_outcome).then_some(delivery_outcome);
         let snapshot = match inputs.observation_owner.take() {
             Some(owner) => owner.finish_query(inputs.runtime_outcome),
             // Flight receives this snapshot only after the attempt has sealed
@@ -221,7 +231,8 @@ impl QueryCoordinator {
                 inputs.claim,
                 inputs.live_stats_cache,
                 stats_outcome,
-                RetainedUnavailableReason::CaptureDisabled,
+                stats_delivery_outcome,
+                inputs.preselected_unavailable.unwrap_or(RetainedUnavailableReason::CaptureDisabled),
                 inputs.artifact_max_bytes,
             );
         };
@@ -235,10 +246,8 @@ impl QueryCoordinator {
                 (snapshot.footer().truncated || snapshot.footer().degraded)
                     .then_some(RetainedUnavailableReason::CaptureTruncated)
             });
-        let control = incomplete_reason.map_or_else(
-            || runtime_control(inputs.key.query_id(), "sealed", false, None),
-            |reason| incomplete_runtime_control(inputs.key.query_id(), reason),
-        );
+        let control =
+            sealed_runtime_control(inputs.key.query_id(), inputs.attempt_report.as_deref(), incomplete_reason);
         let Some(jsonl_limit) = inputs.artifact_max_bytes.checked_sub(u64::try_from(control.len()).unwrap_or(u64::MAX))
         else {
             return FinalizationOutput::unavailable(
@@ -246,6 +255,7 @@ impl QueryCoordinator {
                 inputs.claim,
                 inputs.live_stats_cache,
                 stats_outcome,
+                stats_delivery_outcome,
                 RetainedUnavailableReason::TooLarge,
                 inputs.artifact_max_bytes,
             );
@@ -262,6 +272,7 @@ impl QueryCoordinator {
                 inputs.claim,
                 inputs.live_stats_cache,
                 stats_outcome,
+                stats_delivery_outcome,
                 reason,
                 inputs.artifact_max_bytes,
             );
@@ -277,14 +288,18 @@ impl QueryCoordinator {
                 inputs.claim,
                 inputs.live_stats_cache,
                 stats_outcome,
+                stats_delivery_outcome,
                 RetainedUnavailableReason::TooLarge,
                 inputs.artifact_max_bytes,
             );
         };
         if incomplete_reason.is_none() && composed.stats_incomplete {
             incomplete_reason = Some(RetainedUnavailableReason::CaptureTruncated);
-            let control =
-                incomplete_runtime_control(inputs.key.query_id(), RetainedUnavailableReason::CaptureTruncated);
+            let control = sealed_runtime_control(
+                inputs.key.query_id(),
+                inputs.attempt_report.as_deref(),
+                Some(RetainedUnavailableReason::CaptureTruncated),
+            );
             let Some(recomposed) =
                 compose_terminal_artifact(control, Some(jsonl), inputs.artifact_max_bytes, |remaining| {
                     inputs.captured.to_query_stats_payload(remaining)
@@ -295,6 +310,7 @@ impl QueryCoordinator {
                     inputs.claim,
                     inputs.live_stats_cache,
                     stats_outcome,
+                    stats_delivery_outcome,
                     RetainedUnavailableReason::TooLarge,
                     inputs.artifact_max_bytes,
                 );
@@ -329,7 +345,9 @@ impl QueryCoordinator {
         #[cfg(test)]
         self.finalization_installs.fetch_add(1, Ordering::SeqCst);
         let logical_capture_bytes = record.logical_capture_bytes;
-        let terminal_outcome = record.terminal_outcome.map_or("unknown", QueryTerminalOutcome::stats_outcome);
+        let delivery_outcome = record.terminal_outcome.map_or("unknown", QueryTerminalOutcome::stats_outcome);
+        let terminal_outcome = record.attempt_outcome.as_ref().map(attempt_outcome_label).unwrap_or(delivery_outcome);
+        let terminal_delivery_outcome = (terminal_outcome != delivery_outcome).then_some(delivery_outcome);
         state.active_logical_capture_bytes = state
             .active_logical_capture_bytes
             .checked_sub(logical_capture_bytes)
@@ -348,6 +366,7 @@ impl QueryCoordinator {
             output.tombstone_stats = unavailable_tombstone_stats(
                 output.key.query_id(),
                 terminal_outcome,
+                terminal_delivery_outcome,
                 RetainedUnavailableReason::TooLarge,
                 self.config.per_query_artifact_max_bytes,
             );
@@ -368,6 +387,7 @@ impl QueryCoordinator {
                         unavailable_tombstone_stats(
                             output.key.query_id(),
                             terminal_outcome,
+                            terminal_delivery_outcome,
                             reason,
                             self.config.per_query_artifact_max_bytes,
                         )

@@ -1,5 +1,11 @@
-error[E0599]: no method named `with_attempt_release_commit` found for struct `QueryAdmissionRequest` in the current scope
+error[E0599]: no method named `with_attempt_finalizer` found for struct `QueryAdmissionRequest` in the current scope
  --> tests/ui/public_api/forbidden_attempt_release_binding_setter.rs:7:21
   |
-7 |     let _ = request.with_attempt_release_commit(binding);
-  |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^ method not found in `QueryAdmissionRequest`
+7 |     let _ = request.with_attempt_finalizer(binding);
+  |                     ^^^^^^^^^^^^^^^^^^^^^^
+  |
+help: there is a method `with_attempt_binding` with a similar name
+  |
+7 -     let _ = request.with_attempt_finalizer(binding);
+7 +     let _ = request.with_attempt_binding(binding);
+  |

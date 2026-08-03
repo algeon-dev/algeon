@@ -119,10 +119,7 @@ fn explicit_observed_execution_uses_manifest_identity_on_query_mismatch() {
     assert_eq!(snapshot.manifest().trace_id.as_ref().map(RuntimeTraceId::as_str), Some("shared-trace"));
     assert_eq!(
         snapshot.footer().terminal,
-        Some(RuntimeTerminalOutcome::Failed {
-            error_code: QueryErrorCode::InvalidPlan.to_string(),
-            error_status: QueryErrorCode::InvalidPlan.status().as_str().to_string(),
-        })
+        Some(RuntimeTerminalOutcome::from_query_error(&error))
     );
 }
 
@@ -203,10 +200,7 @@ fn recover_recorded_owner(failure: RuntimeObservationBuildError) -> nexus_query_
     let live = observation.live_snapshot().expect("failed build returns a live owner");
     assert_eq!(live.events().len(), 1, "records captured before the build failure remain available");
     let sealed = observation
-        .seal(RuntimeTerminalOutcome::Failed {
-            error_code: error.code().to_string(),
-            error_status: error.status().as_str().to_string(),
-        })
+        .seal(RuntimeTerminalOutcome::from_query_error(&error))
         .expect("recovered owner remains sealable");
     assert!(sealed.footer().complete);
     assert_eq!(sealed.events().len(), 1);

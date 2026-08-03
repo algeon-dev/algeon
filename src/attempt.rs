@@ -23,7 +23,7 @@ use datafusion::{
 use futures::{FutureExt, Stream};
 use nexus_query_engine::{
     attempt::{AttemptAdmissionBinding, AttemptAdmissionRejection, AttemptHandle, AttemptOwner, BeginAttemptRequest},
-    observability::{AttemptDisposition, RuntimeObservationHandle, RuntimeTerminalOutcome},
+    observability::{AttemptDisposition, AttemptFailureSummary, RuntimeObservationHandle, RuntimeTerminalOutcome},
 };
 pub use nexus_query_engine::{
     attempt::{AttemptBackendCountersSnapshot, AttemptCancellation, AttemptCompletion},
@@ -34,10 +34,11 @@ use crate::{
     backend::NexusGpuBackend,
     error::{DataFusionErrorExt, Error, Result},
     native_exec::{
+        SealedAttemptMetricsTarget,
         admission::{
             AttemptTicketBinding, NativeAdmissionExec, QueryAdmissionTicket, task_context_with_query_admission_ticket,
         },
-        transparent_root_wrapper_input,
+        sealed_attempt_metrics_target, transparent_root_wrapper_input,
     },
     planner::{FinalPlanDisposition, classify_final_plan},
 };
@@ -76,6 +77,28 @@ struct AttemptExecutionState {
     observation_handle: RuntimeObservationHandle,
     cancellation: AttemptCancellation,
     ticket: Mutex<Option<Arc<crate::native_exec::admission::QueryAdmissionTicket>>>,
+    /// The one elected native root that may receive the fixed-cardinality
+    /// attempt metric after this attempt's report has sealed. The target is
+    /// consumed at seal, so no wrapper can publish a second row.
+    sealed_metrics_target: Mutex<Option<SealedAttemptMetricsTarget>>,
+}
+
+impl AttemptExecutionState {
+    fn set_sealed_metrics_target(&self, plan: &dyn ExecutionPlan) {
+        let Some(target) = sealed_attempt_metrics_target(plan) else { return };
+        let mut slot = self.sealed_metrics_target.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Planning supplies a fallback for paths such as CTAS; the actual
+        // execution root replaces it before terminal publication so a replan
+        // never projects into an unexecuted wrapper.
+        *slot = Some(target);
+    }
+
+    fn publish_sealed_metrics(&self, report: &QueryAttemptReport) {
+        let target = self.sealed_metrics_target.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+        if let Some(target) = target {
+            target.record(report);
+        }
+    }
 }
 
 /// Config extension carrying attempt-local state.  It intentionally has no SQL
@@ -108,6 +131,18 @@ impl NexusAttemptExtension {
             admission_binding: self.state.admission_binding.clone(),
             cancellation: self.state.cancellation.clone(),
         }
+    }
+
+    /// Records the native physical plan that first needs admission.
+    ///
+    /// CTAS may execute that plan from `execute_logical_plan` before the
+    /// adapter receives the outer DataFrame's physical plan.  Establish the
+    /// attempt's final-plan disposition at ticket construction so the later
+    /// query-service grant always has a valid lifecycle predecessor.
+    pub(crate) fn native_admission_planned(&self, plan: &dyn ExecutionPlan) {
+        let _ = self.state.handle.set_disposition(disposition_for(classify_final_plan(plan)));
+        let _ = self.state.handle.record_planning_finished();
+        self.state.set_sealed_metrics_target(plan);
     }
 
     /// Retain the planner-created ticket so every execution path in this
@@ -196,11 +231,16 @@ impl NexusGpuBackend {
             observation_handle: begin.owner.admission_binding().observation_handle(),
             cancellation: begin.owner.cancellation(),
             ticket: Mutex::new(None),
+            sealed_metrics_target: Mutex::new(None),
         });
         // The attempt object is a factory, not a receiver: the begin
         // completion is dropped here so only caller-held receivers count
         // toward the abandoned-report decision.
         let completion = begin.completion.uncounted();
+        let metrics_state = Arc::clone(&state);
+        begin.owner.register_sealed_report_sink(move |report| {
+            metrics_state.publish_sealed_metrics(&report);
+        });
         Ok(NexusAttempt {
             owner: Mutex::new(Some(begin.owner)),
             state,
@@ -246,15 +286,14 @@ impl NexusAttempt {
     /// callback can retain the exact completed report together with the
     /// snapshot that embeds it without a detached completion task.
     pub(crate) fn register_sealed_report_observer<F>(&self, observer: F)
-    where F: Fn(Arc<QueryAttemptReport>, nexus_query_engine::observability::SealedRuntimeObservationSnapshot)
+    where F: Fn(Option<Arc<QueryAttemptReport>>, nexus_query_engine::observability::SealedRuntimeObservationSnapshot)
             + Send
             + Sync
             + 'static {
         let completion = self.completion.uncounted();
         self.state.admission_binding.register_seal_observer(move |snapshot| {
-            if let Some(report) = completion.try_report() {
-                observer(report, snapshot);
-            } else {
+            let report = completion.try_report();
+            if report.is_none() {
                 // `AttemptOwner::finish_with_footer` publishes the report
                 // before the owner exposes this sealed snapshot. Keep the
                 // coordinator fail-closed if that engine invariant is ever
@@ -265,6 +304,7 @@ impl NexusAttempt {
                 #[cfg(feature = "server")]
                 tracing::error!("attempt observation sealed before its immutable report was published");
             }
+            observer(report, snapshot);
         });
     }
 
@@ -276,6 +316,13 @@ impl NexusAttempt {
         let owner = self.owner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(owner) = owner.as_ref() {
             let _ = owner.commit_terminal(outcome);
+        }
+    }
+
+    fn commit_datafusion_error(&self, error: &DataFusionError) {
+        let owner = self.owner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(owner) = owner.as_ref() {
+            commit_datafusion_error(owner, error, &self.state.cancellation);
         }
     }
 
@@ -321,16 +368,24 @@ impl NexusAttempt {
     }
 
     pub(crate) fn planning_failed(&self, error: &DataFusionError) {
-        self.commit(terminal_outcome_for_error(error, &self.state.cancellation));
+        self.commit_datafusion_error(error);
     }
 
     /// Commits an adapter-side planning rejection through the same owner as
     /// DataFusion failures, without exposing that owner to callers.
     pub(crate) fn planning_failed_adapter(&self, error: &Error) {
-        self.commit(RuntimeTerminalOutcome::Failed {
-            error_code: error.code().as_str().to_string(),
-            error_status: error.status().as_str().to_string(),
-        });
+        let owner = self.owner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(owner) = owner.as_ref() {
+            if error.code() == crate::error::ErrorCode::Cancelled {
+                let _ = owner.commit_terminal(RuntimeTerminalOutcome::Cancelled);
+            } else if let Some(native) =
+                error.source_error().and_then(|source| source.downcast_ref::<nexus_query_engine::error::QueryError>())
+            {
+                let _ = owner.commit_query_error(native);
+            } else {
+                let _ = owner.commit_failure_summary(AttemptFailureSummary::datafusion_fallback());
+            }
+        }
     }
 
     /// Records the completed physical-planning boundary for Flight's split
@@ -371,11 +426,10 @@ impl NexusAttempt {
         )
         .with_fact("reason", "backend_closing");
         // Close and caller cancellation are independent typed causes.
-        let outcome = RuntimeTerminalOutcome::Failed {
-            error_code: "backend_closing".to_string(),
-            error_status: "permanent".to_string(),
-        };
-        self.commit(outcome);
+        let owner = self.owner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(owner) = owner.as_ref() {
+            let _ = owner.commit_failure_summary(AttemptFailureSummary::backend_closing());
+        }
         Err(DataFusionError::from(error))
     }
 
@@ -451,12 +505,13 @@ impl NexusAttempt {
         }
         let _ = handle.set_disposition(disposition_for(classify_final_plan(plan.as_ref())));
         let _ = handle.record_planning_finished();
+        self.state.set_sealed_metrics_target(plan.as_ref());
         let owner = self.take_owner()?;
         let task_context = self.task_context_with_attempt_ticket(plan.as_ref(), invocation.task_ctx());
         match execute_physical_stream(plan, task_context) {
             Ok(inner) => Ok(AttemptStream::new(inner, owner, Arc::clone(&self.state), self.completion.uncounted())),
             Err(error) => {
-                let _ = owner.commit_terminal(terminal_outcome_for_error(&error, &self.state.cancellation));
+                commit_datafusion_error(&owner, &error, &self.state.cancellation);
                 Err(error)
             },
         }
@@ -476,13 +531,14 @@ impl NexusAttempt {
         if self.state.handle.disposition().is_none() {
             let _ = self.state.handle.set_disposition(disposition_for(classify_final_plan(plan.as_ref())));
         }
+        self.state.set_sealed_metrics_target(plan.as_ref());
         let owner = self.take_owner()?;
         let invocation = self.invocation_context(ctx);
         let task_context = self.task_context_with_attempt_ticket(plan.as_ref(), invocation.task_ctx());
         match execute_physical_stream(plan, task_context) {
             Ok(inner) => Ok(AttemptStream::new(inner, owner, Arc::clone(&self.state), self.completion.uncounted())),
             Err(error) => {
-                let _ = owner.commit_terminal(terminal_outcome_for_error(&error, &self.state.cancellation));
+                commit_datafusion_error(&owner, &error, &self.state.cancellation);
                 Err(error)
             },
         }
@@ -544,20 +600,29 @@ fn disposition_for(disposition: FinalPlanDisposition) -> AttemptDisposition {
     }
 }
 
-/// Classifies a stream or planning error into the bounded terminal outcome.
-fn terminal_outcome_for_error(error: &DataFusionError, cancellation: &AttemptCancellation) -> RuntimeTerminalOutcome {
+/// Captures a returned DataFusion error by reference before reducing it to a
+/// closed terminal outcome. Only native errors contribute a bounded message;
+/// adapter-only errors use the deliberately text-free fallback.
+fn commit_datafusion_error(owner: &AttemptOwner, error: &DataFusionError, cancellation: &AttemptCancellation) {
     if cancellation.is_cancelled() || cancellation.is_expired() {
-        return RuntimeTerminalOutcome::Cancelled;
+        let _ = owner.commit_terminal(RuntimeTerminalOutcome::Cancelled);
+        return;
     }
     match error.find_nexus_error() {
-        Some(error) if error.code() == crate::error::ErrorCode::Cancelled => RuntimeTerminalOutcome::Cancelled,
-        Some(error) => RuntimeTerminalOutcome::Failed {
-            error_code: error.code().as_str().to_string(),
-            error_status: error.status().as_str().to_string(),
+        Some(error) if error.code() == crate::error::ErrorCode::Cancelled => {
+            let _ = owner.commit_terminal(RuntimeTerminalOutcome::Cancelled);
         },
-        None => RuntimeTerminalOutcome::Failed {
-            error_code: "datafusion_error".to_string(),
-            error_status: "permanent".to_string(),
+        Some(error) => {
+            if let Some(native) =
+                error.source_error().and_then(|source| source.downcast_ref::<nexus_query_engine::error::QueryError>())
+            {
+                let _ = owner.commit_query_error(native);
+            } else {
+                let _ = owner.commit_failure_summary(AttemptFailureSummary::datafusion_fallback());
+            }
+        },
+        None => {
+            let _ = owner.commit_failure_summary(AttemptFailureSummary::datafusion_fallback());
         },
     }
 }
@@ -599,6 +664,10 @@ impl AttemptStream {
 
     fn commit(&self, outcome: RuntimeTerminalOutcome) {
         let _ = self.owner.commit_terminal(outcome);
+    }
+
+    fn commit_datafusion_error(&self, error: &DataFusionError) {
+        commit_datafusion_error(&self.owner, error, &self.state.cancellation);
     }
 
     /// Commits the outer terminal result before destroying the physical
@@ -670,8 +739,9 @@ impl Stream for AttemptStream {
                 Poll::Ready(None)
             },
             Ok(Poll::Ready(Some(Err(error)))) => {
-                let outcome = terminal_outcome_for_error(&error, &this.state.cancellation);
-                this.finish_terminal(outcome);
+                this.terminal = true;
+                this.commit_datafusion_error(&error);
+                drop(this.inner.take());
                 Poll::Ready(Some(Err(error)))
             },
             Ok(other) => other,
