@@ -109,6 +109,68 @@ fn exhausted_waiter_retries_protection_after_the_previous_waiter_leaves() {
 }
 
 #[test]
+fn restore_failure_after_an_earlier_installation_rolls_back_every_new_protection() {
+    let service = admission_test_service_with_profile(
+        QueryExecutionConfig::default(),
+        QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(5), max_overtakes_per_waiter: 1 },
+        100,
+        10,
+        1,
+    );
+    let first = service
+        .enqueue_admission_with_request(
+            QueryAdmissionRequest::new().with_attempt_requirement(raised_requirement(10, 100)),
+        )
+        .expect("first exhausted waiter queues");
+    let second = service.enqueue_admission().expect("second exhausted waiter queues");
+
+    {
+        let mut state = service.service.inner.admission.lock().expect("admission state");
+        for request in &mut state.queued {
+            request.overtakes_remaining = 0;
+        }
+        let second_request = state
+            .queued
+            .iter_mut()
+            .find(|request| request.admission_request_id == second.admission_request_id())
+            .expect("second waiter remains queued");
+        // Position zero installs on the real ledger. Position one then hits a
+        // hard ledger lookup error, exercising restoration after partial work.
+        second_request.compatible_devices = vec![1];
+
+        let error = service
+            .service
+            .select_next_runnable_locked(&mut state)
+            .expect_err("the forced position-one restore failure reaches the caller");
+        assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+        assert!(state.queued.iter().all(|request| request.protected_device.is_none()));
+
+        // Restore the fixture's valid submission shape before dropping the
+        // waiters. The assertion above is about the restoration transaction,
+        // not a persistent invalid-device request.
+        state
+            .queued
+            .iter_mut()
+            .find(|request| request.admission_request_id == second.admission_request_id())
+            .expect("second waiter remains queued")
+            .compatible_devices = vec![0];
+    }
+    assert!(
+        !service.device_ledger_reports().unwrap().remove(0).protected_slot,
+        "the partial restore must not strand a protected ledger slot"
+    );
+
+    drop(first);
+    drop(second);
+    let full_capacity = service
+        .admit_query_with_request(
+            QueryAdmissionRequest::new().with_attempt_requirement(raised_requirement(10, 100)),
+        )
+        .expect("the device readmits after the rollback");
+    assert_eq!(full_capacity.device_budget_bytes(), 100);
+}
+
+#[test]
 fn deadline_crossing_during_overtake_commit_rolls_back_allowance_and_protection() {
     let service = admission_test_service_with_profile(
         QueryExecutionConfig::default(),
@@ -256,6 +318,7 @@ fn impossible_requirement_is_rejected_at_submit_without_queueing() {
         soft_working_set_hint_bytes: None,
         estimate_quality: nexus_query_engine::admission::EstimateQuality::Unknown,
         required_capabilities: Vec::new(),
+        attested_cugraph_graph_execution_scopes: Vec::new(),
     };
     let error = service
         .admit_query_with_request(

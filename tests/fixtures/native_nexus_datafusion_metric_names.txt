@@ -108,3 +108,4 @@ final_merge_time
 final_sort_time
 materialization_time
 native_plan_task_mapping_rows
+attempt_report_rows

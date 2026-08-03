@@ -641,7 +641,7 @@ impl AttemptOwner {
         if !admitted {
             match self.0.finalizer_slot.finalize_not_admitted(terminal.clone()) {
                 Ok(terminal) => {
-                    let _ = self.0.observation_owner.finish_query(terminal);
+                    let _ = self.0.observation_owner.finish_query(Some(terminal));
                 },
                 Err(AttemptLifecycleError::FinalizationUnavailable) if self.0.core.lock_lifecycle().ready.is_some() => {
                 },
@@ -790,7 +790,7 @@ impl AttemptAdmissionRejection {
             };
         self.core.lock_lifecycle().terminalize_admission_rejection(outcome.clone(), self.core.monotonic_ns())?;
         let outcome = self.finalizer_slot.finalize_not_admitted(outcome)?;
-        self.observation_owner.finish_query(outcome);
+        self.observation_owner.finish_query(Some(outcome));
         Ok(())
     }
 }
@@ -1204,7 +1204,7 @@ mod tests {
                 AttemptHealthTransition::HealthyReuse,
             ))
             .unwrap();
-        begin.owner.observation_owner_for_test().finish_query(RuntimeTerminalOutcome::Succeeded);
+        begin.owner.observation_owner_for_test().finish_query(Some(RuntimeTerminalOutcome::Succeeded));
         let report = completion.wait_timeout(Duration::from_secs(1)).expect("report published after seal");
         assert_eq!(report.timestamps.outcome_terminal_ns, 20);
         assert_eq!(report.timestamps.cleanup_complete_ns, Some(30));
@@ -1263,7 +1263,7 @@ mod tests {
                 .with_native_fault_evidence(native_fault_evidence),
             )
             .unwrap();
-        begin.owner.observation_owner_for_test().finish_query(RuntimeTerminalOutcome::Succeeded);
+        begin.owner.observation_owner_for_test().finish_query(Some(RuntimeTerminalOutcome::Succeeded));
 
         let report = begin.completion.wait_timeout(Duration::from_secs(1)).expect("report");
         assert_eq!(report.capacity_disposition, AttemptCapacityDisposition::RetainedQuarantine);
@@ -1303,7 +1303,7 @@ mod tests {
             matches!(finalizer_slot.take_for_admission(), Err(AttemptLifecycleError::FinalizationUnavailable)),
             "the post-cleanup finalizer is linear and cannot commit a second fact"
         );
-        begin.owner.observation_owner_for_test().finish_query(RuntimeTerminalOutcome::Succeeded);
+        begin.owner.observation_owner_for_test().finish_query(Some(RuntimeTerminalOutcome::Succeeded));
         let report = completion.wait_timeout(Duration::from_secs(1)).expect("report");
         assert!(matches!(report.outcome, RuntimeTerminalOutcome::Succeeded));
         assert_eq!(report.cleanup_disposition, AttemptCleanupDisposition::Completed);
@@ -1434,10 +1434,10 @@ mod tests {
                 AttemptHealthTransition::HealthyReuse,
             ))
             .unwrap();
-        begin.owner.observation_owner_for_test().finish_query(RuntimeTerminalOutcome::Failed {
+        begin.owner.observation_owner_for_test().finish_query(Some(RuntimeTerminalOutcome::Failed {
             error_code: AttemptFailureCode::CudfTemporaryFailure,
             error_status: AttemptFailureStatus::Temporary,
-        });
+        }));
         let report = begin.completion.wait_timeout(Duration::from_secs(1)).expect("report");
         assert_eq!(report.cleanup_failure_count, 2);
         assert!(report.cleanup_failure_count_complete);
@@ -1520,7 +1520,7 @@ mod tests {
                 AttemptHealthTransition::HealthyReuse,
             ))
             .unwrap();
-        begin.owner.observation_owner_for_test().finish_query(terminal);
+        begin.owner.observation_owner_for_test().finish_query(Some(terminal));
 
         assert_eq!(error.source_error().map(ToString::to_string).as_deref(), Some("original source cause"));
         let report = begin.completion.wait_timeout(Duration::from_secs(1)).expect("report");
@@ -1568,7 +1568,7 @@ mod tests {
                 AttemptHealthTransition::HealthyReuse,
             ))
             .unwrap();
-        begin.owner.observation_owner_for_test().finish_query(RuntimeTerminalOutcome::Succeeded);
+        begin.owner.observation_owner_for_test().finish_query(Some(RuntimeTerminalOutcome::Succeeded));
 
         let report = begin.completion.wait_timeout(Duration::from_secs(1)).expect("report");
         assert_eq!(report.cleanup_failure_count, 1);
@@ -1651,10 +1651,10 @@ mod terminalize_race_tests {
             Err(AttemptLifecycleError::DoubleTerminalization)
         );
         // The engine post-rejection seal publishes the truthful outcome.
-        begin.owner.observation_owner_for_test().finish_query(RuntimeTerminalOutcome::Failed {
+        begin.owner.observation_owner_for_test().finish_query(Some(RuntimeTerminalOutcome::Failed {
             error_code: AttemptFailureCode::ServiceOverloaded,
             error_status: AttemptFailureStatus::Temporary,
-        });
+        }));
         let report = begin.completion.wait_timeout(Duration::from_secs(1)).expect("report");
         assert!(matches!(
             report.outcome,

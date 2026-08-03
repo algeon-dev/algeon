@@ -1033,7 +1033,7 @@ mod observation_tests {
         assert!(
             snapshot.events().iter().all(|event| !matches!(&event.payload, RuntimeObservationPayload::SourceRead(_)))
         );
-        owner.finish_query(RuntimeTerminalOutcome::Succeeded);
+        owner.finish_query(Some(RuntimeTerminalOutcome::Succeeded));
     }
 
     #[test]

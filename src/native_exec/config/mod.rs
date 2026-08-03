@@ -162,7 +162,7 @@ impl NexusNativeExecutionConfig {
             query_id: None,
             trace_id: None,
             plan_task_mapping_datafusion_shape: None,
-            metrics_capture: Some(NativeMetricsCapture::without_sink("unassigned")),
+            metrics_capture: Some(NativeMetricsCapture::standalone()),
             lakehouse_footer_pruning: false,
             graph_execution_services: GraphExecutionServices::default(),
         }

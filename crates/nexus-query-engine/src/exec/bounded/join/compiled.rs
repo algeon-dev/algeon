@@ -36,7 +36,7 @@ use partitioned::*;
 use prepared::*;
 use residual::*;
 use streamed::*;
-use transaction::*;
+use transaction::JoinMaterializationTxn;
 
 pub(in crate::exec::bounded) enum BoundedCompiledJoinBuildState {
     Hash(BoundedRootHashJoinBuildState),

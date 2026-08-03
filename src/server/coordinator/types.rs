@@ -9,10 +9,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use nexus_query_engine::{
-    observability::{AttemptFailureCode, AttemptFailureStatus, RuntimeTerminalOutcome},
-    runtime::ExecutionCancellation,
-};
+use nexus_query_engine::runtime::ExecutionCancellation;
 
 use super::super::observability::CapturedError;
 use crate::{
@@ -166,32 +163,15 @@ impl std::error::Error for QueryCoordinatorError {}
 #[derive(Debug, Clone)]
 pub(in crate::server) enum QueryTerminal {
     Succeeded,
-    Failed { stage: &'static str, error: Arc<CapturedError>, runtime_error_code: String, runtime_error_status: String },
+    Failed { stage: &'static str, error: Arc<CapturedError> },
     Cancelled { stage: &'static str, error: Arc<CapturedError> },
     Dropped,
     Panicked,
 }
 
 impl QueryTerminal {
-    /// Captures the bounded, machine-readable failure identity before the
-    /// diagnostic error projection is subject to capture-budget truncation.
     pub(in crate::server) fn failed(stage: &'static str, error: CapturedError) -> Self {
-        let runtime_error_code = terminal_error_code(&error.code);
-        let runtime_error_status = terminal_error_status(&error.status);
-        Self::Failed { stage, error: Arc::new(error), runtime_error_code, runtime_error_status }
-    }
-
-    pub(in crate::server) fn runtime_outcome(&self) -> RuntimeTerminalOutcome {
-        match self {
-            Self::Succeeded => RuntimeTerminalOutcome::Succeeded,
-            Self::Cancelled { .. } => RuntimeTerminalOutcome::Cancelled,
-            Self::Failed { runtime_error_code, runtime_error_status, .. } => RuntimeTerminalOutcome::Failed {
-                error_code: AttemptFailureCode::from_label(runtime_error_code),
-                error_status: AttemptFailureStatus::from_label(runtime_error_status),
-            },
-            Self::Dropped => RuntimeTerminalOutcome::Dropped,
-            Self::Panicked => RuntimeTerminalOutcome::Panicked,
-        }
+        Self::Failed { stage, error: Arc::new(error) }
     }
 
     pub(in crate::server) const fn compact_outcome(&self) -> QueryTerminalOutcome {
@@ -202,26 +182,6 @@ impl QueryTerminal {
             Self::Dropped => QueryTerminalOutcome::Dropped,
             Self::Panicked => QueryTerminalOutcome::Panicked,
         }
-    }
-}
-
-fn terminal_error_code(value: &str) -> String {
-    const MAX_CODE_BYTES: usize = 128;
-
-    if !value.is_empty()
-        && value.len() <= MAX_CODE_BYTES
-        && value.bytes().all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
-    {
-        value.to_string()
-    } else {
-        "unknown".to_string()
-    }
-}
-
-fn terminal_error_status(value: &str) -> String {
-    match value {
-        "permanent" | "temporary" | "persistent" => value.to_string(),
-        _ => "unknown".to_string(),
     }
 }
 

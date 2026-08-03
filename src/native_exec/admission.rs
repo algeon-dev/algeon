@@ -1,7 +1,7 @@
 //! Plan-scoped query-service admission tickets for backend-managed execution.
 
 #[cfg(test)]
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::{
     any::Any,
     collections::{HashMap, HashSet},
@@ -34,15 +34,6 @@ use nexus_query_engine::{
     },
     runtime::{AdmittedQueryContext, ExecutionCancellation, GpuBackendSession, QueryAdmissionRequest, QueryHandle},
 };
-#[cfg(test)]
-use nexus_query_engine::{
-    error::{QueryError, QueryErrorCode},
-    observability::{
-        AdmissionLifecycleState, AdmissionRequestId, RuntimeAdmissionObservation, RuntimeObservationHandle,
-        RuntimeObservationPayload,
-    },
-    runtime::{QueryActivityLease, QueryServiceAdmissionSnapshot},
-};
 use tokio::sync::Notify;
 
 use crate::{
@@ -54,360 +45,23 @@ use crate::{
 /// Backend-owned service admission source copied into optimizer configs.
 #[derive(Debug, Clone)]
 pub(crate) struct QueryAdmissionSource {
-    capability: QueryAdmissionCapability,
+    session: GpuBackendSession,
     max_device_total_memory_bytes: u64,
-}
-
-#[derive(Debug, Clone)]
-enum QueryAdmissionCapability {
-    Backend(GpuBackendSession),
-    #[cfg(test)]
-    Test(TestAdmissionController),
 }
 
 impl QueryAdmissionSource {
     pub(crate) fn new(session: GpuBackendSession, max_device_total_memory_bytes: u64) -> Self {
-        Self { capability: QueryAdmissionCapability::Backend(session), max_device_total_memory_bytes }
+        Self { session, max_device_total_memory_bytes }
     }
 
     #[cfg(feature = "server")]
     pub(crate) fn backend_matches(&self, session: &GpuBackendSession) -> bool {
-        match &self.capability {
-            QueryAdmissionCapability::Backend(backend) => backend.same_backend(session),
-            #[cfg(test)]
-            QueryAdmissionCapability::Test(_) => false,
-        }
+        self.session.same_backend(session)
     }
 
     pub(crate) fn max_device_total_memory_bytes(&self) -> u64 {
         self.max_device_total_memory_bytes
     }
-
-    pub(crate) fn configured_floor_bytes(&self) -> nexus_query_engine::error::Result<u64> {
-        match &self.capability {
-            QueryAdmissionCapability::Backend(_) => Ok(0),
-            #[cfg(test)]
-            QueryAdmissionCapability::Test(controller) => Ok(controller.configured_floor_bytes()),
-        }
-    }
-}
-
-/// CUDA-free admission ledger used only by root-crate state-machine tests.
-#[cfg(test)]
-#[derive(Debug, Clone)]
-pub(crate) struct TestAdmissionController {
-    inner: Arc<TestAdmissionControllerInner>,
-}
-
-/// Explicit device-local controller inputs for the CUDA-free admission model.
-///
-/// Keeping these values separate from `QueryExecutionConfig` prevents test
-/// fixtures from reintroducing the removed mixed resource/execution config.
-#[cfg(test)]
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct TestAdmissionDeviceProfile {
-    device_ordinal: usize,
-    capacity_bytes: u64,
-    max_active_attempts: usize,
-    configured_floor_bytes: u64,
-}
-
-#[cfg(test)]
-impl TestAdmissionDeviceProfile {
-    pub(crate) const fn new(
-        device_ordinal: usize,
-        capacity_bytes: u64,
-        max_active_attempts: usize,
-        configured_floor_bytes: u64,
-    ) -> Self {
-        Self { device_ordinal, capacity_bytes, max_active_attempts, configured_floor_bytes }
-    }
-}
-
-#[cfg(test)]
-#[derive(Debug)]
-struct TestAdmissionControllerInner {
-    device_profile: TestAdmissionDeviceProfile,
-    /// Fixture-only desired grant for controller arithmetic. This is never
-    /// converted into public admission evidence, so production callers cannot
-    /// author a working-set hint.
-    fallback_working_set_hint_bytes: Option<u64>,
-    /// Optional exact capability profile used by CPU-only ticket tests.
-    ///
-    /// Production admission owns device-profile evaluation in
-    /// `nexus-query-engine::QueryService`; this fixture only lets the adapter
-    /// prove that it forwards the fully aggregated requirement to that
-    /// boundary before any grant state changes.
-    supported_capabilities: Option<Vec<nexus_query_engine::capability::ReservationRequirement>>,
-    state: Mutex<TestAdmissionState>,
-}
-
-#[cfg(test)]
-#[derive(Debug, Default)]
-struct TestAdmissionState {
-    active_queries: usize,
-    active_grant_bytes: u64,
-    next_admission_sequence: u64,
-}
-
-#[cfg(test)]
-impl TestAdmissionController {
-    pub(crate) fn new(
-        device_profile: TestAdmissionDeviceProfile,
-        soft_working_set_hint_bytes: Option<u64>,
-    ) -> nexus_query_engine::error::Result<Self> {
-        Self::new_with_supported_capabilities_inner(device_profile, soft_working_set_hint_bytes, None)
-    }
-
-    /// Builds a CPU-only controller with an exact immutable capability profile.
-    ///
-    /// This is intentionally test-only. Runtime-backed services evaluate the
-    /// profile in the query engine before queueing; the fixture keeps the
-    /// native-ticket aggregation boundary deterministic without constructing
-    /// CUDA resources.
-    pub(crate) fn new_with_supported_capabilities(
-        device_profile: TestAdmissionDeviceProfile,
-        soft_working_set_hint_bytes: Option<u64>,
-        supported_capabilities: Vec<nexus_query_engine::capability::ReservationRequirement>,
-    ) -> nexus_query_engine::error::Result<Self> {
-        Self::new_with_supported_capabilities_inner(
-            device_profile,
-            soft_working_set_hint_bytes,
-            Some(supported_capabilities),
-        )
-    }
-
-    fn new_with_supported_capabilities_inner(
-        device_profile: TestAdmissionDeviceProfile,
-        soft_working_set_hint_bytes: Option<u64>,
-        supported_capabilities: Option<Vec<nexus_query_engine::capability::ReservationRequirement>>,
-    ) -> nexus_query_engine::error::Result<Self> {
-        if device_profile.capacity_bytes == 0
-            || device_profile.max_active_attempts == 0
-            || device_profile.configured_floor_bytes == 0
-        {
-            return Err(QueryError::new(
-                QueryErrorCode::InvalidPlan,
-                "datafusion_nexus.native_exec.test_admission_controller",
-                "test admission controller requires positive capacity, per-device active limit, and floor",
-            )
-            .with_fact("reason", "zero_bound"));
-        }
-        Ok(Self {
-            inner: Arc::new(TestAdmissionControllerInner {
-                device_profile,
-                fallback_working_set_hint_bytes: soft_working_set_hint_bytes,
-                supported_capabilities,
-                state: Mutex::new(TestAdmissionState::default()),
-            }),
-        })
-    }
-
-    pub(crate) fn configured_floor_bytes(&self) -> u64 {
-        self.inner.device_profile.configured_floor_bytes
-    }
-
-    pub(crate) fn source(&self) -> QueryAdmissionSource {
-        QueryAdmissionSource {
-            capability: QueryAdmissionCapability::Test(self.clone()),
-            max_device_total_memory_bytes: self.inner.device_profile.capacity_bytes,
-        }
-    }
-
-    pub(crate) fn admission_snapshot(&self) -> QueryServiceAdmissionSnapshot {
-        let state = self.inner.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        QueryServiceAdmissionSnapshot {
-            active_queries: state.active_queries,
-            queued_queries: 0,
-            protected_devices: Vec::new(),
-        }
-    }
-
-    fn admit(
-        &self,
-        request: QueryAdmissionRequest,
-        observation: RuntimeObservationHandle,
-        activity: Option<QueryActivityLease>,
-    ) -> nexus_query_engine::error::Result<TestAdmissionHandle> {
-        request.execution_cancellation.check("datafusion_nexus.native_exec.test_admission_controller")?;
-        let proof = request.planned_capability_proof().cloned();
-        if self.inner.supported_capabilities.as_ref().is_some_and(|supported| {
-            !proof
-                .as_ref()
-                .map_or(&[][..], |proof| proof.required_capabilities())
-                .iter()
-                .all(|required| supported.contains(required))
-        }) {
-            return Err(QueryError::new(
-                QueryErrorCode::UnsupportedPlanShape,
-                "datafusion_nexus.native_exec.test_admission_controller",
-                "no installed device supports every required native capability",
-            )
-            .with_fact("reason", "required_device_capability_unavailable")
-            .with_fact(
-                "required_capabilities",
-                proof
-                    .as_ref()
-                    .map_or(&[][..], |proof| proof.required_capabilities())
-                    .iter()
-                    .map(|capability| format!("{}:{}", capability.kind.as_str(), capability.required_contract))
-                    .collect::<Vec<_>>()
-                    .join(","),
-            )
-            .with_fact("configured_device_count", 1)
-            .with_fact("compatible_device_count", 0));
-        }
-        let floor = proof.as_ref().map_or(Ok(self.inner.device_profile.configured_floor_bytes), |proof| {
-            proof.required_floor_bytes_for(self.inner.device_profile.configured_floor_bytes)
-        })?;
-        let capacity_bytes = self.inner.device_profile.capacity_bytes;
-        // Mirror production grant sizing: a missing hint takes the full
-        // candidate maximum, never just the floor.
-        let desired = self.inner.fallback_working_set_hint_bytes.unwrap_or(capacity_bytes).max(floor);
-        let (admission_sequence, grant_bytes) = {
-            let mut state = self.inner.state.lock().map_err(|_| {
-                QueryError::new(
-                    QueryErrorCode::Internal,
-                    "datafusion_nexus.native_exec.test_admission_controller",
-                    "test admission state mutex was poisoned",
-                )
-            })?;
-            if state.active_queries >= self.inner.device_profile.max_active_attempts {
-                return Err(QueryError::new(
-                    QueryErrorCode::ServiceOverloaded,
-                    "datafusion_nexus.native_exec.test_admission_controller",
-                    "test admission controller has no available slot",
-                )
-                .with_fact("reason", "capacity_exhausted"));
-            }
-            let available = capacity_bytes.saturating_sub(state.active_grant_bytes);
-            let grant_bytes = desired.min(available);
-            if grant_bytes < floor {
-                return Err(QueryError::new(
-                    QueryErrorCode::ServiceOverloaded,
-                    "datafusion_nexus.native_exec.test_admission_controller",
-                    "test admission controller has insufficient grant capacity",
-                )
-                .with_fact("reason", "grant_capacity_exhausted"));
-            }
-            state.next_admission_sequence += 1;
-            state.active_queries += 1;
-            state.active_grant_bytes += grant_bytes;
-            (state.next_admission_sequence, grant_bytes)
-        };
-        record_test_admission_lifecycle(
-            &observation,
-            admission_sequence,
-            AdmissionLifecycleState::Admitted,
-            Some(self.inner.device_profile.device_ordinal),
-            Some(grant_bytes),
-        );
-        Ok(TestAdmissionHandle {
-            controller: self.clone(),
-            admission_sequence,
-            device_ordinal: self.inner.device_profile.device_ordinal,
-            grant_bytes,
-            observation,
-            activity: Mutex::new(activity),
-            released: AtomicBool::new(false),
-        })
-    }
-
-    pub(crate) fn admitted_grant_bytes(&self) -> nexus_query_engine::error::Result<u64> {
-        let observation =
-            RuntimeObservationOwner::new("test-admission-projection", None, RuntimeObservationConfig::disabled())
-                .handle();
-        let handle = self.admit(QueryAdmissionRequest::new(), observation, None)?;
-        let bytes = handle.grant_bytes;
-        handle.finish();
-        Ok(bytes)
-    }
-
-    pub(crate) fn admit_for_projection(&self) -> nexus_query_engine::error::Result<TestAdmissionPermit> {
-        let observation =
-            RuntimeObservationOwner::new("test-admission-projection", None, RuntimeObservationConfig::disabled())
-                .handle();
-        self.admit(QueryAdmissionRequest::new(), observation, None).map(|handle| TestAdmissionPermit { handle })
-    }
-}
-
-#[cfg(test)]
-#[derive(Debug)]
-pub(crate) struct TestAdmissionPermit {
-    handle: TestAdmissionHandle,
-}
-#[cfg(test)]
-impl TestAdmissionPermit {
-    pub(crate) fn device_ordinal(&self) -> usize {
-        self.handle.device_ordinal
-    }
-    pub(crate) fn device_budget_bytes(&self) -> u64 {
-        self.handle.grant_bytes
-    }
-}
-
-#[cfg(test)]
-#[derive(Debug)]
-struct TestAdmissionHandle {
-    controller: TestAdmissionController,
-    admission_sequence: u64,
-    device_ordinal: usize,
-    grant_bytes: u64,
-    observation: RuntimeObservationHandle,
-    activity: Mutex<Option<QueryActivityLease>>,
-    released: AtomicBool,
-}
-#[cfg(test)]
-impl TestAdmissionHandle {
-    fn acquire_context(&self) -> nexus_query_engine::error::Result<AdmittedQueryContext> {
-        Err(QueryError::new(
-            QueryErrorCode::InvalidPlan,
-            "datafusion_nexus.native_exec.test_admission_controller",
-            "CUDA-free test admission cannot create a runtime execution context",
-        )
-        .with_fact("reason", "test_controller_has_no_runtime_context"))
-    }
-    fn finish(&self) {
-        if self.released.swap(true, Ordering::AcqRel) {
-            return;
-        }
-        self.activity.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
-        let mut state = self.controller.inner.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.active_queries = state.active_queries.saturating_sub(1);
-        state.active_grant_bytes = state.active_grant_bytes.saturating_sub(self.grant_bytes);
-        drop(state);
-        record_test_admission_lifecycle(
-            &self.observation,
-            self.admission_sequence,
-            AdmissionLifecycleState::Released,
-            Some(self.device_ordinal),
-            Some(self.grant_bytes),
-        );
-    }
-}
-#[cfg(test)]
-impl Drop for TestAdmissionHandle {
-    fn drop(&mut self) {
-        self.finish();
-    }
-}
-#[cfg(test)]
-fn record_test_admission_lifecycle(
-    observation: &RuntimeObservationHandle,
-    admission_sequence: u64,
-    lifecycle: AdmissionLifecycleState,
-    device_ordinal: Option<usize>,
-    grant_bytes: Option<u64>,
-) {
-    observation.record(|| {
-        RuntimeObservationPayload::Admission(Box::new(RuntimeAdmissionObservation {
-            admission_request_id: AdmissionRequestId::new(admission_sequence),
-            lifecycle,
-            queue_depth: 0,
-            device_ordinal: device_ordinal.and_then(|ordinal| u32::try_from(ordinal).ok()),
-            grant_bytes,
-        }))
-    });
 }
 
 /// Immutable facts assigned when query-service admission succeeds.
@@ -440,65 +94,34 @@ impl QueryAdmissionFacts {
 }
 
 #[derive(Debug)]
-enum TicketQueryHandle {
-    Backend(Arc<QueryHandle>),
-    #[cfg(test)]
-    Test(TestAdmissionHandle),
-}
+struct TicketQueryHandle(Arc<QueryHandle>);
 
 impl TicketQueryHandle {
     fn admission_sequence(&self) -> u64 {
-        match self {
-            Self::Backend(handle) => handle.admission_sequence(),
-            #[cfg(test)]
-            Self::Test(handle) => handle.admission_sequence,
-        }
+        self.0.admission_sequence()
     }
 
     fn admission_wait(&self) -> Duration {
-        match self {
-            Self::Backend(handle) => handle.admission_wait(),
-            #[cfg(test)]
-            Self::Test(_) => Duration::ZERO,
-        }
+        self.0.admission_wait()
     }
 
     fn device_ordinal(&self) -> usize {
-        match self {
-            Self::Backend(handle) => handle.device_ordinal(),
-            #[cfg(test)]
-            Self::Test(handle) => handle.device_ordinal,
-        }
+        self.0.device_ordinal()
     }
 
     fn device_budget_bytes(&self) -> u64 {
-        match self {
-            Self::Backend(handle) => handle.device_budget_bytes(),
-            #[cfg(test)]
-            Self::Test(handle) => handle.grant_bytes,
-        }
+        self.0.device_budget_bytes()
     }
 
     async fn acquire_context_with_cancellation_async(
         &self,
         cancellation: ExecutionCancellation,
     ) -> nexus_query_engine::error::Result<AdmittedQueryContext> {
-        match self {
-            Self::Backend(handle) => handle.acquire_context_with_cancellation_async(cancellation).await,
-            #[cfg(test)]
-            Self::Test(handle) => {
-                drop(cancellation);
-                handle.acquire_context()
-            },
-        }
+        self.0.acquire_context_with_cancellation_async(cancellation).await
     }
 
     fn finish(&self) {
-        match self {
-            Self::Backend(handle) => handle.finish(),
-            #[cfg(test)]
-            Self::Test(handle) => handle.finish(),
-        }
+        self.0.finish()
     }
 }
 
@@ -764,9 +387,8 @@ impl QueryAdmissionTicket {
     /// for ordinary non-admitted terminalization.
     fn record_attempt_datafusion_failure(&self, error: &DataFusionError) {
         let Some(error) = error.find_nexus_error() else { return };
-        let Some(native) = error
-            .source_error()
-            .and_then(|source| source.downcast_ref::<nexus_query_engine::error::QueryError>())
+        let Some(native) =
+            error.source_error().and_then(|source| source.downcast_ref::<nexus_query_engine::error::QueryError>())
         else {
             return;
         };
@@ -987,60 +609,19 @@ impl QueryAdmissionTicket {
         };
         let observation_activity =
             self.observation_capture.as_ref().and_then(NativeExecutionMetricsCapture::new_observation_activity);
-        #[cfg(test)]
-        let (request, test_activity) = match (&self.source.capability, observation_activity) {
-            (QueryAdmissionCapability::Test(_), Some(Ok(activity))) => (request, Some(activity)),
-            (QueryAdmissionCapability::Test(_), Some(Err(error))) => {
-                record_test_admission_lifecycle(
-                    &observation.handle(),
-                    0,
-                    AdmissionLifecycleState::Rejected {
-                        reason: error.fact_value("reason").unwrap_or_else(|| error.code().as_str()).to_string(),
-                    },
-                    None,
-                    None,
-                );
-                self.terminalize_attempt_admission_error(&error);
-                self.finish_observation_for_error(&observation, &error);
-                reset_guard.reset();
-                return Err(error);
-            },
-            (QueryAdmissionCapability::Test(_), None) => (request, None),
-            (QueryAdmissionCapability::Backend(_), Some(activity)) => {
-                (request.with_runtime_observation_activity_result(activity), None)
-            },
-            (QueryAdmissionCapability::Backend(_), None) => (request, None),
-        };
-        #[cfg(not(test))]
         let request = match observation_activity {
             Some(activity) => request.with_runtime_observation_activity_result(activity),
             None => request,
         };
-        let handle_result = match &self.source.capability {
-            QueryAdmissionCapability::Backend(session) => session
-                .admit_async_with_request(request)
-                .await
-                .map(|handle| TicketQueryHandle::Backend(Arc::new(handle))),
-            #[cfg(test)]
-            QueryAdmissionCapability::Test(controller) => {
-                controller.admit(request, observation.handle(), test_activity).map(TicketQueryHandle::Test)
-            },
-        };
+        let handle_result = self
+            .source
+            .session
+            .admit_async_with_request(request)
+            .await
+            .map(|handle| TicketQueryHandle(Arc::new(handle)));
         let handle = match handle_result {
             Ok(handle) => Arc::new(handle),
             Err(error) => {
-                #[cfg(test)]
-                if matches!(&self.source.capability, QueryAdmissionCapability::Test(_)) {
-                    record_test_admission_lifecycle(
-                        &observation.handle(),
-                        0,
-                        AdmissionLifecycleState::Rejected {
-                            reason: error.fact_value("reason").unwrap_or_else(|| error.code().as_str()).to_string(),
-                        },
-                        None,
-                        None,
-                    );
-                }
                 self.terminalize_attempt_admission_error(&error);
                 self.finish_observation_for_error(&observation, &error);
                 reset_guard.reset();
@@ -1234,13 +815,10 @@ impl QueryAdmissionTicket {
     fn finish_observation_isolated(
         observation: &NativeRuntimeObservation,
         outcome: RuntimeTerminalOutcome,
-        capture: Option<&NativeExecutionMetricsCapture>,
+        _capture: Option<&NativeExecutionMetricsCapture>,
     ) {
-        if let NativeRuntimeObservation::Local(owner) = observation
-            && let Ok(Some(snapshot)) = catch_unwind(AssertUnwindSafe(|| owner.finish_query(outcome)))
-            && let Some(capture) = capture
-        {
-            capture.record_runtime_observation(Arc::new(snapshot));
+        if let NativeRuntimeObservation::Local(owner) = observation {
+            let _ = catch_unwind(AssertUnwindSafe(|| owner.finish_query(Some(outcome))));
         }
     }
 

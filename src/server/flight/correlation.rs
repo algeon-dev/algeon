@@ -106,6 +106,20 @@ mod correlation_tests {
         .expect("query stats are UTF-8")
     }
 
+    async fn sealed_query_stats(service: &DatafusionNexusFlightSqlService, query_id: &str) -> String {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let payload = query_stats(service, query_id);
+                if payload.contains("# sealed=true\n") {
+                    return payload;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("attempt report handoff should seal the terminal query")
+    }
+
     #[test]
     fn tracing_correlation_field_omits_absent_and_empty_values() {
         assert_eq!(tracing_correlation_id(None), None);
@@ -155,6 +169,8 @@ mod correlation_tests {
 
     #[tokio::test]
     async fn get_flight_info_statement_echoes_correlation_id_and_retains_it_in_stats() {
+        use prost::Message as _;
+
         let service = test_service();
         let mut request = Request::new(FlightDescriptor::new_cmd(Vec::<u8>::new()));
         request.metadata_mut().insert(CORRELATION_ID_METADATA_KEY, MetadataValue::try_from("client-corr-42").unwrap());
@@ -181,6 +197,13 @@ mod correlation_tests {
             service.coordinator.ticket_correlation_id(&query_id).expect("statement ticket should be retained");
         assert_eq!(correlation_id.as_deref(), Some("client-corr-42"));
         let payload = query_stats(&service, &query_id);
+        assert!(payload.contains("# correlation_id=client-corr-42\n"), "{payload}");
+        assert!(
+            service
+                .cancel_from_flight_info(&response.into_inner().encode_to_vec())
+                .expect("ticket cancellation decodes")
+        );
+        let payload = sealed_query_stats(&service, &query_id).await;
         assert!(payload.contains("# correlation_id=client-corr-42\n"), "{payload}");
     }
 
@@ -294,7 +317,7 @@ mod correlation_tests {
         assert!(status.message().contains("resource exhausted"), "{status:?}");
         assert!(!status.message().contains("internal server error"), "{status:?}");
 
-        let payload = query_stats(&service, &query_id);
+        let payload = sealed_query_stats(&service, &query_id).await;
         assert!(payload.contains("code=host_materialization_limit_exceeded\n"), "{payload}");
         assert!(payload.contains("kind=resource_exhausted\n"), "{payload}");
         assert!(payload.contains("status=permanent\n"), "{payload}");
@@ -329,13 +352,12 @@ mod correlation_tests {
 
         assert!(native_cancellation.is_cancelled(), "dropping the DoGet stream must cancel native execution");
         assert_eq!(service.cancellations.len(), 0, "dropped streams must leave no cancellable registry entry");
-        let payload = query_stats(&service, &query_id);
+        let payload = sealed_query_stats(&service, &query_id).await;
         assert!(payload.contains("# outcome=cancelled"), "{payload}");
-        assert!(payload.contains("# delivery_outcome=failed"), "{payload}");
+        assert!(payload.contains("# delivery_outcome=dropped"), "{payload}");
         assert!(payload.contains("# sealed=true"), "{payload}");
-        assert!(payload.contains("[structured_error]"), "{payload}");
-        assert!(payload.contains("code=cancelled"), "{payload}");
-        assert!(payload.contains("operation=datafusion_nexus.server.flight.cancel_query"), "{payload}");
+        assert!(payload.contains("# attempt_outcome=cancelled"), "{payload}");
+        assert!(!payload.contains("[structured_error]"), "the coordinator must not mint an attempt error: {payload}");
     }
 
     #[tokio::test]
@@ -409,7 +431,7 @@ mod correlation_tests {
 
         assert!(native_cancellation.is_cancelled(), "dropping a partially polled stream must cancel native work");
         assert_eq!(service.cancellations.len(), 0, "midstream drops must remove cancellation registration");
-        let payload = query_stats(&service, &query_id);
+        let payload = sealed_query_stats(&service, &query_id).await;
         assert!(payload.contains("# outcome=cancelled"), "{payload}");
         assert!(payload.contains("# delivery_outcome=failed"), "{payload}");
         assert!(payload.contains("code=cancelled"), "{payload}");
@@ -420,8 +442,10 @@ mod correlation_tests {
     fn stream_error_terminalizes_once_with_structured_adapter_metadata() {
         let service = test_service();
         let query_id = "stream-error-terminal";
-        let planning =
-            service.register_query(query_id.to_string(), "SELECT private_sql_literal".to_string(), None).unwrap();
+        let planning = service
+            .coordinator
+            .register_with_id(query_id, "SELECT private_sql_literal", None, None, service.runtime_observation_config)
+            .expect("coordinator-owned fixture registers");
         let execution = planning.into_execution().unwrap();
         let terminal = CoordinatorExecutionTerminal::new(execution, query_id.to_string(), Instant::now());
 
@@ -643,8 +667,15 @@ mod correlation_tests {
 
         let service = test_service();
         let planning = service
-            .register_query(QUERY_ID.to_string(), format!("SELECT '{SQL_SECRET}' FROM '{RAW_SOURCE}'"), None)
-            .unwrap();
+            .coordinator
+            .register_with_id(
+                QUERY_ID,
+                format!("SELECT '{SQL_SECRET}' FROM '{RAW_SOURCE}'"),
+                None,
+                None,
+                service.runtime_observation_config,
+            )
+            .expect("coordinator-owned runtime artifact fixture registers");
         let observation = planning.observation_handle().unwrap();
         let execution = planning.into_execution().unwrap();
         let source_location_id =
@@ -763,7 +794,7 @@ mod correlation_tests {
         let footer = records.last().expect("JSONL footer");
         assert_eq!(footer["record_type"], "footer");
         assert_eq!(footer["data"]["complete"], true);
-        assert_eq!(footer["data"]["terminal"], serde_json::json!({ "kind": "succeeded" }));
+        assert_eq!(footer["data"]["terminal"], serde_json::Value::Null);
 
         let wire_bytes = sealed.iter().flat_map(|frame| frame.body.iter().copied()).collect::<Vec<_>>();
         let wire_text = String::from_utf8(wire_bytes).expect("artifact frames should be UTF-8");
@@ -778,7 +809,10 @@ mod correlation_tests {
         const QUERY_ID: &str = "runtime-artifact-unavailable";
 
         let service = test_service();
-        let planning = service.register_query(QUERY_ID.to_string(), "SELECT 1".to_string(), None).unwrap();
+        let planning = service
+            .coordinator
+            .register_with_id(QUERY_ID, "SELECT 1", None, None, service.runtime_observation_config)
+            .expect("coordinator-owned unavailable-artifact fixture registers");
         let hot = planning.hot_counters();
         hot.record_output(usize::MAX, 0);
         hot.record_output(1, 0);

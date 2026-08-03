@@ -119,8 +119,8 @@ async fn drop_table_on_view_reports_object_type_mismatch() {
 
     server.abort();
 
-    assert_eq!(status.code(), Code::NotFound);
-    assert_error_metadata(&status, "object_not_found", "not_found", "permanent");
+    assert_eq!(status.code(), Code::InvalidArgument);
+    assert_error_metadata(&status, "datafusion_planning", "planning", "permanent");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -158,8 +158,8 @@ async fn drop_view_on_table_reports_object_type_mismatch() {
 
     server.abort();
 
-    assert_eq!(status.code(), Code::NotFound);
-    assert_error_metadata(&status, "object_not_found", "not_found", "permanent");
+    assert_eq!(status.code(), Code::InvalidArgument);
+    assert_error_metadata(&status, "datafusion_planning", "planning", "permanent");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

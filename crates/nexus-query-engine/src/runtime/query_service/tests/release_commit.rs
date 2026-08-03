@@ -3,9 +3,7 @@
 // capacity release — plus health disposition coverage.
 
 use super::service::disposition::{
-    CapacityCommitDisposition, CleanupEvidence, decide_capacity_commit,
-    decide_capacity_commit_with_terminal_usage_for_test, decide_capacity_disposition,
-    decide_capacity_disposition_with_terminal_usage_for_test,
+    CapacityCommitDisposition, CleanupEvidence, decide_capacity_commit, decide_capacity_disposition,
 };
 use crate::{
     attempt::{AttemptBackendCounters, AttemptOwner, BeginAttemptRequest},
@@ -965,11 +963,11 @@ fn disposition_mapping_matches_isolation_rules() {
     cleared_usage.current_allocations = 0;
     cleared_usage.current_bytes = 0;
     cleared_usage.current_aligned_bytes = 0;
-    let (disposition, usage) = decide_capacity_disposition_with_terminal_usage_for_test(
+    let (disposition, usage) = decide_capacity_disposition(
         0,
         Some(&domain),
         CleanupEvidence::Completed,
-        cleared_usage,
+        Some(cleared_usage),
     );
     assert_eq!(disposition, CapacityCommitDisposition::HealthyReuse);
     let usage = usage.expect("healthy device samples domain usage");
@@ -984,11 +982,11 @@ fn disposition_mapping_matches_isolation_rules() {
     for (field, inject_residual) in residuals {
         let mut residual_usage = cleared_usage;
         inject_residual(&mut residual_usage);
-        let (disposition, observed_usage) = decide_capacity_disposition_with_terminal_usage_for_test(
+        let (disposition, observed_usage) = decide_capacity_disposition(
             0,
             Some(&domain),
             CleanupEvidence::Completed,
-            residual_usage,
+            Some(residual_usage),
         );
         let reason = match disposition {
             CapacityCommitDisposition::DeviceQuarantine { reason } => reason,
@@ -1000,7 +998,7 @@ fn disposition_mapping_matches_isolation_rules() {
 
     let abandonment = CleanupEvidence::from(crate::runtime::service_stream::StreamCleanupOutcome::CallbackAbandoned);
     assert_eq!(abandonment, CleanupEvidence::CallbackAbandoned);
-    let abandonment_decision = decide_capacity_commit(0, Some(&domain), abandonment);
+    let abandonment_decision = decide_capacity_commit(0, Some(&domain), abandonment, None);
     let disposition = abandonment_decision.disposition;
     assert!(
         matches!(disposition, CapacityCommitDisposition::BackendUnhealthy { .. }),
@@ -1013,7 +1011,7 @@ fn disposition_mapping_matches_isolation_rules() {
     assert!(abandonment_evidence.device_health.is_none(), "unknown isolation must not fabricate a device-local sample");
 
     let synchronization_decision =
-        decide_capacity_commit(0, Some(&domain), CleanupEvidence::StreamSynchronizationFailed);
+        decide_capacity_commit(0, Some(&domain), CleanupEvidence::StreamSynchronizationFailed, None);
     let disposition = synchronization_decision.disposition;
     assert!(
         matches!(disposition, CapacityCommitDisposition::DeviceQuarantine { .. }),
@@ -1047,11 +1045,11 @@ fn disposition_mapping_matches_isolation_rules() {
             "p3_3_test_native_fault",
             Some(native_status),
         );
-        let native_fault_decision = decide_capacity_commit_with_terminal_usage_for_test(
+        let native_fault_decision = decide_capacity_commit(
             0,
             Some(&domain),
             CleanupEvidence::Completed,
-            cleared_usage,
+            Some(cleared_usage),
         );
         assert!(
             matches!(native_fault_decision.disposition, CapacityCommitDisposition::DeviceQuarantine { .. }),
@@ -1072,7 +1070,7 @@ fn disposition_mapping_matches_isolation_rules() {
 
     // Ledger-only releases carry no domain and always healthy-reuse without
     // touching CUDA FFI.
-    let (disposition, usage) = decide_capacity_disposition(0, None, CleanupEvidence::CallbackAbandoned);
+    let (disposition, usage) = decide_capacity_disposition(0, None, CleanupEvidence::CallbackAbandoned, None);
     assert_eq!(disposition, CapacityCommitDisposition::HealthyReuse);
     assert!(usage.is_none());
 

@@ -40,11 +40,8 @@ fn impossible_requirement_is_rejected_before_enqueue() {
 }
 
 #[test]
-fn canonical_graph_proof_missing_from_exact_device_profile_is_rejected_before_queueing() {
-    use crate::{
-        admission::QueryPlanCapabilityProof,
-        runtime::{DeviceCapabilities, DeviceCapability, ReservationKind},
-    };
+fn plan_capability_proof_missing_from_exact_device_profile_is_rejected_before_queueing() {
+    use crate::runtime::{DeviceCapabilities, DeviceCapability};
 
     let service = AdmissionTestController::new_with_device_capabilities(
         QueryExecutionConfig {
@@ -58,16 +55,58 @@ fn canonical_graph_proof_missing_from_exact_device_profile_is_rejected_before_qu
     let error = service
         .enqueue_admission_with_request(
             QueryAdmissionRequest::new()
-                .with_query_plan_capability_proof(QueryPlanCapabilityProof::for_cugraph_graph_execution()),
+                .with_query_plan_capability_proof(explicit_sink_capability_proof()),
         )
         .expect_err("an unavailable device capability must reject locally");
 
     assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
     assert_eq!(error.fact_value("reason"), Some("required_device_capability_unavailable"));
-    assert_eq!(error.fact_value("required_capabilities"), Some("graph_algorithm:cugraph_graph_execution_contract"));
+    assert_eq!(
+        error.fact_value("required_capabilities"),
+        Some("materialization:query_engine_explicit_sink_materialization_reservation")
+    );
     assert_eq!(error.fact_value("configured_device_count"), Some("1"));
     assert_eq!(error.fact_value("compatible_device_count"), Some("0"));
     assert_eq!(service.queued_len(), 0, "capability rejection must never enter the admission queue");
+}
+
+#[test]
+fn submitted_plan_proof_survives_admission_while_test_placement_requirement_does_not_become_execution_evidence() {
+    let service = AdmissionTestController::new(
+        QueryExecutionConfig::default(),
+        QueueBounds::default(),
+        non_gds_deployment(),
+    )
+    .unwrap();
+    let proof = explicit_sink_capability_proof();
+    let submitted = service
+        .try_admit_query_with_request(QueryAdmissionRequest::new().with_query_plan_capability_proof(proof.clone()))
+        .unwrap()
+        .expect("submitted proof admits on an all-modeled test profile");
+    assert_eq!(submitted.handle.submitted_plan_capability_evidence.as_ref(), Some(proof.as_requirement()));
+    drop(submitted);
+
+    let placement_only = service
+        .try_admit_query_with_request(
+            QueryAdmissionRequest::new().with_attempt_requirement(requirement(128, Some(128))),
+        )
+        .unwrap()
+        .expect("internal placement requirement admits");
+    assert!(placement_only.handle.submitted_plan_capability_evidence.is_none());
+}
+
+fn explicit_sink_capability_proof() -> crate::admission::QueryPlanCapabilityProof {
+    use std::sync::Arc;
+
+    use arrow::datatypes::{DataType, Field, Schema};
+    use crate::{plan::QueryPlanBuilder, source::{GpuResidentSource, SourceNode}};
+
+    let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, false)]));
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", schema)));
+    let plan = builder.finish_with_host_sink(source);
+    crate::admission::QueryPlanCapabilityProof::for_query_plan(&plan)
+        .expect("an explicit host sink must expose a capability requirement")
 }
 
 fn restricted_capability_service_and_requirement() -> (AdmissionTestController, AttemptRequirement) {

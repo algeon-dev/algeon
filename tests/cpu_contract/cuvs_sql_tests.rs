@@ -808,9 +808,18 @@ async fn bounded_execution_rejects_before_any_child_execute() {
     };
     let typed = error.find_nexus_error().expect("structured bounded cuVS rejection");
     assert_eq!(typed.code(), ErrorCode::UnsupportedOperator);
-    assert_eq!(typed.facts().get("reason"), Some("blocked_lower_level_contract"));
-    assert_eq!(typed.facts().get("host_fallback"), Some("disabled"));
-    assert_eq!(typed.facts().get("required_contract"), Some("cuvs_vector_algorithm_peak_memory_preflight"));
+    #[cfg(feature = "cuvs")]
+    {
+        assert_eq!(typed.facts().get("reason"), Some("blocked_lower_level_contract"));
+        assert_eq!(typed.facts().get("host_fallback"), Some("disabled"));
+        assert_eq!(typed.facts().get("required_contract"), Some("cuvs_vector_algorithm_peak_memory_preflight"));
+    }
+    #[cfg(not(feature = "cuvs"))]
+    {
+        assert_eq!(typed.facts().get("reason"), Some("cuvs_feature_disabled"));
+        assert_eq!(typed.facts().get("required_feature"), Some("cuvs"));
+        assert_eq!(typed.facts().get("host_fallback"), Some("disabled"));
+    }
     assert_eq!(execute_count.load(Ordering::SeqCst), 0, "bounded rejection must precede child execution");
 }
 

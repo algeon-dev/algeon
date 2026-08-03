@@ -1,6 +1,7 @@
+use nexus_query_engine::observability::RuntimeTerminalOutcome;
+
 use super::*;
 use crate::server::coordinator::QueryKey;
-use nexus_query_engine::observability::RuntimeTerminalOutcome;
 
 /// Preserves which Flight SQL query path issued a ticket after the ticket bytes
 /// have collapsed to a per-execution `query_id`.
@@ -138,6 +139,9 @@ pub(super) struct QueryExecutionGuard {
     pub(super) native_cancellation: ExecutionCancellation,
     pub(super) attempt_cancellation: Option<nexus_query_engine::attempt::AttemptCancellation>,
     pub(super) shutdown_token: CancellationToken,
+    /// Set only after Flight has polled the execution body and therefore
+    /// started response delivery beyond its schema frame.
+    pub(super) delivery_started: Arc<std::sync::atomic::AtomicBool>,
     pub(super) terminal: Arc<CoordinatorExecutionTerminal>,
 }
 
@@ -204,6 +208,7 @@ struct CoordinatorExecutionTerminalState {
 enum CoordinatorExecutionTerminalOutcome {
     Succeeded { stage: &'static str },
     Captured { stage: &'static str, status: Status, captured: CapturedError },
+    Dropped { stage: &'static str },
     Panicked { stage: &'static str },
 }
 
@@ -264,6 +269,9 @@ impl CoordinatorExecutionTerminal {
         let completion = {
             let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             state.attempt_report_attached = true;
+            // The attempt can seal before the Flight RPC has selected its
+            // transport outcome. In that ordering there is no pending
+            // outcome yet, so retain the lease for the later `finish_*` call.
             state.pending.take().and_then(|outcome| state.lease.take().map(|lease| (lease, outcome)))
         };
         if let Some((lease, outcome)) = completion {
@@ -309,6 +317,14 @@ impl CoordinatorExecutionTerminal {
         self.finish(CoordinatorExecutionTerminalOutcome::Captured { stage, status: status.clone(), captured });
     }
 
+    /// Records that the client dropped its response stream. This remains
+    /// distinct from a cancellation status delivered to the client: the
+    /// immutable attempt report can be cancelled while Flight delivery was
+    /// simply abandoned by the peer.
+    pub(super) fn finish_dropped(&self, stage: &'static str) {
+        self.finish(CoordinatorExecutionTerminalOutcome::Dropped { stage });
+    }
+
     pub(super) fn finish_panicked(&self, stage: &'static str) {
         self.finish(CoordinatorExecutionTerminalOutcome::Panicked { stage });
     }
@@ -346,6 +362,16 @@ impl CoordinatorExecutionTerminal {
                 lease.finish_captured(stage, &status, captured);
                 log_statement_status(&self.query_id, stage, self.started_at, &status);
             },
+            CoordinatorExecutionTerminalOutcome::Dropped { stage } => {
+                drop(lease);
+                tracing::info!(
+                    query_id = self.query_id,
+                    outcome = "dropped",
+                    stage,
+                    elapsed_ms = self.started_at.elapsed().as_millis(),
+                    "Flight SQL statement response stream was dropped"
+                );
+            },
             CoordinatorExecutionTerminalOutcome::Panicked { stage } => {
                 lease.finish_panicked();
                 tracing::error!(
@@ -373,6 +399,7 @@ impl CoordinatorExecutionTerminal {
             // This private path is constructed only by
             // `finish_attempt_report_delivery_failed` above.
             CoordinatorExecutionTerminalOutcome::Succeeded { .. }
+            | CoordinatorExecutionTerminalOutcome::Dropped { .. }
             | CoordinatorExecutionTerminalOutcome::Panicked { .. } => {
                 unreachable!("attempt report delivery failure must retain a structured captured error")
             },
@@ -385,11 +412,13 @@ impl Drop for QueryExecutionGuard {
         if !self.terminal.is_finished() {
             if std::thread::panicking() {
                 self.terminal.finish_panicked("stream");
-            } else {
+            } else if self.delivery_started.load(std::sync::atomic::Ordering::Acquire) {
                 let (status, captured) = adapter_error_to_status_and_capture(cancellation_error(&self.shutdown_token));
                 let status =
                     status_with_query_id_and_correlation_id(status, &self.query_id, self.correlation_id.as_deref());
                 self.terminal.finish_captured("stream", &status, captured);
+            } else {
+                self.terminal.finish_dropped("stream");
             }
             self.native_cancellation.cancel();
             if let Some(attempt_cancellation) = &self.attempt_cancellation {

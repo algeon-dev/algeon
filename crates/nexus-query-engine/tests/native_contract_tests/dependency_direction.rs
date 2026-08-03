@@ -163,6 +163,114 @@ fn lakehouse_footer_pruning_uses_the_native_rule_product_path() {
 }
 
 #[test]
+fn root_lakehouse_pruning_reaches_engine_through_one_optimizer_entry_point() {
+    let source = read_repo_source("src/native/lakehouse_pruning.rs");
+
+    assert_eq!(
+        source.matches("optimize_lakehouse_footer_pruning(").count(),
+        1,
+        "the adapter must enter lakehouse pruning through one engine-owned sequencing entry point"
+    );
+    assert_no_edges(
+        "the adapter must not independently discover or apply native optimizer sub-passes",
+        &["src/native/lakehouse_pruning.rs"],
+        &[
+            "identifier:seed_dimension_derived_reader_predicates",
+            "identifier:discover_dimension_derived_pruning_requests",
+            "identifier:apply_local_parquet_row_group_selections",
+            "identifier:apply_dimension_derived_pruning_with_stats",
+            "identifier:local_parquet_source",
+            "identifier:reader_projection_indices",
+        ],
+    );
+}
+
+#[test]
+fn test_only_engine_surfaces_are_crate_private() {
+    let exec = read_repo_source("crates/nexus-query-engine/src/exec/mod.rs");
+    assert!(
+        exec.contains("#[cfg(test)]\npub(crate) mod reservation_contract_testing"),
+        "reservation contract probes must compile only inside the engine test crate"
+    );
+    assert!(
+        exec.contains("#[cfg(test)]\npub(crate) use bounded::pipeline::{ResidentFrameStreamProducerTestHarness"),
+        "bounded frame harnesses must not be exported from the production executor facade"
+    );
+
+    for path in [
+        "crates/nexus-query-engine/src/exec/bounded/pipeline.rs",
+        "crates/nexus-query-engine/src/exec/bounded/compiled.rs",
+        "crates/nexus-query-engine/src/exec/bounded/compiled/tasks/mod.rs",
+    ] {
+        let source = read_repo_source(path);
+        assert!(
+            source.contains("#[cfg(test)]\npub(crate) use"),
+            "{path} must keep bounded frame test harness re-exports crate-private"
+        );
+    }
+
+    let reservation = read_repo_source("crates/nexus-query-engine/src/runtime/reservation.rs");
+    assert!(
+        reservation.contains("pub(crate) struct RetryFacts"),
+        "bounded retry facts are executor implementation details, not a runtime facade"
+    );
+    let runtime = read_repo_source("crates/nexus-query-engine/src/runtime.rs");
+    assert!(runtime.contains("pub(crate) mod gpu;"), "runtime::gpu must remain a private implementation module");
+    assert!(
+        runtime.contains("pub(crate) use reservation::RetryFacts;"),
+        "bounded retry facts must not be re-exported through runtime"
+    );
+}
+
+#[test]
+fn attempt_facts_layering_has_no_error_metrics_runtime_observability_cycle() {
+    assert_no_edges(
+        "error correlation construction must use the lower correlation leaf rather than metrics",
+        &["crates/nexus-query-engine/src/error.rs"],
+        &["crate::metrics"],
+    );
+    assert_no_edges(
+        "metrics projection must use lower execution contracts rather than runtime ownership",
+        &["crates/nexus-query-engine/src/metrics"],
+        &["crate::runtime"],
+    );
+    assert_no_edges(
+        "observability stage helpers must not depend on the concrete runtime execution context",
+        &["crates/nexus-query-engine/src/observability"],
+        &["crate::runtime"],
+    );
+
+    let runtime = read_repo_source("crates/nexus-query-engine/src/runtime.rs");
+    assert!(runtime.contains("pub use policy::{"), "runtime must preserve public policy re-export paths");
+    assert!(runtime.contains("pub use reservation::MemoryReservationRequest;"));
+    let metrics = read_repo_source("crates/nexus-query-engine/src/metrics/mod.rs");
+    assert!(
+        metrics.contains("pub use crate::{\n    correlation::{CompiledTaskId, PlanNodeId, QueryId, TraceId},"),
+        "metrics must preserve the lower correlation-id re-exports"
+    );
+}
+
+#[test]
+fn retired_service_cache_and_second_observation_store_surfaces_do_not_return() {
+    let runtime = read_repo_source("crates/nexus-query-engine/src/runtime.rs");
+    assert!(
+        !runtime.contains("mod cache;") && !runtime.contains("mod source_identity;"),
+        "P5 cache ownership must not be retained as an inactive runtime subsystem"
+    );
+    assert_no_edges(
+        "the retired root metrics-capture observation store must not be reintroduced",
+        &["src", "crates/nexus-query-engine/src"],
+        &[
+            "NativeMetricsCaptureSink",
+            "runtime_observations",
+            "record_runtime_observation",
+            "GpuLocalParquetSourceCache",
+            "GpuResidentGraphCache",
+        ],
+    );
+}
+
+#[test]
 fn native_engine_manifest_has_no_datafusion_dependency() {
     let output = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()))
         .args(["metadata", "--format-version", "1", "--no-deps"])

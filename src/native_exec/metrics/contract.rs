@@ -192,3 +192,33 @@ macro_rules! define_contract {
 }
 
 for_each_native_nexus_metric!(define_contract);
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use nexus_query_engine::metrics::native_datafusion_metric_descriptors;
+
+    use super::NATIVE_NEXUS_DATAFUSION_METRIC_NAMES;
+
+    #[test]
+    fn public_contract_names_exactly_match_engine_native_metric_descriptors() {
+        let descriptor_names =
+            native_datafusion_metric_descriptors().map(|descriptor| descriptor.name).collect::<Vec<_>>();
+        let contract_names = NATIVE_NEXUS_DATAFUSION_METRIC_NAMES.to_vec();
+        let descriptor_name_set = descriptor_names.iter().copied().collect::<BTreeSet<_>>();
+        let contract_name_set = contract_names.iter().copied().collect::<BTreeSet<_>>();
+
+        assert_eq!(
+            descriptor_name_set.len(),
+            descriptor_names.len(),
+            "engine native metric descriptors must not duplicate a name"
+        );
+        assert_eq!(
+            contract_name_set.len(),
+            contract_names.len(),
+            "the public DataFusion metric contract must not duplicate a name"
+        );
+        assert_eq!(descriptor_name_set, contract_name_set);
+    }
+}

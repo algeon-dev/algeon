@@ -157,6 +157,12 @@ pub enum NativeDataFusionRuntimeOutcome {
     Succeeded,
     /// Native runtime failed after starting.
     Failed,
+    /// Native runtime was cancelled after starting.
+    Cancelled,
+    /// Native runtime was dropped after starting.
+    Dropped,
+    /// Native runtime panicked after starting.
+    Panicked,
 }
 
 impl NativeDataFusionRuntimeOutcome {
@@ -166,6 +172,9 @@ impl NativeDataFusionRuntimeOutcome {
             Self::NotStarted => "not_started",
             Self::Succeeded => "succeeded",
             Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+            Self::Dropped => "dropped",
+            Self::Panicked => "panicked",
         }
     }
 }
@@ -753,13 +762,20 @@ mod tests {
                 "10\t11\t12\t13\t14\t15\t16\t17\t18\t19\t20\t21\t22\t23\t24\t25\t26\t27\t28\t29\t30\t31\t",
                 "none\tnone\tnone\tnone\t32\t33\t34\t35\t36\t37\t38\t39\t40\t41\t42\t43\t44\t45\t",
                 "mixed_post_decode\tmeasured_source_pruned\tsource_read_pruned\tnone\t",
-                "46\t47\t48\t49\t50\t51\t52\t53\t54\t55\t56\t57\t58\t59\t60\t61\t62\t63\t64\t65\t66\t67\t",
-                "0\t0\t0\t0\t0\t0\t0\t0\t68\t69\t70\t77\t78\t79\t80\t81\t82\t83\t",
-                "84\t85\t86\t87\t88\t89\t90\t91\t92\tnone\tnone\tnone\t",
+                "46\t47\t48\t49\t50\t51\t52\t53\t59\t60\t61\t62\t63\t64\t65\t66\t67\t",
+                "0\t0\t0\t0\t0\t0\t0\t0\t68\t69\t70\t77\t78\t79\t80\t81\t85\t86\t",
+                "87\t88\t89\t90\t91\t92\tnone\tnone\tnone\t",
                 "outcome=completed,bytes=4096,elapsed_ns=9000000,cache_path_hash=cache123,stable_id_hash=stable456,",
                 "file_index=0,chunk_index=2,error_code=none,error_kind=none,error_status=none,error_operation=none",
                 "\tnone"
             )
         );
+    }
+
+    #[test]
+    fn interrupted_runtime_outcomes_use_report_terminal_labels() {
+        assert_eq!(NativeDataFusionRuntimeOutcome::Cancelled.as_str(), "cancelled");
+        assert_eq!(NativeDataFusionRuntimeOutcome::Dropped.as_str(), "dropped");
+        assert_eq!(NativeDataFusionRuntimeOutcome::Panicked.as_str(), "panicked");
     }
 }

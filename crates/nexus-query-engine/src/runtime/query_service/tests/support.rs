@@ -297,6 +297,7 @@ fn requirement(floor: u64, hint: Option<u64>) -> AttemptRequirement {
         soft_working_set_hint_bytes: hint,
         estimate_quality: EstimateQuality::Modeled,
         required_capabilities: Vec::new(),
+        attested_cugraph_graph_execution_scopes: Vec::new(),
     }
 }
 

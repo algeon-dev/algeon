@@ -15,8 +15,8 @@ use crate::{
     native_exec::{
         NexusNativeComposedExec, NexusNativeComposedGpuProducerExec, NexusNativeExec, NexusNativeExecutionConfig,
         NexusNativeGpuProducerExec,
-        admission::{AttemptTicketBinding, QueryAdmissionTicket},
-        graph::{GraphAdmissionModelAsk, graph_execution_plan},
+        admission::QueryAdmissionTicket,
+        graph::{GraphAdmissionModelAsk, GraphExecutionPlan, graph_execution_plan},
         plan_is_query_admission_wrapped, wrap_plan_with_query_admission_ticket,
     },
     native_report::{NativeJoinDiagnosticSummary, physical_join_diagnostics},
@@ -414,7 +414,7 @@ fn plan_query_admission_ticket_for_optimized_plan(
     attempt: Option<&NexusAttemptExtension>,
 ) -> DataFusionResult<Option<Arc<QueryAdmissionTicket>>> {
     let graph_model_ask = graph_aware_model_ask_for_plan(plan, native_execution_config)?;
-    let fragment_proofs = native_fragment_capability_proofs(plan);
+    let fragment_proofs = native_fragment_capability_proofs(plan)?;
     let ticket = native_execution_config
         .new_plan_query_admission_ticket_with_graph_model_ask_and_fragment_requirements(
             graph_model_ask,
@@ -442,25 +442,44 @@ fn plan_query_admission_ticket_for_optimized_plan(
     Ok(Some(ticket))
 }
 
-fn native_fragment_capability_proofs(plan: &dyn ExecutionPlan) -> Vec<QueryPlanCapabilityProof> {
+fn native_fragment_capability_proofs(plan: &dyn ExecutionPlan) -> DataFusionResult<Vec<QueryPlanCapabilityProof>> {
     let mut proofs = Vec::new();
-    collect_native_fragment_capability_proofs(plan, &mut proofs);
-    proofs
+    collect_native_fragment_capability_proofs(plan, false, &mut proofs)?;
+    Ok(proofs)
 }
 
-fn collect_native_fragment_capability_proofs(plan: &dyn ExecutionPlan, proofs: &mut Vec<QueryPlanCapabilityProof>) {
+fn collect_native_fragment_capability_proofs(
+    plan: &dyn ExecutionPlan,
+    executes_as_cugraph_input: bool,
+    proofs: &mut Vec<QueryPlanCapabilityProof>,
+) -> DataFusionResult<()> {
+    let graph_execution_proof =
+        graph_execution_plan(plan).map(GraphExecutionPlan::graph_execution_capability_proof).transpose()?;
+    let is_cugraph_execution = graph_execution_proof.is_some();
     for child in plan.children() {
-        collect_native_fragment_capability_proofs(child.as_ref(), proofs);
+        collect_native_fragment_capability_proofs(
+            child.as_ref(),
+            executes_as_cugraph_input || is_cugraph_execution,
+            proofs,
+        )?;
     }
-    if graph_execution_plan(plan).is_some() {
-        proofs.push(QueryPlanCapabilityProof::for_cugraph_graph_execution());
-        return;
+    if let Some(proof) = graph_execution_proof {
+        proofs.push(proof);
+        return Ok(());
     }
     if let Some(native_plan) = lowered_native_plan(plan) {
+        let gpu_resident_plan;
+        let native_plan = if executes_as_cugraph_input {
+            gpu_resident_plan = native_plan.clone_with_gpu_resident_sink();
+            &gpu_resident_plan
+        } else {
+            native_plan
+        };
         if let Some(proof) = native_plan_capability_proof(native_plan) {
             proofs.push(proof);
         }
     }
+    Ok(())
 }
 
 fn native_plan_capability_proof(native_plan: &nexus_query_engine::plan::QueryPlan) -> Option<QueryPlanCapabilityProof> {
@@ -661,8 +680,8 @@ mod tests {
 
     use super::*;
     use crate::{
+        backend::InstalledTestGpuBackend,
         error::{DataFusionErrorExt, ErrorCode, ErrorStatus},
-        native_exec::admission::{TestAdmissionController, TestAdmissionDeviceProfile},
     };
 
     fn local_parquet_native_plan() -> QueryPlan {
@@ -721,13 +740,15 @@ mod tests {
         assert!(Arc::ptr_eq(&plan, &returned));
     }
 
-    fn backend_admission_config(min_bytes: u64, want_bytes: u64, capacity_bytes: u64) -> NexusNativeExecutionConfig {
-        let controller = TestAdmissionController::new(
-            TestAdmissionDeviceProfile::new(0, capacity_bytes, 1, min_bytes),
-            Some(want_bytes),
-        )
-        .unwrap();
-        NexusNativeExecutionConfig::bounded(min_bytes, 512, 1, 3, 1).with_query_admission_source(controller.source())
+    fn backend_admission_config(min_bytes: u64) -> (InstalledTestGpuBackend, NexusNativeExecutionConfig) {
+        let backend = InstalledTestGpuBackend::new();
+        let source = backend
+            .optimizer_config()
+            .native_execution_config()
+            .query_admission_source()
+            .expect("installed backend must provide admission authority");
+        let config = NexusNativeExecutionConfig::bounded(min_bytes, 512, 1, 3, 1).with_query_admission_source(source);
+        (backend, config)
     }
 
     fn edge_schema() -> Arc<Schema> {
@@ -803,7 +824,7 @@ mod tests {
         let min = 64 * 1024 * 1024;
         let want = 2 * 1024 * 1024 * 1024;
         let capacity = 4 * 1024 * 1024 * 1024;
-        let config = backend_admission_config(min, want, capacity);
+        let (_backend, config) = backend_admission_config(min);
         let exec = graph_exec(Some(vec![100, 200]), &config);
         let model_ask =
             complete_graph_dominated_model_ask_bytes(&exec, config.graph_memory_calibration_override(), Some(capacity))
@@ -835,7 +856,7 @@ mod tests {
 
     #[test]
     fn planner_ticket_unions_capabilities_from_composed_native_fragments() {
-        let config = backend_admission_config(64 * 1024 * 1024, 2 * 1024 * 1024 * 1024, 4 * 1024 * 1024 * 1024);
+        let (_backend, config) = backend_admission_config(64 * 1024 * 1024);
         let left =
             NexusNativeGpuProducerExec::try_new("left", local_parquet_native_plan().clone_with_gpu_resident_sink())
                 .unwrap();
@@ -875,7 +896,7 @@ mod tests {
 
     #[test]
     fn graph_aware_ticket_ask_keeps_default_ticket_when_graph_rows_are_unknown() {
-        let config = backend_admission_config(64 * 1024 * 1024, 2 * 1024 * 1024 * 1024, 4 * 1024 * 1024 * 1024);
+        let (_backend, config) = backend_admission_config(64 * 1024 * 1024);
         let exec = graph_exec(None, &config);
 
         assert_eq!(graph_aware_model_ask_for_plan(&exec, &config).unwrap(), None);
@@ -885,7 +906,7 @@ mod tests {
 
     #[test]
     fn graph_aware_ticket_keeps_cacheable_bfs_model_bytes_out_of_admission_grant() {
-        let config = backend_admission_config(64 * 1024 * 1024, 2 * 1024 * 1024 * 1024, 4 * 1024 * 1024 * 1024);
+        let (_backend, config) = backend_admission_config(64 * 1024 * 1024);
         let exec = NexusNativeExec::try_new(bfs_native_plan(Some(vec![100, 200])), config.clone()).unwrap();
 
         let ask = graph_aware_model_ask_for_plan(&exec, &config).unwrap().unwrap();
@@ -896,7 +917,7 @@ mod tests {
 
     #[test]
     fn graph_aware_ticket_ask_keeps_default_ticket_when_any_graph_rows_are_unknown() {
-        let config = backend_admission_config(64 * 1024 * 1024, 2 * 1024 * 1024 * 1024, 4 * 1024 * 1024 * 1024);
+        let (_backend, config) = backend_admission_config(64 * 1024 * 1024);
         let known = Arc::new(graph_exec(Some(vec![100, 200]), &config)) as Arc<dyn ExecutionPlan>;
         let unknown = Arc::new(graph_exec(None, &config)) as Arc<dyn ExecutionPlan>;
         let plan = UnionExec::try_new(vec![known, unknown]).unwrap();
@@ -908,7 +929,7 @@ mod tests {
 
     #[test]
     fn graph_aware_ticket_ask_keeps_default_ticket_for_non_graph_dominated_native_plan() {
-        let config = backend_admission_config(64 * 1024 * 1024, 2 * 1024 * 1024 * 1024, 4 * 1024 * 1024 * 1024);
+        let (_backend, config) = backend_admission_config(64 * 1024 * 1024);
         let exec = NexusNativeExec::try_new(graph_union_native_plan(Some(vec![100, 200])), config.clone()).unwrap();
 
         assert_eq!(graph_aware_model_ask_for_plan(&exec, &config).unwrap(), None);

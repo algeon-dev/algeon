@@ -95,6 +95,23 @@ impl Default for ExecutionCancellation {
     }
 }
 
+impl crate::observability::RuntimeExecutionStageContext for ExecutionContext {
+    fn runtime_operator_stage_context(
+        &self,
+    ) -> (
+        crate::observability::RuntimeObservationHandle,
+        Option<crate::observability::PlanExecutionId>,
+        Option<crate::observability::RuntimeSpanId>,
+    ) {
+        let observation = self.runtime_observation().clone();
+        let (plan_execution_id, parent_span_id) = self
+            .runtime_execution_scope()
+            .map(|scope| (Some(scope.plan_execution_id().clone()), Some(scope.plan_span_id())))
+            .unwrap_or((None, None));
+        (observation, plan_execution_id, parent_span_id)
+    }
+}
+
 const ATTEMPT_AUXILIARY_SLOT_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 /// Attempt-owned capacity for streams outside the admission envelope's root
@@ -1011,11 +1028,6 @@ pub(super) struct ExecutionContextParts {
 }
 
 impl ExecutionContext {
-    #[cfg(feature = "cugraph")]
-    pub(super) fn resident_graph_cache_owner_runtime(&self, operation: &'static str) -> Result<Arc<cudf::Runtime>> {
-        self.check_service_epoch(operation)?;
-        Ok(Arc::clone(&self.runtime))
-    }
     /// Starts a builder for an [`ExecutionContext`].
     pub(crate) fn builder() -> ExecutionContextBuilder {
         ExecutionContextBuilder::default()
@@ -1160,47 +1172,6 @@ impl ExecutionContext {
             return Ok(None);
         };
         QueryServiceResourceEpoch::acquire(service_epoch, self.query_anchor.as_ref(), operation).map(Some)
-    }
-
-    /// Derives the service-only base runtime used to establish local-Parquet
-    /// cache affinity without retaining the current query admission anchor.
-    pub(super) fn local_parquet_cache_owner_runtime(&self, operation: &'static str) -> Result<Arc<cudf::Runtime>> {
-        self.check_service_epoch(operation)?;
-        let Some(service_epoch) = &self.service_epoch else {
-            return Ok(Arc::clone(&self.runtime));
-        };
-        let resource_epoch = QueryServiceResourceEpoch::acquire(service_epoch, None, operation)?;
-        let retained: Arc<dyn Send + Sync> = resource_epoch;
-        self.runtime.with_retained_lifetime(retained).map(Arc::new).map_err(|error| {
-            QueryError::from_cudf(operation, "failed to derive local Parquet cache owner runtime", error)
-        })
-    }
-
-    /// Attaches the current query anchor to a query-neutral local-Parquet
-    /// cache runtime while preserving its exact stream and allocator binding.
-    pub(super) fn local_parquet_cache_query_runtime(
-        &self,
-        cache_runtime: &Arc<cudf::Runtime>,
-        operation: &'static str,
-    ) -> Result<Arc<cudf::Runtime>> {
-        self.check_service_epoch(operation)?;
-        if !cudf::Runtime::shares_affinity(&self.runtime, cache_runtime) {
-            return Err(QueryError::new(
-                QueryErrorCode::InvalidPlan,
-                operation,
-                "local Parquet cache runtime does not share the current query runtime affinity",
-            )
-            .with_fact("reason", "local_parquet_cache_runtime_affinity_mismatch")
-            .with_fact("query_runtime_affinity_id", self.runtime.affinity_id().get())
-            .with_fact("cache_runtime_affinity_id", cache_runtime.affinity_id().get()));
-        }
-        let Some(resource_epoch) = self.acquire_resource_epoch(operation)? else {
-            return Ok(Arc::clone(cache_runtime));
-        };
-        let retained: Arc<dyn Send + Sync> = resource_epoch;
-        cache_runtime.with_retained_lifetime(retained).map(Arc::new).map_err(|error| {
-            QueryError::from_cudf(operation, "failed to derive query-scoped local Parquet cache runtime", error)
-        })
     }
 
     /// Returns the cudf runtime used for all GPU operations.
@@ -1905,7 +1876,6 @@ impl ExecutionContext {
         context.graph_memory_calibration_override = override_;
         context
     }
-
 }
 
 fn validate_runtime_observation_query_id(observation: &RuntimeObservationHandle, query_id: &QueryId) -> Result<()> {

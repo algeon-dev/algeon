@@ -47,6 +47,23 @@ impl NativeDataFusionRuntimeSummary {
                 output_bytes: None,
                 metrics: metrics.as_ref().map(NativeDataFusionExecutionMetrics::from_metrics).unwrap_or_default(),
             },
+            NativeDataFusionRuntime::Interrupted { outcome, metrics } => {
+                debug_assert!(matches!(
+                    outcome,
+                    NativeDataFusionRuntimeOutcome::Cancelled
+                        | NativeDataFusionRuntimeOutcome::Dropped
+                        | NativeDataFusionRuntimeOutcome::Panicked
+                ));
+                Self {
+                    started: true,
+                    outcome,
+                    failure: None,
+                    output_batches: None,
+                    output_rows: None,
+                    output_bytes: None,
+                    metrics: metrics.as_ref().map(NativeDataFusionExecutionMetrics::from_metrics).unwrap_or_default(),
+                }
+            },
         }
     }
 }

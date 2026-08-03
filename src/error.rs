@@ -637,6 +637,7 @@ fn code_for_native_error(error: &nexus_query_engine::error::QueryError) -> Error
         nexus_query_engine::error::QueryErrorCode::UnsupportedExpression => ErrorCode::UnsupportedExpression,
         nexus_query_engine::error::QueryErrorCode::UnsupportedType => ErrorCode::UnsupportedType,
         nexus_query_engine::error::QueryErrorCode::InvalidPlan => ErrorCode::InvalidExecutionPlan,
+        nexus_query_engine::error::QueryErrorCode::InvalidAttemptCorrelation => ErrorCode::InvalidRequest,
         nexus_query_engine::error::QueryErrorCode::GraphInputInvalid => ErrorCode::GraphInputInvalid,
         nexus_query_engine::error::QueryErrorCode::CudfInvalidInput => ErrorCode::CudfInvalidInput,
         nexus_query_engine::error::QueryErrorCode::CudfUnsupported => ErrorCode::CudfUnsupported,
@@ -656,7 +657,6 @@ fn code_for_native_error(error: &nexus_query_engine::error::QueryError) -> Error
         nexus_query_engine::error::QueryErrorCode::MemoryReservationFailed => ErrorCode::MemoryReservationFailed,
         nexus_query_engine::error::QueryErrorCode::ServiceOverloaded => ErrorCode::ServiceOverloaded,
         nexus_query_engine::error::QueryErrorCode::Internal => ErrorCode::Internal,
-        _ => ErrorCode::Internal,
     }
 }
 
@@ -979,6 +979,25 @@ mod tests {
         let error = DataFusionError::External(Box::new(nexus_error("datafusion_nexus.test.direct")));
 
         assert_eq!(error.find_nexus_error().map(Error::operation), Some("datafusion_nexus.test.direct"));
+    }
+
+    #[test]
+    fn native_error_status_projection_agrees_with_the_engine_for_every_code() {
+        for native_code in nexus_query_engine::error::QueryErrorCode::ALL {
+            let native = nexus_query_engine::error::QueryError::new(
+                *native_code,
+                "nexus_query_engine.test.status_projection",
+                "native status projection test",
+            );
+            let adapter =
+                Error::from_native("datafusion_nexus.test.status_projection", "adapter status projection test", native);
+
+            assert_eq!(
+                adapter.status().as_str(),
+                native_code.status().as_str(),
+                "{native_code} must retain its native retry/remediation status"
+            );
+        }
     }
 
     #[test]

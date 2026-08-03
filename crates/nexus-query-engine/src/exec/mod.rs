@@ -56,8 +56,9 @@ mod vector_algorithm;
 pub use bounded::pipeline::{
     CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineScheduler, CompiledPipelineState,
     CompiledSchedulingCycle, CompiledTaskAdmission, CompiledTaskExecutor, CompiledTaskOutput, ReleasedCompiledResource,
-    ResidentFrameStreamProducerTestHarness, YieldedFrameCounterTestHarness,
 };
+#[cfg(test)]
+pub(crate) use bounded::pipeline::{ResidentFrameStreamProducerTestHarness, YieldedFrameCounterTestHarness};
 pub use bounded::{
     JoinOutputColumnUpperBoundInput, PER_COLUMN_ALIGNMENT_PADDING_BYTES, PartialAggregateShape,
     STRING_OFFSET_BYTES_CONSERVATIVE, join_output_upper_bound_bytes, partial_aggregate_upper_bound_bytes,
@@ -76,8 +77,8 @@ pub use source::{
     ResolvedRemoteParquetDatasourceProbe, probe_resolved_remote_parquet_datasource, read_gpu_resident_source,
     read_literal_batch_source, read_local_parquet_source,
 };
-#[doc(hidden)]
-pub mod reservation_contract_testing {
+#[cfg(test)]
+pub(crate) mod reservation_contract_testing {
     #![allow(missing_docs)]
 
     use super::bounded::{JoinMaterializationTxn, ReservationTracker};
@@ -89,28 +90,28 @@ pub mod reservation_contract_testing {
     };
 
     #[derive(Debug)]
-    pub struct ReservationTrackerContractProbe {
-        pub metrics: QueryMetrics,
-        pub reserved_after_reserve: u64,
-        pub reserved_after_alias_or_transfer: u64,
-        pub reserved_after_intermediate_release: u64,
-        pub reserved_after_final_release: u64,
+    pub(crate) struct ReservationTrackerContractProbe {
+        pub(crate) metrics: QueryMetrics,
+        pub(crate) reserved_after_reserve: u64,
+        pub(crate) reserved_after_alias_or_transfer: u64,
+        pub(crate) reserved_after_intermediate_release: u64,
+        pub(crate) reserved_after_final_release: u64,
     }
 
     #[derive(Debug)]
-    pub struct ReservationTrackerDenialProbe {
-        pub metrics: QueryMetrics,
-        pub error: QueryError,
-        pub reserved_after_denial: u64,
+    pub(crate) struct ReservationTrackerDenialProbe {
+        pub(crate) metrics: QueryMetrics,
+        pub(crate) error: QueryError,
+        pub(crate) reserved_after_denial: u64,
     }
 
     #[derive(Debug)]
-    pub struct JoinMaterializationTxnRollbackProbe {
-        pub metrics: QueryMetrics,
-        pub reserved_after_rollback: u64,
+    pub(crate) struct JoinMaterializationTxnRollbackProbe {
+        pub(crate) metrics: QueryMetrics,
+        pub(crate) reserved_after_rollback: u64,
     }
 
-    pub fn probe_alias_contract() -> Result<ReservationTrackerContractProbe> {
+    pub(crate) fn probe_alias_contract() -> Result<ReservationTrackerContractProbe> {
         let mut metrics = QueryMetrics::default();
         let mut tracker = ReservationTracker::new(MemorySpaceId::Device { device_ordinal: 0 }, 100);
         let owned = tracker.try_reserve_owned_resident(
@@ -137,7 +138,7 @@ pub mod reservation_contract_testing {
         })
     }
 
-    pub fn probe_transfer_contract() -> Result<ReservationTrackerContractProbe> {
+    pub(crate) fn probe_transfer_contract() -> Result<ReservationTrackerContractProbe> {
         let mut metrics = QueryMetrics::default();
         let mut tracker = ReservationTracker::new(MemorySpaceId::Device { device_ordinal: 0 }, 100);
         let work = tracker.try_reserve_work(
@@ -163,7 +164,7 @@ pub mod reservation_contract_testing {
         })
     }
 
-    pub fn probe_alias_outlives_source_release_contract() -> Result<ReservationTrackerContractProbe> {
+    pub(crate) fn probe_alias_outlives_source_release_contract() -> Result<ReservationTrackerContractProbe> {
         let mut metrics = QueryMetrics::default();
         let mut tracker = ReservationTracker::new(MemorySpaceId::Device { device_ordinal: 0 }, 100);
         let owned = tracker.try_reserve_owned_resident(
@@ -190,7 +191,7 @@ pub mod reservation_contract_testing {
         })
     }
 
-    pub fn probe_denial_capacity_after_alias() -> Result<ReservationTrackerDenialProbe> {
+    pub(crate) fn probe_denial_capacity_after_alias() -> Result<ReservationTrackerDenialProbe> {
         let mut metrics = QueryMetrics::default();
         let mut tracker = ReservationTracker::new(MemorySpaceId::Device { device_ordinal: 0 }, 100);
         let owned = tracker.try_reserve_owned_resident(
@@ -218,7 +219,7 @@ pub mod reservation_contract_testing {
         Ok(ReservationTrackerDenialProbe { metrics, error, reserved_after_denial })
     }
 
-    pub fn probe_join_materialization_txn_rollback_contract() -> Result<JoinMaterializationTxnRollbackProbe> {
+    pub(crate) fn probe_join_materialization_txn_rollback_contract() -> Result<JoinMaterializationTxnRollbackProbe> {
         let mut metrics = QueryMetrics::default();
         let mut tracker = ReservationTracker::new(MemorySpaceId::Device { device_ordinal: 0 }, 100);
         let task_id = "t4";
@@ -918,10 +919,7 @@ mod tests {
         };
         assert_eq!(failure.code(), QueryErrorCode::InvalidPlan);
         assert_eq!(failure.fact_value("reason"), Some("runtime_observation_query_id_mismatch"));
-        assert_key_unavailable_evidence(
-            &failed,
-            RuntimeTerminalOutcome::from_query_error(&failure),
-        );
+        assert_key_unavailable_evidence(&failed, RuntimeTerminalOutcome::from_query_error(&failure));
 
         let cancellation = ExecutionCancellation::new();
         cancellation.cancel();

@@ -313,16 +313,23 @@ where
     }
 }
 
+/// Runtime-owned execution scope exposed to operator-stage observation.
+///
+/// The observation layer deliberately depends on this narrow value contract,
+/// rather than on the runtime's concrete execution context.  That keeps the
+/// observation-to-runtime edge out of the layering graph while preserving the
+/// established [`stage_context_from_execution`] call surface.
+pub trait RuntimeExecutionStageContext {
+    fn runtime_operator_stage_context(
+        &self,
+    ) -> (RuntimeObservationHandle, Option<PlanExecutionId>, Option<RuntimeSpanId>);
+}
+
 /// Helper that builds stage observation identity from a runtime execution scope.
 pub fn stage_context_from_execution(
-    context: &crate::runtime::ExecutionContext,
+    context: &impl RuntimeExecutionStageContext,
 ) -> (RuntimeObservationHandle, Option<PlanExecutionId>, Option<RuntimeSpanId>) {
-    let observation = context.runtime_observation().clone();
-    let (plan_execution_id, parent_span_id) = context
-        .runtime_execution_scope()
-        .map(|scope| (Some(scope.plan_execution_id().clone()), Some(scope.plan_span_id())))
-        .unwrap_or((None, None));
-    (observation, plan_execution_id, parent_span_id)
+    context.runtime_operator_stage_context()
 }
 
 #[cfg(test)]

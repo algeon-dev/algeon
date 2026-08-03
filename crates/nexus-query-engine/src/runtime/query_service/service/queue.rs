@@ -489,7 +489,10 @@ impl QueryService {
         // allowance remains. Reinstall that protection before looking for a
         // runnable placement, not after a younger request has consumed the
         // next slot. This keeps the finite-overtake bound exact.
-        self.restore_exhausted_overtake_protections_locked(state)?;
+        let previous_protections = state.queued.iter().map(|request| request.protected_device).collect::<Vec<_>>();
+        if let Err(error) = self.restore_exhausted_overtake_protections_locked(state) {
+            return Err(self.rollback_new_exhausted_overtake_protections(state, &previous_protections, error));
+        }
         for (position, request) in state.queued.iter().enumerate() {
             let Some(best) = self.best_eligible_device_for(request)? else {
                 continue;
@@ -684,11 +687,7 @@ impl QueryService {
         excluded_ordinal: Option<usize>,
     ) -> Result<ExhaustedWaiterProtection> {
         #[cfg(test)]
-        if self
-            .inner
-            .protection_retarget_failure_after_release
-            .swap(false, Ordering::AcqRel)
-        {
+        if self.inner.protection_retarget_failure_after_release.swap(false, Ordering::AcqRel) {
             return Err(QueryError::new(
                 QueryErrorCode::Internal,
                 "nexus_query_engine.query_service.queue",
@@ -778,6 +777,38 @@ impl QueryService {
         Ok(())
     }
 
+    /// Ends every protection installed by a failed restoration pass and
+    /// restores the queue's prior protection references. A restoration can
+    /// touch several ledgers, so a later hard failure must not leave an
+    /// earlier waiter's slot and liveness bytes withheld indefinitely.
+    fn rollback_new_exhausted_overtake_protections(
+        &self,
+        state: &mut AdmissionState,
+        previous_protections: &[Option<usize>],
+        mut error: QueryError,
+    ) -> QueryError {
+        let mut protection_rolled_back = vec![true; state.queued.len()];
+        for (position, request) in state.queued.iter().enumerate() {
+            if previous_protections[position].is_some() || request.protected_device.is_none() {
+                continue;
+            }
+            let protected_device = request.protected_device.expect("new protection exists");
+            let rollback = self
+                .ledger_for_ordinal(protected_device)
+                .and_then(|ledger| ledger.end_protection(request.admission_request_id).map(|_| ()));
+            if let Err(rollback_error) = rollback {
+                protection_rolled_back[position] = false;
+                error = error.with_fact("overtake_rollback_error", rollback_error.to_string());
+            }
+        }
+        for (position, request) in state.queued.iter_mut().enumerate() {
+            if previous_protections[position].is_some() || protection_rolled_back[position] {
+                request.protected_device = previous_protections[position];
+            }
+        }
+        error
+    }
+
     /// Accounts for a published later admission and installs protection for
     /// every older still-queued compatible waiter that has exhausted its finite
     /// overtake allowance. Any protection failure rolls back both decrements
@@ -807,26 +838,11 @@ impl QueryService {
         let commit_result = self.restore_exhausted_overtake_protections_locked(state).and_then(|()| {
             super::transaction::publication_deadline_error(publication_deadline, None).map_or(Ok(()), Err)
         });
-        if let Err(mut error) = commit_result {
-            let mut protection_rolled_back = vec![true; state.queued.len()];
-            for (position, request) in state.queued.iter().enumerate() {
-                if previous[position].1.is_some() || request.protected_device.is_none() {
-                    continue;
-                }
-                let protected_device = request.protected_device.expect("new protection exists");
-                let rollback = self
-                    .ledger_for_ordinal(protected_device)
-                    .and_then(|ledger| ledger.end_protection(request.admission_request_id).map(|_| ()));
-                if let Err(rollback_error) = rollback {
-                    protection_rolled_back[position] = false;
-                    error = error.with_fact("overtake_rollback_error", rollback_error.to_string());
-                }
-            }
+        if let Err(error) = commit_result {
+            let previous_protections = previous.iter().map(|(_, protection)| *protection).collect::<Vec<_>>();
+            let error = self.rollback_new_exhausted_overtake_protections(state, &previous_protections, error);
             for (position, request) in state.queued.iter_mut().enumerate() {
                 request.overtakes_remaining = previous[position].0;
-                if previous[position].1.is_some() || protection_rolled_back[position] {
-                    request.protected_device = previous[position].1;
-                }
             }
             return Err(error);
         }

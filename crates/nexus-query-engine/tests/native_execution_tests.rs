@@ -215,17 +215,17 @@ fn backend_context_with_policy_and_grant(
     requested_bytes: Option<u64>,
 ) -> BackendQueryContext {
     let request = requested_bytes.map_or_else(QueryAdmissionRequest::new, |bytes| {
-        QueryAdmissionRequest::new().with_test_planned_capability_evidence(fixture_planned_capability_evidence(bytes))
+        QueryAdmissionRequest::new().with_test_placement_requirement(fixture_placement_requirement(bytes))
     });
     let handle = suite_backend_with_policy(policy).session_capability().admit_query_with_request(request).unwrap();
     let context = handle.acquire_context().unwrap();
     BackendQueryContext { context, _handle: handle }
 }
 
-/// Derives a budget hint through the same bounded-plan analysis used by a
-/// frontend. The fixture must not manufacture opaque admission evidence or
-/// reopen a public raw-byte test hook.
-fn fixture_planned_capability_evidence(bytes: u64) -> nexus_query_engine::admission::AttemptCapabilityEvidence {
+/// Derives a placement-only budget hint through the same bounded-plan analysis
+/// used by a frontend. It is not submitted-plan proof and cannot authorize an
+/// arbitrary test plan at execution.
+fn fixture_placement_requirement(bytes: u64) -> nexus_query_engine::admission::AttemptCapabilityEvidence {
     let schema = Arc::new(Schema::new(vec![Field::new("fixture_key", DataType::Int64, false)]));
     let fixture_source = LocalParquetSource::from_files(
         vec![

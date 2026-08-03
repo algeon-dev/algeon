@@ -1,11 +1,13 @@
-error[E0603]: module `owner` is private
- --> tests/ui/public_api/forbidden_owner_internals.rs:1:39
+error[E0603]: module `gpu` is private
+ --> tests/ui/public_api/forbidden_owner_internals.rs:1:34
   |
 1 | use nexus_query_engine::runtime::gpu::owner::{DeviceOwnerToken, LiveBackendLease};
-  |                                       ^^^^^ private module
+  |                                  ^^^  ----- module `owner` is not publicly re-exported
+  |                                  |
+  |                                  private module
   |
-note: the module `owner` is defined here
- --> src/runtime/gpu/mod.rs
+note: the module `gpu` is defined here
+ --> src/runtime.rs
   |
-  | mod owner;
-  | ^^^^^^^^^
+  | pub(crate) mod gpu;
+  | ^^^^^^^^^^^^^^^^^^

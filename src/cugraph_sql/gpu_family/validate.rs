@@ -21,6 +21,7 @@ use super::{
     ERROR_VERTEX_DTYPE_MISMATCH,
     json_schema::{data_type_label, metadata_output_schema_json, normalized_options_json, schema_json},
 };
+use crate::error::{DataFusionErrorExt, ErrorCode};
 
 /// Single-row diagnostic payload returned by graph SQL validation calls.
 #[derive(Debug, Clone)]
@@ -99,12 +100,8 @@ pub(super) async fn validate_graph_call(
     let mut spec = match build_validate_spec(algorithm, table_name, &call, config) {
         Ok(spec) => spec,
         Err(error) => {
-            return ValidationRow::invalid(
-                canonical_function_name,
-                parse_error_code(&error.to_string()),
-                error.to_string(),
-            )
-            .with_output_schema(output_schema_json);
+            return ValidationRow::invalid(canonical_function_name, validation_error_code(&error), error.to_string())
+                .with_output_schema(output_schema_json);
         },
     };
     let mut output_schema_json = schema_json(&spec.output_schema);
@@ -177,7 +174,7 @@ pub(super) async fn validate_graph_call(
                     src_dtype,
                     dst_dtype,
                     weight_dtype,
-                    ..ValidationRow::invalid(canonical_function_name, vertex_domain_error_code(&message), message)
+                    ..ValidationRow::invalid(canonical_function_name, vertex_domain_error_code(&error), message)
                         .with_output_schema(output_schema_json)
                 };
             },
@@ -526,7 +523,7 @@ async fn validate_similarity_vertex_pair_source(
     };
     if let Err(error) = validate_similarity_pair_table_schema(vertex_pairs, &provider.schema(), vertex_domain) {
         let message = error.to_string();
-        let code = if message.contains("is missing") { ERROR_COLUMN_NOT_FOUND } else { ERROR_VERTEX_DTYPE_MISMATCH };
+        let code = similarity_pair_error_code(&error);
         return Some(predicate_validation_error(function_name, code, message, &output_schema_json));
     }
     None
@@ -701,19 +698,32 @@ async fn resolve_table_provider(
         .ok_or_else(|| format!("No table named '{}' for cuGraph edge source", table_ref))
 }
 
-fn parse_error_code(message: &str) -> &'static str {
-    if message.contains("unknown option")
-        || message.contains("requires vertex_radius side input")
-        || message.contains("requires directed=")
-    {
-        ERROR_UNSUPPORTED_OPTION
-    } else {
-        ERROR_INVALID_ARGUMENT
+fn validation_error_code(error: &datafusion::common::DataFusionError) -> &'static str {
+    match structured_error_code(error) {
+        Some(ErrorCode::UnsupportedOperator) => ERROR_UNSUPPORTED_OPTION,
+        Some(ErrorCode::InvalidExecutionPlan) | None => ERROR_INVALID_ARGUMENT,
+        _ => ERROR_INVALID_ARGUMENT,
     }
 }
 
-fn vertex_domain_error_code(message: &str) -> &'static str {
-    if message.contains("unsupported dtype") { ERROR_UNSUPPORTED_VERTEX_DTYPE } else { ERROR_VERTEX_DTYPE_MISMATCH }
+fn vertex_domain_error_code(error: &datafusion::common::DataFusionError) -> &'static str {
+    match structured_error_code(error) {
+        Some(ErrorCode::UnsupportedType) => ERROR_UNSUPPORTED_VERTEX_DTYPE,
+        Some(ErrorCode::InvalidExecutionPlan) | None => ERROR_VERTEX_DTYPE_MISMATCH,
+        _ => ERROR_VERTEX_DTYPE_MISMATCH,
+    }
+}
+
+fn similarity_pair_error_code(error: &datafusion::common::DataFusionError) -> &'static str {
+    match structured_error_code(error) {
+        Some(ErrorCode::FieldNotFound) => ERROR_COLUMN_NOT_FOUND,
+        Some(ErrorCode::InvalidExecutionPlan) | None => ERROR_VERTEX_DTYPE_MISMATCH,
+        _ => ERROR_VERTEX_DTYPE_MISMATCH,
+    }
+}
+
+fn structured_error_code(error: &datafusion::common::DataFusionError) -> Option<ErrorCode> {
+    error.find_nexus_error().map(|error| error.code())
 }
 
 fn json_string(value: &Value, key: &str) -> std::result::Result<String, (&'static str, String)> {
@@ -808,4 +818,50 @@ fn source_vertex_expr(source_vertex: &CugraphBfsSource) -> Expr {
 
 fn is_supported_weight_dtype(data_type: &DataType) -> bool {
     matches!(data_type, DataType::Float32 | DataType::Float64)
+}
+
+#[cfg(test)]
+mod tests {
+    use datafusion::common::DataFusionError;
+
+    use super::{
+        ERROR_COLUMN_NOT_FOUND, ERROR_UNSUPPORTED_OPTION, ERROR_UNSUPPORTED_VERTEX_DTYPE, ERROR_VERTEX_DTYPE_MISMATCH,
+        similarity_pair_error_code, validation_error_code, vertex_domain_error_code,
+    };
+    use crate::error::{Error, ErrorCode};
+
+    #[test]
+    fn validation_error_codes_are_derived_from_structured_errors_not_rendered_messages() {
+        let unsupported_option: DataFusionError = Error::new(
+            ErrorCode::UnsupportedOperator,
+            "datafusion_nexus.test.cugraph_validation",
+            "vertex dtype mismatch",
+        )
+        .into();
+        assert_eq!(validation_error_code(&unsupported_option), ERROR_UNSUPPORTED_OPTION);
+
+        let unsupported_vertex_dtype: DataFusionError = Error::new(
+            ErrorCode::UnsupportedType,
+            "datafusion_nexus.test.cugraph_validation",
+            "source and destination vertex columns differ",
+        )
+        .into();
+        assert_eq!(vertex_domain_error_code(&unsupported_vertex_dtype), ERROR_UNSUPPORTED_VERTEX_DTYPE);
+
+        let vertex_dtype_mismatch: DataFusionError = Error::new(
+            ErrorCode::InvalidExecutionPlan,
+            "datafusion_nexus.test.cugraph_validation",
+            "unsupported vertex dtype",
+        )
+        .into();
+        assert_eq!(vertex_domain_error_code(&vertex_dtype_mismatch), ERROR_VERTEX_DTYPE_MISMATCH);
+
+        let missing_column: DataFusionError = Error::new(
+            ErrorCode::FieldNotFound,
+            "datafusion_nexus.test.cugraph_validation",
+            "vertex pair columns have mismatched dtypes",
+        )
+        .into();
+        assert_eq!(similarity_pair_error_code(&missing_column), ERROR_COLUMN_NOT_FOUND);
+    }
 }

@@ -1,5 +1,10 @@
 //! Pure model tests for the versioned per-device immutable-grant ledger.
 
+use std::sync::{
+    Arc, Barrier, Mutex,
+    atomic::{AtomicBool, AtomicUsize, Ordering},
+};
+
 use super::*;
 
 fn requirement(floor: u64, hint: Option<u64>) -> AttemptRequirement {
@@ -9,6 +14,7 @@ fn requirement(floor: u64, hint: Option<u64>) -> AttemptRequirement {
         soft_working_set_hint_bytes: hint,
         estimate_quality: crate::admission::EstimateQuality::Modeled,
         required_capabilities: Vec::new(),
+        attested_cugraph_graph_execution_scopes: Vec::new(),
     }
 }
 
@@ -75,6 +81,192 @@ fn release_refunds_exactly_and_bumps_sequence() {
 }
 
 #[test]
+fn transition_observer_covers_every_sequence_bump_with_its_atomic_snapshot() {
+    let observations = Arc::new(Mutex::new(Vec::<LedgerTransition>::new()));
+    let first = DeviceLedger::new(profile(1_000, 100, 2));
+    let observations_for_first = Arc::clone(&observations);
+    first
+        .register_transition_observer(Arc::new(move |transition| {
+            observations_for_first.lock().unwrap().push(transition.clone());
+        }))
+        .unwrap();
+
+    let grant = first.try_admit(request(1), &requirement(100, Some(400))).unwrap().expect("admits");
+    assert!(grant.try_reserve_live_bytes(40).unwrap());
+    grant.release_live_bytes(40);
+    assert!(first.try_reserve_evictable_bytes(10).unwrap());
+    assert_eq!(first.release_evictable_bytes(10).unwrap(), 10);
+    assert!(first.protect_slot(request(2), 100).unwrap());
+    assert!(first.end_protection(request(2)).unwrap());
+    drop(grant);
+    assert_eq!(first.close_admission("test close").unwrap(), 1);
+
+    let second = DeviceLedger::new(profile(1_000, 100, 1));
+    let observations_for_second = Arc::clone(&observations);
+    second
+        .register_transition_observer(Arc::new(move |transition| {
+            observations_for_second.lock().unwrap().push(transition.clone());
+        }))
+        .unwrap();
+    assert!(second.close_admission_if_open("test first close").unwrap());
+
+    let observations = observations.lock().unwrap();
+    let expected = [
+        (LedgerTransitionKind::GrantAdmitted, 1),
+        (LedgerTransitionKind::LiveReservationCharged, 2),
+        (LedgerTransitionKind::LiveReservationReleased, 3),
+        (LedgerTransitionKind::EvictableCharged, 4),
+        (LedgerTransitionKind::EvictableReleased, 5),
+        (LedgerTransitionKind::ProtectionInstalled, 6),
+        (LedgerTransitionKind::ProtectionRemoved, 7),
+        (LedgerTransitionKind::GrantReleased, 8),
+        (LedgerTransitionKind::AdmissionClosed, 9),
+        (LedgerTransitionKind::AdmissionClosed, 1),
+    ];
+    assert_eq!(observations.len(), expected.len());
+    for (transition, (kind, sequence)) in observations.iter().zip(expected) {
+        assert_eq!(transition.kind, kind);
+        assert_eq!(transition.snapshot.sequence, sequence);
+    }
+}
+
+#[test]
+fn transition_observer_snapshots_match_sequences_during_concurrent_admit_and_release() {
+    let ledger = Arc::new(DeviceLedger::new(profile(1_000, 100, 2)));
+    let observations = Arc::new(Mutex::new(Vec::<LedgerTransition>::new()));
+    let observations_for_observer = Arc::clone(&observations);
+    ledger
+        .register_transition_observer(Arc::new(move |transition| {
+            observations_for_observer.lock().unwrap().push(transition.clone());
+        }))
+        .unwrap();
+
+    let start = Arc::new(Barrier::new(3));
+    let workers = (0..2)
+        .map(|worker| {
+            let ledger = Arc::clone(&ledger);
+            let start = Arc::clone(&start);
+            std::thread::spawn(move || {
+                start.wait();
+                for round in 0..8 {
+                    let request_id = u64::try_from(worker * 100 + round + 1).unwrap();
+                    loop {
+                        if let Some(grant) =
+                            ledger.try_admit(request(request_id), &requirement(100, Some(100))).unwrap()
+                        {
+                            drop(grant);
+                            break;
+                        }
+                        std::thread::yield_now();
+                    }
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+    start.wait();
+    for worker in workers {
+        worker.join().expect("ledger worker must finish");
+    }
+
+    let observations = observations.lock().unwrap();
+    assert_eq!(observations.len(), 32);
+    for (index, transition) in observations.iter().enumerate() {
+        assert_eq!(transition.snapshot.sequence, u64::try_from(index + 1).unwrap());
+        assert!(matches!(transition.kind, LedgerTransitionKind::GrantAdmitted | LedgerTransitionKind::GrantReleased));
+    }
+}
+
+#[test]
+fn transition_observer_panics_and_same_ledger_reentry_are_isolated() {
+    let ledger = DeviceLedger::new(profile(1_000, 100, 2));
+    let grant = ledger.try_admit(request(1), &requirement(100, Some(400))).unwrap().expect("admits");
+    let retained_grant = Arc::new(Mutex::new(Some(grant.clone())));
+    let reentry_failures = Arc::new(AtomicUsize::new(0));
+    let reentry_done = Arc::new(AtomicBool::new(false));
+    let weak = Arc::downgrade(&ledger.inner);
+    let retained_for_observer = Arc::clone(&retained_grant);
+    let reentry_failures_for_observer = Arc::clone(&reentry_failures);
+    let reentry_done_for_observer = Arc::clone(&reentry_done);
+    ledger
+        .register_transition_observer(Arc::new(move |_| {
+            if reentry_done_for_observer.swap(true, Ordering::Relaxed) {
+                return;
+            }
+            let same_ledger = DeviceLedger { inner: weak.upgrade().expect("ledger remains alive") };
+            let snapshot_error = same_ledger.snapshot().expect_err("Result-returning reentry must fail structurally");
+            assert_eq!(snapshot_error.fact_value("reason"), Some("ledger_observer_reentrancy"));
+            reentry_failures_for_observer.fetch_add(1, Ordering::Relaxed);
+            let retained_grant =
+                retained_for_observer.lock().unwrap().as_ref().expect("retained grant is present").clone();
+            for panic in [
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let _ = same_ledger.protection();
+                })),
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| same_ledger.release_grant(u64::MAX))),
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    retained_grant.record_live_reservation_delta(1);
+                })),
+            ] {
+                let panic = panic.expect_err("same-ledger transition-observer reentry must panic");
+                let error = panic.downcast_ref::<QueryError>().expect("reentry panic carries QueryError");
+                assert_eq!(error.fact_value("reason"), Some("ledger_observer_reentrancy"));
+                reentry_failures_for_observer.fetch_add(1, Ordering::Relaxed);
+            }
+        }))
+        .unwrap();
+    let survived_panic = Arc::new(AtomicBool::new(false));
+    let survived_panic_for_observer = Arc::clone(&survived_panic);
+    ledger
+        .register_transition_observer(Arc::new(move |_| {
+            survived_panic_for_observer.store(true, Ordering::Relaxed);
+            panic!("test observer panic");
+        }))
+        .unwrap();
+    let after_panic = Arc::new(AtomicBool::new(false));
+    let after_panic_for_observer = Arc::clone(&after_panic);
+    ledger
+        .register_transition_observer(Arc::new(move |_| {
+            after_panic_for_observer.store(true, Ordering::Relaxed);
+        }))
+        .unwrap();
+
+    assert!(ledger.protect_slot(request(2), 100).unwrap());
+    assert_eq!(reentry_failures.load(Ordering::Relaxed), 4);
+    assert!(survived_panic.load(Ordering::Relaxed));
+    assert!(after_panic.load(Ordering::Relaxed));
+    assert!(ledger.snapshot().is_ok(), "isolated observer panics must not poison the ledger mutex");
+
+    drop(retained_grant.lock().unwrap().take());
+    drop(grant);
+}
+
+#[test]
+fn release_observer_runs_after_unlock_with_a_post_release_snapshot() {
+    let ledger = DeviceLedger::new(profile(1_000, 100, 1));
+    let weak = Arc::downgrade(&ledger.inner);
+    let observed = Arc::new(Mutex::new(None));
+    let observed_by_callback = Arc::clone(&observed);
+    ledger
+        .register_release_observer(Arc::new(move |snapshot| {
+            let same_ledger = DeviceLedger { inner: weak.upgrade().expect("ledger remains alive") };
+            assert_eq!(snapshot.kind, LedgerTransitionKind::GrantReleased);
+            assert_eq!(
+                same_ledger.snapshot().unwrap(),
+                snapshot.snapshot.clone(),
+                "release observer runs after the ledger mutex is unlocked"
+            );
+            *observed_by_callback.lock().unwrap() = Some(snapshot.snapshot.clone());
+        }))
+        .unwrap();
+    let grant = ledger.try_admit(request(1), &requirement(100, Some(400))).unwrap().expect("admits");
+    drop(grant);
+
+    let observed = observed.lock().unwrap().clone().expect("release observer runs");
+    assert_eq!(observed.active_attempts, 0);
+    assert_eq!(observed.live_grants_bytes, 0);
+}
+
+#[test]
 fn protection_withholds_one_slot_and_floor_reserve() {
     let ledger = DeviceLedger::new(profile(1_000, 100, 2));
     let waiter = request(9);
@@ -102,6 +294,19 @@ fn protection_withholds_one_slot_and_floor_reserve() {
     assert_eq!(snapshot.live_grants_bytes, 800);
     assert!(!snapshot.protected_slot);
     assert_eq!(snapshot.protected_reserve_bytes, 0);
+}
+
+#[test]
+fn refreshing_the_same_protection_is_a_noop_without_a_transition() {
+    let ledger = DeviceLedger::new(profile(1_000, 100, 2));
+    let waiter = request(9);
+    assert!(ledger.protect_slot(waiter, 100).unwrap());
+    let before = ledger.snapshot().unwrap();
+    let protection = ledger.protection().unwrap();
+
+    assert!(ledger.protect_slot(waiter, 200).unwrap());
+    assert_eq!(ledger.snapshot().unwrap(), before);
+    assert_eq!(ledger.protection(), Some(protection));
 }
 
 #[test]
@@ -170,6 +375,7 @@ fn zero_request_floor_resolves_against_each_candidate_profile() {
         soft_working_set_hint_bytes: Some(1),
         estimate_quality: crate::admission::EstimateQuality::Unknown,
         required_capabilities: Vec::new(),
+        attested_cugraph_graph_execution_scopes: Vec::new(),
     };
 
     assert_eq!(small.required_floor_bytes_for(&zero_floor).unwrap(), 8);
@@ -188,6 +394,7 @@ fn request_floor_cannot_lower_the_candidate_profile_floor() {
         soft_working_set_hint_bytes: Some(1),
         estimate_quality: crate::admission::EstimateQuality::Unknown,
         required_capabilities: Vec::new(),
+        attested_cugraph_graph_execution_scopes: Vec::new(),
     };
 
     assert_eq!(ledger.required_floor_bytes_for(&requirement).unwrap(), 107);
@@ -203,6 +410,7 @@ fn requirement_floor_above_the_candidate_profile_floor_is_preserved() {
         soft_working_set_hint_bytes: Some(1),
         estimate_quality: crate::admission::EstimateQuality::Unknown,
         required_capabilities: Vec::new(),
+        attested_cugraph_graph_execution_scopes: Vec::new(),
     };
 
     assert_eq!(ledger.required_floor_bytes_for(&requirement).unwrap(), 127);
@@ -218,6 +426,7 @@ fn overflowing_floor_is_rejected_structurally() {
         soft_working_set_hint_bytes: None,
         estimate_quality: crate::admission::EstimateQuality::Unknown,
         required_capabilities: Vec::new(),
+        attested_cugraph_graph_execution_scopes: Vec::new(),
     };
     assert!(ledger.try_admit(request(1), &overflowing).is_err());
 }
@@ -292,12 +501,6 @@ fn snapshot_aggregates_live_reservations_and_versions_every_observable_accountin
     assert_eq!(ledger.release_evictable_bytes(10).unwrap(), 10);
     let cache_released = ledger.snapshot().unwrap();
     assert!(cache_released.sequence > cache_charged.sequence);
-
-    assert!(ledger.try_reserve_evictable_bytes_from_grant(&grant, 10).unwrap());
-    let grant_cache_charged = ledger.snapshot().unwrap();
-    assert!(grant_cache_charged.sequence > cache_released.sequence);
-    assert_eq!(ledger.release_evictable_bytes(10).unwrap(), 10);
-    assert!(ledger.snapshot().unwrap().sequence > grant_cache_charged.sequence);
 }
 
 #[test]
@@ -331,15 +534,19 @@ fn evictable_cache_accounting_is_separate_from_the_admission_equation() {
 }
 
 #[test]
-fn grant_can_cover_and_reserve_evictable_from_grant() {
+fn evictable_cache_bytes_obey_a_cumulative_bound_across_reserve_and_release() {
     let ledger = DeviceLedger::new(profile(1_000, 100, 1));
     let grant = ledger.try_admit(request(1), &requirement(100, Some(400))).unwrap().expect("admits");
-    assert!(ledger.grant_can_cover_evictable_bytes(&grant, 400).unwrap());
-    assert!(!ledger.grant_can_cover_evictable_bytes(&grant, 401).unwrap());
-    assert!(ledger.try_reserve_evictable_bytes_from_grant(&grant, 200).unwrap());
-    // Over-accounting while the grant is live is explicitly tolerated: each
-    // call is bounded by the grant, not by the cumulative evictable charge.
-    assert!(ledger.try_reserve_evictable_bytes_from_grant(&grant, 300).unwrap());
-    assert!(!ledger.try_reserve_evictable_bytes_from_grant(&grant, 500).unwrap());
-    assert_eq!(ledger.evictable_bytes().unwrap(), 500);
+    assert!(ledger.try_reserve_evictable_bytes(300).unwrap());
+    assert_eq!(ledger.release_evictable_bytes(100).unwrap(), 100);
+    assert!(ledger.try_reserve_evictable_bytes(400).unwrap());
+    assert_eq!(ledger.evictable_bytes().unwrap(), 600);
+    assert!(
+        !ledger.try_reserve_evictable_bytes(1).unwrap(),
+        "live grants and all cache reservations share one device-capacity bound"
+    );
+    assert_eq!(ledger.release_evictable_bytes(250).unwrap(), 250);
+    assert!(ledger.try_reserve_evictable_bytes(250).unwrap());
+    assert_eq!(ledger.evictable_bytes().unwrap(), 600);
+    drop(grant);
 }

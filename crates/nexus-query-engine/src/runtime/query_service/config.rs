@@ -13,20 +13,26 @@ pub struct QueueBounds {
     pub max_overtakes_per_waiter: u32,
 }
 
-impl Default for QueueBounds {
-    fn default() -> Self {
-        // This is the sole queue timeout default. Root/backend builders must
-        // project their queue policy to this value instead of carrying a
-        // second (legacy) timeout.
+impl QueueBounds {
+    /// Canonical bounded-admission queue defaults shared by every frontend.
+    ///
+    /// Frontends may project these values into their own configuration
+    /// surfaces, but must not restate them. Keeping the construction here
+    /// makes the runtime controller the sole owner of queue defaults.
+    pub const fn canonical_default() -> Self {
         Self { max_waiters: 64, max_wait: Duration::from_secs(30), max_overtakes_per_waiter: 4 }
     }
-}
 
-impl QueueBounds {
     pub(super) fn validate(&self) -> Result<()> {
         validate_nonzero_config_field("queue_bounds.max_waiters", self.max_waiters == 0)?;
         validate_nonzero_config_field("queue_bounds.max_wait", self.max_wait.is_zero())?;
         validate_nonzero_config_field("queue_bounds.max_overtakes_per_waiter", self.max_overtakes_per_waiter == 0)
+    }
+}
+
+impl Default for QueueBounds {
+    fn default() -> Self {
+        Self::canonical_default()
     }
 }
 

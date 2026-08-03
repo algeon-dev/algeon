@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use super::{
     CompiledTaskId, PlanNodeId, QueryId, QueryMetrics, optional_row_groups, optional_str, optional_u64, optional_usize,
 };
-use crate::runtime::{MemoryReservationRequest, MemorySpaceId, ReservationKind};
+use crate::execution_contracts::{MemoryReservationRequest, MemorySpaceId, ReservationKind};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ReservationAdmissionProjection {

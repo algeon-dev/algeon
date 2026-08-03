@@ -23,9 +23,11 @@
 //! `[required_floor, max_new_grant]` but never the fit proof.
 
 use std::{
+    cell::RefCell,
     collections::BTreeMap,
     fmt,
-    sync::{Arc, Condvar, Mutex, MutexGuard},
+    panic::{AssertUnwindSafe, catch_unwind},
+    sync::{Arc, Mutex, MutexGuard},
 };
 
 use super::DeviceResourceProfile;
@@ -206,6 +208,41 @@ pub struct DeviceLedgerGrantRow {
     pub live_reserved_bytes: u64,
 }
 
+/// The ledger mutation that advanced an observation sequence.
+///
+/// A transition observer receives the matching [`LedgerSnapshot`] while the
+/// ledger state mutex is still held. Observers must therefore treat the
+/// snapshot as their complete input and must not synchronously re-enter the
+/// same ledger.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum LedgerTransitionKind {
+    AdmissionClosed,
+    GrantAdmitted,
+    ProtectionInstalled,
+    ProtectionRemoved,
+    GrantReleased,
+    EvictableCharged,
+    EvictableReleased,
+    LiveReservationCharged,
+    LiveReservationReleased,
+}
+
+/// One immutable ledger mutation observed atomically with its state change.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LedgerTransition {
+    pub kind: LedgerTransitionKind,
+    pub snapshot: LedgerSnapshot,
+}
+
+/// In-lock observer of one atomic ledger transition.
+pub(crate) type LedgerTransitionObserver = Arc<dyn Fn(&LedgerTransition) + Send + Sync + 'static>;
+
+/// Post-lock observer of a grant release.
+///
+/// Release observers preserve the queue wakeup ordering: the grant has left
+/// the ledger and the state mutex is no longer held when they run.
+pub(crate) type LedgerReleaseObserver = Arc<dyn Fn(&LedgerTransition) + Send + Sync + 'static>;
+
 /// Per-device versioned immutable-grant ledger.
 #[derive(Clone)]
 pub struct DeviceLedger {
@@ -215,9 +252,34 @@ pub struct DeviceLedger {
 struct DeviceLedgerInner {
     profile: DeviceResourceProfile,
     state: Mutex<DeviceLedgerState>,
+    transition_observers: Mutex<Vec<LedgerTransitionObserver>>,
+    release_observers: Mutex<Vec<LedgerReleaseObserver>>,
     evictable_memory_observers: Mutex<Vec<EvictableMemoryObserver>>,
-    release_hook: Mutex<Option<Arc<dyn Fn(usize) + Send + Sync + 'static>>>,
-    available: Condvar,
+}
+
+thread_local! {
+    static LEDGER_TRANSITION_OBSERVER_STACK: RefCell<Vec<*const DeviceLedgerInner>> = const { RefCell::new(Vec::new()) };
+}
+
+struct LedgerTransitionObserverGuard {
+    ledger: *const DeviceLedgerInner,
+}
+
+impl LedgerTransitionObserverGuard {
+    fn enter(ledger: &Arc<DeviceLedgerInner>) -> Self {
+        let ledger = Arc::as_ptr(ledger);
+        LEDGER_TRANSITION_OBSERVER_STACK.with(|stack| stack.borrow_mut().push(ledger));
+        Self { ledger }
+    }
+}
+
+impl Drop for LedgerTransitionObserverGuard {
+    fn drop(&mut self) {
+        LEDGER_TRANSITION_OBSERVER_STACK.with(|stack| {
+            let active = stack.borrow_mut().pop();
+            debug_assert_eq!(active, Some(self.ledger));
+        });
+    }
 }
 
 impl fmt::Debug for DeviceLedgerInner {
@@ -271,9 +333,9 @@ impl DeviceLedger {
                     health: DeviceAdmissionHealth::Open,
                     evictable_bytes: 0,
                 }),
+                transition_observers: Mutex::new(Vec::new()),
+                release_observers: Mutex::new(Vec::new()),
                 evictable_memory_observers: Mutex::new(Vec::new()),
-                release_hook: Mutex::new(None),
-                available: Condvar::new(),
             }),
         }
     }
@@ -315,6 +377,7 @@ impl DeviceLedger {
                 soft_working_set_hint_bytes: Some(hint_bytes),
                 estimate_quality: crate::admission::EstimateQuality::Modeled,
                 required_capabilities: Vec::new(),
+                attested_cugraph_graph_execution_scopes: Vec::new(),
             },
         )
     }
@@ -402,12 +465,108 @@ impl DeviceLedger {
         self.can_ever_fit_required_floor_bytes(self.required_floor_bytes_for(requirement)?)
     }
 
+    fn in_transition_observer(&self) -> bool {
+        let ledger = Arc::as_ptr(&self.inner);
+        LEDGER_TRANSITION_OBSERVER_STACK.with(|stack| stack.borrow().contains(&ledger))
+    }
+
+    fn transition_observer_reentrancy_error(&self, action: &'static str) -> QueryError {
+        QueryError::new(
+            QueryErrorCode::Internal,
+            OPERATION,
+            "device ledger transition observer synchronously re-entered the same ledger",
+        )
+        .with_fact("action", action)
+        .with_fact("reason", "ledger_observer_reentrancy")
+    }
+
+    #[cold]
+    fn panic_on_transition_observer_reentrancy(&self, action: &'static str) -> ! {
+        std::panic::panic_any(self.transition_observer_reentrancy_error(action))
+    }
+
     fn lock_state(&self, action: &'static str) -> Result<MutexGuard<'_, DeviceLedgerState>> {
+        if self.in_transition_observer() {
+            return Err(self.transition_observer_reentrancy_error(action));
+        }
         self.inner.state.lock().map_err(|_error| {
             QueryError::new(QueryErrorCode::Internal, OPERATION, "device ledger mutex was poisoned")
                 .with_fact("action", action)
                 .with_fact("reason", "ledger_mutex_poisoned")
         })
+    }
+
+    fn transition_observers(&self) -> Vec<LedgerTransitionObserver> {
+        self.inner.transition_observers.lock().map(|observers| observers.clone()).unwrap_or_else(|_error| {
+            eprintln!("[nexus-query-engine] warning: device ledger transition-observer mutex was poisoned");
+            Vec::new()
+        })
+    }
+
+    fn release_observers(&self) -> Vec<LedgerReleaseObserver> {
+        self.inner.release_observers.lock().map(|observers| observers.clone()).unwrap_or_else(|_error| {
+            eprintln!("[nexus-query-engine] warning: device ledger release-observer mutex was poisoned");
+            Vec::new()
+        })
+    }
+
+    fn bump_sequence_and_notify_locked(
+        &self,
+        state: &mut DeviceLedgerState,
+        kind: LedgerTransitionKind,
+    ) -> LedgerTransition {
+        state.sequence = state.sequence.saturating_add(1);
+        let transition = LedgerTransition { kind, snapshot: self.snapshot_locked(state) };
+        let observers = self.transition_observers();
+        for observer in observers {
+            let _delivery = LedgerTransitionObserverGuard::enter(&self.inner);
+            if catch_unwind(AssertUnwindSafe(|| observer(&transition))).is_err() {
+                eprintln!("[nexus-query-engine] warning: device ledger transition observer panicked");
+            }
+        }
+        transition
+    }
+
+    /// Registers an in-lock observer for every ledger sequence transition.
+    ///
+    /// Registration is additive. Each invocation receives a snapshot whose
+    /// sequence is exactly the transition sequence; observer panics are
+    /// isolated from admission and release.
+    pub(crate) fn register_transition_observer(&self, observer: LedgerTransitionObserver) -> Result<()> {
+        self.inner
+            .transition_observers
+            .lock()
+            .map_err(|_error| {
+                QueryError::new(
+                    QueryErrorCode::Internal,
+                    OPERATION,
+                    "device ledger transition-observer mutex was poisoned",
+                )
+                .with_fact("reason", "transition_observer_mutex_poisoned")
+            })?
+            .push(observer);
+        Ok(())
+    }
+
+    /// Registers an additive post-lock grant-release observer.
+    ///
+    /// The observer runs only after a grant release has committed and the
+    /// ledger mutex has been released. This preserves the queue-wakeup
+    /// contract without conflating it with atomic state observation.
+    pub(crate) fn register_release_observer(&self, observer: LedgerReleaseObserver) -> Result<()> {
+        self.inner
+            .release_observers
+            .lock()
+            .map_err(|_error| {
+                QueryError::new(
+                    QueryErrorCode::Internal,
+                    OPERATION,
+                    "device ledger release-observer mutex was poisoned",
+                )
+                .with_fact("reason", "release_observer_mutex_poisoned")
+            })?
+            .push(observer);
+        Ok(())
     }
 
     /// One atomic ledger snapshot for placement, reports, and metrics.
@@ -510,7 +669,7 @@ impl DeviceLedger {
             DeviceAdmissionHealth::Closed { generation, .. } => generation.saturating_add(1),
         };
         state.health = DeviceAdmissionHealth::Closed { reason: reason.into(), generation };
-        state.sequence = state.sequence.saturating_add(1);
+        self.bump_sequence_and_notify_locked(&mut state, LedgerTransitionKind::AdmissionClosed);
         Ok(generation)
     }
 
@@ -526,7 +685,7 @@ impl DeviceLedger {
             return Ok(false);
         }
         state.health = DeviceAdmissionHealth::Closed { reason: reason.into(), generation: 1 };
-        state.sequence = state.sequence.saturating_add(1);
+        self.bump_sequence_and_notify_locked(&mut state, LedgerTransitionKind::AdmissionClosed);
         Ok(true)
     }
 
@@ -651,7 +810,7 @@ impl DeviceLedger {
         state
             .grants
             .insert(grant_id, ActiveGrant { admission_request_id: waiter_id, grant_bytes, live_reserved_bytes: 0 });
-        state.sequence = state.sequence.saturating_add(1);
+        self.bump_sequence_and_notify_locked(state, LedgerTransitionKind::GrantAdmitted);
         MemoryGrant {
             inner: Arc::new(MemoryGrantInner {
                 ledger: Arc::clone(&self.inner),
@@ -668,7 +827,9 @@ impl DeviceLedger {
     /// Installs or refreshes the single slot protection for `waiter_id`.
     ///
     /// Returns `Ok(false)` without changing state when another waiter already
-    /// holds this device's protection.
+    /// holds this device's protection. Refreshing an existing protection for
+    /// the same waiter is also a no-op: its original floor and accumulated
+    /// liveness remain authoritative, and no sequence transition is emitted.
     pub(crate) fn protect_slot(&self, waiter_id: AdmissionRequestId, required_floor_bytes: u64) -> Result<bool> {
         if required_floor_bytes == 0 {
             return Err(QueryError::new(
@@ -707,7 +868,7 @@ impl DeviceLedger {
         }
         if state.protection.is_none() {
             state.protection = Some(SlotProtection { waiter_id, liveness_bytes: 0, required_floor_bytes });
-            state.sequence = state.sequence.saturating_add(1);
+            self.bump_sequence_and_notify_locked(&mut state, LedgerTransitionKind::ProtectionInstalled);
         }
         Ok(true)
     }
@@ -718,7 +879,7 @@ impl DeviceLedger {
         let mut state = self.lock_state("end_protection")?;
         if state.protection.is_some_and(|protection| protection.waiter_id == waiter_id) {
             state.protection = None;
-            state.sequence = state.sequence.saturating_add(1);
+            self.bump_sequence_and_notify_locked(&mut state, LedgerTransitionKind::ProtectionRemoved);
             return Ok(true);
         }
         Ok(false)
@@ -726,27 +887,18 @@ impl DeviceLedger {
 
     /// Current protection state for queue/tests.
     pub(crate) fn protection(&self) -> Option<SlotProtection> {
+        if self.in_transition_observer() {
+            self.panic_on_transition_observer_reentrancy("protection");
+        }
         self.inner.state.lock().ok()?.protection
-    }
-
-    /// Installs the single queue-wakeup hook fired after any grant release.
-    ///
-    /// The hook runs after the ledger state lock is released. Callers must
-    /// uphold the same invariant as the legacy release observers: a grant is
-    /// never dropped while the admission mutex is held.
-    pub(crate) fn set_release_hook(&self, hook: Arc<dyn Fn(usize) + Send + Sync + 'static>) -> Result<()> {
-        let mut slot = self.inner.release_hook.lock().map_err(|_error| {
-            QueryError::new(QueryErrorCode::Internal, OPERATION, "device ledger release-hook mutex was poisoned")
-                .with_fact("reason", "release_hook_mutex_poisoned")
-        })?;
-        *slot = Some(hook);
-        Ok(())
     }
 
     /// Releases one grant, moving freed managed bytes into the waiter's
     /// protection liveness before any later admission observes them.
     fn release_grant(&self, grant_id: u64) {
-        let hook = self.inner.release_hook.lock().ok().and_then(|slot| slot.clone());
+        if self.in_transition_observer() {
+            self.panic_on_transition_observer_reentrancy("release_grant");
+        }
         let Ok(mut state) = self.inner.state.lock() else {
             eprintln!("[nexus-query-engine] warning: device ledger release observed a poisoned mutex");
             return;
@@ -759,11 +911,12 @@ impl DeviceLedger {
             let moved = active.grant_bytes.min(deficit);
             protection.liveness_bytes = protection.liveness_bytes.saturating_add(moved);
         }
-        state.sequence = state.sequence.saturating_add(1);
+        let transition = self.bump_sequence_and_notify_locked(&mut state, LedgerTransitionKind::GrantReleased);
         drop(state);
-        self.inner.available.notify_all();
-        if let Some(hook) = hook {
-            hook(self.inner.profile.device_ordinal);
+        for observer in self.release_observers() {
+            if catch_unwind(AssertUnwindSafe(|| observer(&transition))).is_err() {
+                eprintln!("[nexus-query-engine] warning: device ledger release observer panicked");
+            }
         }
     }
 
@@ -793,45 +946,7 @@ impl DeviceLedger {
             return Ok(false);
         }
         state.evictable_bytes = state.evictable_bytes.saturating_add(bytes);
-        state.sequence = state.sequence.saturating_add(1);
-        Ok(true)
-    }
-
-    /// Returns whether an active grant from this ledger can cover bytes being
-    /// retained as evictable cache memory.
-    #[cfg(any(feature = "cugraph", test))]
-    pub(crate) fn grant_can_cover_evictable_bytes(&self, grant: &MemoryGrant, bytes: u64) -> Result<bool> {
-        if bytes == 0 {
-            return Ok(true);
-        }
-        if !Arc::ptr_eq(&self.inner, &grant.inner.ledger) {
-            return Ok(false);
-        }
-        let state = self.lock_state("grant_can_cover_evictable_bytes")?;
-        let Some(active) = state.grants.get(&grant.inner.grant_id) else {
-            return Ok(false);
-        };
-        Ok(bytes <= active.grant_bytes)
-    }
-
-    /// Charges evictable cache bytes already covered by an active grant.
-    #[cfg(any(feature = "cugraph", test))]
-    pub(crate) fn try_reserve_evictable_bytes_from_grant(&self, grant: &MemoryGrant, bytes: u64) -> Result<bool> {
-        if bytes == 0 {
-            return Ok(true);
-        }
-        if !Arc::ptr_eq(&self.inner, &grant.inner.ledger) {
-            return Ok(false);
-        }
-        let mut state = self.lock_state("try_reserve_evictable_bytes_from_grant")?;
-        let Some(active) = state.grants.get(&grant.inner.grant_id) else {
-            return Ok(false);
-        };
-        if bytes > active.grant_bytes {
-            return Ok(false);
-        }
-        state.evictable_bytes = state.evictable_bytes.saturating_add(bytes);
-        state.sequence = state.sequence.saturating_add(1);
+        self.bump_sequence_and_notify_locked(&mut state, LedgerTransitionKind::EvictableCharged);
         Ok(true)
     }
 
@@ -846,9 +961,8 @@ impl DeviceLedger {
             return Ok(0);
         }
         state.evictable_bytes = state.evictable_bytes.saturating_sub(released);
-        state.sequence = state.sequence.saturating_add(1);
+        self.bump_sequence_and_notify_locked(&mut state, LedgerTransitionKind::EvictableReleased);
         drop(state);
-        self.inner.available.notify_all();
         Ok(released)
     }
 
@@ -1119,7 +1233,7 @@ impl MemoryGrant {
         }
         active.live_reserved_bytes = next_live_reserved_bytes;
         self.inner.live_reserved_bytes.store(next_live_reserved_bytes, std::sync::atomic::Ordering::Release);
-        state.sequence = state.sequence.saturating_add(1);
+        ledger.bump_sequence_and_notify_locked(&mut state, LedgerTransitionKind::LiveReservationCharged);
         Ok(true)
     }
 
@@ -1138,6 +1252,9 @@ impl MemoryGrant {
     /// [`Self::transfer_live_reservation`].
     pub(crate) fn record_live_reservation_delta(&self, delta_bytes: i128) {
         let ledger = DeviceLedger { inner: Arc::clone(&self.inner.ledger) };
+        if ledger.in_transition_observer() {
+            ledger.panic_on_transition_observer_reentrancy("record_live_reservation_delta");
+        }
         let mut state = match ledger.inner.state.lock() {
             Ok(state) => state,
             Err(_error) => {
@@ -1163,7 +1280,14 @@ impl MemoryGrant {
         }
         active.live_reserved_bytes = next;
         self.inner.live_reserved_bytes.store(next, std::sync::atomic::Ordering::Release);
-        state.sequence = state.sequence.saturating_add(1);
+        ledger.bump_sequence_and_notify_locked(
+            &mut state,
+            if delta_bytes.is_negative() {
+                LedgerTransitionKind::LiveReservationReleased
+            } else {
+                LedgerTransitionKind::LiveReservationCharged
+            },
+        );
     }
 
     /// Charges and retains newly escaping grant-scoped live bytes.

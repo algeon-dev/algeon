@@ -78,7 +78,8 @@ mod resource;
 // Sibling modules of `tasks/` rely on `use super::*;` to inherit these names.
 pub use executor::CompiledGpuTaskExecutor;
 pub(in crate::exec::bounded) use frame_stream::{ResidentFrameStreamPayload, ResidentFrameStreamSource};
-pub use frame_stream::{ResidentFrameStreamProducerTestHarness, YieldedFrameCounterTestHarness};
+#[cfg(test)]
+pub(crate) use frame_stream::{ResidentFrameStreamProducerTestHarness, YieldedFrameCounterTestHarness};
 use frame_stream::{
     map_dynamic_filter_resident_frame_stream, map_filter_resident_frame_stream, map_projection_resident_frame_stream,
 };

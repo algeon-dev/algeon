@@ -16,8 +16,6 @@ use nexus_query_engine::runtime::{
 };
 pub use nexus_query_engine::runtime::{DeviceCapabilities, GpuDeviceMemoryLimit, GpuMemoryOwnership};
 
-#[cfg(test)]
-use crate::native_exec::admission::{TestAdmissionController, TestAdmissionDeviceProfile, TestAdmissionPermit};
 use crate::{
     error::{Error, ErrorCode, Result},
     native_exec::{NexusNativeExecutionConfig, QueryAdmissionSource},
@@ -25,8 +23,6 @@ use crate::{
     session::{NexusSessionStateBuilderExt, install_nexus_native_rule_with_session_config},
     session_config::DataFusionNexusSessionConfig,
 };
-
-const DEFAULT_ADMISSION_QUEUE_MULTIPLIER: usize = 64;
 
 /// Process-scoped native GPU backend shared by one or more DataFusion sessions.
 #[derive(Debug, Clone)]
@@ -76,21 +72,25 @@ impl NexusGpuDeviceProfile {
     /// Starts a profile with automatic capacity discovery and one active
     /// attempt.  Callers may override any device-local bound below.
     pub fn new(device_ordinal: usize) -> Self {
+        // Project engine-owned defaults instead of carrying a second root
+        // definition. Memory ownership is supplied when this profile is
+        // lowered to the engine config and does not affect these defaults.
+        let defaults = GpuBackendDeviceConfig::new(device_ordinal, GpuMemoryOwnership::WholeDeviceExclusive);
         Self {
-            device_ordinal,
-            memory_limit: GpuDeviceMemoryLimit::default(),
-            backend_reserve_bytes: 0,
-            attempt_floor_bytes: None,
+            device_ordinal: defaults.device_ordinal(),
+            memory_limit: defaults.memory_limit(),
+            backend_reserve_bytes: defaults.backend_reserve_bytes(),
+            attempt_floor_bytes: defaults.attempt_floor_bytes(),
             // Source work is a device-local controller capacity, not an
             // execution/session tuning default. Keep the profile concrete
             // from construction so changing execution prefetch never changes
             // its stream or worker envelope.
-            source_work_per_attempt: 1,
-            max_active_attempts: 1,
+            source_work_per_attempt: defaults.source_work_per_attempt(),
+            max_active_attempts: defaults.max_active_queries(),
             installation_bounds: None,
-            device_capabilities: DeviceCapabilities::default(),
-            install_telemetry: true,
-            install_diagnostics: true,
+            device_capabilities: defaults.device_capabilities().clone(),
+            install_telemetry: defaults.install_telemetry(),
+            install_diagnostics: defaults.install_diagnostics(),
         }
     }
 
@@ -180,7 +180,7 @@ impl NexusGpuDeviceProfile {
         self.install_diagnostics
     }
 
-    fn into_engine_config(&self, memory_ownership: GpuMemoryOwnership) -> GpuBackendDeviceConfig {
+    pub(crate) fn engine_config(&self, memory_ownership: GpuMemoryOwnership) -> GpuBackendDeviceConfig {
         let mut device = GpuBackendDeviceConfig::new(self.device_ordinal, memory_ownership)
             .with_memory_limit(self.memory_limit)
             .with_device_capabilities(self.device_capabilities.clone())
@@ -194,13 +194,6 @@ impl NexusGpuDeviceProfile {
         }
         if let Some(bounds) = self.installation_bounds {
             device = device.with_installation_bounds(bounds.stream_pool_size, bounds.worker_count, bounds.lane_count);
-        } else {
-            let stream_pool_size = backend_stream_pool_size(
-                self.max_active_attempts,
-                self.source_work_per_attempt,
-            );
-            device =
-                device.with_installation_bounds(stream_pool_size, self.max_active_attempts, self.max_active_attempts);
         }
         device
     }
@@ -239,14 +232,29 @@ impl NexusGpuQueuePolicy {
     }
 }
 
+impl From<QueueBounds> for NexusGpuQueuePolicy {
+    fn from(bounds: QueueBounds) -> Self {
+        Self {
+            max_queued_attempts: bounds.max_waiters,
+            max_queue_wait: bounds.max_wait,
+            max_overtakes_per_waiter: bounds.max_overtakes_per_waiter,
+        }
+    }
+}
+
+impl From<NexusGpuQueuePolicy> for QueueBounds {
+    fn from(policy: NexusGpuQueuePolicy) -> Self {
+        Self {
+            max_waiters: policy.max_queued_attempts,
+            max_wait: policy.max_queue_wait,
+            max_overtakes_per_waiter: policy.max_overtakes_per_waiter,
+        }
+    }
+}
+
 impl Default for NexusGpuQueuePolicy {
     fn default() -> Self {
-        Self {
-            max_queued_attempts: DEFAULT_ADMISSION_QUEUE_MULTIPLIER,
-            // Keep one canonical queue timeout across root and engine layers.
-            max_queue_wait: Duration::from_secs(30),
-            max_overtakes_per_waiter: 4,
-        }
+        QueueBounds::default().into()
     }
 }
 
@@ -473,7 +481,7 @@ impl NexusGpuBackend {
         let controller = GpuBackendControllerDraft::new(service_config, queue_bounds);
         let devices = device_profiles
             .iter()
-            .map(|profile| profile.into_engine_config(ownership_by_ordinal[&profile.device_ordinal()]))
+            .map(|profile| profile.engine_config(ownership_by_ordinal[&profile.device_ordinal()]))
             .collect::<Vec<_>>();
         let draft = GpuBackendCoreDraft::new(devices, controller, nongds_deployment());
         let draft = match attempt_completion_queue_capacity {
@@ -544,17 +552,17 @@ fn install_backend_optimizer_config(
     })
 }
 
-/// Pure CUDA-free projection used only by root unit tests.
+/// Pure CUDA-free backend-builder validation projection used only by root unit tests.
 ///
-/// This is intentionally not a `NexusGpuBackend`: it owns no engine resources,
-/// cannot create a runtime context, and exists only to exercise product-policy
-/// lowering before the ownership-enforcing core is constructed.
+/// This is intentionally not a `NexusGpuBackend`: it owns no engine resources
+/// and cannot admit or execute a query. It exercises the same profile,
+/// ownership, queue, and core-draft validation as backend construction without
+/// creating CUDA resources.
 #[cfg(test)]
 #[derive(Debug, Clone)]
-pub(crate) struct TestBackendControllerProjection {
-    controller: TestAdmissionController,
-    controller_config: QueryExecutionConfig,
-    controller_queue_bounds: QueueBounds,
+pub(crate) struct TestBackendValidationProjection {
+    query_execution_config: QueryExecutionConfig,
+    queue_bounds: QueueBounds,
     queue_policy: NexusGpuQueuePolicy,
     optimizer_config: NexusNativeOptimizerConfig,
     device_ordinals: Vec<usize>,
@@ -563,31 +571,17 @@ pub(crate) struct TestBackendControllerProjection {
 }
 
 #[cfg(test)]
-impl TestBackendControllerProjection {
-    pub(crate) fn controller_config(&self) -> nexus_query_engine::error::Result<QueryExecutionConfig> {
-        Ok(self.controller_config.clone())
+impl TestBackendValidationProjection {
+    pub(crate) fn query_execution_config(&self) -> nexus_query_engine::error::Result<QueryExecutionConfig> {
+        Ok(self.query_execution_config.clone())
     }
 
-    pub(crate) fn controller_queue_bounds(&self) -> nexus_query_engine::error::Result<QueueBounds> {
-        Ok(self.controller_queue_bounds.clone())
-    }
-
-    /// The projection device's configured attempt floor. This is a test-only
-    /// compatibility helper for assertions that need a concrete budget.
-    pub(crate) fn configured_floor_bytes(&self) -> nexus_query_engine::error::Result<u64> {
-        Ok(self.controller.configured_floor_bytes())
+    pub(crate) fn queue_bounds(&self) -> nexus_query_engine::error::Result<QueueBounds> {
+        Ok(self.queue_bounds.clone())
     }
 
     pub(crate) fn queue_policy(&self) -> &NexusGpuQueuePolicy {
         &self.queue_policy
-    }
-
-    pub(crate) fn admit(&self) -> nexus_query_engine::error::Result<TestAdmissionPermit> {
-        self.controller.admit_for_projection()
-    }
-
-    pub(crate) fn admitted_grant_bytes(&self) -> nexus_query_engine::error::Result<u64> {
-        self.controller.admitted_grant_bytes()
     }
 
     pub(crate) fn optimizer_config(&self) -> &NexusNativeOptimizerConfig {
@@ -624,21 +618,31 @@ pub(crate) struct InstalledTestGpuBackend {
 #[cfg(test)]
 impl InstalledTestGpuBackend {
     pub(crate) fn new() -> Self {
+        Self::with_config(
+            NexusNativeExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 2, 3, 1),
+            NexusGpuDeviceProfile::new(0)
+                .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 256 * 1024 * 1024 }),
+            NexusGpuQueuePolicy::default(),
+        )
+    }
+
+    /// Builds a serialized real backend with test-selected immutable resource
+    /// and queue envelopes. Tests retain this fixture for the full lifetime of
+    /// every config or ticket cloned from its backend.
+    pub(crate) fn with_config(
+        native_execution_config: NexusNativeExecutionConfig,
+        device_profile: NexusGpuDeviceProfile,
+        queue_policy: NexusGpuQueuePolicy,
+    ) -> Self {
         static SERIAL: Mutex<()> = Mutex::new(());
 
         let serial = SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let device_ordinal = device_profile.device_ordinal();
         let backend = NexusGpuBackend::builder()
-            .with_native_execution_config(NexusNativeExecutionConfig::bounded(
-                256 * 1024 * 1024,
-                64 * 1024 * 1024,
-                2,
-                3,
-                1,
-            ))
-            .device_profiles([NexusGpuDeviceProfile::new(0)
-                .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 256 * 1024 * 1024 })])
-            .device_memory_ownership([(0, GpuMemoryOwnership::WholeDeviceExclusive)])
-            .queue_policy(NexusGpuQueuePolicy::default())
+            .with_native_execution_config(native_execution_config)
+            .device_profiles([device_profile])
+            .device_memory_ownership([(device_ordinal, GpuMemoryOwnership::WholeDeviceExclusive)])
+            .queue_policy(queue_policy)
             .build()
             .expect("root GPU unit test backend must build");
         Self { backend: Some(backend), _serial: serial }
@@ -739,12 +743,12 @@ impl NexusGpuBackendBuilder {
     }
 
     #[cfg(test)]
-    pub(crate) fn build_test_controller_projection(self) -> Result<TestBackendControllerProjection> {
+    pub(crate) fn build_test_validation_projection(self) -> Result<TestBackendValidationProjection> {
         let optimizer_config = self.final_plan_requirements.into_iter().fold(
             NexusNativeOptimizerConfig::default().with_native_execution_config(self.native_execution_config),
             |optimizer_config, requirement| optimizer_config.with_final_plan_requirement(requirement),
         );
-        build_test_controller_projection(
+        build_test_validation_projection(
             optimizer_config,
             self.device_profiles,
             self.device_memory_ownership,
@@ -804,11 +808,8 @@ fn validate_device_profile(profile: &NexusGpuDeviceProfile) -> Result<()> {
         .with_fact("device_ordinal", profile.device_ordinal()));
     }
     if profile.source_work_per_attempt() == 0 {
-        return Err(invalid_backend_config(
-            "device_profiles.source_work_per_attempt",
-            "must be greater than zero",
-        )
-        .with_fact("device_ordinal", profile.device_ordinal()));
+        return Err(invalid_backend_config("device_profiles.source_work_per_attempt", "must be greater than zero")
+            .with_fact("device_ordinal", profile.device_ordinal()));
     }
     if let Some(bounds) = profile.installation_bounds() {
         for (field, value) in [
@@ -826,12 +827,12 @@ fn validate_device_profile(profile: &NexusGpuDeviceProfile) -> Result<()> {
 }
 
 #[cfg(test)]
-fn build_test_controller_projection(
+fn build_test_validation_projection(
     optimizer_config: NexusNativeOptimizerConfig,
     configured_profiles: Vec<NexusGpuDeviceProfile>,
     device_memory_ownership: Vec<(usize, GpuMemoryOwnership)>,
     queue_policy: NexusGpuQueuePolicy,
-) -> Result<TestBackendControllerProjection> {
+) -> Result<TestBackendValidationProjection> {
     let device_profiles = resolve_device_profiles(configured_profiles)?;
     let device_ordinals = device_profiles.iter().map(NexusGpuDeviceProfile::device_ordinal).collect::<Vec<_>>();
     let ownership_by_ordinal = validate_device_memory_ownership(&device_ordinals, &device_memory_ownership)?;
@@ -839,12 +840,12 @@ fn build_test_controller_projection(
         ownership_by_ordinal.iter().map(|(&ordinal, &ownership)| (ordinal, ownership)).collect();
     validate_queue_policy(&queue_policy)?;
     let execution_config = optimizer_config.native_execution_config().clone();
-    let controller_config = backend_query_execution_config(&execution_config)?;
-    let controller_queue_bounds = backend_queue_bounds(&queue_policy);
-    let controller_draft = GpuBackendControllerDraft::new(controller_config.clone(), controller_queue_bounds.clone());
+    let query_execution_config = backend_query_execution_config(&execution_config)?;
+    let queue_bounds = backend_queue_bounds(&queue_policy);
+    let controller_draft = GpuBackendControllerDraft::new(query_execution_config.clone(), queue_bounds.clone());
     let devices = device_profiles
         .iter()
-        .map(|profile| profile.into_engine_config(ownership_by_ordinal[&profile.device_ordinal()]))
+        .map(|profile| profile.engine_config(ownership_by_ordinal[&profile.device_ordinal()]))
         .collect::<Vec<_>>();
     GpuBackendCoreDraft::new(devices, controller_draft, nongds_deployment()).validate().map_err(|error| {
         Error::from_native(
@@ -854,51 +855,9 @@ fn build_test_controller_projection(
         )
     })?;
 
-    let primary_profile = device_profiles.first().expect("validated profile list is non-empty");
-    let capacity_bytes = match primary_profile.memory_limit() {
-        GpuDeviceMemoryLimit::Explicit { limit_bytes } => limit_bytes,
-        GpuDeviceMemoryLimit::Automatic { fallback_bytes, fraction, .. } => {
-            fraction.map_or(fallback_bytes, |value| ((fallback_bytes as f64 * value.value()).floor() as u64).max(1))
-        },
-        _ => {
-            return Err(invalid_backend_config(
-                "device_memory_limit",
-                "test projection does not support this device memory limit",
-            ));
-        },
-    };
-    // Mirror the production profile default: floor = managed / max(8, A_d).
-    let configured_floor_bytes = primary_profile.attempt_floor_bytes.unwrap_or_else(|| {
-        capacity_bytes / u64::try_from(primary_profile.max_active_attempts().max(8)).expect("usize fits u64")
-    });
-    if configured_floor_bytes == 0 {
-        return Err(invalid_backend_config("attempt_floor_bytes", "must resolve to a positive value"));
-    }
-    let controller = TestAdmissionController::new(
-        TestAdmissionDeviceProfile::new(
-            primary_profile.device_ordinal(),
-            capacity_bytes,
-            primary_profile.max_active_attempts(),
-            configured_floor_bytes,
-        ),
-        None,
-    )
-    .map_err(|error| {
-        Error::from_native(
-            "datafusion_nexus.backend.test_controller",
-            "failed to initialize CUDA-free test admission controller",
-            error,
-        )
-    })?;
-    // The planner configuration remains an unadmitted template.  The
-    // test-only source models the selected profile's grant without rewriting
-    // that template to an attempt floor.
-    let execution_config = execution_config.with_query_admission_source(controller.source());
-    let optimizer_config = optimizer_config.with_native_execution_config(execution_config);
-    Ok(TestBackendControllerProjection {
-        controller,
-        controller_config,
-        controller_queue_bounds,
+    Ok(TestBackendValidationProjection {
+        query_execution_config,
+        queue_bounds,
         queue_policy,
         optimizer_config,
         device_ordinals,
@@ -908,13 +867,13 @@ fn build_test_controller_projection(
 }
 
 #[cfg(all(test, feature = "server"))]
-pub(crate) fn test_controller_projection_from_optimizer_config(
+pub(crate) fn test_validation_projection_from_optimizer_config(
     optimizer_config: NexusNativeOptimizerConfig,
     device_profiles: Vec<NexusGpuDeviceProfile>,
     device_memory_ownership: Vec<(usize, GpuMemoryOwnership)>,
     queue_policy: NexusGpuQueuePolicy,
-) -> Result<Option<TestBackendControllerProjection>> {
-    build_test_controller_projection(optimizer_config, device_profiles, device_memory_ownership, queue_policy).map(Some)
+) -> Result<Option<TestBackendValidationProjection>> {
+    build_test_validation_projection(optimizer_config, device_profiles, device_memory_ownership, queue_policy).map(Some)
 }
 
 fn backend_query_execution_config(execution_config: &NexusNativeExecutionConfig) -> Result<QueryExecutionConfig> {
@@ -958,16 +917,7 @@ fn backend_query_execution_config(execution_config: &NexusNativeExecutionConfig)
 }
 
 fn backend_queue_bounds(queue_policy: &NexusGpuQueuePolicy) -> QueueBounds {
-    QueueBounds {
-        max_waiters: queue_policy.max_queued_attempts,
-        max_wait: queue_policy.max_queue_wait,
-        max_overtakes_per_waiter: queue_policy.max_overtakes_per_waiter,
-    }
-}
-
-fn backend_stream_pool_size(max_active_attempts_per_device: usize, max_source_reads_in_flight: usize) -> usize {
-    let per_query_streams = 1usize.saturating_add(max_source_reads_in_flight.max(1));
-    max_active_attempts_per_device.saturating_mul(per_query_streams).max(max_active_attempts_per_device)
+    queue_policy.clone().into()
 }
 
 fn validate_queue_policy(policy: &NexusGpuQueuePolicy) -> Result<()> {

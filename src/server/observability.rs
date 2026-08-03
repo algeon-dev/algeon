@@ -12,21 +12,16 @@ use datafusion::{
         metrics::{Metric, MetricsSet},
     },
 };
-use nexus_query_engine::observability::{
-    AttemptCapacityDisposition, AttemptCleanupDisposition, AttemptDisposition, AttemptHealthTransition,
-    QueryAttemptReport, RuntimeTerminalOutcome,
-};
+use nexus_query_engine::observability::{AttemptDisposition, QueryAttemptReport, RuntimeTerminalOutcome};
 
 use crate::{
     error::{Error, ErrorCode, ErrorSourceDiagnostics, Facts},
-    final_plan_observation::observe_final_plan,
     native_exec::{
         NexusNativeComposedExec, NexusNativeComposedGpuProducerExec, NexusNativeExec, NexusNativeGpuProducerExec,
     },
     native_report::{
-        NativeDataFusionExecutionMetrics, NativeDataFusionExecutionReport, NativeDataFusionExecutionTsvTemplate,
-        NativeDataFusionExecutionWorkloadItem, NativeDataFusionPlanningReport, NativeDataFusionPlanningWorkloadItem,
-        NativeDataFusionRuntime,
+        NativeDataFusionExecutionReport, NativeDataFusionExecutionTsvTemplate, NativeDataFusionExecutionWorkloadItem,
+        NativeDataFusionPlanningReport, NativeDataFusionPlanningWorkloadItem, NativeDataFusionRuntime,
     },
     planner::NativePlanningDiagnostics,
 };
@@ -290,11 +285,9 @@ pub(super) struct CapturedQuery {
     planning: Option<Arc<CapturedPlanning>>,
     planning_failure: Option<CapturedPlanningFailure>,
     metrics: CapturedMetrics,
-    outcome: QueryOutcome,
+    delivery_outcome: Option<CapturedDeliveryOutcome>,
     physical_explain: Option<Arc<str>>,
     native_explain: Option<Arc<str>>,
-    started_at: Instant,
-    completed_at: Option<Instant>,
     last_touched_at: Instant,
     sealed: bool,
     capture: CaptureBudget,
@@ -323,11 +316,9 @@ impl CapturedQuery {
             planning: None,
             planning_failure: None,
             metrics: CapturedMetrics::default(),
-            outcome: QueryOutcome::Running,
+            delivery_outcome: None,
             physical_explain: None,
             native_explain: None,
-            started_at: now,
-            completed_at: None,
             last_touched_at: now,
             sealed: false,
             capture,
@@ -379,7 +370,6 @@ impl CapturedQuery {
             let _ = write!(diagnostics_probe, "{diagnostics:?}");
         }
         let candidate_count = diagnostics.as_ref().map_or(0, |diagnostics| diagnostics.report.outcomes().len());
-        let final_plan_has_gpu_runtime = observe_final_plan(planned_plan.as_ref()).has_gpu_runtime();
         let planning_truncated = diagnostics_probe.truncated
             || physical_explain.truncated
             || native_explain.as_ref().is_some_and(|text| text.truncated)
@@ -409,7 +399,6 @@ impl CapturedQuery {
                 CapturedTsvReport::from_tsv(planning_report.to_tsv()),
                 NativeDataFusionExecutionTsvTemplate::from_report(execution_report),
                 metrics,
-                final_plan_has_gpu_runtime,
             )
         });
         CapturedPlanningRender { planning, physical_explain, native_explain, diagnostics_truncated: planning_truncated }
@@ -468,17 +457,15 @@ impl CapturedQuery {
         }
     }
 
-    pub(super) fn finish_success(&mut self, now: Instant) {
-        if matches!(self.outcome, QueryOutcome::Running) {
-            self.outcome = QueryOutcome::Succeeded;
-            self.completed_at = Some(now);
+    pub(super) fn finish_success(&mut self, _now: Instant) {
+        if self.delivery_outcome.is_none() {
+            self.delivery_outcome = Some(CapturedDeliveryOutcome::Succeeded);
         }
     }
 
-    pub(super) fn finish_failed(&mut self, stage: &'static str, error: Arc<CapturedError>, now: Instant) {
-        if matches!(self.outcome, QueryOutcome::Running | QueryOutcome::Dropped) {
-            self.outcome = QueryOutcome::Failed { stage, error };
-            self.completed_at = Some(now);
+    pub(super) fn finish_failed(&mut self, stage: &'static str, error: Arc<CapturedError>, _now: Instant) {
+        if matches!(self.delivery_outcome, None | Some(CapturedDeliveryOutcome::Dropped)) {
+            self.delivery_outcome = Some(CapturedDeliveryOutcome::Failed { stage, error });
         }
     }
 
@@ -494,22 +481,20 @@ impl CapturedQuery {
         ShutdownCaptureSnapshot {
             query_id: self.query_id.clone(),
             correlation_id: self.correlation_id.clone(),
-            started_at: self.started_at,
+            elapsed_ms: self.elapsed_ms(),
         }
     }
 
-    pub(super) fn finish_dropped(&mut self, now: Instant) {
-        if matches!(self.outcome, QueryOutcome::Running) {
-            self.outcome = QueryOutcome::Dropped;
-            self.completed_at = Some(now);
+    pub(super) fn finish_dropped(&mut self, _now: Instant) {
+        if self.delivery_outcome.is_none() {
+            self.delivery_outcome = Some(CapturedDeliveryOutcome::Dropped);
         }
     }
 
     pub(super) fn seal(&mut self, now: Instant) {
         self.sealed = true;
-        self.completed_at.get_or_insert(now);
-        if matches!(self.outcome, QueryOutcome::Running) {
-            self.outcome = QueryOutcome::Dropped;
+        if self.delivery_outcome.is_none() {
+            self.delivery_outcome = Some(CapturedDeliveryOutcome::Dropped);
         }
         self.last_touched_at = now;
     }
@@ -524,11 +509,11 @@ impl CapturedQuery {
         if let Some(correlation_id) = &self.correlation_id {
             let _ = writeln!(output, "# correlation_id={}", StableValue(correlation_id));
         }
-        let delivery_outcome = self.outcome.as_str();
+        let delivery_outcome = self.delivery_outcome.as_ref().map_or("running", CapturedDeliveryOutcome::as_str);
         let outcome = self
             .attempt_report
             .as_ref()
-            .map(|report| attempt_outcome_label(&report.outcome))
+            .map(|report| report.sealed_projection().labels().outcome)
             .unwrap_or(delivery_outcome);
         let _ = writeln!(output, "# outcome={outcome}");
         // A Flight coordinator may report how response delivery ended, but it
@@ -538,51 +523,36 @@ impl CapturedQuery {
             let _ = writeln!(output, "# delivery_outcome={delivery_outcome}");
         }
         let _ = writeln!(output, "# sealed={}", self.sealed);
-        let _ = writeln!(output, "# elapsed_ms={}", self.elapsed_ms());
+        let _ = writeln!(
+            output,
+            "# elapsed_ms={}",
+            self.elapsed_ms().map_or_else(|| "none".to_string(), |value| value.to_string())
+        );
         if !self.sql.is_empty() {
             let _ = writeln!(output, "# sql={}", StableValue(&self.sql));
         }
         if let Some(report) = &self.attempt_report {
+            let labels = report.sealed_projection().labels();
             let _ = writeln!(output, "# attempt_id={}", report.attempt_id);
-            let _ = writeln!(output, "# attempt_disposition={}", attempt_disposition_label(report.disposition));
-            let _ = writeln!(output, "# attempt_outcome={}", attempt_outcome_label(&report.outcome));
+            let _ = writeln!(output, "# attempt_disposition={}", labels.disposition);
+            let _ = writeln!(output, "# attempt_outcome={}", labels.outcome);
             let _ = writeln!(
                 output,
                 "# attempt_device_ordinal={}",
                 report.device_ordinal.map_or_else(|| "none".to_string(), |value| value.to_string())
             );
-            let _ = writeln!(
-                output,
-                "# attempt_cleanup_disposition={}",
-                attempt_cleanup_disposition_label(report.cleanup_disposition)
-            );
+            let _ = writeln!(output, "# attempt_cleanup_disposition={}", labels.cleanup_disposition);
             let _ = writeln!(output, "# attempt_cleanup_failure_count={}", report.cleanup_failure_count);
-            let _ = writeln!(
-                output,
-                "# attempt_capacity_disposition={}",
-                attempt_capacity_disposition_label(report.capacity_disposition)
-            );
-            let _ = writeln!(output, "# attempt_retry_recovery={}", report.retry_advice.recovery.as_str());
-            let _ = writeln!(output, "# attempt_retry_prerequisite={}", report.retry_advice.prerequisite.as_str());
+            let _ = writeln!(output, "# attempt_capacity_disposition={}", labels.capacity_disposition);
+            let _ = writeln!(output, "# attempt_retry_recovery={}", labels.retry_recovery);
+            let _ = writeln!(output, "# attempt_retry_prerequisite={}", labels.retry_prerequisite);
             let _ =
-                writeln!(output, "# attempt_cleanup_failure_count_complete={}", report.cleanup_failure_count_complete);
-            let _ = writeln!(
-                output,
-                "# attempt_health_transition={}",
-                report.health_transition.map_or("none", attempt_health_transition_label)
-            );
-            let _ = writeln!(output, "# attempt_observation_truncated={}", report.observation_truncated);
-            let _ = writeln!(output, "# attempt_observation_degraded={}", report.observation_degraded);
-            let _ = writeln!(
-                output,
-                "# attempt_native_fault_evidence={}",
-                if report.native_fault_evidence.is_some() { "present" } else { "absent" }
-            );
-            let _ = writeln!(
-                output,
-                "# attempt_resource_evidence={}",
-                if report.resource_evidence.is_some() { "present" } else { "absent" }
-            );
+                writeln!(output, "# attempt_cleanup_failure_count_complete={}", labels.cleanup_failure_count_complete);
+            let _ = writeln!(output, "# attempt_health_transition={}", labels.health_transition);
+            let _ = writeln!(output, "# attempt_observation_truncated={}", labels.observation_truncated);
+            let _ = writeln!(output, "# attempt_observation_degraded={}", labels.observation_degraded);
+            let _ = writeln!(output, "# attempt_native_fault_evidence={}", labels.native_fault_evidence);
+            let _ = writeln!(output, "# attempt_resource_evidence={}", labels.resource_evidence);
         }
 
         let mut metric_projection_truncated = false;
@@ -590,7 +560,7 @@ impl CapturedQuery {
             let planning_written =
                 output.write_atomic("\n[planning]\n") && planning.planning_report.write_atomic(&mut output);
             metric_projection_truncated = planning.metrics.truncated;
-            let runtime = self.runtime_for_planning(planning.metrics.metrics(), planning.final_plan_has_gpu_runtime);
+            let runtime = self.runtime_for_planning(planning.metrics.metrics());
             if planning_written && output.write_atomic("\n[execution]\n") {
                 let _ = write_tsv_atomic(&mut output, &planning.execution_report.to_tsv(runtime));
             }
@@ -617,7 +587,7 @@ impl CapturedQuery {
             }
         }
 
-        if let Some(error) = self.outcome.error() {
+        if let Some(error) = self.delivery_outcome.as_ref().and_then(CapturedDeliveryOutcome::error) {
             let _ = output.write_str("\n[structured_error]\n");
             error.write_to(&mut output);
         }
@@ -658,84 +628,59 @@ impl CapturedQuery {
         QueryStatsPayload { bytes: Arc::from(output.into_bytes()), incomplete }
     }
 
-    fn runtime_for_planning(
-        &self,
-        metrics: Option<MetricsSet>,
-        final_plan_has_gpu_runtime: bool,
-    ) -> NativeDataFusionRuntime {
-        match &self.outcome {
-            QueryOutcome::Succeeded if final_plan_has_gpu_runtime => NativeDataFusionRuntime::Succeeded {
+    fn runtime_for_planning(&self, metrics: Option<MetricsSet>) -> NativeDataFusionRuntime {
+        let Some(report) = self.attempt_report.as_deref() else {
+            return NativeDataFusionRuntime::NotStarted;
+        };
+        let native_runtime_started =
+            matches!(report.disposition, AttemptDisposition::Native | AttemptDisposition::PartialNative);
+        if !native_runtime_started {
+            return NativeDataFusionRuntime::NotStarted;
+        }
+        match &report.outcome {
+            RuntimeTerminalOutcome::Succeeded => NativeDataFusionRuntime::Succeeded {
                 output_batches: self.metrics.output_batches.unwrap_or(0),
                 output_rows: self.metrics.output_rows.unwrap_or(0),
                 output_bytes: self.metrics.output_bytes.unwrap_or(0),
                 metrics: metrics.unwrap_or_default(),
             },
-            QueryOutcome::Succeeded => NativeDataFusionRuntime::NotStarted,
-            QueryOutcome::Failed { error, .. } => {
-                let stage = error.fact_value("native_datafusion_stage");
-                let has_runtime_metric_evidence = metrics.as_ref().is_some_and(|metrics| {
-                    NativeDataFusionExecutionMetrics::from_metrics(metrics)
-                        != NativeDataFusionExecutionMetrics::default()
-                });
-                if final_plan_has_gpu_runtime
-                    && (stage == Some("runtime_execution")
-                        || (stage != Some("runtime_context") && has_runtime_metric_evidence))
-                {
-                    NativeDataFusionRuntime::Failed { message: error.diagnostic.clone(), metrics }
-                } else {
-                    NativeDataFusionRuntime::NotStarted
-                }
+            RuntimeTerminalOutcome::Failed { .. } => {
+                NativeDataFusionRuntime::Failed { message: attempt_failure_message(report), metrics }
             },
-            QueryOutcome::Running | QueryOutcome::Dropped => NativeDataFusionRuntime::NotStarted,
+            RuntimeTerminalOutcome::Cancelled => NativeDataFusionRuntime::Interrupted {
+                outcome: crate::native_report::NativeDataFusionRuntimeOutcome::Cancelled,
+                metrics,
+            },
+            RuntimeTerminalOutcome::Dropped => NativeDataFusionRuntime::Interrupted {
+                outcome: crate::native_report::NativeDataFusionRuntimeOutcome::Dropped,
+                metrics,
+            },
+            RuntimeTerminalOutcome::Panicked => NativeDataFusionRuntime::Interrupted {
+                outcome: crate::native_report::NativeDataFusionRuntimeOutcome::Panicked,
+                metrics,
+            },
         }
     }
 
-    fn elapsed_ms(&self) -> u128 {
-        self.completed_at.unwrap_or_else(Instant::now).saturating_duration_since(self.started_at).as_millis()
+    fn elapsed_ms(&self) -> Option<u128> {
+        self.attempt_report
+            .as_deref()
+            .and_then(QueryAttemptReport::total_ns)
+            .map(|total_ns| u128::from(total_ns) / 1_000_000)
     }
 }
 
-fn attempt_disposition_label(disposition: AttemptDisposition) -> &'static str {
-    match disposition {
-        AttemptDisposition::Unplanned => "unplanned",
-        AttemptDisposition::CpuFallback => "cpu_fallback",
-        AttemptDisposition::PartialNative => "partial_native",
-        AttemptDisposition::Native => "native",
-    }
+fn attempt_failure_message(report: &QueryAttemptReport) -> String {
+    report.primary_failure.as_ref().map_or_else(
+        || "attempt_failure_summary_unavailable".to_string(),
+        |failure| serde_json::to_string(failure).unwrap_or_else(|_| "attempt_failure_summary_unavailable".to_string()),
+    )
 }
 
+/// The server may retain a terminal outcome before it has the full sealed
+/// projection. Its label still comes from the engine's one closed mapping.
 pub(super) fn attempt_outcome_label(outcome: &RuntimeTerminalOutcome) -> &'static str {
-    match outcome {
-        RuntimeTerminalOutcome::Succeeded => "succeeded",
-        RuntimeTerminalOutcome::Failed { .. } => "failed",
-        RuntimeTerminalOutcome::Cancelled => "cancelled",
-        RuntimeTerminalOutcome::Dropped => "dropped",
-        RuntimeTerminalOutcome::Panicked => "panicked",
-    }
-}
-
-fn attempt_cleanup_disposition_label(disposition: AttemptCleanupDisposition) -> &'static str {
-    match disposition {
-        AttemptCleanupDisposition::NotRequired => "not_required",
-        AttemptCleanupDisposition::Completed => "completed",
-        AttemptCleanupDisposition::CompletedWithFailures => "completed_with_failures",
-    }
-}
-
-fn attempt_capacity_disposition_label(disposition: AttemptCapacityDisposition) -> &'static str {
-    match disposition {
-        AttemptCapacityDisposition::NotAdmitted => "not_admitted",
-        AttemptCapacityDisposition::Released => "released",
-        AttemptCapacityDisposition::RetainedQuarantine => "retained_quarantine",
-    }
-}
-
-fn attempt_health_transition_label(transition: AttemptHealthTransition) -> &'static str {
-    match transition {
-        AttemptHealthTransition::HealthyReuse => "healthy_reuse",
-        AttemptHealthTransition::DeviceQuarantined => "device_quarantined",
-        AttemptHealthTransition::BackendUnhealthy => "backend_unhealthy",
-    }
+    outcome.stable_label()
 }
 
 pub(super) struct QueryStatsPayload {
@@ -747,13 +692,13 @@ pub(super) struct QueryStatsPayload {
 pub(super) struct ShutdownCaptureSnapshot {
     query_id: String,
     correlation_id: Option<Arc<str>>,
-    started_at: Instant,
+    elapsed_ms: Option<u128>,
 }
 
 impl ShutdownCaptureSnapshot {
     pub(super) fn to_query_stats_payload(
         &self,
-        now: Instant,
+        _now: Instant,
         output_batches: usize,
         output_rows: usize,
         output_bytes: usize,
@@ -777,10 +722,10 @@ impl ShutdownCaptureSnapshot {
             "# sealed=true\n".to_string(),
             "# incomplete=true\n".to_string(),
             "# unavailable_reason=shutdown_timeout\n".to_string(),
-            format!("# elapsed_ms={}\n", now.saturating_duration_since(self.started_at).as_millis()),
-            format!("# output_batches={output_batches}\n"),
-            format!("# output_rows={output_rows}\n"),
-            format!("# output_bytes={output_bytes}\n"),
+            format!("# elapsed_ms={}\n", self.elapsed_ms.map_or_else(|| "none".to_string(), |value| value.to_string())),
+            format!("# delivery_output_batches={output_batches}\n"),
+            format!("# delivery_output_rows={output_rows}\n"),
+            format!("# delivery_output_bytes={output_bytes}\n"),
         ]);
         for line in lines {
             if !output.write_atomic(&line) {
@@ -803,7 +748,6 @@ struct CapturedPlanning {
     planning_report: CapturedTsvReport,
     execution_report: NativeDataFusionExecutionTsvTemplate,
     metrics: CapturedMetricHandles,
-    final_plan_has_gpu_runtime: bool,
     retained_capacity_bytes: u64,
 }
 
@@ -812,7 +756,6 @@ impl CapturedPlanning {
         planning_report: CapturedTsvReport,
         execution_report: NativeDataFusionExecutionTsvTemplate,
         metrics: MetricsProjection,
-        final_plan_has_gpu_runtime: bool,
     ) -> Self {
         let retained_capacity_bytes = planning_report
             .retained_capacity_bytes
@@ -822,7 +765,6 @@ impl CapturedPlanning {
             planning_report,
             execution_report,
             metrics: CapturedMetricHandles { handles: metrics.handles, truncated: metrics.truncated },
-            final_plan_has_gpu_runtime,
             retained_capacity_bytes,
         }
     }
@@ -902,17 +844,15 @@ struct CapturedMetrics {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum QueryOutcome {
-    Running,
+pub(super) enum CapturedDeliveryOutcome {
     Succeeded,
     Failed { stage: &'static str, error: Arc<CapturedError> },
     Dropped,
 }
 
-impl QueryOutcome {
+impl CapturedDeliveryOutcome {
     fn as_str(&self) -> &'static str {
         match self {
-            Self::Running => "running",
             Self::Succeeded => "succeeded",
             Self::Failed { .. } => "failed",
             Self::Dropped => "dropped",
@@ -922,7 +862,7 @@ impl QueryOutcome {
     fn error(&self) -> Option<&CapturedError> {
         match self {
             Self::Failed { error, .. } => Some(error.as_ref()),
-            Self::Running | Self::Succeeded | Self::Dropped => None,
+            Self::Succeeded | Self::Dropped => None,
         }
     }
 }
@@ -1192,7 +1132,10 @@ mod tests {
     use super::*;
 
     fn cancelled_attempt_report() -> QueryAttemptReport {
-        use nexus_query_engine::observability::{AttemptId, AttemptTimestamps, QUERY_ATTEMPT_REPORT_SCHEMA_V1};
+        use nexus_query_engine::observability::{
+            AttemptCapacityDisposition, AttemptCleanupDisposition, AttemptId, AttemptTimestamps,
+            QUERY_ATTEMPT_REPORT_SCHEMA_V1,
+        };
 
         QueryAttemptReport {
             schema: QUERY_ATTEMPT_REPORT_SCHEMA_V1.to_string(),
@@ -1297,6 +1240,17 @@ mod tests {
         let payload = String::from_utf8(captured.to_query_stats_payload(4096).bytes.to_vec()).unwrap();
         assert!(payload.contains("# outcome=cancelled\n"), "{payload}");
         assert!(payload.contains("# delivery_outcome=failed\n"), "{payload}");
+        assert!(payload.contains("# attempt_disposition=native\n"), "{payload}");
         assert!(payload.contains("# attempt_outcome=cancelled\n"), "{payload}");
+        assert!(payload.contains("# attempt_cleanup_disposition=completed\n"), "{payload}");
+        assert!(payload.contains("# attempt_cleanup_failure_count_complete=true\n"), "{payload}");
+        assert!(payload.contains("# attempt_capacity_disposition=released\n"), "{payload}");
+        assert!(payload.contains("# attempt_retry_recovery=do_not_retry\n"), "{payload}");
+        assert!(payload.contains("# attempt_retry_prerequisite=none\n"), "{payload}");
+        assert!(payload.contains("# attempt_health_transition=none\n"), "{payload}");
+        assert!(payload.contains("# attempt_observation_truncated=false\n"), "{payload}");
+        assert!(payload.contains("# attempt_observation_degraded=false\n"), "{payload}");
+        assert!(payload.contains("# attempt_native_fault_evidence=absent\n"), "{payload}");
+        assert!(payload.contains("# attempt_resource_evidence=absent\n"), "{payload}");
     }
 }

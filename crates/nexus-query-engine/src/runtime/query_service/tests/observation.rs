@@ -56,7 +56,7 @@ fn coordinator_owned_handle_survives_three_legal_admission_epochs_without_interm
         events.iter().filter(|(_, lifecycle)| matches!(lifecycle, AdmissionLifecycleState::Released)).count(),
         3
     );
-    let snapshot = owner.finish_query(RuntimeTerminalOutcome::Succeeded).unwrap();
+    let snapshot = owner.finish_query(Some(RuntimeTerminalOutcome::Succeeded)).unwrap();
     assert_eq!(snapshot.manifest().query_id.as_str(), "coordinator-query");
 }
 #[test]

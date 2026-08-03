@@ -366,13 +366,15 @@ impl QueryCoordinator {
                 let control = incomplete_runtime_control(snapshot.key.query_id(), reason);
                 let composed = compose_terminal_artifact(control, None, snapshot.artifact_max_bytes, |remaining| {
                     snapshot.captured.as_ref().map_or_else(
-                        || unavailable_stats_payload(
-                            snapshot.key.query_id(),
-                            outcome,
-                            delivery_outcome,
-                            reason,
-                            remaining,
-                        ),
+                        || {
+                            unavailable_stats_payload(
+                                snapshot.key.query_id(),
+                                outcome,
+                                delivery_outcome,
+                                reason,
+                                remaining,
+                            )
+                        },
                         |captured| {
                             captured.to_query_stats_payload(
                                 now,

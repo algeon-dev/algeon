@@ -83,7 +83,7 @@ fn runtime_backend(max_active_attempts_per_device: usize) -> NexusGpuBackend {
         .expect("runtime backend should build")
 }
 
-fn controller_projection(max_active_attempts_per_device: usize) -> crate::backend::TestBackendControllerProjection {
+fn validation_projection(max_active_attempts_per_device: usize) -> crate::backend::TestBackendValidationProjection {
     NexusGpuBackend::builder()
         .device_memory_ownership([(0, GpuMemoryOwnership::WholeDeviceExclusive)])
         .with_native_execution_config(NexusNativeExecutionConfig::bounded(
@@ -96,8 +96,8 @@ fn controller_projection(max_active_attempts_per_device: usize) -> crate::backen
         .device_profiles([NexusGpuDeviceProfile::new(0)
             .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: TEST_DEVICE_BUDGET_BYTES })
             .with_max_active_attempts(max_active_attempts_per_device)])
-        .build_test_controller_projection()
-        .expect("CUDA-free backend controller projection should build")
+        .build_test_validation_projection()
+        .expect("CUDA-free backend validation projection should build")
 }
 
 #[test]
@@ -342,9 +342,9 @@ async fn builder_rejects_session_context_without_injected_backend() {
 
 #[test]
 fn builder_rejects_injected_backend_admission_conflict() {
-    let backend = controller_projection(1);
+    let backend = validation_projection(1);
 
-    let error = validate_test_controller_projection_matches_config(&backend, &bounded_config(2)).unwrap_err();
+    let error = validate_test_validation_projection_matches_config(&backend, &bounded_config(2)).unwrap_err();
 
     assert_eq!(error.fact_value("reason"), Some("server_backend_admission_conflict"));
     assert_eq!(error.fact_value("config_field"), Some("admission.device_profiles.max_active_attempts"));
@@ -352,11 +352,11 @@ fn builder_rejects_injected_backend_admission_conflict() {
 
 #[test]
 fn builder_rejects_injected_backend_attempt_floor_conflict() {
-    let backend = controller_projection(1);
+    let backend = validation_projection(1);
     let mut config = bounded_config(1);
     config.gpu_device_profiles[0] = config.gpu_device_profiles[0].clone().with_attempt_floor_bytes(Some(256));
 
-    let error = validate_test_controller_projection_matches_config(&backend, &config).unwrap_err();
+    let error = validate_test_validation_projection_matches_config(&backend, &config).unwrap_err();
 
     assert_eq!(error.fact_value("reason"), Some("server_backend_admission_conflict"));
     assert_eq!(error.fact_value("config_field"), Some("admission.device_profiles.attempt_floor_bytes"));
@@ -364,11 +364,11 @@ fn builder_rejects_injected_backend_attempt_floor_conflict() {
 
 #[test]
 fn builder_rejects_injected_backend_overtake_budget_conflict() {
-    let backend = controller_projection(1);
+    let backend = validation_projection(1);
     let mut config = bounded_config(1);
     config.queue_policy = config.queue_policy.with_max_overtakes_per_waiter(7);
 
-    let error = validate_test_controller_projection_matches_config(&backend, &config).unwrap_err();
+    let error = validate_test_validation_projection_matches_config(&backend, &config).unwrap_err();
 
     assert_eq!(error.fact_value("reason"), Some("server_backend_admission_conflict"));
     assert_eq!(error.fact_value("config_field"), Some("admission.max_overtakes_per_waiter"));
@@ -376,11 +376,11 @@ fn builder_rejects_injected_backend_overtake_budget_conflict() {
 
 #[test]
 fn builder_rejects_injected_backend_per_device_limit_conflict() {
-    let backend = controller_projection(1);
+    let backend = validation_projection(1);
     let mut config = bounded_config(1);
     config.gpu_device_profiles[0] = config.gpu_device_profiles[0].clone().with_max_active_attempts(2);
 
-    let error = validate_test_controller_projection_matches_config(&backend, &config).unwrap_err();
+    let error = validate_test_validation_projection_matches_config(&backend, &config).unwrap_err();
 
     assert_eq!(error.fact_value("reason"), Some("server_backend_admission_conflict"));
     assert_eq!(error.fact_value("config_field"), Some("admission.device_profiles.max_active_attempts"));
@@ -400,20 +400,20 @@ fn builder_accepts_matching_explicit_per_device_cap() {
         .device_profiles([NexusGpuDeviceProfile::new(0)
             .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: TEST_DEVICE_BUDGET_BYTES })
             .with_max_active_attempts(1)])
-        .build_test_controller_projection()
-        .expect("CUDA-free backend controller projection should build");
+        .build_test_validation_projection()
+        .expect("CUDA-free backend validation projection should build");
     let config = bounded_config(1);
 
-    validate_test_controller_projection_matches_config(&backend, &config).unwrap();
+    validate_test_validation_projection_matches_config(&backend, &config).unwrap();
 }
 
 #[test]
 fn builder_rejects_injected_backend_queue_limit_conflict() {
-    let backend = controller_projection(1);
+    let backend = validation_projection(1);
     let mut config = bounded_config(1);
     config.queue_policy = config.queue_policy.with_max_queued_attempts(3);
 
-    let error = validate_test_controller_projection_matches_config(&backend, &config).unwrap_err();
+    let error = validate_test_validation_projection_matches_config(&backend, &config).unwrap_err();
 
     assert_eq!(error.fact_value("reason"), Some("server_backend_admission_conflict"));
     assert_eq!(error.fact_value("config_field"), Some("admission.max_queued_attempts"));
@@ -421,11 +421,11 @@ fn builder_rejects_injected_backend_queue_limit_conflict() {
 
 #[test]
 fn builder_rejects_injected_backend_wait_timeout_conflict() {
-    let backend = controller_projection(1);
+    let backend = validation_projection(1);
     let mut config = bounded_config(1);
     config.queue_policy = config.queue_policy.with_max_queue_wait(std::time::Duration::from_secs(5));
 
-    let error = validate_test_controller_projection_matches_config(&backend, &config).unwrap_err();
+    let error = validate_test_validation_projection_matches_config(&backend, &config).unwrap_err();
 
     assert_eq!(error.fact_value("reason"), Some("server_backend_admission_conflict"));
     assert_eq!(error.fact_value("config_field"), Some("admission.max_queue_wait_ms"));
@@ -433,7 +433,7 @@ fn builder_rejects_injected_backend_wait_timeout_conflict() {
 
 #[test]
 fn builder_rejects_injected_backend_gpu_device_conflict() {
-    let backend = controller_projection(1);
+    let backend = validation_projection(1);
     let mut config = bounded_config(1);
     config.gpu_devices = vec![1];
     config.gpu_device_profiles = vec![
@@ -442,7 +442,7 @@ fn builder_rejects_injected_backend_gpu_device_conflict() {
     ];
     config.gpu_memory_ownership = vec![(1, GpuMemoryOwnership::WholeDeviceExclusive)];
 
-    let error = validate_test_controller_projection_matches_config(&backend, &config).unwrap_err();
+    let error = validate_test_validation_projection_matches_config(&backend, &config).unwrap_err();
 
     assert_eq!(error.fact_value("reason"), Some("server_backend_admission_conflict"));
     assert_eq!(error.fact_value("config_field"), Some("admission.device_profiles"));
@@ -450,7 +450,7 @@ fn builder_rejects_injected_backend_gpu_device_conflict() {
 
 #[test]
 fn injected_backend_validation_does_not_conflate_planner_template_with_profile_capacity() {
-    let backend = controller_projection(1);
+    let backend = validation_projection(1);
     let mut config = bounded_config(1);
     config.native_optimizer_config =
         NexusNativeOptimizerConfig::default().with_native_execution_config(NexusNativeExecutionConfig::bounded(
@@ -461,7 +461,7 @@ fn injected_backend_validation_does_not_conflate_planner_template_with_profile_c
             TEST_MIN_RETRY_CHUNK_ROW_GROUPS,
         ));
 
-    validate_test_controller_projection_matches_config(&backend, &config)
+    validate_test_validation_projection_matches_config(&backend, &config)
         .expect("planner template bytes are not a backend capacity or floor assertion");
 }
 

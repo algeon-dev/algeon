@@ -231,5 +231,4 @@ impl QueryMetrics {
     pub fn record_source_read_queue_wait(&mut self, elapsed: Duration) {
         self.source_read_queue_wait_time += elapsed;
     }
-
 }

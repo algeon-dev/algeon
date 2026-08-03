@@ -123,7 +123,7 @@ async fn statement_planning_errors_include_query_id_metadata() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn unknown_table_errors_are_not_found_with_structured_code() {
+async fn unknown_table_errors_remain_generic_planning_without_message_parsing() {
     let (listener, addr) = free_local_addr();
     let mut config = test_server_config();
     declare_test_gpu_ownership(&mut config);
@@ -139,11 +139,11 @@ async fn unknown_table_errors_are_not_found_with_structured_code() {
     let FlightError::Tonic(status) = error else {
         panic!("expected tonic status, got {error:?}");
     };
-    assert_eq!(status.code(), Code::NotFound);
+    assert_eq!(status.code(), Code::InvalidArgument);
     let query_id = status.metadata().get(QUERY_ID_METADATA_KEY).expect("query_id metadata must be present");
     let query_id = query_id.to_str().expect("query_id metadata must be ASCII");
     assert!(!query_id.is_empty());
-    assert_error_metadata(&status, "object_not_found", "not_found", "permanent");
+    assert_error_metadata(&status, "datafusion_planning", "planning", "permanent");
     assert!(status.message().contains("does_not_exist"));
     assert_no_diagnostic_fields(status.message());
 }

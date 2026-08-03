@@ -132,10 +132,11 @@ impl QueryAdmission {
     }
 
     pub fn log_query_service_state(&self, query_id: Option<&str>, event: &'static str) {
-        let QueryAdmissionBackend::QueryService { backend } = &self.backend else {
-            return;
+        let session = match &self.backend {
+            QueryAdmissionBackend::QueryService { backend } => backend.session_capability(),
+            #[cfg(test)]
+            QueryAdmissionBackend::TestOnly { .. } => return,
         };
-        let session = backend.session_capability();
         match session.admission_snapshot() {
             Ok(snapshot) => {
                 tracing::info!(
@@ -437,11 +438,11 @@ impl NexusGpuBackend {
 }
 
 #[cfg(test)]
-fn server_test_controller_projection_from_config(
+fn server_test_validation_projection_from_config(
     config: &ServerConfig,
-) -> Result<Option<crate::backend::TestBackendControllerProjection>> {
+) -> Result<Option<crate::backend::TestBackendValidationProjection>> {
     config.validate_gpu_device_profiles()?;
-    crate::backend::test_controller_projection_from_optimizer_config(
+    crate::backend::test_validation_projection_from_optimizer_config(
         config.native_optimizer_config.clone(),
         config.gpu_device_profiles.clone(),
         config.gpu_memory_ownership.clone(),
@@ -505,24 +506,29 @@ mod tests {
         ]);
         let config = declare_test_gpu_ownership(server_config_with_test_device_profile(env, Some(3072)).unwrap());
 
-        let backend = server_test_controller_projection_from_config(&config)
+        let backend = server_test_validation_projection_from_config(&config)
             .unwrap()
             .expect("bounded native config should project QueryService admission");
-        let controller = backend.controller_config().unwrap();
+        let controller = backend.query_execution_config().unwrap();
 
         let profile = &backend.device_profiles()[0];
         assert_eq!(profile.max_active_attempts(), 1);
         assert_eq!(profile.device_ordinal(), 0);
         assert_eq!(profile.memory_limit(), crate::backend::GpuDeviceMemoryLimit::Explicit { limit_bytes: 3072 });
+        assert_eq!(
+            profile.engine_config(crate::backend::GpuMemoryOwnership::WholeDeviceExclusive),
+            nexus_query_engine::runtime::GpuBackendDeviceConfig::new(
+                0,
+                crate::backend::GpuMemoryOwnership::WholeDeviceExclusive,
+            )
+            .with_memory_limit(crate::backend::GpuDeviceMemoryLimit::Explicit { limit_bytes: 3072 }),
+            "server profile defaults must be an engine construction projection"
+        );
         assert_eq!(controller.source_scheduler_policy.max_source_reads_in_flight(), 2);
-        assert_eq!(backend.controller_queue_bounds().unwrap().max_waiters, 64);
-        assert_eq!(backend.controller_queue_bounds().unwrap().max_wait, std::time::Duration::from_secs(30));
-        // Floor defaults to managed / max(8, A_d) = 3072 / 8.
-        assert_eq!(backend.configured_floor_bytes().unwrap(), 384);
-
-        let permit = backend.admit().expect("first query should admit");
-        // A hint-less grant takes the full candidate maximum.
-        assert_eq!(permit.device_budget_bytes(), 3072);
+        assert_eq!(backend.queue_bounds().unwrap(), nexus_query_engine::runtime::QueueBounds::default());
+        // The validation projection intentionally stops before runtime floor
+        // resolution or grant allocation.
+        assert_eq!(profile.attempt_floor_bytes(), None);
     }
 
     #[test]
@@ -552,11 +558,11 @@ mod tests {
         ]);
         let config = declare_test_gpu_ownership(server_config_with_test_device_profile(env, Some(3072)).unwrap());
 
-        let backend = server_test_controller_projection_from_config(&config)
+        let backend = server_test_validation_projection_from_config(&config)
             .unwrap()
             .expect("bounded native config should project QueryService admission");
 
-        assert_eq!(backend.controller_queue_bounds().unwrap().max_wait, std::time::Duration::from_millis(250));
+        assert_eq!(backend.queue_bounds().unwrap().max_wait, std::time::Duration::from_millis(250));
     }
 
     #[test]
@@ -576,7 +582,7 @@ mod tests {
         ];
         let config = declare_test_gpu_ownership(config);
 
-        let backend = server_test_controller_projection_from_config(&config)
+        let backend = server_test_validation_projection_from_config(&config)
             .unwrap()
             .expect("bounded native config should project QueryService admission");
 
@@ -585,9 +591,6 @@ mod tests {
             backend.device_profiles().iter().map(|profile| profile.device_ordinal()).collect::<Vec<_>>(),
             vec![0, 1]
         );
-        let permit = backend.admit().expect("first query should admit");
-        assert_eq!(permit.device_ordinal(), 0);
-        assert_eq!(permit.device_budget_bytes(), 2048);
     }
 
     #[test]

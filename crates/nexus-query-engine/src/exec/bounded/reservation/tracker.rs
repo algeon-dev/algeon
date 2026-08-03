@@ -87,7 +87,7 @@ impl ReservationTracker {
     pub(in crate::exec) fn new_for_context(
         context: &ExecutionContext,
         budget_bytes: u64,
-        metrics: &mut QueryMetrics,
+        _metrics: &mut QueryMetrics,
         observation_scope: Option<&RuntimeExecutionObservationScope>,
     ) -> Result<Self> {
         let memory_grant = context.memory_grant()?;
@@ -95,7 +95,8 @@ impl ReservationTracker {
             Some(grant) => ReservationBudget::GrantBackedStatic { budget_bytes, grant },
             None => ReservationBudget::Static(budget_bytes),
         };
-        let mut tracker = Self::new_with_budget_and_observation(context.device_memory_space(), budget, observation_scope);
+        let mut tracker =
+            Self::new_with_budget_and_observation(context.device_memory_space(), budget, observation_scope);
         tracker.query_id = context.query_id().cloned();
         Ok(tracker)
     }

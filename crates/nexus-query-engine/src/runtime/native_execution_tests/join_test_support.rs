@@ -3,8 +3,6 @@ use super::*;
 #[path = "join_test_support/mixed_aggregate.rs"]
 mod mixed_aggregate;
 
-pub(super) use mixed_aggregate::*;
-
 pub(super) fn join_left_source(path: &Path, schema: &Arc<Schema>, columns: &[&str]) -> LocalParquetSource {
     LocalParquetSource::from_files(
         vec![LocalParquetFile::new(path).with_file_size_bytes(fs::metadata(path).unwrap().len())],

@@ -246,4 +246,14 @@ pub enum NativeDataFusionRuntime {
         /// Root-plan DataFusion metrics captured after the failure, when available.
         metrics: Option<MetricsSet>,
     },
+    /// Native runtime started but did not complete normally.
+    ///
+    /// `outcome` is one of `Cancelled`, `Dropped`, or `Panicked`; the sole
+    /// producer is the sealed attempt-report projection in server capture.
+    Interrupted {
+        /// The sealed attempt terminal outcome.
+        outcome: super::NativeDataFusionRuntimeOutcome,
+        /// Root-plan DataFusion metrics captured before interruption, when available.
+        metrics: Option<MetricsSet>,
+    },
 }

@@ -108,7 +108,7 @@ impl RuntimeQueryLifecycle {
             | RuntimeTerminalOutcome::Panicked => PlanExecutionBoundaryKind::Failed,
         };
         self.record_plan(plan_boundary);
-        self.owner.take().and_then(|owner| owner.finish_query(outcome))
+        self.owner.take().and_then(|owner| owner.finish_query(Some(outcome)))
     }
 
     fn record_plan(&self, boundary: PlanExecutionBoundaryKind) {
@@ -318,7 +318,7 @@ mod tests {
         lifecycle.finish(RuntimeTerminalOutcome::Succeeded);
 
         assert!(owner.sealed_snapshot().is_none(), "plan completion must not seal a coordinator-owned query root");
-        let snapshot = owner.finish_query(RuntimeTerminalOutcome::Succeeded).unwrap();
+        let snapshot = owner.finish_query(Some(RuntimeTerminalOutcome::Succeeded)).unwrap();
         assert!(snapshot.events().iter().any(|event| matches!(
             event.payload,
             RuntimeObservationPayload::PlanExecutionBoundary { boundary: PlanExecutionBoundaryKind::Finished }

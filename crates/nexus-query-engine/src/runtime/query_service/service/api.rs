@@ -6,18 +6,13 @@ use crate::{
     attempt::{AttemptAdmissionBinding, AttemptFinalizerSlot},
 };
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 enum RuntimeObservationAttachment {
+    #[default]
     Disabled,
     StandaloneOwner(RuntimeObservationOwner),
     Handle(RuntimeObservationHandle),
     Attempt(AttemptAdmissionBinding),
-}
-
-impl Default for RuntimeObservationAttachment {
-    fn default() -> Self {
-        Self::Disabled
-    }
 }
 
 /// Point-in-time service admission state for bounded-queue and overload reports.
@@ -143,9 +138,12 @@ impl QueryAdmissionRequest {
         self
     }
 
-    /// Crate-test counterpart that preserves a synthetic planner hint.
+    /// Crate-test constructor for an explicit placement requirement.
+    ///
+    /// This sizes an admission only; it is intentionally not an execution
+    /// plan proof and therefore cannot authorize a later-built plan.
     #[cfg(test)]
-    pub(crate) fn with_test_planned_capability_evidence(mut self, attempt_requirement: AttemptRequirement) -> Self {
+    pub(crate) fn with_test_placement_requirement(mut self, attempt_requirement: AttemptRequirement) -> Self {
         self.attempt_requirement = Some(attempt_requirement);
         self
     }
@@ -161,6 +159,14 @@ impl QueryAdmissionRequest {
             .as_ref()
             .map(|proof| proof.as_requirement().clone())
             .or_else(|| self.attempt_requirement.clone())
+    }
+
+    /// Returns the proof that was actually submitted by planning for the
+    /// execution-time coverage check.  Internal requirements still size and
+    /// place an admission, but must not impersonate a proof for an arbitrary
+    /// later-built plan.
+    pub(in crate::runtime::query_service) fn submitted_plan_capability_evidence(&self) -> Option<AttemptRequirement> {
+        self.planned_capability_proof.as_ref().map(|proof| proof.as_requirement().clone())
     }
 
     /// Sets an attempt-bound queue deadline.
@@ -235,28 +241,51 @@ impl QueryAdmissionRequest {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use arrow::datatypes::{DataType, Field, Schema};
+
     use super::*;
-    use crate::observability::RuntimeObservationConfig;
+    use crate::{
+        observability::RuntimeObservationConfig,
+        plan::QueryPlanBuilder,
+        source::{GpuResidentSource, SourceNode},
+    };
+
+    fn explicit_sink_capability_proof() -> QueryPlanCapabilityProof {
+        let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, false)]));
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", schema)));
+        let plan = builder.finish_with_host_sink(source);
+        QueryPlanCapabilityProof::for_query_plan(&plan)
+            .expect("an explicit host sink must expose a capability requirement")
+    }
 
     #[test]
     fn public_capability_attachment_retains_only_an_engine_issued_proof() {
-        let proof = QueryPlanCapabilityProof::for_cugraph_graph_execution();
+        let proof = explicit_sink_capability_proof();
         let request = QueryAdmissionRequest::new().with_query_plan_capability_proof(proof.clone());
 
         assert_eq!(request.planned_capability_proof(), Some(&proof));
         assert_eq!(request.resolved_attempt_requirement(), Some(proof.into_requirement()));
+        assert!(request.submitted_plan_capability_evidence().is_some());
     }
 
     #[cfg(test)]
     #[test]
-    fn explicit_test_hook_retains_synthetic_working_set_hint() {
-        let request = QueryAdmissionRequest::new().with_test_planned_capability_evidence(
-            AttemptRequirement::from_parts(0, 0, Some(4096), crate::admission::EstimateQuality::Modeled, Vec::new()),
-        );
+    fn explicit_test_placement_requirement_retains_working_set_hint_without_submitted_proof() {
+        let request = QueryAdmissionRequest::new().with_test_placement_requirement(AttemptRequirement::from_parts(
+            0,
+            0,
+            Some(4096),
+            crate::admission::EstimateQuality::Modeled,
+            Vec::new(),
+        ));
         let evidence = request.resolved_attempt_requirement().expect("test evidence is retained");
 
         assert_eq!(evidence.soft_working_set_hint_bytes(), Some(4096));
         assert_eq!(evidence.estimate_quality(), crate::admission::EstimateQuality::Modeled);
+        assert!(request.submitted_plan_capability_evidence().is_none());
     }
 
     #[test]

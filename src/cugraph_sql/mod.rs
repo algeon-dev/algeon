@@ -70,7 +70,16 @@ pub(crate) fn cugraph_feature_disabled(algorithm: CugraphAlgorithm) -> DataFusio
 }
 
 fn plan_error(message: impl Into<String>) -> DataFusionError {
-    DataFusionError::Plan(message.into())
+    Error::new(ErrorCode::InvalidExecutionPlan, "datafusion_nexus.cugraph_sql.plan", message).into()
+}
+
+/// Builds a structured rejection for a syntactically valid option that this
+/// SQL surface deliberately does not implement.  Metadata validation projects
+/// this code directly; it must not recover the classification from prose.
+fn unsupported_option_error(message: impl Into<String>) -> DataFusionError {
+    Error::new(ErrorCode::UnsupportedOperator, "datafusion_nexus.cugraph_sql.option", message)
+        .with_fact("reason", "unsupported_option")
+        .into()
 }
 
 fn validate_bfs_logical_edge_id_capability(spec: &CugraphAlgorithmSpec, logical_mapping: bool) -> Result<()> {

@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 
 use arrow::error::ArrowError;
 use datafusion::common::{DataFusionError, Diagnostic, Result as DataFusionResult};
@@ -53,6 +53,8 @@ const NATIVE_ADAPTER_STATUS_CASES: &[(QueryErrorCode, ErrorCode, QueryErrorStatu
     (QueryErrorCode::UnsupportedExpression, ErrorCode::UnsupportedExpression, QueryErrorStatus::Permanent),
     (QueryErrorCode::UnsupportedType, ErrorCode::UnsupportedType, QueryErrorStatus::Permanent),
     (QueryErrorCode::InvalidPlan, ErrorCode::InvalidExecutionPlan, QueryErrorStatus::Permanent),
+    (QueryErrorCode::InvalidAttemptCorrelation, ErrorCode::InvalidRequest, QueryErrorStatus::Permanent),
+    (QueryErrorCode::GraphInputInvalid, ErrorCode::GraphInputInvalid, QueryErrorStatus::Permanent),
     (QueryErrorCode::CudfInvalidInput, ErrorCode::CudfInvalidInput, QueryErrorStatus::Permanent),
     (QueryErrorCode::CudfUnsupported, ErrorCode::CudfUnsupported, QueryErrorStatus::Permanent),
     (QueryErrorCode::CudfResourceExhausted, ErrorCode::CudfResourceExhausted, QueryErrorStatus::Temporary),
@@ -89,7 +91,10 @@ fn every_adapter_code_has_the_expected_retry_status() {
 
 #[test]
 fn every_native_status_is_preserved_at_the_adapter_boundary() {
-    assert_eq!(NATIVE_ADAPTER_STATUS_CASES.len(), 22, "update the complete native status policy table");
+    let mapped_codes = NATIVE_ADAPTER_STATUS_CASES.iter().map(|(code, _, _)| *code).collect::<HashSet<_>>();
+    let engine_codes = QueryErrorCode::ALL.iter().copied().collect::<HashSet<_>>();
+    assert_eq!(mapped_codes.len(), NATIVE_ADAPTER_STATUS_CASES.len(), "native mapping table contains duplicate codes");
+    assert_eq!(mapped_codes, engine_codes, "native mapping table must cover every engine error code");
 
     for &(native_code, expected_adapter_code, expected_native_status) in NATIVE_ADAPTER_STATUS_CASES {
         let native = QueryError::new(native_code, "nexus_query_engine.test.retry_policy", "retry policy test");
@@ -632,18 +637,17 @@ fn native_memory_reservation_error_preserves_adapter_classification_and_facts() 
 
 #[test]
 fn native_retry_error_preserves_resume_boundary_facts() {
-    let native_error = nexus_query_engine::runtime::RetryFacts::new()
-        .with_retry_action("reduce_final_sort_fan_in")
-        .with_resume_boundary("final_sort")
-        .with_committed_chunks(4)
-        .with_committed_partials(4)
-        .with_merge_level(2)
-        .with_merge_fan_in(8)
-        .attach_to_error(nexus_query_engine::error::QueryError::new(
-            nexus_query_engine::error::QueryErrorCode::MemoryReservationFailed,
-            "nexus_query_engine.final_sort.topk_concat",
-            "native final sort exhausted bounded memory",
-        ));
+    let native_error = nexus_query_engine::error::QueryError::new(
+        nexus_query_engine::error::QueryErrorCode::MemoryReservationFailed,
+        "nexus_query_engine.final_sort.topk_concat",
+        "native final sort exhausted bounded memory",
+    )
+    .with_fact("retry_action", "reduce_final_sort_fan_in")
+    .with_fact("resume_boundary", "final_sort")
+    .with_fact("committed_chunks", 4)
+    .with_fact("committed_partials", 4)
+    .with_fact("merge_level", 2)
+    .with_fact("merge_fan_in", 8);
 
     let adapter_error =
         Error::from_native("datafusion_nexus.native_exec.execute", "nexus native query execution failed", native_error);

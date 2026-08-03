@@ -1,13 +1,12 @@
 use super::{
-    super::{
-        attempt_domain::AttemptAllocationDomain,
-        context::{
-            AttemptAuxiliaryPermit, AttemptAuxiliarySlots, QueryResourceAnchor, QueryResourceEpoch,
-            QueryServiceResourceEpoch,
-        },
+    super::context::{
+        AttemptAuxiliaryPermit, AttemptAuxiliarySlots, QueryResourceAnchor, QueryResourceEpoch,
+        QueryServiceResourceEpoch,
     },
     *,
 };
+#[cfg(test)]
+use crate::runtime::attempt_domain::AttemptAllocationDomain;
 use crate::{
     observability::{
         AttemptAllocatorEvent, AttemptAllocatorEventAction, AttemptAllocatorEventSource, AttemptAllocatorPoolUsage,
@@ -55,6 +54,26 @@ impl RootContextSetupCoordinator {
     }
 }
 
+/// Owns a root-context setup claim until setup becomes ready or the work is
+/// abandoned. The claim is moved into the device-pool future so cancellation
+/// while queued drops it at the same boundary that drops the queued work.
+#[derive(Debug)]
+struct RootContextSetupClaimGuard {
+    lifetime: Arc<QueryHandleLifetime>,
+}
+
+impl RootContextSetupClaimGuard {
+    fn new(lifetime: Arc<QueryHandleLifetime>) -> Self {
+        Self { lifetime }
+    }
+}
+
+impl Drop for RootContextSetupClaimGuard {
+    fn drop(&mut self) {
+        self.lifetime.rollback_root_context_setup();
+    }
+}
+
 #[derive(Debug)]
 pub(super) struct QueryHandleLifetime {
     service: Mutex<Option<Arc<QueryServiceInner>>>,
@@ -78,6 +97,7 @@ pub(super) struct QueryHandleLifetime {
     #[cfg(test)]
     release_commit_gate: Mutex<Option<Arc<ReleaseCommitGate>>>,
     #[cfg(test)]
+    root_context_binding_gate: Mutex<Option<Arc<RootContextBindingGate>>>,
     terminal_domain_usage: Mutex<Option<cudf::QueryMemoryDomainUsage>>,
 }
 
@@ -128,6 +148,7 @@ impl QueryHandleLifetime {
                 #[cfg(test)]
                 release_commit_gate: Mutex::new(None),
                 #[cfg(test)]
+                root_context_binding_gate: Mutex::new(None),
                 terminal_domain_usage: Mutex::new(None),
             }
         })
@@ -178,6 +199,34 @@ impl QueryHandleLifetime {
         gate
     }
 
+    /// Pauses root-context setup after it has consumed the root binding while
+    /// the admission envelope remains locked. This makes release/setup races
+    /// deterministic without exposing a production lifecycle seam.
+    #[cfg(test)]
+    pub(super) fn arm_root_context_binding_gate(&self) -> Arc<RootContextBindingGate> {
+        let gate = Arc::new(RootContextBindingGate {
+            entered: std::sync::atomic::AtomicUsize::new(0),
+            gate: std::sync::Barrier::new(2),
+        });
+        *self.root_context_binding_gate.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some(Arc::clone(&gate));
+        gate
+    }
+
+    #[cfg(test)]
+    fn wait_at_root_context_binding_gate(&self) {
+        let gate = self
+            .root_context_binding_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .map(Arc::clone);
+        if let Some(gate) = gate {
+            gate.entered.fetch_add(1, Ordering::AcqRel);
+            gate.gate.wait();
+        }
+    }
+
     /// Overrides this handle's terminal attempt-domain sample exactly once.
     #[cfg(test)]
     pub(super) fn inject_terminal_domain_usage_for_test(&self, usage: cudf::QueryMemoryDomainUsage) {
@@ -193,10 +242,6 @@ impl QueryHandleLifetime {
         let root_context = self.root_context.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let root_context = root_context.as_ref().expect("root context is acquired before injecting cleanup collision");
         assert!(root_context.install_root_stream_cleanup_completion(|_| {}, || {}));
-    }
-
-    fn attempt_allocation_domain(&self) -> Result<Option<AttemptAllocationDomain>> {
-        Ok(self.lock_envelope()?.as_ref().and_then(|envelope| envelope.domain().cloned()))
     }
 
     pub(super) fn memory_grant(&self) -> Result<MemoryGrant> {
@@ -359,7 +404,6 @@ impl QueryHandleLifetime {
         let service_epoch_user = take_owned_for_cleanup(&self.service_epoch_user, "service epoch user");
         #[cfg(test)]
         let release_commit_gate = take_owned_for_cleanup(&self.release_commit_gate, "release commit gate");
-        #[cfg(test)]
         let terminal_domain_usage = take_owned_for_cleanup(&self.terminal_domain_usage, "terminal domain usage");
         let service = take_owned_for_cleanup(&self.service, "query service")
             .expect("query handle lifetime retains its service until the one release path");
@@ -376,7 +420,6 @@ impl QueryHandleLifetime {
             envelope,
             #[cfg(test)]
             release_commit_gate,
-            #[cfg(test)]
             terminal_domain_usage,
             outcome_terminal_domain_usage: None,
             terminal_outcome: RuntimeTerminalOutcome::Dropped,
@@ -473,6 +516,24 @@ pub(crate) struct ReleaseCommitGate {
 }
 
 #[cfg(test)]
+#[derive(Debug)]
+pub(crate) struct RootContextBindingGate {
+    entered: std::sync::atomic::AtomicUsize,
+    gate: std::sync::Barrier,
+}
+
+#[cfg(test)]
+impl RootContextBindingGate {
+    pub(crate) fn entered(&self) -> bool {
+        self.entered.load(Ordering::Acquire) > 0
+    }
+
+    pub(crate) fn open(&self) {
+        self.gate.wait();
+    }
+}
+
+#[cfg(test)]
 impl ReleaseCommitGate {
     /// Whether the release commit has reached the pre-seal barrier.
     pub(crate) fn entered(&self) -> bool {
@@ -508,7 +569,6 @@ struct QueryHandleRelease {
     envelope: Option<super::service::transaction::AdmissionEnvelope>,
     #[cfg(test)]
     release_commit_gate: Option<Arc<ReleaseCommitGate>>,
-    #[cfg(test)]
     terminal_domain_usage: Option<cudf::QueryMemoryDomainUsage>,
     /// Sampled after the terminal outcome is resolved but before GPU cleanup
     /// begins. The timestamp is obtained only from an admitted attempt clock.
@@ -533,7 +593,6 @@ struct QueryHandleReportCommit {
     outcome_terminal_domain_usage: Option<AttemptTimedDomainUsage>,
     #[cfg(test)]
     release_commit_gate: Option<Arc<ReleaseCommitGate>>,
-    #[cfg(test)]
     terminal_domain_usage: Option<cudf::QueryMemoryDomainUsage>,
 }
 
@@ -544,22 +603,10 @@ impl QueryHandleReportCommit {
         terminal_outcome: RuntimeTerminalOutcome,
         evidence: super::service::disposition::CleanupEvidence,
     ) -> Option<super::admission::QueryCompletionActivityTail> {
-        #[cfg(test)]
-        use super::service::disposition::decide_capacity_commit_with_terminal_usage_for_test;
         use super::service::disposition::{CapacityCommitDisposition, CleanupEvidence, decide_capacity_commit};
         let allocator_event_evidence = self.finish_allocator_domain_correlation(evidence);
-        #[cfg(test)]
-        let decision = match self.terminal_domain_usage {
-            Some(terminal_usage) => decide_capacity_commit_with_terminal_usage_for_test(
-                self.device_ordinal,
-                self.domain.as_ref(),
-                evidence,
-                terminal_usage,
-            ),
-            None => decide_capacity_commit(self.device_ordinal, self.domain.as_ref(), evidence),
-        };
-        #[cfg(not(test))]
-        let decision = decide_capacity_commit(self.device_ordinal, self.domain.as_ref(), evidence);
+        let decision =
+            decide_capacity_commit(self.device_ordinal, self.domain.as_ref(), evidence, self.terminal_domain_usage);
         let super::service::disposition::CapacityCommitDecision { disposition, usage, native_fault_evidence } =
             decision;
         if let Some(usage) = usage.as_ref() {
@@ -953,12 +1000,8 @@ impl QueryHandleReportCommit {
         &self,
         evidence: super::service::disposition::CleanupEvidence,
     ) -> Option<AllocatorEventEvidenceRead> {
-        let Some(service) = self.service.as_ref() else {
-            return None;
-        };
-        let Some(binding) = self.allocator_domain_attempt else {
-            return None;
-        };
+        let service = self.service.as_ref()?;
+        let binding = self.allocator_domain_attempt?;
         if evidence == super::service::disposition::CleanupEvidence::Completed
             && let Some(domain) = self.domain.as_ref()
         {
@@ -1150,7 +1193,6 @@ impl QueryHandleRelease {
             envelope: None,
             #[cfg(test)]
             release_commit_gate: None,
-            #[cfg(test)]
             terminal_domain_usage: None,
             outcome_terminal_domain_usage: None,
             terminal_outcome: RuntimeTerminalOutcome::Dropped,
@@ -1187,7 +1229,6 @@ impl QueryHandleRelease {
             outcome_terminal_domain_usage: self.outcome_terminal_domain_usage.take(),
             #[cfg(test)]
             release_commit_gate: self.release_commit_gate.take(),
-            #[cfg(test)]
             terminal_domain_usage: self.terminal_domain_usage.take(),
         }
     }
@@ -1268,10 +1309,10 @@ fn drop_recovering<T>(value: Option<T>, resource: &'static str) {
 pub struct QueryHandle {
     pub(super) config: QueryExecutionConfig,
     pub(super) queue_bounds: QueueBounds,
-    /// Immutable capability requirement resolved before this handle entered the
-    /// service. It is copied into every admitted execution context so plan
-    /// dispatch can verify the proof still covers the actual plan.
-    pub(super) admitted_capability_evidence: crate::admission::AttemptRequirement,
+    /// The proof supplied by planning, retained for execution-time coverage
+    /// validation.  It remains absent when admission resolved a requirement
+    /// solely for placement/accounting.
+    pub(super) submitted_plan_capability_evidence: Option<crate::admission::AttemptRequirement>,
     pub(super) admission_request_id: AdmissionRequestId,
     pub(super) admission_sequence: u64,
     pub(super) admission_wait: Duration,
@@ -1383,6 +1424,8 @@ impl QueryHandle {
     ) -> Result<AdmittedQueryContext> {
         let operation = "nexus_query_engine.query_service.context";
         let setup_claim = self.lifetime.reserve_context_setup_async(&cancellation, operation).await?;
+        let root_setup_claim = (setup_claim == ContextSetupClaim::Root)
+            .then(|| RootContextSetupClaimGuard::new(Arc::clone(&self.lifetime)));
         let stream_acquire_deadline = self.context_stream_acquire_deadline();
         // Claim the attempt-owned share before submitting an auxiliary job.
         // Otherwise excess work from one attempt can fill every global
@@ -1403,15 +1446,7 @@ impl QueryHandle {
                 unreachable!("context setup reservation resolves waits before scheduling")
             },
         };
-        let pool = match self.gpu_execution_pool() {
-            Ok(pool) => pool,
-            Err(error) => {
-                if setup_claim == ContextSetupClaim::Root {
-                    self.lifetime.rollback_root_context_setup();
-                }
-                return Err(error);
-            },
-        };
+        let pool = self.gpu_execution_pool()?;
         let job_class = match setup_claim {
             ContextSetupClaim::Root => super::super::gpu_execution_pool::GpuExecutionJobClass::Root,
             ContextSetupClaim::Auxiliary => super::super::gpu_execution_pool::GpuExecutionJobClass::Auxiliary,
@@ -1427,6 +1462,7 @@ impl QueryHandle {
                 job_class,
                 observation,
                 move |stream_scope| async move {
+                    let _root_setup_claim = root_setup_claim;
                     handle.acquire_context_with_cancellation_and_stream_scope(
                         cancellation,
                         stream_scope,
@@ -1438,9 +1474,6 @@ impl QueryHandle {
             )
             .await
             .and_then(|result| result);
-        if setup_claim == ContextSetupClaim::Root && result.is_err() {
-            self.lifetime.rollback_root_context_setup();
-        }
         result
     }
 
@@ -1475,18 +1508,16 @@ impl QueryHandle {
     ) -> Result<AdmittedQueryContext> {
         let operation = "nexus_query_engine.query_service.context";
         let setup_claim = self.lifetime.reserve_context_setup_sync(&cancellation, operation)?;
+        let _root_setup_claim = (setup_claim == ContextSetupClaim::Root)
+            .then(|| RootContextSetupClaimGuard::new(Arc::clone(&self.lifetime)));
         let stream_acquire_deadline = self.context_stream_acquire_deadline();
-        let result = self.acquire_context_with_cancellation_and_stream_scope(
+        self.acquire_context_with_cancellation_and_stream_scope(
             cancellation,
             crate::observability::RuntimeStreamLeaseScope::default(),
             setup_claim,
             stream_acquire_deadline,
             None,
-        );
-        if setup_claim == ContextSetupClaim::Root && result.is_err() {
-            self.lifetime.rollback_root_context_setup();
-        }
-        result
+        )
     }
 
     fn acquire_context_with_cancellation_and_stream_scope(
@@ -1568,7 +1599,8 @@ impl QueryHandle {
         // The admission transaction already owns the root stream, allocation
         // domain, and root stream member (P2.6). Consume that binding; no
         // stream or domain is created after admission.
-        let binding = {
+        let gpu_execution_pool = resources.gpu_execution_pool_for_device(self.device_ordinal)?;
+        let (stream_lease_guard, memory_grant, runtime, attempt_allocation_domain, attempt_member_lease) = {
             let envelope = self.lifetime.lock_envelope()?;
             let envelope = envelope.as_ref().ok_or_else(|| self.lifetime.released_error())?;
             // The envelope's worker scope is the admission-time identity
@@ -1577,27 +1609,20 @@ impl QueryHandle {
             if let Some(scope) = envelope.worker_scope() {
                 debug_assert_eq!(scope.device_ordinal(), self.device_ordinal);
                 debug_assert_eq!(scope.lane_index(), envelope.lane_index().expect("lane matches its scope"));
-            }
-            envelope.take_root_binding()?
-        };
-        validate_service_stream_pool_device(device.stream_pool(), binding.stream_lease.device())?;
-        let stream_lease_guard = Arc::new(binding.stream_lease);
-        let memory_grant = self.lifetime.memory_grant()?;
-        let runtime = stream_lease_guard.shared_runtime()?;
-        let gpu_execution_pool = resources.gpu_execution_pool_for_device(self.device_ordinal)?;
-        {
-            let envelope = self.lifetime.lock_envelope()?;
-            if let Some(scope) = envelope.as_ref().and_then(|envelope| envelope.worker_scope()) {
                 debug_assert_eq!(scope.pool_id(), gpu_execution_pool.snapshot().pool_id);
             }
-        }
-        let attempt_allocation_domain = self
-            .lifetime
-            .attempt_allocation_domain()?
-            .expect("device-backed admission envelope always carries the attempt allocation domain");
+            let binding = envelope.take_root_binding()?;
+            validate_service_stream_pool_device(device.stream_pool(), binding.stream_lease.device())?;
+            let stream_lease_guard = Arc::new(binding.stream_lease);
+            let memory_grant = envelope.memory_grant().clone();
+            let runtime = stream_lease_guard.shared_runtime()?;
+            let attempt_allocation_domain = envelope.domain().cloned().ok_or_else(|| self.lifetime.released_error())?;
+            #[cfg(test)]
+            self.lifetime.wait_at_root_context_binding_gate();
+            (stream_lease_guard, memory_grant, runtime, attempt_allocation_domain, binding.member_lease)
+        };
         // The root execution stream binds the attempt's root domain member
         // once for the whole attempt lifetime.
-        let attempt_member_lease = binding.member_lease;
         let observation_owner = self.lifetime.observation_owner();
         let query_id = self.lifetime.observation.query_id().map(|query_id| QueryId::new(query_id.as_str()));
         let trace_id =
@@ -1623,7 +1648,7 @@ impl QueryHandle {
             grant_memory_domain: Some(Arc::clone(attempt_allocation_domain.as_cudf())),
             attempt_allocation_domain: Some(attempt_allocation_domain),
             attempt_auxiliary_slots: Some(Arc::clone(&self.lifetime.attempt_auxiliary_slots)),
-            admitted_capability_evidence: Some(self.admitted_capability_evidence.clone()),
+            admitted_capability_evidence: self.submitted_plan_capability_evidence.clone(),
             attempt_member_lease: Some(attempt_member_lease),
             boundary_policy: service.config.boundary_policy,
             source_scheduler_policy: service.config.source_scheduler_policy,

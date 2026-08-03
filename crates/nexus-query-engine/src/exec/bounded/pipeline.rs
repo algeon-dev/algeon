@@ -5,8 +5,9 @@ use super::compiled::execute_compiled_pipeline;
 pub use super::compiled::{
     CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineScheduler, CompiledPipelineState,
     CompiledSchedulingCycle, CompiledTaskAdmission, CompiledTaskExecutor, CompiledTaskOutput, ReleasedCompiledResource,
-    ResidentFrameStreamProducerTestHarness, YieldedFrameCounterTestHarness,
 };
+#[cfg(test)]
+pub(crate) use super::compiled::{ResidentFrameStreamProducerTestHarness, YieldedFrameCounterTestHarness};
 use crate::{
     admission::bounded_pipeline_admission_with_statistical_aggregate_mode,
     error::Result,

@@ -260,58 +260,55 @@ impl ActiveReservation {
             return None;
         }
         match (self.semantics, self.lineage.as_ref()) {
-                (ActiveReservationSemantics::Alias, Some(lineage)) => {
-                    lineage.alias_count.set(lineage.alias_count.get().saturating_sub(1));
-                    let (deferred_release, deferred_transferred_live_charge) = if lineage.alias_count.get() == 0 {
-                        let bytes = lineage.deferred_charged_release_bytes.get();
-                        lineage.deferred_charged_release_bytes.set(0);
-                        let transferred = lineage.deferred_transferred_live_charge_bytes.get().min(bytes);
-                        lineage.deferred_transferred_live_charge_bytes.set(0);
-                        (bytes, transferred)
-                    } else {
-                        (0, 0)
-                    };
-                    if deferred_release > 0 {
-                        self.reserved_bytes.set(self.reserved_bytes.get().saturating_sub(deferred_release));
-                        let ledger_release = deferred_release.saturating_sub(deferred_transferred_live_charge);
-                        self.record_live_delta(-i128::from(ledger_release));
-                        self.released = true;
-                        if let Some(observation) = &self.observation {
-                            observation.record(
-                                &self.event_context,
-                                runtime_release_action(disposition),
-                                disposition,
-                                self.bytes,
-                                0,
-                                -i128::from(deferred_release),
-                                self.reserved_bytes.get(),
-                            );
-                        }
-                        return Some(self.event_context.event(
-                            self.release_action,
+            (ActiveReservationSemantics::Alias, Some(lineage)) => {
+                lineage.alias_count.set(lineage.alias_count.get().saturating_sub(1));
+                let (deferred_release, deferred_transferred_live_charge) = if lineage.alias_count.get() == 0 {
+                    let bytes = lineage.deferred_charged_release_bytes.get();
+                    lineage.deferred_charged_release_bytes.set(0);
+                    let transferred = lineage.deferred_transferred_live_charge_bytes.get().min(bytes);
+                    lineage.deferred_transferred_live_charge_bytes.set(0);
+                    (bytes, transferred)
+                } else {
+                    (0, 0)
+                };
+                if deferred_release > 0 {
+                    self.reserved_bytes.set(self.reserved_bytes.get().saturating_sub(deferred_release));
+                    let ledger_release = deferred_release.saturating_sub(deferred_transferred_live_charge);
+                    self.record_live_delta(-i128::from(ledger_release));
+                    self.released = true;
+                    if let Some(observation) = &self.observation {
+                        observation.record(
+                            &self.event_context,
+                            runtime_release_action(disposition),
+                            disposition,
                             self.bytes,
+                            0,
                             -i128::from(deferred_release),
                             self.reserved_bytes.get(),
-                        ));
-                    }
-                },
-                (_, Some(lineage)) => {
-                    if lineage.alias_count.get() > 0 {
-                        let transferred_live_charge = self.transferred_live_charge_bytes.min(self.charged_bytes);
-                        lineage
-                            .deferred_charged_release_bytes
-                            .set(lineage.deferred_charged_release_bytes.get().saturating_add(self.charged_bytes));
-                        lineage.deferred_transferred_live_charge_bytes.set(
-                            lineage
-                                .deferred_transferred_live_charge_bytes
-                                .get()
-                                .saturating_add(transferred_live_charge),
                         );
-                        self.charged_bytes = 0;
-                        self.transferred_live_charge_bytes = 0;
                     }
-                },
-                (_, None) => {},
+                    return Some(self.event_context.event(
+                        self.release_action,
+                        self.bytes,
+                        -i128::from(deferred_release),
+                        self.reserved_bytes.get(),
+                    ));
+                }
+            },
+            (_, Some(lineage)) => {
+                if lineage.alias_count.get() > 0 {
+                    let transferred_live_charge = self.transferred_live_charge_bytes.min(self.charged_bytes);
+                    lineage
+                        .deferred_charged_release_bytes
+                        .set(lineage.deferred_charged_release_bytes.get().saturating_add(self.charged_bytes));
+                    lineage.deferred_transferred_live_charge_bytes.set(
+                        lineage.deferred_transferred_live_charge_bytes.get().saturating_add(transferred_live_charge),
+                    );
+                    self.charged_bytes = 0;
+                    self.transferred_live_charge_bytes = 0;
+                }
+            },
+            (_, None) => {},
         }
         let charged_delta_bytes = -i128::from(self.charged_bytes);
         self.reserved_bytes.set(self.reserved_bytes.get().saturating_sub(self.charged_bytes));

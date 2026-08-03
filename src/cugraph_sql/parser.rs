@@ -10,7 +10,7 @@ use super::{
     CugraphBfsOutputOptions, CugraphBfsPredicateInputs, CugraphBfsSource, CugraphBfsSourceVertex,
     CugraphGraphConstructionPolicy, CugraphGraphEdgePredicateTable, CugraphGraphOptions, CugraphGraphPredicateTable,
     CugraphKCoreDegreeType, CugraphPageRankParams, CugraphSimilarityParams, CugraphSqlConfig, CugraphTableReference,
-    CugraphVertexPairTable, literal_string_arg, plan_error, result_schema_for_params,
+    CugraphVertexPairTable, literal_string_arg, plan_error, result_schema_for_params, unsupported_option_error,
 };
 
 pub fn parse_cugraph_algorithm_spec(
@@ -226,7 +226,7 @@ fn validate_graph_directedness(algorithm: CugraphAlgorithm, graph_options: &Cugr
         _ if required => "cuGraph algorithm requires directed=true",
         _ => "cuGraph algorithm requires directed=false",
     };
-    Err(plan_error(message))
+    Err(unsupported_option_error(message))
 }
 
 fn parse_options_json(
@@ -716,7 +716,7 @@ fn parse_options_json(
             "prevent_overlapping" if algorithm == CugraphAlgorithm::ForceAtlas2 => {
                 let value = json_bool(value, key)?;
                 if value {
-                    return Err(plan_error(
+                    return Err(unsupported_option_error(
                         "ForceAtlas2 prevent_overlapping requires vertex_radius side input, which the SQL API does not support yet",
                     ));
                 }
@@ -797,7 +797,10 @@ fn parse_options_json(
                 }
             },
             _ => {
-                return Err(plan_error(format!("unknown option '{key}' for {}", algorithm.function_name())));
+                return Err(unsupported_option_error(format!(
+                    "unknown option '{key}' for {}",
+                    algorithm.function_name()
+                )));
             },
         }
     }

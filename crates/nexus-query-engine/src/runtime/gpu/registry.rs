@@ -15,8 +15,8 @@ use super::{
 use crate::{
     error::{QueryError, QueryErrorCode, Result},
     runtime::{
-        GpuBackendConstructionCheckpoint, GpuBackendConstructionProbe, GpuMemoryFraction, ServiceStreamPool,
-        backend_core::ConstructionResourceJournal,
+        GpuBackendConstructionCheckpoint, GpuBackendConstructionProbe, GpuBackendDeviceConfig, GpuMemoryFraction,
+        ServiceStreamPool, backend_core::ConstructionResourceJournal,
     },
 };
 
@@ -66,6 +66,31 @@ pub(crate) struct DeviceRegistryInstallProfile {
     pub(crate) worker_job_capacity: usize,
     pub(crate) lane_count: usize,
     pub(crate) memory_partition: DeviceRegistryMemoryPartition,
+}
+
+impl DeviceRegistryInstallProfile {
+    /// Legacy/direct query-service construction still needs a complete
+    /// per-device profile. Its device-controller defaults deliberately come
+    /// from the public backend device configuration so this fallback cannot
+    /// drift from backend construction.
+    pub(crate) fn legacy_default(stream_pool_size: usize, capacity_policy: DeviceRegistryCapacityPolicy) -> Self {
+        Self {
+            stream_pool_size,
+            device_capabilities: DeviceCapabilities::default(),
+            max_active_queries: Some(GpuBackendDeviceConfig::DEFAULT_MAX_ACTIVE_QUERIES),
+            capacity_policy,
+            backend_reserve_bytes: 0,
+            attempt_floor_bytes: GpuBackendDeviceConfig::DEFAULT_ATTEMPT_FLOOR_BYTES,
+            source_work_per_attempt: GpuBackendDeviceConfig::DEFAULT_SOURCE_WORK_PER_ATTEMPT,
+            worker_job_capacity: stream_pool_size,
+            lane_count: stream_pool_size,
+            memory_partition: DeviceRegistryMemoryPartition::WholeDevice,
+        }
+    }
+
+    fn resolved_max_active_queries(&self) -> usize {
+        self.max_active_queries.unwrap_or(GpuBackendDeviceConfig::DEFAULT_MAX_ACTIVE_QUERIES)
+    }
 }
 
 /// Configuration used when installing a device registry.
@@ -119,22 +144,16 @@ impl DeviceRegistryConfig {
     }
 
     pub(crate) fn profile(&self, device_ordinal: usize) -> DeviceRegistryInstallProfile {
-        self.device_profiles.get(&device_ordinal).cloned().unwrap_or(DeviceRegistryInstallProfile {
-            stream_pool_size: self.stream_pool_size,
-            device_capabilities: DeviceCapabilities::default(),
-            max_active_queries: None,
-            capacity_policy: DeviceRegistryCapacityPolicy::Automatic {
-                headroom_bytes: self.capacity_headroom_bytes,
-                fallback_bytes: self.fallback_capacity_bytes,
-                fraction: None,
-                maximum_bytes: self.device_capacity_bytes,
-            },
-            backend_reserve_bytes: 0,
-            attempt_floor_bytes: None,
-            source_work_per_attempt: 1,
-            worker_job_capacity: self.stream_pool_size,
-            lane_count: self.stream_pool_size,
-            memory_partition: DeviceRegistryMemoryPartition::WholeDevice,
+        self.device_profiles.get(&device_ordinal).cloned().unwrap_or_else(|| {
+            DeviceRegistryInstallProfile::legacy_default(
+                self.stream_pool_size,
+                DeviceRegistryCapacityPolicy::Automatic {
+                    headroom_bytes: self.capacity_headroom_bytes,
+                    fallback_bytes: self.fallback_capacity_bytes,
+                    fraction: None,
+                    maximum_bytes: self.device_capacity_bytes,
+                },
+            )
         })
     }
 }
@@ -247,7 +266,7 @@ impl DeviceRegistry {
             // more than eight slots are configured, so the frozen
             // `floor * A_d <= managed_capacity` invariant always holds.
             // Explicit floors are validated against the same equation.
-            let max_active = profile.max_active_queries.unwrap_or(1);
+            let max_active = profile.resolved_max_active_queries();
             let default_floor_divisor = u64::try_from(max_active).unwrap_or(u64::MAX).max(8);
             let attempt_floor_bytes = match profile.attempt_floor_bytes {
                 Some(floor) => floor,
@@ -274,7 +293,7 @@ impl DeviceRegistry {
                 0,
                 profile.backend_reserve_bytes,
                 attempt_floor_bytes,
-                profile.max_active_queries.unwrap_or(1),
+                profile.resolved_max_active_queries(),
                 profile.source_work_per_attempt,
                 profile.stream_pool_size,
                 profile.worker_job_capacity,
@@ -947,6 +966,16 @@ mod tests {
         let config = DeviceRegistryConfig::new(Vec::new(), 1);
 
         assert_eq!(configured_ordinals(&inventory, &config).unwrap(), vec![0, 1]);
+    }
+
+    #[test]
+    fn fallback_registry_profile_projects_engine_device_defaults() {
+        let profile = DeviceRegistryConfig::new(vec![4], 7).profile(4);
+        let engine = GpuBackendDeviceConfig::new(4, crate::runtime::GpuMemoryOwnership::WholeDeviceExclusive);
+
+        assert_eq!(profile.max_active_queries, Some(engine.max_active_queries()));
+        assert_eq!(profile.attempt_floor_bytes, engine.attempt_floor_bytes());
+        assert_eq!(profile.source_work_per_attempt, engine.source_work_per_attempt());
     }
 
     #[test]

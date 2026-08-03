@@ -20,15 +20,14 @@ use futures::TryStreamExt;
 use nexus_query_engine::{
     expr::{BinaryOp, Expr, LiteralValue},
     optimizer::{
-        DimensionKeyAccumulator, DimensionKeyFilter, KeyRange, LocalParquetRowGroupSelection,
-        apply_dimension_derived_pruning_with_stats, apply_local_parquet_row_group_selections,
-        discover_dimension_derived_pruning_requests, local_parquet_source, reader_projection_indices,
-        seed_dimension_derived_reader_predicates,
+        DimensionKeyAccumulator, DimensionKeyFilter, KeyRange, LakehouseFooterPruningEvent,
+        LakehouseFooterPruningOptions, LakehouseFooterPruningResolver, LocalParquetRowGroupSelection,
+        optimize_lakehouse_footer_pruning,
     },
     parquet_stats::{leaf_column_statistics, row_group_i64_range_for_root_column},
-    plan::{NodeId, PlanNode, QueryPlan},
+    plan::{NodeId, QueryPlan},
     runtime::SourceStorageProfile,
-    source::{LocalParquetSource, ParquetSourceLocation, SourceColumnRef, SourceNode},
+    source::{LocalParquetSource, SourceColumnRef},
 };
 
 #[cfg(test)]
@@ -57,152 +56,108 @@ pub(crate) async fn prune_native_query_plan(
     source_storage_profiles: &[SourceStorageProfile],
 ) -> QueryPlan {
     let policy = TableFormatPruningPolicy::default();
-    let original_plan = plan.clone();
-    let mut plan = seed_dimension_derived_reader_predicates(plan);
-    let mut any_applied = false;
-    let static_target_file_count: usize = static_reader_predicate_source_node_ids(&plan)
-        .into_iter()
-        .filter_map(|source_node_id| local_parquet_source(&plan, source_node_id))
-        .map(|source| source.files.len())
-        .sum();
-    if policy.target_file_guard_exceeded(static_target_file_count) {
-        eprintln!(
-            "[lakehouse_pruning] event=skip reason=too_many_static_predicate_files target_file_count={} max_target_file_count={}",
-            static_target_file_count,
-            policy.max_target_files_across_requests(),
-        );
-        return original_plan;
-    }
-    let mut object_stores = FooterObjectStoreRegistry::new(runtime_env, source_storage_profiles);
+    let mut resolver =
+        FooterPruningResolver { object_stores: FooterObjectStoreRegistry::new(runtime_env, source_storage_profiles) };
+    let result = optimize_lakehouse_footer_pruning(
+        plan,
+        LakehouseFooterPruningOptions::new(policy.max_target_files_across_requests()),
+        &mut resolver,
+    )
+    .await;
 
-    match prune_static_reader_predicate_sources(plan.clone(), &mut object_stores).await {
-        Ok(StaticPredicatePruneOutcome { plan: patched, applied, before, after }) => {
-            if applied {
+    for event in result.events {
+        match event {
+            LakehouseFooterPruningEvent::StaticReaderPredicateApplied { before, after } => {
                 eprintln!(
                     "[lakehouse_pruning] event=static_reader_predicate_applied before_row_groups={} after_row_groups={}",
                     before, after,
                 );
-                plan = patched;
-                any_applied = true;
-            }
-        },
-        Err(reason) => {
-            eprintln!("[lakehouse_pruning] event=skip reason={}", stable_log_field(&reason));
-        },
-    }
-
-    let requests = discover_dimension_derived_pruning_requests(&plan);
-    if requests.is_empty() && !any_applied {
-        return original_plan;
-    }
-
-    let target_file_count: usize = requests
-        .iter()
-        .filter_map(|request| local_parquet_source(&plan, request.target_source_node_id))
-        .filter(|source| !source.files.iter().all(|file| file.location.as_local_path().is_some()))
-        .map(|source| source.files.len())
-        .sum();
-    if policy.target_file_guard_exceeded(target_file_count) {
-        eprintln!(
-            "[lakehouse_pruning] event=skip reason=too_many_target_files target_file_count={} max_target_file_count={}",
-            target_file_count,
-            policy.max_target_files_across_requests(),
-        );
-        return if any_applied { plan } else { original_plan };
-    }
-
-    for request in requests {
-        match prune_request(plan.clone(), &mut object_stores, request).await {
-            Ok(RequestOutcome::Applied { plan: patched, target_source_node_id, before, after }) => {
+            },
+            LakehouseFooterPruningEvent::Skipped { reason } => {
+                eprintln!("[lakehouse_pruning] event=skip reason={}", stable_log_field(&reason));
+            },
+            LakehouseFooterPruningEvent::DimensionDerivedApplied { target_source_node_id, before, after } => {
                 eprintln!(
                     "[lakehouse_pruning] event=applied target_source_node_id={} before_row_groups={} after_row_groups={}",
                     target_source_node_id.index(),
                     before,
                     after,
                 );
-                plan = *patched;
-                any_applied = true;
             },
-            Ok(RequestOutcome::Skipped { target_source_node_id, reason }) => {
+            LakehouseFooterPruningEvent::DimensionDerivedSkipped { target_source_node_id, reason } => {
                 eprintln!(
                     "[lakehouse_pruning] event=skip target_source_node_id={} reason={}",
                     target_source_node_id.index(),
                     reason,
                 );
             },
-            Err(error) => {
+            LakehouseFooterPruningEvent::DimensionDerivedRequestError { error } => {
                 eprintln!("[lakehouse_pruning] event=skip reason=request_error error={}", stable_log_field(&error));
             },
         }
     }
 
-    if any_applied { plan } else { original_plan }
+    result.plan
 }
 
-struct StaticPredicatePruneOutcome {
-    plan: QueryPlan,
-    applied: bool,
-    before: usize,
-    after: usize,
+struct FooterPruningResolver<'a> {
+    object_stores: FooterObjectStoreRegistry<'a>,
 }
 
-async fn prune_static_reader_predicate_sources(
-    mut plan: QueryPlan,
-    object_stores: &mut FooterObjectStoreRegistry<'_>,
-) -> std::result::Result<StaticPredicatePruneOutcome, String> {
-    let source_node_ids = static_reader_predicate_source_node_ids(&plan);
-    if source_node_ids.is_empty() {
-        return Ok(StaticPredicatePruneOutcome { plan, applied: false, before: 0, after: 0 });
+impl LakehouseFooterPruningResolver for FooterPruningResolver<'_> {
+    async fn static_row_group_selections(
+        &mut self,
+        source_node_id: NodeId,
+        source: &LocalParquetSource,
+        predicate: &Expr,
+    ) -> std::result::Result<Option<Vec<LocalParquetRowGroupSelection>>, String> {
+        let Some(pruning_expr) = static_row_group_pruning_expr(source, predicate) else {
+            return Ok(None);
+        };
+        static_reader_predicate_row_group_selections(&mut self.object_stores, source_node_id, source, &pruning_expr)
+            .await
+            .map(Some)
     }
 
-    let mut applied = false;
-    let mut before = 0usize;
-    let mut after = 0usize;
-    for source_node_id in source_node_ids {
-        let Some(source) = local_parquet_source(&plan, source_node_id).cloned() else {
-            continue;
-        };
-        let Some(predicate) = source.reader_predicate.as_ref() else {
-            continue;
-        };
-        let Some(pruning_expr) = static_row_group_pruning_expr(&source, predicate) else {
-            continue;
-        };
-        let selections =
-            static_reader_predicate_row_group_selections(object_stores, source_node_id, &source, &pruning_expr).await?;
-        let result = apply_local_parquet_row_group_selections(plan, source_node_id, &selections);
-        if result.applied {
-            before = before.saturating_add(result.before);
-            after = after.saturating_add(result.after);
-            plan = result.plan;
-            applied = true;
-        } else {
-            plan = result.plan;
+    async fn dimension_key_filter(
+        &mut self,
+        source_node_id: NodeId,
+        source: &LocalParquetSource,
+        key_column: &str,
+        predicate: &Expr,
+        projection_indices: &[usize],
+    ) -> std::result::Result<Option<DimensionKeyFilter>, String> {
+        derive_dimension_key_filter(
+            &mut self.object_stores,
+            source_node_id,
+            source,
+            key_column,
+            predicate,
+            projection_indices,
+        )
+        .await
+    }
+
+    async fn target_row_group_key_ranges(
+        &mut self,
+        source_node_id: NodeId,
+        source: &LocalParquetSource,
+        key_column_index: usize,
+    ) -> std::result::Result<Vec<Vec<Option<KeyRange>>>, String> {
+        let mut per_file_row_group_key_ranges = Vec::with_capacity(source.files.len());
+        for file in &source.files {
+            let object = object_store_file(&file.location)?;
+            let store = self.object_stores.store_for_file(file, &object, source_node_id)?;
+            let metadata = parquet_metadata(store, object.path, file.file_size_bytes, source_node_id).await?;
+            let selected_row_groups = selected_or_all_row_groups(file.row_groups.as_deref(), metadata.num_row_groups());
+            per_file_row_group_key_ranges.push(row_group_key_ranges(
+                metadata.as_ref(),
+                key_column_index,
+                &selected_row_groups,
+            ));
         }
+        Ok(per_file_row_group_key_ranges)
     }
-    Ok(StaticPredicatePruneOutcome { plan, applied, before, after })
-}
-
-fn static_reader_predicate_source_node_ids(plan: &QueryPlan) -> Vec<NodeId> {
-    plan.nodes()
-        .iter()
-        .filter_map(|node| match &node.kind {
-            PlanNode::Source(source) => match source.as_ref() {
-                SourceNode::LocalParquet(source)
-                    if source.reader_predicate.is_some()
-                        && !source.files.is_empty()
-                        && source
-                            .files
-                            .iter()
-                            .all(|file| matches!(file.location, ParquetSourceLocation::ObjectStoreUri { .. })) =>
-                {
-                    Some(node.id)
-                },
-                SourceNode::LocalParquet(_) | SourceNode::GpuResident(_) | SourceNode::LiteralBatch(_) => None,
-            },
-            _ => None,
-        })
-        .collect()
 }
 
 async fn static_reader_predicate_row_group_selections(
@@ -656,96 +611,17 @@ fn static_bytes_range_may_satisfy(min: &[u8], max: &[u8], op: BinaryOp, literal:
     }
 }
 
-enum RequestOutcome {
-    Applied { plan: Box<QueryPlan>, target_source_node_id: NodeId, before: usize, after: usize },
-    Skipped { target_source_node_id: NodeId, reason: &'static str },
-}
-
-async fn prune_request(
-    plan: QueryPlan,
-    object_stores: &mut FooterObjectStoreRegistry<'_>,
-    request: nexus_query_engine::optimizer::DimensionDerivedPruningRequest,
-) -> std::result::Result<RequestOutcome, String> {
-    let target_source_node_id = request.target_source_node_id;
-    let Some(target_source) = local_parquet_source(&plan, target_source_node_id) else {
-        return Ok(RequestOutcome::Skipped { target_source_node_id, reason: "missing_target_source" });
-    };
-    if target_source.files.iter().all(|file| file.location.as_local_path().is_some()) {
-        return Ok(RequestOutcome::Skipped { target_source_node_id, reason: "target_is_local_path" });
-    }
-    if !target_source.files.iter().all(|file| matches!(file.location, ParquetSourceLocation::ObjectStoreUri { .. })) {
-        return Ok(RequestOutcome::Skipped { target_source_node_id, reason: "mixed_or_unsupported_target_locations" });
-    }
-
-    let Some(dimension_source) = local_parquet_source(&plan, request.dimension_source_node_id) else {
-        return Ok(RequestOutcome::Skipped { target_source_node_id, reason: "missing_dimension_source" });
-    };
-    let Some(predicate) = dimension_source.reader_predicate.as_ref() else {
-        return Ok(RequestOutcome::Skipped { target_source_node_id, reason: "missing_dimension_predicate" });
-    };
-
-    let Some(key_filter) = derive_dimension_key_filter(
-        object_stores,
-        request.dimension_source_node_id,
-        dimension_source,
-        &request.dimension_key_column,
-        predicate,
-    )
-    .await?
-    else {
-        return Ok(RequestOutcome::Skipped { target_source_node_id, reason: "empty_or_unsupported_dimension_range" });
-    };
-
-    let SourceColumnRef::File(target_key_column_index) = target_source
-        .source_column_ref(&request.target_key_column)
-        .ok_or_else(|| "missing_target_key_column".to_string())?
-    else {
-        return Ok(RequestOutcome::Skipped { target_source_node_id, reason: "target_key_not_file_column" });
-    };
-
-    let mut per_file_row_group_key_ranges = Vec::with_capacity(target_source.files.len());
-    for file in &target_source.files {
-        let object = object_store_file(&file.location)?;
-        let store = object_stores.store_for_file(file, &object, target_source_node_id)?;
-        let metadata = parquet_metadata(store, object.path, file.file_size_bytes, target_source_node_id).await?;
-        let selected_row_groups = selected_or_all_row_groups(file.row_groups.as_deref(), metadata.num_row_groups());
-        per_file_row_group_key_ranges.push(row_group_key_ranges(
-            metadata.as_ref(),
-            target_key_column_index,
-            &selected_row_groups,
-        ));
-    }
-
-    let result = apply_dimension_derived_pruning_with_stats(
-        plan,
-        target_source_node_id,
-        &per_file_row_group_key_ranges,
-        &key_filter,
-    );
-    if result.applied {
-        Ok(RequestOutcome::Applied {
-            plan: Box::new(result.plan),
-            target_source_node_id,
-            before: result.before,
-            after: result.after,
-        })
-    } else {
-        Ok(RequestOutcome::Skipped { target_source_node_id, reason: "no_fact_row_group_reduction" })
-    }
-}
-
 async fn derive_dimension_key_filter(
     object_stores: &mut FooterObjectStoreRegistry<'_>,
     source_node_id: NodeId,
     source: &LocalParquetSource,
     key_column: &str,
     predicate: &Expr,
+    projection_indices: &[usize],
 ) -> std::result::Result<Option<DimensionKeyFilter>, String> {
     // Fold object-store dimension batches through the same accumulator the
     // in-engine local pass uses, so both derive identical set-aware filters.
     let policy = TableFormatPruningPolicy::default();
-    let projection_indices = reader_projection_indices(source, key_column, predicate)
-        .ok_or_else(|| "unsupported_dimension_projection".to_string())?;
     let mut accumulator = DimensionKeyAccumulator::default();
     let mut total_rows = 0usize;
     for file in &source.files {

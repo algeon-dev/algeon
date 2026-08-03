@@ -42,7 +42,7 @@ use nexus_query_engine::{
     runtime::{
         BoundedJoinReservationContract, BoundedJoinReservationStatus, BuildMaterializationBoundary,
         ExecutionBoundaryPolicy, ExecutionCancellation, MemoryControlPolicy, MemoryReservationRequest, MemorySpaceId,
-        ProbeExecutionBoundary, ReservationKind, ResultMaterializationBoundary, RetryFacts, SourceReadBoundary,
+        ProbeExecutionBoundary, ReservationKind, ResultMaterializationBoundary, SourceReadBoundary,
         SourceSchedulerPolicy,
     },
     source::{
@@ -150,8 +150,6 @@ mod preference_contracts;
 mod public_facade;
 #[path = "../../../tests/support/public_surface.rs"]
 mod public_surface;
-#[path = "native_contract_tests/reservation_tracker_contracts.rs"]
-mod reservation_tracker_contracts;
 #[path = "native_contract_tests/runtime_observability.rs"]
 mod runtime_observability;
 #[path = "native_contract_tests/source_contracts.rs"]
@@ -160,8 +158,6 @@ mod source_contracts;
 mod type_support;
 #[path = "native_contract_tests/vector_algorithm.rs"]
 mod vector_algorithm;
-#[path = "native_contract_tests/yielded_frame.rs"]
-mod yielded_frame;
 
 #[test]
 fn query_error_codes_and_facts_are_stable_without_datafusion() {
@@ -442,26 +438,6 @@ fn source_chunk_planning_policy_rejects_zero_row_group_limit() {
     assert_eq!(error.operation(), "nexus_query_engine.source_chunk.policy");
     assert_eq!(error.fact_value("field"), Some("max_row_groups_per_chunk"));
     assert_eq!(error.fact_value("reason"), Some("zero"));
-}
-
-#[test]
-fn retry_facts_attach_stable_resume_and_merge_context() {
-    let request = MemoryReservationRequest::new(ReservationKind::FinalMerge, 2048, 1024);
-    let error = RetryFacts::new()
-        .with_retry_action("reduce_merge_fan_in")
-        .with_resume_boundary("final_merge")
-        .with_committed_chunks(8)
-        .with_committed_partials(8)
-        .with_merge_level(1)
-        .with_merge_fan_in(2)
-        .attach_to_error(request.denied_error(1024));
-
-    assert_eq!(error.fact_value("retry_action"), Some("reduce_merge_fan_in"));
-    assert_eq!(error.fact_value("resume_boundary"), Some("final_merge"));
-    assert_eq!(error.fact_value("committed_chunks"), Some("8"));
-    assert_eq!(error.fact_value("committed_partials"), Some("8"));
-    assert_eq!(error.fact_value("merge_level"), Some("1"));
-    assert_eq!(error.fact_value("merge_fan_in"), Some("2"));
 }
 
 #[test]

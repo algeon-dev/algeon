@@ -16,8 +16,8 @@ use datafusion_nexus::{
     error::{DataFusionErrorExt, Error as AdapterError},
     native_exec::NexusNativeExecutionConfig,
     native_report::{
-        FinalPlanDisposition, NativeDataFusionPlanningOutcome,
-        NativeDataFusionPlanningReport, NativeDataFusionPlanningRow,
+        FinalPlanDisposition, NativeDataFusionPlanningOutcome, NativeDataFusionPlanningReport,
+        NativeDataFusionPlanningRow,
     },
     planner::{NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule},
     session::NexusSessionStateBuilderExt,
@@ -174,14 +174,8 @@ struct StructuredFailure {
 }
 
 enum NativeCollectOutcome {
-    Succeeded {
-        planning_row: NativeDataFusionPlanningRow,
-        measurement: CpuBaseline,
-    },
-    RuntimeFailed {
-        planning_row: NativeDataFusionPlanningRow,
-        error: DataFusionError,
-    },
+    Succeeded { planning_row: NativeDataFusionPlanningRow, measurement: CpuBaseline },
+    RuntimeFailed { planning_row: NativeDataFusionPlanningRow, error: DataFusionError },
 }
 
 struct PreparedNativeQuery {

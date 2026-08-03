@@ -547,7 +547,7 @@ fn backend_admission_session_config_not_frozen_error() -> DataFusionError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::native_exec::admission::{TestAdmissionController, TestAdmissionDeviceProfile};
+    use crate::backend::InstalledTestGpuBackend;
 
     #[test]
     fn graph_request_key_is_mutable_when_backend_admission_config_is_frozen() {
@@ -567,10 +567,14 @@ mod tests {
 
     #[test]
     fn graph_request_key_applies_to_backend_frozen_optimizer_config() {
-        let controller =
-            TestAdmissionController::new(TestAdmissionDeviceProfile::new(0, 2048, 1, 512), Some(2048)).unwrap();
+        let backend = InstalledTestGpuBackend::new();
+        let source = backend
+            .optimizer_config()
+            .native_execution_config()
+            .query_admission_source()
+            .expect("installed backend must provide admission authority");
         let execution_config =
-            NexusNativeExecutionConfig::bounded(512, 512, 1, 3, 1).with_query_admission_source(controller.source());
+            NexusNativeExecutionConfig::bounded(512, 512, 1, 3, 1).with_query_admission_source(source);
         let base = NexusNativeOptimizerConfig::default().with_native_execution_config(execution_config);
         let mut session_config =
             DataFusionNexusSessionConfig::from_optimizer_config(&base).frozen_for_backend_admission();

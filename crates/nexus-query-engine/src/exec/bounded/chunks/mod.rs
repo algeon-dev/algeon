@@ -3,8 +3,7 @@ use std::collections::VecDeque;
 use super::{
     super::source::{
         ScheduledLocalParquetRead, ScheduledLocalParquetReadOutput, apply_source_scan_limit_to_frame,
-        local_parquet_execution_frame_schema, read_local_parquet_chunk, read_local_parquet_chunk_batch,
-        source_read_batch_request, source_read_request,
+        read_local_parquet_chunk, read_local_parquet_chunk_batch, source_read_batch_request, source_read_request,
     },
     *,
 };

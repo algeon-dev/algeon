@@ -481,11 +481,14 @@ mod tests {
                 lifecycle.gpu(5).unwrap();
                 lifecycle.terminalize(RuntimeTerminalOutcome::Succeeded, 6).unwrap();
                 lifecycle
-                    .terminal_commit(AttemptTerminalCommit::new(
-                        AttemptCapacityDisposition::Released,
-                        None,
-                        AttemptHealthTransition::HealthyReuse,
-                    ), 7)
+                    .terminal_commit(
+                        AttemptTerminalCommit::new(
+                            AttemptCapacityDisposition::Released,
+                            None,
+                            AttemptHealthTransition::HealthyReuse,
+                        ),
+                        7,
+                    )
                     .unwrap();
                 lifecycle.ready(8).unwrap();
             },
@@ -499,11 +502,14 @@ mod tests {
                 lifecycle.gpu(5).unwrap();
                 lifecycle.terminalize(failed(), 6).unwrap();
                 lifecycle
-                    .terminal_commit(AttemptTerminalCommit::new(
-                        AttemptCapacityDisposition::Released,
-                        None,
-                        AttemptHealthTransition::HealthyReuse,
-                    ), 7)
+                    .terminal_commit(
+                        AttemptTerminalCommit::new(
+                            AttemptCapacityDisposition::Released,
+                            None,
+                            AttemptHealthTransition::HealthyReuse,
+                        ),
+                        7,
+                    )
                     .unwrap();
                 lifecycle.ready(8).unwrap();
             },
@@ -641,11 +647,14 @@ mod tests {
             Err(AttemptLifecycleError::InvalidOrder { boundary: "report_ready", reason: "finalization_incomplete" })
         ));
         admitted
-            .terminal_commit(AttemptTerminalCommit::new(
-                AttemptCapacityDisposition::Released,
-                None,
-                AttemptHealthTransition::HealthyReuse,
-            ), 5)
+            .terminal_commit(
+                AttemptTerminalCommit::new(
+                    AttemptCapacityDisposition::Released,
+                    None,
+                    AttemptHealthTransition::HealthyReuse,
+                ),
+                5,
+            )
             .unwrap();
         admitted.ready(6).unwrap();
     }

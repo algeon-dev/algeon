@@ -1,5 +1,4 @@
 use std::{
-    collections::HashMap,
     fs::{self, File},
     path::Path,
     sync::Arc,
@@ -7,12 +6,10 @@ use std::{
 
 use arrow::{
     array::{
-        Array, AsArray, BooleanArray, Date32Array, Date64Array, Decimal128Array, DurationNanosecondArray, Float32Array,
-        Float64Array, Int8Array, Int32Array, Int64Array, LargeListArray, LargeStringArray, ListArray, StringArray,
-        Time32MillisecondArray, Time64NanosecondArray, TimestampMicrosecondArray, TimestampNanosecondArray,
-        UInt32Array, UInt64Array,
+        Array, BooleanArray, Date32Array, Decimal128Array, DurationNanosecondArray, Float32Array, Float64Array,
+        Int8Array, Int32Array, Int64Array, LargeListArray, LargeStringArray, ListArray, StringArray,
+        TimestampNanosecondArray, UInt64Array,
     },
-    buffer::{NullBuffer, OffsetBuffer, ScalarBuffer},
     datatypes::{DataType, Field, Schema, TimeUnit},
     record_batch::RecordBatch,
 };
@@ -24,30 +21,22 @@ use nexus_query_engine::observability::{
     PlanExecutionBoundaryKind, RuntimeObservationConfig, RuntimeObservationPayload, RuntimeTerminalOutcome,
 };
 use nexus_query_engine::{
-    chunk::{SourceChunkPlanningPolicy, plan_local_parquet_source_chunks},
     error::QueryErrorCode,
-    exec::{
-        execute_query_plan, execute_query_plan_with_gpu_inputs, materialize_gpu_result_to_host, output::QueryOutput,
-    },
+    exec::{execute_query_plan, execute_query_plan_with_gpu_inputs, output::QueryOutput},
     expr::{
-        AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, Expr, GroupingSetsSpec, LimitSpec, LiteralValue,
-        SortExpr, SortSpec,
+        AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, Expr, LimitSpec, LiteralValue, SortExpr, SortSpec,
     },
     metrics::{MemoryReservationEventAction, QueryMetrics},
     mode::StddevSampExecutionMode,
     observability::AdmissionRequestId,
-    plan::{
-        JoinKey, JoinNullEquality, JoinOutputColumn, JoinSide, JoinSpec, JoinType, ProjectionOutput, QueryPlanBuilder,
-        WindowFunction, WindowSpec,
-    },
+    plan::{JoinKey, JoinOutputColumn, JoinSide, JoinSpec, JoinType, ProjectionOutput, QueryPlanBuilder},
     runtime::{
-        BoundedJoinReservationContract, BuildMaterializationBoundary, DeviceLedger, ExecutionBoundaryPolicy,
-        ExecutionContext, MemoryControlPolicy, MemorySpaceId, ReservationKind, SourceSchedulerPolicy,
+        BoundedJoinReservationContract, DeviceLedger, ExecutionBoundaryPolicy, ExecutionContext, MemoryControlPolicy,
+        ReservationKind,
         resident::{GpuDataFrame, GpuResidentInputMap, GpuResultHandle},
     },
     source::{
-        GpuResidentSource, LiteralBatchSource, LocalParquetFile, LocalParquetSource, MissingColumn,
-        ParquetEqualityDeleteFile, ParquetPositionDeleteFile, PartitionColumn, ResolvedParquetSource, SourceNode,
+        GpuResidentSource, LiteralBatchSource, LocalParquetFile, LocalParquetSource, PartitionColumn, SourceNode,
         ZERO_COLUMN_COUNT_COLUMN,
     },
 };
@@ -55,19 +44,13 @@ use nexus_query_engine::{
 use nexus_query_engine::{
     exec::force_next_graph_seed_chunk_retry_chunk_attempt_resource_exhausted_for_test,
     exec::force_next_graph_seed_chunk_retry_full_attempt_resource_exhausted_for_test,
-    exec::force_next_graph_statistics_optional_resource_exhausted_for_test,
-    graph_memory::GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES, graph_memory::GRAPH_VERTEX_ESTIMATE_BOUNDARY,
-    graph_memory::GRAPH_VERTEX_ESTIMATE_PROBE_MIN_BYTES, graph_memory::GraphMemoryCalibrationOverride,
-    graph_memory::GraphMemoryModel, graph_memory::GraphMemoryModelInput, graph_memory::GraphReservationOutcome,
-    graph_memory::GraphSeedMode, graph_memory::GraphVertexEstimate, graph_memory::GraphVertexEstimateSource,
-    graph_memory::graph_vertex_estimate_probe_bytes, plan::GraphAlgorithm, plan::GraphAlgorithmParams,
-    plan::GraphAlgorithmSpec, plan::GraphBetweennessCentralityParams, plan::GraphBetweennessSeeds,
-    plan::GraphBfsEndpointPolicy, plan::GraphBfsParams, plan::GraphBfsPredicateInputs, plan::GraphConstructionOptions,
-    plan::GraphConstructionPolicy, plan::GraphEdgeBetweennessCentralityParams, plan::GraphEdgeColumnBindings,
-    plan::GraphEdgePredicateInput, plan::GraphPageRankParams, plan::GraphPageRankPersonalizationInput,
-    plan::GraphPersonalizedPageRankParams, plan::GraphPredicateInput, plan::GraphResidencyPlanAnalysis,
-    plan::GraphSimilarityParams, plan::GraphTriangleCountAllParams, plan::GraphVertexPairInput,
-    plan::graph_residency_descriptor_for_edge_plan, plan::planned_resident_graph_key, plan::stable_graph_result_schema,
+    graph_memory::GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES, graph_memory::GraphMemoryCalibrationOverride,
+    graph_memory::GraphReservationOutcome, plan::GraphAlgorithm, plan::GraphAlgorithmParams, plan::GraphAlgorithmSpec,
+    plan::GraphBetweennessCentralityParams, plan::GraphBetweennessSeeds, plan::GraphBfsEndpointPolicy,
+    plan::GraphBfsParams, plan::GraphBfsPredicateInputs, plan::GraphConstructionOptions, plan::GraphConstructionPolicy,
+    plan::GraphEdgeBetweennessCentralityParams, plan::GraphEdgeColumnBindings, plan::GraphPageRankParams,
+    plan::GraphPredicateInput, plan::GraphSimilarityParams, plan::GraphVertexPairInput,
+    plan::stable_graph_result_schema,
 };
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 
@@ -139,9 +122,7 @@ mod vector_algorithm_execution;
 // Window cache-retention scenarios are P5 substrate; P2 execution tests run
 // with durable source caching disabled.
 
-use aggregate_test_support::*;
 use join_test_support::*;
-use metrics_assertions::*;
 use parquet_fixtures::*;
 use test_support::*;
 

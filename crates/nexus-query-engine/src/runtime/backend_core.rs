@@ -1,32 +1,32 @@
 //! Ownership-enforcing GPU backend construction and lifecycle facade.
 
 use std::{
-    any::Any,
-    collections::BTreeMap,
     fmt,
-    panic::{AssertUnwindSafe, catch_unwind},
     sync::{
-        Arc, Condvar, Mutex, OnceLock, Weak,
-        atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering},
-        mpsc,
+        Arc, Mutex, OnceLock, Weak,
+        atomic::{AtomicU64, Ordering},
     },
-    thread,
     time::{Duration, Instant},
 };
+#[cfg(test)]
+use std::{
+    sync::{Condvar, atomic::AtomicU8, mpsc},
+    thread,
+};
 
+#[cfg(test)]
+use super::observation_completion::ObservationCompletionWorkerLane;
 use super::{
     DeploymentIoCapability, DeviceCapabilities, DeviceFacts, DeviceLedgerReport, DeviceMemoryFailureReport,
     DeviceTelemetrySnapshot, GpuExecutionPoolSnapshot, GpuExecutionQuerySnapshot, QueryAdmissionRequest,
     QueryExecutionConfig, QueryHandle, QueryService, QueryServiceAdmissionSnapshot,
     QueryServiceDeviceAdmissionSnapshot, QueueBounds,
+    backend_close::{CloseCoordinator, ConstructionRollback, reject_reentrant_observation_close},
     backend_lifecycle::{
         BackendLifecycle, GpuLifecyclePermit, ObservationPermit, PublicHandleLease, PublicHandleTracker,
     },
     gpu::{LiveBackendLease, claim_live_backend, normalize_device_ordinals},
-    process_exit::{
-        ProcessExitPhase, ProcessExitRegistration, ProcessExitShutdown, register_cuda_process_exit_shutdown,
-    },
-    query_service::{QueryServiceDrainOutcome, QueryServiceDrainPhaseOutcome},
+    observation_completion::ObservationCompletionExecutor,
 };
 use crate::{
     attempt::{
@@ -34,13 +34,14 @@ use crate::{
         BeginAttemptRequest,
     },
     error::{QueryError, QueryErrorCode, Result},
-    observability::in_runtime_observation_delivery,
 };
 
 const BUILD_OPERATION: &str = "nexus_query_engine.gpu_backend_core.build";
 const CLOSE_OPERATION: &str = "nexus_query_engine.gpu_backend_core.close";
 const RESOURCE_OPERATION: &str = "nexus_query_engine.gpu_backend_core.resource";
-const CLEANUP_SLICE: Duration = Duration::from_millis(100);
+
+pub use super::backend_close::GpuBackendCloseSnapshot;
+pub(crate) use super::observation_completion::ObservationCompletionDispatcher;
 
 /// Deployment ownership promised for one CUDA device.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -125,6 +126,16 @@ pub struct GpuBackendDeviceConfig {
 }
 
 impl GpuBackendDeviceConfig {
+    /// Absence asks the engine to derive the immutable floor from the
+    /// installed device's managed capacity and active-attempt limit.
+    pub const DEFAULT_ATTEMPT_FLOOR_BYTES: Option<u64> = None;
+    /// One auxiliary source-work slot is reserved for each active attempt by
+    /// default.
+    pub const DEFAULT_SOURCE_WORK_PER_ATTEMPT: usize = 1;
+    /// Device admission begins with one active attempt unless the installer
+    /// explicitly freezes a different per-device limit.
+    pub const DEFAULT_MAX_ACTIVE_QUERIES: usize = 1;
+
     pub fn new(device_ordinal: usize, memory_ownership: GpuMemoryOwnership) -> Self {
         Self {
             device_ordinal,
@@ -132,9 +143,9 @@ impl GpuBackendDeviceConfig {
             memory_ownership,
             memory_limit: GpuDeviceMemoryLimit::default(),
             backend_reserve_bytes: 0,
-            attempt_floor_bytes: None,
-            source_work_per_attempt: 1,
-            max_active_queries: 1,
+            attempt_floor_bytes: Self::DEFAULT_ATTEMPT_FLOOR_BYTES,
+            source_work_per_attempt: Self::DEFAULT_SOURCE_WORK_PER_ATTEMPT,
+            max_active_queries: Self::DEFAULT_MAX_ACTIVE_QUERIES,
             stream_pool_size: 1,
             worker_count: 1,
             lane_count: 1,
@@ -248,6 +259,14 @@ impl GpuBackendDeviceConfig {
 
     pub fn lane_count(&self) -> usize {
         self.lane_count
+    }
+
+    pub fn install_telemetry(&self) -> bool {
+        self.install_telemetry
+    }
+
+    pub fn install_diagnostics(&self) -> bool {
+        self.install_diagnostics
     }
 }
 
@@ -427,7 +446,7 @@ fn validate_device_config(device: &GpuBackendDeviceConfig) -> Result<()> {
         }
     }
     match device.memory_limit {
-        GpuDeviceMemoryLimit::Automatic { fallback_bytes, .. } if fallback_bytes == 0 => {
+        GpuDeviceMemoryLimit::Automatic { fallback_bytes: 0, .. } => {
             return Err(invalid_device_config(
                 device.device_ordinal,
                 "memory_limit.fallback_bytes",
@@ -444,7 +463,7 @@ fn validate_device_config(device: &GpuBackendDeviceConfig) -> Result<()> {
             .with_fact("reason", "reserve_exhausts_fallback")
             .with_fact("fallback_bytes", fallback_bytes));
         },
-        GpuDeviceMemoryLimit::Explicit { limit_bytes } if limit_bytes == 0 => {
+        GpuDeviceMemoryLimit::Explicit { limit_bytes: 0 } => {
             return Err(invalid_device_config(
                 device.device_ordinal,
                 "memory_limit.limit_bytes",
@@ -495,14 +514,12 @@ fn validate_device_config(device: &GpuBackendDeviceConfig) -> Result<()> {
         }
     }
     let allocation_limit_bytes = native_allocation_limit_bytes(device)?;
-    cudf::DeviceMemoryManagerOptions { allocation_limit_bytes, ..Default::default() }.validate().map_err(
-        |error| {
-            QueryError::from_cudf(BUILD_OPERATION, "invalid per-device memory manager installation options", error)
-                .with_fact("field", "device_memory_manager_options")
-                .with_fact("device_ordinal", device.device_ordinal)
-                .with_fact("reason", "invalid_device_memory_manager_options")
-        },
-    )?;
+    cudf::DeviceMemoryManagerOptions { allocation_limit_bytes, ..Default::default() }.validate().map_err(|error| {
+        QueryError::from_cudf(BUILD_OPERATION, "invalid per-device memory manager installation options", error)
+            .with_fact("field", "device_memory_manager_options")
+            .with_fact("device_ordinal", device.device_ordinal)
+            .with_fact("reason", "invalid_device_memory_manager_options")
+    })?;
     Ok(())
 }
 
@@ -668,8 +685,6 @@ impl GpuBackendCoreBuilder {
                 self.probe.as_ref(),
                 &journal,
             )?;
-            drop(token);
-
             generation.service.set(service).map_err(|_service| {
                 QueryError::new(
                     QueryErrorCode::Internal,
@@ -1084,504 +1099,22 @@ impl fmt::Debug for GpuResourcePermit {
 }
 
 #[derive(Debug)]
-struct ResourceCore {
+pub(crate) struct ResourceCore {
     identity: u64,
-    generation: Mutex<Option<Arc<ResourceGeneration>>>,
+    pub(crate) generation: Mutex<Option<Arc<ResourceGeneration>>>,
 }
 
 #[derive(Debug)]
-struct ObservationCore {
+pub(crate) struct ObservationCore {
     identity: u64,
-    lifecycle: BackendLifecycle,
+    pub(crate) lifecycle: BackendLifecycle,
     attempt_counters: Arc<AttemptBackendCounters>,
     attempt_completion_queue: Option<Arc<AttemptCompletionQueue>>,
     completion_executor: ObservationCompletionExecutor,
 }
 
-type ObservationCompletionCallback = Box<dyn FnOnce() + Send + 'static>;
-
-/// A completion callback that recovers itself if the worker drops it before
-/// explicitly running it.
-///
-/// A receiver drops its queued messages when the worker exits unexpectedly.
-/// Permit release and observer sealing are terminal work, so silently dropping
-/// either would strand backend observation quiescence.
-struct ObservationCompletionTask {
-    callback: Option<ObservationCompletionCallback>,
-}
-
-impl ObservationCompletionTask {
-    fn new<F>(callback: F) -> Self
-    where F: FnOnce() + Send + 'static {
-        Self { callback: Some(Box::new(callback)) }
-    }
-
-    fn run(mut self) {
-        if let Some(callback) = self.callback.take() {
-            execute_observation_completion(callback);
-        }
-    }
-}
-
-impl Drop for ObservationCompletionTask {
-    fn drop(&mut self) {
-        if let Some(callback) = self.callback.take() {
-            execute_observation_completion(callback);
-        }
-    }
-}
-
-enum ObservationCompletionMessage {
-    Completion(ObservationCompletionTask),
-    #[cfg(test)]
-    InjectWorkerFaultForTest,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ObservationCompletionWorkerLane {
-    Observation,
-    ActivityTail,
-}
-
-impl ObservationCompletionWorkerLane {
-    const fn as_str(self) -> &'static str {
-        match self {
-            Self::Observation => "observation",
-            Self::ActivityTail => "activity_tail",
-        }
-    }
-
-    const fn thread_name(self) -> &'static str {
-        match self {
-            Self::Observation => "nexus-observation-completion-observation",
-            Self::ActivityTail => "nexus-observation-completion-activity-tail",
-        }
-    }
-
-    const fn slot(self) -> usize {
-        match self {
-            Self::Observation => 0,
-            Self::ActivityTail => 1,
-        }
-    }
-}
-
-const OBSERVATION_COMPLETION_WORKER_RUNNING: u8 = 0;
-const OBSERVATION_COMPLETION_WORKER_STOPPED: u8 = 1;
-const OBSERVATION_COMPLETION_POLL_INTERVAL: Duration = Duration::from_millis(10);
-
-/// Supervisor-visible state for the detached completion worker.
-///
-/// A caught supervisor fault is retained as a diagnostic without destroying
-/// the only pre-created delivery thread. The worker continues consuming its
-/// receiver, which keeps completion off callers such as the stream-cleanup
-/// supervisor. Receiver teardown still recovers queued RAII tasks.
 #[derive(Debug)]
-struct ObservationCompletionExecutorState {
-    worker_terminal: AtomicU8,
-    worker_fault_count: AtomicU64,
-    shutdown_requested: AtomicBool,
-}
-
-impl ObservationCompletionExecutorState {
-    fn new() -> Self {
-        Self {
-            worker_terminal: AtomicU8::new(OBSERVATION_COMPLETION_WORKER_RUNNING),
-            worker_fault_count: AtomicU64::new(0),
-            shutdown_requested: AtomicBool::new(false),
-        }
-    }
-
-    fn accepts_dispatch(&self) -> bool {
-        !self.shutdown_requested.load(Ordering::Acquire)
-            && self.worker_terminal.load(Ordering::Acquire) == OBSERVATION_COMPLETION_WORKER_RUNNING
-    }
-
-    fn request_shutdown(&self) {
-        self.shutdown_requested.store(true, Ordering::Release);
-    }
-
-    fn mark_stopped(&self) {
-        self.worker_terminal.store(OBSERVATION_COMPLETION_WORKER_STOPPED, Ordering::Release);
-    }
-
-    fn record_fault(&self) {
-        self.worker_fault_count.fetch_add(1, Ordering::Relaxed);
-    }
-
-    #[cfg(test)]
-    fn worker_fault_count(&self) -> u64 {
-        self.worker_fault_count.load(Ordering::Acquire)
-    }
-}
-
-/// Retains the completion-worker join handles until their final owner either
-/// drains naturally or the process-exit registry stops them. Completion work
-/// is host-side, but activity-tail destructors can reenter backend lifecycle
-/// code, so their workers must not outlive CUDA's process finalizer either.
-#[derive(Debug)]
-struct ObservationCompletionSupervisor {
-    observation_state: Arc<ObservationCompletionExecutorState>,
-    activity_tail_state: Arc<ObservationCompletionExecutorState>,
-    join: Mutex<[Option<thread::JoinHandle<()>>; 2]>,
-    active_workers: AtomicUsize,
-    process_exit_registration: Mutex<Option<ProcessExitRegistration>>,
-}
-
-impl ObservationCompletionSupervisor {
-    fn new() -> Arc<Self> {
-        Arc::new(Self {
-            observation_state: Arc::new(ObservationCompletionExecutorState::new()),
-            activity_tail_state: Arc::new(ObservationCompletionExecutorState::new()),
-            join: Mutex::new([None, None]),
-            active_workers: AtomicUsize::new(0),
-            process_exit_registration: Mutex::new(None),
-        })
-    }
-
-    fn state(&self, lane: ObservationCompletionWorkerLane) -> Arc<ObservationCompletionExecutorState> {
-        match lane {
-            ObservationCompletionWorkerLane::Observation => Arc::clone(&self.observation_state),
-            ObservationCompletionWorkerLane::ActivityTail => Arc::clone(&self.activity_tail_state),
-        }
-    }
-
-    fn spawn_worker(
-        self: &Arc<Self>,
-        lane: ObservationCompletionWorkerLane,
-        state: Arc<ObservationCompletionExecutorState>,
-    ) -> Result<mpsc::Sender<ObservationCompletionMessage>> {
-        let (sender, receiver) = mpsc::channel::<ObservationCompletionMessage>();
-        self.active_workers.fetch_add(1, Ordering::AcqRel);
-        let worker_supervisor = Arc::clone(self);
-        let failed_supervisor = Arc::clone(self);
-        let name = lane.thread_name();
-        let worker = thread::Builder::new()
-            .name(name.to_string())
-            .spawn(move || {
-                run_observation_completion_worker(receiver, state, name);
-                worker_supervisor.worker_stopped();
-            })
-            .map_err(|error| {
-                failed_supervisor.active_workers.fetch_sub(1, Ordering::AcqRel);
-                QueryError::new(
-                    QueryErrorCode::Internal,
-                    BUILD_OPERATION,
-                    "failed to create backend observation completion worker",
-                )
-                .with_fact("reason", "observation_completion_worker_spawn_failed")
-                .with_fact("worker_lane", lane.as_str())
-                .with_fact("io_error", error.to_string())
-            })?;
-        self.join.lock().unwrap_or_else(std::sync::PoisonError::into_inner)[lane.slot()] = Some(worker);
-        Ok(sender)
-    }
-
-    fn activate_process_exit(self: &Arc<Self>) {
-        self.activate_process_exit_with(register_cuda_process_exit_shutdown);
-    }
-
-    /// Registers outside the slot mutex. Process-exit registration may invoke
-    /// the supplied shutdown owner synchronously when global exit has already
-    /// begun; that owner joins workers and re-enters `unregister_process_exit`.
-    /// Keeping the mutex out of that callback path prevents a self-deadlock.
-    fn activate_process_exit_with(
-        self: &Arc<Self>,
-        register: impl FnOnce(Arc<dyn ProcessExitShutdown>) -> Option<ProcessExitRegistration>,
-    ) {
-        {
-            let registration = self.process_exit_registration.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            if registration.is_some() || self.active_workers.load(Ordering::Acquire) == 0 {
-                return;
-            }
-        }
-
-        let shutdown: Arc<dyn ProcessExitShutdown> = self.clone();
-        let registration = register(shutdown);
-        let registration_to_unregister = {
-            let mut slot = self.process_exit_registration.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            if self.active_workers.load(Ordering::Acquire) == 0 || slot.is_some() {
-                registration
-            } else {
-                *slot = registration;
-                None
-            }
-        };
-        if let Some(registration) = registration_to_unregister {
-            registration.unregister();
-        }
-    }
-
-    fn unregister_process_exit(&self) {
-        let registration =
-            self.process_exit_registration.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
-        if let Some(registration) = registration {
-            registration.unregister();
-        }
-    }
-
-    fn worker_stopped(&self) {
-        if self.active_workers.fetch_sub(1, Ordering::AcqRel) == 1 {
-            self.unregister_process_exit();
-        }
-    }
-
-    fn request_shutdown(&self) {
-        self.observation_state.request_shutdown();
-        self.activity_tail_state.request_shutdown();
-    }
-
-    fn join_for_process_exit(&self) {
-        self.request_shutdown();
-        let mut join = self.join.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        for slot in join.iter_mut() {
-            let Some(handle) = slot.take() else {
-                continue;
-            };
-            if handle.thread().id() == thread::current().id() {
-                *slot = Some(handle);
-                continue;
-            }
-            let _ = handle.join();
-        }
-        drop(join);
-        self.unregister_process_exit();
-    }
-}
-
-impl ProcessExitShutdown for ObservationCompletionSupervisor {
-    fn phase(&self) -> ProcessExitPhase {
-        ProcessExitPhase::ObservationCompletion
-    }
-
-    fn shutdown_for_process_exit(&self) {
-        self.join_for_process_exit();
-    }
-}
-
-/// Cloneable post-GPU cleanup dispatch capability.
-///
-/// The observation lane seals and delivers snapshots before releasing an
-/// observation permit. The activity-tail lane drops opaque query activity only
-/// after that fence is gone. Each lane has a pre-created worker and neither
-/// holds a [`ResourceCore`] or GPU resource.
-#[derive(Clone)]
-pub(crate) struct ObservationCompletionDispatcher {
-    observation_sender: mpsc::Sender<ObservationCompletionMessage>,
-    observation_state: Arc<ObservationCompletionExecutorState>,
-    activity_tail_sender: mpsc::Sender<ObservationCompletionMessage>,
-    activity_tail_state: Arc<ObservationCompletionExecutorState>,
-}
-
-impl fmt::Debug for ObservationCompletionDispatcher {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.debug_struct("ObservationCompletionDispatcher").finish_non_exhaustive()
-    }
-}
-
-impl ObservationCompletionDispatcher {
-    /// Runs one finalization payload after its caller has released GPU state.
-    ///
-    /// A stopped or disconnected worker cannot consume the payload, so the
-    /// dispatcher synchronously executes it. A recoverable worker fault does
-    /// not take this path: the pre-created worker records it and continues.
-    pub(crate) fn dispatch<F>(&self, completion: F)
-    where F: FnOnce() + Send + 'static {
-        self.dispatch_to(&self.observation_sender, &self.observation_state, completion);
-    }
-
-    /// Runs opaque activity destruction after the observation lane released
-    /// its permit. This distinct lane prevents a blocking activity callback
-    /// from starving later observation completion required by backend close.
-    pub(crate) fn dispatch_activity_tail<F>(&self, completion: F)
-    where F: FnOnce() + Send + 'static {
-        self.dispatch_to(&self.activity_tail_sender, &self.activity_tail_state, completion);
-    }
-
-    fn dispatch_to<F>(
-        &self,
-        sender: &mpsc::Sender<ObservationCompletionMessage>,
-        state: &ObservationCompletionExecutorState,
-        completion: F,
-    ) where
-        F: FnOnce() + Send + 'static,
-    {
-        let completion = ObservationCompletionTask::new(completion);
-        if !state.accepts_dispatch() {
-            completion.run();
-            return;
-        }
-        if let Err(mpsc::SendError(ObservationCompletionMessage::Completion(completion))) =
-            sender.send(ObservationCompletionMessage::Completion(completion))
-        {
-            completion.run();
-        }
-    }
-
-    #[cfg(test)]
-    fn disconnected_for_test() -> Self {
-        let (observation_sender, observation_receiver) = mpsc::channel();
-        let (activity_tail_sender, activity_tail_receiver) = mpsc::channel();
-        drop(observation_receiver);
-        drop(activity_tail_receiver);
-        Self {
-            observation_sender,
-            observation_state: Arc::new(ObservationCompletionExecutorState::new()),
-            activity_tail_sender,
-            activity_tail_state: Arc::new(ObservationCompletionExecutorState::new()),
-        }
-    }
-}
-
-/// Pre-created, backend-owned worker for detached observation completion.
-///
-/// The executor owns no backend resources. Its dispatcher may be retained by a
-/// query after the resource generation is gone, so an enqueue failure must
-/// execute the payload inline rather than drop its permit. Both receivers drain
-/// accepted payloads after the executor owner drops; dispatcher clones retain
-/// senders until every future completion has either been enqueued or
-/// synchronously finalized.
-#[derive(Debug)]
-struct ObservationCompletionExecutor {
-    dispatcher: ObservationCompletionDispatcher,
-    supervisor: Arc<ObservationCompletionSupervisor>,
-}
-
-impl ObservationCompletionExecutor {
-    fn spawn() -> Result<Self> {
-        Self::spawn_with_lane_spawner(|lane, state, supervisor| supervisor.spawn_worker(lane, state))
-    }
-
-    fn spawn_with_lane_spawner(
-        spawn_lane: impl Fn(
-            ObservationCompletionWorkerLane,
-            Arc<ObservationCompletionExecutorState>,
-            Arc<ObservationCompletionSupervisor>,
-        ) -> Result<mpsc::Sender<ObservationCompletionMessage>>,
-    ) -> Result<Self> {
-        let supervisor = ObservationCompletionSupervisor::new();
-        let observation_state = supervisor.state(ObservationCompletionWorkerLane::Observation);
-        let observation_sender = spawn_lane(
-            ObservationCompletionWorkerLane::Observation,
-            Arc::clone(&observation_state),
-            Arc::clone(&supervisor),
-        )?;
-        let activity_tail_state = supervisor.state(ObservationCompletionWorkerLane::ActivityTail);
-        let activity_tail_sender = match spawn_lane(
-            ObservationCompletionWorkerLane::ActivityTail,
-            Arc::clone(&activity_tail_state),
-            Arc::clone(&supervisor),
-        ) {
-            Ok(sender) => sender,
-            Err(error) => {
-                // Explicitly disconnect the already-started observation
-                // lane before returning an unpublished construction error.
-                drop(observation_sender);
-                supervisor.join_for_process_exit();
-                return Err(error);
-            },
-        };
-        Ok(Self {
-            dispatcher: ObservationCompletionDispatcher {
-                observation_sender,
-                observation_state,
-                activity_tail_sender,
-                activity_tail_state,
-            },
-            supervisor,
-        })
-    }
-
-    /// Registers both lanes only after backend service construction has
-    /// entered CUDA. This keeps the engine's `atexit` callback ahead of
-    /// libcudart while preserving the executor's detached delivery contract.
-    fn activate_process_exit(&self) {
-        self.supervisor.activate_process_exit();
-    }
-
-    #[cfg(test)]
-    fn spawn_with_lane_failure_for_test(failing_lane: ObservationCompletionWorkerLane) -> Result<Self> {
-        Self::spawn_with_lane_spawner(|lane, state, supervisor| {
-            if lane == failing_lane {
-                return Err(QueryError::new(
-                    QueryErrorCode::Internal,
-                    BUILD_OPERATION,
-                    "injected backend observation completion worker spawn failure",
-                )
-                .with_fact("reason", "observation_completion_worker_spawn_failed")
-                .with_fact("worker_lane", lane.as_str()));
-            }
-            supervisor.spawn_worker(lane, state)
-        })
-    }
-
-    fn dispatcher(&self) -> ObservationCompletionDispatcher {
-        self.dispatcher.clone()
-    }
-
-    #[cfg(test)]
-    fn inject_observation_worker_fault_for_test(&self) {
-        self.dispatcher
-            .observation_sender
-            .send(ObservationCompletionMessage::InjectWorkerFaultForTest)
-            .expect("test completion worker is connected");
-    }
-
-    #[cfg(test)]
-    fn observation_worker_fault_count(&self) -> u64 {
-        self.dispatcher.observation_state.worker_fault_count()
-    }
-}
-
-fn run_observation_completion_worker(
-    receiver: mpsc::Receiver<ObservationCompletionMessage>,
-    state: Arc<ObservationCompletionExecutorState>,
-    name: &'static str,
-) {
-    loop {
-        if state.shutdown_requested.load(Ordering::Acquire) {
-            state.mark_stopped();
-            return;
-        }
-        let received =
-            catch_unwind(AssertUnwindSafe(|| match receiver.recv_timeout(OBSERVATION_COMPLETION_POLL_INTERVAL) {
-                Ok(message) => {
-                    match message {
-                        ObservationCompletionMessage::Completion(completion) => completion.run(),
-                        #[cfg(test)]
-                        ObservationCompletionMessage::InjectWorkerFaultForTest => {
-                            panic!("injected observation completion worker fault");
-                        },
-                    }
-                    true
-                },
-                Err(mpsc::RecvTimeoutError::Timeout) => true,
-                Err(mpsc::RecvTimeoutError::Disconnected) => false,
-            }));
-        match received {
-            Ok(true) => {},
-            Ok(false) => {
-                state.mark_stopped();
-                return;
-            },
-            Err(_) => {
-                state.record_fault();
-                eprintln!(
-                    "[nexus-query-engine] warning: backend observation completion worker {name} recovered from a fault"
-                );
-            },
-        }
-    }
-}
-
-fn execute_observation_completion(completion: ObservationCompletionCallback) {
-    if catch_unwind(AssertUnwindSafe(completion)).is_err() {
-        eprintln!("[nexus-query-engine] warning: backend observation completion callback panicked");
-    }
-}
-
-#[derive(Debug)]
-struct ResourceGeneration {
+pub(crate) struct ResourceGeneration {
     service: OnceLock<QueryService>,
     startup_records: OnceLock<Arc<[GpuBackendDeviceStartupRecord]>>,
     generation_id: u64,
@@ -1605,8 +1138,12 @@ impl ResourceGeneration {
         }
     }
 
-    fn service(&self) -> Option<&QueryService> {
+    pub(crate) fn service(&self) -> Option<&QueryService> {
         self.service.get()
+    }
+
+    pub(crate) fn construction_journal(&self) -> &ConstructionResourceJournal {
+        &self.construction_journal
     }
 }
 
@@ -1650,7 +1187,7 @@ impl ConstructionResourceJournal {
         Ok(())
     }
 
-    fn close_and_drain_until(&self, deadline: Instant) -> Result<()> {
+    pub(crate) fn close_and_drain_until(&self, deadline: Instant) -> Result<()> {
         let entries = self.entries.lock().map_err(|_| construction_journal_poisoned())?;
         let mut first_deadline = None;
         let mut first_permanent = None;
@@ -1695,568 +1232,6 @@ fn construction_journal_poisoned() -> QueryError {
         .with_fact("reason", "construction_journal_poisoned")
 }
 
-/// Signals the pre-created cleanup coordinator unless construction reaches
-/// publication. This is intentionally armed before the first GPU mutation.
-struct ConstructionRollback {
-    coordinator: Option<Arc<CloseCoordinator>>,
-}
-
-impl ConstructionRollback {
-    fn new(coordinator: Arc<CloseCoordinator>) -> Self {
-        Self { coordinator: Some(coordinator) }
-    }
-
-    fn disarm(&mut self) {
-        self.coordinator.take();
-    }
-
-    fn attach_cleanup_facts(&mut self, error: QueryError) -> QueryError {
-        let Some(coordinator) = self.coordinator.take() else {
-            return error.with_fact("rollback_cleanup", "not_armed");
-        };
-        let deadline = Instant::now().checked_add(CLEANUP_SLICE).unwrap_or_else(Instant::now);
-        match coordinator.close_and_wait_until(deadline) {
-            Ok(snapshot) => error
-                .with_fact("rollback_cleanup", "quiescent")
-                .with_fact("rollback_gpu_resource_quiescent", snapshot.gpu_resource_quiescent)
-                .with_fact("rollback_observation_quiescent", snapshot.observation_quiescent),
-            Err(cleanup_error) => error
-                .with_fact("rollback_cleanup", "transferred")
-                .with_fact("rollback_cleanup_code", cleanup_error.code().as_str())
-                .with_fact("rollback_cleanup_reason", cleanup_error.fact_value("reason").unwrap_or("unknown")),
-        }
-    }
-}
-
-impl Drop for ConstructionRollback {
-    fn drop(&mut self) {
-        if let Some(coordinator) = self.coordinator.take() {
-            coordinator.signal();
-        }
-    }
-}
-
-#[derive(Debug)]
-struct CloseCoordinator {
-    sender: Mutex<Option<mpsc::Sender<()>>>,
-    state: Arc<CloseCompletion>,
-    lifecycle: BackendLifecycle,
-    join: Mutex<Option<thread::JoinHandle<()>>>,
-    process_exit_requested: Arc<AtomicBool>,
-    process_exit_registration: Mutex<Option<ProcessExitRegistration>>,
-}
-
-impl CloseCoordinator {
-    fn spawn(resource: Arc<ResourceCore>, observation: Arc<ObservationCore>) -> Result<Arc<Self>> {
-        let (sender, receiver) = mpsc::channel();
-        let state = Arc::new(CloseCompletion::new());
-        let process_exit_requested = Arc::new(AtomicBool::new(false));
-        let coordinator = Arc::new(Self {
-            sender: Mutex::new(Some(sender)),
-            state: Arc::clone(&state),
-            lifecycle: observation.lifecycle.clone(),
-            join: Mutex::new(None),
-            process_exit_requested: Arc::clone(&process_exit_requested),
-            process_exit_registration: Mutex::new(None),
-        });
-        let worker_state = Arc::clone(&state);
-        let worker_lifecycle = observation.lifecycle.clone();
-        let resource_for_panic = Arc::clone(&resource);
-        let worker_coordinator = Arc::clone(&coordinator);
-        let join = thread::Builder::new()
-            .name("nexus-gpu-close".to_string())
-            .spawn(move || {
-                let result = catch_unwind(AssertUnwindSafe(|| {
-                    let _ = receiver.recv();
-                    run_cleanup(resource, worker_lifecycle.clone(), Arc::clone(&worker_state), &process_exit_requested);
-                }));
-                if result.is_err() {
-                    worker_state.fail("cleanup_worker", "cleanup worker panicked");
-                    // A panic must not drop a still-installed resource
-                    // generation and release its owner lease.
-                    std::mem::forget(resource_for_panic);
-                }
-                worker_coordinator.unregister_process_exit();
-            })
-            .map_err(|error| {
-                QueryError::new(QueryErrorCode::Internal, BUILD_OPERATION, "failed to create backend cleanup worker")
-                    .with_fact("reason", "cleanup_worker_spawn_failed")
-                    .with_fact("io_error", error.to_string())
-            })?;
-        *coordinator.join.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(join);
-        Ok(coordinator)
-    }
-
-    fn activate_process_exit(self: &Arc<Self>) {
-        let shutdown: Arc<dyn ProcessExitShutdown> = self.clone();
-        let registration = register_cuda_process_exit_shutdown(shutdown);
-        *self.process_exit_registration.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = registration;
-    }
-
-    fn unregister_process_exit(&self) {
-        let registration =
-            self.process_exit_registration.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
-        if let Some(registration) = registration {
-            registration.unregister();
-        }
-    }
-
-    fn signal(&self) -> bool {
-        let gate_winner = self.lifecycle.close();
-        if !gate_winner {
-            return false;
-        }
-        self.state.mark_closing();
-        let sender = self.sender.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
-        if sender.is_none_or(|sender| sender.send(()).is_err()) {
-            self.state.fail("cleanup_signal", "cleanup worker disconnected before close signal");
-        }
-        true
-    }
-
-    fn close_and_wait_until(&self, deadline: Instant) -> Result<GpuBackendCloseSnapshot> {
-        self.signal();
-        let snapshot = self.state.wait_until(deadline, &self.lifecycle)?;
-        self.join_after_quiescence()?;
-        Ok(snapshot)
-    }
-
-    fn join_after_quiescence(&self) -> Result<()> {
-        let mut join = self.join.lock().map_err(|_| {
-            QueryError::new(QueryErrorCode::Internal, CLOSE_OPERATION, "backend cleanup worker join mutex was poisoned")
-                .with_fact("reason", "cleanup_worker_join_poisoned")
-        })?;
-        let Some(handle) = join.take() else {
-            return Ok(());
-        };
-        if handle.thread().id() == thread::current().id() {
-            // A reentrant close invoked by the cleanup worker itself cannot
-            // join its own entry point. The worker will unregister only after
-            // it has completed all GPU and observation teardown.
-            *join = Some(handle);
-            return Ok(());
-        }
-        let joined = handle.join();
-        drop(join);
-        self.unregister_process_exit();
-        joined.map_err(|panic| {
-            QueryError::new(QueryErrorCode::Internal, CLOSE_OPERATION, "backend cleanup worker panicked during join")
-                .with_fact("reason", "cleanup_worker_join_panicked")
-                .with_fact("panic_message", panic_message(panic.as_ref()))
-        })
-    }
-
-    fn join_for_process_exit(&self) {
-        // `std::process::exit` does not unwind the caller's stack. An admitted
-        // handle owned by that stack can therefore never participate in the
-        // ordinary quiescence protocol. Tell the cleanup worker to stop at its
-        // next bounded phase boundary and leak the resource generation; the
-        // separately registered execution/stream supervisors then terminate
-        // their workers without allowing CUDA destructors to run after this
-        // process-exit hook returns.
-        self.process_exit_requested.store(true, Ordering::Release);
-        self.signal();
-        let mut join = self.join.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let Some(handle) = join.take() else {
-            return;
-        };
-        if handle.thread().id() == thread::current().id() {
-            *join = Some(handle);
-            return;
-        }
-        let _ = handle.join();
-        drop(join);
-        self.unregister_process_exit();
-    }
-}
-
-impl ProcessExitShutdown for CloseCoordinator {
-    fn phase(&self) -> ProcessExitPhase {
-        ProcessExitPhase::BackendCoordinator
-    }
-
-    fn shutdown_for_process_exit(&self) {
-        self.join_for_process_exit();
-    }
-}
-
-fn run_cleanup(
-    resource: Arc<ResourceCore>,
-    lifecycle: BackendLifecycle,
-    state: Arc<CloseCompletion>,
-    process_exit_requested: &AtomicBool,
-) {
-    lifecycle.close();
-    let generation = match resource.generation.lock() {
-        Ok(mut generation) => generation.take(),
-        Err(_error) => {
-            state.fail("resource_generation", "resource-core generation mutex was poisoned");
-            std::mem::forget(Arc::clone(&resource));
-            return;
-        },
-    };
-    let Some(generation) = generation else {
-        state.mark_gpu_quiescent();
-        wait_for_observation_forever(&lifecycle, &state, process_exit_requested);
-        return;
-    };
-    let generation = FailClosedGeneration::new(generation);
-    if let Some(service) = generation.service() {
-        service.close().unwrap_or_else(|error| {
-            eprintln!("[nexus-query-engine] backend close signal returned an error: {error}");
-        });
-        if process_exit_requested.load(Ordering::Acquire) {
-            return;
-        }
-        loop {
-            let deadline = Instant::now().checked_add(CLEANUP_SLICE).unwrap_or_else(Instant::now);
-            let outcome: QueryServiceDrainOutcome = service.close_drain_step_until(deadline);
-            let mut all_quiescent = true;
-            let mut permanent_failure = None;
-            for phase_outcome in outcome.phases() {
-                match phase_outcome {
-                    QueryServiceDrainPhaseOutcome::Quiescent { phase } => {
-                        state.record_quiescent(phase.as_str());
-                    },
-                    QueryServiceDrainPhaseOutcome::DeadlineElapsed { phase, .. } => {
-                        all_quiescent = false;
-                        state.record_deadline(phase.as_str());
-                    },
-                    QueryServiceDrainPhaseOutcome::PermanentFailure { phase, error } => {
-                        all_quiescent = false;
-                        if permanent_failure.is_none() {
-                            permanent_failure = Some((phase.as_str(), error));
-                        }
-                    },
-                }
-            }
-            if let Some((phase, error)) = permanent_failure {
-                state.fail(phase, error);
-                return;
-            }
-            if all_quiescent {
-                break;
-            }
-            if process_exit_requested.load(Ordering::Acquire) {
-                return;
-            }
-        }
-    }
-    // The service first closes admission and drains work using the resources
-    // retained by the permanent journal. Only then may the journal close and
-    // verify every runtime/resource handle. Construction rollback has no
-    // published service and therefore reaches this same journal path directly.
-    loop {
-        let deadline = Instant::now().checked_add(CLEANUP_SLICE).unwrap_or_else(Instant::now);
-        match generation.construction_journal().close_and_drain_until(deadline) {
-            Ok(()) => {
-                state.record_quiescent("construction_journal");
-                break;
-            },
-            Err(error) if error.is_cleanup_deadline_elapsed() => {
-                state.record_deadline("construction_journal");
-            },
-            Err(error) => {
-                state.fail("construction_journal", error);
-                return;
-            },
-        }
-        if process_exit_requested.load(Ordering::Acquire) {
-            return;
-        }
-    }
-    loop {
-        let deadline = Instant::now().checked_add(CLEANUP_SLICE).unwrap_or_else(Instant::now);
-        match lifecycle.wait_for_gpu_quiescence_until(deadline) {
-            Ok(()) => {
-                state.record_quiescent("gpu_permit_quiescence");
-                break;
-            },
-            Err(error) if error.is_cleanup_deadline_elapsed() => {
-                state.record_deadline("gpu_permit_quiescence");
-            },
-            Err(error) => {
-                state.fail("gpu_permit_quiescence", error);
-                return;
-            },
-        }
-        if process_exit_requested.load(Ordering::Acquire) {
-            return;
-        }
-    }
-    generation.release();
-    drop(resource);
-    state.mark_gpu_quiescent();
-    wait_for_observation_forever(&lifecycle, &state, process_exit_requested);
-}
-
-fn wait_for_observation_forever(
-    lifecycle: &BackendLifecycle,
-    state: &CloseCompletion,
-    process_exit_requested: &AtomicBool,
-) {
-    loop {
-        let deadline = Instant::now().checked_add(CLEANUP_SLICE).unwrap_or_else(Instant::now);
-        match lifecycle.wait_for_observation_quiescence_until(deadline) {
-            Ok(()) => {
-                state.record_quiescent("observation_quiescence");
-                state.mark_observation_quiescent();
-                return;
-            },
-            Err(error) if error.is_cleanup_deadline_elapsed() => {
-                state.record_deadline("observation_quiescence");
-            },
-            Err(error) => {
-                state.fail("observation_quiescence", error);
-                return;
-            },
-        }
-        if process_exit_requested.load(Ordering::Acquire) {
-            return;
-        }
-    }
-}
-
-struct FailClosedGeneration {
-    generation: Option<Arc<ResourceGeneration>>,
-}
-
-impl FailClosedGeneration {
-    fn new(generation: Arc<ResourceGeneration>) -> Self {
-        Self { generation: Some(generation) }
-    }
-
-    fn service(&self) -> Option<&QueryService> {
-        self.generation.as_ref().expect("generation retained until release").service()
-    }
-
-    fn construction_journal(&self) -> &ConstructionResourceJournal {
-        &self.generation.as_ref().expect("generation retained until release").construction_journal
-    }
-
-    fn release(mut self) {
-        drop(self.generation.take());
-    }
-}
-
-impl Drop for FailClosedGeneration {
-    fn drop(&mut self) {
-        if let Some(generation) = self.generation.take() {
-            std::mem::forget(generation);
-        }
-    }
-}
-
-const PHASE_OPEN: u8 = 0;
-const PHASE_CLOSING: u8 = 1;
-const PHASE_GPU_QUIESCENT: u8 = 2;
-const PHASE_OBSERVATION_QUIESCENT: u8 = 3;
-const PHASE_FAILED: u8 = 4;
-
-#[derive(Debug)]
-struct CloseCompletion {
-    phase: AtomicU8,
-    error: Mutex<Option<CloseFailure>>,
-    deadline_elapsed: AtomicU64,
-    late_successes: AtomicU64,
-    cleanup_phases: Mutex<BTreeMap<&'static str, CleanupPhaseProgress>>,
-    wait: Mutex<()>,
-    changed: Condvar,
-}
-
-#[derive(Debug, Clone)]
-struct CloseFailure {
-    phase: &'static str,
-    error: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CleanupPhaseProgress {
-    DeadlineElapsed,
-    Quiescent,
-}
-
-impl CloseCompletion {
-    fn new() -> Self {
-        Self {
-            phase: AtomicU8::new(PHASE_OPEN),
-            error: Mutex::new(None),
-            deadline_elapsed: AtomicU64::new(0),
-            late_successes: AtomicU64::new(0),
-            cleanup_phases: Mutex::new(BTreeMap::new()),
-            wait: Mutex::new(()),
-            changed: Condvar::new(),
-        }
-    }
-
-    fn mark_closing(&self) {
-        self.advance(PHASE_CLOSING);
-    }
-
-    fn mark_gpu_quiescent(&self) {
-        self.advance(PHASE_GPU_QUIESCENT);
-    }
-
-    fn mark_observation_quiescent(&self) {
-        self.advance(PHASE_OBSERVATION_QUIESCENT);
-    }
-
-    fn advance(&self, phase: u8) {
-        let mut current = self.phase.load(Ordering::Acquire);
-        while current < phase && current != PHASE_FAILED {
-            match self.phase.compare_exchange_weak(current, phase, Ordering::AcqRel, Ordering::Acquire) {
-                Ok(_) => {
-                    self.changed.notify_all();
-                    return;
-                },
-                Err(observed) => current = observed,
-            }
-        }
-    }
-
-    fn record_deadline(&self, phase: &'static str) {
-        let mut phases = self.cleanup_phases.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if !phases.contains_key(phase) {
-            phases.insert(phase, CleanupPhaseProgress::DeadlineElapsed);
-            self.deadline_elapsed.fetch_add(1, Ordering::Relaxed);
-        }
-    }
-
-    fn record_quiescent(&self, phase: &'static str) {
-        let mut phases = self.cleanup_phases.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if phases.insert(phase, CleanupPhaseProgress::Quiescent) == Some(CleanupPhaseProgress::DeadlineElapsed) {
-            self.late_successes.fetch_add(1, Ordering::Relaxed);
-        }
-    }
-
-    fn fail(&self, phase: &'static str, error: impl fmt::Display) {
-        let mut failure = self.error.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if failure.is_none() {
-            *failure = Some(CloseFailure { phase, error: error.to_string() });
-        }
-        drop(failure);
-        // A later observation-cleanup failure must not erase the already
-        // established GPU-resource-quiescent fact. Before GPU quiescence the
-        // failed sentinel also prevents any later success transition.
-        if self.phase.load(Ordering::Acquire) < PHASE_GPU_QUIESCENT {
-            self.phase.store(PHASE_FAILED, Ordering::Release);
-        }
-        self.changed.notify_all();
-    }
-
-    fn snapshot(&self, lifecycle: &BackendLifecycle) -> GpuBackendCloseSnapshot {
-        let phase = self.phase.load(Ordering::Acquire);
-        let lifecycle = lifecycle.snapshot();
-        let cleanup_failed = self.error.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_some();
-        GpuBackendCloseSnapshot {
-            closing: lifecycle.closing,
-            gpu_resource_quiescent: phase == PHASE_GPU_QUIESCENT || phase == PHASE_OBSERVATION_QUIESCENT,
-            observation_quiescent: phase == PHASE_OBSERVATION_QUIESCENT,
-            active_gpu_permits: lifecycle.active_gpu_permits,
-            active_observation_permits: lifecycle.active_observation_permits,
-            cleanup_failed,
-            cleanup_deadline_elapsed_count: self.deadline_elapsed.load(Ordering::Relaxed),
-            cleanup_late_success_count: self.late_successes.load(Ordering::Relaxed),
-        }
-    }
-
-    fn wait_until(&self, deadline: Instant, lifecycle: &BackendLifecycle) -> Result<GpuBackendCloseSnapshot> {
-        let mut wait = super::deadline::mutex_lock_until(&self.wait, deadline).map_err(|error| match error {
-            super::deadline::DeadlineMutexLockError::Poisoned => close_wait_poisoned_error(),
-            super::deadline::DeadlineMutexLockError::TimedOut => close_timeout_error(self.snapshot(lifecycle)),
-        })?;
-        loop {
-            let snapshot = self.snapshot(lifecycle);
-            if snapshot.cleanup_failed {
-                let cleanup_failure =
-                    self.error.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone().unwrap_or_else(|| {
-                        CloseFailure { phase: "unknown", error: "unknown cleanup failure".to_string() }
-                    });
-                return Err(QueryError::new(
-                    QueryErrorCode::Internal,
-                    CLOSE_OPERATION,
-                    "backend cleanup failed closed",
-                )
-                .with_fact("reason", "cleanup_failed_closed")
-                .with_fact("cleanup_phase", cleanup_failure.phase)
-                .with_fact("cleanup_error", cleanup_failure.error));
-            }
-            if snapshot.observation_quiescent {
-                return Ok(snapshot);
-            }
-            if super::deadline::deadline_expired(deadline) {
-                return Err(close_timeout_error(snapshot));
-            }
-            let Some(remaining) = super::deadline::deadline_remaining(deadline) else {
-                return Err(close_timeout_error(snapshot));
-            };
-            let (next, timeout) =
-                self.changed.wait_timeout(wait, remaining).map_err(|_error| close_wait_poisoned_error())?;
-            wait = next;
-            if timeout.timed_out() {
-                // A notify that lands between the deadline expiring and the
-                // waiter rescheduling must not be reported as a timeout: take
-                // one final snapshot before failing.
-                let snapshot = self.snapshot(lifecycle);
-                if snapshot.observation_quiescent {
-                    return Ok(snapshot);
-                }
-                return Err(close_timeout_error(snapshot));
-            }
-        }
-    }
-}
-
-/// Two-scope close state. GPU quiescence can become true while observation
-/// permits still exist; at that point the device-owner lease has been released.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct GpuBackendCloseSnapshot {
-    pub closing: bool,
-    pub gpu_resource_quiescent: bool,
-    pub observation_quiescent: bool,
-    pub active_gpu_permits: usize,
-    pub active_observation_permits: usize,
-    pub cleanup_failed: bool,
-    pub cleanup_deadline_elapsed_count: u64,
-    pub cleanup_late_success_count: u64,
-}
-
-fn close_timeout_error(snapshot: GpuBackendCloseSnapshot) -> QueryError {
-    QueryError::new(QueryErrorCode::ServiceOverloaded, CLOSE_OPERATION, "timed out waiting for backend close")
-        .with_fact("reason", "backend_close_timeout")
-        .with_fact("gpu_resource_quiescent", snapshot.gpu_resource_quiescent)
-        .with_fact("observation_quiescent", snapshot.observation_quiescent)
-        .with_fact("active_gpu_permits", snapshot.active_gpu_permits)
-        .with_fact("active_observation_permits", snapshot.active_observation_permits)
-        .with_fact("cleanup_deadline_elapsed_count", snapshot.cleanup_deadline_elapsed_count)
-        .with_fact("cleanup_late_success_count", snapshot.cleanup_late_success_count)
-}
-
-fn close_wait_poisoned_error() -> QueryError {
-    QueryError::new(QueryErrorCode::Internal, CLOSE_OPERATION, "backend close completion mutex was poisoned")
-        .with_fact("reason", "close_wait_poisoned")
-}
-
-fn panic_message(panic: &(dyn Any + Send)) -> String {
-    panic
-        .downcast_ref::<&'static str>()
-        .map(|message| (*message).to_string())
-        .or_else(|| panic.downcast_ref::<String>().cloned())
-        .unwrap_or_else(|| "non-string panic payload".to_string())
-}
-
-fn reject_reentrant_observation_close() -> Result<()> {
-    if in_runtime_observation_delivery() {
-        return Err(QueryError::new(
-            QueryErrorCode::Internal,
-            CLOSE_OPERATION,
-            "backend close-and-wait cannot run from runtime observation delivery",
-        )
-        .with_fact("reason", "reentrant_observation_close"));
-    }
-    Ok(())
-}
-
 fn backend_closing_resource_error() -> QueryError {
     QueryError::new(
         QueryErrorCode::Cancelled,
@@ -2283,7 +1258,7 @@ fn next_backend_identity() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{super::query_service::QueryServiceDrainPhase, *};
+    use super::*;
 
     #[derive(Debug)]
     struct ActivityPermitOrderingProbe {
@@ -2369,69 +1344,7 @@ mod tests {
 
         assert!(close.gpu_resource_quiescent);
         assert!(close.observation_quiescent);
-        assert!(coordinator.join.lock().unwrap().is_none(), "close must reclaim its cleanup worker handle");
-    }
-
-    #[test]
-    fn observation_completion_executor_runs_detached_callbacks_and_isolates_panics() {
-        let executor = ObservationCompletionExecutor::spawn().expect("test creates observation executor");
-        let dispatcher = executor.dispatcher();
-        let caller = thread::current().id();
-        let (sender, receiver) = mpsc::sync_channel(2);
-
-        dispatcher.dispatch({
-            let sender = sender.clone();
-            move || sender.send(thread::current().id()).expect("test receives completion worker id")
-        });
-        assert_ne!(
-            receiver.recv_timeout(Duration::from_secs(2)).expect("completion worker ran callback"),
-            caller,
-            "pre-created completion worker must detach finalization from the caller"
-        );
-
-        dispatcher.dispatch(|| panic!("injected observation completion panic"));
-        dispatcher.dispatch(move || sender.send(thread::current().id()).expect("worker survives callback panic"));
-        assert_ne!(
-            receiver.recv_timeout(Duration::from_secs(2)).expect("completion worker survived callback panic"),
-            caller
-        );
-    }
-
-    #[test]
-    fn observation_and_activity_tail_callbacks_use_distinct_precreated_workers() {
-        let executor = ObservationCompletionExecutor::spawn().expect("test creates observation executor");
-        let dispatcher = executor.dispatcher();
-        let (sender, receiver) = mpsc::sync_channel(2);
-
-        dispatcher.dispatch({
-            let sender = sender.clone();
-            move || sender.send(thread::current().id()).expect("test observes observation worker")
-        });
-        dispatcher.dispatch_activity_tail(move || {
-            sender.send(thread::current().id()).expect("test observes activity-tail worker")
-        });
-
-        let observation_worker = receiver.recv_timeout(Duration::from_secs(2)).expect("observation callback ran");
-        let activity_tail_worker = receiver.recv_timeout(Duration::from_secs(2)).expect("activity-tail callback ran");
-        assert_ne!(
-            observation_worker, activity_tail_worker,
-            "activity drops must not occupy observation delivery capacity"
-        );
-    }
-
-    #[test]
-    fn process_exit_joins_observation_completion_workers_and_closes_dispatch() {
-        let executor = ObservationCompletionExecutor::spawn().expect("test creates observation executor");
-        let dispatcher = executor.dispatcher();
-
-        executor.supervisor.join_for_process_exit();
-
-        assert_eq!(executor.supervisor.active_workers.load(Ordering::Acquire), 0);
-        assert!(executor.supervisor.join.lock().unwrap().iter().all(Option::is_none));
-        let caller = thread::current().id();
-        let (sender, receiver) = mpsc::sync_channel(1);
-        dispatcher.dispatch(move || sender.send(thread::current().id()).expect("fallback dispatch runs"));
-        assert_eq!(receiver.recv_timeout(Duration::from_secs(2)).expect("fallback completion runs"), caller);
+        assert!(coordinator.worker_join_is_reclaimed_for_test(), "close must reclaim its cleanup worker handle");
     }
 
     #[test]
@@ -2474,91 +1387,6 @@ mod tests {
     }
 
     #[test]
-    fn late_process_exit_registration_runs_callback_without_holding_registration_slot_mutex() {
-        let supervisor = ObservationCompletionSupervisor::new();
-        // The injected registration path models a global process-exit race:
-        // registry registration synchronously invokes the owner, which in
-        // turn calls `unregister_process_exit`.
-        supervisor.active_workers.store(1, Ordering::Release);
-        let callback_supervisor = Arc::clone(&supervisor);
-        let callback_ran = Arc::new(AtomicBool::new(false));
-        let callback_ran_slot = Arc::clone(&callback_ran);
-
-        supervisor.activate_process_exit_with(move |shutdown| {
-            assert!(
-                callback_supervisor.process_exit_registration.try_lock().is_ok(),
-                "registration slot mutex must be unlocked while registry registration calls back"
-            );
-            shutdown.shutdown_for_process_exit();
-            callback_ran_slot.store(true, Ordering::Release);
-            None
-        });
-
-        assert!(callback_ran.load(Ordering::Acquire));
-        supervisor.active_workers.store(0, Ordering::Release);
-    }
-
-    #[test]
-    fn observation_completion_dispatcher_synchronously_finalizes_when_enqueue_fails() {
-        let dispatcher = ObservationCompletionDispatcher::disconnected_for_test();
-        let caller = thread::current().id();
-        let (sender, receiver) = mpsc::sync_channel(1);
-
-        dispatcher.dispatch(move || sender.send(thread::current().id()).expect("fallback runs completion"));
-
-        assert_eq!(receiver.recv_timeout(Duration::from_secs(2)).expect("fallback completed"), caller);
-    }
-
-    #[test]
-    fn recoverable_observation_completion_worker_fault_keeps_later_delivery_off_caller() {
-        let executor = ObservationCompletionExecutor::spawn().expect("test creates observation executor");
-        let dispatcher = executor.dispatcher();
-        let caller = thread::current().id();
-        let (sender, receiver) = mpsc::sync_channel(2);
-
-        dispatcher.dispatch({
-            let sender = sender.clone();
-            move || sender.send(thread::current().id()).expect("test observes executor worker thread")
-        });
-        let worker_thread =
-            receiver.recv_timeout(Duration::from_secs(2)).expect("executor worker ran initial callback");
-
-        executor.inject_observation_worker_fault_for_test();
-        dispatcher.dispatch(move || sender.send(thread::current().id()).expect("recovered queued payload completed"));
-
-        let delivery_thread =
-            receiver.recv_timeout(Duration::from_secs(2)).expect("worker resumes queued completion after a fault");
-        assert_eq!(delivery_thread, worker_thread, "recovered delivery must stay on the pre-created executor thread");
-        assert_ne!(delivery_thread, caller, "recovered delivery must not run on the caller or stream supervisor");
-        assert_eq!(executor.observation_worker_fault_count(), 1, "worker supervisor records the recovered fault");
-    }
-
-    #[test]
-    fn observation_completion_worker_drains_accepted_payloads_after_executor_and_dispatchers_drop() {
-        let executor = ObservationCompletionExecutor::spawn().expect("test creates observation executor");
-        let dispatcher = executor.dispatcher();
-        let gate = Arc::new(BlockingGate::default());
-        let worker_gate = Arc::clone(&gate);
-        let (entered_sender, entered_receiver) = mpsc::sync_channel(1);
-        let (completed_sender, completed_receiver) = mpsc::sync_channel(1);
-
-        dispatcher.dispatch(move || {
-            entered_sender.send(()).expect("test observes first completion callback");
-            worker_gate.wait();
-        });
-        entered_receiver.recv_timeout(Duration::from_secs(2)).expect("completion worker began first callback");
-        dispatcher.dispatch(move || completed_sender.send(()).expect("test observes drained completion callback"));
-
-        drop(dispatcher);
-        drop(executor);
-        gate.release();
-
-        completed_receiver
-            .recv_timeout(Duration::from_secs(2))
-            .expect("worker drained accepted completion after owner drop");
-    }
-
-    #[test]
     fn observation_delivery_rejects_all_blocking_close_apis_without_signaling_close() {
         let backend = inert_backend_for_observation_delivery_test();
         let (sender, receiver) = mpsc::sync_channel(1);
@@ -2580,7 +1408,7 @@ mod tests {
         });
 
         owner
-            .finish_query(crate::observability::RuntimeTerminalOutcome::Succeeded)
+            .finish_query(Some(crate::observability::RuntimeTerminalOutcome::Succeeded))
             .expect("test seals observation owner");
         let (sync, until, asynchronous) = receiver.recv_timeout(Duration::from_secs(2)).expect("observer delivered");
         for error in [sync.unwrap_err(), until.unwrap_err(), asynchronous.unwrap_err()] {
@@ -2619,7 +1447,6 @@ mod tests {
 
     #[derive(Debug)]
     struct FailingProbe(GpuBackendConstructionCheckpoint);
-
     impl GpuBackendConstructionProbe for FailingProbe {
         fn checkpoint(&self, checkpoint: GpuBackendConstructionCheckpoint) -> Result<()> {
             if checkpoint == self.0 {
@@ -3122,63 +1949,6 @@ mod tests {
         pool.join_supervisor().expect("coordinator joined the runtime supervisor before releasing ownership");
         let replacement = claim_live_backend(&[ordinal]).expect("joined runtime permits a replacement owner");
         drop(replacement);
-    }
-
-    #[test]
-    fn cleanup_deadlines_become_late_success_only_for_the_same_phase() {
-        let state = CloseCompletion::new();
-        let lifecycle = BackendLifecycle::new();
-        let phases = [
-            QueryServiceDrainPhase::StreamPoolClose.as_str(),
-            QueryServiceDrainPhase::AdmissionQuiescence.as_str(),
-            QueryServiceDrainPhase::ExecutionPoolQuiescence.as_str(),
-            QueryServiceDrainPhase::StreamPoolQuiescence.as_str(),
-            QueryServiceDrainPhase::ResourceEpoch.as_str(),
-            QueryServiceDrainPhase::FinalCompletion.as_str(),
-            "construction_journal",
-            "gpu_permit_quiescence",
-            "observation_quiescence",
-        ];
-        for phase in phases {
-            state.record_deadline(phase);
-            state.record_deadline(phase);
-        }
-        assert_eq!(state.snapshot(&lifecycle).cleanup_deadline_elapsed_count, phases.len() as u64);
-
-        state.record_quiescent(phases[0]);
-        let snapshot = state.snapshot(&lifecycle);
-        assert_eq!(snapshot.cleanup_late_success_count, 1);
-        let progress = state.cleanup_phases.lock().unwrap();
-        assert_eq!(progress.get(phases[0]), Some(&CleanupPhaseProgress::Quiescent));
-        assert!(phases[1..].iter().all(|phase| progress.get(phase) == Some(&CleanupPhaseProgress::DeadlineElapsed)));
-        drop(progress);
-
-        for phase in &phases[1..] {
-            state.record_quiescent(phase);
-            state.record_quiescent(phase);
-        }
-        state.mark_closing();
-        state.mark_gpu_quiescent();
-        state.mark_observation_quiescent();
-        let snapshot = state.snapshot(&lifecycle);
-
-        assert_eq!(snapshot.cleanup_deadline_elapsed_count, phases.len() as u64);
-        assert_eq!(snapshot.cleanup_late_success_count, phases.len() as u64);
-        assert!(!snapshot.cleanup_failed);
-    }
-
-    #[test]
-    fn observation_failure_does_not_erase_gpu_quiescence() {
-        let state = CloseCompletion::new();
-        let lifecycle = BackendLifecycle::new();
-        state.mark_closing();
-        state.mark_gpu_quiescent();
-        state.fail("observation_quiescence", "injected observation cleanup failure");
-
-        let snapshot = state.snapshot(&lifecycle);
-        assert!(snapshot.gpu_resource_quiescent);
-        assert!(!snapshot.observation_quiescent);
-        assert!(snapshot.cleanup_failed);
     }
 
     #[test]

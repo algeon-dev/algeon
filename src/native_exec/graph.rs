@@ -29,7 +29,8 @@ use datafusion::{
     common::Result as DataFusionResult, execution::memory_pool::MemoryReservation, physical_plan::ExecutionPlan,
 };
 use nexus_query_engine::{
-    graph_memory::GraphMemoryAdmissionEvidence, plan::ResidentGraphKey, runtime::ExecutionCancellation,
+    admission::QueryPlanCapabilityProof, graph_memory::GraphMemoryAdmissionEvidence, plan::ResidentGraphKey,
+    runtime::ExecutionCancellation,
 };
 use tokio::sync::watch;
 
@@ -88,6 +89,10 @@ impl GraphAdmissionModelAsk {
 /// caller-controlled proof SPI.
 pub(crate) trait GraphExecutionPlan: Send + Sync {
     fn graph_model_ask_for_admission(&self) -> DataFusionResult<Option<GraphAdmissionModelAsk>>;
+
+    /// Issues capability evidence for the exact native graph fragment this
+    /// execution node submits after staging its GPU-resident inputs.
+    fn graph_execution_capability_proof(&self) -> DataFusionResult<QueryPlanCapabilityProof>;
 
     /// Returns the one fixed-cardinality post-seal metric target for this
     /// graph execution root. The adapter discovers it through this neutral

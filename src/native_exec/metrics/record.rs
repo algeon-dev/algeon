@@ -15,10 +15,7 @@ use nexus_query_engine::{
     error::QueryError,
     exec::output::{QueryExecutionOutcome, QueryOutput},
     metrics::{JoinOperatorMetrics, QueryMetrics},
-    observability::{
-        AttemptCapacityDisposition, AttemptCleanupDisposition, AttemptDisposition, AttemptHealthTransition,
-        QueryAttemptReport, RuntimeTerminalOutcome, SealedRuntimeObservationSnapshot,
-    },
+    observability::QueryAttemptReport,
     runtime::{ExecutionBoundaryPolicy, LakehouseCacheFillEventSnapshot},
 };
 
@@ -49,81 +46,26 @@ impl SealedAttemptMetricsTarget {
     /// Emit the single fixed-cardinality DataFusion row for this attempt.
     ///
     /// The caller elects exactly one root wrapper before execution. All labels
-    /// are closed report facts; in particular, the attempt id and device
+    /// are derived from the sealed projection; in particular, the attempt id and device
     /// ordinal deliberately never become metric labels.
     pub(crate) fn record(self, report: &QueryAttemptReport) {
+        let labels = report.sealed_projection().labels();
         MetricBuilder::new(&self.metrics)
             .with_type(MetricType::Summary)
-            .with_new_label("disposition", attempt_disposition_label(report.disposition).to_string())
-            .with_new_label("outcome", attempt_outcome_label(&report.outcome).to_string())
-            .with_new_label(
-                "cleanup_disposition",
-                attempt_cleanup_disposition_label(report.cleanup_disposition).to_string(),
-            )
-            .with_new_label("cleanup_failure_count_complete", report.cleanup_failure_count_complete.to_string())
-            .with_new_label(
-                "capacity_disposition",
-                attempt_capacity_disposition_label(report.capacity_disposition).to_string(),
-            )
-            .with_new_label(
-                "health_transition",
-                report.health_transition.map_or_else(|| "none".to_string(), attempt_health_transition_label),
-            )
-            .with_new_label("retry_recovery", report.retry_advice.recovery.as_str().to_string())
-            .with_new_label("retry_prerequisite", report.retry_advice.prerequisite.as_str().to_string())
-            .with_new_label("observation_truncated", report.observation_truncated.to_string())
-            .with_new_label("observation_degraded", report.observation_degraded.to_string())
-            .with_new_label("native_fault_evidence", presence_label(report.native_fault_evidence.is_some()).to_string())
-            .with_new_label("resource_evidence", presence_label(report.resource_evidence.is_some()).to_string())
+            .with_new_label("disposition", labels.disposition)
+            .with_new_label("outcome", labels.outcome)
+            .with_new_label("cleanup_disposition", labels.cleanup_disposition)
+            .with_new_label("cleanup_failure_count_complete", labels.cleanup_failure_count_complete)
+            .with_new_label("capacity_disposition", labels.capacity_disposition)
+            .with_new_label("health_transition", labels.health_transition)
+            .with_new_label("retry_recovery", labels.retry_recovery)
+            .with_new_label("retry_prerequisite", labels.retry_prerequisite)
+            .with_new_label("observation_truncated", labels.observation_truncated)
+            .with_new_label("observation_degraded", labels.observation_degraded)
+            .with_new_label("native_fault_evidence", labels.native_fault_evidence)
+            .with_new_label("resource_evidence", labels.resource_evidence)
             .global_counter(metric_name::attempt_report_rows())
             .add(1);
-    }
-}
-
-const fn presence_label(present: bool) -> &'static str {
-    if present { "present" } else { "absent" }
-}
-
-const fn attempt_disposition_label(disposition: AttemptDisposition) -> &'static str {
-    match disposition {
-        AttemptDisposition::Unplanned => "unplanned",
-        AttemptDisposition::CpuFallback => "cpu_fallback",
-        AttemptDisposition::PartialNative => "partial_native",
-        AttemptDisposition::Native => "native",
-    }
-}
-
-const fn attempt_outcome_label(outcome: &RuntimeTerminalOutcome) -> &'static str {
-    match outcome {
-        RuntimeTerminalOutcome::Succeeded => "succeeded",
-        RuntimeTerminalOutcome::Failed { .. } => "failed",
-        RuntimeTerminalOutcome::Cancelled => "cancelled",
-        RuntimeTerminalOutcome::Dropped => "dropped",
-        RuntimeTerminalOutcome::Panicked => "panicked",
-    }
-}
-
-const fn attempt_cleanup_disposition_label(disposition: AttemptCleanupDisposition) -> &'static str {
-    match disposition {
-        AttemptCleanupDisposition::NotRequired => "not_required",
-        AttemptCleanupDisposition::Completed => "completed",
-        AttemptCleanupDisposition::CompletedWithFailures => "completed_with_failures",
-    }
-}
-
-const fn attempt_capacity_disposition_label(disposition: AttemptCapacityDisposition) -> &'static str {
-    match disposition {
-        AttemptCapacityDisposition::NotAdmitted => "not_admitted",
-        AttemptCapacityDisposition::Released => "released",
-        AttemptCapacityDisposition::RetainedQuarantine => "retained_quarantine",
-    }
-}
-
-fn attempt_health_transition_label(transition: AttemptHealthTransition) -> String {
-    match transition {
-        AttemptHealthTransition::HealthyReuse => "healthy_reuse".to_string(),
-        AttemptHealthTransition::DeviceQuarantined => "device_quarantined".to_string(),
-        AttemptHealthTransition::BackendUnhealthy => "backend_unhealthy".to_string(),
     }
 }
 
@@ -266,16 +208,10 @@ impl NexusNativeMetrics {
 
     pub(crate) fn record_admission_facts(&self, facts: QueryAdmissionFacts) {
         self.record_descriptor_admission_facts(facts);
-        if let Some(capture) = &self.capture {
-            capture.record_admission_facts(facts);
-        }
     }
 
     pub(crate) fn record_query_metrics(&self, metrics: &QueryMetrics) {
         self.record_descriptor_query_metrics(metrics);
-        if let Some(capture) = &self.capture {
-            capture.record_query_metrics(metrics);
-        }
     }
 
     /// Records every evidence surface before returning the native result to the
@@ -284,11 +220,8 @@ impl NexusNativeMetrics {
         &self,
         outcome: QueryExecutionOutcome,
     ) -> std::result::Result<QueryOutput, QueryError> {
-        let (result, metrics, observation) = outcome.into_parts();
+        let (result, metrics, _observation) = outcome.into_parts();
         self.record_query_metrics(&metrics);
-        if let Some(observation) = observation {
-            self.record_runtime_observation(Arc::new(observation));
-        }
         result
     }
 
@@ -298,15 +231,12 @@ impl NexusNativeMetrics {
         &self,
         outcome: QueryExecutionOutcome,
     ) -> std::result::Result<QueryOutput, QueryError> {
-        let (result, mut metrics, observation) = outcome.into_parts();
+        let (result, mut metrics, _observation) = outcome.into_parts();
         if metrics.compiled_pipeline_attempts > 0 {
             metrics.record_compiled_pipeline_tasks_executed(1);
             metrics.record_compiled_pipeline_host_arrow_sink();
         }
         self.record_query_metrics(&metrics);
-        if let Some(observation) = observation {
-            self.record_runtime_observation(Arc::new(observation));
-        }
         result
     }
 
@@ -316,17 +246,8 @@ impl NexusNativeMetrics {
         self.device_to_host_materialized_bytes.add(bytes);
     }
 
-    pub(crate) fn record_runtime_observation(&self, observation: Arc<SealedRuntimeObservationSnapshot>) {
-        if let Some(capture) = &self.capture {
-            capture.record_runtime_observation(observation);
-        }
-    }
-
     pub(crate) fn record_lakehouse_cache_fill_events(&self, events: &[LakehouseCacheFillEventSnapshot]) {
         self.record_descriptor_cache_events(events);
-        if let Some(capture) = &self.capture {
-            capture.record_lakehouse_cache_fill_events(events);
-        }
     }
 
     fn record_lakehouse_cache_fill_event_rows(&self, events: &[LakehouseCacheFillEventSnapshot]) {
@@ -1323,5 +1244,51 @@ fn add_optional_count(metric: &Count, observed: Option<&Count>, value: Option<u6
             observed.add(1);
         }
         metric.add(count(value));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use nexus_query_engine::observability::{
+        AttemptCapacityDisposition, AttemptCleanupDisposition, AttemptDisposition, AttemptHealthTransition, AttemptId,
+        AttemptRetryAdvice, RuntimeTerminalOutcome, SEALED_ATTEMPT_PROJECTION_SCHEMA_V1, SealedAttemptProjection,
+    };
+
+    #[test]
+    fn sealed_attempt_metric_labels_derive_from_the_sealed_projection() {
+        let projection = SealedAttemptProjection {
+            schema: SEALED_ATTEMPT_PROJECTION_SCHEMA_V1,
+            attempt_id: AttemptId::mint(),
+            disposition: AttemptDisposition::Native,
+            outcome: RuntimeTerminalOutcome::Panicked,
+            cleanup_disposition: AttemptCleanupDisposition::CompletedWithFailures,
+            cleanup_failure_count: 7,
+            cleanup_failure_count_complete: false,
+            capacity_disposition: AttemptCapacityDisposition::RetainedQuarantine,
+            health_transition: Some(AttemptHealthTransition::BackendUnhealthy),
+            retry_advice: AttemptRetryAdvice::indeterminate(),
+            observation_truncated: true,
+            observation_degraded: false,
+            native_fault_evidence_present: true,
+            resource_evidence_present: false,
+        };
+
+        assert_eq!(
+            projection.labels(),
+            nexus_query_engine::observability::SealedAttemptLabels {
+                disposition: "native",
+                outcome: "panicked",
+                cleanup_disposition: "completed_with_failures",
+                cleanup_failure_count_complete: "false",
+                capacity_disposition: "retained_quarantine",
+                health_transition: "backend_unhealthy",
+                retry_recovery: "indeterminate",
+                retry_prerequisite: "evidence_unavailable",
+                observation_truncated: "true",
+                observation_degraded: "false",
+                native_fault_evidence: "present",
+                resource_evidence: "absent",
+            }
+        );
     }
 }

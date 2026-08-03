@@ -40,9 +40,10 @@ use nexus_query_engine::{
 };
 
 use super::prune_native_query_plan;
-use crate::native_exec::{
-    NexusNativeComposedExec, NexusNativeExec, NexusNativeExecutionConfig, NexusNativeGpuProducerExec,
-    admission::{TestAdmissionController, TestAdmissionDeviceProfile},
+use crate::{
+    backend::InstalledTestGpuBackend,
+    error::DataFusionErrorExt,
+    native_exec::{NexusNativeComposedExec, NexusNativeExec, NexusNativeExecutionConfig, NexusNativeGpuProducerExec},
 };
 
 #[derive(Debug)]
@@ -233,12 +234,14 @@ fn prunable_query_plan(uri: &str, file_size_bytes: usize, gpu_resident_sink: boo
     (plan, source)
 }
 
-fn admission_only_execution_config() -> NexusNativeExecutionConfig {
-    let controller =
-        TestAdmissionController::new(TestAdmissionDeviceProfile::new(0, 1024 * 1024, 1, 1024 * 1024), None)
-            .expect("CUDA-free test admission controller should build");
+fn admission_execution_config(backend: &InstalledTestGpuBackend) -> NexusNativeExecutionConfig {
+    let source = backend
+        .optimizer_config()
+        .native_execution_config()
+        .query_admission_source()
+        .expect("installed backend must provide admission authority");
     NexusNativeExecutionConfig::bounded(1024 * 1024, 512, 1, 3, 1)
-        .with_query_admission_source(controller.source())
+        .with_query_admission_source(source)
         .with_plan_query_admission_ticket()
         .with_lakehouse_footer_pruning(true)
 }
@@ -346,11 +349,12 @@ async fn product_pruning_falls_back_to_source_storage_profile() {
 
 #[tokio::test]
 async fn native_host_resolves_lakehouse_metadata_before_admission_context() {
+    let backend = InstalledTestGpuBackend::new();
     let (dir, bytes) = prunable_parquet_fixture("lakehouse-host-before-admission");
     let runtime_env = Arc::new(RuntimeEnv::default());
     let get_calls = register_tracking_parquet_store(&runtime_env, "s3://host-source", &bytes).await;
     let (plan, _) = prunable_query_plan("s3://host-source/table/data.parquet", bytes.len(), false);
-    let exec = NexusNativeExec::try_new(plan, admission_only_execution_config())
+    let exec = NexusNativeExec::try_new(plan, admission_execution_config(&backend))
         .expect("test native host execution should build");
 
     let mut stream = exec
@@ -358,13 +362,21 @@ async fn native_host_resolves_lakehouse_metadata_before_admission_context() {
         .expect("native host execution should return a lazy stream");
     let result = stream.next().await.expect("native host stream should resolve once");
 
-    assert!(result.is_err(), "admission-only service must reject native context acquisition");
+    let error = result.expect_err("the object-store fixture reaches native execution after admission");
+    let native = error.find_nexus_error().expect("native execution failure remains structured");
+    assert_eq!(
+        native.operation(),
+        "datafusion_nexus.native_exec.execute",
+        "metadata resolution must complete before the real admission context reaches the intentionally unsupported read"
+    );
+    assert_eq!(native.fact_value("native_operation"), Some("nexus_query_engine.local_parquet_chunk.read"));
     assert!(get_calls.load(Ordering::Relaxed) > 0, "footer metadata must resolve before context acquisition");
     remove_fixture(dir);
 }
 
 #[tokio::test]
 async fn native_composed_resolves_consumer_and_producer_metadata_before_admission_context() {
+    let backend = InstalledTestGpuBackend::new();
     let (dir, bytes) = prunable_parquet_fixture("lakehouse-composed-before-admission");
     let runtime_env = Arc::new(RuntimeEnv::default());
     let consumer_gets = register_tracking_parquet_store(&runtime_env, "s3://consumer-source", &bytes).await;
@@ -393,7 +405,7 @@ async fn native_composed_resolves_consumer_and_producer_metadata_before_admissio
     let union = builder.add_union(vec![consumer_source, producer_source], Arc::clone(&schema));
     let consumer_plan = builder.finish_with_host_sink(union);
     let exec =
-        NexusNativeComposedExec::try_new(consumer_plan, vec![Arc::new(producer)], admission_only_execution_config())
+        NexusNativeComposedExec::try_new(consumer_plan, vec![Arc::new(producer)], admission_execution_config(&backend))
             .expect("test native composed execution should build");
 
     let mut stream = exec
@@ -401,7 +413,14 @@ async fn native_composed_resolves_consumer_and_producer_metadata_before_admissio
         .expect("native composed execution should return a lazy stream");
     let result = stream.next().await.expect("native composed stream should resolve once");
 
-    assert!(result.is_err(), "admission-only service must reject native context acquisition");
+    let error = result.expect_err("the object-store fixture reaches native execution after admission");
+    let native = error.find_nexus_error().expect("native execution failure remains structured");
+    assert_eq!(
+        native.operation(),
+        "datafusion_nexus.native_gpu_producer.execute_gpu",
+        "consumer and producer metadata must resolve before their real admission contexts reach the intentionally unsupported read"
+    );
+    assert_eq!(native.fact_value("native_operation"), Some("nexus_query_engine.local_parquet_chunk.read"));
     assert!(consumer_gets.load(Ordering::Relaxed) > 0, "consumer footer metadata must resolve before admission");
     assert!(producer_gets.load(Ordering::Relaxed) > 0, "producer footer metadata must resolve before admission");
     remove_fixture(dir);
