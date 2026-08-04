@@ -744,8 +744,13 @@ impl QueryService {
             admission_wait_fact,
             lifecycle_ticket,
         } = commit;
+        #[cfg(test)]
         let probe =
             self.inner.admission_transaction_probe.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        // Production installs no probe; the admission transaction hooks are
+        // inlined no-ops over a constant `None`.
+        #[cfg(not(test))]
+        let probe: Option<Arc<super::transaction::AdmissionTransactionProbe>> = None;
         let envelope = super::transaction::AdmissionEnvelope::acquire(
             &self.inner,
             placed_query,

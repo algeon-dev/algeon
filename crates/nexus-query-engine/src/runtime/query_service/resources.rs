@@ -19,8 +19,10 @@ struct DeviceResidentCache {
     #[cfg(feature = "cugraph")]
     graph: crate::runtime::cache::resident_graph::GpuResidentGraphCache,
     // Declare this last: every cache lease and cached allocation must be
-    // destroyed before the domain owner becomes droppable.
-    allocation_factory: crate::runtime::cache::DeviceCacheAllocationFactory,
+    // destroyed before the domain owner becomes droppable. Keep-alive only:
+    // the factory owns the one physical cuDF allocation domain for the
+    // ordinal, so it is retained but never read directly.
+    _allocation_factory: crate::runtime::cache::DeviceCacheAllocationFactory,
 }
 
 impl DeviceResidentCaches {
@@ -41,7 +43,7 @@ impl DeviceResidentCaches {
                     source,
                     #[cfg(feature = "cugraph")]
                     graph,
-                    allocation_factory,
+                    _allocation_factory: allocation_factory,
                 },
             );
             debug_assert!(previous.is_none(), "a registry installs each CUDA ordinal only once");

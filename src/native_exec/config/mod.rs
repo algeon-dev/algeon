@@ -279,10 +279,6 @@ impl NexusNativeExecutionConfig {
         self.plan_task_mapping_datafusion_shape.as_deref()
     }
 
-    pub(crate) fn metrics_capture_factory(&self) -> Option<NativeMetricsCapture> {
-        self.metrics_capture.clone()
-    }
-
     pub(crate) fn new_metrics_capture(&self) -> Option<NativeExecutionMetricsCapture> {
         self.query_admission_ticket
             .as_ref()

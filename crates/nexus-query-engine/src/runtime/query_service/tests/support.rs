@@ -152,23 +152,6 @@ impl AdmissionTestController {
             .deadline = expired;
     }
 
-    fn prune_dead_shared_waiters_retains_self(&self) -> bool {
-        let mut waiters = vec![Weak::<QueryServiceInner>::new(), Arc::downgrade(&self.service.inner)];
-        prune_dead_shared_device_admission_waiters(&mut waiters);
-        waiters.len() == 1 && waiters[0].upgrade().is_some_and(|retained| Arc::ptr_eq(&retained, &self.service.inner))
-    }
-
-    fn register_shared_device_waiter(&self, device_ordinal: usize) {
-        shared_device_admission_waiters()
-            .lock()
-            .unwrap()
-            .insert(device_ordinal, vec![Arc::downgrade(&self.service.inner)]);
-    }
-
-    fn with_admission_locked<T>(&self, operation: impl FnOnce() -> T) -> T {
-        let _guard = self.service.inner.admission.lock().unwrap();
-        operation()
-    }
 }
 
 #[derive(Debug)]
@@ -189,10 +172,6 @@ impl AdmissionTestHandle {
         self.handle.admission_request_id()
     }
 
-    fn admission_wait(&self) -> Duration {
-        self.handle.admission_wait()
-    }
-
     fn admission_wait_fact(&self) -> Option<crate::observability::AttemptAdmissionWaitFact> {
         self.handle.admission_wait_fact()
     }
@@ -203,10 +182,6 @@ impl AdmissionTestHandle {
 
     fn device_ordinal(&self) -> usize {
         self.handle.device_ordinal()
-    }
-
-    fn memory_control_policy(&self) -> MemoryControlPolicy {
-        self.handle.memory_control_policy()
     }
 
     fn boundary_policy(&self) -> ExecutionBoundaryPolicy {
@@ -529,15 +504,6 @@ fn wait_for_exact_queued_len(service: &AdmissionTestController, expected: usize)
         assert!(Instant::now() < deadline, "timed out waiting for {expected} queued admissions; last queued={queued}");
         std::thread::sleep(Duration::from_millis(5));
     }
-}
-fn optimistic_shrink_test_service() -> AdmissionTestController {
-    admission_test_service_with_profile(
-        QueryExecutionConfig::default(),
-        QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(2), max_overtakes_per_waiter: 4 },
-        100,
-        1,
-        2,
-    )
 }
 fn first_memory_governor_report(service: &AdmissionTestController) -> DeviceLedgerReport {
     let reports = service.device_ledger_reports().unwrap();

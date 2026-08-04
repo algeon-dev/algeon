@@ -18,8 +18,10 @@
 //! Every attempt admitted against a real device always carries the complete
 //! physical envelope.
 
+#[cfg(test)]
+use std::sync::mpsc;
 use std::{
-    sync::{Arc, Mutex, mpsc},
+    sync::{Arc, Mutex},
     time::Instant,
 };
 
@@ -88,20 +90,30 @@ impl AdmissionStep {
     ];
 }
 
-/// Fault-injection probe for the admission transaction. The default is no-op.
+/// Fault-injection probe for the admission transaction.
+///
+/// The mechanism is test-only: production installs no probe, so the struct
+/// carries no state there and every hook is an inlined no-op that takes no
+/// locks on the admission path.
 pub(crate) struct AdmissionTransactionProbe {
+    #[cfg(test)]
     fail_at: Mutex<Option<AdmissionStep>>,
+    #[cfg(test)]
     pause_at: Mutex<Option<(AdmissionStep, Arc<AdmissionTransactionPause>)>>,
+    #[cfg(test)]
     force_deadline_at: Mutex<Option<ForcedAdmissionDeadline>>,
+    #[cfg(test)]
     rollback_pause: Mutex<Option<Arc<AdmissionTransactionPause>>>,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ForcedAdmissionDeadline {
     Acquisition(AdmissionStep),
     BeforePublication,
 }
 
+#[cfg(test)]
 struct AdmissionTransactionPause {
     entered: mpsc::SyncSender<()>,
     release: Mutex<mpsc::Receiver<()>>,
@@ -192,6 +204,7 @@ impl AdmissionTransactionProbe {
         )
     }
 
+    #[cfg(test)]
     fn forces_deadline_at_acquisition_stage(&self, stage: &'static str) -> bool {
         matches!(
             *self.force_deadline_at.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
@@ -199,6 +212,13 @@ impl AdmissionTransactionProbe {
         )
     }
 
+    #[cfg(not(test))]
+    #[inline(always)]
+    fn forces_deadline_at_acquisition_stage(&self, _stage: &'static str) -> bool {
+        false
+    }
+
+    #[cfg(test)]
     fn forces_deadline_before_publication(&self) -> bool {
         matches!(
             *self.force_deadline_at.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
@@ -206,6 +226,13 @@ impl AdmissionTransactionProbe {
         )
     }
 
+    #[cfg(not(test))]
+    #[inline(always)]
+    fn forces_deadline_before_publication(&self) -> bool {
+        false
+    }
+
+    #[cfg(test)]
     fn pause_after_rollback_accounting(&self) -> Result<()> {
         let pause = self
             .rollback_pause
@@ -249,6 +276,13 @@ impl AdmissionTransactionProbe {
         Ok(())
     }
 
+    #[cfg(not(test))]
+    #[inline(always)]
+    fn pause_after_rollback_accounting(&self) -> Result<()> {
+        Ok(())
+    }
+
+    #[cfg(test)]
     fn check(&self, step: AdmissionStep) -> Result<()> {
         let fail_at = self.fail_at.lock().map_err(|_error| {
             QueryError::new(
@@ -310,6 +344,12 @@ impl AdmissionTransactionProbe {
                     .with_fact("admission_step", step.as_str())
                 })?;
         }
+        Ok(())
+    }
+
+    #[cfg(not(test))]
+    #[inline(always)]
+    fn check(&self, _step: AdmissionStep) -> Result<()> {
         Ok(())
     }
 }

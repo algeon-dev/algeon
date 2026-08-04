@@ -87,7 +87,7 @@ mod tests {
     fn similarity_graph_build_label_remains_selective() {
         assert_eq!(
             graph_build_label("datafusion_nexus_cugraph_similarity"),
-            Some(c"datafusion_nexus.cugraph_similarity.graph_build".as_ref())
+            Some(c"datafusion_nexus.cugraph_similarity.graph_build")
         );
         assert!(graph_build_label("datafusion_nexus_cugraph_pagerank").is_none());
     }

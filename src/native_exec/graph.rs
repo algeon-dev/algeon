@@ -66,11 +66,13 @@ impl GraphAdmissionModelAsk {
     }
 
     /// Construction-inclusive graph-model estimate retained for planner diagnostics only.
+    #[cfg(test)]
     pub(crate) fn cold_model_requested_bytes(&self) -> u64 {
         self.cold_model_requested_bytes
     }
 
     /// Execution-only graph-model estimate retained for planner diagnostics only.
+    #[cfg(test)]
     pub(crate) fn warm_model_requested_bytes(&self) -> u64 {
         self.warm_model_requested_bytes
     }

@@ -123,7 +123,6 @@ pub(crate) struct ResolvedDeviceInstallPlan {
     pub(crate) device: cudf::DeviceId,
     pub(crate) facts: super::DeviceFacts,
     pub(crate) profile: DeviceRegistryInstallProfile,
-    pub(crate) capacity_bytes: u64,
     pub(crate) resource_profile: DeviceResourceProfile,
 }
 
@@ -137,10 +136,12 @@ pub(crate) struct ResolvedDeviceInstallPlans {
 }
 
 impl ResolvedDeviceInstallPlans {
+    #[cfg(test)]
     pub(crate) fn plans(&self) -> &[ResolvedDeviceInstallPlan] {
         &self.plans
     }
 
+    #[cfg(test)]
     pub(crate) fn device_ordinals(&self) -> &[usize] {
         &self.device_ordinals
     }
@@ -273,13 +274,7 @@ impl DeviceRegistry {
                 .with_fact("lane_count", profile.lane_count)
                 .with_fact("max_active_attempts", resource_profile.max_active_attempts));
             }
-            discovered.push(ResolvedDeviceInstallPlan {
-                device,
-                facts,
-                profile: profile.clone(),
-                capacity_bytes,
-                resource_profile,
-            });
+            discovered.push(ResolvedDeviceInstallPlan { device, facts, profile: profile.clone(), resource_profile });
             checkpoint(probe, GpuBackendConstructionCheckpoint::AfterDeviceDiscovery { device_ordinal: *ordinal })?;
         }
 
@@ -403,11 +398,6 @@ impl DeviceRegistry {
     }
 
     /// Looks up a context by CUDA device ordinal.
-    pub fn context(&self, device: cudf::DeviceId) -> Result<&DeviceContext> {
-        self.context_by_ordinal(device.ordinal())
-    }
-
-    /// Looks up a context by CUDA device ordinal.
     pub fn context_by_ordinal(&self, ordinal: usize) -> Result<&DeviceContext> {
         self.contexts.get(ordinal).and_then(Option::as_ref).ok_or_else(|| {
             QueryError::new(
@@ -453,11 +443,6 @@ impl DeviceRegistry {
 
     pub fn len(&self) -> usize {
         self.device_ordinals.len()
-    }
-
-    /// Returns whether the registry has no installed devices.
-    pub fn is_empty(&self) -> bool {
-        self.device_ordinals.is_empty()
     }
 }
 
@@ -1016,7 +1001,6 @@ mod tests {
         let resolved = DeviceRegistry::resolve_install_plans(&inventory, &config, Some(&probe)).unwrap();
 
         assert_eq!(resolved.device_ordinals(), &[0, 1]);
-        assert_eq!(resolved.plans().iter().map(|plan| plan.capacity_bytes).collect::<Vec<_>>(), vec![900, 1_900]);
         assert_eq!(
             resolved.plans().iter().map(|plan| plan.resource_profile.managed_capacity_bytes).collect::<Vec<_>>(),
             vec![900, 1_900]

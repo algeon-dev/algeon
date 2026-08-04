@@ -125,7 +125,9 @@ enum GpuResidentGraphCheckedOutState {
     /// A caller extracted the parked graph and dropped its checkout guard.
     /// Retaining the pin is intentional: the cache cannot observe later
     /// graph destruction, so releasing the ledger charge would undercount.
-    Escaped { entry: Arc<GpuResidentGraphCacheEntry>, pin: CacheResidencyPin },
+    /// Both fields are keep-alive only: `_pin` retains the ledger charge and
+    /// `_entry` keeps the entry's residency alive until the cache state drops.
+    Escaped { _entry: Arc<GpuResidentGraphCacheEntry>, _pin: CacheResidencyPin },
 }
 
 #[cfg_attr(not(test), derive(Default))]
@@ -722,9 +724,10 @@ where T: GpuResidentGraphTransposition
         let mut state = self.cache.state.lock().map_err(|_error| resident_graph_cache_poisoned("escape"))?;
         match state.checked_out.remove(&self.resident_key) {
             Some(GpuResidentGraphCheckedOutState::Active(entry)) if Arc::ptr_eq(&entry, &self.entry) => {
-                state
-                    .checked_out
-                    .insert(self.resident_key.clone(), GpuResidentGraphCheckedOutState::Escaped { entry, pin });
+                state.checked_out.insert(
+                    self.resident_key.clone(),
+                    GpuResidentGraphCheckedOutState::Escaped { _entry: entry, _pin: pin },
+                );
             },
             Some(previous) => {
                 state.checked_out.insert(self.resident_key.clone(), previous);

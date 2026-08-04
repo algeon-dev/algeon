@@ -316,6 +316,9 @@ pub(super) struct StreamCleanupWorkerOutcomePause {
 pub(super) enum StreamCleanupExecutorExit {
     Shutdown,
     ReceiverDisconnected,
+    // Only test control jobs request an unexpected exit; see the `#[cfg(test)]`
+    // `StreamCleanupControlJob` implementations below.
+    #[cfg(test)]
     Unexpected(&'static str),
 }
 
@@ -459,6 +462,7 @@ impl StreamCleanupSupervisor {
     /// Commit an already-finished worker before an idle/quiescence caller
     /// reports success. A healthy worker remains untouched: only a finished
     /// handle or a join already in progress can enter the terminal path.
+    #[cfg(test)]
     pub(super) fn finalize_if_finished_until(&self, deadline: Instant, operation: &'static str) -> Result<()> {
         let mut state = self.lock_control_until(deadline, operation)?;
         loop {
@@ -789,6 +793,7 @@ impl ServiceStreamPool {
             match job {
                 StreamCleanupJob::Runtime(mut cleanup) => cleanup.run(),
                 StreamCleanupJob::Shutdown => unreachable!("runtime cleanup cannot enqueue supervisor shutdown"),
+                #[cfg(test)]
                 StreamCleanupJob::Control(_) => {
                     unreachable!("new cleanup job is always a runtime cleanup")
                 },
@@ -813,6 +818,7 @@ impl ServiceStreamPool {
                 match job {
                     StreamCleanupJob::Runtime(mut cleanup) => cleanup.run(),
                     StreamCleanupJob::Shutdown => unreachable!("runtime cleanup cannot enqueue supervisor shutdown"),
+                    #[cfg(test)]
                     StreamCleanupJob::Control(_) => {},
                 }
             },
@@ -1100,6 +1106,9 @@ fn stream_cleanup_supervisor_panic_message(panic: &(dyn Any + Send)) -> String {
         .unwrap_or_else(|| "non-string panic payload".to_string())
 }
 
+// Control jobs are a test-only probe channel: production only ever enqueues
+// runtime cleanups and shutdown.
+#[cfg(test)]
 pub(super) trait StreamCleanupControlJob: Send {
     fn run(self: Box<Self>) -> Option<StreamCleanupExecutorExit>;
 }
@@ -1107,6 +1116,7 @@ pub(super) trait StreamCleanupControlJob: Send {
 pub(super) enum StreamCleanupJob {
     Runtime(DeferredStreamCleanup),
     Shutdown,
+    #[cfg(test)]
     Control(Box<dyn StreamCleanupControlJob>),
 }
 
@@ -1127,6 +1137,7 @@ fn run_stream_cleanup_worker(
         Ok(StreamCleanupExecutorExit::ReceiverDisconnected) => {
             StreamCleanupWorkerOutcome::Unexpected { detail: "cleanup receiver disconnected before explicit shutdown" }
         },
+        #[cfg(test)]
         Ok(StreamCleanupExecutorExit::Unexpected(detail)) => StreamCleanupWorkerOutcome::Unexpected { detail },
         Err(panic) => StreamCleanupWorkerOutcome::Panicked {
             panic_message: stream_cleanup_supervisor_panic_message(panic.as_ref()),
@@ -1149,6 +1160,7 @@ fn run_stream_cleanup_executor(receiver: &mpsc::Receiver<StreamCleanupJob>) -> S
         match job {
             StreamCleanupJob::Runtime(mut cleanup) => cleanup.run(),
             StreamCleanupJob::Shutdown => return StreamCleanupExecutorExit::Shutdown,
+            #[cfg(test)]
             StreamCleanupJob::Control(job) => {
                 if let Some(exit) = job.run() {
                     return exit;

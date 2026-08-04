@@ -45,6 +45,9 @@ pub(in crate::runtime::query_service) struct QueryServiceInner {
     pub(in crate::runtime::query_service) allocator_event_correlation: Mutex<AllocatorEventCorrelationIndex>,
     #[cfg(test)]
     pub(in crate::runtime::query_service) shutdown_waiters: AtomicUsize,
+    // Test-only fault-injection hook; production never installs a probe, so
+    // the field compiles out and the admission path takes no probe lock.
+    #[cfg(test)]
     pub(in crate::runtime::query_service) admission_transaction_probe:
         Mutex<Option<Arc<transaction::AdmissionTransactionProbe>>>,
     #[cfg(test)]

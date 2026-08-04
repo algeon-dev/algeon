@@ -231,11 +231,11 @@ async fn overlapping_query_domains_keep_real_physical_allocator_events_exact_and
 
     let first_allocation = first_executor.run(GpuExecutionJobKind::QueryExecution, async move {
         first_barrier.wait();
-        first_runtime.device_buffer(first_request_bytes).map(|buffer| drop(buffer))
+        first_runtime.device_buffer(first_request_bytes).map(drop)
     });
     let second_allocation = second_executor.run(GpuExecutionJobKind::QueryExecution, async move {
         second_barrier.wait();
-        second_runtime.device_buffer(second_request_bytes).map(|buffer| drop(buffer))
+        second_runtime.device_buffer(second_request_bytes).map(drop)
     });
     let (first_allocation, second_allocation) = tokio::join!(first_allocation, second_allocation);
     let first_error = first_allocation

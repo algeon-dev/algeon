@@ -13,24 +13,6 @@ impl QueryService {
         validate_controller_policy_preflight(config, queue_bounds, device_ordinals, deployment_io_capability)
     }
 
-    /// Creates a service entry point and initializes service-owned runtime gates.
-    #[cfg(test)]
-    pub fn new(config: QueryExecutionConfig, queue_bounds: QueueBounds) -> Result<Self> {
-        let device_ordinals = vec![0];
-        Self::new_with_device_ordinals(config, queue_bounds, device_ordinals)
-    }
-
-    /// Creates a service entry point over an explicit set of CUDA device ordinals.
-    #[cfg(test)]
-    pub fn new_with_device_ordinals(
-        config: QueryExecutionConfig,
-        queue_bounds: QueueBounds,
-        device_ordinals: Vec<usize>,
-    ) -> Result<Self> {
-        let deployment = DeploymentIoCapability::cached_current_host();
-        Self::new_with_device_ordinals_and_deployment(config, queue_bounds, device_ordinals, deployment)
-    }
-
     /// Creates a service entry point with caller-supplied deployment diagnostics.
     #[cfg(test)]
     pub fn new_with_deployment(
@@ -331,6 +313,7 @@ impl QueryService {
             allocator_event_correlation: Mutex::new(AllocatorEventCorrelationIndex::default()),
             #[cfg(test)]
             shutdown_waiters: AtomicUsize::new(0),
+            #[cfg(test)]
             admission_transaction_probe: Mutex::new(None),
             #[cfg(test)]
             unknown_isolation_closure_pause: Mutex::new(None),

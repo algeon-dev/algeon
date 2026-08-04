@@ -1,7 +1,5 @@
 use super::*;
 
-type RollupRankRow = (Option<String>, Option<String>, Option<String>, u32, i64, u64);
-
 #[test]
 fn bounded_stddev_join_aggregate_keeps_exact_and_tolerant_statistical_contracts_separate() {
     let runtime = Arc::new(cudf::Runtime::new().unwrap());

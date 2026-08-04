@@ -1135,7 +1135,7 @@ impl GpuBackendSession {
         let generation = generation.as_ref().cloned().ok_or_else(backend_closing_resource_error)?;
         Ok((
             observation,
-            GpuResourcePermit { generation, lifecycle },
+            GpuResourcePermit { generation, _lifecycle: lifecycle },
             self.observation_core.completion_executor.dispatcher(),
         ))
     }
@@ -1250,7 +1250,12 @@ fn backend_telemetry_sampled_at_unix_ms(operation: &'static str) -> Result<u64> 
 /// knows no permit can still retain the generation.
 pub(crate) struct GpuResourcePermit {
     generation: Arc<ResourceGeneration>,
-    lifecycle: GpuLifecyclePermit,
+    // Declare this last: this keep-alive guard is never read, but its `Drop`
+    // releases the GPU lifecycle count, and that release must happen only
+    // after `generation` (declared above) so close waiters never observe a
+    // zero count while a generation is still retained. Reordering the fields
+    // breaks the invariant.
+    _lifecycle: GpuLifecyclePermit,
 }
 
 impl fmt::Debug for GpuResourcePermit {
