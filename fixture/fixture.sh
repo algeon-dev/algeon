@@ -12,6 +12,7 @@ Usage:
   fixture/fixture.sh tpch generate [--scale N...] [--out-root PATH] [--variant raw|optimized|both] [--force]
   fixture/fixture.sh tpcds generate [--scale N...] [--out-root PATH] [--variant raw|optimized|both] [--force]
   fixture/fixture.sh clickbench fetch [--layout single|partitioned|both] [--out PATH]
+  fixture/fixture.sh graph dblp-ingest --source-json PATH [--out-root PATH] [DBLP ingest options]
   fixture/fixture.sh iceberg rest load --workload tpch|tpcds|citation_network [--scale sf1] [--load-mode create|add-files]
   fixture/fixture.sh iceberg glue-moto load --workload tpch|tpcds [--scale sf1]
 
@@ -271,6 +272,9 @@ case "${domain}:${command}" in
     ;;
   clickbench:fetch)
     clickbench_fetch "$@"
+    ;;
+  graph:dblp-ingest)
+    exec python3 "${SCRIPT_DIR}/graph/dblp_ingest.py" "$@"
     ;;
   iceberg:rest)
     subcommand="${1:-}"

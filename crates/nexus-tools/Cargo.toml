@@ -40,9 +40,9 @@ iceberg-e2e = [
 server-iceberg-e2e = ["iceberg-e2e", "datafusion-nexus/server"]
 server-runtime-observability-e2e = ["server-iceberg-e2e", "dep:nexus-query-engine"]
 embedded-backend-e2e = ["server-iceberg-e2e", "dep:reqwest"]
-# The production-validation runner is intentionally opt-in. P6.3 only owns
-# config/provenance/artifact handling; public GPU execution arrives in P6.5.
-single-node-multi-gpu-validate = []
+# The production-validation runner is intentionally opt-in. P6.4 owns only
+# read-only fixture preflight; public GPU execution arrives in P6.5.
+single-node-multi-gpu-validate = ["dep:nexus-workloads"]
 
 [dependencies]
 arrow = { workspace = true }

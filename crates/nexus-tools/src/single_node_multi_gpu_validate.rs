@@ -1,8 +1,8 @@
 //! Versioned P6 production-validation run artifacts.
 //!
-//! P6.3 deliberately owns only profile parsing, provenance capture, and the
-//! no-workload dry run. Fixture preflight is P6.4 and public attempt execution
-//! is P6.5, so this module must not construct a backend or touch a fixture.
+//! P6.4 owns profile parsing, provenance capture, and read-only fixture
+//! preflight. Public attempt execution is P6.5, so this module must not
+//! construct a backend or touch a CUDA execution context.
 
 use std::{
     collections::BTreeSet,
@@ -14,6 +14,11 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use nexus_workloads::{
+    graph::{DblpDatasetMetadata, GraphDatasetResult, describe_canonical_dblp_dataset},
+    metadata::WorkloadDatasetMetadata,
+    tpch::describe_tpch_dataset_with_content_fingerprint,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
@@ -36,24 +41,26 @@ pub(crate) fn run(args: Vec<String>) -> ToolResult<()> {
 
     let options = CliOptions::parse(args)?;
     let (profile, config_sha256) = RunProfile::read(&options.config)?;
-    let provenance = Provenance::collect()?;
-    let artifact = RunArtifact::new(profile, config_sha256, provenance);
-    let encoded = serde_json::to_vec_pretty(&artifact)?;
-    ensure_redacted_json(&serde_json::from_slice(&encoded)?, "")?;
-    let artifact_path = write_new_artifact(&options.out_dir, &encoded)?;
+    let artifact_path = match options.mode {
+        ValidationMode::DryRun => run_dry_run(profile, config_sha256, &options.out_dir)?,
+        ValidationMode::FixturePreflight => {
+            run_fixture_preflight(profile, config_sha256, &options.out_dir, Provenance::collect)?
+        },
+    };
 
-    println!("single-node-multi-gpu validation dry run: {}", artifact_path.display());
+    println!("single-node-multi-gpu validation artifact: {}", artifact_path.display());
     Ok(())
 }
 
 fn print_usage() {
     eprintln!(
-        "single-node-multi-gpu-validate\n\
-         \n\
-         USAGE:\n\
-           single-node-multi-gpu-validate --config run-profile.json --out-dir run-artifacts --dry-run\n\
-         \n\
-         P6.3 writes a provenance-only artifact. Fixture preflight and workload execution begin in P6.4 and P6.5."
+        r"single-node-multi-gpu-validate
+
+USAGE:
+  single-node-multi-gpu-validate --config run-profile.json --out-dir run-artifacts --dry-run
+  single-node-multi-gpu-validate --config run-profile.json --out-dir run-artifacts --fixture-preflight
+
+--dry-run accepts only an empty workload list. --fixture-preflight validates one TPC-H and one DBLP fixture without generating, downloading, overwriting, or executing a workload."
     );
 }
 
@@ -61,13 +68,20 @@ fn print_usage() {
 struct CliOptions {
     config: PathBuf,
     out_dir: PathBuf,
+    mode: ValidationMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ValidationMode {
+    DryRun,
+    FixturePreflight,
 }
 
 impl CliOptions {
     fn parse(args: Vec<String>) -> ToolResult<Self> {
         let mut config = None;
         let mut out_dir = None;
-        let mut dry_run = false;
+        let mut mode = None;
         let mut seen = BTreeSet::new();
         let mut index = 0;
 
@@ -85,24 +99,28 @@ impl CliOptions {
                     let value = required_option_value(&args, &mut index, flag)?;
                     out_dir = Some(PathBuf::from(value));
                 },
-                "--dry-run" => dry_run = true,
+                "--dry-run" => {
+                    if mode.replace(ValidationMode::DryRun).is_some() {
+                        return Err("--dry-run and --fixture-preflight are mutually exclusive".into());
+                    }
+                },
+                "--fixture-preflight" => {
+                    if mode.replace(ValidationMode::FixturePreflight).is_some() {
+                        return Err("--dry-run and --fixture-preflight are mutually exclusive".into());
+                    }
+                },
                 _ => return Err(format!("unknown option {flag}").into()),
             }
             index += 1;
         }
 
-        if !dry_run {
-            return Err(
-                "P6.3 currently requires --dry-run; fixture preflight and workload execution begin in P6.4 and P6.5"
-                    .into(),
-            );
-        }
+        let mode = mode.ok_or("missing required validation mode --dry-run or --fixture-preflight")?;
         let config = config.ok_or("missing required option --config")?;
         let out_dir = out_dir.ok_or("missing required option --out-dir")?;
         if out_dir.as_os_str().is_empty() {
             return Err("--out-dir must not be empty".into());
         }
-        Ok(Self { config, out_dir })
+        Ok(Self { config, out_dir, mode })
     }
 }
 
@@ -115,10 +133,8 @@ fn required_option_value(args: &[String], index: &mut usize, flag: &str) -> Tool
     Ok(value.clone())
 }
 
-/// The v1 profile intentionally fixes the top-level sections P6.5 will consume
-/// while allowing P6.3 to prove the zero-workload artifact path. Workload
-/// detail stays opaque only until P6.5 owns the public workload grammar; P6.3
-/// rejects non-empty selections before persisting any value.
+/// The v1 profile fixes the top-level sections P6.5 will consume. P6.4 owns
+/// only fixture selections; query mixes and execution controls remain P6.5.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 struct RunProfile {
@@ -134,7 +150,34 @@ struct RunProfile {
     #[serde(default)]
     cache: CacheProfile,
     #[serde(default)]
-    workloads: Vec<Value>,
+    workloads: Vec<FixtureWorkloadProfile>,
+}
+
+/// A selected fixture and the command used to prepare it before measurement.
+/// The runner records the command but never executes it.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct FixtureWorkloadProfile {
+    kind: FixtureKind,
+    path: PathBuf,
+    scale: String,
+    preparation_command: String,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+enum FixtureKind {
+    Tpch,
+    Dblp,
+}
+
+impl FixtureKind {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Tpch => "tpch",
+            Self::Dblp => "dblp",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -338,8 +381,35 @@ impl RunProfile {
             },
         }
         validate_device_profiles(&self.backend.device_profiles)?;
-        if !self.workloads.is_empty() {
-            return Err("P6.3 accepts only a no-workload profile; fixture preflight and workload execution begin in P6.4 and P6.5".into());
+        let mut workload_kinds = BTreeSet::new();
+        for workload in &self.workloads {
+            if !workload_kinds.insert(workload.kind) {
+                return Err(format!("workloads contains duplicate {} fixture selections", workload.kind.label()).into());
+            }
+            if workload.path.as_os_str().is_empty() {
+                return Err(format!("{} fixture path must not be empty", workload.kind.label()).into());
+            }
+            if !is_fixture_label(&workload.scale) {
+                return Err(format!(
+                    "{} fixture scale must be a 1-64 character ASCII identifier",
+                    workload.kind.label()
+                )
+                .into());
+            }
+            if !is_preparation_command(&workload.preparation_command) {
+                return Err(format!(
+                    "{} fixture preparation_command must be 1-4096 printable characters",
+                    workload.kind.label()
+                )
+                .into());
+            }
+            if !is_safe_preparation_command(workload.kind, &workload.preparation_command) {
+                return Err(format!(
+                    "{} fixture preparation_command must be a credential-free direct fixture command",
+                    workload.kind.label()
+                )
+                .into());
+            }
         }
         Ok(())
     }
@@ -349,6 +419,82 @@ fn is_profile_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 64
         && name.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+}
+
+fn is_fixture_label(label: &str) -> bool {
+    !label.is_empty()
+        && label.len() <= 64
+        && label.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+}
+
+fn is_preparation_command(command: &str) -> bool {
+    !command.is_empty() && command.len() <= 4096 && command.chars().all(|character| !character.is_control())
+}
+
+fn is_safe_preparation_command(kind: FixtureKind, command: &str) -> bool {
+    if command.contains(['\'', '"', ';', '|', '&', '$', '`', '(', ')', '<', '>', '\\', '=']) {
+        return false;
+    }
+    let arguments = command.split_ascii_whitespace().collect::<Vec<_>>();
+    let (prefix, allowed_options, required_options) = match kind {
+        FixtureKind::Tpch => (
+            ["fixture/fixture.sh", "tpch", "generate"].as_slice(),
+            [
+                "--scale",
+                "--out",
+                "--out-root",
+                "--variant",
+                "--row-group-bytes",
+                "--compression",
+                "--tpchgen-root",
+                "--profile",
+                "--num-threads",
+                "--parts",
+                "--optimize-engine",
+                "--staging-root",
+            ]
+            .as_slice(),
+            ["--scale"].as_slice(),
+        ),
+        FixtureKind::Dblp => (
+            ["fixture/fixture.sh", "graph", "dblp-ingest"].as_slice(),
+            [
+                "--source-json",
+                "--out-root",
+                "--row-group-size",
+                "--profile-row-group-size",
+                "--bucket-width",
+                "--sort-buffer-rows",
+                "--merge-fan-in",
+                "--sort-temp-dir",
+                "--progress-interval",
+            ]
+            .as_slice(),
+            ["--source-json", "--out-root"].as_slice(),
+        ),
+    };
+    if !arguments.starts_with(prefix) {
+        return false;
+    }
+    let mut seen = BTreeSet::new();
+    let mut tail = &arguments[prefix.len()..];
+    while let Some(option) = tail.first() {
+        if !allowed_options.contains(option) || !seen.insert(*option) {
+            return false;
+        }
+        let Some(value) = tail.get(1) else {
+            return false;
+        };
+        if value.starts_with('-') || value.is_empty() {
+            return false;
+        }
+        tail = &tail[2..];
+    }
+    required_options.iter().all(|required| seen.contains(required))
+        && match kind {
+            FixtureKind::Tpch => seen.contains("--out") || seen.contains("--out-root"),
+            FixtureKind::Dblp => true,
+        }
 }
 
 fn validate_device_profiles(device_profiles: &[DeviceProfile]) -> ToolResult<()> {
@@ -382,6 +528,226 @@ fn validate_device_profiles(device_profiles: &[DeviceProfile]) -> ToolResult<()>
     Ok(())
 }
 
+fn run_dry_run(profile: RunProfile, config_sha256: String, out_dir: &Path) -> ToolResult<PathBuf> {
+    if !profile.workloads.is_empty() {
+        return Err(
+            "--dry-run accepts only an empty workloads list; use --fixture-preflight for the P6.4 fixture contract"
+                .into(),
+        );
+    }
+    let artifact = RunArtifact::dry_run(profile, config_sha256, Provenance::collect()?);
+    write_artifact(out_dir, &artifact)
+}
+
+fn run_fixture_preflight(
+    profile: RunProfile,
+    config_sha256: String,
+    out_dir: &Path,
+    collect_provenance: impl FnOnce() -> ToolResult<Provenance>,
+) -> ToolResult<PathBuf> {
+    let fixtures = FixturePreflight::collect(&profile.workloads)?;
+    let artifact = RunArtifact::fixture_preflight(profile, config_sha256, fixtures, collect_provenance()?);
+    write_artifact(out_dir, &artifact)
+}
+
+fn write_artifact(out_dir: &Path, artifact: &RunArtifact) -> ToolResult<PathBuf> {
+    let encoded = serde_json::to_vec_pretty(artifact)?;
+    ensure_redacted_json(&serde_json::from_slice(&encoded)?, "")?;
+    write_new_artifact(out_dir, &encoded)
+}
+
+#[derive(Debug)]
+struct FixturePreflightError {
+    workload: &'static str,
+    reason: &'static str,
+    path: Option<PathBuf>,
+    detail: Option<String>,
+}
+
+impl FixturePreflightError {
+    fn selection(detail: impl Into<String>) -> Self {
+        Self { workload: "fixture_set", reason: "invalid_selection", path: None, detail: Some(detail.into()) }
+    }
+
+    fn missing(workload: &'static str, path: &Path) -> Self {
+        Self { workload, reason: "missing_fixture", path: Some(path.to_path_buf()), detail: None }
+    }
+
+    fn invalid_layout(workload: &'static str, path: &Path, detail: impl Into<String>) -> Self {
+        Self { workload, reason: "invalid_layout", path: Some(path.to_path_buf()), detail: Some(detail.into()) }
+    }
+}
+
+impl std::fmt::Display for FixturePreflightError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "fixture_preflight workload={} reason={}", self.workload, self.reason)?;
+        if let Some(path) = &self.path {
+            write!(formatter, " path={}", path.display())?;
+        }
+        if let Some(detail) = &self.detail {
+            write!(formatter, " detail={detail}")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for FixturePreflightError {}
+
+struct FixturePreflight;
+
+impl FixturePreflight {
+    fn collect(workloads: &[FixtureWorkloadProfile]) -> ToolResult<Vec<FixturePreflightArtifact>> {
+        Self::collect_with_dblp_contract(workloads, DblpFixtureContract::CanonicalV12)
+    }
+
+    #[cfg(test)]
+    fn collect_sample_fixture_for_artifact_test(
+        workloads: &[FixtureWorkloadProfile],
+    ) -> ToolResult<Vec<FixturePreflightArtifact>> {
+        Self::collect_with_dblp_contract(workloads, DblpFixtureContract::Sample)
+    }
+
+    fn collect_with_dblp_contract(
+        workloads: &[FixtureWorkloadProfile],
+        dblp_contract: DblpFixtureContract,
+    ) -> ToolResult<Vec<FixturePreflightArtifact>> {
+        if workloads.len() != 2 {
+            return Err(FixturePreflightError::selection("P6.4 requires exactly one tpch and one dblp fixture").into());
+        }
+        let mut preflighted = Vec::with_capacity(workloads.len());
+        let mut kinds = BTreeSet::new();
+        for workload in workloads {
+            if !kinds.insert(workload.kind) {
+                return Err(FixturePreflightError::selection("fixture kinds must be unique").into());
+            }
+            if !workload.path.is_dir() {
+                return Err(FixturePreflightError::missing(workload.kind.label(), &workload.path).into());
+            }
+            preflighted.push(Self::collect_one(workload, dblp_contract)?);
+        }
+        if kinds != BTreeSet::from([FixtureKind::Tpch, FixtureKind::Dblp]) {
+            return Err(FixturePreflightError::selection("P6.4 requires both tpch and dblp fixture kinds").into());
+        }
+        Ok(preflighted)
+    }
+
+    fn collect_one(
+        workload: &FixtureWorkloadProfile,
+        dblp_contract: DblpFixtureContract,
+    ) -> ToolResult<FixturePreflightArtifact> {
+        match workload.kind {
+            FixtureKind::Tpch => {
+                let metadata = describe_tpch_dataset_with_content_fingerprint(
+                    &workload.path,
+                    &workload.scale,
+                    "p6_fixture_preflight",
+                    &workload.preparation_command,
+                    true,
+                )
+                .map_err(|error| FixturePreflightError::invalid_layout("tpch", &workload.path, error.to_string()))?;
+                let content_fingerprint = metadata.content_fingerprint.clone().ok_or_else(|| {
+                    FixturePreflightError::invalid_layout(
+                        "tpch",
+                        &workload.path,
+                        "content fingerprint was not produced",
+                    )
+                })?;
+                Ok(FixturePreflightArtifact {
+                    kind: FixtureKind::Tpch,
+                    path: workload.path.display().to_string(),
+                    scale: workload.scale.clone(),
+                    preparation_command: workload.preparation_command.clone(),
+                    layout_validation: "complete",
+                    dataset_metadata: metadata.to_neutral_metadata(),
+                    fingerprints: vec![
+                        FixtureFingerprint::fnv1a64("metadata", metadata.metadata_fingerprint),
+                        FixtureFingerprint::fnv1a64("content", content_fingerprint),
+                    ],
+                })
+            },
+            FixtureKind::Dblp => {
+                if workload.scale != "v12" {
+                    return Err(FixturePreflightError::invalid_layout(
+                        "dblp",
+                        &workload.path,
+                        "P6.4 requires the DBLP fixture scale to be v12",
+                    )
+                    .into());
+                }
+                let metadata = describe_dblp_for_contract(workload, dblp_contract).map_err(|error| {
+                    FixturePreflightError::invalid_layout("dblp", &workload.path, error.to_string())
+                })?;
+                Ok(FixturePreflightArtifact {
+                    kind: FixtureKind::Dblp,
+                    path: workload.path.display().to_string(),
+                    scale: workload.scale.clone(),
+                    preparation_command: workload.preparation_command.clone(),
+                    layout_validation: "complete",
+                    dataset_metadata: metadata.to_neutral_metadata(),
+                    fingerprints: vec![
+                        FixtureFingerprint::sha256("manifest", metadata.manifest_sha256),
+                        FixtureFingerprint::sha256("source_metadata", metadata.source_metadata_sha256),
+                        FixtureFingerprint::sha256("source_content", metadata.source_content_sha256),
+                    ],
+                })
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum DblpFixtureContract {
+    CanonicalV12,
+    #[cfg(test)]
+    Sample,
+}
+
+fn describe_dblp_for_contract(
+    workload: &FixtureWorkloadProfile,
+    contract: DblpFixtureContract,
+) -> GraphDatasetResult<DblpDatasetMetadata> {
+    match contract {
+        DblpFixtureContract::CanonicalV12 => {
+            describe_canonical_dblp_dataset(&workload.path, &workload.scale, &workload.preparation_command)
+        },
+        #[cfg(test)]
+        DblpFixtureContract::Sample => nexus_workloads::graph::describe_dblp_dataset(
+            &workload.path,
+            &workload.scale,
+            &workload.preparation_command,
+        ),
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct FixturePreflightArtifact {
+    kind: FixtureKind,
+    path: String,
+    scale: String,
+    preparation_command: String,
+    layout_validation: &'static str,
+    dataset_metadata: WorkloadDatasetMetadata,
+    fingerprints: Vec<FixtureFingerprint>,
+}
+
+#[derive(Debug, Serialize)]
+struct FixtureFingerprint {
+    scope: &'static str,
+    algorithm: &'static str,
+    cryptographic: bool,
+    value: String,
+}
+
+impl FixtureFingerprint {
+    fn fnv1a64(scope: &'static str, value: String) -> Self {
+        Self { scope, algorithm: "fnv1a64", cryptographic: false, value }
+    }
+
+    fn sha256(scope: &'static str, value: String) -> Self {
+        Self { scope, algorithm: "sha256", cryptographic: true, value }
+    }
+}
+
 #[derive(Debug, Serialize)]
 struct RunArtifact {
     schema: &'static str,
@@ -389,24 +755,46 @@ struct RunArtifact {
     status: &'static str,
     created_unix_ms: u128,
     profile: ArtifactProfile,
-    execution: DryRunExecution,
+    execution: ValidationExecution,
     provenance: Provenance,
     redaction: RedactionEvidence,
 }
 
 impl RunArtifact {
-    fn new(profile: RunProfile, config_sha256: String, provenance: Provenance) -> Self {
+    fn dry_run(profile: RunProfile, config_sha256: String, provenance: Provenance) -> Self {
+        Self::new(profile, config_sha256, provenance, "dry_run", "not_applicable_p6_4", Vec::new())
+    }
+
+    fn fixture_preflight(
+        profile: RunProfile,
+        config_sha256: String,
+        fixtures: Vec<FixturePreflightArtifact>,
+        provenance: Provenance,
+    ) -> Self {
+        Self::new(profile, config_sha256, provenance, "fixture_preflight", "complete", fixtures)
+    }
+
+    fn new(
+        profile: RunProfile,
+        config_sha256: String,
+        provenance: Provenance,
+        status: &'static str,
+        fixture_preflight: &'static str,
+        fixtures: Vec<FixturePreflightArtifact>,
+    ) -> Self {
         Self {
             schema: RUN_ARTIFACT_SCHEMA,
             version: RUN_ARTIFACT_VERSION,
-            status: "dry_run",
+            status,
             created_unix_ms: SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |duration| duration.as_millis()),
             profile: ArtifactProfile { profile, sha256: config_sha256 },
-            execution: DryRunExecution {
-                fixture_preflight: "not_applicable_p6_4",
+            execution: ValidationExecution {
+                fixture_preflight,
                 workload_execution: "not_applicable_p6_5",
+                selected_workloads: fixtures.len() as u64,
                 attempted_workloads: 0,
                 attempted_backend_attempts: 0,
+                fixtures,
             },
             provenance,
             redaction: RedactionEvidence {
@@ -429,11 +817,13 @@ struct ArtifactProfile {
 }
 
 #[derive(Debug, Serialize)]
-struct DryRunExecution {
+struct ValidationExecution {
     fixture_preflight: &'static str,
     workload_execution: &'static str,
+    selected_workloads: u64,
     attempted_workloads: u64,
     attempted_backend_attempts: u64,
+    fixtures: Vec<FixturePreflightArtifact>,
 }
 
 #[derive(Debug, Serialize)]
@@ -865,6 +1255,15 @@ fn has_inline_secret(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use arrow::{
+        array::Int64Array,
+        datatypes::{DataType, Field, Schema},
+        record_batch::RecordBatch,
+    };
+    use parquet::arrow::ArrowWriter;
+
     use super::*;
 
     fn valid_profile_json() -> &'static str {
@@ -883,6 +1282,17 @@ mod tests {
         .unwrap();
         assert_eq!(options.config, PathBuf::from("run-profile.json"));
         assert_eq!(options.out_dir, PathBuf::from("run-artifacts"));
+        assert_eq!(options.mode, ValidationMode::DryRun);
+
+        let preflight = CliOptions::parse(vec![
+            "--config".to_string(),
+            "run-profile.json".to_string(),
+            "--out-dir".to_string(),
+            "run-artifacts".to_string(),
+            "--fixture-preflight".to_string(),
+        ])
+        .unwrap();
+        assert_eq!(preflight.mode, ValidationMode::FixturePreflight);
     }
 
     #[test]
@@ -891,7 +1301,8 @@ mod tests {
             (vec!["--config", "a", "--config", "b", "--out-dir", "out", "--dry-run"], "duplicate option --config"),
             (vec!["--config", "a", "--out-dir", "out", "--unexpected", "--dry-run"], "unknown option --unexpected"),
             (vec!["--out-dir", "out", "--dry-run"], "missing required option --config"),
-            (vec!["--config", "a", "--out-dir", "out"], "requires --dry-run"),
+            (vec!["--config", "a", "--out-dir", "out"], "missing required validation mode"),
+            (vec!["--config", "a", "--out-dir", "out", "--dry-run", "--fixture-preflight"], "mutually exclusive"),
             (vec!["--config", "--out-dir", "out", "--dry-run"], "missing value for --config"),
         ] {
             let error = CliOptions::parse(args.into_iter().map(str::to_string).collect()).unwrap_err();
@@ -941,6 +1352,25 @@ mod tests {
     }
 
     #[test]
+    fn profile_rejects_noncanonical_or_credential_bearing_preparation_commands_without_echoing_them() {
+        for command in [
+            "fixture/fixture.sh tpch generate --api-token do-not-leak",
+            "AWS_SECRET_ACCESS_KEY=do-not-leak fixture/fixture.sh tpch generate --scale 1 --out-root /fixtures",
+            "fixture/fixture.sh tpch generate --scale 1 --out-root /fixtures; curl https://example.invalid",
+        ] {
+            let profile = valid_profile_json().replace(
+                "\"workloads\": []",
+                &format!(
+                    "\"workloads\": [{{\"kind\": \"tpch\", \"path\": \"/fixtures/tpch\", \"scale\": \"sf1\", \"preparation_command\": \"{command}\"}}]"
+                ),
+            );
+            let error = RunProfile::parse_bytes(profile.as_bytes()).unwrap_err();
+            assert!(error.to_string().contains("credential-free direct fixture command"), "{error}");
+            assert!(!error.to_string().contains("do-not-leak"), "{error}");
+        }
+    }
+
+    #[test]
     fn profile_reader_rejects_missing_files_without_publishing_an_artifact() {
         let path = test_root("missing-profile").join("missing.json");
         let error = RunProfile::read(&path).unwrap_err();
@@ -957,15 +1387,83 @@ mod tests {
     #[test]
     fn artifact_v1_has_explicit_dry_run_and_redaction_sections() {
         let profile = RunProfile::parse_bytes(valid_profile_json().as_bytes()).unwrap();
-        let artifact = RunArtifact::new(profile, "a".repeat(64), sample_provenance());
+        let artifact = RunArtifact::dry_run(profile, "a".repeat(64), sample_provenance());
         let value = serde_json::to_value(artifact).unwrap();
         assert_eq!(value["schema"], RUN_ARTIFACT_SCHEMA);
         assert_eq!(value["version"], RUN_ARTIFACT_VERSION);
         assert_eq!(value["status"], "dry_run");
+        assert_eq!(value["execution"]["selected_workloads"], 0);
         assert_eq!(value["execution"]["attempted_workloads"], 0);
         assert_eq!(value["execution"]["fixture_preflight"], "not_applicable_p6_4");
         assert_eq!(value["redaction"]["raw_config_persisted"], false);
         ensure_redacted_json(&value, "").unwrap();
+    }
+
+    #[test]
+    fn fixture_preflight_artifact_records_typed_fnv_and_sha256_fingerprints_for_a_validated_sample() {
+        let root = test_root("fixture-preflight");
+        fs::create_dir(&root).unwrap();
+        let tpch_root = root.join("tpch");
+        nexus_workloads::tpch::write_tiny_tpch_parquet_dataset(&tpch_root).unwrap();
+        let dblp_root = root.join("citation_network").join("v1");
+        write_dblp_fixture(&dblp_root);
+        let profile = fixture_preflight_profile(&tpch_root, &dblp_root.join("parquet"));
+        let out_dir = root.join("run-artifacts");
+
+        let fixtures = FixturePreflight::collect_sample_fixture_for_artifact_test(&profile.workloads).unwrap();
+        let artifact = RunArtifact::fixture_preflight(profile, "a".repeat(64), fixtures, sample_provenance());
+        let artifact_path = write_artifact(&out_dir, &artifact).unwrap();
+        let artifact: Value = serde_json::from_slice(&fs::read(artifact_path).unwrap()).unwrap();
+        assert_eq!(artifact["status"], "fixture_preflight");
+        assert_eq!(artifact["execution"]["fixture_preflight"], "complete");
+        assert_eq!(artifact["execution"]["selected_workloads"], 2);
+        assert_eq!(artifact["execution"]["attempted_workloads"], 0);
+        assert_eq!(artifact["execution"]["fixtures"][0]["layout_validation"], "complete");
+        assert_eq!(artifact["execution"]["fixtures"][0]["fingerprints"][0]["algorithm"], "fnv1a64");
+        assert_eq!(artifact["execution"]["fixtures"][0]["fingerprints"][0]["cryptographic"], false);
+        assert_eq!(artifact["execution"]["fixtures"][1]["fingerprints"][0]["algorithm"], "sha256");
+        assert_eq!(artifact["execution"]["fixtures"][1]["fingerprints"][0]["cryptographic"], true);
+        assert_eq!(artifact["execution"]["fixtures"][1]["dataset_metadata"]["scale_factor"], "v12");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn fixture_preflight_rejects_a_self_consistent_noncanonical_dblp_fixture_before_writing_an_artifact() {
+        let root = test_root("noncanonical-dblp-fixture");
+        fs::create_dir(&root).unwrap();
+        let tpch_root = root.join("tpch");
+        nexus_workloads::tpch::write_tiny_tpch_parquet_dataset(&tpch_root).unwrap();
+        let dblp_root = root.join("citation_network").join("v1");
+        write_dblp_fixture(&dblp_root);
+        let profile = fixture_preflight_profile(&tpch_root, &dblp_root);
+        let out_dir = root.join("run-artifacts");
+
+        let error = run_fixture_preflight(profile, "a".repeat(64), &out_dir, || -> ToolResult<Provenance> {
+            panic!("provenance must not be collected after a failed preflight")
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("fixture_preflight workload=dblp reason=invalid_layout"), "{error}");
+        assert!(error.to_string().contains("full canonical DBLP V12"), "{error}");
+        assert!(!out_dir.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn missing_fixture_returns_structured_reason_before_creating_an_output_directory() {
+        let root = test_root("missing-fixture");
+        fs::create_dir(&root).unwrap();
+        let dblp_root = root.join("citation_network").join("v1");
+        write_dblp_fixture(&dblp_root);
+        let profile = fixture_preflight_profile(&root.join("missing-tpch"), &dblp_root);
+        let out_dir = root.join("run-artifacts");
+
+        let error = run_fixture_preflight(profile, "a".repeat(64), &out_dir, || -> ToolResult<Provenance> {
+            panic!("provenance must not be collected after a failed preflight")
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("fixture_preflight workload=tpch reason=missing_fixture"), "{error}");
+        assert!(!out_dir.exists());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -989,6 +1487,84 @@ mod tests {
     fn test_root(label: &str) -> PathBuf {
         let unique = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
         env::temp_dir().join(format!("datafusion-nexus-{label}-{}-{unique}", std::process::id()))
+    }
+
+    fn fixture_preflight_profile(tpch_root: &Path, dblp_root: &Path) -> RunProfile {
+        let mut profile = RunProfile::parse_bytes(valid_profile_json().as_bytes()).unwrap();
+        profile.workloads = vec![
+            FixtureWorkloadProfile {
+                kind: FixtureKind::Tpch,
+                path: tpch_root.to_path_buf(),
+                scale: "tiny".to_string(),
+                preparation_command: "fixture/fixture.sh tpch generate --scale 1 --out-root /data/tpch".to_string(),
+            },
+            FixtureWorkloadProfile {
+                kind: FixtureKind::Dblp,
+                path: dblp_root.to_path_buf(),
+                scale: "v12".to_string(),
+                preparation_command:
+                    "fixture/fixture.sh graph dblp-ingest --source-json /data/dblp.v12.json --out-root /data/demo"
+                        .to_string(),
+            },
+        ];
+        profile.validate().unwrap();
+        profile
+    }
+
+    fn write_dblp_fixture(root: &Path) {
+        let parquet = root.join("parquet");
+        fs::create_dir_all(&parquet).unwrap();
+        let rows = |table: &str| -> usize {
+            match table {
+                "edges_by_src" | "edges_by_dst" => 2,
+                "profiles_by_paper_id" => 3,
+                "paper_authors" => 4,
+                "paper_fos" => 5,
+                _ => unreachable!("fixed DBLP table contract"),
+            }
+        };
+        for &table in nexus_workloads::graph::DBLP_TABLES {
+            write_tiny_graph_parquet(&parquet.join(format!("{table}.parquet")), rows(table));
+        }
+        let entry = |table: &str| {
+            serde_json::json!({
+                "bytes": fs::metadata(parquet.join(format!("{table}.parquet"))).unwrap().len(),
+                "num_rows": rows(table),
+                "num_row_groups": 1,
+                "schema": ["value"]
+            })
+        };
+        let manifest = serde_json::json!({
+            "schema_version": 1,
+            "generator": "fixture/graph/dblp_ingest.py",
+            "dataset": {"dataset_id": "citation-network", "source": "test source"},
+            "max_papers": 3,
+            "counts": {"papers": 3, "edges": 2, "author_rows": 4, "fos_rows": 5},
+            "edge_layouts": {
+                "src": {"parquet": entry("edges_by_src")},
+                "dst": {"parquet": entry("edges_by_dst")}
+            },
+            "profiles": entry("profiles_by_paper_id"),
+            "paper_authors": entry("paper_authors"),
+            "paper_fos": entry("paper_fos")
+        });
+        let source = serde_json::json!({
+            "schema_version": 1,
+            "dataset_id": "citation-network",
+            "source": "test source",
+            "source_json": {"path": "/data/dblp.v12.json", "bytes": 1, "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+        });
+        fs::write(root.join("manifest.json"), serde_json::to_vec_pretty(&manifest).unwrap()).unwrap();
+        fs::write(root.join("source.json"), serde_json::to_vec_pretty(&source).unwrap()).unwrap();
+    }
+
+    fn write_tiny_graph_parquet(path: &Path, rows: usize) {
+        let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, false)]));
+        let values = (0..i64::try_from(rows).unwrap()).collect::<Vec<_>>();
+        let batch = RecordBatch::try_new(schema.clone(), vec![Arc::new(Int64Array::from(values))]).unwrap();
+        let mut writer = ArrowWriter::try_new(File::create(path).unwrap(), schema, None).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
     }
 
     fn sample_provenance() -> Provenance {
