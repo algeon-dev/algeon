@@ -788,6 +788,9 @@ impl GpuBackendCoreBuilder {
                 }
                 startup_records.push(GpuBackendDeviceStartupRecord {
                     device_ordinal: facts.device,
+                    model_name: facts.model_name.clone(),
+                    uuid: facts.uuid.clone(),
+                    physical_total_bytes: facts.physical_total_bytes,
                     facts,
                     capacity_bytes,
                     resource_profile,
@@ -847,6 +850,12 @@ impl GpuBackendCoreBuilder {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GpuBackendDeviceStartupRecord {
     pub device_ordinal: usize,
+    /// NVML product name captured with the immutable device inventory facts.
+    pub model_name: Option<String>,
+    /// NVML UUID captured with the immutable device inventory facts.
+    pub uuid: Option<String>,
+    /// NVML-reported physical framebuffer capacity captured with the immutable device inventory facts.
+    pub physical_total_bytes: Option<u64>,
     pub facts: DeviceFacts,
     pub capacity_bytes: u64,
     /// Full ordinal-local resource-controller profile frozen after discovery.

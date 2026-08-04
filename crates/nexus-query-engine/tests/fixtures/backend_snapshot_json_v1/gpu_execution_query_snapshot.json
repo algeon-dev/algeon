@@ -1,0 +1,7 @@
+{
+  "fields": {
+    "active_query_jobs": "number",
+    "peak_active_query_jobs": "number"
+  },
+  "type": "object"
+}

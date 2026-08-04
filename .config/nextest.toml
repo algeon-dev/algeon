@@ -50,7 +50,8 @@ test-group = "gpu"
 
 [[profile.default.overrides]]
 filter = '''
-(package(nexus-query-engine) & binary(query_service_allocator_lifecycle))
+(package(datafusion-nexus) & binary(p6_device_identity_tests))
+| (package(nexus-query-engine) & binary(query_service_allocator_lifecycle))
 '''
 test-group = "gpu-exclusive"
 # END GENERATED TEST-LANE OVERRIDES — scripts/ci/test_lane_policy.py

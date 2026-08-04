@@ -9,6 +9,7 @@ use std::{
 };
 
 use cudf::{DeviceMemoryFailureAction, DeviceMemoryFailureSource, DeviceMemoryPoolUsage};
+use serde::Serialize;
 
 use crate::error::{QueryError, QueryErrorCode, Result};
 
@@ -51,7 +52,7 @@ struct DeviceMemoryFailureTrackerInner {
 }
 
 /// Point-in-time device memory allocation-failure report.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DeviceMemoryFailureReport {
     pub device_ordinal: usize,
     pub callback_installed: bool,

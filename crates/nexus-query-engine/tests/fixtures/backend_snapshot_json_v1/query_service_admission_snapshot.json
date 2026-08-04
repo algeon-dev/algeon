@@ -1,0 +1,8 @@
+{
+  "fields": {
+    "active_queries": "number",
+    "protected_devices": { "items": ["number"], "length": 2, "type": "array" },
+    "queued_queries": "number"
+  },
+  "type": "object"
+}

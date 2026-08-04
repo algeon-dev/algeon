@@ -1,0 +1,18 @@
+{
+  "fields": {
+    "active_jobs": "number",
+    "active_query_jobs": "number",
+    "aux_job_capacity": "number",
+    "aux_jobs_available": "number",
+    "device_ordinal": "number",
+    "peak_active_jobs": "number",
+    "peak_active_query_jobs": "number",
+    "peak_queued_jobs": "number",
+    "pool_id": "number",
+    "queued_jobs": "number",
+    "root_job_capacity": "number",
+    "root_jobs_available": "number",
+    "worker_count": "number"
+  },
+  "type": "object"
+}

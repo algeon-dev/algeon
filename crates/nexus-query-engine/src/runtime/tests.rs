@@ -1,6 +1,7 @@
 use std::{sync::Arc, time::Duration};
 
 use ::object_store::ObjectStoreExt;
+use serde_json::Value;
 
 use super::{
     cache_events::LakehouseCacheFillEventSink,
@@ -16,6 +17,214 @@ use crate::{
     chunk::SourceChunkPlanningOptions,
     error::{QueryError, QueryErrorCode, Result},
 };
+
+fn p6_snapshot_json_v1_samples() -> [(&'static str, Value); 9] {
+    let backend_metrics = super::backend_metrics::BackendMetricsStore::new(7, &[3])
+        .expect("fixed backend metrics fixture initializes")
+        .snapshot();
+    let ledger_report = DeviceLedgerReport {
+        device_ordinal: 3,
+        sequence: 17,
+        managed_capacity_bytes: 10_000,
+        configured_floor_bytes: 100,
+        max_active_attempts: 4,
+        active_attempts: 1,
+        live_grants_bytes: 900,
+        live_reserved_bytes: 640,
+        root_streams_available: 2,
+        auxiliary_streams_available: 3,
+        root_worker_slots_available: 1,
+        auxiliary_worker_slots_available: 2,
+        worker_depth: 3,
+        available_bytes: 9_100,
+        free_bytes: 8_900,
+        evictable_bytes: 200,
+        protected_slot: true,
+        protected_reserve_bytes: 100,
+        cache_evictable_resident_bytes: 128,
+        cache_pinned_in_use_bytes: 64,
+        health: "open".to_owned(),
+        grants: vec![DeviceLedgerGrantRow {
+            grant_id: 23,
+            admission_request_id: crate::observability::AdmissionRequestId::new(29),
+            grant_bytes: 900,
+            live_reserved_bytes: 640,
+        }],
+    };
+    let device_memory_failure = DeviceMemoryFailureReport {
+        device_ordinal: 3,
+        callback_installed: true,
+        callback_install_unavailable: false,
+        allocation_failure_count: 2,
+        total_failed_allocation_bytes: 8_192,
+        largest_failed_allocation_bytes: 4_096,
+        trim_retry_count: 1,
+        pool_usage_observation_count: 9,
+        last_failed_allocation_bytes: 4_096,
+        last_pool_reserved_current_bytes: 16_384,
+        last_pool_used_current_bytes: 12_288,
+    };
+    let device_telemetry = DeviceTelemetrySnapshot {
+        sampled_at_unix_ms: 1_700_000_000_123,
+        device_ordinal: 3,
+        cuda_status: DeviceTelemetryStatus::Available,
+        cuda_total_bytes: Some(46_068 * 1024 * 1024),
+        cuda_free_bytes: Some(40_000 * 1024 * 1024),
+        nvml_status: DeviceTelemetryStatus::Available,
+        nvml_total_bytes: Some(46_068 * 1024 * 1024),
+        nvml_reserved_bytes: Some(2_048),
+        nvml_used_bytes: Some(6_000 * 1024 * 1024),
+        nvml_free_bytes: Some(40_000 * 1024 * 1024),
+        gpu_utilization_pct: Some(37),
+        memory_utilization_pct: Some(21),
+    };
+    let execution_pool = GpuExecutionPoolSnapshot {
+        pool_id: 31,
+        device_ordinal: 3,
+        worker_count: 4,
+        active_jobs: 2,
+        peak_active_jobs: 3,
+        queued_jobs: 1,
+        peak_queued_jobs: 5,
+        active_query_jobs: 1,
+        peak_active_query_jobs: 2,
+        root_job_capacity: 1,
+        aux_job_capacity: 3,
+        root_jobs_available: 0,
+        aux_jobs_available: 2,
+    };
+
+    [
+        (
+            "backend_metrics_snapshot",
+            serde_json::to_value(backend_metrics).expect("backend metrics snapshot serializes"),
+        ),
+        (
+            "query_service_admission_snapshot",
+            serde_json::to_value(QueryServiceAdmissionSnapshot {
+                active_queries: 2,
+                queued_queries: 1,
+                protected_devices: vec![1, 3],
+            })
+            .expect("admission snapshot serializes"),
+        ),
+        (
+            "query_service_device_admission_snapshot",
+            serde_json::to_value(QueryServiceDeviceAdmissionSnapshot {
+                device_ordinal: 3,
+                process_active_query_slots: 2,
+                has_protection: true,
+            })
+            .expect("device admission snapshot serializes"),
+        ),
+        ("device_ledger_report", serde_json::to_value(ledger_report).expect("ledger report serializes")),
+        (
+            "device_memory_failure_report",
+            serde_json::to_value(device_memory_failure).expect("memory failure report serializes"),
+        ),
+        ("device_telemetry_snapshot", serde_json::to_value(device_telemetry).expect("telemetry snapshot serializes")),
+        ("gpu_execution_pool_snapshot", serde_json::to_value(execution_pool).expect("pool snapshot serializes")),
+        (
+            "gpu_execution_query_snapshot",
+            serde_json::to_value(GpuExecutionQuerySnapshot { active_query_jobs: 1, peak_active_query_jobs: 3 })
+                .expect("query snapshot serializes"),
+        ),
+        (
+            "gpu_backend_close_snapshot",
+            serde_json::to_value(GpuBackendCloseSnapshot {
+                closing: true,
+                gpu_resource_quiescent: true,
+                observation_quiescent: false,
+                active_gpu_permits: 0,
+                active_observation_permits: 2,
+                cleanup_failed: false,
+                cleanup_deadline_elapsed_count: 1,
+                cleanup_late_success_count: 2,
+            })
+            .expect("close snapshot serializes"),
+        ),
+    ]
+}
+
+fn snapshot_json_shape(value: &Value) -> Value {
+    match value {
+        Value::Null => Value::String("null".to_owned()),
+        Value::Bool(_) => Value::String("boolean".to_owned()),
+        Value::Number(_) => Value::String("number".to_owned()),
+        Value::String(_) => Value::String("string".to_owned()),
+        Value::Array(values) => {
+            let mut item_shapes = Vec::new();
+            for value in values {
+                let shape = snapshot_json_shape(value);
+                if !item_shapes.contains(&shape) {
+                    item_shapes.push(shape);
+                }
+            }
+            serde_json::json!({ "type": "array", "length": values.len(), "items": item_shapes })
+        },
+        Value::Object(values) => {
+            let fields = values
+                .iter()
+                .map(|(name, value)| (name.clone(), snapshot_json_shape(value)))
+                .collect::<serde_json::Map<_, _>>();
+            serde_json::json!({ "type": "object", "fields": fields })
+        },
+    }
+}
+
+fn p6_snapshot_json_v1_golden(name: &str) -> Value {
+    let fixture = match name {
+        "backend_metrics_snapshot" => include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/backend_snapshot_json_v1/backend_metrics_snapshot.json"
+        )),
+        "query_service_admission_snapshot" => include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/backend_snapshot_json_v1/query_service_admission_snapshot.json"
+        )),
+        "query_service_device_admission_snapshot" => include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/backend_snapshot_json_v1/query_service_device_admission_snapshot.json"
+        )),
+        "device_ledger_report" => include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/backend_snapshot_json_v1/device_ledger_report.json"
+        )),
+        "device_memory_failure_report" => include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/backend_snapshot_json_v1/device_memory_failure_report.json"
+        )),
+        "device_telemetry_snapshot" => include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/backend_snapshot_json_v1/device_telemetry_snapshot.json"
+        )),
+        "gpu_execution_pool_snapshot" => include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/backend_snapshot_json_v1/gpu_execution_pool_snapshot.json"
+        )),
+        "gpu_execution_query_snapshot" => include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/backend_snapshot_json_v1/gpu_execution_query_snapshot.json"
+        )),
+        "gpu_backend_close_snapshot" => include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/backend_snapshot_json_v1/gpu_backend_close_snapshot.json"
+        )),
+        _ => panic!("missing P6 backend snapshot JSON v1 golden: {name}"),
+    };
+    serde_json::from_str(fixture).expect("versioned backend snapshot JSON golden is valid")
+}
+
+#[test]
+fn p6_snapshot_json_v1_shapes_match_versioned_goldens() {
+    for (name, value) in p6_snapshot_json_v1_samples() {
+        assert_eq!(
+            snapshot_json_shape(&value),
+            p6_snapshot_json_v1_golden(name),
+            "P6 backend snapshot JSON v1 shape changed for {name}"
+        );
+    }
+}
 
 #[test]
 fn object_store_fetch_returns_bytes_from_full_get() {
@@ -62,7 +271,16 @@ impl GpuInventory for FakeGpuInventory {
 }
 
 fn fake_device_facts(device: usize, total_bytes: u64, sm_count: Option<u32>) -> DeviceFacts {
-    DeviceFacts { device, total_bytes, free_bytes: total_bytes / 2, sm_count, utilization_pct: None }
+    DeviceFacts {
+        device,
+        model_name: None,
+        uuid: None,
+        physical_total_bytes: None,
+        total_bytes,
+        free_bytes: total_bytes / 2,
+        sm_count,
+        utilization_pct: None,
+    }
 }
 
 #[test]

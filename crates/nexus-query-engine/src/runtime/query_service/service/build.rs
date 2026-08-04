@@ -488,8 +488,26 @@ mod construction_tests {
     #[test]
     fn pinned_small_device_rejects_oversized_floor_before_installation_phase() {
         let inventory = FrozenPlanInventory(vec![
-            DeviceFacts { device: 0, total_bytes: 100, free_bytes: 100, sm_count: Some(1), utilization_pct: None },
-            DeviceFacts { device: 1, total_bytes: 10, free_bytes: 10, sm_count: Some(1), utilization_pct: None },
+            DeviceFacts {
+                device: 0,
+                model_name: None,
+                uuid: None,
+                physical_total_bytes: None,
+                total_bytes: 100,
+                free_bytes: 100,
+                sm_count: Some(1),
+                utilization_pct: None,
+            },
+            DeviceFacts {
+                device: 1,
+                model_name: None,
+                uuid: None,
+                physical_total_bytes: None,
+                total_bytes: 10,
+                free_bytes: 10,
+                sm_count: Some(1),
+                utilization_pct: None,
+            },
         ]);
         let whole_device_profile = |limit_bytes, floor| DeviceRegistryInstallProfile {
             stream_pool_size: 2,

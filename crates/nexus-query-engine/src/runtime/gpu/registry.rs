@@ -890,8 +890,26 @@ mod tests {
     fn configured_ordinals_default_to_all_inventory_devices() {
         let inventory = FakeInventory {
             facts: vec![
-                DeviceFacts { device: 0, total_bytes: 100, free_bytes: 50, sm_count: Some(1), utilization_pct: None },
-                DeviceFacts { device: 1, total_bytes: 100, free_bytes: 50, sm_count: Some(1), utilization_pct: None },
+                DeviceFacts {
+                    device: 0,
+                    model_name: None,
+                    uuid: None,
+                    physical_total_bytes: None,
+                    total_bytes: 100,
+                    free_bytes: 50,
+                    sm_count: Some(1),
+                    utilization_pct: None,
+                },
+                DeviceFacts {
+                    device: 1,
+                    model_name: None,
+                    uuid: None,
+                    physical_total_bytes: None,
+                    total_bytes: 100,
+                    free_bytes: 50,
+                    sm_count: Some(1),
+                    utilization_pct: None,
+                },
             ],
         };
         let config = DeviceRegistryConfig::new(Vec::new(), 1);
@@ -909,6 +927,9 @@ mod tests {
         let inventory = FakeInventory {
             facts: vec![DeviceFacts {
                 device: 0,
+                model_name: None,
+                uuid: None,
+                physical_total_bytes: None,
                 total_bytes: 100,
                 free_bytes: 50,
                 sm_count: Some(1),
@@ -929,6 +950,9 @@ mod tests {
         let inventory = FakeInventory {
             facts: vec![DeviceFacts {
                 device: 0,
+                model_name: None,
+                uuid: None,
+                physical_total_bytes: None,
                 total_bytes: 100,
                 free_bytes: 50,
                 sm_count: Some(1),
@@ -946,6 +970,9 @@ mod tests {
             facts: vec![
                 DeviceFacts {
                     device: 0,
+                    model_name: None,
+                    uuid: None,
+                    physical_total_bytes: None,
                     total_bytes: 1_000,
                     free_bytes: 500,
                     sm_count: Some(1),
@@ -953,6 +980,9 @@ mod tests {
                 },
                 DeviceFacts {
                     device: 1,
+                    model_name: None,
+                    uuid: None,
+                    physical_total_bytes: None,
                     total_bytes: 2_000,
                     free_bytes: 500,
                     sm_count: Some(1),
@@ -1008,6 +1038,9 @@ mod tests {
             facts: vec![
                 DeviceFacts {
                     device: 0,
+                    model_name: None,
+                    uuid: None,
+                    physical_total_bytes: None,
                     total_bytes: 1_000,
                     free_bytes: 1_000,
                     sm_count: Some(1),
@@ -1015,6 +1048,9 @@ mod tests {
                 },
                 DeviceFacts {
                     device: 1,
+                    model_name: None,
+                    uuid: None,
+                    physical_total_bytes: None,
                     total_bytes: 2_000,
                     free_bytes: 2_000,
                     sm_count: Some(1),
@@ -1066,8 +1102,16 @@ mod tests {
 
     #[test]
     fn managed_capacities_are_derived_independently_per_device() {
-        let whole_facts =
-            DeviceFacts { device: 0, total_bytes: 1_000, free_bytes: 100, sm_count: Some(1), utilization_pct: None };
+        let whole_facts = DeviceFacts {
+            device: 0,
+            model_name: None,
+            uuid: None,
+            physical_total_bytes: None,
+            total_bytes: 1_000,
+            free_bytes: 100,
+            sm_count: Some(1),
+            utilization_pct: None,
+        };
         let whole = DeviceRegistryInstallProfile {
             stream_pool_size: 2,
             device_capabilities: DeviceCapabilities::default(),
@@ -1135,8 +1179,16 @@ mod tests {
 
     #[test]
     fn managed_capacity_never_exceeds_physical_or_owned_memory() {
-        let facts =
-            DeviceFacts { device: 0, total_bytes: 100, free_bytes: 50, sm_count: Some(1), utilization_pct: None };
+        let facts = DeviceFacts {
+            device: 0,
+            model_name: None,
+            uuid: None,
+            physical_total_bytes: None,
+            total_bytes: 100,
+            free_bytes: 50,
+            sm_count: Some(1),
+            utilization_pct: None,
+        };
         let automatic = DeviceRegistryInstallProfile {
             stream_pool_size: 1,
             device_capabilities: DeviceCapabilities::default(),

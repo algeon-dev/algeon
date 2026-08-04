@@ -1,0 +1,17 @@
+{
+  "fields": {
+    "cuda_free_bytes": "number",
+    "cuda_status": "string",
+    "cuda_total_bytes": "number",
+    "device_ordinal": "number",
+    "gpu_utilization_pct": "number",
+    "memory_utilization_pct": "number",
+    "nvml_free_bytes": "number",
+    "nvml_reserved_bytes": "number",
+    "nvml_status": "string",
+    "nvml_total_bytes": "number",
+    "nvml_used_bytes": "number",
+    "sampled_at_unix_ms": "number"
+  },
+  "type": "object"
+}

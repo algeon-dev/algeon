@@ -1,0 +1,41 @@
+{
+  "fields": {
+    "active_attempts": "number",
+    "auxiliary_streams_available": "number",
+    "auxiliary_worker_slots_available": "number",
+    "available_bytes": "number",
+    "cache_evictable_resident_bytes": "number",
+    "cache_pinned_in_use_bytes": "number",
+    "configured_floor_bytes": "number",
+    "device_ordinal": "number",
+    "evictable_bytes": "number",
+    "free_bytes": "number",
+    "grants": {
+      "items": [
+        {
+          "fields": {
+            "admission_request_id": "number",
+            "grant_bytes": "number",
+            "grant_id": "number",
+            "live_reserved_bytes": "number"
+          },
+          "type": "object"
+        }
+      ],
+      "length": 1,
+      "type": "array"
+    },
+    "health": "string",
+    "live_grants_bytes": "number",
+    "live_reserved_bytes": "number",
+    "managed_capacity_bytes": "number",
+    "max_active_attempts": "number",
+    "protected_reserve_bytes": "number",
+    "protected_slot": "boolean",
+    "root_streams_available": "number",
+    "root_worker_slots_available": "number",
+    "sequence": "number",
+    "worker_depth": "number"
+  },
+  "type": "object"
+}
