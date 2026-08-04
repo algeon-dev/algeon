@@ -994,6 +994,7 @@ impl BackendMetricsStore {
     /// Returns whether a previously pulled snapshot still names the current
     /// store generation. This is useful to detect a torn multi-read without
     /// exposing a second mutable observation surface.
+    #[cfg(test)]
     pub(crate) fn is_snapshot_current(&self, snapshot: &BackendMetricsSnapshot) -> bool {
         if snapshot.backend_generation != self.backend_generation {
             return false;

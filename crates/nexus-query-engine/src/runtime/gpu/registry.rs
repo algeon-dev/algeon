@@ -93,6 +93,7 @@ impl DeviceRegistryConfig {
     }
 
     /// Sets the per-device capacity calculation parameters.
+    #[cfg(test)]
     pub fn with_capacity_policy(mut self, headroom_bytes: u64, fallback_bytes: u64) -> Self {
         self.capacity_headroom_bytes = headroom_bytes;
         self.fallback_capacity_bytes = fallback_bytes;
@@ -209,7 +210,7 @@ impl DeviceRegistry {
                 .with_fact("device_ordinal", *ordinal)
                 .with_fact("reason", "missing_device_profile")
             })?;
-            let capacity_bytes = managed_capacity_bytes(*ordinal, &facts, &profile)?;
+            let capacity_bytes = managed_capacity_bytes(*ordinal, &facts, profile)?;
             let configured_limit_bytes =
                 capacity_bytes.checked_add(profile.backend_reserve_bytes).ok_or_else(|| {
                     QueryError::new(

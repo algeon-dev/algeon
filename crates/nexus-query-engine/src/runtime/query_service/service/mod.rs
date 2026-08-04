@@ -272,11 +272,6 @@ impl QueryService {
             .unwrap_or(0)
     }
 
-    /// Returns true when both handles point at the same service instance.
-    pub fn same_service(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.inner, &other.inner)
-    }
-
     /// Closes every scheduler ledger for an injected unknown-isolation fault.
     /// This test hook exercises the same controller transition as production
     /// cleanup; it does not introduce a second health latch.

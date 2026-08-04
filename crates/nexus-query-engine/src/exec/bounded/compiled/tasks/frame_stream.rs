@@ -81,16 +81,19 @@ impl Drop for YieldedFrameReleaseGuard {
     }
 }
 
+#[cfg(test)]
 pub(crate) struct YieldedFrameCounterTestHarness {
     live_counter: Rc<Cell<u64>>,
 }
 
+#[cfg(test)]
 impl Default for YieldedFrameCounterTestHarness {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(test)]
 impl YieldedFrameCounterTestHarness {
     pub(crate) fn new() -> Self {
         Self { live_counter: Rc::new(Cell::new(0)) }
@@ -107,10 +110,12 @@ impl YieldedFrameCounterTestHarness {
     }
 }
 
+#[cfg(test)]
 pub(crate) struct YieldedFrameCounterTestGuard {
     release_guard: YieldedFrameReleaseGuard,
 }
 
+#[cfg(test)]
 impl YieldedFrameCounterTestGuard {
     pub(crate) fn take_for_release(&mut self) {
         self.release_guard.take_for_release("YieldedFrameCounterTestGuard::take_for_release called twice");
@@ -354,8 +359,10 @@ impl ResidentFrameStreamPayload {
     }
 }
 
+#[cfg(test)]
 struct EmptyResidentFrameStreamSource;
 
+#[cfg(test)]
 impl ResidentFrameStreamSource for EmptyResidentFrameStreamSource {
     fn next_frame(
         &mut self,
@@ -366,10 +373,12 @@ impl ResidentFrameStreamSource for EmptyResidentFrameStreamSource {
     }
 }
 
+#[cfg(test)]
 struct ErrorResidentFrameStreamSource {
     emitted: bool,
 }
 
+#[cfg(test)]
 impl ResidentFrameStreamSource for ErrorResidentFrameStreamSource {
     fn next_frame(
         &mut self,
@@ -597,12 +606,14 @@ pub(super) fn map_projection_resident_frame_stream(
     )
 }
 
+#[cfg(test)]
 pub(crate) struct ResidentFrameStreamProducerTestHarness {
     payload: Option<ResidentFrameStreamPayload>,
     reservations: ReservationTracker,
     metrics: QueryMetrics,
 }
 
+#[cfg(test)]
 impl ResidentFrameStreamProducerTestHarness {
     pub(crate) fn new(producer_reservation_bytes: &[u64]) -> Result<Self> {
         Self::with_source(producer_reservation_bytes, Box::new(EmptyResidentFrameStreamSource))

@@ -29,11 +29,13 @@ pub(in crate::runtime::query_service) struct PlacedAdmissionCommit {
 }
 
 impl QueryService {
+    #[cfg(test)]
     pub fn admit_query(&self) -> Result<QueryHandle> {
         self.admit_query_with_request(QueryAdmissionRequest::new())
     }
 
     /// Admits a query with consolidated request-scoped admission metadata.
+    #[cfg(test)]
     pub fn admit_query_with_request(&self, request: QueryAdmissionRequest) -> Result<QueryHandle> {
         self.admit_query_with_request_and_permits(request, None, None, None)
     }
@@ -458,6 +460,7 @@ impl QueryService {
     ///
     /// Call [`QueryAdmissionWaiter::try_admit`] until it returns a handle. If
     /// the waiter is dropped first, the queued request is removed.
+    #[cfg(test)]
     pub fn enqueue_admission(&self) -> Result<QueryAdmissionWaiter> {
         self.enqueue_admission_with_request(QueryAdmissionRequest::new())
     }
@@ -468,11 +471,13 @@ impl QueryService {
     /// same queue, timeout, and overload error taxonomy, but waits on an
     /// event-driven wakeup instead of polling
     /// [`QueryAdmissionWaiter::try_admit`].
+    #[cfg(test)]
     pub async fn admit_async(&self) -> Result<QueryHandle> {
         self.admit_async_with_request(QueryAdmissionRequest::new()).await
     }
 
     /// Admits a query asynchronously with consolidated request-scoped admission metadata.
+    #[cfg(test)]
     pub async fn admit_async_with_request(&self, request: QueryAdmissionRequest) -> Result<QueryHandle> {
         self.admit_async_with_request_and_permits(request, None, None, None).await
     }
@@ -522,6 +527,7 @@ impl QueryService {
     }
 
     /// Enqueues a query admission request with consolidated request-scoped metadata.
+    #[cfg(test)]
     pub fn enqueue_admission_with_request(&self, request: QueryAdmissionRequest) -> Result<QueryAdmissionWaiter> {
         self.enqueue_admission_with_request_and_permits(request, None, None, None)
     }
@@ -970,11 +976,13 @@ impl QueryService {
     ///
     /// Returns `Ok(None)` when all admission slots are active or when queued
     /// requests already exist and this caller must not bypass them.
+    #[cfg(test)]
     pub fn try_admit_query(&self) -> Result<Option<QueryHandle>> {
         self.try_admit_query_with_request(QueryAdmissionRequest::new())
     }
 
     /// Attempts to admit a query with consolidated request-scoped metadata.
+    #[cfg(test)]
     pub fn try_admit_query_with_request(&self, request: QueryAdmissionRequest) -> Result<Option<QueryHandle>> {
         self.try_admit_query_with_request_and_permits(request, None, None, None)
     }
@@ -1239,6 +1247,7 @@ impl QueryService {
     /// service runtime resources, so the owning resource aggregate can be
     /// destroyed. The process-wide backend owner remains attached to that
     /// aggregate until its resources are dropped.
+    #[cfg(test)]
     pub fn close_and_wait_for_quiescence(&self, timeout: Duration) -> Result<()> {
         let deadline = Instant::now().checked_add(timeout).unwrap_or_else(Instant::now);
         self.close_and_wait_for_quiescence_until(deadline)
@@ -1249,6 +1258,7 @@ impl QueryService {
     ///
     /// Time spent acquiring the admission lock or closing the service consumes
     /// this same deadline instead of starting a second grace period.
+    #[cfg(test)]
     pub fn close_and_wait_for_quiescence_until(&self, deadline: Instant) -> Result<()> {
         self.close_drain_step_until(deadline).into_result()
     }

@@ -128,21 +128,25 @@ enum GpuResidentGraphCheckedOutState {
     Escaped { entry: Arc<GpuResidentGraphCacheEntry>, pin: CacheResidencyPin },
 }
 
+#[cfg_attr(not(test), derive(Default))]
 struct GpuResidentGraphCacheState {
     available: HashMap<ResidentGraphKey, Arc<GpuResidentGraphCacheEntry>>,
     checked_out: HashMap<ResidentGraphKey, GpuResidentGraphCheckedOutState>,
     preparation_pins: HashMap<ResidentGraphKey, GpuResidentGraphPreparationPinState>,
+    #[cfg(test)]
     next_preparation_pin_id: u64,
     destructions_in_progress: usize,
     closed: bool,
 }
 
+#[cfg(test)]
 impl Default for GpuResidentGraphCacheState {
     fn default() -> Self {
         Self {
             available: HashMap::new(),
             checked_out: HashMap::new(),
             preparation_pins: HashMap::new(),
+            #[cfg(test)]
             next_preparation_pin_id: 1,
             destructions_in_progress: 0,
             closed: false,
@@ -151,6 +155,7 @@ impl Default for GpuResidentGraphCacheState {
 }
 
 impl GpuResidentGraphCacheState {
+    #[cfg(test)]
     fn next_preparation_pin_id(&mut self) -> u64 {
         let next = self.next_preparation_pin_id;
         self.next_preparation_pin_id = self.next_preparation_pin_id.wrapping_add(1);
@@ -307,15 +312,9 @@ impl GpuResidentGraphCache {
         Ok(Some(GpuResidentGraphInsertTransaction { cache: Arc::clone(&self.inner), charge: Some(charge) }))
     }
 
-    /// Reports whether this device cache contains the canonical graph key.
-    /// This is host-only placement evidence and never allocates or pins.
-    pub(crate) fn contains_resident_key(&self, resident_key: &ResidentGraphKey) -> Result<bool> {
-        let state = self.lock()?;
-        Ok(state.available.contains_key(resident_key) || state.checked_out.contains_key(resident_key))
-    }
-
     /// Pins an available entry before source-side graph preparation commits to
     /// a cache hit. Once [`Self::close`] begins, no final pin is admitted.
+    #[cfg(test)]
     pub(crate) fn try_pin_available_key(
         &self,
         resident_key: &ResidentGraphKey,
@@ -416,29 +415,6 @@ impl GpuResidentGraphCache {
         }))
     }
 
-    /// Evicts one idle resident graph. Pinned graphs are refused without
-    /// changing their charge. GPU destruction happens before the matching
-    /// ledger release transition.
-    pub(crate) fn evict(&self, resident_key: &ResidentGraphKey) -> Result<bool> {
-        let entry = {
-            let mut state = self.lock()?;
-            let Some(entry) = state.available.get(resident_key).cloned() else {
-                return Ok(false);
-            };
-            let Some(_destruction) = entry.residency.begin_eviction()? else {
-                return Ok(false);
-            };
-            // The token is intentionally recreated after the graph has been
-            // detached below. Dropping this probe aborts the gate and avoids
-            // holding a cache mutex during native destruction.
-            drop(_destruction);
-            state.available.remove(resident_key);
-            entry
-        };
-        let graph = entry.take_graph()?;
-        self.destroy_entry_after_graph_drop(entry, graph)
-    }
-
     /// Begins shutdown. Existing pins may finish, but no final preparation pin,
     /// checkout, or insertion can start after this point.
     pub(crate) fn close(&self) -> Result<()> {
@@ -532,6 +508,7 @@ pub(crate) struct GpuResidentGraphInsertTransaction {
 }
 
 impl GpuResidentGraphInsertTransaction {
+    #[cfg(test)]
     pub(crate) fn bytes(&self) -> u64 {
         self.charge.as_ref().map_or(0, CacheResidencyChargeTransaction::bytes)
     }
@@ -664,10 +641,6 @@ where T: GpuResidentGraphTransposition
 impl<T> GpuResidentGraphCheckout<T>
 where T: GpuResidentGraphTransposition
 {
-    pub(crate) fn retained_device_bytes(&self) -> u64 {
-        self.entry.residency.bytes()
-    }
-
     /// Extracts the parked graph for a cuGraph execution. The caller must
     /// return it with [`Self::return_parked`]; dropping the checkout after an
     /// extraction conservatively leaves the shared charge pinned and prevents

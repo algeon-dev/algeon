@@ -169,11 +169,6 @@ impl DeviceContext {
         &self.inner.stream_pool
     }
 
-    /// Handle to cudf's process-global per-device memory manager.
-    pub fn memory_manager(&self) -> &cudf::DeviceMemoryManager {
-        &self.inner.mr_manager
-    }
-
     /// Immutable process-installation record captured before this device was
     /// published in the backend core.
     pub fn memory_manager_installation(&self) -> cudf::DeviceMemoryManagerInstallationState {
@@ -207,11 +202,6 @@ impl DeviceContext {
     /// Device managed capacity used for granted accounting.
     pub fn capacity_bytes(&self) -> u64 {
         self.inner.ledger.managed_capacity_bytes()
-    }
-
-    /// Number of currently admitted attempts on this CUDA device ordinal.
-    pub fn active_queries(&self) -> usize {
-        self.inner.ledger.snapshot().map_or(0, |snapshot| snapshot.active_attempts)
     }
 
     /// Folds a persistent native CUDA fault into the owning admission ledger.

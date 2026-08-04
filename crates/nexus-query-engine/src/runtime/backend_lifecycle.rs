@@ -96,10 +96,12 @@ pub(crate) struct BackendLifecycleSnapshot {
 
 impl BackendLifecycleSnapshot {
     /// Returns whether no observation work remains.
+    #[cfg(test)]
     pub(crate) const fn is_observation_quiescent(self) -> bool {
         self.active_observation_permits == 0
     }
 
+    #[cfg(test)]
     pub(crate) const fn is_gpu_quiescent(self) -> bool {
         self.active_gpu_permits == 0
     }

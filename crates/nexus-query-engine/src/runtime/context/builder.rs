@@ -164,6 +164,7 @@ impl Drop for RuntimeObservationBuildError {
 
 impl ExecutionContextBuilder {
     /// Creates a builder with default runtime and execution policies.
+    #[cfg(test)]
     pub fn new() -> Self {
         Self::default()
     }
@@ -173,6 +174,7 @@ impl ExecutionContextBuilder {
     /// This marks the memory-resource policy as
     /// [`MemoryResourcePolicy::ExternalRuntime`] because allocator/device setup
     /// has happened outside the query engine.
+    #[cfg(test)]
     pub fn with_runtime(mut self, runtime: cudf::Runtime) -> Self {
         self.runtime = Some(Arc::new(runtime));
         self.memory_policy = MemoryResourcePolicy::ExternalRuntime;
@@ -183,6 +185,7 @@ impl ExecutionContextBuilder {
     ///
     /// Prefer this over building separate runtimes when an adapter needs one
     /// CUDA stream, allocator, or device policy across multiple executions.
+    #[cfg(test)]
     pub fn with_shared_runtime(mut self, runtime: Arc<cudf::Runtime>) -> Self {
         self.runtime = Some(runtime);
         self.memory_policy = MemoryResourcePolicy::ExternalRuntime;
@@ -190,12 +193,14 @@ impl ExecutionContextBuilder {
     }
 
     /// Attaches a server-generation lifecycle to file-backed native I/O.
+    #[cfg(test)]
     pub fn with_io_lifecycle(mut self, lifecycle: crate::runtime::IoLifecycle) -> Self {
         self.io_lifecycle = Some(lifecycle);
         self
     }
 
     /// Uses a caller-owned dedicated executor for synchronous GPU work.
+    #[cfg(test)]
     pub(crate) fn with_gpu_execution_pool(mut self, pool: GpuExecutionPool) -> Self {
         self.gpu_execution_pool = Some(pool);
         self
@@ -230,8 +235,7 @@ impl ExecutionContextBuilder {
 
     /// Selects the CUDA device ordinal for runtime construction.
     ///
-    /// Ignored when a runtime is supplied with [`Self::with_runtime`] or
-    /// [`Self::with_shared_runtime`].
+    /// Ignored when a runtime is supplied by the caller.
     pub fn with_device_ordinal(mut self, device_ordinal: usize) -> Self {
         self.device_ordinal = Some(device_ordinal);
         self

@@ -49,10 +49,12 @@ impl ReservationBudget {
 }
 
 impl ReservationTracker {
+    #[cfg(test)]
     pub(in crate::exec) fn new(memory_space: MemorySpaceId, budget_bytes: u64) -> Self {
         Self::new_with_budget(memory_space, ReservationBudget::Static(budget_bytes))
     }
 
+    #[cfg(test)]
     pub(super) fn new_with_budget(memory_space: MemorySpaceId, budget: ReservationBudget) -> Self {
         Self::new_with_budget_and_observation(memory_space, budget, None)
     }

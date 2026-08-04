@@ -248,11 +248,6 @@ impl ServiceStreamPool {
         Ok(pool)
     }
 
-    /// Return the process-global default-sized pool for `device`.
-    pub fn default_for_device(device: cudf::DeviceId) -> Result<Self> {
-        Self::for_device(device, default_service_stream_pool_size_for_device(device))
-    }
-
     /// CUDA device served by this pool.
     pub fn device(&self) -> cudf::DeviceId {
         self.inner.device
@@ -275,6 +270,7 @@ impl ServiceStreamPool {
     ///
     /// This is a quiescence boundary for benchmark warmup and graceful service
     /// drain. It does not create runtimes that were never needed.
+    #[cfg(test)]
     pub(crate) fn wait_until_idle(&self, deadline: Instant, operation: &'static str) -> Result<()> {
         self.wait_until_quiescent(0, deadline, operation)
     }
@@ -389,6 +385,7 @@ impl ServiceStreamPool {
 
     /// Wait until exactly `expected_leased_runtimes` created runtimes remain
     /// checked out and every other runtime has completed cleanup.
+    #[cfg(test)]
     pub(crate) fn wait_until_quiescent(
         &self,
         expected_leased_runtimes: usize,
@@ -486,6 +483,7 @@ impl ServiceStreamPool {
     }
 
     /// Acquire a CUDA stream/runtime lease while observing cooperative cancellation.
+    #[cfg(test)]
     pub fn acquire_with_cancellation(
         &self,
         cancellation: &ExecutionCancellation,
@@ -503,6 +501,7 @@ impl ServiceStreamPool {
 
     /// Acquire a CUDA stream/runtime lease while observing cancellation and an
     /// absolute wait deadline.
+    #[cfg(test)]
     pub fn acquire_with_cancellation_deadline(
         &self,
         cancellation: &ExecutionCancellation,
@@ -520,6 +519,7 @@ impl ServiceStreamPool {
     }
 
     /// Acquires a lease while recording host-side wait and lifecycle evidence.
+    #[cfg(test)]
     pub(crate) fn acquire_observed_with_cancellation_deadline(
         &self,
         cancellation: &ExecutionCancellation,

@@ -162,6 +162,7 @@ impl QueryServiceDrainOutcome {
         &self.phases
     }
 
+    #[cfg(test)]
     fn into_result(self) -> Result<()> {
         let mut first_deadline = None;
         for outcome in self.phases {

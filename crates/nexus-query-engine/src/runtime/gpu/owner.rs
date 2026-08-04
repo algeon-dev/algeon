@@ -34,6 +34,7 @@ pub(crate) struct LiveBackendLease {
 struct LiveBackendLeaseInner {
     registry: Arc<LiveBackendRegistryInner>,
     generation: u64,
+    #[cfg(test)]
     device_ordinals: Arc<[usize]>,
 }
 
@@ -42,10 +43,12 @@ impl LiveBackendLease {
         DeviceOwnerToken { generation: self.inner.generation, _lease: PhantomData }
     }
 
+    #[cfg(test)]
     pub(crate) fn generation(&self) -> u64 {
         self.inner.generation
     }
 
+    #[cfg(test)]
     pub(crate) fn device_ordinals(&self) -> &[usize] {
         &self.inner.device_ordinals
     }
@@ -121,7 +124,12 @@ impl LiveBackendRegistry {
         state.active = Some(ActiveBackendOwner { generation, device_ordinals: Arc::clone(&device_ordinals) });
 
         Ok(LiveBackendLease {
-            inner: Arc::new(LiveBackendLeaseInner { registry: Arc::clone(&self.inner), generation, device_ordinals }),
+            inner: Arc::new(LiveBackendLeaseInner {
+                registry: Arc::clone(&self.inner),
+                generation,
+                #[cfg(test)]
+                device_ordinals,
+            }),
         })
     }
 }
