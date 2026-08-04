@@ -207,7 +207,7 @@ impl fmt::Display for GraphAlgorithm {
 pub enum GraphVertexIdTypeSupport {
     /// The operation accepts Int32 and Int64 vertex id columns.
     Int32OrInt64,
-    /// Legacy cuGraph C API operation whose edge type dispatch only supports
+    /// cuGraph C API operation whose edge type dispatch only supports
     /// Int32 vertex id columns.
     Int32OnlyLegacyEdgeType,
 }

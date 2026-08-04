@@ -8,7 +8,7 @@
 //!
 //! - [`plan`] and [`expr`] define the DataFusion-free query IR.
 //! - [`capability`], [`admission`], and [`pipeline`] prove and compile bounded-execution
-//!   contracts without naming legacy execution families.
+//!   contracts without assigning plans to named execution families.
 //! - [`runtime`] owns device, memory, boundary, and scheduler policy.
 //! - [`exec`] executes a validated [`plan::QueryPlan`] and returns
 //!   either host Arrow output or GPU-resident handles according to its

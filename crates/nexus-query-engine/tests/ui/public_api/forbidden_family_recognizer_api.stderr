@@ -1,0 +1,18 @@
+error[E0432]: unresolved imports `nexus_query_engine::capability::BoundedJoinNodeCapability`, `nexus_query_engine::capability::BoundedKeylessConditionalJoinType`, `nexus_query_engine::capability::bounded_join_node_capability`, `nexus_query_engine::capability::bounded_multi_join_node_capability`, `nexus_query_engine::capability::bounded_root_join_compatible`
+ --> tests/ui/public_api/forbidden_family_recognizer_api.rs:2:5
+  |
+2 |     BoundedJoinNodeCapability, BoundedKeylessConditionalJoinType, bounded_join_node_capability,
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ no `bounded_join_node_capability` in `capability`
+  |     |                          |
+  |     |                          no `BoundedKeylessConditionalJoinType` in `capability`
+  |     no `BoundedJoinNodeCapability` in `capability`
+3 |     bounded_multi_join_node_capability, bounded_root_join_compatible,
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ no `bounded_root_join_compatible` in `capability`
+  |     |
+  |     no `bounded_multi_join_node_capability` in `capability`
+  |
+help: a similar name exists in the module
+  |
+2 -     BoundedJoinNodeCapability, BoundedKeylessConditionalJoinType, bounded_join_node_capability,
+2 +     BoundedJoinNodeCapability, KeylessConditionalJoinKind, bounded_join_node_capability,
+  |

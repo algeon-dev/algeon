@@ -198,7 +198,7 @@ fn assert_strict_report_has_join_path_gates(report: &nexus_query_engine::contrac
     }
 
     let stable_rows = report.stable_kv_rows().join("|");
-    for legacy_term in [
+    for retired_term in [
         "BoundedJoinExecutionFamily",
         "BoundedJoinExecutionPath",
         "bounded_join_execution_family",
@@ -208,8 +208,8 @@ fn assert_strict_report_has_join_path_gates(report: &nexus_query_engine::contrac
         "bounded_join_unresolved_preflight_contracts",
     ] {
         assert!(
-            !stable_rows.contains(legacy_term),
-            "strict bounded diagnostics must not contain legacy family/path term {legacy_term}"
+            !stable_rows.contains(retired_term),
+            "strict bounded diagnostics must not contain retired family/path term {retired_term}"
         );
     }
 }

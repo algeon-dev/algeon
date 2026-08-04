@@ -227,7 +227,7 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
         &config,
         &warmup_rows,
         &query_rows,
-        &samples.legacy,
+        &samples.aggregate,
         &samples.by_device,
         makespan_ms,
         effective_active_max,
@@ -555,7 +555,7 @@ struct SampleRow {
 
 #[derive(Debug, Default)]
 struct SampleCollection {
-    legacy: Vec<SampleRow>,
+    aggregate: Vec<SampleRow>,
     by_device: Vec<DeviceSampleRow>,
 }
 

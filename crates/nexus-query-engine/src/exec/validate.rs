@@ -1207,7 +1207,7 @@ mod tests {
     }
 
     #[test]
-    fn validate_graph_algorithm_rejects_int64_for_legacy_int32_only_algorithms() {
+    fn validate_graph_algorithm_rejects_int64_for_c_api_int32_only_algorithms() {
         for (algorithm, params) in [
             (GraphAlgorithm::MinimumSpanningTree, GraphAlgorithmParams::MinimumSpanningTree(Default::default())),
             (
@@ -1225,7 +1225,7 @@ mod tests {
                 ])),
             );
             let error =
-                validate_query_plan(&int64_plan).expect_err("legacy cuGraph algorithms must reject Int64 vertices");
+                validate_query_plan(&int64_plan).expect_err("cuGraph C API algorithms must reject Int64 vertices");
             assert_eq!(error.code(), QueryErrorCode::UnsupportedType);
             assert_eq!(error.operation(), "nexus_query_engine.graph_algorithm.validate");
             assert_eq!(error.fact_value("reason"), Some("unsupported_vertex_dtype"));
@@ -1243,7 +1243,7 @@ mod tests {
                     Field::new("weight", ArrowDataType::Float64, false),
                 ])),
             );
-            validate_query_plan(&int32_plan).expect("legacy cuGraph algorithms must keep accepting Int32 vertices");
+            validate_query_plan(&int32_plan).expect("cuGraph C API algorithms must keep accepting Int32 vertices");
         }
     }
 

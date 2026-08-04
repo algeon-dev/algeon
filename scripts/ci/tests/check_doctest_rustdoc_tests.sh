@@ -13,7 +13,7 @@ mkdir -p "${tmp_dir}/bin" "${tmp_dir}/phase-logs"
 cat >"${tmp_dir}/bin/bash" <<'SH'
 #!/usr/bin/bash
 case "${1:-}" in
-  scripts/build/check_cpu_packaging_policy.sh | scripts/build/check_build_support.sh | scripts/ci/tests/check_doctest_report_tests.sh | scripts/ci/tests/check_phase_test_counts_tests.sh | scripts/ci/tests/check_gpu_test_lane_tests.sh | scripts/ci/check_gpu_test_lane.sh | scripts/ci/tests/check_doctest_rustdoc_tests.sh | scripts/ci/tests/check_gpu_scheduling_tests.sh | scripts/ci/check_public_terminology.sh | scripts/ci/tests/check_public_terminology_tests.sh)
+  scripts/build/check_cpu_packaging_policy.sh | scripts/build/check_build_support.sh | scripts/ci/tests/check_doctest_report_tests.sh | scripts/ci/tests/check_phase_test_counts_tests.sh | scripts/ci/tests/check_gpu_test_lane_tests.sh | scripts/ci/check_gpu_test_lane.sh | scripts/ci/tests/check_doctest_rustdoc_tests.sh | scripts/ci/tests/check_gpu_scheduling_tests.sh)
     exit 0
     ;;
 esac
@@ -252,6 +252,6 @@ if [[ -s "${tmp_dir}/invalid_strict.log" ]]; then
   sed 's/^/  /' "${tmp_dir}/invalid_strict.log" >&2
   exit 1
 fi
-echo "PASS: invalid legacy STRICT fails before work"
+echo "PASS: invalid STRICT compatibility flag fails before work"
 
 echo "OK: doctest lock/accounting and strict-rustdoc orchestration tests passed without GPU execution."

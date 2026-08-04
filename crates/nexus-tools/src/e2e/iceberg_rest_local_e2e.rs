@@ -9,7 +9,7 @@
 //!
 //! ```bash
 //! docker compose -f fixture/iceberg-local/docker-compose.yml up -d
-//! fixture/iceberg-local/load.sh            # loader (Milestone 3c)
+//! fixture/fixture.sh iceberg rest load --workload tpch --scale sf1
 //! NEXUS_ICEBERG_REST_E2E=1 \
 //!   NEXUS_ICEBERG_REST_URI=http://localhost:8181 \
 //!   NEXUS_ICEBERG_WAREHOUSE=s3://lakehouse/warehouse \

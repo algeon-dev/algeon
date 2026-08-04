@@ -40,8 +40,8 @@ use nexus_workloads::tpcds::{TPCDS_QUERIES, TpcdsQuery};
 use crate::report_workload::{
     RelationalExecutionSelection,
     tpcds::{
-        NEXUS_TPCDS_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV, NEXUS_TPCDS_NATIVE_STDDEV_SAMP_EXECUTION_MODE_ENV,
-        TpcdsNativeProfileSettings, register_tpcds_tables_with_native_metadata,
+        NEXUS_TPCDS_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV, TpcdsNativeProfileSettings,
+        register_tpcds_tables_with_native_metadata,
         tpcds_native_analytics_optimizer_config_with_cost_selection_and_profile_settings,
         tpcds_native_analytics_optimizer_config_with_profile_settings, tpcds_native_profile_settings_from_env,
         tpcds_native_profile_settings_with_env, tpcds_native_report_session_config,

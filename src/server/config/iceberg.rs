@@ -1,10 +1,9 @@
 use super::{env::EnvValues, *};
 
-/// DataFusion catalog name exposed to SQL for Iceberg tables. Preferred over
-/// the Glue-specific catalog-name alias.
+/// DataFusion catalog name exposed to SQL for Iceberg tables.
 pub const NEXUS_ICEBERG_CATALOG_NAME_ENV: &str = "NEXUS_ICEBERG_CATALOG_NAME";
-/// Iceberg namespace exposed to SQL. Preferred over the Glue database alias
-/// and required when Iceberg server registration is configured.
+/// Iceberg namespace exposed to SQL and required when Iceberg server
+/// registration is configured.
 pub const NEXUS_ICEBERG_NAMESPACE_ENV: &str = "NEXUS_ICEBERG_NAMESPACE";
 /// Optional comma-separated Iceberg table registrations. Entries may be
 /// `table` or `alias=table`; when unset, tables resolve lazily through the
@@ -16,18 +15,13 @@ pub const NEXUS_ICEBERG_TABLES_ENV: &str = "NEXUS_ICEBERG_TABLES";
 /// config load time.
 pub const NEXUS_ICEBERG_CATALOG_KIND_ENV: &str = "NEXUS_ICEBERG_CATALOG_KIND";
 
-/// Glue catalog handle passed to iceberg-rust. Also acts as the legacy
-/// DataFusion catalog-name fallback when `NEXUS_ICEBERG_CATALOG_NAME` is unset.
+/// Glue catalog handle passed to iceberg-rust.
 pub const NEXUS_ICEBERG_GLUE_CATALOG_NAME_ENV: &str = "NEXUS_ICEBERG_GLUE_CATALOG_NAME";
-/// Legacy Glue database alias for `NEXUS_ICEBERG_NAMESPACE`.
-pub const NEXUS_ICEBERG_GLUE_DATABASE_ENV: &str = "NEXUS_ICEBERG_GLUE_DATABASE";
 /// Iceberg warehouse location, typically an `s3://...` URI. Required for both
 /// Glue and REST Iceberg backends.
-pub const NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV: &str = "NEXUS_ICEBERG_WAREHOUSE";
+pub const NEXUS_ICEBERG_WAREHOUSE_ENV: &str = "NEXUS_ICEBERG_WAREHOUSE";
 /// Optional AWS Glue catalog ID used to scope Glue requests.
 pub const NEXUS_ICEBERG_GLUE_CATALOG_ID_ENV: &str = "NEXUS_ICEBERG_GLUE_CATALOG_ID";
-/// Legacy Glue table registration alias for `NEXUS_ICEBERG_TABLES`.
-pub const NEXUS_ICEBERG_GLUE_TABLES_ENV: &str = "NEXUS_ICEBERG_GLUE_TABLES";
 /// Optional Glue-compatible endpoint URI, mainly for local or test catalogs.
 pub const NEXUS_ICEBERG_GLUE_URI_ENV: &str = "NEXUS_ICEBERG_GLUE_URI";
 
@@ -213,10 +207,8 @@ pub(super) fn iceberg_config(values: &mut EnvValues<'_>) -> Result<Option<Iceber
         NEXUS_ICEBERG_NAMESPACE_ENV,
         NEXUS_ICEBERG_TABLES_ENV,
         NEXUS_ICEBERG_GLUE_CATALOG_NAME_ENV,
-        NEXUS_ICEBERG_GLUE_DATABASE_ENV,
-        NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV,
+        NEXUS_ICEBERG_WAREHOUSE_ENV,
         NEXUS_ICEBERG_GLUE_CATALOG_ID_ENV,
-        NEXUS_ICEBERG_GLUE_TABLES_ENV,
         NEXUS_ICEBERG_GLUE_URI_ENV,
         NEXUS_ICEBERG_REST_URI_ENV,
         NEXUS_ICEBERG_REST_PREFIX_ENV,
@@ -238,47 +230,24 @@ pub(super) fn iceberg_config(values: &mut EnvValues<'_>) -> Result<Option<Iceber
 
     let kind = iceberg_catalog_kind(values)?;
 
-    // Backend-neutral NEXUS_ICEBERG_NAMESPACE takes precedence; fall
-    // back to the Glue-specific NEXUS_ICEBERG_GLUE_DATABASE alias.
-    let namespace = values
-        .string(NEXUS_ICEBERG_NAMESPACE_ENV)
-        .or_else(|| values.string(NEXUS_ICEBERG_GLUE_DATABASE_ENV))
-        .ok_or_else(|| {
-            ServerError::invalid_config(
-                NEXUS_ICEBERG_NAMESPACE_ENV,
-                "is required (also accepted as NEXUS_ICEBERG_GLUE_DATABASE)",
-            )
-        })?;
+    let namespace = values.required_string(NEXUS_ICEBERG_NAMESPACE_ENV)?;
 
-    let warehouse = values.required_string(NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV)?;
+    let warehouse = values.required_string(NEXUS_ICEBERG_WAREHOUSE_ENV)?;
 
-    // Backend-neutral NEXUS_ICEBERG_TABLES takes precedence; fall
-    // back to the Glue-specific NEXUS_ICEBERG_GLUE_TABLES alias.
-    // When neither is set the dynamic catalog serves all tables and aliases
-    // are not required (empty vec is valid in Milestone 2).
-    let raw_tables = values.string(NEXUS_ICEBERG_TABLES_ENV).or_else(|| values.string(NEXUS_ICEBERG_GLUE_TABLES_ENV));
+    // When unset, the dynamic catalog serves all tables and aliases are not
+    // required (empty vec is valid in Milestone 2).
+    let raw_tables = values.string(NEXUS_ICEBERG_TABLES_ENV);
     let tables = match raw_tables {
-        Some(ref raw) => {
-            let tables_env_name = if values.string(NEXUS_ICEBERG_TABLES_ENV).is_some() {
-                NEXUS_ICEBERG_TABLES_ENV
-            } else {
-                NEXUS_ICEBERG_GLUE_TABLES_ENV
-            };
-            parse_iceberg_tables(tables_env_name, raw)?
-        },
+        Some(ref raw) => parse_iceberg_tables(NEXUS_ICEBERG_TABLES_ENV, raw)?,
         None => vec![],
     };
 
-    // Backend-neutral NEXUS_ICEBERG_CATALOG_NAME takes precedence;
-    // fall back to the Glue-specific alias, then to the compiled-in default.
     let default_catalog_name = match kind {
         IcebergCatalogKind::Glue => DEFAULT_GLUE_CATALOG_NAME,
         IcebergCatalogKind::Rest => DEFAULT_REST_CATALOG_HANDLE,
     };
-    let catalog_name = values
-        .string(NEXUS_ICEBERG_CATALOG_NAME_ENV)
-        .or_else(|| values.string(NEXUS_ICEBERG_GLUE_CATALOG_NAME_ENV))
-        .unwrap_or_else(|| default_catalog_name.to_string());
+    let catalog_name =
+        values.string(NEXUS_ICEBERG_CATALOG_NAME_ENV).unwrap_or_else(|| default_catalog_name.to_string());
 
     let backend = match kind {
         IcebergCatalogKind::Glue => IcebergCatalogBackendConfig::Glue(glue_backend_config(values, &warehouse)?),
@@ -558,10 +527,8 @@ pub(super) fn reject_iceberg_env_without_feature(values: &mut EnvValues<'_>) -> 
         NEXUS_ICEBERG_NAMESPACE_ENV,
         NEXUS_ICEBERG_TABLES_ENV,
         NEXUS_ICEBERG_GLUE_CATALOG_NAME_ENV,
-        NEXUS_ICEBERG_GLUE_DATABASE_ENV,
-        NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV,
+        NEXUS_ICEBERG_WAREHOUSE_ENV,
         NEXUS_ICEBERG_GLUE_CATALOG_ID_ENV,
-        NEXUS_ICEBERG_GLUE_TABLES_ENV,
         NEXUS_ICEBERG_GLUE_URI_ENV,
         NEXUS_ICEBERG_REST_URI_ENV,
         NEXUS_ICEBERG_REST_PREFIX_ENV,

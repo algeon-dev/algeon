@@ -39,19 +39,20 @@ use datafusion_nexus::{
     session::NexusSessionStateBuilderExt,
     source_cardinality::{register_source_unique_keys_for_path, schema_with_source_unique_keys},
     table_format::{
-        TableFormatDataFileFormat, TableFormatDirectDeviceReadDisposition, TableFormatParquetReadStrategyConfig,
-        TableFormatParquetSourceMetadata, TableFormatPlanner, TableFormatReadCapability, TableFormatScanDiagnostics,
-        TableFormatScanPlan, TableFormatScanRequest, TableFormatUnsupportedFeatureCode,
+        AWS_ENDPOINT_URL_ENV, AWS_ENDPOINT_URL_S3_ENV, TableFormatDataFileFormat,
+        TableFormatDirectDeviceReadDisposition, TableFormatParquetReadStrategyConfig, TableFormatParquetSourceMetadata,
+        TableFormatPlanner, TableFormatReadCapability, TableFormatScanDiagnostics, TableFormatScanPlan,
+        TableFormatScanRequest, TableFormatUnsupportedFeatureCode,
         iceberg::{
             AWS_ACCESS_KEY_ID_ENV, AWS_DEFAULT_REGION_ENV, AWS_PROFILE_ENV, AWS_REGION_ENV, AWS_SECRET_ACCESS_KEY_ENV,
-            AWS_SECURITY_TOKEN_ENV, AWS_SESSION_TOKEN_ENV, GlueIcebergCredentialSource, GlueIcebergTableConfig,
-            IcebergTableFormatPlanner, IcebergTableIdentifier, NEXUS_ICEBERG_GLUE_CATALOG_ID_ENV,
-            NEXUS_ICEBERG_GLUE_CATALOG_NAME_ENV, NEXUS_ICEBERG_GLUE_DATABASE_ENV, NEXUS_ICEBERG_GLUE_TABLE_ENV,
-            NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV,
-            NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_DEFAULT_CHAIN, NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_ENV,
-            NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV, NEXUS_ICEBERG_S3_SESSION_TOKEN_ENV, NexusIcebergTableProvider,
-            ResolvedIcebergTable, SourceAccessPolicy,
-            catalog::{GlueIcebergCatalogBackend, RestIcebergCatalogBackend, RestIcebergCatalogConfig},
+            AWS_SECURITY_TOKEN_ENV, AWS_SESSION_TOKEN_ENV, IcebergTableFormatPlanner, IcebergTableIdentifier,
+            NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV, NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_DEFAULT_CHAIN,
+            NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_ENV, NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV,
+            NEXUS_ICEBERG_S3_SESSION_TOKEN_ENV, NexusIcebergTableProvider, ResolvedIcebergTable, SourceAccessPolicy,
+            catalog::{
+                GlueIcebergCatalogBackend, GlueIcebergCatalogConfig, RestIcebergCatalogBackend,
+                RestIcebergCatalogConfig,
+            },
             source_access_policy_to_native_source_storage_profile,
         },
         resolve_table_format_parquet_source_with_metadata,
@@ -153,14 +154,16 @@ const NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV: &str = "NEXUS_ICEBERG_NATIVE_MIN_RE
 const NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV: &str = "NEXUS_ICEBERG_NATIVE_MAX_SOURCE_READS_IN_FLIGHT";
 const NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV: &str =
     "NEXUS_ICEBERG_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE";
-const NATIVE_STDDEV_SAMP_EXECUTION_MODE_ENV: &str = "NEXUS_ICEBERG_NATIVE_STDDEV_SAMP_EXECUTION_MODE";
 const TPCH_SCALE_FACTOR_ENV: &str = "NEXUS_ICEBERG_TPCH_SCALE_FACTOR";
 const TPCDS_SCALE_FACTOR_ENV: &str = "NEXUS_ICEBERG_TPCDS_SCALE_FACTOR";
 const OBJECT_STORE_STAGING_ENV: &str = "NEXUS_ICEBERG_SMOKE_OBJECT_STORE_STAGING";
+const GLUE_CATALOG_HANDLE_ENV: &str = "NEXUS_ICEBERG_GLUE_CATALOG_NAME";
+const GLUE_CATALOG_ID_ENV: &str = "NEXUS_ICEBERG_GLUE_CATALOG_ID";
+const GLUE_TABLE_ENV: &str = "NEXUS_ICEBERG_GLUE_TABLE";
 const GLUE_URI_ENV: &str = "NEXUS_ICEBERG_GLUE_URI";
 const REST_URI_ENV: &str = "NEXUS_ICEBERG_REST_URI";
-const REST_WAREHOUSE_ENV: &str = "NEXUS_ICEBERG_WAREHOUSE";
-const REST_NAMESPACE_ENV: &str = "NEXUS_ICEBERG_NAMESPACE";
+const ICEBERG_WAREHOUSE_ENV: &str = "NEXUS_ICEBERG_WAREHOUSE";
+const ICEBERG_NAMESPACE_ENV: &str = "NEXUS_ICEBERG_NAMESPACE";
 const REST_TABLE_ENV: &str = "NEXUS_ICEBERG_REST_TABLE";
 const REST_S3_ENDPOINT_ENV: &str = "NEXUS_ICEBERG_S3_ENDPOINT";
 const REST_S3_REGION_ENV: &str = "NEXUS_ICEBERG_S3_REGION";
@@ -209,7 +212,9 @@ pub use config::{
     native_execution_config_for_profile_with_env, native_optimizer_options_for_profile,
     native_session_config_for_profile, tpcds_glue_table_name, tpch_glue_table_name,
 };
-pub(crate) use config::{load_custom_query_manifest, native_session_context, table_ident_from_parts};
+pub(crate) use config::{
+    frozen_s3_source_access_policy, load_custom_query_manifest, native_session_context, table_ident_from_parts,
+};
 pub(crate) use cpu_baseline::{
     collect_cpu_baseline_with_timeout, count_value_from_batches, expected_count_from_scan_plan, smoke_session_config,
 };

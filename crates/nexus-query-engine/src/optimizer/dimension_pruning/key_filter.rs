@@ -22,13 +22,13 @@ pub struct KeyRange {
 
 /// Maximum coalesced runs before falling back to one bounding range.
 ///
-/// Bounds memory/overlap cost while preserving legacy single-range behavior.
+/// Bounds memory/overlap cost while preserving the single bounding-range case.
 pub const DIMENSION_KEY_FILTER_MAX_RUNS: usize = DimensionKeyFilter::MAX_RUNS;
 
 /// Dimension keys satisfying a predicate, stored as disjoint inclusive runs.
 ///
 /// Row groups are retained only when a run overlaps their key stats. Contiguous
-/// predicates collapse to the legacy single `[min,max]` behavior.
+/// predicates collapse to one bounding `[min,max]` range.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DimensionKeyFilter {
     /// Sorted by `min`, disjoint, non-adjacent, non-empty.
@@ -79,8 +79,8 @@ impl DimensionKeyFilter {
         Self::from_sorted_unique_keys(&sorted)
     }
 
-    /// A single-run filter spanning `[min,max]` — the legacy bounding-range
-    /// behavior, retained for callers that only have a range.
+    /// A single-run filter spanning `[min,max]` for callers that only have a
+    /// bounding range.
     pub fn from_bounds(bounds: KeyRange) -> Self {
         Self { runs: vec![bounds] }
     }

@@ -50,25 +50,16 @@ impl QueryService {
         device_ordinals: Vec<usize>,
         deployment_io_capability: DeploymentIoCapability,
     ) -> Result<Self> {
-        validate_runtime_service_preflight(&config, &queue_bounds, &device_ordinals, &deployment_io_capability)?;
-        let device_ordinals = normalize_device_ordinals(&device_ordinals)?;
-        let owner_lease = claim_live_backend(&device_ordinals)?;
-        let mut resources = {
-            let token = owner_lease.token();
-            Self::install_runtime_resources(
-                &config,
-                device_ordinals,
-                deployment_io_capability,
-                &token,
-                None,
-                None,
-                None,
-                None,
-                None,
-            )?
-        };
-        resources.owner_lease = Some(owner_lease);
-        Self::build(config, queue_bounds, Some(resources))
+        let device_profiles = device_ordinals
+            .into_iter()
+            .map(|device_ordinal| GpuBackendDeviceConfig::new(device_ordinal, GpuMemoryOwnership::WholeDeviceExclusive))
+            .collect();
+        Self::new_with_device_profiles_and_deployment_for_test(
+            config,
+            queue_bounds,
+            device_profiles,
+            deployment_io_capability,
+        )
     }
 
     /// Test-only runtime construction over explicit immutable device profiles.
@@ -79,26 +70,28 @@ impl QueryService {
         device_profiles: Vec<GpuBackendDeviceConfig>,
         deployment_io_capability: DeploymentIoCapability,
     ) -> Result<Self> {
+        let controller = GpuBackendControllerDraft::new(config, queue_bounds);
+        let mut draft = GpuBackendCoreDraft::new(device_profiles, controller.clone(), deployment_io_capability.clone());
+        draft.normalize_installation_bounds()?;
+        draft.validate()?;
+        let device_profiles = draft.devices().to_vec();
         let device_ordinals = device_profiles.iter().map(GpuBackendDeviceConfig::device_ordinal).collect::<Vec<_>>();
-        validate_runtime_service_preflight(&config, &queue_bounds, &device_ordinals, &deployment_io_capability)?;
         let device_ordinals = normalize_device_ordinals(&device_ordinals)?;
         let owner_lease = claim_live_backend(&device_ordinals)?;
-        let mut resources = {
-            let token = owner_lease.token();
-            Self::install_runtime_resources(
-                &config,
-                device_ordinals,
-                deployment_io_capability,
-                &token,
-                Some(&device_profiles),
-                None,
-                None,
-                None,
-                None,
-            )?
-        };
-        resources.owner_lease = Some(owner_lease);
-        Self::build(config, queue_bounds, Some(resources))
+        let construction_journal = Arc::new(ConstructionResourceJournal::default());
+        let backend_metrics = BackendMetricsStore::new(owner_lease.generation(), &device_ordinals)?;
+        let probe = TestConstructionProbe;
+        let token = owner_lease.token();
+        Self::install_for_backend(
+            device_ordinals,
+            controller,
+            deployment_io_capability,
+            &token,
+            &device_profiles,
+            &probe,
+            &construction_journal,
+            &backend_metrics,
+        )
     }
 
     /// Installs the private runtime service under an already-acquired backend
@@ -118,91 +111,75 @@ impl QueryService {
         let device_ordinals = normalize_device_ordinals(&device_ordinals)?;
         let (config, queue_bounds) = controller.into_parts();
         validate_controller_policy_preflight(&config, &queue_bounds, &device_ordinals, &deployment_io_capability)?;
-        let registry_config = device_registry_config(device_ordinals.clone(), Some(device_profiles))?;
+        let registry_config = device_registry_config(device_ordinals.clone(), device_profiles)?;
         let resolved_plans = DeviceRegistry::resolve_install_plans(&NexusGpuInventory, &registry_config, Some(probe))?;
         let resources = Self::install_runtime_resources(
             &config,
-            device_ordinals,
             deployment_io_capability,
             owner,
-            Some(device_profiles),
-            Some(probe),
-            Some(resolved_plans),
-            Some(construction_journal),
-            Some(backend_metrics),
+            device_profiles,
+            probe,
+            resolved_plans,
+            construction_journal,
+            backend_metrics,
         )?;
         Self::build(config, queue_bounds, Some(resources))
     }
 
     fn install_runtime_resources(
         config: &QueryExecutionConfig,
-        device_ordinals: Vec<usize>,
         deployment_io_capability: DeploymentIoCapability,
         owner: &DeviceOwnerToken<'_>,
-        device_profiles: Option<&[GpuBackendDeviceConfig]>,
-        probe: Option<&dyn GpuBackendConstructionProbe>,
-        resolved_plans: Option<ResolvedDeviceInstallPlans>,
-        construction_journal: Option<&Arc<ConstructionResourceJournal>>,
-        backend_metrics: Option<&BackendMetricsStore>,
+        device_profiles: &[GpuBackendDeviceConfig],
+        probe: &dyn GpuBackendConstructionProbe,
+        resolved_plans: ResolvedDeviceInstallPlans,
+        construction_journal: &Arc<ConstructionResourceJournal>,
+        backend_metrics: &BackendMetricsStore,
     ) -> Result<QueryServiceResources> {
-        let devices = match resolved_plans {
-            Some(resolved_plans) => {
-                DeviceRegistry::install_resolved(resolved_plans, owner, probe, construction_journal, backend_metrics)?
-            },
-            None => {
-                let registry_config = device_registry_config(device_ordinals, device_profiles)?;
-                DeviceRegistry::install(
-                    &NexusGpuInventory,
-                    &registry_config,
-                    owner,
-                    probe,
-                    construction_journal,
-                    backend_metrics,
-                )?
-            },
-        };
+        let devices = DeviceRegistry::install_resolved(
+            resolved_plans,
+            owner,
+            Some(probe),
+            Some(construction_journal),
+            Some(backend_metrics),
+        )?;
         let gpu_execution_query_tracker = GpuExecutionQueryTracker::new();
-        let gpu_execution_worker_count = gpu_execution_worker_count_per_device(config);
         let gpu_execution_pools = devices
             .contexts()
             .map(|device| {
                 let device_ordinal = device.device().ordinal();
-                if let Some(probe) = probe {
-                    probe.checkpoint(GpuBackendConstructionCheckpoint::BeforeWorkerPool { device_ordinal })?;
-                }
-                let worker_count = match device_profiles {
-                    Some(profiles) => profiles
-                        .iter()
-                        .find(|profile| profile.device_ordinal() == device_ordinal)
-                        .map(GpuBackendDeviceConfig::worker_count)
-                        .ok_or_else(|| {
-                            QueryError::new(
-                                QueryErrorCode::Internal,
-                                "nexus_query_engine.query_service.build",
-                                "installed device has no backend construction profile",
-                            )
-                            .with_fact("device_ordinal", device_ordinal)
-                            .with_fact("reason", "device_profile_missing")
-                        })?,
-                    None => gpu_execution_worker_count,
-                };
-                let (root_job_capacity, aux_job_capacity) = match devices.resource_profile(device_ordinal) {
-                    Some(profile) => (profile.max_active_attempts, profile.aux_source_work_capacity),
-                    None => (worker_count, worker_count),
-                };
+                probe.checkpoint(GpuBackendConstructionCheckpoint::BeforeWorkerPool { device_ordinal })?;
+                let worker_count = device_profiles
+                    .iter()
+                    .find(|profile| profile.device_ordinal() == device_ordinal)
+                    .map(GpuBackendDeviceConfig::worker_count)
+                    .ok_or_else(|| {
+                        QueryError::new(
+                            QueryErrorCode::Internal,
+                            "nexus_query_engine.query_service.build",
+                            "installed device has no backend construction profile",
+                        )
+                        .with_fact("device_ordinal", device_ordinal)
+                        .with_fact("reason", "device_profile_missing")
+                    })?;
+                let profile = devices.resource_profile(device_ordinal).ok_or_else(|| {
+                    QueryError::new(
+                        QueryErrorCode::Internal,
+                        "nexus_query_engine.query_service.build",
+                        "installed device has no frozen resource profile",
+                    )
+                    .with_fact("device_ordinal", device_ordinal)
+                    .with_fact("reason", "resource_profile_missing")
+                })?;
                 let pool = GpuExecutionPool::new_with_tracker_and_classes(
                     device_ordinal,
                     worker_count,
-                    root_job_capacity,
-                    aux_job_capacity,
+                    profile.max_active_attempts,
+                    profile.aux_source_work_capacity,
                     gpu_execution_query_tracker.clone(),
                 )?;
-                if let Some(journal) = construction_journal {
-                    journal.record_execution_pool(pool.clone())?;
-                }
-                if let Some(probe) = probe {
-                    probe.checkpoint(GpuBackendConstructionCheckpoint::AfterWorkerPool { device_ordinal })?;
-                }
+                construction_journal.record_execution_pool(pool.clone())?;
+                probe.checkpoint(GpuBackendConstructionCheckpoint::AfterWorkerPool { device_ordinal })?;
                 Ok((device_ordinal, pool))
             })
             .collect::<Result<HashMap<_, _>>>()?;
@@ -227,7 +204,6 @@ impl QueryService {
                 config.source_storage_profiles.clone(),
             )?),
             deployment_io_capability,
-            owner_lease: None,
         })
     }
 
@@ -338,9 +314,8 @@ impl QueryService {
 
         // Epoch idleness is only one owned drain phase. It cannot release the
         // process-wide backend lease while queues, caches, worker pools, or
-        // destructors may still retain GPU state. Legacy direct construction
-        // keeps its lease in `QueryServiceResources`; core-owned construction
-        // keeps it in `ResourceGeneration` and drops it explicitly last.
+        // destructors may still retain GPU state. `ResourceGeneration` keeps
+        // that lease and drops it explicitly last.
         let service_epoch = QueryServiceEpoch::new(None);
         let inner = Arc::new(QueryServiceInner {
             config,
@@ -401,105 +376,66 @@ impl QueryService {
 
 fn device_registry_config(
     device_ordinals: Vec<usize>,
-    device_profiles: Option<&[GpuBackendDeviceConfig]>,
+    device_profiles: &[GpuBackendDeviceConfig],
 ) -> Result<DeviceRegistryConfig> {
-    // Backend profiles already contain explicit per-device installation
-    // bounds. The test-only direct constructor uses the same concrete
-    // per-device source-work default instead of borrowing an execution
-    // setting as controller capacity.
-    let stream_pool_size = match device_profiles {
-        Some(_) => 1,
-        None => {
-            let default_stream_pool_size = default_stream_pool_size_for_ordinals(&device_ordinals)?;
-            let minimum_stream_pool_size = minimum_stream_pool_size(1, 1);
-            default_stream_pool_size.max(minimum_stream_pool_size)
-        },
-    };
-    let mut registry_config = DeviceRegistryConfig::new(device_ordinals.clone(), stream_pool_size);
-    if device_profiles.is_none() {
-        let legacy_capacity_policy = DeviceRegistryCapacityPolicy::Automatic {
-            headroom_bytes: registry_config.capacity_headroom_bytes,
-            fallback_bytes: registry_config.fallback_capacity_bytes,
-            fraction: None,
-            maximum_bytes: registry_config.device_capacity_bytes,
+    let mut registry_config = DeviceRegistryConfig::new(device_ordinals, 1);
+    for profile in device_profiles {
+        let capacity_policy = match profile.memory_limit() {
+            GpuDeviceMemoryLimit::Automatic { headroom_bytes, fallback_bytes, fraction } => {
+                DeviceRegistryCapacityPolicy::Automatic { headroom_bytes, fallback_bytes, fraction }
+            },
+            GpuDeviceMemoryLimit::Explicit { limit_bytes } => DeviceRegistryCapacityPolicy::Explicit { limit_bytes },
         };
-        for ordinal in &device_ordinals {
-            registry_config = registry_config.with_device_profile(
-                *ordinal,
-                DeviceRegistryInstallProfile::legacy_default(stream_pool_size, legacy_capacity_policy),
-            );
-        }
-    }
-    if let Some(device_profiles) = device_profiles {
-        for profile in device_profiles {
-            let capacity_policy = match profile.memory_limit() {
-                GpuDeviceMemoryLimit::Automatic { headroom_bytes, fallback_bytes, fraction } => {
-                    DeviceRegistryCapacityPolicy::Automatic {
-                        headroom_bytes,
-                        fallback_bytes,
-                        fraction,
-                        maximum_bytes: None,
-                    }
-                },
-                GpuDeviceMemoryLimit::Explicit { limit_bytes } => {
-                    DeviceRegistryCapacityPolicy::Explicit { limit_bytes }
-                },
-            };
-            let memory_partition = match profile.memory_ownership() {
-                GpuMemoryOwnership::WholeDeviceExclusive => DeviceRegistryMemoryPartition::WholeDevice,
-                GpuMemoryOwnership::StaticPartition { allocation_limit_bytes } => {
-                    DeviceRegistryMemoryPartition::StaticPartition {
-                        allocation_limit_bytes: usize::try_from(allocation_limit_bytes).map_err(|_error| {
-                            QueryError::new(
-                                QueryErrorCode::InvalidPlan,
-                                "nexus_query_engine.gpu_backend_core.build",
-                                "static partition limit cannot be represented by the native allocator",
-                            )
-                            .with_fact("field", "memory_ownership.allocation_limit_bytes")
-                            .with_fact("device_ordinal", profile.device_ordinal())
-                            .with_fact("allocation_limit_bytes", allocation_limit_bytes)
-                            .with_fact("reason", "allocation_limit_out_of_range")
-                        })?,
-                    }
-                },
-            };
-            registry_config = registry_config.with_device_profile(
-                profile.device_ordinal(),
-                DeviceRegistryInstallProfile {
-                    stream_pool_size: profile.stream_pool_size(),
-                    device_capabilities: profile.device_capabilities().clone(),
-                    max_active_queries: Some(profile.max_active_queries()),
-                    capacity_policy,
-                    backend_reserve_bytes: profile.backend_reserve_bytes(),
-                    cache_cap_bytes: profile.cache_cap_bytes(),
-                    attempt_floor_bytes: profile.attempt_floor_bytes(),
-                    source_work_per_attempt: profile.source_work_per_attempt(),
-                    // Logical worker job-slot capacity follows the frozen
-                    // A_d * (1 + S_d) stream formula; physical worker threads
-                    // remain the pool's own lazily-grown count.
-                    worker_job_capacity: profile.stream_pool_size(),
-                    lane_count: profile.lane_count(),
-                    memory_partition,
-                },
-            );
-        }
+        let memory_partition = match profile.memory_ownership() {
+            GpuMemoryOwnership::WholeDeviceExclusive => DeviceRegistryMemoryPartition::WholeDevice,
+            GpuMemoryOwnership::StaticPartition { allocation_limit_bytes } => {
+                DeviceRegistryMemoryPartition::StaticPartition {
+                    allocation_limit_bytes: usize::try_from(allocation_limit_bytes).map_err(|_error| {
+                        QueryError::new(
+                            QueryErrorCode::InvalidPlan,
+                            "nexus_query_engine.gpu_backend_core.build",
+                            "static partition limit cannot be represented by the native allocator",
+                        )
+                        .with_fact("field", "memory_ownership.allocation_limit_bytes")
+                        .with_fact("device_ordinal", profile.device_ordinal())
+                        .with_fact("allocation_limit_bytes", allocation_limit_bytes)
+                        .with_fact("reason", "allocation_limit_out_of_range")
+                    })?,
+                }
+            },
+        };
+        registry_config = registry_config.with_device_profile(
+            profile.device_ordinal(),
+            DeviceRegistryInstallProfile {
+                stream_pool_size: profile.stream_pool_size(),
+                device_capabilities: profile.device_capabilities().clone(),
+                max_active_queries: profile.max_active_queries(),
+                capacity_policy,
+                backend_reserve_bytes: profile.backend_reserve_bytes(),
+                cache_cap_bytes: profile.cache_cap_bytes(),
+                attempt_floor_bytes: profile.attempt_floor_bytes(),
+                source_work_per_attempt: profile.source_work_per_attempt(),
+                // Logical worker job-slot capacity follows the frozen
+                // A_d * (1 + S_d) stream formula; physical worker threads
+                // remain the pool's own lazily-grown count.
+                worker_job_capacity: profile.stream_pool_size(),
+                lane_count: profile.lane_count(),
+                memory_partition,
+            },
+        );
     }
     Ok(registry_config)
 }
 
-fn validate_runtime_service_preflight(
-    config: &QueryExecutionConfig,
-    queue_bounds: &QueueBounds,
-    device_ordinals: &[usize],
-    deployment_io_capability: &DeploymentIoCapability,
-) -> Result<()> {
-    // Resource-independent admission must precede process-global allocator
-    // installation so those rejections cannot mutate CUDA/RMM state.
-    config.validate(deployment_io_capability)?;
-    queue_bounds.validate()?;
-    SourceObjectStoreRegistry::validate_profiles(&config.source_storage_profiles)?;
-    normalize_device_ordinals(device_ordinals)?;
-    Ok(())
+#[cfg(test)]
+#[derive(Debug)]
+struct TestConstructionProbe;
+
+#[cfg(test)]
+impl GpuBackendConstructionProbe for TestConstructionProbe {
+    fn checkpoint(&self, _checkpoint: GpuBackendConstructionCheckpoint) -> Result<()> {
+        Ok(())
+    }
 }
 
 fn validate_controller_policy_preflight(
@@ -558,7 +494,7 @@ mod construction_tests {
         let whole_device_profile = |limit_bytes, floor| DeviceRegistryInstallProfile {
             stream_pool_size: 2,
             device_capabilities: crate::runtime::DeviceCapabilities::default(),
-            max_active_queries: Some(1),
+            max_active_queries: 1,
             capacity_policy: DeviceRegistryCapacityPolicy::Explicit { limit_bytes },
             backend_reserve_bytes: 0,
             cache_cap_bytes: 0,
@@ -596,8 +532,8 @@ mod construction_tests {
         let device = GpuBackendDeviceConfig::new(0, GpuMemoryOwnership::WholeDeviceExclusive)
             .with_device_capabilities(capabilities.clone());
 
-        let registry = device_registry_config(vec![0], Some(&[device])).unwrap();
+        let registry = device_registry_config(vec![0], &[device]).unwrap();
 
-        assert_eq!(registry.profile(0).device_capabilities, capabilities);
+        assert_eq!(registry.profile(0).expect("backend profile").device_capabilities, capabilities);
     }
 }

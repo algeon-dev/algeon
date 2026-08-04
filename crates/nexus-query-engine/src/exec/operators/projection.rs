@@ -94,8 +94,8 @@ pub(in crate::exec) fn execute_projection_with_budget_and_prepared(
         Some(prepared) => Some(prepared),
         None if node.outputs.iter().any(|output| output.expr.contains_regexp_replace()) => {
             // Bounded callers should prepare once across reservation + execute.
-            // Fall back to prepare under the execute token when only the legacy
-            // entrypoint is used.
+            // Prepare under the execute token when callers use the direct
+            // execution entrypoint.
             Some(prepare_projection_regexp_replace(context, node, &input, metrics)?)
         },
         None => None,

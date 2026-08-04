@@ -18,4 +18,13 @@ fn native_execution_config_forbids_runtime_injection() {
     cases.compile_fail("tests/ui/public_api/forbidden_graph_memory_estimate_admission_evidence.rs");
     cases.compile_fail("tests/ui/public_api/forbidden_graph_execution_spi.rs");
     cases.compile_fail("tests/ui/public_api/forbidden_native_execution_config_with_shared_runtime.rs");
+    cases.compile_fail("tests/ui/public_api/forbidden_iceberg_facade.rs");
+    cases.compile_fail("tests/ui/public_api/forbidden_retired_cudf_core_api.rs");
+    #[cfg(feature = "iceberg")]
+    cases.compile_fail("tests/ui/public_api/forbidden_retired_cudf_iceberg_api.rs");
+    #[cfg(feature = "server")]
+    {
+        cases.compile_fail("tests/ui/public_api/forbidden_retired_cudf_server_api.rs");
+        cases.compile_fail("tests/ui/public_api/forbidden_server_private_modules.rs");
+    }
 }

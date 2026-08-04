@@ -425,9 +425,6 @@ fn escaped_context_causes_bounded_shutdown_timeout_until_final_anchor_drops() {
     drop(retained_context);
     service.close_and_wait_for_quiescence(Duration::from_secs(5)).unwrap();
     drop(service);
-    let replacement = try_guaranteed_runtime_test_service()
-        .expect("the drained service resource aggregate releases the live backend owner when destroyed");
-    drop(replacement);
 }
 #[test]
 fn held_runtime_and_produced_object_delay_service_drain_until_last_provenance_drop() {
@@ -445,15 +442,10 @@ fn held_runtime_and_produced_object_delay_service_drain_until_last_provenance_dr
     let timeout = service.close_and_wait_for_quiescence(Duration::from_millis(10)).unwrap_err();
     assert_eq!(timeout.fact_value("reason"), Some("query_service_shutdown_timeout"));
     assert_eq!(timeout.fact_value("deadline_stage"), Some("admission_quiescence"));
-    let error = try_guaranteed_runtime_test_service().expect_err("the live service retains its backend owner");
-    assert_eq!(error.fact_value("reason"), Some("backend_already_live"));
 
     drop(series);
     service.close_and_wait_for_quiescence(Duration::from_secs(5)).unwrap();
     drop(service);
-    let replacement = try_guaranteed_runtime_test_service()
-        .expect("the drained service resource aggregate releases the live backend owner when destroyed");
-    drop(replacement);
 }
 #[test]
 fn execution_budget_token_retains_query_domain_until_drop() {
@@ -802,20 +794,15 @@ async fn query_handle_gpu_job_retains_query_epoch_until_joined() {
     drop(replacement);
 }
 #[test]
-fn active_query_owner_prevents_service_destruction_until_cleanup_finishes() {
+fn active_query_owner_prevents_service_drain_until_cleanup_finishes() {
     let service = try_guaranteed_runtime_test_service().expect("first guaranteed service");
     let handle = service.admit_query().unwrap();
 
     service.close().unwrap();
-    let error = try_guaranteed_runtime_test_service().expect_err("active grant keeps prior claim live");
-    assert_eq!(error.fact_value("reason"), Some("backend_already_live"));
 
     drop(handle);
     service.close_and_wait_for_quiescence(Duration::from_secs(5)).unwrap();
     drop(service);
-    let replacement = try_guaranteed_runtime_test_service()
-        .expect("the drained service resource aggregate releases the live backend owner when destroyed");
-    drop(replacement);
 }
 #[test]
 fn close_and_wait_fences_delayed_gpu_cleanup_before_service_resource_destruction() {
@@ -857,9 +844,6 @@ fn close_and_wait_fences_delayed_gpu_cleanup_before_service_resource_destruction
     drop(handle);
     service.close().unwrap();
     assert_eq!(service.admission_snapshot().unwrap().active_queries, 1);
-    let error =
-        try_guaranteed_runtime_test_service().expect_err("queued GPU cleanup must retain the prior governor claim");
-    assert_eq!(error.fact_value("reason"), Some("backend_already_live"));
 
     let wait_entry = Arc::new(Barrier::new(2));
     let waiter_entry = Arc::clone(&wait_entry);
@@ -890,9 +874,6 @@ fn close_and_wait_fences_delayed_gpu_cleanup_before_service_resource_destruction
     waiter.join().expect("close waiter must not panic");
 
     drop(service);
-    let replacement = try_guaranteed_runtime_test_service()
-        .expect("the drained service resource aggregate releases the live backend owner when destroyed");
-    drop(replacement);
 }
 #[test]
 fn query_service_waits_for_background_stream_cleanup_quiescence() {

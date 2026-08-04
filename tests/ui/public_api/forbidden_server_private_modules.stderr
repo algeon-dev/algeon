@@ -1,0 +1,47 @@
+error[E0603]: module `auth` is private
+ --> tests/ui/public_api/forbidden_server_private_modules.rs:1:32
+  |
+1 | use datafusion_nexus::server::{auth, config, diagnostics, error};
+  |                                ^^^^ private module
+  |
+note: the module `auth` is defined here
+ --> src/server/mod.rs
+  |
+  | mod auth;
+  | ^^^^^^^^
+
+error[E0603]: module `config` is private
+ --> tests/ui/public_api/forbidden_server_private_modules.rs:1:38
+  |
+1 | use datafusion_nexus::server::{auth, config, diagnostics, error};
+  |                                      ^^^^^^ private module
+  |
+note: the module `config` is defined here
+ --> src/server/mod.rs
+  |
+  | mod config;
+  | ^^^^^^^^^^
+
+error[E0603]: module `diagnostics` is private
+ --> tests/ui/public_api/forbidden_server_private_modules.rs:1:46
+  |
+1 | use datafusion_nexus::server::{auth, config, diagnostics, error};
+  |                                              ^^^^^^^^^^^ private module
+  |
+note: the module `diagnostics` is defined here
+ --> src/server/mod.rs
+  |
+  | mod diagnostics;
+  | ^^^^^^^^^^^^^^^
+
+error[E0603]: module `error` is private
+ --> tests/ui/public_api/forbidden_server_private_modules.rs:1:59
+  |
+1 | use datafusion_nexus::server::{auth, config, diagnostics, error};
+  |                                                           ^^^^^ private module
+  |
+note: the module `error` is defined here
+ --> src/server/mod.rs
+  |
+  | mod error;
+  | ^^^^^^^^^

@@ -67,7 +67,7 @@ pub fn parse_cugraph_algorithm_spec(
     //   (non-comparable) results, so the adapter default aligns with the
     //   Python oracle to keep parity meaningful.
     // - minimum_spanning_tree / spectral_modularity_maximization: cuGraph
-    //   requires an undirected/symmetric graph for these legacy algorithms.
+    //   requires an undirected/symmetric graph for these cuGraph C API operations.
     graph_options = algorithm.effective_default_graph_options(&graph_options);
     let mut params = default_params(algorithm, source.clone());
     let has_options_json = args.len() > next;

@@ -1,10 +1,3 @@
-fn expect_device_buffer_error(result: cudf::Result<cudf::core::DeviceBuffer>) -> cudf::Error {
-    match result {
-        Ok(_) => panic!("expected device buffer allocation to fail"),
-        Err(error) => error,
-    }
-}
-
 fn write_nullable_key_payload_parquet(runtime: &cudf::Runtime, path: &Path) -> Arc<Schema> {
     let schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int32, true),

@@ -603,6 +603,11 @@ where P: TableFormatPlanner + Send + Sync + 'static {
     NexusIcebergTableProvider::from_cpu_provider_and_native_planner(cpu_provider, None, planner)
 }
 
+fn resolved_iceberg_table(table: Table) -> ResolvedIcebergTable {
+    ResolvedIcebergTable::from_table(table, SourceAccessPolicy::s3_default_chain(None))
+        .expect("test Iceberg table must resolve with an explicit source policy")
+}
+
 #[derive(Debug)]
 struct UnknownStatisticsCpuProvider {
     schema: Arc<Schema>,

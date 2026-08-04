@@ -50,9 +50,8 @@ pub struct QueryExecutionConfig {
     /// Source chunk planning mode copied into admitted contexts.
     pub source_chunk_planning_mode: SourceChunkPlanningMode,
     /// Floating statistical aggregate execution contract copied into admitted
-    /// contexts. The field keeps its legacy STDDEV_SAMP name for source
-    /// compatibility.
-    pub stddev_samp_execution_mode: StddevSampExecutionMode,
+    /// contexts.
+    pub statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode,
     /// Dynamic-filter execution policy assigned to native plans using service handles.
     pub dynamic_filter_execution_options: DynamicFilterExecutionOptions,
     /// Keyed-hash join strategy policy assigned to native plans using service handles.
@@ -108,7 +107,7 @@ impl Default for QueryExecutionConfig {
             boundary_policy: ExecutionBoundaryPolicy::default(),
             source_scheduler_policy: SourceSchedulerPolicy::default(),
             source_chunk_planning_mode: SourceChunkPlanningMode::default(),
-            stddev_samp_execution_mode: StddevSampExecutionMode::default(),
+            statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode::default(),
             dynamic_filter_execution_options: DynamicFilterExecutionOptions::default(),
             keyed_hash_join_strategy_options: KeyedHashJoinStrategyOptions::default(),
             aggregate_strategy_execution_options: AggregateStrategyExecutionOptions::default(),
@@ -133,34 +132,4 @@ fn validate_nonzero_config_field(field: &'static str, is_zero: bool) -> Result<(
         .with_fact("reason", "zero"));
     }
     Ok(())
-}
-
-pub(super) fn minimum_stream_pool_size(
-    max_active_attempts_per_device: usize,
-    max_source_reads_in_flight: usize,
-) -> usize {
-    let streams_per_query = 1usize.saturating_add(max_source_reads_in_flight.max(1));
-    max_active_attempts_per_device.saturating_mul(streams_per_query).max(max_active_attempts_per_device)
-}
-
-pub(super) fn default_stream_pool_size_for_ordinals(device_ordinals: &[usize]) -> Result<usize> {
-    let ordinals = if device_ordinals.is_empty() {
-        let device_count = super::NexusGpuInventory.device_count()?;
-        (0..device_count).collect::<Vec<_>>()
-    } else {
-        device_ordinals.to_vec()
-    };
-    let mut default_size = 0;
-    for ordinal in ordinals {
-        let device = cudf::DeviceId::new(ordinal).map_err(|error| {
-            QueryError::from_cudf(
-                "nexus_query_engine.query_service.device",
-                "failed to resolve query service CUDA device",
-                error,
-            )
-            .with_fact("device_ordinal", ordinal)
-        })?;
-        default_size = default_size.max(super::default_service_stream_pool_size_for_device(device));
-    }
-    Ok(default_size)
 }

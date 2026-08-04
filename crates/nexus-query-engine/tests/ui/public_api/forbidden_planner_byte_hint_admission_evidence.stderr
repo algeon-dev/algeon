@@ -1,0 +1,13 @@
+error[E0432]: unresolved import `nexus_query_engine::admission::bounded_pipeline_attempt_requirement`
+ --> tests/ui/public_api/forbidden_planner_byte_hint_admission_evidence.rs:1:5
+  |
+1 | use nexus_query_engine::admission::bounded_pipeline_attempt_requirement;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ no `bounded_pipeline_attempt_requirement` in `admission`
+  |
+note: found an item that was configured out
+ --> src/admission.rs
+  |
+  | #[cfg(feature = "test-hooks")]
+  |       ---------------------- the item is gated behind the `test-hooks` feature
+  | pub use bounded::bounded_pipeline_attempt_requirement;
+  |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

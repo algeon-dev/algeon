@@ -2,9 +2,9 @@
 //!
 //! The support checker is intentionally graph-driven: it inspects
 //! `CompiledPipeline` task, edge, barrier, sink, and gate contracts and does
-//! not route by legacy bounded join family/path vocabulary. Unsupported
-//! graph envelopes fail deterministically instead of falling back to legacy
-//! whole-query wrappers.
+//! not route by named bounded join family/path vocabulary. Unsupported graph
+//! envelopes fail deterministically instead of falling back to whole-query
+//! wrappers.
 
 use std::collections::BTreeSet;
 

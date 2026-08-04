@@ -274,7 +274,7 @@ impl ActiveReservation {
                 if deferred_release > 0 {
                     self.reserved_bytes.set(self.reserved_bytes.get().saturating_sub(deferred_release));
                     let ledger_release = deferred_release.saturating_sub(deferred_transferred_live_charge);
-                    self.record_live_delta(-i128::from(ledger_release));
+                    self.release_live_bytes(ledger_release);
                     self.released = true;
                     if let Some(observation) = &self.observation {
                         observation.record(
@@ -313,7 +313,7 @@ impl ActiveReservation {
         let charged_delta_bytes = -i128::from(self.charged_bytes);
         self.reserved_bytes.set(self.reserved_bytes.get().saturating_sub(self.charged_bytes));
         let ledger_release = self.charged_bytes.saturating_sub(self.transferred_live_charge_bytes);
-        self.record_live_delta(-i128::from(ledger_release));
+        self.release_live_bytes(ledger_release);
         self.released = true;
         if let Some(observation) = &self.observation {
             let disposition = if charged_delta_bytes == 0
@@ -365,16 +365,16 @@ impl ActiveReservation {
         let refunded = (self.bytes - bytes).min(self.charged_bytes);
         self.reserved_bytes.set(self.reserved_bytes.get().saturating_sub(refunded));
         let transferred_refund = refunded.min(self.transferred_live_charge_bytes);
-        self.record_live_delta(-i128::from(refunded.saturating_sub(transferred_refund)));
+        self.release_live_bytes(refunded.saturating_sub(transferred_refund));
         self.bytes = bytes;
         self.charged_bytes = self.charged_bytes.saturating_sub(refunded);
         self.transferred_live_charge_bytes = self.transferred_live_charge_bytes.saturating_sub(transferred_refund);
         refunded
     }
 
-    pub(super) fn record_live_delta(&self, delta_bytes: i128) {
+    pub(super) fn release_live_bytes(&self, bytes: u64) {
         if let Some(grant) = &self.live_accounting {
-            grant.record_live_reservation_delta(delta_bytes);
+            grant.release_live_bytes(bytes);
         }
     }
 }

@@ -217,8 +217,8 @@ impl AdmissionTestHandle {
         self.handle.source_chunk_planning_mode()
     }
 
-    fn stddev_samp_execution_mode(&self) -> StddevSampExecutionMode {
-        self.handle.stddev_samp_execution_mode()
+    fn statistical_aggregate_execution_mode(&self) -> StatisticalAggregateExecutionMode {
+        self.handle.statistical_aggregate_execution_mode()
     }
 
     fn dynamic_filter_execution_options(&self) -> crate::dynamic_filter::DynamicFilterExecutionOptions {

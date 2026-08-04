@@ -463,7 +463,7 @@ fn execute_query_plan_routes_root_hash_join_with_unary_inputs_through_compiled_p
 }
 
 #[test]
-fn execute_query_plan_leaves_unsupported_compiled_graphs_on_legacy_fallback() {
+fn execute_query_plan_leaves_unsupported_compiled_graphs_on_host_fallback() {
     let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
     let dir = unique_temp_dir("nexus-query-engine-compiled-fallback");
     let path = dir.join("input.parquet");
@@ -471,7 +471,7 @@ fn execute_query_plan_leaves_unsupported_compiled_graphs_on_legacy_fallback() {
     let plan = aggregate_sort_limit_data_plan(&path, source_schema);
     let context = bounded_context(shared_runtime(runtime));
 
-    let result = execute_query_plan(&context, &plan).expect("unsupported compiled graph should use legacy fallback");
+    let result = execute_query_plan(&context, &plan).expect("unsupported compiled graph should use host fallback");
     let batch = result.output().as_host_arrow().expect("fallback output should be host Arrow");
     let metrics = result.metrics();
 

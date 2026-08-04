@@ -732,15 +732,15 @@ pub struct CugraphBfsParams {
     pub depth_limit: Option<i64>,
     /// Optional relation-backed predicate inputs.
     pub predicates: CugraphBfsPredicateInputs,
-    /// SQL result-shape options. Defaults preserve the legacy raw BFS schema.
+    /// SQL result-shape options. Defaults use the raw cuGraph distance/sentinel schema.
     pub output: CugraphBfsOutputOptions,
 }
 
 /// SQL-visible BFS source selector.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CugraphBfsSource {
-    /// Scalar source vertex. Numeric scalar sources preserve the legacy SQL
-    /// fast path; string scalar sources are mapped through the logical-id
+    /// Scalar source vertex. Numeric scalar sources use the direct numeric
+    /// path; string scalar sources are mapped through the logical-id
     /// codebook path.
     Scalar(CugraphBfsSourceVertex),
     /// Inline literal source list. This is lowered to a native source-vertices
@@ -830,7 +830,7 @@ impl CugraphBfsSource {
 /// SQL-visible BFS source vertex literal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CugraphBfsSourceVertex {
-    /// Numeric source vertex. This preserves the legacy SQL contract.
+    /// Numeric source vertex for the direct cuGraph vertex-id path.
     Int64(i64),
     /// Logical string source vertex. The SQL execution layer maps it to a
     /// deterministic numeric cuGraph vertex id for one graph call.
@@ -1063,8 +1063,8 @@ pub(crate) fn is_string_vertex_dtype(data_type: &DataType) -> bool {
 
 /// SQL-visible BFS output options.
 ///
-/// `mode = Raw` preserves the stable legacy schema and cuGraph distance
-/// sentinel values. `mode = Normalized` adds `reachable` and converts
+/// `mode = Raw` exposes the raw cuGraph distance/sentinel schema.
+/// `mode = Normalized` adds `reachable` and converts
 /// unreachable distance / absent predecessor sentinels to nulls. `mode = Path`
 /// reconstructs one source-to-target path from the BFS predecessor output.
 /// `return_target_info = true` is an explicit schema-widening request that

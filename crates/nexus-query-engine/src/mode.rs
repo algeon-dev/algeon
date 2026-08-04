@@ -104,12 +104,6 @@ impl StatisticalAggregateToleranceContract {
     }
 }
 
-/// Backward-compatible alias for the original `STDDEV_SAMP` mode name.
-pub type StddevSampExecutionMode = StatisticalAggregateExecutionMode;
-
-/// Backward-compatible alias for the original `STDDEV_SAMP` parse error.
-pub type StddevSampExecutionModeParseError = StatisticalAggregateExecutionModeParseError;
-
 /// Capability-envelope status used by gate-first contract reports.
 ///
 /// The single bounded controller owns admission. [`Self::as_str`] emits the

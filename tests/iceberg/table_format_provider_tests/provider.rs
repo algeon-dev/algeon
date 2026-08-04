@@ -29,7 +29,8 @@ async fn iceberg_provider_plans_structured_table_format_scan_leaf() {
 async fn real_iceberg_provider_exposes_one_canonical_schema_to_cpu_and_native_optimizer() {
     let fixture = RealIcebergProviderFixture::new();
     fixture.write_one_row_and_current_manifest_list().await;
-    let provider = Arc::new(NexusIcebergTableProvider::try_new(fixture.table.clone()).unwrap());
+    let provider =
+        Arc::new(NexusIcebergTableProvider::try_new_resolved(resolved_iceberg_table(fixture.table.clone())).unwrap());
     assert!(provider.schema().fields().iter().all(|field| field.metadata().is_empty()));
 
     let cpu_ctx = SessionContext::new_with_config(direct_friendly_session_config());
@@ -122,7 +123,8 @@ fn close_cuvs_iceberg_session(backend: NexusGpuBackend, ctx: SessionContext) {
 async fn cuvs_sql_plans_a_real_iceberg_relation_then_rejects_bounded_execution() {
     let fixture = RealIcebergProviderFixture::new();
     fixture.write_one_row_and_current_manifest_list().await;
-    let provider = Arc::new(NexusIcebergTableProvider::try_new(fixture.table.clone()).unwrap());
+    let provider =
+        Arc::new(NexusIcebergTableProvider::try_new_resolved(resolved_iceberg_table(fixture.table.clone())).unwrap());
     let (backend, ctx) = cuvs_iceberg_session();
     ctx.register_table("vector_iceberg", provider).unwrap();
 
@@ -175,7 +177,8 @@ async fn cuvs_sql_plans_a_real_iceberg_relation_then_rejects_bounded_execution()
 async fn cuvs_sql_plans_uniform_float32_list_iceberg_vectors_then_rejects_bounded_execution() {
     let fixture = RealIcebergProviderFixture::new_float32_vector_list();
     fixture.write_float32_vector_list_rows_and_current_manifest_list(&[(100, &[0.0, 0.0]), (100, &[3.0, 3.0])]).await;
-    let provider = Arc::new(NexusIcebergTableProvider::try_new(fixture.table.clone()).unwrap());
+    let provider =
+        Arc::new(NexusIcebergTableProvider::try_new_resolved(resolved_iceberg_table(fixture.table.clone())).unwrap());
     let (backend, ctx) = cuvs_iceberg_session();
     ctx.register_table("vector_iceberg", provider).unwrap();
 
@@ -233,7 +236,8 @@ async fn cuvs_sql_plans_uniform_float32_list_iceberg_vectors_then_rejects_bounde
 async fn cuvs_kmeans_and_pca_plan_over_real_iceberg_then_reject_bounded_execution() {
     let fixture = RealIcebergProviderFixture::new();
     fixture.write_clusterable_vector_rows_and_current_manifest_list().await;
-    let provider = Arc::new(NexusIcebergTableProvider::try_new(fixture.table.clone()).unwrap());
+    let provider =
+        Arc::new(NexusIcebergTableProvider::try_new_resolved(resolved_iceberg_table(fixture.table.clone())).unwrap());
     let (backend, ctx) = cuvs_iceberg_session();
     ctx.register_table("vector_iceberg", provider).unwrap();
 
@@ -301,7 +305,8 @@ async fn assert_cuvs_iceberg_bounded_rejection(
 async fn real_nested_iceberg_provider_canonicalizes_cpu_batches_and_native_list_planning() {
     let fixture = RealIcebergProviderFixture::new_nested();
     fixture.write_one_nested_row_and_current_manifest_list().await;
-    let provider = Arc::new(NexusIcebergTableProvider::try_new(fixture.table.clone()).unwrap());
+    let provider =
+        Arc::new(NexusIcebergTableProvider::try_new_resolved(resolved_iceberg_table(fixture.table.clone())).unwrap());
 
     let cpu_ctx = SessionContext::new_with_config(direct_friendly_session_config());
     let projection = vec![1, 2, 3];

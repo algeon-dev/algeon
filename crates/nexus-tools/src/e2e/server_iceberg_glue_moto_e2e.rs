@@ -3,9 +3,9 @@ use std::{collections::HashMap, net::TcpListener, sync::Arc, time::Duration};
 use arrow::array::{Int32Array, Int64Array, UInt32Array, UInt64Array};
 use arrow_flight::sql::client::FlightSqlServiceClient;
 use datafusion_nexus::server::{
-    NEXUS_ICEBERG_CATALOG_KIND_ENV, NEXUS_ICEBERG_GLUE_URI_ENV, NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV,
-    NEXUS_ICEBERG_NAMESPACE_ENV, NEXUS_ICEBERG_S3_ENDPOINT_ENV, NEXUS_ICEBERG_S3_PATH_STYLE_ENV,
-    NEXUS_ICEBERG_S3_REGION_ENV, ServerConfig, serve_with_listener,
+    NEXUS_ICEBERG_CATALOG_KIND_ENV, NEXUS_ICEBERG_GLUE_URI_ENV, NEXUS_ICEBERG_NAMESPACE_ENV,
+    NEXUS_ICEBERG_S3_ENDPOINT_ENV, NEXUS_ICEBERG_S3_PATH_STYLE_ENV, NEXUS_ICEBERG_S3_REGION_ENV,
+    NEXUS_ICEBERG_WAREHOUSE_ENV, ServerConfig, serve_with_listener,
 };
 use futures::TryStreamExt;
 use iceberg::{
@@ -69,7 +69,7 @@ fn local_server_env(
     HashMap::from([
         (NEXUS_ICEBERG_CATALOG_KIND_ENV, "glue".to_string()),
         (NEXUS_ICEBERG_NAMESPACE_ENV, namespace.to_string()),
-        (NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, warehouse.to_string()),
+        (NEXUS_ICEBERG_WAREHOUSE_ENV, warehouse.to_string()),
         (NEXUS_ICEBERG_GLUE_URI_ENV, glue_uri.to_string()),
         (NEXUS_ICEBERG_S3_ENDPOINT_ENV, s3_endpoint.to_string()),
         (NEXUS_ICEBERG_S3_REGION_ENV, "us-east-1".to_string()),
@@ -208,7 +208,7 @@ fn require_local_endpoint_env() -> E2eResult<()> {
     let warehouse = local_warehouse();
     require_loopback_http_url(NEXUS_ICEBERG_GLUE_URI_ENV, &glue_uri)?;
     require_loopback_http_url(NEXUS_ICEBERG_S3_ENDPOINT_ENV, &s3_endpoint)?;
-    require_s3_warehouse(NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, &warehouse)?;
+    require_s3_warehouse(NEXUS_ICEBERG_WAREHOUSE_ENV, &warehouse)?;
     Ok(())
 }
 
@@ -241,7 +241,7 @@ fn require_s3_warehouse(name: &str, value: &str) -> E2eResult<()> {
 }
 
 fn local_warehouse() -> String {
-    std::env::var(NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV).unwrap_or_else(|_| "s3://lakehouse/warehouse".to_string())
+    std::env::var(NEXUS_ICEBERG_WAREHOUSE_ENV).unwrap_or_else(|_| "s3://lakehouse/warehouse".to_string())
 }
 
 fn moto_access_key() -> String {

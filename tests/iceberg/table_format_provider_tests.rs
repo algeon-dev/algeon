@@ -56,8 +56,8 @@ use datafusion_nexus::{
         TableFormatParquetReadStrategyConfig, TableFormatParquetSourceMetadata, TableFormatPartitionTransform,
         TableFormatPartitionValue, TableFormatPlanner, TableFormatReadCapability, TableFormatScalarValue,
         TableFormatScanPlan, TableFormatScanRequest, TableFormatUnsupportedFeature, TableFormatUnsupportedFeatureCode,
-        iceberg::NexusIcebergTableProvider, resolve_table_format_parquet_source,
-        resolve_table_format_parquet_source_with_metadata,
+        iceberg::{NexusIcebergTableProvider, ResolvedIcebergTable, SourceAccessPolicy},
+        resolve_table_format_parquet_source, resolve_table_format_parquet_source_with_metadata,
     },
 };
 use futures::future::BoxFuture;

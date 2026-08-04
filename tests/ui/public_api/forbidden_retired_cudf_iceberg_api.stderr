@@ -1,0 +1,14 @@
+error[E0432]: unresolved imports `datafusion_nexus::table_format::iceberg::CudfIcebergCatalogProvider`, `datafusion_nexus::table_format::iceberg::CudfIcebergSchemaProvider`, `datafusion_nexus::table_format::iceberg::CudfIcebergTableProvider`
+ --> tests/ui/public_api/forbidden_retired_cudf_iceberg_api.rs:2:5
+  |
+2 |     CudfIcebergCatalogProvider, CudfIcebergSchemaProvider, CudfIcebergTableProvider,
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^^ no `CudfIcebergTableProvider` in `table_format::iceberg`
+  |     |                           |
+  |     |                           no `CudfIcebergSchemaProvider` in `table_format::iceberg`
+  |     no `CudfIcebergCatalogProvider` in `table_format::iceberg`
+  |
+help: a similar name exists in the module
+  |
+2 -     CudfIcebergCatalogProvider, CudfIcebergSchemaProvider, CudfIcebergTableProvider,
+2 +     CudfIcebergCatalogProvider, CudfIcebergSchemaProvider, NexusIcebergTableProvider,
+  |

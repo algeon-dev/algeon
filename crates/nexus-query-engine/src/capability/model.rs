@@ -1038,7 +1038,7 @@ impl CapabilityAnalysis {
 
     /// Returns whether the generic closed multi-join capability proof is satisfied.
     ///
-    /// This is a raw side-channel helper for legacy/generic coverage. Executable
+    /// This inspection helper reports generic coverage only. Executable
     /// capability-envelope admission still goes through `capability_envelope_admission()`.
     pub fn admits_closed_multi_join_subgraph(&self) -> bool {
         admission_is_satisfied(&self.closed_multi_join_subgraph_admission)
@@ -1046,7 +1046,7 @@ impl CapabilityAnalysis {
 
     /// Returns whether the generic root-join capability proof is satisfied.
     ///
-    /// This is a raw side-channel helper for legacy/generic coverage. Executable
+    /// This inspection helper reports generic coverage only. Executable
     /// capability-envelope admission still goes through `capability_envelope_admission()`.
     pub fn admits_root_join(&self) -> bool {
         admission_is_satisfied(&self.root_join_admission)
@@ -1054,7 +1054,7 @@ impl CapabilityAnalysis {
 
     /// Returns whether the generic single-join post-root capability proof is satisfied.
     ///
-    /// This is a raw side-channel helper for legacy/generic coverage. Executable
+    /// This inspection helper reports generic coverage only. Executable
     /// capability-envelope admission still goes through `capability_envelope_admission()`.
     pub fn admits_single_join_post_root_pipeline(&self) -> bool {
         admission_is_satisfied(&self.single_join_post_root_pipeline_admission)

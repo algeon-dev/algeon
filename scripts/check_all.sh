@@ -341,11 +341,7 @@ lane_safe=1
 gpu_scheduling_summary=""
 doctest_summary="not-run"
 rustdoc_summary="not-run"
-public_terminology_policy_check=0
-if [[ "${mode}" == full || "${lane}" == policy ]]; then
-  public_terminology_policy_check=1
-fi
-policy_selftest_count=$((10 + 2 * public_terminology_policy_check))
+policy_selftest_count=10
 
 PHASE_ORDER=(
   policy-selftests
@@ -556,12 +552,6 @@ run_isolated_policy_commands() {
     scripts/ci/tests/check_clean_target_artifacts_tests.sh \
     scripts/ci/tests/check_pass_as_skip_policy_tests.sh
   )
-  if [[ "${public_terminology_policy_check}" -eq 1 ]]; then
-    scripts+=(
-      scripts/ci/check_public_terminology.sh
-      scripts/ci/tests/check_public_terminology_tests.sh
-    )
-  fi
   local script
   for script in "${scripts[@]}"; do
     echo

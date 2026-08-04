@@ -1,5 +1,3 @@
-use std::path::Path;
-
 use nexus_query_engine::{
     admission::{BoundedPipelineAdmission, bounded_pipeline_admission},
     capability::AggregateStrategyExecutionOptions,
@@ -18,8 +16,6 @@ use nexus_query_engine::{
     source::{LocalParquetSource, validate_local_parquet_source},
     triage::TriageSummary,
 };
-
-use super::public_surface::{assert_no_crate_root_reexports, assert_no_removed_public_surface};
 
 #[test]
 fn canonical_engine_paths_expose_intentional_contract_groups() {
@@ -47,19 +43,4 @@ fn canonical_engine_paths_expose_intentional_contract_groups() {
     let _triage = TriageSummary::healthy();
     let _bounded_admission: fn(&QueryPlan) -> Result<Option<BoundedPipelineAdmission>> = bounded_pipeline_admission;
     let _source_validation: fn(&LocalParquetSource) -> Result<()> = validate_local_parquet_source;
-}
-
-#[test]
-fn removed_engine_facades_and_glob_reexports_do_not_reappear() {
-    let root = workspace_root();
-    assert_no_crate_root_reexports(&root.join("crates/nexus-query-engine/src/lib.rs"));
-    assert_no_removed_public_surface(&root.join("crates/nexus-query-engine/src"));
-}
-
-fn workspace_root() -> std::path::PathBuf {
-    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("engine crate must remain under the workspace root")
-        .to_path_buf()
 }

@@ -34,7 +34,7 @@ fn grouped_stddev_samp_can_use_gpu_native_tolerant_contract() {
 
     let context = ExecutionContext::builder()
         .with_shared_runtime(runtime)
-        .with_stddev_samp_execution_mode(StddevSampExecutionMode::GpuNativeTolerant)
+        .with_statistical_aggregate_execution_mode(StatisticalAggregateExecutionMode::GpuNativeTolerant)
         .build()
         .unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
@@ -53,10 +53,6 @@ fn grouped_stddev_samp_can_use_gpu_native_tolerant_contract() {
         aggregate_strategy_fact(result.metrics(), "selected_strategy").as_deref(),
         Some("stddev_samp_gpu_native_tolerant")
     );
-    assert_eq!(
-        aggregate_strategy_fact(result.metrics(), "stddev_samp_execution_mode").as_deref(),
-        Some("gpu_native_tolerant")
-    );
     assert_eq!(aggregate_strategy_fact(result.metrics(), "floating_statistical_aggregate").as_deref(), Some("true"));
     assert_eq!(
         aggregate_strategy_fact(result.metrics(), "statistical_aggregate_execution_mode").as_deref(),
@@ -74,7 +70,6 @@ fn grouped_stddev_samp_can_use_gpu_native_tolerant_contract() {
         aggregate_strategy_fact(result.metrics(), "statistical_aggregate_ddof").as_deref(),
         Some("stddev_samp:1")
     );
-    assert_eq!(aggregate_strategy_fact(result.metrics(), "stddev_samp_ddof").as_deref(), Some("1"));
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -127,7 +122,7 @@ fn grouped_tolerant_statistical_aggregate_preserves_decimal_avg_scale() {
 
     let context = ExecutionContext::builder()
         .with_shared_runtime(runtime)
-        .with_stddev_samp_execution_mode(StddevSampExecutionMode::GpuNativeTolerant)
+        .with_statistical_aggregate_execution_mode(StatisticalAggregateExecutionMode::GpuNativeTolerant)
         .build()
         .unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
@@ -187,7 +182,7 @@ fn grouped_floating_statistical_family_can_use_gpu_native_tolerant_contract() {
 
     let context = ExecutionContext::builder()
         .with_shared_runtime(runtime)
-        .with_statistical_aggregate_execution_mode(StddevSampExecutionMode::GpuNativeTolerant)
+        .with_statistical_aggregate_execution_mode(StatisticalAggregateExecutionMode::GpuNativeTolerant)
         .build()
         .unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
@@ -221,8 +216,6 @@ fn grouped_floating_statistical_family_can_use_gpu_native_tolerant_contract() {
         aggregate_strategy_fact(result.metrics(), "statistical_aggregate_gpu_native_formula").as_deref(),
         Some("algebraic_moments")
     );
-    assert_eq!(aggregate_strategy_fact(result.metrics(), "stddev_samp_execution_mode"), None);
-
     fs::remove_dir_all(dir).unwrap();
 }
 
@@ -333,7 +326,7 @@ fn bounded_tolerant_grouped_statistical_aggregate_streams_partial_moments() {
             max_retry_attempts: 1,
             min_retry_chunk_row_groups: 1,
         })
-        .with_statistical_aggregate_execution_mode(StddevSampExecutionMode::GpuNativeTolerant)
+        .with_statistical_aggregate_execution_mode(StatisticalAggregateExecutionMode::GpuNativeTolerant)
         .build()
         .unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
@@ -504,7 +497,7 @@ fn bounded_tolerant_filtered_grouped_statistical_aggregate_uses_filter_preparati
             max_retry_attempts: 1,
             min_retry_chunk_row_groups: 1,
         })
-        .with_statistical_aggregate_execution_mode(StddevSampExecutionMode::GpuNativeTolerant)
+        .with_statistical_aggregate_execution_mode(StatisticalAggregateExecutionMode::GpuNativeTolerant)
         .build()
         .unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();

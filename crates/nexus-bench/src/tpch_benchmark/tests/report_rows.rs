@@ -155,8 +155,6 @@ fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resou
                 statistical_aggregate_tolerance_contract: "".to_string(),
                 statistical_aggregate_functions: "".to_string(),
                 statistical_aggregate_ddof: "".to_string(),
-                stddev_samp_execution_mode: "".to_string(),
-                stddev_samp_ddof: "".to_string(),
                 aggregate_filter_count: 0,
                 filtered_input_materialization_strategy: "".to_string(),
                 filtered_input_materialization_estimated_bytes: 0,

@@ -1373,14 +1373,8 @@ impl QueryHandle {
     }
 
     /// Floating statistical aggregate execution contract assigned to this admitted query.
-    pub fn statistical_aggregate_execution_mode(&self) -> StddevSampExecutionMode {
-        self.config.stddev_samp_execution_mode
-    }
-
-    /// Floating statistical aggregate contract returned through the legacy
-    /// STDDEV_SAMP accessor.
-    pub fn stddev_samp_execution_mode(&self) -> StddevSampExecutionMode {
-        self.statistical_aggregate_execution_mode()
+    pub fn statistical_aggregate_execution_mode(&self) -> StatisticalAggregateExecutionMode {
+        self.config.statistical_aggregate_execution_mode
     }
 
     /// Dynamic-filter execution policy assigned to this admitted query.
@@ -1642,7 +1636,6 @@ impl QueryHandle {
             memory_policy: MemoryResourcePolicy::ExternalRuntime,
             memory_control_policy: self.memory_control_policy(),
             memory_grant: Some(memory_grant),
-            grant_reservation_arena: None,
             grant_memory_domain: Some(Arc::clone(attempt_allocation_domain.as_cudf())),
             attempt_allocation_domain: Some(attempt_allocation_domain),
             attempt_auxiliary_slots: Some(Arc::clone(&self.lifetime.attempt_auxiliary_slots)),
@@ -1663,7 +1656,7 @@ impl QueryHandle {
             source_object_stores: Arc::clone(&resources.source_object_stores),
             deployment_io_capability: resources.deployment_io_capability.clone(),
             cancellation,
-            stddev_samp_execution_mode: service.config.stddev_samp_execution_mode,
+            statistical_aggregate_execution_mode: service.config.statistical_aggregate_execution_mode,
             aggregate_strategy_execution_options: service.config.aggregate_strategy_execution_options,
             source_chunk_planning_options: service.config.source_chunk_planning_options,
             graph_memory_calibration_override: service.config.graph_memory_calibration_override,

@@ -4,9 +4,9 @@ This example runs on the [citation network demo dataset](../demo-dataset.mdx).
 
 ### Peel the satellite fields off the dense citation core
 
-This legacy algorithm needs Int32 vertex ids, and AMiner paper ids overflow
+This cuGraph C API algorithm needs Int32 vertex ids, and AMiner paper ids overflow
 Int32 — so the example uses the
-[SQL renumbering pattern](../demo-dataset.mdx#int32-renumbering-for-the-legacy-algorithms)
+[SQL renumbering pattern](../demo-dataset.mdx#int32-renumbering-for-cugraph-c-api-algorithms)
 on a graph worth clustering: the k=30 citation core (every paper keeps at
 least 30 combined in+out citation links inside the subgraph, as in the
 [k-core example](../algorithms/structure/cugraph_k_core.mdx)). One algorithm's

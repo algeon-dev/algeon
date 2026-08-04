@@ -30,13 +30,13 @@ async fn cugraph_sql_registers_only_execution_udtfs_and_the_common_catalog() {
     for name in ["gpu_list_functions", "gpu_describe_function", "gpu_validate_call"] {
         assert!(functions.contains_key(name), "common catalog UDTF {name} must be installed");
     }
-    let legacy_metadata = [
+    let retired_metadata = [
         concat!("cugraph_", "list_algorithms"),
         concat!("cugraph_", "describe_algorithm"),
         concat!("cugraph_", "validate_call"),
     ];
-    for name in legacy_metadata {
-        assert!(!functions.contains_key(name), "legacy cuGraph metadata UDTF {name} must not be installed");
+    for name in retired_metadata {
+        assert!(!functions.contains_key(name), "retired cuGraph metadata UDTF {name} must not be installed");
     }
 
     let registered_cugraph_udtfs: std::collections::BTreeSet<&str> =
@@ -102,9 +102,37 @@ async fn cugraph_descriptions_retain_graph_schemas_and_use_common_validation_api
     assert!(schemas["field_descriptions"].as_array().unwrap().iter().any(|field| field["name"] == "vertex"));
     let request_schema = json_value(string_value(batch, 7, 0));
     assert_eq!(request_schema["properties"]["relations"]["required"], serde_json::json!(["edges"]));
+    assert_eq!(request_schema["properties"]["schema_version"]["const"], 1);
+    assert!(
+        request_schema["description"]
+            .as_str()
+            .is_some_and(|description| description.contains("no version 0 reader or version negotiation"))
+    );
+    assert!(
+        request_schema["properties"]["schema_version"]["description"]
+            .as_str()
+            .is_some_and(|description| description.contains("rejected before family dispatch"))
+    );
+    assert!(
+        request_schema["properties"]["options"]["description"]
+            .as_str()
+            .is_some_and(|description| description.contains("Flat cuGraph option object"))
+    );
     let examples = json_value(string_value(batch, 8, 0));
-    assert_eq!(examples[0]["call_json"]["schema_version"], 1);
-    assert_eq!(examples[0]["call_json"]["relations"]["edges"]["table"], "target_edges");
+    assert_eq!(
+        examples[0]["call_json"],
+        serde_json::json!({
+            "schema_version": 1,
+            "relations": { "edges": { "table": "target_edges" } },
+            "options": {
+                "source_vertex": 123,
+                "src_col": "src",
+                "dst_col": "dst",
+                "depth_limit": 4,
+            },
+        })
+    );
+    assert!(examples[0]["call_json"]["options"].get("options").is_none());
     assert!(examples[0]["execution_sql"].as_str().unwrap().starts_with("SELECT * FROM cugraph_bfs"));
     let limitations = json_value(string_value(batch, 9, 0));
     assert!(
@@ -117,6 +145,32 @@ async fn cugraph_descriptions_retain_graph_schemas_and_use_common_validation_api
 
     let error = ctx.sql("SELECT * FROM gpu_describe_function('bfs')").await.unwrap_err().to_string();
     assert!(error.contains("unknown GPU function 'bfs'"));
+}
+
+#[tokio::test]
+async fn cugraph_examples_use_versioned_common_envelopes_with_flat_options() {
+    let state = SessionStateBuilder::new_with_default_features().with_cugraph_sql(CugraphSqlConfig::default()).build();
+    let ctx = SessionContext::new_with_state(state);
+
+    for definition in CUGRAPH_OPERATION_REGISTRY {
+        let batches = ctx
+            .sql(&format!("SELECT examples_json FROM gpu_describe_function('{}')", definition.sql_function_name))
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        let examples = json_value(string_value(single_batch(&batches), 0, 0));
+        assert!(!examples.as_array().unwrap().is_empty(), "{} must have an example", definition.sql_function_name);
+        for example in examples.as_array().unwrap() {
+            assert_eq!(example["function_name"], definition.sql_function_name);
+            let call = &example["call_json"];
+            assert_eq!(call["schema_version"], 1);
+            assert_eq!(call["relations"]["edges"]["table"], "target_edges");
+            assert!(call["options"].is_object());
+            assert!(call["options"].get("options").is_none());
+        }
+    }
 }
 
 #[tokio::test]
@@ -157,6 +211,30 @@ async fn cugraph_validation_uses_common_envelope_and_preserves_graph_facts() {
     assert_eq!(details["edges"]["src_dtype"], "Int64");
     assert_eq!(details["edges"]["dst_dtype"], "Int64");
     assert_eq!(details["edges"]["weight_dtype"], "Float64");
+}
+
+#[tokio::test]
+async fn cugraph_validation_requires_flat_common_options() {
+    let state = SessionStateBuilder::new_with_default_features().with_cugraph_sql(CugraphSqlConfig::default()).build();
+    let ctx = SessionContext::new_with_state(state);
+    register_edge_memtable(&ctx, "raw_edges", DataType::Int64, DataType::Int64, DataType::Float64);
+
+    let batch = validate(
+        &ctx,
+        "cugraph_bfs",
+        "raw_edges",
+        serde_json::json!({
+            "source_vertex": 0,
+            "src_col": "src",
+            "dst_col": "dst",
+            "options": { "depth_limit": 2 },
+        }),
+    )
+    .await;
+
+    assert!(!bool_value(&batch, 0, 0));
+    assert_eq!(string_value(&batch, 1, 0), "invalid_argument");
+    assert!(string_value(&batch, 2, 0).contains("must be flat"));
 }
 
 #[tokio::test]

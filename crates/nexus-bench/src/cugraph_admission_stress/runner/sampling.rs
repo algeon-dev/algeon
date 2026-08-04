@@ -127,7 +127,7 @@ pub(super) fn collect_sample(
 
     let primary_facts =
         device_ordinals.first().and_then(|ordinal| facts_by_device.get(ordinal)).copied().unwrap_or_default();
-    let legacy = SampleRow {
+    let aggregate = SampleRow {
         epoch_ms,
         governor_capacity_bytes: primary_facts.governor_capacity_bytes,
         governor_outstanding_bytes: primary_facts.governor_outstanding_bytes,
@@ -143,7 +143,7 @@ pub(super) fn collect_sample(
         trim_retry_count,
     };
     let by_device = device_sample_rows(epoch_ms, device_ordinals, &facts_by_device, active_queries, queued_queries);
-    (legacy, by_device)
+    (aggregate, by_device)
 }
 
 pub(super) fn spawn_sampler(
@@ -164,9 +164,9 @@ pub(super) fn spawn_sampler(
             })
             .collect::<BTreeMap<_, _>>();
         while !stop_flag.load(Ordering::SeqCst) {
-            let (legacy, by_device) = collect_sample(&backend, &device_ordinals, &managers);
+            let (aggregate, by_device) = collect_sample(&backend, &device_ordinals, &managers);
             let mut samples = samples.lock().unwrap();
-            samples.legacy.push(legacy);
+            samples.aggregate.push(aggregate);
             samples.by_device.extend(by_device);
             drop(samples);
             std::thread::sleep(interval);

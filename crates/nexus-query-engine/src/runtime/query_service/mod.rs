@@ -14,22 +14,26 @@ use std::{
 use tokio::{sync::Notify, time};
 
 #[cfg(test)]
+use super::GpuBackendCoreDraft;
+#[cfg(test)]
+use super::GpuInventory;
+#[cfg(test)]
 use super::gpu::claim_live_backend;
 use super::{
     CacheFillByteBudget, DeploymentIoCapability, DeviceLedger, DeviceLedgerReport, DeviceMemoryFailureReport,
     DeviceRegistry, DeviceRegistryConfig, DeviceTelemetrySnapshot, ExecutionBoundaryPolicy, ExecutionCancellation,
     ExecutionContext, GdsDriverProbeStatus, GpuBackendConstructionCheckpoint, GpuBackendConstructionProbe,
     GpuBackendControllerDraft, GpuBackendDeviceConfig, GpuDeviceMemoryLimit, GpuExecutionJobKind, GpuExecutionPool,
-    GpuExecutionPoolSnapshot, GpuExecutionQuerySnapshot, GpuExecutionQueryTracker, GpuInventory, GpuMemoryOwnership,
-    GpuTelemetry, KvikioCompatModeStatus, LakehouseCacheFillConfig, MemoryControlPolicy, MemoryGrant,
-    MemoryResourcePolicy, NexusGpuInventory, NexusNvmlTelemetry, NvidiaFsProbeStatus, PlacementRequest,
-    SourceChunkPlanningMode, SourceSchedulerPolicy, SourceStorageProfile,
+    GpuExecutionPoolSnapshot, GpuExecutionQuerySnapshot, GpuExecutionQueryTracker, GpuMemoryOwnership, GpuTelemetry,
+    KvikioCompatModeStatus, LakehouseCacheFillConfig, MemoryControlPolicy, MemoryGrant, MemoryResourcePolicy,
+    NexusGpuInventory, NexusNvmlTelemetry, NvidiaFsProbeStatus, PlacementRequest, SourceChunkPlanningMode,
+    SourceSchedulerPolicy, SourceStorageProfile,
     cache_events::LakehouseCacheFillEventSink,
     cache_fill::{CacheFillConcurrencyGate, default_lakehouse_cache_fill_budget_bytes},
     context::{ExecutionContextParts, QueryServiceEpoch, QueryServiceEpochUser, validate_service_stream_pool_device},
-    default_service_stream_pool_size_for_device, gpu,
+    gpu,
     gpu::{
-        DeviceOwnerToken, LiveBackendLease, normalize_device_ordinals,
+        DeviceOwnerToken, normalize_device_ordinals,
         registry::{
             DeviceRegistryCapacityPolicy, DeviceRegistryInstallProfile, DeviceRegistryMemoryPartition,
             ResolvedDeviceInstallPlans,
@@ -44,7 +48,7 @@ use crate::{
     dynamic_filter::DynamicFilterExecutionOptions,
     error::{QueryError, QueryErrorCode, Result},
     metrics::QueryId,
-    mode::StddevSampExecutionMode,
+    mode::StatisticalAggregateExecutionMode,
     observability::{
         AdmissionLifecycleState, AdmissionRequestId, RuntimeAdmissionObservation, RuntimeObservationHandle,
         RuntimeObservationOwner, RuntimeObservationPayload, RuntimeTerminalOutcome,
@@ -72,7 +76,6 @@ use admission::{
     service_overloaded_error,
 };
 pub use config::{QueryExecutionConfig, QueueBounds};
-use config::{default_stream_pool_size_for_ordinals, minimum_stream_pool_size};
 use device_waiters::{
     PendingDeviceSlotNotifications, notify_shared_device_admission_available, register_shared_device_admission_waiters,
 };
@@ -80,7 +83,7 @@ use device_waiters::{
 use device_waiters::{prune_dead_shared_device_admission_waiters, shared_device_admission_waiters};
 use handle::QueryHandleLifetime;
 pub use handle::{AdmittedQueryContext, QueryHandle};
-use resources::{QueryServiceResources, gpu_execution_worker_count_per_device};
+use resources::QueryServiceResources;
 pub(crate) use service::QueryService;
 use service::QueryServiceInner;
 pub use service::{

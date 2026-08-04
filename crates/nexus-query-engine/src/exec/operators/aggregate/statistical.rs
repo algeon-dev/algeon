@@ -39,7 +39,7 @@ pub(super) fn should_execute_gpu_native_statistical_aggregate(
     spec: &AggregateSpec,
 ) -> bool {
     aggregate_spec_has_floating_statistical_aggregate(spec)
-        && !context.stddev_samp_execution_mode().is_datafusion_exact()
+        && !context.statistical_aggregate_execution_mode().is_datafusion_exact()
         && !spec.group_exprs.is_empty()
         && spec.grouping_sets.is_none()
 }
@@ -451,7 +451,7 @@ fn gpu_native_statistical_decision(
     add_floating_statistical_aggregate_contract_facts(
         &mut decision.facts,
         spec,
-        StddevSampExecutionMode::GpuNativeTolerant,
+        StatisticalAggregateExecutionMode::GpuNativeTolerant,
     );
     decision
 }

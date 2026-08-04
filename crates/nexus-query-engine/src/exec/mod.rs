@@ -656,7 +656,7 @@ fn execute_query_plan_output(
     validate_query_plan(plan)?;
     context.validate_admitted_plan_capabilities(plan)?;
     let _order_tracking = DataFusionOrderTrackingGuard::new(
-        context.stddev_samp_execution_mode().is_datafusion_exact()
+        context.statistical_aggregate_execution_mode().is_datafusion_exact()
             && plan_requires_datafusion_exact_statistical_order(plan),
     );
     let output = if context.memory_control_policy().is_bounded() {

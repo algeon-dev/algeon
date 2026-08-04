@@ -111,38 +111,6 @@ enum NexusIcebergCpuSource {
 }
 
 impl NexusIcebergTableProvider {
-    /// Builds a provider from an `iceberg-rust` table handle.
-    ///
-    /// The table schema is converted eagerly; file planning remains lazy and
-    /// happens in `TableProvider::scan`.
-    pub fn try_new(table: Table) -> Result<Self> {
-        Self::try_new_with_optional_parquet_read_strategy_config(table, None)
-    }
-
-    /// Builds a provider from an `iceberg-rust` table handle with an explicit
-    /// Parquet read-strategy config.
-    pub fn try_new_with_parquet_read_strategy_config(
-        table: Table,
-        config: TableFormatParquetReadStrategyConfig,
-    ) -> Result<Self> {
-        Self::try_new_with_optional_parquet_read_strategy_config(table, Some(config))
-    }
-
-    fn try_new_with_optional_parquet_read_strategy_config(
-        table: Table,
-        config: Option<TableFormatParquetReadStrategyConfig>,
-    ) -> Result<Self> {
-        let resolved =
-            ResolvedIcebergTable::from_table(table, root_environment_source_access_policy()).map_err(|error| {
-                root_error_from_iceberg(
-                    error,
-                    PLAN_SCAN_OPERATION,
-                    "failed to freeze the Iceberg table snapshot for root adaptation",
-                )
-            })?;
-        Self::try_new_resolved_with_optional_parquet_read_strategy_config(resolved, config)
-    }
-
     /// Builds a provider from the frozen leaf table resolution. The same
     /// resolution supplies the CPU delegate and all native candidate planning;
     /// neither path may rediscover a newer snapshot or source-access policy.
@@ -504,23 +472,6 @@ pub struct IcebergTableFormatPlanner {
 }
 
 impl IcebergTableFormatPlanner {
-    /// Freezes a raw Iceberg table before creating the root inspection planner.
-    ///
-    /// Prefer [`Self::new`] when a catalog integration already resolved the
-    /// table: that lets its CPU delegate and native planner share one exact
-    /// snapshot and source-access policy.
-    pub fn try_new(table: Table) -> Result<Self> {
-        let resolved =
-            ResolvedIcebergTable::from_table(table, root_environment_source_access_policy()).map_err(|error| {
-                root_error_from_iceberg(
-                    error,
-                    PLAN_SCAN_OPERATION,
-                    "failed to freeze the Iceberg table snapshot for root inspection",
-                )
-            })?;
-        Ok(Self::new(resolved))
-    }
-
     /// Builds a root native-inspection planner over one frozen leaf table resolution.
     ///
     /// Manifest/task planning is delegated to `ResolvedIcebergTable`; this
@@ -839,51 +790,6 @@ pub fn source_access_policy_to_native_source_storage_profile(
         S3CredentialRef::Unsigned => s3.with_unsigned_requests(),
     };
     SourceStorageProfile::s3(DEFAULT_TABLE_FORMAT_S3_SOURCE_STORAGE_PROFILE_ID, s3)
-}
-
-/// Freezes the legacy root-constructor source policy from the process exactly
-/// once. New catalog callers should pass `ResolvedIcebergTable` directly;
-/// this bridge keeps raw-table constructors from letting leaf planning and
-/// native inspection independently reinterpret the environment.
-fn root_environment_source_access_policy() -> SourceAccessPolicy {
-    let read = |name| super::non_empty(std::env::var(name).ok());
-    let region = read(super::NEXUS_ICEBERG_S3_REGION_ENV)
-        .or_else(|| read(super::AWS_REGION_ENV))
-        .or_else(|| read(super::AWS_DEFAULT_REGION_ENV));
-    let endpoint = read(super::NEXUS_ICEBERG_S3_ENDPOINT_ENV)
-        .or_else(|| read(crate::table_format::AWS_ENDPOINT_URL_S3_ENV))
-        .or_else(|| read(crate::table_format::AWS_ENDPOINT_URL_ENV));
-    let path_style_access = read(super::NEXUS_ICEBERG_S3_PATH_STYLE_ENV).and_then(|value| value.parse::<bool>().ok());
-    let explicit_credentials = (
-        read(super::NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV),
-        read(super::NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV),
-        read(super::NEXUS_ICEBERG_S3_SESSION_TOKEN_ENV),
-    );
-    let aws_credentials = (
-        read(super::AWS_ACCESS_KEY_ID_ENV),
-        read(super::AWS_SECRET_ACCESS_KEY_ENV),
-        read(super::AWS_SESSION_TOKEN_ENV).or_else(|| read(super::AWS_SECURITY_TOKEN_ENV)),
-    );
-
-    let source_access = match endpoint {
-        Some(endpoint) => SourceAccessPolicy::s3_custom_endpoint(endpoint, region, path_style_access),
-        None => SourceAccessPolicy::s3_default_chain(region),
-    };
-    let mut s3 = source_access.as_s3().clone();
-    s3 = if let (Some(access_key_id), Some(secret_access_key), session_token) = explicit_credentials {
-        s3.with_static_credentials(access_key_id, secret_access_key, session_token)
-    } else if s3.endpoint().is_some()
-        && super::s3_credential_source_default_chain_opt_in(|name| std::env::var(name).ok())
-    {
-        s3.with_default_chain()
-    } else if s3.endpoint().is_none()
-        && let (Some(access_key_id), Some(secret_access_key), session_token) = aws_credentials
-    {
-        s3.with_static_credentials(access_key_id, secret_access_key, session_token)
-    } else {
-        s3
-    };
-    SourceAccessPolicy::S3(s3)
 }
 
 impl TableFormatPlanner for IcebergTableFormatPlanner {

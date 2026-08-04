@@ -21,9 +21,15 @@ use datafusion_nexus::{
     planner::{NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule},
     session::NexusSessionStateBuilderExt,
     table_format::{
-        TableFormatScanRequest,
+        AWS_ENDPOINT_URL_ENV, AWS_ENDPOINT_URL_S3_ENV, TableFormatScanRequest,
         iceberg::{
-            GlueIcebergTableConfig, IcebergTableFormatPlanner, NexusIcebergTableProvider, load_glue_table,
+            AWS_ACCESS_KEY_ID_ENV, AWS_DEFAULT_REGION_ENV, AWS_PROFILE_ENV, AWS_REGION_ENV, AWS_SECRET_ACCESS_KEY_ENV,
+            AWS_SECURITY_TOKEN_ENV, AWS_SESSION_TOKEN_ENV, IcebergTableFormatPlanner, IcebergTableIdentifier,
+            NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV, NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_DEFAULT_CHAIN,
+            NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_ENV, NEXUS_ICEBERG_S3_ENDPOINT_ENV, NEXUS_ICEBERG_S3_PATH_STYLE_ENV,
+            NEXUS_ICEBERG_S3_REGION_ENV, NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV, NEXUS_ICEBERG_S3_SESSION_TOKEN_ENV,
+            NexusIcebergTableProvider, ResolvedIcebergTable, SourceAccessPolicy,
+            catalog::{GlueIcebergCatalogBackend, GlueIcebergCatalogConfig},
             source_access_policy_to_native_source_storage_profile,
         },
     },
@@ -35,8 +41,8 @@ use nexus_query_engine::{
 use tokio::sync::Barrier;
 
 use crate::{
-    gpu_backend::GpuBackendOwner, report_workload::tpch::tpch_report_session_config,
-    stress_harness::validate_synchronized_admission_queue,
+    gpu_backend::GpuBackendOwner, iceberg_smoke::frozen_s3_source_access_policy,
+    report_workload::tpch::tpch_report_session_config, stress_harness::validate_synchronized_admission_queue,
 };
 const TSV_COLUMNS: &[&str] = &[
     "row_type",
@@ -61,13 +67,12 @@ const TSV_COLUMNS: &[&str] = &[
     "error_facts",
     "error_message",
 ];
-const AWS_REGION_ENV: &str = "AWS_REGION";
-const AWS_DEFAULT_REGION_ENV: &str = "AWS_DEFAULT_REGION";
-const NEXUS_ICEBERG_GLUE_CATALOG_NAME_ENV: &str = "NEXUS_ICEBERG_GLUE_CATALOG_NAME";
-const NEXUS_ICEBERG_GLUE_DATABASE_ENV: &str = "NEXUS_ICEBERG_GLUE_DATABASE";
-const NEXUS_ICEBERG_GLUE_TABLE_ENV: &str = "NEXUS_ICEBERG_GLUE_TABLE";
-const NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV: &str = "NEXUS_ICEBERG_GLUE_WAREHOUSE";
-const NEXUS_ICEBERG_GLUE_CATALOG_ID_ENV: &str = "NEXUS_ICEBERG_GLUE_CATALOG_ID";
+const GLUE_CATALOG_HANDLE_ENV: &str = "NEXUS_ICEBERG_GLUE_CATALOG_NAME";
+const GLUE_TABLE_ENV: &str = "NEXUS_ICEBERG_GLUE_TABLE";
+const GLUE_CATALOG_ID_ENV: &str = "NEXUS_ICEBERG_GLUE_CATALOG_ID";
+const ICEBERG_NAMESPACE_ENV: &str = "NEXUS_ICEBERG_NAMESPACE";
+const ICEBERG_WAREHOUSE_ENV: &str = "NEXUS_ICEBERG_WAREHOUSE";
+const GLUE_URI_ENV: &str = "NEXUS_ICEBERG_GLUE_URI";
 const DEFAULT_CATALOG_NAME: &str = "glue";
 const DEFAULT_DATABASE: &str = "tpch_sf1";
 const DEFAULT_TABLE: &str = "lineitem";
@@ -87,7 +92,7 @@ const OVERLOAD_PROBE_ENV: &str = "NEXUS_QUERY_SERVICE_ICEBERG_OVERLOAD_PROBE";
 
 pub async fn run() -> DataFusionResult<()> {
     let config = StressConfig::from_env()?;
-    let expected_count = planned_table_row_count(&config.glue).await?;
+    let expected_count = planned_table_row_count(&config.table).await?;
     let mut rows = Vec::new();
     if config.run_overload_probe {
         rows.push(run_overload_probe(&config)?);
@@ -101,7 +106,7 @@ pub async fn run() -> DataFusionResult<()> {
 
 #[derive(Debug, Clone)]
 struct StressConfig {
-    glue: GlueIcebergTableConfig,
+    table: ResolvedGlueTableConfig,
     table_alias: String,
     sql: String,
     client_ids: Vec<String>,
@@ -115,27 +120,79 @@ struct StressConfig {
     run_overload_probe: bool,
 }
 
+#[derive(Debug, Clone)]
+struct ResolvedGlueTableConfig {
+    catalog_config: GlueIcebergCatalogConfig,
+    identifier: IcebergTableIdentifier,
+    credential_source: &'static str,
+}
+
+impl ResolvedGlueTableConfig {
+    async fn load(&self) -> DataFusionResult<ResolvedIcebergTable> {
+        let backend = GlueIcebergCatalogBackend::connect(self.catalog_config.clone())
+            .await
+            .map_err(|error| DataFusionError::External(Box::new(error)))?
+            .into_backend();
+        backend.load_table(self.identifier.clone()).await.map_err(|error| DataFusionError::External(Box::new(error)))
+    }
+
+    fn table_ident_display(&self) -> String {
+        self.identifier.display_name()
+    }
+}
+
 impl StressConfig {
     fn from_env() -> DataFusionResult<Self> {
-        let catalog_name = env_string(NEXUS_ICEBERG_GLUE_CATALOG_NAME_ENV, DEFAULT_CATALOG_NAME);
-        let database = env_string(NEXUS_ICEBERG_GLUE_DATABASE_ENV, DEFAULT_DATABASE);
-        let table = env_string(NEXUS_ICEBERG_GLUE_TABLE_ENV, DEFAULT_TABLE);
-        let warehouse = env_string(NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, DEFAULT_WAREHOUSE);
+        let catalog_handle = env_string(GLUE_CATALOG_HANDLE_ENV, DEFAULT_CATALOG_NAME);
+        let database = env_string(ICEBERG_NAMESPACE_ENV, DEFAULT_DATABASE);
+        let table = env_string(GLUE_TABLE_ENV, DEFAULT_TABLE);
+        let warehouse = env_string(ICEBERG_WAREHOUSE_ENV, DEFAULT_WAREHOUSE);
         let region = std::env::var(AWS_REGION_ENV)
             .or_else(|_| std::env::var(AWS_DEFAULT_REGION_ENV))
             .unwrap_or_else(|_| DEFAULT_REGION.to_string());
-        let mut glue = GlueIcebergTableConfig::new(catalog_name, database, table, warehouse, region);
-        glue.catalog_id = match std::env::var(NEXUS_ICEBERG_GLUE_CATALOG_ID_ENV) {
+        let catalog_id = match std::env::var(GLUE_CATALOG_ID_ENV) {
             Ok(value) if value.trim().is_empty() => None,
             Ok(value) => Some(value),
             Err(_) if DEFAULT_CATALOG_ID.trim().is_empty() => None,
             Err(_) => Some(DEFAULT_CATALOG_ID.to_string()),
         };
+        let profile = env_optional(AWS_PROFILE_ENV);
+        let aws_access_key_id = env_optional(AWS_ACCESS_KEY_ID_ENV);
+        let aws_secret_access_key = env_optional(AWS_SECRET_ACCESS_KEY_ENV);
+        let aws_session_token = env_optional(AWS_SESSION_TOKEN_ENV).or_else(|| env_optional(AWS_SECURITY_TOKEN_ENV));
+        let source_access_policy = source_access_policy_from_env(&region)?;
+        let mut catalog_config = GlueIcebergCatalogConfig::new(catalog_handle, warehouse, region)
+            .with_source_access_policy(source_access_policy);
+        if let Some(catalog_id) = catalog_id {
+            catalog_config = catalog_config.with_catalog_id(catalog_id);
+        }
+        if let Some(profile) = profile.as_ref() {
+            catalog_config = catalog_config.with_profile(profile.clone());
+        } else if let (Some(access_key_id), Some(secret_access_key)) = (&aws_access_key_id, &aws_secret_access_key) {
+            catalog_config = catalog_config.with_catalog_static_credentials(
+                access_key_id.clone(),
+                secret_access_key.clone(),
+                aws_session_token.clone(),
+            );
+        }
+        if let Some(uri) = env_optional(GLUE_URI_ENV) {
+            catalog_config = catalog_config.with_uri(uri);
+        }
+        let table = ResolvedGlueTableConfig {
+            catalog_config,
+            identifier: IcebergTableIdentifier { namespace: vec![database], name: table },
+            credential_source: glue_credential_source(
+                profile.as_deref(),
+                aws_access_key_id.is_some(),
+                aws_secret_access_key.is_some(),
+                aws_session_token.is_some(),
+            ),
+        };
         let table_alias = "iceberg_t".to_string();
         let sql =
             std::env::var(QUERY_ENV).unwrap_or_else(|_| format!("select count(*) as row_count from {table_alias}"));
         let config = Self {
-            glue,
+            table,
             table_alias,
             sql,
             client_ids: client_ids_from_env(CLIENT_IDS_ENV, &["bulk", "interactive_a", "interactive_b"])?,
@@ -181,7 +238,7 @@ impl StressConfig {
     fn service_config(&self) -> QueryExecutionConfig {
         QueryExecutionConfig {
             source_storage_profiles: vec![source_access_policy_to_native_source_storage_profile(
-                &self.glue.source_access_policy_from_env(),
+                self.table.catalog_config.source_access_policy(),
             )],
             max_source_chunk_bytes: self.max_source_chunk_bytes,
             max_row_groups_per_chunk: self.max_row_groups_per_chunk,
@@ -261,12 +318,11 @@ struct StressRun {
 
 impl StressReport {
     fn to_tsv(&self) -> String {
-        let diagnostics = self.config.glue.diagnostics_from_env();
         let mut output = String::new();
-        output.push_str(&format!("# table_ident={}.{}\n", diagnostics.database, diagnostics.table));
-        output.push_str(&format!("# warehouse={}\n", diagnostics.warehouse));
-        output.push_str(&format!("# region={}\n", diagnostics.region));
-        output.push_str(&format!("# credential_source={}\n", diagnostics.credential_source.code()));
+        output.push_str(&format!("# table_ident={}\n", self.config.table.table_ident_display()));
+        output.push_str(&format!("# warehouse={}\n", self.config.table.catalog_config.warehouse));
+        output.push_str(&format!("# region={}\n", self.config.table.catalog_config.region));
+        output.push_str(&format!("# credential_source={}\n", self.config.table.credential_source));
         output.push_str(&format!(
             "# expected_count={}\n",
             self.expected_count.map(|count| count.to_string()).unwrap_or_else(|| "unknown".to_string())
@@ -359,9 +415,8 @@ impl StructuredFailure {
     }
 }
 
-async fn planned_table_row_count(config: &GlueIcebergTableConfig) -> DataFusionResult<Option<u64>> {
-    let loaded = load_glue_table(config.clone()).await.map_err(DataFusionError::from)?;
-    let scan_plan = IcebergTableFormatPlanner::new(loaded.resolved)
+async fn planned_table_row_count(config: &ResolvedGlueTableConfig) -> DataFusionResult<Option<u64>> {
+    let scan_plan = IcebergTableFormatPlanner::new(config.load().await?)
         .resolve_table_format_scan(TableFormatScanRequest::default())
         .await
         .map_err(DataFusionError::from)?;
@@ -510,8 +565,7 @@ async fn collect_native_with_handle(
         .with_nexus_native_rule(Arc::clone(&native_rule))
         .build();
     let ctx = SessionContext::new_with_state(state);
-    let loaded = load_glue_table(config.glue.clone()).await.map_err(DataFusionError::from)?;
-    let provider = NexusIcebergTableProvider::try_new_resolved(loaded.resolved)
+    let provider = NexusIcebergTableProvider::try_new_resolved(config.table.load().await?)
         .map_err(DataFusionError::from)?
         .with_catalog_type("glue");
     ctx.register_table(config.table_alias.as_str(), Arc::new(provider))?;
@@ -750,6 +804,58 @@ fn env_string(name: &'static str, default: &'static str) -> String {
     std::env::var(name).unwrap_or_else(|_| default.to_string())
 }
 
+fn env_optional(name: &'static str) -> Option<String> {
+    std::env::var(name).ok().filter(|value| !value.trim().is_empty())
+}
+
+fn source_access_policy_from_env(region: &str) -> DataFusionResult<SourceAccessPolicy> {
+    let endpoint = env_optional(NEXUS_ICEBERG_S3_ENDPOINT_ENV)
+        .or_else(|| env_optional(AWS_ENDPOINT_URL_S3_ENV))
+        .or_else(|| env_optional(AWS_ENDPOINT_URL_ENV));
+    let path_style_access = env_optional(NEXUS_ICEBERG_S3_PATH_STYLE_ENV)
+        .map(|value| match value.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => Ok(true),
+            "0" | "false" | "no" | "off" => Ok(false),
+            other => Err(plan_error(format!(
+                "{NEXUS_ICEBERG_S3_PATH_STYLE_ENV} must be a boolean (`true`/`false`), got {other}"
+            ))),
+        })
+        .transpose()?;
+    let default_chain_opt_in = env_optional(NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_ENV)
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case(NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_DEFAULT_CHAIN));
+    Ok(frozen_s3_source_access_policy(
+        endpoint,
+        env_optional(NEXUS_ICEBERG_S3_REGION_ENV).or_else(|| Some(region.to_string())),
+        path_style_access,
+        env_optional(NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV),
+        env_optional(NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV),
+        env_optional(NEXUS_ICEBERG_S3_SESSION_TOKEN_ENV),
+        default_chain_opt_in,
+        Some((
+            env_optional(AWS_ACCESS_KEY_ID_ENV),
+            env_optional(AWS_SECRET_ACCESS_KEY_ENV),
+            env_optional(AWS_SESSION_TOKEN_ENV).or_else(|| env_optional(AWS_SECURITY_TOKEN_ENV)),
+        )),
+    ))
+}
+
+fn glue_credential_source(
+    profile: Option<&str>,
+    has_access_key: bool,
+    has_secret_key: bool,
+    has_session_token: bool,
+) -> &'static str {
+    if matches!(profile, Some(profile) if !profile.is_empty()) {
+        "aws_profile_env"
+    } else if has_access_key && has_secret_key && has_session_token {
+        "sts_env"
+    } else if has_access_key && has_secret_key {
+        "static_key_env"
+    } else {
+        "aws_default_chain"
+    }
+}
+
 fn env_usize(name: &'static str, default: usize) -> DataFusionResult<usize> {
     match std::env::var_os(name) {
         Some(value) => value
@@ -828,7 +934,11 @@ mod tests {
 
     fn queue_test_config() -> StressConfig {
         StressConfig {
-            glue: GlueIcebergTableConfig::new("glue", "db", "table", "s3://warehouse", "us-east-1"),
+            table: ResolvedGlueTableConfig {
+                catalog_config: GlueIcebergCatalogConfig::new("glue", "s3://warehouse", "us-east-1"),
+                identifier: IcebergTableIdentifier { namespace: vec!["db".to_string()], name: "table".to_string() },
+                credential_source: "aws_default_chain",
+            },
             table_alias: "iceberg_t".to_string(),
             sql: "select count(*) from iceberg_t".to_string(),
             client_ids: vec!["a".to_string(), "b".to_string()],

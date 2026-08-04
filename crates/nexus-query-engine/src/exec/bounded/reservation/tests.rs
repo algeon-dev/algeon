@@ -175,7 +175,9 @@ fn cloning_query_metrics_detaches_the_reservation_projection_ledger() -> Result<
 #[test]
 fn grant_backed_static_tracker_transfers_live_output_at_grant_cap_without_double_charge() -> Result<()> {
     let governor = DeviceLedger::for_test(0, 100, 2);
-    let grant = governor.admit_for_test(AdmissionRequestId::new(7), 10, 30)?.expect("initial grant should fit");
+    let grant = governor
+        .admit_with_configured_floor_and_soft_working_set_hint_for_test(AdmissionRequestId::new(7), 10, 30)?
+        .expect("initial grant should fit");
     let mut metrics = QueryMetrics::default();
     let mut reservations = ReservationTracker::new_with_budget(
         MemorySpaceId::Device { device_ordinal: 0 },
@@ -215,7 +217,9 @@ fn grant_backed_static_tracker_transfers_live_output_at_grant_cap_without_double
 #[test]
 fn grant_backed_reservation_tracker_denies_when_shared_grant_live_budget_is_exhausted() -> Result<()> {
     let governor = DeviceLedger::for_test(0, 100, 2);
-    let grant = governor.admit_for_test(AdmissionRequestId::new(7), 30, 70)?.expect("initial grant should fit");
+    let grant = governor
+        .admit_with_configured_floor_and_soft_working_set_hint_for_test(AdmissionRequestId::new(7), 30, 70)?
+        .expect("initial grant should fit");
     let mut metrics = QueryMetrics::default();
     let mut first_tracker = ReservationTracker::new_with_budget(
         MemorySpaceId::Device { device_ordinal: 0 },
@@ -249,7 +253,9 @@ fn grant_backed_reservation_tracker_denies_when_shared_grant_live_budget_is_exha
 #[test]
 fn grant_backed_reservation_tracker_borrowed_resident_does_not_double_charge_grant_live_bytes() -> Result<()> {
     let governor = DeviceLedger::for_test(0, 100, 2);
-    let grant = governor.admit_for_test(AdmissionRequestId::new(7), 30, 70)?.expect("initial grant should fit");
+    let grant = governor
+        .admit_with_configured_floor_and_soft_working_set_hint_for_test(AdmissionRequestId::new(7), 30, 70)?
+        .expect("initial grant should fit");
     let retained_input = grant
         .retain_live_reservation(50)
         .expect("input retention fits the immutable grant")

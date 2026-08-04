@@ -27,11 +27,10 @@ use nexus_query_engine::{
         AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, Expr, LimitSpec, LiteralValue, SortExpr, SortSpec,
     },
     metrics::{MemoryReservationEventAction, QueryMetrics},
-    mode::StddevSampExecutionMode,
-    observability::AdmissionRequestId,
+    mode::StatisticalAggregateExecutionMode,
     plan::{JoinKey, JoinOutputColumn, JoinSide, JoinSpec, JoinType, ProjectionOutput, QueryPlanBuilder},
     runtime::{
-        BoundedJoinReservationContract, DeviceLedger, ExecutionBoundaryPolicy, ExecutionContext, MemoryControlPolicy,
+        BoundedJoinReservationContract, ExecutionBoundaryPolicy, ExecutionContext, MemoryControlPolicy,
         ReservationKind,
         resident::{GpuDataFrame, GpuResidentInputMap, GpuResultHandle},
     },

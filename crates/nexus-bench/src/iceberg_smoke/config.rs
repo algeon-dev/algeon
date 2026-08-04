@@ -93,20 +93,22 @@ impl IcebergNativeSmokeConfig {
                 IcebergNativeSmokeFixture::LocalMetadata { metadata_location, table_ident }
             },
             "glue_s3" => {
-                explicit_glue_table = get(NEXUS_ICEBERG_GLUE_TABLE_ENV).is_some();
-                let database_env = get(NEXUS_ICEBERG_GLUE_DATABASE_ENV);
+                explicit_glue_table = get(GLUE_TABLE_ENV).is_some();
+                let database_env = get(ICEBERG_NAMESPACE_ENV);
                 explicit_catalog_namespace = database_env.is_some();
-                let catalog_name = get(NEXUS_ICEBERG_GLUE_CATALOG_NAME_ENV)
-                    .unwrap_or_else(|| DEFAULT_SMOKE_GLUE_CATALOG_NAME.to_string());
+                let catalog_handle =
+                    get(GLUE_CATALOG_HANDLE_ENV).unwrap_or_else(|| DEFAULT_SMOKE_GLUE_CATALOG_NAME.to_string());
                 let database = database_env.unwrap_or_else(|| DEFAULT_SMOKE_GLUE_DATABASE.to_string());
-                let table = get(NEXUS_ICEBERG_GLUE_TABLE_ENV).unwrap_or_else(|| DEFAULT_SMOKE_GLUE_TABLE.to_string());
-                let warehouse =
-                    get(NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV).unwrap_or_else(|| DEFAULT_SMOKE_GLUE_WAREHOUSE.to_string());
+                let table = get(GLUE_TABLE_ENV).unwrap_or_else(|| DEFAULT_SMOKE_GLUE_TABLE.to_string());
+                let warehouse = get(ICEBERG_WAREHOUSE_ENV).unwrap_or_else(|| DEFAULT_SMOKE_GLUE_WAREHOUSE.to_string());
                 let region = get(AWS_REGION_ENV)
                     .or_else(|| get(AWS_DEFAULT_REGION_ENV))
                     .unwrap_or_else(|| DEFAULT_SMOKE_GLUE_REGION.to_string());
                 let uri = get(GLUE_URI_ENV).filter(|value| !value.trim().is_empty());
-                let s3_endpoint = get(REST_S3_ENDPOINT_ENV).filter(|value| !value.trim().is_empty());
+                let s3_endpoint = get(REST_S3_ENDPOINT_ENV)
+                    .or_else(|| get(AWS_ENDPOINT_URL_S3_ENV))
+                    .or_else(|| get(AWS_ENDPOINT_URL_ENV))
+                    .filter(|value| !value.trim().is_empty());
                 let s3_region = get(REST_S3_REGION_ENV).filter(|value| !value.trim().is_empty());
                 let s3_path_style_access = get(REST_S3_PATH_STYLE_ENV)
                     .filter(|value| !value.trim().is_empty())
@@ -125,30 +127,22 @@ impl IcebergNativeSmokeConfig {
                 let default_chain_opt_in = get(NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_ENV).is_some_and(|value| {
                     value.trim().eq_ignore_ascii_case(NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_DEFAULT_CHAIN)
                 });
-                let mut glue_config = GlueIcebergTableConfig::new(catalog_name, database, table, warehouse, region);
-                if let Some(profile) = get(AWS_PROFILE_ENV).filter(|value| !value.trim().is_empty()) {
-                    glue_config = glue_config.with_profile(profile);
-                }
-                glue_config.catalog_id = match get(NEXUS_ICEBERG_GLUE_CATALOG_ID_ENV) {
+                let profile = get(AWS_PROFILE_ENV).filter(|value| !value.trim().is_empty());
+                let catalog_id = match get(GLUE_CATALOG_ID_ENV) {
                     Some(value) if value.trim().is_empty() => None,
                     Some(value) => Some(value),
                     None if DEFAULT_SMOKE_GLUE_CATALOG_ID.trim().is_empty() => None,
                     None => Some(DEFAULT_SMOKE_GLUE_CATALOG_ID.to_string()),
                 };
-                let credential_source = match (
-                    glue_config.profile.as_deref(),
+                let credential_source = glue_credential_source(
+                    profile.as_deref(),
                     aws_access_key_id.is_some(),
                     aws_secret_access_key.is_some(),
                     aws_session_token.is_some(),
-                ) {
-                    (Some(profile), _, _, _) if !profile.is_empty() => GlueIcebergCredentialSource::AwsProfileEnv,
-                    (_, true, true, true) => GlueIcebergCredentialSource::StsEnv,
-                    (_, true, true, false) => GlueIcebergCredentialSource::StaticKeyEnv,
-                    _ => GlueIcebergCredentialSource::AwsDefaultChain,
-                };
+                );
                 let source_access_policy = frozen_s3_source_access_policy(
                     s3_endpoint.clone(),
-                    s3_region.clone().or_else(|| Some(glue_config.region.clone())),
+                    s3_region.clone().or_else(|| Some(region.clone())),
                     s3_path_style_access,
                     nexus_access_key_id,
                     nexus_secret_access_key,
@@ -156,32 +150,32 @@ impl IcebergNativeSmokeConfig {
                     default_chain_opt_in,
                     Some((aws_access_key_id, aws_secret_access_key, aws_session_token)),
                 );
-                IcebergNativeSmokeFixture::GlueS3 {
-                    catalog_name: glue_config.catalog_name,
-                    database: glue_config.database,
-                    table: glue_config.table,
-                    warehouse: glue_config.warehouse,
-                    catalog_id: glue_config.catalog_id,
-                    region: glue_config.region,
-                    profile: glue_config.profile,
-                    uri,
-                    s3_endpoint,
-                    s3_region,
-                    s3_path_style_access,
-                    credential_source,
-                    source_access_policy,
+                let mut catalog_config = GlueIcebergCatalogConfig::new(catalog_handle, warehouse, region)
+                    .with_source_access_policy(source_access_policy);
+                if let Some(catalog_id) = catalog_id {
+                    catalog_config = catalog_config.with_catalog_id(catalog_id);
                 }
+                if let Some(profile) = profile {
+                    catalog_config = catalog_config.with_profile(profile);
+                }
+                if let Some(uri) = uri {
+                    catalog_config = catalog_config.with_uri(uri);
+                }
+                IcebergNativeSmokeFixture::GlueS3 { catalog_config, database, table, credential_source }
             },
             "rest_s3" => {
                 explicit_glue_table = get(REST_TABLE_ENV).is_some();
                 let catalog_handle = "lake".to_string();
                 let uri = get(REST_URI_ENV).unwrap_or_else(|| DEFAULT_REST_URI.to_string());
-                let warehouse = get(REST_WAREHOUSE_ENV).unwrap_or_else(|| DEFAULT_REST_WAREHOUSE.to_string());
-                let namespace_env = get(REST_NAMESPACE_ENV);
+                let warehouse = get(ICEBERG_WAREHOUSE_ENV).unwrap_or_else(|| DEFAULT_REST_WAREHOUSE.to_string());
+                let namespace_env = get(ICEBERG_NAMESPACE_ENV);
                 explicit_catalog_namespace = namespace_env.is_some();
                 let namespace = namespace_env.unwrap_or_else(|| DEFAULT_REST_NAMESPACE.to_string());
                 let table = get(REST_TABLE_ENV).unwrap_or_else(|| DEFAULT_REST_TABLE.to_string());
-                let s3_endpoint = get(REST_S3_ENDPOINT_ENV).filter(|value| !value.trim().is_empty());
+                let s3_endpoint = get(REST_S3_ENDPOINT_ENV)
+                    .or_else(|| get(AWS_ENDPOINT_URL_S3_ENV))
+                    .or_else(|| get(AWS_ENDPOINT_URL_ENV))
+                    .filter(|value| !value.trim().is_empty());
                 let s3_region = get(REST_S3_REGION_ENV).filter(|value| !value.trim().is_empty());
                 let s3_path_style_access = get(REST_S3_PATH_STYLE_ENV)
                     .filter(|value| !value.trim().is_empty())
@@ -372,21 +366,12 @@ pub enum IcebergNativeSmokeFixture {
         table_ident: Vec<String>,
     },
     GlueS3 {
-        catalog_name: String,
+        /// Canonical leaf catalog configuration that freezes the source policy
+        /// carried into each resolved table.
+        catalog_config: GlueIcebergCatalogConfig,
         database: String,
         table: String,
-        warehouse: String,
-        catalog_id: Option<String>,
-        region: String,
-        profile: Option<String>,
-        uri: Option<String>,
-        s3_endpoint: Option<String>,
-        s3_region: Option<String>,
-        s3_path_style_access: Option<bool>,
-        credential_source: GlueIcebergCredentialSource,
-        /// One frozen policy used by the leaf catalog/FileIO and the native
-        /// execution profile. It never appears in report rows.
-        source_access_policy: SourceAccessPolicy,
+        credential_source: &'static str,
     },
     RestS3 {
         catalog_handle: String,
@@ -425,7 +410,8 @@ impl IcebergNativeSmokeFixture {
     /// DataFusion object store so footer-only pruning can read Parquet footers).
     pub(crate) fn warehouse(&self) -> Option<&str> {
         match self {
-            Self::GlueS3 { warehouse, .. } | Self::RestS3 { warehouse, .. } => Some(warehouse.as_str()),
+            Self::GlueS3 { catalog_config, .. } => Some(catalog_config.warehouse.as_str()),
+            Self::RestS3 { warehouse, .. } => Some(warehouse.as_str()),
             Self::LocalMetadata { .. } => None,
         }
     }
@@ -451,41 +437,18 @@ impl IcebergNativeSmokeFixture {
     pub fn credential_source(&self) -> &'static str {
         match self {
             Self::LocalMetadata { .. } => "not_applicable",
-            Self::GlueS3 { credential_source, .. } => credential_source.code(),
+            Self::GlueS3 { credential_source, .. } => credential_source,
             Self::RestS3 { credential_source, .. } => credential_source,
         }
     }
 
     pub(crate) fn with_tpch_table(&self, table_name: &str, scale_factor: &str) -> SmokeResult<Self> {
         match self {
-            Self::GlueS3 {
-                catalog_name,
-                database,
-                warehouse,
-                catalog_id,
-                region,
-                profile,
-                uri,
-                s3_endpoint,
-                s3_region,
-                s3_path_style_access,
-                credential_source,
-                source_access_policy,
-                ..
-            } => Ok(Self::GlueS3 {
-                catalog_name: catalog_name.clone(),
+            Self::GlueS3 { catalog_config, database, credential_source, .. } => Ok(Self::GlueS3 {
+                catalog_config: catalog_config.clone(),
                 database: database.clone(),
                 table: tpch_glue_table_name(table_name, scale_factor),
-                warehouse: warehouse.clone(),
-                catalog_id: catalog_id.clone(),
-                region: region.clone(),
-                profile: profile.clone(),
-                uri: uri.clone(),
-                s3_endpoint: s3_endpoint.clone(),
-                s3_region: s3_region.clone(),
-                s3_path_style_access: *s3_path_style_access,
-                credential_source: *credential_source,
-                source_access_policy: source_access_policy.clone(),
+                credential_source,
             }),
             Self::RestS3 {
                 catalog_handle,
@@ -518,34 +481,11 @@ impl IcebergNativeSmokeFixture {
 
     pub fn with_tpcds_table(&self, table_name: &str, scale_factor: &str) -> SmokeResult<Self> {
         match self {
-            Self::GlueS3 {
-                catalog_name,
-                database,
-                warehouse,
-                catalog_id,
-                region,
-                profile,
-                uri,
-                s3_endpoint,
-                s3_region,
-                s3_path_style_access,
-                credential_source,
-                source_access_policy,
-                ..
-            } => Ok(Self::GlueS3 {
-                catalog_name: catalog_name.clone(),
+            Self::GlueS3 { catalog_config, database, credential_source, .. } => Ok(Self::GlueS3 {
+                catalog_config: catalog_config.clone(),
                 database: database.clone(),
                 table: tpcds_glue_table_name(table_name, scale_factor),
-                warehouse: warehouse.clone(),
-                catalog_id: catalog_id.clone(),
-                region: region.clone(),
-                profile: profile.clone(),
-                uri: uri.clone(),
-                s3_endpoint: s3_endpoint.clone(),
-                s3_region: s3_region.clone(),
-                s3_path_style_access: *s3_path_style_access,
-                credential_source: *credential_source,
-                source_access_policy: source_access_policy.clone(),
+                credential_source,
             }),
             Self::RestS3 {
                 catalog_handle,
@@ -607,25 +547,10 @@ impl IcebergNativeSmokeFixture {
     pub(crate) fn glue_catalog_config(
         &self,
     ) -> Option<datafusion_nexus::table_format::iceberg::catalog::GlueIcebergCatalogConfig> {
-        let Self::GlueS3 { catalog_name, warehouse, region, catalog_id, profile, uri, source_access_policy, .. } = self
-        else {
+        let Self::GlueS3 { catalog_config, .. } = self else {
             return None;
         };
-        let mut config = datafusion_nexus::table_format::iceberg::catalog::GlueIcebergCatalogConfig::new(
-            catalog_name,
-            warehouse,
-            region,
-        );
-        if let Some(catalog_id) = catalog_id.as_ref() {
-            config = config.with_catalog_id(catalog_id.clone());
-        }
-        if let Some(profile) = profile.as_ref() {
-            config = config.with_profile(profile.clone());
-        }
-        if let Some(uri) = uri.as_ref() {
-            config = config.with_uri(uri.clone());
-        }
-        Some(config.with_source_access_policy(source_access_policy.clone()))
+        Some(catalog_config.clone())
     }
 
     pub(crate) fn parquet_read_strategy_config(&self) -> TableFormatParquetReadStrategyConfig {
@@ -644,14 +569,30 @@ impl IcebergNativeSmokeFixture {
     pub(crate) fn source_access_policy(&self) -> Option<&SourceAccessPolicy> {
         match self {
             Self::LocalMetadata { .. } => None,
-            Self::GlueS3 { source_access_policy, .. } | Self::RestS3 { source_access_policy, .. } => {
-                Some(source_access_policy)
-            },
+            Self::GlueS3 { catalog_config, .. } => Some(catalog_config.source_access_policy()),
+            Self::RestS3 { source_access_policy, .. } => Some(source_access_policy),
         }
     }
 }
 
-fn frozen_s3_source_access_policy(
+fn glue_credential_source(
+    profile: Option<&str>,
+    has_access_key: bool,
+    has_secret_key: bool,
+    has_session_token: bool,
+) -> &'static str {
+    if matches!(profile, Some(profile) if !profile.is_empty()) {
+        "aws_profile_env"
+    } else if has_access_key && has_secret_key && has_session_token {
+        "sts_env"
+    } else if has_access_key && has_secret_key {
+        "static_key_env"
+    } else {
+        "aws_default_chain"
+    }
+}
+
+pub(crate) fn frozen_s3_source_access_policy(
     endpoint: Option<String>,
     region: Option<String>,
     path_style_access: Option<bool>,
@@ -716,7 +657,7 @@ pub(crate) async fn native_session_context(
         boundary_policy: execution_config.boundary_policy(),
         source_scheduler_policy: execution_config.source_scheduler_policy(),
         source_chunk_planning_mode: execution_config.source_chunk_planning_mode(),
-        stddev_samp_execution_mode: execution_config.stddev_samp_execution_mode(),
+        statistical_aggregate_execution_mode: execution_config.statistical_aggregate_execution_mode(),
         dynamic_filter_execution_options: execution_config.dynamic_filter_execution_options(),
         keyed_hash_join_strategy_options: execution_config.keyed_hash_join_strategy_options(),
         aggregate_strategy_execution_options: execution_config.aggregate_strategy_execution_options(),
@@ -876,10 +817,7 @@ pub(crate) fn native_statistical_aggregate_execution_mode_for_profile_with_env(
 pub(crate) fn optional_env_statistical_aggregate_execution_mode_get(
     get: &mut impl FnMut(&str) -> Option<String>,
 ) -> SmokeResult<Option<StatisticalAggregateExecutionMode>> {
-    match get(NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV)
-        .or_else(|| get(NATIVE_STDDEV_SAMP_EXECUTION_MODE_ENV))
-        .filter(|value| !value.trim().is_empty())
-    {
+    match get(NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV).filter(|value| !value.trim().is_empty()) {
         Some(value) => value.trim().parse::<StatisticalAggregateExecutionMode>().map(Some).map_err(|error| {
             smoke_error(format!(
                 "unsupported Iceberg native statistical aggregate execution mode={}; expected datafusion_exact_host_welford or gpu_native_tolerant: {error}",

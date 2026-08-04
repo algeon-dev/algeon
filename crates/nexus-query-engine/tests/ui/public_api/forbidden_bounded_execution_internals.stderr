@@ -1,0 +1,34 @@
+error[E0432]: unresolved imports `nexus_query_engine::exec::ResidentFrameStreamProducerTestHarness`, `nexus_query_engine::exec::reservation_contract_testing`
+ --> tests/ui/public_api/forbidden_bounded_execution_internals.rs:1:32
+  |
+1 | use nexus_query_engine::exec::{ResidentFrameStreamProducerTestHarness, bounded, reservation_contract_testing};
+  |                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ no `reservation_contract_testing` in `exec`
+  |                                |
+  |                                no `ResidentFrameStreamProducerTestHarness` in `exec`
+  |
+note: found an item that was configured out
+ --> src/exec/mod.rs
+  |
+  | #[cfg(test)]
+  |       ---- the item is gated here
+  | pub(crate) use bounded::pipeline::{ResidentFrameStreamProducerTestHarness, YieldedFrameCounterTestHarness};
+  |                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+note: found an item that was configured out
+ --> src/exec/mod.rs
+  |
+  | #[cfg(test)]
+  |       ---- the item is gated here
+  | pub(crate) mod reservation_contract_testing {
+  |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0603]: module `bounded` is private
+ --> tests/ui/public_api/forbidden_bounded_execution_internals.rs:1:72
+  |
+1 | use nexus_query_engine::exec::{ResidentFrameStreamProducerTestHarness, bounded, reservation_contract_testing};
+  |                                                                        ^^^^^^^ private module
+  |
+note: the module `bounded` is defined here
+ --> src/exec/mod.rs
+  |
+  | mod bounded;
+  | ^^^^^^^^^^^

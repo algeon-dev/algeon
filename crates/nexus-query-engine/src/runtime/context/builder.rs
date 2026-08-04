@@ -11,11 +11,10 @@ use std::{
 use super::{
     super::{
         CacheFillByteBudget, DeploymentIoCapability, ExecutionBoundaryPolicy, GpuExecutionPool,
-        LakehouseCacheFillConfig, MemoryControlPolicy, MemoryGrant, MemoryResourcePolicy, ServiceStreamPool,
+        LakehouseCacheFillConfig, MemoryControlPolicy, MemoryResourcePolicy, ServiceStreamPool,
         SourceChunkPlanningMode, SourceStorageProfile,
         cache_events::LakehouseCacheFillEventSink,
         cache_fill::{CacheFillConcurrencyGate, default_lakehouse_cache_fill_budget_bytes},
-        memory_domain::create_grant_reservation_arena,
         object_store::{SourceObjectStoreRegistry, default_object_store_control_runtime},
         service_stream::{default_service_stream_pool_size_for_device, validate_service_stream_pool_size},
     },
@@ -28,7 +27,7 @@ use crate::{
     error::{QueryError, QueryErrorCode, Result},
     graph_memory::GraphMemoryCalibrationOverride,
     metrics::{QueryId, TraceId},
-    mode::StddevSampExecutionMode,
+    mode::StatisticalAggregateExecutionMode,
     observability::{
         RuntimeObservationConfig, RuntimeObservationHandle, RuntimeObservationSession, RuntimeQueryId,
         RuntimeTerminalOutcome, RuntimeTraceId,
@@ -62,8 +61,6 @@ pub(crate) struct ExecutionContextBuilder {
     memory_policy: MemoryResourcePolicy,
     /// Engine-level bounded/unbounded memory contract.
     memory_control_policy: MemoryControlPolicy,
-    /// Optional soft governor grant backing bounded execution.
-    memory_grant: Option<MemoryGrant>,
     /// Source/build/probe/result boundary contract.
     boundary_policy: ExecutionBoundaryPolicy,
     /// Source read scheduling contract.
@@ -88,7 +85,7 @@ pub(crate) struct ExecutionContextBuilder {
     /// Cooperative cancellation flag observed by native execution.
     cancellation: ExecutionCancellation,
     /// Execution contract for floating statistical aggregates.
-    stddev_samp_execution_mode: StddevSampExecutionMode,
+    statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode,
     /// Runtime threshold policy for grouped aggregate strategy selection.
     aggregate_strategy_execution_options: AggregateStrategyExecutionOptions,
     /// Expert policy for local-throughput source chunk planning.
@@ -255,12 +252,6 @@ impl ExecutionContextBuilder {
         self
     }
 
-    /// Attaches a soft governor grant to bounded execution contexts built here.
-    pub fn with_memory_grant(mut self, memory_grant: MemoryGrant) -> Self {
-        self.memory_grant = Some(memory_grant);
-        self
-    }
-
     /// Sets the execution boundary policy.
     pub fn with_boundary_policy(mut self, boundary_policy: ExecutionBoundaryPolicy) -> Self {
         self.boundary_policy = boundary_policy;
@@ -342,14 +333,9 @@ impl ExecutionContextBuilder {
     }
 
     /// Selects the execution contract for floating statistical aggregates.
-    pub fn with_statistical_aggregate_execution_mode(mut self, mode: StddevSampExecutionMode) -> Self {
-        self.stddev_samp_execution_mode = mode;
+    pub fn with_statistical_aggregate_execution_mode(mut self, mode: StatisticalAggregateExecutionMode) -> Self {
+        self.statistical_aggregate_execution_mode = mode;
         self
-    }
-
-    /// Selects the execution contract through the legacy STDDEV_SAMP builder.
-    pub fn with_stddev_samp_execution_mode(self, mode: StddevSampExecutionMode) -> Self {
-        self.with_statistical_aggregate_execution_mode(mode)
     }
 
     /// Sets grouped aggregate strategy execution policy.
@@ -488,7 +474,6 @@ impl ExecutionContextBuilder {
             };
             let gpu_execution_pool =
                 resolve_gpu_execution_pool(gpu_execution_pool, runtime.device(), service_stream_pool.pool_size())?;
-            let grant_reservation_arena = create_grant_reservation_arena(runtime.as_ref(), self.memory_grant.as_ref())?;
             return Ok(ExecutionContext::from_parts(ExecutionContextParts {
                 service_epoch: None,
                 query_epoch: None,
@@ -504,8 +489,7 @@ impl ExecutionContextBuilder {
                 gpu_execution_pool,
                 memory_policy: MemoryResourcePolicy::ExternalRuntime,
                 memory_control_policy: self.memory_control_policy,
-                memory_grant: self.memory_grant.clone(),
-                grant_reservation_arena,
+                memory_grant: None,
                 grant_memory_domain: None,
                 attempt_allocation_domain: None,
                 attempt_auxiliary_slots: None,
@@ -526,7 +510,7 @@ impl ExecutionContextBuilder {
                 source_object_stores,
                 deployment_io_capability,
                 cancellation: self.cancellation,
-                stddev_samp_execution_mode: self.stddev_samp_execution_mode,
+                statistical_aggregate_execution_mode: self.statistical_aggregate_execution_mode,
                 aggregate_strategy_execution_options: self.aggregate_strategy_execution_options,
                 source_chunk_planning_options: self.source_chunk_planning_options,
                 graph_memory_calibration_override: self.graph_memory_calibration_override,
@@ -572,7 +556,6 @@ impl ExecutionContextBuilder {
         let gpu_execution_pool =
             resolve_gpu_execution_pool(gpu_execution_pool, runtime.device(), service_stream_pool.pool_size())?;
         let runtime = Arc::new(runtime);
-        let grant_reservation_arena = create_grant_reservation_arena(runtime.as_ref(), self.memory_grant.as_ref())?;
         Ok(ExecutionContext::from_parts(ExecutionContextParts {
             service_epoch: None,
             query_epoch: None,
@@ -588,8 +571,7 @@ impl ExecutionContextBuilder {
             gpu_execution_pool,
             memory_policy,
             memory_control_policy: self.memory_control_policy,
-            memory_grant: self.memory_grant,
-            grant_reservation_arena,
+            memory_grant: None,
             grant_memory_domain: None,
             attempt_allocation_domain: None,
             attempt_auxiliary_slots: None,
@@ -610,7 +592,7 @@ impl ExecutionContextBuilder {
             source_object_stores,
             deployment_io_capability,
             cancellation: self.cancellation,
-            stddev_samp_execution_mode: self.stddev_samp_execution_mode,
+            statistical_aggregate_execution_mode: self.statistical_aggregate_execution_mode,
             aggregate_strategy_execution_options: self.aggregate_strategy_execution_options,
             source_chunk_planning_options: self.source_chunk_planning_options,
             graph_memory_calibration_override: self.graph_memory_calibration_override,

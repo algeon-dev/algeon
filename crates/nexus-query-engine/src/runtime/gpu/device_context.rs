@@ -29,7 +29,6 @@ struct DeviceContextInner {
     memory_failure_tracker: DeviceMemoryFailureTracker,
     ledger: Arc<DeviceLedger>,
     facts: DeviceFacts,
-    max_active_queries: Option<usize>,
     lane_permits: std::sync::Arc<super::lanes::DeviceLanePermits>,
 }
 
@@ -44,7 +43,7 @@ impl DeviceContext {
         memory_failure_tracker: DeviceMemoryFailureTracker,
         ledger: Arc<DeviceLedger>,
         facts: DeviceFacts,
-        max_active_queries: Option<usize>,
+        max_active_queries: usize,
     ) -> Result<Self> {
         if device.ordinal() != facts.device {
             return Err(QueryError::new(
@@ -119,7 +118,7 @@ impl DeviceContext {
             .with_fact("device_ordinal", device.ordinal())
             .with_fact("device_ledger_ordinal", ledger.device_ordinal()));
         }
-        if max_active_queries == Some(0) {
+        if max_active_queries == 0 {
             return Err(QueryError::new(
                 QueryErrorCode::InvalidPlan,
                 "nexus_query_engine.gpu.device_context",
@@ -129,9 +128,7 @@ impl DeviceContext {
             .with_fact("field", "max_active_queries")
             .with_fact("reason", "zero"));
         }
-        if let Some(max_active_queries) = max_active_queries
-            && max_active_queries != ledger.profile().max_active_attempts
-        {
+        if max_active_queries != ledger.profile().max_active_attempts {
             return Err(QueryError::new(
                 QueryErrorCode::InvalidPlan,
                 "nexus_query_engine.gpu.device_context",
@@ -157,7 +154,6 @@ impl DeviceContext {
                 memory_failure_tracker,
                 ledger,
                 facts,
-                max_active_queries,
                 lane_permits,
             }),
         })
@@ -216,12 +212,6 @@ impl DeviceContext {
     /// Number of currently admitted attempts on this CUDA device ordinal.
     pub fn active_queries(&self) -> usize {
         self.inner.ledger.snapshot().map_or(0, |snapshot| snapshot.active_attempts)
-    }
-
-    /// Immutable backend-owned active-query limit for this device, falling
-    /// back to the legacy uniform controller projection when absent.
-    pub(crate) fn active_query_limit(&self, legacy_limit: Option<usize>) -> Option<usize> {
-        self.inner.max_active_queries.or(legacy_limit)
     }
 
     /// Folds a persistent native CUDA fault into the owning admission ledger.

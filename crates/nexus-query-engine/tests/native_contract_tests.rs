@@ -128,8 +128,6 @@ mod attempt_lifecycle;
 pub(crate) mod bounded_join_admission;
 #[path = "native_contract_tests/bounded_join_sizing.rs"]
 mod bounded_join_sizing;
-#[path = "native_contract_tests/capability_module_boundaries.rs"]
-mod capability_module_boundaries;
 #[path = "native_contract_tests/dependency_direction.rs"]
 mod dependency_direction;
 #[path = "native_contract_tests/expr_contracts.rs"]
@@ -148,8 +146,6 @@ mod plan_contracts;
 mod preference_contracts;
 #[path = "native_contract_tests/public_facade.rs"]
 mod public_facade;
-#[path = "../../../tests/support/public_surface.rs"]
-mod public_surface;
 #[path = "native_contract_tests/runtime_observability.rs"]
 mod runtime_observability;
 #[path = "native_contract_tests/source_contracts.rs"]

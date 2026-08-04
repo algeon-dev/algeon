@@ -469,24 +469,24 @@ fn planning_io_phase_marks_planning_did_io_without_retained_diagnostics() {
 
 #[test]
 fn coverage_preflight_ignores_retired_rejection_facts() {
-    let legacy_facts: [(&'static str, &'static str); 2] = [
+    let retired_facts: [(&'static str, &'static str); 2] = [
         ("fallback_reason", "iceberg_table_format_unavailable"),
         ("leaf_guard_first_rejection", "unsupported_legacy_leaf"),
     ];
 
-    for (legacy_key, legacy_value) in legacy_facts {
+    for (retired_key, retired_value) in retired_facts {
         let error = DataFusionError::External(Box::new(
             Error::new(ErrorCode::UnsupportedOperator, "datafusion_nexus.test", "unsupported operator")
-                .with_fact(legacy_key, legacy_value),
+                .with_fact(retired_key, retired_value),
         ));
 
         let rejection = QueryGpuRejection::from_datafusion_error(QueryGpuRejectionPhase::PhysicalPlanning, &error);
 
-        assert_eq!(rejection.reason_code, ErrorCode::UnsupportedOperator.as_str(), "legacy fact `{legacy_key}`");
+        assert_eq!(rejection.reason_code, ErrorCode::UnsupportedOperator.as_str(), "retired fact `{retired_key}`");
         assert_eq!(
             classify_physical_planning_error(&error),
             QueryGpuRejectionPhase::PhysicalPlanning,
-            "legacy fact `{legacy_key}` must not change coverage phase"
+            "retired fact `{retired_key}` must not change coverage phase"
         );
     }
 }

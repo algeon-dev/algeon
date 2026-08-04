@@ -40,8 +40,8 @@ pub(in crate::server) struct QueryRecord {
     pub(in crate::server) active_activities: usize,
     pub(in crate::server) observation_owner: Option<RuntimeObservationOwner>,
     /// Flight attempt reports are immutable handoffs from the actual attempt
-    /// owner. `None` remains valid for legacy coordinator-owned observation
-    /// paths, but attempt-owned records cannot finalize until this arrives.
+    /// owner. `None` remains valid when an attempt never begins, but records
+    /// with an attempt cannot finalize until this arrives.
     pub(in crate::server) attempt_report: Option<Arc<QueryAttemptReport>>,
     /// The canonical attempt outcome survives handoff of the full immutable
     /// report so unavailable and tombstone projections never reconstruct it

@@ -384,20 +384,21 @@ impl DeviceLedger {
         Self::new(profile)
     }
 
-    /// Test convenience: admit one attempt with a legacy-style band.
+    /// Test convenience: admit one attempt with explicit configured-floor and
+    /// soft-working-set inputs.
     #[cfg(test)]
-    pub(crate) fn admit_for_test(
+    pub(crate) fn admit_with_configured_floor_and_soft_working_set_hint_for_test(
         &self,
         waiter_id: AdmissionRequestId,
-        floor_bytes: u64,
-        hint_bytes: u64,
+        configured_floor_bytes: u64,
+        soft_working_set_hint_bytes: u64,
     ) -> Result<Option<MemoryGrant>> {
         self.try_admit(
             waiter_id,
             &AttemptRequirement {
-                configured_floor_bytes: floor_bytes,
+                configured_floor_bytes,
                 capability_floor_raise_bytes: 0,
-                soft_working_set_hint_bytes: Some(hint_bytes),
+                soft_working_set_hint_bytes: Some(soft_working_set_hint_bytes),
                 estimate_quality: crate::admission::EstimateQuality::Modeled,
                 required_capabilities: Vec::new(),
                 attested_cugraph_graph_execution_scopes: Vec::new(),
@@ -811,7 +812,6 @@ impl DeviceLedger {
                 admission_request_id: waiter_id,
                 grant_bytes,
                 live_reserved_bytes: Default::default(),
-                reservation_arena: Mutex::new(None),
             }),
             resource_epoch: None,
         }
@@ -934,22 +934,6 @@ impl DeviceLedger {
         Ok(true)
     }
 
-    /// Releases bytes previously charged to the evictable-cache ledger.
-    pub(crate) fn release_evictable_bytes(&self, bytes: u64) -> Result<u64> {
-        if bytes == 0 {
-            return Ok(0);
-        }
-        let mut state = self.lock_state("release_evictable_bytes")?;
-        let released = bytes.min(state.evictable_bytes);
-        if released == 0 {
-            return Ok(0);
-        }
-        state.evictable_bytes = state.evictable_bytes.saturating_sub(released);
-        self.bump_sequence_and_notify_locked(&mut state, LedgerTransitionKind::EvictableReleased);
-        drop(state);
-        Ok(released)
-    }
-
     /// Moves one exact resident-cache charge from evictable to pinned.
     ///
     /// The aggregate cache charge is unchanged. This narrow transition is
@@ -1012,7 +996,7 @@ impl DeviceLedger {
 
     /// Releases the complete exact charge of a destroyed resident-cache entry.
     ///
-    /// Unlike the legacy aggregate release helper, this refuses an
+    /// Unlike a permissive aggregate release, this refuses an
     /// undercharged release. The residency state machine calls it only after
     /// GPU-safe destruction has completed, so a mismatched byte count must
     /// fail closed instead of releasing another entry's charge.
@@ -1092,19 +1076,10 @@ struct MemoryGrantInner {
     admission_request_id: AdmissionRequestId,
     grant_bytes: u64,
     live_reserved_bytes: std::sync::atomic::AtomicU64,
-    /// One direct-context arena capability shared by every clone of this
-    /// immutable grant.  Admission envelopes use their hard
-    /// `AttemptAllocationDomain` instead and never populate this slot.
-    reservation_arena: Mutex<Option<Arc<cudf::ReservationArena>>>,
 }
 
 impl Drop for MemoryGrantInner {
     fn drop(&mut self) {
-        // Destroy the native arena before returning the immutable grant to the
-        // ledger.  The arena is grant-local state, so this remains ordered even
-        // when the last `MemoryGrant` clone is dropped from a context teardown.
-        let arena = self.reservation_arena.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner).take();
-        drop(arena);
         DeviceLedger { inner: Arc::clone(&self.ledger) }.release_grant(self.grant_id);
     }
 }
@@ -1142,62 +1117,6 @@ impl MemoryGrant {
     /// Device ordinal that owns this grant.
     pub fn device_ordinal(&self) -> usize {
         self.inner.ledger.profile.device_ordinal
-    }
-
-    /// Returns the one direct-context reservation arena capability for this
-    /// grant, creating it once under the grant's shared ownership cell.
-    ///
-    /// Cloning a [`MemoryGrant`] clones that cell rather than creating another
-    /// full-budget arena.  This seam is intentionally separate from admitted
-    /// attempt domains, whose `AdmissionEnvelope` creates and owns the hard
-    /// query domain directly.
-    pub(crate) fn reservation_arena(&self, runtime: &cudf::Runtime) -> Result<Arc<cudf::ReservationArena>> {
-        const OPERATION: &str = "nexus_query_engine.runtime.grant_reservation_arena";
-        if runtime.device().ordinal() != self.device_ordinal() {
-            return Err(QueryError::new(
-                QueryErrorCode::InvalidPlan,
-                OPERATION,
-                "memory grant reservation arena runtime device does not match grant device",
-            )
-            .with_fact("grant_id", self.grant_id())
-            .with_fact("admission_request_id", self.admission_request_id())
-            .with_fact("grant_device_ordinal", self.device_ordinal())
-            .with_fact("runtime_device_ordinal", runtime.device().ordinal()));
-        }
-        let limit_bytes = usize::try_from(self.budget_bytes()).map_err(|_error| {
-            QueryError::new(QueryErrorCode::InvalidPlan, OPERATION, "memory grant budget exceeds platform usize range")
-                .with_fact("grant_id", self.grant_id())
-                .with_fact("admission_request_id", self.admission_request_id())
-                .with_fact("budget_bytes", self.budget_bytes())
-        })?;
-        let mut slot = self.inner.reservation_arena.lock().map_err(|_error| {
-            QueryError::new(QueryErrorCode::Internal, OPERATION, "memory grant reservation arena mutex was poisoned")
-                .with_fact("grant_id", self.grant_id())
-                .with_fact("admission_request_id", self.admission_request_id())
-        })?;
-        if let Some(arena) = slot.as_ref() {
-            validate_reservation_arena_identity(self, runtime, arena, OPERATION)?;
-            return Ok(Arc::clone(arena));
-        }
-
-        let manager = runtime.device_memory_manager().map_err(|error| {
-            QueryError::from_cudf(
-                OPERATION,
-                "failed to resolve device memory manager for grant-backed reservation arena",
-                error,
-            )
-            .with_fact("grant_id", self.grant_id())
-            .with_fact("admission_request_id", self.admission_request_id())
-        })?;
-        let arena = Arc::new(manager.reservation_arena(self.grant_id(), limit_bytes).map_err(|error| {
-            QueryError::from_cudf(OPERATION, "failed to create grant-backed reservation arena", error)
-                .with_fact("grant_id", self.grant_id())
-                .with_fact("admission_request_id", self.admission_request_id())
-                .with_fact("budget_bytes", self.budget_bytes())
-        })?);
-        validate_reservation_arena_identity(self, runtime, &arena, OPERATION)?;
-        *slot = Some(Arc::clone(&arena));
-        Ok(arena)
     }
 
     /// Device-resident bytes currently protected by all reservation trackers
@@ -1244,54 +1163,37 @@ impl MemoryGrant {
     /// Releases live bytes previously admitted by
     /// [`Self::try_reserve_live_bytes`].
     pub(crate) fn release_live_bytes(&self, bytes: u64) {
-        self.record_live_reservation_delta(-i128::from(bytes));
-    }
-
-    /// Releases grant-scoped live reservation bytes already admitted by the
-    /// owning reservation tracker or retention handle.
-    ///
-    /// New positive charges must use [`Self::try_reserve_live_bytes`], which
-    /// proves that the immutable grant can cover them. Ownership transfer to
-    /// a result handle is represented without a delta by
-    /// [`Self::transfer_live_reservation`].
-    pub(crate) fn record_live_reservation_delta(&self, delta_bytes: i128) {
+        if bytes == 0 {
+            return;
+        }
         let ledger = DeviceLedger { inner: Arc::clone(&self.inner.ledger) };
         if ledger.in_transition_observer() {
-            ledger.panic_on_transition_observer_reentrancy("record_live_reservation_delta");
+            ledger.panic_on_transition_observer_reentrancy("release_live_bytes");
         }
         let mut state = match ledger.inner.state.lock() {
             Ok(state) => state,
             Err(_error) => {
-                eprintln!("[nexus-query-engine] warning: failed to update memory grant live reservation bytes");
+                eprintln!("[nexus-query-engine] warning: failed to release memory grant live reservation bytes");
                 return;
             },
         };
+        self.release_locked(&ledger, &mut state, bytes);
+    }
+
+    /// Applies one exact release while the ledger state lock is held.
+    fn release_locked(&self, ledger: &DeviceLedger, state: &mut DeviceLedgerState, bytes: u64) {
         let Some(active) = state.grants.get_mut(&self.inner.grant_id) else {
             return;
         };
-        let previous = active.live_reserved_bytes;
-        let next = if delta_bytes.is_negative() {
-            let release_bytes = u64::try_from(delta_bytes.unsigned_abs()).unwrap_or(u64::MAX);
-            active.live_reserved_bytes.saturating_sub(release_bytes)
-        } else {
-            // This branch remains defensive for legacy internal callers, but
-            // cannot grow beyond the immutable grant. New callers use the
-            // checked reservation API above.
-            active.live_reserved_bytes.saturating_add(delta_bytes as u64).min(active.grant_bytes)
-        };
-        if next == previous {
+        let Some(next_live_reserved_bytes) = active.live_reserved_bytes.checked_sub(bytes) else {
+            eprintln!(
+                "[nexus-query-engine] warning: exact memory grant live-reservation release exceeded its active charge"
+            );
             return;
-        }
-        active.live_reserved_bytes = next;
-        self.inner.live_reserved_bytes.store(next, std::sync::atomic::Ordering::Release);
-        ledger.bump_sequence_and_notify_locked(
-            &mut state,
-            if delta_bytes.is_negative() {
-                LedgerTransitionKind::LiveReservationReleased
-            } else {
-                LedgerTransitionKind::LiveReservationCharged
-            },
-        );
+        };
+        active.live_reserved_bytes = next_live_reserved_bytes;
+        self.inner.live_reserved_bytes.store(next_live_reserved_bytes, std::sync::atomic::Ordering::Release);
+        ledger.bump_sequence_and_notify_locked(state, LedgerTransitionKind::LiveReservationReleased);
     }
 
     /// Charges and retains newly escaping grant-scoped live bytes.
@@ -1331,40 +1233,6 @@ impl MemoryGrant {
     }
 }
 
-fn validate_reservation_arena_identity(
-    grant: &MemoryGrant,
-    runtime: &cudf::Runtime,
-    arena: &cudf::ReservationArena,
-    operation: &'static str,
-) -> Result<()> {
-    if arena.device().ordinal() != runtime.device().ordinal() {
-        return Err(QueryError::new(
-            QueryErrorCode::CudfInvariantViolation,
-            operation,
-            "grant reservation arena device does not match execution runtime device",
-        )
-        .with_fact("grant_id", grant.grant_id())
-        .with_fact("arena_device_ordinal", arena.device().ordinal())
-        .with_fact("runtime_device_ordinal", runtime.device().ordinal()));
-    }
-    let usage = arena.usage().map_err(|error| {
-        QueryError::from_cudf(operation, "failed to verify grant reservation arena identity", error)
-            .with_fact("grant_id", grant.grant_id())
-    })?;
-    if usage.arena_id != grant.grant_id() || usage.allocation_limit_bytes != grant.budget_bytes() {
-        return Err(QueryError::new(
-            QueryErrorCode::CudfInvariantViolation,
-            operation,
-            "grant reservation arena does not match immutable grant",
-        )
-        .with_fact("grant_id", grant.grant_id())
-        .with_fact("arena_id", usage.arena_id)
-        .with_fact("grant_bytes", grant.budget_bytes())
-        .with_fact("allocation_limit_bytes", usage.allocation_limit_bytes));
-    }
-    Ok(())
-}
-
 impl MemoryGrantLiveReservation {
     /// Bytes retained by this handle in the owning memory grant.
     pub(crate) fn bytes(&self) -> u64 {
@@ -1402,7 +1270,7 @@ impl MemoryGrantLiveReservation {
 
 impl Drop for MemoryGrantLiveReservationInner {
     fn drop(&mut self) {
-        self.grant.record_live_reservation_delta(-i128::from(self.bytes));
+        self.grant.release_live_bytes(self.bytes);
     }
 }
 
