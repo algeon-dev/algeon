@@ -40,6 +40,9 @@ iceberg-e2e = [
 server-iceberg-e2e = ["iceberg-e2e", "datafusion-nexus/server"]
 server-runtime-observability-e2e = ["server-iceberg-e2e", "dep:nexus-query-engine"]
 embedded-backend-e2e = ["server-iceberg-e2e", "dep:reqwest"]
+# The production-validation runner is intentionally opt-in. P6.3 only owns
+# config/provenance/artifact handling; public GPU execution arrives in P6.5.
+single-node-multi-gpu-validate = []
 
 [dependencies]
 arrow = { workspace = true }
@@ -58,6 +61,7 @@ prost = "0.14"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"], optional = true }
 serde_json = { workspace = true }
 serde = { workspace = true }
+sha2 = { workspace = true }
 tokio = { workspace = true, features = ["macros", "process", "rt", "rt-multi-thread", "sync", "time"] }
 tonic = { workspace = true }
 url = "2.5"
