@@ -49,12 +49,18 @@ pub(super) fn cugraph_datafusion_edge_plan_residency_analysis(
     edge_source: Arc<dyn ExecutionPlan>,
     native_spec: &GraphAlgorithmSpec,
 ) -> GraphResidencyPlanAnalysis {
+    let direct_parquet_descriptor =
+        edge_source.as_ref().downcast_ref::<datafusion::datasource::source::DataSourceExec>().and_then(|source| {
+            crate::native::graph_residency_descriptor_for_datafusion_local_parquet_scan(source, native_spec)
+        });
     let lowering = crate::native::lower_physical_plan_to_native(edge_source);
-    if lowering.plans.len() != 1 || lowering.selected_count() != 1 {
-        return GraphResidencyPlanAnalysis::Bypass(GraphSourceFingerprintBypassReason::NonLocalParquetSource);
+    if lowering.plans.len() == 1 && lowering.selected_count() == 1 {
+        return graph_residency_descriptor_for_edge_plan(&lowering.plans[0], native_spec);
     }
-    let native_plan = &lowering.plans[0];
-    graph_residency_descriptor_for_edge_plan(native_plan, native_spec)
+    direct_parquet_descriptor.map_or_else(
+        || GraphResidencyPlanAnalysis::Bypass(GraphSourceFingerprintBypassReason::NonLocalParquetSource),
+        GraphResidencyPlanAnalysis::Keyable,
+    )
 }
 
 pub(super) fn native_graph_spec_for_residency(
@@ -94,8 +100,7 @@ pub(super) fn attach_graph_residency(
         Some(graph_residency) if graph_residency_matches_edge_schema(graph_residency, edge_schema, spec) => {
             frame.with_graph_residency(graph_residency.clone())
         },
-        None => frame,
-        Some(_) => frame,
+        None | Some(_) => frame,
     }
 }
 

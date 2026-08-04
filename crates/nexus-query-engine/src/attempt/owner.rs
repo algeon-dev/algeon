@@ -20,13 +20,13 @@ use crate::observability::{
 use crate::{
     error::QueryError,
     observability::{
-        AttemptAdmissionFact, AttemptCapacityDisposition, AttemptCleanupDisposition, AttemptDisposition,
-        AttemptFailureSummary, AttemptId, AttemptQueryId, AttemptRetryAdvice, AttemptTerminalCommit,
-        AttemptTraceContext, CleanupFailurePhase, CleanupFailureSummary, QUERY_ATTEMPT_REPORT_SCHEMA_V1,
-        QueryAttemptReport, RuntimeCleanupFailureObservation, RuntimeObservationClock, RuntimeObservationConfig,
-        RuntimeObservationFooter, RuntimeObservationHandle, RuntimeObservationOwner, RuntimeObservationPayload,
-        RuntimeQueryId, RuntimeTerminalOutcome, RuntimeTraceId, SealedRuntimeObservationSnapshot,
-        SystemRuntimeObservationClock,
+        AttemptAdmissionFact, AttemptAdmissionWaitFact, AttemptCapacityDisposition, AttemptCleanupDisposition,
+        AttemptDisposition, AttemptFailureSummary, AttemptId, AttemptQueryId, AttemptRetryAdvice,
+        AttemptTerminalCommit, AttemptTraceContext, CleanupFailurePhase, CleanupFailureSummary,
+        QUERY_ATTEMPT_REPORT_SCHEMA_V1, QueryAttemptReport, RuntimeCleanupFailureObservation, RuntimeObservationClock,
+        RuntimeObservationConfig, RuntimeObservationFooter, RuntimeObservationHandle, RuntimeObservationOwner,
+        RuntimeObservationPayload, RuntimeQueryId, RuntimeTerminalOutcome, RuntimeTraceId,
+        SealedRuntimeObservationSnapshot, SystemRuntimeObservationClock,
     },
     runtime::ObservationPermit,
 };
@@ -302,6 +302,7 @@ impl AttemptCore {
             retry_advice,
             device_ordinal: lifecycle.admitted.as_ref().map(|(_, fact)| fact.device_ordinal),
             admission: lifecycle.admitted.as_ref().map(|(_, fact)| fact.clone()),
+            admission_wait: lifecycle.admission_wait,
             timestamps: lifecycle.timestamps(),
             cleanup_disposition: if lifecycle.admitted.is_some() {
                 if cleanup_failure_count == 0 {
@@ -348,13 +349,13 @@ impl AttemptCore {
 
     fn terminalize_for_release_with_primary_failure(
         &self,
+        outcome: RuntimeTerminalOutcome,
         summary: AttemptFailureSummary,
     ) -> Result<RuntimeTerminalOutcome, AttemptLifecycleError> {
         let mut lifecycle = self.lock_lifecycle();
         if lifecycle.terminal.is_some() {
             return Err(AttemptLifecycleError::DoubleTerminalization);
         }
-        let outcome = RuntimeTerminalOutcome::failed(&summary);
         lifecycle.primary_failure(summary);
         lifecycle.terminalize(outcome, self.monotonic_ns())?;
         Ok(lifecycle.terminal.as_ref().expect("terminal outcome was recorded").1.clone())
@@ -374,7 +375,8 @@ impl AttemptCore {
         // error.  The stored summary is therefore the only truthful terminal
         // classification available at this boundary; do not replace it with
         // a mechanical drop/cancellation fallback.
-        let fallback = lifecycle.primary_failure.as_ref().map(RuntimeTerminalOutcome::failed).unwrap_or(fallback);
+        let fallback =
+            lifecycle.primary_failure.as_ref().map(RuntimeTerminalOutcome::from_primary_failure).unwrap_or(fallback);
         let at = self.monotonic_ns();
         lifecycle.terminalize(fallback.clone(), at).unwrap_or(());
         lifecycle.terminal.as_ref().map(|(_, outcome)| outcome.clone()).unwrap_or(fallback)
@@ -669,14 +671,12 @@ impl AttemptOwner {
     /// closed terminal outcome. The caller retains the untouched error and
     /// its complete source chain.
     pub fn commit_query_error(&self, error: &QueryError) -> Result<(), AttemptLifecycleError> {
-        if error.code() == crate::error::QueryErrorCode::Cancelled {
-            return self.commit_terminal(RuntimeTerminalOutcome::Cancelled);
-        }
         let admitted = self.0.core.lock_lifecycle().admitted.is_some();
-        let terminal = self
-            .0
-            .core
-            .terminalize_for_release_with_primary_failure(AttemptFailureSummary::from_native_error(error))?;
+        let outcome = RuntimeTerminalOutcome::from_query_error(error);
+        let terminal = match RuntimeTerminalOutcome::primary_failure_from_query_error(error) {
+            Some(summary) => self.0.core.terminalize_for_release_with_primary_failure(outcome, summary)?,
+            None => self.0.core.terminalize_for_release(outcome)?,
+        };
         self.commit_resolved_terminal(terminal, admitted)
     }
 
@@ -684,7 +684,10 @@ impl AttemptOwner {
     /// source-chain text in the engine-owned report.
     pub fn commit_failure_summary(&self, summary: AttemptFailureSummary) -> Result<(), AttemptLifecycleError> {
         let admitted = self.0.core.lock_lifecycle().admitted.is_some();
-        let terminal = self.0.core.terminalize_for_release_with_primary_failure(summary)?;
+        let terminal = self
+            .0
+            .core
+            .terminalize_for_release_with_primary_failure(RuntimeTerminalOutcome::failed(&summary), summary)?;
         self.commit_resolved_terminal(terminal, admitted)
     }
 }
@@ -775,19 +778,28 @@ impl AttemptAdmissionRejection {
     /// request. The lifecycle accepts it only after admission was requested
     /// and before a grant or physical execution boundary exists.
     pub fn reject(&self, error: &QueryError) -> Result<(), AttemptLifecycleError> {
-        let outcome =
-            if self.core.cancellation.is_cancelled() || error.code() == crate::error::QueryErrorCode::Cancelled {
-                RuntimeTerminalOutcome::Cancelled
+        let cancellation_error = self.core.cancellation.is_cancelled().then(|| {
+            self.core
+                .cancellation
+                .check("nexus_query_engine.attempt.admission_rejection")
+                .expect_err("an effective cancellation must produce a terminal error")
+        });
+        let (outcome, summary) = if let Some(cancellation_error) = cancellation_error {
+            (
+                RuntimeTerminalOutcome::Cancelled,
+                RuntimeTerminalOutcome::primary_failure_from_query_error(&cancellation_error),
+            )
+        } else {
+            let summary = if error.fact_value("reason") == Some("backend_closing") {
+                Some(AttemptFailureSummary::backend_closing())
             } else {
-                let summary = if error.fact_value("reason") == Some("backend_closing") {
-                    AttemptFailureSummary::backend_closing()
-                } else {
-                    AttemptFailureSummary::from_native_error(error)
-                };
-                let outcome = RuntimeTerminalOutcome::failed(&summary);
-                self.core.lock_lifecycle().primary_failure(summary);
-                outcome
+                RuntimeTerminalOutcome::primary_failure_from_query_error(error)
             };
+            (RuntimeTerminalOutcome::from_query_error(error), summary)
+        };
+        if let Some(summary) = summary {
+            self.core.lock_lifecycle().primary_failure(summary);
+        }
         self.core.lock_lifecycle().terminalize_admission_rejection(outcome.clone(), self.core.monotonic_ns())?;
         let outcome = self.finalizer_slot.finalize_not_admitted(outcome)?;
         self.observation_owner.finish_query(Some(outcome));
@@ -925,6 +937,12 @@ impl AttemptHandle {
         self.0.lock_lifecycle().admitted(fact, self.0.monotonic_ns())
     }
 
+    /// Records the immutable final queue/overtake state emitted by the owning
+    /// query-service admission controller.
+    pub fn record_admission_wait(&self, fact: AttemptAdmissionWaitFact) -> Result<(), AttemptLifecycleError> {
+        self.0.lock_lifecycle().admission_wait(fact)
+    }
+
     pub fn record_physical_execution_started(&self) -> Result<(), AttemptLifecycleError> {
         self.0.lock_lifecycle().physical(self.0.monotonic_ns())
     }
@@ -941,8 +959,8 @@ impl AttemptHandle {
     /// the original error to the attempt owner.  The full error remains on
     /// that returned path; this records only its bounded stable summary.
     pub fn record_native_failure(&self, error: &QueryError) {
-        if error.code() != crate::error::QueryErrorCode::Cancelled {
-            self.0.lock_lifecycle().primary_failure(AttemptFailureSummary::from_native_error(error));
+        if let Some(summary) = RuntimeTerminalOutcome::primary_failure_from_query_error(error) {
+            self.0.lock_lifecycle().primary_failure(summary);
         }
     }
 
@@ -1587,6 +1605,43 @@ mod tests {
     }
 
     #[test]
+    fn deadline_expired_cancelled_error_retains_its_bounded_reason() {
+        let (begin, _clock, _counters) = test_begin(RuntimeObservationConfig::native_execution(), None);
+        let error = QueryError::new(QueryErrorCode::Cancelled, "test.deadline", "deadline elapsed")
+            .with_fact("reason", "deadline_expired")
+            .with_fact("cancellation_requested", true);
+
+        begin.owner.commit_query_error(&error).unwrap();
+
+        let report = begin.completion.wait_timeout(Duration::from_secs(1)).expect("report");
+        assert_eq!(report.outcome, RuntimeTerminalOutcome::Cancelled);
+        let summary = report.primary_failure.as_ref().expect("deadline summary");
+        assert_eq!(summary.code(), AttemptFailureCode::Cancelled);
+        assert_eq!(summary.origin(), crate::observability::AttemptFailureOrigin::Native);
+        assert_eq!(summary.facts().len(), 1);
+        assert_eq!(summary.facts()[0].value(), crate::observability::AttemptFailureFactValue::DeadlineExpired);
+    }
+
+    #[test]
+    fn caller_and_generic_cancellation_keep_the_control_summary() {
+        for error in [
+            QueryError::new(QueryErrorCode::Cancelled, "test.caller_cancelled", "caller cancelled")
+                .with_fact("reason", "caller_cancelled"),
+            QueryError::new(QueryErrorCode::Cancelled, "test.generic_cancelled", "cancelled"),
+        ] {
+            let (begin, _clock, _counters) = test_begin(RuntimeObservationConfig::native_execution(), None);
+            begin.owner.commit_query_error(&error).unwrap();
+
+            let report = begin.completion.wait_timeout(Duration::from_secs(1)).expect("report");
+            assert_eq!(report.outcome, RuntimeTerminalOutcome::Cancelled);
+            let summary = report.primary_failure.as_ref().expect("control cancellation summary");
+            assert_eq!(summary.code(), AttemptFailureCode::Cancelled);
+            assert_eq!(summary.origin(), crate::observability::AttemptFailureOrigin::AttemptControl);
+            assert!(summary.facts().is_empty());
+        }
+    }
+
+    #[test]
     fn control_terminal_paths_publish_text_free_primary_summaries() {
         for (outcome, code) in [
             (RuntimeTerminalOutcome::Cancelled, AttemptFailureCode::Cancelled),
@@ -1753,9 +1808,14 @@ mod abandonment_race_tests {
         );
         let cancellation = begin.owner.cancellation();
         assert!(cancellation.is_expired());
+        let execution_cancellation = cancellation.execution_cancellation();
+        assert!(execution_cancellation.is_expired(), "native execution must retain the attempt deadline");
+        assert_eq!(execution_cancellation.deadline(), cancellation.deadline());
         let error = cancellation.check("test.deadline").unwrap_err();
         assert_eq!(error.fact_value("reason"), Some("deadline_expired"));
         assert_eq!(error.fact_value("cancellation_requested"), Some("true"));
-        assert!(!cancellation.is_cancelled(), "expiry is not a caller cancel signal");
+        let execution_error = execution_cancellation.check("test.native_deadline").unwrap_err();
+        assert_eq!(execution_error.fact_value("reason"), Some("deadline_expired"));
+        assert!(cancellation.is_cancelled(), "expiry is an effective cancellation at native safe boundaries");
     }
 }

@@ -41,9 +41,11 @@ pub enum BackendAttemptDisposition {
 }
 
 impl BackendAttemptDisposition {
-    const COUNT: usize = 4;
+    /// Number of closed disposition values in the backend metric store.
+    pub const COUNT: usize = 4;
 
-    const ALL: [Self; Self::COUNT] = [Self::Unplanned, Self::CpuFallback, Self::PartialNative, Self::Native];
+    /// Every closed disposition value in descriptor order.
+    pub const ALL: [Self; Self::COUNT] = [Self::Unplanned, Self::CpuFallback, Self::PartialNative, Self::Native];
 
     /// Stable closed label value for the backend descriptor table.
     pub const fn as_str(self) -> &'static str {
@@ -81,9 +83,12 @@ pub enum BackendAttemptOutcome {
 }
 
 impl BackendAttemptOutcome {
-    const COUNT: usize = 5;
+    /// Number of closed terminal outcome values in the backend metric store.
+    pub const COUNT: usize = 5;
 
-    const ALL: [Self; Self::COUNT] = [Self::Succeeded, Self::Failed, Self::Cancelled, Self::Dropped, Self::Panicked];
+    /// Every closed terminal outcome value in descriptor order.
+    pub const ALL: [Self; Self::COUNT] =
+        [Self::Succeeded, Self::Failed, Self::Cancelled, Self::Dropped, Self::Panicked];
 
     /// Stable closed label value for the backend descriptor table.
     pub const fn as_str(self) -> &'static str {
@@ -122,9 +127,11 @@ pub enum BackendAttemptDuration {
 }
 
 impl BackendAttemptDuration {
-    const COUNT: usize = 4;
+    /// Number of closed attempt-duration values in the backend metric store.
+    pub const COUNT: usize = 4;
 
-    const ALL: [Self; Self::COUNT] = [Self::Total, Self::Planning, Self::QueueWait, Self::PhysicalExecution];
+    /// Every closed attempt-duration value in descriptor order.
+    pub const ALL: [Self; Self::COUNT] = [Self::Total, Self::Planning, Self::QueueWait, Self::PhysicalExecution];
 
     /// Stable closed label value for the backend descriptor table.
     pub const fn as_str(self) -> &'static str {

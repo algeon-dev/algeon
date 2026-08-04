@@ -11,7 +11,7 @@ pub struct AttemptCancellation {
 
 impl AttemptCancellation {
     pub(crate) fn new(deadline: Option<Instant>) -> Self {
-        Self { execution: ExecutionCancellation::new(), deadline }
+        Self { execution: ExecutionCancellation::with_deadline(deadline), deadline }
     }
     pub fn cancel(&self) {
         self.execution.cancel()
@@ -25,7 +25,7 @@ impl AttemptCancellation {
 
     /// Returns whether the optional absolute deadline has expired.
     pub fn is_expired(&self) -> bool {
-        self.deadline.is_some_and(|deadline| Instant::now() >= deadline)
+        self.execution.is_expired()
     }
 
     pub fn execution_cancellation(&self) -> ExecutionCancellation {
@@ -36,17 +36,7 @@ impl AttemptCancellation {
     /// pre-execution, and result drain). Caller cancellation wins first; an
     /// expired deadline reports the distinct `deadline_expired` reason.
     pub fn check(&self, operation: &'static str) -> Result<()> {
-        self.execution.check(operation)?;
-        if self.is_expired() {
-            return Err(crate::error::QueryError::new(
-                crate::error::QueryErrorCode::Cancelled,
-                operation,
-                "attempt deadline expired",
-            )
-            .with_fact("cancellation_requested", true)
-            .with_fact("reason", "deadline_expired"));
-        }
-        Ok(())
+        self.execution.check(operation)
     }
 }
 

@@ -354,7 +354,6 @@ impl NexusAttempt {
     /// terminalize the same attempt that later owns physical execution.
     pub(crate) fn planning_context(&self, ctx: &SessionContext) -> DataFusionResult<SessionContext> {
         if self.cancellation().check("datafusion_nexus.attempt.flight_planning").is_err() {
-            self.commit(RuntimeTerminalOutcome::Cancelled);
             return Err(self.cancelled_error("datafusion_nexus.attempt.flight_planning"));
         }
         self.fail_if_backend_closing("datafusion_nexus.attempt.flight_planning")?;
@@ -364,6 +363,10 @@ impl NexusAttempt {
 
     fn cancelled_error(&self, operation: &'static str) -> DataFusionError {
         let error = self.cancellation().check(operation).expect_err("cancellation was checked after it was requested");
+        let owner = self.owner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(owner) = owner.as_ref() {
+            let _ = owner.commit_query_error(&error);
+        }
         DataFusionError::from(Error::from_native(operation, "execution attempt was cancelled", error))
     }
 
@@ -376,12 +379,12 @@ impl NexusAttempt {
     pub(crate) fn planning_failed_adapter(&self, error: &Error) {
         let owner = self.owner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(owner) = owner.as_ref() {
-            if error.code() == crate::error::ErrorCode::Cancelled {
-                let _ = owner.commit_terminal(RuntimeTerminalOutcome::Cancelled);
-            } else if let Some(native) =
+            if let Some(native) =
                 error.source_error().and_then(|source| source.downcast_ref::<nexus_query_engine::error::QueryError>())
             {
                 let _ = owner.commit_query_error(native);
+            } else if error.code() == crate::error::ErrorCode::Cancelled {
+                let _ = owner.commit_terminal(RuntimeTerminalOutcome::Cancelled);
             } else {
                 let _ = owner.commit_failure_summary(AttemptFailureSummary::datafusion_fallback());
             }
@@ -436,7 +439,6 @@ impl NexusAttempt {
     /// Plans SQL in a fresh invocation-local session state.
     pub async fn plan_sql(&self, ctx: &SessionContext, sql: &str) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
         if self.cancellation().check("datafusion_nexus.attempt.plan_sql").is_err() {
-            self.commit(RuntimeTerminalOutcome::Cancelled);
             return Err(self.cancelled_error("datafusion_nexus.attempt.plan_sql"));
         }
         self.fail_if_backend_closing("datafusion_nexus.attempt.plan_sql")?;
@@ -457,7 +459,6 @@ impl NexusAttempt {
             },
         };
         if self.cancellation().check("datafusion_nexus.attempt.plan_sql").is_err() {
-            self.commit(RuntimeTerminalOutcome::Cancelled);
             return Err(self.cancelled_error("datafusion_nexus.attempt.plan_sql"));
         }
         let _ = handle.set_disposition(disposition_for(classify_final_plan(plan.as_ref())));
@@ -476,7 +477,6 @@ impl NexusAttempt {
     /// state so native fragments bind this attempt's admission handle.
     pub async fn execute_dataframe(&self, df: DataFrame) -> DataFusionResult<AttemptStream> {
         if self.cancellation().check("datafusion_nexus.attempt.execute_dataframe").is_err() {
-            self.commit(RuntimeTerminalOutcome::Cancelled);
             return Err(self.cancelled_error("datafusion_nexus.attempt.execute_dataframe"));
         }
         self.fail_if_backend_closing("datafusion_nexus.attempt.execute_dataframe")?;
@@ -500,7 +500,6 @@ impl NexusAttempt {
             },
         };
         if self.cancellation().check("datafusion_nexus.attempt.execute_dataframe").is_err() {
-            self.commit(RuntimeTerminalOutcome::Cancelled);
             return Err(self.cancelled_error("datafusion_nexus.attempt.execute_dataframe"));
         }
         let _ = handle.set_disposition(disposition_for(classify_final_plan(plan.as_ref())));
@@ -524,7 +523,6 @@ impl NexusAttempt {
         ctx: &SessionContext,
     ) -> DataFusionResult<AttemptStream> {
         if self.cancellation().check("datafusion_nexus.attempt.execute").is_err() {
-            self.commit(RuntimeTerminalOutcome::Cancelled);
             return Err(self.cancelled_error("datafusion_nexus.attempt.execute"));
         }
         self.fail_if_backend_closing("datafusion_nexus.attempt.execute")?;
@@ -605,7 +603,10 @@ fn disposition_for(disposition: FinalPlanDisposition) -> AttemptDisposition {
 /// adapter-only errors use the deliberately text-free fallback.
 fn commit_datafusion_error(owner: &AttemptOwner, error: &DataFusionError, cancellation: &AttemptCancellation) {
     if cancellation.is_cancelled() || cancellation.is_expired() {
-        let _ = owner.commit_terminal(RuntimeTerminalOutcome::Cancelled);
+        let cancellation_error = cancellation
+            .check("datafusion_nexus.attempt.terminal_error")
+            .expect_err("an effective cancellation must produce a terminal error");
+        let _ = owner.commit_query_error(&cancellation_error);
         return;
     }
     match error.find_nexus_error() {
@@ -680,6 +681,19 @@ impl AttemptStream {
         drop(self.inner.take());
     }
 
+    /// Finalizes an effective cancellation through its typed native error so
+    /// deadline expiry retains its bounded reason in the immutable report.
+    fn finish_cancelled(&mut self) {
+        self.terminal = true;
+        let error = self
+            .state
+            .cancellation
+            .check("datafusion_nexus.attempt.result_drain")
+            .expect_err("an effective cancellation must produce a terminal error");
+        let _ = self.owner.commit_query_error(&error);
+        drop(self.inner.take());
+    }
+
     fn cancelled_error(&self) -> DataFusionError {
         let operation = "datafusion_nexus.attempt.result_drain";
         match self.state.cancellation.check(operation) {
@@ -714,7 +728,7 @@ impl Stream for AttemptStream {
         {
             // The cancellation error is the stream's final item. The handle
             // is terminal after `commit`, so it cannot guard a later poll.
-            this.finish_terminal(RuntimeTerminalOutcome::Cancelled);
+            this.finish_cancelled();
             return Poll::Ready(Some(Err(this.cancelled_error())));
         }
         if !this.physical_start_recorded {
@@ -759,7 +773,7 @@ impl Drop for AttemptStream {
             if std::thread::panicking() {
                 self.finish_terminal(RuntimeTerminalOutcome::Panicked);
             } else if self.state.cancellation.is_cancelled() || self.state.cancellation.is_expired() {
-                self.finish_terminal(RuntimeTerminalOutcome::Cancelled);
+                self.finish_cancelled();
             } else {
                 self.state.cancellation.cancel();
                 self.finish_terminal(RuntimeTerminalOutcome::Dropped);

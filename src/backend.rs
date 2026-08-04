@@ -14,7 +14,9 @@ use nexus_query_engine::runtime::{
     GpuBackendDeviceConfig, GpuBackendSession, KvikioCompatModeStatus, MemoryControlPolicy, NvidiaFsProbeStatus,
     QueryAdmissionRequest, QueryExecutionConfig, QueueBounds,
 };
-pub use nexus_query_engine::runtime::{DeviceCapabilities, GpuDeviceMemoryLimit, GpuMemoryOwnership};
+pub use nexus_query_engine::runtime::{
+    DeviceCapabilities, DeviceQuarantineInjection, GpuBackendFaultInjector, GpuDeviceMemoryLimit, GpuMemoryOwnership,
+};
 
 use crate::{
     error::{Error, ErrorCode, Result},
@@ -321,6 +323,13 @@ impl NexusGpuBackend {
         self.core.identity()
     }
 
+    /// Returns an explicit capability for controlled device-quarantine
+    /// validation. It is not a production backend mode and does not fabricate
+    /// a CUDA fault.
+    pub fn fault_injector(&self) -> GpuBackendFaultInjector {
+        self.core.fault_injector()
+    }
+
     /// Immutable per-device construction records shared by every clone and
     /// session installed from this backend.
     pub fn device_startup_records(&self) -> &[nexus_query_engine::runtime::GpuBackendDeviceStartupRecord] {
@@ -329,6 +338,13 @@ impl NexusGpuBackend {
 
     pub fn close(&self) -> bool {
         self.core.close()
+    }
+
+    /// Returns the current two-scope backend close state without initiating a
+    /// close. Callers that own shutdown evidence can therefore distinguish a
+    /// completed close from a timeout or cleanup failure.
+    pub fn close_snapshot(&self) -> nexus_query_engine::runtime::GpuBackendCloseSnapshot {
+        self.core.close_snapshot()
     }
 
     pub fn close_and_wait(

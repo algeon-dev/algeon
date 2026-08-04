@@ -12,7 +12,9 @@ use datafusion_nexus::{
     native_exec::NexusNativeExecutionConfig,
 };
 use futures::StreamExt;
-use nexus_query_engine::observability::{AttemptDisposition, AttemptFailureCode, RuntimeTerminalOutcome};
+use nexus_query_engine::observability::{
+    AttemptDisposition, AttemptFailureCode, AttemptFailureFactValue, RuntimeTerminalOutcome,
+};
 
 static BACKEND_SERIAL: Mutex<()> = Mutex::new(());
 
@@ -443,6 +445,73 @@ async fn abandoned_reports_are_best_effort_delivery_loss_only() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn close_before_planning_seals_backend_closing_without_admission() {
+    let backend = backend();
+    let cpu_ctx = cpu_only_context(&backend);
+    let attempt = backend.begin_attempt(AttemptOptions::default()).expect("attempt wins the begin gate before close");
+    let completion = attempt.completion();
+
+    assert!(backend.close(), "the close signal wins after the attempt starts");
+    let error = attempt
+        .plan_sql(&cpu_ctx, "SELECT approx_distinct(v) FROM cpu_rows")
+        .await
+        .expect_err("a pre-planning attempt cannot create a plan after close");
+    let nexus_error =
+        datafusion_nexus::error::DataFusionErrorExt::find_nexus_error(&error).expect("structured close error");
+    assert_eq!(nexus_error.fact_value("reason"), Some("backend_closing"));
+
+    let report = completion.await;
+    assert!(matches!(
+        report.outcome,
+        RuntimeTerminalOutcome::Failed { error_code: AttemptFailureCode::BackendClosing, .. }
+    ));
+    assert_eq!(report.disposition, AttemptDisposition::Unplanned);
+    assert!(report.admission.is_none());
+    assert!(report.timestamps.planning_started_ns.is_none());
+    assert!(report.timestamps.admission_requested_ns.is_none());
+    assert!(report.timestamps.physical_execution_started_ns.is_none());
+    assert_eq!(report.primary_failure.as_ref().map(|summary| summary.code()), Some(AttemptFailureCode::BackendClosing));
+
+    let close = backend
+        .close_and_wait(std::time::Duration::from_secs(10))
+        .expect("unplanned close report releases observation scope");
+    assert!(close.gpu_resource_quiescent);
+    assert!(close.observation_quiescent);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn close_during_cpu_result_drain_times_out_then_recovers_after_one_report() {
+    let backend = backend();
+    let cpu_ctx = cpu_only_context(&backend);
+    let attempt = backend.begin_attempt(AttemptOptions::default()).expect("attempt begins before close");
+    let completion = attempt.completion();
+    let mut stream =
+        attempt.sql(&cpu_ctx, "SELECT approx_distinct(v) FROM cpu_rows").await.expect("CPU result stream starts");
+
+    assert!(backend.close(), "the result drain starts before backend close");
+    let timeout = backend
+        .close_and_wait(std::time::Duration::from_millis(25))
+        .expect_err("the live result stream retains its observation scope during close");
+    assert_eq!(timeout.fact_value("reason"), Some("backend_close_timeout"));
+    assert_eq!(timeout.fact_value("gpu_resource_quiescent"), Some("true"));
+    assert_eq!(timeout.fact_value("observation_quiescent"), Some("false"));
+
+    while let Some(batch) = stream.next().await {
+        batch.expect("CPU result drain remains usable after close starts");
+    }
+    let report = completion.await;
+    assert!(matches!(report.outcome, RuntimeTerminalOutcome::Succeeded));
+    assert_eq!(report.disposition, AttemptDisposition::CpuFallback);
+    assert!(report.timestamps.physical_execution_started_ns.is_some());
+    assert!(report.timestamps.report_ready_ns.is_some());
+
+    let close =
+        backend.close_and_wait(std::time::Duration::from_secs(10)).expect("EOF releases the final result-drain scope");
+    assert!(close.gpu_resource_quiescent);
+    assert!(close.observation_quiescent);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn begin_after_close_is_backend_closing_and_reports_outlive_quiescence() {
     let backend = backend();
     let ctx = native_context(&backend).await;
@@ -551,6 +620,10 @@ async fn deadline_expiry_cancels_planning_and_drain_with_typed_reason() {
     assert_eq!(nexus_error.fact_value("reason"), Some("deadline_expired"));
     let report = expired.completion().await;
     assert!(matches!(report.outcome, RuntimeTerminalOutcome::Cancelled));
+    assert_eq!(
+        report.primary_failure.as_ref().and_then(|summary| summary.facts().first()).map(|fact| fact.value()),
+        Some(AttemptFailureFactValue::DeadlineExpired)
+    );
     assert_eq!(report.disposition, AttemptDisposition::Unplanned);
     assert!(report.timestamps.physical_execution_started_ns.is_none());
 
@@ -570,6 +643,10 @@ async fn deadline_expiry_cancels_planning_and_drain_with_typed_reason() {
     let report = draining.completion().await;
     assert!(saw_error, "the drain surfaces the expired deadline");
     assert!(matches!(report.outcome, RuntimeTerminalOutcome::Cancelled));
+    assert_eq!(
+        report.primary_failure.as_ref().and_then(|summary| summary.facts().first()).map(|fact| fact.value()),
+        Some(AttemptFailureFactValue::DeadlineExpired)
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

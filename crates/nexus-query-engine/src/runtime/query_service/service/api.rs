@@ -3,6 +3,40 @@
 use serde::Serialize;
 
 use super::*;
+
+/// Result of a controlled device-quarantine injection.
+///
+/// The injection changes only the engine's admission ledger. It deliberately
+/// does not manufacture a CUDA error or mutate cuDF's process-wide device
+/// health; controlled validation uses it to exercise the same device-local
+/// scheduler transition that a proven native fault would perform.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeviceQuarantineInjection {
+    device_ordinal: usize,
+    device_health_generation: u64,
+    newly_quarantined: bool,
+}
+
+impl DeviceQuarantineInjection {
+    pub(crate) fn new(device_ordinal: usize, device_health_generation: u64, newly_quarantined: bool) -> Self {
+        Self { device_ordinal, device_health_generation, newly_quarantined }
+    }
+
+    /// Ordinal of the admission ledger that was targeted.
+    pub fn device_ordinal(self) -> usize {
+        self.device_ordinal
+    }
+
+    /// Generation of the targeted ledger's closed admission state.
+    pub fn device_health_generation(self) -> u64 {
+        self.device_health_generation
+    }
+
+    /// Whether this call performed the open-to-closed transition.
+    pub fn newly_quarantined(self) -> bool {
+        self.newly_quarantined
+    }
+}
 use crate::{
     admission::{AttemptRequirement, QueryPlanCapabilityProof},
     attempt::{AttemptAdmissionBinding, AttemptFinalizerSlot},

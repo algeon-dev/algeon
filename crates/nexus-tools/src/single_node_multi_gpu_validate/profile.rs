@@ -215,6 +215,11 @@ pub(super) struct SchedulingProfile {
     pub(super) concurrency: usize,
     #[serde(default)]
     pub(super) arrival_rate_per_second: Option<u64>,
+    /// Optional exact bound on closed-loop rounds. This is an explicit
+    /// scenario shape, not a hidden drain margin: it leaves the remaining
+    /// declared window for cooperative finalization.
+    #[serde(default)]
+    pub(super) max_rounds: Option<usize>,
     #[serde(default)]
     pub(super) seed: u64,
     #[serde(default)]
@@ -234,6 +239,7 @@ impl Default for SchedulingProfile {
             arrival_mode: default_arrival_mode(),
             concurrency: default_concurrency(),
             arrival_rate_per_second: None,
+            max_rounds: None,
             seed: 0,
             warmup_seconds: 0,
             measurement_seconds: 0,
@@ -308,6 +314,124 @@ impl RunProfile {
         self.workloads.iter().map(|workload| workload.queries.len()).sum()
     }
 
+    /// Returns the cache-disabled half of an opt-in P6.8 paired calibration.
+    ///
+    /// This preserves every workload, scheduling, admission, and device field
+    /// except the one P5 cache control: each ordinal-local `cache_cap_bytes`.
+    /// It is intentionally derived rather than read from another profile so a
+    /// cache calibration cannot compare two unrelated runs.
+    pub(super) fn cache_disabled_companion(&self) -> ToolResult<Self> {
+        if self.cache.mode != CacheMode::Enabled {
+            return Err("--cache-calibration requires cache.mode enabled in --config".into());
+        }
+        let mut companion = self.clone();
+        companion.cache.mode = CacheMode::Disabled;
+        for device in &mut companion.backend.device_profiles {
+            device.cache_cap_bytes = 0;
+        }
+        companion.validate()?;
+        Ok(companion)
+    }
+
+    /// Validates the finite cohort used by the explicit P6.6 overload probe.
+    ///
+    /// This is deliberately a profile shape rather than a second admission
+    /// policy: the backend still owns queueing, finite overtakes, placement,
+    /// and report sealing. The runner only requires enough bounded offered
+    /// work for those public facts to be falsifiable.
+    pub(super) fn validate_overload_fairness_scenario(&self) -> ToolResult<()> {
+        if self.backend.device_profiles.len() < 2 {
+            return Err(
+                "--overload-fairness requires at least two configured devices for unrelated-device progress".into()
+            );
+        }
+        if self.scheduling.arrival_mode != ArrivalMode::Concurrency {
+            return Err(
+                "--overload-fairness requires scheduling.arrival_mode=concurrency for one bounded cohort".into()
+            );
+        }
+        if self.scheduling.max_rounds != Some(1) {
+            return Err("--overload-fairness requires scheduling.max_rounds=1 for one bounded drain cohort".into());
+        }
+        if self.scheduling.warmup_seconds != 0 {
+            return Err(
+                "--overload-fairness requires scheduling.warmup_seconds=0 so every cohort report is measured".into()
+            );
+        }
+        if self.selected_query_count() < 2 {
+            return Err(
+                "--overload-fairness requires at least two selected workload queries with distinct plan shapes".into(),
+            );
+        }
+
+        let active_capacity = self.backend.device_profiles.iter().try_fold(0_usize, |total, device| {
+            total
+                .checked_add(device.max_active_attempts)
+                .ok_or("--overload-fairness configured active-attempt capacity overflows")
+        })?;
+        if self.scheduling.concurrency <= active_capacity {
+            return Err(format!(
+                "--overload-fairness requires scheduling.concurrency above configured active-attempt capacity {active_capacity}"
+            )
+            .into());
+        }
+        let bounded_cohort_capacity = active_capacity
+            .checked_add(self.backend.queue.max_queued_attempts)
+            .ok_or("--overload-fairness configured queue capacity overflows")?;
+        if self.scheduling.concurrency > bounded_cohort_capacity {
+            return Err(format!(
+                "--overload-fairness scheduling.concurrency must not exceed active-plus-queue capacity {bounded_cohort_capacity}"
+            )
+            .into());
+        }
+        let required_queue_slots = usize::try_from(self.backend.queue.max_overtakes_per_waiter)
+            .ok()
+            .and_then(|overtakes| overtakes.checked_add(1))
+            .ok_or("--overload-fairness finite-overtake queue requirement overflows")?;
+        if self.backend.queue.max_queued_attempts < required_queue_slots {
+            return Err(format!(
+                "--overload-fairness requires backend.queue.max_queued_attempts of at least {required_queue_slots} for its finite-overtake witness"
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    /// Validates P6.6's fixed two-step physical allocator-pressure probe.
+    ///
+    /// The runner establishes real external CUDA pressure before `q01`, then
+    /// releases it before the `edge_scan` recovery attempt. Profile validation
+    /// owns the finite sequencing contract; the sealed report reducer later
+    /// proves that the observed physical request remained below every immutable
+    /// domain, grant, and manager cap.
+    pub(super) fn validate_physical_allocator_pressure_scenario(&self) -> ToolResult<()> {
+        if self.backend.device_profiles.len() != 1 {
+            return Err(
+                "--physical-allocator-pressure requires exactly one configured device for same-device recovery".into(),
+            );
+        }
+        if !matches!(&self.backend.device_profiles[0].ownership, DeviceOwnership::StaticPartition { .. }) {
+            return Err("--physical-allocator-pressure requires a static_partition device ownership envelope".into());
+        }
+        if self.cache.mode != CacheMode::Disabled {
+            return Err("--physical-allocator-pressure requires cache.mode=disabled".into());
+        }
+        if self.scheduling.arrival_mode != ArrivalMode::Concurrency || self.scheduling.concurrency != 1 {
+            return Err(
+                "--physical-allocator-pressure requires scheduling.arrival_mode=concurrency with concurrency=1".into(),
+            );
+        }
+        if self.scheduling.max_rounds != Some(2) {
+            return Err("--physical-allocator-pressure requires scheduling.max_rounds=2".into());
+        }
+        let labels =
+            self.workloads.iter().flat_map(|workload| workload.queries.iter().map(String::as_str)).collect::<Vec<_>>();
+        if labels.as_slice() != ["q01", "edge_scan"] {
+            return Err("--physical-allocator-pressure requires exactly q01 followed by edge_scan".into());
+        }
+        Ok(())
+    }
+
     pub(super) fn validate(&self) -> ToolResult<()> {
         if self.schema != RUN_PROFILE_SCHEMA {
             return Err(format!("run profile schema must be {RUN_PROFILE_SCHEMA}").into());
@@ -328,6 +452,7 @@ impl RunProfile {
         validate_native_execution(&self.backend.native_execution)?;
         validate_queue(&self.backend.queue)?;
         validate_device_profiles(&self.backend.device_profiles)?;
+        self.validate_cache_mode()?;
         self.validate_workloads()
     }
 
@@ -352,6 +477,15 @@ impl RunProfile {
             && scheduling.rate_overrun != RateOverrunPolicy::default()
         {
             return Err("scheduling.rate_overrun is only valid when scheduling.arrival_mode is rate".into());
+        }
+        match (scheduling.arrival_mode, scheduling.max_rounds) {
+            (ArrivalMode::Concurrency, Some(0)) => {
+                return Err("scheduling.max_rounds must be greater than zero when present".into());
+            },
+            (ArrivalMode::Rate, Some(_)) => {
+                return Err("scheduling.max_rounds is only valid when scheduling.arrival_mode is concurrency".into());
+            },
+            _ => {},
         }
         Ok(())
     }
@@ -403,6 +537,29 @@ impl RunProfile {
             }
         }
         Ok(())
+    }
+
+    /// The profile's cache mode must describe the single ledger-accounted
+    /// cache control the backend actually receives.  A nonzero ordinal-local
+    /// cap is the P5 opt-in; there is no second cache switch in the runner.
+    fn validate_cache_mode(&self) -> ToolResult<()> {
+        let enabled_ordinals = self
+            .backend
+            .device_profiles
+            .iter()
+            .filter(|profile| profile.cache_cap_bytes != 0)
+            .map(|profile| profile.ordinal)
+            .collect::<Vec<_>>();
+        match (self.cache.mode, enabled_ordinals.is_empty()) {
+            (CacheMode::Disabled, true) | (CacheMode::Enabled, false) => Ok(()),
+            (CacheMode::Disabled, false) => Err(format!(
+                "cache.mode disabled requires cache_cap_bytes = 0 on every configured device; nonzero on ordinals {enabled_ordinals:?}"
+            )
+            .into()),
+            (CacheMode::Enabled, true) => {
+                Err("cache.mode enabled requires a nonzero cache_cap_bytes on at least one configured device".into())
+            },
+        }
     }
 }
 

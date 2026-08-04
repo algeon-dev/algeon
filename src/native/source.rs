@@ -2,15 +2,19 @@ use std::collections::BTreeSet;
 
 use arrow::datatypes::SchemaRef;
 use datafusion::{
-    datasource::physical_plan::{FileScanConfig, FileSource, ParquetSource},
-    physical_plan::filter::FilterExec,
+    datasource::{
+        physical_plan::{FileScanConfig, FileSource, ParquetSource},
+        source::DataSourceExec,
+    },
+    physical_plan::{ExecutionPlan, filter::FilterExec},
 };
 use nexus_query_engine::{
     expr::LiteralValue as NativeLiteralValue,
     parquet_stats::{ColumnByteKind, row_group_column_bytes, row_group_null_counts_for_root_column},
+    plan::{GraphAlgorithmSpec, GraphResidencyDescriptor, graph_residency_descriptor_for_local_parquet_source},
     source::{
-        LocalParquetFile as NativeLocalParquetFile, PartitionColumnDisposition as NativePartitionColumnDisposition,
-        SourceColumnRef as NativeSourceColumnRef,
+        LocalParquetFile as NativeLocalParquetFile, LocalParquetSource as NativeLocalParquetSource,
+        PartitionColumnDisposition as NativePartitionColumnDisposition, SourceColumnRef as NativeSourceColumnRef,
     },
 };
 use parquet::file::reader::{FileReader, SerializedFileReader};
@@ -103,6 +107,84 @@ pub(crate) fn native_parquet_file_reader_factory_is_supported(parquet_source: &P
     // or IO semantics in ways the native source IR cannot represent.
     let debug = format!("{factory:?}");
     debug.starts_with("DefaultParquetFileReaderFactory") || debug.starts_with("CachedParquetFileReaderFactory")
+}
+
+/// Derives a stable graph-residency descriptor directly from a DataFusion
+/// local-Parquet scan.
+///
+/// This is intentionally narrower than native execution lowering. Graph cache
+/// identity is a complete edge *rowset* contract, so the scan's parallel file
+/// grouping and declared output order do not affect it. They do matter to a
+/// host-visible native execution plan and therefore remain rejected by
+/// [`validate_slice1_parquet_scan`].
+///
+/// Pushed reader predicates and scan limits can change the effective rowset in
+/// ways this direct adapter does not yet model, so they continue to bypass.
+pub(crate) fn graph_residency_descriptor_for_datafusion_local_parquet_scan(
+    source_exec: &DataSourceExec,
+    graph_spec: &GraphAlgorithmSpec,
+) -> Option<GraphResidencyDescriptor> {
+    let (file_scan, parquet_source) = source_exec.downcast_to_file_source::<ParquetSource>()?;
+    let source = graph_residency_local_parquet_scan_source(source_exec, file_scan, parquet_source).ok()?;
+    graph_residency_descriptor_for_local_parquet_source(&source, graph_spec).descriptor().cloned()
+}
+
+/// Returns the exact row count for the same narrow local-Parquet rowset that
+/// may form a graph-residency key.
+///
+/// The conversion deliberately rejects pushed predicates and scan limits, so
+/// the total is footer-proven for the exact rows consumed by a graph build.
+/// This lets graph admission use a real construction model when DataFusion's
+/// generic scan statistics are merely inexact.
+pub(crate) fn exact_row_count_for_datafusion_local_parquet_scan(source_exec: &DataSourceExec) -> Option<u64> {
+    let (file_scan, parquet_source) = source_exec.downcast_to_file_source::<ParquetSource>()?;
+    let source = graph_residency_local_parquet_scan_source(source_exec, file_scan, parquet_source).ok()?;
+    source.exact_selected_row_count()
+}
+
+fn graph_residency_local_parquet_scan_source(
+    source_exec: &DataSourceExec,
+    file_scan: &FileScanConfig,
+    parquet_source: &ParquetSource,
+) -> Result<NativeLocalParquetSource, CapabilityReason> {
+    // Cache identity must describe the exact graph rowset. The general native
+    // lowerer can model these features for execution, but this source-only
+    // bridge deliberately leaves them unkeyable until it also fingerprints
+    // their complete semantics.
+    if file_scan.limit.is_some() || parquet_source.filter().is_some() {
+        return Err(CapabilityReason::NativeSourcePushedDownParquetPredicate);
+    }
+    if !native_parquet_object_store_scan_is_supported(file_scan) {
+        return Err(CapabilityReason::NativeSourceNonLocalObjectStore);
+    }
+    if file_scan.expr_adapter_factory.is_some() {
+        return Err(CapabilityReason::NativeSourceExprAdapter);
+    }
+    if !native_parquet_file_reader_factory_is_supported(parquet_source) {
+        return Err(CapabilityReason::NativeSourceParquetFileReaderFactory);
+    }
+
+    let required_scan_output_indices = (0..source_exec.schema().fields().len()).collect::<Vec<_>>();
+    let requirements = required_parquet_column_requirements_for_scan_columns(
+        file_scan,
+        parquet_source,
+        None,
+        &required_scan_output_indices,
+    )?;
+    validate_partition_columns(file_scan, &requirements.partition_column_indices)?;
+    let source_schema = native_source_output_schema(file_scan, &requirements)?;
+    let files = local_parquet_files(file_scan, parquet_source, None, source_schema.clone(), &requirements)?;
+
+    Ok(NativeLocalParquetSource::from_files(files, source_schema, requirements.read_columns)
+        .with_column_roles(requirements.projected_output_columns, requirements.pure_filter_columns)
+        .with_column_source_refs(
+            requirements.read_column_file_indices,
+            requirements.projected_output_column_source_refs,
+            requirements.pure_filter_column_source_refs,
+        )
+        .with_file_column_count(file_scan.file_schema().fields().len())
+        .with_partition_columns(requirements.partition_columns)
+        .with_missing_columns(requirements.missing_columns))
 }
 
 /// Converts DataFusion `PartitionedFile` entries into native local Parquet files.

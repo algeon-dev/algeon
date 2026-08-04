@@ -12,7 +12,8 @@ mod reporting;
 mod requests;
 pub(in crate::runtime::query_service) mod transaction;
 pub use api::{
-    QueryActivityLease, QueryAdmissionRequest, QueryServiceAdmissionSnapshot, QueryServiceDeviceAdmissionSnapshot,
+    DeviceQuarantineInjection, QueryActivityLease, QueryAdmissionRequest, QueryServiceAdmissionSnapshot,
+    QueryServiceDeviceAdmissionSnapshot,
 };
 pub(in crate::runtime::query_service::service) use queue::query_service_shutdown_timeout;
 pub(in crate::runtime::query_service) use requests::PlacedAdmissionCommit;
@@ -270,6 +271,50 @@ impl QueryService {
             })
             .or_else(|| self.inner.fallback_device_ledger.as_ref().map(|ledger| ledger.profile().max_active_attempts))
             .unwrap_or(0)
+    }
+
+    /// Performs an explicit, controlled device-local quarantine transition.
+    ///
+    /// This is intentionally an engine capability rather than a backend
+    /// configuration mode. It owns the same ledger health state consulted by
+    /// placement, takes the fleet admission gate used by placement, and leaves
+    /// native cuDF health untouched. A caller can therefore validate fallback
+    /// after a quarantine without claiming to have produced a real CUDA fault.
+    pub(crate) fn inject_device_quarantine(&self, device_ordinal: usize) -> Result<DeviceQuarantineInjection> {
+        const REASON: &str = "controlled validation device quarantine";
+
+        let injection = {
+            let _fleet_admission = self.inner.fleet_admission.lock().map_err(|_error| {
+                QueryError::new(
+                    QueryErrorCode::Internal,
+                    "nexus_query_engine.query_service.fault_injection",
+                    "fleet admission gate was poisoned",
+                )
+                .with_fact("reason", "fleet_admission_gate_poisoned")
+            })?;
+            let resources = self.inner.resources.as_ref().ok_or_else(|| {
+                QueryError::new(
+                    QueryErrorCode::InvalidPlan,
+                    "nexus_query_engine.query_service.fault_injection",
+                    "controlled device quarantine requires an installed GPU backend",
+                )
+                .with_fact("reason", "gpu_backend_required")
+            })?;
+            let ledger = resources.devices.context_by_ordinal(device_ordinal)?.ledger();
+            let newly_quarantined = ledger.close_admission_if_open(REASON)?;
+            let crate::runtime::gpu::DeviceAdmissionHealth::Closed { generation, .. } = ledger.health()? else {
+                return Err(QueryError::new(
+                    QueryErrorCode::Internal,
+                    "nexus_query_engine.query_service.fault_injection",
+                    "device ledger remained open after controlled quarantine",
+                )
+                .with_fact("reason", "quarantine_transition_not_observed")
+                .with_fact("device_ordinal", device_ordinal));
+            };
+            DeviceQuarantineInjection::new(device_ordinal, generation, newly_quarantined)
+        };
+        self.inner.notify_admission_available();
+        Ok(injection)
     }
 
     /// Closes every scheduler ledger for an injected unknown-isolation fault.

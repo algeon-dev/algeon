@@ -377,7 +377,8 @@ impl QueryService {
         while let Some(request) = state.queued.pop_front() {
             if request.execution_cancellation.is_cancelled() {
                 let _ = self.end_request_protection(&request);
-                let _ = request.terminal.record(admission_cancellation_error());
+                let _ =
+                    request.terminal.record(admission_cancellation_or_deadline_error(&request.execution_cancellation));
                 cancelled.push(request);
             } else if request.deadline <= now {
                 let _ = self.end_request_protection(&request);

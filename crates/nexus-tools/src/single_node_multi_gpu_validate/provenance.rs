@@ -2,7 +2,7 @@
 
 use std::{
     env, fs,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     process::Command,
 };
 
@@ -75,6 +75,9 @@ impl RepositoryProvenance {
 #[derive(Debug, Serialize)]
 pub(super) struct DirtyManifest {
     pub(super) format: &'static str,
+    /// Digest of the complete direct dirty source state. Unlike a
+    /// porcelain-only digest, changing a dirty file's contents changes this
+    /// value even when its status path does not.
     pub(super) sha256: String,
     pub(super) entries: Vec<String>,
 }
@@ -95,8 +98,66 @@ impl DirtyManifest {
                     .map_err(|_| format!("{name} dirty manifest contains non-UTF-8 paths"))
             })
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(Self { format: "git-status-porcelain-v1-z", sha256: sha256_bytes(&output), entries })
+        let tracked_diff = git_output_bytes(repo, ["diff", "--binary", "--no-ext-diff", "HEAD", "--"], name)?;
+        let untracked_paths = git_output_bytes(repo, ["ls-files", "--others", "--exclude-standard", "-z"], name)?;
+        let sha256 = dirty_content_sha256(repo, name, &output, &tracked_diff, &untracked_paths)?;
+        Ok(Self {
+            format: "git-status-porcelain-v1-z+direct-worktree-content-sha256-v1",
+            sha256,
+            entries,
+        })
     }
+}
+
+fn dirty_content_sha256(
+    repo: &Path,
+    name: &str,
+    status: &[u8],
+    tracked_diff: &[u8],
+    untracked_paths: &[u8],
+) -> ToolResult<String> {
+    // These bytes are never persisted; the artifact carries only their
+    // digest. The revision, porcelain state, final tracked diff, every
+    // untracked file together identify the actual source consumed by the
+    // release binary without leaking a patch. Nested worktrees retain their
+    // normal Git dirty entry: their build outputs are not source inputs to
+    // this release runner and can be arbitrarily large.
+    let mut source_state = Vec::new();
+    append_record(&mut source_state, b"format", b"direct-worktree-content-v1");
+    append_record(&mut source_state, b"status", status);
+    append_record(&mut source_state, b"tracked-diff", tracked_diff);
+    for path in untracked_paths.split(|byte| *byte == b'\0').filter(|path| !path.is_empty()) {
+        let path = std::str::from_utf8(path).map_err(|_| format!("{name} untracked path is not UTF-8"))?;
+        let path = Path::new(path);
+        if path.is_absolute() || path.components().any(|component| matches!(component, Component::ParentDir)) {
+            return Err(format!("{name} untracked path escapes its repository").into());
+        }
+        let contents = read_untracked_contents(&repo.join(path), name)?;
+        append_record(&mut source_state, b"untracked-path", path.as_os_str().as_encoded_bytes());
+        append_record(&mut source_state, b"untracked-contents", &contents);
+    }
+    Ok(sha256_bytes(&source_state))
+}
+
+fn read_untracked_contents(path: &Path, name: &str) -> ToolResult<Vec<u8>> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|_| format!("cannot stat untracked {} in {name} for provenance", path.display()))?;
+    if metadata.file_type().is_symlink() {
+        let target = fs::read_link(path)
+            .map_err(|_| format!("cannot read untracked symlink {} in {name} for provenance", path.display()))?;
+        return Ok(target.as_os_str().as_encoded_bytes().to_vec());
+    }
+    if !metadata.is_file() {
+        return Err(format!("untracked {} in {name} is not a regular file or symlink", path.display()).into());
+    }
+    fs::read(path).map_err(|_| format!("cannot read untracked {} in {name} for provenance", path.display()).into())
+}
+
+fn append_record(destination: &mut Vec<u8>, label: &[u8], value: &[u8]) {
+    destination.extend_from_slice(&(label.len() as u64).to_be_bytes());
+    destination.extend_from_slice(label);
+    destination.extend_from_slice(&(value.len() as u64).to_be_bytes());
+    destination.extend_from_slice(value);
 }
 
 pub(super) fn git_output<const N: usize>(repo: &Path, args: [&str; N], name: &str) -> ToolResult<String> {
@@ -302,5 +363,42 @@ impl RunnerIdentity {
     pub(super) fn collect() -> ToolResult<Self> {
         let executable = env::current_exe().map_err(|_| "cannot resolve validation runner executable")?;
         Ok(Self { executable: FileIdentity::collect(&executable, "validation runner executable")? })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        fs,
+        path::Path,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    use super::dirty_content_sha256;
+
+    #[test]
+    fn dirty_content_digest_changes_when_a_tracked_diff_changes_at_the_same_path() {
+        let status = b" M src/owner.rs\0";
+        let first = dirty_content_sha256(Path::new("."), "test", status, b"diff --git a/src/owner.rs\n-old\n", b"")
+            .expect("tracked diff digest");
+        let second = dirty_content_sha256(Path::new("."), "test", status, b"diff --git a/src/owner.rs\n-new\n", b"")
+            .expect("tracked diff digest");
+
+        assert_ne!(first, second, "a porcelain-only digest would miss this source change");
+    }
+
+    #[test]
+    fn dirty_content_digest_changes_when_an_untracked_file_changes_at_the_same_path() {
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let root = std::env::temp_dir().join(format!("nexus-provenance-{nonce}"));
+        fs::create_dir(&root).unwrap();
+        let file = root.join("probe.rs");
+        fs::write(&file, b"first").unwrap();
+        let first = dirty_content_sha256(&root, "test", b"?? probe.rs\0", b"", b"probe.rs\0").unwrap();
+        fs::write(&file, b"second").unwrap();
+        let second = dirty_content_sha256(&root, "test", b"?? probe.rs\0", b"", b"probe.rs\0").unwrap();
+        fs::remove_dir_all(&root).unwrap();
+
+        assert_ne!(first, second, "untracked source content belongs in the dirty manifest");
     }
 }

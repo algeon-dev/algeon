@@ -1482,6 +1482,23 @@ pub struct AttemptAdmissionFact {
     pub device_ordinal: usize,
     pub grant_bytes: u64,
 }
+
+/// Final finite-overtake state captured when a queued admission receives its
+/// immutable grant.
+///
+/// This is intentionally a sealed controller fact rather than a runner-side
+/// estimate. `submission_sequence` is FIFO identity, independent of the
+/// later admission sequence. `protection_device_ordinal` records the
+/// ledger-local protection that was held at placement, if finite overtakes
+/// had exhausted the waiter's allowance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttemptAdmissionWaitFact {
+    pub submission_sequence: u64,
+    pub overtake_limit: u32,
+    pub overtakes_consumed: u32,
+    pub overtakes_remaining: u32,
+    pub protection_device_ordinal: Option<usize>,
+}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttemptTimestamps {
     pub submitted_ns: u64,
@@ -1512,6 +1529,10 @@ pub struct QueryAttemptReport {
     pub retry_advice: AttemptRetryAdvice,
     pub device_ordinal: Option<usize>,
     pub admission: Option<AttemptAdmissionFact>,
+    /// Final queue/overtake facts for an admitted request. `None` means the
+    /// execution path did not retain a queue-backed admission handle; it is
+    /// never reconstructed from snapshots after the report is sealed.
+    pub admission_wait: Option<AttemptAdmissionWaitFact>,
     pub timestamps: AttemptTimestamps,
     pub cleanup_disposition: AttemptCleanupDisposition,
     /// Exact when `cleanup_failure_count_complete` is true. The lifecycle
@@ -1724,6 +1745,24 @@ impl RuntimeTerminalOutcome {
             Self::Cancelled
         } else {
             Self::failed(&AttemptFailureSummary::from_native_error(error))
+        }
+    }
+
+    /// Returns the bounded primary-failure projection that must accompany a
+    /// terminal native error. Ordinary caller cancellation intentionally
+    /// remains a text-free control outcome, while an expired deadline retains
+    /// its stable reason beside the same `Cancelled` terminal outcome.
+    pub(crate) fn primary_failure_from_query_error(error: &crate::error::QueryError) -> Option<AttemptFailureSummary> {
+        match error.code() {
+            crate::error::QueryErrorCode::Cancelled if error.fact_value("reason") != Some("deadline_expired") => None,
+            _ => Some(AttemptFailureSummary::from_native_error(error)),
+        }
+    }
+
+    pub(crate) const fn from_primary_failure(summary: &AttemptFailureSummary) -> Self {
+        match summary.code() {
+            AttemptFailureCode::Cancelled => Self::Cancelled,
+            _ => Self::failed(summary),
         }
     }
 

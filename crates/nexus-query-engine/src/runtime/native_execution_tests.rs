@@ -55,6 +55,8 @@ use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 
 #[test]
 fn execute_query_plan_stamps_correlation_on_early_errors() {
+    use std::time::{Duration, Instant};
+
     use nexus_query_engine::{
         metrics::{QueryId, TraceId},
         runtime::ExecutionCancellation,
@@ -77,7 +79,7 @@ fn execute_query_plan_stamps_correlation_on_early_errors() {
         .unwrap();
 
     let error = match execute_query_plan(&context, &plan) {
-        Ok(_) => panic!("cancelled context should fail before execution"),
+        Ok(_) => panic!("cancelled context should fail before native execution"),
         Err(error) => error,
     };
     assert_eq!(error.code(), QueryErrorCode::Cancelled);
@@ -85,6 +87,21 @@ fn execute_query_plan_stamps_correlation_on_early_errors() {
     assert_eq!(error.trace_id().map(TraceId::as_str), Some("trace-exec"));
     assert_eq!(error.fact_value("query_id"), Some("query-exec"));
     assert_eq!(error.fact_value("trace_id"), Some("trace-exec"));
+
+    let expired_context = ExecutionContext::builder()
+        .with_cancellation(ExecutionCancellation::with_deadline(Some(Instant::now() - Duration::from_millis(1))))
+        .with_query_id(QueryId::new("query-deadline"))
+        .with_trace_id(TraceId::new("trace-deadline"))
+        .build()
+        .unwrap();
+    let deadline_error = match execute_query_plan(&expired_context, &plan) {
+        Ok(_) => panic!("an elapsed deadline must stop the native execution safe boundary"),
+        Err(error) => error,
+    };
+    assert_eq!(deadline_error.code(), QueryErrorCode::Cancelled);
+    assert_eq!(deadline_error.fact_value("reason"), Some("deadline_expired"));
+    assert_eq!(deadline_error.query_id().map(QueryId::as_str), Some("query-deadline"));
+    assert_eq!(deadline_error.trace_id().map(TraceId::as_str), Some("trace-deadline"));
 }
 
 #[path = "native_execution_tests/aggregate_test_support.rs"]

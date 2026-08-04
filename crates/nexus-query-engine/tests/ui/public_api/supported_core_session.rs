@@ -3,13 +3,17 @@ use nexus_query_engine::{
     observability::RuntimeObservationHandle,
     runtime::{
         DeploymentIoCapability, ExecutionContext, GdsDriverProbeStatus, GpuBackendControllerDraft, GpuBackendCore,
-        GpuBackendCoreDraft, GpuBackendDeviceConfig, GpuBackendSession, GpuExecutionJobKind, GpuExecutorLease,
+        GpuBackendCoreDraft, GpuBackendDeviceConfig, GpuBackendFaultInjector, GpuBackendSession, GpuExecutionJobKind, GpuExecutorLease,
         GpuMemoryOwnership, KvikioCompatModeStatus, NvidiaFsProbeStatus, QueryExecutionConfig, QueryHandle, QueueBounds,
     },
 };
 
 fn use_session(core: &GpuBackendCore) -> GpuBackendSession {
     core.session_capability()
+}
+
+fn use_fault_injector(core: &GpuBackendCore) -> GpuBackendFaultInjector {
+    core.fault_injector()
 }
 
 async fn use_executor(executor: &GpuExecutorLease) -> Result<()> {
@@ -47,6 +51,7 @@ fn main() {
     );
     let _builder = GpuBackendCore::builder(draft);
     let _supported_session_factory: fn(&GpuBackendCore) -> GpuBackendSession = use_session;
+    let _supported_fault_injector_factory: fn(&GpuBackendCore) -> GpuBackendFaultInjector = use_fault_injector;
     let _supported_executor_api = use_executor;
     let _supported_context_executor: fn(&ExecutionContext) -> Result<GpuExecutorLease> = context_executor;
     let _supported_query_executor: fn(&QueryHandle) -> Result<GpuExecutorLease> = query_executor;

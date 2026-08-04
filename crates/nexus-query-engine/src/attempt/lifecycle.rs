@@ -1,7 +1,7 @@
 //! Pure fixed execution-attempt lifecycle state.
 use crate::observability::{
-    AttemptAdmissionFact, AttemptDisposition, AttemptFailureSummary, AttemptTerminalCommit, AttemptTimestamps,
-    CleanupFailureSummary, RuntimeTerminalOutcome,
+    AttemptAdmissionFact, AttemptAdmissionWaitFact, AttemptDisposition, AttemptFailureSummary, AttemptTerminalCommit,
+    AttemptTimestamps, CleanupFailureSummary, RuntimeTerminalOutcome,
 };
 #[cfg(test)]
 use crate::observability::{
@@ -35,6 +35,7 @@ pub(crate) struct AttemptLifecycle {
     pub planning_finished: Option<u64>,
     pub admission_requested: Option<u64>,
     pub admitted: Option<(u64, AttemptAdmissionFact)>,
+    pub admission_wait: Option<AttemptAdmissionWaitFact>,
     pub physical: Option<u64>,
     pub gpu: Option<u64>,
     pub terminal: Option<(u64, RuntimeTerminalOutcome)>,
@@ -71,6 +72,7 @@ impl AttemptLifecycle {
             planning_finished: None,
             admission_requested: None,
             admitted: None,
+            admission_wait: None,
             physical: None,
             gpu: None,
             terminal: None,
@@ -141,6 +143,29 @@ impl AttemptLifecycle {
         }
         self.admitted = Some((at, fact));
         Ok(())
+    }
+
+    /// Retains the controller-owned final queue state after admission has
+    /// succeeded. A second identical observation is harmless; conflicting
+    /// state would make the immutable sealed report ambiguous.
+    pub(crate) fn admission_wait(&mut self, fact: AttemptAdmissionWaitFact) -> Result<(), AttemptLifecycleError> {
+        if self.admitted.is_none() {
+            return Err(AttemptLifecycleError::InvalidOrder {
+                boundary: "admission_wait",
+                reason: "admission_not_granted",
+            });
+        }
+        match self.admission_wait {
+            None => {
+                self.admission_wait = Some(fact);
+                Ok(())
+            },
+            Some(current) if current == fact => Ok(()),
+            Some(_) => Err(AttemptLifecycleError::InvalidOrder {
+                boundary: "admission_wait",
+                reason: "conflicting_final_queue_fact",
+            }),
+        }
     }
 
     pub(crate) fn physical(&mut self, at: u64) -> Result<(), AttemptLifecycleError> {

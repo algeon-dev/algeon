@@ -118,6 +118,7 @@ fn native_metrics_record_query_service_admission_facts() {
     native_metrics.record_admission_facts(QueryAdmissionFacts {
         admission_sequence: 7,
         admission_wait: Duration::from_millis(3),
+        admission_wait_fact: None,
         device_ordinal: 2,
         query_grant_bytes: 4096,
     });

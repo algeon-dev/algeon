@@ -399,6 +399,11 @@ pub(super) fn native_algorithm_params_for_memory_estimate(
         // These variants require side-input node ids in the native IR. Fall back
         // to default admission instead of minting placeholder ids.
         CugraphAlgorithmParams::PersonalizedPageRank(_) => None,
+        CugraphAlgorithmParams::Bfs(params)
+            if !params.source.requires_source_vertices_input() && !params.predicates.has_inputs() =>
+        {
+            Some(GraphAlgorithmParams::Bfs(Box::new(native_bfs_params(params, &[]))))
+        },
         CugraphAlgorithmParams::Bfs(_) => None,
         CugraphAlgorithmParams::Similarity(_) => None,
         _ => Some(native_algorithm_params(params, &[])),
@@ -687,8 +692,9 @@ mod tests {
 
     use super::*;
     use crate::cugraph_sql::{
-        CugraphBfsOutputMode, CugraphBfsOutputOptions, CugraphBfsParams, CugraphBfsSource,
-        CugraphGraphConstructionPolicy, CugraphGraphOptions, CugraphTableReference, result_schema_for_params,
+        CugraphBfsOutputMode, CugraphBfsOutputOptions, CugraphBfsParams, CugraphBfsPredicateInputs, CugraphBfsSource,
+        CugraphBfsSourceVertex, CugraphGraphConstructionPolicy, CugraphGraphOptions, CugraphGraphPredicateTable,
+        CugraphTableReference, result_schema_for_params,
     };
 
     fn bfs_spec(source: CugraphBfsSource, output_mode: CugraphBfsOutputMode) -> CugraphAlgorithmSpec {
@@ -778,5 +784,43 @@ mod tests {
             Some(&projection),
             Some(2),
         );
+    }
+
+    #[test]
+    fn memory_estimate_accepts_only_side_input_free_bfs() {
+        let scalar = CugraphAlgorithmParams::Bfs(Box::new(CugraphBfsParams {
+            source: CugraphBfsSource::scalar_i64(7),
+            depth_limit: Some(3),
+            predicates: Default::default(),
+            output: Default::default(),
+        }));
+        let Some(GraphAlgorithmParams::Bfs(native)) = native_algorithm_params_for_memory_estimate(&scalar) else {
+            panic!("scalar BFS without predicates must retain its graph memory estimate");
+        };
+        assert_eq!(native.source_vertex, 7);
+        assert!(native.source_vertices.is_none());
+        assert!(!native.predicates.has_inputs());
+
+        let source_input = CugraphAlgorithmParams::Bfs(Box::new(CugraphBfsParams {
+            source: CugraphBfsSource::LiteralList(vec![CugraphBfsSourceVertex::Int64(7)]),
+            depth_limit: Some(3),
+            predicates: Default::default(),
+            output: Default::default(),
+        }));
+        assert!(native_algorithm_params_for_memory_estimate(&source_input).is_none());
+
+        let predicate_input = CugraphAlgorithmParams::Bfs(Box::new(CugraphBfsParams {
+            source: CugraphBfsSource::scalar_i64(7),
+            depth_limit: Some(3),
+            predicates: CugraphBfsPredicateInputs {
+                include_vertices: Some(CugraphGraphPredicateTable::new(
+                    CugraphTableReference::parse("vertices").expect("static table identifier is valid"),
+                    "vertex",
+                )),
+                ..Default::default()
+            },
+            output: Default::default(),
+        }));
+        assert!(native_algorithm_params_for_memory_estimate(&predicate_input).is_none());
     }
 }

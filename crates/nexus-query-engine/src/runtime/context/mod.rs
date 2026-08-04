@@ -57,12 +57,23 @@ pub use builder::{RuntimeObservationBuildError, RuntimeObservedExecutionContextB
 #[derive(Debug, Clone)]
 pub struct ExecutionCancellation {
     cancelled: Arc<AtomicBool>,
+    deadline: Option<Instant>,
 }
 
 impl ExecutionCancellation {
     /// Creates a non-cancelled execution flag.
     pub fn new() -> Self {
-        Self { cancelled: Arc::new(AtomicBool::new(false)) }
+        Self::with_deadline(None)
+    }
+
+    /// Creates a cancellation token with an optional absolute deadline.
+    ///
+    /// The deadline is checked at the same cooperative native-engine
+    /// boundaries as caller cancellation. It cannot preempt a CUDA call
+    /// already in flight, but it prevents the next safe boundary from
+    /// starting more native work after the deadline has elapsed.
+    pub fn with_deadline(deadline: Option<Instant>) -> Self {
+        Self { cancelled: Arc::new(AtomicBool::new(false)), deadline }
     }
 
     /// Marks the execution as cancelled.
@@ -70,14 +81,30 @@ impl ExecutionCancellation {
         self.cancelled.store(true, Ordering::Release);
     }
 
-    /// Returns whether cancellation has been requested.
+    /// Returns whether this execution must stop at its next cooperative safe
+    /// boundary.
+    ///
+    /// An elapsed deadline is intentionally an effective cancellation here.
+    /// Callers that need to distinguish an explicit caller action from expiry
+    /// must use [`Self::check`], which preserves explicit cancellation as the
+    /// primary reason.
     pub fn is_cancelled(&self) -> bool {
-        self.cancelled.load(Ordering::Acquire)
+        self.cancellation_requested() || self.is_expired()
+    }
+
+    /// Returns the optional absolute deadline shared by every clone.
+    pub fn deadline(&self) -> Option<Instant> {
+        self.deadline
+    }
+
+    /// Returns whether the optional deadline has elapsed.
+    pub fn is_expired(&self) -> bool {
+        self.deadline.is_some_and(|deadline| Instant::now() >= deadline)
     }
 
     /// Returns a structured native error if cancellation has been requested.
     pub fn check(&self, operation: &'static str) -> Result<()> {
-        if self.is_cancelled() {
+        if self.cancellation_requested() {
             return Err(QueryError::new(
                 crate::error::QueryErrorCode::Cancelled,
                 operation,
@@ -85,7 +112,20 @@ impl ExecutionCancellation {
             )
             .with_fact("cancellation_requested", true));
         }
+        if self.is_expired() {
+            return Err(QueryError::new(
+                crate::error::QueryErrorCode::Cancelled,
+                operation,
+                "native query execution deadline expired",
+            )
+            .with_fact("cancellation_requested", true)
+            .with_fact("reason", "deadline_expired"));
+        }
         Ok(())
+    }
+
+    fn cancellation_requested(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
     }
 }
 
@@ -276,6 +316,26 @@ impl Drop for AttemptAuxiliaryPermit {
 #[cfg(test)]
 mod attempt_auxiliary_slots_tests {
     use super::*;
+
+    #[test]
+    fn execution_cancellation_preserves_deadline_across_clones_and_keeps_caller_cancel_first() {
+        let deadline = Instant::now() - Duration::from_millis(1);
+        let cancellation = ExecutionCancellation::with_deadline(Some(deadline));
+        let clone = cancellation.clone();
+        assert_eq!(clone.deadline(), Some(deadline));
+        assert!(clone.is_expired());
+        assert!(clone.is_cancelled(), "an elapsed deadline must stop native safe boundaries");
+        let deadline_error = clone
+            .check("nexus_query_engine.test.execution_cancellation_deadline")
+            .expect_err("expired execution deadline must stop a safe boundary");
+        assert_eq!(deadline_error.fact_value("reason"), Some("deadline_expired"));
+
+        cancellation.cancel();
+        let caller_error = clone
+            .check("nexus_query_engine.test.execution_cancellation_caller_cancel")
+            .expect_err("explicit caller cancellation remains terminal");
+        assert_eq!(caller_error.fact_value("reason"), None, "caller cancellation takes precedence over expiry");
+    }
 
     #[test]
     fn held_slot_rejects_cancelled_and_expired_waiters_then_releases() {

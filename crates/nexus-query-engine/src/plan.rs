@@ -48,8 +48,8 @@ pub use graph_algorithm::{
     GraphSccParams, GraphSimilarityParams, GraphSourceFingerprint, GraphSourceFingerprintBypassReason,
     GraphSourceVertexRequirement, GraphSpectralClusteringParams, GraphSsspParams, GraphTriangleCountAllParams,
     GraphVertexIdTypeSupport, GraphVertexPairInput, GraphWccParams, GraphWeightPolicy, ResidentGraphKey,
-    graph_residency_descriptor_for_edge_plan, graph_result_schema_for_params, planned_resident_graph_key,
-    stable_graph_result_schema,
+    graph_residency_descriptor_for_edge_plan, graph_residency_descriptor_for_local_parquet_source,
+    graph_result_schema_for_params, planned_resident_graph_key, stable_graph_result_schema,
 };
 pub use join::{
     HashJoinBuildArtifactId, JoinKey, JoinNode, JoinNullEquality, JoinOutputColumn, JoinSide, JoinSpec, JoinType,

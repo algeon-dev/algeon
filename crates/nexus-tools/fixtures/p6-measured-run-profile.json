@@ -85,8 +85,9 @@
     "arrival_mode": "concurrency",
     "concurrency": 8,
     "seed": 20260804,
-    "warmup_seconds": 10,
-    "measurement_seconds": 60
+    "warmup_seconds": 0,
+    "measurement_seconds": 70,
+    "max_rounds": 1
   },
   "cache": {
     "mode": "disabled"

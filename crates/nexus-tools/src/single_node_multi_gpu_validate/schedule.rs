@@ -42,6 +42,9 @@ pub(super) struct ArrivalPlan {
     pub(super) seed: u64,
     pub(super) concurrency: usize,
     pub(super) arrival_rate_per_second: Option<u64>,
+    /// Explicit closed-loop batch bound, when the profile chose one. A
+    /// `None` value preserves duration-paced closed-loop scheduling.
+    pub(super) max_rounds: Option<usize>,
     pub(super) rate_overrun: &'static str,
     pub(super) warmup_ns: u64,
     pub(super) measurement_ns: u64,
@@ -77,9 +80,14 @@ impl ArrivalPlan {
         let horizon_ns = warmup_ns.checked_add(measurement_ns).ok_or("scheduling window overflows nanoseconds")?;
 
         let arrivals = match scheduling.arrival_mode {
-            ArrivalMode::Concurrency => {
-                plan_concurrency(scheduling.concurrency, horizon_ns, warmup_ns, query_count, session_count)
-            },
+            ArrivalMode::Concurrency => plan_concurrency(
+                scheduling.concurrency,
+                scheduling.max_rounds,
+                horizon_ns,
+                warmup_ns,
+                query_count,
+                session_count,
+            ),
             ArrivalMode::Rate => {
                 let rate = scheduling
                     .arrival_rate_per_second
@@ -102,6 +110,7 @@ impl ArrivalPlan {
             seed: scheduling.seed,
             concurrency: scheduling.concurrency,
             arrival_rate_per_second: scheduling.arrival_rate_per_second,
+            max_rounds: scheduling.max_rounds,
             rate_overrun: match scheduling.rate_overrun {
                 RateOverrunPolicy::Delay => "delay",
                 RateOverrunPolicy::Drop => "drop",
@@ -128,6 +137,7 @@ impl ArrivalPlan {
 /// arrivals never become attempt rows.
 fn plan_concurrency(
     concurrency: usize,
+    max_rounds: Option<usize>,
     horizon_ns: u64,
     warmup_ns: u64,
     query_count: usize,
@@ -136,7 +146,8 @@ fn plan_concurrency(
     // A generous round budget: the driver ends on the wall-clock deadline, and
     // an attempt cannot be shorter than this floor in practice.
     const MIN_ROUND_NS: u64 = 1_000_000;
-    let rounds = usize::try_from(horizon_ns / MIN_ROUND_NS).unwrap_or(usize::MAX).max(1);
+    let duration_paced_rounds = usize::try_from(horizon_ns / MIN_ROUND_NS).unwrap_or(usize::MAX).max(1);
+    let rounds = max_rounds.unwrap_or(duration_paced_rounds).min(duration_paced_rounds);
     let mut arrivals = Vec::new();
     let mut sequence = 0;
     for round in 0..rounds {
@@ -239,6 +250,7 @@ mod tests {
             arrival_mode: mode,
             concurrency: 4,
             arrival_rate_per_second: rate,
+            max_rounds: None,
             seed,
             warmup_seconds: 2,
             measurement_seconds: 8,
@@ -265,6 +277,19 @@ mod tests {
         // The plan is generous against the horizon; the driver stops on the
         // measurement deadline rather than exhausting the plan.
         assert!(plan.arrivals.len() > 4 * 10);
+    }
+
+    #[test]
+    fn configured_round_bound_preserves_one_complete_closed_loop_batch() {
+        let mut profile = scheduling(ArrivalMode::Concurrency, None, 0);
+        profile.max_rounds = Some(2);
+
+        let plan = ArrivalPlan::plan(&profile, 3, 2).unwrap();
+
+        assert_eq!(plan.max_rounds, Some(2));
+        assert_eq!(plan.arrivals.len(), 8);
+        assert!(plan.arrivals.iter().take(4).all(|arrival| arrival.round == 0));
+        assert!(plan.arrivals.iter().skip(4).all(|arrival| arrival.round == 1));
     }
 
     /// Rate mode attributes phases from planned offsets. Concurrency mode has

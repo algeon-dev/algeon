@@ -255,6 +255,99 @@ async fn dropping_queued_root_context_setup_rolls_back_the_in_flight_claim() {
     drop(handle);
     service.close_and_wait_for_quiescence(Duration::from_secs(10)).expect("service drains");
 }
+
+#[test]
+fn expired_deadline_stops_secondary_stream_acquisition_before_consuming_a_permit() {
+    let service = try_guaranteed_runtime_test_service().expect("runtime-backed service");
+    let resources = service.inner.resources.as_ref().expect("runtime-backed service");
+    let device = resources.devices.context_by_ordinal(0).expect("device context");
+    let handle = service.admit_query().expect("admission");
+    let root_context = handle.acquire_context().expect("root context");
+    let counters_before = device.stream_pool().class_counters();
+
+    let error = handle
+        .acquire_context_with_cancellation(ExecutionCancellation::with_deadline(Some(
+            Instant::now() - Duration::from_millis(1),
+        )))
+        .expect_err("an expired attempt deadline must not acquire a secondary stream");
+
+    assert_eq!(error.code(), QueryErrorCode::Cancelled);
+    assert_eq!(error.fact_value("reason"), Some("deadline_expired"));
+    assert_eq!(device.stream_pool().class_counters(), counters_before, "no auxiliary stream permit was consumed");
+
+    drop(root_context);
+    handle.finish();
+    drop(handle);
+    service
+        .wait_for_stream_pools_idle(Duration::from_secs(10))
+        .expect("expired attempt context cleanup returns the root stream");
+    service.close_and_wait_for_quiescence(Duration::from_secs(10)).expect("service drains");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn deadline_expiry_while_context_setup_waits_stops_the_worker_and_cleanup_still_releases() {
+    let service = try_guaranteed_runtime_test_service().expect("single-worker runtime service");
+    let resources = service.inner.resources.as_ref().expect("runtime-backed service");
+    let device = resources.devices.context_by_ordinal(0).expect("device context");
+    let handle = Arc::new(service.admit_query().expect("admission"));
+    let pool = handle.gpu_execution_pool().expect("counted GPU execution pool");
+    assert_eq!(pool.snapshot().worker_count, 1);
+
+    let release = Arc::new(tokio::sync::Semaphore::new(0));
+    let blocker_release = Arc::clone(&release);
+    let (blocker_started_tx, blocker_started_rx) = tokio::sync::oneshot::channel();
+    pool.spawn(GpuExecutionJobKind::QueryExecution, async move {
+        let _ = blocker_started_tx.send(());
+        let _permit = blocker_release.acquire_owned().await.expect("blocker release semaphore remains open");
+    })
+    .expect("worker blocker submits");
+    blocker_started_rx.await.expect("worker blocker starts");
+
+    let deadline = Instant::now() + Duration::from_millis(100);
+    let cancellation = ExecutionCancellation::with_deadline(Some(deadline));
+    let acquiring_handle = Arc::clone(&handle);
+    let acquisition =
+        tokio::spawn(async move { acquiring_handle.acquire_context_with_cancellation_async(cancellation).await });
+    let queue_observation_deadline = Instant::now() + Duration::from_secs(10);
+    while pool.snapshot().queued_jobs == 0 {
+        assert!(Instant::now() < queue_observation_deadline, "context setup must reach the GPU worker queue");
+        tokio::task::yield_now().await;
+    }
+
+    tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
+    release.add_permits(1);
+    let error = tokio::time::timeout(Duration::from_secs(10), acquisition)
+        .await
+        .expect("queued context setup returns after the worker is released")
+        .expect("queued context setup task does not panic")
+        .expect_err("deadline-expired worker setup must not create a native context");
+    assert_eq!(error.code(), QueryErrorCode::Cancelled);
+    assert_eq!(error.fact_value("reason"), Some("deadline_expired"));
+
+    let recovery_context = tokio::time::timeout(Duration::from_secs(10), handle.acquire_context_async())
+        .await
+        .expect("a fresh context setup does not inherit the expired worker claim")
+        .expect("a fresh context setup consumes the original root binding");
+    let (root_outstanding, _, auxiliary_outstanding, _) = device.stream_pool().class_counters();
+    assert_eq!(
+        (root_outstanding, auxiliary_outstanding),
+        (1, 0),
+        "the expired worker did not consume the root binding or create an auxiliary stream"
+    );
+    drop(recovery_context);
+
+    handle.finish();
+    drop(pool);
+    drop(handle);
+    service
+        .wait_for_stream_pools_idle(Duration::from_secs(10))
+        .expect("deadline expiry does not cancel admission cleanup");
+    let replacement = service.admit_query().expect("cleanup returns the expired attempt's admission capacity");
+    replacement.finish();
+    drop(replacement);
+    service.close_and_wait_for_quiescence(Duration::from_secs(10)).expect("service drains");
+}
+
 #[test]
 fn query_service_context_keeps_admission_until_context_drop() {
     let service = runtime_test_service(1, 8);
@@ -835,6 +928,93 @@ async fn query_handle_gpu_job_retains_query_epoch_until_joined() {
     let replacement = service.admit_query().expect("joining the final GPU job releases query admission");
     drop(replacement);
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn close_during_admitted_execution_waits_for_the_job_and_seals_before_quiescence() {
+    let service = try_guaranteed_runtime_test_service().expect("runtime-backed service");
+    let backend_lifecycle = crate::runtime::BackendLifecycle::new();
+    let counters = std::sync::Arc::new(crate::attempt::AttemptBackendCounters::default());
+    let attempt = crate::attempt::AttemptOwner::begin(
+        crate::attempt::BeginAttemptRequest {
+            observation: RuntimeObservationConfig::bounded(32, 32 * 1024),
+            ..crate::attempt::BeginAttemptRequest::default()
+        },
+        backend_lifecycle.try_begin_observation().expect("attempt observation permit"),
+        std::sync::Arc::clone(&counters),
+        None,
+    );
+    let attempt_owner = attempt.owner;
+    let completion = attempt.completion;
+    let attempt_handle = attempt_owner.handle();
+    attempt_handle.record_planning_started().expect("planning starts");
+    attempt_handle.record_planning_finished().expect("planning finishes");
+    attempt_handle.set_disposition(crate::observability::AttemptDisposition::Native).expect("native disposition");
+    attempt_handle.record_admission_requested().expect("admission requested");
+
+    let handle = service
+        .admit_query_with_request(QueryAdmissionRequest::new().with_attempt_binding(attempt_owner.admission_binding()))
+        .expect("attempt-bound admission");
+    attempt_handle
+        .record_admitted(crate::observability::AttemptAdmissionFact {
+            admission_sequence: handle.admission_sequence(),
+            admission_wait_ns: handle.admission_wait().as_nanos().try_into().unwrap_or(u64::MAX),
+            device_ordinal: handle.device_ordinal(),
+            grant_bytes: handle.device_budget_bytes(),
+        })
+        .expect("attempt admission fact");
+    let context = handle.acquire_context().expect("admitted execution context");
+    attempt_handle.record_physical_execution_started().expect("physical execution starts");
+    attempt_handle.record_gpu_execution_started().expect("GPU execution starts");
+
+    let pool = handle.gpu_execution_pool().expect("counted query GPU execution pool");
+    let job_pool = pool.clone();
+    let release = Arc::new(tokio::sync::Semaphore::new(0));
+    let job_release = Arc::clone(&release);
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let execution = tokio::spawn(async move {
+        job_pool
+            .run(GpuExecutionJobKind::QueryExecution, async move {
+                let _ = started_tx.send(());
+                let _permit = job_release.acquire_owned().await.expect("execution release semaphore remains open");
+            })
+            .await
+    });
+    started_rx.await.expect("admitted execution job starts");
+
+    service.close().expect("close stops new admission while admitted execution continues");
+    assert_eq!(service.admission_snapshot().unwrap().active_queries, 1, "live execution retains its admission");
+    let timeout = service
+        .close_and_wait_for_quiescence(Duration::from_millis(25))
+        .expect_err("close cannot quiesce while the admitted execution job is blocked");
+    assert_eq!(timeout.fact_value("reason"), Some("query_service_shutdown_timeout"));
+    assert!(!completion.is_ready(), "no terminal report is published while execution still owns the query epoch");
+
+    attempt_owner.commit_terminal(RuntimeTerminalOutcome::Succeeded).expect("execution commits its terminal outcome");
+    drop(context);
+    handle.finish();
+    drop(handle);
+    assert!(!completion.is_ready(), "terminal outcome alone cannot release the running execution job");
+    assert_eq!(
+        service.admission_snapshot().unwrap().active_queries,
+        1,
+        "capacity stays unavailable until the job drains"
+    );
+
+    release.add_permits(1);
+    execution.await.expect("execution job task joins").expect("execution job completes after release");
+    drop(pool);
+
+    let report = completion.wait_timeout(Duration::from_secs(10)).expect("post-cleanup attempt report seals");
+    assert!(matches!(report.outcome, RuntimeTerminalOutcome::Succeeded));
+    assert!(report.timestamps.admitted_ns.is_some());
+    assert!(report.timestamps.physical_execution_started_ns.is_some());
+    assert!(report.timestamps.cleanup_complete_ns.is_some());
+    assert!(report.timestamps.report_ready_ns.is_some());
+    assert_eq!(report.capacity_disposition, crate::observability::AttemptCapacityDisposition::Released);
+    assert_eq!(counters.snapshot().reports_ready, 1, "admitted close publishes exactly one terminal report");
+    service.close_and_wait_for_quiescence(Duration::from_secs(10)).expect("late execution cleanup lets close recover");
+}
+
 #[test]
 fn active_query_owner_prevents_service_drain_until_cleanup_finishes() {
     let service = try_guaranteed_runtime_test_service().expect("first guaranteed service");

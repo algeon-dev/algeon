@@ -193,6 +193,10 @@ impl AdmissionTestHandle {
         self.handle.admission_wait()
     }
 
+    fn admission_wait_fact(&self) -> Option<crate::observability::AttemptAdmissionWaitFact> {
+        self.handle.admission_wait_fact()
+    }
+
     fn device_budget_bytes(&self) -> u64 {
         self.handle.device_budget_bytes()
     }

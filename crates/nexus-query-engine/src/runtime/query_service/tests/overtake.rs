@@ -49,6 +49,11 @@ fn overtakes_count_exact_bypasses_and_install_protection_at_limit() {
 
     let admitted_big = big.try_admit().unwrap().expect("protected waiter is admitted once releases land");
     assert_eq!(admitted_big.device_budget_bytes(), 50);
+    let wait = admitted_big.admission_wait_fact().expect("queued admission retains its final overtake state");
+    assert_eq!(wait.overtake_limit, 2);
+    assert_eq!(wait.overtakes_consumed, 2);
+    assert_eq!(wait.overtakes_remaining, 0);
+    assert_eq!(wait.protection_device_ordinal, Some(0));
     let report = service.device_ledger_reports().unwrap().remove(0);
     assert!(!report.protected_slot, "admission consumes the protection");
     assert_eq!(report.protected_reserve_bytes, 0);
@@ -209,6 +214,27 @@ fn deadline_crossing_during_overtake_commit_rolls_back_allowance_and_protection(
     assert_eq!(older_state.protected_device, None);
     drop(state);
     assert!(!service.device_ledger_reports().unwrap().remove(0).protected_slot);
+}
+
+#[test]
+fn caller_deadline_remains_a_typed_cancellation_at_admission() {
+    let service = admission_test_service_with_profile(
+        QueryExecutionConfig::default(),
+        QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(5), max_overtakes_per_waiter: 1 },
+        100,
+        10,
+        2,
+    );
+    let cancellation = ExecutionCancellation::with_deadline(Some(Instant::now() - Duration::from_millis(1)));
+
+    let error = service
+        .admit_query_with_request(QueryAdmissionRequest::new().with_execution_cancellation(cancellation))
+        .expect_err("an expired caller deadline must stop admission before it can publish a grant");
+
+    assert_eq!(error.code(), QueryErrorCode::Cancelled);
+    assert_eq!(error.fact_value("reason"), Some("deadline_expired"));
+    assert_eq!(service.admission_snapshot().unwrap().active_queries, 0);
+    assert_eq!(service.admission_snapshot().unwrap().queued_queries, 0);
 }
 
 #[test]

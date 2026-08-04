@@ -543,6 +543,25 @@ impl LocalParquetSource {
         self.files.iter().map(LocalParquetFile::selected_row_group_count).sum()
     }
 
+    /// Returns the exact number of rows represented by the selected Parquet
+    /// row groups, when every selected group has footer-backed row metadata.
+    ///
+    /// This is deliberately narrower than the source's descriptive estimates:
+    /// callers that need an exact graph-input cardinality cannot substitute
+    /// file sizes, optimizer statistics, or an unselected row-group total.
+    pub fn exact_selected_row_count(&self) -> Option<u64> {
+        self.files.iter().try_fold(0_u64, |source_total, file| {
+            let row_group_rows = file.row_group_rows.as_ref()?;
+            let file_total = match file.row_groups.as_ref() {
+                Some(selected) => selected
+                    .iter()
+                    .try_fold(0_u64, |total, row_group| total.checked_add(*row_group_rows.get(*row_group)?)),
+                None => row_group_rows.iter().try_fold(0_u64, |total, rows| total.checked_add(*rows)),
+            }?;
+            source_total.checked_add(file_total)
+        })
+    }
+
     /// Number of file entries represented as byte-ranged in diagnostics.
     pub fn ranged_file_count(&self) -> usize {
         self.diagnostics.ranged_file_count
@@ -1065,5 +1084,20 @@ mod tests {
         for sensitive in ["secret-bucket", "private/key", "X-Amz-Signature", "abc"] {
             assert!(!diagnostic.contains(sensitive), "diagnostic leaked {sensitive}: {diagnostic}");
         }
+    }
+
+    #[test]
+    fn exact_selected_row_count_uses_only_footer_proven_selected_groups() {
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+        let source = LocalParquetSource::from_files(
+            vec![
+                LocalParquetFile::new("first.parquet").with_row_groups(vec![0, 2]).with_row_group_rows(vec![3, 5, 7]),
+                LocalParquetFile::new("second.parquet").with_row_group_rows(vec![11]),
+            ],
+            schema,
+            vec!["id".to_string()],
+        );
+
+        assert_eq!(source.exact_selected_row_count(), Some(21));
     }
 }

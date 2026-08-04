@@ -49,6 +49,14 @@ name = "gpu_backend_heterogeneous_active_limits"
 path = "tests/gpu_backend_heterogeneous_active_limits.rs"
 
 [[test]]
+name = "gpu_backend_fault_injection"
+path = "tests/gpu_backend_fault_injection.rs"
+
+[[test]]
+name = "gpu_allocator_event_correlation"
+path = "tests/gpu_allocator_event_correlation.rs"
+
+[[test]]
 name = "native_contract_tests"
 path = "tests/native_contract_tests.rs"
 

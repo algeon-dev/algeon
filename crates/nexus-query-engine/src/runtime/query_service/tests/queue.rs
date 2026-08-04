@@ -402,3 +402,60 @@ fn query_service_close_wakes_waiting_admission() {
     assert_eq!(error.code(), QueryErrorCode::Cancelled);
     assert_eq!(error.fact_value("reason"), Some("admission_closed"));
 }
+
+#[test]
+fn attempt_bound_queued_close_seals_one_terminal_report_without_admission() {
+    let service = test_service(1, 8);
+    let active = service.admit_query().expect("first admission occupies the only slot");
+    let lifecycle = crate::runtime::BackendLifecycle::new();
+    let counters = std::sync::Arc::new(crate::attempt::AttemptBackendCounters::default());
+    let attempt = crate::attempt::AttemptOwner::begin(
+        crate::attempt::BeginAttemptRequest {
+            observation: RuntimeObservationConfig::bounded(32, 32 * 1024),
+            ..crate::attempt::BeginAttemptRequest::default()
+        },
+        lifecycle.try_begin_observation().expect("attempt observation permit"),
+        std::sync::Arc::clone(&counters),
+        None,
+    );
+    let attempt_owner = attempt.owner;
+    let completion = attempt.completion;
+    let attempt_handle = attempt_owner.handle();
+    attempt_handle.record_planning_started().expect("planning starts");
+    attempt_handle.record_planning_finished().expect("planning finishes");
+    attempt_handle.set_disposition(AttemptDisposition::Native).expect("native disposition");
+    attempt_handle.record_admission_requested().expect("admission requested");
+
+    let mut queued = service
+        .enqueue_admission_with_request(
+            QueryAdmissionRequest::new().with_attempt_binding(attempt_owner.admission_binding()),
+        )
+        .expect("attempt-bound request queues behind the active admission");
+    assert_eq!(service.admission_snapshot().unwrap().active_queries, 1);
+    assert_eq!(service.admission_snapshot().unwrap().queued_queries, 1);
+
+    service.close().expect("close wakes the queued attempt");
+    let error = queued.try_admit().expect_err("closed admission cannot publish a query handle");
+    assert_eq!(error.code(), QueryErrorCode::Cancelled);
+    assert_eq!(error.fact_value("reason"), Some("admission_closed"));
+
+    let report = completion.wait_timeout(Duration::from_secs(2)).expect("queued close seals the bound attempt report");
+    assert!(matches!(report.outcome, RuntimeTerminalOutcome::Cancelled));
+    assert_eq!(report.disposition, AttemptDisposition::Native);
+    assert!(report.timestamps.admission_requested_ns.is_some());
+    assert!(report.timestamps.admitted_ns.is_none());
+    assert!(report.timestamps.physical_execution_started_ns.is_none());
+    assert!(report.timestamps.report_ready_ns.is_some());
+    assert_eq!(counters.snapshot().reports_ready, 1, "queued close publishes exactly one terminal report");
+    assert_eq!(
+        service.admission_snapshot().unwrap().active_queries,
+        1,
+        "the queued close cannot release the live admission"
+    );
+    assert_eq!(service.admission_snapshot().unwrap().queued_queries, 0, "the closed queue has no leaked waiter");
+
+    drop(active);
+    service
+        .close_and_wait_for_quiescence(Duration::from_secs(2))
+        .expect("active admission release lets the closed service quiesce");
+}

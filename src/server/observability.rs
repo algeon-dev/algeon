@@ -1144,6 +1144,7 @@ mod tests {
             retry_advice: nexus_query_engine::observability::AttemptRetryAdvice::do_not_retry(),
             device_ordinal: Some(0),
             admission: None,
+            admission_wait: None,
             timestamps: AttemptTimestamps {
                 submitted_ns: 1,
                 planning_started_ns: Some(2),

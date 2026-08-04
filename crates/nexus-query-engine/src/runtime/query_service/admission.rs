@@ -235,8 +235,7 @@ impl QueuedAdmissionTerminal {
     /// disposition that must finish the removed request's completion payload.
     pub(super) fn record(&self, error: QueryError) -> RuntimeTerminalOutcome {
         let disposition = RuntimeTerminalOutcome::from_query_error(&error);
-        let primary_failure = (error.code() != QueryErrorCode::Cancelled)
-            .then(|| crate::observability::AttemptFailureSummary::from_native_error(&error));
+        let primary_failure = RuntimeTerminalOutcome::primary_failure_from_query_error(&error);
         let mut terminal = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if terminal.error.is_none() {
             terminal.primary_failure = primary_failure;
@@ -286,6 +285,22 @@ pub(super) struct AdmissionRequest {
     /// Terminal result recorded by queue maintenance before it drops this
     /// request's completion payload outside the admission mutex.
     pub(super) terminal: QueuedAdmissionTerminal,
+}
+
+impl AdmissionRequest {
+    /// Captures the controller's immutable finite-overtake state at the
+    /// moment this queued request is selected for placement. The request is
+    /// removed immediately afterwards, so later snapshots cannot recover
+    /// this fact truthfully.
+    pub(super) fn admission_wait_fact(&self, overtake_limit: u32) -> crate::observability::AttemptAdmissionWaitFact {
+        crate::observability::AttemptAdmissionWaitFact {
+            submission_sequence: self.submission_seq,
+            overtake_limit,
+            overtakes_consumed: overtake_limit.saturating_sub(self.overtakes_remaining),
+            overtakes_remaining: self.overtakes_remaining,
+            protection_device_ordinal: self.protected_device,
+        }
+    }
 }
 
 /// The one ownership boundary for terminal admission completion.
@@ -374,8 +389,8 @@ impl QueryCompletion {
         // still borrowed. `finish` deliberately consumes only its closed
         // terminal projection, so doing this afterwards would lose operation,
         // allowlisted facts, and redacted text from an attempt report.
-        if error.code() != QueryErrorCode::Cancelled {
-            self.record_primary_failure(crate::observability::AttemptFailureSummary::from_native_error(error));
+        if let Some(summary) = RuntimeTerminalOutcome::primary_failure_from_query_error(error) {
+            self.record_primary_failure(summary);
         }
         self.finish(RuntimeTerminalOutcome::from_query_error(error));
     }
@@ -686,7 +701,7 @@ impl QueryAdmissionWaiter {
         }
 
         if self.execution_cancellation.is_cancelled() {
-            let error = admission_cancellation_error();
+            let error = admission_cancellation_or_deadline_error(&self.execution_cancellation);
             let removed = match self.service.inner.admission.lock() {
                 Ok(mut state) => {
                     let removed = self
@@ -855,6 +870,8 @@ impl QueryAdmissionWaiter {
             };
             let admitted = state.queued.remove(position).expect("admissible request exists");
             let admitted_submission_seq = admitted.submission_seq;
+            let admission_wait_fact =
+                admitted.admission_wait_fact(self.service.inner.queue_bounds.max_overtakes_per_waiter);
             if let Some(error) = self.service.admission_terminal_rejection(&state) {
                 record_admission_lifecycle(
                     &admitted.observation,
@@ -890,6 +907,7 @@ impl QueryAdmissionWaiter {
                     deadline: self.deadline,
                     execution_cancellation: admitted.execution_cancellation,
                     admitted_submission_seq: Some(admitted_submission_seq),
+                    admission_wait_fact: Some(admission_wait_fact),
                     lifecycle_ticket,
                 })
                 .map(Some);
@@ -986,11 +1004,7 @@ pub(super) fn remove_queued_request(
 
 pub(super) fn finish_removed_request_error(request: Option<AdmissionRequest>, error: &QueryError) {
     if let Some(request) = request {
-        if error.code() == QueryErrorCode::Cancelled {
-            request.completion.finish_cancelled();
-        } else {
-            request.completion.finish_error(error);
-        }
+        request.completion.finish_error(error);
     }
 }
 
@@ -1002,6 +1016,16 @@ pub(super) fn admission_cancellation_error() -> QueryError {
     )
     .with_fact("reason", "admission_cancelled")
     .with_fact("cancellation_requested", true)
+}
+
+/// Preserves an attempt-wide deadline's typed cancellation reason when a
+/// queue boundary observes an effective cancellation. Explicit caller
+/// cancellation retains the stable admission-specific reason.
+pub(super) fn admission_cancellation_or_deadline_error(cancellation: &ExecutionCancellation) -> QueryError {
+    match cancellation.check("nexus_query_engine.query_service.admission") {
+        Err(error) if error.fact_value("reason") == Some("deadline_expired") => error,
+        _ => admission_cancellation_error(),
+    }
 }
 
 pub(super) fn finish_removed_request_cancelled(request: Option<AdmissionRequest>) {
