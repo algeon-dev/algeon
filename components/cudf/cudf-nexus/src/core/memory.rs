@@ -2018,16 +2018,10 @@ impl DeviceMemoryManager {
     }
 
     /// Create an opt-in query memory domain backed by a private CUDA async pool.
+    ///
+    /// When this manager owns a static allocation partition, live allocations
+    /// through the private pool consume that same partition limit.
     pub fn query_memory_domain(&self, domain_id: u64, options: QueryMemoryDomainOptions) -> Result<QueryMemoryDomain> {
-        if Self::options_for_device(self.device())?.is_some_and(|options| options.allocation_limit_bytes.is_some()) {
-            return Err(error::Error::new_with(
-                error::ErrorCode::UnsupportedOperation,
-                "memory::device_memory_manager::query_memory_domain",
-                "query memory domains cannot bypass a hard manager allocation limit",
-            )
-            .with_detail("reason", "query_domain_incompatible_with_allocation_limit")
-            .with_detail("device", self.device().ordinal().to_string()));
-        }
         let _guard = DeviceGuard::new(self.device())?;
         let mut domain = ptr::null_mut();
         error::check_status_in_with_details(
