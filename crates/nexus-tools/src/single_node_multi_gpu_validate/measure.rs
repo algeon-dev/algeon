@@ -122,9 +122,14 @@ async fn run_measured(
     let sessions = install_sessions(&backend, profile, &queries).await?;
 
     let sampler = Sampler::start(&backend);
-    let outcome = match (quarantine_device, deadline_first_after, domain_exhaustion_probe, physical_allocator_pressure)
-    {
-        (Some(target_ordinal), None, false, false) => {
+    let outcome = match (
+        quarantine_device,
+        deadline_first_after,
+        domain_exhaustion_probe,
+        physical_allocator_pressure,
+        overload_fairness,
+    ) {
+        (Some(target_ordinal), None, false, false, false) => {
             drive_concurrent_quarantine(
                 &backend,
                 &sessions,
@@ -136,7 +141,7 @@ async fn run_measured(
             )
             .await
         },
-        (None, Some(deadline_after), false, false) => {
+        (None, Some(deadline_after), false, false, false) => {
             drive_deadline_after_admission(
                 &backend,
                 &sessions,
@@ -147,10 +152,10 @@ async fn run_measured(
             )
             .await
         },
-        (None, None, true, false) => {
+        (None, None, true, false, false) => {
             drive_domain_exhaustion_probe(&backend, &sessions, &queries, &plan, profile.scheduling.rate_overrun).await
         },
-        (None, None, false, true) => {
+        (None, None, false, true, false) => {
             drive_physical_allocator_pressure(
                 &backend,
                 &sessions,
@@ -161,7 +166,18 @@ async fn run_measured(
             )
             .await
         },
-        (None, None, false, false) => {
+        (None, None, false, false, true) => {
+            drive_overload_fairness(
+                &backend,
+                &sessions,
+                &queries,
+                &plan,
+                profile.scheduling.rate_overrun,
+                profile.backend.queue.max_queued_attempts,
+            )
+            .await
+        },
+        (None, None, false, false, false) => {
             drive(&backend, &sessions, &queries, &plan, profile.scheduling.rate_overrun, cancel_first_after).await
         },
         _ => unreachable!("CLI validation rejects combined P6.6 scenario controls"),
@@ -205,6 +221,7 @@ async fn run_measured(
             plan.arrivals.len(),
             profile.backend.queue.max_queued_attempts,
             profile.backend.queue.max_overtakes_per_waiter,
+            driven.observed_peak_queued_attempts,
             driven.dropped_overrun_arrivals,
             driven.begin_failures,
             driven.join_failures,
@@ -414,6 +431,7 @@ async fn drive_physical_allocator_pressure(
             pressure_established_before_q01: true,
             pressure_released_before_recovery: true,
         }),
+        observed_peak_queued_attempts: 0,
     })
 }
 
@@ -557,6 +575,7 @@ struct DrivenRun {
     quarantine_barrier: Option<QuarantineBarrier>,
     deadline_barrier: Option<DeadlineBarrierEvidence>,
     physical_allocator_pressure: Option<PhysicalAllocatorPressureBarrier>,
+    observed_peak_queued_attempts: usize,
 }
 
 /// Runner-local facts sampled around a synchronous controlled quarantine.
@@ -602,6 +621,35 @@ async fn drive(
     plan: &ArrivalPlan,
     rate_overrun: RateOverrunPolicy,
     cancel_first_after: Option<Duration>,
+) -> ToolResult<DrivenRun> {
+    drive_with_queue_observation(backend, sessions, queries, plan, rate_overrun, cancel_first_after, None).await
+}
+
+/// Drives the physical bounded-overload cohort through the same public attempt
+/// API as an ordinary run, while retaining only the public queue high-water
+/// mark. It does not manufacture unequal admission requirements.
+async fn drive_overload_fairness(
+    backend: &NexusGpuBackend,
+    sessions: &[SessionContext],
+    queries: &[SelectedQuery],
+    plan: &ArrivalPlan,
+    rate_overrun: RateOverrunPolicy,
+    queue_limit: usize,
+) -> ToolResult<DrivenRun> {
+    if queue_limit == 0 {
+        return Err("--overload-fairness requires a non-zero configured queue limit".into());
+    }
+    drive_with_queue_observation(backend, sessions, queries, plan, rate_overrun, None, Some(queue_limit)).await
+}
+
+async fn drive_with_queue_observation(
+    backend: &NexusGpuBackend,
+    sessions: &[SessionContext],
+    queries: &[SelectedQuery],
+    plan: &ArrivalPlan,
+    rate_overrun: RateOverrunPolicy,
+    cancel_first_after: Option<Duration>,
+    queue_limit: Option<usize>,
 ) -> ToolResult<DrivenRun> {
     let started = Instant::now();
     let closed_loop = plan.arrival_mode == "concurrency";
@@ -705,6 +753,10 @@ async fn drive(
         }));
     }
 
+    let observed_peak_queued_attempts = match queue_limit {
+        Some(limit) => observe_queue_peak(backend, limit, run_deadline).await?,
+        None => 0,
+    };
     drain(&mut tasks, &mut observations, &mut join_failures).await;
     let elapsed_until_reports_ns = started.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
     let cancellation_barrier = if let Some(mut barrier) = cancellation_barrier {
@@ -738,7 +790,27 @@ async fn drive(
         quarantine_barrier: None,
         deadline_barrier: None,
         physical_allocator_pressure: None,
+        observed_peak_queued_attempts,
     })
+}
+
+/// Samples the public aggregate queue count while the initial finite cohort is
+/// live. The five-second bound is only an observation window; every submitted
+/// attempt is still awaited and sealed by the normal drain below.
+async fn observe_queue_peak(backend: &NexusGpuBackend, queue_limit: usize, run_deadline: Instant) -> ToolResult<usize> {
+    const POLL_INTERVAL: Duration = Duration::from_millis(1);
+    const OBSERVATION_WINDOW: Duration = Duration::from_secs(5);
+    let deadline = (Instant::now() + OBSERVATION_WINDOW).min(run_deadline);
+    let mut peak = 0;
+    loop {
+        let snapshot = backend.admission_snapshot()?;
+        peak = peak.max(snapshot.queued_queries);
+        if peak >= queue_limit || Instant::now() >= deadline {
+            return Ok(peak);
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        tokio::time::sleep(POLL_INTERVAL.min(remaining)).await;
+    }
 }
 
 /// Drives a two-cohort controlled-quarantine scenario through the ordinary
@@ -885,6 +957,7 @@ async fn drive_concurrent_quarantine(
         }),
         deadline_barrier: None,
         physical_allocator_pressure: None,
+        observed_peak_queued_attempts: 0,
     })
 }
 
@@ -1006,6 +1079,7 @@ async fn drive_deadline_after_admission(
             healthy_reuse_completed,
         }),
         physical_allocator_pressure: None,
+        observed_peak_queued_attempts: 0,
     })
 }
 

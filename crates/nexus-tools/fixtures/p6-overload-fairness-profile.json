@@ -7,10 +7,10 @@
       {
         "ordinal": 0,
         "ownership": "whole_device_exclusive",
-        "memory_limit_bytes": 6442450944,
+        "memory_limit_bytes": 21474836480,
         "backend_reserve_bytes": 536870912,
         "cache_cap_bytes": 0,
-        "attempt_floor_bytes": 268435456,
+        "attempt_floor_bytes": 1073741824,
         "source_work_per_attempt": 2,
         "max_active_attempts": 2,
         "installation": {
@@ -22,10 +22,10 @@
       {
         "ordinal": 1,
         "ownership": "whole_device_exclusive",
-        "memory_limit_bytes": 6442450944,
+        "memory_limit_bytes": 21474836480,
         "backend_reserve_bytes": 536870912,
         "cache_cap_bytes": 0,
-        "attempt_floor_bytes": 268435456,
+        "attempt_floor_bytes": 1073741824,
         "source_work_per_attempt": 2,
         "max_active_attempts": 2,
         "installation": {
@@ -56,7 +56,7 @@
     "concurrency": 8,
     "seed": 20260804,
     "warmup_seconds": 0,
-    "measurement_seconds": 70,
+    "measurement_seconds": 120,
     "max_rounds": 1
   },
   "cache": {
