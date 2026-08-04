@@ -42,7 +42,7 @@ fn bindings_include_critical_core_symbols() {
         "cugraph_edgelist_get_destinations",
         "cugraph_edgelist_free",
         // Raw edgelist construction workspace preflight
-        "cugraph_edgelist_sort_workspace_preflight",
+        "cugraph_graph_construction_workspace_preflight",
         "cugraph_bfs_side_input_workspace_preflight",
         "cugraph_personalized_pagerank_side_input_workspace_preflight",
         // Centrality

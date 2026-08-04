@@ -2,7 +2,7 @@ mod support;
 
 use support::{include_dir, manifest_dir, strip_c_comments};
 
-const SYMBOL: &str = "cugraph_edgelist_sort_workspace_preflight";
+const SYMBOL: &str = "cugraph_graph_construction_workspace_preflight";
 
 fn normalized_declaration(source: &str) -> String {
     let source = strip_c_comments(source);
