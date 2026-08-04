@@ -834,6 +834,10 @@ pub struct ExecutionContext {
     query_id: Option<QueryId>,
     /// Optional parent trace id used to group related query executions.
     trace_id: Option<TraceId>,
+    /// Engine-minted identity for the physical attempt that admitted this context.
+    ///
+    /// Direct contexts are not attempt-bound and therefore leave this absent.
+    attempt_id: Option<crate::observability::AttemptId>,
     /// Shared query-local bounded runtime observation session.
     runtime_observation: RuntimeObservationHandle,
     /// Shared terminal owner carried by query-service contexts.
@@ -996,6 +1000,7 @@ pub(super) struct ExecutionContextParts {
     pub(super) io_lifecycle: Option<IoLifecycle>,
     pub(super) query_id: Option<QueryId>,
     pub(super) trace_id: Option<TraceId>,
+    pub(super) attempt_id: Option<crate::observability::AttemptId>,
     pub(super) runtime_observation: RuntimeObservationHandle,
     pub(super) runtime_observation_owner: Option<crate::observability::RuntimeObservationOwner>,
     pub(super) runtime_execution_scope: Option<crate::observability::RuntimeExecutionObservationScope>,
@@ -1067,6 +1072,7 @@ impl ExecutionContext {
             io_lifecycle: None,
             query_id: None,
             trace_id: None,
+            attempt_id: None,
             runtime_observation: RuntimeObservationHandle::disabled(),
             runtime_observation_owner: None,
             runtime_execution_scope: None,
@@ -1117,6 +1123,7 @@ impl ExecutionContext {
             io_lifecycle: parts.io_lifecycle,
             query_id: parts.query_id,
             trace_id: parts.trace_id,
+            attempt_id: parts.attempt_id,
             runtime_observation: parts.runtime_observation,
             runtime_observation_owner: parts.runtime_observation_owner,
             runtime_execution_scope: parts.runtime_execution_scope,
@@ -1234,6 +1241,14 @@ impl ExecutionContext {
     /// Returns the optional parent trace id.
     pub fn trace_id(&self) -> Option<&TraceId> {
         self.trace_id.as_ref()
+    }
+
+    /// Returns the engine-minted attempt identity carried by an admitted context.
+    ///
+    /// This remains absent for direct contexts because they are not part of a
+    /// public execution-attempt lifecycle.
+    pub(crate) fn attempt_id(&self) -> Option<crate::observability::AttemptId> {
+        self.attempt_id
     }
 
     /// Returns the shared recording handle without terminal-seal authority.
@@ -1369,6 +1384,7 @@ impl ExecutionContext {
             io_lifecycle: self.io_lifecycle.clone(),
             query_id: self.query_id.clone(),
             trace_id: self.trace_id.clone(),
+            attempt_id: self.attempt_id,
             runtime_observation: self.runtime_observation.clone(),
             runtime_observation_owner: self.runtime_observation_owner.clone(),
             runtime_execution_scope: self.runtime_execution_scope.clone(),

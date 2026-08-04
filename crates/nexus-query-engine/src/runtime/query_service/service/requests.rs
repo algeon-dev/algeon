@@ -956,6 +956,7 @@ impl QueryService {
                 Arc::clone(&self.inner),
                 admission_request_id,
                 observation,
+                attempt_id,
                 completion,
                 envelope,
                 admitted_requirement,

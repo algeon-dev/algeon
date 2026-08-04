@@ -109,6 +109,48 @@ fn query_service_context_carries_graph_calibration_override() {
     assert_eq!(admitted_context.context().graph_memory_calibration_override(), graph_memory_calibration_override);
 }
 
+#[test]
+fn attempt_bound_context_carries_its_engine_identity_for_gpu_execution_annotations() {
+    let service = try_guaranteed_runtime_test_service().expect("runtime-backed service");
+    let lifecycle = crate::runtime::BackendLifecycle::new();
+    let attempt = crate::attempt::AttemptOwner::begin(
+        crate::attempt::BeginAttemptRequest::default(),
+        lifecycle.try_begin_observation().expect("attempt observation permit"),
+        std::sync::Arc::new(crate::attempt::AttemptBackendCounters::default()),
+        None,
+    );
+    let attempt_id = attempt.owner.attempt_id();
+    let attempt_owner = attempt.owner;
+    let completion = attempt.completion;
+    let attempt_handle = attempt_owner.handle();
+    attempt_handle.record_planning_started().expect("planning starts");
+    attempt_handle.record_planning_finished().expect("planning finishes");
+    attempt_handle
+        .set_disposition(crate::observability::AttemptDisposition::Native)
+        .expect("native disposition");
+    attempt_handle.record_admission_requested().expect("admission requested");
+    let handle = service
+        .admit_query_with_request(QueryAdmissionRequest::new().with_attempt_binding(attempt_owner.admission_binding()))
+        .expect("attempt-bound admission");
+    attempt_handle
+        .record_admitted(crate::observability::AttemptAdmissionFact {
+            admission_sequence: handle.admission_sequence(),
+            admission_wait_ns: handle.admission_wait().as_nanos().try_into().unwrap_or(u64::MAX),
+            device_ordinal: handle.device_ordinal(),
+            grant_bytes: handle.device_budget_bytes(),
+        })
+        .expect("attempt admission fact");
+    let context = handle.acquire_context().expect("attempt-bound execution context");
+
+    assert_eq!(context.context().attempt_id(), Some(attempt_id));
+
+    attempt_owner.commit_terminal(RuntimeTerminalOutcome::Succeeded).expect("attempt terminalizes");
+    drop(context);
+    handle.finish();
+    drop(handle);
+    completion.wait_timeout(Duration::from_secs(10)).expect("attempt report publishes after cleanup");
+}
+
 #[cfg(feature = "cugraph")]
 #[test]
 fn cache_enabled_context_exposes_source_and_graph_leases_from_one_domain() {
