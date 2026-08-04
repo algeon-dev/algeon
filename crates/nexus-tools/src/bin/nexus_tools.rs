@@ -65,7 +65,7 @@ mod server_iceberg_rest_multigpu_e2e;
 mod server_iceberg_rest_multigpu_e2e;
 #[cfg(feature = "single-node-multi-gpu-validate")]
 #[cfg_attr(test, allow(dead_code))]
-#[path = "../single_node_multi_gpu_validate.rs"]
+#[path = "../single_node_multi_gpu_validate/mod.rs"]
 mod single_node_multi_gpu_validate;
 #[cfg(feature = "validate-query")]
 #[path = "../validate_query.rs"]
@@ -125,7 +125,7 @@ fn print_usage() {
            flock /tmp/cudf-gpu.lock cargo run -p nexus-tools --features cugraph-oracle -- cugraph-fixture-e2e <pagerank|bfs-include-edges|bfs-utf8-include-edges|bfs-utf8-path|bfs-utf8-predicates>\n\
            flock /tmp/cudf-gpu.lock cargo run -p nexus-tools --features cugraph-similarity-calibrate -- cugraph-similarity-calibrate --algorithm <jaccard|sorensen|overlap|cosine> --pair-rows <N> [--weighted] [--vertex-dtype int32|int64] [--topology sparse-uniform|hub-skewed] [--edge-parquet PATH --edge-row-groups N] [--observation-out PATH]\n\
            flock /tmp/cudf-gpu.lock cargo run -p nexus-tools --features datafusion-baseline-contract-validate -- datafusion-baseline-contract-validate [--out-dir DIR]\n\
-           cargo run -p nexus-tools --features single-node-multi-gpu-validate -- single-node-multi-gpu-validate --config run-profile.json --out-dir run-artifacts --dry-run\n           cargo run -p nexus-tools --features single-node-multi-gpu-validate -- single-node-multi-gpu-validate --config run-profile.json --out-dir run-artifacts --fixture-preflight"
+           cargo run -p nexus-tools --features single-node-multi-gpu-validate -- single-node-multi-gpu-validate --config run-profile.json --out-dir run-artifacts --dry-run\n           cargo run -p nexus-tools --features single-node-multi-gpu-validate -- single-node-multi-gpu-validate --config run-profile.json --out-dir run-artifacts --fixture-preflight\n           flock /tmp/cudf-gpu.lock cargo run --release -p nexus-tools --features single-node-multi-gpu-validate-run -- single-node-multi-gpu-validate --config run-profile.json --out-dir run-artifacts --measured-run [--nsight-trace PATH]"
     );
 }
 

@@ -9,8 +9,10 @@ use arrow::{
     datatypes::{DataType, Field, Schema},
     record_batch::RecordBatch,
 };
+use datafusion::prelude::SessionContext;
 use nexus_workloads::graph::{
     DBLP_DATASET_ID, DBLP_TABLES, describe_canonical_dblp_dataset, describe_dblp_dataset, discover_dblp_fixture_layout,
+    register_dblp_tables,
 };
 use parquet::arrow::ArrowWriter;
 use serde_json::json;
@@ -95,6 +97,24 @@ fn canonical_dblp_discovery_rejects_a_self_consistent_sample_fixture() {
 
     let error = describe_canonical_dblp_dataset(&root, "v12", "prepared").unwrap_err();
     assert!(error.to_string().contains("full canonical DBLP V12"), "{error}");
+}
+
+#[tokio::test]
+async fn dblp_registration_binds_every_required_table_under_its_fixture_name() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path().join("citation_network").join("v1");
+    write_dblp_fixture(&root);
+
+    let ctx = SessionContext::new();
+    let layout = register_dblp_tables(&ctx, &root).await.unwrap();
+    assert_eq!(layout.parquet_root, root.join("parquet"));
+    for table in DBLP_TABLES {
+        let rows = ctx.sql(&format!("SELECT COUNT(*) FROM {table}")).await.unwrap().collect().await.unwrap();
+        assert_eq!(rows.len(), 1, "{table}");
+    }
+
+    let missing = temporary.path().join("absent");
+    assert!(register_dblp_tables(&SessionContext::new(), &missing).await.is_err());
 }
 
 fn write_dblp_fixture(root: &Path) {

@@ -13,6 +13,10 @@ use std::{
 };
 
 use arrow::error::ArrowError;
+use datafusion::{
+    error::DataFusionError,
+    prelude::{ParquetReadOptions, SessionContext},
+};
 use parquet::{
     arrow::arrow_reader::ParquetRecordBatchReaderBuilder,
     errors::ParquetError,
@@ -45,7 +49,10 @@ pub enum GraphDatasetError {
     Io(std::io::Error),
     Arrow(ArrowError),
     Parquet(ParquetError),
+    DataFusion(DataFusionError),
     InvalidDataset(String),
+    /// A fixture path that cannot be expressed as UTF-8 for table registration.
+    NonUtf8Path(PathBuf),
 }
 
 impl Display for GraphDatasetError {
@@ -54,7 +61,9 @@ impl Display for GraphDatasetError {
             Self::Io(error) => write!(formatter, "I/O error: {error}"),
             Self::Arrow(error) => write!(formatter, "Arrow error: {error}"),
             Self::Parquet(error) => write!(formatter, "Parquet error: {error}"),
+            Self::DataFusion(error) => write!(formatter, "DataFusion error: {error}"),
             Self::InvalidDataset(message) => write!(formatter, "invalid DBLP graph dataset: {message}"),
+            Self::NonUtf8Path(path) => write!(formatter, "non-UTF-8 DBLP fixture path: {}", path.display()),
         }
     }
 }
@@ -65,7 +74,8 @@ impl StdError for GraphDatasetError {
             Self::Io(error) => Some(error),
             Self::Arrow(error) => Some(error),
             Self::Parquet(error) => Some(error),
-            Self::InvalidDataset(_) => None,
+            Self::DataFusion(error) => Some(error),
+            Self::InvalidDataset(_) | Self::NonUtf8Path(_) => None,
         }
     }
 }
@@ -85,6 +95,12 @@ impl From<ArrowError> for GraphDatasetError {
 impl From<ParquetError> for GraphDatasetError {
     fn from(value: ParquetError) -> Self {
         Self::Parquet(value)
+    }
+}
+
+impl From<DataFusionError> for GraphDatasetError {
+    fn from(value: DataFusionError) -> Self {
+        Self::DataFusion(value)
     }
 }
 
@@ -210,6 +226,20 @@ pub fn discover_dblp_fixture_layout(root: &Path) -> GraphDatasetResult<DblpFixtu
     }
 
     Ok(DblpFixtureLayout { dataset_root, parquet_root, manifest_path, source_path })
+}
+
+/// Registers the five [`DBLP_TABLES`] Parquet files under their fixture names.
+///
+/// Each table is exactly one file, so this needs no listing-table fan-in. The
+/// returned layout lets a caller record the resolved roots it registered from.
+pub async fn register_dblp_tables(ctx: &SessionContext, root: &Path) -> GraphDatasetResult<DblpFixtureLayout> {
+    let layout = discover_dblp_fixture_layout(root)?;
+    for table in DBLP_TABLES {
+        let path = layout.parquet_root.join(format!("{table}.parquet"));
+        let path_str = path.to_str().ok_or_else(|| GraphDatasetError::NonUtf8Path(path.clone()))?;
+        ctx.register_parquet(*table, path_str, ParquetReadOptions::default()).await?;
+    }
+    Ok(layout)
 }
 
 /// Describes a prepared DBLP fixture without invoking the fixture generator.
