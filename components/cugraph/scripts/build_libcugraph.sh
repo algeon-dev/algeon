@@ -45,6 +45,35 @@ if [[ ! -d "${cuvs_install_dir}" ]]; then
     exit 1
 fi
 cuvs_install_dir="$(cd "${cuvs_install_dir}" && pwd -P)"
+if [[ -d "${default_cuvs_install_dir}" ]]; then
+    default_cuvs_install_dir="$(cd "${default_cuvs_install_dir}" && pwd -P)"
+fi
+
+if [[ "${cuvs_install_dir}" == "${default_cuvs_install_dir}" ]]; then
+    cuvs_source_revision_path="${cuvs_install_dir}/share/cuvs-nexus/source-revision"
+    if [[ ! -f "${cuvs_source_revision_path}" ]]; then
+        echo "error: default sibling cuVS install '${cuvs_install_dir}' is missing '${cuvs_source_revision_path#"${cuvs_install_dir}"/}'." >&2
+        echo "Rebuild/install the sibling cuVS checkout, or select a compatible external CUVS_INSTALL_DIR." >&2
+        exit 1
+    fi
+    sibling_cuvs_gitlink="$(git -C "${workspace_parent}/cuvs-nexus" ls-files --stage -- cuvs)" || {
+        echo "error: failed to read the sibling cuVS gitlink from '${workspace_parent}/cuvs-nexus'." >&2
+        exit 1
+    }
+    if [[ ! "${sibling_cuvs_gitlink}" =~ ^160000[[:space:]]+([[:xdigit:]]+)[[:space:]]+0[[:space:]]+cuvs$ ]]; then
+        echo "error: sibling cuVS index must contain exactly one stage-0 cuvs gitlink; found '${sibling_cuvs_gitlink}'." >&2
+        exit 1
+    fi
+    expected_cuvs_revision="${BASH_REMATCH[1]}"
+    installed_cuvs_revision="$(<"${cuvs_source_revision_path}")"
+    installed_cuvs_revision="${installed_cuvs_revision#"${installed_cuvs_revision%%[![:space:]]*}"}"
+    installed_cuvs_revision="${installed_cuvs_revision%"${installed_cuvs_revision##*[![:space:]]}"}"
+    if [[ "${installed_cuvs_revision}" != "${expected_cuvs_revision}" ]]; then
+        echo "error: default sibling cuVS install source revision '${installed_cuvs_revision}' does not match sibling gitlink '${expected_cuvs_revision}'." >&2
+        echo "Rebuild/install the sibling cuVS checkout before building libcugraph." >&2
+        exit 1
+    fi
+fi
 
 cuvs_config_dir=""
 for candidate in "${cuvs_install_dir}/lib/cmake/cuvs" "${cuvs_install_dir}/lib64/cmake/cuvs"; do

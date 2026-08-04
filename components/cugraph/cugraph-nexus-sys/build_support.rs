@@ -35,13 +35,13 @@ pub(crate) struct CanonicalCuvsContract {
     pub(crate) library_selector_path: PathBuf,
     pub(crate) library_path: PathBuf,
     pub(crate) runtime_lib_dir: PathBuf,
+    pub(crate) source_revision_inputs: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ValidatedCuvsLoader {
     pub(crate) cugraph_library_selector_path: PathBuf,
     pub(crate) cugraph_library_path: PathBuf,
-    pub(crate) cuvs_library_path: PathBuf,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -113,6 +113,12 @@ pub(crate) fn resolve_native_build_contract(
         link_dirs_env.as_ref(),
         runtime_lib_dirs_env.as_ref(),
     );
+
+    if explicit_contract_count == 3 && cmake_build_dir_env.is_some() {
+        return Err("The native contract must come from exactly one source. Do not set CUGRAPH_CMAKE_BUILD_DIR when \
+             CUGRAPH_NATIVE_INCLUDE_DIRS, CUGRAPH_NATIVE_LINK_DIRS, and CUGRAPH_RUNTIME_LIB_DIRS are set."
+            .to_string());
+    }
 
     if explicit_contract_count == 3 {
         return Ok(NativeBuildContract {
@@ -248,10 +254,68 @@ pub(crate) fn resolve_canonical_cuvs_contract(
         ));
     }
 
-    Ok(CanonicalCuvsContract { install_dir, cmake_config_dir, library_selector_path, library_path, runtime_lib_dir })
+    let source_revision_inputs =
+        if default_install_dir.canonicalize().is_ok_and(|default_install_dir| default_install_dir == install_dir) {
+            validate_sibling_cuvs_source_revision(workspace_parent, &install_dir)?
+        } else {
+            Vec::new()
+        };
+
+    Ok(CanonicalCuvsContract {
+        install_dir,
+        cmake_config_dir,
+        library_selector_path,
+        library_path,
+        runtime_lib_dir,
+        source_revision_inputs,
+    })
 }
 
-#[cfg_attr(test, allow(dead_code))]
+fn validate_sibling_cuvs_source_revision(workspace_parent: &Path, install_dir: &Path) -> Result<Vec<PathBuf>, String> {
+    let sibling_repo = workspace_parent.join("cuvs-nexus");
+    let stage = command_stdout(
+        "resolve the sibling cuVS source revision",
+        Command::new("git").arg("-C").arg(&sibling_repo).args(["ls-files", "--stage", "--", "cuvs"]),
+    )?;
+    let fields = stage.split_ascii_whitespace().collect::<Vec<_>>();
+    let ["160000", expected_revision, "0", "cuvs"] = fields.as_slice() else {
+        return Err(format!(
+            "The default sibling cuVS prefix requires exactly one stage-0 cuvs gitlink in '{}', but git reported '{}'.",
+            sibling_repo.display(),
+            stage.trim()
+        ));
+    };
+
+    let marker_path = install_dir.join("share/cuvs-nexus/source-revision");
+    let installed_revision = fs::read_to_string(&marker_path).map_err(|error| {
+        format!(
+            "The default sibling cuVS prefix '{}' is missing its pinned source marker '{}': {error}. Rebuild it with cuvs-nexus/scripts/build_libcuvs.sh.",
+            install_dir.display(),
+            marker_path.display()
+        )
+    })?;
+    if installed_revision.trim() != *expected_revision {
+        return Err(format!(
+            "The default sibling cuVS prefix '{}' was built from revision '{}', but the sibling cuVS gitlink pins '{}'. Rebuild the prefix with cuvs-nexus/scripts/build_libcuvs.sh.",
+            install_dir.display(),
+            installed_revision.trim(),
+            expected_revision
+        ));
+    }
+
+    let git_index = command_stdout(
+        "resolve the sibling cuVS Git index",
+        Command::new("git").arg("-C").arg(&sibling_repo).args([
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-path",
+            "index",
+        ]),
+    )?;
+    let git_index = normalize_existing_file(Path::new(git_index.trim()))?;
+    Ok(vec![marker_path, git_index])
+}
+
 pub(crate) fn tracked_cmake_export_files(cmake_build_dir: &Path) -> Vec<PathBuf> {
     vec![
         cmake_build_dir.join("cugraph-config.cmake"),
@@ -562,13 +626,13 @@ pub(crate) fn validate_cugraph_cuvs_loader(
         "resolve libcugraph loader closure",
         Command::new("ldd").arg(&cugraph_library_selector_path).env("LD_LIBRARY_PATH", &loader_search_path),
     )?;
-    let cuvs_library_path = validate_cuvs_loader_outputs(&readelf_output, &ldd_output, &cuvs.library_path)?;
+    validate_cuvs_loader_outputs(&readelf_output, &ldd_output, &cuvs.library_path)?;
     let ambient_ldd_output = command_stdout(
         "inspect ambient libcugraph loader resolution",
         Command::new("ldd").arg(&cugraph_library_selector_path),
     )?;
     validate_ambient_cuvs_resolution(&ambient_ldd_output, &cuvs.library_path)?;
-    Ok(ValidatedCuvsLoader { cugraph_library_selector_path, cugraph_library_path, cuvs_library_path })
+    Ok(ValidatedCuvsLoader { cugraph_library_selector_path, cugraph_library_path })
 }
 
 pub(crate) fn controlled_loader_search_path(
@@ -1153,15 +1217,21 @@ fn normalize_existing_dir(path: &Path) -> Result<PathBuf, String> {
     Ok(canonical)
 }
 
+fn normalize_existing_file(path: &Path) -> Result<PathBuf, String> {
+    let canonical =
+        path.canonicalize().map_err(|_| format!("Path '{}' does not exist or is not accessible.", path.display()))?;
+    if !canonical.is_file() {
+        return Err(format!("Path '{}' is not a file.", canonical.display()));
+    }
+    Ok(canonical)
+}
+
 fn looks_like_library_path(path: &Path) -> bool {
     let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
         return false;
     };
     file_name.ends_with(".so")
         || file_name.contains(".so.")
-        || file_name.ends_with(".dylib")
-        || file_name.ends_with(".dll")
-        || file_name.ends_with(".lib")
         // Static archives (e.g. CUDA's `libcudart_static.a`) are linked by the
         // CMake export via absolute paths. Capture their directory so the
         // toolkit lib dir flows through the formal native-link metadata; the
@@ -1171,16 +1241,7 @@ fn looks_like_library_path(path: &Path) -> bool {
 }
 
 fn has_library(dir: &Path, stem: &str) -> bool {
-    let exact_names = [
-        format!("lib{stem}.so"),
-        format!("lib{stem}.dylib"),
-        format!("lib{stem}.dll"),
-        format!("lib{stem}.lib"),
-        format!("{stem}.dll"),
-        format!("{stem}.lib"),
-    ];
-
-    if exact_names.iter().any(|name| dir.join(name).exists()) {
+    if dir.join(format!("lib{stem}.so")).exists() {
         return true;
     }
 

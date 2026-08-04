@@ -1,4 +1,84 @@
-use std::{fs, path::PathBuf};
+use std::{
+    env, fs,
+    os::unix::fs::{PermissionsExt, symlink},
+    path::{Path, PathBuf},
+    process::{Command, Output},
+    time::{SystemTime, UNIX_EPOCH},
+};
+
+const TEST_CUVS_REVISION: &str = "2bd7cd71d31e39eb9ee00c2a250085a1afb84977";
+
+struct ManualBuildFixture {
+    root: PathBuf,
+    script: PathBuf,
+    workspace: PathBuf,
+}
+
+impl ManualBuildFixture {
+    fn new(marker: Option<&str>) -> Self {
+        let unique = SystemTime::now().duration_since(UNIX_EPOCH).expect("system time").as_nanos();
+        let root = env::temp_dir().join(format!("cugraph-manual-contract-{}-{unique}", std::process::id()));
+        let workspace = root.join("workspace");
+        let repo = workspace.join("cugraph-nexus");
+        let script = repo.join("scripts/build_libcugraph.sh");
+        let sibling = workspace.join("cuvs-nexus");
+        let default_install = sibling.join("cuvs-install");
+        fs::create_dir_all(repo.join("scripts")).expect("create fixture scripts directory");
+        fs::create_dir_all(repo.join("cugraph")).expect("create fixture upstream directory");
+        fs::create_dir_all(&default_install).expect("create fixture default cuVS prefix");
+        fs::copy(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../scripts/build_libcugraph.sh"), &script)
+            .expect("copy manual build script");
+
+        let upstream = repo.join("cugraph/build.sh");
+        fs::write(&upstream, "#!/usr/bin/env bash\nexit 0\n").expect("write fixture upstream build script");
+        fs::set_permissions(&upstream, fs::Permissions::from_mode(0o755))
+            .expect("make fixture build script executable");
+
+        let init =
+            Command::new("git").arg("-C").arg(&sibling).args(["init", "--quiet"]).status().expect("run git init");
+        assert!(init.success(), "initialize sibling cuVS fixture");
+        let cacheinfo = format!("160000,{TEST_CUVS_REVISION},cuvs");
+        let update = Command::new("git")
+            .arg("-C")
+            .arg(&sibling)
+            .args(["update-index", "--add", "--cacheinfo", &cacheinfo])
+            .status()
+            .expect("record sibling cuVS gitlink");
+        assert!(update.success(), "record sibling cuVS fixture gitlink");
+
+        if let Some(marker) = marker {
+            let marker_path = default_install.join("share/cuvs-nexus/source-revision");
+            fs::create_dir_all(marker_path.parent().expect("marker parent")).expect("create marker parent");
+            fs::write(marker_path, format!("{marker}\n")).expect("write source marker");
+        }
+
+        Self { root, script, workspace }
+    }
+
+    fn default_install(&self) -> PathBuf {
+        self.workspace.join("cuvs-nexus/cuvs-install")
+    }
+
+    fn run(&self, cuvs_install: Option<&Path>) -> Output {
+        let mut command = Command::new(&self.script);
+        command.env_remove("CUVS_INSTALL_DIR").env_remove("CUDF_INSTALL_DIR").env_remove("CUGRAPH_CPP_BUILD_DIR");
+        if let Some(cuvs_install) = cuvs_install {
+            command.env("CUVS_INSTALL_DIR", cuvs_install);
+        }
+        command.output().expect("run manual build contract fixture")
+    }
+}
+
+impl Drop for ManualBuildFixture {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.root);
+    }
+}
+
+fn assert_stderr_contains(output: &Output, expected: &str) {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains(expected), "expected stderr to contain '{expected}', got:\n{stderr}");
+}
 
 fn read_build_rs() -> String {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -193,6 +273,68 @@ fn manual_and_cargo_builds_share_canonical_cuvs_contract() {
     assert!(manual_script.contains("libcuvs.so"));
     assert!(build_support.contains("-DCUGRAPH_USE_CUVS_STATIC=OFF"));
     assert!(manual_script.contains("-DCUGRAPH_USE_CUVS_STATIC=OFF"));
+    assert!(
+        build_support.contains("share/cuvs-nexus/source-revision"),
+        "the Cargo resolver must validate the default sibling cuVS source marker"
+    );
+    assert!(
+        manual_script.contains("share/cuvs-nexus/source-revision"),
+        "the manual build must validate the default sibling cuVS source marker"
+    );
+    assert!(
+        build_support.contains("args([\"ls-files\", \"--stage\", \"--\", \"cuvs\"])"),
+        "the Cargo resolver must compare the default marker with the sibling cuVS stage-0 gitlink"
+    );
+    assert!(
+        manual_script.contains("git -C \"${workspace_parent}/cuvs-nexus\" ls-files --stage -- cuvs"),
+        "the manual build must compare the default marker with the sibling cuVS stage-0 gitlink"
+    );
+    assert!(
+        manual_script.contains("^160000[[:space:]]+([[:xdigit:]]+)[[:space:]]+0[[:space:]]+cuvs$"),
+        "the manual build must require an exact stage-0 cuVS gitlink"
+    );
+    assert!(
+        build_support.contains("installed_revision.trim() != *expected_revision")
+            && manual_script.contains("[[ \"${installed_cuvs_revision}\" != \"${expected_cuvs_revision}\" ]]"),
+        "both build paths must reject a default source marker that differs from the sibling cuVS gitlink"
+    );
+    assert!(
+        manual_script.contains("if [[ \"${cuvs_install_dir}\" == \"${default_cuvs_install_dir}\" ]]; then"),
+        "the manual build must validate an explicit or symlinked default cuVS prefix too"
+    );
+}
+
+#[test]
+fn manual_build_executes_default_sibling_marker_validation() {
+    let missing = ManualBuildFixture::new(None);
+    let output = missing.run(None);
+    assert!(!output.status.success());
+    assert_stderr_contains(&output, "missing 'share/cuvs-nexus/source-revision'");
+
+    let stale = ManualBuildFixture::new(Some("stale-revision"));
+    let output = stale.run(None);
+    assert!(!output.status.success());
+    assert_stderr_contains(&output, "does not match sibling gitlink");
+
+    let alias = stale.root.join("default-cuvs-alias");
+    symlink(stale.default_install(), &alias).expect("create default prefix alias");
+    let output = stale.run(Some(&alias));
+    assert!(!output.status.success());
+    assert_stderr_contains(&output, "does not match sibling gitlink");
+}
+
+#[test]
+fn manual_build_accepts_matching_default_and_marker_free_external_prefixes() {
+    let matching = ManualBuildFixture::new(Some(TEST_CUVS_REVISION));
+    let output = matching.run(None);
+    assert!(!output.status.success());
+    assert_stderr_contains(&output, "does not export cuVS's CMake package");
+
+    let external = matching.root.join("external-cuvs");
+    fs::create_dir_all(&external).expect("create external cuVS prefix");
+    let output = matching.run(Some(&external));
+    assert!(!output.status.success());
+    assert_stderr_contains(&output, "does not export cuVS's CMake package");
 }
 
 #[test]
@@ -210,6 +352,11 @@ fn build_rs_tracks_cuvs_selectors_and_native_identity_inputs() {
             "build.rs must track {tracked} so native identity metadata cannot become stale"
         );
     }
+
+    assert!(
+        build_rs.contains("for path in &cuvs.source_revision_inputs") && build_rs.contains("cargo:rerun-if-changed={}"),
+        "build.rs must rerun when the sibling source marker or Git index changes"
+    );
 }
 
 #[test]
@@ -306,10 +453,10 @@ fn cmake_probe_pins_makefiles_generator_for_link_txt_contract() {
 
 #[test]
 fn include_sensitive_tests_reuse_build_support_include_resolution() {
-    let source = read_test_source("tests/support.rs");
+    let source = read_test_source("tests/support/mod.rs");
     assert!(
         source.contains("resolve_native_build_contract"),
-        "tests/support.rs should reuse build_support::resolve_native_build_contract so the test include path follows the formal native contract"
+        "tests/support/mod.rs should reuse build_support::resolve_native_build_contract so the test include path follows the formal native contract"
     );
 }
 

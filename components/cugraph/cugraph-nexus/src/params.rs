@@ -506,7 +506,7 @@ impl ClosedUnitF64 {
     /// Returns [`ErrorKind::InvalidInput`] if `value` is not in the closed
     /// interval `[0.0, 1.0]` or is not finite.
     pub fn new(value: f64) -> crate::error::Result<Self> {
-        if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+        if !(0.0..=1.0).contains(&value) {
             return Err(Error::new(ErrorKind::InvalidInput, "ClosedUnitF64::new")
                 .with_message("value must be in the closed interval [0.0, 1.0]")
                 .with_context("value", format!("{value}")));

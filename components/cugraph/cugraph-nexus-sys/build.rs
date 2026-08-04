@@ -8,28 +8,18 @@ fn emit_runtime_search_path(path: &std::path::Path) {
 }
 
 fn emit_runtime_metadata(paths: &[PathBuf]) {
-    if !paths.is_empty() {
-        let joined = env::join_paths(paths).expect("runtime library search paths must be valid OS strings");
-        println!("cargo:runtime-lib-dirs={}", joined.to_string_lossy());
-        println!("cargo:metadata=runtime-lib-dirs={}", joined.to_string_lossy());
-    }
+    let joined = env::join_paths(paths).expect("runtime library search paths must be valid OS strings");
+    println!("cargo:runtime-lib-dirs={}", joined.to_string_lossy());
+    println!("cargo:metadata=runtime-lib-dirs={}", joined.to_string_lossy());
 }
 
 fn emit_native_include_metadata(paths: &[PathBuf]) {
-    if paths.is_empty() {
-        return;
-    }
-
     let joined = env::join_paths(paths).expect("native include search paths must be valid OS strings");
     println!("cargo:native-include-dirs={}", joined.to_string_lossy());
     println!("cargo:metadata=native-include-dirs={}", joined.to_string_lossy());
 }
 
 fn emit_native_link_metadata(paths: &[PathBuf]) {
-    if paths.is_empty() {
-        return;
-    }
-
     let joined = env::join_paths(paths).expect("native link search paths must be valid OS strings");
     println!("cargo:native-link-dirs={}", joined.to_string_lossy());
     println!("cargo:metadata=native-link-dirs={}", joined.to_string_lossy());
@@ -79,19 +69,15 @@ fn main() {
     let validated_loader =
         build_support::validate_cugraph_cuvs_loader(&contract.native_link_dirs, &contract.runtime_lib_dirs, &cuvs)
             .unwrap_or_else(|err| panic!("{err}"));
-    if validated_loader.cuvs_library_path != cuvs.library_path {
-        panic!(
-            "The validated libcuvs identity '{}' changed from the canonical contract '{}'.",
-            validated_loader.cuvs_library_path.display(),
-            cuvs.library_path.display()
-        );
-    }
     if !contract.runtime_lib_dirs.iter().any(|path| path == &cuvs.runtime_lib_dir) {
         contract.runtime_lib_dirs.push(cuvs.runtime_lib_dir.clone());
     }
-    if let Ok(cmake_export_dir) =
-        build_support::resolve_cmake_export_dir(&manifest_dir, effective_cmake_build_dir_env.clone())
-    {
+    if explicit_contract_count == 0 {
+        let cmake_export_dir = PathBuf::from(
+            effective_cmake_build_dir_env
+                .as_deref()
+                .expect("CMake contract resolution must retain its selected export directory"),
+        );
         for path in build_support::tracked_cmake_export_files(&cmake_export_dir) {
             if path.exists() {
                 println!("cargo:rerun-if-changed={}", path.display());
@@ -127,6 +113,9 @@ fn main() {
     println!("cargo:rerun-if-changed={}", cuvs.cmake_config_dir.join("cuvs-config.cmake").display());
     println!("cargo:rerun-if-changed={}", cuvs.library_selector_path.display());
     println!("cargo:rerun-if-changed={}", cuvs.library_path.display());
+    for path in &cuvs.source_revision_inputs {
+        println!("cargo:rerun-if-changed={}", path.display());
+    }
     println!("cargo:rerun-if-changed={}", validated_loader.cugraph_library_selector_path.display());
     println!("cargo:rerun-if-changed={}", validated_loader.cugraph_library_path.display());
 

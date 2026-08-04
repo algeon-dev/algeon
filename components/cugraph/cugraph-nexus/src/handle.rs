@@ -88,7 +88,7 @@ unsafe extern "C" {
 }
 
 struct RuntimeResourceHandleOwner {
-    raw: Option<NonNull<cugraph_rs_runtime_resource_handle_t>>,
+    raw: NonNull<cugraph_rs_runtime_resource_handle_t>,
     device: i32,
     // cuGraph's graph construction keeps some device allocations behind RMM's
     // current-resource API. Keep this lease until after RAFT/cuGraph teardown
@@ -147,22 +147,18 @@ impl RuntimeResourceHandleOwner {
                 .with_context("device", runtime_device.to_string()));
         }
 
-        Ok(Self { raw: Some(raw), device: runtime_device, _current_resource_route: current_resource_route })
+        Ok(Self { raw, device: runtime_device, _current_resource_route: current_resource_route })
     }
 
     fn resource_handle(&self) -> *mut cugraph_resource_handle_t {
         // SAFETY: the entered binding-extension lease retains this live shim.
-        unsafe {
-            cugraph_rs_runtime_resource_handle_get(
-                self.raw.expect("runtime resource-handle owner is live while entered").as_ptr(),
-            )
-        }
+        unsafe { cugraph_rs_runtime_resource_handle_get(self.raw.as_ptr()) }
     }
 }
 
 impl Drop for RuntimeResourceHandleOwner {
     fn drop(&mut self) {
-        let mut raw = self.raw.take().map_or(ptr::null_mut(), NonNull::as_ptr);
+        let mut raw = self.raw.as_ptr();
         drop_device_resource(
             &mut raw,
             self.device,
@@ -296,11 +292,9 @@ pub struct ResourceHandle {
 /// on the owning CUDA device for the lifetime of the borrow.
 pub struct EnteredContext<'a> {
     owner: &'a ResourceHandle,
-    #[allow(dead_code)]
-    guard: DeviceGuard,
+    _guard: DeviceGuard,
     // Field order is intentional: restore the thread's CUDA device before
     // releasing the binding extension's stable execution gate.
-    #[allow(dead_code)]
     runtime_extension: Option<BindingExtensionGuard<'a, RuntimeResourceHandleOwner>>,
     _nosend_nosync: PhantomData<*mut ()>,
 }
@@ -481,16 +475,6 @@ impl ResourceHandle {
         self.state.standalone_raw().expect("runtime-bound handle pointers require an EnteredContext")
     }
 
-    /// Borrow the underlying raw cuGraph resource-handle pointer.
-    ///
-    /// This does not transfer ownership. The returned pointer is valid only
-    /// while `self` remains alive, and callers must not free it unless
-    /// ownership has been transferred separately.
-    #[allow(dead_code)]
-    pub(crate) fn as_raw_resource_handle(&self) -> *mut cugraph_resource_handle_t {
-        self.state.standalone_raw().expect("runtime-bound handle pointers require an EnteredContext")
-    }
-
     /// Consume this wrapper and return the underlying raw handle pointer.
     ///
     /// This suppresses Rust-side `Drop`, so no automatic
@@ -590,23 +574,17 @@ impl ResourceHandle {
             | ResourceHandleState::ExternalOwned { .. } => None,
         };
         let guard = DeviceGuard::enter_owner_device(self.device(), operation)?;
-        Ok(EnteredContext { owner: self, guard, runtime_extension, _nosend_nosync: PhantomData })
+        Ok(EnteredContext { owner: self, _guard: guard, runtime_extension, _nosend_nosync: PhantomData })
     }
 }
 
 impl Drop for ResourceHandle {
     fn drop(&mut self) {
         match &mut self.state {
-            ResourceHandleState::LocalOwned { raw, device }
-            | ResourceHandleState::ExternalOwned { raw, device, .. }
-                if !raw.is_null() =>
-            {
+            ResourceHandleState::LocalOwned { raw, device } | ResourceHandleState::ExternalOwned { raw, device } => {
                 drop_device_resource(raw, *device, "ResourceHandle::drop", DeviceResourceKind::ResourceHandle);
             },
-            ResourceHandleState::LocalOwned { .. }
-            | ResourceHandleState::RuntimeBound { .. }
-            | ResourceHandleState::ExternalBorrowed { .. }
-            | ResourceHandleState::ExternalOwned { .. } => {},
+            ResourceHandleState::RuntimeBound { .. } | ResourceHandleState::ExternalBorrowed { .. } => {},
         }
     }
 }

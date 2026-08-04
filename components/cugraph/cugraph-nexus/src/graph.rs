@@ -133,7 +133,6 @@ pub struct Graph<T = Forward> {
     vertex_dtype: DataType,
     weight_dtype: DataType,
     has_weights: bool,
-    has_edge_ids: bool,
     edge_id_dtype: Option<DataType>,
     pending_input_completion: Option<DeferredInputCompletion>,
     // Runtime-bound resource handles used to build or operate on the graph
@@ -163,7 +162,6 @@ pub struct ParkedGraph<T = Forward> {
     vertex_dtype: DataType,
     weight_dtype: DataType,
     has_weights: bool,
-    has_edge_ids: bool,
     edge_id_dtype: Option<DataType>,
     park_event: cudf::runtime::CudaEvent,
     resource_handle_leases: Vec<ResourceHandleLease>,
@@ -178,7 +176,7 @@ pub struct ParkedGraph<T = Forward> {
 unsafe impl<T: Send> Send for ParkedGraph<T> {}
 
 pub(crate) struct DeferredInputCompletion {
-    owners: Vec<Arc<dyn Any + Send + Sync>>,
+    _owners: Vec<Arc<dyn Any + Send + Sync>>,
     witnesses: Vec<CompletionWitness>,
 }
 
@@ -188,7 +186,7 @@ impl DeferredInputCompletion {
             return None;
         }
 
-        Some(Self { owners, witnesses })
+        Some(Self { _owners: owners, witnesses })
     }
 
     pub(crate) fn synchronize_witnesses(&self, operation: &'static str) -> Result<()> {
@@ -202,7 +200,6 @@ impl DeferredInputCompletion {
         for witness in &self.witnesses {
             let _ = witness.synchronize();
         }
-        drop(self.owners);
     }
 }
 
@@ -372,10 +369,7 @@ where
         }
 
         if edge.0 == edge.1 {
-            logical_edge_count = logical_edge_count.checked_add(run_len).ok_or_else(|| {
-                Error::new(ErrorKind::InvalidState, operation)
-                    .with_message("logical edge count overflow while accumulating undirected self-loops")
-            })?;
+            logical_edge_count += run_len;
         } else if !run_len.is_multiple_of(2) {
             return Err(Error::new(ErrorKind::InvalidState, operation)
                 .with_message(
@@ -384,10 +378,7 @@ where
                 .with_context("edge", format!("{edge:?}"))
                 .with_context("run_len", run_len.to_string()));
         } else {
-            logical_edge_count = logical_edge_count.checked_add(run_len / 2).ok_or_else(|| {
-                Error::new(ErrorKind::InvalidState, operation)
-                    .with_message("logical edge count overflow while accumulating undirected multiedges")
-            })?;
+            logical_edge_count += run_len / 2;
         }
 
         index += run_len;
@@ -432,7 +423,7 @@ impl<T> Graph<T> {
     }
 
     pub(crate) fn has_edge_ids(&self) -> bool {
-        self.has_edge_ids
+        self.edge_id_dtype.is_some()
     }
 
     pub(crate) fn edge_id_dtype(&self) -> Option<DataType> {
@@ -492,7 +483,6 @@ impl<T> Graph<T> {
             vertex_dtype: this.vertex_dtype,
             weight_dtype: this.weight_dtype,
             has_weights: this.has_weights,
-            has_edge_ids: this.has_edge_ids,
             edge_id_dtype: this.edge_id_dtype,
             park_event: event,
             resource_handle_leases,
@@ -501,7 +491,7 @@ impl<T> Graph<T> {
         })
     }
 
-    fn validate_runtime_bound_transfer(&self, handle: &EnteredContext<'_>, operation: &'static str) -> Result<()> {
+    fn validate_runtime_bound_transfer(&mut self, handle: &EnteredContext<'_>, operation: &'static str) -> Result<()> {
         if handle.device() != self.device {
             return Err(Error::new(ErrorKind::InvalidInput, operation)
                 .with_message("graph and resource handle must be on the same CUDA device")
@@ -518,10 +508,7 @@ impl<T> Graph<T> {
                 .with_message("graph was used with a non-runtime-bound resource handle and cannot be parked"));
         }
 
-        let leases = self.resource_handle_leases.try_borrow().map_err(|_| {
-            Error::new(ErrorKind::InvalidState, operation)
-                .with_message("graph runtime-bound resource-handle lease ledger is already borrowed")
-        })?;
+        let leases = self.resource_handle_leases.get_mut();
         if leases.is_empty() {
             return Err(Error::new(ErrorKind::InvalidState, operation)
                 .with_message("graph has no runtime-bound handle leases to prove park stream ownership"));
@@ -548,10 +535,7 @@ impl<T> Graph<T> {
             return Ok(());
         };
 
-        let mut leases = self.resource_handle_leases.try_borrow_mut().map_err(|_| {
-            Error::new(ErrorKind::InvalidState, operation)
-                .with_message("graph runtime-bound resource-handle lease ledger is already borrowed")
-        })?;
+        let mut leases = self.resource_handle_leases.borrow_mut();
 
         if let Some(existing) = leases.first()
             && !existing.same_binding(&lease)
@@ -775,7 +759,6 @@ impl<T> ParkedGraph<T> {
             vertex_dtype: this.vertex_dtype,
             weight_dtype: this.weight_dtype,
             has_weights: this.has_weights,
-            has_edge_ids: this.has_edge_ids,
             edge_id_dtype: this.edge_id_dtype,
             pending_input_completion: None,
             resource_handle_leases: RefCell::new(resource_handle_leases),
@@ -797,10 +780,6 @@ impl<T> ParkedGraph<T> {
             return Err(Error::new(ErrorKind::InvalidState, operation)
                 .with_message("parked graph resume requires a runtime-bound resource handle"));
         };
-        if self.resource_handle_leases.is_empty() {
-            return Err(Error::new(ErrorKind::InvalidState, operation)
-                .with_message("parked graph has no runtime-bound handle leases"));
-        }
         if !self.resource_handle_leases.iter().all(|lease| lease.same_binding(&handle_lease)) {
             return Err(Error::new(ErrorKind::InvalidState, operation)
                 .with_message("parked graph execution binding does not match the resume handle")
@@ -876,8 +855,8 @@ pub struct GraphBuilder<'a> {
     vertices: Option<(*mut cugraph_type_erased_device_array_view_t, usize)>,
     edge_start_time_ids: Option<(*mut cugraph_type_erased_device_array_view_t, usize)>,
     edge_end_time_ids: Option<(*mut cugraph_type_erased_device_array_view_t, usize)>,
-    vertex_dtype: Option<DataType>,
-    weight_dtype: Option<DataType>,
+    vertex_dtype: DataType,
+    weight_dtype: DataType,
     renumber: bool,
     drop_self_loops: bool,
     drop_multi_edges: bool,
@@ -931,8 +910,8 @@ impl<'a> GraphBuilder<'a> {
             vertices: None,
             edge_start_time_ids: None,
             edge_end_time_ids: None,
-            vertex_dtype: Some(V::data_type()),
-            weight_dtype: None,
+            vertex_dtype: V::data_type(),
+            weight_dtype: DataType::Float32,
             renumber: false,
             drop_self_loops: false,
             drop_multi_edges: false,
@@ -955,7 +934,7 @@ impl<'a> GraphBuilder<'a> {
     /// Must have the same length as `src`/`dst`.
     pub fn weights<W: CugraphElement>(mut self, weights: &'a DeviceArrayView<'a, W>) -> Self {
         self.weights = Some((weights.as_ptr(), weights.len()));
-        self.weight_dtype = Some(W::data_type());
+        self.weight_dtype = W::data_type();
         self
     }
 
@@ -1056,20 +1035,6 @@ impl<'a> GraphBuilder<'a> {
     pub(crate) fn build_inner<T>(&self, handle: &EnteredContext<'_>, store_transposed: bool) -> Result<Graph<T>> {
         self.validate()?;
 
-        // Resolve dtypes: prefer the cached builder-state value (from either
-        // the typed API or the raw-view cudf interop path), falling back to a
-        // runtime query of the raw view pointer only when necessary.
-        let vertex_dtype = match self.vertex_dtype {
-            Some(dt) => dt,
-            None => Self::view_dtype(self.src)?,
-        };
-        let weight_dtype = match self.weight_dtype {
-            Some(dt) => dt,
-            None => match self.weights {
-                Some((ptr, _)) => Self::view_dtype(ptr)?,
-                None => DataType::Float32,
-            },
-        };
         let edge_id_dtype = self.edge_ids.map(|(ptr, _)| Self::view_dtype(ptr)).transpose()?;
 
         let c_props = self.properties.into();
@@ -1116,10 +1081,9 @@ impl<'a> GraphBuilder<'a> {
             raw: graph,
             device: handle.device(),
             properties: self.properties,
-            vertex_dtype,
-            weight_dtype,
+            vertex_dtype: self.vertex_dtype,
+            weight_dtype: self.weight_dtype,
             has_weights: self.weights.is_some(),
-            has_edge_ids: self.edge_ids.is_some(),
             edge_id_dtype,
             pending_input_completion: None,
             resource_handle_leases: RefCell::new(handle.runtime_bound_lease().into_iter().collect()),
@@ -1147,8 +1111,8 @@ impl<'a> GraphBuilder<'a> {
             vertices: None,
             edge_start_time_ids: None,
             edge_end_time_ids: None,
-            vertex_dtype: Some(src.dtype()?),
-            weight_dtype: None,
+            vertex_dtype: src.dtype()?,
+            weight_dtype: DataType::Float32,
             renumber: false,
             drop_self_loops: false,
             drop_multi_edges: false,
@@ -1161,7 +1125,7 @@ impl<'a> GraphBuilder<'a> {
     /// Set weights from a raw view. Used by cudf_interop.
     pub(crate) fn weights_raw(mut self, raw: &'a RawDeviceArrayView<'a>) -> Result<Self> {
         self.weights = Some((raw.as_ptr(), raw.len()));
-        self.weight_dtype = Some(raw.dtype()?);
+        self.weight_dtype = raw.dtype()?;
         Ok(self)
     }
 
@@ -2426,7 +2390,6 @@ mod tests {
             vertex_dtype: DataType::Int32,
             weight_dtype: DataType::Float32,
             has_weights: false,
-            has_edge_ids: false,
             edge_id_dtype: None,
             pending_input_completion,
             resource_handle_leases: RefCell::new(handle.runtime_bound_lease().into_iter().collect()),
@@ -2562,7 +2525,6 @@ mod tests {
             vertex_dtype: DataType::Int32,
             weight_dtype: DataType::Float32,
             has_weights: false,
-            has_edge_ids: false,
             edge_id_dtype: None,
             pending_input_completion: None,
             resource_handle_leases: RefCell::new(Vec::new()),
@@ -3049,7 +3011,7 @@ mod tests {
             .weights_raw(&wgt_raw)
             .expect("weights_raw");
 
-        assert_eq!(builder.vertex_dtype, Some(DataType::Int32));
-        assert_eq!(builder.weight_dtype, Some(DataType::Float64));
+        assert_eq!(builder.vertex_dtype, DataType::Int32);
+        assert_eq!(builder.weight_dtype, DataType::Float64);
     }
 }
