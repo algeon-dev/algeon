@@ -249,6 +249,7 @@ impl NexusGpuBackend {
         })
     }
 
+    /// Drains reports whose completion receivers were all dropped.
     pub fn take_abandoned_attempt_reports(&self, max: usize) -> Vec<Arc<QueryAttemptReport>> {
         self.session_capability().take_abandoned_attempt_reports(max)
     }

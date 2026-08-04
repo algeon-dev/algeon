@@ -107,6 +107,7 @@ impl NexusGpuDeviceProfile {
         self
     }
 
+    /// A zero cap disables resident caching.
     pub fn with_cache_cap_bytes(mut self, cache_cap_bytes: u64) -> Self {
         self.cache_cap_bytes = cache_cap_bytes;
         self
@@ -305,6 +306,9 @@ impl NexusGpuBackend {
         install_backend_optimizer_config(builder, &self.optimizer_config)
     }
 
+    /// Installs the native optimizer and cuGraph SQL functions.
+    ///
+    /// Without the `cugraph` feature, execution returns a structured feature-disabled error.
     pub fn install_on_with_cugraph_sql(
         &self,
         builder: SessionStateBuilder,
@@ -336,6 +340,7 @@ impl NexusGpuBackend {
         self.core.device_startup_records()
     }
 
+    /// Starts shutdown; queued attempts fail while in-flight work drains.
     pub fn close(&self) -> bool {
         self.core.close()
     }
@@ -390,6 +395,7 @@ impl NexusGpuBackend {
         self.session.device_admission_snapshots()
     }
 
+    /// Returns the admission source of truth; telemetry is diagnostic only.
     pub fn device_ledger_reports(
         &self,
     ) -> nexus_query_engine::error::Result<Vec<nexus_query_engine::runtime::DeviceLedgerReport>> {
@@ -402,6 +408,7 @@ impl NexusGpuBackend {
         self.session.device_memory_failure_reports()
     }
 
+    /// Returns diagnostic CUDA/NVML samples, never admission state.
     pub fn device_telemetry_snapshots(
         &self,
     ) -> nexus_query_engine::error::Result<Vec<nexus_query_engine::runtime::DeviceTelemetrySnapshot>> {
@@ -420,6 +427,7 @@ impl NexusGpuBackend {
         self.session.gpu_execution_query_report()
     }
 
+    /// Blocks the caller until admission succeeds or fails.
     pub fn admit_query(&self) -> nexus_query_engine::error::Result<nexus_query_engine::runtime::QueryHandle> {
         self.session.admit_query()
     }
@@ -430,6 +438,7 @@ impl NexusGpuBackend {
         self.session.try_admit_query_with_request(QueryAdmissionRequest::new())
     }
 
+    /// Awaits admission without blocking a thread; dropping the future removes its request.
     pub async fn admit_async(&self) -> nexus_query_engine::error::Result<nexus_query_engine::runtime::QueryHandle> {
         self.session.admit_async_with_request(QueryAdmissionRequest::new()).await
     }

@@ -13,6 +13,8 @@ impl AttemptCancellation {
     pub(crate) fn new(deadline: Option<Instant>) -> Self {
         Self { execution: ExecutionCancellation::with_deadline(deadline), deadline }
     }
+
+    /// Requests cooperative cancellation; cleanup still completes.
     pub fn cancel(&self) {
         self.execution.cancel()
     }
@@ -40,6 +42,7 @@ impl AttemptCancellation {
     }
 }
 
+/// Returns the earlier caller deadline or configured queue expiry.
 pub fn effective_queue_expiry(
     submitted: Instant,
     caller_deadline: Option<Instant>,
