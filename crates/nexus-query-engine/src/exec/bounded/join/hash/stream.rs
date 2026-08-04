@@ -48,11 +48,7 @@ pub(in crate::exec::bounded::join::hash) fn materialize_bounded_root_hash_join_p
     ) {
         Ok(bytes) => bytes,
         Err(error) => {
-            drop(left_indices);
-            drop(right_indices);
-            drop(indices);
             reservations.release(gather_map_reservation, metrics);
-            drop(probe);
             return Err(error);
         },
     };
@@ -68,11 +64,7 @@ pub(in crate::exec::bounded::join::hash) fn materialize_bounded_root_hash_join_p
     ) {
         Ok(bytes) => bytes,
         Err(error) => {
-            drop(left_indices);
-            drop(right_indices);
-            drop(indices);
             reservations.release(gather_map_reservation, metrics);
-            drop(probe);
             return Err(error);
         },
     };
@@ -107,11 +99,7 @@ pub(in crate::exec::bounded::join::hash) fn materialize_bounded_root_hash_join_p
                 }
             },
             Err(error) => {
-                drop(left_indices);
-                drop(right_indices);
-                drop(indices);
                 reservations.release(gather_map_reservation, metrics);
-                drop(probe);
                 return Err(error);
             },
         }
@@ -153,11 +141,7 @@ pub(in crate::exec::bounded::join::hash) fn materialize_bounded_root_hash_join_p
             },
             Err(error) => {
                 release_root_hash_join_stream_outputs(outputs, reservations, metrics);
-                drop(left_indices);
-                drop(right_indices);
-                drop(indices);
                 reservations.release(gather_map_reservation, metrics);
-                drop(probe);
                 return Err(error);
             },
         }
@@ -187,11 +171,7 @@ pub(in crate::exec::bounded::join::hash) fn materialize_bounded_root_hash_join_p
             output_bytes: cumulative_output_bytes,
         },
     ));
-    drop(left_indices);
-    drop(right_indices);
-    drop(indices);
     reservations.release(gather_map_reservation, metrics);
-    drop(probe);
     Ok(outputs)
 }
 
@@ -346,12 +326,12 @@ impl RootHashJoinMaterializeStreamSource {
         metrics: &mut QueryMetrics,
     ) {
         while let Some(output) = self.pending_outputs.pop_back() {
-            reservations.release(output.reservation, metrics);
-            drop(output.frame);
+            let ResidentGpuFrame { reservation, .. } = output;
+            reservations.release(reservation, metrics);
         }
-        drop(self.left_indices.take());
-        drop(self.right_indices.take());
-        drop(self.indices.take());
+        self.left_indices = None;
+        self.right_indices = None;
+        self.indices = None;
         if let Some(reservation) = self.gather_map_reservation.take() {
             reservations.release(reservation, metrics);
         }

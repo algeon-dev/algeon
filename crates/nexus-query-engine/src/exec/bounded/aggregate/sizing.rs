@@ -657,7 +657,6 @@ fn string_byte_length_stats_for_partial_sizing(
     let observed = match byte_counts.device_allocated_size_bytes() {
         Ok(bytes) => bytes as u64,
         Err(error) => {
-            drop(byte_counts);
             reservations.release(reservation, metrics);
             return Err(QueryError::from_cudf(
                 "nexus_query_engine.bounded.aggregate.string_length_sizing",
@@ -669,7 +668,6 @@ fn string_byte_length_stats_for_partial_sizing(
     };
     if observed > reservation.bytes() {
         let error = partial_aggregate_string_sizing_upper_bound_violation_error(node_id, reservation.bytes(), observed);
-        drop(byte_counts);
         reservations.release(reservation, metrics);
         return Err(error.with_fact("column", input_column));
     }
@@ -677,7 +675,6 @@ fn string_byte_length_stats_for_partial_sizing(
     let max_len = match byte_counts.max_value_in::<i32>(&token.execution_overrides()) {
         Ok(max_len) => max_len,
         Err(error) => {
-            drop(byte_counts);
             reservations.release(reservation, metrics);
             return Err(QueryError::from_cudf(
                 "nexus_query_engine.bounded.aggregate.string_length_sizing",
@@ -690,7 +687,6 @@ fn string_byte_length_stats_for_partial_sizing(
     let total_bytes = match byte_counts.sum_value_in::<i64>(&token.execution_overrides()) {
         Ok(total_bytes) => total_bytes,
         Err(error) => {
-            drop(byte_counts);
             reservations.release(reservation, metrics);
             return Err(QueryError::from_cudf(
                 "nexus_query_engine.bounded.aggregate.string_length_sizing",
@@ -700,7 +696,6 @@ fn string_byte_length_stats_for_partial_sizing(
             .with_fact("column", input_column));
         },
     };
-    drop(byte_counts);
     reservations.release(reservation, metrics);
     Ok(StringByteLengthStats { max_len: max_len.unwrap_or(0).max(0) as u64, total_bytes: total_bytes.max(0) as u64 })
 }

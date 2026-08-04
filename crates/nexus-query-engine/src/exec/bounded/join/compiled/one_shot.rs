@@ -361,9 +361,7 @@ pub(super) fn materialize_compiled_one_shot_equi_join_probe_chunk(
         let build_alias = match alias_compiled_one_shot_build_chunk(node_id, build, reservations, metrics) {
             Ok(build_alias) => build_alias,
             Err(error) => {
-                drop(indices);
                 reservations.release(gather_map_reservation, metrics);
-                drop(probe);
                 return Err(error);
             },
         };
@@ -428,9 +426,7 @@ pub(super) fn materialize_compiled_one_shot_equi_join_probe_chunk(
                 reservations,
                 &error,
             );
-            drop(indices);
             reservations.release(gather_map_reservation, metrics);
-            drop(probe);
             return Err(error);
         },
     };
@@ -446,9 +442,7 @@ pub(super) fn materialize_compiled_one_shot_equi_join_probe_chunk(
     ) {
         Ok(reservation) => reservation,
         Err(error) => {
-            drop(indices);
             reservations.release(gather_map_reservation, metrics);
-            drop(probe);
             return Err(error);
         },
     };
@@ -462,10 +456,8 @@ pub(super) fn materialize_compiled_one_shot_equi_join_probe_chunk(
     ) {
         Ok(output) => output,
         Err(error) => {
-            drop(indices);
             reservations.release(gather_map_reservation, metrics);
             reservations.release(output_reservation, metrics);
-            drop(probe);
             return Err(error);
         },
     };
@@ -473,27 +465,19 @@ pub(super) fn materialize_compiled_one_shot_equi_join_probe_chunk(
     let output_bytes = match observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), metrics) {
         Ok(bytes) => bytes,
         Err(error) => {
-            drop(output);
-            drop(indices);
             reservations.release(gather_map_reservation, metrics);
             reservations.release(output_reservation, metrics);
-            drop(probe);
             return Err(error);
         },
     };
     if let Err(error) =
         reconcile_join_output_upper_bound(node_id, &mut output_reservation, output_bytes, reservations, metrics)
     {
-        drop(output);
-        drop(indices);
         reservations.release(gather_map_reservation, metrics);
         reservations.release(output_reservation, metrics);
-        drop(probe);
         return Err(error);
     }
-    drop(indices);
     reservations.release(gather_map_reservation, metrics);
-    drop(probe);
     summary.record_chunk(
         probe_rows,
         probe_bytes,

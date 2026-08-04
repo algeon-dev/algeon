@@ -210,7 +210,6 @@ fn deduplicate_filtered_join_build_keys(
     let output_bytes = match observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), metrics) {
         Ok(bytes) => bytes,
         Err(error) => {
-            drop(output);
             reservations.release(output_reservation, metrics);
             release_bounded_join_side_frame(build, reservations, metrics);
             return Err(error);
@@ -229,7 +228,6 @@ fn deduplicate_filtered_join_build_keys(
             ),
             metrics,
         ) {
-            drop(output);
             reservations.release(output_reservation, metrics);
             release_bounded_join_side_frame(build, reservations, metrics);
             return Err(error);
@@ -409,7 +407,6 @@ pub(super) fn execute_compiled_filtered_join_probe_chunk_from_resident_frame(
         Err(error) => {
             reservations.release(gather_map_reservation, metrics);
             reservations.release(probe_state_reservation, metrics);
-            drop(probe);
             return Err(join_index_error(error, node));
         },
     };
@@ -456,9 +453,7 @@ pub(super) fn execute_compiled_filtered_join_probe_chunk_from_resident_frame(
             output_rows,
             output_bytes,
         );
-        drop(indices);
         reservations.release(gather_map_reservation, metrics);
-        drop(probe);
         ResidentGpuFrame { frame: GpuDataFrame::new(output), reservation: output_reservation }
     } else {
         let left_projection =
@@ -505,9 +500,7 @@ pub(super) fn execute_compiled_filtered_join_probe_chunk_from_resident_frame(
             output_rows,
             output_bytes,
         );
-        drop(indices);
         reservations.release(gather_map_reservation, metrics);
-        drop(probe);
         ResidentGpuFrame { frame: GpuDataFrame::new(output), reservation: output_reservation }
     };
     Ok(output)
@@ -589,12 +582,8 @@ pub(super) fn execute_compiled_filtered_join_materialize(
             output_rows,
             output_bytes,
         );
-        drop(indices);
         reservations.release(gather_map_reservation, metrics);
-        drop(build.filtered_join);
         reservations.release(build.hash_table_reservation, metrics);
-        drop(probe);
-        drop(build.build);
         ResidentGpuFrame { frame: GpuDataFrame::new(output), reservation: output_reservation }
     } else {
         let left_projection =
@@ -642,12 +631,8 @@ pub(super) fn execute_compiled_filtered_join_materialize(
             output_rows,
             output_bytes,
         );
-        drop(indices);
         reservations.release(gather_map_reservation, metrics);
-        drop(build.filtered_join);
         reservations.release(build.hash_table_reservation, metrics);
-        drop(probe);
-        drop(build.build);
         ResidentGpuFrame { frame: GpuDataFrame::new(output), reservation: output_reservation }
     };
     Ok(output)
@@ -696,8 +681,7 @@ pub(super) fn release_compiled_filtered_join_build_state(
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
 ) {
-    let BoundedCompiledFilteredJoinBuildState { build, filtered_join, hash_table_reservation, .. } = build;
-    drop(filtered_join);
+    let BoundedCompiledFilteredJoinBuildState { build, filtered_join: _, hash_table_reservation, .. } = build;
     reservations.release(hash_table_reservation, metrics);
     release_bounded_join_side_frame(build, reservations, metrics);
 }
@@ -707,8 +691,7 @@ pub(super) fn release_compiled_filtered_join_probe_state(
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
 ) {
-    let BoundedCompiledFilteredJoinProbeState { build, probe, probe_state, probe_state_reservation, .. } = probe;
-    drop(probe_state);
+    let BoundedCompiledFilteredJoinProbeState { build, probe, probe_state: _, probe_state_reservation, .. } = probe;
     reservations.release(probe_state_reservation, metrics);
     release_compiled_filtered_join_build_state(build, reservations, metrics);
     release_bounded_join_side_frame(probe, reservations, metrics);

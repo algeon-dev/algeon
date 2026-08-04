@@ -991,49 +991,6 @@ fn queue_sweep_finish_pause_registry() -> &'static Mutex<Vec<QueueSweepFinishPau
     QUEUE_SWEEP_FINISH_PAUSE.get_or_init(|| Mutex::new(Vec::new()))
 }
 
-/// Test-side half of a one-shot queue-sweep pause.
-#[cfg(test)]
-#[derive(Debug)]
-pub(in crate::runtime::query_service) struct QueueSweepFinishPauseHandle {
-    entered: Mutex<std::sync::mpsc::Receiver<()>>,
-    release: Mutex<Option<std::sync::mpsc::SyncSender<()>>>,
-    service: std::sync::Weak<QueryServiceInner>,
-    pause: Arc<QueueSweepFinishPause>,
-}
-
-#[cfg(test)]
-impl QueueSweepFinishPauseHandle {
-    pub(in crate::runtime::query_service) fn wait_until_entered(&self, timeout: Duration) {
-        self.entered
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .recv_timeout(timeout)
-            .expect("queue sweep did not reach the finish pause before the deadline");
-    }
-
-    pub(in crate::runtime::query_service) fn release(&self) {
-        if let Some(release) = self.release.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
-            release.send(()).expect("paused queue sweep remains live until release");
-        }
-    }
-}
-
-#[cfg(test)]
-impl Drop for QueueSweepFinishPauseHandle {
-    fn drop(&mut self) {
-        if let Some(release) = self.release.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
-            let _ = release.send(());
-        }
-        let mut registration =
-            queue_sweep_finish_pause_registry().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(position) = registration.iter().position(|registered| {
-            registered.service.ptr_eq(&self.service) && Arc::ptr_eq(&registered.pause, &self.pause)
-        }) {
-            registration.remove(position);
-        }
-    }
-}
-
 #[cfg(test)]
 fn take_queue_sweep_finish_pause(service: &QueryService) -> Option<Arc<QueueSweepFinishPause>> {
     let mut registration =
@@ -1049,9 +1006,7 @@ fn take_queue_sweep_finish_pause(service: &QueryService) -> Option<Arc<QueueSwee
 impl QueryService {
     /// Pauses the next sweep from this service after it has removed requests
     /// and recorded their terminal errors, but before completion delivery.
-    pub(in crate::runtime::query_service) fn pause_next_queue_sweep_finish_for_test(
-        &self,
-    ) -> QueueSweepFinishPauseHandle {
+    pub(in crate::runtime::query_service) fn pause_next_queue_sweep_finish_for_test(&self) -> TestPauseHandle {
         let (entered_sender, entered_receiver) = std::sync::mpsc::sync_channel(1);
         let (release_sender, release_receiver) = std::sync::mpsc::sync_channel(1);
         let pause = Arc::new(QueueSweepFinishPause { entered: entered_sender, release: Mutex::new(release_receiver) });
@@ -1064,12 +1019,16 @@ impl QueryService {
             "only one queue sweep finish pause may be armed for a service at a time"
         );
         registration.push(QueueSweepFinishPauseRegistration { service: service.clone(), pause: pause.clone() });
-        QueueSweepFinishPauseHandle {
-            entered: Mutex::new(entered_receiver),
-            release: Mutex::new(Some(release_sender)),
-            service,
-            pause,
-        }
+        TestPauseHandle::new("queue sweep finish", entered_receiver, release_sender).with_drop_cleanup(move || {
+            let mut registration =
+                queue_sweep_finish_pause_registry().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(position) = registration
+                .iter()
+                .position(|registered| registered.service.ptr_eq(&service) && Arc::ptr_eq(&registered.pause, &pause))
+            {
+                registration.remove(position);
+            }
+        })
     }
 }
 

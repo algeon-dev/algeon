@@ -355,8 +355,5 @@ mod topology_tests {
                 _ => {},
             }
         }
-
-        drop(first);
-        drop(second);
     }
 }

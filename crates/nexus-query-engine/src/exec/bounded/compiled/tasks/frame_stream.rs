@@ -148,7 +148,6 @@ impl ResidentFrameStreamProducer {
     fn release(mut self, reservations: &mut ReservationTracker, metrics: &mut QueryMetrics) {
         if let Some(mut inner) = self.inner.take() {
             inner.release(reservations, metrics);
-            drop(inner);
         }
         for reservation in self.producer_reservations.drain(..).rev() {
             reservations.release(reservation, metrics);
@@ -661,6 +660,6 @@ impl ResidentFrameStreamProducerTestHarness {
     }
 
     pub(crate) fn drop_payload_without_release(&mut self) {
-        drop(self.payload.take());
+        let _ = self.payload.take();
     }
 }

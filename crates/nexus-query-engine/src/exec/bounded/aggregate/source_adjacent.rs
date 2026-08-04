@@ -238,7 +238,6 @@ fn release_raw_source_inputs_reverse(
     metrics: &mut QueryMetrics,
 ) {
     while let Some((_chunks, raw)) = inputs.pop() {
-        drop(raw.partial.frame);
         reservations.release(raw.partial.reservation, metrics);
     }
 }
@@ -440,7 +439,6 @@ fn partition_source_adjacent_raw_chunk(
     ) {
         Ok(reservation) => reservation,
         Err(error) => {
-            drop(raw.frame);
             reservations.release(raw.reservation, metrics);
             return Err(error);
         },
@@ -455,7 +453,6 @@ fn partition_source_adjacent_raw_chunk(
         Ok(token) => token,
         Err(error) => {
             reservations.release(partition_reservation, metrics);
-            drop(raw.frame);
             reservations.release(raw.reservation, metrics);
             return Err(error);
         },
@@ -500,13 +497,12 @@ fn partition_source_adjacent_raw_chunk(
                 Ok(frame) => frame,
                 Err(error) => {
                     stage_guard.fail(&error);
-                    drop(raw_frame);
                     reservations.release(raw.reservation, metrics);
                     reservations.release(partition_reservation, metrics);
                     return Err(error);
                 },
             };
-            let partitioned = with_partition_column
+            with_partition_column
                 .with_execution(&token.execution_overrides())
                 .hash_partition_by([partition_column.as_str()], partition_count)
                 .map_err(|error| {
@@ -521,9 +517,7 @@ fn partition_source_adjacent_raw_chunk(
                         .with_fact("partition_count", partition_count),
                         &token,
                     )
-                });
-            drop(with_partition_column);
-            partitioned
+                })
         },
         SourceAdjacentAggregatePartitioner::GroupKey { key_columns } => raw_frame
             .with_execution(&token.execution_overrides())
@@ -552,7 +546,6 @@ fn partition_source_adjacent_raw_chunk(
             Err(error)
         },
     };
-    drop(raw_frame);
     reservations.release(raw.reservation, metrics);
 
     let partitioned = match partitioned {
@@ -567,7 +560,6 @@ fn partition_source_adjacent_raw_chunk(
     let partitioned_bytes = match observe_device_memory_bytes(&partitioned_gpu, metrics) {
         Ok(bytes) => bytes,
         Err(error) => {
-            drop(partitioned_frame);
             reservations.release(partition_reservation, metrics);
             return Err(error);
         },
@@ -583,7 +575,6 @@ fn partition_source_adjacent_raw_chunk(
         .with_stage("source_adjacent_aggregate_hash_partition")
         .with_task_registration(hash_task_id.clone(), 1, "aggregate");
         if let Err(error) = reservations.try_grow(&mut partition_reservation, grow_request, metrics) {
-            drop(partitioned_frame);
             reservations.release(partition_reservation, metrics);
             return Err(error);
         }
@@ -608,13 +599,11 @@ fn partition_source_adjacent_raw_chunk(
             Ok(frame) => partitions.push(frame),
             Err(error) => {
                 release_optional_partials_reverse(reservations, partitions, metrics);
-                drop(partitioned_frame);
                 reservations.release(partition_reservation, metrics);
                 return Err(error);
             },
         }
     }
-    drop(partitioned_frame);
     reservations.release(partition_reservation, metrics);
     Ok(partitions)
 }
@@ -752,7 +741,6 @@ fn execute_source_adjacent_partition_aggregate(
     ) {
         Ok(reservation) => reservation,
         Err(error) => {
-            drop(input_frame);
             reservations.release(input_reservation, metrics);
             return Err(error);
         },
@@ -766,7 +754,6 @@ fn execute_source_adjacent_partition_aggregate(
     ) {
         Ok(token) => token,
         Err(error) => {
-            drop(input_frame);
             reservations.release(work_reservation, metrics);
             reservations.release(input_reservation, metrics);
             return Err(error.with_fact_if_absent("node_id", bounded.aggregate_id));
@@ -821,7 +808,6 @@ fn execute_source_adjacent_partition_aggregate(
         &output_request,
         metrics,
     ) {
-        drop(frame);
         reservations.release(work_reservation, metrics);
         return Err(error);
     }
@@ -902,7 +888,6 @@ fn concatenate_committed_frames(
             )
         })
     };
-    drop(first_frame);
     reservations.release(first_reservation, metrics);
     release_partials_reverse(reservations, inputs, metrics);
 
@@ -932,7 +917,6 @@ fn concatenate_committed_frames(
         &output_request,
         metrics,
     ) {
-        drop(concatenated);
         reservations.release(concat_reservation, metrics);
         return Err(error);
     }
@@ -956,7 +940,6 @@ fn release_partition_inputs_reverse(
     metrics: &mut QueryMetrics,
 ) {
     while let Some(input) = inputs.pop() {
-        drop(input.partial.frame);
         reservations.release(input.partial.reservation, metrics);
     }
 }
@@ -968,7 +951,6 @@ fn release_optional_partials_reverse(
 ) {
     while let Some(partial) = partials.pop() {
         if let Some(partial) = partial {
-            drop(partial.frame);
             reservations.release(partial.reservation, metrics);
         }
     }
@@ -980,7 +962,6 @@ fn release_aligned_partials_reverse(
     metrics: &mut QueryMetrics,
 ) {
     while let Some(partial) = partials.pop() {
-        drop(partial.partial.frame);
         reservations.release(partial.partial.reservation, metrics);
     }
 }

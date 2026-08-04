@@ -635,6 +635,7 @@ impl ReservationTracker {
         if request.resident_resource_id.is_none() {
             request.resident_resource_id = context.resident_resource_id.clone();
         }
+        // Release the RefCell borrow before metrics registration can re-borrow diagnostic state.
         drop(context);
         if let (Some(task_attempt_id), Some(task_kind)) = (&request.task_attempt_id, &request.task_kind) {
             metrics.register_task_definition(task_attempt_id.task_id.as_str(), task_kind);

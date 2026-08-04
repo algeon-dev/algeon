@@ -179,7 +179,6 @@ fn release_aligned_group_key_partials_reverse(
     metrics: &mut QueryMetrics,
 ) {
     while let Some(partial) = partials.pop() {
-        drop(partial.partial.frame);
         reservations.release(partial.partial.reservation, metrics);
     }
 }
@@ -679,6 +678,7 @@ fn execute_partitioned_final_merge_group(
         reservations,
         metrics,
     );
+    // Detach the native stream reservation before releasing the engine reservations below.
     drop(token);
     release_partials_reverse(reservations, inputs, metrics);
     reservations.release(merge_reservation, metrics);

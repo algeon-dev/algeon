@@ -41,6 +41,9 @@ debug = 1
 broken_intra_doc_links = "deny"
 bare_urls = "deny"
 
+[workspace.lints.clippy]
+drop_non_drop = "deny"
+
 [lints]
 workspace = true
 

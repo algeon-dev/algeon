@@ -34,9 +34,9 @@ use nexus_query_engine::{
 use super::{
     super::observability::{CapturedError, QueryStatsPayload},
     artifacts::{
-        FinalizationTestGate, LiveStatsCache, LiveStatsRead, LiveStatsWaitResult, QUERY_STATS_HEADER_LINE,
-        RUNTIME_ARTIFACT_CONTROL_SCHEMA, RUNTIME_ARTIFACT_CONTROL_SCHEMA_V2, compose_terminal_artifact,
-        incomplete_runtime_control, install_coordinator_render_probe,
+        ArtifactEgressLimiter, FinalizationTestGate, LiveStatsCache, LiveStatsRead, LiveStatsWaitResult,
+        LiveStatsWaiter, QUERY_STATS_HEADER_LINE, RUNTIME_ARTIFACT_CONTROL_SCHEMA, RUNTIME_ARTIFACT_CONTROL_SCHEMA_V2,
+        compose_terminal_artifact, incomplete_runtime_control, install_coordinator_render_probe,
     },
     maintenance::{CoordinatorMaintenanceClock, QueryCoordinatorMaintenance},
     retention::checked_deadline,
@@ -1931,6 +1931,72 @@ fn renderer_drop_wakes_all_waiters_with_one_shared_error_and_exact_accounting() 
     assert_eq!(state.rendering_key, None);
     assert_eq!(state.completed_key, Some(key));
     assert!(state.render_failed);
+}
+
+#[test]
+fn live_stats_waiter_drop_underflow_during_unwind_closes_the_cache_without_aborting() {
+    let cache = Arc::new(LiveStatsCache::new());
+    let waiter = LiveStatsWaiter {
+        cache: Arc::clone(&cache),
+        key: (1, QueryHotCounterSnapshot { output_batches: 1, output_rows: 1, output_bytes: 1, overflow: false }),
+        completed: false,
+    };
+
+    let unwind = catch_unwind(AssertUnwindSafe(|| {
+        let _waiter = waiter;
+        panic!("live stats waiter unwind probe");
+    }));
+
+    assert!(unwind.is_err(), "the original unwind must survive the waiter drop");
+    let state = cache.state.lock().unwrap();
+    assert!(!state.open);
+    assert!(state.abandoned);
+    assert_eq!(state.waiting_readers, 0);
+    assert!(state.stats.is_none());
+    assert!(state.rendering_key.is_none());
+}
+
+#[test]
+fn live_stats_renderer_drop_underflow_during_unwind_closes_the_cache_without_aborting() {
+    let cache = Arc::new(LiveStatsCache::new());
+    let key = (1, QueryHotCounterSnapshot { output_batches: 1, output_rows: 1, output_bytes: 1, overflow: false });
+    let LiveStatsRead::Render(renderer) = cache.begin_read(key) else {
+        panic!("first reader must elect the renderer");
+    };
+    cache.state.lock().unwrap().active_renderers = 0;
+
+    let unwind = catch_unwind(AssertUnwindSafe(|| {
+        let _renderer = renderer;
+        panic!("live stats renderer unwind probe");
+    }));
+
+    assert!(unwind.is_err(), "the original unwind must survive the renderer drop");
+    let state = cache.state.lock().unwrap();
+    assert!(!state.open);
+    assert!(state.abandoned);
+    assert_eq!(state.active_renderers, 0);
+    assert!(state.stats.is_none());
+    assert!(state.rendering_key.is_none());
+}
+
+#[test]
+fn artifact_egress_drop_underflow_during_unwind_quarantines_the_limiter_without_aborting() {
+    let limiter = ArtifactEgressLimiter::new(1, 1024);
+    let lease = limiter.try_acquire(512).unwrap();
+    limiter.state.lock().unwrap().streams = 0;
+
+    let unwind = catch_unwind(AssertUnwindSafe(|| {
+        let _lease = lease;
+        panic!("artifact egress unwind probe");
+    }));
+
+    assert!(unwind.is_err(), "the original unwind must survive the egress lease drop");
+    let state = limiter.state.lock().unwrap();
+    assert!(state.closed);
+    assert_eq!((state.streams, state.bytes), (1, 1024));
+    drop(state);
+    let error = limiter.try_acquire(1).unwrap_err();
+    assert_eq!(error.kind(), QueryCoordinatorErrorKind::ArtifactEgressCapacity);
 }
 
 #[test]

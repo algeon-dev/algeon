@@ -1533,28 +1533,38 @@ impl JobCounterGuard {
 
 impl Drop for JobCounterGuard {
     fn drop(&mut self) {
-        // Synchronize the zero-counter transition with drain waiters. Without
-        // this lock, a waiter could observe zero between the decrement and the
-        // completion callback that releases the job's final resource anchors.
-        let _drain_state = self.drain.changed.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         // Publish the terminal transition before counters expose pool
         // quiescence. Callers use those counters as a completion fence and
         // must never observe an active count of zero with a nonterminal job.
         self.terminal.finish_drop();
-        match self.state {
-            JobCounterState::Queued => decrement(&self.counters.queued),
-            JobCounterState::Active => {
-                if self.kind == GpuExecutionJobKind::QueryExecution {
-                    self.query_tracker.finish_query();
-                    decrement(&self.counters.active_queries);
-                }
-                decrement(&self.counters.active);
-            },
+
+        // The completion hook can acquire arbitrary locks or block. Run it
+        // before publishing pool quiescence, but never while retaining the
+        // drain mutex that serializes the zero-counter transition.
+        let completion_panic =
+            self.completion.take().and_then(|completion| std::panic::catch_unwind(AssertUnwindSafe(completion)).err());
+
+        {
+            // Synchronize the zero-counter transition with drain waiters.
+            // Completion above releases the job's final resource anchors, so
+            // a waiter that observes zero after this decrement may proceed.
+            let _drain_state = self.drain.changed.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            match self.state {
+                JobCounterState::Queued => decrement(&self.counters.queued),
+                JobCounterState::Active => {
+                    if self.kind == GpuExecutionJobKind::QueryExecution {
+                        self.query_tracker.finish_query();
+                        decrement(&self.counters.active_queries);
+                    }
+                    decrement(&self.counters.active);
+                },
+            }
+            self.drain.wake.notify_all();
         }
-        if let Some(completion) = self.completion.take() {
-            completion();
+
+        if let Some(panic) = completion_panic {
+            std::panic::resume_unwind(panic);
         }
-        self.drain.wake.notify_all();
     }
 }
 
@@ -2234,6 +2244,46 @@ mod tests {
         assert_eq!(snapshot.queued_jobs, 0);
         assert_eq!(snapshot.active_query_jobs, 0);
         assert_eq!(pool.query_tracker().snapshot().active_query_jobs, 0);
+    }
+
+    #[test]
+    fn completion_runs_without_drain_lock_and_precedes_zero_counter_transition() {
+        let pool = GpuExecutionPool::new(28, 1).unwrap();
+        let drain = Arc::clone(&pool.inner.drain);
+        let completion_gate = Arc::new(BlockingGate::default());
+        let completion_gate_for_job = Arc::clone(&completion_gate);
+        let completion_can_lock_drain = Arc::new(AtomicBool::new(false));
+        let completion_can_lock_drain_for_job = Arc::clone(&completion_can_lock_drain);
+        let completion_finished = Arc::new(AtomicBool::new(false));
+        let completion_finished_for_job = Arc::clone(&completion_finished);
+        let (entered_sender, entered_receiver) = mpsc::sync_channel(0);
+
+        pool.spawn_observed_with_completion(
+            GpuExecutionJobKind::Cleanup,
+            RuntimeObservationHandle::disabled(),
+            async {},
+            move || {
+                let can_lock_drain = {
+                    let _drain_state = drain.changed.try_lock();
+                    _drain_state.is_ok()
+                };
+                completion_can_lock_drain_for_job.store(can_lock_drain, Ordering::Release);
+                entered_sender.send(()).expect("test receives completion entry");
+                completion_gate_for_job.wait();
+                completion_finished_for_job.store(true, Ordering::Release);
+            },
+        )
+        .unwrap();
+
+        entered_receiver.recv_timeout(Duration::from_secs(5)).expect("completion starts");
+        let active_during_completion = pool.snapshot().active_jobs;
+
+        completion_gate.release();
+        pool.wait_for_drain_until(Instant::now() + Duration::from_secs(5)).unwrap();
+
+        assert!(completion_can_lock_drain.load(Ordering::Acquire));
+        assert_eq!(active_during_completion, 1);
+        assert!(completion_finished.load(Ordering::Acquire));
     }
 
     #[tokio::test(flavor = "current_thread")]

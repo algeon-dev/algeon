@@ -102,8 +102,6 @@ fn execute_compiled_projected_cross_join_materialize_with_strategy(
             output_bytes,
         },
     ));
-    drop(left);
-    drop(right);
     Ok(ResidentGpuFrame { frame: GpuDataFrame::new(output), reservation: output_reservation })
 }
 

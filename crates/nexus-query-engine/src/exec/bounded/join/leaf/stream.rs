@@ -332,13 +332,11 @@ where
                 1,
                 stream.max_attempts,
             ) {
-                drop(output.frame);
                 reservations.release(output.reservation, metrics);
                 abandon_join_leaf_reads(pending, reservations, metrics);
                 return Err(error);
             }
         } else if let Err(error) = observe_device_memory_bytes(&output.frame, metrics) {
-            drop(output.frame);
             reservations.release(output.reservation, metrics);
             abandon_join_leaf_reads(pending, reservations, metrics);
             return Err(error);

@@ -8,6 +8,10 @@
   cleanup.
 - Preserve public behavior and contract tests unless the task changes them. Add
   tests for behavior or regressions; comment only on non-obvious constraints.
+- An explicit `drop()` in production code needs a one-line comment explaining
+  why the value cannot wait until end of scope (such as a lock window,
+  re-entrancy, or `RefCell` re-borrow); otherwise delete it rather than add it.
+  Test code is exempt.
 
 ## Project boundaries
 
@@ -34,6 +38,8 @@
   mode, tenant policy, grant band, or slot guarantee; preserved strict-named
   and adaptive-named wire fields are canonical projections of the one
   contract, not separate producers.
+- The reservation ledger is integer accounting, not a residency oracle; dropping
+  a frame earlier does not change what it reports.
 - Model aggregate partial/final state explicitly. AVG is SUM + COUNT followed by
   final SUM/SUM, never average-of-averages.
 

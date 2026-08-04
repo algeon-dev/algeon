@@ -367,8 +367,8 @@ impl ResidentFrameStreamSource for RootHashJoinProbeStreamSource {
 
     fn release(&mut self, reservations: &mut ReservationTracker, metrics: &mut QueryMetrics) {
         while let Some(output) = self.pending_outputs.pop_front() {
-            reservations.release(output.reservation, metrics);
-            drop(output.frame);
+            let ResidentGpuFrame { reservation, .. } = output;
+            reservations.release(reservation, metrics);
         }
         if let Some(input) = self.inputs.take() {
             input.release_all(reservations, metrics);
@@ -1152,9 +1152,6 @@ fn concatenate_streamed_hash_join_outputs(
     let output = match first_frame.with_execution(&overrides).concat_many(&rest_frame_refs) {
         Ok(output) => output,
         Err(error) => {
-            drop(rest_frame_refs);
-            drop(frames);
-            drop(first_frame);
             release_streamed_join_reservations_reverse(reservations, input_reservations, metrics);
             reservations.release(output_reservation, metrics);
             return Err(QueryError::from_cudf(
@@ -1172,10 +1169,6 @@ fn concatenate_streamed_hash_join_outputs(
     let output_bytes = match observe_device_memory_bytes(&output_frame, metrics) {
         Ok(bytes) => bytes,
         Err(error) => {
-            drop(output_frame);
-            drop(rest_frame_refs);
-            drop(frames);
-            drop(first_frame);
             release_streamed_join_reservations_reverse(reservations, input_reservations, metrics);
             reservations.release(output_reservation, metrics);
             return Err(error);
@@ -1194,10 +1187,6 @@ fn concatenate_streamed_hash_join_outputs(
             ),
             metrics,
         ) {
-            drop(output_frame);
-            drop(rest_frame_refs);
-            drop(frames);
-            drop(first_frame);
             release_streamed_join_reservations_reverse(reservations, input_reservations, metrics);
             reservations.release(output_reservation, metrics);
             return Err(error);
@@ -1205,9 +1194,6 @@ fn concatenate_streamed_hash_join_outputs(
     } else {
         reservations.shrink_to_observed(&mut output_reservation, output_bytes, metrics);
     }
-    drop(rest_frame_refs);
-    drop(frames);
-    drop(first_frame);
     release_streamed_join_reservations_reverse(reservations, input_reservations, metrics);
     Ok(ResidentGpuFrame { frame: output_frame, reservation: output_reservation })
 }
@@ -1218,8 +1204,8 @@ fn release_streamed_join_outputs_reverse(
     metrics: &mut QueryMetrics,
 ) {
     while let Some(output) = outputs.pop() {
-        drop(output.frame);
-        reservations.release(output.reservation, metrics);
+        let ResidentGpuFrame { reservation, .. } = output;
+        reservations.release(reservation, metrics);
     }
 }
 
@@ -1526,7 +1512,6 @@ fn materialize_compiled_keyed_equality_join_indices_with_preflight(
     let index_bytes = match hash_indices.device_allocated_size_bytes().map(|bytes| bytes as u64) {
         Ok(bytes) => bytes,
         Err(error) => {
-            drop(hash_indices);
             reservations.release(gather_map_reservation, metrics);
             return Err(QueryError::from_cudf(
                 "nexus_query_engine.bounded.join.compiled_keyed_equality_index_bytes",
@@ -1538,7 +1523,6 @@ fn materialize_compiled_keyed_equality_join_indices_with_preflight(
         },
     };
     if index_bytes > gather_map_reservation.bytes() {
-        drop(hash_indices);
         reservations.release(gather_map_reservation, metrics);
         return Err(QueryError::new(
             QueryErrorCode::MemoryReservationFailed,
@@ -1561,7 +1545,6 @@ fn materialize_compiled_keyed_equality_join_indices_with_preflight(
             CompiledJoinIndices::Pair { left: hash_indices.probe().clone(), right: hash_indices.build().clone() }
         },
     };
-    drop(hash_indices);
     Ok(CompiledEqualityJoinPreflightIndices {
         indices,
         gather_map_reservation,
@@ -1584,12 +1567,11 @@ fn compiled_hash_join_left_probe_size_for_full_size_preflight(
 }
 
 fn release_temporary_compiled_hash_join(
-    hash_join: GpuHashJoinBuildHandle,
+    _hash_join: GpuHashJoinBuildHandle,
     hash_table_reservation: ActiveReservation,
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
 ) {
-    drop(hash_join);
     reservations.release(hash_table_reservation, metrics);
 }
 
@@ -1879,7 +1861,6 @@ fn materialize_compiled_indices_output(
     let output_bytes = match observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), metrics) {
         Ok(bytes) => bytes,
         Err(error) => {
-            drop(output);
             txn.rollback(reservations, metrics);
             return Err(error);
         },
@@ -1890,7 +1871,6 @@ fn materialize_compiled_indices_output(
     if let Err(error) =
         reconcile_join_output_upper_bound(node_id, txn.output_reservation_mut(), output_bytes, reservations, metrics)
     {
-        drop(output);
         txn.rollback(reservations, metrics);
         return Err(error);
     }

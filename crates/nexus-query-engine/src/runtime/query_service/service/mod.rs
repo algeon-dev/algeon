@@ -117,6 +117,116 @@ impl QueryServiceInner {
     }
 }
 
+/// Test-side half of a one-shot pause rendezvous.
+///
+/// Dropping the handle releases a paused worker so a failing assertion cannot
+/// strand a test thread. Optional cleanup runs after that release, matching
+/// the registry-backed pause handles' previous teardown order.
+#[cfg(test)]
+pub(in crate::runtime::query_service) struct TestPauseHandle {
+    name: &'static str,
+    entered: Mutex<std::sync::mpsc::Receiver<()>>,
+    release: Mutex<Option<std::sync::mpsc::SyncSender<()>>>,
+    drop_cleanup: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+}
+
+#[cfg(test)]
+impl std::fmt::Debug for TestPauseHandle {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("TestPauseHandle").field("name", &self.name).finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+impl TestPauseHandle {
+    pub(in crate::runtime::query_service) fn new(
+        name: &'static str,
+        entered: std::sync::mpsc::Receiver<()>,
+        release: std::sync::mpsc::SyncSender<()>,
+    ) -> Self {
+        Self { name, entered: Mutex::new(entered), release: Mutex::new(Some(release)), drop_cleanup: Mutex::new(None) }
+    }
+
+    pub(in crate::runtime::query_service) fn with_drop_cleanup(
+        mut self,
+        cleanup: impl FnOnce() + Send + 'static,
+    ) -> Self {
+        *self.drop_cleanup.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Box::new(cleanup));
+        self
+    }
+
+    pub(in crate::runtime::query_service) fn wait_until_entered(&self, timeout: Duration) {
+        self.entered
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .recv_timeout(timeout)
+            .unwrap_or_else(|error| panic!("{} did not enter before the deadline: {error}", self.name));
+    }
+
+    pub(in crate::runtime::query_service) fn entered_within(&self, timeout: Duration) -> bool {
+        match self.entered.lock().unwrap_or_else(std::sync::PoisonError::into_inner).recv_timeout(timeout) {
+            Ok(()) => true,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => false,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                panic!("{} pause sender disconnected", self.name)
+            },
+        }
+    }
+
+    pub(in crate::runtime::query_service) fn release(&self) {
+        let release = self.release.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+        if let Some(release) = release
+            && release.send(()).is_err()
+        {
+            panic!("paused {} remains live until release", self.name);
+        }
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestPauseHandle {
+    fn drop(&mut self) {
+        if let Some(release) = self.release.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
+            let _ = release.try_send(());
+        }
+        if let Some(cleanup) = self.drop_cleanup.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
+            cleanup();
+        }
+    }
+}
+
+#[cfg(test)]
+mod test_pause_handle_tests {
+    use std::{sync::mpsc, time::Duration};
+
+    use super::TestPauseHandle;
+
+    #[test]
+    fn drop_releases_the_paused_worker_before_running_cleanup() {
+        let (entered_sender, entered_receiver) = mpsc::sync_channel(1);
+        let (release_sender, release_receiver) = mpsc::sync_channel(1);
+        let (worker_released_sender, worker_released_receiver) = mpsc::sync_channel(1);
+        let (cleanup_sender, cleanup_receiver) = mpsc::sync_channel(1);
+        let worker = std::thread::spawn(move || {
+            entered_sender.send(()).expect("pause handle remains live until the worker enters");
+            release_receiver.recv().expect("pause handle releases the worker during teardown");
+            worker_released_sender.send(()).expect("drop cleanup remains live until the worker is released");
+        });
+        let pause = TestPauseHandle::new("test pause", entered_receiver, release_sender).with_drop_cleanup(move || {
+            worker_released_receiver
+                .recv_timeout(Duration::from_secs(2))
+                .expect("pause handle releases the worker before running cleanup");
+            cleanup_sender.send(()).expect("test observes pause cleanup");
+        });
+
+        pause.wait_until_entered(Duration::from_secs(2));
+        drop(pause);
+
+        cleanup_receiver.recv_timeout(Duration::from_secs(2)).expect("drop runs pause cleanup");
+        worker.join().expect("paused worker does not panic");
+    }
+}
+
 /// Test-only rendezvous after the first ledger of a fleet closure has been
 /// marked closed. The closure keeps `fleet_admission` while waiting, exposing
 /// the exact interleaving that must not admit work on a later device.
@@ -136,40 +246,6 @@ impl UnknownIsolationClosurePause {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .recv()
             .expect("unknown-isolation closure pause is released");
-    }
-}
-
-/// Test-side half of a one-shot unknown-isolation closure pause.
-#[cfg(test)]
-#[derive(Debug)]
-pub(in crate::runtime::query_service) struct UnknownIsolationClosurePauseHandle {
-    entered: Mutex<std::sync::mpsc::Receiver<()>>,
-    release: Mutex<Option<std::sync::mpsc::SyncSender<()>>>,
-}
-
-#[cfg(test)]
-impl UnknownIsolationClosurePauseHandle {
-    pub(in crate::runtime::query_service) fn wait_until_entered(&self, timeout: Duration) {
-        self.entered
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .recv_timeout(timeout)
-            .expect("unknown-isolation closure did not close its first ledger before the deadline");
-    }
-
-    pub(in crate::runtime::query_service) fn release(&self) {
-        if let Some(release) = self.release.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
-            release.send(()).expect("paused unknown-isolation closure remains live until release");
-        }
-    }
-}
-
-#[cfg(test)]
-impl Drop for UnknownIsolationClosurePauseHandle {
-    fn drop(&mut self) {
-        if let Some(release) = self.release.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
-            let _ = release.send(());
-        }
     }
 }
 
@@ -214,7 +290,7 @@ impl QueryService {
     #[cfg(test)]
     pub(in crate::runtime::query_service) fn pause_unknown_isolation_closure_after_first_ledger_for_test(
         &self,
-    ) -> UnknownIsolationClosurePauseHandle {
+    ) -> TestPauseHandle {
         let (entered_sender, entered_receiver) = std::sync::mpsc::sync_channel(1);
         let (release_sender, release_receiver) = std::sync::mpsc::sync_channel(1);
         let pause =
@@ -223,10 +299,7 @@ impl QueryService {
             self.inner.unknown_isolation_closure_pause.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         assert!(armed.is_none(), "only one unknown-isolation closure pause may be armed for a service");
         *armed = Some(pause);
-        UnknownIsolationClosurePauseHandle {
-            entered: Mutex::new(entered_receiver),
-            release: Mutex::new(Some(release_sender)),
-        }
+        TestPauseHandle::new("unknown-isolation closure", entered_receiver, release_sender)
     }
 
     /// Injects one failure after an exhausted waiter's old protection has

@@ -341,6 +341,7 @@ fn execute_compiled_partitioned_final_merge_group(
         metrics,
     );
     let merge_elapsed = timer.elapsed();
+    // Detach the native stream reservation before releasing the engine reservation below.
     drop(token);
     reservations.release(merge_reservation, metrics);
     let frame = match result {
@@ -389,9 +390,6 @@ fn merge_compiled_partitioned_final_aggregate_partials_consuming(
         let other_frames = partials.iter().map(|partial| partial.frame.frame().clone()).collect::<Vec<_>>();
         let other_frame_refs = other_frames.iter().collect::<Vec<_>>();
         let concatenated = first_frame.with_execution(&token.execution_overrides()).concat_many(&other_frame_refs);
-        drop(other_frame_refs);
-        drop(other_frames);
-        drop(first_frame);
         match concatenated {
             Ok(frame) => frame,
             Err(error) => {
@@ -664,9 +662,6 @@ fn merge_compiled_final_aggregate_partials(
     let other_frames = partials[1..].iter().map(|partial| partial.frame.frame().clone()).collect::<Vec<_>>();
     let other_frame_refs = other_frames.iter().collect::<Vec<_>>();
     let concatenated = first_frame.with_execution(&token.execution_overrides()).concat_many(&other_frame_refs);
-    drop(other_frame_refs);
-    drop(other_frames);
-    drop(first_frame);
     let concatenated = concatenated.map(GpuDataFrame::new).map_err(|error| {
         QueryError::from_cudf(
             "nexus_query_engine.bounded.aggregate.compiled_stream_concat_partials",

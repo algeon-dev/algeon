@@ -44,9 +44,6 @@ pub(super) fn concatenate_join_source_chunks(
     let output = match first_frame.with_execution(&overrides).concat_many(&rest_frame_refs) {
         Ok(output) => output,
         Err(error) => {
-            drop(rest_frame_refs);
-            drop(frames);
-            drop(first_frame);
             release_join_source_reservations_reverse(reservations, input_reservations, metrics);
             reservations.release(output_reservation, metrics);
             return Err(QueryError::from_cudf(
@@ -64,10 +61,6 @@ pub(super) fn concatenate_join_source_chunks(
     let output_bytes = match observe_device_memory_bytes(&output_frame, metrics) {
         Ok(bytes) => bytes,
         Err(error) => {
-            drop(output_frame);
-            drop(rest_frame_refs);
-            drop(frames);
-            drop(first_frame);
             release_join_source_reservations_reverse(reservations, input_reservations, metrics);
             reservations.release(output_reservation, metrics);
             return Err(error);
@@ -84,18 +77,11 @@ pub(super) fn concatenate_join_source_chunks(
                 .with_attempt(1, 1),
             metrics,
         ) {
-            drop(output_frame);
-            drop(rest_frame_refs);
-            drop(frames);
-            drop(first_frame);
             release_join_source_reservations_reverse(reservations, input_reservations, metrics);
             reservations.release(output_reservation, metrics);
             return Err(error);
         }
     }
-    drop(rest_frame_refs);
-    drop(frames);
-    drop(first_frame);
     release_join_source_reservations_reverse(reservations, input_reservations, metrics);
     Ok(ResidentGpuFrame { frame: output_frame, reservation: output_reservation })
 }
@@ -105,8 +91,7 @@ pub(super) fn release_join_source_chunks_reverse(
     mut chunks: Vec<(GpuDataFrame, ActiveReservation)>,
     metrics: &mut QueryMetrics,
 ) {
-    while let Some((frame, reservation)) = chunks.pop() {
-        drop(frame);
+    while let Some((_, reservation)) = chunks.pop() {
         reservations.release(reservation, metrics);
     }
 }

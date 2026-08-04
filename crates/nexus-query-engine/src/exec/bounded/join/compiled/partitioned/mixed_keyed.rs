@@ -186,7 +186,6 @@ fn materialize_partitioned_mixed_keyed_residual_join_partition(
     let mixed_size_data_bytes = match size_data.device_allocated_size_bytes(node) {
         Ok(bytes) => bytes,
         Err(error) => {
-            drop(size_data);
             txn.rollback(reservations, metrics);
             return Err(error);
         },
@@ -203,7 +202,6 @@ fn materialize_partitioned_mixed_keyed_residual_join_partition(
     ) {
         Ok(reservation) => reservation,
         Err(error) => {
-            drop(size_data);
             txn.rollback(reservations, metrics);
             return Err(error);
         },
@@ -213,7 +211,6 @@ fn materialize_partitioned_mixed_keyed_residual_join_partition(
     let gather_map_reservation_bytes = match size_data.gather_map_reservation_size_bytes(node) {
         Ok(bytes) => bytes,
         Err(error) => {
-            drop(size_data);
             txn.rollback(reservations, metrics);
             return Err(error);
         },
@@ -230,7 +227,6 @@ fn materialize_partitioned_mixed_keyed_residual_join_partition(
     ) {
         Ok(reservation) => reservation,
         Err(error) => {
-            drop(size_data);
             txn.rollback(reservations, metrics);
             return Err(error);
         },
@@ -324,7 +320,6 @@ fn materialize_partitioned_mixed_keyed_residual_join_partition(
     let output_bytes = match observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), metrics) {
         Ok(bytes) => bytes,
         Err(error) => {
-            drop(output);
             txn.rollback(reservations, metrics);
             return Err(error);
         },
@@ -332,7 +327,6 @@ fn materialize_partitioned_mixed_keyed_residual_join_partition(
     if let Err(error) =
         reconcile_join_output_upper_bound(node_id, txn.output_reservation_mut(), output_bytes, reservations, metrics)
     {
-        drop(output);
         txn.rollback(reservations, metrics);
         return Err(error);
     }

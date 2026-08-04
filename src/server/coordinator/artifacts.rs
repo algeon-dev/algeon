@@ -326,6 +326,18 @@ pub(in crate::server) struct LiveStatsCacheState {
     pub(in crate::server) abandoned: bool,
 }
 
+fn fail_closed_live_stats_cache(state: &mut LiveStatsCacheState) {
+    // Once the lease counters disagree with their owners, serving another
+    // mutable projection would make the cache's single-flight state
+    // untrustworthy. A terminal snapshot, if already installed, stays valid.
+    state.open = false;
+    state.rendering_key = None;
+    state.completed_key = None;
+    state.stats = None;
+    state.render_failed = true;
+    state.abandoned = state.terminal_stats.is_none();
+}
+
 impl LiveStatsCache {
     pub(in crate::server) fn new() -> Self {
         Self {
@@ -490,9 +502,24 @@ impl Drop for LiveStatsWaiter {
         if self.completed {
             return;
         }
-        let mut state = self.cache.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.waiting_readers = state.waiting_readers.checked_sub(1).expect("live stats waiter count underflow");
-        self.cache.changed.notify_all();
+        let underflow = {
+            let mut state = self.cache.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            match state.waiting_readers.checked_sub(1) {
+                Some(waiting_readers) => {
+                    state.waiting_readers = waiting_readers;
+                    self.cache.changed.notify_all();
+                    false
+                },
+                None => {
+                    fail_closed_live_stats_cache(&mut state);
+                    self.cache.changed.notify_all();
+                    true
+                },
+            }
+        };
+        if underflow && !std::thread::panicking() {
+            panic!("live stats waiter count underflow");
+        }
     }
 }
 
@@ -534,15 +561,30 @@ impl Drop for LiveStatsReadLease {
         if self.completed {
             return;
         }
-        let mut state = self.cache.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state.open {
-            state.completed_key = Some(self.key);
-            state.stats = None;
-            state.render_failed = true;
+        let underflow = {
+            let mut state = self.cache.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            if state.open {
+                state.completed_key = Some(self.key);
+                state.stats = None;
+                state.render_failed = true;
+            }
+            state.rendering_key = None;
+            match state.active_renderers.checked_sub(1) {
+                Some(active_renderers) => {
+                    state.active_renderers = active_renderers;
+                    self.cache.changed.notify_all();
+                    false
+                },
+                None => {
+                    fail_closed_live_stats_cache(&mut state);
+                    self.cache.changed.notify_all();
+                    true
+                },
+            }
+        };
+        if underflow && !std::thread::panicking() {
+            panic!("live stats renderer count underflow");
         }
-        state.rendering_key = None;
-        state.active_renderers = state.active_renderers.checked_sub(1).expect("live stats renderer count underflow");
-        self.cache.changed.notify_all();
     }
 }
 
@@ -559,6 +601,7 @@ pub(in crate::server) struct ArtifactEgressState {
     pub(in crate::server) bytes: u64,
     pub(in crate::server) peak_streams: usize,
     pub(in crate::server) peak_bytes: u64,
+    pub(in crate::server) closed: bool,
 }
 
 impl ArtifactEgressLimiter {
@@ -571,6 +614,12 @@ impl ArtifactEgressLimiter {
         bytes: u64,
     ) -> Result<ArtifactEgressLease, QueryCoordinatorError> {
         let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.closed {
+            return Err(QueryCoordinatorError::new(
+                QueryCoordinatorErrorKind::ArtifactEgressCapacity,
+                "runtime artifact response capacity is unavailable after an accounting failure",
+            ));
+        }
         let Some(next_streams) = state.streams.checked_add(1) else {
             return Err(QueryCoordinatorError::new(
                 QueryCoordinatorErrorKind::ArtifactEgressCapacity,
@@ -606,6 +655,12 @@ pub(in crate::server) struct ArtifactEgressLease {
 impl ArtifactEgressLease {
     pub(in crate::server) fn reconcile(&mut self, bytes: u64) -> Result<(), QueryCoordinatorError> {
         let mut state = self.limiter.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.closed {
+            return Err(QueryCoordinatorError::new(
+                QueryCoordinatorErrorKind::ArtifactEgressCapacity,
+                "runtime artifact response capacity is unavailable after an accounting failure",
+            ));
+        }
         if bytes > self.bytes {
             return Err(QueryCoordinatorError::new(
                 QueryCoordinatorErrorKind::ArtifactEgressCapacity,
@@ -621,9 +676,25 @@ impl ArtifactEgressLease {
 
 impl Drop for ArtifactEgressLease {
     fn drop(&mut self) {
-        let mut state = self.limiter.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.streams = state.streams.checked_sub(1).expect("artifact egress stream release is exact");
-        state.bytes = state.bytes.checked_sub(self.bytes).expect("artifact egress byte release is exact");
+        let underflow = {
+            let mut state = self.limiter.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            match (state.streams.checked_sub(1), state.bytes.checked_sub(self.bytes)) {
+                (Some(streams), Some(bytes)) => {
+                    state.streams = streams;
+                    state.bytes = bytes;
+                    false
+                },
+                _ => {
+                    state.streams = self.limiter.max_streams;
+                    state.bytes = self.limiter.max_bytes;
+                    state.closed = true;
+                    true
+                },
+            }
+        };
+        if underflow && !std::thread::panicking() {
+            panic!("artifact egress lease accounting underflow");
+        }
     }
 }
 

@@ -67,7 +67,6 @@ pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_probe_from_frame(
     ) {
         Ok(bytes) => bytes,
         Err(error) => {
-            drop(indices);
             reservations.release(gather_map_reservation, metrics);
             release_bounded_join_side_frame(probe, reservations, metrics);
             return Err(error);
@@ -145,7 +144,6 @@ pub(in crate::exec::bounded::join::hash) fn execute_bounded_root_hash_join_singl
     let gather_map_bytes = match indices.device_allocated_size_bytes().map(|bytes| bytes as u64) {
         Ok(bytes) => bytes,
         Err(error) => {
-            drop(indices);
             reservations.release(gather_map_reservation, metrics);
             release_bounded_join_side_frame(probe, reservations, metrics);
             return Err(QueryError::from_cudf(
@@ -157,7 +155,6 @@ pub(in crate::exec::bounded::join::hash) fn execute_bounded_root_hash_join_singl
         },
     };
     if gather_map_bytes > gather_map_reservation.bytes() {
-        drop(indices);
         reservations.release(gather_map_reservation, metrics);
         release_bounded_join_side_frame(probe, reservations, metrics);
         return Err(QueryError::new(
@@ -267,7 +264,6 @@ pub(in crate::exec::bounded::join::hash) fn execute_bounded_root_hash_join_multi
     let gather_map_bytes = match indices.device_allocated_size_bytes().map(|bytes| bytes as u64) {
         Ok(bytes) => bytes,
         Err(error) => {
-            drop(indices);
             reservations.release(gather_map_reservation, metrics);
             release_bounded_join_side_frame(probe, reservations, metrics);
             return Err(QueryError::from_cudf(
@@ -478,7 +474,6 @@ pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_probe_from_reside
     ) {
         Ok(bytes) => bytes,
         Err(error) => {
-            drop(indices);
             reservations.release(gather_map_reservation, metrics);
             release_bounded_join_side_frame(probe, reservations, metrics);
             return Err(error);

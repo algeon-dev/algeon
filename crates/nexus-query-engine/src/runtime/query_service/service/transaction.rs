@@ -18,8 +18,6 @@
 //! Every attempt admitted against a real device always carries the complete
 //! physical envelope.
 
-#[cfg(test)]
-use std::time::Duration;
 use std::{
     sync::{Arc, Mutex, mpsc},
     time::Instant,
@@ -109,42 +107,6 @@ struct AdmissionTransactionPause {
     release: Mutex<mpsc::Receiver<()>>,
 }
 
-/// Test-side half of a transaction pause. Channel rendezvous are bounded so a
-/// setup failure before the requested admission step fails the test instead of
-/// hanging the whole nextest process on an unbounded barrier.
-#[cfg(test)]
-pub(crate) struct AdmissionTransactionPauseHandle {
-    entered: Mutex<mpsc::Receiver<()>>,
-    release: Mutex<Option<mpsc::SyncSender<()>>>,
-}
-
-#[cfg(test)]
-impl AdmissionTransactionPauseHandle {
-    pub(crate) fn wait_until_entered(&self, timeout: Duration) {
-        self.entered
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .recv_timeout(timeout)
-            .expect("admission transaction did not reach the requested pause step before the deadline");
-    }
-
-    pub(crate) fn release(&self) {
-        let release = self.release.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
-        if let Some(release) = release {
-            release.send(()).expect("paused admission transaction remains live until release");
-        }
-    }
-}
-
-#[cfg(test)]
-impl Drop for AdmissionTransactionPauseHandle {
-    fn drop(&mut self) {
-        if let Some(release) = self.release.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
-            let _ = release.try_send(());
-        }
-    }
-}
-
 impl std::fmt::Debug for AdmissionTransactionProbe {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.debug_struct("AdmissionTransactionProbe").finish_non_exhaustive()
@@ -177,7 +139,7 @@ impl AdmissionTransactionProbe {
     /// grant exists; the release channel lets it resume without publishing it
     /// early.
     #[cfg(test)]
-    pub(crate) fn pausing_at(step: AdmissionStep) -> (Self, AdmissionTransactionPauseHandle) {
+    pub(crate) fn pausing_at(step: AdmissionStep) -> (Self, super::TestPauseHandle) {
         let (entered_sender, entered_receiver) = mpsc::sync_channel(1);
         let (release_sender, release_receiver) = mpsc::sync_channel(1);
         let pause =
@@ -189,10 +151,7 @@ impl AdmissionTransactionProbe {
                 force_deadline_at: Mutex::new(None),
                 rollback_pause: Mutex::new(None),
             },
-            AdmissionTransactionPauseHandle {
-                entered: Mutex::new(entered_receiver),
-                release: Mutex::new(Some(release_sender)),
-            },
+            super::TestPauseHandle::new("admission transaction", entered_receiver, release_sender),
         )
     }
 
@@ -217,7 +176,7 @@ impl AdmissionTransactionProbe {
     /// lifecycle ticket into rollback cleanup, but before its drop starts
     /// physical cleanup. This exposes the exact shutdown-quiescence boundary.
     #[cfg(test)]
-    pub(crate) fn pausing_after_rollback_accounting() -> (Self, AdmissionTransactionPauseHandle) {
+    pub(crate) fn pausing_after_rollback_accounting() -> (Self, super::TestPauseHandle) {
         let (entered_sender, entered_receiver) = mpsc::sync_channel(1);
         let (release_sender, release_receiver) = mpsc::sync_channel(1);
         let pause =
@@ -229,10 +188,7 @@ impl AdmissionTransactionProbe {
                 force_deadline_at: Mutex::new(Some(ForcedAdmissionDeadline::BeforePublication)),
                 rollback_pause: Mutex::new(Some(pause)),
             },
-            AdmissionTransactionPauseHandle {
-                entered: Mutex::new(entered_receiver),
-                release: Mutex::new(Some(release_sender)),
-            },
+            super::TestPauseHandle::new("admission rollback cleanup", entered_receiver, release_sender),
         )
     }
 
@@ -374,25 +330,127 @@ struct EnvelopePhysical {
     root_stream: Mutex<Option<StreamLease>>,
 }
 
-/// One admitted attempt's resource envelope.
+/// One stage in a typed teardown sequence.
 ///
-/// Field declaration order is the required drop order: physical components,
-/// attempt lane, immutable ledger grant, backend generation permit, and
-/// finally the admission lifecycle ticket.
+/// Each stage owns exactly one resource and the only valid continuation after
+/// that resource is released. Its destructor explicitly releases the current
+/// stage before Rust can descend into `then`, so changing field declaration
+/// order cannot weaken the sequence.
+struct TeardownStep<T, Next> {
+    release: Option<T>,
+    then: Next,
+}
+
+impl<T, Next> Drop for TeardownStep<T, Next> {
+    fn drop(&mut self) {
+        // This release must precede descent into `then`: admission capacity
+        // is reusable only after every earlier stage has completed.
+        drop(self.release.take());
+    }
+}
+
+type AdmissionTerminalSequence = TeardownStep<
+    DeviceLanePermit,
+    TeardownStep<MemoryGrant, TeardownStep<GpuResourcePermit, TeardownStep<AdmissionTicket, ()>>>,
+>;
+
+/// Terminal admission resources encoded as a release chain rather than
+/// independent envelope fields. The type fixes lane → grant → backend permit
+/// → lifecycle-ticket destruction regardless of enclosing field order.
+struct AdmissionTerminalTeardown {
+    sequence: AdmissionTerminalSequence,
+}
+
+impl AdmissionTerminalTeardown {
+    fn new(
+        lane_permit: Option<DeviceLanePermit>,
+        memory_grant: MemoryGrant,
+        gpu_resource_permit: Option<GpuResourcePermit>,
+        lifecycle_ticket: Option<AdmissionTicket>,
+    ) -> Self {
+        Self {
+            sequence: TeardownStep {
+                release: lane_permit,
+                then: TeardownStep {
+                    release: Some(memory_grant),
+                    then: TeardownStep {
+                        release: gpu_resource_permit,
+                        then: TeardownStep { release: lifecycle_ticket, then: () },
+                    },
+                },
+            },
+        }
+    }
+
+    fn memory_grant(&self) -> &MemoryGrant {
+        self.sequence.then.release.as_ref().expect("admission teardown retains an immutable memory grant")
+    }
+
+    fn lane_index(&self) -> Option<usize> {
+        self.sequence.release.as_ref().map(DeviceLanePermit::index)
+    }
+
+    fn lifecycle_ticket_mut(&mut self) -> Option<&mut AdmissionTicket> {
+        self.sequence.then.then.then.release.as_mut()
+    }
+
+    fn retain_gpu_resource_permit(&mut self, gpu_resource_permit: Option<GpuResourcePermit>) {
+        let slot = &mut self.sequence.then.then.release;
+        debug_assert!(slot.is_none(), "published admission envelope can retain only one GPU resource permit");
+        *slot = gpu_resource_permit;
+    }
+}
+
+/// GPU-bound and terminal admission resources. Physical resources are released
+/// before the typed terminal sequence; a rollback can move the terminal
+/// sequence intact behind a stream cleanup fence.
+struct AdmissionTeardown {
+    physical: Option<EnvelopePhysical>,
+    terminal: Option<AdmissionTerminalTeardown>,
+}
+
+impl AdmissionTeardown {
+    fn new(
+        physical: Option<EnvelopePhysical>,
+        lane_permit: Option<DeviceLanePermit>,
+        memory_grant: MemoryGrant,
+        lifecycle_ticket: Option<AdmissionTicket>,
+    ) -> Self {
+        Self {
+            physical,
+            terminal: Some(AdmissionTerminalTeardown::new(lane_permit, memory_grant, None, lifecycle_ticket)),
+        }
+    }
+
+    fn terminal(&self) -> &AdmissionTerminalTeardown {
+        self.terminal.as_ref().expect("admission envelope terminal teardown is present")
+    }
+
+    fn terminal_mut(&mut self) -> &mut AdmissionTerminalTeardown {
+        self.terminal.as_mut().expect("admission envelope terminal teardown is present")
+    }
+
+    fn take_terminal(&mut self) -> AdmissionTerminalTeardown {
+        self.terminal.take().expect("admission envelope terminal teardown is present")
+    }
+}
+
+impl Drop for AdmissionTeardown {
+    fn drop(&mut self) {
+        // Physical CUDA state must disappear before the terminal release
+        // chain can return capacity or clear lifecycle quiescence.
+        drop(self.physical.take());
+        drop(self.terminal.take());
+    }
+}
+
+/// One admitted attempt's resource envelope.
 pub(crate) struct AdmissionEnvelope {
     /// Retained so a pre-publication drop can account for deferred rollback
-    /// cleanup until its stream callback has released the lane and grant.
+    /// cleanup until its stream callback has released the terminal sequence.
     service: Arc<QueryServiceInner>,
     device_ordinal: usize,
-    physical: Option<EnvelopePhysical>,
-    lane_permit: Option<DeviceLanePermit>,
-    memory_grant: MemoryGrant,
-    /// Retained by the published envelope until every CUDA-bound component
-    /// and the immutable grant have been released.
-    gpu_resource_permit: Option<GpuResourcePermit>,
-    /// Final close/drain fence. This remains with the envelope so it cannot
-    /// outlive or be released before the admission resources it represents.
-    lifecycle_ticket: Option<AdmissionTicket>,
+    teardown: AdmissionTeardown,
     /// Present only for an engine-owned attempt after the native domain and
     /// its post-install ring watermark have both been observed.
     allocator_domain_attempt: Option<AllocatorDomainAttempt>,
@@ -405,8 +463,8 @@ impl std::fmt::Debug for AdmissionEnvelope {
         formatter
             .debug_struct("AdmissionEnvelope")
             .field("device_ordinal", &self.device_ordinal)
-            .field("grant_id", &self.memory_grant.grant_id())
-            .field("ledger_only", &self.physical.is_none())
+            .field("grant_id", &self.teardown.terminal().memory_grant().grant_id())
+            .field("ledger_only", &self.teardown.physical.is_none())
             .finish_non_exhaustive()
     }
 }
@@ -419,10 +477,7 @@ impl Drop for AdmissionEnvelope {
             // that could attribute a later callback to this attempt.
             discard_admitted_domain(&self.service.allocator_event_correlation, binding);
         }
-        let Some(physical) = self.physical.take() else {
-            // Keep the ticket in its field. Rust drops fields after this
-            // destructor in declaration order, so the grant and generation
-            // permit release before the ticket clears lifecycle quiescence.
+        let Some(physical) = self.teardown.physical.take() else {
             self.begin_terminal_cleanup();
             return;
         };
@@ -436,18 +491,8 @@ impl Drop for AdmissionEnvelope {
             // attached is a rollback path. Move its terminal owners behind
             // the stream quiescence fence before releasing capacity.
             self.begin_terminal_cleanup();
-            defer_rollback_capacity_release(
-                &self.service,
-                root_stream,
-                self.lane_permit.take(),
-                Some(self.memory_grant.clone()),
-                self.gpu_resource_permit.take(),
-                self.lifecycle_ticket.take(),
-            );
+            defer_rollback_capacity_release(&self.service, root_stream, self.teardown.take_terminal());
         } else {
-            // The root binding was already consumed. Keep both terminal
-            // owners in their fields so normal struct-field destruction
-            // releases them only after lane and grant cleanup.
             self.begin_terminal_cleanup();
         }
     }
@@ -465,43 +510,21 @@ struct EnvelopeBuilder {
     memory_grant: Option<MemoryGrant>,
 }
 
-/// Capacity acquired for a provisional admission remains unavailable until
-/// the root stream's deferred cleanup has crossed its quiescence boundary.
-/// The field order preserves lane-before-grant release at that boundary.
-struct RollbackCapacityRetention {
-    _lane_permit: Option<DeviceLanePermit>,
-    _memory_grant: Option<MemoryGrant>,
-    _gpu_resource_permit: Option<GpuResourcePermit>,
-    /// Dropped last, after lane/grant release has crossed the stream cleanup
-    /// fence and the generation permit has been released, so lifecycle
-    /// quiescence cannot be observed before capacity is mechanically reusable.
-    _lifecycle_ticket: Option<AdmissionTicket>,
-}
-
 fn defer_rollback_capacity_release(
     service: &Arc<QueryServiceInner>,
     root_stream: StreamLease,
-    lane_permit: Option<DeviceLanePermit>,
-    memory_grant: Option<MemoryGrant>,
-    gpu_resource_permit: Option<GpuResourcePermit>,
-    lifecycle_ticket: Option<AdmissionTicket>,
+    terminal: AdmissionTerminalTeardown,
 ) {
     let service_for_notification = Arc::clone(service);
-    let retention = Arc::new(Mutex::new(Some(RollbackCapacityRetention {
-        _lane_permit: lane_permit,
-        _memory_grant: memory_grant,
-        _gpu_resource_permit: gpu_resource_permit,
-        _lifecycle_ticket: lifecycle_ticket,
-    })));
+    let retention = Arc::new(Mutex::new(Some(terminal)));
     let release_after_quiescence = Arc::clone(&retention);
     let installed = root_stream.install_cleanup_completion(
         |_| {},
         move || {
             drop(release_after_quiescence.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take());
-            // Notify only after the retention fields have dropped: the
-            // lifecycle ticket is declared last and therefore removed after
-            // the ledger grant/lane and backend-generation permit, making
-            // this the precise quiescence edge.
+            // Notify only after the typed terminal sequence has dropped: its
+            // lifecycle ticket is the final stage, making this the precise
+            // quiescence edge.
             service_for_notification.notify_admission_available();
         },
     );
@@ -528,25 +551,25 @@ impl Drop for EnvelopeBuilder {
         drop(self.root_member.take());
         drop(self.domain.take());
         let root_stream = self.root_stream.take();
+        let Some(memory_grant) = self.memory_grant.take() else {
+            // A successfully built envelope has moved every terminal owner
+            // out of this builder; its destructor must therefore be a no-op.
+            debug_assert!(root_stream.is_none(), "transferred envelope leaves no root stream in its builder");
+            debug_assert!(self.lane_permit.is_none(), "transferred envelope leaves no lane permit in its builder");
+            debug_assert!(lifecycle_ticket.is_none(), "transferred envelope leaves no lifecycle ticket in its builder");
+            return;
+        };
+        let terminal = AdmissionTerminalTeardown::new(self.lane_permit.take(), memory_grant, None, lifecycle_ticket);
 
         let Some(root_stream) = root_stream else {
             // No stream cleanup fence exists yet. Release capacity explicitly
             // before the local lifecycle ticket drops; otherwise a concurrent
             // close could observe lifecycle quiescence while this builder
             // still holds an attempt lane or immutable grant.
-            drop(self.lane_permit.take());
-            drop(self.memory_grant.take());
-            drop(lifecycle_ticket);
+            drop(terminal);
             return;
         };
-        defer_rollback_capacity_release(
-            &self.service,
-            root_stream,
-            self.lane_permit.take(),
-            self.memory_grant.take(),
-            None,
-            lifecycle_ticket,
-        );
+        defer_rollback_capacity_release(&self.service, root_stream, terminal);
     }
 }
 
@@ -630,11 +653,12 @@ impl AdmissionEnvelope {
             return Ok(Self {
                 service: Arc::clone(&builder.service),
                 device_ordinal,
-                physical: None,
-                lane_permit: None,
-                memory_grant: builder.memory_grant.take().expect("grant present"),
-                gpu_resource_permit: None,
-                lifecycle_ticket: builder.lifecycle_ticket.take(),
+                teardown: AdmissionTeardown::new(
+                    None,
+                    None,
+                    builder.memory_grant.take().expect("grant present"),
+                    builder.lifecycle_ticket.take(),
+                ),
                 allocator_domain_attempt: None,
                 rollback_cleanup_started: false,
             });
@@ -715,16 +739,17 @@ impl AdmissionEnvelope {
         Ok(Self {
             service: Arc::clone(&builder.service),
             device_ordinal,
-            physical: Some(EnvelopePhysical {
-                worker_scope,
-                root_member: Mutex::new(builder.root_member.take()),
-                domain: builder.domain.take().expect("domain present"),
-                root_stream: Mutex::new(builder.root_stream.take()),
-            }),
-            lane_permit: builder.lane_permit.take(),
-            memory_grant: builder.memory_grant.take().expect("grant present"),
-            gpu_resource_permit: None,
-            lifecycle_ticket: builder.lifecycle_ticket.take(),
+            teardown: AdmissionTeardown::new(
+                Some(EnvelopePhysical {
+                    worker_scope,
+                    root_member: Mutex::new(builder.root_member.take()),
+                    domain: builder.domain.take().expect("domain present"),
+                    root_stream: Mutex::new(builder.root_stream.take()),
+                }),
+                builder.lane_permit.take(),
+                builder.memory_grant.take().expect("grant present"),
+                builder.lifecycle_ticket.take(),
+            ),
             allocator_domain_attempt: None,
             rollback_cleanup_started: false,
         })
@@ -735,7 +760,7 @@ impl AdmissionEnvelope {
     }
 
     pub(crate) fn memory_grant(&self) -> &MemoryGrant {
-        &self.memory_grant
+        self.teardown.terminal().memory_grant()
     }
 
     /// Atomically hands an unpublished envelope's lifecycle ticket from
@@ -743,7 +768,7 @@ impl AdmissionEnvelope {
     /// service admission mutex while installing the idempotence guard.
     pub(crate) fn preaccount_rollback_cleanup(&mut self, _state: &mut super::super::admission::AdmissionState) {
         if !self.rollback_cleanup_started {
-            if let Some(ticket) = self.lifecycle_ticket.as_mut()
+            if let Some(ticket) = self.teardown.terminal_mut().lifecycle_ticket_mut()
                 && let Err(error) = ticket.transition_to_cleanup()
             {
                 eprintln!(
@@ -755,8 +780,9 @@ impl AdmissionEnvelope {
     }
 
     pub(crate) fn activate_lifecycle_ticket(&mut self) -> Result<()> {
-        self.lifecycle_ticket
-            .as_mut()
+        self.teardown
+            .terminal_mut()
+            .lifecycle_ticket_mut()
             .ok_or_else(|| {
                 QueryError::new(
                     QueryErrorCode::Internal,
@@ -792,7 +818,7 @@ impl AdmissionEnvelope {
     /// Records the active-to-cleanup transition while retaining the ticket
     /// inside this envelope through all terminal resource destruction.
     pub(crate) fn begin_terminal_cleanup(&mut self) {
-        if let Some(ticket) = self.lifecycle_ticket.as_mut()
+        if let Some(ticket) = self.teardown.terminal_mut().lifecycle_ticket_mut()
             && !ticket.is_cleanup()
             && let Err(error) = ticket.transition_to_cleanup()
         {
@@ -804,41 +830,37 @@ impl AdmissionEnvelope {
     /// not exposed again: the envelope releases it together with the admitted
     /// attempt's other terminal resources.
     pub(crate) fn retain_gpu_resource_permit(&mut self, gpu_resource_permit: Option<GpuResourcePermit>) {
-        debug_assert!(
-            self.gpu_resource_permit.is_none(),
-            "published admission envelope can retain only one GPU resource permit"
-        );
-        self.gpu_resource_permit = gpu_resource_permit;
+        self.teardown.terminal_mut().retain_gpu_resource_permit(gpu_resource_permit);
     }
 
     /// The attempt allocation domain. Always present for device-backed
     /// admissions; `None` only on ledger-only envelopes.
     pub(crate) fn domain(&self) -> Option<&AttemptAllocationDomain> {
-        self.physical.as_ref().map(|physical| &physical.domain)
+        self.teardown.physical.as_ref().map(|physical| &physical.domain)
     }
 
     /// Device worker scope identity evidence for device-backed admissions.
     pub(crate) fn worker_scope(&self) -> Option<DeviceWorkerScope> {
-        self.physical.as_ref().map(|physical| physical.worker_scope)
+        self.teardown.physical.as_ref().map(|physical| physical.worker_scope)
     }
 
     /// Attempt lane index for device-backed admissions.
     pub(crate) fn lane_index(&self) -> Option<usize> {
-        self.lane_permit.as_ref().map(DeviceLanePermit::index)
+        self.teardown.terminal().lane_index()
     }
 
     /// Whether this envelope still owns GPU-bound components. Once the root
     /// context consumed the stream and member, the remaining domain keeps the
     /// envelope GPU-bound until release.
     pub(crate) fn holds_gpu_resources(&self) -> bool {
-        self.physical.is_some()
+        self.teardown.physical.is_some()
     }
 
     /// Takes the root stream binding for the first context acquisition.
     /// Exactly one call succeeds per envelope.
     pub(crate) fn take_root_binding(&self) -> Result<RootStreamBinding> {
         let operation = "nexus_query_engine.query_service.admission_transaction";
-        let physical = self.physical.as_ref().ok_or_else(|| {
+        let physical = self.teardown.physical.as_ref().ok_or_else(|| {
             QueryError::new(QueryErrorCode::Internal, operation, "ledger-only admission envelope has no root binding")
                 .with_fact("device_ordinal", self.device_ordinal)
                 .with_fact("reason", "ledger_only_envelope")
@@ -883,11 +905,52 @@ impl AdmissionEnvelope {
     /// destroyed before the stream returns to its pool. Returns `None` when
     /// the root context already consumed the binding.
     pub(crate) fn release_unconsumed_physical(&mut self) -> Option<StreamLease> {
-        let physical = self.physical.take()?;
+        let physical = self.teardown.physical.take()?;
         let member = physical.root_member.lock().ok().and_then(|mut slot| slot.take());
         drop(member);
         let domain = physical.domain;
         drop(domain);
         physical.root_stream.lock().ok().and_then(|mut slot| slot.take())
+    }
+}
+
+#[cfg(test)]
+mod teardown_sequence_tests {
+    use std::sync::{Arc, Mutex};
+
+    use super::TeardownStep;
+
+    struct RecordedRelease {
+        name: &'static str,
+        releases: Arc<Mutex<Vec<&'static str>>>,
+    }
+
+    impl Drop for RecordedRelease {
+        fn drop(&mut self) {
+            self.releases.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(self.name);
+        }
+    }
+
+    #[test]
+    fn typed_teardown_releases_each_stage_before_its_successor() {
+        let releases = Arc::new(Mutex::new(Vec::new()));
+        let record = |name| RecordedRelease { name, releases: Arc::clone(&releases) };
+        let teardown = TeardownStep {
+            release: Some(record("lane")),
+            then: TeardownStep {
+                release: Some(record("grant")),
+                then: TeardownStep {
+                    release: Some(record("backend_permit")),
+                    then: TeardownStep { release: Some(record("lifecycle_ticket")), then: () },
+                },
+            },
+        };
+
+        drop(teardown);
+
+        assert_eq!(
+            *releases.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
+            ["lane", "grant", "backend_permit", "lifecycle_ticket"]
+        );
     }
 }

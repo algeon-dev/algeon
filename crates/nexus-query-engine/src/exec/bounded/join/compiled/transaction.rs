@@ -91,7 +91,7 @@ impl JoinMaterializationTxn {
     }
 
     pub(in crate::exec::bounded::join::compiled) fn drop_indices(&mut self) {
-        drop(self.indices.take());
+        self.indices = None;
     }
 
     pub(in crate::exec) fn set_output_reservation(&mut self, reservation: ActiveReservation) {
@@ -127,7 +127,7 @@ impl JoinMaterializationTxn {
     }
 
     fn release_uncommitted(&mut self, reservations: &mut ReservationTracker, metrics: &mut QueryMetrics) {
-        drop(self.indices.take());
+        self.indices = None;
         if let Some(reservation) = self.output_reservation.take() {
             reservations.release(reservation, metrics);
         }

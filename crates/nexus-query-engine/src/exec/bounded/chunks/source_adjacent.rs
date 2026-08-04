@@ -173,7 +173,6 @@ pub(in crate::exec::bounded::chunks) fn execute_bounded_chunk_batch_operator_fro
     let first_chunk = batch.chunks.first().expect("source chunk batch is non-empty");
     let ScheduledLocalParquetReadOutput { frame, reservation: source_reservation, .. } = source;
     if let Err(error) = context.check_cancellation("nexus_query_engine.exec.bounded.chunk_batch_operator") {
-        drop(frame);
         reservations.release(source_reservation, metrics);
         return Err(error);
     }
@@ -193,7 +192,6 @@ pub(in crate::exec::bounded::chunks) fn execute_bounded_chunk_batch_operator_fro
     let operator_reservation = match reservations.try_reserve(operator_request, metrics) {
         Ok(reservation) => reservation,
         Err(error) => {
-            drop(frame);
             reservations.release(source_reservation, metrics);
             return Err(error);
         },
@@ -384,7 +382,6 @@ pub(in crate::exec::bounded) fn execute_source_adjacent_chunk_projection(
     ) {
         Ok(reservation) => reservation,
         Err(error) => {
-            drop(input_frame);
             reservations.release(input_reservation, metrics);
             return Err(error);
         },
@@ -404,7 +401,6 @@ pub(in crate::exec::bounded) fn execute_source_adjacent_chunk_projection(
             ) {
                 Ok(token) => token,
                 Err(error) => {
-                    drop(input_frame);
                     reservations.release(work_reservation, metrics);
                     reservations.release(input_reservation, metrics);
                     return Err(attach_chunk_resource_facts(error, chunk, stage, attempt, max_attempts, metrics));
@@ -427,7 +423,6 @@ pub(in crate::exec::bounded) fn execute_source_adjacent_chunk_projection(
             );
         },
         Err(error) => {
-            drop(input_frame);
             reservations.release(work_reservation, metrics);
             reservations.release(input_reservation, metrics);
             return Err(attach_chunk_resource_facts(error, chunk, stage, attempt, max_attempts, metrics));
@@ -452,8 +447,6 @@ pub(in crate::exec::bounded) fn execute_source_adjacent_chunk_projection(
             .with_stage(stage),
             metrics,
         ) {
-            drop(prepared);
-            drop(input_frame);
             reservations.release(work_reservation, metrics);
             reservations.release(input_reservation, metrics);
             return Err(attach_chunk_resource_facts(error, chunk, stage, attempt, max_attempts, metrics));
@@ -468,8 +461,6 @@ pub(in crate::exec::bounded) fn execute_source_adjacent_chunk_projection(
     ) {
         Ok(token) => token,
         Err(error) => {
-            drop(prepared);
-            drop(input_frame);
             reservations.release(work_reservation, metrics);
             reservations.release(input_reservation, metrics);
             return Err(attach_chunk_resource_facts(error, chunk, stage, attempt, max_attempts, metrics));
@@ -522,7 +513,6 @@ fn finish_source_adjacent_chunk_unary(
     let output_bytes = match observe_device_memory_bytes(&frame, metrics) {
         Ok(bytes) => bytes,
         Err(error) => {
-            drop(frame);
             reservations.release(work_reservation, metrics);
             return Err(attach_chunk_resource_facts(error, chunk, output_boundary, attempt, max_attempts, metrics));
         },
@@ -545,7 +535,6 @@ fn finish_source_adjacent_chunk_unary(
         &output_request,
         metrics,
     ) {
-        drop(frame);
         reservations.release(work_reservation, metrics);
         return Err(attach_chunk_resource_facts(error, chunk, output_boundary, attempt, max_attempts, metrics));
     }
@@ -617,7 +606,6 @@ fn execute_source_adjacent_chunk_unary_with_work_bytes(
     ) {
         Ok(reservation) => reservation,
         Err(error) => {
-            drop(input.frame);
             reservations.release(input.reservation, metrics);
             return Err(error);
         },
@@ -651,7 +639,6 @@ fn execute_source_adjacent_chunk_unary_with_work_bytes(
     let output_bytes = match observe_device_memory_bytes(&frame, metrics) {
         Ok(bytes) => bytes,
         Err(error) => {
-            drop(frame);
             reservations.release(work_reservation, metrics);
             return Err(attach_chunk_resource_facts(error, chunk, output_boundary, attempt, max_attempts, metrics));
         },
@@ -672,7 +659,6 @@ fn execute_source_adjacent_chunk_unary_with_work_bytes(
         if let Err(error) =
             reservations.try_grow(&mut work_reservation, output_request.clone().with_requested_bytes(delta), metrics)
         {
-            drop(frame);
             reservations.release(work_reservation, metrics);
             return Err(error);
         }

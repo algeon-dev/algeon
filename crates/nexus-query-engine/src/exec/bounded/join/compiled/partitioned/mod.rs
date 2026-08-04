@@ -184,8 +184,6 @@ pub(super) fn hash_partition_join_side(
     let partitioned_bytes = match observe_device_memory_bytes(&partitioned_frame, metrics) {
         Ok(bytes) => bytes,
         Err(error) => {
-            drop(partitioned_frame);
-            drop(partitioned);
             reservations.release(reservation, metrics);
             release_partition_input(frame, input_reservation, reservations, metrics);
             return Err(error);
@@ -198,8 +196,6 @@ pub(super) fn hash_partition_join_side(
             bounded_join_request(ReservationKind::OperatorOutput, boundary, delta, reservations.budget(), node_id),
             metrics,
         ) {
-            drop(partitioned_frame);
-            drop(partitioned);
             reservations.release(reservation, metrics);
             release_partition_input(frame, input_reservation, reservations, metrics);
             return Err(error);
@@ -213,12 +209,11 @@ pub(super) fn hash_partition_join_side(
 }
 
 fn release_partition_input(
-    frame: DataFrame,
+    _frame: DataFrame,
     reservation: ActiveReservation,
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
 ) {
-    drop(frame);
     reservations.release(reservation, metrics);
 }
 
@@ -227,8 +222,7 @@ pub(super) fn release_partitioned_join_side(
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
 ) {
-    let PartitionedJoinSide { frame, reservation, .. } = side;
-    drop(frame);
+    let PartitionedJoinSide { frame: _, reservation, .. } = side;
     reservations.release(reservation, metrics);
 }
 
