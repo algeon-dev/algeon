@@ -44,7 +44,9 @@ pub use budget::{
     BudgetedExecutionOutcome, ExecutionBudgetEnforcement, ExecutionBudgetReport, ExecutionBudgetRequest,
     ExecutionBudgetStatus, ExecutionBudgetToken,
 };
-pub use cache_allocation::{CacheAllocationDomain, CacheAllocationDomainId, CacheAllocationLease};
+pub use cache_allocation::{
+    CacheAllocationDomain, CacheAllocationDomainId, CacheAllocationLease, CacheAllocationScope,
+};
 pub use device::DeviceId;
 pub use device_guard::DeviceEntryGuard;
 pub use device_health::{
