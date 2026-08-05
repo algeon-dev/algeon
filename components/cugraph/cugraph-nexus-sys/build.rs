@@ -159,6 +159,7 @@ fn main() {
         .derive_hash(true)
         // Use newtype enums for FFI safety. Rust enums are UB-prone if C passes unknown values.
         .newtype_enum("cugraph_error_code_")
+        .newtype_enum("cugraph_allocation_source_")
         .newtype_enum("bool_")
         .newtype_enum("data_type_id_");
 

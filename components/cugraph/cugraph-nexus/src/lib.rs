@@ -112,7 +112,7 @@ pub mod types;
 // Arrays
 pub use array::{DeviceArray, DeviceArrayView, DeviceBuffer};
 // Error handling
-pub use error::{Error, ErrorKind, ErrorStatus};
+pub use error::{AllocationSource, Error, ErrorKind, ErrorStatus};
 // Graph construction and type-state
 pub use graph::{Forward, Graph, GraphBuilder, ParkedGraph, Transposed, Transposition};
 // Infrastructure

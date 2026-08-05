@@ -30,6 +30,14 @@ mod tests {
     }
 
     #[test]
+    fn test_allocation_source_values() {
+        assert_eq!(cugraph_allocation_source_t::CUGRAPH_ALLOCATION_SOURCE_UNKNOWN.0, 0);
+        assert_eq!(cugraph_allocation_source_t::CUGRAPH_ALLOCATION_SOURCE_RMM_OUT_OF_MEMORY.0, 1);
+        assert_eq!(cugraph_allocation_source_t::CUGRAPH_ALLOCATION_SOURCE_RMM_BAD_ALLOC.0, 2);
+        assert_eq!(cugraph_allocation_source_t::CUGRAPH_ALLOCATION_SOURCE_STD_BAD_ALLOC.0, 3);
+    }
+
+    #[test]
     fn test_bool_values() {
         assert_eq!(bool_t::FALSE.0, 0);
         assert_eq!(bool_t::TRUE.0, 1);
