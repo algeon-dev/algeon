@@ -8,7 +8,7 @@
 use std::{fmt, marker::PhantomData, mem::ManuallyDrop, ptr, ptr::NonNull, sync::Arc};
 
 use cudf::{
-    DeviceId,
+    CurrentResourceRouteLease, DeviceId, DeviceMemoryManager,
     runtime::{BindingExtensionGuard, BindingExtensionInitError, BindingExtensionLease},
 };
 use cugraph_sys::{
@@ -90,6 +90,11 @@ unsafe extern "C" {
 struct RuntimeResourceHandleOwner {
     raw: Option<NonNull<cugraph_rs_runtime_resource_handle_t>>,
     device: i32,
+    // cuGraph's graph construction keeps some device allocations behind RMM's
+    // current-resource API. Keep this lease until after RAFT/cuGraph teardown
+    // so those allocations always reach the runtime's explicit resource
+    // without replacing cuDF's permanent current resource.
+    _current_resource_route: CurrentResourceRouteLease,
 }
 
 // SAFETY: the shim owns a RAFT handle constructed from an explicit cudf stream
@@ -112,6 +117,11 @@ impl RuntimeResourceHandleOwner {
         validate_runtime_binding_device(runtime_device, binding, operation)?;
 
         let _guard = DeviceGuard::enter_owner_device(runtime_device, operation)?;
+        let manager = DeviceMemoryManager::for_device(runtime.device())
+            .map_err(|error| map_current_resource_route_error(error, operation))?;
+        let current_resource_route = manager
+            .route_current_resource(runtime.stream(), runtime.memory_resource())
+            .map_err(|error| map_current_resource_route_error(error, operation))?;
         // SAFETY: `binding` is borrowed from a live explicit cudf runtime. The
         // shim borrows the stream and memory-resource handles for exactly the
         // lifetime guarded by the binding-extension lease's retained domain.
@@ -137,7 +147,7 @@ impl RuntimeResourceHandleOwner {
                 .with_context("device", runtime_device.to_string()));
         }
 
-        Ok(Self { raw: Some(raw), device: runtime_device })
+        Ok(Self { raw: Some(raw), device: runtime_device, _current_resource_route: current_resource_route })
     }
 
     fn resource_handle(&self) -> *mut cugraph_resource_handle_t {
@@ -147,10 +157,6 @@ impl RuntimeResourceHandleOwner {
                 self.raw.expect("runtime resource-handle owner is live while entered").as_ptr(),
             )
         }
-    }
-
-    fn raw(&self) -> *mut cugraph_rs_runtime_resource_handle_t {
-        self.raw.expect("runtime resource-handle owner is live while entered").as_ptr()
     }
 }
 
@@ -217,6 +223,15 @@ impl ResourceHandleLease {
 fn map_binding_extension_lifecycle_error(error: cudf::Error, operation: &'static str) -> Error {
     Error::new(ErrorKind::InvalidState, operation)
         .with_message("cudf runtime binding-extension lifecycle rejected cuGraph handle access")
+        .with_context("cudf_code", error.code().to_string())
+        .with_context("cudf_operation", error.operation().to_string())
+        .with_context("cudf_message", error.message().to_string())
+        .set_source(error)
+}
+
+fn map_current_resource_route_error(error: cudf::Error, operation: &'static str) -> Error {
+    Error::new(ErrorKind::InvalidState, operation)
+        .with_message("failed to register the runtime memory resource for legacy current-RMM allocations")
         .with_context("cudf_code", error.code().to_string())
         .with_context("cudf_operation", error.operation().to_string())
         .with_context("cudf_message", error.message().to_string())
@@ -321,14 +336,6 @@ impl EnteredContext<'_> {
 
     pub(crate) fn runtime_bound_lease(&self) -> Option<ResourceHandleLease> {
         self.owner.runtime_bound_lease()
-    }
-
-    /// Borrow the native runtime-bound owner for an API that must carry the
-    /// exact runtime memory resource through an upstream global-RMM boundary.
-    /// The pointer is valid only while this entered context holds its binding
-    /// extension guard.
-    pub(crate) fn runtime_resource_handle_raw(&self) -> Option<*mut std::ffi::c_void> {
-        self.runtime_extension.as_ref().map(|extension| extension.value().raw().cast::<std::ffi::c_void>())
     }
 }
 

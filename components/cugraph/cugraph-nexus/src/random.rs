@@ -24,7 +24,7 @@ use cugraph_sys::{cugraph_error_t, cugraph_rng_state_create, cugraph_rng_state_t
 use crate::{
     cuda::{DeviceResourceKind, drop_device_resource},
     error::{Result, check_error, require_non_null},
-    handle::EnteredContext,
+    handle::{EnteredContext, ResourceHandleLease},
 };
 
 /// RAII wrapper around `cugraph_rng_state_t`.
@@ -35,6 +35,8 @@ use crate::{
 pub struct RngState {
     raw: *mut cugraph_rng_state_t,
     device: i32,
+    // Keeps a runtime-bound cuGraph handle alive until after Drop frees `raw`.
+    _resource_handle_lease: Option<ResourceHandleLease>,
     _nosend_nosync: PhantomData<*mut ()>,
 }
 
@@ -62,7 +64,12 @@ impl RngState {
 
         let raw = require_non_null(raw, "RngState::new", "rng_state")?;
 
-        Ok(Self { raw, device: handle.device(), _nosend_nosync: PhantomData })
+        Ok(Self {
+            raw,
+            device: handle.device(),
+            _resource_handle_lease: handle.runtime_bound_lease(),
+            _nosend_nosync: PhantomData,
+        })
     }
 
     /// Get the raw C pointer. For internal use by other modules.
@@ -103,5 +110,22 @@ mod tests {
     #[test]
     fn test_rng_state_not_send_sync() {
         assert_not_impl_any!(RngState: Send, Sync);
+    }
+
+    #[test]
+    fn runtime_bound_rng_state_retains_native_owner_until_drop() {
+        let runtime = std::sync::Arc::new(cudf::Runtime::builder().build().expect("runtime"));
+        let handle = ResourceHandle::for_runtime(runtime).expect("runtime-bound handle");
+        let rng = {
+            let entered = handle.enter("runtime_bound_rng_state_retains_native_owner_until_drop").expect("entered");
+            RngState::new(&entered, 42).expect("rng state")
+        };
+
+        drop(handle);
+        let lease = rng._resource_handle_lease.as_ref().expect("runtime-bound rng should retain its native owner");
+        let mut entered_after_handle_drop = false;
+        lease.with_teardown_gate(|| entered_after_handle_drop = true);
+        assert!(entered_after_handle_drop, "the RNG lease must keep the native owner live after its handle drops");
+        drop(rng);
     }
 }

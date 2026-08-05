@@ -1,7 +1,7 @@
 //! Integration tests for runtime allocator-routing behavior.
 mod common;
 
-use std::{process::Command, ptr, sync::Arc};
+use std::{ptr, sync::Arc};
 
 use common::cudf::{
     assert_score_maps_close_f32, explicit_runtime, pagerank_score_map, python_weighted_reciprocal_expected_pagerank_map,
@@ -18,55 +18,10 @@ use cugraph::{
     types::GraphProperties,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CurrentAllocatorProbeOutcome {
-    Observed { allocation_delta: i64 },
-    Unobserved,
-    ObservedViaAbort,
-}
-
-struct CurrentDeviceResourceRestore {
-    previous_raw: *mut std::ffi::c_void,
-}
-
-impl Drop for CurrentDeviceResourceRestore {
-    fn drop(&mut self) {
-        let status = unsafe { test_support::cudf_test_memory_resource_set_current_raw(self.previous_raw) };
-        assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to restore previous current device resource");
-    }
-}
-
 fn current_device_resource_raw() -> *mut std::ffi::c_void {
     let mut out = ptr::null_mut();
     let status = unsafe { test_support::cudf_test_current_device_resource_raw(&mut out) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read current device resource");
-    out
-}
-
-fn install_current_device_resource(mr: &cudf::core::memory::DeviceMemoryResource) -> CurrentDeviceResourceRestore {
-    let previous_raw = current_device_resource_raw();
-    let status = unsafe { test_support::cudf_test_memory_resource_set_current(mr.as_borrowed_sys().as_raw()) };
-    assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to install current device resource");
-    CurrentDeviceResourceRestore { previous_raw }
-}
-
-fn stats_memory_resource() -> cudf::DeviceMemoryResource {
-    let device = cudf::DeviceId::current().expect("failed to resolve device for stats memory resource");
-    let mut raw = ptr::null_mut();
-    let status = unsafe { test_support::cudf_test_memory_resource_create_stats(&mut raw) };
-    assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to create stats memory resource");
-    // SAFETY: the test hook returns a fresh, uniquely owned handle for the
-    // current device, and this test transfers its sole ownership to cuDF.
-    unsafe { cudf::testing::core::adopt_owned_memory_resource_for_test(raw, device) }
-        .expect("failed to adopt stats memory resource")
-}
-
-fn allocation_count(resource: &cudf::DeviceMemoryResource) -> i64 {
-    let mut out = 0_i64;
-    let status = unsafe {
-        test_support::cudf_test_memory_resource_allocation_count(resource.as_borrowed_sys().as_raw(), &mut out)
-    };
-    assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read allocation count");
     out
 }
 
@@ -97,49 +52,6 @@ fn python_weighted_options() -> SeriesGraphOptions {
 
 fn runtime_with_explicit_pool_memory_resource() -> Arc<cudf::Runtime> {
     Arc::new(cudf::Runtime::builder().with_pool_memory_resource(8 * 1024 * 1024, None).build().expect("runtime"))
-}
-
-fn run_current_allocator_probe(mode: &str) -> CurrentAllocatorProbeOutcome {
-    let output = Command::new(env!("CARGO_BIN_EXE_allocator_routing_probe"))
-        .arg(mode)
-        .output()
-        .expect("allocator probe should start");
-
-    if let Some(code) = output.status.code() {
-        assert_eq!(
-            code,
-            0,
-            "allocator probe failed unexpectedly: stdout={}; stderr={}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-
-        let stdout = String::from_utf8(output.stdout).expect("probe stdout should be UTF-8");
-        let line = stdout.trim();
-        if line == "unobserved" {
-            return CurrentAllocatorProbeOutcome::Unobserved;
-        }
-        let delta = line
-            .strip_prefix("observed:")
-            .and_then(|value| value.parse::<i64>().ok())
-            .expect("probe should report observed:<delta> or unobserved");
-        return CurrentAllocatorProbeOutcome::Observed { allocation_delta: delta };
-    }
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::ExitStatusExt;
-
-        if output.status.signal() == Some(6) {
-            return CurrentAllocatorProbeOutcome::ObservedViaAbort;
-        }
-    }
-
-    panic!(
-        "allocator probe terminated unexpectedly: stdout={}; stderr={}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
 }
 
 #[test]
@@ -229,33 +141,17 @@ fn runtime_bound_prepared_python_imports_use_runtime_execution_context() {
 }
 
 #[test]
-fn borrowed_allocator_probe_reports_current_allocator_usage_or_contained_abort() {
-    let _guard = common::cudf::cuda_test_serial_guard();
-    match run_current_allocator_probe("borrowed") {
-        CurrentAllocatorProbeOutcome::Observed { allocation_delta } => {
-            assert!(allocation_delta > 0, "observed probe should report a positive allocation delta");
-        },
-        CurrentAllocatorProbeOutcome::Unobserved | CurrentAllocatorProbeOutcome::ObservedViaAbort => {},
-    }
-}
-
-#[test]
-fn prepared_allocator_probe_reports_current_allocator_usage_or_contained_abort() {
-    let _guard = common::cudf::cuda_test_serial_guard();
-    match run_current_allocator_probe("prepared") {
-        CurrentAllocatorProbeOutcome::Observed { allocation_delta } => {
-            assert!(allocation_delta > 0, "observed probe should report a positive allocation delta");
-        },
-        CurrentAllocatorProbeOutcome::Unobserved | CurrentAllocatorProbeOutcome::ObservedViaAbort => {},
-    }
-}
-
-#[test]
 fn runtime_bound_parked_graph_retains_bytes_in_its_cache_allocation_domain() {
     let _guard = common::cudf::cuda_test_serial_guard();
-    let cache_domain =
-        cudf::CacheAllocationDomain::new(cudf::DeviceId::current().expect("current CUDA device"), 64 * 1024 * 1024)
-            .expect("cache allocation domain");
+    let device = cudf::DeviceId::current().expect("current CUDA device");
+    let manager = cudf::DeviceMemoryManager::for_device(device).expect("permanent device memory manager");
+    let current_before = current_device_resource_raw();
+    assert_eq!(
+        current_before as usize,
+        manager.resource().testing_raw_handle_value(),
+        "the production allocator route requires cuDF's permanent manager resource to remain current"
+    );
+    let cache_domain = cudf::CacheAllocationDomain::new(device, 64 * 1024 * 1024).expect("cache allocation domain");
     let cache_lease = cache_domain.lease_runtime().expect("cache runtime lease");
     let cache_runtime = Arc::new(cache_lease.runtime().clone());
     let cache_handle = ResourceHandle::for_runtime(Arc::clone(&cache_runtime)).expect("cache-bound resource handle");
@@ -272,14 +168,6 @@ fn runtime_bound_parked_graph_retains_bytes_in_its_cache_allocation_domain() {
     let src_view = src.view().expect("source view");
     let dst_view = dst.view().expect("destination view");
 
-    let sentinel = stats_memory_resource();
-    assert_ne!(
-        sentinel.testing_raw_handle_value(),
-        cache_runtime.memory_resource().testing_raw_handle_value(),
-        "test requires a current resource distinct from the cache allocation domain"
-    );
-    let _restore = install_current_device_resource(&sentinel);
-    let sentinel_before = allocation_count(&sentinel);
     let domain_before = cache_domain.usage().expect("cache domain usage before graph construction");
 
     let graph = GraphBuilder::new(&src_view, &dst_view)
@@ -295,9 +183,9 @@ fn runtime_bound_parked_graph_retains_bytes_in_its_cache_allocation_domain() {
         "a parked graph must retain live bytes in its runtime-bound cache domain: before={domain_before:?}, after={domain_with_parked_graph:?}"
     );
     assert_eq!(
-        allocation_count(&sentinel),
-        sentinel_before,
-        "graph construction must not charge retained graph buffers to the ambient global RMM resource"
+        current_device_resource_raw(),
+        current_before,
+        "runtime-bound graph construction must not replace cuDF's permanent current RMM resource"
     );
 
     drop(parked);
@@ -306,5 +194,10 @@ fn runtime_bound_parked_graph_retains_bytes_in_its_cache_allocation_domain() {
     assert_eq!(
         domain_after_drop.current_bytes, domain_before.current_bytes,
         "dropping the parked graph must release exactly the cache-domain bytes it retained: before={domain_before:?}, after={domain_after_drop:?}"
+    );
+    assert_eq!(
+        current_device_resource_raw(),
+        current_before,
+        "cache graph teardown must leave cuDF's permanent current RMM resource unchanged"
     );
 }
