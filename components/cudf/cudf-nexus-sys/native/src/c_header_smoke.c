@@ -31,6 +31,13 @@ static int cudf_rust_c_header_smoke(void)
     &cudf_memory_manager_for_device_with_failure_callback;
   cudf_status_t (*f4c_manager_state)(int32_t, int32_t*, int32_t*) =
     &cudf_memory_manager_failure_callback_state;
+  cudf_status_t (*f4c_manager_route)(cudf_memory_manager_handle,
+                                     cudf_stream_handle,
+                                     cudf_memory_resource_handle,
+                                     cudf_current_resource_route_handle*) =
+    &cudf_memory_manager_route_current_resource;
+  cudf_status_t (*f4c_manager_route_destroy)(cudf_current_resource_route_handle) =
+    &cudf_current_resource_route_destroy;
   cudf_status_t (*f4d)(cudf_reservation_handle, size_t) = &cudf_reservation_resize;
 
   cudf_status_t (*f5)(cudf_type_id_t, cudf_data_type_handle*) = &cudf_data_type_create;

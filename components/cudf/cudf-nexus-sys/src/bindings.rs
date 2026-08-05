@@ -118,6 +118,8 @@ pub type _bindgen_ty_8 = core::ffi::c_uint;
 pub type cudf_allocator_event_read_status_t = core::ffi::c_uint;
 #[doc = " Opaque handle to the process-local memory manager for one CUDA device."]
 pub type cudf_memory_manager_handle = *mut cudf_memory_manager_handle_state;
+#[doc = " Opaque lease that routes current-RMM allocations for one CUDA stream to an\n explicit memory resource without replacing the device's current resource."]
+pub type cudf_current_resource_route_handle = *mut cudf_current_resource_route_handle_state;
 pub type _bindgen_ty_9 = core::ffi::c_uint;
 pub type cudf_memory_manager_base_kind_t = core::ffi::c_uint;
 pub type cudf_memory_manager_installation_status_t = core::ffi::c_uint;
@@ -460,6 +462,11 @@ pub struct cudf_allocator_event_t {
 pub struct cudf_memory_manager_handle_state {
     _unused: [u8; 0],
 }
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct cudf_current_resource_route_handle_state {
+    _unused: [u8; 0],
+}
 #[doc = " Physical-base configuration fixed when a device manager is first created."]
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -781,7 +788,7 @@ pub const CUDF_ALLOCATOR_EVENT_COMPLETENESS_HAS_POOL_USAGE: _bindgen_ty_8 = 4;
 pub const CUDF_ALLOCATOR_EVENT_COMPLETENESS_HAS_ACTION: _bindgen_ty_8 = 8;
 #[doc = " The requested sequence was copied into the supplied event record."]
 pub const CUDF_ALLOCATOR_EVENT_READ_AVAILABLE: cudf_allocator_event_read_status_t = 0;
-#[doc = " A producer has reserved the sequence but has not published it yet."]
+#[doc = " The sequence has no stable record at the instant of this read."]
 pub const CUDF_ALLOCATOR_EVENT_READ_PENDING: cudf_allocator_event_read_status_t = 1;
 #[doc = " The requested sequence has fallen behind the fixed ring capacity."]
 pub const CUDF_ALLOCATOR_EVENT_READ_OVERWRITTEN: cudf_allocator_event_read_status_t = 2;
@@ -2741,6 +2748,14 @@ unsafe extern "C" {
         manager: cudf_memory_manager_handle,
         out: *mut cudf_memory_resource_handle,
     ) -> cudf_status_t;
+    #[doc = " Route global/current-RMM allocations issued on `stream` through `resource`.\n\n The manager's installed current resource remains unchanged. The returned\n lease retains the target resource until it is destroyed; allocations made\n through the lease retain their route until their matching deallocation.\n When `resource` is already this manager's permanent resource, `*out` is\n null and no route is needed."]
+    pub fn cudf_memory_manager_route_current_resource(
+        manager: cudf_memory_manager_handle,
+        stream: cudf_stream_handle,
+        resource: cudf_memory_resource_handle,
+        out: *mut cudf_current_resource_route_handle,
+    ) -> cudf_status_t;
+    pub fn cudf_current_resource_route_destroy(route: cudf_current_resource_route_handle) -> cudf_status_t;
     pub fn cudf_memory_manager_pool_usage(
         manager: cudf_memory_manager_handle,
         out: *mut cudf_memory_pool_usage_t,
