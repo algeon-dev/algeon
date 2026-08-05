@@ -1349,6 +1349,27 @@ struct DeviceMemoryManagerHandle {
 unsafe impl Send for DeviceMemoryManagerHandle {}
 unsafe impl Sync for DeviceMemoryManagerHandle {}
 
+/// Lease that routes legacy global-RMM allocations on one stream to an
+/// explicit runtime memory resource.
+///
+/// The device manager's permanent current RMM resource is never replaced.
+/// Instead, its reservation-aware adaptor dispatches allocations made through
+/// that current resource by stream and retains the target resource until each
+/// routed allocation is deallocated. This is for native libraries whose API
+/// cannot accept an explicit allocator even when their surrounding runtime
+/// has one.
+#[must_use = "dropping the lease removes the stream route for future current-RMM allocations"]
+#[derive(Debug)]
+pub struct CurrentResourceRouteLease {
+    raw: Option<NonNull<cudf_sys::cudf_current_resource_route_handle_state>>,
+    device: DeviceId,
+    // Keep the target owner, stream identity, and manager handle live while
+    // native code can still allocate through the registered route.
+    _target: DeviceMemoryResource,
+    _stream: CudaStream,
+    _manager: DeviceMemoryManager,
+}
+
 /// A live reservation attached to a CUDA stream.
 ///
 /// Dropping this value detaches the reservation from the stream. Allocations
@@ -1872,6 +1893,72 @@ impl DeviceMemoryManager {
     /// Device-level reservation-aware adaptor for explicit execution options.
     pub fn resource(&self) -> &DeviceMemoryResource {
         &self.resource
+    }
+
+    /// Route legacy current-RMM allocations made on `stream` to `resource`.
+    ///
+    /// This preserves the manager's permanent current RMM resource and is
+    /// intended for a native API that accepts the stream explicitly but still
+    /// performs some retained allocations through RMM's current resource.
+    /// The returned lease must outlive that native owner. Allocations made
+    /// before the lease drops retain their target resource until deallocation.
+    ///
+    /// Passing this manager's own resource is a no-op lease: it is already the
+    /// current-resource allocation path and routing it would recurse.
+    pub fn route_current_resource(
+        &self,
+        stream: &CudaStream,
+        resource: &DeviceMemoryResource,
+    ) -> Result<CurrentResourceRouteLease> {
+        let _guard = DeviceGuard::new(self.device())?;
+        if stream.device() != self.device() {
+            return Err(error::Error::new_with(
+                error::ErrorCode::RuntimeBindingMismatch,
+                "memory::device_memory_manager::route_current_resource",
+                "current-resource routing requires stream and memory manager to be on the same CUDA device",
+            )
+            .with_fact(error::FACT_LEFT_DEVICE, error::DeviceIdFact(stream.device().ordinal_raw()))
+            .with_fact(error::FACT_RIGHT_DEVICE, error::DeviceIdFact(self.device().ordinal_raw()))
+            .with_detail("resource", "stream_and_memory_manager")
+            .with_detail("reason", "cross_device_current_resource_route"));
+        }
+        if resource.device() != self.device() {
+            return Err(error::Error::new_with(
+                error::ErrorCode::RuntimeBindingMismatch,
+                "memory::device_memory_manager::route_current_resource",
+                "current-resource routing requires target resource and memory manager to be on the same CUDA device",
+            )
+            .with_fact(error::FACT_LEFT_DEVICE, error::DeviceIdFact(resource.device().ordinal_raw()))
+            .with_fact(error::FACT_RIGHT_DEVICE, error::DeviceIdFact(self.device().ordinal_raw()))
+            .with_detail("resource", "target_resource_and_memory_manager")
+            .with_detail("reason", "cross_device_current_resource_route"));
+        }
+
+        let mut raw = ptr::null_mut();
+        error::check_status_in_with_details(
+            unsafe {
+                cudf_sys::cudf_memory_manager_route_current_resource(
+                    self.handle.raw.as_ptr(),
+                    stream.as_raw(),
+                    resource.as_raw(),
+                    &mut raw,
+                )
+            },
+            "memory::device_memory_manager::route_current_resource",
+            [
+                ("device", self.device().ordinal().to_string()),
+                ("stream_device", stream.device().ordinal().to_string()),
+                ("resource_device", resource.device().ordinal().to_string()),
+            ],
+        )?;
+
+        Ok(CurrentResourceRouteLease {
+            raw: NonNull::new(raw),
+            device: self.device(),
+            _target: resource.clone(),
+            _stream: stream.clone(),
+            _manager: self.clone(),
+        })
     }
 
     /// Read physical CUDA async-pool counters for this manager.
@@ -2437,6 +2524,18 @@ impl Drop for QueryMemoryDomainHandle {
             let status = unsafe { cudf_sys::cudf_query_memory_domain_destroy(owned) };
             if status != cudf_sys::CUDF_SUCCESS {
                 record_native_teardown_failure(self.device, "QueryMemoryDomainHandle::drop", status);
+            }
+        });
+    }
+}
+
+impl Drop for CurrentResourceRouteLease {
+    fn drop(&mut self) {
+        let mut raw = self.raw.take().map_or(ptr::null_mut(), NonNull::as_ptr);
+        crate::runtime::drop_device_resource(&mut raw, self.device, "CurrentResourceRouteLease::drop", |owned| {
+            let status = unsafe { cudf_sys::cudf_current_resource_route_destroy(owned) };
+            if status != cudf_sys::CUDF_SUCCESS {
+                record_native_teardown_failure(self.device, "CurrentResourceRouteLease::drop", status);
             }
         });
     }
