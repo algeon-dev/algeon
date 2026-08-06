@@ -119,10 +119,6 @@ impl Drop for CentralityResult {
     }
 }
 
-// ---------------------------------------------------------------------------
-// PageRankResult
-// ---------------------------------------------------------------------------
-
 /// Result of a PageRank computation.
 ///
 /// Provides access to vertex ids, centrality values, iteration count, and
@@ -195,10 +191,6 @@ impl PageRankResult {
     }
 }
 
-// ---------------------------------------------------------------------------
-// EigenvectorCentralityResult
-// ---------------------------------------------------------------------------
-
 /// Result of an eigenvector centrality computation.
 pub struct EigenvectorCentralityResult(CentralityResult);
 
@@ -256,10 +248,6 @@ impl EigenvectorCentralityResult {
     }
 }
 
-// ---------------------------------------------------------------------------
-// KatzCentralityResult
-// ---------------------------------------------------------------------------
-
 /// Result of a Katz centrality computation.
 pub struct KatzCentralityResult(CentralityResult);
 
@@ -316,10 +304,6 @@ impl KatzCentralityResult {
     }
 }
 
-// ---------------------------------------------------------------------------
-// BetweennessCentralityResult
-// ---------------------------------------------------------------------------
-
 /// Result of a betweenness centrality computation.
 ///
 /// Provides access to vertex ids and their betweenness centrality values.
@@ -333,10 +317,6 @@ impl std::fmt::Debug for BetweennessCentralityResult {
         f.debug_struct("BetweennessCentralityResult").finish_non_exhaustive()
     }
 }
-
-// ---------------------------------------------------------------------------
-// EdgeBetweennessCentralityResult
-// ---------------------------------------------------------------------------
 
 pub(crate) struct EdgeCentralityResult {
     raw: *mut cugraph_edge_centrality_result_t,
@@ -477,10 +457,6 @@ impl EdgeBetweennessCentralityResult {
             .map_err(|e: Error| e.with_operation("EdgeBetweennessCentralityResult::to_dataframe"))
     }
 }
-
-// ---------------------------------------------------------------------------
-// HitsResult
-// ---------------------------------------------------------------------------
 
 /// Result of a HITS computation.
 pub struct HitsResult {

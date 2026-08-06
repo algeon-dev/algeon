@@ -365,7 +365,6 @@ pub(crate) fn force_atlas2<T: Transposition, V: CugraphElement, W: CugraphElemen
     let graph_vertex_count =
         if initial_pos.is_some() || vertex_attrs.is_some() { Some(graph_vertex_count(handle, graph)?) } else { None };
 
-    // Validate initial position arrays have consistent lengths.
     if let Some(pos) = initial_pos {
         let graph_vertex_count = graph_vertex_count.expect("graph vertex count should exist for initial positions");
         let n = pos.vertices.len();
@@ -446,13 +445,11 @@ pub(crate) fn force_atlas2<T: Transposition, V: CugraphElement, W: CugraphElemen
         }
     }
 
-    // Extract raw pointers for initial positions.
     let (start_verts_ptr, x_start_ptr, y_start_ptr) = match initial_pos {
         Some(pos) => (pos.vertices.as_ptr(), pos.x.as_ptr(), pos.y.as_ptr()),
         None => (ptr::null_mut(), ptr::null_mut(), ptr::null_mut()),
     };
 
-    // Extract raw pointers for vertex attributes.
     let empty = ForceAtlas2VertexAttrs::<V, W>::default();
     let attrs = vertex_attrs.unwrap_or(&empty);
 

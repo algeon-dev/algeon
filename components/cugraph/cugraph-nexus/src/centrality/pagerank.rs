@@ -208,7 +208,6 @@ fn pagerank_impl<V: CugraphElement, W: CugraphElement>(
     call: PageRankCall,
     operation: &'static str,
 ) -> Result<PageRankResult> {
-    // Validate precomputed weights.
     if let Some(pw) = precomputed_weights {
         if pw.vertices.len() != pw.sums.len() {
             return Err(Error::new(ErrorKind::InvalidInput, operation)
@@ -220,7 +219,6 @@ fn pagerank_impl<V: CugraphElement, W: CugraphElement>(
         validate_weight_dtype::<W>(operation, "precomputed weights sums")?;
     }
 
-    // Validate initial guess.
     if let Some(ig) = initial_guess {
         if ig.vertices.len() != ig.values.len() {
             return Err(Error::new(ErrorKind::InvalidInput, operation)
@@ -243,7 +241,6 @@ fn pagerank_impl<V: CugraphElement, W: CugraphElement>(
         validate_weight_dtype::<W>(operation, "personalization values")?;
     }
 
-    // Extract raw pointers for optional arrays.
     let (pw_verts_ptr, pw_sums_ptr) = match precomputed_weights {
         Some(pw) => (pw.vertices.as_ptr() as *const _, pw.sums.as_ptr() as *const _),
         None => (ptr::null(), ptr::null()),
