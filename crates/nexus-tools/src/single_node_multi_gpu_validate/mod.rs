@@ -10,11 +10,13 @@ mod cache_calibration;
 #[cfg(feature = "single-node-multi-gpu-validate-run")]
 mod measure;
 mod metrics_audit;
+mod operability;
 mod preflight;
 mod profile;
 mod provenance;
 mod redact;
 mod schedule;
+mod timeseries;
 mod util;
 mod workload;
 
@@ -65,9 +67,11 @@ fn print_usage() {
 USAGE:
   single-node-multi-gpu-validate --config run-profile.json --out-dir run-artifacts --dry-run
   single-node-multi-gpu-validate --config run-profile.json --out-dir run-artifacts --fixture-preflight
-  single-node-multi-gpu-validate --config run-profile.json --out-dir run-artifacts --measured-run [--nsight-trace PATH] [--quarantine-device ORDINAL] [--cancel-first-after-ms MILLISECONDS] [--deadline-first-after-ms MILLISECONDS] [--domain-exhaustion-probe] [--physical-allocator-pressure] [--overload-fairness] [--cache-calibration]
+  single-node-multi-gpu-validate --config run-profile.json --out-dir run-artifacts --measured-run [OPTIONS]
 
---dry-run accepts only an empty workload list. --fixture-preflight validates one TPC-H and one DBLP fixture without generating, downloading, overwriting, or executing a workload. --measured-run executes the profile's workload mix on the public backend and attempt API and requires the single-node-multi-gpu-validate-run feature. --nsight-trace records an externally captured trace's identity; this runner never captures one itself. --quarantine-device keeps a first closed-loop cohort live until the target has a public grant/job witness, invokes the backend's explicit controlled fault-injection capability, then releases a post-acknowledgement cohort; it does not manufacture a CUDA fault. --cancel-first-after-ms requests cooperative cancellation of the first submitted public attempt; the artifact fails closed unless its sealed report is cancelled. --deadline-first-after-ms gives the first attempt an absolute deadline, requires public post-admission evidence before its typed deadline-expired report, then proves healthy reuse without task abort. --domain-exhaustion-probe runs the profile's fixed serial q01 then edge_scan scenario against one static partition and requires a sealed exact `reservation_limit` allocator event, released capacity, healthy reuse, and same-device recovery. It does not claim a physical allocator failure. --physical-allocator-pressure establishes a real external cuDF sidecar allocation before public q01 SQL on one static partition, releases it before edge_scan recovery, and fails closed unless q01 seals one exact `physical` allocator event below every immutable logical cap with completed cleanup, healthy reuse, and quiescent close. --overload-fairness drives one finite cohort above the resolved active-attempt capacity and validates only sealed admission facts: complete bounded drain, exact finite-overtake arithmetic and protection, and a successful unrelated-device completion before the protected waiter is admitted. --cache-calibration derives a cache-disabled companion from an enabled profile and runs the paired P5 cache calibration."
+`--measured-run` executes the selected public-API workload mix. It never
+persists or compares query result rows; it records lifecycle, admission,
+telemetry, allocator-attribution, cache, and operability evidence only."
     );
 }
 
@@ -78,6 +82,12 @@ struct CliOptions {
     mode: ValidationMode,
     /// An externally captured Nsight trace whose identity the artifact records.
     nsight_trace: Option<PathBuf>,
+    /// W8's explicit live reference-exporter cell. The full URL is runtime
+    /// input only; artifacts retain a redacted host:port identity.
+    otlp_metrics_endpoint: Option<String>,
+    /// Defaults in the measured-run-only exporter configuration when an
+    /// endpoint is supplied.
+    otlp_export_interval_ms: Option<u64>,
     /// Device ordinal to quarantine through the explicit public validation
     /// capability after a target-device live-work witness and before the
     /// runner releases its post-acknowledgement cohort.
@@ -104,6 +114,20 @@ struct CliOptions {
     /// Run the cache-disabled companion and configured P5 cache opt-in as a
     /// paired P6.8 calibration.
     cache_calibration: bool,
+    /// S6: quarantine this many ordinals, one cycle at a time, during a
+    /// sustained closed-loop run. Each cycle witnesses live work on its
+    /// target, injects through the public fault injector, and requires zero
+    /// post-acknowledgement placements on the target with healthy fleet
+    /// progress on the remaining ordinals.
+    quarantine_cycles: Option<usize>,
+    /// S6: begin the public close path at the midpoint of the measurement
+    /// window while a load cohort is in flight. Queued waiters must seal
+    /// `backend_closing`, in-flight attempts must finish, and every submitted
+    /// attempt must be accounted for exactly once.
+    close_under_load: bool,
+    /// I8: hold one public completion receiver at a time behind this delay.
+    /// This is a dedicated rate-mode probe, never a backend behavior mode.
+    slow_report_sink: Option<std::time::Duration>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -119,6 +143,8 @@ impl CliOptions {
         let mut out_dir = None;
         let mut mode = None;
         let mut nsight_trace = None;
+        let mut otlp_metrics_endpoint = None;
+        let mut otlp_export_interval_ms = None;
         let mut quarantine_device = None;
         let mut cancel_first_after = None;
         let mut deadline_first_after = None;
@@ -126,6 +152,9 @@ impl CliOptions {
         let mut overload_fairness = false;
         let mut physical_allocator_pressure = false;
         let mut cache_calibration = false;
+        let mut quarantine_cycles = None;
+        let mut close_under_load = false;
+        let mut slow_report_sink = None;
         let mut seen = BTreeSet::new();
         let mut index = 0;
 
@@ -146,6 +175,19 @@ impl CliOptions {
                 "--nsight-trace" => {
                     let value = required_option_value(&args, &mut index, flag)?;
                     nsight_trace = Some(PathBuf::from(value));
+                },
+                "--otlp-metrics-endpoint" => {
+                    let value = required_option_value(&args, &mut index, flag)?;
+                    otlp_metrics_endpoint = Some(value);
+                },
+                "--otlp-export-interval-ms" => {
+                    let value = required_option_value(&args, &mut index, flag)?;
+                    let milliseconds =
+                        value.parse::<u64>().map_err(|_| "--otlp-export-interval-ms must be a positive integer")?;
+                    if milliseconds == 0 {
+                        return Err("--otlp-export-interval-ms must be greater than zero".into());
+                    }
+                    otlp_export_interval_ms = Some(milliseconds);
                 },
                 "--quarantine-device" => {
                     let value = required_option_value(&args, &mut index, flag)?;
@@ -174,6 +216,25 @@ impl CliOptions {
                 "--overload-fairness" => overload_fairness = true,
                 "--physical-allocator-pressure" => physical_allocator_pressure = true,
                 "--cache-calibration" => cache_calibration = true,
+                "--quarantine-cycles" => {
+                    let value = required_option_value(&args, &mut index, flag)?;
+                    let cycles =
+                        value.parse::<usize>().map_err(|_| "--quarantine-cycles must be a positive integer")?;
+                    if cycles == 0 {
+                        return Err("--quarantine-cycles must be greater than zero".into());
+                    }
+                    quarantine_cycles = Some(cycles);
+                },
+                "--close-under-load" => close_under_load = true,
+                "--slow-report-sink-ms" => {
+                    let value = required_option_value(&args, &mut index, flag)?;
+                    let milliseconds =
+                        value.parse::<u64>().map_err(|_| "--slow-report-sink-ms must be a positive integer")?;
+                    if milliseconds == 0 {
+                        return Err("--slow-report-sink-ms must be greater than zero".into());
+                    }
+                    slow_report_sink = Some(std::time::Duration::from_millis(milliseconds));
+                },
                 "--dry-run" => set_mode(&mut mode, ValidationMode::DryRun)?,
                 "--fixture-preflight" => set_mode(&mut mode, ValidationMode::FixturePreflight)?,
                 "--measured-run" => set_mode(&mut mode, ValidationMode::MeasuredRun)?,
@@ -191,92 +252,49 @@ impl CliOptions {
         if nsight_trace.is_some() && mode != ValidationMode::MeasuredRun {
             return Err("--nsight-trace is only valid with --measured-run".into());
         }
-        if quarantine_device.is_some() && mode != ValidationMode::MeasuredRun {
-            return Err("--quarantine-device is only valid with --measured-run".into());
+        if otlp_metrics_endpoint.is_some() && mode != ValidationMode::MeasuredRun {
+            return Err("--otlp-metrics-endpoint is only valid with --measured-run".into());
         }
-        if cancel_first_after.is_some() && mode != ValidationMode::MeasuredRun {
-            return Err("--cancel-first-after-ms is only valid with --measured-run".into());
+        if otlp_export_interval_ms.is_some() && otlp_metrics_endpoint.is_none() {
+            return Err("--otlp-export-interval-ms requires --otlp-metrics-endpoint".into());
         }
-        if deadline_first_after.is_some() && mode != ValidationMode::MeasuredRun {
-            return Err("--deadline-first-after-ms is only valid with --measured-run".into());
+        // Scenario controls are pairwise exclusive and measured-run only. The
+        // table keeps that contract in one place; the error names the first
+        // conflicting pair.
+        let scenario_controls: [(&str, bool); 10] = [
+            ("--quarantine-device", quarantine_device.is_some()),
+            ("--cancel-first-after-ms", cancel_first_after.is_some()),
+            ("--deadline-first-after-ms", deadline_first_after.is_some()),
+            ("--domain-exhaustion-probe", domain_exhaustion_probe),
+            ("--overload-fairness", overload_fairness),
+            ("--physical-allocator-pressure", physical_allocator_pressure),
+            ("--cache-calibration", cache_calibration),
+            ("--quarantine-cycles", quarantine_cycles.is_some()),
+            ("--close-under-load", close_under_load),
+            ("--slow-report-sink-ms", slow_report_sink.is_some()),
+        ];
+        let active = scenario_controls.iter().filter(|(_, active)| *active).map(|(name, _)| *name);
+        let mut active = active.peekable();
+        if let Some(first) = active.next()
+            && let Some(second) = active.next()
+        {
+            return Err(format!("{first} cannot be combined with {second}").into());
         }
-        if domain_exhaustion_probe && mode != ValidationMode::MeasuredRun {
-            return Err("--domain-exhaustion-probe is only valid with --measured-run".into());
+        for (name, active) in scenario_controls {
+            if active && mode != ValidationMode::MeasuredRun {
+                return Err(format!("{name} is only valid with --measured-run").into());
+            }
         }
-        if overload_fairness && mode != ValidationMode::MeasuredRun {
-            return Err("--overload-fairness is only valid with --measured-run".into());
-        }
-        if physical_allocator_pressure && mode != ValidationMode::MeasuredRun {
-            return Err("--physical-allocator-pressure is only valid with --measured-run".into());
-        }
-        if cache_calibration && mode != ValidationMode::MeasuredRun {
-            return Err("--cache-calibration is only valid with --measured-run".into());
-        }
-        if cache_calibration && quarantine_device.is_some() {
-            return Err("--cache-calibration cannot be combined with --quarantine-device".into());
-        }
-        if cache_calibration && cancel_first_after.is_some() {
-            return Err("--cache-calibration cannot be combined with --cancel-first-after-ms".into());
-        }
-        if cache_calibration && deadline_first_after.is_some() {
-            return Err("--cache-calibration cannot be combined with --deadline-first-after-ms".into());
-        }
-        if cache_calibration && domain_exhaustion_probe {
-            return Err("--cache-calibration cannot be combined with --domain-exhaustion-probe".into());
-        }
-        if cache_calibration && overload_fairness {
-            return Err("--cache-calibration cannot be combined with --overload-fairness".into());
-        }
-        if cache_calibration && physical_allocator_pressure {
-            return Err("--cache-calibration cannot be combined with --physical-allocator-pressure".into());
-        }
-        if quarantine_device.is_some() && deadline_first_after.is_some() {
-            return Err("--quarantine-device cannot be combined with --deadline-first-after-ms".into());
-        }
-        if cancel_first_after.is_some() && deadline_first_after.is_some() {
-            return Err("--cancel-first-after-ms cannot be combined with --deadline-first-after-ms".into());
-        }
-        if quarantine_device.is_some() && domain_exhaustion_probe {
-            return Err("--quarantine-device cannot be combined with --domain-exhaustion-probe".into());
-        }
-        if cancel_first_after.is_some() && domain_exhaustion_probe {
-            return Err("--cancel-first-after-ms cannot be combined with --domain-exhaustion-probe".into());
-        }
-        if deadline_first_after.is_some() && domain_exhaustion_probe {
-            return Err("--deadline-first-after-ms cannot be combined with --domain-exhaustion-probe".into());
-        }
-        if overload_fairness && quarantine_device.is_some() {
-            return Err("--overload-fairness cannot be combined with --quarantine-device".into());
-        }
-        if overload_fairness && cancel_first_after.is_some() {
-            return Err("--overload-fairness cannot be combined with --cancel-first-after-ms".into());
-        }
-        if overload_fairness && deadline_first_after.is_some() {
-            return Err("--overload-fairness cannot be combined with --deadline-first-after-ms".into());
-        }
-        if overload_fairness && domain_exhaustion_probe {
-            return Err("--overload-fairness cannot be combined with --domain-exhaustion-probe".into());
-        }
-        if physical_allocator_pressure && quarantine_device.is_some() {
-            return Err("--physical-allocator-pressure cannot be combined with --quarantine-device".into());
-        }
-        if physical_allocator_pressure && cancel_first_after.is_some() {
-            return Err("--physical-allocator-pressure cannot be combined with --cancel-first-after-ms".into());
-        }
-        if physical_allocator_pressure && deadline_first_after.is_some() {
-            return Err("--physical-allocator-pressure cannot be combined with --deadline-first-after-ms".into());
-        }
-        if physical_allocator_pressure && domain_exhaustion_probe {
-            return Err("--physical-allocator-pressure cannot be combined with --domain-exhaustion-probe".into());
-        }
-        if physical_allocator_pressure && overload_fairness {
-            return Err("--physical-allocator-pressure cannot be combined with --overload-fairness".into());
+        if otlp_metrics_endpoint.is_some() && cache_calibration {
+            return Err("--otlp-metrics-endpoint cannot be combined with --cache-calibration".into());
         }
         Ok(Self {
             config,
             out_dir,
             mode,
             nsight_trace,
+            otlp_metrics_endpoint,
+            otlp_export_interval_ms,
             quarantine_device,
             cancel_first_after,
             deadline_first_after,
@@ -284,6 +302,9 @@ impl CliOptions {
             overload_fairness,
             physical_allocator_pressure,
             cache_calibration,
+            quarantine_cycles,
+            close_under_load,
+            slow_report_sink,
         })
     }
 }
@@ -329,6 +350,7 @@ fn run_fixture_preflight(
 /// Validates the measured-run profile and its fixtures before anything else, so
 /// a misconfigured run cannot reach a backend build or publish a partial
 /// artifact.
+#[cfg(any(test, not(feature = "single-node-multi-gpu-validate-run")))]
 fn measured_run_preflight(
     profile: &RunProfile,
     quarantine_device: Option<usize>,
@@ -337,6 +359,36 @@ fn measured_run_preflight(
     overload_fairness: bool,
     physical_allocator_pressure: bool,
     cache_calibration: bool,
+    quarantine_cycles: Option<usize>,
+    close_under_load: bool,
+) -> ToolResult<Vec<FixturePreflightArtifact>> {
+    measured_run_preflight_with_completion_sink(
+        profile,
+        quarantine_device,
+        deadline_first_after,
+        domain_exhaustion_probe,
+        overload_fairness,
+        physical_allocator_pressure,
+        cache_calibration,
+        quarantine_cycles,
+        close_under_load,
+        None,
+    )
+}
+
+/// Extends the established measured-run preflight with I8's dedicated sink
+/// shape without widening the helpers used by the existing scenario tests.
+fn measured_run_preflight_with_completion_sink(
+    profile: &RunProfile,
+    quarantine_device: Option<usize>,
+    deadline_first_after: Option<std::time::Duration>,
+    domain_exhaustion_probe: bool,
+    overload_fairness: bool,
+    physical_allocator_pressure: bool,
+    cache_calibration: bool,
+    quarantine_cycles: Option<usize>,
+    close_under_load: bool,
+    slow_report_sink: Option<std::time::Duration>,
 ) -> ToolResult<Vec<FixturePreflightArtifact>> {
     if profile.selected_query_count() == 0 {
         return Err("--measured-run requires at least one workload query selection".into());
@@ -344,8 +396,10 @@ fn measured_run_preflight(
     if profile.backend.device_profiles.is_empty() {
         return Err("--measured-run requires at least one backend.device_profiles entry".into());
     }
-    if profile.scheduling.measurement_seconds == 0 {
-        return Err("--measured-run requires a non-zero scheduling.measurement_seconds".into());
+    if profile.scheduling.measurement_seconds == 0 && profile.scheduling.steps.is_empty() {
+        return Err(
+            "--measured-run requires a non-zero scheduling.measurement_seconds or a scheduling.steps list".into()
+        );
     }
     if let Some(device_ordinal) = quarantine_device {
         if profile.backend.device_profiles.len() < 2 {
@@ -411,6 +465,77 @@ fn measured_run_preflight(
     if cache_calibration {
         profile.cache_disabled_companion()?;
     }
+    if let Some(cycles) = quarantine_cycles {
+        // Each cycle needs a distinct target, and the fleet must keep at
+        // least one open ordinal so stabilization between cycles is real.
+        if profile.backend.device_profiles.len() < 2 {
+            return Err("--quarantine-cycles requires at least two configured devices".into());
+        }
+        if cycles > profile.backend.device_profiles.len() - 1 {
+            return Err(format!(
+                "--quarantine-cycles {cycles} exceeds the configured device count minus one {}; each cycle needs a distinct target and the fleet needs one open ordinal",
+                profile.backend.device_profiles.len() - 1
+            )
+            .into());
+        }
+        if profile.scheduling.arrival_mode != profile::ArrivalMode::Concurrency {
+            return Err(
+                "--quarantine-cycles requires scheduling.arrival_mode=concurrency for its sustained closed-loop load"
+                    .into(),
+            );
+        }
+        if profile.scheduling.concurrency < profile.backend.device_profiles.len() {
+            return Err(
+                "--quarantine-cycles requires scheduling.concurrency of at least the configured device count so every cycle target has live work"
+                    .into(),
+            );
+        }
+    }
+    if close_under_load {
+        if profile.scheduling.arrival_mode == profile::ArrivalMode::Concurrency && profile.scheduling.concurrency < 2 {
+            return Err(
+                "--close-under-load requires scheduling.concurrency of at least 2 so close lands with work in flight"
+                    .into(),
+            );
+        }
+        // Close must land with a queued cohort, or the probe cannot prove
+        // that queued waiters seal `backend_closing`.
+        let active_capacity =
+            profile.backend.device_profiles.iter().map(|device| device.max_active_attempts).sum::<usize>();
+        if profile.scheduling.arrival_mode != profile::ArrivalMode::Concurrency
+            || profile.scheduling.concurrency <= active_capacity
+        {
+            return Err(format!(
+                "--close-under-load requires concurrency scheduling with scheduling.concurrency above the fleet active-attempt capacity {active_capacity} so a queued cohort exists at close"
+            )
+            .into());
+        }
+    }
+    if let Some(sink_delay) = slow_report_sink {
+        if profile.scheduling.arrival_mode != profile::ArrivalMode::Rate {
+            return Err("--slow-report-sink-ms requires scheduling.arrival_mode=rate".into());
+        }
+        let sink_delay_ms = sink_delay.as_millis();
+        let rates = if profile.scheduling.steps.is_empty() {
+            vec![profile.scheduling.arrival_rate_per_second]
+        } else {
+            profile.scheduling.steps.iter().map(|step| step.arrival_rate_per_second).collect()
+        };
+        if rates.iter().any(|rate| rate.is_none_or(|rate| u128::from(rate).saturating_mul(sink_delay_ms) <= 1_000)) {
+            return Err(
+                "--slow-report-sink-ms requires every rate step to offer more completions per second than the one-per-delay sink can drain"
+                    .into(),
+            );
+        }
+    }
+    if (quarantine_cycles.is_some() || close_under_load)
+        && (profile.scheduling.attempt_deadline_ms.is_some() || profile.scheduling.cancel_every_n.is_some())
+    {
+        return Err(
+            "S5 storm knobs (attempt_deadline_ms, cancel_every_n) cannot be combined with --quarantine-cycles or --close-under-load"
+                .into(),
+        );
+    }
     let executed =
         profile.workloads.iter().filter(|workload| !workload.queries.is_empty()).cloned().collect::<Vec<_>>();
     FixturePreflight::collect(&executed, FixtureSelectionPolicy::AtLeastOneKind)
@@ -418,7 +543,11 @@ fn measured_run_preflight(
 
 #[cfg(feature = "single-node-multi-gpu-validate-run")]
 fn run_measured_run(profile: RunProfile, config_sha256: String, options: &CliOptions) -> ToolResult<PathBuf> {
-    let fixtures = measured_run_preflight(
+    #[cfg(not(feature = "single-node-multi-gpu-validate-run-otlp"))]
+    if options.otlp_metrics_endpoint.is_some() {
+        return Err("--otlp-metrics-endpoint requires --features single-node-multi-gpu-validate-run-otlp".into());
+    }
+    let fixtures = measured_run_preflight_with_completion_sink(
         &profile,
         options.quarantine_device,
         options.deadline_first_after,
@@ -426,7 +555,32 @@ fn run_measured_run(profile: RunProfile, config_sha256: String, options: &CliOpt
         options.overload_fairness,
         options.physical_allocator_pressure,
         options.cache_calibration,
+        options.quarantine_cycles,
+        options.close_under_load,
+        options.slow_report_sink,
     )?;
+    let otlp_export = options
+        .otlp_metrics_endpoint
+        .as_deref()
+        .map(|endpoint| {
+            measure::OtlpExportConfig::new(
+                endpoint,
+                std::time::Duration::from_millis(options.otlp_export_interval_ms.unwrap_or(1_000)),
+            )
+        })
+        .transpose()?;
+    let probes = measure::ProbeSelection {
+        quarantine_device: options.quarantine_device,
+        cancel_first_after: options.cancel_first_after,
+        deadline_first_after: options.deadline_first_after,
+        domain_exhaustion_probe: options.domain_exhaustion_probe,
+        overload_fairness: options.overload_fairness,
+        physical_allocator_pressure: options.physical_allocator_pressure,
+        quarantine_cycles: options.quarantine_cycles,
+        close_under_load: options.close_under_load,
+        otlp_export,
+        slow_report_sink: options.slow_report_sink,
+    };
     let trace = match &options.nsight_trace {
         Some(path) => {
             measure::TraceSelection { uri: Some(path.display().to_string()), sha256: Some(util::sha256_file(path)?) }
@@ -440,8 +594,8 @@ fn run_measured_run(profile: RunProfile, config_sha256: String, options: &CliOpt
     let artifact = if options.cache_calibration {
         let cache_disabled = profile.cache_disabled_companion()?;
         let disabled_measurement =
-            measure::run_on_owned_runtime(&cache_disabled, trace.clone(), None, None, None, false, false, false)?;
-        let opt_in_measurement = measure::run_on_owned_runtime(&profile, trace, None, None, None, false, false, false)?;
+            measure::run_on_owned_runtime(&cache_disabled, trace.clone(), measure::ProbeSelection::default())?;
+        let opt_in_measurement = measure::run_on_owned_runtime(&profile, trace, measure::ProbeSelection::default())?;
         RunArtifact::cache_calibration(
             profile,
             config_sha256,
@@ -451,16 +605,7 @@ fn run_measured_run(profile: RunProfile, config_sha256: String, options: &CliOpt
             opt_in_measurement,
         )
     } else {
-        let measurement = measure::run_on_owned_runtime(
-            &profile,
-            trace,
-            options.quarantine_device,
-            options.cancel_first_after,
-            options.deadline_first_after,
-            options.domain_exhaustion_probe,
-            options.overload_fairness,
-            options.physical_allocator_pressure,
-        )?;
+        let measurement = measure::run_on_owned_runtime(&profile, trace, probes)?;
         RunArtifact::measured_run(profile, config_sha256, fixtures, provenance, measurement)
     };
     let path = write_artifact(&options.out_dir, &artifact)?;
@@ -484,6 +629,8 @@ fn run_measured_run(profile: RunProfile, _config_sha256: String, _options: &CliO
         _options.overload_fairness,
         _options.physical_allocator_pressure,
         _options.cache_calibration,
+        _options.quarantine_cycles,
+        _options.close_under_load,
     )?;
     Err("--measured-run requires --features single-node-multi-gpu-validate-run".into())
 }

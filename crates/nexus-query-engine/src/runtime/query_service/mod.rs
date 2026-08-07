@@ -42,7 +42,7 @@ use super::{
     object_store::{SourceObjectStoreRegistry, default_object_store_control_runtime},
 };
 use crate::{
-    admission::AttemptRequirement,
+    admission::{AttemptRequirement, AttemptReservationEnvelope},
     capability::{AggregateStrategyExecutionOptions, KeyedHashJoinStrategyOptions},
     chunk::SourceChunkPlanningOptions,
     dynamic_filter::DynamicFilterExecutionOptions,

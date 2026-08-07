@@ -134,6 +134,30 @@ impl CacheResidencyChargeTransaction {
         self.rollback_inner()
     }
 
+    /// Seals an unsafe prospective-cache teardown without returning its
+    /// precharge.  The caller must close admission before returning: concrete
+    /// allocations may still survive native destruction, so automatic rollback
+    /// would create an unowned physical-allocation window.
+    #[cfg(feature = "cugraph")]
+    pub(crate) fn retain_charge_after_unsafe_teardown(mut self) {
+        self.charged = false;
+    }
+
+    /// Commits a rollback only after the caller has proved that every
+    /// allocation routed through the prospective cache scope was destroyed.
+    /// A ledger failure keeps its existing charge but suppresses `Drop` retry:
+    /// callers close admission rather than risk releasing later without a new
+    /// teardown proof.
+    #[cfg(feature = "cugraph")]
+    pub(crate) fn release_after_proven_empty(mut self) -> Result<()> {
+        if !self.charged {
+            return Ok(());
+        }
+        let result = self.ledger.release_cache_residency_charge_after_destroy(self.bytes);
+        self.charged = false;
+        result
+    }
+
     fn rollback_inner(&mut self) -> Result<()> {
         if !self.charged {
             return Ok(());
@@ -229,6 +253,63 @@ impl CacheResidency {
         debug_assert_eq!(state.charge_location, CacheResidencyChargeLocation::Evictable);
         state.eviction_in_progress = true;
         Ok(Some(CacheResidencyDestruction { inner: Some(Arc::clone(&self.inner)) }))
+    }
+}
+
+/// A conservative pinned charge for transient work that must execute in the
+/// shared cache allocation domain.
+///
+/// A parked cuGraph graph is bound to that domain's runtime.  Its algorithm
+/// outputs and workspaces can therefore exist in the same domain while the
+/// graph is checked out, even though they do not become reusable cache
+/// entries.  This guard reserves that bounded in-use interval in the one
+/// ledger before the operation starts, then releases it only after the caller
+/// has destroyed every transient cache-domain object.  Dropping it without
+/// [`Self::release_after_destroy`] deliberately strands the charge rather than
+/// allowing an uncharged physical allocation.
+#[cfg(feature = "cugraph")]
+#[must_use = "transient cache-domain work must release its ledger charge only after physical destruction"]
+pub(crate) struct CacheExecutionReservation {
+    residency: CacheResidency,
+    pin: Option<CacheResidencyPin>,
+}
+
+#[cfg(feature = "cugraph")]
+impl CacheExecutionReservation {
+    /// Conservatively reserves `bytes` before transient cache-domain work can
+    /// allocate. `None` means the one aggregate cache cap cannot prove the
+    /// operation safe.
+    pub(crate) fn begin(ledger: DeviceLedger, bytes: u64) -> Result<Option<Self>> {
+        let Some(transaction) = CacheResidency::begin_attempt_owned(ledger, bytes)? else {
+            return Ok(None);
+        };
+        let residency = transaction.commit_evictable();
+        let pin = residency.try_pin()?.ok_or_else(|| {
+            QueryError::new(
+                QueryErrorCode::Internal,
+                OPERATION,
+                "fresh transient cache-domain reservation could not become pinned",
+            )
+            .with_fact("reason", "cache_execution_reservation_pin_refused")
+        })?;
+        Ok(Some(Self { residency, pin: Some(pin) }))
+    }
+
+    /// Releases this charge after all transient objects allocated in the
+    /// shared cache domain have been destroyed.
+    pub(crate) fn release_after_destroy(mut self) -> Result<()> {
+        // The transient CUDA objects are already gone, so expose the charge
+        // as evictable before committing its exact ledger release.
+        drop(self.pin.take());
+        let destruction = self.residency.begin_eviction()?.ok_or_else(|| {
+            QueryError::new(
+                QueryErrorCode::Internal,
+                OPERATION,
+                "transient cache-domain reservation was not evictable after destruction",
+            )
+            .with_fact("reason", "cache_execution_reservation_not_evictable")
+        })?;
+        destruction.commit_after_destroy()
     }
 }
 
@@ -538,5 +619,39 @@ mod tests {
         let snapshot = ledger.snapshot().unwrap();
         assert_eq!(snapshot.cache_evictable_resident_bytes, 0);
         assert_eq!(snapshot.cache_pinned_in_use_bytes, 0);
+    }
+
+    #[cfg(feature = "cugraph")]
+    #[test]
+    fn transient_cache_execution_reservation_is_pinned_until_physical_cleanup() {
+        let ledger = ledger(500);
+        let reservation = CacheExecutionReservation::begin(ledger.clone(), 200)
+            .unwrap()
+            .expect("the transient cache reservation fits");
+
+        let during_execution = ledger.snapshot().unwrap();
+        assert_eq!(during_execution.cache_evictable_resident_bytes, 0);
+        assert_eq!(during_execution.cache_pinned_in_use_bytes, 200);
+
+        reservation.release_after_destroy().unwrap();
+
+        let after_cleanup = ledger.snapshot().unwrap();
+        assert_eq!(after_cleanup.cache_evictable_resident_bytes, 0);
+        assert_eq!(after_cleanup.cache_pinned_in_use_bytes, 0);
+    }
+
+    #[cfg(feature = "cugraph")]
+    #[test]
+    fn dropped_transient_cache_execution_reservation_retains_charge_fail_closed() {
+        let ledger = ledger(500);
+        let reservation = CacheExecutionReservation::begin(ledger.clone(), 200)
+            .unwrap()
+            .expect("the transient cache reservation fits");
+
+        drop(reservation);
+
+        let stranded = ledger.snapshot().unwrap();
+        assert_eq!(stranded.cache_evictable_resident_bytes, 200);
+        assert_eq!(stranded.cache_pinned_in_use_bytes, 0);
     }
 }

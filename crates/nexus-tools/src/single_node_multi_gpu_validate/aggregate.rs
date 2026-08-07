@@ -14,15 +14,25 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::Serialize;
 use serde_json::Value;
 
-use super::schedule::SchedulePhase;
+use super::{profile::FixtureKind, schedule::SchedulePhase};
 
 /// One attempt's measured outcome, projected from `QueryAttemptReport`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct AttemptObservation {
     pub(super) sequence: usize,
     pub(super) phase: SchedulePhase,
+    /// W3 step this attempt was submitted under. Single-phase runs are all
+    /// step zero.
+    pub(super) step_index: usize,
+    /// The fixture kind the query came from. Labels collide across kinds
+    /// (`q01` exists in TPC-H and TPC-DS), so this remains artifact identity.
+    pub(super) query_kind: FixtureKind,
     pub(super) query_label: String,
     pub(super) graph_workload: bool,
+    /// The runner owns this expectation at query selection time. A false
+    /// value is reserved for an explicit non-executing capability probe whose
+    /// own reducer proves its exact terminal contract.
+    pub(super) placement_required: bool,
     pub(super) attempt_id: String,
     pub(super) disposition: String,
     pub(super) outcome: String,
@@ -36,6 +46,10 @@ pub(super) struct AttemptObservation {
     pub(super) succeeded: bool,
     /// Present only when the attempt reached native GPU execution.
     pub(super) reached_gpu: bool,
+    /// One typed graph model-claim snapshot frozen with the sealed report.
+    /// It is absent for non-native attempts, attempts that have not reached
+    /// their seal point, or an unexpectedly missing native-root projection.
+    pub(super) graph_claim_calibration: Option<GraphClaimCalibrationSnapshot>,
     pub(super) device_ordinal: Option<usize>,
     pub(super) grant_bytes: Option<u64>,
     pub(super) admission_sequence: Option<u64>,
@@ -70,6 +84,82 @@ pub(super) struct AttemptFailureClass {
     pub(super) code: String,
     pub(super) status: String,
     pub(super) operation: String,
+}
+
+/// Bounded, typed engine graph-calibration projection associated with one
+/// sealed attempt. This stays independent of admission and does not parse
+/// DataFusion metric labels.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(super) struct GraphClaimCalibrationSnapshot {
+    pub(super) truncated: bool,
+    pub(super) rows: Vec<GraphClaimCalibrationRow>,
+    /// The execution owner explicitly classified this graph attempt before
+    /// sealing. Rows do not imply physical execution: a BFS singleflight
+    /// follower intentionally has no locally measured graph row.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) execution: Option<GraphClaimCalibrationExecution>,
+    /// True only when exactly one non-conflicting execution classification
+    /// reached the sealed snapshot.
+    pub(super) execution_complete: bool,
+}
+
+/// Typed execution semantics sealed with one graph calibration snapshot.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum GraphClaimCalibrationExecution {
+    Physical,
+    NonPhysical(GraphClaimCalibrationNonPhysicalReason),
+}
+
+/// Closed vocabulary for graph attempts that intentionally did not execute
+/// a physical graph algorithm locally.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum GraphClaimCalibrationNonPhysicalReason {
+    BfsSingleflightFollower {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        leader_attempt_id: Option<String>,
+    },
+    GraphMemoryAdmissionDenied,
+}
+
+/// One engine-owned graph model claim and its correlated runtime peak.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(super) struct GraphClaimCalibrationRow {
+    pub(super) node_id: String,
+    pub(super) algorithm: String,
+    pub(super) model_requested_bytes: u64,
+    pub(super) requested_bytes: u64,
+    pub(super) budget_bytes: Option<u64>,
+    pub(super) execution_state: String,
+    pub(super) measured_peak_bytes: Option<u64>,
+    pub(super) measured_peak_provenance: String,
+    pub(super) graph_model_error_ratio: Option<String>,
+}
+
+/// I11 completeness result for every measurement-phase graph attempt.
+#[derive(Debug, Clone, Serialize)]
+pub(super) struct GraphClaimCalibrationEvidence {
+    pub(super) status: ClauseStatus,
+    pub(super) graph_attempts: u64,
+    pub(super) attempts: Vec<GraphClaimCalibrationAttemptEvidence>,
+}
+
+impl GraphClaimCalibrationEvidence {
+    pub(super) fn passes(&self) -> bool {
+        self.status == ClauseStatus::Evidenced
+    }
+}
+
+/// Per-attempt failure is intentionally a closed vocabulary rather than a
+/// rendered error. The raw typed rows beside it remain the evidence.
+#[derive(Debug, Clone, Serialize)]
+pub(super) struct GraphClaimCalibrationAttemptEvidence {
+    pub(super) sequence: usize,
+    pub(super) status: ClauseStatus,
+    pub(super) reason: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) snapshot: Option<GraphClaimCalibrationSnapshot>,
 }
 
 /// P6.6-relevant facts projected directly from one sealed report.
@@ -130,6 +220,9 @@ pub(super) struct DeviceConfiguration {
     /// Immutable P5 aggregate resident-cache cap for this ordinal. A zero cap
     /// means no cache domain exists on the device.
     pub(super) cache_cap_bytes: u64,
+    /// Whether the resolved backend installed diagnostic telemetry for this
+    /// ordinal. It never participates in admission.
+    pub(super) install_telemetry: bool,
     pub(super) max_active_attempts: usize,
     pub(super) stream_pool_size: usize,
     pub(super) worker_count: usize,
@@ -151,7 +244,45 @@ pub(super) struct MeasuredAggregate {
     /// validation capability was invoked for this run.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) quarantine_fallback: Option<QuarantineFallbackEvidence>,
+    /// W3 per-step envelope aggregates. Empty for single-phase profiles, so
+    /// their artifacts carry no per-step section.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(super) steps: Vec<StepAggregate>,
     pub(super) report_aggregate_equality: ReportAggregateEquality,
+}
+
+/// One W3 step's envelope curve point: throughput and latency computed over
+/// exactly the attempts that step measured, against its own window.
+#[derive(Debug, Clone, Serialize)]
+pub(super) struct StepAggregate {
+    pub(super) step_index: usize,
+    pub(super) concurrency: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) arrival_rate_per_second: Option<u64>,
+    pub(super) rate_overrun: &'static str,
+    pub(super) measurement_ns: u64,
+    pub(super) throughput: ThroughputAggregate,
+    pub(super) latency: LatencyAggregate,
+    /// Placement counts per ordinal inside this step, for balance reading.
+    pub(super) placements: Vec<StepPlacement>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+pub(super) struct StepPlacement {
+    pub(super) device_ordinal: usize,
+    pub(super) attempts_placed: u64,
+    pub(super) attempts_succeeded: u64,
+}
+
+/// The per-step window the reducer aggregates against, projected from the
+/// arrival plan so the pure reduction never sees the plan itself.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct StepWindow {
+    pub(super) step_index: usize,
+    pub(super) concurrency: usize,
+    pub(super) arrival_rate_per_second: Option<u64>,
+    pub(super) rate_overrun: &'static str,
+    pub(super) measurement_ns: u64,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -185,6 +316,13 @@ pub(super) struct LatencyAggregate {
     pub(super) max_ns: u64,
     pub(super) mean_ns: u64,
     pub(super) queue_wait_p95_ns: u64,
+    /// Sealed admission-controller waits, separate from execution-plan queue
+    /// timing. The sample count keeps a no-admission observation distinct from
+    /// a measured zero-wait fast path.
+    pub(super) admission_wait_samples: u64,
+    pub(super) admission_wait_p50_ns: u64,
+    pub(super) admission_wait_p95_ns: u64,
+    pub(super) admission_wait_p99_ns: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -205,6 +343,7 @@ pub(super) struct DevicePlacement {
 pub(super) struct AttemptRow {
     pub(super) sequence: usize,
     pub(super) phase: SchedulePhase,
+    pub(super) step_index: usize,
     pub(super) query_label: String,
     pub(super) attempt_id: String,
     pub(super) disposition: String,
@@ -212,6 +351,12 @@ pub(super) struct AttemptRow {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) failure: Option<AttemptFailureClass>,
     pub(super) terminal_evidence: AttemptTerminalEvidence,
+    /// W8's per-attempt public-report attribution check. This is a
+    /// deterministic projection of the sealed facts beside it, not a second
+    /// event stream or inference from runner control flow.
+    pub(super) attribution: super::operability::AttemptAttribution,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) graph_claim_calibration: Option<GraphClaimCalibrationSnapshot>,
     pub(super) device_ordinal: Option<usize>,
     pub(super) grant_bytes: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -248,6 +393,152 @@ pub(super) enum ClauseStatus {
     Evidenced,
     NotEvidenced,
     Failed,
+}
+
+/// Requires one unambiguous, typed model-claim/peak row for every graph
+/// attempt that entered the measurement phase. A profile opts into this I11
+/// gate only for graph workload cells; non-graph attempts are deliberately
+/// outside its denominator.
+pub(super) fn graph_claim_calibration_evidence(observations: &[AttemptObservation]) -> GraphClaimCalibrationEvidence {
+    let graph_attempts = observations
+        .iter()
+        .filter(|attempt| attempt.graph_workload && attempt.phase == SchedulePhase::Measurement)
+        .collect::<Vec<_>>();
+    let mut attempts_by_id = BTreeMap::<&str, Vec<&AttemptObservation>>::new();
+    for attempt in &graph_attempts {
+        attempts_by_id.entry(&attempt.attempt_id).or_default().push(*attempt);
+    }
+    let attempts = graph_attempts
+        .iter()
+        .map(|attempt| {
+            let Some(snapshot) = attempt.graph_claim_calibration.as_ref() else {
+                return GraphClaimCalibrationAttemptEvidence {
+                    sequence: attempt.sequence,
+                    status: ClauseStatus::NotEvidenced,
+                    reason: "missing_sealed_graph_claim_snapshot",
+                    snapshot: None,
+                };
+            };
+            let (status, reason) = match graph_claim_calibration_reason(snapshot, attempt, &attempts_by_id) {
+                Some(reason) => (ClauseStatus::NotEvidenced, reason),
+                None => (ClauseStatus::Evidenced, "complete"),
+            };
+            GraphClaimCalibrationAttemptEvidence {
+                sequence: attempt.sequence,
+                status,
+                reason,
+                snapshot: Some(snapshot.clone()),
+            }
+        })
+        .collect::<Vec<_>>();
+    let status = if attempts.is_empty() {
+        ClauseStatus::NotEvidenced
+    } else if attempts.iter().all(|attempt| attempt.status == ClauseStatus::Evidenced) {
+        ClauseStatus::Evidenced
+    } else {
+        ClauseStatus::NotEvidenced
+    };
+    GraphClaimCalibrationEvidence { status, graph_attempts: graph_attempts.len() as u64, attempts }
+}
+
+/// Returns the closed-vocabulary reason why one measurement-phase graph
+/// attempt cannot qualify. `None` means that its physical peak or linked
+/// non-physical follower semantics are complete.
+fn graph_claim_calibration_reason(
+    snapshot: &GraphClaimCalibrationSnapshot,
+    attempt: &AttemptObservation,
+    attempts_by_id: &BTreeMap<&str, Vec<&AttemptObservation>>,
+) -> Option<&'static str> {
+    if snapshot.truncated {
+        return Some("graph_claim_snapshot_truncated");
+    }
+    let Some(execution) = snapshot.execution.as_ref() else {
+        return Some("graph_execution_classification_missing");
+    };
+    if !snapshot.execution_complete {
+        return Some("graph_execution_classification_conflicted");
+    }
+    match execution {
+        GraphClaimCalibrationExecution::Physical => physical_graph_claim_calibration_reason(snapshot),
+        GraphClaimCalibrationExecution::NonPhysical(
+            GraphClaimCalibrationNonPhysicalReason::BfsSingleflightFollower { leader_attempt_id },
+        ) => {
+            if !snapshot.rows.is_empty() {
+                return Some("singleflight_follower_has_graph_claim_rows");
+            }
+            let Some(leader_attempt_id) = leader_attempt_id.as_deref() else {
+                return Some("singleflight_follower_missing_leader_attempt_id");
+            };
+            let Some([leader]) = attempts_by_id.get(leader_attempt_id).map(Vec::as_slice) else {
+                return Some("singleflight_follower_leader_not_evidenced");
+            };
+            let Some(leader_snapshot) = leader.graph_claim_calibration.as_ref() else {
+                return Some("singleflight_follower_leader_not_evidenced");
+            };
+            if matches!(leader_snapshot.execution.as_ref(), Some(GraphClaimCalibrationExecution::Physical))
+                && leader_snapshot.execution_complete
+                && physical_graph_claim_calibration_reason(leader_snapshot).is_none()
+            {
+                None
+            } else {
+                Some("singleflight_follower_leader_not_evidenced")
+            }
+        },
+        GraphClaimCalibrationExecution::NonPhysical(
+            GraphClaimCalibrationNonPhysicalReason::GraphMemoryAdmissionDenied,
+        ) => graph_memory_admission_denied_reason(snapshot, attempt),
+    }
+}
+
+/// A physical execution qualifies only with one direct, non-synthetic peak.
+fn physical_graph_claim_calibration_reason(snapshot: &GraphClaimCalibrationSnapshot) -> Option<&'static str> {
+    if snapshot.rows.len() != 1 {
+        return Some("expected_exactly_one_graph_claim_row");
+    }
+    let row = &snapshot.rows[0];
+    if row.execution_state != "algorithm_started" {
+        return Some("physical_graph_execution_state_not_started");
+    }
+    match (row.measured_peak_bytes, row.measured_peak_provenance.as_str()) {
+        (Some(_), "reservation_high_water" | "cache_scope_high_water" | "pool_delta") => None,
+        _ => Some("graph_peak_measurement_unavailable"),
+    }
+}
+
+/// A graph-memory model denial can qualify without a runtime peak only when
+/// the engine row proves that the executor never started and the canonical
+/// attempt failure has the matching closed native reservation class.
+fn graph_memory_admission_denied_reason(
+    snapshot: &GraphClaimCalibrationSnapshot,
+    attempt: &AttemptObservation,
+) -> Option<&'static str> {
+    if snapshot.rows.len() != 1 {
+        return Some("expected_exactly_one_graph_claim_row");
+    }
+    let row = &snapshot.rows[0];
+    if row.execution_state != "graph_memory_admission_denied" {
+        return Some("graph_memory_admission_denied_state_missing");
+    }
+    if row.measured_peak_bytes.is_some() || row.measured_peak_provenance != "unavailable" {
+        return Some("graph_memory_admission_denied_has_graph_peak");
+    }
+    let Some(budget_bytes) = row.budget_bytes else {
+        return Some("graph_memory_admission_denied_budget_missing");
+    };
+    if row.requested_bytes <= budget_bytes {
+        return Some("graph_memory_admission_denied_budget_mismatch");
+    }
+    match attempt.failure.as_ref() {
+        Some(AttemptFailureClass { origin, code, status, operation })
+            if origin == "Native"
+                && code == "MemoryReservationFailed"
+                && status == "Temporary"
+                && operation == "Execution" =>
+        {
+            None
+        },
+        _ => Some("graph_memory_admission_denied_failure_mismatch"),
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -343,6 +634,44 @@ pub(super) struct QuarantineFallbackEvidence {
     /// A pre-ack grant must return after its attempt has drained. This proves
     /// the transition did not strand already admitted target work.
     pub(super) pre_existing_target_work_released: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) cache_residency: Option<CacheQuarantineEvidence>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub(super) require_cache_residency: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(super) struct CacheQuarantineEvidence {
+    pub(super) pre_ack: serde_json::Value,
+    pub(super) post_ack: serde_json::Value,
+    pub(super) final_observation: serde_json::Value,
+    pub(super) status: ClauseStatus,
+}
+
+impl CacheQuarantineEvidence {
+    pub(super) fn from_snapshots(
+        pre_ack: Option<serde_json::Value>,
+        post_ack: Option<serde_json::Value>,
+        final_observation: Option<serde_json::Value>,
+    ) -> Option<Self> {
+        let (Some(pre_ack), Some(post_ack), Some(final_observation)) = (pre_ack, post_ack, final_observation) else {
+            return None;
+        };
+        let valid = [&pre_ack, &post_ack, &final_observation].iter().enumerate().all(|(index, snapshot)| {
+            let Some(object) = snapshot.as_object() else { return false };
+            let cap = object.get("cache_cap_bytes").and_then(serde_json::Value::as_u64).unwrap_or(0);
+            let ledger = object.get("ledger_evictable_resident_bytes").and_then(serde_json::Value::as_u64).unwrap_or(0)
+                + object.get("ledger_pinned_in_use_bytes").and_then(serde_json::Value::as_u64).unwrap_or(0);
+            let physical = object.get("physical_current_bytes").and_then(serde_json::Value::as_u64).unwrap_or(u64::MAX);
+            cap > 0 && (index != 0 || ledger > 0) && ledger <= cap && physical <= ledger && physical <= cap
+        });
+        Some(Self {
+            pre_ack,
+            post_ack,
+            final_observation,
+            status: valid.then_some(ClauseStatus::Evidenced).unwrap_or(ClauseStatus::Failed),
+        })
+    }
 }
 
 /// Evidence for an ordinary query-domain cap exhaustion collected entirely
@@ -839,6 +1168,9 @@ impl OverloadFairnessEvidence {
 }
 
 impl QuarantineFallbackEvidence {
+    pub(super) fn require_cache_residency(&mut self) {
+        self.require_cache_residency = true;
+    }
     #[allow(clippy::too_many_arguments)]
     pub(super) fn from_barrier(
         target_ordinal: usize,
@@ -852,6 +1184,7 @@ impl QuarantineFallbackEvidence {
         target_ledger_closed: bool,
         post_ack_sequences: &BTreeSet<usize>,
         pre_existing_target_work_released: bool,
+        cache_residency: Option<CacheQuarantineEvidence>,
         observations: &[AttemptObservation],
     ) -> Self {
         let post_ack_attempts =
@@ -885,10 +1218,21 @@ impl QuarantineFallbackEvidence {
             post_ack_target_placements,
             post_ack_healthy_gpu_reaching_completions,
             pre_existing_target_work_released,
+            cache_residency,
+            require_cache_residency: false,
         }
     }
 
     fn clause(&self) -> ScenarioClause {
+        if self.require_cache_residency
+            && self.cache_residency.as_ref().is_none_or(|e| e.status != ClauseStatus::Evidenced)
+        {
+            return clause(
+                "device_block_or_quarantine_fallback",
+                ClauseStatus::Failed,
+                "cache residency evidence missing or invalid".to_string(),
+            );
+        }
         if self.pre_ack_witness_offset_ns >= self.acknowledgement_offset_ns {
             return clause(
                 "device_block_or_quarantine_fallback",
@@ -970,6 +1314,67 @@ impl QuarantineFallbackEvidence {
     }
 }
 
+/// S6 repeated-quarantine evidence: each cycle reuses the single-quarantine
+/// barrier semantics against a rotation target, and the section evidences
+/// only when every configured cycle landed with the fleet stabilizing on the
+/// remaining ordinals afterwards.
+#[derive(Debug, Clone, Serialize)]
+pub(super) struct QuarantineCyclesEvidence {
+    pub(super) status: ClauseStatus,
+    pub(super) configured_cycles: u64,
+    pub(super) completed_cycles: u64,
+    pub(super) cycles: Vec<QuarantineCycleRow>,
+}
+
+impl QuarantineCyclesEvidence {
+    pub(super) fn from_cycle_evidence(configured_cycles: usize, cycles: Vec<QuarantineFallbackEvidence>) -> Self {
+        let rows = cycles
+            .into_iter()
+            .enumerate()
+            .map(|(cycle_index, evidence)| {
+                let clause = evidence.clause();
+                QuarantineCycleRow {
+                    cycle_index,
+                    target_ordinal: evidence.target_ordinal,
+                    device_health_generation: evidence.device_health_generation,
+                    status: clause.status,
+                    detail: clause.detail,
+                    evidence,
+                }
+            })
+            .collect::<Vec<_>>();
+        let status = if rows.len() == configured_cycles && rows.iter().all(|row| row.status == ClauseStatus::Evidenced)
+        {
+            ClauseStatus::Evidenced
+        } else {
+            ClauseStatus::Failed
+        };
+        Self {
+            status,
+            configured_cycles: configured_cycles.min(u64::MAX as usize) as u64,
+            completed_cycles: rows.len().min(u64::MAX as usize) as u64,
+            cycles: rows,
+        }
+    }
+
+    pub(super) fn is_evidenced(&self) -> bool {
+        self.status == ClauseStatus::Evidenced
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(super) struct QuarantineCycleRow {
+    pub(super) cycle_index: usize,
+    pub(super) target_ordinal: usize,
+    /// The target's health generation after its quarantine landed. Each
+    /// cycle's target is distinct, so the per-cycle generation increment is
+    /// recorded on its own ordinal.
+    pub(super) device_health_generation: u64,
+    pub(super) status: ClauseStatus,
+    pub(super) detail: String,
+    pub(super) evidence: QuarantineFallbackEvidence,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub(super) struct LogicalSlotOccupancyEvidence {
     pub(super) basis: &'static str,
@@ -1000,6 +1405,7 @@ pub(super) struct ReportAggregateEquality {
 }
 
 impl MeasuredAggregate {
+    #[cfg(test)]
     pub(super) fn reduce(
         observations: &[AttemptObservation],
         devices: &[DeviceConfiguration],
@@ -1007,12 +1413,13 @@ impl MeasuredAggregate {
         warmup_ns: u64,
         measurement_ns: u64,
     ) -> Self {
-        Self::reduce_with_quarantine(observations, devices, occupancy, warmup_ns, measurement_ns, None)
+        Self::reduce_full(observations, devices, occupancy, warmup_ns, measurement_ns, None, &[])
     }
 
     /// Reduces ordinary P6.5 observations plus the optional explicit P6.6
     /// quarantine transition. Keeping the input as a small observation DTO
     /// preserves CPU-only unit tests and keeps GPU interaction in `measure`.
+    #[cfg(test)]
     pub(super) fn reduce_with_quarantine(
         observations: &[AttemptObservation],
         devices: &[DeviceConfiguration],
@@ -1020,6 +1427,21 @@ impl MeasuredAggregate {
         warmup_ns: u64,
         measurement_ns: u64,
         quarantine_fallback: Option<QuarantineFallbackEvidence>,
+    ) -> Self {
+        Self::reduce_full(observations, devices, occupancy, warmup_ns, measurement_ns, quarantine_fallback, &[])
+    }
+
+    /// The complete reduction. `steps` carries the W3 per-step windows; an
+    /// empty slice is a single-phase run and emits no per-step section.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn reduce_full(
+        observations: &[AttemptObservation],
+        devices: &[DeviceConfiguration],
+        occupancy: &BTreeMap<usize, DeviceOccupancyPeaks>,
+        warmup_ns: u64,
+        measurement_ns: u64,
+        quarantine_fallback: Option<QuarantineFallbackEvidence>,
+        steps: &[StepWindow],
     ) -> Self {
         let measured =
             observations.iter().filter(|attempt| attempt.phase == SchedulePhase::Measurement).collect::<Vec<_>>();
@@ -1035,6 +1457,7 @@ impl MeasuredAggregate {
             warmup_attempts: (observations.len() - measured.len()) as u64,
             measurement_attempts: measured.len() as u64,
         };
+        let steps = steps.iter().map(|window| step_aggregate(window, observations)).collect();
         let report_aggregate_equality = equality(&window, &placement, &throughput, &attempts);
         Self {
             window,
@@ -1044,6 +1467,7 @@ impl MeasuredAggregate {
             attempts,
             scenarios,
             quarantine_fallback,
+            steps,
             report_aggregate_equality,
         }
     }
@@ -1054,6 +1478,39 @@ impl MeasuredAggregate {
     pub(super) fn with_overload_fairness(mut self, evidence: OverloadFairnessEvidence) -> Self {
         self.scenarios.overload_fairness = Some(evidence);
         self
+    }
+}
+
+/// Per-step throughput/latency over exactly the attempts the step measured.
+/// Warmup arrivals belong to no step's measurement; step windows are
+/// disjoint measurement phases, so their union is the run's measurement set.
+fn step_aggregate(window: &StepWindow, observations: &[AttemptObservation]) -> StepAggregate {
+    let measured = observations
+        .iter()
+        .filter(|attempt| attempt.phase == SchedulePhase::Measurement && attempt.step_index == window.step_index)
+        .collect::<Vec<_>>();
+    let mut placements: BTreeMap<usize, StepPlacement> = BTreeMap::new();
+    for attempt in observations.iter().filter(|attempt| attempt.step_index == window.step_index) {
+        let Some(ordinal) = attempt.device_ordinal else {
+            continue;
+        };
+        let entry = placements.entry(ordinal).or_insert(StepPlacement {
+            device_ordinal: ordinal,
+            attempts_placed: 0,
+            attempts_succeeded: 0,
+        });
+        entry.attempts_placed += 1;
+        entry.attempts_succeeded += u64::from(attempt.succeeded);
+    }
+    StepAggregate {
+        step_index: window.step_index,
+        concurrency: window.concurrency,
+        arrival_rate_per_second: window.arrival_rate_per_second,
+        rate_overrun: window.rate_overrun,
+        measurement_ns: window.measurement_ns,
+        throughput: throughput(&measured, window.measurement_ns),
+        latency: latency(&measured),
+        placements: placements.into_values().collect(),
     }
 }
 
@@ -1078,6 +1535,8 @@ fn latency(measured: &[&AttemptObservation]) -> LatencyAggregate {
     totals.sort_unstable();
     let mut queue_waits = measured.iter().filter_map(|attempt| attempt.queue_wait_ns).collect::<Vec<_>>();
     queue_waits.sort_unstable();
+    let mut admission_waits = measured.iter().filter_map(|attempt| attempt.admission_wait_ns).collect::<Vec<_>>();
+    admission_waits.sort_unstable();
     let sum: u128 = totals.iter().map(|value| u128::from(*value)).sum();
     LatencyAggregate {
         samples: totals.len() as u64,
@@ -1088,6 +1547,10 @@ fn latency(measured: &[&AttemptObservation]) -> LatencyAggregate {
         max_ns: totals.last().copied().unwrap_or_default(),
         mean_ns: if totals.is_empty() { 0 } else { u64::try_from(sum / totals.len() as u128).unwrap_or(u64::MAX) },
         queue_wait_p95_ns: percentile(&queue_waits, 95.0),
+        admission_wait_samples: admission_waits.len() as u64,
+        admission_wait_p50_ns: percentile(&admission_waits, 50.0),
+        admission_wait_p95_ns: percentile(&admission_waits, 95.0),
+        admission_wait_p99_ns: percentile(&admission_waits, 99.0),
     }
 }
 
@@ -1134,12 +1597,15 @@ fn row(attempt: &AttemptObservation) -> AttemptRow {
     AttemptRow {
         sequence: attempt.sequence,
         phase: attempt.phase,
+        step_index: attempt.step_index,
         query_label: attempt.query_label.clone(),
         attempt_id: attempt.attempt_id.clone(),
         disposition: attempt.disposition.clone(),
         outcome: attempt.outcome.clone(),
         failure: attempt.failure.clone(),
         terminal_evidence: attempt.terminal_evidence.clone(),
+        attribution: super::operability::attribution_for(attempt),
+        graph_claim_calibration: attempt.graph_claim_calibration.clone(),
         device_ordinal: attempt.device_ordinal,
         grant_bytes: attempt.grant_bytes,
         admission_sequence: attempt.admission_sequence,
@@ -1310,13 +1776,18 @@ fn multiple_device_clauses(
 
     // A caller may intentionally cancel an attempt before it reaches
     // admission. That sealed control outcome has no device by contract and
-    // must not be reclassified as a placement defect; every other measured
-    // attempt still requires exactly one ordinal.
+    // must not be reclassified as a placement defect. An explicit
+    // non-executing capability probe also has no placement by design; its
+    // separate probe reducer owns the typed rejection proof. Every selected
+    // workload attempt still requires exactly one ordinal.
     let pre_admission_cancellations =
         measured.iter().filter(|attempt| attempt.outcome == "cancelled" && attempt.device_ordinal.is_none()).count();
+    let non_executing_capability_probes = measured.iter().filter(|attempt| !attempt.placement_required).count();
     let placement_required = measured
         .iter()
-        .filter(|attempt| !(attempt.outcome == "cancelled" && attempt.device_ordinal.is_none()))
+        .filter(|attempt| {
+            attempt.placement_required && !(attempt.outcome == "cancelled" && attempt.device_ordinal.is_none())
+        })
         .collect::<Vec<_>>();
     let one_ordinal_each =
         !placement_required.is_empty() && placement_required.iter().all(|attempt| attempt.device_ordinal.is_some());
@@ -1325,7 +1796,7 @@ fn multiple_device_clauses(
             "one_ordinal_per_attempt",
             ClauseStatus::Evidenced,
             format!(
-                "{} measured attempts each recorded exactly one ordinal; {pre_admission_cancellations} explicit pre-admission cancellations were exempt",
+                "{} placement-required measured attempts each recorded exactly one ordinal; {non_executing_capability_probes} non-executing capability probes and {pre_admission_cancellations} explicit pre-admission cancellations were exempt",
                 placement_required.len()
             ),
         )
@@ -1466,6 +1937,7 @@ mod tests {
             physical_total_bytes: Some(46_068 * 1024 * 1024),
             capacity_bytes,
             cache_cap_bytes: 0,
+            install_telemetry: true,
             max_active_attempts,
             stream_pool_size: 8,
             worker_count: 2,
@@ -1490,8 +1962,11 @@ mod tests {
         AttemptObservation {
             sequence,
             phase,
+            step_index: 0,
+            query_kind: super::super::profile::FixtureKind::Tpch,
             query_label: "q01".to_string(),
             graph_workload: false,
+            placement_required: true,
             attempt_id: format!("attempt-{sequence:032x}"),
             disposition: "Native".to_string(),
             outcome: "succeeded".to_string(),
@@ -1499,6 +1974,7 @@ mod tests {
             terminal_evidence: terminal_evidence(),
             succeeded: true,
             reached_gpu: true,
+            graph_claim_calibration: None,
             device_ordinal: Some(ordinal),
             grant_bytes: Some(1024),
             admission_sequence: Some(sequence as u64),
@@ -1599,6 +2075,7 @@ mod tests {
             true,
             &observations.iter().map(|observation| observation.sequence).collect(),
             true,
+            None,
             observations,
         )
     }
@@ -1743,6 +2220,33 @@ mod tests {
             .unwrap();
         assert_eq!(clause.status, ClauseStatus::Evidenced);
         assert!(clause.detail.contains("1 explicit pre-admission cancellations"));
+    }
+
+    #[test]
+    fn explicit_nonexecuting_capability_probe_is_not_a_missing_placement() {
+        let devices = vec![device(0, 1 << 30, 2), device(1, 1 << 30, 2)];
+        let mut capability_probe = attempt(0, 0, None, None, 0, 10, 10, SchedulePhase::Measurement);
+        capability_probe.graph_workload = true;
+        capability_probe.placement_required = false;
+        capability_probe.outcome = "failed".to_string();
+        capability_probe.succeeded = false;
+        capability_probe.reached_gpu = false;
+        capability_probe.device_ordinal = None;
+        let observations = vec![
+            capability_probe,
+            attempt(1, 0, Some(2), Some(11), 0, 10, 10, SchedulePhase::Measurement),
+            attempt(2, 1, Some(3), Some(12), 0, 10, 10, SchedulePhase::Measurement),
+        ];
+
+        let aggregate = MeasuredAggregate::reduce(&observations, &devices, &BTreeMap::new(), 0, 1_000_000_000);
+        let clause = aggregate
+            .scenarios
+            .multiple_devices
+            .iter()
+            .find(|clause| clause.clause == "one_ordinal_per_attempt")
+            .unwrap();
+        assert_eq!(clause.status, ClauseStatus::Evidenced);
+        assert!(clause.detail.contains("1 non-executing capability probes"));
     }
 
     #[test]
@@ -2141,5 +2645,339 @@ mod tests {
         assert_eq!(aggregate.scenarios.same_device.len(), 1);
         assert_eq!(aggregate.scenarios.same_device[0].status, ClauseStatus::NotEvidenced);
         assert!(scenario_clauses_pass(&aggregate.scenarios));
+    }
+
+    #[test]
+    fn per_step_aggregates_attribute_throughput_and_placement_to_their_step() {
+        let observations = vec![
+            AttemptObservation {
+                step_index: 0,
+                total_ns: Some(1_000_000),
+                ..attempt(0, 0, Some(1), Some(2), 0, 10, 1_000_000, SchedulePhase::Measurement)
+            },
+            AttemptObservation {
+                step_index: 1,
+                total_ns: Some(3_000_000),
+                ..attempt(1, 1, Some(3), Some(4), 0, 20, 3_000_000, SchedulePhase::Measurement)
+            },
+            AttemptObservation {
+                step_index: 1,
+                total_ns: Some(5_000_000),
+                ..attempt(2, 1, Some(5), Some(6), 0, 30, 5_000_000, SchedulePhase::Measurement)
+            },
+        ];
+        let steps = [
+            StepWindow {
+                step_index: 0,
+                concurrency: 1,
+                arrival_rate_per_second: None,
+                rate_overrun: "delay",
+                measurement_ns: 1_000_000_000,
+            },
+            StepWindow {
+                step_index: 1,
+                concurrency: 4,
+                arrival_rate_per_second: None,
+                rate_overrun: "delay",
+                measurement_ns: 2_000_000_000,
+            },
+        ];
+        let devices = [device(0, 1 << 30, 2), device(1, 1 << 30, 2)];
+        let aggregate =
+            MeasuredAggregate::reduce_full(&observations, &devices, &occupancy(2), 0, 3_000_000_000, None, &steps);
+        assert_eq!(aggregate.steps.len(), 2);
+        let step0 = &aggregate.steps[0];
+        assert_eq!(step0.throughput.completions, 1);
+        assert_eq!(step0.latency.p50_ns, 1_000_000);
+        assert_eq!(step0.placements.iter().map(|placement| placement.device_ordinal).collect::<Vec<_>>(), [0]);
+        let step1 = &aggregate.steps[1];
+        assert_eq!(step1.throughput.completions, 2);
+        assert_eq!(step1.throughput.application_qps, 1.0);
+        assert_eq!(step1.latency.p50_ns, 3_000_000);
+        assert_eq!(step1.latency.max_ns, 5_000_000);
+        assert_eq!(step1.placements.len(), 1);
+        assert_eq!(step1.placements[0].attempts_placed, 2);
+        // The run-level aggregate still spans every step's measurement set.
+        assert_eq!(aggregate.throughput.completions, 3);
+    }
+
+    #[test]
+    fn latency_keeps_sealed_admission_waits_separate_from_plan_queue_waits() {
+        let mut first = attempt(0, 0, Some(1), Some(2), 0, 10, 10, SchedulePhase::Measurement);
+        first.admission_wait_ns = Some(10);
+        first.queue_wait_ns = Some(1_000);
+        let mut second = attempt(1, 0, Some(3), Some(4), 0, 20, 20, SchedulePhase::Measurement);
+        second.admission_wait_ns = Some(20);
+        second.queue_wait_ns = Some(2_000);
+        let mut third = attempt(2, 0, Some(5), Some(6), 0, 30, 30, SchedulePhase::Measurement);
+        third.admission_wait_ns = Some(90);
+        third.queue_wait_ns = Some(3_000);
+
+        let reduced = latency(&[&first, &second, &third]);
+        assert_eq!(reduced.admission_wait_samples, 3);
+        assert_eq!(reduced.admission_wait_p50_ns, 20);
+        assert_eq!(reduced.admission_wait_p95_ns, 90);
+        assert_eq!(reduced.admission_wait_p99_ns, 90);
+        assert_eq!(reduced.queue_wait_p95_ns, 3_000);
+    }
+
+    #[test]
+    fn quarantine_cycles_evidence_requires_every_configured_cycle_to_evidence() {
+        let observations = vec![
+            attempt(0, 1, Some(1), Some(2), 0, 10, 10, SchedulePhase::Measurement),
+            attempt(1, 2, Some(3), Some(4), 0, 20, 20, SchedulePhase::Measurement),
+        ];
+        let first = quarantine_evidence(0, &observations);
+        let second = quarantine_evidence(1, &observations[1..]);
+        let evidenced = QuarantineCyclesEvidence::from_cycle_evidence(2, vec![first.clone(), second]);
+        assert!(evidenced.is_evidenced());
+        assert_eq!(evidenced.completed_cycles, 2);
+        assert_eq!(evidenced.cycles[0].target_ordinal, 0);
+        assert_eq!(evidenced.cycles[1].device_health_generation, 1);
+
+        // Fewer cycles than configured is a failure, not a partial pass.
+        let incomplete = QuarantineCyclesEvidence::from_cycle_evidence(3, vec![first.clone()]);
+        assert!(!incomplete.is_evidenced());
+        assert_eq!(incomplete.completed_cycles, 1);
+
+        // A cycle with post-ack placements on its target fails the section.
+        let contaminated = vec![attempt(0, 0, Some(1), Some(2), 0, 10, 10, SchedulePhase::Measurement)];
+        let failed = QuarantineCyclesEvidence::from_cycle_evidence(1, vec![quarantine_evidence(0, &contaminated)]);
+        assert!(!failed.is_evidenced());
+        assert_eq!(failed.cycles[0].status, ClauseStatus::Failed);
+    }
+
+    fn cache_snapshot(physical: u64, ledger: u64, cap: u64) -> serde_json::Value {
+        serde_json::json!({"cache_cap_bytes": cap, "ledger_evictable_resident_bytes": ledger, "ledger_pinned_in_use_bytes": 0, "physical_current_bytes": physical})
+    }
+
+    #[test]
+    fn opted_in_cache_quarantine_requires_complete_consistent_snapshots() {
+        let observations = vec![attempt(0, 1, Some(1), Some(2), 0, 10, 10, SchedulePhase::Measurement)];
+        let mut evidence = quarantine_evidence(0, &observations);
+        evidence.cache_residency = CacheQuarantineEvidence::from_snapshots(
+            Some(cache_snapshot(90, 100, 100)),
+            Some(cache_snapshot(0, 0, 100)),
+            Some(cache_snapshot(0, 0, 100)),
+        );
+        evidence.require_cache_residency();
+        assert_eq!(evidence.clause().status, ClauseStatus::Evidenced);
+    }
+
+    #[test]
+    fn opted_in_cache_quarantine_rejects_missing_or_zero_pre_ack() {
+        let observations = vec![attempt(0, 1, Some(1), Some(2), 0, 10, 10, SchedulePhase::Measurement)];
+        let mut evidence = quarantine_evidence(0, &observations);
+        evidence.require_cache_residency();
+        assert_eq!(evidence.clause().status, ClauseStatus::Failed);
+        evidence.cache_residency = CacheQuarantineEvidence::from_snapshots(
+            Some(cache_snapshot(0, 0, 100)),
+            Some(cache_snapshot(0, 100, 100)),
+            Some(cache_snapshot(0, 100, 100)),
+        );
+        assert_eq!(evidence.clause().status, ClauseStatus::Failed);
+    }
+
+    #[test]
+    fn opted_in_cache_quarantine_rejects_physical_over_ledger_or_cap() {
+        let observations = vec![attempt(0, 1, Some(1), Some(2), 0, 10, 10, SchedulePhase::Measurement)];
+        for snapshots in [
+            (cache_snapshot(101, 100, 100), cache_snapshot(80, 100, 100), cache_snapshot(80, 100, 100)),
+            (cache_snapshot(101, 200, 100), cache_snapshot(80, 100, 100), cache_snapshot(80, 100, 100)),
+            (cache_snapshot(80, 100, 100), cache_snapshot(101, 100, 100), cache_snapshot(80, 100, 100)),
+            (cache_snapshot(80, 100, 100), cache_snapshot(1, 0, 100), cache_snapshot(80, 100, 100)),
+        ] {
+            let mut evidence = quarantine_evidence(0, &observations);
+            evidence.cache_residency =
+                CacheQuarantineEvidence::from_snapshots(Some(snapshots.0), Some(snapshots.1), Some(snapshots.2));
+            evidence.require_cache_residency();
+            assert_eq!(evidence.clause().status, ClauseStatus::Failed);
+        }
+    }
+
+    #[test]
+    fn legacy_quarantine_remains_evidenced_without_cache_observations() {
+        let observations = vec![attempt(0, 1, Some(1), Some(2), 0, 10, 10, SchedulePhase::Measurement)];
+        let evidence = quarantine_evidence(0, &observations);
+        assert_eq!(evidence.clause().status, ClauseStatus::Evidenced);
+    }
+
+    fn complete_graph_claim_row() -> GraphClaimCalibrationRow {
+        GraphClaimCalibrationRow {
+            node_id: "n7".to_string(),
+            algorithm: "pagerank".to_string(),
+            model_requested_bytes: 4_096,
+            requested_bytes: 4_096,
+            budget_bytes: Some(8_192),
+            execution_state: "algorithm_started".to_string(),
+            measured_peak_bytes: Some(4_000),
+            measured_peak_provenance: "reservation_high_water".to_string(),
+            graph_model_error_ratio: Some("1.024".to_string()),
+        }
+    }
+
+    fn physical_graph_claim_snapshot(rows: Vec<GraphClaimCalibrationRow>) -> GraphClaimCalibrationSnapshot {
+        GraphClaimCalibrationSnapshot {
+            truncated: false,
+            rows,
+            execution: Some(GraphClaimCalibrationExecution::Physical),
+            execution_complete: true,
+        }
+    }
+
+    fn bfs_singleflight_follower_snapshot(leader_attempt_id: Option<String>) -> GraphClaimCalibrationSnapshot {
+        GraphClaimCalibrationSnapshot {
+            truncated: false,
+            rows: Vec::new(),
+            execution: Some(GraphClaimCalibrationExecution::NonPhysical(
+                GraphClaimCalibrationNonPhysicalReason::BfsSingleflightFollower { leader_attempt_id },
+            )),
+            execution_complete: true,
+        }
+    }
+
+    #[test]
+    fn graph_claim_calibration_requires_one_complete_typed_row_per_graph_attempt() {
+        let mut graph = attempt(0, 0, Some(1), Some(2), 0, 10, 10, SchedulePhase::Measurement);
+        graph.graph_workload = true;
+        graph.graph_claim_calibration = Some(physical_graph_claim_snapshot(vec![complete_graph_claim_row()]));
+
+        let evidence = graph_claim_calibration_evidence(&[graph.clone()]);
+        assert!(evidence.passes());
+        assert_eq!(evidence.graph_attempts, 1);
+        assert_eq!(evidence.attempts[0].reason, "complete");
+
+        graph.graph_claim_calibration.as_mut().expect("snapshot exists").rows.push(complete_graph_claim_row());
+        let duplicate = graph_claim_calibration_evidence(&[graph]);
+        assert!(!duplicate.passes());
+        assert_eq!(duplicate.attempts[0].reason, "expected_exactly_one_graph_claim_row");
+    }
+
+    #[test]
+    fn graph_claim_calibration_rejects_missing_or_unmeasured_rows() {
+        let mut missing = attempt(0, 0, Some(1), Some(2), 0, 10, 10, SchedulePhase::Measurement);
+        missing.graph_workload = true;
+        let missing_evidence = graph_claim_calibration_evidence(&[missing]);
+        assert!(!missing_evidence.passes());
+        assert_eq!(missing_evidence.attempts[0].reason, "missing_sealed_graph_claim_snapshot");
+
+        let mut unavailable = attempt(1, 0, Some(3), Some(4), 0, 20, 20, SchedulePhase::Measurement);
+        unavailable.graph_workload = true;
+        unavailable.graph_claim_calibration = Some(physical_graph_claim_snapshot(vec![GraphClaimCalibrationRow {
+            measured_peak_bytes: None,
+            measured_peak_provenance: "unavailable".to_string(),
+            ..complete_graph_claim_row()
+        }]));
+        let unavailable_evidence = graph_claim_calibration_evidence(&[unavailable]);
+        assert!(!unavailable_evidence.passes());
+        assert_eq!(unavailable_evidence.attempts[0].reason, "graph_peak_measurement_unavailable");
+    }
+
+    #[test]
+    fn graph_claim_calibration_accepts_only_the_exact_model_admission_denial_contract() {
+        let mut denied = attempt(1, 0, Some(3), Some(4), 0, 20, 20, SchedulePhase::Measurement);
+        denied.graph_workload = true;
+        denied.outcome = "failed".to_string();
+        denied.succeeded = false;
+        denied.failure = Some(AttemptFailureClass {
+            origin: "Native".to_string(),
+            code: "MemoryReservationFailed".to_string(),
+            status: "Temporary".to_string(),
+            operation: "Execution".to_string(),
+        });
+        denied.graph_claim_calibration = Some(GraphClaimCalibrationSnapshot {
+            truncated: false,
+            rows: vec![GraphClaimCalibrationRow {
+                model_requested_bytes: 9_000,
+                requested_bytes: 9_000,
+                budget_bytes: Some(8_000),
+                execution_state: "graph_memory_admission_denied".to_string(),
+                measured_peak_bytes: None,
+                measured_peak_provenance: "unavailable".to_string(),
+                graph_model_error_ratio: None,
+                ..complete_graph_claim_row()
+            }],
+            execution: Some(GraphClaimCalibrationExecution::NonPhysical(
+                GraphClaimCalibrationNonPhysicalReason::GraphMemoryAdmissionDenied,
+            )),
+            execution_complete: true,
+        });
+
+        let evidence = graph_claim_calibration_evidence(&[denied.clone()]);
+        assert!(evidence.passes());
+        assert_eq!(evidence.attempts[0].reason, "complete");
+
+        denied.failure = None;
+        let mismatch = graph_claim_calibration_evidence(&[denied]);
+        assert!(!mismatch.passes());
+        assert_eq!(mismatch.attempts[0].reason, "graph_memory_admission_denied_failure_mismatch");
+    }
+
+    #[test]
+    fn graph_claim_calibration_accepts_a_fully_linked_singleflight_follower() {
+        let mut leader = attempt(0, 0, Some(1), Some(2), 0, 10, 10, SchedulePhase::Measurement);
+        leader.graph_workload = true;
+        leader.graph_claim_calibration = Some(physical_graph_claim_snapshot(vec![complete_graph_claim_row()]));
+
+        let mut follower = attempt(1, 0, Some(3), Some(4), 0, 10, 10, SchedulePhase::Measurement);
+        follower.graph_workload = true;
+        follower.graph_claim_calibration = Some(bfs_singleflight_follower_snapshot(Some(leader.attempt_id.clone())));
+
+        let evidence = graph_claim_calibration_evidence(&[leader, follower]);
+        assert!(evidence.passes());
+        assert_eq!(evidence.graph_attempts, 2);
+        assert_eq!(evidence.attempts[1].reason, "complete");
+    }
+
+    #[test]
+    fn graph_claim_calibration_rejects_unlinked_or_row_carrying_singleflight_followers() {
+        let mut absent_leader_id = attempt(0, 0, Some(1), Some(2), 0, 10, 10, SchedulePhase::Measurement);
+        absent_leader_id.graph_workload = true;
+        absent_leader_id.graph_claim_calibration = Some(bfs_singleflight_follower_snapshot(None));
+        let absent_leader_id_evidence = graph_claim_calibration_evidence(&[absent_leader_id]);
+        assert!(!absent_leader_id_evidence.passes());
+        assert_eq!(absent_leader_id_evidence.attempts[0].reason, "singleflight_follower_missing_leader_attempt_id");
+
+        let mut missing_leader = attempt(0, 0, Some(1), Some(2), 0, 10, 10, SchedulePhase::Measurement);
+        missing_leader.graph_workload = true;
+        missing_leader.graph_claim_calibration =
+            Some(bfs_singleflight_follower_snapshot(Some("attempt-missing".to_string())));
+        let missing_leader_evidence = graph_claim_calibration_evidence(&[missing_leader]);
+        assert!(!missing_leader_evidence.passes());
+        assert_eq!(missing_leader_evidence.attempts[0].reason, "singleflight_follower_leader_not_evidenced");
+
+        let mut carrying_row = attempt(1, 0, Some(3), Some(4), 0, 10, 10, SchedulePhase::Measurement);
+        carrying_row.graph_workload = true;
+        let mut snapshot = bfs_singleflight_follower_snapshot(Some("attempt-missing".to_string()));
+        snapshot.rows.push(complete_graph_claim_row());
+        carrying_row.graph_claim_calibration = Some(snapshot);
+        let carrying_row_evidence = graph_claim_calibration_evidence(&[carrying_row]);
+        assert!(!carrying_row_evidence.passes());
+        assert_eq!(carrying_row_evidence.attempts[0].reason, "singleflight_follower_has_graph_claim_rows");
+    }
+
+    #[test]
+    fn graph_claim_calibration_rejects_missing_or_conflicting_execution_classification() {
+        let mut missing = attempt(0, 0, Some(1), Some(2), 0, 10, 10, SchedulePhase::Measurement);
+        missing.graph_workload = true;
+        missing.graph_claim_calibration = Some(GraphClaimCalibrationSnapshot {
+            truncated: false,
+            rows: vec![complete_graph_claim_row()],
+            execution: None,
+            execution_complete: false,
+        });
+        let missing_evidence = graph_claim_calibration_evidence(&[missing]);
+        assert!(!missing_evidence.passes());
+        assert_eq!(missing_evidence.attempts[0].reason, "graph_execution_classification_missing");
+
+        let mut conflicting = attempt(1, 0, Some(3), Some(4), 0, 10, 10, SchedulePhase::Measurement);
+        conflicting.graph_workload = true;
+        conflicting.graph_claim_calibration = Some(GraphClaimCalibrationSnapshot {
+            execution_complete: false,
+            ..physical_graph_claim_snapshot(vec![complete_graph_claim_row()])
+        });
+        let conflicting_evidence = graph_claim_calibration_evidence(&[conflicting]);
+        assert!(!conflicting_evidence.passes());
+        assert_eq!(conflicting_evidence.attempts[0].reason, "graph_execution_classification_conflicted");
     }
 }

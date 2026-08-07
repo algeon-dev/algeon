@@ -1,5 +1,5 @@
 use super::*;
-use crate::graph_memory::GraphMemoryCalibrationOverride;
+use crate::{admission::AttemptReservationPolicy, graph_memory::GraphMemoryCalibrationOverride};
 
 /// Bounded admission-queue policy.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,6 +96,20 @@ impl QueryExecutionConfig {
             max_retry_attempts: self.max_retry_attempts,
             min_retry_chunk_row_groups: self.min_retry_chunk_row_groups,
         }
+    }
+
+    /// The service-owned policy inputs used to resolve proof-held physical
+    /// reservation shapes before ledger admission.
+    pub(super) const fn attempt_reservation_policy(&self) -> AttemptReservationPolicy {
+        AttemptReservationPolicy::new(
+            self.max_source_chunk_bytes,
+            self.max_row_groups_per_chunk,
+            self.max_retry_attempts,
+            self.min_retry_chunk_row_groups,
+            self.source_scheduler_policy,
+            self.source_chunk_planning_mode,
+            self.source_chunk_planning_options,
+        )
     }
 }
 

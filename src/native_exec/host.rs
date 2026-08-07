@@ -29,7 +29,9 @@ use super::{
         properties_with_equivalence, run_gpu_execution_task, write_native_plan_tree,
     },
     config::NexusNativeExecutionConfig,
-    metrics::{NativeExecutionMetricsCapture, NexusNativeMetrics, SealedAttemptMetricsTarget},
+    metrics::{
+        GraphClaimCalibrationCapture, NativeExecutionMetricsCapture, NexusNativeMetrics, SealedAttemptMetricsTarget,
+    },
 };
 use crate::error::{Error, ErrorCode};
 
@@ -43,6 +45,7 @@ pub struct NexusNativeExec {
     plan: QueryPlan,
     execution_config: NexusNativeExecutionConfig,
     metrics_capture: Option<NativeExecutionMetricsCapture>,
+    graph_claim_calibration_capture: GraphClaimCalibrationCapture,
     metrics: ExecutionPlanMetricsSet,
     cache: Arc<PlanProperties>,
 }
@@ -83,7 +86,14 @@ impl NexusNativeExec {
         };
 
         let metrics_capture = execution_config.new_metrics_capture();
-        Ok(Self { cache, plan, execution_config, metrics_capture, metrics: ExecutionPlanMetricsSet::new() })
+        Ok(Self {
+            cache,
+            plan,
+            execution_config,
+            metrics_capture,
+            graph_claim_calibration_capture: GraphClaimCalibrationCapture::default(),
+            metrics: ExecutionPlanMetricsSet::new(),
+        })
     }
 
     pub fn native_plan(&self) -> &QueryPlan {
@@ -99,7 +109,7 @@ impl NexusNativeExec {
     /// The attempt owner elects it before execution; the wrapper itself never
     /// reads or retains terminal attempt state.
     pub(crate) fn sealed_attempt_metrics_target(&self) -> SealedAttemptMetricsTarget {
-        SealedAttemptMetricsTarget::new(&self.metrics)
+        SealedAttemptMetricsTarget::new(&self.metrics, self.graph_claim_calibration_capture.clone())
     }
 
     pub(crate) async fn prepare_lakehouse_metadata(&self, task_context: &TaskContext) -> Self {
@@ -201,7 +211,8 @@ impl ExecutionPlan for NexusNativeExec {
             partition,
             self.metrics_capture.clone(),
             self.execution_config.plan_task_mapping_datafusion_shape(),
-        );
+        )
+        .with_graph_claim_calibration_capture(self.graph_claim_calibration_capture.clone());
         let output_schema = Arc::clone(&schema);
         let output = native_host_output_stream(
             NATIVE_NEXUS_EXEC_HOST_OUTPUT_MEMORY_CONSUMER,
@@ -290,6 +301,7 @@ impl ExecutionPlan for NexusNativeExec {
                             cursor_executor,
                             cursor_observation,
                             cursor_metrics,
+                            context_lease,
                         ))
                     },
                 )

@@ -9,6 +9,7 @@ fn server_native_config_option_descriptors_cover_toml_env_and_session_keys() {
         ("native.max_source_reads_in_flight", NEXUS_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV),
         ("native.source_chunk_planning_mode", NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV),
         ("native.statistical_aggregate_execution_mode", NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV),
+        ("native.final_plan_requirement", NEXUS_SERVER_FINAL_PLAN_REQUIREMENT_ENV),
     ];
 
     assert_eq!(NEXUS_SERVER_NATIVE_CONFIG_OPTIONS.len(), expected.len());
@@ -48,7 +49,10 @@ fn server_config_accepts_bounded_native_profile() {
     ]);
     let config = server_config_with_default_device_profile(env).unwrap();
     let projection = DataFusionNexusSessionConfig::from_optimizer_config(&config.native_optimizer_config);
-    assert_eq!(config.gpu_device_profiles[0].memory_limit(), datafusion_nexus::backend::GpuDeviceMemoryLimit::default());
+    assert_eq!(
+        config.gpu_device_profiles[0].memory_limit(),
+        datafusion_nexus::backend::GpuDeviceMemoryLimit::default()
+    );
     assert_eq!(projection.native_device_budget_bytes, 1024);
     assert_eq!(projection.native_max_source_chunk_bytes, 512);
     assert_eq!(projection.native_max_row_groups_per_chunk, 8);
@@ -138,6 +142,35 @@ fn server_config_rejects_zero_extended_native_query_knobs() {
         let error = ServerConfig::from_env_get(|env_name| env.get(env_name).cloned()).unwrap_err();
         assert!(error.to_string().contains(name));
     }
+}
+
+#[test]
+fn server_config_leaves_final_plan_unconstrained_by_default() {
+    let config = server_config_with_default_device_profile(BTreeMap::new()).unwrap();
+    assert!(config.native_optimizer_config.final_plan_requirements().is_empty());
+}
+
+#[test]
+fn server_config_accepts_no_datafusion_cpu_final_plan_requirement_env() {
+    let env = BTreeMap::from([(NEXUS_SERVER_FINAL_PLAN_REQUIREMENT_ENV, "no_datafusion_cpu".to_string())]);
+    let config = server_config_with_default_device_profile(env).unwrap();
+    assert_eq!(config.native_optimizer_config.final_plan_requirements(), &[FinalPlanRequirement::NoDataFusionCpu]);
+}
+
+#[test]
+fn server_config_accepts_no_datafusion_cpu_final_plan_requirement_toml() {
+    let (_dir, env) = env_with_server_toml("[native]\nfinal_plan_requirement = \"no_datafusion_cpu\"\n");
+    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+    assert_eq!(config.native_optimizer_config.final_plan_requirements(), &[FinalPlanRequirement::NoDataFusionCpu]);
+}
+
+#[test]
+fn server_config_rejects_unknown_final_plan_requirement() {
+    let env = BTreeMap::from([(NEXUS_SERVER_FINAL_PLAN_REQUIREMENT_ENV, "native_only".to_string())]);
+    let error = server_config_with_default_device_profile(env).unwrap_err();
+    assert_eq!(error.code(), datafusion_nexus::error::ErrorCode::InvalidRequest);
+    assert_eq!(error.fact_value("config_field"), Some(NEXUS_SERVER_FINAL_PLAN_REQUIREMENT_ENV));
+    assert!(error.message().contains("no_datafusion_cpu"), "{error}");
 }
 
 #[test]

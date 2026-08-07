@@ -1,5 +1,6 @@
 use std::{borrow::Cow, collections::BTreeSet, fs, time::Duration};
 
+use arrow::datatypes::SchemaRef;
 use parquet::file::reader::FileReader;
 
 use super::*;
@@ -130,26 +131,67 @@ pub fn read_local_parquet_source(
     // The resident value has a stable source schema, so bypass rather than
     // cache a scope-dependent frame. This preserves the existing exact-order
     // contract without teaching the cache a second schema producer.
-    let cache =
-        if crate::exec::order::datafusion_order_tracking_enabled() { None } else { context.resident_source_cache() };
-    let key =
-        cache.as_ref().map(|_| crate::runtime::source_identity::GpuLocalParquetSourceCacheKey::from_source(source));
-    if let (Some(cache), Some(key)) = (cache.as_ref(), key.as_ref())
-        && let Some((handle, _retained_device_bytes)) = cache.get(key, context, &source.schema)?
-    {
-        metrics.record_input_batch(handle.num_rows() as u64);
-        return Ok(handle.into_gpu_frame());
+    let Some(cache) = resident_source_cache(context) else {
+        return read_local_parquet_source_uncached(context, source_node_id, source, metrics);
+    };
+    let cache_schema = source_cache_frame_schema(source)?;
+    let key = crate::runtime::source_identity::GpuLocalParquetSourceCacheKey::from_source(source);
+    match cache.checkout_or_claim(key, context, &cache_schema)? {
+        crate::runtime::cache::local_parquet::GpuLocalParquetSourceCacheLoad::Hit(handle) => {
+            metrics.record_input_batch(handle.num_rows() as u64);
+            Ok(handle.into_gpu_frame())
+        },
+        crate::runtime::cache::local_parquet::GpuLocalParquetSourceCacheLoad::Leader(claim) => {
+            let frame = match read_local_parquet_source_uncached(context, source_node_id, source, metrics) {
+                Ok(frame) => frame,
+                Err(error) => {
+                    cache.abandon_load(claim)?;
+                    return Err(error);
+                },
+            };
+            promote_source_cache_load(&cache, claim, context, &frame, &cache_schema)?;
+            Ok(frame)
+        },
     }
+}
 
-    let frame = read_local_parquet_source_uncached(context, source_node_id, source, metrics)?;
-    if let (Some(cache), Some(key)) = (cache.as_ref(), key) {
-        // Promotion copies, never transfers, the attempt-owned frame. A
-        // failed promotion therefore leaves the current attempt as the sole
-        // owner and preserves its primary execution result.
-        let handle = GpuResultHandle::new(context, frame.clone(), Arc::clone(&source.schema))?;
-        let _promotion = cache.promote(key, context, &handle)?;
-    }
-    Ok(frame)
+/// Returns the one ordinal-local source cache only when the cached frame has
+/// a stable schema. DataFusion's exact-order scope injects hidden columns, so
+/// retaining that scope-dependent output would violate the cache key's schema
+/// contract.
+fn resident_source_cache(
+    context: &ExecutionContext,
+) -> Option<crate::runtime::cache::local_parquet::GpuLocalParquetSourceCache> {
+    (!crate::exec::order::datafusion_order_tracking_enabled()).then(|| context.resident_source_cache()).flatten()
+}
+
+/// Returns the schema of the exact [`SourceReadMode::ExecutionFrame`] value
+/// retained by the source cache.  The source catalog schema can have a
+/// different field order from the execution frame after projection planning,
+/// so it cannot bind a cached GPU result contract.
+fn source_cache_frame_schema(source: &LocalParquetSource) -> Result<SchemaRef> {
+    local_parquet_execution_frame_schema(source)
+}
+
+/// Finishes a leader-owned source read.  The cache always copies rather than
+/// transfers `frame`, so a skipped promotion leaves the current attempt as
+/// the sole owner and remains a successful query result.
+fn promote_source_cache_load(
+    cache: &crate::runtime::cache::local_parquet::GpuLocalParquetSourceCache,
+    claim: crate::runtime::cache::local_parquet::GpuLocalParquetSourceCacheLoadClaim,
+    context: &ExecutionContext,
+    frame: &GpuDataFrame,
+    schema: &SchemaRef,
+) -> Result<()> {
+    let handle = match GpuResultHandle::new(context, frame.clone(), Arc::clone(schema)) {
+        Ok(handle) => handle,
+        Err(error) => {
+            cache.abandon_load(claim)?;
+            return Err(error);
+        },
+    };
+    let _promotion = cache.promote_load(claim, context, &handle)?;
+    Ok(())
 }
 
 /// Import a literal host Arrow source into a GPU dataframe.
@@ -388,6 +430,60 @@ pub(super) fn read_local_parquet_chunk_with_reader_dynamic_filter_count(
     reader_dynamic_filter_count: usize,
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
+    // Count probes and empty chunks are synthetic frames rather than decoded
+    // Parquet values. Keeping them out of the resident source cache avoids
+    // charging a zero-value control path as a data-cache entry.
+    let cacheable =
+        !source.is_count_star_probe_source() && !chunk.zero_column_count && chunk.scan_limit_rows != Some(0);
+    let Some(cache) = cacheable.then(|| resident_source_cache(context)).flatten() else {
+        return read_local_parquet_chunk_uncached(
+            context,
+            source,
+            chunk,
+            budget_bytes,
+            budget_boundary,
+            reader_dynamic_filter_count,
+            metrics,
+        );
+    };
+    let cache_schema = source_cache_frame_schema(source)?;
+    let key = crate::runtime::source_identity::GpuLocalParquetSourceCacheKey::from_chunk(source, chunk);
+    match cache.checkout_or_claim(key, context, &cache_schema)? {
+        crate::runtime::cache::local_parquet::GpuLocalParquetSourceCacheLoad::Hit(handle) => {
+            metrics.record_input_batch(handle.num_rows() as u64);
+            Ok(handle.into_gpu_frame())
+        },
+        crate::runtime::cache::local_parquet::GpuLocalParquetSourceCacheLoad::Leader(claim) => {
+            let frame = match read_local_parquet_chunk_uncached(
+                context,
+                source,
+                chunk,
+                budget_bytes,
+                budget_boundary,
+                reader_dynamic_filter_count,
+                metrics,
+            ) {
+                Ok(frame) => frame,
+                Err(error) => {
+                    cache.abandon_load(claim)?;
+                    return Err(error);
+                },
+            };
+            promote_source_cache_load(&cache, claim, context, &frame, &cache_schema)?;
+            Ok(frame)
+        },
+    }
+}
+
+fn read_local_parquet_chunk_uncached(
+    context: &ExecutionContext,
+    source: &LocalParquetSource,
+    chunk: &SourceChunk,
+    budget_bytes: u64,
+    budget_boundary: &'static str,
+    reader_dynamic_filter_count: usize,
+    metrics: &mut QueryMetrics,
+) -> Result<GpuDataFrame> {
     context.check_cancellation("nexus_query_engine.local_parquet_chunk.read")?;
     if chunk.zero_column_count {
         let row_count = chunk.known_row_count.ok_or_else(|| {
@@ -570,6 +666,69 @@ fn count_star_probe_weight_frame(
 }
 
 pub(super) fn read_local_parquet_chunk_batch(
+    context: &ExecutionContext,
+    source: &LocalParquetSource,
+    batch: &crate::chunk::SourceChunkBatch,
+    budget_bytes: u64,
+    budget_boundary: &'static str,
+    reader_dynamic_filter_count: usize,
+    metrics: &mut QueryMetrics,
+) -> Result<GpuDataFrame> {
+    if batch.is_singleton() {
+        let chunk = batch.chunks.first().expect("singleton source chunk batch has one child");
+        return read_local_parquet_chunk_with_reader_dynamic_filter_count(
+            context,
+            source,
+            chunk,
+            budget_bytes,
+            budget_boundary,
+            reader_dynamic_filter_count,
+            metrics,
+        );
+    }
+    let cacheable = !source.is_count_star_probe_source()
+        && batch.chunks.iter().all(|chunk| !chunk.zero_column_count && chunk.scan_limit_rows != Some(0));
+    let Some(cache) = cacheable.then(|| resident_source_cache(context)).flatten() else {
+        return read_local_parquet_chunk_batch_uncached(
+            context,
+            source,
+            batch,
+            budget_bytes,
+            budget_boundary,
+            reader_dynamic_filter_count,
+            metrics,
+        );
+    };
+    let cache_schema = source_cache_frame_schema(source)?;
+    let key = crate::runtime::source_identity::GpuLocalParquetSourceCacheKey::from_chunk_batch(source, batch);
+    match cache.checkout_or_claim(key, context, &cache_schema)? {
+        crate::runtime::cache::local_parquet::GpuLocalParquetSourceCacheLoad::Hit(handle) => {
+            metrics.record_input_batch(handle.num_rows() as u64);
+            Ok(handle.into_gpu_frame())
+        },
+        crate::runtime::cache::local_parquet::GpuLocalParquetSourceCacheLoad::Leader(claim) => {
+            let frame = match read_local_parquet_chunk_batch_uncached(
+                context,
+                source,
+                batch,
+                budget_bytes,
+                budget_boundary,
+                reader_dynamic_filter_count,
+                metrics,
+            ) {
+                Ok(frame) => frame,
+                Err(error) => {
+                    cache.abandon_load(claim)?;
+                    return Err(error);
+                },
+            };
+            promote_source_cache_load(&cache, claim, context, &frame, &cache_schema)?;
+            Ok(frame)
+        },
+    }
+}
+
+fn read_local_parquet_chunk_batch_uncached(
     context: &ExecutionContext,
     source: &LocalParquetSource,
     batch: &crate::chunk::SourceChunkBatch,
@@ -846,6 +1005,25 @@ mod tests {
         assert_eq!(request.row_groups, Some(vec![0, 1]));
         assert_eq!(request.attempt, Some(2));
         assert_eq!(request.max_attempts, Some(5));
+    }
+
+    #[test]
+    fn source_cache_schema_uses_execution_frame_order_for_permuted_edge_columns() {
+        let catalog_schema = Arc::new(Schema::new(vec![
+            Field::new("dst", ArrowDataType::Int64, false),
+            Field::new("src", ArrowDataType::Int64, false),
+        ]));
+        let source = LocalParquetSource::new(
+            "/tmp/source-cache-permuted-edge-columns.parquet",
+            catalog_schema,
+            vec!["src".to_string(), "dst".to_string()],
+        )
+        .with_column_roles(vec!["src".to_string(), "dst".to_string()], Vec::new());
+
+        let cache_schema = source_cache_frame_schema(&source).expect("cache schema must use the execution frame");
+        let names = cache_schema.fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>();
+
+        assert_eq!(names, ["src", "dst"]);
     }
 
     #[test]

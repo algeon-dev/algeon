@@ -1,6 +1,7 @@
 use nexus_query_engine::admission::QueryPlanCapabilityProof;
 
 use super::*;
+use crate::attempt::NexusAttemptExtension;
 #[derive(Clone, Debug)]
 pub struct CugraphAlgoExec {
     pub(super) spec: CugraphAlgorithmSpec,
@@ -13,6 +14,7 @@ pub struct CugraphAlgoExec {
     pub(super) host_boundary_config: GpuIslandHostBoundaryConfig,
     pub(super) prepared_staged_inputs: Option<Arc<std::sync::Mutex<Option<StagedCugraphInputs>>>>,
     pub(super) metrics_capture: Option<NativeExecutionMetricsCapture>,
+    pub(super) graph_claim_calibration_capture: crate::native_exec::GraphClaimCalibrationCapture,
     pub(super) edge_source_canonical_facts: CugraphEdgeCanonicalFacts,
     pub(super) graph_residency: Option<GraphResidencyDescriptor>,
     pub(super) gpu_result_input_name: String,
@@ -91,16 +93,10 @@ impl CugraphAlgoExec {
         )?;
         let graph_residency =
             cugraph_graph_residency_descriptor(&spec, Arc::clone(&edge_source), edge_normalize_inserted);
-        let native_execution_config = cugraph_execution_config_with_graph_aware_ticket(
-            &spec,
-            edge_source.as_ref(),
-            &predicate_sources,
-            &predicate_row_upper_bounds,
-            projection.as_ref(),
-            limit,
-            edge_normalize_inserted,
-            native_execution_config,
-        )?;
+        // Footer pruning is async and can change the exact graph cardinality.
+        // Do not let this pre-hydration plan carry an admission ticket; the
+        // one immutable ticket is minted after metadata preparation.
+        let native_execution_config = native_execution_config.without_query_admission_ticket();
         let metrics_capture = native_execution_config.new_metrics_capture();
         Ok(Self {
             spec,
@@ -113,6 +109,7 @@ impl CugraphAlgoExec {
             host_boundary_config,
             prepared_staged_inputs: None,
             metrics_capture,
+            graph_claim_calibration_capture: crate::native_exec::GraphClaimCalibrationCapture::default(),
             edge_source_canonical_facts,
             graph_residency,
             gpu_result_input_name,
@@ -146,7 +143,7 @@ impl CugraphAlgoExec {
     /// Returns the one post-seal attempt projection target for this cuGraph
     /// execution root. It is read only and has no graph/admission authority.
     pub(crate) fn sealed_attempt_metrics_target(&self) -> crate::native_exec::SealedAttemptMetricsTarget {
-        crate::native_exec::SealedAttemptMetricsTarget::new(&self.metrics)
+        crate::native_exec::SealedAttemptMetricsTarget::new(&self.metrics, self.graph_claim_calibration_capture.clone())
     }
 
     #[cfg(test)]
@@ -162,7 +159,7 @@ impl CugraphAlgoExec {
         )
     }
 
-    async fn prepare_lakehouse_source_metadata(mut self, task_context: Arc<TaskContext>) -> Result<Self> {
+    pub(crate) async fn prepare_lakehouse_source_metadata(mut self, task_context: Arc<TaskContext>) -> Result<Self> {
         self.edge_source =
             prepare_cugraph_source_metadata(Arc::clone(&self.edge_source), Arc::clone(&task_context)).await?;
         let mut predicate_sources = Vec::with_capacity(self.predicate_sources.len());
@@ -170,6 +167,36 @@ impl CugraphAlgoExec {
             predicate_sources.push(prepare_cugraph_source_metadata(source, Arc::clone(&task_context)).await?);
         }
         self.predicate_sources = predicate_sources;
+        // Hydration may replace the edge source with its footer-resolved
+        // physical shape. Re-derive all rowset-bound graph provenance so the
+        // runtime reservation consumes the same source facts as the ticket
+        // minted immediately afterward.
+        self.graph_residency = cugraph_graph_residency_descriptor(
+            &self.spec,
+            Arc::clone(&self.edge_source),
+            self.edge_normalize_inserted(),
+        );
+        Ok(self)
+    }
+
+    pub(crate) fn issue_graph_aware_ticket_after_metadata(mut self, task_context: &TaskContext) -> Result<Self> {
+        self.predicate_row_upper_bounds = self
+            .predicate_sources
+            .iter()
+            .map(|source| exact_execution_plan_output_rows(source.as_ref()))
+            .collect::<Result<Vec<_>>>()?;
+        self.native_execution_config = cugraph_execution_config_after_metadata(
+            &self.spec,
+            self.edge_source.as_ref(),
+            &self.predicate_sources,
+            &self.predicate_row_upper_bounds,
+            self.projection.as_ref(),
+            self.limit,
+            self.edge_normalize_inserted(),
+            &self.native_execution_config,
+            task_context,
+        )?;
+        self.metrics_capture = self.native_execution_config.new_metrics_capture();
         Ok(self)
     }
 
@@ -265,8 +292,17 @@ impl CugraphAlgoExec {
                 .await;
         };
         let coordinator = self.native_execution_config.graph_execution_services().bfs_singleflight();
+        let correlation_fingerprint = native_context
+            .query_id()
+            .map(|query_id| nexus_query_engine::runtime::cache_observation_fingerprint(query_id.as_str()));
+        let attempt_id = task_context
+            .session_config()
+            .options()
+            .extensions
+            .get::<NexusAttemptExtension>()
+            .map(NexusAttemptExtension::attempt_id);
         loop {
-            match coordinator.join(key.clone())? {
+            match coordinator.join_with_attempt(key.clone(), correlation_fingerprint.clone(), attempt_id)? {
                 GraphBfsSingleflightJoin::Leader(mut leader) => {
                     match self
                         .execute_gpu_result_with_context_physical(
@@ -281,24 +317,7 @@ impl CugraphAlgoExec {
                         Ok((input_name, handle)) => {
                             let publication: Result<()> = (|| {
                                 if leader.has_followers()? {
-                                    let publication_metrics = NexusNativeMetrics::new_with_capture(
-                                        &self.metrics,
-                                        partition,
-                                        self.metrics_capture.clone(),
-                                    );
-                                    let mut graph_metrics = GraphExecutionMetrics::new(
-                                        &publication_metrics,
-                                        self.native_execution_config.runtime_observation_config(),
-                                    );
-                                    let output = materialize_gpu_output_eagerly(
-                                        handle.clone(),
-                                        task_context.as_ref(),
-                                        native_context.cancellation().clone(),
-                                        self.host_boundary_config.max_output_staging_bytes(),
-                                        &mut graph_metrics,
-                                    )?;
-                                    graph_metrics.finish(Ok(()))?;
-                                    leader.publish(output.published_result())?;
+                                    leader.publish(GraphBfsPublishedResult::gpu(handle.clone()))?;
                                 } else {
                                     leader.complete_without_result()?;
                                 }
@@ -319,27 +338,53 @@ impl CugraphAlgoExec {
                 GraphBfsSingleflightJoin::Follower(mut follower) => {
                     match follower.wait(native_context.cancellation()).await? {
                         GraphBfsFollowerOutcome::Ready(result) => {
+                            // Release unused host staging before importing or handing off the published result.
                             drop(staged_inputs.take());
                             let started = Instant::now();
-                            let schema = self.schema();
-                            let frame = record_batches_to_gpu(native_context, Arc::clone(&schema), result.batches())?;
-                            let output_device_bytes = frame.device_allocated_size_bytes().ok();
-                            let handle = GpuResultHandle::new(native_context, frame, schema).map_err(|error| {
-                                DataFusionError::from(Error::from_native(
-                                    "datafusion_nexus.cugraph_sql.bfs_singleflight_follower",
-                                    "failed to bind the coalesced BFS follower output",
-                                    error,
-                                ))
-                            })?;
-                            coordinator.record_follower_copy();
-                            self.record_bfs_singleflight_gpu_follower_metrics(
-                                partition,
-                                &key,
-                                result.batches(),
-                                output_device_bytes,
-                                started.elapsed(),
-                            );
-                            return Ok((self.gpu_result_input_name.clone(), handle));
+                            self.graph_claim_calibration_capture
+                                .record_bfs_singleflight_follower(follower.leader_attempt_id());
+                            match GraphBfsFollowerRoute::for_gpu_follower(result.kind()) {
+                                GraphBfsFollowerRoute::HandoffGpuResult => {
+                                    let handle = result.gpu_handle().expect("GPU route requires a GPU publication");
+                                    follower.record_copy();
+                                    self.record_bfs_singleflight_gpu_result_follower_metrics(
+                                        partition,
+                                        &key,
+                                        u64::try_from(handle.num_rows()).unwrap_or(u64::MAX),
+                                        u64::try_from(handle.num_columns()).unwrap_or(u64::MAX),
+                                        started.elapsed(),
+                                    );
+                                    return Ok((self.gpu_result_input_name.clone(), handle));
+                                },
+                                GraphBfsFollowerRoute::UploadHostResult => {
+                                    let batches =
+                                        result.host_batches().expect("host upload route requires host batches");
+                                    let schema = self.schema();
+                                    let frame = record_batches_to_gpu(native_context, Arc::clone(&schema), batches)?;
+                                    let output_device_bytes = frame.device_allocated_size_bytes().ok();
+                                    let handle =
+                                        GpuResultHandle::new(native_context, frame, schema).map_err(|error| {
+                                            DataFusionError::from(Error::from_native(
+                                                "datafusion_nexus.cugraph_sql.bfs_singleflight_follower",
+                                                "failed to bind the coalesced BFS follower output",
+                                                error,
+                                            ))
+                                        })?;
+                                    follower.record_copy();
+                                    self.record_bfs_singleflight_gpu_follower_metrics(
+                                        partition,
+                                        &key,
+                                        batches,
+                                        output_device_bytes,
+                                        started.elapsed(),
+                                    );
+                                    return Ok((self.gpu_result_input_name.clone(), handle));
+                                },
+                                GraphBfsFollowerRoute::ReuseHostResult
+                                | GraphBfsFollowerRoute::MaterializeGpuResult => {
+                                    unreachable!("GPU follower route must accept a GPU-resident output")
+                                },
+                            }
                         },
                         GraphBfsFollowerOutcome::Retry => continue,
                     }
@@ -360,7 +405,8 @@ impl CugraphAlgoExec {
             .iter()
             .fold(0u64, |rows, batch| rows.saturating_add(u64::try_from(batch.num_rows()).unwrap_or(u64::MAX)));
         let output_columns = batches.first().map_or(0, |batch| u64::try_from(batch.num_columns()).unwrap_or(u64::MAX));
-        let metrics = NexusNativeMetrics::new_with_capture(&self.metrics, partition, self.metrics_capture.clone());
+        let metrics = NexusNativeMetrics::new_with_capture(&self.metrics, partition, self.metrics_capture.clone())
+            .with_graph_claim_calibration_capture(self.graph_claim_calibration_capture.clone());
         let mut query_metrics = QueryMetrics::default();
         query_metrics.record_graph_algorithm_runtime(GraphAlgorithmRuntimeMetrics {
             node_id: "bfs_singleflight_follower".to_string(),
@@ -386,6 +432,40 @@ impl CugraphAlgoExec {
         metrics.record_query_metrics(&query_metrics);
     }
 
+    pub(super) fn record_bfs_singleflight_gpu_result_follower_metrics(
+        &self,
+        partition: usize,
+        key: &GraphBfsSingleflightKey,
+        output_rows: u64,
+        output_columns: u64,
+        elapsed: std::time::Duration,
+    ) {
+        let metrics = NexusNativeMetrics::new_with_capture(&self.metrics, partition, self.metrics_capture.clone())
+            .with_graph_claim_calibration_capture(self.graph_claim_calibration_capture.clone());
+        let mut query_metrics = QueryMetrics::default();
+        query_metrics.record_graph_algorithm_runtime(GraphAlgorithmRuntimeMetrics {
+            node_id: "bfs_singleflight_follower".to_string(),
+            algorithm: "bfs".to_string(),
+            runtime_outcome: "succeeded".to_string(),
+            input_boundary: "singleflight_gpu_result".to_string(),
+            output_boundary: "gpu_resident".to_string(),
+            construction_policy: self.spec.graph_options.construction_policy.as_str().to_string(),
+            source_column: self.spec.src_col.clone(),
+            destination_column: self.spec.dst_col.clone(),
+            weight_column: None,
+            directed: self.spec.graph_options.directed,
+            renumber: self.spec.graph_options.renumber,
+            algorithm_parameters: format!("source_vertex={}", key.source_vertex),
+            algorithm_metadata: "bfs_singleflight=follower".to_string(),
+            output_rows,
+            output_columns,
+            elapsed_ns: u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX),
+            gpu_resident_input_handoffs: 1,
+            ..GraphAlgorithmRuntimeMetrics::default()
+        });
+        metrics.record_query_metrics(&query_metrics);
+    }
+
     async fn execute_host_result_with_context_impl(
         &self,
         native_context: &ExecutionContext,
@@ -405,9 +485,18 @@ impl CugraphAlgoExec {
                 .record_datafusion_output(metrics));
         };
         let coordinator = self.native_execution_config.graph_execution_services().bfs_singleflight();
+        let correlation_fingerprint = native_context
+            .query_id()
+            .map(|query_id| nexus_query_engine::runtime::cache_observation_fingerprint(query_id.as_str()));
+        let attempt_id = task_context
+            .session_config()
+            .options()
+            .extensions
+            .get::<NexusAttemptExtension>()
+            .map(NexusAttemptExtension::attempt_id);
         let mut staged_inputs = Some(staged_inputs);
         loop {
-            match coordinator.join(key.clone())? {
+            match coordinator.join_with_attempt(key.clone(), correlation_fingerprint.clone(), attempt_id)? {
                 GraphBfsSingleflightJoin::Leader(mut leader) => {
                     match self
                         .execute_host_result_with_context_physical(
@@ -441,16 +530,56 @@ impl CugraphAlgoExec {
                     let started = Instant::now();
                     match follower.wait(native_context.cancellation()).await? {
                         GraphBfsFollowerOutcome::Ready(result) => {
+                            // Release unused host staging before reusing or materializing the published result.
                             drop(staged_inputs.take());
-                            coordinator.record_follower_copy();
-                            self.record_bfs_singleflight_host_follower_metrics(
-                                metrics,
-                                &key,
-                                result.batches(),
-                                started.elapsed(),
-                            );
-                            return Ok(EagerCugraphHostOutput::from_published_result(self.schema(), &result)
-                                .record_datafusion_output(metrics));
+                            self.graph_claim_calibration_capture
+                                .record_bfs_singleflight_follower(follower.leader_attempt_id());
+                            match GraphBfsFollowerRoute::for_host_follower(result.kind()) {
+                                GraphBfsFollowerRoute::ReuseHostResult => {
+                                    let batches =
+                                        result.host_batches().expect("host reuse route requires host batches");
+                                    follower.record_copy();
+                                    self.record_bfs_singleflight_host_follower_metrics(
+                                        metrics,
+                                        &key,
+                                        batches,
+                                        started.elapsed(),
+                                    );
+                                    let output = EagerCugraphHostOutput::from_published_result(self.schema(), &result)
+                                        .expect("host reuse route requires a host publication");
+                                    return Ok(output.record_datafusion_output(metrics));
+                                },
+                                GraphBfsFollowerRoute::MaterializeGpuResult => {
+                                    let handle = result
+                                        .gpu_handle()
+                                        .expect("host materialization route requires a GPU publication");
+                                    let mut graph_metrics = GraphExecutionMetrics::new(
+                                        metrics,
+                                        self.native_execution_config.runtime_observation_config(),
+                                    );
+                                    let output = materialize_gpu_output_eagerly(
+                                        handle,
+                                        task_context.as_ref(),
+                                        native_context.cancellation().clone(),
+                                        self.host_boundary_config.max_output_staging_bytes(),
+                                        &mut graph_metrics,
+                                    )?;
+                                    graph_metrics.finish(Ok(()))?;
+                                    let (batches, _) = output.shared_parts();
+                                    follower.record_copy();
+                                    self.record_bfs_singleflight_host_follower_metrics_for_input(
+                                        metrics,
+                                        &key,
+                                        batches.as_slice(),
+                                        "singleflight_gpu_result",
+                                        started.elapsed(),
+                                    );
+                                    return Ok(output.record_datafusion_output(metrics));
+                                },
+                                GraphBfsFollowerRoute::UploadHostResult | GraphBfsFollowerRoute::HandoffGpuResult => {
+                                    unreachable!("host follower route must produce host Arrow")
+                                },
+                            }
                         },
                         GraphBfsFollowerOutcome::Retry => continue,
                     }
@@ -560,6 +689,23 @@ impl CugraphAlgoExec {
         batches: &[RecordBatch],
         elapsed: std::time::Duration,
     ) {
+        self.record_bfs_singleflight_host_follower_metrics_for_input(
+            metrics,
+            key,
+            batches,
+            "singleflight_host_result",
+            elapsed,
+        );
+    }
+
+    fn record_bfs_singleflight_host_follower_metrics_for_input(
+        &self,
+        metrics: &NexusNativeMetrics,
+        key: &GraphBfsSingleflightKey,
+        batches: &[RecordBatch],
+        input_boundary: &'static str,
+        elapsed: std::time::Duration,
+    ) {
         let output_rows = batches
             .iter()
             .fold(0u64, |rows, batch| rows.saturating_add(u64::try_from(batch.num_rows()).unwrap_or(u64::MAX)));
@@ -569,7 +715,7 @@ impl CugraphAlgoExec {
             node_id: "bfs_singleflight_follower".to_string(),
             algorithm: "bfs".to_string(),
             runtime_outcome: "succeeded".to_string(),
-            input_boundary: "singleflight_host_result".to_string(),
+            input_boundary: input_boundary.to_string(),
             output_boundary: "host_arrow".to_string(),
             construction_policy: self.spec.graph_options.construction_policy.as_str().to_string(),
             source_column: self.spec.src_col.clone(),
@@ -605,7 +751,8 @@ impl CugraphAlgoExec {
             .into());
         }
         self.validate_standalone_bounded_sources()?;
-        let metrics = NexusNativeMetrics::new_with_capture(&self.metrics, partition, self.metrics_capture.clone());
+        let metrics = NexusNativeMetrics::new_with_capture(&self.metrics, partition, self.metrics_capture.clone())
+            .with_graph_claim_calibration_capture(self.graph_claim_calibration_capture.clone());
         let _elapsed_compute = metrics.baseline.elapsed_compute().timer();
         let mut graph_metrics =
             GraphExecutionMetrics::new(&metrics, self.native_execution_config.runtime_observation_config());
@@ -735,13 +882,21 @@ impl GpuResidentProducer for CugraphAlgoExec {
         &self.gpu_result_input_name
     }
 
+    fn prepared_admission_tickets(&self) -> Vec<Arc<crate::native_exec::admission::QueryAdmissionTicket>> {
+        self.native_execution_config.query_admission_ticket().into_iter().collect()
+    }
+
     fn prepare_execution_plan<'a>(
         &'a self,
         _plan: Arc<dyn ExecutionPlan>,
         task_context: Arc<TaskContext>,
     ) -> BoxFuture<'a, Result<Arc<dyn ExecutionPlan>>> {
         Box::pin(async move {
-            let mut prepared = self.clone().prepare_lakehouse_source_metadata(Arc::clone(&task_context)).await?;
+            let mut prepared = self
+                .clone()
+                .prepare_lakehouse_source_metadata(Arc::clone(&task_context))
+                .await?
+                .issue_graph_aware_ticket_after_metadata(task_context.as_ref())?;
             prepared.prepared_staged_inputs = Some(Arc::new(std::sync::Mutex::new(Some(
                 stage_cugraph_inputs(
                     &prepared.spec,
@@ -800,6 +955,10 @@ impl GraphExecutionPlan for CugraphAlgoExec {
             self.limit,
             cugraph_edge_normalize_inserted(&self.spec, &self.edge_source_canonical_facts),
         )
+    }
+
+    fn graph_result_input_name(&self) -> &str {
+        &self.gpu_result_input_name
     }
 
     fn sealed_attempt_metrics_target(&self) -> crate::native_exec::SealedAttemptMetricsTarget {
@@ -903,16 +1062,15 @@ impl ExecutionPlan for CugraphAlgoExec {
 
         let schema = self.schema();
         let exec = self.clone();
-        let default_execution_config = self.native_execution_config.clone();
-        let metrics = NexusNativeMetrics::new_with_capture(&self.metrics, partition, self.metrics_capture.clone());
+        let metrics = NexusNativeMetrics::new_with_capture(&self.metrics, partition, self.metrics_capture.clone())
+            .with_graph_claim_calibration_capture(self.graph_claim_calibration_capture.clone());
         self.validate_standalone_bounded_sources()?;
         let output = futures::stream::once(async move {
-            let exec = exec.prepare_lakehouse_source_metadata(Arc::clone(&task_context)).await?;
-            let execution_config = cugraph_execution_config_for_task_context(
-                exec.edge_source.as_ref(),
-                &default_execution_config,
-                &task_context,
-            );
+            let exec = exec
+                .prepare_lakehouse_source_metadata(Arc::clone(&task_context))
+                .await?
+                .issue_graph_aware_ticket_after_metadata(task_context.as_ref())?;
+            let execution_config = exec.native_execution_config.clone();
             let task_context = task_context_with_cugraph_execution_ticket(&execution_config, task_context);
             let staged_inputs = stage_cugraph_inputs(
                 &exec.spec,

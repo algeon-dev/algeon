@@ -334,6 +334,14 @@ pub const QUERY_METRIC_DESCRIPTORS: &[MetricDescriptor] = &[
         None,
     ),
     metric(
+        "native_graph_claim_calibration_rows",
+        MetricUnit::Count,
+        MetricAggregation::RowCount,
+        "Nested graph model-claim versus measured-peak calibration rows.",
+        None,
+        None,
+    ),
+    metric(
         "native_graph_runtime_rows",
         MetricUnit::Count,
         MetricAggregation::RowCount,

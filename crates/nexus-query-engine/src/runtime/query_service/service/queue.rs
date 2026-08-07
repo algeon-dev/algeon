@@ -373,8 +373,9 @@ impl QueryService {
         let now = Instant::now();
         let mut expired = Vec::new();
         let mut cancelled = Vec::new();
-        let mut retained = VecDeque::with_capacity(state.queued.len());
-        while let Some(request) = state.queued.pop_front() {
+        let mut queued = state.take_queued_requests();
+        let mut retained = VecDeque::with_capacity(queued.len());
+        while let Some(request) = queued.pop_front() {
             if request.execution_cancellation.is_cancelled() {
                 let _ = self.end_request_protection(&request);
                 let _ =
@@ -392,7 +393,7 @@ impl QueryService {
                 retained.push_back(request);
             }
         }
-        state.queued = retained;
+        state.replace_queued_requests(retained);
 
         // Retarget only live waiters. It may remove protected waiters whose
         // last capable device closed, after which the ordinary health sweep
@@ -404,8 +405,9 @@ impl QueryService {
                 Vec::new()
             },
         };
-        let mut retained = VecDeque::with_capacity(state.queued.len());
-        while let Some(request) = state.queued.pop_front() {
+        let mut queued = state.take_queued_requests();
+        let mut retained = VecDeque::with_capacity(queued.len());
+        while let Some(request) = queued.pop_front() {
             match self.all_compatible_devices_closed_error(&request.compatible_devices) {
                 Ok(Some(error)) => {
                     let _ = self.end_request_protection(&request);
@@ -420,7 +422,7 @@ impl QueryService {
                 },
             }
         }
-        state.queued = retained;
+        state.replace_queued_requests(retained);
         if !expired.is_empty() {
             self.inner.notify_admission_available();
             for (request, _) in &expired {
@@ -644,7 +646,7 @@ impl QueryService {
                     // retaining it unprotected would let a later caller fail
                     // while driving queue repair and would violate finite
                     // overtake protection.
-                    let removed = state.queued.remove(position).expect("scanned position is valid");
+                    let removed = state.remove_queued_at(position).expect("scanned position is valid");
                     terminated.push((removed, error));
                     continue;
                 },
@@ -670,7 +672,7 @@ impl QueryService {
                     .with_fact("protected_device_ordinal", protected_ordinal),
                     Err(error) => error,
                 };
-                let removed = state.queued.remove(position).expect("scanned position is valid");
+                let removed = state.remove_queued_at(position).expect("scanned position is valid");
                 terminated.push((removed, error));
             }
         }

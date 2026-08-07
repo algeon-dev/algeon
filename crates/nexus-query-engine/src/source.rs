@@ -35,8 +35,9 @@ pub(crate) use diagnostics::{
 };
 pub use location::ParquetSourceLocation;
 pub use parquet::{
-    LocalParquetFile, LocalParquetSource, MissingColumn, ParquetFieldIdReadBinding, ParquetReaderDecimalType,
-    ParquetReaderDecimalTypeId, PartitionColumn, SourceColumnRef, ZERO_COLUMN_COUNT_COLUMN,
+    GRAPH_SIMPLE_DIRECTED_EDGE_TOPOLOGY_PARQUET_METADATA_KEY, GRAPH_VERTEX_UPPER_BOUND_PARQUET_METADATA_KEY,
+    GraphSimpleDirectedEdgeTopology, LocalParquetFile, LocalParquetSource, MissingColumn, ParquetFieldIdReadBinding,
+    ParquetReaderDecimalType, ParquetReaderDecimalTypeId, PartitionColumn, SourceColumnRef, ZERO_COLUMN_COUNT_COLUMN,
 };
 pub use read_policy::{
     CredentialMode, LakehouseCacheFillMode, LakehouseCacheReadMode, LakehouseCacheStatus, ParquetReadStrategy,

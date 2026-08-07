@@ -137,6 +137,14 @@ impl GraphResidencyPlanAnalysis {
 pub struct GraphResidencyDescriptor {
     /// Stable source rowset fingerprint.
     pub source_fingerprint: GraphSourceFingerprint,
+    /// Footer-proven upper bound on graph vertices for this exact source
+    /// rowset. This is intentionally absent for caller-provided content
+    /// identities and every source whose row selection is not complete.
+    graph_vertex_upper_bound: Option<u64>,
+    /// Footer-proven raw edge-row count for this exact source rowset. Edge
+    /// normalization retains that source frame while the normalized graph
+    /// frame is live, so bounded graph admission must retain this fact.
+    graph_raw_edge_row_count: Option<u64>,
     /// Arrow dtype of the graph vertex columns.
     pub vertex_data_type: arrow::datatypes::DataType,
     /// Arrow dtype of the semantic weight column when the algorithm consumes
@@ -147,6 +155,24 @@ pub struct GraphResidencyDescriptor {
 }
 
 impl GraphResidencyDescriptor {
+    /// Footer-proven graph vertex bound for this descriptor's source rowset.
+    ///
+    /// A descriptor can expose a bound only when the local-Parquet source
+    /// analysis proved it belongs to the complete edge rowset; callers cannot
+    /// attach an arbitrary value to an external content identity.
+    pub const fn graph_vertex_upper_bound(&self) -> Option<u64> {
+        self.graph_vertex_upper_bound
+    }
+
+    /// Footer-proven raw edge-row count for this descriptor's source rowset.
+    ///
+    /// A descriptor can expose the count only when the local-Parquet source
+    /// analysis proved it belongs to the complete edge rowset; external
+    /// identities and partial sources cannot attach a detached count.
+    pub const fn graph_raw_edge_row_count(&self) -> Option<u64> {
+        self.graph_raw_edge_row_count
+    }
+
     /// Creates a descriptor for a materialized edge rowset with a caller-owned,
     /// immutable content identity.
     ///
@@ -172,6 +198,8 @@ impl GraphResidencyDescriptor {
             source_fingerprint: GraphSourceFingerprint::new(format!(
                 "mode=external_content_identity_graph_edges_v1;content_identity={content_identity}"
             )),
+            graph_vertex_upper_bound: None,
+            graph_raw_edge_row_count: None,
             vertex_data_type,
             weight_data_type,
             edge_id_data_type,
@@ -330,6 +358,61 @@ pub fn graph_residency_descriptor_for_edge_plan(
     }
 }
 
+/// Returns whether an edge-producing native plan retains a footer-proven
+/// complete simple directed rowset for the requested endpoint columns.
+///
+/// This is deliberately independent of graph-cache eligibility. The proof is
+/// usable only through column-preserving projections over one complete local
+/// Parquet source; every row-changing or otherwise opaque node fails closed.
+/// That lets an adapter omit Python-compatible null filtering and endpoint
+/// deduplication without borrowing a file-level certificate for another
+/// rowset.
+pub fn edge_plan_has_simple_directed_edge_topology(
+    plan: &QueryPlan,
+    source_column: &str,
+    destination_column: &str,
+) -> bool {
+    edge_node_has_simple_directed_edge_topology(plan, plan.root_id(), source_column, destination_column)
+}
+
+fn edge_node_has_simple_directed_edge_topology(
+    plan: &QueryPlan,
+    node_id: NodeId,
+    source_column: &str,
+    destination_column: &str,
+) -> bool {
+    let Some(node) = plan.node(node_id) else {
+        return false;
+    };
+    match &node.kind {
+        PlanNode::Source(source) => match source.as_ref() {
+            crate::source::SourceNode::LocalParquet(source) => {
+                source.has_simple_directed_edge_topology(source_column, destination_column)
+            },
+            crate::source::SourceNode::GpuResident(_) | crate::source::SourceNode::LiteralBatch(_) => false,
+        },
+        PlanNode::Projection(projection) => {
+            let (Some(source_column), Some(destination_column)) = (
+                projection_source_column(projection, source_column),
+                projection_source_column(projection, destination_column),
+            ) else {
+                return false;
+            };
+            edge_node_has_simple_directed_edge_topology(plan, projection.input, &source_column, &destination_column)
+        },
+        PlanNode::Filter(_)
+        | PlanNode::Aggregate(_)
+        | PlanNode::Window(_)
+        | PlanNode::Sort(_)
+        | PlanNode::Limit(_)
+        | PlanNode::Join(_)
+        | PlanNode::Union(_)
+        | PlanNode::EdgeNormalize(_)
+        | PlanNode::GraphAlgorithm(_)
+        | PlanNode::VectorAlgorithm(_) => false,
+    }
+}
+
 /// Derives graph-residency facts from one fully translated local-Parquet
 /// source.
 ///
@@ -458,6 +541,8 @@ fn graph_residency_descriptor_for_local_parquet_source_with_bindings(
 
     Ok(GraphResidencyDescriptor {
         source_fingerprint: GraphSourceFingerprint::new(fingerprint),
+        graph_vertex_upper_bound: source.graph_vertex_upper_bound(),
+        graph_raw_edge_row_count: source.graph_raw_edge_row_count(),
         vertex_data_type: source_field.data_type().clone(),
         weight_data_type: weight_field.map(|field| field.data_type().clone()),
         edge_id_data_type: edge_id_field.map(|field| field.data_type().clone()),

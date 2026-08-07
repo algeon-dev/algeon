@@ -107,7 +107,13 @@ impl TableProvider for CugraphAlgoTableProvider {
         }
         let native_execution_config =
             native_execution_config_with_request_options(session_state, self.native_execution_config.clone());
-        let planning_state = session_state_with_native_execution_config(session_state, native_execution_config.clone())
+        // This nested state lowers the edge/predicate relations only.  The
+        // outer cuGraph root owns admission after footer metadata is hydrated;
+        // allowing this nested optimizer to bind a ticket would leave a
+        // source-only claim on the parent attempt and shadow that graph ticket
+        // at execution time.
+        let nested_planning_config = native_execution_config.clone().without_query_admission_for_cugraph_subplan();
+        let planning_state = session_state_with_native_execution_config(session_state, nested_planning_config)
             .unwrap_or_else(|| session_state.clone());
         let scan = LogicalPlanBuilder::scan(table_ref, provider_as_source(provider), None)?.build()?;
         let edge_source_plan = LogicalPlanBuilder::from(scan).project(edge_source_projection(&spec))?.build()?;
@@ -188,6 +194,23 @@ impl TableProvider for CugraphUnavailableTableProvider {
 struct CugraphFeatureDisabledExec {
     algorithm: CugraphAlgorithm,
     cache: Arc<PlanProperties>,
+}
+
+/// Whether this plan can only terminate at the zero-child executor for an
+/// unavailable cuGraph feature. DataFusion may add output wrappers above that
+/// executor, but every path still ends at the same typed rejection before any
+/// CPU or GPU data execution can begin.
+#[cfg(not(feature = "cugraph"))]
+pub(crate) fn is_feature_disabled_execution_plan(plan: &dyn ExecutionPlan) -> bool {
+    plan.downcast_ref::<CugraphFeatureDisabledExec>().is_some() || {
+        let children = plan.children();
+        !children.is_empty() && children.into_iter().all(|child| is_feature_disabled_execution_plan(child.as_ref()))
+    }
+}
+
+#[cfg(feature = "cugraph")]
+pub(crate) fn is_feature_disabled_execution_plan(_plan: &dyn ExecutionPlan) -> bool {
+    false
 }
 
 #[cfg(not(feature = "cugraph"))]

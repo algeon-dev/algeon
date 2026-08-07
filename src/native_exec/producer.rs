@@ -24,6 +24,7 @@ use nexus_query_engine::{
 };
 
 use super::{
+    admission::QueryAdmissionTicket,
     common::{
         comma_separated, conservative_properties, gpu_resident_source_names, native_plan_one_line,
         native_query_runtime_error, write_native_plan_tree,
@@ -32,9 +33,17 @@ use super::{
 };
 use crate::error::{Error, ErrorCode};
 
-/// Frontend-neutral device-resident producer contract used by composed native execution.
-pub trait GpuResidentProducer: Send + Sync {
+/// Crate-internal device-resident producer contract used by composed native execution.
+pub(crate) trait GpuResidentProducer: Send + Sync {
     fn gpu_result_input_name(&self) -> &str;
+
+    /// Returns every post-preparation admission ticket owned by this producer
+    /// subtree.  A composed root aggregates these immutable proofs with its
+    /// own consumer proof before it acquires one context for the whole GPU
+    /// island.  The default keeps ordinary relational producers ticket-free.
+    fn prepared_admission_tickets(&self) -> Vec<Arc<QueryAdmissionTicket>> {
+        Vec::new()
+    }
 
     /// Performs fallible async preparation before callers acquire native GPU
     /// admission. Frontends return an equivalent producer plan carrying
@@ -56,7 +65,7 @@ pub trait GpuResidentProducer: Send + Sync {
 }
 
 /// A frontend hook that recognizes one of its GPU-resident producer nodes.
-pub type GpuResidentProducerDiscovery = for<'a> fn(&'a dyn ExecutionPlan) -> Option<&'a dyn GpuResidentProducer>;
+pub(crate) type GpuResidentProducerDiscovery = for<'a> fn(&'a dyn ExecutionPlan) -> Option<&'a dyn GpuResidentProducer>;
 
 static GPU_RESIDENT_PRODUCER_DISCOVERIES: OnceLock<Mutex<Vec<GpuResidentProducerDiscovery>>> = OnceLock::new();
 
@@ -64,7 +73,7 @@ static GPU_RESIDENT_PRODUCER_DISCOVERIES: OnceLock<Mutex<Vec<GpuResidentProducer
 ///
 /// Registration is idempotent for the same function. Core execution never
 /// imports a concrete frontend to discover producer nodes.
-pub fn register_gpu_resident_producer_discovery(discovery: GpuResidentProducerDiscovery) {
+pub(crate) fn register_gpu_resident_producer_discovery(discovery: GpuResidentProducerDiscovery) {
     let mut discoveries = GPU_RESIDENT_PRODUCER_DISCOVERIES
         .get_or_init(|| Mutex::new(Vec::new()))
         .lock()
@@ -305,6 +314,16 @@ pub(crate) fn gpu_resident_producer(plan: &dyn ExecutionPlan) -> Option<&dyn Gpu
 
 pub(crate) fn gpu_resident_producer_input_name(plan: &dyn ExecutionPlan) -> Option<String> {
     gpu_resident_producer(plan).map(|producer| producer.gpu_result_input_name().to_string())
+}
+
+/// Returns the admission tickets emitted by a fully prepared producer
+/// subtree.  This is deliberately discovered through the producer SPI rather
+/// than the attempt extension: a composed query may have several producers,
+/// and the extension only retains the most recently bound ticket.
+pub(crate) fn prepared_gpu_resident_producer_admission_tickets(
+    plan: &dyn ExecutionPlan,
+) -> Vec<Arc<QueryAdmissionTicket>> {
+    gpu_resident_producer(plan).map_or_else(Vec::new, GpuResidentProducer::prepared_admission_tickets)
 }
 
 /// Resolves producer metadata and bounded host inputs before a composed query

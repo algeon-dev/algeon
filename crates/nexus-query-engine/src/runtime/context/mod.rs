@@ -17,6 +17,7 @@ use super::{
     GpuExecutionPool, GpuExecutorLease, LakehouseCacheFillConfig, MemoryControlPolicy, MemoryGrant,
     MemoryResourcePolicy, MemorySpaceId, ServiceStreamPool, SourceChunkPlanningMode, SourceReadStreamLease,
     SourceStorageProfile, StreamLease,
+    allocator_correlation::AttemptCacheScopeAllocatorCorrelation,
     attempt_domain::AttemptAllocationDomain,
     cache_events::{LakehouseCacheFillEventSink, LakehouseCacheFillEventSnapshot},
     cache_fill::{CacheFillConcurrencyGate, CacheFillOperationPermit},
@@ -28,7 +29,7 @@ use super::{
     },
 };
 use crate::{
-    admission::AttemptRequirement,
+    admission::{AttemptRequirement, AttemptReservationEnvelope},
     capability::AggregateStrategyExecutionOptions,
     chunk::SourceChunkPlanningOptions,
     error::{QueryError, QueryErrorCode, Result},
@@ -898,6 +899,10 @@ pub struct ExecutionContext {
     ///
     /// Direct contexts are not attempt-bound and therefore leave this absent.
     attempt_id: Option<crate::observability::AttemptId>,
+    /// Attempt-local carrier for exact resident-cache allocator failures.
+    /// Direct contexts carry an inert value because they have no sealed
+    /// attempt report that could truthfully own the evidence.
+    cache_scope_allocator_correlation: AttemptCacheScopeAllocatorCorrelation,
     /// Shared query-local bounded runtime observation session.
     runtime_observation: RuntimeObservationHandle,
     /// Shared terminal owner carried by query-service contexts.
@@ -944,6 +949,8 @@ pub struct ExecutionContext {
     /// the resolved requirement so execution can reject a plan whose actual
     /// capability contracts were not present at admission.
     admitted_capability_evidence: Option<AttemptRequirement>,
+    /// Service-resolved policy envelope used to size the admitted grant.
+    admitted_reservation_envelope: Option<AttemptReservationEnvelope>,
     /// This context's shared member lease on its execution stream. One
     /// member per stream for the attempt; per-stage tokens clone it.
     attempt_member_lease: Option<cudf::StreamReservationLease>,
@@ -1061,6 +1068,7 @@ pub(super) struct ExecutionContextParts {
     pub(super) query_id: Option<QueryId>,
     pub(super) trace_id: Option<TraceId>,
     pub(super) attempt_id: Option<crate::observability::AttemptId>,
+    pub(super) cache_scope_allocator_correlation: AttemptCacheScopeAllocatorCorrelation,
     pub(super) runtime_observation: RuntimeObservationHandle,
     pub(super) runtime_observation_owner: Option<crate::observability::RuntimeObservationOwner>,
     pub(super) runtime_execution_scope: Option<crate::observability::RuntimeExecutionObservationScope>,
@@ -1074,6 +1082,7 @@ pub(super) struct ExecutionContextParts {
     pub(super) attempt_allocation_domain: Option<AttemptAllocationDomain>,
     pub(super) attempt_auxiliary_slots: Option<Arc<AttemptAuxiliarySlots>>,
     pub(super) admitted_capability_evidence: Option<AttemptRequirement>,
+    pub(super) admitted_reservation_envelope: Option<AttemptReservationEnvelope>,
     pub(super) attempt_member_lease: Option<cudf::StreamReservationLease>,
     pub(super) boundary_policy: ExecutionBoundaryPolicy,
     pub(super) source_scheduler_policy: SourceSchedulerPolicy,
@@ -1142,6 +1151,7 @@ impl ExecutionContext {
             query_id: None,
             trace_id: None,
             attempt_id: None,
+            cache_scope_allocator_correlation: AttemptCacheScopeAllocatorCorrelation::default(),
             runtime_observation: RuntimeObservationHandle::disabled(),
             runtime_observation_owner: None,
             runtime_execution_scope: None,
@@ -1155,6 +1165,7 @@ impl ExecutionContext {
             attempt_allocation_domain: None,
             attempt_auxiliary_slots: None,
             admitted_capability_evidence: None,
+            admitted_reservation_envelope: None,
             attempt_member_lease: None,
             boundary_policy: ExecutionBoundaryPolicy::default(),
             source_scheduler_policy: SourceSchedulerPolicy::default(),
@@ -1193,6 +1204,7 @@ impl ExecutionContext {
             query_id: parts.query_id,
             trace_id: parts.trace_id,
             attempt_id: parts.attempt_id,
+            cache_scope_allocator_correlation: parts.cache_scope_allocator_correlation,
             runtime_observation: parts.runtime_observation,
             runtime_observation_owner: parts.runtime_observation_owner,
             runtime_execution_scope: parts.runtime_execution_scope,
@@ -1207,6 +1219,7 @@ impl ExecutionContext {
             attempt_allocation_domain: parts.attempt_allocation_domain,
             attempt_auxiliary_slots: parts.attempt_auxiliary_slots,
             admitted_capability_evidence: parts.admitted_capability_evidence,
+            admitted_reservation_envelope: parts.admitted_reservation_envelope,
             attempt_member_lease: parts.attempt_member_lease,
             boundary_policy: parts.boundary_policy,
             source_scheduler_policy: parts.source_scheduler_policy,
@@ -1318,6 +1331,17 @@ impl ExecutionContext {
     /// public execution-attempt lifecycle.
     pub(crate) fn attempt_id(&self) -> Option<crate::observability::AttemptId> {
         self.attempt_id
+    }
+
+    /// Opens one exact allocator-event window for an exclusive resident graph
+    /// checkout. The caller must finish the returned guard after cache-runtime
+    /// temporaries are destroyed and before returning the checkout.
+    #[cfg(feature = "cugraph")]
+    pub(crate) fn begin_cache_scope_allocator_correlation(
+        &self,
+        scope: Arc<cudf::CacheAllocationScope>,
+    ) -> Option<crate::runtime::allocator_correlation::CacheScopeCorrelationGuard> {
+        self.cache_scope_allocator_correlation.begin(scope)
     }
 
     /// Returns the shared recording handle without terminal-seal authority.
@@ -1454,6 +1478,7 @@ impl ExecutionContext {
             query_id: self.query_id.clone(),
             trace_id: self.trace_id.clone(),
             attempt_id: self.attempt_id,
+            cache_scope_allocator_correlation: self.cache_scope_allocator_correlation.clone(),
             runtime_observation: self.runtime_observation.clone(),
             runtime_observation_owner: self.runtime_observation_owner.clone(),
             runtime_execution_scope: self.runtime_execution_scope.clone(),
@@ -1467,6 +1492,7 @@ impl ExecutionContext {
             attempt_allocation_domain: self.attempt_allocation_domain.clone(),
             attempt_auxiliary_slots: self.attempt_auxiliary_slots.as_ref().map(Arc::clone),
             admitted_capability_evidence: self.admitted_capability_evidence.clone(),
+            admitted_reservation_envelope: self.admitted_reservation_envelope.clone(),
             attempt_member_lease,
             boundary_policy: self.boundary_policy,
             source_scheduler_policy: self.source_scheduler_policy,
@@ -1555,7 +1581,18 @@ impl ExecutionContext {
     /// actual native plan. This is intentionally evaluated at execution as a
     /// defense against callers reusing a handle with a different plan.
     pub(crate) fn validate_admitted_plan_capabilities(&self, plan: &QueryPlan) -> Result<()> {
-        self.admitted_capability_evidence.as_ref().map_or(Ok(()), |evidence| evidence.validate_covers_plan(plan))
+        if let Some(evidence) = &self.admitted_capability_evidence {
+            evidence.validate_covers_plan(plan)?;
+        }
+        self.admitted_reservation_envelope.as_ref().map_or(Ok(()), |envelope| {
+            envelope.validate_execution(
+                plan,
+                self.memory_control_policy(),
+                self.source_scheduler_policy,
+                self.source_chunk_planning_mode,
+                self.source_chunk_planning_options,
+            )
+        })
     }
 
     pub(super) fn install_root_stream_cleanup_completion(

@@ -23,6 +23,7 @@ use datafusion_nexus::{
     },
     error::{DataFusionErrorExt, ErrorCode},
     gpu_functions::{GPU_LIST_FUNCTIONS_FUNCTION, GPU_VALIDATE_CALL_FUNCTION},
+    planner::NexusNativeOptimizerConfig,
     session::NexusSessionStateBuilderExt,
 };
 
@@ -102,6 +103,23 @@ async fn feature_off_execution_rejects_before_the_edge_source_can_scan() {
 }
 
 #[tokio::test]
+async fn feature_off_execution_remains_typed_under_the_no_cpu_requirement() {
+    let scans = Arc::new(AtomicUsize::new(0));
+    let ctx = feature_off_no_cpu_context(Arc::clone(&scans));
+    let dataframe = ctx.sql("SELECT * FROM cugraph_pagerank('edges')").await.unwrap();
+    let plan = dataframe.create_physical_plan().await.unwrap();
+    assert!(contains_zero_child_feature_disabled_exec(Arc::clone(&plan)));
+
+    let error = dataframe.collect().await.expect_err("feature-off execution must reach its typed capability error");
+    let typed =
+        error.find_nexus_error().expect("feature-off error must remain structured under the no-CPU requirement");
+    assert_eq!(typed.code(), ErrorCode::UnsupportedOperator);
+    assert_eq!(typed.operation(), "datafusion_nexus.cugraph_sql.execute");
+    assert_eq!(typed.facts().get("reason"), Some("required_feature_disabled"));
+    assert_eq!(scans.load(Ordering::SeqCst), 0, "feature-off execution must not scan or materialize edge input");
+}
+
+#[tokio::test]
 async fn feature_off_preserves_schema_validation_before_capability_rejection() {
     let ctx = feature_off_context(Arc::new(AtomicUsize::new(0)));
     let dataframe = ctx.sql("SELECT * FROM cugraph_pagerank('bad_edges')").await.unwrap();
@@ -114,6 +132,21 @@ fn feature_off_context(scans: Arc<AtomicUsize>) -> SessionContext {
         .with_cugraph_sql(CugraphSqlConfig::default())
         .with_cugraph_sql(CugraphSqlConfig::default())
         .build();
+    feature_off_context_with_state(state, scans)
+}
+
+fn feature_off_no_cpu_context(scans: Arc<AtomicUsize>) -> SessionContext {
+    let state = SessionStateBuilder::new_with_default_features()
+        .with_nexus_native(NexusNativeOptimizerConfig::default().with_no_datafusion_cpu_requirement())
+        .with_cugraph_sql(CugraphSqlConfig::default())
+        .build();
+    feature_off_context_with_state(state, scans)
+}
+
+fn feature_off_context_with_state(
+    state: datafusion::execution::SessionState,
+    scans: Arc<AtomicUsize>,
+) -> SessionContext {
     let ctx = SessionContext::new_with_state(state);
     ctx.register_table("edges", Arc::new(ScanSentinelProvider::new(edge_schema(), scans)))
         .expect("register edge sentinel");

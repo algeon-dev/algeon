@@ -22,10 +22,10 @@ pub mod producer;
 
 pub(crate) use common::run_gpu_execution_task;
 
-#[cfg(feature = "cugraph")]
-pub(crate) use self::admission::query_admission_ticket_from_task_context;
 #[cfg(all(test, feature = "cugraph"))]
-pub(crate) use self::admission::task_context_with_query_admission_ticket;
+pub(crate) use self::admission::query_admission_ticket_from_task_context;
+#[cfg(feature = "cugraph")]
+pub(crate) use self::metrics::GraphClaimCalibrationCapture;
 #[cfg(feature = "server")]
 pub(crate) use self::metrics::{
     NativeMetricsCapture, NativeObservationActivityFactory, SERVER_CAPTURE_LOSS_METRIC_NAME,
@@ -39,9 +39,12 @@ pub(crate) use self::{
 pub use self::{
     composed::{NexusNativeComposedExec, NexusNativeComposedGpuProducerExec},
     config::NexusNativeExecutionConfig,
-    graph::GraphBfsSingleflightSnapshot,
+    graph::{GraphBfsSingleflightEventSnapshot, GraphBfsSingleflightSnapshot},
     host::NexusNativeExec,
-    metrics::NATIVE_NEXUS_DATAFUSION_METRIC_NAMES,
+    metrics::{
+        GraphClaimCalibrationExecution, GraphClaimCalibrationNonPhysicalReason, NATIVE_NEXUS_DATAFUSION_METRIC_NAMES,
+        SealedAttemptGraphClaimCalibrationSnapshot,
+    },
     producer::NexusNativeGpuProducerExec,
 };
 

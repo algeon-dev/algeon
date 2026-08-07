@@ -2,22 +2,27 @@ use std::collections::BTreeSet;
 
 use arrow::datatypes::SchemaRef;
 use datafusion::{
-    datasource::{
-        physical_plan::{FileScanConfig, FileSource, ParquetSource},
-        source::DataSourceExec,
-    },
-    physical_plan::{ExecutionPlan, filter::FilterExec},
+    datasource::physical_plan::{FileScanConfig, FileSource, ParquetSource},
+    physical_plan::filter::FilterExec,
 };
+#[cfg(feature = "cugraph")]
+use datafusion::{datasource::source::DataSourceExec, physical_plan::ExecutionPlan};
 use nexus_query_engine::{
     expr::LiteralValue as NativeLiteralValue,
     parquet_stats::{ColumnByteKind, row_group_column_bytes, row_group_null_counts_for_root_column},
-    plan::{GraphAlgorithmSpec, GraphResidencyDescriptor, graph_residency_descriptor_for_local_parquet_source},
     source::{
-        LocalParquetFile as NativeLocalParquetFile, LocalParquetSource as NativeLocalParquetSource,
+        GRAPH_SIMPLE_DIRECTED_EDGE_TOPOLOGY_PARQUET_METADATA_KEY, GRAPH_VERTEX_UPPER_BOUND_PARQUET_METADATA_KEY,
+        GraphSimpleDirectedEdgeTopology, LocalParquetFile as NativeLocalParquetFile,
         PartitionColumnDisposition as NativePartitionColumnDisposition, SourceColumnRef as NativeSourceColumnRef,
     },
 };
+#[cfg(feature = "cugraph")]
+use nexus_query_engine::{
+    plan::{GraphAlgorithmSpec, GraphResidencyDescriptor, graph_residency_descriptor_for_local_parquet_source},
+    source::LocalParquetSource as NativeLocalParquetSource,
+};
 use parquet::file::reader::{FileReader, SerializedFileReader};
+use serde_json::Value;
 
 use super::{
     literal::{NativeLiteralContext, native_literal_value},
@@ -120,13 +125,27 @@ pub(crate) fn native_parquet_file_reader_factory_is_supported(parquet_source: &P
 ///
 /// Pushed reader predicates and scan limits can change the effective rowset in
 /// ways this direct adapter does not yet model, so they continue to bypass.
+#[cfg(feature = "cugraph")]
 pub(crate) fn graph_residency_descriptor_for_datafusion_local_parquet_scan(
     source_exec: &DataSourceExec,
     graph_spec: &GraphAlgorithmSpec,
 ) -> Option<GraphResidencyDescriptor> {
-    let (file_scan, parquet_source) = source_exec.downcast_to_file_source::<ParquetSource>()?;
-    let source = graph_residency_local_parquet_scan_source(source_exec, file_scan, parquet_source).ok()?;
+    let source = graph_local_parquet_source_for_datafusion_local_parquet_scan(source_exec)?;
     graph_residency_descriptor_for_local_parquet_source(&source, graph_spec).descriptor().cloned()
+}
+
+/// Builds the engine-owned source model for the exact DataFusion local-Parquet
+/// rowset accepted by the direct graph path.
+///
+/// Callers can use this only to carry source-owned descriptive evidence into
+/// an engine capability proof; filters, limits, and unsupported scan semantics
+/// remain fail-closed in the shared bridge below.
+#[cfg(feature = "cugraph")]
+pub(crate) fn graph_local_parquet_source_for_datafusion_local_parquet_scan(
+    source_exec: &DataSourceExec,
+) -> Option<NativeLocalParquetSource> {
+    let (file_scan, parquet_source) = source_exec.downcast_to_file_source::<ParquetSource>()?;
+    graph_residency_local_parquet_scan_source(source_exec, file_scan, parquet_source).ok()
 }
 
 /// Returns the exact row count for the same narrow local-Parquet rowset that
@@ -136,12 +155,42 @@ pub(crate) fn graph_residency_descriptor_for_datafusion_local_parquet_scan(
 /// the total is footer-proven for the exact rows consumed by a graph build.
 /// This lets graph admission use a real construction model when DataFusion's
 /// generic scan statistics are merely inexact.
+#[cfg(feature = "cugraph")]
 pub(crate) fn exact_row_count_for_datafusion_local_parquet_scan(source_exec: &DataSourceExec) -> Option<u64> {
-    let (file_scan, parquet_source) = source_exec.downcast_to_file_source::<ParquetSource>()?;
-    let source = graph_residency_local_parquet_scan_source(source_exec, file_scan, parquet_source).ok()?;
+    let source = graph_local_parquet_source_for_datafusion_local_parquet_scan(source_exec)?;
     source.exact_selected_row_count()
 }
 
+/// Returns the footer-proven graph vertex upper bound for the same exact
+/// local-Parquet rowset accepted by the graph-residency bridge.
+///
+/// This deliberately shares the rowset checks with
+/// [`exact_row_count_for_datafusion_local_parquet_scan`]: a detached fixture
+/// manifest or a query/session setting must never price a different scan.
+#[cfg(feature = "cugraph")]
+pub(crate) fn graph_vertex_upper_bound_for_datafusion_local_parquet_scan(source_exec: &DataSourceExec) -> Option<u64> {
+    let source = graph_local_parquet_source_for_datafusion_local_parquet_scan(source_exec)?;
+    source.graph_vertex_upper_bound()
+}
+
+/// Returns whether an exact DataFusion local-Parquet edge rowset proves that
+/// Python-compatible null filtering and directed-pair deduplication are
+/// semantic no-ops for these endpoint columns.
+///
+/// The engine-owned source contract rejects projections that stop denoting the
+/// complete physical file rowset and refuses multi-file inputs because a
+/// per-file certificate cannot establish cross-file uniqueness.
+#[cfg(feature = "cugraph")]
+pub(crate) fn datafusion_local_parquet_scan_has_simple_directed_edge_topology(
+    source_exec: &DataSourceExec,
+    source_column: &str,
+    destination_column: &str,
+) -> bool {
+    graph_local_parquet_source_for_datafusion_local_parquet_scan(source_exec)
+        .is_some_and(|source| source.has_simple_directed_edge_topology(source_column, destination_column))
+}
+
+#[cfg(feature = "cugraph")]
 fn graph_residency_local_parquet_scan_source(
     source_exec: &DataSourceExec,
     file_scan: &FileScanConfig,
@@ -350,6 +399,12 @@ pub(super) fn attach_row_group_byte_metadata(
     {
         native_file = native_file.with_row_group_rows(row_group_rows);
     }
+    if let Some(vertex_upper_bound) = graph_vertex_upper_bound_from_footer(metadata) {
+        native_file = native_file.with_graph_vertex_upper_bound(vertex_upper_bound);
+    }
+    if let Some(topology) = graph_simple_directed_edge_topology_from_footer(metadata) {
+        native_file = native_file.with_graph_simple_directed_edge_topology(topology);
+    }
     for column_index in read_column_indexes {
         let Some(null_counts) = row_group_null_counts_for_root_column(metadata, column_index) else {
             continue;
@@ -358,6 +413,53 @@ pub(super) fn attach_row_group_byte_metadata(
     }
 
     native_file
+}
+
+/// Reads exactly one parseable graph-vertex upper bound from the Parquet
+/// footer.  Duplicate, empty, or malformed metadata is deliberately ignored
+/// rather than selecting an arbitrary producer value.
+fn graph_vertex_upper_bound_from_footer(metadata: &parquet::file::metadata::ParquetMetaData) -> Option<u64> {
+    graph_vertex_upper_bound_from_key_value_metadata(metadata.file_metadata().key_value_metadata()?)
+}
+
+fn graph_vertex_upper_bound_from_key_value_metadata(metadata: &[parquet::file::metadata::KeyValue]) -> Option<u64> {
+    let mut entries = metadata.iter().filter(|entry| entry.key == GRAPH_VERTEX_UPPER_BOUND_PARQUET_METADATA_KEY);
+    let value = entries.next()?.value.as_deref()?.parse::<u64>().ok()?;
+    entries.next().is_none().then_some(value)
+}
+
+/// JSON schema carried by the v1 simple-directed topology footer key.
+///
+/// Keep the payload intentionally small and index-based: the native source
+/// contract compares the declared physical column roles to the resolved scan
+/// bindings, so aliases cannot accidentally claim a proof for another column.
+/// Reads exactly one valid simple-directed topology certificate from a Parquet
+/// footer. A malformed, duplicate, or overbroad entry remains unavailable;
+/// callers then retain the normal Python-compatible edge-normalize path.
+fn graph_simple_directed_edge_topology_from_footer(
+    metadata: &parquet::file::metadata::ParquetMetaData,
+) -> Option<GraphSimpleDirectedEdgeTopology> {
+    graph_simple_directed_edge_topology_from_key_value_metadata(metadata.file_metadata().key_value_metadata()?)
+}
+
+fn graph_simple_directed_edge_topology_from_key_value_metadata(
+    metadata: &[parquet::file::metadata::KeyValue],
+) -> Option<GraphSimpleDirectedEdgeTopology> {
+    let mut entries =
+        metadata.iter().filter(|entry| entry.key == GRAPH_SIMPLE_DIRECTED_EDGE_TOPOLOGY_PARQUET_METADATA_KEY);
+    let value = entries.next()?.value.as_deref()?;
+    if entries.next().is_some() {
+        return None;
+    }
+    let Value::Object(footer) = serde_json::from_str(value).ok()? else {
+        return None;
+    };
+    if footer.len() != 2 {
+        return None;
+    }
+    let source_column_index = footer.get("source_column_index")?.as_u64()?.try_into().ok()?;
+    let destination_column_index = footer.get("destination_column_index")?.as_u64()?.try_into().ok()?;
+    GraphSimpleDirectedEdgeTopology::new(source_column_index, destination_column_index)
 }
 
 fn file_source_ref_index(source_ref: &NativeSourceColumnRef) -> Option<usize> {
@@ -427,7 +529,16 @@ mod tests {
     use std::sync::Arc;
 
     use nexus_query_engine::parquet_stats::single_leaf_primitive_root_column_index;
-    use parquet::schema::{parser::parse_message_type, types::SchemaDescriptor};
+    use parquet::{
+        file::metadata::KeyValue,
+        schema::{parser::parse_message_type, types::SchemaDescriptor},
+    };
+
+    use super::{
+        GRAPH_SIMPLE_DIRECTED_EDGE_TOPOLOGY_PARQUET_METADATA_KEY, GRAPH_VERTEX_UPPER_BOUND_PARQUET_METADATA_KEY,
+        GraphSimpleDirectedEdgeTopology, graph_simple_directed_edge_topology_from_key_value_metadata,
+        graph_vertex_upper_bound_from_key_value_metadata,
+    };
 
     #[test]
     fn null_count_leaf_mapping_refuses_nested_roots_and_maps_later_primitives() {
@@ -447,5 +558,61 @@ mod tests {
 
         assert_eq!(single_leaf_primitive_root_column_index(&schema, 0), None);
         assert_eq!(single_leaf_primitive_root_column_index(&schema, 1), Some(2));
+    }
+
+    #[test]
+    fn graph_vertex_footer_metadata_accepts_one_valid_value_and_fails_closed_otherwise() {
+        let entry = |value: Option<&str>| {
+            KeyValue::new(GRAPH_VERTEX_UPPER_BOUND_PARQUET_METADATA_KEY.to_string(), value.map(ToString::to_string))
+        };
+
+        assert_eq!(graph_vertex_upper_bound_from_key_value_metadata(&[entry(Some("4894081"))]), Some(4_894_081));
+        assert_eq!(graph_vertex_upper_bound_from_key_value_metadata(&[entry(Some("bad"))]), None);
+        assert_eq!(graph_vertex_upper_bound_from_key_value_metadata(&[entry(None)]), None);
+        assert_eq!(
+            graph_vertex_upper_bound_from_key_value_metadata(&[entry(Some("7")), entry(Some("8"))]),
+            None,
+            "duplicate footer entries must not let admission choose an arbitrary producer value"
+        );
+    }
+
+    #[test]
+    fn simple_directed_edge_topology_footer_requires_one_exact_schema() {
+        let entry = |value: Option<&str>| {
+            KeyValue::new(
+                GRAPH_SIMPLE_DIRECTED_EDGE_TOPOLOGY_PARQUET_METADATA_KEY.to_string(),
+                value.map(ToString::to_string),
+            )
+        };
+
+        assert_eq!(
+            graph_simple_directed_edge_topology_from_key_value_metadata(&[entry(Some(
+                r#"{"destination_column_index":2,"source_column_index":1}"#,
+            ))]),
+            GraphSimpleDirectedEdgeTopology::new(1, 2),
+        );
+        assert_eq!(graph_simple_directed_edge_topology_from_key_value_metadata(&[entry(Some("not-json"))]), None);
+        assert_eq!(
+            graph_simple_directed_edge_topology_from_key_value_metadata(&[entry(Some(
+                r#"{"source_column_index":1,"destination_column_index":1}"#,
+            ))]),
+            None,
+            "a topology certificate must name two distinct endpoint columns"
+        );
+        assert_eq!(
+            graph_simple_directed_edge_topology_from_key_value_metadata(&[entry(Some(
+                r#"{"source_column_index":1,"destination_column_index":2,"extra":true}"#,
+            ))]),
+            None,
+            "unknown footer fields must not silently broaden a certificate"
+        );
+        assert_eq!(
+            graph_simple_directed_edge_topology_from_key_value_metadata(&[
+                entry(Some(r#"{"source_column_index":1,"destination_column_index":2}"#)),
+                entry(Some(r#"{"source_column_index":1,"destination_column_index":2}"#)),
+            ]),
+            None,
+            "duplicate footer entries must not let source lowering choose an arbitrary certificate"
+        );
     }
 }

@@ -145,6 +145,7 @@ pub enum AttemptDisposition {
     PartialNative,
     Native,
 }
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AttemptCleanupDisposition {
@@ -152,6 +153,7 @@ pub enum AttemptCleanupDisposition {
     Completed,
     CompletedWithFailures,
 }
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AttemptCapacityDisposition {
@@ -312,6 +314,7 @@ impl AttemptFailureOperation {
 #[serde(rename_all = "snake_case")]
 pub enum AttemptFailureFactKey {
     Reason,
+    AllocationSource,
 }
 
 /// Stable allowlisted fact values for bounded failure summaries.
@@ -327,6 +330,9 @@ pub enum AttemptFailureFactValue {
     ProtectedWaiterNoRunnableDevice,
     RequiredFloorExceedsDeviceCapacity,
     BackendUnhealthy,
+    CugraphRmmOutOfMemory,
+    CugraphRmmBadAlloc,
+    CugraphStdBadAlloc,
 }
 
 /// One closed, bounded fact retained beside an attempt failure summary.
@@ -575,47 +581,41 @@ impl AttemptFailureSummary {
     /// [`crate::error::QueryError`] keeps that complete source text on its
     /// ordinary error path.
     pub fn from_native_error(error: &crate::error::QueryError) -> Self {
-        let facts = match error.fact_value("reason") {
-            Some("backend_closing") => vec![AttemptFailureFact {
-                key: AttemptFailureFactKey::Reason,
-                value: AttemptFailureFactValue::BackendClosing,
-            }],
-            Some("deadline_expired") => vec![AttemptFailureFact {
-                key: AttemptFailureFactKey::Reason,
-                value: AttemptFailureFactValue::DeadlineExpired,
-            }],
-            Some("caller_cancelled") => vec![AttemptFailureFact {
-                key: AttemptFailureFactKey::Reason,
-                value: AttemptFailureFactValue::CallerCancelled,
-            }],
-            Some("admission_queue_full") => vec![AttemptFailureFact {
-                key: AttemptFailureFactKey::Reason,
-                value: AttemptFailureFactValue::AdmissionQueueFull,
-            }],
-            Some("queue_wait_elapsed") => vec![AttemptFailureFact {
-                key: AttemptFailureFactKey::Reason,
-                value: AttemptFailureFactValue::QueueWaitElapsed,
-            }],
-            Some("memory_grant_wait_timeout") => vec![AttemptFailureFact {
-                key: AttemptFailureFactKey::Reason,
-                value: AttemptFailureFactValue::MemoryGrantWaitTimeout,
-            }],
-            Some("protected_waiter_no_runnable_device") => vec![AttemptFailureFact {
-                key: AttemptFailureFactKey::Reason,
-                value: AttemptFailureFactValue::ProtectedWaiterNoRunnableDevice,
-            }],
-            Some("required_floor_exceeds_device_capacity") | Some("impossible_requirement") => {
-                vec![AttemptFailureFact {
-                    key: AttemptFailureFactKey::Reason,
-                    value: AttemptFailureFactValue::RequiredFloorExceedsDeviceCapacity,
-                }]
+        let mut facts = Vec::with_capacity(2);
+        let reason = match error.fact_value("reason") {
+            Some("backend_closing") => Some(AttemptFailureFactValue::BackendClosing),
+            Some("deadline_expired") => Some(AttemptFailureFactValue::DeadlineExpired),
+            Some("caller_cancelled") => Some(AttemptFailureFactValue::CallerCancelled),
+            Some("admission_queue_full") => Some(AttemptFailureFactValue::AdmissionQueueFull),
+            Some("queue_wait_elapsed") => Some(AttemptFailureFactValue::QueueWaitElapsed),
+            Some("memory_grant_wait_timeout") => Some(AttemptFailureFactValue::MemoryGrantWaitTimeout),
+            Some("protected_waiter_no_runnable_device") => {
+                Some(AttemptFailureFactValue::ProtectedWaiterNoRunnableDevice)
             },
-            Some("backend_unhealthy") => vec![AttemptFailureFact {
-                key: AttemptFailureFactKey::Reason,
-                value: AttemptFailureFactValue::BackendUnhealthy,
-            }],
-            _ => Vec::new(),
+            Some("required_floor_exceeds_device_capacity") | Some("impossible_requirement") => {
+                Some(AttemptFailureFactValue::RequiredFloorExceedsDeviceCapacity)
+            },
+            Some("backend_unhealthy") => Some(AttemptFailureFactValue::BackendUnhealthy),
+            _ => None,
         };
+        if let Some(value) = reason {
+            facts.push(AttemptFailureFact { key: AttemptFailureFactKey::Reason, value });
+        }
+        let allocation_source = match error.cugraph_allocation_source() {
+            Some(crate::error::CugraphAllocationSource::RmmOutOfMemory) => {
+                Some(AttemptFailureFactValue::CugraphRmmOutOfMemory)
+            },
+            Some(crate::error::CugraphAllocationSource::RmmBadAlloc) => {
+                Some(AttemptFailureFactValue::CugraphRmmBadAlloc)
+            },
+            Some(crate::error::CugraphAllocationSource::StdBadAlloc) => {
+                Some(AttemptFailureFactValue::CugraphStdBadAlloc)
+            },
+            Some(crate::error::CugraphAllocationSource::Unknown) | None => None,
+        };
+        if let Some(value) = allocation_source {
+            facts.push(AttemptFailureFact { key: AttemptFailureFactKey::AllocationSource, value });
+        }
         Self {
             origin: AttemptFailureOrigin::Native,
             code: AttemptFailureCode::from_query_error_code(error.code()),
@@ -969,6 +969,7 @@ pub struct AttemptTimedDomainUsage {
 pub enum AttemptAllocatorEventSource {
     Physical,
     ReservationLimit,
+    AllocationLimit,
     Unknown,
 }
 
@@ -1389,7 +1390,10 @@ impl AttemptRetryAdvice {
                     AttemptFailureCode::CudfResourceExhausted | AttemptFailureCode::MemoryReservationFailed
                 ) {
                     return match exact_allocator_event_source(resource_evidence) {
-                        Some(AttemptAllocatorEventSource::ReservationLimit) => Self::change_configuration(),
+                        Some(
+                            AttemptAllocatorEventSource::ReservationLimit
+                            | AttemptAllocatorEventSource::AllocationLimit,
+                        ) => Self::change_configuration(),
                         // An exact physical allocator failure establishes
                         // neither that capacity will drain nor that the same
                         // demand can fit on a subsequent attempt. Backoff is
@@ -1802,6 +1806,64 @@ mod tests {
         AttemptFailureFact { key: AttemptFailureFactKey::Reason, value }
     }
 
+    #[test]
+    fn native_failure_summary_projects_only_known_cugraph_allocation_sources_in_key_order() {
+        let error = crate::error::QueryError::new(
+            crate::error::QueryErrorCode::CudfResourceExhausted,
+            "nexus_query_engine.test.allocation_source",
+            "cuGraph allocation failed",
+        )
+        .with_fact("reason", "backend_closing")
+        .with_cugraph_allocation_source(crate::error::CugraphAllocationSource::RmmBadAlloc);
+
+        let summary = AttemptFailureSummary::from_native_error(&error);
+        assert_eq!(
+            summary.facts(),
+            &[
+                reason(AttemptFailureFactValue::BackendClosing),
+                AttemptFailureFact {
+                    key: AttemptFailureFactKey::AllocationSource,
+                    value: AttemptFailureFactValue::CugraphRmmBadAlloc,
+                },
+            ]
+        );
+
+        for (source, expected) in [
+            (crate::error::CugraphAllocationSource::RmmOutOfMemory, AttemptFailureFactValue::CugraphRmmOutOfMemory),
+            (crate::error::CugraphAllocationSource::StdBadAlloc, AttemptFailureFactValue::CugraphStdBadAlloc),
+        ] {
+            let error = crate::error::QueryError::new(
+                crate::error::QueryErrorCode::CudfResourceExhausted,
+                "nexus_query_engine.test.allocation_source",
+                "cuGraph allocation failed",
+            )
+            .with_cugraph_allocation_source(source);
+            assert_eq!(
+                AttemptFailureSummary::from_native_error(&error).facts(),
+                &[AttemptFailureFact { key: AttemptFailureFactKey::AllocationSource, value: expected }]
+            );
+        }
+
+        let unknown = crate::error::QueryError::new(
+            crate::error::QueryErrorCode::CudfResourceExhausted,
+            "nexus_query_engine.test.allocation_source",
+            "cuGraph allocation failed",
+        )
+        .with_cugraph_allocation_source(crate::error::CugraphAllocationSource::Unknown);
+        assert!(AttemptFailureSummary::from_native_error(&unknown).facts().is_empty());
+
+        let untyped_fact = crate::error::QueryError::new(
+            crate::error::QueryErrorCode::CudfResourceExhausted,
+            "nexus_query_engine.test.allocation_source",
+            "cuGraph allocation failed",
+        )
+        .with_fact("cugraph_allocation_source", "rmm_bad_alloc");
+        assert!(
+            AttemptFailureSummary::from_native_error(&untyped_fact).facts().is_empty(),
+            "free-form diagnostic facts must not mint sealed allocation provenance"
+        );
+    }
+
     fn exact_allocator_evidence(source: AttemptAllocatorEventSource) -> AttemptResourceEvidence {
         let mut evidence = AttemptResourceEvidence::unavailable();
         evidence.allocator_event = AttemptEvidenceField::attempt_exact(AttemptAllocatorEvent {
@@ -2044,6 +2106,19 @@ mod tests {
                 no_commit.4,
             ),
             AttemptRetryAdvice::change_configuration()
+        );
+        assert_eq!(
+            advice_for(
+                &RuntimeTerminalOutcome::failed(&resource_exhausted),
+                Some(&resource_exhausted),
+                no_commit.0,
+                no_commit.1,
+                no_commit.2,
+                Some(exact_allocator_evidence(AttemptAllocatorEventSource::AllocationLimit)),
+                no_commit.4,
+            ),
+            AttemptRetryAdvice::change_configuration(),
+            "an exact cache allocation limit cannot resolve without configuration change"
         );
         assert_eq!(
             advice_for(

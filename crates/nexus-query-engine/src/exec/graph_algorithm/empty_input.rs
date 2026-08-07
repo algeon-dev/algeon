@@ -208,6 +208,7 @@ pub(super) fn empty_graph_execution_result(
             policy.side_inputs.as_str(),
         ),
         budget_observations: Vec::new(),
+        cache_scope_peak_bytes: None,
     })
 }
 

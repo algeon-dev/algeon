@@ -13,7 +13,7 @@ use crate::{
         BuildMaterializationBoundary, ExecutionBoundaryPolicy, ProbeExecutionBoundary, ResultMaterializationBoundary,
         SourceReadBoundary,
     },
-    graph_memory::GraphReservationReport,
+    graph_memory::{GraphClaimCalibrationRow, GraphReservationReport},
 };
 
 impl QueryMetrics {
@@ -36,6 +36,11 @@ impl QueryMetrics {
                 "budgeted_executions": self.budgeted_execution_events.iter().map(BudgetedExecutionEvent::to_json).collect::<Vec<_>>(),
                 "operators": self.operators.iter().map(OperatorMetrics::to_json).collect::<Vec<_>>(),
                 "graph_reservations": self.graph_reservation_rows.iter().map(GraphReservationReport::to_json).collect::<Vec<_>>(),
+                "graph_claim_calibration": self
+                    .graph_claim_calibration_rows
+                    .iter()
+                    .map(GraphClaimCalibrationRow::to_json)
+                    .collect::<Vec<_>>(),
                 "graph_runtime": self.graph_algorithm_runtime_rows.iter().map(GraphAlgorithmRuntimeMetrics::to_json).collect::<Vec<_>>(),
                 "task_operators": self.task_operator_metrics.values().map(TaskOperatorMetrics::to_json).collect::<Vec<_>>(),
                 "task_runtime": self.task_runtime_metrics.values().map(TaskRuntimeMetrics::to_json).collect::<Vec<_>>(),
@@ -107,6 +112,7 @@ impl QueryMetrics {
             "max_task_retained_bytes" => optional_u64_json(self.max_task_retained_bytes),
             "max_task_retained_bytes_observed" => json!(self.max_task_retained_bytes.is_some()),
             "native_graph_reservation_rows" => json!(self.graph_reservation_rows.len()),
+            "native_graph_claim_calibration_rows" => json!(self.graph_claim_calibration_rows.len()),
             "native_graph_runtime_rows" => json!(self.graph_algorithm_runtime_rows.len()),
             "native_task_operator_rows" => json!(self.task_operator_metrics.len()),
             "native_task_runtime_rows" => json!(self.task_runtime_metrics.len()),
@@ -348,6 +354,25 @@ impl GraphReservationReport {
                 })
             }),
             "reason": self.reason,
+        })
+    }
+}
+
+impl GraphClaimCalibrationRow {
+    /// Serializes this graph claim-versus-peak calibration row as named JSON.
+    pub fn to_json(&self) -> Value {
+        json!({
+            "query_id": optional_query_id(self.query_id.as_ref()),
+            "node_id": self.node_id,
+            "node_index": self.node_index,
+            "algorithm": self.algorithm.as_str(),
+            "model_requested_bytes": self.model_requested_bytes,
+            "requested_bytes": self.requested_bytes,
+            "budget_bytes": self.budget_bytes,
+            "execution_state": self.execution_state.as_str(),
+            "measured_peak_bytes": self.measured_peak_bytes,
+            "measured_peak_provenance": self.measured_peak_provenance.as_str(),
+            "graph_model_error_ratio": self.graph_model_error_ratio.map(|ratio| ratio.as_decimal_string()),
         })
     }
 }

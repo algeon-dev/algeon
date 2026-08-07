@@ -269,9 +269,9 @@ impl EagerCugraphHostOutput {
         GraphBfsPublishedResult::new(batches, reservation)
     }
 
-    pub(super) fn from_published_result(schema: SchemaRef, result: &GraphBfsPublishedResult) -> Self {
-        let (batches, reservation) = result.shared_parts();
-        Self::from_shared_parts(schema, batches, reservation)
+    pub(super) fn from_published_result(schema: SchemaRef, result: &GraphBfsPublishedResult) -> Option<Self> {
+        let (batches, reservation) = result.host_shared_parts()?;
+        Some(Self::from_shared_parts(schema, batches, reservation))
     }
 
     pub(super) fn record_datafusion_output(self, metrics: &NexusNativeMetrics) -> Self {

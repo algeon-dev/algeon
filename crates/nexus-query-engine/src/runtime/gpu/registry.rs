@@ -57,6 +57,9 @@ pub(crate) struct DeviceRegistryInstallProfile {
     pub(crate) source_work_per_attempt: usize,
     pub(crate) worker_job_capacity: usize,
     pub(crate) lane_count: usize,
+    /// Whether public diagnostics may actively sample CUDA/NVML telemetry for
+    /// this ordinal. This never participates in admission or placement.
+    pub(crate) install_telemetry: bool,
     pub(crate) memory_partition: DeviceRegistryMemoryPartition,
 }
 
@@ -115,6 +118,7 @@ impl DeviceRegistryConfig {
 pub(crate) struct DeviceRegistry {
     contexts: Arc<[Option<DeviceContext>]>,
     device_ordinals: Arc<[usize]>,
+    telemetry_device_ordinals: Arc<[usize]>,
     resource_profiles: Arc<[DeviceResourceProfile]>,
 }
 
@@ -144,6 +148,10 @@ impl ResolvedDeviceInstallPlans {
     #[cfg(test)]
     pub(crate) fn device_ordinals(&self) -> &[usize] {
         &self.device_ordinals
+    }
+
+    fn telemetry_device_ordinals(&self) -> Vec<usize> {
+        self.plans.iter().filter(|plan| plan.profile.install_telemetry).map(|plan| plan.device.ordinal()).collect()
     }
 }
 
@@ -291,6 +299,7 @@ impl DeviceRegistry {
         backend_metrics: Option<&BackendMetricsStore>,
     ) -> Result<Self> {
         let _owner_generation = owner.generation();
+        let telemetry_device_ordinals = resolved.telemetry_device_ordinals();
         let ResolvedDeviceInstallPlans { plans: discovered, device_ordinals: ordinals, max_ordinal } = resolved;
 
         // Freeze discovery for the complete set before installing any
@@ -393,6 +402,7 @@ impl DeviceRegistry {
         Ok(Self {
             contexts: contexts.into(),
             device_ordinals: ordinals.into(),
+            telemetry_device_ordinals: telemetry_device_ordinals.into(),
             resource_profiles: resource_profiles.into(),
         })
     }
@@ -422,6 +432,12 @@ impl DeviceRegistry {
     /// Enabled CUDA ordinals in placement order.
     pub fn device_ordinals(&self) -> &[usize] {
         &self.device_ordinals
+    }
+
+    /// CUDA ordinals whose immutable startup profile enables live telemetry.
+    /// This diagnostic selection is independent of the admission device set.
+    pub(crate) fn telemetry_device_ordinals(&self) -> &[usize] {
+        &self.telemetry_device_ordinals
     }
 
     /// Number of installed device contexts.
@@ -990,17 +1006,19 @@ mod tests {
             source_work_per_attempt: 1,
             worker_job_capacity: 2,
             lane_count: 1,
+            install_telemetry: true,
             memory_partition: DeviceRegistryMemoryPartition::WholeDevice,
         };
         let config = DeviceRegistryConfig::new(vec![0, 1], 2)
             .with_capacity_policy(100, 200)
             .with_device_profile(0, profile.clone())
-            .with_device_profile(1, profile);
+            .with_device_profile(1, DeviceRegistryInstallProfile { install_telemetry: false, ..profile });
         let probe = RecordingProbe::default();
 
         let resolved = DeviceRegistry::resolve_install_plans(&inventory, &config, Some(&probe)).unwrap();
 
         assert_eq!(resolved.device_ordinals(), &[0, 1]);
+        assert_eq!(resolved.telemetry_device_ordinals(), vec![0]);
         assert_eq!(
             resolved.plans().iter().map(|plan| plan.resource_profile.managed_capacity_bytes).collect::<Vec<_>>(),
             vec![900, 1_900]
@@ -1057,6 +1075,7 @@ mod tests {
             source_work_per_attempt: 1,
             worker_job_capacity: 4,
             lane_count: 2,
+            install_telemetry: true,
             memory_partition: DeviceRegistryMemoryPartition::WholeDevice,
         };
         let plans = DeviceRegistry::resolve_install_plans(
@@ -1111,6 +1130,7 @@ mod tests {
             source_work_per_attempt: 1,
             worker_job_capacity: 2,
             lane_count: 2,
+            install_telemetry: true,
             memory_partition: DeviceRegistryMemoryPartition::WholeDevice,
         };
         let partition_facts = DeviceFacts { device: 1, total_bytes: 4_000, ..whole_facts.clone() };
@@ -1129,6 +1149,7 @@ mod tests {
             source_work_per_attempt: 1,
             worker_job_capacity: 7,
             lane_count: 7,
+            install_telemetry: true,
             memory_partition: DeviceRegistryMemoryPartition::StaticPartition { allocation_limit_bytes: 600 },
         };
         let explicit_facts = DeviceFacts { device: 2, total_bytes: 10_000, ..whole_facts.clone() };
@@ -1143,6 +1164,7 @@ mod tests {
             source_work_per_attempt: 1,
             worker_job_capacity: 3,
             lane_count: 3,
+            install_telemetry: true,
             memory_partition: DeviceRegistryMemoryPartition::WholeDevice,
         };
 
@@ -1188,6 +1210,7 @@ mod tests {
             source_work_per_attempt: 1,
             worker_job_capacity: 1,
             lane_count: 1,
+            install_telemetry: true,
             memory_partition: DeviceRegistryMemoryPartition::WholeDevice,
         };
         assert_eq!(managed_capacity_bytes(0, &facts, &automatic).unwrap(), 100);

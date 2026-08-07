@@ -273,10 +273,13 @@ fn requirement(floor: u64, hint: Option<u64>) -> AttemptRequirement {
     AttemptRequirement {
         configured_floor_bytes: floor,
         capability_floor_raise_bytes: 0,
+        required_phase_floor_bytes: 0,
+        source_stage_bytes: None,
         soft_working_set_hint_bytes: hint,
         estimate_quality: EstimateQuality::Modeled,
         required_capabilities: Vec::new(),
         attested_cugraph_graph_execution_scopes: Vec::new(),
+        reservation_shapes: Vec::new(),
     }
 }
 

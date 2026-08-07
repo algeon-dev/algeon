@@ -25,8 +25,8 @@ use nexus_query_engine::{
         GraphResidencyOrientation, GraphResidencyPlanAnalysis, GraphSimilarityParams,
         GraphSourceFingerprintBypassReason, GraphSourceVertexRequirement, GraphTriangleCountAllParams,
         GraphVertexIdTypeSupport, GraphVertexPairInput, GraphWeightPolicy, PlanNode, ProjectionOutput, QueryPlan,
-        QueryPlanBuilder, graph_residency_descriptor_for_edge_plan, planned_resident_graph_key,
-        stable_graph_result_schema,
+        QueryPlanBuilder, edge_plan_has_simple_directed_edge_topology, graph_residency_descriptor_for_edge_plan,
+        planned_resident_graph_key, stable_graph_result_schema,
     },
     source::{
         CredentialMode, GpuResidentSource, LocalParquetFile, LocalParquetSource, ParquetFieldIdReadBinding,

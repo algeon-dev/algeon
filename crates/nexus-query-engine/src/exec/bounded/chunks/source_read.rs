@@ -467,10 +467,19 @@ fn read_local_parquet_chunk_required_only_attempt(
         },
     };
     let frame = if let Some(remaining_rows) = visible_limit_remaining {
-        match apply_source_scan_limit_to_frame(context, frame.into_frame(), *remaining_rows, metrics) {
-            Ok((frame, remaining)) => {
+        match apply_source_scan_limit_to_frame(context, frame.frame().clone(), *remaining_rows, metrics) {
+            Ok((limited, remaining)) => {
                 *remaining_rows = remaining;
-                GpuDataFrame::new(frame)
+                // A slice may retain aliases into a checked-out cache frame.
+                // Keep its pin until the derived source result is released so
+                // an LRU promotion cannot evict the cache allocation early.
+                match GpuDataFrame::try_new_with_source_residency(limited, &frame) {
+                    Ok(frame) => frame,
+                    Err(error) => {
+                        reservations.release(reservation, metrics);
+                        return Err(error);
+                    },
+                }
             },
             Err(error) => {
                 reservations.release(reservation, metrics);

@@ -9,13 +9,14 @@ benchmark datasets.
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -24,6 +25,7 @@ GEN_TPCH = REPO_ROOT / "fixture" / "tpc-h" / "generate.py"
 GEN_TPCDS = REPO_ROOT / "fixture" / "tpc-ds" / "generate.py"
 SPARK_WRITE_ICEBERG = REPO_ROOT / "fixture" / "iceberg-local" / "spark_write_iceberg.py"
 TPC_PARQUET_LAYOUT = REPO_ROOT / "fixture" / "tpc" / "parquet_layout.py"
+DBLP_INGEST = REPO_ROOT / "fixture" / "graph" / "dblp_ingest.py"
 
 
 def run_cmd(args: list[str], env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
@@ -147,6 +149,156 @@ class FakeSpark:
 
 
 class FixtureGeneratorCompatibilityTests(unittest.TestCase):
+    def test_dblp_edge_footer_carries_simple_topology_and_only_full_fixture_carries_vertex_bound(self) -> None:
+        dblp = load_script_module("dblp_ingest_footer_contract_under_test", DBLP_INGEST)
+
+        with tempfile.TemporaryDirectory(prefix="nexus_dblp_footer_contract.") as tmp:
+            root = Path(tmp)
+            source = root / "dblp.json"
+            source.write_text(
+                "[\n"
+                '{"id": 101, "references": [202]},\n'
+                '{"id": 202, "references": [101]}\n'
+                "]\n",
+                encoding="utf-8",
+            )
+
+            def convert_args(max_papers: int) -> SimpleNamespace:
+                return SimpleNamespace(
+                    source_json=source,
+                    out_root=root / "output",
+                    row_group_size=2,
+                    profile_row_group_size=2,
+                    bucket_width=10,
+                    max_papers=max_papers,
+                    overwrite=False,
+                    sort_buffer_rows=2,
+                    merge_fan_in=2,
+                    sort_temp_dir=None,
+                    keep_work=False,
+                    skip_sha256=True,
+                    progress_interval=0.0,
+                    quiet=True,
+                )
+
+            full_manifest = dblp.convert(
+                dblp.DatasetSpec(expected_papers=2, expected_edges=2),
+                convert_args(max_papers=0),
+            )
+            metadata_key = dblp.GRAPH_VERTEX_UPPER_BOUND_METADATA_KEY
+            footer_key = metadata_key.encode("ascii")
+            topology_key = dblp.GRAPH_SIMPLE_DIRECTED_EDGE_TOPOLOGY_METADATA_KEY
+            topology_footer_key = topology_key.encode("ascii")
+            expected_topology = '{"destination_column_index":2,"source_column_index":1}'
+            for order in ("src", "dst"):
+                parquet_path = Path(full_manifest["root"]) / "parquet" / f"edges_by_{order}.parquet"
+                parquet_footer = dblp.pq.ParquetFile(parquet_path).metadata.metadata
+                self.assertEqual(parquet_footer[footer_key], b"2")
+                self.assertEqual(parquet_footer[topology_footer_key], expected_topology.encode("utf-8"))
+                self.assertEqual(
+                    full_manifest["edge_layouts"][order]["footer_metadata"],
+                    {metadata_key: "2", topology_key: expected_topology},
+                )
+
+            sample_manifest = dblp.convert(
+                dblp.DatasetSpec(expected_papers=2, expected_edges=2),
+                convert_args(max_papers=1),
+            )
+            self.assertEqual(sample_manifest["counts"]["papers"], 1)
+            for order in ("src", "dst"):
+                parquet_path = Path(sample_manifest["root"]) / "parquet" / f"edges_by_{order}.parquet"
+                parquet_footer = dblp.pq.ParquetFile(parquet_path).metadata.metadata
+                self.assertNotIn(footer_key, parquet_footer)
+                self.assertEqual(parquet_footer[topology_footer_key], expected_topology.encode("utf-8"))
+                self.assertEqual(
+                    sample_manifest["edge_layouts"][order]["footer_metadata"],
+                    {topology_key: expected_topology},
+                )
+
+    def test_dblp_multi_graph_slices_are_disjoint_discoverable_and_rowset_distinct(self) -> None:
+        dblp = load_script_module("dblp_ingest_multigraph_contract_under_test", DBLP_INGEST)
+
+        with tempfile.TemporaryDirectory(prefix="nexus_dblp_multigraph_contract.") as tmp:
+            root = Path(tmp)
+            source = root / "dblp.json"
+            papers = [
+                {"id": paper_id, "references": [100_000 + paper_id], "title": f"paper-{paper_id}"}
+                for paper_id in range(1, 129)
+            ]
+            source.write_text("[\n" + ",\n".join(json.dumps(paper) for paper in papers) + "\n]\n")
+
+            args = SimpleNamespace(
+                source_json=source,
+                out_root=root / "output",
+                row_group_size=16,
+                profile_row_group_size=16,
+                bucket_width=10,
+                max_papers=0,
+                overwrite=False,
+                sort_buffer_rows=16,
+                merge_fan_in=2,
+                sort_temp_dir=None,
+                keep_work=False,
+                skip_sha256=True,
+                edge_slice_count=4,
+                edge_slice_seed=20_260_804,
+                progress_interval=0.0,
+                quiet=True,
+            )
+            manifest = dblp.convert(dblp.DatasetSpec(expected_papers=128, expected_edges=128), args)
+            parent_root = Path(manifest["root"])
+            slice_index = manifest["multi_graph_slices"]
+            self.assertEqual(slice_index["partition"], dblp.MULTI_GRAPH_SLICE_PARTITION)
+            self.assertEqual(slice_index["slice_count"], 4)
+            self.assertEqual(len(slice_index["slices"]), 4)
+
+            full_edge_ids = set(
+                dblp.pq.read_table(parent_root / "parquet" / "edges_by_src.parquet").column("edge_id").to_pylist()
+            )
+            seen_edge_ids: set[int] = set()
+            rowset_fingerprints: set[str] = set()
+            footer_key = dblp.GRAPH_VERTEX_UPPER_BOUND_METADATA_KEY.encode("ascii")
+            for entry in slice_index["slices"]:
+                index = entry["index"]
+                slice_root = Path(entry["root"])
+                self.assertEqual(slice_root, parent_root / "slices" / f"source-hash-{index:02d}")
+                self.assertTrue((slice_root / "manifest.json").is_file())
+                self.assertTrue((slice_root / "source.json").is_file())
+                for table in ("edges_by_src", "edges_by_dst", "profiles_by_paper_id", "paper_authors", "paper_fos"):
+                    self.assertTrue((slice_root / "parquet" / f"{table}.parquet").is_file(), table)
+
+                slice_manifest = json.loads((slice_root / "manifest.json").read_text())
+                slice_contract = slice_manifest["multi_graph_slice"]
+                self.assertEqual(slice_contract["slice_index"], index)
+                self.assertEqual(slice_contract["slice_count"], 4)
+                self.assertEqual(slice_contract["edge_rowset_sha256"], entry["edge_rowset_sha256"])
+                rowset_fingerprints.add(entry["edge_rowset_sha256"])
+                source_metadata = json.loads((slice_root / "source.json").read_text())
+                self.assertEqual(source_metadata["derived_fixture"], slice_contract)
+
+                edge_table = dblp.pq.read_table(slice_root / "parquet" / "edges_by_src.parquet")
+                edge_ids = set(edge_table.column("edge_id").to_pylist())
+                self.assertTrue(edge_ids)
+                self.assertFalse(seen_edge_ids & edge_ids)
+                seen_edge_ids.update(edge_ids)
+                for src in edge_table.column("src").to_pylist():
+                    self.assertEqual(dblp.edge_slice_index(src, 4, 20_260_804), index)
+                for order in ("src", "dst"):
+                    parquet_footer = dblp.pq.ParquetFile(
+                        slice_root / "parquet" / f"edges_by_{order}.parquet"
+                    ).metadata.metadata
+                    self.assertNotIn(footer_key, parquet_footer)
+
+            self.assertEqual(seen_edge_ids, full_edge_ids)
+            self.assertEqual(len(rowset_fingerprints), 4)
+
+            args.overwrite = True
+            repeated = dblp.convert(dblp.DatasetSpec(expected_papers=128, expected_edges=128), args)
+            self.assertEqual(
+                [entry["edge_rowset_sha256"] for entry in repeated["multi_graph_slices"]["slices"]],
+                [entry["edge_rowset_sha256"] for entry in slice_index["slices"]],
+            )
+
     def test_generators_default_to_repo_sf1_roots(self) -> None:
         layout = load_script_module("tpc_parquet_layout_under_test", TPC_PARQUET_LAYOUT)
 

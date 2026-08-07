@@ -402,6 +402,23 @@ impl NexusGpuBackend {
         self.session.device_ledger_reports()
     }
 
+    /// Returns the physical resident-cache allocation-domain observations.
+    /// They are diagnostic cross-checks; admission stays owned by the ledger.
+    pub fn device_cache_reports(
+        &self,
+    ) -> nexus_query_engine::error::Result<Vec<nexus_query_engine::runtime::DeviceCacheReport>> {
+        self.session.device_cache_reports()
+    }
+
+    /// Returns bounded source-cache events from the cache owners themselves.
+    /// These observations support correlation diagnostics; the ledger remains
+    /// the sole admission and residency authority.
+    pub fn device_cache_source_event_snapshots(
+        &self,
+    ) -> nexus_query_engine::error::Result<Vec<nexus_query_engine::runtime::CacheSourceEventSnapshot>> {
+        self.session.device_cache_source_event_snapshots()
+    }
+
     pub fn device_memory_failure_reports(
         &self,
     ) -> nexus_query_engine::error::Result<Vec<nexus_query_engine::runtime::DeviceMemoryFailureReport>> {
@@ -669,17 +686,31 @@ impl InstalledTestGpuBackend {
         device_profile: NexusGpuDeviceProfile,
         queue_policy: NexusGpuQueuePolicy,
     ) -> Self {
+        Self::with_config_and_final_plan_requirements(native_execution_config, device_profile, queue_policy, [])
+    }
+
+    /// Builds a serialized real backend with explicit final-plan requirements.
+    /// This keeps integration tests on the same frozen backend-installation
+    /// path as production cells that add a final-plan gate.
+    pub(crate) fn with_config_and_final_plan_requirements(
+        native_execution_config: NexusNativeExecutionConfig,
+        device_profile: NexusGpuDeviceProfile,
+        queue_policy: NexusGpuQueuePolicy,
+        final_plan_requirements: impl IntoIterator<Item = FinalPlanRequirement>,
+    ) -> Self {
         static SERIAL: Mutex<()> = Mutex::new(());
 
         let serial = SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let device_ordinal = device_profile.device_ordinal();
-        let backend = NexusGpuBackend::builder()
+        let mut builder = NexusGpuBackend::builder()
             .with_native_execution_config(native_execution_config)
             .device_profiles([device_profile])
             .device_memory_ownership([(device_ordinal, GpuMemoryOwnership::WholeDeviceExclusive)])
-            .queue_policy(queue_policy)
-            .build()
-            .expect("root GPU unit test backend must build");
+            .queue_policy(queue_policy);
+        for requirement in final_plan_requirements {
+            builder = builder.with_final_plan_requirement(requirement);
+        }
+        let backend = builder.build().expect("root GPU unit test backend must build");
         Self { backend: Some(backend), _serial: serial }
     }
 

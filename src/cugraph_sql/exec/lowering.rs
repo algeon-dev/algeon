@@ -1,4 +1,4 @@
-use super::{node::projected_schema, *};
+use super::{bfs_mapping::bfs_logical_output_projection_plan, node::projected_schema, *};
 
 pub(super) fn preflight_cugraph_query_plan(
     spec: &CugraphAlgorithmSpec,
@@ -273,6 +273,7 @@ pub(super) fn cugraph_execution_capability_proof(
     limit: Option<usize>,
     edge_normalize_inserted: bool,
 ) -> Result<nexus_query_engine::admission::QueryPlanCapabilityProof> {
+    let prepared = prepare_bfs_logical_input_schemas(spec, Arc::clone(&edge_schema), predicate_schemas.clone())?;
     let plan = cugraph_execution_plan(
         spec,
         edge_schema,
@@ -282,14 +283,30 @@ pub(super) fn cugraph_execution_capability_proof(
         limit,
         edge_normalize_inserted,
     )?;
-    nexus_query_engine::admission::QueryPlanCapabilityProof::for_cugraph_graph_execution_plan(&plan).ok_or_else(|| {
-        Error::new(
-            ErrorCode::InvalidExecutionPlan,
-            "datafusion_nexus.cugraph_sql.plan_capability_proof",
-            "native cuGraph query plan did not expose capability evidence",
-        )
-        .into()
-    })
+    let graph_proof = nexus_query_engine::admission::QueryPlanCapabilityProof::for_cugraph_graph_execution_plan(&plan)
+        .ok_or_else(|| {
+            DataFusionError::from(Error::new(
+                ErrorCode::InvalidExecutionPlan,
+                "datafusion_nexus.cugraph_sql.plan_capability_proof",
+                "native cuGraph query plan did not expose capability evidence",
+            ))
+        })?;
+    if !prepared.logical_mapping || is_bfs_path_output(spec) || (projection.is_none() && limit.is_none()) {
+        return Ok(graph_proof);
+    }
+    let logical_output_plan = bfs_logical_output_projection_plan(Arc::clone(&spec.output_schema), projection, limit)?;
+    let logical_output_proof =
+        nexus_query_engine::admission::QueryPlanCapabilityProof::for_query_plan(&logical_output_plan)
+            .expect("every native logical-output plan has an exact reservation scope");
+    nexus_query_engine::admission::QueryPlanCapabilityProof::combine(graph_proof, [logical_output_proof]).map_err(
+        |error| {
+            DataFusionError::from(Error::from_native(
+                "datafusion_nexus.cugraph_sql.plan_capability_proof",
+                "failed to compose the logical BFS output admission proof",
+                error,
+            ))
+        },
+    )
 }
 
 pub(super) fn bind_predicate_gpu_inputs(
@@ -759,13 +776,29 @@ mod tests {
             false,
         )
         .expect("prepared runtime graph plan must build");
-        let runtime_proof =
+        let graph_runtime_proof =
             nexus_query_engine::admission::QueryPlanCapabilityProof::for_cugraph_graph_execution_plan(&runtime_plan)
                 .expect("prepared runtime graph plan must expose a capability proof");
+        let runtime_proof =
+            if prepared.logical_mapping && !is_bfs_path_output(spec) && (projection.is_some() || limit.is_some()) {
+                let logical_output_plan =
+                    bfs_logical_output_projection_plan(Arc::clone(&spec.output_schema), projection, limit)
+                        .expect("logical BFS output plan must build");
+                let logical_output_proof =
+                    nexus_query_engine::admission::QueryPlanCapabilityProof::for_query_plan(&logical_output_plan)
+                        .expect("logical BFS output plan must expose a capability proof");
+                nexus_query_engine::admission::QueryPlanCapabilityProof::combine(
+                    graph_runtime_proof,
+                    [logical_output_proof],
+                )
+                .expect("runtime graph and logical BFS output proofs must compose")
+            } else {
+                graph_runtime_proof
+            };
 
         assert_eq!(
             admission_proof, runtime_proof,
-            "admission must attest the exact prepared graph fragment runtime executes"
+            "admission must attest the exact prepared graph and logical-output fragments runtime executes"
         );
     }
 

@@ -40,9 +40,44 @@ fn query_service_reports_admission_snapshot() {
     let snapshot = service.admission_snapshot().unwrap();
     assert_eq!(snapshot.active_queries, 1);
     assert_eq!(snapshot.queued_queries, 1);
+    assert_eq!(snapshot.queue_high_watermark, 1);
 
     drop(active);
     waiter.join().unwrap();
+}
+
+#[test]
+fn query_service_admission_snapshot_retains_queue_high_watermark_after_drain() {
+    const QUEUE_LIMIT: usize = 2;
+
+    let service = test_service(1, QUEUE_LIMIT);
+    let active = service.admit_query().unwrap();
+    let first = service.enqueue_admission().unwrap();
+    let second = service.enqueue_admission().unwrap();
+
+    let saturated = service.admission_snapshot().unwrap();
+    assert_eq!(saturated.queued_queries, QUEUE_LIMIT);
+    assert_eq!(saturated.queue_high_watermark, QUEUE_LIMIT);
+    assert!(saturated.queue_high_watermark <= service.service.queue_bounds().max_waiters);
+
+    let overflow = service.enqueue_admission().unwrap_err();
+    assert_eq!(overflow.code(), QueryErrorCode::ServiceOverloaded);
+    assert_eq!(overflow.fact_value("reason"), Some("admission_queue_full"));
+    assert_eq!(
+        service.admission_snapshot().unwrap().queue_high_watermark,
+        QUEUE_LIMIT,
+        "a rejected arrival must not inflate the service-owned queue high-watermark"
+    );
+
+    drop(first);
+    drop(second);
+
+    let drained = service.admission_snapshot().unwrap();
+    assert_eq!(drained.queued_queries, 0);
+    assert_eq!(drained.queue_high_watermark, QUEUE_LIMIT);
+    assert!(drained.queue_high_watermark <= service.service.queue_bounds().max_waiters);
+
+    drop(active);
 }
 #[test]
 fn query_service_try_admit_does_not_queue_when_saturated() {

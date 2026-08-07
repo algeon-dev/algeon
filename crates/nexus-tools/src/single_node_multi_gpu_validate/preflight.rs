@@ -7,8 +7,10 @@ use std::{
 };
 
 use nexus_workloads::{
-    graph::{DblpDatasetMetadata, GraphDatasetResult, describe_canonical_dblp_dataset},
+    clickbench::describe_clickbench_dataset_with_content_fingerprint,
+    graph::{DblpDatasetMetadata, GraphDatasetResult, describe_canonical_dblp_dataset, describe_dblp_dataset},
     metadata::WorkloadDatasetMetadata,
+    tpcds::describe_tpcds_dataset_with_content_fingerprint,
     tpch::describe_tpch_dataset_with_content_fingerprint,
 };
 use serde::Serialize;
@@ -98,8 +100,21 @@ impl FixturePreflight {
         let mut preflighted = Vec::with_capacity(workloads.len());
         let mut kinds = BTreeSet::new();
         for workload in workloads {
-            if !kinds.insert(workload.kind) {
+            let is_new_kind = kinds.insert(workload.kind);
+            if policy == FixtureSelectionPolicy::BothKindsExactly && !is_new_kind {
                 return Err(FixturePreflightError::selection("fixture kinds must be unique").into());
+            }
+            if policy == FixtureSelectionPolicy::AtLeastOneKind && !is_new_kind && workload.kind != FixtureKind::Dblp {
+                return Err(FixturePreflightError::selection("only DBLP supports multiple fixture selections").into());
+            }
+            if policy == FixtureSelectionPolicy::BothKindsExactly
+                && workload.kind == FixtureKind::Dblp
+                && workload.scale != "v12"
+            {
+                return Err(FixturePreflightError::selection(
+                    "P6.4 requires the canonical DBLP V12 fixture, not a multi-graph slice",
+                )
+                .into());
             }
             if !workload.path.is_dir() {
                 return Err(FixturePreflightError::missing(workload.kind.label(), &workload.path).into());
@@ -119,47 +134,80 @@ impl FixturePreflight {
         dblp_contract: DblpFixtureContract,
     ) -> ToolResult<FixturePreflightArtifact> {
         match workload.kind {
-            FixtureKind::Tpch => {
-                let metadata = describe_tpch_dataset_with_content_fingerprint(
-                    &workload.path,
-                    &workload.scale,
-                    "p6_fixture_preflight",
-                    &workload.preparation_command,
-                    true,
-                )
-                .map_err(|error| FixturePreflightError::invalid_layout("tpch", &workload.path, error.to_string()))?;
-                let content_fingerprint = metadata.content_fingerprint.clone().ok_or_else(|| {
+            FixtureKind::Tpch | FixtureKind::Tpcds | FixtureKind::Clickbench => {
+                let (dataset_metadata, content_fingerprint) = match workload.kind {
+                    FixtureKind::Tpch => {
+                        let metadata = describe_tpch_dataset_with_content_fingerprint(
+                            &workload.path,
+                            &workload.scale,
+                            "p6_fixture_preflight",
+                            &workload.preparation_command,
+                            true,
+                        )
+                        .map_err(|error| {
+                            FixturePreflightError::invalid_layout("tpch", &workload.path, error.to_string())
+                        })?;
+                        (metadata.to_neutral_metadata(), metadata.content_fingerprint)
+                    },
+                    FixtureKind::Tpcds => {
+                        let metadata = describe_tpcds_dataset_with_content_fingerprint(
+                            &workload.path,
+                            &workload.scale,
+                            "p6_fixture_preflight",
+                            &workload.preparation_command,
+                            true,
+                        )
+                        .map_err(|error| {
+                            FixturePreflightError::invalid_layout("tpcds", &workload.path, error.to_string())
+                        })?;
+                        (metadata.to_neutral_metadata(), metadata.content_fingerprint)
+                    },
+                    FixtureKind::Clickbench => {
+                        let metadata = describe_clickbench_dataset_with_content_fingerprint(
+                            &workload.path,
+                            "p6_fixture_preflight",
+                            &workload.preparation_command,
+                            true,
+                        )
+                        .map_err(|error| {
+                            FixturePreflightError::invalid_layout("clickbench", &workload.path, error.to_string())
+                        })?;
+                        (metadata.to_neutral_metadata(), metadata.content_fingerprint)
+                    },
+                    FixtureKind::Dblp => unreachable!("dblp is handled by its own preflight arm"),
+                };
+                let content_fingerprint = content_fingerprint.ok_or_else(|| {
                     FixturePreflightError::invalid_layout(
-                        "tpch",
+                        workload.kind.label(),
                         &workload.path,
                         "content fingerprint was not produced",
                     )
                 })?;
                 Ok(FixturePreflightArtifact {
-                    kind: FixtureKind::Tpch,
+                    kind: workload.kind,
                     path: workload.path.display().to_string(),
                     scale: workload.scale.clone(),
                     preparation_command: workload.preparation_command.clone(),
                     layout_validation: "complete",
-                    dataset_metadata: metadata.to_neutral_metadata(),
                     fingerprints: vec![
-                        FixtureFingerprint::fnv1a64("metadata", metadata.metadata_fingerprint),
+                        FixtureFingerprint::fnv1a64("metadata", dataset_metadata.metadata_fingerprint.clone()),
                         FixtureFingerprint::fnv1a64("content", content_fingerprint),
                     ],
+                    dataset_metadata,
                 })
             },
             FixtureKind::Dblp => {
-                if workload.scale != "v12" {
-                    return Err(FixturePreflightError::invalid_layout(
-                        "dblp",
-                        &workload.path,
-                        "P6.4 requires the DBLP fixture scale to be v12",
-                    )
-                    .into());
-                }
                 let metadata = describe_dblp_for_contract(workload, dblp_contract).map_err(|error| {
                     FixturePreflightError::invalid_layout("dblp", &workload.path, error.to_string())
                 })?;
+                let mut fingerprints = vec![
+                    FixtureFingerprint::sha256("manifest", metadata.manifest_sha256.clone()),
+                    FixtureFingerprint::sha256("source_metadata", metadata.source_metadata_sha256.clone()),
+                    FixtureFingerprint::sha256("source_content", metadata.source_content_sha256.clone()),
+                ];
+                if let Some(slice) = &metadata.multi_graph_slice {
+                    fingerprints.push(FixtureFingerprint::sha256("edge_rowset", slice.edge_rowset_sha256.clone()));
+                }
                 Ok(FixturePreflightArtifact {
                     kind: FixtureKind::Dblp,
                     path: workload.path.display().to_string(),
@@ -167,11 +215,7 @@ impl FixturePreflight {
                     preparation_command: workload.preparation_command.clone(),
                     layout_validation: "complete",
                     dataset_metadata: metadata.to_neutral_metadata(),
-                    fingerprints: vec![
-                        FixtureFingerprint::sha256("manifest", metadata.manifest_sha256),
-                        FixtureFingerprint::sha256("source_metadata", metadata.source_metadata_sha256),
-                        FixtureFingerprint::sha256("source_content", metadata.source_content_sha256),
-                    ],
+                    fingerprints,
                 })
             },
         }
@@ -191,7 +235,28 @@ fn describe_dblp_for_contract(
 ) -> GraphDatasetResult<DblpDatasetMetadata> {
     match contract {
         DblpFixtureContract::CanonicalV12 => {
-            describe_canonical_dblp_dataset(&workload.path, &workload.scale, &workload.preparation_command)
+            if workload.scale == "v12" {
+                return describe_canonical_dblp_dataset(&workload.path, &workload.scale, &workload.preparation_command);
+            }
+            if !workload.scale.starts_with("v12_slice_") {
+                return Err(nexus_workloads::graph::GraphDatasetError::InvalidDataset(
+                    "DBLP fixture scale must be v12 or v12_slice_<index>".to_string(),
+                ));
+            }
+            let metadata = describe_dblp_dataset(&workload.path, &workload.scale, &workload.preparation_command)?;
+            let slice = metadata.multi_graph_slice.as_ref().ok_or_else(|| {
+                nexus_workloads::graph::GraphDatasetError::InvalidDataset(
+                    "DBLP slice profile requires generator-authenticated multi_graph_slice metadata".to_string(),
+                )
+            })?;
+            let expected_scale = format!("v12_slice_{:02}", slice.slice_index);
+            if workload.scale != expected_scale {
+                return Err(nexus_workloads::graph::GraphDatasetError::InvalidDataset(format!(
+                    "DBLP slice profile scale {} does not match fixture slice index {}; expected {expected_scale}",
+                    workload.scale, slice.slice_index
+                )));
+            }
+            Ok(metadata)
         },
         #[cfg(test)]
         DblpFixtureContract::Sample => nexus_workloads::graph::describe_dblp_dataset(

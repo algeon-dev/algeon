@@ -3,6 +3,7 @@ use super::{
     file::ServerNativeFileConfig,
     *,
 };
+use crate::planner::FinalPlanRequirement;
 
 /// Native bounded-execution device-memory budget in bytes. When one bounded
 /// budget value is set, the source chunk byte and row-group limits must also be set.
@@ -31,6 +32,9 @@ pub const NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV: &str = "NEXUS_SERV
 /// `datafusion_exact_host_welford` or `gpu_native_tolerant`.
 pub const NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV: &str =
     "NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE";
+/// Completed-plan requirement enforced after native rewriting. Accepts
+/// `no_datafusion_cpu`; unset leaves the completed plan unconstrained.
+pub const NEXUS_SERVER_FINAL_PLAN_REQUIREMENT_ENV: &str = "NEXUS_SERVER_FINAL_PLAN_REQUIREMENT";
 /// Scope for a server `[native]` configuration option.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -139,6 +143,14 @@ pub const NEXUS_SERVER_NATIVE_CONFIG_OPTIONS: &[NexusServerNativeConfigOption] =
         session_key: Some("datafusion_nexus.native.statistical_aggregate_execution_mode"),
         description: "Floating statistical aggregate execution contract.",
     },
+    NexusServerNativeConfigOption {
+        toml_field: "native.final_plan_requirement",
+        env_var: NEXUS_SERVER_FINAL_PLAN_REQUIREMENT_ENV,
+        value_type: "enum: no_datafusion_cpu",
+        scope: ServerNativeConfigScope::NativeExecution,
+        session_key: None,
+        description: "Completed-plan requirement enforced after native rewriting.",
+    },
 ];
 pub(super) fn native_optimizer_config(
     values: &mut EnvValues<'_>,
@@ -199,6 +211,17 @@ pub(super) fn native_optimizer_config(
     .map(|raw| {
         parse_statistical_aggregate_execution_mode(raw.field, &raw.value)
             .map(|mode| NativeConfigValue::new(mode, raw.field))
+    })
+    .transpose()?;
+    let final_plan_requirement = optional_native_string(
+        values,
+        NEXUS_SERVER_FINAL_PLAN_REQUIREMENT_ENV,
+        "native.final_plan_requirement",
+        file.final_plan_requirement.as_deref(),
+    )
+    .map(|raw| {
+        parse_final_plan_requirement(raw.field, &raw.value)
+            .map(|requirement| NativeConfigValue::new(requirement, raw.field))
     })
     .transpose()?;
     let retry_attempts = max_retry_attempts
@@ -305,7 +328,11 @@ pub(super) fn native_optimizer_config(
         execution_config = execution_config.with_statistical_aggregate_execution_mode(mode.value);
     }
 
-    Ok(NexusNativeOptimizerConfig::default().with_native_execution_config(execution_config))
+    let mut optimizer_config = NexusNativeOptimizerConfig::default().with_native_execution_config(execution_config);
+    if let Some(requirement) = final_plan_requirement {
+        optimizer_config = optimizer_config.with_final_plan_requirement(requirement.value);
+    }
+    Ok(optimizer_config)
 }
 
 pub(super) fn optional_native_string(
@@ -395,5 +422,12 @@ pub(super) fn parse_statistical_aggregate_execution_mode(
             field,
             format!("must be `datafusion_exact_host_welford` or `gpu_native_tolerant`, got `{other}`"),
         )),
+    }
+}
+
+pub(super) fn parse_final_plan_requirement(field: &'static str, raw: &str) -> Result<FinalPlanRequirement> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "no_datafusion_cpu" => Ok(FinalPlanRequirement::NoDataFusionCpu),
+        other => Err(ServerError::invalid_config(field, format!("must be `no_datafusion_cpu`, got `{other}`"))),
     }
 }

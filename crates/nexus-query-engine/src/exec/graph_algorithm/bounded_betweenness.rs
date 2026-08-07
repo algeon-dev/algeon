@@ -412,7 +412,7 @@ pub(super) fn execute_bounded_betweenness_seed_chunk_retry(
             .with_fact("algorithm", spec.algorithm.as_str()));
         },
     };
-    Ok(GraphAlgorithmExecutionResult { frame, algorithm_metadata, budget_observations })
+    Ok(GraphAlgorithmExecutionResult { frame, algorithm_metadata, budget_observations, cache_scope_peak_bytes: None })
 }
 
 #[cfg(feature = "cugraph")]

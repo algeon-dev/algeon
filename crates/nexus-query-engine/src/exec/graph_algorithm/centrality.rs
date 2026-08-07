@@ -38,6 +38,7 @@ pub(super) fn execute_pagerank(
             frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
             algorithm_metadata,
             budget_observations: Vec::new(),
+            cache_scope_peak_bytes: None,
         })
     };
     {
@@ -183,6 +184,7 @@ pub(super) fn execute_eigenvector_centrality(
                 frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
                 algorithm_metadata,
                 budget_observations: Vec::new(),
+                cache_scope_peak_bytes: None,
             })
         },
     )
@@ -242,6 +244,7 @@ pub(super) fn execute_hits(
                 frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
                 algorithm_metadata,
                 budget_observations: Vec::new(),
+                cache_scope_peak_bytes: None,
             })
         },
     )
@@ -312,6 +315,7 @@ pub(super) fn execute_betweenness_centrality(
                 frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
                 algorithm_metadata,
                 budget_observations: Vec::new(),
+                cache_scope_peak_bytes: None,
             })
         },
     )
@@ -382,6 +386,7 @@ pub(super) fn execute_edge_betweenness_centrality(
                 frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
                 algorithm_metadata,
                 budget_observations: Vec::new(),
+                cache_scope_peak_bytes: None,
             })
         },
     )
@@ -459,6 +464,7 @@ pub(super) fn execute_katz_centrality(
                 frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
                 algorithm_metadata,
                 budget_observations: Vec::new(),
+                cache_scope_peak_bytes: None,
             })
         },
     )
@@ -500,6 +506,7 @@ where
         frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
         algorithm_metadata,
         budget_observations: Vec::new(),
+        cache_scope_peak_bytes: None,
     })
 }
 

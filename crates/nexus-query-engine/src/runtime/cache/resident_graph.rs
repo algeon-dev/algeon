@@ -14,7 +14,9 @@ use std::{
 
 use cugraph::{ParkedGraph, Transposed, Transposition};
 
-use super::{CacheResidency, CacheResidencyChargeTransaction, CacheResidencyPin};
+use super::{
+    CacheExecutionReservation, CacheGraphActivity, CacheResidency, CacheResidencyChargeTransaction, CacheResidencyPin,
+};
 use crate::{
     error::{QueryError, QueryErrorCode, Result},
     plan::{GraphResidencyOrientation, ResidentGraphKey},
@@ -89,6 +91,11 @@ impl GpuResidentGraphTransposition for Transposed {
 
 struct GpuResidentGraphCacheEntry {
     graph: Mutex<Option<GpuResidentGraphEntry>>,
+    /// One graph-specific child tracker and exact runtime binding. It remains
+    /// live through `ParkedGraph` destruction so teardown can prove no scoped
+    /// allocation survives before releasing the ledger charge.
+    allocation_scope: Arc<cudf::CacheAllocationScope>,
+    retained_scope_usage: cudf::DeviceMemoryResourceUsage,
     residency: CacheResidency,
 }
 
@@ -138,6 +145,10 @@ struct GpuResidentGraphCacheState {
     #[cfg(test)]
     next_preparation_pin_id: u64,
     destructions_in_progress: usize,
+    lookup_hits: u64,
+    lookup_misses: u64,
+    insertions: u64,
+    duplicate_inserts: u64,
     closed: bool,
 }
 
@@ -151,6 +162,10 @@ impl Default for GpuResidentGraphCacheState {
             #[cfg(test)]
             next_preparation_pin_id: 1,
             destructions_in_progress: 0,
+            lookup_hits: 0,
+            lookup_misses: 0,
+            insertions: 0,
+            duplicate_inserts: 0,
             closed: false,
         }
     }
@@ -170,17 +185,17 @@ impl GpuResidentGraphCacheState {
 
 struct GpuResidentGraphCacheInner {
     ledger: DeviceLedger,
-    allocation_lease: cudf::CacheAllocationLease,
-    runtime: Arc<cudf::Runtime>,
+    allocation_domain: cudf::CacheAllocationDomain,
     state: Mutex<GpuResidentGraphCacheState>,
     changed: Condvar,
 }
 
 /// Per-device cuGraph resident-cache subdomain.
 ///
-/// A cache instance owns one runtime lease from the shared device cache domain.
-/// Graphs are therefore always resumed on the same exact runtime binding, and
-/// source and graph cache allocations still share the domain's aggregate cap.
+/// A cache instance owns the one shared device allocation domain. Each graph
+/// entry retains its own child-tracked scope and therefore its own exact
+/// runtime binding; source and graph allocations still share the domain's
+/// aggregate hard cap.
 pub(crate) struct GpuResidentGraphCache {
     inner: Arc<GpuResidentGraphCacheInner>,
 }
@@ -226,31 +241,10 @@ impl GpuResidentGraphCache {
             .with_fact("domain_capacity_bytes", domain.capacity_bytes())
             .with_fact("ledger_cache_cap_bytes", ledger.profile().cache_cap_bytes));
         }
-        let allocation_lease = domain.lease_runtime().map_err(|error| {
-            QueryError::from_cudf(
-                OPERATION,
-                "failed to lease the shared cache allocation domain for resident graphs",
-                error,
-            )
-            .with_fact("device_ordinal", device_ordinal)
-            .with_fact("cache_allocation_domain_id", domain.id())
-        })?;
-        let runtime = Arc::new(allocation_lease.runtime().clone());
-        if runtime.device().ordinal() != device_ordinal {
-            return Err(QueryError::new(
-                QueryErrorCode::CudfInvariantViolation,
-                OPERATION,
-                "graph cache runtime does not match its ledger device",
-            )
-            .with_fact("reason", "graph_cache_runtime_device_mismatch")
-            .with_fact("ledger_device_ordinal", device_ordinal)
-            .with_fact("runtime_device_ordinal", runtime.device().ordinal()));
-        }
         Ok(Self {
             inner: Arc::new(GpuResidentGraphCacheInner {
                 ledger,
-                allocation_lease,
-                runtime,
+                allocation_domain: domain,
                 state: Mutex::new(GpuResidentGraphCacheState::default()),
                 changed: Condvar::new(),
             }),
@@ -259,26 +253,18 @@ impl GpuResidentGraphCache {
 
     /// Stable identity of the shared source/graph cache allocation domain.
     pub(crate) fn cache_allocation_domain_id(&self) -> cudf::CacheAllocationDomainId {
-        self.inner.allocation_lease.domain_id()
+        self.inner.allocation_domain.id()
     }
 
     /// Shared physical allocation domain used by both resident cache subdomains.
+    #[cfg(test)]
     pub(crate) fn cache_allocation_domain(&self) -> &cudf::CacheAllocationDomain {
-        self.inner.allocation_lease.domain()
+        &self.inner.allocation_domain
     }
 
-    /// The one graph-cache runtime binding. Graph builders and consumers must
-    /// use this runtime, not a query runtime or a per-entry companion runtime.
-    pub(crate) fn runtime(&self) -> &Arc<cudf::Runtime> {
-        &self.inner.runtime
-    }
-
-    /// Samples aggregate live bytes from the shared physical allocation domain.
-    pub(crate) fn allocation_usage(&self) -> Result<cudf::DeviceMemoryResourceUsage> {
-        self.cache_allocation_domain().usage().map_err(|error| {
-            QueryError::from_cudf(OPERATION, "failed to sample shared cache allocation-domain usage", error)
-                .with_fact("cache_allocation_domain_id", self.cache_allocation_domain_id())
-        })
+    /// CUDA device on which every graph scope in this cache is created.
+    pub(crate) fn device(&self) -> cudf::DeviceId {
+        self.inner.allocation_domain.device()
     }
 
     /// The largest conservative graph reservation still permitted by the one
@@ -296,9 +282,40 @@ impl GpuResidentGraphCache {
         Ok(cache_remaining.min(managed_remaining))
     }
 
+    /// Reserves the remaining proven-safe cache capacity for one graph
+    /// execution.  A parked graph must execute on this allocation domain, so
+    /// cuGraph's transient result/workspace allocations need a ledger owner
+    /// for their whole lifetime as well as the graph's retained charge.
+    ///
+    /// Returning `None` means no transient allocation can be proven safe; a
+    /// caller must return the checkout and execute through the attempt domain
+    /// instead of using this cache runtime without a charge.
+    pub(crate) fn begin_execution_reservation(&self) -> Result<Option<CacheExecutionReservation>> {
+        let bytes = self.available_reservation_bytes()?;
+        if bytes == 0 {
+            return Ok(None);
+        }
+        CacheExecutionReservation::begin(self.inner.ledger.clone(), bytes)
+    }
+
+    /// A scope that does not return to its retained baseline may still own
+    /// allocations beyond the cache entry's charge. Stop new admission while
+    /// the execution reservation remains fail-closed in the ledger.
+    pub(crate) fn close_admission_for_scope_invariant(&self) -> Result<()> {
+        self.inner.ledger.close_admission_if_open("resident_graph_scope_usage_mismatch").map(|_| ())
+    }
+
+    /// A scope-local stream fence failed, so the cache cannot prove that a
+    /// transient execution reservation is physically retired before reuse.
+    pub(crate) fn close_admission_for_scope_retirement_fence(&self) -> Result<()> {
+        self.inner.ledger.close_admission_if_open("resident_graph_scope_retirement_fence_failed").map(|_| ())
+    }
+
     /// Pre-reserves a graph's measured retention bytes before graph construction
-    /// or ownership transfer. Dropping the returned transaction rolls the exact
-    /// charge back unless it is committed by [`GpuResidentGraphInsertTransaction::insert_if_absent`].
+    /// or ownership transfer. The caller must prove candidate teardown through
+    /// [`GpuResidentGraphInsertTransaction::abort_after_candidate_destroyed`]
+    /// before the precharge can return; an unproven drop instead closes
+    /// admission and retains it.
     pub(crate) fn begin_insert(&self, retained_device_bytes: u64) -> Result<Option<GpuResidentGraphInsertTransaction>> {
         if self.lock()?.closed {
             return Ok(None);
@@ -307,11 +324,32 @@ impl GpuResidentGraphCache {
         else {
             return Ok(None);
         };
+        let allocation_scope = self.inner.allocation_domain.allocation_scope().map_err(|error| {
+            QueryError::from_cudf(OPERATION, "failed to create a graph-specific cache allocation scope", error)
+                .with_fact("device_ordinal", self.inner.ledger.device_ordinal())
+                .with_fact("cache_allocation_domain_id", self.cache_allocation_domain_id())
+        })?;
+        if allocation_scope.device() != self.device() {
+            return Err(QueryError::new(
+                QueryErrorCode::CudfInvariantViolation,
+                OPERATION,
+                "resident graph allocation scope does not match its shared cache domain device",
+            )
+            .with_fact("reason", "resident_graph_scope_device_mismatch")
+            .with_fact("cache_allocation_domain_id", self.cache_allocation_domain_id())
+            .with_fact("scope_device_ordinal", allocation_scope.device().ordinal())
+            .with_fact("cache_device_ordinal", self.device().ordinal()));
+        }
         if self.lock()?.closed {
             drop(charge);
             return Ok(None);
         }
-        Ok(Some(GpuResidentGraphInsertTransaction { cache: Arc::clone(&self.inner), charge: Some(charge) }))
+        Ok(Some(GpuResidentGraphInsertTransaction {
+            cache: Arc::clone(&self.inner),
+            allocation_scope: Arc::new(allocation_scope),
+            retained_scope_usage: None,
+            charge: Some(charge),
+        }))
     }
 
     /// Pins an available entry before source-side graph preparation commits to
@@ -360,18 +398,22 @@ impl GpuResidentGraphCache {
             return Err(resident_graph_cache_closed("checkout"));
         }
         let Some(entry) = state.available.get(resident_key).cloned() else {
+            state.lookup_misses = state.lookup_misses.saturating_add(1);
             return Ok(None);
         };
         let pin = match preparation_pin {
             Some(preparation_pin) => {
                 if !preparation_pin.belongs_to(&self.inner, resident_key) {
+                    state.lookup_misses = state.lookup_misses.saturating_add(1);
                     return Ok(None);
                 }
                 let Some(prepared) = state.preparation_pins.remove(resident_key) else {
+                    state.lookup_misses = state.lookup_misses.saturating_add(1);
                     return Ok(None);
                 };
                 if prepared.id != preparation_pin.id {
                     state.preparation_pins.insert(resident_key.clone(), prepared);
+                    state.lookup_misses = state.lookup_misses.saturating_add(1);
                     return Ok(None);
                 }
                 preparation_pin.active = false;
@@ -379,9 +421,11 @@ impl GpuResidentGraphCache {
             },
             None => {
                 if state.preparation_pins.contains_key(resident_key) {
+                    state.lookup_misses = state.lookup_misses.saturating_add(1);
                     return Ok(None);
                 }
                 let Some(pin) = entry.residency.try_pin()? else {
+                    state.lookup_misses = state.lookup_misses.saturating_add(1);
                     return Ok(None);
                 };
                 pin
@@ -406,6 +450,7 @@ impl GpuResidentGraphCache {
         let removed = state.available.remove(resident_key);
         debug_assert!(removed.is_some());
         state.checked_out.insert(resident_key.clone(), GpuResidentGraphCheckedOutState::Active(Arc::clone(&entry)));
+        state.lookup_hits = state.lookup_hits.saturating_add(1);
         Ok(Some(GpuResidentGraphCheckout {
             cache: Arc::clone(&self.inner),
             resident_key: resident_key.clone(),
@@ -484,6 +529,19 @@ impl GpuResidentGraphCache {
         })
     }
 
+    pub(crate) fn activity(&self) -> Result<CacheGraphActivity> {
+        let state = self.lock()?;
+        Ok(CacheGraphActivity {
+            available_entries: state.available.len(),
+            checked_out_entries: state.checked_out.len(),
+            preparation_pins: state.preparation_pins.len(),
+            lookup_hits: state.lookup_hits,
+            lookup_misses: state.lookup_misses,
+            insertions: state.insertions,
+            duplicate_inserts: state.duplicate_inserts,
+        })
+    }
+
     fn lock(&self) -> Result<MutexGuard<'_, GpuResidentGraphCacheState>> {
         self.inner.state.lock().map_err(|_error| resident_graph_cache_poisoned("lock"))
     }
@@ -503,9 +561,11 @@ impl GpuResidentGraphCache {
 
 /// Linear reservation used while a caller constructs or promotes a graph into
 /// the shared cache allocation domain.
-#[must_use = "dropping an insert transaction rolls its ledger reservation back"]
+#[must_use = "an insert transaction must fence candidate teardown before returning its ledger precharge"]
 pub(crate) struct GpuResidentGraphInsertTransaction {
     cache: Arc<GpuResidentGraphCacheInner>,
+    allocation_scope: Arc<cudf::CacheAllocationScope>,
+    retained_scope_usage: Option<cudf::DeviceMemoryResourceUsage>,
     charge: Option<CacheResidencyChargeTransaction>,
 }
 
@@ -515,24 +575,35 @@ impl GpuResidentGraphInsertTransaction {
         self.charge.as_ref().map_or(0, CacheResidencyChargeTransaction::bytes)
     }
 
-    /// Runtime bound to the shared cache allocation domain. Build the graph on
-    /// this runtime before committing it, never on a private companion runtime.
-    pub(crate) fn runtime(&self) -> &Arc<cudf::Runtime> {
-        &self.cache.runtime
+    /// Exact runtime binding for this prospective graph. Retain the matching
+    /// scope with the parked graph; sibling cache work is deliberately absent
+    /// from this runtime's usage counter.
+    pub(crate) fn runtime(&self) -> Arc<cudf::Runtime> {
+        Arc::new(self.allocation_scope.runtime().clone())
     }
 
-    /// Measures the graph's retained allocation delta from the shared cache
-    /// domain and reconciles a conservative pre-reservation down to that exact
-    /// value. A larger-than-reserved delta returns `false`; the caller must
-    /// destroy the graph before this transaction drops and rolls its charge
-    /// back, so the ledger never observes an undercharged retained graph.
-    pub(crate) fn shrink_to_domain_delta(&mut self, before: cudf::DeviceMemoryResourceUsage) -> Result<bool> {
-        let after = self.cache.allocation_lease.domain().usage().map_err(|error| {
-            QueryError::from_cudf(OPERATION, "failed to measure resident graph allocation-domain delta", error)
-                .with_fact("cache_allocation_domain_id", self.cache.allocation_lease.domain_id())
-        })?;
-        let retained_bytes = after.current_bytes.saturating_sub(before.current_bytes);
-        self.charge
+    /// Opens an allocator-event correlation window for this prospective cache
+    /// entry. The caller must finish it only after all scope-owned temporaries
+    /// have been destroyed, while this transaction still keeps the scope alive.
+    pub(crate) fn allocation_scope(&self) -> Arc<cudf::CacheAllocationScope> {
+        Arc::clone(&self.allocation_scope)
+    }
+
+    /// Returns the exact high-water mark from this candidate graph's private
+    /// allocation scope. The caller must first finish the scope's work so the
+    /// value covers every allocation from the physical graph build.
+    pub(crate) fn scope_peak_bytes(&self) -> Result<u64> {
+        self.scope_usage().map(|usage| usage.peak_bytes)
+    }
+
+    /// Reconciles the conservative pre-reservation to this graph scope's live
+    /// bytes. The scope excludes sibling source/graph cache mutations, so this
+    /// remains exact even while the shared allocation domain is under churn.
+    pub(crate) fn shrink_to_scope_usage(&mut self) -> Result<bool> {
+        self.synchronize_scope()?;
+        let usage = self.scope_usage()?;
+        let shrunk = self
+            .charge
             .as_mut()
             .ok_or_else(|| {
                 QueryError::new(
@@ -542,7 +613,11 @@ impl GpuResidentGraphInsertTransaction {
                 )
                 .with_fact("reason", "resident_graph_insert_transaction_consumed")
             })?
-            .shrink_to(retained_bytes)
+            .shrink_to(usage.current_bytes)?;
+        if shrunk {
+            self.retained_scope_usage = Some(usage);
+        }
+        Ok(shrunk)
     }
 
     pub(crate) fn insert_if_absent<T>(
@@ -553,47 +628,203 @@ impl GpuResidentGraphInsertTransaction {
     where
         T: GpuResidentGraphTransposition,
     {
-        let expected_device = self.cache.runtime.device().ordinal();
+        let expected_device = self.allocation_scope.device().ordinal();
         let graph_device = parked.device();
         if graph_device != i32::try_from(expected_device).unwrap_or(i32::MAX) {
+            // Destroy the native candidate before proving its scope empty and returning the precharge.
             drop(parked);
-            return Err(QueryError::new(
+            let error = QueryError::new(
                 QueryErrorCode::InvalidPlan,
                 OPERATION,
                 "parked graph device does not match the shared cache allocation domain",
             )
             .with_fact("reason", "resident_graph_device_mismatch")
             .with_fact("graph_device_ordinal", graph_device)
-            .with_fact("cache_device_ordinal", expected_device));
+            .with_fact("cache_device_ordinal", expected_device);
+            self.abort_after_candidate_destroyed()?;
+            return Err(error);
         }
         if resident_key.orientation != T::orientation() {
+            // Destroy the native candidate before proving its scope empty and returning the precharge.
             drop(parked);
-            return Err(QueryError::new(
+            let error = QueryError::new(
                 QueryErrorCode::InvalidPlan,
                 OPERATION,
                 "parked graph orientation does not match the resident graph key",
             )
-            .with_fact("reason", "resident_graph_key_orientation_mismatch"));
+            .with_fact("reason", "resident_graph_key_orientation_mismatch");
+            self.abort_after_candidate_destroyed()?;
+            return Err(error);
+        }
+        let Some(retained_scope_usage) = self.retained_scope_usage else {
+            // Destroy the native candidate before proving its scope empty and returning the precharge.
+            drop(parked);
+            let error = QueryError::new(
+                QueryErrorCode::Internal,
+                OPERATION,
+                "resident graph insertion was not reconciled to its allocation scope",
+            )
+            .with_fact("reason", "resident_graph_scope_usage_not_reconciled");
+            self.abort_after_candidate_destroyed()?;
+            return Err(error);
+        };
+        let current_scope_usage = match self.scope_usage() {
+            Ok(usage) => usage,
+            Err(error) => {
+                // Destroy the native candidate before its unmeasurable scope is retained fail-closed.
+                drop(parked);
+                let _ = self.abort_after_candidate_destroyed();
+                return Err(error);
+            },
+        };
+        if current_scope_usage.current_bytes != retained_scope_usage.current_bytes
+            || current_scope_usage.current_aligned_bytes != retained_scope_usage.current_aligned_bytes
+            || current_scope_usage.current_allocations != retained_scope_usage.current_allocations
+        {
+            // Destroy the native candidate before proving its scope empty and returning the precharge.
+            drop(parked);
+            let error = scope_usage_changed_after_reconciliation(
+                retained_scope_usage,
+                current_scope_usage,
+                self.cache.allocation_domain.id(),
+            );
+            self.abort_after_candidate_destroyed()?;
+            return Err(error);
         }
         let mut state = self.cache.state.lock().map_err(|_error| resident_graph_cache_poisoned("insert"))?;
         if state.closed {
+            // Do not hold the cache mutex across native graph destruction or scope teardown.
             drop(state);
+            // Destroy the native candidate before proving its scope empty and returning the precharge.
             drop(parked);
+            self.abort_after_candidate_destroyed()?;
             return Ok(GpuResidentGraphCacheInsert::Closed);
         }
         if state.available.contains_key(&resident_key) || state.checked_out.contains_key(&resident_key) {
+            state.duplicate_inserts = state.duplicate_inserts.saturating_add(1);
+            // Do not hold the cache mutex across native graph destruction or scope teardown.
             drop(state);
+            // Destroy the native candidate before proving its scope empty and returning the precharge.
             drop(parked);
+            self.abort_after_candidate_destroyed()?;
             return Ok(GpuResidentGraphCacheInsert::AlreadyPresent);
         }
         let charge = self.charge.take().expect("resident graph insertion transaction is consumed once");
         let entry = Arc::new(GpuResidentGraphCacheEntry {
             graph: Mutex::new(Some(T::into_entry(parked))),
+            allocation_scope: Arc::clone(&self.allocation_scope),
+            retained_scope_usage,
             residency: charge.commit_evictable(),
         });
         state.available.insert(resident_key, entry);
+        state.insertions = state.insertions.saturating_add(1);
         self.cache.changed.notify_all();
         Ok(GpuResidentGraphCacheInsert::Inserted)
+    }
+
+    fn scope_usage(&self) -> Result<cudf::DeviceMemoryResourceUsage> {
+        self.allocation_scope.usage().map_err(|error| {
+            QueryError::from_cudf(OPERATION, "failed to read resident graph allocation-scope usage", error)
+                .with_fact("cache_allocation_domain_id", self.allocation_scope.domain_id())
+        })
+    }
+
+    /// The graph-construction stream is unique to this scope. It must retire
+    /// before a logical usage snapshot can authorize release of any cache
+    /// precharge; accounting counters alone are not a CUDA completion proof.
+    fn synchronize_scope(&self) -> Result<()> {
+        self.allocation_scope.synchronize().map_err(|error| {
+            QueryError::from_cudf(
+                OPERATION,
+                "failed to fence resident graph allocation scope before reconciliation",
+                error,
+            )
+            .with_fact("reason", "resident_graph_scope_retirement_fence_failed")
+            .with_fact("cache_allocation_domain_id", self.allocation_scope.domain_id())
+        })
+    }
+
+    /// Releases a prospective graph-cache precharge only after all candidate
+    /// objects and companion runtime handles have been destroyed.  The graph
+    /// builder must call this on every non-commit path; dropping the
+    /// transaction without this proof instead closes admission and retains the
+    /// charge.
+    pub(crate) fn abort_after_candidate_destroyed(mut self) -> Result<()> {
+        let Some(charge) = self.charge.take() else {
+            return Ok(());
+        };
+        if let Err(error) = self.synchronize_scope() {
+            charge.retain_charge_after_unsafe_teardown();
+            self.cache.ledger.close_admission_if_open("resident_graph_scope_retirement_fence_failed")?;
+            return Err(error);
+        }
+        let device = self.allocation_scope.device();
+        let health = cudf::runtime::device_health_snapshot(device);
+        let scope_usage = self.scope_usage();
+        let usage_is_empty = scope_usage.as_ref().is_ok_and(|usage| {
+            usage.current_bytes == 0 && usage.current_aligned_bytes == 0 && usage.current_allocations == 0
+        });
+        if health.status() != cudf::runtime::DeviceHealthStatus::Healthy || !usage_is_empty {
+            charge.retain_charge_after_unsafe_teardown();
+            return self.fail_closed_candidate_teardown(
+                "resident graph candidate teardown could not prove an empty healthy allocation scope",
+                scope_usage.ok(),
+            );
+        }
+        if let Err(error) = charge.release_after_proven_empty() {
+            let _ = self.cache.ledger.close_admission_if_open("resident_graph_candidate_charge_release_failed");
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    fn fail_closed_candidate_teardown(
+        &self,
+        message: &'static str,
+        scope_usage: Option<cudf::DeviceMemoryResourceUsage>,
+    ) -> Result<()> {
+        self.cache.ledger.close_admission_if_open("resident_graph_candidate_teardown_unproven")?;
+        let mut error = QueryError::new(QueryErrorCode::CudfPersistentFailure, OPERATION, message)
+            .with_fact("reason", "resident_graph_candidate_teardown_unproven")
+            .with_fact("device_ordinal", self.allocation_scope.device().ordinal())
+            .with_fact("cache_allocation_domain_id", self.allocation_scope.domain_id());
+        if let Some(usage) = scope_usage {
+            error = error
+                .with_fact("scope_current_bytes", usage.current_bytes)
+                .with_fact("scope_current_aligned_bytes", usage.current_aligned_bytes)
+                .with_fact("scope_current_allocations", usage.current_allocations);
+        }
+        Err(error)
+    }
+}
+
+impl Drop for GpuResidentGraphInsertTransaction {
+    fn drop(&mut self) {
+        let Some(charge) = self.charge.take() else {
+            return;
+        };
+        // This destructor runs after later graph-builder locals have dropped.
+        // It may therefore return the precharge only when the exact scope
+        // stream fences successfully and reports no surviving allocation;
+        // every other path retains the charge and stops admission.
+        let scope_fenced = self.allocation_scope.synchronize().is_ok();
+        let scope_empty = self.allocation_scope.usage().is_ok_and(|usage| {
+            usage.current_bytes == 0 && usage.current_aligned_bytes == 0 && usage.current_allocations == 0
+        });
+        let healthy = cudf::runtime::device_health_snapshot(self.allocation_scope.device()).status()
+            == cudf::runtime::DeviceHealthStatus::Healthy;
+        if scope_fenced && scope_empty && healthy {
+            if charge.release_after_proven_empty().is_err() {
+                let _ =
+                    self.cache.ledger.close_admission_if_open("resident_graph_insert_transaction_drop_release_failed");
+            }
+            return;
+        }
+        charge.retain_charge_after_unsafe_teardown();
+        let _ = self
+            .cache
+            .ledger
+            .close_admission_if_open("resident_graph_insert_transaction_dropped_without_teardown_proof");
     }
 }
 
@@ -643,6 +874,80 @@ where T: GpuResidentGraphTransposition
 impl<T> GpuResidentGraphCheckout<T>
 where T: GpuResidentGraphTransposition
 {
+    /// The exact scope runtime that constructed this parked graph.
+    pub(crate) fn runtime(&self) -> Arc<cudf::Runtime> {
+        Arc::new(self.entry.allocation_scope.runtime().clone())
+    }
+
+    /// Keeps the exact cache allocation scope alive while an exclusive
+    /// checkout contributes allocator-event evidence for one attempt.
+    pub(crate) fn allocation_scope(&self) -> Arc<cudf::CacheAllocationScope> {
+        Arc::clone(&self.entry.allocation_scope)
+    }
+
+    /// Returns the exact high-water mark for this resident graph's exclusive
+    /// cache scope. The checkout remains pinned while it is measured, so no
+    /// other graph execution can contribute to this scope's report.
+    pub(crate) fn scope_peak_bytes(&self) -> Result<u64> {
+        self.entry.allocation_scope.usage().map(|usage| usage.peak_bytes).map_err(|error| {
+            QueryError::from_cudf(OPERATION, "failed to read checked-out resident graph allocation-scope peak", error)
+                .with_fact("cache_allocation_domain_id", self.entry.allocation_scope.domain_id())
+        })
+    }
+
+    /// Fences the exact private stream that executed this checkout. The cache
+    /// must retain transient ledger ownership until this returns successfully.
+    pub(crate) fn synchronize_scope(&self) -> Result<()> {
+        self.entry.allocation_scope.synchronize().map_err(|error| {
+            QueryError::from_cudf(OPERATION, "failed to fence checked-out resident graph allocation scope", error)
+                .with_fact("reason", "resident_graph_scope_retirement_fence_failed")
+                .with_fact("cache_allocation_domain_id", self.entry.allocation_scope.domain_id())
+        })
+    }
+
+    /// Requires cached execution to return the graph-specific allocation scope
+    /// to the exact retained baseline before its transient ledger reservation
+    /// may be released.
+    pub(crate) fn verify_retained_scope_usage(&self) -> Result<()> {
+        let current = self.entry.allocation_scope.usage().map_err(|error| {
+            QueryError::from_cudf(OPERATION, "failed to read checked-out resident graph allocation-scope usage", error)
+                .with_fact("cache_allocation_domain_id", self.entry.allocation_scope.domain_id())
+        })?;
+        let retained = self.entry.retained_scope_usage;
+        if current.current_bytes != retained.current_bytes
+            || current.current_aligned_bytes != retained.current_aligned_bytes
+            || current.current_allocations != retained.current_allocations
+        {
+            return Err(scope_usage_changed_after_reconciliation(
+                retained,
+                current,
+                self.entry.allocation_scope.domain_id(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Proves that a re-parked graph may return to the available cache before
+    /// its checkout correlation window closes. The private-stream fence must
+    /// already have completed; this checks both the retained allocation
+    /// baseline and current device health while the checkout is still
+    /// exclusive.
+    pub(crate) fn verify_reparked_scope_for_return(&self) -> Result<()> {
+        self.verify_retained_scope_usage()?;
+        let device = self.entry.allocation_scope.device();
+        if cudf::runtime::device_health_snapshot(device).status() != cudf::runtime::DeviceHealthStatus::Healthy {
+            return Err(QueryError::new(
+                QueryErrorCode::CudfPersistentFailure,
+                OPERATION,
+                "resident graph allocation scope device is unhealthy after re-park",
+            )
+            .with_fact("reason", "resident_graph_scope_device_unhealthy_after_repark")
+            .with_fact("device_ordinal", device.ordinal())
+            .with_fact("cache_allocation_domain_id", self.entry.allocation_scope.domain_id()));
+        }
+        Ok(())
+    }
+
     /// Extracts the parked graph for a cuGraph execution. The caller must
     /// return it with [`Self::return_parked`]; dropping the checkout after an
     /// extraction conservatively leaves the shared charge pinned and prevents
@@ -656,7 +961,7 @@ where T: GpuResidentGraphTransposition
     }
 
     fn complete_with_parked(&mut self, parked: ParkedGraph<T>) -> Result<()> {
-        let expected_device = self.cache.runtime.device().ordinal();
+        let expected_device = self.entry.allocation_scope.device().ordinal();
         let graph_device = parked.device();
         if graph_device != i32::try_from(expected_device).unwrap_or(i32::MAX) {
             drop(parked);
@@ -783,7 +1088,7 @@ fn destroy_entry_after_graph_drop(
         )
         .with_fact("reason", "resident_graph_destroy_state_invalid"));
     };
-    let device = cache.runtime.device();
+    let device = entry.allocation_scope.device();
     let before = cudf::runtime::device_health_snapshot(device);
     if before.status() != cudf::runtime::DeviceHealthStatus::Healthy {
         std::mem::forget(graph);
@@ -797,6 +1102,15 @@ fn destroy_entry_after_graph_drop(
     // graph state. Only after that destructor returns may the ledger charge be
     // committed as released.
     drop(graph);
+    if entry.allocation_scope.synchronize().is_err() {
+        destruction.retain_charge_after_failed_destruction()?;
+        return record_teardown_quarantine(
+            cache,
+            entry.residency.bytes(),
+            "resident graph allocation scope retirement fence failed after graph destruction",
+        )
+        .map(|_| false);
+    }
     let after = cudf::runtime::device_health_snapshot(device);
     if after.status() != cudf::runtime::DeviceHealthStatus::Healthy
         || after.quarantined_teardown_count() > before.quarantined_teardown_count()
@@ -809,8 +1123,50 @@ fn destroy_entry_after_graph_drop(
         )
         .map(|_| false);
     }
+    let scope_usage = match entry.allocation_scope.usage() {
+        Ok(usage) => usage,
+        Err(_error) => {
+            destruction.retain_charge_after_failed_destruction()?;
+            return record_teardown_quarantine(
+                cache,
+                entry.residency.bytes(),
+                "resident graph allocation scope could not be measured after graph destruction",
+            )
+            .map(|_| false);
+        },
+    };
+    if scope_usage.current_bytes != 0 || scope_usage.current_aligned_bytes != 0 || scope_usage.current_allocations != 0
+    {
+        destruction.retain_charge_after_failed_destruction()?;
+        return record_teardown_quarantine(
+            cache,
+            entry.residency.bytes(),
+            "resident graph allocation scope retained bytes after graph destruction",
+        )
+        .map(|_| false);
+    }
     destruction.commit_after_destroy()?;
     Ok(true)
+}
+
+fn scope_usage_changed_after_reconciliation(
+    retained: cudf::DeviceMemoryResourceUsage,
+    current: cudf::DeviceMemoryResourceUsage,
+    allocation_domain_id: cudf::CacheAllocationDomainId,
+) -> QueryError {
+    QueryError::new(
+        QueryErrorCode::CudfInvariantViolation,
+        OPERATION,
+        "resident graph allocation scope did not return to its retained baseline",
+    )
+    .with_fact("reason", "resident_graph_scope_usage_mismatch")
+    .with_fact("cache_allocation_domain_id", allocation_domain_id)
+    .with_fact("retained_current_bytes", retained.current_bytes)
+    .with_fact("current_bytes", current.current_bytes)
+    .with_fact("retained_current_aligned_bytes", retained.current_aligned_bytes)
+    .with_fact("current_aligned_bytes", current.current_aligned_bytes)
+    .with_fact("retained_current_allocations", retained.current_allocations)
+    .with_fact("current_allocations", current.current_allocations)
 }
 
 fn record_teardown_quarantine(cache: &Arc<GpuResidentGraphCacheInner>, bytes: u64, reason: &'static str) -> Result<()> {

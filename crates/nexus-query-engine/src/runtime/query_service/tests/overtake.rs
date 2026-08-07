@@ -341,10 +341,13 @@ fn impossible_requirement_is_rejected_at_submit_without_queueing() {
     let requirement = crate::admission::AttemptRequirement {
         configured_floor_bytes: 10,
         capability_floor_raise_bytes: 200,
+        required_phase_floor_bytes: 0,
+        source_stage_bytes: None,
         soft_working_set_hint_bytes: None,
         estimate_quality: nexus_query_engine::admission::EstimateQuality::Unknown,
         required_capabilities: Vec::new(),
         attested_cugraph_graph_execution_scopes: Vec::new(),
+        reservation_shapes: Vec::new(),
     };
     let error = service
         .admit_query_with_request(

@@ -95,6 +95,8 @@ impl NexusNativeExecutionConfig {
     ) -> crate::error::Result<NexusNativeExecutionContext> {
         self.validate_query_policies()?;
         if let Some(ticket) = self.query_admission_ticket_for_task_context(&task_context) {
+            let task_context =
+                super::super::admission::task_context_with_query_admission_ticket(task_context, Arc::clone(&ticket));
             return ticket
                 .acquire_context(task_context, self.cancellation.clone())
                 .await

@@ -22,7 +22,7 @@ workspace = true
 [dependencies]
 arrow = { workspace = true }
 blake3 = { workspace = true }
-bytes = "1"
+bytes = { workspace = true }
 cudf = { workspace = true }
 # Direct edge so build.rs receives both the runtime directory and the shared
 # RMM/logger identity exported through cudf-sys's DEP_CUDF_RUST_* metadata.
@@ -41,10 +41,10 @@ serde_json = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
 
 [dev-dependencies]
-async-trait = "0.1"
+async-trait = { workspace = true }
+
 # autotests = false above: every tests/*.rs harness must be registered here
 # explicitly — unregistered files are silently ignored by cargo.
-
 [[test]]
 name = "gpu_backend_heterogeneous_active_limits"
 path = "tests/gpu_backend_heterogeneous_active_limits.rs"

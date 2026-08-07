@@ -17,14 +17,15 @@ use cudf::{
     },
 };
 
+#[cfg(any(feature = "cugraph", test))]
+use crate::runtime::gpu::ledger::MemoryGrant;
 use crate::{
     error::{QueryError, Result},
     naming::is_datafusion_order_column_name,
     plan::{GraphResidencyDescriptor, JoinNullEquality},
     runtime::{
-        DevicePlacement, ExecutionCancellation, ExecutionContext,
-        cache::local_parquet::GpuLocalParquetSourceCachePin,
-        gpu::ledger::{MemoryGrant, MemoryGrantLiveReservation},
+        DevicePlacement, ExecutionCancellation, ExecutionContext, cache::local_parquet::GpuLocalParquetSourceCachePin,
+        gpu::ledger::MemoryGrantLiveReservation,
     },
 };
 
@@ -177,6 +178,7 @@ impl GpuDataFrame {
     ///
     /// This is intentionally distinct from the frame's physical allocation:
     /// callers use it only to avoid reserving an overlapping live input twice.
+    #[cfg(any(feature = "cugraph", test))]
     pub(crate) fn live_reservation_bytes_for(&self, grant: Option<&MemoryGrant>) -> u64 {
         match (self.live_reservation.as_ref(), grant) {
             (Some(reservation), Some(grant)) if reservation.belongs_to(grant) => reservation.bytes(),

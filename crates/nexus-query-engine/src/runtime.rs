@@ -68,6 +68,9 @@ pub use boundary::{
 pub use bounded_join::{
     BoundedJoinReservationContract, BoundedJoinReservationRequirement, BoundedJoinReservationStatus,
 };
+pub use cache::{
+    CacheGraphActivity, CacheSourceActivity, CacheSourceEventSnapshot, DeviceCacheReport, cache_observation_fingerprint,
+};
 pub use cache_events::LakehouseCacheFillEventSnapshot;
 pub(crate) use cache_events::{LakehouseCacheFillErrorEvent, LakehouseCacheFillEvent, LakehouseCacheFillOutcome};
 pub use cache_fill::{

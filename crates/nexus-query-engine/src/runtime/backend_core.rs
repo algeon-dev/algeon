@@ -1190,6 +1190,16 @@ impl GpuBackendSession {
         self.with_service(QueryService::device_ledger_reports)
     }
 
+    pub fn device_cache_reports(&self) -> Result<Vec<crate::runtime::DeviceCacheReport>> {
+        self.with_service(QueryService::device_cache_reports)
+    }
+
+    /// Returns bounded owner-emitted source-cache observations for diagnostic
+    /// correlation with public attempt reports.
+    pub fn device_cache_source_event_snapshots(&self) -> Result<Vec<crate::runtime::CacheSourceEventSnapshot>> {
+        self.with_service(QueryService::device_cache_source_event_snapshots)
+    }
+
     pub fn device_memory_failure_reports(&self) -> Result<Vec<DeviceMemoryFailureReport>> {
         self.with_service(|service| Ok(service.device_memory_failure_reports()))
     }

@@ -71,6 +71,10 @@ pub struct QueryMetrics {
     pub graph_algorithm_runtime_rows: Vec<GraphAlgorithmRuntimeMetrics>,
     /// Graph memory-tier reservation rows in observation order.
     pub graph_reservation_rows: Vec<GraphReservationReport>,
+    /// Fixed-shape graph model-claim versus measured-peak calibration rows in
+    /// observation order. These are diagnostic projections and never form
+    /// admission evidence.
+    pub graph_claim_calibration_rows: Vec<crate::graph_memory::GraphClaimCalibrationRow>,
     /// Join-strategy diagnostics captured during planning/execution.
     pub join_strategy_decisions: Vec<JoinStrategyDecisionMetrics>,
     /// Aggregate-strategy diagnostics captured during planning/execution.
@@ -352,6 +356,9 @@ impl QueryMetrics {
         for row in &mut self.graph_reservation_rows {
             row.query_id = Some(query_id.clone());
         }
+        for row in &mut self.graph_claim_calibration_rows {
+            row.query_id = Some(query_id.clone());
+        }
     }
 
     /// Merges another query metrics value into this one.
@@ -371,6 +378,7 @@ impl QueryMetrics {
         self.operators.extend(other.operators);
         self.graph_algorithm_runtime_rows.extend(other.graph_algorithm_runtime_rows);
         self.graph_reservation_rows.extend(other.graph_reservation_rows);
+        self.graph_claim_calibration_rows.extend(other.graph_claim_calibration_rows);
         self.join_strategy_decisions.extend(other.join_strategy_decisions);
         self.aggregate_strategy_decisions.extend(other.aggregate_strategy_decisions);
         self.dynamic_filter_runtime_rows.extend(other.dynamic_filter_runtime_rows);

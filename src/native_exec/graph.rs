@@ -16,7 +16,8 @@
 //! host result to followers.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
+    fmt,
     sync::{
         Arc, Mutex, OnceLock,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -29,8 +30,11 @@ use datafusion::{
     common::Result as DataFusionResult, execution::memory_pool::MemoryReservation, physical_plan::ExecutionPlan,
 };
 use nexus_query_engine::{
-    admission::QueryPlanCapabilityProof, graph_memory::GraphMemoryAdmissionEvidence, plan::ResidentGraphKey,
-    runtime::ExecutionCancellation,
+    admission::QueryPlanCapabilityProof,
+    graph_memory::GraphMemoryAdmissionEvidence,
+    observability::AttemptId,
+    plan::ResidentGraphKey,
+    runtime::{ExecutionCancellation, cache_observation_fingerprint, resident::GpuResultHandle},
 };
 use tokio::sync::watch;
 
@@ -41,6 +45,9 @@ use crate::{
 
 const OPERATION: &str = "datafusion_nexus.graph_execution.bfs_singleflight";
 const DEFAULT_MAX_BATCH_WIDTH: usize = 32;
+/// The coordinator remains a serving primitive, not an unbounded event
+/// recorder.  A fresh S7 cohort is far smaller than this bounded projection.
+const MAX_BFS_SINGLEFLIGHT_EVENT_SNAPSHOTS: usize = 256;
 
 /// Opaque construction-inclusive and execution-only graph-model output.
 ///
@@ -109,6 +116,11 @@ pub(crate) trait GraphExecutionPlan: Send + Sync {
     /// Issues capability evidence for the exact native graph fragment this
     /// execution node submits after staging its GPU-resident inputs.
     fn graph_execution_capability_proof(&self) -> DataFusionResult<QueryPlanCapabilityProof>;
+
+    /// Returns the exact GPU-resident input name through which this graph
+    /// execution root hands its already-live result to a composed native
+    /// host-output passthrough.
+    fn graph_result_input_name(&self) -> &str;
 
     /// Returns the one fixed-cardinality post-seal metric target for this
     /// graph execution root. The adapter discovers it through this neutral
@@ -185,7 +197,7 @@ pub(crate) struct GraphBfsSingleflightKey {
 }
 
 /// Additive diagnostics for exact-request BFS serving coalescing.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GraphBfsSingleflightSnapshot {
     /// Requests accepted by the exact deep-BFS eligibility guard.
     pub eligible_requests: u64,
@@ -203,6 +215,25 @@ pub struct GraphBfsSingleflightSnapshot {
     pub cancelled_waiters: u64,
     /// Largest number of logical requests joined to one generation.
     pub peak_width: usize,
+    /// Bounded coordinator-emitted events. These are not derived from the
+    /// aggregate counters above and contain only one-way fingerprints.
+    pub events: Vec<GraphBfsSingleflightEventSnapshot>,
+}
+
+/// One bounded BFS singleflight fact emitted at the coordinator that owns the
+/// group lifecycle. Exact key and caller correlation are one-way fingerprints
+/// so diagnostic snapshots never disclose source identities or query ids.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GraphBfsSingleflightEventSnapshot {
+    /// Per-coordinator monotonically increasing sequence number.
+    pub sequence: u64,
+    pub device_ordinal: usize,
+    pub singleflight_key_fingerprint: String,
+    pub correlation_fingerprint: Option<String>,
+    pub generation: u64,
+    /// `leader_join`, `follower_join`, `leader_traversal`,
+    /// `leader_published`, `follower_copy`, or `leader_failed`.
+    pub action: &'static str,
 }
 
 /// Process-local coordinator shared by clones of one backend execution config.
@@ -238,19 +269,48 @@ impl GraphBfsSingleflight {
         self.inner.enabled.load(Ordering::Acquire)
     }
 
+    #[cfg(test)]
     pub(crate) fn join(&self, key: GraphBfsSingleflightKey) -> Result<GraphBfsSingleflightJoin> {
+        self.join_with_correlation(key, None)
+    }
+
+    /// Joins a coalescing group while retaining only the caller-supplied
+    /// one-way correlation fingerprint in its bounded event projection.
+    pub(crate) fn join_with_correlation(
+        &self,
+        key: GraphBfsSingleflightKey,
+        correlation_fingerprint: Option<String>,
+    ) -> Result<GraphBfsSingleflightJoin> {
+        self.join_with_attempt(key, correlation_fingerprint, None)
+    }
+
+    /// Joins a coalescing group and retains the leader's engine-minted attempt
+    /// id only in the in-process follower state. It is projected later by the
+    /// follower's own sealed attempt snapshot, never by coordinator events.
+    pub(crate) fn join_with_attempt(
+        &self,
+        key: GraphBfsSingleflightKey,
+        correlation_fingerprint: Option<String>,
+        leader_attempt_id: Option<AttemptId>,
+    ) -> Result<GraphBfsSingleflightJoin> {
         self.inner.counters.eligible_requests.fetch_add(1, Ordering::Relaxed);
         let mut state = self.inner.state.lock().map_err(|_error| state_poisoned_error(key.device_ordinal))?;
-        if let Some(groups) = state.groups.get_mut(&key)
-            && let Some(group) = groups.iter_mut().find(|group| group.participants < self.inner.max_batch_width)
-        {
-            group.participants += 1;
-            update_peak(&self.inner.counters.peak_width, group.participants);
+        let follower = state.groups.get_mut(&key).and_then(|groups| {
+            groups.iter_mut().find(|group| group.participants < self.inner.max_batch_width).map(|group| {
+                group.participants += 1;
+                update_peak(&self.inner.counters.peak_width, group.participants);
+                (group.generation, group.leader_attempt_id, group.sender.subscribe())
+            })
+        });
+        if let Some((generation, leader_attempt_id, receiver)) = follower {
+            state.record_event(&key, correlation_fingerprint.clone(), generation, "follower_join");
             return Ok(GraphBfsSingleflightJoin::Follower(GraphBfsFollower {
                 coordinator: self.clone(),
                 key,
-                generation: group.generation,
-                receiver: group.sender.subscribe(),
+                generation,
+                leader_attempt_id,
+                correlation_fingerprint,
+                receiver,
                 completed: false,
             }));
         }
@@ -258,24 +318,36 @@ impl GraphBfsSingleflight {
         state.next_generation = state.next_generation.saturating_add(1);
         let generation = state.next_generation;
         let (sender, _receiver) = watch::channel(PublishedResult::Pending);
-        let groups = state.groups.entry(key.clone()).or_default();
-        if !groups.is_empty() {
+        let overflow = {
+            let groups = state.groups.entry(key.clone()).or_default();
+            let overflow = !groups.is_empty();
+            groups.push(SingleflightGroup { generation, participants: 1, leader_attempt_id, sender });
+            overflow
+        };
+        if overflow {
             self.inner.counters.overflow_groups.fetch_add(1, Ordering::Relaxed);
         }
-        groups.push(SingleflightGroup { generation, participants: 1, sender });
         self.inner.counters.groups_formed.fetch_add(1, Ordering::Relaxed);
         update_peak(&self.inner.counters.peak_width, 1);
+        state.record_event(&key, correlation_fingerprint.clone(), generation, "leader_join");
         Ok(GraphBfsSingleflightJoin::Leader(GraphBfsLeader {
             coordinator: self.clone(),
             key,
             generation,
+            correlation_fingerprint,
             traversal_submitted: false,
             resolved: false,
         }))
     }
 
-    pub(crate) fn record_follower_copy(&self) {
+    fn record_follower_copy(
+        &self,
+        key: &GraphBfsSingleflightKey,
+        generation: u64,
+        correlation_fingerprint: Option<String>,
+    ) {
         self.inner.counters.follower_copies.fetch_add(1, Ordering::Relaxed);
+        self.record_event(key, correlation_fingerprint, generation, "follower_copy");
     }
 
     pub(crate) fn snapshot(&self) -> GraphBfsSingleflightSnapshot {
@@ -289,13 +361,30 @@ impl GraphBfsSingleflight {
             leader_failures: counters.leader_failures.load(Ordering::Acquire),
             cancelled_waiters: counters.cancelled_waiters.load(Ordering::Acquire),
             peak_width: usize::try_from(counters.peak_width.load(Ordering::Acquire)).unwrap_or(usize::MAX),
+            events: self
+                .inner
+                .state
+                .lock()
+                .map(|state| state.recent_events.iter().cloned().collect())
+                .unwrap_or_default(),
         }
     }
 
-    fn publish(&self, key: &GraphBfsSingleflightKey, generation: u64, result: PublishedResult) -> Result<()> {
+    fn publish(
+        &self,
+        key: &GraphBfsSingleflightKey,
+        generation: u64,
+        correlation_fingerprint: Option<String>,
+        result: PublishedResult,
+    ) -> Result<()> {
         let sender = {
             let mut state = self.inner.state.lock().map_err(|_error| state_poisoned_error(key.device_ordinal))?;
-            remove_group(&mut state, key, generation).map(|group| group.sender)
+            let published = matches!(&result, PublishedResult::Ready(_));
+            let sender = remove_group(&mut state, key, generation).map(|group| group.sender);
+            if published && sender.is_some() {
+                state.record_event(key, correlation_fingerprint, generation, "leader_published");
+            }
+            sender
         };
         if let Some(sender) = sender {
             sender.send_replace(result);
@@ -312,9 +401,21 @@ impl GraphBfsSingleflight {
             .map_or(0, |group| group.participants))
     }
 
-    fn abandon(&self, key: &GraphBfsSingleflightKey, generation: u64, cancelled: bool) {
+    fn abandon(
+        &self,
+        key: &GraphBfsSingleflightKey,
+        generation: u64,
+        correlation_fingerprint: Option<String>,
+        cancelled: bool,
+    ) {
         let sender = match self.inner.state.lock() {
-            Ok(mut state) => remove_group(&mut state, key, generation).map(|group| group.sender),
+            Ok(mut state) => {
+                let sender = remove_group(&mut state, key, generation).map(|group| group.sender);
+                if !cancelled && sender.is_some() {
+                    state.record_event(key, correlation_fingerprint, generation, "leader_failed");
+                }
+                sender
+            },
             Err(_error) => {
                 eprintln!("[datafusion-nexus] warning: failed to abandon poisoned BFS singleflight state");
                 None
@@ -345,6 +446,22 @@ impl GraphBfsSingleflight {
             group.participants = group.participants.saturating_sub(1);
         }
     }
+
+    fn record_event(
+        &self,
+        key: &GraphBfsSingleflightKey,
+        correlation_fingerprint: Option<String>,
+        generation: u64,
+        action: &'static str,
+    ) {
+        let Ok(mut state) = self.inner.state.lock() else {
+            eprintln!(
+                "[datafusion-nexus] warning: failed to record BFS singleflight event after state mutex poisoning"
+            );
+            return;
+        };
+        state.record_event(key, correlation_fingerprint, generation, action);
+    }
 }
 
 #[derive(Debug)]
@@ -359,12 +476,38 @@ struct SingleflightInner {
 struct SingleflightState {
     groups: HashMap<GraphBfsSingleflightKey, Vec<SingleflightGroup>>,
     next_generation: u64,
+    next_event_sequence: u64,
+    recent_events: VecDeque<GraphBfsSingleflightEventSnapshot>,
+}
+
+impl SingleflightState {
+    fn record_event(
+        &mut self,
+        key: &GraphBfsSingleflightKey,
+        correlation_fingerprint: Option<String>,
+        generation: u64,
+        action: &'static str,
+    ) {
+        if self.recent_events.len() == MAX_BFS_SINGLEFLIGHT_EVENT_SNAPSHOTS {
+            self.recent_events.pop_front();
+        }
+        self.recent_events.push_back(GraphBfsSingleflightEventSnapshot {
+            sequence: self.next_event_sequence,
+            device_ordinal: key.device_ordinal,
+            singleflight_key_fingerprint: graph_bfs_singleflight_key_fingerprint(key),
+            correlation_fingerprint,
+            generation,
+            action,
+        });
+        self.next_event_sequence = self.next_event_sequence.saturating_add(1);
+    }
 }
 
 #[derive(Debug)]
 struct SingleflightGroup {
     generation: u64,
     participants: usize,
+    leader_attempt_id: Option<AttemptId>,
     sender: watch::Sender<PublishedResult>,
 }
 
@@ -387,25 +530,102 @@ enum PublishedResult {
     Retry,
 }
 
-/// Bounded host batches published by one BFS leader and retained until every
-/// joined follower has imported or returned them.
-#[derive(Debug, Clone)]
-pub(crate) struct GraphBfsPublishedResult {
-    batches: Arc<Vec<RecordBatch>>,
-    reservation: Arc<MemoryReservation>,
+/// One exact BFS result retained only until every joined follower has imported
+/// or returned it. GPU publication keeps the producer's live grant attached;
+/// a follower reaches the engine's explicit cross-attempt GPU handoff before
+/// any downstream operator consumes it.
+#[derive(Clone)]
+pub(crate) enum GraphBfsPublishedResult {
+    Host { batches: Arc<Vec<RecordBatch>>, reservation: Arc<MemoryReservation> },
+    Gpu(GpuResultHandle),
+}
+
+/// The storage boundary selected by the singleflight leader.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum GraphBfsPublicationKind {
+    Host,
+    Gpu,
+}
+
+/// The explicit conversion, if any, required to deliver a published BFS
+/// result to a follower's requested sink.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum GraphBfsFollowerRoute {
+    ReuseHostResult,
+    UploadHostResult,
+    HandoffGpuResult,
+    MaterializeGpuResult,
+}
+
+impl GraphBfsFollowerRoute {
+    pub(crate) const fn for_gpu_follower(publication: GraphBfsPublicationKind) -> Self {
+        match publication {
+            GraphBfsPublicationKind::Host => Self::UploadHostResult,
+            GraphBfsPublicationKind::Gpu => Self::HandoffGpuResult,
+        }
+    }
+
+    pub(crate) const fn for_host_follower(publication: GraphBfsPublicationKind) -> Self {
+        match publication {
+            GraphBfsPublicationKind::Host => Self::ReuseHostResult,
+            GraphBfsPublicationKind::Gpu => Self::MaterializeGpuResult,
+        }
+    }
 }
 
 impl GraphBfsPublishedResult {
+    /// Constructs the host representation required by a host-sink leader.
     pub(crate) fn new(batches: Arc<Vec<RecordBatch>>, reservation: Arc<MemoryReservation>) -> Self {
-        Self { batches, reservation }
+        Self::Host { batches, reservation }
     }
 
-    pub(crate) fn batches(&self) -> &[RecordBatch] {
-        self.batches.as_slice()
+    /// Retains a GPU-resident leader output without forcing its complete
+    /// materialization merely to satisfy same-device followers.
+    pub(crate) fn gpu(handle: GpuResultHandle) -> Self {
+        Self::Gpu(handle)
     }
 
-    pub(crate) fn shared_parts(&self) -> (Arc<Vec<RecordBatch>>, Arc<MemoryReservation>) {
-        (Arc::clone(&self.batches), Arc::clone(&self.reservation))
+    pub(crate) const fn kind(&self) -> GraphBfsPublicationKind {
+        match self {
+            Self::Host { .. } => GraphBfsPublicationKind::Host,
+            Self::Gpu(_) => GraphBfsPublicationKind::Gpu,
+        }
+    }
+
+    pub(crate) fn host_batches(&self) -> Option<&[RecordBatch]> {
+        match self {
+            Self::Host { batches, .. } => Some(batches.as_slice()),
+            Self::Gpu(_) => None,
+        }
+    }
+
+    pub(crate) fn host_shared_parts(&self) -> Option<(Arc<Vec<RecordBatch>>, Arc<MemoryReservation>)> {
+        match self {
+            Self::Host { batches, reservation } => Some((Arc::clone(batches), Arc::clone(reservation))),
+            Self::Gpu(_) => None,
+        }
+    }
+
+    pub(crate) fn gpu_handle(&self) -> Option<GpuResultHandle> {
+        match self {
+            Self::Host { .. } => None,
+            Self::Gpu(handle) => Some(handle.clone()),
+        }
+    }
+}
+
+impl fmt::Debug for GraphBfsPublishedResult {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Host { batches, .. } => {
+                formatter.debug_struct("GraphBfsPublishedResult::Host").field("batch_count", &batches.len()).finish()
+            },
+            Self::Gpu(handle) => formatter
+                .debug_struct("GraphBfsPublishedResult::Gpu")
+                .field("rows", &handle.num_rows())
+                .field("columns", &handle.num_columns())
+                .finish(),
+        }
     }
 }
 
@@ -418,6 +638,7 @@ pub(crate) struct GraphBfsLeader {
     coordinator: GraphBfsSingleflight,
     key: GraphBfsSingleflightKey,
     generation: u64,
+    correlation_fingerprint: Option<String>,
     traversal_submitted: bool,
     resolved: bool,
 }
@@ -427,6 +648,12 @@ impl GraphBfsLeader {
         debug_assert!(!self.traversal_submitted, "singleflight leader submitted more than one traversal");
         if !self.traversal_submitted {
             self.coordinator.inner.counters.physical_traversals.fetch_add(1, Ordering::Relaxed);
+            self.coordinator.record_event(
+                &self.key,
+                self.correlation_fingerprint.clone(),
+                self.generation,
+                "leader_traversal",
+            );
             self.traversal_submitted = true;
         }
     }
@@ -436,19 +663,29 @@ impl GraphBfsLeader {
     }
 
     pub(crate) fn publish(&mut self, result: GraphBfsPublishedResult) -> Result<()> {
-        self.coordinator.publish(&self.key, self.generation, PublishedResult::Ready(result))?;
+        self.coordinator.publish(
+            &self.key,
+            self.generation,
+            self.correlation_fingerprint.clone(),
+            PublishedResult::Ready(result),
+        )?;
         self.resolved = true;
         Ok(())
     }
 
     pub(crate) fn complete_without_result(&mut self) -> Result<()> {
-        self.coordinator.publish(&self.key, self.generation, PublishedResult::Retry)?;
+        self.coordinator.publish(
+            &self.key,
+            self.generation,
+            self.correlation_fingerprint.clone(),
+            PublishedResult::Retry,
+        )?;
         self.resolved = true;
         Ok(())
     }
 
     pub(crate) fn fail(mut self) {
-        self.coordinator.abandon(&self.key, self.generation, false);
+        self.coordinator.abandon(&self.key, self.generation, self.correlation_fingerprint.clone(), false);
         self.resolved = true;
     }
 }
@@ -456,7 +693,7 @@ impl GraphBfsLeader {
 impl Drop for GraphBfsLeader {
     fn drop(&mut self) {
         if !self.resolved {
-            self.coordinator.abandon(&self.key, self.generation, true);
+            self.coordinator.abandon(&self.key, self.generation, self.correlation_fingerprint.clone(), true);
             self.resolved = true;
         }
     }
@@ -466,11 +703,23 @@ pub(crate) struct GraphBfsFollower {
     coordinator: GraphBfsSingleflight,
     key: GraphBfsSingleflightKey,
     generation: u64,
+    leader_attempt_id: Option<AttemptId>,
+    correlation_fingerprint: Option<String>,
     receiver: watch::Receiver<PublishedResult>,
     completed: bool,
 }
 
 impl GraphBfsFollower {
+    /// The engine-minted identity of the physical leader, when this
+    /// coordinator was joined by an attempt-bound request.
+    pub(crate) const fn leader_attempt_id(&self) -> Option<AttemptId> {
+        self.leader_attempt_id
+    }
+
+    pub(crate) fn record_copy(&self) {
+        self.coordinator.record_follower_copy(&self.key, self.generation, self.correlation_fingerprint.clone());
+    }
+
     pub(crate) async fn wait(&mut self, cancellation: &ExecutionCancellation) -> Result<GraphBfsFollowerOutcome> {
         loop {
             if let Err(error) = cancellation.check(OPERATION) {
@@ -527,6 +776,10 @@ fn remove_group(
 
 fn update_peak(peak: &AtomicU64, value: usize) {
     peak.fetch_max(u64::try_from(value).unwrap_or(u64::MAX), Ordering::AcqRel);
+}
+
+fn graph_bfs_singleflight_key_fingerprint(key: &GraphBfsSingleflightKey) -> String {
+    cache_observation_fingerprint(&format!("datafusion-nexus/bfs-singleflight-key/v1/{key:?}"))
 }
 
 fn state_poisoned_error(device_ordinal: usize) -> Error {
@@ -613,6 +866,66 @@ mod tests {
         assert_eq!(snapshot.peak_width, 2);
     }
 
+    #[test]
+    fn attempt_bound_follower_retains_its_physical_leader_identity() {
+        let coordinator = GraphBfsSingleflight::new(4);
+        let leader_attempt_id = AttemptId::mint();
+        let GraphBfsSingleflightJoin::Leader(_leader) =
+            coordinator.join_with_attempt(key(1), None, Some(leader_attempt_id)).unwrap()
+        else {
+            panic!("first request must lead")
+        };
+        let GraphBfsSingleflightJoin::Follower(follower) =
+            coordinator.join_with_attempt(key(1), None, Some(AttemptId::mint())).unwrap()
+        else {
+            panic!("second request must follow")
+        };
+
+        assert_eq!(follower.leader_attempt_id(), Some(leader_attempt_id));
+    }
+
+    #[tokio::test]
+    async fn correlated_events_are_emitted_by_the_singleflight_owner() {
+        let coordinator = GraphBfsSingleflight::new(4);
+        let GraphBfsSingleflightJoin::Leader(mut leader) =
+            coordinator.join_with_correlation(key(1), Some("leader-correlation".to_string())).unwrap()
+        else {
+            panic!("first request must lead")
+        };
+        let GraphBfsSingleflightJoin::Follower(mut follower) =
+            coordinator.join_with_correlation(key(1), Some("follower-correlation".to_string())).unwrap()
+        else {
+            panic!("second request must follow")
+        };
+
+        leader.record_traversal_submission();
+        leader.publish(empty_result()).unwrap();
+        assert!(matches!(
+            follower.wait(&ExecutionCancellation::new()).await.unwrap(),
+            GraphBfsFollowerOutcome::Ready(_)
+        ));
+        follower.record_copy();
+
+        let snapshot = coordinator.snapshot();
+        let actions = snapshot.events.iter().map(|event| event.action).collect::<Vec<_>>();
+        assert_eq!(
+            actions,
+            vec!["leader_join", "follower_join", "leader_traversal", "leader_published", "follower_copy"]
+        );
+        assert!(snapshot.events.iter().all(|event| event.device_ordinal == 0));
+        assert_eq!(
+            snapshot
+                .events
+                .iter()
+                .map(|event| &event.singleflight_key_fingerprint)
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            1
+        );
+        assert_eq!(snapshot.events[0].correlation_fingerprint.as_deref(), Some("leader-correlation"));
+        assert_eq!(snapshot.events[1].correlation_fingerprint.as_deref(), Some("follower-correlation"));
+    }
+
     #[tokio::test]
     async fn published_multi_batch_result_retains_one_shared_reservation_for_followers() {
         let coordinator = GraphBfsSingleflight::new(4);
@@ -638,12 +951,32 @@ mod tests {
         let GraphBfsFollowerOutcome::Ready(result) = follower.wait(&ExecutionCancellation::new()).await.unwrap() else {
             panic!("published result must be ready")
         };
-        assert_eq!(result.batches().len(), 2);
+        assert_eq!(result.host_batches().expect("host result must expose batches").len(), 2);
         assert_eq!(pool.reserved(), 128);
         drop(result);
         assert_eq!(pool.reserved(), 128, "the follower receiver still retains the published result");
         drop(follower);
         assert_eq!(pool.reserved(), 0);
+    }
+
+    #[test]
+    fn published_result_routing_matches_follower_sink() {
+        assert_eq!(
+            GraphBfsFollowerRoute::for_gpu_follower(GraphBfsPublicationKind::Host),
+            GraphBfsFollowerRoute::UploadHostResult,
+        );
+        assert_eq!(
+            GraphBfsFollowerRoute::for_gpu_follower(GraphBfsPublicationKind::Gpu),
+            GraphBfsFollowerRoute::HandoffGpuResult,
+        );
+        assert_eq!(
+            GraphBfsFollowerRoute::for_host_follower(GraphBfsPublicationKind::Host),
+            GraphBfsFollowerRoute::ReuseHostResult,
+        );
+        assert_eq!(
+            GraphBfsFollowerRoute::for_host_follower(GraphBfsPublicationKind::Gpu),
+            GraphBfsFollowerRoute::MaterializeGpuResult,
+        );
     }
 
     #[test]

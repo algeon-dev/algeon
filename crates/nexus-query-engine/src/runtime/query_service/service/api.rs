@@ -38,7 +38,7 @@ impl DeviceQuarantineInjection {
     }
 }
 use crate::{
-    admission::{AttemptRequirement, QueryPlanCapabilityProof},
+    admission::{AttemptRequirement, AttemptReservationEnvelope, AttemptReservationPolicy, QueryPlanCapabilityProof},
     attempt::{AttemptAdmissionBinding, AttemptFinalizerSlot},
 };
 
@@ -58,6 +58,11 @@ pub struct QueryServiceAdmissionSnapshot {
     pub active_queries: usize,
     /// Number of admissions currently waiting in the service queue.
     pub queued_queries: usize,
+    /// Largest number of admissions queued concurrently since this service
+    /// was constructed. This is maintained by queue transitions, rather than
+    /// inferred from snapshot polling, and therefore remains available after
+    /// the queue drains.
+    pub queue_high_watermark: usize,
     /// Devices currently withholding one future slot and liveness bytes for
     /// an overtake-limited waiter.
     pub protected_devices: Vec<usize>,
@@ -196,6 +201,16 @@ impl QueryAdmissionRequest {
     /// later-built plan.
     pub(in crate::runtime::query_service) fn submitted_plan_capability_evidence(&self) -> Option<AttemptRequirement> {
         self.planned_capability_proof.as_ref().map(|proof| proof.as_requirement().clone())
+    }
+
+    /// Resolves the opaque proof against the query service's installed source
+    /// scheduler and chunk policy.  Synthetic test placement requirements do
+    /// not carry a plan shape and therefore produce no execution envelope.
+    pub(in crate::runtime::query_service) fn resolved_reservation_envelope(
+        &self,
+        policy: AttemptReservationPolicy,
+    ) -> Result<Option<AttemptReservationEnvelope>> {
+        self.planned_capability_proof.as_ref().map(|proof| proof.resolve_reservation_envelope(policy)).transpose()
     }
 
     /// Sets an attempt-bound queue deadline.

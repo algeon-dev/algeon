@@ -46,7 +46,11 @@ use nexus_query_engine::{
         output::{QueryExecutionOutcome, QueryOutput},
     },
     expr::{BinaryOp, CaseWhen, Expr as NativeExpr, LimitSpec, LiteralValue},
-    graph_memory::{graph_edge_list_output_rows_for_plan, graph_memory_admission_evidence_for_edge_list},
+    graph_memory::{
+        GraphMemoryCalibrationOverride, GraphVertexEstimate,
+        graph_memory_bounded_admission_evidence_for_edge_list_with_vertex_estimate,
+        query_plan_graph_vertex_upper_bound,
+    },
     metrics::{GraphAlgorithmRuntimeMetrics, QueryMetrics},
     observability::RuntimeObservationConfig,
     plan::{
@@ -83,15 +87,15 @@ use crate::{
         NexusNativeGpuProducerExec, NexusNativeMetrics,
         admission::task_context_with_query_admission_ticket,
         graph::{
-            GraphAdmissionModelAsk, GraphBfsFollowerOutcome, GraphBfsLeader, GraphBfsPublishedResult,
-            GraphBfsSingleflightJoin, GraphBfsSingleflightKey, GraphExecutionPlan,
+            GraphAdmissionModelAsk, GraphBfsFollowerOutcome, GraphBfsFollowerRoute, GraphBfsLeader,
+            GraphBfsPublishedResult, GraphBfsSingleflightJoin, GraphBfsSingleflightKey, GraphExecutionPlan,
             register_graph_execution_plan_discovery,
         },
         producer::{
             GpuResidentProducer, gpu_resident_producer as native_gpu_resident_producer,
             register_gpu_resident_producer_discovery,
         },
-        query_admission_ticket_from_task_context, run_gpu_execution_task,
+        run_gpu_execution_task,
     },
 };
 

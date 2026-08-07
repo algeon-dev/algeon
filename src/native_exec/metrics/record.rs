@@ -14,8 +14,9 @@ use datafusion::physical_plan::metrics::{BaselineMetrics, Count, ExecutionPlanMe
 use nexus_query_engine::{
     error::QueryError,
     exec::output::{QueryExecutionOutcome, QueryOutput},
+    graph_memory::{GraphClaimCalibrationRow, GraphClaimExecutionState},
     metrics::{JoinOperatorMetrics, QueryMetrics},
-    observability::QueryAttemptReport,
+    observability::{AttemptId, QueryAttemptReport},
     runtime::{ExecutionBoundaryPolicy, LakehouseCacheFillEventSnapshot},
 };
 
@@ -36,11 +37,27 @@ pub(super) use mapping::{NATIVE_NEXUS_RECORDING_DESCRIPTORS, NativeMetricRecordi
 #[derive(Debug, Clone)]
 pub(crate) struct SealedAttemptMetricsTarget {
     metrics: ExecutionPlanMetricsSet,
+    graph_claim_calibration_captures: Vec<GraphClaimCalibrationCapture>,
 }
 
 impl SealedAttemptMetricsTarget {
-    pub(crate) fn new(metrics: &ExecutionPlanMetricsSet) -> Self {
-        Self { metrics: metrics.clone() }
+    pub(crate) fn new(
+        metrics: &ExecutionPlanMetricsSet,
+        graph_claim_calibration_capture: GraphClaimCalibrationCapture,
+    ) -> Self {
+        Self { metrics: metrics.clone(), graph_claim_calibration_captures: vec![graph_claim_calibration_capture] }
+    }
+
+    pub(crate) fn with_graph_claim_calibration_captures(
+        mut self,
+        captures: impl IntoIterator<Item = GraphClaimCalibrationCapture>,
+    ) -> Self {
+        self.graph_claim_calibration_captures.extend(captures);
+        self
+    }
+
+    pub(crate) fn graph_claim_calibration_captures(&self) -> impl Iterator<Item = GraphClaimCalibrationCapture> + '_ {
+        self.graph_claim_calibration_captures.iter().cloned()
     }
 
     /// Emit the single fixed-cardinality DataFusion row for this attempt.
@@ -48,7 +65,11 @@ impl SealedAttemptMetricsTarget {
     /// The caller elects exactly one root wrapper before execution. All labels
     /// are derived from the sealed projection; in particular, the attempt id and device
     /// ordinal deliberately never become metric labels.
-    pub(crate) fn record(self, report: &QueryAttemptReport) {
+    pub(crate) fn record(self, report: &QueryAttemptReport) -> SealedAttemptGraphClaimCalibrationSnapshot {
+        let graph_claim_calibration = SealedAttemptGraphClaimCalibrationSnapshot::from_captures(
+            report.attempt_id,
+            self.graph_claim_calibration_captures,
+        );
         let labels = report.sealed_projection().labels();
         MetricBuilder::new(&self.metrics)
             .with_type(MetricType::Summary)
@@ -66,7 +87,237 @@ impl SealedAttemptMetricsTarget {
             .with_new_label("resource_evidence", labels.resource_evidence)
             .global_counter(metric_name::attempt_report_rows())
             .add(1);
+        graph_claim_calibration
     }
+}
+
+/// Maximum graph calibration rows retained by one public sealed-attempt
+/// snapshot. The engine can retain richer diagnostic metrics internally, but
+/// the adapter projection stays bounded for runner handoff.
+pub const SEALED_ATTEMPT_GRAPH_CLAIM_CALIBRATION_MAX_ROWS: usize = 64;
+
+/// Immutable, typed graph claim-versus-peak rows projected by one sealed
+/// attempt.
+///
+/// Rows originate directly from engine [`QueryMetrics`]. The adapter neither
+/// parses DataFusion metric labels nor uses this snapshot for admission,
+/// retries, or device accounting.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SealedAttemptGraphClaimCalibrationSnapshot {
+    attempt_id: AttemptId,
+    rows: Box<[GraphClaimCalibrationRow]>,
+    truncated: bool,
+    execution: Option<GraphClaimCalibrationExecution>,
+    execution_complete: bool,
+}
+
+/// Typed graph-execution classification sealed with an attempt's calibration
+/// rows. A physical classification requires the engine to record that the
+/// graph executor started; peak qualification remains fail-closed downstream.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GraphClaimCalibrationExecution {
+    Physical,
+    NonPhysical(GraphClaimCalibrationNonPhysicalReason),
+}
+
+/// Closed vocabulary for graph attempts that intentionally did not execute a
+/// graph algorithm locally.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GraphClaimCalibrationNonPhysicalReason {
+    /// This exact BFS request reused a completed leader result. The leader's
+    /// engine-minted attempt id is retained when the request was attempt-bound
+    /// so qualification can require that leader's physical peak evidence.
+    BfsSingleflightFollower { leader_attempt_id: Option<AttemptId> },
+    /// The engine's graph-memory model denied the request before the graph
+    /// executor started. The retained row carries the exact typed state and
+    /// request-versus-budget evidence.
+    GraphMemoryAdmissionDenied,
+}
+
+impl SealedAttemptGraphClaimCalibrationSnapshot {
+    fn from_captures(attempt_id: AttemptId, captures: impl IntoIterator<Item = GraphClaimCalibrationCapture>) -> Self {
+        let mut rows = Vec::new();
+        let mut truncated = false;
+        let mut execution = None;
+        let mut execution_complete = true;
+        for capture in captures {
+            let captured = capture.seal();
+            truncated |= captured.truncated;
+            if let Some(captured_execution) = captured.execution {
+                // A composed root contributes an otherwise empty capture while
+                // its graph producer owns the classification. An absent
+                // classification is neutral here; only a reported, conflicting
+                // classification can make the merged projection incomplete.
+                execution_complete &= captured.execution_complete;
+                match execution.as_ref() {
+                    // The sealed target may receive the same capture through a
+                    // composed root and its graph producer. Classification is
+                    // state, not an event, so identical observations coalesce.
+                    Some(existing) if existing == &captured_execution => {},
+                    Some(_) => {
+                        execution = Some(captured_execution);
+                        execution_complete = false;
+                    },
+                    None => execution = Some(captured_execution),
+                }
+            }
+            let remaining = SEALED_ATTEMPT_GRAPH_CLAIM_CALIBRATION_MAX_ROWS.saturating_sub(rows.len());
+            if captured.rows.len() > remaining {
+                truncated = true;
+            }
+            rows.extend(captured.rows.into_iter().take(remaining));
+        }
+        Self { attempt_id, rows: rows.into_boxed_slice(), truncated, execution, execution_complete }
+    }
+
+    /// Attempt that owns this immutable diagnostic projection.
+    pub const fn attempt_id(&self) -> AttemptId {
+        self.attempt_id
+    }
+
+    /// Typed engine rows in execution observation order.
+    pub fn rows(&self) -> &[GraphClaimCalibrationRow] {
+        &self.rows
+    }
+
+    /// Whether the adapter omitted rows beyond its fixed public bound.
+    pub const fn truncated(&self) -> bool {
+        self.truncated
+    }
+
+    /// Explicit BFS follower classification or the engine-row-derived graph
+    /// executor state. `None` remains fail-closed when no exact boundary was
+    /// observed.
+    pub fn execution(&self) -> Option<&GraphClaimCalibrationExecution> {
+        self.execution.as_ref()
+    }
+
+    /// Whether the execution owner recorded exactly one non-conflicting
+    /// classification before the attempt sealed.
+    pub const fn execution_complete(&self) -> bool {
+        self.execution_complete && self.execution.is_some()
+    }
+}
+
+/// Per-wrapper typed calibration collector. It is shared by execution clones,
+/// then frozen exactly once by the elected sealed-attempt target.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct GraphClaimCalibrationCapture {
+    state: Arc<Mutex<GraphClaimCalibrationCaptureState>>,
+}
+
+#[derive(Debug, Default)]
+struct GraphClaimCalibrationCaptureState {
+    rows: Vec<GraphClaimCalibrationRow>,
+    truncated: bool,
+    execution: Option<GraphClaimCalibrationExecution>,
+    execution_complete: bool,
+    sealed: bool,
+}
+
+struct CapturedGraphClaimCalibrationRows {
+    rows: Vec<GraphClaimCalibrationRow>,
+    truncated: bool,
+    execution: Option<GraphClaimCalibrationExecution>,
+    execution_complete: bool,
+}
+
+impl GraphClaimCalibrationCapture {
+    /// Records a completed exact-request BFS follower. The follower did not
+    /// execute a graph algorithm; it must point at its physical leader rather
+    /// than borrow or synthesize that leader's peak.
+    pub(crate) fn record_bfs_singleflight_follower(&self, leader_attempt_id: Option<AttemptId>) {
+        self.record_execution(GraphClaimCalibrationExecution::NonPhysical(
+            GraphClaimCalibrationNonPhysicalReason::BfsSingleflightFollower { leader_attempt_id },
+        ));
+    }
+
+    fn record_execution(&self, execution: GraphClaimCalibrationExecution) {
+        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.sealed {
+            return;
+        }
+        match state.execution.as_ref() {
+            // A wrapper can reach the same physical boundary through nested
+            // execution helpers. Repeating the identical fact does not make
+            // the sealed ownership classification ambiguous.
+            Some(existing) if existing == &execution => {},
+            Some(_) => {
+                state.execution = Some(execution);
+                state.execution_complete = false;
+            },
+            None => {
+                state.execution = Some(execution);
+                state.execution_complete = true;
+            },
+        }
+    }
+
+    pub(crate) fn record(&self, rows: &[GraphClaimCalibrationRow]) {
+        if rows.is_empty() {
+            return;
+        }
+        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.sealed {
+            return;
+        }
+        let remaining = SEALED_ATTEMPT_GRAPH_CLAIM_CALIBRATION_MAX_ROWS.saturating_sub(state.rows.len());
+        if rows.len() > remaining {
+            state.truncated = true;
+        }
+        state.rows.extend(rows.iter().take(remaining).cloned());
+    }
+
+    fn seal(&self) -> CapturedGraphClaimCalibrationRows {
+        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.sealed = true;
+        let (row_execution, row_execution_complete) = graph_claim_execution_from_rows(&state.rows);
+        let (execution, execution_complete) = match state.execution.clone() {
+            // BFS followers have an engine-minted request identity rather than
+            // a local graph row. Keep that explicit route distinct from the
+            // row-derived graph-executor lifecycle.
+            Some(execution) => (Some(execution), state.execution_complete),
+            None => (row_execution, row_execution_complete),
+        };
+        CapturedGraphClaimCalibrationRows {
+            rows: state.rows.clone(),
+            truncated: state.truncated,
+            execution,
+            execution_complete,
+        }
+    }
+}
+
+/// Derives an attempt classification only from terminal states authored by the
+/// engine's graph-claim row. Pending or inconsistent rows never become a
+/// physical graph execution at the adapter boundary.
+fn graph_claim_execution_from_rows(
+    rows: &[GraphClaimCalibrationRow],
+) -> (Option<GraphClaimCalibrationExecution>, bool) {
+    let mut execution = None;
+    let mut complete = !rows.is_empty();
+    for row in rows {
+        let row_execution = match row.execution_state {
+            GraphClaimExecutionState::Pending => {
+                complete = false;
+                continue;
+            },
+            GraphClaimExecutionState::AlgorithmStarted => GraphClaimCalibrationExecution::Physical,
+            GraphClaimExecutionState::GraphMemoryAdmissionDenied => GraphClaimCalibrationExecution::NonPhysical(
+                GraphClaimCalibrationNonPhysicalReason::GraphMemoryAdmissionDenied,
+            ),
+        };
+        match execution.as_ref() {
+            Some(existing) if existing == &row_execution => {},
+            Some(_) => {
+                execution = Some(row_execution);
+                complete = false;
+            },
+            None => execution = Some(row_execution),
+        }
+    }
+    let complete = complete && execution.is_some();
+    (execution, complete)
 }
 
 /// Private translation layer from native QueryMetrics into DataFusion metrics.
@@ -74,6 +325,7 @@ impl SealedAttemptMetricsTarget {
 pub(crate) struct NexusNativeMetrics {
     metrics_set: ExecutionPlanMetricsSet,
     plan_task_mapping_datafusion_shape: Option<String>,
+    graph_claim_calibration_capture: Option<GraphClaimCalibrationCapture>,
     pub(crate) baseline: BaselineMetrics,
     registry: NativeMetricRegistry,
     row_capture_budget: Arc<Mutex<MetricRowCaptureBudget>>,
@@ -182,12 +434,22 @@ impl NexusNativeMetrics {
         Self {
             metrics_set: metrics.clone(),
             plan_task_mapping_datafusion_shape: plan_task_mapping_datafusion_shape.map(ToString::to_string),
+            graph_claim_calibration_capture: None,
             baseline: BaselineMetrics::new(metrics, partition),
             registry: NativeMetricRegistry::register(metrics, partition),
             row_capture_budget,
             row_capture_loss,
             row_capture_loss_reported: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// Attach the elected wrapper's typed graph calibration collector.
+    ///
+    /// This is intentionally separate from DataFusion row metrics: it copies
+    /// engine rows before label rendering and has no admission authority.
+    pub(crate) fn with_graph_claim_calibration_capture(mut self, capture: GraphClaimCalibrationCapture) -> Self {
+        self.graph_claim_calibration_capture = Some(capture);
+        self
     }
 
     fn admit_metric_row(&self, row: &impl fmt::Debug) -> bool {
@@ -209,6 +471,9 @@ impl NexusNativeMetrics {
     }
 
     pub(crate) fn record_query_metrics(&self, metrics: &QueryMetrics) {
+        if let Some(capture) = &self.graph_claim_calibration_capture {
+            capture.record(metrics.graph_claim_calibration_rows());
+        }
         self.record_descriptor_query_metrics(metrics);
     }
 
@@ -1245,10 +1510,136 @@ fn add_optional_count(metric: &Count, observed: Option<&Count>, value: Option<u6
 
 #[cfg(test)]
 mod tests {
-    use nexus_query_engine::observability::{
-        AttemptCapacityDisposition, AttemptCleanupDisposition, AttemptDisposition, AttemptHealthTransition, AttemptId,
-        AttemptRetryAdvice, RuntimeTerminalOutcome, SEALED_ATTEMPT_PROJECTION_SCHEMA_V1, SealedAttemptProjection,
+    use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
+    use nexus_query_engine::{
+        graph_memory::{GraphClaimCalibrationRow, GraphClaimExecutionState, GraphMeasuredPeakProvenance},
+        metrics::QueryMetrics,
+        observability::{
+            AttemptCapacityDisposition, AttemptCleanupDisposition, AttemptDisposition, AttemptHealthTransition,
+            AttemptId, AttemptRetryAdvice, RuntimeTerminalOutcome, SEALED_ATTEMPT_PROJECTION_SCHEMA_V1,
+            SealedAttemptProjection,
+        },
+        plan::GraphAlgorithm,
     };
+
+    use super::*;
+
+    fn calibration_row(index: usize, algorithm: GraphAlgorithm) -> GraphClaimCalibrationRow {
+        GraphClaimCalibrationRow {
+            query_id: None,
+            node_id: format!("n{index}"),
+            node_index: index,
+            algorithm,
+            model_requested_bytes: 1_024 + index as u64,
+            requested_bytes: 768 + index as u64,
+            budget_bytes: Some(2_048),
+            execution_state: GraphClaimExecutionState::AlgorithmStarted,
+            measured_peak_bytes: Some(512 + index as u64),
+            measured_peak_provenance: GraphMeasuredPeakProvenance::ReservationHighWater,
+            graph_model_error_ratio: None,
+        }
+    }
+
+    #[test]
+    fn sealed_graph_calibration_snapshot_keeps_typed_rows_and_fixed_bound() {
+        let metrics_set = ExecutionPlanMetricsSet::new();
+        let capture = GraphClaimCalibrationCapture::default();
+        let metrics = NexusNativeMetrics::new(&metrics_set, 0).with_graph_claim_calibration_capture(capture.clone());
+        let mut query_metrics = QueryMetrics::default();
+        for index in 0..=SEALED_ATTEMPT_GRAPH_CLAIM_CALIBRATION_MAX_ROWS {
+            query_metrics.graph_claim_calibration_rows.push(calibration_row(index, GraphAlgorithm::PageRank));
+        }
+
+        metrics.record_query_metrics(&query_metrics);
+        let attempt_id = AttemptId::mint();
+        let snapshot = SealedAttemptGraphClaimCalibrationSnapshot::from_captures(attempt_id, [capture.clone()]);
+
+        assert_eq!(snapshot.attempt_id(), attempt_id);
+        assert!(snapshot.execution_complete());
+        assert!(matches!(snapshot.execution(), Some(GraphClaimCalibrationExecution::Physical)));
+        assert_eq!(snapshot.rows().len(), SEALED_ATTEMPT_GRAPH_CLAIM_CALIBRATION_MAX_ROWS);
+        assert!(snapshot.truncated());
+        assert_eq!(snapshot.rows()[0].node_index, 0);
+        assert_eq!(snapshot.rows()[0].algorithm, GraphAlgorithm::PageRank);
+        assert_eq!(snapshot.rows()[0].measured_peak_provenance, GraphMeasuredPeakProvenance::ReservationHighWater);
+        assert_eq!(
+            snapshot.rows()[SEALED_ATTEMPT_GRAPH_CLAIM_CALIBRATION_MAX_ROWS - 1].node_index,
+            SEALED_ATTEMPT_GRAPH_CLAIM_CALIBRATION_MAX_ROWS - 1
+        );
+
+        let mut late_metrics = QueryMetrics::default();
+        late_metrics.graph_claim_calibration_rows.push(calibration_row(999, GraphAlgorithm::Bfs));
+        metrics.record_query_metrics(&late_metrics);
+        assert!(snapshot.rows().iter().all(|row| row.node_index != 999));
+    }
+
+    #[test]
+    fn sealed_graph_calibration_snapshot_retains_a_nonphysical_follower_leader_link() {
+        let capture = GraphClaimCalibrationCapture::default();
+        let leader_attempt_id = AttemptId::mint();
+        capture.record_bfs_singleflight_follower(Some(leader_attempt_id));
+
+        let snapshot = SealedAttemptGraphClaimCalibrationSnapshot::from_captures(AttemptId::mint(), [capture]);
+
+        assert!(snapshot.execution_complete());
+        assert!(snapshot.rows().is_empty());
+        assert_eq!(
+            snapshot.execution(),
+            Some(&GraphClaimCalibrationExecution::NonPhysical(
+                GraphClaimCalibrationNonPhysicalReason::BfsSingleflightFollower {
+                    leader_attempt_id: Some(leader_attempt_id),
+                },
+            ))
+        );
+    }
+
+    #[test]
+    fn sealed_graph_calibration_snapshot_uses_the_physical_producer_classification_from_a_composed_root() {
+        let root_capture = GraphClaimCalibrationCapture::default();
+        let producer_capture = GraphClaimCalibrationCapture::default();
+        producer_capture.record(&[calibration_row(1, GraphAlgorithm::PageRank)]);
+
+        let snapshot = SealedAttemptGraphClaimCalibrationSnapshot::from_captures(
+            AttemptId::mint(),
+            [root_capture, producer_capture],
+        );
+
+        assert!(snapshot.execution_complete());
+        assert!(matches!(snapshot.execution(), Some(GraphClaimCalibrationExecution::Physical)));
+    }
+
+    #[test]
+    fn sealed_graph_calibration_snapshot_rejects_conflicting_engine_row_states() {
+        let capture = GraphClaimCalibrationCapture::default();
+        let mut admission_denied = calibration_row(2, GraphAlgorithm::Bfs);
+        admission_denied.execution_state = GraphClaimExecutionState::GraphMemoryAdmissionDenied;
+        capture.record(&[calibration_row(1, GraphAlgorithm::Bfs), admission_denied]);
+
+        let snapshot = SealedAttemptGraphClaimCalibrationSnapshot::from_captures(AttemptId::mint(), [capture]);
+
+        assert!(!snapshot.execution_complete());
+        assert!(matches!(snapshot.execution(), Some(GraphClaimCalibrationExecution::NonPhysical(_))));
+    }
+
+    #[test]
+    fn sealed_graph_calibration_snapshot_derives_model_admission_denial_from_engine_row() {
+        let capture = GraphClaimCalibrationCapture::default();
+        let mut denied = calibration_row(1, GraphAlgorithm::PageRank);
+        denied.execution_state = GraphClaimExecutionState::GraphMemoryAdmissionDenied;
+        denied.measured_peak_bytes = None;
+        denied.measured_peak_provenance = GraphMeasuredPeakProvenance::Unavailable;
+        capture.record(&[denied]);
+
+        let snapshot = SealedAttemptGraphClaimCalibrationSnapshot::from_captures(AttemptId::mint(), [capture]);
+
+        assert!(snapshot.execution_complete());
+        assert_eq!(
+            snapshot.execution(),
+            Some(&GraphClaimCalibrationExecution::NonPhysical(
+                GraphClaimCalibrationNonPhysicalReason::GraphMemoryAdmissionDenied,
+            ))
+        );
+    }
 
     #[test]
     fn sealed_attempt_metric_labels_derive_from_the_sealed_projection() {

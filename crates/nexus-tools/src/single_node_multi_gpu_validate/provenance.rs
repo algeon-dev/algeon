@@ -335,7 +335,7 @@ pub(super) fn required_command_version<const N: usize>(program: &str, args: [&st
         .output()
         .map_err(|_| format!("cannot execute required provenance tool {program}"))?;
     if !output.status.success() {
-        return Err(format!("required provenance tool {program} failed").into());
+        return Err(format!("required provenance tool {program} failed with status {}", output.status).into());
     }
     if output.stdout.len() > MAX_TOOL_VERSION_BYTES || output.stderr.len() > MAX_TOOL_VERSION_BYTES {
         return Err(format!("required provenance tool {program} produced an oversized version response").into());
