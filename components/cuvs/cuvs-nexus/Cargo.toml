@@ -1,0 +1,27 @@
+[package]
+name = "cuvs-nexus"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Nexus-safe Rust bindings for NVIDIA cuVS GPU vector search and clustering"
+license-file.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+categories = ["api-bindings", "science"]
+keywords = ["cuvs", "cuda", "gpu", "rapids"]
+build = "build.rs"
+
+[lib]
+name = "cuvs"
+
+[dependencies]
+cudf.workspace = true
+cuvs-sys.workspace = true
+rapids-interop.workspace = true
+
+[build-dependencies]
+
+[dev-dependencies]
+arrow.workspace = true
+static_assertions.workspace = true
