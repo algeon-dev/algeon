@@ -1,0 +1,18 @@
+[package]
+name = "cuvs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Thin safe Rust wrapper for a scoped subset of the cuVS C API"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+categories = ["api-bindings", "science"]
+keywords = ["cuvs", "cuda", "gpu", "rapids"]
+build = "build.rs"
+
+[dependencies]
+cuvs-sys.workspace = true
+
+[build-dependencies]
