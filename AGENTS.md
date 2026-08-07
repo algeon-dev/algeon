@@ -45,19 +45,30 @@
 
 ## Build and test
 
+Use `--all-features` everywhere, in every inner-loop command. Cargo keys build
+artifacts by feature unification, so alternating between
+`--no-default-features` and `--all-features` across commands in the same edit
+loop does not reuse the other set's artifacts and pays a fresh build of the
+~400-unit dependency graph each way. Staying in one feature set keeps every
+command below on the same artifacts.
+
+Package selection is not part of this: `-p <crate> --all-features` and
+`--workspace --all-features` were measured to leave each other's artifacts
+valid (0 units rebuilt in both directions), so the targeted `-p` loops below
+cost nothing extra against the workspace-wide gate.
+
 ```bash
-# Default members
-cargo build
-cargo clippy --all-targets --all-features
+# Build and lint, any package
+cargo build --all-features
+cargo clippy --workspace --all-targets --all-features
 cargo +nightly fmt --all
 
 # Targeted edit loops
-cargo nextest run -p datafusion-nexus --no-default-features --test cpu_contract_tests
-cargo nextest run -p datafusion-nexus --no-default-features --test native_planning_tests
-cargo nextest run -p nexus-query-engine --no-default-features --test native_contract_tests
+cargo nextest run -p datafusion-nexus --all-features --test cpu_contract_tests
+cargo nextest run -p datafusion-nexus --all-features --test native_planning_tests
+cargo nextest run -p nexus-query-engine --all-features --test native_contract_tests
 
 # Non-default bench package, when touched
-cargo check -p nexus-bench --all-targets --all-features
 cargo clippy -p nexus-bench --all-targets --all-features
 cargo nextest run -p nexus-bench --all-features
 

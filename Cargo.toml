@@ -30,12 +30,19 @@ resolver = "3"
 version = "0.1.0"
 rust-version = "1.94"
 
-# Line tables only. Full debuginfo left every integration harness near 2 GiB and
-# dominated link time on the local edit loop; file:line failure diagnostics remain
-# with debug = 1. Do not combine this with other profile experiments in the same
-# measurement (see docs/plan/2026-07-22-test-build-feedback-loop-plan.md).
-[profile.test]
-debug = 1
+# The `test` profile only covers test TARGET crates; every dependency
+# (workspace libs such as nexus-query-engine, and third-party crates such as
+# datafusion and tokio) is always compiled under `[profile.dev]`, `[profile.test]`
+# settings never reach them. Full debuginfo (`debug = 2`) on `dev` left every
+# rlib and integration-test binary near or above 1-2 GiB and dominated link
+# time on the local edit loop. Line-tables-only keeps `file:line` in panics
+# and backtraces while dropping the variable/type debug records that make up
+# most of the bytes; unpacked split-debuginfo keeps what remains out of the
+# rlib/binary itself. `[profile.test]` is intentionally absent so it inherits
+# these settings from `dev` rather than diverging again.
+[profile.dev]
+debug = "line-tables-only"
+split-debuginfo = "unpacked"
 
 [workspace.lints.rustdoc]
 broken_intra_doc_links = "deny"

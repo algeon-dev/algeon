@@ -174,8 +174,8 @@ assert_phase_contains() {
   local phase=$2
   local expected=$3
   local row
-  # Anchor at the start of the phase column so "rustdoc" does not also match
-  # the later "bench-rustdoc" row introduced by the explicit bench phases.
+  # Anchor at the start of the phase column so a shorter phase id cannot match
+  # a longer one that merely starts with it.
   row=$(grep -E "^${phase} \\| " "${file}" | tail -n 1) || {
     echo "FAIL: ${file} has no phase-table row for ${phase}" >&2
     sed 's/^/  /' "${file}" >&2
@@ -195,12 +195,12 @@ assert_contains "${tmp_dir}/multi.output" "RAW_DOCTEST_STDERR"
 assert_contains "${tmp_dir}/multi.output" "DOCTEST HARNESS: name=first_crate"
 assert_contains "${tmp_dir}/multi.output" "Doctest accounting preflight for final aggregation: command_status=0 parse_status=ok harnesses=2 executed=3 passed=3 failed=0 ignored=1 measured=0 filtered=6"
 assert_contains "${tmp_dir}/multi.output" "Doctest accounting final: command_status=0 parse_status=ok harnesses=2 executed=3 passed=3 failed=0 ignored=1 measured=0 filtered=6"
-assert_contains "${tmp_dir}/multi.log" "flock </tmp/cudf-gpu.lock> <cargo> <test> <--all-features> <--doc> <--no-fail-fast>"
-assert_contains "${tmp_dir}/multi.log" "cargo rustdocflags=-A warnings -Cdebuginfo=0 -D warnings <doc> <--all-features> <--no-deps> <--keep-going>"
+assert_contains "${tmp_dir}/multi.log" "flock </tmp/cudf-gpu.lock> <cargo> <test> <--workspace> <--all-features> <--doc> <--no-fail-fast>"
+assert_contains "${tmp_dir}/multi.log" "cargo rustdocflags=-A warnings -Cdebuginfo=0 -D warnings <doc> <--workspace> <--all-features> <--no-deps> <--keep-going>"
 assert_phase_contains "${tmp_dir}/multi.output" doctests "0.100s | PASS | harnesses=2 executed=3 passed=3 failed=0 ignored=1 measured=0 filtered=6 | - | /tmp/cudf-gpu.lock | all | ${tmp_dir}/phase-logs/doctests.log"
-assert_phase_contains "${tmp_dir}/multi.output" doctests "doctests | flock /tmp/cudf-gpu.lock cargo test --all-features --doc --no-fail-fast | 0.100s"
+assert_phase_contains "${tmp_dir}/multi.output" doctests "doctests | flock /tmp/cudf-gpu.lock cargo test --workspace --all-features --doc --no-fail-fast | 0.100s"
 assert_phase_contains "${tmp_dir}/multi.output" rustdoc "0.100s | PASS | - | - | - | all | ${tmp_dir}/phase-logs/rustdoc.log"
-assert_phase_contains "${tmp_dir}/multi.output" rustdoc "rustdoc | RUSTDOCFLAGS='-A warnings -Cdebuginfo=0 -D warnings' cargo doc --all-features --no-deps --keep-going | 0.100s"
+assert_phase_contains "${tmp_dir}/multi.output" rustdoc "rustdoc | RUSTDOCFLAGS='-A warnings -Cdebuginfo=0 -D warnings' cargo doc --workspace --all-features --no-deps --keep-going | 0.100s"
 assert_contains "${tmp_dir}/phase-logs/doctests.log" "RAW_DOCTEST_STDERR"
 if [[ $(grep -c '^flock ' "${tmp_dir}/multi.log") -ne 3 ]]; then
   echo "FAIL: expected shared, exclusive, and doctest flock invocations" >&2

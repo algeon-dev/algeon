@@ -49,6 +49,14 @@ path = "src/lib.rs"
 test = false
 doctest = false
 
+# Runnable examples carry no unit tests. Declaring each bin explicitly with
+# `test = false` keeps auto-discovery from adding an empty test harness to the
+# workspace test surface, which the lane catalog would then have to classify.
+[[bin]]
+name = "attempt_lifecycle"
+path = "src/bin/attempt_lifecycle.rs"
+test = false
+
 [[bin]]
 name = "embedded_backend"
 path = "src/bin/embedded_backend.rs"
