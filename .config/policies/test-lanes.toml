@@ -25,21 +25,6 @@ lane = "cpu"
 reason = "Workload tests validate ClickBench native profile/env resolution without executing the native GPU workload."
 
 [[binary]]
-id = "nexus-bench::native_relational_execution_evidence_tests"
-lane = "cpu"
-reason = "Tests validate relational-execution evidence without executing CUDA work."
-
-[[binary]]
-id = "nexus-bench::tpcds_workload_tests"
-lane = "cpu"
-reason = "Workload tests validate TPCDS query catalogs and fixtures without native execution."
-
-[[binary]]
-id = "nexus-bench::tpch_workload_tests"
-lane = "cpu"
-reason = "Workload tests validate TPCH query catalogs and fixtures without native execution."
-
-[[binary]]
 id = "nexus-workloads::clickbench_contracts"
 lane = "cpu"
 reason = "ClickBench catalog, deterministic fixture discovery, and Parquet metadata contracts do not create a native runtime."

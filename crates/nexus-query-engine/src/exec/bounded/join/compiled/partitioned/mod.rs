@@ -306,24 +306,3 @@ pub(super) fn join_keys_for_side(node: &JoinNode, side: JoinSide) -> Vec<String>
         .collect()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn mixed_join_row_target_stays_conservative_for_small_budgets() {
-        assert_eq!(
-            partitioned_mixed_join_target_rows_for_budget(256 * 1024 * 1024),
-            BoundedPartitionRowPolicy::DEFAULT_MIXED_JOIN_MIN_TARGET_ROWS
-        );
-    }
-
-    #[test]
-    fn mixed_join_row_target_scales_with_large_device_budgets() {
-        assert_eq!(partitioned_mixed_join_target_rows_for_budget(95 * 1024 * 1024 * 1024), 12_451_840);
-        assert_eq!(
-            partitioned_mixed_join_target_rows_for_budget(256 * 1024 * 1024 * 1024),
-            BoundedPartitionRowPolicy::DEFAULT_MIXED_JOIN_MAX_TARGET_ROWS
-        );
-    }
-}

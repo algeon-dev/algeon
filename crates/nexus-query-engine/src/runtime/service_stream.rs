@@ -1785,10 +1785,8 @@ mod permit_class_tests {
     use super::*;
 
     #[test]
+    #[ignore = "requires GPU: DeviceId::count() guard would silently pass on GPU-less hosts"]
     fn root_class_waits_while_auxiliary_slots_are_free() {
-        if cudf::DeviceId::count().unwrap_or(0) == 0 {
-            return;
-        }
         let pool = ServiceStreamPool::new_with_classes(cudf::DeviceId::DEFAULT, 3, 1, 2).unwrap();
         let root = pool.acquire_with_class(StreamPermitClass::Root).unwrap();
         let aux_one = pool.acquire_with_class(StreamPermitClass::Auxiliary).unwrap();
@@ -1826,10 +1824,8 @@ mod permit_class_tests {
     }
 
     #[test]
+    #[ignore = "requires GPU: DeviceId::count() guard would silently pass on GPU-less hosts"]
     fn auxiliary_class_waits_while_root_slots_are_free() {
-        if cudf::DeviceId::count().unwrap_or(0) == 0 {
-            return;
-        }
         let pool = ServiceStreamPool::new_with_classes(cudf::DeviceId::DEFAULT, 3, 1, 1).unwrap();
         let _root = pool.acquire_with_class(StreamPermitClass::Root).unwrap();
         let aux = pool.acquire_with_class(StreamPermitClass::Auxiliary).unwrap();

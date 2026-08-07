@@ -1912,9 +1912,6 @@ mod tests {
 
     fn assert_query_activity_allows_close_and_replacement_after_release(acquire_context: bool) {
         let _owner_test = live_backend_test_lock();
-        if cudf::DeviceId::count().unwrap_or(0) == 0 {
-            return;
-        }
         let backend = GpuBackendCore::builder(one_device_backend_draft(0)).build().unwrap();
         let lifecycle = backend.observation_core.lifecycle.clone();
         let observed_active_gpu_permits = Arc::new(std::sync::atomic::AtomicUsize::new(usize::MAX));
@@ -1947,21 +1944,21 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires GPU: DeviceId::count() guard would silently pass on GPU-less hosts"]
     fn query_activity_returns_only_after_service_resources_and_backend_gpu_permit_release() {
         assert_query_activity_allows_close_and_replacement_after_release(false);
     }
 
     #[test]
+    #[ignore = "requires GPU: DeviceId::count() guard would silently pass on GPU-less hosts"]
     fn context_cleanup_completes_before_query_activity_can_close_and_replace_backend() {
         assert_query_activity_allows_close_and_replacement_after_release(true);
     }
 
     #[test]
+    #[ignore = "requires GPU: DeviceId::count() guard would silently pass on GPU-less hosts"]
     fn backend_observation_quiescence_waits_for_detached_seal_observers() {
         let _owner_test = live_backend_test_lock();
-        if cudf::DeviceId::count().unwrap_or(0) == 0 {
-            return;
-        }
         let backend = GpuBackendCore::builder(one_device_backend_draft(0)).build().unwrap();
         let owner = crate::observability::RuntimeObservationOwner::new(
             "detached-seal-observer",
@@ -2006,11 +2003,9 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires GPU: DeviceId::count() guard would silently pass on GPU-less hosts"]
     fn reentrant_activity_close_does_not_block_later_query_stream_cleanup() {
         let _owner_test = live_backend_test_lock();
-        if cudf::DeviceId::count().unwrap_or(0) == 0 {
-            return;
-        }
         let backend = GpuBackendCore::builder(GpuBackendCoreDraft::new(
             vec![
                 GpuBackendDeviceConfig::new(0, GpuMemoryOwnership::WholeDeviceExclusive)
@@ -2074,11 +2069,9 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires GPU: DeviceId::count() guard would silently pass on GPU-less hosts"]
     fn every_constructed_resource_is_journaled_before_its_after_boundary() {
         let _owner_test = live_backend_test_lock();
-        if cudf::DeviceId::count().unwrap_or(0) == 0 {
-            return;
-        }
 
         const MANAGER: &[&str] = &["memory_manager"];
         const STREAM: &[&str] = &["memory_manager", "stream_pool"];
@@ -2238,11 +2231,9 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires GPU: DeviceId::count() guard would silently pass on GPU-less hosts"]
     fn begin_attempt_after_close_is_rejected_without_creating_an_attempt() {
         let _owner_test = live_backend_test_lock();
-        if cudf::DeviceId::count().unwrap_or(0) == 0 {
-            return;
-        }
         let backend = GpuBackendCore::builder(one_device_backend_draft(0)).build().unwrap();
         let session = backend.session_capability();
         assert!(backend.close());
@@ -2256,11 +2247,9 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires GPU: DeviceId::count() guard would silently pass on GPU-less hosts"]
     fn begin_attempt_winning_the_close_gate_is_counted_until_report_ready() {
         let _owner_test = live_backend_test_lock();
-        if cudf::DeviceId::count().unwrap_or(0) == 0 {
-            return;
-        }
         let backend = GpuBackendCore::builder(one_device_backend_draft(0)).build().unwrap();
         let session = backend.session_capability();
         let begin = session.begin_attempt(BeginAttemptRequest::default()).unwrap();
@@ -2358,11 +2347,9 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires GPU: DeviceId::count() guard would silently pass on GPU-less hosts"]
     fn abandoned_attempt_reports_land_in_the_bounded_completion_queue() {
         let _owner_test = live_backend_test_lock();
-        if cudf::DeviceId::count().unwrap_or(0) == 0 {
-            return;
-        }
         let draft = one_device_backend_draft(0).with_attempt_completion_queue_capacity(2);
         let backend = GpuBackendCore::builder(draft).build().unwrap();
         let session = backend.session_capability();
