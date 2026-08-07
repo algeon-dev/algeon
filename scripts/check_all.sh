@@ -369,6 +369,7 @@ PHASE_ORDER=(
 )
 declare -A PHASE_COMMAND PHASE_DURATION PHASE_STATUS PHASE_COUNTS
 declare -A PHASE_GPU_CAP PHASE_LOCK PHASE_FEATURES PHASE_LOG PHASE_EXIT
+declare -A PHASE_HASH PHASE_CACHE PHASE_LAST_PASS_HASH PHASE_SCOPE_HASH
 
 define_phase() {
   local id=$1
@@ -382,6 +383,8 @@ define_phase() {
   PHASE_FEATURES["${id}"]=${feature_label}
   PHASE_LOG["${id}"]=-
   PHASE_EXIT["${id}"]=-
+  PHASE_HASH["${id}"]=-
+  PHASE_CACHE["${id}"]='n/a'
 }
 
 define_phase policy-selftests "${policy_selftest_count} isolated policy/orchestration scripts"
@@ -523,6 +526,270 @@ run_phase() {
   [[ "${PHASE_STATUS[${id}]}" == PASS ]]
 }
 
+# Each cacheable phase is a pure function of this checkout, the resolved
+# feature selection, the Rust toolchains, and Cargo/Rust environment inputs.
+# The two deliberately narrower scopes avoid invalidating rustfmt and the
+# policy self-tests for unrelated workspace edits.
+phase_source_scope() {
+  case "$1" in
+    policy-selftests) printf '%s\n' policy ;;
+    rustfmt) printf '%s\n' rustfmt ;;
+    *) printf '%s\n' workspace ;;
+  esac
+}
+
+# The index records every tracked file's content ID without reopening the whole
+# workspace.  Pair it with raw hashes for the (usually small) set of unstaged
+# and untracked files so the result still names the exact source tree Cargo
+# sees, rather than an index-only approximation.
+phase_scope_index_entries() {
+  local scope=$1
+  case "${scope}" in
+    policy) git ls-files --stage -z -- scripts .config/policies ;;
+    rustfmt)
+      git ls-files --stage -z -- \
+        ':(glob)**/*.rs' rustfmt.toml .rustfmt.toml
+      ;;
+    *) git ls-files --stage -z ;;
+  esac
+}
+
+phase_scope_unstaged_paths() {
+  local scope=$1
+  case "${scope}" in
+    policy) git diff --no-ext-diff --no-renames --name-only -z -- scripts .config/policies ;;
+    rustfmt)
+      git diff --no-ext-diff --no-renames --name-only -z -- \
+        ':(glob)**/*.rs' rustfmt.toml .rustfmt.toml
+      ;;
+    *) git diff --no-ext-diff --no-renames --name-only -z ;;
+  esac
+}
+
+phase_scope_untracked_paths() {
+  local scope=$1
+  case "${scope}" in
+    policy) git ls-files --others --exclude-standard -z -- scripts .config/policies ;;
+    rustfmt)
+      git ls-files --others --exclude-standard -z -- \
+        ':(glob)**/*.rs' rustfmt.toml .rustfmt.toml
+      ;;
+    *) git ls-files --others --exclude-standard -z ;;
+  esac
+}
+
+phase_hash_worktree_paths() {
+  local path
+  local -a existing_paths=()
+  while IFS= read -r -d '' path; do
+    printf 'path\0%s\0' "${path}"
+    if [[ -f "${path}" || -L "${path}" ]]; then
+      existing_paths+=("${path}")
+    else
+      # A deletion remains a cache input even though its indexed content ID is
+      # still present in the first part of the fingerprint.
+      printf 'missing\0%s\0' "${path}"
+    fi
+  done
+  if (( ${#existing_paths[@]} > 0 )); then
+    # Zero-delimited sha256sum output keeps every path bound to its content
+    # while avoiding one process per changed file in a dirty workspace.
+    sha256sum --zero -- "${existing_paths[@]}"
+  fi
+}
+
+phase_cache_environment() {
+  local entry name
+  while IFS= read -r -d '' entry; do
+    name=${entry%%=*}
+    case "${name}" in
+      CARGO_* | RUST* | RUSTC | RUSTC_WRAPPER | PATH | LD_LIBRARY_PATH)
+        printf '%s\0' "${entry}"
+        ;;
+    esac
+  done < <(env -0 | LC_ALL=C sort -z)
+}
+
+phase_toolchain_hash() {
+  local toolchain_identity
+  if [[ -n "${PHASE_TOOLCHAIN_HASH-}" ]]; then
+    return 0
+  fi
+  toolchain_identity=$( {
+    rustc -vV
+    rustup run "${RUSTFMT_TOOLCHAIN}" rustc -vV
+  } ) || return 1
+  PHASE_TOOLCHAIN_HASH=$(printf '%s\0' "${toolchain_identity}" | sha256sum | awk '{print $1}')
+}
+
+phase_environment_hash() {
+  if [[ -n "${PHASE_ENVIRONMENT_HASH-}" ]]; then
+    return 0
+  fi
+  PHASE_ENVIRONMENT_HASH=$(phase_cache_environment | sha256sum | awk '{print $1}') || return 1
+}
+
+phase_scope_hash() {
+  local scope=$1 hash
+  if [[ -v "PHASE_SCOPE_HASH[${scope}]" ]]; then
+    return 0
+  fi
+  hash=$( {
+    printf 'index\0'
+    phase_scope_index_entries "${scope}"
+    printf 'unstaged\0'
+    phase_scope_unstaged_paths "${scope}" |
+      phase_hash_worktree_paths
+    printf 'untracked\0'
+    phase_scope_untracked_paths "${scope}" |
+      phase_hash_worktree_paths
+  } | sha256sum | awk '{print $1}') || return 1
+  PHASE_SCOPE_HASH["${scope}"]=${hash}
+}
+
+phase_source_hash() {
+  local id=$1 scope scope_hash toolchain_hash environment_hash
+  scope=$(phase_source_scope "${id}") || return 1
+  phase_scope_hash "${scope}" || return 1
+  phase_toolchain_hash || return 1
+  phase_environment_hash || return 1
+  scope_hash=${PHASE_SCOPE_HASH[${scope}]}
+  toolchain_hash=${PHASE_TOOLCHAIN_HASH}
+  environment_hash=${PHASE_ENVIRONMENT_HASH}
+
+  {
+    printf '%s\0' 'check-all-phase-cache-v2'
+    printf 'phase=%s\0' "${id}"
+    printf '%s\0' 'features'
+    printf '%s\0' "${FEATURE_ARGS[@]}"
+    printf 'scope=%s\0scope-hash=%s\0' "${scope}" "${scope_hash}"
+    printf 'toolchain-hash=%s\0environment-hash=%s\0' "${toolchain_hash}" "${environment_hash}"
+  } | sha256sum | awk '{print $1}'
+}
+
+phase_cache_load() {
+  local payload status=0 id hash
+  [[ -e "${PHASE_CACHE_FILE}" ]] || return 0
+  payload=$(python3 - "${PHASE_CACHE_FILE}" <<'PY'
+import json
+import re
+import sys
+
+try:
+    with open(sys.argv[1], encoding="utf-8") as input_file:
+        cache = json.load(input_file)
+    phases = cache["phases"]
+    if cache["version"] != 1 or not isinstance(phases, dict):
+        raise ValueError("unsupported cache schema")
+    for phase, record in phases.items():
+        if not isinstance(phase, str) or not isinstance(record, dict):
+            raise ValueError("invalid phase cache record")
+        if record.get("status") != "PASS" or not re.fullmatch(r"[0-9a-f]{64}", record.get("hash", "")):
+            raise ValueError(f"invalid PASS record for {phase}")
+        print(f"{phase}\t{record['hash']}")
+except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as error:
+    print(f"{type(error).__name__}: {error}", file=sys.stderr)
+    sys.exit(1)
+PY
+  ) || status=$?
+  if [[ "${status}" -ne 0 ]]; then
+    echo "WARN: ignoring unreadable phase cache '${PHASE_CACHE_FILE}': ${payload}" >&2
+    return 0
+  fi
+  while IFS=$'\t' read -r id hash; do
+    [[ -n "${id}" && "${hash}" =~ ^[0-9a-f]{64}$ ]] || continue
+    PHASE_LAST_PASS_HASH["${id}"]=${hash}
+  done <<<"${payload}"
+}
+
+phase_cache_store() {
+  local temporary id separator=''
+  temporary=$(mktemp "${PHASE_CACHE_FILE}.tmp.XXXXXX") || {
+    echo "WARN: could not create temporary phase-cache file beside '${PHASE_CACHE_FILE}'." >&2
+    return 0
+  }
+  {
+    printf '{\n  "version": 1,\n  "phases": {'
+    for id in "${PHASE_ORDER[@]}"; do
+      [[ -v "PHASE_LAST_PASS_HASH[${id}]" ]] || continue
+      printf '%s\n    "%s": {"status": "PASS", "hash": "%s"}' \
+        "${separator}" "${id}" "${PHASE_LAST_PASS_HASH[${id}]}"
+      separator=,
+    done
+    printf '\n  }\n}\n'
+  } >"${temporary}" || {
+    rm -f -- "${temporary}"
+    echo "WARN: could not write phase cache '${PHASE_CACHE_FILE}'." >&2
+    return 0
+  }
+  mv -f -- "${temporary}" "${PHASE_CACHE_FILE}" || {
+    rm -f -- "${temporary}"
+    echo "WARN: could not publish phase cache '${PHASE_CACHE_FILE}'." >&2
+  }
+}
+
+phase_uses_gpu_lock() {
+  [[ "$1" == "${GPU_LOCK}" ]]
+}
+
+cache_phase_hit() {
+  local id=$1 gpu_cap=$2 lock_path=$3
+  local phase_log="${PHASE_LOG_DIR}/${id}.log"
+  : >"${phase_log}" || {
+    echo "ERROR: cannot create phase log '${phase_log}'." >&2
+    PHASE_STATUS["${id}"]='FAIL(log)'
+    PHASE_LOG["${id}"]=${phase_log}
+    status=1
+    return 1
+  }
+  PHASE_DURATION["${id}"]='0.000s'
+  PHASE_STATUS["${id}"]=CACHED
+  PHASE_COUNTS["${id}"]=cached
+  PHASE_GPU_CAP["${id}"]=${gpu_cap}
+  PHASE_LOCK["${id}"]=${lock_path}
+  PHASE_LOG["${id}"]=${phase_log}
+  PHASE_EXIT["${id}"]=0
+  printf '==> [%s] CACHED: source-state hash matched %s\n' \
+    "${id}" "${PHASE_HASH[${id}]}" | tee "${phase_log}"
+}
+
+run_or_cache_phase() {
+  local id=$1 count_kind=$2 gpu_cap=$3 lock_path=$4 hash=''
+  shift 4
+
+  # Device-locked phases establish same-run GPU evidence. The lock argument is
+  # the source of truth: no separately maintained list can accidentally cache
+  # a newly added GPU phase.
+  if phase_uses_gpu_lock "${lock_path}"; then
+    PHASE_CACHE["${id}"]='n/a'
+    run_phase "${id}" "${count_kind}" "${gpu_cap}" "${lock_path}" "$@"
+    return
+  fi
+
+  if hash=$(phase_source_hash "${id}"); then
+    PHASE_HASH["${id}"]=${hash}
+  else
+    PHASE_HASH["${id}"]=unavailable
+    echo "WARN: ${id} source-state hash is unavailable; executing the phase." >&2
+  fi
+
+  if [[ -n "${hash}" && "${PHASE_LAST_PASS_HASH[${id}]-}" == "${hash}" ]]; then
+    PHASE_CACHE["${id}"]=HIT
+    cache_phase_hit "${id}" "${gpu_cap}" "${lock_path}"
+    return
+  fi
+
+  PHASE_CACHE["${id}"]=MISS
+  if run_phase "${id}" "${count_kind}" "${gpu_cap}" "${lock_path}" "$@"; then
+    if [[ -n "${hash}" ]]; then
+      PHASE_LAST_PASS_HASH["${id}"]=${hash}
+      phase_cache_store
+    fi
+    return 0
+  fi
+  return 1
+}
+
 run_isolated_policy_commands() {
   local policy_status=0
   local -a scripts=(
@@ -635,21 +902,24 @@ rustdoc_command() {
   RUSTDOCFLAGS="${DOC_RUSTDOCFLAGS}" compiling_phase cargo doc --workspace "${FEATURE_ARGS[@]}" --no-deps --keep-going
 }
 
+PHASE_CACHE_FILE="$(dirname -- "${PHASE_LOG_DIR}")/last-pass.json"
+phase_cache_load
+
 if [[ "${mode}" == full || "${lane}" == policy || "${mode}" == fast ]]; then
-  run_phase policy-selftests "literal:checks=${policy_selftest_count}" - - run_isolated_policy_commands || true
-  run_phase rustfmt none - - cargo "+${RUSTFMT_TOOLCHAIN}" fmt --all --check || true
-  if ! run_phase lane-structure literal:checks=2 - - run_lane_structure_commands; then
+  run_or_cache_phase policy-selftests "literal:checks=${policy_selftest_count}" - - run_isolated_policy_commands || true
+  run_or_cache_phase rustfmt none - - cargo "+${RUSTFMT_TOOLCHAIN}" fmt --all --check || true
+  if ! run_or_cache_phase lane-structure literal:checks=2 - - run_lane_structure_commands; then
     lane_safe=0
   fi
 else
-  if ! run_phase lane-structure literal:checks=2 - - run_lane_structure_commands; then
+  if ! run_or_cache_phase lane-structure literal:checks=2 - - run_lane_structure_commands; then
     lane_safe=0
   fi
 fi
 
 if [[ "${lane}" != policy ]]; then
   if [[ "${mode}" != fast ]]; then
-    if ! run_phase live-inventory none - - compiling_phase bash scripts/ci/check_gpu_test_lane.sh "${FEATURE_ARGS[@]}"; then
+    if ! run_or_cache_phase live-inventory none - - compiling_phase bash scripts/ci/check_gpu_test_lane.sh "${FEATURE_ARGS[@]}"; then
       lane_safe=0
       echo "ABORT: live lane inventory failed; selected nextest lanes will not run." >&2
     fi
@@ -663,7 +933,7 @@ if [[ "${lane}" != policy ]]; then
     else
       preflight_cap=${GPU_EXCLUSIVE_CAP}
     fi
-    if ! run_phase gpu-preflight none "${preflight_cap}" - run_gpu_config_preflight; then
+    if ! run_or_cache_phase gpu-preflight none "${preflight_cap}" - run_gpu_config_preflight; then
       echo "ERROR: GPU scheduling preflight is invalid; refusing to run GPU lanes." >&2
       fatal_status=2
       lane_safe=0
@@ -683,11 +953,11 @@ if [[ "${lane}" != policy ]]; then
     # nexus-iceberg), plus nexus-tools and nexus-examples, whose tests this
     # script previously only type-checked and never ran.
     [[ "${needs_cpu}" -eq 0 ]] \
-      || run_phase cpu-tests nextest - - cpu_test_command || true
+      || run_or_cache_phase cpu-tests nextest - - cpu_test_command || true
     [[ "${needs_shared_gpu}" -eq 0 ]] \
-      || run_phase gpu-shared-tests nextest "${gpu_threads}" "${GPU_LOCK}" gpu_shared_test_command || true
+      || run_or_cache_phase gpu-shared-tests nextest "${gpu_threads}" "${GPU_LOCK}" gpu_shared_test_command || true
     [[ "${needs_exclusive_gpu}" -eq 0 ]] \
-      || run_phase gpu-exclusive-tests nextest "${GPU_EXCLUSIVE_CAP}" "${GPU_LOCK}" gpu_exclusive_test_command || true
+      || run_or_cache_phase gpu-exclusive-tests nextest "${GPU_EXCLUSIVE_CAP}" "${GPU_LOCK}" gpu_exclusive_test_command || true
   else
     [[ "${needs_cpu}" -eq 0 || "${PHASE_STATUS[cpu-tests]}" != SKIPPED ]] \
       || PHASE_STATUS[cpu-tests]='SKIPPED(blocked)'
@@ -699,10 +969,10 @@ if [[ "${lane}" != policy ]]; then
 fi
 
 if [[ "${mode}" == full ]]; then
-  run_phase doctests doctest - "${GPU_LOCK}" doctest_command || true
-  run_phase rustdoc none - - rustdoc_command || true
+  run_or_cache_phase doctests doctest - "${GPU_LOCK}" doctest_command || true
+  run_or_cache_phase rustdoc none - - rustdoc_command || true
   rustdoc_summary="command_status=${PHASE_EXIT[rustdoc]} warnings=denied"
-  run_phase clippy none - - compiling_phase cargo clippy --workspace --all-targets "${FEATURE_ARGS[@]}" || true
+  run_or_cache_phase clippy none - - compiling_phase cargo clippy --workspace --all-targets "${FEATURE_ARGS[@]}" || true
 fi
 
 sanitize_phase_cell() {
@@ -717,10 +987,10 @@ print_phase_table() {
   local id
   echo
   echo "PHASE SUMMARY"
-  echo "Phase | Command | Duration | Status | Test counts | GPU cap | Lock | Features | Log"
-  echo "--- | --- | --- | --- | --- | --- | --- | --- | ---"
+  echo "Phase | Command | Duration | Status | Test counts | GPU cap | Lock | Features | Log | Cache"
+  echo "--- | --- | --- | --- | --- | --- | --- | --- | --- | ---"
   for id in "${PHASE_ORDER[@]}"; do
-    printf '%s | %s | %s | %s | %s | %s | %s | %s | %s\n' \
+    printf '%s | %s | %s | %s | %s | %s | %s | %s | %s | %s\n' \
       "$(sanitize_phase_cell "${id}")" \
       "$(sanitize_phase_cell "${PHASE_COMMAND[${id}]}")" \
       "$(sanitize_phase_cell "${PHASE_DURATION[${id}]}")" \
@@ -729,7 +999,8 @@ print_phase_table() {
       "$(sanitize_phase_cell "${PHASE_GPU_CAP[${id}]}")" \
       "$(sanitize_phase_cell "${PHASE_LOCK[${id}]}")" \
       "$(sanitize_phase_cell "${PHASE_FEATURES[${id}]}")" \
-      "$(sanitize_phase_cell "${PHASE_LOG[${id}]}")"
+      "$(sanitize_phase_cell "${PHASE_LOG[${id}]}")" \
+      "$(sanitize_phase_cell "${PHASE_CACHE[${id}]}")"
   done
 }
 

@@ -83,6 +83,9 @@ partial and must not be reported as full validation.
 ## Testing and repository policy
 
 - Serialize GPU work with `flock /tmp/cudf-gpu.lock`.
+- After a full gate begins, a late repair may re-run only phases whose
+  source-state hash changed, plus every GPU-locked phase unconditionally;
+  rerunning only the changed subset never establishes full validation.
 - `.config/policies/test-lanes.toml` is the only lane-admission source. After
   changing it, run
   `python3 scripts/ci/test_lane_policy.py generate-nextest --write`.
