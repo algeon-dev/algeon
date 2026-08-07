@@ -1,7 +1,0 @@
-error[E0560]: struct `QueryExecutionConfig` has no field named `device_memory_manager_base`
- --> tests/ui/public_api/forbidden_query_execution_config_allocator_base.rs:6:9
-  |
-6 |         device_memory_manager_base: DeviceMemoryManagerBase::Pool {
-  |         ^^^^^^^^^^^^^^^^^^^^^^^^^^ `QueryExecutionConfig` does not have this field
-  |
-  = note: available fields are: `lakehouse_cache_fill`, `source_storage_profiles`, `boundary_policy`, `source_scheduler_policy`, `source_chunk_planning_mode` ... and 10 others

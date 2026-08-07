@@ -1,0 +1,407 @@
+pub mod nexus_bench
+pub mod nexus_bench::clickbench_benchmark
+pub async fn nexus_bench::clickbench_benchmark::run_main() -> std::process::ExitCode
+pub mod nexus_bench::cugraph_admission_stress
+pub async fn nexus_bench::cugraph_admission_stress::run() -> core::result::Result<(), alloc::boxed::Box<dyn core::error::Error>>
+pub mod nexus_bench::cugraph_sql_construction_report
+pub async fn nexus_bench::cugraph_sql_construction_report::run() -> core::result::Result<(), alloc::boxed::Box<dyn core::error::Error>>
+pub mod nexus_bench::iceberg_smoke
+pub enum nexus_bench::iceberg_smoke::CpuBaselineSessionProfile
+pub nexus_bench::iceberg_smoke::CpuBaselineSessionProfile::Smoke
+pub nexus_bench::iceberg_smoke::CpuBaselineSessionProfile::TpchTuned
+pub enum nexus_bench::iceberg_smoke::CustomWorkload
+pub nexus_bench::iceberg_smoke::CustomWorkload::Tpcds
+pub nexus_bench::iceberg_smoke::CustomWorkload::Tpch
+pub enum nexus_bench::iceberg_smoke::IcebergNativeSmokeFixture
+pub nexus_bench::iceberg_smoke::IcebergNativeSmokeFixture::GlueS3
+pub nexus_bench::iceberg_smoke::IcebergNativeSmokeFixture::GlueS3::catalog_config: nexus_iceberg::source_access::GlueIcebergCatalogConfig
+pub nexus_bench::iceberg_smoke::IcebergNativeSmokeFixture::GlueS3::credential_source: &'static str
+pub nexus_bench::iceberg_smoke::IcebergNativeSmokeFixture::GlueS3::database: alloc::string::String
+pub nexus_bench::iceberg_smoke::IcebergNativeSmokeFixture::GlueS3::table: alloc::string::String
+pub nexus_bench::iceberg_smoke::IcebergNativeSmokeFixture::LocalMetadata
+pub nexus_bench::iceberg_smoke::IcebergNativeSmokeFixture::LocalMetadata::metadata_location: alloc::string::String
+pub nexus_bench::iceberg_smoke::IcebergNativeSmokeFixture::LocalMetadata::table_ident: alloc::vec::Vec<alloc::string::String>
+pub nexus_bench::iceberg_smoke::IcebergNativeSmokeFixture::RestS3
+pub nexus_bench::iceberg_smoke::IcebergNativeSmokeFixture::RestS3::catalog_handle: alloc::string::String
+pub nexus_bench::iceberg_smoke::IcebergNativeSmokeFixture::RestS3::credential_source: &'static str
+pub nexus_bench::iceberg_smoke::IcebergNativeSmokeFixture::RestS3::namespace: alloc::string::String
+pub nexus_bench::iceberg_smoke::IcebergNativeSmokeFixture::RestS3::s3_endpoint: core::option::Option<alloc::string::String>
+pub nexus_bench::iceberg_smoke::IcebergNativeSmokeFixture::RestS3::s3_path_style_access: core::option::Option<bool>
+pub nexus_bench::iceberg_smoke::IcebergNativeSmokeFixture::RestS3::s3_region: core::option::Option<alloc::string::String>
+pub nexus_bench::iceberg_smoke::IcebergNativeSmokeFixture::RestS3::source_access_policy: nexus_iceberg::source_access::SourceAccessPolicy
+pub nexus_bench::iceberg_smoke::IcebergNativeSmokeFixture::RestS3::table: alloc::string::String
+pub nexus_bench::iceberg_smoke::IcebergNativeSmokeFixture::RestS3::uri: alloc::string::String
+pub nexus_bench::iceberg_smoke::IcebergNativeSmokeFixture::RestS3::warehouse: alloc::string::String
+impl nexus_bench::iceberg_smoke::IcebergNativeSmokeFixture
+pub fn nexus_bench::iceberg_smoke::IcebergNativeSmokeFixture::catalog_type(&self) -> &'static str
+pub fn nexus_bench::iceberg_smoke::IcebergNativeSmokeFixture::credential_source(&self) -> &'static str
+pub fn nexus_bench::iceberg_smoke::IcebergNativeSmokeFixture::mode_code(&self) -> &'static str
+pub fn nexus_bench::iceberg_smoke::IcebergNativeSmokeFixture::tpcds_all_tables_ident_display(&self, &str) -> alloc::string::String
+pub fn nexus_bench::iceberg_smoke::IcebergNativeSmokeFixture::tpch_all_tables_ident_display(&self, &str) -> alloc::string::String
+pub fn nexus_bench::iceberg_smoke::IcebergNativeSmokeFixture::with_tpcds_table(&self, &str, &str) -> core::result::Result<Self, alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync)>>
+pub enum nexus_bench::iceberg_smoke::NativeExecutionProfile
+pub nexus_bench::iceberg_smoke::NativeExecutionProfile::Smoke
+pub nexus_bench::iceberg_smoke::NativeExecutionProfile::TpcdsBenchmark
+pub nexus_bench::iceberg_smoke::NativeExecutionProfile::TpchBenchmark
+pub enum nexus_bench::iceberg_smoke::ObjectStoreStagingMode
+pub nexus_bench::iceberg_smoke::ObjectStoreStagingMode::Auto
+pub nexus_bench::iceberg_smoke::ObjectStoreStagingMode::Disabled
+pub nexus_bench::iceberg_smoke::ObjectStoreStagingMode::Required
+pub enum nexus_bench::iceberg_smoke::ObjectStoreStagingStatus
+pub nexus_bench::iceberg_smoke::ObjectStoreStagingStatus::DirectNative
+pub nexus_bench::iceberg_smoke::ObjectStoreStagingStatus::Disabled
+pub nexus_bench::iceberg_smoke::ObjectStoreStagingStatus::NotNeeded
+pub nexus_bench::iceberg_smoke::ObjectStoreStagingStatus::StagedLocal
+impl nexus_bench::iceberg_smoke::ObjectStoreStagingStatus
+pub const fn nexus_bench::iceberg_smoke::ObjectStoreStagingStatus::code(self) -> &'static str
+pub enum nexus_bench::iceberg_smoke::SmokeQueryExecutionMode
+pub nexus_bench::iceberg_smoke::SmokeQueryExecutionMode::CpuBaselineOnly
+pub nexus_bench::iceberg_smoke::SmokeQueryExecutionMode::NativeAndCpuBaseline
+pub nexus_bench::iceberg_smoke::SmokeQueryExecutionMode::NativeOnly
+pub struct nexus_bench::iceberg_smoke::IcebergNativeSmokeConfig
+pub nexus_bench::iceberg_smoke::IcebergNativeSmokeConfig::continue_on_query_error: bool
+pub nexus_bench::iceberg_smoke::IcebergNativeSmokeConfig::cpu_baseline_timeout_secs: core::option::Option<u64>
+pub nexus_bench::iceberg_smoke::IcebergNativeSmokeConfig::custom_query_file: core::option::Option<std::path::PathBuf>
+pub nexus_bench::iceberg_smoke::IcebergNativeSmokeConfig::custom_workload: core::option::Option<nexus_bench::iceberg_smoke::CustomWorkload>
+pub nexus_bench::iceberg_smoke::IcebergNativeSmokeConfig::execution_mode: nexus_bench::iceberg_smoke::SmokeQueryExecutionMode
+pub nexus_bench::iceberg_smoke::IcebergNativeSmokeConfig::fixture: nexus_bench::iceberg_smoke::IcebergNativeSmokeFixture
+pub nexus_bench::iceberg_smoke::IcebergNativeSmokeConfig::object_store_staging: nexus_bench::iceberg_smoke::ObjectStoreStagingMode
+pub nexus_bench::iceberg_smoke::IcebergNativeSmokeConfig::query_id: alloc::string::String
+pub nexus_bench::iceberg_smoke::IcebergNativeSmokeConfig::sql: alloc::string::String
+pub nexus_bench::iceberg_smoke::IcebergNativeSmokeConfig::stream_tsv_rows: bool
+pub nexus_bench::iceberg_smoke::IcebergNativeSmokeConfig::table_alias: alloc::string::String
+pub nexus_bench::iceberg_smoke::IcebergNativeSmokeConfig::tpcds_query_ids: alloc::vec::Vec<alloc::string::String>
+pub nexus_bench::iceberg_smoke::IcebergNativeSmokeConfig::tpcds_scale_factor: alloc::string::String
+pub nexus_bench::iceberg_smoke::IcebergNativeSmokeConfig::tpch_query_ids: alloc::vec::Vec<alloc::string::String>
+pub nexus_bench::iceberg_smoke::IcebergNativeSmokeConfig::tpch_scale_factor: alloc::string::String
+impl nexus_bench::iceberg_smoke::IcebergNativeSmokeConfig
+pub fn nexus_bench::iceberg_smoke::IcebergNativeSmokeConfig::from_env() -> core::result::Result<Self, alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync)>>
+pub fn nexus_bench::iceberg_smoke::IcebergNativeSmokeConfig::from_env_get(impl core::ops::function::FnMut(&str) -> core::option::Option<alloc::string::String>) -> core::result::Result<Self, alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync)>>
+pub struct nexus_bench::iceberg_smoke::IcebergNativeSmokeReport
+pub nexus_bench::iceberg_smoke::IcebergNativeSmokeReport::rows: alloc::vec::Vec<nexus_bench::iceberg_smoke::IcebergNativeSmokeReportRow>
+impl nexus_bench::iceberg_smoke::IcebergNativeSmokeReport
+pub fn nexus_bench::iceberg_smoke::IcebergNativeSmokeReport::to_tsv(&self) -> alloc::string::String
+pub struct nexus_bench::iceberg_smoke::IcebergNativeSmokeReportRow
+pub nexus_bench::iceberg_smoke::IcebergNativeSmokeReportRow::catalog_type: alloc::string::String
+pub nexus_bench::iceberg_smoke::IcebergNativeSmokeReportRow::comparison_mode: datafusion_nexus::native_report::tpcds_parity::report::ParityComparisonMode
+pub nexus_bench::iceberg_smoke::IcebergNativeSmokeReportRow::cpu_arrow_reader_fallback: bool
+pub nexus_bench::iceberg_smoke::IcebergNativeSmokeReportRow::cpu_output_batches: core::option::Option<usize>
+pub nexus_bench::iceberg_smoke::IcebergNativeSmokeReportRow::cpu_output_fingerprint: core::option::Option<alloc::string::String>
+pub nexus_bench::iceberg_smoke::IcebergNativeSmokeReportRow::cpu_output_rows: core::option::Option<usize>
+pub nexus_bench::iceberg_smoke::IcebergNativeSmokeReportRow::cpu_runtime_elapsed_ms: core::option::Option<u128>
+pub nexus_bench::iceberg_smoke::IcebergNativeSmokeReportRow::cpu_runtime_outcome: datafusion_nexus::native_report::rows::NativeDataFusionRuntimeOutcome
+pub nexus_bench::iceberg_smoke::IcebergNativeSmokeReportRow::cpu_runtime_started: bool
+pub nexus_bench::iceberg_smoke::IcebergNativeSmokeReportRow::credential_source: alloc::string::String
+pub nexus_bench::iceberg_smoke::IcebergNativeSmokeReportRow::diagnostics: datafusion_nexus::table_format::scan::diagnostics::TableFormatScanDiagnostics
+pub nexus_bench::iceberg_smoke::IcebergNativeSmokeReportRow::expected_count: core::option::Option<u64>
+pub nexus_bench::iceberg_smoke::IcebergNativeSmokeReportRow::final_disposition: datafusion_nexus::planner::FinalPlanDisposition
+pub nexus_bench::iceberg_smoke::IcebergNativeSmokeReportRow::fixture_mode: alloc::string::String
+pub nexus_bench::iceberg_smoke::IcebergNativeSmokeReportRow::lakehouse_cache_fill_event_snapshot_rows: alloc::string::String
+pub nexus_bench::iceberg_smoke::IcebergNativeSmokeReportRow::native_count_value: core::option::Option<u64>
+pub nexus_bench::iceberg_smoke::IcebergNativeSmokeReportRow::native_output_batches: core::option::Option<usize>
+pub nexus_bench::iceberg_smoke::IcebergNativeSmokeReportRow::native_output_fingerprint: core::option::Option<alloc::string::String>
+pub nexus_bench::iceberg_smoke::IcebergNativeSmokeReportRow::native_output_rows: core::option::Option<usize>
+pub nexus_bench::iceberg_smoke::IcebergNativeSmokeReportRow::native_planning_outcome: core::option::Option<datafusion_nexus::native_report::rows::NativeDataFusionPlanningOutcome>
+pub nexus_bench::iceberg_smoke::IcebergNativeSmokeReportRow::native_reason_code: core::option::Option<alloc::string::String>
+pub nexus_bench::iceberg_smoke::IcebergNativeSmokeReportRow::native_runtime_elapsed_ms: core::option::Option<u128>
+pub nexus_bench::iceberg_smoke::IcebergNativeSmokeReportRow::native_runtime_outcome: datafusion_nexus::native_report::rows::NativeDataFusionRuntimeOutcome
+pub nexus_bench::iceberg_smoke::IcebergNativeSmokeReportRow::native_runtime_started: bool
+pub nexus_bench::iceberg_smoke::IcebergNativeSmokeReportRow::native_source_read_runtime_rows: alloc::string::String
+pub nexus_bench::iceberg_smoke::IcebergNativeSmokeReportRow::parity_detail: core::option::Option<alloc::string::String>
+pub nexus_bench::iceberg_smoke::IcebergNativeSmokeReportRow::parity_status: datafusion_nexus::native_report::tpcds_parity::report::ParityStatus
+pub nexus_bench::iceberg_smoke::IcebergNativeSmokeReportRow::query_id: alloc::string::String
+pub nexus_bench::iceberg_smoke::IcebergNativeSmokeReportRow::sql: alloc::string::String
+pub nexus_bench::iceberg_smoke::IcebergNativeSmokeReportRow::staging_summary: nexus_bench::iceberg_smoke::ObjectStoreStagingSummary
+pub nexus_bench::iceberg_smoke::IcebergNativeSmokeReportRow::table_ident: alloc::string::String
+impl nexus_bench::iceberg_smoke::IcebergNativeSmokeReportRow
+pub fn nexus_bench::iceberg_smoke::IcebergNativeSmokeReportRow::finalize_count_parity_if_needed(&mut self)
+pub fn nexus_bench::iceberg_smoke::IcebergNativeSmokeReportRow::new(alloc::string::String, alloc::string::String, alloc::string::String, alloc::string::String, alloc::string::String, datafusion_nexus::table_format::scan::diagnostics::TableFormatScanDiagnostics, core::option::Option<datafusion_nexus::native_report::rows::NativeDataFusionPlanningOutcome>, core::option::Option<alloc::string::String>, datafusion_nexus::planner::FinalPlanDisposition, core::option::Option<u64>, nexus_bench::iceberg_smoke::ObjectStoreStagingSummary, alloc::string::String) -> Self
+pub fn nexus_bench::iceberg_smoke::IcebergNativeSmokeReportRow::record_native_metrics(&mut self, datafusion_nexus::native_report::metrics::NativeDataFusionExecutionMetrics)
+pub struct nexus_bench::iceberg_smoke::ObjectStoreStagingSummary
+pub nexus_bench::iceberg_smoke::ObjectStoreStagingSummary::mode: nexus_bench::iceberg_smoke::ObjectStoreStagingMode
+pub nexus_bench::iceberg_smoke::ObjectStoreStagingSummary::staged_bytes: u64
+pub nexus_bench::iceberg_smoke::ObjectStoreStagingSummary::staged_data_file_count: usize
+pub nexus_bench::iceberg_smoke::ObjectStoreStagingSummary::status: nexus_bench::iceberg_smoke::ObjectStoreStagingStatus
+impl nexus_bench::iceberg_smoke::ObjectStoreStagingSummary
+pub const fn nexus_bench::iceberg_smoke::ObjectStoreStagingSummary::new(nexus_bench::iceberg_smoke::ObjectStoreStagingMode, nexus_bench::iceberg_smoke::ObjectStoreStagingStatus) -> Self
+impl core::default::Default for nexus_bench::iceberg_smoke::ObjectStoreStagingSummary
+pub fn nexus_bench::iceberg_smoke::ObjectStoreStagingSummary::default() -> Self
+pub struct nexus_bench::iceberg_smoke::StagedObjectStoreDataFile
+pub nexus_bench::iceberg_smoke::StagedObjectStoreDataFile::id: alloc::string::String
+pub nexus_bench::iceberg_smoke::StagedObjectStoreDataFile::local_path: std::path::PathBuf
+pub nexus_bench::iceberg_smoke::StagedObjectStoreDataFile::staged_bytes: u64
+pub fn nexus_bench::iceberg_smoke::cpu_baseline_listing_file_extension(&[datafusion_datasource::url::ListingTableUrl]) -> &'static str
+pub fn nexus_bench::iceberg_smoke::cpu_baseline_listing_urls_from_scan_plan(&datafusion_nexus::table_format::scan::plan::TableFormatScanPlan) -> core::result::Result<alloc::vec::Vec<datafusion_datasource::url::ListingTableUrl>, alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync)>>
+pub fn nexus_bench::iceberg_smoke::cpu_baseline_session_config(nexus_bench::iceberg_smoke::CpuBaselineSessionProfile) -> datafusion_execution::config::SessionConfig
+pub fn nexus_bench::iceberg_smoke::fingerprint_output_batches(&arrow_schema::schema::Schema, &[arrow_array::record_batch::RecordBatch], &str) -> datafusion_nexus::native_report::tpcds_parity::compare::ParityComparisonResult
+pub fn nexus_bench::iceberg_smoke::native_execution_config_for_profile_with_env(nexus_bench::iceberg_smoke::NativeExecutionProfile, impl core::ops::function::FnMut(&str) -> core::option::Option<alloc::string::String>) -> core::result::Result<datafusion_nexus::native_exec::config::NexusNativeExecutionConfig, alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync)>>
+pub fn nexus_bench::iceberg_smoke::native_optimizer_options_for_profile(nexus_bench::iceberg_smoke::NativeExecutionProfile, &datafusion_nexus::native_exec::config::NexusNativeExecutionConfig) -> nexus_query_engine::optimizer::NativeOptimizerOptions
+pub fn nexus_bench::iceberg_smoke::native_session_config_for_profile(nexus_bench::iceberg_smoke::NativeExecutionProfile) -> datafusion_execution::config::SessionConfig
+pub fn nexus_bench::iceberg_smoke::rewrite_scan_plan_for_staged_object_store_files(datafusion_nexus::table_format::scan::plan::TableFormatScanPlan, &[nexus_bench::iceberg_smoke::StagedObjectStoreDataFile]) -> datafusion_nexus::table_format::scan::plan::TableFormatScanPlan
+pub async fn nexus_bench::iceberg_smoke::run_from_env() -> core::result::Result<nexus_bench::iceberg_smoke::IcebergNativeSmokeReport, alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync)>>
+pub async fn nexus_bench::iceberg_smoke::run_report(nexus_bench::iceberg_smoke::IcebergNativeSmokeConfig) -> core::result::Result<nexus_bench::iceberg_smoke::IcebergNativeSmokeReport, alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync)>>
+pub async fn nexus_bench::iceberg_smoke::run_report_streaming(nexus_bench::iceberg_smoke::IcebergNativeSmokeConfig, &mut dyn core::io::write::Write) -> core::result::Result<nexus_bench::iceberg_smoke::IcebergNativeSmokeReport, alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync)>>
+pub async fn nexus_bench::iceberg_smoke::run_single_tpch_query_report_with_execution_mode(nexus_bench::iceberg_smoke::IcebergNativeSmokeConfig, impl core::convert::Into<alloc::string::String>, nexus_bench::iceberg_smoke::SmokeQueryExecutionMode) -> core::result::Result<nexus_bench::iceberg_smoke::IcebergNativeSmokeReportRow, alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync)>>
+pub fn nexus_bench::iceberg_smoke::smoke_parity_uses_ordered_rows(&str, &arrow_schema::schema::Schema) -> bool
+pub fn nexus_bench::iceberg_smoke::stable_tsv_field(&str) -> alloc::string::String
+pub fn nexus_bench::iceberg_smoke::tpcds_glue_table_name(&str, &str) -> alloc::string::String
+pub fn nexus_bench::iceberg_smoke::tpch_glue_table_name(&str, &str) -> alloc::string::String
+pub fn nexus_bench::iceberg_smoke::write_smoke_tsv_header(&mut dyn core::io::write::Write) -> core::result::Result<(), alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync)>>
+pub fn nexus_bench::iceberg_smoke::write_smoke_tsv_row(&mut dyn core::io::write::Write, &nexus_bench::iceberg_smoke::IcebergNativeSmokeReportRow) -> core::result::Result<(), alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync)>>
+pub mod nexus_bench::iceberg_tpch_benchmark
+pub enum nexus_bench::iceberg_tpch_benchmark::BenchmarkTimeoutCategory
+pub nexus_bench::iceberg_tpch_benchmark::BenchmarkTimeoutCategory::CpuS3Baseline
+pub nexus_bench::iceberg_tpch_benchmark::BenchmarkTimeoutCategory::Iteration
+pub nexus_bench::iceberg_tpch_benchmark::BenchmarkTimeoutCategory::NativeRuntime
+impl nexus_bench::iceberg_tpch_benchmark::BenchmarkTimeoutCategory
+pub const fn nexus_bench::iceberg_tpch_benchmark::BenchmarkTimeoutCategory::as_str(self) -> &'static str
+pub struct nexus_bench::iceberg_tpch_benchmark::CpuChildFailure
+pub nexus_bench::iceberg_tpch_benchmark::CpuChildFailure::detail: alloc::string::String
+pub nexus_bench::iceberg_tpch_benchmark::CpuChildFailure::elapsed_ms: u128
+pub nexus_bench::iceberg_tpch_benchmark::CpuChildFailure::timeout: bool
+pub struct nexus_bench::iceberg_tpch_benchmark::CpuChildResult
+pub nexus_bench::iceberg_tpch_benchmark::CpuChildResult::comparison_mode: datafusion_nexus::native_report::tpcds_parity::report::ParityComparisonMode
+pub nexus_bench::iceberg_tpch_benchmark::CpuChildResult::detail: core::option::Option<alloc::string::String>
+pub nexus_bench::iceberg_tpch_benchmark::CpuChildResult::elapsed_ms: core::option::Option<u128>
+pub nexus_bench::iceberg_tpch_benchmark::CpuChildResult::output_batches: core::option::Option<usize>
+pub nexus_bench::iceberg_tpch_benchmark::CpuChildResult::output_fingerprint: core::option::Option<alloc::string::String>
+pub nexus_bench::iceberg_tpch_benchmark::CpuChildResult::output_rows: core::option::Option<usize>
+pub struct nexus_bench::iceberg_tpch_benchmark::FullSf1DirectS3GateSummary
+pub nexus_bench::iceberg_tpch_benchmark::FullSf1DirectS3GateSummary::cpu_runtime_elapsed_ms_total: u128
+pub nexus_bench::iceberg_tpch_benchmark::FullSf1DirectS3GateSummary::measured_iterations: usize
+pub nexus_bench::iceberg_tpch_benchmark::FullSf1DirectS3GateSummary::native_runtime_elapsed_ms_total: u128
+pub nexus_bench::iceberg_tpch_benchmark::FullSf1DirectS3GateSummary::query_count: usize
+pub nexus_bench::iceberg_tpch_benchmark::FullSf1DirectS3GateSummary::report_elapsed_ms: u128
+pub struct nexus_bench::iceberg_tpch_benchmark::IcebergTpchBenchmarkConfig
+pub nexus_bench::iceberg_tpch_benchmark::IcebergTpchBenchmarkConfig::iteration_timeout_secs: core::option::Option<u64>
+pub nexus_bench::iceberg_tpch_benchmark::IcebergTpchBenchmarkConfig::iterations: usize
+pub nexus_bench::iceberg_tpch_benchmark::IcebergTpchBenchmarkConfig::query_ids: alloc::vec::Vec<alloc::string::String>
+pub nexus_bench::iceberg_tpch_benchmark::IcebergTpchBenchmarkConfig::query_timeout_secs: core::option::Option<u64>
+pub nexus_bench::iceberg_tpch_benchmark::IcebergTpchBenchmarkConfig::smoke_config: nexus_bench::iceberg_smoke::IcebergNativeSmokeConfig
+pub nexus_bench::iceberg_tpch_benchmark::IcebergTpchBenchmarkConfig::warmup_iterations: usize
+impl nexus_bench::iceberg_tpch_benchmark::IcebergTpchBenchmarkConfig
+pub fn nexus_bench::iceberg_tpch_benchmark::IcebergTpchBenchmarkConfig::from_env() -> core::result::Result<Self, alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync)>>
+pub fn nexus_bench::iceberg_tpch_benchmark::IcebergTpchBenchmarkConfig::from_env_get(impl core::ops::function::FnMut(&str) -> core::option::Option<alloc::string::String>) -> core::result::Result<Self, alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync)>>
+pub struct nexus_bench::iceberg_tpch_benchmark::IcebergTpchBenchmarkReport
+pub nexus_bench::iceberg_tpch_benchmark::IcebergTpchBenchmarkReport::rows: alloc::vec::Vec<nexus_bench::iceberg_tpch_benchmark::IcebergTpchBenchmarkRow>
+impl nexus_bench::iceberg_tpch_benchmark::IcebergTpchBenchmarkReport
+pub fn nexus_bench::iceberg_tpch_benchmark::IcebergTpchBenchmarkReport::to_tsv(&self) -> alloc::string::String
+pub struct nexus_bench::iceberg_tpch_benchmark::IcebergTpchBenchmarkRow
+pub nexus_bench::iceberg_tpch_benchmark::IcebergTpchBenchmarkRow::iteration: usize
+pub nexus_bench::iceberg_tpch_benchmark::IcebergTpchBenchmarkRow::measured_iterations: usize
+pub nexus_bench::iceberg_tpch_benchmark::IcebergTpchBenchmarkRow::report_elapsed_ms: u128
+pub nexus_bench::iceberg_tpch_benchmark::IcebergTpchBenchmarkRow::smoke_row: nexus_bench::iceberg_smoke::IcebergNativeSmokeReportRow
+pub nexus_bench::iceberg_tpch_benchmark::IcebergTpchBenchmarkRow::timeout_category: core::option::Option<nexus_bench::iceberg_tpch_benchmark::BenchmarkTimeoutCategory>
+pub nexus_bench::iceberg_tpch_benchmark::IcebergTpchBenchmarkRow::tpch_scale_factor: alloc::string::String
+pub nexus_bench::iceberg_tpch_benchmark::IcebergTpchBenchmarkRow::warmup_iterations: usize
+pub const nexus_bench::iceberg_tpch_benchmark::REPORT_COLUMNS: &[&str]
+pub const nexus_bench::iceberg_tpch_benchmark::REPORT_HEADER: &str
+pub fn nexus_bench::iceberg_tpch_benchmark::apply_cpu_child_failure(&mut nexus_bench::iceberg_smoke::IcebergNativeSmokeReportRow, nexus_bench::iceberg_tpch_benchmark::CpuChildFailure)
+pub fn nexus_bench::iceberg_tpch_benchmark::parse_cpu_child_result(&str) -> core::result::Result<nexus_bench::iceberg_tpch_benchmark::CpuChildResult, alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync)>>
+pub async fn nexus_bench::iceberg_tpch_benchmark::run_benchmark(nexus_bench::iceberg_tpch_benchmark::IcebergTpchBenchmarkConfig) -> core::result::Result<nexus_bench::iceberg_tpch_benchmark::IcebergTpchBenchmarkReport, alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync)>>
+pub async fn nexus_bench::iceberg_tpch_benchmark::run_main()
+pub fn nexus_bench::iceberg_tpch_benchmark::set_iteration_report_elapsed_ms(&mut [nexus_bench::iceberg_tpch_benchmark::IcebergTpchBenchmarkRow], usize, u128)
+pub fn nexus_bench::iceberg_tpch_benchmark::validate_full_sf1_staged_s3_gate_for_config(&nexus_bench::iceberg_tpch_benchmark::IcebergTpchBenchmarkReport, &nexus_bench::iceberg_tpch_benchmark::IcebergTpchBenchmarkConfig) -> core::result::Result<core::option::Option<nexus_bench::iceberg_tpch_benchmark::FullSf1DirectS3GateSummary>, alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync)>>
+pub fn nexus_bench::iceberg_tpch_benchmark::write_benchmark_tsv_header(&mut impl core::io::write::Write) -> core::io::error::Result<()>
+pub fn nexus_bench::iceberg_tpch_benchmark::write_benchmark_tsv_row(&mut impl core::io::write::Write, &nexus_bench::iceberg_tpch_benchmark::IcebergTpchBenchmarkRow) -> core::io::error::Result<()>
+pub mod nexus_bench::query_service_iceberg_stress
+pub async fn nexus_bench::query_service_iceberg_stress::run() -> datafusion_common::error::Result<()>
+pub mod nexus_bench::query_service_tpcds_stress
+pub async fn nexus_bench::query_service_tpcds_stress::run() -> datafusion_common::error::Result<()>
+pub mod nexus_bench::query_service_tpch_stress
+pub async fn nexus_bench::query_service_tpch_stress::run() -> datafusion_common::error::Result<()>
+pub mod nexus_bench::report_metadata
+pub trait nexus_bench::report_metadata::ReportDatasetMetadataExt
+pub fn nexus_bench::report_metadata::ReportDatasetMetadataExt::to_workload_dataset_metadata(&self) -> datafusion_nexus::native_report::dataset::WorkloadDatasetMetadata
+impl nexus_bench::report_metadata::ReportDatasetMetadataExt for nexus_workloads::clickbench::dataset::ClickbenchDatasetMetadata
+pub fn nexus_workloads::clickbench::dataset::ClickbenchDatasetMetadata::to_workload_dataset_metadata(&self) -> datafusion_nexus::native_report::dataset::WorkloadDatasetMetadata
+impl nexus_bench::report_metadata::ReportDatasetMetadataExt for nexus_workloads::tpcds::dataset::TpcdsDatasetMetadata
+pub fn nexus_workloads::tpcds::dataset::TpcdsDatasetMetadata::to_workload_dataset_metadata(&self) -> datafusion_nexus::native_report::dataset::WorkloadDatasetMetadata
+impl nexus_bench::report_metadata::ReportDatasetMetadataExt for nexus_workloads::tpch::dataset::TpchDatasetMetadata
+pub fn nexus_workloads::tpch::dataset::TpchDatasetMetadata::to_workload_dataset_metadata(&self) -> datafusion_nexus::native_report::dataset::WorkloadDatasetMetadata
+pub mod nexus_bench::report_workload
+pub mod nexus_bench::report_workload::clickbench
+pub enum nexus_bench::report_workload::clickbench::ClickbenchExecutionProgressEvent<'a>
+pub nexus_bench::report_workload::clickbench::ClickbenchExecutionProgressEvent::QueryFinished
+pub nexus_bench::report_workload::clickbench::ClickbenchExecutionProgressEvent::QueryFinished::elapsed_ms: u128
+pub nexus_bench::report_workload::clickbench::ClickbenchExecutionProgressEvent::QueryFinished::query_id: &'a str
+pub nexus_bench::report_workload::clickbench::ClickbenchExecutionProgressEvent::QueryFinished::query_index: usize
+pub nexus_bench::report_workload::clickbench::ClickbenchExecutionProgressEvent::QueryFinished::runtime_outcome: &'a str
+pub nexus_bench::report_workload::clickbench::ClickbenchExecutionProgressEvent::QueryFinished::total: usize
+pub nexus_bench::report_workload::clickbench::ClickbenchExecutionProgressEvent::QueryStarted
+pub nexus_bench::report_workload::clickbench::ClickbenchExecutionProgressEvent::QueryStarted::query_id: &'a str
+pub nexus_bench::report_workload::clickbench::ClickbenchExecutionProgressEvent::QueryStarted::query_index: usize
+pub nexus_bench::report_workload::clickbench::ClickbenchExecutionProgressEvent::QueryStarted::total: usize
+pub struct nexus_bench::report_workload::clickbench::ClickbenchNativeProfileSettings
+pub nexus_bench::report_workload::clickbench::ClickbenchNativeProfileSettings::device_budget_bytes: u64
+pub nexus_bench::report_workload::clickbench::ClickbenchNativeProfileSettings::max_retry_attempts: usize
+pub nexus_bench::report_workload::clickbench::ClickbenchNativeProfileSettings::max_row_groups_per_chunk: usize
+pub nexus_bench::report_workload::clickbench::ClickbenchNativeProfileSettings::max_source_chunk_bytes: u64
+pub nexus_bench::report_workload::clickbench::ClickbenchNativeProfileSettings::min_retry_chunk_row_groups: usize
+pub nexus_bench::report_workload::clickbench::ClickbenchNativeProfileSettings::profile_name: &'static str
+pub nexus_bench::report_workload::clickbench::ClickbenchNativeProfileSettings::profile_source: &'static str
+pub nexus_bench::report_workload::clickbench::ClickbenchNativeProfileSettings::source_chunk_planning_mode: nexus_query_engine::execution_contracts::SourceChunkPlanningMode
+pub const nexus_bench::report_workload::clickbench::CLICKBENCH_GPU_THROUGHPUT_DEVICE_BUDGET_BYTES: u64
+pub const nexus_bench::report_workload::clickbench::CLICKBENCH_GPU_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK: usize
+pub const nexus_bench::report_workload::clickbench::CLICKBENCH_GPU_THROUGHPUT_MAX_SOURCE_CHUNK_BYTES: u64
+pub const nexus_bench::report_workload::clickbench::CLICKBENCH_NATIVE_PROFILE_CONSERVATIVE: &str
+pub const nexus_bench::report_workload::clickbench::CLICKBENCH_NATIVE_PROFILE_CUSTOM: &str
+pub const nexus_bench::report_workload::clickbench::CLICKBENCH_NATIVE_PROFILE_GPU_THROUGHPUT: &str
+pub const nexus_bench::report_workload::clickbench::NEXUS_CLICKBENCH_NATIVE_DEVICE_BUDGET_BYTES_ENV: &str
+pub const nexus_bench::report_workload::clickbench::NEXUS_CLICKBENCH_NATIVE_MAX_RETRY_ATTEMPTS_ENV: &str
+pub const nexus_bench::report_workload::clickbench::NEXUS_CLICKBENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV: &str
+pub const nexus_bench::report_workload::clickbench::NEXUS_CLICKBENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV: &str
+pub const nexus_bench::report_workload::clickbench::NEXUS_CLICKBENCH_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV: &str
+pub const nexus_bench::report_workload::clickbench::NEXUS_CLICKBENCH_NATIVE_PROFILE_ENV: &str
+pub const nexus_bench::report_workload::clickbench::NEXUS_CLICKBENCH_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV: &str
+pub async fn nexus_bench::report_workload::clickbench::clickbench_datafusion_execution_workload_items(&std::path::Path, datafusion_execution::config::SessionConfig) -> nexus_workloads::clickbench::ClickbenchWorkloadResult<alloc::vec::Vec<datafusion_nexus::native_report::workload::NativeDataFusionExecutionWorkloadItem>>
+pub async fn nexus_bench::report_workload::clickbench::clickbench_datafusion_execution_workload_items_filtered(&std::path::Path, datafusion_execution::config::SessionConfig, datafusion_nexus::planner::NexusNativeOptimizerConfig, core::option::Option<&[&str]>, core::option::Option<&mut dyn core::ops::function::FnMut(nexus_bench::report_workload::clickbench::ClickbenchExecutionProgressEvent<'_>)>) -> nexus_workloads::clickbench::ClickbenchWorkloadResult<alloc::vec::Vec<datafusion_nexus::native_report::workload::NativeDataFusionExecutionWorkloadItem>>
+pub async fn nexus_bench::report_workload::clickbench::clickbench_datafusion_execution_workload_items_with_optimizer_config(&std::path::Path, datafusion_execution::config::SessionConfig, datafusion_nexus::planner::NexusNativeOptimizerConfig) -> nexus_workloads::clickbench::ClickbenchWorkloadResult<alloc::vec::Vec<datafusion_nexus::native_report::workload::NativeDataFusionExecutionWorkloadItem>>
+pub async fn nexus_bench::report_workload::clickbench::clickbench_datafusion_planning_workload_items(&std::path::Path, datafusion_execution::config::SessionConfig) -> nexus_workloads::clickbench::ClickbenchWorkloadResult<alloc::vec::Vec<datafusion_nexus::native_report::workload::NativeDataFusionPlanningWorkloadItem>>
+pub async fn nexus_bench::report_workload::clickbench::clickbench_datafusion_planning_workload_items_with_optimizer_config(&std::path::Path, datafusion_execution::config::SessionConfig, datafusion_nexus::planner::NexusNativeOptimizerConfig) -> nexus_workloads::clickbench::ClickbenchWorkloadResult<alloc::vec::Vec<datafusion_nexus::native_report::workload::NativeDataFusionPlanningWorkloadItem>>
+pub async fn nexus_bench::report_workload::clickbench::clickbench_fallback_pressure_workload_items(&std::path::Path, datafusion_execution::config::SessionConfig) -> nexus_workloads::clickbench::ClickbenchWorkloadResult<alloc::vec::Vec<datafusion_nexus::native_report::workload::NativeFallbackPressureWorkloadItem>>
+pub fn nexus_bench::report_workload::clickbench::clickbench_native_optimizer_config() -> datafusion_nexus::planner::NexusNativeOptimizerConfig
+pub fn nexus_bench::report_workload::clickbench::clickbench_native_optimizer_config_with_profile_settings(&nexus_bench::report_workload::clickbench::ClickbenchNativeProfileSettings) -> datafusion_nexus::planner::NexusNativeOptimizerConfig
+pub fn nexus_bench::report_workload::clickbench::clickbench_native_profile_settings_from_env() -> nexus_bench::report_workload::clickbench::ClickbenchNativeProfileSettings
+pub fn nexus_bench::report_workload::clickbench::clickbench_native_profile_settings_with_env(impl core::ops::function::FnMut(&'static str) -> core::option::Option<alloc::string::String>) -> nexus_bench::report_workload::clickbench::ClickbenchNativeProfileSettings
+pub fn nexus_bench::report_workload::clickbench::clickbench_report_session_config() -> datafusion_execution::config::SessionConfig
+pub fn nexus_bench::report_workload::clickbench::clickbench_tuned_cpu_session_config() -> datafusion_execution::config::SessionConfig
+pub mod nexus_bench::report_workload::tpcds
+pub enum nexus_bench::report_workload::tpcds::TpcdsExecutionProgressEvent<'a>
+pub nexus_bench::report_workload::tpcds::TpcdsExecutionProgressEvent::QueryFinished
+pub nexus_bench::report_workload::tpcds::TpcdsExecutionProgressEvent::QueryFinished::elapsed_ms: u128
+pub nexus_bench::report_workload::tpcds::TpcdsExecutionProgressEvent::QueryFinished::query_id: &'a str
+pub nexus_bench::report_workload::tpcds::TpcdsExecutionProgressEvent::QueryFinished::query_index: usize
+pub nexus_bench::report_workload::tpcds::TpcdsExecutionProgressEvent::QueryFinished::runtime_outcome: &'a str
+pub nexus_bench::report_workload::tpcds::TpcdsExecutionProgressEvent::QueryFinished::total: usize
+pub nexus_bench::report_workload::tpcds::TpcdsExecutionProgressEvent::QueryStarted
+pub nexus_bench::report_workload::tpcds::TpcdsExecutionProgressEvent::QueryStarted::query_id: &'a str
+pub nexus_bench::report_workload::tpcds::TpcdsExecutionProgressEvent::QueryStarted::query_index: usize
+pub nexus_bench::report_workload::tpcds::TpcdsExecutionProgressEvent::QueryStarted::total: usize
+pub enum nexus_bench::report_workload::tpcds::TpcdsParityProgressEvent<'a>
+pub nexus_bench::report_workload::tpcds::TpcdsParityProgressEvent::QueryStarted
+pub nexus_bench::report_workload::tpcds::TpcdsParityProgressEvent::QueryStarted::query_id: &'a str
+pub nexus_bench::report_workload::tpcds::TpcdsParityProgressEvent::QueryStarted::query_index: usize
+pub nexus_bench::report_workload::tpcds::TpcdsParityProgressEvent::QueryStarted::total: usize
+pub nexus_bench::report_workload::tpcds::TpcdsParityProgressEvent::RowReady
+pub nexus_bench::report_workload::tpcds::TpcdsParityProgressEvent::RowReady::query_id: &'a str
+pub nexus_bench::report_workload::tpcds::TpcdsParityProgressEvent::RowReady::query_index: usize
+pub nexus_bench::report_workload::tpcds::TpcdsParityProgressEvent::RowReady::row: &'a datafusion_nexus::native_report::tpcds_parity::report::NativeTpcdsParityRow
+pub nexus_bench::report_workload::tpcds::TpcdsParityProgressEvent::RowReady::total: usize
+pub struct nexus_bench::report_workload::tpcds::TpcdsExternalEngineConfig
+pub nexus_bench::report_workload::tpcds::TpcdsExternalEngineConfig::binary: std::path::PathBuf
+pub struct nexus_bench::report_workload::tpcds::TpcdsExternalOracleConfig
+pub nexus_bench::report_workload::tpcds::TpcdsExternalOracleConfig::duckdb: core::option::Option<nexus_bench::report_workload::tpcds::TpcdsExternalEngineConfig>
+pub nexus_bench::report_workload::tpcds::TpcdsExternalOracleConfig::scratch_dir: std::path::PathBuf
+pub struct nexus_bench::report_workload::tpcds::TpcdsNativeProfileSettings
+pub nexus_bench::report_workload::tpcds::TpcdsNativeProfileSettings::device_budget_bytes: u64
+pub nexus_bench::report_workload::tpcds::TpcdsNativeProfileSettings::max_retry_attempts: usize
+pub nexus_bench::report_workload::tpcds::TpcdsNativeProfileSettings::max_row_groups_per_chunk: usize
+pub nexus_bench::report_workload::tpcds::TpcdsNativeProfileSettings::max_source_chunk_bytes: u64
+pub nexus_bench::report_workload::tpcds::TpcdsNativeProfileSettings::min_retry_chunk_row_groups: usize
+pub nexus_bench::report_workload::tpcds::TpcdsNativeProfileSettings::profile_name: &'static str
+pub nexus_bench::report_workload::tpcds::TpcdsNativeProfileSettings::profile_source: &'static str
+pub nexus_bench::report_workload::tpcds::TpcdsNativeProfileSettings::source_chunk_planning_mode: nexus_query_engine::execution_contracts::SourceChunkPlanningMode
+pub const nexus_bench::report_workload::tpcds::NEXUS_TPCDS_NATIVE_COST_SELECTION_ENV: &str
+pub const nexus_bench::report_workload::tpcds::NEXUS_TPCDS_NATIVE_COST_SELECTION_MAX_RESIDUAL_JOIN_ROW_GROUPS_ENV: &str
+pub const nexus_bench::report_workload::tpcds::NEXUS_TPCDS_NATIVE_COST_SELECTION_MAX_RESIDUAL_JOIN_SOURCE_BYTES_ENV: &str
+pub const nexus_bench::report_workload::tpcds::NEXUS_TPCDS_NATIVE_COST_SELECTION_MAX_SMALL_SELECTIVE_ROW_GROUPS_ENV: &str
+pub const nexus_bench::report_workload::tpcds::NEXUS_TPCDS_NATIVE_COST_SELECTION_MAX_SMALL_SELECTIVE_SOURCE_BYTES_ENV: &str
+pub const nexus_bench::report_workload::tpcds::NEXUS_TPCDS_NATIVE_COST_SELECTION_MAX_TOPK_FETCH_ENV: &str
+pub const nexus_bench::report_workload::tpcds::NEXUS_TPCDS_NATIVE_DEVICE_BUDGET_BYTES_ENV: &str
+pub const nexus_bench::report_workload::tpcds::NEXUS_TPCDS_NATIVE_MAX_RETRY_ATTEMPTS_ENV: &str
+pub const nexus_bench::report_workload::tpcds::NEXUS_TPCDS_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV: &str
+pub const nexus_bench::report_workload::tpcds::NEXUS_TPCDS_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV: &str
+pub const nexus_bench::report_workload::tpcds::NEXUS_TPCDS_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV: &str
+pub const nexus_bench::report_workload::tpcds::NEXUS_TPCDS_NATIVE_PROFILE_ENV: &str
+pub const nexus_bench::report_workload::tpcds::NEXUS_TPCDS_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV: &str
+pub const nexus_bench::report_workload::tpcds::NEXUS_TPCDS_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV: &str
+pub const nexus_bench::report_workload::tpcds::TPCDS_COST_SELECTION_MAX_RESIDUAL_JOIN_ROW_GROUPS: usize
+pub const nexus_bench::report_workload::tpcds::TPCDS_NATIVE_PROFILE_CONSERVATIVE: &str
+pub const nexus_bench::report_workload::tpcds::TPCDS_NATIVE_PROFILE_CUSTOM: &str
+pub const nexus_bench::report_workload::tpcds::TPCDS_NATIVE_PROFILE_SF100_GPU_THROUGHPUT: &str
+pub const nexus_bench::report_workload::tpcds::TPCDS_SF100_GPU_THROUGHPUT_DEVICE_BUDGET_BYTES: u64
+pub const nexus_bench::report_workload::tpcds::TPCDS_SF100_GPU_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK: usize
+pub const nexus_bench::report_workload::tpcds::TPCDS_SF100_GPU_THROUGHPUT_MAX_SOURCE_CHUNK_BYTES: u64
+pub async fn nexus_bench::report_workload::tpcds::register_tpcds_tables_with_native_metadata(&datafusion::execution::context::SessionContext, &std::path::Path) -> nexus_workloads::tpcds::TpcdsWorkloadResult<()>
+pub async fn nexus_bench::report_workload::tpcds::tpcds_datafusion_execution_workload_items(&std::path::Path, datafusion_execution::config::SessionConfig) -> nexus_workloads::tpcds::TpcdsWorkloadResult<alloc::vec::Vec<datafusion_nexus::native_report::workload::NativeDataFusionExecutionWorkloadItem>>
+pub async fn nexus_bench::report_workload::tpcds::tpcds_datafusion_execution_workload_items_filtered(&std::path::Path, datafusion_execution::config::SessionConfig, datafusion_nexus::planner::NexusNativeOptimizerConfig, core::option::Option<&[&str]>, core::option::Option<&mut dyn core::ops::function::FnMut(nexus_bench::report_workload::tpcds::TpcdsExecutionProgressEvent<'_>)>) -> nexus_workloads::tpcds::TpcdsWorkloadResult<alloc::vec::Vec<datafusion_nexus::native_report::workload::NativeDataFusionExecutionWorkloadItem>>
+pub async fn nexus_bench::report_workload::tpcds::tpcds_datafusion_execution_workload_items_with_optimizer_config(&std::path::Path, datafusion_execution::config::SessionConfig, datafusion_nexus::planner::NexusNativeOptimizerConfig) -> nexus_workloads::tpcds::TpcdsWorkloadResult<alloc::vec::Vec<datafusion_nexus::native_report::workload::NativeDataFusionExecutionWorkloadItem>>
+pub async fn nexus_bench::report_workload::tpcds::tpcds_datafusion_planning_workload_items(&std::path::Path, datafusion_execution::config::SessionConfig) -> nexus_workloads::tpcds::TpcdsWorkloadResult<alloc::vec::Vec<datafusion_nexus::native_report::workload::NativeDataFusionPlanningWorkloadItem>>
+pub async fn nexus_bench::report_workload::tpcds::tpcds_datafusion_planning_workload_items_with_optimizer_config(&std::path::Path, datafusion_execution::config::SessionConfig, datafusion_nexus::planner::NexusNativeOptimizerConfig) -> nexus_workloads::tpcds::TpcdsWorkloadResult<alloc::vec::Vec<datafusion_nexus::native_report::workload::NativeDataFusionPlanningWorkloadItem>>
+pub async fn nexus_bench::report_workload::tpcds::tpcds_fallback_pressure_workload_items(&std::path::Path, datafusion_execution::config::SessionConfig) -> nexus_workloads::tpcds::TpcdsWorkloadResult<alloc::vec::Vec<datafusion_nexus::native_report::workload::NativeFallbackPressureWorkloadItem>>
+pub fn nexus_bench::report_workload::tpcds::tpcds_native_analytics_optimizer_config() -> datafusion_nexus::planner::NexusNativeOptimizerConfig
+pub fn nexus_bench::report_workload::tpcds::tpcds_native_analytics_optimizer_config_with_cost_selection_and_profile_settings(&nexus_bench::report_workload::tpcds::TpcdsNativeProfileSettings) -> datafusion_nexus::planner::NexusNativeOptimizerConfig
+pub fn nexus_bench::report_workload::tpcds::tpcds_native_analytics_optimizer_config_with_profile_settings(&nexus_bench::report_workload::tpcds::TpcdsNativeProfileSettings) -> datafusion_nexus::planner::NexusNativeOptimizerConfig
+pub fn nexus_bench::report_workload::tpcds::tpcds_native_cost_selection_options_from_env() -> nexus_query_engine::plan::preference::NativePlanCostOptions
+pub fn nexus_bench::report_workload::tpcds::tpcds_native_cost_selection_options_with_env(impl core::ops::function::FnMut(&'static str) -> core::option::Option<alloc::string::String>) -> nexus_query_engine::plan::preference::NativePlanCostOptions
+pub fn nexus_bench::report_workload::tpcds::tpcds_native_optimizer_config() -> datafusion_nexus::planner::NexusNativeOptimizerConfig
+pub fn nexus_bench::report_workload::tpcds::tpcds_native_optimizer_config_with_profile_settings(&nexus_bench::report_workload::tpcds::TpcdsNativeProfileSettings) -> datafusion_nexus::planner::NexusNativeOptimizerConfig
+pub fn nexus_bench::report_workload::tpcds::tpcds_native_profile_settings_from_env() -> nexus_bench::report_workload::tpcds::TpcdsNativeProfileSettings
+pub fn nexus_bench::report_workload::tpcds::tpcds_native_profile_settings_with_env(impl core::ops::function::FnMut(&'static str) -> core::option::Option<alloc::string::String>) -> nexus_bench::report_workload::tpcds::TpcdsNativeProfileSettings
+pub fn nexus_bench::report_workload::tpcds::tpcds_native_report_session_config() -> datafusion_execution::config::SessionConfig
+pub async fn nexus_bench::report_workload::tpcds::tpcds_parity_report_rows_with_external_oracles(&std::path::Path, datafusion_execution::config::SessionConfig, datafusion_nexus::planner::NexusNativeOptimizerConfig, core::option::Option<&[alloc::string::String]>, core::option::Option<nexus_bench::report_workload::tpcds::TpcdsExternalOracleConfig>, datafusion_nexus::native_report::tpcds_parity::report::ParityFloatTolerance, core::option::Option<&mut dyn core::ops::function::FnMut(nexus_bench::report_workload::tpcds::TpcdsParityProgressEvent<'_>)>) -> nexus_workloads::tpcds::TpcdsWorkloadResult<alloc::vec::Vec<datafusion_nexus::native_report::tpcds_parity::report::NativeTpcdsParityRow>>
+pub async fn nexus_bench::report_workload::tpcds::tpcds_parity_workload_items(&std::path::Path, datafusion_execution::config::SessionConfig, datafusion_nexus::planner::NexusNativeOptimizerConfig, core::option::Option<&[alloc::string::String]>) -> nexus_workloads::tpcds::TpcdsWorkloadResult<alloc::vec::Vec<datafusion_nexus::native_report::tpcds_parity::report::NativeTpcdsParityWorkloadItem>>
+pub async fn nexus_bench::report_workload::tpcds::tpcds_parity_workload_items_with_external_oracles(&std::path::Path, datafusion_execution::config::SessionConfig, datafusion_nexus::planner::NexusNativeOptimizerConfig, core::option::Option<&[alloc::string::String]>, core::option::Option<nexus_bench::report_workload::tpcds::TpcdsExternalOracleConfig>) -> nexus_workloads::tpcds::TpcdsWorkloadResult<alloc::vec::Vec<datafusion_nexus::native_report::tpcds_parity::report::NativeTpcdsParityWorkloadItem>>
+pub async fn nexus_bench::report_workload::tpcds::tpcds_parity_workload_items_with_session_configs(&std::path::Path, datafusion_execution::config::SessionConfig, datafusion_execution::config::SessionConfig, datafusion_nexus::planner::NexusNativeOptimizerConfig, core::option::Option<&[alloc::string::String]>) -> nexus_workloads::tpcds::TpcdsWorkloadResult<alloc::vec::Vec<datafusion_nexus::native_report::tpcds_parity::report::NativeTpcdsParityWorkloadItem>>
+pub fn nexus_bench::report_workload::tpcds::tpcds_report_session_config() -> datafusion_execution::config::SessionConfig
+pub mod nexus_bench::report_workload::tpch
+pub enum nexus_bench::report_workload::tpch::AnalyticalOlapCapabilityFirstAdmission
+pub nexus_bench::report_workload::tpch::AnalyticalOlapCapabilityFirstAdmission::Accepted
+pub nexus_bench::report_workload::tpch::AnalyticalOlapCapabilityFirstAdmission::ExpectedSupersetWin
+impl nexus_bench::report_workload::tpch::AnalyticalOlapCapabilityFirstAdmission
+pub const fn nexus_bench::report_workload::tpch::AnalyticalOlapCapabilityFirstAdmission::as_str(self) -> &'static str
+pub enum nexus_bench::report_workload::tpch::AnalyticalOlapCurrentStrictAdmission
+pub nexus_bench::report_workload::tpch::AnalyticalOlapCurrentStrictAdmission::Accepted
+pub nexus_bench::report_workload::tpch::AnalyticalOlapCurrentStrictAdmission::RejectedBeforeExecution
+impl nexus_bench::report_workload::tpch::AnalyticalOlapCurrentStrictAdmission
+pub const fn nexus_bench::report_workload::tpch::AnalyticalOlapCurrentStrictAdmission::as_str(self) -> &'static str
+pub enum nexus_bench::report_workload::tpch::AnalyticalOlapLoweringExpectation
+pub nexus_bench::report_workload::tpch::AnalyticalOlapLoweringExpectation::NativeQueryPlan
+impl nexus_bench::report_workload::tpch::AnalyticalOlapLoweringExpectation
+pub const fn nexus_bench::report_workload::tpch::AnalyticalOlapLoweringExpectation::as_str(self) -> &'static str
+pub enum nexus_bench::report_workload::tpch::AnalyticalOlapWorkloadClass
+pub nexus_bench::report_workload::tpch::AnalyticalOlapWorkloadClass::AggregateSortTopK
+pub nexus_bench::report_workload::tpch::AnalyticalOlapWorkloadClass::DecorrelatableSubquery
+pub nexus_bench::report_workload::tpch::AnalyticalOlapWorkloadClass::MultiJoinResidentPressure
+pub nexus_bench::report_workload::tpch::AnalyticalOlapWorkloadClass::SelfJoin
+pub nexus_bench::report_workload::tpch::AnalyticalOlapWorkloadClass::StarSchemaJoin
+impl nexus_bench::report_workload::tpch::AnalyticalOlapWorkloadClass
+pub const fn nexus_bench::report_workload::tpch::AnalyticalOlapWorkloadClass::as_str(self) -> &'static str
+pub struct nexus_bench::report_workload::tpch::AnalyticalOlapQuery
+pub nexus_bench::report_workload::tpch::AnalyticalOlapQuery::capability_first_admission: nexus_bench::report_workload::tpch::AnalyticalOlapCapabilityFirstAdmission
+pub nexus_bench::report_workload::tpch::AnalyticalOlapQuery::current_strict_admission: nexus_bench::report_workload::tpch::AnalyticalOlapCurrentStrictAdmission
+pub nexus_bench::report_workload::tpch::AnalyticalOlapQuery::expected_lowering: nexus_bench::report_workload::tpch::AnalyticalOlapLoweringExpectation
+pub nexus_bench::report_workload::tpch::AnalyticalOlapQuery::id: &'static str
+pub nexus_bench::report_workload::tpch::AnalyticalOlapQuery::sql: &'static str
+pub nexus_bench::report_workload::tpch::AnalyticalOlapQuery::workload_class: nexus_bench::report_workload::tpch::AnalyticalOlapWorkloadClass
+pub const nexus_bench::report_workload::tpch::ANALYTICAL_OLAP_QUERIES: &[nexus_bench::report_workload::tpch::AnalyticalOlapQuery]
+pub const nexus_bench::report_workload::tpch::ANALYTICAL_OLAP_QUERY_COUNT: usize
+pub async fn nexus_bench::report_workload::tpch::analytical_olap_datafusion_planning_workload_items(&std::path::Path, datafusion_execution::config::SessionConfig) -> nexus_workloads::tpch::TpchWorkloadResult<alloc::vec::Vec<datafusion_nexus::native_report::workload::NativeDataFusionPlanningWorkloadItem>>
+pub async fn nexus_bench::report_workload::tpch::analytical_olap_datafusion_planning_workload_items_with_optimizer_config(&std::path::Path, datafusion_execution::config::SessionConfig, datafusion_nexus::planner::NexusNativeOptimizerConfig) -> nexus_workloads::tpch::TpchWorkloadResult<alloc::vec::Vec<datafusion_nexus::native_report::workload::NativeDataFusionPlanningWorkloadItem>>
+pub async fn nexus_bench::report_workload::tpch::analytical_olap_fallback_pressure_workload_items(&std::path::Path, datafusion_execution::config::SessionConfig) -> nexus_workloads::tpch::TpchWorkloadResult<alloc::vec::Vec<datafusion_nexus::native_report::workload::NativeFallbackPressureWorkloadItem>>
+pub fn nexus_bench::report_workload::tpch::analytical_olap_query_ids() -> impl core::iter::traits::iterator::Iterator<Item = &'static str>
+pub async fn nexus_bench::report_workload::tpch::tpch_datafusion_execution_workload_items(&std::path::Path, datafusion_execution::config::SessionConfig) -> nexus_workloads::tpch::TpchWorkloadResult<alloc::vec::Vec<datafusion_nexus::native_report::workload::NativeDataFusionExecutionWorkloadItem>>
+pub async fn nexus_bench::report_workload::tpch::tpch_datafusion_execution_workload_items_with_optimizer_config(&std::path::Path, datafusion_execution::config::SessionConfig, datafusion_nexus::planner::NexusNativeOptimizerConfig) -> nexus_workloads::tpch::TpchWorkloadResult<alloc::vec::Vec<datafusion_nexus::native_report::workload::NativeDataFusionExecutionWorkloadItem>>
+pub async fn nexus_bench::report_workload::tpch::tpch_datafusion_planning_workload_items(&std::path::Path, datafusion_execution::config::SessionConfig) -> nexus_workloads::tpch::TpchWorkloadResult<alloc::vec::Vec<datafusion_nexus::native_report::workload::NativeDataFusionPlanningWorkloadItem>>
+pub async fn nexus_bench::report_workload::tpch::tpch_datafusion_planning_workload_items_with_optimizer_config(&std::path::Path, datafusion_execution::config::SessionConfig, datafusion_nexus::planner::NexusNativeOptimizerConfig) -> nexus_workloads::tpch::TpchWorkloadResult<alloc::vec::Vec<datafusion_nexus::native_report::workload::NativeDataFusionPlanningWorkloadItem>>
+pub async fn nexus_bench::report_workload::tpch::tpch_fallback_pressure_workload_items(&std::path::Path, datafusion_execution::config::SessionConfig) -> nexus_workloads::tpch::TpchWorkloadResult<alloc::vec::Vec<datafusion_nexus::native_report::workload::NativeFallbackPressureWorkloadItem>>
+pub fn nexus_bench::report_workload::tpch::tpch_native_optimizer_config() -> datafusion_nexus::planner::NexusNativeOptimizerConfig
+pub fn nexus_bench::report_workload::tpch::tpch_report_session_config() -> datafusion_execution::config::SessionConfig
+pub async fn nexus_bench::report_workload::tpch::tpch_scalar_fallback_pressure_workload_items(&std::path::Path, datafusion_execution::config::SessionConfig) -> nexus_workloads::tpch::TpchWorkloadResult<alloc::vec::Vec<datafusion_nexus::native_report::workload::NativeFallbackPressureWorkloadItem>>
+pub fn nexus_bench::report_workload::tpch::tpch_tuned_cpu_session_config() -> datafusion_execution::config::SessionConfig
+pub enum nexus_bench::report_workload::RelationalExecutionSelection
+pub nexus_bench::report_workload::RelationalExecutionSelection::CpuBaseline
+pub nexus_bench::report_workload::RelationalExecutionSelection::Native
+pub nexus_bench::report_workload::RelationalExecutionSelection::Native::final_plan_requirement: core::option::Option<datafusion_nexus::planner::FinalPlanRequirement>
+impl nexus_bench::report_workload::RelationalExecutionSelection
+pub const fn nexus_bench::report_workload::RelationalExecutionSelection::as_str(self) -> &'static str
+pub fn nexus_bench::report_workload::RelationalExecutionSelection::configure_native_optimizer(self, datafusion_nexus::planner::NexusNativeOptimizerConfig) -> core::option::Option<datafusion_nexus::planner::NexusNativeOptimizerConfig>
+pub const fn nexus_bench::report_workload::RelationalExecutionSelection::final_plan_requirement(self) -> core::option::Option<datafusion_nexus::planner::FinalPlanRequirement>
+pub const fn nexus_bench::report_workload::RelationalExecutionSelection::installs_native_rule(self) -> bool
+pub const fn nexus_bench::report_workload::RelationalExecutionSelection::native() -> Self
+pub const fn nexus_bench::report_workload::RelationalExecutionSelection::strict_native() -> Self
+pub mod nexus_bench::tpcds_three_way_bench
+pub async fn nexus_bench::tpcds_three_way_bench::run() -> core::result::Result<(), alloc::boxed::Box<dyn core::error::Error>>
+pub mod nexus_bench::tpch_benchmark
+pub async fn nexus_bench::tpch_benchmark::run_main() -> datafusion_common::error::Result<()>

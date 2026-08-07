@@ -1,8 +1,0 @@
-error[E0432]: unresolved imports `datafusion_nexus::server::CudfInventory`, `datafusion_nexus::server::CudfNvmlTelemetry`, `datafusion_nexus::server::DatafusionCudfFlightSqlService`
- --> tests/ui/public_api/forbidden_retired_cudf_server_api.rs:1:32
-  |
-1 | use datafusion_nexus::server::{CudfInventory, CudfNvmlTelemetry, DatafusionCudfFlightSqlService};
-  |                                ^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ no `DatafusionCudfFlightSqlService` in `server`
-  |                                |              |
-  |                                |              no `CudfNvmlTelemetry` in `server`
-  |                                no `CudfInventory` in `server`

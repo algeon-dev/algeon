@@ -20,11 +20,6 @@ lane = "cpu"
 reason = "Tests validate Iceberg CLI item shapes and environment handling without contacting services or CUDA."
 
 [[binary]]
-id = "nexus-bench::bench_public_api_boundary"
-lane = "cpu"
-reason = "Compiler-enforced benchmark public-facade checks do not execute the native GPU workload."
-
-[[binary]]
 id = "nexus-bench::clickbench_workload_tests"
 lane = "cpu"
 reason = "Workload tests validate ClickBench native profile/env resolution without executing the native GPU workload."
@@ -189,11 +184,6 @@ lane = "cpu"
 reason = "Backend metric descriptor golden and cardinality contracts are pure catalog checks and do not initialize CUDA."
 
 [[binary]]
-id = "datafusion-nexus::datafusion_public_api_boundary"
-lane = "cpu"
-reason = "Trybuild coverage verifies the adapter runtime-injection boundary without constructing a CUDA runtime."
-
-[[binary]]
 id = "nexus-query-engine::native_contract_tests"
 lane = "cpu"
 reason = "Native contract coverage is pure capability, report, schema, and admission validation; compiled CUDA execution lives in native_pipeline_execution_tests."
@@ -201,7 +191,7 @@ reason = "Native contract coverage is pure capability, report, schema, and admis
 [[binary]]
 id = "nexus-query-engine::public_api_boundary"
 lane = "cpu"
-reason = "Trybuild coverage verifies the public engine API boundary without constructing a CUDA runtime."
+reason = "Proves the two supported GPU-resource construction paths still compile and compose; forbidden-item coverage moved to scripts/ci/check_public_api_surface.sh. Neither remaining case constructs a CUDA runtime."
 
 [[binary]]
 id = "nexus-query-engine::gpu_backend_heterogeneous_active_limits"

@@ -1,5 +1,0 @@
-error[E0432]: unresolved import `datafusion_nexus::backend::NexusMemoryPolicy`
- --> tests/ui/public_api/forbidden_legacy_memory_policy.rs:1:5
-  |
-1 | use datafusion_nexus::backend::NexusMemoryPolicy;
-  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ no `NexusMemoryPolicy` in `backend`

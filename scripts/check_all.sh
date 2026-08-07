@@ -11,15 +11,14 @@ readonly GPU_EXCLUSIVE_CAP=1
 readonly GPU_NEXTEST_PROFILE=default
 readonly GPU_NEXTEST_GROUP=gpu
 
-# Incremental compilation is disabled per compiling phase, never exported
-# process-wide. This is the cold full-gate entry point, so the incremental
-# cache only costs I/O and disk here. A process-wide export would also reach
+# This script deliberately does not touch CARGO_INCREMENTAL. Disabling it was
+# measured to make the cpu-tests phase 2.7x slower (139.7s vs 51.9s over two
+# alternating rounds, each preceded by one engine source edit, tests themselves
+# ~16s of that), because the gate re-runs against a warm target directory far
+# more often than a cold one. Do not reintroduce it without a same-protocol
+# measurement, and never as a process-wide export: that would also reach
 # scripts/build/, whose packaging policy self-tests assert that redistributable
-# builds inherit no ambient Cargo flags, and would fail them. Interactive
-# `cargo build`/`cargo check` keep incremental compilation either way.
-compiling_phase() {
-  CARGO_INCREMENTAL=0 "$@"
-}
+# builds inherit no ambient Cargo flags.
 
 usage() {
   cat <<'USAGE'
@@ -352,7 +351,7 @@ lane_safe=1
 gpu_scheduling_summary=""
 doctest_summary="not-run"
 rustdoc_summary="not-run"
-policy_selftest_count=10
+policy_selftest_count=11
 
 PHASE_ORDER=(
   policy-selftests
@@ -365,6 +364,7 @@ PHASE_ORDER=(
   gpu-exclusive-tests
   doctests
   rustdoc
+  public-api-surface
   clippy
 )
 declare -A PHASE_COMMAND PHASE_DURATION PHASE_STATUS PHASE_COUNTS
@@ -402,6 +402,12 @@ define_phase gpu-shared-tests "flock ${GPU_LOCK} cargo nextest run -P ${GPU_NEXT
 define_phase gpu-exclusive-tests "flock ${GPU_LOCK} cargo nextest run -P ${GPU_NEXTEST_PROFILE} --workspace ${FEATURE_ARGS[*]} -E group(gpu-exclusive) --no-fail-fast --test-threads ${GPU_EXCLUSIVE_CAP}"
 define_phase doctests "flock ${GPU_LOCK} cargo test --workspace ${FEATURE_ARGS[*]} --doc --no-fail-fast"
 define_phase rustdoc "RUSTDOCFLAGS='${DOC_RUSTDOCFLAGS}' cargo doc --workspace ${FEATURE_ARGS[*]} --no-deps --keep-going"
+# Snapshots each tracked crate's public API (rustdoc JSON via cargo-public-api)
+# against .config/policies/public-api/*.txt. Pure function of source +
+# toolchain + features, same as rustdoc/clippy/cpu-tests, so it is cacheable
+# under the same workspace scope and never GPU-locked. Placed right after
+# rustdoc so it reuses that phase's warm dependency doc metadata.
+define_phase public-api-surface "bash scripts/ci/check_public_api_surface.sh check ${FEATURE_ARGS[*]}"
 define_phase clippy "cargo clippy --workspace --all-targets ${FEATURE_ARGS[*]}"
 
 phase_now_ms() {
@@ -802,7 +808,8 @@ run_isolated_policy_commands() {
     scripts/ci/tests/check_doctest_rustdoc_tests.sh \
     scripts/ci/tests/check_gpu_scheduling_tests.sh \
     scripts/ci/tests/check_clean_target_artifacts_tests.sh \
-    scripts/ci/tests/check_pass_as_skip_policy_tests.sh
+    scripts/ci/tests/check_pass_as_skip_policy_tests.sh \
+    scripts/ci/tests/check_public_api_surface_tests.sh
   )
   local script
   for script in "${scripts[@]}"; do
@@ -840,7 +847,7 @@ esac
 
 run_gpu_config_preflight() {
   local gpu_show_config gpu_show_config_status=0
-  gpu_show_config=$(compiling_phase cargo nextest show-config --color never -P "${GPU_NEXTEST_PROFILE}" test-groups --workspace "${FEATURE_ARGS[@]}" 2>&1) \
+  gpu_show_config=$(cargo nextest show-config --color never -P "${GPU_NEXTEST_PROFILE}" test-groups --workspace "${FEATURE_ARGS[@]}" 2>&1) \
     || gpu_show_config_status=$?
   if [[ "${gpu_show_config_status}" -ne 0 ]]; then
     printf '%s\n' "${gpu_show_config}" >&2
@@ -879,27 +886,31 @@ run_gpu_config_preflight() {
 }
 
 cpu_test_command() {
-  compiling_phase cargo nextest run --workspace "${FEATURE_ARGS[@]}" \
+  cargo nextest run --workspace "${FEATURE_ARGS[@]}" \
     -E 'not group(gpu) & not group(gpu-exclusive)' --no-fail-fast
 }
 
 gpu_shared_test_command() {
-  compiling_phase flock "${GPU_LOCK}" cargo nextest run -P "${GPU_NEXTEST_PROFILE}" \
+  flock "${GPU_LOCK}" cargo nextest run -P "${GPU_NEXTEST_PROFILE}" \
     --workspace "${FEATURE_ARGS[@]}" -E "group(${GPU_NEXTEST_GROUP})" --no-fail-fast --test-threads "${gpu_threads}"
 }
 
 gpu_exclusive_test_command() {
-  compiling_phase flock "${GPU_LOCK}" cargo nextest run -P "${GPU_NEXTEST_PROFILE}" \
+  flock "${GPU_LOCK}" cargo nextest run -P "${GPU_NEXTEST_PROFILE}" \
     --workspace "${FEATURE_ARGS[@]}" -E 'group(gpu-exclusive)' --no-fail-fast --test-threads "${GPU_EXCLUSIVE_CAP}"
 }
 
 doctest_command() {
-  compiling_phase flock "${GPU_LOCK}" cargo test \
+  flock "${GPU_LOCK}" cargo test \
     --workspace "${FEATURE_ARGS[@]}" --doc --no-fail-fast
 }
 
 rustdoc_command() {
-  RUSTDOCFLAGS="${DOC_RUSTDOCFLAGS}" compiling_phase cargo doc --workspace "${FEATURE_ARGS[@]}" --no-deps --keep-going
+  RUSTDOCFLAGS="${DOC_RUSTDOCFLAGS}" cargo doc --workspace "${FEATURE_ARGS[@]}" --no-deps --keep-going
+}
+
+public_api_surface_command() {
+  bash scripts/ci/check_public_api_surface.sh check "${FEATURE_ARGS[@]}"
 }
 
 PHASE_CACHE_FILE="$(dirname -- "${PHASE_LOG_DIR}")/last-pass.json"
@@ -919,7 +930,7 @@ fi
 
 if [[ "${lane}" != policy ]]; then
   if [[ "${mode}" != fast ]]; then
-    if ! run_or_cache_phase live-inventory none - - compiling_phase bash scripts/ci/check_gpu_test_lane.sh "${FEATURE_ARGS[@]}"; then
+    if ! run_or_cache_phase live-inventory none - - bash scripts/ci/check_gpu_test_lane.sh "${FEATURE_ARGS[@]}"; then
       lane_safe=0
       echo "ABORT: live lane inventory failed; selected nextest lanes will not run." >&2
     fi
@@ -972,7 +983,8 @@ if [[ "${mode}" == full ]]; then
   run_or_cache_phase doctests doctest - "${GPU_LOCK}" doctest_command || true
   run_or_cache_phase rustdoc none - - rustdoc_command || true
   rustdoc_summary="command_status=${PHASE_EXIT[rustdoc]} warnings=denied"
-  run_or_cache_phase clippy none - - compiling_phase cargo clippy --workspace --all-targets "${FEATURE_ARGS[@]}" || true
+  run_or_cache_phase public-api-surface literal:crates=3 - - public_api_surface_command || true
+  run_or_cache_phase clippy none - - cargo clippy --workspace --all-targets "${FEATURE_ARGS[@]}" || true
 fi
 
 sanitize_phase_cell() {

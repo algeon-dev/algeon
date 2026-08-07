@@ -42,7 +42,8 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "ti
 
 [dev-dependencies]
 async-trait = "0.1"
-trybuild = "1"
+# autotests = false above: every tests/*.rs harness must be registered here
+# explicitly — unregistered files are silently ignored by cargo.
 
 [[test]]
 name = "gpu_backend_heterogeneous_active_limits"

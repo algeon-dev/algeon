@@ -63,8 +63,6 @@ tempfile = { workspace = true, optional = true }
 name = "nexus_bench"
 path = "src/lib.rs"
 
-[dev-dependencies]
-trybuild = "1"
 
 [[bin]]
 name = "native_iceberg_tpch_benchmark"
