@@ -1,5 +1,11 @@
 # cugraph-nexus
 
+> [!IMPORTANT]
+> Development has moved to
+> [`DataFusion-Nexus/datafusion-nexus`](https://github.com/DataFusion-Nexus/datafusion-nexus/tree/main/components/cugraph).
+> This repository is retained as a read-only historical archive. Clone the
+> monorepo recursively for the current source, build tooling, and tests.
+
 `cugraph-nexus` is a Rust GPU graph analytics workspace built around [`libcugraph`](https://github.com/DataFusion-Nexus/cugraph).
 Its main direction is to make cuGraph usable as part of backend services and query execution systems for
 [DataFusion-Nexus](https://github.com/DataFusion-Nexus/DataFusion-Nexus). It focuses on safe Rust APIs for GPU graph
