@@ -87,22 +87,6 @@ impl GraphAdmissionModelAsk {
     pub(crate) fn cold_model_evidence(&self) -> &GraphMemoryAdmissionEvidence {
         &self.cold_model_evidence
     }
-
-    pub(crate) fn max(self, other: Self) -> Self {
-        let Self {
-            cold_model_requested_bytes: self_cold,
-            warm_model_requested_bytes: self_warm,
-            cold_model_evidence: self_evidence,
-        } = self;
-        let Self {
-            cold_model_requested_bytes: other_cold,
-            warm_model_requested_bytes: other_warm,
-            cold_model_evidence: other_evidence,
-        } = other;
-        let (cold_model_requested_bytes, cold_model_evidence) =
-            if other_cold > self_cold { (other_cold, other_evidence) } else { (self_cold, self_evidence) };
-        Self { cold_model_requested_bytes, warm_model_requested_bytes: self_warm.max(other_warm), cold_model_evidence }
-    }
 }
 
 /// Frontend-neutral graph-model diagnostics exposed by a graph execution node.
@@ -111,8 +95,6 @@ impl GraphAdmissionModelAsk {
 /// recognized this crate-private execution type; graph frontends do not get a
 /// caller-controlled proof SPI.
 pub(crate) trait GraphExecutionPlan: Send + Sync {
-    fn graph_model_ask_for_admission(&self) -> DataFusionResult<Option<GraphAdmissionModelAsk>>;
-
     /// Issues capability evidence for the exact native graph fragment this
     /// execution node submits after staging its GPU-resident inputs.
     fn graph_execution_capability_proof(&self) -> DataFusionResult<QueryPlanCapabilityProof>;
@@ -276,6 +258,7 @@ impl GraphBfsSingleflight {
 
     /// Joins a coalescing group while retaining only the caller-supplied
     /// one-way correlation fingerprint in its bounded event projection.
+    #[cfg(test)]
     pub(crate) fn join_with_correlation(
         &self,
         key: GraphBfsSingleflightKey,

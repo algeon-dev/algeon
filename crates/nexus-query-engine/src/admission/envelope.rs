@@ -15,10 +15,341 @@ use crate::{
     error::{QueryError, QueryErrorCode, Result},
     exec::{JoinOutputColumnUpperBoundInput, PartialAggregateShape, partial_aggregate_upper_bound_bytes},
     graph_memory::GraphMemoryAdmissionEvidence,
+    observability::{
+        AttemptComposedScheduleOccurrence, AttemptComposedScheduleProjection, COMPOSED_SCHEDULE_PROJECTION_SCHEMA_V1,
+    },
     plan::{PlanNode, QueryPlan, estimated_reachable_local_parquet_source_bytes},
     runtime::{MemoryControlPolicy, SourceChunkPlanningMode, SourceSchedulerPolicy},
     source::SourceNode,
 };
+
+const GRAPH_ATTEMPT_COMPLETE_PHASE_UNMODELED_REASON: &str = "graph_attempt_complete_phase_unmodeled";
+
+/// One ordered graph-producer occurrence in a composed attempt.
+///
+/// Structural plan scopes are deliberately carried alongside an explicit
+/// occurrence identifier.  Equal plans therefore remain distinct allocation
+/// owners when their result handles are retained through the consumer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AttemptReservationProducerOccurrence {
+    occurrence_id: String,
+    execution_scope_fingerprint: String,
+    isolated_peak_bytes: Option<u64>,
+    retained_output_bytes: Option<u64>,
+}
+
+impl AttemptReservationProducerOccurrence {
+    /// Builds one occurrence from engine-owned evidence.  The byte fields are
+    /// optional only while a proof is being assembled; resolution rejects any
+    /// missing phase evidence before placement.
+    pub(crate) fn new(
+        occurrence_id: impl Into<String>,
+        execution_scope_fingerprint: impl Into<String>,
+        isolated_peak_bytes: Option<u64>,
+        retained_output_bytes: Option<u64>,
+    ) -> Self {
+        Self {
+            occurrence_id: occurrence_id.into(),
+            execution_scope_fingerprint: execution_scope_fingerprint.into(),
+            isolated_peak_bytes,
+            retained_output_bytes,
+        }
+    }
+}
+
+/// Engine-owned ordered lifetime model for one composed graph attempt.
+///
+/// The schedule is intentionally opaque to adapter callers: its byte values
+/// come from engine-issued capability evidence.  The fold models the executor
+/// order exactly: fixed bytes plus retained prior outputs and one producer's
+/// isolated peak, followed by retained-output accumulation, then the consumer
+/// additional peak.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AttemptReservationSchedule {
+    attempt_wide_fixed_bytes: Option<u64>,
+    producer_occurrences: Vec<AttemptReservationProducerOccurrence>,
+    consumer_scope_fingerprint: Option<String>,
+    consumer_additional_peak_bytes: Option<u64>,
+}
+
+impl AttemptReservationSchedule {
+    pub(crate) fn new(
+        attempt_wide_fixed_bytes: Option<u64>,
+        producer_occurrences: Vec<AttemptReservationProducerOccurrence>,
+        consumer_scope_fingerprint: Option<String>,
+        consumer_additional_peak_bytes: Option<u64>,
+    ) -> Self {
+        Self {
+            attempt_wide_fixed_bytes,
+            producer_occurrences,
+            consumer_scope_fingerprint,
+            consumer_additional_peak_bytes,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn producer_occurrences(&self) -> &[AttemptReservationProducerOccurrence] {
+        &self.producer_occurrences
+    }
+
+    fn scope_counts(&self) -> std::collections::HashMap<&str, usize> {
+        let mut counts = std::collections::HashMap::with_capacity(self.producer_occurrences.len() + 1);
+        for scope in self
+            .producer_occurrences
+            .iter()
+            .map(|occurrence| occurrence.execution_scope_fingerprint.as_str())
+            .chain(self.consumer_scope_fingerprint.as_deref())
+        {
+            *counts.entry(scope).or_default() += 1;
+        }
+        counts
+    }
+
+    #[cfg(test)]
+    pub(crate) fn checked_fold(&self) -> Result<u64> {
+        self.checked_fold_with_scopes(&[])
+    }
+
+    fn checked_fold_with_scopes(&self, scopes: &[AttemptReservationShape]) -> Result<u64> {
+        let fixed = self
+            .attempt_wide_fixed_bytes
+            .ok_or_else(|| graph_schedule_error("missing_attempt_wide_fixed_bytes", None, None))?;
+        if self.producer_occurrences.is_empty() {
+            return Err(graph_schedule_error("missing_producer_evidence", None, None));
+        }
+        if self.consumer_scope_fingerprint.is_none() {
+            return Err(graph_schedule_error("missing_consumer_scope", None, None));
+        }
+        let consumer_peak = self
+            .consumer_additional_peak_bytes
+            .ok_or_else(|| graph_schedule_error("missing_consumer_additional_peak", None, None))?;
+        self.validate_occurrence_ids_and_scopes(scopes)?;
+
+        let mut retained_prior = 0_u64;
+        let mut complete_peak = 0_u64;
+        for occurrence in &self.producer_occurrences {
+            let isolated_peak = occurrence.isolated_peak_bytes.ok_or_else(|| {
+                graph_schedule_error("missing_producer_isolated_peak", Some(&occurrence.occurrence_id), None)
+            })?;
+            let retained_output = occurrence.retained_output_bytes.ok_or_else(|| {
+                graph_schedule_error("missing_producer_retained_output", Some(&occurrence.occurrence_id), None)
+            })?;
+            let producer_stage = fixed
+                .checked_add(retained_prior)
+                .ok_or_else(|| {
+                    graph_schedule_error(
+                        "producer_stage_fixed_plus_retained_overflow",
+                        Some(&occurrence.occurrence_id),
+                        Some("producer_stage_fixed_plus_retained"),
+                    )
+                })?
+                .checked_add(isolated_peak)
+                .ok_or_else(|| {
+                    graph_schedule_error(
+                        "producer_stage_isolated_peak_overflow",
+                        Some(&occurrence.occurrence_id),
+                        Some("producer_stage_isolated_peak"),
+                    )
+                })?;
+            complete_peak = complete_peak.max(producer_stage);
+            retained_prior = retained_prior.checked_add(retained_output).ok_or_else(|| {
+                graph_schedule_error(
+                    "retained_output_accumulation_overflow",
+                    Some(&occurrence.occurrence_id),
+                    Some("retained_output_accumulation"),
+                )
+            })?;
+        }
+
+        let consumer_stage = fixed
+            .checked_add(retained_prior)
+            .ok_or_else(|| {
+                graph_schedule_error(
+                    "consumer_stage_fixed_plus_retained_overflow",
+                    None,
+                    Some("consumer_stage_fixed_plus_retained"),
+                )
+            })?
+            .checked_add(consumer_peak)
+            .ok_or_else(|| {
+                graph_schedule_error(
+                    "consumer_stage_additional_peak_overflow",
+                    None,
+                    Some("consumer_stage_additional_peak"),
+                )
+            })?;
+        Ok(complete_peak.max(consumer_stage))
+    }
+
+    fn projection(
+        &self,
+        scopes: &[AttemptReservationShape],
+        attempt_id: crate::observability::AttemptId,
+        device_ordinal: usize,
+        grant_id: u64,
+        grant_bytes: u64,
+    ) -> Result<AttemptComposedScheduleProjection> {
+        // Run the canonical fold first. This validates every required owner
+        // contribution and exact scope coverage before any public projection
+        // is published.
+        let complete_peak = self.checked_fold_with_scopes(scopes)?;
+        let fixed = self
+            .attempt_wide_fixed_bytes
+            .ok_or_else(|| graph_schedule_error("missing_attempt_wide_fixed_bytes", None, None))?;
+        let consumer_scope = self
+            .consumer_scope_fingerprint
+            .clone()
+            .ok_or_else(|| graph_schedule_error("missing_consumer_scope", None, None))?;
+        let consumer_additional_peak_bytes = self
+            .consumer_additional_peak_bytes
+            .ok_or_else(|| graph_schedule_error("missing_consumer_additional_peak", None, None))?;
+
+        let mut retained_prior = 0_u64;
+        let mut producer_occurrences = Vec::with_capacity(self.producer_occurrences.len());
+        for occurrence in &self.producer_occurrences {
+            let isolated_peak_bytes = occurrence.isolated_peak_bytes.ok_or_else(|| {
+                graph_schedule_error("missing_producer_isolated_peak", Some(&occurrence.occurrence_id), None)
+            })?;
+            let retained_output_bytes = occurrence.retained_output_bytes.ok_or_else(|| {
+                graph_schedule_error("missing_producer_retained_output", Some(&occurrence.occurrence_id), None)
+            })?;
+            let stage_peak_bytes = fixed
+                .checked_add(retained_prior)
+                .and_then(|value| value.checked_add(isolated_peak_bytes))
+                .ok_or_else(|| {
+                    graph_schedule_error(
+                        "producer_stage_projection_overflow",
+                        Some(&occurrence.occurrence_id),
+                        Some("producer_stage_peak"),
+                    )
+                })?;
+            producer_occurrences.push(AttemptComposedScheduleOccurrence {
+                occurrence_id: occurrence.occurrence_id.clone(),
+                execution_scope_fingerprint: occurrence.execution_scope_fingerprint.clone(),
+                isolated_peak_bytes,
+                retained_output_bytes,
+                stage_peak_bytes,
+            });
+            retained_prior = retained_prior.checked_add(retained_output_bytes).ok_or_else(|| {
+                graph_schedule_error(
+                    "retained_output_accumulation_overflow",
+                    Some(&occurrence.occurrence_id),
+                    Some("retained_output_accumulation"),
+                )
+            })?;
+        }
+        let consumer_stage_peak_bytes = fixed
+            .checked_add(retained_prior)
+            .and_then(|value| value.checked_add(consumer_additional_peak_bytes))
+            .ok_or_else(|| {
+                graph_schedule_error("consumer_stage_projection_overflow", None, Some("consumer_stage_peak"))
+            })?;
+        if grant_bytes < complete_peak {
+            return Err(graph_schedule_error("immutable_grant_below_schedule_peak", None, Some("projection"))
+                .with_fact("immutable_grant_bytes", grant_bytes)
+                .with_fact("complete_phase_peak_bytes", complete_peak));
+        }
+
+        let fingerprint = AttemptComposedScheduleProjection::fingerprint_for(
+            fixed,
+            &producer_occurrences,
+            &consumer_scope,
+            consumer_additional_peak_bytes,
+            consumer_stage_peak_bytes,
+            complete_peak,
+        );
+        Ok(AttemptComposedScheduleProjection {
+            schema: COMPOSED_SCHEDULE_PROJECTION_SCHEMA_V1.to_owned(),
+            attempt_id,
+            device_ordinal,
+            grant_id,
+            grant_bytes,
+            attempt_wide_fixed_bytes: fixed,
+            producer_occurrences,
+            consumer_scope_fingerprint: consumer_scope,
+            consumer_additional_peak_bytes,
+            consumer_stage_peak_bytes,
+            complete_peak_bytes: complete_peak,
+            fingerprint,
+        })
+    }
+
+    fn validate_occurrence_ids_and_scopes(&self, scopes: &[AttemptReservationShape]) -> Result<()> {
+        let mut occurrence_ids = HashSet::with_capacity(self.producer_occurrences.len());
+        for occurrence in &self.producer_occurrences {
+            if occurrence.occurrence_id.is_empty() {
+                return Err(graph_schedule_error("missing_producer_occurrence_id", None, None));
+            }
+            if !occurrence_ids.insert(&occurrence.occurrence_id) {
+                return Err(graph_schedule_error(
+                    "duplicate_producer_occurrence_id",
+                    Some(&occurrence.occurrence_id),
+                    None,
+                ));
+            }
+            if occurrence.execution_scope_fingerprint.is_empty() {
+                return Err(graph_schedule_error(
+                    "missing_producer_occurrence_scope",
+                    Some(&occurrence.occurrence_id),
+                    None,
+                ));
+            }
+        }
+
+        let Some(consumer_scope) = self.consumer_scope_fingerprint.as_deref() else {
+            return Err(graph_schedule_error("missing_consumer_scope", None, None));
+        };
+        if consumer_scope.is_empty() {
+            return Err(graph_schedule_error("missing_consumer_scope", None, None));
+        }
+        if scopes.is_empty() {
+            return Ok(());
+        }
+
+        let mut expected_scope_counts = std::collections::HashMap::<&str, usize>::new();
+        for scope in self
+            .producer_occurrences
+            .iter()
+            .map(|occurrence| occurrence.execution_scope_fingerprint.as_str())
+            .chain(std::iter::once(consumer_scope))
+        {
+            *expected_scope_counts.entry(scope).or_default() += 1;
+        }
+        let mut actual_scope_counts = std::collections::HashMap::<&str, usize>::new();
+        for scope in scopes.iter().map(|scope| scope.execution_scope_fingerprint.as_str()) {
+            *actual_scope_counts.entry(scope).or_default() += 1;
+        }
+        if expected_scope_counts
+            .iter()
+            .any(|(scope, expected)| actual_scope_counts.get(scope).copied().unwrap_or_default() < *expected)
+        {
+            return Err(graph_schedule_error("schedule_scope_coverage_mismatch", None, Some("scope_coverage")));
+        }
+        Ok(())
+    }
+
+    fn validate_runtime(&self, consumer_plan: &QueryPlan, occurrence_ids: &[String]) -> Result<()> {
+        let expected_consumer_scope = self
+            .consumer_scope_fingerprint
+            .as_deref()
+            .ok_or_else(|| graph_schedule_error("missing_consumer_scope", None, Some("runtime")))?;
+        if expected_consumer_scope != canonical_execution_scope_fingerprint(consumer_plan) {
+            return Err(graph_schedule_error("runtime_consumer_scope_mismatch", None, Some("runtime")));
+        }
+        if self.producer_occurrences.len() != occurrence_ids.len() {
+            return Err(graph_schedule_error("runtime_occurrence_count_mismatch", None, Some("runtime"))
+                .with_fact("scheduled_occurrence_count", self.producer_occurrences.len())
+                .with_fact("runtime_occurrence_count", occurrence_ids.len()));
+        }
+        for (scheduled, runtime) in self.producer_occurrences.iter().zip(occurrence_ids) {
+            if scheduled.occurrence_id != *runtime {
+                return Err(graph_schedule_error("runtime_occurrence_order_mismatch", Some(runtime), Some("runtime"))
+                    .with_fact("scheduled_occurrence_id", scheduled.occurrence_id.as_str()));
+            }
+        }
+        self.validate_occurrence_ids_and_scopes(&[])
+    }
+}
 
 /// Service-owned policy inputs that affect the bounded attempt's physical
 /// liveness. `device_budget_bytes` is deliberately absent: a grant is the
@@ -105,6 +436,7 @@ pub(crate) struct AttemptReservationShape {
     is_attested_graph_result_passthrough_scope: bool,
     is_attested_graph_result_bounded_consumer_scope: bool,
     is_bfs_logical_output_scope: bool,
+    ordered_schedule: Option<AttemptReservationSchedule>,
 }
 
 impl AttemptReservationShape {
@@ -121,10 +453,27 @@ impl AttemptReservationShape {
             is_attested_graph_result_passthrough_scope: false,
             is_attested_graph_result_bounded_consumer_scope: false,
             is_bfs_logical_output_scope: is_bfs_logical_output_projection_plan(plan),
+            ordered_schedule: None,
         }
     }
 
-    fn matches(&self, plan: &QueryPlan) -> bool {
+    pub(crate) fn execution_scope_fingerprint(&self) -> &str {
+        &self.execution_scope_fingerprint
+    }
+
+    pub(crate) fn attach_ordered_schedule(&mut self, schedule: AttemptReservationSchedule) -> Result<()> {
+        if self.ordered_schedule.is_some() {
+            return Err(graph_schedule_error("duplicate_schedule_evidence", None, Some("schedule")));
+        }
+        self.ordered_schedule = Some(schedule);
+        Ok(())
+    }
+
+    fn ordered_schedule(&self) -> Option<&AttemptReservationSchedule> {
+        self.ordered_schedule.as_ref()
+    }
+
+    pub(crate) fn matches(&self, plan: &QueryPlan) -> bool {
         self.execution_scope_fingerprint == canonical_execution_scope_fingerprint(plan)
     }
 
@@ -195,6 +544,10 @@ impl AttemptReservationShape {
         self.complete_graph_memory_phase.is_some()
     }
 
+    pub(crate) fn graph_memory_admission_evidence(&self) -> Option<&GraphMemoryAdmissionEvidence> {
+        self.complete_graph_memory_phase.as_ref()
+    }
+
     fn resolve(&self, policy: AttemptReservationPolicy) -> Result<ResolvedReservationShape> {
         if self.accounted_by_graph_phase {
             return Ok(ResolvedReservationShape { required_phase_floor_bytes: 0, complete_phase_peak_bytes: Some(0) });
@@ -253,6 +606,7 @@ pub(crate) struct AttemptReservationEnvelope {
     scopes: Vec<AttemptReservationShape>,
     required_phase_floor_bytes: u64,
     complete_phase_peak_bytes: Option<u64>,
+    ordered_schedule: Option<AttemptReservationSchedule>,
 }
 
 impl AttemptReservationEnvelope {
@@ -260,37 +614,84 @@ impl AttemptReservationEnvelope {
         reservation_shapes: &[AttemptReservationShape],
         policy: AttemptReservationPolicy,
     ) -> Result<Self> {
-        let mut scopes = Vec::with_capacity(reservation_shapes.len());
-        for scope in reservation_shapes {
-            if !scopes.contains(scope) {
-                scopes.push(scope.clone());
-            }
-        }
+        // Reservation shapes are allocation occurrences, not structural set
+        // members.  Equal graph plans may retain two distinct result handles
+        // and must remain two entries in the resolved envelope.
+        let scopes = reservation_shapes.to_vec();
+        let ordered_schedule =
+            match scopes.iter().filter_map(AttemptReservationShape::ordered_schedule).collect::<Vec<_>>().as_slice() {
+                [] => None,
+                [schedule] => Some((*schedule).clone()),
+                _ => return Err(graph_schedule_error("duplicate_schedule_evidence", None, Some("schedule"))),
+            };
 
         let mut required_phase_floor_bytes = 0_u64;
         let mut complete_phase_peak_bytes = Some(0_u64);
         let has_graph_memory_phase = scopes.iter().any(AttemptReservationShape::has_graph_memory_phase);
+        let mut scheduled_scope_counts = ordered_schedule.as_ref().map(AttemptReservationSchedule::scope_counts);
         for scope in &scopes {
             let resolved = scope.resolve(policy)?;
-            required_phase_floor_bytes = required_phase_floor_bytes
-                .checked_add(resolved.required_phase_floor_bytes)
-                .ok_or_else(|| envelope_overflow_error("combined_required_phase"))?;
+            let is_scheduled_scope = scheduled_scope_counts.as_mut().is_some_and(|counts| {
+                let Some(remaining) = counts.get_mut(scope.execution_scope_fingerprint()) else {
+                    return false;
+                };
+                if *remaining == 0 {
+                    return false;
+                }
+                *remaining -= 1;
+                true
+            });
+            if is_scheduled_scope {
+                // The ordered fold is the only complete peak for its covered
+                // producer/consumer occurrences.  Adding their isolated
+                // peaks here would reintroduce the obsolete blind sum.
+                continue;
+            }
+            required_phase_floor_bytes =
+                required_phase_floor_bytes.checked_add(resolved.required_phase_floor_bytes).ok_or_else(|| {
+                    ordered_schedule.as_ref().map_or_else(
+                        || envelope_overflow_error("combined_required_phase"),
+                        |_| {
+                            graph_schedule_error("combined_required_phase_overflow", None, Some("required_phase_floor"))
+                        },
+                    )
+                })?;
             complete_phase_peak_bytes = match (complete_phase_peak_bytes, resolved.complete_phase_peak_bytes) {
-                (Some(current), Some(peak)) => current.checked_add(peak),
+                (Some(current), Some(peak)) => match current.checked_add(peak) {
+                    Some(value) => Some(value),
+                    None if ordered_schedule.is_some() => {
+                        return Err(graph_schedule_error(
+                            "auxiliary_complete_phase_overflow",
+                            None,
+                            Some("auxiliary_complete_phase"),
+                        ));
+                    },
+                    None => None,
+                },
                 _ => None,
             };
         }
 
-        if has_graph_memory_phase && complete_phase_peak_bytes.is_none() {
+        if let Some(schedule) = &ordered_schedule {
+            if complete_phase_peak_bytes.is_none() {
+                return Err(graph_schedule_error("auxiliary_scope_unmodeled", None, Some("auxiliary_scope")));
+            }
+            let complete_peak = schedule.checked_fold_with_scopes(&scopes)?;
+            required_phase_floor_bytes = required_phase_floor_bytes.max(complete_peak);
+            complete_phase_peak_bytes =
+                complete_phase_peak_bytes.map(|auxiliary_peak| auxiliary_peak.max(complete_peak));
+        }
+
+        if ordered_schedule.is_none() && has_graph_memory_phase && complete_phase_peak_bytes.is_none() {
             return Err(QueryError::new(
                 QueryErrorCode::UnsupportedPlanShape,
                 "nexus_query_engine.admission.reservation_envelope",
                 "a graph attempt contains a runtime scope without a complete bounded phase target",
             )
-            .with_fact("reason", "graph_attempt_complete_phase_unmodeled"));
+            .with_fact("reason", GRAPH_ATTEMPT_COMPLETE_PHASE_UNMODELED_REASON));
         }
 
-        Ok(Self { policy, scopes, required_phase_floor_bytes, complete_phase_peak_bytes })
+        Ok(Self { policy, scopes, required_phase_floor_bytes, complete_phase_peak_bytes, ordered_schedule })
     }
 
     pub(crate) fn required_phase_floor_bytes(&self) -> u64 {
@@ -299,6 +700,45 @@ impl AttemptReservationEnvelope {
 
     pub(crate) fn complete_phase_peak_bytes(&self) -> Option<u64> {
         self.complete_phase_peak_bytes
+    }
+
+    #[cfg(test)]
+    pub(crate) fn ordered_schedule(&self) -> Option<&AttemptReservationSchedule> {
+        self.ordered_schedule.as_ref()
+    }
+
+    pub(crate) fn validate_composed_execution(
+        &self,
+        consumer_plan: &QueryPlan,
+        occurrence_ids: &[String],
+        immutable_grant_bytes: u64,
+    ) -> Result<()> {
+        let Some(schedule) = &self.ordered_schedule else {
+            return Err(graph_schedule_error("missing_admitted_schedule", None, Some("runtime")));
+        };
+        schedule.validate_runtime(consumer_plan, occurrence_ids)?;
+        let required_peak = schedule.checked_fold_with_scopes(&self.scopes)?;
+        if immutable_grant_bytes < required_peak {
+            return Err(graph_schedule_error("immutable_grant_below_schedule_peak", None, Some("runtime"))
+                .with_fact("immutable_grant_bytes", immutable_grant_bytes)
+                .with_fact("complete_phase_peak_bytes", required_peak));
+        }
+        Ok(())
+    }
+
+    /// Publishes the immutable schedule priced by this envelope, bound to the
+    /// grant and device selected by the admission transaction.
+    pub(crate) fn composed_schedule_projection(
+        &self,
+        attempt_id: crate::observability::AttemptId,
+        device_ordinal: usize,
+        grant_id: u64,
+        grant_bytes: u64,
+    ) -> Result<AttemptComposedScheduleProjection> {
+        let Some(schedule) = &self.ordered_schedule else {
+            return Err(graph_schedule_error("missing_admitted_schedule", None, Some("projection")));
+        };
+        schedule.projection(&self.scopes, attempt_id, device_ordinal, grant_id, grant_bytes)
     }
 
     pub(crate) fn validate_execution(
@@ -524,6 +964,23 @@ fn envelope_overflow_error(phase: &'static str) -> QueryError {
     )
     .with_fact("reason", "attempt_reservation_envelope_overflow")
     .with_fact("phase", phase)
+}
+
+fn graph_schedule_error(reason: &'static str, occurrence_id: Option<&str>, phase: Option<&'static str>) -> QueryError {
+    let mut error = QueryError::new(
+        QueryErrorCode::UnsupportedPlanShape,
+        "nexus_query_engine.admission.reservation_envelope",
+        "a composed graph attempt lacks a complete ordered memory schedule",
+    )
+    .with_fact("reason", GRAPH_ATTEMPT_COMPLETE_PHASE_UNMODELED_REASON)
+    .with_fact("schedule_reason", reason);
+    if let Some(occurrence_id) = occurrence_id {
+        error = error.with_fact("occurrence_id", occurrence_id);
+    }
+    if let Some(phase) = phase {
+        error = error.with_fact("phase", phase);
+    }
+    error
 }
 
 #[cfg(test)]
@@ -943,5 +1400,408 @@ mod tests {
         let error = combined.resolve_reservation_envelope(reservation_policy()).unwrap_err();
         assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
         assert_eq!(error.fact_value("reason"), Some("graph_attempt_complete_phase_unmodeled"));
+    }
+
+    fn schedule_occurrence(
+        occurrence_id: &str,
+        scope: &str,
+        isolated_peak_bytes: Option<u64>,
+        retained_output_bytes: Option<u64>,
+    ) -> AttemptReservationProducerOccurrence {
+        AttemptReservationProducerOccurrence::new(occurrence_id, scope, isolated_peak_bytes, retained_output_bytes)
+    }
+
+    fn schedule(
+        fixed_bytes: Option<u64>,
+        producers: Vec<AttemptReservationProducerOccurrence>,
+        consumer_scope: Option<&str>,
+        consumer_peak_bytes: Option<u64>,
+    ) -> AttemptReservationSchedule {
+        AttemptReservationSchedule::new(fixed_bytes, producers, consumer_scope.map(str::to_owned), consumer_peak_bytes)
+    }
+
+    fn schedule_scope(scope: &str) -> AttemptReservationShape {
+        AttemptReservationShape {
+            execution_scope_fingerprint: scope.to_owned(),
+            has_local_parquet_source: false,
+            source_stage_bytes: None,
+            complete_zero_column_global_aggregate: None,
+            complete_graph_memory_phase: None,
+            post_graph_bfs_logical_output_peak_bytes: None,
+            accounted_by_graph_phase: false,
+            is_cugraph_graph_input_scope: false,
+            is_attested_graph_result_passthrough_scope: false,
+            is_attested_graph_result_bounded_consumer_scope: false,
+            is_bfs_logical_output_scope: false,
+            ordered_schedule: None,
+        }
+    }
+
+    fn assert_schedule_rejected(schedule: &AttemptReservationSchedule, expected_reason: &str) {
+        let error = schedule.checked_fold().expect_err("incomplete schedule must reject closed");
+        assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
+        assert_eq!(error.fact_value("reason"), Some(GRAPH_ATTEMPT_COMPLETE_PHASE_UNMODELED_REASON));
+        assert_eq!(error.fact_value("schedule_reason"), Some(expected_reason));
+    }
+
+    #[test]
+    fn ordered_schedule_n1_folds_fixed_producer_output_and_consumer() {
+        let schedule = schedule(
+            Some(10),
+            vec![schedule_occurrence("p0", "producer", Some(20), Some(5))],
+            Some("consumer"),
+            Some(7),
+        );
+        assert_eq!(schedule.checked_fold().unwrap(), 30, "max(10 + 20, 10 + 5 + 7)");
+    }
+
+    #[test]
+    fn ordered_schedule_folds_heterogeneous_two_producers() {
+        let schedule = schedule(
+            Some(10),
+            vec![
+                schedule_occurrence("pagerank", "p", Some(20), Some(5)),
+                schedule_occurrence("forceatlas", "f", Some(40), Some(8)),
+            ],
+            Some("consumer"),
+            Some(7),
+        );
+        assert_eq!(schedule.checked_fold().unwrap(), 55, "the second producer coexists with the retained first output");
+        assert_ne!(schedule.checked_fold().unwrap(), 80, "scheduled producers must not be blindly summed");
+    }
+
+    #[test]
+    fn ordered_schedule_retains_equal_structural_occurrences() {
+        let schedule = schedule(
+            Some(4),
+            vec![
+                schedule_occurrence("same-0", "equal", Some(10), Some(6)),
+                schedule_occurrence("same-1", "equal", Some(10), Some(6)),
+            ],
+            Some("consumer"),
+            Some(1),
+        );
+        assert_eq!(schedule.producer_occurrences().len(), 2);
+        assert_eq!(schedule.checked_fold().unwrap(), 20);
+    }
+
+    #[test]
+    fn ordered_schedule_folds_three_producers() {
+        let schedule = schedule(
+            Some(3),
+            vec![
+                schedule_occurrence("p0", "p0", Some(4), Some(5)),
+                schedule_occurrence("p1", "p1", Some(8), Some(6)),
+                schedule_occurrence("p2", "p2", Some(2), Some(7)),
+            ],
+            Some("consumer"),
+            Some(9),
+        );
+        assert_eq!(schedule.checked_fold().unwrap(), 30);
+    }
+
+    #[test]
+    fn ordered_schedule_is_order_sensitive() {
+        let first = schedule(
+            Some(5),
+            vec![
+                schedule_occurrence("large", "large", Some(40), Some(1)),
+                schedule_occurrence("small", "small", Some(10), Some(20)),
+            ],
+            Some("consumer"),
+            Some(1),
+        );
+        let second = schedule(
+            Some(5),
+            vec![
+                schedule_occurrence("small", "small", Some(10), Some(20)),
+                schedule_occurrence("large", "large", Some(40), Some(1)),
+            ],
+            Some("consumer"),
+            Some(1),
+        );
+        assert_eq!(first.checked_fold().unwrap(), 45);
+        assert_eq!(second.checked_fold().unwrap(), 65);
+    }
+
+    #[test]
+    fn ordered_schedule_rejects_missing_evidence() {
+        assert_schedule_rejected(
+            &schedule(None, vec![schedule_occurrence("p", "p", Some(1), Some(1))], Some("c"), Some(1)),
+            "missing_attempt_wide_fixed_bytes",
+        );
+        assert_schedule_rejected(&schedule(Some(0), Vec::new(), Some("c"), Some(1)), "missing_producer_evidence");
+        assert_schedule_rejected(
+            &schedule(Some(0), vec![schedule_occurrence("p", "p", Some(1), Some(1))], None, Some(1)),
+            "missing_consumer_scope",
+        );
+        assert_schedule_rejected(
+            &schedule(Some(0), vec![schedule_occurrence("p", "p", Some(1), Some(1))], Some("c"), None),
+            "missing_consumer_additional_peak",
+        );
+        assert_schedule_rejected(
+            &schedule(Some(0), vec![schedule_occurrence("p", "p", None, Some(1))], Some("c"), Some(1)),
+            "missing_producer_isolated_peak",
+        );
+        assert_schedule_rejected(
+            &schedule(Some(0), vec![schedule_occurrence("p", "p", Some(1), None)], Some("c"), Some(1)),
+            "missing_producer_retained_output",
+        );
+    }
+
+    #[test]
+    fn ordered_schedule_rejects_duplicate_occurrence_ids() {
+        assert_schedule_rejected(
+            &schedule(
+                Some(0),
+                vec![
+                    schedule_occurrence("duplicate", "p0", Some(1), Some(1)),
+                    schedule_occurrence("duplicate", "p1", Some(1), Some(1)),
+                ],
+                Some("c"),
+                Some(1),
+            ),
+            "duplicate_producer_occurrence_id",
+        );
+    }
+
+    #[test]
+    fn ordered_schedule_rejects_scope_mismatch_but_allows_auxiliary_scopes() {
+        let schedule =
+            schedule(Some(0), vec![schedule_occurrence("p", "producer", Some(1), Some(1))], Some("consumer"), Some(1));
+        let scopes = vec![schedule_scope("producer"), schedule_scope("consumer"), schedule_scope("auxiliary")];
+        assert_eq!(schedule.checked_fold_with_scopes(&scopes).unwrap(), 2);
+
+        let mismatched = vec![schedule_scope("different"), schedule_scope("consumer")];
+        let error = schedule.checked_fold_with_scopes(&mismatched).unwrap_err();
+        assert_eq!(error.fact_value("reason"), Some(GRAPH_ATTEMPT_COMPLETE_PHASE_UNMODELED_REASON));
+        assert_eq!(error.fact_value("schedule_reason"), Some("schedule_scope_coverage_mismatch"));
+    }
+
+    #[test]
+    fn envelope_uses_schedule_peak_as_the_composed_floor_without_deduplicating_scopes() {
+        let schedule = schedule(
+            Some(10),
+            vec![schedule_occurrence("p", "producer", Some(20), Some(5))],
+            Some("consumer"),
+            Some(7),
+        );
+        let mut producer = schedule_scope("producer");
+        producer.attach_ordered_schedule(schedule).unwrap();
+        let mut auxiliary = schedule_scope("auxiliary");
+        auxiliary.account_for_by_graph_phase();
+        let scopes = vec![producer, schedule_scope("consumer"), auxiliary];
+        let envelope = AttemptReservationEnvelope::resolve(&scopes, reservation_policy())
+            .expect("auxiliary exact scopes remain valid with a complete schedule");
+        assert_eq!(envelope.complete_phase_peak_bytes(), Some(30));
+        assert_eq!(envelope.required_phase_floor_bytes(), 30);
+        assert!(envelope.ordered_schedule().is_some());
+        assert_eq!(envelope.scopes.len(), 3, "equal/auxiliary occurrences are not shape-deduplicated");
+    }
+
+    #[test]
+    fn envelope_does_not_sum_heterogeneous_isolated_peaks_when_schedule_is_present() {
+        let schedule = schedule(
+            Some(10),
+            vec![
+                schedule_occurrence("p", "producer-p", Some(20), Some(5)),
+                schedule_occurrence("f", "producer-f", Some(40), Some(8)),
+            ],
+            Some("consumer"),
+            Some(7),
+        );
+        let mut producer = schedule_scope("producer-p");
+        producer.attach_ordered_schedule(schedule).unwrap();
+        let scopes = vec![producer, schedule_scope("producer-f"), schedule_scope("consumer")];
+        let envelope = AttemptReservationEnvelope::resolve(&scopes, reservation_policy()).unwrap();
+        assert_eq!(envelope.complete_phase_peak_bytes(), Some(55));
+        assert_ne!(envelope.complete_phase_peak_bytes(), Some(80));
+    }
+
+    fn resolved_runtime_schedule_envelope(consumer_plan: &QueryPlan) -> AttemptReservationEnvelope {
+        let mut producer_scope = schedule_scope("producer-scope");
+        producer_scope
+            .attach_ordered_schedule(schedule(
+                Some(0),
+                vec![
+                    schedule_occurrence("first", "producer-scope", Some(20), Some(5)),
+                    schedule_occurrence("second", "producer-scope", Some(30), Some(6)),
+                ],
+                Some(&canonical_execution_scope_fingerprint(consumer_plan)),
+                Some(7),
+            ))
+            .unwrap();
+        AttemptReservationEnvelope::resolve(
+            &[
+                producer_scope,
+                schedule_scope("producer-scope"),
+                schedule_scope(&canonical_execution_scope_fingerprint(consumer_plan)),
+            ],
+            reservation_policy(),
+        )
+        .expect("complete runtime schedule must resolve")
+    }
+
+    #[test]
+    fn composed_runtime_validation_rejects_producer_occurrence_order_mismatch() {
+        let consumer_plan = graph_result_passthrough_plan("graph-result");
+        let envelope = resolved_runtime_schedule_envelope(&consumer_plan);
+
+        let error = envelope
+            .validate_composed_execution(
+                &consumer_plan,
+                &["second".to_owned(), "first".to_owned()],
+                envelope.required_phase_floor_bytes(),
+            )
+            .expect_err("runtime execution must preserve the admitted producer order");
+
+        assert_eq!(error.fact_value("reason"), Some(GRAPH_ATTEMPT_COMPLETE_PHASE_UNMODELED_REASON));
+        assert_eq!(error.fact_value("schedule_reason"), Some("runtime_occurrence_order_mismatch"));
+        assert_eq!(error.fact_value("scheduled_occurrence_id"), Some("first"));
+    }
+
+    #[test]
+    fn composed_runtime_validation_rejects_producer_occurrence_count_mismatch() {
+        let consumer_plan = graph_result_passthrough_plan("graph-result");
+        let envelope = resolved_runtime_schedule_envelope(&consumer_plan);
+
+        let error = envelope
+            .validate_composed_execution(&consumer_plan, &["first".to_owned()], envelope.required_phase_floor_bytes())
+            .expect_err("runtime execution must not omit an admitted producer occurrence");
+
+        assert_eq!(error.fact_value("reason"), Some(GRAPH_ATTEMPT_COMPLETE_PHASE_UNMODELED_REASON));
+        assert_eq!(error.fact_value("schedule_reason"), Some("runtime_occurrence_count_mismatch"));
+        assert_eq!(error.fact_value("scheduled_occurrence_count"), Some("2"));
+        assert_eq!(error.fact_value("runtime_occurrence_count"), Some("1"));
+    }
+
+    #[test]
+    fn composed_runtime_validation_rejects_consumer_scope_mismatch() {
+        let admitted_consumer_plan = graph_result_passthrough_plan("graph-result");
+        let envelope = resolved_runtime_schedule_envelope(&admitted_consumer_plan);
+        let changed_consumer_plan = graph_result_sort_consumer_plan("graph-result");
+
+        let error = envelope
+            .validate_composed_execution(
+                &changed_consumer_plan,
+                &["first".to_owned(), "second".to_owned()],
+                envelope.required_phase_floor_bytes(),
+            )
+            .expect_err("runtime execution must preserve the admitted consumer scope");
+
+        assert_eq!(error.fact_value("reason"), Some(GRAPH_ATTEMPT_COMPLETE_PHASE_UNMODELED_REASON));
+        assert_eq!(error.fact_value("schedule_reason"), Some("runtime_consumer_scope_mismatch"));
+    }
+
+    #[test]
+    fn composed_runtime_validation_rejects_immutable_grant_below_schedule_peak() {
+        let consumer_plan = graph_result_passthrough_plan("graph-result");
+        let envelope = resolved_runtime_schedule_envelope(&consumer_plan);
+
+        let error = envelope
+            .validate_composed_execution(&consumer_plan, &["first".to_owned(), "second".to_owned()], 34)
+            .expect_err("runtime execution must not begin below its schedule peak");
+
+        assert_eq!(envelope.required_phase_floor_bytes(), 35);
+        assert_eq!(error.fact_value("reason"), Some(GRAPH_ATTEMPT_COMPLETE_PHASE_UNMODELED_REASON));
+        assert_eq!(error.fact_value("schedule_reason"), Some("immutable_grant_below_schedule_peak"));
+        assert_eq!(error.fact_value("immutable_grant_bytes"), Some("34"));
+        assert_eq!(error.fact_value("complete_phase_peak_bytes"), Some("35"));
+    }
+
+    #[test]
+    fn composed_schedule_projection_is_lossless_and_fingerprint_stable() {
+        let consumer_plan = graph_result_passthrough_plan("graph-result");
+        let envelope = resolved_runtime_schedule_envelope(&consumer_plan);
+        let attempt_id = crate::observability::AttemptId::mint();
+        let projection = envelope
+            .composed_schedule_projection(attempt_id, 2, 41, envelope.required_phase_floor_bytes())
+            .expect("resolved composed schedule must publish a projection");
+
+        assert_eq!(projection.attempt_id, attempt_id);
+        assert_eq!(projection.device_ordinal, 2);
+        assert_eq!(projection.grant_id, 41);
+        assert_eq!(projection.attempt_wide_fixed_bytes, 0);
+        assert_eq!(projection.producer_occurrences.len(), 2);
+        assert_eq!(projection.producer_occurrences[0].occurrence_id, "first");
+        assert_eq!(projection.producer_occurrences[0].stage_peak_bytes, 20);
+        assert_eq!(projection.producer_occurrences[1].stage_peak_bytes, 35);
+        assert_eq!(projection.consumer_stage_peak_bytes, 18);
+        assert_eq!(projection.complete_peak_bytes, 35);
+        assert!(projection.fingerprint.starts_with("composed-schedule-fnv1a64:"));
+        assert!(projection.fingerprint_matches_contents());
+
+        let mut corrupted = projection.clone();
+        corrupted.fingerprint = "composed-schedule-fnv1a64:0000000000000000".to_owned();
+        assert!(!corrupted.fingerprint_matches_contents());
+
+        let repeat = envelope
+            .composed_schedule_projection(attempt_id, 2, 99, envelope.required_phase_floor_bytes())
+            .expect("same schedule must retain its deterministic fingerprint");
+        assert_eq!(projection.fingerprint, repeat.fingerprint);
+        assert_ne!(projection.grant_id, repeat.grant_id, "placement identity is not part of schedule identity");
+    }
+
+    #[test]
+    fn composed_schedule_projection_fails_closed_without_an_admitted_schedule() {
+        let envelope = AttemptReservationEnvelope::resolve(&[schedule_scope("ordinary")], reservation_policy())
+            .expect("ordinary scope resolves without a composed schedule");
+        let error = envelope
+            .composed_schedule_projection(crate::observability::AttemptId::mint(), 0, 1, 1)
+            .expect_err("projection requests must fail closed when schedule evidence is absent");
+        assert_eq!(error.fact_value("reason"), Some(GRAPH_ATTEMPT_COMPLETE_PHASE_UNMODELED_REASON));
+        assert_eq!(error.fact_value("schedule_reason"), Some("missing_admitted_schedule"));
+    }
+
+    #[test]
+    fn ordered_schedule_rejects_empty_occurrence_id_and_scope() {
+        assert_schedule_rejected(
+            &schedule(Some(0), vec![schedule_occurrence("", "p", Some(1), Some(1))], Some("c"), Some(1)),
+            "missing_producer_occurrence_id",
+        );
+        assert_schedule_rejected(
+            &schedule(Some(0), vec![schedule_occurrence("p", "", Some(1), Some(1))], Some("c"), Some(1)),
+            "missing_producer_occurrence_scope",
+        );
+    }
+
+    #[test]
+    fn ordered_schedule_rejects_every_checked_fold_overflow_edge() {
+        assert_schedule_rejected(
+            &schedule(Some(u64::MAX), vec![schedule_occurrence("p", "p", Some(1), Some(0))], Some("c"), Some(0)),
+            "producer_stage_isolated_peak_overflow",
+        );
+        assert_schedule_rejected(
+            &schedule(
+                Some(u64::MAX),
+                vec![
+                    schedule_occurrence("p0", "p0", Some(0), Some(1)),
+                    schedule_occurrence("p1", "p1", Some(0), Some(0)),
+                ],
+                Some("c"),
+                Some(0),
+            ),
+            "producer_stage_fixed_plus_retained_overflow",
+        );
+        assert_schedule_rejected(
+            &schedule(
+                Some(0),
+                vec![
+                    schedule_occurrence("p0", "p0", Some(0), Some(u64::MAX)),
+                    schedule_occurrence("p1", "p1", Some(0), Some(1)),
+                ],
+                Some("c"),
+                Some(0),
+            ),
+            "retained_output_accumulation_overflow",
+        );
+        assert_schedule_rejected(
+            &schedule(Some(u64::MAX), vec![schedule_occurrence("p", "p", Some(0), Some(1))], Some("c"), Some(0)),
+            "consumer_stage_fixed_plus_retained_overflow",
+        );
+        assert_schedule_rejected(
+            &schedule(Some(u64::MAX), vec![schedule_occurrence("p", "p", Some(0), Some(0))], Some("c"), Some(1)),
+            "consumer_stage_additional_peak_overflow",
+        );
     }
 }

@@ -37,8 +37,8 @@ use crate::{
     metrics::{QueryId, TraceId},
     mode::StatisticalAggregateExecutionMode,
     observability::{
-        RuntimeObservationHandle, RuntimeObservationSession, RuntimeStreamLeaseScope, RuntimeTaskId, RuntimeTraceId,
-        RuntimeWorkerId,
+        AttemptComposedScheduleProjection, RuntimeObservationHandle, RuntimeObservationSession,
+        RuntimeStreamLeaseScope, RuntimeTaskId, RuntimeTraceId, RuntimeWorkerId,
     },
     plan::QueryPlan,
 };
@@ -1593,6 +1593,105 @@ impl ExecutionContext {
                 self.source_chunk_planning_options,
             )
         })
+    }
+
+    /// Validates the pre-admission composed graph schedule immediately before
+    /// the adapter dispatches its first retained-output producer.
+    ///
+    /// Ordinary per-plan validation runs when each fragment executes. This
+    /// earlier check additionally binds the aggregate consumer scope, producer
+    /// occurrence order, immutable grant, and runtime device to the one
+    /// schedule that was priced by the query service.
+    pub fn validate_admitted_composed_graph_attempt(
+        &self,
+        consumer_plan: &QueryPlan,
+        occurrence_ids: &[String],
+    ) -> Result<()> {
+        self.validate_admitted_plan_capabilities(consumer_plan)?;
+        let immutable_grant = self.memory_grant()?.ok_or_else(|| {
+            QueryError::new(
+                QueryErrorCode::UnsupportedPlanShape,
+                "nexus_query_engine.runtime.context",
+                "a composed graph attempt requires the immutable grant issued with its schedule",
+            )
+            .with_fact("reason", "graph_attempt_complete_phase_unmodeled")
+            .with_fact("schedule_reason", "missing_immutable_grant")
+        })?;
+        let runtime_device_ordinal = self.runtime()?.device().ordinal();
+        if runtime_device_ordinal != immutable_grant.device_ordinal() {
+            return Err(QueryError::new(
+                QueryErrorCode::UnsupportedPlanShape,
+                "nexus_query_engine.runtime.context",
+                "the composed graph runtime device differs from the admitted immutable grant device",
+            )
+            .with_fact("reason", "graph_attempt_complete_phase_unmodeled")
+            .with_fact("schedule_reason", "runtime_device_grant_mismatch")
+            .with_fact("runtime_device_ordinal", runtime_device_ordinal)
+            .with_fact("grant_device_ordinal", immutable_grant.device_ordinal()));
+        }
+        let envelope = self.admitted_reservation_envelope.as_ref().ok_or_else(|| {
+            QueryError::new(
+                QueryErrorCode::UnsupportedPlanShape,
+                "nexus_query_engine.runtime.context",
+                "a composed graph attempt requires an admitted ordered reservation schedule",
+            )
+            .with_fact("reason", "graph_attempt_complete_phase_unmodeled")
+            .with_fact("schedule_reason", "missing_admitted_schedule")
+        })?;
+        envelope.validate_composed_execution(consumer_plan, occurrence_ids, immutable_grant.budget_bytes())
+    }
+
+    /// Returns the immutable composed schedule priced by this admitted
+    /// context. The projection is tied to this context's attempt id, grant,
+    /// and runtime device; no live allocator or telemetry value participates.
+    /// Requests against ordinary contexts or an admitted envelope without a
+    /// schedule fail closed.
+    pub fn composed_schedule_projection(&self) -> Result<AttemptComposedScheduleProjection> {
+        let attempt_id = self.attempt_id.ok_or_else(|| {
+            QueryError::new(
+                QueryErrorCode::UnsupportedPlanShape,
+                "nexus_query_engine.runtime.context",
+                "a composed schedule requires an engine-owned attempt identity",
+            )
+            .with_fact("reason", "graph_attempt_complete_phase_unmodeled")
+            .with_fact("schedule_reason", "missing_attempt_id")
+        })?;
+        let grant = self.memory_grant()?.ok_or_else(|| {
+            QueryError::new(
+                QueryErrorCode::UnsupportedPlanShape,
+                "nexus_query_engine.runtime.context",
+                "a composed schedule requires the immutable grant issued with admission",
+            )
+            .with_fact("reason", "graph_attempt_complete_phase_unmodeled")
+            .with_fact("schedule_reason", "missing_immutable_grant")
+        })?;
+        let runtime_device_ordinal = self.runtime()?.device().ordinal();
+        if runtime_device_ordinal != grant.device_ordinal() {
+            return Err(QueryError::new(
+                QueryErrorCode::UnsupportedPlanShape,
+                "nexus_query_engine.runtime.context",
+                "the composed schedule runtime device differs from its immutable grant device",
+            )
+            .with_fact("reason", "graph_attempt_complete_phase_unmodeled")
+            .with_fact("schedule_reason", "runtime_device_grant_mismatch")
+            .with_fact("runtime_device_ordinal", runtime_device_ordinal)
+            .with_fact("grant_device_ordinal", grant.device_ordinal()));
+        }
+        let envelope = self.admitted_reservation_envelope.as_ref().ok_or_else(|| {
+            QueryError::new(
+                QueryErrorCode::UnsupportedPlanShape,
+                "nexus_query_engine.runtime.context",
+                "a composed schedule requires an admitted reservation envelope",
+            )
+            .with_fact("reason", "graph_attempt_complete_phase_unmodeled")
+            .with_fact("schedule_reason", "missing_admitted_schedule")
+        })?;
+        envelope.composed_schedule_projection(
+            attempt_id,
+            runtime_device_ordinal,
+            grant.grant_id(),
+            grant.budget_bytes(),
+        )
     }
 
     pub(super) fn install_root_stream_cleanup_completion(

@@ -205,6 +205,14 @@ fn deadline_crossing_during_overtake_commit_rolls_back_allowance_and_protection(
         .expect_err("expired publication cannot commit overtake accounting");
 
     assert_eq!(error.fact_value("reason"), Some("queue_wait_elapsed"));
+    assert_eq!(
+        QueryAdmissionOutcome::from_error_with_queue_bounds(&error, service.service.queue_bounds()),
+        QueryAdmissionOutcome::Capacity {
+            queued_queries: None,
+            queue_capacity: Some(8),
+            max_queue_wait: Some(Duration::from_secs(5)),
+        }
+    );
     let older_state = state
         .queued
         .iter()

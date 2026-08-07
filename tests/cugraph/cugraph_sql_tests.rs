@@ -17,7 +17,7 @@ use datafusion::{
     execution::SessionStateBuilder,
     logical_expr::{col, lit},
     parquet::{arrow::ArrowWriter, file::properties::WriterProperties},
-    physical_plan::displayable,
+    physical_plan::{ExecutionPlan, displayable},
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use datafusion_nexus::{

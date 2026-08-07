@@ -15,6 +15,7 @@ use std::{
 
 const CUDF_METADATA_ENV: &str = "DEP_CUDF_RUST_METADATA";
 const CUDF_RUNTIME_LIB_DIR_ENV: &str = "DEP_CUDF_RUST_RUNTIME_LIB_DIR";
+const CUDF_RUST_RUNTIME_LIB_ENV: &str = "DEP_CUDF_RUST_CUDF_RUST_RUNTIME_LIB";
 const CUDF_LIBCUDF_RUNTIME_LIB_ENV: &str = "DEP_CUDF_RUST_LIBCUDF_RUNTIME_LIB";
 const CUDF_RMM_RUNTIME_LIB_ENV: &str = "DEP_CUDF_RUST_RMM_RUNTIME_LIB";
 const CUDF_RAPIDS_LOGGER_RUNTIME_LIB_ENV: &str = "DEP_CUDF_RUST_RAPIDS_LOGGER_RUNTIME_LIB";
@@ -113,6 +114,7 @@ struct CudaEnvironment {
 struct CudfEnvironment {
     aggregate_metadata: Option<String>,
     runtime_lib_dir: Option<String>,
+    cudf_rust_runtime_lib: Option<String>,
     libcudf_runtime_lib: Option<String>,
     rmm_runtime_lib: Option<String>,
     rapids_logger_runtime_lib: Option<String>,
@@ -147,6 +149,7 @@ struct EnvironmentSnapshot {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct CudfMetadata {
     runtime_lib_dir: Option<PathBuf>,
+    cudf_rust_runtime_lib: Option<PathBuf>,
     libcudf_runtime_lib: Option<PathBuf>,
     rmm_runtime_lib: Option<PathBuf>,
     rapids_logger_runtime_lib: Option<PathBuf>,
@@ -180,6 +183,7 @@ fn read_environment(consumers: RapidsConsumers) -> EnvironmentSnapshot {
     let cudf = CudfEnvironment {
         aggregate_metadata: std::env::var(CUDF_METADATA_ENV).ok(),
         runtime_lib_dir: std::env::var(CUDF_RUNTIME_LIB_DIR_ENV).ok(),
+        cudf_rust_runtime_lib: std::env::var(CUDF_RUST_RUNTIME_LIB_ENV).ok(),
         libcudf_runtime_lib: std::env::var(CUDF_LIBCUDF_RUNTIME_LIB_ENV).ok(),
         rmm_runtime_lib: std::env::var(CUDF_RMM_RUNTIME_LIB_ENV).ok(),
         rapids_logger_runtime_lib: std::env::var(CUDF_RAPIDS_LOGGER_RUNTIME_LIB_ENV).ok(),
@@ -220,6 +224,12 @@ fn resolve_metadata(environment: &EnvironmentSnapshot) -> ResolvedMetadata {
                 cudf.runtime_lib_dir.as_deref(),
                 cudf.aggregate_metadata.as_deref(),
                 "runtime-lib-dir",
+            )
+            .map(PathBuf::from),
+            cudf_rust_runtime_lib: select_metadata_value(
+                cudf.cudf_rust_runtime_lib.as_deref(),
+                cudf.aggregate_metadata.as_deref(),
+                "cudf-rust-runtime-lib",
             )
             .map(PathBuf::from),
             libcudf_runtime_lib: select_metadata_value(
@@ -326,6 +336,7 @@ fn runtime_directories(metadata: &ResolvedMetadata, consumers: RapidsConsumers) 
         push_unique_path(&mut runtime_dirs, dir.clone());
     }
     for library in [
+        metadata.cudf.cudf_rust_runtime_lib.as_ref(),
         metadata.cudf.libcudf_runtime_lib.as_ref(),
         metadata.cudf.rmm_runtime_lib.as_ref(),
         metadata.cudf.rapids_logger_runtime_lib.as_ref(),
@@ -477,6 +488,18 @@ fn track_env(name: &str) {
     println!("cargo:rerun-if-env-changed={name}");
 }
 
+fn track_required_runtime_library(name: &str, library: Option<&Path>) {
+    let library = library.unwrap_or_else(|| {
+        panic!(
+            "cudf-sys did not expose {name}; rebuild the sys crate so downstream executables can bind the exact native shim"
+        )
+    });
+    if !library.is_file() {
+        panic!("cudf-sys exposed {name}={}, but that library does not exist", library.display());
+    }
+    println!("cargo:rerun-if-changed={}", library.display());
+}
+
 fn track_cugraph_env() {
     track_env(CUGRAPH_RUNTIME_LIB_DIRS_ENV);
     track_env(CUGRAPH_NATIVE_LINK_DIRS_ENV);
@@ -507,6 +530,7 @@ pub fn configure(config: Config) {
     println!("cargo:rerun-if-changed={}", config.support_source);
     track_env(CUDF_METADATA_ENV);
     track_env(CUDF_RUNTIME_LIB_DIR_ENV);
+    track_env(CUDF_RUST_RUNTIME_LIB_ENV);
     track_env(CUDF_LIBCUDF_RUNTIME_LIB_ENV);
     track_env(CUDF_RMM_RUNTIME_LIB_ENV);
     track_env(CUDF_RAPIDS_LOGGER_RUNTIME_LIB_ENV);
@@ -528,6 +552,8 @@ pub fn configure(config: Config) {
             );
         }
     }
+
+    track_required_runtime_library(CUDF_RUST_RUNTIME_LIB_ENV, metadata.cudf.cudf_rust_runtime_lib.as_deref());
 
     emit_cargo_directives(link_directives(&metadata, consumers, config.link_arg_targets));
     if config.nvtx3interop {
@@ -952,7 +978,8 @@ mod tests {
             expected: CudfMetadata,
         }
         let aggregate = Some(
-            "runtime-lib-dir=/aggregate;libcudf-runtime-lib=/aggregate/libcudf.so;\
+            "runtime-lib-dir=/aggregate;cudf-rust-runtime-lib=/aggregate/libcudf_rust.so;\
+             libcudf-runtime-lib=/aggregate/libcudf.so;\
              rmm-runtime-lib=/aggregate/librmm.so;rapids-logger-runtime-lib=/aggregate/librapids_logger.so;\
              rapids-logger-linkage=static"
                 .to_string(),
@@ -963,6 +990,7 @@ mod tests {
                 environment: CudfEnvironment { aggregate_metadata: aggregate.clone(), ..CudfEnvironment::default() },
                 expected: CudfMetadata {
                     runtime_lib_dir: Some("/aggregate".into()),
+                    cudf_rust_runtime_lib: Some("/aggregate/libcudf_rust.so".into()),
                     libcudf_runtime_lib: Some("/aggregate/libcudf.so".into()),
                     rmm_runtime_lib: Some("/aggregate/librmm.so".into()),
                     rapids_logger_runtime_lib: Some("/aggregate/librapids_logger.so".into()),
@@ -974,6 +1002,7 @@ mod tests {
                 environment: CudfEnvironment {
                     aggregate_metadata: aggregate,
                     runtime_lib_dir: Some("/direct".to_string()),
+                    cudf_rust_runtime_lib: Some("/direct/libcudf_rust.so".to_string()),
                     libcudf_runtime_lib: Some("/direct/libcudf.so".to_string()),
                     rmm_runtime_lib: None,
                     rapids_logger_runtime_lib: Some("/direct/librapids_logger.so".to_string()),
@@ -981,6 +1010,7 @@ mod tests {
                 },
                 expected: CudfMetadata {
                     runtime_lib_dir: Some("/direct".into()),
+                    cudf_rust_runtime_lib: Some("/direct/libcudf_rust.so".into()),
                     libcudf_runtime_lib: Some("/direct/libcudf.so".into()),
                     rmm_runtime_lib: Some("/aggregate/librmm.so".into()),
                     rapids_logger_runtime_lib: Some("/direct/librapids_logger.so".into()),
@@ -1037,6 +1067,7 @@ mod tests {
         let metadata = ResolvedMetadata {
             cudf: CudfMetadata {
                 runtime_lib_dir: Some("/runtime".into()),
+                cudf_rust_runtime_lib: Some("/runtime/libcudf_rust.so".into()),
                 libcudf_runtime_lib: Some("/cudf/libcudf.so".into()),
                 rmm_runtime_lib: Some("/rmm/librmm.so".into()),
                 rapids_logger_runtime_lib: None,

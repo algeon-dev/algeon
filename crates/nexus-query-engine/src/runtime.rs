@@ -111,8 +111,8 @@ pub(crate) use process_exit::{
 };
 pub(crate) use query_service::QueryService;
 pub use query_service::{
-    AdmittedQueryContext, DeviceQuarantineInjection, QueryActivityLease, QueryAdmissionRequest, QueryExecutionConfig,
-    QueryHandle, QueryServiceAdmissionSnapshot, QueryServiceDeviceAdmissionSnapshot, QueueBounds,
+    AdmittedQueryContext, DeviceQuarantineInjection, QueryActivityLease, QueryAdmissionOutcome, QueryAdmissionRequest,
+    QueryExecutionConfig, QueryHandle, QueryServiceAdmissionSnapshot, QueryServiceDeviceAdmissionSnapshot, QueueBounds,
 };
 pub use reservation::MemoryReservationRequest;
 pub(crate) use reservation::RetryFacts;

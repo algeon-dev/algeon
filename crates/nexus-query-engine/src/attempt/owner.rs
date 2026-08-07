@@ -21,8 +21,8 @@ use crate::{
     error::QueryError,
     observability::{
         AttemptAdmissionFact, AttemptAdmissionWaitFact, AttemptCapacityDisposition, AttemptCleanupDisposition,
-        AttemptDisposition, AttemptFailureSummary, AttemptId, AttemptQueryId, AttemptRetryAdvice,
-        AttemptTerminalCommit, AttemptTraceContext, CleanupFailurePhase, CleanupFailureSummary,
+        AttemptComposedScheduleProjection, AttemptDisposition, AttemptFailureSummary, AttemptId, AttemptQueryId,
+        AttemptRetryAdvice, AttemptTerminalCommit, AttemptTraceContext, CleanupFailurePhase, CleanupFailureSummary,
         QUERY_ATTEMPT_REPORT_SCHEMA_V1, QueryAttemptReport, RuntimeCleanupFailureObservation, RuntimeObservationClock,
         RuntimeObservationConfig, RuntimeObservationFooter, RuntimeObservationHandle, RuntimeObservationOwner,
         RuntimeObservationPayload, RuntimeQueryId, RuntimeTerminalOutcome, RuntimeTraceId,
@@ -303,6 +303,7 @@ impl AttemptCore {
             device_ordinal: lifecycle.admitted.as_ref().map(|(_, fact)| fact.device_ordinal),
             admission: lifecycle.admitted.as_ref().map(|(_, fact)| fact.clone()),
             admission_wait: lifecycle.admission_wait,
+            composed_schedule: lifecycle.composed_schedule.clone(),
             timestamps: lifecycle.timestamps(),
             cleanup_disposition: if lifecycle.admitted.is_some() {
                 if cleanup_failure_count == 0 {
@@ -941,6 +942,23 @@ impl AttemptHandle {
     /// query-service admission controller.
     pub fn record_admission_wait(&self, fact: AttemptAdmissionWaitFact) -> Result<(), AttemptLifecycleError> {
         self.0.lock_lifecycle().admission_wait(fact)
+    }
+
+    /// Publishes the engine-owned composed schedule into this attempt's
+    /// immutable report. The lifecycle verifies the projection's attempt
+    /// placement against the already-recorded admission fact; callers cannot
+    /// replace the schedule after finalization.
+    pub fn record_composed_schedule_projection(
+        &self,
+        projection: AttemptComposedScheduleProjection,
+    ) -> Result<(), AttemptLifecycleError> {
+        if projection.attempt_id != self.0.attempt_id {
+            return Err(AttemptLifecycleError::InvalidOrder {
+                boundary: "composed_schedule",
+                reason: "attempt_id_mismatch",
+            });
+        }
+        self.0.lock_lifecycle().composed_schedule(projection)
     }
 
     pub fn record_physical_execution_started(&self) -> Result<(), AttemptLifecycleError> {

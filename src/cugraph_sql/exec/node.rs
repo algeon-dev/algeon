@@ -127,6 +127,7 @@ impl CugraphAlgoExec {
         cugraph_edge_normalize_inserted(&self.spec, &self.edge_source_canonical_facts)
     }
 
+    #[cfg(test)]
     pub(crate) fn graph_model_ask_bytes_for_admission_ticket(&self) -> Result<Option<GraphAdmissionModelAsk>> {
         cugraph_graph_model_ask_bytes(
             &self.spec,
@@ -941,10 +942,6 @@ pub(super) fn register_cugraph_execution_spis() {
 }
 
 impl GraphExecutionPlan for CugraphAlgoExec {
-    fn graph_model_ask_for_admission(&self) -> Result<Option<GraphAdmissionModelAsk>> {
-        self.graph_model_ask_bytes_for_admission_ticket()
-    }
-
     fn graph_execution_capability_proof(&self) -> Result<QueryPlanCapabilityProof> {
         cugraph_execution_capability_proof(
             &self.spec,

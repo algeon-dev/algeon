@@ -553,6 +553,21 @@ async fn cugraph_producer_preparation_mints_one_post_hydration_ticket_for_host_a
         .native_execution_config
         .query_admission_ticket_id()
         .expect("post-hydration cuGraph producer must carry its graph-aware ticket");
+    let prepared_graph = crate::native_exec::graph::graph_execution_plan(prepared.as_ref())
+        .expect("prepared cuGraph execution must retain its frontend-neutral graph binding");
+    assert_eq!(
+        prepared_graph.graph_result_input_name(),
+        prepared_exec.gpu_result_input_name,
+        "the prepared graph scope and runtime result occurrence must remain bound to one input name",
+    );
+    let prepared_ticket = prepared_exec
+        .native_execution_config
+        .query_admission_ticket()
+        .expect("prepared cuGraph occurrence must retain its graph-aware ticket");
+    assert!(
+        prepared_ticket.attempt_capability_proof().is_some(),
+        "the prepared occurrence must retain one opaque graph proof for composed admission",
+    );
 
     let host_task_context =
         task_context_with_cugraph_execution_ticket(&prepared_exec.native_execution_config, Arc::clone(&task_context));
@@ -990,7 +1005,8 @@ fn cugraph_algo_exec_registers_frontend_neutral_execution_spis() {
 
     let graph = crate::native_exec::graph::graph_execution_plan(plan)
         .expect("registered graph admission discovery should recognize cuGraph execution");
-    assert!(graph.graph_model_ask_for_admission().unwrap().is_some());
+    assert_eq!(graph.graph_result_input_name(), exec.gpu_result_input_name);
+    assert!(graph.graph_execution_capability_proof().is_ok());
 }
 
 #[test]

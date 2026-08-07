@@ -88,6 +88,11 @@ pub(super) struct ScenarioRequirementsProfile {
     /// Require the resolved device envelopes to be heterogeneous.
     #[serde(default)]
     pub(super) require_heterogeneous_device_profiles: bool,
+    /// Require the sealed bounded-overload outcome. Only P7/P8 contention
+    /// profiles opt into this; an isolated P6 calibration never infers it
+    /// from a selected workload label.
+    #[serde(default)]
+    pub(super) require_overload_outcome: bool,
 }
 
 /// Profile-owned S2 QPS-envelope requirements.
@@ -199,6 +204,7 @@ impl RunProfile {
                 require_same_device_overlap: true,
                 require_all_device_progress: true,
                 require_heterogeneous_device_profiles: true,
+                require_overload_outcome: false,
             },
         }
     }

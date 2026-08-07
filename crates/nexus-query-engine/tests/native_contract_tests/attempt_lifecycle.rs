@@ -106,6 +106,7 @@ fn query_attempt_report_serde_round_trips_with_stable_field_names() {
             overtakes_remaining: 0,
             protection_device_ordinal: Some(1),
         }),
+        composed_schedule: None,
         timestamps: AttemptTimestamps {
             submitted_ns: 0,
             planning_started_ns: Some(1),
@@ -147,6 +148,7 @@ fn query_attempt_report_serde_round_trips_with_stable_field_names() {
         "device_ordinal",
         "admission",
         "admission_wait",
+        "composed_schedule",
         "timestamps",
         "cleanup_disposition",
         "cleanup_failure_count",

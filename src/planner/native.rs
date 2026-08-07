@@ -5,13 +5,7 @@ use datafusion::{
     physical_optimizer::PhysicalOptimizerRule,
     physical_plan::ExecutionPlan,
 };
-use nexus_query_engine::{
-    admission::QueryPlanCapabilityProof,
-    expr::{AggregateFunction, Expr, LiteralValue},
-    metrics::QueryId,
-    plan::PlanNode,
-    source::SourceNode,
-};
+use nexus_query_engine::{admission::QueryPlanCapabilityProof, metrics::QueryId};
 
 use super::{FinalPlanDisposition, FinalPlanRequirement, NexusNativeOptimizerConfig, classify_final_plan};
 use crate::{
@@ -22,7 +16,7 @@ use crate::{
         NexusNativeComposedExec, NexusNativeComposedGpuProducerExec, NexusNativeExec, NexusNativeExecutionConfig,
         NexusNativeGpuProducerExec,
         admission::QueryAdmissionTicket,
-        graph::{GraphAdmissionModelAsk, GraphExecutionPlan, graph_execution_plan},
+        graph::{GraphExecutionPlan, graph_execution_plan},
         plan_is_query_admission_wrapped, wrap_plan_with_query_admission_ticket,
     },
     native_report::{NativeJoinDiagnosticSummary, physical_join_diagnostics},
@@ -434,13 +428,9 @@ fn plan_query_admission_ticket_for_optimized_plan(
     if plan_contains_deferred_graph_admission(plan) {
         return Ok(None);
     }
-    let graph_model_ask = graph_aware_model_ask_for_plan(plan, native_execution_config)?;
     let fragment_proofs = native_fragment_capability_proofs(plan)?;
     let ticket = native_execution_config
-        .new_plan_query_admission_ticket_with_graph_model_ask_and_fragment_requirements(
-            graph_model_ask,
-            fragment_proofs,
-        )
+        .new_plan_query_admission_ticket_with_fragment_requirements(fragment_proofs)
         .map_err(|error| {
             datafusion::common::DataFusionError::from(Error::from_native(
                 "datafusion_nexus.native_optimizer.graph_ticket_ask",
@@ -525,255 +515,15 @@ fn lowered_native_plan(plan: &dyn ExecutionPlan) -> Option<&nexus_query_engine::
     plan.downcast_ref::<NexusNativeComposedGpuProducerExec>().map(NexusNativeComposedGpuProducerExec::native_plan)
 }
 
-fn graph_aware_model_ask_for_plan(
-    plan: &dyn ExecutionPlan,
-    native_execution_config: &NexusNativeExecutionConfig,
-) -> DataFusionResult<Option<GraphAdmissionModelAsk>> {
-    let Some(source) = native_execution_config.query_admission_source() else {
-        return Ok(None);
-    };
-    let graph_model_ask = complete_graph_dominated_model_ask_bytes(
-        plan,
-        native_execution_config.graph_memory_calibration_override(),
-        Some(source.max_device_total_memory_bytes()),
-    )?;
-    Ok(graph_model_ask)
-}
-
-#[derive(Debug, Default)]
-struct GraphModelAskScan {
-    max_graph_model_ask: Option<GraphAdmissionModelAsk>,
-    graph_node_count: usize,
-    estimated_graph_node_count: usize,
-    disqualified: bool,
-    non_graph_native_fragment_count: usize,
-}
-
-fn complete_graph_dominated_model_ask_bytes(
-    plan: &dyn ExecutionPlan,
-    calibration_override: nexus_query_engine::graph_memory::GraphMemoryCalibrationOverride,
-    device_total_memory_bytes: Option<u64>,
-) -> DataFusionResult<Option<GraphAdmissionModelAsk>> {
-    let mut scan = GraphModelAskScan::default();
-    collect_graph_model_ask_scan(plan, calibration_override, device_total_memory_bytes, &mut scan)?;
-    if scan.disqualified
-        || scan.non_graph_native_fragment_count > 0
-        || scan.graph_node_count != 1
-        || scan.estimated_graph_node_count != scan.graph_node_count
-    {
-        return Ok(None);
-    }
-    Ok(scan.max_graph_model_ask)
-}
-
-fn collect_graph_model_ask_scan(
-    plan: &dyn ExecutionPlan,
-    calibration_override: nexus_query_engine::graph_memory::GraphMemoryCalibrationOverride,
-    device_total_memory_bytes: Option<u64>,
-    scan: &mut GraphModelAskScan,
-) -> DataFusionResult<bool> {
-    if let Some(graph) = graph_execution_plan(plan) {
-        update_registered_graph_model_ask_scan(graph, scan)?;
-        return Ok(true);
-    }
-
-    let mut child_has_graph = false;
-    for child in plan.children() {
-        child_has_graph |=
-            collect_graph_model_ask_scan(child.as_ref(), calibration_override, device_total_memory_bytes, scan)?;
-    }
-
-    let mut local_has_graph = false;
-    if let Some(native) = plan.downcast_ref::<NexusNativeExec>() {
-        local_has_graph =
-            update_graph_model_ask_scan(native.native_plan(), calibration_override, device_total_memory_bytes, scan)?;
-    } else if let Some(native) = plan.downcast_ref::<NexusNativeComposedExec>() {
-        if child_has_graph
-            && (native_plan_is_graph_ticket_light_fragment(native.native_plan())
-                || native_plan_is_graph_result_count_reduction_fragment(native.native_plan()))
-        {
-            return Ok(true);
-        }
-        local_has_graph =
-            update_graph_model_ask_scan(native.native_plan(), calibration_override, device_total_memory_bytes, scan)?;
-    } else if let Some(native) = plan.downcast_ref::<NexusNativeComposedGpuProducerExec>() {
-        if child_has_graph
-            && (native_plan_is_graph_ticket_light_fragment(native.native_plan())
-                || native_plan_is_graph_result_count_reduction_fragment(native.native_plan()))
-        {
-            return Ok(true);
-        }
-        local_has_graph =
-            update_graph_model_ask_scan(native.native_plan(), calibration_override, device_total_memory_bytes, scan)?;
-    } else if let Some(native) = plan.downcast_ref::<NexusNativeGpuProducerExec>() {
-        local_has_graph =
-            update_graph_model_ask_scan(native.native_plan(), calibration_override, device_total_memory_bytes, scan)?;
-    }
-    Ok(local_has_graph || child_has_graph)
-}
-
-fn update_graph_model_ask_scan(
-    native_plan: &nexus_query_engine::plan::QueryPlan,
-    calibration_override: nexus_query_engine::graph_memory::GraphMemoryCalibrationOverride,
-    device_total_memory_bytes: Option<u64>,
-    scan: &mut GraphModelAskScan,
-) -> DataFusionResult<bool> {
-    let graph_node_count = native_plan_graph_node_count(native_plan);
-    if graph_node_count == 0 {
-        scan.non_graph_native_fragment_count += 1;
-        return Ok(false);
-    }
-    scan.graph_node_count += graph_node_count;
-    if !native_plan_is_graph_dominated(native_plan) {
-        scan.disqualified = true;
-        return Ok(true);
-    }
-    for evidence in nexus_query_engine::graph_memory::graph_memory_admission_evidence_for_plan(
-        native_plan,
-        calibration_override,
-        device_total_memory_bytes,
-    )
-    .map_err(|error| {
-        datafusion::common::DataFusionError::from(Error::from_native(
-            "datafusion_nexus.native_optimizer.graph_ticket_ask",
-            "failed to derive graph admission evidence from native plan metadata",
-            error,
-        ))
-    })? {
-        scan.estimated_graph_node_count += 1;
-        let ask = GraphAdmissionModelAsk::from_graph_memory_admission_evidence(evidence);
-        scan.max_graph_model_ask = Some(match scan.max_graph_model_ask.take() {
-            Some(current) => current.max(ask),
-            None => ask,
-        });
-    }
-    Ok(true)
-}
-
-fn update_registered_graph_model_ask_scan(
-    graph: &dyn crate::native_exec::graph::GraphExecutionPlan,
-    scan: &mut GraphModelAskScan,
-) -> DataFusionResult<()> {
-    scan.graph_node_count += 1;
-    if let Some(model_ask) = graph.graph_model_ask_for_admission()? {
-        scan.estimated_graph_node_count += 1;
-        scan.max_graph_model_ask = Some(match scan.max_graph_model_ask.take() {
-            Some(current) => current.max(model_ask),
-            None => model_ask,
-        });
-    }
-    Ok(())
-}
-
-fn native_plan_graph_node_count(native_plan: &nexus_query_engine::plan::QueryPlan) -> usize {
-    native_plan.nodes().iter().filter(|node| matches!(node.kind, PlanNode::GraphAlgorithm(_))).count()
-}
-
-fn native_plan_is_graph_dominated(native_plan: &nexus_query_engine::plan::QueryPlan) -> bool {
-    let mut has_graph = false;
-    for node in native_plan.nodes() {
-        match &node.kind {
-            PlanNode::GraphAlgorithm(_) => has_graph = true,
-            PlanNode::Source(_)
-            | PlanNode::Filter(_)
-            | PlanNode::Projection(_)
-            | PlanNode::Limit(_)
-            | PlanNode::EdgeNormalize(_) => {},
-            PlanNode::Aggregate(_)
-            | PlanNode::Window(_)
-            | PlanNode::Sort(_)
-            | PlanNode::Join(_)
-            | PlanNode::Union(_)
-            | PlanNode::VectorAlgorithm(_) => {
-                return false;
-            },
-        }
-    }
-    has_graph
-}
-
-fn native_plan_is_graph_ticket_light_fragment(native_plan: &nexus_query_engine::plan::QueryPlan) -> bool {
-    native_plan.nodes().iter().all(|node| {
-        matches!(node.kind, PlanNode::Source(_) | PlanNode::Filter(_) | PlanNode::Projection(_) | PlanNode::Limit(_))
-    })
-}
-
-/// A terminal `COUNT(*)` over one GPU-resident graph result keeps scalar
-/// reduction state only, so it can share the graph model's admission target.
-/// Grouped, distinct, filtered, and non-count aggregates remain independent
-/// native work and therefore disqualify graph-only model admission.
-fn native_plan_is_graph_result_count_reduction_fragment(native_plan: &nexus_query_engine::plan::QueryPlan) -> bool {
-    let [source, count_argument, aggregate, result] = native_plan.nodes() else {
-        return false;
-    };
-    if !native_plan.unreachable_node_ids().is_empty() || native_plan.root_id() != result.id {
-        return false;
-    }
-    let source_id = source.id;
-    let count_argument_id = count_argument.id;
-    let aggregate_id = aggregate.id;
-    let PlanNode::Source(source) = &source.kind else {
-        return false;
-    };
-    if !matches!(source.as_ref(), SourceNode::GpuResident(_)) {
-        return false;
-    }
-    let PlanNode::Projection(count_argument) = &count_argument.kind else {
-        return false;
-    };
-    if count_argument.input != source_id
-        || count_argument.outputs.len() != 1
-        || !is_non_null_literal_projection(&count_argument.outputs[0].expr)
-    {
-        return false;
-    }
-    let PlanNode::Aggregate(aggregate) = &aggregate.kind else {
-        return false;
-    };
-    if aggregate.input != count_argument_id
-        || !aggregate.spec.group_exprs.is_empty()
-        || aggregate.spec.grouping_sets.is_some()
-        || aggregate.spec.aggr_exprs.len() != 1
-    {
-        return false;
-    }
-    let count = &aggregate.spec.aggr_exprs[0];
-    if count.function != AggregateFunction::Count
-        || count.distinct
-        || count.filter.is_some()
-        || !matches!(&count.expr, Expr::Column(column) if column.name() == count_argument.outputs[0].field.name())
-    {
-        return false;
-    }
-    let PlanNode::Projection(result) = &result.kind else {
-        return false;
-    };
-    result.input == aggregate_id
-        && result.outputs.len() == 1
-        && matches!(
-            &result.outputs[0].expr,
-            Expr::Alias { expr, .. } if matches!(expr.as_ref(), Expr::Column(column) if column.name() == count.alias)
-        )
-}
-
-fn is_non_null_literal_projection(expr: &Expr) -> bool {
-    matches!(expr, Expr::Alias { expr, .. } if matches!(expr.as_ref(), Expr::Literal(value) if !matches!(value, LiteralValue::Null(_))))
-}
-
 #[cfg(test)]
 mod tests {
     use arrow::datatypes::{DataType, Field, Schema};
     #[cfg(feature = "cugraph")]
     use datafusion::physical_plan::coop::CooperativeExec;
-    use datafusion::physical_plan::{empty::EmptyExec, union::UnionExec};
+    use datafusion::physical_plan::empty::EmptyExec;
     use nexus_query_engine::{
-        expr::{AggregateExpr, AggregateFunction, AggregateSpec, Expr, LiteralValue},
-        plan::{
-            GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec, GraphBfsParams, GraphConstructionOptions,
-            GraphConstructionPolicy, GraphEdgeColumnBindings, GraphTriangleCountAllParams, ProjectionOutput, QueryPlan,
-            QueryPlanBuilder,
-        },
-        source::{GpuResidentSource, LocalParquetFile, LocalParquetSource, SourceNode},
+        plan::{QueryPlan, QueryPlanBuilder},
+        source::{GpuResidentSource, LocalParquetSource, SourceNode},
     };
 
     use super::*;
@@ -863,105 +613,6 @@ mod tests {
         ]))
     }
 
-    fn triangle_spec() -> GraphAlgorithmSpec {
-        GraphAlgorithmSpec::with_stable_schema(
-            GraphAlgorithm::TriangleCountAll,
-            GraphEdgeColumnBindings::new("src", "dst", Some("weight")),
-            GraphConstructionOptions {
-                directed: false,
-                renumber: true,
-                policy: GraphConstructionPolicy::PythonCugraph,
-            },
-            GraphAlgorithmParams::TriangleCountAll(GraphTriangleCountAllParams),
-        )
-    }
-
-    fn edge_source(row_group_rows: Option<Vec<u64>>) -> LocalParquetSource {
-        let mut file = LocalParquetFile::new("edges.parquet");
-        if let Some(row_group_rows) = row_group_rows {
-            file = file.with_row_group_rows(row_group_rows);
-        }
-        LocalParquetSource::from_files(
-            vec![file],
-            edge_schema(),
-            vec!["src".to_string(), "dst".to_string(), "weight".to_string()],
-        )
-    }
-
-    fn graph_native_plan(row_group_rows: Option<Vec<u64>>) -> QueryPlan {
-        let mut builder = QueryPlanBuilder::new();
-        let source = builder.add_source(SourceNode::LocalParquet(edge_source(row_group_rows)));
-        let spec = triangle_spec();
-        let graph = builder.try_add_graph_algorithm(source, spec).unwrap();
-        builder.finish_with_host_sink(graph)
-    }
-
-    fn bfs_native_plan(row_group_rows: Option<Vec<u64>>) -> QueryPlan {
-        let mut builder = QueryPlanBuilder::new();
-        let source = builder.add_source(SourceNode::LocalParquet(edge_source(row_group_rows)));
-        let spec = GraphAlgorithmSpec::with_stable_schema(
-            GraphAlgorithm::Bfs,
-            GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
-            GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::PythonCugraph },
-            GraphAlgorithmParams::Bfs(Box::new(GraphBfsParams::new(0, None))),
-        );
-        let graph = builder.try_add_graph_algorithm(source, spec).unwrap();
-        builder.finish_with_host_sink(graph)
-    }
-
-    fn graph_result_count_reduction_plan(function: AggregateFunction) -> QueryPlan {
-        let input_schema = Arc::new(Schema::empty());
-        let count_argument_field = Field::new("__nexus_native_aggregate_arg_0", DataType::Int64, false);
-        let count_output_field = Field::new("count(Int64(1))", DataType::Int64, false);
-        let result_field = Field::new("reached", DataType::Int64, false);
-        let mut builder = QueryPlanBuilder::new();
-        let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
-            "__datafusion_nexus_cugraph_result_0",
-            input_schema,
-        )));
-        let count_argument = builder.add_projection(
-            source,
-            vec![ProjectionOutput::new(
-                Expr::literal(LiteralValue::Int64(1)).alias(count_argument_field.name()),
-                count_argument_field.clone(),
-            )],
-        );
-        let aggregate = builder.add_aggregate(
-            count_argument,
-            AggregateSpec::new(
-                Vec::new(),
-                vec![AggregateExpr::new(
-                    function,
-                    Expr::column(count_argument_field.name()),
-                    count_output_field.name(),
-                )],
-            ),
-            Arc::new(Schema::new(vec![count_output_field.clone()])),
-        );
-        let result = builder.add_projection(
-            aggregate,
-            vec![ProjectionOutput::new(
-                Expr::column(count_output_field.name()).alias(result_field.name()),
-                result_field,
-            )],
-        );
-        builder.finish_with_host_sink(result)
-    }
-
-    fn graph_exec(row_group_rows: Option<Vec<u64>>, config: &NexusNativeExecutionConfig) -> NexusNativeExec {
-        NexusNativeExec::try_new(graph_native_plan(row_group_rows), config.clone()).unwrap()
-    }
-
-    fn graph_union_native_plan(row_group_rows: Option<Vec<u64>>) -> QueryPlan {
-        let mut builder = QueryPlanBuilder::new();
-        let source = builder.add_source(SourceNode::LocalParquet(edge_source(row_group_rows)));
-        let spec = triangle_spec();
-        let output_schema = Arc::clone(&spec.output_schema);
-        let graph = builder.try_add_graph_algorithm(source, spec).unwrap();
-        let union = builder.add_union(vec![graph, graph], Arc::clone(&output_schema));
-        builder.finish_with_host_sink_schema(union, output_schema)
-    }
-
     #[cfg(feature = "cugraph")]
     fn deferred_cugraph_exec(config: &NexusNativeExecutionConfig) -> Arc<dyn ExecutionPlan> {
         let params = CugraphAlgorithmParams::TriangleCountAll(CugraphTriangleCountAllParams);
@@ -985,53 +636,6 @@ mod tests {
             CugraphAlgoExec::try_new(spec, edges, vec![], None, None, config.clone())
                 .expect("deferred cuGraph fixture should build"),
         ) as Arc<dyn ExecutionPlan>
-    }
-
-    #[test]
-    fn graph_aware_ticket_uses_lowered_cold_graph_model_as_immutable_grant_target() {
-        let min = 64 * 1024 * 1024;
-        let want = 2 * 1024 * 1024 * 1024;
-        let capacity = 4 * 1024 * 1024 * 1024;
-        let (_backend, config) = backend_admission_config(min);
-        let exec = graph_exec(Some(vec![100, 200]), &config);
-        let model_ask =
-            complete_graph_dominated_model_ask_bytes(&exec, config.graph_memory_calibration_override(), Some(capacity))
-                .unwrap();
-        let expected = model_ask.as_ref().map(GraphAdmissionModelAsk::cold_model_requested_bytes);
-
-        let requested = graph_aware_model_ask_for_plan(&exec, &config).unwrap();
-        let ticket = plan_query_admission_ticket_for_optimized_plan(&exec, &config, None).unwrap().unwrap();
-        let expected_proof = native_plan_capability_proof(exec.native_plan()).map(|proof| {
-            proof.with_graph_memory_admission_evidence(
-                model_ask.as_ref().expect("known graph rows produce opaque model evidence").cold_model_evidence(),
-            )
-        });
-
-        assert_eq!(requested, model_ask);
-        assert_eq!(ticket.attempt_capability_proof(), expected_proof.as_ref());
-        assert!(
-            expected.expect("known graph rows produce model bytes") < want,
-            "small graph estimate should not default to the controller hint"
-        );
-        assert!(
-            ticket
-                .attempt_capability_proof()
-                .expect("native graph ticket retains its engine-issued proof")
-                .required_capabilities()
-                .iter()
-                .any(|requirement| {
-                    requirement.required_contract
-                        == nexus_query_engine::plan::GRAPH_ALGORITHM_CAPABILITY_REQUIRED_CONTRACT
-                })
-        );
-        assert_eq!(
-            ticket
-                .attempt_capability_proof()
-                .expect("native graph ticket retains its engine-issued proof")
-                .soft_working_set_hint_bytes(),
-            expected,
-            "the cold graph model only targets the immutable grant selected by the ledger"
-        );
     }
 
     #[test]
@@ -1104,64 +708,5 @@ mod tests {
             plan_is_query_admission_wrapped(wrapped.as_ref()),
             "deferring cuGraph admission must not suppress ordinary native admission wrappers",
         );
-    }
-
-    #[test]
-    fn graph_aware_ticket_ask_keeps_default_ticket_when_graph_rows_are_unknown() {
-        let (_backend, config) = backend_admission_config(64 * 1024 * 1024);
-        let exec = graph_exec(None, &config);
-
-        assert_eq!(graph_aware_model_ask_for_plan(&exec, &config).unwrap(), None);
-        let ticket = plan_query_admission_ticket_for_optimized_plan(&exec, &config, None).unwrap().unwrap();
-        assert_eq!(ticket.attempt_capability_proof(), native_plan_capability_proof(exec.native_plan()).as_ref());
-    }
-
-    #[test]
-    fn graph_aware_ticket_uses_cacheable_bfs_cold_model_as_immutable_grant_target() {
-        let (_backend, config) = backend_admission_config(64 * 1024 * 1024);
-        let exec = NexusNativeExec::try_new(bfs_native_plan(Some(vec![100, 200])), config.clone()).unwrap();
-
-        let ask = graph_aware_model_ask_for_plan(&exec, &config).unwrap().unwrap();
-        assert!(ask.cold_model_requested_bytes() > ask.warm_model_requested_bytes());
-        let ticket = plan_query_admission_ticket_for_optimized_plan(&exec, &config, None).unwrap().unwrap();
-        assert_eq!(
-            ticket
-                .attempt_capability_proof()
-                .expect("native graph ticket retains its engine-issued proof")
-                .soft_working_set_hint_bytes(),
-            Some(ask.cold_model_requested_bytes())
-        );
-    }
-
-    #[test]
-    fn graph_model_keeps_only_terminal_count_star_reduction_light() {
-        assert!(native_plan_is_graph_result_count_reduction_fragment(&graph_result_count_reduction_plan(
-            AggregateFunction::Count,
-        )));
-        assert!(!native_plan_is_graph_result_count_reduction_fragment(&graph_result_count_reduction_plan(
-            AggregateFunction::Sum,
-        )));
-    }
-
-    #[test]
-    fn graph_aware_ticket_ask_keeps_default_ticket_when_any_graph_rows_are_unknown() {
-        let (_backend, config) = backend_admission_config(64 * 1024 * 1024);
-        let known = Arc::new(graph_exec(Some(vec![100, 200]), &config)) as Arc<dyn ExecutionPlan>;
-        let unknown = Arc::new(graph_exec(None, &config)) as Arc<dyn ExecutionPlan>;
-        let plan = UnionExec::try_new(vec![known, unknown]).unwrap();
-
-        assert_eq!(graph_aware_model_ask_for_plan(plan.as_ref(), &config).unwrap(), None);
-        let ticket = plan_query_admission_ticket_for_optimized_plan(plan.as_ref(), &config, None).unwrap().unwrap();
-        assert!(ticket.attempt_capability_proof().is_some());
-    }
-
-    #[test]
-    fn graph_aware_ticket_ask_keeps_default_ticket_for_non_graph_dominated_native_plan() {
-        let (_backend, config) = backend_admission_config(64 * 1024 * 1024);
-        let exec = NexusNativeExec::try_new(graph_union_native_plan(Some(vec![100, 200])), config.clone()).unwrap();
-
-        assert_eq!(graph_aware_model_ask_for_plan(&exec, &config).unwrap(), None);
-        let ticket = plan_query_admission_ticket_for_optimized_plan(&exec, &config, None).unwrap().unwrap();
-        assert_eq!(ticket.attempt_capability_proof(), native_plan_capability_proof(exec.native_plan()).as_ref());
     }
 }

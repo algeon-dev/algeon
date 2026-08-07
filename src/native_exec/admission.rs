@@ -2,6 +2,9 @@
 
 #[cfg(test)]
 use std::sync::atomic::{AtomicU64, Ordering};
+
+#[cfg(test)]
+static NEXT_TICKET_ID: AtomicU64 = AtomicU64::new(1);
 use std::{
     any::Any,
     collections::{HashMap, HashSet},
@@ -29,8 +32,8 @@ use nexus_query_engine::{
     admission::QueryPlanCapabilityProof,
     attempt::{AttemptAdmissionBinding, AttemptCancellation, AttemptHandle},
     observability::{
-        AttemptAdmissionFact, RuntimeObservationConfig, RuntimeObservationOwner, RuntimeQueryId,
-        RuntimeTerminalOutcome, RuntimeTraceId,
+        AttemptAdmissionFact, AttemptComposedScheduleProjection, RuntimeObservationConfig, RuntimeObservationOwner,
+        RuntimeQueryId, RuntimeTerminalOutcome, RuntimeTraceId,
     },
     runtime::{AdmittedQueryContext, ExecutionCancellation, GpuBackendSession, QueryAdmissionRequest, QueryHandle},
 };
@@ -143,6 +146,9 @@ pub(crate) struct QueryAdmissionTicket {
     attempt: Option<AttemptTicketBinding>,
     #[cfg(test)]
     id: u64,
+    #[cfg(test)]
+    source: Option<QueryAdmissionSource>,
+    #[cfg(not(test))]
     source: QueryAdmissionSource,
     /// Engine-issued proof for the native fragments this ticket may execute.
     /// `None` is intentionally not an empty explicit proof: all-modeled
@@ -319,8 +325,6 @@ impl QueryAdmissionTicket {
         observation: impl Into<NativeRuntimeObservation>,
         observation_capture: Option<NativeExecutionMetricsCapture>,
     ) -> Arc<Self> {
-        #[cfg(test)]
-        static NEXT_TICKET_ID: AtomicU64 = AtomicU64::new(1);
         let observation = observation.into();
         let observation_handle = observation.handle();
         let observation_query_id = observation_handle.query_id().cloned();
@@ -330,6 +334,9 @@ impl QueryAdmissionTicket {
             attempt: None,
             #[cfg(test)]
             id: NEXT_TICKET_ID.fetch_add(1, Ordering::Relaxed),
+            #[cfg(test)]
+            source: Some(source),
+            #[cfg(not(test))]
             source,
             attempt_capability_proof,
             rebound_capability_proof: OnceLock::new(),
@@ -337,6 +344,37 @@ impl QueryAdmissionTicket {
             observation_trace_id,
             observation_config,
             observation_capture,
+            state: Mutex::new(TicketState {
+                rounds: HashMap::new(),
+                admitting: HashSet::new(),
+                next_epoch: 0,
+                initial_observation: Some(observation),
+            }),
+            notify: Arc::new(Notify::new()),
+        })
+    }
+
+    /// Creates a ticket whose lifecycle can be exercised without constructing
+    /// a GPU backend.  The test-only ticket deliberately cannot acquire a
+    /// native context; it is used to drive the execution-round and stream
+    /// guards through their CPU-visible cleanup paths.
+    #[cfg(test)]
+    pub(crate) fn new_for_lifecycle_test(observation_owner: RuntimeObservationOwner) -> Arc<Self> {
+        let observation = NativeRuntimeObservation::Local(observation_owner);
+        let observation_handle = observation.handle();
+        let observation_query_id = observation_handle.query_id().cloned();
+        let observation_trace_id = observation_handle.trace_id().cloned();
+        let observation_config = observation_handle.config();
+        Arc::new(Self {
+            attempt: None,
+            id: NEXT_TICKET_ID.fetch_add(1, Ordering::Relaxed),
+            source: None,
+            attempt_capability_proof: None,
+            rebound_capability_proof: OnceLock::new(),
+            observation_query_id,
+            observation_trace_id,
+            observation_config,
+            observation_capture: None,
             state: Mutex::new(TicketState {
                 rounds: HashMap::new(),
                 admitting: HashSet::new(),
@@ -365,7 +403,25 @@ impl QueryAdmissionTicket {
     }
 
     pub(crate) fn source(&self) -> QueryAdmissionSource {
-        self.source.clone()
+        #[cfg(test)]
+        {
+            return self.source.clone().expect("lifecycle-only test ticket has no admission source");
+        }
+        #[cfg(not(test))]
+        {
+            self.source.clone()
+        }
+    }
+
+    fn admission_source(&self) -> &QueryAdmissionSource {
+        #[cfg(test)]
+        {
+            return self.source.as_ref().expect("lifecycle-only test ticket cannot acquire a native context");
+        }
+        #[cfg(not(test))]
+        {
+            &self.source
+        }
     }
 
     pub(crate) fn attempt_capability_proof_for_rebind(&self) -> Option<QueryPlanCapabilityProof> {
@@ -446,6 +502,27 @@ impl QueryAdmissionTicket {
         }
     }
 
+    /// Publishes the engine-owned composed schedule when this ticket carries
+    /// an attempt lifecycle binding. Standalone tickets have no sealed report
+    /// owner and therefore intentionally retain no projection.
+    pub(crate) fn record_attempt_composed_schedule_projection(
+        &self,
+        projection: AttemptComposedScheduleProjection,
+    ) -> nexus_query_engine::error::Result<()> {
+        let Some(binding) = &self.attempt else {
+            return Ok(());
+        };
+        binding.handle.record_composed_schedule_projection(projection).map_err(|error| {
+            nexus_query_engine::error::QueryError::new(
+                nexus_query_engine::error::QueryErrorCode::Internal,
+                "datafusion_nexus.native_exec.admission_ticket",
+                "failed to publish the admitted composed schedule to the attempt report",
+            )
+            .with_fact("reason", "composed_schedule_projection_record_failed")
+            .with_fact("lifecycle_error", error.to_string())
+        })
+    }
+
     /// Captures a native failure while it is still borrowed by this adapter
     /// path.  This is deliberately record-only: the post-cleanup finalizer
     /// remains the sole admitted terminal/seal authority.
@@ -486,14 +563,6 @@ impl QueryAdmissionTicket {
     #[cfg(test)]
     pub(crate) fn attempt_capability_proof(&self) -> Option<&QueryPlanCapabilityProof> {
         self.current_capability_proof()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn observation_owner(&self) -> RuntimeObservationOwner {
-        match self.new_observation() {
-            NativeRuntimeObservation::Local(owner) => owner,
-            NativeRuntimeObservation::Coordinated(_) => panic!("coordinated tickets do not expose seal authority"),
-        }
     }
 
     pub(crate) fn metrics_capture(&self) -> Option<NativeExecutionMetricsCapture> {
@@ -688,7 +757,7 @@ impl QueryAdmissionTicket {
             None => request,
         };
         let handle_result = self
-            .source
+            .admission_source()
             .session
             .admit_async_with_request(request)
             .await

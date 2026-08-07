@@ -18,7 +18,7 @@ use datafusion::{
 };
 use futures::future::BoxFuture;
 use nexus_query_engine::{
-    admission::QueryPlanCapabilityProof,
+    admission::{ComposedGraphProducerCandidate, QueryPlanCapabilityProof},
     exec::{execute_query_plan_with_gpu_inputs_observed, output::QueryOutput},
     plan::QueryPlan,
     runtime::{
@@ -223,8 +223,13 @@ impl NexusNativeComposedExec {
     }
 }
 
+struct CompletedComposedAdmissionProof {
+    execution_config: NexusNativeExecutionConfig,
+    has_composed_graph_schedule: bool,
+}
+
 /// Replaces provisional producer tickets with the one proof for the complete
-/// composed GPU island.  Child preparation is the only phase that can resolve
+/// composed GPU island. Child preparation is the only phase that can resolve
 /// footer-bound graph evidence, while the outer consumer is the only owner of
 /// its aggregate/filter capability requirements.
 fn complete_composed_admission_proof(
@@ -232,7 +237,7 @@ fn complete_composed_admission_proof(
     consumer_plan: &QueryPlan,
     prepared_gpu_inputs: &[Arc<dyn ExecutionPlan>],
     task_context: &TaskContext,
-) -> DataFusionResult<NexusNativeExecutionConfig> {
+) -> DataFusionResult<CompletedComposedAdmissionProof> {
     let mut producer_tickets = Vec::new();
     for input in prepared_gpu_inputs {
         for ticket in prepared_gpu_resident_producer_admission_tickets(input.as_ref()) {
@@ -248,7 +253,7 @@ fn complete_composed_admission_proof(
         .iter()
         .filter_map(|input| graph_execution_plan(input.as_ref()).map(|graph| graph.graph_result_input_name()))
         .collect::<Vec<_>>();
-    let consumer_proof = match graph_result_input_names.as_slice() {
+    let standalone_consumer_proof = match graph_result_input_names.as_slice() {
         [graph_result_input_name] => {
             let passthrough = QueryPlanCapabilityProof::for_attested_graph_result_passthrough_plan(
                 consumer_plan,
@@ -262,17 +267,59 @@ fn complete_composed_admission_proof(
         },
         _ => QueryPlanCapabilityProof::for_query_plan(consumer_plan),
     };
-    if let Some(consumer_proof) = consumer_proof {
+    if let Some(consumer_proof) = standalone_consumer_proof {
         proofs.push(consumer_proof);
     }
     let Some(first_proof) = proofs.first().cloned() else {
-        return Ok(execution_config);
+        return Ok(CompletedComposedAdmissionProof { execution_config, has_composed_graph_schedule: false });
+    };
+    let standalone_proof =
+        QueryPlanCapabilityProof::combine(first_proof, proofs.into_iter().skip(1)).map_err(|error| {
+            DataFusionError::from(Error::from_native(
+                "datafusion_nexus.native_composed.admission_proof",
+                "failed to aggregate prepared producer and consumer capability proofs",
+                error,
+            ))
+        })?;
+
+    let all_prepared_inputs_are_graph_producers =
+        !prepared_gpu_inputs.is_empty() && graph_result_input_names.len() == prepared_gpu_inputs.len();
+    let (complete_proof, has_composed_graph_schedule) = if all_prepared_inputs_are_graph_producers {
+        let candidates = prepared_gpu_inputs.iter().map(|input| {
+            let tickets = prepared_gpu_resident_producer_admission_tickets(input.as_ref());
+            let mut proofs =
+                tickets.iter().filter_map(|ticket| ticket.attempt_capability_proof_for_rebind()).collect::<Vec<_>>();
+            let capability_proof = matches!(proofs.as_slice(), [_]).then(|| proofs.remove(0));
+            ComposedGraphProducerCandidate::new(
+                gpu_resident_producer_input_name(input.as_ref()),
+                graph_execution_plan(input.as_ref()).map(|graph| graph.graph_result_input_name().to_owned()),
+                capability_proof,
+            )
+        });
+        let consumer_proof = QueryPlanCapabilityProof::for_query_plan(consumer_plan).ok_or_else(|| {
+            DataFusionError::from(Error::new(
+                ErrorCode::InvalidExecutionPlan,
+                "datafusion_nexus.native_composed.admission_proof",
+                "the native composed consumer did not issue an exact capability proof",
+            ))
+        })?;
+        let proof = QueryPlanCapabilityProof::resolve_composed_graph_attempt(consumer_plan, consumer_proof, candidates)
+            .map_err(|error| {
+                DataFusionError::from(Error::from_native(
+                    "datafusion_nexus.native_composed.admission_proof",
+                    "failed to derive the complete engine-owned composed graph admission schedule",
+                    error,
+                ))
+            })?;
+        (proof, true)
+    } else {
+        (standalone_proof, false)
     };
     let Some(first_ticket) = producer_tickets.first() else {
         // The outer consumer alone needs a capability proof, so retain the
-        // existing ordinary admission path rather than manufacturing a second
-        // ticket without a prepared producer to own its lifecycle.
-        return Ok(execution_config);
+        // ordinary admission path rather than manufacturing a second ticket
+        // without a prepared producer to own its lifecycle.
+        return Ok(CompletedComposedAdmissionProof { execution_config, has_composed_graph_schedule });
     };
 
     let source = execution_config.query_admission_source().unwrap_or_else(|| first_ticket.source());
@@ -286,14 +333,6 @@ fn complete_composed_admission_proof(
         .into());
     }
 
-    let complete_proof =
-        QueryPlanCapabilityProof::combine(first_proof, proofs.into_iter().skip(1)).map_err(|error| {
-            DataFusionError::from(Error::from_native(
-                "datafusion_nexus.native_composed.admission_proof",
-                "failed to aggregate prepared producer and consumer capability proofs",
-                error,
-            ))
-        })?;
     // The admission stream has already selected its ambient ticket before a
     // footer-bound producer can finish preparation. Rebinding a new ticket
     // here would create a second query-service lifecycle whose release can
@@ -317,14 +356,20 @@ fn complete_composed_admission_proof(
                 error,
             ))
         })?;
-        return Ok(execution_config.with_existing_query_admission_ticket(active_ticket));
+        return Ok(CompletedComposedAdmissionProof {
+            execution_config: execution_config.with_existing_query_admission_ticket(active_ticket),
+            has_composed_graph_schedule,
+        });
     }
 
     let ticket = first_ticket.rebind_with_source_and_capability_proof(source, complete_proof);
     if let Some(attempt) = task_context.session_config().options().extensions.get::<NexusAttemptExtension>() {
         attempt.bind_ticket(Arc::clone(&ticket));
     }
-    Ok(execution_config.with_existing_query_admission_ticket(ticket))
+    Ok(CompletedComposedAdmissionProof {
+        execution_config: execution_config.with_existing_query_admission_ticket(ticket),
+        has_composed_graph_schedule,
+    })
 }
 
 impl DisplayAs for NexusNativeComposedExec {
@@ -435,12 +480,34 @@ impl ExecutionPlan for NexusNativeComposedExec {
                     prepared_gpu_inputs
                         .push(prepare_gpu_resident_producer_for_execution(input, Arc::clone(&task_context)).await?);
                 }
-                let execution_config = complete_composed_admission_proof(
+                let completed_admission = complete_composed_admission_proof(
                     execution_config,
                     &plan,
                     &prepared_gpu_inputs,
                     task_context.as_ref(),
                 )?;
+                let has_composed_graph_schedule = completed_admission.has_composed_graph_schedule;
+                let execution_config = completed_admission.execution_config;
+                let runtime_occurrence_ids = if has_composed_graph_schedule {
+                    prepared_gpu_inputs
+                        .iter()
+                        .map(|input| {
+                            gpu_resident_producer_input_name(input.as_ref()).ok_or_else(|| {
+                                DataFusionError::from(
+                                    Error::new(
+                                        ErrorCode::InvalidExecutionPlan,
+                                        "datafusion_nexus.native_composed.execute",
+                                        "the prepared composed producer is missing its stable runtime occurrence identity",
+                                    )
+                                    .with_fact("reason", "graph_attempt_complete_phase_unmodeled")
+                                    .with_fact("schedule_reason", "runtime_producer_occurrence_missing"),
+                                )
+                            })
+                        })
+                        .collect::<DataFusionResult<Vec<_>>>()?
+                } else {
+                    Vec::new()
+                };
                 let runtime_observation_config = execution_config.runtime_observation_config();
                 // Build one native context for all producer fragments and the consumer so device-resident
                 // handles are compatible across the composed execution.
@@ -450,6 +517,50 @@ impl ExecutionPlan for NexusNativeComposedExec {
                     .map_err(|error| DataFusionError::from(mark_native_runtime_error(error, "runtime_context")))?;
                 if let Some(admission_facts) = context_lease.admission_facts() {
                     metrics.record_admission_facts(admission_facts);
+                }
+                if has_composed_graph_schedule {
+                    context_lease
+                        .context()
+                        .validate_admitted_composed_graph_attempt(&plan, &runtime_occurrence_ids)
+                        .map_err(|error| {
+                            DataFusionError::from(mark_native_runtime_error(
+                                Error::from_native(
+                                    "datafusion_nexus.native_composed.composed_schedule",
+                                    "the admitted composed graph schedule does not match runtime execution",
+                                    error,
+                                ),
+                                "composed_schedule",
+                            ))
+                        })?;
+                    if let Some(ticket) =
+                        super::admission::query_admission_ticket_from_task_context(task_context.as_ref())
+                            .or_else(|| execution_config.query_admission_ticket())
+                            .filter(|ticket| ticket.is_attempt_bound())
+                    {
+                        let composed_schedule_projection =
+                            context_lease.context().composed_schedule_projection().map_err(|error| {
+                                DataFusionError::from(mark_native_runtime_error(
+                                    Error::from_native(
+                                        "datafusion_nexus.native_composed.composed_schedule",
+                                        "failed to materialize the admitted composed schedule projection",
+                                        error,
+                                    ),
+                                    "composed_schedule",
+                                ))
+                            })?;
+                        ticket.record_attempt_composed_schedule_projection(composed_schedule_projection).map_err(
+                            |error| {
+                                DataFusionError::from(mark_native_runtime_error(
+                                    Error::from_native(
+                                        "datafusion_nexus.native_composed.composed_schedule",
+                                        "failed to attach the admitted composed schedule to the attempt lifecycle",
+                                        error,
+                                    ),
+                                    "composed_schedule",
+                                ))
+                            },
+                        )?;
+                    }
                 }
                 let gpu_executor = context_lease.context().gpu_executor().map_err(|error| {
                     DataFusionError::from(mark_native_runtime_error(
@@ -478,7 +589,7 @@ impl ExecutionPlan for NexusNativeComposedExec {
                         let execution_task_context =
                             context_lease.task_context().map(Arc::clone).unwrap_or_else(|| Arc::clone(&task_context));
                         let mut input_map = GpuResidentInputMap::new();
-                        for child in prepared_gpu_inputs {
+                        for (input_index, child) in prepared_gpu_inputs.into_iter().enumerate() {
                             let (input_name, handle) = execute_gpu_resident_producer_with_context(
                                 child.as_ref(),
                                 &context,
@@ -486,6 +597,22 @@ impl ExecutionPlan for NexusNativeComposedExec {
                                 Arc::clone(&execution_task_context),
                             )
                             .await?;
+                            if has_composed_graph_schedule {
+                                let expected_occurrence_id = &runtime_occurrence_ids[input_index];
+                                if input_name != *expected_occurrence_id {
+                                    return Err(DataFusionError::from(
+                                        Error::new(
+                                            ErrorCode::InvalidExecutionPlan,
+                                            "datafusion_nexus.native_composed.execute",
+                                            "a composed producer returned a runtime occurrence different from the admitted schedule",
+                                        )
+                                        .with_fact("reason", "graph_attempt_complete_phase_unmodeled")
+                                        .with_fact("schedule_reason", "runtime_producer_occurrence_order_mismatch")
+                                        .with_fact("scheduled_occurrence_id", expected_occurrence_id)
+                                        .with_fact("runtime_occurrence_id", input_name),
+                                    ));
+                                }
+                            }
                             input_map.insert(input_name, handle);
                         }
 
@@ -895,26 +1022,37 @@ mod tests {
         execution::context::TaskContext,
         physical_plan::{
             DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, SendableRecordBatchStream, empty::EmptyExec,
+            metrics::ExecutionPlanMetricsSet,
         },
     };
     use futures::future::BoxFuture;
     use nexus_query_engine::{
         admission::QueryPlanCapabilityProof,
-        plan::{QueryPlan, QueryPlanBuilder},
-        runtime::{ExecutionContext, resident::GpuResultHandle},
+        expr::{Expr, SortExpr, SortSpec},
+        graph_memory::{GraphMemoryCalibrationOverride, graph_memory_admission_evidence_for_edge_list},
+        plan::{
+            GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec, GraphBfsParams, GraphConstructionOptions,
+            GraphEdgeColumnBindings, QueryPlan, QueryPlanBuilder,
+        },
+        runtime::{ExecutionContext, QueryAdmissionRequest, resident::GpuResultHandle},
         source::{GpuResidentSource, LocalParquetFile, LocalParquetSource, SourceNode},
     };
 
     use super::*;
     use crate::{
         backend::InstalledTestGpuBackend,
-        native_exec::admission::{QueryAdmissionTicket, task_context_with_query_admission_ticket},
+        native_exec::{
+            admission::{QueryAdmissionTicket, task_context_with_query_admission_ticket},
+            graph::{GraphExecutionPlan, register_graph_execution_plan_discovery},
+        },
     };
 
     #[derive(Debug)]
     struct FakeGpuResidentProducer {
         input_name: String,
         ticket: Arc<QueryAdmissionTicket>,
+        capability_proof: QueryPlanCapabilityProof,
+        graph_execution: bool,
         inner: EmptyExec,
     }
 
@@ -980,8 +1118,28 @@ mod tests {
         }
     }
 
+    impl GraphExecutionPlan for FakeGpuResidentProducer {
+        fn graph_execution_capability_proof(&self) -> DataFusionResult<QueryPlanCapabilityProof> {
+            Ok(self.capability_proof.clone())
+        }
+
+        fn graph_result_input_name(&self) -> &str {
+            &self.input_name
+        }
+
+        fn sealed_attempt_metrics_target(&self) -> SealedAttemptMetricsTarget {
+            SealedAttemptMetricsTarget::new(&ExecutionPlanMetricsSet::new(), GraphClaimCalibrationCapture::default())
+        }
+    }
+
     fn fake_gpu_resident_producer(plan: &dyn ExecutionPlan) -> Option<&dyn GpuResidentProducer> {
         plan.downcast_ref::<FakeGpuResidentProducer>().map(|producer| producer as &dyn GpuResidentProducer)
+    }
+
+    fn fake_graph_execution_plan(plan: &dyn ExecutionPlan) -> Option<&dyn GraphExecutionPlan> {
+        plan.downcast_ref::<FakeGpuResidentProducer>()
+            .filter(|producer| producer.graph_execution)
+            .map(|producer| producer as &dyn GraphExecutionPlan)
     }
 
     fn admission_source(backend: &InstalledTestGpuBackend) -> crate::native_exec::QueryAdmissionSource {
@@ -992,43 +1150,89 @@ mod tests {
             .expect("installed backend must provide admission authority")
     }
 
-    fn schema() -> Arc<Schema> {
-        Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, false)]))
-    }
-
-    fn producer_plan(schema: Arc<Schema>) -> QueryPlan {
+    fn typed_graph_producer_proof() -> (Arc<Schema>, QueryPlanCapabilityProof) {
+        let edge_schema = Arc::new(Schema::new(vec![
+            Field::new("src", DataType::Int64, false),
+            Field::new("dst", DataType::Int64, false),
+        ]));
+        let spec = GraphAlgorithmSpec::with_stable_schema(
+            GraphAlgorithm::Bfs,
+            GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
+            GraphConstructionOptions::default(),
+            GraphAlgorithmParams::Bfs(Box::new(GraphBfsParams::new(0, None))),
+        );
         let mut builder = QueryPlanBuilder::new();
         let source = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
             vec![LocalParquetFile::new("/tmp/composed-admission-proof.parquet")],
-            schema,
-            vec!["value".to_string()],
+            Arc::clone(&edge_schema),
+            vec!["src".to_string(), "dst".to_string()],
         )));
-        builder.finish_gpu_resident(source)
+        let graph = builder.try_add_graph_algorithm(source, spec.clone()).expect("BFS graph plan must lower");
+        let graph_plan = builder.finish_gpu_resident(graph);
+        let evidence = graph_memory_admission_evidence_for_edge_list(
+            &spec,
+            &edge_schema,
+            10,
+            None,
+            GraphMemoryCalibrationOverride::none(),
+            None,
+        )
+        .expect("BFS graph plan must have typed memory evidence");
+        let proof = QueryPlanCapabilityProof::for_cugraph_graph_execution_plan(&graph_plan)
+            .expect("BFS graph plan must issue a capability proof")
+            .with_graph_memory_admission_evidence(&evidence);
+        (spec.output_schema, proof)
+    }
+
+    fn consumer_plan_for_inputs(input_names: &[&str], schema: Arc<Schema>) -> QueryPlan {
+        let mut builder = QueryPlanBuilder::new();
+        let inputs = input_names
+            .iter()
+            .map(|input_name| {
+                builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(*input_name, Arc::clone(&schema))))
+            })
+            .collect::<Vec<_>>();
+        let root = match inputs.as_slice() {
+            [input] => *input,
+            _ => builder.add_union(inputs, Arc::clone(&schema)),
+        };
+        builder.finish_with_host_sink(root)
     }
 
     fn consumer_plan(schema: Arc<Schema>) -> QueryPlan {
-        let mut builder = QueryPlanBuilder::new();
-        let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("fake_input", schema)));
-        builder.finish_with_host_sink(source)
+        consumer_plan_for_inputs(&["fake_input"], schema)
+    }
+
+    fn sorted_consumer_plan(schema: Arc<Schema>) -> QueryPlan {
+        consumer_plan(schema).with_appended_sort(SortSpec::new(vec![SortExpr::new(
+            Expr::column("vertex"),
+            false,
+            false,
+        )]))
     }
 
     #[test]
     fn complete_composed_admission_proof_rebinds_fake_producer_with_full_cpu_only_proof() {
         register_gpu_resident_producer_discovery(fake_gpu_resident_producer);
+        register_graph_execution_plan_discovery(fake_graph_execution_plan);
         let backend = InstalledTestGpuBackend::new();
         let source = admission_source(&backend);
-        let schema = schema();
-        let producer_proof = QueryPlanCapabilityProof::for_query_plan(&producer_plan(Arc::clone(&schema)))
-            .expect("local parquet producer has a capability proof");
+        let (schema, producer_proof) = typed_graph_producer_proof();
         let consumer_plan = consumer_plan(Arc::clone(&schema));
-        let consumer_proof = QueryPlanCapabilityProof::for_query_plan(&consumer_plan)
-            .expect("host-materializing consumer has a capability proof");
-        let expected_proof = QueryPlanCapabilityProof::combine(producer_proof.clone(), [consumer_proof])
-            .expect("producer and consumer proofs combine");
-        let producer_ticket = QueryAdmissionTicket::new(source.clone(), Some(producer_proof));
+        let consumer_proof =
+            QueryPlanCapabilityProof::for_query_plan(&consumer_plan).expect("consumer has an exact proof");
+        let expected_proof = QueryPlanCapabilityProof::combine_composed_graph_attempt(
+            &consumer_plan,
+            consumer_proof,
+            [("fake_input".to_string(), producer_proof.clone())],
+        )
+        .expect("single-producer composition uses the ordered graph schedule");
+        let producer_ticket = QueryAdmissionTicket::new(source.clone(), Some(producer_proof.clone()));
         let prepared_inputs: Vec<Arc<dyn ExecutionPlan>> = vec![Arc::new(FakeGpuResidentProducer {
             input_name: "fake_input".to_string(),
             ticket: Arc::clone(&producer_ticket),
+            capability_proof: producer_proof,
+            graph_execution: true,
             inner: EmptyExec::new(schema),
         })];
         let config = NexusNativeExecutionConfig::bounded(1024, 512, 1, 3, 1).with_query_admission_source(source);
@@ -1036,30 +1240,102 @@ mod tests {
 
         let completed = complete_composed_admission_proof(config, &consumer_plan, &prepared_inputs, &task_context)
             .expect("proof completion is CPU-only and does not acquire CUDA");
-        let completed_ticket = completed.query_admission_ticket().expect("complete proof installs one ticket");
+        assert!(completed.has_composed_graph_schedule, "typed N=1 evidence must bind the generalized schedule");
+        let completed_ticket =
+            completed.execution_config.query_admission_ticket().expect("complete proof installs one ticket");
 
         assert!(!Arc::ptr_eq(&completed_ticket, &producer_ticket), "completion reissues the prepared ticket");
         assert_eq!(completed_ticket.attempt_capability_proof(), Some(&expected_proof));
     }
 
     #[test]
-    fn complete_composed_admission_proof_preserves_the_active_stream_ticket_before_admission() {
+    fn complete_composed_admission_proof_rejects_incomplete_single_graph_schedule() {
         register_gpu_resident_producer_discovery(fake_gpu_resident_producer);
+        register_graph_execution_plan_discovery(fake_graph_execution_plan);
         let backend = InstalledTestGpuBackend::new();
         let source = admission_source(&backend);
-        let schema = schema();
-        let producer_proof = QueryPlanCapabilityProof::for_query_plan(&producer_plan(Arc::clone(&schema)))
-            .expect("local parquet producer has a capability proof");
-        let consumer_plan = consumer_plan(Arc::clone(&schema));
-        let consumer_proof = QueryPlanCapabilityProof::for_query_plan(&consumer_plan)
-            .expect("host-materializing consumer has a capability proof");
-        let expected_proof = QueryPlanCapabilityProof::combine(producer_proof.clone(), [consumer_proof])
-            .expect("producer and consumer proofs combine");
+        let (schema, producer_proof) = typed_graph_producer_proof();
+        let consumer_plan = sorted_consumer_plan(Arc::clone(&schema));
         let producer_ticket = QueryAdmissionTicket::new(source.clone(), Some(producer_proof.clone()));
-        let active_ticket = QueryAdmissionTicket::new(source.clone(), Some(producer_proof));
         let prepared_inputs: Vec<Arc<dyn ExecutionPlan>> = vec![Arc::new(FakeGpuResidentProducer {
             input_name: "fake_input".to_string(),
             ticket: producer_ticket,
+            capability_proof: producer_proof,
+            graph_execution: true,
+            inner: EmptyExec::new(schema),
+        })];
+        let config = NexusNativeExecutionConfig::bounded(1024, 512, 1, 3, 1).with_query_admission_source(source);
+
+        match complete_composed_admission_proof(config, &consumer_plan, &prepared_inputs, &TaskContext::default()) {
+            Ok(_) => panic!("a single graph producer with an unmodeled consumer phase must fail closed"),
+            Err(_) => {},
+        }
+    }
+
+    #[test]
+    fn complete_composed_admission_proof_keeps_relational_producers_off_the_graph_schedule() {
+        register_gpu_resident_producer_discovery(fake_gpu_resident_producer);
+        register_graph_execution_plan_discovery(fake_graph_execution_plan);
+        let backend = InstalledTestGpuBackend::new();
+        let source = admission_source(&backend);
+        let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, false)]));
+        let mut builder = QueryPlanBuilder::new();
+        let input = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+            vec![LocalParquetFile::new("/tmp/composed-relational-proof.parquet")],
+            Arc::clone(&schema),
+            vec!["value".to_string()],
+        )));
+        let producer_plan = builder.finish_gpu_resident(input);
+        let producer_proof =
+            QueryPlanCapabilityProof::for_query_plan(&producer_plan).expect("relational producer has an exact proof");
+        let consumer_plan = consumer_plan(Arc::clone(&schema));
+        let consumer_proof =
+            QueryPlanCapabilityProof::for_query_plan(&consumer_plan).expect("relational consumer has an exact proof");
+        let expected_proof = QueryPlanCapabilityProof::combine(producer_proof.clone(), [consumer_proof])
+            .expect("relational composition retains ordinary capability aggregation");
+        let producer_ticket = QueryAdmissionTicket::new(source.clone(), Some(producer_proof.clone()));
+        let prepared_inputs: Vec<Arc<dyn ExecutionPlan>> = vec![Arc::new(FakeGpuResidentProducer {
+            input_name: "fake_input".to_string(),
+            ticket: producer_ticket,
+            capability_proof: producer_proof,
+            graph_execution: false,
+            inner: EmptyExec::new(schema),
+        })];
+        let config = NexusNativeExecutionConfig::bounded(1024, 512, 1, 3, 1).with_query_admission_source(source);
+
+        let completed =
+            complete_composed_admission_proof(config, &consumer_plan, &prepared_inputs, &TaskContext::default())
+                .expect("pure relational composition must not require graph schedule evidence");
+        assert!(!completed.has_composed_graph_schedule);
+        let completed_ticket =
+            completed.execution_config.query_admission_ticket().expect("relational composition retains one ticket");
+
+        assert_eq!(completed_ticket.attempt_capability_proof(), Some(&expected_proof));
+    }
+
+    #[test]
+    fn complete_composed_admission_proof_preserves_the_active_stream_ticket_before_admission() {
+        register_gpu_resident_producer_discovery(fake_gpu_resident_producer);
+        register_graph_execution_plan_discovery(fake_graph_execution_plan);
+        let backend = InstalledTestGpuBackend::new();
+        let source = admission_source(&backend);
+        let (schema, producer_proof) = typed_graph_producer_proof();
+        let consumer_plan = consumer_plan(Arc::clone(&schema));
+        let consumer_proof =
+            QueryPlanCapabilityProof::for_query_plan(&consumer_plan).expect("consumer has an exact proof");
+        let expected_proof = QueryPlanCapabilityProof::combine_composed_graph_attempt(
+            &consumer_plan,
+            consumer_proof,
+            [("fake_input".to_string(), producer_proof.clone())],
+        )
+        .expect("single-producer composition uses the ordered graph schedule");
+        let producer_ticket = QueryAdmissionTicket::new(source.clone(), Some(producer_proof.clone()));
+        let active_ticket = QueryAdmissionTicket::new(source.clone(), Some(producer_proof.clone()));
+        let prepared_inputs: Vec<Arc<dyn ExecutionPlan>> = vec![Arc::new(FakeGpuResidentProducer {
+            input_name: "fake_input".to_string(),
+            ticket: producer_ticket,
+            capability_proof: producer_proof,
+            graph_execution: true,
             inner: EmptyExec::new(schema),
         })];
         let config = NexusNativeExecutionConfig::bounded(1024, 512, 1, 3, 1).with_query_admission_source(source);
@@ -1069,9 +1345,102 @@ mod tests {
         let completed =
             complete_composed_admission_proof(config, &consumer_plan, &prepared_inputs, task_context.as_ref())
                 .expect("proof completion must preserve the already-active stream ticket");
-        let completed_ticket = completed.query_admission_ticket().expect("completion retains the active ticket");
+        assert!(completed.has_composed_graph_schedule, "the active ticket still carries the complete N=1 schedule");
+        let completed_ticket =
+            completed.execution_config.query_admission_ticket().expect("completion retains the active ticket");
 
         assert!(Arc::ptr_eq(&completed_ticket, &active_ticket));
         assert_eq!(active_ticket.attempt_capability_proof(), Some(&expected_proof));
+    }
+
+    #[tokio::test]
+    async fn prepared_composed_producers_rebind_one_ordered_scope_proof_and_grant() {
+        register_gpu_resident_producer_discovery(fake_gpu_resident_producer);
+        register_graph_execution_plan_discovery(fake_graph_execution_plan);
+        let backend = InstalledTestGpuBackend::new();
+        let source = admission_source(&backend);
+        let (schema, producer_proof) = typed_graph_producer_proof();
+        let consumer_plan = consumer_plan_for_inputs(&["first", "second"], Arc::clone(&schema));
+        let first_ticket = QueryAdmissionTicket::new(source.clone(), Some(producer_proof.clone()));
+        let second_ticket = QueryAdmissionTicket::new(source.clone(), Some(producer_proof.clone()));
+        let producers = vec![
+            Arc::new(FakeGpuResidentProducer {
+                input_name: "first".to_string(),
+                ticket: first_ticket,
+                capability_proof: producer_proof.clone(),
+                graph_execution: true,
+                inner: EmptyExec::new(Arc::clone(&schema)),
+            }) as Arc<dyn ExecutionPlan>,
+            Arc::new(FakeGpuResidentProducer {
+                input_name: "second".to_string(),
+                ticket: second_ticket,
+                capability_proof: producer_proof.clone(),
+                graph_execution: true,
+                inner: EmptyExec::new(Arc::clone(&schema)),
+            }) as Arc<dyn ExecutionPlan>,
+        ];
+        let config = NexusNativeExecutionConfig::bounded(1024, 512, 1, 3, 1).with_query_admission_source(source);
+        let composed = NexusNativeComposedExec::try_new(consumer_plan.clone(), producers, config)
+            .expect("the real composed constructor must retain both prepared producer occurrences");
+
+        // Exercise the same preparation boundary used by composed execution.
+        // The fake producer has no metadata work, but discovery, ordering, and
+        // ticket extraction all run through the production preparation path.
+        let task_context = Arc::new(TaskContext::default());
+        let prepared = composed
+            .prepare_lakehouse_metadata(Arc::clone(&task_context))
+            .await
+            .expect("CPU-only composed preparation must preserve both producers");
+        let prepared_occurrences = prepared
+            .gpu_inputs
+            .iter()
+            .map(|input| gpu_resident_producer_input_name(input.as_ref()).expect("prepared producer identity"))
+            .collect::<Vec<_>>();
+        assert_eq!(prepared_occurrences, ["first", "second"]);
+
+        let expected_proof = QueryPlanCapabilityProof::combine_composed_graph_attempt(
+            &consumer_plan,
+            QueryPlanCapabilityProof::for_query_plan(&consumer_plan).expect("consumer has an exact proof"),
+            [("first".to_string(), producer_proof.clone()), ("second".to_string(), producer_proof.clone())],
+        )
+        .expect("prepared producer occurrences must derive one ordered composed proof");
+        let completed = complete_composed_admission_proof(
+            prepared.execution_config.clone(),
+            &prepared.plan,
+            &prepared.gpu_inputs,
+            task_context.as_ref(),
+        )
+        .expect("proof completion must remain CPU-only before context acquisition");
+        assert!(completed.has_composed_graph_schedule, "N=2 graph producers require the ordered schedule");
+        let completed_ticket =
+            completed.execution_config.query_admission_ticket().expect("composed proof owns one ticket");
+        assert_eq!(completed_ticket.attempt_capability_proof(), Some(&expected_proof));
+
+        // The scheduler receives only this opaque proof. Its selected handle
+        // is the immutable grant authority; no GPU work or result handle is
+        // created by this assertion.
+        let required_floor = expected_proof.required_floor_bytes_for(0).expect("composed proof floor is checked");
+        let grant = backend
+            .backend()
+            .session_capability()
+            .admit_query_with_request(QueryAdmissionRequest::new().with_query_plan_capability_proof(expected_proof))
+            .expect("the installed test profile must admit the composed proof");
+        assert_eq!(grant.device_ordinal(), 0);
+        assert!(
+            grant.device_budget_bytes() >= required_floor,
+            "admission grant must cover the engine-issued composed proof floor"
+        );
+        drop(grant);
+
+        // Swapping the prepared occurrences changes the schedule proof. A
+        // later runtime order change therefore cannot silently reuse this
+        // admission evidence.
+        let reversed = QueryPlanCapabilityProof::combine_composed_graph_attempt(
+            &consumer_plan,
+            QueryPlanCapabilityProof::for_query_plan(&consumer_plan).expect("consumer has an exact proof"),
+            [("second".to_string(), producer_proof.clone()), ("first".to_string(), producer_proof)],
+        )
+        .expect("reversed occurrence order is independently representable");
+        assert_ne!(completed_ticket.attempt_capability_proof(), Some(&reversed));
     }
 }

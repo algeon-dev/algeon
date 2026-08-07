@@ -31,7 +31,10 @@ use datafusion_nexus::{
 use futures::StreamExt as _;
 use nexus_query_engine::{
     metrics::{BackendMetric, backend_metric_descriptors},
-    observability::{AttemptDisposition, QueryAttemptReport},
+    observability::{
+        AttemptComposedScheduleProjection, AttemptDisposition, COMPOSED_SCHEDULE_PROJECTION_SCHEMA_V1,
+        QueryAttemptReport,
+    },
     runtime::{
         BackendAttemptDisposition, BackendAttemptDuration, BackendAttemptOutcome, BackendHistogramSnapshot,
         BackendMetricsSnapshot,
@@ -51,8 +54,9 @@ use super::{
     artifact::{
         ArrivalPlanEvidence, BackendCloseEvidence, BackendCloseFailure, BackendCloseOutcome,
         BackendCloseSnapshotEvidence, BackendEvidence, BackendSnapshotSample, CancellationBarrierEvidence,
-        CloseUnderLoadEvidence, CompletionSinkEvidence, DeadlineBarrierEvidence, MeasuredRunArtifact,
-        OperabilityEvidence, QpsEnvelopeEvidence, RunDeadlineEvidence, TimeSeriesEvidence, TraceEvidence,
+        CloseUnderLoadEvidence, CompletionSinkEvidence, ComposedScheduleArtifact, ComposedScheduleOccurrence,
+        DeadlineBarrierEvidence, MeasuredRunArtifact, OperabilityEvidence, QpsEnvelopeEvidence, RunDeadlineEvidence,
+        TimeSeriesEvidence, TraceEvidence,
     },
     cache_calibration::{CacheSameKeyCohortEvidence, CacheSameKeyProbeEvidence},
     metrics_audit::{MetricSnapshotObservation, MetricsAudit},
@@ -759,6 +763,11 @@ async fn run_measured(
             CacheMode::Disabled => "disabled",
             CacheMode::Enabled => "enabled",
         },
+        composed_schedules: driven
+            .observations
+            .iter()
+            .filter_map(|observation| observation.composed_schedule.clone())
+            .collect(),
         cache_same_key_probe,
         qps_envelope,
         graph_claim_calibration,
@@ -3365,6 +3374,11 @@ fn observe(
         succeeded: report.outcome.stable_label() == super::aggregate::SUCCEEDED_OUTCOME,
         reached_gpu: matches!(report.disposition, AttemptDisposition::Native | AttemptDisposition::PartialNative),
         graph_claim_calibration: capture.graph_claim_calibration,
+        composed_schedule: report
+            .composed_schedule
+            .as_ref()
+            .filter(|projection| projection.schema == COMPOSED_SCHEDULE_PROJECTION_SCHEMA_V1)
+            .map(project_composed_schedule_projection),
         device_ordinal: report.admission.as_ref().map(|admission| admission.device_ordinal).or(report.device_ordinal),
         grant_bytes: report.admission.as_ref().map(|admission| admission.grant_bytes),
         admission_sequence: report.admission.as_ref().map(|admission| admission.admission_sequence),
@@ -3388,6 +3402,40 @@ fn observe(
         // stamp taken in the collector loop would only record collector order.
         submitted_ns: report.timestamps.submitted_ns,
         outcome_terminal_ns: report.timestamps.outcome_terminal_ns,
+    }
+}
+
+/// Copies a schedule only from the sealed engine projection. This conversion
+/// changes artifact field names but never derives a byte, scope, order, or
+/// fingerprint in the runner.
+fn project_composed_schedule_projection(projection: &AttemptComposedScheduleProjection) -> ComposedScheduleArtifact {
+    ComposedScheduleArtifact {
+        schema: super::COMPOSED_SCHEDULE_SCHEMA,
+        version: super::COMPOSED_SCHEDULE_VERSION,
+        attempt_id: projection.attempt_id.to_string(),
+        selected_ordinal: projection.device_ordinal,
+        grant_id: projection.grant_id,
+        grant_bytes: projection.grant_bytes,
+        schedule_fingerprint: projection.fingerprint.clone(),
+        engine_fingerprint_matches_contents: projection.fingerprint_matches_contents(),
+        attempt_wide_fixed_bytes: projection.attempt_wide_fixed_bytes,
+        occurrences: projection
+            .producer_occurrences
+            .iter()
+            .enumerate()
+            .map(|(order, occurrence)| ComposedScheduleOccurrence {
+                occurrence_id: occurrence.occurrence_id.clone(),
+                order,
+                structural_scope: occurrence.execution_scope_fingerprint.clone(),
+                isolated_peak_bytes: occurrence.isolated_peak_bytes,
+                stage_peak_bytes: occurrence.stage_peak_bytes,
+                retained_output_bytes: occurrence.retained_output_bytes,
+            })
+            .collect(),
+        consumer_structural_scope: projection.consumer_scope_fingerprint.clone(),
+        consumer_additional_peak_bytes: projection.consumer_additional_peak_bytes,
+        consumer_stage_peak_bytes: projection.consumer_stage_peak_bytes,
+        complete_phase_peak_bytes: projection.complete_peak_bytes,
     }
 }
 
@@ -4004,6 +4052,7 @@ mod tests {
                 require_same_device_overlap: true,
                 require_all_device_progress: true,
                 require_heterogeneous_device_profiles: true,
+                require_overload_outcome: false,
             },
         ));
         assert!(!selected_scenario_clauses_pass(
@@ -4013,9 +4062,78 @@ mod tests {
                 require_same_device_overlap: true,
                 require_all_device_progress: true,
                 require_heterogeneous_device_profiles: true,
+                require_overload_outcome: false,
             },
         ));
         assert!(selected_scenario_clauses_pass(&aggregate.scenarios, false, ScenarioRequirementsProfile::default(),));
+    }
+
+    #[test]
+    fn sealed_engine_composed_projection_is_copied_without_runner_byte_derivation() {
+        let attempt_id = nexus_query_engine::observability::AttemptId::mint();
+        let mut hasher = nexus_query_engine::harness::StableFnv1a64::new();
+        hasher.update_field(COMPOSED_SCHEDULE_PROJECTION_SCHEMA_V1);
+        hasher.update_field("10");
+        hasher.update_field("2");
+        for (id, scope, isolated, retained, stage) in [
+            ("pagerank#0", "scope-pr", 90_u64, 20_u64, 100_u64),
+            ("forceatlas2#0", "scope-fa2", 100_u64, 30_u64, 130_u64),
+        ] {
+            hasher.update_field(id);
+            hasher.update_field(scope);
+            hasher.update_field(&isolated.to_string());
+            hasher.update_field(&retained.to_string());
+            hasher.update_field(&stage.to_string());
+        }
+        hasher.update_field("scope-consumer");
+        hasher.update_field("10");
+        hasher.update_field("70");
+        hasher.update_field("130");
+        let fingerprint = format!("composed-schedule-fnv1a64:{:016x}", hasher.finish());
+        let mut projection: AttemptComposedScheduleProjection = serde_json::from_value(serde_json::json!({
+            "schema": COMPOSED_SCHEDULE_PROJECTION_SCHEMA_V1,
+            "attempt_id": attempt_id.to_string(),
+            "device_ordinal": 3,
+            "grant_id": 7,
+            "grant_bytes": 160,
+            "attempt_wide_fixed_bytes": 10,
+            "producer_occurrences": [
+                {
+                    "occurrence_id": "pagerank#0",
+                    "execution_scope_fingerprint": "scope-pr",
+                    "isolated_peak_bytes": 90,
+                    "retained_output_bytes": 20,
+                    "stage_peak_bytes": 100,
+                },
+                {
+                    "occurrence_id": "forceatlas2#0",
+                    "execution_scope_fingerprint": "scope-fa2",
+                    "isolated_peak_bytes": 100,
+                    "retained_output_bytes": 30,
+                    "stage_peak_bytes": 130,
+                },
+            ],
+            "consumer_scope_fingerprint": "scope-consumer",
+            "consumer_additional_peak_bytes": 10,
+            "consumer_stage_peak_bytes": 70,
+            "complete_peak_bytes": 130,
+            "fingerprint": fingerprint,
+        }))
+        .unwrap();
+        assert!(projection.fingerprint_matches_contents());
+
+        let artifact = project_composed_schedule_projection(&projection);
+        assert_eq!(artifact.attempt_id, attempt_id.to_string());
+        assert_eq!(artifact.selected_ordinal, 3);
+        assert_eq!(artifact.grant_id, 7);
+        assert_eq!(artifact.grant_bytes, 160);
+        assert_eq!(artifact.occurrences[1].occurrence_id, "forceatlas2#0");
+        assert_eq!(artifact.occurrences[1].stage_peak_bytes, 130);
+        assert_eq!(artifact.complete_phase_peak_bytes, 130);
+        assert!(artifact.engine_fingerprint_matches_contents);
+
+        projection.fingerprint = "composed-schedule-fnv1a64:0000000000000000".to_owned();
+        assert!(!project_composed_schedule_projection(&projection).engine_fingerprint_matches_contents);
     }
 
     #[test]

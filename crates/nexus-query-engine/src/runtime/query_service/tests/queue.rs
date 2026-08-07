@@ -19,6 +19,14 @@ fn query_service_reports_overload_when_queue_is_full() {
     assert_eq!(error.kind(), crate::error::QueryErrorKind::ResourceExhausted);
     assert_eq!(error.status(), crate::error::QueryErrorStatus::Temporary);
     assert_eq!(error.fact_value("reason"), Some("admission_queue_full"));
+    assert_eq!(
+        QueryAdmissionOutcome::from_error_with_queue_bounds(&error, service.service.queue_bounds()),
+        QueryAdmissionOutcome::Capacity {
+            queued_queries: Some(1),
+            queue_capacity: Some(1),
+            max_queue_wait: Some(Duration::from_millis(500)),
+        }
+    );
 
     drop(active);
     finish_sender.send(()).unwrap();
@@ -176,6 +184,7 @@ async fn query_service_execution_token_cancels_a_queued_async_admission() {
         .expect("queued admission task must not panic")
         .expect_err("cancelled queued admission must not receive a handle");
     assert_eq!(error.code(), QueryErrorCode::Cancelled);
+    assert_eq!(QueryAdmissionOutcome::from_error(&error), QueryAdmissionOutcome::Cancelled);
     wait_for_exact_queued_len(&service, 0);
 
     drop(active);
@@ -356,6 +365,14 @@ fn query_admission_waiter_times_out_while_selected_but_memory_blocked() {
 
     assert_eq!(error.code(), QueryErrorCode::ServiceOverloaded);
     assert_eq!(error.fact_value("reason"), Some("queue_wait_elapsed"));
+    assert_eq!(
+        QueryAdmissionOutcome::from_error_with_queue_bounds(&error, service.service.queue_bounds()),
+        QueryAdmissionOutcome::Capacity {
+            queued_queries: Some(0),
+            queue_capacity: Some(8),
+            max_queue_wait: Some(Duration::from_millis(20)),
+        }
+    );
 }
 #[test]
 fn query_service_work_conserving_admission_skips_memory_blocked_head() {

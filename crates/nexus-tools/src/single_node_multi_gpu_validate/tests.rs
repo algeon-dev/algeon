@@ -20,8 +20,8 @@ use serde_json::Value;
 
 use super::{
     aggregate::{
-        AttemptObservation, AttemptTerminalEvidence, DeviceConfiguration, DeviceOccupancyPeaks, MeasuredAggregate,
-        scenario_clauses_pass,
+        AttemptObservation, AttemptTerminalEvidence, ClauseStatus, DeviceConfiguration, DeviceOccupancyPeaks,
+        MeasuredAggregate, OverloadFairnessEvidence, scenario_clauses_pass,
     },
     metrics_audit::{MetricSnapshotObservation, MetricsAudit},
     profile::{
@@ -34,8 +34,9 @@ use super::{
     },
     redact::ensure_redacted_json,
     schedule::{ArrivalPlan, SchedulePhase},
+    timeseries::DeviceSeriesRow,
     util::{output_parent, write_new_artifact},
-    workload::select_queries,
+    workload::{SelectedQueryDescriptor, select_queries},
     *,
 };
 
@@ -769,6 +770,52 @@ fn the_shipped_measured_run_profile_parses_plans_and_is_heterogeneous() {
     assert_eq!(plan.arrivals.len() % plan.concurrency, 0);
     // Every configured ordinal is reachable by the planned attempt volume.
     assert!(plan.arrivals.len() >= profile.backend.device_profiles.len());
+}
+
+#[test]
+fn p6_isolated_cache_off_profiles_pin_one_graph_shape_and_declared_model_bands() {
+    let profiles = [
+        ("bfs", include_str!("../../fixtures/p6-isolated-bfs-cache-off.json")),
+        ("pagerank", include_str!("../../fixtures/p6-isolated-pagerank-cache-off.json")),
+        ("force_atlas2", include_str!("../../fixtures/p6-isolated-force-atlas2-cache-off.json")),
+        ("pagerank_forceatlas2_join", include_str!("../../fixtures/p6-isolated-pagerank-forceatlas2-cache-off.json")),
+    ];
+
+    for (query_label, json) in profiles {
+        let profile = RunProfile::parse_bytes(json.as_bytes()).expect("isolated P6 profile must remain parseable");
+        let [device] = profile.backend.device_profiles.as_slice() else {
+            panic!("isolated P6 profile must use exactly one device");
+        };
+        assert_eq!(profile.scenario_requirements(), Default::default());
+        assert!(profile.graph_claim_calibration.is_some());
+        assert_eq!(profile.cache.mode, CacheMode::Disabled);
+        assert_eq!(device.cache_cap_bytes, 0);
+        assert_eq!(device.source_work_per_attempt, 2);
+        assert_eq!(device.max_active_attempts, 1);
+        assert_eq!(device.installation.stream_pool_size, 3);
+        assert_eq!(device.installation.worker_count, 1);
+        assert_eq!(device.installation.lane_count, 1);
+        assert_eq!(profile.scheduling.arrival_mode, ArrivalMode::Concurrency);
+        assert_eq!(profile.scheduling.concurrency, 1);
+        assert_eq!(profile.scheduling.max_rounds, Some(1));
+        let calibration = profile.vram_calibration.expect("P6 must declare a calibration band");
+        assert_eq!(calibration.max_underclaim_bytes, 67_108_864);
+        assert_eq!(calibration.max_observed_to_claim_ratio_milli, 1_000);
+        assert_eq!(calibration.max_overclaim_bytes, 67_108_864);
+        assert_eq!(calibration.max_claim_to_observed_ratio_milli, 1_000);
+
+        let selected = select_queries(&profile.workloads).expect("isolated P6 workload label must resolve");
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].label, query_label);
+        assert!(selected[0].graph);
+        assert_eq!(
+            profile.workloads[0].path,
+            PathBuf::from("/opt/dlami/nvme/fixture/data/demo/citation_network/v1/parquet")
+        );
+        let plan = ArrivalPlan::plan(&profile.scheduling, selected.len(), profile.session.shared_session_count)
+            .expect("isolated P6 profile must plan its one measured attempt");
+        assert_eq!(plan.arrivals.len(), 1);
+    }
 }
 
 #[test]
@@ -2321,6 +2368,7 @@ fn measured_run_artifact_records_scenarios_throughput_placement_and_declared_gap
         selected_queries: queries.iter().map(super::workload::SelectedQuery::descriptor).collect(),
         arrival_plan: super::artifact::ArrivalPlanEvidence::new(&plan, 0, 0, 0, 0),
         cache_state: "disabled",
+        composed_schedules: Vec::new(),
         cache_same_key_probe: None,
         qps_envelope: None,
         graph_claim_calibration: None,
@@ -2444,6 +2492,7 @@ fn a_failed_scenario_clause_marks_the_artifact_non_qualifying() {
             0,
         ),
         cache_state: "disabled",
+        composed_schedules: Vec::new(),
         cache_same_key_probe: None,
         qps_envelope: None,
         graph_claim_calibration: None,
@@ -2469,6 +2518,229 @@ fn a_failed_scenario_clause_marks_the_artifact_non_qualifying() {
     let artifact = RunArtifact::measured_run(profile, "a".repeat(64), Vec::new(), sample_provenance(), measurement);
     let value = serde_json::to_value(artifact).unwrap();
     assert_eq!(value["status"], "measured_run_non_qualifying");
+}
+
+/// P6's C=1 composed calibration and P7/P8 contention share the same
+/// schedule evidence, but only the latter explicitly declares a bounded
+/// overload result. The branch matrix keeps every other composed-artifact
+/// failure fail-closed while ensuring a workload label cannot invent that
+/// later-phase requirement.
+#[test]
+fn composed_qualification_evidence_is_fail_closed_and_overload_is_profile_declared() {
+    let cases = [
+        ("isolated_p6_without_overload_contract", None, true, true, true, None, false, &[][..]),
+        ("missing_root_source_hash", Some("root"), true, true, true, None, false, &["missing_source_hash"][..]),
+        ("missing_cudf_source_hash", Some("cudf"), true, true, true, None, false, &["missing_source_hash"][..]),
+        ("missing_cugraph_source_hash", Some("cugraph"), true, true, true, None, false, &["missing_source_hash"][..]),
+        ("missing_binary_hash", None, false, true, true, None, false, &["missing_binary_hash"][..]),
+        (
+            "missing_physical_memory_sample",
+            None,
+            true,
+            false,
+            true,
+            None,
+            false,
+            &["missing_physical_memory_sample"][..],
+        ),
+        ("missing_device_witness", None, true, true, false, None, false, &["missing_device_witness"][..]),
+        ("missing_schedule", None, true, true, true, None, false, &["missing_composed_schedule"][..]),
+        (
+            "undeclared_failed_overload_is_not_a_requirement",
+            None,
+            true,
+            true,
+            true,
+            Some(ClauseStatus::Failed),
+            false,
+            &[][..],
+        ),
+        (
+            "declared_missing_overload_fails",
+            None,
+            true,
+            true,
+            true,
+            None,
+            true,
+            &["missing_required_overload_outcome"][..],
+        ),
+        (
+            "declared_failed_overload_fails",
+            None,
+            true,
+            true,
+            true,
+            Some(ClauseStatus::Failed),
+            true,
+            &["missing_required_overload_outcome"][..],
+        ),
+        ("declared_evidenced_overload_passes", None, true, true, true, Some(ClauseStatus::Evidenced), true, &[][..]),
+    ];
+
+    for (name, missing_source, binary_present, physical_sample, device_witness, overload, require_overload, expected) in
+        cases
+    {
+        let mut provenance = sample_provenance();
+        match missing_source {
+            Some("root") => provenance.repositories.root.dirty_manifest.sha256.clear(),
+            Some("cudf") => provenance.repositories.cudf_nexus.dirty_manifest.sha256.clear(),
+            Some("cugraph") => provenance.repositories.cugraph_nexus.dirty_manifest.sha256.clear(),
+            None => {},
+            Some(other) => panic!("unexpected source selector {other}"),
+        }
+        if !binary_present {
+            provenance.runner.executable.sha256.clear();
+        }
+
+        let artifact = RunArtifact::measured_run(
+            composed_qualification_profile(require_overload),
+            "a".repeat(64),
+            Vec::new(),
+            provenance,
+            composed_qualification_measurement(name != "missing_schedule", physical_sample, device_witness, overload),
+        );
+        let value = serde_json::to_value(artifact).unwrap();
+        let actual = value["execution"]["qualification_failures"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|failure| failure["code"].as_str().unwrap())
+            .collect::<BTreeSet<_>>();
+        let expected = expected.iter().copied().collect::<BTreeSet<_>>();
+        assert_eq!(actual, expected, "{name}");
+        assert_eq!(
+            value["status"],
+            if expected.is_empty() { "measured_run" } else { "measured_run_non_qualifying" },
+            "{name}"
+        );
+    }
+}
+
+fn composed_qualification_profile(require_overload_outcome: bool) -> RunProfile {
+    let mut profile = measured_run_profile();
+    if require_overload_outcome {
+        let mut json = serde_json::to_value(&profile).unwrap();
+        json["scenario_requirements"] = serde_json::json!({ "require_overload_outcome": true });
+        profile = RunProfile::parse_bytes(&serde_json::to_vec(&json).unwrap()).unwrap();
+    }
+    profile
+}
+
+fn composed_qualification_measurement(
+    schedule_present: bool,
+    physical_sample: bool,
+    device_witness: bool,
+    overload: Option<ClauseStatus>,
+) -> super::artifact::MeasuredRunArtifact {
+    let mut schedule = super::artifact::ComposedScheduleArtifact::test_complete();
+    schedule.attempt_id = "composed-attempt".to_string();
+    schedule.grant_id = 17;
+
+    let mut observations = measured_observations();
+    let composed_attempt = &mut observations[0];
+    composed_attempt.query_kind = FixtureKind::Dblp;
+    composed_attempt.query_label = "pagerank_forceatlas2_join".to_string();
+    composed_attempt.graph_workload = true;
+    composed_attempt.attempt_id = schedule.attempt_id.clone();
+    composed_attempt.device_ordinal = Some(schedule.selected_ordinal);
+    composed_attempt.grant_bytes = Some(schedule.grant_bytes);
+    composed_attempt.grant_id = Some(schedule.grant_id);
+
+    let devices = if device_witness {
+        vec![measured_device(schedule.selected_ordinal, 1 << 30, 2)]
+    } else {
+        vec![measured_device(schedule.selected_ordinal + 1, 1 << 30, 2)]
+    };
+    let mut aggregate = MeasuredAggregate::reduce(
+        &observations,
+        &devices,
+        &BTreeMap::from([(schedule.selected_ordinal, measured_occupancy(1))]),
+        0,
+        1_000_000_000,
+    );
+    if let Some(status) = overload {
+        let mut evidence = OverloadFairnessEvidence::from_observations(&[], &[], 0, 0, 0, 0, 0, 0, 0);
+        evidence.status = status;
+        aggregate.scenarios.overload_fairness = Some(evidence);
+    }
+
+    let mut time_series = super::artifact::TimeSeriesEvidence::empty();
+    if physical_sample {
+        time_series.device_rows.push(DeviceSeriesRow {
+            offset_ns: 1,
+            device_ordinal: schedule.selected_ordinal,
+            health_open: true,
+            gpu_utilization_pct: Some(1),
+            memory_utilization_pct: Some(1),
+            cuda_free_bytes: Some(1),
+            nvml_used_bytes: Some(1),
+            active_attempts: 1,
+            live_grants_bytes: schedule.grant_bytes,
+            live_reserved_bytes: schedule.grant_bytes,
+            cache_evictable_resident_bytes: 0,
+            cache_pinned_in_use_bytes: 0,
+            cache_physical_current_bytes: None,
+            cache_physical_peak_bytes: None,
+            allocation_failure_count: 0,
+            ledger_sequence: 1,
+            claim_snapshot_end_sequence: Some(1),
+            claim_snapshot_stable: true,
+            active_query_jobs: 1,
+            queued_jobs: 0,
+        });
+    }
+
+    super::artifact::MeasuredRunArtifact {
+        qualifying: true,
+        backend: super::artifact::BackendEvidence {
+            resource_core: 1,
+            observation_core: 2,
+            resource_generation: 3,
+            shared_session_count: 1,
+            queue_max_queued_attempts: 64,
+            queue_max_queue_wait_ms: 30_000,
+            queue_max_overtakes_per_waiter: 4,
+            device_startup_records: serde_json::to_value(&devices).unwrap(),
+            close: test_close_evidence(),
+        },
+        selected_queries: vec![SelectedQueryDescriptor {
+            fixture_index: 0,
+            kind: FixtureKind::Dblp,
+            label: "pagerank_forceatlas2_join".to_string(),
+            workload_class: "graph",
+        }],
+        arrival_plan: super::artifact::ArrivalPlanEvidence::new(
+            &ArrivalPlan::plan(&measured_run_profile().scheduling, 1, 1).unwrap(),
+            0,
+            0,
+            0,
+            0,
+        ),
+        cache_state: "disabled",
+        composed_schedules: if schedule_present { vec![schedule] } else { Vec::new() },
+        cache_same_key_probe: None,
+        qps_envelope: None,
+        graph_claim_calibration: None,
+        aggregate,
+        deadline: test_deadline_evidence(),
+        cancellation_barrier: None,
+        deadline_barrier: None,
+        domain_exhaustion: None,
+        physical_allocator_pressure: None,
+        quarantine_cycles: None,
+        close_under_load: None,
+        completion_sink: None,
+        feature_off_cugraph: None,
+        metrics_audit: measured_metrics_audit(observations.len()),
+        operability: super::artifact::OperabilityEvidence {
+            attribution: super::operability::AttributionCompleteness::from_observations(&observations),
+            otlp_export: super::operability::OtlpExportEvidence::not_requested(),
+        },
+        time_series,
+        snapshots: Vec::new(),
+        trace: super::artifact::TraceEvidence { captured_by_runner: false, uri: None, sha256: None },
+    }
 }
 
 fn measured_metrics_audit(reported_attempts: usize) -> MetricsAudit {
@@ -2643,6 +2915,7 @@ fn measured_observations() -> Vec<AttemptObservation> {
                 succeeded: true,
                 reached_gpu: true,
                 graph_claim_calibration: None,
+                composed_schedule: None,
                 device_ordinal: Some(ordinal),
                 grant_bytes: Some(1024 * (index as u64 + 1)),
                 admission_sequence: Some(index as u64),

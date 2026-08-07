@@ -17,6 +17,19 @@ pub use self::{
     literal::LiteralValue,
 };
 
+/// Resolves a projection expression that only renames one existing column.
+///
+/// Nested aliases do not evaluate or allocate a new device column. Callers
+/// that rely on this for a zero-copy path must still verify that the declared
+/// output type matches the referenced input field.
+pub(crate) fn alias_wrapped_column(expr: &Expr) -> Option<&ColumnRef> {
+    match expr {
+        Expr::Column(column) => Some(column),
+        Expr::Alias { expr, .. } => alias_wrapped_column(expr),
+        _ => None,
+    }
+}
+
 pub(crate) fn interval_month_day_nano(expr: &Expr) -> Option<(i32, i32, i64)> {
     let Expr::Literal(LiteralValue::IntervalMonthDayNano { months, days, nanoseconds }) = expr else {
         return None;

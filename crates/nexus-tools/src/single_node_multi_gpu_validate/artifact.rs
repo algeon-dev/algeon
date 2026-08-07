@@ -69,13 +69,22 @@ impl RunArtifact {
         config_sha256: String,
         fixtures: Vec<FixturePreflightArtifact>,
         provenance: Provenance,
-        measurement: MeasuredRunArtifact,
+        mut measurement: MeasuredRunArtifact,
     ) -> Self {
-        let status = if measurement.qualifying { "measured_run" } else { "measured_run_non_qualifying" };
+        let require_overload_outcome = profile.scenario_requirements().require_overload_outcome;
+        let composed_schedules = measurement.composed_schedules.clone();
+        let failures = qualification_failures(&measurement, &provenance, &composed_schedules, require_overload_outcome);
+        if !failures.is_empty() {
+            measurement.qualifying = false;
+        }
+        let qualifying = measurement.qualifying;
+        let status = if qualifying { "measured_run" } else { "measured_run_non_qualifying" };
         let mut artifact = Self::new(profile, config_sha256, provenance, status, "complete", fixtures);
         artifact.execution.workload_execution = "complete";
         artifact.execution.attempted_workloads = measurement.selected_queries.len() as u64;
         artifact.execution.attempted_backend_attempts = measurement.aggregate.attempts.len() as u64;
+        artifact.execution.qualification_failures = failures;
+        artifact.execution.composed_schedules = composed_schedules;
         artifact.execution.measurement = Some(measurement);
         artifact
     }
@@ -92,15 +101,33 @@ impl RunArtifact {
         cache_disabled: MeasuredRunArtifact,
         cache_opt_in: MeasuredRunArtifact,
     ) -> Self {
+        let require_overload_outcome = profile.scenario_requirements().require_overload_outcome;
+        let mut composed_schedules = cache_disabled.composed_schedules.clone();
+        composed_schedules.extend(cache_opt_in.composed_schedules.iter().cloned());
         let evidence = CacheCalibrationEvidence::new(cache_disabled, cache_opt_in, profile.cache.stress.clone());
         let status = if evidence.qualifies() { "cache_calibration" } else { "cache_calibration_non_qualifying" };
         let attempted_backend_attempts =
             evidence.cache_disabled.aggregate.attempts.len() + evidence.cache_opt_in.aggregate.attempts.len();
         let attempted_workloads = evidence.cache_opt_in.selected_queries.len() as u64;
+        let mut failures = qualification_failures(
+            &evidence.cache_disabled,
+            &provenance,
+            &evidence.cache_disabled.composed_schedules,
+            require_overload_outcome,
+        );
+        failures.extend(qualification_failures(
+            &evidence.cache_opt_in,
+            &provenance,
+            &evidence.cache_opt_in.composed_schedules,
+            require_overload_outcome,
+        ));
+        let status = if failures.is_empty() { status } else { "cache_calibration_non_qualifying" };
         let mut artifact = Self::new(profile, config_sha256, provenance, status, "complete", fixtures);
         artifact.execution.workload_execution = "complete";
         artifact.execution.attempted_workloads = attempted_workloads;
         artifact.execution.attempted_backend_attempts = attempted_backend_attempts as u64;
+        artifact.execution.qualification_failures = failures;
+        artifact.execution.composed_schedules = composed_schedules;
         artifact.execution.cache_calibration = Some(evidence);
         artifact
     }
@@ -126,6 +153,8 @@ impl RunArtifact {
                 attempted_workloads: 0,
                 attempted_backend_attempts: 0,
                 fixtures,
+                qualification_failures: Vec::new(),
+                composed_schedules: Vec::new(),
                 measurement: None,
                 cache_calibration: None,
             },
@@ -157,6 +186,13 @@ pub(super) struct ValidationExecution {
     pub(super) attempted_workloads: u64,
     pub(super) attempted_backend_attempts: u64,
     pub(super) fixtures: Vec<FixturePreflightArtifact>,
+    /// Machine-readable, closed-vocabulary reasons why composed evidence
+    /// cannot qualify. Empty is the only qualifying composed state.
+    pub(super) qualification_failures: Vec<QualificationFailure>,
+    /// Independent versioned evidence for every composed graph attempt the
+    /// runner observed. Each row originates in the sealed engine report.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(super) composed_schedules: Vec<ComposedScheduleArtifact>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) measurement: Option<MeasuredRunArtifact>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -172,6 +208,11 @@ pub(super) struct MeasuredRunArtifact {
     pub(super) selected_queries: Vec<SelectedQueryDescriptor>,
     pub(super) arrival_plan: ArrivalPlanEvidence,
     pub(super) cache_state: &'static str,
+    /// Engine-owned composed schedules collected from sealed reports. They are
+    /// rendered once at the outer artifact boundary, rather than duplicated
+    /// in the measured payload.
+    #[serde(skip)]
+    pub(super) composed_schedules: Vec<ComposedScheduleArtifact>,
     /// S7's dedicated exact-key source/BFS cohorts, when the opt-in profile
     /// asked the runner to establish cache-singleflight evidence separately
     /// from the throughput window.
@@ -246,6 +287,299 @@ pub(super) struct MeasuredRunArtifact {
     pub(super) time_series: TimeSeriesEvidence,
     pub(super) snapshots: Vec<BackendSnapshotSample>,
     pub(super) trace: TraceEvidence,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(super) struct QualificationFailure {
+    pub(super) code: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) attempt_id: Option<String>,
+}
+
+/// Versioned composed-schedule evidence. Every byte field is copied from one
+/// sealed engine attempt report; telemetry supplies only independent physical
+/// witnesses and is never used to derive a schedule value.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(super) struct ComposedScheduleArtifact {
+    pub(super) schema: &'static str,
+    pub(super) version: u32,
+    pub(super) attempt_id: String,
+    pub(super) selected_ordinal: usize,
+    pub(super) grant_id: u64,
+    pub(super) grant_bytes: u64,
+    pub(super) schedule_fingerprint: String,
+    /// Set only by the engine projection's content verifier before the runner
+    /// copies the schedule into this artifact.
+    pub(super) engine_fingerprint_matches_contents: bool,
+    pub(super) attempt_wide_fixed_bytes: u64,
+    pub(super) occurrences: Vec<ComposedScheduleOccurrence>,
+    pub(super) consumer_structural_scope: String,
+    pub(super) consumer_additional_peak_bytes: u64,
+    pub(super) consumer_stage_peak_bytes: u64,
+    pub(super) complete_phase_peak_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(super) struct ComposedScheduleOccurrence {
+    pub(super) occurrence_id: String,
+    pub(super) order: usize,
+    pub(super) structural_scope: String,
+    pub(super) isolated_peak_bytes: u64,
+    pub(super) stage_peak_bytes: u64,
+    pub(super) retained_output_bytes: u64,
+}
+
+impl ComposedScheduleArtifact {
+    #[cfg(test)]
+    pub(super) fn test_complete() -> Self {
+        Self {
+            schema: super::COMPOSED_SCHEDULE_SCHEMA,
+            version: super::COMPOSED_SCHEDULE_VERSION,
+            attempt_id: "attempt-1".to_string(),
+            selected_ordinal: 0,
+            grant_id: 1,
+            grant_bytes: 160,
+            schedule_fingerprint: "composed-schedule-fnv1a64:0123456789abcdef".to_string(),
+            engine_fingerprint_matches_contents: true,
+            attempt_wide_fixed_bytes: 10,
+            occurrences: vec![
+                ComposedScheduleOccurrence {
+                    occurrence_id: "pagerank#0".to_string(),
+                    order: 0,
+                    structural_scope: "scope-pr".to_string(),
+                    isolated_peak_bytes: 90,
+                    stage_peak_bytes: 100,
+                    retained_output_bytes: 20,
+                },
+                ComposedScheduleOccurrence {
+                    occurrence_id: "forceatlas2#0".to_string(),
+                    order: 1,
+                    structural_scope: "scope-fa2".to_string(),
+                    isolated_peak_bytes: 100,
+                    stage_peak_bytes: 130,
+                    retained_output_bytes: 30,
+                },
+            ],
+            consumer_structural_scope: "scope-consumer".to_string(),
+            consumer_additional_peak_bytes: 10,
+            consumer_stage_peak_bytes: 70,
+            complete_phase_peak_bytes: 130,
+        }
+    }
+
+    fn failures(&self) -> Vec<QualificationFailure> {
+        let mut failures = Vec::new();
+        if self.schema != super::COMPOSED_SCHEDULE_SCHEMA || self.version != super::COMPOSED_SCHEDULE_VERSION {
+            failures.push(QualificationFailure {
+                code: "composed_schedule_version_mismatch",
+                attempt_id: Some(self.attempt_id.clone()),
+            });
+        }
+        if self.attempt_id.is_empty() || self.grant_id == 0 {
+            failures.push(QualificationFailure {
+                code: "composed_schedule_identity_missing",
+                attempt_id: Some(self.attempt_id.clone()),
+            });
+        }
+        if !is_engine_schedule_fingerprint(&self.schedule_fingerprint) {
+            failures.push(QualificationFailure {
+                code: "composed_schedule_fingerprint_invalid",
+                attempt_id: Some(self.attempt_id.clone()),
+            });
+        }
+        if !self.engine_fingerprint_matches_contents {
+            failures.push(QualificationFailure {
+                code: "composed_schedule_fingerprint_mismatch",
+                attempt_id: Some(self.attempt_id.clone()),
+            });
+        }
+        if self.occurrences.is_empty() {
+            failures.push(QualificationFailure {
+                code: "missing_composed_schedule_row",
+                attempt_id: Some(self.attempt_id.clone()),
+            });
+        }
+        let mut retained = 0_u64;
+        let mut derived_peak = 0_u64;
+        let mut ids = std::collections::BTreeSet::new();
+        for (expected_order, occurrence) in self.occurrences.iter().enumerate() {
+            if occurrence.order != expected_order
+                || occurrence.occurrence_id.is_empty()
+                || occurrence.structural_scope.is_empty()
+            {
+                failures.push(QualificationFailure {
+                    code: "contradictory_composed_schedule",
+                    attempt_id: Some(self.attempt_id.clone()),
+                });
+            }
+            if !ids.insert(&occurrence.occurrence_id) {
+                failures.push(QualificationFailure {
+                    code: "duplicate_composed_schedule_occurrence",
+                    attempt_id: Some(self.attempt_id.clone()),
+                });
+            }
+            let Some(stage) = self
+                .attempt_wide_fixed_bytes
+                .checked_add(retained)
+                .and_then(|value| value.checked_add(occurrence.isolated_peak_bytes))
+            else {
+                failures.push(QualificationFailure {
+                    code: "composed_schedule_arithmetic_overflow",
+                    attempt_id: Some(self.attempt_id.clone()),
+                });
+                break;
+            };
+            if occurrence.stage_peak_bytes != stage {
+                failures.push(QualificationFailure {
+                    code: "composed_schedule_stage_peak_mismatch",
+                    attempt_id: Some(self.attempt_id.clone()),
+                });
+            }
+            derived_peak = derived_peak.max(stage);
+            let Some(next_retained) = retained.checked_add(occurrence.retained_output_bytes) else {
+                failures.push(QualificationFailure {
+                    code: "composed_schedule_arithmetic_overflow",
+                    attempt_id: Some(self.attempt_id.clone()),
+                });
+                break;
+            };
+            retained = next_retained;
+        }
+        if self.consumer_structural_scope.is_empty() {
+            failures.push(QualificationFailure {
+                code: "missing_composed_consumer_scope",
+                attempt_id: Some(self.attempt_id.clone()),
+            });
+        }
+        if let Some(consumer_stage) = self
+            .attempt_wide_fixed_bytes
+            .checked_add(retained)
+            .and_then(|value| value.checked_add(self.consumer_additional_peak_bytes))
+        {
+            if self.consumer_stage_peak_bytes != consumer_stage {
+                failures.push(QualificationFailure {
+                    code: "composed_schedule_consumer_peak_mismatch",
+                    attempt_id: Some(self.attempt_id.clone()),
+                });
+            }
+            derived_peak = derived_peak.max(consumer_stage);
+        } else {
+            failures.push(QualificationFailure {
+                code: "composed_schedule_arithmetic_overflow",
+                attempt_id: Some(self.attempt_id.clone()),
+            });
+        }
+        if self.complete_phase_peak_bytes != derived_peak || self.grant_bytes < self.complete_phase_peak_bytes {
+            failures.push(QualificationFailure {
+                code: "composed_schedule_complete_peak_mismatch",
+                attempt_id: Some(self.attempt_id.clone()),
+            });
+        }
+        failures
+    }
+}
+
+fn is_engine_schedule_fingerprint(fingerprint: &str) -> bool {
+    let Some(hex) = fingerprint.strip_prefix("composed-schedule-fnv1a64:") else {
+        return false;
+    };
+    hex.len() == 16 && hex.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn qualification_failures(
+    measurement: &MeasuredRunArtifact,
+    provenance: &Provenance,
+    composed_schedules: &[ComposedScheduleArtifact],
+    require_overload_outcome: bool,
+) -> Vec<QualificationFailure> {
+    let composed = measurement.selected_queries.iter().any(|query| query.label == "pagerank_forceatlas2_join");
+    if !composed {
+        return Vec::new();
+    }
+    let mut failures = Vec::new();
+    let composed_attempts = measurement
+        .aggregate
+        .attempts
+        .iter()
+        .filter(|attempt| attempt.query_label == "pagerank_forceatlas2_join")
+        .collect::<Vec<_>>();
+    if composed_attempts.is_empty() || composed_schedules.is_empty() {
+        failures.push(QualificationFailure { code: "missing_composed_schedule", attempt_id: None });
+    }
+    let mut schedules_by_attempt = std::collections::BTreeMap::new();
+    for schedule in composed_schedules {
+        if schedules_by_attempt.insert(schedule.attempt_id.as_str(), schedule).is_some() {
+            failures.push(QualificationFailure {
+                code: "duplicate_composed_schedule_attempt",
+                attempt_id: Some(schedule.attempt_id.clone()),
+            });
+        }
+        failures.extend(schedule.failures());
+    }
+    for attempt in composed_attempts {
+        let Some(schedule) = schedules_by_attempt.get(attempt.attempt_id.as_str()) else {
+            failures.push(QualificationFailure {
+                code: "missing_composed_schedule",
+                attempt_id: Some(attempt.attempt_id.clone()),
+            });
+            continue;
+        };
+        if attempt.device_ordinal != Some(schedule.selected_ordinal)
+            || attempt.grant_bytes != Some(schedule.grant_bytes)
+            || attempt.grant_id != Some(schedule.grant_id)
+        {
+            failures.push(QualificationFailure {
+                code: "composed_schedule_attempt_binding_mismatch",
+                attempt_id: Some(attempt.attempt_id.clone()),
+            });
+        }
+        if !measurement.time_series.device_rows.iter().any(|row| {
+            row.device_ordinal == schedule.selected_ordinal
+                && row.cuda_free_bytes.is_some()
+                && row.nvml_used_bytes.is_some()
+        }) {
+            failures.push(QualificationFailure {
+                code: "missing_physical_memory_sample",
+                attempt_id: Some(attempt.attempt_id.clone()),
+            });
+        }
+        if !measurement.aggregate.placement.iter().any(|placement| {
+            placement.configuration.ordinal == schedule.selected_ordinal && placement.attempts_placed > 0
+        }) {
+            failures.push(QualificationFailure {
+                code: "missing_device_witness",
+                attempt_id: Some(attempt.attempt_id.clone()),
+            });
+        }
+    }
+    for schedule in composed_schedules {
+        if !measurement.aggregate.attempts.iter().any(|attempt| attempt.attempt_id == schedule.attempt_id) {
+            failures.push(QualificationFailure {
+                code: "composed_schedule_attempt_not_observed",
+                attempt_id: Some(schedule.attempt_id.clone()),
+            });
+        }
+    }
+    if provenance.repositories.root.dirty_manifest.sha256.is_empty()
+        || provenance.repositories.cudf_nexus.dirty_manifest.sha256.is_empty()
+        || provenance.repositories.cugraph_nexus.dirty_manifest.sha256.is_empty()
+    {
+        failures.push(QualificationFailure { code: "missing_source_hash", attempt_id: None });
+    }
+    if provenance.runner.executable.sha256.is_empty() {
+        failures.push(QualificationFailure { code: "missing_binary_hash", attempt_id: None });
+    }
+    if require_overload_outcome
+        && !measurement
+            .aggregate
+            .scenarios
+            .overload_fairness
+            .as_ref()
+            .is_some_and(|evidence| evidence.status == ClauseStatus::Evidenced)
+    {
+        failures.push(QualificationFailure { code: "missing_required_overload_outcome", attempt_id: None });
+    }
+    failures
 }
 
 /// Evidence for one profile that declares the S2 QPS-envelope contract.
@@ -955,5 +1289,48 @@ mod qps_envelope_tests {
 
         let truncated = QpsEnvelopeEvidence::from_steps(profile, &steps, 16, 64, true, &[(0, 0), (1, 64), (2, 64)]);
         assert_eq!(truncated.status, ClauseStatus::Failed);
+    }
+}
+
+#[cfg(test)]
+mod composed_schedule_tests {
+    use serde_json::Value;
+
+    use super::ComposedScheduleArtifact;
+
+    #[test]
+    fn complete_schedule_validates_and_serializes_as_versioned_evidence() {
+        let schedule = ComposedScheduleArtifact::test_complete();
+        assert!(schedule.failures().is_empty());
+        let value: Value = serde_json::to_value(schedule).unwrap();
+        assert_eq!(value["schema"], "datafusion_nexus.single_node_multi_gpu.composed_schedule.v1");
+        assert_eq!(value["version"], 1);
+        assert_eq!(value["occurrences"].as_array().unwrap().len(), 2);
+        assert_eq!(value["occurrences"][0]["order"], 0);
+        assert_eq!(value["consumer_structural_scope"], "scope-consumer");
+    }
+
+    #[test]
+    fn missing_or_contradictory_schedule_fails_closed() {
+        let mut missing = ComposedScheduleArtifact::test_complete();
+        missing.occurrences.clear();
+        let codes = missing.failures().into_iter().map(|failure| failure.code).collect::<Vec<_>>();
+        assert!(codes.contains(&"missing_composed_schedule_row"));
+        assert!(codes.contains(&"composed_schedule_complete_peak_mismatch"));
+
+        let mut contradictory = ComposedScheduleArtifact::test_complete();
+        contradictory.occurrences[1].order = 0;
+        contradictory.occurrences[1].occurrence_id = contradictory.occurrences[0].occurrence_id.clone();
+        contradictory.occurrences[1].stage_peak_bytes = 1;
+        contradictory.schedule_fingerprint = "not-an-engine-fingerprint".to_string();
+        contradictory.engine_fingerprint_matches_contents = false;
+        contradictory.grant_bytes = 1;
+        let codes = contradictory.failures().into_iter().map(|failure| failure.code).collect::<Vec<_>>();
+        assert!(codes.contains(&"contradictory_composed_schedule"));
+        assert!(codes.contains(&"duplicate_composed_schedule_occurrence"));
+        assert!(codes.contains(&"composed_schedule_stage_peak_mismatch"));
+        assert!(codes.contains(&"composed_schedule_fingerprint_invalid"));
+        assert!(codes.contains(&"composed_schedule_fingerprint_mismatch"));
+        assert!(codes.contains(&"composed_schedule_complete_peak_mismatch"));
     }
 }

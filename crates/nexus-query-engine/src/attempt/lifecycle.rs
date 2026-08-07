@@ -1,7 +1,8 @@
 //! Pure fixed execution-attempt lifecycle state.
 use crate::observability::{
-    AttemptAdmissionFact, AttemptAdmissionWaitFact, AttemptDisposition, AttemptFailureSummary, AttemptTerminalCommit,
-    AttemptTimestamps, CleanupFailureSummary, RuntimeTerminalOutcome,
+    AttemptAdmissionFact, AttemptAdmissionWaitFact, AttemptComposedScheduleProjection, AttemptDisposition,
+    AttemptFailureSummary, AttemptTerminalCommit, AttemptTimestamps, COMPOSED_SCHEDULE_PROJECTION_SCHEMA_V1,
+    CleanupFailureSummary, RuntimeTerminalOutcome,
 };
 #[cfg(test)]
 use crate::observability::{
@@ -36,6 +37,7 @@ pub(crate) struct AttemptLifecycle {
     pub admission_requested: Option<u64>,
     pub admitted: Option<(u64, AttemptAdmissionFact)>,
     pub admission_wait: Option<AttemptAdmissionWaitFact>,
+    pub composed_schedule: Option<AttemptComposedScheduleProjection>,
     pub physical: Option<u64>,
     pub gpu: Option<u64>,
     pub terminal: Option<(u64, RuntimeTerminalOutcome)>,
@@ -73,6 +75,7 @@ impl AttemptLifecycle {
             admission_requested: None,
             admitted: None,
             admission_wait: None,
+            composed_schedule: None,
             physical: None,
             gpu: None,
             terminal: None,
@@ -164,6 +167,64 @@ impl AttemptLifecycle {
             Some(_) => Err(AttemptLifecycleError::InvalidOrder {
                 boundary: "admission_wait",
                 reason: "conflicting_final_queue_fact",
+            }),
+        }
+    }
+
+    /// Attaches the immutable composed schedule after admission and before the
+    /// attempt can publish its report. Repeated identical attachment is
+    /// harmless; a conflicting or late attachment would make the sealed
+    /// report ambiguous and is rejected.
+    pub(crate) fn composed_schedule(
+        &mut self,
+        projection: AttemptComposedScheduleProjection,
+    ) -> Result<(), AttemptLifecycleError> {
+        if projection.schema != COMPOSED_SCHEDULE_PROJECTION_SCHEMA_V1 {
+            return Err(AttemptLifecycleError::InvalidOrder {
+                boundary: "composed_schedule",
+                reason: "unsupported_schedule_schema",
+            });
+        }
+        if !projection.fingerprint_matches_contents() {
+            return Err(AttemptLifecycleError::InvalidOrder {
+                boundary: "composed_schedule",
+                reason: "fingerprint_mismatch",
+            });
+        }
+        if self.admitted.is_none() {
+            return Err(AttemptLifecycleError::InvalidOrder {
+                boundary: "composed_schedule",
+                reason: "admission_not_granted",
+            });
+        }
+        if self.ready.is_some() || self.finalized {
+            return Err(AttemptLifecycleError::InvalidOrder {
+                boundary: "composed_schedule",
+                reason: "report_ready_already_recorded",
+            });
+        }
+        let (_, admission) = self.admitted.as_ref().expect("admission checked");
+        if projection.device_ordinal != admission.device_ordinal {
+            return Err(AttemptLifecycleError::InvalidOrder {
+                boundary: "composed_schedule",
+                reason: "device_ordinal_mismatch",
+            });
+        }
+        if projection.grant_bytes != admission.grant_bytes {
+            return Err(AttemptLifecycleError::InvalidOrder {
+                boundary: "composed_schedule",
+                reason: "grant_bytes_mismatch",
+            });
+        }
+        match &self.composed_schedule {
+            None => {
+                self.composed_schedule = Some(projection);
+                Ok(())
+            },
+            Some(current) if current == &projection => Ok(()),
+            Some(_) => Err(AttemptLifecycleError::InvalidOrder {
+                boundary: "composed_schedule",
+                reason: "conflicting_schedule_projection",
             }),
         }
     }
@@ -432,6 +493,32 @@ mod tests {
         AttemptAdmissionFact { admission_sequence: 7, admission_wait_ns: 3, device_ordinal: 2, grant_bytes: 4096 }
     }
 
+    fn projection() -> AttemptComposedScheduleProjection {
+        let mut projection = AttemptComposedScheduleProjection {
+            schema: crate::observability::COMPOSED_SCHEDULE_PROJECTION_SCHEMA_V1.to_owned(),
+            attempt_id: crate::observability::AttemptId::mint(),
+            device_ordinal: 2,
+            grant_id: 11,
+            grant_bytes: 4096,
+            attempt_wide_fixed_bytes: 0,
+            producer_occurrences: Vec::new(),
+            consumer_scope_fingerprint: "consumer".to_owned(),
+            consumer_additional_peak_bytes: 1,
+            consumer_stage_peak_bytes: 1,
+            complete_peak_bytes: 1,
+            fingerprint: String::new(),
+        };
+        projection.fingerprint = AttemptComposedScheduleProjection::fingerprint_for(
+            projection.attempt_wide_fixed_bytes,
+            &projection.producer_occurrences,
+            &projection.consumer_scope_fingerprint,
+            projection.consumer_additional_peak_bytes,
+            projection.consumer_stage_peak_bytes,
+            projection.complete_peak_bytes,
+        );
+        projection
+    }
+
     fn failed() -> RuntimeTerminalOutcome {
         RuntimeTerminalOutcome::Failed {
             error_code: AttemptFailureCode::Internal,
@@ -450,6 +537,37 @@ mod tests {
 
         assert_eq!(lifecycle.cleanup_failures, u64::MAX);
         assert!(!lifecycle.cleanup_failures_complete);
+    }
+
+    #[test]
+    fn composed_schedule_requires_admission_and_preserves_one_immutable_projection() {
+        let mut lifecycle = AttemptLifecycle::new(0);
+        let schedule = projection();
+        assert_eq!(
+            lifecycle.composed_schedule(schedule.clone()),
+            Err(AttemptLifecycleError::InvalidOrder { boundary: "composed_schedule", reason: "admission_not_granted" })
+        );
+
+        lifecycle.disposition(AttemptDisposition::Native).unwrap();
+        lifecycle.admission_requested(1).unwrap();
+        lifecycle.admitted(fact(), 2).unwrap();
+        lifecycle.composed_schedule(schedule.clone()).unwrap();
+        lifecycle.composed_schedule(schedule).unwrap();
+        let mut corrupted = projection();
+        corrupted.fingerprint = "composed-schedule-fnv1a64:0000000000000000".to_owned();
+        assert_eq!(
+            lifecycle.composed_schedule(corrupted),
+            Err(AttemptLifecycleError::InvalidOrder { boundary: "composed_schedule", reason: "fingerprint_mismatch" })
+        );
+        let mut conflicting = projection();
+        conflicting.grant_id = 12;
+        assert_eq!(
+            lifecycle.composed_schedule(conflicting),
+            Err(AttemptLifecycleError::InvalidOrder {
+                boundary: "composed_schedule",
+                reason: "conflicting_schedule_projection"
+            })
+        );
     }
 
     /// One row of the phase lifecycle table driven through the state machine.

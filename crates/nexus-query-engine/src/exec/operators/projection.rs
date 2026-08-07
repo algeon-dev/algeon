@@ -1,5 +1,5 @@
 use super::*;
-use crate::expr::ColumnRef;
+use crate::expr::alias_wrapped_column;
 
 pub(in crate::exec) fn validate_projection_capability(
     node: &ProjectionNode,
@@ -593,7 +593,7 @@ fn try_execute_column_only_projection(
     let mut selected_columns = Vec::with_capacity(node.outputs.len());
     let mut renames = Vec::new();
     for output in &node.outputs {
-        let Some(column) = projection_output_source_column(&output.expr) else {
+        let Some(column) = alias_wrapped_column(&output.expr) else {
             return Ok(None);
         };
         let source_name = column.name().to_string();
@@ -632,14 +632,6 @@ fn try_execute_column_only_projection(
         })?;
     }
     coerce_projection_output_schema(output, node, token, metrics).map(Some)
-}
-
-fn projection_output_source_column(expr: &Expr) -> Option<&ColumnRef> {
-    match expr {
-        Expr::Column(column) => Some(column),
-        Expr::Alias { expr, .. } => projection_output_source_column(expr),
-        _ => None,
-    }
 }
 
 fn coerce_projection_output_schema(

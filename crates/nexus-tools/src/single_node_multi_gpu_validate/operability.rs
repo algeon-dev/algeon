@@ -528,6 +528,7 @@ mod tests {
             succeeded: false,
             reached_gpu: true,
             graph_claim_calibration: None,
+            composed_schedule: None,
             device_ordinal: Some(0),
             grant_bytes: Some(1),
             admission_sequence: Some(1),
