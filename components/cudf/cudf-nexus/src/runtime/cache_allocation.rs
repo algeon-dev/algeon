@@ -20,10 +20,13 @@ use std::{
 use super::{CudaStream, DeviceId, Runtime, device_guard::DeviceGuard};
 use crate::core::{
     error::{Error, ErrorCode, Result},
-    memory::{DeviceMemoryResource, DeviceMemoryResourceUsage},
+    memory::{
+        AllocatorEventRead, AllocatorEventRingBounds, DeviceMemoryResource, DeviceMemoryResourceUsage,
+    },
 };
 
 static NEXT_CACHE_ALLOCATION_DOMAIN_ID: AtomicU64 = AtomicU64::new(1);
+static NEXT_CACHE_ALLOCATION_SCOPE_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Stable identity for one device-scoped cache allocation domain.
 ///
@@ -56,6 +59,43 @@ impl fmt::Display for CacheAllocationDomainId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
     }
+}
+
+/// Stable identity for one cache allocation scope instance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct CacheAllocationScopeId(NonZeroU64);
+
+impl CacheAllocationScopeId {
+    fn next() -> Result<Self> {
+        let value = NEXT_CACHE_ALLOCATION_SCOPE_ID.fetch_add(1, Ordering::Relaxed);
+        NonZeroU64::new(value).map(Self).ok_or_else(|| {
+            Error::new_with(
+                ErrorCode::InvariantViolation,
+                "runtime::cache_allocation::CacheAllocationScopeId::next",
+                "cache allocation scope identity space was exhausted",
+            )
+            .with_detail("scope_id", value.to_string())
+        })
+    }
+
+    pub fn get(self) -> u64 {
+        self.0.get()
+    }
+}
+
+impl fmt::Display for CacheAllocationScopeId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+/// Complete identity for one cache allocation scope instance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CacheAllocationScopeIdentity {
+    pub device: DeviceId,
+    pub domain_id: CacheAllocationDomainId,
+    pub scope_id: CacheAllocationScopeId,
+    pub generation: u64,
 }
 
 #[derive(Debug)]
@@ -193,7 +233,9 @@ impl CacheAllocationDomain {
             .with_stream(scope_stream)
             .with_memory_resource(memory_resource.clone())
             .build()?;
-        Ok(CacheAllocationScope { runtime, memory_resource, domain: self.clone() })
+        let scope_id = CacheAllocationScopeId::next()?;
+        let generation = scope_id.get();
+        Ok(CacheAllocationScope { runtime, memory_resource, domain: self.clone(), scope_id, generation })
     }
 
     /// Snapshot aggregate live-allocation accounting for every lease.
@@ -248,9 +290,36 @@ pub struct CacheAllocationScope {
     runtime: Runtime,
     memory_resource: DeviceMemoryResource,
     domain: CacheAllocationDomain,
+    scope_id: CacheAllocationScopeId,
+    generation: u64,
 }
 
 impl CacheAllocationScope {
+    /// Complete identity for this scope instance.
+    pub fn identity(&self) -> CacheAllocationScopeIdentity {
+        CacheAllocationScopeIdentity {
+            device: self.domain.device(),
+            domain_id: self.domain.id(),
+            scope_id: self.scope_id,
+            generation: self.generation,
+        }
+    }
+
+    /// Allocator event ring bounds for the scope-local ring (stub).
+    pub fn allocator_event_ring_bounds(&self) -> Result<AllocatorEventRingBounds> {
+        Ok(AllocatorEventRingBounds { capacity: 0, first_available_sequence: None, next_sequence: 0 })
+    }
+
+    /// Read one sequence from the scope-local ring (stub: always Pending).
+    pub fn read_allocator_event(&self, _sequence: u64) -> Result<AllocatorEventRead> {
+        Ok(AllocatorEventRead::Pending)
+    }
+
+    /// Synchronize the scope's stream (used as scope fence).
+    pub fn synchronize(&self) -> Result<()> {
+        self.runtime.synchronize()
+    }
+
     /// Shared physical cache allocation domain retained by this scope.
     pub fn domain(&self) -> &CacheAllocationDomain {
         &self.domain

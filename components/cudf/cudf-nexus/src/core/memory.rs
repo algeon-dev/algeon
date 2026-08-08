@@ -158,6 +158,8 @@ pub enum DeviceMemoryFailureSource {
     Physical,
     /// A stream reservation or reservation arena limit rejected the allocation.
     ReservationLimit,
+    /// A cache-scope or arena allocation limit rejected the allocation.
+    AllocationLimit,
     /// A newer native library reported a source this cudf version does not know.
     Unknown(u32),
 }
@@ -167,6 +169,9 @@ impl DeviceMemoryFailureSource {
         match value {
             value if value == cudf_sys::CUDF_MEMORY_FAILURE_SOURCE_PHYSICAL => Self::Physical,
             value if value == cudf_sys::CUDF_MEMORY_FAILURE_SOURCE_RESERVATION_LIMIT => Self::ReservationLimit,
+            // Newer kernels report AllocationLimit as 2; preserve as distinct variant so
+            // downstream `AllocationLimit` matching compiles even when native is older.
+            2 => Self::AllocationLimit,
             other => Self::Unknown(other),
         }
     }
@@ -186,6 +191,8 @@ pub enum DeviceMemoryFailureAllocationDomain {
     ReservationArena { arena_id: u64, reservation_id: u64 },
     /// A query memory domain rejected the allocation.
     QueryMemoryDomain { domain_id: u64, member_id: u64 },
+    /// A cache allocation scope rejected the allocation.
+    CacheAllocationScope { cache_domain_id: u64, scope_id: u64 },
     /// A newer native library reported a domain kind this cudf version does not know.
     Unknown { kind: u64, primary_id: u64, secondary_id: u64 },
 }
@@ -203,6 +210,8 @@ impl DeviceMemoryFailureAllocationDomain {
             value if value == cudf_sys::CUDF_MEMORY_FAILURE_DOMAIN_QUERY_MEMORY_DOMAIN as u64 => {
                 Some(Self::QueryMemoryDomain { domain_id: primary_id, member_id: secondary_id })
             },
+            // Native newer kind 4 is cache allocation scope; keep compiled even on older sys.
+            4 => Some(Self::CacheAllocationScope { cache_domain_id: primary_id, scope_id: secondary_id }),
             other => Some(Self::Unknown { kind: other, primary_id, secondary_id }),
         }
     }

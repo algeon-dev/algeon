@@ -1172,6 +1172,86 @@ impl HashJoin {
     }
 }
 
+
+/// Metadata-only estimator for hash-join pre-build reservation size.
+///
+/// This stub mirrors `cudf::ops::join::hash_join_pre_build_reservation_size_bytes_from_non_nullable_fixed_width_metadata`
+/// expected by `nexus-query-engine` composed consumer admission. It estimates from key type widths and row count without
+/// touching GPU state, so composed admission can size joins without a device.
+pub fn hash_join_pre_build_reservation_size_bytes_from_non_nullable_fixed_width_metadata(
+    key_type_ids: &[crate::core::types::TypeId],
+    rows: u64,
+    load_factor: f64,
+) -> crate::core::error::Result<usize> {
+    if key_type_ids.is_empty() {
+        return Err(crate::core::error::Error::new_with(
+            crate::core::error::ErrorCode::ForeignInvalidArgument,
+            "ops::join::hash_join_pre_build_reservation_size_bytes_from_non_nullable_fixed_width_metadata",
+            "hash join requires at least one key column",
+        ));
+    }
+    if !(0.0 < load_factor && load_factor < 1.0) {
+        return Err(crate::core::error::Error::new_with(
+            crate::core::error::ErrorCode::ForeignInvalidArgument,
+            "ops::join::hash_join_pre_build_reservation_size_bytes_from_non_nullable_fixed_width_metadata",
+            "load factor must be in (0, 1)",
+        ));
+    }
+    for type_id in key_type_ids {
+        match type_id {
+            crate::core::types::TypeId::String
+            | crate::core::types::TypeId::List
+            | crate::core::types::TypeId::Struct
+            | crate::core::types::TypeId::Dictionary32 => {
+                return Err(crate::core::error::Error::new_with(
+                    crate::core::error::ErrorCode::ForeignInvalidArgument,
+                    "ops::join::hash_join_pre_build_reservation_size_bytes_from_non_nullable_fixed_width_metadata",
+                    "only fixed-width non-nullable keys are supported",
+                ));
+            },
+            _ => {},
+        }
+    }
+    let rows_usize = usize::try_from(rows).map_err(|_| {
+        crate::core::error::Error::new_with(
+            crate::core::error::ErrorCode::SizeOverflow,
+            "ops::join::hash_join_pre_build_reservation_size_bytes_from_non_nullable_fixed_width_metadata",
+            "row count exceeds usize",
+        )
+    })?;
+    if rows_usize == 0 {
+        return Ok(0);
+    }
+    let bytes_per_key: usize = key_type_ids
+        .iter()
+        .map(|id| match id {
+            crate::core::types::TypeId::Int8 | crate::core::types::TypeId::UInt8 | crate::core::types::TypeId::Bool8 => 1,
+            crate::core::types::TypeId::Int16 | crate::core::types::TypeId::UInt16 => 2,
+            crate::core::types::TypeId::Int32 | crate::core::types::TypeId::UInt32 | crate::core::types::TypeId::Float32 => 4,
+            crate::core::types::TypeId::Int64
+            | crate::core::types::TypeId::UInt64
+            | crate::core::types::TypeId::Float64
+            | crate::core::types::TypeId::TimestampDays
+            | crate::core::types::TypeId::TimestampSeconds
+            | crate::core::types::TypeId::TimestampMilliseconds
+            | crate::core::types::TypeId::TimestampMicroseconds
+            | crate::core::types::TypeId::TimestampNanoseconds
+            | crate::core::types::TypeId::DurationDays
+            | crate::core::types::TypeId::DurationSeconds
+            | crate::core::types::TypeId::DurationMilliseconds
+            | crate::core::types::TypeId::DurationMicroseconds
+            | crate::core::types::TypeId::DurationNanoseconds => 8,
+            crate::core::types::TypeId::Decimal32 => 4,
+            crate::core::types::TypeId::Decimal64 => 8,
+            crate::core::types::TypeId::Decimal128 => 16,
+            _ => 8,
+        })
+        .sum();
+    let slots = ((rows as f64) / load_factor).ceil() as usize;
+    // Conservative estimate: slots * bytes_per_key plus hash-table overhead.
+    Ok(slots.saturating_mul(bytes_per_key).saturating_add(64))
+}
+
 fn is_hash_join_retained_preprocessing_reservation_gap(error: &Error) -> bool {
     error.code() == ErrorCode::ForeignInvalidArgument
         && error.detail_value("reservation_contract") == Some("hash_join_pre_build_reservation_size_bytes")

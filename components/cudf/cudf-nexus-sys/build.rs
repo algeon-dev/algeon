@@ -54,6 +54,24 @@ fn main() {
     let directives =
         build_support::cmake::read_cargo_link_directives(&install_dir).unwrap_or_else(|error| panic!("{error}"));
     build_support::cmake::replay_cargo_link_directives(&directives);
+    // The freshly built libcudf_rust shim lives under the CMake install
+    // prefix and must be tracked as `cudf-rust-runtime-lib` so downstream
+    // `scripts/build/rapids.rs` can bake the exact rpath. This is emitted
+    // here (rather than inside the discovery helper) because the shim path
+    // is the build output itself, not a discovered dependency.
+    {
+        let shim = install_dir.join("lib/libcudf_rust.so");
+        if shim.is_file() {
+            println!("cargo:rerun-if-changed={}", shim.display());
+            println!("cargo:cudf-rust-runtime-lib={}", shim.display());
+            println!("cargo:metadata=cudf-rust-runtime-lib={}", shim.display());
+        } else {
+            println!(
+                "cargo:warning=expected libcudf_rust shim at {} but it was missing; downstream rpath will be incomplete",
+                shim.display()
+            );
+        }
+    }
     build_support::cmake::emit_runtime_dep_library_metadata();
 
     // Track all native, binding-generation, compiler, and discovery inputs

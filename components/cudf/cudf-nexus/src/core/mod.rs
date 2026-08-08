@@ -14,7 +14,7 @@ pub mod types;
 
 pub(crate) use column::ColumnView;
 pub use column::{Column, DeviceBuffer, DeviceSlice, ValidatedFloat32DeviceBuffer, ValidatedInt64DeviceBufferRange};
-pub use error::{Error, ErrorCode, ErrorKind, ErrorStatus, Result};
+pub use error::{CudfErrorClassification, Error, ErrorCode, ErrorKind, ErrorStatus, Result, classify_cudf_error};
 pub use memory::{DeviceMemoryResource, DeviceMemoryResourceUsage};
 pub use scalar::Scalar;
 pub use table::Table;
