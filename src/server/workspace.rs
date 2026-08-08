@@ -124,7 +124,9 @@ impl SchemaProvider for NexusWorkspaceSchemaProvider {
             return Err(crate::error::Error::new(
                 crate::error::ErrorCode::InvalidRequest,
                 "datafusion_nexus.server.workspace.shadow_guard",
-                format!("workspace table `{name}` would shadow a backing source table; choose a different workspace name"),
+                format!(
+                    "workspace table `{name}` would shadow a backing source table; choose a different workspace name"
+                ),
             )
             .into());
         }

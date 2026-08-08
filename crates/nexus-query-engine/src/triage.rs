@@ -67,30 +67,28 @@ impl std::fmt::Display for TriageCode {
 impl From<QueryErrorCode> for TriageCode {
     fn from(code: QueryErrorCode) -> Self {
         match code {
-            QueryErrorCode::Cancelled => Self::Cancelled,
             QueryErrorCode::UnsupportedPlanShape => Self::UnsupportedPlanShape,
             QueryErrorCode::UnsupportedOperator => Self::UnsupportedOperator,
             QueryErrorCode::UnsupportedExpression => Self::UnsupportedExpression,
             QueryErrorCode::UnsupportedType => Self::UnsupportedType,
             QueryErrorCode::CudfUnsupported => Self::UnsupportedPlanShape,
             QueryErrorCode::InvalidPlan => Self::InvalidPlan,
-            QueryErrorCode::InvalidAttemptCorrelation => Self::InvalidInput,
-            QueryErrorCode::GraphInputInvalid => Self::InvalidInput,
-            QueryErrorCode::CudfInvalidInput => Self::InvalidInput,
             QueryErrorCode::MemoryReservationFailed => Self::MemoryReservationDenied,
-            QueryErrorCode::CudfResourceExhausted
-            | QueryErrorCode::SizeOverflow
-            | QueryErrorCode::HostMaterializationLimitExceeded => Self::ResourceExhausted,
             QueryErrorCode::ServiceOverloaded => Self::ServiceOverloaded,
             QueryErrorCode::SourceAccessDenied
             | QueryErrorCode::SourceUnauthenticated
             | QueryErrorCode::SourceObjectNotFound
             | QueryErrorCode::SourceTemporaryFailure => Self::SourceFailure,
-            QueryErrorCode::CudfTemporaryFailure
-            | QueryErrorCode::CudfPersistentFailure
-            | QueryErrorCode::CudfDependencyFailure => Self::DependencyFailure,
-            QueryErrorCode::CudfInvariantViolation => Self::InvariantViolation,
-            QueryErrorCode::Internal => Self::Internal,
+            _ => match code.kind() {
+                crate::error::QueryErrorKind::Cancelled => Self::Cancelled,
+                crate::error::QueryErrorKind::Planning => Self::InvalidPlan,
+                crate::error::QueryErrorKind::InvalidInput => Self::InvalidInput,
+                crate::error::QueryErrorKind::Unsupported => Self::UnsupportedPlanShape,
+                crate::error::QueryErrorKind::ResourceExhausted => Self::ResourceExhausted,
+                crate::error::QueryErrorKind::DependencyFailure => Self::DependencyFailure,
+                crate::error::QueryErrorKind::InvariantViolation => Self::InvariantViolation,
+                crate::error::QueryErrorKind::Internal => Self::Internal,
+            },
         }
     }
 }

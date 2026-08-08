@@ -237,34 +237,46 @@ pub enum AttemptFailureCode {
     CleanupCallbackAbandoned,
 }
 
+impl From<crate::error::QueryErrorCode> for AttemptFailureCode {
+    fn from(code: crate::error::QueryErrorCode) -> Self {
+        Self::from_query_error_code(code)
+    }
+}
+
+const fn attempt_failure_code_for_query_error(code: crate::error::QueryErrorCode) -> AttemptFailureCode {
+    match code {
+        crate::error::QueryErrorCode::Cancelled => AttemptFailureCode::Cancelled,
+        crate::error::QueryErrorCode::UnsupportedPlanShape => AttemptFailureCode::UnsupportedPlanShape,
+        crate::error::QueryErrorCode::UnsupportedOperator => AttemptFailureCode::UnsupportedOperator,
+        crate::error::QueryErrorCode::UnsupportedExpression => AttemptFailureCode::UnsupportedExpression,
+        crate::error::QueryErrorCode::UnsupportedType => AttemptFailureCode::UnsupportedType,
+        crate::error::QueryErrorCode::InvalidPlan => AttemptFailureCode::InvalidPlan,
+        crate::error::QueryErrorCode::InvalidAttemptCorrelation => AttemptFailureCode::InvalidAttemptCorrelation,
+        crate::error::QueryErrorCode::GraphInputInvalid => AttemptFailureCode::GraphInputInvalid,
+        crate::error::QueryErrorCode::CudfInvalidInput => AttemptFailureCode::CudfInvalidInput,
+        crate::error::QueryErrorCode::CudfUnsupported => AttemptFailureCode::CudfUnsupported,
+        crate::error::QueryErrorCode::CudfResourceExhausted => AttemptFailureCode::CudfResourceExhausted,
+        crate::error::QueryErrorCode::SizeOverflow => AttemptFailureCode::SizeOverflow,
+        crate::error::QueryErrorCode::HostMaterializationLimitExceeded => {
+            AttemptFailureCode::HostMaterializationLimitExceeded
+        },
+        crate::error::QueryErrorCode::CudfTemporaryFailure => AttemptFailureCode::CudfTemporaryFailure,
+        crate::error::QueryErrorCode::CudfPersistentFailure => AttemptFailureCode::CudfPersistentFailure,
+        crate::error::QueryErrorCode::CudfDependencyFailure => AttemptFailureCode::CudfDependencyFailure,
+        crate::error::QueryErrorCode::SourceAccessDenied => AttemptFailureCode::SourceAccessDenied,
+        crate::error::QueryErrorCode::SourceUnauthenticated => AttemptFailureCode::SourceUnauthenticated,
+        crate::error::QueryErrorCode::SourceObjectNotFound => AttemptFailureCode::SourceObjectNotFound,
+        crate::error::QueryErrorCode::SourceTemporaryFailure => AttemptFailureCode::SourceTemporaryFailure,
+        crate::error::QueryErrorCode::CudfInvariantViolation => AttemptFailureCode::CudfInvariantViolation,
+        crate::error::QueryErrorCode::MemoryReservationFailed => AttemptFailureCode::MemoryReservationFailed,
+        crate::error::QueryErrorCode::ServiceOverloaded => AttemptFailureCode::ServiceOverloaded,
+        crate::error::QueryErrorCode::Internal => AttemptFailureCode::Internal,
+    }
+}
+
 impl AttemptFailureCode {
     pub const fn from_query_error_code(code: crate::error::QueryErrorCode) -> Self {
-        match code {
-            crate::error::QueryErrorCode::Cancelled => Self::Cancelled,
-            crate::error::QueryErrorCode::UnsupportedPlanShape => Self::UnsupportedPlanShape,
-            crate::error::QueryErrorCode::UnsupportedOperator => Self::UnsupportedOperator,
-            crate::error::QueryErrorCode::UnsupportedExpression => Self::UnsupportedExpression,
-            crate::error::QueryErrorCode::UnsupportedType => Self::UnsupportedType,
-            crate::error::QueryErrorCode::InvalidPlan => Self::InvalidPlan,
-            crate::error::QueryErrorCode::InvalidAttemptCorrelation => Self::InvalidAttemptCorrelation,
-            crate::error::QueryErrorCode::GraphInputInvalid => Self::GraphInputInvalid,
-            crate::error::QueryErrorCode::CudfInvalidInput => Self::CudfInvalidInput,
-            crate::error::QueryErrorCode::CudfUnsupported => Self::CudfUnsupported,
-            crate::error::QueryErrorCode::CudfResourceExhausted => Self::CudfResourceExhausted,
-            crate::error::QueryErrorCode::SizeOverflow => Self::SizeOverflow,
-            crate::error::QueryErrorCode::HostMaterializationLimitExceeded => Self::HostMaterializationLimitExceeded,
-            crate::error::QueryErrorCode::CudfTemporaryFailure => Self::CudfTemporaryFailure,
-            crate::error::QueryErrorCode::CudfPersistentFailure => Self::CudfPersistentFailure,
-            crate::error::QueryErrorCode::CudfDependencyFailure => Self::CudfDependencyFailure,
-            crate::error::QueryErrorCode::SourceAccessDenied => Self::SourceAccessDenied,
-            crate::error::QueryErrorCode::SourceUnauthenticated => Self::SourceUnauthenticated,
-            crate::error::QueryErrorCode::SourceObjectNotFound => Self::SourceObjectNotFound,
-            crate::error::QueryErrorCode::SourceTemporaryFailure => Self::SourceTemporaryFailure,
-            crate::error::QueryErrorCode::CudfInvariantViolation => Self::CudfInvariantViolation,
-            crate::error::QueryErrorCode::MemoryReservationFailed => Self::MemoryReservationFailed,
-            crate::error::QueryErrorCode::ServiceOverloaded => Self::ServiceOverloaded,
-            crate::error::QueryErrorCode::Internal => Self::Internal,
-        }
+        attempt_failure_code_for_query_error(code)
     }
 }
 
@@ -623,7 +635,7 @@ impl AttemptFailureSummary {
         }
         Self {
             origin: AttemptFailureOrigin::Native,
-            code: AttemptFailureCode::from_query_error_code(error.code()),
+            code: error.code().into(),
             status: AttemptFailureStatus::from_query_error_status(error.status()),
             operation: AttemptFailureOperation::from_native_operation(error.operation()),
             text: None,

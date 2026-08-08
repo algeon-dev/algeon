@@ -334,6 +334,11 @@ pub(super) struct AdmissionRequest {
 }
 
 impl AdmissionRequest {
+    #[cfg(test)]
+    pub(super) fn requirement_for_device(&self, _device_ordinal: usize) -> Option<&AttemptRequirement> {
+        Some(&self.requirement)
+    }
+
     /// Captures the controller's immutable finite-overtake state at the
     /// moment this queued request is selected for placement. The request is
     /// removed immediately afterwards, so later snapshots cannot recover

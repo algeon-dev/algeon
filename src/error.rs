@@ -601,9 +601,7 @@ fn redact_uri_tokens(message: &str) -> String {
 fn code_for_cudf_error(error: &cudf::Error) -> ErrorCode {
     match cudf::classify_cudf_error(error) {
         cudf::CudfErrorClassification::SizeOverflow => ErrorCode::SizeOverflow,
-        cudf::CudfErrorClassification::HostMaterializationLimitExceeded => {
-            ErrorCode::HostMaterializationLimitExceeded
-        },
+        cudf::CudfErrorClassification::HostMaterializationLimitExceeded => ErrorCode::HostMaterializationLimitExceeded,
         cudf::CudfErrorClassification::ResourceExhausted => ErrorCode::CudfResourceExhausted,
         cudf::CudfErrorClassification::TemporaryFailure => ErrorCode::CudfTemporaryFailure,
         cudf::CudfErrorClassification::PersistentFailure => ErrorCode::CudfPersistentFailure,

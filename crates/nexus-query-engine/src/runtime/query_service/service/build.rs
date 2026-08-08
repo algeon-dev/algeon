@@ -319,6 +319,10 @@ impl QueryService {
             unknown_isolation_closure_pause: Mutex::new(None),
             #[cfg(test)]
             protection_retarget_failure_after_release: AtomicBool::new(false),
+            #[cfg(test)]
+            direct_placement_resolution_failure: AtomicBool::new(false),
+            #[cfg(test)]
+            direct_provisional_cleanup_pause: Mutex::new(None),
             next_admission_request_id: AtomicU64::new(1),
             next_submission_seq: AtomicU64::new(1),
             next_admission_sequence: AtomicU64::new(1),

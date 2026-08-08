@@ -1,3 +1,6 @@
+#[path = "backend_metric_descriptor_tests.rs"]
+mod backend_metric_descriptor_tests;
+
 use std::{
     fs::{self, File},
     path::Path,

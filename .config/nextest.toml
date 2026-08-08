@@ -33,21 +33,15 @@ max-threads = 1
 [[profile.default.overrides]]
 filter = '''
 (package(datafusion-nexus) & kind(lib))
-| (package(datafusion-nexus) & binary(attempt_lifecycle_tests))
 | (package(datafusion-nexus) & binary(cugraph_tests))
-| (package(datafusion-nexus) & binary(cuvs_sql_gpu_tests))
 | (package(datafusion-nexus) & binary(iceberg_tests))
 | (package(datafusion-nexus) & binary(native_exec_tests))
-| (package(datafusion-nexus) & binary(native_metrics_tests))
 | (package(datafusion-nexus) & binary(native_runtime_pruning_tests))
 | (package(datafusion-nexus) & binary(native_tpcds_parity_tests))
-| (package(datafusion-nexus) & binary(server_cugraph_tests))
-| (package(datafusion-nexus) & binary(server_cuvs_tests))
+| (package(datafusion-nexus) & binary(root_gpu_tests))
 | (package(datafusion-nexus) & binary(server_tests))
-| (package(datafusion-nexus) & binary(session_config_tests))
 | (package(nexus-query-engine) & kind(lib))
-| (package(nexus-query-engine) & binary(gpu_backend_fault_injection))
-| (package(nexus-query-engine) & binary(gpu_backend_heterogeneous_active_limits))
+| (package(nexus-query-engine) & binary(gpu_backend_shared_tests))
 | (package(nexus-query-engine) & binary(native_pipeline_execution_tests))
 '''
 test-group = "gpu"
@@ -55,8 +49,7 @@ test-group = "gpu"
 [[profile.default.overrides]]
 filter = '''
 (package(datafusion-nexus) & binary(p6_device_identity_tests))
-| (package(nexus-query-engine) & binary(gpu_allocator_event_correlation))
-| (package(nexus-query-engine) & binary(query_service_allocator_lifecycle))
+| (package(nexus-query-engine) & binary(gpu_allocator_exclusive_tests))
 '''
 test-group = "gpu-exclusive"
 threads-required = "num-test-threads"

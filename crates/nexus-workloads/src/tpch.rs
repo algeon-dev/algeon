@@ -16,6 +16,7 @@ pub use dataset::{
 pub use fixture::write_tiny_tpch_parquet_dataset;
 pub use registration::{register_tpch_table_layout, register_tpch_tables};
 
-pub use crate::NEXUS_PARQUET_DIR_ENV;
-
-pub use crate::error::{TpchWorkloadError, TpchWorkloadResult};
+pub use crate::{
+    NEXUS_PARQUET_DIR_ENV,
+    error::{TpchWorkloadError, TpchWorkloadResult},
+};

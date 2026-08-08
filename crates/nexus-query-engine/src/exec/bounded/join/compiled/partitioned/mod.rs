@@ -305,4 +305,3 @@ pub(super) fn join_keys_for_side(node: &JoinNode, side: JoinSide) -> Vec<String>
         })
         .collect()
 }
-

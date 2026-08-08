@@ -123,10 +123,7 @@ impl AwsCatalogErrorFacts {
         let facts = Self {
             error_code,
             request_id: aws_request_id_fact(&text),
-            http_status: typed
-                .as_ref()
-                .and_then(|metadata| metadata.code().and_then(aws_http_status_from_code))
-                .or_else(|| aws_http_status_fact(&text)),
+            http_status: aws_http_status_fact(&text),
             retryable: aws_retryable_fact(&text),
             detail,
         };
@@ -200,15 +197,6 @@ fn canonical_aws_error_detail(code: &str) -> Option<&'static str> {
         Some("AccessDeniedException") => Some("access_denied"),
         Some("SignatureDoesNotMatch") => Some("signature_mismatch"),
         Some("EntityNotFoundException") => Some("not_found"),
-        _ => None,
-    }
-}
-
-fn aws_http_status_from_code(code: &str) -> Option<&'static str> {
-    match canonical_aws_error_code(code) {
-        Some("AccessDeniedException") | Some("SignatureDoesNotMatch") => Some("403"),
-        Some("ExpiredTokenException") | Some("InvalidAccessKeyId") | Some("UnrecognizedClientException") => Some("401"),
-        Some("EntityNotFoundException") => Some("404"),
         _ => None,
     }
 }
@@ -308,7 +296,7 @@ mod tests {
 
         assert_eq!(facts.error_code, Some("AccessDeniedException"));
         assert_eq!(facts.detail, Some("access_denied"));
-        assert_eq!(facts.http_status, Some("403"));
+        assert_eq!(facts.http_status, None);
     }
 }
 

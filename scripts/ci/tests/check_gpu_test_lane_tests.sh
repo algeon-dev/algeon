@@ -174,7 +174,7 @@ printf '%s\n' 'datafusion-nexus::fault_injection_unclassified' >>"${tmp_dir}/unc
 make_inventory "${tmp_dir}/unclassified" "${tmp_dir}/unclassified.json"
 run_shell_case unclassified_binary 1 "unclassified test binary" "${tmp_dir}/unclassified.json"
 
-grep -vFx 'datafusion-nexus::server_cugraph_tests' "${tmp_dir}/expected" >"${tmp_dir}/feature-gated"
+grep -vFx 'datafusion-nexus::cugraph_tests' "${tmp_dir}/expected" >"${tmp_dir}/feature-gated"
 make_inventory "${tmp_dir}/feature-gated" "${tmp_dir}/feature-gated.json"
 run_shell_case stale_all_features 1 "stale all-feature catalog entry" "${tmp_dir}/feature-gated.json"
 run_shell_case stale_explicit_features 0 "absent from explicit narrower feature inventory" "${tmp_dir}/feature-gated.json" 0 server

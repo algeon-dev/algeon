@@ -46,16 +46,12 @@ async-trait = { workspace = true }
 # autotests = false above: every tests/*.rs harness must be registered here
 # explicitly — unregistered files are silently ignored by cargo.
 [[test]]
-name = "gpu_backend_heterogeneous_active_limits"
-path = "tests/gpu_backend_heterogeneous_active_limits.rs"
+name = "gpu_backend_shared_tests"
+path = "tests/gpu_backend_shared_tests.rs"
 
 [[test]]
-name = "gpu_backend_fault_injection"
-path = "tests/gpu_backend_fault_injection.rs"
-
-[[test]]
-name = "gpu_allocator_event_correlation"
-path = "tests/gpu_allocator_event_correlation.rs"
+name = "gpu_allocator_exclusive_tests"
+path = "tests/gpu_allocator_exclusive_tests.rs"
 
 [[test]]
 name = "native_contract_tests"
@@ -68,11 +64,3 @@ path = "tests/native_pipeline_execution_tests.rs"
 [[test]]
 name = "public_api_boundary"
 path = "tests/public_api_boundary.rs"
-
-[[test]]
-name = "backend_metric_descriptor_tests"
-path = "tests/backend_metric_descriptor_tests.rs"
-
-[[test]]
-name = "query_service_allocator_lifecycle"
-path = "tests/query_service_allocator_lifecycle.rs"

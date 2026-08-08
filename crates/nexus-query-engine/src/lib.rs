@@ -22,14 +22,6 @@
 #[cfg(test)]
 extern crate self as nexus_query_engine;
 
-// This public-route execution suite needs synthetic admission and fault
-// injection fixtures that must remain crate-private. Keeping its source under
-// `tests/` preserves its focused fixture layout while compiling it only as a
-// unit-test module prevents Cargo consumers from enabling those hooks.
-#[cfg(test)]
-#[path = "../tests/native_execution_tests.rs"]
-mod native_execution_integration_tests;
-
 // These focused contract sources exercise crate-private reservation and frame
 // ownership hooks.  They remain outside the production facade while compiling
 // with the engine's unit-test crate.
@@ -39,6 +31,10 @@ mod reservation_tracker_contracts;
 #[cfg(test)]
 #[path = "../tests/native_contract_tests/yielded_frame.rs"]
 mod yielded_frame;
+
+#[cfg(test)]
+#[path = "../tests/native_execution_tests.rs"]
+mod native_execution_integration_tests;
 
 pub mod admission;
 /// Execution-attempt ownership, cancellation, lifecycle, and completion delivery.

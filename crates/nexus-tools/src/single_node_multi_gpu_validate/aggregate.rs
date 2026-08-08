@@ -155,9 +155,7 @@ impl From<datafusion_nexus::attempt::GraphClaimCalibrationNonPhysicalReason>
         match value {
             datafusion_nexus::attempt::GraphClaimCalibrationNonPhysicalReason::BfsSingleflightFollower {
                 leader_attempt_id,
-            } => Self::BfsSingleflightFollower {
-                leader_attempt_id: leader_attempt_id.map(|id| id.to_string()),
-            },
+            } => Self::BfsSingleflightFollower { leader_attempt_id: leader_attempt_id.map(|id| id.to_string()) },
             datafusion_nexus::attempt::GraphClaimCalibrationNonPhysicalReason::GraphMemoryAdmissionDenied => {
                 Self::GraphMemoryAdmissionDenied
             },
