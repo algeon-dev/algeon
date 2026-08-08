@@ -345,7 +345,7 @@ impl CugraphAlgoExec {
                             self.graph_claim_calibration_capture
                                 .record_bfs_singleflight_follower(follower.leader_attempt_id());
                             match GraphBfsFollowerRoute::for_gpu_follower(result.kind()) {
-                                GraphBfsFollowerRoute::HandoffGpuResult => {
+                                GraphBfsFollowerRoute::HandoffGpu => {
                                     let handle = result.gpu_handle().expect("GPU route requires a GPU publication");
                                     follower.record_copy();
                                     self.record_bfs_singleflight_gpu_result_follower_metrics(
@@ -357,7 +357,7 @@ impl CugraphAlgoExec {
                                     );
                                     return Ok((self.gpu_result_input_name.clone(), handle));
                                 },
-                                GraphBfsFollowerRoute::UploadHostResult => {
+                                GraphBfsFollowerRoute::UploadHost => {
                                     let batches =
                                         result.host_batches().expect("host upload route requires host batches");
                                     let schema = self.schema();
@@ -381,8 +381,7 @@ impl CugraphAlgoExec {
                                     );
                                     return Ok((self.gpu_result_input_name.clone(), handle));
                                 },
-                                GraphBfsFollowerRoute::ReuseHostResult
-                                | GraphBfsFollowerRoute::MaterializeGpuResult => {
+                                GraphBfsFollowerRoute::ReuseHost | GraphBfsFollowerRoute::MaterializeGpu => {
                                     unreachable!("GPU follower route must accept a GPU-resident output")
                                 },
                             }
@@ -536,7 +535,7 @@ impl CugraphAlgoExec {
                             self.graph_claim_calibration_capture
                                 .record_bfs_singleflight_follower(follower.leader_attempt_id());
                             match GraphBfsFollowerRoute::for_host_follower(result.kind()) {
-                                GraphBfsFollowerRoute::ReuseHostResult => {
+                                GraphBfsFollowerRoute::ReuseHost => {
                                     let batches =
                                         result.host_batches().expect("host reuse route requires host batches");
                                     follower.record_copy();
@@ -550,7 +549,7 @@ impl CugraphAlgoExec {
                                         .expect("host reuse route requires a host publication");
                                     return Ok(output.record_datafusion_output(metrics));
                                 },
-                                GraphBfsFollowerRoute::MaterializeGpuResult => {
+                                GraphBfsFollowerRoute::MaterializeGpu => {
                                     let handle = result
                                         .gpu_handle()
                                         .expect("host materialization route requires a GPU publication");
@@ -577,7 +576,7 @@ impl CugraphAlgoExec {
                                     );
                                     return Ok(output.record_datafusion_output(metrics));
                                 },
-                                GraphBfsFollowerRoute::UploadHostResult | GraphBfsFollowerRoute::HandoffGpuResult => {
+                                GraphBfsFollowerRoute::UploadHost | GraphBfsFollowerRoute::HandoffGpu => {
                                     unreachable!("host follower route must produce host Arrow")
                                 },
                             }

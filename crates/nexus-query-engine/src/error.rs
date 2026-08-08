@@ -324,6 +324,67 @@ pub const fn status_for_code(code: QueryErrorCode) -> QueryErrorStatus {
     }
 }
 
+pub(crate) const fn triage_code_for_query_error(code: QueryErrorCode) -> crate::triage::TriageCode {
+    match code {
+        QueryErrorCode::Cancelled => crate::triage::TriageCode::Cancelled,
+        QueryErrorCode::UnsupportedPlanShape => crate::triage::TriageCode::UnsupportedPlanShape,
+        QueryErrorCode::UnsupportedOperator => crate::triage::TriageCode::UnsupportedOperator,
+        QueryErrorCode::UnsupportedExpression => crate::triage::TriageCode::UnsupportedExpression,
+        QueryErrorCode::UnsupportedType => crate::triage::TriageCode::UnsupportedType,
+        QueryErrorCode::InvalidPlan => crate::triage::TriageCode::InvalidPlan,
+        QueryErrorCode::InvalidAttemptCorrelation
+        | QueryErrorCode::GraphInputInvalid
+        | QueryErrorCode::CudfInvalidInput => crate::triage::TriageCode::InvalidInput,
+        QueryErrorCode::CudfUnsupported => crate::triage::TriageCode::UnsupportedPlanShape,
+        QueryErrorCode::CudfResourceExhausted
+        | QueryErrorCode::SizeOverflow
+        | QueryErrorCode::HostMaterializationLimitExceeded => crate::triage::TriageCode::ResourceExhausted,
+        QueryErrorCode::CudfTemporaryFailure
+        | QueryErrorCode::CudfPersistentFailure
+        | QueryErrorCode::CudfDependencyFailure => crate::triage::TriageCode::DependencyFailure,
+        QueryErrorCode::CudfInvariantViolation => crate::triage::TriageCode::InvariantViolation,
+        QueryErrorCode::ServiceOverloaded => crate::triage::TriageCode::ServiceOverloaded,
+        QueryErrorCode::Internal => crate::triage::TriageCode::Internal,
+        QueryErrorCode::SourceAccessDenied
+        | QueryErrorCode::SourceUnauthenticated
+        | QueryErrorCode::SourceObjectNotFound
+        | QueryErrorCode::SourceTemporaryFailure => crate::triage::TriageCode::SourceFailure,
+        QueryErrorCode::MemoryReservationFailed => crate::triage::TriageCode::MemoryReservationDenied,
+    }
+}
+
+pub(crate) const fn attempt_failure_code_for_query_error(
+    code: QueryErrorCode,
+) -> crate::observability::AttemptFailureCode {
+    use crate::observability::AttemptFailureCode;
+    match code {
+        QueryErrorCode::Cancelled => AttemptFailureCode::Cancelled,
+        QueryErrorCode::UnsupportedPlanShape => AttemptFailureCode::UnsupportedPlanShape,
+        QueryErrorCode::UnsupportedOperator => AttemptFailureCode::UnsupportedOperator,
+        QueryErrorCode::UnsupportedExpression => AttemptFailureCode::UnsupportedExpression,
+        QueryErrorCode::UnsupportedType => AttemptFailureCode::UnsupportedType,
+        QueryErrorCode::InvalidPlan => AttemptFailureCode::InvalidPlan,
+        QueryErrorCode::InvalidAttemptCorrelation => AttemptFailureCode::InvalidAttemptCorrelation,
+        QueryErrorCode::GraphInputInvalid => AttemptFailureCode::GraphInputInvalid,
+        QueryErrorCode::CudfInvalidInput => AttemptFailureCode::CudfInvalidInput,
+        QueryErrorCode::CudfUnsupported => AttemptFailureCode::CudfUnsupported,
+        QueryErrorCode::CudfResourceExhausted => AttemptFailureCode::CudfResourceExhausted,
+        QueryErrorCode::SizeOverflow => AttemptFailureCode::SizeOverflow,
+        QueryErrorCode::HostMaterializationLimitExceeded => AttemptFailureCode::HostMaterializationLimitExceeded,
+        QueryErrorCode::CudfTemporaryFailure => AttemptFailureCode::CudfTemporaryFailure,
+        QueryErrorCode::CudfPersistentFailure => AttemptFailureCode::CudfPersistentFailure,
+        QueryErrorCode::CudfDependencyFailure => AttemptFailureCode::CudfDependencyFailure,
+        QueryErrorCode::SourceAccessDenied => AttemptFailureCode::SourceAccessDenied,
+        QueryErrorCode::SourceUnauthenticated => AttemptFailureCode::SourceUnauthenticated,
+        QueryErrorCode::SourceObjectNotFound => AttemptFailureCode::SourceObjectNotFound,
+        QueryErrorCode::SourceTemporaryFailure => AttemptFailureCode::SourceTemporaryFailure,
+        QueryErrorCode::CudfInvariantViolation => AttemptFailureCode::CudfInvariantViolation,
+        QueryErrorCode::MemoryReservationFailed => AttemptFailureCode::MemoryReservationFailed,
+        QueryErrorCode::ServiceOverloaded => AttemptFailureCode::ServiceOverloaded,
+        QueryErrorCode::Internal => AttemptFailureCode::Internal,
+    }
+}
+
 /// Machine-readable facts attached to a [`QueryError`].
 ///
 /// Fact keys are static strings so they can be treated as a documented contract
@@ -365,7 +426,9 @@ impl Facts {
 }
 
 /// Structured native-engine error with stable classification and facts.
-pub struct QueryError {
+pub struct QueryError(Box<QueryErrorRepr>);
+
+struct QueryErrorRepr {
     query_id: Option<QueryId>,
     trace_id: Option<TraceId>,
     code: QueryErrorCode,
@@ -420,7 +483,7 @@ impl QueryError {
         let message = message.into();
         assert!(!operation.is_empty(), "nexus-query-engine error operation must not be empty");
         assert!(!message.is_empty(), "nexus-query-engine error message must not be empty");
-        Self {
+        Self(Box::new(QueryErrorRepr {
             query_id: None,
             trace_id: None,
             code,
@@ -431,7 +494,7 @@ impl QueryError {
             graph_cache_scope_peak_bytes: None,
             source: None,
             cleanup_disposition: None,
-        }
+        }))
     }
 
     /// Marks an owner-reported cleanup wait as an elapsed deadline.
@@ -441,12 +504,12 @@ impl QueryError {
     /// by itself authorize indefinite cleanup retries.
     #[must_use]
     pub(crate) fn with_cleanup_deadline_elapsed(mut self) -> Self {
-        self.cleanup_disposition = Some(CleanupDisposition::DeadlineElapsed);
+        self.0.cleanup_disposition = Some(CleanupDisposition::DeadlineElapsed);
         self
     }
 
     pub(crate) fn is_cleanup_deadline_elapsed(&self) -> bool {
-        self.cleanup_disposition == Some(CleanupDisposition::DeadlineElapsed)
+        self.0.cleanup_disposition == Some(CleanupDisposition::DeadlineElapsed)
     }
 
     /// Adds one machine-readable fact.
@@ -456,14 +519,14 @@ impl QueryError {
     /// [`ToString`]. Duplicate keys panic.
     #[must_use]
     pub fn with_fact(mut self, key: &'static str, value: impl ToString) -> Self {
-        self.facts.insert(key, value.to_string());
+        self.0.facts.insert(key, value.to_string());
         self
     }
 
     #[must_use]
     pub(crate) fn with_fact_if_absent(mut self, key: &'static str, value: impl ToString) -> Self {
-        if self.facts.get(key).is_none() {
-            self.facts.insert(key, value.to_string());
+        if self.0.facts.get(key).is_none() {
+            self.0.facts.insert(key, value.to_string());
         }
         self
     }
@@ -473,15 +536,15 @@ impl QueryError {
     #[cfg(any(feature = "cugraph", test))]
     #[must_use]
     pub(crate) fn with_cugraph_allocation_source(mut self, source: CugraphAllocationSource) -> Self {
-        self.facts.insert("cugraph_allocation_source", source.as_str().to_string());
-        self.cugraph_allocation_source = Some(source);
+        self.0.facts.insert("cugraph_allocation_source", source.as_str().to_string());
+        self.0.cugraph_allocation_source = Some(source);
         self
     }
 
     /// Returns the closed cuGraph allocation provenance, when the cuGraph
     /// boundary supplied one.
     pub const fn cugraph_allocation_source(&self) -> Option<CugraphAllocationSource> {
-        self.cugraph_allocation_source
+        self.0.cugraph_allocation_source
     }
 
     /// Retains an exact high-water mark from a completed resident-graph cache
@@ -490,7 +553,7 @@ impl QueryError {
     #[cfg(feature = "cugraph")]
     #[must_use]
     pub(crate) fn with_graph_cache_scope_peak_bytes(mut self, peak_bytes: u64) -> Self {
-        self.graph_cache_scope_peak_bytes = Some(peak_bytes);
+        self.0.graph_cache_scope_peak_bytes = Some(peak_bytes);
         self
     }
 
@@ -499,15 +562,15 @@ impl QueryError {
     /// proof.
     #[cfg(feature = "cugraph")]
     pub(crate) const fn graph_cache_scope_peak_bytes(&self) -> Option<u64> {
-        self.graph_cache_scope_peak_bytes
+        self.0.graph_cache_scope_peak_bytes
     }
 
     /// Assigns a query-wide diagnostic correlation id and mirrors it into facts.
     #[must_use]
     pub fn with_query_id(mut self, query_id: impl Into<QueryId>) -> Self {
         let query_id = query_id.into();
-        self.facts.set("query_id", query_id.to_string());
-        self.query_id = Some(query_id);
+        self.0.facts.set("query_id", query_id.to_string());
+        self.0.query_id = Some(query_id);
         self
     }
 
@@ -515,8 +578,8 @@ impl QueryError {
     #[must_use]
     pub fn with_trace_id(mut self, trace_id: impl Into<TraceId>) -> Self {
         let trace_id = trace_id.into();
-        self.facts.set("trace_id", trace_id.to_string());
-        self.trace_id = Some(trace_id);
+        self.0.facts.set("trace_id", trace_id.to_string());
+        self.0.trace_id = Some(trace_id);
         self
     }
 
@@ -524,7 +587,7 @@ impl QueryError {
     #[must_use]
     pub fn with_source<E>(mut self, source: E) -> Self
     where E: StdError + Send + Sync + 'static {
-        self.source = Some(Box::new(source));
+        self.0.source = Some(Box::new(source));
         self
     }
 
@@ -644,51 +707,51 @@ impl QueryError {
 
     /// Returns the stable machine-readable error code.
     pub fn code(&self) -> QueryErrorCode {
-        self.code
+        self.0.code
     }
 
     /// Returns the coarse category derived from [`Self::code`].
     pub fn kind(&self) -> QueryErrorKind {
-        self.code.kind()
+        self.0.code.kind()
     }
 
     /// Returns the retry/remediation status derived from [`Self::code`].
     pub fn status(&self) -> QueryErrorStatus {
-        self.code.status()
+        self.0.code.status()
     }
 
     /// Returns the query-wide diagnostic correlation id, when assigned.
     pub fn query_id(&self) -> Option<&QueryId> {
-        self.query_id.as_ref()
+        self.0.query_id.as_ref()
     }
 
     /// Returns the optional parent trace id, when assigned.
     pub fn trace_id(&self) -> Option<&TraceId> {
-        self.trace_id.as_ref()
+        self.0.trace_id.as_ref()
     }
 
     /// Returns the stable dotted operation id that produced the error.
     pub fn operation(&self) -> &'static str {
-        self.operation
+        self.0.operation
     }
 
     /// Returns the human-facing diagnostic message.
     pub fn message(&self) -> &str {
-        &self.message
+        &self.0.message
     }
 
     /// Returns the sorted machine-readable fact set.
     pub fn facts(&self) -> &Facts {
-        self.facts.as_ref()
+        self.0.facts.as_ref()
     }
 
     pub fn fact_value(&self, key: &str) -> Option<&str> {
-        self.facts.get(key)
+        self.0.facts.get(key)
     }
 
     /// Returns the underlying source error when one was attached.
     pub fn source_error(&self) -> Option<&(dyn StdError + 'static)> {
-        self.source.as_deref().map(|source| source as &(dyn StdError + 'static))
+        self.0.source.as_deref().map(|source| source as &(dyn StdError + 'static))
     }
 
     /// Typed cuDF budget-exhaustion counters preserved from the source chain.
@@ -707,20 +770,20 @@ impl QueryError {
 
     /// Serializes this error as a structured diagnostic JSON object.
     pub fn to_json(&self) -> Value {
-        let query_id = self.query_id.as_ref().map(QueryId::as_str).or_else(|| self.fact_value("query_id"));
-        let trace_id = self.trace_id.as_ref().map(TraceId::as_str).or_else(|| self.fact_value("trace_id"));
+        let query_id = self.0.query_id.as_ref().map(QueryId::as_str).or_else(|| self.fact_value("query_id"));
+        let trace_id = self.0.trace_id.as_ref().map(TraceId::as_str).or_else(|| self.fact_value("trace_id"));
         json!({
             "schema": "nexus_query_engine.query_error.v1",
             "query_id": query_id,
             "trace_id": trace_id,
             "triage": self.triage_summary().to_json(),
-            "code": self.code.as_str(),
+            "code": self.0.code.as_str(),
             "kind": self.kind().as_str(),
             "status": self.status().as_str(),
-            "operation": self.operation,
-            "message": self.message,
-            "facts": self.facts.iter().collect::<BTreeMap<_, _>>(),
-            "source": self.source.as_ref().map(|source| source.to_string()),
+            "operation": self.0.operation,
+            "message": self.0.message,
+            "facts": self.0.facts.iter().collect::<BTreeMap<_, _>>(),
+            "source": self.0.source.as_ref().map(|source| source.to_string()),
         })
     }
 }
@@ -775,14 +838,14 @@ impl fmt::Display for QueryError {
             self.kind(),
             self.status(),
             self.operation(),
-            quote(&self.message),
+            quote(self.message()),
         )?;
 
-        if self.facts.values.is_empty() {
+        if self.0.facts.values.is_empty() {
             f.write_str(" facts={}")?;
         } else {
             f.write_str(" facts={")?;
-            for (index, (key, value)) in self.facts.iter().enumerate() {
+            for (index, (key, value)) in self.0.facts.iter().enumerate() {
                 if index > 0 {
                     f.write_str(", ")?;
                 }
@@ -791,7 +854,7 @@ impl fmt::Display for QueryError {
             f.write_str("}")?;
         }
 
-        if let Some(source) = &self.source {
+        if let Some(source) = &self.0.source {
             write!(f, " source={}", quote(&source.to_string()))?;
         }
 
@@ -802,17 +865,17 @@ impl fmt::Display for QueryError {
 impl fmt::Debug for QueryError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("QueryError")
-            .field("query_id", &self.query_id)
-            .field("trace_id", &self.trace_id)
-            .field("code", &self.code)
+            .field("query_id", &self.0.query_id)
+            .field("trace_id", &self.0.trace_id)
+            .field("code", &self.0.code)
             .field("kind", &self.kind())
             .field("status", &self.status())
-            .field("operation", &self.operation)
-            .field("message", &self.message)
-            .field("facts", &self.facts)
-            .field("cugraph_allocation_source", &self.cugraph_allocation_source)
-            .field("graph_cache_scope_peak_bytes", &self.graph_cache_scope_peak_bytes)
-            .field("source", &self.source.as_ref().map(|source| source.to_string()))
+            .field("operation", &self.0.operation)
+            .field("message", &self.0.message)
+            .field("facts", &self.0.facts)
+            .field("cugraph_allocation_source", &self.0.cugraph_allocation_source)
+            .field("graph_cache_scope_peak_bytes", &self.0.graph_cache_scope_peak_bytes)
+            .field("source", &self.0.source.as_ref().map(|source| source.to_string()))
             .finish()
     }
 }

@@ -14,7 +14,7 @@ use nexus_bench::{
         },
     },
 };
-use nexus_workloads::tpch::{TpchDatasetMetadata, TpchWorkloadResult, prepare_tpch_report_dataset};
+use nexus_workloads::tpch::{TpchDatasetMetadata, WorkloadResult, prepare_tpch_report_dataset};
 
 #[tokio::main]
 async fn main() {
@@ -24,7 +24,7 @@ async fn main() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-async fn tpch_report(dir: &std::path::Path) -> TpchWorkloadResult<TpchExecutionReport> {
+async fn tpch_report(dir: &std::path::Path) -> WorkloadResult<TpchExecutionReport> {
     let relational_execution = RelationalExecutionSelection::native();
     eprintln!("[native_tpch_execution_report] stage=run_config relational_execution={}", relational_execution.as_str(),);
     let (root, metadata) = prepare_tpch_report_dataset(dir)?;

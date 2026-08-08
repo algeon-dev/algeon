@@ -51,7 +51,7 @@ fn test_server_config() -> ServerConfig {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn bounded_flight_sql_lists_all_cuvs_operations_and_rejects_relation_subqueries() {
-    let _guard = server_test_lock().lock().await;
+    let _guard = super::root_gpu_fixture::lock_async().await;
     let (listener, addr) = free_local_addr();
     let mut config = test_server_config();
     config.gpu_memory_ownership = vec![(0, GpuMemoryOwnership::WholeDeviceExclusive)];
@@ -118,7 +118,7 @@ async fn bounded_flight_sql_lists_all_cuvs_operations_and_rejects_relation_subqu
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn bounded_flight_sql_plans_parquet_cuvs_relations_then_rejects_execution() {
-    let _guard = server_test_lock().lock().await;
+    let _guard = super::root_gpu_fixture::lock_async().await;
     let temp_dir = tempfile::tempdir().expect("temporary Parquet directory");
     let parquet_path = temp_dir.path().join("vector_input.parquet");
     write_vector_parquet(&parquet_path);
@@ -166,7 +166,7 @@ async fn bounded_flight_sql_plans_parquet_cuvs_relations_then_rejects_execution(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn default_bounded_flight_sql_rejects_cuvs_before_child_execution_with_structured_status() {
-    let _guard = server_test_lock().lock().await;
+    let _guard = super::root_gpu_fixture::lock_async().await;
     let (listener, addr) = free_local_addr();
     let mut config = test_server_config();
     config.gpu_memory_ownership = vec![(0, GpuMemoryOwnership::WholeDeviceExclusive)];
@@ -230,11 +230,6 @@ fn warm_cuda_once() {
     CUDA_WARM.get_or_init(|| {
         let _ = datafusion_nexus::server::init_cuda_device(0);
     });
-}
-
-fn server_test_lock() -> &'static tokio::sync::Mutex<()> {
-    static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
 }
 
 fn free_local_addr() -> (TcpListener, std::net::SocketAddr) {

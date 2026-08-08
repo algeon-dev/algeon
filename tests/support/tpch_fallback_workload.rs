@@ -2,12 +2,12 @@ use std::path::Path;
 
 use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_nexus::native_report::NativeFallbackPressureWorkloadItem;
-use nexus_workloads::tpch::{TPCH_QUERIES, TpchWorkloadResult, register_tpch_tables};
+use nexus_workloads::tpch::{TPCH_QUERIES, WorkloadResult, register_tpch_tables};
 
 pub(crate) async fn tpch_fallback_pressure_workload_items(
     root: &Path,
     config: SessionConfig,
-) -> TpchWorkloadResult<Vec<NativeFallbackPressureWorkloadItem>> {
+) -> WorkloadResult<Vec<NativeFallbackPressureWorkloadItem>> {
     let ctx = SessionContext::new_with_config(config);
     register_tpch_tables(&ctx, root).await?;
 

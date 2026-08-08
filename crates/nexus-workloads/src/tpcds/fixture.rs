@@ -11,9 +11,9 @@ use arrow::{
 };
 use datafusion::parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 
-use super::TpcdsWorkloadResult;
+use super::WorkloadResult;
 
-pub fn write_tiny_tpcds_parquet_dataset(root: &Path) -> TpcdsWorkloadResult<()> {
+pub fn write_tiny_tpcds_parquet_dataset(root: &Path) -> WorkloadResult<()> {
     fs::create_dir_all(root)?;
     write_call_center(root)?;
     write_catalog_page(root)?;
@@ -42,7 +42,7 @@ pub fn write_tiny_tpcds_parquet_dataset(root: &Path) -> TpcdsWorkloadResult<()> 
     Ok(())
 }
 
-fn write_call_center(root: &Path) -> TpcdsWorkloadResult<()> {
+fn write_call_center(root: &Path) -> WorkloadResult<()> {
     write_table(
         root,
         "call_center",
@@ -115,7 +115,7 @@ fn write_call_center(root: &Path) -> TpcdsWorkloadResult<()> {
     )
 }
 
-fn write_catalog_page(root: &Path) -> TpcdsWorkloadResult<()> {
+fn write_catalog_page(root: &Path) -> WorkloadResult<()> {
     write_table(
         root,
         "catalog_page",
@@ -144,7 +144,7 @@ fn write_catalog_page(root: &Path) -> TpcdsWorkloadResult<()> {
     )
 }
 
-fn write_catalog_returns(root: &Path) -> TpcdsWorkloadResult<()> {
+fn write_catalog_returns(root: &Path) -> WorkloadResult<()> {
     write_table(
         root,
         "catalog_returns",
@@ -209,7 +209,7 @@ fn write_catalog_returns(root: &Path) -> TpcdsWorkloadResult<()> {
     )
 }
 
-fn write_catalog_sales(root: &Path) -> TpcdsWorkloadResult<()> {
+fn write_catalog_sales(root: &Path) -> WorkloadResult<()> {
     write_table(
         root,
         "catalog_sales",
@@ -288,7 +288,7 @@ fn write_catalog_sales(root: &Path) -> TpcdsWorkloadResult<()> {
     )
 }
 
-fn write_customer(root: &Path) -> TpcdsWorkloadResult<()> {
+fn write_customer(root: &Path) -> WorkloadResult<()> {
     write_table(
         root,
         "customer",
@@ -335,7 +335,7 @@ fn write_customer(root: &Path) -> TpcdsWorkloadResult<()> {
     )
 }
 
-fn write_customer_address(root: &Path) -> TpcdsWorkloadResult<()> {
+fn write_customer_address(root: &Path) -> WorkloadResult<()> {
     write_table(
         root,
         "customer_address",
@@ -372,7 +372,7 @@ fn write_customer_address(root: &Path) -> TpcdsWorkloadResult<()> {
     )
 }
 
-fn write_customer_demographics(root: &Path) -> TpcdsWorkloadResult<()> {
+fn write_customer_demographics(root: &Path) -> WorkloadResult<()> {
     write_table(
         root,
         "customer_demographics",
@@ -401,7 +401,7 @@ fn write_customer_demographics(root: &Path) -> TpcdsWorkloadResult<()> {
     )
 }
 
-fn write_date_dim(root: &Path) -> TpcdsWorkloadResult<()> {
+fn write_date_dim(root: &Path) -> WorkloadResult<()> {
     write_table(
         root,
         "date_dim",
@@ -468,7 +468,7 @@ fn write_date_dim(root: &Path) -> TpcdsWorkloadResult<()> {
     )
 }
 
-fn write_household_demographics(root: &Path) -> TpcdsWorkloadResult<()> {
+fn write_household_demographics(root: &Path) -> WorkloadResult<()> {
     write_table(
         root,
         "household_demographics",
@@ -489,7 +489,7 @@ fn write_household_demographics(root: &Path) -> TpcdsWorkloadResult<()> {
     )
 }
 
-fn write_income_band(root: &Path) -> TpcdsWorkloadResult<()> {
+fn write_income_band(root: &Path) -> WorkloadResult<()> {
     write_table(
         root,
         "income_band",
@@ -502,7 +502,7 @@ fn write_income_band(root: &Path) -> TpcdsWorkloadResult<()> {
     )
 }
 
-fn write_inventory(root: &Path) -> TpcdsWorkloadResult<()> {
+fn write_inventory(root: &Path) -> WorkloadResult<()> {
     write_table(
         root,
         "inventory",
@@ -516,7 +516,7 @@ fn write_inventory(root: &Path) -> TpcdsWorkloadResult<()> {
     )
 }
 
-fn write_item(root: &Path) -> TpcdsWorkloadResult<()> {
+fn write_item(root: &Path) -> WorkloadResult<()> {
     write_table(
         root,
         "item",
@@ -571,7 +571,7 @@ fn write_item(root: &Path) -> TpcdsWorkloadResult<()> {
     )
 }
 
-fn write_promotion(root: &Path) -> TpcdsWorkloadResult<()> {
+fn write_promotion(root: &Path) -> WorkloadResult<()> {
     write_table(
         root,
         "promotion",
@@ -620,7 +620,7 @@ fn write_promotion(root: &Path) -> TpcdsWorkloadResult<()> {
     )
 }
 
-fn write_reason(root: &Path) -> TpcdsWorkloadResult<()> {
+fn write_reason(root: &Path) -> WorkloadResult<()> {
     write_table(
         root,
         "reason",
@@ -637,7 +637,7 @@ fn write_reason(root: &Path) -> TpcdsWorkloadResult<()> {
     )
 }
 
-fn write_ship_mode(root: &Path) -> TpcdsWorkloadResult<()> {
+fn write_ship_mode(root: &Path) -> WorkloadResult<()> {
     write_table(
         root,
         "ship_mode",
@@ -660,7 +660,7 @@ fn write_ship_mode(root: &Path) -> TpcdsWorkloadResult<()> {
     )
 }
 
-fn write_store(root: &Path) -> TpcdsWorkloadResult<()> {
+fn write_store(root: &Path) -> WorkloadResult<()> {
     write_table(
         root,
         "store",
@@ -729,7 +729,7 @@ fn write_store(root: &Path) -> TpcdsWorkloadResult<()> {
     )
 }
 
-fn write_store_returns(root: &Path) -> TpcdsWorkloadResult<()> {
+fn write_store_returns(root: &Path) -> WorkloadResult<()> {
     write_table(
         root,
         "store_returns",
@@ -780,7 +780,7 @@ fn write_store_returns(root: &Path) -> TpcdsWorkloadResult<()> {
     )
 }
 
-fn write_store_sales(root: &Path) -> TpcdsWorkloadResult<()> {
+fn write_store_sales(root: &Path) -> WorkloadResult<()> {
     write_table(
         root,
         "store_sales",
@@ -837,7 +837,7 @@ fn write_store_sales(root: &Path) -> TpcdsWorkloadResult<()> {
     )
 }
 
-fn write_time_dim(root: &Path) -> TpcdsWorkloadResult<()> {
+fn write_time_dim(root: &Path) -> WorkloadResult<()> {
     write_table(
         root,
         "time_dim",
@@ -868,7 +868,7 @@ fn write_time_dim(root: &Path) -> TpcdsWorkloadResult<()> {
     )
 }
 
-fn write_warehouse(root: &Path) -> TpcdsWorkloadResult<()> {
+fn write_warehouse(root: &Path) -> WorkloadResult<()> {
     write_table(
         root,
         "warehouse",
@@ -907,7 +907,7 @@ fn write_warehouse(root: &Path) -> TpcdsWorkloadResult<()> {
     )
 }
 
-fn write_web_page(root: &Path) -> TpcdsWorkloadResult<()> {
+fn write_web_page(root: &Path) -> WorkloadResult<()> {
     write_table(
         root,
         "web_page",
@@ -946,7 +946,7 @@ fn write_web_page(root: &Path) -> TpcdsWorkloadResult<()> {
     )
 }
 
-fn write_web_returns(root: &Path) -> TpcdsWorkloadResult<()> {
+fn write_web_returns(root: &Path) -> WorkloadResult<()> {
     write_table(
         root,
         "web_returns",
@@ -1005,7 +1005,7 @@ fn write_web_returns(root: &Path) -> TpcdsWorkloadResult<()> {
     )
 }
 
-fn write_web_sales(root: &Path) -> TpcdsWorkloadResult<()> {
+fn write_web_sales(root: &Path) -> WorkloadResult<()> {
     write_table(
         root,
         "web_sales",
@@ -1084,7 +1084,7 @@ fn write_web_sales(root: &Path) -> TpcdsWorkloadResult<()> {
     )
 }
 
-fn write_web_site(root: &Path) -> TpcdsWorkloadResult<()> {
+fn write_web_site(root: &Path) -> WorkloadResult<()> {
     write_table(
         root,
         "web_site",
@@ -1147,7 +1147,7 @@ fn write_web_site(root: &Path) -> TpcdsWorkloadResult<()> {
     )
 }
 
-fn write_table(root: &Path, table: &str, schema: Arc<Schema>, columns: Vec<ArrayRef>) -> TpcdsWorkloadResult<()> {
+fn write_table(root: &Path, table: &str, schema: Arc<Schema>, columns: Vec<ArrayRef>) -> WorkloadResult<()> {
     let batch = RecordBatch::try_new(Arc::clone(&schema), columns)?;
     let file = File::create(root.join(format!("{table}.parquet")))?;
     let props = WriterProperties::builder().build();

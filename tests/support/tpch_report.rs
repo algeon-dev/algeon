@@ -26,7 +26,7 @@ use datafusion_nexus::{
     planner::{NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule},
     session::NexusSessionStateBuilderExt,
 };
-use nexus_workloads::tpch::{TPCH_QUERIES, TpchDatasetMetadata, TpchWorkloadResult, register_tpch_tables};
+use nexus_workloads::tpch::{TPCH_QUERIES, TpchDatasetMetadata, WorkloadResult, register_tpch_tables};
 
 pub(crate) trait TestReportDatasetMetadataExt {
     fn to_workload_dataset_metadata(&self) -> WorkloadDatasetMetadata;
@@ -68,7 +68,7 @@ pub(crate) fn tpch_native_optimizer_config() -> NexusNativeOptimizerConfig {
 pub(crate) async fn tpch_scalar_fallback_pressure_workload_items(
     root: &Path,
     config: SessionConfig,
-) -> TpchWorkloadResult<Vec<NativeFallbackPressureWorkloadItem>> {
+) -> WorkloadResult<Vec<NativeFallbackPressureWorkloadItem>> {
     let ctx = SessionContext::new_with_config(config);
     register_tpch_tables(&ctx, root).await?;
 
@@ -142,7 +142,7 @@ fn count_filter_plan(
 pub(crate) async fn tpch_datafusion_planning_workload_items(
     root: &Path,
     session_config: SessionConfig,
-) -> TpchWorkloadResult<Vec<NativeDataFusionPlanningWorkloadItem>> {
+) -> WorkloadResult<Vec<NativeDataFusionPlanningWorkloadItem>> {
     tpch_datafusion_planning_workload_items_with_optimizer_config(root, session_config, tpch_native_optimizer_config())
         .await
 }
@@ -151,7 +151,7 @@ pub(crate) async fn tpch_datafusion_planning_workload_items_with_optimizer_confi
     root: &Path,
     session_config: SessionConfig,
     optimizer_config: NexusNativeOptimizerConfig,
-) -> TpchWorkloadResult<Vec<NativeDataFusionPlanningWorkloadItem>> {
+) -> WorkloadResult<Vec<NativeDataFusionPlanningWorkloadItem>> {
     datafusion_planning_workload_items(
         root,
         session_config,
@@ -166,7 +166,7 @@ pub(crate) async fn datafusion_planning_workload_items<'a>(
     session_config: SessionConfig,
     optimizer_config: NexusNativeOptimizerConfig,
     queries: impl IntoIterator<Item = (&'a str, &'a str)>,
-) -> TpchWorkloadResult<Vec<NativeDataFusionPlanningWorkloadItem>> {
+) -> WorkloadResult<Vec<NativeDataFusionPlanningWorkloadItem>> {
     let native_rule = Arc::new(NexusNativePhysicalOptimizerRule::new(optimizer_config));
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(session_config)

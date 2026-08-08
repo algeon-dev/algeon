@@ -1559,9 +1559,11 @@ fn raw_libcugraph_bfs_phase_peak_bytes(
 /// existing construction pricing until their own calibration adopts this
 /// owner-bound contract.
 fn raw_bfs_sort_workspace_bound_bytes(spec: &GraphAlgorithmSpec, input: GraphMemoryModelInput) -> u64 {
-    (spec.algorithm == GraphAlgorithm::Bfs && spec.graph_options.policy == GraphConstructionPolicy::RawLibcugraph)
-        .then_some(input.construction_sort_workspace_bound_bytes.unwrap_or(0))
-        .unwrap_or(0)
+    if spec.algorithm == GraphAlgorithm::Bfs && spec.graph_options.policy == GraphConstructionPolicy::RawLibcugraph {
+        input.construction_sort_workspace_bound_bytes.unwrap_or(0)
+    } else {
+        0
+    }
 }
 
 /// Raw cuGraph BFS builds its endpoint-pair sort workspace inside cuGraph.
@@ -3272,8 +3274,7 @@ mod tests {
         };
         let output_sized = 4_096;
         let exact_params = GraphAlgorithmParams::ForceAtlas2(GraphForceAtlas2Params::default());
-        let mut barnes_hut = GraphForceAtlas2Params::default();
-        barnes_hut.barnes_hut_optimize = true;
+        let barnes_hut = GraphForceAtlas2Params { barnes_hut_optimize: true, ..Default::default() };
         let barnes_hut_params = GraphAlgorithmParams::ForceAtlas2(barnes_hut);
 
         assert_eq!(force_atlas2_workspace_bytes(input, 10, &exact_params, output_sized), output_sized + 10 * 44);
@@ -3321,8 +3322,7 @@ mod tests {
             pair_vertex_width_bytes: None,
             pair_cardinality_source: None,
         };
-        let mut barnes_hut = GraphForceAtlas2Params::default();
-        barnes_hut.barnes_hut_optimize = true;
+        let barnes_hut = GraphForceAtlas2Params { barnes_hut_optimize: true, ..Default::default() };
         let params = GraphAlgorithmParams::ForceAtlas2(barnes_hut);
         let construction_bytes = 4_000;
         let result_conversion_bytes = 160;

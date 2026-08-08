@@ -17,8 +17,7 @@ use datafusion_nexus::{
     session::NexusSessionStateBuilderExt,
 };
 use nexus_workloads::clickbench::{
-    CLICKBENCH_QUERIES, ClickbenchQuery, ClickbenchWorkloadResult, discover_clickbench_layout,
-    register_clickbench_table,
+    CLICKBENCH_QUERIES, ClickbenchQuery, WorkloadResult, discover_clickbench_layout, register_clickbench_table,
 };
 
 /// Device-byte budget for bounded native ClickBench execution.
@@ -335,7 +334,7 @@ fn parse_env_source_chunk_planning_mode(value: String) -> nexus_query_engine::ru
 pub async fn clickbench_fallback_pressure_workload_items(
     root: &Path,
     config: SessionConfig,
-) -> ClickbenchWorkloadResult<Vec<NativeFallbackPressureWorkloadItem>> {
+) -> WorkloadResult<Vec<NativeFallbackPressureWorkloadItem>> {
     let ctx = SessionContext::new_with_config(config);
     let layout = discover_clickbench_layout(root)?;
     register_clickbench_table(&ctx, &layout).await?;
@@ -370,7 +369,7 @@ pub async fn clickbench_fallback_pressure_workload_items(
 pub async fn clickbench_datafusion_planning_workload_items(
     root: &Path,
     session_config: SessionConfig,
-) -> ClickbenchWorkloadResult<Vec<NativeDataFusionPlanningWorkloadItem>> {
+) -> WorkloadResult<Vec<NativeDataFusionPlanningWorkloadItem>> {
     clickbench_datafusion_planning_workload_items_with_optimizer_config(
         root,
         session_config,
@@ -388,7 +387,7 @@ pub async fn clickbench_datafusion_planning_workload_items_with_optimizer_config
     root: &Path,
     session_config: SessionConfig,
     optimizer_config: NexusNativeOptimizerConfig,
-) -> ClickbenchWorkloadResult<Vec<NativeDataFusionPlanningWorkloadItem>> {
+) -> WorkloadResult<Vec<NativeDataFusionPlanningWorkloadItem>> {
     let native_rule = Arc::new(NexusNativePhysicalOptimizerRule::new(optimizer_config.clone()));
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(session_config)
@@ -437,7 +436,7 @@ pub async fn clickbench_datafusion_planning_workload_items_with_optimizer_config
 pub async fn clickbench_datafusion_execution_workload_items(
     root: &Path,
     session_config: SessionConfig,
-) -> ClickbenchWorkloadResult<Vec<NativeDataFusionExecutionWorkloadItem>> {
+) -> WorkloadResult<Vec<NativeDataFusionExecutionWorkloadItem>> {
     clickbench_datafusion_execution_workload_items_with_optimizer_config(
         root,
         session_config,
@@ -453,7 +452,7 @@ pub async fn clickbench_datafusion_execution_workload_items_with_optimizer_confi
     root: &Path,
     session_config: SessionConfig,
     optimizer_config: NexusNativeOptimizerConfig,
-) -> ClickbenchWorkloadResult<Vec<NativeDataFusionExecutionWorkloadItem>> {
+) -> WorkloadResult<Vec<NativeDataFusionExecutionWorkloadItem>> {
     clickbench_datafusion_execution_workload_items_filtered(root, session_config, optimizer_config, None, None).await
 }
 
@@ -498,7 +497,7 @@ pub async fn clickbench_datafusion_execution_workload_items_filtered(
     optimizer_config: NexusNativeOptimizerConfig,
     query_ids: Option<&[&str]>,
     mut progress: Option<&mut dyn FnMut(ClickbenchExecutionProgressEvent<'_>)>,
-) -> ClickbenchWorkloadResult<Vec<NativeDataFusionExecutionWorkloadItem>> {
+) -> WorkloadResult<Vec<NativeDataFusionExecutionWorkloadItem>> {
     let native_rule = Arc::new(NexusNativePhysicalOptimizerRule::new(optimizer_config.clone()));
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(session_config)

@@ -30,8 +30,8 @@ use nexus_bench::{
     },
 };
 use nexus_workloads::{
-    tpcds::{TpcdsDatasetMetadata, TpcdsWorkloadResult, prepare_tpcds_report_dataset},
-    tpch::{TpchDatasetMetadata, TpchWorkloadResult, prepare_tpch_report_dataset},
+    tpcds::{TpcdsDatasetMetadata, WorkloadResult, prepare_tpcds_report_dataset},
+    tpch::{TpchDatasetMetadata, prepare_tpch_report_dataset},
 };
 
 #[tokio::main]
@@ -102,13 +102,13 @@ async fn synthetic_workload_items(dir: &std::path::Path) -> Vec<NativeFallbackPr
     items
 }
 
-async fn tpch_workload_items(dir: &std::path::Path) -> TpchWorkloadResult<TpchWorkload> {
+async fn tpch_workload_items(dir: &std::path::Path) -> WorkloadResult<TpchWorkload> {
     let (root, metadata) = prepare_tpch_report_dataset(dir)?;
     let items = tpch_fallback_pressure_workload_items(&root, tpch_report_session_config()).await?;
     Ok(TpchWorkload { items, metadata })
 }
 
-async fn tpch_scalar_workload_items(dir: &std::path::Path) -> TpchWorkloadResult<TpchWorkload> {
+async fn tpch_scalar_workload_items(dir: &std::path::Path) -> WorkloadResult<TpchWorkload> {
     let (root, metadata) = prepare_tpch_report_dataset(dir)?;
     let items = tpch_scalar_fallback_pressure_workload_items(&root, tpch_report_session_config()).await?;
     Ok(TpchWorkload { items, metadata })
@@ -119,7 +119,7 @@ struct TpchWorkload {
     metadata: TpchDatasetMetadata,
 }
 
-async fn tpcds_workload_items(dir: &std::path::Path) -> TpcdsWorkloadResult<TpcdsWorkload> {
+async fn tpcds_workload_items(dir: &std::path::Path) -> WorkloadResult<TpcdsWorkload> {
     let (root, metadata) = prepare_tpcds_report_dataset(dir)?;
     let items = tpcds_fallback_pressure_workload_items(&root, tpcds_report_session_config()).await?;
     Ok(TpcdsWorkload { items, metadata })

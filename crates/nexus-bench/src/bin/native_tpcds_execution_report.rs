@@ -15,7 +15,7 @@ use nexus_bench::{
         },
     },
 };
-use nexus_workloads::tpcds::{TpcdsDatasetMetadata, TpcdsWorkloadResult, prepare_tpcds_report_dataset};
+use nexus_workloads::tpcds::{TpcdsDatasetMetadata, WorkloadResult, prepare_tpcds_report_dataset};
 
 const NEXUS_TPCDS_EXECUTION_QUERY_IDS_ENV: &str = "NEXUS_TPCDS_EXECUTION_QUERY_IDS";
 const NEXUS_TPCDS_EXECUTION_PROGRESS_ENV: &str = "NEXUS_TPCDS_EXECUTION_PROGRESS";
@@ -28,7 +28,7 @@ async fn main() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-async fn tpcds_report(dir: &std::path::Path) -> TpcdsWorkloadResult<TpcdsExecutionReport> {
+async fn tpcds_report(dir: &std::path::Path) -> WorkloadResult<TpcdsExecutionReport> {
     let relational_execution = RelationalExecutionSelection::native();
     eprintln!(
         "[native_tpcds_execution_report] stage=run_config relational_execution={}",

@@ -1094,7 +1094,7 @@ impl ArrivalPlanEvidence {
         join_failures: u64,
         storm_cancellations_requested: u64,
     ) -> Self {
-        let storm = (plan.attempt_deadline_ms.is_some() || plan.cancel_every_n.is_some()).then(|| StormEvidence {
+        let storm = (plan.attempt_deadline_ms.is_some() || plan.cancel_every_n.is_some()).then_some(StormEvidence {
             attempt_deadline_ms: plan.attempt_deadline_ms,
             cancel_every_n: plan.cancel_every_n,
             cancel_after_ms: plan.cancel_after_ms,

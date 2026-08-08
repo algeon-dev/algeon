@@ -1,9 +1,6 @@
 //! GPU-lane integration contracts for the explicit attempt adapter.
 
-use std::{
-    ops::Deref,
-    sync::{Mutex, MutexGuard},
-};
+use std::ops::Deref;
 
 use datafusion::prelude::SessionContext;
 use datafusion_nexus::{
@@ -16,18 +13,16 @@ use nexus_query_engine::observability::{
     AttemptDisposition, AttemptFailureCode, AttemptFailureFactValue, RuntimeTerminalOutcome,
 };
 
-static BACKEND_SERIAL: Mutex<()> = Mutex::new(());
-
 /// Keeps process-wide backend ownership serialized until the backend has
 /// closed and released every resource that can retain its owner lease.
 struct BackendFixture {
     backend: Option<NexusGpuBackend>,
-    _guard: MutexGuard<'static, ()>,
+    _guard: tokio::sync::OwnedSemaphorePermit,
 }
 
 impl BackendFixture {
     fn new(queue_capacity: Option<usize>, resource_policy: datafusion_nexus::backend::NexusGpuQueuePolicy) -> Self {
-        let guard = BACKEND_SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let guard = super::root_gpu_fixture::lock();
         let mut builder = NexusGpuBackend::builder()
             .with_native_execution_config(NexusNativeExecutionConfig::bounded(
                 256 * 1024 * 1024,

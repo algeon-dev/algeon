@@ -1,5 +1,7 @@
 use std::fmt;
 
+use nexus_query_engine::error::QueryErrorCode;
+
 /// Stable, machine-readable adapter error codes.
 ///
 /// Codes describe the closest adapter-level cause. [`ErrorKind`] and
@@ -309,6 +311,35 @@ pub const fn kind_for_code(code: ErrorCode) -> ErrorKind {
 /// failure that requires escalation or intervention, while
 /// [`ErrorStatus::Permanent`] means the request, input, configuration, or code
 /// must change before the same operation can succeed.
+pub(crate) fn code_for_native_error(code: QueryErrorCode) -> ErrorCode {
+    match code {
+        QueryErrorCode::Cancelled => ErrorCode::Cancelled,
+        QueryErrorCode::UnsupportedPlanShape => ErrorCode::UnsupportedOperator,
+        QueryErrorCode::UnsupportedOperator => ErrorCode::UnsupportedOperator,
+        QueryErrorCode::UnsupportedExpression => ErrorCode::UnsupportedExpression,
+        QueryErrorCode::UnsupportedType => ErrorCode::UnsupportedType,
+        QueryErrorCode::InvalidPlan => ErrorCode::InvalidExecutionPlan,
+        QueryErrorCode::InvalidAttemptCorrelation => ErrorCode::InvalidRequest,
+        QueryErrorCode::GraphInputInvalid => ErrorCode::GraphInputInvalid,
+        QueryErrorCode::CudfInvalidInput => ErrorCode::CudfInvalidInput,
+        QueryErrorCode::CudfUnsupported => ErrorCode::CudfUnsupported,
+        QueryErrorCode::CudfResourceExhausted => ErrorCode::CudfResourceExhausted,
+        QueryErrorCode::SizeOverflow => ErrorCode::SizeOverflow,
+        QueryErrorCode::HostMaterializationLimitExceeded => ErrorCode::HostMaterializationLimitExceeded,
+        QueryErrorCode::CudfTemporaryFailure => ErrorCode::CudfTemporaryFailure,
+        QueryErrorCode::CudfPersistentFailure => ErrorCode::CudfPersistentFailure,
+        QueryErrorCode::CudfDependencyFailure => ErrorCode::CudfDependencyFailure,
+        QueryErrorCode::SourceAccessDenied => ErrorCode::SourceAccessDenied,
+        QueryErrorCode::SourceUnauthenticated => ErrorCode::SourceUnauthenticated,
+        QueryErrorCode::SourceObjectNotFound => ErrorCode::SourceObjectNotFound,
+        QueryErrorCode::SourceTemporaryFailure => ErrorCode::SourceTemporaryFailure,
+        QueryErrorCode::CudfInvariantViolation => ErrorCode::CudfInvariantViolation,
+        QueryErrorCode::MemoryReservationFailed => ErrorCode::MemoryReservationFailed,
+        QueryErrorCode::ServiceOverloaded => ErrorCode::ServiceOverloaded,
+        QueryErrorCode::Internal => ErrorCode::Internal,
+    }
+}
+
 pub const fn status_for_code(code: ErrorCode) -> ErrorStatus {
     match code {
         ErrorCode::Cancelled => ErrorStatus::Permanent,

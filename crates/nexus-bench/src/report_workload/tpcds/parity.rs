@@ -26,7 +26,7 @@ use nexus_workloads::tpcds::TpcdsQuery;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
 use super::{
-    TPCDS_QUERIES, TPCDS_TABLES, TpcdsWorkloadResult, discover_tpcds_table_layout, native_tpcds_session_config,
+    TPCDS_QUERIES, TPCDS_TABLES, WorkloadResult, discover_tpcds_table_layout, native_tpcds_session_config,
     register_tpcds_tables_with_native_metadata,
 };
 
@@ -80,7 +80,7 @@ pub async fn tpcds_parity_workload_items(
     session_config: SessionConfig,
     optimizer_config: NexusNativeOptimizerConfig,
     query_filter: Option<&[String]>,
-) -> TpcdsWorkloadResult<Vec<NativeTpcdsParityWorkloadItem>> {
+) -> WorkloadResult<Vec<NativeTpcdsParityWorkloadItem>> {
     tpcds_parity_workload_items_with_external_oracles(root, session_config, optimizer_config, query_filter, None).await
 }
 
@@ -94,7 +94,7 @@ pub async fn tpcds_parity_workload_items_with_session_configs(
     native_session_config: SessionConfig,
     optimizer_config: NexusNativeOptimizerConfig,
     query_filter: Option<&[String]>,
-) -> TpcdsWorkloadResult<Vec<NativeTpcdsParityWorkloadItem>> {
+) -> WorkloadResult<Vec<NativeTpcdsParityWorkloadItem>> {
     tpcds_parity_workload_items_with_session_configs_and_external_oracles(
         root,
         cpu_session_config,
@@ -118,7 +118,7 @@ pub async fn tpcds_parity_workload_items_with_external_oracles(
     optimizer_config: NexusNativeOptimizerConfig,
     query_filter: Option<&[String]>,
     external_oracles: Option<TpcdsExternalOracleConfig>,
-) -> TpcdsWorkloadResult<Vec<NativeTpcdsParityWorkloadItem>> {
+) -> WorkloadResult<Vec<NativeTpcdsParityWorkloadItem>> {
     tpcds_parity_workload_items_with_session_configs_and_external_oracles(
         root,
         session_config.clone(),
@@ -143,7 +143,7 @@ pub async fn tpcds_parity_report_rows_with_external_oracles(
     external_oracles: Option<TpcdsExternalOracleConfig>,
     float_tolerance: ParityFloatTolerance,
     progress: Option<&mut dyn FnMut(TpcdsParityProgressEvent<'_>)>,
-) -> TpcdsWorkloadResult<Vec<NativeTpcdsParityRow>> {
+) -> WorkloadResult<Vec<NativeTpcdsParityRow>> {
     tpcds_parity_report_rows_with_session_configs_and_external_oracles(
         root,
         session_config.clone(),
@@ -164,7 +164,7 @@ async fn tpcds_parity_workload_items_with_session_configs_and_external_oracles(
     optimizer_config: NexusNativeOptimizerConfig,
     query_filter: Option<&[String]>,
     external_oracles: Option<TpcdsExternalOracleConfig>,
-) -> TpcdsWorkloadResult<Vec<NativeTpcdsParityWorkloadItem>> {
+) -> WorkloadResult<Vec<NativeTpcdsParityWorkloadItem>> {
     let runner = TpcdsParityRunner::new(root, cpu_session_config, native_session_config, optimizer_config).await?;
     let mut items = Vec::with_capacity(TPCDS_QUERIES.len());
     for query in TPCDS_QUERIES {
@@ -186,7 +186,7 @@ async fn tpcds_parity_report_rows_with_session_configs_and_external_oracles(
     external_oracles: Option<TpcdsExternalOracleConfig>,
     float_tolerance: ParityFloatTolerance,
     mut progress: Option<&mut dyn FnMut(TpcdsParityProgressEvent<'_>)>,
-) -> TpcdsWorkloadResult<Vec<NativeTpcdsParityRow>> {
+) -> WorkloadResult<Vec<NativeTpcdsParityRow>> {
     let runner = TpcdsParityRunner::new(root, cpu_session_config, native_session_config, optimizer_config).await?;
     let selected: Vec<_> = TPCDS_QUERIES.iter().filter(|query| is_query_selected(query.id, query_filter)).collect();
     let total = selected.len();
@@ -220,7 +220,7 @@ impl TpcdsParityRunner {
         cpu_session_config: SessionConfig,
         native_session_config: SessionConfig,
         optimizer_config: NexusNativeOptimizerConfig,
-    ) -> TpcdsWorkloadResult<Self> {
+    ) -> WorkloadResult<Self> {
         let cpu_stats_fallback_ctx = if cpu_session_config.options().execution.collect_statistics {
             let mut fallback_config = cpu_session_config.clone();
             fallback_config.options_mut().execution.collect_statistics = false;
@@ -485,7 +485,7 @@ fn run_external_oracle(
     })
 }
 
-fn external_oracle_sql(root: &Path, query_sql: &str, output_path: &Path) -> TpcdsWorkloadResult<String> {
+fn external_oracle_sql(root: &Path, query_sql: &str, output_path: &Path) -> WorkloadResult<String> {
     let mut sql = String::new();
     for &table in TPCDS_TABLES {
         let layout = discover_tpcds_table_layout(root, table)?;

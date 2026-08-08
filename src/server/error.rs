@@ -23,6 +23,14 @@ pub const UNSUPPORTED_COLUMN_METADATA_KEY: &str = "x-datafusion-nexus-unsupporte
 pub const UNSUPPORTED_COLUMN_TYPE_METADATA_KEY: &str = "x-datafusion-nexus-unsupported-column-type";
 /// Flight SQL response metadata key containing the first unsupported column role, when known.
 pub const UNSUPPORTED_COLUMN_ROLE_METADATA_KEY: &str = "x-datafusion-nexus-unsupported-column-role";
+/// Flight SQL response metadata key containing the graph predicate role, when known.
+pub const PREDICATE_ROLE_METADATA_KEY: &str = "x-datafusion-nexus-predicate-role";
+/// Flight SQL response metadata key containing the graph validation reason, when known.
+pub const REASON_METADATA_KEY: &str = "x-datafusion-nexus-reason";
+/// Flight SQL response metadata key containing the required graph option, when known.
+pub const REQUIRED_OPTION_METADATA_KEY: &str = "x-datafusion-nexus-required-option";
+/// Flight SQL response metadata key containing the native diagnostic message, when known.
+pub const NATIVE_MESSAGE_METADATA_KEY: &str = "x-datafusion-nexus-native-message";
 const DATAFUSION_ERROR_FALLBACK_OPERATION: &str = "datafusion_nexus.server.datafusion_error";
 
 pub type Result<T> = std::result::Result<T, ServerError>;
@@ -143,7 +151,13 @@ impl ServerError {
         #[cfg(feature = "iceberg")]
         let source = match source.downcast::<nexus_iceberg::IcebergError>() {
             Ok(iceberg_error) => {
-                return Self { inner: error_from_iceberg_error(message, *iceberg_error) };
+                return Self {
+                    inner: crate::table_format::iceberg::adapter::root_error_from_iceberg(
+                        *iceberg_error,
+                        "datafusion_nexus.server.session",
+                        message,
+                    ),
+                };
             },
             Err(source) => source,
         };
@@ -221,66 +235,6 @@ impl ServerError {
 fn adapter_error_with_message(message: String, source: Error) -> Error {
     let facts = source.facts().clone();
     Error::new(source.code(), source.operation(), message).with_preserved_facts(facts).with_source(source)
-}
-
-#[cfg(feature = "iceberg")]
-fn error_from_iceberg_error(message: String, source: nexus_iceberg::IcebergError) -> Error {
-    use nexus_iceberg::{IcebergErrorCode, IcebergErrorStatus};
-    let code = if source.status == IcebergErrorStatus::Temporary {
-        ErrorCode::SourceTemporaryFailure
-    } else {
-        match source.code {
-            IcebergErrorCode::Authentication => ErrorCode::SourceUnauthenticated,
-            IcebergErrorCode::Access => ErrorCode::SourceAccessDenied,
-            IcebergErrorCode::NotFound => ErrorCode::SourceObjectNotFound,
-            IcebergErrorCode::TemporaryDependency | IcebergErrorCode::Timeout => ErrorCode::SourceTemporaryFailure,
-            IcebergErrorCode::Cancelled => ErrorCode::Cancelled,
-            IcebergErrorCode::InvalidMetadata => ErrorCode::InvalidExecutionPlan,
-            IcebergErrorCode::UnsupportedSchema => ErrorCode::UnsupportedType,
-            IcebergErrorCode::Internal => ErrorCode::SourceDependencyFailure,
-        }
-    };
-    let mut error = Error::new(code, "datafusion_nexus.server.session", message)
-        .with_log_safe_fact("iceberg_error_code", source.code.as_str())
-        .with_log_safe_fact(
-            "iceberg_error_status",
-            match source.status {
-                IcebergErrorStatus::Permanent => "permanent",
-                IcebergErrorStatus::Temporary => "temporary",
-                IcebergErrorStatus::Cancelled => "cancelled",
-            },
-        )
-        .with_log_safe_fact("iceberg_operation", source.operation.as_str())
-        .with_fact("iceberg_message", source.sanitized_message.clone());
-    let context = source.typed_context.as_ref();
-    if let Some(kind) = context.catalog_kind {
-        error = error.with_log_safe_fact(
-            "iceberg_catalog_kind",
-            match kind {
-                nexus_iceberg::IcebergCatalogErrorKind::Glue => "glue",
-                nexus_iceberg::IcebergCatalogErrorKind::Rest => "rest",
-            },
-        );
-    }
-    if let Some(catalog_handle) = context.catalog_handle.as_ref() {
-        error = error.with_fact("iceberg_catalog_handle", catalog_handle.clone());
-    }
-    if let Some(table_identifier) = context.table_identifier.as_ref() {
-        error = error.with_fact("iceberg_table_identifier", table_identifier.clone());
-    }
-    if let Some(snapshot_id) = context.snapshot_id {
-        error = error.with_fact("snapshot_id", snapshot_id);
-    }
-    if let Some(schema_id) = context.schema_id {
-        error = error.with_fact("iceberg_schema_id", schema_id);
-    }
-    if let Some(field_id) = context.field_id {
-        error = error.with_fact("field_id", field_id);
-    }
-    if let Some(file_count) = context.file_count {
-        error = error.with_fact("iceberg_file_count", file_count);
-    }
-    error
 }
 
 fn server_error_from_datafusion_error(message: String, source: DataFusionError) -> Error {
@@ -492,7 +446,7 @@ pub(super) fn status_source_diagnostics(status: &Status) -> (Option<String>, Opt
 }
 
 fn client_status_message(error: &Error) -> String {
-    let message = match error.code() {
+    match error.code() {
         ErrorCode::SqlParse | ErrorCode::FieldNotFound | ErrorCode::ObjectNotFound | ErrorCode::DataFusionPlanning => {
             error.message().to_string()
         },
@@ -518,8 +472,7 @@ fn client_status_message(error: &Error) -> String {
             "internal server error while processing the request".to_string()
         },
         _ => error.message().to_string(),
-    };
-    message
+    }
 }
 
 fn status_with_error_metadata(mut status: Status, error: &Error) -> Status {
@@ -537,6 +490,10 @@ fn status_with_error_metadata(mut status: Status, error: &Error) -> Status {
     insert_fact_metadata(status.metadata_mut(), UNSUPPORTED_COLUMN_METADATA_KEY, error, "unsupported_column");
     insert_fact_metadata(status.metadata_mut(), UNSUPPORTED_COLUMN_TYPE_METADATA_KEY, error, "unsupported_column_type");
     insert_fact_metadata(status.metadata_mut(), UNSUPPORTED_COLUMN_ROLE_METADATA_KEY, error, "unsupported_column_role");
+    insert_fact_metadata(status.metadata_mut(), PREDICATE_ROLE_METADATA_KEY, error, "predicate_role");
+    insert_fact_metadata(status.metadata_mut(), REASON_METADATA_KEY, error, "reason");
+    insert_fact_metadata(status.metadata_mut(), REQUIRED_OPTION_METADATA_KEY, error, "required_option");
+    insert_fact_metadata(status.metadata_mut(), NATIVE_MESSAGE_METADATA_KEY, error, "native_message");
     status
 }
 
@@ -1167,6 +1124,36 @@ mod tests {
         assert!(!captured.diagnostic.contains("facts="), "{}", captured.diagnostic);
     }
 
+    #[cfg(feature = "iceberg")]
+    #[test]
+    fn server_error_session_preserves_foreign_iceberg_classification() {
+        use nexus_iceberg::{IcebergError, IcebergErrorCode, IcebergErrorStatus, IcebergOperation};
+
+        let auth = ServerError::session(
+            "catalog authentication failed",
+            IcebergError::new(
+                IcebergErrorCode::Authentication,
+                IcebergErrorStatus::Permanent,
+                IcebergOperation::CatalogConnect,
+                "authentication failed",
+            ),
+        );
+        let access = ServerError::session(
+            "catalog access failed",
+            IcebergError::new(
+                IcebergErrorCode::Access,
+                IcebergErrorStatus::Permanent,
+                IcebergOperation::CatalogListTables,
+                "access denied",
+            ),
+        );
+        let unknown = ServerError::session("foreign source failed", std::io::Error::other("unknown"));
+
+        assert_eq!(auth.code(), ErrorCode::SourceUnauthenticated);
+        assert_eq!(access.code(), ErrorCode::SourceAccessDenied);
+        assert_eq!(unknown.code(), ErrorCode::Internal);
+    }
+
     #[test]
     fn server_error_session_preserves_native_query_error_classification() {
         let native = nexus_query_engine::error::QueryError::new(
@@ -1235,6 +1222,8 @@ mod tests {
 
         assert_eq!(status.code(), Code::InvalidArgument);
         assert_error_metadata(&status, "invalid_execution_plan", "planning", "permanent");
+        assert_metadata_value(&status, REASON_METADATA_KEY, "partial_source_vertices_absent");
+        assert_metadata_value(&status, PREDICATE_ROLE_METADATA_KEY, "source_vertices");
         assert_no_diagnostic_fields(status.message());
     }
 
@@ -1255,6 +1244,13 @@ mod tests {
 
         assert_eq!(status.code(), Code::Unimplemented);
         assert_error_metadata(&status, "unsupported_type", "unsupported", "permanent");
+        assert_metadata_value(
+            &status,
+            NATIVE_MESSAGE_METADATA_KEY,
+            "BFS predicate id column dtype must match the graph vertex dtype",
+        );
+        assert_metadata_value(&status, REASON_METADATA_KEY, "predicate_dtype_mismatch");
+        assert_metadata_value(&status, PREDICATE_ROLE_METADATA_KEY, "target_vertices");
         assert_no_diagnostic_fields(status.message());
     }
 
@@ -1282,6 +1278,13 @@ mod tests {
 
         assert_eq!(status.code(), Code::InvalidArgument);
         assert_error_metadata(&status, "invalid_execution_plan", "planning", "permanent");
+        assert_metadata_value(
+            &status,
+            NATIVE_MESSAGE_METADATA_KEY,
+            "exact betweenness requires explicit seeds or k above the configured vertex threshold",
+        );
+        assert_metadata_value(&status, REASON_METADATA_KEY, "exact_betweenness_vertex_threshold_exceeded");
+        assert_metadata_value(&status, REQUIRED_OPTION_METADATA_KEY, "seeds_or_k");
         assert_no_diagnostic_fields(status.message());
     }
 

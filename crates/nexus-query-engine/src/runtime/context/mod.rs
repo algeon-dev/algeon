@@ -9,7 +9,7 @@ use std::{
 };
 
 use ::object_store::ObjectStoreExt;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-hooks"))]
 use bytes::Bytes;
 
 use super::{
@@ -298,7 +298,8 @@ impl AttemptAuxiliarySlots {
         )
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-hooks"))]
+    #[cfg_attr(not(test), expect(dead_code, reason = "used by in-crate auxiliary-slot tests"))]
     fn in_use_for_test(&self) -> usize {
         self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).in_use
     }
@@ -1113,7 +1114,7 @@ impl ExecutionContext {
     // No production callers; kept private-but-present so tests/ui/public_api
     // pins that this factory stays unreachable outside the crate.
     #[allow(dead_code)]
-    pub(crate) fn builder() -> ExecutionContextBuilder {
+    pub fn builder() -> ExecutionContextBuilder {
         ExecutionContextBuilder::default()
     }
 
@@ -1125,7 +1126,7 @@ impl ExecutionContext {
     // No production callers; kept private-but-present so tests/ui/public_api
     // pins that this constructor stays unreachable outside the crate.
     #[allow(dead_code)]
-    pub(crate) fn from_runtime(runtime: cudf::Runtime) -> Result<Self> {
+    pub fn from_runtime(runtime: cudf::Runtime) -> Result<Self> {
         Self::from_shared_runtime(Arc::new(runtime))
     }
 
@@ -1136,7 +1137,7 @@ impl ExecutionContext {
     // No production callers; kept private-but-present so tests/ui/public_api
     // pins that this constructor stays unreachable outside the crate.
     #[allow(dead_code)]
-    pub(crate) fn from_shared_runtime(runtime: Arc<cudf::Runtime>) -> Result<Self> {
+    pub fn from_shared_runtime(runtime: Arc<cudf::Runtime>) -> Result<Self> {
         let service_stream_pool =
             ServiceStreamPool::new(runtime.device(), default_service_stream_pool_size_for_device(runtime.device()))
                 .expect("default service stream pool size is non-zero");
@@ -2026,7 +2027,8 @@ impl ExecutionContext {
         &self.deployment_io_capability
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-hooks"))]
+    #[cfg_attr(not(test), expect(dead_code, reason = "used by in-crate runtime source tests"))]
     pub(super) fn fetch_object_store_bytes_on_runtime(
         object_store_control_runtime: &tokio::runtime::Runtime,
         store: Arc<dyn ::object_store::ObjectStore>,

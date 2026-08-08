@@ -3,7 +3,7 @@
 //! This module is available with the `iceberg` Cargo feature. Lower-level,
 //! format-neutral scan facts remain under [`crate::table_format`].
 
-mod adapter;
+pub(crate) mod adapter;
 pub mod catalog;
 mod planner;
 

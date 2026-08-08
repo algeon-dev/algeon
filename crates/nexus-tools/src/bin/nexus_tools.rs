@@ -16,6 +16,7 @@ mod gpu_backend;
 #[path = "../clickbench_stage_probe.rs"]
 mod clickbench_stage_probe;
 #[cfg(any(not(test), feature = "server-runtime-observability-e2e"))]
+#[cfg_attr(test, allow(dead_code))]
 #[path = "../connection_retry.rs"]
 mod connection_retry;
 #[cfg(all(feature = "cugraph-oracle", not(test)))]
@@ -67,6 +68,7 @@ mod server_iceberg_glue_remote_direct_e2e;
 #[path = "../e2e/server_iceberg_rest_multigpu_e2e.rs"]
 mod server_iceberg_rest_multigpu_e2e;
 #[cfg(all(feature = "server-runtime-observability-e2e", test))]
+#[cfg_attr(test, allow(dead_code))]
 #[path = "../e2e/server_iceberg_rest_multigpu_e2e.rs"]
 mod server_iceberg_rest_multigpu_e2e;
 #[cfg(feature = "single-node-multi-gpu-validate")]

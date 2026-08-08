@@ -405,7 +405,7 @@ impl QueryAdmissionTicket {
     pub(crate) fn source(&self) -> QueryAdmissionSource {
         #[cfg(test)]
         {
-            return self.source.clone().expect("lifecycle-only test ticket has no admission source");
+            self.source.clone().expect("lifecycle-only test ticket has no admission source")
         }
         #[cfg(not(test))]
         {
@@ -416,7 +416,7 @@ impl QueryAdmissionTicket {
     fn admission_source(&self) -> &QueryAdmissionSource {
         #[cfg(test)]
         {
-            return self.source.as_ref().expect("lifecycle-only test ticket cannot acquire a native context");
+            self.source.as_ref().expect("lifecycle-only test ticket cannot acquire a native context")
         }
         #[cfg(not(test))]
         {

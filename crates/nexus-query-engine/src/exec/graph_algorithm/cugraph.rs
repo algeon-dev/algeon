@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-#[cfg(test)]
+#[cfg(all(test, feature = "cugraph"))]
 use std::sync::atomic::Ordering;
 
 use super::super::*;
@@ -38,8 +38,8 @@ use bounded_betweenness::{
     resolve_runtime_graph_spec_for_execution, runtime_graph_spec_resolution_after_bounded_seed_validation,
     validate_betweenness_static_seed_policy,
 };
-#[cfg(test)]
-pub(crate) use bounded_betweenness::{
+#[cfg(any(test, feature = "test-hooks"))]
+pub use bounded_betweenness::{
     force_next_graph_seed_chunk_retry_chunk_attempt_resource_exhausted_for_test,
     force_next_graph_seed_chunk_retry_full_attempt_resource_exhausted_for_test,
 };
@@ -53,8 +53,8 @@ use layout::*;
 use memory::*;
 use params::*;
 use similarity::*;
-#[cfg(test)]
-pub(crate) use statistics::force_next_graph_statistics_optional_resource_exhausted_for_test;
+#[cfg(any(test, feature = "test-hooks"))]
+pub use statistics::force_next_graph_statistics_optional_resource_exhausted_for_test;
 use structure::*;
 use traversal::{execute_bfs, execute_sssp};
 
@@ -367,7 +367,7 @@ fn execute_graph_algorithm_attempt(
     inputs: GraphAlgorithmExecutionInputs,
     executor: GraphAlgorithmExecutor,
 ) -> Result<GraphAlgorithmExecutionResult> {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-hooks"))]
     if graph_seed_chunk_retry_batches(spec).is_some()
         && bounded_betweenness::FORCE_NEXT_GRAPH_SEED_CHUNK_RETRY_FULL_ATTEMPT_RESOURCE_EXHAUSTED
             .swap(false, Ordering::SeqCst)

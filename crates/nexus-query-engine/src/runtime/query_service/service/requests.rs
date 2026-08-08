@@ -800,33 +800,30 @@ impl QueryService {
         #[cfg(not(test))]
         let probe: Option<Arc<super::transaction::AdmissionTransactionProbe>> = None;
         #[cfg(test)]
-        if self.inner.direct_placement_resolution_failure.swap(false, Ordering::AcqRel) {
-            if let Some(pause) = self
+        if self.inner.direct_placement_resolution_failure.swap(false, Ordering::AcqRel)
+            && let Some(pause) = self
                 .inner
                 .direct_provisional_cleanup_pause
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .take()
-            {
-                let super::super::admission::PlacedQuery { device_ordinal: _, memory_grant } = placed_query;
-                let state = self.inner.admission.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                lifecycle_ticket
-                    .transition_to_cleanup()
-                    .expect("injected resolution failure accounts provisional cleanup");
-                self.inner.notify_admission_available();
-                drop(state);
-                pause.wait();
-                drop(memory_grant);
-                drop(lifecycle_ticket);
-                let error = QueryError::new(
-                    QueryErrorCode::Internal,
-                    "nexus_query_engine.query_service.placement",
-                    "device-specific admission resolution was unavailable",
-                )
-                .with_fact("reason", "missing_device_specific_admission_resolution");
-                completion.finish_error(&error);
-                return Err(error);
-            }
+        {
+            let super::super::admission::PlacedQuery { device_ordinal: _, memory_grant } = placed_query;
+            let state = self.inner.admission.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            lifecycle_ticket.transition_to_cleanup().expect("injected resolution failure accounts provisional cleanup");
+            self.inner.notify_admission_available();
+            drop(state);
+            pause.wait();
+            drop(memory_grant);
+            drop(lifecycle_ticket);
+            let error = QueryError::new(
+                QueryErrorCode::Internal,
+                "nexus_query_engine.query_service.placement",
+                "device-specific admission resolution was unavailable",
+            )
+            .with_fact("reason", "missing_device_specific_admission_resolution");
+            completion.finish_error(&error);
+            return Err(error);
         }
         let envelope = super::transaction::AdmissionEnvelope::acquire(
             &self.inner,

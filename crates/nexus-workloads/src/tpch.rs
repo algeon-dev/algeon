@@ -18,5 +18,5 @@ pub use registration::{register_tpch_table_layout, register_tpch_tables};
 
 pub use crate::{
     NEXUS_PARQUET_DIR_ENV,
-    error::{TpchWorkloadError, TpchWorkloadResult},
+    error::{WorkloadError, WorkloadResult},
 };

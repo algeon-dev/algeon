@@ -2188,6 +2188,7 @@ pub const datafusion_nexus::server::ERROR_CODE_METADATA_KEY: &str
 pub const datafusion_nexus::server::ERROR_KIND_METADATA_KEY: &str
 pub const datafusion_nexus::server::ERROR_OPERATION_METADATA_KEY: &str
 pub const datafusion_nexus::server::ERROR_STATUS_METADATA_KEY: &str
+pub const datafusion_nexus::server::NATIVE_MESSAGE_METADATA_KEY: &str
 pub const datafusion_nexus::server::NEXUS_ICEBERG_CATALOG_KIND_ENV: &str
 pub const datafusion_nexus::server::NEXUS_ICEBERG_CATALOG_NAME_ENV: &str
 pub const datafusion_nexus::server::NEXUS_ICEBERG_GLUE_CATALOG_ID_ENV: &str
@@ -2239,6 +2240,9 @@ pub const datafusion_nexus::server::NEXUS_SERVER_WORKSPACE_BACKING_CATALOG_ENV: 
 pub const datafusion_nexus::server::NEXUS_SERVER_WORKSPACE_BACKING_SCHEMA_ENV: &str
 pub const datafusion_nexus::server::NEXUS_SERVER_WORKSPACE_CATALOG_ENV: &str
 pub const datafusion_nexus::server::NEXUS_SERVER_WORKSPACE_SCHEMA_ENV: &str
+pub const datafusion_nexus::server::PREDICATE_ROLE_METADATA_KEY: &str
+pub const datafusion_nexus::server::REASON_METADATA_KEY: &str
+pub const datafusion_nexus::server::REQUIRED_OPTION_METADATA_KEY: &str
 pub const datafusion_nexus::server::UNSUPPORTED_COLUMN_METADATA_KEY: &str
 pub const datafusion_nexus::server::UNSUPPORTED_COLUMN_ROLE_METADATA_KEY: &str
 pub const datafusion_nexus::server::UNSUPPORTED_COLUMN_TYPE_METADATA_KEY: &str

@@ -2,7 +2,7 @@ use std::path::Path;
 
 use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_nexus::native_report::NativeFallbackPressureWorkloadItem;
-use nexus_workloads::tpch::{TpchWorkloadResult, register_tpch_tables};
+use nexus_workloads::tpch::{WorkloadResult, register_tpch_tables};
 
 pub(crate) const ANALYTICAL_OLAP_QUERY_COUNT: usize = ANALYTICAL_OLAP_QUERIES.len();
 
@@ -207,7 +207,7 @@ LIMIT 5
 pub(crate) async fn analytical_olap_fallback_pressure_workload_items(
     root: &Path,
     config: SessionConfig,
-) -> TpchWorkloadResult<Vec<NativeFallbackPressureWorkloadItem>> {
+) -> WorkloadResult<Vec<NativeFallbackPressureWorkloadItem>> {
     let ctx = SessionContext::new_with_config(config);
     register_tpch_tables(&ctx, root).await?;
     let mut items = Vec::with_capacity(ANALYTICAL_OLAP_QUERIES.len());

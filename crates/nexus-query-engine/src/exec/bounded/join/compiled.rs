@@ -26,7 +26,6 @@ mod prepared;
 mod residual;
 mod streamed;
 pub(in crate::exec) mod transaction;
-
 use cross::*;
 use filtered::*;
 use keyless::*;
@@ -36,7 +35,7 @@ use partitioned::*;
 use prepared::*;
 use residual::*;
 use streamed::*;
-use transaction::JoinMaterializationTxn;
+pub(in crate::exec) use transaction::JoinMaterializationTxn;
 
 pub(in crate::exec::bounded) enum BoundedCompiledJoinBuildState {
     Hash(BoundedRootHashJoinBuildState),

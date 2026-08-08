@@ -15,6 +15,8 @@ cugraph = ["dep:cugraph", "dep:cugraph-sys"]
 cuvs = ["dep:cuvs", "dep:cuvs-sys"]
 # Optional live NVML diagnostics; admission capacity and SM count remain on cudf CUDA/RMM inventory.
 nvml = ["dep:nvml-wrapper"]
+# Enables the crate-private seams consumed by the registered GPU execution harness.
+test-hooks = []
 
 [lints]
 workspace = true
@@ -56,6 +58,11 @@ path = "tests/gpu_allocator_exclusive_tests.rs"
 [[test]]
 name = "native_contract_tests"
 path = "tests/native_contract_tests.rs"
+
+[[test]]
+name = "native_execution_tests"
+path = "tests/native_execution_tests.rs"
+required-features = ["test-hooks"]
 
 [[test]]
 name = "native_pipeline_execution_tests"

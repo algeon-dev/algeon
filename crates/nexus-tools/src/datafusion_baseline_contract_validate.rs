@@ -562,17 +562,17 @@ async fn run_parquet_case_inner(
         detail.push_str("; DataFusion baseline must have no native plan and retain DataSourceExec");
     }
 
-    if let Some(expected) = expected_path {
-        if path != Some(expected) {
-            ok = false;
-            detail.push_str(&format!("; expected path {expected:?}"));
-        }
+    if let Some(expected) = expected_path
+        && path != Some(expected)
+    {
+        ok = false;
+        detail.push_str(&format!("; expected path {expected:?}"));
     }
-    if let Some(min_f) = expected_min_fragments {
-        if fragments.unwrap_or(0) < min_f {
-            ok = false;
-            detail.push_str(&format!("; fragments {} < {min_f}", fragments.unwrap_or(0)));
-        }
+    if let Some(min_f) = expected_min_fragments
+        && fragments.unwrap_or(0) < min_f
+    {
+        ok = false;
+        detail.push_str(&format!("; fragments {} < {min_f}", fragments.unwrap_or(0)));
     }
     if require_host_boundary_if_partial && path == Some(FinalPlanDisposition::Mixed) && host_boundaries.unwrap_or(0) < 1
     {
@@ -910,7 +910,7 @@ async fn run_runtime_no_rescue_constrained(bench: &Path) -> ToolResult<CaseResul
     let facts = nexus_facts_from_df_error(&err);
     let no_rescue = facts.get("cpu_fallback_after_native_start").map(String::as_str) == Some("false");
     let stage = facts.get("native_datafusion_stage").map(String::as_str).unwrap_or("");
-    let ok = no_rescue && (stage.contains("runtime") || facts.get("error_code").is_some());
+    let ok = no_rescue && (stage.contains("runtime") || facts.contains_key("error_code"));
     ToolResult::Ok(CaseResult {
         id: id.into(),
         category: "runtime_failure".into(),
@@ -1107,7 +1107,7 @@ async fn run_empty_parquet_corner(path: &Path, backend: &NexusGpuBackend) -> Cas
                 // long as it does not silently replay through DataFusion after native start
                 // of a different plan id, and the planning report is populated.
                 let no_rescue = error_facts.get("cpu_fallback_after_native_start").map(String::as_str) == Some("false");
-                let ok = if row.is_some() && (no_rescue || error_facts.get("error_code").is_some()) {
+                let ok = if row.is_some() && (no_rescue || error_facts.contains_key("error_code")) {
                     detail.push_str(&format!(
                         "; empty native collect failed without DataFusion replay (contractual): {e}"
                     ));

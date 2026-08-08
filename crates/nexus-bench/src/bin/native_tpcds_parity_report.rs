@@ -17,7 +17,7 @@ use nexus_bench::{
     },
 };
 use nexus_query_engine::mode::StatisticalAggregateExecutionMode;
-use nexus_workloads::tpcds::{TpcdsWorkloadResult, prepare_tpcds_report_dataset};
+use nexus_workloads::tpcds::{WorkloadResult, prepare_tpcds_report_dataset};
 
 const NEXUS_TPCDS_PARITY_QUERY_IDS_ENV: &str = "NEXUS_TPCDS_PARITY_QUERY_IDS";
 const NEXUS_TPCDS_PARITY_FLOAT_ABS_TOLERANCE_ENV: &str = "NEXUS_TPCDS_PARITY_FLOAT_ABS_TOLERANCE";
@@ -33,7 +33,7 @@ async fn main() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-async fn write_parity_report(dir: &std::path::Path, output: &mut impl Write) -> TpcdsWorkloadResult<()> {
+async fn write_parity_report(dir: &std::path::Path, output: &mut impl Write) -> WorkloadResult<()> {
     let (root, metadata) = prepare_tpcds_report_dataset(dir)?;
     let optimizer_config = native_optimizer_config_from_env();
     let statistical_aggregate_execution_mode = optimizer_config.statistical_aggregate_execution_mode();

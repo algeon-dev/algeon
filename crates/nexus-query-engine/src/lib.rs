@@ -32,10 +32,6 @@ mod reservation_tracker_contracts;
 #[path = "../tests/native_contract_tests/yielded_frame.rs"]
 mod yielded_frame;
 
-#[cfg(test)]
-#[path = "../tests/native_execution_tests.rs"]
-mod native_execution_integration_tests;
-
 pub mod admission;
 /// Execution-attempt ownership, cancellation, lifecycle, and completion delivery.
 pub mod attempt;

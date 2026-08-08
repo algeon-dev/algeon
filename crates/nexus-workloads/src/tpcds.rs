@@ -16,5 +16,5 @@ pub use registration::register_tpcds_tables;
 
 pub use crate::{
     NEXUS_PARQUET_DIR_ENV,
-    error::{TpcdsWorkloadError, TpcdsWorkloadResult},
+    error::{WorkloadError, WorkloadResult},
 };

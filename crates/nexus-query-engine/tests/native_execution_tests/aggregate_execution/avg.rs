@@ -652,3 +652,31 @@ fn bounded_native_query_executes_grouped_mixed_integer_and_decimal_avg() {
     let context = backend_context();
     assert_grouped_mixed_integer_and_decimal_avg(&context);
 }
+
+#[test]
+fn unbounded_native_query_executes_grouped_decimal_avg_at_output_scale() {
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
+    assert_grouped_decimal_avg_keeps_output_scale(&context);
+}
+
+#[test]
+fn unbounded_native_query_executes_grouped_mixed_integer_and_decimal_avg() {
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
+    assert_grouped_mixed_integer_and_decimal_avg(&context);
+}
+
+#[test]
+fn unbounded_native_query_executes_grouped_high_cardinality_mixed_avg() {
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
+    assert_grouped_high_cardinality_mixed_avg(&context, 1500);
+}
+
+#[test]
+fn unbounded_native_query_executes_grouped_many_group_decimal_avg() {
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
+    assert_grouped_many_group_decimal_avg(&context);
+}

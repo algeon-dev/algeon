@@ -454,7 +454,7 @@ fn measured_run_preflight_with_completion_sink(
             .iter()
             .flat_map(|workload| workload.queries.iter().map(String::as_str))
             .collect::<Vec<_>>();
-        if labels.as_slice() != &["q01", "edge_scan"] {
+        if labels.as_slice() != ["q01", "edge_scan"] {
             return Err("--domain-exhaustion-probe requires exactly q01 followed by edge_scan".into());
         }
     }

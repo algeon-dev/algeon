@@ -3,6 +3,7 @@ mod backend_metric_descriptor_tests;
 
 use std::{
     fs::{self, File},
+    mem::size_of,
     path::Path,
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
@@ -157,6 +158,12 @@ mod source_contracts;
 mod type_support;
 #[path = "native_contract_tests/vector_algorithm.rs"]
 mod vector_algorithm;
+
+#[test]
+fn query_error_size_is_pinned() {
+    assert_eq!(size_of::<QueryError>(), 8);
+    assert!(size_of::<Result<(), QueryError>>() <= 16);
+}
 
 #[test]
 fn query_error_codes_and_facts_are_stable_without_datafusion() {

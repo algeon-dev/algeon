@@ -17,8 +17,8 @@ use datafusion::{
 };
 use datafusion_nexus::{planner::NexusNativePhysicalOptimizerRule, session::NexusSessionStateBuilderExt};
 use nexus_workloads::clickbench::{
-    CLICKBENCH_QUERIES, ClickbenchDatasetMetadata, ClickbenchLayout, ClickbenchQuery, ClickbenchWorkloadError,
-    ClickbenchWorkloadResult, discover_clickbench_layout, prepare_clickbench_report_dataset, register_clickbench_table,
+    CLICKBENCH_QUERIES, ClickbenchDatasetMetadata, ClickbenchLayout, ClickbenchQuery, WorkloadError, WorkloadResult,
+    discover_clickbench_layout, prepare_clickbench_report_dataset, register_clickbench_table,
 };
 
 use crate::report_workload::{
@@ -147,10 +147,10 @@ pub async fn run_main() -> ExitCode {
     }
 }
 
-async fn run() -> ClickbenchWorkloadResult<()> {
+async fn run() -> WorkloadResult<()> {
     let config = BenchmarkConfig::from_env()?;
     let (root, metadata) = prepare_clickbench_report_dataset()?.ok_or_else(|| {
-        ClickbenchWorkloadError::InvalidDataset(
+        WorkloadError::InvalidDataset(
             "no ClickBench fixture found; set NEXUS_PARQUET_DIR or stage \
              fixture/clickbench/data/{hits.parquet, partitioned/} before running this benchmark"
                 .into(),
@@ -199,7 +199,7 @@ impl CpuProfile {
 }
 
 impl BenchmarkConfig {
-    fn from_env() -> ClickbenchWorkloadResult<Self> {
+    fn from_env() -> WorkloadResult<Self> {
         let warmup_iterations = env_usize(WARMUPS_ENV, 0)?;
         let iterations = env_usize(ITERATIONS_ENV, 1)?;
         if iterations == 0 {
@@ -250,13 +250,10 @@ async fn run_benchmark(
     config: &BenchmarkConfig,
     metadata: &ClickbenchDatasetMetadata,
     layout: &ClickbenchLayout,
-) -> ClickbenchWorkloadResult<BenchmarkReport> {
+) -> WorkloadResult<BenchmarkReport> {
     if let Some(dir) = &config.dump_rows_dir {
         fs::create_dir_all(dir).map_err(|error| {
-            ClickbenchWorkloadError::InvalidDataset(format!(
-                "failed to create {DUMP_ROWS_DIR_ENV} {}: {error}",
-                dir.display()
-            ))
+            WorkloadError::InvalidDataset(format!("failed to create {DUMP_ROWS_DIR_ENV} {}: {error}", dir.display()))
         })?;
     }
     let queries = config.selected_queries();
@@ -282,10 +279,7 @@ async fn run_benchmark(
     Ok(BenchmarkReport { config: config.clone(), metadata: metadata.clone(), rows })
 }
 
-async fn build_cpu_ctx(
-    config: &BenchmarkConfig,
-    layout: &ClickbenchLayout,
-) -> ClickbenchWorkloadResult<SessionContext> {
+async fn build_cpu_ctx(config: &BenchmarkConfig, layout: &ClickbenchLayout) -> WorkloadResult<SessionContext> {
     let ctx = SessionContext::new_with_config(config.cpu_profile.session_config());
     register_clickbench_table(&ctx, layout).await?;
     Ok(ctx)
@@ -294,7 +288,7 @@ async fn build_cpu_ctx(
 async fn build_native_ctx(
     config: &BenchmarkConfig,
     layout: &ClickbenchLayout,
-) -> ClickbenchWorkloadResult<(SessionContext, Arc<NexusNativePhysicalOptimizerRule>)> {
+) -> WorkloadResult<(SessionContext, Arc<NexusNativePhysicalOptimizerRule>)> {
     let optimizer_config = config
         .native_execution
         .configure_native_optimizer(clickbench_native_optimizer_config_with_profile_settings(&config.native_profile))
@@ -931,7 +925,7 @@ fn sanitize_tsv_field(s: &str) -> String {
     s.replace(['\t', '\r', '\n'], " ")
 }
 
-fn env_usize(name: &str, default: usize) -> ClickbenchWorkloadResult<usize> {
+fn env_usize(name: &str, default: usize) -> WorkloadResult<usize> {
     match std::env::var(name) {
         Ok(value) => value.parse().map_err(|_| invalid_env(format!("{name}={value} is not a non-negative integer"))),
         Err(_) => Ok(default),
@@ -949,7 +943,7 @@ fn env_truthy(name: &str) -> bool {
     )
 }
 
-fn query_ids_from_env(name: &str) -> ClickbenchWorkloadResult<Vec<String>> {
+fn query_ids_from_env(name: &str) -> WorkloadResult<Vec<String>> {
     match std::env::var(name) {
         Ok(value) => {
             let mut ids: Vec<String> =
@@ -966,8 +960,8 @@ fn query_ids_from_env(name: &str) -> ClickbenchWorkloadResult<Vec<String>> {
     }
 }
 
-fn invalid_env(message: String) -> ClickbenchWorkloadError {
-    ClickbenchWorkloadError::InvalidDataset(message)
+fn invalid_env(message: String) -> WorkloadError {
+    WorkloadError::InvalidDataset(message)
 }
 
 #[cfg(test)]

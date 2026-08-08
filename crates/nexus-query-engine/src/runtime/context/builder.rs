@@ -1,6 +1,6 @@
 //! Construction and policy validation for native execution contexts.
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-hooks"))]
 use std::time::Duration;
 use std::{
     error::Error as StdError,
@@ -22,7 +22,7 @@ use super::{
     ExecutionCancellation, ExecutionContext, ExecutionContextParts, RuntimeObservedExecutionContext,
     SourceSchedulerPolicy,
 };
-#[cfg(test)]
+#[cfg(any(test, feature = "test-hooks"))]
 use crate::observability::{RuntimeObservationConfig, RuntimeQueryId, RuntimeTraceId};
 use crate::{
     capability::AggregateStrategyExecutionOptions,
@@ -42,13 +42,13 @@ use crate::{
 /// the builder creates a cudf runtime from the requested device ordinal and
 /// memory-resource policy.
 #[derive(Debug, Default)]
-pub(crate) struct ExecutionContextBuilder {
+pub struct ExecutionContextBuilder {
     /// Optional caller-provided diagnostic query id.
     query_id: Option<QueryId>,
     /// Optional caller-provided parent trace id.
     trace_id: Option<TraceId>,
     /// Query-local bounded runtime observation policy.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-hooks"))]
     runtime_observation_config: RuntimeObservationConfig,
     /// Prebuilt runtime to use instead of constructing one.
     runtime: Option<Arc<cudf::Runtime>>,
@@ -169,7 +169,7 @@ impl ExecutionContextBuilder {
     /// This marks the memory-resource policy as
     /// [`MemoryResourcePolicy::ExternalRuntime`] because allocator/device setup
     /// has happened outside the query engine.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-hooks"))]
     pub fn with_runtime(mut self, runtime: cudf::Runtime) -> Self {
         self.runtime = Some(Arc::new(runtime));
         self.memory_policy = MemoryResourcePolicy::ExternalRuntime;
@@ -180,7 +180,7 @@ impl ExecutionContextBuilder {
     ///
     /// Prefer this over building separate runtimes when an adapter needs one
     /// CUDA stream, allocator, or device policy across multiple executions.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-hooks"))]
     pub fn with_shared_runtime(mut self, runtime: Arc<cudf::Runtime>) -> Self {
         self.runtime = Some(runtime);
         self.memory_policy = MemoryResourcePolicy::ExternalRuntime;
@@ -188,28 +188,28 @@ impl ExecutionContextBuilder {
     }
 
     /// Supplies the query-wide diagnostic correlation id.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-hooks"))]
     pub fn with_query_id(mut self, query_id: impl Into<QueryId>) -> Self {
         self.query_id = Some(query_id.into());
         self
     }
 
     /// Supplies the optional parent trace id.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-hooks"))]
     pub fn with_trace_id(mut self, trace_id: impl Into<TraceId>) -> Self {
         self.trace_id = Some(trace_id.into());
         self
     }
 
     /// Enables or disables bounded runtime observation for the constructed context.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-hooks"))]
     pub fn with_runtime_observation_config(mut self, config: RuntimeObservationConfig) -> Self {
         self.runtime_observation_config = config;
         self
     }
 
     /// Supplies a caller-created query session and enters the owner-preserving build API.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-hooks"))]
     pub fn with_runtime_observation_session(
         mut self,
         session: RuntimeObservationSession,
@@ -222,42 +222,43 @@ impl ExecutionContextBuilder {
     ///
     /// Ignored for an injected runtime except for the recorded
     /// `ExternalRuntime` diagnostic state.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-hooks"))]
     pub fn with_memory_policy(mut self, memory_policy: MemoryResourcePolicy) -> Self {
         self.memory_policy = memory_policy;
         self
     }
 
     /// Sets the engine-level memory control contract.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-hooks"))]
     pub fn with_memory_control_policy(mut self, memory_control_policy: MemoryControlPolicy) -> Self {
         self.memory_control_policy = memory_control_policy;
         self
     }
 
     /// Sets bounded source scheduling controls.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-hooks"))]
     pub fn with_source_scheduler_policy(mut self, source_scheduler_policy: SourceSchedulerPolicy) -> Self {
         self.source_scheduler_policy = source_scheduler_policy;
         self
     }
 
     /// Set bounded source chunk planning mode.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-hooks"))]
     pub fn with_source_chunk_planning_mode(mut self, mode: SourceChunkPlanningMode) -> Self {
         self.source_chunk_planning_mode = mode;
         self
     }
 
     /// Registers source object-store profiles used by remote reads and cache fills.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-hooks"))]
     pub fn with_source_storage_profiles(mut self, profiles: impl IntoIterator<Item = SourceStorageProfile>) -> Self {
         self.source_storage_profiles = profiles.into_iter().collect();
         self
     }
 
     /// Uses a caller-owned service stream pool for bounded source-read workers.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-hooks"))]
+    #[cfg_attr(not(test), expect(dead_code, reason = "used by in-crate source scheduler tests"))]
     pub(crate) fn with_service_stream_pool(mut self, service_stream_pool: ServiceStreamPool) -> Self {
         self.service_stream_pool = Some(service_stream_pool);
         self
@@ -266,63 +267,63 @@ impl ExecutionContextBuilder {
     /// Sets the size of the default process-global service stream pool.
     ///
     /// Ignored when a pool is supplied with [`Self::with_service_stream_pool`].
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-hooks"))]
     pub fn with_service_stream_pool_size(mut self, pool_size: usize) -> Self {
         self.service_stream_pool_size = Some(pool_size);
         self
     }
 
     /// Sets the service-wide background lakehouse cache-fill byte budget.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-hooks"))]
     pub fn with_lakehouse_cache_fill_budget_bytes(mut self, budget_bytes: u64) -> Self {
         self.lakehouse_cache_fill_budget_bytes = Some(budget_bytes);
         self
     }
 
     /// Sets the bounded wait for blocking lakehouse cache maintenance resources.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-hooks"))]
     pub fn with_lakehouse_cache_fill_acquire_timeout(mut self, timeout: Duration) -> Self {
         self.lakehouse_cache_fill_config.get_or_insert_with(Default::default).acquire_timeout = timeout;
         self
     }
 
     /// Sets the service-wide background lakehouse cache-fill operation cap.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-hooks"))]
     pub fn with_lakehouse_cache_fill_max_concurrent_ops(mut self, max_concurrent_ops: usize) -> Self {
         self.lakehouse_cache_fill_max_concurrent_ops = Some(max_concurrent_ops);
         self
     }
 
     /// Sets the cooperative cancellation flag for native execution.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-hooks"))]
     pub fn with_cancellation(mut self, cancellation: ExecutionCancellation) -> Self {
         self.cancellation = cancellation;
         self
     }
 
     /// Selects the execution contract for floating statistical aggregates.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-hooks"))]
     pub fn with_statistical_aggregate_execution_mode(mut self, mode: StatisticalAggregateExecutionMode) -> Self {
         self.statistical_aggregate_execution_mode = mode;
         self
     }
 
     /// Sets expert local-throughput source chunk planning policy.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-hooks"))]
     pub fn with_source_chunk_planning_options(mut self, options: SourceChunkPlanningOptions) -> Self {
         self.source_chunk_planning_options = options;
         self
     }
 
     /// Supplies fixture/config graph calibration metadata.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-hooks"))]
     pub fn with_graph_memory_calibration_override(mut self, override_: GraphMemoryCalibrationOverride) -> Self {
         self.graph_memory_calibration_override = override_;
         self
     }
 
     /// Validates policies, constructs or records the runtime, and returns a context.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-hooks"))]
     pub fn build(self) -> Result<ExecutionContext> {
         if self.runtime_observation_config.is_enabled() {
             return Err(runtime_observation_owner_required_error());
@@ -331,7 +332,7 @@ impl ExecutionContextBuilder {
     }
 
     /// Builds a cloneable execution context paired with its unique observation owner.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-hooks"))]
     pub fn build_with_runtime_observation(
         self,
     ) -> std::result::Result<RuntimeObservedExecutionContext, RuntimeObservationBuildError> {

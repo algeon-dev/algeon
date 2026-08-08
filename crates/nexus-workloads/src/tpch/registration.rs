@@ -9,9 +9,9 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionContext},
 };
 
-use super::{TPCH_TABLES, TpchTableLayout, TpchWorkloadError, TpchWorkloadResult, discover_tpch_table_layout};
+use super::{TPCH_TABLES, TpchTableLayout, WorkloadError, WorkloadResult, discover_tpch_table_layout};
 
-pub async fn register_tpch_tables(ctx: &SessionContext, root: &Path) -> TpchWorkloadResult<()> {
+pub async fn register_tpch_tables(ctx: &SessionContext, root: &Path) -> WorkloadResult<()> {
     for table in TPCH_TABLES {
         let layout = discover_tpch_table_layout(root, table)?;
         register_tpch_table_layout(ctx, table, &layout).await?;
@@ -23,9 +23,9 @@ pub async fn register_tpch_table_layout(
     ctx: &SessionContext,
     table: &str,
     layout: &TpchTableLayout,
-) -> TpchWorkloadResult<()> {
+) -> WorkloadResult<()> {
     if layout.files.len() == 1 || layout.anchor.is_dir() {
-        let path = layout.anchor.to_str().ok_or_else(|| TpchWorkloadError::NonUtf8Path(layout.anchor.clone()))?;
+        let path = layout.anchor.to_str().ok_or_else(|| WorkloadError::NonUtf8Path(layout.anchor.clone()))?;
         ctx.register_parquet(table, path, ParquetReadOptions::default()).await?;
         return Ok(());
     }
@@ -33,11 +33,11 @@ pub async fn register_tpch_table_layout(
     let urls = layout
         .files
         .iter()
-        .map(|path| -> TpchWorkloadResult<ListingTableUrl> {
-            let path_str = path.to_str().ok_or_else(|| TpchWorkloadError::NonUtf8Path(path.clone()))?;
+        .map(|path| -> WorkloadResult<ListingTableUrl> {
+            let path_str = path.to_str().ok_or_else(|| WorkloadError::NonUtf8Path(path.clone()))?;
             Ok(ListingTableUrl::parse(format!("file://{path_str}"))?)
         })
-        .collect::<TpchWorkloadResult<Vec<_>>>()?;
+        .collect::<WorkloadResult<Vec<_>>>()?;
     let listing_options = ListingOptions::new(Arc::new(ParquetFormat::default())).with_file_extension(".parquet");
     let inferred_schema = listing_options.infer_schema(&ctx.state(), &urls[0]).await?;
     let config = ListingTableConfig::new_with_multi_paths(urls)

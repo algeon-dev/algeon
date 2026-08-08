@@ -40,8 +40,8 @@ filter = '''
 | (package(datafusion-nexus) & binary(native_tpcds_parity_tests))
 | (package(datafusion-nexus) & binary(root_gpu_tests))
 | (package(datafusion-nexus) & binary(server_tests))
-| (package(nexus-query-engine) & kind(lib))
 | (package(nexus-query-engine) & binary(gpu_backend_shared_tests))
+| (package(nexus-query-engine) & binary(native_execution_tests))
 | (package(nexus-query-engine) & binary(native_pipeline_execution_tests))
 '''
 test-group = "gpu"

@@ -22,8 +22,8 @@ pub(crate) use diagnostics::{
 pub(crate) use envelope::{AttemptReservationEnvelope, AttemptReservationPolicy};
 pub(crate) use join_strategy::{CompiledJoinExecutionStrategy, CompiledJoinStrategySelection};
 pub(crate) use requirement::AttemptCapabilityEvidence as AttemptRequirement;
-#[cfg(test)]
-pub(crate) use requirement::{AttemptCapabilityEvidence, EstimateQuality};
+#[cfg(any(test, feature = "test-hooks"))]
+pub use requirement::{AttemptCapabilityEvidence, EstimateQuality};
 pub use requirement::{ComposedGraphProducerCandidate, QueryPlanCapabilityProof};
 #[doc(hidden)]
 pub use support::{

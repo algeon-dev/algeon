@@ -44,7 +44,7 @@ use nexus_query_engine::{
     },
 };
 use nexus_workloads::clickbench::{
-    CLICKBENCH_QUERIES, ClickbenchWorkloadError, discover_clickbench_layout, prepare_clickbench_report_dataset,
+    CLICKBENCH_QUERIES, WorkloadError, discover_clickbench_layout, prepare_clickbench_report_dataset,
     register_clickbench_table,
 };
 use serde::Serialize;
@@ -111,7 +111,7 @@ pub async fn run(args: Vec<String>) -> ToolResult<()> {
     let profile = clickbench_native_profile_settings_from_env();
     let backend = build_probe_backend(&profile)?;
     let (root, _metadata) = prepare_clickbench_report_dataset()?.ok_or_else(|| {
-        ClickbenchWorkloadError::InvalidDataset(
+        WorkloadError::InvalidDataset(
             "no ClickBench fixture found; set NEXUS_PARQUET_DIR or stage fixture/clickbench/data".to_string(),
         )
     })?;

@@ -15,8 +15,8 @@ pub(in crate::exec) struct RuntimeGraphStatisticsProbe {
     pub(in crate::exec) statistics: crate::graph_memory::GraphStatistics,
 }
 
-#[cfg(all(test, feature = "cugraph"))]
-pub(crate) fn force_next_graph_statistics_optional_resource_exhausted_for_test() {
+#[cfg(all(any(test, feature = "test-hooks"), feature = "cugraph"))]
+pub fn force_next_graph_statistics_optional_resource_exhausted_for_test() {
     FORCE_NEXT_GRAPH_STATISTICS_OPTIONAL_RESOURCE_EXHAUSTED.with(|force| force.set(true));
 }
 

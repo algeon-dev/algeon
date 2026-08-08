@@ -262,7 +262,7 @@ pub(super) fn drift_summary(rows: &[DeviceSeriesRow], process_rows: &[ProcessSer
             let first = rows.first().expect("per_ordinal yields non-empty groups");
             let last = rows.last().expect("per_ordinal yields non-empty groups");
             let mid_offset = first.offset_ns + (last.offset_ns - first.offset_ns) / 2;
-            let at_or_before_mid = rows.iter().filter(|row| row.offset_ns <= mid_offset).last().unwrap_or(first);
+            let at_or_before_mid = rows.iter().rfind(|row| row.offset_ns <= mid_offset).unwrap_or(first);
             let cache = |row: &&DeviceSeriesRow| row.cache_evictable_resident_bytes + row.cache_pinned_in_use_bytes;
             OrdinalDriftSummary {
                 device_ordinal: ordinal,
@@ -276,8 +276,8 @@ pub(super) fn drift_summary(rows: &[DeviceSeriesRow], process_rows: &[ProcessSer
                 },
                 live_grants_bytes_first: first.live_grants_bytes,
                 live_grants_bytes_last: last.live_grants_bytes,
-                cache_resident_bytes_first: cache(&first),
-                cache_resident_bytes_last: cache(&last),
+                cache_resident_bytes_first: cache(first),
+                cache_resident_bytes_last: cache(last),
                 cache_resident_bytes_peak: rows.iter().map(cache).max().unwrap_or_default(),
                 allocation_failure_count_first: first.allocation_failure_count,
                 allocation_failure_count_last: last.allocation_failure_count,
@@ -498,7 +498,7 @@ fn ratio_milli(numerator: u64, denominator: u64) -> Option<u64> {
 
 /// Groups rows by ordinal, preserving first-seen ordinal order and the
 /// input's per-ordinal time order.
-fn per_ordinal<'a>(rows: &'a [DeviceSeriesRow]) -> impl Iterator<Item = (usize, Vec<&'a DeviceSeriesRow>)> {
+fn per_ordinal(rows: &[DeviceSeriesRow]) -> impl Iterator<Item = (usize, Vec<&DeviceSeriesRow>)> {
     let mut order = Vec::new();
     let mut groups: std::collections::BTreeMap<usize, Vec<&DeviceSeriesRow>> = std::collections::BTreeMap::new();
     for row in rows {

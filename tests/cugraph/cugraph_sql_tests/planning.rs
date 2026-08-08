@@ -381,7 +381,11 @@ async fn cugraph_table_function_scan_rejects_int64_for_legacy_int32_only_algorit
         .create_physical_plan()
         .await
         .unwrap_err();
-    assert!(malformed.find_nexus_error().is_none(), "missing columns must remain a planning error: {malformed}");
+    let DataFusionError::External(source) = &malformed else {
+        panic!("missing columns must remain a typed external planning error: {malformed}");
+    };
+    let nexus = source.downcast_ref::<Error>().expect("External error must contain the adapter Error");
+    assert_eq!(nexus.code(), ErrorCode::FieldNotFound);
     assert!(malformed.to_string().contains("missing source column 'missing_src'"));
 }
 

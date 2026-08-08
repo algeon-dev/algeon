@@ -2257,7 +2257,6 @@ dependencies = [
  "arrow",
  "arrow-flight",
  "async-trait",
- "aws-smithy-types",
  "base64",
  "bytes",
  "cudf-nexus",

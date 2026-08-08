@@ -1,5 +1,12 @@
 pub mod nexus_query_engine
 pub mod nexus_query_engine::admission
+pub enum nexus_query_engine::admission::EstimateQuality
+pub nexus_query_engine::admission::EstimateQuality::Measured
+pub nexus_query_engine::admission::EstimateQuality::Modeled
+pub nexus_query_engine::admission::EstimateQuality::Unknown
+pub struct nexus_query_engine::admission::AttemptCapabilityEvidence
+impl nexus_query_engine::admission::AttemptCapabilityEvidence
+pub fn nexus_query_engine::admission::AttemptCapabilityEvidence::from_parts(u64, u64, core::option::Option<u64>, nexus_query_engine::admission::EstimateQuality, alloc::vec::Vec<nexus_query_engine::capability::ReservationRequirement>) -> Self
 pub struct nexus_query_engine::admission::BoundedPipelineAdmission
 impl nexus_query_engine::admission::BoundedPipelineAdmission
 pub fn nexus_query_engine::admission::BoundedPipelineAdmission::analysis(&self) -> &nexus_query_engine::capability::CapabilityAnalysis
@@ -950,8 +957,6 @@ pub const nexus_query_engine::error::QueryErrorCode::ALL: &'static [Self]
 pub const fn nexus_query_engine::error::QueryErrorCode::as_str(self) -> &'static str
 pub const fn nexus_query_engine::error::QueryErrorCode::kind(self) -> nexus_query_engine::error::QueryErrorKind
 pub const fn nexus_query_engine::error::QueryErrorCode::status(self) -> nexus_query_engine::error::QueryErrorStatus
-impl core::convert::From<nexus_query_engine::error::QueryErrorCode> for nexus_query_engine::observability::AttemptFailureCode
-pub fn nexus_query_engine::observability::AttemptFailureCode::from(nexus_query_engine::error::QueryErrorCode) -> Self
 impl core::convert::From<nexus_query_engine::error::QueryErrorCode> for nexus_query_engine::triage::TriageCode
 pub fn nexus_query_engine::triage::TriageCode::from(nexus_query_engine::error::QueryErrorCode) -> Self
 impl core::fmt::Display for nexus_query_engine::error::QueryErrorCode
@@ -982,7 +987,7 @@ impl nexus_query_engine::error::Facts
 pub fn nexus_query_engine::error::Facts::get(&self, &str) -> core::option::Option<&str>
 pub fn nexus_query_engine::error::Facts::iter(&self) -> impl core::iter::traits::iterator::Iterator<Item = (&'static str, &str)>
 pub fn nexus_query_engine::error::Facts::new() -> Self
-pub struct nexus_query_engine::error::QueryError
+pub struct nexus_query_engine::error::QueryError(_)
 impl nexus_query_engine::error::QueryError
 pub fn nexus_query_engine::error::QueryError::code(&self) -> nexus_query_engine::error::QueryErrorCode
 pub fn nexus_query_engine::error::QueryError::cudf_budget_exhaustion(&self) -> core::option::Option<&cudf::core::error::BudgetExhaustionDetail>
@@ -2435,8 +2440,6 @@ pub nexus_query_engine::observability::AttemptFailureCode::UnsupportedPlanShape
 pub nexus_query_engine::observability::AttemptFailureCode::UnsupportedType
 impl nexus_query_engine::observability::AttemptFailureCode
 pub const fn nexus_query_engine::observability::AttemptFailureCode::from_query_error_code(nexus_query_engine::error::QueryErrorCode) -> Self
-impl core::convert::From<nexus_query_engine::error::QueryErrorCode> for nexus_query_engine::observability::AttemptFailureCode
-pub fn nexus_query_engine::observability::AttemptFailureCode::from(nexus_query_engine::error::QueryErrorCode) -> Self
 pub enum nexus_query_engine::observability::AttemptFailureFactKey
 pub nexus_query_engine::observability::AttemptFailureFactKey::AllocationSource
 pub nexus_query_engine::observability::AttemptFailureFactKey::Reason
@@ -5947,6 +5950,7 @@ pub fn nexus_query_engine::runtime::ExecutionContext::attempt_allocation_domain_
 pub fn nexus_query_engine::runtime::ExecutionContext::attempt_allocation_domain_usage(&self) -> nexus_query_engine::error::Result<core::option::Option<cudf::core::memory::QueryMemoryDomainUsage>>
 pub fn nexus_query_engine::runtime::ExecutionContext::boundary_policy(&self) -> nexus_query_engine::runtime::ExecutionBoundaryPolicy
 pub fn nexus_query_engine::runtime::ExecutionContext::bounded_device_budget_bytes(&self) -> core::option::Option<u64>
+pub fn nexus_query_engine::runtime::ExecutionContext::builder() -> nexus_query_engine::runtime::context::builder::ExecutionContextBuilder
 pub fn nexus_query_engine::runtime::ExecutionContext::cancellation(&self) -> &nexus_query_engine::runtime::ExecutionCancellation
 pub fn nexus_query_engine::runtime::ExecutionContext::check_cancellation(&self, &'static str) -> nexus_query_engine::error::Result<()>
 pub fn nexus_query_engine::runtime::ExecutionContext::composed_schedule_projection(&self) -> nexus_query_engine::error::Result<nexus_query_engine::observability::AttemptComposedScheduleProjection>
@@ -5955,6 +5959,8 @@ pub fn nexus_query_engine::runtime::ExecutionContext::device_memory_space(&self)
 pub fn nexus_query_engine::runtime::ExecutionContext::device_placement(&self) -> nexus_query_engine::runtime::DevicePlacement
 pub fn nexus_query_engine::runtime::ExecutionContext::drain_lakehouse_cache_fill_event_snapshots(&self) -> alloc::vec::Vec<nexus_query_engine::runtime::LakehouseCacheFillEventSnapshot>
 pub fn nexus_query_engine::runtime::ExecutionContext::execution_budget_token(&self, cudf::runtime::budget::ExecutionBudgetRequest) -> nexus_query_engine::error::Result<cudf::runtime::budget::ExecutionBudgetToken>
+pub fn nexus_query_engine::runtime::ExecutionContext::from_runtime(cudf::runtime::owner::Runtime) -> nexus_query_engine::error::Result<Self>
+pub fn nexus_query_engine::runtime::ExecutionContext::from_shared_runtime(alloc::sync::Arc<cudf::runtime::owner::Runtime>) -> nexus_query_engine::error::Result<Self>
 pub fn nexus_query_engine::runtime::ExecutionContext::gpu_executor(&self) -> nexus_query_engine::error::Result<nexus_query_engine::runtime::GpuExecutorLease>
 pub fn nexus_query_engine::runtime::ExecutionContext::graph_memory_calibration_override(&self) -> nexus_query_engine::graph_memory::GraphMemoryCalibrationOverride
 pub fn nexus_query_engine::runtime::ExecutionContext::is_query_service_admitted(&self) -> bool
@@ -6276,6 +6282,7 @@ pub fn nexus_query_engine::runtime::QueryAdmissionRequest::with_runtime_observat
 pub fn nexus_query_engine::runtime::QueryAdmissionRequest::with_runtime_observation_activity_result(self, nexus_query_engine::error::Result<nexus_query_engine::runtime::QueryActivityLease>) -> Self
 pub fn nexus_query_engine::runtime::QueryAdmissionRequest::with_runtime_observation_handle(self, nexus_query_engine::observability::RuntimeObservationHandle) -> Self
 pub fn nexus_query_engine::runtime::QueryAdmissionRequest::with_runtime_observation_owner(self, nexus_query_engine::observability::RuntimeObservationOwner) -> Self
+pub fn nexus_query_engine::runtime::QueryAdmissionRequest::with_test_placement_requirement(self, nexus_query_engine::admission::AttemptCapabilityEvidence) -> Self
 pub struct nexus_query_engine::runtime::QueryExecutionConfig
 pub nexus_query_engine::runtime::QueryExecutionConfig::aggregate_strategy_execution_options: nexus_query_engine::capability::AggregateStrategyExecutionOptions
 pub nexus_query_engine::runtime::QueryExecutionConfig::boundary_policy: nexus_query_engine::runtime::ExecutionBoundaryPolicy

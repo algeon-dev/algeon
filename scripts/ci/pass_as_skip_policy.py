@@ -20,7 +20,7 @@ RULES = {
         re.DOTALL,
     ),
     "device_count_skip": re.compile(
-        r"(?:if\s+)?(?:cudf::)?DeviceId::count\s*\(\)(?:\s*\.unwrap_or\s*\(\s*0\s*\))?\s*==\s*0\s*\{\s*return\s*;\s*\}",
+        r"(?:if\s+)?(?:cudf::)?DeviceId::count\s*\(\)(?:\s*\.unwrap_or\s*\(\s*0\s*\))?\s*(?:==|!=|<=|>=|<|>)\s*\d+\s*\{\s*return\s*;\s*\}",
         re.DOTALL,
     ),
     "optional_python_oracle": re.compile(

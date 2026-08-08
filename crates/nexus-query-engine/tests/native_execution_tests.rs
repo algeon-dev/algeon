@@ -28,16 +28,23 @@ use nexus_query_engine::{
     chunk::{SourceChunkPlanningPolicy, plan_local_parquet_source_chunks},
     error::QueryErrorCode,
     exec::{
-        execute_query_plan, execute_query_plan_with_gpu_inputs, materialize_gpu_result_to_host, output::QueryOutput,
+        execute_query_plan, execute_query_plan_with_gpu_inputs, execute_query_plan_with_gpu_inputs_observed,
+        force_next_graph_seed_chunk_retry_chunk_attempt_resource_exhausted_for_test,
+        force_next_graph_seed_chunk_retry_full_attempt_resource_exhausted_for_test, materialize_gpu_result_to_host,
+        output::QueryOutput,
     },
     expr::{
         AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, Expr, GroupingSetsSpec, LimitSpec, LiteralValue,
         SortExpr, SortSpec,
     },
+    graph_memory::GraphMemoryCalibrationOverride,
     metrics::{MemoryReservationEventAction, QueryMetrics},
+    observability::{
+        PlanExecutionBoundaryKind, RuntimeObservationConfig, RuntimeObservationPayload, RuntimeTerminalOutcome,
+    },
     plan::{
-        JoinKey, JoinNullEquality, JoinOutputColumn, JoinSide, JoinSpec, JoinType, ProjectionOutput, QueryPlanBuilder,
-        WindowFunction, WindowSpec,
+        GraphEdgeBetweennessCentralityParams, JoinKey, JoinNullEquality, JoinOutputColumn, JoinSide, JoinSpec,
+        JoinType, ProjectionOutput, QueryPlanBuilder, WindowFunction, WindowSpec,
     },
     runtime::{
         AdmittedQueryContext, BoundedJoinReservationContract, DeploymentIoCapability, ExecutionBoundaryPolicy,
@@ -276,8 +283,12 @@ mod partition_execution;
 mod projection_test_support;
 #[path = "native_execution_tests/projection_validation.rs"]
 mod projection_validation;
+#[path = "native_execution_tests/semijoin_reduction.rs"]
+mod semijoin_reduction;
 #[path = "native_execution_tests/test_support.rs"]
 mod test_support;
+#[path = "native_execution_tests/unbounded_pruning_regressions.rs"]
+mod unbounded_pruning_regressions;
 #[cfg(feature = "cuvs")]
 #[path = "native_execution_tests/vector_algorithm_execution.rs"]
 mod vector_algorithm_execution;

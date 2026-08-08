@@ -9,17 +9,12 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionContext},
 };
 
-use super::{
-    CLICKBENCH_RAW_TABLE, CLICKBENCH_TABLE, ClickbenchLayout, ClickbenchWorkloadError, ClickbenchWorkloadResult,
-};
+use super::{CLICKBENCH_RAW_TABLE, CLICKBENCH_TABLE, ClickbenchLayout, WorkloadError, WorkloadResult};
 
-pub async fn register_clickbench_table(
-    ctx: &SessionContext,
-    layout: &ClickbenchLayout,
-) -> ClickbenchWorkloadResult<()> {
+pub async fn register_clickbench_table(ctx: &SessionContext, layout: &ClickbenchLayout) -> WorkloadResult<()> {
     match layout {
         ClickbenchLayout::Single { file } => {
-            let path_str = file.to_str().ok_or_else(|| ClickbenchWorkloadError::NonUtf8Path(file.clone()))?;
+            let path_str = file.to_str().ok_or_else(|| WorkloadError::NonUtf8Path(file.clone()))?;
             ctx.register_parquet(CLICKBENCH_RAW_TABLE, path_str, ParquetReadOptions::default()).await?;
         },
         ClickbenchLayout::Partitioned { files, .. } => register_clickbench_partitioned_shards(ctx, files).await?,
@@ -31,26 +26,22 @@ pub async fn register_clickbench_table(
     Ok(())
 }
 
-async fn register_clickbench_partitioned_shards(
-    ctx: &SessionContext,
-    files: &[PathBuf],
-) -> ClickbenchWorkloadResult<()> {
+async fn register_clickbench_partitioned_shards(ctx: &SessionContext, files: &[PathBuf]) -> WorkloadResult<()> {
     let urls = files
         .iter()
-        .map(|path| -> ClickbenchWorkloadResult<ListingTableUrl> {
+        .map(|path| -> WorkloadResult<ListingTableUrl> {
             let absolute = path.canonicalize().map_err(|error| {
-                ClickbenchWorkloadError::InvalidDataset(format!(
+                WorkloadError::InvalidDataset(format!(
                     "failed to canonicalize ClickBench shard {}: {error}",
                     path.display()
                 ))
             })?;
-            let absolute_str =
-                absolute.to_str().ok_or_else(|| ClickbenchWorkloadError::NonUtf8Path(absolute.clone()))?;
+            let absolute_str = absolute.to_str().ok_or_else(|| WorkloadError::NonUtf8Path(absolute.clone()))?;
             Ok(ListingTableUrl::parse(format!("file://{absolute_str}"))?)
         })
-        .collect::<ClickbenchWorkloadResult<Vec<_>>>()?;
+        .collect::<WorkloadResult<Vec<_>>>()?;
     if urls.is_empty() {
-        return Err(ClickbenchWorkloadError::InvalidDataset(
+        return Err(WorkloadError::InvalidDataset(
             "register_clickbench_partitioned_shards called with zero shards".to_string(),
         ));
     }

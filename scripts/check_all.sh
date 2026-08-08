@@ -408,7 +408,7 @@ define_phase rustdoc "RUSTDOCFLAGS='${DOC_RUSTDOCFLAGS}' cargo doc --workspace $
 # under the same workspace scope and never GPU-locked. Placed right after
 # rustdoc so it reuses that phase's warm dependency doc metadata.
 define_phase public-api-surface "bash scripts/ci/check_public_api_surface.sh check ${FEATURE_ARGS[*]}"
-define_phase clippy "cargo clippy --workspace --all-targets ${FEATURE_ARGS[*]}"
+define_phase clippy "cargo clippy --workspace --all-targets ${FEATURE_ARGS[*]} -- -D warnings"
 
 phase_now_ms() {
   local value
@@ -984,7 +984,7 @@ if [[ "${mode}" == full ]]; then
   run_or_cache_phase rustdoc none - - rustdoc_command || true
   rustdoc_summary="command_status=${PHASE_EXIT[rustdoc]} warnings=denied"
   run_or_cache_phase public-api-surface literal:crates=3 - - public_api_surface_command || true
-  run_or_cache_phase clippy none - - cargo clippy --workspace --all-targets "${FEATURE_ARGS[@]}" || true
+  run_or_cache_phase clippy none - - cargo clippy --workspace --all-targets "${FEATURE_ARGS[@]}" -- -D warnings || true
 fi
 
 sanitize_phase_cell() {

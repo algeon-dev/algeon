@@ -54,7 +54,8 @@ impl ReservationTracker {
         Self::new_with_budget(memory_space, ReservationBudget::Static(budget_bytes))
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-hooks"))]
+    #[cfg_attr(not(test), expect(dead_code, reason = "used by in-crate reservation contract tests"))]
     pub(super) fn new_with_budget(memory_space: MemorySpaceId, budget: ReservationBudget) -> Self {
         Self::new_with_budget_and_observation(memory_space, budget, None)
     }
