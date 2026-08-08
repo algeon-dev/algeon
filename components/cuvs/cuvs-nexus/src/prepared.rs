@@ -355,16 +355,20 @@ impl CuvsResources {
         validated: &ValidatedFixedSizeListFloat32Export<'_>,
         layout: MatrixLayout,
     ) -> Result<OwnedFloat32Matrix> {
-        self.pack_validated_list_float32_child(
-            validated
-                .copy_active_child_into_runtime(self.runtime())
-                .map_err(|error| from_cudf("CuvsResources::pack_validated_fixed_size_list_float32", error))?,
-            validated.rows(),
-            validated.dimension(),
-            validated.binding_id(),
-            layout,
-            "CuvsResources::pack_validated_fixed_size_list_float32",
-        )
+        let operation = "CuvsResources::pack_validated_fixed_size_list_float32";
+        self.validate_exact_binding(operation)?;
+        if validated.binding_id() != self.binding_id() {
+            return Err(invalid_input(
+                operation,
+                "validated list input and cuVS resources must use the same exact runtime binding",
+            )
+            .with_context("tensor_binding_id", validated.binding_id())
+            .with_context("resource_binding_id", self.binding_id()));
+        }
+        let packed = validated
+            .pack_active_child_into_runtime(self.runtime(), layout.into())
+            .map_err(|error| from_cudf(operation, error))?;
+        OwnedFloat32Matrix::from_finite_checked_packed(self, packed)
     }
 
     /// Copy a proof-validated runtime-uniform `List<Float32>` child into a
@@ -374,16 +378,20 @@ impl CuvsResources {
         validated: &ValidatedUniformListFloat32Export<'_>,
         layout: MatrixLayout,
     ) -> Result<OwnedFloat32Matrix> {
-        self.pack_validated_list_float32_child(
-            validated
-                .copy_active_child_into_runtime(self.runtime())
-                .map_err(|error| from_cudf("CuvsResources::pack_validated_uniform_list_float32", error))?,
-            validated.rows(),
-            validated.dimension(),
-            validated.binding_id(),
-            layout,
-            "CuvsResources::pack_validated_uniform_list_float32",
-        )
+        let operation = "CuvsResources::pack_validated_uniform_list_float32";
+        self.validate_exact_binding(operation)?;
+        if validated.binding_id() != self.binding_id() {
+            return Err(invalid_input(
+                operation,
+                "validated list input and cuVS resources must use the same exact runtime binding",
+            )
+            .with_context("tensor_binding_id", validated.binding_id())
+            .with_context("resource_binding_id", self.binding_id()));
+        }
+        let packed = validated
+            .pack_active_child_into_runtime(self.runtime(), layout.into())
+            .map_err(|error| from_cudf(operation, error))?;
+        OwnedFloat32Matrix::from_finite_checked_packed(self, packed)
     }
 
     /// Atomically import one prepared table root and pack all top-level columns
@@ -402,31 +410,6 @@ impl CuvsResources {
         let packed = self
             .runtime()
             .pack_float32_columns(&column_refs, layout.into())
-            .map_err(|error| from_cudf(operation, error))?;
-        OwnedFloat32Matrix::from_finite_checked_packed(self, packed)
-    }
-
-    fn pack_validated_list_float32_child(
-        &self,
-        child: cudf::core::Column,
-        rows: usize,
-        dimension: usize,
-        producer_binding_id: cudf::runtime::ExecutionBindingId,
-        layout: MatrixLayout,
-        operation: &'static str,
-    ) -> Result<OwnedFloat32Matrix> {
-        self.validate_exact_binding(operation)?;
-        if producer_binding_id != self.binding_id() {
-            return Err(invalid_input(
-                operation,
-                "validated list input and cuVS resources must use the same exact runtime binding",
-            )
-            .with_context("tensor_binding_id", producer_binding_id)
-            .with_context("resource_binding_id", self.binding_id()));
-        }
-        let packed = self
-            .runtime()
-            .pack_flat_float32_column(&child, rows, dimension, layout.into())
             .map_err(|error| from_cudf(operation, error))?;
         OwnedFloat32Matrix::from_finite_checked_packed(self, packed)
     }
