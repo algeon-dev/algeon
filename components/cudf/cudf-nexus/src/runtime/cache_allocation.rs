@@ -20,9 +20,7 @@ use std::{
 use super::{CudaStream, DeviceId, Runtime, device_guard::DeviceGuard};
 use crate::core::{
     error::{Error, ErrorCode, Result},
-    memory::{
-        AllocatorEventRead, AllocatorEventRingBounds, DeviceMemoryResource, DeviceMemoryResourceUsage,
-    },
+    memory::{AllocatorEventRead, AllocatorEventRingBounds, DeviceMemoryResource, DeviceMemoryResourceUsage},
 };
 
 static NEXT_CACHE_ALLOCATION_DOMAIN_ID: AtomicU64 = AtomicU64::new(1);
