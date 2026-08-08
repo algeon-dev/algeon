@@ -519,78 +519,7 @@ fn client_status_message(error: &Error) -> String {
         },
         _ => error.message().to_string(),
     };
-    let message = append_unsupported_column_context(error, message);
-    append_graph_context(error, message)
-}
-
-fn append_unsupported_column_context(error: &Error, message: String) -> String {
-    let Some(column) = error.fact_value("unsupported_column") else {
-        return message;
-    };
-    let column_type = error.fact_value("unsupported_column_type").unwrap_or("unknown");
-    let role = error.fact_value("unsupported_column_role").unwrap_or("unknown");
-    if message.contains("unsupported_column=") {
-        return message;
-    }
-    format!(
-        "{message}; unsupported_column={column}; unsupported_column_type={column_type}; unsupported_column_role={role}"
-    )
-}
-
-/// Enriches the client-facing message for cuGraph SQL planning/validation
-/// rejections.
-///
-/// These rejections wrap a native `nexus-query-engine` error whose specific
-/// `message` (e.g. "exact betweenness requires explicit seeds or k above the
-/// configured vertex threshold") and structured facts (`reason`,
-/// `required_option`, `predicate_role`) are the actionable diagnostic, but the
-/// adapter overrides the client message with a generic wrapper such as "native
-/// cuGraph SQL GPU-resident query execution failed". This surfaces the
-/// underlying native message and key facts so callers see what to fix.
-///
-/// Only client-actionable graph validation errors are enriched. Internal,
-/// execution, dependency, and invariant graph failures stay generic (they were
-/// already collapsed to "internal server error ..." upstream, and the graph
-/// kind gate keeps them generic here too) so genuinely unexpected failures do
-/// not leak internal detail.
-fn append_graph_context(error: &Error, message: String) -> String {
-    let graph_context = error.operation().contains("cugraph")
-        || error.fact_value("native_operation").is_some_and(|operation| operation.contains("graph_algorithm"));
-    if !graph_context || !is_client_actionable_graph_error(error.kind()) {
-        return message;
-    }
-    // Surface the specific native message when the adapter overrode the client
-    // message with a generic wrapper. The native message carries the precise
-    // validation cause; the generic adapter message does not.
-    let message = match error.fact_value("native_message") {
-        Some(native_message)
-            if native_message != message && native_message != error.message() && !message.contains(native_message) =>
-        {
-            format!("{message}: {native_message}")
-        },
-        _ => message,
-    };
-    let mut context = Vec::new();
-    if let Some(reason) = error.fact_value("reason")
-        && !message.contains("reason=")
-    {
-        context.push(format!("reason={reason}"));
-    }
-    if let Some(required_option) = error.fact_value("required_option")
-        && !message.contains("required_option=")
-    {
-        context.push(format!("required_option={required_option}"));
-    }
-    if let Some(role) = error.fact_value("predicate_role")
-        && !message.contains("predicate_role=")
-    {
-        context.push(format!("predicate_role={role}"));
-    }
-    if context.is_empty() { message } else { format!("{message}; {}", context.join("; ")) }
-}
-
-fn is_client_actionable_graph_error(kind: ErrorKind) -> bool {
-    matches!(kind, ErrorKind::Planning | ErrorKind::InvalidInput | ErrorKind::Unsupported)
+    message
 }
 
 fn status_with_error_metadata(mut status: Status, error: &Error) -> Status {
@@ -1280,11 +1209,6 @@ mod tests {
         assert_eq!(status.code(), Code::Unimplemented);
         assert_error_metadata(&status, "unsupported_type", "unsupported", "permanent");
         assert!(status.message().contains("does not support the projected type"));
-        assert!(status.message().contains("unsupported_column=countDetail"));
-        assert!(status.message().contains(
-            "unsupported_column_type=Map(\"entries\": non-null Struct(\"key\": non-null Utf8, \"value\": Int32), unsorted)"
-        ));
-        assert!(status.message().contains("unsupported_column_role=projected"));
         assert_metadata_value(&status, UNSUPPORTED_COLUMN_METADATA_KEY, "countDetail");
         assert_metadata_value(
             &status,
@@ -1311,8 +1235,6 @@ mod tests {
 
         assert_eq!(status.code(), Code::InvalidArgument);
         assert_error_metadata(&status, "invalid_execution_plan", "planning", "permanent");
-        assert!(status.message().contains("reason=partial_source_vertices_absent"));
-        assert!(status.message().contains("predicate_role=source_vertices"));
         assert_no_diagnostic_fields(status.message());
     }
 
@@ -1333,9 +1255,6 @@ mod tests {
 
         assert_eq!(status.code(), Code::Unimplemented);
         assert_error_metadata(&status, "unsupported_type", "unsupported", "permanent");
-        assert!(status.message().contains("BFS predicate id column dtype must match the graph vertex dtype"));
-        assert!(status.message().contains("reason=predicate_dtype_mismatch"));
-        assert!(status.message().contains("predicate_role=target_vertices"));
         assert_no_diagnostic_fields(status.message());
     }
 
@@ -1363,13 +1282,6 @@ mod tests {
 
         assert_eq!(status.code(), Code::InvalidArgument);
         assert_error_metadata(&status, "invalid_execution_plan", "planning", "permanent");
-        assert!(
-            status
-                .message()
-                .contains("exact betweenness requires explicit seeds or k above the configured vertex threshold")
-        );
-        assert!(status.message().contains("reason=exact_betweenness_vertex_threshold_exceeded"));
-        assert!(status.message().contains("required_option=seeds_or_k"));
         assert_no_diagnostic_fields(status.message());
     }
 
