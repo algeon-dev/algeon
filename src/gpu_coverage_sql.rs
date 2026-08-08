@@ -248,7 +248,7 @@ fn usize_to_i64(value: usize, field: &'static str) -> Result<i64> {
 }
 
 fn plan_error(message: impl Into<String>) -> DataFusionError {
-    DataFusionError::Plan(message.into())
+    Error::new(ErrorCode::InvalidRequest, "datafusion_nexus.gpu_coverage_sql.plan", message).into()
 }
 
 fn strings(values: Vec<String>) -> ArrayRef {

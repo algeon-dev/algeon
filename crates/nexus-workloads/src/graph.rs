@@ -5,21 +5,14 @@
 //! Parquet layout and its generator-written provenance documents.
 
 use std::{
-    error::Error as StdError,
-    fmt::{Display, Formatter},
     fs::{self, File},
     io::Read as _,
     path::{Path, PathBuf},
 };
 
-use arrow::error::ArrowError;
-use datafusion::{
-    error::DataFusionError,
-    prelude::{ParquetReadOptions, SessionContext},
-};
+use datafusion::prelude::{ParquetReadOptions, SessionContext};
 use parquet::{
     arrow::arrow_reader::ParquetRecordBatchReaderBuilder,
-    errors::ParquetError,
     file::reader::{FileReader, SerializedFileReader},
 };
 use serde_json::Value;
@@ -56,68 +49,7 @@ pub const DBLP_MULTI_GRAPH_SLICE_SCHEMA_VERSION: u64 = 1;
 pub const DBLP_TABLES: &[&str] =
     &["edges_by_src", "edges_by_dst", "profiles_by_paper_id", "paper_authors", "paper_fos"];
 
-/// Read-only DBLP fixture discovery error.
-#[derive(Debug)]
-pub enum GraphDatasetError {
-    Io(std::io::Error),
-    Arrow(ArrowError),
-    Parquet(ParquetError),
-    DataFusion(DataFusionError),
-    InvalidDataset(String),
-    /// A fixture path that cannot be expressed as UTF-8 for table registration.
-    NonUtf8Path(PathBuf),
-}
-
-impl Display for GraphDatasetError {
-    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Io(error) => write!(formatter, "I/O error: {error}"),
-            Self::Arrow(error) => write!(formatter, "Arrow error: {error}"),
-            Self::Parquet(error) => write!(formatter, "Parquet error: {error}"),
-            Self::DataFusion(error) => write!(formatter, "DataFusion error: {error}"),
-            Self::InvalidDataset(message) => write!(formatter, "invalid DBLP graph dataset: {message}"),
-            Self::NonUtf8Path(path) => write!(formatter, "non-UTF-8 DBLP fixture path: {}", path.display()),
-        }
-    }
-}
-
-impl StdError for GraphDatasetError {
-    fn source(&self) -> Option<&(dyn StdError + 'static)> {
-        match self {
-            Self::Io(error) => Some(error),
-            Self::Arrow(error) => Some(error),
-            Self::Parquet(error) => Some(error),
-            Self::DataFusion(error) => Some(error),
-            Self::InvalidDataset(_) | Self::NonUtf8Path(_) => None,
-        }
-    }
-}
-
-impl From<std::io::Error> for GraphDatasetError {
-    fn from(value: std::io::Error) -> Self {
-        Self::Io(value)
-    }
-}
-
-impl From<ArrowError> for GraphDatasetError {
-    fn from(value: ArrowError) -> Self {
-        Self::Arrow(value)
-    }
-}
-
-impl From<ParquetError> for GraphDatasetError {
-    fn from(value: ParquetError) -> Self {
-        Self::Parquet(value)
-    }
-}
-
-impl From<DataFusionError> for GraphDatasetError {
-    fn from(value: DataFusionError) -> Self {
-        Self::DataFusion(value)
-    }
-}
-
-pub type GraphDatasetResult<T> = Result<T, GraphDatasetError>;
+pub use crate::error::{GraphDatasetError, GraphDatasetResult};
 
 /// Fully resolved DBLP fixture layout.
 #[derive(Debug, Clone, PartialEq, Eq)]
