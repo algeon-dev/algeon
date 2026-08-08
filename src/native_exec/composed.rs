@@ -263,20 +263,24 @@ fn complete_composed_admission_proof(
                 consumer_plan,
                 graph_result_input_name,
             );
-            passthrough.or(bounded_consumer)
+            passthrough.or(bounded_consumer).or_else(|| QueryPlanCapabilityProof::for_query_plan(consumer_plan))
         },
         _ => QueryPlanCapabilityProof::for_query_plan(consumer_plan),
+    };
+    let Some(consumer_proof) = standalone_consumer_proof else {
+        return Err(Error::new(
+            ErrorCode::InvalidExecutionPlan,
+            "datafusion_nexus.native_composed.admission_proof",
+            "the native composed consumer did not issue an exact capability proof",
+        )
+        .with_fact("reason", "consumer_admission_proof_missing")
+        .into());
     };
     // A lone graph result is an established standalone handoff. The ordered
     // schedule is reserved for genuinely composed attempts with multiple
     // retained producer occurrences.
-
-    if let Some(consumer_proof) = standalone_consumer_proof.as_ref() {
-        proofs.push(consumer_proof.clone());
-    }
-    let Some(first_proof) = proofs.first().cloned() else {
-        return Ok(CompletedComposedAdmissionProof { execution_config, has_composed_graph_schedule: false });
-    };
+    proofs.push(consumer_proof);
+    let first_proof = proofs.first().cloned().expect("consumer proof is always pushed");
     let standalone_proof =
         QueryPlanCapabilityProof::combine(first_proof, proofs.into_iter().skip(1)).map_err(|error| {
             DataFusionError::from(Error::from_native(
@@ -1037,7 +1041,7 @@ mod tests {
         graph_memory::{GraphMemoryCalibrationOverride, graph_memory_admission_evidence_for_edge_list},
         plan::{
             GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec, GraphBfsParams, GraphConstructionOptions,
-            GraphEdgeColumnBindings, QueryPlan, QueryPlanBuilder,
+            GraphEdgeColumnBindings, ProjectionOutput, QueryPlan, QueryPlanBuilder,
         },
         runtime::{ExecutionContext, QueryAdmissionRequest, resident::GpuResultHandle},
         source::{GpuResidentSource, LocalParquetFile, LocalParquetSource, SourceNode},
@@ -1208,6 +1212,21 @@ mod tests {
         consumer_plan_for_inputs(&["fake_input"], schema)
     }
 
+    fn non_attested_projection_consumer_plan(schema: Arc<Schema>) -> QueryPlan {
+        let mut builder = QueryPlanBuilder::new();
+        let source =
+            builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("fake_input", Arc::clone(&schema))));
+        let projected = builder.add_projection(
+            source,
+            schema
+                .fields()
+                .iter()
+                .map(|field| ProjectionOutput::new(Expr::column(field.name()), field.as_ref().clone()))
+                .collect(),
+        );
+        builder.finish_with_host_sink(projected)
+    }
+
     fn sorted_consumer_plan(schema: Arc<Schema>) -> QueryPlan {
         consumer_plan(schema).with_appended_sort(SortSpec::new(vec![SortExpr::new(
             Expr::column("vertex"),
@@ -1224,13 +1243,14 @@ mod tests {
         let source = admission_source(&backend);
         let (schema, producer_proof) = typed_graph_producer_proof();
         let consumer_plan = consumer_plan(Arc::clone(&schema));
-        let _consumer_proof =
-            QueryPlanCapabilityProof::for_query_plan(&consumer_plan).expect("consumer has an exact proof");
+        let consumer_proof =
+            QueryPlanCapabilityProof::for_attested_graph_result_passthrough_plan(&consumer_plan, "fake_input")
+                .expect("consumer has an attested passthrough proof");
         let producer_ticket = QueryAdmissionTicket::new(source.clone(), Some(producer_proof.clone()));
         let prepared_inputs: Vec<Arc<dyn ExecutionPlan>> = vec![Arc::new(FakeGpuResidentProducer {
             input_name: "fake_input".to_string(),
             ticket: Arc::clone(&producer_ticket),
-            capability_proof: producer_proof,
+            capability_proof: producer_proof.clone(),
             graph_execution: true,
             inner: EmptyExec::new(schema),
         })];
@@ -1244,7 +1264,41 @@ mod tests {
             completed.execution_config.query_admission_ticket().expect("complete proof installs one ticket");
 
         assert!(!Arc::ptr_eq(&completed_ticket, &producer_ticket), "completion reissues the prepared ticket");
-        assert!(completed_ticket.attempt_capability_proof().is_some());
+        let expected_proof =
+            QueryPlanCapabilityProof::combine(producer_proof.clone(), [consumer_proof]).expect("proofs aggregate");
+        assert_eq!(completed_ticket.attempt_capability_proof(), Some(&expected_proof));
+    }
+
+    #[test]
+    fn complete_composed_admission_proof_aggregates_non_attested_consumer_fallback_scope() {
+        register_gpu_resident_producer_discovery(fake_gpu_resident_producer);
+        register_graph_execution_plan_discovery(fake_graph_execution_plan);
+        let backend = InstalledTestGpuBackend::new();
+        let source = admission_source(&backend);
+        let (schema, producer_proof) = typed_graph_producer_proof();
+        let consumer_plan = non_attested_projection_consumer_plan(Arc::clone(&schema));
+        let consumer_proof =
+            QueryPlanCapabilityProof::for_query_plan(&consumer_plan).expect("consumer has an exact proof");
+        let producer_ticket = QueryAdmissionTicket::new(source.clone(), Some(producer_proof.clone()));
+        let prepared_inputs: Vec<Arc<dyn ExecutionPlan>> = vec![Arc::new(FakeGpuResidentProducer {
+            input_name: "fake_input".to_string(),
+            ticket: producer_ticket,
+            capability_proof: producer_proof.clone(),
+            graph_execution: true,
+            inner: EmptyExec::new(schema),
+        })];
+        let config = NexusNativeExecutionConfig::bounded(1024, 512, 1, 3, 1).with_query_admission_source(source);
+        let completed =
+            complete_composed_admission_proof(config, &consumer_plan, &prepared_inputs, &TaskContext::default())
+                .expect("non-attested one-producer consumer uses ordinary bounded admission");
+        let completed_ticket = completed
+            .execution_config
+            .query_admission_ticket()
+            .expect("fallback completion installs one admission ticket");
+        let completed_proof =
+            completed_ticket.attempt_capability_proof().expect("fallback completion retains the selected proof");
+        let expected = QueryPlanCapabilityProof::combine(producer_proof, [consumer_proof]).expect("proofs aggregate");
+        assert_eq!(completed_proof, &expected);
     }
 
     #[test]

@@ -13,10 +13,13 @@ use arrow::{
     datatypes::{DataType, Field, Schema},
     record_batch::RecordBatch,
 };
-use arrow_flight::sql::client::FlightSqlServiceClient;
+use arrow_flight::{error::FlightError, sql::client::FlightSqlServiceClient};
 use datafusion_nexus::{
     backend::GpuMemoryOwnership,
-    server::{NEXUS_SERVER_CUGRAPH_ENABLED_ENV, Result as ServerResult, ServerConfig, serve_with_listener},
+    server::{
+        NEXUS_SERVER_CUGRAPH_ENABLED_ENV, PREDICATE_ROLE_METADATA_KEY, REASON_METADATA_KEY, Result as ServerResult,
+        ServerConfig, serve_with_listener,
+    },
 };
 use futures::TryStreamExt;
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
@@ -336,9 +339,15 @@ async fn cugraph_bfs_path_uses_gpu_resident_join_side_inputs_over_flight_sql() {
            ORDER BY path_index"#;
     let partial_flight_info = client.execute(partial_error_sql.to_string(), None).await.unwrap();
     let ticket = partial_flight_info.endpoint.first().and_then(|endpoint| endpoint.ticket.clone()).unwrap();
-    let error = client.do_get(ticket).await.unwrap().try_collect::<Vec<_>>().await.unwrap_err().to_string();
-    assert!(error.contains("partial_source_vertices_absent"), "unexpected Flight SQL error: {error}");
-    assert!(!error.contains("Found invalid vertex"), "Flight SQL error should be graph-aware: {error}");
+    let error = client.do_get(ticket).await.unwrap().try_collect::<Vec<_>>().await.unwrap_err();
+    let FlightError::Tonic(status) = error else {
+        panic!("expected tonic Flight error, got {error:?}");
+    };
+    assert_eq!(
+        status.metadata().get(REASON_METADATA_KEY).and_then(|value| value.to_str().ok()),
+        Some("partial_source_vertices_absent"),
+        "Flight SQL error reason trailer",
+    );
 
     execute_batches(&mut client, "CREATE VIEW empty_bfs_sources AS SELECT CAST(0 AS BIGINT) AS vertex_id WHERE 1 = 0")
         .await;
@@ -365,10 +374,20 @@ async fn cugraph_bfs_path_uses_gpu_resident_join_side_inputs_over_flight_sql() {
            ORDER BY path_index"#;
     let bad_predicate_flight_info = client.execute(bad_predicate_sql.to_string(), None).await.unwrap();
     let ticket = bad_predicate_flight_info.endpoint.first().and_then(|endpoint| endpoint.ticket.clone()).unwrap();
-    let error = client.do_get(ticket).await.unwrap().try_collect::<Vec<_>>().await.unwrap_err().to_string();
-    assert!(error.contains("predicate_vertices_absent"), "unexpected Flight SQL error: {error}");
-    assert!(error.contains("include_vertices"), "Flight SQL error should carry predicate_role: {error}");
-    assert!(!error.contains("Found invalid vertex"), "Flight SQL error should be graph-aware: {error}");
+    let error = client.do_get(ticket).await.unwrap().try_collect::<Vec<_>>().await.unwrap_err();
+    let FlightError::Tonic(status) = error else {
+        panic!("expected tonic Flight error, got {error:?}");
+    };
+    assert_eq!(
+        status.metadata().get(REASON_METADATA_KEY).and_then(|value| value.to_str().ok()),
+        Some("predicate_vertices_absent"),
+        "Flight SQL error reason trailer",
+    );
+    assert_eq!(
+        status.metadata().get(PREDICATE_ROLE_METADATA_KEY).and_then(|value| value.to_str().ok()),
+        Some("include_vertices"),
+        "Flight SQL error predicate-role trailer",
+    );
 }
 
 /// Warm the process-wide CUDA context exactly once. The first CUDA call pays a
