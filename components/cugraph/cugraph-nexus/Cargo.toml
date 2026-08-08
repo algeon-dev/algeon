@@ -16,6 +16,9 @@ build = "build.rs"
 [lib]
 name = "cugraph"
 
+[lints]
+workspace = true
+
 [features]
 test-hooks = ["cudf-sys/test-hooks"]
 
