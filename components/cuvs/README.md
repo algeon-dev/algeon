@@ -25,10 +25,9 @@ execution remain in DataFusion Nexus.
 - `cuvs/` - the pinned official
   [cuVS](https://github.com/rapidsai/cuvs) source submodule used to build the
   native libraries.
-- `scripts/` - source bootstrap, native build, binding generation, and contract
-  checks.
-- `tools/generate-bindings/` - the unpublished maintenance tool that refreshes
-  checked-in bindings without changing the library feature set.
+- `scripts/` - the two operational entry points for source bootstrap and the
+  canonical native build.
+- `tools/xtask/` - unpublished binding and verification maintenance tooling.
 
 ## Status
 
@@ -40,8 +39,23 @@ right for DataFusion Nexus.
 ## Testing
 
 Cargo features are reserved for additive library capabilities; documentation
-and binding-generation maintenance modes do not alter native linkage. After
-building the canonical native prefix, the complete workspace test surface is:
+and binding-generation maintenance modes do not alter native linkage. Run the
+native-free repository, package, workspace, and checked-binding contracts with:
+
+```bash
+cargo xtask verify
+```
+
+Bindings are checked in and generated only from the pinned cuVS revision. Once
+the cuVS build has materialized DLPack headers, check or refresh them with:
+
+```bash
+cargo xtask bindings check
+cargo xtask bindings generate
+```
+
+After building the canonical native prefix, the complete workspace test
+surface is:
 
 ```bash
 cargo test --workspace --all-features --no-fail-fast

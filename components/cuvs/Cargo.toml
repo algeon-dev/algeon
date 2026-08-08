@@ -1,5 +1,5 @@
 [workspace]
-members = ["cuvs-nexus-sys", "cuvs-nexus", "tools/generate-bindings"]
+members = ["cuvs-nexus-sys", "cuvs-nexus", "tools/xtask"]
 default-members = ["cuvs-nexus-sys", "cuvs-nexus"]
 resolver = "3"
 
@@ -22,4 +22,7 @@ cmake-package = "0.2.0"
 cudf = { package = "cudf-nexus", path = "../cudf-nexus/cudf-nexus", version = "0.1.0" }
 cuvs-sys = { package = "cuvs-nexus-sys", path = "cuvs-nexus-sys", version = "0.1.0" }
 rapids-interop = { path = "../cudf-nexus/rapids-interop", version = "0.1.0" }
+serde = "1"
+serde_json = "1"
 static_assertions = "1"
+tempfile = "3"
