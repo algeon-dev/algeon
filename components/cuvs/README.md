@@ -1,5 +1,11 @@
 # cuvs-nexus
 
+> [!IMPORTANT]
+> Development has moved to
+> [`DataFusion-Nexus/datafusion-nexus`](https://github.com/DataFusion-Nexus/datafusion-nexus/tree/main/components/cuvs).
+> This repository is retained as a read-only historical archive. Clone the
+> monorepo recursively for the current source, build tooling, and tests.
+
 `cuvs-nexus` is a Rust GPU vector search and clustering workspace built around [`libcuvs`](https://github.com/rapidsai/cuvs).
 Its main direction is to make cuVS usable as part of backend services and query execution systems for
 [DataFusion-Nexus](https://github.com/DataFusion-Nexus/DataFusion-Nexus). It focuses on safe Rust APIs for GPU vector
