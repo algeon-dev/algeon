@@ -220,6 +220,7 @@ impl CugraphAlgoExec {
             .cancellation()
             .clone();
         let max_staging_bytes = prepared.host_boundary_config.max_input_staging_bytes();
+        let max_output_staging_bytes = prepared.host_boundary_config.max_output_staging_bytes();
         let collected_inputs = collect_cugraph_inputs(
             &prepared.spec,
             Arc::clone(&prepared.edge_source),
@@ -227,10 +228,13 @@ impl CugraphAlgoExec {
             Arc::clone(&task_context),
             &cancellation,
             max_staging_bytes,
+            max_output_staging_bytes,
         )
         .await?;
-        let input_row_bounds = collected_inputs.row_bounds()?;
         check_host_staging_cancellation(&cancellation)?;
+        let mut staged_inputs = collected_inputs.prepare_logical_inputs(&prepared.spec)?;
+        check_host_staging_cancellation(&cancellation)?;
+        let input_row_bounds = staged_inputs.row_bounds()?;
         let exact_edge_source_gpu_plan =
             exact_composed_edge_source_gpu_plan(prepared.edge_source.as_ref(), task_context.as_ref()).await?;
         let (prepared, admission_graph_plan) = prepared.issue_graph_aware_ticket_after_staging(
@@ -238,7 +242,6 @@ impl CugraphAlgoExec {
             task_context.as_ref(),
             exact_edge_source_gpu_plan.as_ref(),
         )?;
-        let mut staged_inputs = collected_inputs.prepare_logical_inputs(&prepared.spec, max_staging_bytes)?;
         staged_inputs.admitted_graph_plan = Some(admission_graph_plan);
         staged_inputs.admitted_edge_source_gpu_plan = exact_edge_source_gpu_plan;
         check_host_staging_cancellation(&cancellation)?;
@@ -610,6 +613,7 @@ impl CugraphAlgoExec {
                                         task_context.as_ref(),
                                         native_context.cancellation().clone(),
                                         self.host_boundary_config.max_output_staging_bytes(),
+                                        None,
                                         &mut graph_metrics,
                                     )?;
                                     graph_metrics.finish(Ok(()))?;
@@ -654,6 +658,7 @@ impl CugraphAlgoExec {
                 predicate_frames,
                 logical_codebook,
                 execution_spec,
+                host_evidence,
                 reservation: _input_reservation,
             } = staged_inputs.upload(native_context, &mut graph_metrics, Arc::clone(&task_context)).await?;
             let edge_frame =
@@ -664,6 +669,7 @@ impl CugraphAlgoExec {
                 &predicate_frames,
                 task_context.as_ref(),
                 self.host_boundary_config.max_output_staging_bytes(),
+                Some(&host_evidence),
                 &mut graph_metrics,
             )?;
             let path_target = path_target
@@ -693,6 +699,7 @@ impl CugraphAlgoExec {
                 task_context.as_ref(),
                 native_context.cancellation().clone(),
                 self.host_boundary_config.max_output_staging_bytes(),
+                Some(&host_evidence),
                 &mut graph_metrics,
             )?;
             let output = if let Some(codebook) = logical_codebook.as_ref() {
@@ -812,6 +819,7 @@ impl CugraphAlgoExec {
                 predicate_frames,
                 logical_codebook: _,
                 execution_spec,
+                host_evidence: _,
                 reservation: _input_reservation,
             } = staged_inputs.upload(native_context, &mut graph_metrics, Arc::clone(&task_context)).await?;
             let edge_frame =

@@ -360,16 +360,24 @@ fn retained_output_debit_composes_setup_and_work_without_a_second_grant_charge()
 #[test]
 fn augment_gpu_inputs_charges_each_retained_reservation_once_and_reuses_existing_guard() -> Result<()> {
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let governor = DeviceLedger::for_test(runtime.device().ordinal(), 2048, 2);
-    let grant = governor
-        .admit_with_configured_floor_and_soft_working_set_hint_for_test(AdmissionRequestId::new(9), 1, 1024)?
-        .expect("initial grant should fit");
+    const FIXED_BYTES: u64 = 64;
+    const CONSUMER_BYTES: u64 = 128;
     let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
     let batch = RecordBatch::try_new(schema.clone(), vec![Arc::new(Int32Array::from(vec![1, 2, 3]))])
         .map_err(|error| QueryError::new(QueryErrorCode::Internal, "reservation_test.batch", error.to_string()))?;
     let frame = DataFrame::from_record_batch(&runtime, &batch)
         .map_err(|error| QueryError::from_cudf("reservation_test.frame", "failed to create test GPU frame", error))?;
     let bytes = GpuDataFrame::new(frame.clone()).device_allocated_size_bytes()?;
+    let grant_bytes = FIXED_BYTES
+        .checked_add(bytes)
+        .and_then(|value| value.checked_add(CONSUMER_BYTES))
+        .expect("test grant components fit");
+    let managed_capacity = grant_bytes.checked_mul(2).expect("test ledger capacity fits");
+    let governor = DeviceLedger::for_test(runtime.device().ordinal(), managed_capacity, 2);
+    let grant = governor
+        .admit_with_configured_floor_and_soft_working_set_hint_for_test(AdmissionRequestId::new(9), 1, grant_bytes)?
+        .expect("initial grant should fit");
+    assert_eq!(grant.budget_bytes(), grant_bytes, "the test must exercise an exact B + O + C immutable grant");
     let live_reservation =
         grant.retain_live_reservation(bytes)?.expect("test frame should retain a positive live reservation");
     let context = ExecutionContext::builder().with_shared_runtime(Arc::clone(&runtime)).build()?;
@@ -379,7 +387,7 @@ fn augment_gpu_inputs_charges_each_retained_reservation_once_and_reuses_existing
     inputs.insert("first".to_string(), handle.clone());
     inputs.insert("duplicate".to_string(), handle);
 
-    let tracker = ReservationTracker::new_with_budget(
+    let mut tracker = ReservationTracker::new_with_budget(
         MemorySpaceId::Device { device_ordinal: runtime.device().ordinal() },
         ReservationBudget::GrantBackedStatic { budget_bytes: grant.budget_bytes(), grant: grant.clone() },
     );
@@ -391,9 +399,39 @@ fn augment_gpu_inputs_charges_each_retained_reservation_once_and_reuses_existing
     let reaugmented = tracker.augment_gpu_inputs(&reordered)?;
     assert_eq!(tracker.raw_reserved_bytes(), bytes, "an existing same-tracker guard must not be charged again");
 
+    let mut metrics = QueryMetrics::default();
+    let setup = tracker.try_reserve_owned_resident(
+        test_request(ReservationKind::SourceRead, "setup", FIXED_BYTES, tracker.budget()),
+        &mut metrics,
+    )?;
+    assert_eq!(tracker.reservable_remaining_bytes()?, CONSUMER_BYTES);
+    let work = tracker.try_reserve_work(
+        test_request(ReservationKind::OperatorOutput, "consumer_work", CONSUMER_BYTES, tracker.budget()),
+        &mut metrics,
+    )?;
+    assert_eq!(tracker.raw_reserved_bytes(), grant_bytes, "B + O + C must fill the grant exactly");
+    assert_eq!(
+        grant.live_reserved_bytes(),
+        grant_bytes,
+        "the retained handle and consumer allocations share one grant"
+    );
+
+    let denied = match tracker.try_reserve_work(
+        test_request(ReservationKind::OperatorOutput, "consumer_work", 1, tracker.budget()),
+        &mut metrics,
+    ) {
+        Ok(_) => panic!("C + 1 must fail at the tracker reservation boundary"),
+        Err(error) => error,
+    };
+    assert_eq!(denied.code(), QueryErrorCode::MemoryReservationFailed);
+    assert_eq!(denied.fact_value("memory_boundary"), Some("consumer_work"));
+    assert_eq!(denied.fact_value("reason"), None, "the denial must not be reported as domain exhaustion");
+
     drop(reaugmented);
     drop(reordered);
     drop(augmented);
+    tracker.release(work, &mut metrics);
+    tracker.release(setup, &mut metrics);
     assert_eq!(tracker.raw_reserved_bytes(), 0, "augmented handles release the tracker-only debit");
     assert_eq!(grant.live_reserved_bytes(), bytes, "the producer handle remains the sole ledger owner");
     drop(inputs);

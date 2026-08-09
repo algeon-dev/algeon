@@ -21,7 +21,7 @@ pub(super) fn apply_host_projection_limit(
         return Ok(output);
     }
     let schema = projected_schema(&spec.output_schema, projection)?;
-    let (batches, reservation) = output.into_parts();
+    let (batches, reservation, host_evidence) = output.into_parts_with_evidence();
     let old_bytes =
         batches.iter().map(get_record_batch_memory_size).try_fold(0usize, |sum, bytes| sum.checked_add(bytes));
     let old_bytes = old_bytes.ok_or_else(|| plan_error("logical BFS host output size overflowed usize"))?;
@@ -42,6 +42,9 @@ pub(super) fn apply_host_projection_limit(
     let new_bytes =
         projected.iter().map(get_record_batch_memory_size).try_fold(0usize, |sum, bytes| sum.checked_add(bytes));
     let new_bytes = new_bytes.ok_or_else(|| plan_error("projected logical BFS host output size overflowed usize"))?;
+    if let Some(evidence) = host_evidence.as_ref() {
+        evidence.check_output_growth("projected_output", reservation.size(), new_bytes)?;
+    }
     reservation.try_grow(new_bytes).map_err(|source| {
         DataFusionError::from(
             Error::new(
@@ -57,7 +60,7 @@ pub(super) fn apply_host_projection_limit(
     // End the superseded batch ownership before lowering its charged output bytes.
     drop(batches);
     reservation.shrink(old_bytes);
-    Ok(EagerCugraphHostOutput::from_shared_parts(schema, Arc::new(projected), reservation))
+    Ok(EagerCugraphHostOutput::from_shared_parts_with_evidence(schema, Arc::new(projected), reservation, host_evidence))
 }
 
 pub(super) fn is_bfs_path_output(spec: &CugraphAlgorithmSpec) -> bool {
@@ -110,6 +113,11 @@ pub(super) struct BoundedBfsPathTarget {
 }
 
 impl BoundedBfsPathTarget {
+    #[cfg(test)]
+    pub(super) fn for_test(vertex: BfsPathVertex, reservation: Arc<MemoryReservation>) -> Self {
+        Self { vertex, reservation }
+    }
+
     pub(super) fn map_vertex(self, codebook: &HostBfsCodebook) -> Result<Self> {
         let vertex = match self.vertex {
             BfsPathVertex::Int64(code) => BfsPathVertex::Utf8(codebook.decode_code(code)?),
@@ -125,6 +133,7 @@ pub(super) fn bfs_path_target_vertex(
     predicate_frames: &[CugraphGpuFrame],
     task_context: &TaskContext,
     max_staging_bytes: usize,
+    host_evidence: Option<&HostReservationEvidence>,
     metrics: &mut GraphExecutionMetrics<'_>,
 ) -> Result<Option<BoundedBfsPathTarget>> {
     let CugraphAlgorithmParams::Bfs(params) = &spec.params else {
@@ -159,6 +168,7 @@ pub(super) fn bfs_path_target_vertex(
         task_context,
         context.cancellation().clone(),
         max_staging_bytes,
+        host_evidence,
         metrics,
     )?;
     let (batches, reservation) = output.into_parts();
@@ -191,10 +201,13 @@ pub(super) fn materialize_bfs_path_output_from_host(
     max_staging_bytes: usize,
 ) -> Result<(RecordBatch, Arc<MemoryReservation>)> {
     let BoundedBfsPathTarget { vertex: target, reservation: target_reservation } = target;
-    let available_staging_bytes = max_staging_bytes.checked_sub(target_reservation.size()).ok_or_else(|| {
-        host_staging_limit_error("bfs_path", "target_vertex", target_reservation.size(), 0, max_staging_bytes)
+    let output_limit_bytes = output
+        .host_evidence()
+        .map_or(max_staging_bytes, |evidence| evidence.output_limit_bytes().min(max_staging_bytes));
+    let available_staging_bytes = output_limit_bytes.checked_sub(target_reservation.size()).ok_or_else(|| {
+        host_staging_limit_error("bfs_path", "target_vertex", target_reservation.size(), 0, output_limit_bytes)
     })?;
-    let (batches, reservation) = output.into_parts();
+    let (batches, reservation, _host_evidence) = output.into_parts_with_evidence();
     let row_count =
         batches.iter().try_fold(0usize, |rows, batch| rows.checked_add(batch.num_rows())).ok_or_else(|| {
             host_staging_limit_error("bfs_path", "reconstruction_workspace", 0, usize::MAX, available_staging_bytes)
