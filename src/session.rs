@@ -161,22 +161,31 @@ pub(crate) fn session_state_with_native_execution_config(
     let rule = Arc::new(NexusNativePhysicalOptimizerRule::new(optimizer_config));
     let mut rules = state.physical_optimizers().to_vec();
     insert_nexus_native_rules_for_cugraph_subplan(&mut rules, rule);
-    // Graph edge and predicate sources feed device-resident construction, so
-    // the subplan must present each scan as one ordered run: a declared
-    // fixture ordering (the source-sorted DBLP layout) only survives to
-    // native lowering from a single file group, and the native device
-    // pipeline parallelizes reads internally regardless of this setting.
+    Some(build_cugraph_subplan_state(state, rules))
+}
+
+#[cfg(feature = "cugraph")]
+pub(crate) fn session_state_for_cugraph_host_subplan(state: &SessionState) -> SessionState {
+    let mut rules = state.physical_optimizers().to_vec();
+    remove_nexus_native_rules(&mut rules);
+    build_cugraph_subplan_state(state, rules)
+}
+
+#[cfg(feature = "cugraph")]
+fn build_cugraph_subplan_state(state: &SessionState, rules: PhysicalOptimizerRules) -> SessionState {
+    // Graph edge and predicate sources feed graph construction or host-side
+    // staging, so each nested scan must present one ordered run: a declared
+    // fixture ordering (the source-sorted DBLP layout) only survives from a
+    // single file group, and native graph ingress parallelizes reads internally.
     // `new_from_existing` disables default catalog creation because the nested
     // planner shares the parent catalog list. Preserve that property after
     // changing subplan parallelism: recreating the default catalog would
     // overwrite the parent's registered relation providers.
     let subplan_config = state.config().clone().with_target_partitions(1).with_create_default_catalog_and_schema(false);
-    Some(
-        SessionStateBuilder::new_from_existing(state.clone())
-            .with_config(subplan_config)
-            .with_physical_optimizer_rules(rules)
-            .build(),
-    )
+    SessionStateBuilder::new_from_existing(state.clone())
+        .with_config(subplan_config)
+        .with_physical_optimizer_rules(rules)
+        .build()
 }
 
 pub(crate) fn installed_nexus_native_optimizer_config(state: &SessionState) -> Option<NexusNativeOptimizerConfig> {
@@ -288,11 +297,7 @@ fn insert_nexus_native_rules_before_final_validation(
     rules: &mut PhysicalOptimizerRules,
     native_rule: Arc<NexusNativePhysicalOptimizerRule>,
 ) {
-    rules.retain(|existing| {
-        existing.name() != NEXUS_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME
-            && existing.name() != NEXUS_NATIVE_COUNT_ONLY_PHYSICAL_OPTIMIZER_RULE_NAME
-            && existing.name() != NEXUS_FINAL_PLAN_REQUIREMENT_RULE_NAME
-    });
+    remove_nexus_native_rules(rules);
     let count_only_rule = Arc::new(native_rule.count_only_probe_rule());
     let insertion_position =
         rules.iter().position(|existing| existing.name() == DATAFUSION_AGGREGATE_STATISTICS_RULE_NAME).unwrap_or(0);
@@ -317,11 +322,7 @@ fn insert_nexus_native_rules_for_cugraph_subplan(
     rules: &mut PhysicalOptimizerRules,
     native_rule: Arc<NexusNativePhysicalOptimizerRule>,
 ) {
-    rules.retain(|existing| {
-        existing.name() != NEXUS_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME
-            && existing.name() != NEXUS_NATIVE_COUNT_ONLY_PHYSICAL_OPTIMIZER_RULE_NAME
-            && existing.name() != NEXUS_FINAL_PLAN_REQUIREMENT_RULE_NAME
-    });
+    remove_nexus_native_rules(rules);
     let count_only_rule = Arc::new(native_rule.count_only_probe_rule());
     let insertion_position =
         rules.iter().position(|existing| existing.name() == DATAFUSION_AGGREGATE_STATISTICS_RULE_NAME).unwrap_or(0);
@@ -334,6 +335,14 @@ fn insert_nexus_native_rules_for_cugraph_subplan(
     if let Some(final_validation) = final_validation {
         rules.push(final_validation);
     }
+}
+
+fn remove_nexus_native_rules(rules: &mut PhysicalOptimizerRules) {
+    rules.retain(|existing| {
+        existing.name() != NEXUS_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME
+            && existing.name() != NEXUS_NATIVE_COUNT_ONLY_PHYSICAL_OPTIMIZER_RULE_NAME
+            && existing.name() != NEXUS_FINAL_PLAN_REQUIREMENT_RULE_NAME
+    });
 }
 
 #[cfg(all(test, feature = "cugraph"))]
@@ -382,6 +391,20 @@ mod tests {
 
         assert!(rules.iter().any(|rule| rule.name() == NEXUS_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME));
         assert!(!rules.iter().any(|rule| rule.name() == NEXUS_FINAL_PLAN_REQUIREMENT_RULE_NAME));
+    }
+
+    #[test]
+    fn cugraph_host_subplanning_removes_nexus_rules() {
+        let optimizer_config = NexusNativeOptimizerConfig::default().with_no_datafusion_cpu_requirement();
+        let state = SessionStateBuilder::new_with_default_features().with_nexus_native(optimizer_config).build();
+        let nested = session_state_for_cugraph_host_subplan(&state);
+        let rules = nested.physical_optimizers();
+
+        assert!(!rules.iter().any(|rule| rule.name() == NEXUS_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME));
+        assert!(!rules.iter().any(|rule| rule.name() == NEXUS_NATIVE_COUNT_ONLY_PHYSICAL_OPTIMIZER_RULE_NAME));
+        assert!(!rules.iter().any(|rule| rule.name() == NEXUS_FINAL_PLAN_REQUIREMENT_RULE_NAME));
+        assert!(rules.iter().any(|rule| rule.name() == DATAFUSION_FINAL_VALIDATION_RULE_NAME));
+        assert_eq!(nested.config().target_partitions(), 1);
     }
 
     #[test]

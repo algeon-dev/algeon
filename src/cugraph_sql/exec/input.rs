@@ -9,6 +9,35 @@ pub(super) enum StagedCugraphSource {
     Host { schema: SchemaRef, batches: Vec<RecordBatch> },
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct CugraphInputRowBounds {
+    edge: Option<u64>,
+    predicates: Vec<Option<u64>>,
+}
+
+impl CugraphInputRowBounds {
+    pub(super) fn from_execution_plans(
+        edge_source: &dyn ExecutionPlan,
+        predicate_sources: &[Arc<dyn ExecutionPlan>],
+    ) -> Result<Self> {
+        Ok(Self {
+            edge: edge_source_output_rows(edge_source)?,
+            predicates: predicate_sources
+                .iter()
+                .map(|source| exact_execution_plan_output_rows(source.as_ref()))
+                .collect::<Result<Vec<_>>>()?,
+        })
+    }
+
+    pub(super) fn edge_row_upper_bound(&self) -> Option<u64> {
+        self.edge
+    }
+
+    pub(super) fn predicate_row_upper_bounds(&self) -> &[Option<u64>] {
+        &self.predicates
+    }
+}
+
 #[derive(Debug)]
 pub(super) struct StagedCugraphInputs {
     pub(super) edge: StagedCugraphSource,
@@ -17,6 +46,15 @@ pub(super) struct StagedCugraphInputs {
     pub(super) logical_codebook: Option<HostBfsCodebook>,
     pub(super) execution_spec: CugraphAlgorithmSpec,
     pub(super) reservation: Option<MemoryReservation>,
+}
+
+#[derive(Debug)]
+pub(super) struct CollectedCugraphInputs {
+    edge: StagedCugraphSource,
+    logical_literal_source: Option<StagedCugraphSource>,
+    predicates: Vec<StagedCugraphSource>,
+    staged_bytes: usize,
+    reservation: MemoryReservation,
 }
 
 pub(super) struct UploadedCugraphInputs {
@@ -28,6 +66,7 @@ pub(super) struct UploadedCugraphInputs {
     pub(super) reservation: Option<MemoryReservation>,
 }
 
+#[cfg(test)]
 pub(super) async fn stage_cugraph_inputs(
     spec: &CugraphAlgorithmSpec,
     edge_source: Arc<dyn ExecutionPlan>,
@@ -36,6 +75,19 @@ pub(super) async fn stage_cugraph_inputs(
     cancellation: &nexus_query_engine::runtime::ExecutionCancellation,
     max_staging_bytes: usize,
 ) -> Result<StagedCugraphInputs> {
+    collect_cugraph_inputs(spec, edge_source, predicate_sources, task_context, cancellation, max_staging_bytes)
+        .await?
+        .prepare_logical_inputs(spec, max_staging_bytes)
+}
+
+pub(super) async fn collect_cugraph_inputs(
+    spec: &CugraphAlgorithmSpec,
+    edge_source: Arc<dyn ExecutionPlan>,
+    predicate_sources: Vec<Arc<dyn ExecutionPlan>>,
+    task_context: Arc<TaskContext>,
+    cancellation: &nexus_query_engine::runtime::ExecutionCancellation,
+    max_staging_bytes: usize,
+) -> Result<CollectedCugraphInputs> {
     cancellation.check("datafusion_nexus.cugraph_sql.host_input_staging").map_err(|error| {
         DataFusionError::from(Error::from_native(
             "datafusion_nexus.cugraph_sql.host_input_staging",
@@ -86,23 +138,7 @@ pub(super) async fn stage_cugraph_inputs(
             .await?,
         );
     }
-    let (edge, logical_literal_source, predicates, logical_codebook, execution_spec) = prepare_bfs_logical_host_inputs(
-        spec,
-        edge,
-        logical_literal_source,
-        predicates,
-        &mut staged_bytes,
-        max_staging_bytes,
-        &mut reservation,
-    )?;
-    Ok(StagedCugraphInputs {
-        edge,
-        logical_literal_source,
-        predicates,
-        logical_codebook,
-        execution_spec,
-        reservation: Some(reservation),
-    })
+    Ok(CollectedCugraphInputs { edge, logical_literal_source, predicates, staged_bytes, reservation })
 }
 
 async fn stage_cugraph_source(
@@ -143,7 +179,9 @@ async fn stage_cugraph_source(
     Ok(StagedCugraphSource::Host { schema, batches })
 }
 
-fn check_host_staging_cancellation(cancellation: &nexus_query_engine::runtime::ExecutionCancellation) -> Result<()> {
+pub(super) fn check_host_staging_cancellation(
+    cancellation: &nexus_query_engine::runtime::ExecutionCancellation,
+) -> Result<()> {
     cancellation.check("datafusion_nexus.cugraph_sql.host_input_staging").map_err(|error| {
         DataFusionError::from(Error::from_native(
             "datafusion_nexus.cugraph_sql.host_input_staging",
@@ -206,7 +244,44 @@ pub(super) fn host_staging_limit_error(
     .into()
 }
 
+impl CollectedCugraphInputs {
+    pub(super) fn row_bounds(&self) -> Result<CugraphInputRowBounds> {
+        cugraph_input_row_bounds(&self.edge, &self.predicates)
+    }
+
+    pub(super) fn prepare_logical_inputs(
+        self,
+        spec: &CugraphAlgorithmSpec,
+        max_staging_bytes: usize,
+    ) -> Result<StagedCugraphInputs> {
+        let Self { edge, logical_literal_source, predicates, mut staged_bytes, mut reservation } = self;
+        let (edge, logical_literal_source, predicates, logical_codebook, execution_spec) =
+            prepare_bfs_logical_host_inputs(
+                spec,
+                edge,
+                logical_literal_source,
+                predicates,
+                &mut staged_bytes,
+                max_staging_bytes,
+                &mut reservation,
+            )?;
+        Ok(StagedCugraphInputs {
+            edge,
+            logical_literal_source,
+            predicates,
+            logical_codebook,
+            execution_spec,
+            reservation: Some(reservation),
+        })
+    }
+}
+
 impl StagedCugraphInputs {
+    #[cfg(test)]
+    pub(super) fn row_bounds(&self) -> Result<CugraphInputRowBounds> {
+        cugraph_input_row_bounds(&self.edge, &self.predicates)
+    }
+
     pub(super) async fn upload(
         self,
         context: &ExecutionContext,
@@ -245,10 +320,40 @@ impl StagedCugraphInputs {
     }
 }
 
+fn cugraph_input_row_bounds(
+    edge: &StagedCugraphSource,
+    predicates: &[StagedCugraphSource],
+) -> Result<CugraphInputRowBounds> {
+    Ok(CugraphInputRowBounds {
+        edge: edge.row_upper_bound(StagedCugraphSourceRole::Edge)?,
+        predicates: predicates
+            .iter()
+            .enumerate()
+            .map(|(index, source)| source.row_upper_bound(StagedCugraphSourceRole::Predicate(index)))
+            .collect::<Result<Vec<_>>>()?,
+    })
+}
+
+#[derive(Clone, Copy)]
+enum StagedCugraphSourceRole {
+    Edge,
+    Predicate(usize),
+}
+
 impl StagedCugraphSource {
     pub(super) fn schema(&self) -> SchemaRef {
         match self {
             Self::Native { schema, .. } | Self::Host { schema, .. } => Arc::clone(schema),
+        }
+    }
+
+    fn row_upper_bound(&self, role: StagedCugraphSourceRole) -> Result<Option<u64>> {
+        match self {
+            Self::Native { plan, .. } => match role {
+                StagedCugraphSourceRole::Edge => edge_source_output_rows(plan.as_ref()),
+                StagedCugraphSourceRole::Predicate(_) => exact_execution_plan_output_rows(plan.as_ref()),
+            },
+            Self::Host { batches, .. } => checked_staged_host_rows(batches, role).map(Some),
         }
     }
 
@@ -263,6 +368,38 @@ impl StagedCugraphSource {
             Self::Host { schema, batches } => record_batches_to_gpu(context, schema, &batches),
         }
     }
+}
+
+fn checked_staged_host_rows(batches: &[RecordBatch], role: StagedCugraphSourceRole) -> Result<u64> {
+    batches.iter().try_fold(0_u64, |rows, batch| {
+        let batch_rows = u64::try_from(batch.num_rows()).map_err(|_| staged_host_row_overflow(role, rows, u64::MAX))?;
+        rows.checked_add(batch_rows).ok_or_else(|| staged_host_row_overflow(role, rows, batch_rows))
+    })
+}
+
+fn staged_host_row_overflow(
+    role: StagedCugraphSourceRole,
+    accumulated_rows: u64,
+    next_batch_rows: u64,
+) -> DataFusionError {
+    let mut error = Error::new(
+        ErrorCode::SizeOverflow,
+        "datafusion_nexus.cugraph_sql.host_input_rows",
+        "staged cuGraph host-input row count overflowed the native cardinality contract",
+    )
+    .with_fact(
+        "source_kind",
+        match role {
+            StagedCugraphSourceRole::Edge => "edge",
+            StagedCugraphSourceRole::Predicate(_) => "side_input",
+        },
+    )
+    .with_fact("accumulated_rows", accumulated_rows)
+    .with_fact("next_batch_rows", next_batch_rows);
+    if let StagedCugraphSourceRole::Predicate(index) = role {
+        error = error.with_fact("predicate_index", index);
+    }
+    error.into()
 }
 
 #[derive(Clone, Debug)]

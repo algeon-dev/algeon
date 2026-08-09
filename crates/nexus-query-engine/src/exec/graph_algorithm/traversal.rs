@@ -692,24 +692,8 @@ pub(super) fn resolve_empty_bfs_edge_input(
     sanitized_edges: &DataFrame,
     side_inputs: &std::collections::BTreeMap<NodeId, GpuDataFrame>,
 ) -> Result<GraphAlgorithmExecutionResult> {
-    let crate::plan::GraphAlgorithmParams::Bfs(params) = &spec.params else {
-        return Err(QueryError::new(
-            QueryErrorCode::InvalidPlan,
-            "nexus_query_engine.graph_algorithm.empty_input",
-            "BFS empty-input policy was attached to incompatible parameters",
-        )
-        .with_fact("algorithm", spec.algorithm.as_str()));
-    };
-    let (mut edges, vertex_type) = project_edge_list(sanitized_edges, spec)?;
-    let predicate_columns = BfsPredicateColumns::from_side_inputs(
-        context,
-        params,
-        side_inputs,
-        vertex_type,
-        spec.edge_columns.edge_id.is_some(),
-        spec,
-        &mut edges,
-    )?;
+    let params = empty_bfs_params(spec)?;
+    let (edges, predicate_columns) = project_bfs_inputs(context, spec, params, sanitized_edges, side_inputs)?;
     debug_assert_eq!(edges.num_rows(), 0, "empty-edge policy must run after all BFS edge filters");
 
     if let Some(result) = empty_bfs_result_for_trivial_path_endpoint(context, spec, params, &edges, &predicate_columns)?
@@ -729,6 +713,52 @@ pub(super) fn resolve_empty_bfs_edge_input(
     .with_fact("sanitized_input_rows", edges.num_rows())
     .with_fact("empty_input_policy", spec.algorithm.definition().empty_input_policy().edge_input.as_str())
     .with_fact("source_rows", predicate_columns.source_vertices.as_ref().map_or(1, cudf::Series::len)))
+}
+
+pub(super) fn resolve_empty_bfs_source_input(
+    context: &ExecutionContext,
+    spec: &crate::plan::GraphAlgorithmSpec,
+    sanitized_edges: &DataFrame,
+    side_inputs: &std::collections::BTreeMap<NodeId, GpuDataFrame>,
+) -> Result<Option<GraphAlgorithmExecutionResult>> {
+    let params = empty_bfs_params(spec)?;
+    let (edges, predicate_columns) = project_bfs_inputs(context, spec, params, sanitized_edges, side_inputs)?;
+    if !predicate_columns.source_vertices.as_ref().is_some_and(cudf::Series::is_empty) {
+        return Ok(None);
+    }
+    empty_bfs_result_for_trivial_path_endpoint(context, spec, params, &edges, &predicate_columns)
+}
+
+fn empty_bfs_params(spec: &crate::plan::GraphAlgorithmSpec) -> Result<&crate::plan::GraphBfsParams> {
+    let crate::plan::GraphAlgorithmParams::Bfs(params) = &spec.params else {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.graph_algorithm.empty_input",
+            "BFS empty-input policy was attached to incompatible parameters",
+        )
+        .with_fact("algorithm", spec.algorithm.as_str()));
+    };
+    Ok(params)
+}
+
+fn project_bfs_inputs(
+    context: &ExecutionContext,
+    spec: &crate::plan::GraphAlgorithmSpec,
+    params: &crate::plan::GraphBfsParams,
+    sanitized_edges: &DataFrame,
+    side_inputs: &std::collections::BTreeMap<NodeId, GpuDataFrame>,
+) -> Result<(DataFrame, BfsPredicateColumns)> {
+    let (mut edges, vertex_type) = project_edge_list(sanitized_edges, spec)?;
+    let predicate_columns = BfsPredicateColumns::from_side_inputs(
+        context,
+        params,
+        side_inputs,
+        vertex_type,
+        spec.edge_columns.edge_id.is_some(),
+        spec,
+        &mut edges,
+    )?;
+    Ok((edges, predicate_columns))
 }
 
 fn graph_bfs_error_for_missing_path_endpoint(

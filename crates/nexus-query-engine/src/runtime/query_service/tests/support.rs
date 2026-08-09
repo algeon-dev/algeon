@@ -279,6 +279,8 @@ fn requirement(floor: u64, hint: Option<u64>) -> AttemptRequirement {
         estimate_quality: EstimateQuality::Modeled,
         required_capabilities: Vec::new(),
         owner_terms: Vec::new(),
+        bound_derivation: None,
+        requires_composed_producer_binding: false,
         attested_cugraph_graph_execution_scopes: Vec::new(),
         reservation_shapes: Vec::new(),
     }

@@ -118,7 +118,7 @@ impl CompiledGpuTaskExecutor<'_> {
                     self.context,
                     source,
                     node_id,
-                    self.gpu_inputs,
+                    &self.gpu_inputs,
                     &mut self.reservations,
                     self.metrics,
                 )
@@ -135,7 +135,7 @@ impl CompiledGpuTaskExecutor<'_> {
                     self.context,
                     source,
                     node_id,
-                    self.gpu_inputs,
+                    &self.gpu_inputs,
                     &mut self.reservations,
                     self.metrics,
                 )

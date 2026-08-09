@@ -22,14 +22,11 @@ pub(super) fn edge_execution_config(
     default_execution_config.clone()
 }
 
-/// Resolves exact edge metadata and mints the one immutable graph-aware ticket
-/// for this execution attempt.  Planning must never leave a ticket behind:
-/// lakehouse footer pruning can change the graph row and vertex evidence.
-pub(super) fn cugraph_execution_config_after_metadata(
+pub(super) fn cugraph_execution_config_after_staging(
     spec: &CugraphAlgorithmSpec,
     edge_source: &dyn ExecutionPlan,
     predicate_sources: &[Arc<dyn ExecutionPlan>],
-    predicate_row_upper_bounds: &[Option<u64>],
+    input_row_bounds: &CugraphInputRowBounds,
     projection: Option<&Vec<usize>>,
     limit: Option<usize>,
     edge_normalize_inserted: bool,
@@ -54,7 +51,7 @@ pub(super) fn cugraph_execution_config_after_metadata(
         spec,
         edge_source,
         predicate_sources,
-        predicate_row_upper_bounds,
+        input_row_bounds,
         projection,
         limit,
         edge_normalize_inserted,
@@ -87,20 +84,23 @@ pub(super) fn cugraph_execution_config_with_graph_aware_ticket(
     spec: &CugraphAlgorithmSpec,
     edge_source: &dyn ExecutionPlan,
     predicate_sources: &[Arc<dyn ExecutionPlan>],
-    predicate_row_upper_bounds: &[Option<u64>],
+    input_row_bounds: &CugraphInputRowBounds,
     projection: Option<&Vec<usize>>,
     limit: Option<usize>,
     edge_normalize_inserted: bool,
     execution_config: NexusNativeExecutionConfig,
 ) -> Result<NexusNativeExecutionConfig> {
-    let edge_row_upper_bound =
-        if execution_config.query_admission_source().is_none() { None } else { edge_source_output_rows(edge_source)? };
+    let edge_row_upper_bound = if execution_config.query_admission_source().is_none() {
+        None
+    } else {
+        input_row_bounds.edge_row_upper_bound()
+    };
     let edge_vertex_upper_bound = edge_source_graph_vertex_estimate(edge_source).map(|estimate| estimate.count);
     let (graph_execution_plan, graph_execution_proof) = cugraph_execution_capability_proof_with_edge_row_upper_bound(
         spec,
         edge_source.schema(),
         predicate_sources.iter().map(|source| source.schema()).collect(),
-        predicate_row_upper_bounds,
+        input_row_bounds.predicate_row_upper_bounds(),
         projection,
         limit,
         edge_normalize_inserted,

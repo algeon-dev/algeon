@@ -406,6 +406,8 @@ impl DeviceLedger {
                 estimate_quality: crate::admission::EstimateQuality::Modeled,
                 required_capabilities: Vec::new(),
                 owner_terms: Vec::new(),
+                bound_derivation: None,
+                requires_composed_producer_binding: false,
                 attested_cugraph_graph_execution_scopes: Vec::new(),
                 reservation_shapes: Vec::new(),
             },
@@ -1093,7 +1095,6 @@ impl MemoryGrant {
         self.inner.admission_request_id
     }
 
-    #[cfg(any(feature = "cugraph", test))]
     pub(crate) fn identity_key(&self) -> usize {
         Arc::as_ptr(&self.inner) as usize
     }
@@ -1226,15 +1227,17 @@ impl MemoryGrant {
 
 impl MemoryGrantLiveReservation {
     /// Bytes retained by this handle in the owning memory grant.
-    #[cfg(any(feature = "cugraph", test))]
     pub(crate) fn bytes(&self) -> u64 {
         self.inner.bytes
     }
 
     /// Whether this retention consumes capacity from `grant`.
-    #[cfg(any(feature = "cugraph", test))]
     pub(crate) fn belongs_to(&self, grant: &MemoryGrant) -> bool {
         self.inner.grant.identity_key() == grant.identity_key()
+    }
+
+    pub(crate) fn identity_key(&self) -> usize {
+        Arc::as_ptr(&self.inner) as usize
     }
 
     /// Retains a derived reservation for output bytes produced under the

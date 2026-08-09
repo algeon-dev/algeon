@@ -31,7 +31,10 @@ use datafusion_nexus::{
     backend::{GpuMemoryOwnership, NexusGpuBackend, NexusGpuDeviceProfile},
     cugraph_sql::{
         CUGRAPH_OPERATION_REGISTRY, CugraphAlgorithm, CugraphSqlConfig,
-        parity::{CUGRAPH_PARITY_SPECS, OracleLookup, ParityTruthSource, data_root, load_ref_csv_vertex_list},
+        parity::{
+            CUGRAPH_PARITY_SPECS, OracleLookup, ParityComparator, ParityTruthSource, data_root,
+            load_ref_csv_vertex_list,
+        },
     },
 };
 use serde_json::{Map, Value};
@@ -108,6 +111,18 @@ fn parity_specs_declare_a_comparator_family() {
     for spec in CUGRAPH_PARITY_SPECS {
         let label = compare::family_label(spec.comparator);
         assert!(!label.is_empty(), "spec '{}' has an empty comparator family label", spec.label,);
+        let sql = parity_sql(spec);
+        let unordered = spec.algorithm == CugraphAlgorithm::EdgeBetweennessCentrality
+            || matches!(spec.comparator, ParityComparator::EdgeSubgraph | ParityComparator::SimilarityMultiset);
+        if unordered {
+            assert!(
+                !sql.contains(" ORDER BY "),
+                "spec '{}' must not request an unsupported multi-key sort",
+                spec.label
+            );
+        } else {
+            assert!(sql.ends_with(" ORDER BY vertex"), "spec '{}' must retain its supported vertex sort", spec.label);
+        }
     }
 }
 
@@ -378,16 +393,14 @@ fn parity_sql(spec: &datafusion_nexus::cugraph_sql::parity::ParitySpec) -> Strin
     } else {
         format!("'{table}', 'src', 'dst', 'weight', '{}'", options.replace('\'', "''"))
     };
-    let order_by = match spec.algorithm {
-        CugraphAlgorithm::EdgeBetweennessCentrality => "source, destination",
-        CugraphAlgorithm::KCore | CugraphAlgorithm::MinimumSpanningTree => "src, dst",
-        CugraphAlgorithm::Jaccard
-        | CugraphAlgorithm::Sorensen
-        | CugraphAlgorithm::Overlap
-        | CugraphAlgorithm::Cosine => "first, second, similarity",
-        _ => "vertex",
-    };
-    format!("SELECT * FROM {}({args}) ORDER BY {order_by}", spec.algorithm.function_name())
+    let sql = format!("SELECT * FROM {}({args})", spec.algorithm.function_name());
+    if spec.algorithm == CugraphAlgorithm::EdgeBetweennessCentrality
+        || matches!(spec.comparator, ParityComparator::EdgeSubgraph | ParityComparator::SimilarityMultiset)
+    {
+        sql
+    } else {
+        format!("{sql} ORDER BY vertex")
+    }
 }
 
 fn dataset_table_name(dataset: &str) -> String {

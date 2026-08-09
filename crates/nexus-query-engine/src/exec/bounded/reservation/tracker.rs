@@ -1,10 +1,17 @@
+use std::{
+    collections::{HashMap, HashSet},
+    sync::{Arc, atomic::AtomicU64},
+};
+
 use super::*;
+use crate::runtime::resident::{GpuResidentInputMap, RetainedReservationGuard};
 
 pub(in crate::exec) struct ReservationTracker {
     query_id: Option<QueryId>,
     memory_space: MemorySpaceId,
     budget: ReservationBudget,
     reserved_bytes: Rc<Cell<u64>>,
+    retained_debit_bytes: Arc<AtomicU64>,
     observation_scope: Option<RuntimeExecutionObservationScope>,
     next_reservation_id: Rc<Cell<u64>>,
     diagnostic_context: Rc<RefCell<ReservationDiagnosticContext>>,
@@ -72,6 +79,7 @@ impl ReservationTracker {
             memory_space,
             budget,
             reserved_bytes: Rc::new(Cell::new(0)),
+            retained_debit_bytes: Arc::new(AtomicU64::new(0)),
             observation_scope: observation_scope.cloned(),
             next_reservation_id: Rc::new(Cell::new(1)),
             diagnostic_context: Rc::new(RefCell::new(ReservationDiagnosticContext::default())),
@@ -120,6 +128,43 @@ impl ReservationTracker {
 
     pub(in crate::exec) fn can_reserve(&self, requested_bytes: u64) -> bool {
         self.reservable_remaining_bytes().is_ok_and(|remaining| requested_bytes <= remaining)
+    }
+
+    pub(in crate::exec) fn augment_gpu_inputs(&self, gpu_inputs: &GpuResidentInputMap) -> Result<GpuResidentInputMap> {
+        let Some(grant) = self.budget.live_accounting() else {
+            return Ok(gpu_inputs.clone());
+        };
+        let mut augmented = GpuResidentInputMap::new();
+        let already_guarded = gpu_inputs
+            .values()
+            .filter_map(|handle| {
+                let (reservation_id, bytes) = handle.retained_reservation_identity_for(&grant)?;
+                let guard = handle.retained_reservation_guard_for(&self.retained_debit_bytes)?;
+                Some((reservation_id, (bytes, guard)))
+            })
+            .collect::<HashMap<_, _>>();
+        let mut retained_reservation_ids = HashSet::new();
+        for (input_name, handle) in gpu_inputs {
+            let handle = match handle.retained_reservation_identity_for(&grant) {
+                Some((reservation_id, retained_bytes)) => {
+                    let handle = handle.clone();
+                    if let Some((_, guard)) = already_guarded.get(&reservation_id) {
+                        if handle.has_retained_reservation_guard(&self.retained_debit_bytes) {
+                            handle
+                        } else {
+                            handle.with_retained_reservation_guard(guard.clone())
+                        }
+                    } else if retained_reservation_ids.insert(reservation_id) {
+                        handle.with_retained_reservation_guard(self.try_acquire_retained_debit(retained_bytes)?)
+                    } else {
+                        handle
+                    }
+                },
+                None => handle.clone(),
+            };
+            augmented.insert(input_name.clone(), handle);
+        }
+        Ok(augmented)
     }
 
     pub(in crate::exec) fn enter_task_observation_scope(
@@ -647,7 +692,7 @@ impl ReservationTracker {
     }
 
     pub(super) fn raw_reserved_bytes(&self) -> u64 {
-        self.reserved_bytes.get()
+        self.reserved_bytes.get().saturating_add(self.retained_debit_bytes.load(std::sync::atomic::Ordering::Acquire))
     }
 
     pub(in crate::exec) fn reservable_remaining_bytes(&self) -> Result<u64> {
@@ -658,8 +703,21 @@ impl ReservationTracker {
         if !self.budget.try_reserve_live_bytes(bytes)? {
             return Ok(false);
         }
-        self.reserved_bytes.set(self.raw_reserved_bytes().saturating_add(bytes));
+        self.reserved_bytes.set(self.reserved_bytes.get().saturating_add(bytes));
         Ok(true)
+    }
+
+    pub(in crate::exec) fn try_acquire_retained_debit(&self, bytes: u64) -> Result<RetainedReservationGuard> {
+        let active_remaining = self.budget().saturating_sub(self.reserved_bytes.get());
+        let retained_remaining =
+            active_remaining.saturating_sub(self.retained_debit_bytes.load(std::sync::atomic::Ordering::Acquire));
+        RetainedReservationGuard::try_acquire(Arc::clone(&self.retained_debit_bytes), active_remaining, bytes)
+            .ok_or_else(|| {
+                MemoryReservationRequest::new(ReservationKind::CapabilityContract, bytes, self.budget())
+                    .with_memory_boundary("retained_output")
+                    .with_stage("retained_output_tracker")
+                    .denied_error(retained_remaining)
+            })
     }
 
     fn reservation_belongs_to_tracker(&self, reservation: &ActiveReservation) -> bool {

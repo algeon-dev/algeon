@@ -64,8 +64,10 @@ pub(in crate::exec::bounded) fn execute_compiled_pipeline(
             ResultSink::HostArrow { .. } => (QueryOutput::HostArrow(executor.take_host_output()?), true),
             ResultSink::GpuResident { .. } => (QueryOutput::GpuResident(executor.take_gpu_output(&mut state)?), false),
         };
-        debug_assert_eq!(executor.reserved_bytes(), 0);
-        (state.completed_task_count(), output, host_sink)
+        let completed_task_count = state.completed_task_count();
+        let reservations = executor.into_reservations();
+        debug_assert_eq!(reservations.reserved_bytes(), 0);
+        (completed_task_count, output, host_sink)
     };
     metrics.record_compiled_pipeline_tasks_executed(completed_task_count as u64);
     if host_sink {

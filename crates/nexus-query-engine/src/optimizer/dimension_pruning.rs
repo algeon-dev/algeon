@@ -564,6 +564,11 @@ pub struct LocalParquetRowGroupSelection {
     pub total_row_groups: usize,
     /// Physical row-group ids retained by the external pruning pass.
     pub row_groups: Vec<usize>,
+    /// Exact row counts for every physical row group, in footer order.
+    ///
+    /// Keeping the full footer order lets the engine validate selected ids
+    /// before carrying the source-owned cardinality into the rewritten plan.
+    pub row_group_rows: Vec<u64>,
 }
 
 /// Outcome of [`apply_local_parquet_row_group_selections`].
@@ -581,10 +586,11 @@ pub struct LocalParquetRowGroupSelectionApplyResult {
 
 /// Applies externally-derived row-group selections to a `LocalParquetSource`.
 ///
-/// The supplied selections are physical Parquet row-group ids, one entry per
-/// source file. Existing file-level selections are narrowed, never widened. An
-/// empty result is treated as non-applied for now because native empty-source
-/// representation is not modeled by this patching API.
+/// The supplied selections are physical Parquet row-group ids and full footer
+/// row counts, one entry per source file. Existing file-level selections are
+/// narrowed, never widened. An empty result is treated as non-applied for now
+/// because native empty-source representation is not modeled by this patching
+/// API.
 pub fn apply_local_parquet_row_group_selections(
     plan: QueryPlan,
     source_node_id: NodeId,
@@ -610,8 +616,9 @@ pub fn apply_local_parquet_row_group_selections(
     let mut before = 0usize;
     let mut after = 0usize;
     let mut new_row_groups_by_file = Vec::with_capacity(source.files.len());
+    let mut row_group_rows_by_file = Vec::with_capacity(source.files.len());
     for (file, selection) in source.files.iter().zip(selections) {
-        if selection.total_row_groups == 0 {
+        if selection.total_row_groups == 0 || selection.row_group_rows.len() != selection.total_row_groups {
             return unchanged(nodes);
         }
         let candidates = selected_or_all_row_groups(file, selection.total_row_groups);
@@ -639,14 +646,18 @@ pub fn apply_local_parquet_row_group_selections(
         before += candidates.len();
         after += selection.row_groups.len();
         new_row_groups_by_file.push(selection.row_groups.clone());
+        row_group_rows_by_file.push(selection.row_group_rows.clone());
     }
 
     if after == 0 || after >= before {
         return unchanged(nodes);
     }
 
-    for (file, row_groups) in source.files.iter_mut().zip(new_row_groups_by_file) {
+    for ((file, row_groups), row_group_rows) in
+        source.files.iter_mut().zip(new_row_groups_by_file).zip(row_group_rows_by_file)
+    {
         file.row_groups = Some(row_groups);
+        file.row_group_rows = Some(row_group_rows);
     }
     source.refresh_diagnostics();
     LocalParquetRowGroupSelectionApplyResult {
@@ -759,7 +770,11 @@ mod tests {
         let result = apply_local_parquet_row_group_selections(
             plan,
             source_node_id,
-            &[LocalParquetRowGroupSelection { total_row_groups: 5, row_groups: vec![1, 2] }],
+            &[LocalParquetRowGroupSelection {
+                total_row_groups: 5,
+                row_groups: vec![1, 2],
+                row_group_rows: vec![10, 20, 30, 40, 50],
+            }],
         );
 
         assert!(result.applied);
@@ -767,6 +782,15 @@ mod tests {
         assert_eq!(result.after, 2);
         let source = local_parquet_source(&result.plan, source_node_id).unwrap();
         assert_eq!(source.files[0].row_groups, Some(vec![1, 2]));
+        assert_eq!(source.files[0].row_group_rows, Some(vec![10, 20, 30, 40, 50]));
+        assert_eq!(source.exact_selected_row_count(), Some(50));
+        let stats = source
+            .diagnostics
+            .selected_row_group_stats
+            .as_ref()
+            .expect("row-count metadata should be reflected in diagnostics");
+        assert_eq!(stats.selected_rows, Some(50));
+        assert_eq!(stats.total_rows, Some(150));
     }
 
     #[test]
@@ -776,7 +800,11 @@ mod tests {
         let result = apply_local_parquet_row_group_selections(
             plan,
             source_node_id,
-            &[LocalParquetRowGroupSelection { total_row_groups: 5, row_groups: vec![1, 4] }],
+            &[LocalParquetRowGroupSelection {
+                total_row_groups: 5,
+                row_groups: vec![1, 4],
+                row_group_rows: vec![10, 20, 30, 40, 50],
+            }],
         );
 
         assert!(!result.applied);
@@ -791,7 +819,11 @@ mod tests {
         let result = apply_local_parquet_row_group_selections(
             plan,
             source_node_id,
-            &[LocalParquetRowGroupSelection { total_row_groups: 5, row_groups: Vec::new() }],
+            &[LocalParquetRowGroupSelection {
+                total_row_groups: 5,
+                row_groups: Vec::new(),
+                row_group_rows: vec![10, 20, 30, 40, 50],
+            }],
         );
 
         assert!(!result.applied);
@@ -806,7 +838,11 @@ mod tests {
         let result = apply_local_parquet_row_group_selections(
             plan,
             source_node_id,
-            &[LocalParquetRowGroupSelection { total_row_groups: 5, row_groups: vec![1, 1] }],
+            &[LocalParquetRowGroupSelection {
+                total_row_groups: 5,
+                row_groups: vec![1, 1],
+                row_group_rows: vec![10, 20, 30, 40, 50],
+            }],
         );
 
         assert!(!result.applied);
@@ -821,12 +857,36 @@ mod tests {
         let result = apply_local_parquet_row_group_selections(
             plan,
             source_node_id,
-            &[LocalParquetRowGroupSelection { total_row_groups: 5, row_groups: vec![2, 1] }],
+            &[LocalParquetRowGroupSelection {
+                total_row_groups: 5,
+                row_groups: vec![2, 1],
+                row_group_rows: vec![10, 20, 30, 40, 50],
+            }],
         );
 
         assert!(!result.applied);
         let source = local_parquet_source(&result.plan, source_node_id).unwrap();
         assert_eq!(source.files[0].row_groups, Some(vec![0, 1, 2]));
+    }
+
+    #[test]
+    fn apply_local_parquet_row_group_selections_rejects_misaligned_row_counts() {
+        let (plan, source_node_id) = test_plan_with_source_row_groups(Some(vec![0, 1, 2]));
+
+        let result = apply_local_parquet_row_group_selections(
+            plan,
+            source_node_id,
+            &[LocalParquetRowGroupSelection {
+                total_row_groups: 5,
+                row_groups: vec![1, 2],
+                row_group_rows: vec![10, 20],
+            }],
+        );
+
+        assert!(!result.applied);
+        let source = local_parquet_source(&result.plan, source_node_id).unwrap();
+        assert_eq!(source.files[0].row_groups, Some(vec![0, 1, 2]));
+        assert_eq!(source.files[0].row_group_rows, None);
     }
 
     #[test]

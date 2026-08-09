@@ -23,7 +23,7 @@ pub(crate) use envelope::{
     AttemptReservationEnvelope, AttemptReservationPolicy, canonical_execution_scope_fingerprint,
 };
 pub(crate) use join_strategy::{CompiledJoinExecutionStrategy, CompiledJoinStrategySelection};
-pub(crate) use requirement::AttemptCapabilityEvidence as AttemptRequirement;
+pub(crate) use requirement::{AttemptBoundDerivation, AttemptCapabilityEvidence as AttemptRequirement};
 #[cfg(any(test, feature = "test-hooks"))]
 pub use requirement::{AttemptCapabilityEvidence, EstimateQuality};
 pub use requirement::{ComposedGraphProducerCandidate, QueryPlanCapabilityProof};

@@ -180,6 +180,19 @@ async fn static_reader_predicate_row_group_selections(
             .await
             .map_err(|error| format!("static_reader_predicate_footer_unavailable {error}"))?;
         let total_row_groups = metadata.num_row_groups();
+        let row_group_rows = metadata
+            .row_groups()
+            .iter()
+            .map(|row_group| {
+                u64::try_from(row_group.num_rows()).map_err(|_| {
+                    format!(
+                        "static_reader_predicate_row_group_rows_invalid source_node_id={} row_group_count={}",
+                        source_node_id.index(),
+                        total_row_groups,
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         let candidates = selected_or_all_row_groups(file.row_groups.as_deref(), total_row_groups);
         let mut row_groups = Vec::with_capacity(candidates.len());
         for row_group_index in candidates {
@@ -192,7 +205,7 @@ async fn static_reader_predicate_row_group_selections(
                 row_groups.push(row_group_index);
             }
         }
-        selections.push(LocalParquetRowGroupSelection { total_row_groups, row_groups });
+        selections.push(LocalParquetRowGroupSelection { total_row_groups, row_groups, row_group_rows });
     }
     Ok(selections)
 }

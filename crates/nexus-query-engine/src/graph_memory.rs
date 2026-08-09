@@ -969,11 +969,23 @@ fn graph_side_input_workspace_peak_bytes_with_owner(
                     },
                 }
             }
+            let num_vertices = graph_side_input_count(estimate.vertex_estimate, "num_vertices", graph.spec.algorithm)?;
+            let num_edges = graph_side_input_count(estimate.input_edges, "num_edges", graph.spec.algorithm)?;
+            if include_vertices_rows.is_some() && exclude_vertices_rows.is_some() {
+                return Err(side_input_workspace_preflight_unavailable(
+                    "owner_input_rejected",
+                    None,
+                    Some(graph.spec.algorithm),
+                ));
+            }
+            if source_rows == 0 {
+                return Ok(Some(0));
+            }
             let input = cugraph::cudf_interop::BfsSideInputPreflightInput::new(
                 graph_vertex_type,
                 graph_vertex_type,
-                graph_side_input_count(estimate.vertex_estimate, "num_vertices", graph.spec.algorithm)?,
-                graph_side_input_count(estimate.input_edges, "num_edges", graph.spec.algorithm)?,
+                num_vertices,
+                num_edges,
                 source_rows,
                 include_vertices_rows,
                 exclude_vertices_rows,
@@ -3785,6 +3797,28 @@ mod tests {
             preflight.source_copy_bytes() + preflight.predicate_bitmap_bytes() + preflight.edge_mask_bytes(),
             "the owner term must preserve the co-resident peak rather than sum sequential components"
         );
+    }
+
+    #[cfg(feature = "cugraph")]
+    #[test]
+    fn bfs_empty_source_side_input_owner_is_zero() {
+        let side_schema = Arc::new(Schema::new(vec![Field::new("vertex", DataType::Int64, false)]));
+        let plan = bfs_side_input_plan(side_schema, Some(0), |side| {
+            let mut params = GraphBfsParams::new(0, None);
+            params.source_vertices = Some(GraphPredicateInput::new(side, "vertex"));
+            params.endpoint_policy = crate::plan::GraphBfsEndpointPolicy::EmptyOnMissingPathEndpoint;
+            params
+        });
+        let evidence =
+            graph_memory_bounded_admission_evidence_for_plan(&plan, GraphMemoryCalibrationOverride::none(), None)
+                .expect("zero-row BFS source must retain finite graph-memory evidence");
+        let side_input_terms = evidence
+            .owner_term_facts()
+            .iter()
+            .filter(|fact| fact.role() == GraphMemoryOwnerTermRole::SideInputWorkspace)
+            .collect::<Vec<_>>();
+        assert_eq!(side_input_terms.len(), 1);
+        assert_eq!(side_input_terms[0].bytes(), 0);
     }
 
     #[cfg(feature = "cugraph")]

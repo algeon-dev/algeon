@@ -172,6 +172,9 @@ pub fn compare(
         ParityComparator::Numeric if spec.algorithm == CugraphAlgorithm::ForceAtlas2 => {
             compare_force_atlas2(&actual, &expected, spec.tolerance.abs, spec.tolerance.rel)
         },
+        ParityComparator::Numeric if spec.algorithm == CugraphAlgorithm::EdgeBetweennessCentrality => {
+            compare_edge_betweenness(&actual, &expected, spec.tolerance.abs, spec.tolerance.rel)
+        },
         ParityComparator::Numeric => compare_numeric(&actual, &expected, spec.tolerance.abs, spec.tolerance.rel),
         ParityComparator::PartitionEquivalence => compare_partitions(&actual, &expected),
         ParityComparator::PartitionQuality if spec.algorithm == CugraphAlgorithm::Ecg => {
@@ -381,6 +384,50 @@ fn compare_numeric(actual: &Table, expected: &Table, abs: f64, rel: f64) -> Resu
     for (name, actual_values) in &actual.columns {
         let expected_values = expected.column(name)?;
         compare_numeric_column(name, actual_values, expected_values, abs, rel)?;
+    }
+    Ok(())
+}
+
+fn compare_edge_betweenness(actual: &Table, expected: &Table, abs: f64, rel: f64) -> Result<(), String> {
+    let keyed_scores = |table: &Table| -> Result<BTreeMap<(i64, i64), f64>, String> {
+        let sources = table.integer_column("source")?;
+        let destinations = table.integer_column("destination")?;
+        let scores = table.column("score")?;
+        if sources.len() != destinations.len() || sources.len() != scores.len() {
+            return Err(format!(
+                "edge betweenness output has mismatched column lengths: source={}, destination={}, score={}",
+                sources.len(),
+                destinations.len(),
+                scores.len()
+            ));
+        }
+        let mut keyed = BTreeMap::new();
+        for (row, ((source, destination), score)) in sources.into_iter().zip(destinations).zip(scores).enumerate() {
+            let key = (source, destination);
+            let score = score.number("score", row)?;
+            if keyed.insert(key, score).is_some() {
+                return Err(format!("edge betweenness output contains duplicate edge {key:?}"));
+            }
+        }
+        Ok(keyed)
+    };
+
+    let actual = keyed_scores(actual)?;
+    let expected = keyed_scores(expected)?;
+    let actual_edges = actual.keys().copied().collect::<BTreeSet<_>>();
+    let expected_edges = expected.keys().copied().collect::<BTreeSet<_>>();
+    if actual_edges != expected_edges {
+        return Err(format!("edge betweenness keys differ: GPU={actual_edges:?} oracle={expected_edges:?}"));
+    }
+    for edge in actual_edges {
+        let actual = actual[&edge];
+        let expected = expected[&edge];
+        if !numbers_close(actual, expected, abs, rel) {
+            let tolerance = abs.max(rel * actual.abs().max(expected.abs()));
+            return Err(format!(
+                "edge betweenness score mismatch for {edge:?}: GPU={actual} oracle={expected} tolerance={tolerance}"
+            ));
+        }
     }
     Ok(())
 }
@@ -983,6 +1030,29 @@ mod tests {
         compare_numeric(&table(101.0), &table(100.0), 0.0, 1.0 / 101.0).unwrap();
         let error = compare_numeric(&table(101.001), &table(100.0), 0.0, 1.0 / 101.0).unwrap_err();
         assert!(error.contains("mismatch"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn edge_betweenness_comparison_keys_reordered_rows() {
+        let table = |sources: Vec<i64>, destinations: Vec<i64>, scores: Vec<f64>| Table {
+            rows: sources.len(),
+            columns: BTreeMap::from([
+                ("source".to_string(), sources.into_iter().map(Cell::Int).collect()),
+                ("destination".to_string(), destinations.into_iter().map(Cell::Int).collect()),
+                ("score".to_string(), scores.into_iter().map(Cell::Float).collect()),
+            ]),
+        };
+        let expected = table(vec![0, 1], vec![1, 2], vec![0.5, 0.25]);
+        let reordered = table(vec![1, 0], vec![2, 1], vec![0.250_001, 0.500_001]);
+        compare_edge_betweenness(&reordered, &expected, 1.0e-5, 0.0).unwrap();
+
+        let wrong_value = table(vec![1, 0], vec![2, 1], vec![0.3, 0.5]);
+        let error = compare_edge_betweenness(&wrong_value, &expected, 1.0e-5, 0.0).unwrap_err();
+        assert!(error.contains("score mismatch"), "unexpected error: {error}");
+
+        let wrong_key = table(vec![2, 0], vec![1, 1], vec![0.25, 0.5]);
+        let error = compare_edge_betweenness(&wrong_key, &expected, 1.0e-5, 0.0).unwrap_err();
+        assert!(error.contains("keys differ"), "unexpected error: {error}");
     }
 
     #[test]

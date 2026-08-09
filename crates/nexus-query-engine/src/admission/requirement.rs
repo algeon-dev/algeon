@@ -25,8 +25,8 @@ use crate::{
         query_plan_hard_row_upper_bound,
     },
     plan::{
-        JoinNode, JoinSide, JoinType, NodeId, PlanNode, QueryPlan, estimated_local_parquet_source_bytes,
-        estimated_output_rows, estimated_reachable_local_parquet_source_bytes,
+        JoinNode, JoinSide, JoinType, NodeId, PlanNode, QueryPlan, ResultSink, estimated_local_parquet_source_bytes,
+        estimated_reachable_local_parquet_source_bytes,
     },
     runtime::ReservationKind,
     source::SourceNode,
@@ -48,6 +48,7 @@ pub enum EstimateQuality {
 enum OwnerId {
     Attempt,
     Graph(NodeId),
+    Producer(NodeId),
     Source(NodeId),
     Consumer(NodeId),
     SideInput(NodeId),
@@ -60,6 +61,7 @@ impl OwnerId {
         match self {
             Self::Attempt => "attempt",
             Self::Graph(_) => "graph",
+            Self::Producer(_) => "producer",
             Self::Source(_) => "source",
             Self::Consumer(_) => "consumer",
             Self::SideInput(_) => "side_input",
@@ -94,7 +96,7 @@ enum OwnerTermRole {
 }
 
 impl OwnerTermRole {
-    const fn as_str(self) -> &'static str {
+    pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::AttemptWideFixed => "attempt_wide_fixed",
             Self::GraphPersistent => "graph_persistent",
@@ -141,6 +143,7 @@ impl AllocationClass {
 enum OwnerTermConstructionPolicy {
     Generic,
     AllowLiteralBatch,
+    AllowMixedSourceComposition,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -150,7 +153,7 @@ enum OccurrenceId {
 }
 
 impl OccurrenceId {
-    fn as_str(&self) -> String {
+    pub(crate) fn as_str(&self) -> String {
         match self {
             Self::PlanLocal(node_id) => format!("plan_local:{node_id}"),
             Self::Composed(occurrence_id) => format!("composed:{occurrence_id}"),
@@ -159,11 +162,29 @@ impl OccurrenceId {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-struct OwnerTermId {
+pub(crate) struct OwnerTermId {
     owner: OwnerId,
     role: OwnerTermRole,
     occurrence: OccurrenceId,
     execution_scope_fingerprint: String,
+}
+
+impl OwnerTermId {
+    pub(crate) fn role_label(&self) -> &'static str {
+        self.role.as_str()
+    }
+
+    pub(crate) fn occurrence_label(&self) -> String {
+        self.occurrence.as_str()
+    }
+}
+
+/// Internal provenance for the finite bound selected for one admitted
+/// attempt.  This is engine evidence, not a caller-selectable policy mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AttemptBoundDerivation {
+    OrderedTimeline,
+    ConservativeOwnerSum,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -276,6 +297,7 @@ fn owner_term_shape_is_valid(owner: &OwnerId, role: OwnerTermRole, class: Alloca
             OwnerTermRole::RetainedOutput => class == AllocationClass::AttemptRetained,
             _ => false,
         },
+        OwnerId::Producer(_) => role == OwnerTermRole::RetainedOutput && class == AllocationClass::AttemptRetained,
         OwnerId::Source(_) => role == OwnerTermRole::SourceStage && class == AllocationClass::ActivePhase,
         OwnerId::Consumer(_) => {
             matches!(
@@ -378,6 +400,57 @@ impl AllocationOwnerTerm {
             self.retained_row_count_upper_bound,
         )
     }
+
+    pub(crate) fn id(&self) -> &OwnerTermId {
+        &self.id
+    }
+
+    pub(crate) fn bytes(&self) -> u64 {
+        self.bytes.get()
+    }
+
+    pub(crate) const fn is_retained_output(&self) -> bool {
+        matches!(self.id.role, OwnerTermRole::RetainedOutput)
+    }
+
+    pub(crate) const fn retained_row_count_upper_bound(&self) -> Option<u64> {
+        self.retained_row_count_upper_bound
+    }
+
+    pub(crate) const fn is_graph_phase_term(&self) -> bool {
+        matches!(self.id.owner, OwnerId::Graph(_))
+            && matches!(
+                self.id.role,
+                OwnerTermRole::GraphPersistent
+                    | OwnerTermRole::ConstructionTransient
+                    | OwnerTermRole::ExecutionWorkspace
+                    | OwnerTermRole::SideInputWorkspace
+            )
+    }
+
+    pub(crate) const fn is_construction_phase_term(&self) -> bool {
+        matches!(self.id.role, OwnerTermRole::GraphPersistent | OwnerTermRole::ConstructionTransient)
+    }
+
+    pub(crate) const fn is_execution_phase_term(&self) -> bool {
+        matches!(
+            self.id.role,
+            OwnerTermRole::GraphPersistent | OwnerTermRole::ExecutionWorkspace | OwnerTermRole::SideInputWorkspace
+        )
+    }
+
+    pub(crate) fn execution_scope_fingerprint(&self) -> &str {
+        &self.id.execution_scope_fingerprint
+    }
+
+    pub(crate) fn provides_complete_phase_coverage(&self) -> bool {
+        !matches!(self.id.role, OwnerTermRole::SourceStage)
+    }
+
+    #[cfg(not(test))]
+    pub(crate) fn is_consumer_scope(&self, scope: &str) -> bool {
+        matches!(self.id.owner, OwnerId::Consumer(_)) && self.id.execution_scope_fingerprint == scope
+    }
 }
 
 fn owner_term_error(reason: &'static str, role: Option<OwnerTermRole>, class: Option<AllocationClass>) -> QueryError {
@@ -395,6 +468,16 @@ fn owner_term_error(reason: &'static str, role: Option<OwnerTermRole>, class: Op
         Some(class) => error.with_fact("allocation_class", class.as_str()),
         None => error,
     }
+}
+
+fn owner_derivation_error(reason: impl ToString) -> QueryError {
+    QueryError::new(
+        QueryErrorCode::UnsupportedPlanShape,
+        "nexus_query_engine.admission.requirement",
+        "attempt bound derivation is unavailable",
+    )
+    .with_fact("reason", reason)
+    .with_fact("derivation", "conservative_owner_sum")
 }
 
 fn sort_owner_error(reason: &'static str, resource: &'static str) -> QueryError {
@@ -536,12 +619,16 @@ fn graph_owner_terms_from_evidence(evidence: &GraphMemoryAdmissionEvidence) -> R
     Ok(terms)
 }
 
-fn local_parquet_source_owner_terms(plan: &QueryPlan) -> Result<Vec<AllocationOwnerTerm>> {
+fn local_parquet_source_owner_terms(
+    plan: &QueryPlan,
+    allow_mixed_source_composition: bool,
+) -> Result<Vec<AllocationOwnerTerm>> {
     let scope = canonical_execution_scope_fingerprint(plan);
     let unreachable = plan.unreachable_node_ids().into_iter().collect::<HashSet<_>>();
     let mut terms = Vec::new();
     let mut has_local_source = false;
     let mut has_non_local_source = false;
+    let mut has_disallowed_non_local_source = false;
     for node in plan.nodes() {
         if unreachable.contains(&node.id) {
             continue;
@@ -551,6 +638,7 @@ fn local_parquet_source_owner_terms(plan: &QueryPlan) -> Result<Vec<AllocationOw
         };
         let SourceNode::LocalParquet(source) = source.as_ref() else {
             has_non_local_source = true;
+            has_disallowed_non_local_source |= !matches!(source.as_ref(), SourceNode::GpuResident(_));
             continue;
         };
         has_local_source = true;
@@ -567,10 +655,109 @@ fn local_parquet_source_owner_terms(plan: &QueryPlan) -> Result<Vec<AllocationOw
             None,
         )?);
     }
-    if has_local_source && has_non_local_source {
+    if has_local_source && has_non_local_source && (!allow_mixed_source_composition || has_disallowed_non_local_source)
+    {
         return Err(owner_term_error("mixed_source_kinds", Some(OwnerTermRole::SourceStage), None));
     }
     Ok(terms)
+}
+
+fn has_mixed_local_gpu_sources(plan: &QueryPlan) -> bool {
+    let unreachable = plan.unreachable_node_ids().into_iter().collect::<HashSet<_>>();
+    let mut has_local = false;
+    let mut has_gpu = false;
+    let mut has_other = false;
+    for node in plan.nodes() {
+        if unreachable.contains(&node.id) {
+            continue;
+        }
+        let PlanNode::Source(source) = &node.kind else {
+            continue;
+        };
+        match source.as_ref() {
+            SourceNode::LocalParquet(_) => has_local = true,
+            SourceNode::GpuResident(_) => has_gpu = true,
+            SourceNode::LiteralBatch(_) => has_other = true,
+        }
+    }
+    has_local && has_gpu && !has_other
+}
+
+fn generic_gpu_resident_owner_terms(
+    plan: &QueryPlan,
+    include_gpu_output_owner: bool,
+    allow_mixed_source_composition: bool,
+) -> Result<Vec<AllocationOwnerTerm>> {
+    let scope = canonical_execution_scope_fingerprint(plan);
+    if !matches!(plan.sink(), ResultSink::GpuResident { .. })
+        || plan.nodes().iter().any(|node| matches!(node.kind, PlanNode::GraphAlgorithm(_)))
+    {
+        return Ok(Vec::new());
+    }
+    if !include_gpu_output_owner {
+        return Ok(Vec::new());
+    }
+    let ResultSink::GpuResident { input } = plan.sink() else {
+        unreachable!();
+    };
+    let local_source_terms = local_parquet_source_owner_terms(plan, allow_mixed_source_composition)?;
+    if !local_source_terms.is_empty() {
+        let reachable_sources = plan
+            .nodes()
+            .iter()
+            .filter(|node| {
+                !plan.unreachable_node_ids().contains(&node.id)
+                    && matches!(&node.kind, PlanNode::Source(source) if matches!(source.as_ref(), SourceNode::LocalParquet(_)))
+            })
+            .collect::<Vec<_>>();
+        let [source_node] = reachable_sources.as_slice() else {
+            return Err(owner_term_error(
+                "gpu_resident_output_owner_alias_unmodeled",
+                Some(OwnerTermRole::RetainedOutput),
+                None,
+            ));
+        };
+        if source_node.id != *input {
+            return Err(owner_term_error(
+                "gpu_resident_output_owner_alias_unmodeled",
+                Some(OwnerTermRole::RetainedOutput),
+                None,
+            ));
+        }
+        let rows = query_plan_hard_row_upper_bound(plan).ok_or_else(|| {
+            owner_term_error("gpu_resident_row_bound_unavailable", Some(OwnerTermRole::RetainedOutput), None)
+        })?;
+        let output_bytes = bounded_consumer_frame_bytes(rows, source_node.output_schema()).map_err(|error| {
+            owner_term_error("gpu_resident_output_bytes_unavailable", Some(OwnerTermRole::RetainedOutput), None)
+                .with_fact("sizing_reason", error.fact_value("schedule_reason").unwrap_or("unknown"))
+        })?;
+        let source_bytes = local_source_terms.first().map(AllocationOwnerTerm::bytes).ok_or_else(|| {
+            owner_term_error("gpu_resident_source_owner_missing", Some(OwnerTermRole::SourceStage), None)
+        })?;
+        return Ok(vec![AllocationOwnerTerm::new(
+            OwnerId::Producer(*input),
+            OwnerTermRole::RetainedOutput,
+            OccurrenceId::PlanLocal(*input),
+            scope,
+            AllocationClass::AttemptRetained,
+            source_bytes.max(output_bytes),
+            Some(rows),
+        )?]);
+    }
+    if !plan.nodes().iter().any(|node| {
+        !plan.unreachable_node_ids().contains(&node.id)
+            && matches!(&node.kind, PlanNode::Source(source) if matches!(source.as_ref(), SourceNode::GpuResident(_)))
+    }) {
+        return Ok(Vec::new());
+    }
+    // A GPU-resident source already names an upstream retained handle.  The
+    // generic plan proof cannot establish whether this sink materializes a
+    // distinct output or merely forwards that handle, so minting another
+    // producer owner would either double-charge a passthrough or leave a
+    // materialized output unbound to its source.  Composed admission supplies
+    // the retained-input binding when it owns that contract; reject this
+    // standalone shape until then.
+    Err(owner_term_error("gpu_resident_output_owner_alias_unmodeled", Some(OwnerTermRole::RetainedOutput), None))
 }
 
 fn literal_batch_owner_term_rejection_reason(
@@ -618,6 +805,12 @@ pub struct AttemptCapabilityEvidence {
     pub(crate) required_capabilities: Vec<ReservationRequirement>,
     /// Exact engine-issued allocation owners used by bounded derivations.
     pub(crate) owner_terms: Vec<AllocationOwnerTerm>,
+    /// Provenance selected when this evidence is resolved into an immutable
+    /// reservation envelope.  It is intentionally absent before selection.
+    pub(crate) bound_derivation: Option<AttemptBoundDerivation>,
+    /// A mixed LocalParquet/GPU consumer is incomplete until composition binds
+    /// every GPU-resident occurrence to a retained producer term.
+    pub(crate) requires_composed_producer_binding: bool,
     /// Exact graph plans for which the engine may replace its generic
     /// lower-level graph-workspace blocker with the cuGraph contract.
     ///
@@ -711,13 +904,29 @@ impl QueryPlanCapabilityProof {
         Some(Self { requirement })
     }
 
+    /// Derives the consumer proof used only while composing an exact GPU
+    /// island. This policy permits a reachable LocalParquet source alongside
+    /// GPU-resident branches so the shared traversal can consume the
+    /// canonical source-stage terms. Literal and other non-GPU source kinds
+    /// remain rejected.
+    pub fn for_composed_consumer_plan(plan: &QueryPlan) -> Option<Self> {
+        let mut requirement = AttemptCapabilityEvidence::for_query_plan_with_policy(
+            plan,
+            OwnerTermConstructionPolicy::AllowMixedSourceComposition,
+        );
+        requirement.requires_composed_producer_binding = has_mixed_local_gpu_sources(plan);
+        Some(Self { requirement })
+    }
+
     /// Derives the proof for the exact native fragment that materializes the
     /// cuGraph edge input. The graph-memory model owns that final resident
     /// frame, so its scope is retained for execution equality but contributes
     /// no second whole-attempt phase.
     pub fn for_cugraph_graph_input_plan(plan: &QueryPlan) -> Option<Self> {
-        let mut requirement =
-            AttemptCapabilityEvidence::for_query_plan_with_policy(plan, OwnerTermConstructionPolicy::AllowLiteralBatch);
+        let mut requirement = AttemptCapabilityEvidence::for_query_plan_without_gpu_output_owner(
+            plan,
+            OwnerTermConstructionPolicy::AllowLiteralBatch,
+        );
         requirement.mark_cugraph_graph_input_scope();
         Some(Self { requirement })
     }
@@ -733,8 +942,10 @@ impl QueryPlanCapabilityProof {
     /// saturation fail closed before an admission ticket is issued.
     pub fn try_for_cugraph_side_input_plan(plan: &QueryPlan) -> Result<Self> {
         let frame_bytes = cugraph_side_input_frame_upper_bound_bytes(plan)?;
-        let mut requirement =
-            AttemptCapabilityEvidence::for_query_plan_with_policy(plan, OwnerTermConstructionPolicy::AllowLiteralBatch);
+        let mut requirement = AttemptCapabilityEvidence::for_query_plan_without_gpu_output_owner(
+            plan,
+            OwnerTermConstructionPolicy::AllowLiteralBatch,
+        );
         let [shape] = requirement.reservation_shapes.as_mut_slice() else {
             return Err(
                 composed_schedule_error("side_input_scope_ambiguous", None).with_fact("phase", "side_input_frame")
@@ -764,6 +975,7 @@ impl QueryPlanCapabilityProof {
             return None;
         }
         let mut requirement = AttemptCapabilityEvidence::for_query_plan(plan);
+        requirement.remove_generic_gpu_resident_retained_output_terms();
         requirement.mark_attested_graph_result_passthrough_scope();
         Some(Self { requirement })
     }
@@ -831,6 +1043,7 @@ impl QueryPlanCapabilityProof {
         let descriptor =
             sort_metadata_for_attested_graph_result(plan, graph_result_input_name, producer_row_count_upper_bound)?;
         let mut requirement = AttemptCapabilityEvidence::for_query_plan(plan);
+        requirement.remove_generic_gpu_resident_retained_output_terms();
         requirement.mark_attested_graph_result_bounded_consumer_scope();
         if let [shape] = requirement.reservation_shapes.as_mut_slice() {
             shape.set_sort_metadata(descriptor)?;
@@ -870,6 +1083,7 @@ impl QueryPlanCapabilityProof {
     /// exact.
     pub fn for_cugraph_graph_execution_plan(plan: &QueryPlan) -> Option<Self> {
         let mut requirement = AttemptCapabilityEvidence::for_query_plan(plan);
+        requirement.remove_generic_gpu_resident_retained_output_terms();
         let graph_requirement = generic_graph_execution_blocker();
         if !requirement.required_capabilities.contains(&graph_requirement) {
             return (!requirement.required_capabilities.is_empty()).then_some(Self { requirement });
@@ -927,6 +1141,7 @@ impl QueryPlanCapabilityProof {
         let mut occurrences = Vec::with_capacity(ordered_producers.len());
         let mut producer_outputs = Vec::with_capacity(ordered_producers.len());
         let mut producer_proofs = Vec::with_capacity(ordered_producers.len());
+        let mut retained_terms_by_occurrence = HashMap::with_capacity(ordered_producers.len());
         for (occurrence_id, mut producer) in ordered_producers {
             if occurrence_id.is_empty() {
                 return Err(composed_schedule_error("missing_producer_occurrence_id", None));
@@ -934,56 +1149,86 @@ impl QueryPlanCapabilityProof {
             if !occurrence_ids.insert(occurrence_id.clone()) {
                 return Err(composed_schedule_error("duplicate_producer_occurrence_id", Some(&occurrence_id)));
             }
-            let [attested_scope] = producer.requirement.attested_cugraph_graph_execution_scopes.as_slice() else {
-                return Err(composed_schedule_error("missing_producer_scope", Some(&occurrence_id)));
-            };
-            let matching_shapes = producer
-                .requirement
-                .reservation_shapes
-                .iter()
-                .filter(|shape| attested_scope.matches_reservation_shape(shape))
-                .collect::<Vec<_>>();
+            let matching_shapes =
+                if let [attested_scope] = producer.requirement.attested_cugraph_graph_execution_scopes.as_slice() {
+                    producer
+                        .requirement
+                        .reservation_shapes
+                        .iter()
+                        .filter(|shape| attested_scope.matches_reservation_shape(shape))
+                        .collect::<Vec<_>>()
+                } else {
+                    producer.requirement.reservation_shapes.iter().collect::<Vec<_>>()
+                };
             let [producer_shape] = matching_shapes.as_slice() else {
                 return Err(composed_schedule_error("producer_scope_coverage_mismatch", Some(&occurrence_id)));
             };
-            let Some(graph_evidence) = producer_shape.graph_memory_admission_evidence() else {
-                return Err(composed_schedule_error("missing_producer_graph_memory_evidence", Some(&occurrence_id)));
-            };
             let producer_scope = producer_shape.execution_scope_fingerprint().to_owned();
-            let isolated_peak_bytes = graph_evidence.cold_model_requested_bytes();
-            let retained_output_bytes = graph_evidence.retained_output_bytes();
-            let row_count_upper_bound = graph_evidence.retained_output_rows_upper_bound();
             producer.requirement.rebind_owner_terms_to_composed_occurrence(&occurrence_id)?;
+            let retained_output_term = producer
+                .requirement
+                .retained_output_term_for_composition()
+                .map_err(|error| error.with_fact("occurrence_id", occurrence_id.as_str()))?;
+            let retained_output_term_id = retained_output_term.id().clone();
+            let row_count_upper_bound = retained_output_term.retained_row_count_upper_bound().ok_or_else(|| {
+                composed_schedule_error("producer_retained_output_rows_missing", Some(&occurrence_id))
+            })?;
+            let producer_term_groups = producer.requirement.isolated_phase_term_groups();
+            retained_terms_by_occurrence.insert(occurrence_id.clone(), retained_output_term_id.clone());
             producer_outputs.push(ComposedGraphProducerOutputEvidence {
                 occurrence_id: occurrence_id.clone(),
                 row_count_upper_bound,
             });
-            occurrences.push(AttemptReservationProducerOccurrence::new(
+            occurrences.push(AttemptReservationProducerOccurrence::from_term_groups(
                 occurrence_id,
                 producer_scope,
-                Some(isolated_peak_bytes),
-                Some(retained_output_bytes),
+                producer_term_groups,
+                Some(retained_output_term_id),
             ));
             producer_proofs.push(producer);
         }
 
-        let (consumer_additional_peak_bytes, consumer_owner_terms) =
-            composed_consumer_additional_peak_bytes_for_plan(consumer_plan, &producer_outputs)?;
+        let ComposedConsumerBranchBound {
+            owner_terms: consumer_owner_terms,
+            peak_owner_term_ids: consumer_peak_term_ids,
+            consumed_occurrences,
+            ..
+        } = composed_consumer_bound_with_peak_terms(
+            consumer_plan,
+            &producer_outputs,
+            &consumer.requirement.owner_terms,
+        )?;
         let mut consumer = consumer;
+        consumer.requirement.requires_composed_producer_binding = false;
+        consumer.requirement.remove_generic_gpu_resident_retained_output_terms();
         consumer.requirement.owner_terms = merge_owner_terms(&consumer.requirement.owner_terms, consumer_owner_terms)?;
-        let schedule = AttemptReservationSchedule::new(
+        let schedule = AttemptReservationSchedule::from_term_ids(
             // Current bounded composed attempts have no independent
             // attempt-wide device allocation.  Keep this explicit so a future
             // attempt-wide owner must be represented in the schedule rather
             // than silently folded into a producer or consumer phase.
             Some(0),
+            None,
             occurrences,
             Some(consumer_scope),
-            Some(consumer_additional_peak_bytes),
+            consumer_peak_term_ids,
         );
         let [consumer_shape] = consumer.requirement.reservation_shapes.as_mut_slice() else {
             return Err(composed_schedule_error("missing_consumer_scope", None));
         };
+        let bindings = consumed_occurrences
+            .iter()
+            .map(|occurrence_id| {
+                retained_terms_by_occurrence
+                    .get(occurrence_id)
+                    .cloned()
+                    .map(|term_id| (occurrence_id.clone(), term_id))
+                    .ok_or_else(|| {
+                        composed_schedule_error("consumer_retained_input_binding_missing", Some(occurrence_id))
+                    })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        consumer_shape.set_retained_input_bindings(bindings)?;
         consumer_shape.attach_ordered_schedule(schedule)?;
 
         let first = producer_proofs.remove(0);
@@ -1008,31 +1253,147 @@ impl QueryPlanCapabilityProof {
     ) -> Result<Self> {
         let ordered_producers = ordered_producers.into_iter().collect::<Vec<_>>();
 
-        (|| {
-            let ordered_proofs = ordered_producers
-                .into_iter()
-                .map(|producer| {
-                    let occurrence_id = producer
-                        .runtime_occurrence_id
-                        .ok_or_else(|| composed_schedule_error("runtime_producer_occurrence_missing", None))?;
-                    let graph_result_input_name = producer.graph_result_input_name.ok_or_else(|| {
-                        composed_schedule_error("producer_graph_evidence_missing", Some(&occurrence_id))
-                    })?;
-                    if occurrence_id != graph_result_input_name {
-                        return Err(composed_schedule_error(
-                            "producer_occurrence_identity_mismatch",
-                            Some(&occurrence_id),
-                        )
-                        .with_fact("graph_result_input_name", graph_result_input_name));
-                    }
-                    let proof = producer.capability_proof.ok_or_else(|| {
-                        composed_schedule_error("producer_admission_proof_missing_or_ambiguous", Some(&occurrence_id))
-                    })?;
-                    Ok((occurrence_id, proof))
-                })
-                .collect::<Result<Vec<_>>>()?;
-            Self::combine_composed_graph_attempt(consumer_plan, consumer, ordered_proofs)
-        })()
+        let ordered_result = ordered_producers
+            .iter()
+            .map(|producer| {
+                let occurrence_id = producer
+                    .runtime_occurrence_id
+                    .clone()
+                    .ok_or_else(|| composed_schedule_error("runtime_producer_occurrence_missing", None))?;
+                if producer
+                    .graph_result_input_name
+                    .as_deref()
+                    .is_some_and(|graph_result_input_name| occurrence_id != graph_result_input_name)
+                {
+                    return Err(composed_schedule_error("producer_occurrence_identity_mismatch", Some(&occurrence_id))
+                        .with_fact(
+                            "graph_result_input_name",
+                            producer.graph_result_input_name.clone().unwrap_or_default(),
+                        ));
+                }
+                let proof = producer.capability_proof.clone().ok_or_else(|| {
+                    composed_schedule_error("producer_admission_proof_missing_or_ambiguous", Some(&occurrence_id))
+                })?;
+                Ok((occurrence_id, proof))
+            })
+            .collect::<Result<Vec<_>>>()
+            .and_then(|proofs| Self::combine_composed_graph_attempt(consumer_plan, consumer.clone(), proofs));
+        match ordered_result {
+            Ok(proof) => Ok(proof),
+            Err(ordered_error) => {
+                let conservative_result = ordered_producers
+                    .into_iter()
+                    .map(|producer| {
+                        let occurrence_id = producer
+                            .runtime_occurrence_id
+                            .ok_or_else(|| composed_schedule_error("runtime_producer_occurrence_missing", None))?;
+                        let proof = producer.capability_proof.ok_or_else(|| {
+                            composed_schedule_error(
+                                "producer_admission_proof_missing_or_ambiguous",
+                                Some(&occurrence_id),
+                            )
+                        })?;
+                        Ok((occurrence_id, proof))
+                    })
+                    .collect::<Result<Vec<_>>>()
+                    .and_then(|proofs| {
+                        Self::combine_conservative_composed_graph_attempt(consumer_plan, consumer, proofs)
+                    })
+                    .map(|mut proof| {
+                        for shape in &mut proof.requirement.reservation_shapes {
+                            shape.detach_ordered_schedule();
+                        }
+                        proof
+                    });
+                match conservative_result {
+                    Ok(proof) => Ok(proof),
+                    Err(conservative_error) => {
+                        let ordered_reason = ordered_error
+                            .fact_value("schedule_reason")
+                            .unwrap_or("ordered_timeline_unavailable")
+                            .to_owned();
+                        let conservative_reason = conservative_error
+                            .fact_value("schedule_reason")
+                            .or_else(|| conservative_error.fact_value("reason"))
+                            .unwrap_or("conservative_owner_sum_unavailable")
+                            .to_owned();
+                        Err(ordered_error
+                            .with_fact("ordered_reason", ordered_reason)
+                            .with_fact("conservative_reason", conservative_reason))
+                    },
+                }
+            },
+        }
+    }
+
+    fn combine_conservative_composed_graph_attempt(
+        consumer_plan: &QueryPlan,
+        consumer: Self,
+        ordered_producers: Vec<(String, Self)>,
+    ) -> Result<Self> {
+        if ordered_producers.is_empty() {
+            return Err(composed_schedule_error("missing_producer_evidence", None));
+        }
+        let [consumer_shape] = consumer.requirement.reservation_shapes.as_slice() else {
+            return Err(composed_schedule_error("missing_consumer_scope", None));
+        };
+        if !consumer_shape.matches(consumer_plan) {
+            return Err(composed_schedule_error("consumer_scope_coverage_mismatch", None));
+        }
+
+        let mut occurrence_ids = HashSet::with_capacity(ordered_producers.len());
+        let mut producer_outputs = Vec::with_capacity(ordered_producers.len());
+        let mut producer_requirements = Vec::with_capacity(ordered_producers.len());
+        let mut retained_terms_by_occurrence = HashMap::with_capacity(ordered_producers.len());
+        for (occurrence_id, mut producer) in ordered_producers {
+            if occurrence_id.is_empty() || !occurrence_ids.insert(occurrence_id.clone()) {
+                return Err(composed_schedule_error("duplicate_producer_occurrence_id", Some(&occurrence_id)));
+            }
+            producer.requirement.rebind_owner_terms_to_composed_occurrence(&occurrence_id)?;
+            let retained_output_term = producer
+                .requirement
+                .retained_output_term_for_composition()
+                .map_err(|error| error.with_fact("occurrence_id", occurrence_id.as_str()))?;
+            let row_count_upper_bound = retained_output_term.retained_row_count_upper_bound().ok_or_else(|| {
+                composed_schedule_error("producer_retained_output_rows_missing", Some(&occurrence_id))
+            })?;
+            let retained_output_term_id = retained_output_term.id().clone();
+            retained_terms_by_occurrence.insert(occurrence_id.clone(), retained_output_term_id);
+            producer_outputs.push(ComposedGraphProducerOutputEvidence {
+                occurrence_id: occurrence_id.clone(),
+                row_count_upper_bound,
+            });
+            producer_requirements.push(producer.requirement);
+        }
+
+        let mut consumer = consumer;
+        consumer.requirement.requires_composed_producer_binding = false;
+        consumer.requirement.remove_generic_gpu_resident_retained_output_terms();
+        let ComposedConsumerBranchBound { owner_terms, consumed_occurrences, .. } =
+            composed_consumer_bound_with_peak_terms(
+                consumer_plan,
+                &producer_outputs,
+                &consumer.requirement.owner_terms,
+            )?;
+        consumer.requirement.owner_terms = merge_owner_terms(&consumer.requirement.owner_terms, owner_terms)?;
+        let [consumer_shape] = consumer.requirement.reservation_shapes.as_mut_slice() else {
+            return Err(composed_schedule_error("missing_consumer_scope", None));
+        };
+        let bindings = consumed_occurrences
+            .iter()
+            .map(|occurrence_id| {
+                retained_terms_by_occurrence
+                    .get(occurrence_id)
+                    .cloned()
+                    .map(|term_id| (occurrence_id.clone(), term_id))
+                    .ok_or_else(|| {
+                        composed_schedule_error("consumer_retained_input_binding_missing", Some(occurrence_id))
+                    })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        consumer_shape.set_retained_input_bindings(bindings)?;
+        producer_requirements.push(consumer.requirement);
+        AttemptCapabilityEvidence::aggregate(producer_requirements).map(|requirement| Self { requirement })
     }
 
     /// Refines this engine-issued proof with an opaque cold graph-model hint.
@@ -1086,7 +1447,14 @@ impl QueryPlanCapabilityProof {
         &self,
         policy: AttemptReservationPolicy,
     ) -> Result<AttemptReservationEnvelope> {
-        AttemptReservationEnvelope::resolve(&self.requirement.reservation_shapes, policy)
+        if self.requirement.requires_composed_producer_binding {
+            return Err(composed_schedule_error("consumer_producer_binding_required", None));
+        }
+        AttemptReservationEnvelope::resolve_with_owner_terms(
+            &self.requirement.reservation_shapes,
+            &self.requirement.owner_terms,
+            policy,
+        )
     }
 
     #[cfg(test)]
@@ -1100,6 +1468,12 @@ impl QueryPlanCapabilityProof {
 }
 
 impl AttemptCapabilityEvidence {
+    fn remove_generic_gpu_resident_retained_output_terms(&mut self) {
+        self.owner_terms.retain(|term| {
+            !(matches!(term.id.owner, OwnerId::Producer(_)) && term.id.role == OwnerTermRole::RetainedOutput)
+        });
+    }
+
     /// Returns evidence derived from the engine's capability analysis for one
     /// lowered native plan.  The plan, rather than an embedding caller,
     /// determines the capability set.
@@ -1108,9 +1482,35 @@ impl AttemptCapabilityEvidence {
     }
 
     fn for_query_plan_with_policy(plan: &QueryPlan, policy: OwnerTermConstructionPolicy) -> Self {
+        Self::for_query_plan_with_policy_and_gpu_output(plan, policy, true)
+    }
+
+    fn for_query_plan_without_gpu_output_owner(plan: &QueryPlan, policy: OwnerTermConstructionPolicy) -> Self {
+        Self::for_query_plan_with_policy_and_gpu_output(plan, policy, false)
+    }
+
+    fn for_query_plan_with_policy_and_gpu_output(
+        plan: &QueryPlan,
+        policy: OwnerTermConstructionPolicy,
+        include_gpu_output_owner: bool,
+    ) -> Self {
         let source_stage_bytes = estimated_reachable_local_parquet_source_bytes(plan);
-        let source_owner_result = local_parquet_source_owner_terms(plan);
-        let source_owner_terms = source_owner_result.as_ref().cloned().unwrap_or_default();
+        let allow_mixed_source_composition = policy == OwnerTermConstructionPolicy::AllowMixedSourceComposition;
+        let source_owner_result = local_parquet_source_owner_terms(plan, allow_mixed_source_composition);
+        let gpu_owner_result =
+            generic_gpu_resident_owner_terms(plan, include_gpu_output_owner, allow_mixed_source_composition);
+        let mut source_owner_terms = Vec::new();
+        if let Ok(terms) = &source_owner_result {
+            source_owner_terms.extend(terms.iter().cloned());
+        }
+        if let Ok(gpu_owner_terms) = &gpu_owner_result {
+            if !gpu_owner_terms.is_empty() && !source_owner_terms.is_empty() {
+                // A source-only GPU sink transfers the source frame into the
+                // producer handle; retain one owner, never both lifetimes.
+                source_owner_terms.clear();
+            }
+            source_owner_terms.extend(gpu_owner_terms.iter().cloned());
+        }
         let literal_rejection_reason = literal_batch_owner_term_rejection_reason(plan, policy);
         let mut evidence = Self::from_parts(
             0,
@@ -1125,6 +1525,10 @@ impl AttemptCapabilityEvidence {
         if let Some(reason) = literal_rejection_reason {
             shape.set_owner_term_rejection_reason(reason);
         } else if let Err(error) = source_owner_result {
+            shape.set_owner_term_rejection_reason(
+                error.fact_value("reason").unwrap_or("attempt_owner_term_unavailable"),
+            );
+        } else if let Err(error) = gpu_owner_result {
             shape.set_owner_term_rejection_reason(
                 error.fact_value("reason").unwrap_or("attempt_owner_term_unavailable"),
             );
@@ -1154,6 +1558,19 @@ impl AttemptCapabilityEvidence {
     /// Returns the descriptive working-set target, if a planner produced one.
     pub(crate) fn soft_working_set_hint_bytes(&self) -> Option<u64> {
         self.soft_working_set_hint_bytes
+    }
+
+    #[cfg(test)]
+    pub(crate) fn bound_derivation(&self) -> Option<AttemptBoundDerivation> {
+        self.bound_derivation
+    }
+
+    /// Computes the checked fallback bound from the one engine-issued owner
+    /// inventory.  The inventory is an exact multiset: IDs are never silently
+    /// deduplicated and every finite term is charged once.
+    #[cfg(test)]
+    pub(crate) fn conservative_owner_sum(&self) -> Result<u64> {
+        checked_owner_sum(&self.owner_terms, &self.reservation_shapes)
     }
 
     /// Returns the provenance quality of the descriptive working-set target.
@@ -1219,6 +1636,8 @@ impl AttemptCapabilityEvidence {
             estimate_quality,
             required_capabilities,
             owner_terms: Vec::new(),
+            bound_derivation: None,
+            requires_composed_producer_binding: false,
             attested_cugraph_graph_execution_scopes: Vec::new(),
             reservation_shapes: Vec::new(),
         }
@@ -1231,6 +1650,7 @@ impl AttemptCapabilityEvidence {
     pub(crate) fn with_reservation_envelope(mut self, envelope: &AttemptReservationEnvelope) -> Self {
         self.required_phase_floor_bytes = self.required_phase_floor_bytes.max(envelope.required_phase_floor_bytes());
         self.soft_working_set_hint_bytes = envelope.complete_phase_peak_bytes();
+        self.bound_derivation = envelope.bound_derivation();
         self.estimate_quality =
             envelope.complete_phase_peak_bytes().map_or(EstimateQuality::Unknown, |_| EstimateQuality::Modeled);
         self
@@ -1337,6 +1757,54 @@ impl AttemptCapabilityEvidence {
             return Err(sort_owner_error("producer_graph_scope_mismatch", "graph_result_output"));
         }
         Ok(evidence.retained_output_rows_upper_bound())
+    }
+
+    fn retained_output_term_for_composition(&self) -> Result<&AllocationOwnerTerm> {
+        let mut retained = self.owner_terms.iter().filter(|term| term.is_retained_output());
+        let term = retained.next().ok_or_else(|| {
+            composed_schedule_error("producer_retained_output_term_missing", None).with_fact("phase", "retained_output")
+        })?;
+        if retained.next().is_some() {
+            return Err(composed_schedule_error("producer_retained_output_term_ambiguous", None)
+                .with_fact("phase", "retained_output"));
+        }
+        if term.retained_row_count_upper_bound().is_none() {
+            return Err(composed_schedule_error("producer_retained_output_rows_missing", None)
+                .with_fact("phase", "retained_output"));
+        }
+        Ok(term)
+    }
+
+    fn isolated_phase_term_groups(&self) -> Vec<Vec<OwnerTermId>> {
+        let mut construction = Vec::new();
+        let mut execution = Vec::new();
+        let mut other_active = Vec::new();
+        for term in &self.owner_terms {
+            if term.is_retained_output() {
+                execution.push(term.id().clone());
+                continue;
+            }
+            if term.is_construction_phase_term() {
+                construction.push(term.id().clone());
+            }
+            if term.is_execution_phase_term() {
+                execution.push(term.id().clone());
+            }
+            if !term.is_graph_phase_term() {
+                other_active.push(term.id().clone());
+            }
+        }
+        let mut groups = Vec::new();
+        if !construction.is_empty() {
+            groups.push(construction);
+        }
+        if !execution.is_empty() {
+            groups.push(execution);
+        }
+        if !other_active.is_empty() {
+            groups.push(other_active);
+        }
+        groups
     }
 
     /// Retains exact scopes for graph-owned frames while treating each one as
@@ -1552,7 +2020,9 @@ impl AttemptCapabilityEvidence {
         let mut attested_cugraph_graph_execution_scopes = Vec::new();
         let mut reservation_shapes = Vec::new();
         let mut cugraph_side_input_scopes = HashSet::new();
+        let mut requires_composed_producer_binding = false;
         for fragment in fragments {
+            requires_composed_producer_binding |= fragment.requires_composed_producer_binding;
             for shape in &fragment.reservation_shapes {
                 if shape.is_cugraph_side_input_scope()
                     && !cugraph_side_input_scopes.insert(shape.execution_scope_fingerprint().to_owned())
@@ -1644,6 +2114,7 @@ impl AttemptCapabilityEvidence {
             graph_source_stage_bytes
         };
         aggregate.owner_terms = owner_terms;
+        aggregate.requires_composed_producer_binding = requires_composed_producer_binding;
         aggregate.attested_cugraph_graph_execution_scopes = attested_cugraph_graph_execution_scopes;
         aggregate.reservation_shapes = reservation_shapes;
         if let Some(graph_shape_index) = aggregate.exact_attested_graph_reservation_shape_index()
@@ -1651,8 +2122,77 @@ impl AttemptCapabilityEvidence {
         {
             aggregate.account_graph_owned_runtime_scopes(graph_shape_index);
         }
+        // Provenance is selected only after the service resolves the final
+        // immutable envelope. Aggregation must not badge a derivation that has
+        // not yet computed the final peak.
+        aggregate.bound_derivation = None;
         Ok(aggregate)
     }
+}
+
+pub(crate) fn checked_owner_sum(
+    owner_terms: &[AllocationOwnerTerm],
+    scopes: &[AttemptReservationShape],
+) -> Result<u64> {
+    for scope in scopes {
+        if let Some(reason) = scope.owner_term_rejection_reason() {
+            return Err(owner_derivation_error(reason));
+        }
+        if let Some(schedule) = scope.ordered_schedule() {
+            schedule
+                .validate_term_references(owner_terms)
+                .map_err(|_| owner_derivation_error("attempt_owner_term_missing"))?;
+        }
+        for (occurrence_id, term_id) in scope.retained_input_bindings() {
+            let term = owner_terms.iter().find(|term| term.id() == term_id).ok_or_else(|| {
+                owner_derivation_error("attempt_retained_input_term_missing")
+                    .with_fact("occurrence_id", occurrence_id.as_str())
+            })?;
+            if !term.is_retained_output() || term.id().occurrence_label() != format!("composed:{occurrence_id}") {
+                return Err(owner_derivation_error("attempt_retained_input_binding_invalid")
+                    .with_fact("occurrence_id", occurrence_id.as_str()));
+            }
+        }
+    }
+    let mut seen = HashSet::with_capacity(owner_terms.len());
+    owner_terms.iter().try_fold(0_u64, |total, term| {
+        validate_owner_term(term)?;
+        if !seen.insert(term.id.clone()) {
+            return Err(owner_derivation_error("attempt_owner_term_duplicate"));
+        }
+        total.checked_add(term.bytes.get()).ok_or_else(|| {
+            owner_derivation_error("attempt_owner_term_sum_overflow")
+                .with_fact("owner_term_role", term.id.role.as_str())
+                .with_fact("occurrence", term.id.occurrence.as_str())
+        })
+    })
+}
+
+pub(crate) fn owner_inventory_covers_scopes(
+    owner_terms: &[AllocationOwnerTerm],
+    scopes: &[AttemptReservationShape],
+    owner_sum: u64,
+    required_phase_floor_bytes: u64,
+    ordered_schedule_present: bool,
+) -> bool {
+    if !ordered_schedule_present && owner_sum < required_phase_floor_bytes {
+        return false;
+    }
+    if owner_terms.is_empty()
+        || owner_terms.iter().any(|term| {
+            !scopes.iter().any(|scope| scope.execution_scope_fingerprint() == term.execution_scope_fingerprint())
+        })
+        || scopes.iter().any(|scope| {
+            !scope.is_accounted_by_graph_phase()
+                && !owner_terms
+                    .iter()
+                    .any(|term| term.execution_scope_fingerprint() == scope.execution_scope_fingerprint())
+        })
+        || owner_terms.iter().all(|term| !term.provides_complete_phase_coverage())
+    {
+        return false;
+    }
+    checked_owner_sum(owner_terms, scopes).is_ok()
 }
 
 fn source_stage_overflow_error(term: &'static str) -> QueryError {
@@ -1683,12 +2223,25 @@ struct ComposedConsumerBranchBound {
     /// Maximum additional bytes owned while this branch is materialized.
     additional_peak_bytes: u64,
     owner_terms: Vec<AllocationOwnerTerm>,
+    peak_owner_term_ids: Vec<OwnerTermId>,
+    final_owned_term_ids: Vec<OwnerTermId>,
+    consumed_occurrences: Vec<String>,
 }
 
+#[cfg(test)]
 fn composed_consumer_additional_peak_bytes_for_plan(
     consumer_plan: &QueryPlan,
     producer_outputs: &[ComposedGraphProducerOutputEvidence],
 ) -> Result<(u64, Vec<AllocationOwnerTerm>)> {
+    let bound = composed_consumer_bound_with_peak_terms(consumer_plan, producer_outputs, &[])?;
+    Ok((bound.additional_peak_bytes, bound.owner_terms))
+}
+
+fn composed_consumer_bound_with_peak_terms(
+    consumer_plan: &QueryPlan,
+    producer_outputs: &[ComposedGraphProducerOutputEvidence],
+    owner_terms: &[AllocationOwnerTerm],
+) -> Result<ComposedConsumerBranchBound> {
     if !consumer_plan.unreachable_node_ids().is_empty() {
         return Err(composed_schedule_error("consumer_contains_unreachable_nodes", None));
     }
@@ -1700,25 +2253,30 @@ fn composed_consumer_additional_peak_bytes_for_plan(
     }
     let mut used_occurrences = HashSet::with_capacity(outputs.len());
     let root = consumer_plan.root_id();
-    let root_bound = match &consumer_plan.root_node().kind {
+    let mut root_bound = match &consumer_plan.root_node().kind {
         PlanNode::Source(_) | PlanNode::Filter(_) | PlanNode::Projection(_) => {
-            composed_consumer_branch_bound(consumer_plan, root, &outputs, &mut used_occurrences)?
+            composed_consumer_branch_bound(consumer_plan, root, &outputs, &mut used_occurrences, owner_terms)?
         },
         PlanNode::Union(union) => {
-            if union.inputs.len() != producer_outputs.len() {
-                return Err(composed_schedule_error("consumer_union_occurrence_count_mismatch", None));
-            }
             let mut total_rows = 0_u64;
             let mut branch_peak_bytes = 0_u64;
             let mut branch_terms = Vec::new();
+            let mut peak_owner_term_ids = Vec::new();
             for input in &union.inputs {
-                let branch = composed_consumer_branch_bound(consumer_plan, *input, &outputs, &mut used_occurrences)?;
+                let branch = composed_consumer_branch_bound(
+                    consumer_plan,
+                    *input,
+                    &outputs,
+                    &mut used_occurrences,
+                    owner_terms,
+                )?;
                 total_rows = checked_consumer_add(total_rows, branch.rows, "consumer_union_rows_overflow")?;
                 branch_peak_bytes = checked_consumer_add(
                     branch_peak_bytes,
                     branch.additional_peak_bytes,
                     "consumer_union_branch_peak_overflow",
                 )?;
+                peak_owner_term_ids.extend(branch.peak_owner_term_ids);
                 branch_terms.extend(branch.owner_terms);
             }
             let union_output = bounded_consumer_frame_bytes(total_rows, consumer_plan.root_node().output_schema())?;
@@ -1730,6 +2288,14 @@ fn composed_consumer_additional_peak_bytes_for_plan(
                 consumer_plan,
             )?;
             branch_terms.push(union_output_term);
+            let union_output_term_id = branch_terms.last().expect("union output term inserted").id.clone();
+            // Union branches are materialized sequentially and their retained
+            // outputs coexist until the union output is formed.
+            // `branch_peak_bytes` already captures that additive lifetime;
+            // retain the corresponding owner identities below.
+            let mut final_owned_term_ids = Vec::new();
+            peak_owner_term_ids.push(union_output_term_id.clone());
+            final_owned_term_ids.push(union_output_term_id);
             ComposedConsumerBranchBound {
                 rows: total_rows,
                 schema: consumer_plan.root_node().output_schema().clone(),
@@ -1740,19 +2306,35 @@ fn composed_consumer_additional_peak_bytes_for_plan(
                     "consumer_union_output_overflow",
                 )?,
                 owner_terms: branch_terms,
+                peak_owner_term_ids,
+                final_owned_term_ids,
+                consumed_occurrences: Vec::new(),
             }
         },
         PlanNode::Join(join) => {
-            composed_consumer_join_peak_bytes(consumer_plan, root, join, &outputs, &mut used_occurrences)?
+            composed_consumer_join_peak_bytes(consumer_plan, root, join, &outputs, &mut used_occurrences, owner_terms)?
+        },
+        PlanNode::Sort(sort) => {
+            composed_consumer_sort_peak_bytes(consumer_plan, root, sort, &outputs, &mut used_occurrences, owner_terms)?
         },
         _ => return Err(composed_schedule_error("consumer_topology_unmodeled", None)),
     };
-    if used_occurrences.len() != producer_outputs.len() {
-        return Err(composed_schedule_error("consumer_occurrence_coverage_mismatch", None)
-            .with_fact("consumer_occurrence_count", used_occurrences.len())
-            .with_fact("producer_occurrence_count", producer_outputs.len()));
+    if root_bound.owner_terms.is_empty() {
+        let output_term =
+            consumer_owner_term(root, OwnerTermRole::ConsumerOutput, AllocationClass::ActivePhase, 0, consumer_plan)?;
+        let output_term_id = output_term.id.clone();
+        root_bound.owner_terms.push(output_term);
+        root_bound.peak_owner_term_ids.push(output_term_id.clone());
+        root_bound.final_owned_term_ids.push(output_term_id);
     }
-    Ok((root_bound.additional_peak_bytes, root_bound.owner_terms))
+    if let Some(unconsumed) = producer_outputs.iter().find(|output| !used_occurrences.contains(&output.occurrence_id)) {
+        return Err(composed_schedule_error(
+            "consumer_producer_occurrence_unconsumed",
+            Some(&unconsumed.occurrence_id),
+        ));
+    }
+    root_bound.consumed_occurrences = producer_outputs.iter().map(|output| output.occurrence_id.clone()).collect();
+    Ok(root_bound)
 }
 
 fn composed_consumer_branch_bound(
@@ -1760,37 +2342,91 @@ fn composed_consumer_branch_bound(
     node_id: NodeId,
     outputs: &HashMap<&str, &ComposedGraphProducerOutputEvidence>,
     used_occurrences: &mut HashSet<String>,
+    owner_terms: &[AllocationOwnerTerm],
 ) -> Result<ComposedConsumerBranchBound> {
     let node = plan.node(node_id).ok_or_else(|| composed_schedule_error("consumer_missing_plan_node", None))?;
     match &node.kind {
         PlanNode::Source(source) => {
-            let SourceNode::GpuResident(source) = source.as_ref() else {
-                return Err(composed_schedule_error("consumer_non_graph_source", None));
-            };
-            let Some(output) = outputs.get(source.input_name.as_str()) else {
-                return Err(composed_schedule_error("consumer_source_occurrence_missing", Some(&source.input_name)));
-            };
-            if !used_occurrences.insert(source.input_name.clone()) {
-                return Err(composed_schedule_error("consumer_source_occurrence_reused", Some(&source.input_name)));
+            match source.as_ref() {
+                SourceNode::GpuResident(source) => {
+                    let Some(output) = outputs.get(source.input_name.as_str()) else {
+                        return Err(composed_schedule_error(
+                            "consumer_source_occurrence_missing",
+                            Some(&source.input_name),
+                        ));
+                    };
+                    if !used_occurrences.insert(source.input_name.clone()) {
+                        return Err(composed_schedule_error(
+                            "consumer_source_occurrence_reused",
+                            Some(&source.input_name),
+                        ));
+                    }
+                    if source.row_count_upper_bound.is_some_and(|rows| rows != output.row_count_upper_bound) {
+                        return Err(composed_schedule_error(
+                            "consumer_source_row_bound_mismatch",
+                            Some(&source.input_name),
+                        )
+                        .with_fact("producer_row_count_upper_bound", output.row_count_upper_bound)
+                        .with_fact(
+                            "consumer_row_count_upper_bound",
+                            source.row_count_upper_bound.unwrap_or_default(),
+                        ));
+                    }
+                    // The source handle is retained by the producer schedule, not
+                    // allocated by the consumer. Its exact typed bytes are therefore
+                    // intentionally excluded from this branch's additional phase.
+                    Ok(ComposedConsumerBranchBound {
+                        rows: output.row_count_upper_bound,
+                        schema: source.schema.clone(),
+                        final_owned_bytes: 0,
+                        additional_peak_bytes: 0,
+                        owner_terms: Vec::new(),
+                        peak_owner_term_ids: Vec::new(),
+                        final_owned_term_ids: Vec::new(),
+                        consumed_occurrences: Vec::new(),
+                    })
+                },
+                SourceNode::LocalParquet(source) => {
+                    let source_term = owner_terms
+                        .iter()
+                        .filter(|term| {
+                            matches!(term.id.owner, OwnerId::Source(id) if id == node_id)
+                                && term.id.role == OwnerTermRole::SourceStage
+                                && term.id.occurrence == OccurrenceId::PlanLocal(node_id)
+                                && term.execution_scope_fingerprint() == canonical_execution_scope_fingerprint(plan)
+                        })
+                        .collect::<Vec<_>>();
+                    let [source_term] = source_term.as_slice() else {
+                        return Err(composed_schedule_error("consumer_local_source_owner_missing", None)
+                            .with_fact("node_id", node_id));
+                    };
+                    let rows = source
+                        .exact_selected_row_count()
+                        .map(|rows| rows.min(source.scan_limit.unwrap_or(usize::MAX) as u64))
+                        .map(|rows| rows.min(source.max_rows.unwrap_or(usize::MAX) as u64))
+                        .ok_or_else(|| {
+                            composed_schedule_error("consumer_local_source_rows_unavailable", None)
+                                .with_fact("node_id", node_id)
+                        })?;
+                    // The source-stage owner is issued by the ordinary plan
+                    // proof. Reuse its identity and bytes instead of minting a
+                    // second consumer term for the same decoded frame.
+                    Ok(ComposedConsumerBranchBound {
+                        rows,
+                        schema: source.output_schema().clone(),
+                        final_owned_bytes: source_term.bytes(),
+                        additional_peak_bytes: source_term.bytes(),
+                        owner_terms: Vec::new(),
+                        peak_owner_term_ids: vec![source_term.id().clone()],
+                        final_owned_term_ids: vec![source_term.id().clone()],
+                        consumed_occurrences: Vec::new(),
+                    })
+                },
+                SourceNode::LiteralBatch(_) => Err(composed_schedule_error("consumer_non_graph_source", None)),
             }
-            if source.row_count_upper_bound.is_some_and(|rows| rows != output.row_count_upper_bound) {
-                return Err(composed_schedule_error("consumer_source_row_bound_mismatch", Some(&source.input_name))
-                    .with_fact("producer_row_count_upper_bound", output.row_count_upper_bound)
-                    .with_fact("consumer_row_count_upper_bound", source.row_count_upper_bound.unwrap_or_default()));
-            }
-            // The source handle is retained by the producer schedule, not
-            // allocated by the consumer. Its exact typed bytes are therefore
-            // intentionally excluded from this branch's additional phase.
-            Ok(ComposedConsumerBranchBound {
-                rows: output.row_count_upper_bound,
-                schema: source.schema.clone(),
-                final_owned_bytes: 0,
-                additional_peak_bytes: 0,
-                owner_terms: Vec::new(),
-            })
         },
         PlanNode::Filter(filter) => {
-            let input = composed_consumer_branch_bound(plan, filter.input, outputs, used_occurrences)?;
+            let input = composed_consumer_branch_bound(plan, filter.input, outputs, used_occurrences, owner_terms)?;
             let output_bytes = bounded_consumer_frame_bytes(input.rows, node.output_schema())?;
             // cuDF filter materializes the selected frame while a Boolean
             // predicate mask is live. Size the mask through the same typed
@@ -1802,30 +2438,48 @@ fn composed_consumer_branch_bound(
                 "consumer_filter_mask_overflow",
             )?;
             let mut owner_terms = input.owner_terms;
-            owner_terms.push(consumer_owner_term(
+            let output_term = consumer_owner_term(
                 node_id,
                 OwnerTermRole::ConsumerOutput,
                 AllocationClass::ActivePhase,
                 output_bytes,
                 plan,
-            )?);
-            owner_terms.push(consumer_owner_term(
+            )?;
+            let predicate_term = consumer_owner_term(
                 node_id,
                 OwnerTermRole::ConsumerPredicateMask,
                 AllocationClass::ActivePhase,
                 predicate_mask_bytes,
                 plan,
-            )?);
+            )?;
+            let output_term_id = output_term.id.clone();
+            let predicate_term_id = predicate_term.id.clone();
+            let mut peak_owner_term_ids = input.peak_owner_term_ids.clone();
+            let stage_peak = checked_consumer_add(
+                checked_consumer_add(input.final_owned_bytes, output_bytes, "consumer_filter_output_overflow")?,
+                predicate_mask_bytes,
+                "consumer_filter_mask_overflow",
+            )?;
+            if stage_peak >= input.additional_peak_bytes {
+                peak_owner_term_ids = input.final_owned_term_ids.clone();
+                peak_owner_term_ids.push(output_term_id.clone());
+                peak_owner_term_ids.push(predicate_term_id);
+            }
+            owner_terms.push(output_term);
+            owner_terms.push(predicate_term);
             Ok(ComposedConsumerBranchBound {
                 rows: input.rows,
                 schema: node.output_schema().clone(),
                 final_owned_bytes: output_bytes,
                 additional_peak_bytes: input.additional_peak_bytes.max(stage_bytes),
                 owner_terms,
+                peak_owner_term_ids,
+                final_owned_term_ids: vec![output_term_id],
+                consumed_occurrences: Vec::new(),
             })
         },
         PlanNode::Projection(projection) => {
-            let input = composed_consumer_branch_bound(plan, projection.input, outputs, used_occurrences)?;
+            let input = composed_consumer_branch_bound(plan, projection.input, outputs, used_occurrences, owner_terms)?;
             let mut selected_columns = HashSet::with_capacity(projection.outputs.len());
             for output in &projection.outputs {
                 let Some(column) = alias_wrapped_column(&output.expr) else {
@@ -1855,10 +2509,86 @@ fn composed_consumer_branch_bound(
                 final_owned_bytes: input.final_owned_bytes,
                 additional_peak_bytes: input.additional_peak_bytes,
                 owner_terms: input.owner_terms,
+                peak_owner_term_ids: input.peak_owner_term_ids,
+                final_owned_term_ids: input.final_owned_term_ids,
+                consumed_occurrences: Vec::new(),
             })
         },
         _ => Err(composed_schedule_error("consumer_branch_topology_unmodeled", None)),
     }
+}
+
+fn composed_consumer_sort_peak_bytes(
+    plan: &QueryPlan,
+    node_id: NodeId,
+    sort: &crate::plan::SortNode,
+    outputs: &HashMap<&str, &ComposedGraphProducerOutputEvidence>,
+    used_occurrences: &mut HashSet<String>,
+    owner_terms: &[AllocationOwnerTerm],
+) -> Result<ComposedConsumerBranchBound> {
+    let graph_result_input_names = plan
+        .nodes()
+        .iter()
+        .filter(|node| !plan.unreachable_node_ids().contains(&node.id))
+        .filter_map(|node| match &node.kind {
+            PlanNode::Source(source) => match source.as_ref() {
+                SourceNode::GpuResident(source) => Some(source.input_name.as_str()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let [graph_result_input_name] = graph_result_input_names.as_slice() else {
+        return Err(composed_schedule_error("consumer_topology_unmodeled", None));
+    };
+    if !is_attested_graph_result_bounded_consumer_plan(plan, graph_result_input_name) {
+        return Err(composed_schedule_error("consumer_topology_unmodeled", None));
+    }
+    let input = composed_consumer_branch_bound(plan, sort.input, outputs, used_occurrences, owner_terms)?;
+    let scope = canonical_execution_scope_fingerprint(plan);
+    let sort_terms = [
+        OwnerTermRole::SortKeyOutput,
+        OwnerTermRole::SortSequence,
+        OwnerTermRole::SortTemporaryWorkspace,
+        OwnerTermRole::SortRetainedOrder,
+        OwnerTermRole::SortOutputFrame,
+        OwnerTermRole::SortOutputNullMask,
+    ]
+    .into_iter()
+    .map(|role| OwnerTermId {
+        owner: OwnerId::Sort(node_id),
+        role,
+        occurrence: OccurrenceId::PlanLocal(node_id),
+        execution_scope_fingerprint: scope.clone(),
+    })
+    .collect::<Vec<_>>();
+    let final_owned_term_ids = sort_terms
+        .iter()
+        .filter(|term_id| {
+            matches!(
+                term_id.role,
+                OwnerTermRole::SortRetainedOrder | OwnerTermRole::SortOutputFrame | OwnerTermRole::SortOutputNullMask
+            )
+        })
+        .cloned()
+        .collect();
+    let output_schema = plan
+        .node(node_id)
+        .ok_or_else(|| composed_schedule_error("consumer_missing_plan_node", None))?
+        .output_schema()
+        .clone();
+    let mut peak_owner_term_ids = input.peak_owner_term_ids;
+    peak_owner_term_ids.extend(sort_terms);
+    Ok(ComposedConsumerBranchBound {
+        rows: input.rows,
+        schema: output_schema,
+        final_owned_bytes: 0,
+        additional_peak_bytes: 0,
+        owner_terms: input.owner_terms,
+        peak_owner_term_ids,
+        final_owned_term_ids,
+        consumed_occurrences: Vec::new(),
+    })
 }
 
 fn composed_consumer_join_peak_bytes(
@@ -1867,12 +2597,13 @@ fn composed_consumer_join_peak_bytes(
     join: &JoinNode,
     outputs: &HashMap<&str, &ComposedGraphProducerOutputEvidence>,
     used_occurrences: &mut HashSet<String>,
+    owner_terms: &[AllocationOwnerTerm],
 ) -> Result<ComposedConsumerBranchBound> {
     if join.spec.join_type != JoinType::Inner || join.spec.residual_predicate.is_some() || join.spec.keys.is_empty() {
         return Err(composed_schedule_error("consumer_join_topology_unmodeled", None));
     }
-    let left = composed_consumer_branch_bound(plan, join.inputs[0], outputs, used_occurrences)?;
-    let right = composed_consumer_branch_bound(plan, join.inputs[1], outputs, used_occurrences)?;
+    let left = composed_consumer_branch_bound(plan, join.inputs[0], outputs, used_occurrences, owner_terms)?;
+    let right = composed_consumer_branch_bound(plan, join.inputs[1], outputs, used_occurrences, owner_terms)?;
     let (build, probe, build_keys) = match join.spec.build_side {
         JoinSide::Left => (&left, &right, join.spec.keys.iter().map(|key| &key.left).collect::<Vec<_>>()),
         JoinSide::Right => (&right, &left, join.spec.keys.iter().map(|key| &key.right).collect::<Vec<_>>()),
@@ -1930,49 +2661,58 @@ fn composed_consumer_join_peak_bytes(
     ]
     .into_iter()
     .try_fold(0_u64, |total, bytes| checked_consumer_add(total, bytes, "consumer_join_peak_overflow"))?;
-    let mut owner_terms = left.owner_terms;
-    owner_terms.extend(right.owner_terms);
-    owner_terms.push(consumer_owner_term(
+    let build_term = consumer_owner_term(
         node_id,
         OwnerTermRole::ConsumerBuildInput,
         AllocationClass::ActivePhase,
         build_selected_bytes,
         plan,
-    )?);
-    owner_terms.push(consumer_owner_term(
+    )?;
+    let probe_term = consumer_owner_term(
         node_id,
         OwnerTermRole::ConsumerProbeInput,
         AllocationClass::ActivePhase,
         probe_selected_bytes,
         plan,
-    )?);
-    owner_terms.push(consumer_owner_term(
+    )?;
+    let hash_term = consumer_owner_term(
         node_id,
         OwnerTermRole::ConsumerHashTable,
         AllocationClass::ActivePhase,
         hash_table_bytes,
         plan,
-    )?);
-    owner_terms.push(consumer_owner_term(
+    )?;
+    let pair_term = consumer_owner_term(
         node_id,
         OwnerTermRole::ConsumerPairIndices,
         AllocationClass::ActivePhase,
         pair_indices_bytes,
         plan,
-    )?);
-    owner_terms.push(consumer_owner_term(
-        node_id,
-        OwnerTermRole::ConsumerOutput,
-        AllocationClass::ActivePhase,
-        output_bytes,
-        plan,
-    )?);
+    )?;
+    let output_term =
+        consumer_owner_term(node_id, OwnerTermRole::ConsumerOutput, AllocationClass::ActivePhase, output_bytes, plan)?;
+    let mut peak_owner_term_ids = left.peak_owner_term_ids;
+    peak_owner_term_ids.extend(right.peak_owner_term_ids);
+    peak_owner_term_ids.extend([
+        build_term.id.clone(),
+        probe_term.id.clone(),
+        hash_term.id.clone(),
+        pair_term.id.clone(),
+        output_term.id.clone(),
+    ]);
+    let mut owner_terms = left.owner_terms;
+    owner_terms.extend(right.owner_terms);
+    owner_terms.extend([build_term, probe_term, hash_term, pair_term, output_term]);
+    let final_owned_term_id = owner_terms.last().expect("join output term inserted").id.clone();
     Ok(ComposedConsumerBranchBound {
         rows: output_rows,
         schema: plan.root_node().output_schema().clone(),
         final_owned_bytes: output_bytes,
         additional_peak_bytes: peak,
         owner_terms,
+        peak_owner_term_ids,
+        final_owned_term_ids: vec![final_owned_term_id],
+        consumed_occurrences: Vec::new(),
     })
 }
 
@@ -2253,6 +2993,7 @@ fn sort_metadata_for_attested_graph_result(
     let unreachable = plan.unreachable_node_ids().into_iter().collect::<HashSet<_>>();
     let mut source = None;
     let mut sort = None;
+    let mut filter_count = 0_usize;
     for node in plan.nodes() {
         if unreachable.contains(&node.id) {
             continue;
@@ -2266,6 +3007,14 @@ fn sort_metadata_for_attested_graph_result(
             PlanNode::Sort(sort_node) => {
                 if sort.replace((node.id, sort_node)).is_some() {
                     return Err(sort_owner_error("multiple_sort_nodes", "sort_plan"));
+                }
+            },
+            PlanNode::Filter(_) => {
+                filter_count = filter_count
+                    .checked_add(1)
+                    .ok_or_else(|| sort_owner_error("filter_node_count_overflow", "sort_plan"))?;
+                if filter_count > 1 {
+                    return Err(sort_owner_error("multiple_filter_nodes", "sort_plan"));
                 }
             },
             _ => return Err(sort_owner_error("sort_plan_contains_unmodeled_node", "sort_plan")),
@@ -2313,8 +3062,8 @@ fn sort_metadata_for_attested_graph_result(
             .with_fact("producer_row_count_upper_bound", producer_row_count_upper_bound)
             .with_fact("consumer_row_count_upper_bound", consumer_row_count_upper_bound));
     }
-    let row_count = estimated_output_rows(plan, sort_node.input)
-        .or(producer_row_count_upper_bound)
+    let row_count = producer_row_count_upper_bound
+        .or_else(|| query_plan_hard_row_upper_bound(plan))
         .ok_or_else(|| sort_owner_error("row_bound_missing", "sort_input"))?;
     let num_rows = usize::try_from(row_count).map_err(|_| sort_owner_error("row_bound_exceeds_usize", "sort_input"))?;
     let (output_frame_bytes, output_null_mask_bytes) =
@@ -2411,6 +3160,8 @@ fn is_attested_graph_result_passthrough_plan(plan: &QueryPlan, graph_result_inpu
 
 fn is_attested_graph_result_bounded_consumer_plan(plan: &QueryPlan, graph_result_input_name: &str) -> bool {
     let mut graph_result_source_count = 0_usize;
+    let mut sort_count = 0_usize;
+    let mut filter_count = 0_usize;
     for node in plan.nodes() {
         if plan.unreachable_node_ids().contains(&node.id) {
             continue;
@@ -2420,11 +3171,16 @@ fn is_attested_graph_result_bounded_consumer_plan(plan: &QueryPlan, graph_result
             {
                 graph_result_source_count += 1;
             },
-            PlanNode::Sort(_) => {},
+            PlanNode::Sort(_) => {
+                sort_count += 1;
+            },
+            PlanNode::Filter(_) => {
+                filter_count += 1;
+            },
             _ => return false,
         }
     }
-    graph_result_source_count == 1
+    graph_result_source_count == 1 && sort_count == 1 && filter_count <= 1
 }
 
 #[cfg(test)]
@@ -2513,6 +3269,24 @@ mod tests {
             .expect("finite graph evidence")
     }
 
+    fn relational_gpu_producer_proof() -> QueryPlanCapabilityProof {
+        let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, false)]));
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+            vec![
+                LocalParquetFile::new("/tmp/requirement-relational-producer.parquet")
+                    .with_row_groups(vec![0])
+                    .with_row_group_rows(vec![8])
+                    .with_row_group_bytes(vec![128])
+                    .with_projected_row_group_bytes(vec![64], vec![128]),
+            ],
+            schema,
+            vec!["value".to_owned()],
+        )));
+        let plan = builder.finish_gpu_resident(source);
+        QueryPlanCapabilityProof::for_query_plan(&plan).expect("bounded relational GPU producer must issue a proof")
+    }
+
     fn graph_output_union_consumer(input_names: &[&str]) -> QueryPlan {
         let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, false)]));
         let mut builder = QueryPlanBuilder::new();
@@ -2524,6 +3298,27 @@ mod tests {
         builder.finish_with_host_sink(root)
     }
 
+    fn mixed_local_graph_union_consumer(source: LocalParquetSource) -> QueryPlan {
+        let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, false)]));
+        let mut builder = QueryPlanBuilder::new();
+        let local = builder.add_source(SourceNode::LocalParquet(source));
+        let graph = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("graph", Arc::clone(&schema))));
+        let root = builder.add_union(vec![local, graph], schema);
+        builder.finish_with_host_sink(root)
+    }
+
+    fn mixed_local_graph_union_source(row_count: Option<u64>, bytes: Option<u64>) -> LocalParquetSource {
+        let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, false)]));
+        let mut file = LocalParquetFile::new("/tmp/requirement-mixed-composition.parquet");
+        if let Some(row_count) = row_count {
+            file = file.with_row_group_rows(vec![row_count]);
+        }
+        if let Some(bytes) = bytes {
+            file = file.with_projected_row_group_bytes(vec![bytes / 2], vec![bytes]);
+        }
+        LocalParquetSource::from_files(vec![file], schema, vec!["value".to_owned()])
+    }
+
     fn graph_output_projection_consumer(expr: Expr, output_type: DataType) -> QueryPlan {
         let input_schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, false)]));
         let mut builder = QueryPlanBuilder::new();
@@ -2531,6 +3326,15 @@ mod tests {
         let projection = builder
             .add_projection(source, vec![ProjectionOutput::new(expr, Field::new("projected", output_type, false))]);
         builder.finish_with_host_sink(projection)
+    }
+
+    fn graph_output_filter_consumer(input_name: &str) -> QueryPlan {
+        let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, false)]));
+        let mut builder = QueryPlanBuilder::new();
+        let source =
+            builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(input_name, Arc::clone(&schema))));
+        let filter = builder.add_filter(source, Expr::column("value"), schema);
+        builder.finish_with_host_sink(filter)
     }
 
     fn graph_output_inner_join_consumer(
@@ -2655,6 +3459,94 @@ mod tests {
             .resolve_reservation_envelope(reservation_policy())
             .expect_err("mixed sources must fail before placement");
         assert_eq!(error.fact_value("reason"), Some("attempt_owner_term_mixed_source_kinds"));
+    }
+
+    #[test]
+    fn composed_union_reuses_exact_local_source_stage_alongside_gpu_producer() {
+        let consumer_plan = mixed_local_graph_union_consumer(mixed_local_graph_union_source(Some(3), Some(64)));
+        let consumer = QueryPlanCapabilityProof::for_composed_consumer_plan(&consumer_plan)
+            .expect("composition policy issues the mixed local/GPU consumer proof");
+        let direct_error = consumer
+            .clone()
+            .resolve_reservation_envelope(reservation_policy())
+            .expect_err("a mixed consumer cannot resolve before a retained producer is bound");
+        assert_eq!(direct_error.fact_value("schedule_reason"), Some("consumer_producer_binding_required"));
+        let aggregated = AttemptCapabilityEvidence::aggregate([consumer.clone().into_requirement()]).unwrap();
+        let aggregate_error = QueryPlanCapabilityProof { requirement: aggregated }
+            .resolve_reservation_envelope(reservation_policy())
+            .expect_err("generic aggregation must preserve the incomplete composition marker");
+        assert_eq!(aggregate_error.fact_value("schedule_reason"), Some("consumer_producer_binding_required"));
+        let combined = QueryPlanCapabilityProof::combine_composed_graph_attempt(
+            &consumer_plan,
+            consumer,
+            [("graph".to_owned(), graph_bfs_proof_with_typed_output(0))],
+        )
+        .expect("the exact local branch and one GPU producer must compose");
+
+        let source_terms = combined
+            .as_requirement()
+            .owner_terms
+            .iter()
+            .filter(|term| term.id.role == OwnerTermRole::SourceStage)
+            .collect::<Vec<_>>();
+        assert_eq!(source_terms.len(), 1, "composition must reuse one canonical SourceStage owner");
+        assert_eq!(source_terms[0].bytes(), 64);
+        let consumer_shape = combined
+            .as_requirement()
+            .reservation_shapes
+            .iter()
+            .find(|shape| shape.matches(&consumer_plan))
+            .expect("consumer scope is retained");
+        assert_eq!(consumer_shape.retained_input_bindings().len(), 1);
+        assert_eq!(consumer_shape.retained_input_bindings()[0].0, "graph");
+        let envelope = combined
+            .resolve_reservation_envelope(reservation_policy())
+            .expect("mixed local/GPU composition has one finite owner inventory");
+        assert!(envelope.complete_phase_peak_bytes().is_some());
+    }
+
+    #[test]
+    fn composed_union_rejects_unknown_local_rows_or_bytes_before_placement() {
+        let unknown_rows = mixed_local_graph_union_consumer(mixed_local_graph_union_source(None, Some(64)));
+        let consumer = QueryPlanCapabilityProof::for_composed_consumer_plan(&unknown_rows).unwrap();
+        let error = QueryPlanCapabilityProof::combine_composed_graph_attempt(
+            &unknown_rows,
+            consumer,
+            [("graph".to_owned(), graph_bfs_proof_with_typed_output(0))],
+        )
+        .expect_err("missing local footer rows cannot be turned into a consumer bound");
+        assert_eq!(error.fact_value("schedule_reason"), Some("consumer_local_source_rows_unavailable"));
+
+        let unknown_bytes = mixed_local_graph_union_consumer(mixed_local_graph_union_source(Some(3), None));
+        let consumer = QueryPlanCapabilityProof::for_composed_consumer_plan(&unknown_bytes).unwrap();
+        let error = QueryPlanCapabilityProof::combine_composed_graph_attempt(
+            &unknown_bytes,
+            consumer,
+            [("graph".to_owned(), graph_bfs_proof_with_typed_output(0))],
+        )
+        .expect_err("missing local source bytes cannot be turned into a consumer bound");
+        assert_eq!(error.fact_value("schedule_reason"), Some("consumer_local_source_owner_missing"));
+    }
+
+    #[test]
+    fn composed_consumer_rejects_literal_source_mixed_with_gpu_producer() {
+        let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, false)]));
+        let mut builder = QueryPlanBuilder::new();
+        let local = builder.add_source(SourceNode::LocalParquet(mixed_local_graph_union_source(Some(3), Some(64))));
+        let literal_batch = arrow::record_batch::RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(arrow::array::Int64Array::from(vec![1]))],
+        )
+        .unwrap();
+        let literal = builder.add_source(SourceNode::LiteralBatch(crate::source::LiteralBatchSource::new(
+            Arc::clone(&schema),
+            vec![literal_batch],
+        )));
+        let root = builder.add_union(vec![local, literal], schema);
+        let plan = builder.finish_with_host_sink(root);
+        let proof = QueryPlanCapabilityProof::for_composed_consumer_plan(&plan).unwrap();
+        let error = proof.resolve_reservation_envelope(reservation_policy()).unwrap_err();
+        assert_eq!(error.fact_value("reason"), Some("attempt_owner_term_literal_source_bytes_unavailable"));
     }
 
     #[test]
@@ -2935,6 +3827,37 @@ mod tests {
     }
 
     #[test]
+    fn generic_gpu_sink_with_a_gpu_source_rejects_an_unbound_output_owner() {
+        let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, false)]));
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", schema)));
+        let plan = builder.finish_gpu_resident(source);
+        let proof = QueryPlanCapabilityProof::for_query_plan(&plan).unwrap();
+        let error = proof
+            .resolve_reservation_envelope(reservation_policy())
+            .expect_err("a GPU-source sink cannot mint an unbound generic retained output");
+        assert_eq!(error.fact_value("reason"), Some("attempt_owner_term_gpu_resident_output_owner_alias_unmodeled"));
+    }
+
+    #[test]
+    fn cugraph_side_input_disables_generic_gpu_output_ownership() {
+        let schema = Arc::new(Schema::new(vec![Field::new("vertex_id", DataType::Int64, true)]));
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::GpuResident(
+            GpuResidentSource::new("predicate", Arc::clone(&schema)).with_row_count_upper_bound(2),
+        ));
+        let plan = builder.finish_gpu_resident(source);
+
+        let proof = QueryPlanCapabilityProof::try_for_cugraph_side_input_plan(&plan)
+            .expect("a bounded GPU-resident side input must issue a proof");
+        assert!(
+            proof.as_requirement().owner_terms.iter().all(|term| !matches!(term.id().owner, OwnerId::Producer(_))),
+            "the side-input frame must be the sole owner for this native fragment"
+        );
+        assert_eq!(proof.as_requirement().side_input_frame_owner_term_bytes().len(), 1);
+    }
+
+    #[test]
     fn aggregate_rejects_raise_overflow() {
         let result = AttemptCapabilityEvidence::aggregate_with_configured_floor(
             0,
@@ -2945,6 +3868,138 @@ mod tests {
             ],
         );
         assert_eq!(result.unwrap_err().fact_value("reason"), Some("attempt_requirement_capability_raise_overflow"));
+    }
+
+    fn finite_test_owner_terms(plan: &QueryPlan, first: u64, second: u64) -> Vec<AllocationOwnerTerm> {
+        let scope = canonical_execution_scope_fingerprint(plan);
+        vec![
+            AllocationOwnerTerm::new(
+                OwnerId::Source(plan.root_id()),
+                OwnerTermRole::SourceStage,
+                OccurrenceId::PlanLocal(plan.root_id()),
+                scope.clone(),
+                AllocationClass::ActivePhase,
+                first,
+                None,
+            )
+            .unwrap(),
+            AllocationOwnerTerm::new(
+                OwnerId::Consumer(plan.root_id()),
+                OwnerTermRole::ConsumerOutput,
+                OccurrenceId::PlanLocal(plan.root_id()),
+                scope,
+                AllocationClass::ActivePhase,
+                second,
+                None,
+            )
+            .unwrap(),
+        ]
+    }
+
+    #[test]
+    fn conservative_owner_sum_charges_each_shared_inventory_term_once() {
+        let plan = ordinary_native_plan();
+        let mut evidence = AttemptCapabilityEvidence::from_parts(0, 0, None, EstimateQuality::Unknown, Vec::new());
+        evidence.owner_terms = finite_test_owner_terms(&plan, 11, 7);
+        evidence.reservation_shapes.push(AttemptReservationShape::for_query_plan(&plan));
+        assert_eq!(evidence.conservative_owner_sum().unwrap(), 18);
+        let aggregate = AttemptCapabilityEvidence::aggregate([evidence]).unwrap();
+        assert_eq!(aggregate.bound_derivation(), None, "provenance is selected when the envelope resolves");
+    }
+
+    #[test]
+    fn conservative_derivation_accepts_a_complete_zero_byte_inventory_but_not_missing_coverage() {
+        let plan = ordinary_native_plan();
+        let mut complete = AttemptCapabilityEvidence::from_parts(0, 0, None, EstimateQuality::Unknown, Vec::new());
+        complete.owner_terms = finite_test_owner_terms(&plan, 0, 0);
+        complete.reservation_shapes.push(AttemptReservationShape::for_query_plan(&plan));
+        let complete = AttemptCapabilityEvidence::aggregate([complete]).unwrap();
+        assert_eq!(complete.bound_derivation(), None, "provenance is selected when the envelope resolves");
+
+        let mut missing = AttemptCapabilityEvidence::from_parts(0, 0, None, EstimateQuality::Unknown, Vec::new());
+        missing.owner_terms = vec![finite_test_owner_terms(&plan, 0, 0).remove(0)];
+        missing.reservation_shapes.push(AttemptReservationShape::for_query_plan(&plan));
+        let missing = AttemptCapabilityEvidence::aggregate([missing]).unwrap();
+        assert_eq!(missing.bound_derivation(), None);
+    }
+
+    #[test]
+    fn proof_envelope_pins_one_producer_peak_to_fixed_plus_output_plus_consumer() {
+        let consumer_plan = graph_output_filter_consumer("producer");
+        let producer = graph_bfs_proof_with_typed_output(0);
+        let combined = QueryPlanCapabilityProof::resolve_composed_graph_attempt(
+            &consumer_plan,
+            QueryPlanCapabilityProof::for_query_plan(&consumer_plan).unwrap(),
+            [ComposedGraphProducerCandidate::new(
+                Some("producer".to_owned()),
+                Some("wrong-producer-name".to_owned()),
+                Some(producer),
+            )],
+        )
+        .expect("the conservative production seam must retain a complete owner inventory");
+
+        assert_eq!(combined.as_requirement().bound_derivation(), None);
+        let retained_terms =
+            combined.as_requirement().owner_terms.iter().filter(|term| term.is_retained_output()).collect::<Vec<_>>();
+        assert_eq!(retained_terms.len(), 1, "one producer occurrence owns one retained output");
+        let consumer_shapes = combined
+            .as_requirement()
+            .reservation_shapes
+            .iter()
+            .filter(|shape| shape.matches(&consumer_plan))
+            .collect::<Vec<_>>();
+        let [consumer_shape] = consumer_shapes.as_slice() else {
+            panic!("consumer scope must be unique in the production composition");
+        };
+        assert_eq!(consumer_shape.retained_input_bindings().len(), 1);
+        assert_eq!(consumer_shape.retained_input_bindings()[0].1, retained_terms[0].id().clone());
+        assert!(
+            combined
+                .as_requirement()
+                .owner_terms
+                .iter()
+                .all(|term| term.id().role != OwnerTermRole::ConsumerBuildInput),
+            "the consumer source handle is retained by the producer, not allocated as a second input frame"
+        );
+
+        let expected_owner_sum = combined
+            .as_requirement()
+            .owner_terms
+            .iter()
+            .map(AllocationOwnerTerm::bytes)
+            .try_fold(0_u64, u64::checked_add)
+            .expect("test owner inventory fits");
+        let envelope = combined.resolve_reservation_envelope(reservation_policy()).unwrap();
+        assert_eq!(envelope.bound_derivation(), Some(AttemptBoundDerivation::ConservativeOwnerSum));
+        assert_eq!(envelope.complete_phase_peak_bytes(), Some(expected_owner_sum));
+    }
+
+    #[test]
+    fn conservative_owner_sum_rejects_duplicate_saturated_and_overflow_terms() {
+        let plan = ordinary_native_plan();
+        let terms = finite_test_owner_terms(&plan, 11, 7);
+        let mut duplicate = AttemptCapabilityEvidence::from_parts(0, 0, None, EstimateQuality::Unknown, Vec::new());
+        duplicate.owner_terms = vec![terms[0].clone(), terms[0].clone()];
+        assert_eq!(
+            duplicate.conservative_owner_sum().unwrap_err().fact_value("reason"),
+            Some("attempt_owner_term_duplicate")
+        );
+
+        let mut saturated = AttemptCapabilityEvidence::from_parts(0, 0, None, EstimateQuality::Unknown, Vec::new());
+        let mut saturated_term = terms[0].clone();
+        saturated_term.bytes = FiniteBytes(u64::MAX);
+        saturated.owner_terms = vec![saturated_term];
+        assert_eq!(
+            saturated.conservative_owner_sum().unwrap_err().fact_value("reason"),
+            Some("attempt_owner_term_saturated")
+        );
+
+        let mut overflowing = AttemptCapabilityEvidence::from_parts(0, 0, None, EstimateQuality::Unknown, Vec::new());
+        overflowing.owner_terms = finite_test_owner_terms(&plan, u64::MAX - 1, 2);
+        assert_eq!(
+            overflowing.conservative_owner_sum().unwrap_err().fact_value("reason"),
+            Some("attempt_owner_term_sum_overflow")
+        );
     }
 
     #[test]
@@ -3202,23 +4257,68 @@ mod tests {
             .map(|term| term.id.occurrence.as_str())
             .collect::<HashSet<_>>();
         assert_eq!(retained_occurrences, HashSet::from(["composed:same-0".to_owned(), "composed:same-1".to_owned()]));
+        assert_eq!(
+            requirement.owner_terms.iter().filter(|term| term.id.role == OwnerTermRole::RetainedOutput).count(),
+            2,
+            "each producer retained term is represented exactly once"
+        );
+        assert!(requirement.conservative_owner_sum().is_ok());
+    }
+
+    #[test]
+    fn composed_consumer_rejects_an_extra_unconsumed_producer_occurrence() {
+        let consumer_plan = graph_output_union_consumer(&["only"]);
+        let error = QueryPlanCapabilityProof::combine_composed_graph_attempt(
+            &consumer_plan,
+            QueryPlanCapabilityProof::for_query_plan(&consumer_plan).unwrap(),
+            [
+                ("only".to_owned(), graph_bfs_proof_with_typed_output(0)),
+                ("extra".to_owned(), graph_bfs_proof_with_typed_output(1)),
+            ],
+        )
+        .expect_err("an extra producer occurrence must not be silently dropped");
+        assert_eq!(error.fact_value("schedule_reason"), Some("consumer_producer_occurrence_unconsumed"));
+        assert_eq!(error.fact_value("occurrence_id"), Some("extra"));
     }
 
     #[test]
     fn composed_graph_schedule_seam_derives_complete_typed_union_evidence() {
-        let consumer_plan = graph_output_union_consumer(&["first-occurrence", "second-occurrence"]);
+        let consumer_plan =
+            graph_output_union_consumer(&["zeta-occurrence", "alpha-occurrence", "mu-occurrence", "beta-occurrence"]);
         let first = graph_bfs_proof_with_typed_output(0);
         let second = graph_bfs_proof_with_typed_output(1);
+        let third = graph_bfs_proof_with_typed_output(2);
+        let fourth = graph_bfs_proof_with_typed_output(3);
         let consumer =
             QueryPlanCapabilityProof::for_query_plan(&consumer_plan).expect("consumer proof must be engine-issued");
 
         let combined = QueryPlanCapabilityProof::combine_composed_graph_attempt(
             &consumer_plan,
             consumer,
-            [("first-occurrence".to_owned(), first), ("second-occurrence".to_owned(), second)],
+            [
+                ("zeta-occurrence".to_owned(), first),
+                ("alpha-occurrence".to_owned(), second),
+                ("mu-occurrence".to_owned(), third),
+                ("beta-occurrence".to_owned(), fourth),
+            ],
         )
         .expect("typed producer and engine consumer evidence must derive one complete schedule");
-        assert_eq!(combined.as_requirement().reservation_shapes.len(), 3);
+        assert_eq!(combined.as_requirement().reservation_shapes.len(), 5);
+        let consumer_shape = combined
+            .as_requirement()
+            .reservation_shapes
+            .iter()
+            .find(|shape| shape.matches(&consumer_plan))
+            .expect("the composed consumer scope must be present");
+        let binding_occurrences = consumer_shape
+            .retained_input_bindings()
+            .iter()
+            .map(|(occurrence_id, _)| occurrence_id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            binding_occurrences,
+            vec!["zeta-occurrence", "alpha-occurrence", "mu-occurrence", "beta-occurrence"]
+        );
         let envelope = combined
             .resolve_reservation_envelope(reservation_policy())
             .expect("complete typed graph and union evidence must resolve before placement");
@@ -3240,6 +4340,67 @@ mod tests {
         let envelope = combined.resolve_reservation_envelope(reservation_policy()).unwrap();
         assert!(envelope.complete_phase_peak_bytes().is_some());
         assert!(envelope.required_phase_floor_bytes() > 0);
+    }
+
+    #[test]
+    fn composed_resolver_keeps_graph_derivation_when_a_relational_gpu_producer_is_added() {
+        let graph_only_consumer = graph_output_union_consumer(&["graph-left", "graph-right"]);
+        let graph_only = QueryPlanCapabilityProof::resolve_composed_graph_attempt(
+            &graph_only_consumer,
+            QueryPlanCapabilityProof::for_query_plan(&graph_only_consumer).unwrap(),
+            [
+                ComposedGraphProducerCandidate::new(
+                    Some("graph-left".to_owned()),
+                    Some("graph-left".to_owned()),
+                    Some(graph_bfs_proof_with_typed_output(0)),
+                ),
+                ComposedGraphProducerCandidate::new(
+                    Some("graph-right".to_owned()),
+                    Some("graph-right".to_owned()),
+                    Some(graph_bfs_proof_with_typed_output(1)),
+                ),
+            ],
+        )
+        .expect("two graph producers must resolve through the production seam");
+        let graph_only_envelope = graph_only
+            .resolve_reservation_envelope(reservation_policy())
+            .expect("two graph producers must resolve a finite envelope");
+        let graph_only_derivation =
+            graph_only_envelope.bound_derivation().expect("two graph producers must select a finite bound derivation");
+
+        let mixed_consumer = graph_output_union_consumer(&["graph-left", "graph-right", "relational"]);
+        let relational = relational_gpu_producer_proof();
+        let mixed = QueryPlanCapabilityProof::resolve_composed_graph_attempt(
+            &mixed_consumer,
+            QueryPlanCapabilityProof::for_query_plan(&mixed_consumer).unwrap(),
+            [
+                ComposedGraphProducerCandidate::new(
+                    Some("graph-left".to_owned()),
+                    Some("graph-left".to_owned()),
+                    Some(graph_bfs_proof_with_typed_output(0)),
+                ),
+                ComposedGraphProducerCandidate::new(
+                    Some("graph-right".to_owned()),
+                    Some("graph-right".to_owned()),
+                    Some(graph_bfs_proof_with_typed_output(1)),
+                ),
+                ComposedGraphProducerCandidate::new(Some("relational".to_owned()), None, Some(relational)),
+            ],
+        )
+        .expect("adding a complete relational GPU producer must not change admissibility");
+        let mixed_requirement = mixed.as_requirement();
+        let relational_terms = mixed_requirement
+            .owner_terms
+            .iter()
+            .filter(|term| term.id().occurrence_label() == "composed:relational")
+            .collect::<Vec<_>>();
+        assert!(!relational_terms.is_empty(), "the relational producer must retain engine-owned terms");
+        assert!(relational_terms.iter().all(|term| term.bytes() > 0));
+        let mixed_envelope = mixed
+            .resolve_reservation_envelope(reservation_policy())
+            .expect("the mixed producer set must resolve a finite envelope");
+        assert_eq!(mixed_envelope.bound_derivation(), Some(graph_only_derivation));
+        assert!(mixed_envelope.complete_phase_peak_bytes().is_some());
     }
 
     #[test]
@@ -3271,6 +4432,54 @@ mod tests {
     }
 
     #[test]
+    fn incomplete_ordered_metadata_falls_back_to_rebound_conservative_owner_terms() {
+        let consumer_plan = graph_output_union_consumer(&["only"]);
+        let proof = QueryPlanCapabilityProof::resolve_composed_graph_attempt(
+            &consumer_plan,
+            QueryPlanCapabilityProof::for_query_plan(&consumer_plan).unwrap(),
+            [ComposedGraphProducerCandidate::new(
+                Some("only".to_owned()),
+                None,
+                Some(graph_bfs_proof_with_typed_output(0)),
+            )],
+        )
+        .expect("complete typed proof can conservatively compose without ordered metadata");
+        let envelope = proof.resolve_reservation_envelope(reservation_policy()).unwrap();
+        assert_eq!(envelope.bound_derivation(), Some(AttemptBoundDerivation::OrderedTimeline));
+        assert!(envelope.complete_phase_peak_bytes().is_some());
+    }
+
+    #[test]
+    fn conservative_resolver_rejects_a_non_graph_source_proof_without_retained_output_term() {
+        let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, false)]));
+        let source_bytes = u64::try_from(cudf::DataFrame::minimum_parquet_source_read_budget_bytes()).unwrap();
+        let mut producer_builder = QueryPlanBuilder::new();
+        let producer_source = producer_builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+            vec![LocalParquetFile::new("/tmp/conservative-producer.parquet").with_file_size_bytes(source_bytes)],
+            Arc::clone(&schema),
+            vec!["value".to_owned()],
+        )));
+        let producer_plan = producer_builder.finish_with_host_sink(producer_source);
+        let mut consumer_builder = QueryPlanBuilder::new();
+        let consumer_source = consumer_builder.add_source(SourceNode::GpuResident(
+            GpuResidentSource::new("only", Arc::clone(&schema)).with_row_count_upper_bound(1),
+        ));
+        let consumer_plan = consumer_builder.finish_with_host_sink(consumer_source);
+
+        let error = QueryPlanCapabilityProof::resolve_composed_graph_attempt(
+            &consumer_plan,
+            QueryPlanCapabilityProof::for_query_plan(&consumer_plan).unwrap(),
+            [ComposedGraphProducerCandidate::new(
+                Some("only".to_owned()),
+                None,
+                Some(QueryPlanCapabilityProof::for_query_plan(&producer_plan).unwrap()),
+            )],
+        )
+        .expect_err("a non-graph producer without an AttemptRetained output must reject before placement");
+        assert_eq!(error.fact_value("conservative_reason"), Some("producer_retained_output_term_missing"));
+    }
+
+    #[test]
     fn incomplete_single_graph_candidate_fails_closed_with_structured_schedule_facts() {
         let consumer_plan = graph_output_union_consumer(&["only"]);
         let incomplete_graph_proof =
@@ -3289,7 +4498,7 @@ mod tests {
         .expect_err("an incomplete N=1 candidate must not retain an unscheduled admission proof");
 
         assert_eq!(error.fact_value("reason"), Some("graph_attempt_complete_phase_unmodeled"));
-        assert_eq!(error.fact_value("schedule_reason"), Some("missing_producer_graph_memory_evidence"));
+        assert_eq!(error.fact_value("schedule_reason"), Some("producer_retained_output_term_missing"));
         assert_eq!(error.fact_value("occurrence_id"), Some("only"));
     }
 
@@ -3335,12 +4544,10 @@ mod tests {
         let consumer_plan = graph_output_projection_consumer(Expr::column("value").alias("projected"), DataType::Int64);
         let output =
             ComposedGraphProducerOutputEvidence { occurrence_id: "only".to_owned(), row_count_upper_bound: 128 };
-        assert_eq!(
-            composed_consumer_additional_peak_bytes_for_plan(&consumer_plan, &[output])
-                .expect("an alias-only projection must have a bounded zero-copy contract"),
-            (0, Vec::new()),
-            "an alias-only projection is a zero-copy select/rename"
-        );
+        let (bytes, owner_terms) = composed_consumer_additional_peak_bytes_for_plan(&consumer_plan, &[output])
+            .expect("an alias-only projection must have a bounded zero-copy contract");
+        assert_eq!(bytes, 0, "an alias-only projection is a zero-copy select/rename");
+        assert_eq!(owner_terms.iter().map(AllocationOwnerTerm::bytes).collect::<Vec<_>>(), vec![0]);
 
         let combined = QueryPlanCapabilityProof::combine_composed_graph_attempt(
             &consumer_plan,
@@ -3437,6 +4644,20 @@ mod tests {
         builder.finish_with_host_sink(sort)
     }
 
+    fn graph_result_filter_sort_plan(row_bound: Option<u64>) -> QueryPlan {
+        let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int32, false)]));
+        let mut builder = QueryPlanBuilder::new();
+        let mut source = GpuResidentSource::new("graph_result", Arc::clone(&schema));
+        if let Some(row_bound) = row_bound {
+            source = source.with_row_count_upper_bound(row_bound);
+        }
+        let source = builder.add_source(SourceNode::GpuResident(source));
+        let filter = builder.add_filter(source, Expr::column("value"), Arc::clone(&schema));
+        let sort =
+            builder.add_sort(filter, SortSpec::new(vec![SortExpr::new(Expr::column("value"), false, false)]), schema);
+        builder.finish_with_host_sink(sort)
+    }
+
     #[test]
     fn supported_graph_result_sort_resolves_exact_owner_components_per_device() {
         let plan = graph_result_sort_plan(DataType::Int32, false, Some(128), 1);
@@ -3463,6 +4684,79 @@ mod tests {
                 .iter()
                 .all(|term| term.id.execution_scope_fingerprint == canonical_execution_scope_fingerprint(&plan))
         );
+    }
+
+    #[test]
+    fn composed_graph_result_sort_resolves_through_the_production_schedule_seam() {
+        let consumer_plan = graph_result_sort_plan(DataType::Int32, false, None, 1);
+        let consumer = QueryPlanCapabilityProof::for_attested_graph_result_bounded_consumer_plan_with_producer(
+            &consumer_plan,
+            "graph_result",
+            &graph_bfs_proof_with_typed_output(0),
+        )
+        .expect("supported sort metadata must issue a typed consumer proof");
+        let composed = QueryPlanCapabilityProof::resolve_composed_graph_attempt(
+            &consumer_plan,
+            consumer,
+            [ComposedGraphProducerCandidate::new(
+                Some("graph_result".to_owned()),
+                Some("graph_result".to_owned()),
+                Some(graph_bfs_proof_with_typed_output(0)),
+            )],
+        )
+        .expect("one graph producer and its supported sort consumer must compose");
+        let resolved = composed
+            .requirement_for_device_with_preflight(0, |descriptor, _| {
+                assert!(descriptor.num_rows > 0);
+                Ok(SortRadixPreflight::new_for_test(128, 256, 512, 256))
+            })
+            .expect("the candidate device preflight must hydrate sort owner terms");
+        let sort_owner_terms = resolved
+            .as_requirement()
+            .owner_terms
+            .iter()
+            .filter(|term| matches!(term.id.owner, OwnerId::Sort(_)))
+            .count();
+        assert_eq!(sort_owner_terms, 6);
+        let envelope = resolved
+            .resolve_reservation_envelope(reservation_policy())
+            .expect("the composed sort proof must resolve a finite ordered envelope");
+        assert_eq!(envelope.bound_derivation(), Some(AttemptBoundDerivation::OrderedTimeline));
+        assert!(envelope.complete_phase_peak_bytes().is_some());
+    }
+
+    #[test]
+    fn composed_filter_then_sort_references_filter_and_sort_owner_terms() {
+        let consumer_plan = graph_result_filter_sort_plan(None);
+        let producer = graph_bfs_proof_with_typed_output(0);
+        let consumer = QueryPlanCapabilityProof::for_attested_graph_result_bounded_consumer_plan_with_producer(
+            &consumer_plan,
+            "graph_result",
+            &producer,
+        )
+        .expect("Filter then one-key integral Sort has a bounded consumer proof");
+        let composed = QueryPlanCapabilityProof::combine_composed_graph_attempt(
+            &consumer_plan,
+            consumer,
+            [("graph_result".to_owned(), producer)],
+        )
+        .expect("Filter then Sort must consume one producer exactly once");
+        let resolved = composed
+            .requirement_for_device_with_preflight(0, |descriptor, _| {
+                assert!(descriptor.num_rows > 0);
+                Ok(SortRadixPreflight::new_for_test(64, 128, 256, 128))
+            })
+            .expect("the existing cuDF sort owner preflight resolves the consumer terms");
+        assert!(resolved.as_requirement().owner_terms.iter().any(|term| {
+            matches!(term.id.owner, OwnerId::Consumer(_)) && term.id.role == OwnerTermRole::ConsumerPredicateMask
+        }));
+        assert!(resolved.as_requirement().owner_terms.iter().any(|term| {
+            matches!(term.id.owner, OwnerId::Sort(_)) && term.id.role == OwnerTermRole::SortTemporaryWorkspace
+        }));
+        let envelope = resolved
+            .resolve_reservation_envelope(reservation_policy())
+            .expect("Filter and Sort owner terms share one ordered consumer inventory");
+        assert_eq!(envelope.bound_derivation(), Some(AttemptBoundDerivation::OrderedTimeline));
     }
 
     #[test]
@@ -3537,6 +4831,47 @@ mod tests {
             mismatch_error.fact_value("sort_rejection_reason"),
             Some("sort_owner_graph_result_row_bound_mismatch")
         );
+    }
+
+    #[test]
+    fn composed_resolver_preserves_sticky_sort_rejection_until_envelope_resolution() {
+        let graph_producer = graph_bfs_proof_with_typed_output(0);
+        let cases = [
+            (
+                graph_result_sort_plan(DataType::Float32, false, None, 1),
+                graph_producer.clone(),
+                "sort_owner_key_type_not_integral_or_chrono",
+            ),
+            (
+                graph_result_sort_plan(DataType::Int32, false, None, 1),
+                QueryPlanCapabilityProof::for_query_plan(&ordinary_native_plan()).unwrap(),
+                "sort_owner_producer_graph_scope_missing",
+            ),
+        ];
+        for (consumer_plan, producer_for_sort, expected_sort_reason) in cases {
+            let consumer = QueryPlanCapabilityProof::for_attested_graph_result_bounded_consumer_plan_with_producer(
+                &consumer_plan,
+                "graph_result",
+                &producer_for_sort,
+            )
+            .expect("the attested sort shape must retain a typed rejection");
+            let composed = QueryPlanCapabilityProof::resolve_composed_graph_attempt(
+                &consumer_plan,
+                consumer,
+                [ComposedGraphProducerCandidate::new(
+                    Some("graph_result".to_owned()),
+                    Some("graph_result".to_owned()),
+                    Some(graph_producer.clone()),
+                )],
+            )
+            .expect("sticky sort rejection remains inside the production proof until envelope resolution");
+            let error = composed
+                .resolve_reservation_envelope(reservation_policy())
+                .expect_err("unsupported sort must fail before an admission envelope is issued");
+            assert_eq!(error.fact_value("reason"), Some("graph_attempt_complete_phase_unmodeled"));
+            assert_eq!(error.fact_value("schedule_reason"), Some("sort_metadata_rejected"));
+            assert_eq!(error.fact_value("sort_rejection_reason"), Some(expected_sort_reason));
+        }
     }
 
     #[test]
