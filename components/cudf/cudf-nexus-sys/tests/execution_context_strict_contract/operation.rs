@@ -872,6 +872,58 @@ fn sorting_duplicate_non_ex_production_apis_are_removed() {
 }
 
 #[test]
+fn sorted_order_radix_preflight_preserves_owner_and_runtime_dispatch_contract() {
+    assert!(
+        VENDORED_SORTED_ORDER_RADIX_CU.contains("rmm::cuda_set_device_raii device_guard"),
+        "owner preflight must activate the explicit candidate device with RAII",
+    );
+    assert!(
+        VENDORED_SORTED_ORDER_RADIX_CU.contains("cudf::get_default_stream().value()"),
+        "owner preflight must query CUB on the default stream after device selection",
+    );
+    assert!(!VENDORED_SORTED_ORDER_RADIX_CU.contains("exec_options"));
+    assert!(!VENDORED_SORTED_ORDER_RADIX_CU.contains("is_sorted_order_radix_sortable"));
+    assert!(contains_normalized(
+        VENDORED_SORTED_ORDER_RADIX_CU,
+        "radix_sort_pairs_temp_bytes<T>(nullptr, nullptr, nullptr, nullptr, num_rows, ascending, stream)",
+    ));
+    assert!(contains_normalized(
+        VENDORED_SORTED_ORDER_RADIX_CU,
+        "radix_sort_pairs_temp_bytes(d_in, d_out, dv_in, dv_out, n, ascending, sv)",
+    ));
+    assert!(VENDORED_SORTED_ORDER_RADIX_CU.contains("requires(cudf::is_floating_point<T>())"));
+    assert!(VENDORED_SORTED_ORDER_RADIX_CU.contains("cub::DeviceRadixSort::SortPairsDescending"));
+
+    let h_fields = [
+        "std::size_t key_output_bytes{0};",
+        "std::size_t sequence_bytes{0};",
+        "std::size_t temporary_workspace_bytes{0};",
+        "std::size_t retained_order_bytes{0};",
+        "std::size_t active_phase_peak_bytes{0};",
+    ];
+    let mut previous = 0;
+    for field in h_fields {
+        let position = VENDORED_SORTING_HPP.find(field).expect("vendored C++ result field must exist");
+        assert!(position > previous, "vendored C++ result fields must retain ABI order");
+        previous = position;
+    }
+
+    let ffi_fields = [
+        "uint64_t key_output_bytes;",
+        "uint64_t sequence_bytes;",
+        "uint64_t temporary_workspace_bytes;",
+        "uint64_t retained_order_bytes;",
+        "uint64_t active_phase_peak_bytes;",
+    ];
+    let mut previous = 0;
+    for field in ffi_fields {
+        let position = SORTING_H.find(field).expect("FFI result field must exist");
+        assert!(position > previous, "FFI result fields must retain ABI order");
+        previous = position;
+    }
+}
+
+#[test]
 fn stream_compaction_ex_entries_use_required_exec_options() {
     for (function, end_marker) in
         [("cudf_drop_nulls_ex", "cudf_status_t cudf_distinct_ex"), ("cudf_distinct_ex", "}  // extern \"C\"")]

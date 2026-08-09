@@ -30,6 +30,7 @@
 #include <cudf/join/hash_join.hpp>
 #include <cudf/join/join.hpp>
 #include <cudf/reduction.hpp>
+#include <cudf/sorting.hpp>
 #include <cudf/stream_compaction.hpp>
 #include <cudf/strings/side_type.hpp>
 #include <cudf/types.hpp>
@@ -50,6 +51,20 @@ static_assert(sizeof(cudf_ast_table_reference_t) == sizeof(int32_t),
 static_assert(sizeof(cudf_type_id_t) == sizeof(int32_t), "cudf_type_id_t must be 32-bit");
 static_assert(sizeof(cudf_order_t) == sizeof(int32_t), "cudf_order_t must be 32-bit");
 static_assert(sizeof(cudf_null_order_t) == sizeof(int32_t), "cudf_null_order_t must be 32-bit");
+static_assert(std::is_standard_layout_v<cudf_sorted_order_radix_preflight_result_t>,
+              "sorted-order radix preflight result must be standard layout");
+static_assert(sizeof(cudf_sorted_order_radix_preflight_result_t) == sizeof(uint64_t) * 5,
+              "sorted-order radix preflight result ABI size changed");
+static_assert(alignof(cudf_sorted_order_radix_preflight_result_t) == alignof(uint64_t),
+              "sorted-order radix preflight result ABI alignment changed");
+static_assert(offsetof(cudf_sorted_order_radix_preflight_result_t, key_output_bytes) == 0);
+static_assert(offsetof(cudf_sorted_order_radix_preflight_result_t, sequence_bytes) == sizeof(uint64_t));
+static_assert(offsetof(cudf_sorted_order_radix_preflight_result_t, temporary_workspace_bytes) ==
+              sizeof(uint64_t) * 2);
+static_assert(offsetof(cudf_sorted_order_radix_preflight_result_t, retained_order_bytes) ==
+              sizeof(uint64_t) * 3);
+static_assert(offsetof(cudf_sorted_order_radix_preflight_result_t, active_phase_peak_bytes) ==
+              sizeof(uint64_t) * 4);
 static_assert(sizeof(cudf_aggregation_kind_t) == sizeof(int32_t),
               "cudf_aggregation_kind_t must be 32-bit");
 static_assert(sizeof(cudf_null_policy_t) == sizeof(int32_t), "cudf_null_policy_t must be 32-bit");

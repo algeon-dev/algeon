@@ -278,7 +278,7 @@ pub use ops::{
     lookup::LookupTable,
     reduction::ReduceAgg,
     replace::FillPolicy,
-    sorting::SortOptions,
+    sorting::{SORTED_ORDER_RADIX_PREFLIGHT_CONTRACT, SortOptions, SortedOrderRadixPreflight},
     stream_compaction::DuplicateKeepOption,
     strings::{
         REPLACE_WITH_BACKREFS_OUTPUT_SIZE_PREFLIGHT_CONTRACT, ReplaceWithBackrefsOutputSizePreflight,

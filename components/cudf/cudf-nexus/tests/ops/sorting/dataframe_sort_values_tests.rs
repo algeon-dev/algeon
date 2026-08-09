@@ -1,8 +1,8 @@
 //! Tests for `SortOptions` and the high-level `DataFrame::sort_values`.
 
 use cudf::{
-    DataFrame, ErrorCode, ErrorKind, ExecutionBudgetEnforcement, ExecutionBudgetRequest, ExecutionBudgetStatus,
-    SortOptions,
+    DataFrame, DataFramePreparedSort, DataType, DeviceId, ErrorCode, ErrorKind, ExecutionBudgetEnforcement,
+    ExecutionBudgetRequest, ExecutionBudgetStatus, SortOptions, TypeId,
     core::error::{FactKeyName, FactValue},
     frame::dataframe::InfoDetail,
     ops::sorting,
@@ -62,6 +62,47 @@ fn assert_budget_report_high_water(report: &cudf::ExecutionBudgetReport, lower_b
     assert!(
         report.allocator_peak_aligned_bytes().is_some_and(|bytes| bytes <= report.request().budget_bytes()),
         "aligned allocator peak should stay within budget: {report:?}",
+    );
+}
+
+fn assert_sorted_order_radix_preflight_facts(
+    report: &cudf::ExecutionBudgetReport,
+    preflight: sorting::SortedOrderRadixPreflight,
+) {
+    let key_output_bytes = preflight.key_output_bytes().to_string();
+    let sequence_bytes = preflight.sequence_bytes().to_string();
+    let temporary_workspace_bytes = preflight.temporary_workspace_bytes().to_string();
+    let retained_order_bytes = preflight.retained_order_bytes().to_string();
+    let active_phase_peak_bytes = preflight.active_phase_peak_bytes().to_string();
+
+    assert_eq!(report.unresolved_contract(), None);
+    assert_eq!(
+        report.context_facts().get("sorted_order_radix_preflight_status").map(String::as_str),
+        Some("supported")
+    );
+    assert_eq!(
+        report.context_facts().get("sorted_order_radix_preflight_contract").map(String::as_str),
+        Some(sorting::SORTED_ORDER_RADIX_PREFLIGHT_CONTRACT),
+    );
+    assert_eq!(
+        report.context_facts().get("sorted_order_radix_key_output_bytes").map(String::as_str),
+        Some(key_output_bytes.as_str()),
+    );
+    assert_eq!(
+        report.context_facts().get("sorted_order_radix_sequence_bytes").map(String::as_str),
+        Some(sequence_bytes.as_str()),
+    );
+    assert_eq!(
+        report.context_facts().get("sorted_order_radix_temporary_workspace_bytes").map(String::as_str),
+        Some(temporary_workspace_bytes.as_str()),
+    );
+    assert_eq!(
+        report.context_facts().get("sorted_order_radix_retained_order_bytes").map(String::as_str),
+        Some(retained_order_bytes.as_str()),
+    );
+    assert_eq!(
+        report.context_facts().get("sorted_order_radix_active_phase_peak_bytes").map(String::as_str),
+        Some(active_phase_peak_bytes.as_str()),
     );
 }
 
@@ -435,6 +476,45 @@ fn test_sorted_order_reservation_rejects_rows_above_cudf_size_type() {
 }
 
 #[test]
+fn test_sorted_order_radix_preflight_rejects_unsupported_metadata_shapes() {
+    let stable = DataFramePreparedSort::sorted_order_radix_preflight_for_metadata(
+        4,
+        DataType::new(TypeId::Int32),
+        0,
+        true,
+        sorting::Order::Ascending,
+        DeviceId::DEFAULT,
+    )
+    .expect_err("stable sorted-order radix preflight must remain unsupported");
+    assert_eq!(stable.code(), ErrorCode::UnsupportedOperation);
+    assert_eq!(error_context_value(&stable, "reason").as_deref(), Some("stable_sort_unsupported"));
+
+    let nullable = DataFramePreparedSort::sorted_order_radix_preflight_for_metadata(
+        4,
+        DataType::new(TypeId::Int32),
+        1,
+        false,
+        sorting::Order::Ascending,
+        DeviceId::DEFAULT,
+    )
+    .expect_err("nullable sorted-order radix preflight must remain unsupported");
+    assert_eq!(nullable.code(), ErrorCode::NullUnexpected);
+    assert_eq!(error_context_value(&nullable, "reason").as_deref(), Some("nullable_key_unsupported"));
+
+    let float = DataFramePreparedSort::sorted_order_radix_preflight_for_metadata(
+        4,
+        DataType::new(TypeId::Float64),
+        0,
+        false,
+        sorting::Order::Ascending,
+        DeviceId::DEFAULT,
+    )
+    .expect_err("floating-point sorted-order radix preflight must remain unsupported");
+    assert_eq!(float.code(), ErrorCode::UnsupportedDtype);
+    assert_eq!(error_context_value(&float, "reason").as_deref(), Some("key_type_not_integral_or_chrono"));
+}
+
+#[test]
 fn test_prepared_sort_materialized_output_reservation_matches_actual_numeric_output() {
     let ids = crate::common::series::<i32>("id", &[3, 1, 2]).unwrap();
     let vals = crate::common::series::<i32>("val", &[30, 10, 20]).unwrap();
@@ -462,6 +542,7 @@ fn test_prepare_sort_values_with_budget_applies_token_and_reports_retained_order
     let prepared = outcome.value();
     let report = outcome.report();
     let expected_order_bytes = prepared.sorted_order_reservation_size_bytes().unwrap();
+    let preflight = prepared.sorted_order_radix_preflight().expect("i32 unstable sort should have owner preflight");
 
     assert_eq!(report.request().boundary(), "final_sort");
     assert_eq!(report.request().budget_bytes(), 64 * 1024 * 1024);
@@ -470,7 +551,7 @@ fn test_prepare_sort_values_with_budget_applies_token_and_reports_retained_order
     assert_eq!(report.retained_bytes(), Some(expected_order_bytes));
     assert_eq!(report.output_bytes(), None);
     assert_budget_report_high_water(report, expected_order_bytes);
-    assert_eq!(report.unresolved_contract(), Some("libcudf_sort_temporary_workspace_preflight_unavailable"));
+    assert_sorted_order_radix_preflight_facts(report, preflight);
     assert_eq!(
         prepared.sorted_order().as_column().testing_execution_domain_mr_value(),
         token.memory_resource().testing_raw_handle_value(),
@@ -480,6 +561,47 @@ fn test_prepare_sort_values_with_budget_applies_token_and_reports_retained_order
         last_exec_mr_value(),
         token.memory_resource().testing_raw_handle_value(),
         "prepared sort execution should route through the device manager resource",
+    );
+}
+
+#[test]
+fn test_prepare_sort_values_with_budget_descending_reports_owner_preflight() {
+    let df = sample_df();
+    let token = with_test_runtime(|runtime| {
+        runtime
+            .execution_budget_token(
+                ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("descending_final_sort"),
+            )
+            .unwrap()
+    });
+
+    let outcome =
+        df.prepare_sort_values_with_budget(["id"], SortOptions::new().with_descending(vec![true]), &token).unwrap();
+    let prepared = outcome.value();
+    let preflight = prepared.sorted_order_radix_preflight().expect("i32 unstable sort should have owner preflight");
+
+    assert_sorted_order_radix_preflight_facts(outcome.report(), preflight);
+    assert_eq!(prepared.sorted_order().to_vec_strict::<i32>().unwrap(), vec![4, 2, 0, 1, 3]);
+}
+
+#[test]
+fn test_prepare_sort_values_with_budget_multi_key_retains_unresolved_owner_contract() {
+    let df = sample_df();
+    let token = with_test_runtime(|runtime| {
+        runtime
+            .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("multi_key_final_sort"))
+            .unwrap()
+    });
+
+    let outcome = df
+        .prepare_sort_values_with_budget(["id", "score"], SortOptions::new().with_descending(vec![false, true]), &token)
+        .unwrap();
+
+    assert!(outcome.value().sorted_order_radix_preflight().is_none());
+    assert_eq!(outcome.report().unresolved_contract(), Some("libcudf_sort_temporary_workspace_preflight_unavailable"),);
+    assert_eq!(
+        outcome.report().context_facts().get("sorted_order_radix_preflight_status").map(String::as_str),
+        Some("unresolved_unsupported_shape"),
     );
 }
 
@@ -552,7 +674,7 @@ fn test_prepared_sort_materialize_with_budget_reports_output_size_and_allocator(
     assert_eq!(report.retained_bytes(), Some(prepared.retained_sorted_order_device_allocated_size_bytes().unwrap()));
     assert_eq!(report.output_bytes(), Some(output_bytes));
     assert_budget_report_high_water(report, output_bytes);
-    assert_eq!(report.unresolved_contract(), Some("libcudf_sort_temporary_workspace_preflight_unavailable"));
+    assert_sorted_order_radix_preflight_facts(report, prepared.sorted_order_radix_preflight().unwrap());
     assert_eq!(
         sorted.testing_execution_domain_mr_value(),
         materialize_token.memory_resource().testing_raw_handle_value(),
