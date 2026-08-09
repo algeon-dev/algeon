@@ -7,7 +7,7 @@
 #
 #   1. One RMM per process: any process that loads libcugraph together with
 #      libcudf must bind every rmm symbol to a single librmm.so build. We make
-#      the cudf install prefix self-contained (scripts/bootstrap_cudf_install.sh)
+#      the cudf install prefix self-contained (scripts/build/bootstrap_cudf_install.sh)
 #      and force cuGraph to resolve RMM and rapids_logger from it via
 #      EXTRA_CMAKE_ARGS, instead of letting CPM build private copies.
 #   2. A post-build check that no private RMM/rapids_logger copy leaked into the
@@ -16,23 +16,22 @@
 #      cuVS prefix and prove libcugraph resolves that exact libcuvs.so.
 #
 # Env:
-#   CUDF_INSTALL_DIR          cudf install prefix (default: ../cudf-nexus/cudf-install)
-#   CUVS_INSTALL_DIR          canonical cuVS prefix (default: ../cuvs-nexus/cuvs-install)
-#   CUGRAPH_CPP_BUILD_DIR     cuGraph build dir   (default: cugraph/cpp/build)
+#   CUDF_INSTALL_DIR          cudf install prefix (default: target/native/cudf-install)
+#   CUVS_INSTALL_DIR          canonical cuVS prefix (default: target/native/cuvs-install)
+#   CUGRAPH_CMAKE_BUILD_DIR   cuGraph build dir   (default: target/native/cugraph-build)
 #   CMAKE_CUDA_ARCHITECTURES  CUDA arch list (default: NATIVE, cugraph/build.sh's default)
 set -euo pipefail
 
-repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-workspace_parent="$(cd "${repo_root}/.." && pwd)"
-upstream_build="${repo_root}/cugraph/build.sh"
-build_dir="${CUGRAPH_CPP_BUILD_DIR:-${repo_root}/cugraph/cpp/build}"
-cudf_install_dir="${CUDF_INSTALL_DIR:-${workspace_parent}/cudf-nexus/cudf-install}"
-default_cuvs_install_dir="${workspace_parent}/cuvs-nexus/cuvs-install"
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+upstream_build="${repo_root}/components/cugraph/cugraph/build.sh"
+build_dir="${CUGRAPH_CMAKE_BUILD_DIR:-${repo_root}/target/native/cugraph-build}"
+cudf_install_dir="${CUDF_INSTALL_DIR:-${repo_root}/target/native/cudf-install}"
+default_cuvs_install_dir="${repo_root}/target/native/cuvs-install"
 cuvs_install_dir="${CUVS_INSTALL_DIR:-${default_cuvs_install_dir}}"
 
 if [[ ! -x "${upstream_build}" ]]; then
     echo "error: upstream cuGraph build script '${upstream_build}' not found." >&2
-    echo "Initialize the cugraph submodule: git submodule update --init --recursive cugraph" >&2
+    echo "Initialize the cugraph submodule: git submodule update --init --recursive components/cugraph/cugraph" >&2
     exit 1
 fi
 
@@ -52,8 +51,8 @@ fi
 if [[ "${cuvs_install_dir}" == "${default_cuvs_install_dir}" ]]; then
     cuvs_source_revision_path="${cuvs_install_dir}/share/cuvs-nexus/source-revision"
     if [[ ! -f "${cuvs_source_revision_path}" ]]; then
-        echo "error: default sibling cuVS install '${cuvs_install_dir}' is missing '${cuvs_source_revision_path#"${cuvs_install_dir}"/}'." >&2
-        echo "Rebuild/install the sibling cuVS checkout, or select a compatible external CUVS_INSTALL_DIR." >&2
+        echo "error: default cuVS install '${cuvs_install_dir}' is missing '${cuvs_source_revision_path#"${cuvs_install_dir}"/}'." >&2
+        echo "Rebuild/install the pinned cuVS source, or select a compatible external CUVS_INSTALL_DIR." >&2
         exit 1
     fi
 fi
@@ -91,7 +90,7 @@ case "${cuvs_library_path}" in
 esac
 
 # Make the cudf prefix export rmm's full CMake dependency closure (idempotent).
-CUDF_INSTALL_DIR="${cudf_install_dir}" "${repo_root}/scripts/bootstrap_cudf_install.sh"
+CUDF_INSTALL_DIR="${cudf_install_dir}" "${repo_root}/scripts/build/bootstrap_cudf_install.sh"
 
 if [[ ! -f "${cudf_install_dir}/lib/cmake/rmm/rmm-config.cmake" ]]; then
     echo "error: '${cudf_install_dir}' does not export the rmm CMake package." >&2
@@ -121,6 +120,7 @@ extra_cmake_args=(
     "-U" "FETCHCONTENT_SOURCE_DIR_CUVS"
     "-U" "FETCHCONTENT_UPDATES_DISCONNECTED_CUVS"
     "-DCMAKE_FIND_PACKAGE_PREFER_CONFIG=ON"
+    "-DCMAKE_PREFIX_PATH=${cudf_install_dir};${cuvs_install_dir}"
     "-Dcuvs_ROOT=${cuvs_install_dir}"
 )
 if [[ -n "${CMAKE_CUDA_ARCHITECTURES:-}" ]]; then
@@ -140,6 +140,12 @@ EXTRA_CMAKE_ARGS="${extra_cmake_args[*]}" \
 cmake_cache_value() {
     local key="$1"
     awk -F= -v key="${key}" '$1 == key { print $2; found = 1 } END { if (!found) exit 1 }' \
+        "${build_dir}/CMakeCache.txt"
+}
+
+cmake_cache_value_any_type() {
+    local key="$1"
+    awk -F= -v key="${key}" '$1 ~ ("^" key ":[^=]+$") { print $2; found = 1 } END { if (!found) exit 1 }' \
         "${build_dir}/CMakeCache.txt"
 }
 
@@ -164,6 +170,16 @@ check_package_dir() {
 check_package_dir rmm_DIR "${cudf_install_dir}/lib/cmake/rmm" rmm
 check_package_dir rapids_logger_DIR "${cudf_install_dir}/lib/cmake/rapids_logger" rapids_logger
 check_package_dir cuvs_DIR "${cuvs_config_dir}" cuVS
+
+configured_prefix_path="$(cmake_cache_value_any_type CMAKE_PREFIX_PATH)" || {
+    echo "error: configure did not write CMAKE_PREFIX_PATH to ${build_dir}/CMakeCache.txt." >&2
+    exit 1
+}
+expected_prefix_path="${cudf_install_dir};${cuvs_install_dir}"
+if [[ "${configured_prefix_path}" != "${expected_prefix_path}" ]]; then
+    echo "error: configure retained CMAKE_PREFIX_PATH='${configured_prefix_path}', expected '${expected_prefix_path}'." >&2
+    exit 1
+fi
 
 stale_copies="$(find "${build_dir}/_deps" -maxdepth 3 \
     \( -name 'librmm.so*' -o -name 'librapids_logger.so*' -o -name 'libcuvs.so*' \) 2>/dev/null || true)"

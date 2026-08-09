@@ -28,7 +28,7 @@ application code to reason about queries before and after execution.
   run PageRank, BFS, Louvain, ForceAtlas2, and other algorithms over registered
   edge relations and return ordinary rows. The shared
   [GPU function catalog](website/docs/guides/gpu-function-discovery.mdx) lets
-  clients list and describe cuGraph, cuVS, and cuOpt contracts, validate available
+  clients list and describe the cuGraph and cuVS contracts, validate available
   calls, and check whether each function is executable in the current session.
 - **Parquet and Iceberg sources.** Native scans read local and S3-compatible
   Parquet, including Iceberg tables resolved through REST and Glue catalogs.
@@ -53,3 +53,17 @@ application code to reason about queries before and after execution.
 > query-planning behavior, and overall architecture are evolving rapidly
 > and may change incompatibly between releases. Evaluate it carefully
 > before using it in production, and use it at your own risk.
+
+## Repository layout
+
+DataFusion Nexus is one Cargo workspace. The maintained Rust integration layers
+live under `components/`, while the pinned cuDF, cuGraph, and cuVS native sources
+are the three submodules registered by the root `.gitmodules`.
+
+```bash
+git clone --recurse-submodules \
+  https://github.com/DataFusion-Nexus/datafusion-nexus.git
+```
+
+Use the [website build guide](website/docs/build/overview.md) for native
+prerequisites, `target/native/*` defaults, and the single root validation gate.

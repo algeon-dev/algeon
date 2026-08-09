@@ -1,12 +1,12 @@
 # Contributing
 
-Contributions are very welcome. This repository is still early, so the most
+Contributions are very welcome. This component is still early, so the most
 valuable contributions are changes that make the service-facing ownership,
 execution, memory, and interop contracts clearer and more reliable.
 
-This guide is intentionally focused on the Rust workspace and its native
-cuDF boundary. The repository is Linux-only, and the `cudf/` submodule is the
-pinned fork used for native builds.
+This guide is intentionally focused on the Rust crates and their native cuDF
+boundary. The monorepo is Linux-only, and `components/cudf/cudf/` is the pinned
+fork used for native builds.
 
 ## Start With an Issue
 
@@ -97,10 +97,10 @@ receive review from the relevant maintainers when available.
 
 ## Local Setup
 
-Initialize the pinned cuDF submodule before building from a fresh checkout:
+From the monorepo root, initialize the pinned cuDF source before building:
 
 ```shell
-git submodule update --init --recursive
+git submodule update --init --recursive components/cudf/cudf
 ```
 
 The workspace MSRV is Rust 1.94. Formatting requires nightly Rust:
@@ -113,23 +113,24 @@ Set at least one native discovery path before running checks. Use an installed
 libcudf prefix:
 
 ```shell
-export CUDF_INSTALL_DIR=/path/to/cudf-install
+export CUDF_INSTALL_DIR="$PWD/target/native/cudf-install"
 ```
 
 or a preconfigured cuDF build tree:
 
 ```shell
-export CUDF_CPP_BUILD_DIR=/path/to/cudf/cpp/build
+export CUDF_CPP_BUILD_DIR="$PWD/components/cudf/cudf/cpp/build"
 ```
 
 When both are set, `CUDF_INSTALL_DIR` takes precedence. The selected prefix,
-CUDA loader environment, and cuDF commit must match the checkout being tested.
+CUDA loader environment, and root submodule pin must match the checkout being
+tested.
 
 ## Testing
 
-This repository does not currently have GitHub Actions runners with GPU
-coverage. Contributors are responsible for testing their changes in an
-appropriate local or external GPU environment.
+The root repository gate owns CI and GPU-lane admission for this component.
+Contributors are still responsible for testing native changes in an
+appropriate local or external GPU environment before requesting review.
 
 Record the environment alongside every test result; the PR requirements above
 specify the details to include.
@@ -142,8 +143,8 @@ cargo check --workspace --all-features --all-targets
 cargo clippy --workspace --all-features --all-targets -- -D warnings
 cargo +nightly fmt --all
 
-cargo test -p rapids-interop
-flock /tmp/cudf-gpu.lock cargo test -p cudf-nexus --test semantic_contracts
+cargo test -p rapids-interop --all-features
+flock /tmp/cudf-gpu.lock cargo test -p cudf-nexus --all-features --test semantic_contracts
 flock /tmp/cudf-gpu.lock cargo test --workspace --all-features --no-fail-fast
 ```
 

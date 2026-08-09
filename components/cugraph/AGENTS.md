@@ -48,23 +48,24 @@
 
 ## Project boundaries
 
-`cugraph-nexus` provides service-facing Rust graph APIs over libcugraph. SQL
-planning and query execution belong in `datafusion-nexus`.
+`components/cugraph` provides service-facing Rust graph APIs over libcugraph.
+SQL planning and query execution belong in the root `datafusion-nexus` adapter.
 
 - Safe graph, algorithm, result, and cuDF interop APIs belong in
   `cugraph-nexus/`; bindgen and native contract resolution belong in
   `cugraph-nexus-sys/`.
-- `cudf-nexus` and `rapids-interop` are sibling dependencies. `cugraph/` is the
-  pinned upstream source; the default cuVS prefix comes from sibling
-  `cuvs-nexus`, while an explicitly selected compatible external prefix is
-  supported.
-- Preserve the two workspace crates and their dependency direction.
+- `cudf-nexus`, `rapids-interop`, and `cuvs-nexus` are root-workspace component
+  dependencies. `components/cugraph/cugraph/` is the pinned native source; the
+  default cuVS prefix is `target/native/cuvs-install`, while an explicitly
+  selected compatible external prefix is supported.
+- Preserve the two component crates and their dependency direction inside the
+  root workspace.
 - Linux only. MSRV is Rust 1.94; formatting requires nightly.
 
 ## Architecture contracts
 
 - cuDF, cuGraph, and compatible cuVS 26.06.x must resolve one RMM runtime. The
-  default sibling cuVS prefix requires its pinned source marker; an explicitly
+  default root cuVS prefix requires its pinned source marker; an explicitly
   selected external prefix may omit that Nexus marker. Never accept a private
   `_deps` RMM or libcuvs copy.
 - Resolve the native cuGraph contract from exactly one source: the formal CMake
@@ -84,17 +85,18 @@ planning and query execution belong in `datafusion-nexus`.
 
 ```bash
 # Canonical native build
-CUDF_INSTALL_DIR=/path/to/cudf-nexus/cudf-install \
-CUVS_INSTALL_DIR=/path/to/cuvs-nexus/cuvs-install \
-scripts/build_libcugraph.sh
+CUDF_INSTALL_DIR="$PWD/target/native/cudf-install" \
+CUVS_INSTALL_DIR="$PWD/target/native/cuvs-install" \
+CUGRAPH_CMAKE_BUILD_DIR="$PWD/target/native/cugraph-build" \
+scripts/build/build_libcugraph.sh
 
 cargo check --workspace --all-features --all-targets
 cargo clippy --workspace --all-features --all-targets -- -D warnings
 cargo +nightly fmt --all
 
 # Focused contract loops
-cargo test -p cugraph-nexus-sys --test build_path_resolution
-flock /tmp/cudf-gpu.lock cargo test -p cugraph-nexus --test gpu_algorithms
+cargo test -p cugraph-nexus-sys --all-features --test build_path_resolution
+flock /tmp/cudf-gpu.lock cargo test -p cugraph-nexus --all-features --test gpu_algorithms
 
 # Full workspace surface, with the canonical loader environment from README.md
 flock /tmp/cudf-gpu.lock cargo test --workspace --all-features --no-fail-fast
@@ -122,7 +124,7 @@ radius. Report exact native prefixes, loader paths, and GPU environment.
 
 - Serialize every GPU test with `flock /tmp/cudf-gpu.lock`.
 - Cargo auto-build is enabled by default and may reconfigure
-  `cugraph/cpp/build`; set `CUGRAPH_SYS_AUTO_BUILD=0` when only an existing
+  `target/native/cugraph-build`; set `CUGRAPH_SYS_AUTO_BUILD=0` when only an existing
   native contract may be used. Keep the manual and Cargo paths aligned.
 - Set `CUGRAPH_NATIVE_INCLUDE_DIRS`, `CUGRAPH_NATIVE_LINK_DIRS`, and
   `CUGRAPH_RUNTIME_LIB_DIRS` together or not at all. Use

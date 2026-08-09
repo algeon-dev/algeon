@@ -342,15 +342,15 @@ fn build_script_makes_clang_tools_opt_in_and_tracks_explicit_tool_env() {
 }
 
 #[test]
-fn default_sibling_cmake_cache_is_skipped_when_install_prefix_is_selected() {
+fn canonical_cmake_cache_tracks_matching_build_metadata() {
     let unique = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
     let temp_dir = std::env::temp_dir().join(format!("cudf-sys-sibling-cache-contract-{unique}"));
-    let manifest_dir = temp_dir.join("cudf-nexus-sys");
+    let manifest_dir = temp_dir.join("components/cudf/cudf-nexus-sys");
     let install_dir = temp_dir.join("install");
-    let sibling_build = temp_dir.join("cudf/cpp/build");
+    let canonical_build = temp_dir.join("target/native/cudf-build");
     fs::create_dir_all(&manifest_dir).unwrap();
     fs::create_dir_all(&install_dir).unwrap();
-    fs::create_dir_all(&sibling_build).unwrap();
+    fs::create_dir_all(&canonical_build).unwrap();
 
     assert!(
         build_support::cmake::active_cudf_cmake_cache(&manifest_dir, Some(&install_dir), None).is_none(),
@@ -358,30 +358,27 @@ fn default_sibling_cmake_cache_is_skipped_when_install_prefix_is_selected() {
     );
     assert!(
         build_support::cmake::active_cudf_cmake_cache(&manifest_dir, None, None)
-            == Some(build_support::cmake::default_sibling_cudf_cmake_cache(&manifest_dir)),
-        "absent discovery overrides still use the default sibling build tree when present"
+            == Some(build_support::cmake::default_cudf_cmake_cache(&manifest_dir)),
+        "absent discovery overrides must track the canonical monorepo build tree"
     );
     assert!(
-        build_support::cmake::active_cudf_cmake_cache(
-            &manifest_dir,
-            None,
-            Some(&manifest_dir.join("../cudf/cpp/build")),
-        ) == Some(build_support::cmake::default_sibling_cudf_cmake_cache(&manifest_dir)),
-        "explicit selection of the default sibling build must keep tracking its cache"
+        build_support::cmake::active_cudf_cmake_cache(&manifest_dir, None, Some(&canonical_build),)
+            == Some(build_support::cmake::default_cudf_cmake_cache(&manifest_dir)),
+        "explicit selection of the canonical build must keep tracking its cache"
     );
     assert_eq!(
         build_support::cmake::active_cudf_cmake_cache(&manifest_dir, None, Some(&temp_dir.join("other-build"))),
         Some(temp_dir.join("other-build/CMakeCache.txt")),
         "a non-default explicit build dir must track only its own cache path"
     );
-    assert!(
+    assert_eq!(
         build_support::cmake::active_cudf_cmake_cache(
             &manifest_dir,
             Some(&install_dir),
             Some(&temp_dir.join("other-build")),
-        )
-        .is_none(),
-        "install-prefix discovery must ignore an inactive explicit build-dir cache"
+        ),
+        Some(temp_dir.join("other-build/CMakeCache.txt")),
+        "explicit build metadata must stay fingerprinted alongside install-prefix discovery"
     );
 
     fs::remove_dir_all(temp_dir).unwrap();
@@ -953,9 +950,10 @@ fn collect_native_clang_lint_files_is_scoped_to_src_and_include() {
         lint_files.iter().all(|path| build_support::lint::is_clang_lintable_path(path)),
         "expected every collected file to satisfy the lintable-path predicate: {lint_files:?}"
     );
+    let upstream_native = manifest_dir.join("../cudf");
     assert!(
-        !lint_files.iter().any(|path| path.to_string_lossy().contains("/cudf/")),
-        "expected upstream cudf files to stay out of cudf-sys lint scope: {lint_files:?}"
+        lint_files.iter().all(|path| !path.starts_with(&upstream_native)),
+        "expected upstream cudf files to stay out of cudf-nexus-sys lint scope: {lint_files:?}"
     );
 
     // The collector appends `native/src` and `native/include` to the crate

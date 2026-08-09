@@ -1,14 +1,10 @@
-# cugraph-nexus
+# cuGraph component
 
-> [!IMPORTANT]
-> Development has moved to
-> [`DataFusion-Nexus/datafusion-nexus`](https://github.com/DataFusion-Nexus/datafusion-nexus/tree/main/components/cugraph).
-> This repository is retained as a read-only historical archive. Clone the
-> monorepo recursively for the current source, build tooling, and tests.
-
-`cugraph-nexus` is a Rust GPU graph analytics workspace built around [`libcugraph`](https://github.com/DataFusion-Nexus/cugraph).
+`components/cugraph` is the DataFusion Nexus Rust graph integration component
+built around [`libcugraph`](https://github.com/DataFusion-Nexus/cugraph). It is
+part of the root Cargo workspace, not a second repository or workspace.
 Its main direction is to make cuGraph usable as part of backend services and query execution systems for
-[DataFusion-Nexus](https://github.com/DataFusion-Nexus/DataFusion-Nexus). It focuses on safe Rust APIs for GPU graph
+[DataFusion Nexus](https://github.com/DataFusion-Nexus/datafusion-nexus/tree/main/components/cugraph). It focuses on safe Rust APIs for GPU graph
 processing while keeping ownership, memory movement, execution context, synchronization, and interop
 behavior explicit enough for service-side integration.
 
@@ -22,6 +18,18 @@ behavior explicit enough for service-side integration.
 
 ## Workspace
 
-- `cugraph-nexus/` - the safe public Rust API crate, published as `cugraph-nexus` (import `cugraph`).
-- `cugraph-nexus-sys/` - low-level FFI bindings around the cuGraph C API (import `cugraph_sys`).
-- `cugraph/` - the pinned upstream **[forked cuGraph](https://github.com/DataFusion-Nexus/cugraph)** source submodule used to build `libcugraph`.
+- `components/cugraph/cugraph-nexus/` - the safe public Rust API crate, published as `cugraph-nexus` (import `cugraph`).
+- `components/cugraph/cugraph-nexus-sys/` - low-level FFI bindings around the cuGraph C API (import `cugraph_sys`).
+- `components/cugraph/cugraph/` - the pinned **[forked cuGraph](https://github.com/DataFusion-Nexus/cugraph)** source submodule used to build `libcugraph`.
+
+Native defaults are repo-relative: `target/native/cudf-install` and
+`target/native/cuvs-install` provide the shared cuDF/RMM and cuVS prefixes, and
+`target/native/cugraph-build` is the cuGraph CMake build tree. Use the root
+`scripts/build/build_libcugraph.sh` helper and root `scripts/check_all.sh` gate.
+
+## Migration provenance
+
+- Wrapper repository and archive: <https://github.com/DataFusion-Nexus/cugraph-nexus>
+- Frozen imported tip: `438c73b830ae0549d95276fcaddd8411f797ec7d`
+- Import merge: `9bbec7a2a87fb445414b784eaa0492bb6b76690d`
+- Final path: `components/cugraph`

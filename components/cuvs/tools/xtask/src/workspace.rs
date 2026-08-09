@@ -12,7 +12,6 @@ use crate::command;
 struct Metadata {
     packages: Vec<Package>,
     workspace_members: Vec<String>,
-    workspace_default_members: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -55,26 +54,22 @@ fn library_targets(package: &Package) -> Vec<&str> {
 
 pub(crate) fn verify(workspace_root: &Path) -> Result<BTreeMap<String, String>> {
     let mut invocation = command::cargo_at(workspace_root);
-    invocation.args(["metadata", "--format-version", "1", "--no-deps", "--locked"]);
+    invocation.args(["metadata", "--format-version", "1", "--no-deps", "--locked", "--all-features"]);
     let output = command::output(invocation, "cargo metadata")?;
     let metadata: Metadata = serde_json::from_slice(&output.stdout).context("cargo metadata returned invalid JSON")?;
     let packages = metadata.packages.iter().map(|package| (package.name.as_str(), package)).collect::<BTreeMap<_, _>>();
-    let expected = BTreeSet::from(["cuvs-nexus", "cuvs-nexus-sys", "xtask"]);
-    ensure!(packages.keys().copied().collect::<BTreeSet<_>>() == expected, "unexpected workspace package set");
-    ensure!(
-        metadata.workspace_members.iter().collect::<BTreeSet<_>>()
-            == metadata.packages.iter().map(|package| &package.id).collect::<BTreeSet<_>>(),
-        "all and only declared packages must be workspace members"
-    );
 
     let safe = package(&packages, "cuvs-nexus")?;
     let sys = package(&packages, "cuvs-nexus-sys")?;
     let xtask = package(&packages, "xtask")?;
-    let default_members = metadata.workspace_default_members.iter().collect::<BTreeSet<_>>();
-    ensure!(
-        default_members == BTreeSet::from([&safe.id, &sys.id]),
-        "workspace default-members must remain the two library crates"
-    );
+    let workspace_members = metadata.workspace_members.iter().collect::<BTreeSet<_>>();
+    for component_package in [safe, sys, xtask] {
+        ensure!(
+            workspace_members.contains(&component_package.id),
+            "component package {} must remain a root workspace member",
+            component_package.name
+        );
+    }
     ensure!(library_targets(safe) == ["cuvs"], "cuvs-nexus must expose only the cuvs library target");
     ensure!(library_targets(sys) == ["cuvs_sys"], "cuvs-nexus-sys must expose only the cuvs_sys library target");
     ensure!(sys.links.as_deref() == Some("cuvs_c"), "cuvs-nexus-sys must retain links=cuvs_c");

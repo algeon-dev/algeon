@@ -27,14 +27,15 @@ root adapter crate.
 The engine's full test surface requires cargo-nextest per-test-process
 isolation. Allocator-lifecycle cases intentionally install a process-global
 `DeviceMemoryManager`, and native-execution cases retain one backend policy per
-process. Do not use broad `cargo test -p nexus-query-engine`, `cargo test
---lib`, or serialized libtest threads as package-level validation.
+process. Do not use broad `cargo test -p nexus-query-engine --all-features`,
+`cargo test --all-features --lib`, or serialized libtest threads as
+package-level validation.
 
 ```bash
-cargo nextest run -p nexus-query-engine --no-default-features --test native_contract_tests
-cargo nextest run -p nexus-query-engine --no-default-features --test public_api_boundary
-flock /tmp/cudf-gpu.lock cargo nextest run -p nexus-query-engine --lib
-flock /tmp/cudf-gpu.lock cargo nextest run -p nexus-query-engine --test query_service_allocator_lifecycle
+cargo nextest run -p nexus-query-engine --all-features --test native_contract_tests
+cargo nextest run -p nexus-query-engine --all-features --test public_api_boundary
+flock /tmp/cudf-gpu.lock cargo nextest run -p nexus-query-engine --all-features --lib
+flock /tmp/cudf-gpu.lock cargo nextest run -p nexus-query-engine --all-features --test query_service_allocator_lifecycle
 bash scripts/check_all.sh
 ```
 

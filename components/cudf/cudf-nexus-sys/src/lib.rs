@@ -11,8 +11,8 @@
 //! Every raw function call in this crate is unsafe. Callers must uphold the
 //! handle ownership, device, stream, memory-resource, completion, and callback
 //! lifetime requirements documented by the C headers. See the concise
-//! [README](https://github.com/DataFusion-Nexus/cudf-nexus/blob/main/cudf-nexus-sys/README.md)
-//! and [SAFETY.md](https://github.com/DataFusion-Nexus/cudf-nexus/blob/main/cudf-nexus-sys/SAFETY.md)
+//! [README](https://github.com/DataFusion-Nexus/datafusion-nexus/blob/main/components/cudf/cudf-nexus-sys/README.md)
+//! and [SAFETY.md](https://github.com/DataFusion-Nexus/datafusion-nexus/blob/main/components/cudf/cudf-nexus-sys/SAFETY.md)
 //! before adding or changing raw-handle code.
 //!
 //! Borrowed stream and memory-resource owner-handle tokens, plus an explicit

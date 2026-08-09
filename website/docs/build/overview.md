@@ -24,24 +24,27 @@ Docker path is documented separately in [Building with Docker](./docker.md).
 
 | Component | Role | Language | How it is consumed |
 | --- | --- | --- | --- |
-| [`datafusion-nexus`](https://github.com/DataFusion-Nexus/datafusion-nexus) | DataFusion adapter, native engine (`nexus-query-engine`), workload contracts, benchmarks, Flight SQL server | Rust | cloned (this repo) |
-| [`cudf-nexus`](https://github.com/DataFusion-Nexus/cudf-nexus) | Safe Rust API over libcudf (`cudf-nexus`, `cudf-nexus-sys`, `rapids-interop`); vendors the [`cudf` fork](https://github.com/DataFusion-Nexus/cudf) as a submodule | Rust + C++/CUDA | cloned (+ submodule) |
-| [`cuvs-nexus`](https://github.com/DataFusion-Nexus/cuvs-nexus) | Safe Rust API over libcuvs (`cuvs-nexus`, `cuvs-nexus-sys`); vendors upstream [`cuVS`](https://github.com/rapidsai/cuvs) as a submodule | Rust + C++/CUDA | cloned (+ submodule) |
-| [`cugraph-nexus`](https://github.com/DataFusion-Nexus/cugraph-nexus) | Safe Rust API over libcugraph (`cugraph-nexus`, `cugraph-nexus-sys`); vendors the [`cugraph` fork](https://github.com/DataFusion-Nexus/cugraph) as a submodule | Rust + C++/CUDA | cloned (+ submodule) |
+| Root adapter | DataFusion adapter, native engine (`nexus-query-engine`), workload contracts, benchmarks, Flight SQL server | Rust | `src/`, `crates/` |
+| `components/cudf` | Safe Rust API over libcudf (`cudf-nexus`, `cudf-nexus-sys`, `rapids-interop`); pins the [`cudf` fork](https://github.com/DataFusion-Nexus/cudf) | Rust + C++/CUDA | one component + submodule |
+| `components/cuvs` | Safe Rust API over libcuvs (`cuvs-nexus`, `cuvs-nexus-sys`); pins official [`cuVS`](https://github.com/rapidsai/cuvs) | Rust + C++/CUDA | one component + submodule |
+| `components/cugraph` | Safe Rust API over libcugraph (`cugraph-nexus`, `cugraph-nexus-sys`); pins the [`cugraph` fork](https://github.com/DataFusion-Nexus/cugraph) | Rust + C++/CUDA | one component + submodule |
 
-`datafusion-nexus` pins `cudf`, `cuvs`, and `cugraph` to **sibling path
-checkouts**, so these four repositories must sit next to each other in one root
-directory. Cargo fetches Apache DataFusion and the remaining registry or Git
-dependencies automatically; there is nothing else to clone.
+The root `.gitmodules` pins the three native sources and the root Cargo
+workspace resolves all Rust components through `components/*`. Cargo fetches
+Apache DataFusion and the remaining registry or Git dependencies automatically;
+there is one product checkout and one recursive submodule update.
 
 ```text
-<NEXUS_ROOT>/
-├── cudf-nexus/            # + cudf/ submodule (libcudf sources)
-│   └── cudf-install/   # created by the libcudf build (step 2)
-├── cuvs-nexus/            # + cuvs/ submodule (libcuvs sources)
-│   └── cuvs-install/   # created by the libcuvs build (step 5)
-├── cugraph-nexus/         # + cugraph/ submodule (libcugraph sources)
-└── datafusion-nexus/
+datafusion-nexus/
+├── components/cudf/cudf/       # pinned cuDF fork submodule
+├── components/cugraph/cugraph/ # pinned cuGraph fork submodule
+├── components/cuvs/cuvs/       # pinned official cuVS submodule
+├── crates/ and src/             # root Rust workspace
+└── target/native/
+    ├── cudf-build/             # canonical cuDF CMake cache
+    ├── cudf-install/           # canonical cuDF/RMM install prefix
+    ├── cuvs-install/           # canonical cuVS install prefix
+    └── cugraph-build/          # canonical cuGraph CMake build tree
 ```
 
 ## Build order
@@ -58,19 +61,27 @@ datafusion-nexus uses the enabled cuDF, cuVS, and cuGraph Rust bindings.
 
 The full-feature build order follows those dependencies:
 
-1. **libcudf** — `./build.sh libcudf` inside the `cudf` submodule. Installs
-   `libcudf.so` and the shared `librmm.so` into `cudf-nexus/cudf-install/`.
-2. **cudf-nexus** — `cargo build` / `cargo test`. `cudf-nexus-sys` compiles its C++
+1. **libcudf** — `bash scripts/build/build_libcudf.sh` from the root. It drives
+   the pinned source at `components/cudf/cudf/`, keeps the CMake cache in
+   `target/native/cudf-build/`, and installs `libcudf.so` plus the shared
+   `librmm.so` into `target/native/cudf-install/`.
+2. **cudf-nexus** — root-workspace `cargo build --all-features` /
+   `cargo test --all-features`.
+   `cudf-nexus-sys` compiles its C++
    shim against that native install.
-3. **Shared cuDF prefix** — `cugraph-nexus/scripts/bootstrap_cudf_install.sh`.
+3. **Shared cuDF prefix** — `scripts/build/bootstrap_cudf_install.sh`.
    Prepares the cuDF install for the cuVS and cuGraph builds without creating a
    second RMM.
-4. **libcuvs** — `cuvs-nexus/scripts/build_libcuvs.sh`. Uses the `librmm.so`
-   produced by libcudf and installs `libcuvs.so` into `cuvs-nexus/cuvs-install/`.
-5. **cuvs-nexus** — `cargo build` / `cargo test` against that build tree.
-6. **libcugraph** — `cugraph-nexus/scripts/build_libcugraph.sh`. Uses the same
+4. **libcuvs** — `scripts/build/build_libcuvs.sh`. Uses the `librmm.so`
+   produced by libcudf and installs `libcuvs.so` into `target/native/cuvs-install/`.
+5. **cuvs-nexus** — root-workspace `cargo build --all-features` /
+   `cargo test --all-features` against that
+   canonical prefix.
+6. **libcugraph** — `scripts/build/build_libcugraph.sh`. Uses the same
    `librmm.so` from libcudf and the `libcuvs.so` built in step 4.
-7. **cugraph-nexus** — `cargo build` / `cargo test` against that build tree.
+7. **cugraph-nexus** — root-workspace `cargo build --all-features` /
+   `cargo test --all-features` against
+   `target/native/cugraph-build/`.
 8. **datafusion-nexus** — `cargo build --all-features` for a compile check; bare
    `bash scripts/check_all.sh` for the canonical full pre-merge surface.
 9. **Docker image** — optional packaging for the standalone Flight SQL server.

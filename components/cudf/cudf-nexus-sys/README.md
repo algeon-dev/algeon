@@ -12,19 +12,19 @@ general-purpose Rust ownership API.
 
 ## Native libcudf discovery
 
-Set one native-discovery environment variable for every build. An installed
-prefix is the normal choice:
+Set one native-discovery environment variable for every build. The repo-local
+installed prefix is the normal choice:
 
 ```bash
-CUDF_INSTALL_DIR=~/code/cudf-nexus/cudf-install \
-  cargo check -p cudf-nexus-sys
+CUDF_INSTALL_DIR="$PWD/target/native/cudf-install" \
+  cargo check -p cudf-nexus-sys --all-features
 ```
 
 For development against an already configured cuDF build tree, use:
 
 ```bash
-CUDF_CPP_BUILD_DIR=/path/to/cudf/build \
-  cargo check -p cudf-nexus-sys
+CUDF_CPP_BUILD_DIR="$PWD/components/cudf/cudf/cpp/build" \
+  cargo check -p cudf-nexus-sys --all-features
 ```
 
 When both variables are present, `CUDF_INSTALL_DIR` takes precedence. Do not
@@ -38,8 +38,8 @@ and test-only native controls. The `test-hooks` feature is only for this
 workspace's integration and failure-path tests:
 
 ```bash
-CUDF_INSTALL_DIR=~/code/cudf-nexus/cudf-install \
-  cargo test -p cudf-nexus-sys --features test-hooks --test build_link_contract
+CUDF_INSTALL_DIR="$PWD/target/native/cudf-install" \
+  cargo test -p cudf-nexus-sys --all-features --test build_link_contract
 ```
 
 With that feature, generated test declarations are available under
@@ -61,8 +61,8 @@ From the repository root, regenerate after a C-header ABI change and verify
 that checked-in output is current with these exact commands:
 
 ```bash
-./cudf-nexus-sys/bindings/generate.sh
-./cudf-nexus-sys/bindings/generate.sh --check
+./components/cudf/cudf-nexus-sys/bindings/generate.sh
+./components/cudf/cudf-nexus-sys/bindings/generate.sh --check
 ```
 
 Do not edit generated binding files by hand.
@@ -74,15 +74,15 @@ an all-features build so feature unification cannot hide a production
 dependency on test hooks.
 
 ```bash
-CUDF_INSTALL_DIR=~/code/cudf-nexus/cudf-install \
-  cargo check -p cudf-nexus-sys
-CUDF_INSTALL_DIR=~/code/cudf-nexus/cudf-install \
-  cargo doc -p cudf-nexus-sys --no-deps
-./cudf-nexus-sys/bindings/generate.sh --check
+CUDF_INSTALL_DIR="$PWD/target/native/cudf-install" \
+  cargo check -p cudf-nexus-sys --all-features
+CUDF_INSTALL_DIR="$PWD/target/native/cudf-install" \
+  cargo doc -p cudf-nexus-sys --all-features --no-deps
+./components/cudf/cudf-nexus-sys/bindings/generate.sh --check
 
 flock /tmp/cudf-gpu.lock \
-  env CUDF_INSTALL_DIR=~/code/cudf-nexus/cudf-install \
-  cargo test -p cudf-nexus-sys --features test-hooks --no-fail-fast
+  env CUDF_INSTALL_DIR="$PWD/target/native/cudf-install" \
+  cargo test -p cudf-nexus-sys --all-features --no-fail-fast
 ```
 
 See [`SAFETY.md`](SAFETY.md) before introducing or changing raw-handle code.

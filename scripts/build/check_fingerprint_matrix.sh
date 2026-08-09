@@ -1,21 +1,21 @@
 #!/usr/bin/env bash
-# Live Cargo fingerprint matrix for cudf-sys.
+# Live Cargo fingerprint matrix for cudf-nexus-sys.
 #
-# Confirms that ambient PATH changes leave cudf-sys fresh while genuine
+# Confirms that ambient PATH changes leave cudf-nexus-sys fresh while genuine
 # compiler, discovery, runtime, and shim-input changes dirty the correct unit.
 # Emits Cargo fingerprint reasons (redact PATH values before publishing logs).
 #
 # Usage:
-#   bash scripts/check_fingerprint_matrix.sh
+#   bash scripts/build/check_fingerprint_matrix.sh
 #
 # Requirements:
 #   - CUDF_INSTALL_DIR pointing at a usable libcudf install prefix
 #   - CC/CXX set (basenames allowed; absolute preferred)
-#   - cargo + a configured CUDA/host toolchain that can build cudf-sys
+#   - cargo + a configured CUDA/host toolchain that can build cudf-nexus-sys
 
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${ROOT}"
 
 if [[ -z "${CUDF_INSTALL_DIR:-}" ]]; then
@@ -35,12 +35,12 @@ unset CUDF_CPP_BUILD_DIR || true
 LOG_DIR="${CUD_RS_FINGERPRINT_LOG_DIR:-${ROOT}/target/fingerprint-matrix}"
 mkdir -p "${LOG_DIR}"
 # Build a single lightweight contract harness so the matrix is not a full
-# cudf-sys test-link fanout. Fingerprint reasons still cover RunCustomBuild.
+# cudf-nexus-sys test-link fanout. Fingerprint reasons still cover RunCustomBuild.
 CARGO_FINGERPRINT_LOG='cargo::core::compiler::fingerprint=info'
 DIRTY_TIMEOUT_SECS="${CUD_RS_FINGERPRINT_DIRTY_TIMEOUT_SECS:-90}"
 
-SIBLING_CACHE=""
-SIBLING_MTIME_REF=""
+UNSELECTED_BUILD_CACHE=""
+UNSELECTED_BUILD_MTIME_REF=""
 SHIM_SOURCE=""
 SHIM_MTIME_REF=""
 LIBCUDF_PATH=""
@@ -49,8 +49,8 @@ LIBCUDF_MTIME_REF=""
 restore_probe_mtimes() {
   local status=$?
   set +e
-  if [[ -n "${SIBLING_MTIME_REF}" && -f "${SIBLING_MTIME_REF}" && -n "${SIBLING_CACHE}" && -e "${SIBLING_CACHE}" ]]; then
-    touch -r "${SIBLING_MTIME_REF}" "${SIBLING_CACHE}"
+  if [[ -n "${UNSELECTED_BUILD_MTIME_REF}" && -f "${UNSELECTED_BUILD_MTIME_REF}" && -n "${UNSELECTED_BUILD_CACHE}" && -e "${UNSELECTED_BUILD_CACHE}" ]]; then
+    touch -r "${UNSELECTED_BUILD_MTIME_REF}" "${UNSELECTED_BUILD_CACHE}"
   fi
   if [[ -n "${SHIM_MTIME_REF}" && -f "${SHIM_MTIME_REF}" && -n "${SHIM_SOURCE}" && -e "${SHIM_SOURCE}" ]]; then
     touch -r "${SHIM_MTIME_REF}" "${SHIM_SOURCE}"
@@ -58,7 +58,7 @@ restore_probe_mtimes() {
   if [[ -n "${LIBCUDF_MTIME_REF}" && -f "${LIBCUDF_MTIME_REF}" && -n "${LIBCUDF_PATH}" && -e "${LIBCUDF_PATH}" ]]; then
     touch -r "${LIBCUDF_MTIME_REF}" "${LIBCUDF_PATH}"
   fi
-  rm -f "${SIBLING_MTIME_REF}" "${SHIM_MTIME_REF}" "${LIBCUDF_MTIME_REF}"
+  rm -f "${UNSELECTED_BUILD_MTIME_REF}" "${SHIM_MTIME_REF}" "${LIBCUDF_MTIME_REF}"
   exit "${status}"
 }
 
@@ -88,14 +88,14 @@ run_no_run() {
     set +e
     env CARGO_LOG="${CARGO_FINGERPRINT_LOG}" "$@" \
       timeout --signal=INT --kill-after=15s "${DIRTY_TIMEOUT_SECS}" \
-      cargo test -p cudf-sys --test fingerprint_matrix_contract --no-run \
+      cargo test -p cudf-nexus-sys --all-features --test fingerprint_matrix_contract --no-run \
       >"${log}.raw" 2>&1
     status=$?
     set -e
   else
     set +e
     env CARGO_LOG="${CARGO_FINGERPRINT_LOG}" "$@" \
-      cargo test -p cudf-sys --test fingerprint_matrix_contract --no-run \
+      cargo test -p cudf-nexus-sys --all-features --test fingerprint_matrix_contract --no-run \
       >"${log}.raw" 2>&1
     status=$?
     set -e
@@ -106,7 +106,7 @@ run_no_run() {
     echo "note: ${label}: cargo timed out after ${DIRTY_TIMEOUT_SECS}s (acceptable when dirtiness already recorded)"
   elif [[ "${status}" -ne 0 ]]; then
     if [[ "${allow_timeout}" -eq 1 ]] \
-      && rg -q 'fingerprint dirty|dirty: EnvVarChanged|Compiling cudf-sys|Running custom build command for cudf-sys' "${log}"; then
+      && rg -q 'fingerprint dirty|dirty: EnvVarChanged|Compiling cudf-nexus-sys|Running custom build command for cudf-nexus-sys' "${log}"; then
       echo "note: ${label}: cargo exited ${status} after dirtiness was already observed"
     else
       echo "ERROR: ${label}: cargo exited ${status}" >&2
@@ -114,33 +114,33 @@ run_no_run() {
       exit "${status}"
     fi
   fi
-  rg -n 'Finished|Compiling cudf-sys|Running custom build|fingerprint dirty|dirty:' "${log}" || true
+  rg -n 'Finished|Compiling cudf-nexus-sys|Running custom build|fingerprint dirty|dirty:' "${log}" || true
 }
 
 assert_no_cudf_sys_compile() {
   local label="$1"
   local log="${LOG_DIR}/${label}.log"
-  if rg -q 'Compiling cudf-sys|Running custom build command for cudf-sys|fingerprint dirty' "${log}"; then
-    echo "ERROR: ${label}: expected cudf-sys to stay fresh; saw a rebuild:" >&2
-    rg -n 'Compiling cudf-sys|Running custom build|dirty:' "${log}" >&2 || true
+  if rg -q 'Compiling cudf-nexus-sys|Running custom build command for cudf-nexus-sys|fingerprint dirty' "${log}"; then
+    echo "ERROR: ${label}: expected cudf-nexus-sys to stay fresh; saw a rebuild:" >&2
+    rg -n 'Compiling cudf-nexus-sys|Running custom build|dirty:' "${log}" >&2 || true
     exit 1
   fi
   if ! rg -q 'Finished' "${log}"; then
     echo "ERROR: ${label}: missing Finished line" >&2
     exit 1
   fi
-  echo "OK: ${label}: cudf-sys remained fresh"
+  echo "OK: ${label}: cudf-nexus-sys remained fresh"
 }
 
 assert_cudf_sys_rebuild() {
   local label="$1"
   local log="${LOG_DIR}/${label}.log"
-  if ! rg -q 'fingerprint dirty|dirty: EnvVarChanged|Compiling cudf-sys|Running custom build command for cudf-sys' "${log}"; then
-    echo "ERROR: ${label}: expected cudf-sys to rebuild; no dirty/compiling evidence found." >&2
+  if ! rg -q 'fingerprint dirty|dirty: EnvVarChanged|Compiling cudf-nexus-sys|Running custom build command for cudf-nexus-sys' "${log}"; then
+    echo "ERROR: ${label}: expected cudf-nexus-sys to rebuild; no dirty/compiling evidence found." >&2
     exit 1
   fi
-  echo "OK: ${label}: cudf-sys became dirty (see ${log})"
-  rg -n 'fingerprint dirty|dirty:|Compiling cudf-sys|Running custom build' "${log}" || true
+  echo "OK: ${label}: cudf-nexus-sys became dirty (see ${log})"
+  rg -n 'fingerprint dirty|dirty:|Compiling cudf-nexus-sys|Running custom build' "${log}" || true
 }
 
 echo "Baseline warm build under install-prefix discovery..."
@@ -160,20 +160,20 @@ run_no_run "04-venv-path" env \
   PATH="${ROOT}/.venv/bin:${PATH}"
 assert_no_cudf_sys_compile "04-venv-path"
 
-echo "Touch unrelated sibling CMakeCache while install prefix is selected..."
-SIBLING_CACHE="${ROOT}/cudf/cpp/build/CMakeCache.txt"
-if [[ ! -f "${SIBLING_CACHE}" ]]; then
-  echo "SKIP: 05-unrelated-sibling-cache (no ${SIBLING_CACHE})"
+echo "Touch unselected canonical build cache while install-only discovery is selected..."
+UNSELECTED_BUILD_CACHE="${ROOT}/target/native/cudf-build/CMakeCache.txt"
+if [[ ! -f "${UNSELECTED_BUILD_CACHE}" ]]; then
+  echo "SKIP: 05-unselected-build-cache (no ${UNSELECTED_BUILD_CACHE})"
 else
-  SIBLING_MTIME_REF="$(mktemp)"
-  touch -r "${SIBLING_CACHE}" "${SIBLING_MTIME_REF}"
-  touch "${SIBLING_CACHE}"
-  run_no_run "05-unrelated-sibling-cache" env \
+  UNSELECTED_BUILD_MTIME_REF="$(mktemp)"
+  touch -r "${UNSELECTED_BUILD_CACHE}" "${UNSELECTED_BUILD_MTIME_REF}"
+  touch "${UNSELECTED_BUILD_CACHE}"
+  run_no_run "05-unselected-build-cache" env \
     CC="${CC}" CXX="${CXX}" CUDF_INSTALL_DIR="${CUDF_INSTALL_DIR}"
-  assert_no_cudf_sys_compile "05-unrelated-sibling-cache"
-  touch -r "${SIBLING_MTIME_REF}" "${SIBLING_CACHE}"
-  rm -f "${SIBLING_MTIME_REF}"
-  SIBLING_MTIME_REF=""
+  assert_no_cudf_sys_compile "05-unselected-build-cache"
+  touch -r "${UNSELECTED_BUILD_MTIME_REF}" "${UNSELECTED_BUILD_CACHE}"
+  rm -f "${UNSELECTED_BUILD_MTIME_REF}"
+  UNSELECTED_BUILD_MTIME_REF=""
 fi
 
 echo "Changing CC must dirty the native build..."
@@ -200,8 +200,8 @@ assert_cudf_sys_rebuild "08-change-install-dir"
 run_no_run "09-restore-install-dir" --allow-timeout env \
   CC="${CC}" CXX="${CXX}" CUDF_INSTALL_DIR="${CUDF_INSTALL_DIR}"
 
-echo "Touching a cudf-sys shim source must dirty the native build..."
-SHIM_SOURCE="${ROOT}/cudf-nexus-sys/native/src/error.cpp"
+echo "Touching a cudf-nexus-sys shim source must dirty the native build..."
+SHIM_SOURCE="${ROOT}/components/cudf/cudf-nexus-sys/native/src/error.cpp"
 if [[ ! -f "${SHIM_SOURCE}" ]]; then
   echo "ERROR: missing shim source ${SHIM_SOURCE}" >&2
   exit 2
@@ -237,4 +237,4 @@ run_no_run "12-final-restore" --allow-timeout env \
 
 echo
 echo "Fingerprint matrix passed. Redacted logs: ${LOG_DIR}"
-echo "Static contracts: cargo test -p cudf-sys --test fingerprint_matrix_contract --test build_link_contract"
+echo "Static contracts: cargo test -p cudf-nexus-sys --all-features --test fingerprint_matrix_contract --test build_link_contract"

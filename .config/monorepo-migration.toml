@@ -1,0 +1,68 @@
+schema_version = 1
+frozen_at = "2026-08-24T21:47:49-04:00"
+migration_branch = "migration/monorepo-refactor-2026-08-24"
+expected_imported_commit_count = 870
+expected_root_count = 4
+imported_dag_tip = "abec59e4a9b9d45b452dd3557dcc85f7c7119159"
+
+[github]
+visibility = "private"
+default_branch = "main"
+releases = "none"
+branch_protection = "unavailable for these private repositories on the current GitHub plan"
+
+[root]
+repository_url = "https://github.com/DataFusion-Nexus/datafusion-nexus"
+frozen_tip = "5fece9888f7a3c34a65843704cc3edef65610ecc"
+reachable_commits = 488
+root_commit = "241d9218c74a3897fb9f2a8a8367d2f9cede9cab"
+recovery_branch = "recovery/pre-monorepo-2026-08-24"
+recovery_tag = "pre-monorepo-2026-08-24-datafusion-nexus"
+
+[[imports]]
+name = "cudf-nexus"
+repository_url = "https://github.com/DataFusion-Nexus/cudf-nexus"
+archive_url = "https://github.com/DataFusion-Nexus/cudf-nexus"
+frozen_tip = "a2e893dc7193964feeb4a045d47229d8a2a830ee"
+cutover_tip = "a12b464ba7c0239049959d88a617c93d07fa5839"
+reachable_commits = 283
+root_commit = "338eb4f8d7736c30cc5e07c2a8192f8546bb2efd"
+import_merge = "f6f9046adae3ed6077efde97add417cbc5a11627"
+cutover_merge = "4e245f68191c1386681141e7c71a60a9bdd01356"
+final_path = "components/cudf"
+recovery_branch = "recovery/pre-monorepo-2026-08-24"
+recovery_tag = "pre-monorepo-2026-08-24-cudf-nexus"
+native_gitlink_path = "components/cudf/cudf"
+native_gitlink = "7d23f6a079795199c96c9b6ce9711cb4e58c1d3f"
+
+[[imports]]
+name = "cugraph-nexus"
+repository_url = "https://github.com/DataFusion-Nexus/cugraph-nexus"
+archive_url = "https://github.com/DataFusion-Nexus/cugraph-nexus"
+frozen_tip = "438c73b830ae0549d95276fcaddd8411f797ec7d"
+cutover_tip = "bb2510c2d83a9f1545e3ce1475ab824fbd0b4a1a"
+reachable_commits = 87
+root_commit = "435d1a17eeedc1f96015fd5abddbb396e0fdeb09"
+import_merge = "9bbec7a2a87fb445414b784eaa0492bb6b76690d"
+cutover_merge = "87418bd2908a8d25620682482eec545ff298621f"
+final_path = "components/cugraph"
+recovery_branch = "recovery/pre-monorepo-2026-08-24"
+recovery_tag = "pre-monorepo-2026-08-24-cugraph-nexus"
+native_gitlink_path = "components/cugraph/cugraph"
+native_gitlink = "a73ed2dd01543410cea7c0e41dc3b97d23fd1630"
+
+[[imports]]
+name = "cuvs-nexus"
+repository_url = "https://github.com/DataFusion-Nexus/cuvs-nexus"
+archive_url = "https://github.com/DataFusion-Nexus/cuvs-nexus"
+frozen_tip = "f719914c2f6fd75168edb2059d1e54a9787e3340"
+cutover_tip = "9e77c5db97dad185a92062b323eeb2785be33411"
+reachable_commits = 9
+root_commit = "e24645b00be7edfdb578086c67fa4f1aa370224e"
+import_merge = "abec59e4a9b9d45b452dd3557dcc85f7c7119159"
+cutover_merge = "78c9f85aea4856a686b0370fe7b13033bf66e08d"
+final_path = "components/cuvs"
+recovery_branch = "recovery/pre-monorepo-2026-08-24"
+recovery_tag = "pre-monorepo-2026-08-24-cuvs-nexus"
+native_gitlink_path = "components/cuvs/cuvs"
+native_gitlink = "25b1be43a8c127e5ab6d2f29f20c62dbfd3351ab"

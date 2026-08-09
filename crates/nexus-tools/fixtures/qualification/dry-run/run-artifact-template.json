@@ -7,8 +7,9 @@
     "process": {"boot_id": "fixture-boot", "pid": 1, "process_start_ticks": 1},
     "repositories": {
       "root": {"name": "datafusion-nexus", "path": "/fixture/datafusion-nexus", "revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "dirty_manifest": {"format": "fixture", "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "entries": []}},
-      "cudf_nexus": {"name": "cudf-nexus", "path": "/fixture/cudf-nexus", "revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "dirty_manifest": {"format": "fixture", "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "entries": []}},
-      "cugraph_nexus": {"name": "cugraph-nexus", "path": "/fixture/cugraph-nexus", "revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "dirty_manifest": {"format": "fixture", "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "entries": []}}
+      "cudf_nexus": {"name": "cudf-native-source", "path": "/fixture/datafusion-nexus/components/cudf/cudf", "revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "dirty_manifest": {"format": "fixture", "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "entries": []}},
+      "cugraph_nexus": {"name": "cugraph-native-source", "path": "/fixture/datafusion-nexus/components/cugraph/cugraph", "revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "dirty_manifest": {"format": "fixture", "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "entries": []}},
+      "cuvs_nexus": {"name": "cuvs-native-source", "path": "/fixture/datafusion-nexus/components/cuvs/cuvs", "revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "dirty_manifest": {"format": "fixture", "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "entries": []}}
     },
     "native_libraries": {
       "libcudf_resolved": {"path": "/fixture/libcudf.so", "size_bytes": 1, "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},

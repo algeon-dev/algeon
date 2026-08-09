@@ -13,6 +13,9 @@ build = "build.rs"
 links = "cudf_rust"
 autotests = false
 
+[lints]
+workspace = true
+
 [lib]
 name = "cudf_sys"
 

@@ -183,28 +183,24 @@ pub(crate) fn discard_stale_cmake_build_dir_at(
     }
 }
 
-/// Sibling libcudf build-tree cache used when discovery is not driven by an
-/// install prefix. Path is relative to the `cudf-nexus-sys` manifest directory.
-pub(crate) fn default_sibling_cudf_cmake_cache(manifest_dir: &Path) -> PathBuf {
-    manifest_dir.join("../cudf/cpp/build/CMakeCache.txt")
+pub(crate) fn default_cudf_cmake_cache(manifest_dir: &Path) -> PathBuf {
+    super::default_cudf_build_dir(manifest_dir)
+        .expect("cudf-nexus-sys manifest must be inside the monorepo")
+        .join("CMakeCache.txt")
 }
 
 /// `CMakeCache.txt` that participates in the active libcudf discovery
-/// contract, if any. Install-prefix mode intentionally ignores inactive build
-/// tree caches, even when both discovery variables are present.
+/// contract, if any. A build tree selected alongside an install prefix carries
+/// capability metadata and must identify that same install prefix.
 pub(crate) fn active_cudf_cmake_cache(
     manifest_dir: &Path,
     install_dir: Option<&Path>,
     build_dir: Option<&Path>,
 ) -> Option<PathBuf> {
-    if install_dir.is_some() {
-        return None;
+    if let Some(build_dir) = build_dir {
+        return Some(build_dir.join("CMakeCache.txt"));
     }
-
-    Some(match build_dir {
-        Some(build_dir) => build_dir.join("CMakeCache.txt"),
-        None => default_sibling_cudf_cmake_cache(manifest_dir),
-    })
+    install_dir.is_none().then(|| default_cudf_cmake_cache(manifest_dir))
 }
 
 fn locate_runtime_dep_library(file_name: &str, build_dir_subpath: &str) -> Option<PathBuf> {

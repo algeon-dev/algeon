@@ -1636,7 +1636,10 @@ dependencies = [
  "parquet",
  "rapids-interop",
  "smallvec",
+ "static_assertions",
  "strum 0.28.0",
+ "tempfile",
+ "tokio",
  "typed-builder 0.23.2",
 ]
 
@@ -1645,17 +1648,20 @@ name = "cudf-nexus-sys"
 version = "0.1.0"
 dependencies = [
  "cmake",
+ "static_assertions",
 ]
 
 [[package]]
 name = "cugraph-nexus"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "cc",
  "cudf-nexus",
  "cudf-nexus-sys",
  "cugraph-nexus-sys",
  "rapids-interop",
+ "static_assertions",
 ]
 
 [[package]]
@@ -1669,9 +1675,11 @@ dependencies = [
 name = "cuvs-nexus"
 version = "0.1.0"
 dependencies = [
+ "arrow",
  "cudf-nexus",
  "cuvs-nexus-sys",
  "rapids-interop",
+ "static_assertions",
 ]
 
 [[package]]
@@ -1681,6 +1689,7 @@ dependencies = [
  "anyhow",
  "cc",
  "cmake-package",
+ "static_assertions",
 ]
 
 [[package]]
@@ -4909,6 +4918,9 @@ dependencies = [
 [[package]]
 name = "rapids-interop"
 version = "0.1.0"
+dependencies = [
+ "static_assertions",
+]
 
 [[package]]
 name = "recursive"
@@ -6925,6 +6937,17 @@ name = "xmlparser"
 version = "0.13.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "66fee0b777b0f5ac1c69bb06d361268faafa61cd4682ae064a171c16c433e9e4"
+
+[[package]]
+name = "xtask"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "bindgen",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
 
 [[package]]
 name = "yoke"

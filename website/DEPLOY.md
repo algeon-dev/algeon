@@ -1,6 +1,6 @@
 # Deploying the website to Cloudflare Pages (`datafusion.nexus`)
 
-The `website/` Docusaurus site is deployed to **Cloudflare Pages** (project
+The `website/` Docusaurus site in the DataFusion Nexus monorepo is deployed to **Cloudflare Pages** (project
 `datafusion-nexus`) and served at the apex custom domain
 **<https://datafusion.nexus>**. The domain lives in the same Cloudflare account
 that hosts the Pages project, so DNS and TLS are managed entirely in Cloudflare.

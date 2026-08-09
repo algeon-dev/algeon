@@ -1,5 +1,7 @@
 fn read_cugraph_source(relative: &str) -> String {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../cugraph-nexus/cugraph").join(relative);
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../components/cugraph/cugraph")
+        .join(relative);
     std::fs::read_to_string(&path).unwrap_or_else(|error| panic!("failed to read {}: {error}", path.display()))
 }
 
@@ -201,7 +203,7 @@ fn edge_schema_with_edge_id(vertex_type: DataType, weight_type: DataType) -> Arc
 /// The native registry names that require the cuGraph graph implementation.
 ///
 /// This is deliberately a contract over our public dependency and descriptor
-/// layer, rather than a parser for a sibling checkout's Rust source. API
+/// layer, rather than a parser for its implementation source. API
 /// changes in the local `cugraph` crate are caught by the compile-time type references
 /// below and by the execution adapters that call those APIs.
 #[cfg(feature = "cugraph")]

@@ -21,10 +21,10 @@ datafusion-nexus = { path = "../datafusion-nexus", features = ["cugraph"] }
 futures = "0.3"
 ```
 
-Nexus is currently consumed from its source checkout. Place the application
-beside the four Nexus repositories described in
-[Building from Source](../build/from-source.md#1-clone-the-repositories), or
-adjust the path while preserving their sibling layout.
+Nexus is currently consumed from the root source checkout. Clone the monorepo
+recursively as described in [Building from Source](../build/from-source.md#1-clone-the-repository),
+then point the application at the root package. The component crates are
+resolved through the root workspace; no separate checkout layout is required.
 
 The root crate has no default features. Add `cugraph` for graph SQL, `iceberg`
 for Iceberg sources, `cuvs` for cuVS bindings, and `nvml` for optional device

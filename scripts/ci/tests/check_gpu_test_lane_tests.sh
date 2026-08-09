@@ -58,19 +58,26 @@ make_inventory() {
   python3 - "${ids_file}" "${output}" <<'PY'
 import json
 import sys
+import tomllib
 
 ids = [line.strip() for line in open(sys.argv[1], encoding="utf-8") if line.strip()]
+with open(".config/policies/test-lanes.toml", "rb") as catalog_file:
+    catalog = {entry["id"]: entry.get("binary_name") for entry in tomllib.load(catalog_file)["binary"]}
 binaries = {}
 for binary_id in ids:
     if "::" in binary_id:
-        binary_name = binary_id.split("::", 1)[1].removeprefix("bin/")
+        target = binary_id.split("::", 1)[1]
+        target_kind = "bin" if target.startswith("bin/") else "test"
+        binary_name = target.removeprefix("bin/")
     else:
         binary_name = binary_id.replace("-", "_")
+        target_kind = "lib"
+    binary_name = catalog.get(binary_id) or binary_name
     binaries[binary_id] = {
         "binary-id": binary_id,
         "binary-name": binary_name,
+        "kind": target_kind,
         "package-id": "path+file:///fault-injection#fixture",
-        "kind": "test",
         "binary-path": f"/tmp/{binary_name}",
         "build-platform": "target",
     }
@@ -140,6 +147,24 @@ run_policy_case() {
 run_shell_case complete 0 "${catalog_success}" \
   "${tmp_dir}/complete.json" 0 "" "visible-successful-inventory-progress"
 grep -Fq "visible-successful-inventory-progress" "${tmp_dir}/complete.output"
+python3 - <<'PY'
+import importlib.util
+import sys
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("test_lane_policy", Path("scripts/ci/test_lane_policy.py"))
+module = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+assert module.filter_expression(
+    module.LaneEntry("fixture::same_name", "gpu", "test", "shared")
+) == "(package(fixture) & kind(test) & binary(same_name))"
+assert module.filter_expression(
+    module.LaneEntry("fixture::bin/same_name", "gpu", "test", "shared")
+) == "(package(fixture) & kind(bin) & binary(same_name))"
+PY
+echo "PASS: same-name bin/test targets use deterministic kind filters"
 
 cli_feature_output="${tmp_dir}/cli-feature-args.output"
 PATH="${tmp_dir}/bin:${PATH}" \
@@ -164,10 +189,36 @@ run_shell_case malformed_json 2 "malformed nextest JSON inventory" "${tmp_dir}/m
 printf '{"rust-binaries":{}}\n' >"${tmp_dir}/empty.json"
 run_shell_case empty_inventory 2 "contained no test binaries" "${tmp_dir}/empty.json"
 
-cp "${tmp_dir}/expected" "${tmp_dir}/duplicate-name"
-printf '%s\n' 'fault-injection-package::native_exec_tests' >>"${tmp_dir}/duplicate-name"
-make_inventory "${tmp_dir}/duplicate-name" "${tmp_dir}/duplicate-name.json"
-run_shell_case duplicate_binary_name 1 "test-binary name collision" "${tmp_dir}/duplicate-name.json"
+python3 - "${tmp_dir}/duplicate-name.json" "${tmp_dir}/complete.json" <<'PY'
+import json
+import sys
+
+with open(sys.argv[2], encoding="utf-8") as source:
+    inventory = json.load(source)
+inventory["rust-binaries"].update(
+    {
+        "fault-injection-package::first_tests": {
+            "binary-id": "fault-injection-package::first_tests",
+            "binary-name": "same_target_name",
+            "kind": "test",
+            "package-id": "path+file:///fault-injection#fixture",
+            "binary-path": "/tmp/same_target_name-first",
+            "build-platform": "target",
+        },
+        "fault-injection-package::second_tests": {
+            "binary-id": "fault-injection-package::second_tests",
+            "binary-name": "same_target_name",
+            "kind": "test",
+            "package-id": "path+file:///fault-injection#fixture",
+            "binary-path": "/tmp/same_target_name-second",
+            "build-platform": "target",
+        },
+    }
+)
+with open(sys.argv[1], "w", encoding="utf-8") as output:
+    json.dump(inventory, output)
+PY
+run_shell_case duplicate_binary_name 1 "test-binary target collision" "${tmp_dir}/duplicate-name.json"
 
 cp "${tmp_dir}/expected" "${tmp_dir}/unclassified"
 printf '%s\n' 'datafusion-nexus::fault_injection_unclassified' >>"${tmp_dir}/unclassified"
@@ -192,7 +243,7 @@ with open(sys.argv[1], "w", encoding="utf-8") as output_file:
                     "binary-id": "nexus-bench",
                     "binary-name": "renamed_bench",
                     "package-id": "path+file:///fault-injection#fixture",
-                    "kind": "test",
+                    "kind": "lib",
                     "binary-path": "/tmp/renamed_bench",
                     "build-platform": "target",
                 }
@@ -201,7 +252,7 @@ with open(sys.argv[1], "w", encoding="utf-8") as output_file:
         output_file,
     )
 PY
-run_policy_case conflicting_union_names 1 "conflicting binary-name for nexus-bench" \
+run_policy_case conflicting_union_names 1 "conflicting binary metadata for nexus-bench" \
   validate-inventory \
   --inventory "${tmp_dir}/complete.json" \
   --inventory "${tmp_dir}/bench-conflict.json" \

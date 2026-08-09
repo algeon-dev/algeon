@@ -3,6 +3,10 @@
 The documentation site for [DataFusion Nexus](https://github.com/DataFusion-Nexus/datafusion-nexus),
 built with [Docusaurus](https://docusaurus.io/) 3.10.1.
 
+`website/` is owned by the root monorepo. Source-build pages refer to the
+recursive checkout, root Cargo workspace, and native artifacts under
+`target/native/*`; component sources are pinned under `components/*`.
+
 > Requires Node.js >= 20.
 
 ## Install
@@ -76,7 +80,7 @@ Use `"link": { "type": "generated-index", "description": "…" }` instead when t
 category should land on an auto-generated index rather than a specific doc.
 
 **Internal links.** Link to other pages by relative file path including the
-extension (e.g. `[Architecture](./architecture/index.md)`); Docusaurus resolves
+extension (e.g. `[Design](./docs/design/index.mdx)`); Docusaurus resolves
 these at build time and `onBrokenLinks: 'throw'` fails the build on a bad link.
 
 > **Note:** `website/` is tracked in git and deployed automatically (see

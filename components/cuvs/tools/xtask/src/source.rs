@@ -5,6 +5,7 @@ use anyhow::{Context, Result, ensure};
 use crate::command;
 
 const PINNED_CUVS_URL: &str = "https://github.com/rapidsai/cuvs.git";
+const CUVS_SUBMODULE_PATH: &str = "components/cuvs/cuvs";
 
 fn is_git_sha(value: &str) -> bool {
     value.len() == 40 && value.bytes().all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
@@ -32,31 +33,39 @@ pub(crate) fn verify(workspace_root: &Path) -> Result<String> {
 
     let path = git_text(
         workspace_root,
-        &["config", "-f", ".gitmodules", "--get", "submodule.cuvs.path"],
+        &["config", "-f", ".gitmodules", "--get", "submodule.components/cuvs/cuvs.path"],
         "cuVS submodule path inspection",
     )?;
-    ensure!(path.trim() == "cuvs", ".gitmodules must define submodule.cuvs.path=cuvs");
+    ensure!(
+        path.trim() == CUVS_SUBMODULE_PATH,
+        ".gitmodules must define submodule.components/cuvs/cuvs.path={CUVS_SUBMODULE_PATH}"
+    );
     let url = git_text(
         workspace_root,
-        &["config", "-f", ".gitmodules", "--get", "submodule.cuvs.url"],
+        &["config", "-f", ".gitmodules", "--get", "submodule.components/cuvs/cuvs.url"],
         "cuVS submodule URL inspection",
     )?;
-    ensure!(url.trim() == PINNED_CUVS_URL, ".gitmodules must define submodule.cuvs.url={PINNED_CUVS_URL}");
+    ensure!(
+        url.trim() == PINNED_CUVS_URL,
+        ".gitmodules must define submodule.components/cuvs/cuvs.url={PINNED_CUVS_URL}"
+    );
 
-    let index = git_text(workspace_root, &["ls-files", "--stage", "--", "cuvs"], "cuVS gitlink inspection")?;
+    let index =
+        git_text(workspace_root, &["ls-files", "--stage", "--", CUVS_SUBMODULE_PATH], "cuVS gitlink inspection")?;
     let index_fields = index.split_whitespace().collect::<Vec<_>>();
     ensure!(
         index_fields.len() == 4
             && index_fields[0] == "160000"
             && is_git_sha(index_fields[1])
             && index_fields[2] == "0"
-            && index_fields[3] == "cuvs",
-        "cuvs must be a stage-0 gitlink in the superproject index, found: {}",
+            && index_fields[3] == CUVS_SUBMODULE_PATH,
+        "{CUVS_SUBMODULE_PATH} must be a stage-0 gitlink in the superproject index, found: {}",
         index.trim()
     );
     let pinned = index_fields[1].to_owned();
 
-    let head = git_text(workspace_root, &["ls-tree", "HEAD", "--", "cuvs"], "HEAD cuVS gitlink inspection")?;
+    let head =
+        git_text(workspace_root, &["ls-tree", "HEAD", "--", CUVS_SUBMODULE_PATH], "HEAD cuVS gitlink inspection")?;
     if !head.trim().is_empty() {
         let fields = head.split_whitespace().collect::<Vec<_>>();
         ensure!(
@@ -66,7 +75,7 @@ pub(crate) fn verify(workspace_root: &Path) -> Result<String> {
         );
     }
 
-    let source_dir = workspace_root.join("cuvs");
+    let source_dir = workspace_root.join(CUVS_SUBMODULE_PATH);
     ensure!(source_dir.join(".git").exists(), "cuVS submodule is not initialized at {}", source_dir.display());
     let metadata = fs::symlink_metadata(&source_dir)
         .with_context(|| format!("failed to inspect cuVS source path {}", source_dir.display()))?;

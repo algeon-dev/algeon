@@ -213,7 +213,7 @@ fn create_i32_nullable_column_raw(data: &[i32], validity_bits: u8) -> cudf_sys::
 /// Create an i32 scalar and return its raw cudf_scalar_handle.
 fn create_i32_scalar_raw(value: i32) -> cudf_sys::cudf_scalar_handle {
     let mut handle: cudf_sys::cudf_scalar_handle = ptr::null_mut();
-    let (_stream, _mr, exec) = strict_exec_owners();
+    let (stream, _mr, exec) = strict_exec_owners();
     let status = unsafe {
         cudf_sys::cudf_scalar_create_numeric_ex(
             cudf_sys::CUDF_TYPE_INT32,
@@ -225,6 +225,8 @@ fn create_i32_scalar_raw(value: i32) -> cudf_sys::cudf_scalar_handle {
     };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to create i32 scalar");
     assert!(!handle.is_null());
+    // This helper returns the scalar for use on unrelated test streams.
+    stream.synchronize().expect("scalar producer stream sync failed");
     handle
 }
 

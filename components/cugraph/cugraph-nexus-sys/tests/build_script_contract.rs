@@ -17,17 +17,16 @@ impl ManualBuildFixture {
         let unique = SystemTime::now().duration_since(UNIX_EPOCH).expect("system time").as_nanos();
         let root = env::temp_dir().join(format!("cugraph-manual-contract-{}-{unique}", std::process::id()));
         let workspace = root.join("workspace");
-        let repo = workspace.join("cugraph-nexus");
-        let script = repo.join("scripts/build_libcugraph.sh");
-        let sibling = workspace.join("cuvs-nexus");
-        let default_install = sibling.join("cuvs-install");
-        fs::create_dir_all(repo.join("scripts")).expect("create fixture scripts directory");
-        fs::create_dir_all(repo.join("cugraph")).expect("create fixture upstream directory");
+        let repo = workspace.join("components/cugraph/cugraph");
+        let script = workspace.join("scripts/build/build_libcugraph.sh");
+        let default_install = workspace.join("target/native/cuvs-install");
+        fs::create_dir_all(script.parent().expect("script parent")).expect("create fixture scripts directory");
+        fs::create_dir_all(&repo).expect("create fixture upstream directory");
         fs::create_dir_all(&default_install).expect("create fixture default cuVS prefix");
-        fs::copy(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../scripts/build_libcugraph.sh"), &script)
+        fs::copy(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../scripts/build/build_libcugraph.sh"), &script)
             .expect("copy manual build script");
 
-        let upstream = repo.join("cugraph/build.sh");
+        let upstream = repo.join("build.sh");
         fs::write(&upstream, "#!/usr/bin/env bash\nexit 0\n").expect("write fixture upstream build script");
         fs::set_permissions(&upstream, fs::Permissions::from_mode(0o755))
             .expect("make fixture build script executable");
@@ -42,7 +41,7 @@ impl ManualBuildFixture {
     }
 
     fn default_install(&self) -> PathBuf {
-        self.workspace.join("cuvs-nexus/cuvs-install")
+        self.workspace.join("target/native/cuvs-install")
     }
 
     fn run(&self, cuvs_install: Option<&Path>) -> Output {
@@ -88,8 +87,8 @@ fn read_downstream_build_rs() -> String {
 
 fn read_manual_build_script() -> String {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    fs::read_to_string(manifest_dir.join("../scripts/build_libcugraph.sh"))
-        .expect("failed to read scripts/build_libcugraph.sh")
+    fs::read_to_string(manifest_dir.join("../../../scripts/build/build_libcugraph.sh"))
+        .expect("failed to read scripts/build/build_libcugraph.sh")
 }
 
 fn read_upstream_cugraph_file(path: &str) -> String {
@@ -253,6 +252,8 @@ fn manual_and_cargo_builds_share_runtime_cuvs_contract() {
     assert!(build_support.contains("-Dcuvs_ROOT={}"));
     assert!(manual_script.contains("CUVS_INSTALL_DIR"));
     assert!(manual_script.contains("-Dcuvs_ROOT=${cuvs_install_dir}"));
+    assert!(manual_script.contains("-DCMAKE_PREFIX_PATH=${cudf_install_dir};${cuvs_install_dir}"));
+    assert!(manual_script.contains("configured_prefix_path=\"$(cmake_cache_value_any_type CMAKE_PREFIX_PATH)\""));
     assert!(build_support.contains("cuvs_DIR"));
     assert!(manual_script.contains("check_package_dir cuvs_DIR"));
     assert!(build_support.contains("libcuvs.so"));
@@ -261,19 +262,19 @@ fn manual_and_cargo_builds_share_runtime_cuvs_contract() {
     assert!(manual_script.contains("-DCUGRAPH_USE_CUVS_STATIC=OFF"));
     assert!(
         build_support.contains("share/cuvs-nexus/source-revision"),
-        "the Cargo resolver must validate the default sibling cuVS source marker"
+        "the Cargo resolver must validate the default cuVS source marker"
     );
     assert!(
         manual_script.contains("share/cuvs-nexus/source-revision"),
-        "the manual build must validate the default sibling cuVS source marker"
+        "the manual build must validate the default cuVS source marker"
     );
     assert!(
-        build_support.contains("args([\"ls-files\", \"--stage\", \"--\", \"cuvs\"])"),
-        "the Cargo resolver must compare the default marker with the sibling cuVS stage-0 gitlink"
+        build_support.contains("components/cuvs/cuvs"),
+        "the Cargo resolver must compare the default marker with the root cuVS stage-0 gitlink"
     );
     assert!(
         build_support.contains("installed_revision.trim() != *expected_revision"),
-        "the Cargo resolver must reject a default source marker that differs from the sibling cuVS gitlink"
+        "the Cargo resolver must reject a default source marker that differs from the root cuVS gitlink"
     );
     for pinned_fragment in ["ls-files --stage -- cuvs", "expected_cuvs_revision", "does not match sibling gitlink"] {
         assert!(
@@ -330,7 +331,7 @@ fn build_rs_tracks_cuvs_selectors_and_native_identity_inputs() {
 
     assert!(
         build_rs.contains("for path in &cuvs.source_revision_inputs") && build_rs.contains("cargo:rerun-if-changed={}"),
-        "build.rs must rerun when the sibling source marker or Git index changes"
+        "build.rs must rerun when the root source marker or Git index changes"
     );
 }
 
@@ -397,7 +398,7 @@ fn build_rs_uses_cmake_export_fallback_instead_of_pkg_config_or_deps_scanning() 
         "build.rs should support an explicit CMake export root for native metadata resolution"
     );
     assert!(
-        build_support.contains("../cugraph/cpp/build"),
+        build_support.contains("target/native/cugraph-build"),
         "build_support.rs should support the workspace-local CMake export root for repo-local builds"
     );
     assert!(

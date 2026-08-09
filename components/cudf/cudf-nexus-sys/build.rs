@@ -11,6 +11,18 @@ fn main() {
     // the same toolchain identity.
     let (cc, cxx) = build_support::toolchain::prepare_cmake_toolchain();
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR must be set"));
+    if env::var_os("CUDF_INSTALL_DIR").is_none() && env::var_os("CUDF_CPP_BUILD_DIR").is_none() {
+        let default_install_dir =
+            build_support::default_cudf_install_dir(&manifest_dir).unwrap_or_else(|error| panic!("{error}"));
+        let default_build_dir =
+            build_support::default_cudf_build_dir(&manifest_dir).unwrap_or_else(|error| panic!("{error}"));
+        // SAFETY: build scripts are single-threaded and the native CMake
+        // configuration reads this selector after it is set.
+        unsafe {
+            env::set_var("CUDF_INSTALL_DIR", default_install_dir);
+            env::set_var("CUDF_CPP_BUILD_DIR", default_build_dir);
+        }
+    }
     let native_dir = build_support::lint::native_dir(&manifest_dir);
     let test_hooks = if env::var_os("CARGO_FEATURE_TEST_HOOKS").is_some() { "ON" } else { "OFF" };
 

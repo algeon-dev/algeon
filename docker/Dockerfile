@@ -5,7 +5,7 @@
 # ===========================================================================
 #
 # This image ships a Rust binary that links FORKED RAPIDS C++ libraries
-# (cuDF / cuGraph / RMM / cuVS) built from local sibling checkouts. Those
+# (cuDF / cuGraph / RMM / cuVS) built from the pinned monorepo sources. Those
 # forked `.so` files are NOT in any public `rapidsai/*` or `nvidia/cuda`
 # image, so we bundle the exact libraries the binary was linked against.
 # The unmodified CUDA *toolkit* libraries (libcudart, libcublas, libnvrtc,

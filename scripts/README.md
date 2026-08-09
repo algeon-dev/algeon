@@ -19,3 +19,9 @@ Repository-owned policy data lives in `.config/policies/`; standard tool
 configuration such as `.config/nextest.toml` remains at the location expected
 by that tool. When moving or adding a script, update this map and all callers in
 the same change.
+
+Native build helpers also run from this root and default to the repo-local
+prefixes `target/native/cudf-install`, `target/native/cuvs-install`, and
+`target/native/cugraph-build`. Native source is resolved only through the root
+submodules under `components/*`; component-local wrapper scripts are not a
+second entry point.

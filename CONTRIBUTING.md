@@ -27,8 +27,8 @@ the issue before writing code:
   abstractions, unverified performance fixes, and mechanical refactors without
   an agreed technical goal are not useful starting points.
 - Identify the owning layer early. If a capability gap belongs in `cudf-nexus` or
-  `cugraph-nexus`, open the issue and implement the fix in the owning sibling
-  repository rather than introducing an adapter-level workaround.
+  `cugraph-nexus`, open the issue and implement the fix in its component under
+  `components/` rather than introducing an adapter-level workaround.
 - For bug reports, specify the affected crate, physical plan or SQL query,
   minimal reproduction steps, sanitized configuration or data, actual result,
   and expected result. Source inspection alone is not confirmation of a bug; if
@@ -86,8 +86,8 @@ Apache DataFusion Physical Plan
         ┌──────────────────────┴──────────────────────┐
         ▼                                             ▼
 ┌──────────────────────────────┐        ┌─────────────────────────────┐
-│ sibling: cudf-nexus          │        │ sibling: cugraph-nexus      │
-│ (cuDF / RMM / KvikIO C++)    │        │ (cuGraph C++ / C API)       │
+│ components/cudf              │        │ components/cugraph          │
+│ cuDF / RMM / KvikIO          │        │ cuGraph C++ / C API          │
 └──────────────────────────────┘        └─────────────────────────────┘
 ```
 
@@ -96,7 +96,7 @@ Apache DataFusion Physical Plan
 - **Fix the owning abstraction**: DataFusion-dependent lowering belongs in the
   root adapter; DataFusion-independent IR, capability admission, and execution
   belong in `crates/nexus-query-engine`; native cuDF and cuGraph operations
-  belong in their respective sibling crates. Never paper over an engine or
+  belong in their respective component crates. Never paper over an engine or
   RAPIDS limitation with an adapter workaround.
 - **One bounded admission contract**: Every native attempt is admitted against
   a single per-device ledger, immutable grants, and transactional envelopes.
@@ -112,7 +112,7 @@ Apache DataFusion Physical Plan
   convert to `DataFusionError` only at the DataFusion boundary.
 
 For complete architectural details and reference designs, consult the
-[Architecture Guides](website/docs/overview.md).
+[Architecture Guides](website/docs/design/index.mdx).
 
 ## Subtractive Development
 
@@ -157,7 +157,7 @@ In the PR description, include:
 - A concise summary of the change and its user-facing or technical value.
 - The behavior, API, or contract that changed.
 - The layer that owns the change (root adapter, `nexus-query-engine`,
-  `nexus-server`, `nexus-iceberg`, or sibling RAPIDS crates).
+  `nexus-server`, `nexus-iceberg`, or a component crate under `components/`).
 - The test environment used: CUDA driver and toolkit setup, GPU model, Rust
   toolchain, host OS, and relevant environment variables.
 - The exact test commands or verification steps executed.
@@ -167,14 +167,26 @@ Do not describe a compile-only check as native or GPU qualification.
 
 ## Local Setup
 
-DataFusion Nexus expects sibling checkouts of the RAPIDS Rust repositories:
+DataFusion Nexus is a single recursive checkout. The root workspace owns the
+adapter, engine, server, tests, and all three Rust integration components:
 
 ```text
-nexus/
-├── cudf-nexus/
-├── cugraph-nexus/
-├── cuvs-nexus/
-└── datafusion-nexus/
+datafusion-nexus/
+├── components/cudf/             # cudf-nexus, cudf-nexus-sys, rapids-interop
+│   └── cudf/                    # pinned cuDF fork submodule
+├── components/cugraph/          # cugraph-nexus and cugraph-nexus-sys
+│   └── cugraph/                 # pinned cuGraph fork submodule
+├── components/cuvs/             # cuvs-nexus, cuvs-nexus-sys, xtask
+│   └── cuvs/                    # pinned official cuVS submodule
+├── crates/                      # DataFusion-free engine and support crates
+└── src/                         # DataFusion adapter
+```
+
+Clone the repository with its pinned native sources:
+
+```bash
+git clone --recurse-submodules \
+  https://github.com/DataFusion-Nexus/datafusion-nexus.git
 ```
 
 ### Toolchain & Environment Specifications
@@ -186,8 +198,8 @@ defined and maintained in the website documentation:
 - [Prerequisites](website/docs/build/prerequisites.md): System dependencies,
   CUDA requirements, compiler pairings, and linker setup.
 - [Environment Configuration](website/docs/build/environment.md): Discovery
-  paths (`CUDF_INSTALL_DIR`, `CUGRAPH_INSTALL_DIR`, `CUVS_INSTALL_DIR`) and
-  CUDA loader settings.
+  paths (`CUDF_INSTALL_DIR`, `CUGRAPH_CMAKE_BUILD_DIR`, `CUVS_INSTALL_DIR`),
+  their `target/native/*` defaults, and CUDA loader settings.
 - [Building from Source](website/docs/build/from-source.md): Step-by-step
   build instructions and package compilation.
 
@@ -204,7 +216,7 @@ refer to the [Tests Documentation](website/docs/build/tests.md).
 
 `nexus-query-engine` tests require process isolation because allocator lifecycle
 cases install a process-global `DeviceMemoryManager`, and native execution cases
-retain backend policy per process. Broad `cargo test` runs without process
+retain backend policy per process. Broad `cargo test --all-features` runs without process
 isolation fail closed or corrupt global state. Test execution must use
 `cargo-nextest` as specified in the testing guide.
 
@@ -213,8 +225,8 @@ isolation fail closed or corrupt global state. Test execution must use
 Direct GPU commands must be serialized with `flock /tmp/cudf-gpu.lock`:
 
 ```shell
-flock /tmp/cudf-gpu.lock cargo nextest run -p nexus-query-engine --lib
-flock /tmp/cudf-gpu.lock cargo nextest run -p datafusion-nexus --test root_gpu_tests
+flock /tmp/cudf-gpu.lock cargo nextest run -p nexus-query-engine --all-features --lib
+flock /tmp/cudf-gpu.lock cargo nextest run -p datafusion-nexus --all-features --test root_gpu_tests
 ```
 
 > [!IMPORTANT]
@@ -255,5 +267,6 @@ bash scripts/check_all.sh
   modifying it, regenerate nextest configuration:
   `python3 scripts/ci/test_lane_policy.py generate-nextest --write`.
 - Do not add external-service E2E tests (such as live Iceberg REST/Glue catalogs)
-  to default Cargo test targets; run them explicitly via `cargo run -p nexus-tools`
+  to default Cargo test targets; run them explicitly via
+  `cargo run -p nexus-tools --all-features`
   or fixture scripts under `fixture/`.

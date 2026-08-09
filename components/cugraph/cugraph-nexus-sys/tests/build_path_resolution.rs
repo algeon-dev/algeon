@@ -51,25 +51,29 @@ fn create_cuvs_install(prefix: &Path) -> PathBuf {
     prefix.to_path_buf()
 }
 
-fn create_sibling_cuvs_pin(workspace_parent: &Path) {
-    let sibling_repo = workspace_parent.join("cuvs-nexus");
-    fs::create_dir_all(&sibling_repo).expect("create sibling cuVS repository");
+fn workspace_manifest_dir(root: &Path) -> PathBuf {
+    root.join("components/cugraph/cugraph-nexus-sys")
+}
+
+fn create_root_cuvs_pin(workspace_root: &Path) {
+    let source_parent = workspace_root.join("components/cuvs");
+    fs::create_dir_all(&source_parent).expect("create root cuVS source parent");
     let init =
-        Command::new("git").arg("-C").arg(&sibling_repo).args(["init", "--quiet"]).status().expect("run git init");
-    assert!(init.success(), "initialize sibling cuVS repository");
-    let cacheinfo = format!("160000,{TEST_CUVS_REVISION},cuvs");
+        Command::new("git").arg("-C").arg(workspace_root).args(["init", "--quiet"]).status().expect("run git init");
+    assert!(init.success(), "initialize root repository");
+    let cacheinfo = format!("160000,{TEST_CUVS_REVISION},components/cuvs/cuvs");
     let update = Command::new("git")
         .arg("-C")
-        .arg(&sibling_repo)
+        .arg(workspace_root)
         .args(["update-index", "--add", "--cacheinfo", &cacheinfo])
         .status()
         .expect("run git update-index");
-    assert!(update.success(), "record sibling cuVS gitlink");
+    assert!(update.success(), "record root cuVS gitlink");
 }
 
-fn create_default_cuvs_install(workspace_parent: &Path) -> PathBuf {
-    create_sibling_cuvs_pin(workspace_parent);
-    let install = create_cuvs_install(&workspace_parent.join("cuvs-nexus/cuvs-install"));
+fn create_default_cuvs_install(workspace_root: &Path) -> PathBuf {
+    create_root_cuvs_pin(workspace_root);
+    let install = create_cuvs_install(&workspace_root.join("target/native/cuvs-install"));
     let marker = install.join("share/cuvs-nexus/source-revision");
     fs::create_dir_all(marker.parent().expect("source marker parent")).expect("create source marker directory");
     fs::write(marker, format!("{TEST_CUVS_REVISION}\n")).expect("write source marker");
@@ -247,8 +251,8 @@ fn cmake_export_dir_uses_explicit_override_when_present() {
 #[test]
 fn cmake_export_dir_uses_workspace_local_build_tree_when_available() {
     let root = TestDir::new();
-    let manifest_dir = root.path().join("repo").join("cugraph-nexus-sys");
-    let build_dir = root.path().join("repo").join("cugraph").join("cpp").join("build");
+    let manifest_dir = workspace_manifest_dir(root.path());
+    let build_dir = root.path().join("target/native/cugraph-build");
 
     fs::create_dir_all(&manifest_dir).expect("create manifest dir");
     fs::create_dir_all(&build_dir).expect("create build dir");
@@ -262,10 +266,10 @@ fn cmake_export_dir_uses_workspace_local_build_tree_when_available() {
 #[test]
 fn prepare_workspace_cmake_export_dir_reuses_existing_canonical_build() {
     let root = TestDir::new();
-    let manifest_dir = root.path().join("repo").join("cugraph-nexus-sys");
-    let cpp_dir = root.path().join("repo").join("cugraph").join("cpp");
-    let build_dir = cpp_dir.join("build");
-    let cudf_install = root.path().join("cudf-nexus").join("cudf-install");
+    let manifest_dir = workspace_manifest_dir(root.path());
+    let cpp_dir = root.path().join("components/cugraph/cugraph/cpp");
+    let build_dir = root.path().join("target/native/cugraph-build");
+    let cudf_install = root.path().join("target/native/cudf-install");
     let cuvs_install = create_default_cuvs_install(root.path());
     let rmm_dir = cudf_install.join("lib").join("cmake").join("rmm");
     let logger_dir = cudf_install.join("lib").join("cmake").join("rapids_logger");
@@ -300,9 +304,9 @@ fn prepare_workspace_cmake_export_dir_reuses_existing_canonical_build() {
 #[test]
 fn prepare_workspace_cmake_export_dir_honors_auto_build_opt_out() {
     let root = TestDir::new();
-    let manifest_dir = root.path().join("repo").join("cugraph-nexus-sys");
-    let cpp_dir = root.path().join("repo").join("cugraph").join("cpp");
-    let cudf_install = root.path().join("cudf-nexus").join("cudf-install");
+    let manifest_dir = workspace_manifest_dir(root.path());
+    let cpp_dir = root.path().join("components/cugraph/cugraph/cpp");
+    let cudf_install = root.path().join("target/native/cudf-install");
     create_default_cuvs_install(root.path());
     let rmm_dir = cudf_install.join("lib").join("cmake").join("rmm");
     let logger_dir = cudf_install.join("lib").join("cmake").join("rapids_logger");
@@ -326,10 +330,10 @@ fn prepare_workspace_cmake_export_dir_honors_auto_build_opt_out() {
 #[test]
 fn prepare_workspace_cmake_export_dir_rejects_stale_cuda_arch_when_auto_build_is_disabled() {
     let root = TestDir::new();
-    let manifest_dir = root.path().join("repo").join("cugraph-nexus-sys");
-    let cpp_dir = root.path().join("repo").join("cugraph").join("cpp");
-    let build_dir = cpp_dir.join("build");
-    let cudf_install = root.path().join("cudf-nexus").join("cudf-install");
+    let manifest_dir = workspace_manifest_dir(root.path());
+    let cpp_dir = root.path().join("components/cugraph/cugraph/cpp");
+    let build_dir = root.path().join("target/native/cugraph-build");
+    let cudf_install = root.path().join("target/native/cudf-install");
     let cuvs_install = create_default_cuvs_install(root.path());
     let rmm_dir = cudf_install.join("lib").join("cmake").join("rmm");
     let logger_dir = cudf_install.join("lib").join("cmake").join("rapids_logger");
@@ -479,7 +483,7 @@ fn primary_cugraph_include_dir_returns_the_path_with_cugraph_headers() {
 #[test]
 fn canonical_cuvs_contract_resolves_cmake_package_and_library_identity() {
     let root = TestDir::new();
-    let manifest_dir = root.path().join("repo/cugraph-nexus-sys");
+    let manifest_dir = workspace_manifest_dir(root.path());
     let cuvs_install = create_cuvs_install(&root.path().join("canonical-cuvs"));
     fs::create_dir_all(&manifest_dir).expect("create manifest dir");
 
@@ -496,14 +500,14 @@ fn canonical_cuvs_contract_resolves_cmake_package_and_library_identity() {
 }
 
 #[test]
-fn canonical_cuvs_contract_requires_matching_default_sibling_source_marker() {
+fn canonical_cuvs_contract_requires_matching_default_source_marker() {
     let root = TestDir::new();
-    let manifest_dir = root.path().join("cugraph-nexus/cugraph-nexus-sys");
+    let manifest_dir = workspace_manifest_dir(root.path());
     let cuvs_install = create_default_cuvs_install(root.path());
     fs::create_dir_all(&manifest_dir).expect("create manifest dir");
 
-    let contract = build_support::resolve_canonical_cuvs_contract(&manifest_dir, None)
-        .expect("resolve default sibling cuVS contract");
+    let contract =
+        build_support::resolve_canonical_cuvs_contract(&manifest_dir, None).expect("resolve default cuVS contract");
 
     assert_eq!(contract.install_dir, cuvs_install.canonicalize().expect("canonical default cuVS prefix"));
     assert_eq!(contract.source_revision_inputs.len(), 2);
@@ -512,9 +516,9 @@ fn canonical_cuvs_contract_requires_matching_default_sibling_source_marker() {
 }
 
 #[test]
-fn canonical_cuvs_contract_rejects_missing_or_stale_default_sibling_source_marker() {
+fn canonical_cuvs_contract_rejects_missing_or_stale_default_source_marker() {
     let root = TestDir::new();
-    let manifest_dir = root.path().join("cugraph-nexus/cugraph-nexus-sys");
+    let manifest_dir = workspace_manifest_dir(root.path());
     let cuvs_install = create_default_cuvs_install(root.path());
     let marker = cuvs_install.join("share/cuvs-nexus/source-revision");
     fs::create_dir_all(&manifest_dir).expect("create manifest dir");
@@ -530,22 +534,21 @@ fn canonical_cuvs_contract_rejects_missing_or_stale_default_sibling_source_marke
 }
 
 #[test]
-fn canonical_cuvs_contract_rejects_default_sibling_without_a_stage_zero_gitlink() {
+fn canonical_cuvs_contract_rejects_default_without_a_stage_zero_gitlink() {
     let root = TestDir::new();
-    let manifest_dir = root.path().join("cugraph-nexus/cugraph-nexus-sys");
-    let sibling_repo = root.path().join("cuvs-nexus");
-    let cuvs_install = create_cuvs_install(&sibling_repo.join("cuvs-install"));
+    let manifest_dir = workspace_manifest_dir(root.path());
+    let cuvs_install = create_cuvs_install(&root.path().join("target/native/cuvs-install"));
     let marker = cuvs_install.join("share/cuvs-nexus/source-revision");
     fs::create_dir_all(&manifest_dir).expect("create manifest dir");
     fs::create_dir_all(marker.parent().expect("source marker parent")).expect("create source marker directory");
     fs::write(marker, format!("{TEST_CUVS_REVISION}\n")).expect("write source marker");
-    let init =
-        Command::new("git").arg("-C").arg(&sibling_repo).args(["init", "--quiet"]).status().expect("run git init");
-    assert!(init.success(), "initialize sibling cuVS repository");
+    let init = Command::new("git").arg("-C").arg(root.path()).args(["init", "--quiet"]).status().expect("run git init");
+    assert!(init.success(), "initialize root repository");
 
     let err = build_support::resolve_canonical_cuvs_contract(&manifest_dir, None).unwrap_err();
 
-    assert!(err.contains("exactly one stage-0 cuvs gitlink"));
+    assert!(err.contains("exactly one stage-0 gitlink"));
+    assert!(err.contains("components/cuvs/cuvs"));
 }
 
 #[cfg(unix)]
@@ -554,7 +557,7 @@ fn canonical_cuvs_contract_does_not_treat_a_default_prefix_symlink_as_external()
     use std::os::unix::fs::symlink;
 
     let root = TestDir::new();
-    let manifest_dir = root.path().join("cugraph-nexus/cugraph-nexus-sys");
+    let manifest_dir = workspace_manifest_dir(root.path());
     let cuvs_install = create_default_cuvs_install(root.path());
     let alias = root.path().join("explicit-cuvs-alias");
     fs::create_dir_all(&manifest_dir).expect("create manifest dir");
@@ -571,7 +574,7 @@ fn canonical_cuvs_contract_does_not_treat_a_default_prefix_symlink_as_external()
 #[test]
 fn canonical_cuvs_contract_rejects_missing_shared_library() {
     let root = TestDir::new();
-    let manifest_dir = root.path().join("repo/cugraph-nexus-sys");
+    let manifest_dir = workspace_manifest_dir(root.path());
     let cuvs_install = create_cuvs_install(&root.path().join("missing-lib"));
     fs::create_dir_all(&manifest_dir).expect("create manifest dir");
     fs::remove_file(cuvs_install.join("lib/libcuvs.so")).expect("remove libcuvs fixture");
@@ -590,7 +593,7 @@ fn canonical_cuvs_contract_preserves_selector_and_refreshes_symlink_identity() {
     use std::os::unix::fs::symlink;
 
     let root = TestDir::new();
-    let manifest_dir = root.path().join("repo/cugraph-nexus-sys");
+    let manifest_dir = workspace_manifest_dir(root.path());
     let cuvs_install = create_cuvs_install(&root.path().join("external-cuvs"));
     fs::create_dir_all(&manifest_dir).expect("create manifest dir");
     let selector = cuvs_install.join("lib/libcuvs.so");

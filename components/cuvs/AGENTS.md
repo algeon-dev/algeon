@@ -46,17 +46,20 @@
 
 ## Project boundaries
 
-`cuvs-nexus` is the runtime-bound Rust integration for the scoped cuVS surface
-used by DataFusion Nexus. SQL planning and query execution belong in
-`datafusion-nexus`, not this repository.
+`components/cuvs` is the runtime-bound Rust integration for the scoped cuVS
+surface used by DataFusion Nexus. SQL planning and query execution belong in
+the root `datafusion-nexus` adapter.
 
 - Safe algorithm, tensor, ownership, and completion APIs belong in
   `cuvs-nexus/`; raw generated C bindings and native discovery belong in
   `cuvs-nexus-sys/`.
-- `cudf-nexus` and `rapids-interop` are sibling path dependencies. The pinned
-  official cuVS source is the `cuvs/` submodule.
-- Default members are the two library crates. `tools/xtask` is unpublished
-  maintenance tooling and remains an explicit non-default member.
+- `cudf-nexus` and `rapids-interop` are root-workspace component dependencies.
+  The pinned official cuVS source is `components/cuvs/cuvs`.
+- The root workspace owns default membership. The two cuVS library crates and
+  unpublished `components/cuvs/tools/xtask` package are non-default members.
+- The canonical install defaults are `target/native/cuvs-install` and the
+  shared `target/native/cudf-install`; override them only with explicit
+  selectors such as `CUVS_ROOT` and `CUVS_INSTALL_DIR`.
 - Linux only. MSRV is Rust 1.94; formatting requires nightly.
 
 ## Architecture contracts
@@ -71,7 +74,7 @@ used by DataFusion Nexus. SQL planning and query execution belong in
   and incomplete-drop behavior. Complete reads only after cuVS work is enqueued;
   never release producer storage before the consumer fence permits it.
 - Checked-in bindings come only from the pinned cuVS revision through
-  `cargo xtask bindings generate`. Normal library builds, docs, and lints must
+  `cargo run -p xtask --all-features -- bindings generate`. Normal library builds, docs, and lints must
   not regenerate bindings or gain a bindgen build dependency.
 - Native discovery accepts a canonical installed cuVS package, never a private
   `_deps` copy. Preserve the selected cuDF/RMM identity, shared CUDA runtime,
@@ -84,19 +87,19 @@ used by DataFusion Nexus. SQL planning and query execution belong in
 
 ```bash
 # Native-free repository, package, workspace, and checked-binding contracts
-cargo xtask verify
+cargo run -p xtask --all-features -- verify
 cargo clippy -p xtask --all-features --all-targets -- -D warnings
 DOCS_RS=1 RUSTDOCFLAGS="-D warnings" cargo doc -p cuvs-nexus-sys --all-features --no-deps
 cargo +nightly fmt --all
 
 # Source and canonical native prefix setup
-scripts/bootstrap_cuvs.sh
-scripts/build_libcuvs.sh
-cargo xtask bindings check
+scripts/build/bootstrap_cuvs.sh
+scripts/build/build_libcuvs.sh
+cargo run -p xtask --all-features -- bindings check
 
 # Targeted native edit loops
-flock /tmp/cudf-gpu.lock cargo test -p cuvs-nexus-sys --test abi_contract
-flock /tmp/cudf-gpu.lock cargo test -p cuvs-nexus --test gpu
+flock /tmp/cudf-gpu.lock cargo test -p cuvs-nexus-sys --all-features --test abi_contract
+flock /tmp/cudf-gpu.lock cargo test -p cuvs-nexus --all-features --test gpu
 
 # Full native workspace surface
 cargo check --workspace --all-features --all-targets
@@ -105,7 +108,7 @@ flock /tmp/cudf-gpu.lock cargo test --workspace --all-features --no-fail-fast
 ```
 
 Run focused checks first, then broaden validation with the change's blast
-radius. `cargo xtask verify` is native-free maintenance validation and must not
+radius. `cargo run -p xtask --all-features -- verify` is native-free maintenance validation and must not
 be reported as the full native or GPU test surface.
 
 ## Writing tests
@@ -126,12 +129,12 @@ be reported as the full native or GPU test surface.
 ## Testing and repository policy
 
 - Serialize every GPU test with `flock /tmp/cudf-gpu.lock`.
-- `cargo xtask verify` is the canonical maintenance-contract entry point.
+- `cargo run -p xtask --all-features -- verify` is the canonical maintenance-contract entry point.
   Binding refresh and reproducibility checks live under
-  `cargo xtask bindings`; do not add replacement one-off check scripts.
-- `scripts/bootstrap_cuvs.sh` and `scripts/build_libcuvs.sh` are the only
-  top-level operational scripts. Keep source, workspace, package, and binding
-  policy in `tools/xtask`.
+  `cargo run -p xtask --all-features -- bindings`; do not add replacement one-off check scripts.
+- `scripts/build/bootstrap_cuvs.sh` and `scripts/build/build_libcuvs.sh` are the
+  root-owned cuVS operational scripts. Keep source, workspace, package, and
+  binding policy in `components/cuvs/tools/xtask`.
 - Keep `CUVS_NEXUS_SYS_SKIP_NATIVE` and `DOCS_RS` as maintenance environments,
   not additive `cuvs-nexus-sys` Cargo features. The sys crate must remain
   usable for native-free linting, documentation, and package verification.
@@ -139,7 +142,7 @@ be reported as the full native or GPU test surface.
   the source pin, native build flags, headers, discovery, loader metadata, or
   generated bindings.
 - `CUVS_ROOT` is an explicit build-time package selector, not a runtime loader
-  configuration. Do not add ambient sibling, cuGraph build-tree, or private
+  configuration. Do not add ambient component, cuGraph build-tree, or private
   dependency fallbacks.
 
 ## Public contracts

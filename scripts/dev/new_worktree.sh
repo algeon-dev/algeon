@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
-# Create an isolated git worktree for parallel agent development on
-# datafusion-nexus. Shares sibling path dependencies (cudf-nexus, cugraph-nexus, and
-# optional comparison repos) with the primary checkout; isolates only the Cargo target dir
-# so parallel builds don't clobber each other.
+# Create an isolated datafusion-nexus worktree, including native sources and
+# build/install directories.
 #
 # Usage:
 #   scripts/dev/new_worktree.sh <name> [base-ref]
@@ -13,8 +11,8 @@
 # Result:
 #   - worktree at ../datafusion-nexus-wt-<name>
 #   - new branch wt/<name> tracking the base ref
-#   - isolated CARGO_TARGET_DIR under ~/code/cargo-target/datafusion-nexus-wt-<name>
-#   - .venv symlink to the shared primary-checkout Python environment
+#   - recursive native-source submodules at their pinned revisions
+#   - isolated CARGO_TARGET_DIR and native artifacts under the worktree
 #   - .envrc.sh inside the worktree that exports the right env vars
 
 set -euo pipefail
@@ -38,8 +36,7 @@ parent_dir="$(dirname "$repo_root")"
 
 worktree_path="$parent_dir/datafusion-nexus-wt-$name"
 branch="wt/$name"
-target_dir="$HOME/code/cargo-target/datafusion-nexus-wt-$name"
-shared_venv="$parent_dir/datafusion-nexus/.venv"
+target_dir="$worktree_path/target"
 
 if [[ -e "$worktree_path" ]]; then
     echo "error: $worktree_path already exists" >&2
@@ -48,42 +45,26 @@ fi
 
 echo "==> Creating worktree at $worktree_path (branch $branch from $base_ref)"
 git -C "$repo_root" worktree add -b "$branch" "$worktree_path" "$base_ref"
+git -C "$worktree_path" submodule update --init --recursive
 
 mkdir -p "$target_dir"
-if [[ -d "$shared_venv" ]]; then
-    ln -s "$shared_venv" "$worktree_path/.venv"
-else
-    echo "warning: shared Python venv $shared_venv does not exist; skipping worktree .venv symlink" >&2
-fi
 
 envrc="$worktree_path/.envrc.sh"
 cat >"$envrc" <<EOF
 # Source this file when working in this worktree:
 #   source .envrc.sh
 #
-# Provides:
-#   - isolated CARGO_TARGET_DIR so parallel worktrees don't fight over target/
-#   - PATH pointing at the shared Python .venv when present
-#   - LD_LIBRARY_PATH pointing at the shared cudf-nexus install + this worktree's
-#     own cudf-nexus-sys build output (in case cudf-nexus-sys is rebuilt here).
 CARGO_TARGET_DIR="$target_dir"
 export CARGO_TARGET_DIR
 
-if [[ -d "$worktree_path/.venv/bin" && ":\${PATH:-}:" != *":$worktree_path/.venv/bin:"* ]]; then
-    PATH="$worktree_path/.venv/bin\${PATH:+:\$PATH}"
-    export PATH
-fi
+CUDF_INSTALL_DIR="\$CARGO_TARGET_DIR/native/cudf-install"
+CUVS_INSTALL_DIR="\$CARGO_TARGET_DIR/native/cuvs-install"
+CUGRAPH_CMAKE_BUILD_DIR="\$CARGO_TARGET_DIR/native/cugraph-build"
+export CUDF_INSTALL_DIR CUVS_INSTALL_DIR CUGRAPH_CMAKE_BUILD_DIR
 
-# Shared libcudf install (from the primary cudf-nexus checkout). Every worktree
-# links against the same libcudf.so unless you explicitly override cudf-nexus via
-# a .cargo/config.toml [paths] entry in this worktree.
-_CUDF_INSTALL_LIB="$HOME/code/cudf-nexus/cudf-install/lib"
-_WT_CUDF_SYS_OUT="\$CARGO_TARGET_DIR/release/build"
-
-if [[ ":\${LD_LIBRARY_PATH:-}:" != *":\$_CUDF_INSTALL_LIB:"* ]]; then
-    LD_LIBRARY_PATH="\$_CUDF_INSTALL_LIB\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
-    export LD_LIBRARY_PATH
-fi
+_NEXUS_NATIVE_LIBS="\$CUGRAPH_CMAKE_BUILD_DIR:\$CUDF_INSTALL_DIR/lib:\$CUVS_INSTALL_DIR/lib"
+LD_LIBRARY_PATH="\$_NEXUS_NATIVE_LIBS\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
+export LD_LIBRARY_PATH
 
 # Tag the shell so you can see which worktree you're in.
 PS1_WT_TAG="(wt:$name) "
@@ -102,21 +83,16 @@ cat <<EOF
 Worktree:        $worktree_path
 Branch:          $branch  (forked from $base_ref)
 CARGO_TARGET_DIR: $target_dir
-Python venv:      $worktree_path/.venv -> $shared_venv
+Native artifacts: $target_dir/native
 
 Next steps:
   cd $worktree_path
   source .envrc.sh
-  cargo build
+  cargo build --all-features
 
-Sibling path-deps shared with primary checkout (read-only by convention):
-  $parent_dir/cudf-nexus
-  optional comparison repos under $parent_dir
-
-If you need to modify a sibling dep for this worktree only, add a
-[paths] override to $worktree_path/.cargo/config.toml — do NOT edit
-the sibling repo in place, every other worktree shares it.
+The component crates, native gitlinks, Cargo target, and mutable native
+build/install directories are all isolated inside this worktree.
 
 GPU is a single resource. Serialize benchmark/execution runs across
-worktrees with e.g. \`flock /tmp/cudf-gpu.lock cargo run --release ...\`.
+worktrees with e.g. \`flock /tmp/cudf-gpu.lock cargo run --release --all-features ...\`.
 EOF

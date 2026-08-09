@@ -18,8 +18,10 @@ fn workspace_root() -> Result<PathBuf> {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(Path::parent)
+        .and_then(Path::parent)
+        .and_then(Path::parent)
         .map(Path::to_path_buf)
-        .context("xtask must remain under tools/xtask")
+        .context("xtask must remain under components/cuvs/tools/xtask")
 }
 
 fn verify(workspace_root: &Path) -> Result<()> {
@@ -27,12 +29,12 @@ fn verify(workspace_root: &Path) -> Result<()> {
     let versions = workspace::verify(workspace_root)?;
 
     let mut check = command::cargo_at(workspace_root);
-    check.args(["check", "--locked", "-p", "cuvs-nexus-sys", "--all-targets"]);
+    check.args(["check", "--locked", "-p", "cuvs-nexus-sys", "--all-features", "--all-targets"]);
     check.env("CUVS_NEXUS_SYS_SKIP_NATIVE", "1");
     command::run(check, "native-free cuvs-nexus-sys all-target check")?;
 
     let mut cmake = command::cargo_at(workspace_root);
-    cmake.args(["test", "--locked", "-p", "cuvs-nexus-sys", "--test", "cmake_root_contract"]);
+    cmake.args(["test", "--locked", "-p", "cuvs-nexus-sys", "--all-features", "--test", "cmake_root_contract"]);
     cmake.env("CUVS_NEXUS_SYS_SKIP_NATIVE", "1");
     command::run(cmake, "CMake root contract tests")?;
 
@@ -44,19 +46,19 @@ fn verify(workspace_root: &Path) -> Result<()> {
 #[cfg(not(feature = "bindings"))]
 fn bindings_command(workspace_root: &Path, args: &[OsString]) -> Result<()> {
     let mut invocation = command::cargo_at(workspace_root);
-    invocation.args(["run", "--locked", "--package", "xtask", "--features", "bindings", "--"]);
+    invocation.args(["run", "--locked", "-p", "xtask", "--all-features", "--"]);
     invocation.args(args);
     command::run(invocation, "binding maintenance command")
 }
 
 #[cfg(feature = "bindings")]
 fn bindings_command(workspace_root: &Path, args: &[OsString]) -> Result<()> {
-    ensure!(args.len() == 2, "usage: cargo xtask bindings <generate|check>");
+    ensure!(args.len() == 2, "usage: cargo run -p xtask --all-features -- bindings <generate|check>");
     bindings::run(workspace_root, args[1].to_str().context("binding action must be valid UTF-8")?)
 }
 
 fn usage() -> &'static str {
-    "usage:\n  cargo xtask bindings generate\n  cargo xtask bindings check\n  cargo xtask verify"
+    "usage:\n  cargo run -p xtask --all-features -- bindings generate\n  cargo run -p xtask --all-features -- bindings check\n  cargo run -p xtask --all-features -- verify"
 }
 
 fn main() -> Result<()> {

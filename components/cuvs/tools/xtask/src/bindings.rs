@@ -10,16 +10,16 @@ use crate::source;
 
 fn generate(workspace_root: &Path, output: &Path) -> Result<String> {
     let revision = source::verify(workspace_root)?;
-    let manifest_dir = workspace_root.join("tools/xtask");
-    let sys_dir = workspace_root.join("cuvs-nexus-sys");
-    let source_dir = workspace_root.join("cuvs");
+    let manifest_dir = workspace_root.join("components/cuvs/tools/xtask");
+    let sys_dir = workspace_root.join("components/cuvs/cuvs-nexus-sys");
+    let source_dir = workspace_root.join("components/cuvs/cuvs");
     let include_dir = source_dir.join("c/include");
     let header = include_dir.join("cuvs/core/all.h");
     ensure!(header.is_file(), "pinned cuVS headers are missing at {}", header.display());
 
     let dlpack_include = env::var_os("DLPACK_INCLUDE_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|| source_dir.join("cpp/build/_deps/dlpack-src/include"));
+        .unwrap_or_else(|| workspace_root.join("target/native/cuvs-build/_deps/dlpack-src/include"));
     ensure!(
         dlpack_include.join("dlpack/dlpack.h").is_file(),
         "DLPack headers are missing under '{}'; build the canonical cuVS prefix or set DLPACK_INCLUDE_DIR",
@@ -63,12 +63,15 @@ fn print_diff(checked_in: &Path, generated: &Path) -> Result<()> {
 }
 
 pub(crate) fn run(workspace_root: &Path, action: &str) -> Result<()> {
-    ensure!(matches!(action, "generate" | "check"), "usage: cargo xtask bindings <generate|check>");
+    ensure!(
+        matches!(action, "generate" | "check"),
+        "usage: cargo run -p xtask --all-features -- bindings <generate|check>"
+    );
     let temporary = tempfile::Builder::new().prefix("cuvs-nexus-bindings-").tempdir()?;
     let generated = temporary.path().join("bindings.rs");
     let revision = generate(workspace_root, &generated)?;
     ensure!(generated.metadata()?.len() > 0, "bindings generator produced an empty file");
-    let checked_in = workspace_root.join("cuvs-nexus-sys/src/bindings.rs");
+    let checked_in = workspace_root.join("components/cuvs/cuvs-nexus-sys/src/bindings.rs");
 
     if action == "generate" {
         fs::copy(&generated, &checked_in)
@@ -79,7 +82,7 @@ pub(crate) fn run(workspace_root: &Path, action: &str) -> Result<()> {
     if fs::read(&generated)? != fs::read(&checked_in)? {
         eprintln!("error: checked-in bindings are stale: {}", checked_in.display());
         print_diff(&checked_in, &generated)?;
-        bail!("run `cargo xtask bindings generate`");
+        bail!("run `cargo run -p xtask --all-features -- bindings generate`");
     }
     println!("checked-in bindings match pinned cuVS headers: {}", checked_in.display());
     Ok(())

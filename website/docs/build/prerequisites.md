@@ -26,8 +26,8 @@ follow the [RAPIDS install guide](https://docs.rapids.ai/install/) and the
 | gcc/g++ **14** | libcudf, libcuvs, libcugraph builds (host compiler) | RAPIDS 26.06 pins gcc 14 |
 | CMake ≥ 3.30.4 | libcudf, libcuvs, libcugraph builds; the cuDF Rust shim | hard floor in the C++ projects |
 | Ninja | libcudf, libcuvs, libcugraph builds | RAPIDS build scripts default to it |
-| mold + clang | `cudf-nexus`, `cuvs-nexus`, `cugraph-nexus`, `datafusion-nexus` Cargo builds | `datafusion-nexus` pins mold in `.cargo/config.toml`; install both on the host |
-| Rust (stable + nightly) | `cudf-nexus`, `cuvs-nexus`, `cugraph-nexus`, `datafusion-nexus` | nightly only for `rustfmt` |
+| mold + clang | Root workspace Cargo builds for `components/*` and `datafusion-nexus` | The root `.cargo/config.toml` pins mold; install both on the host |
+| Rust (stable + nightly) | Root workspace crates and `datafusion-nexus` | nightly only for `rustfmt` |
 | Python + pyarrow | a few `cudf-nexus` Parquet **fixture tests** | **not** a build dependency |
 
 ## NVIDIA driver and CUDA toolkit
@@ -78,7 +78,8 @@ sudo apt-get install -y build-essential git ninja-build gcc-14 g++-14 clang mold
 This line also installs **ninja** (the generator every CMake build in the stack
 uses; RAPIDS build scripts default to it), **git**, **clang**, and **mold**.
 `datafusion-nexus` selects clang + mold from its `.cargo/config.toml`, so install
-both before any `cargo build` / `cargo test` step on the Rust workspaces.
+both before any `cargo build --all-features` / `cargo test --all-features` step
+on the Rust workspace.
 
 RAPIDS 26.06 **pins gcc 14** as the host compiler for all three native builds
 (`gcc_linux-64=14.*` in the cudf, cuvs, and cugraph `dependencies.yaml`). Ubuntu
@@ -135,10 +136,10 @@ mold --version
 clang --version
 ```
 
-For sibling crates built outside `datafusion-nexus`
-(`cudf-nexus`, `cuvs-nexus`, `cugraph-nexus`),
-install the same packages and keep an equivalent linker setting in
-`~/.cargo/config.toml` so plain `cargo build` still uses mold:
+All component crates are built from the `datafusion-nexus` root workspace, so
+the root `.cargo/config.toml` applies to them. If you intentionally build a
+component from a source copy outside this checkout, install the same packages
+and keep an equivalent linker setting in `~/.cargo/config.toml`:
 
 ```toml
 [target.x86_64-unknown-linux-gnu]
@@ -165,10 +166,10 @@ it. The nightly toolchain is only used for `cargo +nightly fmt`.
 
 ## Python (test fixtures only)
 
-A few `cudf-nexus` Parquet fixture tests shell out to Python with pyarrow. This is
+A few `components/cudf` Parquet fixture tests shell out to Python with pyarrow. This is
 **not** a build dependency — libcudf, libcuvs, libcugraph, and every Rust crate compile
 and link without it — so install it only if you intend to run the full
-`cudf-nexus` test suite:
+cuDF component test suite:
 
 ```bash
 python3 -m pip install --user pyarrow

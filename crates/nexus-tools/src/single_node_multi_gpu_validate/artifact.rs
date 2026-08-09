@@ -493,9 +493,12 @@ fn qualification_failures(
     require_overload_outcome: bool,
 ) -> Vec<QualificationFailure> {
     let mut failures = Vec::new();
-    for repository in
-        [&provenance.repositories.root, &provenance.repositories.cudf_nexus, &provenance.repositories.cugraph_nexus]
-    {
+    for repository in [
+        &provenance.repositories.root,
+        &provenance.repositories.cudf_nexus,
+        &provenance.repositories.cugraph_nexus,
+        &provenance.repositories.cuvs_nexus,
+    ] {
         if repository.revision.is_empty() || repository.dirty_manifest.sha256.is_empty() {
             failures.push(QualificationFailure { code: "missing_source_hash", attempt_id: None });
         }

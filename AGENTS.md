@@ -43,12 +43,17 @@
 ## Project boundaries
 
 `datafusion-nexus` lowers DataFusion physical plans to `nexus-query-engine` IR
-and executes them via `cudf-nexus` and `cugraph-nexus`. DataFusion-dependent
-code belongs in the root adapter; DataFusion-independent IR and execution
-belong in `crates/nexus-query-engine`.
+and executes them via the Rust components under `components/`. DataFusion-
+dependent code belongs in the root adapter; DataFusion-independent IR and
+execution belong in `crates/nexus-query-engine`.
 
-- `cudf-nexus` and `cugraph-nexus` are sibling path dependencies; DataFusion is
-  pinned in `Cargo.toml`.
+- `cudf-nexus`, `cugraph-nexus`, and `cuvs-nexus` are internal members of the
+  root workspace. Their package and Rust import identities remain unchanged.
+- Native sources are the root-registered submodules at
+  `components/cudf/cudf`, `components/cugraph/cugraph`, and
+  `components/cuvs/cuvs`; native defaults live under `target/native/`.
+- The root `.gitmodules`, `Cargo.lock`, workspace, and `scripts/check_all.sh`
+  are the only source registry, lockfile, workspace, and full validation gate.
 - Default members are the adapter, `nexus-workloads`, and `nexus-query-engine`.
   Bench, tools, and examples are explicit non-default members.
 - Linux only. MSRV is Rust 1.94; formatting requires nightly.
@@ -126,7 +131,7 @@ partial and must not be reported as full validation.
   changing it, run
   `python3 scripts/ci/test_lane_policy.py generate-nextest --write`.
 - Do not add external-service E2E tests to Cargo test targets; invoke them
-  explicitly through `cargo run -p nexus-tools`.
+  explicitly through `cargo run -p nexus-tools --all-features`.
 - Use `bash scripts/dev/clean_target_artifacts.sh` only to report removable build
   artifacts; cleanup is never implicit.
 - `scripts/check_all.sh` is the only top-level script entry. Build tooling lives

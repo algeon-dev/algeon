@@ -761,8 +761,8 @@ fn graph_operation_registry_has_cugraph_public_contracts() {
     let _: Option<cugraph::Graph<cugraph::Transposed>> = None;
 
     // Method-item references are compile-time contracts against the local `cugraph` crate's
-    // public API. They intentionally avoid reading a sibling checkout's
-    // source, while still failing if an execution adapter's entry point is
+    // public API. They intentionally avoid parsing its implementation source,
+    // while still failing if an execution adapter's entry point is
     // renamed or removed.
     let _ = cugraph::Graph::<cugraph::Transposed>::pagerank;
     let _ = cugraph::Graph::<cugraph::Transposed>::personalized_pagerank::<i32, f32>;

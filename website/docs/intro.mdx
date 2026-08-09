@@ -18,12 +18,11 @@ execution as the baseline when GPU execution is not selected.
 
 Nexus also exposes specialized GPU algorithms through SQL table functions,
 allowing results from [cuGraph](https://docs.rapids.ai/api/cugraph/stable/),
-[cuVS](https://docs.nvidia.com/cuvs/home), and
-[cuOpt](https://docs.nvidia.com/cuopt/user-guide/latest/introduction.html) to
-be composed with standard relational operations such as joins, filters, and
-aggregations — the three families are at different stages of readiness (see
-[Current limitations](#current-limitations)). Data can be read directly from
-local Parquet files or remote Iceberg tables.
+[cuVS](https://docs.nvidia.com/cuvs/home) to be composed with standard
+relational operations such as joins, filters, and aggregations. The two
+families have different execution readiness (see [Current
+limitations](#current-limitations)). Data can be read directly from local
+Parquet files or remote Iceberg tables.
 
 Designed to integrate into existing architectures, Nexus provides structured,
 machine-readable planning decisions, capabilities, and errors, enabling both
@@ -92,8 +91,7 @@ To learn why we built DataFusion Nexus, read
   grant fails with a structured error instead of degrading.
 - **Specialized GPU coverage is uneven.** cuGraph is executable. cuVS SQL calls
   can be discovered, validated, and planned, but bounded execution is rejected
-  until the lower-level peak-memory preflight exists. `cuopt_*` functions are not
-  implemented.
+  until the lower-level peak-memory preflight exists.
 - **Native file scans are Parquet-only.** Native scans support local and
   S3-compatible Parquet. Iceberg position deletes are supported when their scan
   is otherwise admissible; equality deletes, delete vectors, non-Parquet files,
@@ -114,10 +112,11 @@ To learn why we built DataFusion Nexus, read
 - `nexus-examples` — runnable embedded-backend examples.
 - `nexus-server` — the Arrow Flight SQL service and server configuration.
 
-Three sibling repositories are also first-class parts of the implementation:
-`cudf-nexus` is the Rust/libcudf boundary, `cuvs-nexus` provides vector search
-bindings, and `cugraph-nexus` is the Rust/libcugraph boundary behind the
-`cugraph_*` SQL functions.
+The maintained Rust integration layers are first-class components of this
+repository: `components/cudf` is the Rust/libcudf boundary,
+`components/cuvs` provides vector-search bindings, and `components/cugraph` is
+the Rust/libcugraph boundary behind the `cugraph_*` SQL functions. Their native
+sources are the root-pinned submodules under the same directories.
 
 ## Next steps
 

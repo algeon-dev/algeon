@@ -17,8 +17,8 @@ The split:
 
 | Layer | Source | How it gets in |
 |---|---|---|
-| Forked cuDF/cuGraph/RMM `.so` | local `../cudf-nexus`, `../cugraph-nexus` builds | **bundled** by `stage-docker-payload.sh` → `dist/lib/` |
-| Canonical cuVS `.so` | local `../cuvs-nexus/cuvs-install` | **bundled** by `stage-docker-payload.sh`; `libcuvs.so` for either accelerator and `libcuvs_c.so` for the `cuvs` feature |
+| Forked cuDF/cuGraph/RMM `.so` | root `target/native/cudf-install` and `target/native/cugraph-build` | **bundled** by `stage-docker-payload.sh` → `dist/lib/` |
+| Canonical cuVS `.so` | root `target/native/cuvs-install` | **bundled** by `stage-docker-payload.sh`; `libcuvs.so` for either accelerator and `libcuvs_c.so` for the `cuvs` feature |
 | `libcudf_rust*.so` FFI bridges | cudf-nexus-sys CMake `OUT_DIR` | **bundled** by `stage-docker-payload.sh` |
 | CUDA toolkit (`libcudart`, `libcublas`, `libnvrtc`, …) | official `nvidia/cuda:*-runtime` | **harvested** in-Dockerfile via `ldd` |
 | `libgomp1`, `libbrotli1`, `ca-certificates`, `tini` | Ubuntu apt | installed in final stage |
@@ -48,9 +48,9 @@ profile, policy hash, and binary hash. `SKIP_CARGO_BUILD=1` succeeds only when
 that provenance still matches the selected policy and artifact bytes.
 
 Prerequisites: the forked libs must already be built —
-`../cudf-nexus/cudf-install/lib/libcudf.so`,
-`../cuvs-nexus/cuvs-install/lib/libcuvs.so`, and (for cugraph)
-`../cugraph-nexus/cugraph/cpp/build/libcugraph.so`. Override their locations with
+`target/native/cudf-install/lib/libcudf.so`,
+`target/native/cuvs-install/lib/libcuvs.so`, and (for cugraph)
+`target/native/cugraph-build/libcugraph.so`. Override their locations with
 `CUDF_INSTALL_DIR`, `CUVS_INSTALL_DIR`, and `CUGRAPH_CMAKE_BUILD_DIR`.
 The Cargo build receives `CUVS_ROOT=$CUVS_INSTALL_DIR`, and cuGraph must have
 been configured against that same prefix. `readelf` and `ldd` are mandatory
@@ -100,7 +100,7 @@ library** because of how each fork was compiled:
   cuGraph with a multi-arch list before `build.sh`, e.g.:
   ```bash
   CMAKE_CUDA_ARCHITECTURES="75-real;80-real;86-real;89-real;90-real;100-real;120-real;120-virtual" \
-    bash ../cugraph-nexus/scripts/build_libcugraph.sh
+    bash scripts/build/build_libcugraph.sh
   ```
   (Verify with `cuobjdump --list-elf libcugraph.so | grep -oE 'sm_[0-9]+'`.)
   The lean cuDF-only image has no such restriction.

@@ -42,7 +42,7 @@ under `target/stress/profiles/` with the deterministic generator below; it
 validates every emitted concrete profile before writing it.
 
 ```bash
-cargo build --release -p nexus-tools --features single-node-multi-gpu-validate-run-cugraph
+cargo build --release -p nexus-tools --all-features
 mkdir -p target/stress
 
 flock /tmp/cudf-gpu.lock target/release/nexus_tools single-node-multi-gpu-validate \
@@ -61,7 +61,7 @@ fault evidence, a 250 ms per-rejection bound, and four GPU-reaching relational
 measurement successes. Build this one without the cugraph suffix:
 
 ```bash
-cargo build --release -p nexus-tools --features single-node-multi-gpu-validate-run
+cargo build --release -p nexus-tools --all-features
 
 flock /tmp/cudf-gpu.lock target/release/nexus_tools single-node-multi-gpu-validate \
   --config crates/nexus-tools/fixtures/stress/stress-s1-feature-off-sf1.json \
@@ -159,7 +159,7 @@ target/stress/otelcol-v0.158.0/otelcol --config target/stress/otelcol-v0.158.0/c
 sha256sum target/stress/otelcol-v0.158.0/collector.yaml \
   > target/stress/s1-otlp-sf1/collector-config.sha256
 
-cargo build --release -p nexus-tools --features single-node-multi-gpu-validate-run-otlp
+cargo build --release -p nexus-tools --all-features
 
 flock /tmp/cudf-gpu.lock target/release/nexus_tools single-node-multi-gpu-validate \
   --config crates/nexus-tools/fixtures/stress/stress-s1-embedded-sf1.json \
@@ -395,7 +395,7 @@ JSON. Both cells require the cugraph runner and execute the paired A/B run
 with `--cache-calibration` under the GPU lock.
 
 ```bash
-cargo build --release -p nexus-tools --features single-node-multi-gpu-validate-run-cugraph
+cargo build --release -p nexus-tools --all-features
 
 flock /tmp/cudf-gpu.lock target/release/nexus_tools single-node-multi-gpu-validate \
   --config crates/nexus-tools/fixtures/stress/stress-s7-cache-thrash-sf10.json \
@@ -446,14 +446,14 @@ lock, start it in one terminal with the profile's companion TOML, register
 another terminal. The server owns the GPU lock; do not lock the client as well.
 
 ```bash
-cargo build --release -p nexus-tools --features single-node-multi-gpu-validate-run
+cargo build --release -p nexus-tools --all-features
 mkdir -p target/stress
 flock /tmp/cudf-gpu.lock target/release/nexus_tools single-node-multi-gpu-validate \
   --config crates/nexus-tools/fixtures/stress/stress-s2-sweep-scan-sf1.json \
   --out-dir target/stress/s2-sweep-scan-sf1 --measured-run
 
-cargo build --release -p nexus-server --features cugraph --bin datafusion_nexus_server
-cargo build --release -p nexus-tools
+cargo build --release -p nexus-server --all-features --bin datafusion_nexus_server
+cargo build --release -p nexus-tools --all-features
 
 NEXUS_SERVER_GPU_DEVICES=0,1,2,3 \
 NEXUS_SERVER_CONFIG_FILE=crates/nexus-tools/fixtures/stress/server-s8-s2-scan-sf1.toml \

@@ -75,7 +75,7 @@ The binary walks the three dispositions an attempt can reach:
   observability survives clients that disconnect early.
 
 ```bash
-cargo run -p nexus-examples --bin attempt_lifecycle
+cargo run -p nexus-examples --all-features --bin attempt_lifecycle
 ```
 
 Requires one CUDA device; exits with a clear message when none is present. Set
@@ -216,11 +216,12 @@ NEXUS_SERVER_WORKSPACE_BACKING_CATALOG=lake \
 NEXUS_SERVER_WORKSPACE_BACKING_SCHEMA=citation_network \
 NEXUS_SERVER_WORKSPACE_BACKING_ALIASES=papers,paper_fos,citation_edges,citation_edges_by_dst \
 flock /tmp/cudf-gpu.lock \
-cargo run -p nexus-examples --bin embedded_backend
+cargo run -p nexus-examples --all-features --bin embedded_backend
 ```
 
 `embedded_backend` is the crate's `default-run` binary, so a bare
-`cargo run -p nexus-examples` with the same environment works too.
+`cargo run -p nexus-examples --all-features` with the same environment works
+too.
 
 Use the exact Iceberg keys shown above. `NEXUS_ICEBERG_CATALOG=rest` is not a
 server config key, and `NEXUS_ICEBERG_REST_WAREHOUSE` is not read by the REST
@@ -324,7 +325,7 @@ timestamp. The binary is a pointer, not a service; the embeddable code is
 pinned by [`tests/otlp_metrics_exporter.rs`](tests/otlp_metrics_exporter.rs):
 
 ```bash
-cargo test -p nexus-examples --features otlp-metrics
+cargo test -p nexus-examples --all-features
 ```
 
 No CUDA device is required for this one.

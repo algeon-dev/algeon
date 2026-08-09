@@ -48,8 +48,8 @@ DataFusion session.
   DataFusion dependency. It owns the IR, capability analysis, execution-time
   context, and executor.
 - **RAPIDS capability belongs below:** Missing GPU APIs, memory hooks, device
-  interop, or graph contracts belong in `cudf-nexus` / `cugraph-nexus`, not adapter
-  workarounds.
+  interop, graph, or vector contracts belong in the `components/cudf` /
+  `components/cugraph` / `components/cuvs` crates, not adapter workarounds.
 
 ## Integration surfaces
 
@@ -161,15 +161,15 @@ Three deep contracts sit behind this overview, each on its own page:
         It has no DataFusion dependency.</>,
     },
     {
-      kind: 'bindings', name: 'cudf-nexus / cugraph-nexus', note: 'safe Rust over RAPIDS', tone: 'gpu',
+      kind: 'bindings', name: 'components/cudf + components/cugraph + components/cuvs', note: 'safe Rust over RAPIDS', tone: 'gpu',
       boundary: 'FFI / C ABI boundary',
-      sub: 'cudf · cugraph',
+      sub: 'cudf · cugraph · cuvs',
       detail: <>The binding crates own RAII device memory, runtime and stream
         invariants, RAPIDS interop contracts, structured FFI errors, and missing
         low-level capability. Fix GPU foundations here first.</>,
     },
     {
-      kind: 'native', name: 'libcudf + libcugraph + RMM', note: 'C++ / CUDA kernels · memory pool', tone: 'gpu',
+      kind: 'native', name: 'libcudf + libcugraph + libcuvs + RMM', note: 'C++ / CUDA kernels · memory pool', tone: 'gpu',
       sub: 'NVIDIA RAPIDS',
       detail: <>CUDA kernels and the RMM allocator live below the Rust
         boundary. C++ exceptions must be converted below or at the C ABI and

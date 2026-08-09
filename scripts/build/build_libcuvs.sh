@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
-source_dir="${repo_root}/cuvs"
-build_dir="${CUVS_CPP_BUILD_DIR:-${source_dir}/cpp/build}"
-install_dir="${CUVS_INSTALL_DIR:-${repo_root}/cuvs-install}"
-cudf_install_dir="${CUDF_INSTALL_DIR:-$(cd -- "${repo_root}/.." && pwd -P)/cudf-nexus/cudf-install}"
-(cd "${repo_root}" && cargo xtask source check)
+repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)"
+source_dir="${repo_root}/components/cuvs/cuvs"
+build_dir="${CUVS_CPP_BUILD_DIR:-${repo_root}/target/native/cuvs-build}"
+install_dir="${CUVS_INSTALL_DIR:-${repo_root}/target/native/cuvs-install}"
+cudf_install_dir="${CUDF_INSTALL_DIR:-${repo_root}/target/native/cudf-install}"
+(cd "${repo_root}" && cargo run -p xtask --all-features -- source check)
 
 [[ -f "${source_dir}/VERSION" ]] || {
     echo "error: cuVS source does not contain VERSION: ${source_dir}" >&2
@@ -42,12 +42,12 @@ done
 
 [[ -f "${cudf_install_dir}/lib/cmake/rmm/rmm-config.cmake" ]] || {
     echo "error: canonical cuDF/RMM prefix does not export rmm: ${cudf_install_dir}" >&2
-    echo "Build/install cudf-nexus first or set CUDF_INSTALL_DIR." >&2
+    echo "Build/install cuDF from components/cudf/cudf first or set CUDF_INSTALL_DIR." >&2
     exit 1
 }
 [[ -f "${cudf_install_dir}/lib/cmake/rapids_logger/rapids_logger-config.cmake" ]] || {
     echo "error: canonical cuDF/RMM prefix does not export rapids_logger: ${cudf_install_dir}" >&2
-    echo "Run cugraph-nexus/scripts/bootstrap_cudf_install.sh for that prefix, then retry." >&2
+    echo "Run scripts/build/bootstrap_cudf_install.sh for that prefix, then retry." >&2
     exit 1
 }
 
@@ -173,4 +173,4 @@ done
 echo "canonical cuVS prefix ready: ${install_dir}"
 echo "source revision: ${source_revision}"
 echo "native version: ${native_version}"
-echo "Cargo: CUVS_ROOT=${install_dir} cargo check --workspace --all-targets"
+echo "Cargo: CUVS_ROOT=${install_dir} cargo check --workspace --all-targets --all-features"
