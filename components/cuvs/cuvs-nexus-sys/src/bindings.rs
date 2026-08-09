@@ -183,6 +183,15 @@ unsafe extern "C" {
 }
 unsafe extern "C" {
     #[must_use]
+    #[doc = " @brief Create an opaque C handle for C++ type `raft::resources` whose memory\n        allocations are tracked and written as CSV samples from a background\n        thread.\n\n The returned handle wraps all reachable memory resources (host, pinned,\n managed, device, workspace, large_workspace) with allocation-tracking\n adaptors and replaces the global host and device memory resources for the\n lifetime of the handle. It is otherwise indistinguishable from a handle\n created by ::cuvsResourcesCreate and can be used wherever a\n ::cuvsResources_t is accepted. The CSV reporter is stopped and the global\n memory resources are restored when the handle is destroyed via\n ::cuvsResourcesDestroy.\n\n @param[out] res                 cuvsResources_t opaque C handle\n @param[in]  csv_path            Path to the output CSV file\n                                 (created/truncated). Must be a non-empty,\n                                 null-terminated UTF-8 string.\n @param[in]  sample_interval_ms  Minimum time in milliseconds between\n                                 successive CSV samples. Pass 10 to match the\n                                 C++ default.\n @return cuvsError_t"]
+    pub fn cuvsResourcesCreateWithMemoryTracking(
+        res: *mut cuvsResources_t,
+        csv_path: *const ::std::os::raw::c_char,
+        sample_interval_ms: i64,
+    ) -> cuvsError_t;
+}
+unsafe extern "C" {
+    #[must_use]
     #[doc = " @brief Destroy and de-allocate opaque C handle for C++ type `raft::resources`\n\n @param[in] res cuvsResources_t opaque C handle\n @return cuvsError_t"]
     pub fn cuvsResourcesDestroy(res: cuvsResources_t) -> cuvsError_t;
 }
@@ -205,6 +214,11 @@ unsafe extern "C" {
     #[must_use]
     #[doc = " @brief Get the id of the device associated with this cuvsResources_t\n\n @param[in] res cuvsResources_t opaque C handle\n @param[out] device_id int the id of the device associated with res\n @return cuvsError_t"]
     pub fn cuvsDeviceIdGet(res: cuvsResources_t, device_id: *mut ::std::os::raw::c_int) -> cuvsError_t;
+}
+unsafe extern "C" {
+    #[must_use]
+    #[doc = " @brief Configure the temporary workspace on this resources object as an uncapped pool, backed\n        by the current device memory resource. After the initial reservation is allocated on\n        first use, subsequent calls to cuvsRMMAlloc / cuvsRMMFree on the same resources handle\n        hit the pool cache rather than calling cudaMallocAsync / cudaFreeAsync, reducing CUDA\n        context lock contention under concurrent query threads. The pool grows without shrinking:\n        freed allocations are returned to the pool rather than to the device, so the pool's\n        high-water mark only increases until the resources object is destroyed.\n\n @param[in] res                cuvsResources_t opaque C handle\n @param[in] initial_size_bytes initial pool reservation in bytes; size to cover the\n                               steady-state working set to avoid growth after warmup\n @return cuvsError_t"]
+    pub fn cuvsResourcesSetWorkspacePool(res: cuvsResources_t, initial_size_bytes: usize) -> cuvsError_t;
 }
 unsafe extern "C" {
     #[must_use]
@@ -253,6 +267,11 @@ unsafe extern "C" {
 }
 unsafe extern "C" {
     #[must_use]
+    #[doc = " @brief Switches the working memory resource to use stream-ordered asynchronous allocation\n (cudaMallocAsync / cudaFreeAsync). Unlike the pool resource, this resource returns memory to\n the stream immediately without blocking the CPU, eliminating device-wide synchronization on\n deallocation. This is especially beneficial when multiple CAGRA searches run concurrently on\n separate CUDA streams, because the internal workspace allocations no longer serialize kernel\n launches. Be aware that this function will change the memory resource for the whole process\n and the new memory resource will be used until explicitly changed.\n\n @return cuvsError_t"]
+    pub fn cuvsRMMAsyncMemoryResourceEnable() -> cuvsError_t;
+}
+unsafe extern "C" {
+    #[must_use]
     #[doc = " @brief Resets the memory resource to use the default memory resource (cuda_memory_resource)\n @return cuvsError_t"]
     pub fn cuvsRMMMemoryResourceReset() -> cuvsError_t;
 }
@@ -286,6 +305,101 @@ unsafe extern "C" {
         end: i64,
         dst: *mut DLManagedTensor,
     ) -> cuvsError_t;
+}
+#[repr(u32)]
+#[doc = " @brief Generic dataset layout kind for C API dataset handles."]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+pub enum cuvsDatasetLayout_t {
+    CUVS_DATASET_LAYOUT_STANDARD = 0,
+    CUVS_DATASET_LAYOUT_PADDED = 1,
+}
+#[repr(u32)]
+#[doc = " @brief Memory space holding a C API dataset handle's data."]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+pub enum cuvsDatasetMemType_t {
+    CUVS_DATASET_MEM_TYPE_HOST = 0,
+    CUVS_DATASET_MEM_TYPE_DEVICE = 1,
+}
+#[doc = " @brief Dataset handle representing owning storage or a non-owning view.\n\n `addr` points to C++ dataset storage or view metadata managed by the C API. `mem_type`\n identifies the memory space, `layout` identifies the data layout, and `is_owning` indicates\n whether the handle owns its backing data."]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct cuvsDataset {
+    pub addr: usize,
+    pub destroy_addr: ::std::option::Option<unsafe extern "C" fn(arg1: *mut ::std::os::raw::c_void)>,
+    pub dtype: DLDataType,
+    pub mem_type: cuvsDatasetMemType_t,
+    pub layout: cuvsDatasetLayout_t,
+    pub is_owning: bool,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of cuvsDataset"][::std::mem::size_of::<cuvsDataset>() - 32usize];
+    ["Alignment of cuvsDataset"][::std::mem::align_of::<cuvsDataset>() - 8usize];
+    ["Offset of field: cuvsDataset::addr"][::std::mem::offset_of!(cuvsDataset, addr) - 0usize];
+    ["Offset of field: cuvsDataset::destroy_addr"][::std::mem::offset_of!(cuvsDataset, destroy_addr) - 8usize];
+    ["Offset of field: cuvsDataset::dtype"][::std::mem::offset_of!(cuvsDataset, dtype) - 16usize];
+    ["Offset of field: cuvsDataset::mem_type"][::std::mem::offset_of!(cuvsDataset, mem_type) - 20usize];
+    ["Offset of field: cuvsDataset::layout"][::std::mem::offset_of!(cuvsDataset, layout) - 24usize];
+    ["Offset of field: cuvsDataset::is_owning"][::std::mem::offset_of!(cuvsDataset, is_owning) - 28usize];
+};
+pub type cuvsDataset_t = *mut cuvsDataset;
+unsafe extern "C" {
+    #[must_use]
+    #[doc = " @brief Create an empty owning dataset handle.\n\n The dataset storage, memory type, layout, and dtype are populated by the operation that fills\n this handle."]
+    pub fn cuvsDatasetCreate(dataset: *mut cuvsDataset_t) -> cuvsError_t;
+}
+unsafe extern "C" {
+    #[must_use]
+    #[doc = " @brief Create an owning padded dataset in the requested memory space.\n\n The source tensor may reside in host- or device-accessible memory. Its contents are copied into\n newly allocated padded storage in `target_mem_type`.\n\n @param[in] res cuVS resources\n @param[in] dataset source tensor\n @param[in] target_mem_type memory space in which to allocate the padded dataset\n @param[out] padded_dataset newly allocated owning padded dataset"]
+    pub fn cuvsDatasetMakePadded(
+        res: cuvsResources_t,
+        dataset: *mut DLManagedTensor,
+        target_mem_type: cuvsDatasetMemType_t,
+        padded_dataset: *mut cuvsDataset_t,
+    ) -> cuvsError_t;
+}
+unsafe extern "C" {
+    #[must_use]
+    #[doc = " @brief Create a non-owning padded dataset view from a host- or device-resident tensor.\n\n Memory residency is inferred from the tensor."]
+    pub fn cuvsDatasetMakePaddedView(
+        res: cuvsResources_t,
+        dataset: *mut DLManagedTensor,
+        padded_dataset: *mut cuvsDataset_t,
+    ) -> cuvsError_t;
+}
+unsafe extern "C" {
+    #[must_use]
+    #[doc = " @brief Create a non-owning standard dataset view from a host- or device-resident tensor.\n\n Memory residency is inferred from the tensor."]
+    pub fn cuvsDatasetMakeStandardView(
+        res: cuvsResources_t,
+        dataset: *mut DLManagedTensor,
+        standard_dataset: *mut cuvsDataset_t,
+    ) -> cuvsError_t;
+}
+unsafe extern "C" {
+    #[must_use]
+    #[doc = " @brief Destroy a dataset handle created by a `cuvsDatasetMake*` function."]
+    pub fn cuvsDatasetDestroy(dataset: cuvsDataset_t) -> cuvsError_t;
+}
+unsafe extern "C" {
+    #[must_use]
+    #[doc = " @brief Get the memory residency of a dataset handle."]
+    pub fn cuvsDatasetGetMemType(dataset: cuvsDataset_t, mem_type: *mut cuvsDatasetMemType_t) -> cuvsError_t;
+}
+unsafe extern "C" {
+    #[must_use]
+    #[doc = " @brief Get the layout of a dataset handle."]
+    pub fn cuvsDatasetGetLayout(dataset: cuvsDataset_t, layout: *mut cuvsDatasetLayout_t) -> cuvsError_t;
+}
+unsafe extern "C" {
+    #[must_use]
+    #[doc = " @brief Get whether a dataset handle owns its backing storage."]
+    pub fn cuvsDatasetGetIsOwning(dataset: cuvsDataset_t, is_owning: *mut bool) -> cuvsError_t;
+}
+unsafe extern "C" {
+    #[must_use]
+    #[doc = " @brief Get the element dtype of a dataset handle."]
+    pub fn cuvsDatasetGetDtype(dataset: cuvsDataset_t, dtype: *mut DLDataType) -> cuvsError_t;
 }
 #[repr(u32)]
 #[doc = " enum to tell how to compute distance"]
@@ -347,7 +461,7 @@ pub enum cuvsKMeansInitMethod {
     #[doc = " User provides the array of initial centroids"]
     Array = 2,
 }
-#[doc = " @brief Hyper-parameters for the kmeans algorithm\n NB: The inertia_check field is kept for ABI compatibility. Removed in cuvsKMeansParams_v2.\n TODO: CalVer for the replacement: 26.08"]
+#[doc = " @brief Hyper-parameters for the kmeans algorithm"]
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct cuvsKMeansParams {
@@ -368,14 +482,12 @@ pub struct cuvsKMeansParams {
     pub batch_samples: ::std::os::raw::c_int,
     #[doc = " if 0 then batch_centroids = n_clusters"]
     pub batch_centroids: ::std::os::raw::c_int,
-    #[doc = " Deprecated, ignored. Kept for ABI compatibility."]
-    pub inertia_check: bool,
     #[doc = " Whether to use hierarchical (balanced) kmeans or not"]
     pub hierarchical: bool,
     #[doc = " For hierarchical k-means , defines the number of training iterations"]
     pub hierarchical_n_iters: ::std::os::raw::c_int,
     #[doc = " Number of samples to process per GPU batch for the batched (host-data) API.\n When set to 0, defaults to n_samples (process all at once)."]
-    pub streaming_batch_size: i64,
+    pub device_buffer_samples: i64,
     #[doc = " Number of samples to draw for KMeansPlusPlus initialization.\n When set to 0, uses heuristic min(3 * n_clusters, n_samples) for host data,\n or n_samples for device data."]
     pub init_size: i64,
 }
@@ -395,93 +507,24 @@ const _: () = {
         [::std::mem::offset_of!(cuvsKMeansParams, batch_samples) - 40usize];
     ["Offset of field: cuvsKMeansParams::batch_centroids"]
         [::std::mem::offset_of!(cuvsKMeansParams, batch_centroids) - 44usize];
-    ["Offset of field: cuvsKMeansParams::inertia_check"]
-        [::std::mem::offset_of!(cuvsKMeansParams, inertia_check) - 48usize];
     ["Offset of field: cuvsKMeansParams::hierarchical"]
-        [::std::mem::offset_of!(cuvsKMeansParams, hierarchical) - 49usize];
+        [::std::mem::offset_of!(cuvsKMeansParams, hierarchical) - 48usize];
     ["Offset of field: cuvsKMeansParams::hierarchical_n_iters"]
         [::std::mem::offset_of!(cuvsKMeansParams, hierarchical_n_iters) - 52usize];
-    ["Offset of field: cuvsKMeansParams::streaming_batch_size"]
-        [::std::mem::offset_of!(cuvsKMeansParams, streaming_batch_size) - 56usize];
+    ["Offset of field: cuvsKMeansParams::device_buffer_samples"]
+        [::std::mem::offset_of!(cuvsKMeansParams, device_buffer_samples) - 56usize];
     ["Offset of field: cuvsKMeansParams::init_size"][::std::mem::offset_of!(cuvsKMeansParams, init_size) - 64usize];
 };
-#[doc = " @brief Hyper-parameters for the kmeans algorithm\n TODO: Remove this after cuvsKMeansParams is replaced in ABI 2.0"]
-#[repr(C)]
-#[derive(Debug, Copy, Clone)]
-pub struct cuvsKMeansParams_v2 {
-    pub metric: cuvsDistanceType,
-    #[doc = " The number of clusters to form as well as the number of centroids to generate (default:8)."]
-    pub n_clusters: ::std::os::raw::c_int,
-    #[doc = " Method for initialization, defaults to k-means++:\n  - cuvsKMeansInitMethod::KMeansPlusPlus (k-means++): Use scalable k-means++ algorithm\n to select the initial cluster centers.\n  - cuvsKMeansInitMethod::Random (random): Choose 'n_clusters' observations (rows) at\n random from the input data for the initial centroids.\n  - cuvsKMeansInitMethod::Array (ndarray): Use 'centroids' as initial cluster centers."]
-    pub init: cuvsKMeansInitMethod,
-    #[doc = " Maximum number of iterations of the k-means algorithm for a single run."]
-    pub max_iter: ::std::os::raw::c_int,
-    #[doc = " Relative tolerance with regards to inertia to declare convergence."]
-    pub tol: f64,
-    #[doc = " Number of instance k-means algorithm will be run with different seeds."]
-    pub n_init: ::std::os::raw::c_int,
-    #[doc = " Oversampling factor for use in the k-means|| algorithm"]
-    pub oversampling_factor: f64,
-    #[doc = " batch_samples and batch_centroids are used to tile 1NN computation which is\n useful to optimize/control the memory footprint\n Default tile is [batch_samples x n_clusters] i.e. when batch_centroids is 0\n then don't tile the centroids"]
-    pub batch_samples: ::std::os::raw::c_int,
-    #[doc = " if 0 then batch_centroids = n_clusters"]
-    pub batch_centroids: ::std::os::raw::c_int,
-    #[doc = " Whether to use hierarchical (balanced) kmeans or not"]
-    pub hierarchical: bool,
-    #[doc = " For hierarchical k-means , defines the number of training iterations"]
-    pub hierarchical_n_iters: ::std::os::raw::c_int,
-    #[doc = " Number of samples to process per GPU batch for the batched (host-data) API.\n When set to 0, defaults to n_samples (process all at once)."]
-    pub streaming_batch_size: i64,
-    #[doc = " Number of samples to draw for KMeansPlusPlus initialization.\n When set to 0, uses heuristic min(3 * n_clusters, n_samples) for host data,\n or n_samples for device data."]
-    pub init_size: i64,
-}
-#[allow(clippy::unnecessary_operation, clippy::identity_op)]
-const _: () = {
-    ["Size of cuvsKMeansParams_v2"][::std::mem::size_of::<cuvsKMeansParams_v2>() - 72usize];
-    ["Alignment of cuvsKMeansParams_v2"][::std::mem::align_of::<cuvsKMeansParams_v2>() - 8usize];
-    ["Offset of field: cuvsKMeansParams_v2::metric"][::std::mem::offset_of!(cuvsKMeansParams_v2, metric) - 0usize];
-    ["Offset of field: cuvsKMeansParams_v2::n_clusters"]
-        [::std::mem::offset_of!(cuvsKMeansParams_v2, n_clusters) - 4usize];
-    ["Offset of field: cuvsKMeansParams_v2::init"][::std::mem::offset_of!(cuvsKMeansParams_v2, init) - 8usize];
-    ["Offset of field: cuvsKMeansParams_v2::max_iter"][::std::mem::offset_of!(cuvsKMeansParams_v2, max_iter) - 12usize];
-    ["Offset of field: cuvsKMeansParams_v2::tol"][::std::mem::offset_of!(cuvsKMeansParams_v2, tol) - 16usize];
-    ["Offset of field: cuvsKMeansParams_v2::n_init"][::std::mem::offset_of!(cuvsKMeansParams_v2, n_init) - 24usize];
-    ["Offset of field: cuvsKMeansParams_v2::oversampling_factor"]
-        [::std::mem::offset_of!(cuvsKMeansParams_v2, oversampling_factor) - 32usize];
-    ["Offset of field: cuvsKMeansParams_v2::batch_samples"]
-        [::std::mem::offset_of!(cuvsKMeansParams_v2, batch_samples) - 40usize];
-    ["Offset of field: cuvsKMeansParams_v2::batch_centroids"]
-        [::std::mem::offset_of!(cuvsKMeansParams_v2, batch_centroids) - 44usize];
-    ["Offset of field: cuvsKMeansParams_v2::hierarchical"]
-        [::std::mem::offset_of!(cuvsKMeansParams_v2, hierarchical) - 48usize];
-    ["Offset of field: cuvsKMeansParams_v2::hierarchical_n_iters"]
-        [::std::mem::offset_of!(cuvsKMeansParams_v2, hierarchical_n_iters) - 52usize];
-    ["Offset of field: cuvsKMeansParams_v2::streaming_batch_size"]
-        [::std::mem::offset_of!(cuvsKMeansParams_v2, streaming_batch_size) - 56usize];
-    ["Offset of field: cuvsKMeansParams_v2::init_size"]
-        [::std::mem::offset_of!(cuvsKMeansParams_v2, init_size) - 64usize];
-};
 pub type cuvsKMeansParams_t = *mut cuvsKMeansParams;
-pub type cuvsKMeansParams_v2_t = *mut cuvsKMeansParams_v2;
 unsafe extern "C" {
     #[must_use]
-    #[doc = " @brief Allocate KMeans params, and populate with default values\n\n @note In cuVS 26.08 (next ABI major version) this signature will be\n replaced by cuvsKMeansParamsCreate_v2.\n\n @param[in] params cuvsKMeansParams_t to allocate\n @return cuvsError_t"]
+    #[doc = " @brief Allocate KMeans params, and populate with default values\n\n @param[in] params cuvsKMeansParams_t to allocate\n @return cuvsError_t"]
     pub fn cuvsKMeansParamsCreate(params: *mut cuvsKMeansParams_t) -> cuvsError_t;
 }
 unsafe extern "C" {
     #[must_use]
-    #[doc = " @brief De-allocate KMeans params\n\n @note In cuVS 26.08 (next ABI major version) this signature will be\n replaced by cuvsKMeansParamsDestroy_v2.\n\n @param[in] params\n @return cuvsError_t"]
+    #[doc = " @brief De-allocate KMeans params\n\n @param[in] params\n @return cuvsError_t"]
     pub fn cuvsKMeansParamsDestroy(params: cuvsKMeansParams_t) -> cuvsError_t;
-}
-unsafe extern "C" {
-    #[must_use]
-    #[doc = " @brief Allocate KMeans params\n\n Mirrors cuvsKMeansParamsCreate but operates on cuvsKMeansParams_v2.\n Will become the unsuffixed cuvsKMeansParamsCreate in cuVS 26.08.\n\n @param[in] params cuvsKMeansParams_v2_t to allocate\n @return cuvsError_t"]
-    pub fn cuvsKMeansParamsCreate_v2(params: *mut cuvsKMeansParams_v2_t) -> cuvsError_t;
-}
-unsafe extern "C" {
-    #[must_use]
-    #[doc = " @brief De-allocate KMeans params allocated by cuvsKMeansParamsCreate_v2.\n\n @param[in] params\n @return cuvsError_t"]
-    pub fn cuvsKMeansParamsDestroy_v2(params: cuvsKMeansParams_v2_t) -> cuvsError_t;
 }
 #[repr(u32)]
 #[doc = " @brief Type of k-means algorithm."]
@@ -492,7 +535,7 @@ pub enum cuvsKMeansType {
 }
 unsafe extern "C" {
     #[must_use]
-    #[doc = " @brief Find clusters with k-means algorithm.\n\n   Initial centroids are chosen with k-means++ algorithm. Empty\n   clusters are reinitialized by choosing new centroids with\n   k-means++ algorithm.\n\n   X may reside on either host (CPU) or device (GPU) memory.\n   When X is on the host the data is streamed to the GPU in\n   batches controlled by params->streaming_batch_size.\n\n @note In cuVS 26.08 (next ABI major version) this signature will be\n replaced by cuvsKMeansFit_v2.\n\n @param[in]     res           opaque C handle\n @param[in]     params        Parameters for KMeans model.\n @param[in]     X             Training instances to cluster. The data must\n                              be in row-major format. May be on host or\n                              device memory.\n                              [dim = n_samples x n_features]\n @param[in]     sample_weight Optional weights for each observation in X.\n                              Must be on the same memory space as X.\n                              [len = n_samples]\n @param[inout]  centroids     [in] When init is InitMethod::Array, use\n                              centroids as the initial cluster centers.\n                              [out] The generated centroids from the\n                              kmeans algorithm are stored at the address\n                              pointed by 'centroids'. Must be on device.\n                              [dim = n_clusters x n_features]\n @param[out]    inertia       Sum of squared distances of samples to their\n                              closest cluster center.\n @param[out]    n_iter        Number of iterations run."]
+    #[doc = " @brief Find clusters with k-means algorithm.\n\n   Initial centroids are chosen with k-means++ algorithm. Empty\n   clusters are reinitialized by choosing new centroids with\n   k-means++ algorithm.\n\n   X may reside on either host (CPU) or device (GPU) memory.\n   When X is on the host the data is buffered to the GPU in\n   batches controlled by params->device_buffer_samples.\n\n @param[in]     res           opaque C handle\n @param[in]     params        Parameters for KMeans model.\n @param[in]     X             Training instances to cluster. The data must\n                              be in row-major format. May be on host or\n                              device memory.\n                              [dim = n_samples x n_features]\n @param[in]     sample_weight Optional weights for each observation in X.\n                              Must be on the same memory space as X.\n                              [len = n_samples]\n @param[inout]  centroids     [in] When init is InitMethod::Array, use\n                              centroids as the initial cluster centers.\n                              [out] The generated centroids from the\n                              kmeans algorithm are stored at the address\n                              pointed by 'centroids'. Must be on device.\n                              [dim = n_clusters x n_features]\n @param[out]    inertia       Sum of squared distances of samples to their\n                              closest cluster center.\n @param[out]    n_iter        Number of iterations run."]
     pub fn cuvsKMeansFit(
         res: cuvsResources_t,
         params: cuvsKMeansParams_t,
@@ -505,37 +548,10 @@ unsafe extern "C" {
 }
 unsafe extern "C" {
     #[must_use]
-    #[doc = " @brief Find clusters with k-means algorithm (v2 params layout).\n\n Mirrors cuvsKMeansFit but takes cuvsKMeansParams_v2_t. Will become the\n unsuffixed cuvsKMeansFit in cuVS 26.08.\n\n @param[in]     res           opaque C handle\n @param[in]     params        Parameters for KMeans model (v2 layout).\n @param[in]     X             Training instances to cluster. The data must\n                              be in row-major format. May be on host or\n                              device memory.\n                              [dim = n_samples x n_features]\n @param[in]     sample_weight Optional weights for each observation in X.\n                              Must be on the same memory space as X.\n                              [len = n_samples]\n @param[inout]  centroids     [in] When init is InitMethod::Array, use\n                              centroids as the initial cluster centers.\n                              [out] The generated centroids from the\n                              kmeans algorithm are stored at the address\n                              pointed by 'centroids'. Must be on device.\n                              [dim = n_clusters x n_features]\n @param[out]    inertia       Sum of squared distances of samples to their\n                              closest cluster center.\n @param[out]    n_iter        Number of iterations run."]
-    pub fn cuvsKMeansFit_v2(
-        res: cuvsResources_t,
-        params: cuvsKMeansParams_v2_t,
-        X: *mut DLManagedTensor,
-        sample_weight: *mut DLManagedTensor,
-        centroids: *mut DLManagedTensor,
-        inertia: *mut f64,
-        n_iter: *mut ::std::os::raw::c_int,
-    ) -> cuvsError_t;
-}
-unsafe extern "C" {
-    #[must_use]
-    #[doc = " @brief Predict the closest cluster each sample in X belongs to.\n\n @note In cuVS 26.08 (next ABI major version) this signature will be\n replaced by cuvsKMeansPredict_v2.\n\n @param[in]     res              opaque C handle\n @param[in]     params           Parameters for KMeans model.\n @param[in]     X                New data to predict.\n                                 [dim = n_samples x n_features]\n @param[in]     sample_weight    Optional weights for each observation in X.\n                                 [len = n_samples]\n @param[in]     centroids        Cluster centroids. The data must be in\n                                 row-major format.\n                                 [dim = n_clusters x n_features]\n @param[in]     normalize_weight True if the weights should be normalized\n @param[out]    labels           Index of the cluster each sample in X\n                                 belongs to.\n                                 [len = n_samples]\n @param[out]    inertia          Sum of squared distances of samples to\n                                 their closest cluster center."]
+    #[doc = " @brief Predict the closest cluster each sample in X belongs to.\n\n @param[in]     res              opaque C handle\n @param[in]     params           Parameters for KMeans model.\n @param[in]     X                New data to predict.\n                                 [dim = n_samples x n_features]\n @param[in]     sample_weight    Optional weights for each observation in X.\n                                 [len = n_samples]\n @param[in]     centroids        Cluster centroids. The data must be in\n                                 row-major format.\n                                 [dim = n_clusters x n_features]\n @param[in]     normalize_weight True if the weights should be normalized\n @param[out]    labels           Index of the cluster each sample in X\n                                 belongs to.\n                                 [len = n_samples]\n @param[out]    inertia          Sum of squared distances of samples to\n                                 their closest cluster center."]
     pub fn cuvsKMeansPredict(
         res: cuvsResources_t,
         params: cuvsKMeansParams_t,
-        X: *mut DLManagedTensor,
-        sample_weight: *mut DLManagedTensor,
-        centroids: *mut DLManagedTensor,
-        labels: *mut DLManagedTensor,
-        normalize_weight: bool,
-        inertia: *mut f64,
-    ) -> cuvsError_t;
-}
-unsafe extern "C" {
-    #[must_use]
-    #[doc = " @brief Predict the closest cluster each sample in X belongs to (v2 params layout).\n\n Mirrors cuvsKMeansPredict but takes cuvsKMeansParams_v2_t. Will become the\n unsuffixed cuvsKMeansPredict in cuVS 26.08.\n\n @param[in]     res              opaque C handle\n @param[in]     params           Parameters for KMeans model (v2 layout).\n @param[in]     X                New data to predict.\n                                 [dim = n_samples x n_features]\n @param[in]     sample_weight    Optional weights for each observation in X.\n                                 [len = n_samples]\n @param[in]     centroids        Cluster centroids. The data must be in\n                                 row-major format.\n                                 [dim = n_clusters x n_features]\n @param[in]     normalize_weight True if the weights should be normalized\n @param[out]    labels           Index of the cluster each sample in X\n                                 belongs to.\n                                 [len = n_samples]\n @param[out]    inertia          Sum of squared distances of samples to\n                                 their closest cluster center."]
-    pub fn cuvsKMeansPredict_v2(
-        res: cuvsResources_t,
-        params: cuvsKMeansParams_v2_t,
         X: *mut DLManagedTensor,
         sample_weight: *mut DLManagedTensor,
         centroids: *mut DLManagedTensor,
@@ -1041,7 +1057,7 @@ unsafe extern "C" {
 }
 unsafe extern "C" {
     #[must_use]
-    #[doc = " @brief Build an all-neighbors k-NN graph automatically detecting host vs device dataset.\n\n @param[in] res             Can be a SNMG multi-GPU resources (`cuvsResources_t`) or single-GPU\n resources\n @param[in] params          Build parameters (see cuvsAllNeighborsIndexParams)\n @param[in] dataset         2D tensor [num_rows x dim] on host or device (auto-detected)\n @param[out] indices        2D tensor [num_rows x k] on device (int64)\n @param[out] distances      Optional 2D tensor [num_rows x k] on device (float32); can be NULL\n @param[out] core_distances Optional 1D tensor [num_rows] on device (float32); can be NULL\n @param[in] alpha           Mutual-reachability scaling; used only when core_distances is provided\n\n The function automatically detects whether the dataset is host-resident or device-resident\n and calls the appropriate implementation. For host datasets, it partitions data into\n `n_clusters` clusters and assigns each row to `overlap_factor` nearest clusters. For device\n datasets, `n_clusters` must be 1 (no batching); `overlap_factor` is ignored.\n Outputs always reside in device memory."]
+    #[doc = " @brief Build an all-neighbors k-NN graph automatically detecting host vs device dataset.\n\n @param[in] res             Can be a SNMG multi-GPU resources (`cuvsResources_t`) or single-GPU\n resources\n @param[in] params          Build parameters (see cuvsAllNeighborsIndexParams)\n @param[in] dataset         2D tensor [num_rows x dim] on host or device (auto-detected)\n @param[out] indices        2D tensor [num_rows x k] (int64), host or device\n @param[out] distances      Optional 2D tensor [num_rows x k] (float32), host or device; can be\n                            NULL\n @param[out] core_distances Optional 1D tensor [num_rows] (float32), host or device; can be NULL\n @param[in] alpha           Mutual-reachability scaling; used only when core_distances is provided\n\n The function automatically detects whether the dataset is host-resident or device-resident\n and calls the appropriate implementation. For host datasets, it partitions data into\n `n_clusters` clusters and assigns each row to `overlap_factor` nearest clusters. For device\n datasets, `n_clusters` must be 1 (no batching); `overlap_factor` is ignored.\n\n Output memory space: a host dataset supports host- or device-resident outputs; a device dataset\n requires device-resident outputs. All provided outputs must share the same memory space."]
     pub fn cuvsAllNeighborsBuild(
         res: cuvsResources_t,
         params: cuvsAllNeighborsIndexParams_t,
@@ -1060,7 +1076,7 @@ pub enum cuvsFilterType {
     BITSET = 1,
     BITMAP = 2,
 }
-#[doc = " @brief Struct to hold address of cuvs::neighbors::prefilter and its type\n"]
+#[doc = " @brief Struct to hold address of cuvs::neighbors::prefilter and its type\n\n `addr` points to a filter object owned by the caller; the library performs no caching of the\n underlying bitset across search calls. Allocating and populating the device bitset may be more\n expensive than a single filtered search, so callers that issue repeated searches against the same\n filter (e.g. many queries over one index) should build the bitset once and reuse the same\n cuvsFilter across those calls rather than rebuild it per search. Reusing the bitset is essential\n for realizing the full throughput of filtered search."]
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct cuvsFilter {
@@ -1269,14 +1285,12 @@ pub struct cuvsCagraIndexParams {
     pub build_algo: cuvsCagraGraphBuildAlgo,
     #[doc = " Number of Iterations to run if building with NN_DESCENT"]
     pub nn_descent_niter: usize,
-    #[doc = " Optional: specify compression parameters if compression is desired.\n\n NOTE: this is experimental new API, consider it unsafe."]
-    pub compression: cuvsCagraCompressionParams_t,
     #[doc = " Optional: specify graph build params based on build_algo\n - IVF_PQ: cuvsIvfPqParams_t\n - ACE: cuvsAceParams_t\n - Others: nullptr"]
     pub graph_build_params: *mut ::std::os::raw::c_void,
 }
 #[allow(clippy::unnecessary_operation, clippy::identity_op)]
 const _: () = {
-    ["Size of cuvsCagraIndexParams"][::std::mem::size_of::<cuvsCagraIndexParams>() - 56usize];
+    ["Size of cuvsCagraIndexParams"][::std::mem::size_of::<cuvsCagraIndexParams>() - 48usize];
     ["Alignment of cuvsCagraIndexParams"][::std::mem::align_of::<cuvsCagraIndexParams>() - 8usize];
     ["Offset of field: cuvsCagraIndexParams::metric"][::std::mem::offset_of!(cuvsCagraIndexParams, metric) - 0usize];
     ["Offset of field: cuvsCagraIndexParams::intermediate_graph_degree"]
@@ -1287,10 +1301,8 @@ const _: () = {
         [::std::mem::offset_of!(cuvsCagraIndexParams, build_algo) - 24usize];
     ["Offset of field: cuvsCagraIndexParams::nn_descent_niter"]
         [::std::mem::offset_of!(cuvsCagraIndexParams, nn_descent_niter) - 32usize];
-    ["Offset of field: cuvsCagraIndexParams::compression"]
-        [::std::mem::offset_of!(cuvsCagraIndexParams, compression) - 40usize];
     ["Offset of field: cuvsCagraIndexParams::graph_build_params"]
-        [::std::mem::offset_of!(cuvsCagraIndexParams, graph_build_params) - 48usize];
+        [::std::mem::offset_of!(cuvsCagraIndexParams, graph_build_params) - 40usize];
 };
 pub type cuvsCagraIndexParams_t = *mut cuvsCagraIndexParams;
 unsafe extern "C" {
@@ -1334,6 +1346,18 @@ unsafe extern "C" {
         ef_construction: ::std::os::raw::c_int,
         heuristic: cuvsCagraHnswHeuristicType,
         metric: cuvsDistanceType,
+    ) -> cuvsError_t;
+}
+unsafe extern "C" {
+    #[must_use]
+    #[doc = " @brief Create CAGRA index parameters heuristically tuned for a dataset\n\n This factory function selects the graph build algorithm and its parameters based on the shape of\n the dataset.\n\n @param[out] params The CAGRA index params to populate\n @param[in] n_rows Number of rows in the dataset\n @param[in] dim Number of dimensions in the dataset\n @param[in] graph_degree Degree of the output graph\n @param[in] metric Distance metric to use\n @param[in] build_quality Higher values increase build quality (and cost) up to a point\n @return cuvsError_t"]
+    pub fn cuvsCagraIndexParamsFromDataset(
+        params: cuvsCagraIndexParams_t,
+        n_rows: i64,
+        dim: i64,
+        graph_degree: usize,
+        metric: cuvsDistanceType,
+        build_quality: usize,
     ) -> cuvsError_t;
 }
 #[doc = " @defgroup cagra_c_extend_params C API for CUDA ANN Graph-based nearest neighbor search\n @{\n/\n/**\n @brief Supplemental parameters to extend CAGRA Index\n"]
@@ -1466,7 +1490,7 @@ unsafe extern "C" {
     #[doc = " @brief De-allocate CAGRA search params\n\n @param[in] params\n @return cuvsError_t"]
     pub fn cuvsCagraSearchParamsDestroy(params: cuvsCagraSearchParams_t) -> cuvsError_t;
 }
-#[doc = " @brief Struct to hold address of cuvs::neighbors::cagra::index and its active trained dtype\n"]
+#[doc = " @brief Struct holding the CAGRA index storage address and vector element dtype (DLPack-style)\n\n Matches the usual cuVS C index pattern (`addr` + `dtype`). \\p addr points at implementation-owned\n storage (not always a bare `cagra::index*`); free only via \\ref cuvsCagraIndexDestroy. \\p dtype\n describes index vector elements for queries and template dispatch."]
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct cuvsCagraIndex {
@@ -1518,21 +1542,31 @@ unsafe extern "C" {
 }
 unsafe extern "C" {
     #[must_use]
-    #[doc = " @brief Build a CAGRA index with a `DLManagedTensor` which has underlying\n        `DLDeviceType` equal to `kDLCUDA`, `kDLCUDAHost`, `kDLCUDAManaged`,\n        or `kDLCPU`. Also, acceptable underlying types are:\n        1. `kDLDataType.code == kDLFloat` and `kDLDataType.bits = 32`\n        2. `kDLDataType.code == kDLFloat` and `kDLDataType.bits = 16`\n        3. `kDLDataType.code == kDLInt` and `kDLDataType.bits = 8`\n        4. `kDLDataType.code == kDLUInt` and `kDLDataType.bits = 8`\n\n @code {.c}\n #include <cuvs/core/c_api.h>\n #include <cuvs/neighbors/cagra.h>\n\n // Create cuvsResources_t\n cuvsResources_t res;\n cuvsError_t res_create_status = cuvsResourcesCreate(&res);\n\n // Assume a populated `DLManagedTensor` type here\n DLManagedTensor dataset;\n\n // Create default index params\n cuvsCagraIndexParams_t params;\n cuvsError_t params_create_status = cuvsCagraIndexParamsCreate(&params);\n\n // Create CAGRA index\n cuvsCagraIndex_t index;\n cuvsError_t index_create_status = cuvsCagraIndexCreate(&index);\n\n // Build the CAGRA Index\n cuvsError_t build_status = cuvsCagraBuild(res, params, &dataset, index);\n\n // de-allocate `params`, `index` and `res`\n cuvsError_t params_destroy_status = cuvsCagraIndexParamsDestroy(params);\n cuvsError_t index_destroy_status = cuvsCagraIndexDestroy(index);\n cuvsError_t res_destroy_status = cuvsResourcesDestroy(res);\n @endcode\n\n @param[in] res cuvsResources_t opaque C handle\n @param[in] params cuvsCagraIndexParams_t used to build CAGRA index\n @param[in] dataset DLManagedTensor* training dataset\n @param[inout] index cuvsCagraIndex_t Newly built CAGRA index. This index needs to be already\n                                      created with cuvsCagraIndexCreate.\n @return cuvsError_t"]
-    pub fn cuvsCagraBuild(
+    #[doc = " @brief Update a CAGRA index with a device-padded dataset.\n\n This is the centralized dataset update operation for C callers. If \\p index\n is already device-padded, its dataset view is replaced in place. Otherwise,\n the index is converted and its opaque handle is rebound to a search-ready\n device-padded index. Caller retains ownership of\n \\p device_padded_dataset and must keep it alive while \\p index uses it.\n\n @param[in] res             cuvsResources_t opaque C handle\n @param[in] device_padded_dataset owning or non-owning device-padded dataset handle\n @param[inout] index        CAGRA index handle\n @return cuvsError_t"]
+    pub fn cuvsCagraUpdateDataset(
         res: cuvsResources_t,
-        params: cuvsCagraIndexParams_t,
-        dataset: *mut DLManagedTensor,
+        device_padded_dataset: cuvsDataset_t,
         index: cuvsCagraIndex_t,
     ) -> cuvsError_t;
 }
 unsafe extern "C" {
     #[must_use]
-    #[doc = " @brief Extend a CAGRA index with a `DLManagedTensor` which has underlying\n        `DLDeviceType` equal to `kDLCUDA`, `kDLCUDAHost`, `kDLCUDAManaged`,\n        or `kDLCPU`. Also, acceptable underlying types are:\n        1. `kDLDataType.code == kDLFloat` and `kDLDataType.bits = 32`\n        2. `kDLDataType.code == kDLFloat` and `kDLDataType.bits = 16`\n        3. `kDLDataType.code == kDLInt` and `kDLDataType.bits = 8`\n        4. `kDLDataType.code == kDLUInt` and `kDLDataType.bits = 8`\n\n @param[in] res cuvsResources_t opaque C handle\n @param[in] params cuvsCagraExtendParams_t used to extend CAGRA index\n @param[in] additional_dataset DLManagedTensor* additional dataset\n @param[in,out] index cuvsCagraIndex_t CAGRA index\n @return cuvsError_t"]
+    #[doc = " @brief Build a CAGRA index from a dataset handle. Acceptable underlying\n        types are:\n        1. `kDLDataType.code == kDLFloat` and `kDLDataType.bits = 32`\n        2. `kDLDataType.code == kDLFloat` and `kDLDataType.bits = 16`\n        3. `kDLDataType.code == kDLInt` and `kDLDataType.bits = 8`\n        4. `kDLDataType.code == kDLUInt` and `kDLDataType.bits = 8`\n\n The memory space and layout \\p dataset was constructed with select the C++ build overload.\n Build the handle with an owning factory or the matching dataset view factory\n (`cuvsDatasetMakePaddedView` / `cuvsDatasetMakeStandardView`).\n\n Note that a dataset residing in host memory produces a host-backed index, which\n must be made search-ready with `cuvsCagraUpdateDataset` (using a device-padded\n dataset) before calling `cuvsCagraSearch`.\n\n @code {.c}\n #include <cuvs/core/c_api.h>\n #include <cuvs/neighbors/cagra.h>\n\n // Create cuvsResources_t\n cuvsResources_t res;\n cuvsError_t res_create_status = cuvsResourcesCreate(&res);\n\n // Assume a populated `DLManagedTensor` type here holding a device padded dataset\n DLManagedTensor dataset;\n\n // Wrap it in a non-owning dataset handle\n cuvsDataset_t dataset_view;\n cuvsError_t view_create_status = cuvsDatasetMakePaddedView(res, &dataset, &dataset_view);\n\n // Create default index params\n cuvsCagraIndexParams_t params;\n cuvsError_t params_create_status = cuvsCagraIndexParamsCreate(&params);\n\n // Create CAGRA index\n cuvsCagraIndex_t index;\n cuvsError_t index_create_status = cuvsCagraIndexCreate(&index);\n\n // Build the CAGRA Index\n cuvsError_t build_status = cuvsCagraBuild(res, params, dataset_view, index);\n\n // de-allocate `dataset_view`, `params`, `index` and `res`\n cuvsError_t view_destroy_status = cuvsDatasetDestroy(dataset_view);\n cuvsError_t params_destroy_status = cuvsCagraIndexParamsDestroy(params);\n cuvsError_t index_destroy_status = cuvsCagraIndexDestroy(index);\n cuvsError_t res_destroy_status = cuvsResourcesDestroy(res);\n @endcode\n\n @param[in] res cuvsResources_t opaque C handle\n @param[in] params cuvsCagraIndexParams_t used to build CAGRA index\n @param[in] dataset cuvsDataset_t training dataset or dataset view\n @param[inout] index cuvsCagraIndex_t Newly built CAGRA index. This index needs to be already\n                                      created with cuvsCagraIndexCreate.\n @return cuvsError_t"]
+    pub fn cuvsCagraBuild(
+        res: cuvsResources_t,
+        params: cuvsCagraIndexParams_t,
+        dataset: cuvsDataset_t,
+        index: cuvsCagraIndex_t,
+    ) -> cuvsError_t;
+}
+unsafe extern "C" {
+    #[must_use]
+    #[doc = " @brief Extend a CAGRA index with a caller-owned pre-concatenated padded dataset.\n\n The caller must build `extended_dataset` as `old || new` (size `n_old + n_new`) before calling.\n Rows `[0, new_start_row)` are the original vectors; rows `[new_start_row, n_rows)` are the\n additional vectors. `new_start_row` must equal the current index size. The library only extends\n the graph and rebinds the index to `extended_dataset`; keep that dataset alive for the index\n lifetime.\n\n @param[in] res cuvsResources_t opaque C handle\n @param[in] params cuvsCagraExtendParams_t used to extend CAGRA index\n @param[in] extended_dataset cuvsDataset_t caller-owned device-padded dataset of old || new\n @param[in] new_start_row row index where the additional vectors begin\n @param[in,out] index cuvsCagraIndex_t CAGRA index\n @return cuvsError_t"]
     pub fn cuvsCagraExtend(
         res: cuvsResources_t,
         params: cuvsCagraExtendParams_t,
-        additional_dataset: *mut DLManagedTensor,
+        extended_dataset: cuvsDataset_t,
+        new_start_row: i64,
         index: cuvsCagraIndex_t,
     ) -> cuvsError_t;
 }
@@ -1551,12 +1585,35 @@ unsafe extern "C" {
 }
 unsafe extern "C" {
     #[must_use]
-    #[doc = " @defgroup cagra_c_index_serialize CAGRA C-API serialize functions\n @{\n/\n/**\n Save the index to file.\n\n Experimental, both the API and the serialization format are subject to change.\n\n @code{.c}\n #include <cuvs/neighbors/cagra.h>\n\n // Create cuvsResources_t\n cuvsResources_t res;\n cuvsError_t res_create_status = cuvsResourcesCreate(&res);\n\n // create an index with `cuvsCagraBuild`\n cuvsCagraSerialize(res, \"/path/to/index\", index, true);\n @endcode\n\n @param[in] res cuvsResources_t opaque C handle\n @param[in] filename the file name for saving the index\n @param[in] index CAGRA index\n @param[in] include_dataset Whether or not to write out the dataset to the file.\n"]
-    pub fn cuvsCagraSerialize(
+    #[doc = " @brief Search multiple CAGRA index partitions concurrently and return the global top-k per\n query.\n\n For each query row, the function searches all partitions in parallel into an internal\n intermediate buffer, applies per-partition distance post-processing, runs a batched top-k\n merge across partitions, and writes the final outputs to the caller-supplied device tensors.\n All work is submitted to the CUDA stream associated with @p res; use @c cuvsStreamSync to\n wait for completion.\n\n The index element type may be float32, float16, int8, or uint8. All partitions must share the\n same element type, and the queries must use that same type.\n\n @param[in]  res            cuvsResources_t opaque C handle\n @param[in]  params         search parameters (shared across partitions)\n @param[in]  num_partitions number of index partitions\n @param[in]  indices        array of num_partitions cuvsCagraIndex_t pointers, all of the same\n                            element type\n @param[in]  queries        DLManagedTensor* (device, same dtype as the indices, [n_queries,\n                            dim]); the queries matrix is searched against every partition\n @param[out] partition_ids  DLManagedTensor* (device, uint32, [n_queries, k]); which partition\n                            each returned neighbor came from\n @param[out] neighbors      DLManagedTensor* (device, uint32 or int64, [n_queries, k]); ordinal\n                            in the corresponding partition's dataset\n @param[out] distances      DLManagedTensor* (device, float32, [n_queries, k]); post-processed\n                            distance for each (query, neighbor)\n @param[in]  filters        array of `num_partitions` filters, one per partition (or NULL for a\n                            fully unfiltered search). `filters[i]` applies to partition `i`: use\n                            {.type=NO_FILTER, .addr=0} for no filter on that partition, or\n                            {.type=BITSET, .addr=ptr} where ptr is a uintptr_t-cast\n                            DLManagedTensor* holding that partition's own bitset (one bit per\n                            vector in that partition; standard 32-bit packing)."]
+    pub fn cuvsCagraSearchMultiPartition(
+        res: cuvsResources_t,
+        params: cuvsCagraSearchParams_t,
+        num_partitions: u32,
+        indices: *mut cuvsCagraIndex_t,
+        queries: *mut DLManagedTensor,
+        partition_ids: *mut DLManagedTensor,
+        neighbors: *mut DLManagedTensor,
+        distances: *mut DLManagedTensor,
+        filters: *mut cuvsFilter,
+    ) -> cuvsError_t;
+}
+unsafe extern "C" {
+    #[must_use]
+    #[doc = " @defgroup cagra_c_index_serialize CAGRA C-API serialize functions\n @{\n/\n/**\n Save the CAGRA graph to file without its dataset.\n\n Experimental, both the API and the serialization format are subject to change.\n\n @param[in] res cuvsResources_t opaque C handle\n @param[in] filename the file name for saving the graph\n @param[in] index CAGRA index"]
+    pub fn cuvsCagraSerializeGraph(
         res: cuvsResources_t,
         filename: *const ::std::os::raw::c_char,
         index: cuvsCagraIndex_t,
-        include_dataset: bool,
+    ) -> cuvsError_t;
+}
+unsafe extern "C" {
+    #[must_use]
+    #[doc = " Save the CAGRA graph and its attached dataset to file.\n\n The index stores a non-owning dataset view. The caller must keep the dataset backing that view\n alive while this function runs. Returns CUVS_ERROR without modifying the destination file if\n the index has no attached dataset.\n\n Experimental, both the API and the serialization format are subject to change.\n\n @param[in] res cuvsResources_t opaque C handle\n @param[in] filename the file name for saving the graph and dataset\n @param[in] index CAGRA index with an attached host or device dataset"]
+    pub fn cuvsCagraSerializeGraphAndDataset(
+        res: cuvsResources_t,
+        filename: *const ::std::os::raw::c_char,
+        index: cuvsCagraIndex_t,
     ) -> cuvsError_t;
 }
 unsafe extern "C" {
@@ -1570,11 +1627,21 @@ unsafe extern "C" {
 }
 unsafe extern "C" {
     #[must_use]
-    #[doc = " Load index from file.\n\n Experimental, both the API and the serialization format are subject to change.\n\n @param[in] res cuvsResources_t opaque C handle\n @param[in] filename the name of the file that stores the index\n @param[inout] index cuvsCagraIndex_t CAGRA index loaded from disk. This index needs to be already\n                                      created with cuvsCagraIndexCreate."]
-    pub fn cuvsCagraDeserialize(
+    #[doc = " Load the CAGRA graph from file without retaining a serialized dataset.\n\n This succeeds whether or not the file contains a dataset. Use cuvsCagraUpdateDataset to attach a\n caller-owned device-padded dataset view before searching the graph-only index.\n\n Experimental, both the API and the serialization format are subject to change.\n\n @param[in] res cuvsResources_t opaque C handle\n @param[in] filename the name of the file that stores the index\n @param[inout] index pre-created CAGRA index populated on success and unchanged on failure"]
+    pub fn cuvsCagraDeserializeGraph(
         res: cuvsResources_t,
         filename: *const ::std::os::raw::c_char,
         index: cuvsCagraIndex_t,
+    ) -> cuvsError_t;
+}
+unsafe extern "C" {
+    #[must_use]
+    #[doc = " Load the CAGRA graph and dataset from file.\n\n The returned owning dataset preserves the serialized host/device memory type and\n standard/padded layout. The index stores a non-owning view into it, so the caller must keep the\n dataset alive while the index uses it and destroy it separately with cuvsDatasetDestroy. Only a\n device-padded result is immediately searchable through the C API; attach a caller-owned\n device-padded view with cuvsCagraUpdateDataset for any other kind. The output pointer\n must point to a null handle on entry; deserialization acts as a factory and transfers ownership\n of the allocated dataset handle on success. Returns CUVS_ERROR when the file has no dataset; the\n index and output handle are unchanged on failure.\n\n Experimental, both the API and the serialization format are subject to change.\n\n @param[in] res cuvsResources_t opaque C handle\n @param[in] filename the name of the file that stores the graph and dataset\n @param[inout] index pre-created CAGRA index populated on success and unchanged on failure\n @param[out] out_dataset receives the allocated owning dataset handle; must point to null on entry"]
+    pub fn cuvsCagraDeserializeGraphAndDataset(
+        res: cuvsResources_t,
+        filename: *const ::std::os::raw::c_char,
+        index: cuvsCagraIndex_t,
+        out_dataset: *mut cuvsDataset_t,
     ) -> cuvsError_t;
 }
 unsafe extern "C" {
@@ -1590,13 +1657,14 @@ unsafe extern "C" {
 }
 unsafe extern "C" {
     #[must_use]
-    #[doc = " @brief Merge multiple CAGRA indices into a single CAGRA index.\n\n All input indices must have been built with the same data type (`index.dtype`) and\n have the same dimensionality (`index.dims`). The merged index uses the output\n parameters specified in `cuvsCagraIndexParams`.\n\n Input indices must have:\n  - `index.dtype.code` and `index.dtype.bits` matching across all indices.\n  - Supported data types for indices:\n      a. `kDLFloat` with `bits = 32`\n      b. `kDLFloat` with `bits = 16`\n      c. `kDLInt` with `bits = 8`\n      d. `kDLUInt` with `bits = 8`\n\n The resulting output index will have the same data type as the input indices.\n\n Example:\n @code{.c}\n #include <cuvs/core/c_api.h>\n #include <cuvs/neighbors/cagra.h>\n\n cuvsResources_t res;\n cuvsError_t res_create_status = cuvsResourcesCreate(&res);\n\n cuvsCagraIndex_t index1, index2, merged_index;\n cuvsCagraIndexCreate(&index1);\n cuvsCagraIndexCreate(&index2);\n cuvsCagraIndexCreate(&merged_index);\n\n // Assume index1 and index2 have been built using cuvsCagraBuild\n\n cuvsCagraIndexParams_t merge_params;\n cuvsError_t params_create_status = cuvsCagraIndexParamsCreate(&merge_params);\n\n cuvsError_t merge_status = cuvsCagraMerge(res, merge_params, (cuvsCagraIndex_t[]){index1,\n index2}, 2, merged_index);\n\n // Use merged_index for search operations\n\n cuvsError_t params_destroy_status = cuvsCagraIndexParamsDestroy(merge_params);\n cuvsError_t res_destroy_status = cuvsResourcesDestroy(res);\n @endcode\n\n @param[in] res cuvsResources_t opaque C handle\n @param[in] params cuvsCagraIndexParams_t parameters controlling merge behavior\n @param[in] indices Array of input cuvsCagraIndex_t handles to merge\n @param[in] num_indices Number of input indices\n @param[in] filter Filter that can be used to filter out vectors from the merged index\n @param[out] output_index Output handle that will store the merged index.\n                          Must be initialized using `cuvsCagraIndexCreate` before use."]
+    #[doc = " @brief Merge multiple CAGRA indices into a single CAGRA index.\n\n All input indices must have been built with the same data type (`index.dtype`) and\n have the same dimensionality (`index.dims`). The merged index uses the output\n parameters specified in `cuvsCagraIndexParams`.\n\n Input indices must have:\n  - `index.dtype.code` and `index.dtype.bits` matching across all indices.\n  - Supported data types for indices:\n      a. `kDLFloat` with `bits = 32`\n      b. `kDLFloat` with `bits = 16`\n      c. `kDLInt` with `bits = 8`\n      d. `kDLUInt` with `bits = 8`\n\n The resulting output index will have the same data type as the input indices.\n\n Example:\n @code{.c}\n #include <cuvs/core/c_api.h>\n #include <cuvs/neighbors/cagra.h>\n\n cuvsResources_t res;\n cuvsError_t res_create_status = cuvsResourcesCreate(&res);\n\n cuvsCagraIndex_t index1, index2, merged_index;\n cuvsCagraIndexCreate(&index1);\n cuvsCagraIndexCreate(&index2);\n cuvsCagraIndexCreate(&merged_index);\n\n // Assume index1 and index2 have device datasets and were built using cuvsCagraBuild.\n\n cuvsCagraIndexParams_t merge_params;\n cuvsError_t params_create_status = cuvsCagraIndexParamsCreate(&merge_params);\n\n cuvsDataset_t merged_dataset;\n cuvsDatasetCreate(&merged_dataset);\n cuvsFilter filter = {.type = NO_FILTER, .addr = 0};\n\n cuvsError_t merge_status = cuvsCagraMerge(res, merge_params, (cuvsCagraIndex_t[]){index1,\n index2}, 2, filter, merged_dataset, merged_index);\n\n // Use merged_index for search operations\n\n cuvsCagraIndexDestroy(merged_index);\n cuvsDatasetDestroy(merged_dataset);\n cuvsError_t params_destroy_status = cuvsCagraIndexParamsDestroy(merge_params);\n cuvsError_t res_destroy_status = cuvsResourcesDestroy(res);\n @endcode\n\n @param[in] res cuvsResources_t opaque C handle\n @param[in] params cuvsCagraIndexParams_t parameters controlling merge behavior\n @param[in] indices Array of input cuvsCagraIndex_t handles to merge\n @param[in] num_indices Number of input indices\n @param[in] filter Filter that can be used to filter out vectors from the merged index\n @param[out] merged_dataset Empty owning dataset handle. Merge first attempts to allocate and\n                            populate device storage with the same layout as the input indices. For\n                            an unfiltered merge, if device allocation fails, it falls back to host\n                            storage and returns a host-backed output index. Keep this dataset alive\n                            while using \\p output_index. A host-backed output index must be updated\n                            with `cuvsCagraUpdateDataset` before device search.\n @param[out] output_index Output handle that will store the merged index.\n                          Must be initialized using `cuvsCagraIndexCreate` before use."]
     pub fn cuvsCagraMerge(
         res: cuvsResources_t,
         params: cuvsCagraIndexParams_t,
         indices: *mut cuvsCagraIndex_t,
         num_indices: usize,
         filter: cuvsFilter,
+        merged_dataset: cuvsDataset_t,
         output_index: cuvsCagraIndex_t,
     ) -> cuvsError_t;
 }
@@ -2467,7 +2535,7 @@ unsafe extern "C" {
 }
 unsafe extern "C" {
     #[must_use]
-    #[doc = " @brief Perform PCA fit operation.\n\n Computes the principal components, explained variances, singular values, and column means\n from the input data.\n\n @code {.c}\n #include <cuvs/core/c_api.h>\n #include <cuvs/preprocessing/pca.h>\n\n // Create cuvsResources_t\n cuvsResources_t res;\n cuvsResourcesCreate(&res);\n\n // Create PCA params\n cuvsPcaParams_t params;\n cuvsPcaParamsCreate(&params);\n params->n_components = 2;\n\n // Assume populated DLManagedTensor objects (col-major, float32, device memory)\n DLManagedTensor input;          // [n_rows x n_cols]\n DLManagedTensor components;     // [n_components x n_cols]\n DLManagedTensor explained_var;  // [n_components]\n DLManagedTensor explained_var_ratio; // [n_components]\n DLManagedTensor singular_vals;  // [n_components]\n DLManagedTensor mu;             // [n_cols]\n DLManagedTensor noise_vars;     // [1] (scalar)\n\n cuvsPcaFit(res, params, &input, &components, &explained_var,\n            &explained_var_ratio, &singular_vals, &mu, &noise_vars, false);\n\n // Cleanup\n cuvsPcaParamsDestroy(params);\n cuvsResourcesDestroy(res);\n @endcode\n\n @param[in] res cuvsResources_t opaque C handle\n @param[in] params PCA parameters\n @param[inout] input input data [n_rows x n_cols] (col-major, float32, device)\n @param[out] components principal components [n_components x n_cols] (col-major, float32, device)\n @param[out] explained_var explained variances [n_components] (float32, device)\n @param[out] explained_var_ratio explained variance ratios [n_components] (float32, device)\n @param[out] singular_vals singular values [n_components] (float32, device)\n @param[out] mu column means [n_cols] (float32, device)\n @param[out] noise_vars noise variance [1] (float32, device)\n @param[in] flip_signs_based_on_U whether to determine signs by U (true) or V.T (false)\n @return cuvsError_t"]
+    #[doc = " @brief Perform PCA fit operation.\n\n Computes the principal components, explained variances, singular values, and column means\n from the input data.\n\n The layout of `input` (C-contiguous / row-major or F-contiguous / col-major) is detected\n from its DLPack strides; `components` must use the same layout as `input`.\n\n @code {.c}\n #include <cuvs/core/c_api.h>\n #include <cuvs/preprocessing/pca.h>\n\n // Create cuvsResources_t\n cuvsResources_t res;\n cuvsResourcesCreate(&res);\n\n // Create PCA params\n cuvsPcaParams_t params;\n cuvsPcaParamsCreate(&params);\n params->n_components = 2;\n\n // Assume populated DLManagedTensor objects (float32, device memory)\n DLManagedTensor input;          // [n_rows x n_cols] (C- or F-contiguous)\n DLManagedTensor components;     // [n_components x n_cols] (same layout as input)\n DLManagedTensor explained_var;  // [n_components]\n DLManagedTensor explained_var_ratio; // [n_components]\n DLManagedTensor singular_vals;  // [n_components]\n DLManagedTensor mu;             // [n_cols]\n DLManagedTensor noise_vars;     // [1] (scalar)\n\n cuvsPcaFit(res, params, &input, &components, &explained_var,\n            &explained_var_ratio, &singular_vals, &mu, &noise_vars, false);\n\n // Cleanup\n cuvsPcaParamsDestroy(params);\n cuvsResourcesDestroy(res);\n @endcode\n\n @param[in] res cuvsResources_t opaque C handle\n @param[in] params PCA parameters\n @param[inout] input input data [n_rows x n_cols] (C- or F-contiguous, float32, device)\n @param[out] components principal components [n_components x n_cols] (same layout as input)\n @param[out] explained_var explained variances [n_components] (float32, device)\n @param[out] explained_var_ratio explained variance ratios [n_components] (float32, device)\n @param[out] singular_vals singular values [n_components] (float32, device)\n @param[out] mu column means [n_cols] (float32, device)\n @param[out] noise_vars noise variance [1] (float32, device)\n @param[in] flip_signs_based_on_U whether to determine signs by U (true) or V.T (false)\n @return cuvsError_t"]
     pub fn cuvsPcaFit(
         res: cuvsResources_t,
         params: cuvsPcaParams_t,
@@ -2483,7 +2551,7 @@ unsafe extern "C" {
 }
 unsafe extern "C" {
     #[must_use]
-    #[doc = " @brief Perform PCA fit and transform in a single operation.\n\n Computes the principal components and transforms the input data into the eigenspace.\n\n @param[in] res cuvsResources_t opaque C handle\n @param[in] params PCA parameters\n @param[inout] input input data [n_rows x n_cols] (col-major, float32, device)\n @param[out] trans_input transformed data [n_rows x n_components] (col-major, float32, device)\n @param[out] components principal components [n_components x n_cols] (col-major, float32, device)\n @param[out] explained_var explained variances [n_components] (float32, device)\n @param[out] explained_var_ratio explained variance ratios [n_components] (float32, device)\n @param[out] singular_vals singular values [n_components] (float32, device)\n @param[out] mu column means [n_cols] (float32, device)\n @param[out] noise_vars noise variance [1] (float32, device)\n @param[in] flip_signs_based_on_U whether to determine signs by U (true) or V.T (false)\n @return cuvsError_t"]
+    #[doc = " @brief Perform PCA fit and transform in a single operation.\n\n Computes the principal components and transforms the input data into the eigenspace.\n The layout of `input` (C- or F-contiguous) is detected from its DLPack strides; all\n other matrix tensors must use the same layout.\n\n @param[in] res cuvsResources_t opaque C handle\n @param[in] params PCA parameters\n @param[inout] input input data [n_rows x n_cols] (C- or F-contiguous, float32, device)\n @param[out] trans_input transformed data [n_rows x n_components] (same layout as input)\n @param[out] components principal components [n_components x n_cols] (same layout as input)\n @param[out] explained_var explained variances [n_components] (float32, device)\n @param[out] explained_var_ratio explained variance ratios [n_components] (float32, device)\n @param[out] singular_vals singular values [n_components] (float32, device)\n @param[out] mu column means [n_cols] (float32, device)\n @param[out] noise_vars noise variance [1] (float32, device)\n @param[in] flip_signs_based_on_U whether to determine signs by U (true) or V.T (false)\n @return cuvsError_t"]
     pub fn cuvsPcaFitTransform(
         res: cuvsResources_t,
         params: cuvsPcaParams_t,
@@ -2500,7 +2568,7 @@ unsafe extern "C" {
 }
 unsafe extern "C" {
     #[must_use]
-    #[doc = " @brief Perform PCA transform operation.\n\n Transforms the input data into the eigenspace using previously computed principal components.\n\n @param[in] res cuvsResources_t opaque C handle\n @param[in] params PCA parameters\n @param[inout] input data to transform [n_rows x n_cols] (col-major, float32, device)\n @param[in] components principal components [n_components x n_cols] (col-major, float32, device)\n @param[in] singular_vals singular values [n_components] (float32, device)\n @param[in] mu column means [n_cols] (float32, device)\n @param[out] trans_input transformed data [n_rows x n_components] (col-major, float32, device)\n @return cuvsError_t"]
+    #[doc = " @brief Perform PCA transform operation.\n\n Transforms the input data into the eigenspace using previously computed principal components.\n The layout of `input` (C- or F-contiguous) is detected from its DLPack strides; all other\n matrix tensors must use the same layout.\n\n @param[in] res cuvsResources_t opaque C handle\n @param[in] params PCA parameters\n @param[inout] input data to transform [n_rows x n_cols] (C- or F-contiguous, float32, device)\n @param[in] components principal components [n_components x n_cols] (same layout as input)\n @param[in] singular_vals singular values [n_components] (float32, device)\n @param[in] mu column means [n_cols] (float32, device)\n @param[out] trans_input transformed data [n_rows x n_components] (same layout as input)\n @return cuvsError_t"]
     pub fn cuvsPcaTransform(
         res: cuvsResources_t,
         params: cuvsPcaParams_t,
@@ -2513,7 +2581,7 @@ unsafe extern "C" {
 }
 unsafe extern "C" {
     #[must_use]
-    #[doc = " @brief Perform PCA inverse transform operation.\n\n Transforms data from the eigenspace back to the original space.\n\n @param[in] res cuvsResources_t opaque C handle\n @param[in] params PCA parameters\n @param[in] trans_input transformed data [n_rows x n_components] (col-major, float32, device)\n @param[in] components principal components [n_components x n_cols] (col-major, float32, device)\n @param[in] singular_vals singular values [n_components] (float32, device)\n @param[in] mu column means [n_cols] (float32, device)\n @param[out] output reconstructed data [n_rows x n_cols] (col-major, float32, device)\n @return cuvsError_t"]
+    #[doc = " @brief Perform PCA inverse transform operation.\n\n Transforms data from the eigenspace back to the original space.\n The layout of `trans_input` (C- or F-contiguous) is detected from its DLPack strides;\n all other matrix tensors must use the same layout.\n\n @param[in] res cuvsResources_t opaque C handle\n @param[in] params PCA parameters\n @param[in] trans_input transformed data [n_rows x n_components] (C- or F-contiguous,\n float32, device)\n @param[in] components principal components [n_components x n_cols] (same layout as trans_input)\n @param[in] singular_vals singular values [n_components] (float32, device)\n @param[in] mu column means [n_cols] (float32, device)\n @param[out] output reconstructed data [n_rows x n_cols] (same layout as trans_input)\n @return cuvsError_t"]
     pub fn cuvsPcaInverseTransform(
         res: cuvsResources_t,
         params: cuvsPcaParams_t,
@@ -2840,5 +2908,15 @@ unsafe extern "C" {
         quantizer: cuvsScalarQuantizer_t,
         dataset: *mut DLManagedTensor,
         out: *mut DLManagedTensor,
+    ) -> cuvsError_t;
+}
+unsafe extern "C" {
+    #[must_use]
+    #[doc = " @brief Select the k smallest values from a flat device array of n candidates.\n\n Treats `in_val` as a matrix of shape [1, n] and selects the `k` smallest\n float values.  `out_idx` receives the int64 column positions of the selected\n values in [0, n), so the caller can recover per-segment identity as:\n\n   segment_index        = out_idx[j] / segment_k\n   position_in_segment  = out_idx[j] % segment_k\n\n @param[in]  res      cuvsResources_t handle\n @param[in]  in_val   DLManagedTensor* shape [1, n], float32, device memory\n @param[out] out_val  DLManagedTensor* shape [1, k], float32, device memory\n @param[out] out_idx  DLManagedTensor* shape [1, k], int64,   device memory\n @return cuvsError_t"]
+    pub fn cuvsSelectK(
+        res: cuvsResources_t,
+        in_val: *mut DLManagedTensor,
+        out_val: *mut DLManagedTensor,
+        out_idx: *mut DLManagedTensor,
     ) -> cuvsError_t;
 }

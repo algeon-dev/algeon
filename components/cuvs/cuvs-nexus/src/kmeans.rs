@@ -85,14 +85,14 @@ pub struct KMeansModel {
 }
 
 struct ParamsHandle {
-    raw: Option<NonNull<cuvs_sys::cuvsKMeansParams_v2>>,
+    raw: Option<NonNull<cuvs_sys::cuvsKMeansParams>>,
 }
 
 impl ParamsHandle {
     fn new(params: &KMeansParams, operation: &'static str) -> Result<Self> {
         validate_params(params, operation)?;
         let mut raw = ptr::null_mut();
-        unsafe { check_cuvs(cuvs_sys::cuvsKMeansParamsCreate_v2(&mut raw), operation)? };
+        unsafe { check_cuvs(cuvs_sys::cuvsKMeansParamsCreate(&mut raw), operation)? };
         let raw = NonNull::new(raw).ok_or_else(|| invalid_state(operation, "cuVS returned null KMeans params"))?;
         unsafe {
             let native = raw.as_ptr();
@@ -103,13 +103,13 @@ impl ParamsHandle {
             (*native).tol = params.tol;
             (*native).n_init = params.n_init;
             (*native).hierarchical = false;
-            (*native).streaming_batch_size = 0;
+            (*native).device_buffer_samples = 0;
             (*native).init_size = 0;
         }
         Ok(Self { raw: Some(raw) })
     }
 
-    fn as_ptr(&self, operation: &'static str) -> Result<cuvs_sys::cuvsKMeansParams_v2_t> {
+    fn as_ptr(&self, operation: &'static str) -> Result<cuvs_sys::cuvsKMeansParams_t> {
         self.raw.map(NonNull::as_ptr).ok_or_else(|| invalid_state(operation, "KMeans params have already been closed"))
     }
 
@@ -117,7 +117,7 @@ impl ParamsHandle {
         let Some(raw) = self.raw.take() else {
             return Ok(());
         };
-        let result = unsafe { check_cuvs(cuvs_sys::cuvsKMeansParamsDestroy_v2(raw.as_ptr()), operation) };
+        let result = unsafe { check_cuvs(cuvs_sys::cuvsKMeansParamsDestroy(raw.as_ptr()), operation) };
         if result.is_err() {
             self.raw = Some(raw);
         }
@@ -129,7 +129,7 @@ impl Drop for ParamsHandle {
     fn drop(&mut self) {
         if let Some(raw) = self.raw.take() {
             unsafe {
-                let _ = cuvs_sys::cuvsKMeansParamsDestroy_v2(raw.as_ptr());
+                let _ = cuvs_sys::cuvsKMeansParamsDestroy(raw.as_ptr());
             }
         }
     }
@@ -234,7 +234,7 @@ impl KMeansModel {
             let mut centroids_tensor = DlpackTensor::from_mut(&mut centroids_view);
             let call_result = unsafe {
                 check_cuvs(
-                    cuvs_sys::cuvsKMeansFit_v2(
+                    cuvs_sys::cuvsKMeansFit(
                         native,
                         params_handle.as_ptr(operation)?,
                         data_tensor.as_mut_ptr(),
@@ -299,7 +299,7 @@ impl KMeansModel {
             let mut labels_tensor = DlpackTensor::from_mut(&mut labels_view);
             let call_result = unsafe {
                 check_cuvs(
-                    cuvs_sys::cuvsKMeansPredict_v2(
+                    cuvs_sys::cuvsKMeansPredict(
                         native,
                         params_handle.as_ptr(operation)?,
                         data_tensor.as_mut_ptr(),

@@ -5,7 +5,7 @@ use std::{
     fmt,
 };
 
-pub const EXPECTED_CUVS_VERSION: (u16, u16, u16) = (26, 6, 0);
+pub const EXPECTED_CUVS_VERSION: (u16, u16, u16) = (26, 8, 0);
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
