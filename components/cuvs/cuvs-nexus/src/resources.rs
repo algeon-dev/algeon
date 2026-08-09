@@ -67,7 +67,7 @@ impl Drop for NativeResources {
 
 /// One serialized cuVS resource generation for an exact cudf runtime binding.
 ///
-/// cuVS 26.06 exposes stream selection but no memory-resource setter. This
+/// cuVS 26.08 exposes stream selection but no memory-resource setter. This
 /// bridge therefore accepts only runtimes whose memory resource is cudf's
 /// process-lifetime current [`cudf::DeviceMemoryManager`] resource. Stream
 /// reservations remain supported because they route allocations by stream
@@ -98,7 +98,7 @@ impl CuvsResources {
         if memory_resource != current_memory_resource {
             return Err(unsupported(
                 CREATE_OPERATION,
-                "cuVS 26.06 cannot bind an arbitrary runtime memory resource; use the device memory manager resource and stream reservations",
+                "cuVS 26.08 cannot bind an arbitrary runtime memory resource; use the device memory manager resource and stream reservations",
             )
             .with_context("runtime_memory_resource", format!("0x{memory_resource:x}"))
             .with_context("current_memory_resource", format!("0x{current_memory_resource:x}")));

@@ -1,4 +1,4 @@
-//! Generated raw FFI bindings to the pinned cuVS 26.06 C API.
+//! Generated raw FFI bindings to the pinned cuVS 26.08 C API.
 
 use std::{
     ffi::{c_char, c_int, c_uint, c_void},
