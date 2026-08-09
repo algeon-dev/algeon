@@ -32,6 +32,7 @@ pub(crate) use self::metrics::{
 };
 pub(crate) use self::{
     admission::{QueryAdmissionSource, plan_is_query_admission_wrapped, wrap_plan_with_query_admission_ticket},
+    composed::composed_admission_capability_proof,
     metrics::{
         NativeExecutionMetricsCapture, NativeRuntimeObservation, NexusNativeMetrics, SealedAttemptMetricsTarget,
     },

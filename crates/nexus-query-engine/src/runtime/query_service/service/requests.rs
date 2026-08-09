@@ -1,7 +1,7 @@
 //! Blocking/async admission entrypoints and service close paths.
 
 use super::*;
-use crate::admission::AttemptReservationPolicy;
+use crate::admission::{AdmittedAttemptProof, AttemptReservationPolicy};
 
 // `ExecutionCancellation` is intentionally a lightweight shared flag. The
 // blocking queue has no caller-owned wake handle, so bounded waits observe it
@@ -89,7 +89,7 @@ pub(in crate::runtime::query_service) struct PlacedAdmissionCommit {
     pub(in crate::runtime::query_service) admitted_reservation_envelope: Option<AttemptReservationEnvelope>,
     pub(in crate::runtime::query_service) admitted_compatible_devices: Vec<usize>,
     pub(in crate::runtime::query_service) observation: RuntimeObservationHandle,
-    pub(in crate::runtime::query_service) attempt_id: Option<crate::observability::AttemptId>,
+    pub(in crate::runtime::query_service) attempt_id: crate::observability::AttemptId,
     pub(in crate::runtime::query_service) completion: QueryCompletion,
     pub(in crate::runtime::query_service) admission_request_id: AdmissionRequestId,
     pub(in crate::runtime::query_service) admission_wait: Duration,
@@ -140,7 +140,7 @@ impl QueryService {
         let submitted_plan_capability_evidence = request.submitted_plan_capability_evidence();
         let mut request = request;
         let mut observation_owner = request.take_runtime_observation();
-        let attempt_id = observation_owner.attempt_id;
+        let attempt_id = observation_owner.attempt_id.unwrap_or_else(crate::observability::AttemptId::mint);
         let admission_request_id =
             AdmissionRequestId::new(self.inner.next_admission_request_id.fetch_add(1, Ordering::Relaxed));
         let activity_error = observation_owner.activity_error.take();
@@ -370,6 +370,7 @@ impl QueryService {
                 let placed_query = match self.try_place_on_device(
                     device_ordinal,
                     admission_request_id,
+                    state.queued[position].attempt_id,
                     &selected_requirement,
                     &mut slot_notifications,
                 ) {
@@ -474,7 +475,7 @@ impl QueryService {
                     finish_removed_request_error(Some(admitted), &error);
                     return Err(error);
                 }
-                let lifecycle_ticket = state.lifecycle.begin_provisional();
+                let lifecycle_ticket = state.lifecycle.begin_provisional(Arc::downgrade(&self.inner));
                 self.inner.notify_admission_available();
                 drop(state);
                 return self.commit_placed_admission(PlacedAdmissionCommit {
@@ -647,7 +648,7 @@ impl QueryService {
         let submitted_plan_capability_evidence = request.submitted_plan_capability_evidence();
         let mut request = request;
         let mut observation_owner = request.take_runtime_observation();
-        let attempt_id = observation_owner.attempt_id;
+        let attempt_id = observation_owner.attempt_id.unwrap_or_else(crate::observability::AttemptId::mint);
         let admission_request_id =
             AdmissionRequestId::new(self.inner.next_admission_request_id.fetch_add(1, Ordering::Relaxed));
         let activity_error = observation_owner.activity_error.take();
@@ -958,9 +959,32 @@ impl QueryService {
                 return Err(primary);
             },
         };
-        if let Some(attempt_id) = attempt_id {
-            envelope.register_allocator_domain_attempt(attempt_id);
-        }
+        let admitted_attempt_proof = match AdmittedAttemptProof::from_post_grant(
+            admitted_reservation_envelope,
+            submitted_plan_capability_evidence,
+            envelope.memory_grant(),
+        ) {
+            Ok(proof) => proof.map(Arc::new),
+            Err(error) => {
+                envelope.preaccount_rollback_cleanup(&mut state);
+                record_admission_lifecycle(
+                    &observation,
+                    admission_request_id,
+                    admission_rejection(&error),
+                    state.queued.len(),
+                    None,
+                    None,
+                );
+                self.inner.notify_admission_available();
+                drop(state);
+                super::transaction::pause_after_rollback_accounting(probe.as_deref());
+                drop(envelope);
+                self.inner.notify_admission_available();
+                completion.finish_error(&error);
+                return Err(error);
+            },
+        };
+        envelope.register_allocator_domain_attempt(attempt_id);
         if let Err(error) =
             execution_cancellation.check("nexus_query_engine.query_service.admission_transaction.publish")
         {
@@ -1112,13 +1136,12 @@ impl QueryService {
                 attempt_id,
                 completion,
                 envelope,
+                admitted_attempt_proof.clone(),
                 admitted_device_requirements,
                 admitted_compatible_devices,
             ),
             config: self.inner.config.clone(),
             queue_bounds: self.inner.queue_bounds.clone(),
-            submitted_plan_capability_evidence,
-            admitted_reservation_envelope,
             admission_request_id,
             admission_sequence,
             admission_wait,
@@ -1171,7 +1194,7 @@ impl QueryService {
         let submitted_plan_capability_evidence = request.submitted_plan_capability_evidence();
         let mut request = request;
         let mut observation_owner = request.take_runtime_observation();
-        let attempt_id = observation_owner.attempt_id;
+        let attempt_id = observation_owner.attempt_id.unwrap_or_else(crate::observability::AttemptId::mint);
         let admission_request_id =
             AdmissionRequestId::new(self.inner.next_admission_request_id.fetch_add(1, Ordering::Relaxed));
         let activity_error = observation_owner.activity_error.take();
@@ -1305,6 +1328,7 @@ impl QueryService {
         }
         let placed_query = match self.try_place_query(
             admission_request_id,
+            attempt_id,
             &device_entries,
             &compatible_devices,
             &mut slot_notifications,
@@ -1346,7 +1370,7 @@ impl QueryService {
             super::super::admission::missing_device_admission_entry_error(placed_query.device_ordinal)
         })?;
         let admitted_reservation_envelope = selected_entry.admitted_reservation_envelope.clone();
-        let lifecycle_ticket = state.lifecycle.begin_provisional();
+        let lifecycle_ticket = state.lifecycle.begin_provisional(Arc::downgrade(&self.inner));
         self.inner.notify_admission_available();
         drop(state);
         // The try path never waits for queue capacity, but the commit

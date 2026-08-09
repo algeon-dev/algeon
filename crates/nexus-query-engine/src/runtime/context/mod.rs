@@ -29,7 +29,7 @@ use super::{
     },
 };
 use crate::{
-    admission::{AttemptBoundDerivation, AttemptRequirement, AttemptReservationEnvelope},
+    admission::{AdmittedAttemptProof, AttemptBoundDerivation},
     capability::AggregateStrategyExecutionOptions,
     chunk::SourceChunkPlanningOptions,
     error::{QueryError, QueryErrorCode, Result},
@@ -944,14 +944,9 @@ pub struct ExecutionContext {
     memory_grant: Option<MemoryGrant>,
     /// Attempt-owned auxiliary stream allowance installed by query-service admission.
     attempt_auxiliary_slots: Option<Arc<AttemptAuxiliarySlots>>,
-    /// Immutable capability requirement resolved before this service admission.
-    ///
-    /// Direct contexts have no admission proof. Service-admitted contexts retain
-    /// the resolved requirement so execution can reject a plan whose actual
-    /// capability contracts were not present at admission.
-    admitted_capability_evidence: Option<AttemptRequirement>,
-    /// Service-resolved policy envelope used to size the admitted grant.
-    admitted_reservation_envelope: Option<AttemptReservationEnvelope>,
+    /// Immutable post-grant proof shared by this context and its query handle.
+    /// Direct contexts intentionally carry no proof.
+    admitted_attempt_proof: Option<Arc<AdmittedAttemptProof>>,
     /// This context's shared member lease on its execution stream. One
     /// member per stream for the attempt; per-stage tokens clone it.
     attempt_member_lease: Option<cudf::StreamReservationLease>,
@@ -1082,8 +1077,7 @@ pub(super) struct ExecutionContextParts {
     pub(super) grant_memory_domain: Option<Arc<cudf::QueryMemoryDomain>>,
     pub(super) attempt_allocation_domain: Option<AttemptAllocationDomain>,
     pub(super) attempt_auxiliary_slots: Option<Arc<AttemptAuxiliarySlots>>,
-    pub(super) admitted_capability_evidence: Option<AttemptRequirement>,
-    pub(super) admitted_reservation_envelope: Option<AttemptReservationEnvelope>,
+    pub(super) admitted_attempt_proof: Option<Arc<AdmittedAttemptProof>>,
     pub(super) attempt_member_lease: Option<cudf::StreamReservationLease>,
     pub(super) boundary_policy: ExecutionBoundaryPolicy,
     pub(super) source_scheduler_policy: SourceSchedulerPolicy,
@@ -1165,8 +1159,7 @@ impl ExecutionContext {
             grant_memory_domain: None,
             attempt_allocation_domain: None,
             attempt_auxiliary_slots: None,
-            admitted_capability_evidence: None,
-            admitted_reservation_envelope: None,
+            admitted_attempt_proof: None,
             attempt_member_lease: None,
             boundary_policy: ExecutionBoundaryPolicy::default(),
             source_scheduler_policy: SourceSchedulerPolicy::default(),
@@ -1219,8 +1212,7 @@ impl ExecutionContext {
             grant_memory_domain: parts.grant_memory_domain,
             attempt_allocation_domain: parts.attempt_allocation_domain,
             attempt_auxiliary_slots: parts.attempt_auxiliary_slots,
-            admitted_capability_evidence: parts.admitted_capability_evidence,
-            admitted_reservation_envelope: parts.admitted_reservation_envelope,
+            admitted_attempt_proof: parts.admitted_attempt_proof,
             attempt_member_lease: parts.attempt_member_lease,
             boundary_policy: parts.boundary_policy,
             source_scheduler_policy: parts.source_scheduler_policy,
@@ -1492,8 +1484,7 @@ impl ExecutionContext {
             grant_memory_domain: self.grant_memory_domain.clone(),
             attempt_allocation_domain: self.attempt_allocation_domain.clone(),
             attempt_auxiliary_slots: self.attempt_auxiliary_slots.as_ref().map(Arc::clone),
-            admitted_capability_evidence: self.admitted_capability_evidence.clone(),
-            admitted_reservation_envelope: self.admitted_reservation_envelope.clone(),
+            admitted_attempt_proof: self.admitted_attempt_proof.clone(),
             attempt_member_lease,
             boundary_policy: self.boundary_policy,
             source_scheduler_policy: self.source_scheduler_policy,
@@ -1578,22 +1569,135 @@ impl ExecutionContext {
         self.resident_graph_cache.clone()
     }
 
-    /// Rejects execution when this admitted context's proof does not cover the
-    /// actual native plan. This is intentionally evaluated at execution as a
-    /// defense against callers reusing a handle with a different plan.
-    pub(crate) fn validate_admitted_plan_capabilities(&self, plan: &QueryPlan) -> Result<()> {
-        if let Some(evidence) = &self.admitted_capability_evidence {
-            evidence.validate_covers_plan(plan)?;
+    fn validate_admitted_proof(
+        &self,
+        plan: &QueryPlan,
+        occurrence_ids: Option<&[String]>,
+    ) -> Result<Option<AttemptComposedScheduleProjection>> {
+        if !self.query_service_admitted {
+            return Ok(None);
         }
-        self.admitted_reservation_envelope.as_ref().map_or(Ok(()), |envelope| {
-            envelope.validate_execution(
-                plan,
-                self.memory_control_policy(),
-                self.source_scheduler_policy,
-                self.source_chunk_planning_mode,
-                self.source_chunk_planning_options,
+        let proof = self.admitted_attempt_proof.as_ref().ok_or_else(|| {
+            QueryError::new(
+                QueryErrorCode::UnsupportedPlanShape,
+                "nexus_query_engine.runtime.context",
+                "a query-service context requires an immutable post-grant admission proof",
             )
-        })
+            .with_fact("reason", "admitted_attempt_proof_missing")
+            .with_fact("plan_scope", crate::admission::canonical_execution_scope_fingerprint(plan))
+        })?;
+        let runtime_device_ordinal = self.runtime()?.device().ordinal();
+        if runtime_device_ordinal != proof.selected_device() {
+            return Err(QueryError::new(
+                QueryErrorCode::UnsupportedPlanShape,
+                "nexus_query_engine.runtime.context",
+                "the runtime device differs from the admitted execution proof",
+            )
+            .with_fact("reason", "admitted_attempt_proof_device_mismatch")
+            .with_fact("runtime_device_ordinal", runtime_device_ordinal)
+            .with_fact("selected_device_ordinal", proof.selected_device()));
+        }
+        let immutable_grant = self.memory_grant()?.ok_or_else(|| {
+            QueryError::new(
+                QueryErrorCode::UnsupportedPlanShape,
+                "nexus_query_engine.runtime.context",
+                "an admitted context requires the immutable grant carried by its execution proof",
+            )
+            .with_fact("reason", "admitted_attempt_proof_grant_missing")
+        })?;
+        if immutable_grant.device_ordinal() != proof.selected_device() {
+            return Err(QueryError::new(
+                QueryErrorCode::UnsupportedPlanShape,
+                "nexus_query_engine.runtime.context",
+                "the immutable grant device differs from the admitted execution proof",
+            )
+            .with_fact("reason", "admitted_attempt_proof_grant_device_mismatch")
+            .with_fact("grant_device_ordinal", immutable_grant.device_ordinal())
+            .with_fact("selected_device_ordinal", proof.selected_device()));
+        }
+        if immutable_grant.identity() != proof.grant_identity() {
+            return Err(QueryError::new(
+                QueryErrorCode::UnsupportedPlanShape,
+                "nexus_query_engine.runtime.context",
+                "the immutable grant identity differs from the admitted execution proof",
+            )
+            .with_fact("reason", "admitted_attempt_proof_grant_identity_mismatch")
+            .with_fact("grant_attempt_id", immutable_grant.identity().attempt_id)
+            .with_fact("proof_attempt_id", proof.grant_identity().attempt_id)
+            .with_fact("grant_generation", immutable_grant.identity().generation)
+            .with_fact("proof_generation", proof.grant_identity().generation));
+        }
+        if self.attempt_id != Some(proof.grant_identity().attempt_id) {
+            return Err(QueryError::new(
+                QueryErrorCode::UnsupportedPlanShape,
+                "nexus_query_engine.runtime.context",
+                "the context attempt identity differs from the admitted execution proof",
+            )
+            .with_fact("reason", "admitted_attempt_proof_attempt_mismatch")
+            .with_fact(
+                "context_attempt_id",
+                self.attempt_id.map(|attempt_id| attempt_id.to_string()).unwrap_or_default(),
+            )
+            .with_fact("proof_attempt_id", proof.grant_identity().attempt_id));
+        }
+        let domain = self.attempt_allocation_domain.as_ref().ok_or_else(|| {
+            QueryError::new(
+                QueryErrorCode::UnsupportedPlanShape,
+                "nexus_query_engine.runtime.context",
+                "an admitted context requires the allocation domain carried by its execution proof",
+            )
+            .with_fact("reason", "admitted_attempt_proof_domain_missing")
+        })?;
+        if domain.device_ordinal() != proof.selected_device() || domain.grant_identity() != proof.grant_identity() {
+            return Err(QueryError::new(
+                QueryErrorCode::UnsupportedPlanShape,
+                "nexus_query_engine.runtime.context",
+                "the allocation domain identity differs from the admitted execution proof",
+            )
+            .with_fact("reason", "admitted_attempt_proof_domain_identity_mismatch")
+            .with_fact("domain_device_ordinal", domain.device_ordinal())
+            .with_fact("selected_device_ordinal", proof.selected_device())
+            .with_fact("domain_generation", domain.grant_identity().generation)
+            .with_fact("proof_generation", proof.grant_identity().generation));
+        }
+        proof.submitted_capability_evidence().validate_covers_plan(plan)?;
+        proof.reservation_envelope().validate_execution_with_grant(
+            plan,
+            self.memory_control_policy(),
+            self.source_scheduler_policy,
+            self.source_chunk_planning_mode,
+            self.source_chunk_planning_options,
+            immutable_grant.budget_bytes(),
+        )?;
+        let Some(occurrence_ids) = occurrence_ids else {
+            return Ok(None);
+        };
+        let projection_identity = match proof.reservation_envelope().bound_derivation() {
+            Some(AttemptBoundDerivation::OrderedTimeline) => {
+                Some((proof.grant_identity().attempt_id, runtime_device_ordinal, proof.grant_identity().generation))
+            },
+            Some(AttemptBoundDerivation::ConservativeOwnerSum) => None,
+            None => {
+                return Err(QueryError::new(
+                    QueryErrorCode::UnsupportedPlanShape,
+                    "nexus_query_engine.runtime.context",
+                    "an admitted execution proof has no selected bound derivation",
+                )
+                .with_fact("reason", "attempt_bound_derivation_unavailable"));
+            },
+        };
+        proof.reservation_envelope().validate_and_project_composed_execution(
+            plan,
+            occurrence_ids,
+            immutable_grant.budget_bytes(),
+            projection_identity,
+        )
+    }
+
+    /// Universal pre-GPU gate for service-created execution contexts. Direct
+    /// contexts remain unrestricted and return success without a proof.
+    pub fn validate_admitted_plan_capabilities(&self, plan: &QueryPlan) -> Result<()> {
+        self.validate_admitted_proof(plan, None).map(|_| ())
     }
 
     /// Validates one composed attempt against its final engine-selected bound.
@@ -1606,52 +1710,27 @@ impl ExecutionContext {
         consumer_plan: &QueryPlan,
         occurrence_ids: &[String],
     ) -> Result<Option<AttemptComposedScheduleProjection>> {
-        self.validate_admitted_plan_capabilities(consumer_plan)?;
-        let immutable_grant = self.memory_grant()?.ok_or_else(|| {
-            QueryError::new(
-                QueryErrorCode::UnsupportedPlanShape,
-                "nexus_query_engine.runtime.context",
-                "an admitted attempt requires the immutable grant issued with its envelope",
-            )
-            .with_fact("reason", "graph_attempt_complete_phase_unmodeled")
-            .with_fact("schedule_reason", "missing_immutable_grant")
-        })?;
-        let runtime_device_ordinal = self.runtime()?.device().ordinal();
-        if runtime_device_ordinal != immutable_grant.device_ordinal() {
-            return Err(QueryError::new(
-                QueryErrorCode::UnsupportedPlanShape,
-                "nexus_query_engine.runtime.context",
-                "the runtime device differs from the admitted immutable grant device",
-            )
-            .with_fact("reason", "graph_attempt_complete_phase_unmodeled")
-            .with_fact("schedule_reason", "runtime_device_grant_mismatch")
-            .with_fact("runtime_device_ordinal", runtime_device_ordinal)
-            .with_fact("grant_device_ordinal", immutable_grant.device_ordinal()));
-        }
-        let envelope = self.admitted_reservation_envelope.as_ref().ok_or_else(|| {
-            QueryError::new(
-                QueryErrorCode::UnsupportedPlanShape,
-                "nexus_query_engine.runtime.context",
-                "an admitted attempt requires an admitted reservation envelope",
-            )
-            .with_fact("reason", "graph_attempt_complete_phase_unmodeled")
-            .with_fact("schedule_reason", "missing_admitted_schedule")
-        })?;
-        match envelope.bound_derivation() {
-            Some(AttemptBoundDerivation::OrderedTimeline) => envelope.validate_and_project_composed_execution(
-                consumer_plan,
-                occurrence_ids,
-                immutable_grant.budget_bytes(),
-                self.attempt_id.map(|attempt_id| (attempt_id, runtime_device_ordinal, immutable_grant.grant_id())),
-            ),
-            Some(AttemptBoundDerivation::ConservativeOwnerSum) => Ok(None),
-            None => Err(QueryError::new(
-                QueryErrorCode::UnsupportedPlanShape,
-                "nexus_query_engine.runtime.context",
-                "an admitted attempt has no selected bound derivation",
-            )
-            .with_fact("reason", "attempt_bound_derivation_unavailable")),
-        }
+        self.validate_admitted_proof(consumer_plan, Some(occurrence_ids))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn replace_admitted_attempt_proof_for_test(&mut self, proof: Option<Arc<AdmittedAttemptProof>>) {
+        self.admitted_attempt_proof = proof;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn admitted_attempt_proof_for_test(&self) -> Option<&AdmittedAttemptProof> {
+        self.admitted_attempt_proof.as_deref()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn replace_attempt_allocation_domain_for_test(&mut self, domain: Option<AttemptAllocationDomain>) {
+        self.attempt_allocation_domain = domain;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn attempt_allocation_domain_for_test(&self) -> Option<AttemptAllocationDomain> {
+        self.attempt_allocation_domain.clone()
     }
 
     /// Returns the immutable composed schedule priced by this admitted
@@ -1660,49 +1739,41 @@ impl ExecutionContext {
     /// Requests against ordinary contexts or an admitted envelope without a
     /// schedule fail closed.
     pub fn composed_schedule_projection(&self) -> Result<AttemptComposedScheduleProjection> {
-        let attempt_id = self.attempt_id.ok_or_else(|| {
+        let proof = self.admitted_attempt_proof.as_ref().ok_or_else(|| {
             QueryError::new(
                 QueryErrorCode::UnsupportedPlanShape,
                 "nexus_query_engine.runtime.context",
-                "a composed schedule requires an engine-owned attempt identity",
+                "a composed schedule requires an admitted execution proof",
             )
-            .with_fact("reason", "graph_attempt_complete_phase_unmodeled")
-            .with_fact("schedule_reason", "missing_attempt_id")
+            .with_fact("reason", "admitted_attempt_proof_missing")
         })?;
         let grant = self.memory_grant()?.ok_or_else(|| {
             QueryError::new(
                 QueryErrorCode::UnsupportedPlanShape,
                 "nexus_query_engine.runtime.context",
-                "a composed schedule requires the immutable grant issued with admission",
+                "a composed schedule requires the immutable grant carried by its execution proof",
             )
-            .with_fact("reason", "graph_attempt_complete_phase_unmodeled")
+            .with_fact("reason", "admitted_attempt_proof_grant_missing")
             .with_fact("schedule_reason", "missing_immutable_grant")
         })?;
         let runtime_device_ordinal = self.runtime()?.device().ordinal();
-        if runtime_device_ordinal != grant.device_ordinal() {
+        if runtime_device_ordinal != proof.selected_device() || grant.identity() != proof.grant_identity() {
             return Err(QueryError::new(
                 QueryErrorCode::UnsupportedPlanShape,
                 "nexus_query_engine.runtime.context",
-                "the composed schedule runtime device differs from its immutable grant device",
+                "the composed schedule identity differs from its admitted execution proof",
             )
-            .with_fact("reason", "graph_attempt_complete_phase_unmodeled")
+            .with_fact("reason", "admitted_attempt_proof_identity_mismatch")
             .with_fact("schedule_reason", "runtime_device_grant_mismatch")
             .with_fact("runtime_device_ordinal", runtime_device_ordinal)
-            .with_fact("grant_device_ordinal", grant.device_ordinal()));
+            .with_fact("proof_device_ordinal", proof.selected_device())
+            .with_fact("grant_generation", grant.identity().generation)
+            .with_fact("proof_generation", proof.grant_identity().generation));
         }
-        let envelope = self.admitted_reservation_envelope.as_ref().ok_or_else(|| {
-            QueryError::new(
-                QueryErrorCode::UnsupportedPlanShape,
-                "nexus_query_engine.runtime.context",
-                "a composed schedule requires an admitted reservation envelope",
-            )
-            .with_fact("reason", "graph_attempt_complete_phase_unmodeled")
-            .with_fact("schedule_reason", "missing_admitted_schedule")
-        })?;
-        envelope.composed_schedule_projection(
-            attempt_id,
+        proof.reservation_envelope().composed_schedule_projection(
+            proof.grant_identity().attempt_id,
             runtime_device_ordinal,
-            grant.grant_id(),
+            proof.grant_identity().generation,
             grant.budget_bytes(),
         )
     }
@@ -1829,6 +1900,11 @@ impl ExecutionContext {
     /// Returns the immutable domain id for this admitted attempt.
     pub fn attempt_allocation_domain_id(&self) -> Option<u64> {
         self.attempt_allocation_domain.as_ref().map(AttemptAllocationDomain::domain_id)
+    }
+
+    /// Immutable grant identity owned by this admitted attempt domain.
+    pub fn attempt_allocation_grant_identity(&self) -> Option<crate::runtime::gpu::GrantIdentity> {
+        self.attempt_allocation_domain.as_ref().map(AttemptAllocationDomain::grant_identity)
     }
 
     /// Samples the allocation-domain current and peak usage.

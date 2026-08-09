@@ -132,6 +132,8 @@ fn attempt_bound_context_carries_its_engine_identity_for_gpu_execution_annotatio
     let handle = service
         .admit_query_with_request(QueryAdmissionRequest::new().with_attempt_binding(attempt_owner.admission_binding()))
         .expect("attempt-bound admission");
+    let grant_identity = handle.grant_identity().expect("admitted handle owns its grant identity");
+    assert_eq!(grant_identity.attempt_id, attempt_id);
     attempt_handle
         .record_admitted(crate::observability::AttemptAdmissionFact {
             admission_sequence: handle.admission_sequence(),
@@ -143,6 +145,11 @@ fn attempt_bound_context_carries_its_engine_identity_for_gpu_execution_annotatio
     let context = handle.acquire_context().expect("attempt-bound execution context");
 
     assert_eq!(context.context().attempt_id(), Some(attempt_id));
+    assert_eq!(context.context().attempt_allocation_grant_identity(), Some(grant_identity));
+    assert_eq!(
+        context.context().memory_grant().unwrap().unwrap().identity(),
+        context.context().attempt_allocation_grant_identity().unwrap()
+    );
 
     attempt_owner.commit_terminal(RuntimeTerminalOutcome::Succeeded).expect("attempt terminalizes");
     drop(context);
@@ -187,6 +194,96 @@ fn query_service_released_handle_rejects_context_acquisition() {
 
     assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
     assert_eq!(error.fact_value("reason"), Some("query_handle_released"));
+}
+
+#[test]
+fn admitted_context_gate_rejects_missing_identity_device_and_scope_proofs() {
+    let service = runtime_test_service(2, 8);
+    let plan = explicit_sink_plan("input");
+    let proof = crate::admission::QueryPlanCapabilityProof::for_query_plan(&plan)
+        .expect("the test plan must issue an execution capability proof");
+    let handle = service
+        .admit_query_with_request(QueryAdmissionRequest::new().with_query_plan_capability_proof(proof))
+        .expect("proof-backed admission");
+    let admitted = handle.acquire_context().expect("service context");
+    admitted
+        .context()
+        .validate_admitted_plan_capabilities(&plan)
+        .expect("the immutable post-grant proof matches its context");
+
+    let changed_plan = explicit_sink_plan("different-input");
+    let error = admitted
+        .context()
+        .validate_admitted_plan_capabilities(&changed_plan)
+        .expect_err("a changed plan must not reuse an admitted proof");
+    assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
+    let proof = admitted
+        .context()
+        .admitted_attempt_proof_for_test()
+        .expect("the acquired context carries the proof")
+        .clone();
+    let grant_identity = proof.grant_identity();
+    let mut wrong_generation = admitted.context().clone();
+    wrong_generation.replace_admitted_attempt_proof_for_test(Some(Arc::new(proof.with_identity_for_test(
+        proof.selected_device(),
+        crate::runtime::gpu::GrantIdentity { generation: grant_identity.generation + 1, ..grant_identity },
+    ))));
+    let error = wrong_generation
+        .validate_admitted_plan_capabilities(&plan)
+        .expect_err("a recycled grant generation must not pass the context gate");
+    assert_eq!(error.fact_value("reason"), Some("admitted_attempt_proof_grant_identity_mismatch"));
+
+    let mut wrong_attempt = admitted.context().clone();
+    wrong_attempt.replace_admitted_attempt_proof_for_test(Some(Arc::new(proof.with_identity_for_test(
+        proof.selected_device(),
+        crate::runtime::gpu::GrantIdentity {
+            attempt_id: crate::observability::AttemptId::mint(),
+            ..grant_identity
+        },
+    ))));
+    let error = wrong_attempt
+        .validate_admitted_plan_capabilities(&plan)
+        .expect_err("a different attempt identity must not pass the context gate");
+    assert_eq!(error.fact_value("reason"), Some("admitted_attempt_proof_grant_identity_mismatch"));
+
+    let mut wrong_selected_device = admitted.context().clone();
+    wrong_selected_device.replace_admitted_attempt_proof_for_test(Some(Arc::new(proof.with_identity_for_test(
+        proof.selected_device() + 1,
+        grant_identity,
+    ))));
+    let error = wrong_selected_device
+        .validate_admitted_plan_capabilities(&plan)
+        .expect_err("a proof selected for another device must not pass the context gate");
+    assert_eq!(error.fact_value("reason"), Some("admitted_attempt_proof_device_mismatch"));
+
+    let second_handle = service.admit_query().expect("second admission");
+    let second_context = second_handle.acquire_context().expect("second context");
+    let mut wrong_domain = admitted.context().clone();
+    wrong_domain.replace_attempt_allocation_domain_for_test(second_context.context().attempt_allocation_domain_for_test());
+    let error = wrong_domain
+        .validate_admitted_plan_capabilities(&plan)
+        .expect_err("a domain from another grant must not pass the context gate");
+    assert_eq!(error.fact_value("reason"), Some("admitted_attempt_proof_domain_identity_mismatch"));
+
+    let direct = ExecutionContext::builder().build().expect("direct context");
+    direct
+        .validate_admitted_plan_capabilities(&plan)
+        .expect("direct contexts remain unrestricted by service proofs");
+}
+
+#[test]
+fn placement_only_service_context_fails_closed_without_post_grant_proof() {
+    let service = runtime_test_service(1, 8);
+    let handle = service.admit_query().expect("placement-only admission");
+    let context = handle.acquire_context().expect("placement-only context");
+    let plan = explicit_sink_plan("input");
+
+    let error = context
+        .context()
+        .validate_admitted_plan_capabilities(&plan)
+        .expect_err("service execution requires post-grant proof evidence");
+    assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
+    assert_eq!(error.fact_value("reason"), Some("admitted_attempt_proof_missing"));
 }
 
 #[tokio::test(flavor = "current_thread")]

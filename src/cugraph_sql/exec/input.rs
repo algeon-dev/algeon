@@ -45,6 +45,8 @@ pub(super) struct StagedCugraphInputs {
     pub(super) predicates: Vec<StagedCugraphSource>,
     pub(super) logical_codebook: Option<HostBfsCodebook>,
     pub(super) execution_spec: CugraphAlgorithmSpec,
+    pub(super) admitted_graph_plan: Option<nexus_query_engine::plan::QueryPlan>,
+    pub(super) admitted_edge_source_gpu_plan: Option<nexus_query_engine::plan::QueryPlan>,
     pub(super) reservation: Option<MemoryReservation>,
 }
 
@@ -271,6 +273,8 @@ impl CollectedCugraphInputs {
             predicates,
             logical_codebook,
             execution_spec,
+            admitted_graph_plan: None,
+            admitted_edge_source_gpu_plan: None,
             reservation: Some(reservation),
         })
     }
@@ -282,19 +286,51 @@ impl StagedCugraphInputs {
         cugraph_input_row_bounds(&self.edge, &self.predicates)
     }
 
+    pub(super) fn validate_admission(&self, context: &ExecutionContext) -> Result<()> {
+        if !context.is_query_service_admitted() {
+            return Ok(());
+        }
+        let graph_plan = self.admitted_graph_plan.as_ref().ok_or_else(|| {
+            Error::new(
+                ErrorCode::InvalidExecutionPlan,
+                "datafusion_nexus.cugraph_sql.admission",
+                "cuGraph staged inputs are missing the admission-time graph execution plan",
+            )
+            .with_fact("reason", "admission_graph_plan_missing")
+        })?;
+        context.validate_admitted_plan_capabilities(graph_plan).map_err(|error| {
+            DataFusionError::from(Error::from_native(
+                "datafusion_nexus.cugraph_sql.admission",
+                "the admitted cuGraph graph plan does not match runtime execution",
+                error,
+            ))
+        })
+    }
+
     pub(super) async fn upload(
         self,
         context: &ExecutionContext,
         metrics: &mut GraphExecutionMetrics<'_>,
         task_context: Arc<TaskContext>,
     ) -> Result<UploadedCugraphInputs> {
-        let Self { edge, logical_literal_source, predicates, logical_codebook, execution_spec, reservation } = self;
+        self.validate_admission(context)?;
+        let Self {
+            edge,
+            logical_literal_source,
+            predicates,
+            logical_codebook,
+            execution_spec,
+            admitted_graph_plan: _,
+            admitted_edge_source_gpu_plan,
+            reservation,
+        } = self;
         let edge_schema = edge.schema();
-        let edge_frame = edge.upload(context, metrics, Arc::clone(&task_context)).await?;
+        let edge_frame =
+            edge.upload(context, metrics, Arc::clone(&task_context), admitted_edge_source_gpu_plan).await?;
         let logical_literal_source = match logical_literal_source {
             Some(source) => {
                 let schema = source.schema();
-                let frame = source.upload(context, metrics, Arc::clone(&task_context)).await?;
+                let frame = source.upload(context, metrics, Arc::clone(&task_context), None).await?;
                 Some(CugraphGpuFrame { schema, frame })
             },
             None => None,
@@ -302,7 +338,7 @@ impl StagedCugraphInputs {
         let mut predicate_frames = Vec::with_capacity(predicates.len());
         for source in predicates {
             let schema = source.schema();
-            let frame = source.upload(context, metrics, Arc::clone(&task_context)).await?;
+            let frame = source.upload(context, metrics, Arc::clone(&task_context), None).await?;
             predicate_frames.push(CugraphGpuFrame { schema, frame });
         }
         if let Some(source) = logical_literal_source {
@@ -362,9 +398,12 @@ impl StagedCugraphSource {
         context: &ExecutionContext,
         metrics: &mut GraphExecutionMetrics<'_>,
         task_context: Arc<TaskContext>,
+        admitted_edge_source_gpu_plan: Option<nexus_query_engine::plan::QueryPlan>,
     ) -> Result<GpuDataFrame> {
         match self {
-            Self::Native { plan, .. } => execute_edge_source_to_gpu(context, metrics, plan, task_context).await,
+            Self::Native { plan, .. } => {
+                execute_edge_source_to_gpu(context, metrics, plan, task_context, admitted_edge_source_gpu_plan).await
+            },
             Self::Host { schema, batches } => record_batches_to_gpu(context, schema, &batches),
         }
     }
@@ -617,6 +656,7 @@ pub(super) async fn execute_edge_source_to_gpu(
     metrics: &mut GraphExecutionMetrics<'_>,
     plan: Arc<dyn ExecutionPlan>,
     task_context: Arc<TaskContext>,
+    admitted_composed_plan: Option<nexus_query_engine::plan::QueryPlan>,
 ) -> Result<GpuDataFrame> {
     if let Some(native) = as_nexus_native_exec(plan.as_ref()) {
         let native_plan = crate::native_exec::lakehouse::resolve_query_plan(
@@ -644,13 +684,39 @@ pub(super) async fn execute_edge_source_to_gpu(
         return Ok(handle.into_gpu_frame());
     }
     if let Some(native) = as_nexus_native_composed_exec(plan.as_ref()) {
-        let native_plan = crate::native_exec::lakehouse::resolve_query_plan(
-            native.execution_config(),
-            native.native_plan().clone(),
-            task_context.as_ref(),
-        )
-        .await
-        .clone_with_gpu_resident_sink();
+        let native_plan = match admitted_composed_plan {
+            Some(plan) => plan,
+            None => crate::native_exec::lakehouse::resolve_query_plan(
+                native.execution_config(),
+                native.native_plan().clone(),
+                task_context.as_ref(),
+            )
+            .await
+            .clone_with_gpu_resident_sink(),
+        };
+        let runtime_occurrence_ids = native
+            .gpu_inputs()
+            .iter()
+            .map(|input| {
+                gpu_resident_producer_input_name(input.as_ref()).ok_or_else(|| {
+                    DataFusionError::from(
+                        Error::new(
+                            ErrorCode::InvalidExecutionPlan,
+                            "datafusion_nexus.cugraph_sql.edge_source_composed",
+                            "the composed cuGraph edge source is missing a top-level producer occurrence identity",
+                        )
+                        .with_fact("reason", "composed_admission_occurrence_missing"),
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        context.validate_admitted_composed_attempt(&native_plan, &runtime_occurrence_ids).map_err(|error| {
+            DataFusionError::from(Error::from_native(
+                "datafusion_nexus.cugraph_sql.edge_source_composed.admission",
+                "the admitted composed edge source does not match runtime execution",
+                error,
+            ))
+        })?;
         let mut gpu_inputs = GpuResidentInputMap::new();
         for child in native.gpu_inputs() {
             let Some(producer) = native_gpu_resident_producer(child.as_ref()) else {

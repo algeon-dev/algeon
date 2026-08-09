@@ -233,11 +233,12 @@ impl DeviceContext {
     pub(crate) fn try_admit_attempt(
         &self,
         waiter_id: AdmissionRequestId,
+        attempt_id: crate::observability::AttemptId,
         requirement: &AttemptRequirement,
     ) -> Result<Option<MemoryGrant>> {
         if self.synchronize_native_admission_health()? {
             return Ok(None);
         }
-        self.inner.ledger.try_admit(waiter_id, requirement)
+        self.inner.ledger.try_admit_for_attempt(waiter_id, attempt_id, requirement)
     }
 }

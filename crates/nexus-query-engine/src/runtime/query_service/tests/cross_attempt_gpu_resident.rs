@@ -1,9 +1,43 @@
+fn pagerank_plan(edge_schema: std::sync::Arc<arrow::datatypes::Schema>) -> crate::plan::QueryPlan {
+    let mut builder = crate::plan::QueryPlanBuilder::new();
+    let edges = builder.add_source(crate::source::SourceNode::GpuResident(crate::source::GpuResidentSource::new(
+        "edges",
+        std::sync::Arc::clone(&edge_schema),
+    )));
+    let spec = crate::plan::GraphAlgorithmSpec::with_stable_schema(
+        crate::plan::GraphAlgorithm::PageRank,
+        crate::plan::GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
+        crate::plan::GraphConstructionOptions {
+            directed: true,
+            renumber: true,
+            policy: crate::plan::GraphConstructionPolicy::RawLibcugraph,
+        },
+        crate::plan::GraphAlgorithmParams::PageRank(crate::plan::GraphPageRankParams::default()),
+    );
+    let graph = builder.add_graph_algorithm(edges, spec);
+    builder.finish_with_host_sink_schema(
+        graph,
+        crate::plan::stable_graph_result_schema(crate::plan::GraphAlgorithm::PageRank),
+    )
+}
+
 #[test]
 fn graph_gpu_input_from_another_admitted_attempt_is_relocated_into_the_consumer_domain() {
     let service = try_guaranteed_runtime_test_service_with_concurrency(2)
         .expect("runtime-backed service with two same-device attempt lanes");
-    let producer_attempt = service.admit_query().expect("producer attempt admission");
-    let consumer_attempt = service.admit_query().expect("consumer attempt admission");
+    let edge_schema = std::sync::Arc::new(arrow::datatypes::Schema::new(vec![
+        arrow::datatypes::Field::new("src", arrow::datatypes::DataType::Int32, false),
+        arrow::datatypes::Field::new("dst", arrow::datatypes::DataType::Int32, false),
+    ]));
+    let plan = pagerank_plan(std::sync::Arc::clone(&edge_schema));
+    let proof = crate::admission::QueryPlanCapabilityProof::for_cugraph_graph_execution_plan(&plan)
+        .expect("PageRank plan must issue a graph execution proof");
+    let producer_attempt = service
+        .admit_query_with_request(QueryAdmissionRequest::new().with_query_plan_capability_proof(proof.clone()))
+        .expect("producer attempt admission");
+    let consumer_attempt = service
+        .admit_query_with_request(QueryAdmissionRequest::new().with_query_plan_capability_proof(proof))
+        .expect("consumer attempt admission");
     let producer_context = producer_attempt.acquire_context().expect("producer context");
     let consumer_context = consumer_attempt.acquire_context().expect("consumer context");
 
@@ -21,11 +55,6 @@ fn graph_gpu_input_from_another_admitted_attempt_is_relocated_into_the_consumer_
         consumer_runtime.binding_id(),
         "same-device attempts must use distinct exact execution bindings"
     );
-
-    let edge_schema = std::sync::Arc::new(arrow::datatypes::Schema::new(vec![
-        arrow::datatypes::Field::new("src", arrow::datatypes::DataType::Int32, false),
-        arrow::datatypes::Field::new("dst", arrow::datatypes::DataType::Int32, false),
-    ]));
     let edge_batch = arrow::record_batch::RecordBatch::try_new(
         std::sync::Arc::clone(&edge_schema),
         vec![
@@ -102,26 +131,6 @@ fn graph_gpu_input_from_another_admitted_attempt_is_relocated_into_the_consumer_
     drop(relocated);
     consumer_runtime.synchronize().expect("consumer handoff stream synchronization");
 
-    let mut builder = crate::plan::QueryPlanBuilder::new();
-    let edges = builder.add_source(crate::source::SourceNode::GpuResident(crate::source::GpuResidentSource::new(
-        "edges",
-        std::sync::Arc::clone(&edge_schema),
-    )));
-    let spec = crate::plan::GraphAlgorithmSpec::with_stable_schema(
-        crate::plan::GraphAlgorithm::PageRank,
-        crate::plan::GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
-        crate::plan::GraphConstructionOptions {
-            directed: true,
-            renumber: true,
-            policy: crate::plan::GraphConstructionPolicy::RawLibcugraph,
-        },
-        crate::plan::GraphAlgorithmParams::PageRank(crate::plan::GraphPageRankParams::default()),
-    );
-    let graph = builder.add_graph_algorithm(edges, spec);
-    let plan = builder.finish_with_host_sink_schema(
-        graph,
-        crate::plan::stable_graph_result_schema(crate::plan::GraphAlgorithm::PageRank),
-    );
     let result = crate::exec::execute_query_plan_with_gpu_inputs(consumer_context.context(), &plan, &inputs)
         .expect("graph execution after the source-domain handoff");
     assert_eq!(result.metrics().boundary.gpu_resident_input_handoffs, 1);
@@ -166,6 +175,13 @@ fn cache_enabled_pagerank_promotes_one_graph_into_the_ledger_owned_domain() {
         .with_cache_cap_bytes(CACHE_CAP_BYTES)],
     )
     .expect("cache-enabled runtime service");
+    let edge_schema = std::sync::Arc::new(arrow::datatypes::Schema::new(vec![
+        arrow::datatypes::Field::new("src", arrow::datatypes::DataType::Int32, false),
+        arrow::datatypes::Field::new("dst", arrow::datatypes::DataType::Int32, false),
+    ]));
+    let plan = pagerank_plan(std::sync::Arc::clone(&edge_schema));
+    let proof = crate::admission::QueryPlanCapabilityProof::for_cugraph_graph_execution_plan(&plan)
+        .expect("PageRank plan must issue a graph execution proof");
     let backend_lifecycle = crate::runtime::BackendLifecycle::new();
     let counters = std::sync::Arc::new(crate::attempt::AttemptBackendCounters::default());
     let observed_attempt = crate::attempt::AttemptOwner::begin(
@@ -185,7 +201,11 @@ fn cache_enabled_pagerank_promotes_one_graph_into_the_ledger_owned_domain() {
     attempt_handle.set_disposition(crate::observability::AttemptDisposition::Native).expect("native disposition");
     attempt_handle.record_admission_requested().expect("admission requested");
     let attempt = service
-        .admit_query_with_request(QueryAdmissionRequest::new().with_attempt_binding(attempt_owner.admission_binding()))
+        .admit_query_with_request(
+            QueryAdmissionRequest::new()
+                .with_attempt_binding(attempt_owner.admission_binding())
+                .with_query_plan_capability_proof(proof),
+        )
         .expect("admission");
     attempt_handle
         .record_admitted(crate::observability::AttemptAdmissionFact {
@@ -198,10 +218,6 @@ fn cache_enabled_pagerank_promotes_one_graph_into_the_ledger_owned_domain() {
     let admitted = attempt.acquire_context().expect("admitted context");
     let context = admitted.context();
     let runtime = context.runtime().expect("attempt runtime");
-    let edge_schema = std::sync::Arc::new(arrow::datatypes::Schema::new(vec![
-        arrow::datatypes::Field::new("src", arrow::datatypes::DataType::Int32, false),
-        arrow::datatypes::Field::new("dst", arrow::datatypes::DataType::Int32, false),
-    ]));
     let edge_batch = arrow::record_batch::RecordBatch::try_new(
         std::sync::Arc::clone(&edge_schema),
         vec![
@@ -228,27 +244,6 @@ fn cache_enabled_pagerank_promotes_one_graph_into_the_ledger_owned_domain() {
     .expect("resident graph input");
     let mut inputs = crate::runtime::resident::GpuResidentInputMap::new();
     inputs.insert("edges".to_string(), input);
-    let mut builder = crate::plan::QueryPlanBuilder::new();
-    let edges = builder.add_source(crate::source::SourceNode::GpuResident(crate::source::GpuResidentSource::new(
-        "edges",
-        std::sync::Arc::clone(&edge_schema),
-    )));
-    let spec = crate::plan::GraphAlgorithmSpec::with_stable_schema(
-        crate::plan::GraphAlgorithm::PageRank,
-        crate::plan::GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
-        crate::plan::GraphConstructionOptions {
-            directed: true,
-            renumber: true,
-            policy: crate::plan::GraphConstructionPolicy::RawLibcugraph,
-        },
-        crate::plan::GraphAlgorithmParams::PageRank(crate::plan::GraphPageRankParams::default()),
-    );
-    let graph = builder.add_graph_algorithm(edges, spec);
-    let plan = builder.finish_with_host_sink_schema(
-        graph,
-        crate::plan::stable_graph_result_schema(crate::plan::GraphAlgorithm::PageRank),
-    );
-
     let result = crate::exec::execute_query_plan_with_gpu_inputs(context, &plan, &inputs)
         .expect("cache-enabled PageRank execution");
     let ledger_report = service.device_ledger_reports().expect("ledger report").remove(0);

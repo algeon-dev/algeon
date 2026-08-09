@@ -184,6 +184,10 @@ impl AdmissionTestHandle {
         self.handle.device_ordinal()
     }
 
+    fn grant_identity(&self) -> crate::runtime::gpu::GrantIdentity {
+        self.handle.grant_identity().expect("admitted handle owns a live grant identity")
+    }
+
     fn boundary_policy(&self) -> ExecutionBoundaryPolicy {
         self.handle.boundary_policy()
     }
@@ -242,7 +246,7 @@ impl AdmissionTestLockGuard<'_> {
             return;
         }
         if synthetic_ticket.is_none() {
-            let mut ticket = self.state.lifecycle.begin_provisional();
+            let mut ticket = self.state.lifecycle.begin_provisional(Weak::new());
             ticket.transition_to_active().expect("synthetic lifecycle ticket activates exactly once");
             *synthetic_ticket = Some(ticket);
         }

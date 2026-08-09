@@ -191,8 +191,9 @@ impl CugraphAlgoExec {
         mut self,
         input_row_bounds: CugraphInputRowBounds,
         task_context: &TaskContext,
-    ) -> Result<Self> {
-        self.native_execution_config = cugraph_execution_config_after_staging(
+        exact_edge_source_gpu_plan: Option<&nexus_query_engine::plan::QueryPlan>,
+    ) -> Result<(Self, nexus_query_engine::plan::QueryPlan)> {
+        let (execution_config, graph_execution_plan) = cugraph_execution_config_after_staging(
             &self.spec,
             self.edge_source.as_ref(),
             &self.predicate_sources,
@@ -202,10 +203,12 @@ impl CugraphAlgoExec {
             self.edge_normalize_inserted(),
             &self.native_execution_config,
             task_context,
+            exact_edge_source_gpu_plan,
         )?;
+        self.native_execution_config = execution_config;
         self.input_row_bounds = input_row_bounds;
         self.metrics_capture = self.native_execution_config.new_metrics_capture();
-        Ok(self)
+        Ok((self, graph_execution_plan))
     }
 
     pub(super) async fn prepare_staged_attempt(
@@ -228,8 +231,16 @@ impl CugraphAlgoExec {
         .await?;
         let input_row_bounds = collected_inputs.row_bounds()?;
         check_host_staging_cancellation(&cancellation)?;
-        let prepared = prepared.issue_graph_aware_ticket_after_staging(input_row_bounds, task_context.as_ref())?;
-        let staged_inputs = collected_inputs.prepare_logical_inputs(&prepared.spec, max_staging_bytes)?;
+        let exact_edge_source_gpu_plan =
+            exact_composed_edge_source_gpu_plan(prepared.edge_source.as_ref(), task_context.as_ref()).await?;
+        let (prepared, admission_graph_plan) = prepared.issue_graph_aware_ticket_after_staging(
+            input_row_bounds,
+            task_context.as_ref(),
+            exact_edge_source_gpu_plan.as_ref(),
+        )?;
+        let mut staged_inputs = collected_inputs.prepare_logical_inputs(&prepared.spec, max_staging_bytes)?;
+        staged_inputs.admitted_graph_plan = Some(admission_graph_plan);
+        staged_inputs.admitted_edge_source_gpu_plan = exact_edge_source_gpu_plan;
         check_host_staging_cancellation(&cancellation)?;
         Ok((prepared, staged_inputs))
     }
@@ -314,6 +325,9 @@ impl CugraphAlgoExec {
             "datafusion_nexus.cugraph_sql.bfs_singleflight.runtime",
             "query service closed before cuGraph BFS execution acquired its runtime",
         )?;
+        if let Some(staged) = staged_inputs.as_ref() {
+            staged.validate_admission(native_context)?;
+        }
         let Some(key) = self.bfs_singleflight_key(runtime.device().ordinal()) else {
             return self
                 .execute_gpu_result_with_context_physical(
@@ -511,6 +525,7 @@ impl CugraphAlgoExec {
             "datafusion_nexus.cugraph_sql.bfs_singleflight.runtime",
             "query service closed before cuGraph BFS execution acquired its runtime",
         )?;
+        staged_inputs.validate_admission(native_context)?;
         let Some(key) = self.bfs_singleflight_key(runtime.device().ordinal()) else {
             return Ok(self
                 .execute_host_result_with_context_physical(native_context, task_context, metrics, staged_inputs, None)

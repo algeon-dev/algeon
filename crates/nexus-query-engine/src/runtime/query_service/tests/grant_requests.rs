@@ -20,6 +20,76 @@ fn attempt_requirement_hint_selects_grant_for_one_admission() {
 }
 
 #[test]
+fn admission_without_observation_mints_one_identity_per_committed_grant() {
+    let service = AdmissionTestController::new_with_ledger(
+        QueryExecutionConfig::default(),
+        QueueBounds::default(),
+        non_gds_deployment(),
+        test_ledger(4096, 2, Default::default()),
+    )
+    .unwrap();
+
+    let first = service
+        .try_admit_query_with_request(QueryAdmissionRequest::new().with_attempt_requirement(requirement(100, Some(100))))
+        .unwrap()
+        .expect("first request admits");
+    let second = service
+        .try_admit_query_with_request(QueryAdmissionRequest::new().with_attempt_requirement(requirement(100, Some(100))))
+        .unwrap()
+        .expect("second request admits");
+
+    assert_ne!(first.grant_identity().attempt_id, second.grant_identity().attempt_id);
+    assert_ne!(first.grant_identity().generation, second.grant_identity().generation);
+}
+
+#[test]
+fn attempt_binding_identity_survives_request_placement_and_handle_commit() {
+    let service = AdmissionTestController::new_with_ledger(
+        QueryExecutionConfig::default(),
+        QueueBounds::default(),
+        non_gds_deployment(),
+        test_ledger(4096, 1, Default::default()),
+    )
+    .unwrap();
+    let lifecycle = crate::runtime::BackendLifecycle::new();
+    let attempt = crate::attempt::AttemptOwner::begin(
+        crate::attempt::BeginAttemptRequest::default(),
+        lifecycle.try_begin_observation().expect("attempt observation permit"),
+        std::sync::Arc::new(crate::attempt::AttemptBackendCounters::default()),
+        None,
+    );
+    let attempt_id = attempt.owner.attempt_id();
+    let attempt_owner = attempt.owner;
+    let completion = attempt.completion;
+    let attempt_handle = attempt_owner.handle();
+    attempt_handle.record_planning_started().unwrap();
+    attempt_handle.record_planning_finished().unwrap();
+    attempt_handle.set_disposition(crate::observability::AttemptDisposition::Native).unwrap();
+    attempt_handle.record_admission_requested().unwrap();
+
+    let handle = service
+        .service
+        .admit_query_with_request(QueryAdmissionRequest::new().with_attempt_binding(attempt_owner.admission_binding()))
+        .expect("attempt-bound request admits");
+
+    assert_eq!(handle.grant_identity().unwrap().attempt_id, attempt_id);
+    attempt_handle
+        .record_admitted(crate::observability::AttemptAdmissionFact {
+            admission_sequence: handle.admission_sequence(),
+            admission_wait_ns: handle.admission_wait().as_nanos().try_into().unwrap_or(u64::MAX),
+            device_ordinal: handle.device_ordinal(),
+            grant_bytes: handle.device_budget_bytes(),
+        })
+        .unwrap();
+    attempt_owner.commit_terminal(RuntimeTerminalOutcome::Succeeded).unwrap();
+    handle.finish();
+    drop(handle);
+    completion
+        .wait_timeout(std::time::Duration::from_secs(1))
+        .expect("attempt report publishes after admission-only cleanup");
+}
+
+#[test]
 fn eager_device_entries_share_requirement_envelope_bytes_for_fit_grant_and_execution() {
     let service = AdmissionTestController::new(
         QueryExecutionConfig::default(),
@@ -52,7 +122,13 @@ fn eager_device_entries_share_requirement_envelope_bytes_for_fit_grant_and_execu
         admitted.handle.lifetime.admitted_device_requirement_for_test(admitted.handle.device_ordinal()),
         Some(&expected_requirement),
     );
-    assert_eq!(admitted.handle.admitted_reservation_envelope.as_ref(), Some(&envelope));
+    assert_eq!(
+        admitted.handle.lifetime.admitted_attempt_proof_for_test().map(|proof| proof.reservation_envelope()),
+        Some(&envelope),
+    );
+    let proof = admitted.handle.lifetime.admitted_attempt_proof_for_test().expect("submitted admission carries its proof");
+    assert_eq!(proof.selected_device(), admitted.handle.device_ordinal());
+    assert_eq!(proof.grant_identity(), admitted.handle.grant_identity().expect("grant identity"));
     drop(admitted);
 }
 
@@ -144,7 +220,10 @@ fn submitted_plan_proof_survives_admission_while_test_placement_requirement_does
         .try_admit_query_with_request(QueryAdmissionRequest::new().with_query_plan_capability_proof(proof.clone()))
         .unwrap()
         .expect("submitted proof admits on an all-modeled test profile");
-    assert_eq!(submitted.handle.submitted_plan_capability_evidence.as_ref(), Some(proof.as_requirement()));
+    assert_eq!(
+        submitted.handle.lifetime.admitted_attempt_proof_for_test().map(|proof| proof.submitted_capability_evidence()),
+        Some(proof.as_requirement()),
+    );
     drop(submitted);
 
     let placement_only = service
@@ -153,10 +232,16 @@ fn submitted_plan_proof_survives_admission_while_test_placement_requirement_does
         )
         .unwrap()
         .expect("internal placement requirement admits");
-    assert!(placement_only.handle.submitted_plan_capability_evidence.is_none());
+    assert!(placement_only.handle.lifetime.admitted_attempt_proof_for_test().is_none());
 }
 
 fn explicit_sink_capability_proof() -> crate::admission::QueryPlanCapabilityProof {
+    let plan = explicit_sink_plan("input");
+    crate::admission::QueryPlanCapabilityProof::for_query_plan(&plan)
+        .expect("an explicit host sink must expose a capability requirement")
+}
+
+fn explicit_sink_plan(input_name: &str) -> crate::plan::QueryPlan {
     use std::sync::Arc;
 
     use arrow::datatypes::{DataType, Field, Schema};
@@ -164,10 +249,8 @@ fn explicit_sink_capability_proof() -> crate::admission::QueryPlanCapabilityProo
 
     let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, false)]));
     let mut builder = QueryPlanBuilder::new();
-    let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", schema)));
-    let plan = builder.finish_with_host_sink(source);
-    crate::admission::QueryPlanCapabilityProof::for_query_plan(&plan)
-        .expect("an explicit host sink must expose a capability requirement")
+    let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(input_name, schema)));
+    builder.finish_with_host_sink(source)
 }
 
 fn restricted_capability_service_and_requirement() -> (AdmissionTestController, AttemptRequirement) {
