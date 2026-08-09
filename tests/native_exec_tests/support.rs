@@ -38,11 +38,13 @@ use datafusion::{
 };
 use datafusion_nexus::{native_exec::NexusNativeExecutionConfig, planner::NexusNativeOptimizerConfig};
 use nexus_query_engine::{
+    admission::QueryPlanCapabilityProof,
     expr::ColumnRef,
     plan::{JoinKey, JoinOutputColumn, JoinSide, JoinSpec, JoinType, QueryPlan, QueryPlanBuilder},
     source::{GpuResidentSource, LocalParquetFile, LocalParquetSource, SourceNode},
 };
 use nexus_workloads::tpch::TPCH_TABLES;
+use parquet::file::reader::{FileReader, SerializedFileReader};
 
 use crate::tpch_session::tpch_report_session_config;
 
@@ -66,16 +68,38 @@ pub(super) fn gpu_resident_plan() -> QueryPlan {
     builder.finish_gpu_resident(source)
 }
 
-pub(super) fn bounded_left_build_left_semi_join_host_sink_plan() -> QueryPlan {
+pub(super) fn bounded_left_build_left_semi_join_host_sink_plan_with_paths(
+    left_path: &std::path::Path,
+    right_path: &std::path::Path,
+) -> QueryPlan {
     let mut builder = QueryPlanBuilder::new();
-    let left = builder.add_source(SourceNode::LocalParquet(local_parquet_source()));
-    let right = builder.add_source(SourceNode::LocalParquet(local_parquet_source()));
+    let left = builder.add_source(SourceNode::LocalParquet(local_parquet_source_with_exact_metadata(
+        left_path,
+        join_left_schema(),
+        vec!["key".to_string(), "l_payload".to_string(), "l_m00".to_string()],
+    )));
+    let right = builder.add_source(SourceNode::LocalParquet(local_parquet_source_with_exact_metadata(
+        right_path,
+        join_right_schema(),
+        vec!["key".to_string(), "r_payload".to_string(), "r_m01".to_string()],
+    )));
     let key = JoinKey::new(ColumnRef::input(0, "key", "key"), ColumnRef::input(1, "key", "key"));
     let spec = JoinSpec::new(JoinType::LeftSemi, vec![key])
         .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "key", "key"), "key")])
         .with_build_side(JoinSide::Left);
     let join = builder.add_join(left, right, spec, schema());
     builder.finish_with_host_sink(join)
+}
+
+pub(super) fn admitted_native_config(
+    plan: &QueryPlan,
+    config: NexusNativeExecutionConfig,
+) -> NexusNativeExecutionConfig {
+    let proof = QueryPlanCapabilityProof::for_query_plan(plan).expect("exact native fixture plan must issue a proof");
+    let handle = super::test_gpu_backend()
+        .admit_query_with_plan_capability_proof(proof)
+        .expect("exact native fixture proof must admit");
+    config.with_query_service_handle(Arc::new(handle))
 }
 
 pub(super) fn local_parquet_gpu_resident_plan(path: &std::path::Path, schema: Arc<Schema>) -> QueryPlan {
@@ -90,14 +114,53 @@ pub(super) fn local_parquet_gpu_resident_plan(path: &std::path::Path, schema: Ar
 }
 
 pub(super) fn local_parquet_host_sink_plan(path: &std::path::Path, schema: Arc<Schema>) -> QueryPlan {
-    let source = LocalParquetSource::from_files(
-        vec![LocalParquetFile::new(path).with_file_size_bytes(fs::metadata(path).unwrap().len())],
+    let source = local_parquet_source_with_exact_metadata(
+        path,
         schema,
         vec!["key".to_string(), "payload".to_string(), "m00".to_string(), "m01".to_string()],
     );
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
     builder.finish_with_host_sink(source)
+}
+
+pub(super) fn local_parquet_source_with_exact_metadata(
+    path: &std::path::Path,
+    schema: Arc<Schema>,
+    read_columns: Vec<String>,
+) -> LocalParquetSource {
+    LocalParquetSource::from_files(vec![exact_local_parquet_file(path)], schema, read_columns)
+}
+
+fn exact_local_parquet_file(path: &std::path::Path) -> LocalParquetFile {
+    let reader = SerializedFileReader::try_from(path).unwrap_or_else(|error| {
+        panic!("written native fixture must be readable as Parquet: {}: {error}", path.display())
+    });
+    let metadata = reader.metadata();
+    let file_size = fs::metadata(path)
+        .unwrap_or_else(|error| panic!("written native fixture must be stat-able: {}: {error}", path.display()))
+        .len();
+    let row_group_rows = metadata
+        .row_groups()
+        .iter()
+        .map(|row_group| u64::try_from(row_group.num_rows()).expect("fixture row count fits u64"))
+        .collect::<Vec<_>>();
+    let row_group_bytes = metadata
+        .row_groups()
+        .iter()
+        .map(|row_group| u64::try_from(row_group.compressed_size()).expect("fixture compressed bytes fit u64"))
+        .collect::<Vec<_>>();
+    let projected_uncompressed_bytes = metadata
+        .row_groups()
+        .iter()
+        .map(|row_group| u64::try_from(row_group.total_byte_size()).expect("fixture uncompressed bytes fit u64"))
+        .collect::<Vec<_>>();
+    LocalParquetFile::new(path)
+        .with_file_size_bytes(file_size)
+        .with_row_groups((0..metadata.num_row_groups()).collect())
+        .with_row_group_rows(row_group_rows)
+        .with_row_group_bytes(row_group_bytes.clone())
+        .with_projected_row_group_bytes(row_group_bytes, projected_uncompressed_bytes)
 }
 
 pub(super) fn gpu_resident_host_sink_plan(input_name: &str, schema: Arc<Schema>) -> QueryPlan {
@@ -587,11 +650,7 @@ pub(super) fn write_sorted_parquet_file(path: &std::path::Path) {
 }
 
 pub(super) fn write_join_left_parquet_file(path: &std::path::Path) {
-    let schema = Arc::new(Schema::new(vec![
-        Field::new("key", DataType::Int32, false),
-        Field::new("l_payload", DataType::Int32, false),
-        Field::new("l_m00", DataType::Int64, false),
-    ]));
+    let schema = join_left_schema();
     let batch = RecordBatch::try_new(
         Arc::clone(&schema),
         vec![
@@ -604,12 +663,16 @@ pub(super) fn write_join_left_parquet_file(path: &std::path::Path) {
     write_batch(path, schema, batch);
 }
 
-pub(super) fn write_join_right_parquet_file(path: &std::path::Path) {
-    let schema = Arc::new(Schema::new(vec![
+fn join_left_schema() -> Arc<Schema> {
+    Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int32, false),
-        Field::new("r_payload", DataType::Int32, false),
-        Field::new("r_m01", DataType::Int64, false),
-    ]));
+        Field::new("l_payload", DataType::Int32, false),
+        Field::new("l_m00", DataType::Int64, false),
+    ]))
+}
+
+pub(super) fn write_join_right_parquet_file(path: &std::path::Path) {
+    let schema = join_right_schema();
     let batch = RecordBatch::try_new(
         Arc::clone(&schema),
         vec![
@@ -620,6 +683,14 @@ pub(super) fn write_join_right_parquet_file(path: &std::path::Path) {
     )
     .unwrap();
     write_batch(path, schema, batch);
+}
+
+fn join_right_schema() -> Arc<Schema> {
+    Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("r_payload", DataType::Int32, false),
+        Field::new("r_m01", DataType::Int64, false),
+    ]))
 }
 
 fn write_batch(path: &std::path::Path, schema: Arc<Schema>, batch: RecordBatch) {

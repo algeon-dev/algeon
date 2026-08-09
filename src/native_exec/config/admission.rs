@@ -157,7 +157,7 @@ impl NexusNativeExecutionConfig {
         self.query_admission_ticket.as_ref().map(|ticket| ticket.id())
     }
 
-    pub(super) fn query_admission_ticket_for_task_context(
+    pub(crate) fn query_admission_ticket_for_task_context(
         &self,
         task_context: &TaskContext,
     ) -> Option<Arc<QueryAdmissionTicket>> {

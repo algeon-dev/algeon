@@ -13,7 +13,7 @@ use crate::{
     metrics::{PlanNodeId, QueryId},
     plan::{
         EdgeNormalizeSpec, GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec, GraphConstructionPolicy,
-        GraphEdgeColumnBindings, NodeId, PlanNode, QueryPlan, estimated_output_rows,
+        GraphEdgeColumnBindings, JoinType, NodeId, PlanNode, QueryPlan, estimated_output_rows,
     },
 };
 
@@ -568,6 +568,7 @@ pub(crate) enum GraphMemoryOwnerTermRole {
     GraphPersistent,
     ConstructionTransient,
     ExecutionWorkspace,
+    GraphLiveReservationFloorTopUp,
     SideInputWorkspace,
     RetainedOutput,
 }
@@ -578,6 +579,7 @@ impl GraphMemoryOwnerTermRole {
             Self::GraphPersistent => "graph_persistent",
             Self::ConstructionTransient => "construction_transient",
             Self::ExecutionWorkspace => "execution_workspace",
+            Self::GraphLiveReservationFloorTopUp => "graph_live_reservation_floor_top_up",
             Self::SideInputWorkspace => "side_input_workspace",
             Self::RetainedOutput => "retained_output",
         }
@@ -738,10 +740,13 @@ impl GraphMemoryAdmissionEvidence {
         // while construction-only scratch has completed before then.
         let cold_model_requested_bytes = estimate.construction_bytes.max(estimate.requested_bytes).max(1);
         let execution_scope_fingerprint = canonical_execution_scope_fingerprint(plan);
+        let live_reservation_floor_top_up_bytes =
+            graph_live_reservation_floor_top_up_bytes(cold_model_requested_bytes)?;
         let mut owner_terms = estimate.owner_components.owner_terms(
             execution_scope_fingerprint.clone(),
             node_id,
             estimate.retained_output_bytes,
+            live_reservation_floor_top_up_bytes,
         )?;
         if let Some(side_input_peak_bytes) = graph_side_input_workspace_peak_bytes(plan, node_id, estimate)? {
             owner_terms.push(GraphMemoryOwnerTermFact::new(
@@ -825,17 +830,59 @@ impl GraphMemoryAdmissionEvidence {
     /// together. Callers cannot choose this relation or inject a raw graph
     /// model byte value.
     pub(crate) fn cold_model_with_source_stage_bytes(&self, source_stage_bytes: u64) -> Result<u64> {
-        if source_stage_bytes == u64::MAX || self.cold_model_requested_bytes == u64::MAX {
+        self.graph_peak_with_source_stage_bytes(self.cold_model_requested_bytes, source_stage_bytes)
+    }
+
+    /// Returns the graph-native live reservation after applying the canonical
+    /// bounded execution minimum. The model value remains available through
+    /// [`Self::cold_model_requested_bytes`] as diagnostics; this lower bound
+    /// is a reservation contract, not an observed allocation term.
+    pub(crate) fn bounded_live_graph_peak_bytes(&self) -> Result<u64> {
+        let Some(top_up) = self.graph_live_reservation_floor_top_up_bytes()? else {
+            return Ok(self.cold_model_requested_bytes);
+        };
+        self.cold_model_requested_bytes
+            .checked_add(top_up)
+            .ok_or_else(|| graph_memory_arithmetic_error("graph_live_reservation", "addition"))
+    }
+
+    /// Composes the bounded graph-native live minimum with a prepared source
+    /// frame using the same owner lifetime relation as the raw model.
+    pub(crate) fn bounded_live_graph_peak_with_source_stage_bytes(&self, source_stage_bytes: u64) -> Result<u64> {
+        let Some(top_up) = self.graph_live_reservation_floor_top_up_bytes()? else {
+            return self.cold_model_with_source_stage_bytes(source_stage_bytes);
+        };
+        let graph_peak = self
+            .cold_model_requested_bytes
+            .checked_add(top_up)
+            .ok_or_else(|| graph_memory_arithmetic_error("graph_live_reservation", "addition"))?;
+        self.graph_peak_with_source_stage_bytes(graph_peak, source_stage_bytes)
+    }
+
+    fn graph_peak_with_source_stage_bytes(&self, graph_peak_bytes: u64, source_stage_bytes: u64) -> Result<u64> {
+        if source_stage_bytes == u64::MAX || graph_peak_bytes == u64::MAX {
             return Err(graph_memory_arithmetic_error("source_stage_graph_peak", "saturated"));
         }
         match self.source_stage_lifetime {
-            GraphSourceStageLifetime::SharedPreparedEdgeFrame => {
-                Ok(source_stage_bytes.max(self.cold_model_requested_bytes))
-            },
+            GraphSourceStageLifetime::SharedPreparedEdgeFrame => Ok(source_stage_bytes.max(graph_peak_bytes)),
             GraphSourceStageLifetime::SeparateNormalizedInput => source_stage_bytes
-                .checked_add(self.cold_model_requested_bytes)
+                .checked_add(graph_peak_bytes)
                 .ok_or_else(|| graph_memory_arithmetic_error("source_stage_graph_peak", "addition")),
         }
+    }
+
+    pub(crate) fn graph_live_reservation_floor_top_up_bytes(&self) -> Result<Option<u64>> {
+        let expected = graph_live_reservation_floor_top_up_bytes(self.cold_model_requested_bytes)?;
+        let mut facts = self
+            .owner_terms
+            .iter()
+            .filter(|fact| fact.role() == GraphMemoryOwnerTermRole::GraphLiveReservationFloorTopUp);
+        let actual = facts.next().map(GraphMemoryOwnerTermFact::bytes);
+        if facts.next().is_some() || actual != expected {
+            return Err(graph_memory_arithmetic_error("graph_live_reservation_floor_top_up", "owner_term_mismatch")
+                .with_fact("reason", "graph_memory_owner_term_floor_mismatch"));
+        }
+        Ok(expected)
     }
 }
 
@@ -2007,6 +2054,19 @@ fn project_model_bytes(value: ModelBytes, term: &'static str, diagnostic: bool) 
     if diagnostic { Ok(value.diagnostic_u64()) } else { value.bounded_u64(term) }
 }
 
+fn graph_live_reservation_floor_top_up_bytes(cold_model_requested_bytes: u64) -> Result<Option<u64>> {
+    if cold_model_requested_bytes == u64::MAX {
+        return Err(graph_memory_arithmetic_error("graph_live_reservation_floor_top_up", "saturated"));
+    }
+    if cold_model_requested_bytes >= GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES {
+        return Ok(None);
+    }
+    GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES
+        .checked_sub(cold_model_requested_bytes)
+        .map(Some)
+        .ok_or_else(|| graph_memory_arithmetic_error("graph_live_reservation_floor_top_up", "subtraction"))
+}
+
 #[derive(Debug, Clone, Copy)]
 struct GraphDerivedTerms {
     construction: ModelBytes,
@@ -2045,8 +2105,9 @@ impl GraphMemoryOwnerComponents {
         execution_scope_fingerprint: String,
         graph_node_id: NodeId,
         retained_output: GraphMemoryRetainedOutputContribution,
+        live_reservation_floor_top_up_bytes: Option<u64>,
     ) -> Result<Vec<GraphMemoryOwnerTermFact>> {
-        Ok(vec![
+        let mut terms = vec![
             GraphMemoryOwnerTermFact::new(
                 execution_scope_fingerprint.clone(),
                 graph_node_id,
@@ -2069,13 +2130,23 @@ impl GraphMemoryOwnerComponents {
                 None,
             )?,
             GraphMemoryOwnerTermFact::new(
-                execution_scope_fingerprint,
+                execution_scope_fingerprint.clone(),
                 graph_node_id,
                 GraphMemoryOwnerTermRole::RetainedOutput,
                 retained_output.bytes(),
                 Some(retained_output.row_count_upper_bound()),
             )?,
-        ])
+        ];
+        if let Some(bytes) = live_reservation_floor_top_up_bytes {
+            terms.push(GraphMemoryOwnerTermFact::new(
+                execution_scope_fingerprint,
+                graph_node_id,
+                GraphMemoryOwnerTermRole::GraphLiveReservationFloorTopUp,
+                bytes,
+                None,
+            )?);
+        }
+        Ok(terms)
     }
 }
 
@@ -3286,6 +3357,15 @@ fn hard_row_upper_bound_for_plan_node(plan: &QueryPlan, node_id: NodeId) -> Opti
         PlanNode::Aggregate(aggregate) if aggregate.spec.group_exprs.is_empty() => {
             Some((1, GraphPairCardinalitySource::PlanExact))
         },
+        PlanNode::Join(join)
+            if join.spec.join_type == JoinType::Inner
+                && !join.spec.keys.is_empty()
+                && join.spec.residual_predicate.is_none() =>
+        {
+            let left_rows = hard_row_upper_bound_for_plan_node(plan, join.inputs[0])?.0;
+            let right_rows = hard_row_upper_bound_for_plan_node(plan, join.inputs[1])?.0;
+            left_rows.checked_mul(right_rows).map(|rows| (rows, GraphPairCardinalitySource::PlanHardUpperBound))
+        },
         PlanNode::Aggregate(_)
         | PlanNode::Join(_)
         | PlanNode::EdgeNormalize(_)
@@ -3592,12 +3672,14 @@ mod tests {
 
     use super::*;
     use crate::{
+        expr::{ColumnRef, Expr, LiteralValue},
         plan::{
             GraphBfsParams, GraphConstructionOptions, GraphEdgePredicateInput, GraphForceAtlas2Params,
             GraphPageRankParams, GraphPageRankPersonalizationInput, GraphPersonalizedPageRankParams,
-            GraphPredicateInput, GraphSimilarityParams, GraphTriangleCountAllParams, QueryPlanBuilder,
+            GraphPredicateInput, GraphSimilarityParams, GraphTriangleCountAllParams, JoinKey, JoinSpec,
+            QueryPlanBuilder,
         },
-        source::{LocalParquetFile, LocalParquetSource, SourceNode},
+        source::{GpuResidentSource, LocalParquetFile, LocalParquetSource, SourceNode},
     };
 
     fn edge_schema() -> SchemaRef {
@@ -3680,6 +3762,68 @@ mod tests {
         builder.finish_gpu_resident(graph)
     }
 
+    fn bounded_join_plan(
+        left_rows: Option<u64>,
+        right_rows: Option<u64>,
+        join_type: JoinType,
+        keyed: bool,
+        residual: bool,
+    ) -> QueryPlan {
+        let schema = Arc::new(Schema::new(vec![Field::new("key", DataType::Int64, false)]));
+        let mut builder = QueryPlanBuilder::new();
+        let mut left_source = GpuResidentSource::new("bounded-join-left", Arc::clone(&schema));
+        if let Some(rows) = left_rows {
+            left_source = left_source.with_row_count_upper_bound(rows);
+        }
+        let mut right_source = GpuResidentSource::new("bounded-join-right", Arc::clone(&schema));
+        if let Some(rows) = right_rows {
+            right_source = right_source.with_row_count_upper_bound(rows);
+        }
+        let left = builder.add_source(SourceNode::GpuResident(left_source));
+        let right = builder.add_source(SourceNode::GpuResident(right_source));
+        let keys = keyed
+            .then(|| JoinKey::new(ColumnRef::input(0, "key", "key"), ColumnRef::input(1, "key", "key")))
+            .into_iter()
+            .collect();
+        let mut spec = JoinSpec::new(join_type, keys);
+        if residual {
+            spec = spec.with_residual_predicate(Expr::literal(LiteralValue::Boolean(true)));
+        }
+        let join = builder.add_join(left, right, spec, schema);
+        builder.finish_gpu_resident(join)
+    }
+
+    #[test]
+    fn keyed_inner_join_hard_row_bound_is_checked_product_and_fail_closed() {
+        let bounded = bounded_join_plan(Some(3), Some(4), JoinType::Inner, true, false);
+        assert_eq!(query_plan_hard_row_upper_bound(&bounded), Some(12));
+
+        let empty = bounded_join_plan(Some(0), Some(4), JoinType::Inner, true, false);
+        assert_eq!(query_plan_hard_row_upper_bound(&empty), Some(0));
+
+        let unknown = bounded_join_plan(None, Some(4), JoinType::Inner, true, false);
+        assert_eq!(query_plan_hard_row_upper_bound(&unknown), None);
+
+        let overflow = bounded_join_plan(Some(u64::MAX), Some(2), JoinType::Inner, true, false);
+        assert_eq!(query_plan_hard_row_upper_bound(&overflow), None);
+
+        let residual = bounded_join_plan(Some(3), Some(4), JoinType::Inner, true, true);
+        assert_eq!(query_plan_hard_row_upper_bound(&residual), None);
+
+        for (join_type, keyed) in [
+            (JoinType::Left, true),
+            (JoinType::Full, true),
+            (JoinType::LeftSemi, true),
+            (JoinType::LeftAnti, true),
+            (JoinType::Cross, false),
+            (JoinType::LeftMark, true),
+            (JoinType::Inner, false),
+        ] {
+            let unsupported = bounded_join_plan(Some(3), Some(4), join_type, keyed, false);
+            assert_eq!(query_plan_hard_row_upper_bound(&unsupported), None, "join type {join_type}");
+        }
+    }
+
     #[test]
     fn bounded_graph_evidence_exposes_exclusive_owner_terms() {
         let spec = GraphAlgorithmSpec::with_stable_schema(
@@ -3703,7 +3847,9 @@ mod tests {
                 .expect("bounded graph evidence");
 
         let facts = evidence.owner_term_facts();
-        let expected_owner_term_count = if cfg!(feature = "cugraph") { 5 } else { 4 };
+        let expected_owner_term_count = 4
+            + usize::from(evidence.cold_model_requested_bytes() < GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES)
+            + usize::from(cfg!(feature = "cugraph"));
         assert_eq!(facts.len(), expected_owner_term_count);
         assert_eq!(facts.iter().filter(|fact| fact.row_count_upper_bound().is_some()).count(), 1);
         assert_eq!(
@@ -3738,6 +3884,15 @@ mod tests {
                 .bytes(),
             estimate.estimate.retained_output_bytes.bytes()
         );
+        let floor_top_up = facts
+            .iter()
+            .find(|fact| fact.role() == GraphMemoryOwnerTermRole::GraphLiveReservationFloorTopUp)
+            .map(GraphMemoryOwnerTermFact::bytes);
+        assert_eq!(
+            floor_top_up,
+            (evidence.cold_model_requested_bytes() < GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES)
+                .then(|| GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES - evidence.cold_model_requested_bytes())
+        );
         if cfg!(feature = "cugraph") {
             assert!(
                 facts
@@ -3756,6 +3911,44 @@ mod tests {
         );
         assert!(facts.iter().all(|fact| fact.role() != GraphMemoryOwnerTermRole::GraphPersistent
             || fact.bytes() != estimate.estimate.construction_bytes));
+    }
+
+    #[test]
+    fn bounded_graph_live_floor_is_a_checked_owner_top_up_over_raw_model() {
+        let spec = GraphAlgorithmSpec::with_stable_schema(
+            GraphAlgorithm::Bfs,
+            GraphEdgeColumnBindings::new("src", "dst", Some("weight")),
+            GraphConstructionOptions::default(),
+            GraphAlgorithmParams::Bfs(Box::new(GraphBfsParams::new(0, None))),
+        );
+        let tiny = bounded_evidence_for_spec(&spec, 1);
+        assert!(tiny.cold_model_requested_bytes() < GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES);
+        assert_eq!(
+            tiny.bounded_live_graph_peak_bytes().expect("tiny graph floor fits"),
+            GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES
+        );
+        assert_eq!(
+            tiny.owner_term_facts()
+                .iter()
+                .filter(|fact| fact.role() == GraphMemoryOwnerTermRole::GraphLiveReservationFloorTopUp)
+                .map(GraphMemoryOwnerTermFact::bytes)
+                .collect::<Vec<_>>(),
+            vec![GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES - tiny.cold_model_requested_bytes()]
+        );
+
+        let large = bounded_evidence_for_spec(&spec, 100_000);
+        assert!(large.cold_model_requested_bytes() >= GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES);
+        assert_eq!(
+            large.bounded_live_graph_peak_bytes().expect("large graph model fits"),
+            large.cold_model_requested_bytes(),
+            "the canonical floor must not alter sufficiently large graph models"
+        );
+        assert!(
+            large
+                .owner_term_facts()
+                .iter()
+                .all(|fact| fact.role() != GraphMemoryOwnerTermRole::GraphLiveReservationFloorTopUp)
+        );
     }
 
     #[cfg(feature = "cugraph")]

@@ -117,13 +117,10 @@ fn native_gpu_result_handle_rejects_sink_schema_name_order_mismatch_before_host_
 #[test]
 fn native_projection_schema_coercion_rejects_unsupported_output_type_mismatch() {
     let context = backend_context();
-    let runtime = Arc::new(context.runtime().unwrap());
     let input_schema = Arc::new(Schema::new(vec![Field::new("key", DataType::Int32, false)]));
     let output_schema = Arc::new(Schema::new(vec![Field::new("bad_key", DataType::Utf8, false)]));
     let batch =
         RecordBatch::try_new(Arc::clone(&input_schema), vec![Arc::new(Int32Array::from(vec![1, 2, 3]))]).unwrap();
-    let frame = DataFrame::from_record_batch(&runtime, &batch).unwrap();
-
     let mut builder = QueryPlanBuilder::new();
     let source =
         builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("int_input", Arc::clone(&input_schema))));
@@ -132,14 +129,17 @@ fn native_projection_schema_coercion_rejects_unsupported_output_type_mismatch() 
         projection_outputs(vec![Expr::column("key").alias("bad_key")], Arc::clone(&output_schema)),
     );
     let plan = builder.finish_gpu_resident(projection);
+    let admitted = context.admit_plan(&plan).unwrap();
+    let runtime = Arc::new(admitted.runtime().unwrap());
+    let frame = DataFrame::from_record_batch(&runtime, &batch).unwrap();
 
     let mut gpu_inputs = GpuResidentInputMap::new();
     gpu_inputs.insert(
         "int_input".to_string(),
-        GpuResultHandle::new(&context, GpuDataFrame::new(frame), Arc::clone(&input_schema)).unwrap(),
+        GpuResultHandle::new(&admitted, GpuDataFrame::new(frame), Arc::clone(&input_schema)).unwrap(),
     );
 
-    let error = match execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs) {
+    let error = match execute_query_plan_with_gpu_inputs(&admitted, &plan, &gpu_inputs) {
         Ok(_) => panic!("projection schema coercion should reject unsupported Int32 to Utf8 mismatch"),
         Err(error) => error,
     };
@@ -151,6 +151,7 @@ fn native_projection_schema_coercion_rejects_unsupported_output_type_mismatch() 
     assert_eq!(error.fact_value("field_index"), Some("0"));
     assert_eq!(error.fact_value("actual_type"), Some("Int32"));
     assert_eq!(error.fact_value("expected_type"), Some("Utf8"));
+    admitted.finish();
 }
 
 #[test]

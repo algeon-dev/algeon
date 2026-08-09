@@ -53,11 +53,21 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
     let result = lower_physical_plan_to_native(Arc::clone(plan));
     assert_eq!(result.selected_count(), 1, "q15 outcomes={:?}", result.report.outcomes());
     let native_plan = &result.plans[0];
+    assert_eq!(
+        native_plan.capability_analysis().root_full_sort_join_aggregate_admission,
+        nexus_query_engine::capability::CapabilityDecision::Satisfied,
+        "q15 root full-sort admission should be satisfied",
+    );
     assert!(
         native_plan.capability_analysis().admits_root_full_sort_join_aggregate_pipeline(),
         "q15 should lower to the executable root full-sort shared aggregate fanout pipeline:\n{native_plan}"
     );
     let optimized_q15 = nexus_query_engine::optimizer::optimize_query_plan(native_plan.clone(), &Default::default());
+    assert_eq!(
+        optimized_q15.plan.capability_analysis().root_full_sort_join_aggregate_admission,
+        nexus_query_engine::capability::CapabilityDecision::Satisfied,
+        "optimized q15 root full-sort admission should remain satisfied",
+    );
     assert!(
         optimized_q15.plan.capability_analysis().admits_root_full_sort_join_aggregate_pipeline(),
         "optimized q15 should be admitted by the root full-sort shared aggregate fanout envelope:\n{}",

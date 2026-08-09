@@ -72,10 +72,9 @@ fn bounded_native_query_executes_global_final_merge_with_consistent_state_schema
 }
 
 #[test]
-fn raw_bounded_context_executes_wide_global_final_merge_without_partitioned_path() {
+fn bounded_context_executes_wide_global_final_merge_without_partitioned_path() {
     let dir = unique_temp_dir("nexus-query-engine-raw-bounded-final-merge-retry");
     let path = dir.join("input.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let input_schema = write_final_merge_retry_input_parquet(&path, 1024);
     let repeated_sums = 256;
     let aggregated_schema = Arc::new(Schema::new(
@@ -101,27 +100,13 @@ fn raw_bounded_context_executes_wide_global_final_merge_without_partitioned_path
     let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&aggregated_schema));
     let plan = builder.finish_with_host_sink(aggregate);
 
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 300_000,
-            max_source_chunk_bytes: 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 3,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
-    assert_eq!(
-        context.memory_control_policy(),
-        MemoryControlPolicy::Bounded {
-            device_budget_bytes: 300_000,
-            max_source_chunk_bytes: 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 3,
-            min_retry_chunk_row_groups: 1,
-        }
-    );
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+        device_budget_bytes: 300_000,
+        max_source_chunk_bytes: 1024 * 1024,
+        max_row_groups_per_chunk: 1,
+        max_retry_attempts: 3,
+        min_retry_chunk_row_groups: 1,
+    });
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
@@ -147,11 +132,10 @@ fn raw_bounded_context_executes_wide_global_final_merge_without_partitioned_path
 }
 
 #[test]
-fn raw_bounded_context_reports_retry_facts_when_final_merge_retry_exhausts() {
+fn bounded_context_reports_retry_facts_when_final_merge_retry_exhausts() {
     let dir = unique_temp_dir("nexus-query-engine-raw-bounded-final-merge-retry-exhausted");
     let path = dir.join("input.parquet");
     let second_path = dir.join("input2.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let input_schema = write_final_merge_retry_input_parquet(&path, 1024);
     write_final_merge_retry_input_parquet(&second_path, 1024);
     let repeated_sums = 128;
@@ -181,27 +165,13 @@ fn raw_bounded_context_reports_retry_facts_when_final_merge_retry_exhausts() {
     let aggregate = builder.add_aggregate(source, aggregate, aggregated_schema);
     let plan = builder.finish_with_host_sink(aggregate);
 
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 140_000,
-            max_source_chunk_bytes: 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
-    assert_eq!(
-        context.memory_control_policy(),
-        MemoryControlPolicy::Bounded {
-            device_budget_bytes: 140_000,
-            max_source_chunk_bytes: 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        }
-    );
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+        device_budget_bytes: 140_000,
+        max_source_chunk_bytes: 1024 * 1024,
+        max_row_groups_per_chunk: 1,
+        max_retry_attempts: 1,
+        min_retry_chunk_row_groups: 1,
+    });
 
     let error = match execute_query_plan(&context, &plan) {
         Ok(_) => panic!("bounded execution should fail after exhausting final merge retry fan-in"),

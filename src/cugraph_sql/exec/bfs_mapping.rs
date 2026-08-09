@@ -144,6 +144,15 @@ pub(super) struct HostBfsCodebookAllocationBound {
     value_count: usize,
 }
 
+#[derive(Debug)]
+pub(super) struct PreparedBfsLogicalHostInputs {
+    pub(super) edge: StagedCugraphSource,
+    pub(super) logical_literal_source: Option<StagedCugraphSource>,
+    pub(super) predicates: Vec<StagedCugraphSource>,
+    pub(super) logical_codebook: Option<HostBfsCodebook>,
+    pub(super) execution_spec: CugraphAlgorithmSpec,
+}
+
 pub(super) fn prepare_bfs_logical_host_inputs(
     spec: &CugraphAlgorithmSpec,
     edge: StagedCugraphSource,
@@ -153,18 +162,24 @@ pub(super) fn prepare_bfs_logical_host_inputs(
     max_staging_bytes: usize,
     reservation: &mut MemoryReservation,
     host_evidence: &mut HostReservationEvidence,
-) -> Result<(
-    StagedCugraphSource,
-    Option<StagedCugraphSource>,
-    Vec<StagedCugraphSource>,
-    Option<HostBfsCodebook>,
-    CugraphAlgorithmSpec,
-)> {
+) -> Result<PreparedBfsLogicalHostInputs> {
     let CugraphAlgorithmParams::Bfs(params) = &spec.params else {
-        return Ok((edge, logical_literal_source, predicates, None, spec.clone()));
+        return Ok(PreparedBfsLogicalHostInputs {
+            edge,
+            logical_literal_source,
+            predicates,
+            logical_codebook: None,
+            execution_spec: spec.clone(),
+        });
     };
     if !bfs_uses_logical_mapping(spec, params, &edge.schema())? {
-        return Ok((edge, logical_literal_source, predicates, None, spec.clone()));
+        return Ok(PreparedBfsLogicalHostInputs {
+            edge,
+            logical_literal_source,
+            predicates,
+            logical_codebook: None,
+            execution_spec: spec.clone(),
+        });
     }
 
     let StagedCugraphSource::Host { .. } = &edge else {
@@ -273,7 +288,13 @@ pub(super) fn prepare_bfs_logical_host_inputs(
 
     let mut execution_spec = spec.clone();
     execution_spec.output_schema = bfs_numeric_execution_schema(params)?;
-    Ok((edge, logical_literal_source, predicates, Some(codebook), execution_spec))
+    Ok(PreparedBfsLogicalHostInputs {
+        edge,
+        logical_literal_source,
+        predicates,
+        logical_codebook: Some(codebook),
+        execution_spec,
+    })
 }
 
 fn encode_staged_source(

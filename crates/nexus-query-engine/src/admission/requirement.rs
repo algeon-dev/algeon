@@ -77,6 +77,7 @@ enum OwnerTermRole {
     GraphPersistent,
     ConstructionTransient,
     ExecutionWorkspace,
+    GraphLiveReservationFloorTopUp,
     SideInputWorkspace,
     RetainedOutput,
     SourceStage,
@@ -102,6 +103,7 @@ impl OwnerTermRole {
             Self::GraphPersistent => "graph_persistent",
             Self::ConstructionTransient => "construction_transient",
             Self::ExecutionWorkspace => "execution_workspace",
+            Self::GraphLiveReservationFloorTopUp => "graph_live_reservation_floor_top_up",
             Self::SideInputWorkspace => "side_input_workspace",
             Self::RetainedOutput => "retained_output",
             Self::SourceStage => "source_stage",
@@ -307,6 +309,7 @@ fn owner_term_shape_is_valid(owner: &OwnerId, role: OwnerTermRole, class: Alloca
             OwnerTermRole::GraphPersistent
             | OwnerTermRole::ConstructionTransient
             | OwnerTermRole::ExecutionWorkspace
+            | OwnerTermRole::GraphLiveReservationFloorTopUp
             | OwnerTermRole::SideInputWorkspace => class == AllocationClass::ActivePhase,
             OwnerTermRole::RetainedOutput => class == AllocationClass::AttemptRetained,
             _ => false,
@@ -457,12 +460,17 @@ impl AllocationOwnerTerm {
                 OwnerTermRole::GraphPersistent
                     | OwnerTermRole::ConstructionTransient
                     | OwnerTermRole::ExecutionWorkspace
+                    | OwnerTermRole::GraphLiveReservationFloorTopUp
                     | OwnerTermRole::SideInputWorkspace
             )
     }
 
     pub(crate) const fn is_graph_persistent(&self) -> bool {
         matches!(self.id.role, OwnerTermRole::GraphPersistent)
+    }
+
+    pub(crate) const fn is_graph_phase_alternative(&self) -> bool {
+        self.is_graph_persistent() || matches!(self.id.role, OwnerTermRole::GraphLiveReservationFloorTopUp)
     }
 
     pub(crate) const fn is_source_stage(&self) -> bool {
@@ -510,13 +518,21 @@ impl AllocationOwnerTerm {
     }
 
     pub(crate) const fn is_construction_phase_term(&self) -> bool {
-        matches!(self.id.role, OwnerTermRole::GraphPersistent | OwnerTermRole::ConstructionTransient)
+        matches!(
+            self.id.role,
+            OwnerTermRole::GraphPersistent
+                | OwnerTermRole::ConstructionTransient
+                | OwnerTermRole::GraphLiveReservationFloorTopUp
+        )
     }
 
     pub(crate) const fn is_execution_phase_term(&self) -> bool {
         matches!(
             self.id.role,
-            OwnerTermRole::GraphPersistent | OwnerTermRole::ExecutionWorkspace | OwnerTermRole::SideInputWorkspace
+            OwnerTermRole::GraphPersistent
+                | OwnerTermRole::ExecutionWorkspace
+                | OwnerTermRole::GraphLiveReservationFloorTopUp
+                | OwnerTermRole::SideInputWorkspace
         )
     }
 
@@ -574,6 +590,9 @@ fn graph_owner_term_from_fact(fact: &GraphMemoryOwnerTermFact) -> Result<Allocat
         },
         GraphMemoryOwnerTermRole::ExecutionWorkspace => {
             (OwnerTermRole::ExecutionWorkspace, AllocationClass::ActivePhase)
+        },
+        GraphMemoryOwnerTermRole::GraphLiveReservationFloorTopUp => {
+            (OwnerTermRole::GraphLiveReservationFloorTopUp, AllocationClass::ActivePhase)
         },
         GraphMemoryOwnerTermRole::SideInputWorkspace => {
             (OwnerTermRole::SideInputWorkspace, AllocationClass::ActivePhase)
@@ -640,7 +659,8 @@ fn merge_owner_terms(
 
 fn graph_owner_terms_from_evidence(evidence: &GraphMemoryAdmissionEvidence) -> Result<Vec<AllocationOwnerTerm>> {
     const REQUIRED_GRAPH_OWNER_TERM_COUNT: usize = 4;
-    const MAX_GRAPH_OWNER_TERM_COUNT: usize = REQUIRED_GRAPH_OWNER_TERM_COUNT + 1;
+    const MAX_GRAPH_OWNER_TERM_COUNT: usize = REQUIRED_GRAPH_OWNER_TERM_COUNT + 2;
+    evidence.graph_live_reservation_floor_top_up_bytes()?;
     let facts = evidence.owner_term_facts();
     if !(REQUIRED_GRAPH_OWNER_TERM_COUNT..=MAX_GRAPH_OWNER_TERM_COUNT).contains(&facts.len()) {
         return Err(QueryError::new(
@@ -1700,6 +1720,38 @@ impl AttemptCapabilityEvidence {
         }
     }
 
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub(crate) fn with_test_placement_overlay(mut self, test_requirement: AttemptCapabilityEvidence) -> Result<Self> {
+        let placement_only = test_requirement.capability_floor_raise_bytes == 0
+            && test_requirement.required_phase_floor_bytes == 0
+            && test_requirement.source_stage_bytes.is_none()
+            && test_requirement.required_capabilities.is_empty()
+            && test_requirement.owner_terms.is_empty()
+            && test_requirement.bound_derivation.is_none()
+            && test_requirement.reservation_shapes.is_empty()
+            && !test_requirement.requires_composed_producer_binding
+            && test_requirement.attested_cugraph_graph_execution_scopes.is_empty();
+        if !placement_only {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "nexus_query_engine.admission.requirement",
+                "test placement overlay contains non-placement capability evidence",
+            )
+            .with_fact("reason", "test_placement_overlay_not_placement_only"));
+        }
+        let test_target_bytes = test_requirement.soft_working_set_hint_bytes.unwrap_or(0);
+        self.configured_floor_bytes =
+            self.configured_floor_bytes.max(test_requirement.configured_floor_bytes).max(test_target_bytes);
+        self.soft_working_set_hint_bytes =
+            match (self.soft_working_set_hint_bytes, test_requirement.soft_working_set_hint_bytes) {
+                (Some(base), Some(test)) => Some(base.max(test)),
+                (Some(base), None) => Some(base),
+                (None, Some(test)) => Some(test),
+                (None, None) => None,
+            };
+        Ok(self)
+    }
+
     /// Applies a service-resolved envelope immediately before placement. A
     /// graph envelope with an incomplete scope is rejected before this point;
     /// non-graph incomplete shapes retain the ledger's conservative candidate
@@ -1721,10 +1773,9 @@ impl AttemptCapabilityEvidence {
     fn extend_with_graph_memory_admission_evidence(&mut self, evidence: &GraphMemoryAdmissionEvidence) -> Result<()> {
         let graph_shape_index = self.graph_memory_evidence_scope_index(evidence)?;
         let graph_owner_terms = graph_owner_terms_from_evidence(evidence)?;
-        let graph_native_peak_bytes = evidence.cold_model_requested_bytes();
         let whole_attempt_peak_bytes = match self.source_stage_bytes {
-            Some(source_stage_bytes) => evidence.cold_model_with_source_stage_bytes(source_stage_bytes)?,
-            None => graph_native_peak_bytes,
+            Some(source_stage_bytes) => evidence.bounded_live_graph_peak_with_source_stage_bytes(source_stage_bytes)?,
+            None => evidence.bounded_live_graph_peak_bytes()?,
         };
         let source_stage_bytes = self.source_stage_bytes;
 
@@ -1934,7 +1985,7 @@ impl AttemptCapabilityEvidence {
                 };
                 let separate_source =
                     term.is_source_stage() && separate_graph_source_scopes.contains(term.execution_scope_fingerprint());
-                if term.is_graph_persistent() || separate_source {
+                if term.is_graph_phase_alternative() || separate_source {
                     alternative_term_ids.push(term_id.clone());
                 }
             }
@@ -4032,7 +4083,8 @@ mod tests {
             0,
             "shared prepared edge frame has one graph owner, not a second source-stage owner",
         );
-        let expected_peak = 96_u64.max(evidence.cold_model_requested_bytes());
+        let expected_peak =
+            evidence.bounded_live_graph_peak_with_source_stage_bytes(96).expect("shared graph live reservation fits");
         assert_eq!(requirement.soft_working_set_hint_bytes(), Some(expected_peak));
         let owner_sum = requirement.conservative_owner_sum().expect("shared graph owner inventory is finite");
         let envelope =
@@ -4097,8 +4149,9 @@ mod tests {
                 .iter()
                 .all(|group| { group.iter().any(|term_id| term_id.role == OwnerTermRole::GraphPersistent) })
         );
-        let expected_peak =
-            96_u64.checked_add(evidence.cold_model_requested_bytes()).expect("normalized source and graph peak fit");
+        let expected_peak = evidence
+            .bounded_live_graph_peak_with_source_stage_bytes(96)
+            .expect("normalized source and graph live reservation fit");
         assert_eq!(requirement.soft_working_set_hint_bytes(), Some(expected_peak));
         let owner_sum = requirement.conservative_owner_sum().expect("normalized graph owner inventory is finite");
         let envelope =
@@ -4167,10 +4220,18 @@ mod tests {
             .expect("graph plan must issue an engine-owned capability proof");
 
         assert_eq!(proof.soft_working_set_hint_bytes(), None);
+        let proof = proof.with_graph_memory_admission_evidence(&evidence).unwrap();
         assert_eq!(
-            proof.with_graph_memory_admission_evidence(&evidence).unwrap().soft_working_set_hint_bytes(),
-            Some(evidence.cold_model_requested_bytes())
+            proof.soft_working_set_hint_bytes(),
+            Some(evidence.bounded_live_graph_peak_bytes().expect("graph live reservation fits"))
         );
+        let requirement = proof.as_requirement();
+        let owner_ids = requirement.owner_terms.iter().map(|term| term.id.clone()).collect::<HashSet<_>>();
+        assert_eq!(owner_ids.len(), requirement.owner_terms.len(), "floor top-up has one owner identity");
+        let owner_sum = requirement.conservative_owner_sum().expect("tiny graph owner inventory is finite");
+        let envelope = proof.resolve_reservation_envelope(reservation_policy()).expect("tiny graph envelope resolves");
+        assert!(owner_sum >= crate::graph_memory::GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES);
+        assert_eq!(envelope.complete_phase_peak_bytes(), Some(owner_sum));
     }
 
     #[test]
@@ -4227,6 +4288,65 @@ mod tests {
             requirement.required_floor_bytes().unwrap_err().fact_value("reason"),
             Some("attempt_requirement_floor_overflow")
         );
+    }
+
+    #[test]
+    fn test_placement_overlay_uses_the_maximum_floor_instead_of_sum() {
+        let plan = ordinary_native_plan();
+        let mut proof = QueryPlanCapabilityProof::for_query_plan(&plan).expect("ordinary plan issues a proof");
+        proof.requirement.configured_floor_bytes = 7;
+        let overlay = AttemptCapabilityEvidence::from_parts(0, 0, Some(11), EstimateQuality::Measured, Vec::new());
+
+        let resolved =
+            proof.into_requirement().with_test_placement_overlay(overlay).expect("placement-only evidence is valid");
+
+        assert_eq!(resolved.configured_floor_bytes, 11);
+        assert_eq!(resolved.required_floor_bytes_for(0).unwrap(), 11);
+        assert_ne!(resolved.configured_floor_bytes, 18);
+    }
+
+    #[test]
+    fn test_placement_target_survives_proof_envelope_resolution_and_floor_sizing() {
+        let plan = ordinary_native_plan();
+        let proof = QueryPlanCapabilityProof::for_query_plan(&plan).expect("ordinary plan issues a proof");
+        let resolved = proof.requirement_for_device(0).expect("ordinary proof resolves on a device");
+        let envelope = resolved
+            .resolve_reservation_envelope(reservation_policy())
+            .expect("ordinary proof resolves to a finite envelope");
+        let sized = resolved
+            .as_requirement()
+            .clone()
+            .with_reservation_envelope(&envelope)
+            .with_test_placement_overlay(AttemptCapabilityEvidence::from_parts(
+                0,
+                0,
+                Some(1_000_000),
+                EstimateQuality::Measured,
+                Vec::new(),
+            ))
+            .expect("placement-only evidence is valid");
+
+        assert_eq!(sized.configured_floor_bytes, 1_000_000);
+        assert_eq!(sized.required_floor_bytes_for(0).unwrap(), 1_000_000);
+    }
+
+    #[test]
+    fn test_placement_overlay_rejects_non_placement_evidence() {
+        let mut non_placement = AttemptCapabilityEvidence::empty();
+        non_placement.capability_floor_raise_bytes = 1;
+
+        let error = AttemptCapabilityEvidence::empty()
+            .with_test_placement_overlay(non_placement)
+            .expect_err("test overlay must not attach capability evidence");
+
+        assert_eq!(error.fact_value("reason"), Some("test_placement_overlay_not_placement_only"));
+
+        let mut provenance = AttemptCapabilityEvidence::empty();
+        provenance.bound_derivation = Some(AttemptBoundDerivation::ConservativeOwnerSum);
+        let error = AttemptCapabilityEvidence::empty()
+            .with_test_placement_overlay(provenance)
+            .expect_err("test overlay must not attach bound provenance");
+        assert_eq!(error.fact_value("reason"), Some("test_placement_overlay_not_placement_only"));
     }
 
     #[test]
@@ -5046,7 +5166,12 @@ mod tests {
         )
         .expect("runtime occurrence rebinding keeps equal graph producers distinct");
         let requirement = combined.as_requirement();
-        let expected_owner_term_count = if cfg!(feature = "cugraph") { 11 } else { 9 };
+        let graph_owner_top_up_count = requirement
+            .owner_terms
+            .iter()
+            .filter(|term| term.id.role == OwnerTermRole::GraphLiveReservationFloorTopUp)
+            .count();
+        let expected_owner_term_count = (if cfg!(feature = "cugraph") { 11 } else { 9 }) + graph_owner_top_up_count;
         assert_eq!(requirement.owner_terms.len(), expected_owner_term_count);
         let retained_occurrences = requirement
             .owner_terms
@@ -5331,6 +5456,21 @@ mod tests {
         let envelope = n3.resolve_reservation_envelope(reservation_policy()).unwrap();
         assert!(envelope.complete_phase_peak_bytes().is_some());
         assert_eq!(n3.as_requirement().reservation_shapes.len(), 4, "equal producer scopes remain three occurrences");
+        let floor_ids = n3
+            .as_requirement()
+            .owner_terms
+            .iter()
+            .filter(|term| term.id.role == OwnerTermRole::GraphLiveReservationFloorTopUp)
+            .map(|term| term.id.clone())
+            .collect::<HashSet<_>>();
+        assert_eq!(floor_ids.len(), 3, "each tiny producer owns one distinct graph floor top-up");
+        let scheduled_ids = envelope
+            .ordered_schedule()
+            .expect("equal graph producers use the ordered derivation")
+            .producer_phase_term_ids()
+            .into_iter()
+            .collect::<HashSet<_>>();
+        assert!(floor_ids.is_subset(&scheduled_ids), "ordered graph phases must reference each floor top-up");
     }
 
     #[test]

@@ -81,7 +81,6 @@ fn bounded_native_query_finalizes_single_chunk_global_sum_min_max_hidden_state()
         max_retry_attempts: 1,
         min_retry_chunk_row_groups: 1,
     });
-    let runtime = Arc::new(context.runtime().unwrap());
     let input_schema = write_row_grouped_input_parquet(&path);
     let expected_names = ["sum_m00", "min_m00", "max_m01", "count_payload"];
 
@@ -115,67 +114,60 @@ fn bounded_native_query_finalizes_single_chunk_global_sum_min_max_hidden_state()
         if host_sink { builder.finish_with_host_sink(aggregate) } else { builder.finish_gpu_resident(aggregate) }
     };
 
-    let host_result = execute_query_plan(&context, &build_plan(true)).unwrap();
-    assert_eq!(host_result.metrics().source_chunks_planned, 1);
-    assert_eq!(host_result.metrics().partial_aggregate_count, 1);
-    assert_eq!(host_result.metrics().final_merge_attempts, 0);
-    let QueryOutput::HostArrow(batch) = host_result.output() else {
-        panic!("host sink should materialize one RecordBatch");
-    };
-    assert_eq!(batch.num_columns(), expected_names.len());
-    assert_eq!(batch.schema().fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>(), expected_names);
-    assert!(
-        batch.schema().fields().iter().all(|field| !field.name().starts_with("__nexus_native_global_valid_count_"))
-    );
-    assert_eq!(batch.num_rows(), 1);
-    assert_eq!(int64_array(batch, 0).values().as_ref(), &[1500]);
-    assert_eq!(int64_array(batch, 1).values().as_ref(), &[100]);
-    assert_eq!(int64_array(batch, 2).values().as_ref(), &[5]);
-    assert_eq!(int64_array(batch, 3).values().as_ref(), &[5]);
+    let host_plan = build_plan(true);
+    let host_admitted = context.admit_plan(&host_plan).unwrap();
+    {
+        let host_result =
+            execute_query_plan_with_gpu_inputs(&host_admitted, &host_plan, &GpuResidentInputMap::new()).unwrap();
+        assert_eq!(host_result.metrics().source_chunks_planned, 1);
+        assert_eq!(host_result.metrics().partial_aggregate_count, 1);
+        assert_eq!(host_result.metrics().final_merge_attempts, 0);
+        let QueryOutput::HostArrow(batch) = host_result.output() else {
+            panic!("host sink should materialize one RecordBatch");
+        };
+        assert_eq!(batch.num_columns(), expected_names.len());
+        assert_eq!(
+            batch.schema().fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>(),
+            expected_names
+        );
+        assert!(
+            batch.schema().fields().iter().all(|field| !field.name().starts_with("__nexus_native_global_valid_count_"))
+        );
+        assert_eq!(batch.num_rows(), 1);
+        assert_eq!(int64_array(batch, 0).values().as_ref(), &[1500]);
+        assert_eq!(int64_array(batch, 1).values().as_ref(), &[100]);
+        assert_eq!(int64_array(batch, 2).values().as_ref(), &[5]);
+        assert_eq!(int64_array(batch, 3).values().as_ref(), &[5]);
+    }
+    host_admitted.finish();
+    drop(host_admitted);
 
-    let gpu_result = execute_query_plan(&context, &build_plan(false)).unwrap();
-    let QueryOutput::GpuResident(frame) = gpu_result.output() else {
-        panic!("gpu sink should return a GPU-resident frame");
-    };
-    assert_eq!(frame.num_columns(), expected_names.len());
-    assert_eq!(frame.frame().column_names(), expected_names);
-    assert_eq!(frame.schema().fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>(), expected_names);
-    assert_eq!(frame.device_placement(), context.device_placement());
-    assert_eq!(frame.runtime().device().ordinal(), runtime.device().ordinal());
-    assert_eq!(gpu_result.metrics().boundary.device_to_host_materializations, 0);
-
-    let mut materialization_metrics = QueryMetrics::default();
-    let materialized = materialize_gpu_result_to_host(frame.clone(), &mut materialization_metrics).unwrap();
-    assert_eq!(materialization_metrics.boundary.device_to_host_materializations, 1);
-    assert_eq!(materialization_metrics.boundary.device_to_host_materialized_rows, 1);
+    let gpu_plan = build_plan(false);
+    let gpu_analysis = gpu_plan.capability_analysis();
+    let aggregate_gap = gpu_analysis
+        .requirements
+        .iter()
+        .find(|requirement| requirement.required_contract == "aggregate_contract")
+        .expect("global aggregate capability analysis must retain its owner gap");
+    assert_eq!(aggregate_gap.status, nexus_query_engine::capability::ContractStatus::Modeled);
     assert_eq!(
-        materialized.schema().fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>(),
-        expected_names
+        aggregate_gap.quality,
+        nexus_query_engine::capability::ContractQuality::HardBudgetedReportWithUnresolvedPreflight
     );
-    assert_eq!(int64_array(&materialized, 0).values().as_ref(), &[1500]);
-
-    let output_schema = Arc::new(Schema::new(vec![Field::new("sum_m00", DataType::Int64, true)]));
-    let mut builder = QueryPlanBuilder::new();
-    let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
-        "q_global_partial",
-        Arc::clone(&aggregated_schema),
-    )));
-    let projection =
-        builder.add_projection(source, projection_outputs(vec![Expr::column("sum_m00")], Arc::clone(&output_schema)));
-    let consumer_plan = builder.finish_with_host_sink(projection);
-    let mut gpu_inputs = GpuResidentInputMap::new();
-    gpu_inputs.insert("q_global_partial".to_string(), frame.clone());
-
-    let consumed = execute_query_plan_with_gpu_inputs(&context, &consumer_plan, &gpu_inputs).unwrap();
-    assert_eq!(consumed.metrics().boundary.gpu_resident_input_handoffs, 1);
-    assert_eq!(consumed.metrics().boundary.host_to_device_uploads, 0);
-    assert_eq!(consumed.metrics().boundary.device_to_host_materializations, 1);
-    assert_eq!(consumed.metrics().parquet_files, 0);
-    let QueryOutput::HostArrow(batch) = consumed.output() else {
-        panic!("GPU-resident source consumer should materialize only at the final host sink");
+    assert_eq!(
+        nexus_query_engine::capability::lower_level_unresolved_preflight_gap(
+            ReservationKind::OperatorOutput,
+            aggregate_gap.required_contract,
+        ),
+        Some("libcudf_groupby_aggregate_temporary_workspace_preflight_unavailable")
+    );
+    let error = match context.admit_plan(&gpu_plan) {
+        Ok(_) => panic!("GPU-sink global aggregate must reject before any GPU execution"),
+        Err(error) => error,
     };
-    assert_eq!(batch.schema(), output_schema);
-    assert_eq!(int64_array(batch, 0).values().as_ref(), &[1500]);
+    assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
+    assert_eq!(error.operation(), "nexus_query_engine.admission.requirement");
+    assert_eq!(error.fact_value("reason"), Some("attempt_owner_term_gpu_resident_output_owner_alias_unmodeled"));
 
     fs::remove_dir_all(dir).unwrap();
 }

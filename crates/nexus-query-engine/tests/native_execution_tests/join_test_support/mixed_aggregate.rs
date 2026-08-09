@@ -135,7 +135,7 @@ pub(crate) fn mixed_keyed_residual_join_grouped_aggregate_input_plan(
     builder.finish_with_host_sink(output)
 }
 
-fn mixed_aggregate_fact_source(path: &Path, schema: &Arc<Schema>, columns: &[&str]) -> LocalParquetSource {
+fn mixed_aggregate_fact_source(path: &Path, schema: &Arc<Schema>, columns: &[&str]) -> NativeLocalParquetSource {
     LocalParquetSource::from_files(
         vec![LocalParquetFile::new(path).with_file_size_bytes(fs::metadata(path).unwrap().len())],
         Arc::clone(schema),
@@ -143,7 +143,11 @@ fn mixed_aggregate_fact_source(path: &Path, schema: &Arc<Schema>, columns: &[&st
     )
 }
 
-fn mixed_aggregate_grouped_fact_source(path: &Path, schema: &Arc<Schema>, columns: &[&str]) -> LocalParquetSource {
+fn mixed_aggregate_grouped_fact_source(
+    path: &Path,
+    schema: &Arc<Schema>,
+    columns: &[&str],
+) -> NativeLocalParquetSource {
     LocalParquetSource::from_files(
         vec![LocalParquetFile::new(path)],
         Arc::clone(schema),
@@ -151,7 +155,7 @@ fn mixed_aggregate_grouped_fact_source(path: &Path, schema: &Arc<Schema>, column
     )
 }
 
-fn mixed_aggregate_dim_source(path: &Path, schema: &Arc<Schema>) -> LocalParquetSource {
+fn mixed_aggregate_dim_source(path: &Path, schema: &Arc<Schema>) -> NativeLocalParquetSource {
     LocalParquetSource::from_files(
         vec![LocalParquetFile::new(path).with_file_size_bytes(fs::metadata(path).unwrap().len())],
         Arc::clone(schema),

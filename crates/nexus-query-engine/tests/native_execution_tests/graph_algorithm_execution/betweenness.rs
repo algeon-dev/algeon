@@ -1,7 +1,6 @@
 #[test]
 fn betweenness_with_explicit_seeds_records_approximate_metadata() {
     let context = backend_context();
-    let runtime = Arc::new(context.runtime().unwrap());
 
     let edge_schema = Arc::new(Schema::new(vec![
         Field::new("src", DataType::Int32, false),
@@ -14,7 +13,7 @@ fn betweenness_with_explicit_seeds_records_approximate_metadata() {
     .unwrap();
 
     let mut builder = QueryPlanBuilder::new();
-    let edges = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("edges", Arc::clone(&edge_schema))));
+    let edges = builder.add_source(SourceNode::GpuResident(gpu_resident_source("edges", Arc::clone(&edge_schema), &edge_batch)));
     let spec = GraphAlgorithmSpec::with_stable_schema(
         GraphAlgorithm::BetweennessCentrality,
         GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
@@ -27,19 +26,21 @@ fn betweenness_with_explicit_seeds_records_approximate_metadata() {
     let graph = builder.add_graph_algorithm(edges, spec);
     let plan =
         builder.finish_with_host_sink_schema(graph, stable_graph_result_schema(GraphAlgorithm::BetweennessCentrality));
+    let admitted = context.admit_plan(&plan).unwrap();
+    let runtime = Arc::new(admitted.runtime().unwrap());
 
     let mut gpu_inputs = GpuResidentInputMap::new();
     gpu_inputs.insert(
         "edges".to_string(),
         GpuResultHandle::new(
-            &context,
+            &admitted,
             GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &edge_batch).unwrap()),
             Arc::clone(&edge_schema),
         )
         .unwrap(),
     );
 
-    let result = execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs).unwrap();
+    let result = execute_query_plan_with_gpu_inputs(&admitted, &plan, &gpu_inputs).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize betweenness output");
     };
@@ -49,12 +50,12 @@ fn betweenness_with_explicit_seeds_records_approximate_metadata() {
     assert_eq!(graph_metrics.len(), 1);
     assert!(graph_metrics[0].algorithm_metadata.contains("approximate=true"));
     assert!(graph_metrics[0].algorithm_metadata.contains("seed_count=2"));
+    admitted.finish();
 }
 
 #[test]
 fn betweenness_k_selects_deterministic_approximate_seed_count() {
     let context = backend_context_with_grant(16 * 1024 * 1024);
-    let runtime = Arc::new(context.runtime().unwrap());
 
     let edge_schema = Arc::new(Schema::new(vec![
         Field::new("src", DataType::Int32, false),
@@ -67,7 +68,7 @@ fn betweenness_k_selects_deterministic_approximate_seed_count() {
     .unwrap();
 
     let mut builder = QueryPlanBuilder::new();
-    let edges = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("edges", Arc::clone(&edge_schema))));
+    let edges = builder.add_source(SourceNode::GpuResident(gpu_resident_source("edges", Arc::clone(&edge_schema), &edge_batch)));
     let spec = GraphAlgorithmSpec::with_stable_schema(
         GraphAlgorithm::BetweennessCentrality,
         GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
@@ -80,19 +81,21 @@ fn betweenness_k_selects_deterministic_approximate_seed_count() {
     let graph = builder.add_graph_algorithm(edges, spec);
     let plan =
         builder.finish_with_host_sink_schema(graph, stable_graph_result_schema(GraphAlgorithm::BetweennessCentrality));
+    let admitted = context.admit_plan(&plan).unwrap();
+    let runtime = Arc::new(admitted.runtime().unwrap());
 
     let mut gpu_inputs = GpuResidentInputMap::new();
     gpu_inputs.insert(
         "edges".to_string(),
         GpuResultHandle::new(
-            &context,
+            &admitted,
             GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &edge_batch).unwrap()),
             Arc::clone(&edge_schema),
         )
         .unwrap(),
     );
 
-    let result = execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs).unwrap();
+    let result = execute_query_plan_with_gpu_inputs(&admitted, &plan, &gpu_inputs).unwrap();
     let graph_metrics = &result.metrics().graph_algorithm_runtime_rows;
     assert_eq!(graph_metrics.len(), 1);
     assert!(graph_metrics[0].algorithm_parameters.contains("k=2"));
@@ -119,12 +122,12 @@ fn betweenness_k_selects_deterministic_approximate_seed_count() {
     assert_eq!(seed_budget.budget_bytes, graph_reservations[0].requested_bytes);
     assert!(seed_budget.allocator_high_water_bytes.is_some());
     assert!(seed_budget.context_facts.contains_key("reservation_id"));
+    admitted.finish();
 }
 
 #[test]
 fn exact_betweenness_above_threshold_is_refused_before_cugraph() {
     let context = backend_context();
-    let runtime = Arc::new(context.runtime().unwrap());
 
     let edge_schema = Arc::new(Schema::new(vec![
         Field::new("src", DataType::Int32, false),
@@ -137,7 +140,7 @@ fn exact_betweenness_above_threshold_is_refused_before_cugraph() {
     .unwrap();
 
     let mut builder = QueryPlanBuilder::new();
-    let edges = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("edges", Arc::clone(&edge_schema))));
+    let edges = builder.add_source(SourceNode::GpuResident(gpu_resident_source("edges", Arc::clone(&edge_schema), &edge_batch)));
     let spec = GraphAlgorithmSpec::with_stable_schema(
         GraphAlgorithm::BetweennessCentrality,
         GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
@@ -150,19 +153,21 @@ fn exact_betweenness_above_threshold_is_refused_before_cugraph() {
     let graph = builder.add_graph_algorithm(edges, spec);
     let plan =
         builder.finish_with_host_sink_schema(graph, stable_graph_result_schema(GraphAlgorithm::BetweennessCentrality));
+    let admitted = context.admit_plan(&plan).unwrap();
+    let runtime = Arc::new(admitted.runtime().unwrap());
 
     let mut gpu_inputs = GpuResidentInputMap::new();
     gpu_inputs.insert(
         "edges".to_string(),
         GpuResultHandle::new(
-            &context,
+            &admitted,
             GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &edge_batch).unwrap()),
             Arc::clone(&edge_schema),
         )
         .unwrap(),
     );
 
-    let error = match execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs) {
+    let error = match execute_query_plan_with_gpu_inputs(&admitted, &plan, &gpu_inputs) {
         Ok(_) => panic!("exact betweenness above threshold should be refused before cuGraph"),
         Err(error) => error,
     };
@@ -170,12 +175,12 @@ fn exact_betweenness_above_threshold_is_refused_before_cugraph() {
     assert_eq!(error.fact_value("reason"), Some("exact_betweenness_vertex_threshold_exceeded"));
     assert_eq!(error.fact_value("actual_vertex_count"), Some("3"));
     assert_eq!(error.fact_value("required_option"), Some("seeds_or_k"));
+    admitted.finish();
 }
 
 #[test]
 fn bounded_exact_betweenness_above_threshold_is_refused_before_graph_memory_denial() {
     let context = backend_context_with_grant(512 * 1024);
-    let runtime = Arc::new(context.runtime().unwrap());
     let edge_schema = Arc::new(Schema::new(vec![
         Field::new("src", DataType::Int32, false),
         Field::new("dst", DataType::Int32, false),
@@ -186,7 +191,7 @@ fn bounded_exact_betweenness_above_threshold_is_refused_before_graph_memory_deni
     )
     .unwrap();
     let mut builder = QueryPlanBuilder::new();
-    let edges = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("edges", Arc::clone(&edge_schema))));
+    let edges = builder.add_source(SourceNode::GpuResident(gpu_resident_source("edges", Arc::clone(&edge_schema), &edge_batch)));
     let spec = GraphAlgorithmSpec::with_stable_schema(
         GraphAlgorithm::BetweennessCentrality,
         GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
@@ -199,19 +204,21 @@ fn bounded_exact_betweenness_above_threshold_is_refused_before_graph_memory_deni
     let graph = builder.add_graph_algorithm(edges, spec);
     let plan =
         builder.finish_with_host_sink_schema(graph, stable_graph_result_schema(GraphAlgorithm::BetweennessCentrality));
+    let admitted = context.admit_plan(&plan).unwrap();
+    let runtime = Arc::new(admitted.runtime().unwrap());
 
     let mut gpu_inputs = GpuResidentInputMap::new();
     gpu_inputs.insert(
         "edges".to_string(),
         GpuResultHandle::new(
-            &context,
+            &admitted,
             GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &edge_batch).unwrap()),
             Arc::clone(&edge_schema),
         )
         .unwrap(),
     );
 
-    let error = match execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs) {
+    let error = match execute_query_plan_with_gpu_inputs(&admitted, &plan, &gpu_inputs) {
         Ok(_) => panic!("bounded exact betweenness above threshold should be refused before graph memory admission"),
         Err(error) => error,
     };
@@ -219,12 +226,12 @@ fn bounded_exact_betweenness_above_threshold_is_refused_before_graph_memory_deni
     assert_eq!(error.fact_value("reason"), Some("exact_betweenness_vertex_threshold_exceeded"));
     assert_eq!(error.fact_value("actual_vertex_count"), Some("3"));
     assert_eq!(error.fact_value("required_option"), Some("seeds_or_k"));
+    admitted.finish();
 }
 
 #[test]
 fn exact_betweenness_threshold_uses_actual_vertices_not_edge_upper_bound() {
     let context = backend_context();
-    let runtime = Arc::new(context.runtime().unwrap());
 
     let edge_schema = Arc::new(Schema::new(vec![
         Field::new("src", DataType::Int32, false),
@@ -237,7 +244,7 @@ fn exact_betweenness_threshold_uses_actual_vertices_not_edge_upper_bound() {
     .unwrap();
 
     let mut builder = QueryPlanBuilder::new();
-    let edges = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("edges", Arc::clone(&edge_schema))));
+    let edges = builder.add_source(SourceNode::GpuResident(gpu_resident_source("edges", Arc::clone(&edge_schema), &edge_batch)));
     let spec = GraphAlgorithmSpec::with_stable_schema(
         GraphAlgorithm::BetweennessCentrality,
         GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
@@ -250,19 +257,22 @@ fn exact_betweenness_threshold_uses_actual_vertices_not_edge_upper_bound() {
     let graph = builder.add_graph_algorithm(edges, spec);
     let plan =
         builder.finish_with_host_sink_schema(graph, stable_graph_result_schema(GraphAlgorithm::BetweennessCentrality));
+    let admitted = context.admit_plan(&plan).unwrap();
+    let runtime = Arc::new(admitted.runtime().unwrap());
 
     let mut gpu_inputs = GpuResidentInputMap::new();
     gpu_inputs.insert(
         "edges".to_string(),
         GpuResultHandle::new(
-            &context,
+            &admitted,
             GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &edge_batch).unwrap()),
             Arc::clone(&edge_schema),
         )
         .unwrap(),
     );
 
-    execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs).unwrap();
+    execute_query_plan_with_gpu_inputs(&admitted, &plan, &gpu_inputs).unwrap();
+    admitted.finish();
 }
 
 // BFS does not consume edge weights, so a null weight must NOT drop its edge
@@ -273,19 +283,13 @@ fn exact_betweenness_threshold_uses_actual_vertices_not_edge_upper_bound() {
 #[test]
 fn bounded_betweenness_oom_retries_once_by_chunking_same_seed_set() {
     let _guard = GRAPH_SEED_CHUNK_RETRY_TEST_LOCK.lock().expect("graph seed-chunk retry test lock poisoned");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let context = ExecutionContext::builder()
-        .with_query_id("bounded-betweenness-seed-chunk-retry")
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 16 * 1024 * 1024,
-            max_source_chunk_bytes: 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+        device_budget_bytes: 16 * 1024 * 1024,
+        max_source_chunk_bytes: 1024 * 1024,
+        max_row_groups_per_chunk: 1,
+        max_retry_attempts: 1,
+        min_retry_chunk_row_groups: 1,
+    });
 
     let edge_schema = Arc::new(Schema::new(vec![
         Field::new("src", DataType::Int32, false),
@@ -298,7 +302,7 @@ fn bounded_betweenness_oom_retries_once_by_chunking_same_seed_set() {
     .unwrap();
 
     let mut builder = QueryPlanBuilder::new();
-    let edges = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("edges", Arc::clone(&edge_schema))));
+    let edges = builder.add_source(SourceNode::GpuResident(gpu_resident_source("edges", Arc::clone(&edge_schema), &edge_batch)));
     let spec = GraphAlgorithmSpec::with_stable_schema(
         GraphAlgorithm::BetweennessCentrality,
         GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
@@ -311,26 +315,28 @@ fn bounded_betweenness_oom_retries_once_by_chunking_same_seed_set() {
     let graph = builder.add_graph_algorithm(edges, spec);
     let plan =
         builder.finish_with_host_sink_schema(graph, stable_graph_result_schema(GraphAlgorithm::BetweennessCentrality));
+    let admitted = context.admit_plan(&plan).unwrap();
+    let runtime = Arc::new(admitted.runtime().unwrap());
 
     let mut gpu_inputs = GpuResidentInputMap::new();
     gpu_inputs.insert(
         "edges".to_string(),
         GpuResultHandle::new(
-            &context,
+            &admitted,
             GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &edge_batch).unwrap()),
             Arc::clone(&edge_schema),
         )
         .unwrap(),
     );
 
-    let expected_result = execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs).unwrap();
+    let expected_result = execute_query_plan_with_gpu_inputs(&admitted, &plan, &gpu_inputs).unwrap();
     let QueryOutput::HostArrow(expected_batch) = expected_result.output() else {
         panic!("host sink should materialize full betweenness output");
     };
 
     force_next_graph_seed_chunk_retry_full_attempt_resource_exhausted_for_test();
     let outcome = execute_query_plan_with_gpu_inputs_observed(
-        &context,
+        &admitted,
         &plan,
         &gpu_inputs,
         RuntimeObservationConfig::native_execution(),
@@ -403,23 +409,19 @@ fn bounded_betweenness_oom_retries_once_by_chunking_same_seed_set() {
         vec![PlanExecutionBoundaryKind::Started, PlanExecutionBoundaryKind::Finished],
         "internal retry remains inside the initial native execution and never replays through another plan",
     );
+    admitted.finish();
 }
 
 #[test]
 fn bounded_betweenness_failed_retry_still_records_graph_floor() {
     let _guard = GRAPH_SEED_CHUNK_RETRY_TEST_LOCK.lock().expect("graph seed-chunk retry test lock poisoned");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 16 * 1024 * 1024,
-            max_source_chunk_bytes: 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+        device_budget_bytes: 16 * 1024 * 1024,
+        max_source_chunk_bytes: 1024 * 1024,
+        max_row_groups_per_chunk: 1,
+        max_retry_attempts: 1,
+        min_retry_chunk_row_groups: 1,
+    });
 
     let edge_schema = Arc::new(Schema::new(vec![
         Field::new("src", DataType::Int32, false),
@@ -432,7 +434,7 @@ fn bounded_betweenness_failed_retry_still_records_graph_floor() {
     .unwrap();
 
     let mut builder = QueryPlanBuilder::new();
-    let edges = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("edges", Arc::clone(&edge_schema))));
+    let edges = builder.add_source(SourceNode::GpuResident(gpu_resident_source("edges", Arc::clone(&edge_schema), &edge_batch)));
     let spec = GraphAlgorithmSpec::with_stable_schema(
         GraphAlgorithm::BetweennessCentrality,
         GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
@@ -445,12 +447,14 @@ fn bounded_betweenness_failed_retry_still_records_graph_floor() {
     let graph = builder.add_graph_algorithm(edges, spec);
     let plan =
         builder.finish_with_host_sink_schema(graph, stable_graph_result_schema(GraphAlgorithm::BetweennessCentrality));
+    let admitted = context.admit_plan(&plan).unwrap();
+    let runtime = Arc::new(admitted.runtime().unwrap());
 
     let mut gpu_inputs = GpuResidentInputMap::new();
     gpu_inputs.insert(
         "edges".to_string(),
         GpuResultHandle::new(
-            &context,
+            &admitted,
             GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &edge_batch).unwrap()),
             Arc::clone(&edge_schema),
         )
@@ -460,7 +464,7 @@ fn bounded_betweenness_failed_retry_still_records_graph_floor() {
     force_next_graph_seed_chunk_retry_full_attempt_resource_exhausted_for_test();
     force_next_graph_seed_chunk_retry_chunk_attempt_resource_exhausted_for_test();
     let outcome = execute_query_plan_with_gpu_inputs_observed(
-        &context,
+        &admitted,
         &plan,
         &gpu_inputs,
         RuntimeObservationConfig::native_execution(),
@@ -477,23 +481,19 @@ fn bounded_betweenness_failed_retry_still_records_graph_floor() {
         Some(RuntimeTerminalOutcome::from_query_error(error)),
         "terminal status must come from the terminal retry error, not the recorded retry action",
     );
+    admitted.finish();
 }
 
 #[test]
 fn bounded_edge_betweenness_retry_matches_full_seed_result() {
     let _guard = GRAPH_SEED_CHUNK_RETRY_TEST_LOCK.lock().expect("graph seed-chunk retry test lock poisoned");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(Arc::clone(&runtime))
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 16 * 1024 * 1024,
-            max_source_chunk_bytes: 1024 * 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap();
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+        device_budget_bytes: 16 * 1024 * 1024,
+        max_source_chunk_bytes: 1024 * 1024,
+        max_row_groups_per_chunk: 1,
+        max_retry_attempts: 1,
+        min_retry_chunk_row_groups: 1,
+    });
 
     let edge_schema = Arc::new(Schema::new(vec![
         Field::new("src", DataType::Int32, false),
@@ -506,7 +506,7 @@ fn bounded_edge_betweenness_retry_matches_full_seed_result() {
     .unwrap();
 
     let mut builder = QueryPlanBuilder::new();
-    let edges = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("edges", Arc::clone(&edge_schema))));
+    let edges = builder.add_source(SourceNode::GpuResident(gpu_resident_source("edges", Arc::clone(&edge_schema), &edge_batch)));
     let spec = GraphAlgorithmSpec::with_stable_schema(
         GraphAlgorithm::EdgeBetweennessCentrality,
         GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
@@ -519,25 +519,27 @@ fn bounded_edge_betweenness_retry_matches_full_seed_result() {
     let graph = builder.add_graph_algorithm(edges, spec);
     let plan = builder
         .finish_with_host_sink_schema(graph, stable_graph_result_schema(GraphAlgorithm::EdgeBetweennessCentrality));
+    let admitted = context.admit_plan(&plan).unwrap();
+    let runtime = Arc::new(admitted.runtime().unwrap());
 
     let mut gpu_inputs = GpuResidentInputMap::new();
     gpu_inputs.insert(
         "edges".to_string(),
         GpuResultHandle::new(
-            &context,
+            &admitted,
             GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &edge_batch).unwrap()),
             Arc::clone(&edge_schema),
         )
         .unwrap(),
     );
 
-    let expected_result = execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs).unwrap();
+    let expected_result = execute_query_plan_with_gpu_inputs(&admitted, &plan, &gpu_inputs).unwrap();
     let QueryOutput::HostArrow(expected_batch) = expected_result.output() else {
         panic!("host sink should materialize full edge betweenness output");
     };
 
     force_next_graph_seed_chunk_retry_full_attempt_resource_exhausted_for_test();
-    let result = execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs).unwrap();
+    let result = execute_query_plan_with_gpu_inputs(&admitted, &plan, &gpu_inputs).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize bounded chunked edge betweenness output");
     };
@@ -549,4 +551,5 @@ fn bounded_edge_betweenness_retry_matches_full_seed_result() {
         .filter(|event| event.operation == "datafusion_nexus_cugraph_edge_betweenness_centrality")
         .collect::<Vec<_>>();
     assert_eq!(graph_budget_events.len(), 2, "bounded retry should budget each edge-betweenness seed chunk");
+    admitted.finish();
 }

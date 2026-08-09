@@ -736,7 +736,7 @@ impl AttemptReservationSchedule {
                     "producer_alternative_phase",
                 )?;
                 self.validate_producer_phase_term(term, occurrence)?;
-                if !(term.is_graph_persistent() || term.is_source_stage())
+                if !(term.is_graph_phase_alternative() || term.is_source_stage())
                     || !phase.isolated_peak_term_groups.first().is_some_and(|group| group.contains(term_id))
                     || !phase.isolated_peak_term_groups.get(1).is_some_and(|group| group.contains(term_id))
                 {
@@ -860,7 +860,7 @@ impl AttemptReservationSchedule {
                                 .iter()
                                 .any(|allowed_id| allowed_id == term_id)
                     })
-                    && (term.is_graph_persistent() || term.is_source_stage());
+                    && (term.is_graph_phase_alternative() || term.is_source_stage());
                 if !allowed {
                     return Err(graph_schedule_error(
                         "producer_phase_group_duplicate",
@@ -1437,8 +1437,10 @@ impl AttemptReservationShape {
         }
         if let Some(graph_phase) = &self.complete_graph_memory_phase {
             let graph_peak = match self.source_stage_bytes {
-                Some(source_stage_bytes) => graph_phase.cold_model_with_source_stage_bytes(source_stage_bytes)?,
-                None => graph_phase.cold_model_requested_bytes(),
+                Some(source_stage_bytes) => {
+                    graph_phase.bounded_live_graph_peak_with_source_stage_bytes(source_stage_bytes)?
+                },
+                None => graph_phase.bounded_live_graph_peak_bytes()?,
             };
             return Ok(ResolvedReservationShape {
                 required_phase_floor_bytes: graph_peak,

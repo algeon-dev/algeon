@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn native_grouped_aggregate_filter_masks_false_and_null_predicates() {
-    let (runtime, context, schema, inputs) = filtered_aggregate_input();
+    let (context, schema, batch) = filtered_aggregate_input();
     let output_schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int32, false),
         Field::new("sum_payload", DataType::Int64, true),
@@ -30,8 +30,20 @@ fn native_grouped_aggregate_filter_masks_false_and_null_predicates() {
     let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&output_schema));
     let sort = builder.add_sort(aggregate, sort, Arc::clone(&output_schema));
     let plan = builder.finish_with_host_sink(sort);
+    let admitted = context.admit_plan(&plan).unwrap();
+    let runtime = Arc::new(admitted.runtime().unwrap());
+    let mut inputs = GpuResidentInputMap::new();
+    inputs.insert(
+        "filtered".to_string(),
+        GpuResultHandle::new(
+            &admitted,
+            GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &batch).unwrap()),
+            Arc::clone(&schema),
+        )
+        .unwrap(),
+    );
 
-    let result = execute_query_plan_with_gpu_inputs(&context, &plan, &inputs).unwrap();
+    let result = execute_query_plan_with_gpu_inputs(&admitted, &plan, &inputs).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
     };
@@ -42,7 +54,8 @@ fn native_grouped_aggregate_filter_masks_false_and_null_predicates() {
     assert_eq!(int64_array(batch, 3).values().as_ref(), &[1, 2]);
     assert_eq!(float64_array(batch, 4).values().as_ref(), &[10.0, 5.0]);
     assert_eq!(result.metrics().boundary.host_to_device_uploads, 0);
-    assert_eq!(runtime.device().ordinal(), context.runtime().unwrap().device().ordinal());
+    assert_eq!(runtime.device().ordinal(), admitted.runtime().unwrap().device().ordinal());
+    admitted.finish();
 }
 
 #[test]
@@ -54,7 +67,6 @@ fn bounded_native_grouped_filtered_aggregate_single_pass_reports_materialization
         max_retry_attempts: 1,
         min_retry_chunk_row_groups: 1,
     });
-    let runtime = Arc::new(context.runtime().unwrap());
     let schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int32, false),
         Field::new("payload", DataType::Int64, true),
@@ -69,12 +81,6 @@ fn bounded_native_grouped_filtered_aggregate_single_pass_reports_materialization
         ],
     )
     .unwrap();
-    let frame = DataFrame::from_record_batch(&runtime, &batch).unwrap();
-    let mut inputs = GpuResidentInputMap::new();
-    inputs.insert(
-        "filtered".to_string(),
-        GpuResultHandle::new(&context, GpuDataFrame::new(frame), Arc::clone(&schema)).unwrap(),
-    );
     let output_schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int32, false),
         Field::new("sum_payload", DataType::Int64, true),
@@ -93,8 +99,16 @@ fn bounded_native_grouped_filtered_aggregate_single_pass_reports_materialization
     let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("filtered", Arc::clone(&schema))));
     let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&output_schema));
     let plan = builder.finish_with_host_sink(aggregate);
+    let admitted = context.admit_plan(&plan).unwrap();
+    let runtime = Arc::new(admitted.runtime().unwrap());
+    let frame = DataFrame::from_record_batch(&runtime, &batch).unwrap();
+    let mut inputs = GpuResidentInputMap::new();
+    inputs.insert(
+        "filtered".to_string(),
+        GpuResultHandle::new(&admitted, GpuDataFrame::new(frame), Arc::clone(&schema)).unwrap(),
+    );
 
-    let result = execute_query_plan_with_gpu_inputs(&context, &plan, &inputs).unwrap();
+    let result = execute_query_plan_with_gpu_inputs(&admitted, &plan, &inputs).unwrap();
     let strategy = result
         .metrics()
         .aggregate_strategy_decisions
@@ -112,6 +126,7 @@ fn bounded_native_grouped_filtered_aggregate_single_pass_reports_materialization
             .and_then(|bytes| bytes.parse::<u64>().ok())
             .is_some_and(|bytes| bytes > 0)
     );
+    admitted.finish();
 }
 
 #[test]
@@ -125,7 +140,6 @@ fn bounded_native_grouped_filtered_aggregate_segments_low_cardinality_groups() {
         max_retry_attempts: 1,
         min_retry_chunk_row_groups: 1,
     });
-    let runtime = Arc::new(context.runtime().unwrap());
     let row_count = 100_000usize;
     let schema = Arc::new(
         Schema::new(vec![
@@ -147,12 +161,6 @@ fn bounded_native_grouped_filtered_aggregate_segments_low_cardinality_groups() {
         ],
     )
     .unwrap();
-    let frame = DataFrame::from_record_batch(&runtime, &batch).unwrap();
-    let mut inputs = GpuResidentInputMap::new();
-    inputs.insert(
-        "filtered".to_string(),
-        GpuResultHandle::new(&context, GpuDataFrame::new(frame), Arc::clone(&schema)).unwrap(),
-    );
 
     let mut fields = vec![Field::new("key", DataType::Int32, false)];
     let mut aggr_exprs = Vec::new();
@@ -186,8 +194,16 @@ fn bounded_native_grouped_filtered_aggregate_segments_low_cardinality_groups() {
     let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&output_schema));
     let sort = builder.add_sort(aggregate, sort, Arc::clone(&output_schema));
     let plan = builder.finish_with_host_sink(sort);
+    let admitted = context.admit_plan(&plan).unwrap();
+    let runtime = Arc::new(admitted.runtime().unwrap());
+    let frame = DataFrame::from_record_batch(&runtime, &batch).unwrap();
+    let mut inputs = GpuResidentInputMap::new();
+    inputs.insert(
+        "filtered".to_string(),
+        GpuResultHandle::new(&admitted, GpuDataFrame::new(frame), Arc::clone(&schema)).unwrap(),
+    );
 
-    let result = execute_query_plan_with_gpu_inputs(&context, &plan, &inputs).unwrap();
+    let result = execute_query_plan_with_gpu_inputs(&admitted, &plan, &inputs).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
     };
@@ -342,7 +358,7 @@ fn bounded_native_partial_grouped_filtered_aggregate_segments_high_cardinality_g
 
 #[test]
 fn native_global_aggregate_filter_masks_false_and_null_predicates() {
-    let (_runtime, context, schema, inputs) = filtered_aggregate_input();
+    let (context, schema, batch) = filtered_aggregate_input();
     let output_schema = Arc::new(Schema::new(vec![
         Field::new("sum_payload", DataType::Int64, true),
         Field::new("count_payload", DataType::Int64, false),
@@ -367,8 +383,20 @@ fn native_global_aggregate_filter_masks_false_and_null_predicates() {
     let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("filtered", Arc::clone(&schema))));
     let aggregate = builder.add_aggregate(source, aggregate, output_schema);
     let plan = builder.finish_with_host_sink(aggregate);
+    let admitted = context.admit_plan(&plan).unwrap();
+    let runtime = Arc::new(admitted.runtime().unwrap());
+    let mut inputs = GpuResidentInputMap::new();
+    inputs.insert(
+        "filtered".to_string(),
+        GpuResultHandle::new(
+            &admitted,
+            GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &batch).unwrap()),
+            Arc::clone(&schema),
+        )
+        .unwrap(),
+    );
 
-    let result = execute_query_plan_with_gpu_inputs(&context, &plan, &inputs).unwrap();
+    let result = execute_query_plan_with_gpu_inputs(&admitted, &plan, &inputs).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
     };
@@ -377,11 +405,12 @@ fn native_global_aggregate_filter_masks_false_and_null_predicates() {
     assert_eq!(int64_array(batch, 1).values().as_ref(), &[2]);
     assert_eq!(int64_array(batch, 2).values().as_ref(), &[3]);
     assert_eq!(float64_array(batch, 3).values().as_ref(), &[7.5]);
+    admitted.finish();
 }
 
 #[test]
 fn native_global_aggregate_filter_masks_count_distinct_inputs() {
-    let (_runtime, context, schema, inputs) = filtered_aggregate_input();
+    let (context, schema, batch) = filtered_aggregate_input();
     let output_schema = Arc::new(Schema::new(vec![Field::new("distinct_payload", DataType::Int64, false)]));
     let aggregate = AggregateSpec::new(
         Vec::new(),
@@ -396,13 +425,26 @@ fn native_global_aggregate_filter_masks_count_distinct_inputs() {
     let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("filtered", Arc::clone(&schema))));
     let aggregate = builder.add_aggregate(source, aggregate, output_schema);
     let plan = builder.finish_with_host_sink(aggregate);
+    let admitted = context.admit_plan(&plan).unwrap();
+    let runtime = Arc::new(admitted.runtime().unwrap());
+    let mut inputs = GpuResidentInputMap::new();
+    inputs.insert(
+        "filtered".to_string(),
+        GpuResultHandle::new(
+            &admitted,
+            GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &batch).unwrap()),
+            Arc::clone(&schema),
+        )
+        .unwrap(),
+    );
 
-    let result = execute_query_plan_with_gpu_inputs(&context, &plan, &inputs).unwrap();
+    let result = execute_query_plan_with_gpu_inputs(&admitted, &plan, &inputs).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
     };
     assert_eq!(batch.num_rows(), 1);
     assert_eq!(int64_array(batch, 0).values().as_ref(), &[2]);
+    admitted.finish();
 }
 
 #[test]
@@ -416,7 +458,6 @@ fn bounded_native_global_filtered_aggregate_segments_large_materialization() {
         max_retry_attempts: 1,
         min_retry_chunk_row_groups: 1,
     });
-    let runtime = Arc::new(context.runtime().unwrap());
     let schema = Arc::new(
         Schema::new(vec![
             Field::new("payload", DataType::Int64, false),
@@ -446,13 +487,6 @@ fn bounded_native_global_filtered_aggregate_segments_large_materialization() {
         ],
     )
     .unwrap();
-    let frame = DataFrame::from_record_batch(&runtime, &batch).unwrap();
-    let mut inputs = GpuResidentInputMap::new();
-    inputs.insert(
-        "filtered".to_string(),
-        GpuResultHandle::new(&context, GpuDataFrame::new(frame), Arc::clone(&schema)).unwrap(),
-    );
-
     let mut fields = Vec::new();
     let mut aggr_exprs = Vec::new();
     for bucket in 0..5 {
@@ -497,8 +531,16 @@ fn bounded_native_global_filtered_aggregate_segments_large_materialization() {
     let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("filtered", Arc::clone(&schema))));
     let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&output_schema));
     let plan = builder.finish_with_host_sink(aggregate);
+    let admitted = context.admit_plan(&plan).unwrap();
+    let runtime = Arc::new(admitted.runtime().unwrap());
+    let frame = DataFrame::from_record_batch(&runtime, &batch).unwrap();
+    let mut inputs = GpuResidentInputMap::new();
+    inputs.insert(
+        "filtered".to_string(),
+        GpuResultHandle::new(&admitted, GpuDataFrame::new(frame), Arc::clone(&schema)).unwrap(),
+    );
 
-    let result = execute_query_plan_with_gpu_inputs(&context, &plan, &inputs).unwrap();
+    let result = execute_query_plan_with_gpu_inputs(&admitted, &plan, &inputs).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
     };
@@ -577,7 +619,6 @@ fn bounded_native_global_filtered_aggregate_segments_q09_decimal_avg_shape() {
         max_retry_attempts: 1,
         min_retry_chunk_row_groups: 1,
     });
-    let runtime = Arc::new(context.runtime().unwrap());
     let repeats_per_quantity = 700usize;
     let row_count = 100 * repeats_per_quantity;
     let schema = Arc::new(
@@ -603,13 +644,6 @@ fn bounded_native_global_filtered_aggregate_segments_q09_decimal_avg_shape() {
         ],
     )
     .unwrap();
-    let frame = DataFrame::from_record_batch(&runtime, &batch).unwrap();
-    let mut inputs = GpuResidentInputMap::new();
-    inputs.insert(
-        "filtered".to_string(),
-        GpuResultHandle::new(&context, GpuDataFrame::new(frame), Arc::clone(&schema)).unwrap(),
-    );
-
     let mut fields = Vec::new();
     let mut aggr_exprs = Vec::new();
     for (bucket, lower) in [1, 21, 41, 61, 81].into_iter().enumerate() {
@@ -646,8 +680,16 @@ fn bounded_native_global_filtered_aggregate_segments_q09_decimal_avg_shape() {
     let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("filtered", Arc::clone(&schema))));
     let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&output_schema));
     let plan = builder.finish_with_host_sink(aggregate);
+    let admitted = context.admit_plan(&plan).unwrap();
+    let runtime = Arc::new(admitted.runtime().unwrap());
+    let frame = DataFrame::from_record_batch(&runtime, &batch).unwrap();
+    let mut inputs = GpuResidentInputMap::new();
+    inputs.insert(
+        "filtered".to_string(),
+        GpuResultHandle::new(&admitted, GpuDataFrame::new(frame), Arc::clone(&schema)).unwrap(),
+    );
 
-    let result = execute_query_plan_with_gpu_inputs(&context, &plan, &inputs).unwrap();
+    let result = execute_query_plan_with_gpu_inputs(&admitted, &plan, &inputs).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
     };
@@ -880,9 +922,8 @@ fn bounded_native_partial_global_filtered_aggregate_segments_large_materializati
     fs::remove_dir_all(dir).unwrap();
 }
 
-fn filtered_aggregate_input() -> (Arc<cudf::Runtime>, BackendQueryContext, Arc<Schema>, GpuResidentInputMap) {
+fn filtered_aggregate_input() -> (BackendQueryContext, Arc<Schema>, RecordBatch) {
     let context = backend_context();
-    let runtime = Arc::new(context.runtime().unwrap());
     let schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int32, false),
         Field::new("payload", DataType::Int64, true),
@@ -897,11 +938,5 @@ fn filtered_aggregate_input() -> (Arc<cudf::Runtime>, BackendQueryContext, Arc<S
         ],
     )
     .unwrap();
-    let frame = DataFrame::from_record_batch(&runtime, &batch).unwrap();
-    let mut inputs = GpuResidentInputMap::new();
-    inputs.insert(
-        "filtered".to_string(),
-        GpuResultHandle::new(&context, GpuDataFrame::new(frame), Arc::clone(&schema)).unwrap(),
-    );
-    (runtime, context, schema, inputs)
+    (context, schema, batch)
 }

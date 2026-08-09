@@ -950,7 +950,8 @@ fn ordered_avg(values: impl IntoIterator<Item = f64>) -> Option<f64> {
 fn grouped_stddev_samp_can_use_gpu_native_tolerant_contract() {
     let dir = unique_temp_dir("nexus-query-engine-gpu-native-stddev-samp");
     let path = dir.join("input.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context_with_statistical_aggregate_mode(StatisticalAggregateExecutionMode::GpuNativeTolerant);
+    let runtime = Arc::new(context.runtime().unwrap());
     let input_schema = write_stddev_input_parquet(&runtime, &path);
     let output_schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int32, false),
@@ -978,11 +979,6 @@ fn grouped_stddev_samp_can_use_gpu_native_tolerant_contract() {
     let sort = builder.add_sort(aggregate, sort, Arc::clone(&output_schema));
     let plan = builder.finish_with_host_sink(sort);
 
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(runtime)
-        .with_statistical_aggregate_execution_mode(StatisticalAggregateExecutionMode::GpuNativeTolerant)
-        .build()
-        .unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
@@ -1022,7 +1018,8 @@ fn grouped_stddev_samp_can_use_gpu_native_tolerant_contract() {
 
 #[test]
 fn grouped_tolerant_statistical_aggregate_preserves_decimal_avg_scale() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context_with_statistical_aggregate_mode(StatisticalAggregateExecutionMode::GpuNativeTolerant);
+    let runtime = Arc::new(context.runtime().unwrap());
     let dir = unique_temp_dir("nexus-query-engine-gpu-native-statistical-decimal-avg");
     let path = dir.join("input.parquet");
     let input_schema = Arc::new(Schema::new(vec![
@@ -1066,11 +1063,6 @@ fn grouped_tolerant_statistical_aggregate_preserves_decimal_avg_scale() {
     let sort = builder.add_sort(aggregate, sort, Arc::clone(&output_schema));
     let plan = builder.finish_with_host_sink(sort);
 
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(runtime)
-        .with_statistical_aggregate_execution_mode(StatisticalAggregateExecutionMode::GpuNativeTolerant)
-        .build()
-        .unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
@@ -1096,7 +1088,8 @@ fn grouped_tolerant_statistical_aggregate_preserves_decimal_avg_scale() {
 fn grouped_floating_statistical_family_can_use_gpu_native_tolerant_contract() {
     let dir = unique_temp_dir("nexus-query-engine-gpu-native-statistical-aggregates");
     let path = dir.join("input.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context_with_statistical_aggregate_mode(StatisticalAggregateExecutionMode::GpuNativeTolerant);
+    let runtime = Arc::new(context.runtime().unwrap());
     let input_schema = write_stddev_input_parquet(&runtime, &path);
     let output_schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int32, false),
@@ -1126,11 +1119,6 @@ fn grouped_floating_statistical_family_can_use_gpu_native_tolerant_contract() {
     let sort = builder.add_sort(aggregate, sort, Arc::clone(&output_schema));
     let plan = builder.finish_with_host_sink(sort);
 
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(runtime)
-        .with_statistical_aggregate_execution_mode(StatisticalAggregateExecutionMode::GpuNativeTolerant)
-        .build()
-        .unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
@@ -1167,7 +1155,17 @@ fn grouped_floating_statistical_family_can_use_gpu_native_tolerant_contract() {
 
 #[test]
 fn bounded_tolerant_grouped_statistical_aggregate_streams_partial_moments() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context_with_memory_control_policy_and_statistical_aggregate_mode(
+        MemoryControlPolicy::Bounded {
+            device_budget_bytes: 128 * 1024 * 1024,
+            max_source_chunk_bytes: 1024,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        },
+        StatisticalAggregateExecutionMode::GpuNativeTolerant,
+    );
+    let runtime = Arc::new(context.runtime().unwrap());
     let dir = unique_temp_dir("nexus-query-engine-bounded-tolerant-statistical-moments");
     let left_path = dir.join("left.parquet");
     let right_path = dir.join("right.parquet");
@@ -1263,18 +1261,6 @@ fn bounded_tolerant_grouped_statistical_aggregate_streams_partial_moments() {
     );
     let plan = builder.finish_with_host_sink(sort);
 
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(runtime)
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 128 * 1024 * 1024,
-            max_source_chunk_bytes: 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .with_statistical_aggregate_execution_mode(StatisticalAggregateExecutionMode::GpuNativeTolerant)
-        .build()
-        .unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
@@ -1342,7 +1328,17 @@ fn bounded_tolerant_grouped_statistical_aggregate_streams_partial_moments() {
 
 #[test]
 fn bounded_tolerant_filtered_grouped_statistical_aggregate_uses_filter_preparation() {
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = backend_context_with_memory_control_policy_and_statistical_aggregate_mode(
+        MemoryControlPolicy::Bounded {
+            device_budget_bytes: 128 * 1024 * 1024,
+            max_source_chunk_bytes: 1024,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        },
+        StatisticalAggregateExecutionMode::GpuNativeTolerant,
+    );
+    let runtime = Arc::new(context.runtime().unwrap());
     let dir = unique_temp_dir("nexus-query-engine-bounded-filtered-statistical-moments");
     let left_path = dir.join("left.parquet");
     let right_path = dir.join("right.parquet");
@@ -1434,18 +1430,6 @@ fn bounded_tolerant_filtered_grouped_statistical_aggregate_uses_filter_preparati
     );
     let plan = builder.finish_with_host_sink(sort);
 
-    let context = ExecutionContext::builder()
-        .with_shared_runtime(runtime)
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 128 * 1024 * 1024,
-            max_source_chunk_bytes: 1024,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        })
-        .with_statistical_aggregate_execution_mode(StatisticalAggregateExecutionMode::GpuNativeTolerant)
-        .build()
-        .unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");

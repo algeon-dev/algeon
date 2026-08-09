@@ -3,7 +3,6 @@ use super::*;
 #[test]
 fn native_boolean_and_or_use_sql_three_valued_logic() {
     let context = backend_context();
-    let runtime = Arc::new(context.runtime().unwrap());
     let input_schema =
         Arc::new(Schema::new(vec![Field::new("a", DataType::Boolean, true), Field::new("b", DataType::Boolean, true)]));
     let output_schema = Arc::new(Schema::new(vec![
@@ -26,8 +25,6 @@ fn native_boolean_and_or_use_sql_three_valued_logic() {
         ],
     )
     .unwrap();
-    let frame = DataFrame::from_record_batch(&runtime, &batch).unwrap();
-
     let mut builder = QueryPlanBuilder::new();
     let source =
         builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("bool_input", Arc::clone(&input_schema))));
@@ -42,14 +39,17 @@ fn native_boolean_and_or_use_sql_three_valued_logic() {
         ),
     );
     let plan = builder.finish_with_host_sink(projection);
+    let admitted = context.admit_plan(&plan).unwrap();
+    let runtime = Arc::new(admitted.runtime().unwrap());
+    let frame = DataFrame::from_record_batch(&runtime, &batch).unwrap();
 
     let mut gpu_inputs = GpuResidentInputMap::new();
     gpu_inputs.insert(
         "bool_input".to_string(),
-        GpuResultHandle::new(&context, GpuDataFrame::new(frame), Arc::clone(&input_schema)).unwrap(),
+        GpuResultHandle::new(&admitted, GpuDataFrame::new(frame), Arc::clone(&input_schema)).unwrap(),
     );
 
-    let result = execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs).unwrap();
+    let result = execute_query_plan_with_gpu_inputs(&admitted, &plan, &gpu_inputs).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
     };
@@ -62,6 +62,7 @@ fn native_boolean_and_or_use_sql_three_valued_logic() {
         boolean_array(batch, 1),
         &[Some(false), Some(false), Some(false), Some(true), Some(false), None, None],
     );
+    admitted.finish();
 }
 
 fn assert_boolean_values(array: &BooleanArray, expected: &[Option<bool>]) {
@@ -200,7 +201,6 @@ fn native_query_executes_filter_projection_over_tpch_like_types() {
 #[test]
 fn native_projection_coerces_decimal_output_to_declared_scale() {
     let context = backend_context();
-    let runtime = Arc::new(context.runtime().unwrap());
     let input_schema = Arc::new(Schema::new(vec![Field::new("amount", DataType::Decimal128(20, 0), false)]));
     let output_schema = Arc::new(Schema::new(vec![Field::new("mkt_share", DataType::Decimal128(20, -1), false)]));
     let batch = RecordBatch::try_new(
@@ -208,8 +208,6 @@ fn native_projection_coerces_decimal_output_to_declared_scale() {
         vec![Arc::new(Decimal128Array::from_iter_values([120, 340]).with_precision_and_scale(20, 0).unwrap())],
     )
     .unwrap();
-    let frame = DataFrame::from_record_batch(&runtime, &batch).unwrap();
-
     let mut builder = QueryPlanBuilder::new();
     let source =
         builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("decimal_input", Arc::clone(&input_schema))));
@@ -218,14 +216,17 @@ fn native_projection_coerces_decimal_output_to_declared_scale() {
         projection_outputs(vec![Expr::column("amount").alias("mkt_share")], Arc::clone(&output_schema)),
     );
     let plan = builder.finish_gpu_resident(projection);
+    let admitted = context.admit_plan(&plan).unwrap();
+    let runtime = Arc::new(admitted.runtime().unwrap());
+    let frame = DataFrame::from_record_batch(&runtime, &batch).unwrap();
 
     let mut gpu_inputs = GpuResidentInputMap::new();
     gpu_inputs.insert(
         "decimal_input".to_string(),
-        GpuResultHandle::new(&context, GpuDataFrame::new(frame), Arc::clone(&input_schema)).unwrap(),
+        GpuResultHandle::new(&admitted, GpuDataFrame::new(frame), Arc::clone(&input_schema)).unwrap(),
     );
 
-    let result = execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs).unwrap();
+    let result = execute_query_plan_with_gpu_inputs(&admitted, &plan, &gpu_inputs).unwrap();
     let QueryOutput::GpuResident(handle) = result.output() else {
         panic!("GPU-resident sink should keep projection output on device");
     };
@@ -237,6 +238,7 @@ fn native_projection_coerces_decimal_output_to_declared_scale() {
     let mkt_share = decimal128_array(&batch, 0);
     assert_eq!(mkt_share.data_type(), &DataType::Decimal128(20, -1));
     assert_eq!(mkt_share.values().as_ref(), &[12, 34]);
+    admitted.finish();
 }
 
 #[test]
@@ -300,7 +302,6 @@ fn bounded_native_projection_coerces_decimal_output_to_declared_scale() {
 #[test]
 fn native_projection_decimal_division_uses_declared_binary_output_type() {
     let context = backend_context();
-    let runtime = Arc::new(context.runtime().unwrap());
     let input_schema = Arc::new(Schema::new(vec![
         Field::new("numerator", DataType::Decimal128(38, 8), false),
         Field::new("denominator", DataType::Decimal128(38, 8), false),
@@ -318,8 +319,6 @@ fn native_projection_decimal_division_uses_declared_binary_output_type() {
         ],
     )
     .unwrap();
-    let frame = DataFrame::from_record_batch(&runtime, &batch).unwrap();
-
     let projection_expr = Expr::binary_with_output_type(
         Expr::column("numerator"),
         BinaryOp::Divide,
@@ -333,14 +332,17 @@ fn native_projection_decimal_division_uses_declared_binary_output_type() {
     let projection =
         builder.add_projection(source, projection_outputs(vec![projection_expr], Arc::clone(&output_schema)));
     let plan = builder.finish_with_host_sink(projection);
+    let admitted = context.admit_plan(&plan).unwrap();
+    let runtime = Arc::new(admitted.runtime().unwrap());
+    let frame = DataFrame::from_record_batch(&runtime, &batch).unwrap();
 
     let mut gpu_inputs = GpuResidentInputMap::new();
     gpu_inputs.insert(
         "decimal_input".to_string(),
-        GpuResultHandle::new(&context, GpuDataFrame::new(frame), Arc::clone(&input_schema)).unwrap(),
+        GpuResultHandle::new(&admitted, GpuDataFrame::new(frame), Arc::clone(&input_schema)).unwrap(),
     );
 
-    let result = execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs).unwrap();
+    let result = execute_query_plan_with_gpu_inputs(&admitted, &plan, &gpu_inputs).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
     };
@@ -348,6 +350,7 @@ fn native_projection_decimal_division_uses_declared_binary_output_type() {
     let ratio = decimal128_array(batch, 0);
     assert_eq!(ratio.data_type(), &DataType::Decimal128(38, 8));
     assert_eq!(ratio.values().as_ref(), &[25_000_000, 50_000_000]);
+    admitted.finish();
 }
 
 #[test]

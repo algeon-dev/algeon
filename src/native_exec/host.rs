@@ -17,6 +17,7 @@ use datafusion::{
     },
 };
 use nexus_query_engine::{
+    admission::QueryPlanCapabilityProof,
     exec::{execute_query_plan_observed, output::QueryOutput},
     plan::QueryPlan,
     runtime::resident::GpuResultHandle,
@@ -220,7 +221,54 @@ impl ExecutionPlan for NexusNativeExec {
             Arc::clone(&task_context),
             account_memory_pool,
             async move {
+                let unresolved_capability_proof = QueryPlanCapabilityProof::for_query_plan(&plan);
                 let plan = super::lakehouse::resolve_query_plan(&execution_config, plan, task_context.as_ref()).await;
+                if execution_config.lakehouse_footer_pruning()
+                    && let Some(ticket) =
+                        execution_config.query_admission_ticket_for_task_context(task_context.as_ref())
+                {
+                    let unresolved_capability_proof = unresolved_capability_proof.ok_or_else(|| {
+                        DataFusionError::from(
+                            Error::new(
+                                ErrorCode::InvalidExecutionPlan,
+                                "datafusion_nexus.native_exec.admission_proof",
+                                "the unresolved native host plan did not issue an exact capability proof",
+                            )
+                            .with_fact("reason", "native_host_unresolved_admission_proof_missing"),
+                        )
+                    })?;
+                    let proof = QueryPlanCapabilityProof::for_query_plan(&plan).ok_or_else(|| {
+                        DataFusionError::from(
+                            Error::new(
+                                ErrorCode::InvalidExecutionPlan,
+                                "datafusion_nexus.native_exec.admission_proof",
+                                "the resolved native host plan did not issue an exact capability proof",
+                            )
+                            .with_fact("reason", "native_host_resolved_admission_proof_missing"),
+                        )
+                    })?;
+                    if let Some(existing) = ticket.attempt_capability_proof_for_rebind()
+                        && existing != unresolved_capability_proof
+                        && existing != proof
+                    {
+                        return Err(DataFusionError::from(
+                            Error::new(
+                                ErrorCode::InvalidExecutionPlan,
+                                "datafusion_nexus.native_exec.admission_proof",
+                                "the active native host admission ticket does not attest to this single host plan",
+                            )
+                            .with_fact("reason", "native_host_admission_proof_scope_mismatch")
+                            .with_fact("ticket_proof_scope", "combined_or_different_native_plan"),
+                        ));
+                    }
+                    ticket.rebind_capability_proof_before_admission(proof).map_err(|error| {
+                        DataFusionError::from(Error::from_native(
+                            "datafusion_nexus.native_exec.admission_proof",
+                            "failed to rebind the native host admission ticket before query-service admission",
+                            error,
+                        ))
+                    })?;
+                }
                 // Context construction is the configuration/validation stage. Failures here happen
                 // before the native query starts.
                 let context_lease = execution_config

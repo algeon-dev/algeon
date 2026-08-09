@@ -151,7 +151,6 @@ fn bounded_native_query_denies_mixed_keyed_residual_grouped_aggregate_source_bef
         retained_bytes_before_grouped_aggregate_source_read(baseline.metrics()).saturating_add(8192);
     drop(baseline);
     drop(runtime);
-    drop(baseline_context);
     let constrained_context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
         device_budget_bytes: retained_join_subtree_bytes,
         max_source_chunk_bytes: 16 * 1024 * 1024,
@@ -208,7 +207,6 @@ fn bounded_native_query_enforces_mixed_keyed_residual_grouped_aggregate_hard_bud
         .saturating_add(operator_token_budget);
     drop(baseline);
     drop(runtime);
-    drop(baseline_context);
     let constrained_context = mixed_grouped_aggregate_execution_context(constrained_budget);
     let error = match execute_query_plan(&constrained_context, &plan) {
         Ok(_) => panic!("constrained mixed keyed residual grouped aggregate input should fail aggregate hard budget"),

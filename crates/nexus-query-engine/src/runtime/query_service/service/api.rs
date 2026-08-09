@@ -311,6 +311,8 @@ pub struct QueryAdmissionRequest {
     /// admission input.  When absent, admission uses empty evidence only when
     /// every installed profile accepts every modeled capability.
     pub(in crate::runtime::query_service) attempt_requirement: Option<AttemptRequirement>,
+    #[cfg(any(test, feature = "test-hooks"))]
+    test_placement_requirement: Option<AttemptRequirement>,
     /// Public proof retained for diagnostic inspection until submission.
     planned_capability_proof: Option<QueryPlanCapabilityProof>,
     /// Caller-provided bound for queueing this attempt. The service combines it
@@ -395,7 +397,10 @@ impl QueryAdmissionRequest {
     /// plan proof and therefore cannot authorize a later-built plan.
     #[cfg(any(test, feature = "test-hooks"))]
     pub fn with_test_placement_requirement(mut self, attempt_requirement: AttemptRequirement) -> Self {
-        self.attempt_requirement = Some(attempt_requirement);
+        AttemptRequirement::empty()
+            .with_test_placement_overlay(attempt_requirement.clone())
+            .expect("test placement evidence is finite");
+        self.test_placement_requirement = Some(attempt_requirement);
         self
     }
 
@@ -410,10 +415,35 @@ impl QueryAdmissionRequest {
     }
 
     pub(in crate::runtime::query_service) fn resolved_attempt_requirement(&self) -> Option<AttemptRequirement> {
-        self.planned_capability_proof
+        let requirement = self
+            .planned_capability_proof
             .as_ref()
             .map(|proof| proof.as_requirement().clone())
-            .or_else(|| self.attempt_requirement.clone())
+            .or_else(|| self.attempt_requirement.clone());
+        #[cfg(any(test, feature = "test-hooks"))]
+        if let Some(test_placement_requirement) = &self.test_placement_requirement {
+            return requirement
+                .map(|requirement| {
+                    requirement
+                        .with_test_placement_overlay(test_placement_requirement.clone())
+                        .expect("test placement evidence is finite")
+                })
+                .or_else(|| Some(test_placement_requirement.clone()));
+        }
+        requirement
+    }
+
+    pub(in crate::runtime::query_service::service) fn apply_test_placement_overlay(
+        &self,
+        requirement: AttemptRequirement,
+    ) -> AttemptRequirement {
+        #[cfg(any(test, feature = "test-hooks"))]
+        if let Some(test_placement_requirement) = &self.test_placement_requirement {
+            return requirement
+                .with_test_placement_overlay(test_placement_requirement.clone())
+                .expect("test placement evidence is finite");
+        }
+        requirement
     }
 
     /// Returns the proof that was actually submitted by planning for the
@@ -547,6 +577,47 @@ mod tests {
         assert_eq!(evidence.soft_working_set_hint_bytes(), Some(4096));
         assert_eq!(evidence.estimate_quality(), crate::admission::EstimateQuality::Modeled);
         assert!(request.submitted_plan_capability_evidence().is_none());
+    }
+
+    #[test]
+    fn test_placement_overlay_is_independent_of_proof_attachment_order() {
+        let proof = explicit_sink_capability_proof();
+        let original_proof = proof.clone();
+        let placement =
+            AttemptRequirement::from_parts(0, 0, Some(4096), crate::admission::EstimateQuality::Measured, Vec::new());
+
+        let proof_first = QueryAdmissionRequest::new()
+            .with_query_plan_capability_proof(proof.clone())
+            .with_test_placement_requirement(placement.clone());
+        let placement_first = QueryAdmissionRequest::new()
+            .with_test_placement_requirement(placement)
+            .with_query_plan_capability_proof(proof);
+
+        assert_eq!(proof_first.resolved_attempt_requirement(), placement_first.resolved_attempt_requirement());
+        assert_eq!(
+            proof_first.submitted_plan_capability_evidence(),
+            placement_first.submitted_plan_capability_evidence()
+        );
+        assert_eq!(proof_first.planned_capability_proof(), Some(&original_proof));
+        assert_eq!(placement_first.planned_capability_proof(), Some(&original_proof));
+        assert_eq!(proof_first.submitted_plan_capability_evidence(), Some(original_proof.as_requirement().clone()));
+    }
+
+    #[test]
+    fn test_placement_overlay_preserves_plan_scope_and_capability_evidence() {
+        let proof = explicit_sink_capability_proof();
+        let before = proof.clone();
+        let request = QueryAdmissionRequest::new()
+            .with_query_plan_capability_proof(proof)
+            .with_test_placement_requirement(AttemptRequirement::from_parts(
+                0,
+                0,
+                Some(4096),
+                crate::admission::EstimateQuality::Measured,
+                Vec::new(),
+            ));
+        assert_eq!(request.planned_capability_proof(), Some(&before));
+        assert_eq!(request.submitted_plan_capability_evidence(), Some(before.as_requirement().clone()));
     }
 
     #[test]

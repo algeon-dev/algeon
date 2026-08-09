@@ -90,8 +90,12 @@ impl std::ops::Deref for AdmittedExecutionContext {
     }
 }
 
-pub(super) fn bounded_execution_context() -> AdmittedExecutionContext {
-    let handle = pruning_test_backend().admit_query().expect("pruning test query must be admitted");
+pub(super) fn bounded_execution_context(plan: &QueryPlan) -> AdmittedExecutionContext {
+    let proof =
+        QueryPlanCapabilityProof::for_query_plan(plan).expect("pruning plan must issue an exact capability proof");
+    let handle = pruning_test_backend()
+        .admit_query_with_plan_capability_proof(proof)
+        .expect("pruning test query must be admitted with its exact plan proof");
     let context = handle.acquire_context().expect("pruning test context must be acquired");
     AdmittedExecutionContext { context, _handle: handle }
 }

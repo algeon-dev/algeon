@@ -528,7 +528,7 @@ enum PublishedResult {
 #[derive(Clone)]
 pub(crate) enum GraphBfsPublishedResult {
     Host { batches: Arc<Vec<RecordBatch>>, reservation: Arc<MemoryReservation> },
-    Gpu(GpuResultHandle),
+    Gpu(Box<GpuResultHandle>),
 }
 
 /// The storage boundary selected by the singleflight leader.
@@ -573,7 +573,7 @@ impl GraphBfsPublishedResult {
     /// Retains a GPU-resident leader output without forcing its complete
     /// materialization merely to satisfy same-device followers.
     pub(crate) fn gpu(handle: GpuResultHandle) -> Self {
-        Self::Gpu(handle)
+        Self::Gpu(Box::new(handle))
     }
 
     pub(crate) const fn kind(&self) -> GraphBfsPublicationKind {
@@ -600,7 +600,7 @@ impl GraphBfsPublishedResult {
     pub(crate) fn gpu_handle(&self) -> Option<GpuResultHandle> {
         match self {
             Self::Host { .. } => None,
-            Self::Gpu(handle) => Some(handle.clone()),
+            Self::Gpu(handle) => Some((**handle).clone()),
         }
     }
 }

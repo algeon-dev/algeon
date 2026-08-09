@@ -1,12 +1,12 @@
 use super::*;
 
 #[test]
-fn unbounded_semijoin_reduction_matches_original_execution_on_small_fixture() {
+fn native_semijoin_reduction_matches_original_execution_on_small_fixture() {
     let dir = unique_temp_dir("nexus-query-engine-unbounded-semijoin-reduction-parity");
     let a_path = dir.join("a.parquet");
     let b_path = dir.join("b.parquet");
     let keyset_path = dir.join("keyset.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let runtime = backend_runtime();
 
     let a_schema = Arc::new(Schema::new(vec![
         Field::new("a_key", DataType::Int32, false),
@@ -37,8 +37,7 @@ fn unbounded_semijoin_reduction_matches_original_execution_on_small_fixture() {
     assert_eq!(optimizer_result.change, nexus_query_engine::optimizer::NativeOptimizerChange::Changed);
     assert_eq!(optimizer_result.diagnostics.semijoin_reduction.applied_count, 1);
 
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
-    assert_eq!(context.memory_control_policy(), MemoryControlPolicy::Unbounded);
+    let context = backend_context();
     let original = execute_query_plan(&context, &plan).unwrap();
     let optimized = execute_query_plan(&context, &optimizer_result.plan).unwrap();
 

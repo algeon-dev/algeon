@@ -1,3 +1,5 @@
+use nexus_query_engine::source::LocalParquetSource;
+
 use super::*;
 
 pub(crate) fn aggregate_over_join_subplan_topk_plan() -> nexus_query_engine::plan::QueryPlan {

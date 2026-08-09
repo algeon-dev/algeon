@@ -8,13 +8,17 @@ async fn create_view_statement_executes_once_and_persists_across_statements() {
     let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
     let mut client = connect_with_retry(addr).await;
 
+    let dir = tempfile::Builder::new().prefix("datafusion-nexus-flight-sql-view-").tempdir().unwrap();
+    let parquet_path = dir.path().join("edges.parquet");
+    write_update_edges_parquet(&parquet_path);
+    let source_ddl = format!(
+        "CREATE EXTERNAL TABLE target_edges_source STORED AS PARQUET LOCATION '{}'",
+        parquet_path.to_string_lossy()
+    );
+    let _ = execute_batches(&mut client, &source_ddl).await;
+
     let flight_info = client
-        .execute(
-            "CREATE VIEW target_edges AS \
-         SELECT * FROM (VALUES (0::BIGINT, 1::BIGINT), (1::BIGINT, 2::BIGINT)) AS t(src, dst)"
-                .to_string(),
-            None,
-        )
+        .execute("CREATE VIEW target_edges AS SELECT * FROM target_edges_source".to_string(), None)
         .await
         .unwrap();
     let advertised_schema = flight_info.clone().try_decode_schema().unwrap();
@@ -41,10 +45,19 @@ async fn prepared_create_view_query_advertises_empty_schema_and_persists() {
     let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
     let mut client = connect_with_retry(addr).await;
 
+    let dir = tempfile::Builder::new().prefix("datafusion-nexus-flight-sql-prepared-view-").tempdir().unwrap();
+    let parquet_path = dir.path().join("edges.parquet");
+    write_update_edges_parquet(&parquet_path);
+    let source_ddl = format!(
+        "CREATE EXTERNAL TABLE prepared_target_edges_source STORED AS PARQUET LOCATION '{}'",
+        parquet_path.to_string_lossy()
+    );
+    let _ = execute_batches(&mut client, &source_ddl).await;
+
     let mut prepared = client
         .prepare(
             "CREATE VIEW prepared_target_edges AS \
-             SELECT * FROM (VALUES (10::BIGINT, 11::BIGINT), (11::BIGINT, 12::BIGINT)) AS t(src, dst)"
+             SELECT src + 10 AS src, dst + 10 AS dst FROM prepared_target_edges_source"
                 .to_string(),
             None,
         )

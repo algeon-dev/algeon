@@ -3,7 +3,6 @@ use super::*;
 #[test]
 fn native_query_projects_date64_and_time_types() {
     let context = backend_context();
-    let runtime = Arc::new(context.runtime().unwrap());
     let input_schema = Arc::new(Schema::new(vec![
         Field::new("event_date64", DataType::Date64, false),
         Field::new("event_time_ms", DataType::Time32(TimeUnit::Millisecond), false),
@@ -35,19 +34,21 @@ fn native_query_projects_date64_and_time_types() {
         ),
     );
     let plan = builder.finish_with_host_sink(projection);
+    let admitted = context.admit_plan(&plan).unwrap();
+    let runtime = Arc::new(admitted.runtime().unwrap());
 
     let mut gpu_inputs = GpuResidentInputMap::new();
     gpu_inputs.insert(
         "input".to_string(),
         GpuResultHandle::new(
-            &context,
+            &admitted,
             GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &input_batch).unwrap()),
             Arc::clone(&input_schema),
         )
         .unwrap(),
     );
 
-    let result = execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs).unwrap();
+    let result = execute_query_plan_with_gpu_inputs(&admitted, &plan, &gpu_inputs).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
     };
@@ -66,6 +67,7 @@ fn native_query_projects_date64_and_time_types() {
         batch.column(2).as_any().downcast_ref::<Time64NanosecondArray>().unwrap().values().as_ref(),
         &[1_000_000_000, 86_399_000_000_000]
     );
+    admitted.finish();
 }
 
 #[test]
@@ -699,7 +701,7 @@ fn native_query_rejects_date64_temporal_scalars_before_source_read() {
     ];
 
     for (name, projection, output_schema) in cases {
-        let source = LocalParquetSource::new(
+        let source = LocalParquetSource::from_path(
             format!("/tmp/does-not-need-to-exist-for-date64-{name}.parquet"),
             Arc::clone(&input_schema),
             vec!["event_date64".to_string()],
@@ -754,7 +756,7 @@ fn native_query_rejects_out_of_envelope_substring_before_source_read() {
     ];
 
     for (name, expr, expected_code, expected_context) in cases {
-        let source = LocalParquetSource::new(
+        let source = LocalParquetSource::from_path(
             format!("/tmp/does-not-need-to-exist-for-substring-{name}.parquet"),
             Arc::clone(&input_schema),
             vec!["orderkey".to_string(), "status".to_string()],

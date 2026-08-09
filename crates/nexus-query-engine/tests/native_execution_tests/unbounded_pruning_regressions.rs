@@ -1,9 +1,7 @@
 use super::*;
 
-fn unbounded_execution_context() -> ExecutionContext {
-    let context = ExecutionContext::from_runtime(cudf::Runtime::new().unwrap()).unwrap();
-    assert_eq!(context.memory_control_policy(), MemoryControlPolicy::Unbounded);
-    context
+fn admitted_execution_context() -> BackendQueryContext {
+    backend_context()
 }
 
 #[test]
@@ -46,7 +44,7 @@ fn unbounded_single_stage_grouped_median_preserves_pruning_regression() {
     );
     let plan = builder.finish_with_host_sink(sorted);
 
-    let context = unbounded_execution_context();
+    let context = admitted_execution_context();
     let result = execute_query_plan(&context, &plan).unwrap();
     assert_eq!(result.metrics().partial_aggregate_count, 0, "median must remain single-stage");
     let QueryOutput::HostArrow(batch) = result.output() else { panic!("median must materialize to Arrow") };
@@ -65,7 +63,7 @@ fn unbounded_physically_empty_parquet_count_and_count_star_return_zero() {
     write_physically_empty_parquet(&zero_row_file, Arc::clone(&schema));
     write_zero_row_group_parquet(&zero_row_group_file, Arc::clone(&schema));
 
-    let context = unbounded_execution_context();
+    let context = admitted_execution_context();
     for path in [&zero_row_file, &zero_row_group_file] {
         let file = LocalParquetFile::new(path).with_file_size_bytes(fs::metadata(path).unwrap().len());
 
@@ -267,7 +265,7 @@ fn unbounded_tpch_q3_multi_join_aggregate_topk_preserves_pruning_regression() {
     );
     let limited = builder.add_limit(sorted, LimitSpec::fetch(10), aggregate_schema);
 
-    let result = execute_query_plan(&unbounded_execution_context(), &builder.finish_with_host_sink(limited)).unwrap();
+    let result = execute_query_plan(&admitted_execution_context(), &builder.finish_with_host_sink(limited)).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else { panic!("Q3 must materialize to Arrow") };
     assert_eq!(batch.num_rows(), 1);
     assert_eq!(int32_array(batch, 0).value(0), 10);
@@ -359,7 +357,7 @@ fn unbounded_tpch_q19_join_residual_in_list_preserves_pruning_regression() {
         aggregate_schema,
     );
 
-    let result = execute_query_plan(&unbounded_execution_context(), &builder.finish_with_host_sink(aggregate)).unwrap();
+    let result = execute_query_plan(&admitted_execution_context(), &builder.finish_with_host_sink(aggregate)).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else { panic!("Q19 must materialize to Arrow") };
     assert_eq!(int64_array(batch, 0).value(0), 300);
     fs::remove_dir_all(dir).unwrap();
@@ -507,7 +505,13 @@ fn unbounded_tpch_q15_revenue_subplan_root_join_preserves_pruning_regression() {
         supplier_revenue_schema,
     );
 
-    let result = execute_query_plan(&unbounded_execution_context(), &builder.finish_with_host_sink(sorted)).unwrap();
+    let plan = builder.finish_with_host_sink(sorted);
+    assert_eq!(
+        plan.capability_analysis().root_full_sort_join_aggregate_admission,
+        nexus_query_engine::capability::CapabilityDecision::Satisfied,
+        "Q15 shared grouped-aggregate keyless root must satisfy root full-sort admission",
+    );
+    let result = execute_query_plan(&admitted_execution_context(), &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else { panic!("Q15 must materialize to Arrow") };
     assert_eq!(int32_array(batch, 0).values().as_ref(), &[1, 2]);
     assert_eq!(int64_array(batch, 2).values().as_ref(), &[120, 120]);
@@ -516,7 +520,7 @@ fn unbounded_tpch_q15_revenue_subplan_root_join_preserves_pruning_regression() {
 
 #[test]
 fn unbounded_tpch_q16_distinct_anti_join_preserves_pruning_regression() {
-    let fixture_runtime = cudf::Runtime::new().unwrap();
+    let fixture_runtime = backend_runtime();
     let dir = unique_temp_dir("nexus-query-engine-unbounded-tpch-q16");
     let part_path = dir.join("part.parquet");
     let partsupp_path = dir.join("partsupp.parquet");
@@ -620,7 +624,7 @@ fn unbounded_tpch_q16_distinct_anti_join_preserves_pruning_regression() {
         aggregate_schema,
     );
 
-    let result = execute_query_plan(&unbounded_execution_context(), &builder.finish_with_host_sink(sorted)).unwrap();
+    let result = execute_query_plan(&admitted_execution_context(), &builder.finish_with_host_sink(sorted)).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else { panic!("Q16 must materialize to Arrow") };
     assert_eq!(batch.num_rows(), 1);
     assert_eq!(string_array(batch, 0).value(0), "Brand#11");
@@ -630,7 +634,7 @@ fn unbounded_tpch_q16_distinct_anti_join_preserves_pruning_regression() {
 
 #[test]
 fn unbounded_tpch_q11_nested_having_subquery_preserves_pruning_regression() {
-    let fixture_runtime = cudf::Runtime::new().unwrap();
+    let fixture_runtime = backend_runtime();
     let dir = unique_temp_dir("nexus-query-engine-unbounded-tpch-q11");
     let grouped_fact_path = dir.join("grouped-partsupp.parquet");
     let scalar_fact_path = dir.join("scalar-partsupp.parquet");
@@ -655,7 +659,7 @@ fn unbounded_tpch_q11_nested_having_subquery_preserves_pruning_regression() {
         &supplier_schema,
     );
 
-    let result = execute_query_plan(&unbounded_execution_context(), &plan).unwrap();
+    let result = execute_query_plan(&admitted_execution_context(), &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else { panic!("Q11 must materialize to Arrow") };
     assert_eq!(int32_array(batch, 0).values().as_ref(), &[2, 1]);
     assert_eq!(int64_array(batch, 1).values().as_ref(), &[25, 15]);

@@ -3,7 +3,6 @@ use super::*;
 #[test]
 fn native_cumulative_aggregate_window_restores_input_order_and_carries_null_rows() {
     let context = backend_context();
-    let runtime = Arc::new(context.runtime().unwrap());
     let input_schema = Arc::new(Schema::new(vec![
         Field::new("grp", DataType::Int32, false),
         Field::new("ord", DataType::Int32, false),
@@ -25,8 +24,6 @@ fn native_cumulative_aggregate_window_restores_input_order_and_carries_null_rows
         ],
     )
     .unwrap();
-    let frame = DataFrame::from_record_batch(&runtime, &batch).unwrap();
-
     let mut builder = QueryPlanBuilder::new();
     let source =
         builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("window_input", Arc::clone(&input_schema))));
@@ -43,14 +40,17 @@ fn native_cumulative_aggregate_window_restores_input_order_and_carries_null_rows
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(window);
+    let admitted = context.admit_plan(&plan).unwrap();
+    let runtime = Arc::new(admitted.runtime().unwrap());
+    let frame = DataFrame::from_record_batch(&runtime, &batch).unwrap();
 
     let mut gpu_inputs = GpuResidentInputMap::new();
     gpu_inputs.insert(
         "window_input".to_string(),
-        GpuResultHandle::new(&context, GpuDataFrame::new(frame), Arc::clone(&input_schema)).unwrap(),
+        GpuResultHandle::new(&admitted, GpuDataFrame::new(frame), Arc::clone(&input_schema)).unwrap(),
     );
 
-    let result = execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs).unwrap();
+    let result = execute_query_plan_with_gpu_inputs(&admitted, &plan, &gpu_inputs).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
     };
@@ -66,12 +66,12 @@ fn native_cumulative_aggregate_window_restores_input_order_and_carries_null_rows
         int64_array(batch, 4).iter().collect::<Vec<_>>(),
         vec![Some(10), Some(10), Some(7), Some(10), Some(7), Some(7)]
     );
+    admitted.finish();
 }
 
 #[test]
 fn native_lag_window_shifts_within_partition_and_restores_input_order() {
     let context = backend_context();
-    let runtime = Arc::new(context.runtime().unwrap());
     let input_schema = Arc::new(Schema::new(vec![
         Field::new("grp", DataType::Int32, false),
         Field::new("ord", DataType::Int32, false),
@@ -94,8 +94,6 @@ fn native_lag_window_shifts_within_partition_and_restores_input_order() {
         ],
     )
     .unwrap();
-    let frame = DataFrame::from_record_batch(&runtime, &batch).unwrap();
-
     let mut builder = QueryPlanBuilder::new();
     let source =
         builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("window_input", Arc::clone(&input_schema))));
@@ -109,14 +107,17 @@ fn native_lag_window_shifts_within_partition_and_restores_input_order() {
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(window);
+    let admitted = context.admit_plan(&plan).unwrap();
+    let runtime = Arc::new(admitted.runtime().unwrap());
+    let frame = DataFrame::from_record_batch(&runtime, &batch).unwrap();
 
     let mut gpu_inputs = GpuResidentInputMap::new();
     gpu_inputs.insert(
         "window_input".to_string(),
-        GpuResultHandle::new(&context, GpuDataFrame::new(frame), Arc::clone(&input_schema)).unwrap(),
+        GpuResultHandle::new(&admitted, GpuDataFrame::new(frame), Arc::clone(&input_schema)).unwrap(),
     );
 
-    let result = execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs).unwrap();
+    let result = execute_query_plan_with_gpu_inputs(&admitted, &plan, &gpu_inputs).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
     };
@@ -151,7 +152,6 @@ fn native_lag_window_groups_null_partition_keys_together() {
     // otherwise null-keyed rows are dropped and the row-index reattach
     // misaligns the output column.
     let context = backend_context();
-    let runtime = Arc::new(context.runtime().unwrap());
     let input_schema = Arc::new(Schema::new(vec![
         Field::new("grp", DataType::Int32, true),
         Field::new("ord", DataType::Int32, false),
@@ -168,8 +168,6 @@ fn native_lag_window_groups_null_partition_keys_together() {
     let value = Int64Array::from(vec![Some(20), Some(100), Some(10), Some(200), Some(30)]);
     let batch =
         RecordBatch::try_new(Arc::clone(&input_schema), vec![Arc::new(grp), Arc::new(ord), Arc::new(value)]).unwrap();
-    let frame = DataFrame::from_record_batch(&runtime, &batch).unwrap();
-
     let mut builder = QueryPlanBuilder::new();
     let source =
         builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("window_input", Arc::clone(&input_schema))));
@@ -183,14 +181,17 @@ fn native_lag_window_groups_null_partition_keys_together() {
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(window);
+    let admitted = context.admit_plan(&plan).unwrap();
+    let runtime = Arc::new(admitted.runtime().unwrap());
+    let frame = DataFrame::from_record_batch(&runtime, &batch).unwrap();
 
     let mut gpu_inputs = GpuResidentInputMap::new();
     gpu_inputs.insert(
         "window_input".to_string(),
-        GpuResultHandle::new(&context, GpuDataFrame::new(frame), Arc::clone(&input_schema)).unwrap(),
+        GpuResultHandle::new(&admitted, GpuDataFrame::new(frame), Arc::clone(&input_schema)).unwrap(),
     );
 
-    let result = execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs).unwrap();
+    let result = execute_query_plan_with_gpu_inputs(&admitted, &plan, &gpu_inputs).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
     };
@@ -212,7 +213,6 @@ fn native_lag_window_groups_null_partition_keys_together() {
 #[test]
 fn native_lead_window_with_explicit_default_fills_partition_edges() {
     let context = backend_context();
-    let runtime = Arc::new(context.runtime().unwrap());
     let input_schema = Arc::new(Schema::new(vec![
         Field::new("grp", DataType::Int32, false),
         Field::new("ord", DataType::Int32, false),
@@ -236,8 +236,6 @@ fn native_lead_window_with_explicit_default_fills_partition_edges() {
         ],
     )
     .unwrap();
-    let frame = DataFrame::from_record_batch(&runtime, &batch).unwrap();
-
     let mut builder = QueryPlanBuilder::new();
     let source =
         builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("window_input", Arc::clone(&input_schema))));
@@ -256,14 +254,17 @@ fn native_lead_window_with_explicit_default_fills_partition_edges() {
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(window);
+    let admitted = context.admit_plan(&plan).unwrap();
+    let runtime = Arc::new(admitted.runtime().unwrap());
+    let frame = DataFrame::from_record_batch(&runtime, &batch).unwrap();
 
     let mut gpu_inputs = GpuResidentInputMap::new();
     gpu_inputs.insert(
         "window_input".to_string(),
-        GpuResultHandle::new(&context, GpuDataFrame::new(frame), Arc::clone(&input_schema)).unwrap(),
+        GpuResultHandle::new(&admitted, GpuDataFrame::new(frame), Arc::clone(&input_schema)).unwrap(),
     );
 
-    let result = execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs).unwrap();
+    let result = execute_query_plan_with_gpu_inputs(&admitted, &plan, &gpu_inputs).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
     };
@@ -283,7 +284,6 @@ fn native_lead_window_with_explicit_default_fills_partition_edges() {
 #[test]
 fn native_row_number_window_counts_one_based_rows_per_partition() {
     let context = backend_context();
-    let runtime = Arc::new(context.runtime().unwrap());
     let input_schema = Arc::new(Schema::new(vec![
         Field::new("grp", DataType::Int32, false),
         Field::new("ord", DataType::Int32, false),
@@ -304,8 +304,6 @@ fn native_row_number_window_counts_one_based_rows_per_partition() {
         ],
     )
     .unwrap();
-    let frame = DataFrame::from_record_batch(&runtime, &batch).unwrap();
-
     let mut builder = QueryPlanBuilder::new();
     let source =
         builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("window_input", Arc::clone(&input_schema))));
@@ -327,14 +325,17 @@ fn native_row_number_window_counts_one_based_rows_per_partition() {
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(window);
+    let admitted = context.admit_plan(&plan).unwrap();
+    let runtime = Arc::new(admitted.runtime().unwrap());
+    let frame = DataFrame::from_record_batch(&runtime, &batch).unwrap();
 
     let mut gpu_inputs = GpuResidentInputMap::new();
     gpu_inputs.insert(
         "window_input".to_string(),
-        GpuResultHandle::new(&context, GpuDataFrame::new(frame), Arc::clone(&input_schema)).unwrap(),
+        GpuResultHandle::new(&admitted, GpuDataFrame::new(frame), Arc::clone(&input_schema)).unwrap(),
     );
 
-    let result = execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs).unwrap();
+    let result = execute_query_plan_with_gpu_inputs(&admitted, &plan, &gpu_inputs).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
     };
@@ -342,4 +343,5 @@ fn native_row_number_window_counts_one_based_rows_per_partition() {
     assert_eq!(int32_array(batch, 0).values().as_ref(), &[1, 1, 1, 2, 2, 2]);
     assert_eq!(int32_array(batch, 1).values().as_ref(), &[1, 2, 3, 1, 2, 3]);
     assert_eq!(uint64_array(batch, 3).values().as_ref(), &[1, 2, 3, 1, 2, 3]);
+    admitted.finish();
 }

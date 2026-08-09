@@ -86,31 +86,35 @@ impl TableProvider for GpuCoverageProvider {
             vec![vec![coverage_batch(&coverage, ExplainGpuOutputMode::Rows, None)?]],
         )?;
         let input = table.scan(state, projection, filters, limit).await?;
-        Ok(Arc::new(GpuCoverageCpuBoundaryExec::new(input)))
+        Ok(cpu_physical_boundary(input))
     }
 }
 
+pub(crate) fn cpu_physical_boundary(input: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
+    Arc::new(DataFusionCpuBoundaryExec::new(input))
+}
+
 #[derive(Debug)]
-struct GpuCoverageCpuBoundaryExec {
+struct DataFusionCpuBoundaryExec {
     input: Arc<dyn ExecutionPlan>,
     properties: Arc<PlanProperties>,
 }
 
-impl GpuCoverageCpuBoundaryExec {
+impl DataFusionCpuBoundaryExec {
     fn new(input: Arc<dyn ExecutionPlan>) -> Self {
         Self { properties: Arc::clone(input.properties()), input }
     }
 }
 
-impl DisplayAs for GpuCoverageCpuBoundaryExec {
+impl DisplayAs for DataFusionCpuBoundaryExec {
     fn fmt_as(&self, _: DisplayFormatType, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "GpuCoverageCpuBoundaryExec")
+        write!(f, "DataFusionCpuBoundaryExec")
     }
 }
 
-impl ExecutionPlan for GpuCoverageCpuBoundaryExec {
+impl ExecutionPlan for DataFusionCpuBoundaryExec {
     fn name(&self) -> &str {
-        "GpuCoverageCpuBoundaryExec"
+        "DataFusionCpuBoundaryExec"
     }
 
     fn properties(&self) -> &Arc<PlanProperties> {

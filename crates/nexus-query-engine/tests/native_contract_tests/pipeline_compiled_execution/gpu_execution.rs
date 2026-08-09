@@ -24,7 +24,7 @@ fn compiled_gpu_executor_runs_root_hash_join_build_probe_materialize() {
         CompiledBoundedPipelineSupport::Supported
     );
     let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
-    let context = bounded_context(shared_runtime(runtime));
+    let context = bounded_context(shared_runtime(runtime), &compiled_plan);
     let mut compiled_metrics = QueryMetrics::default();
     let gpu_inputs = nexus_query_engine::runtime::resident::GpuResidentInputMap::new();
 
@@ -82,7 +82,7 @@ fn compiled_gpu_executor_runs_shared_source_hash_join_without_rereading() {
         CompiledBoundedPipelineSupport::Supported
     );
     let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
-    let context = bounded_context(shared_runtime(runtime));
+    let context = bounded_context(shared_runtime(runtime), &plan);
     let mut metrics = QueryMetrics::default();
     let gpu_inputs = nexus_query_engine::runtime::resident::GpuResidentInputMap::new();
 
@@ -134,7 +134,7 @@ fn execute_query_plan_rejects_grouped_aggregate_join_build_input_without_strict_
         compiled_bounded_query_plan_support(&plan, &pipeline).expect("plan-aware support check should not fail"),
         CompiledBoundedPipelineSupport::Supported
     );
-    let context = bounded_context(shared_runtime(runtime));
+    let context = bounded_context(shared_runtime(runtime), &plan);
 
     let error = match execute_query_plan(&context, &plan) {
         Ok(_) => panic!("grouped aggregate join-build input needs explicit bounded admission"),
@@ -170,7 +170,7 @@ fn compiled_gpu_executor_streams_grouped_aggregate_join_build_input_source() {
         CompiledBoundedPipelineSupport::Supported
     );
     let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
-    let context = bounded_context(shared_runtime(runtime));
+    let context = bounded_context(shared_runtime(runtime), &plan);
     let mut metrics = QueryMetrics::default();
     let gpu_inputs = GpuResidentInputMap::new();
 
@@ -220,7 +220,7 @@ fn compiled_gpu_executor_streams_shared_source_for_join_build_and_grouped_aggreg
         CompiledBoundedPipelineSupport::Supported
     );
     let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
-    let context = bounded_context(shared_runtime(runtime));
+    let context = bounded_context(shared_runtime(runtime), &plan);
     let mut metrics = QueryMetrics::default();
     let gpu_inputs = GpuResidentInputMap::new();
 
@@ -263,7 +263,7 @@ fn execute_query_plan_routes_nonlinear_topk_and_subquery_filter_paths_through_co
             CompiledBoundedPipelineSupport::Supported,
             "{label}: non-linear plan should be admitted by compiled support"
         );
-        let context = bounded_context(Arc::clone(&runtime));
+        let context = bounded_context(Arc::clone(&runtime), &plan);
 
         let result = execute_query_plan(&context, &plan)
             .unwrap_or_else(|error| panic!("{label}: compiled execution failed: {error}"));
@@ -294,7 +294,7 @@ fn execute_query_plan_routes_root_hash_join_through_compiled_pipeline() {
     let plan = root_join_data_plan(&left_path, &right_path);
     let analysis = plan.capability_analysis();
     let pipeline = compile_pipeline(&plan, &analysis).expect("root join should compile");
-    let context = bounded_context(shared_runtime(runtime));
+    let context = bounded_context(shared_runtime(runtime), &plan);
 
     let result = execute_query_plan(&context, &plan).expect("root join should execute through compiled scheduler");
     let batch = result.output().as_host_arrow().expect("compiled output should be host Arrow");
@@ -317,7 +317,7 @@ fn observed_compiled_root_join_replays_typed_reservations_with_registered_tasks(
     write_join_parquets(&left_path, &right_path);
     let plan = root_join_data_plan(&left_path, &right_path);
     let pipeline = compile_pipeline(&plan, &plan.capability_analysis()).expect("observed root join compiles");
-    let context = bounded_context(shared_runtime(runtime));
+    let context = bounded_context(shared_runtime(runtime), &plan);
 
     let outcome = nexus_query_engine::exec::execute_query_plan_observed(
         &context,
@@ -413,7 +413,7 @@ fn execute_query_plan_routes_keyless_root_join_strategy_through_compiled_pipelin
         compiled_bounded_query_plan_support(&plan, &pipeline).expect("plan-aware support check should not fail"),
         CompiledBoundedPipelineSupport::Supported
     );
-    let context = bounded_context(shared_runtime(runtime));
+    let context = bounded_context(shared_runtime(runtime), &plan);
 
     let result = execute_query_plan(&context, &plan).expect("keyless root join should execute");
     let batch = result.output().as_host_arrow().expect("compiled output should be host Arrow");
@@ -448,7 +448,7 @@ fn execute_query_plan_routes_root_hash_join_with_unary_inputs_through_compiled_p
         compiled_bounded_pipeline_support(&pipeline).expect("support check should not fail"),
         CompiledBoundedPipelineSupport::Supported
     );
-    let context = bounded_context(shared_runtime(runtime));
+    let context = bounded_context(shared_runtime(runtime), &plan);
 
     let result = execute_query_plan(&context, &plan).expect("root join with unary inputs should execute");
     let batch = result.output().as_host_arrow().expect("compiled output should be host Arrow");
@@ -469,7 +469,7 @@ fn execute_query_plan_leaves_unsupported_compiled_graphs_on_host_fallback() {
     let path = dir.join("input.parquet");
     let source_schema = write_source_unary_parquet(&path);
     let plan = aggregate_sort_limit_data_plan(&path, source_schema);
-    let context = bounded_context(shared_runtime(runtime));
+    let context = bounded_context(shared_runtime(runtime), &plan);
 
     let result = execute_query_plan(&context, &plan).expect("unsupported compiled graph should use host fallback");
     let batch = result.output().as_host_arrow().expect("fallback output should be host Arrow");
@@ -525,8 +525,26 @@ fn execute_query_plan_routes_gpu_resident_sink_join_through_compiled_pipeline() 
         .is_none(),
         "GPU sink plans admitted by strict compiled execution must not emit unsupported bounded-join facts"
     );
-    let context = bounded_context(shared_runtime(runtime));
-
+    let mut passthrough_builder = QueryPlanBuilder::new();
+    let passthrough_source = passthrough_builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
+        "compiled_root_join",
+        plan.output_schema().clone(),
+    )));
+    let passthrough_plan = passthrough_builder.finish_with_host_sink(passthrough_source);
+    let root_proof = QueryPlanCapabilityProof::for_query_plan(&plan).expect("GPU sink root must issue a proof");
+    let passthrough_consumer_proof = QueryPlanCapabilityProof::for_composed_consumer_plan(&passthrough_plan)
+        .expect("GPU-resident passthrough must issue a composed consumer proof");
+    let composed_proof = QueryPlanCapabilityProof::resolve_composed_graph_attempt(
+        &passthrough_plan,
+        passthrough_consumer_proof,
+        [ComposedGraphProducerCandidate::new(
+            Some("compiled_root_join".to_owned()),
+            Some("compiled_root_join".to_owned()),
+            Some(root_proof),
+        )],
+    )
+    .expect("GPU-resident passthrough must retain the producer occurrence in its composed proof");
+    let context = bounded_context_for_proofs(shared_runtime(runtime), [composed_proof]);
     let result = execute_query_plan(&context, &plan).expect("strict compiled GPU sink join should execute");
     let QueryOutput::GpuResident(handle) = result.output() else {
         panic!("GPU sink should keep the compiled output resident");
@@ -543,12 +561,6 @@ fn execute_query_plan_routes_gpu_resident_sink_join_through_compiled_pipeline() 
 
     let mut passthrough_inputs = GpuResidentInputMap::new();
     passthrough_inputs.insert("compiled_root_join".to_string(), handle.clone());
-    let mut passthrough_builder = QueryPlanBuilder::new();
-    let passthrough_source = passthrough_builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
-        "compiled_root_join",
-        plan.output_schema().clone(),
-    )));
-    let passthrough_plan = passthrough_builder.finish_with_host_sink(passthrough_source);
     let passthrough = execute_query_plan_with_gpu_inputs(&context, &passthrough_plan, &passthrough_inputs)
         .expect("compiled GPU output handle should feed a later GPU-resident source");
     let QueryOutput::HostArrow(passthrough_batch) = passthrough.output() else {
@@ -724,7 +736,7 @@ fn execute_query_plan_routes_root_hash_join_aggregate_through_compiled_pipeline(
         compiled_bounded_pipeline_support(&pipeline).expect("support check should not fail"),
         CompiledBoundedPipelineSupport::Supported
     );
-    let context = bounded_context(shared_runtime(runtime));
+    let context = bounded_context(shared_runtime(runtime), &plan);
 
     let result = execute_query_plan(&context, &plan).expect("aggregate graph should execute through compiled path");
     let batch = result.output().as_host_arrow().expect("compiled output should be host Arrow");
@@ -754,7 +766,7 @@ fn execute_query_plan_sizes_compiled_stream_aggregate_string_group_keys_inside_r
         compiled_bounded_query_plan_support(&plan, &pipeline).expect("plan-aware support check should not fail"),
         CompiledBoundedPipelineSupport::Supported
     );
-    let context = bounded_context(shared_runtime(runtime));
+    let context = bounded_context(shared_runtime(runtime), &plan);
 
     let result = execute_query_plan(&context, &plan)
         .expect("compiled stream aggregate should size string group keys inside reservations");
@@ -838,7 +850,7 @@ fn execute_query_plan_routes_root_hash_join_final_sort_limit_through_compiled_pi
             .expect("compiled final-sort task should retain its modeled reservation gate");
     assert_eq!(final_sort_gate.status(), ContractStatus::Modeled);
     assert_eq!(final_sort_gate.quality(), ContractQuality::HardBudgetedReportWithUnresolvedPreflight);
-    let context = bounded_context(shared_runtime(runtime));
+    let context = bounded_context(shared_runtime(runtime), &plan);
 
     let result = execute_query_plan(&context, &plan).expect("final-sort/limit graph should execute");
     let batch = result.output().as_host_arrow().expect("compiled output should be host Arrow");
@@ -868,7 +880,7 @@ fn execute_query_plan_routes_single_join_post_root_graph_through_compiled_pipeli
         compiled_bounded_pipeline_support(&pipeline).expect("support check should not fail"),
         CompiledBoundedPipelineSupport::Supported
     );
-    let context = bounded_context(shared_runtime(runtime));
+    let context = bounded_context(shared_runtime(runtime), &plan);
 
     let result =
         execute_query_plan(&context, &plan).expect("single-join post-root graph should execute through compiled path");
@@ -900,7 +912,7 @@ fn execute_query_plan_routes_simple_multi_join_tree_through_compiled_pipeline() 
         compiled_bounded_pipeline_support(&pipeline).expect("support check should not fail"),
         CompiledBoundedPipelineSupport::Supported
     );
-    let context = bounded_context(shared_runtime(runtime));
+    let context = bounded_context(shared_runtime(runtime), &plan);
 
     let result = execute_query_plan(&context, &plan).expect("multi-join graph should execute");
     let batch = result.output().as_host_arrow().expect("compiled output should be host Arrow");
@@ -947,7 +959,7 @@ fn execute_query_plan_streams_residual_one_shot_probe_from_prior_join() {
             matches!(&node.kind, PlanNode::Join(join) if join.spec.residual_predicate.is_some()).then_some(node.id)
         })
         .expect("fixture should contain the downstream residual join");
-    let context = bounded_context(shared_runtime(runtime));
+    let context = bounded_context(shared_runtime(runtime), &plan);
 
     let result = execute_query_plan(&context, &plan)
         .expect("residual one-shot stream probe should execute through compiled path");
@@ -1056,7 +1068,7 @@ fn execute_query_plan_streams_residual_one_shot_probe_from_leaf_local_source() {
             matches!(&node.kind, PlanNode::Join(join) if join.spec.residual_predicate.is_some()).then_some(node.id)
         })
         .expect("fixture should contain the residual join");
-    let context = bounded_context(shared_runtime(runtime));
+    let context = bounded_context(shared_runtime(runtime), &plan);
 
     let result = execute_query_plan(&context, &plan)
         .expect("residual one-shot leaf stream probe should execute through compiled path");
@@ -1152,7 +1164,7 @@ fn execute_query_plan_streams_residual_one_shot_right_probe_with_left_build() {
             matches!(&node.kind, PlanNode::Join(join) if join.spec.residual_predicate.is_some()).then_some(node.id)
         })
         .expect("fixture should contain the residual join");
-    let context = bounded_context(shared_runtime(runtime));
+    let context = bounded_context(shared_runtime(runtime), &plan);
 
     let result = execute_query_plan(&context, &plan)
         .expect("left-build residual one-shot leaf stream probe should execute through compiled path");
@@ -1225,10 +1237,14 @@ fn execute_query_plan_streams_residual_one_shot_right_probe_with_left_build() {
 #[test]
 fn compiled_host_sink_diagnostics_are_structured_without_legacy_routing_terms() {
     let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
-    let plan = root_join_plan();
+    let dir = unique_temp_dir("nexus-query-engine-compiled-host-sink-diagnostics");
+    let left_path = dir.join("left.parquet");
+    let right_path = dir.join("right.parquet");
+    write_join_parquets(&left_path, &right_path);
+    let plan = root_join_data_plan(&left_path, &right_path);
     let analysis = plan.capability_analysis();
     let pipeline = compile_pipeline(&plan, &analysis).expect("root join should compile");
-    let context = bounded_context(shared_runtime(runtime));
+    let context = bounded_context(shared_runtime(runtime), &plan);
     let gpu_inputs = nexus_query_engine::runtime::resident::GpuResidentInputMap::new();
     let mut metrics = QueryMetrics::default();
     let mut executor =

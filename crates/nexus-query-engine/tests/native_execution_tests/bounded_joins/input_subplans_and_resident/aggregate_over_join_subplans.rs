@@ -114,8 +114,6 @@ fn bounded_native_query_executes_keyless_conditional_join_with_aggregate_over_jo
     assert_eq!(int64_array(batch, 1).values().as_ref(), &[25, 15]);
     drop(result);
     drop(runtime);
-    drop(context);
-
     let constrained_context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
         device_budget_bytes: 1,
         max_source_chunk_bytes: 1024,

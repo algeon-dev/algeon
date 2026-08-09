@@ -32,6 +32,7 @@ use datafusion::{
 };
 use futures::{StreamExt, stream::BoxStream};
 use nexus_query_engine::{
+    admission::QueryPlanCapabilityProof,
     expr::{BinaryOp, Expr, LiteralValue},
     optimizer::local_parquet_source,
     plan::{NodeId, QueryPlan, QueryPlanBuilder},
@@ -237,9 +238,21 @@ fn prunable_query_plan(uri: &str, file_size_bytes: usize, gpu_resident_sink: boo
     (plan, source)
 }
 
-fn admission_execution_config(backend: &InstalledTestGpuBackend) -> NexusNativeExecutionConfig {
+fn admission_execution_config(backend: &InstalledTestGpuBackend, plan: &QueryPlan) -> NexusNativeExecutionConfig {
+    let source = backend
+        .optimizer_config()
+        .native_execution_config()
+        .query_admission_source()
+        .expect("installed backend must provide admission authority");
+    let ticket = QueryAdmissionTicket::new(
+        source.clone(),
+        Some(
+            QueryPlanCapabilityProof::for_query_plan(plan).expect("unresolved host plan must issue a capability proof"),
+        ),
+    );
     NexusNativeExecutionConfig::bounded(1024 * 1024, 512, 1, 3, 1)
-        .with_query_service_handle(Arc::new(backend.admit_query().expect("test query must be admitted by the backend")))
+        .with_query_admission_source(source)
+        .with_existing_query_admission_ticket(ticket)
         .with_lakehouse_footer_pruning(true)
 }
 
@@ -364,7 +377,7 @@ async fn native_host_resolves_lakehouse_metadata_before_admission_context() {
     let runtime_env = Arc::new(RuntimeEnv::default());
     let get_calls = register_tracking_parquet_store(&runtime_env, "s3://host-source", &bytes).await;
     let (plan, _) = prunable_query_plan("s3://host-source/table/data.parquet", bytes.len(), false);
-    let exec = NexusNativeExec::try_new(plan, admission_execution_config(&backend))
+    let exec = NexusNativeExec::try_new(plan.clone(), admission_execution_config(&backend, &plan))
         .expect("test native host execution should build");
 
     let mut stream = exec
@@ -381,6 +394,49 @@ async fn native_host_resolves_lakehouse_metadata_before_admission_context() {
     );
     assert_eq!(native.fact_value("native_operation"), Some("nexus_query_engine.local_parquet_chunk.read"));
     assert!(get_calls.load(Ordering::Relaxed) > 0, "footer metadata must resolve before context acquisition");
+    remove_fixture(dir);
+}
+
+#[tokio::test]
+async fn native_host_rejects_combined_admission_ticket_before_grant() {
+    let backend = InstalledTestGpuBackend::new();
+    let (dir, bytes) = prunable_parquet_fixture("lakehouse-host-combined-ticket");
+    let runtime_env = Arc::new(RuntimeEnv::default());
+    let get_calls = register_tracking_parquet_store(&runtime_env, "s3://host-combined", &bytes).await;
+    let (plan, _) = prunable_query_plan("s3://host-combined/table/data.parquet", bytes.len(), false);
+    let (other_plan, _) = prunable_query_plan("s3://other-combined/table/data.parquet", bytes.len(), true);
+    let combined_proof = QueryPlanCapabilityProof::combine(
+        QueryPlanCapabilityProof::for_query_plan(&plan).expect("host plan must issue a capability proof"),
+        [QueryPlanCapabilityProof::for_query_plan(&other_plan)
+            .expect("other native plan must issue a capability proof")],
+    )
+    .expect("distinct native plans must combine into one aggregate proof");
+    let expected_combined_proof = combined_proof.clone();
+    let source = backend
+        .optimizer_config()
+        .native_execution_config()
+        .query_admission_source()
+        .expect("installed backend must provide admission authority");
+    let ticket = QueryAdmissionTicket::new(source.clone(), Some(combined_proof));
+    let config = NexusNativeExecutionConfig::bounded(1024 * 1024, 512, 1, 3, 1)
+        .with_query_admission_source(source)
+        .with_existing_query_admission_ticket(Arc::clone(&ticket))
+        .with_lakehouse_footer_pruning(true);
+    let exec = NexusNativeExec::try_new(plan, config).expect("test native host execution should build");
+
+    let mut stream = exec
+        .execute(0, task_context_with_runtime(Arc::clone(&runtime_env)))
+        .expect("native host execution should return a lazy stream");
+    let result = stream.next().await.expect("native host stream should resolve once");
+
+    let error = result.expect_err("a combined ticket must not be rebound to one host fragment");
+    let native = error.find_nexus_error().expect("ticket mismatch remains structured");
+    assert_eq!(native.operation(), "datafusion_nexus.native_exec.admission_proof");
+    assert_eq!(native.fact_value("reason"), Some("native_host_admission_proof_scope_mismatch"));
+    assert_eq!(native.fact_value("ticket_proof_scope"), Some("combined_or_different_native_plan"));
+    assert!(get_calls.load(Ordering::Relaxed) > 0, "footer metadata must resolve before ticket validation");
+    assert_eq!(backend.backend().admission_snapshot().unwrap().active_queries, 0, "mismatch must reject before grant");
+    assert_eq!(ticket.attempt_capability_proof_for_rebind(), Some(expected_combined_proof));
     remove_fixture(dir);
 }
 

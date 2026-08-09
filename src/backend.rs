@@ -449,6 +449,14 @@ impl NexusGpuBackend {
         self.session.admit_query()
     }
 
+    /// Blocks until the backend admits a query with the exact engine-issued plan proof.
+    pub fn admit_query_with_plan_capability_proof(
+        &self,
+        proof: nexus_query_engine::admission::QueryPlanCapabilityProof,
+    ) -> nexus_query_engine::error::Result<nexus_query_engine::runtime::QueryHandle> {
+        self.session.admit_query_with_request(QueryAdmissionRequest::new().with_query_plan_capability_proof(proof))
+    }
+
     pub fn try_admit_query(
         &self,
     ) -> nexus_query_engine::error::Result<Option<nexus_query_engine::runtime::QueryHandle>> {

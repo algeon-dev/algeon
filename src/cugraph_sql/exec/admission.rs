@@ -177,6 +177,35 @@ pub(super) fn cugraph_execution_config_with_graph_aware_ticket(
     Ok((execution_config, graph_execution_plan))
 }
 
+pub(super) fn validate_cugraph_graph_owner_preflight(
+    spec: &CugraphAlgorithmSpec,
+    edge_source: &dyn ExecutionPlan,
+    predicate_sources: &[Arc<dyn ExecutionPlan>],
+    input_row_bounds: &CugraphInputRowBounds,
+    projection: Option<&Vec<usize>>,
+    limit: Option<usize>,
+    edge_normalize_inserted: bool,
+    execution_config: &NexusNativeExecutionConfig,
+) -> Result<()> {
+    if execution_config.query_admission_source().is_none() {
+        return Ok(());
+    }
+    let edge_vertex_upper_bound = edge_source_graph_vertex_estimate(edge_source).map(|estimate| estimate.count);
+    let (graph_execution_plan, _) = cugraph_execution_capability_proof_with_edge_row_upper_bound(
+        spec,
+        edge_source.schema(),
+        predicate_sources.iter().map(|source| source.schema()).collect(),
+        input_row_bounds.predicate_row_upper_bounds(),
+        projection,
+        limit,
+        edge_normalize_inserted,
+        input_row_bounds.edge_row_upper_bound(),
+        edge_vertex_upper_bound,
+    )?;
+    let _ = cugraph_graph_model_ask_bytes(&graph_execution_plan, edge_source, execution_config)?;
+    Ok(())
+}
+
 fn collect_native_fragment_capability_proofs(
     plan: &dyn ExecutionPlan,
     proofs: &mut Vec<QueryPlanCapabilityProof>,

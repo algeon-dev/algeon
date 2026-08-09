@@ -128,13 +128,17 @@ async fn flight_sql_get_tables_distinguishes_views_from_base_tables() {
 
     // Seed both a real base table and a view so we can assert that the
     // metadata layer reports each with the correct Flight SQL table_type.
-    let _ = execute_batches(
-        &mut client,
-        "CREATE TABLE metadata_probe_base AS \
-         SELECT * FROM (VALUES (1::INT, 'a'), (2::INT, 'b')) AS t(id, label)",
-    )
-    .await;
-    let _ = execute_batches(&mut client, "CREATE VIEW metadata_probe_view AS SELECT id FROM metadata_probe_base").await;
+    let dir = tempfile::Builder::new().prefix("datafusion-nexus-flight-sql-metadata-").tempdir().unwrap();
+    let parquet_path = dir.path().join("metadata_probe.parquet");
+    write_update_edges_parquet(&parquet_path);
+    let source_ddl = format!(
+        "CREATE EXTERNAL TABLE metadata_probe_base STORED AS PARQUET LOCATION '{}'",
+        parquet_path.to_string_lossy()
+    );
+    let _ = execute_batches(&mut client, &source_ddl).await;
+    let _ =
+        execute_batches(&mut client, "CREATE VIEW metadata_probe_view AS SELECT src AS id FROM metadata_probe_base")
+            .await;
 
     let flight_info = client
         .get_tables(CommandGetTables {

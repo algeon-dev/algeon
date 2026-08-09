@@ -10,7 +10,7 @@ fn bounded_native_query_rejects_unsupported_expression_before_source_read() {
         Field::new("key", DataType::Int32, false),
         Field::new("sum_value", DataType::Int64, true),
     ]));
-    let source = LocalParquetSource::new(
+    let source = LocalParquetSource::from_path(
         "/tmp/does-not-need-to-exist-for-expression-preflight.parquet",
         Arc::clone(&input_schema),
         vec!["key".into(), "value".into()],

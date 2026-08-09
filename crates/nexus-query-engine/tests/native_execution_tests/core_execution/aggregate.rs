@@ -104,13 +104,24 @@ fn native_query_executes_group_only_aggregate_when_output_key_name_already_exist
     let sort = SortSpec::new(vec![SortExpr::new(Expr::column("i_item_id"), false, false)]);
 
     let mut builder = QueryPlanBuilder::new();
-    let source =
-        builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![input_batch])));
+    let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&schema))));
     let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&output_schema));
     let sort = builder.add_sort(aggregate, sort, Arc::clone(&output_schema));
     let plan = builder.finish_with_host_sink(sort);
 
-    let result = execute_query_plan(&context, &plan).unwrap();
+    let admitted = context.admit_plan(&plan).unwrap();
+    let runtime = Arc::new(admitted.runtime().unwrap());
+    let mut inputs = GpuResidentInputMap::new();
+    inputs.insert(
+        "input".to_owned(),
+        GpuResultHandle::new(
+            &admitted,
+            GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &input_batch).unwrap()),
+            Arc::clone(&schema),
+        )
+        .unwrap(),
+    );
+    let result = execute_query_plan_with_gpu_inputs(&admitted, &plan, &inputs).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
     };
@@ -119,4 +130,5 @@ fn native_query_executes_group_only_aggregate_when_output_key_name_already_exist
     assert_eq!(string_array(batch, 0).iter().collect::<Vec<_>>(), vec![Some("item_1"), Some("item_2")]);
     assert_eq!(string_array(batch, 1).iter().collect::<Vec<_>>(), vec![Some("desc_1"), Some("desc_2")]);
     assert_eq!(int32_array(batch, 2).values().as_ref(), &[10, 20]);
+    admitted.finish();
 }

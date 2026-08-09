@@ -37,10 +37,10 @@ fn native_query_executes_multi_file_direct_parquet_source_in_file_order() {
 }
 
 #[test]
-fn unbounded_context_restores_duplicate_host_sink_schema_without_swapping_columns() {
+fn native_context_restores_duplicate_host_sink_schema_without_swapping_columns() {
     let dir = unique_temp_dir("nexus-query-engine-unbounded-duplicate-host-sink-schema");
     let path = dir.join("input.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let runtime = backend_runtime();
     let input_schema = write_input_parquet(&runtime, &path);
     let executable_schema = Arc::new(Schema::new(vec![
         Field::new("exec_left_value", DataType::Int64, false),
@@ -66,8 +66,7 @@ fn unbounded_context_restores_duplicate_host_sink_schema_without_swapping_column
         ),
     );
     let plan = builder.finish_with_host_sink_schema(projection, Arc::clone(&frontend_sink_schema));
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
-    assert_eq!(context.memory_control_policy(), MemoryControlPolicy::Unbounded);
+    let context = backend_context();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -83,10 +82,10 @@ fn unbounded_context_restores_duplicate_host_sink_schema_without_swapping_column
 }
 
 #[test]
-fn unbounded_context_executes_direct_parquet_pipeline_to_host_sink() {
+fn native_context_executes_direct_parquet_pipeline_to_host_sink() {
     let dir = unique_temp_dir("nexus-query-engine-unbounded-native-execution");
     let path = dir.join("input.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let runtime = backend_runtime();
     let input_schema = write_input_parquet(&runtime, &path);
 
     let projected_schema = Arc::new(Schema::new(vec![
@@ -128,8 +127,7 @@ fn unbounded_context_executes_direct_parquet_pipeline_to_host_sink() {
     let limit = builder.add_limit(sort, LimitSpec::fetch(2), aggregated_schema);
     let plan = builder.finish_with_host_sink(limit);
 
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
-    assert_eq!(context.memory_control_policy(), MemoryControlPolicy::Unbounded);
+    let context = backend_context();
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.parquet_files, 1);
@@ -164,11 +162,11 @@ fn unbounded_context_executes_direct_parquet_pipeline_to_host_sink() {
 }
 
 #[test]
-fn unbounded_context_executes_multi_file_direct_parquet_source() {
+fn native_context_executes_multi_file_direct_parquet_source() {
     let dir = unique_temp_dir("nexus-query-engine-unbounded-native-execution-multi-file");
     let first_path = dir.join("part-000.parquet");
     let second_path = dir.join("part-001.parquet");
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let runtime = backend_runtime();
     let input_schema = write_input_parquet(&runtime, &first_path);
     write_input_parquet(&runtime, &second_path);
 
@@ -210,8 +208,7 @@ fn unbounded_context_executes_multi_file_direct_parquet_source() {
     let limit = builder.add_limit(sort, LimitSpec::fetch(2), aggregated_schema);
     let plan = builder.finish_with_host_sink(limit);
 
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
-    assert_eq!(context.memory_control_policy(), MemoryControlPolicy::Unbounded);
+    let context = backend_context();
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.parquet_files, 2);

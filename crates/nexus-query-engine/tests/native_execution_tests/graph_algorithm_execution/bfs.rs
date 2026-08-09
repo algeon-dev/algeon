@@ -1,7 +1,6 @@
 #[test]
 fn bfs_drops_null_edge_rows_before_graph_construction() {
     let context = backend_context();
-    let runtime = Arc::new(context.runtime().unwrap());
 
     let edge_schema =
         Arc::new(Schema::new(vec![Field::new("src", DataType::Int32, true), Field::new("dst", DataType::Int32, true)]));
@@ -15,7 +14,7 @@ fn bfs_drops_null_edge_rows_before_graph_construction() {
     .unwrap();
 
     let mut builder = QueryPlanBuilder::new();
-    let edges = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("edges", Arc::clone(&edge_schema))));
+    let edges = builder.add_source(SourceNode::GpuResident(gpu_resident_source("edges", Arc::clone(&edge_schema), &edge_batch)));
     let spec = GraphAlgorithmSpec::with_stable_schema(
         GraphAlgorithm::Bfs,
         GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
@@ -24,19 +23,21 @@ fn bfs_drops_null_edge_rows_before_graph_construction() {
     );
     let graph = builder.add_graph_algorithm(edges, spec);
     let plan = builder.finish_with_host_sink_schema(graph, stable_graph_result_schema(GraphAlgorithm::Bfs));
+    let admitted = context.admit_plan(&plan).unwrap();
+    let runtime = Arc::new(admitted.runtime().unwrap());
 
     let mut gpu_inputs = GpuResidentInputMap::new();
     gpu_inputs.insert(
         "edges".to_string(),
         GpuResultHandle::new(
-            &context,
+            &admitted,
             GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &edge_batch).unwrap()),
             Arc::clone(&edge_schema),
         )
         .unwrap(),
     );
 
-    let result = execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs).unwrap();
+    let result = execute_query_plan_with_gpu_inputs(&admitted, &plan, &gpu_inputs).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize BFS output");
     };
@@ -74,12 +75,12 @@ fn bfs_drops_null_edge_rows_before_graph_construction() {
         .expect("null-edge filter metrics should be recorded when dirty rows are dropped");
     assert_eq!(null_filter.input_rows, 5);
     assert_eq!(null_filter.output_rows, 3);
+    admitted.finish();
 }
 
 #[test]
 fn bfs_python_cugraph_reports_null_edges_dropped_before_edge_normalize() {
     let context = backend_context();
-    let runtime = Arc::new(context.runtime().unwrap());
 
     let edge_schema =
         Arc::new(Schema::new(vec![Field::new("src", DataType::Int32, true), Field::new("dst", DataType::Int32, true)]));
@@ -93,7 +94,7 @@ fn bfs_python_cugraph_reports_null_edges_dropped_before_edge_normalize() {
     .unwrap();
 
     let mut builder = QueryPlanBuilder::new();
-    let edges = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("edges", Arc::clone(&edge_schema))));
+    let edges = builder.add_source(SourceNode::GpuResident(gpu_resident_source("edges", Arc::clone(&edge_schema), &edge_batch)));
     let spec = GraphAlgorithmSpec::with_stable_schema(
         GraphAlgorithm::Bfs,
         GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
@@ -102,19 +103,21 @@ fn bfs_python_cugraph_reports_null_edges_dropped_before_edge_normalize() {
     );
     let graph = builder.add_graph_algorithm(edges, spec);
     let plan = builder.finish_with_host_sink_schema(graph, stable_graph_result_schema(GraphAlgorithm::Bfs));
+    let admitted = context.admit_plan(&plan).unwrap();
+    let runtime = Arc::new(admitted.runtime().unwrap());
 
     let mut gpu_inputs = GpuResidentInputMap::new();
     gpu_inputs.insert(
         "edges".to_string(),
         GpuResultHandle::new(
-            &context,
+            &admitted,
             GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &edge_batch).unwrap()),
             Arc::clone(&edge_schema),
         )
         .unwrap(),
     );
 
-    let result = execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs).unwrap();
+    let result = execute_query_plan_with_gpu_inputs(&admitted, &plan, &gpu_inputs).unwrap();
     let graph_metrics = &result.metrics().graph_algorithm_runtime_rows;
     assert_eq!(graph_metrics.len(), 1);
     assert!(graph_metrics[0].algorithm_metadata.contains("null_edge_rows_dropped=2"));
@@ -127,12 +130,12 @@ fn bfs_python_cugraph_reports_null_edges_dropped_before_edge_normalize() {
             && event.status == "reservation_enforced"
             && event.allocator_high_water_bytes.is_some()
     }));
+    admitted.finish();
 }
 
 #[test]
 fn bfs_keeps_null_weight_edges_but_drops_null_edge_id_rows() {
     let context = backend_context();
-    let runtime = Arc::new(context.runtime().unwrap());
 
     let edge_schema = Arc::new(Schema::new(vec![
         Field::new("src", DataType::Int32, false),
@@ -156,7 +159,7 @@ fn bfs_keeps_null_weight_edges_but_drops_null_edge_id_rows() {
     .unwrap();
 
     let mut builder = QueryPlanBuilder::new();
-    let edges = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("edges", Arc::clone(&edge_schema))));
+    let edges = builder.add_source(SourceNode::GpuResident(gpu_resident_source("edges", Arc::clone(&edge_schema), &edge_batch)));
     let spec = GraphAlgorithmSpec::with_stable_schema(
         GraphAlgorithm::Bfs,
         GraphEdgeColumnBindings::new("src", "dst", Some("weight")).with_edge_id("edge_id"),
@@ -165,19 +168,21 @@ fn bfs_keeps_null_weight_edges_but_drops_null_edge_id_rows() {
     );
     let graph = builder.add_graph_algorithm(edges, spec);
     let plan = builder.finish_with_host_sink_schema(graph, stable_graph_result_schema(GraphAlgorithm::Bfs));
+    let admitted = context.admit_plan(&plan).unwrap();
+    let runtime = Arc::new(admitted.runtime().unwrap());
 
     let mut gpu_inputs = GpuResidentInputMap::new();
     gpu_inputs.insert(
         "edges".to_string(),
         GpuResultHandle::new(
-            &context,
+            &admitted,
             GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &edge_batch).unwrap()),
             Arc::clone(&edge_schema),
         )
         .unwrap(),
     );
 
-    let result = execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs).unwrap();
+    let result = execute_query_plan_with_gpu_inputs(&admitted, &plan, &gpu_inputs).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize BFS output");
     };
@@ -207,6 +212,7 @@ fn bfs_keeps_null_weight_edges_but_drops_null_edge_id_rows() {
         .expect("null-edge filter metrics should be recorded when dirty rows are dropped");
     assert_eq!(null_filter.input_rows, 5);
     assert_eq!(null_filter.output_rows, 4);
+    admitted.finish();
 }
 
 // Companion to the above isolates BFS with only a weight binding
@@ -215,7 +221,6 @@ fn bfs_keeps_null_weight_edges_but_drops_null_edge_id_rows() {
 #[test]
 fn bfs_null_weight_does_not_drop_reachable_edges() {
     let context = backend_context();
-    let runtime = Arc::new(context.runtime().unwrap());
 
     let edge_schema = Arc::new(Schema::new(vec![
         Field::new("src", DataType::Int32, false),
@@ -234,7 +239,7 @@ fn bfs_null_weight_does_not_drop_reachable_edges() {
     .unwrap();
 
     let mut builder = QueryPlanBuilder::new();
-    let edges = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("edges", Arc::clone(&edge_schema))));
+    let edges = builder.add_source(SourceNode::GpuResident(gpu_resident_source("edges", Arc::clone(&edge_schema), &edge_batch)));
     let spec = GraphAlgorithmSpec::with_stable_schema(
         GraphAlgorithm::Bfs,
         GraphEdgeColumnBindings::new("src", "dst", Some("weight")),
@@ -243,19 +248,21 @@ fn bfs_null_weight_does_not_drop_reachable_edges() {
     );
     let graph = builder.add_graph_algorithm(edges, spec);
     let plan = builder.finish_with_host_sink_schema(graph, stable_graph_result_schema(GraphAlgorithm::Bfs));
+    let admitted = context.admit_plan(&plan).unwrap();
+    let runtime = Arc::new(admitted.runtime().unwrap());
 
     let mut gpu_inputs = GpuResidentInputMap::new();
     gpu_inputs.insert(
         "edges".to_string(),
         GpuResultHandle::new(
-            &context,
+            &admitted,
             GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &edge_batch).unwrap()),
             Arc::clone(&edge_schema),
         )
         .unwrap(),
     );
 
-    let result = execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs).unwrap();
+    let result = execute_query_plan_with_gpu_inputs(&admitted, &plan, &gpu_inputs).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize BFS output");
     };
@@ -274,12 +281,12 @@ fn bfs_null_weight_does_not_drop_reachable_edges() {
     let graph_metrics = &result.metrics().graph_algorithm_runtime_rows;
     assert_eq!(graph_metrics.len(), 1);
     assert!(graph_metrics[0].algorithm_metadata.contains("null_edge_rows_dropped=0"));
+    admitted.finish();
 }
 
 #[test]
 fn bfs_include_edge_ids_filters_edges() {
     let context = backend_context();
-    let runtime = Arc::new(context.runtime().unwrap());
 
     let edge_schema = Arc::new(Schema::new(vec![
         Field::new("src", DataType::Int32, false),
@@ -301,9 +308,8 @@ fn bfs_include_edge_ids_filters_edges() {
         RecordBatch::try_new(Arc::clone(&allowed_schema), vec![Arc::new(Int32Array::from(vec![11, 13]))]).unwrap();
 
     let mut builder = QueryPlanBuilder::new();
-    let edges = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("edges", Arc::clone(&edge_schema))));
-    let allowed =
-        builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("allowed", Arc::clone(&allowed_schema))));
+    let edges = builder.add_source(SourceNode::GpuResident(gpu_resident_source("edges", Arc::clone(&edge_schema), &edge_batch)));
+    let allowed = builder.add_source(SourceNode::GpuResident(gpu_resident_source("allowed", Arc::clone(&allowed_schema), &allowed_batch)));
     let params = GraphBfsParams {
         source_vertex: 0,
         source_vertices: None,
@@ -323,12 +329,14 @@ fn bfs_include_edge_ids_filters_edges() {
     );
     let graph = builder.add_graph_algorithm(edges, spec);
     let plan = builder.finish_with_host_sink_schema(graph, stable_graph_result_schema(GraphAlgorithm::Bfs));
+    let admitted = context.admit_plan(&plan).unwrap();
+    let runtime = Arc::new(admitted.runtime().unwrap());
 
     let mut gpu_inputs = GpuResidentInputMap::new();
     gpu_inputs.insert(
         "edges".to_string(),
         GpuResultHandle::new(
-            &context,
+            &admitted,
             GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &edge_batch).unwrap()),
             Arc::clone(&edge_schema),
         )
@@ -337,14 +345,14 @@ fn bfs_include_edge_ids_filters_edges() {
     gpu_inputs.insert(
         "allowed".to_string(),
         GpuResultHandle::new(
-            &context,
+            &admitted,
             GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &allowed_batch).unwrap()),
             Arc::clone(&allowed_schema),
         )
         .unwrap(),
     );
 
-    let result = execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs).unwrap();
+    let result = execute_query_plan_with_gpu_inputs(&admitted, &plan, &gpu_inputs).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize BFS output");
     };
@@ -363,12 +371,12 @@ fn bfs_include_edge_ids_filters_edges() {
     let graph_metrics = &result.metrics().graph_algorithm_runtime_rows;
     assert_eq!(graph_metrics.len(), 1);
     assert!(graph_metrics[0].algorithm_metadata.contains("predicate_include_edge_ids_rows=2"));
+    admitted.finish();
 }
 
 #[test]
 fn bfs_include_edges_relation_filters_by_source_destination() {
     let context = backend_context();
-    let runtime = Arc::new(context.runtime().unwrap());
 
     let edge_schema = Arc::new(Schema::new(vec![
         Field::new("src", DataType::Int32, false),
@@ -391,9 +399,8 @@ fn bfs_include_edges_relation_filters_by_source_destination() {
     .unwrap();
 
     let mut builder = QueryPlanBuilder::new();
-    let edges = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("edges", Arc::clone(&edge_schema))));
-    let allowed =
-        builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("allowed", Arc::clone(&allowed_schema))));
+    let edges = builder.add_source(SourceNode::GpuResident(gpu_resident_source("edges", Arc::clone(&edge_schema), &edge_batch)));
+    let allowed = builder.add_source(SourceNode::GpuResident(gpu_resident_source("allowed", Arc::clone(&allowed_schema), &allowed_batch)));
     let params = GraphBfsParams {
         source_vertex: 0,
         source_vertices: None,
@@ -413,12 +420,14 @@ fn bfs_include_edges_relation_filters_by_source_destination() {
     );
     let graph = builder.add_graph_algorithm(edges, spec);
     let plan = builder.finish_with_host_sink_schema(graph, stable_graph_result_schema(GraphAlgorithm::Bfs));
+    let admitted = context.admit_plan(&plan).unwrap();
+    let runtime = Arc::new(admitted.runtime().unwrap());
 
     let mut gpu_inputs = GpuResidentInputMap::new();
     gpu_inputs.insert(
         "edges".to_string(),
         GpuResultHandle::new(
-            &context,
+            &admitted,
             GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &edge_batch).unwrap()),
             Arc::clone(&edge_schema),
         )
@@ -427,14 +436,14 @@ fn bfs_include_edges_relation_filters_by_source_destination() {
     gpu_inputs.insert(
         "allowed".to_string(),
         GpuResultHandle::new(
-            &context,
+            &admitted,
             GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &allowed_batch).unwrap()),
             Arc::clone(&allowed_schema),
         )
         .unwrap(),
     );
 
-    let result = execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs).unwrap();
+    let result = execute_query_plan_with_gpu_inputs(&admitted, &plan, &gpu_inputs).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize BFS output");
     };
@@ -456,12 +465,12 @@ fn bfs_include_edges_relation_filters_by_source_destination() {
     assert_eq!(graph_metrics.len(), 1);
     assert!(graph_metrics[0].algorithm_metadata.contains("predicate_include_edges_rows=2"));
     assert!(graph_metrics[0].algorithm_metadata.contains("predicate_include_edges_aligned_rows=2"));
+    admitted.finish();
 }
 
 #[test]
 fn bfs_source_vertices_side_input_accepts_multiple_rows() {
     let context = backend_context();
-    let runtime = Arc::new(context.runtime().unwrap());
 
     let edge_schema = Arc::new(Schema::new(vec![
         Field::new("src", DataType::Int32, false),
@@ -477,9 +486,8 @@ fn bfs_source_vertices_side_input_accepts_multiple_rows() {
         RecordBatch::try_new(Arc::clone(&source_schema), vec![Arc::new(Int32Array::from(vec![0, 10]))]).unwrap();
 
     let mut builder = QueryPlanBuilder::new();
-    let edges = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("edges", Arc::clone(&edge_schema))));
-    let sources =
-        builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("sources", Arc::clone(&source_schema))));
+    let edges = builder.add_source(SourceNode::GpuResident(gpu_resident_source("edges", Arc::clone(&edge_schema), &edge_batch)));
+    let sources = builder.add_source(SourceNode::GpuResident(gpu_resident_source("sources", Arc::clone(&source_schema), &source_batch)));
     let mut params = GraphBfsParams::new(0, None);
     params.source_vertices = Some(GraphPredicateInput::new(sources, "source_vertex"));
     let spec = GraphAlgorithmSpec::with_stable_schema(
@@ -490,12 +498,14 @@ fn bfs_source_vertices_side_input_accepts_multiple_rows() {
     );
     let graph = builder.add_graph_algorithm(edges, spec);
     let plan = builder.finish_with_host_sink_schema(graph, stable_graph_result_schema(GraphAlgorithm::Bfs));
+    let admitted = context.admit_plan(&plan).unwrap();
+    let runtime = Arc::new(admitted.runtime().unwrap());
 
     let mut gpu_inputs = GpuResidentInputMap::new();
     gpu_inputs.insert(
         "edges".to_string(),
         GpuResultHandle::new(
-            &context,
+            &admitted,
             GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &edge_batch).unwrap()),
             Arc::clone(&edge_schema),
         )
@@ -504,14 +514,14 @@ fn bfs_source_vertices_side_input_accepts_multiple_rows() {
     gpu_inputs.insert(
         "sources".to_string(),
         GpuResultHandle::new(
-            &context,
+            &admitted,
             GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &source_batch).unwrap()),
             Arc::clone(&source_schema),
         )
         .unwrap(),
     );
 
-    let result = execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs).unwrap();
+    let result = execute_query_plan_with_gpu_inputs(&admitted, &plan, &gpu_inputs).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize BFS output");
     };
@@ -527,12 +537,12 @@ fn bfs_source_vertices_side_input_accepts_multiple_rows() {
     assert_eq!(distance_for(10), 0);
     assert_eq!(distance_for(11), 1);
     assert!(result.metrics().graph_algorithm_runtime_rows[0].algorithm_metadata.contains("source_vertices_rows=2"));
+    admitted.finish();
 }
 
 #[test]
 fn bfs_source_vertices_side_input_rejects_empty_source_set() {
     let context = backend_context();
-    let runtime = Arc::new(context.runtime().unwrap());
 
     let edge_schema = Arc::new(Schema::new(vec![
         Field::new("src", DataType::Int32, false),
@@ -548,9 +558,8 @@ fn bfs_source_vertices_side_input_rejects_empty_source_set() {
         RecordBatch::try_new(Arc::clone(&source_schema), vec![Arc::new(Int32Array::from(Vec::<i32>::new()))]).unwrap();
 
     let mut builder = QueryPlanBuilder::new();
-    let edges = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("edges", Arc::clone(&edge_schema))));
-    let sources =
-        builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("sources", Arc::clone(&source_schema))));
+    let edges = builder.add_source(SourceNode::GpuResident(gpu_resident_source("edges", Arc::clone(&edge_schema), &edge_batch)));
+    let sources = builder.add_source(SourceNode::GpuResident(gpu_resident_source("sources", Arc::clone(&source_schema), &source_batch)));
     let mut params = GraphBfsParams::new(0, None);
     params.source_vertices = Some(GraphPredicateInput::new(sources, "source_vertex"));
     let spec = GraphAlgorithmSpec::with_stable_schema(
@@ -561,12 +570,14 @@ fn bfs_source_vertices_side_input_rejects_empty_source_set() {
     );
     let graph = builder.add_graph_algorithm(edges, spec);
     let plan = builder.finish_with_host_sink_schema(graph, stable_graph_result_schema(GraphAlgorithm::Bfs));
+    let admitted = context.admit_plan(&plan).unwrap();
+    let runtime = Arc::new(admitted.runtime().unwrap());
 
     let mut gpu_inputs = GpuResidentInputMap::new();
     gpu_inputs.insert(
         "edges".to_string(),
         GpuResultHandle::new(
-            &context,
+            &admitted,
             GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &edge_batch).unwrap()),
             Arc::clone(&edge_schema),
         )
@@ -575,24 +586,24 @@ fn bfs_source_vertices_side_input_rejects_empty_source_set() {
     gpu_inputs.insert(
         "sources".to_string(),
         GpuResultHandle::new(
-            &context,
+            &admitted,
             GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &source_batch).unwrap()),
             Arc::clone(&source_schema),
         )
         .unwrap(),
     );
 
-    let error = match execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs) {
+    let error = match execute_query_plan_with_gpu_inputs(&admitted, &plan, &gpu_inputs) {
         Ok(_) => panic!("empty BFS source-vertices side input should fail"),
         Err(error) => error.to_string(),
     };
     assert!(error.contains("source-vertices side input must contain at least one row"), "{error}");
+    admitted.finish();
 }
 
 #[test]
 fn bfs_empty_path_endpoint_policy_returns_empty_after_edge_filter() {
     let context = backend_context();
-    let runtime = Arc::new(context.runtime().unwrap());
 
     let edge_schema = Arc::new(Schema::new(vec![
         Field::new("src", DataType::Int32, false),
@@ -620,13 +631,10 @@ fn bfs_empty_path_endpoint_policy_returns_empty_after_edge_filter() {
     .unwrap();
 
     let mut builder = QueryPlanBuilder::new();
-    let edges = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("edges", Arc::clone(&edge_schema))));
-    let sources =
-        builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("sources", Arc::clone(&source_schema))));
-    let targets =
-        builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("targets", Arc::clone(&target_schema))));
-    let allowed =
-        builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("allowed", Arc::clone(&allowed_schema))));
+    let edges = builder.add_source(SourceNode::GpuResident(gpu_resident_source("edges", Arc::clone(&edge_schema), &edge_batch)));
+    let sources = builder.add_source(SourceNode::GpuResident(gpu_resident_source("sources", Arc::clone(&source_schema), &source_batch)));
+    let targets = builder.add_source(SourceNode::GpuResident(gpu_resident_source("targets", Arc::clone(&target_schema), &target_batch)));
+    let allowed = builder.add_source(SourceNode::GpuResident(gpu_resident_source("allowed", Arc::clone(&allowed_schema), &allowed_batch)));
     let mut params = GraphBfsParams::new(0, None);
     params.source_vertices = Some(GraphPredicateInput::new(sources, "source_vertex"));
     params.predicates.target_vertices = Some(GraphPredicateInput::new(targets, "vertex_id"));
@@ -641,6 +649,8 @@ fn bfs_empty_path_endpoint_policy_returns_empty_after_edge_filter() {
     );
     let graph = builder.add_graph_algorithm(edges, spec);
     let plan = builder.finish_with_host_sink_schema(graph, stable_graph_result_schema(GraphAlgorithm::Bfs));
+    let admitted = context.admit_plan(&plan).unwrap();
+    let runtime = Arc::new(admitted.runtime().unwrap());
 
     let mut gpu_inputs = GpuResidentInputMap::new();
     for (name, schema, batch) in [
@@ -652,7 +662,7 @@ fn bfs_empty_path_endpoint_policy_returns_empty_after_edge_filter() {
         gpu_inputs.insert(
             name.to_string(),
             GpuResultHandle::new(
-                &context,
+                &admitted,
                 GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &batch).unwrap()),
                 schema,
             )
@@ -660,7 +670,7 @@ fn bfs_empty_path_endpoint_policy_returns_empty_after_edge_filter() {
         );
     }
 
-    let result = execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs).unwrap();
+    let result = execute_query_plan_with_gpu_inputs(&admitted, &plan, &gpu_inputs).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize BFS output");
     };
@@ -672,12 +682,12 @@ fn bfs_empty_path_endpoint_policy_returns_empty_after_edge_filter() {
     assert!(metadata.contains("valid_source_rows=0"), "{metadata}");
     assert!(metadata.contains("target_rows=1"), "{metadata}");
     assert!(metadata.contains("valid_target_rows=1"), "{metadata}");
+    admitted.finish();
 }
 
 #[test]
 fn bfs_target_metadata_columns_are_shaped_when_requested() {
     let context = backend_context();
-    let runtime = Arc::new(context.runtime().unwrap());
 
     let edge_schema = Arc::new(Schema::new(vec![
         Field::new("src", DataType::Int32, false),
@@ -694,9 +704,8 @@ fn bfs_target_metadata_columns_are_shaped_when_requested() {
         RecordBatch::try_new(Arc::clone(&target_schema), vec![Arc::new(Int32Array::from(vec![2]))]).unwrap();
 
     let mut builder = QueryPlanBuilder::new();
-    let edges = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("edges", Arc::clone(&edge_schema))));
-    let targets =
-        builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("targets", Arc::clone(&target_schema))));
+    let edges = builder.add_source(SourceNode::GpuResident(gpu_resident_source("edges", Arc::clone(&edge_schema), &edge_batch)));
+    let targets = builder.add_source(SourceNode::GpuResident(gpu_resident_source("targets", Arc::clone(&target_schema), &target_batch)));
     let mut params = GraphBfsParams::new(0, None);
     params.predicates.target_vertices = Some(GraphPredicateInput::new(targets, "vertex_id"));
     params.return_target_info = true;
@@ -711,12 +720,14 @@ fn bfs_target_metadata_columns_are_shaped_when_requested() {
     );
     let graph = builder.add_graph_algorithm(edges, spec);
     let plan = builder.finish_with_host_sink_schema(graph, output_schema);
+    let admitted = context.admit_plan(&plan).unwrap();
+    let runtime = Arc::new(admitted.runtime().unwrap());
 
     let mut gpu_inputs = GpuResidentInputMap::new();
     gpu_inputs.insert(
         "edges".to_string(),
         GpuResultHandle::new(
-            &context,
+            &admitted,
             GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &edge_batch).unwrap()),
             Arc::clone(&edge_schema),
         )
@@ -725,14 +736,14 @@ fn bfs_target_metadata_columns_are_shaped_when_requested() {
     gpu_inputs.insert(
         "targets".to_string(),
         GpuResultHandle::new(
-            &context,
+            &admitted,
             GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &target_batch).unwrap()),
             Arc::clone(&target_schema),
         )
         .unwrap(),
     );
 
-    let result = execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs).unwrap();
+    let result = execute_query_plan_with_gpu_inputs(&admitted, &plan, &gpu_inputs).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize BFS output");
     };
@@ -747,4 +758,5 @@ fn bfs_target_metadata_columns_are_shaped_when_requested() {
     assert_eq!(graph_metrics.len(), 1);
     assert!(graph_metrics[0].algorithm_metadata.contains("target_found=true"));
     assert!(graph_metrics[0].algorithm_metadata.contains("target_distance=2"));
+    admitted.finish();
 }

@@ -295,8 +295,6 @@ fn bounded_native_query_reports_chunk_operator_hard_budget_failure_after_reserva
     assert!(operator_budget > 0);
 
     let operator_token_budget = operator_budget.saturating_mul(4);
-    drop(baseline_context);
-
     let constrained_context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
         device_budget_bytes: source_budget.saturating_add(operator_token_budget),
         max_source_chunk_bytes: 1024 * 1024,

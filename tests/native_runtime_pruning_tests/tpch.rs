@@ -176,7 +176,7 @@ async fn native_runtime_tpch_q04_tiny_bounded_left_semi_full_sort_matches_cpu() 
         "Q4 should use the bounded full-sort left-semi grouped aggregate path:\n{}",
         lowering.plans[0]
     );
-    let direct_result = execute_query_plan(&bounded_execution_context(), &lowering.plans[0]).unwrap();
+    let direct_result = execute_query_plan(&bounded_execution_context(&lowering.plans[0]), &lowering.plans[0]).unwrap();
     let direct_metrics = direct_result.metrics();
     assert_eq!(direct_metrics.compiled_pipeline_attempts, 1);
     assert_eq!(direct_metrics.compiled_pipeline_host_arrow_sinks, 1);
@@ -246,7 +246,7 @@ async fn native_runtime_tpch_q18_tiny_bounded_resident_aggregate_topk_matches_cp
         "Q18 should use the resident grouped aggregate TopK bounded path:\n{}",
         lowering.plans[0]
     );
-    let direct_result = execute_query_plan(&bounded_execution_context(), &lowering.plans[0]).unwrap();
+    let direct_result = execute_query_plan(&bounded_execution_context(&lowering.plans[0]), &lowering.plans[0]).unwrap();
     let direct_metrics = direct_result.metrics();
     assert_eq!(direct_metrics.compiled_pipeline_attempts, 1);
     assert!(direct_metrics.compiled_pipeline_tasks_executed > 0);
@@ -305,7 +305,7 @@ async fn native_runtime_tpch_q20_tiny_bounded_resident_aggregate_subquery_filter
         "Q20 should use the resident grouped aggregate subquery-filter bounded path:\n{}",
         lowering.plans[0]
     );
-    let direct_result = execute_query_plan(&bounded_execution_context(), &lowering.plans[0]).unwrap();
+    let direct_result = execute_query_plan(&bounded_execution_context(&lowering.plans[0]), &lowering.plans[0]).unwrap();
     let direct_metrics = direct_result.metrics();
     assert_eq!(direct_metrics.compiled_pipeline_attempts, 1);
     assert!(direct_metrics.compiled_pipeline_tasks_executed > 0);

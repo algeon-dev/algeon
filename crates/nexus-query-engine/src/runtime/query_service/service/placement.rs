@@ -189,7 +189,7 @@ impl QueryService {
         // An unknown-isolation cleanup fault is represented by closed device
         // ledgers, not a service-side latch.  Check that canonical controller
         // state before treating a closed fleet as a capacity-floor error.
-        if let Some(error) = self.all_compatible_devices_closed_error(&compatible_devices)? {
+        if let Some(error) = self.all_compatible_devices_closed_error(compatible_devices)? {
             return Err(error);
         }
 
@@ -240,7 +240,7 @@ impl QueryService {
         // check or after its ranking snapshot. Health is ledger-owned, so
         // re-read the canonical state before calling a remaining open fleet a
         // capacity failure.
-        if let Some(error) = self.all_compatible_devices_closed_error(&compatible_devices)? {
+        if let Some(error) = self.all_compatible_devices_closed_error(compatible_devices)? {
             return Err(error);
         }
         if any_device_can_fit_floor {

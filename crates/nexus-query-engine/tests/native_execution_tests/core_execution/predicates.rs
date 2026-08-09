@@ -1,5 +1,5 @@
 #[test]
-fn native_query_executes_literal_batch_source_with_offset_only_limit() {
+fn native_query_executes_gpu_resident_source_with_offset_only_limit() {
     let context = backend_context();
     let schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int32, false),
@@ -15,16 +15,27 @@ fn native_query_executes_literal_batch_source_with_offset_only_limit() {
     .unwrap();
 
     let mut builder = QueryPlanBuilder::new();
-    let source =
-        builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![input_batch])));
+    let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&schema))));
     let limit = builder.add_limit(source, LimitSpec::offset(1), Arc::clone(&schema));
     let plan = builder.finish_with_host_sink(limit);
 
-    let result = execute_query_plan(&context, &plan).unwrap();
+    let admitted = context.admit_plan(&plan).unwrap();
+    let runtime = Arc::new(admitted.runtime().unwrap());
+    let mut inputs = GpuResidentInputMap::new();
+    inputs.insert(
+        "input".to_owned(),
+        GpuResultHandle::new(
+            &admitted,
+            GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &input_batch).unwrap()),
+            Arc::clone(&schema),
+        )
+        .unwrap(),
+    );
+    let result = execute_query_plan_with_gpu_inputs(&admitted, &plan, &inputs).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.input_batches, 1);
     assert_eq!(metrics.input_rows, 3);
-    assert_eq!(metrics.boundary.host_to_device_uploads, 1);
+    assert_eq!(metrics.boundary.host_to_device_uploads, 0);
     assert_eq!(metrics.boundary.device_to_host_materializations, 1);
     assert_eq!(metrics.boundary.device_to_host_materialized_rows, 2);
 
@@ -36,27 +47,35 @@ fn native_query_executes_literal_batch_source_with_offset_only_limit() {
     assert_eq!(int32_array(batch, 0).values().as_ref(), &[2, 3]);
     assert!(string_array(batch, 1).is_null(0));
     assert_eq!(string_array(batch, 1).value(1), "three");
+    admitted.finish();
 }
 
 #[test]
-fn native_literal_batch_source_preserves_batch_order() {
+fn native_gpu_resident_source_preserves_input_order() {
     let context = backend_context();
     let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
-    let first_batch =
-        RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![10, 11]))]).unwrap();
-    let second_batch =
-        RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![20, 21, 22]))]).unwrap();
 
     let mut builder = QueryPlanBuilder::new();
-    let source = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(
-        Arc::clone(&schema),
-        vec![first_batch, second_batch],
-    )));
+    let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&schema))));
     let plan = builder.finish_with_host_sink(source);
 
-    let result = execute_query_plan(&context, &plan).unwrap();
+    let combined_batch =
+        RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![10, 11, 20, 21, 22]))]).unwrap();
+    let admitted = context.admit_plan(&plan).unwrap();
+    let runtime = Arc::new(admitted.runtime().unwrap());
+    let mut inputs = GpuResidentInputMap::new();
+    inputs.insert(
+        "input".to_owned(),
+        GpuResultHandle::new(
+            &admitted,
+            GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &combined_batch).unwrap()),
+            Arc::clone(&schema),
+        )
+        .unwrap(),
+    );
+    let result = execute_query_plan_with_gpu_inputs(&admitted, &plan, &inputs).unwrap();
     let metrics = result.metrics();
-    assert_eq!(metrics.input_batches, 2);
+    assert_eq!(metrics.input_batches, 1);
     assert_eq!(metrics.input_rows, 5);
 
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -64,6 +83,7 @@ fn native_literal_batch_source_preserves_batch_order() {
     };
     assert_eq!(batch.num_rows(), 5);
     assert_eq!(int32_array(batch, 0).values().as_ref(), &[10, 11, 20, 21, 22]);
+    admitted.finish();
 }
 
 #[test]

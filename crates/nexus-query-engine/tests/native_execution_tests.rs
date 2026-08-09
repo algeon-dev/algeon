@@ -25,13 +25,15 @@ use arrow::{
 };
 use cudf::DataFrame;
 use nexus_query_engine::{
+    admission::QueryPlanCapabilityProof,
     chunk::{SourceChunkPlanningPolicy, plan_local_parquet_source_chunks},
     error::QueryErrorCode,
     exec::{
-        execute_query_plan, execute_query_plan_with_gpu_inputs, execute_query_plan_with_gpu_inputs_observed,
+        execute_query_plan_with_gpu_inputs as execute_query_plan_with_gpu_inputs_direct,
+        execute_query_plan_with_gpu_inputs_observed as execute_query_plan_with_gpu_inputs_observed_direct,
         force_next_graph_seed_chunk_retry_chunk_attempt_resource_exhausted_for_test,
         force_next_graph_seed_chunk_retry_full_attempt_resource_exhausted_for_test, materialize_gpu_result_to_host,
-        output::QueryOutput,
+        output::{QueryExecutionOutcome, QueryExecutionResult, QueryOutput},
     },
     expr::{
         AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, Expr, GroupingSetsSpec, LimitSpec, LiteralValue,
@@ -39,12 +41,13 @@ use nexus_query_engine::{
     },
     graph_memory::GraphMemoryCalibrationOverride,
     metrics::{MemoryReservationEventAction, QueryMetrics},
+    mode::StatisticalAggregateExecutionMode,
     observability::{
         PlanExecutionBoundaryKind, RuntimeObservationConfig, RuntimeObservationPayload, RuntimeTerminalOutcome,
     },
     plan::{
         GraphEdgeBetweennessCentralityParams, JoinKey, JoinNullEquality, JoinOutputColumn, JoinSide, JoinSpec,
-        JoinType, ProjectionOutput, QueryPlanBuilder, WindowFunction, WindowSpec,
+        JoinType, PlanNode, ProjectionOutput, QueryPlan, QueryPlanBuilder, WindowFunction, WindowSpec,
     },
     runtime::{
         AdmittedQueryContext, BoundedJoinReservationContract, DeploymentIoCapability, ExecutionBoundaryPolicy,
@@ -55,9 +58,9 @@ use nexus_query_engine::{
         resident::{GpuDataFrame, GpuResidentInputMap, GpuResultHandle},
     },
     source::{
-        GpuResidentSource, LiteralBatchSource, LocalParquetFile, LocalParquetSource, MissingColumn,
-        ParquetEqualityDeleteFile, ParquetPositionDeleteFile, PartitionColumn, ResolvedParquetSource, SourceNode,
-        ZERO_COLUMN_COUNT_COLUMN,
+        GpuResidentSource, LiteralBatchSource, LocalParquetFile, LocalParquetSource as NativeLocalParquetSource,
+        MissingColumn, ParquetEqualityDeleteFile, ParquetPositionDeleteFile, PartitionColumn, ResolvedParquetSource,
+        SourceNode, ZERO_COLUMN_COUNT_COLUMN,
     },
 };
 #[cfg(feature = "cugraph")]
@@ -67,14 +70,14 @@ use nexus_query_engine::{
     graph_memory::GRAPH_VERTEX_ESTIMATE_PROBE_MIN_BYTES, graph_memory::GraphMemoryModel,
     graph_memory::GraphMemoryModelInput, graph_memory::GraphReservationOutcome, graph_memory::GraphSeedMode,
     graph_memory::GraphVertexEstimate, graph_memory::GraphVertexEstimateSource,
-    graph_memory::graph_vertex_estimate_probe_bytes, plan::GraphAlgorithm, plan::GraphAlgorithmParams,
-    plan::GraphAlgorithmSpec, plan::GraphBetweennessCentralityParams, plan::GraphBetweennessSeeds,
-    plan::GraphBfsEndpointPolicy, plan::GraphBfsParams, plan::GraphBfsPredicateInputs, plan::GraphConstructionOptions,
-    plan::GraphConstructionPolicy, plan::GraphEdgeColumnBindings, plan::GraphEdgePredicateInput,
-    plan::GraphPageRankParams, plan::GraphPageRankPersonalizationInput, plan::GraphPersonalizedPageRankParams,
-    plan::GraphPredicateInput, plan::GraphResidencyPlanAnalysis, plan::GraphSimilarityParams,
-    plan::GraphTriangleCountAllParams, plan::GraphVertexPairInput, plan::graph_residency_descriptor_for_edge_plan,
-    plan::stable_graph_result_schema,
+    graph_memory::graph_memory_bounded_admission_evidence_for_plan, graph_memory::graph_vertex_estimate_probe_bytes,
+    plan::GraphAlgorithm, plan::GraphAlgorithmParams, plan::GraphAlgorithmSpec, plan::GraphBetweennessCentralityParams,
+    plan::GraphBetweennessSeeds, plan::GraphBfsEndpointPolicy, plan::GraphBfsParams, plan::GraphBfsPredicateInputs,
+    plan::GraphConstructionOptions, plan::GraphConstructionPolicy, plan::GraphEdgeColumnBindings,
+    plan::GraphEdgePredicateInput, plan::GraphPageRankParams, plan::GraphPageRankPersonalizationInput,
+    plan::GraphPersonalizedPageRankParams, plan::GraphPredicateInput, plan::GraphResidencyPlanAnalysis,
+    plan::GraphSimilarityParams, plan::GraphTriangleCountAllParams, plan::GraphVertexPairInput,
+    plan::graph_residency_descriptor_for_edge_plan, plan::stable_graph_result_schema,
 };
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 
@@ -92,6 +95,7 @@ struct BackendTestPolicy {
     max_retry_attempts: usize,
     min_retry_chunk_row_groups: usize,
     source_scheduler_policy: SourceSchedulerPolicy,
+    statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode,
 }
 
 impl Default for BackendTestPolicy {
@@ -102,6 +106,7 @@ impl Default for BackendTestPolicy {
             max_retry_attempts: 3,
             min_retry_chunk_row_groups: 1,
             source_scheduler_policy: SourceSchedulerPolicy::default(),
+            statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode::default(),
         }
     }
 }
@@ -125,6 +130,7 @@ impl BackendTestPolicy {
                 max_retry_attempts,
                 min_retry_chunk_row_groups,
                 source_scheduler_policy: SourceSchedulerPolicy::default(),
+                statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode::default(),
             },
             device_budget_bytes,
         )
@@ -132,6 +138,14 @@ impl BackendTestPolicy {
 
     fn with_source_scheduler_policy(mut self, source_scheduler_policy: SourceSchedulerPolicy) -> Self {
         self.source_scheduler_policy = source_scheduler_policy;
+        self
+    }
+
+    fn with_statistical_aggregate_execution_mode(
+        mut self,
+        statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode,
+    ) -> Self {
+        self.statistical_aggregate_execution_mode = statistical_aggregate_execution_mode;
         self
     }
 }
@@ -144,10 +158,6 @@ fn non_gds_deployment() -> DeploymentIoCapability {
     )
 }
 
-fn suite_backend() -> &'static GpuBackendCore {
-    suite_backend_with_policy(BackendTestPolicy::default())
-}
-
 fn suite_backend_with_policy(policy: BackendTestPolicy) -> &'static GpuBackendCore {
     static BACKEND: OnceLock<(BackendTestPolicy, GpuBackendCore)> = OnceLock::new();
     let (installed_policy, backend) = BACKEND.get_or_init(|| {
@@ -158,6 +168,7 @@ fn suite_backend_with_policy(policy: BackendTestPolicy) -> &'static GpuBackendCo
                 max_retry_attempts: policy.max_retry_attempts,
                 min_retry_chunk_row_groups: policy.min_retry_chunk_row_groups,
                 source_scheduler_policy: policy.source_scheduler_policy,
+                statistical_aggregate_execution_mode: policy.statistical_aggregate_execution_mode,
                 ..QueryExecutionConfig::default()
             },
             QueueBounds::default(),
@@ -180,15 +191,40 @@ fn suite_backend_with_policy(policy: BackendTestPolicy) -> &'static GpuBackendCo
 }
 
 struct BackendQueryContext {
-    context: AdmittedQueryContext,
-    _handle: QueryHandle,
+    policy: BackendTestPolicy,
+    requested_bytes: Option<u64>,
 }
 
-impl Deref for BackendQueryContext {
+struct AdmittedPlanContext {
+    context: AdmittedQueryContext,
+    handle: QueryHandle,
+}
+
+impl Deref for AdmittedPlanContext {
     type Target = ExecutionContext;
 
     fn deref(&self) -> &Self::Target {
         self.context.context()
+    }
+}
+
+impl AdmittedPlanContext {
+    fn finish(&self) {
+        self.handle.finish();
+    }
+
+    fn with_graph_memory_calibration_override(&self, override_: GraphMemoryCalibrationOverride) -> ExecutionContext {
+        self.context.context().with_graph_memory_calibration_override(override_)
+    }
+
+    fn execute_with_graph_memory_calibration_override(
+        &self,
+        plan: &QueryPlan,
+        gpu_inputs: &GpuResidentInputMap,
+        calibration_override: GraphMemoryCalibrationOverride,
+    ) -> nexus_query_engine::error::Result<QueryExecutionResult> {
+        let context = self.with_graph_memory_calibration_override(calibration_override);
+        execute_query_plan_with_gpu_inputs_direct(&context, plan, gpu_inputs)
     }
 }
 
@@ -200,9 +236,41 @@ fn backend_context_with_grant(requested_bytes: impl Into<Option<u64>>) -> Backen
     backend_context_with_policy_and_grant(BackendTestPolicy::default(), requested_bytes.into())
 }
 
+fn backend_context_with_statistical_aggregate_mode(
+    statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode,
+) -> BackendQueryContext {
+    backend_context_with_policy_and_grant(
+        BackendTestPolicy::default().with_statistical_aggregate_execution_mode(statistical_aggregate_execution_mode),
+        None,
+    )
+}
+
+fn backend_context_with_grant_and_statistical_aggregate_mode(
+    requested_bytes: impl Into<Option<u64>>,
+    statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode,
+) -> BackendQueryContext {
+    backend_context_with_policy_and_grant(
+        BackendTestPolicy::default().with_statistical_aggregate_execution_mode(statistical_aggregate_execution_mode),
+        requested_bytes.into(),
+    )
+}
+
 fn backend_context_with_memory_control_policy(policy: MemoryControlPolicy) -> BackendQueryContext {
+    backend_context_with_memory_control_policy_and_statistical_aggregate_mode(
+        policy,
+        StatisticalAggregateExecutionMode::default(),
+    )
+}
+
+fn backend_context_with_memory_control_policy_and_statistical_aggregate_mode(
+    policy: MemoryControlPolicy,
+    statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode,
+) -> BackendQueryContext {
     let (policy, device_budget_bytes) = BackendTestPolicy::from_memory_control_policy(policy);
-    backend_context_with_policy_and_grant(policy, Some(device_budget_bytes))
+    backend_context_with_policy_and_grant(
+        policy.with_statistical_aggregate_execution_mode(statistical_aggregate_execution_mode),
+        Some(device_budget_bytes),
+    )
 }
 
 fn backend_context_with_memory_and_scheduler_policy(
@@ -220,12 +288,7 @@ fn backend_context_with_policy_and_grant(
     policy: BackendTestPolicy,
     requested_bytes: Option<u64>,
 ) -> BackendQueryContext {
-    let request = requested_bytes.map_or_else(QueryAdmissionRequest::new, |bytes| {
-        QueryAdmissionRequest::new().with_test_placement_requirement(fixture_placement_requirement(bytes))
-    });
-    let handle = suite_backend_with_policy(policy).session_capability().admit_query_with_request(request).unwrap();
-    let context = handle.acquire_context().unwrap();
-    BackendQueryContext { context, _handle: handle }
+    BackendQueryContext { policy, requested_bytes }
 }
 
 /// Creates the exact synthetic placement request used to bound one test
@@ -244,12 +307,182 @@ fn fixture_placement_requirement(bytes: u64) -> nexus_query_engine::admission::A
 }
 
 fn backend_runtime() -> Arc<cudf::Runtime> {
+    backend_runtime_with_policy(BackendTestPolicy::default())
+}
+
+fn backend_runtime_with_policy(policy: BackendTestPolicy) -> Arc<cudf::Runtime> {
     // Fixture-only GPU work may use the backend's declared device after the
     // process owner is installed. Never inject this runtime or its GPU objects
     // into execution; admitted contexts provide the execution runtime.
-    let _ = suite_backend();
+    let _ = suite_backend_with_policy(policy);
     let device = cudf::DeviceId::new(0).expect("native execution suite fixture device");
     Arc::new(cudf::Runtime::builder().with_device(device).build().expect("native execution suite fixture runtime"))
+}
+
+impl BackendQueryContext {
+    fn runtime(&self) -> nexus_query_engine::error::Result<cudf::Runtime> {
+        Ok(backend_runtime_with_policy(self.policy).as_ref().clone())
+    }
+
+    fn admit_plan(&self, plan: &QueryPlan) -> nexus_query_engine::error::Result<AdmittedPlanContext> {
+        self.admit_plan_with_graph_memory_calibration_override(plan, GraphMemoryCalibrationOverride::none())
+    }
+
+    fn admit_plan_with_graph_memory_calibration_override(
+        &self,
+        plan: &QueryPlan,
+        calibration_override: GraphMemoryCalibrationOverride,
+    ) -> nexus_query_engine::error::Result<AdmittedPlanContext> {
+        let proof =
+            capability_proof_for_fixture_plan_with_graph_memory_calibration_override(plan, calibration_override)?;
+        self.admit_proof(proof)
+    }
+
+    fn admit_proof(&self, proof: QueryPlanCapabilityProof) -> nexus_query_engine::error::Result<AdmittedPlanContext> {
+        let mut request = QueryAdmissionRequest::new().with_query_plan_capability_proof(proof);
+        if let Some(bytes) = self.requested_bytes {
+            request = request.with_test_placement_requirement(fixture_placement_requirement(bytes));
+        }
+        let handle = suite_backend_with_policy(self.policy).session_capability().admit_query_with_request(request)?;
+        let context = handle.acquire_context()?;
+        Ok(AdmittedPlanContext { context, handle })
+    }
+
+    fn execute_admitted(
+        &self,
+        plan: &QueryPlan,
+        gpu_inputs: &GpuResidentInputMap,
+    ) -> nexus_query_engine::error::Result<QueryExecutionResult> {
+        let admitted = self.admit_plan(plan)?;
+        let result = execute_query_plan_with_gpu_inputs_direct(admitted.context.context(), plan, gpu_inputs);
+        if result.is_err()
+            || result.as_ref().is_ok_and(|result| !matches!(result.output(), QueryOutput::GpuResident(_)))
+        {
+            admitted.finish();
+        }
+        result
+    }
+
+    fn execute_admitted_observed(
+        &self,
+        plan: &QueryPlan,
+        gpu_inputs: &GpuResidentInputMap,
+        config: RuntimeObservationConfig,
+    ) -> QueryExecutionOutcome {
+        let admitted = self.admit_plan(plan).expect("native fixture plan must admit before observed execution");
+        let outcome =
+            execute_query_plan_with_gpu_inputs_observed_direct(admitted.context.context(), plan, gpu_inputs, config);
+        if outcome.result().is_err()
+            || outcome.result().is_ok_and(|output| !matches!(output, QueryOutput::GpuResident(_)))
+        {
+            admitted.finish();
+        }
+        outcome
+    }
+}
+
+fn capability_proof_for_fixture_plan_with_graph_memory_calibration_override(
+    plan: &QueryPlan,
+    calibration_override: GraphMemoryCalibrationOverride,
+) -> nexus_query_engine::error::Result<QueryPlanCapabilityProof> {
+    #[cfg(feature = "cugraph")]
+    if plan.nodes().iter().any(|node| matches!(node.kind, PlanNode::GraphAlgorithm(_))) {
+        let evidence = graph_memory_bounded_admission_evidence_for_plan(plan, calibration_override, None)?;
+        return QueryPlanCapabilityProof::for_cugraph_graph_execution_plan(plan)
+            .ok_or_else(|| {
+                nexus_query_engine::error::QueryError::new(
+                    QueryErrorCode::UnsupportedPlanShape,
+                    "nexus_query_engine.native_execution_tests.proof",
+                    "graph fixture did not issue an exact cuGraph execution proof",
+                )
+            })?
+            .with_graph_memory_admission_evidence(&evidence);
+    }
+
+    QueryPlanCapabilityProof::for_query_plan(plan).ok_or_else(|| {
+        nexus_query_engine::error::QueryError::new(
+            QueryErrorCode::UnsupportedPlanShape,
+            "nexus_query_engine.native_execution_tests.proof",
+            "native fixture did not issue a capability proof",
+        )
+    })
+}
+
+trait TestExecutionContext {
+    fn execute_plan(
+        &self,
+        plan: &QueryPlan,
+        gpu_inputs: &GpuResidentInputMap,
+    ) -> nexus_query_engine::error::Result<QueryExecutionResult>;
+
+    fn execute_plan_observed(
+        &self,
+        plan: &QueryPlan,
+        gpu_inputs: &GpuResidentInputMap,
+        config: RuntimeObservationConfig,
+    ) -> QueryExecutionOutcome;
+}
+
+impl TestExecutionContext for AdmittedPlanContext {
+    fn execute_plan(
+        &self,
+        plan: &QueryPlan,
+        gpu_inputs: &GpuResidentInputMap,
+    ) -> nexus_query_engine::error::Result<QueryExecutionResult> {
+        execute_query_plan_with_gpu_inputs_direct(self.context.context(), plan, gpu_inputs)
+    }
+
+    fn execute_plan_observed(
+        &self,
+        plan: &QueryPlan,
+        gpu_inputs: &GpuResidentInputMap,
+        config: RuntimeObservationConfig,
+    ) -> QueryExecutionOutcome {
+        execute_query_plan_with_gpu_inputs_observed_direct(self.context.context(), plan, gpu_inputs, config)
+    }
+}
+
+impl TestExecutionContext for BackendQueryContext {
+    fn execute_plan(
+        &self,
+        plan: &QueryPlan,
+        gpu_inputs: &GpuResidentInputMap,
+    ) -> nexus_query_engine::error::Result<QueryExecutionResult> {
+        self.execute_admitted(plan, gpu_inputs)
+    }
+
+    fn execute_plan_observed(
+        &self,
+        plan: &QueryPlan,
+        gpu_inputs: &GpuResidentInputMap,
+        config: RuntimeObservationConfig,
+    ) -> QueryExecutionOutcome {
+        self.execute_admitted_observed(plan, gpu_inputs, config)
+    }
+}
+
+fn execute_query_plan<C: TestExecutionContext + ?Sized>(
+    context: &C,
+    plan: &QueryPlan,
+) -> nexus_query_engine::error::Result<QueryExecutionResult> {
+    context.execute_plan(plan, &GpuResidentInputMap::new())
+}
+
+fn execute_query_plan_with_gpu_inputs<C: TestExecutionContext + ?Sized>(
+    context: &C,
+    plan: &QueryPlan,
+    gpu_inputs: &GpuResidentInputMap,
+) -> nexus_query_engine::error::Result<QueryExecutionResult> {
+    context.execute_plan(plan, gpu_inputs)
+}
+
+fn execute_query_plan_with_gpu_inputs_observed<C: TestExecutionContext + ?Sized>(
+    context: &C,
+    plan: &QueryPlan,
+    gpu_inputs: &GpuResidentInputMap,
+    config: RuntimeObservationConfig,
+) -> QueryExecutionOutcome {
+    context.execute_plan_observed(plan, gpu_inputs, config)
 }
 
 #[path = "native_execution_tests/aggregate_execution.rs"]
@@ -298,12 +531,12 @@ mod window_execution;
 use aggregate_test_support::*;
 use join_test_support::*;
 use metrics_assertions::*;
-use parquet_fixtures::*;
+use parquet_fixtures::{fixture_local_parquet_source as LocalParquetSource, *};
 use projection_test_support::*;
 use test_support::*;
 
 #[test]
-fn backend_session_executes_grouped_aggregate_from_literal_batches() {
+fn backend_session_executes_grouped_aggregate_from_gpu_resident_input() {
     let context = backend_context();
     let schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int32, false),
@@ -319,7 +552,7 @@ fn backend_session_executes_grouped_aggregate_from_literal_batches() {
         Field::new("total", DataType::Int64, true),
     ]));
     let mut builder = QueryPlanBuilder::new();
-    let source = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(schema, vec![batch])));
+    let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&schema))));
     let aggregate = builder.add_aggregate(
         source,
         AggregateSpec::new(
@@ -334,8 +567,22 @@ fn backend_session_executes_grouped_aggregate_from_literal_batches() {
         output_schema,
     );
 
-    let result = execute_query_plan(&context, &builder.finish_with_host_sink(sort)).unwrap();
+    let plan = builder.finish_with_host_sink(sort);
+    let admitted = context.admit_plan(&plan).unwrap();
+    let runtime = Arc::new(admitted.runtime().unwrap());
+    let mut inputs = GpuResidentInputMap::new();
+    inputs.insert(
+        "input".to_owned(),
+        GpuResultHandle::new(
+            &admitted,
+            GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &batch).unwrap()),
+            Arc::clone(&schema),
+        )
+        .unwrap(),
+    );
+    let result = execute_query_plan_with_gpu_inputs(&admitted, &plan, &inputs).unwrap();
     let QueryOutput::HostArrow(output) = result.output() else { panic!("host sink must return Arrow output") };
     assert_eq!(int32_array(output, 0).values().as_ref(), &[1, 2]);
     assert_eq!(int64_array(output, 1).values().as_ref(), &[30, 7]);
+    admitted.finish();
 }
