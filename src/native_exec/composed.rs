@@ -118,6 +118,14 @@ impl NexusNativeComposedExec {
         let mut provided_inputs = BTreeSet::new();
         for child in &gpu_inputs {
             let Some(input_name) = gpu_resident_producer_input_name(child.as_ref()) else {
+                if let Some(rejection) =
+                    graph_execution_plan(child.as_ref()).and_then(|graph| graph.gpu_resident_output_rejection())
+                {
+                    return Err(adapter_error_from_graph_rejection(
+                        rejection,
+                        "datafusion_nexus.native_composed.try_new",
+                    ));
+                }
                 return Err(Error::new(
                     ErrorCode::InvalidExecutionPlan,
                     "datafusion_nexus.native_composed.try_new",
@@ -223,6 +231,26 @@ impl NexusNativeComposedExec {
     }
 }
 
+fn adapter_error_from_graph_rejection(rejection: DataFusionError, operation: &'static str) -> Error {
+    match rejection {
+        DataFusionError::External(source) => match source.downcast::<Error>() {
+            Ok(error) => *error,
+            Err(source) => Error::new(
+                ErrorCode::InvalidExecutionPlan,
+                operation,
+                "graph execution rejected the GPU-resident output boundary",
+            )
+            .with_boxed_source(source),
+        },
+        rejection => Error::new(
+            ErrorCode::InvalidExecutionPlan,
+            operation,
+            "graph execution rejected the GPU-resident output boundary",
+        )
+        .with_source(rejection),
+    }
+}
+
 struct CompletedComposedAdmissionProof {
     execution_config: NexusNativeExecutionConfig,
     has_composed_graph_schedule: bool,
@@ -247,49 +275,10 @@ fn complete_composed_admission_proof(
         }
     }
 
-    let mut proofs =
-        producer_tickets.iter().filter_map(|ticket| ticket.attempt_capability_proof_for_rebind()).collect::<Vec<_>>();
     let graph_result_input_names = prepared_gpu_inputs
         .iter()
         .filter_map(|input| graph_execution_plan(input.as_ref()).map(|graph| graph.graph_result_input_name()))
         .collect::<Vec<_>>();
-    let standalone_consumer_proof = match graph_result_input_names.as_slice() {
-        [graph_result_input_name] => {
-            let passthrough = QueryPlanCapabilityProof::for_attested_graph_result_passthrough_plan(
-                consumer_plan,
-                graph_result_input_name,
-            );
-            let bounded_consumer = QueryPlanCapabilityProof::for_attested_graph_result_bounded_consumer_plan(
-                consumer_plan,
-                graph_result_input_name,
-            );
-            passthrough.or(bounded_consumer).or_else(|| QueryPlanCapabilityProof::for_query_plan(consumer_plan))
-        },
-        _ => QueryPlanCapabilityProof::for_query_plan(consumer_plan),
-    };
-    let Some(consumer_proof) = standalone_consumer_proof else {
-        return Err(Error::new(
-            ErrorCode::InvalidExecutionPlan,
-            "datafusion_nexus.native_composed.admission_proof",
-            "the native composed consumer did not issue an exact capability proof",
-        )
-        .with_fact("reason", "consumer_admission_proof_missing")
-        .into());
-    };
-    // A lone graph result is an established standalone handoff. The ordered
-    // schedule is reserved for genuinely composed attempts with multiple
-    // retained producer occurrences.
-    proofs.push(consumer_proof);
-    let first_proof = proofs.first().cloned().expect("consumer proof is always pushed");
-    let standalone_proof =
-        QueryPlanCapabilityProof::combine(first_proof, proofs.into_iter().skip(1)).map_err(|error| {
-            DataFusionError::from(Error::from_native(
-                "datafusion_nexus.native_composed.admission_proof",
-                "failed to aggregate prepared producer and consumer capability proofs",
-                error,
-            ))
-        })?;
-
     let all_prepared_inputs_are_graph_producers =
         !prepared_gpu_inputs.is_empty() && graph_result_input_names.len() == prepared_gpu_inputs.len();
     let needs_composed_graph_schedule = all_prepared_inputs_are_graph_producers && graph_result_input_names.len() > 1;
@@ -322,6 +311,59 @@ fn complete_composed_admission_proof(
             })?;
         (proof, true)
     } else {
+        let standalone_consumer_proof = match graph_result_input_names.as_slice() {
+            [graph_result_input_name] => {
+                let passthrough = QueryPlanCapabilityProof::for_attested_graph_result_passthrough_plan(
+                    consumer_plan,
+                    graph_result_input_name,
+                );
+                let producer_proofs = producer_tickets
+                    .iter()
+                    .filter_map(|ticket| ticket.attempt_capability_proof_for_rebind())
+                    .collect::<Vec<_>>();
+                let bounded_consumer = match producer_proofs.as_slice() {
+                    [producer] => {
+                        QueryPlanCapabilityProof::for_attested_graph_result_bounded_consumer_plan_with_producer(
+                            consumer_plan,
+                            graph_result_input_name,
+                            producer,
+                        )
+                    },
+                    _ => QueryPlanCapabilityProof::for_attested_graph_result_bounded_consumer_plan(
+                        consumer_plan,
+                        graph_result_input_name,
+                    ),
+                };
+                passthrough.or(bounded_consumer).or_else(|| QueryPlanCapabilityProof::for_query_plan(consumer_plan))
+            },
+            _ => QueryPlanCapabilityProof::for_query_plan(consumer_plan),
+        };
+        let Some(consumer_proof) = standalone_consumer_proof else {
+            return Err(Error::new(
+                ErrorCode::InvalidExecutionPlan,
+                "datafusion_nexus.native_composed.admission_proof",
+                "the native composed consumer did not issue an exact capability proof",
+            )
+            .with_fact("reason", "consumer_admission_proof_missing")
+            .into());
+        };
+        // A lone graph result is an established standalone handoff. The ordered
+        // schedule is reserved for genuinely composed attempts with multiple
+        // retained producer occurrences.
+        let mut proofs = producer_tickets
+            .iter()
+            .filter_map(|ticket| ticket.attempt_capability_proof_for_rebind())
+            .collect::<Vec<_>>();
+        proofs.push(consumer_proof);
+        let first_proof = proofs.first().cloned().expect("consumer proof is always pushed");
+        let standalone_proof =
+            QueryPlanCapabilityProof::combine(first_proof, proofs.into_iter().skip(1)).map_err(|error| {
+                DataFusionError::from(Error::from_native(
+                    "datafusion_nexus.native_composed.admission_proof",
+                    "failed to aggregate prepared producer and consumer capability proofs",
+                    error,
+                ))
+            })?;
         (standalone_proof, false)
     };
     let Some(first_ticket) = producer_tickets.first() else {
@@ -975,6 +1017,11 @@ fn validate_composed_gpu_inputs(
     let mut provided_inputs = BTreeSet::new();
     for child in gpu_inputs {
         let Some(input_name) = gpu_resident_producer_input_name(child.as_ref()) else {
+            if let Some(rejection) =
+                graph_execution_plan(child.as_ref()).and_then(|graph| graph.gpu_resident_output_rejection())
+            {
+                return Err(adapter_error_from_graph_rejection(rejection, operation));
+            }
             return Err(Error::new(
                 ErrorCode::InvalidExecutionPlan,
                 operation,
@@ -1038,7 +1085,7 @@ mod tests {
     use nexus_query_engine::{
         admission::QueryPlanCapabilityProof,
         expr::{Expr, SortExpr, SortSpec},
-        graph_memory::{GraphMemoryCalibrationOverride, graph_memory_admission_evidence_for_edge_list},
+        graph_memory::{GraphMemoryCalibrationOverride, graph_memory_bounded_admission_evidence_for_plan},
         plan::{
             GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec, GraphBfsParams, GraphConstructionOptions,
             GraphEdgeColumnBindings, ProjectionOutput, QueryPlan, QueryPlanBuilder,
@@ -1050,6 +1097,7 @@ mod tests {
     use super::*;
     use crate::{
         backend::InstalledTestGpuBackend,
+        error::{Error, ErrorCode},
         native_exec::{
             admission::{QueryAdmissionTicket, task_context_with_query_admission_ticket},
             graph::{GraphExecutionPlan, register_graph_execution_plan_discovery},
@@ -1063,6 +1111,77 @@ mod tests {
         capability_proof: QueryPlanCapabilityProof,
         graph_execution: bool,
         inner: EmptyExec,
+    }
+
+    #[derive(Debug)]
+    struct FakeHostOwnedGraphExec {
+        inner: EmptyExec,
+    }
+
+    impl DisplayAs for FakeHostOwnedGraphExec {
+        fn fmt_as(&self, format: DisplayFormatType, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            self.inner.fmt_as(format, formatter)
+        }
+    }
+
+    impl ExecutionPlan for FakeHostOwnedGraphExec {
+        fn name(&self) -> &str {
+            "FakeHostOwnedGraphExec"
+        }
+
+        fn properties(&self) -> &Arc<PlanProperties> {
+            self.inner.properties()
+        }
+
+        fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+            Vec::new()
+        }
+
+        fn with_new_children(
+            self: Arc<Self>,
+            children: Vec<Arc<dyn ExecutionPlan>>,
+        ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+            if children.is_empty() {
+                Ok(self)
+            } else {
+                Err(DataFusionError::Execution("fake host-owned graph has no children".to_string()))
+            }
+        }
+
+        fn execute(
+            &self,
+            partition: usize,
+            task_context: Arc<TaskContext>,
+        ) -> DataFusionResult<SendableRecordBatchStream> {
+            self.inner.execute(partition, task_context)
+        }
+    }
+
+    impl GraphExecutionPlan for FakeHostOwnedGraphExec {
+        fn graph_execution_capability_proof(&self) -> DataFusionResult<QueryPlanCapabilityProof> {
+            Err(DataFusionError::Execution("fake host-owned graph does not issue a proof".to_string()))
+        }
+
+        fn graph_result_input_name(&self) -> &str {
+            "fake_input"
+        }
+
+        fn sealed_attempt_metrics_target(&self) -> SealedAttemptMetricsTarget {
+            SealedAttemptMetricsTarget::new(&ExecutionPlanMetricsSet::new(), GraphClaimCalibrationCapture::default())
+        }
+
+        fn gpu_resident_output_rejection(&self) -> Option<DataFusionError> {
+            Some(
+                Error::new(
+                    ErrorCode::RequiredGpuOperationUnsupported,
+                    "datafusion_nexus.test.host_owned_graph",
+                    "fake graph output is host-owned",
+                )
+                .with_fact("reason", "logical_bfs_gpu_result_unsupported")
+                .with_fact("output_boundary", "gpu_resident")
+                .into(),
+            )
+        }
     }
 
     impl DisplayAs for FakeGpuResidentProducer {
@@ -1151,6 +1270,10 @@ mod tests {
             .map(|producer| producer as &dyn GraphExecutionPlan)
     }
 
+    fn fake_host_owned_graph_execution_plan(plan: &dyn ExecutionPlan) -> Option<&dyn GraphExecutionPlan> {
+        plan.downcast_ref::<FakeHostOwnedGraphExec>().map(|graph| graph as &dyn GraphExecutionPlan)
+    }
+
     fn admission_source(backend: &InstalledTestGpuBackend) -> crate::native_exec::QueryAdmissionSource {
         backend
             .optimizer_config()
@@ -1172,24 +1295,25 @@ mod tests {
         );
         let mut builder = QueryPlanBuilder::new();
         let source = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
-            vec![LocalParquetFile::new("/tmp/composed-admission-proof.parquet")],
+            vec![
+                LocalParquetFile::new("/tmp/composed-admission-proof.parquet")
+                    .with_row_groups(vec![0])
+                    .with_row_group_rows(vec![10])
+                    .with_row_group_bytes(vec![64])
+                    .with_projected_row_group_bytes(vec![32], vec![96]),
+            ],
             Arc::clone(&edge_schema),
             vec!["src".to_string(), "dst".to_string()],
         )));
         let graph = builder.try_add_graph_algorithm(source, spec.clone()).expect("BFS graph plan must lower");
         let graph_plan = builder.finish_gpu_resident(graph);
-        let evidence = graph_memory_admission_evidence_for_edge_list(
-            &spec,
-            &edge_schema,
-            10,
-            None,
-            GraphMemoryCalibrationOverride::none(),
-            None,
-        )
-        .expect("BFS graph plan must have typed memory evidence");
+        let evidence =
+            graph_memory_bounded_admission_evidence_for_plan(&graph_plan, GraphMemoryCalibrationOverride::none(), None)
+                .expect("BFS graph plan must have typed memory evidence");
         let proof = QueryPlanCapabilityProof::for_cugraph_graph_execution_plan(&graph_plan)
             .expect("BFS graph plan must issue a capability proof")
-            .with_graph_memory_admission_evidence(&evidence);
+            .with_graph_memory_admission_evidence(&evidence)
+            .expect("finite graph evidence");
         (spec.output_schema, proof)
     }
 
@@ -1210,6 +1334,22 @@ mod tests {
 
     fn consumer_plan(schema: Arc<Schema>) -> QueryPlan {
         consumer_plan_for_inputs(&["fake_input"], schema)
+    }
+
+    #[test]
+    fn composed_constructor_preserves_host_owned_graph_gpu_output_rejection() {
+        register_graph_execution_plan_discovery(fake_host_owned_graph_execution_plan);
+        let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, false)]));
+        let consumer_plan = consumer_plan(Arc::clone(&schema));
+        let child = Arc::new(FakeHostOwnedGraphExec { inner: EmptyExec::new(schema) }) as Arc<dyn ExecutionPlan>;
+
+        let error =
+            NexusNativeComposedExec::try_new(consumer_plan, vec![child], NexusNativeExecutionConfig::bounded_default())
+                .expect_err("host-owned graph results must not be accepted as GPU-resident producers");
+
+        assert_eq!(error.code(), ErrorCode::RequiredGpuOperationUnsupported);
+        assert_eq!(error.fact_value("reason"), Some("logical_bfs_gpu_result_unsupported"));
+        assert_eq!(error.fact_value("output_boundary"), Some("gpu_resident"));
     }
 
     fn non_attested_projection_consumer_plan(schema: Arc<Schema>) -> QueryPlan {
@@ -1233,6 +1373,25 @@ mod tests {
             false,
             false,
         )]))
+    }
+
+    fn sorted_consumer_plan_with_shape(
+        schema: Arc<Schema>,
+        key_count: usize,
+        row_count_upper_bound: Option<u64>,
+    ) -> QueryPlan {
+        let mut builder = QueryPlanBuilder::new();
+        let mut source = GpuResidentSource::new("fake_input", Arc::clone(&schema));
+        if let Some(row_count_upper_bound) = row_count_upper_bound {
+            source = source.with_row_count_upper_bound(row_count_upper_bound);
+        }
+        let source = builder.add_source(SourceNode::GpuResident(source));
+        let sort = builder.add_sort(
+            source,
+            SortSpec::new((0..key_count).map(|_| SortExpr::new(Expr::column("vertex"), false, false)).collect()),
+            schema,
+        );
+        builder.finish_with_host_sink(sort)
     }
 
     #[test]
@@ -1320,8 +1479,12 @@ mod tests {
         let config = NexusNativeExecutionConfig::bounded(1024, 512, 1, 3, 1).with_query_admission_source(source);
 
         let standalone_consumer_proof =
-            QueryPlanCapabilityProof::for_attested_graph_result_bounded_consumer_plan(&consumer_plan, "fake_input")
-                .expect("the native full sort remains an attested standalone graph consumer");
+            QueryPlanCapabilityProof::for_attested_graph_result_bounded_consumer_plan_with_producer(
+                &consumer_plan,
+                "fake_input",
+                &producer_proof,
+            )
+            .expect("the native full sort remains an attested standalone graph consumer");
         let expected_proof = QueryPlanCapabilityProof::combine(producer_proof.clone(), [standalone_consumer_proof])
             .expect("the standalone graph sort proof remains valid");
         let completed =
@@ -1336,6 +1499,73 @@ mod tests {
                 .attempt_capability_proof(),
             Some(&expected_proof)
         );
+    }
+
+    #[test]
+    fn complete_composed_admission_proof_rejects_unsupported_graph_result_sorts_at_admission() {
+        register_gpu_resident_producer_discovery(fake_gpu_resident_producer);
+        register_graph_execution_plan_discovery(fake_graph_execution_plan);
+        let backend = InstalledTestGpuBackend::new();
+        let source = admission_source(&backend);
+        let (_producer_schema, producer_proof) = typed_graph_producer_proof();
+        let cases = [
+            (
+                Arc::new(Schema::new(vec![Field::new("vertex", DataType::Float32, false)])),
+                1,
+                Some(8),
+                "sort_owner_key_type_not_integral_or_chrono",
+            ),
+            (
+                Arc::new(Schema::new(vec![Field::new("vertex", DataType::Int64, true)])),
+                1,
+                Some(8),
+                "sort_owner_nullable_key_unsupported",
+            ),
+            (
+                Arc::new(Schema::new(vec![Field::new("vertex", DataType::Int64, false)])),
+                2,
+                Some(8),
+                "sort_owner_sort_requires_exactly_one_key",
+            ),
+        ];
+
+        for (schema, key_count, row_count_upper_bound, sort_rejection_reason) in cases {
+            let consumer_plan = sorted_consumer_plan_with_shape(Arc::clone(&schema), key_count, row_count_upper_bound);
+            let producer_ticket = QueryAdmissionTicket::new(source.clone(), Some(producer_proof.clone()));
+            let prepared_inputs: Vec<Arc<dyn ExecutionPlan>> = vec![Arc::new(FakeGpuResidentProducer {
+                input_name: "fake_input".to_string(),
+                ticket: producer_ticket,
+                capability_proof: producer_proof.clone(),
+                graph_execution: true,
+                inner: EmptyExec::new(Arc::clone(&schema)),
+            })];
+            let config =
+                NexusNativeExecutionConfig::bounded(1024, 512, 1, 3, 1).with_query_admission_source(source.clone());
+            let completed =
+                complete_composed_admission_proof(config, &consumer_plan, &prepared_inputs, &TaskContext::default())
+                    .expect("recognized graph-result sort shape must issue a sticky proof");
+            let completed_ticket = completed
+                .execution_config
+                .query_admission_ticket()
+                .expect("proof completion installs one admission ticket");
+            let proof = completed_ticket
+                .attempt_capability_proof()
+                .expect("completed ticket retains the composed capability proof")
+                .clone();
+
+            let error = backend
+                .backend()
+                .session_capability()
+                .admit_query_with_request(QueryAdmissionRequest::new().with_query_plan_capability_proof(proof))
+                .expect_err("unsupported graph-result sort must reject during device/envelope resolution");
+            assert_eq!(error.code(), nexus_query_engine::error::QueryErrorCode::UnsupportedPlanShape);
+            assert_eq!(error.fact_value("reason"), Some("graph_attempt_complete_phase_unmodeled"));
+            assert_eq!(error.fact_value("schedule_reason"), Some("sort_metadata_rejected"));
+            assert_eq!(error.fact_value("sort_rejection_reason"), Some(sort_rejection_reason));
+            let snapshot = backend.backend().admission_snapshot().expect("test backend exposes admission state");
+            assert_eq!(snapshot.active_queries, 0, "a rejected sort must not mutate the grant ledger");
+            assert_eq!(snapshot.queued_queries, 0, "a rejected sort must not become a generic admission waiter");
+        }
     }
 
     #[test]

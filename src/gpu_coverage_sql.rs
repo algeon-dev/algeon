@@ -11,9 +11,12 @@ use datafusion::{
     catalog::{Session, TableFunction, TableFunctionImpl, TableProvider},
     common::{DataFusionError, Result, ScalarValue},
     datasource::{MemTable, TableType},
-    execution::{SessionState, context::SessionContext},
+    execution::{
+        SessionState,
+        context::{SessionContext, TaskContext},
+    },
     logical_expr::Expr,
-    physical_plan::ExecutionPlan,
+    physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, SendableRecordBatchStream},
 };
 
 use crate::{
@@ -82,7 +85,51 @@ impl TableProvider for GpuCoverageProvider {
             coverage_schema(),
             vec![vec![coverage_batch(&coverage, ExplainGpuOutputMode::Rows, None)?]],
         )?;
-        table.scan(state, projection, filters, limit).await
+        let input = table.scan(state, projection, filters, limit).await?;
+        Ok(Arc::new(GpuCoverageCpuBoundaryExec::new(input)))
+    }
+}
+
+#[derive(Debug)]
+struct GpuCoverageCpuBoundaryExec {
+    input: Arc<dyn ExecutionPlan>,
+    properties: Arc<PlanProperties>,
+}
+
+impl GpuCoverageCpuBoundaryExec {
+    fn new(input: Arc<dyn ExecutionPlan>) -> Self {
+        Self { properties: Arc::clone(input.properties()), input }
+    }
+}
+
+impl DisplayAs for GpuCoverageCpuBoundaryExec {
+    fn fmt_as(&self, _: DisplayFormatType, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "GpuCoverageCpuBoundaryExec")
+    }
+}
+
+impl ExecutionPlan for GpuCoverageCpuBoundaryExec {
+    fn name(&self) -> &str {
+        "GpuCoverageCpuBoundaryExec"
+    }
+
+    fn properties(&self) -> &Arc<PlanProperties> {
+        &self.properties
+    }
+
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+        vec![&self.input]
+    }
+
+    fn with_new_children(self: Arc<Self>, children: Vec<Arc<dyn ExecutionPlan>>) -> Result<Arc<dyn ExecutionPlan>> {
+        let [input] = children.try_into().map_err(|children: Vec<Arc<dyn ExecutionPlan>>| {
+            DataFusionError::Internal(format!("coverage CPU boundary expected one child, got {}", children.len()))
+        })?;
+        Ok(Arc::new(Self::new(input)))
+    }
+
+    fn execute(&self, partition: usize, task_context: Arc<TaskContext>) -> Result<SendableRecordBatchStream> {
+        self.input.execute(partition, task_context)
     }
 }
 

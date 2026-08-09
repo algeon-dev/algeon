@@ -622,7 +622,8 @@ fn graph_memory_model_prices_dblp_triangle_from_runtime_statistics_above_measure
         GraphAlgorithmParams::TriangleCountAll(GraphTriangleCountAllParams),
     );
     let peak_chunk_min_degree_sum =
-        triangle_count_peak_chunk_min_degree_pricing_term(493_000_000, 45_476_753, Some(188));
+        triangle_count_peak_chunk_min_degree_pricing_term(493_000_000, 45_476_753, Some(188))
+            .expect("triangle chunk pricing must remain finite");
     assert_eq!(peak_chunk_min_degree_sum, 77_031_250);
     let statistics = GraphStatistics::runtime_exact_vertices(4_146_772)
         .with_degree_distribution(128, 34)

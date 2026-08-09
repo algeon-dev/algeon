@@ -15,10 +15,7 @@ use arrow::{
     datatypes::{DataType, Schema, SchemaRef},
     record_batch::RecordBatch,
 };
-use cudf::{
-    DataFrame, Series,
-    frame::{dataframe::HostBatchCursorConfig, factorization::Codebook},
-};
+use cudf::frame::dataframe::HostBatchCursorConfig;
 use datafusion::{
     common::{DataFusionError, Result, stats::Precision, utils::memory::get_record_batch_memory_size},
     datasource::{memory::MemorySourceConfig, physical_plan::FileScanConfig, source::DataSourceExec},
@@ -46,11 +43,7 @@ use nexus_query_engine::{
         output::{QueryExecutionOutcome, QueryOutput},
     },
     expr::{BinaryOp, CaseWhen, Expr as NativeExpr, LimitSpec, LiteralValue},
-    graph_memory::{
-        GraphMemoryCalibrationOverride, GraphVertexEstimate,
-        graph_memory_bounded_admission_evidence_for_edge_list_with_vertex_estimate,
-        query_plan_graph_vertex_upper_bound,
-    },
+    graph_memory::{GraphMemoryCalibrationOverride, GraphVertexEstimate, query_plan_graph_vertex_upper_bound},
     metrics::{GraphAlgorithmRuntimeMetrics, QueryMetrics},
     observability::RuntimeObservationConfig,
     plan::{

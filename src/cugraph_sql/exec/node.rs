@@ -83,6 +83,9 @@ impl CugraphAlgoExec {
             .iter()
             .map(|source| exact_execution_plan_output_rows(source.as_ref()))
             .collect::<Result<Vec<_>>>()?;
+        let edge_row_upper_bound = edge_source_output_rows(edge_source.as_ref())?;
+        let edge_vertex_upper_bound =
+            edge_source_graph_vertex_estimate(edge_source.as_ref()).map(|estimate| estimate.count);
         preflight_cugraph_query_plan(
             &spec,
             edge_source.schema(),
@@ -90,6 +93,8 @@ impl CugraphAlgoExec {
             projection.as_ref(),
             limit,
             edge_normalize_inserted,
+            edge_row_upper_bound,
+            edge_vertex_upper_bound,
         )?;
         let graph_residency =
             cugraph_graph_residency_descriptor(&spec, Arc::clone(&edge_source), edge_normalize_inserted);
@@ -129,12 +134,21 @@ impl CugraphAlgoExec {
 
     #[cfg(test)]
     pub(crate) fn graph_model_ask_bytes_for_admission_ticket(&self) -> Result<Option<GraphAdmissionModelAsk>> {
-        cugraph_graph_model_ask_bytes(
+        let edge_row_upper_bound = edge_source_output_rows(self.edge_source.as_ref())?;
+        let edge_vertex_upper_bound =
+            edge_source_graph_vertex_estimate(self.edge_source.as_ref()).map(|estimate| estimate.count);
+        let (graph_plan, _) = cugraph_execution_capability_proof_with_edge_row_upper_bound(
             &self.spec,
-            self.edge_source.as_ref(),
+            self.edge_source.schema(),
+            self.predicate_sources.iter().map(|source| source.schema()).collect(),
+            &self.predicate_row_upper_bounds,
+            self.projection.as_ref(),
+            self.limit,
             self.edge_normalize_inserted(),
-            &self.native_execution_config,
-        )
+            edge_row_upper_bound,
+            edge_vertex_upper_bound,
+        )?;
+        cugraph_graph_model_ask_bytes(&graph_plan, self.edge_source.as_ref(), &self.native_execution_config)
     }
 
     pub(crate) fn coverage_algorithm_name(&self) -> &'static str {
@@ -600,8 +614,14 @@ impl CugraphAlgoExec {
         let mut graph_metrics =
             GraphExecutionMetrics::new(metrics, self.native_execution_config.runtime_observation_config());
         let result = async {
-            let UploadedCugraphInputs { edge_schema, edge_frame, logical_literal_source, predicate_frames } =
-                staged_inputs.upload(native_context, &mut graph_metrics, Arc::clone(&task_context)).await?;
+            let UploadedCugraphInputs {
+                edge_schema,
+                edge_frame,
+                predicate_frames,
+                logical_codebook,
+                execution_spec,
+                reservation: _input_reservation,
+            } = staged_inputs.upload(native_context, &mut graph_metrics, Arc::clone(&task_context)).await?;
             let edge_frame =
                 attach_graph_residency(edge_frame, self.graph_residency.as_ref(), edge_schema.as_ref(), &self.spec);
             let path_target = bfs_path_target_vertex(
@@ -612,71 +632,55 @@ impl CugraphAlgoExec {
                 self.host_boundary_config.max_output_staging_bytes(),
                 &mut graph_metrics,
             )?;
-            let prepared = prepare_bfs_logical_gpu_inputs(
-                native_context,
-                &self.spec,
-                edge_schema,
-                edge_frame,
-                logical_literal_source,
-                predicate_frames,
-            )?;
-            let logical_mapping = prepared.logical_codebook.is_some();
+            let path_target = path_target
+                .map(|target| match logical_codebook.as_ref() {
+                    Some(codebook) => target.map_vertex(codebook),
+                    None => Ok(target),
+                })
+                .transpose()?;
+            let logical_mapping = logical_codebook.is_some();
             let handle = execute_cugraph_query_to_gpu_with_options(
                 native_context,
                 &mut graph_metrics,
-                &prepared.execution_spec,
-                prepared.edge_schema,
-                prepared.edge_frame,
-                prepared.predicate_frames,
+                &execution_spec,
+                edge_schema,
+                edge_frame,
+                predicate_frames,
                 &self.predicate_row_upper_bounds,
                 if logical_mapping || path_target.is_some() { None } else { self.projection.as_ref() },
                 if logical_mapping || path_target.is_some() { None } else { self.limit },
                 self.edge_normalize_inserted(),
+                edge_source_output_rows(self.edge_source.as_ref())?,
+                edge_source_graph_vertex_estimate(self.edge_source.as_ref()).map(|estimate| estimate.count),
                 singleflight_leader,
             )?;
-            let handle = if let Some(codebook) = prepared.logical_codebook {
-                let decoded = decode_bfs_logical_gpu_output(
-                    native_context,
-                    handle,
-                    &codebook,
-                    bfs_decoded_output_schema_for_host(&self.spec),
-                )?;
-                if path_target.is_some() {
-                    decoded
-                } else {
-                    apply_gpu_projection_limit(
-                        native_context,
-                        &mut graph_metrics,
-                        decoded,
-                        Arc::clone(&self.spec.output_schema),
-                        self.projection.as_ref(),
-                        self.limit,
-                    )?
-                }
-            } else {
-                handle
-            };
-            if let Some(path_target) = path_target {
-                let (path, reservation) = materialize_bfs_path_output(
-                    native_context,
-                    task_context.as_ref(),
-                    handle,
-                    &self.spec,
-                    path_target,
-                    self.projection.as_ref(),
-                    self.limit,
-                    self.host_boundary_config.max_output_staging_bytes(),
-                    &mut graph_metrics,
-                )?;
-                return Ok(EagerCugraphHostOutput::from_shared_parts(self.schema(), Arc::new(vec![path]), reservation));
-            }
-            materialize_gpu_output_eagerly(
+            let output = materialize_gpu_output_eagerly(
                 handle,
                 task_context.as_ref(),
                 native_context.cancellation().clone(),
                 self.host_boundary_config.max_output_staging_bytes(),
                 &mut graph_metrics,
-            )
+            )?;
+            let output = if let Some(codebook) = logical_codebook.as_ref() {
+                decode_bfs_logical_host_output(output, codebook, bfs_decoded_output_schema_for_host(&self.spec))?
+            } else {
+                output
+            };
+            if let Some(path_target) = path_target {
+                let (path, reservation) = materialize_bfs_path_output_from_host(
+                    output,
+                    &self.spec,
+                    path_target,
+                    self.projection.as_ref(),
+                    self.limit,
+                    self.host_boundary_config.max_output_staging_bytes(),
+                )?;
+                return Ok(EagerCugraphHostOutput::from_shared_parts(self.schema(), Arc::new(vec![path]), reservation));
+            }
+            if logical_mapping {
+                return apply_host_projection_limit(output, &self.spec, self.projection.as_ref(), self.limit);
+            }
+            Ok(output)
         };
         let result = result.await;
         graph_metrics.finish(result)
@@ -739,7 +743,7 @@ impl CugraphAlgoExec {
         partition: usize,
         task_context: Arc<TaskContext>,
         staged_inputs: StagedCugraphInputs,
-        mut singleflight_leader: Option<&mut GraphBfsLeader>,
+        singleflight_leader: Option<&mut GraphBfsLeader>,
     ) -> Result<(String, GpuResultHandle)> {
         if partition != 0 {
             return Err(Error::new(
@@ -757,119 +761,42 @@ impl CugraphAlgoExec {
         let mut graph_metrics =
             GraphExecutionMetrics::new(&metrics, self.native_execution_config.runtime_observation_config());
         let result = async {
-            let UploadedCugraphInputs { edge_schema, edge_frame, logical_literal_source, predicate_frames } =
-                staged_inputs.upload(native_context, &mut graph_metrics, Arc::clone(&task_context)).await?;
-            let edge_frame =
-                attach_graph_residency(edge_frame, self.graph_residency.as_ref(), edge_schema.as_ref(), &self.spec);
-            if is_bfs_path_output(&self.spec) {
-                let path_target = bfs_path_target_vertex(
-                    native_context,
-                    &self.spec,
-                    &predicate_frames,
-                    task_context.as_ref(),
-                    self.host_boundary_config.max_output_staging_bytes(),
-                    &mut graph_metrics,
-                )?
-                .expect("path mode checked");
-                let prepared = prepare_bfs_logical_gpu_inputs(
-                    native_context,
-                    &self.spec,
-                    edge_schema,
-                    edge_frame,
-                    logical_literal_source,
-                    predicate_frames,
-                )?;
-                let handle = execute_cugraph_query_to_gpu_with_options(
-                    native_context,
-                    &mut graph_metrics,
-                    &prepared.execution_spec,
-                    prepared.edge_schema,
-                    prepared.edge_frame,
-                    prepared.predicate_frames,
-                    &self.predicate_row_upper_bounds,
-                    None,
-                    None,
-                    self.edge_normalize_inserted(),
-                    singleflight_leader.as_deref_mut(),
-                )?;
-                let handle = if let Some(codebook) = prepared.logical_codebook {
-                    decode_bfs_logical_gpu_output(
-                        native_context,
-                        handle,
-                        &codebook,
-                        bfs_decoded_output_schema_for_host(&self.spec),
-                    )?
-                } else {
-                    handle
-                };
-                let path_residency_source = handle.clone().into_gpu_frame();
-                let (path, _reservation) = materialize_bfs_path_output(
-                    native_context,
-                    task_context.as_ref(),
-                    handle,
-                    &self.spec,
-                    path_target,
-                    self.projection.as_ref(),
-                    self.limit,
-                    self.host_boundary_config.max_output_staging_bytes(),
-                    &mut graph_metrics,
-                )?;
-                let schema = projected_schema(&self.spec.output_schema, self.projection.as_ref())?;
-                let frame = record_batches_to_gpu(native_context, Arc::clone(&schema), &[path])?;
-                let frame = retain_mapped_cugraph_frame(
-                    frame.into_frame(),
-                    &path_residency_source,
-                    "datafusion_nexus.cugraph_sql.path_output",
-                    "failed to retain BFS path GPU output residency",
-                )?;
-                let handle = GpuResultHandle::new(native_context, frame, schema).map_err(|error| {
-                    DataFusionError::from(Error::from_native(
-                        "datafusion_nexus.cugraph_sql.path_output",
-                        "failed to bind BFS path output as a GPU-resident result",
-                        error,
-                    ))
-                })?;
-                return Ok((self.gpu_result_input_name.clone(), handle));
+            let logical_bfs_mapping = logical_bfs_mapping_for_gpu_boundary(&self.spec, &self.edge_source.schema())?;
+            if is_bfs_path_output(&self.spec) || logical_bfs_mapping {
+                return Err(Error::new(
+                    ErrorCode::RequiredGpuOperationUnsupported,
+                    "datafusion_nexus.cugraph_sql.execute_gpu",
+                    "logical and path BFS results are host-owned and cannot be GPU-resident producers",
+                )
+                .with_fact("reason", "logical_bfs_gpu_result_unsupported")
+                .with_fact("output_boundary", "gpu_resident")
+                .into());
             }
-            let prepared = prepare_bfs_logical_gpu_inputs(
-                native_context,
-                &self.spec,
+            let UploadedCugraphInputs {
                 edge_schema,
                 edge_frame,
-                logical_literal_source,
                 predicate_frames,
-            )?;
+                logical_codebook: _,
+                execution_spec,
+                reservation: _input_reservation,
+            } = staged_inputs.upload(native_context, &mut graph_metrics, Arc::clone(&task_context)).await?;
+            let edge_frame =
+                attach_graph_residency(edge_frame, self.graph_residency.as_ref(), edge_schema.as_ref(), &self.spec);
             let handle = execute_cugraph_query_to_gpu_with_options(
                 native_context,
                 &mut graph_metrics,
-                &prepared.execution_spec,
-                prepared.edge_schema,
-                prepared.edge_frame,
-                prepared.predicate_frames,
+                &execution_spec,
+                edge_schema,
+                edge_frame,
+                predicate_frames,
                 &self.predicate_row_upper_bounds,
-                if prepared.logical_codebook.is_some() { None } else { self.projection.as_ref() },
-                if prepared.logical_codebook.is_some() { None } else { self.limit },
+                self.projection.as_ref(),
+                self.limit,
                 self.edge_normalize_inserted(),
+                edge_source_output_rows(self.edge_source.as_ref())?,
+                edge_source_graph_vertex_estimate(self.edge_source.as_ref()).map(|estimate| estimate.count),
                 singleflight_leader,
             )?;
-            let handle = if let Some(codebook) = prepared.logical_codebook {
-                let decoded = decode_bfs_logical_gpu_output(
-                    native_context,
-                    handle,
-                    &codebook,
-                    Arc::clone(&self.spec.output_schema),
-                )?;
-                apply_gpu_projection_limit(
-                    native_context,
-                    &mut graph_metrics,
-                    decoded,
-                    Arc::clone(&self.spec.output_schema),
-                    self.projection.as_ref(),
-                    self.limit,
-                )?
-            } else {
-                handle
-            };
             Ok((self.gpu_result_input_name.clone(), handle))
         };
         let result = result.await;
@@ -897,17 +824,16 @@ impl GpuResidentProducer for CugraphAlgoExec {
                 .prepare_lakehouse_source_metadata(Arc::clone(&task_context))
                 .await?
                 .issue_graph_aware_ticket_after_metadata(task_context.as_ref())?;
-            prepared.prepared_staged_inputs = Some(Arc::new(std::sync::Mutex::new(Some(
-                stage_cugraph_inputs(
-                    &prepared.spec,
-                    Arc::clone(&prepared.edge_source),
-                    prepared.predicate_sources.clone(),
-                    task_context,
-                    prepared.native_execution_config.cancellation(),
-                    prepared.host_boundary_config.max_input_staging_bytes(),
-                )
-                .await?,
-            ))));
+            let staged_inputs = stage_cugraph_inputs(
+                &prepared.spec,
+                Arc::clone(&prepared.edge_source),
+                prepared.predicate_sources.clone(),
+                Arc::clone(&task_context),
+                prepared.native_execution_config.cancellation(),
+                prepared.host_boundary_config.max_input_staging_bytes(),
+            )
+            .await?;
+            prepared.prepared_staged_inputs = Some(Arc::new(std::sync::Mutex::new(Some(staged_inputs))));
             Ok(Arc::new(prepared) as Arc<dyn ExecutionPlan>)
         })
     }
@@ -924,8 +850,21 @@ impl GpuResidentProducer for CugraphAlgoExec {
     }
 }
 
+fn logical_bfs_mapping_for_gpu_boundary(spec: &CugraphAlgorithmSpec, edge_schema: &SchemaRef) -> Result<bool> {
+    let CugraphAlgorithmParams::Bfs(params) = &spec.params else {
+        return Ok(false);
+    };
+    bfs_uses_logical_mapping(spec, params, edge_schema)
+}
+
 pub(super) fn cugraph_gpu_resident_producer(plan: &dyn ExecutionPlan) -> Option<&dyn GpuResidentProducer> {
-    plan.downcast_ref::<CugraphAlgoExec>().map(|producer| producer as &dyn GpuResidentProducer)
+    let producer = plan.downcast_ref::<CugraphAlgoExec>()?;
+    let logical_bfs_mapping =
+        logical_bfs_mapping_for_gpu_boundary(&producer.spec, &producer.edge_source.schema()).ok()?;
+    if is_bfs_path_output(&producer.spec) || logical_bfs_mapping {
+        return None;
+    }
+    Some(producer as &dyn GpuResidentProducer)
 }
 
 pub(super) fn cugraph_execution_plan(plan: &dyn ExecutionPlan) -> Option<&dyn GraphExecutionPlan> {
@@ -942,7 +881,10 @@ pub(super) fn register_cugraph_execution_spis() {
 
 impl GraphExecutionPlan for CugraphAlgoExec {
     fn graph_execution_capability_proof(&self) -> Result<QueryPlanCapabilityProof> {
-        cugraph_execution_capability_proof(
+        let edge_row_upper_bound = edge_source_output_rows(self.edge_source.as_ref())?;
+        let edge_vertex_upper_bound =
+            edge_source_graph_vertex_estimate(self.edge_source.as_ref()).map(|estimate| estimate.count);
+        cugraph_execution_capability_proof_with_edge_row_upper_bound(
             &self.spec,
             self.edge_source.schema(),
             self.predicate_sources.iter().map(|source| source.schema()).collect(),
@@ -950,7 +892,10 @@ impl GraphExecutionPlan for CugraphAlgoExec {
             self.projection.as_ref(),
             self.limit,
             cugraph_edge_normalize_inserted(&self.spec, &self.edge_source_canonical_facts),
+            edge_row_upper_bound,
+            edge_vertex_upper_bound,
         )
+        .map(|(_, proof)| proof)
     }
 
     fn graph_result_input_name(&self) -> &str {
@@ -959,6 +904,26 @@ impl GraphExecutionPlan for CugraphAlgoExec {
 
     fn sealed_attempt_metrics_target(&self) -> crate::native_exec::SealedAttemptMetricsTarget {
         self.sealed_attempt_metrics_target()
+    }
+
+    fn gpu_resident_output_rejection(&self) -> Option<DataFusionError> {
+        let logical_bfs_mapping = match logical_bfs_mapping_for_gpu_boundary(&self.spec, &self.edge_source.schema()) {
+            Ok(value) => value,
+            Err(error) => return Some(error),
+        };
+        if !is_bfs_path_output(&self.spec) && !logical_bfs_mapping {
+            return None;
+        }
+        Some(
+            Error::new(
+                ErrorCode::RequiredGpuOperationUnsupported,
+                "datafusion_nexus.cugraph_sql.gpu_result_producer",
+                "logical and path BFS results are host-owned and cannot be GPU-resident producers",
+            )
+            .with_fact("reason", "logical_bfs_gpu_result_unsupported")
+            .with_fact("output_boundary", "gpu_resident")
+            .into(),
+        )
     }
 }
 
@@ -1066,17 +1031,17 @@ impl ExecutionPlan for CugraphAlgoExec {
                 .prepare_lakehouse_source_metadata(Arc::clone(&task_context))
                 .await?
                 .issue_graph_aware_ticket_after_metadata(task_context.as_ref())?;
-            let execution_config = exec.native_execution_config.clone();
-            let task_context = task_context_with_cugraph_execution_ticket(&execution_config, task_context);
             let staged_inputs = stage_cugraph_inputs(
                 &exec.spec,
                 Arc::clone(&exec.edge_source),
                 exec.predicate_sources.clone(),
                 Arc::clone(&task_context),
-                execution_config.cancellation(),
+                exec.native_execution_config.cancellation(),
                 exec.host_boundary_config.max_input_staging_bytes(),
             )
             .await?;
+            let execution_config = exec.native_execution_config.clone();
+            let task_context = task_context_with_cugraph_execution_ticket(&execution_config, task_context);
             let context_lease =
                 execution_config.execution_context_async(Arc::clone(&task_context)).await.map_err(|error| {
                     DataFusionError::from(

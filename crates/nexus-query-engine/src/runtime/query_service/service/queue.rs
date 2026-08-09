@@ -7,9 +7,7 @@
 //! of the controller state machine.
 
 use super::*;
-use crate::runtime::gpu::placement::{
-    PlacementCandidate, ordered_placement_candidate_snapshots, preferred_placement_candidate,
-};
+use crate::runtime::gpu::placement::{PlacementCandidate, preferred_placement_candidate};
 
 /// Returns the only ledgers on which a waiter may be placed right now.
 ///
@@ -219,25 +217,24 @@ impl QueryService {
         .with_fact("compatible_device_count", 0)
     }
 
-    pub(in crate::runtime::query_service) fn reject_impossible_requirement(
+    pub(in crate::runtime::query_service) fn reject_impossible_requirements(
         &self,
-        requirement: &AttemptRequirement,
+        device_entries: &DeviceAdmissionEntries,
         required_capabilities: &[crate::capability::ReservationRequirement],
-        compatible_devices: &[usize],
     ) -> Result<()> {
-        if compatible_devices.is_empty() && !required_capabilities.is_empty() {
+        if device_entries.is_empty() && !required_capabilities.is_empty() {
             return Err(self.no_capable_device_error(required_capabilities));
         }
         let mut maximum = None;
         let mut can_ever_fit = false;
-        for ordinal in compatible_devices {
+        for (ordinal, entry) in device_entries {
             let ledger = self.ledger_for_ordinal(*ordinal)?;
             let managed = ledger.managed_capacity_bytes();
             maximum = Some(maximum.unwrap_or(0u64).max(managed));
-            let required_floor = ledger.required_floor_bytes_for(requirement)?;
+            let required_floor = ledger.required_floor_bytes_for(&entry.requirement)?;
             can_ever_fit |= ledger.can_ever_fit_required_floor_bytes(required_floor)?;
         }
-        if compatible_devices.is_empty() || !can_ever_fit {
+        if device_entries.is_empty() || !can_ever_fit {
             return Err(QueryError::new(
                 QueryErrorCode::ServiceOverloaded,
                 "nexus_query_engine.query_service.admission",
@@ -517,14 +514,9 @@ impl QueryService {
         request: &AdmissionRequest,
     ) -> Result<Option<usize>> {
         if let Some(resources) = &self.inner.resources {
-            let placement_request = PlacementRequest::new(0)
-                .with_attempt_requirement(request.requirement.clone())
-                .with_required_capabilities(super::placement::required_capabilities_for_placement(
-                    &request.requirement,
-                ));
-            let candidates = ordered_placement_candidate_snapshots(
-                &resources.devices,
-                &placement_request,
+            let candidates = self.placement_candidates_for_entries(
+                resources,
+                &request.device_entries,
                 placement_candidate_ordinals(&request.compatible_devices, request.protected_device),
                 request.protected_device,
             )?;
@@ -544,7 +536,8 @@ impl QueryService {
             if !self.is_device_admission_healthy(ordinal)? {
                 continue;
             }
-            let required_floor = ledger.required_floor_bytes_for(&request.requirement)?;
+            let requirement = request.requirement_for_device(ordinal)?;
+            let required_floor = ledger.required_floor_bytes_for(requirement)?;
             // One snapshot contains every ranking input. The protected-waiter
             // exception is a property of this queued request, so it is safe to
             // resolve it against the same versioned ledger read.
@@ -588,22 +581,20 @@ impl QueryService {
             return Ok(None);
         }
         if let Some(resources) = &self.inner.resources {
-            let placement_request = PlacementRequest::new(0)
-                .with_attempt_requirement(first.requirement.clone())
-                .with_required_capabilities(super::placement::required_capabilities_for_placement(&first.requirement));
             // Preserve the same registry ranking as normal queue/direct
             // placement.  Unlike ordinary selection the fallback deliberately
             // drives the best healthy candidate even if it is saturated, so
             // the resulting wait retains the memory-grant timeout taxonomy.
-            let candidates = ordered_placement_candidate_snapshots(
-                &resources.devices,
-                &placement_request,
+            let candidates = self.placement_candidates_for_entries(
+                resources,
+                &first.device_entries,
                 placement_candidate_ordinals(&first.compatible_devices, first.protected_device),
                 first.protected_device,
             )?;
             return Ok(candidates.into_iter().next().map(|candidate| (0, candidate.candidate.ordinal)));
         }
         for device in placement_candidate_ordinals(&first.compatible_devices, first.protected_device) {
+            first.requirement_for_device(device)?;
             if self.is_device_admission_healthy(device)? {
                 return Ok(Some((0, device)));
             }
@@ -631,11 +622,11 @@ impl QueryService {
             let request_id = state.queued[position].admission_request_id;
             protected_ledger.end_protection(request_id)?;
             state.queued[position].protected_device = None;
-            let requirement = state.queued[position].requirement.clone();
+            let device_entries = state.queued[position].device_entries.clone();
             let compatible_devices = state.queued[position].compatible_devices.clone();
             let protection = match self.try_install_exhausted_waiter_protection_after_old_target_release(
                 request_id,
-                &requirement,
+                &device_entries,
                 &compatible_devices,
                 Some(protected_ordinal),
             ) {
@@ -685,7 +676,7 @@ impl QueryService {
     fn try_install_exhausted_waiter_protection_after_old_target_release(
         &self,
         request_id: AdmissionRequestId,
-        requirement: &AttemptRequirement,
+        device_entries: &DeviceAdmissionEntries,
         compatible_devices: &[usize],
         excluded_ordinal: Option<usize>,
     ) -> Result<ExhaustedWaiterProtection> {
@@ -698,7 +689,7 @@ impl QueryService {
             )
             .with_fact("reason", "injected_protection_retarget_failure"));
         }
-        self.try_install_exhausted_waiter_protection(request_id, requirement, compatible_devices, excluded_ordinal)
+        self.try_install_exhausted_waiter_protection(request_id, device_entries, compatible_devices, excluded_ordinal)
     }
 
     /// Ranks every currently viable protection target from one ledger
@@ -709,7 +700,7 @@ impl QueryService {
     fn try_install_exhausted_waiter_protection(
         &self,
         request_id: AdmissionRequestId,
-        requirement: &AttemptRequirement,
+        device_entries: &DeviceAdmissionEntries,
         compatible_devices: &[usize],
         excluded_ordinal: Option<usize>,
     ) -> Result<ExhaustedWaiterProtection> {
@@ -717,7 +708,12 @@ impl QueryService {
         let mut healthy_target_remains = false;
         for ordinal in compatible_devices.iter().copied().filter(|ordinal| Some(*ordinal) != excluded_ordinal) {
             let ledger = self.ledger_for_ordinal(ordinal)?;
-            let required_floor = ledger.required_floor_bytes_for(requirement)?;
+            let requirement = device_entries
+                .get(&ordinal)
+                .ok_or_else(|| super::super::admission::missing_device_admission_entry_error(ordinal))?
+                .requirement
+                .clone();
+            let required_floor = ledger.required_floor_bytes_for(&requirement)?;
             if !ledger.can_ever_fit_required_floor_bytes(required_floor)? {
                 continue;
             }
@@ -764,15 +760,15 @@ impl QueryService {
     /// candidate selection.
     fn restore_exhausted_overtake_protections_locked(&self, state: &mut AdmissionState) -> Result<()> {
         for position in 0..state.queued.len() {
-            let (request_id, requirement, compatible_devices) = {
+            let (request_id, device_entries, compatible_devices) = {
                 let request = &state.queued[position];
                 if request.overtakes_remaining != 0 || request.protected_device.is_some() {
                     continue;
                 }
-                (request.admission_request_id, request.requirement.clone(), request.compatible_devices.clone())
+                (request.admission_request_id, request.device_entries.clone(), request.compatible_devices.clone())
             };
             if let ExhaustedWaiterProtection::Installed(ordinal) =
-                self.try_install_exhausted_waiter_protection(request_id, &requirement, &compatible_devices, None)?
+                self.try_install_exhausted_waiter_protection(request_id, &device_entries, &compatible_devices, None)?
             {
                 state.queued[position].protected_device = Some(ordinal);
             }

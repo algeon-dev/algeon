@@ -1,4 +1,4 @@
-use super::{bfs_mapping::bfs_logical_output_projection_plan, node::projected_schema, *};
+use super::{node::projected_schema, *};
 
 pub(super) fn preflight_cugraph_query_plan(
     spec: &CugraphAlgorithmSpec,
@@ -7,6 +7,8 @@ pub(super) fn preflight_cugraph_query_plan(
     projection: Option<&Vec<usize>>,
     limit: Option<usize>,
     edge_normalize_inserted: bool,
+    edge_row_upper_bound: Option<u64>,
+    edge_vertex_upper_bound: Option<u64>,
 ) -> Result<()> {
     let predicate_row_upper_bounds = vec![None; predicate_schemas.len()];
     let plan = cugraph_execution_plan(
@@ -17,6 +19,8 @@ pub(super) fn preflight_cugraph_query_plan(
         projection,
         limit,
         edge_normalize_inserted,
+        edge_row_upper_bound,
+        edge_vertex_upper_bound,
     )?;
     nexus_query_engine::exec::preflight_query_plan(&plan).map_err(|error| {
         if error.kind() == nexus_query_engine::error::QueryErrorKind::Unsupported {
@@ -50,6 +54,8 @@ pub(super) fn execute_cugraph_query_to_gpu_with_options(
     projection: Option<&Vec<usize>>,
     limit: Option<usize>,
     edge_normalize_inserted: bool,
+    edge_row_upper_bound: Option<u64>,
+    edge_vertex_upper_bound: Option<u64>,
     singleflight_leader: Option<&mut GraphBfsLeader>,
 ) -> Result<GpuResultHandle> {
     let graph_context = graph_algorithm_execution_context(context)?;
@@ -63,6 +69,8 @@ pub(super) fn execute_cugraph_query_to_gpu_with_options(
         projection,
         limit,
         edge_normalize_inserted,
+        edge_row_upper_bound,
+        edge_vertex_upper_bound,
     )?;
     if let Some(leader) = singleflight_leader {
         leader.record_traversal_submission();
@@ -119,6 +127,8 @@ pub(super) fn cugraph_query_plan(
     projection: Option<&Vec<usize>>,
     limit: Option<usize>,
     edge_normalize_inserted: bool,
+    edge_row_upper_bound: Option<u64>,
+    edge_vertex_upper_bound: Option<u64>,
 ) -> Result<CugraphQueryPlan> {
     let handle = GpuResultHandle::new(context, edge_frame, Arc::clone(&edge_schema)).map_err(|error| {
         DataFusionError::from(Error::from_native(
@@ -139,6 +149,8 @@ pub(super) fn cugraph_query_plan(
         projection,
         limit,
         edge_normalize_inserted,
+        edge_row_upper_bound,
+        edge_vertex_upper_bound,
     )?;
     Ok(CugraphQueryPlan { plan, inputs })
 }
@@ -155,6 +167,8 @@ fn cugraph_execution_plan(
     projection: Option<&Vec<usize>>,
     limit: Option<usize>,
     edge_normalize_inserted: bool,
+    edge_row_upper_bound: Option<u64>,
+    edge_vertex_upper_bound: Option<u64>,
 ) -> Result<nexus_query_engine::plan::QueryPlan> {
     let prepared = prepare_bfs_logical_input_schemas(spec, edge_schema, predicate_schemas)?;
     // Logical-id decoding and path reconstruction are host-side finalization
@@ -170,6 +184,8 @@ fn cugraph_execution_plan(
         if defer_final_projection { None } else { projection },
         if defer_final_projection { None } else { limit },
         edge_normalize_inserted,
+        edge_row_upper_bound,
+        edge_vertex_upper_bound,
     )
 }
 
@@ -184,16 +200,60 @@ fn cugraph_execution_plan_from_prepared_schemas(
     projection: Option<&Vec<usize>>,
     limit: Option<usize>,
     edge_normalize_inserted: bool,
+    edge_row_upper_bound: Option<u64>,
+    edge_vertex_upper_bound: Option<u64>,
 ) -> Result<nexus_query_engine::plan::QueryPlan> {
+    let predicate_row_upper_bounds =
+        prepared_predicate_row_upper_bounds(spec, &predicate_schemas, predicate_row_upper_bounds)?;
     cugraph_schema_query_plan(
         spec,
         edge_schema,
         predicate_schemas,
-        predicate_row_upper_bounds,
+        &predicate_row_upper_bounds,
         projection,
         limit,
         edge_normalize_inserted,
+        edge_row_upper_bound,
+        edge_vertex_upper_bound,
     )
+}
+
+fn prepared_predicate_row_upper_bounds(
+    spec: &CugraphAlgorithmSpec,
+    predicate_schemas: &[SchemaRef],
+    predicate_row_upper_bounds: &[Option<u64>],
+) -> Result<Vec<Option<u64>>> {
+    let mut bounds = predicate_row_upper_bounds.to_vec();
+    if let CugraphAlgorithmParams::Bfs(params) = &spec.params
+        && params.source.is_utf8()
+    {
+        let source_rows = params.source.literal_count().and_then(|rows| u64::try_from(rows).ok()).ok_or_else(|| {
+            plan_error("cuGraph logical BFS source row bound does not fit the native cardinality contract")
+        })?;
+        match predicate_schemas.len().cmp(&bounds.len()) {
+            std::cmp::Ordering::Greater if predicate_schemas.len() == bounds.len() + 1 => {
+                bounds.insert(0, Some(source_rows));
+            },
+            std::cmp::Ordering::Equal => {
+                if bounds.first().copied() != Some(Some(source_rows)) {
+                    return Err(plan_error(
+                        "cuGraph logical BFS source row bound does not match its exact scalar or literal source cardinality",
+                    ));
+                }
+            },
+            _ => {
+                return Err(plan_error(
+                    "cuGraph prepared predicate schemas and row-cardinality evidence must have matching lengths",
+                ));
+            },
+        }
+    }
+    if predicate_schemas.len() != bounds.len() {
+        return Err(plan_error(
+            "cuGraph prepared predicate schemas and row-cardinality evidence must have matching lengths",
+        ));
+    }
+    Ok(bounds)
 }
 
 pub(super) fn cugraph_schema_query_plan(
@@ -204,8 +264,10 @@ pub(super) fn cugraph_schema_query_plan(
     projection: Option<&Vec<usize>>,
     limit: Option<usize>,
     edge_normalize_inserted: bool,
+    edge_row_upper_bound: Option<u64>,
+    edge_vertex_upper_bound: Option<u64>,
 ) -> Result<nexus_query_engine::plan::QueryPlan> {
-    if spec.algorithm.is_similarity() && predicate_schemas.len() != predicate_row_upper_bounds.len() {
+    if predicate_schemas.len() != predicate_row_upper_bounds.len() {
         return Err(Error::new(
             ErrorCode::InvalidExecutionPlan,
             "datafusion_nexus.cugraph_sql.plan",
@@ -216,8 +278,12 @@ pub(super) fn cugraph_schema_query_plan(
         .into());
     }
     let mut builder = QueryPlanBuilder::new();
-    let input = builder
-        .add_source(SourceNode::GpuResident(GpuResidentSource::new(CUGRAPH_EDGE_INPUT_NAME, Arc::clone(&edge_schema))));
+    let edge_source = GpuResidentSource::new(CUGRAPH_EDGE_INPUT_NAME, Arc::clone(&edge_schema));
+    let edge_source =
+        edge_row_upper_bound.map_or(edge_source.clone(), |rows| edge_source.with_row_count_upper_bound(rows));
+    let edge_source = edge_vertex_upper_bound
+        .map_or(edge_source.clone(), |vertices| edge_source.with_graph_vertex_upper_bound(vertices));
+    let input = builder.add_source(SourceNode::GpuResident(edge_source));
     let predicate_nodes = predicate_schemas
         .into_iter()
         .enumerate()
@@ -264,7 +330,7 @@ pub(super) fn cugraph_schema_query_plan(
     Ok(builder.finish_gpu_resident(root))
 }
 
-pub(super) fn cugraph_execution_capability_proof(
+pub(super) fn cugraph_execution_capability_proof_with_edge_row_upper_bound(
     spec: &CugraphAlgorithmSpec,
     edge_schema: SchemaRef,
     predicate_schemas: Vec<SchemaRef>,
@@ -272,8 +338,9 @@ pub(super) fn cugraph_execution_capability_proof(
     projection: Option<&Vec<usize>>,
     limit: Option<usize>,
     edge_normalize_inserted: bool,
-) -> Result<nexus_query_engine::admission::QueryPlanCapabilityProof> {
-    let prepared = prepare_bfs_logical_input_schemas(spec, Arc::clone(&edge_schema), predicate_schemas.clone())?;
+    edge_row_upper_bound: Option<u64>,
+    edge_vertex_upper_bound: Option<u64>,
+) -> Result<(nexus_query_engine::plan::QueryPlan, nexus_query_engine::admission::QueryPlanCapabilityProof)> {
     let plan = cugraph_execution_plan(
         spec,
         edge_schema,
@@ -282,6 +349,8 @@ pub(super) fn cugraph_execution_capability_proof(
         projection,
         limit,
         edge_normalize_inserted,
+        edge_row_upper_bound,
+        edge_vertex_upper_bound,
     )?;
     let graph_proof = nexus_query_engine::admission::QueryPlanCapabilityProof::for_cugraph_graph_execution_plan(&plan)
         .ok_or_else(|| {
@@ -291,22 +360,7 @@ pub(super) fn cugraph_execution_capability_proof(
                 "native cuGraph query plan did not expose capability evidence",
             ))
         })?;
-    if !prepared.logical_mapping || is_bfs_path_output(spec) || (projection.is_none() && limit.is_none()) {
-        return Ok(graph_proof);
-    }
-    let logical_output_plan = bfs_logical_output_projection_plan(Arc::clone(&spec.output_schema), projection, limit)?;
-    let logical_output_proof =
-        nexus_query_engine::admission::QueryPlanCapabilityProof::for_query_plan(&logical_output_plan)
-            .expect("every native logical-output plan has an exact reservation scope");
-    nexus_query_engine::admission::QueryPlanCapabilityProof::combine(graph_proof, [logical_output_proof]).map_err(
-        |error| {
-            DataFusionError::from(Error::from_native(
-                "datafusion_nexus.cugraph_sql.plan_capability_proof",
-                "failed to compose the logical BFS output admission proof",
-                error,
-            ))
-        },
-    )
+    Ok((plan, graph_proof))
 }
 
 pub(super) fn bind_predicate_gpu_inputs(
@@ -379,52 +433,6 @@ pub(super) fn native_graph_spec_for_placement_hint(
         })
         .collect::<Vec<_>>();
     native_graph_spec(spec, edge_normalize_inserted, &predicate_nodes)
-}
-
-pub(super) fn native_graph_spec_for_memory_estimate(
-    spec: &CugraphAlgorithmSpec,
-    edge_normalize_inserted: bool,
-) -> Option<GraphAlgorithmSpec> {
-    let mut edge_columns =
-        GraphEdgeColumnBindings::new(spec.src_col.clone(), spec.dst_col.clone(), spec.weight_col.clone());
-    if let Some(edge_id) = &spec.edge_id_col {
-        edge_columns = edge_columns.with_edge_id(edge_id.clone());
-    }
-    let algorithm = native_algorithm(spec.algorithm);
-    let params = native_algorithm_params_for_memory_estimate(&spec.params)?;
-    let output_schema = algorithm.definition().result_schema_for_params(&params);
-    Some(
-        GraphAlgorithmSpec::new(
-            algorithm,
-            edge_columns,
-            GraphConstructionOptions {
-                directed: spec.graph_options.directed,
-                renumber: spec.graph_options.renumber,
-                policy: GraphConstructionPolicy::RawLibcugraph,
-            },
-            params,
-            output_schema,
-        )
-        .with_edge_normalize_inserted(edge_normalize_inserted),
-    )
-}
-
-pub(super) fn native_algorithm_params_for_memory_estimate(
-    params: &CugraphAlgorithmParams,
-) -> Option<GraphAlgorithmParams> {
-    match params {
-        // These variants require side-input node ids in the native IR. Fall back
-        // to default admission instead of minting placeholder ids.
-        CugraphAlgorithmParams::PersonalizedPageRank(_) => None,
-        CugraphAlgorithmParams::Bfs(params)
-            if !params.source.requires_source_vertices_input() && !params.predicates.has_inputs() =>
-        {
-            Some(GraphAlgorithmParams::Bfs(Box::new(native_bfs_params(params, &[]))))
-        },
-        CugraphAlgorithmParams::Bfs(_) => None,
-        CugraphAlgorithmParams::Similarity(_) => None,
-        _ => Some(native_algorithm_params(params, &[])),
-    }
 }
 
 pub(super) fn bfs_normalized_output_projection(
@@ -709,9 +717,8 @@ mod tests {
 
     use super::*;
     use crate::cugraph_sql::{
-        CugraphBfsOutputMode, CugraphBfsOutputOptions, CugraphBfsParams, CugraphBfsPredicateInputs, CugraphBfsSource,
-        CugraphBfsSourceVertex, CugraphGraphConstructionPolicy, CugraphGraphOptions, CugraphGraphPredicateTable,
-        CugraphTableReference, result_schema_for_params,
+        CugraphBfsOutputMode, CugraphBfsOutputOptions, CugraphBfsParams, CugraphBfsSource,
+        CugraphGraphConstructionPolicy, CugraphGraphOptions, CugraphTableReference, result_schema_for_params,
     };
 
     fn bfs_spec(source: CugraphBfsSource, output_mode: CugraphBfsOutputMode) -> CugraphAlgorithmSpec {
@@ -752,7 +759,7 @@ mod tests {
         limit: Option<usize>,
     ) {
         let predicate_row_upper_bounds = Vec::new();
-        let admission_proof = cugraph_execution_capability_proof(
+        let (_, admission_proof) = cugraph_execution_capability_proof_with_edge_row_upper_bound(
             spec,
             Arc::clone(&edge_schema),
             Vec::new(),
@@ -760,6 +767,8 @@ mod tests {
             projection,
             limit,
             false,
+            None,
+            None,
         )
         .expect("cuGraph plan must expose a capability proof");
 
@@ -774,27 +783,14 @@ mod tests {
             if defer_final_projection { None } else { projection },
             if defer_final_projection { None } else { limit },
             false,
+            None,
+            None,
         )
         .expect("prepared runtime graph plan must build");
         let graph_runtime_proof =
             nexus_query_engine::admission::QueryPlanCapabilityProof::for_cugraph_graph_execution_plan(&runtime_plan)
                 .expect("prepared runtime graph plan must expose a capability proof");
-        let runtime_proof =
-            if prepared.logical_mapping && !is_bfs_path_output(spec) && (projection.is_some() || limit.is_some()) {
-                let logical_output_plan =
-                    bfs_logical_output_projection_plan(Arc::clone(&spec.output_schema), projection, limit)
-                        .expect("logical BFS output plan must build");
-                let logical_output_proof =
-                    nexus_query_engine::admission::QueryPlanCapabilityProof::for_query_plan(&logical_output_plan)
-                        .expect("logical BFS output plan must expose a capability proof");
-                nexus_query_engine::admission::QueryPlanCapabilityProof::combine(
-                    graph_runtime_proof,
-                    [logical_output_proof],
-                )
-                .expect("runtime graph and logical BFS output proofs must compose")
-            } else {
-                graph_runtime_proof
-            };
+        let runtime_proof = graph_runtime_proof;
 
         assert_eq!(
             admission_proof, runtime_proof,
@@ -820,40 +816,57 @@ mod tests {
     }
 
     #[test]
-    fn memory_estimate_accepts_only_side_input_free_bfs() {
-        let scalar = CugraphAlgorithmParams::Bfs(Box::new(CugraphBfsParams {
-            source: CugraphBfsSource::scalar_i64(7),
-            depth_limit: Some(3),
-            predicates: Default::default(),
-            output: Default::default(),
-        }));
-        let Some(GraphAlgorithmParams::Bfs(native)) = native_algorithm_params_for_memory_estimate(&scalar) else {
-            panic!("scalar BFS without predicates must retain its graph memory estimate");
+    fn graph_scope_preserves_source_vertex_bound_across_admission_and_runtime_plans() {
+        let spec = bfs_spec(CugraphBfsSource::scalar_i64(0), CugraphBfsOutputMode::Raw);
+        let edge_schema = edge_schema(DataType::Int64);
+        let predicate_row_upper_bounds = Vec::new();
+        let (admission_plan, admission_proof) = cugraph_execution_capability_proof_with_edge_row_upper_bound(
+            &spec,
+            Arc::clone(&edge_schema),
+            Vec::new(),
+            &predicate_row_upper_bounds,
+            None,
+            None,
+            false,
+            Some(5),
+            Some(11),
+        )
+        .expect("admission plan must build");
+        let prepared =
+            prepare_bfs_logical_input_schemas(&spec, edge_schema, Vec::new()).expect("BFS input schemas must prepare");
+        let runtime_plan = cugraph_execution_plan_from_prepared_schemas(
+            &prepared.execution_spec,
+            prepared.edge_schema,
+            prepared.predicate_schemas,
+            &predicate_row_upper_bounds,
+            None,
+            None,
+            false,
+            Some(5),
+            Some(11),
+        )
+        .expect("runtime plan must build with the same source bounds");
+
+        let source_metadata = |plan: &nexus_query_engine::plan::QueryPlan| {
+            plan.nodes().iter().find_map(|node| match &node.kind {
+                PlanNode::Source(source) => match source.as_ref() {
+                    nexus_query_engine::source::SourceNode::GpuResident(source)
+                        if source.input_name == CUGRAPH_EDGE_INPUT_NAME =>
+                    {
+                        Some((source.row_count_upper_bound, source.graph_vertex_upper_bound))
+                    },
+                    _ => None,
+                },
+                _ => None,
+            })
         };
-        assert_eq!(native.source_vertex, 7);
-        assert!(native.source_vertices.is_none());
-        assert!(!native.predicates.has_inputs());
-
-        let source_input = CugraphAlgorithmParams::Bfs(Box::new(CugraphBfsParams {
-            source: CugraphBfsSource::LiteralList(vec![CugraphBfsSourceVertex::Int64(7)]),
-            depth_limit: Some(3),
-            predicates: Default::default(),
-            output: Default::default(),
-        }));
-        assert!(native_algorithm_params_for_memory_estimate(&source_input).is_none());
-
-        let predicate_input = CugraphAlgorithmParams::Bfs(Box::new(CugraphBfsParams {
-            source: CugraphBfsSource::scalar_i64(7),
-            depth_limit: Some(3),
-            predicates: CugraphBfsPredicateInputs {
-                include_vertices: Some(CugraphGraphPredicateTable::new(
-                    CugraphTableReference::parse("vertices").expect("static table identifier is valid"),
-                    "vertex",
-                )),
-                ..Default::default()
-            },
-            output: Default::default(),
-        }));
-        assert!(native_algorithm_params_for_memory_estimate(&predicate_input).is_none());
+        assert_eq!(source_metadata(&admission_plan), Some((Some(5), Some(11))));
+        assert_eq!(source_metadata(&runtime_plan), Some((Some(5), Some(11))));
+        assert_eq!(
+            admission_proof,
+            nexus_query_engine::admission::QueryPlanCapabilityProof::for_cugraph_graph_execution_plan(&runtime_plan)
+                .expect("runtime plan must issue the same graph proof"),
+            "runtime actual rows must not replace the admitted source-bound scope metadata"
+        );
     }
 }

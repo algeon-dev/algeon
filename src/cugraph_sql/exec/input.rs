@@ -11,17 +11,21 @@ pub(super) enum StagedCugraphSource {
 
 #[derive(Debug)]
 pub(super) struct StagedCugraphInputs {
-    edge: StagedCugraphSource,
-    logical_literal_source: Option<StagedCugraphSource>,
-    predicates: Vec<StagedCugraphSource>,
-    reservation: MemoryReservation,
+    pub(super) edge: StagedCugraphSource,
+    pub(super) logical_literal_source: Option<StagedCugraphSource>,
+    pub(super) predicates: Vec<StagedCugraphSource>,
+    pub(super) logical_codebook: Option<HostBfsCodebook>,
+    pub(super) execution_spec: CugraphAlgorithmSpec,
+    pub(super) reservation: Option<MemoryReservation>,
 }
 
 pub(super) struct UploadedCugraphInputs {
     pub(super) edge_schema: SchemaRef,
     pub(super) edge_frame: GpuDataFrame,
-    pub(super) logical_literal_source: Option<CugraphGpuFrame>,
     pub(super) predicate_frames: Vec<CugraphGpuFrame>,
+    pub(super) logical_codebook: Option<HostBfsCodebook>,
+    pub(super) execution_spec: CugraphAlgorithmSpec,
+    pub(super) reservation: Option<MemoryReservation>,
 }
 
 pub(super) async fn stage_cugraph_inputs(
@@ -82,7 +86,23 @@ pub(super) async fn stage_cugraph_inputs(
             .await?,
         );
     }
-    Ok(StagedCugraphInputs { edge, logical_literal_source, predicates, reservation })
+    let (edge, logical_literal_source, predicates, logical_codebook, execution_spec) = prepare_bfs_logical_host_inputs(
+        spec,
+        edge,
+        logical_literal_source,
+        predicates,
+        &mut staged_bytes,
+        max_staging_bytes,
+        &mut reservation,
+    )?;
+    Ok(StagedCugraphInputs {
+        edge,
+        logical_literal_source,
+        predicates,
+        logical_codebook,
+        execution_spec,
+        reservation: Some(reservation),
+    })
 }
 
 async fn stage_cugraph_source(
@@ -193,7 +213,7 @@ impl StagedCugraphInputs {
         metrics: &mut GraphExecutionMetrics<'_>,
         task_context: Arc<TaskContext>,
     ) -> Result<UploadedCugraphInputs> {
-        let Self { edge, logical_literal_source, predicates, reservation } = self;
+        let Self { edge, logical_literal_source, predicates, logical_codebook, execution_spec, reservation } = self;
         let edge_schema = edge.schema();
         let edge_frame = edge.upload(context, metrics, Arc::clone(&task_context)).await?;
         let logical_literal_source = match logical_literal_source {
@@ -210,13 +230,23 @@ impl StagedCugraphInputs {
             let frame = source.upload(context, metrics, Arc::clone(&task_context)).await?;
             predicate_frames.push(CugraphGpuFrame { schema, frame });
         }
-        drop(reservation);
-        Ok(UploadedCugraphInputs { edge_schema, edge_frame, logical_literal_source, predicate_frames })
+        if let Some(source) = logical_literal_source {
+            predicate_frames.insert(0, source);
+        }
+        let reservation = if logical_codebook.is_some() { reservation } else { None };
+        Ok(UploadedCugraphInputs {
+            edge_schema,
+            edge_frame,
+            predicate_frames,
+            logical_codebook,
+            execution_spec,
+            reservation,
+        })
     }
 }
 
 impl StagedCugraphSource {
-    fn schema(&self) -> SchemaRef {
+    pub(super) fn schema(&self) -> SchemaRef {
         match self {
             Self::Native { schema, .. } | Self::Host { schema, .. } => Arc::clone(schema),
         }
@@ -534,23 +564,6 @@ pub(super) async fn execute_edge_source_to_gpu(
 pub(super) struct CugraphGpuFrame {
     pub(super) schema: SchemaRef,
     pub(super) frame: GpuDataFrame,
-}
-
-pub(super) fn cudf_logical_mapping_error(error: cudf::Error) -> DataFusionError {
-    Error::from_native(
-        "datafusion_nexus.cugraph_sql.logical_mapping",
-        "cuGraph logical BFS GPU mapping failed",
-        nexus_query_engine::error::QueryError::from_cudf(
-            "datafusion_nexus.cugraph_sql.logical_mapping",
-            "cuGraph logical BFS GPU mapping failed",
-            error,
-        ),
-    )
-    .into()
-}
-
-pub(super) fn cudf_series(frame: &DataFrame, column: &str) -> Result<Series> {
-    frame.series(column).map_err(cudf_logical_mapping_error)
 }
 
 pub(super) fn record_batches_to_gpu(

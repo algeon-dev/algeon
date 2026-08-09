@@ -20,16 +20,19 @@ impl nexus_query_engine::admission::QueryPlanCapabilityProof
 pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::combine(Self, impl core::iter::traits::collect::IntoIterator<Item = Self>) -> nexus_query_engine::error::Result<Self>
 pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::combine_composed_graph_attempt(&nexus_query_engine::plan::QueryPlan, Self, impl core::iter::traits::collect::IntoIterator<Item = (alloc::string::String, Self)>) -> nexus_query_engine::error::Result<Self>
 pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::for_attested_graph_result_bounded_consumer_plan(&nexus_query_engine::plan::QueryPlan, &str) -> core::option::Option<Self>
+pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::for_attested_graph_result_bounded_consumer_plan_with_producer(&nexus_query_engine::plan::QueryPlan, &str, &Self) -> core::option::Option<Self>
 pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::for_attested_graph_result_passthrough_plan(&nexus_query_engine::plan::QueryPlan, &str) -> core::option::Option<Self>
 pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::for_cugraph_graph_execution_plan(&nexus_query_engine::plan::QueryPlan) -> core::option::Option<Self>
 pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::for_cugraph_graph_input_plan(&nexus_query_engine::plan::QueryPlan) -> core::option::Option<Self>
 pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::for_query_plan(&nexus_query_engine::plan::QueryPlan) -> core::option::Option<Self>
 pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::required_capabilities(&self) -> &[nexus_query_engine::capability::ReservationRequirement]
 pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::required_floor_bytes_for(&self, u64) -> nexus_query_engine::error::Result<u64>
+pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::requirement_for_device(&self, usize) -> nexus_query_engine::error::Result<Self>
 pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::resolve_composed_graph_attempt(&nexus_query_engine::plan::QueryPlan, Self, impl core::iter::traits::collect::IntoIterator<Item = nexus_query_engine::admission::ComposedGraphProducerCandidate>) -> nexus_query_engine::error::Result<Self>
 pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::soft_working_set_hint_bytes(&self) -> core::option::Option<u64>
-pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::with_graph_memory_admission_evidence(self, &nexus_query_engine::graph_memory::GraphMemoryAdmissionEvidence) -> Self
-pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::with_local_parquet_source_stage(self, &nexus_query_engine::source::LocalParquetSource) -> Self
+pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::try_for_attested_graph_result_bounded_consumer_plan(&nexus_query_engine::plan::QueryPlan, &str) -> nexus_query_engine::error::Result<Self>
+pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::try_for_cugraph_side_input_plan(&nexus_query_engine::plan::QueryPlan) -> nexus_query_engine::error::Result<Self>
+pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::with_graph_memory_admission_evidence(self, &nexus_query_engine::graph_memory::GraphMemoryAdmissionEvidence) -> nexus_query_engine::error::Result<Self>
 pub fn nexus_query_engine::admission::bounded_join_modeled_facts(&nexus_query_engine::plan::QueryPlan, nexus_query_engine::runtime::ExecutionBoundaryPolicy) -> core::option::Option<alloc::collections::btree::map::BTreeMap<&'static str, alloc::string::String>>
 pub fn nexus_query_engine::admission::bounded_join_unsupported_shape_facts(&nexus_query_engine::plan::QueryPlan, nexus_query_engine::runtime::ExecutionBoundaryPolicy) -> core::option::Option<alloc::collections::btree::map::BTreeMap<&'static str, alloc::string::String>>
 pub fn nexus_query_engine::admission::bounded_pipeline_admission(&nexus_query_engine::plan::QueryPlan) -> nexus_query_engine::error::Result<core::option::Option<nexus_query_engine::admission::BoundedPipelineAdmission>>
@@ -1525,7 +1528,7 @@ pub nexus_query_engine::graph_memory::GraphMemoryModelInput::vertex_width_bytes:
 pub nexus_query_engine::graph_memory::GraphMemoryModelInput::weight_width_bytes: core::option::Option<u64>
 impl nexus_query_engine::graph_memory::GraphMemoryModelInput
 pub fn nexus_query_engine::graph_memory::GraphMemoryModelInput::raw_edge_count(self) -> u64
-pub fn nexus_query_engine::graph_memory::GraphMemoryModelInput::vertex_upper_bound(self) -> u64
+pub fn nexus_query_engine::graph_memory::GraphMemoryModelInput::vertex_upper_bound(self) -> nexus_query_engine::error::Result<u64>
 pub fn nexus_query_engine::graph_memory::GraphMemoryModelInput::with_construction_sort_workspace_bound_bytes(self, u64) -> Self
 pub fn nexus_query_engine::graph_memory::GraphMemoryModelInput::with_device_total_memory_bytes(self, u64) -> Self
 pub fn nexus_query_engine::graph_memory::GraphMemoryModelInput::with_edge_normalize_inserted(self, bool) -> Self
@@ -1613,10 +1616,7 @@ pub const nexus_query_engine::graph_memory::GRAPH_MEMORY_ESTIMATE_EXCEEDS_BUDGET
 pub const nexus_query_engine::graph_memory::GRAPH_VERTEX_ESTIMATE_BOUNDARY: &str
 pub const nexus_query_engine::graph_memory::GRAPH_VERTEX_ESTIMATE_PROBE_MIN_BYTES: u64
 pub fn nexus_query_engine::graph_memory::graph_edge_list_output_rows_for_plan(&nexus_query_engine::plan::QueryPlan) -> core::option::Option<u64>
-pub fn nexus_query_engine::graph_memory::graph_memory_admission_evidence_for_edge_list(&nexus_query_engine::plan::GraphAlgorithmSpec, &arrow_schema::schema::SchemaRef, u64, core::option::Option<u64>, nexus_query_engine::graph_memory::GraphMemoryCalibrationOverride, core::option::Option<u64>) -> nexus_query_engine::error::Result<nexus_query_engine::graph_memory::GraphMemoryAdmissionEvidence>
-pub fn nexus_query_engine::graph_memory::graph_memory_admission_evidence_for_edge_list_with_vertex_estimate(&nexus_query_engine::plan::GraphAlgorithmSpec, &arrow_schema::schema::SchemaRef, u64, core::option::Option<u64>, core::option::Option<nexus_query_engine::graph_memory::GraphVertexEstimate>, nexus_query_engine::graph_memory::GraphMemoryCalibrationOverride, core::option::Option<u64>) -> nexus_query_engine::error::Result<nexus_query_engine::graph_memory::GraphMemoryAdmissionEvidence>
-pub fn nexus_query_engine::graph_memory::graph_memory_admission_evidence_for_plan(&nexus_query_engine::plan::QueryPlan, nexus_query_engine::graph_memory::GraphMemoryCalibrationOverride, core::option::Option<u64>) -> nexus_query_engine::error::Result<alloc::vec::Vec<nexus_query_engine::graph_memory::GraphMemoryAdmissionEvidence>>
-pub fn nexus_query_engine::graph_memory::graph_memory_bounded_admission_evidence_for_edge_list_with_vertex_estimate(&nexus_query_engine::plan::GraphAlgorithmSpec, &arrow_schema::schema::SchemaRef, u64, core::option::Option<u64>, core::option::Option<nexus_query_engine::graph_memory::GraphVertexEstimate>, core::option::Option<u64>, nexus_query_engine::graph_memory::GraphMemoryCalibrationOverride, core::option::Option<u64>) -> nexus_query_engine::error::Result<nexus_query_engine::graph_memory::GraphMemoryAdmissionEvidence>
+pub fn nexus_query_engine::graph_memory::graph_memory_bounded_admission_evidence_for_plan(&nexus_query_engine::plan::QueryPlan, nexus_query_engine::graph_memory::GraphMemoryCalibrationOverride, core::option::Option<u64>) -> nexus_query_engine::error::Result<nexus_query_engine::graph_memory::GraphMemoryAdmissionEvidence>
 pub const fn nexus_query_engine::graph_memory::graph_memory_class(nexus_query_engine::plan::GraphAlgorithm) -> nexus_query_engine::graph_memory::GraphMemoryClass
 pub fn nexus_query_engine::graph_memory::graph_memory_estimate_for_edge_list(&nexus_query_engine::plan::GraphAlgorithmSpec, &arrow_schema::schema::SchemaRef, u64, core::option::Option<u64>, nexus_query_engine::graph_memory::GraphMemoryCalibrationOverride, core::option::Option<u64>) -> nexus_query_engine::error::Result<nexus_query_engine::graph_memory::GraphMemoryEstimate>
 pub fn nexus_query_engine::graph_memory::graph_memory_estimate_for_edge_list_with_vertex_estimate(&nexus_query_engine::plan::GraphAlgorithmSpec, &arrow_schema::schema::SchemaRef, u64, core::option::Option<u64>, core::option::Option<nexus_query_engine::graph_memory::GraphVertexEstimate>, nexus_query_engine::graph_memory::GraphMemoryCalibrationOverride, core::option::Option<u64>) -> nexus_query_engine::error::Result<nexus_query_engine::graph_memory::GraphMemoryEstimate>
@@ -1627,7 +1627,7 @@ pub fn nexus_query_engine::graph_memory::graph_runtime_statistics_probe_bytes(ne
 pub fn nexus_query_engine::graph_memory::graph_vertex_estimate_probe_bytes(nexus_query_engine::graph_memory::GraphMemoryModelInput, u64) -> u64
 pub fn nexus_query_engine::graph_memory::query_plan_graph_vertex_upper_bound(&nexus_query_engine::plan::QueryPlan) -> core::option::Option<u64>
 pub fn nexus_query_engine::graph_memory::query_plan_hard_row_upper_bound(&nexus_query_engine::plan::QueryPlan) -> core::option::Option<u64>
-pub fn nexus_query_engine::graph_memory::triangle_count_peak_chunk_min_degree_pricing_term(u64, u64, core::option::Option<u32>) -> u64
+pub fn nexus_query_engine::graph_memory::triangle_count_peak_chunk_min_degree_pricing_term(u64, u64, core::option::Option<u32>) -> nexus_query_engine::error::Result<u64>
 pub mod nexus_query_engine::harness
 pub struct nexus_query_engine::harness::StableFnv1a64
 impl nexus_query_engine::harness::StableFnv1a64
@@ -6590,11 +6590,13 @@ pub nexus_query_engine::source::ZeroColumnCountDisposition::Represented
 impl nexus_query_engine::source::ZeroColumnCountDisposition
 pub const fn nexus_query_engine::source::ZeroColumnCountDisposition::as_str(self) -> &'static str
 pub struct nexus_query_engine::source::GpuResidentSource
+pub nexus_query_engine::source::GpuResidentSource::graph_vertex_upper_bound: core::option::Option<u64>
 pub nexus_query_engine::source::GpuResidentSource::input_name: alloc::string::String
 pub nexus_query_engine::source::GpuResidentSource::row_count_upper_bound: core::option::Option<u64>
 pub nexus_query_engine::source::GpuResidentSource::schema: arrow_schema::schema::SchemaRef
 impl nexus_query_engine::source::GpuResidentSource
 pub fn nexus_query_engine::source::GpuResidentSource::new(impl core::convert::Into<alloc::string::String>, arrow_schema::schema::SchemaRef) -> Self
+pub fn nexus_query_engine::source::GpuResidentSource::with_graph_vertex_upper_bound(self, u64) -> Self
 pub fn nexus_query_engine::source::GpuResidentSource::with_row_count_upper_bound(self, u64) -> Self
 pub struct nexus_query_engine::source::GraphSimpleDirectedEdgeTopology
 pub nexus_query_engine::source::GraphSimpleDirectedEdgeTopology::destination_column_index: usize

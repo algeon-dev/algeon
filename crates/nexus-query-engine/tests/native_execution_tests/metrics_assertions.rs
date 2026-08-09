@@ -150,7 +150,42 @@ fn final_sort_budget_event_has_common_contract(event: &BudgetedExecutionEvent, b
         && event.budget_bytes > 0
         && event.enforcement == "query_domain_member"
         && event.status == "reservation_enforced"
-        && event.unresolved_contract.as_deref() == Some("libcudf_sort_temporary_workspace_preflight_unavailable")
+        && event.unresolved_contract.is_none()
+        && sorted_order_radix_owner_contract_is_finite(event)
+}
+
+fn sorted_order_radix_owner_contract_is_finite(event: &BudgetedExecutionEvent) -> bool {
+    if event.context_facts.get("sorted_order_radix_preflight_status").map(String::as_str) != Some("supported")
+        || event.context_facts.get("sorted_order_radix_preflight_contract").map(String::as_str)
+            != Some("sorted_order_radix_owner_preflight")
+    {
+        return false;
+    }
+
+    let [
+        Some(key_output_bytes),
+        Some(sequence_bytes),
+        Some(temporary_workspace_bytes),
+        Some(retained_order_bytes),
+        Some(active_phase_peak_bytes),
+    ] = [
+        "sorted_order_radix_key_output_bytes",
+        "sorted_order_radix_sequence_bytes",
+        "sorted_order_radix_temporary_workspace_bytes",
+        "sorted_order_radix_retained_order_bytes",
+        "sorted_order_radix_active_phase_peak_bytes",
+    ]
+    .map(|key| event.context_facts.get(key).and_then(|value| value.parse::<u64>().ok()))
+    else {
+        return false;
+    };
+
+    sequence_bytes == retained_order_bytes
+        && key_output_bytes
+            .checked_add(sequence_bytes)
+            .and_then(|bytes| bytes.checked_add(temporary_workspace_bytes))
+            .and_then(|bytes| bytes.checked_add(retained_order_bytes))
+            == Some(active_phase_peak_bytes)
 }
 
 fn assert_representative_budgeted_contract(event: &BudgetedExecutionEvent) {
@@ -205,24 +240,15 @@ fn assert_representative_budgeted_contract(event: &BudgetedExecutionEvent) {
         },
         "nexus_query_engine.final_sort.prepare" => {
             assert_eq!(event.boundary, "final_sort");
-            assert_eq!(
-                event.unresolved_contract.as_deref(),
-                Some("libcudf_sort_temporary_workspace_preflight_unavailable")
-            );
+            assert_final_sort_preflight_contract(event);
         },
         "nexus_query_engine.final_sort.materialize" => {
             assert_eq!(event.boundary, "final_sort");
-            assert_eq!(
-                event.unresolved_contract.as_deref(),
-                Some("libcudf_sort_temporary_workspace_preflight_unavailable")
-            );
+            assert_final_sort_preflight_contract(event);
         },
         "nexus_query_engine.final_sort.topk_prepare" | "nexus_query_engine.final_sort.topk_materialize" => {
             assert!(matches!(event.boundary.as_str(), "final_sort_topk_chunk" | "final_sort_topk_merge"));
-            assert_eq!(
-                event.unresolved_contract.as_deref(),
-                Some("libcudf_sort_temporary_workspace_preflight_unavailable")
-            );
+            assert_final_sort_preflight_contract(event);
         },
         "nexus_query_engine.local_parquet_chunk.zero_column_count" => {
             assert!(matches!(event.boundary.as_str(), "source_chunk_read" | "source_chunk_prefetch"));
@@ -240,6 +266,24 @@ fn assert_representative_budgeted_contract(event: &BudgetedExecutionEvent) {
             );
         },
         _ => {},
+    }
+}
+
+fn assert_final_sort_preflight_contract(event: &BudgetedExecutionEvent) {
+    if event.context_facts.get("sorted_order_radix_preflight_status").map(String::as_str) == Some("supported") {
+        assert!(
+            event.unresolved_contract.is_none() && sorted_order_radix_owner_contract_is_finite(event),
+            "supported sorted-order radix event must carry finite owner facts: {event:?}"
+        );
+    } else {
+        assert_eq!(
+            event.context_facts.get("sorted_order_radix_preflight_status").map(String::as_str),
+            Some("unresolved_unsupported_shape")
+        );
+        assert_eq!(
+            event.unresolved_contract.as_deref(),
+            Some("libcudf_sort_temporary_workspace_preflight_unavailable")
+        );
     }
 }
 

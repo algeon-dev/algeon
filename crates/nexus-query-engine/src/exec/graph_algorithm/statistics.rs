@@ -287,7 +287,7 @@ fn graph_statistics_betweenness_resident_out_degree_sum(
         exact_vertices,
         vertex_width_bytes,
         device_total_memory_bytes,
-    );
+    )?;
     if resident_sources == 0 || out_degrees.num_rows() == 0 {
         return Ok(0);
     }
@@ -329,27 +329,46 @@ fn graph_statistics_betweenness_resident_sources(
     exact_vertices: u64,
     vertex_width_bytes: u64,
     device_total_memory_bytes: Option<u64>,
-) -> u64 {
+) -> Result<u64> {
     let requested_sources = match &spec.params {
         crate::plan::GraphAlgorithmParams::BetweennessCentrality(params) => {
             params.seeds.as_ref().map_or_else(|| params.k.unwrap_or(exact_vertices), |seeds| seeds.len() as u64)
         },
-        crate::plan::GraphAlgorithmParams::EdgeBetweennessCentrality(_) => return 1,
-        _ => return 0,
+        crate::plan::GraphAlgorithmParams::EdgeBetweennessCentrality(_) => return Ok(1),
+        _ => return Ok(0),
     };
     let mut resident_sources = requested_sources.clamp(1, u16::MAX as u64);
     let Some(total_memory_bytes) = device_total_memory_bytes else {
-        return resident_sources;
+        return Ok(resident_sources);
     };
     if resident_sources <= 1 || exact_vertices == 0 {
-        return resident_sources;
+        return Ok(resident_sources);
     }
-    let bfs_result_bytes_per_source = exact_vertices.saturating_mul(vertex_width_bytes.saturating_mul(2));
+    let bfs_result_width = vertex_width_bytes.checked_mul(2).ok_or_else(|| {
+        QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            GRAPH_STATISTICS_OPERATION,
+            "runtime graph statistics pricing is not finite",
+        )
+        .with_fact("reason", "graph_statistics_pricing_overflow")
+        .with_fact("term", "betweenness_bfs_result_width")
+        .with_fact("operation", "multiplication")
+    })?;
+    let bfs_result_bytes_per_source = exact_vertices.checked_mul(bfs_result_width).ok_or_else(|| {
+        QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            GRAPH_STATISTICS_OPERATION,
+            "runtime graph statistics pricing is not finite",
+        )
+        .with_fact("reason", "graph_statistics_pricing_overflow")
+        .with_fact("term", "betweenness_bfs_result_bytes")
+        .with_fact("operation", "multiplication")
+    })?;
     if bfs_result_bytes_per_source == 0 {
-        return resident_sources;
+        return Ok(resident_sources);
     }
     resident_sources = resident_sources.min(total_memory_bytes / 4 / bfs_result_bytes_per_source).max(1);
-    resident_sources
+    Ok(resident_sources)
 }
 
 #[cfg(feature = "cugraph")]
@@ -569,7 +588,7 @@ fn graph_statistics_triangle_min_degree(
         sum_min_degree_oriented,
         oriented_edge_count,
         device_multiprocessor_count,
-    );
+    )?;
     Ok((sum_min_degree_oriented, oriented_edge_count, peak_chunk_min_degree_sum))
 }
 

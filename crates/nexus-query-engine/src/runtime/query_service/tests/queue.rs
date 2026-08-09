@@ -374,6 +374,65 @@ fn query_admission_waiter_times_out_while_selected_but_memory_blocked() {
         }
     );
 }
+
+#[test]
+fn query_admission_waiter_timeout_reports_the_selected_device_requirement() {
+    let service = QueryService::new_with_device_ordinals_and_deployment(
+        QueryExecutionConfig::default(),
+        QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(2), max_overtakes_per_waiter: 4 },
+        vec![0, 1],
+        non_gds_deployment(),
+    )
+    .expect("two-device runtime-backed service");
+    service
+        .close_device_admission_for_test(0, "selected-device-timeout-test")
+        .expect("ordinal zero closes while ordinal one remains eligible");
+    let active = service.admit_query().expect("ordinal one admits the active attempt");
+    assert_eq!(active.device_ordinal(), 1);
+
+    let mut waiter = service.enqueue_admission().expect("request enters the shared queue");
+    let entries = DeviceAdmissionEntries::from([
+        (
+            0,
+            DeviceAdmissionEntry {
+                requirement: requirement(111, Some(111)),
+                admitted_reservation_envelope: None,
+            },
+        ),
+        (
+            1,
+            DeviceAdmissionEntry {
+                requirement: requirement(222, Some(222)),
+                admitted_reservation_envelope: None,
+            },
+        ),
+    ]);
+    waiter.device_entries = entries.clone();
+    {
+        let mut state = service.inner.admission.lock().expect("admission state");
+        state
+            .queued
+            .iter_mut()
+            .find(|request| request.admission_request_id == waiter.admission_request_id)
+            .expect("queued request")
+            .device_entries = entries;
+    }
+
+    // Keep the queued request's service deadline in the future so the sweep
+    // retains it, while the waiter deadline drives the selected-but-blocked
+    // timeout branch below.
+    waiter.deadline = Instant::now();
+    let error = waiter.try_admit().expect_err("saturated ordinal one reports a memory-grant timeout");
+
+    assert_eq!(error.fact_value("reason"), Some("memory_grant_wait_timeout"));
+    assert_eq!(error.fact_value("required_floor_bytes"), Some("222"));
+    assert_eq!(error.fact_value("soft_working_set_hint_bytes"), Some("222"));
+
+    active.finish();
+    drop(active);
+    service.close_and_wait_for_quiescence(Duration::from_secs(10)).expect("service drains");
+}
+
 #[test]
 fn query_service_work_conserving_admission_skips_memory_blocked_head() {
     let service = admission_test_service_with_profile(

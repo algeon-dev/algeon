@@ -574,11 +574,6 @@ pub(super) fn int64_column(batch: &RecordBatch, index: usize) -> Vec<i64> {
     (0..batch.num_rows()).map(|row| values.value(row)).collect()
 }
 
-pub(super) fn string_path_column(batch: &RecordBatch, index: usize) -> Vec<&str> {
-    let values = batch.column(index).as_any().downcast_ref::<StringArray>().unwrap();
-    (0..batch.num_rows()).map(|row| values.value(row)).collect()
-}
-
 pub(super) fn assert_empty_i64_path_batch(batch: &RecordBatch) {
     assert_eq!(batch.num_rows(), 0);
     assert_eq!(

@@ -354,6 +354,7 @@ fn impossible_requirement_is_rejected_at_submit_without_queueing() {
         soft_working_set_hint_bytes: None,
         estimate_quality: nexus_query_engine::admission::EstimateQuality::Unknown,
         required_capabilities: Vec::new(),
+        owner_terms: Vec::new(),
         attested_cugraph_graph_execution_scopes: Vec::new(),
         reservation_shapes: Vec::new(),
     };

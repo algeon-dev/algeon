@@ -17,6 +17,7 @@ fn requirement(floor: u64, hint: Option<u64>) -> AttemptRequirement {
         soft_working_set_hint_bytes: hint,
         estimate_quality: crate::admission::EstimateQuality::Modeled,
         required_capabilities: Vec::new(),
+        owner_terms: Vec::new(),
         attested_cugraph_graph_execution_scopes: Vec::new(),
         reservation_shapes: Vec::new(),
     }
@@ -501,6 +502,7 @@ fn zero_request_floor_resolves_against_each_candidate_profile() {
         soft_working_set_hint_bytes: Some(1),
         estimate_quality: crate::admission::EstimateQuality::Unknown,
         required_capabilities: Vec::new(),
+        owner_terms: Vec::new(),
         attested_cugraph_graph_execution_scopes: Vec::new(),
         reservation_shapes: Vec::new(),
     };
@@ -523,6 +525,7 @@ fn request_floor_cannot_lower_the_candidate_profile_floor() {
         soft_working_set_hint_bytes: Some(1),
         estimate_quality: crate::admission::EstimateQuality::Unknown,
         required_capabilities: Vec::new(),
+        owner_terms: Vec::new(),
         attested_cugraph_graph_execution_scopes: Vec::new(),
         reservation_shapes: Vec::new(),
     };
@@ -542,6 +545,7 @@ fn requirement_floor_above_the_candidate_profile_floor_is_preserved() {
         soft_working_set_hint_bytes: Some(1),
         estimate_quality: crate::admission::EstimateQuality::Unknown,
         required_capabilities: Vec::new(),
+        owner_terms: Vec::new(),
         attested_cugraph_graph_execution_scopes: Vec::new(),
         reservation_shapes: Vec::new(),
     };
@@ -574,6 +578,7 @@ fn overflowing_floor_is_rejected_structurally() {
         soft_working_set_hint_bytes: None,
         estimate_quality: crate::admission::EstimateQuality::Unknown,
         required_capabilities: Vec::new(),
+        owner_terms: Vec::new(),
         attested_cugraph_graph_execution_scopes: Vec::new(),
         reservation_shapes: Vec::new(),
     };

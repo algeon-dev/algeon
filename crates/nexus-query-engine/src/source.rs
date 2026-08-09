@@ -146,17 +146,47 @@ pub struct GpuResidentSource {
     /// can admit bounded operators without inspecting or materializing the
     /// handle first.
     pub row_count_upper_bound: Option<u64>,
+    /// A source-owned upper bound on graph vertices for this exact edge rowset.
+    /// Unlike row cardinality, this metadata is only meaningful to graph
+    /// planning and remains absent for generic resident inputs.
+    pub graph_vertex_upper_bound: Option<u64>,
 }
 
 impl GpuResidentSource {
     /// Creates a GPU-resident source with the provided runtime name and schema.
     pub fn new(input_name: impl Into<String>, schema: SchemaRef) -> Self {
-        Self { input_name: input_name.into(), schema, row_count_upper_bound: None }
+        Self { input_name: input_name.into(), schema, row_count_upper_bound: None, graph_vertex_upper_bound: None }
     }
 
     /// Attaches a frontend-proved hard upper bound on this input's row count.
     pub fn with_row_count_upper_bound(mut self, row_count_upper_bound: u64) -> Self {
         self.row_count_upper_bound = Some(row_count_upper_bound);
         self
+    }
+
+    /// Attaches a source-owned graph vertex upper bound for this exact edge rowset.
+    pub fn with_graph_vertex_upper_bound(mut self, graph_vertex_upper_bound: u64) -> Self {
+        self.graph_vertex_upper_bound = Some(graph_vertex_upper_bound);
+        self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use arrow::datatypes::{DataType, Field, Schema};
+
+    use super::GpuResidentSource;
+
+    #[test]
+    fn gpu_resident_source_keeps_row_and_graph_vertex_bounds_distinct() {
+        let source = GpuResidentSource::new(
+            "edges",
+            std::sync::Arc::new(Schema::new(vec![Field::new("src", DataType::Int64, false)])),
+        )
+        .with_row_count_upper_bound(7)
+        .with_graph_vertex_upper_bound(11);
+
+        assert_eq!(source.row_count_upper_bound, Some(7));
+        assert_eq!(source.graph_vertex_upper_bound, Some(11));
     }
 }

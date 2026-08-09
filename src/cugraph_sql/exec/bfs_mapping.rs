@@ -1,18 +1,427 @@
-use super::{node::projected_schema, *};
+use std::{collections::BTreeSet, mem::size_of, sync::Arc};
 
-pub(super) struct PreparedCugraphInputs {
-    pub(super) execution_spec: CugraphAlgorithmSpec,
-    pub(super) edge_schema: SchemaRef,
-    pub(super) edge_frame: GpuDataFrame,
-    pub(super) predicate_frames: Vec<CugraphGpuFrame>,
-    pub(super) logical_codebook: Option<Codebook>,
-}
+use super::*;
 
 pub(super) struct PreparedCugraphInputSchemas {
     pub(super) execution_spec: CugraphAlgorithmSpec,
     pub(super) edge_schema: SchemaRef,
     pub(super) predicate_schemas: Vec<SchemaRef>,
     pub(super) logical_mapping: bool,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct HostBfsCodebook {
+    values: Arc<Vec<String>>,
+}
+
+impl HostBfsCodebook {
+    fn from_sources(sources: &[(&StagedCugraphSource, Vec<String>)]) -> Result<Self> {
+        Self::from_sources_with_limit(sources, i32::MAX as usize)
+    }
+
+    pub(super) fn from_sources_with_limit(
+        sources: &[(&StagedCugraphSource, Vec<String>)],
+        max_distinct: usize,
+    ) -> Result<Self> {
+        let mut values = BTreeSet::new();
+        for (source, columns) in sources {
+            let StagedCugraphSource::Host { schema, batches } = source else {
+                return Err(logical_bfs_native_source_error("codebook", "native"));
+            };
+            for column in columns {
+                let field = schema.field_with_name(column).map_err(|error| {
+                    DataFusionError::from(
+                        Error::new(
+                            ErrorCode::InvalidExecutionPlan,
+                            "datafusion_nexus.cugraph_sql.logical_bfs_host_mapping",
+                            "logical BFS host mapping could not find a required vertex column",
+                        )
+                        .with_fact("column", column)
+                        .with_source(error),
+                    )
+                })?;
+                if !is_bfs_logical_vertex_type(field.data_type()) {
+                    return Err(Error::new(
+                        ErrorCode::UnsupportedType,
+                        "datafusion_nexus.cugraph_sql.logical_bfs_host_mapping",
+                        "logical BFS host mapping requires UTF8 vertex columns",
+                    )
+                    .with_fact("column", column)
+                    .with_fact("data_type", format!("{:?}", field.data_type()))
+                    .with_fact("reason", "logical_bfs_vertex_dtype_unsupported")
+                    .into());
+                }
+                for batch in batches {
+                    let index = batch.schema().index_of(column).map_err(DataFusionError::from)?;
+                    collect_string_values(batch.column(index).as_ref(), &mut values, column)?;
+                }
+            }
+        }
+        if values.len() > max_distinct {
+            return Err(Error::new(
+                ErrorCode::SizeOverflow,
+                "datafusion_nexus.cugraph_sql.logical_bfs_host_mapping",
+                "logical BFS host codebook exceeds its checked Int32 domain",
+            )
+            .with_fact("reason", "logical_bfs_codebook_overflow")
+            .with_fact("distinct_values", values.len())
+            .with_fact("max_distinct_values", max_distinct)
+            .into());
+        }
+        let values = Arc::new(values.into_iter().collect::<Vec<_>>());
+        for (index, _) in values.iter().enumerate() {
+            i32::try_from(index).map_err(|_| {
+                Error::new(
+                    ErrorCode::SizeOverflow,
+                    "datafusion_nexus.cugraph_sql.logical_bfs_host_mapping",
+                    "logical BFS host codebook index does not fit Int32",
+                )
+                .with_fact("reason", "logical_bfs_codebook_overflow")
+                .with_fact("index", index)
+            })?;
+        }
+        Ok(Self { values })
+    }
+
+    pub(super) fn code(&self, value: &str) -> Option<i32> {
+        self.values
+            .binary_search_by(|candidate| candidate.as_str().cmp(value))
+            .ok()
+            .and_then(|index| i32::try_from(index).ok())
+    }
+
+    pub(super) fn decode_code(&self, code: i64) -> Result<String> {
+        let index = usize::try_from(code).map_err(|_| logical_bfs_unknown_code_error(code))?;
+        self.values.get(index).cloned().ok_or_else(|| logical_bfs_unknown_code_error(code))
+    }
+
+    pub(super) fn memory_size(&self) -> Result<usize> {
+        let vector_bytes = self.values.capacity().checked_mul(size_of::<String>());
+        let string_bytes = self.values.iter().try_fold(0usize, |total, value| total.checked_add(value.capacity()));
+        vector_bytes.and_then(|vector| string_bytes.and_then(|strings| vector.checked_add(strings))).ok_or_else(|| {
+            Error::new(
+                ErrorCode::SizeOverflow,
+                "datafusion_nexus.cugraph_sql.logical_bfs_host_mapping",
+                "logical BFS host codebook size overflowed usize",
+            )
+            .with_fact("reason", "logical_bfs_codebook_size_overflow")
+            .into()
+        })
+    }
+}
+
+pub(super) fn prepare_bfs_logical_host_inputs(
+    spec: &CugraphAlgorithmSpec,
+    edge: StagedCugraphSource,
+    logical_literal_source: Option<StagedCugraphSource>,
+    predicates: Vec<StagedCugraphSource>,
+    staged_bytes: &mut usize,
+    max_staging_bytes: usize,
+    reservation: &mut MemoryReservation,
+) -> Result<(
+    StagedCugraphSource,
+    Option<StagedCugraphSource>,
+    Vec<StagedCugraphSource>,
+    Option<HostBfsCodebook>,
+    CugraphAlgorithmSpec,
+)> {
+    let CugraphAlgorithmParams::Bfs(params) = &spec.params else {
+        return Ok((edge, logical_literal_source, predicates, None, spec.clone()));
+    };
+    if !bfs_uses_logical_mapping(spec, params, &edge.schema())? {
+        return Ok((edge, logical_literal_source, predicates, None, spec.clone()));
+    }
+
+    let StagedCugraphSource::Host { .. } = &edge else {
+        return Err(logical_bfs_native_source_error("edge", "native"));
+    };
+    if let Some(source) = &logical_literal_source
+        && !matches!(source, StagedCugraphSource::Host { .. })
+    {
+        return Err(logical_bfs_native_source_error("source_vertices", "native"));
+    }
+    if let Some((index, _)) =
+        predicates.iter().enumerate().find(|(_, source)| matches!(source, StagedCugraphSource::Native { .. }))
+    {
+        return Err(logical_bfs_native_source_error("side_input", format!("native_index_{index}")));
+    }
+
+    validate_bfs_logical_edge_schema(spec, &edge.schema())?;
+    let edge_columns = vec![spec.src_col.clone(), spec.dst_col.clone()];
+    let literal_columns = logical_literal_source.as_ref().map(|_| vec!["__source_vertex".to_string()]);
+    let predicate_columns = predicates
+        .iter()
+        .enumerate()
+        .map(|(index, _)| bfs_logical_predicate_columns(params, index))
+        .collect::<Vec<_>>();
+
+    let mut domain_sources = Vec::with_capacity(2 + predicates.len() + usize::from(logical_literal_source.is_some()));
+    domain_sources.push((&edge, edge_columns));
+    if let (Some(source), Some(columns)) = (&logical_literal_source, literal_columns.as_ref()) {
+        domain_sources.push((source, columns.clone()));
+    }
+    for (source, columns) in predicates.iter().zip(predicate_columns.iter()) {
+        domain_sources.push((source, columns.clone()));
+    }
+    let codebook = HostBfsCodebook::from_sources(&domain_sources)?;
+    reserve_logical_mapping_bytes("codebook", codebook.memory_size()?, staged_bytes, max_staging_bytes, reservation)?;
+
+    let edge = encode_staged_source(
+        edge,
+        &[spec.src_col.clone(), spec.dst_col.clone()],
+        &codebook,
+        staged_bytes,
+        max_staging_bytes,
+        reservation,
+    )?;
+    let logical_literal_source = logical_literal_source
+        .map(|source| {
+            encode_staged_source(
+                source,
+                &["__source_vertex".to_string()],
+                &codebook,
+                staged_bytes,
+                max_staging_bytes,
+                reservation,
+            )
+        })
+        .transpose()?;
+    let predicates = predicates
+        .into_iter()
+        .enumerate()
+        .map(|(index, source)| {
+            let columns = bfs_logical_predicate_columns(params, index);
+            encode_staged_source(source, &columns, &codebook, staged_bytes, max_staging_bytes, reservation)
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    let mut execution_spec = spec.clone();
+    execution_spec.output_schema = bfs_numeric_execution_schema(params)?;
+    Ok((edge, logical_literal_source, predicates, Some(codebook), execution_spec))
+}
+
+fn encode_staged_source(
+    source: StagedCugraphSource,
+    columns: &[String],
+    codebook: &HostBfsCodebook,
+    staged_bytes: &mut usize,
+    max_staging_bytes: usize,
+    reservation: &mut MemoryReservation,
+) -> Result<StagedCugraphSource> {
+    let StagedCugraphSource::Host { schema, batches } = source else {
+        return Err(logical_bfs_native_source_error("logical_input", "native"));
+    };
+    let mapped_schema = remap_bfs_logical_schema(&schema, &columns.iter().map(String::as_str).collect::<Vec<_>>())?;
+    let mut mapped_batches = Vec::with_capacity(batches.len());
+    for batch in batches {
+        let original_bytes = get_record_batch_memory_size(&batch);
+        let encoded_upper_bound = original_bytes.checked_add(size_of::<RecordBatch>()).ok_or_else(|| {
+            host_staging_limit_error("logical_bfs", "encoded_input", *staged_bytes, usize::MAX, max_staging_bytes)
+        })?;
+        let peak_bytes = staged_bytes.checked_add(encoded_upper_bound).ok_or_else(|| {
+            host_staging_limit_error(
+                "logical_bfs",
+                "encoded_input",
+                *staged_bytes,
+                encoded_upper_bound,
+                max_staging_bytes,
+            )
+        })?;
+        if peak_bytes > max_staging_bytes {
+            return Err(host_staging_limit_error(
+                "logical_bfs",
+                "encoded_input",
+                *staged_bytes,
+                encoded_upper_bound,
+                max_staging_bytes,
+            ));
+        }
+        reservation.try_grow(encoded_upper_bound).map_err(|source| {
+            DataFusionError::from(
+                Error::new(
+                    ErrorCode::MemoryReservationFailed,
+                    "datafusion_nexus.cugraph_sql.host_staging_reservation",
+                    "DataFusion host memory pool denied encoded logical BFS staging",
+                )
+                .with_fact("boundary", "encoded_input")
+                .with_fact("requested_bytes", encoded_upper_bound)
+                .with_fact("superseded_bytes", original_bytes)
+                .with_source(source),
+            )
+        })?;
+        let mut arrays = batch.columns().to_vec();
+        for column in columns {
+            let index = batch.schema().index_of(column).map_err(DataFusionError::from)?;
+            arrays[index] = encode_logical_array(batch.column(index).as_ref(), codebook, column)?;
+        }
+        let mapped = RecordBatch::try_new(Arc::clone(&mapped_schema), arrays).map_err(DataFusionError::from)?;
+        let mapped_bytes = get_record_batch_memory_size(&mapped);
+        if mapped_bytes > encoded_upper_bound {
+            return Err(Error::new(
+                ErrorCode::CudfInvariantViolation,
+                "datafusion_nexus.cugraph_sql.logical_bfs_host_mapping",
+                "logical BFS encoded batch exceeded its reserved upper bound",
+            )
+            .with_fact("reserved_bytes", encoded_upper_bound)
+            .with_fact("actual_bytes", mapped_bytes)
+            .into());
+        }
+        let next_bytes = staged_bytes
+            .checked_sub(original_bytes)
+            .and_then(|bytes| bytes.checked_add(mapped_bytes))
+            .ok_or_else(|| {
+                host_staging_limit_error("logical_bfs", "encoded_input", *staged_bytes, mapped_bytes, max_staging_bytes)
+            })?;
+        if next_bytes > max_staging_bytes {
+            return Err(host_staging_limit_error(
+                "logical_bfs",
+                "encoded_input",
+                *staged_bytes,
+                mapped_bytes,
+                max_staging_bytes,
+            ));
+        }
+        // End the old batch ownership before lowering its charged staging bytes.
+        drop(batch);
+        reservation.shrink(original_bytes);
+        reservation.shrink(encoded_upper_bound - mapped_bytes);
+        *staged_bytes = next_bytes;
+        mapped_batches.push(mapped);
+    }
+    Ok(StagedCugraphSource::Host { schema: mapped_schema, batches: mapped_batches })
+}
+
+fn reserve_logical_mapping_bytes(
+    boundary: &'static str,
+    requested_bytes: usize,
+    staged_bytes: &mut usize,
+    max_staging_bytes: usize,
+    reservation: &mut MemoryReservation,
+) -> Result<()> {
+    let next = staged_bytes.checked_add(requested_bytes).ok_or_else(|| {
+        host_staging_limit_error("logical_bfs", boundary, *staged_bytes, requested_bytes, max_staging_bytes)
+    })?;
+    if next > max_staging_bytes {
+        return Err(host_staging_limit_error(
+            "logical_bfs",
+            boundary,
+            *staged_bytes,
+            requested_bytes,
+            max_staging_bytes,
+        ));
+    }
+    reservation.try_grow(requested_bytes).map_err(|source| {
+        DataFusionError::from(
+            Error::new(
+                ErrorCode::MemoryReservationFailed,
+                "datafusion_nexus.cugraph_sql.host_staging_reservation",
+                "DataFusion host memory pool denied logical BFS mapping storage",
+            )
+            .with_fact("boundary", boundary)
+            .with_fact("requested_bytes", requested_bytes)
+            .with_fact("staged_bytes", *staged_bytes)
+            .with_source(source),
+        )
+    })?;
+    *staged_bytes = next;
+    Ok(())
+}
+
+fn collect_string_values(array: &dyn Array, values: &mut BTreeSet<String>, column: &str) -> Result<()> {
+    if let Some(array) = array.as_any().downcast_ref::<StringArray>() {
+        for row in 0..array.len() {
+            if !array.is_null(row) {
+                values.insert(array.value(row).to_owned());
+            }
+        }
+        return Ok(());
+    }
+    if let Some(array) = array.as_any().downcast_ref::<LargeStringArray>() {
+        for row in 0..array.len() {
+            if !array.is_null(row) {
+                values.insert(array.value(row).to_owned());
+            }
+        }
+        return Ok(());
+    }
+    if let Some(array) = array.as_any().downcast_ref::<StringViewArray>() {
+        for row in 0..array.len() {
+            if !array.is_null(row) {
+                values.insert(array.value(row).to_owned());
+            }
+        }
+        return Ok(());
+    }
+    Err(Error::new(
+        ErrorCode::UnsupportedType,
+        "datafusion_nexus.cugraph_sql.logical_bfs_host_mapping",
+        "logical BFS host mapping received a non-string vertex array",
+    )
+    .with_fact("column", column)
+    .with_fact("data_type", format!("{:?}", array.data_type()))
+    .with_fact("reason", "logical_bfs_vertex_dtype_unsupported")
+    .into())
+}
+
+pub(super) fn encode_logical_array(array: &dyn Array, codebook: &HostBfsCodebook, column: &str) -> Result<ArrayRef> {
+    let mut values = Vec::with_capacity(array.len());
+    for row in 0..array.len() {
+        if array.is_null(row) {
+            values.push(None);
+            continue;
+        }
+        let value = if let Some(array) = array.as_any().downcast_ref::<StringArray>() {
+            array.value(row)
+        } else if let Some(array) = array.as_any().downcast_ref::<LargeStringArray>() {
+            array.value(row)
+        } else if let Some(array) = array.as_any().downcast_ref::<StringViewArray>() {
+            array.value(row)
+        } else {
+            return Err(Error::new(
+                ErrorCode::UnsupportedType,
+                "datafusion_nexus.cugraph_sql.logical_bfs_host_mapping",
+                "logical BFS host mapping received a non-string vertex array",
+            )
+            .with_fact("column", column)
+            .with_fact("data_type", format!("{:?}", array.data_type()))
+            .with_fact("reason", "logical_bfs_vertex_dtype_unsupported")
+            .into());
+        };
+        let code = codebook.code(value).ok_or_else(|| {
+            Error::new(
+                ErrorCode::CudfInvariantViolation,
+                "datafusion_nexus.cugraph_sql.logical_bfs_host_mapping",
+                "logical BFS host mapping value was absent from its deterministic codebook",
+            )
+            .with_fact("column", column)
+            .with_fact("reason", "logical_bfs_codebook_value_missing")
+        })?;
+        values.push(Some(code));
+    }
+    Ok(Arc::new(Int32Array::from(values)) as ArrayRef)
+}
+
+fn logical_bfs_native_source_error(source_kind: &'static str, source_state: impl Into<String>) -> DataFusionError {
+    Error::new(
+        ErrorCode::RequiredGpuOperationUnsupported,
+        "datafusion_nexus.cugraph_sql.logical_bfs_host_mapping",
+        "logical BFS requires host Arrow sources before admission",
+    )
+    .with_fact("reason", "logical_bfs_native_source_unsupported")
+    .with_fact("source_kind", source_kind)
+    .with_fact("source_state", source_state.into())
+    .into()
+}
+
+fn logical_bfs_unknown_code_error(code: i64) -> DataFusionError {
+    Error::new(
+        ErrorCode::CudfInvariantViolation,
+        "datafusion_nexus.cugraph_sql.logical_bfs_host_output",
+        "logical BFS output contained a code outside its host codebook",
+    )
+    .with_fact("reason", "logical_bfs_output_code_unknown")
+    .with_fact("code", code)
+    .into()
 }
 
 pub(super) fn prepare_bfs_logical_input_schemas(
@@ -61,123 +470,6 @@ pub(super) fn prepare_bfs_logical_input_schemas(
     })
 }
 
-pub(super) fn prepare_bfs_logical_gpu_inputs(
-    context: &ExecutionContext,
-    spec: &CugraphAlgorithmSpec,
-    edge_schema: SchemaRef,
-    edge_frame: GpuDataFrame,
-    literal_source_frame: Option<CugraphGpuFrame>,
-    predicate_frames: Vec<CugraphGpuFrame>,
-) -> Result<PreparedCugraphInputs> {
-    let CugraphAlgorithmParams::Bfs(params) = &spec.params else {
-        return Ok(PreparedCugraphInputs {
-            execution_spec: spec.clone(),
-            edge_schema,
-            edge_frame,
-            predicate_frames,
-            logical_codebook: None,
-        });
-    };
-    if !validate_bfs_logical_mapping_capability(spec, params, &edge_schema)? {
-        return Ok(PreparedCugraphInputs {
-            execution_spec: spec.clone(),
-            edge_schema,
-            edge_frame,
-            predicate_frames,
-            logical_codebook: None,
-        });
-    }
-    let runtime = counted_cudf_runtime(
-        context,
-        "datafusion_nexus.cugraph_sql.logical_mapping.runtime",
-        "query service closed before cuGraph logical mapping acquired its runtime",
-    )?;
-    let source_edge_frame = edge_frame.clone();
-    let edge_frame = edge_frame.into_frame();
-    validate_bfs_logical_edge_schema(spec, &edge_schema)?;
-    let mut domain_parts = vec![cudf_series(&edge_frame, &spec.src_col)?, cudf_series(&edge_frame, &spec.dst_col)?];
-    let literal_source_series =
-        literal_source_frame.as_ref().map(|frame| cudf_series(frame.frame.frame(), "__source_vertex")).transpose()?;
-    if let Some(source_series) = &literal_source_series {
-        domain_parts.push(source_series.clone());
-    }
-    if let CugraphBfsSource::Relation(source) = &params.source {
-        let source_frame = predicate_frames
-            .first()
-            .ok_or_else(|| plan_error("BFS source_vertices relation source was not planned"))?;
-        domain_parts.push(cudf_series(source_frame.frame.frame(), &source.column)?);
-    }
-    for (index, frame) in predicate_frames.iter().enumerate() {
-        collect_bfs_logical_predicate_domain_parts(params, index, frame, &mut domain_parts)?;
-    }
-    let domain_refs = domain_parts.iter().collect::<Vec<_>>();
-    let domain = Series::concat(&domain_refs).map_err(|error| {
-        DataFusionError::from(Error::from_native(
-            "datafusion_nexus.cugraph_sql.logical_mapping",
-            "failed to concatenate cuGraph logical BFS mapping domain on GPU",
-            nexus_query_engine::error::QueryError::from_cudf(
-                "datafusion_nexus.cugraph_sql.logical_mapping",
-                "failed to concatenate cuGraph logical BFS mapping domain on GPU",
-                error,
-            ),
-        ))
-    })?;
-    let codebook = domain.codebook().map_err(|error| {
-        DataFusionError::from(Error::from_native(
-            "datafusion_nexus.cugraph_sql.logical_mapping",
-            "failed to build cuGraph logical BFS codebook on GPU",
-            nexus_query_engine::error::QueryError::from_cudf(
-                "datafusion_nexus.cugraph_sql.logical_mapping",
-                "failed to build cuGraph logical BFS codebook on GPU",
-                error,
-            ),
-        ))
-    })?;
-
-    let mapped_edge = encode_bfs_logical_edge_frame(spec, edge_frame, &codebook)?;
-    let mapped_edge_schema = remap_bfs_logical_schema(&edge_schema, &[&spec.src_col, &spec.dst_col])?;
-    let mut mapped_predicates = Vec::with_capacity(predicate_frames.len() + 1);
-    if let Some(source_series) = literal_source_series {
-        let source_code = codebook
-            .encode(&source_series)
-            .map_err(cudf_logical_mapping_error)?
-            .into_series()
-            .copy_into_runtime(&runtime)
-            .map_err(cudf_logical_mapping_error)?;
-        let source_frame =
-            DataFrame::from_series([("__source_vertex", source_code)]).map_err(cudf_logical_mapping_error)?;
-        let source_schema =
-            Arc::new(Schema::new(vec![arrow::datatypes::Field::new("__source_vertex", DataType::Int32, false)]));
-        mapped_predicates.push(CugraphGpuFrame {
-            schema: source_schema,
-            frame: retain_mapped_cugraph_frame(
-                source_frame,
-                &source_edge_frame,
-                "datafusion_nexus.cugraph_sql.logical_mapping",
-                "failed to retain mapped cuGraph logical source frame residency",
-            )?,
-        });
-    }
-    for (index, frame) in predicate_frames.into_iter().enumerate() {
-        mapped_predicates.push(encode_bfs_logical_predicate_frame(params, index, frame, &codebook)?);
-    }
-
-    let mut execution_spec = spec.clone();
-    execution_spec.output_schema = bfs_numeric_execution_schema(params)?;
-    Ok(PreparedCugraphInputs {
-        execution_spec,
-        edge_schema: mapped_edge_schema,
-        edge_frame: retain_mapped_cugraph_frame(
-            mapped_edge,
-            &source_edge_frame,
-            "datafusion_nexus.cugraph_sql.logical_mapping",
-            "failed to retain mapped cuGraph logical edge frame residency",
-        )?,
-        predicate_frames: mapped_predicates,
-        logical_codebook: Some(codebook),
-    })
-}
-
 fn validate_bfs_logical_mapping_capability(
     spec: &CugraphAlgorithmSpec,
     params: &super::CugraphBfsParams,
@@ -186,16 +478,6 @@ fn validate_bfs_logical_mapping_capability(
     let logical_mapping = bfs_uses_logical_mapping(spec, params, edge_schema)?;
     super::super::validate_bfs_logical_edge_id_capability(spec, logical_mapping)?;
     Ok(logical_mapping)
-}
-
-pub(super) fn retain_mapped_cugraph_frame(
-    frame: DataFrame,
-    source: &GpuDataFrame,
-    operation: &'static str,
-    message: &'static str,
-) -> Result<GpuDataFrame> {
-    GpuDataFrame::try_new_with_source_residency(frame, source)
-        .map_err(|error| DataFusionError::from(Error::from_native(operation, message, error)))
 }
 
 pub(super) fn validate_bfs_logical_edge_schema(spec: &CugraphAlgorithmSpec, edge_schema: &SchemaRef) -> Result<()> {
@@ -261,81 +543,6 @@ pub(super) fn is_bfs_logical_vertex_type(data_type: &DataType) -> bool {
     matches!(data_type, DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View)
 }
 
-pub(super) fn collect_bfs_logical_predicate_domain_parts(
-    params: &super::CugraphBfsParams,
-    index: usize,
-    frame: &CugraphGpuFrame,
-    domain_parts: &mut Vec<Series>,
-) -> Result<()> {
-    let source_offset = bfs_planned_source_input_offset(params);
-    if index < source_offset {
-        return Ok(());
-    }
-    let index = index - source_offset;
-    let mut expected_index = 0;
-    if let Some(input) = &params.predicates.include_vertices {
-        if index == expected_index {
-            domain_parts.push(cudf_series(frame.frame.frame(), &input.column)?);
-        }
-        expected_index += 1;
-    }
-    if let Some(input) = &params.predicates.exclude_vertices {
-        if index == expected_index {
-            domain_parts.push(cudf_series(frame.frame.frame(), &input.column)?);
-        }
-        expected_index += 1;
-    }
-    if let Some(input) = &params.predicates.target_vertices {
-        if index == expected_index {
-            domain_parts.push(cudf_series(frame.frame.frame(), &input.column)?);
-        }
-        expected_index += 1;
-    }
-    if params.predicates.include_edge_ids.is_some() {
-        expected_index += 1;
-    }
-    if let Some(input) = &params.predicates.include_edges
-        && index == expected_index
-    {
-        domain_parts.push(cudf_series(frame.frame.frame(), &input.source_col)?);
-        domain_parts.push(cudf_series(frame.frame.frame(), &input.destination_col)?);
-    }
-    Ok(())
-}
-
-pub(super) fn encode_bfs_logical_edge_frame(
-    spec: &CugraphAlgorithmSpec,
-    frame: DataFrame,
-    codebook: &Codebook,
-) -> Result<DataFrame> {
-    let frame = encode_column(frame, &spec.src_col, codebook)?;
-    encode_column(frame, &spec.dst_col, codebook)
-}
-
-pub(super) fn encode_bfs_logical_predicate_frame(
-    params: &super::CugraphBfsParams,
-    index: usize,
-    frame: CugraphGpuFrame,
-    codebook: &Codebook,
-) -> Result<CugraphGpuFrame> {
-    let source_frame = frame.frame.clone();
-    let mut raw = frame.frame.into_frame();
-    let encoded_columns = bfs_logical_predicate_columns(params, index);
-    for column in &encoded_columns {
-        raw = encode_column(raw, column, codebook)?;
-    }
-    let encoded_column_refs = encoded_columns.iter().map(String::as_str).collect::<Vec<_>>();
-    Ok(CugraphGpuFrame {
-        schema: remap_bfs_logical_schema(&frame.schema, &encoded_column_refs)?,
-        frame: retain_mapped_cugraph_frame(
-            raw,
-            &source_frame,
-            "datafusion_nexus.cugraph_sql.logical_mapping",
-            "failed to retain mapped cuGraph logical predicate frame residency",
-        )?,
-    })
-}
-
 pub(super) fn bfs_logical_predicate_columns(params: &super::CugraphBfsParams, index: usize) -> Vec<String> {
     let source_offset = bfs_planned_source_input_offset(params);
     if index < source_offset {
@@ -344,7 +551,6 @@ pub(super) fn bfs_logical_predicate_columns(params: &super::CugraphBfsParams, in
             _ => Vec::new(),
         };
     }
-
     let index = index - source_offset;
     let mut expected_index = 0;
     for input in [
@@ -373,18 +579,13 @@ pub(super) fn bfs_planned_source_input_offset(params: &super::CugraphBfsParams) 
     usize::from(params.source.planned_source_vertices_input())
 }
 
-pub(super) fn encode_column(frame: DataFrame, column: &str, codebook: &Codebook) -> Result<DataFrame> {
-    let encoded = codebook.encode(&cudf_series(&frame, column)?).map_err(cudf_logical_mapping_error)?.into_series();
-    frame.with_column(column, encoded).map_err(cudf_logical_mapping_error)
-}
-
 pub(super) fn remap_bfs_logical_schema(schema: &SchemaRef, columns: &[&str]) -> Result<SchemaRef> {
     let fields = schema
         .fields()
         .iter()
         .map(|field| {
             if columns.iter().any(|column| *column == field.name()) {
-                arrow::datatypes::Field::new(field.name(), DataType::Int32, false)
+                arrow::datatypes::Field::new(field.name(), DataType::Int32, field.is_nullable())
             } else {
                 field.as_ref().clone()
             }
@@ -438,135 +639,107 @@ pub(super) fn normalized_bfs_base_field(
     Ok(arrow::datatypes::Field::new(field.name(), field.data_type().clone(), nullable))
 }
 
-pub(super) fn decode_bfs_logical_gpu_output(
-    context: &ExecutionContext,
-    handle: GpuResultHandle,
-    codebook: &Codebook,
-    output_schema: SchemaRef,
-) -> Result<GpuResultHandle> {
-    let runtime = counted_cudf_runtime(
-        context,
-        "datafusion_nexus.cugraph_sql.logical_mapping.runtime",
-        "query service closed before cuGraph logical output mapping acquired its runtime",
-    )?;
-    let raw_frame = handle.into_gpu_frame();
-    let raw = raw_frame.frame();
-    let vertex =
-        decode_code_column(raw, "vertex", codebook)?.copy_into_runtime(&runtime).map_err(cudf_logical_mapping_error)?;
-    let distance = cudf_series(raw, "distance")?.copy_into_runtime(&runtime).map_err(cudf_logical_mapping_error)?;
-    let predecessor = decode_bfs_predecessor_code_column(raw, codebook)?
-        .copy_into_runtime(&runtime)
-        .map_err(cudf_logical_mapping_error)?;
-    let mut columns = vec![("vertex", vertex), ("distance", distance), ("predecessor", predecessor)];
-    let raw_column_names = raw.column_names();
-    if raw_column_names.contains(&"reachable") {
-        let reachable =
-            cudf_series(raw, "reachable")?.copy_into_runtime(&runtime).map_err(cudf_logical_mapping_error)?;
-        columns.push(("reachable", reachable));
-    }
-    if raw_column_names.contains(&"target_found") {
-        let target_found =
-            cudf_series(raw, "target_found")?.copy_into_runtime(&runtime).map_err(cudf_logical_mapping_error)?;
-        let target_distance =
-            cudf_series(raw, "target_distance")?.copy_into_runtime(&runtime).map_err(cudf_logical_mapping_error)?;
-        columns.push(("target_found", target_found));
-        columns.push(("target_distance", target_distance));
-    }
-    let frame = DataFrame::from_series(columns).map_err(cudf_logical_mapping_error)?;
-    let frame = GpuDataFrame::try_new_with_source_residency(frame, &raw_frame).map_err(|error| {
-        DataFusionError::from(Error::from_native(
-            "datafusion_nexus.cugraph_sql.logical_output",
-            "failed to retain decoded cuGraph logical BFS output residency",
-            error,
-        ))
-    })?;
-    GpuResultHandle::new(context, frame, output_schema).map_err(|error| {
-        DataFusionError::from(Error::from_native(
-            "datafusion_nexus.cugraph_sql.logical_output",
-            "failed to bind decoded cuGraph logical BFS output",
-            error,
-        ))
-    })
-}
-
-pub(super) fn decode_code_column(frame: &DataFrame, column: &str, codebook: &Codebook) -> Result<Series> {
-    let codes = cudf_series(frame, column)?.astype(cudf::TypeId::Int32).map_err(cudf_logical_mapping_error)?;
-    codebook.decode_series(&codes).map_err(cudf_logical_mapping_error)
-}
-
-pub(super) fn decode_bfs_predecessor_code_column(frame: &DataFrame, codebook: &Codebook) -> Result<Series> {
-    let codes = cudf_series(frame, "predecessor")?.astype(cudf::TypeId::Int32).map_err(cudf_logical_mapping_error)?;
-    let code_frame = DataFrame::from_series([("__predecessor_code", codes)]).map_err(cudf_logical_mapping_error)?;
-    let code_frame = code_frame
-        .with_columns([(
-            "__predecessor_code",
-            cudf::ops::when(cudf::ops::col("__predecessor_code").ge(0i32))
-                .then(cudf::ops::col("__predecessor_code"))
-                .otherwise(cudf::ops::lit_null(cudf::DataType::new(cudf::TypeId::Int32))),
-        )])
-        .map_err(cudf_logical_mapping_error)?;
-    codebook.decode_series(&cudf_series(&code_frame, "__predecessor_code")?).map_err(cudf_logical_mapping_error)
-}
-
-pub(super) fn apply_gpu_projection_limit(
-    context: &ExecutionContext,
-    metrics: &mut GraphExecutionMetrics<'_>,
-    handle: GpuResultHandle,
-    schema: SchemaRef,
-    projection: Option<&Vec<usize>>,
-    limit: Option<usize>,
-) -> Result<GpuResultHandle> {
-    if projection.is_none() && limit.is_none() {
-        return Ok(handle);
-    }
-    let input_name = "__datafusion_nexus_cugraph_logical_output";
-    let mut inputs = GpuResidentInputMap::new();
-    inputs.insert(input_name.to_string(), handle);
-    let plan = bfs_logical_output_projection_plan(schema, projection, limit)?;
-    let outcome =
-        execute_query_plan_with_gpu_inputs_observed(context, &plan, &inputs, metrics.runtime_observation_config());
-    let output = finalize_graph_query_outcome(
-        metrics,
-        outcome,
-        "datafusion_nexus.cugraph_sql.logical_output",
-        "failed to apply GPU projection/limit to decoded cuGraph logical BFS output",
-    )?;
-    let QueryOutput::GpuResident(handle) = output else {
-        return Err(plan_error("decoded cuGraph logical BFS projection did not produce a GPU output"));
+pub(super) fn bfs_decoded_output_schema_for_host(spec: &CugraphAlgorithmSpec) -> SchemaRef {
+    let CugraphAlgorithmParams::Bfs(params) = &spec.params else {
+        return Arc::clone(&spec.output_schema);
     };
-    Ok(handle)
+    if params.output.mode != CugraphBfsOutputMode::Path {
+        return Arc::clone(&spec.output_schema);
+    }
+    Arc::new(Schema::new(vec![
+        arrow::datatypes::Field::new("vertex", DataType::Utf8, false),
+        arrow::datatypes::Field::new("distance", DataType::Int64, false),
+        arrow::datatypes::Field::new("predecessor", DataType::Utf8, true),
+    ]))
 }
 
-/// Builds the exact GPU-resident native fragment used after decoding logical
-/// BFS vertex identifiers. Admission attests this alongside the raw graph
-/// fragment before execution, so the immutable envelope does not authorize a
-/// different post-graph plan.
-pub(super) fn bfs_logical_output_projection_plan(
-    schema: SchemaRef,
-    projection: Option<&Vec<usize>>,
-    limit: Option<usize>,
-) -> Result<nexus_query_engine::plan::QueryPlan> {
-    let input_name = "__datafusion_nexus_cugraph_logical_output";
-    let mut builder = QueryPlanBuilder::new();
-    let mut root = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(input_name, Arc::clone(&schema))));
-    let input_schema = Arc::clone(&schema);
-    let mut root_schema = schema;
-    if let Some(projection) = projection {
-        let outputs = projection
-            .iter()
-            .map(|index| {
-                let field =
-                    input_schema.fields().get(*index).map(|field| field.as_ref().clone()).ok_or_else(|| {
-                        plan_error(format!("cuGraph output projection index {index} is out of range"))
-                    })?;
-                Ok(ProjectionOutput::new(nexus_query_engine::expr::Expr::column(field.name()), field))
-            })
-            .collect::<Result<Vec<_>>>()?;
-        root_schema = projected_schema(&input_schema, Some(projection))?;
-        root = builder.add_projection(root, outputs);
+pub(super) fn decode_bfs_logical_host_output(
+    output: EagerCugraphHostOutput,
+    codebook: &HostBfsCodebook,
+    output_schema: SchemaRef,
+) -> Result<EagerCugraphHostOutput> {
+    let (batches, reservation) = output.into_parts();
+    let old_bytes =
+        batches.iter().map(get_record_batch_memory_size).try_fold(0usize, |sum, bytes| sum.checked_add(bytes));
+    let old_bytes = old_bytes.ok_or_else(|| plan_error("logical BFS host output size overflowed usize"))?;
+    let mut decoded = Vec::with_capacity(batches.len());
+    for batch in batches.iter() {
+        decoded.push(decode_bfs_logical_host_batch(batch, codebook, Arc::clone(&output_schema))?);
     }
-    if let Some(limit) = limit {
-        root = builder.add_limit(root, LimitSpec::fetch(limit), Arc::clone(&root_schema));
+    let new_bytes =
+        decoded.iter().map(get_record_batch_memory_size).try_fold(0usize, |sum, bytes| sum.checked_add(bytes));
+    let new_bytes = new_bytes.ok_or_else(|| plan_error("decoded logical BFS host output size overflowed usize"))?;
+    reservation.try_grow(new_bytes).map_err(|source| {
+        DataFusionError::from(
+            Error::new(
+                ErrorCode::MemoryReservationFailed,
+                "datafusion_nexus.cugraph_sql.host_staging_reservation",
+                "DataFusion host memory pool denied decoded logical BFS output staging",
+            )
+            .with_fact("boundary", "decoded_output")
+            .with_fact("requested_bytes", new_bytes)
+            .with_source(source),
+        )
+    })?;
+    // End encoded batch ownership before lowering its charged output bytes.
+    drop(batches);
+    reservation.shrink(old_bytes);
+    Ok(EagerCugraphHostOutput::from_shared_parts(output_schema, Arc::new(decoded), reservation))
+}
+
+pub(super) fn decode_bfs_logical_host_batch(
+    batch: &RecordBatch,
+    codebook: &HostBfsCodebook,
+    output_schema: SchemaRef,
+) -> Result<RecordBatch> {
+    let mut columns = batch.columns().to_vec();
+    if let Ok(index) = batch.schema().index_of("vertex") {
+        columns[index] = decode_vertex_array(batch.column(index).as_ref(), codebook, "vertex")?;
     }
-    Ok(builder.finish_gpu_resident(root))
+    if let Ok(index) = batch.schema().index_of("predecessor") {
+        columns[index] = decode_predecessor_array(batch.column(index).as_ref(), codebook)?;
+    }
+    RecordBatch::try_new(output_schema, columns).map_err(DataFusionError::from)
+}
+
+fn decode_vertex_array(array: &dyn Array, codebook: &HostBfsCodebook, column: &'static str) -> Result<ArrayRef> {
+    let mut values = Vec::with_capacity(array.len());
+    for row in 0..array.len() {
+        if array.is_null(row) {
+            values.push(None);
+        } else {
+            values.push(Some(codebook.decode_code(numeric_array_value(array, row, column)?)?));
+        }
+    }
+    Ok(Arc::new(StringArray::from(values)) as ArrayRef)
+}
+
+fn decode_predecessor_array(array: &dyn Array, codebook: &HostBfsCodebook) -> Result<ArrayRef> {
+    let mut values = Vec::with_capacity(array.len());
+    for row in 0..array.len() {
+        if array.is_null(row) {
+            values.push(None);
+            continue;
+        }
+        let code = numeric_array_value(array, row, "predecessor")?;
+        values.push((code >= 0).then(|| codebook.decode_code(code)).transpose()?);
+    }
+    Ok(Arc::new(StringArray::from(values)) as ArrayRef)
+}
+
+fn numeric_array_value(array: &dyn Array, row: usize, column: &'static str) -> Result<i64> {
+    if let Some(array) = array.as_any().downcast_ref::<Int32Array>() {
+        return Ok(i64::from(array.value(row)));
+    }
+    if let Some(array) = array.as_any().downcast_ref::<Int64Array>() {
+        return Ok(array.value(row));
+    }
+    Err(Error::new(
+        ErrorCode::UnsupportedType,
+        "datafusion_nexus.cugraph_sql.logical_bfs_host_output",
+        "logical BFS output vertex column was not an integral array",
+    )
+    .with_fact("column", column)
+    .with_fact("data_type", format!("{:?}", array.data_type()))
+    .into())
 }

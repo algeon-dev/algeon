@@ -353,3 +353,92 @@ fn failed_protection_retarget_terminalizes_its_waiter_without_rejecting_the_next
     drop(handle);
     service.close_and_wait_for_quiescence(Duration::from_secs(10)).expect("service drains");
 }
+
+#[test]
+fn device_entries_keep_distinct_ordinal_requirement_and_envelope_values() {
+    let service = test_service(1, 8).service;
+    let policy = service.inner.config.attempt_reservation_policy();
+    let empty_envelope = crate::admission::AttemptReservationEnvelope::resolve(&[], policy)
+        .expect("empty test envelope is finite");
+    let first = requirement(128, Some(128));
+    let second = requirement(256, Some(512));
+    let (entries, compatible) = service
+        .resolve_device_admission_entries_for_test(&[0, 1], |ordinal| {
+            Ok(DeviceAdmissionEntry {
+                requirement: if ordinal == 0 { first.clone() } else { second.clone() },
+                admitted_reservation_envelope: (ordinal == 1).then(|| empty_envelope.clone()),
+            })
+        })
+        .expect("both concrete candidates resolve");
+
+    assert_eq!(compatible, vec![0, 1]);
+    assert_eq!(entries.get(&0).expect("ordinal zero entry").requirement.configured_floor_bytes, 128);
+    assert_eq!(entries.get(&1).expect("ordinal one entry").requirement.configured_floor_bytes, 256);
+    assert_ne!(
+        entries.get(&0).expect("ordinal zero entry").admitted_reservation_envelope,
+        entries.get(&1).expect("ordinal one entry").admitted_reservation_envelope,
+    );
+}
+
+#[test]
+fn candidate_local_entry_resolution_prunes_only_the_rejected_ordinal() {
+    let service = test_service(1, 8).service;
+    let (entries, compatible) = service
+        .resolve_device_admission_entries_for_test(&[0, 1], |ordinal| {
+            if ordinal == 0 {
+                Err(QueryError::new(
+                    QueryErrorCode::UnsupportedPlanShape,
+                    "nexus_query_engine.test.sort_preflight",
+                    "candidate sort owner preflight failed",
+                )
+                .with_fact("reason", "sort_owner_candidate_device_unavailable"))
+            } else {
+                Ok(DeviceAdmissionEntry {
+                    requirement: requirement(256, Some(256)),
+                    admitted_reservation_envelope: None,
+                })
+            }
+        })
+        .expect("one healthy candidate remains");
+
+    assert_eq!(compatible, vec![1]);
+    assert!(entries.get(&0).is_none(), "the rejected candidate must not enter placement");
+    assert_eq!(entries.get(&1).expect("ordinal one entry").requirement.configured_floor_bytes, 256);
+}
+
+#[test]
+fn all_device_entry_resolution_failures_return_owner_reason_before_queueing() {
+    let service = test_service(1, 8).service;
+    let error = service
+        .resolve_device_admission_entries_for_test(&[0, 1], |_ordinal| {
+            Err(QueryError::new(
+                QueryErrorCode::UnsupportedPlanShape,
+                "nexus_query_engine.test.sort_preflight",
+                "sort owner preflight is unavailable",
+            )
+            .with_fact("reason", "sort_owner_native_preflight_unavailable"))
+        })
+        .expect_err("all candidate-local failures reject before enqueue");
+
+    assert_eq!(error.fact_value("reason"), Some("sort_owner_native_preflight_unavailable"));
+    assert_eq!(error.fact_value("candidate_count"), Some("2"));
+    assert_eq!(service.inner.admission.lock().expect("admission state").queued.len(), 0);
+}
+
+#[test]
+fn missing_selected_entry_is_a_typed_invariant_error() {
+    let service = test_service(1, 8).service;
+    let mut notifications = PendingDeviceSlotNotifications::default();
+    let error = service
+        .try_place_query(
+            AdmissionRequestId::new(91),
+            &DeviceAdmissionEntries::new(),
+            &[0],
+            &mut notifications,
+        )
+        .expect_err("placement cannot fall back when the selected entry is absent");
+
+    assert_eq!(error.code(), QueryErrorCode::Internal);
+    assert_eq!(error.fact_value("reason"), Some("missing_device_specific_admission_resolution"));
+    assert_eq!(error.fact_value("device_ordinal"), Some("0"));
+}

@@ -767,7 +767,10 @@ pub struct LocalParquetFile {
     pub pure_filter_row_group_compressed_bytes: Option<Vec<u64>>,
     /// Estimated or known uncompressed byte sizes for pure-filter file columns.
     pub pure_filter_row_group_uncompressed_bytes: Option<Vec<u64>>,
-    /// Estimated or known row counts for selected row groups.
+    /// Estimated or known row counts in physical Parquet row-group order.
+    ///
+    /// The vector covers every physical row group; `row_groups`, when present,
+    /// contains the physical IDs selected for this source.
     pub row_group_rows: Option<Vec<u64>>,
     /// Footer-proven upper bound on distinct graph vertices in this complete
     /// edge file, when the fixture/data producer attached one.
@@ -964,7 +967,7 @@ impl LocalParquetFile {
         self
     }
 
-    /// Sets row-count metadata for selected row groups.
+    /// Sets row-count metadata in physical Parquet row-group order.
     pub fn with_row_group_rows(mut self, row_group_rows: Vec<u64>) -> Self {
         self.row_group_rows = Some(row_group_rows);
         self

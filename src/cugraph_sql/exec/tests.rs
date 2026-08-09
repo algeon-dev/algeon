@@ -1,7 +1,7 @@
 use std::{fs::File, sync::Arc};
 
 use arrow::{
-    array::{ArrayRef, Float64Array, Int64Array, StringArray},
+    array::{ArrayRef, Float64Array, Int32Array, Int64Array, LargeStringArray, StringArray, StringViewArray},
     datatypes::{DataType, Field, Schema},
     record_batch::RecordBatch,
 };
@@ -34,9 +34,9 @@ use crate::{
     attempt::{AttemptOptions, NexusAttemptExtension},
     backend::InstalledTestGpuBackend,
     cugraph_sql::{
-        CugraphBfsOutputOptions, CugraphBfsParams, CugraphGraphOptions, CugraphGraphPredicateTable,
-        CugraphPageRankParams, CugraphSqlConfig, CugraphTableReference, CugraphTriangleCountAllParams,
-        result_schema_for_params,
+        CugraphBfsOutputOptions, CugraphBfsParams, CugraphGraphEdgePredicateTable, CugraphGraphOptions,
+        CugraphGraphPredicateTable, CugraphPageRankParams, CugraphSqlConfig, CugraphTableReference,
+        CugraphTriangleCountAllParams, result_schema_for_params,
     },
     error::{DataFusionErrorExt, ErrorCode},
     native_exec::query_admission_ticket_from_task_context,
@@ -69,7 +69,20 @@ fn edge_schema() -> Arc<Schema> {
 }
 
 fn string_edge_schema() -> Arc<Schema> {
-    Arc::new(Schema::new(vec![Field::new("src", DataType::Utf8, false), Field::new("dst", DataType::Utf8, false)]))
+    Arc::new(Schema::new(vec![Field::new("src", DataType::Utf8, true), Field::new("dst", DataType::Utf8, true)]))
+}
+
+fn memory_string_edge_source() -> Arc<dyn ExecutionPlan> {
+    let schema = string_edge_schema();
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(StringArray::from(vec![Some("bob"), None, Some("alice")])) as ArrayRef,
+            Arc::new(StringArray::from(vec![Some("alice"), Some("bob"), None])) as ArrayRef,
+        ],
+    )
+    .unwrap();
+    MemorySourceConfig::try_new_exec(&[vec![batch]], schema, None).unwrap() as Arc<dyn ExecutionPlan>
 }
 
 fn memory_edge_source(rows: usize) -> Arc<dyn ExecutionPlan> {
@@ -106,6 +119,10 @@ impl ExecutionPlan for CountingExec {
 
     fn properties(&self) -> &Arc<PlanProperties> {
         self.input.properties()
+    }
+
+    fn partition_statistics(&self, partition: Option<usize>) -> Result<Arc<datafusion::common::Statistics>> {
+        self.input.partition_statistics(partition)
     }
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
@@ -495,6 +512,248 @@ fn logical_bfs_path_reconstruction_applies_the_final_schema_after_decode() {
     assert_eq!(path.schema(), spec.output_schema);
     assert_eq!(path.num_columns(), 5);
     assert_eq!(path.num_rows(), 2);
+}
+
+#[test]
+fn logical_bfs_host_codebook_is_sorted_checked_and_null_preserving_for_arrow_strings() {
+    let arrays: Vec<ArrayRef> = vec![
+        Arc::new(StringArray::from(vec![Some("bob"), None, Some("alice")])) as ArrayRef,
+        Arc::new(LargeStringArray::from(vec![Some("bob"), None, Some("carol")])) as ArrayRef,
+        Arc::new(StringViewArray::from(vec![Some("carol"), None, Some("bob")])) as ArrayRef,
+    ];
+    for array in arrays {
+        let expected_first = if let Some(array) = array.as_any().downcast_ref::<StringArray>() {
+            array.value(0).to_owned()
+        } else if let Some(array) = array.as_any().downcast_ref::<LargeStringArray>() {
+            array.value(0).to_owned()
+        } else if let Some(array) = array.as_any().downcast_ref::<StringViewArray>() {
+            array.value(0).to_owned()
+        } else {
+            unreachable!("test array is one of the supported UTF8 representations")
+        };
+        let expected_sorted: &[&str] = match array.data_type() {
+            DataType::Utf8 => &["alice", "bob"],
+            DataType::LargeUtf8 | DataType::Utf8View => &["bob", "carol"],
+            data_type => unreachable!("unexpected test array type: {data_type:?}"),
+        };
+        let schema = Arc::new(Schema::new(vec![Field::new("vertex", array.data_type().clone(), true)]));
+        let source = StagedCugraphSource::Host {
+            schema: Arc::clone(&schema),
+            batches: vec![RecordBatch::try_new(Arc::clone(&schema), vec![array]).unwrap()],
+        };
+        let codebook = HostBfsCodebook::from_sources_with_limit(&[(&source, vec!["vertex".to_string()])], 8)
+            .expect("supported Arrow string arrays should build a host codebook");
+        let batch = match &source {
+            StagedCugraphSource::Host { batches, .. } => &batches[0],
+            StagedCugraphSource::Native { .. } => unreachable!("test source is host-owned"),
+        };
+        let encoded = encode_logical_array(batch.column(0).as_ref(), &codebook, "vertex")
+            .expect("host logical encoding should succeed");
+        let encoded = encoded.as_any().downcast_ref::<Int32Array>().expect("encoding must use Int32");
+        assert_eq!(codebook.decode_code(i64::from(encoded.value(0))).unwrap(), expected_first);
+        assert!(encoded.is_null(1), "nulls must remain null in the encoded domain");
+        assert_eq!(codebook.decode_code(0).unwrap(), expected_sorted[0]);
+        for (index, value) in expected_sorted.iter().enumerate() {
+            assert_eq!(codebook.code(value), Some(index as i32), "codebook code must follow sorted order");
+        }
+        assert_eq!(codebook.code("missing"), None);
+        let owned_string_bytes = expected_sorted.iter().map(|value| String::from(*value).capacity()).sum::<usize>();
+        let expected_memory = owned_string_bytes + expected_sorted.len() * std::mem::size_of::<String>();
+        assert_eq!(codebook.memory_size().unwrap(), expected_memory, "codebook memory charges one canonical vector");
+    }
+}
+
+#[test]
+fn logical_bfs_host_codebook_rejects_checked_distinct_overflow() {
+    let schema = Arc::new(Schema::new(vec![Field::new("vertex", DataType::Utf8, false)]));
+    let batch =
+        RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(StringArray::from(vec!["alice", "bob"])) as ArrayRef])
+            .unwrap();
+    let source = StagedCugraphSource::Host { schema, batches: vec![batch] };
+    let error = HostBfsCodebook::from_sources_with_limit(&[(&source, vec!["vertex".to_string()])], 1)
+        .expect_err("the checked test limit must reject a second distinct vertex");
+    let nexus = error.find_nexus_error().expect("overflow remains a structured error");
+    assert_eq!(nexus.fact_value("reason"), Some("logical_bfs_codebook_overflow"));
+}
+
+#[tokio::test]
+async fn logical_bfs_host_mapping_charges_codebook_and_encoded_peak_then_releases_on_failure() {
+    let runtime = Arc::new(RuntimeEnvBuilder::new().with_memory_limit(4 * 1024 * 1024, 1.0).build().unwrap());
+    let task_context = Arc::new(TaskContext::default().with_runtime(Arc::clone(&runtime)));
+    let spec = bfs_utf8_spec();
+    let edge_source = memory_string_edge_source();
+    let edge_batches = collect(Arc::clone(&edge_source), Arc::clone(&task_context)).await.unwrap();
+    let edge_bytes = edge_batches.iter().map(get_record_batch_memory_size).sum::<usize>();
+    drop(edge_batches);
+    let source_batch = bfs_literal_string_source_batch(&spec).unwrap().unwrap();
+    let source_bytes = get_record_batch_memory_size(&source_batch);
+    let max_staging_bytes = edge_bytes.checked_add(source_bytes).expect("input bytes fit usize");
+    let error = stage_cugraph_inputs(
+        &spec,
+        edge_source,
+        vec![],
+        task_context,
+        &ExecutionCancellation::new(),
+        max_staging_bytes,
+    )
+    .await
+    .expect_err("the codebook owner must be charged before admission and exceed the input-only cap");
+    let nexus = error.find_nexus_error().expect("host mapping cap failure remains structured");
+    assert_eq!(nexus.code(), ErrorCode::HostStagingLimitExceeded);
+    assert_eq!(nexus.fact_value("boundary"), Some("codebook"));
+    assert_eq!(runtime.memory_pool.reserved(), 0, "failed host mapping releases all staged ownership");
+}
+
+#[tokio::test]
+async fn logical_bfs_native_source_rejects_before_ticket_or_gpu_context() {
+    let schema = string_edge_schema();
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::empty(Arc::clone(&schema))));
+    let native_plan = builder.finish_with_host_sink(source);
+    let native_source =
+        Arc::new(NexusNativeExec::try_new(native_plan, NexusNativeExecutionConfig::bounded_default()).unwrap())
+            as Arc<dyn ExecutionPlan>;
+    let runtime = Arc::new(RuntimeEnvBuilder::new().with_memory_limit(1024 * 1024, 1.0).build().unwrap());
+    let task_context = Arc::new(TaskContext::default().with_runtime(runtime));
+    let error = stage_cugraph_inputs(
+        &bfs_utf8_spec(),
+        native_source,
+        vec![],
+        task_context,
+        &ExecutionCancellation::new(),
+        1024 * 1024,
+    )
+    .await
+    .expect_err("logical BFS must not stage a native logical source");
+    let nexus = error.find_nexus_error().expect("native logical-source rejection remains structured");
+    assert_eq!(nexus.fact_value("reason"), Some("logical_bfs_native_source_unsupported"));
+}
+
+#[tokio::test]
+async fn cugraph_utf8_include_edges_native_predicate_rejects_owner_before_logical_staging() {
+    let backend = test_gpu_backend();
+    let config = backend_execution_config(&backend);
+    let mut spec = bfs_utf8_spec();
+    let CugraphAlgorithmParams::Bfs(params) = &mut spec.params else { unreachable!("test spec is BFS") };
+    params.predicates.include_edges = Some(CugraphGraphEdgePredicateTable::new(
+        CugraphTableReference::parse("allowed_edges").unwrap(),
+        "src",
+        "dst",
+        None::<String>,
+    ));
+
+    let schema = string_edge_schema();
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::empty(Arc::clone(&schema))));
+    let native_plan = builder.finish_with_host_sink(source);
+    let native_predicate =
+        Arc::new(NexusNativeExec::try_new(native_plan, config.clone()).unwrap()) as Arc<dyn ExecutionPlan>;
+    let exec = CugraphAlgoExec::try_new(
+        spec.clone(),
+        memory_string_edge_source(),
+        vec![Arc::clone(&native_predicate)],
+        None,
+        None,
+        config.clone(),
+    )
+    .expect("include_edges owner rejection occurs after metadata hydration");
+
+    let mut stream = exec.execute(0, Arc::new(TaskContext::default())).expect("cuGraph stream should build");
+    let error = futures::TryStreamExt::try_next(&mut stream)
+        .await
+        .expect_err("graph owner preflight must reject before staging the native logical predicate");
+    let nexus = error.find_nexus_error().expect("owner rejection remains structured");
+    assert_eq!(nexus.fact_value("reason"), Some("side_input_workspace_preflight_unavailable"));
+    assert_eq!(nexus.fact_value("side_input_reason"), Some("include_edges_owner_contract_missing"));
+    assert_eq!(nexus.fact_value("side_input_role"), Some("include_edges"));
+    assert_eq!(backend.backend().admission_snapshot().unwrap().active_queries, 0);
+
+    let producer_exec = Arc::new(
+        CugraphAlgoExec::try_new(spec, memory_string_edge_source(), vec![native_predicate], None, None, config)
+            .expect("include_edges owner rejection occurs after producer metadata hydration"),
+    );
+    let producer_result = producer_exec
+        .prepare_execution_plan(Arc::clone(&producer_exec) as Arc<dyn ExecutionPlan>, Arc::new(TaskContext::default()))
+        .await;
+    let producer_error = match producer_result {
+        Ok(_) => panic!("graph owner preflight must reject before producer staging the native logical predicate"),
+        Err(error) => error,
+    };
+    let producer_nexus = producer_error.find_nexus_error().expect("owner rejection remains structured");
+    assert_eq!(producer_nexus.fact_value("reason"), Some("side_input_workspace_preflight_unavailable"));
+    assert_eq!(producer_nexus.fact_value("side_input_reason"), Some("include_edges_owner_contract_missing"));
+    assert_eq!(producer_nexus.fact_value("side_input_role"), Some("include_edges"));
+}
+
+#[test]
+fn logical_and_path_bfs_decline_gpu_resident_producer_but_numeric_bfs_remains_a_producer() {
+    let logical = CugraphAlgoExec::try_new(
+        bfs_utf8_spec(),
+        memory_string_edge_source(),
+        vec![],
+        None,
+        None,
+        NexusNativeExecutionConfig::bounded_default(),
+    )
+    .expect("logical BFS should build as a host-root graph execution");
+    assert!(crate::native_exec::producer::gpu_resident_producer(&logical).is_none());
+
+    let numeric_path = CugraphAlgoExec::try_new(
+        bfs_utf8_path_spec(),
+        memory_string_edge_source(),
+        vec![],
+        None,
+        None,
+        NexusNativeExecutionConfig::bounded_default(),
+    )
+    .expect("logical BFS path should build as a host-root graph execution");
+    assert!(crate::native_exec::producer::gpu_resident_producer(&numeric_path).is_none());
+
+    let numeric = CugraphAlgoExec::try_new(
+        bfs_spec(),
+        memory_edge_source(4),
+        vec![],
+        None,
+        None,
+        NexusNativeExecutionConfig::bounded_default(),
+    )
+    .expect("numeric non-path BFS should retain the GPU producer contract");
+    assert!(crate::native_exec::producer::gpu_resident_producer(&numeric).is_some());
+}
+
+#[test]
+fn malformed_logical_bfs_mapping_fails_closed_at_gpu_boundaries() {
+    let mut spec = bfs_spec();
+    let CugraphAlgorithmParams::Bfs(params) = &mut spec.params else { unreachable!("test spec is BFS") };
+    params.source = CugraphBfsSource::Relation(CugraphGraphPredicateTable::new(
+        CugraphTableReference::parse("source_vertices").unwrap(),
+        "source_vertex",
+    ));
+    let source_schema = Arc::new(Schema::new(vec![Field::new("source_vertex", DataType::Int64, false)]));
+    let source_exec = Arc::new(EmptyExec::new(Arc::clone(&source_schema))) as Arc<dyn ExecutionPlan>;
+    let mut exec = CugraphAlgoExec::try_new(
+        spec,
+        memory_edge_source(4),
+        vec![source_exec],
+        None,
+        None,
+        NexusNativeExecutionConfig::bounded_default(),
+    )
+    .expect("numeric relation-backed BFS should build before schema corruption");
+    let malformed_schema = Arc::new(Schema::new(vec![Field::new("src", DataType::Int64, false)]));
+    exec.edge_source = Arc::new(EmptyExec::new(malformed_schema)) as Arc<dyn ExecutionPlan>;
+    let plan = &exec as &dyn ExecutionPlan;
+
+    assert!(
+        crate::native_exec::producer::gpu_resident_producer(plan).is_none(),
+        "mapping validation errors must not classify a malformed BFS as a GPU producer"
+    );
+    let rejection = crate::native_exec::graph::GraphExecutionPlan::gpu_resident_output_rejection(&exec)
+        .expect("mapping validation errors must be surfaced at the GPU boundary");
+    let nexus = rejection.find_nexus_error().expect("mapping validation error must remain structured");
+    assert_eq!(nexus.code(), ErrorCode::InvalidExecutionPlan);
+    assert_eq!(nexus.operation(), "datafusion_nexus.cugraph_sql.plan");
+    assert!(nexus.message().contains("dst"), "the missing mapping column must remain actionable");
 }
 
 #[tokio::test]
@@ -966,8 +1225,9 @@ fn cugraph_algo_exec_uses_cold_graph_model_as_immutable_grant_target() {
         .graph_model_ask_bytes_for_admission_ticket()
         .expect("graph model should derive opaque admission evidence")
         .expect("known edge rows should produce graph model evidence");
-    let expected_proof =
-        graph_ticket_proof(&exec).with_graph_memory_admission_evidence(model_ask.cold_model_evidence());
+    let expected_proof = graph_ticket_proof(&exec)
+        .with_graph_memory_admission_evidence(model_ask.cold_model_evidence())
+        .expect("exact graph evidence must match the graph proof scope");
 
     assert!(
         model_ask.cold_model_requested_bytes() < want,
@@ -1018,10 +1278,14 @@ fn cugraph_graph_model_ask_prefers_exact_edge_rows_over_configured_raw_edges() {
     );
     let edge_source = memory_edge_source(300);
 
-    let exact_ask = cugraph_graph_model_ask_bytes(&triangle_spec(), edge_source.as_ref(), true, &config)
-        .unwrap()
-        .expect("exact rows should produce graph ask");
-    let stale_override_ask = cugraph_graph_model_ask_bytes(&triangle_spec(), edge_source.as_ref(), true, &stale_config)
+    let exact_exec = CugraphAlgoExec::try_new(triangle_spec(), Arc::clone(&edge_source), vec![], None, None, config)
+        .expect("triangle exec should build");
+    let exact_ask =
+        exact_exec.graph_model_ask_bytes_for_admission_ticket().unwrap().expect("exact rows should produce graph ask");
+    let stale_exec = CugraphAlgoExec::try_new(triangle_spec(), edge_source, vec![], None, None, stale_config)
+        .expect("triangle exec with stale override should build");
+    let stale_override_ask = stale_exec
+        .graph_model_ask_bytes_for_admission_ticket()
         .unwrap()
         .expect("exact rows should win over stale override");
 
@@ -1036,30 +1300,14 @@ fn cugraph_raw_bfs_ticket_admits_with_the_owner_sort_workspace_preflight_bound()
     let config =
         NexusNativeExecutionConfig::bounded(64 * 1024 * 1024, 512, 1, 3, 1).with_query_admission_source(source);
 
-    let ask = cugraph_graph_model_ask_bytes(&bfs_spec(), memory_edge_source(300).as_ref(), false, &config)
+    let exec = CugraphAlgoExec::try_new(bfs_spec(), memory_edge_source(300), vec![], None, None, config)
+        .expect("raw BFS exec should build");
+    let ask = exec
+        .graph_model_ask_bytes_for_admission_ticket()
         .expect("owner preflight must let raw BFS derive bounded admission evidence")
         .expect("exact edge rows plus the owner bound must produce a raw-BFS ask");
 
     assert!(ask.cold_model_requested_bytes() > 0);
-}
-
-#[test]
-fn cugraph_raw_bfs_ticket_still_refuses_when_the_owner_preflight_is_unavailable() {
-    let native_spec = native_graph_spec_for_memory_estimate(&bfs_spec(), false)
-        .expect("BFS without predicate inputs has a native memory model");
-    let error = graph_memory_bounded_admission_evidence_for_edge_list_with_vertex_estimate(
-        &native_spec,
-        &edge_schema(),
-        300,
-        Some(300),
-        None,
-        None,
-        GraphMemoryCalibrationOverride::none(),
-        None,
-    )
-    .expect_err("raw BFS must not mint bounded evidence without the owner preflight bound");
-
-    assert_eq!(error.fact_value("reason"), Some("raw_bfs_sort_workspace_preflight_unavailable"));
 }
 
 #[test]
@@ -1081,7 +1329,9 @@ fn cugraph_algo_exec_uses_native_edge_cold_model_as_immutable_grant_target() {
         .graph_model_ask_bytes_for_admission_ticket()
         .expect("graph model should derive opaque admission evidence")
         .expect("native edge-source rows should produce graph model evidence");
-    let expected_proof = expected_proof.with_graph_memory_admission_evidence(model_ask.cold_model_evidence());
+    let expected_proof = expected_proof
+        .with_graph_memory_admission_evidence(model_ask.cold_model_evidence())
+        .expect("exact graph evidence must match the graph proof scope");
 
     assert_eq!(
         ticket.attempt_capability_proof(),
@@ -1450,7 +1700,8 @@ async fn installed_backend_datafusion_parquet_graph_ticket_keeps_post_hydration_
     let expected_proof =
         nexus_query_engine::admission::QueryPlanCapabilityProof::combine(graph_ticket_proof(&prepared), [source_proof])
             .expect("the graph root and resolved native edge source must retain one combined proof")
-            .with_graph_memory_admission_evidence(model_ask.cold_model_evidence());
+            .with_graph_memory_admission_evidence(model_ask.cold_model_evidence())
+            .expect("exact graph evidence must match the graph proof scope");
     assert_eq!(
         proof, &expected_proof,
         "the post-hydration ticket must retain the exact graph and resolved source proofs with phase-aware model evidence"
@@ -1679,7 +1930,8 @@ fn cugraph_algo_exec_keeps_keyable_native_affinity_out_of_the_admission_ticket()
         .expect("keyable native edge source should derive graph admission evidence")
         .expect("exact native edge rows should produce graph model evidence");
     let expected_proof = graph_ticket_proof_for_native_source(&exec)
-        .with_graph_memory_admission_evidence(model_ask.cold_model_evidence());
+        .with_graph_memory_admission_evidence(model_ask.cold_model_evidence())
+        .expect("exact graph evidence must match the graph proof scope");
     let ticket = exec.native_execution_config.query_admission_ticket().expect("cuGraph exec should mint a plan ticket");
     assert_eq!(
         ticket.attempt_capability_proof(),
@@ -1706,7 +1958,11 @@ fn cugraph_algo_exec_uses_the_same_proof_for_unkeyable_edge_source() {
 
     assert_eq!(
         ticket.attempt_capability_proof(),
-        Some(&graph_ticket_proof(&exec).with_graph_memory_admission_evidence(model_ask.cold_model_evidence()))
+        Some(
+            &graph_ticket_proof(&exec)
+                .with_graph_memory_admission_evidence(model_ask.cold_model_evidence())
+                .expect("exact graph evidence must match the graph proof scope"),
+        )
     );
 }
 
