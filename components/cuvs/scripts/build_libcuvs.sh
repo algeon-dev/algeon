@@ -6,9 +6,23 @@ source_dir="${repo_root}/cuvs"
 build_dir="${CUVS_CPP_BUILD_DIR:-${source_dir}/cpp/build}"
 install_dir="${CUVS_INSTALL_DIR:-${repo_root}/cuvs-install}"
 cudf_install_dir="${CUDF_INSTALL_DIR:-$(cd -- "${repo_root}/.." && pwd -P)/cudf-nexus/cudf-install}"
-expected_revision="6ba2ce28687b32995d015da35b9823ec35de108b"
-
 (cd "${repo_root}" && cargo xtask source check)
+
+[[ -f "${source_dir}/VERSION" ]] || {
+    echo "error: cuVS source does not contain VERSION: ${source_dir}" >&2
+    exit 1
+}
+source_version="$(<"${source_dir}/VERSION")"
+if [[ "${source_version}" =~ ^([0-9][0-9])\.([0-9][0-9])\.([0-9][0-9])$ ]]; then
+    native_version="$((10#${BASH_REMATCH[1]})).$((10#${BASH_REMATCH[2]})).$((10#${BASH_REMATCH[3]}))"
+else
+    echo "error: unsupported cuVS VERSION format: ${source_version}" >&2
+    exit 1
+fi
+if ! source_revision="$(git -C "${source_dir}" rev-parse HEAD 2>/dev/null)"; then
+    echo "error: cuVS source is not a git checkout: ${source_dir}" >&2
+    exit 1
+fi
 
 cuda_toolkit_root="${CUDAToolkit_ROOT:-${CUDA_HOME:-${CUDA_PATH:-/usr/local/cuda}}}"
 cuda_runtime_lib=""
@@ -37,7 +51,7 @@ done
     exit 1
 }
 
-# cuVS 26.06's header-only CUTLASS setup reads the static-named cache entry
+# cuVS's header-only CUTLASS setup reads the static-named cache entry
 # even for shared-only builds, so bind that entry to the selected shared file.
 cmake -S "${source_dir}/cpp" -B "${build_dir}" -G Ninja \
     -DCMAKE_BUILD_TYPE=Release \
@@ -63,7 +77,7 @@ cmake --install "${build_dir}"
 
 dlpack_source_dir="${build_dir}/_deps/dlpack-src/include/dlpack"
 [[ -f "${dlpack_source_dir}/dlpack.h" ]] || {
-    echo "error: pinned cuVS build did not materialize the required DLPack public headers: ${dlpack_source_dir}" >&2
+    echo "error: cuVS build did not materialize the required DLPack public headers: ${dlpack_source_dir}" >&2
     exit 1
 }
 cmake -E copy_directory "${dlpack_source_dir}" "${install_dir}/include/dlpack"
@@ -126,8 +140,8 @@ done
 
 marker_dir="${install_dir}/share/cuvs-nexus"
 mkdir -p "${marker_dir}"
-printf '%s\n' "${expected_revision}" >"${marker_dir}/source-revision"
-printf '%s\n' "26.8.0" >"${marker_dir}/native-version"
+printf '%s\n' "${source_revision}" >"${marker_dir}/source-revision"
+printf '%s\n' "${native_version}" >"${marker_dir}/native-version"
 printf '%s\n' "${canonical_rmm}" >"${marker_dir}/rmm-runtime-lib"
 
 loader_path="${lib_dir}:${cudf_lib_dir}"
@@ -157,5 +171,6 @@ for library in "${lib_dir}/libcuvs.so" "${lib_dir}/libcuvs_c.so"; do
 done
 
 echo "canonical cuVS prefix ready: ${install_dir}"
-echo "source revision: ${expected_revision}"
+echo "source revision: ${source_revision}"
+echo "native version: ${native_version}"
 echo "Cargo: CUVS_ROOT=${install_dir} cargo check --workspace --all-targets"
