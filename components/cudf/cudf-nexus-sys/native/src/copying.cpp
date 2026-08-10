@@ -14,8 +14,70 @@
 #include <cudf/utilities/memory_resource.hpp>
 
 #include <memory>
+#include <vector>
 
 extern "C" {
+cudf_status_t cudf_gather_fixed_width_dont_check_preflight(
+  int64_t output_rows,
+  cudf_gather_fixed_width_column_metadata_t const* columns,
+  int32_t num_columns,
+  int32_t device,
+  cudf_gather_fixed_width_dont_check_preflight_result_t* out)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = {};
+  if (num_columns < 0) {
+    set_error("num_columns must be non-negative");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
+  if (num_columns > 0 && columns == nullptr) {
+    set_error("columns is null");
+    return CUDF_ERROR_NULL;
+  }
+
+  CUDF_RUST_TRY
+  {
+    std::vector<cudf::gather_fixed_width_column_metadata> metadata;
+    metadata.reserve(static_cast<std::size_t>(num_columns));
+    for (int32_t i = 0; i < num_columns; ++i) {
+      auto const& column = columns[i];
+      if (column.nullable != 0 && column.nullable != 1) {
+        set_error("column nullable must be 0 or 1");
+        return CUDF_ERROR_INVALID_OPERATION;
+      }
+      if (column.num_children < 0) {
+        set_error("column num_children must be non-negative");
+        return CUDF_ERROR_INVALID_OPERATION;
+      }
+      auto const raw_type_id = static_cast<int32_t>(column.type_id);
+      if (raw_type_id < static_cast<int32_t>(cudf::type_id::EMPTY) ||
+          raw_type_id >= static_cast<int32_t>(cudf::type_id::NUM_TYPE_IDS)) {
+        set_error("column type_id is invalid");
+        return CUDF_ERROR_INVALID_OPERATION;
+      }
+      metadata.push_back({cudf::data_type(to_cudf_type_id(column.type_id)),
+                          column.nullable != 0,
+                          column.num_children});
+    }
+
+    auto const result =
+      cudf::gather_fixed_width_dont_check_preflight(output_rows, metadata, device);
+    out->gather_map_bytes       = static_cast<uint64_t>(result.gather_map_bytes);
+    out->output_data_bytes      = static_cast<uint64_t>(result.output_data_bytes);
+    out->output_null_mask_bytes = static_cast<uint64_t>(result.output_null_mask_bytes);
+    out->target_mask_pointer_array_bytes =
+      static_cast<uint64_t>(result.target_mask_pointer_array_bytes);
+    out->source_table_device_view_bytes =
+      static_cast<uint64_t>(result.source_table_device_view_bytes);
+    out->valid_count_array_bytes = static_cast<uint64_t>(result.valid_count_array_bytes);
+    out->native_temporary_workspace_bytes =
+      static_cast<uint64_t>(result.native_temporary_workspace_bytes);
+    out->active_phase_peak_bytes = static_cast<uint64_t>(result.active_phase_peak_bytes);
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
 cudf_status_t cudf_gather_ex(cudf_table_view_handle input,
                              cudf_column_view_handle gather_map,
                              cudf_out_of_bounds_policy_t bounds_policy,

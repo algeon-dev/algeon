@@ -42,6 +42,7 @@ fn sorted_order_radix_context_facts(preflight: Option<sorting::SortedOrderRadixP
     ];
     if let Some(preflight) = preflight {
         facts.extend([
+            ("sorted_order_radix_key_input_bytes".to_string(), preflight.key_input_bytes().to_string()),
             ("sorted_order_radix_key_output_bytes".to_string(), preflight.key_output_bytes().to_string()),
             ("sorted_order_radix_sequence_bytes".to_string(), preflight.sequence_bytes().to_string()),
             (
@@ -81,7 +82,7 @@ fn unique_temp_column_name(df: &DataFrame, base: &str) -> String {
 /// - materialize the sorted DataFrame by gathering the retained input.
 ///
 /// This contract covers the retained sorted-order column and the materialized
-/// gather output. For the supported unstable one-key integral/chrono shape it
+/// gather output. For the supported unstable one-key integral/chrono/floating-point shape it
 /// also retains the exact libcudf owner preflight; unsupported shapes keep the
 /// temporary-workspace contract unresolved.
 #[derive(Debug, Clone)]
@@ -111,7 +112,7 @@ impl DataFramePreparedSort {
     }
 
     /// Borrow the exact owner preflight when this prepared sort used the
-    /// supported unstable one-key integral/chrono radix shape.
+    /// supported unstable one-key integral/chrono/floating-point radix shape.
     pub fn sorted_order_radix_preflight(&self) -> Option<sorting::SortedOrderRadixPreflight> {
         self.sorted_order_radix_preflight
     }
@@ -216,7 +217,7 @@ impl DataFramePreparedSort {
     /// The gathered output allocation is routed through the token's
     /// stream-bound reservation. The returned report records the retained
     /// sorted-order bytes and exact materialized output bytes. Supported
-    /// unstable one-key integral/chrono sorts also record the owner preflight;
+    /// unstable one-key integral/chrono/floating-point sorts also record the owner preflight;
     /// other shapes retain the unresolved temporary-workspace contract.
     pub fn materialize_with_budget(&self, token: &ExecutionBudgetToken) -> Result<BudgetedExecutionOutcome<DataFrame>> {
         let operation = "dataframe::prepared_sort::materialize_with_budget";
@@ -313,7 +314,7 @@ impl DataFrame {
     ///
     /// This contract covers the retained sorted-order bytes and the
     /// materialized gather output sizing. Supported unstable one-key
-    /// integral/chrono keys also expose the libcudf owner preflight; other
+    /// integral/chrono/floating-point keys also expose the libcudf owner preflight; other
     /// shapes retain the unresolved temporary-workspace contract.
     pub fn prepare_sort_values<I, S>(&self, by: I, options: SortOptions) -> Result<DataFramePreparedSort>
     where
@@ -327,7 +328,7 @@ impl DataFrame {
     ///
     /// Sorted-order creation is routed through the token's stream-bound
     /// reservation. The returned report records the retained sorted-order
-    /// bytes and, for supported unstable one-key integral/chrono keys, the
+    /// bytes and, for supported unstable one-key integral/chrono/floating-point keys, the
     /// libcudf owner preflight. Other shapes retain the unresolved
     /// temporary-workspace contract.
     pub fn prepare_sort_values_with_budget<I, S>(

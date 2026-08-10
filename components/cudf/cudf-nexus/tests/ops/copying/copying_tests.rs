@@ -1,9 +1,14 @@
 //! Tests for CU-7: gather (take) and conditional copy.
-use cudf::{core::Table, ops::copying, testing::prelude::*};
+use cudf::{
+    DataFrame, DeviceId, ErrorCode, ExecutionBudgetRequest, Series,
+    core::{DataType, Table, TypeId},
+    ops::copying,
+    testing::prelude::*,
+};
 
 use crate::common::{
     column_from_slice, column_from_slice_nullable, explicit_bool_column, explicit_i32_column, last_exec_mr_value,
-    last_exec_stream_value, last_sync_stream_value, reset_exec_observation, reset_sync_observation,
+    last_exec_stream_value, last_sync_stream_value, reset_exec_observation, reset_sync_observation, with_test_runtime,
 };
 
 #[test]
@@ -82,6 +87,90 @@ fn test_gather_empty_map() {
     let result = copying::gather(&tv, &map_view).unwrap();
     let rv = result.testing_view().unwrap();
     assert_eq!(rv.num_rows().unwrap(), 0);
+}
+
+#[test]
+fn test_fixed_width_dont_check_preflight_components_sum() {
+    let preflight = copying::gather_fixed_width_dont_check_preflight_for_metadata(
+        &[(DataType::new(TypeId::Int32), false), (DataType::new(TypeId::Float64), true)],
+        5,
+        DeviceId::DEFAULT,
+    )
+    .unwrap();
+
+    assert_eq!(preflight.gather_map_bytes(), 5 * std::mem::size_of::<i32>());
+    assert_eq!(preflight.output_frame_bytes(), 5 * (std::mem::size_of::<i32>() + std::mem::size_of::<f64>()));
+    assert!(preflight.output_null_mask_bytes() > 0);
+    assert_eq!(
+        preflight.native_workspace_bytes(),
+        preflight.target_mask_pointer_array_bytes()
+            + preflight.source_table_device_view_bytes()
+            + preflight.valid_count_array_bytes()
+    );
+    assert_eq!(
+        preflight.active_phase_peak_bytes(),
+        preflight.gather_map_bytes()
+            + preflight.output_frame_bytes()
+            + preflight.output_null_mask_bytes()
+            + preflight.native_workspace_bytes()
+    );
+}
+
+#[test]
+fn test_fixed_width_dont_check_preflight_rejects_unsupported_dtype_and_row_overflow() {
+    let unsupported = copying::gather_fixed_width_dont_check_preflight_for_metadata(
+        &[(DataType::new(TypeId::String), false)],
+        1,
+        DeviceId::DEFAULT,
+    )
+    .expect_err("variable-width dtype must be rejected before native sizing");
+    assert_eq!(unsupported.code(), ErrorCode::UnsupportedDtype);
+
+    let overflow = copying::gather_fixed_width_dont_check_preflight_for_metadata(
+        &[(DataType::new(TypeId::Int32), false)],
+        i32::MAX as usize + 1,
+        DeviceId::DEFAULT,
+    )
+    .expect_err("rows above cudf::size_type must be rejected before native sizing");
+    assert_eq!(overflow.code(), ErrorCode::SizeOverflow);
+}
+
+#[test]
+fn test_fixed_width_dont_check_preflight_zero_rows_is_zero() {
+    let preflight = copying::gather_fixed_width_dont_check_preflight_for_metadata(
+        &[(DataType::new(TypeId::Int32), true)],
+        0,
+        DeviceId::DEFAULT,
+    )
+    .unwrap();
+    assert_eq!(preflight.gather_map_bytes(), 0);
+    assert_eq!(preflight.output_frame_bytes(), 0);
+    assert_eq!(preflight.output_null_mask_bytes(), 0);
+    assert_eq!(preflight.native_workspace_bytes(), 0);
+    assert_eq!(preflight.active_phase_peak_bytes(), 0);
+}
+
+#[test]
+fn test_fixed_width_dont_check_preflight_matches_budgeted_slice_peak() {
+    let (preflight, peak_bytes) = with_test_runtime(|runtime| {
+        let input = runtime.column_from_slice_nullable(&[10i32, 20, 30, 40], &[true, false, true, true]).unwrap();
+        let frame = DataFrame::from_series([("value", Series::from_column(input).unwrap())]).unwrap();
+        let token = runtime
+            .execution_budget_token(ExecutionBudgetRequest::new(1 << 20).with_boundary("gather_preflight_peak"))
+            .unwrap();
+        let preflight = copying::gather_fixed_width_dont_check_preflight_for_metadata(
+            &[(DataType::new(TypeId::Int32), true)],
+            3,
+            runtime.device(),
+        )
+        .unwrap();
+        let result = frame.with_execution(&token.execution_overrides()).slice(1, 3).unwrap();
+        assert_eq!(result.num_rows(), 3);
+        let peak_bytes = token.reservation_usage().unwrap().peak_bytes;
+        (preflight, peak_bytes)
+    });
+
+    assert_eq!(peak_bytes, preflight.active_phase_peak_bytes() as u64);
 }
 
 #[test]

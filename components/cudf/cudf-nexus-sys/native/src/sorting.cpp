@@ -91,15 +91,14 @@ cudf_status_t is_sorted_impl(cudf_table_view_handle input,
 }  // namespace
 
 extern "C" {
-cudf_status_t cudf_sorted_order_radix_preflight(
-  int64_t num_rows,
-  cudf_type_id_t key_type,
-  int64_t null_count,
-  int32_t key_count,
-  int32_t stable,
-  cudf_order_t key_order,
-  int32_t device,
-  cudf_sorted_order_radix_preflight_result_t* out)
+cudf_status_t cudf_sorted_order_radix_preflight(int64_t num_rows,
+                                                cudf_type_id_t key_type,
+                                                int64_t null_count,
+                                                int32_t key_count,
+                                                int32_t stable,
+                                                cudf_order_t key_order,
+                                                int32_t device,
+                                                cudf_sorted_order_radix_preflight_result_t* out)
 {
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = {};
@@ -121,18 +120,20 @@ cudf_status_t cudf_sorted_order_radix_preflight(
 
   CUDF_RUST_TRY
   {
-    auto const result = cudf::sorted_order_radix_preflight(num_rows,
-                                                           cudf::data_type(to_cudf_type_id(key_type)),
-                                                           null_count,
-                                                           key_count,
-                                                           stable != 0,
-                                                           cudf_order,
-                                                           device);
+    auto const result =
+      cudf::sorted_order_radix_preflight(num_rows,
+                                         cudf::data_type(to_cudf_type_id(key_type)),
+                                         null_count,
+                                         key_count,
+                                         stable != 0,
+                                         cudf_order,
+                                         device);
+    out->key_input_bytes           = static_cast<uint64_t>(result.key_input_bytes);
     out->key_output_bytes          = static_cast<uint64_t>(result.key_output_bytes);
     out->sequence_bytes            = static_cast<uint64_t>(result.sequence_bytes);
     out->temporary_workspace_bytes = static_cast<uint64_t>(result.temporary_workspace_bytes);
     out->retained_order_bytes      = static_cast<uint64_t>(result.retained_order_bytes);
-    out->active_phase_peak_bytes  = static_cast<uint64_t>(result.active_phase_peak_bytes);
+    out->active_phase_peak_bytes   = static_cast<uint64_t>(result.active_phase_peak_bytes);
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH

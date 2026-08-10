@@ -26,10 +26,12 @@ typedef enum {
 
 /// Allocation components for the unstable one-key radix sorted-order path.
 ///
-/// All fields are requested bytes. `active_phase_peak_bytes` is the checked
-/// sum of key output, sequence, CUB temporary storage, and retained INT32
-/// sorted-order output, which are co-resident during execution.
+/// All fields are requested bytes. `key_input_bytes` is zero for integral and
+/// chrono keys and the transformed float-pair input for floating keys.
+/// `active_phase_peak_bytes` is the checked sum of the five components, which
+/// are co-resident during execution.
 typedef struct cudf_sorted_order_radix_preflight_result_t {
+  uint64_t key_input_bytes;
   uint64_t key_output_bytes;
   uint64_t sequence_bytes;
   uint64_t temporary_workspace_bytes;
