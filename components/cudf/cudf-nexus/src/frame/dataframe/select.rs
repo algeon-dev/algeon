@@ -226,9 +226,9 @@ impl DataFrame {
 
         let mut resolved = Vec::with_capacity(columns.len());
         for name in columns {
-            let input_position =
-                self.columns.get_index_of(name.as_str()).ok_or_else(|| missing_column_error(operation, &name))?;
-            let column = Arc::clone(self.columns.get_index(input_position).expect("column index was just resolved").1);
+            let (input_position, _, column) =
+                self.columns.get_full(name.as_str()).ok_or_else(|| missing_column_error(operation, &name))?;
+            let column = Arc::clone(column);
             resolved.push(ResolvedSelectColumn { name, input_position, column });
         }
         Ok(resolved)

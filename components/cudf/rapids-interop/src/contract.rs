@@ -225,10 +225,6 @@ impl LeaseBackend {
         Self::new(SemanticLeaseBackend { incomplete_drop_behavior: IncompleteDropBehavior::ExplicitCompletionRequired })
     }
 
-    pub(crate) fn semantic_default() -> Self {
-        Self::semantic_guaranteed_fallback()
-    }
-
     pub fn incomplete_drop_behavior(&self) -> IncompleteDropBehavior {
         self.inner.incomplete_drop_behavior()
     }
@@ -416,7 +412,6 @@ impl OwnedTransferOwner {
 
 impl fmt::Debug for OwnedTransferOwner {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let _ = &self.state;
         f.debug_struct("OwnedTransferOwner").finish()
     }
 }

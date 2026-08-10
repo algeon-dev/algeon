@@ -491,7 +491,6 @@ impl SeriesPreparedReplaceWithBackrefs {
         // Rebind the resulting column to the retained input series domain so the
         // caller can attach it back onto the original DataFrame without an
         // explicit copy_into_runtime relocation.
-        let _ = execution;
         let column =
             unsafe { Column::from_raw_with_domain(out, Arc::clone(self.input.as_column().execution_domain())) }
                 .map_err(&map_execution_error)?;

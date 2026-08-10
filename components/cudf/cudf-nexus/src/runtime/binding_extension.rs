@@ -437,7 +437,7 @@ where T: Any + Send + Sync
     }
 
     fn poison_after_unwind(&self, owner: ThreadId, reason: &'static str) {
-        let mut lifecycle = self.lifecycle.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut lifecycle = self.lifecycle.lock().expect("binding extension lifecycle mutex poisoned");
         if matches!(&*lifecycle, Lifecycle::Initializing { owner: active } if *active == owner) {
             *lifecycle = Lifecycle::Poisoned { reason };
         }
@@ -447,7 +447,7 @@ where T: Any + Send + Sync
 
     fn release(self: &Arc<Self>, generation: Arc<Generation<T>>) {
         let current_thread = std::thread::current().id();
-        let mut lifecycle = self.lifecycle.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut lifecycle = self.lifecycle.lock().expect("binding extension lifecycle mutex poisoned");
         let prior_leases =
             match generation
                 .external_leases
@@ -489,7 +489,7 @@ where T: Any + Send + Sync
     }
 
     fn complete_destruction(&self, generation_id: u64, owner: ThreadId, unwinding: bool) {
-        let mut lifecycle = self.lifecycle.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut lifecycle = self.lifecycle.lock().expect("binding extension lifecycle mutex poisoned");
         let state_matches = matches!(
             &*lifecycle,
             Lifecycle::Destroying { generation_id: active_generation, owner: active_owner }
@@ -527,7 +527,7 @@ where T: Any + Send + Sync
     }
 
     fn factory_failed(&mut self) {
-        let mut lifecycle = self.slot.lifecycle.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut lifecycle = self.slot.lifecycle.lock().expect("binding extension lifecycle mutex poisoned");
         if matches!(&*lifecycle, Lifecycle::Initializing { owner } if *owner == self.owner) {
             *lifecycle = Lifecycle::Vacant;
         } else {

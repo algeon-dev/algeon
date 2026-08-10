@@ -325,13 +325,7 @@ impl DataFrame {
                     position,
                     name: name.clone(),
                     data_type,
-                    nullable: nullable.ok_or_else(|| {
-                        crate::core::error::invariant_violation(
-                            "dataframe::info_with",
-                            "nullable metadata must be populated when column details are requested",
-                        )
-                        .with_column(name.clone())
-                    })?,
+                    nullable: nullable.expect("column details always populate nullability"),
                     null_count,
                     non_null_count,
                     memory_accounting: if payload_bytes.is_some() || device_allocated_bytes.is_some() {
@@ -363,6 +357,15 @@ impl DataFrame {
                 None
             },
         })
+    }
+
+    pub(super) fn device_allocated_size_bytes(&self) -> Result<usize> {
+        let info = self.info_with(InfoDetail::DEVICE_ALLOCATED)?;
+        Ok(info
+            .memory_accounting
+            .expect("DEVICE_ALLOCATED always populates memory accounting")
+            .device_allocated_bytes
+            .expect("DEVICE_ALLOCATED always populates device-allocated bytes"))
     }
 
     /// Return retained-owner identities for this DataFrame's columns.

@@ -151,13 +151,10 @@ impl PinnedSlabPool {
     }
 
     fn release(&self, slab: PinnedSlab) {
-        let Ok(mut state) = self.state.lock() else {
-            // Poisoned pool: leak the slab rather than corrupt state.
-            std::mem::forget(slab);
-            return;
-        };
-        state.free.push(slab);
-        drop(state);
+        {
+            let mut state = self.state.lock().expect("pinned staging pool mutex poisoned");
+            state.free.push(slab);
+        }
         self.available.notify_one();
     }
 }

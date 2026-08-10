@@ -87,12 +87,7 @@ where I: IntoIterator<Item = (String, Arc<Column>)> {
     validate_no_duplicate_names(&names, operation)?;
 
     let mut named_columns = named_columns.into_iter();
-    let (first_name, first_column) = named_columns.next().ok_or_else(|| {
-        crate::core::error::invariant_violation(
-            operation,
-            "non-empty dataframe construction unexpectedly lost its first column",
-        )
-    })?;
+    let (first_name, first_column) = named_columns.next().expect("non-empty dataframe retains its first column");
     let first_rows = named_column_len(&first_name, &first_column, operation)?;
 
     let mut columns: FastIndexMap<String, Arc<Column>> = fast_index_map_with_capacity(names.len());
@@ -246,10 +241,11 @@ impl DataFrame {
     /// Returns an error if `names.len()` does not match the table's column
     /// count, or if names contain duplicates.
     pub fn from_table(table: Table, names: Vec<String>) -> Result<Self> {
-        let view = table.view()?;
-        let num_cols = view.num_columns()?;
-        let row_count = if num_cols > 0 { view.num_rows()? } else { 0 };
-        drop(view);
+        let (num_cols, row_count) = {
+            let view = table.view()?;
+            let num_cols = view.num_columns()?;
+            (num_cols, if num_cols > 0 { view.num_rows()? } else { 0 })
+        };
         let table_domain = Arc::clone(table.execution_domain());
 
         let expected = names.len();

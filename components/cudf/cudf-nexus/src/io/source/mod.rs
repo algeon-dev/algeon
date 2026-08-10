@@ -188,11 +188,6 @@ fn validate_unique_named<'a>(
     let names = names.into_iter();
     let mut seen = fast_hash_set_with_capacity(names.size_hint().0);
     for (index, name) in names.enumerate() {
-        if name.is_empty() {
-            return Err(Error::new_with(ErrorCode::EmptyInput, operation, "column name must not be empty")
-                .with_detail("reason", "empty_name")
-                .with_detail("position", index.to_string()));
-        }
         if !seen.insert(name) {
             return Err(Error::new_with(ErrorCode::DuplicateColumnName, operation, "duplicate column name")
                 .with_column(name.to_string())

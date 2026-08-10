@@ -505,13 +505,6 @@ impl<'a> GroupBy<'a> {
     pub(crate) fn __debug_agg_in_context(&self, specs: &[AggSpec], ctx: &ExecutionOverrides<'_>) -> Result<DataFrame> {
         self.agg_in_context(specs, ctx)
     }
-    pub(crate) fn __debug_prepare_groups_in_context(
-        &self,
-        ctx: &ExecutionOverrides<'_>,
-    ) -> Result<PreparedGroupByFacts> {
-        self.prepare_groups_in_context(ctx)
-    }
-
     fn prepare_groups_impl(
         &self,
         ctx: &ExecutionOverrides<'_>,

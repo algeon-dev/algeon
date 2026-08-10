@@ -202,7 +202,7 @@ fn fixed_width_required_bytes(column: &SemanticColumn) -> Result<usize> {
     let elem_size = column.data_type().id().fixed_width_size_bytes().ok_or_else(|| {
         InteropError::new(
             InteropErrorKind::UnsupportedType,
-            "prepared device export supports fixed-width logical types only for fixed-width layouts",
+            "prepared export fixed-width layout requires a fixed-width logical type",
         )
         .with_context("column_id", column.id().get().to_string())
         .with_context("type_id", format!("{:?}", column.data_type().id()).to_lowercase())
@@ -242,7 +242,7 @@ fn dictionary_indices_required_bytes(column: &SemanticColumn) -> Result<usize> {
     if column.data_type().id() != TypeId::Dictionary32 {
         return Err(InteropError::new(
             InteropErrorKind::UnsupportedType,
-            "prepared device export dictionary layout requires the dictionary32 logical type in the current slice",
+            "prepared export dictionary layout requires the dictionary32 logical type in the current slice",
         )
         .with_context("column_id", column.id().get().to_string())
         .with_context("type_id", format!("{:?}", column.data_type().id()).to_lowercase()));
@@ -264,16 +264,7 @@ fn dictionary_indices_required_bytes(column: &SemanticColumn) -> Result<usize> {
 
 fn validate_semantic_layout_matches_data_type(column: &SemanticColumn) -> Result<()> {
     match column.layout() {
-        ColumnLayout::FixedWidth { .. } => {
-            if column.data_type().id().fixed_width_size_bytes().is_none() {
-                return Err(InteropError::new(
-                    InteropErrorKind::UnsupportedType,
-                    "prepared export fixed-width layout requires a fixed-width logical type",
-                )
-                .with_context("column_id", column.id().get().to_string())
-                .with_context("type_id", format!("{:?}", column.data_type().id()).to_lowercase()));
-            }
-        },
+        ColumnLayout::FixedWidth { .. } => {},
         ColumnLayout::BinaryLike { .. } => {
             if column.data_type().id() != TypeId::String {
                 return Err(InteropError::new(
@@ -304,16 +295,7 @@ fn validate_semantic_layout_matches_data_type(column: &SemanticColumn) -> Result
                 .with_context("type_id", format!("{:?}", column.data_type().id()).to_lowercase()));
             }
         },
-        ColumnLayout::Dictionary { .. } => {
-            if column.data_type().id() != TypeId::Dictionary32 {
-                return Err(InteropError::new(
-                    InteropErrorKind::UnsupportedType,
-                    "prepared export dictionary layout requires the dictionary32 logical type in the current slice",
-                )
-                .with_context("column_id", column.id().get().to_string())
-                .with_context("type_id", format!("{:?}", column.data_type().id()).to_lowercase()));
-            }
-        },
+        ColumnLayout::Dictionary { .. } => {},
     }
 
     Ok(())
@@ -886,7 +868,6 @@ pub(crate) fn lease_readiness_binding(readiness: ProducerReadiness<'_>) -> Lease
 pub(crate) fn validate_read_start_authority(
     profile: PreparedExportProfile,
     read_start: ReadStartAuthority<'_>,
-    producer_device: Option<i32>,
 ) -> Result<()> {
     match profile {
         PreparedExportProfile::Host => match read_start {
@@ -896,12 +877,9 @@ pub(crate) fn validate_read_start_authority(
                     .with_context("read_start", "consumer_stream"))
             },
         },
-        PreparedExportProfile::Device => {
-            let _ = producer_device.expect("prepared device export must resolve a producer device");
-            match read_start {
-                ReadStartAuthority::SynchronousByReturn => Ok(()),
-                ReadStartAuthority::ConsumerStream { .. } => Ok(()),
-            }
+        PreparedExportProfile::Device => match read_start {
+            ReadStartAuthority::SynchronousByReturn => Ok(()),
+            ReadStartAuthority::ConsumerStream { .. } => Ok(()),
         },
     }
 }

@@ -47,8 +47,8 @@ impl DataFrame {
         ) {
             Ok(bytes) => Ok(bytes),
             Err(error)
-                if hash_join_retained_preprocessing_reservation_gap(&error)
-                    && hash_join_retained_preprocessing_fallback_supported(&build_key_table)? =>
+                if join::is_hash_join_retained_preprocessing_reservation_gap(&error)
+                    && join::hash_join_retained_preprocessing_fallback_supported(build_key_table.table())? =>
             {
                 let build_key_frame = self.select(build_keys.clone()).map_err(|error| error.reanchor(operation))?;
                 let build_key_table = build_key_frame.to_table_copy().map_err(|error| error.reanchor(operation))?;
@@ -116,13 +116,10 @@ impl DataFrame {
         ctx: &ExecutionOverrides<'_>,
     ) -> Result<DataFrameJoinSides> {
         let operation: &'static str = "dataframe::with_execution::merge_split";
-        let (left_on_strs, right_on_strs, _shared_keys) = resolve_merge_keys(&options, operation)?;
+        let (left_on_strs, right_on_strs, _) =
+            resolve_join_keys(options.on_keys(), options.left_on_keys(), options.right_on_keys(), operation)?;
         let left_on_refs: Vec<&str> = left_on_strs.iter().map(|s| s.as_str()).collect();
         let right_on_refs: Vec<&str> = right_on_strs.iter().map(|s| s.as_str()).collect();
-
-        if left_on_refs.len() != right_on_refs.len() {
-            return Err(merge_key_count_mismatch_error(operation, left_on_refs.len(), right_on_refs.len()));
-        }
 
         let output_domain = ctx.resolve_output_domain(self.execution_domain())?;
         self.join_split_on_impl_with_null_eq_and_context(
@@ -301,15 +298,11 @@ impl DataFrame {
         let operation: &'static str = operation;
 
         // Resolve key names from options.
-        let (left_on_strs, right_on_strs, shared_keys) = resolve_merge_keys(&options, operation)?;
+        let (left_on_strs, right_on_strs, shared_keys) =
+            resolve_join_keys(options.on_keys(), options.left_on_keys(), options.right_on_keys(), operation)?;
 
         let left_on_refs: Vec<&str> = left_on_strs.iter().map(|s| s.as_str()).collect();
         let right_on_refs: Vec<&str> = right_on_strs.iter().map(|s| s.as_str()).collect();
-
-        // Validate key counts match.
-        if left_on_refs.len() != right_on_refs.len() {
-            return Err(merge_key_count_mismatch_error(operation, left_on_refs.len(), right_on_refs.len()));
-        }
 
         let join_type = options.join_type();
 
@@ -344,14 +337,11 @@ impl DataFrame {
     pub fn merge_split(&self, right: &DataFrame, options: join::MergeOptions) -> Result<DataFrameJoinSides> {
         let operation: &'static str = "dataframe::merge_split";
 
-        let (left_on_strs, right_on_strs, _shared_keys) = resolve_merge_keys(&options, operation)?;
+        let (left_on_strs, right_on_strs, _) =
+            resolve_join_keys(options.on_keys(), options.left_on_keys(), options.right_on_keys(), operation)?;
 
         let left_on_refs: Vec<&str> = left_on_strs.iter().map(|s| s.as_str()).collect();
         let right_on_refs: Vec<&str> = right_on_strs.iter().map(|s| s.as_str()).collect();
-
-        if left_on_refs.len() != right_on_refs.len() {
-            return Err(merge_key_count_mismatch_error(operation, left_on_refs.len(), right_on_refs.len()));
-        }
 
         self.join_split_on_impl_with_null_eq_and_context(
             right,
@@ -513,13 +503,10 @@ impl DataFrame {
         ctx: Option<&ExecutionOverrides<'_>>,
         operation: &'static str,
     ) -> Result<DataFrameJoinPairIndices> {
-        let (left_on_strs, right_on_strs) = resolve_dataframe_join_keys(&options, operation)?;
+        let (left_on_strs, right_on_strs, _) =
+            resolve_join_keys(options.on_keys(), options.left_on_keys(), options.right_on_keys(), operation)?;
         let left_on_refs: Vec<&str> = left_on_strs.iter().map(|s| s.as_str()).collect();
         let right_on_refs: Vec<&str> = right_on_strs.iter().map(|s| s.as_str()).collect();
-
-        if left_on_refs.len() != right_on_refs.len() {
-            return Err(merge_key_count_mismatch_error(operation, left_on_refs.len(), right_on_refs.len()));
-        }
 
         let left_key_indices = resolve_column_names(self.columns_map(), &left_on_refs, operation)?;
         let right_key_indices = resolve_column_names(right.columns_map(), &right_on_refs, operation)?;
@@ -562,13 +549,10 @@ impl DataFrame {
         ctx: Option<&ExecutionOverrides<'_>>,
         operation: &'static str,
     ) -> Result<DataFrameJoinIndices> {
-        let (left_on_strs, right_on_strs) = resolve_dataframe_join_keys(&options, operation)?;
+        let (left_on_strs, right_on_strs, _) =
+            resolve_join_keys(options.on_keys(), options.left_on_keys(), options.right_on_keys(), operation)?;
         let left_on_refs: Vec<&str> = left_on_strs.iter().map(|s| s.as_str()).collect();
         let right_on_refs: Vec<&str> = right_on_strs.iter().map(|s| s.as_str()).collect();
-
-        if left_on_refs.len() != right_on_refs.len() {
-            return Err(merge_key_count_mismatch_error(operation, left_on_refs.len(), right_on_refs.len()));
-        }
 
         let left_key_indices = resolve_column_names(self.columns_map(), &left_on_refs, operation)?;
         let right_key_indices = resolve_column_names(right.columns_map(), &right_on_refs, operation)?;
@@ -685,10 +669,6 @@ impl DataFrame {
             operation,
         )?;
         let output_domain = Arc::clone(execution.output_domain());
-
-        if keys.left_on.len() != keys.right_on.len() {
-            return Err(merge_key_count_mismatch_error(operation, keys.left_on.len(), keys.right_on.len()));
-        }
 
         // Resolve key column names in both sides.
         let left_key_indices = resolve_column_names(self.columns_map(), keys.left_on, operation)?;
@@ -1089,15 +1069,7 @@ impl DataFrameHashJoin {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        let probe_keys = probe_on.into_iter().map(|key| key.as_ref().to_string()).collect::<Vec<_>>();
-        validate_hash_join_key_names(&probe_keys, operation)?;
-        if probe_keys.len() != self.build_keys.len() {
-            return Err(merge_key_count_mismatch_error(operation, probe_keys.len(), self.build_keys.len()));
-        }
-
-        let probe_key_refs = probe_keys.iter().map(|key| key.as_str()).collect::<Vec<_>>();
-        let probe_key_indices = resolve_column_names(probe.columns_map(), &probe_key_refs, operation)?;
-        let probe_key_table = build_borrowed_table_view_from_columns(probe.columns_map(), &probe_key_indices)?;
+        let probe_key_table = resolve_probe_key_table(probe, probe_on, self.build_keys.len(), operation)?;
         let raw_indices = match (join_type, output_size) {
             (join::JoinType::Inner, None) => self.join.inner_join_indices_in(probe_key_table.table(), ctx)?,
             (join::JoinType::Left, None) => self.join.left_join_indices_in(probe_key_table.table(), ctx)?,
@@ -1131,15 +1103,7 @@ impl DataFrameHashJoin {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        let probe_keys = probe_on.into_iter().map(|key| key.as_ref().to_string()).collect::<Vec<_>>();
-        validate_hash_join_key_names(&probe_keys, operation)?;
-        if probe_keys.len() != self.build_keys.len() {
-            return Err(merge_key_count_mismatch_error(operation, probe_keys.len(), self.build_keys.len()));
-        }
-
-        let probe_key_refs = probe_keys.iter().map(|key| key.as_str()).collect::<Vec<_>>();
-        let probe_key_indices = resolve_column_names(probe.columns_map(), &probe_key_refs, operation)?;
-        let probe_key_table = build_borrowed_table_view_from_columns(probe.columns_map(), &probe_key_indices)?;
+        let probe_key_table = resolve_probe_key_table(probe, probe_on, self.build_keys.len(), operation)?;
         let size = match join_type {
             join::JoinType::Inner => self.join.inner_join_size_in(probe_key_table.table(), ctx)?,
             join::JoinType::Left => self.join.left_join_size_in(probe_key_table.table(), ctx)?,

@@ -6,7 +6,7 @@ use super::{fillna_ops::DropDuplicatesOptions, group_keys::require_non_empty_gro
 use crate::{
     core::{
         column::Column,
-        error::{self, FACT_COLUMN_INDEX, Result},
+        error::{self, Result},
         types::DataType,
     },
     frame::series::Series,
@@ -435,11 +435,9 @@ impl DataFrame {
         let key_indices = resolve_column_names(&self.columns, &by_refs, operation)?;
         let (mut orders, mut null_orders) = options.resolve(by_refs.len(), operation)?;
 
-        let sorted_order_radix_preflight = if !options.stable && by_refs.len() == 1 && key_indices.len() == 1 {
-            let (_, key_column) = self.columns.get_index(key_indices[0]).ok_or_else(|| {
-                error::invariant_violation(operation, "resolved sort key index should always remain valid")
-                    .with_fact(FACT_COLUMN_INDEX, key_indices[0])
-            })?;
+        let sorted_order_radix_preflight = if !options.stable && by_refs.len() == 1 {
+            let (_, key_column) =
+                self.columns.get_index(key_indices[0]).expect("resolved sort key index remains valid");
             let key_type = key_column.data_type().map_err(|error| error.reanchor(operation))?;
             let null_count = key_column.null_count().map_err(|error| error.reanchor(operation))?;
             if null_count == 0 && sorting::sorted_order_radix_key_supported(key_type.id()) {
@@ -474,18 +472,9 @@ impl DataFrame {
         let stable_key_columns;
         let keys_table = if stable_row_position.is_some() {
             stable_key_columns = self.sort_key_columns_in_domain(&key_indices, &output_domain, operation)?;
-            Self::build_stable_sort_key_table_for_sorted_order(
-                &stable_key_columns,
-                stable_row_position.as_ref(),
-                operation,
-            )?
+            Self::build_stable_sort_key_table_for_sorted_order(&stable_key_columns, stable_row_position.as_ref())?
         } else {
-            Self::build_sort_key_table_for_sorted_order(
-                self.columns_map(),
-                &key_indices,
-                stable_row_position.as_ref(),
-                operation,
-            )?
+            Self::build_sort_key_table_for_sorted_order(self.columns_map(), &key_indices, stable_row_position.as_ref())?
         };
         let sorted_order = sorting::sorted_order_impl(
             keys_table.table(),
@@ -508,10 +497,7 @@ impl DataFrame {
         let should_copy = !ExecutionDomain::same_provenance(&self.domain, output_domain);
         let mut key_columns = Vec::with_capacity(key_indices.len());
         for &idx in key_indices {
-            let (_, column) = self.columns.get_index(idx).ok_or_else(|| {
-                error::invariant_violation(operation, "resolved sort key index should always remain valid")
-                    .with_fact(FACT_COLUMN_INDEX, idx)
-            })?;
+            let (_, column) = self.columns.get_index(idx).expect("resolved sort key index remains valid");
             let column = if should_copy {
                 Arc::new(column.copy_into_domain(Arc::clone(output_domain), operation)?)
             } else {
@@ -525,7 +511,6 @@ impl DataFrame {
     fn build_stable_sort_key_table_for_sorted_order<'a>(
         key_columns: &'a [Arc<Column>],
         stable_row_position: Option<&'a Column>,
-        operation: &'static str,
     ) -> Result<TempTableView<'a>> {
         let mut views = Vec::with_capacity(key_columns.len() + usize::from(stable_row_position.is_some()));
         for column in key_columns {
@@ -535,13 +520,6 @@ impl DataFrame {
             views.push(stable_row_position.view()?);
         }
 
-        if views.is_empty() {
-            return Err(error::invariant_violation(
-                operation,
-                "stable sorted-order key table should contain at least the row-position tie breaker",
-            ));
-        }
-
         TempTableView::from_column_views(views)
     }
 
@@ -549,14 +527,10 @@ impl DataFrame {
         columns: &'a FastIndexMap<String, Arc<Column>>,
         key_indices: &[usize],
         stable_row_position: Option<&'a Column>,
-        operation: &'static str,
     ) -> Result<TempTableView<'a>> {
         let mut views = Vec::with_capacity(key_indices.len() + usize::from(stable_row_position.is_some()));
         for &idx in key_indices {
-            let (_, column) = columns.get_index(idx).ok_or_else(|| {
-                error::invariant_violation(operation, "resolved sort key index should always remain valid")
-                    .with_fact(FACT_COLUMN_INDEX, idx)
-            })?;
+            let (_, column) = columns.get_index(idx).expect("resolved sort key index remains valid");
             views.push(column.view()?);
         }
         if let Some(stable_row_position) = stable_row_position {
@@ -646,10 +620,7 @@ impl DataFrame {
         let key_refs: SmallVec<[&str; SORT_KEY_INLINE_CAPACITY]> = keys.iter().map(|key| key.as_str()).collect();
         let key_indices = resolve_column_names(&self.columns, &key_refs, operation)?;
         let value_indices = resolve_column_names(&self.columns, &[value], operation)?;
-        let value_column = self.columns.get_index(value_indices[0]).ok_or_else(|| {
-            error::invariant_violation(operation, "resolved scan value index should always remain valid")
-                .with_fact(FACT_COLUMN_INDEX, value_indices[0])
-        })?;
+        let value_column = self.columns.get_index(value_indices[0]).expect("resolved scan value index remains valid");
 
         let keys_table = crate::internal::resolve::build_borrowed_table_view_from_columns(&self.columns, &key_indices)?;
         let value_view = value_column.1.view()?;

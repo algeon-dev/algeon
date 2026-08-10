@@ -335,11 +335,6 @@ impl RemoteParquetSource {
         Ok(())
     }
 
-    fn validate_for_current_reader(&self, operation: &'static str) -> Result<()> {
-        self.validate_contract_for_current_reader(operation)?;
-        Ok(())
-    }
-
     fn can_use_path_reader_fallback(&self) -> bool {
         !self.read_mode.requires_explicit_kvikio_datasource() && self.profile.is_path_reader_compatible()
     }
@@ -1075,7 +1070,7 @@ pub(crate) fn read_parquet_table_with_evidence(
         .remote_source
         .as_ref()
         .map(|source| {
-            source.validate_for_current_reader(OPERATION)?;
+            source.validate_contract_for_current_reader(OPERATION)?;
             CString::new(source.reader_path()).map_err(|_| {
                 error::interior_null_byte_error(
                     OPERATION,
@@ -1335,7 +1330,7 @@ pub(crate) fn read_parquet_multi_table(options: &ParquetMultiTableReadOptions) -
                 })?;
             },
             ParquetMultiTableInput::RemoteSource(source) => {
-                source.validate_for_current_reader(OPERATION).map_err(|error| {
+                source.validate_contract_for_current_reader(OPERATION).map_err(|error| {
                     error
                         .with_detail("file_index", file_index.to_string())
                         .with_detail("path", input.display_path())

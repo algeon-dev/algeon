@@ -24,60 +24,32 @@ pub(super) struct DeviceTableExportContext<'a> {
 impl<'a> DeviceTableExportContext<'a> {
     fn from_domain(operation: &'static str, domain: &Arc<ExecutionDomain>) -> Result<Self, InteropError> {
         let (default_device, readiness) = prepared_device_readiness(operation, domain)?;
-        Self::with_readiness(operation, domain, default_device, readiness)
+        Ok(Self::new(operation, domain, default_device, readiness))
     }
 
-    pub(super) fn with_readiness(
+    pub(super) fn from_event(
+        operation: &'static str,
+        domain: &Arc<ExecutionDomain>,
+        event: &'a CudaEvent,
+    ) -> Result<Self, InteropError> {
+        let (default_device, readiness) = prepared_device_event_readiness(operation, domain, event)?;
+        Ok(Self::new(operation, domain, default_device, readiness))
+    }
+
+    fn new(
         operation: &'static str,
         domain: &Arc<ExecutionDomain>,
         default_device: i32,
         readiness: ProducerReadiness<'a>,
-    ) -> Result<Self, InteropError> {
-        let domain_device = domain.device_snapshot();
-        if default_device != domain_device {
-            return Err(InteropError::new(
-                InteropErrorKind::ReadinessMismatch,
-                "prepared table export device must match producer execution domain",
-            )
-            .with_context("operation", operation)
-            .with_context("left_device", default_device.to_string())
-            .with_context("right_device", domain_device.to_string()));
-        }
-
-        match readiness {
-            ProducerReadiness::DeviceStreamOrdered { stream } if stream.device() != default_device => {
-                return Err(device_readiness_mismatch_error(operation, default_device, stream.device()));
-            },
-            ProducerReadiness::DeviceEventOrdered { event } if event.device() != default_device => {
-                return Err(device_readiness_mismatch_error(operation, default_device, event.device()));
-            },
-            ProducerReadiness::HostVisible
-            | ProducerReadiness::DeviceStreamOrdered { .. }
-            | ProducerReadiness::DeviceEventOrdered { .. } => {},
-        }
-
-        Ok(Self {
+    ) -> Self {
+        Self {
             operation,
             placement: domain.placement(),
             observer: domain.boundary_observer(),
             default_device,
             readiness,
-        })
+        }
     }
-}
-
-fn device_readiness_mismatch_error(
-    operation: &'static str,
-    default_device: i32,
-    readiness_device: i32,
-) -> InteropError {
-    InteropError::new(
-        InteropErrorKind::ReadinessMismatch,
-        "prepared table export readiness must match producer CUDA device",
-    )
-    .with_context("operation", operation)
-    .with_context("left_device", default_device.to_string())
-    .with_context("right_device", readiness_device.to_string())
 }
 
 fn table_dimensions(view: &TableView<'_>, operation: &'static str) -> Result<(usize, usize), InteropError> {

@@ -14,7 +14,7 @@ use ::parquet::{
 };
 use typed_builder::TypedBuilder;
 
-use super::{info::InfoDetail, owned::DataFrame};
+use super::owned::DataFrame;
 use crate::{
     core::{
         error::{Error, ErrorCode, Result},
@@ -1558,16 +1558,6 @@ fn read_parquet_source_chunks_frame_per_chunk(
     Ok(ParquetSourceChunkReadOutput::new(frame, Some(ParquetReadEvidence::local_path_multi_footer_materialized())))
 }
 
-fn dataframe_device_allocated_size_bytes(frame: &DataFrame, operation: &'static str) -> Result<usize> {
-    let info = frame.info_with(InfoDetail::DEVICE_ALLOCATED).map_err(|error| error.reanchor(operation))?;
-    let memory = info.memory_accounting.ok_or_else(|| {
-        crate::core::error::invariant_violation(operation, "device allocation accounting was not populated")
-    })?;
-    memory
-        .device_allocated_bytes
-        .ok_or_else(|| crate::core::error::invariant_violation(operation, "device allocated bytes were not populated"))
-}
-
 fn dataframe_from_parquet_table_options(
     table_options: &ParquetTableReadOptions<'_>,
     operation: &'static str,
@@ -1604,7 +1594,10 @@ fn read_parquet_source_chunk_with_budget_input(
     }
     .map_err(|error| token.annotate_error(error, operation))?;
     let output_rows = output.frame().num_rows();
-    let output_bytes = dataframe_device_allocated_size_bytes(output.frame(), operation)
+    let output_bytes = output
+        .frame()
+        .device_allocated_size_bytes()
+        .map_err(|error| error.reanchor(operation))
         .map_err(|error| token.annotate_error(error, operation))?;
     output
         .frame()
@@ -1823,7 +1816,9 @@ impl DataFrame {
         let frame = dataframe_from_parquet_table_options(&table_options, operation)
             .map_err(|error| token.annotate_error(error, operation))?;
         let output_rows = frame.num_rows();
-        let output_bytes = dataframe_device_allocated_size_bytes(&frame, operation)
+        let output_bytes = frame
+            .device_allocated_size_bytes()
+            .map_err(|error| error.reanchor(operation))
             .map_err(|error| token.annotate_error(error, operation))?;
         let report = token
             .reservation_enforced_report()
@@ -2142,7 +2137,10 @@ impl DataFrame {
         let output = read_parquet_source_chunks_frame(&budget_runtime, source, chunks, mode, operation)
             .map_err(|error| token.annotate_error(error, operation))?;
         let output_rows = output.frame().num_rows();
-        let output_bytes = dataframe_device_allocated_size_bytes(output.frame(), operation)
+        let output_bytes = output
+            .frame()
+            .device_allocated_size_bytes()
+            .map_err(|error| error.reanchor(operation))
             .map_err(|error| token.annotate_error(error, operation))?;
         output
             .frame()

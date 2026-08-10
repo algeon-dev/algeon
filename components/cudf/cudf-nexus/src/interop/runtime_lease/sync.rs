@@ -124,7 +124,7 @@ pub(super) fn complete_cross_device_event_shared(
     Ok(witness)
 }
 
-pub(super) fn synchronize_same_device_stream_raw(
+pub(in crate::interop) fn synchronize_same_device_stream_raw(
     stream_raw: *mut c_void,
     stream_device: DeviceId,
     operation: &'static str,
@@ -140,7 +140,7 @@ pub(super) fn synchronize_same_device_stream_raw(
     event.synchronize().map_err(|error| error.reanchor(operation).with_detail("completion", "same_device_stream"))
 }
 
-pub(super) fn synchronize_cross_device_event_raw(
+pub(in crate::interop) fn synchronize_cross_device_event_raw(
     event_raw: *mut c_void,
     consumer_device: DeviceId,
     operation: &'static str,
@@ -356,47 +356,6 @@ pub(crate) fn synchronize_completion_fallback(
             event
                 .synchronize()
                 .map_err(|error| error.reanchor(operation).with_detail("completion", "cross_device_event"))
-        },
-    }
-}
-
-pub(crate) fn synchronize_runtime_release_completion(
-    completion: TransferCompletionAuthority<'_>,
-    release_device: i32,
-    operation: &'static str,
-) -> std::result::Result<(), InteropError> {
-    match completion {
-        TransferCompletionAuthority::SynchronousByReturn => Err(InteropError::new(
-            InteropErrorKind::ProfileUnsupported,
-            "runtime-backed owned-transfer release requires a consumer signal completion authority",
-        )
-        .with_context("operation", operation)
-        .with_context("completion", "synchronous_by_return")
-        .with_context("release_device", release_device.to_string())),
-        TransferCompletionAuthority::SameDeviceStream { stream } => {
-            let stream_device = stream.device().ordinal_raw();
-            if stream_device != release_device {
-                return Err(InteropError::new(
-                    InteropErrorKind::ReadinessMismatch,
-                    "runtime-backed owned-transfer release stream must live on the release CUDA device",
-                )
-                .with_context("operation", operation)
-                .with_context("completion", "same_device_stream")
-                .with_context("left_device", release_device.to_string())
-                .with_context("right_device", stream_device.to_string()));
-            }
-            let raw = stream.interop_raw_handle().map_err(|error| {
-                super::super::map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error)
-            })?;
-            synchronize_same_device_stream_raw(raw, stream.device(), operation)
-                .map_err(|error| super::super::map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error))
-        },
-        TransferCompletionAuthority::CrossDeviceEvent { event } => {
-            let raw = event.interop_raw_handle().map_err(|error| {
-                super::super::map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error)
-            })?;
-            synchronize_cross_device_event_raw(raw, event.device(), operation)
-                .map_err(|error| super::super::map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error))
         },
     }
 }

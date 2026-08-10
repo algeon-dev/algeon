@@ -173,7 +173,7 @@ pub(crate) struct DeviceHealthRegistry {
 
 impl DeviceHealthRegistry {
     pub(crate) fn state(&self, device: DeviceId) -> Arc<DeviceHealthState> {
-        let mut states = self.states.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut states = self.states.lock().expect("device health registry mutex poisoned");
         Arc::clone(states.entry(device.ordinal_raw()).or_insert_with(|| Arc::new(DeviceHealthState::new())))
     }
 

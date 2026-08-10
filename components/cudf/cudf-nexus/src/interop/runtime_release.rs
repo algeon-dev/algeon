@@ -188,18 +188,22 @@ impl RuntimeOwnedReleaseCompletion {
         }
     }
 
-    fn wait_for_release(&self, release_device: i32, operation: &'static str) -> std::result::Result<(), InteropError> {
+    fn wait_for_release(&self, operation: &'static str) -> std::result::Result<(), InteropError> {
         match self {
-            Self::SameDeviceStream { stream } => runtime_lease::synchronize_runtime_release_completion(
-                TransferCompletionAuthority::same_device_stream(stream),
-                release_device,
-                operation,
-            ),
-            Self::CrossDeviceEvent { event } => runtime_lease::synchronize_runtime_release_completion(
-                TransferCompletionAuthority::cross_device_event(event),
-                release_device,
-                operation,
-            ),
+            Self::SameDeviceStream { stream } => {
+                let raw = stream
+                    .interop_raw_handle()
+                    .map_err(|error| map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error))?;
+                runtime_lease::synchronize_same_device_stream_raw(raw, stream.device(), operation)
+                    .map_err(|error| map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error))
+            },
+            Self::CrossDeviceEvent { event } => {
+                let raw = event
+                    .interop_raw_handle()
+                    .map_err(|error| map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error))?;
+                runtime_lease::synchronize_cross_device_event_raw(raw, event.device(), operation)
+                    .map_err(|error| map_cudf_error(InteropErrorKind::ReadinessUnavailable, operation, error))
+            },
         }
     }
 
@@ -277,7 +281,7 @@ impl<T> RuntimeOwnedTransferState<T> {
         completion: &RuntimeOwnedReleaseCompletion,
         operation: &'static str,
     ) -> std::result::Result<(), InteropError> {
-        match completion.wait_for_release(self.release_device, operation) {
+        match completion.wait_for_release(operation) {
             Ok(()) => Ok(()),
             Err(wait_error) => match completion.synchronize_fallback(operation) {
                 Ok(()) => Ok(()),
