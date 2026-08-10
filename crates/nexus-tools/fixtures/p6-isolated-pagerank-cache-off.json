@@ -58,9 +58,9 @@
   "workloads": [
     {
       "kind": "dblp",
-      "path": "/opt/dlami/nvme/fixture/data/demo/citation_network/v1/parquet",
+      "path": "/opt/dlami/nvme/fixture/data/demo-v12-topology-r1/citation_network/v1/parquet",
       "scale": "v12",
-      "preparation_command": "fixture/fixture.sh graph dblp-ingest --source-json /path/to/dblp.v12.json --out-root /opt/dlami/nvme/fixture/data/demo",
+      "preparation_command": "fixture/fixture.sh graph dblp-ingest --source-json /path/to/dblp.v12.json --out-root /opt/dlami/nvme/fixture/data/demo-v12-topology-r1",
       "queries": [
         "pagerank"
       ]
