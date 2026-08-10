@@ -40,10 +40,3 @@ flock /tmp/cudf-gpu.lock cargo nextest run \
 `cugraph-nexus-sys` intentionally generates bindings from the selected native
 headers in `build.rs`; the selected headers and include paths are part of its
 package/native contract.
-
-## Migration provenance
-
-- Wrapper repository and archive: <https://github.com/DataFusion-Nexus/cugraph-nexus>
-- Frozen imported tip: `438c73b830ae0549d95276fcaddd8411f797ec7d`
-- Import merge: `9bbec7a2a87fb445414b784eaa0492bb6b76690d`
-- Final path: `components/cugraph`

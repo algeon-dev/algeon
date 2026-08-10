@@ -39,6 +39,12 @@ pub(super) fn unsupported_numeric_target_error(operation: &'static str, target: 
 /// [`std::fmt::Display`] for `Series` is metadata-only. It reports the dtype,
 /// length, and nullability summary, but it never materializes values to host
 /// memory.
+///
+/// # Interop
+///
+/// Use a borrowed view for temporary device access, a prepared export when the
+/// consumer needs access or a copy, and an owned transfer when it takes over
+/// the device buffers.
 #[derive(Clone)]
 pub struct Series {
     pub(super) column: Arc<Column>,

@@ -114,12 +114,24 @@ fn interop_high_level_adapter_surface_smoke() {
         _f: for<'a, 'b> fn(&'a PreparedColumnExport<'b>, &'a Runtime) -> std::result::Result<Series, InteropError>,
     ) {
     }
-    fn assert_dataframe_prepared_import_with_names(
+    fn assert_dataframe_borrowed_import(
+        _f: for<'a, 'b> fn(
+            &'a BorrowedTableView<'b>,
+            Option<Vec<String>>,
+            &'a Runtime,
+        ) -> std::result::Result<DataFrame, InteropError>,
+    ) {
+    }
+    fn assert_dataframe_prepared_import(
         _f: for<'a, 'b> fn(
             &'a PreparedTableExport<'b>,
+            Option<Vec<String>>,
             &'a Runtime,
-            Vec<String>,
         ) -> std::result::Result<DataFrame, InteropError>,
+    ) {
+    }
+    fn assert_dataframe_owned_import(
+        _f: fn(OwnedTableTransfer, Option<Vec<String>>, &Runtime) -> std::result::Result<DataFrame, InteropError>,
     ) {
     }
     fn assert_dataframe_owned_producer(
@@ -149,9 +161,9 @@ fn interop_high_level_adapter_surface_smoke() {
 
     assert_arrow_host_record_batch_import(arrow_host::dataframe_from_record_batch);
     assert_series_prepared_import(Series::try_import_from_prepared_column_export_into_runtime);
-    assert_dataframe_prepared_import_with_names(
-        DataFrame::try_import_from_prepared_table_export_into_runtime_and_names,
-    );
+    assert_dataframe_borrowed_import(DataFrame::try_import_from_borrowed_table_view_into_runtime);
+    assert_dataframe_prepared_import(DataFrame::try_import_from_prepared_table_export_into_runtime);
+    assert_dataframe_owned_import(DataFrame::try_import_from_owned_device_table_transfer_into_runtime);
     assert_dataframe_owned_producer(DataFrame::try_into_owned_transfer_with_release_synchronization);
     assert_partitioned_owned_producer(PartitionedDataFrameExport::try_into_owned_transfer_with_release_synchronization);
     assert_partitioned_table_prepared_import(

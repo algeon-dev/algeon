@@ -1011,7 +1011,8 @@ fn dataframe_try_into_owned_device_transfer_deep_copies_when_dataframe_columns_a
 
     let transfer = frame.try_into_owned_transfer().unwrap();
     let imported =
-        DataFrame::try_import_from_owned_device_table_transfer_into_runtime(transfer, &destination_runtime).unwrap();
+        DataFrame::try_import_from_owned_device_table_transfer_into_runtime(transfer, None, &destination_runtime)
+            .unwrap();
     let imported_id_ptr = imported.series("id").unwrap().testing_view().unwrap().device_data_ptr().unwrap();
     let imported_value_ptr = imported.series("value").unwrap().testing_view().unwrap().device_data_ptr().unwrap();
 

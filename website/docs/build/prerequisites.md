@@ -1,173 +1,62 @@
 ---
 sidebar_position: 2
-description: System packages, CUDA toolkit, host compiler, mold linker, and Rust toolchain needed before cloning anything — with each tool mapped to the layer that requires it.
+description: Install the upstream native-build prerequisites, then add the small set of tools required by this checkout.
 ---
 
 # Prerequisites
 
-Everything below installs system-wide, once. Commands are written for Ubuntu
-24.04 (the RAPIDS-supported LTS); adapt package names for other distributions.
+Start with the [RAPIDS install guide](https://docs.rapids.ai/install/) for your
+Linux distribution. It owns NVIDIA driver, CUDA toolkit, GPU support,
+host-compiler, CMake, and Ninja compatibility. The upstream dependency
+manifests are [cuDF](https://github.com/NVIDIA/cudf/blob/main/dependencies.yaml),
+[cuVS](https://github.com/NVIDIA/cuvs/blob/main/dependencies.yaml), and
+[cuGraph](https://github.com/rapidsai/cugraph/blob/main/dependencies.yaml).
+The exact native sources in this checkout are the authority for this build;
+their `dependencies.yaml` and `CMakeLists.txt` files take precedence if they
+differ from those upstream references.
 
-The three native libraries in the stack — **libcudf**, **libcuvs**, and
-**libcugraph** — are built from the sources pinned by this checkout, so their
-toolchain requirements are the upstream RAPIDS ones. Where a tool version
-matters, this page cites the requirement rather than tying the guide to a
-particular RAPIDS release;
-follow the [RAPIDS install guide](https://docs.rapids.ai/install/) and the
-checked-out `dependencies.yaml` files as the source of truth.
+This page covers only what connects that upstream environment to DataFusion
+Nexus.
 
-## What each tool is for
+## Native build environment
 
-| Tool | Required by | Notes |
-| --- | --- | --- |
-| NVIDIA driver + CUDA toolkit | libcudf, libcuvs, libcugraph builds (nvcc); every layer at runtime (GPU) | CUDA 12.2, 12.5, 12.8, 12.9, or 13.0–13.3 |
-| gcc/g++ **14** | libcudf, libcuvs, libcugraph builds (host compiler) | the pinned native sources require gcc 14 |
-| CMake ≥ 4.0 | libcudf, libcuvs, libcugraph builds; the cuDF Rust shim | effective stack floor from the pinned native projects |
-| Ninja | libcudf, libcuvs, libcugraph builds | RAPIDS build scripts default to it |
-| mold + clang | Root workspace Cargo builds for `components/*` and `datafusion-nexus` | The root `.cargo/config.toml` pins mold; install both on the host |
-| Rust (stable + nightly) | Root workspace crates and `datafusion-nexus` | nightly only for `rustfmt` |
-| Python + pyarrow | a few `cudf-nexus` Parquet **fixture tests** | **not** a build dependency |
+The recursive checkout builds its pinned `libcudf`, `libcuvs`, and
+`libcugraph` sources locally. Before continuing, use the RAPIDS guidance to
+install a compatible NVIDIA driver, CUDA toolkit, host compiler, CMake, and
+Ninja. `nvcc` must be available from the CUDA installation you intend to use.
 
-## NVIDIA driver and CUDA toolkit
-
-The pinned native dependency matrices list CUDA 12.2, 12.5, 12.8, 12.9, and
-13.0 through 13.3. Use one of those toolkit versions with a driver new enough
-for that toolkit
-([RAPIDS install](https://docs.rapids.ai/install/)):
-
-- CUDA 12.x → driver ≥ 525.60.13
-- CUDA 13.x → driver ≥ 580.65.06
-
-Install the toolkit from NVIDIA's apt repository (distribution packages lag).
-Pick a `cuda-toolkit-<major>-<minor>` package within the supported range that
-matches your installed driver — for example a CUDA 13 toolkit:
+Install the checkout-specific host tools:
 
 ```bash
-wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
-sudo dpkg -i cuda-keyring_1.1-1_all.deb
-sudo apt-get update
-sudo apt-get install -y cuda-toolkit-13-0    # 13-0 through 13-3, or a listed CUDA 12.x toolkit
+sudo apt-get install -y build-essential git clang mold
 ```
 
-This installs under `/usr/local/cuda-<version>` and maintains the
-`/usr/local/cuda` alternatives symlink, which the
-[build-shell configuration](./from-source.md#2-configure-the-build-shell) points
-at. Verify:
+The root [`.cargo/config.toml`](https://github.com/DataFusion-Nexus/datafusion-nexus/blob/main/.cargo/config.toml)
+selects `clang` and `mold` for normal source builds. If the pinned native
+sources require a compiler that is not your distribution default, install that
+compiler as directed by their checked-out dependency files, then set it in the
+[build shell](./from-source.md#2-configure-the-build-shell).
+
+Native binaries target the build GPU by default. When they must run on a
+different GPU, build the required architectures explicitly as described in
+[Building from Source](./from-source.md#3-build-the-native-stack).
+
+## Rust toolchain and test runner
+
+Install Rust with the [official Rustup instructions](https://rustup.rs/). The
+workspace declares its MSRV in `Cargo.toml`; nightly is needed only for
+formatting. Then install the repository's canonical test runner:
 
 ```bash
-nvidia-smi --query-gpu=name,compute_cap,driver_version --format=csv
-/usr/local/cuda/bin/nvcc --version
-readlink -f /usr/local/cuda    # confirm the symlink resolves to the toolkit you want
+rustup toolchain install nightly
+cargo install --locked --version 0.9.140 cargo-nextest
 ```
 
-### GPU architecture
+## Optional fixture dependency
 
-The pinned RAPIDS sources support NVIDIA **Volta or newer (compute capability 7.0+)**;
-Pascal support was dropped in 24.02. The native libraries build for your own
-GPU's architecture by default (`CMAKE_CUDA_ARCHITECTURES=NATIVE`) — you do not
-need to know your compute capability up front, only to list it explicitly when
-building binaries that must run on a *different* GPU model
-([Building from Source](./from-source.md#build-cudf-and-the-shared-rmm-prefix)).
+Some `components/cudf` Parquet fixture tests use Python with PyArrow. It is
+not needed to build or link the native libraries or Rust workspace. Install
+PyArrow from its [official installation guide](https://arrow.apache.org/docs/python/install.html)
+only when running that component's full fixture suite.
 
-## Host compiler: gcc/g++ 14
-
-```bash
-sudo apt-get install -y build-essential git ninja-build gcc-14 g++-14 clang mold
-```
-
-This line also installs **ninja** (the generator every CMake build in the stack
-uses; RAPIDS build scripts default to it), **git**, **clang**, and **mold**.
-`datafusion-nexus` selects clang + mold from its `.cargo/config.toml`, so install
-both before any `cargo build --all-features` or
-`cargo nextest run --all-features` step on the Rust workspace.
-
-The pinned native sources **pin gcc 14** as the host compiler for all three native builds
-(`gcc_linux-64=14.*` in the cudf, cuvs, and cugraph `dependencies.yaml`). Ubuntu
-24.04's default is gcc 13, so install `gcc-14`/`g++-14` explicitly; the
-[build-shell configuration](./from-source.md#2-configure-the-build-shell) points
-`CC`/`CXX`/`CUDAHOSTCXX` at it.
-There is no need to change the system default compiler.
-
-### CUDA and host-compiler compatibility
-
-`nvcc` rejects host compilers newer than the CUDA toolkit supports. CUDA 13.0
-added support up to gcc 15, so the recommended website build pairing is CUDA
-13.x with gcc 14. The supported CUDA range does not imply that one host
-compiler works across every point release: CUDA 12.2, for example, supports
-gcc only through 12.2. If using CUDA 12.x, choose a host compiler from that
-toolkit's NVIDIA compatibility table and point `CC`, `CXX`, and `CUDAHOSTCXX`
-at it. If several CUDA toolkits are installed, confirm which one
-`/usr/local/cuda` resolves to before building — a stale symlink to an older
-toolkit is a classic source of inscrutable `nvcc` errors.
-
-### CMake ≥ 4.0
-
-All three pinned native projects (`libcudf`, `libcuvs`, `libcugraph`) require
-CMake 4.0. The `cudf-nexus-sys` shim has a lower 3.30.4 floor, but the complete
-stack therefore requires 4.0. Ubuntu 24.04 ships 3.28, which fails
-immediately — install a newer CMake from the
-[Kitware apt repository](https://apt.kitware.com/):
-
-```bash
-test -f /usr/share/doc/kitware-archive-keyring/copyright ||
-  wget -O - https://apt.kitware.com/keys/kitware-archive-latest.asc 2>/dev/null \
-  | gpg --dearmor - | sudo tee /usr/share/keyrings/kitware-archive-keyring.gpg >/dev/null
-echo 'deb [signed-by=/usr/share/keyrings/kitware-archive-keyring.gpg] https://apt.kitware.com/ubuntu/ noble main' \
-  | sudo tee /etc/apt/sources.list.d/kitware.list >/dev/null
-sudo apt-get update && sudo apt-get install -y cmake
-cmake --version   # ≥ 4.0
-```
-
-## Rust linker: mold
-
-Normal Cargo builds for this stack require the
-[mold](https://github.com/rui314/mold) linker and `clang` on the host.
-`datafusion-nexus/.cargo/config.toml` selects them as:
-
-```toml
-[target.x86_64-unknown-linux-gnu]
-linker = "clang"
-rustflags = ["-C", "target-cpu=x86-64-v4", "-C", "link-arg=-fuse-ld=mold"]
-```
-
-Install mold and clang before the first Rust build:
-
-```bash
-sudo apt-get install -y clang mold
-mold --version
-clang --version
-```
-
-All component crates are built from the `datafusion-nexus` root workspace, so
-the root `.cargo/config.toml` applies to every one of them.
-
-Redistributable server packaging (`docker/stage-docker-payload.sh`) does **not** read workspace
-or home Cargo linker config; it builds from an isolated working directory and
-clean `CARGO_HOME` with only the CPU packaging policy flags. Day-to-day source
-builds and tests still need mold on the host.
-
-## Rust toolchain
-
-```bash
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-source "$HOME/.cargo/env"
-rustup toolchain install nightly                       # rustfmt.toml uses unstable options
-cargo install --locked --version 0.9.140 cargo-nextest # exact canonical test runner
-```
-
-The Rust crates declare an MSRV in `Cargo.toml`; any current stable satisfies
-it. The nightly toolchain is only used for `cargo +nightly fmt`.
-
-## Python (test fixtures only)
-
-A few `components/cudf` Parquet fixture tests shell out to Python with pyarrow. This is
-**not** a build dependency — libcudf, libcuvs, libcugraph, and every Rust crate compile
-and link without it — so install it only if you intend to run the full
-cuDF component test suite:
-
-```bash
-python3 -m pip install --user pyarrow
-```
-
-Continue with [Building from Source](./from-source.md), which begins with the
-recursive clone and checkout-local environment configuration.
+Continue with [Building from Source](./from-source.md).

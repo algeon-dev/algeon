@@ -803,8 +803,9 @@ fn prepared_export_vs_deep_copy_import_pagerank_equivalence() {
     let export = producer_df.try_prepare_device_table_export().expect("prepared export");
     let mut prepared_graph = build_undirected_prepared_graph(&handle, &export).expect("prepared graph");
 
-    let imported_df = cudf::DataFrame::try_import_from_prepared_table_export_into_runtime(&export, &consumer_runtime)
-        .expect("deep-copy import");
+    let imported_df =
+        cudf::DataFrame::try_import_from_prepared_table_export_into_runtime(&export, None, &consumer_runtime)
+            .expect("deep-copy import");
     assert_named_edge_columns(&imported_df);
     let mut fallback_graph = build_undirected_named_dataframe_graph(&handle, &imported_df).expect("fallback graph");
 
@@ -839,7 +840,7 @@ fn prepared_host_export_import_pagerank_matches_prepared_device_path() {
 
     let host_export = producer_df.try_prepare_host_table_export().expect("prepared host export");
     let imported_df =
-        cudf::DataFrame::try_import_from_prepared_table_export_into_runtime(&host_export, &consumer_runtime)
+        cudf::DataFrame::try_import_from_prepared_table_export_into_runtime(&host_export, None, &consumer_runtime)
             .expect("host fallback import");
     assert_named_edge_columns(&imported_df);
     let mut fallback_graph = build_undirected_named_dataframe_graph(&handle, &imported_df).expect("fallback graph");

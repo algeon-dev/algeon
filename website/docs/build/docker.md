@@ -1,7 +1,7 @@
 ---
 sidebar_position: 4
 sidebar_label: Docker
-description: Build the DataFusion Nexus Flight SQL server image from locally built native artifacts, run it with NVIDIA Container Toolkit, and smoke-test Flight SQL.
+description: Build the DataFusion Nexus Flight SQL server image from locally built native artifacts and smoke-test Flight SQL.
 ---
 
 # Building with Docker
@@ -10,6 +10,14 @@ The Docker image packages the standalone Flight SQL server plus the exact
 forked RAPIDS libraries it was linked against. It is a **packaging step after a
 source build**, not a replacement for building the component crates under
 `components/` and the root workspace from source.
+
+:::note[Docker requires a source build]
+
+Complete [Building from Source](./from-source.md) before following this page.
+`docker/stage-docker-payload.sh` packages the locally built native libraries;
+it cannot create their cuDF, cuVS, or cuGraph artifacts itself.
+
+:::
 
 The image build has two phases:
 
@@ -47,19 +55,13 @@ The lean `FEATURES=iceberg,nvml` image omits cuVS and cuGraph, so it
 needs neither optional native artifact. Production examples keep `nvml` enabled so live
 device telemetry is available without affecting admission decisions.
 
-You also need Docker with NVIDIA Container Toolkit installed on the runtime
-host:
-
-```bash
-docker --version
-nvidia-smi
-docker run --rm --gpus all nvidia/cuda:13.2.1-base-ubuntu24.04 nvidia-smi
-```
-
-The default image uses CUDA 13.2 runtime layers. The host driver must support
-CUDA 13, and the forked native libraries must include kernels for the GPU
-architecture you deploy on. The full `cugraph` image is currently only portable
-to architectures included when the `components/cugraph` native library was built.
+Install Docker and configure GPU containers with the
+[NVIDIA Container Toolkit documentation](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
+The runtime host must satisfy NVIDIA's documented driver and container-runtime
+requirements. The full `cugraph` image is portable only to GPU architectures
+included when `components/cugraph` was built; see
+[Building from Source](./from-source.md#3-build-the-native-stack) when you
+need to cover additional deployment GPUs.
 
 ## Build the image
 

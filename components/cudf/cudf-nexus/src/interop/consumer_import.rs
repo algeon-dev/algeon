@@ -163,17 +163,15 @@ fn partition_runtime_count_mismatch_error(
     .with_context("remedy", "provide exactly one destination runtime per partition")
 }
 
-fn missing_dataframe_import_names_error(operation: &'static str, explicit_variant: &'static str) -> InteropError {
+fn missing_dataframe_import_names_error(operation: &'static str) -> InteropError {
     InteropError::new(
         InteropErrorKind::InvalidView,
-        format!(
-            "high-level DataFrame import requires schema names on the shared root; use {explicit_variant} when the root does not carry schema names"
-        ),
+        "high-level DataFrame import requires schema names on the shared root or in the names parameter",
     )
     .with_context("operation", operation)
     .with_context("resource", "schema_names")
     .with_context("reason", "missing_schema_names")
-    .with_context("remedy", format!("use {explicit_variant} when the root does not carry schema names"))
+    .with_context("remedy", "pass Some(names) when the root does not carry schema names")
 }
 
 fn runtime_exec_options(runtime: &Runtime, operation: &'static str) -> Result<EnteredExecution, InteropError> {
@@ -738,10 +736,10 @@ pub(super) fn wrap_imported_dataframe(
     DataFrame::from_table(table, names).map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))
 }
 
-pub(super) fn required_dataframe_import_names(
-    names: Option<&[String]>,
+pub(super) fn dataframe_import_names(
+    names: Option<Vec<String>>,
+    root_names: Option<&[String]>,
     operation: &'static str,
-    explicit_variant: &'static str,
 ) -> Result<Vec<String>, InteropError> {
-    names.map(|names| names.to_vec()).ok_or_else(|| missing_dataframe_import_names_error(operation, explicit_variant))
+    names.or_else(|| root_names.map(ToOwned::to_owned)).ok_or_else(|| missing_dataframe_import_names_error(operation))
 }
