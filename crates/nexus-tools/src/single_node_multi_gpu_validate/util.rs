@@ -41,6 +41,10 @@ fn hex_digest(bytes: &[u8]) -> String {
 }
 
 pub(super) fn write_new_artifact(out_dir: &Path, contents: &[u8]) -> ToolResult<PathBuf> {
+    write_new_named_artifact(out_dir, ARTIFACT_FILE_NAME, contents)
+}
+
+pub(super) fn write_new_named_artifact(out_dir: &Path, file_name: &str, contents: &[u8]) -> ToolResult<PathBuf> {
     if out_dir.exists() {
         return Err(format!(
             "--out-dir {} already exists; refuse to mix or overwrite run artifacts",
@@ -53,8 +57,8 @@ pub(super) fn write_new_artifact(out_dir: &Path, contents: &[u8]) -> ToolResult<
         return Err(format!("--out-dir parent {} does not exist", parent.display()).into());
     }
     fs::create_dir(out_dir).map_err(|_| format!("cannot create --out-dir {}", out_dir.display()))?;
-    let temporary = out_dir.join(format!(".{ARTIFACT_FILE_NAME}.{}.tmp", std::process::id()));
-    let artifact = out_dir.join(ARTIFACT_FILE_NAME);
+    let temporary = out_dir.join(format!(".{file_name}.{}.tmp", std::process::id()));
+    let artifact = out_dir.join(file_name);
     let write_result = (|| -> ToolResult<()> {
         let mut file = File::options().write(true).create_new(true).open(&temporary)?;
         file.write_all(contents)?;

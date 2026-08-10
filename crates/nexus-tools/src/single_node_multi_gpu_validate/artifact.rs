@@ -27,7 +27,7 @@ use super::{
     redact::ensure_redacted_json,
     schedule::ArrivalPlan,
     timeseries::{
-        DeviceSeriesRow, DriftSummary, ObservationPullSummary, OrdinalUtilizationSummary, ProcessSeriesRow,
+        DeviceSeriesRow, DriftSummary, ObservationPullSummary, OrdinalUtilizationSummary, ProcessSeriesRow, SampleGap,
         VramCalibrationEvidence,
     },
     util::write_new_artifact,
@@ -492,82 +492,95 @@ fn qualification_failures(
     composed_schedules: &[ComposedScheduleArtifact],
     require_overload_outcome: bool,
 ) -> Vec<QualificationFailure> {
-    let composed = measurement.selected_queries.iter().any(|query| query.label == "pagerank_forceatlas2_join");
-    if !composed {
-        return Vec::new();
-    }
     let mut failures = Vec::new();
-    let composed_attempts = measurement
-        .aggregate
-        .attempts
-        .iter()
-        .filter(|attempt| attempt.query_label == "pagerank_forceatlas2_join")
-        .collect::<Vec<_>>();
-    if composed_attempts.is_empty() || composed_schedules.is_empty() {
-        failures.push(QualificationFailure { code: "missing_composed_schedule", attempt_id: None });
-    }
-    let mut schedules_by_attempt = std::collections::BTreeMap::new();
-    for schedule in composed_schedules {
-        if schedules_by_attempt.insert(schedule.attempt_id.as_str(), schedule).is_some() {
-            failures.push(QualificationFailure {
-                code: "duplicate_composed_schedule_attempt",
-                attempt_id: Some(schedule.attempt_id.clone()),
-            });
-        }
-        failures.extend(schedule.failures());
-    }
-    for attempt in composed_attempts {
-        let Some(schedule) = schedules_by_attempt.get(attempt.attempt_id.as_str()) else {
-            failures.push(QualificationFailure {
-                code: "missing_composed_schedule",
-                attempt_id: Some(attempt.attempt_id.clone()),
-            });
-            continue;
-        };
-        if attempt.device_ordinal != Some(schedule.selected_ordinal)
-            || attempt.grant_bytes != Some(schedule.grant_bytes)
-            || attempt.grant_id != Some(schedule.grant_id)
-        {
-            failures.push(QualificationFailure {
-                code: "composed_schedule_attempt_binding_mismatch",
-                attempt_id: Some(attempt.attempt_id.clone()),
-            });
-        }
-        if !measurement.time_series.device_rows.iter().any(|row| {
-            row.device_ordinal == schedule.selected_ordinal
-                && row.cuda_free_bytes.is_some()
-                && row.nvml_used_bytes.is_some()
-        }) {
-            failures.push(QualificationFailure {
-                code: "missing_physical_memory_sample",
-                attempt_id: Some(attempt.attempt_id.clone()),
-            });
-        }
-        if !measurement.aggregate.placement.iter().any(|placement| {
-            placement.configuration.ordinal == schedule.selected_ordinal && placement.attempts_placed > 0
-        }) {
-            failures.push(QualificationFailure {
-                code: "missing_device_witness",
-                attempt_id: Some(attempt.attempt_id.clone()),
-            });
-        }
-    }
-    for schedule in composed_schedules {
-        if !measurement.aggregate.attempts.iter().any(|attempt| attempt.attempt_id == schedule.attempt_id) {
-            failures.push(QualificationFailure {
-                code: "composed_schedule_attempt_not_observed",
-                attempt_id: Some(schedule.attempt_id.clone()),
-            });
-        }
-    }
-    if provenance.repositories.root.dirty_manifest.sha256.is_empty()
-        || provenance.repositories.cudf_nexus.dirty_manifest.sha256.is_empty()
-        || provenance.repositories.cugraph_nexus.dirty_manifest.sha256.is_empty()
+    for repository in
+        [&provenance.repositories.root, &provenance.repositories.cudf_nexus, &provenance.repositories.cugraph_nexus]
     {
-        failures.push(QualificationFailure { code: "missing_source_hash", attempt_id: None });
+        if repository.revision.is_empty() || repository.dirty_manifest.sha256.is_empty() {
+            failures.push(QualificationFailure { code: "missing_source_hash", attempt_id: None });
+        }
+        if !repository.dirty_manifest.entries.is_empty() {
+            failures.push(QualificationFailure { code: "dirty_source", attempt_id: None });
+        }
     }
     if provenance.runner.executable.sha256.is_empty() {
         failures.push(QualificationFailure { code: "missing_binary_hash", attempt_id: None });
+    }
+    if provenance.native_libraries.libcudf_resolved.as_ref().is_none_or(|identity| identity.sha256.is_empty()) {
+        failures.push(QualificationFailure { code: "missing_libcudf_hash", attempt_id: None });
+    }
+    if provenance.native_libraries.libcugraph_resolved.as_ref().is_none_or(|identity| identity.sha256.is_empty()) {
+        failures.push(QualificationFailure { code: "missing_libcugraph_hash", attempt_id: None });
+    }
+    for placement in &measurement.aggregate.placement {
+        if placement.attempts_placed == 0 {
+            continue;
+        }
+        let ordinal = placement.configuration.ordinal;
+        if !measurement
+            .time_series
+            .device_rows
+            .iter()
+            .any(|row| row.device_ordinal == ordinal && row.cuda_free_bytes.is_some() && row.nvml_used_bytes.is_some())
+        {
+            failures.push(QualificationFailure { code: "missing_physical_memory_sample", attempt_id: None });
+        }
+    }
+
+    if measurement.selected_queries.iter().any(|query| query.label == "pagerank_forceatlas2_join") {
+        let composed_attempts = measurement
+            .aggregate
+            .attempts
+            .iter()
+            .filter(|attempt| attempt.query_label == "pagerank_forceatlas2_join")
+            .collect::<Vec<_>>();
+        if composed_attempts.is_empty() || composed_schedules.is_empty() {
+            failures.push(QualificationFailure { code: "missing_composed_schedule", attempt_id: None });
+        }
+        let mut schedules_by_attempt = std::collections::BTreeMap::new();
+        for schedule in composed_schedules {
+            if schedules_by_attempt.insert(schedule.attempt_id.as_str(), schedule).is_some() {
+                failures.push(QualificationFailure {
+                    code: "duplicate_composed_schedule_attempt",
+                    attempt_id: Some(schedule.attempt_id.clone()),
+                });
+            }
+            failures.extend(schedule.failures());
+        }
+        for attempt in composed_attempts {
+            let Some(schedule) = schedules_by_attempt.get(attempt.attempt_id.as_str()) else {
+                failures.push(QualificationFailure {
+                    code: "missing_composed_schedule",
+                    attempt_id: Some(attempt.attempt_id.clone()),
+                });
+                continue;
+            };
+            if attempt.device_ordinal != Some(schedule.selected_ordinal)
+                || attempt.grant_bytes != Some(schedule.grant_bytes)
+                || attempt.grant_id != Some(schedule.grant_id)
+            {
+                failures.push(QualificationFailure {
+                    code: "composed_schedule_attempt_binding_mismatch",
+                    attempt_id: Some(attempt.attempt_id.clone()),
+                });
+            }
+            if !measurement.aggregate.placement.iter().any(|placement| {
+                placement.configuration.ordinal == schedule.selected_ordinal && placement.attempts_placed > 0
+            }) {
+                failures.push(QualificationFailure {
+                    code: "missing_device_witness",
+                    attempt_id: Some(attempt.attempt_id.clone()),
+                });
+            }
+        }
+        for schedule in composed_schedules {
+            if !measurement.aggregate.attempts.iter().any(|attempt| attempt.attempt_id == schedule.attempt_id) {
+                failures.push(QualificationFailure {
+                    code: "composed_schedule_attempt_not_observed",
+                    attempt_id: Some(schedule.attempt_id.clone()),
+                });
+            }
+        }
     }
     if require_overload_outcome
         && !measurement
@@ -793,6 +806,8 @@ pub(super) struct TimeSeriesEvidence {
     /// True when the window required a coarser cadence than the 250 ms base
     /// interval to stay inside bounded retention.
     pub(super) retention_downsampled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) maximum_cuda_nvml_sample_gap: Option<SampleGap>,
     pub(super) device_rows: Vec<DeviceSeriesRow>,
     pub(super) process_rows: Vec<ProcessSeriesRow>,
     pub(super) utilization: Vec<OrdinalUtilizationSummary>,
@@ -1143,6 +1158,7 @@ impl TimeSeriesEvidence {
         Self {
             sample_interval_ns: 0,
             retention_downsampled: false,
+            maximum_cuda_nvml_sample_gap: None,
             device_rows: Vec::new(),
             process_rows: Vec::new(),
             utilization: Vec::new(),

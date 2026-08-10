@@ -16,7 +16,9 @@ use crate::ToolResult;
 
 #[derive(Debug, Serialize)]
 pub(super) struct Provenance {
+    pub(super) process: ProcessIdentity,
     pub(super) repositories: RepositoryProvenanceSet,
+    pub(super) native_libraries: NativeLibraryIdentities,
     pub(super) cuvs_build_inputs: CuvsBuildInputs,
     pub(super) toolchains: ToolchainVersions,
     pub(super) runner: RunnerIdentity,
@@ -29,11 +31,13 @@ impl Provenance {
         let cudf_root = sibling_root.join("cudf-nexus");
         let cugraph_root = sibling_root.join("cugraph-nexus");
         Ok(Self {
+            process: ProcessIdentity::collect()?,
             repositories: RepositoryProvenanceSet {
                 root: RepositoryProvenance::collect("datafusion-nexus", &workspace_root)?,
                 cudf_nexus: RepositoryProvenance::collect("cudf-nexus", &cudf_root)?,
                 cugraph_nexus: RepositoryProvenance::collect("cugraph-nexus", &cugraph_root)?,
             },
+            native_libraries: NativeLibraryIdentities::collect()?,
             cuvs_build_inputs: CuvsBuildInputs::collect()?,
             toolchains: ToolchainVersions::collect()?,
             runner: RunnerIdentity::collect()?,
@@ -69,6 +73,45 @@ impl RepositoryProvenance {
         let revision = git_output(&canonical_path, ["rev-parse", "HEAD"], name)?;
         let dirty_manifest = DirtyManifest::collect(&canonical_path, name)?;
         Ok(Self { name, path: canonical_path.display().to_string(), revision, dirty_manifest })
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct NativeLibraryIdentities {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) libcudf_resolved: Option<FileIdentity>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) libcugraph_resolved: Option<FileIdentity>,
+}
+
+impl NativeLibraryIdentities {
+    fn collect() -> ToolResult<Self> {
+        Ok(Self {
+            libcudf_resolved: loaded_library_identity("libcudf.so")?,
+            libcugraph_resolved: loaded_library_identity("libcugraph.so")?,
+        })
+    }
+}
+
+fn loaded_library_identity(file_name: &str) -> ToolResult<Option<FileIdentity>> {
+    let maps = fs::read_to_string("/proc/self/maps").map_err(|_| "cannot read /proc/self/maps")?;
+    let mut paths = maps
+        .lines()
+        .filter_map(|line| line.split_whitespace().last())
+        .map(Path::new)
+        .filter(|path| {
+            path.file_name().and_then(|name| name.to_str()).is_some_and(|name| {
+                name == file_name || name.strip_prefix(file_name).is_some_and(|suffix| suffix.starts_with('.'))
+            })
+        })
+        .map(fs::canonicalize)
+        .collect::<Result<Vec<_>, _>>()?;
+    paths.sort_unstable();
+    paths.dedup();
+    match paths.as_slice() {
+        [] => Ok(None),
+        [path] => FileIdentity::collect(path, file_name).map(Some),
+        _ => Err(format!("multiple loaded {file_name} identities are mapped").into()),
     }
 }
 
@@ -353,6 +396,34 @@ pub(super) fn required_command_version<const N: usize>(program: &str, args: [&st
 #[derive(Debug, Serialize)]
 pub(super) struct RunnerIdentity {
     pub(super) executable: FileIdentity,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct ProcessIdentity {
+    pub(super) boot_id: String,
+    pub(super) pid: u32,
+    pub(super) process_start_ticks: u64,
+}
+
+impl ProcessIdentity {
+    pub(super) fn collect() -> ToolResult<Self> {
+        let boot_id = fs::read_to_string("/proc/sys/kernel/random/boot_id")
+            .map_err(|_| "cannot read process boot_id")?
+            .trim()
+            .to_string();
+        if boot_id.is_empty() {
+            return Err("process boot_id is empty".into());
+        }
+        let stat = fs::read_to_string("/proc/self/stat").map_err(|_| "cannot read /proc/self/stat")?;
+        let fields = stat.rsplit_once(") ").ok_or("/proc/self/stat has no command boundary")?.1;
+        let process_start_ticks = fields
+            .split_whitespace()
+            .nth(19)
+            .ok_or("/proc/self/stat has no process start ticks")?
+            .parse::<u64>()
+            .map_err(|_| "/proc/self/stat process start ticks are invalid")?;
+        Ok(Self { boot_id, pid: std::process::id(), process_start_ticks })
+    }
 }
 
 impl RunnerIdentity {

@@ -1697,6 +1697,13 @@ fn same_device_clauses(observations: &[AttemptObservation], placement: &[DeviceP
             "no ordinal placed two or more attempts".to_string(),
         )];
     };
+    if busiest.configuration.max_active_attempts < 2 {
+        return vec![clause(
+            "multiple_admitted_attempts_on_one_device",
+            ClauseStatus::NotEvidenced,
+            format!("ordinal {} has serial attempt capacity", busiest.configuration.ordinal),
+        )];
+    }
     let ordinal = busiest.configuration.ordinal;
     let on_device = observations.iter().filter(|attempt| attempt.device_ordinal == Some(ordinal)).collect::<Vec<_>>();
 
@@ -2684,6 +2691,19 @@ mod tests {
         let observations = vec![attempt(0, 0, Some(1), Some(2), 0, 10, 10, SchedulePhase::Measurement)];
         let aggregate =
             MeasuredAggregate::reduce(&observations, &[device(0, 1 << 30, 2)], &occupancy(1), 0, 1_000_000_000);
+        assert_eq!(aggregate.scenarios.same_device.len(), 1);
+        assert_eq!(aggregate.scenarios.same_device[0].status, ClauseStatus::NotEvidenced);
+        assert!(scenario_clauses_pass(&aggregate.scenarios));
+    }
+
+    #[test]
+    fn a_serial_device_profile_leaves_same_device_concurrency_unevidenced() {
+        let observations = vec![
+            attempt(0, 0, Some(1), Some(2), 0, 10, 10, SchedulePhase::Measurement),
+            attempt(1, 0, Some(3), Some(4), 10, 20, 10, SchedulePhase::Measurement),
+        ];
+        let aggregate =
+            MeasuredAggregate::reduce(&observations, &[device(0, 1 << 30, 1)], &occupancy(1), 0, 1_000_000_000);
         assert_eq!(aggregate.scenarios.same_device.len(), 1);
         assert_eq!(aggregate.scenarios.same_device[0].status, ClauseStatus::NotEvidenced);
         assert!(scenario_clauses_pass(&aggregate.scenarios));

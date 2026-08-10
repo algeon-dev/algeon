@@ -786,6 +786,7 @@ async fn run_measured(
         time_series: TimeSeriesEvidence {
             sample_interval_ns: sampler.sample_interval.as_nanos().min(u128::from(u64::MAX)) as u64,
             retention_downsampled: sampler.sample_interval > SAMPLE_INTERVAL,
+            maximum_cuda_nvml_sample_gap: timeseries::maximum_physical_sample_gap(&sampler.device_series),
             utilization: timeseries::utilization_summary(&sampler.device_series),
             drift: timeseries::drift_summary(&sampler.device_series, &sampler.process_series),
             vram_calibration,
@@ -3760,6 +3761,18 @@ fn sample_once(
     let cugraph_bfs_singleflight = cugraph_bfs_singleflight_snapshot(backend);
     let admission = backend.admission_snapshot().ok();
     let backend_metrics = backend.backend_metrics_snapshot();
+    let completed_attempts = BackendAttemptDisposition::ALL
+        .into_iter()
+        .flat_map(|disposition| {
+            BackendAttemptOutcome::ALL
+                .into_iter()
+                .map(move |outcome| backend_metrics.attempts.completed(disposition, outcome))
+        })
+        .fold(0_u64, u64::saturating_add);
+    let successful_native_attempts = [BackendAttemptDisposition::PartialNative, BackendAttemptDisposition::Native]
+        .into_iter()
+        .map(|disposition| backend_metrics.attempts.completed(disposition, BackendAttemptOutcome::Succeeded))
+        .fold(0_u64, u64::saturating_add);
     let observation_pull_ns = observation_started.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
     for ledger in &ledgers {
         let entry = peaks.entry(ledger.device_ordinal).or_insert_with(|| DeviceOccupancyPeaks {
@@ -3795,6 +3808,8 @@ fn sample_once(
         backend_generation: backend_metrics.backend_generation,
         metric_generation: backend_metrics.generation,
         observation_pull_ns,
+        completed_attempts,
+        successful_native_attempts,
     });
     for ledger in &ledgers {
         let ledger_after_telemetry =
@@ -3817,6 +3832,7 @@ fn sample_once(
             cuda_free_bytes: device_telemetry.and_then(|snapshot| snapshot.cuda_free_bytes),
             nvml_used_bytes: device_telemetry.and_then(|snapshot| snapshot.nvml_used_bytes),
             active_attempts: ledger.active_attempts,
+            managed_capacity_bytes: ledger.managed_capacity_bytes,
             live_grants_bytes: ledger.live_grants_bytes,
             live_reserved_bytes: ledger.live_reserved_bytes,
             cache_evictable_resident_bytes: ledger.cache_evictable_resident_bytes,

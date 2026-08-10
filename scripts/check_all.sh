@@ -339,8 +339,29 @@ else
     || usage_error "cannot create a phase log directory under target/check-all."
 fi
 
+repository_gate_identity() {
+  local path=$1
+  local revision
+  local state
+  revision=$(git -C "${path}" rev-parse HEAD 2>/dev/null) || revision=unavailable
+  if [[ -z "$(git -C "${path}" status --porcelain=v1 --untracked-files=all --ignore-submodules=none 2>/dev/null)" ]]; then
+    state=clean
+  else
+    state=dirty
+  fi
+  printf '%s:%s' "${revision}" "${state}"
+}
+
+gate_source_identity() {
+  printf 'root=%s cudf_nexus=%s cugraph_nexus=%s' \
+    "$(repository_gate_identity "${ROOT}")" \
+    "$(repository_gate_identity "${ROOT}/../cudf-nexus")" \
+    "$(repository_gate_identity "${ROOT}/../cugraph-nexus")"
+}
+
 echo "CHECK CONFIG: mode=${mode} lane=${lane} runner=${runner}(${runner_source}) features=${feature_label}(${feature_source}) gpu_profile=${GPU_NEXTEST_PROFILE} gpu_threads=${gpu_threads}(nproc) strict=always(${strict_source})"
 echo "PHASE LOG DIRECTORY: ${PHASE_LOG_DIR}"
+echo "CHECK SOURCE START: $(gate_source_identity)"
 if [[ "${mode}" != full ]]; then
   echo "PARTIAL SURFACE: mode=${mode} lane=${lane}; this does not satisfy full pre-merge validation."
 fi
@@ -1018,6 +1039,7 @@ print_phase_table() {
 
 print_phase_table
 echo
+echo "CHECK SOURCE END: $(gate_source_identity)"
 [[ -z "${gpu_scheduling_summary}" ]] || echo "GPU scheduling final: ${gpu_scheduling_summary}"
 [[ "${mode}" != full ]] || echo "Doctest accounting final: ${doctest_summary}"
 [[ "${mode}" != full ]] || echo "Rustdoc final: ${rustdoc_summary}"
