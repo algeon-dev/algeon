@@ -1,7 +1,7 @@
 use super::{env::EnvValues, *};
 
-/// Enables registration of cuGraph SQL functions. Must be `true` before any
-/// other cuGraph server setting is accepted. A feature-off server still
+/// Enables registration of cuGraph SQL functions. Defaults to `true`; set it
+/// to `false` to hide the SQL frontend. A feature-off server still
 /// registers the public SQL frontend when enabled, but execution then returns
 /// its structured `required_feature_disabled` capability error.
 pub const NEXUS_SERVER_CUGRAPH_ENABLED_ENV: &str = "NEXUS_SERVER_CUGRAPH_ENABLED";
@@ -26,8 +26,8 @@ pub(super) fn cugraph_config(values: &mut EnvValues<'_>) -> Result<Option<Cugrap
         NEXUS_SERVER_CUGRAPH_RENUMBER_ENV,
         NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV,
     ]);
-    let enabled = values.optional_bool(NEXUS_SERVER_CUGRAPH_ENABLED_ENV)?;
-    if enabled != Some(true) {
+    let enabled = values.optional_bool(NEXUS_SERVER_CUGRAPH_ENABLED_ENV)?.unwrap_or(true);
+    if !enabled {
         if requested {
             return Err(ServerError::invalid_config(
                 NEXUS_SERVER_CUGRAPH_ENABLED_ENV,

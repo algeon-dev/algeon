@@ -17,7 +17,7 @@ validating a production query with
 
 | Area | Native forms |
 | --- | --- |
-| Sources | Local Parquet and resolved Iceberg Parquet data files; projected columns, row-group selection, partition columns, reader predicates, scan limits, and position deletes when their contracts are supported. |
+| Sources | Local and S3 object-store Parquet, plus resolved Iceberg Parquet data files; projected columns, row-group selection, partition columns, reader predicates, scan limits, and position deletes when their contracts are supported. |
 | Row operations | Filters, projections, stable or unstable sorts, `LIMIT`/`OFFSET`, and schema-compatible `UNION ALL`. |
 | Aggregation | Global and grouped aggregation, admitted grouping sets, aggregate filters, and partial/final state when the state is explicitly modeled. |
 | Windows | `rank`, `row_number`, `lag`, `lead`, whole-partition aggregate windows, and cumulative `sum`/`min`/`max` over `ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW`. `rank`, `lag`, and `lead` require `ORDER BY`; `row_number` does not. |

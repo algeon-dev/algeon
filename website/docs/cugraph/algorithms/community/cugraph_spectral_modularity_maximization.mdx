@@ -1,7 +1,7 @@
 ---
 title: Spectral Modularity Maximization
 sidebar_label: Spectral Modularity Maximization
-description: "Cluster vertices with spectral modularity maximization."
+description: "Partition vertices by embedding the graph with leading modularity eigenvectors and clustering that embedding with k-means."
 ---
 
 {/* GENERATED FROM the unified GPU function catalog by website/scripts/gen-cugraph-docs.mjs. Do not edit by hand. */}
@@ -10,11 +10,9 @@ description: "Cluster vertices with spectral modularity maximization."
 
 SQL function: `cugraph_spectral_modularity_maximization`
 
-Cluster vertices with spectral modularity maximization.
+Official cuGraph reference: [C API](https://docs.nvidia.com/cugraph/26.08/api_docs/cugraph_c/community/#spectral-clustering-modularity-maximization)
 
-## Use this when
-
-Use this when a SQL statement needs Spectral Modularity Maximization results over a registered edge relation.
+Partition vertices by embedding the graph with leading modularity eigenvectors and clustering that embedding with k-means.
 
 ## Signature
 
@@ -22,28 +20,18 @@ Use this when a SQL statement needs Spectral Modularity Maximization results ove
 cugraph_spectral_modularity_maximization(table_name [, src_col, dst_col [, weight_col [, options_json]]])
 ```
 
-## Quickstart
-
-```sql
-SELECT * FROM cugraph_spectral_modularity_maximization('target_edges')
-```
-
 ## Relation inputs
 
-cuGraph consumes a registered edge table or view by its first positional name. It does not accept a parenthesized relation subquery. Metadata validation uses the same registered name.
-
-| Role | Required | Reference | Description |
-| --- | --- | --- | --- |
-| `edges` | yes | `table` | Required edge-list table or view for graph construction. |
+The first positional argument names a registered edge table or view (the `edges` role). Parenthesized relation subqueries are not accepted; metadata validation uses the same registered name.
 
 ## Scalar arguments & JSON options
 
 ### Positional scalar arguments
 
+`src_col` and `dst_col` name the edge endpoint columns; both are optional and default to `src` and `dst`.
+
 | Argument | Type | Required | Default | Notes |
 | --- | --- | --- | --- | --- |
-| `src_col` | `Utf8` | no | `src` |  |
-| `dst_col` | `Utf8` | no | `dst` |  |
 | `weight_col` | `Utf8\|null` | no |  | accepted as an edge-column binding; native algorithm execution does not consume weights; semantic effect: none for this algorithm |
 
 ### JSON options
@@ -60,13 +48,7 @@ cuGraph consumes a registered edge table or view by its first positional name. I
 
 ### Graph construction options
 
-Shared by all cuGraph functions, shown with this function's defaults. See [Graph Construction Options](../../graph-options.mdx) for the construction-policy guide.
-
-| Option | Type | Default | Constraints | Description |
-| --- | --- | --- | --- | --- |
-| `construction_policy` | `Utf8` | `"python_cugraph"` | one of `"python_cugraph"`, `"raw_libcugraph"` | Edge-list construction semantics used before calling libcugraph. |
-| `directed` | `Boolean` | `false` |  | Whether graph construction treats edges as directed. |
-| `renumber` | `Boolean` | `true` |  | Whether graph construction may renumber external vertex identifiers internally. |
+This function builds an undirected graph by default (`directed=false`); all other graph construction options follow the shared defaults documented in [Graph Construction Options](../../graph-options.mdx).
 
 ## Output schema
 
@@ -75,7 +57,7 @@ Shared by all cuGraph functions, shown with this function's defaults. See [Graph
 | `vertex` | `Int64` | no | Vertex assigned to a spectral clustering partition. |
 | `partition` | `Int64` | no | Cluster identifier assigned by spectral modularity maximization. |
 
-**Concrete schemas are call-specific.** These are generic descriptor schemas. Run [`gpu_validate_call`](../../../reference/gpu-function-catalog.mdx#gpu_validate_callfunction_name-call_json) for a concrete, table-specific output schema.
+These are generic descriptor schemas; [validate the call](#validate-before-running) to get the concrete, table-specific output schema.
 
 ## Examples
 
@@ -85,14 +67,12 @@ import Examples from '../../_examples/cugraph_spectral_modularity_maximization.m
 
 ## Limitations & lifecycle
 
-- dry-run validates table resolution, column presence, static dtypes, and options only
-- dry-run does not scan edge data, construct a graph, or prove source-vertex existence
 - cuGraph C API edge-type dispatch requires Int32 source and destination vertex columns
 - cuGraph requires directed=false so the graph is constructed as an undirected/symmetric view
 
 ## Validate before running
 
-Validation checks registered relation metadata, bindings, dtypes, and options without scanning rows or touching the GPU:
+Dry-run validation checks registered relation metadata, column presence, static dtypes, and options only; it does not scan edge data, construct a graph, or prove source-vertex existence:
 
 ```sql
 SELECT * FROM gpu_validate_call(

@@ -1,176 +1,174 @@
 ---
 sidebar_position: 1
 slug: /design/native-lowering
-description: "How DataFusion Nexus lowers supported physical plans to native cuDF execution: candidate selection, final-plan requirements, session wiring, and plan-shape admission evidence."
+description: "How a completed DataFusion physical plan becomes native QueryPlan IR, keeps its CPU baseline, and crosses into GPU execution."
 ---
-
-import {SystemDiagram} from '@site/src/components/design/Diagram';
 
 # Native Lowering & Final Plans
 
-This page covers the *plan-time* native boundary: how a DataFusion physical
-plan candidate becomes a native `QueryPlan`, what happens when it is not
-selected, and what evidence every decision leaves behind. Process-wide runtime admission
-— immutable device grants, per-device attempt bounds, and device-memory governance — is a separate
-contract described in [Admission & Memory Governance](./admission.mdx). The
-architecture overview and layering rules live on the [Design](./index.mdx)
-page.
+Native lowering is the adapter between DataFusion's open `ExecutionPlan` tree
+and the query engine's closed, DataFusion-free `QueryPlan` IR. It runs after
+DataFusion has chosen physical operators, so lowering consumes decisions such
+as aggregate mode, join shape, scan pushdown, partitioning, and output order
+instead of replanning them.
 
-## Relational acceleration path
+To DataFusion, all of this is ordinary machinery: three `PhysicalOptimizerRule`s
+and, when selection succeeds, an `ExecutionPlan` wrapper node in the completed
+plan.
 
-Relational selection is whole-plan: Nexus evaluates one completed relational
-physical candidate, selects it as a native replacement when its contract is
-supported, or preserves the executable DataFusion baseline. It does not
-recursively extract arbitrary relational subtrees into a new CPU/GPU plan.
-That timing is deliberate: the physical plan already encodes aggregate mode,
-partitioning, projection pushdown, join shape, sort requirements, and file scan
-facts. Starting from a logical plan would duplicate DataFusion's physical
-planner inside the adapter. cuGraph operations are separate, explicit GPU
-islands with their own required boundary.
+The planning path is:
 
-<SystemDiagram
-  ariaLabel="Relational native execution path"
-  lanes={[
-    {id: 'host', label: 'host'},
-    {id: 'gpu', label: 'gpu', tone: 'gpu'},
-  ]}
-  nodes={[
-    {
-      id: 'df', lane: 'host', col: 0,
-      kind: 'upstream', name: 'DataFusion', note: 'SQL -> physical plan', tone: 'plan',
-      sub: 'datafusion',
-      detail: <>DataFusion owns SQL, logical and physical planning, catalogs,
-        and the CPU operators. Nexus participates through session wiring, not
-        by replacing the frontend.</>,
-    },
-    {
-      id: 'rule', lane: 'host', col: 1,
-      kind: 'adapter', name: 'native rewrite', note: ['datafusion_nexus_native', 'PlanningReport'], tone: 'engine',
-      sub: 'src/session.rs · src/planner/native.rs · src/native/',
-      detail: <>The final native rewrite rule is the relational decision point.
-        It normalizes and validates an exact relational physical candidate,
-        lowers a selected whole candidate with
-        <code>lower_physical_plan_to_native</code>, and
-        records every <code>Selected</code>, <code>NotSupported</code>, or
-        <code>NotSelectedByCost</code> outcome in a <code>PlanningReport</code>.
-        Session wiring also installs a count-only
-        probe and the final-plan requirement rule around this rule.</>,
-    },
-    {
-      id: 'native', lane: 'gpu', col: 2,
-      kind: 'engine', name: 'NexusNativeExec', note: 'QueryPlan on cuDF', tone: 'gpu',
-      sub: 'src/native_exec/ · crates/nexus-query-engine',
-      detail: <>DataFusion sees a normal <code>ExecutionPlan</code> wrapper.
-        Inside it is an engine-owned <code>QueryPlan</code>. Host Arrow batches
-        cross to cuDF at the boundary, the native plan runs through
-        <code>nexus-query-engine</code>, and results return as host Arrow
-        batches. Explicit GPU islands can also consume an eligible
-        device-resident input and return host Arrow to downstream DataFusion
-        operators.</>,
-    },
-    {
-      id: 'cpu', lane: 'host', col: 2,
-      kind: 'baseline', name: 'DataFusion baseline', note: 'structured candidate outcome', tone: 'plan',
-      sub: 'stock DataFusion execution',
-      detail: <>A relational candidate that is not selected keeps its original
-        executable DataFusion operators. The unified Iceberg scan delegates to its
-        executable CPU Arrow plan when native inspection does not support
-        acceleration. <code>CapabilityReason</code> identifies unsupported
-        operator, expression, type, source, or plan-shape contracts;
-        native-capable candidates declined by a preference rule report a
-        separate cost reason and evidence.</>,
-    },
-    {
-      id: 'out', lane: 'host', col: 3,
-      kind: 'output', name: 'Arrow stream', note: 'same caller contract', tone: 'plain',
-      sub: 'arrow::RecordBatch',
-      detail: <>Both paths produce ordinary Arrow <code>RecordBatch</code>es
-        at the DataFusion boundary. A caller using DataFusion or Flight SQL
-        should not need a different API because a whole relational candidate or
-        explicit GPU island ran on the GPU.</>,
-    },
-  ]}
-  edges={[
-    {from: 'df', to: 'rule'},
-    {from: 'rule', to: 'native', label: 'selected'},
-    {from: 'rule', to: 'cpu', label: 'baseline retained', dashed: true},
-    {from: 'native', to: 'out'},
-    {from: 'cpu', to: 'out'},
-  ]}
-  caption={<>The GPU path is a reported rewrite of a supported whole relational
-  candidate. Non-selection preserves the executable DataFusion baseline,
-  including the CPU delegate held by a unified Iceberg scan.</>}
-/>
+~~~text
+DataFusion ExecutionPlan
+  -> normalize and validate the completed physical shape
+  -> lower one supported candidate to QueryPlan
+  -> optimize IR, apply cost selection, and check execution capability
+  -> NexusNativeExec or NexusNativeComposedExec
+  -> capability proof and, when needed, a QueryAdmissionTicket
+~~~
 
-:::warning[Runtime failures do not replay]
-Candidate selection is a planning-time boundary. If a relational candidate is
-not selected, DataFusion keeps its executable baseline. An Iceberg candidate
-that is not selected keeps the same wrapper's executable CPU delegate. Once
-native execution or an explicit GPU island starts, runtime failures surface as
-structured errors and metrics; Nexus does not replay that already-started work
-on CPU.
-:::
-
-## Baseline preservation and final-plan requirements
-
-Installing the native optimizer preserves the executable DataFusion baseline.
-`NotSupported` and `NotSelectedByCost` are candidate outcomes, not planning
-errors. Iceberg scans follow the same rule through their executable CPU
-delegate. A caller that requires a DataFusion-CPU-free final plan configures a
-final-plan requirement such as `NoDataFusionCpu`. Nexus plans once, classifies that exact
-completed plan as `DataFusion`, `Native`, or `Mixed`, then either executes it
-or returns terminal `Rejected` when the requirement is not satisfied.
+Runtime admission and device-memory accounting begin later. See
+[Admission & Memory Governance](./admission.mdx).
 
 ## Session wiring
 
-`with_nexus_native` installs three physical optimizer hooks. Only the final
-rewrite is the public relational decision point, but the surrounding hooks are
-part of the operable design.
+`with_nexus_native` installs three physical optimizer rules around DataFusion's
+own rules:
 
-| Hook | Position | Why it exists |
+| Rule | Position | Responsibility |
 | --- | --- | --- |
-| `datafusion_nexus_native_count_only` | Before DataFusion `aggregate_statistics` | Detect count-only shapes before DataFusion's statistics shortcut hides the native candidate. |
-| `datafusion_nexus_native` | After DataFusion's default rules | Run final whole-plan relational candidate selection, lowering, and report capture while DataFusion can still validate the rewritten tree. |
-| `datafusion_nexus_final_plan_requirement` | After native lowering, before `SanityCheckPlan` | Enforce the configured final plan disposition without treating an executable Iceberg wrapper as a non-executable leaf. |
+| `datafusion_nexus_native_count_only` | Before `aggregate_statistics` | Capture safe zero-column count shapes before DataFusion replaces them with statistics. |
+| `datafusion_nexus_native` | After the other physical optimizer rules | Make the final native selection and retain its structured diagnostics. This public name is also the deduplication key. |
+| `datafusion_nexus_final_plan_requirement` | After native selection, before `SanityCheckPlan` | Enforce optional requirements against the exact completed plan. |
 
-:::warning[Public optimizer rule name]
-The public rule name `datafusion_nexus_native` is also the deduplication key.
-Do not rename it casually.
-:::
+The entry points are `src/session.rs` for rule ordering and
+`NexusNativePhysicalOptimizerRule::optimize` in `src/planner/native.rs` for the
+rewrite. The rule is idempotent: an admission wrapper, `NexusNativeExec`,
+`NexusNativeComposedExec`, or a
+[certified mixed plan](#selection-fallback-and-mixed-execution) is not lowered
+again.
 
-## Plan-shape admission and execution evidence
+## Lowering pipeline
 
-Plan-shape admission decides whether a candidate lowers natively at all. It has
-two layers. The adapter first normalizes and validates DataFusion physical
-shapes, expressions, Arrow types, sources, and lowering contracts. Once that
-produces a DataFusion-free `QueryPlan`, engine-side capability analysis does
-capability-first admission for bounded and compiled execution. A native IR
-candidate is not admitted because it matches a broad query family; it is
-admitted because the required node, edge, invariant, and reservation contracts
-are locally supported.
+### 1. Recognize a physical candidate
 
-| Boundary | Code | Evidence developers should assert |
-| --- | --- | --- |
-| Adapter candidate selection | `src/native/normalize.rs`, `src/native/validate.rs`, `src/native/lowering/` | `PlanningReport` rows with `CandidateOutcome::Selected`, `NotSupported { capability_reason }`, or `NotSelectedByCost { cost_reason, evidence }`. |
-| Engine capability analysis | `crates/nexus-query-engine/src/capability/entry.rs` | Per-node, edge, invariant, aggregate-strategy, and envelope-admission decisions. |
-| Bounded controller execution | `crates/nexus-query-engine/src/runtime/query_service/`, `exec/bounded/` | Capability-first admission, a per-device immutable grant, and reservation evidence. |
-| Runtime execution | `execute_query_plan` / `execute_query_plan_with_gpu_inputs` | `QueryMetrics`, DataFusion metrics, and native TSV reports, not printed plans. |
+`src/native/normalize.rs` removes only known transparent wrappers and builds a
+`NormalizedNativePlan` for an exact supported shape. Operator, expression,
+type, source, and ordering checks stay in `src/native/validate.rs`,
+`src/native/expression_contract/`, and the source-specific lowering code.
 
-Adapter-side `NexusNativeExecutionConfig` stores the DataFusion-facing knobs and
-builds the native `ExecutionContext` at the DataFusion/native boundary. The
-engine context then owns execution-time memory control, boundary policy,
-reservation, source scheduling, retry evidence, and any enabled resident-cache
-capacity. Resident-cache capacity is an explicit per-device ledger allocation,
-not a query-level execution option.
+Normalization is deliberately narrower than DataFusion's plan model. A miss
+returns a stable `CapabilityReason`; it does not guess at an equivalent plan.
 
-:::warning[One bounded-controller evidence model]
-There is one capability-first bounded controller. Native reports expose its
-concrete `capability_contract_rows` and `capability_compiled_graphs` evidence;
-deleted adaptive row/counter families are not emitted. Do not add a second
-decision path or treat an unsupported capability as an adapter-side estimate;
-unresolved GPU capability gaps belong in `cudf-nexus` / `libcudf`.
-:::
+### 2. Build engine-owned IR
 
-Aggregates follow the same rule: state must be explicit in the engine. AVG is
-partial `SUM + COUNT`, final merge, then final projection; unsupported lookalikes
-stay on the DataFusion baseline until their state semantics are modeled and tested.
+`src/native/lowering/` recursively translates the normalized tree with
+`QueryPlanBuilder`. The result is an append-only DAG of engine `PlanNode`s with
+an explicit `ResultSink`. The host sink preserves the DataFusion output schema,
+including schema metadata.
+
+Declared ordering is part of the replacement contract. Lowering must prove the
+native plan reproduces it or append a supported native sort. Otherwise the
+candidate remains on DataFusion with `NativeOrderedOutputUnsupported`.
+
+### 3. Select an executable native plan
+
+`replace_lowered_root_or_keep_plan` in `src/planner/native/attempt.rs` accepts
+only one lowered plan with one selected candidate. It then:
+
+1. runs `nexus_query_engine::optimizer::optimize_query_plan`;
+2. rechecks declared output ordering;
+3. applies the engine-owned native cost decision; and
+4. builds capability diagnostics and rejects unsupported bounded execution
+   before creating a wrapper.
+
+Every non-selection returns the original executable DataFusion plan. A
+native-capable plan declined by cost is distinct from an unsupported plan.
+
+### 4. Choose the DataFusion wrapper
+
+A `QueryPlan` with ordinary sources becomes `NexusNativeExec`. A plan that
+references named GPU-resident sources becomes `NexusNativeComposedExec`, whose
+children are explicit GPU producers. The composed wrapper validates that the
+required and provided input names match exactly; this is GPU-to-GPU
+composition, not arbitrary relational fragment extraction.
+
+The planner derives opaque `QueryPlanCapabilityProof`s for the selected
+fragments. When planner-side admission authority is present, it combines them
+into one ticket whose device and grant acquisition waits until execution.
+Existing service handles do not need another ticket, and graph roots may defer
+ticket creation until source metadata needed by the exact proof is available.
+
+## Selection, fallback, and mixed execution
+
+`PlanningReport` is the public planning evidence. Assert its structured
+outcomes rather than formatted plan text:
+
+| Outcome | Meaning |
+| --- | --- |
+| `Selected` | The candidate became native IR and passed final selection. |
+| `NotSupported` | A `CapabilityReason` identifies the unsupported semantic, source, ordering, or execution contract. |
+| `NotSelectedByCost` | The candidate is supported, but the native cost decision retained DataFusion and records its evidence. |
+
+The installed rule instance retains only its most recent completed lowering
+attempt and exposes it through `last_planning_diagnostics`. The bundle pairs
+the report with native optimizer, source, and capability evidence; it is
+diagnostic state, not a planning history.
+
+Relational selection is whole-candidate by default. There is one narrow mixed
+exception in `src/planner/native/mixed.rs`: when whole-plan lowering misses on
+an unsupported expression, Nexus may certify a final CPU `ILIKE` filter over a
+single local-Parquet source and replace only that source with a native
+host-output leaf. The certificate checks the exact shape, source, schema, and
+physical properties, then rebuilds the CPU filter from the new child. Do not
+generalize this into a subtree extractor; a new mixed boundary needs its own
+complete property and ownership proof.
+
+## Native execution boundary
+
+`NexusNativeExec` and `NexusNativeComposedExec` are ordinary DataFusion
+`ExecutionPlan`s with one bounded output partition. At execution they acquire
+the admitted native context, run the engine's observed execution entry point,
+and expose Arrow `RecordBatch`es to the caller. The composed form first turns
+its producer results into the `GpuResidentInputMap` consumed by the native
+plan, avoiding an intermediate host materialization.
+
+The runtime observation snapshot is the source for engine `QueryMetrics`,
+DataFusion metrics, and native report projections. Once native execution has
+started, a failure is returned as a structured error; the query is not replayed
+through the retained CPU plan.
+
+## Baseline preservation and final-plan requirements
+
+`NotSupported` and `NotSelectedByCost` are planning outcomes, not errors. The
+original DataFusion plan remains executable unless the caller configured a
+completed-plan requirement.
+
+`classify_final_plan` walks the exact result and reports `DataFusion`, `Native`,
+or `Mixed`. `FinalPlanRequirement::NoDataFusionCpu` rejects a completed plan
+that would execute DataFusion CPU operators. A feature-disabled cuGraph
+terminal is exempt because it executes neither CPU nor GPU work. An
+unsatisfied requirement returns `FinalPlanRequirementUnsatisfied`; `Rejected`
+is the terminal planning outcome, not another physical node.
+
+## Extending native lowering
+
+Keep changes at the owner of the missing contract:
+
+| Change | Extend |
+| --- | --- |
+| Recognize another DataFusion physical shape | `src/native/normalize.rs`, `src/native/validate.rs`, and the existing module in `src/native/lowering/` |
+| Add or change native IR semantics | `crates/nexus-query-engine/src/plan/`, then its optimizer, capability, and execution owners |
+| Add an explicit GPU producer or graph island | The existing `GpuResidentProducer` or `GraphExecutionPlan` boundary in `src/native_exec/`, then compose through the current wrappers |
+| Add a missing cuDF or cuGraph primitive | `cudf-nexus` or `cugraph-nexus`; do not emulate it in the DataFusion adapter |
+| Change selection evidence | `src/report.rs`, `src/capability.rs`, and the existing public report projections and contract tests |
+
+Extend `tests/native_planning/lowering.rs` for lowering and report behavior,
+`tests/native_exec_tests.rs` for selection, fallback, mixed, and wrapper
+contracts, and the engine's `native_contract_tests` for DataFusion-independent
+behavior. A useful focused loop is:
+
+~~~bash
+cargo nextest run -p datafusion-nexus --all-features --test native_planning_tests
+cargo nextest run -p nexus-query-engine --all-features --test native_contract_tests
+~~~

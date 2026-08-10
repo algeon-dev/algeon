@@ -1,5 +1,5 @@
 ---
-sidebar_position: 3.5
+sidebar_position: 6
 sidebar_label: GPU Coverage Validation
 description: Inspect the exact planned GPU and DataFusion execution domains for one SQL query before execution.
 ---
@@ -81,9 +81,10 @@ It is not inferred from whether an optimizer attempted a native rewrite.
 | `datafusion` | `cpu` | The executable plan has no selected GPU runtime node. |
 | `rejected` | `rejected` | Planning returned no executable plan. |
 
-`rejected` includes the phase, stable `reason_code`, retryability, and safe
-detail in `coverage_json`. Terminal source-resolution failures, an unsupported
-required GPU island, and a failed final-plan requirement are planning errors.
+`rejected` includes the phase, stable `reason_code`, retry-advice
+availability, and safe detail in `coverage_json`. Terminal source-resolution
+failures, an unsupported required GPU island, and a failed final-plan
+requirement are planning errors.
 By contrast, an ordinary relational capability miss is not an error: the same
 query remains executable on the DataFusion baseline and normally has final
 disposition `datafusion`.
@@ -162,8 +163,10 @@ match coverage.final_disposition {
         }
     }
     FinalPlanDisposition::Rejected => {
-        if let QueryGpuCoverageOverall::Rejected { phase, reason_code, retryable, detail } = &coverage.overall {
-            eprintln!("{} {reason_code} retryable={retryable}: {detail}", phase.as_str());
+        if let QueryGpuCoverageOverall::Rejected { phase, reason_code, detail, .. } =
+            &coverage.overall
+        {
+            eprintln!("{} {reason_code}: {detail}", phase.as_str());
         }
     }
 }

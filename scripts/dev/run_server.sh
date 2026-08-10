@@ -8,8 +8,9 @@
 # The release binary must already be built. Either artifact flavor works:
 #   cargo build --release -p nexus-server --features iceberg,nvml --bin datafusion_nexus_server
 #   cargo build --release -p nexus-server --features iceberg,cugraph,cuvs,nvml --bin datafusion_nexus_server
-# The cuGraph SQL UDTFs stay disabled unless NEXUS_SERVER_CUGRAPH_ENABLED=true
-# is exported before calling this script (requires the cugraph build).
+# The cuGraph SQL frontend is enabled by default. Set
+# NEXUS_SERVER_CUGRAPH_ENABLED=false to hide it; execution requires the
+# cugraph build.
 #
 # AWS credentials (short-lived STS tokens) must be in the host environment:
 #   export AWS_ACCESS_KEY_ID=...
@@ -44,16 +45,14 @@ export NEXUS_SERVER_LOG="${NEXUS_SERVER_LOG:-info}"
 # ---------------------------------------------------------------------------
 # cuGraph SQL DSL
 #
-# NEXUS_SERVER_CUGRAPH_ENABLED              true | false (unset = disabled)
+# NEXUS_SERVER_CUGRAPH_ENABLED              true | false (unset = enabled)
 # NEXUS_SERVER_CUGRAPH_DIRECTED             default graph direction
 # NEXUS_SERVER_CUGRAPH_RENUMBER             default cuGraph renumber flag
 # NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY  python_cugraph | raw_libcugraph
 #
-# No default is exported here: unset is valid for every artifact flavor (a
-# cugraph build keeps the SQL UDTFs disabled; a no-cugraph build rejects any
-# cuGraph env except an explicit `false`). To expose the UDTFs, export
-# NEXUS_SERVER_CUGRAPH_ENABLED=true before calling this script — that requires
-# a binary built with the `cugraph` feature.
+# No default is exported here: the server configuration defaults to enabled.
+# Set NEXUS_SERVER_CUGRAPH_ENABLED=false before calling this script to hide the
+# frontend.
 # ---------------------------------------------------------------------------
 # export NEXUS_SERVER_CUGRAPH_ENABLED=true
 # export NEXUS_SERVER_CUGRAPH_DIRECTED=true

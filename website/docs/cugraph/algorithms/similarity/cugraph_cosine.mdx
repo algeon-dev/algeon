@@ -1,7 +1,7 @@
 ---
 title: Cosine
 sidebar_label: Cosine
-description: "Compute cosine similarity coefficients for explicit candidate vertex pairs."
+description: "Compare the neighbor vectors of explicit vertex pairs using cosine similarity, with optional edge-weight contributions."
 ---
 
 {/* GENERATED FROM the unified GPU function catalog by website/scripts/gen-cugraph-docs.mjs. Do not edit by hand. */}
@@ -10,11 +10,9 @@ description: "Compute cosine similarity coefficients for explicit candidate vert
 
 SQL function: `cugraph_cosine`
 
-Compute cosine similarity coefficients for explicit candidate vertex pairs.
+Official cuGraph reference: [Python API](https://docs.nvidia.com/cugraph/26.08/api_docs/api/cugraph/cugraph.link_prediction.cosine/)
 
-## Use this when
-
-Use this when a SQL statement needs Cosine results over a registered edge relation.
+Compare the neighbor vectors of explicit vertex pairs using cosine similarity, with optional edge-weight contributions.
 
 ## Signature
 
@@ -22,28 +20,18 @@ Use this when a SQL statement needs Cosine results over a registered edge relati
 cugraph_cosine(table_name, src_col, dst_col, weight_col, options_json)
 ```
 
-## Quickstart
-
-```sql
-SELECT * FROM cugraph_cosine('target_edges', 'src', 'dst', NULL, '{"vertex_pairs_table":"candidate_pairs","first_vertex_col":"first","second_vertex_col":"second"}')
-```
-
 ## Relation inputs
 
-cuGraph consumes a registered edge table or view by its first positional name. It does not accept a parenthesized relation subquery. Metadata validation uses the same registered name.
-
-| Role | Required | Reference | Description |
-| --- | --- | --- | --- |
-| `edges` | yes | `table` | Required edge-list table or view for graph construction. |
+The first positional argument names a registered edge table or view (the `edges` role). Parenthesized relation subqueries are not accepted; metadata validation uses the same registered name.
 
 ## Scalar arguments & JSON options
 
 ### Positional scalar arguments
 
+`src_col` and `dst_col` name the edge endpoint columns; both are optional and default to `src` and `dst`.
+
 | Argument | Type | Required | Default | Notes |
 | --- | --- | --- | --- | --- |
-| `src_col` | `Utf8` | no | `src` |  |
-| `dst_col` | `Utf8` | no | `dst` |  |
 | `weight_col` | `Utf8\|null` | no |  | optional edge weight column for graph construction when supported by the algorithm; semantic effect: edge weights affect algorithm results when provided |
 
 ### JSON options
@@ -56,13 +44,7 @@ cuGraph consumes a registered edge table or view by its first positional name. I
 
 ### Graph construction options
 
-Shared by all cuGraph functions, shown with this function's defaults. See [Graph Construction Options](../../graph-options.mdx) for the construction-policy guide.
-
-| Option | Type | Default | Constraints | Description |
-| --- | --- | --- | --- | --- |
-| `construction_policy` | `Utf8` | `"python_cugraph"` | one of `"python_cugraph"`, `"raw_libcugraph"` | Edge-list construction semantics used before calling libcugraph. |
-| `directed` | `Boolean` | `false` | one of `false`; valid when required false: similarity operates on an undirected/symmetric graph | Whether graph construction treats edges as directed. |
-| `renumber` | `Boolean` | `true` |  | Whether graph construction may renumber external vertex identifiers internally. |
+This function requires `directed=false` (undirected/symmetric graph); all other graph construction options follow the shared defaults documented in [Graph Construction Options](../../graph-options.mdx).
 
 ## Output schema
 
@@ -72,7 +54,7 @@ Shared by all cuGraph functions, shown with this function's defaults. See [Graph
 | `second` | `Int64` | no | Second vertex from the explicit candidate-pair relation. |
 | `similarity` | `Float64` | no | Similarity coefficient for the explicit candidate pair. |
 
-**Concrete schemas are call-specific.** These are generic descriptor schemas. Run [`gpu_validate_call`](../../../reference/gpu-function-catalog.mdx#gpu_validate_callfunction_name-call_json) for a concrete, table-specific output schema.
+These are generic descriptor schemas; [validate the call](#validate-before-running) to get the concrete, table-specific output schema.
 
 ## Examples
 
@@ -82,8 +64,6 @@ import Examples from '../../_examples/cugraph_cosine.mdx';
 
 ## Limitations & lifecycle
 
-- dry-run validates table resolution, column presence, static dtypes, and options only
-- dry-run does not scan edge data, construct a graph, or prove source-vertex existence
 - similarity is explicit-pair only; all-pairs candidate generation and all-pairs top-k search are not exposed
 - options_json must name vertex_pairs_table, first_vertex_col, and second_vertex_col
 - candidate-pair columns must share the same Int32 or Int64 dtype and match the graph vertex domain
@@ -95,7 +75,7 @@ import Examples from '../../_examples/cugraph_cosine.mdx';
 
 ## Validate before running
 
-Validation checks registered relation metadata, bindings, dtypes, and options without scanning rows or touching the GPU:
+Dry-run validation checks registered relation metadata, column presence, static dtypes, and options only; it does not scan edge data, construct a graph, or prove source-vertex existence:
 
 ```sql
 SELECT * FROM gpu_validate_call(

@@ -177,10 +177,8 @@ fn captured_specs_and_generated_reference_pages_match_the_canonical_registry() {
         );
         assert!(page.contains(&format!("# {}", descriptor.display_name)), "{}", page_path.display());
         assert!(page.contains(&format!("SQL function: `{}`", descriptor.sql_function_name)), "{}", page_path.display());
-        assert!(page.contains(descriptor.use_this_when), "{}", page_path.display());
         assert!(page.contains(descriptor.quickstart_sql), "{}", page_path.display());
         let headings = [
-            "## Use this when",
             "## Signature",
             "## Quickstart",
             "## Relation inputs",

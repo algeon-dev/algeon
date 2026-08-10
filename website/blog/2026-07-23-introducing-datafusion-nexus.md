@@ -1,5 +1,5 @@
 ---
-title: "Introducing DataFusion Nexus: Bringing the GPU into the Query Engine"
+title: "DataFusion Nexus: Specialized GPU Algorithms, Now in SQL"
 description: Why we built a GPU query engine on top of Apache DataFusion — the problems it solves, the design principles behind it, and where it stands today.
 slug: introducing-datafusion-nexus
 tags: [announcement]

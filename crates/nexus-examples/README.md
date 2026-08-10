@@ -233,6 +233,22 @@ server did not see `NEXUS_ICEBERG_CATALOG_KIND=rest`.
 > `--features cuvs` registers the `cuvs_*` table functions so discovery and
 > planning surfaces can list them.
 
+### Pipelines
+
+The example exposes these predefined, parameter-validated GPU pipelines:
+
+| Pipeline | Capability |
+| --- | --- |
+| `sql_aggregate_topk` | Filter, sort, and limit over `papers`. |
+| `sql_join_facets` | Join `paper_fos` to `papers`, then group and aggregate. |
+| `graph_pagerank_topk` | Run `cugraph_pagerank`, join vertices back to papers, and return top scores. |
+| `graph_bfs_hops` | Run `cugraph_bfs`, join vertices back to papers, and aggregate by hop distance. |
+
+`GET /api/pipelines/{name}/plan` returns the structured `PlanningReport` JSON
+for that pipeline's default parameters. Use a `Selected` outcome as native
+execution evidence; `NotSupported` and `NotSelectedByCost` retain the reason
+for a non-native choice. Do not depend on printed physical plans.
+
 ### REST examples
 
 ```bash
@@ -259,6 +275,8 @@ curl http://127.0.0.1:8080/api/pipelines/sql_aggregate_topk/plan
 curl http://127.0.0.1:8080/api/gpu
 ```
 
+### Flight SQL
+
 Flight SQL clients connect to `grpc://127.0.0.1:50051` and see the same
 workspace. For example:
 
@@ -268,20 +286,6 @@ printf '%s\n' \
   "SELECT vertex, value FROM cugraph_pagerank('citation_edges', 'src', 'dst', 'weight') ORDER BY value DESC LIMIT 5" |
   arrow_cli --host 127.0.0.1 -P 50051 --timeout 120 --output table
 ```
-
-### Pipelines
-
-| Pipeline | Capability |
-| --- | --- |
-| `sql_aggregate_topk` | Filter, sort, and limit over `papers`. |
-| `sql_join_facets` | Join `paper_fos` to `papers`, then group and aggregate. |
-| `graph_pagerank_topk` | Run `cugraph_pagerank`, join vertices back to papers, and return top scores. |
-| `graph_bfs_hops` | Run `cugraph_bfs`, join vertices back to papers, and aggregate by hop distance. |
-
-`GET /api/pipelines/{name}/plan` returns the structured `PlanningReport` JSON
-for that pipeline's default parameters. Use a `Selected` outcome as native
-execution evidence; `NotSupported` and `NotSelectedByCost` retain the reason
-for a non-native choice. Do not depend on printed physical plans.
 
 ### E2E
 

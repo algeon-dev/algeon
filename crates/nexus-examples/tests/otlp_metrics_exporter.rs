@@ -62,7 +62,6 @@ fn production_request_preserves_caller_resource_and_cumulative_histogram() {
         panic!("production metric must use OTLP histogram data");
     };
 
-    assert_eq!(histogram.aggregation_temporality, 2);
     assert_eq!(histogram.aggregation_temporality, AggregationTemporality::Cumulative as i32);
     let point = histogram.data_points.first().expect("histogram point is preserved");
     assert_eq!(point.explicit_bounds.len(), point.bucket_counts.len() - 1);

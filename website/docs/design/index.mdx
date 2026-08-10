@@ -38,10 +38,12 @@ DataFusion session.
 
 - **DataFusion stays in charge:** SQL, catalogs, physical planning, and the
   executable baseline remain stock DataFusion. Every unified Iceberg scan keeps
-  an executable upstream CPU delegate alongside its optional native scan facts.
+  an executable upstream CPU delegate alongside its optional native scan facts
+  (the format-neutral description of the scan that lowering hands to the
+  engine).
 - **The adapter translates:** `src/` recognizes whole relational DataFusion
-  physical candidates, lowers selected candidates into `QueryPlan`, and exposes
-  reports.
+  physical plans as native candidates, lowers a selected candidate into
+  `QueryPlan`, and exposes reports.
 - **The engine owns native execution:** `crates/nexus-query-engine` has no
   DataFusion dependency. It owns the IR, capability analysis, execution-time
   context, and executor.
@@ -61,22 +63,27 @@ DataFusion session.
 
 The preferred embedded entry point is a process-scoped `NexusGpuBackend`. It
 installs the native optimizer and gives every installed session the same
-QueryService admission owner and per-device immutable-grant ledger. The cuGraph line is
+process-wide admission service and per-device memory ledger, so concurrent
+sessions draw from one GPU capacity authority
+(see [Admission & Memory Governance](./admission.mdx)). The cuGraph line is
 available only when the crate is built with `--features cugraph`; omit it for a
 pure relational session.
 
 ```rust
 use datafusion::execution::SessionStateBuilder;
 use datafusion_nexus::{
-    backend::NexusGpuBackend,
+    backend::{GpuMemoryOwnership, NexusGpuBackend, NexusGpuDeviceProfile},
     cugraph_sql::CugraphSqlConfig,
 };
 
 let backend = NexusGpuBackend::builder()
+    .device_profiles([NexusGpuDeviceProfile::new(0)])
+    .device_memory_ownership([(0, GpuMemoryOwnership::WholeDeviceExclusive)])
     .build()?;
+
 let state = backend
     .install_on_with_cugraph_sql(
-        SessionStateBuilder::new().with_default_features(),
+        SessionStateBuilder::new_with_default_features(),
         CugraphSqlConfig::default(),
     )?
     .build();
@@ -96,9 +103,13 @@ plan after native selection. The full boundary is described in
 
 | Feature | Adds |
 | --- | --- |
-| `cugraph` | cuGraph SQL algorithms and engine graph execution support. |
-| `nexus-server/cugraph` | cuGraph SQL in the Flight SQL server. |
-| `iceberg` | Unified CPU-executable and native-accelerated Iceberg / Glue / REST / S3 source integration. |
+| `cugraph` | cuGraph SQL algorithms and graph execution. |
+| `cuvs` | cuVS bindings and vector-function planning. |
+| `iceberg` | Iceberg catalogs and native scan integration. |
+| `nvml` | Optional NVML device diagnostics. |
+
+The server's features with the same names forward these adapter and engine
+capabilities into `nexus-server`.
 
 The `nexus-server` package owns the Arrow Flight SQL service, protocol
 handshake, cancellation, admission, workspace, and diagnostics.
@@ -128,17 +139,17 @@ Three deep contracts sit behind this overview, each on its own page:
     {
       kind: 'upstream', name: 'DataFusion', note: 'SQL · planner · CPU operators', tone: 'plan',
       sub: 'datafusion',
-      detail: <>Nexus consumes DataFusion physical-plan and
+      detail: <>Nexus consumes DataFusion physical-plan and{" "}
         <code>ExecutionPlan</code> APIs. SQL parsing, catalog resolution, and
         CPU execution remain upstream behavior.</>,
     },
     {
       kind: 'adapter', name: 'datafusion-nexus', note: 'rule wiring · lowering · wrappers · reports', tone: 'engine',
       sub: 'src/',
-      detail: <>Everything DataFusion-specific lives here:
-        <code>src/native/</code> for shape recognition and lowering,
-        <code>src/native_exec/</code> for wrappers,
-        <code>src/native_report/</code> for report rows, and
+      detail: <>Everything DataFusion-specific lives here:{" "}
+        <code>src/native/</code> for shape recognition and lowering,{" "}
+        <code>src/native_exec/</code> for wrappers,{" "}
+        <code>src/native_report/</code> for report rows, and{" "}
         <code>src/error.rs</code> for adapter errors.</>,
     },
     {
@@ -187,7 +198,7 @@ consumes a closed, owned `QueryPlan` instead of DataFusion's open
 
 The current `PlanNode` variants are `Source`, `Filter`, `Projection`,
 `Aggregate`, `Window`, `Sort`, `Limit`, `Join`, `Union`, `EdgeNormalize`, and
-`GraphAlgorithm`.
+`GraphAlgorithm`, plus `VectorAlgorithm` for cuVS plans.
 
 ### Placement rules
 
@@ -233,7 +244,7 @@ ORDER BY value DESC;
       id: 'gdf', lane: 'gpu', col: 1,
       kind: 'edge data', name: 'GpuDataFrame', note: 'native or imported', tone: 'gpu',
       sub: 'execute_edge_source_to_gpu',
-      detail: <>If the edge source is already <code>NexusNativeExec</code> or
+      detail: <>If the edge source is already <code>NexusNativeExec</code> or{" "}
         <code>NexusNativeComposedExec</code>, it is re-sunk as GPU-resident and
         handed forward without materializing host Arrow. Otherwise DataFusion
         produces Arrow batches and Nexus imports them into cuDF.</>,
@@ -242,7 +253,7 @@ ORDER BY value DESC;
       id: 'graph', lane: 'gpu', col: 2,
       kind: 'cuGraph', name: 'Graph<T>', note: ['prepared export', 'typed algorithm'], tone: 'graph',
       sub: 'crates/nexus-query-engine/src/exec/graph_algorithm/',
-      detail: <>The engine prepares a cuDF table export, binds a cuGraph
+      detail: <>The engine prepares a cuDF table export, binds a cuGraph{" "}
         <code>ResourceHandle</code> to a runtime on the same device and stream,
         builds a typed cuGraph graph, and runs the selected algorithm. Bounded
         graph execution runs on a stream-scoped budget token attached to the
@@ -316,12 +327,14 @@ Use this page as the routing table before changing behavior:
 | --- | --- | --- |
 | Native rewrite coverage | `src/native/normalize.rs`, `src/native/lowering/`, `src/native/validate*` | `PlanningReport`, `CandidateOutcome`, `CapabilityReason`, rule names |
 | Native execution semantics | `crates/nexus-query-engine/src/admission/`, `capability/`, `pipeline/`, `exec/`, `runtime/` | Immutable-grant reservation evidence and retained report projections |
-| cuGraph SQL behavior | `src/cugraph_sql/types.rs`, `parser.rs`, `metadata/`, `exec/`, engine `exec/graph_algorithm/` | Metadata column order and validation output |
+| cuGraph SQL behavior | `src/cugraph_sql/types.rs`, `parser.rs`, `exec/`, `src/gpu_functions/`, engine `exec/graph_algorithm/` | Metadata column order and validation output |
 | Iceberg/source behavior | `src/table_format/`, `src/table_format/iceberg/`, server workspace configuration | Source diagnostics and credential-safe error facts |
 | Public diagnostics | `src/native_report/schema.rs`, `src/native_exec/metrics/`, `src/error.rs` | TSV headers, metric names, `ErrorCode`s |
 
 ## Authoritative references
 
+- [Glossary](../reference/glossary.md) for one-line definitions of the terms
+  used across these pages.
 - [cuGraph SQL API](../cugraph/overview.mdx) for callable graph algorithms and
   validation metadata.
 - `Cargo.toml` for feature gates and dependency declarations.

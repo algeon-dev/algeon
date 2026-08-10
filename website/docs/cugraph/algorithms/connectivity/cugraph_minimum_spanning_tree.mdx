@@ -1,7 +1,7 @@
 ---
 title: Minimum Spanning Tree
 sidebar_label: Minimum Spanning Tree
-description: "Compute a minimum spanning tree."
+description: "Select a minimum-total-weight acyclic edge set, producing a spanning tree for a connected graph or a spanning forest otherwise."
 ---
 
 {/* GENERATED FROM the unified GPU function catalog by website/scripts/gen-cugraph-docs.mjs. Do not edit by hand. */}
@@ -10,11 +10,9 @@ description: "Compute a minimum spanning tree."
 
 SQL function: `cugraph_minimum_spanning_tree`
 
-Compute a minimum spanning tree.
+Official cuGraph reference: [Python API](https://docs.nvidia.com/cugraph/26.08/api_docs/api/cugraph/cugraph.tree.minimum_spanning_tree.minimum_spanning_tree/)
 
-## Use this when
-
-Use this when a SQL statement needs Minimum Spanning Tree results over a registered edge relation.
+Select a minimum-total-weight acyclic edge set, producing a spanning tree for a connected graph or a spanning forest otherwise.
 
 ## Signature
 
@@ -22,28 +20,18 @@ Use this when a SQL statement needs Minimum Spanning Tree results over a registe
 cugraph_minimum_spanning_tree(table_name, src_col, dst_col, weight_col [, options_json])
 ```
 
-## Quickstart
-
-```sql
-SELECT * FROM cugraph_minimum_spanning_tree('target_edges', 'src', 'dst', 'weight')
-```
-
 ## Relation inputs
 
-cuGraph consumes a registered edge table or view by its first positional name. It does not accept a parenthesized relation subquery. Metadata validation uses the same registered name.
-
-| Role | Required | Reference | Description |
-| --- | --- | --- | --- |
-| `edges` | yes | `table` | Required edge-list table or view for graph construction. |
+The first positional argument names a registered edge table or view (the `edges` role). Parenthesized relation subqueries are not accepted; metadata validation uses the same registered name.
 
 ## Scalar arguments & JSON options
 
 ### Positional scalar arguments
 
+`src_col` and `dst_col` name the edge endpoint columns; both are optional and default to `src` and `dst`.
+
 | Argument | Type | Required | Default | Notes |
 | --- | --- | --- | --- | --- |
-| `src_col` | `Utf8` | no | `src` |  |
-| `dst_col` | `Utf8` | no | `dst` |  |
 | `weight_col` | `Utf8\|null` | yes |  | required edge weight column; semantic effect: required edge weights define the spanning-tree objective |
 
 ### JSON options
@@ -52,13 +40,7 @@ _This function has no algorithm-specific options._
 
 ### Graph construction options
 
-Shared by all cuGraph functions, shown with this function's defaults. See [Graph Construction Options](../../graph-options.mdx) for the construction-policy guide.
-
-| Option | Type | Default | Constraints | Description |
-| --- | --- | --- | --- | --- |
-| `construction_policy` | `Utf8` | `"python_cugraph"` | one of `"python_cugraph"`, `"raw_libcugraph"` | Edge-list construction semantics used before calling libcugraph. |
-| `directed` | `Boolean` | `false` |  | Whether graph construction treats edges as directed. |
-| `renumber` | `Boolean` | `true` |  | Whether graph construction may renumber external vertex identifiers internally. |
+This function builds an undirected graph by default (`directed=false`); all other graph construction options follow the shared defaults documented in [Graph Construction Options](../../graph-options.mdx).
 
 ## Output schema
 
@@ -67,7 +49,7 @@ Shared by all cuGraph functions, shown with this function's defaults. See [Graph
 | `src` | `Int64` | no | Source vertex of an edge selected for the minimum spanning tree. |
 | `dst` | `Int64` | no | Destination vertex of an edge selected for the minimum spanning tree. |
 
-**Concrete schemas are call-specific.** These are generic descriptor schemas. Run [`gpu_validate_call`](../../../reference/gpu-function-catalog.mdx#gpu_validate_callfunction_name-call_json) for a concrete, table-specific output schema.
+These are generic descriptor schemas; [validate the call](#validate-before-running) to get the concrete, table-specific output schema.
 
 ## Examples
 
@@ -77,14 +59,12 @@ import Examples from '../../_examples/cugraph_minimum_spanning_tree.mdx';
 
 ## Limitations & lifecycle
 
-- dry-run validates table resolution, column presence, static dtypes, and options only
-- dry-run does not scan edge data, construct a graph, or prove source-vertex existence
 - cuGraph C API edge-type dispatch requires Int32 source and destination vertex columns
 - cuGraph requires directed=false so the graph is constructed as an undirected/symmetric view
 
 ## Validate before running
 
-Validation checks registered relation metadata, bindings, dtypes, and options without scanning rows or touching the GPU:
+Dry-run validation checks registered relation metadata, column presence, static dtypes, and options only; it does not scan edge data, construct a graph, or prove source-vertex existence:
 
 ```sql
 SELECT * FROM gpu_validate_call(

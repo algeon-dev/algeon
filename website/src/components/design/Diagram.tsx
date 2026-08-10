@@ -551,9 +551,11 @@ export function StackDiagram({ariaLabel, nodes, caption}: StackDiagramProps) {
 
 // ---------------------------------------------------------------------------
 // ArchitectureDiagram — the single static overview on the site homepage.
-// The query path stays centered and top-down; lakehouse input and planning
-// evidence occupy a compact left rail. No node is interactive and no edge is
-// animated.
+// The query path runs down the left column and results collect on the right,
+// looping back to the caller; local disk and the lakehouse sit in one storage
+// container and share a single KvikIO read path into the GPU, and the dashed
+// edge marks the DataFusion CPU fallback. No node is interactive and no edge
+// is animated.
 // ---------------------------------------------------------------------------
 
 const ARCH_KIND = {size: 11.5, lh: 18, track: 0.07};
@@ -568,7 +570,6 @@ const ARCH_FONTS: BoxFonts = {
 };
 const ARCH_CARD_BORDER = 'var(--nx-arch-card-border, #d7dce1)';
 const ARCH_EDGE = 'var(--nx-arch-edge, #748292)';
-const ARCH_EVIDENCE_EDGE = 'var(--nx-arch-evidence-edge, #b7c0ca)';
 const ARCH_CARD_BORDER_WIDTH = 1.2;
 const ARCH_EDGE_WIDTH = 1.1;
 
@@ -584,46 +585,19 @@ function smallHeadRight(x: number, y: number): string {
   return `M ${x - 5} ${y - 4} L ${x - 0.5} ${y} L ${x - 5} ${y + 4}`;
 }
 
-/** Down → across → down, with rounded bends from the rule to an execution path. */
-function archForkPath(sx: number, sy: number, midY: number, dx: number, dy: number): string {
-  const R = 10;
-  const hDir = dx > sx ? 1 : -1;
-  const r1 = Math.min(R, (midY - sy) / 2, Math.abs(dx - sx));
-  const r2 = Math.min(R, (dy - midY) / 2, Math.abs(dx - sx));
-  return [
-    `M ${sx} ${sy}`,
-    `L ${sx} ${midY - r1}`,
-    `Q ${sx} ${midY} ${sx + r1 * hDir} ${midY}`,
-    `L ${dx - r2 * hDir} ${midY}`,
-    `Q ${dx} ${midY} ${dx} ${midY + r2}`,
-    `L ${dx} ${dy - 1}`,
-  ].join(' ');
-}
-
-/** Down → across into the result junction, rounded bend, no arrowhead. */
-function archMergePath(sx: number, sy: number, midY: number, cx: number): string {
-  const r = Math.min(10, (midY - sy) / 2, Math.abs(cx - sx));
-  const hDir = cx > sx ? 1 : -1;
-  return [
-    `M ${sx} ${sy}`,
-    `L ${sx} ${midY - r}`,
-    `Q ${sx} ${midY} ${sx + r * hDir} ${midY}`,
-    `L ${cx} ${midY}`,
-  ].join(' ');
+function smallHeadUp(x: number, y: number): string {
+  return `M ${x - 4} ${y + 5} L ${x} ${y + 0.5} L ${x + 4} ${y + 5}`;
 }
 
 export function ArchitectureDiagram({caption}: {caption?: React.ReactNode}) {
-  const cx = 570;
-  const sourceCx = 170;
-  const gpuCx = 400;
-  const cpuCx = 740;
-  const outputCx = cx;
-  const reportCx = sourceCx;
+  const colX = 140;
+  const outCx = 830;
+  const sourceCx = 640;
 
   const top: DiagramNode = {
     kind: 'query interfaces',
     name: 'SQL · DataFrame · Flight SQL',
-    note: 'embedded Rust · remote ADBC clients',
+    note: 'embedded library · remote ADBC clients',
     tone: 'plain',
   };
   const rule: DiagramNode = {
@@ -632,32 +606,14 @@ export function ArchitectureDiagram({caption}: {caption?: React.ReactNode}) {
     note: 'selects a whole relational candidate',
     tone: 'engine',
   };
-  const source: DiagramNode = {
-    kind: 'lakehouse',
-    name: 'Iceberg · Parquet',
-    note: [
-      'REST / Glue catalog metadata',
-    ],
-    tone: 'lake',
-  };
   const gpu: DiagramNode = {
     kind: 'native · same process',
     name: 'GPU execution',
     note: [
-      'whole relational plan · explicit GPU islands',
-      'cuDF / cuGraph / cuVS',
-      'admission queue · GPU memory ledger'
+      'cuDF · SQL algorithm functions',
+      'admission queue · GPU memory ledger',
     ],
     tone: 'gpu',
-  };
-  const cpu: DiagramNode = {
-    kind: 'DataFusion baseline',
-    name: 'DataFusion CPU execution',
-    note: [
-      'non-selected relational candidate',
-      'stock operators · unified Iceberg CPU delegate',
-    ],
-    tone: 'plain',
   };
   const out: DiagramNode = {
     kind: 'same caller contract',
@@ -665,145 +621,146 @@ export function ArchitectureDiagram({caption}: {caption?: React.ReactNode}) {
     note: 'returns to the original query interface',
     tone: 'plain',
   };
-  const report: DiagramNode = {
-    kind: 'machine-readable planning',
-    name: 'Planning evidence',
-    note: [
-      'PlanningReport · stable reason codes',
-      'nexus_explain_coverage · preflight',
-    ],
+  const disk: DiagramNode = {
+    kind: 'mutable workspace',
+    name: 'Local disk',
+    note: 'Parquet files · scratch tables',
     tone: 'bridge',
+  };
+  const source: DiagramNode = {
+    kind: 'S3-compatible',
+    name: 'Remote Iceberg',
+    note: 'REST / Glue catalog metadata',
+    tone: 'lake',
   };
 
   const topSize = measureNode(top, ARCH_FONTS);
   const ruleSize = measureNode(rule, ARCH_FONTS);
-  const sourceSize = measureNode(source, ARCH_FONTS);
   const gpuSize = measureNode(gpu, ARCH_FONTS);
-  const cpuSize = measureNode(cpu, ARCH_FONTS);
   const outSize = measureNode(out, ARCH_FONTS);
-  const reportSize = measureNode(report, ARCH_FONTS);
-  const executionH = Math.max(gpuSize.h, cpuSize.h);
+  const diskSize = measureNode(disk, ARCH_FONTS);
+  const sourceSize = measureNode(source, ARCH_FONTS);
 
   const topY = EDGE;
   const topBottom = topY + topSize.h;
-  const ruleY = topBottom + 68;
+  const topCy = topY + topSize.h / 2;
+  const ruleY = topBottom + 64;
   const ruleBottom = ruleY + ruleSize.h;
   const ruleCy = ruleY + ruleSize.h / 2;
-  const legY = ruleBottom + 46;
-  const executionY = ruleBottom + 112;
-  const executionBottom = executionY + executionH;
-  const mergeY = executionBottom + 68;
-  const outY = mergeY + 34;
-  // Side cards stay away from the top edge so the query interface remains the
-  // only visual entry point. Evidence aligns with the optimizer; lakehouse
-  // input aligns its bottom edge with the result tier.
-  const reportY = ruleCy - reportSize.h / 2;
-  const sourceY = outY + outSize.h - sourceSize.h - 32;
-  const H = Math.max(outY + outSize.h, sourceY + sourceSize.h) + EDGE;
+  const gpuY = ruleBottom + 64;
+  const gpuBottom = gpuY + gpuSize.h;
+  const gpuCy = gpuY + gpuSize.h / 2;
+  // The result card shares the optimizer row so the CPU fallback edge is a
+  // straight read across the page.
+  const outY = ruleCy - outSize.h / 2;
+  const outBottom = outY + outSize.h;
+  // Storage cards share one baseline even though their heights differ, and
+  // one container encloses both — the single KvikIO arrow below rises from
+  // the container's top edge, not from either card.
+  const inputY = gpuBottom + 96;
+  const inputBottom = inputY + Math.max(diskSize.h, sourceSize.h);
+  const diskY = inputBottom - diskSize.h;
+  const sourceY = inputBottom - sourceSize.h;
+  const storeLeft = Math.min(colX, sourceCx - sourceSize.w / 2) - 26;
+  const storeRight = Math.max(colX + diskSize.w, sourceCx + sourceSize.w / 2) + 26;
+  const storeY = inputY - 24;
+  const storeBottom = inputBottom + 24;
+  const H = Math.ceil(storeBottom) + EDGE;
+
+  // Left-aligned column: the spine runs at the narrowest card's center, so
+  // every vertical arrow still lands inside its box.
+  const spineX = colX + Math.min(topSize.w, ruleSize.w, gpuSize.w) / 2;
+  const topRight = colX + topSize.w;
+  const ruleRight = colX + ruleSize.w;
+  const gpuRight = colX + gpuSize.w;
+  const outLeft = outCx - outSize.w / 2;
+  const outRight = outCx + outSize.w / 2;
+  const R = 12;
+  const W = Math.ceil(outRight + 8);
 
   const stroke = ARCH_EDGE;
-  const evidenceStroke = ARCH_EVIDENCE_EDGE;
-  const ruleLeft = cx - ruleSize.w / 2;
-  const reportRight = reportCx + reportSize.w / 2;
-  const reportCy = reportY + reportSize.h / 2;
-  const sourceTop = sourceY;
-  const gpuLeft = gpuCx - gpuSize.w / 2;
-  const executionCy = executionY + executionH / 2;
-  const outRight = outputCx + outSize.w / 2;
-  const outCy = outY + outSize.h / 2;
-  const topRight = cx + topSize.w / 2;
-  const topCy = topY + topSize.h / 2;
-  const cpuRight = cpuCx + cpuSize.w / 2;
-  const returnRailX = cpuRight + 18;
-  const W = Math.ceil(returnRailX + 8);
-  const returnRadius = 12;
-  const head = (d: string, fill = stroke) => (
-    <path d={d} fill={fill} stroke="none" />
-  );
+  const head = (d: string) => <path d={d} fill={stroke} stroke="none" />;
 
   return (
     <Figure caption={caption} svgW={W} svgH={H} minW={680} center>
-      {/* The main query path uses one stroke language throughout. */}
-      <line x1={cx} y1={topBottom} x2={cx} y2={ruleY - 1}
+      {/* The main query path runs straight down the left column. */}
+      <line x1={spineX} y1={topBottom} x2={spineX} y2={ruleY - 1}
         stroke={stroke} strokeWidth={ARCH_EDGE_WIDTH} />
-      {head(smallHeadDown(cx, ruleY))}
+      {head(smallHeadDown(spineX, ruleY))}
+      <line x1={spineX} y1={ruleBottom} x2={spineX} y2={gpuY - 1}
+        stroke={stroke} strokeWidth={ARCH_EDGE_WIDTH} />
+      {head(smallHeadDown(spineX, gpuY))}
 
-      {/* Box headings carry branch semantics, keeping labels off the paths. */}
-      <path d={archForkPath(cx - 70, ruleBottom, legY, gpuCx, executionY)}
-        fill="none" stroke={stroke} strokeWidth={ARCH_EDGE_WIDTH} strokeLinejoin="round" />
-      {head(smallHeadDown(gpuCx, executionY))}
-      <path d={archForkPath(cx + 70, ruleBottom, legY, cpuCx, executionY)}
-        fill="none" stroke={stroke} strokeWidth={ARCH_EDGE_WIDTH} strokeLinejoin="round" />
-      {head(smallHeadDown(cpuCx, executionY))}
+      {/* A non-selected candidate falls back to DataFusion CPU execution —
+          dashed, as the non-selected path — and still lands in the same
+          Arrow stream. */}
+      <line x1={ruleRight} y1={ruleCy} x2={outLeft - 1} y2={ruleCy}
+        stroke={stroke} strokeWidth={ARCH_EDGE_WIDTH} strokeDasharray="5 4" />
+      {head(smallHeadRight(outLeft, ruleCy))}
+      <text x={(ruleRight + outLeft) / 2} y={ruleCy + 20} textAnchor="middle"
+        fontSize={ARCH_KIND.size} fontWeight={600} fill={COLOR.muted}>
+        DataFusion CPU fallback
+      </text>
 
-      {/* The lakehouse sits low on the page as an input dependency rather than
-          a competing entry point. Its rail climbs to the native path. */}
+      {/* GPU results join the same caller contract from below. */}
       <path
         d={[
-          `M ${sourceCx} ${sourceTop}`,
-          `L ${sourceCx} ${executionCy + returnRadius}`,
-          `Q ${sourceCx} ${executionCy} ${sourceCx + returnRadius} ${executionCy}`,
-          `L ${gpuLeft - 1} ${executionCy}`,
+          `M ${gpuRight} ${gpuCy}`,
+          `L ${outCx - R} ${gpuCy}`,
+          `Q ${outCx} ${gpuCy} ${outCx} ${gpuCy - R}`,
+          `L ${outCx} ${outBottom + 1}`,
         ].join(' ')}
         fill="none" stroke={stroke} strokeWidth={ARCH_EDGE_WIDTH} strokeLinejoin="round" />
-      {head(smallHeadRight(gpuLeft, executionCy))}
-      <text x={sourceCx - 10} y={(sourceTop + executionCy + returnRadius) / 2 + ARCH_KIND.size * 0.35}
+      {head(smallHeadUp(outCx, outBottom))}
+
+      {/* Both storage cards share one KvikIO read path: a single trunk
+          climbs from the storage container's top edge into the GPU. */}
+      <line x1={spineX} y1={storeY} x2={spineX} y2={gpuBottom + 1}
+        stroke={stroke} strokeWidth={ARCH_EDGE_WIDTH} />
+      {head(smallHeadUp(spineX, gpuBottom))}
+      <text x={spineX - 10} y={(storeY + gpuBottom) / 2 + ARCH_KIND.size * 0.35}
         fontSize={ARCH_KIND.size} fontWeight={600} textAnchor="end" fill={COLOR.muted}>
         KvikIO
       </text>
 
-      {/* Both execution paths preserve the same Arrow result contract. */}
-      <path d={archMergePath(gpuCx, executionBottom, mergeY, outputCx)} fill="none"
-        stroke={stroke} strokeWidth={ARCH_EDGE_WIDTH} strokeLinejoin="round" />
-      <path d={archMergePath(cpuCx, executionBottom, mergeY, outputCx)} fill="none"
-        stroke={stroke} strokeWidth={ARCH_EDGE_WIDTH} strokeLinejoin="round" />
-      <line x1={outputCx} y1={mergeY} x2={outputCx} y2={outY - 1}
-        stroke={stroke} strokeWidth={ARCH_EDGE_WIDTH} />
-      {head(smallHeadDown(outputCx, outY))}
-
-      {/* Evidence is the only dotted side channel. The aligned cards make its
-          relationship to the optimizer explicit without another elbow. */}
-      <line x1={ruleLeft} y1={ruleCy} x2={reportRight + 1} y2={reportCy}
-        stroke={evidenceStroke} strokeWidth={ARCH_EDGE_WIDTH} strokeDasharray="2 6" />
-      {head(smallHeadLeft(reportRight, reportCy), evidenceStroke)}
-
-      {/* Results return outside the planning/execution layout, so the loop is
-          visible without crossing any card or branch. */}
+      {/* Results return outside the query path, so the loop is visible
+          without crossing any card. */}
       <path
         d={[
-          `M ${outRight} ${outCy}`,
-          `L ${returnRailX - returnRadius} ${outCy}`,
-          `Q ${returnRailX} ${outCy} ${returnRailX} ${outCy - returnRadius}`,
-          `L ${returnRailX} ${topCy + returnRadius}`,
-          `Q ${returnRailX} ${topCy} ${returnRailX - returnRadius} ${topCy}`,
+          `M ${outCx} ${outY}`,
+          `L ${outCx} ${topCy + R}`,
+          `Q ${outCx} ${topCy} ${outCx - R} ${topCy}`,
           `L ${topRight + 1} ${topCy}`,
         ].join(' ')}
         fill="none" stroke={stroke} strokeWidth={ARCH_EDGE_WIDTH} strokeLinejoin="round" />
       {head(smallHeadLeft(topRight, topCy))}
 
+      {/* The storage container groups both inputs under the shared read
+          path; cards draw on top of it. */}
+      <rect x={storeLeft} y={storeY} width={storeRight - storeLeft}
+        height={storeBottom - storeY} rx={10}
+        fill={COLOR.fg} fillOpacity={0.04}
+        stroke={ARCH_CARD_BORDER} strokeWidth={1} />
       {/* Boxes are last so edge endpoints tuck under their borders. */}
-      <Box node={top} x={cx - topSize.w / 2} y={topY} w={topSize.w} h={topSize.h}
+      <Box node={top} x={colX} y={topY} w={topSize.w} h={topSize.h}
         fonts={ARCH_FONTS} kindColor={COLOR.muted}
         borderColor={ARCH_CARD_BORDER} borderWidth={ARCH_CARD_BORDER_WIDTH} />
-      <rect x={cx - ruleSize.w / 2 - 7} y={ruleY - 7}
+      <rect x={colX - 7} y={ruleY - 7}
         width={ruleSize.w + 14} height={ruleSize.h + 14} rx={12}
         fill={TONE.engine} opacity={0.1} />
-      <Box node={rule} x={cx - ruleSize.w / 2} y={ruleY} w={ruleSize.w} h={ruleSize.h}
+      <Box node={rule} x={colX} y={ruleY} w={ruleSize.w} h={ruleSize.h}
         fonts={ARCH_FONTS} kindColor={COLOR.muted}
         borderColor={ARCH_CARD_BORDER} borderWidth={ARCH_CARD_BORDER_WIDTH} />
-      <Box node={report} x={reportCx - reportSize.w / 2} y={reportY}
-        w={reportSize.w} h={reportSize.h} fonts={ARCH_FONTS} kindColor={COLOR.muted}
+      <Box node={gpu} x={colX} y={gpuY} w={gpuSize.w} h={gpuSize.h}
+        fonts={ARCH_FONTS} kindColor={COLOR.muted}
         borderColor={ARCH_CARD_BORDER} borderWidth={ARCH_CARD_BORDER_WIDTH} />
-      <Box node={source} x={sourceCx - sourceSize.w / 2} y={sourceY}
-        w={sourceSize.w} h={sourceSize.h} fonts={ARCH_FONTS} kindColor={COLOR.muted}
+      <Box node={out} x={outLeft} y={outY} w={outSize.w} h={outSize.h}
+        fonts={ARCH_FONTS} kindColor={COLOR.muted}
         borderColor={ARCH_CARD_BORDER} borderWidth={ARCH_CARD_BORDER_WIDTH} />
-      <Box node={gpu} x={gpuCx - gpuSize.w / 2} y={executionY}
-        w={gpuSize.w} h={executionH} fonts={ARCH_FONTS} kindColor={COLOR.muted}
+      <Box node={disk} x={colX} y={diskY} w={diskSize.w} h={diskSize.h}
+        fonts={ARCH_FONTS} kindColor={COLOR.muted}
         borderColor={ARCH_CARD_BORDER} borderWidth={ARCH_CARD_BORDER_WIDTH} />
-      <Box node={cpu} x={cpuCx - cpuSize.w / 2} y={executionY}
-        w={cpuSize.w} h={executionH} fonts={ARCH_FONTS} kindColor={COLOR.muted}
-        borderColor={ARCH_CARD_BORDER} borderWidth={ARCH_CARD_BORDER_WIDTH} />
-      <Box node={out} x={outputCx - outSize.w / 2} y={outY} w={outSize.w} h={outSize.h}
+      <Box node={source} x={sourceCx - sourceSize.w / 2} y={sourceY} w={sourceSize.w} h={sourceSize.h}
         fonts={ARCH_FONTS} kindColor={COLOR.muted}
         borderColor={ARCH_CARD_BORDER} borderWidth={ARCH_CARD_BORDER_WIDTH} />
     </Figure>

@@ -6,10 +6,11 @@ description: What you are building, how the repositories fit together, and the u
 
 # Overview
 
-DataFusion Nexus is the top of a GPU query stack. The adapter crate lowers
-DataFusion physical plans into a native IR and executes them on RAPIDS cuDF,
-cuVS, and cuGraph through Rust bindings. Building it from source therefore
-means building the native libraries in a fixed, bottom-up order.
+DataFusion Nexus sits above a feature-selected GPU stack. Relational execution
+uses RAPIDS cuDF, and graph SQL adds cuGraph. The cuVS SQL surface can be
+discovered and planned, but cannot run under bounded admission yet. A
+full-feature source build still includes libcuvs because cuGraph links it, so
+the native libraries must be built in a fixed, bottom-up order.
 
 This guide walks the whole path: system prerequisites, environment variables,
 cloning, building each layer, optionally packaging the Flight SQL server into a
@@ -28,10 +29,9 @@ Docker path is documented separately in [Building with Docker](./docker.md).
 | [`cugraph-nexus`](https://github.com/DataFusion-Nexus/cugraph-nexus) | Safe Rust API over libcugraph (`cugraph-nexus`, `cugraph-nexus-sys`); vendors the [`cugraph` fork](https://github.com/DataFusion-Nexus/cugraph) as a submodule | Rust + C++/CUDA | cloned (+ submodule) |
 
 `datafusion-nexus` pins `cudf`, `cuvs`, and `cugraph` to **sibling path
-checkouts**, so these four repositories must sit next to each other in one root directory.
-Everything else — Apache DataFusion and the rest of the Rust dependency graph —
-is an ordinary published crate that Cargo fetches automatically; there is
-nothing else to clone.
+checkouts**, so these four repositories must sit next to each other in one root
+directory. Cargo fetches Apache DataFusion and the remaining registry or Git
+dependencies automatically; there is nothing else to clone.
 
 ```text
 <NEXUS_ROOT>/
@@ -52,10 +52,10 @@ libcudf ── produces ──> librmm.so
                             ├──> libcuvs
                             └──> libcugraph <── libcuvs
 
-datafusion-nexus uses the cuDF, cuVS, and cuGraph Rust bindings.
+datafusion-nexus uses the enabled cuDF, cuVS, and cuGraph Rust bindings.
 ```
 
-The build order follows those dependencies:
+The full-feature build order follows those dependencies:
 
 1. **libcudf** — `./build.sh libcudf` inside the `cudf` submodule. Installs
    `libcudf.so` and the shared `librmm.so` into `cudf-nexus/cudf-install/`.
@@ -70,8 +70,8 @@ The build order follows those dependencies:
 6. **libcugraph** — `cugraph-nexus/scripts/build_libcugraph.sh`. Uses the same
    `librmm.so` from libcudf and the `libcuvs.so` built in step 4.
 7. **cugraph-nexus** — `cargo build` / `cargo test` against that build tree.
-8. **datafusion-nexus** — `cargo build` plus the nextest suite. Cargo pulls the
-   remaining dependencies (including Apache DataFusion) from crates.io.
+8. **datafusion-nexus** — `cargo build --all-features` for a compile check; bare
+   `bash scripts/check_all.sh` for the canonical full pre-merge surface.
 9. **Docker image** — optional packaging for the standalone Flight SQL server.
    `docker/build.sh` stages the release binary and the locally built forked
    RAPIDS libraries; `docker build` then harvests the CUDA runtime libraries
@@ -80,9 +80,9 @@ The build order follows those dependencies:
 ## Requirements
 
 The three native libraries are built from RAPIDS 26.06 sources, so their
-toolchain requirements are the upstream RAPIDS ones. These are **requirements**,
-not the single configuration the guide ran on — any combination within these
-ranges is expected to behave the same.
+toolchain requirements are the upstream RAPIDS ones. Select a mutually
+compatible driver, CUDA toolkit, and host compiler; the supported ranges below
+do not imply that every cross-product is valid.
 
 | Component | Requirement | Source |
 | --- | --- | --- |

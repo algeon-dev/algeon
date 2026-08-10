@@ -1,7 +1,7 @@
 ---
 title: BFS
 sidebar_label: BFS
-description: "Multi-source-capable breadth-first search; source selectors must contain at most one source per connected component."
+description: "Visit reachable vertices in increasing unweighted hop distance from one or more sources, returning distances and optional predecessors."
 ---
 
 {/* GENERATED FROM the unified GPU function catalog by website/scripts/gen-cugraph-docs.mjs. Do not edit by hand. */}
@@ -10,11 +10,9 @@ description: "Multi-source-capable breadth-first search; source selectors must c
 
 SQL function: `cugraph_bfs`
 
-Multi-source-capable breadth-first search; source selectors must contain at most one source per connected component.
+Official cuGraph reference: [C API](https://docs.nvidia.com/cugraph/26.08/api_docs/cugraph_c/traversal/#breadth-first-search-bfs)
 
-## Use this when
-
-Use this when a SQL statement needs BFS results over a registered edge relation.
+Visit reachable vertices in increasing unweighted hop distance from one or more sources, returning distances and optional predecessors.
 
 ## Signature
 
@@ -22,29 +20,19 @@ Use this when a SQL statement needs BFS results over a registered edge relation.
 cugraph_bfs(table_name, source_vertex_or_vertices [, src_col, dst_col [, weight_col [, options_json]]])
 ```
 
-## Quickstart
-
-```sql
-SELECT * FROM cugraph_bfs('target_edges', 123, 'src', 'dst', NULL, '{"depth_limit":4}')
-```
-
 ## Relation inputs
 
-cuGraph consumes a registered edge table or view by its first positional name. It does not accept a parenthesized relation subquery. Metadata validation uses the same registered name.
-
-| Role | Required | Reference | Description |
-| --- | --- | --- | --- |
-| `edges` | yes | `table` | Required edge-list table or view for graph construction. |
+The first positional argument names a registered edge table or view (the `edges` role). Parenthesized relation subqueries are not accepted; metadata validation uses the same registered name.
 
 ## Scalar arguments & JSON options
 
 ### Positional scalar arguments
 
+`src_col` and `dst_col` name the edge endpoint columns; both are optional and default to `src` and `dst`.
+
 | Argument | Type | Required | Default | Notes |
 | --- | --- | --- | --- | --- |
 | `source_vertex_or_vertices` | `Int64\|Utf8\|List<Int64>\|List<Utf8>\|null-with-source_vertices_table` | yes |  | selector: literal scalar/list source selector, or NULL with source_vertices_table/source_vertex_col options |
-| `src_col` | `Utf8` | no | `src` |  |
-| `dst_col` | `Utf8` | no | `dst` |  |
 | `weight_col` | `Utf8\|null` | no |  | accepted as an edge-column binding but ignored by BFS traversal; semantic effect: none for traversal; BFS distance is a hop count |
 
 ### JSON options
@@ -72,13 +60,7 @@ cuGraph consumes a registered edge table or view by its first positional name. I
 
 ### Graph construction options
 
-Shared by all cuGraph functions, shown with this function's defaults. See [Graph Construction Options](../../graph-options.mdx) for the construction-policy guide.
-
-| Option | Type | Default | Constraints | Description |
-| --- | --- | --- | --- | --- |
-| `construction_policy` | `Utf8` | `"python_cugraph"` | one of `"python_cugraph"`, `"raw_libcugraph"` | Edge-list construction semantics used before calling libcugraph. |
-| `directed` | `Boolean` | `true` |  | Whether graph construction treats edges as directed. |
-| `renumber` | `Boolean` | `true` |  | Whether graph construction may renumber external vertex identifiers internally. |
+Graph construction follows the shared defaults (`directed=true`, renumbering, `python_cugraph` policy) documented in [Graph Construction Options](../../graph-options.mdx).
 
 ## Output schema
 
@@ -130,7 +112,7 @@ Shared by all cuGraph functions, shown with this function's defaults. See [Graph
 | `target_found` | `Boolean` | no | Whether a requested target vertex was reached by the BFS traversal. |
 | `target_distance` | `Int64` | yes | Hop-count distance to the requested target vertex, null when the target was not reached. |
 
-**Concrete schemas are call-specific.** These are generic descriptor schemas. Run [`gpu_validate_call`](../../../reference/gpu-function-catalog.mdx#gpu_validate_callfunction_name-call_json) for a concrete, table-specific output schema.
+These are generic descriptor schemas; [validate the call](#validate-before-running) to get the concrete, table-specific output schema.
 
 ## Examples
 
@@ -140,8 +122,6 @@ import Examples from '../../_examples/cugraph_bfs.mdx';
 
 ## Limitations & lifecycle
 
-- dry-run validates table resolution, column presence, static dtypes, and options only
-- dry-run does not scan edge data, construct a graph, or prove source-vertex existence
 - source lists and source_vertices_table are multi-source BFS, not one BFS per source
 - source lists and source_vertices_table must contain at most one source per connected component
 - raw/normalized output does not expose origin source per vertex
@@ -151,7 +131,7 @@ import Examples from '../../_examples/cugraph_bfs.mdx';
 
 ## Validate before running
 
-Validation checks registered relation metadata, bindings, dtypes, and options without scanning rows or touching the GPU:
+Dry-run validation checks registered relation metadata, column presence, static dtypes, and options only; it does not scan edge data, construct a graph, or prove source-vertex existence:
 
 ```sql
 SELECT * FROM gpu_validate_call(
