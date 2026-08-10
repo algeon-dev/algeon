@@ -227,7 +227,7 @@ async fn register_iceberg_catalog(ctx: &SessionContext, config: &ServerConfig) -
     Ok(())
 }
 
-/// Builds the [`TableProvider`] used to seed a pre-declared alias.
+/// Builds the [`datafusion::datasource::TableProvider`] used to seed a pre-declared alias.
 ///
 /// Uses the same dual-mode provider as the dynamic three-part catalog path.
 #[cfg(feature = "iceberg")]

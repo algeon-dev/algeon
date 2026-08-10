@@ -1,10 +1,13 @@
 ---
-sidebar_position: 6
+sidebar_position: 5
 sidebar_label: Tests
 description: The verified test surface — nextest lanes, GPU serialization, check_all.sh, feature flags, and formatting/lints.
 ---
 
 # Tests
+
+Run these commands from the recursive checkout after configuring the build
+shell in [Building from Source](./from-source.md#2-configure-the-build-shell).
 
 ## Tooling layout
 
@@ -117,8 +120,8 @@ selected feature set applies to every workspace phase; the default is
 Shared-GPU tests automatically use every CPU core available to the current
 environment. `check_all.sh` validates the positive integer returned by `nproc`
 and passes it explicitly to nextest; exclusive tests always use one.
-`bash scripts/ci/test_all.sh` is a pure alias that preserves every argument
-passed to `check_all.sh`.
+CI helpers under `scripts/ci/` are internal callers. Developers use the root
+`scripts/check_all.sh` entry point.
 
 Cargo is never a test-runner fallback. The admitted test surface requires
 `cargo-nextest` per-test-process isolation: allocator lifecycle cases mutate a

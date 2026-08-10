@@ -176,7 +176,7 @@ datafusion-nexus/
 │   └── cudf/                    # pinned cuDF fork submodule
 ├── components/cugraph/          # cugraph-nexus and cugraph-nexus-sys
 │   └── cugraph/                 # pinned cuGraph fork submodule
-├── components/cuvs/             # cuvs-nexus, cuvs-nexus-sys, xtask
+├── components/cuvs/             # cuvs-nexus and cuvs-nexus-sys
 │   └── cuvs/                    # pinned official cuVS submodule
 ├── crates/                      # DataFusion-free engine and support crates
 └── src/                         # DataFusion adapter
@@ -189,6 +189,13 @@ git clone --recurse-submodules \
   https://github.com/DataFusion-Nexus/datafusion-nexus.git
 ```
 
+## Native Components
+
+`components/cudf`, `components/cuvs`, and `components/cugraph` are members of
+this workspace, not independent projects. Their crate boundaries and native
+defaults are documented in their respective READMEs. The pinned submodules and
+native build order are defined in [Building from Source](website/docs/build/from-source.md).
+
 ### Toolchain & Environment Specifications
 
 All toolchain specifications (Rust compiler channels, linker setup with mold
@@ -197,15 +204,26 @@ defined and maintained in the website documentation:
 
 - [Prerequisites](website/docs/build/prerequisites.md): System dependencies,
   CUDA requirements, compiler pairings, and linker setup.
-- [Environment Configuration](website/docs/build/environment.md): Discovery
-  paths (`CUDF_INSTALL_DIR`, `CUGRAPH_CMAKE_BUILD_DIR`, `CUVS_INSTALL_DIR`),
-  their `target/native/*` defaults, and CUDA loader settings.
-- [Building from Source](website/docs/build/from-source.md): Step-by-step
-  build instructions and package compilation.
+- [Building from Source](website/docs/build/from-source.md): Recursive clone,
+  checkout-local native selectors (`CUDF_INSTALL_DIR`,
+  `CUGRAPH_CMAKE_BUILD_DIR`, `CUVS_INSTALL_DIR`), native build order, and Rust
+  workspace compilation.
 
 Always use `--all-features` in cargo commands. Feature unification ensures that
 the entire workspace dependency graph builds with a unified feature set and
 avoids unnecessary artifact rebuilds.
+
+Focused component validation uses the same commands for every native wrapper:
+
+```bash
+cargo clippy -p <component-packages...> --all-targets --all-features -- -D warnings
+cargo +nightly fmt --all --check
+flock /tmp/cudf-gpu.lock cargo nextest run \
+  -p <component-packages...> --all-features --no-fail-fast
+```
+
+The package groups are `cudf-nexus cudf-nexus-sys rapids-interop`,
+`cugraph-nexus cugraph-nexus-sys`, and `cuvs-nexus cuvs-nexus-sys`.
 
 ## Testing & Validation
 

@@ -2,7 +2,7 @@
 //!
 //! Adapter errors classify failures from DataFusion planning/execution,
 //! native execution, cuDF calls made directly by the adapter, and native
-//! native execution errors wrapped at the adapter boundary. Native errors
+//! engine errors wrapped at the adapter boundary. Native errors
 //! keep their original classification in `native_*` facts while this layer maps
 //! them into adapter-level [`ErrorCode`] values suitable for DataFusion.
 

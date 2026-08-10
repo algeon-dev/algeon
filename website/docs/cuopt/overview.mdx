@@ -1,0 +1,23 @@
+---
+sidebar_position: 1
+slug: /cuopt
+description: SQL-visible cuOpt optimization over DataFusion Nexus SQL sessions (in progress).
+---
+
+# cuOpt SQL API (WIP)
+
+:::note[In progress]
+
+The cuOpt SQL surface is under active development. This page is a placeholder
+that describes the intended shape; the `cuopt_*` table functions are not yet
+available, and the details below may change before release.
+
+:::
+
+DataFusion Nexus will expose NVIDIA
+[**cuOpt**](https://github.com/nvidia/cuopt) as SQL table functions over
+DataFusion SQL sessions — the same pattern already used by the
+[cuGraph SQL API](../cugraph/overview.mdx). Each `cuopt_*` function will read a
+relation of decision inputs, run a GPU optimization workload, and return rows
+you can join and filter alongside the rest of your query, over the data already
+in your session — no separate solver service and no copy to keep in sync.

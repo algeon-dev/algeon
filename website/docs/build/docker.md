@@ -1,5 +1,5 @@
 ---
-sidebar_position: 5
+sidebar_position: 4
 sidebar_label: Docker
 description: Build the DataFusion Nexus Flight SQL server image from locally built native artifacts, run it with NVIDIA Container Toolkit, and smoke-test Flight SQL.
 ---

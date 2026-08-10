@@ -9,22 +9,20 @@ Everything below installs system-wide, once. Commands are written for Ubuntu
 24.04 (the RAPIDS-supported LTS); adapt package names for other distributions.
 
 The three native libraries in the stack — **libcudf**, **libcuvs**, and
-**libcugraph** — are
-built from the RAPIDS 26.06 sources, so their toolchain requirements are the
-upstream RAPIDS ones. Where a version matters, this page cites the upstream
-requirement rather than pinning the exact build this guide happened to run on;
+**libcugraph** — are built from the sources pinned by this checkout, so their
+toolchain requirements are the upstream RAPIDS ones. Where a tool version
+matters, this page cites the requirement rather than tying the guide to a
+particular RAPIDS release;
 follow the [RAPIDS install guide](https://docs.rapids.ai/install/) and the
-`dependencies.yaml` in [cudf](https://github.com/rapidsai/cudf) /
-[cuvs](https://github.com/rapidsai/cuvs) /
-[cugraph](https://github.com/rapidsai/cugraph) as the source of truth.
+checked-out `dependencies.yaml` files as the source of truth.
 
 ## What each tool is for
 
 | Tool | Required by | Notes |
 | --- | --- | --- |
-| NVIDIA driver + CUDA toolkit | libcudf, libcuvs, libcugraph builds (nvcc); every layer at runtime (GPU) | CUDA 12.2 through 13.2 |
-| gcc/g++ **14** | libcudf, libcuvs, libcugraph builds (host compiler) | RAPIDS 26.06 pins gcc 14 |
-| CMake ≥ 3.30.4 | libcudf, libcuvs, libcugraph builds; the cuDF Rust shim | hard floor in the C++ projects |
+| NVIDIA driver + CUDA toolkit | libcudf, libcuvs, libcugraph builds (nvcc); every layer at runtime (GPU) | CUDA 12.2, 12.5, 12.8, 12.9, or 13.0–13.3 |
+| gcc/g++ **14** | libcudf, libcuvs, libcugraph builds (host compiler) | the pinned native sources require gcc 14 |
+| CMake ≥ 4.0 | libcudf, libcuvs, libcugraph builds; the cuDF Rust shim | effective stack floor from the pinned native projects |
 | Ninja | libcudf, libcuvs, libcugraph builds | RAPIDS build scripts default to it |
 | mold + clang | Root workspace Cargo builds for `components/*` and `datafusion-nexus` | The root `.cargo/config.toml` pins mold; install both on the host |
 | Rust (stable + nightly) | Root workspace crates and `datafusion-nexus` | nightly only for `rustfmt` |
@@ -32,14 +30,15 @@ follow the [RAPIDS install guide](https://docs.rapids.ai/install/) and the
 
 ## NVIDIA driver and CUDA toolkit
 
-RAPIDS 26.06 supports **CUDA 12.2 through 13.2** (either the CUDA 12 or CUDA 13
-line), with a driver new enough for the toolkit you install
+The pinned native dependency matrices list CUDA 12.2, 12.5, 12.8, 12.9, and
+13.0 through 13.3. Use one of those toolkit versions with a driver new enough
+for that toolkit
 ([RAPIDS install](https://docs.rapids.ai/install/)):
 
-- CUDA 12.2–12.9 → driver ≥ 525.60.13
-- CUDA 13.0–13.2 → driver ≥ 580.65.06
+- CUDA 12.x → driver ≥ 525.60.13
+- CUDA 13.x → driver ≥ 580.65.06
 
-Install the toolkit from NVIDIA's apt repository (the distro archive lags).
+Install the toolkit from NVIDIA's apt repository (distribution packages lag).
 Pick a `cuda-toolkit-<major>-<minor>` package within the supported range that
 matches your installed driver — for example a CUDA 13 toolkit:
 
@@ -47,12 +46,13 @@ matches your installed driver — for example a CUDA 13 toolkit:
 wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
 sudo dpkg -i cuda-keyring_1.1-1_all.deb
 sudo apt-get update
-sudo apt-get install -y cuda-toolkit-13-0    # 13-0/13-1/13-2 or a CUDA 12.2+ toolkit
+sudo apt-get install -y cuda-toolkit-13-0    # 13-0 through 13-3, or a listed CUDA 12.x toolkit
 ```
 
 This installs under `/usr/local/cuda-<version>` and maintains the
 `/usr/local/cuda` alternatives symlink, which the
-[environment file](./environment.md) points at. Verify:
+[build-shell configuration](./from-source.md#2-configure-the-build-shell) points
+at. Verify:
 
 ```bash
 nvidia-smi --query-gpu=name,compute_cap,driver_version --format=csv
@@ -62,12 +62,12 @@ readlink -f /usr/local/cuda    # confirm the symlink resolves to the toolkit you
 
 ### GPU architecture
 
-RAPIDS 26.06 supports NVIDIA **Volta or newer (compute capability 7.0+)**;
+The pinned RAPIDS sources support NVIDIA **Volta or newer (compute capability 7.0+)**;
 Pascal support was dropped in 24.02. The native libraries build for your own
 GPU's architecture by default (`CMAKE_CUDA_ARCHITECTURES=NATIVE`) — you do not
 need to know your compute capability up front, only to list it explicitly when
 building binaries that must run on a *different* GPU model
-([Building from Source](./from-source.md#2-build-libcudf)).
+([Building from Source](./from-source.md#build-cudf-and-the-shared-rmm-prefix)).
 
 ## Host compiler: gcc/g++ 14
 
@@ -78,13 +78,14 @@ sudo apt-get install -y build-essential git ninja-build gcc-14 g++-14 clang mold
 This line also installs **ninja** (the generator every CMake build in the stack
 uses; RAPIDS build scripts default to it), **git**, **clang**, and **mold**.
 `datafusion-nexus` selects clang + mold from its `.cargo/config.toml`, so install
-both before any `cargo build --all-features` / `cargo test --all-features` step
-on the Rust workspace.
+both before any `cargo build --all-features` or
+`cargo nextest run --all-features` step on the Rust workspace.
 
-RAPIDS 26.06 **pins gcc 14** as the host compiler for all three native builds
+The pinned native sources **pin gcc 14** as the host compiler for all three native builds
 (`gcc_linux-64=14.*` in the cudf, cuvs, and cugraph `dependencies.yaml`). Ubuntu
 24.04's default is gcc 13, so install `gcc-14`/`g++-14` explicitly; the
-[environment file](./environment.md) points `CC`/`CXX`/`CUDAHOSTCXX` at it.
+[build-shell configuration](./from-source.md#2-configure-the-build-shell) points
+`CC`/`CXX`/`CUDAHOSTCXX` at it.
 There is no need to change the system default compiler.
 
 ### CUDA and host-compiler compatibility
@@ -99,10 +100,11 @@ at it. If several CUDA toolkits are installed, confirm which one
 `/usr/local/cuda` resolves to before building — a stale symlink to an older
 toolkit is a classic source of inscrutable `nvcc` errors.
 
-### CMake ≥ 3.30.4
+### CMake ≥ 4.0
 
-All three native builds (`libcudf`, `libcuvs`, `libcugraph`) and the `cudf-nexus-sys` shim declare
-`cmake_minimum_required(VERSION 3.30.4)`. Ubuntu 24.04 ships 3.28, which fails
+All three pinned native projects (`libcudf`, `libcuvs`, `libcugraph`) require
+CMake 4.0. The `cudf-nexus-sys` shim has a lower 3.30.4 floor, but the complete
+stack therefore requires 4.0. Ubuntu 24.04 ships 3.28, which fails
 immediately — install a newer CMake from the
 [Kitware apt repository](https://apt.kitware.com/):
 
@@ -113,7 +115,7 @@ test -f /usr/share/doc/kitware-archive-keyring/copyright ||
 echo 'deb [signed-by=/usr/share/keyrings/kitware-archive-keyring.gpg] https://apt.kitware.com/ubuntu/ noble main' \
   | sudo tee /etc/apt/sources.list.d/kitware.list >/dev/null
 sudo apt-get update && sudo apt-get install -y cmake
-cmake --version   # ≥ 3.30.4
+cmake --version   # ≥ 4.0
 ```
 
 ## Rust linker: mold
@@ -137,15 +139,7 @@ clang --version
 ```
 
 All component crates are built from the `datafusion-nexus` root workspace, so
-the root `.cargo/config.toml` applies to them. If you intentionally build a
-component from a source copy outside this checkout, install the same packages
-and keep an equivalent linker setting in `~/.cargo/config.toml`:
-
-```toml
-[target.x86_64-unknown-linux-gnu]
-linker = "clang"
-rustflags = ["-C", "link-arg=-fuse-ld=mold"]
-```
+the root `.cargo/config.toml` applies to every one of them.
 
 Redistributable server packaging (`docker/stage-docker-payload.sh`) does **not** read workspace
 or home Cargo linker config; it builds from an isolated working directory and
@@ -175,4 +169,5 @@ cuDF component test suite:
 python3 -m pip install --user pyarrow
 ```
 
-Continue with [Environment](./environment.md).
+Continue with [Building from Source](./from-source.md), which begins with the
+recursive clone and checkout-local environment configuration.

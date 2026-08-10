@@ -289,7 +289,7 @@ pub async fn serve_with_listener(config: ServerConfig, listener: std::net::TcpLi
     FlightSqlServer::builder().config(config).listener(listener).build().await?.serve().await
 }
 
-/// How [`serve_inner`] obtains its TCP socket.
+/// How [`FlightSqlServer`] obtains its TCP socket.
 enum Listen {
     /// Bind `addr` only once startup is complete (matches historical `serve`
     /// behaviour: full init, then bind, so the socket never exists half-ready).

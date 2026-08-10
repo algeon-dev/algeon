@@ -3,7 +3,7 @@
 The documentation site for [DataFusion Nexus](https://github.com/DataFusion-Nexus/datafusion-nexus),
 built with [Docusaurus](https://docusaurus.io/) 3.10.1.
 
-`website/` is owned by the root monorepo. Source-build pages refer to the
+`website/` is owned by the root repository. Source-build pages refer to the
 recursive checkout, root Cargo workspace, and native artifacts under
 `target/native/*`; component sources are pinned under `components/*`.
 
@@ -116,7 +116,7 @@ Docusaurus officially integrates with [Algolia
 DocSearch](https://docusaurus.io/docs/search#using-algolia-docsearch), which is
 free for public/open-source technical docs but requires applying to the
 DocSearch program and is only suitable once the site is publicly crawlable. To
-migrate:
+switch:
 
 1. Apply at <https://docsearch.algolia.com/apply> and wait for approval. You
    will receive an `appId`, a public `apiKey` (safe to commit), and an
