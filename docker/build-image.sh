@@ -37,31 +37,16 @@ label_value() {
 
 CPU_BASELINE=$(label_value cpu_baseline)
 CPU_IMAGE_ARCH=$(label_value cpu_arch)
-CPU_POLICY_PROFILE=$(label_value cpu_profile)
-CPU_PROFILE_KIND=$(label_value cpu_profile_kind)
 CPU_TARGET_TRIPLE=$(label_value cpu_target)
 CPU_BINARY_SHA256=$(label_value binary_sha256)
 CPU_PROVENANCE_SHA256=$(sha256sum "$PROVENANCE" | awk '{print $1}')
-CPU_IMAGE_TAG_SUFFIX=$(python3 - "$PROVENANCE" <<'PY'
-import json
-import sys
-
-with open(sys.argv[1], encoding="utf-8") as provenance_file:
-    provenance = json.load(provenance_file)
-try:
-    print(provenance["cpu_profile"]["image_tag_suffix"])
-except (KeyError, TypeError) as error:
-    raise SystemExit(f"ERROR: staged provenance is missing cpu_profile.image_tag_suffix: {error}")
-PY
-)
+CPU_IMAGE_TAG_SUFFIX="$CPU_BASELINE"
 
 python3 "$POLICY_HELPER" --policy "$POLICY_FILE" verify-image-inputs \
     --provenance "$PROVENANCE" \
     --labels "$LABELS" \
     --baseline "$CPU_BASELINE" \
     --arch "$CPU_IMAGE_ARCH" \
-    --profile "$CPU_POLICY_PROFILE" \
-    --profile-kind "$CPU_PROFILE_KIND" \
     --target "$CPU_TARGET_TRIPLE" \
     --binary-sha256 "$CPU_BINARY_SHA256" \
     --provenance-sha256 "$CPU_PROVENANCE_SHA256" >/dev/null
@@ -77,8 +62,6 @@ docker_args=(
     build
     --build-arg "CPU_BASELINE=$CPU_BASELINE"
     --build-arg "CPU_ARCH=$CPU_IMAGE_ARCH"
-    --build-arg "CPU_PROFILE=$CPU_POLICY_PROFILE"
-    --build-arg "CPU_PROFILE_KIND=$CPU_PROFILE_KIND"
     --build-arg "CPU_TARGET=$CPU_TARGET_TRIPLE"
     --build-arg "CPU_BINARY_SHA256=$CPU_BINARY_SHA256"
     --build-arg "CPU_PROVENANCE_SHA256=$CPU_PROVENANCE_SHA256"

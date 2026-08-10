@@ -43,12 +43,12 @@ def load_policy(path: Path) -> dict[str, Any]:
     except (OSError, tomllib.TOMLDecodeError) as error:
         raise PolicyError(f"cannot load CPU packaging policy {path}: {error}") from error
 
-    if set(policy) != {"clean_environment", "profiles"}:
-        raise PolicyError("CPU packaging policy top-level keys must be exactly clean_environment and profiles")
+    if set(policy) != {"clean_environment", "cpu"}:
+        raise PolicyError("CPU packaging policy top-level keys must be exactly clean_environment and cpu")
     clean = policy.get("clean_environment")
-    profiles = policy.get("profiles")
-    if not isinstance(clean, dict) or not isinstance(profiles, dict) or not profiles:
-        raise PolicyError("policy requires clean_environment and at least one profile")
+    cpu = policy.get("cpu")
+    if not isinstance(clean, dict) or not isinstance(cpu, dict):
+        raise PolicyError("policy requires clean_environment and cpu")
     for list_name in (
         "pass_through",
         "explicit_inputs",
@@ -78,46 +78,28 @@ def load_policy(path: Path) -> dict[str, Any]:
     ):
         raise PolicyError("tool version commands must be non-empty string lists")
 
-    for name, profile in profiles.items():
-        if not isinstance(name, str) or not isinstance(profile, dict):
-            raise PolicyError("profile names and values must be strings and tables")
-        required = {
-            "kind",
-            "declared_baseline",
-            "target_triple",
-            "rustflags",
-            "cargo_profile",
-            "artifact_dir",
-            "image_tag_suffix",
-            "image_arch",
-            "deployment_requirement",
-        }
-        missing = required - profile.keys()
-        if missing:
-            raise PolicyError(f"profile {name!r} is missing: {', '.join(sorted(missing))}")
-        for key in required - {"rustflags"}:
-            if not isinstance(profile[key], str) or not profile[key]:
-                raise PolicyError(f"profiles.{name}.{key} must be a non-empty string")
-        if profile["kind"] not in {"redistributable", "tuned-local"}:
-            raise PolicyError(f"profiles.{name}.kind is unsupported")
-        expected_flags = ["-C", f"target-cpu={profile['declared_baseline']}"]
-        if profile["rustflags"] != expected_flags:
-            raise PolicyError(
-                f"profiles.{name}.rustflags must be exactly {expected_flags!r}"
-            )
-        for key in ("target_triple", "cargo_profile", "artifact_dir", "image_tag_suffix", "image_arch"):
-            if not re.fullmatch(r"[A-Za-z0-9_.-]+", profile[key]):
-                raise PolicyError(f"profiles.{name}.{key} contains unsafe characters")
+    required = {
+        "baseline",
+        "target_triple",
+        "rustflags",
+        "cargo_profile",
+        "artifact_dir",
+        "image_arch",
+        "deployment_requirement",
+    }
+    missing = required - cpu.keys()
+    if missing:
+        raise PolicyError(f"cpu is missing: {', '.join(sorted(missing))}")
+    for key in required - {"rustflags"}:
+        if not isinstance(cpu[key], str) or not cpu[key]:
+            raise PolicyError(f"cpu.{key} must be a non-empty string")
+    expected_flags = ["-C", f"target-cpu={cpu['baseline']}"]
+    if cpu["rustflags"] != expected_flags:
+        raise PolicyError(f"cpu.rustflags must be exactly {expected_flags!r}")
+    for key in ("target_triple", "cargo_profile", "artifact_dir", "image_arch"):
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+", cpu[key]):
+            raise PolicyError(f"cpu.{key} contains unsafe characters")
     return policy
-
-
-def select_profile(policy: Mapping[str, Any], name: str) -> dict[str, Any]:
-    try:
-        profile = policy["profiles"][name]
-    except KeyError as error:
-        known = ", ".join(sorted(policy["profiles"]))
-        raise PolicyError(f"unknown CPU packaging profile {name!r}; expected one of: {known}") from error
-    return dict(profile)
 
 
 def canonical_features(raw: str) -> list[str]:
@@ -131,18 +113,15 @@ def canonical_features(raw: str) -> list[str]:
     return sorted(set(features))
 
 
-def policy_snapshot(name: str, profile: Mapping[str, Any]) -> dict[str, Any]:
+def cpu_snapshot(cpu: Mapping[str, Any]) -> dict[str, Any]:
     return {
-        "name": name,
-        "kind": profile["kind"],
-        "declared_baseline": profile["declared_baseline"],
-        "target_triple": profile["target_triple"],
-        "effective_rustflags": list(profile["rustflags"]),
-        "cargo_profile": profile["cargo_profile"],
-        "artifact_dir": profile["artifact_dir"],
-        "image_tag_suffix": profile["image_tag_suffix"],
-        "image_arch": profile["image_arch"],
-        "deployment_requirement": profile["deployment_requirement"],
+        "baseline": cpu["baseline"],
+        "target_triple": cpu["target_triple"],
+        "effective_rustflags": list(cpu["rustflags"]),
+        "cargo_profile": cpu["cargo_profile"],
+        "artifact_dir": cpu["artifact_dir"],
+        "image_arch": cpu["image_arch"],
+        "deployment_requirement": cpu["deployment_requirement"],
     }
 
 
@@ -251,8 +230,7 @@ def atomic_json(path: Path, value: Mapping[str, Any]) -> None:
 def create_build_provenance(
     *,
     policy_path: Path,
-    profile_name: str,
-    profile: Mapping[str, Any],
+    cpu: Mapping[str, Any],
     features: Sequence[str],
     binary: Path,
     output: Path,
@@ -274,7 +252,7 @@ def create_build_provenance(
             sorted(load_policy(policy_path)["clean_environment"]["fixed_build_environment"].items())
         ),
         "fixed_tool_versions": dict(fixed_tool_versions),
-        "cpu_profile": policy_snapshot(profile_name, profile),
+        "cpu": cpu_snapshot(cpu),
         "features": list(features),
         "feature_string": ",".join(features),
         "binary_name": SERVER_BINARY,
@@ -302,8 +280,7 @@ def verify_build_provenance(
     *,
     policy_path: Path,
     policy: Mapping[str, Any],
-    profile_name: str,
-    profile: Mapping[str, Any],
+    cpu: Mapping[str, Any],
     features: Sequence[str],
     binary: Path,
     provenance_path: Path,
@@ -316,7 +293,7 @@ def verify_build_provenance(
         "fixed_build_environment": dict(
             sorted(policy["clean_environment"]["fixed_build_environment"].items())
         ),
-        "cpu_profile": policy_snapshot(profile_name, profile),
+        "cpu": cpu_snapshot(cpu),
         "features": list(features),
         "feature_string": ",".join(features),
         "binary_name": SERVER_BINARY,
@@ -344,14 +321,12 @@ def verify_build_provenance(
 
 
 def write_labels(path: Path, provenance: Mapping[str, Any]) -> None:
-    profile = provenance["cpu_profile"]
+    cpu = provenance["cpu"]
     values = {
         "binary_sha256": provenance["binary_sha256"],
-        "cpu_baseline": profile["declared_baseline"],
-        "cpu_arch": profile["image_arch"],
-        "cpu_profile": profile["name"],
-        "cpu_profile_kind": profile["kind"],
-        "cpu_target": profile["target_triple"],
+        "cpu_baseline": cpu["baseline"],
+        "cpu_arch": cpu["image_arch"],
+        "cpu_target": cpu["target_triple"],
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("".join(f"{key}={values[key]}\n" for key in sorted(values)), encoding="utf-8")
@@ -374,14 +349,12 @@ def parse_labels(path: Path) -> dict[str, str]:
 
 
 def verify_staged_labels(provenance: Mapping[str, Any], labels: Mapping[str, str]) -> None:
-    profile = provenance.get("cpu_profile", {})
+    cpu = provenance.get("cpu", {})
     expected = {
         "binary_sha256": provenance.get("binary_sha256"),
-        "cpu_baseline": profile.get("declared_baseline"),
-        "cpu_arch": profile.get("image_arch"),
-        "cpu_profile": profile.get("name"),
-        "cpu_profile_kind": profile.get("kind"),
-        "cpu_target": profile.get("target_triple"),
+        "cpu_baseline": cpu.get("baseline"),
+        "cpu_arch": cpu.get("image_arch"),
+        "cpu_target": cpu.get("target_triple"),
     }
     if provenance.get("provenance_kind") != "staged-image-artifact":
         raise PolicyError("image provenance must describe a staged-image-artifact")
@@ -392,18 +365,15 @@ def verify_staged_labels(provenance: Mapping[str, Any], labels: Mapping[str, str
 
 def command_describe(args: argparse.Namespace) -> None:
     policy = load_policy(args.policy)
-    profile = select_profile(policy, args.profile)
+    cpu = policy["cpu"]
     values = {
-        "CPU_POLICY_PROFILE": args.profile,
-        "CPU_PROFILE_KIND": profile["kind"],
-        "CPU_BASELINE": profile["declared_baseline"],
-        "CPU_TARGET_TRIPLE": profile["target_triple"],
-        "CPU_CARGO_PROFILE": profile["cargo_profile"],
-        "CPU_ARTIFACT_DIR": profile["artifact_dir"],
-        "CPU_IMAGE_TAG_SUFFIX": profile["image_tag_suffix"],
-        "CPU_IMAGE_ARCH": profile["image_arch"],
-        "CPU_DEPLOYMENT_REQUIREMENT": profile["deployment_requirement"],
-        "CPU_RUSTFLAGS_JSON": json.dumps(profile["rustflags"], separators=(",", ":")),
+        "CPU_BASELINE": cpu["baseline"],
+        "CPU_TARGET_TRIPLE": cpu["target_triple"],
+        "CPU_CARGO_PROFILE": cpu["cargo_profile"],
+        "CPU_ARTIFACT_DIR": cpu["artifact_dir"],
+        "CPU_IMAGE_ARCH": cpu["image_arch"],
+        "CPU_DEPLOYMENT_REQUIREMENT": cpu["deployment_requirement"],
+        "CPU_RUSTFLAGS_JSON": json.dumps(cpu["rustflags"], separators=(",", ":")),
     }
     for key, value in values.items():
         print(f"{key}={shlex.quote(value)}")
@@ -411,7 +381,6 @@ def command_describe(args: argparse.Namespace) -> None:
 
 def command_check_env(args: argparse.Namespace) -> None:
     policy = load_policy(args.policy)
-    select_profile(policy, args.profile)
     reject_ambient_overrides(policy)
     print("OK: ambient packaging environment contains no codegen/config overrides.")
 
@@ -423,7 +392,7 @@ def command_normalize_features(args: argparse.Namespace) -> None:
 def command_build(args: argparse.Namespace) -> None:
     policy_path = args.policy.resolve()
     policy = load_policy(policy_path)
-    profile = select_profile(policy, args.profile)
+    cpu = policy["cpu"]
     reject_ambient_overrides(policy)
     features = canonical_features(args.features)
     explicit = parse_explicit_env(policy, args.explicit_env)
@@ -434,12 +403,12 @@ def command_build(args: argparse.Namespace) -> None:
         raise PolicyError("cargo and rustc must be available on PATH")
 
     target_root = args.target_root.resolve()
-    cargo_target_dir = target_root / profile["artifact_dir"]
+    cargo_target_dir = target_root / cpu["artifact_dir"]
     cargo_home = target_root / ".cargo-home"
     prepare_clean_cargo_home(cargo_home)
     environment = clean_build_environment(policy, cargo_home, explicit)
-    target = profile["target_triple"]
-    rustflags_config = json.dumps(profile["rustflags"], separators=(",", ":"))
+    target = cpu["target_triple"]
+    rustflags_config = json.dumps(cpu["rustflags"], separators=(",", ":"))
     command = [
         cargo_path,
         "--config",
@@ -451,7 +420,7 @@ def command_build(args: argparse.Namespace) -> None:
         str(args.manifest.resolve()),
         "--locked",
         "--profile",
-        profile["cargo_profile"],
+        cpu["cargo_profile"],
         "--target",
         target,
         "--target-dir",
@@ -473,12 +442,11 @@ def command_build(args: argparse.Namespace) -> None:
         except (OSError, subprocess.CalledProcessError) as error:
             raise PolicyError(f"canonical Cargo build failed: {error}") from error
 
-        binary = cargo_target_dir / target / profile["cargo_profile"] / SERVER_BINARY
+        binary = cargo_target_dir / target / cpu["cargo_profile"] / SERVER_BINARY
         provenance_path = binary.with_name(binary.name + ".cpu-provenance.json")
         create_build_provenance(
             policy_path=policy_path,
-            profile_name=args.profile,
-            profile=profile,
+            cpu=cpu,
             features=features,
             binary=binary,
             output=provenance_path,
@@ -496,13 +464,12 @@ def command_build(args: argparse.Namespace) -> None:
 def command_verify_build(args: argparse.Namespace) -> None:
     policy_path = args.policy.resolve()
     policy = load_policy(policy_path)
-    profile = select_profile(policy, args.profile)
+    cpu = policy["cpu"]
     features = canonical_features(args.features)
     verify_build_provenance(
         policy_path=policy_path,
         policy=policy,
-        profile_name=args.profile,
-        profile=profile,
+        cpu=cpu,
         features=features,
         binary=args.binary.resolve(),
         provenance_path=args.provenance.resolve(),
@@ -513,13 +480,12 @@ def command_verify_build(args: argparse.Namespace) -> None:
 def command_stage(args: argparse.Namespace) -> None:
     policy_path = args.policy.resolve()
     policy = load_policy(policy_path)
-    profile = select_profile(policy, args.profile)
+    cpu = policy["cpu"]
     features = canonical_features(args.features)
     build = verify_build_provenance(
         policy_path=policy_path,
         policy=policy,
-        profile_name=args.profile,
-        profile=profile,
+        cpu=cpu,
         features=features,
         binary=args.source_binary.resolve(),
         provenance_path=args.build_provenance.resolve(),
@@ -551,8 +517,6 @@ def command_verify_image_inputs(args: argparse.Namespace) -> None:
     expected_cli = {
         "cpu_baseline": args.baseline,
         "cpu_arch": args.arch,
-        "cpu_profile": args.profile,
-        "cpu_profile_kind": args.profile_kind,
         "cpu_target": args.target,
         "binary_sha256": args.binary_sha256,
     }
@@ -574,11 +538,9 @@ def parser() -> argparse.ArgumentParser:
     subparsers = result.add_subparsers(dest="command", required=True)
 
     describe = subparsers.add_parser("describe")
-    describe.add_argument("--profile", default="portable")
     describe.set_defaults(function=command_describe)
 
     check_env = subparsers.add_parser("check-env")
-    check_env.add_argument("--profile", default="portable")
     check_env.set_defaults(function=command_check_env)
 
     features = subparsers.add_parser("normalize-features")
@@ -586,7 +548,6 @@ def parser() -> argparse.ArgumentParser:
     features.set_defaults(function=command_normalize_features)
 
     build = subparsers.add_parser("build")
-    build.add_argument("--profile", default="portable")
     build.add_argument("--features", required=True)
     build.add_argument("--target-root", type=Path, required=True)
     build.add_argument("--manifest", type=Path, required=True)
@@ -594,14 +555,12 @@ def parser() -> argparse.ArgumentParser:
     build.set_defaults(function=command_build)
 
     verify = subparsers.add_parser("verify-build")
-    verify.add_argument("--profile", default="portable")
     verify.add_argument("--features", required=True)
     verify.add_argument("--binary", type=Path, required=True)
     verify.add_argument("--provenance", type=Path, required=True)
     verify.set_defaults(function=command_verify_build)
 
     stage = subparsers.add_parser("stage")
-    stage.add_argument("--profile", default="portable")
     stage.add_argument("--features", required=True)
     stage.add_argument("--source-binary", type=Path, required=True)
     stage.add_argument("--staged-binary", type=Path, required=True)
@@ -615,8 +574,6 @@ def parser() -> argparse.ArgumentParser:
     image.add_argument("--labels", type=Path, required=True)
     image.add_argument("--baseline")
     image.add_argument("--arch")
-    image.add_argument("--profile")
-    image.add_argument("--profile-kind")
     image.add_argument("--target")
     image.add_argument("--binary-sha256")
     image.add_argument("--provenance-sha256")

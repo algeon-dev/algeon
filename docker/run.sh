@@ -4,7 +4,6 @@
 # Usage:
 #   bash docker/run.sh             # start the server
 #   bash docker/run.sh --dry-run   # print the docker run command without executing
-#   NEXUS_SERVER_IMAGE=datafusion-nexus-server:x86-64-v3-tuned bash docker/run.sh
 #
 # AWS credentials (short-lived STS tokens) must be in the host environment:
 #   export AWS_ACCESS_KEY_ID=...

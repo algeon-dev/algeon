@@ -98,34 +98,23 @@ bash docker/build-image.sh
 
 Skipping compilation does not trust an arbitrary `target/release` binary. It
 requires an artifact created by the canonical packaging helper whose binary
-hash, policy hash, features, profile, target, and codegen flags still agree.
+hash, policy hash, features, target, and codegen flags still agree.
 
-Redistributable builds use the declarative `portable` profile in
-`.config/policies/cpu-packaging.toml`. The helper rejects ambient Rust/C/C++ codegen and
-Cargo target/profile overrides wholesale, then invokes Cargo from an isolated
-working directory and clean `CARGO_HOME` with the policy's exact target triple
-and `target-cpu=x86-64-v4`. The resulting `docker/dist/cpu-provenance.json`
-records the exact rustc/Cargo versions, target, effective codegen flags,
-declared baseline, features/profile, policy hash, and binary hash. Docker
-hard-fails if its baseline/profile/target labels or hashes disagree with that
-provenance. `CPU_BINARY_SHA256` is the checksum of the staged server binary;
+Docker packaging always builds a clean `x86-64-v4` server artifact. The helper
+rejects ambient Rust/C/C++ codegen and Cargo target/profile overrides, then
+invokes Cargo from an isolated working directory and clean `CARGO_HOME` with
+the fixed target triple and `target-cpu=x86-64-v4`. The resulting
+`docker/dist/cpu-provenance.json` records the exact rustc/Cargo versions,
+target, effective codegen flags, features, policy hash, and binary hash. Docker
+hard-fails if its baseline, target, or hashes disagree with that provenance.
+`CPU_BINARY_SHA256` is the checksum of the staged server binary;
 `docker/build-image.sh` supplies it automatically.
 
 :::warning[Build machine versus target host CPU]
-The default build targets x86-64-v4. Both the build machine and every target
-host must support that instruction set; otherwise the binary may terminate
-with `SIGILL` before `main`.
+This image targets x86-64-v4. Both the build machine and every target host must
+support that instruction set; otherwise the binary may terminate with `SIGILL`
+before `main`.
 :::
-
-For a v3-compatible artifact, use the separate profile:
-
-```bash
-CPU_PACKAGE_PROFILE=tuned-local-v3 bash docker/stage-docker-payload.sh
-bash docker/build-image.sh
-```
-
-Deploy that image only to full x86-64-v3 hosts and never retag it as the
-default `datafusion-nexus-server:x86-64-v4` image.
 
 ## Run the server
 
@@ -156,7 +145,7 @@ docker ps --filter ancestor=datafusion-nexus-server:x86-64-v4
 host networking, enables cuGraph SQL by default, sets bounded native memory
 knobs, and wires the local Iceberg REST/RustFS defaults. It defaults to
 `datafusion-nexus-server:x86-64-v4`; set `NEXUS_SERVER_IMAGE` explicitly for a
-tuned artifact:
+different repository or tag:
 
 ```bash
 flock /tmp/cudf-gpu.lock bash docker/run.sh
