@@ -62,6 +62,12 @@ pub(in crate::runtime::query_service) struct QueryServiceInner {
     direct_placement_resolution_failure: AtomicBool,
     #[cfg(test)]
     direct_provisional_cleanup_pause: Mutex<Option<Arc<DirectProvisionalCleanupPause>>>,
+    #[cfg(test)]
+    pending_preflight_resolver_calls: AtomicUsize,
+    #[cfg(test)]
+    pending_preflight_pause: Mutex<Option<Arc<PendingPreflightPause>>>,
+    #[cfg(test)]
+    pending_preflight_failure: AtomicBool,
     pub(in crate::runtime::query_service) next_admission_request_id: AtomicU64,
     /// Monotonic FIFO submission identity, independent of eventual admission order.
     pub(in crate::runtime::query_service) next_submission_seq: AtomicU64,
@@ -72,6 +78,39 @@ impl QueryServiceInner {
     pub(in crate::runtime::query_service) fn notify_admission_available(&self) {
         self.admission_available.notify_all();
         self.admission_notify.notify_waiters();
+    }
+
+    #[cfg(test)]
+    pub(in crate::runtime::query_service) fn pending_preflight_resolver_calls(&self) -> usize {
+        self.pending_preflight_resolver_calls.load(Ordering::Acquire)
+    }
+
+    #[cfg(test)]
+    pub(in crate::runtime::query_service) fn reset_pending_preflight_resolver_calls(&self) {
+        self.pending_preflight_resolver_calls.store(0, Ordering::Release);
+    }
+
+    #[cfg(test)]
+    pub(in crate::runtime::query_service) fn pause_pending_preflight_for_test(&self) -> TestPauseHandle {
+        let (entered_sender, entered_receiver) = std::sync::mpsc::sync_channel(1);
+        let (release_sender, release_receiver) = std::sync::mpsc::sync_channel(1);
+        *self.pending_preflight_pause.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some(Arc::new(PendingPreflightPause { entered: entered_sender, release: Mutex::new(release_receiver) }));
+        TestPauseHandle::new("pending preflight", entered_receiver, release_sender)
+    }
+
+    #[cfg(test)]
+    pub(in crate::runtime::query_service) fn before_pending_preflight_resolution(&self) {
+        self.pending_preflight_resolver_calls.fetch_add(1, Ordering::AcqRel);
+        let pause = self.pending_preflight_pause.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+        if let Some(pause) = pause {
+            pause.wait();
+        }
+    }
+
+    #[cfg(test)]
+    pub(in crate::runtime::query_service) fn fail_next_pending_preflight_for_test(&self) {
+        self.pending_preflight_failure.store(true, Ordering::Release);
     }
 
     /// Fails closed when cleanup cannot establish fault isolation.  Ledger
@@ -122,6 +161,25 @@ impl QueryServiceInner {
         if let Some(pause) = pause {
             pause.wait();
         }
+    }
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+struct PendingPreflightPause {
+    entered: std::sync::mpsc::SyncSender<()>,
+    release: Mutex<std::sync::mpsc::Receiver<()>>,
+}
+
+#[cfg(test)]
+impl PendingPreflightPause {
+    fn wait(&self) {
+        self.entered.send(()).expect("pending preflight pause receiver remains live");
+        self.release
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .recv()
+            .expect("pending preflight pause is released");
     }
 }
 

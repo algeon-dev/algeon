@@ -59,6 +59,57 @@ pub(super) struct AdmissionLifecycleTracker {
     state: Arc<Mutex<AdmissionLifecycleTrackerState>>,
 }
 
+#[derive(Debug)]
+pub(super) struct PendingPreflightReservation {
+    service: Weak<QueryServiceInner>,
+    submission_seq: u64,
+    armed: bool,
+}
+
+impl PendingPreflightReservation {
+    pub(super) fn new(service: Weak<QueryServiceInner>, submission_seq: u64) -> Self {
+        Self { service, submission_seq, armed: true }
+    }
+
+    pub(super) const fn submission_seq(&self) -> u64 {
+        self.submission_seq
+    }
+
+    pub(super) fn release(mut self) {
+        self.release_if_armed();
+    }
+
+    pub(super) fn convert_locked(mut self, state: &mut AdmissionState) {
+        let removed = state.pending_preflight.remove(&self.submission_seq);
+        self.armed = false;
+        assert!(removed, "pending preflight sequence must be reserved before conversion");
+    }
+
+    fn release_if_armed(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let Some(service) = self.service.upgrade() else {
+            self.armed = false;
+            return;
+        };
+        let removed = match service.admission.lock() {
+            Ok(mut state) => state.pending_preflight.remove(&self.submission_seq),
+            Err(error) => error.into_inner().pending_preflight.remove(&self.submission_seq),
+        };
+        self.armed = false;
+        if removed {
+            service.notify_admission_available();
+        }
+    }
+}
+
+impl Drop for PendingPreflightReservation {
+    fn drop(&mut self) {
+        self.release_if_armed();
+    }
+}
+
 impl AdmissionLifecycleTracker {
     pub(super) fn begin_provisional(&self, service: Weak<QueryServiceInner>) -> AdmissionTicket {
         let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -215,6 +266,7 @@ impl Drop for AdmissionTicket {
 pub(super) struct AdmissionState {
     pub(super) lifecycle: AdmissionLifecycleTracker,
     pub(super) queued: VecDeque<AdmissionRequest>,
+    pub(super) pending_preflight: BTreeSet<u64>,
     /// Largest queue depth observed by this service since construction.
     ///
     /// The admission mutex owns both the queue and this value, so snapshots
@@ -227,7 +279,12 @@ pub(super) struct AdmissionState {
 impl AdmissionState {
     /// Inserts a request and records the resulting queue high-water mark.
     pub(super) fn enqueue_request(&mut self, request: AdmissionRequest) {
-        self.queued.push_back(request);
+        let position = self
+            .queued
+            .iter()
+            .position(|queued| queued.submission_seq > request.submission_seq)
+            .unwrap_or(self.queued.len());
+        self.queued.insert(position, request);
         self.record_queue_depth();
     }
 
@@ -1183,6 +1240,15 @@ pub(super) fn service_overloaded_error(reason: &'static str, queued_queries: usi
     .with_fact("reason", reason)
     .with_fact("queued_queries", queued_queries)
     .with_fact("max_waiters", max_waiters)
+}
+
+pub(super) fn admission_queue_full_error(
+    queued_queries: usize,
+    max_waiters: usize,
+    pending_preflight: usize,
+) -> QueryError {
+    service_overloaded_error("admission_queue_full", queued_queries, max_waiters)
+        .with_fact("pending_preflight", pending_preflight)
 }
 
 pub(super) fn service_closed_error() -> QueryError {

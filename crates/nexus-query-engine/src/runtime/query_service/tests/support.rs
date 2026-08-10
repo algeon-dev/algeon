@@ -97,6 +97,26 @@ impl AdmissionTestController {
         self.service.inner.admission.lock().unwrap_or_else(std::sync::PoisonError::into_inner).queued.len()
     }
 
+    fn pending_preflight_len(&self) -> usize {
+        self.service.inner.admission.lock().unwrap_or_else(std::sync::PoisonError::into_inner).pending_preflight.len()
+    }
+
+    fn pending_preflight_resolver_calls(&self) -> usize {
+        self.service.inner.pending_preflight_resolver_calls()
+    }
+
+    fn reset_pending_preflight_resolver_calls(&self) {
+        self.service.inner.reset_pending_preflight_resolver_calls();
+    }
+
+    fn pause_pending_preflight(&self) -> crate::runtime::query_service::service::TestPauseHandle {
+        self.service.inner.pause_pending_preflight_for_test()
+    }
+
+    fn fail_next_pending_preflight(&self) {
+        self.service.inner.fail_next_pending_preflight_for_test();
+    }
+
     fn poison_admission(&self) {
         let service = self.service.clone();
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
@@ -513,6 +533,17 @@ fn wait_for_exact_queued_len(service: &AdmissionTestController, expected: usize)
         }
         assert!(Instant::now() < deadline, "timed out waiting for {expected} queued admissions; last queued={queued}");
         std::thread::sleep(Duration::from_millis(5));
+    }
+}
+fn wait_for_pending_preflight_len(service: &AdmissionTestController, expected: usize) {
+    let deadline = Instant::now() + Duration::from_secs(1);
+    loop {
+        let pending = service.pending_preflight_len();
+        if pending == expected {
+            return;
+        }
+        assert!(Instant::now() < deadline, "timed out waiting for {expected} pending preflight reservations; last pending={pending}");
+        std::thread::yield_now();
     }
 }
 fn first_memory_governor_report(service: &AdmissionTestController) -> DeviceLedgerReport {

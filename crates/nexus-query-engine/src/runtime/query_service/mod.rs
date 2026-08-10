@@ -3,7 +3,7 @@
 #[cfg(test)]
 use std::sync::atomic::AtomicUsize;
 use std::{
-    collections::{BTreeMap, HashMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
     sync::{
         Arc, Condvar, Mutex, OnceLock, Weak,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -70,10 +70,11 @@ mod tests;
 
 pub(crate) use admission::QueryAdmissionWaiter;
 use admission::{
-    AdmissionRequest, AdmissionState, DeviceAdmissionEntries, DeviceAdmissionEntry, PlacedQuery, QueryCompletion,
-    QueuedAdmissionTerminal, admission_cancellation_or_deadline_error, finish_closed_queued_requests,
-    finish_expired_queued_requests, finish_removed_request_cancelled, finish_removed_request_error,
-    remove_queued_request, service_closed_error, service_overloaded_error,
+    AdmissionRequest, AdmissionState, DeviceAdmissionEntries, DeviceAdmissionEntry, PendingPreflightReservation,
+    PlacedQuery, QueryCompletion, QueuedAdmissionTerminal, admission_cancellation_or_deadline_error,
+    admission_queue_full_error, finish_closed_queued_requests, finish_expired_queued_requests,
+    finish_removed_request_cancelled, finish_removed_request_error, remove_queued_request, service_closed_error,
+    service_overloaded_error,
 };
 pub use config::{QueryExecutionConfig, QueueBounds};
 use device_waiters::{

@@ -21,6 +21,18 @@ impl QueryService {
         candidate_ordinals: &[usize],
         policy: AttemptReservationPolicy,
     ) -> Result<(DeviceAdmissionEntries, Vec<usize>)> {
+        #[cfg(test)]
+        {
+            self.inner.before_pending_preflight_resolution();
+            if self.inner.pending_preflight_failure.swap(false, Ordering::AcqRel) {
+                return Err(QueryError::new(
+                    QueryErrorCode::UnsupportedPlanShape,
+                    "nexus_query_engine.query_service.admission",
+                    "injected device-specific admission preflight failure",
+                )
+                .with_fact("reason", "injected_pending_preflight_failure"));
+            }
+        }
         let proof = request.planned_capability_proof();
         self.resolve_device_admission_entries_with(candidate_ordinals, |ordinal| match proof {
             Some(proof) => (|| {
@@ -103,6 +115,157 @@ pub(in crate::runtime::query_service) struct PlacedAdmissionCommit {
 }
 
 impl QueryService {
+    fn reserve_pending_preflight_for_request(
+        &self,
+        observation: &RuntimeObservationHandle,
+        admission_request_id: AdmissionRequestId,
+        execution_cancellation: &ExecutionCancellation,
+        deadline: Instant,
+    ) -> Result<PendingPreflightReservation> {
+        let mut state = self.lock_admission()?;
+        let sweep = self.sweep_expired_queued_requests_locked(&mut state);
+        if !sweep.is_empty() {
+            // Queue-sweep completion may reenter service shutdown, so release the admission lock first.
+            drop(state);
+            sweep.finish();
+            state = self.lock_admission()?;
+        }
+        if let Some(error) = self.admission_terminal_rejection(&state) {
+            record_admission_lifecycle(
+                observation,
+                admission_request_id,
+                admission_rejection(&error),
+                state.queued.len(),
+                None,
+                None,
+            );
+            return Err(error);
+        }
+        if execution_cancellation.is_cancelled() {
+            let error = admission_cancellation_or_deadline_error(execution_cancellation);
+            record_admission_lifecycle(
+                observation,
+                admission_request_id,
+                AdmissionLifecycleState::CancellationRequested,
+                state.queued.len(),
+                None,
+                None,
+            );
+            record_admission_lifecycle(
+                observation,
+                admission_request_id,
+                AdmissionLifecycleState::Cancelled,
+                state.queued.len(),
+                None,
+                None,
+            );
+            return Err(error);
+        }
+        if Instant::now() >= deadline {
+            let error =
+                service_overloaded_error("queue_wait_elapsed", state.queued.len(), self.inner.queue_bounds.max_waiters);
+            record_admission_lifecycle(
+                observation,
+                admission_request_id,
+                AdmissionLifecycleState::TimedOut,
+                state.queued.len(),
+                None,
+                None,
+            );
+            return Err(error);
+        }
+        let Some(pending) = self.reserve_pending_preflight_locked(&mut state) else {
+            let error = admission_queue_full_error(
+                state.queued.len(),
+                self.inner.queue_bounds.max_waiters,
+                state.pending_preflight.len(),
+            );
+            record_admission_lifecycle(
+                observation,
+                admission_request_id,
+                admission_rejection(&error),
+                state.queued.len(),
+                None,
+                None,
+            );
+            return Err(error);
+        };
+        Ok(pending)
+    }
+
+    fn convert_pending_preflight_to_waiter(
+        &self,
+        request: AdmissionRequest,
+        pending: PendingPreflightReservation,
+    ) -> Result<std::sync::MutexGuard<'_, AdmissionState>> {
+        let mut state = self.lock_admission()?;
+        let error = if let Some(error) = self.admission_terminal_rejection(&state) {
+            record_admission_lifecycle(
+                &request.observation,
+                request.admission_request_id,
+                admission_rejection(&error),
+                state.queued.len(),
+                None,
+                None,
+            );
+            Some(error)
+        } else if request.execution_cancellation.is_cancelled() {
+            let error = admission_cancellation_or_deadline_error(&request.execution_cancellation);
+            record_admission_lifecycle(
+                &request.observation,
+                request.admission_request_id,
+                AdmissionLifecycleState::CancellationRequested,
+                state.queued.len(),
+                None,
+                None,
+            );
+            record_admission_lifecycle(
+                &request.observation,
+                request.admission_request_id,
+                AdmissionLifecycleState::Cancelled,
+                state.queued.len(),
+                None,
+                None,
+            );
+            Some(error)
+        } else if Instant::now() >= request.deadline {
+            let error =
+                service_overloaded_error("queue_wait_elapsed", state.queued.len(), self.inner.queue_bounds.max_waiters);
+            record_admission_lifecycle(
+                &request.observation,
+                request.admission_request_id,
+                AdmissionLifecycleState::TimedOut,
+                state.queued.len(),
+                None,
+                None,
+            );
+            Some(error)
+        } else {
+            None
+        };
+        if let Some(error) = error {
+            // Completion may reenter shutdown, so release the lock and pending reservation first.
+            drop(state);
+            pending.release();
+            finish_removed_request_error(Some(request), &error);
+            return Err(error);
+        }
+        let observation = request.observation.clone();
+        let admission_request_id = request.admission_request_id;
+        state.enqueue_request(request);
+        pending.convert_locked(&mut state);
+        self.inner.notify_admission_available();
+        record_admission_lifecycle(
+            &observation,
+            admission_request_id,
+            AdmissionLifecycleState::Enqueued,
+            state.queued.len(),
+            None,
+            None,
+        );
+        Ok(state)
+    }
+
     #[cfg(test)]
     pub fn admit_query(&self) -> Result<QueryHandle> {
         self.admit_query_with_request(QueryAdmissionRequest::new())
@@ -207,6 +370,21 @@ impl QueryService {
         let deadline = queue_deadline.map_or(configured_deadline, |deadline| deadline.min(configured_deadline));
         let required_capabilities = super::placement::required_capabilities_for_placement(&requirement);
         let candidate_ordinals = self.compatible_devices_for_capabilities(&required_capabilities)?;
+        let mut slot_notifications = PendingDeviceSlotNotifications::default();
+        let pending = match self.reserve_pending_preflight_for_request(
+            observation_owner.as_ref(),
+            admission_request_id,
+            &execution_cancellation,
+            deadline,
+        ) {
+            Ok(pending) => pending,
+            Err(error) => {
+                completion.finish_error(&error);
+                return Err(error);
+            },
+        };
+        let submission_seq = pending.submission_seq();
+
         let (device_entries, compatible_devices) = match self.resolve_device_admission_entries(
             &request,
             &requirement,
@@ -223,6 +401,7 @@ impl QueryService {
                     None,
                     None,
                 );
+                pending.release();
                 completion.finish_error(&error);
                 return Err(error);
             },
@@ -236,6 +415,7 @@ impl QueryService {
                 None,
                 None,
             );
+            pending.release();
             completion.finish_error(&error);
             return Err(error);
         }
@@ -246,64 +426,16 @@ impl QueryService {
             completion,
             submitted_plan_capability_evidence,
             device_entries,
-            submission_seq: self.inner.next_submission_seq.fetch_add(1, Ordering::Relaxed),
+            submission_seq,
             compatible_devices,
             overtakes_remaining: self.inner.queue_bounds.max_overtakes_per_waiter,
             protected_device: None,
             deadline,
-            execution_cancellation,
+            execution_cancellation: execution_cancellation.clone(),
             terminal: QueuedAdmissionTerminal::default(),
         };
         let terminal = request.terminal.clone();
-
-        let mut slot_notifications = PendingDeviceSlotNotifications::default();
-        let mut state = self.lock_admission()?;
-        let sweep = self.sweep_expired_queued_requests_locked(&mut state);
-        if !sweep.is_empty() {
-            drop(state);
-            sweep.finish();
-            state = self.lock_admission()?;
-        }
-        if let Some(error) = self.admission_terminal_rejection(&state) {
-            record_admission_lifecycle(
-                observation_owner.as_ref(),
-                admission_request_id,
-                admission_rejection(&error),
-                state.queued.len(),
-                None,
-                None,
-            );
-            drop(state);
-            finish_removed_request_error(Some(request), &error);
-            return Err(error);
-        }
-        if state.queued.len() >= self.inner.queue_bounds.max_waiters {
-            let error = service_overloaded_error(
-                "admission_queue_full",
-                state.queued.len(),
-                self.inner.queue_bounds.max_waiters,
-            );
-            record_admission_lifecycle(
-                observation_owner.as_ref(),
-                admission_request_id,
-                admission_rejection(&error),
-                state.queued.len(),
-                None,
-                None,
-            );
-            drop(state);
-            finish_removed_request_error(Some(request), &error);
-            return Err(error);
-        }
-        state.enqueue_request(request);
-        record_admission_lifecycle(
-            observation_owner.as_ref(),
-            admission_request_id,
-            AdmissionLifecycleState::Enqueued,
-            state.queued.len(),
-            None,
-            None,
-        );
+        let mut state = self.convert_pending_preflight_to_waiter(request, pending)?;
 
         loop {
             if let Some(error) = terminal.take() {
@@ -715,6 +847,20 @@ impl QueryService {
         let deadline = queue_deadline.map_or(configured_deadline, |deadline| deadline.min(configured_deadline));
         let required_capabilities = super::placement::required_capabilities_for_placement(&requirement);
         let candidate_ordinals = self.compatible_devices_for_capabilities(&required_capabilities)?;
+        let pending = match self.reserve_pending_preflight_for_request(
+            observation_owner.as_ref(),
+            admission_request_id,
+            &execution_cancellation,
+            deadline,
+        ) {
+            Ok(pending) => pending,
+            Err(error) => {
+                completion.finish_error(&error);
+                return Err(error);
+            },
+        };
+        let submission_seq = pending.submission_seq();
+
         let (device_entries, compatible_devices) = match self.resolve_device_admission_entries(
             &request,
             &requirement,
@@ -731,6 +877,7 @@ impl QueryService {
                     None,
                     None,
                 );
+                pending.release();
                 completion.finish_error(&error);
                 return Err(error);
             },
@@ -744,85 +891,30 @@ impl QueryService {
                 None,
                 None,
             );
+            pending.release();
             completion.finish_error(&error);
             return Err(error);
         }
-        let mut state = self.lock_admission()?;
-        if let Some(error) = self.admission_terminal_rejection(&state) {
-            record_admission_lifecycle(
-                observation_owner.as_ref(),
-                admission_request_id,
-                admission_rejection(&error),
-                state.queued.len(),
-                None,
-                None,
-            );
-            drop(state);
-            completion.finish_error(&error);
-            return Err(error);
-        }
-        let sweep = self.sweep_expired_queued_requests_locked(&mut state);
-        if !sweep.is_empty() {
-            drop(state);
-            sweep.finish();
-            state = self.lock_admission()?;
-        }
-        if let Some(error) = self.admission_terminal_rejection(&state) {
-            record_admission_lifecycle(
-                observation_owner.as_ref(),
-                admission_request_id,
-                admission_rejection(&error),
-                state.queued.len(),
-                None,
-                None,
-            );
-            drop(state);
-            completion.finish_error(&error);
-            return Err(error);
-        }
-        if state.queued.len() >= self.inner.queue_bounds.max_waiters {
-            let error = service_overloaded_error(
-                "admission_queue_full",
-                state.queued.len(),
-                self.inner.queue_bounds.max_waiters,
-            );
-            record_admission_lifecycle(
-                observation_owner.as_ref(),
-                admission_request_id,
-                admission_rejection(&error),
-                state.queued.len(),
-                None,
-                None,
-            );
-            drop(state);
-            completion.finish_error(&error);
-            return Err(error);
-        }
-        state.enqueue_request(AdmissionRequest {
+
+        let request = AdmissionRequest {
             admission_request_id,
             observation: observation_owner.handle.clone(),
             attempt_id,
             completion,
             submitted_plan_capability_evidence,
             device_entries: device_entries.clone(),
-            submission_seq: self.inner.next_submission_seq.fetch_add(1, Ordering::Relaxed),
+            submission_seq,
             compatible_devices,
             overtakes_remaining: self.inner.queue_bounds.max_overtakes_per_waiter,
             protected_device: None,
             deadline,
             execution_cancellation: execution_cancellation.clone(),
             terminal: QueuedAdmissionTerminal::default(),
-        });
-        let terminal = state.queued.back().expect("queued admission request exists").terminal.clone();
-        record_admission_lifecycle(
-            observation_owner.as_ref(),
-            admission_request_id,
-            AdmissionLifecycleState::Enqueued,
-            state.queued.len(),
-            None,
-            None,
-        );
-        self.inner.notify_admission_available();
+        };
+        let terminal = request.terminal.clone();
+        {
+            let _state = self.convert_pending_preflight_to_waiter(request, pending)?;
+        }
         Ok(QueryAdmissionWaiter {
             service: self.clone(),
             admission_request_id,
@@ -1259,6 +1351,76 @@ impl QueryService {
         let mut slot_notifications = PendingDeviceSlotNotifications::default();
         let required_capabilities = super::placement::required_capabilities_for_placement(&requirement);
         let candidate_ordinals = self.compatible_devices_for_capabilities(&required_capabilities)?;
+        let requested_at = Instant::now();
+        let configured_deadline = requested_at.checked_add(self.inner.queue_bounds.max_wait).unwrap_or(requested_at);
+        let deadline = queue_deadline.map_or(configured_deadline, |deadline| deadline.min(configured_deadline));
+        let mut state = self.lock_admission()?;
+        let sweep = self.sweep_expired_queued_requests_locked(&mut state);
+        if !sweep.is_empty() {
+            // Queue-sweep completion may reenter service shutdown, so release the admission lock first.
+            drop(state);
+            sweep.finish();
+            state = self.lock_admission()?;
+        }
+        if let Some(error) = self.admission_terminal_rejection(&state) {
+            record_admission_lifecycle(
+                observation_owner.as_ref(),
+                admission_request_id,
+                admission_rejection(&error),
+                state.queued.len(),
+                None,
+                None,
+            );
+            // Completion may reenter service shutdown, so release the admission lock first.
+            drop(state);
+            completion.finish_error(&error);
+            return Err(error);
+        }
+        if execution_cancellation.is_cancelled() {
+            let error = admission_cancellation_or_deadline_error(&execution_cancellation);
+            record_admission_lifecycle(
+                observation_owner.as_ref(),
+                admission_request_id,
+                AdmissionLifecycleState::CancellationRequested,
+                state.queued.len(),
+                None,
+                None,
+            );
+            record_admission_lifecycle(
+                observation_owner.as_ref(),
+                admission_request_id,
+                AdmissionLifecycleState::Cancelled,
+                state.queued.len(),
+                None,
+                None,
+            );
+            // Completion may reenter service shutdown, so release the admission lock first.
+            drop(state);
+            completion.finish_error(&error);
+            return Err(error);
+        }
+        if Instant::now() >= deadline {
+            let error =
+                service_overloaded_error("queue_wait_elapsed", state.queued.len(), self.inner.queue_bounds.max_waiters);
+            record_admission_lifecycle(
+                observation_owner.as_ref(),
+                admission_request_id,
+                AdmissionLifecycleState::TimedOut,
+                state.queued.len(),
+                None,
+                None,
+            );
+            // Completion may reenter service shutdown, so release the admission lock first.
+            drop(state);
+            completion.finish_timeout(&error);
+            return Err(error);
+        }
+        if !state.queued.is_empty() || !state.pending_preflight.is_empty() {
+            return Ok(None);
+        }
+        // Device-specific owner preflight must not extend the admission-lock window.
+        drop(state);
+
         let (device_entries, compatible_devices) = match self.resolve_device_admission_entries(
             &request,
             &requirement,
@@ -1291,22 +1453,11 @@ impl QueryService {
             completion.finish_error(&error);
             return Err(error);
         }
+
         let mut state = self.lock_admission()?;
-        if let Some(error) = self.admission_terminal_rejection(&state) {
-            record_admission_lifecycle(
-                observation_owner.as_ref(),
-                admission_request_id,
-                admission_rejection(&error),
-                state.queued.len(),
-                None,
-                None,
-            );
-            drop(state);
-            completion.finish_error(&error);
-            return Err(error);
-        }
         let sweep = self.sweep_expired_queued_requests_locked(&mut state);
         if !sweep.is_empty() {
+            // Queue-sweep completion may reenter service shutdown, so release the admission lock first.
             drop(state);
             sweep.finish();
             state = self.lock_admission()?;
@@ -1320,13 +1471,52 @@ impl QueryService {
                 None,
                 None,
             );
+            // Completion may reenter service shutdown, so release the admission lock first.
             drop(state);
             completion.finish_error(&error);
             return Err(error);
         }
-        if !state.queued.is_empty() {
-            drop(state);
+        if !state.queued.is_empty() || !state.pending_preflight.is_empty() {
             return Ok(None);
+        }
+        if execution_cancellation.is_cancelled() {
+            let error = admission_cancellation_or_deadline_error(&execution_cancellation);
+            record_admission_lifecycle(
+                observation_owner.as_ref(),
+                admission_request_id,
+                AdmissionLifecycleState::CancellationRequested,
+                state.queued.len(),
+                None,
+                None,
+            );
+            record_admission_lifecycle(
+                observation_owner.as_ref(),
+                admission_request_id,
+                AdmissionLifecycleState::Cancelled,
+                state.queued.len(),
+                None,
+                None,
+            );
+            // Completion may reenter service shutdown, so release the admission lock first.
+            drop(state);
+            completion.finish_error(&error);
+            return Err(error);
+        }
+        if Instant::now() >= deadline {
+            let error =
+                service_overloaded_error("queue_wait_elapsed", state.queued.len(), self.inner.queue_bounds.max_waiters);
+            record_admission_lifecycle(
+                observation_owner.as_ref(),
+                admission_request_id,
+                AdmissionLifecycleState::TimedOut,
+                state.queued.len(),
+                None,
+                None,
+            );
+            // Completion may reenter service shutdown, so release the admission lock first.
+            drop(state);
+            completion.finish_timeout(&error);
+            return Err(error);
         }
         let placed_query = match self.try_place_query(
             admission_request_id,
@@ -1345,13 +1535,13 @@ impl QueryService {
                     None,
                     None,
                 );
+                // Completion may reenter service shutdown, so release the admission lock first.
                 drop(state);
                 completion.finish_error(&error);
                 return Err(error);
             },
         };
         let Some(placed_query) = placed_query else {
-            drop(state);
             return Ok(None);
         };
         if let Some(error) = self.admission_terminal_rejection(&state) {
@@ -1363,6 +1553,7 @@ impl QueryService {
                 None,
                 None,
             );
+            // Grant cleanup and completion may reenter shutdown, so release the admission lock first.
             drop(state);
             drop(placed_query);
             completion.finish_error(&error);
@@ -1374,13 +1565,8 @@ impl QueryService {
         let admitted_reservation_envelope = selected_entry.admitted_reservation_envelope.clone();
         let lifecycle_ticket = state.lifecycle.begin_provisional(Arc::downgrade(&self.inner));
         self.inner.notify_admission_available();
+        // Admission commit may wait for resource handoff, so release the controller lock first.
         drop(state);
-        // The try path never waits for queue capacity, but the commit
-        // transaction may briefly wait for a root stream handoff from a
-        // releasing attempt; that wait observes the attempt-wide deadline.
-        let configured_deadline =
-            Instant::now().checked_add(self.inner.queue_bounds.max_wait).unwrap_or_else(Instant::now);
-        let deadline = queue_deadline.map_or(configured_deadline, |deadline| deadline.min(configured_deadline));
         self.commit_placed_admission(PlacedAdmissionCommit {
             placed_query,
             admitted_device_requirements: device_entries
@@ -1620,7 +1806,7 @@ impl QueryService {
         }
         let mut waited_for_quiescence = false;
         loop {
-            if state.lifecycle.is_quiescent() && state.queued.is_empty() {
+            if state.lifecycle.is_quiescent() && state.queued.is_empty() && state.pending_preflight.is_empty() {
                 if waited_for_quiescence && crate::runtime::deadline::deadline_expired(deadline) {
                     return QueryServiceDrainPhaseOutcome::DeadlineElapsed {
                         phase: QueryServiceDrainPhase::AdmissionQuiescence,
