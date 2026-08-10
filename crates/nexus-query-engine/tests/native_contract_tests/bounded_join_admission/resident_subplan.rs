@@ -144,7 +144,7 @@ fn bounded_keyed_hash_join_resident_subplan_pipeline_admission_stays_narrow() {
 
 #[test]
 fn bounded_multi_join_aggregate_over_join_subplan_topk_pipeline_is_executable() {
-    let plan = aggregate_over_join_subplan_topk_plan();
+    let plan = aggregate_over_join_subplan_topk_plan(false);
     let analysis = plan.capability_analysis();
 
     assert!(!plan.capability_analysis().admits_root_join());
@@ -271,7 +271,7 @@ fn bounded_multi_join_aggregate_over_join_subplan_topk_capability_proof_stays_na
 
 #[test]
 fn bounded_multi_join_resident_grouped_aggregate_subquery_filter_pipeline_is_executable() {
-    let plan = resident_grouped_aggregate_subquery_filter_plan();
+    let plan = resident_grouped_aggregate_subquery_filter_plan(false);
 
     assert!(!plan.capability_analysis().admits_root_join());
     assert!(!plan.capability_analysis().admits_single_join_post_root_pipeline());
@@ -305,7 +305,7 @@ fn bounded_multi_join_resident_grouped_aggregate_subquery_filter_pipeline_is_exe
 
 #[test]
 fn bounded_multi_join_resident_grouped_aggregate_subquery_filter_admission_uses_capability_proof() {
-    let plan = resident_grouped_aggregate_subquery_filter_plan();
+    let plan = resident_grouped_aggregate_subquery_filter_plan(false);
     let analysis = plan.capability_analysis();
 
     assert_eq!(
@@ -328,7 +328,7 @@ fn bounded_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_p
     for (variant, plan) in [
         (
             ResidentGroupedAggregateInputPostJoinAggregateTopKVariant::Admitted,
-            resident_grouped_aggregate_input_post_join_aggregate_topk_plan(),
+            resident_grouped_aggregate_input_post_join_aggregate_topk_plan(false),
         ),
         (
             ResidentGroupedAggregateInputPostJoinAggregateTopKVariant::DirectPostJoinAggregateInput,
@@ -401,7 +401,7 @@ fn bounded_hash_join_resident_grouped_aggregate_topk_admission_uses_capability_p
     for (variant, plan) in [
         (
             ResidentGroupedAggregateInputPostJoinAggregateTopKVariant::Admitted,
-            resident_grouped_aggregate_input_post_join_aggregate_topk_plan(),
+            resident_grouped_aggregate_input_post_join_aggregate_topk_plan(false),
         ),
         (
             ResidentGroupedAggregateInputPostJoinAggregateTopKVariant::DirectPostJoinAggregateInput,

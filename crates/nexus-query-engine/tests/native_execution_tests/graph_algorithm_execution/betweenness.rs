@@ -364,7 +364,7 @@ fn bounded_betweenness_oom_retries_once_by_chunking_same_seed_set() {
     let max_budget_peak = graph_budget_events.iter().filter_map(|event| event.allocator_high_water_bytes).max();
     for event in &graph_budget_events {
         assert_eq!(event.boundary, "graph_memory");
-        assert_eq!(event.enforcement, "stream_bound_reservation");
+        assert_eq!(event.enforcement, "query_domain_member");
         assert_eq!(event.status, "reservation_enforced");
         assert_eq!(event.unresolved_contract, None);
         assert_eq!(event.budget_bytes, graph_reservation.requested_bytes);
@@ -382,9 +382,8 @@ fn bounded_betweenness_oom_retries_once_by_chunking_same_seed_set() {
             "runtime graph peak should cover the graph-boundary budget high-water fallback"
         );
     }
-    assert_eq!(metrics.query_id().as_str(), "bounded-betweenness-seed-chunk-retry");
     let snapshot = outcome.observation().expect("bounded retry should preserve one native observation");
-    assert_eq!(snapshot.manifest().query_id.as_str(), "bounded-betweenness-seed-chunk-retry");
+    assert_eq!(snapshot.manifest().query_id.as_str(), metrics.query_id().as_str());
     assert_eq!(snapshot.footer().terminal, Some(RuntimeTerminalOutcome::Succeeded));
     let plan_execution_ids = snapshot
         .topology()

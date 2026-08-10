@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn native_semijoin_reduction_matches_original_execution_on_small_fixture() {
+fn native_semijoin_reduction_preserves_bounded_rejection_for_unsupported_subcontract() {
     let dir = unique_temp_dir("nexus-query-engine-unbounded-semijoin-reduction-parity");
     let a_path = dir.join("a.parquet");
     let b_path = dir.join("b.parquet");
@@ -38,28 +38,19 @@ fn native_semijoin_reduction_matches_original_execution_on_small_fixture() {
     assert_eq!(optimizer_result.diagnostics.semijoin_reduction.applied_count, 1);
 
     let context = backend_context();
-    let original = execute_query_plan(&context, &plan).unwrap();
-    let optimized = execute_query_plan(&context, &optimizer_result.plan).unwrap();
-
-    let QueryOutput::HostArrow(original_batch) = original.output() else {
-        panic!("original semijoin plan should materialize host output");
-    };
-    let QueryOutput::HostArrow(optimized_batch) = optimized.output() else {
-        panic!("optimized semijoin plan should materialize host output");
-    };
-    assert_eq!(original_batch.schema(), optimized_batch.schema());
-    assert_eq!(original_batch.num_columns(), optimized_batch.num_columns());
-    assert_eq!(original_batch.num_rows(), optimized_batch.num_rows());
-    for column_index in 0..original_batch.num_columns() {
+    for candidate in [&plan, &optimizer_result.plan] {
+        let error = match execute_query_plan(&context, candidate) {
+            Ok(_) => panic!("the root full-sort grouped-aggregate subcontract remains unsupported"),
+            Err(error) => error,
+        };
+        assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
+        assert_eq!(error.operation(), "nexus_query_engine.bounded.plan");
+        assert_eq!(error.fact_value("reason"), Some("bounded_join_plan_shape_unsupported"));
         assert_eq!(
-            int32_array(original_batch, column_index).values().as_ref(),
-            int32_array(optimized_batch, column_index).values().as_ref()
+            error.fact_value("bounded_join_rejection_reason"),
+            Some("root_full_sort_join_aggregate_rejects_unsupported_subcontract")
         );
     }
-    assert_eq!(int32_array(optimized_batch, 0).values().as_ref(), &[2]);
-    assert_eq!(int32_array(optimized_batch, 1).values().as_ref(), &[20]);
-    assert_eq!(int32_array(optimized_batch, 2).values().as_ref(), &[2]);
-    assert_eq!(int32_array(optimized_batch, 3).values().as_ref(), &[200]);
 
     fs::remove_dir_all(dir).unwrap();
 }

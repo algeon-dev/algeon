@@ -2,14 +2,14 @@ use nexus_query_engine::source::LocalParquetSource;
 
 use super::*;
 
-pub(crate) fn aggregate_over_join_subplan_topk_plan() -> nexus_query_engine::plan::QueryPlan {
-    aggregate_over_join_subplan_topk_plan_inner(AggregateOverJoinSubplanTopKVariant::Admitted)
+pub(crate) fn aggregate_over_join_subplan_topk_plan(with_source_metadata: bool) -> nexus_query_engine::plan::QueryPlan {
+    aggregate_over_join_subplan_topk_plan_inner(AggregateOverJoinSubplanTopKVariant::Admitted, with_source_metadata)
 }
 
 pub(crate) fn aggregate_over_join_subplan_topk_variant_plan(
     variant: AggregateOverJoinSubplanTopKVariant,
 ) -> nexus_query_engine::plan::QueryPlan {
-    aggregate_over_join_subplan_topk_plan_inner(variant)
+    aggregate_over_join_subplan_topk_plan_inner(variant, false)
 }
 
 /// Mutates the multi-join TopK shape where a grouped aggregate is itself built
@@ -36,14 +36,15 @@ pub(crate) enum AggregateOverJoinSubplanTopKVariant {
 
 fn aggregate_over_join_subplan_topk_plan_inner(
     variant: AggregateOverJoinSubplanTopKVariant,
+    with_source_metadata: bool,
 ) -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
-    let a = source(&mut builder, "aggregate-over-join-topk-a");
-    let b = source(&mut builder, "aggregate-over-join-topk-b");
-    let c = source(&mut builder, "aggregate-over-join-topk-c");
-    let d = source(&mut builder, "aggregate-over-join-topk-d");
-    let e = source(&mut builder, "aggregate-over-join-topk-e");
-    let f = source(&mut builder, "aggregate-over-join-topk-f");
+    let a = source_with_optional_metadata(&mut builder, "aggregate-over-join-topk-a", with_source_metadata);
+    let b = source_with_optional_metadata(&mut builder, "aggregate-over-join-topk-b", with_source_metadata);
+    let c = source_with_optional_metadata(&mut builder, "aggregate-over-join-topk-c", with_source_metadata);
+    let d = source_with_optional_metadata(&mut builder, "aggregate-over-join-topk-d", with_source_metadata);
+    let e = source_with_optional_metadata(&mut builder, "aggregate-over-join-topk-e", with_source_metadata);
+    let f = source_with_optional_metadata(&mut builder, "aggregate-over-join-topk-f", with_source_metadata);
 
     let ab = join(&mut builder, a, b, "ab");
     let left_tree = match variant {
@@ -105,20 +106,37 @@ fn aggregate_over_join_subplan_topk_plan_inner(
     }
 }
 
-pub(crate) fn resident_grouped_aggregate_input_post_join_aggregate_topk_plan() -> nexus_query_engine::plan::QueryPlan {
-    resident_grouped_aggregate_input_post_join_aggregate_topk_variant_plan(
+pub(crate) fn resident_grouped_aggregate_input_post_join_aggregate_topk_plan(
+    with_source_metadata: bool,
+) -> nexus_query_engine::plan::QueryPlan {
+    resident_grouped_aggregate_input_post_join_aggregate_topk_plan_inner(
         ResidentGroupedAggregateInputPostJoinAggregateTopKVariant::Admitted,
+        with_source_metadata,
     )
 }
 
 pub(crate) fn resident_grouped_aggregate_input_post_join_aggregate_topk_variant_plan(
     variant: ResidentGroupedAggregateInputPostJoinAggregateTopKVariant,
 ) -> nexus_query_engine::plan::QueryPlan {
+    resident_grouped_aggregate_input_post_join_aggregate_topk_plan_inner(variant, false)
+}
+
+fn resident_grouped_aggregate_input_post_join_aggregate_topk_plan_inner(
+    variant: ResidentGroupedAggregateInputPostJoinAggregateTopKVariant,
+    with_source_metadata: bool,
+) -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
-    let a = source(&mut builder, "resident-aggregate-post-aggregate-topk-a");
-    let b = source(&mut builder, "resident-aggregate-post-aggregate-topk-b");
-    let c = source(&mut builder, "resident-aggregate-post-aggregate-topk-c");
-    let lineitem = source(&mut builder, "resident-aggregate-post-aggregate-topk-lineitem");
+    let a =
+        source_with_optional_metadata(&mut builder, "resident-aggregate-post-aggregate-topk-a", with_source_metadata);
+    let b =
+        source_with_optional_metadata(&mut builder, "resident-aggregate-post-aggregate-topk-b", with_source_metadata);
+    let c =
+        source_with_optional_metadata(&mut builder, "resident-aggregate-post-aggregate-topk-c", with_source_metadata);
+    let lineitem = source_with_optional_metadata(
+        &mut builder,
+        "resident-aggregate-post-aggregate-topk-lineitem",
+        with_source_metadata,
+    );
 
     let grouped_input = grouped_aggregate(&mut builder, lineitem);
     let mut grouped_input = if matches!(
@@ -214,13 +232,25 @@ pub(crate) enum ResidentGroupedAggregateInputPostJoinAggregateTopKVariant {
     UnsupportedGroupedInputFilter,
 }
 
-pub(crate) fn resident_grouped_aggregate_subquery_filter_plan() -> nexus_query_engine::plan::QueryPlan {
+pub(crate) fn resident_grouped_aggregate_subquery_filter_plan(
+    with_source_metadata: bool,
+) -> nexus_query_engine::plan::QueryPlan {
+    resident_grouped_aggregate_subquery_filter_plan_inner(with_source_metadata)
+}
+
+fn resident_grouped_aggregate_subquery_filter_plan_inner(
+    with_source_metadata: bool,
+) -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
-    let a = source(&mut builder, "resident-aggregate-subquery-filter-a");
-    let b = source(&mut builder, "resident-aggregate-subquery-filter-b");
-    let c = source(&mut builder, "resident-aggregate-subquery-filter-c");
-    let d = source(&mut builder, "resident-aggregate-subquery-filter-d");
-    let lineitem = source(&mut builder, "resident-aggregate-subquery-filter-lineitem");
+    let a = source_with_optional_metadata(&mut builder, "resident-aggregate-subquery-filter-a", with_source_metadata);
+    let b = source_with_optional_metadata(&mut builder, "resident-aggregate-subquery-filter-b", with_source_metadata);
+    let c = source_with_optional_metadata(&mut builder, "resident-aggregate-subquery-filter-c", with_source_metadata);
+    let d = source_with_optional_metadata(&mut builder, "resident-aggregate-subquery-filter-d", with_source_metadata);
+    let lineitem = source_with_optional_metadata(
+        &mut builder,
+        "resident-aggregate-subquery-filter-lineitem",
+        with_source_metadata,
+    );
 
     let left_tree = join(&mut builder, a, b, "left_tree");
     let grouped_input = grouped_aggregate(&mut builder, lineitem);
@@ -1104,6 +1134,23 @@ pub(crate) fn shared_grouped_aggregate_fanout_to_join_and_grouped_aggregate_plan
 fn source(builder: &mut QueryPlanBuilder, label: &str) -> nexus_query_engine::plan::NodeId {
     builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
         format!("/tmp/{label}.parquet"),
+        key_value_schema(),
+        vec!["k".into(), "v".into()],
+    )))
+}
+
+fn source_with_optional_metadata(
+    builder: &mut QueryPlanBuilder,
+    label: &str,
+    with_source_metadata: bool,
+) -> nexus_query_engine::plan::NodeId {
+    if !with_source_metadata {
+        return source(builder, label);
+    }
+    let path = format!("/tmp/{label}.parquet");
+    let file = LocalParquetFile::new(&path).with_file_size_bytes(std::fs::metadata(&path).unwrap().len());
+    builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+        vec![file],
         key_value_schema(),
         vec!["k".into(), "v".into()],
     )))

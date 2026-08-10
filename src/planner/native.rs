@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use datafusion::{
-    common::{Result as DataFusionResult, config::ConfigOptions},
+    common::{DataFusionError, Result as DataFusionResult, config::ConfigOptions},
     physical_optimizer::PhysicalOptimizerRule,
     physical_plan::ExecutionPlan,
 };
@@ -490,15 +490,21 @@ fn collect_native_fragment_capability_proofs(
         } else {
             native_plan
         };
-        if let Some(proof) = native_plan_capability_proof(native_plan) {
-            proofs.push(proof);
-        }
+        proofs.push(native_plan_capability_proof(native_plan)?);
     }
     Ok(())
 }
 
-fn native_plan_capability_proof(native_plan: &nexus_query_engine::plan::QueryPlan) -> Option<QueryPlanCapabilityProof> {
-    QueryPlanCapabilityProof::for_query_plan(native_plan)
+fn native_plan_capability_proof(
+    native_plan: &nexus_query_engine::plan::QueryPlan,
+) -> DataFusionResult<QueryPlanCapabilityProof> {
+    QueryPlanCapabilityProof::for_query_plan_preflighted(native_plan).map_err(|error| {
+        DataFusionError::from(Error::from_native(
+            "datafusion_nexus.native_optimizer.admission_proof",
+            "native query-plan preflight failed before admission proof issuance",
+            error,
+        ))
+    })
 }
 
 fn lowered_native_plan(plan: &dyn ExecutionPlan) -> Option<&nexus_query_engine::plan::QueryPlan> {

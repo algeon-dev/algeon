@@ -209,8 +209,10 @@ fn native_projection_coerces_decimal_output_to_declared_scale() {
     )
     .unwrap();
     let mut builder = QueryPlanBuilder::new();
-    let source =
-        builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("decimal_input", Arc::clone(&input_schema))));
+    let source = builder.add_source(SourceNode::GpuResident(
+        GpuResidentSource::new("decimal_input", Arc::clone(&input_schema))
+            .with_row_count_upper_bound(batch.num_rows() as u64),
+    ));
     let projection = builder.add_projection(
         source,
         projection_outputs(vec![Expr::column("amount").alias("mkt_share")], Arc::clone(&output_schema)),

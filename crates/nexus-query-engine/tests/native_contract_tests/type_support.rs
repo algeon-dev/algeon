@@ -204,6 +204,40 @@ fn list_string_null_predicates_are_rejected_in_native_post_join_residuals() {
     assert_eq!(error.fact_value("expected"), Some("expected scalar operator value"));
 }
 
+#[test]
+fn projection_preflight_rejects_unsupported_implicit_output_cast() {
+    let input_schema = Arc::new(Schema::new(vec![Field::new("key", DataType::Int32, false)]));
+    let output_schema = Arc::new(Schema::new(vec![Field::new("bad_key", DataType::Utf8, false)]));
+
+    let error = native_validation_error_for_plan(|builder| {
+        let source =
+            builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&input_schema))));
+        builder.add_projection(source, projection_outputs(vec![Expr::column("key").alias("bad_key")], output_schema))
+    });
+
+    assert_eq!(error.code(), QueryErrorCode::UnsupportedType);
+    assert_eq!(error.fact_value("reason"), Some("projection_output_schema_mismatch"));
+    assert_eq!(error.fact_value("reason_detail"), Some("implicit_cast_not_supported"));
+    assert_eq!(error.fact_value("field_name"), Some("bad_key"));
+    assert_eq!(error.fact_value("field_index"), Some("0"));
+    assert_eq!(error.fact_value("actual_type"), Some("Int32"));
+    assert_eq!(error.fact_value("expected_type"), Some("Utf8"));
+}
+
+#[test]
+fn projection_preflight_accepts_equivalent_list_child_names() {
+    let input_list = DataType::List(Arc::new(Field::new("element", DataType::Utf8, true)));
+    let output_list = DataType::List(Arc::new(Field::new("item", DataType::Utf8, true)));
+    let input_schema = Arc::new(Schema::new(vec![Field::new("tags", input_list, true)]));
+    let output_schema = Arc::new(Schema::new(vec![Field::new("tags", output_list, true)]));
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", input_schema)));
+    let projection = builder.add_projection(source, projection_outputs(vec![Expr::column("tags")], output_schema));
+
+    nexus_query_engine::exec::preflight_query_plan(&builder.finish_with_host_sink(projection))
+        .expect("list child field names do not require a native cast");
+}
+
 fn native_validation_error_for_plan(build_root: impl FnOnce(&mut QueryPlanBuilder) -> NodeId) -> QueryError {
     let mut builder = QueryPlanBuilder::new();
     let root = build_root(&mut builder);

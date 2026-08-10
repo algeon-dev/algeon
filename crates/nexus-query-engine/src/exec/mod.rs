@@ -50,7 +50,7 @@ pub mod output;
 mod retry;
 mod source;
 mod util;
-mod validate;
+pub(crate) mod validate;
 mod vector_algorithm;
 
 #[doc(hidden)]
@@ -290,6 +290,7 @@ use crate::{
         AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, CaseWhen, Expr, LimitSpec, LiteralValue, SortSpec,
     },
     metrics::{QueryId, QueryMetrics, SourceReadRuntimeMetrics, TraceId},
+    mode::StatisticalAggregateExecutionMode,
     observability::{
         PlanEdgeRow, PlanExecutionId, PlanNodeRow, RuntimeExecutionObservationScope, RuntimeObservationConfig,
         RuntimeObservationOwner, RuntimeObservationSession, RuntimePlanExecutionLifecycle, RuntimePlanNodeId,
@@ -300,8 +301,8 @@ use crate::{
         PlanNode, ProjectionNode, QueryPlan, ResultSink, SortNode, WindowFrame, WindowNode,
     },
     runtime::{
-        BoundedJoinReservationContract, ExecutionContext, MemoryControlPolicy, MemoryReservationRequest,
-        ReservationKind, RetryFacts,
+        BoundedJoinReservationContract, ExecutionBoundaryPolicy, ExecutionContext, MemoryControlPolicy,
+        MemoryReservationRequest, ReservationKind, RetryFacts,
         resident::{
             GpuDataFrame, GpuFilteredJoinBuildHandle, GpuHashJoinBuildHandle, GpuResidentInputMap, GpuResultHandle,
         },
@@ -319,6 +320,20 @@ use crate::{
 /// admission. Execution entrypoints call the same validation internally.
 pub fn preflight_query_plan(plan: &QueryPlan) -> Result<()> {
     validate::validate_query_plan(plan)
+}
+
+/// Validates a native plan and applies the bounded execution shape contract.
+///
+/// This boundary is used after frontend-owned plan resolution, before bounded
+/// admission can fail on a lower-level reservation envelope. Unbounded plans
+/// continue to use [`preflight_query_plan`] alone.
+pub fn preflight_bounded_query_plan(
+    plan: &QueryPlan,
+    boundary_policy: ExecutionBoundaryPolicy,
+    statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode,
+) -> Result<()> {
+    preflight_query_plan(plan)?;
+    bounded::preflight_bounded_join_plan(plan, boundary_policy, statistical_aggregate_execution_mode)
 }
 
 static NEXT_PLAN_EXECUTION_ID: AtomicU64 = AtomicU64::new(1);

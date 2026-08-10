@@ -585,6 +585,21 @@ impl LocalParquetSource {
         self.files.iter().map(LocalParquetFile::selected_row_group_count).sum()
     }
 
+    pub(crate) fn exact_selected_row_group_rows(&self) -> Option<Vec<u64>> {
+        self.files.iter().try_fold(Vec::with_capacity(self.selected_row_group_count()), |mut selected_rows, file| {
+            let row_group_rows = file.row_group_rows.as_ref()?;
+            match file.row_groups.as_ref() {
+                Some(row_groups) => {
+                    for row_group in row_groups {
+                        selected_rows.push(*row_group_rows.get(*row_group)?);
+                    }
+                },
+                None => selected_rows.extend(row_group_rows.iter().copied()),
+            }
+            Some(selected_rows)
+        })
+    }
+
     /// Returns the exact number of rows represented by the selected Parquet
     /// row groups, when every selected group has footer-backed row metadata.
     ///
@@ -592,16 +607,7 @@ impl LocalParquetSource {
     /// callers that need an exact graph-input cardinality cannot substitute
     /// file sizes, optimizer statistics, or an unselected row-group total.
     pub fn exact_selected_row_count(&self) -> Option<u64> {
-        self.files.iter().try_fold(0_u64, |source_total, file| {
-            let row_group_rows = file.row_group_rows.as_ref()?;
-            let file_total = match file.row_groups.as_ref() {
-                Some(selected) => selected
-                    .iter()
-                    .try_fold(0_u64, |total, row_group| total.checked_add(*row_group_rows.get(*row_group)?)),
-                None => row_group_rows.iter().try_fold(0_u64, |total, rows| total.checked_add(*rows)),
-            }?;
-            source_total.checked_add(file_total)
-        })
+        self.exact_selected_row_group_rows()?.into_iter().try_fold(0_u64, |total, rows| total.checked_add(rows))
     }
 
     /// Returns a footer-proven graph vertex upper bound when this source still

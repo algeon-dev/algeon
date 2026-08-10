@@ -221,31 +221,39 @@ impl ExecutionPlan for NexusNativeExec {
             Arc::clone(&task_context),
             account_memory_pool,
             async move {
-                let unresolved_capability_proof = QueryPlanCapabilityProof::for_query_plan(&plan);
+                let unresolved_capability_proof =
+                    QueryPlanCapabilityProof::for_query_plan_preflighted(&plan).map_err(|error| {
+                        DataFusionError::from(Error::from_native(
+                            "datafusion_nexus.native_exec.admission_proof",
+                            "failed to preflight the unresolved native host plan before admission",
+                            error,
+                        ))
+                    })?;
                 let plan = super::lakehouse::resolve_query_plan(&execution_config, plan, task_context.as_ref()).await;
+                if execution_config.memory_control_policy().is_bounded() {
+                    nexus_query_engine::exec::preflight_bounded_query_plan(
+                        &plan,
+                        execution_config.boundary_policy(),
+                        execution_config.statistical_aggregate_execution_mode(),
+                    )
+                    .map_err(|error| {
+                        DataFusionError::from(Error::from_native(
+                            "datafusion_nexus.native_exec.bounded_preflight",
+                            "failed to preflight the resolved bounded native host plan before admission",
+                            error,
+                        ))
+                    })?;
+                }
                 if execution_config.lakehouse_footer_pruning()
                     && let Some(ticket) =
                         execution_config.query_admission_ticket_for_task_context(task_context.as_ref())
                 {
-                    let unresolved_capability_proof = unresolved_capability_proof.ok_or_else(|| {
-                        DataFusionError::from(
-                            Error::new(
-                                ErrorCode::InvalidExecutionPlan,
-                                "datafusion_nexus.native_exec.admission_proof",
-                                "the unresolved native host plan did not issue an exact capability proof",
-                            )
-                            .with_fact("reason", "native_host_unresolved_admission_proof_missing"),
-                        )
-                    })?;
-                    let proof = QueryPlanCapabilityProof::for_query_plan(&plan).ok_or_else(|| {
-                        DataFusionError::from(
-                            Error::new(
-                                ErrorCode::InvalidExecutionPlan,
-                                "datafusion_nexus.native_exec.admission_proof",
-                                "the resolved native host plan did not issue an exact capability proof",
-                            )
-                            .with_fact("reason", "native_host_resolved_admission_proof_missing"),
-                        )
+                    let proof = QueryPlanCapabilityProof::for_query_plan_preflighted(&plan).map_err(|error| {
+                        DataFusionError::from(Error::from_native(
+                            "datafusion_nexus.native_exec.admission_proof",
+                            "failed to preflight the resolved native host plan before admission",
+                            error,
+                        ))
                     })?;
                     if let Some(existing) = ticket.attempt_capability_proof_for_rebind()
                         && existing != unresolved_capability_proof

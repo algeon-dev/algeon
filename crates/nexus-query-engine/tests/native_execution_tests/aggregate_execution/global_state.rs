@@ -161,13 +161,22 @@ fn bounded_native_query_finalizes_single_chunk_global_sum_min_max_hidden_state()
         ),
         Some("libcudf_groupby_aggregate_temporary_workspace_preflight_unavailable")
     );
-    let error = match context.admit_plan(&gpu_plan) {
-        Ok(_) => panic!("GPU-sink global aggregate must reject before any GPU execution"),
-        Err(error) => error,
+    let gpu_result = execute_query_plan(&context, &gpu_plan).unwrap();
+    assert_eq!(gpu_result.metrics().source_chunks_planned, 1);
+    assert_eq!(gpu_result.metrics().partial_aggregate_count, 1);
+    assert_eq!(gpu_result.metrics().final_merge_attempts, 0);
+    let QueryOutput::GpuResident(handle) = gpu_result.output() else {
+        panic!("GPU sink should retain the finalized global aggregate");
     };
-    assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
-    assert_eq!(error.operation(), "nexus_query_engine.admission.requirement");
-    assert_eq!(error.fact_value("reason"), Some("attempt_owner_term_gpu_resident_output_owner_alias_unmodeled"));
+    let mut materialization_metrics = QueryMetrics::default();
+    let batch = materialize_gpu_result_to_host(handle.clone(), &mut materialization_metrics).unwrap();
+    assert_eq!(batch.num_columns(), expected_names.len());
+    assert_eq!(batch.num_rows(), 1);
+    assert_eq!(int64_array(&batch, 0).values().as_ref(), &[1500]);
+    assert_eq!(int64_array(&batch, 1).values().as_ref(), &[100]);
+    assert_eq!(int64_array(&batch, 2).values().as_ref(), &[5]);
+    assert_eq!(int64_array(&batch, 3).values().as_ref(), &[5]);
+    drop(gpu_result);
 
     fs::remove_dir_all(dir).unwrap();
 }

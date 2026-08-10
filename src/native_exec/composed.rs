@@ -550,6 +550,20 @@ impl ExecutionPlan for NexusNativeComposedExec {
             account_memory_pool,
             async move {
                 let plan = super::lakehouse::resolve_query_plan(&execution_config, plan, task_context.as_ref()).await;
+                if execution_config.memory_control_policy().is_bounded() {
+                    nexus_query_engine::exec::preflight_bounded_query_plan(
+                        &plan,
+                        execution_config.boundary_policy(),
+                        execution_config.statistical_aggregate_execution_mode(),
+                    )
+                    .map_err(|error| {
+                        DataFusionError::from(Error::from_native(
+                            "datafusion_nexus.native_composed.bounded_preflight",
+                            "failed to preflight the resolved bounded native composed plan before admission",
+                            error,
+                        ))
+                    })?;
+                }
                 let mut prepared_gpu_inputs = Vec::with_capacity(gpu_inputs.len());
                 for input in gpu_inputs {
                     prepared_gpu_inputs

@@ -740,7 +740,7 @@ fn projection_schema_mismatch_error_with_budget(
     }
 }
 
-fn projection_schema_mismatch_error(
+pub(in crate::exec) fn projection_schema_mismatch_error(
     field_index: usize,
     field_name: &str,
     actual_type: &ArrowDataType,

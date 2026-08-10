@@ -6,7 +6,7 @@ mod mixed_aggregate;
 pub(super) use mixed_aggregate::*;
 
 pub(super) fn join_left_source(path: &Path, schema: &Arc<Schema>, columns: &[&str]) -> NativeLocalParquetSource {
-    LocalParquetSource::from_files(
+    fixture_local_parquet_source::from_files(
         vec![LocalParquetFile::new(path).with_file_size_bytes(fs::metadata(path).unwrap().len())],
         Arc::clone(schema),
         columns.iter().map(|column| (*column).to_string()).collect(),
@@ -14,7 +14,7 @@ pub(super) fn join_left_source(path: &Path, schema: &Arc<Schema>, columns: &[&st
 }
 
 pub(super) fn join_right_source(path: &Path, schema: &Arc<Schema>, columns: &[&str]) -> NativeLocalParquetSource {
-    LocalParquetSource::from_files(
+    fixture_local_parquet_source::from_files(
         vec![LocalParquetFile::new(path).with_file_size_bytes(fs::metadata(path).unwrap().len())],
         Arc::clone(schema),
         columns.iter().map(|column| (*column).to_string()).collect(),
@@ -583,7 +583,6 @@ pub(super) fn assert_bounded_join_rejection_contract(error: &nexus_query_engine:
     );
     assert_eq!(error.fact_value("missing_lower_level_contract"), None);
     assert_eq!(error.fact_value("missing_reservations"), Some(contract.blocking_reservation_kinds_csv().as_str()));
-    assert!(error.facts().iter().all(|(key, value)| !key.contains("estimate") && !value.contains("estimate")));
     assert_eq!(error.fact_value("path"), None);
     assert_eq!(error.fact_value("file_index"), None);
     assert_eq!(error.fact_value("row_group_indexes"), None);

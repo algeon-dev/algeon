@@ -4,7 +4,10 @@ use arrow::datatypes::{Field, SchemaRef};
 
 use super::{source::local_parquet_execution_frame_schema, *};
 use crate::{
-    datatypes::{arrow_fields_match_except_name, is_supported_arrow_type},
+    datatypes::{
+        arrow_data_types_match_except_list_child_names, arrow_fields_match_except_name,
+        is_supported_arrow_implicit_cast, is_supported_arrow_type,
+    },
     plan::{QueryNode, UnionNode},
     source::validate_literal_batch_source,
 };
@@ -52,8 +55,10 @@ pub(super) fn validate_query_plan(plan: &QueryPlan) -> Result<()> {
             PlanNode::Projection(projection) => {
                 let input = input_node(plan, projection.input, node.id)?;
                 let input_available = available_columns(&available_columns_by_node, projection.input)?;
-                for output in &projection.outputs {
-                    if vector_ingress_columns.get(&node.id).is_some_and(|columns| columns.contains(output.field.name()))
+                for (field_index, output) in projection.outputs.iter().enumerate() {
+                    let actual_type = if vector_ingress_columns
+                        .get(&node.id)
+                        .is_some_and(|columns| columns.contains(output.field.name()))
                     {
                         crate::vector_validation::validate_vector_ingress_projection_output(
                             output,
@@ -61,8 +66,21 @@ pub(super) fn validate_query_plan(plan: &QueryPlan) -> Result<()> {
                             input_available,
                             vector_ingress_columns.get(&projection.input),
                         )?;
+                        output.field.data_type().clone()
                     } else {
-                        validate_projection_output_expr(output, input.output_schema(), input_available)?;
+                        validate_projection_output_expr(output, input.output_schema(), input_available)?
+                    };
+                    let expected_type = output.field.data_type();
+                    if !arrow_data_types_match_except_list_child_names(&actual_type, expected_type)
+                        && !is_supported_arrow_implicit_cast(&actual_type, expected_type)
+                    {
+                        return Err(projection_schema_mismatch_error(
+                            field_index,
+                            output.field.name(),
+                            &actual_type,
+                            expected_type,
+                        )
+                        .with_fact("reason_detail", "implicit_cast_not_supported"));
                     }
                 }
                 validate_projection_capability(projection, &node.facts.output_schema)?;
@@ -301,6 +319,13 @@ fn input_node(plan: &QueryPlan, input: NodeId, consumer: NodeId) -> Result<&Quer
         .with_fact("consumer", consumer)
         .with_fact("input", input)
     })
+}
+
+pub(crate) fn projection_output_type_for_admission(
+    output: &crate::plan::ProjectionOutput,
+    input_schema: &SchemaRef,
+) -> Result<arrow::datatypes::DataType> {
+    validate_projection_output_expr(output, input_schema, &schema_column_names(input_schema))
 }
 
 fn available_columns(columns_by_node: &[BTreeSet<String>], input: NodeId) -> Result<&BTreeSet<String>> {

@@ -207,7 +207,7 @@ fn bounded_native_query_applies_post_decode_filter_to_shared_local_source_frame(
             )
     }));
     let context = backend_context_with_grant(1024 * 1024);
-    let admitted = context.admit_plan(&optimized.plan).unwrap();
+    let admitted = context.admit_plan_for_compiled_executor_test(&optimized.plan).unwrap();
 
     let analysis = optimized.plan.capability_analysis();
     let pipeline = nexus_query_engine::pipeline::compile_pipeline(&optimized.plan, &analysis).unwrap();
