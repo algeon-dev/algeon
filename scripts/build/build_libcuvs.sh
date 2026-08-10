@@ -6,7 +6,7 @@ source_dir="${repo_root}/components/cuvs/cuvs"
 build_dir="${CUVS_CPP_BUILD_DIR:-${repo_root}/target/native/cuvs-build}"
 install_dir="${CUVS_INSTALL_DIR:-${repo_root}/target/native/cuvs-install}"
 cudf_install_dir="${CUDF_INSTALL_DIR:-${repo_root}/target/native/cudf-install}"
-(cd "${repo_root}" && cargo run -p xtask --all-features -- source check)
+(cd "${repo_root}" && scripts/ci/check_native_sources.sh cuvs)
 
 [[ -f "${source_dir}/VERSION" ]] || {
     echo "error: cuVS source does not contain VERSION: ${source_dir}" >&2

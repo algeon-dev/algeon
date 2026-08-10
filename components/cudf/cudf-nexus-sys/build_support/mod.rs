@@ -86,7 +86,6 @@ pub(crate) fn emit_build_fingerprints(manifest_dir: &Path, native_dir: &Path, cl
         native_dir.join(".clang-tidy"),
         clang_format_config.to_path_buf(),
         manifest_dir.join("bindings/wrapper.h"),
-        manifest_dir.join("bindings/generate.sh"),
     ] {
         println!("cargo:rerun-if-changed={}", path.display());
     }

@@ -22,12 +22,26 @@ behavior explicit enough for service-side integration.
 - `components/cuvs/cuvs-nexus-sys/` - generated low-level bindings and native build discovery for `libcuvs` (import `cuvs_sys`).
 - `components/cuvs/cuvs/` - the pinned official [cuVS](https://github.com/rapidsai/cuvs) source submodule used to build the native libraries.
 - `scripts/build/bootstrap_cuvs.sh` and `scripts/build/build_libcuvs.sh` - root-owned native build entry points.
-- `components/cuvs/tools/xtask/` - unpublished binding and verification maintenance tooling.
+- `scripts/dev/bindings.sh cuvs` - root-owned checked-binding maintenance.
 
 Native defaults are repo-relative: `target/native/cudf-install` supplies the
 shared cuDF/RMM prefix and `target/native/cuvs-install` is the canonical cuVS
 install. The root `.gitmodules`, `Cargo.lock`, and `scripts/check_all.sh` are
 the only source, lockfile, and full-gate authorities.
+
+## Focused validation
+
+```bash
+cargo clippy -p cuvs-nexus -p cuvs-nexus-sys \
+  --all-targets --all-features -- -D warnings
+cargo +nightly fmt --all --check
+flock /tmp/cudf-gpu.lock cargo nextest run \
+  -p cuvs-nexus -p cuvs-nexus-sys --all-features --no-fail-fast
+```
+
+Use `scripts/dev/bindings.sh cuvs --check` for checked bindings and
+`CUVS_NEXUS_SYS_SKIP_NATIVE=1 cargo check --locked -p cuvs-nexus-sys
+--all-targets --all-features` for the native-free sys contract.
 
 ## Migration provenance
 

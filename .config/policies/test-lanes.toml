@@ -645,11 +645,6 @@ lane = "cpu"
 reason = "cuVS CMake-root tests inspect source/build discovery and do not execute the native GPU API."
 
 [[binary]]
-id = "xtask::bin/xtask"
-lane = "cpu"
-reason = "The xtask binary validates source, package, bindings, and native-free command wiring without CUDA execution."
-
-[[binary]]
 id = "cugraph-nexus::build_script_contract"
 lane = "cpu"
 reason = "cuGraph build-script contracts inspect source, package metadata, and path resolution without creating CUDA state."

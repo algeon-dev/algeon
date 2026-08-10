@@ -268,7 +268,6 @@ fn build_script_tracks_build_support_and_cargo_link_template_changes() {
         "cmake/cudf-discovery.cmake",
         "cmake/cudf-rust.map",
         "bindings/wrapper.h",
-        "bindings/generate.sh",
     ] {
         assert!(BUILD_SUPPORT_MOD.contains(tracked), "expected fingerprint contract to track {tracked}");
     }

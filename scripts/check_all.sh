@@ -393,17 +393,20 @@ lane_safe=1
 gpu_scheduling_summary=""
 doctest_summary="not-run"
 rustdoc_summary="not-run"
-policy_selftest_count=11
+policy_selftest_count=12
 
 PHASE_ORDER=(
   policy-selftests
+  native-sources
+  checked-bindings
+  component-packages
+  cuvs-native-free
   rustfmt
   lane-structure
   live-inventory
   gpu-preflight
   cpu-tests
   gpu-shared-tests
-  cuvs-cargo-tests
   gpu-exclusive-tests
   doctests
   rustdoc
@@ -432,17 +435,17 @@ define_phase() {
 }
 
 define_phase policy-selftests "${policy_selftest_count} isolated policy/orchestration scripts"
+define_phase native-sources "bash scripts/ci/check_native_sources.sh"
+define_phase checked-bindings "scripts/dev/bindings.sh cudf --check + cuvs --check"
+define_phase component-packages "bash scripts/ci/check_component_packages.sh"
+define_phase cuvs-native-free "CUVS_NEXUS_SYS_SKIP_NATIVE=1 cargo check --locked -p cuvs-nexus-sys --all-targets --all-features"
 define_phase rustfmt "cargo +${RUSTFMT_TOOLCHAIN} fmt --all --check"
 define_phase lane-structure "test_lane_policy.py check-catalog + generated override check"
-# Nextest phases share one workspace feature unification. The cuVS safe/sys
-# crates retain their Cargo-runner contract in one separately locked phase and
-# are excluded from nextest to avoid executing them twice.
 define_phase live-inventory "bash scripts/ci/check_gpu_test_lane.sh ${FEATURE_ARGS[*]}"
 define_phase gpu-preflight "cargo nextest show-config --color never -P ${GPU_NEXTEST_PROFILE} test-groups --workspace ${FEATURE_ARGS[*]}"
-define_phase cpu-tests "cargo nextest run --workspace --exclude cuvs-nexus --exclude cuvs-nexus-sys ${FEATURE_ARGS[*]} -E 'not group(gpu) & not group(gpu-exclusive)' --no-fail-fast --final-status-level fail"
-define_phase gpu-shared-tests "flock ${GPU_LOCK} cargo nextest run -P ${GPU_NEXTEST_PROFILE} --workspace --exclude cuvs-nexus --exclude cuvs-nexus-sys ${FEATURE_ARGS[*]} -E group(${GPU_NEXTEST_GROUP}) --no-fail-fast --test-threads ${gpu_threads} --final-status-level fail"
-define_phase cuvs-cargo-tests "flock ${GPU_LOCK} cargo test -p cuvs-nexus -p cuvs-nexus-sys --all-features --no-fail-fast"
-define_phase gpu-exclusive-tests "flock ${GPU_LOCK} cargo nextest run -P ${GPU_NEXTEST_PROFILE} --workspace --exclude cuvs-nexus --exclude cuvs-nexus-sys ${FEATURE_ARGS[*]} -E group(gpu-exclusive) --no-fail-fast --test-threads ${GPU_EXCLUSIVE_CAP} --final-status-level fail"
+define_phase cpu-tests "cargo nextest run --workspace ${FEATURE_ARGS[*]} -E 'not group(gpu) & not group(gpu-exclusive)' --no-fail-fast --final-status-level fail"
+define_phase gpu-shared-tests "flock ${GPU_LOCK} cargo nextest run -P ${GPU_NEXTEST_PROFILE} --workspace ${FEATURE_ARGS[*]} -E group(${GPU_NEXTEST_GROUP}) --no-fail-fast --test-threads ${gpu_threads} --final-status-level fail"
+define_phase gpu-exclusive-tests "flock ${GPU_LOCK} cargo nextest run -P ${GPU_NEXTEST_PROFILE} --workspace ${FEATURE_ARGS[*]} -E group(gpu-exclusive) --no-fail-fast --test-threads ${GPU_EXCLUSIVE_CAP} --final-status-level fail"
 define_phase doctests "flock ${GPU_LOCK} cargo test --workspace ${FEATURE_ARGS[*]} --doc --no-fail-fast"
 define_phase rustdoc "RUSTDOCFLAGS='${DOC_RUSTDOCFLAGS}' cargo doc --workspace ${FEATURE_ARGS[*]} --no-deps --keep-going"
 # Snapshots each tracked crate's public API (rustdoc JSON via cargo-public-api)
@@ -920,6 +923,7 @@ run_isolated_policy_commands() {
     scripts/ci/tests/check_doctest_report_tests.sh \
     scripts/ci/tests/check_phase_test_counts_tests.sh \
     scripts/ci/tests/check_gpu_test_lane_tests.sh \
+    scripts/ci/tests/check_native_sources_tests.sh \
     scripts/ci/tests/check_doctest_rustdoc_tests.sh \
     scripts/ci/tests/check_gpu_scheduling_tests.sh \
     scripts/ci/tests/check_clean_target_artifacts_tests.sh \
@@ -945,23 +949,19 @@ run_lane_structure_commands() {
 needs_cpu=0
 needs_shared_gpu=0
 needs_exclusive_gpu=0
-needs_cuvs=0
 case "${mode}:${lane}" in
   full:all | lane:all)
     needs_cpu=1
     needs_shared_gpu=1
     needs_exclusive_gpu=1
-    needs_cuvs=1
     ;;
   fast:cpu | lane:cpu) needs_cpu=1 ;;
   lane:gpu)
     needs_shared_gpu=1
     needs_exclusive_gpu=1
-    needs_cuvs=1
     ;;
   lane:gpu-shared)
     needs_shared_gpu=1
-    needs_cuvs=1
     ;;
   lane:gpu-exclusive) needs_exclusive_gpu=1 ;;
 esac
@@ -1007,24 +1007,20 @@ run_gpu_config_preflight() {
 }
 
 cpu_test_command() {
-  cargo nextest run --workspace --exclude cuvs-nexus --exclude cuvs-nexus-sys "${FEATURE_ARGS[@]}" \
+  cargo nextest run --workspace "${FEATURE_ARGS[@]}" \
     -E 'not group(gpu) & not group(gpu-exclusive)' --no-fail-fast --final-status-level fail
 }
 
 gpu_shared_test_command() {
   flock "${GPU_LOCK}" cargo nextest run -P "${GPU_NEXTEST_PROFILE}" \
-    --workspace --exclude cuvs-nexus --exclude cuvs-nexus-sys "${FEATURE_ARGS[@]}" \
+    --workspace "${FEATURE_ARGS[@]}" \
     -E "group(${GPU_NEXTEST_GROUP})" --no-fail-fast \
     --test-threads "${gpu_threads}" --final-status-level fail
 }
 
-cuvs_cargo_test_command() {
-  flock "${GPU_LOCK}" cargo test -p cuvs-nexus -p cuvs-nexus-sys --all-features --no-fail-fast
-}
-
 gpu_exclusive_test_command() {
   flock "${GPU_LOCK}" cargo nextest run -P "${GPU_NEXTEST_PROFILE}" \
-    --workspace --exclude cuvs-nexus --exclude cuvs-nexus-sys "${FEATURE_ARGS[@]}" \
+    --workspace "${FEATURE_ARGS[@]}" \
     -E 'group(gpu-exclusive)' --no-fail-fast \
     --test-threads "${GPU_EXCLUSIVE_CAP}" --final-status-level fail
 }
@@ -1042,11 +1038,17 @@ public_api_surface_command() {
   bash scripts/ci/check_public_api_surface.sh check "${FEATURE_ARGS[@]}"
 }
 
+checked_bindings_command() {
+  bash scripts/dev/bindings.sh cudf --check
+  bash scripts/dev/bindings.sh cuvs --check
+}
+
 PHASE_CACHE_FILE="$(dirname -- "${PHASE_LOG_DIR}")/last-pass.json"
 phase_cache_load
 
 if [[ "${mode}" == full || "${lane}" == policy || "${mode}" == fast ]]; then
   run_or_cache_phase policy-selftests "literal:checks=${policy_selftest_count}" - - run_isolated_policy_commands || true
+  run_or_cache_phase native-sources none - - bash scripts/ci/check_native_sources.sh || true
   run_or_cache_phase rustfmt none - - cargo "+${RUSTFMT_TOOLCHAIN}" fmt --all --check || true
   if ! run_or_cache_phase lane-structure literal:checks=2 - - run_lane_structure_commands; then
     lane_safe=0
@@ -1055,6 +1057,13 @@ else
   if ! run_or_cache_phase lane-structure literal:checks=2 - - run_lane_structure_commands; then
     lane_safe=0
   fi
+fi
+
+if [[ "${mode}" == full ]]; then
+  run_or_cache_phase checked-bindings none - - checked_bindings_command || true
+  run_or_cache_phase component-packages "literal:packages=7" - - bash scripts/ci/check_component_packages.sh || true
+  run_or_cache_phase cuvs-native-free none - - env CUVS_NEXUS_SYS_SKIP_NATIVE=1 \
+    cargo check --locked -p cuvs-nexus-sys --all-targets --all-features || true
 fi
 
 if [[ "${lane}" != policy ]]; then
@@ -1096,8 +1105,6 @@ if [[ "${lane}" != policy ]]; then
       || run_or_cache_phase cpu-tests nextest - - cpu_test_command || true
     [[ "${needs_shared_gpu}" -eq 0 ]] \
       || run_or_cache_phase gpu-shared-tests nextest "${gpu_threads}" "${GPU_LOCK}" gpu_shared_test_command || true
-    [[ "${needs_cuvs}" -eq 0 ]] \
-      || run_or_cache_phase cuvs-cargo-tests cargo "${gpu_threads}" "${GPU_LOCK}" cuvs_cargo_test_command || true
     [[ "${needs_exclusive_gpu}" -eq 0 ]] \
       || run_or_cache_phase gpu-exclusive-tests nextest "${GPU_EXCLUSIVE_CAP}" "${GPU_LOCK}" gpu_exclusive_test_command || true
   else
@@ -1105,8 +1112,6 @@ if [[ "${lane}" != policy ]]; then
       || PHASE_STATUS[cpu-tests]='SKIPPED(blocked)'
     [[ "${needs_shared_gpu}" -eq 0 || "${PHASE_STATUS[gpu-shared-tests]}" != SKIPPED ]] \
       || PHASE_STATUS[gpu-shared-tests]='SKIPPED(blocked)'
-    [[ "${needs_cuvs}" -eq 0 || "${PHASE_STATUS[cuvs-cargo-tests]}" != SKIPPED ]] \
-      || PHASE_STATUS[cuvs-cargo-tests]='SKIPPED(blocked)'
     [[ "${needs_exclusive_gpu}" -eq 0 || "${PHASE_STATUS[gpu-exclusive-tests]}" != SKIPPED ]] \
       || PHASE_STATUS[gpu-exclusive-tests]='SKIPPED(blocked)'
   fi

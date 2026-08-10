@@ -27,6 +27,20 @@ Native defaults are repo-relative: `target/native/cudf-install` and
 `target/native/cugraph-build` is the cuGraph CMake build tree. Use the root
 `scripts/build/build_libcugraph.sh` helper and root `scripts/check_all.sh` gate.
 
+## Focused validation
+
+```bash
+cargo clippy -p cugraph-nexus -p cugraph-nexus-sys \
+  --all-targets --all-features -- -D warnings
+cargo +nightly fmt --all --check
+flock /tmp/cudf-gpu.lock cargo nextest run \
+  -p cugraph-nexus -p cugraph-nexus-sys --all-features --no-fail-fast
+```
+
+`cugraph-nexus-sys` intentionally generates bindings from the selected native
+headers in `build.rs`; the selected headers and include paths are part of its
+package/native contract.
+
 ## Migration provenance
 
 - Wrapper repository and archive: <https://github.com/DataFusion-Nexus/cugraph-nexus>

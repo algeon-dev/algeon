@@ -74,16 +74,12 @@ over libcudf. Query planning belongs in the root `datafusion-nexus` adapter.
 ## Build and test
 
 ```bash
-cargo check --workspace --all-features --all-targets
-cargo clippy --workspace --all-features --all-targets -- -D warnings
-cargo +nightly fmt --all
-
-# Focused contract loops
-cargo test -p rapids-interop --all-features
-flock /tmp/cudf-gpu.lock cargo test -p cudf-nexus --all-features --test semantic_contracts
-
-# Full workspace surface
-flock /tmp/cudf-gpu.lock cargo test --workspace --all-features --no-fail-fast
+cargo clippy -p cudf-nexus -p cudf-nexus-sys -p rapids-interop \
+  --all-targets --all-features -- -D warnings
+cargo +nightly fmt --all --check
+flock /tmp/cudf-gpu.lock cargo nextest run \
+  -p cudf-nexus -p cudf-nexus-sys -p rapids-interop \
+  --all-features --no-fail-fast
 ```
 
 Run focused checks first, then broaden validation with the change's blast
@@ -114,6 +110,8 @@ radius. Report exact commands and selected native prefix or GPU environment.
 - Native source and component checks run from the monorepo root. The root
   `scripts/check_all.sh` is the only full gate; component crates do not carry a
   second workspace gate or lockfile.
+- Checked-in production and test-support bindings are maintained only through
+  `scripts/dev/bindings.sh cudf [--check]`.
 - Keep the cuDF submodule pin and C++ shim ABI synchronized. Test both Rust
   contracts and native failure/cleanup paths when changing FFI.
 
