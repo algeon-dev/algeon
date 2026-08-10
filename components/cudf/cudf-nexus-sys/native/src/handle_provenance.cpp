@@ -30,5 +30,3 @@ cudf_status_t cudf_translate_cleanup_exception_noexcept() noexcept
     return CUDF_ERROR_UNKNOWN;
   }
 }
-
-cudf_status_t cudf_translate_exception_for_provenance_call() { return translate_exception(); }

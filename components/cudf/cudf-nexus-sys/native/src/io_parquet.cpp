@@ -79,7 +79,7 @@ cudf_status_t configure_parquet_reader_builder(Builder& builder,
                                                const int32_t* row_groups,
                                                int32_t num_row_groups)
 {
-  if (columns != nullptr && num_columns > 0) {
+  if (num_columns > 0) {
     cudf_status_t status = validate_c_string_array(columns, num_columns, "columns");
     if (status != CUDF_SUCCESS) { return status; }
     std::vector<std::string> col_names;
@@ -299,7 +299,6 @@ void init_parquet_pruning_evidence(cudf_io_parquet_pruning_evidence_t* out)
 void write_parquet_pruning_evidence(cudf_io_parquet_pruning_evidence_t* out,
                                     cudf::io::table_metadata const& metadata)
 {
-  if (out == nullptr) { return; }
   out->input_row_groups = static_cast<int64_t>(metadata.num_input_row_groups);
   if (metadata.num_row_groups_after_stats_filter.has_value()) {
     out->has_row_groups_after_stats_filter = 1;
@@ -631,7 +630,6 @@ std::unique_ptr<counted_remote_parquet_source> make_counted_remote_source(
 void write_remote_read_evidence(cudf_io_remote_parquet_read_evidence_t* out,
                                 std::vector<counted_remote_parquet_source*> const& sources)
 {
-  if (out == nullptr) { return; }
   int64_t host_bytes   = 0;
   int64_t host_count   = 0;
   int64_t device_bytes = 0;
@@ -786,7 +784,7 @@ cudf_status_t cudf_io_write_parquet_ex(cudf_table_view_handle table,
 
     auto builder = cudf::io::parquet_writer_options::builder(sink, *view);
 
-    if (column_names != nullptr && num_columns > 0) {
+    if (num_columns > 0) {
       cudf_status_t status = validate_c_string_array(column_names, num_columns, "column_names");
       if (status != CUDF_SUCCESS) { return status; }
       cudf::io::table_input_metadata table_meta(*view);
@@ -1086,7 +1084,7 @@ cudf_status_t cudf_io_read_parquet_multi_with_metadata_filter_ex(
     auto source  = cudf::io::source_info(std::move(paths));
     auto builder = cudf::io::parquet_reader_options::builder(source);
 
-    if (columns != nullptr && num_columns > 0) {
+    if (num_columns > 0) {
       std::vector<std::string> col_names;
       col_names.reserve(num_columns);
       for (int32_t i = 0; i < num_columns; ++i) {
@@ -1236,7 +1234,7 @@ cudf_status_t cudf_io_read_parquet_multi_mixed_with_metadata_filter_ex(
 
     auto builder = cudf::io::parquet_reader_options::builder();
 
-    if (columns != nullptr && num_columns > 0) {
+    if (num_columns > 0) {
       std::vector<std::string> col_names;
       col_names.reserve(num_columns);
       for (int32_t i = 0; i < num_columns; ++i) {

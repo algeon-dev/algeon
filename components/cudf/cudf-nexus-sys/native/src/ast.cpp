@@ -168,7 +168,6 @@ cudf_status_t cudf_ast_operation_binary_create(cudf_ast_operator_t op,
 
 cudf_status_t cudf_ast_expression_destroy(cudf_ast_expression_handle handle)
 {
-  if (handle == nullptr) { return CUDF_SUCCESS; }
   try {
     delete reinterpret_cast<cudf_ast_expression_owner_ref*>(handle);
     return CUDF_SUCCESS;

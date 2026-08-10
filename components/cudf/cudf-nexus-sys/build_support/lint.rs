@@ -18,7 +18,10 @@ pub(crate) fn clang_tidy_config_path(manifest_dir: &Path) -> PathBuf {
 }
 
 pub(crate) fn clang_format_config_path(manifest_dir: &Path) -> PathBuf {
-    manifest_dir.parent().unwrap_or(manifest_dir).join("cudf/.clang-format")
+    manifest_dir
+        .parent()
+        .expect("cudf-nexus-sys manifest directory must have a repository parent")
+        .join("cudf/.clang-format")
 }
 
 pub(crate) fn is_clang_lintable_path(path: &Path) -> bool {

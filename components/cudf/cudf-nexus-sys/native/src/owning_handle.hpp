@@ -124,7 +124,4 @@ std::unique_ptr<cudf_table_handle_state> cudf_make_foreign_table_handle_state(
 std::unique_ptr<cudf_table_handle_state> cudf_make_table_handle_state_from_columns(
   cudf::size_type num_rows, std::vector<std::unique_ptr<cudf_column_handle_state>> columns);
 
-std::unique_ptr<cudf_table_handle_state> cudf_make_foreign_table_handle_state_from_columns(
-  cudf::size_type num_rows, std::vector<std::unique_ptr<cudf_column_handle_state>> columns);
-
 #endif  // CUDF_RUST_OWNING_HANDLE_HPP

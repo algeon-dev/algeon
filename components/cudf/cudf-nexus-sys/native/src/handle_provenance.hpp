@@ -23,23 +23,6 @@ cudf_handle_provenance cudf_capture_current_handle_provenance();
 
 cudf_status_t cudf_translate_cleanup_exception_noexcept() noexcept;
 
-cudf_status_t cudf_translate_exception_for_provenance_call();
-
-template <typename Callable>
-cudf_status_t cudf_call_under_provenance(cudf_handle_provenance const& provenance, Callable&& call)
-{
-  try {
-    cudf_device_guard device_guard;
-    cudf_status_t const device_status = device_guard.activate(provenance.device);
-    if (device_status != CUDF_SUCCESS) { return device_status; }
-
-    std::forward<Callable>(call)();
-    return CUDF_SUCCESS;
-  } catch (...) {
-    return cudf_translate_exception_for_provenance_call();
-  }
-}
-
 template <typename Callable>
 decltype(auto) cudf_invoke_under_provenance(cudf_handle_provenance const& provenance,
                                             Callable&& call)

@@ -147,7 +147,6 @@ cudf_memory_resource_usage_t reservation_aware_resource_adaptor::usage(
   std::shared_ptr<reservation_state> const& state)
 {
   cudf_memory_resource_usage_t out{};
-  if (state == nullptr) { return out; }
   std::scoped_lock lock{mutex_};
   fill_usage(out,
              state->allocation_limit,
@@ -170,7 +169,6 @@ cudf_memory_resource_usage_t reservation_aware_resource_adaptor::arena_usage(
   std::shared_ptr<reservation_arena_state> const& state)
 {
   cudf_memory_resource_usage_t out{};
-  if (state == nullptr) { return out; }
   std::scoped_lock lock{mutex_};
   fill_usage(out,
              state->allocation_limit,
@@ -194,10 +192,6 @@ bool reservation_aware_resource_adaptor::resize(std::shared_ptr<reservation_stat
                                                 std::size_t limit_bytes,
                                                 std::string& error)
 {
-  if (state == nullptr) {
-    error = "reservation is null";
-    return false;
-  }
   std::scoped_lock lock{mutex_};
   if (!state->attached) {
     error = "reservation is not attached";
@@ -212,10 +206,6 @@ bool reservation_aware_resource_adaptor::resize_arena(
   std::size_t limit_bytes,
   std::string& error)
 {
-  if (state == nullptr) {
-    error = "reservation arena is null";
-    return false;
-  }
   std::scoped_lock lock{mutex_};
   if (!state->active) {
     error = "reservation arena is not active";
@@ -594,10 +584,6 @@ cudf_status_t cudf_memory_manager_route_current_resource(
     }
 
     auto* adaptor = manager_state->owner->reservation_adaptor;
-    if (adaptor == nullptr) {
-      set_error("memory manager resource is not reservation-aware");
-      return CUDF_ERROR_INVALID_OPERATION;
-    }
     std::string attach_error;
     auto route = adaptor->attach_current_resource_route(
       cudf_stream_view_from_handle(stream), resource_state.owner, attach_error);
@@ -621,10 +607,7 @@ cudf_status_t cudf_current_resource_route_destroy(cudf_current_resource_route_ha
   CUDF_RUST_TRY
   {
     auto* state = reinterpret_cast<current_resource_route_handle_state*>(route);
-    if (state->manager != nullptr && state->manager->owner != nullptr) {
-      auto* adaptor = state->manager->owner->reservation_adaptor;
-      if (adaptor != nullptr) { adaptor->detach_current_resource_route(state->route); }
-    }
+    state->manager->owner->reservation_adaptor->detach_current_resource_route(state->route);
     delete state;
     return CUDF_SUCCESS;
   }
@@ -655,10 +638,6 @@ cudf_status_t cudf_memory_manager_attach_reservation(cudf_memory_manager_handle 
       "same CUDA device");
     if (stream_status != CUDF_SUCCESS) { return stream_status; }
     auto* adaptor = manager_state->owner->reservation_adaptor;
-    if (adaptor == nullptr) {
-      set_error("memory manager resource is not reservation-aware");
-      return CUDF_ERROR_INVALID_OPERATION;
-    }
 
     std::string attach_error;
     auto reservation = adaptor->attach(
@@ -693,10 +672,6 @@ cudf_status_t cudf_memory_manager_create_reservation_arena(cudf_memory_manager_h
       return CUDF_ERROR_INVALID_OPERATION;
     }
     auto* adaptor = manager_state->owner->reservation_adaptor;
-    if (adaptor == nullptr) {
-      set_error("memory manager resource is not reservation-aware");
-      return CUDF_ERROR_INVALID_OPERATION;
-    }
 
     auto state     = std::make_unique<reservation_arena_handle_state>();
     state->manager = std::move(manager_state);
@@ -738,10 +713,6 @@ cudf_status_t cudf_memory_manager_attach_reservation_to_arena(cudf_memory_manage
       "the same CUDA device");
     if (stream_status != CUDF_SUCCESS) { return stream_status; }
     auto* adaptor = manager_state->owner->reservation_adaptor;
-    if (adaptor == nullptr) {
-      set_error("memory manager resource is not reservation-aware");
-      return CUDF_ERROR_INVALID_OPERATION;
-    }
 
     std::string attach_error;
     auto reservation = adaptor->attach(cudf_stream_view_from_handle(stream),
@@ -773,10 +744,6 @@ cudf_status_t cudf_reservation_usage(cudf_reservation_handle reservation,
   {
     auto& state   = *reinterpret_cast<reservation_handle_state*>(reservation);
     auto* adaptor = state.manager->owner->reservation_adaptor;
-    if (adaptor == nullptr) {
-      set_error("reservation manager resource is not reservation-aware");
-      return CUDF_ERROR_INVALID_OPERATION;
-    }
     if (state.query_domain_member != nullptr) {
       *out = adaptor->query_domain_member_usage(state.query_domain_member);
     } else {
@@ -794,10 +761,6 @@ cudf_status_t cudf_reservation_resize(cudf_reservation_handle reservation, size_
   {
     auto& state   = *reinterpret_cast<reservation_handle_state*>(reservation);
     auto* adaptor = state.manager->owner->reservation_adaptor;
-    if (adaptor == nullptr) {
-      set_error("reservation manager resource is not reservation-aware");
-      return CUDF_ERROR_INVALID_OPERATION;
-    }
     std::string resize_error;
     bool resized = false;
     if (state.query_domain_member != nullptr) {
@@ -822,12 +785,10 @@ cudf_status_t cudf_reservation_detach(cudf_reservation_handle reservation)
   {
     auto* state   = reinterpret_cast<reservation_handle_state*>(reservation);
     auto* adaptor = state->manager->owner->reservation_adaptor;
-    if (adaptor != nullptr) {
-      if (state->query_domain_member != nullptr) {
-        adaptor->detach_query_domain_member(state->query_domain_member);
-      } else {
-        adaptor->detach(state->reservation);
-      }
+    if (state->query_domain_member != nullptr) {
+      adaptor->detach_query_domain_member(state->query_domain_member);
+    } else {
+      adaptor->detach(state->reservation);
     }
     delete state;
     return CUDF_SUCCESS;
@@ -845,10 +806,6 @@ cudf_status_t cudf_reservation_arena_usage(cudf_reservation_arena_handle arena,
   {
     auto& state   = *reinterpret_cast<reservation_arena_handle_state*>(arena);
     auto* adaptor = state.manager->owner->reservation_adaptor;
-    if (adaptor == nullptr) {
-      set_error("reservation arena manager resource is not reservation-aware");
-      return CUDF_ERROR_INVALID_OPERATION;
-    }
     *out = adaptor->arena_usage(state.arena);
     return CUDF_SUCCESS;
   }
@@ -862,10 +819,6 @@ cudf_status_t cudf_reservation_arena_resize(cudf_reservation_arena_handle arena,
   {
     auto& state   = *reinterpret_cast<reservation_arena_handle_state*>(arena);
     auto* adaptor = state.manager->owner->reservation_adaptor;
-    if (adaptor == nullptr) {
-      set_error("reservation arena manager resource is not reservation-aware");
-      return CUDF_ERROR_INVALID_OPERATION;
-    }
     std::string resize_error;
     if (!adaptor->resize_arena(state.arena, limit_bytes, resize_error)) {
       set_error(resize_error);
@@ -883,7 +836,7 @@ cudf_status_t cudf_reservation_arena_destroy(cudf_reservation_arena_handle arena
   {
     auto* state   = reinterpret_cast<reservation_arena_handle_state*>(arena);
     auto* adaptor = state->manager->owner->reservation_adaptor;
-    if (adaptor != nullptr) { adaptor->destroy_arena(state->arena); }
+    adaptor->destroy_arena(state->arena);
     delete state;
     return CUDF_SUCCESS;
   }

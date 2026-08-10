@@ -231,7 +231,7 @@ cudf_status_t cudf_column_create_numeric_ex(cudf_type_id_t type_id,
     dev_data.emplace(data, data_bytes, exec->stream, *exec->mr);
 
     // Copy null mask to device if provided.
-    if (null_mask != nullptr && null_count > 0) {
+    if (null_count > 0) {
       // cudf bitmask is stored as uint32_t words.
       size_t mask_bytes = cudf::bitmask_allocation_size_bytes(static_cast<cudf::size_type>(size));
       // We receive packed bytes from Rust — copy them to a device buffer
@@ -1053,7 +1053,7 @@ cudf_status_t cudf_column_create_strings_ex(const char** strings,
     // Build a single concatenated chars buffer on host
     std::vector<char> host_chars(total_chars);
     for (int32_t i = 0; i < num_strings; ++i) {
-      if (lengths[i] > 0 && strings[i] != nullptr) {
+      if (lengths[i] > 0) {
         std::memcpy(host_chars.data() + host_offsets[i], strings[i], lengths[i]);
       }
     }
@@ -1075,7 +1075,7 @@ cudf_status_t cudf_column_create_strings_ex(const char** strings,
     dev_chars.emplace(host_chars.data(), chars_bytes, exec->stream, *exec->mr);
     maybe_fail_strings_host_import_after_chars_copy();
 
-    if (null_mask != nullptr && null_count > 0) {
+    if (null_count > 0) {
       auto const compact_mask_bytes = (num_strings_size + 7) / 8;
       auto const alloc_mask_bytes =
         cudf::bitmask_allocation_size_bytes(static_cast<cudf::size_type>(num_strings));

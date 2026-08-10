@@ -84,7 +84,6 @@ query_domain_resource::query_domain_resource(cudaMemPool_t pool,
   std::shared_ptr<query_domain_member_counters> const& member, bool attached) const
 {
   cudf_memory_resource_usage_t out{};
-  if (member == nullptr) { return out; }
   fill_usage(out,
              member->allocation_limit.load(std::memory_order_relaxed),
              member->current_bytes.load(std::memory_order_relaxed),
@@ -692,7 +691,6 @@ void reservation_aware_resource_adaptor::destroy_query_domain(
 cudf_memory_resource_usage_t reservation_aware_resource_adaptor::query_domain_usage(
   std::shared_ptr<query_domain_state> const& state)
 {
-  if (state == nullptr || state->resource == nullptr) { return {}; }
   std::shared_lock lock{query_domain_mutex_};
   return state->resource->usage(state->active, state->active_members);
 }
@@ -703,16 +701,13 @@ cudf_memory_resource_usage_t reservation_aware_resource_adaptor::query_domain_us
   std::shared_lock lock{query_domain_mutex_};
   return static_cast<std::size_t>(std::count_if(
     query_domains_by_pool_.cbegin(), query_domains_by_pool_.cend(), [domain_id](auto const& entry) {
-      return entry.second != nullptr && entry.second->id == domain_id;
+      return entry.second->id == domain_id;
     }));
 }
 
 cudf_memory_resource_usage_t reservation_aware_resource_adaptor::query_domain_member_usage(
   std::shared_ptr<query_domain_member_state> const& state)
 {
-  if (state == nullptr || state->domain == nullptr || state->domain->resource == nullptr) {
-    return {};
-  }
   std::shared_lock lock{query_domain_mutex_};
   return state->domain->resource->member_usage(state->counters, state->attached);
 }
@@ -720,10 +715,6 @@ cudf_memory_resource_usage_t reservation_aware_resource_adaptor::query_domain_me
 bool reservation_aware_resource_adaptor::resize_query_domain(
   std::shared_ptr<query_domain_state> const& state, std::size_t grant_bytes, std::string& error)
 {
-  if (state == nullptr || state->resource == nullptr) {
-    error = "query memory domain is null";
-    return false;
-  }
   std::shared_lock lock{query_domain_mutex_};
   if (!state->active) {
     error = "query memory domain is not active";
@@ -737,10 +728,6 @@ bool reservation_aware_resource_adaptor::resize_query_domain_member(
   std::size_t limit_bytes,
   std::string& error)
 {
-  if (state == nullptr || state->resource == nullptr) {
-    error = "query memory domain member is null";
-    return false;
-  }
   std::shared_lock lock{query_domain_mutex_};
   if (!state->attached) {
     error = "query memory domain member is not attached";
@@ -752,9 +739,6 @@ bool reservation_aware_resource_adaptor::resize_query_domain_member(
 void reservation_aware_resource_adaptor::trim_query_domain(
   std::shared_ptr<query_domain_state> const& state, std::uint64_t keep_bytes)
 {
-  if (state == nullptr || state->resource == nullptr) {
-    throw std::runtime_error{"query memory domain is null"};
-  }
   state->resource->trim_to(keep_bytes);
 }
 
@@ -914,10 +898,6 @@ cudf_status_t cudf_memory_manager_create_query_memory_domain(cudf_memory_manager
       return CUDF_ERROR_INVALID_OPERATION;
     }
     auto* adaptor = manager_state->owner->reservation_adaptor;
-    if (adaptor == nullptr) {
-      set_error("memory manager resource is not reservation-aware");
-      return CUDF_ERROR_INVALID_OPERATION;
-    }
     if (manager_state->owner->async_pool == nullptr) {
       set_error("query memory domains require a CUDA async manager base");
       return CUDF_ERROR_INVALID_OPERATION;
@@ -971,10 +951,6 @@ cudf_status_t cudf_query_memory_domain_attach_stream(cudf_query_memory_domain_ha
       "same CUDA device");
     if (stream_status != CUDF_SUCCESS) { return stream_status; }
     auto* adaptor = domain_state.manager->owner->reservation_adaptor;
-    if (adaptor == nullptr) {
-      set_error("query memory domain manager resource is not reservation-aware");
-      return CUDF_ERROR_INVALID_OPERATION;
-    }
     std::string attach_error;
     auto member = adaptor->attach_query_domain(domain_state.domain,
                                                cudf_stream_view_from_handle(stream),
@@ -1021,10 +997,6 @@ cudf_status_t cudf_query_memory_domain_usage(cudf_query_memory_domain_handle dom
   {
     auto& state   = *reinterpret_cast<query_domain_handle_state*>(domain);
     auto* adaptor = state.manager->owner->reservation_adaptor;
-    if (adaptor == nullptr) {
-      set_error("query memory domain manager resource is not reservation-aware");
-      return CUDF_ERROR_INVALID_OPERATION;
-    }
     *out = adaptor->query_domain_usage(state.domain);
     return CUDF_SUCCESS;
   }
@@ -1040,10 +1012,6 @@ cudf_status_t cudf_query_memory_domain_identity(cudf_query_memory_domain_handle 
   CUDF_RUST_TRY
   {
     auto const& state = *reinterpret_cast<query_domain_handle_state*>(domain);
-    if (state.manager == nullptr || state.domain == nullptr) {
-      set_error("query memory domain identity is unavailable");
-      return CUDF_ERROR_INVALID_OPERATION;
-    }
     out->struct_size    = sizeof(cudf_query_memory_domain_identity_t);
     out->device_ordinal = state.manager->device;
     out->domain_id      = state.domain->id;
@@ -1062,8 +1030,7 @@ cudf_status_t cudf_query_memory_domain_pool_usage(cudf_query_memory_domain_handl
   CUDF_RUST_TRY
   {
     auto& state = *reinterpret_cast<query_domain_handle_state*>(domain);
-    if (state.domain == nullptr || state.domain->resource == nullptr ||
-        !state.domain->resource->pool_usage(*out)) {
+    if (!state.domain->resource->pool_usage(*out)) {
       set_error("failed to read query memory domain pool usage");
       return CUDF_ERROR_INVALID_OPERATION;
     }
@@ -1080,10 +1047,6 @@ cudf_status_t cudf_query_memory_domain_resize_grant(cudf_query_memory_domain_han
   {
     auto& state   = *reinterpret_cast<query_domain_handle_state*>(domain);
     auto* adaptor = state.manager->owner->reservation_adaptor;
-    if (adaptor == nullptr) {
-      set_error("query memory domain manager resource is not reservation-aware");
-      return CUDF_ERROR_INVALID_OPERATION;
-    }
     std::string resize_error;
     if (!adaptor->resize_query_domain(state.domain, grant_bytes, resize_error)) {
       set_error(resize_error);
@@ -1102,10 +1065,6 @@ cudf_status_t cudf_query_memory_domain_trim(cudf_query_memory_domain_handle doma
   {
     auto& state   = *reinterpret_cast<query_domain_handle_state*>(domain);
     auto* adaptor = state.manager->owner->reservation_adaptor;
-    if (adaptor == nullptr) {
-      set_error("query memory domain manager resource is not reservation-aware");
-      return CUDF_ERROR_INVALID_OPERATION;
-    }
     adaptor->trim_query_domain(state.domain, keep_bytes);
     return CUDF_SUCCESS;
   }
@@ -1119,7 +1078,7 @@ cudf_status_t cudf_query_memory_domain_destroy(cudf_query_memory_domain_handle d
   {
     auto* state   = reinterpret_cast<query_domain_handle_state*>(domain);
     auto* adaptor = state->manager->owner->reservation_adaptor;
-    if (adaptor != nullptr) { adaptor->destroy_query_domain(state->domain); }
+    adaptor->destroy_query_domain(state->domain);
     delete state;
     return CUDF_SUCCESS;
   }

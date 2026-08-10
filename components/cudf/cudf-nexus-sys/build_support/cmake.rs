@@ -374,7 +374,7 @@ pub(crate) fn check_libcudf_staleness(manifest_dir: &Path) {
         return;
     }
 
-    let display_path = newest.as_ref().map(|(path, _)| path.display().to_string()).unwrap_or_default();
+    let display_path = newest.expect("a newer libcudf source requires a newest source path").0.display().to_string();
     let rebuild_command = match installed_prefix_for_libcudf(&libcudf_so) {
         Some(install_prefix) => format!("`INSTALL_PREFIX={} ./build.sh libcudf`", install_prefix.display()),
         None => "`./build.sh libcudf -n`".to_owned(),

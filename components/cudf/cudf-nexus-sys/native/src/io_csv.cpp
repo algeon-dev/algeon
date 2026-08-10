@@ -71,7 +71,7 @@ cudf_status_t cudf_io_write_csv_ex(cudf_table_view_handle table,
                      .inter_column_delimiter(delimiter)
                      .include_header(include_header != 0);
 
-    if (column_names != nullptr && num_columns > 0) {
+    if (num_columns > 0) {
       cudf_status_t status = validate_c_string_array(column_names, num_columns, "column_names");
       if (status != CUDF_SUCCESS) { return status; }
       std::vector<std::string> names;

@@ -935,9 +935,3 @@ std::unique_ptr<cudf_table_handle_state> cudf_make_table_handle_state_from_colum
 {
   return std::make_unique<column_state_table_handle_state>(num_rows, std::move(columns));
 }
-
-std::unique_ptr<cudf_table_handle_state> cudf_make_foreign_table_handle_state_from_columns(
-  cudf::size_type num_rows, std::vector<std::unique_ptr<cudf_column_handle_state>> columns)
-{
-  return cudf_make_table_handle_state_from_columns(num_rows, std::move(columns));
-}

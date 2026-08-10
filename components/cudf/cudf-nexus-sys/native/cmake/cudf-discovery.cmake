@@ -73,9 +73,7 @@ function(cudf_rust_collect_package_prefixes cache_path output_var)
     endif()
   endforeach()
 
-  if(package_prefixes)
-    list(REMOVE_DUPLICATES package_prefixes)
-  endif()
+  list(REMOVE_DUPLICATES package_prefixes)
   set(${output_var}
       "${package_prefixes}"
       PARENT_SCOPE
