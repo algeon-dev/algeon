@@ -5,6 +5,67 @@ the GPU lock, prepare fixtures separately, and use a new output directory for
 each invocation. None of these commands downloads, creates, or overwrites a
 fixture.
 
+## Code axes (S / P / W / G / I)
+
+`S`, `P`, `W`, `G`, and `I` are short handles, not self-explanatory names. Each
+points at the place that owns the full meaning, which stays authoritative when
+the two disagree. `S` cells are owned by a section of this runbook; the
+`P`/`W`/`G`/`I` codes are owned by comments in
+`crates/nexus-tools/src/single_node_multi_gpu_validate/`. Keep this table in
+sync when a code is added or retired.
+
+| Axis | What the codes number here | Owner |
+| --- | --- | --- |
+| `S` | stress scenario cells (recorded load experiments) | a section of this runbook |
+| `P` | the validation program's own capability phases | `single_node_multi_gpu_validate` module docs |
+| `W` | workload / observability artifact projections | `single_node_multi_gpu_validate` comments |
+| `G` | the DBLP cuGraph workload priority set | `workload.rs` and `generate_s2_graph_profiles.py` |
+| `I` | observability findings and gated probes | `single_node_multi_gpu_validate` comments |
+
+### S — stress scenario cells
+
+| Cell | What it records |
+| --- | --- |
+| `S1` | embedded-library mixed load; the feature-off cugraph cell; the OTLP (W8) collector cell |
+| `S2` | concurrency/envelope/rate sweeps, knee-rate instantiation, claim-versus-VRAM calibration |
+| `S3` | utilization, telemetry on/off A/B, heterogeneous ordinal profiles |
+| `S4` | sustained-plateau QPS (optional spike/drain steps) |
+| `S5` | storms: cancellation, deadline, sustained overload, and the I8 completion-sink cell |
+| `S6` | quarantine (single, cycles, cache-resident) and close-under-load |
+| `S7` | cache qualification: the paired P6.8 calibration and the cold-cache same-key probe |
+| `S8` | Flight SQL server profiles (pooled / churn), bound to an in-process S2 baseline |
+
+### P — program capability phases
+
+- `P4` — the pull-only backend-metric snapshots (the audited metric store).
+- `P5` — the cache opt-in control (`cache_cap_bytes`).
+- `P6` — the measured production-validation run pipeline:
+  - `P6.3` dry run; `P6.4` read-only fixture preflight; `P6.5` the measured public-API run (the published artifact schema).
+  - `P6.6` the dedicated probes: deadline, cancellation, domain-cap exhaustion, finite-cohort overload, physical allocator pressure.
+  - `P6.7` the bounded metrics audit over timestamped P4 snapshots.
+  - `P6.8` the paired cache-disabled / cache-opt-in calibration.
+- `P7` / `P8` — the contention profiles that opt into the sealed bounded-overload outcome.
+
+### W — workload / observability projections
+
+- `W1` — the compact per-device utilization/ledger/cache and process time series.
+- `W3` — the multi-phase (multi-step) schedule and its per-step envelope aggregates.
+- `W6` — the planned-attempt cap / offered-process bound every plan is checked against.
+- `W8` — operability: per-attempt attribution completeness and the explicit reference OTLP exporter cell.
+- `W9` — several DBLP graph fixtures (distinct source-hash slices) under shared registration names.
+
+### G — DBLP cuGraph workload priority set
+
+- `G1` `force_atlas2`, `G2` `bfs_deep`, `G3` `pagerank`, `G4` `betweenness` (`betweenness_centrality`).
+
+### I — observability findings / gated probes
+
+- `I1` — the histogram-saturation usability finding (non-blocking).
+- `I5` — the allocation-fragmentation canary (first- vs second-half drift finding).
+- `I8` — the serialized public completion-receiver (slow report sink) probe.
+- `I11` — the graph-model claim/peak calibration gate (one typed row per measurement-phase graph attempt).
+- `I13` — the public monitoring pull cost (with `W8`).
+
 ## Host and fixture requirements
 
 The shipped S1-S7 profiles require one Linux host with CUDA, NVML, and four
