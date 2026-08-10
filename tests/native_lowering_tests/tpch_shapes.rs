@@ -539,7 +539,7 @@ async fn tpch_q11_lowers_joined_grouped_and_scalar_aggregate_inputs_for_bounded_
     assert_q11_keyless_proof_selected_as(
         &optimized.plan,
         "optimized q11",
-        nexus_query_engine::capability::CapabilityEnvelope::KeylessConditionalJoinAggregateOverJoinSubplanInputs,
+        nexus_query_engine::capability::CapabilityEnvelope::RootFullSortJoinAggregate,
     );
     let aggregate_join_pushdown = &optimized.diagnostics.aggregate_join_pushdown;
     assert_eq!(aggregate_join_pushdown.applied_count, 1, "optimizer diagnostics={aggregate_join_pushdown:?}");

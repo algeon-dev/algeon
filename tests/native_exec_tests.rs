@@ -10,7 +10,6 @@ use arrow::{
 };
 use datafusion::{
     common::{DataFusionError, ScalarValue, config::ConfigOptions},
-    datasource::{memory::MemorySourceConfig, source::DataSourceExec},
     execution::{context::TaskContext, object_store::ObjectStoreUrl},
     logical_expr::Operator,
     physical_expr::{
@@ -239,9 +238,10 @@ fn native_composed_exec_hands_gpu_result_between_fragments_without_host_material
     let config = bounded_config();
 
     let producer_plan = local_parquet_gpu_resident_plan(&path, Arc::clone(&schema));
+    let consumer_plan = gpu_resident_host_sink_plan("fragment_input", Arc::clone(&schema));
+    let config = admitted_composed_config(&consumer_plan, "fragment_input", &producer_plan, config);
     let producer = Arc::new(NexusNativeGpuProducerExec::try_new("fragment_input", producer_plan).unwrap());
     let producer_child = Arc::clone(&producer) as Arc<dyn ExecutionPlan>;
-    let consumer_plan = gpu_resident_host_sink_plan("fragment_input", Arc::clone(&schema));
     let composed = Arc::new(NexusNativeComposedExec::try_new(consumer_plan, vec![producer_child], config).unwrap());
 
     assert_eq!(composed.name(), "NexusNativeComposedExec");
@@ -282,9 +282,10 @@ fn native_composed_host_output_memory_pool_accounting_fails_fast() {
     let config = bounded_config().with_host_output_memory_pool_accounting(true);
 
     let producer_plan = local_parquet_gpu_resident_plan(&path, Arc::clone(&schema));
+    let consumer_plan = gpu_resident_host_sink_plan("fragment_input", Arc::clone(&schema));
+    let config = admitted_composed_config(&consumer_plan, "fragment_input", &producer_plan, config);
     let producer = Arc::new(NexusNativeGpuProducerExec::try_new("fragment_input", producer_plan).unwrap());
     let producer_child = Arc::clone(&producer) as Arc<dyn ExecutionPlan>;
-    let consumer_plan = gpu_resident_host_sink_plan("fragment_input", Arc::clone(&schema));
     let composed = Arc::new(NexusNativeComposedExec::try_new(consumer_plan, vec![producer_child], config).unwrap());
     // The four source columns contain only 72 logical cuDF payload bytes, but
     // their four Arrow destination buffers retain 4 * 64 = 256 bytes. A
@@ -731,7 +732,8 @@ proptest! {
         let native = filter.input().downcast_ref::<NexusNativeExec>().expect("mixed boundary must replace only the source leaf");
         assert_mixed_boundary_properties(filter, native);
 
-        let mixed = futures::executor::block_on(collect(Arc::clone(&planned), Arc::new(TaskContext::default()))).unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let mixed = runtime.block_on(collect(Arc::clone(&planned), Arc::new(TaskContext::default()))).unwrap();
         prop_assert_eq!(ilike_rows(&mixed), ilike_rows(&cpu));
 
         let retained_report = native_rule.last_report().expect("mixed-boundary selected report should be retained");
@@ -908,7 +910,11 @@ fn native_execution_reestablished_declared_scan_ordering_is_sorted() {
 
 #[test]
 fn native_execution_sort_preserving_merge_matches_datafusion_sorted_input() {
-    let scan = sorted_two_partition_memory_source();
+    let dir = unique_temp_dir("datafusion-nexus-native-exec-sort-preserving-merge");
+    write_sorted_parquet_file(&dir.join("first.parquet"));
+    write_sorted_parquet_file(&dir.join("second.parquet"));
+    let scan = parquet_scan_with_target_partitions(&dir, 2);
+    assert_eq!(scan.properties().output_partitioning().partition_count(), 2);
     let ordering = LexOrdering::new([PhysicalSortExpr::new(
         col("key", &scan.schema()).unwrap(),
         ArrowSortOptions::new(false, false),
@@ -928,33 +934,9 @@ fn native_execution_sort_preserving_merge_matches_datafusion_sorted_input() {
         futures::executor::block_on(collect(Arc::clone(&optimized), Arc::new(TaskContext::default()))).unwrap();
     assert_eq!(actual.len(), expected.len());
     assert_eq!(int32_array(&actual[0], 0).values().as_ref(), int32_array(&expected[0], 0).values().as_ref());
-    assert_eq!(int32_array(&actual[0], 0).values().as_ref(), &[1, 2, 3, 4]);
-}
+    assert_eq!(int32_array(&actual[0], 0).values().as_ref(), &[1, 1, 1, 1, 2, 2]);
 
-fn sorted_two_partition_memory_source() -> Arc<dyn ExecutionPlan> {
-    let schema = Arc::new(arrow::datatypes::Schema::new(vec![arrow::datatypes::Field::new(
-        "key",
-        arrow::datatypes::DataType::Int32,
-        false,
-    )]));
-    let first = arrow::record_batch::RecordBatch::try_new(
-        Arc::clone(&schema),
-        vec![Arc::new(arrow::array::Int32Array::from(vec![1, 3]))],
-    )
-    .unwrap();
-    let second = arrow::record_batch::RecordBatch::try_new(
-        Arc::clone(&schema),
-        vec![Arc::new(arrow::array::Int32Array::from(vec![2, 4]))],
-    )
-    .unwrap();
-    let ordering =
-        LexOrdering::new([PhysicalSortExpr::new(col("key", &schema).unwrap(), ArrowSortOptions::new(false, false))])
-            .expect("memory source ordering should be non-empty");
-    let source = MemorySourceConfig::try_new(&[vec![first], vec![second]], Arc::clone(&schema), None)
-        .unwrap()
-        .try_with_sort_information(vec![ordering])
-        .unwrap();
-    DataSourceExec::from_data_source(source)
+    fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]
@@ -1496,8 +1478,6 @@ fn native_optimizer_rule_executes_try_cast_string_to_integer_with_null_on_failur
         parquet::arrow::ArrowWriter,
         prelude::{ParquetReadOptions, SessionConfig, SessionContext},
     };
-    use datafusion_nexus::session::NexusSessionStateBuilderExt;
-
     let dir = unique_temp_dir("datafusion-nexus-native-exec-try-cast");
     let path = dir.join("input.parquet");
     {
@@ -1519,10 +1499,13 @@ fn native_optimizer_rule_executes_try_cast_string_to_integer_with_null_on_failur
         writer.close().unwrap();
     }
 
-    let state = SessionStateBuilder::new()
-        .with_default_features()
-        .with_config(SessionConfig::new().with_target_partitions(1).with_repartition_file_scans(false))
-        .with_nexus_native(native_optimizer_config())
+    let state = test_gpu_backend()
+        .install_on(
+            SessionStateBuilder::new()
+                .with_default_features()
+                .with_config(SessionConfig::new().with_target_partitions(1).with_repartition_file_scans(false)),
+        )
+        .unwrap()
         .build();
     let ctx = SessionContext::new_with_state(state);
     futures::executor::block_on(ctx.register_parquet("bench", path.to_str().unwrap(), ParquetReadOptions::default()))

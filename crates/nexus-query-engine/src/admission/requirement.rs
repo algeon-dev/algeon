@@ -54,6 +54,7 @@ enum OwnerId {
     Consumer(NodeId),
     SideInput(NodeId),
     Sort(NodeId),
+    Limit(NodeId),
     CacheLedger,
 }
 
@@ -68,6 +69,7 @@ impl OwnerId {
             Self::Consumer(_) => "consumer",
             Self::SideInput(_) => "side_input",
             Self::Sort(_) => "sort",
+            Self::Limit(_) => "limit",
             Self::CacheLedger => "cache_ledger",
         }
     }
@@ -93,6 +95,11 @@ enum OwnerTermRole {
     ConsumerPairIndices,
     ConsumerProjectionCastWorkspace,
     SideInputFrame,
+    LimitGatherMap,
+    LimitNativeWorkspace,
+    LimitOutputFrame,
+    LimitOutputNullMask,
+    SortKeyInput,
     SortKeyOutput,
     SortSequence,
     SortTemporaryWorkspace,
@@ -122,6 +129,11 @@ impl OwnerTermRole {
             Self::ConsumerPairIndices => "consumer_pair_indices",
             Self::ConsumerProjectionCastWorkspace => "consumer_projection_cast_workspace",
             Self::SideInputFrame => "side_input_frame",
+            Self::LimitGatherMap => "limit_gather_map",
+            Self::LimitNativeWorkspace => "limit_native_workspace",
+            Self::LimitOutputFrame => "limit_output_frame",
+            Self::LimitOutputNullMask => "limit_output_null_mask",
+            Self::SortKeyInput => "sort_key_input",
             Self::SortKeyOutput => "sort_key_output",
             Self::SortSequence => "sort_sequence",
             Self::SortTemporaryWorkspace => "sort_temporary_workspace",
@@ -213,6 +225,7 @@ pub(crate) enum AttemptBoundDerivation {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SortRadixPreflight {
+    key_input_bytes: u64,
     key_output_bytes: u64,
     sequence_bytes: u64,
     temporary_workspace_bytes: u64,
@@ -220,8 +233,69 @@ pub(crate) struct SortRadixPreflight {
     active_phase_peak_bytes: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct LimitRangeGatherPreflight {
+    gather_map_bytes: u64,
+    output_frame_bytes: u64,
+    output_null_mask_bytes: u64,
+    native_workspace_bytes: u64,
+    active_phase_peak_bytes: u64,
+}
+
+impl LimitRangeGatherPreflight {
+    fn checked_from_cudf(preflight: cudf::ops::copying::GatherFixedWidthDontCheckPreflight) -> Result<Self> {
+        let gather_map_bytes = u64::try_from(preflight.gather_map_bytes())
+            .map_err(|_| limit_owner_error("native_byte_count_exceeds_u64", "gather_map_bytes"))?;
+        let output_frame_bytes = u64::try_from(preflight.output_frame_bytes())
+            .map_err(|_| limit_owner_error("native_byte_count_exceeds_u64", "output_frame_bytes"))?;
+        let output_null_mask_bytes = u64::try_from(preflight.output_null_mask_bytes())
+            .map_err(|_| limit_owner_error("native_byte_count_exceeds_u64", "output_null_mask_bytes"))?;
+        let native_workspace_bytes = u64::try_from(preflight.native_workspace_bytes())
+            .map_err(|_| limit_owner_error("native_byte_count_exceeds_u64", "native_workspace_bytes"))?;
+        let active_phase_peak_bytes = u64::try_from(preflight.active_phase_peak_bytes())
+            .map_err(|_| limit_owner_error("native_byte_count_exceeds_u64", "active_phase_peak_bytes"))?;
+        let expected_peak = gather_map_bytes
+            .checked_add(output_frame_bytes)
+            .and_then(|value| value.checked_add(output_null_mask_bytes))
+            .and_then(|value| value.checked_add(native_workspace_bytes))
+            .ok_or_else(|| limit_owner_error("component_sum_overflow", "active_phase_peak_bytes"))?;
+        if expected_peak != active_phase_peak_bytes {
+            return Err(limit_owner_error("active_phase_component_sum_mismatch", "active_phase_peak_bytes"));
+        }
+        Ok(Self {
+            gather_map_bytes,
+            output_frame_bytes,
+            output_null_mask_bytes,
+            native_workspace_bytes,
+            active_phase_peak_bytes,
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_for_test(
+        gather_map_bytes: u64,
+        output_frame_bytes: u64,
+        output_null_mask_bytes: u64,
+        native_workspace_bytes: u64,
+    ) -> Self {
+        Self {
+            gather_map_bytes,
+            output_frame_bytes,
+            output_null_mask_bytes,
+            native_workspace_bytes,
+            active_phase_peak_bytes: gather_map_bytes
+                .checked_add(output_frame_bytes)
+                .and_then(|value| value.checked_add(output_null_mask_bytes))
+                .and_then(|value| value.checked_add(native_workspace_bytes))
+                .expect("test limit preflight components fit"),
+        }
+    }
+}
+
 impl SortRadixPreflight {
     fn checked_from_cudf(preflight: cudf::ops::sorting::SortedOrderRadixPreflight) -> Result<Self> {
+        let key_input_bytes = u64::try_from(preflight.key_input_bytes())
+            .map_err(|_| sort_owner_error("native_byte_count_exceeds_u64", "key_input_bytes"))?;
         let key_output_bytes = u64::try_from(preflight.key_output_bytes())
             .map_err(|_| sort_owner_error("native_byte_count_exceeds_u64", "key_output_bytes"))?;
         let sequence_bytes = u64::try_from(preflight.sequence_bytes())
@@ -232,8 +306,9 @@ impl SortRadixPreflight {
             .map_err(|_| sort_owner_error("native_byte_count_exceeds_u64", "retained_order_bytes"))?;
         let active_phase_peak_bytes = u64::try_from(preflight.active_phase_peak_bytes())
             .map_err(|_| sort_owner_error("native_byte_count_exceeds_u64", "active_phase_peak_bytes"))?;
-        let expected_peak = key_output_bytes
-            .checked_add(sequence_bytes)
+        let expected_peak = key_input_bytes
+            .checked_add(key_output_bytes)
+            .and_then(|value| value.checked_add(sequence_bytes))
             .and_then(|value| value.checked_add(temporary_workspace_bytes))
             .and_then(|value| value.checked_add(retained_order_bytes))
             .ok_or_else(|| sort_owner_error("component_sum_overflow", "active_phase_peak_bytes"))?;
@@ -244,6 +319,7 @@ impl SortRadixPreflight {
             return Err(sort_owner_error("sequence_retained_component_mismatch", "retained_order_bytes"));
         }
         Ok(Self {
+            key_input_bytes,
             key_output_bytes,
             sequence_bytes,
             temporary_workspace_bytes,
@@ -259,13 +335,32 @@ impl SortRadixPreflight {
         temporary_workspace_bytes: u64,
         retained_order_bytes: u64,
     ) -> Self {
-        Self {
+        Self::new_for_test_with_key_input(
+            0,
             key_output_bytes,
             sequence_bytes,
             temporary_workspace_bytes,
             retained_order_bytes,
-            active_phase_peak_bytes: key_output_bytes
-                .checked_add(sequence_bytes)
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_for_test_with_key_input(
+        key_input_bytes: u64,
+        key_output_bytes: u64,
+        sequence_bytes: u64,
+        temporary_workspace_bytes: u64,
+        retained_order_bytes: u64,
+    ) -> Self {
+        Self {
+            key_input_bytes,
+            key_output_bytes,
+            sequence_bytes,
+            temporary_workspace_bytes,
+            retained_order_bytes,
+            active_phase_peak_bytes: key_input_bytes
+                .checked_add(key_output_bytes)
+                .and_then(|value| value.checked_add(sequence_bytes))
                 .and_then(|value| value.checked_add(temporary_workspace_bytes))
                 .and_then(|value| value.checked_add(retained_order_bytes))
                 .expect("test preflight components fit"),
@@ -289,6 +384,16 @@ pub(crate) struct SortMetadataDescriptor {
     pub(crate) key_order: cudf::ops::sorting::Order,
     pub(crate) output_frame_bytes: u64,
     pub(crate) output_null_mask_bytes: u64,
+    pub(crate) limit: Option<LimitMetadataDescriptor>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LimitMetadataDescriptor {
+    pub(crate) node_id: NodeId,
+    pub(crate) execution_scope_fingerprint: String,
+    pub(crate) input_rows: u64,
+    pub(crate) output_rows: usize,
+    pub(crate) output_columns: Vec<(cudf::DataType, bool)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -342,10 +447,20 @@ fn owner_term_shape_is_valid(owner: &OwnerId, role: OwnerTermRole, class: Alloca
         },
         OwnerId::SideInput(_) => role == OwnerTermRole::SideInputFrame && class == AllocationClass::ActivePhase,
         OwnerId::Sort(_) => match role {
-            OwnerTermRole::SortKeyOutput | OwnerTermRole::SortSequence | OwnerTermRole::SortTemporaryWorkspace => {
+            OwnerTermRole::SortKeyInput
+            | OwnerTermRole::SortKeyOutput
+            | OwnerTermRole::SortSequence
+            | OwnerTermRole::SortTemporaryWorkspace => class == AllocationClass::ActivePhase,
+            OwnerTermRole::SortRetainedOrder | OwnerTermRole::SortOutputFrame | OwnerTermRole::SortOutputNullMask => {
+                class == AllocationClass::AttemptRetained
+            },
+            _ => false,
+        },
+        OwnerId::Limit(_) => match role {
+            OwnerTermRole::LimitGatherMap | OwnerTermRole::LimitNativeWorkspace => {
                 class == AllocationClass::ActivePhase
             },
-            OwnerTermRole::SortRetainedOrder | OwnerTermRole::SortOutputFrame | OwnerTermRole::SortOutputNullMask => {
+            OwnerTermRole::LimitOutputFrame | OwnerTermRole::LimitOutputNullMask => {
                 class == AllocationClass::AttemptRetained
             },
             _ => false,
@@ -365,7 +480,11 @@ fn validate_retention_shape(
         }
     } else if matches!(
         role,
-        OwnerTermRole::SortRetainedOrder | OwnerTermRole::SortOutputFrame | OwnerTermRole::SortOutputNullMask
+        OwnerTermRole::SortRetainedOrder
+            | OwnerTermRole::SortOutputFrame
+            | OwnerTermRole::SortOutputNullMask
+            | OwnerTermRole::LimitOutputFrame
+            | OwnerTermRole::LimitOutputNullMask
     ) {
         if class != AllocationClass::AttemptRetained || retained_row_count_upper_bound.is_some() {
             return Err(owner_term_error("retained_sort_output_shape_invalid", Some(role), Some(class)));
@@ -491,7 +610,10 @@ impl AllocationOwnerTerm {
     }
 
     pub(crate) const fn is_consumer_schedule_owner(&self) -> bool {
-        matches!(self.id.owner, OwnerId::Source(_) | OwnerId::Consumer(_) | OwnerId::SideInput(_) | OwnerId::Sort(_))
+        matches!(
+            self.id.owner,
+            OwnerId::Source(_) | OwnerId::Consumer(_) | OwnerId::SideInput(_) | OwnerId::Sort(_) | OwnerId::Limit(_)
+        )
     }
 
     pub(crate) fn has_consumer_schedule_identity(&self) -> bool {
@@ -519,12 +641,23 @@ impl AllocationOwnerTerm {
                 node_id == occurrence
                     && matches!(
                         role,
-                        OwnerTermRole::SortKeyOutput
+                        OwnerTermRole::SortKeyInput
+                            | OwnerTermRole::SortKeyOutput
                             | OwnerTermRole::SortSequence
                             | OwnerTermRole::SortTemporaryWorkspace
                             | OwnerTermRole::SortRetainedOrder
                             | OwnerTermRole::SortOutputFrame
                             | OwnerTermRole::SortOutputNullMask
+                    )
+            },
+            (OwnerId::Limit(node_id), role, OccurrenceId::PlanLocal(occurrence)) => {
+                node_id == occurrence
+                    && matches!(
+                        role,
+                        OwnerTermRole::LimitGatherMap
+                            | OwnerTermRole::LimitNativeWorkspace
+                            | OwnerTermRole::LimitOutputFrame
+                            | OwnerTermRole::LimitOutputNullMask
                     )
             },
             _ => false,
@@ -593,6 +726,16 @@ fn sort_owner_error(reason: &'static str, resource: &'static str) -> QueryError 
         "sorted-order owner preflight is unavailable",
     )
     .with_fact("reason", format!("sort_owner_{reason}"))
+    .with_fact("resource", resource)
+}
+
+fn limit_owner_error(reason: &'static str, resource: &'static str) -> QueryError {
+    QueryError::new(
+        QueryErrorCode::UnsupportedPlanShape,
+        "nexus_query_engine.admission.requirement",
+        "bounded limit range-gather owner preflight is unavailable",
+    )
+    .with_fact("reason", format!("limit_owner_{reason}"))
     .with_fact("resource", resource)
 }
 
@@ -1579,7 +1722,7 @@ impl QueryPlanCapabilityProof {
 
         let ComposedConsumerBranchBound {
             owner_terms: consumer_owner_terms,
-            peak_owner_term_ids: consumer_peak_term_ids,
+            peak_owner_term_groups: consumer_peak_term_groups,
             dominated_owner_term_ids: consumer_dominated_term_ids,
             allocation_state: consumer_state,
             consumed_occurrences,
@@ -1600,11 +1743,11 @@ impl QueryPlanCapabilityProof {
             .filter(|term| term.is_attempt_wide_fixed())
             .map(|term| term.id().clone())
             .collect::<Vec<_>>();
-        let schedule = AttemptReservationSchedule::from_phase_term_ids_with_dominated(
+        let schedule = AttemptReservationSchedule::from_phase_term_groups_with_dominated(
             attempt_wide_fixed_term_ids,
             producer_phases,
             consumer_state,
-            consumer_peak_term_ids,
+            consumer_peak_term_groups,
             consumer_dominated_term_ids,
         );
         let [consumer_shape] = consumer.requirement.reservation_shapes.as_mut_slice() else {
@@ -1766,7 +1909,25 @@ impl QueryPlanCapabilityProof {
     pub(crate) fn requirement_for_device_with_preflight<F>(&self, device_ordinal: usize, preflight: F) -> Result<Self>
     where F: Fn(&SortMetadataDescriptor, usize) -> Result<SortRadixPreflight> {
         self.requirement
-            .resolve_for_device_with_preflight(device_ordinal, preflight)
+            .resolve_for_device_with_preflight_and_limit(device_ordinal, preflight, |_, _| {
+                Err(limit_owner_error("test_preflight_missing", "limit"))
+            })
+            .map(|requirement| Self { requirement })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn requirement_for_device_with_preflight_and_limit<F, G>(
+        &self,
+        device_ordinal: usize,
+        sort_preflight: F,
+        limit_preflight: G,
+    ) -> Result<Self>
+    where
+        F: Fn(&SortMetadataDescriptor, usize) -> Result<SortRadixPreflight>,
+        G: Fn(&LimitMetadataDescriptor, usize) -> Result<LimitRangeGatherPreflight>,
+    {
+        self.requirement
+            .resolve_for_device_with_preflight_and_limit(device_ordinal, sort_preflight, limit_preflight)
             .map(|requirement| Self { requirement })
     }
 
@@ -2362,38 +2523,71 @@ impl AttemptCapabilityEvidence {
             )
             .with_fact("reason", "sort_owner_candidate_device_unavailable")
         })?;
-        self.resolve_for_device_with_preflight(device_ordinal, |descriptor, _| {
-            let preflight = cudf::DataFramePreparedSort::sorted_order_radix_preflight_for_metadata(
-                descriptor.num_rows,
-                descriptor.key_type,
-                descriptor.null_count,
-                descriptor.stable,
-                descriptor.key_order,
-                device,
-            )
-            .map_err(|error| {
-                QueryError::from_cudf(
-                    "nexus_query_engine.admission.requirement.sort_preflight",
-                    "native sorted-order owner preflight failed",
-                    error,
+        self.resolve_for_device_with_preflight_and_limit(
+            device_ordinal,
+            |descriptor, _| {
+                let preflight = cudf::DataFramePreparedSort::sorted_order_radix_preflight_for_metadata(
+                    descriptor.num_rows,
+                    descriptor.key_type,
+                    descriptor.null_count,
+                    descriptor.stable,
+                    descriptor.key_order,
+                    device,
                 )
-                .with_fact("reason", "sort_owner_native_preflight_failed")
-            })?;
-            SortRadixPreflight::checked_from_cudf(preflight)
-        })
+                .map_err(|error| {
+                    QueryError::from_cudf(
+                        "nexus_query_engine.admission.requirement.sort_preflight",
+                        "native sorted-order owner preflight failed",
+                        error,
+                    )
+                    .with_fact("reason", "sort_owner_native_preflight_failed")
+                })?;
+                SortRadixPreflight::checked_from_cudf(preflight)
+            },
+            |descriptor, _| {
+                let preflight = cudf::ops::copying::gather_fixed_width_dont_check_preflight_for_metadata(
+                    &descriptor.output_columns,
+                    descriptor.output_rows,
+                    device,
+                )
+                .map_err(|error| {
+                    QueryError::from_cudf(
+                        "nexus_query_engine.admission.requirement.limit_preflight",
+                        "native bounded limit range-gather owner preflight failed",
+                        error,
+                    )
+                    .with_fact("reason", "limit_owner_native_preflight_failed")
+                })?;
+                LimitRangeGatherPreflight::checked_from_cudf(preflight)
+            },
+        )
     }
 
-    fn resolve_for_device_with_preflight<F>(&self, device_ordinal: usize, preflight: F) -> Result<Self>
-    where F: Fn(&SortMetadataDescriptor, usize) -> Result<SortRadixPreflight> {
+    fn resolve_for_device_with_preflight_and_limit<F, G>(
+        &self,
+        device_ordinal: usize,
+        sort_preflight: F,
+        limit_preflight: G,
+    ) -> Result<Self>
+    where
+        F: Fn(&SortMetadataDescriptor, usize) -> Result<SortRadixPreflight>,
+        G: Fn(&LimitMetadataDescriptor, usize) -> Result<LimitRangeGatherPreflight>,
+    {
         let mut resolved = self.clone();
         let descriptors =
             self.reservation_shapes.iter().filter_map(AttemptReservationShape::sort_metadata).collect::<Vec<_>>();
         for descriptor in &descriptors {
             validate_sort_metadata_descriptor(descriptor)?;
-            let components = preflight(descriptor, device_ordinal)?;
+            let components = sort_preflight(descriptor, device_ordinal)?;
             let terms = sort_owner_terms(descriptor, components)?;
             resolved.owner_terms = merge_owner_terms(&resolved.owner_terms, terms)?;
             resolved.set_sort_phase_peak(descriptor, components.active_phase_peak_bytes)?;
+            if let Some(limit) = descriptor.limit.as_ref() {
+                let components = limit_preflight(limit, device_ordinal)?;
+                let terms = limit_owner_terms(limit, components)?;
+                resolved.owner_terms = merge_owner_terms(&resolved.owner_terms, terms)?;
+                resolved.set_limit_phase_peak(limit, components.active_phase_peak_bytes)?;
+            }
         }
         Ok(resolved)
     }
@@ -2411,6 +2605,21 @@ impl AttemptCapabilityEvidence {
             return Err(sort_owner_error("reservation_scope_ambiguous", "sort_scope"));
         }
         shape.set_sort_phase_peak_bytes(peak_bytes)
+    }
+
+    fn set_limit_phase_peak(&mut self, descriptor: &LimitMetadataDescriptor, peak_bytes: u64) -> Result<()> {
+        let matching = self
+            .reservation_shapes
+            .iter_mut()
+            .filter(|shape| shape.matches_execution_scope_fingerprint(&descriptor.execution_scope_fingerprint));
+        let mut matching = matching.peekable();
+        let Some(shape) = matching.next() else {
+            return Err(limit_owner_error("reservation_scope_missing", "limit_scope"));
+        };
+        if matching.peek().is_some() {
+            return Err(limit_owner_error("reservation_scope_ambiguous", "limit_scope"));
+        }
+        shape.set_limit_phase_peak_bytes(peak_bytes)
     }
 
     /// Verifies that this admitted requirement covers the plan about to run.
@@ -2685,6 +2894,10 @@ struct ComposedConsumerBranchBound {
     /// Maximum additional bytes owned while this branch is materialized.
     additional_peak_bytes: u64,
     owner_terms: Vec<AllocationOwnerTerm>,
+    /// Alternative consumer lifetime peaks; each group is summed and the
+    /// schedule takes the maximum across groups.
+    peak_owner_term_groups: Vec<Vec<OwnerTermId>>,
+    /// Flattened view retained for branch-local dominance decisions.
     peak_owner_term_ids: Vec<OwnerTermId>,
     dominated_owner_term_ids: Vec<OwnerTermId>,
     final_owned_term_ids: Vec<OwnerTermId>,
@@ -2772,6 +2985,7 @@ fn composed_consumer_bound_with_peak_terms(
                     "consumer_union_output_overflow",
                 )?,
                 owner_terms: branch_terms,
+                peak_owner_term_groups: vec![peak_owner_term_ids.clone()],
                 peak_owner_term_ids,
                 dominated_owner_term_ids,
                 final_owned_term_ids,
@@ -2785,11 +2999,20 @@ fn composed_consumer_bound_with_peak_terms(
         PlanNode::Sort(sort) => {
             composed_consumer_sort_peak_bytes(consumer_plan, root, sort, &outputs, &mut used_occurrences, owner_terms)?
         },
+        PlanNode::Limit(limit) => composed_consumer_limit_peak_bytes(
+            consumer_plan,
+            root,
+            limit,
+            &outputs,
+            &mut used_occurrences,
+            owner_terms,
+        )?,
         _ => return Err(composed_schedule_error("consumer_topology_unmodeled", None)),
     };
     match root_bound.allocation_state {
         AttemptReservationConsumerState::Passthrough => {
             if root_bound.additional_peak_bytes != 0
+                || !root_bound.peak_owner_term_groups.is_empty()
                 || !root_bound.peak_owner_term_ids.is_empty()
                 || !root_bound.dominated_owner_term_ids.is_empty()
                 || !root_bound.final_owned_term_ids.is_empty()
@@ -2799,7 +3022,7 @@ fn composed_consumer_bound_with_peak_terms(
             }
         },
         AttemptReservationConsumerState::Bounded => {
-            if root_bound.peak_owner_term_ids.is_empty() {
+            if root_bound.peak_owner_term_groups.is_empty() || root_bound.peak_owner_term_ids.is_empty() {
                 return Err(composed_schedule_error("consumer_bounded_owner_terms_missing", None));
             }
         },
@@ -2858,6 +3081,7 @@ fn composed_consumer_branch_bound(
                         final_owned_bytes: 0,
                         additional_peak_bytes: 0,
                         owner_terms: Vec::new(),
+                        peak_owner_term_groups: Vec::new(),
                         peak_owner_term_ids: Vec::new(),
                         dominated_owner_term_ids: Vec::new(),
                         final_owned_term_ids: Vec::new(),
@@ -2896,6 +3120,7 @@ fn composed_consumer_branch_bound(
                         final_owned_bytes: source_term.bytes(),
                         additional_peak_bytes: source_term.bytes(),
                         owner_terms: Vec::new(),
+                        peak_owner_term_groups: vec![vec![source_term.id().clone()]],
                         peak_owner_term_ids: vec![source_term.id().clone()],
                         dominated_owner_term_ids: Vec::new(),
                         final_owned_term_ids: vec![source_term.id().clone()],
@@ -2964,6 +3189,7 @@ fn composed_consumer_branch_bound(
                 final_owned_bytes: output_bytes,
                 additional_peak_bytes: input.additional_peak_bytes.max(stage_bytes),
                 owner_terms,
+                peak_owner_term_groups: vec![peak_owner_term_ids.clone()],
                 peak_owner_term_ids,
                 dominated_owner_term_ids,
                 final_owned_term_ids: vec![output_term_id],
@@ -3002,6 +3228,7 @@ fn composed_consumer_branch_bound(
                 final_owned_bytes: input.final_owned_bytes,
                 additional_peak_bytes: input.additional_peak_bytes,
                 owner_terms: input.owner_terms,
+                peak_owner_term_groups: input.peak_owner_term_groups,
                 peak_owner_term_ids: input.peak_owner_term_ids,
                 dominated_owner_term_ids: input.dominated_owner_term_ids,
                 final_owned_term_ids: input.final_owned_term_ids,
@@ -3042,6 +3269,7 @@ fn composed_consumer_sort_peak_bytes(
     let input = composed_consumer_branch_bound(plan, sort.input, outputs, used_occurrences, owner_terms)?;
     let scope = canonical_execution_scope_fingerprint(plan);
     let sort_terms = [
+        OwnerTermRole::SortKeyInput,
         OwnerTermRole::SortKeyOutput,
         OwnerTermRole::SortSequence,
         OwnerTermRole::SortTemporaryWorkspace,
@@ -3084,8 +3312,84 @@ fn composed_consumer_sort_peak_bytes(
         final_owned_bytes: 0,
         additional_peak_bytes: 0,
         owner_terms: input.owner_terms,
+        peak_owner_term_groups: vec![peak_owner_term_ids.clone()],
         peak_owner_term_ids,
         dominated_owner_term_ids,
+        final_owned_term_ids,
+        allocation_state: AttemptReservationConsumerState::Bounded,
+        consumed_occurrences: Vec::new(),
+    })
+}
+
+fn composed_consumer_limit_peak_bytes(
+    plan: &QueryPlan,
+    node_id: NodeId,
+    limit: &crate::plan::LimitNode,
+    outputs: &HashMap<&str, &ComposedGraphProducerOutputEvidence>,
+    used_occurrences: &mut HashSet<String>,
+    owner_terms: &[AllocationOwnerTerm],
+) -> Result<ComposedConsumerBranchBound> {
+    let PlanNode::Sort(sort) =
+        &plan.node(limit.input).ok_or_else(|| composed_schedule_error("consumer_missing_plan_node", None))?.kind
+    else {
+        return Err(composed_schedule_error("consumer_topology_unmodeled", None));
+    };
+    let sort_bound =
+        composed_consumer_sort_peak_bytes(plan, limit.input, sort, outputs, used_occurrences, owner_terms)?;
+    let scope = canonical_execution_scope_fingerprint(plan);
+    let limit_terms = [
+        OwnerTermRole::LimitGatherMap,
+        OwnerTermRole::LimitNativeWorkspace,
+        OwnerTermRole::LimitOutputFrame,
+        OwnerTermRole::LimitOutputNullMask,
+    ]
+    .into_iter()
+    .map(|role| OwnerTermId {
+        owner: OwnerId::Limit(node_id),
+        role,
+        occurrence: OccurrenceId::PlanLocal(node_id),
+        execution_scope_fingerprint: scope.clone(),
+    })
+    .collect::<Vec<_>>();
+    let final_owned_term_ids = limit_terms
+        .iter()
+        .filter(|term_id| matches!(term_id.role, OwnerTermRole::LimitOutputFrame | OwnerTermRole::LimitOutputNullMask))
+        .cloned()
+        .collect::<Vec<_>>();
+    let output_schema = plan
+        .node(node_id)
+        .ok_or_else(|| composed_schedule_error("consumer_missing_plan_node", None))?
+        .output_schema()
+        .clone();
+    let fetch_usize =
+        limit.spec.fetch.ok_or_else(|| composed_schedule_error("consumer_limit_fetch_unbounded", None))?;
+    let skip =
+        u64::try_from(limit.spec.skip).map_err(|_| composed_schedule_error("consumer_limit_skip_exceeds_u64", None))?;
+    let fetch =
+        u64::try_from(fetch_usize).map_err(|_| composed_schedule_error("consumer_limit_fetch_exceeds_u64", None))?;
+    limit
+        .spec
+        .skip
+        .checked_add(fetch_usize)
+        .ok_or_else(|| composed_schedule_error("consumer_limit_skip_fetch_overflow", None))?;
+    let group_a = sort_bound.peak_owner_term_ids.clone();
+    let mut group_b = sort_bound
+        .final_owned_term_ids
+        .iter()
+        .filter(|term_id| matches!(term_id.role, OwnerTermRole::SortOutputFrame | OwnerTermRole::SortOutputNullMask))
+        .cloned()
+        .collect::<Vec<_>>();
+    group_b.extend(limit_terms.clone());
+    let peak_owner_term_ids = group_a.clone();
+    Ok(ComposedConsumerBranchBound {
+        rows: sort_bound.rows.saturating_sub(skip).min(fetch),
+        schema: output_schema,
+        final_owned_bytes: 0,
+        additional_peak_bytes: 0,
+        owner_terms: sort_bound.owner_terms,
+        peak_owner_term_groups: vec![group_a, group_b],
+        peak_owner_term_ids,
+        dominated_owner_term_ids: sort_bound.dominated_owner_term_ids,
         final_owned_term_ids,
         allocation_state: AttemptReservationConsumerState::Bounded,
         consumed_occurrences: Vec::new(),
@@ -3213,6 +3517,7 @@ fn composed_consumer_join_peak_bytes(
         final_owned_bytes: output_bytes,
         additional_peak_bytes: peak,
         owner_terms,
+        peak_owner_term_groups: vec![peak_owner_term_ids.clone()],
         peak_owner_term_ids,
         dominated_owner_term_ids,
         final_owned_term_ids: vec![final_owned_term_id],
@@ -3441,12 +3746,40 @@ fn sort_owner_terms(
     let scope = descriptor.execution_scope_fingerprint.clone();
     let owner = OwnerId::Sort(descriptor.node_id);
     [
+        (OwnerTermRole::SortKeyInput, AllocationClass::ActivePhase, components.key_input_bytes),
         (OwnerTermRole::SortKeyOutput, AllocationClass::ActivePhase, components.key_output_bytes),
         (OwnerTermRole::SortSequence, AllocationClass::ActivePhase, components.sequence_bytes),
         (OwnerTermRole::SortTemporaryWorkspace, AllocationClass::ActivePhase, components.temporary_workspace_bytes),
         (OwnerTermRole::SortRetainedOrder, AllocationClass::AttemptRetained, components.retained_order_bytes),
         (OwnerTermRole::SortOutputFrame, AllocationClass::AttemptRetained, descriptor.output_frame_bytes),
         (OwnerTermRole::SortOutputNullMask, AllocationClass::AttemptRetained, descriptor.output_null_mask_bytes),
+    ]
+    .into_iter()
+    .map(|(role, class, bytes)| {
+        AllocationOwnerTerm::new(
+            owner.clone(),
+            role,
+            OccurrenceId::PlanLocal(descriptor.node_id),
+            scope.clone(),
+            class,
+            bytes,
+            None,
+        )
+    })
+    .collect()
+}
+
+fn limit_owner_terms(
+    descriptor: &LimitMetadataDescriptor,
+    components: LimitRangeGatherPreflight,
+) -> Result<Vec<AllocationOwnerTerm>> {
+    let scope = descriptor.execution_scope_fingerprint.clone();
+    let owner = OwnerId::Limit(descriptor.node_id);
+    [
+        (OwnerTermRole::LimitGatherMap, AllocationClass::ActivePhase, components.gather_map_bytes),
+        (OwnerTermRole::LimitNativeWorkspace, AllocationClass::ActivePhase, components.native_workspace_bytes),
+        (OwnerTermRole::LimitOutputFrame, AllocationClass::AttemptRetained, components.output_frame_bytes),
+        (OwnerTermRole::LimitOutputNullMask, AllocationClass::AttemptRetained, components.output_null_mask_bytes),
     ]
     .into_iter()
     .map(|(role, class, bytes)| {
@@ -3474,8 +3807,13 @@ fn validate_sort_metadata_descriptor(descriptor: &SortMetadataDescriptor) -> Res
         return Err(sort_owner_error("nullable_key_unsupported", "sort_key"));
     }
     let key_type = descriptor.key_type.id();
-    if !(key_type.is_signed_int() || key_type.is_unsigned_int() || key_type.is_timestamp() || key_type.is_duration()) {
-        return Err(sort_owner_error("key_type_not_integral_or_chrono", "sort_key"));
+    if !(key_type.is_signed_int()
+        || key_type.is_unsigned_int()
+        || key_type.is_timestamp()
+        || key_type.is_duration()
+        || key_type.is_float())
+    {
+        return Err(sort_owner_error("key_type_not_radix_dispatchable", "sort_key"));
     }
     if descriptor.num_rows > i32::MAX as usize {
         return Err(sort_owner_error("row_count_exceeds_cudf_size_type", "sort_input"));
@@ -3484,6 +3822,17 @@ fn validate_sort_metadata_descriptor(descriptor: &SortMetadataDescriptor) -> Res
         .map_err(|_| sort_owner_error("sort_output_bytes_saturated", "sort_output"))?;
     FiniteBytes::new(descriptor.output_null_mask_bytes)
         .map_err(|_| sort_owner_error("sort_output_null_mask_saturated", "sort_output_null_mask"))?;
+    if let Some(limit) = &descriptor.limit {
+        if limit.execution_scope_fingerprint != descriptor.execution_scope_fingerprint {
+            return Err(limit_owner_error("scope_mismatch", "limit_scope"));
+        }
+        if limit.input_rows != descriptor.num_rows as u64 || limit.output_rows > descriptor.num_rows {
+            return Err(limit_owner_error("row_bound_mismatch", "limit_rows"));
+        }
+        if limit.output_columns.is_empty() {
+            return Err(limit_owner_error("output_schema_empty", "limit_output"));
+        }
+    }
     Ok(())
 }
 
@@ -3498,6 +3847,7 @@ fn sort_metadata_for_attested_graph_result(
     let unreachable = plan.unreachable_node_ids().into_iter().collect::<HashSet<_>>();
     let mut source = None;
     let mut sort = None;
+    let mut limit = None;
     let mut filter_count = 0_usize;
     for node in plan.nodes() {
         if unreachable.contains(&node.id) {
@@ -3514,6 +3864,11 @@ fn sort_metadata_for_attested_graph_result(
                     return Err(sort_owner_error("multiple_sort_nodes", "sort_plan"));
                 }
             },
+            PlanNode::Limit(limit_node) => {
+                if limit.replace((node.id, limit_node)).is_some() {
+                    return Err(sort_owner_error("multiple_limit_nodes", "limit_plan"));
+                }
+            },
             PlanNode::Filter(_) => {
                 filter_count = filter_count
                     .checked_add(1)
@@ -3525,7 +3880,7 @@ fn sort_metadata_for_attested_graph_result(
             _ => return Err(sort_owner_error("sort_plan_contains_unmodeled_node", "sort_plan")),
         }
     }
-    let Some((_, source_node)) = source else {
+    let Some((source_node_id, source_node)) = source else {
         return Err(sort_owner_error("graph_result_source_missing", "sort_input"));
     };
     let SourceNode::GpuResident(source_node) = source_node else {
@@ -3534,6 +3889,13 @@ fn sort_metadata_for_attested_graph_result(
     let Some((sort_node_id, sort_node)) = sort else {
         return Err(sort_owner_error("sort_node_missing", "sort_plan"));
     };
+    if sort_node.input != source_node_id
+        && !plan
+            .node(sort_node.input)
+            .is_some_and(|node| matches!(&node.kind, PlanNode::Filter(filter) if filter.input == source_node_id))
+    {
+        return Err(sort_owner_error("sort_input_topology_unmodeled", "sort_plan"));
+    }
     let [sort_expr] = sort_node.spec.expressions.as_slice() else {
         return Err(sort_owner_error("sort_requires_exactly_one_key", "sort_key"));
     };
@@ -3553,10 +3915,11 @@ fn sort_metadata_for_attested_graph_result(
     if !(key_type_id.is_signed_int()
         || key_type_id.is_unsigned_int()
         || key_type_id.is_timestamp()
-        || key_type_id.is_duration())
+        || key_type_id.is_duration()
+        || key_type_id.is_float())
     {
         return Err(
-            sort_owner_error("key_type_not_integral_or_chrono", "sort_key").with_fact("key_type", key_type_id.name())
+            sort_owner_error("key_type_not_radix_dispatchable", "sort_key").with_fact("key_type", key_type_id.name())
         );
     }
     if let (Some(consumer_row_count_upper_bound), Some(producer_row_count_upper_bound)) =
@@ -3568,11 +3931,54 @@ fn sort_metadata_for_attested_graph_result(
             .with_fact("consumer_row_count_upper_bound", consumer_row_count_upper_bound));
     }
     let row_count = producer_row_count_upper_bound
-        .or_else(|| query_plan_hard_row_upper_bound(plan))
+        .or(source_node.row_count_upper_bound)
         .ok_or_else(|| sort_owner_error("row_bound_missing", "sort_input"))?;
     let num_rows = usize::try_from(row_count).map_err(|_| sort_owner_error("row_bound_exceeds_usize", "sort_input"))?;
+    let sort_output_schema =
+        plan.node(sort_node_id).ok_or_else(|| sort_owner_error("sort_node_missing", "sort_plan"))?.output_schema();
     let (output_frame_bytes, output_null_mask_bytes) =
-        bounded_consumer_frame_components(row_count, plan.root_node().output_schema())?;
+        bounded_consumer_frame_components(row_count, sort_output_schema)?;
+    let limit = limit
+        .map(|(limit_node_id, limit_node)| {
+            if limit_node.input != sort_node_id || plan.root_id() != limit_node_id || sort_node.input != source_node_id
+            {
+                return Err(sort_owner_error("limit_input_topology_unmodeled", "limit_plan"));
+            }
+            let fetch = limit_node.spec.fetch.ok_or_else(|| limit_owner_error("fetch_unbounded", "limit_rows"))?;
+            let _ = limit_node
+                .spec
+                .skip
+                .checked_add(fetch)
+                .ok_or_else(|| limit_owner_error("skip_fetch_overflow", "limit_rows"))?;
+            let skip =
+                u64::try_from(limit_node.spec.skip).map_err(|_| limit_owner_error("skip_exceeds_u64", "limit_rows"))?;
+            let fetch = u64::try_from(fetch).map_err(|_| limit_owner_error("fetch_exceeds_u64", "limit_rows"))?;
+            let output_rows_u64 = row_count.saturating_sub(skip).min(fetch);
+            let output_rows = usize::try_from(output_rows_u64)
+                .map_err(|_| limit_owner_error("output_rows_exceed_usize", "limit_rows"))?;
+            let output_columns = plan
+                .root_node()
+                .output_schema()
+                .fields()
+                .iter()
+                .map(|field| {
+                    let data_type = cudf_dtype_from_arrow_type(field.data_type()).ok_or_else(|| {
+                        limit_owner_error("output_dtype_unmodeled", "limit_output")
+                            .with_fact("column", field.name())
+                            .with_fact("data_type", format!("{:?}", field.data_type()))
+                    })?;
+                    Ok((data_type, field.is_nullable()))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            Ok(LimitMetadataDescriptor {
+                node_id: limit_node_id,
+                execution_scope_fingerprint: canonical_execution_scope_fingerprint(plan),
+                input_rows: row_count,
+                output_rows,
+                output_columns,
+            })
+        })
+        .transpose()?;
     Ok(SortMetadataDescriptor {
         node_id: sort_node_id,
         execution_scope_fingerprint: canonical_execution_scope_fingerprint(plan),
@@ -3587,6 +3993,7 @@ fn sort_metadata_for_attested_graph_result(
         },
         output_frame_bytes,
         output_null_mask_bytes,
+        limit,
     })
 }
 
@@ -3665,8 +4072,14 @@ fn is_attested_graph_result_passthrough_plan(plan: &QueryPlan, graph_result_inpu
 
 fn is_attested_graph_result_bounded_consumer_plan(plan: &QueryPlan, graph_result_input_name: &str) -> bool {
     let mut graph_result_source_count = 0_usize;
+    let mut graph_result_source_id = None;
     let mut sort_count = 0_usize;
+    let mut sort_id = None;
     let mut filter_count = 0_usize;
+    let mut limit_count = 0_usize;
+    let mut limit_id = None;
+    let mut limit_input = None;
+    let mut sort_input = None;
     for node in plan.nodes() {
         if plan.unreachable_node_ids().contains(&node.id) {
             continue;
@@ -3675,17 +4088,45 @@ fn is_attested_graph_result_bounded_consumer_plan(plan: &QueryPlan, graph_result
             PlanNode::Source(source) if matches!(source.as_ref(), SourceNode::GpuResident(source) if source.input_name == graph_result_input_name) =>
             {
                 graph_result_source_count += 1;
+                graph_result_source_id = Some(node.id);
             },
-            PlanNode::Sort(_) => {
+            PlanNode::Sort(sort) => {
                 sort_count += 1;
+                sort_id = Some(node.id);
+                sort_input = Some(sort.input);
             },
             PlanNode::Filter(_) => {
                 filter_count += 1;
             },
+            PlanNode::Limit(limit) => {
+                limit_count += 1;
+                limit_id = Some(node.id);
+                limit_input = Some(limit.input);
+            },
             _ => return false,
         }
     }
-    graph_result_source_count == 1 && sort_count == 1 && filter_count <= 1
+    if graph_result_source_count != 1 || sort_count != 1 {
+        return false;
+    }
+    match (limit_count, limit_id, limit_input, sort_id, graph_result_source_id, sort_input) {
+        (1, Some(limit_id), Some(limit_input), Some(sort_id), Some(source_id), Some(sort_input)) => {
+            filter_count == 0 && plan.root_id() == limit_id && limit_input == sort_id && sort_input == source_id
+        },
+        (0, None, None, Some(sort_id), Some(source_id), Some(sort_input)) => {
+            if plan.root_id() != sort_id || filter_count > 1 {
+                return false;
+            }
+            if sort_input == source_id {
+                return true;
+            }
+            filter_count == 1
+                && plan
+                    .node(sort_input)
+                    .is_some_and(|node| matches!(&node.kind, PlanNode::Filter(filter) if filter.input == source_id))
+        },
+        _ => false,
+    }
 }
 
 #[cfg(test)]
@@ -3699,7 +4140,7 @@ mod tests {
         admission::envelope::AttemptReservationProducerPhase,
         capability::{ContractQuality, ReservationRequirement},
         chunk::SourceChunkPlanningOptions,
-        expr::{AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, Expr, SortExpr, SortSpec},
+        expr::{AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, Expr, LimitSpec, SortExpr, SortSpec},
         graph_memory::{GraphMemoryCalibrationOverride, graph_memory_bounded_admission_evidence_for_plan},
         plan::{
             GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec, GraphBfsParams, GraphConstructionOptions,
@@ -3725,6 +4166,10 @@ mod tests {
     }
 
     fn graph_bfs_plan_with_source_vertex(source_vertex: i64) -> QueryPlan {
+        graph_bfs_plan_with_source_vertex_and_rows(source_vertex, 20)
+    }
+
+    fn graph_bfs_plan_with_source_vertex_and_rows(source_vertex: i64, row_count_upper_bound: u64) -> QueryPlan {
         let schema = Arc::new(Schema::new(vec![
             Field::new("src", DataType::Int64, false),
             Field::new("dst", DataType::Int64, false),
@@ -3732,7 +4177,7 @@ mod tests {
         ]));
         let mut builder = QueryPlanBuilder::new();
         let edges = builder.add_source(SourceNode::GpuResident(
-            GpuResidentSource::new("edges", schema).with_row_count_upper_bound(20),
+            GpuResidentSource::new("edges", schema).with_row_count_upper_bound(row_count_upper_bound),
         ));
         let graph = builder.add_graph_algorithm(
             edges,
@@ -3830,6 +4275,18 @@ mod tests {
 
     fn graph_bfs_proof_with_typed_output(source_vertex: i64) -> QueryPlanCapabilityProof {
         let plan = graph_bfs_plan_with_source_vertex(source_vertex);
+        graph_bfs_proof_with_typed_output_for_plan(plan)
+    }
+
+    fn graph_bfs_proof_with_typed_output_and_rows(
+        source_vertex: i64,
+        row_count_upper_bound: u64,
+    ) -> QueryPlanCapabilityProof {
+        let plan = graph_bfs_plan_with_source_vertex_and_rows(source_vertex, row_count_upper_bound);
+        graph_bfs_proof_with_typed_output_for_plan(plan)
+    }
+
+    fn graph_bfs_proof_with_typed_output_for_plan(plan: QueryPlan) -> QueryPlanCapabilityProof {
         let evidence =
             graph_memory_bounded_admission_evidence_for_plan(&plan, GraphMemoryCalibrationOverride::none(), None)
                 .expect("test graph plan must produce typed admission evidence");
@@ -4172,10 +4629,16 @@ mod tests {
         let source_terms = requirement.owner_terms.iter().filter(|term| term.is_source_stage()).collect::<Vec<_>>();
         let retained_terms =
             requirement.owner_terms.iter().filter(|term| term.is_retained_output()).collect::<Vec<_>>();
-        assert_eq!(source_terms.len(), 1);
+        assert_eq!(source_terms.len(), 2);
+        assert_ne!(source_terms[0].id(), source_terms[1].id());
         assert_eq!(retained_terms.len(), 1);
         assert_eq!(retained_terms[0].retained_row_count_upper_bound(), Some(5));
-        assert!(retained_terms[0].bytes() > source_terms[0].bytes());
+        let mut source_bytes = source_terms.iter().map(|term| term.bytes()).collect::<Vec<_>>();
+        source_bytes.sort_unstable();
+        let mut expected_source_bytes = vec![64, bounded_consumer_frame_bytes(2, &schema).unwrap()];
+        expected_source_bytes.sort_unstable();
+        assert_eq!(source_bytes, expected_source_bytes);
+        assert_eq!(retained_terms[0].bytes(), bounded_consumer_frame_bytes(5, &schema).unwrap());
         QueryPlanCapabilityProof { requirement }
             .resolve_reservation_envelope(reservation_policy())
             .expect("computed GPU sink must have a complete owner inventory");
@@ -6153,6 +6616,25 @@ mod tests {
         builder.finish_with_host_sink(sort)
     }
 
+    fn graph_result_sort_limit_plan(row_bound: u64, skip: usize, fetch: usize) -> QueryPlan {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("vertex", DataType::Int64, false),
+            Field::new("distance", DataType::Int64, false),
+            Field::new("predecessor", DataType::Int64, true),
+        ]));
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::GpuResident(
+            GpuResidentSource::new("graph_result", Arc::clone(&schema)).with_row_count_upper_bound(row_bound),
+        ));
+        let sort = builder.add_sort(
+            source,
+            SortSpec::new(vec![SortExpr::new(Expr::column("distance"), false, false)]),
+            Arc::clone(&schema),
+        );
+        let limit = builder.add_limit(sort, LimitSpec::new(skip, Some(fetch)), schema);
+        builder.finish_with_host_sink(limit)
+    }
+
     fn graph_result_filter_sort_plan(row_bound: Option<u64>) -> QueryPlan {
         let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int32, false)]));
         let mut builder = QueryPlanBuilder::new();
@@ -6186,13 +6668,159 @@ mod tests {
             .iter()
             .filter(|term| matches!(term.id.owner, OwnerId::Sort(_)))
             .collect::<Vec<_>>();
-        assert_eq!(terms.len(), 6);
-        assert!(terms.iter().all(|term| term.bytes.get() > 0));
+        assert_eq!(terms.len(), 7);
+        assert_eq!(
+            terms
+                .iter()
+                .find(|term| term.id.role == OwnerTermRole::SortKeyInput)
+                .expect("sort key input owner must be present")
+                .bytes(),
+            0
+        );
+        assert!(terms.iter().filter(|term| term.id.role != OwnerTermRole::SortKeyInput).all(|term| term.bytes() > 0));
         assert!(
             terms
                 .iter()
                 .all(|term| term.id.execution_scope_fingerprint == canonical_execution_scope_fingerprint(&plan))
         );
+    }
+
+    #[test]
+    fn floating_sort_keys_issue_key_input_owner_terms() {
+        for data_type in [DataType::Float32, DataType::Float64] {
+            let plan = graph_result_sort_plan(data_type, false, Some(128), 1);
+            let proof =
+                QueryPlanCapabilityProof::try_for_attested_graph_result_bounded_consumer_plan(&plan, "graph_result")
+                    .expect("floating radix sort metadata must be accepted");
+            let resolved = proof
+                .requirement_for_device_with_preflight(0, |_, _| {
+                    Ok(SortRadixPreflight::new_for_test_with_key_input(512, 128, 256, 512, 256))
+                })
+                .expect("floating sort owner preflight must resolve");
+            let key_input = resolved
+                .as_requirement()
+                .owner_terms
+                .iter()
+                .find(|term| term.id.role == OwnerTermRole::SortKeyInput)
+                .expect("floating sort key input owner must be present");
+            assert_eq!(key_input.bytes(), 512);
+        }
+    }
+
+    #[test]
+    fn graph_result_sort_limit_uses_alternative_consumer_peak_groups() {
+        let cases = [
+            (
+                SortRadixPreflight::new_for_test_with_key_input(1_000, 1_000, 1_000, 1_000, 1_000),
+                LimitRangeGatherPreflight::new_for_test(1, 1, 1, 1),
+            ),
+            (
+                SortRadixPreflight::new_for_test_with_key_input(1, 1, 1, 1, 1),
+                LimitRangeGatherPreflight::new_for_test(1_000, 1_000, 1_000, 1_000),
+            ),
+        ];
+        for (sort_preflight, limit_preflight) in cases {
+            let plan = graph_result_sort_limit_plan(100, 7, 2);
+            let consumer = QueryPlanCapabilityProof::for_attested_graph_result_bounded_consumer_plan_with_producer(
+                &plan,
+                "graph_result",
+                &graph_bfs_proof_with_typed_output_and_rows(0, 50),
+            )
+            .expect("bounded sort-limit consumer must issue a proof");
+            let composed = QueryPlanCapabilityProof::combine_composed_graph_attempt(
+                &plan,
+                consumer,
+                [("graph_result".to_owned(), graph_bfs_proof_with_typed_output_and_rows(0, 50))],
+            )
+            .expect("sort-limit consumer must bind one graph producer");
+            let resolved = composed
+                .requirement_for_device_with_preflight_and_limit(
+                    0,
+                    |descriptor, _| {
+                        assert_eq!(descriptor.num_rows, 100);
+                        Ok(sort_preflight)
+                    },
+                    |descriptor, _| {
+                        assert_eq!(descriptor.input_rows, 100);
+                        assert_eq!(descriptor.output_rows, 2);
+                        assert_eq!(
+                            descriptor.output_columns,
+                            vec![
+                                (cudf::DataType::new(cudf::TypeId::Int64), false),
+                                (cudf::DataType::new(cudf::TypeId::Int64), false),
+                                (cudf::DataType::new(cudf::TypeId::Int64), true),
+                            ]
+                        );
+                        Ok(limit_preflight)
+                    },
+                )
+                .expect("sort and limit owner preflights must resolve");
+            let shape = resolved
+                .as_requirement()
+                .reservation_shapes
+                .iter()
+                .find(|shape| shape.matches(&plan))
+                .expect("consumer reservation scope must remain attached");
+            let schedule = shape.ordered_schedule().expect("consumer schedule must be attached");
+            let groups = schedule.consumer_peak_term_groups();
+            assert_eq!(groups.len(), 2);
+            let owner_terms = &resolved.as_requirement().owner_terms;
+            let sum_group = |group: &[OwnerTermId]| {
+                group
+                    .iter()
+                    .map(|term_id| {
+                        owner_terms
+                            .iter()
+                            .find(|term| term.id() == term_id)
+                            .expect("scheduled term must have an owner inventory entry")
+                            .bytes()
+                    })
+                    .sum::<u64>()
+            };
+            let group_a = sum_group(&groups[0]);
+            let group_b = sum_group(&groups[1]);
+            assert_eq!(schedule.consumer_peak_bytes_for_test(owner_terms).unwrap(), group_a.max(group_b));
+            assert_ne!(group_a, group_b, "the fixtures must exercise both peak alternatives");
+            assert!(
+                groups[1].iter().all(|term_id| !matches!(
+                    term_id.role,
+                    OwnerTermRole::SortKeyInput
+                        | OwnerTermRole::SortKeyOutput
+                        | OwnerTermRole::SortSequence
+                        | OwnerTermRole::SortTemporaryWorkspace
+                        | OwnerTermRole::SortRetainedOrder
+                )),
+                "the limit phase retains only the full sorted frame"
+            );
+            let sort_frame = owner_terms
+                .iter()
+                .find(|term| {
+                    matches!(term.id.owner, OwnerId::Sort(_)) && term.id.role == OwnerTermRole::SortOutputFrame
+                })
+                .expect("full sorted frame owner must be present");
+            let limit_frame = owner_terms
+                .iter()
+                .find(|term| {
+                    matches!(term.id.owner, OwnerId::Limit(_)) && term.id.role == OwnerTermRole::LimitOutputFrame
+                })
+                .expect("bounded limit output frame owner must be present");
+            assert_ne!(sort_frame.id(), limit_frame.id());
+            assert_ne!(sort_frame.bytes(), limit_frame.bytes());
+            let limit_null_mask = owner_terms
+                .iter()
+                .filter(|term| matches!(term.id.owner, OwnerId::Limit(_)))
+                .filter(|term| term.id.role == OwnerTermRole::LimitOutputNullMask)
+                .collect::<Vec<_>>();
+            assert_eq!(limit_null_mask.len(), 1);
+            assert_eq!(limit_null_mask[0].bytes(), limit_preflight.output_null_mask_bytes);
+            let limit_workspace = owner_terms
+                .iter()
+                .filter(|term| matches!(term.id.owner, OwnerId::Limit(_)))
+                .filter(|term| term.id.role == OwnerTermRole::LimitNativeWorkspace)
+                .collect::<Vec<_>>();
+            assert_eq!(limit_workspace.len(), 1);
+            assert_eq!(limit_workspace[0].bytes(), limit_preflight.native_workspace_bytes);
+        }
     }
 
     #[test]
@@ -6226,7 +6854,7 @@ mod tests {
             .iter()
             .filter(|term| matches!(term.id.owner, OwnerId::Sort(_)))
             .count();
-        assert_eq!(sort_owner_terms, 6);
+        assert_eq!(sort_owner_terms, 7);
         let envelope = resolved
             .resolve_reservation_envelope(reservation_policy())
             .expect("the composed sort proof must resolve a finite ordered envelope");
@@ -6347,9 +6975,9 @@ mod tests {
         let graph_producer = graph_bfs_proof_with_typed_output(0);
         let cases = [
             (
-                graph_result_sort_plan(DataType::Float32, false, None, 1),
+                graph_result_sort_plan(DataType::Utf8, false, None, 1),
                 graph_producer.clone(),
-                "sort_owner_key_type_not_integral_or_chrono",
+                "sort_owner_key_type_not_radix_dispatchable",
             ),
             (
                 graph_result_sort_plan(DataType::Int32, false, None, 1),
@@ -6386,11 +7014,7 @@ mod tests {
     #[test]
     fn unsupported_graph_result_sort_shapes_reject_before_preflight() {
         for (plan, reason) in [
-            (
-                graph_result_sort_plan(DataType::Float32, false, Some(8), 1),
-                "sort_owner_key_type_not_integral_or_chrono",
-            ),
-            (graph_result_sort_plan(DataType::Utf8, false, Some(8), 1), "sort_owner_key_type_not_integral_or_chrono"),
+            (graph_result_sort_plan(DataType::Utf8, false, Some(8), 1), "sort_owner_key_type_not_radix_dispatchable"),
             (graph_result_sort_plan(DataType::Int32, true, Some(8), 1), "sort_owner_nullable_key_unsupported"),
             (graph_result_sort_plan(DataType::Int32, false, Some(8), 2), "sort_owner_sort_requires_exactly_one_key"),
             (graph_result_sort_plan(DataType::Int32, false, None, 1), "sort_owner_row_bound_missing"),

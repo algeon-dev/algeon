@@ -1682,19 +1682,13 @@ mod tests {
     }
 
     #[test]
-    fn complete_composed_admission_proof_rejects_unsupported_graph_result_sorts_at_admission() {
+    fn complete_composed_admission_proof_rejects_invalid_graph_result_sorts_at_admission() {
         register_gpu_resident_producer_discovery(fake_gpu_resident_producer);
         register_graph_execution_plan_discovery(fake_graph_execution_plan);
         let backend = InstalledTestGpuBackend::new();
         let source = admission_source(&backend);
         let (_producer_schema, producer_proof) = typed_graph_producer_proof();
         let cases = [
-            (
-                Arc::new(Schema::new(vec![Field::new("vertex", DataType::Float32, false)])),
-                1,
-                None,
-                "sort_owner_key_type_not_integral_or_chrono",
-            ),
             (
                 Arc::new(Schema::new(vec![Field::new("vertex", DataType::Int64, true)])),
                 1,
@@ -1724,7 +1718,7 @@ mod tests {
                 NexusNativeExecutionConfig::bounded(1024, 512, 1, 3, 1).with_query_admission_source(source.clone());
             let completed =
                 complete_composed_admission_proof(config, &consumer_plan, &prepared_inputs, &TaskContext::default())
-                    .expect("unsupported graph-result sort retains a typed proof until envelope resolution");
+                    .expect("invalid graph-result sort retains a typed proof until envelope resolution");
             let completed_ticket = completed
                 .execution_config
                 .query_admission_ticket()
@@ -1737,7 +1731,7 @@ mod tests {
                 .backend()
                 .session_capability()
                 .admit_query_with_request(QueryAdmissionRequest::new().with_query_plan_capability_proof(proof))
-                .expect_err("unsupported graph-result sort must reject before producer GPU work");
+                .expect_err("invalid graph-result sort must reject before producer GPU work");
             assert_eq!(error.fact_value("reason"), Some("graph_attempt_complete_phase_unmodeled"));
             assert_eq!(error.fact_value("schedule_reason"), Some("sort_metadata_rejected"));
             assert_eq!(error.fact_value("sort_rejection_reason"), Some(sort_rejection_reason));

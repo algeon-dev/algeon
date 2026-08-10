@@ -25,7 +25,7 @@ use futures::future::BoxFuture;
 use nexus_query_engine::{
     admission::QueryPlanCapabilityProof,
     expr::{Expr, SortExpr, SortSpec},
-    graph_memory::graph_memory_bounded_admission_evidence_for_plan,
+    graph_memory::{GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES, graph_memory_bounded_admission_evidence_for_plan},
     observability::RuntimeObservationConfig,
     plan::{ProjectionOutput, QueryPlan},
     runtime::ExecutionCancellation,
@@ -2113,8 +2113,8 @@ fn cugraph_algo_exec_uses_cold_graph_model_as_immutable_grant_target() {
             .attempt_capability_proof()
             .expect("cuGraph ticket retains its engine-issued proof")
             .soft_working_set_hint_bytes(),
-        Some(model_ask.cold_model_requested_bytes()),
-        "the cold model may target the immutable grant but cannot alter its ledger-owned fit range"
+        Some(model_ask.cold_model_requested_bytes().max(GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES)),
+        "the immutable grant target includes the canonical graph live-reservation minimum"
     );
 }
 
@@ -2213,7 +2213,7 @@ fn cugraph_algo_exec_uses_native_edge_cold_model_as_immutable_grant_target() {
             .attempt_capability_proof()
             .expect("the graph ticket retains its engine-issued proof")
             .soft_working_set_hint_bytes(),
-        Some(model_ask.cold_model_requested_bytes())
+        Some(model_ask.cold_model_requested_bytes().max(GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES))
     );
 }
 
@@ -2408,8 +2408,8 @@ async fn cugraph_algo_exec_uses_footer_rows_as_a_graph_admission_target() {
             .attempt_capability_proof()
             .expect("cuGraph ticket retains its engine-issued proof")
             .soft_working_set_hint_bytes(),
-        Some(model_ask.cold_model_requested_bytes()),
-        "the direct DataFusion scan's host staging is not a second device owner beside the graph model"
+        Some(model_ask.cold_model_requested_bytes().max(GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES)),
+        "the direct DataFusion scan shares the bounded graph live-reservation owner"
     );
 }
 
@@ -2437,8 +2437,8 @@ async fn cugraph_algo_exec_uses_footer_rows_for_cacheable_bfs_admission() {
             .attempt_capability_proof()
             .expect("cacheable BFS ticket retains its engine-issued proof")
             .soft_working_set_hint_bytes(),
-        Some(model_ask.cold_model_requested_bytes()),
-        "the graph cold peak already includes its prepared GPU edge frame"
+        Some(model_ask.cold_model_requested_bytes().max(GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES)),
+        "the bounded graph live peak includes its prepared GPU edge frame"
     );
 }
 

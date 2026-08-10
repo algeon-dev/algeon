@@ -175,7 +175,7 @@ pub(crate) struct AttemptReservationSchedule {
     attempt_wide_fixed_term_ids: Vec<OwnerTermId>,
     producer_phases: Vec<AttemptReservationProducerPhase>,
     consumer_state: AttemptReservationConsumerState,
-    consumer_peak_term_ids: Vec<OwnerTermId>,
+    consumer_peak_term_groups: Vec<Vec<OwnerTermId>>,
     consumer_dominated_term_ids: Vec<OwnerTermId>,
     #[cfg(test)]
     test_attempt_wide_fixed_bytes: Option<u64>,
@@ -191,27 +191,29 @@ impl AttemptReservationSchedule {
         consumer_state: AttemptReservationConsumerState,
         consumer_peak_term_ids: Vec<OwnerTermId>,
     ) -> Self {
-        Self::from_phase_term_ids_with_dominated(
+        let consumer_peak_term_groups =
+            if consumer_peak_term_ids.is_empty() { Vec::new() } else { vec![consumer_peak_term_ids] };
+        Self::from_phase_term_groups_with_dominated(
             attempt_wide_fixed_term_ids,
             producer_phases,
             consumer_state,
-            consumer_peak_term_ids,
+            consumer_peak_term_groups,
             Vec::new(),
         )
     }
 
-    pub(crate) fn from_phase_term_ids_with_dominated(
+    pub(crate) fn from_phase_term_groups_with_dominated(
         attempt_wide_fixed_term_ids: Vec<OwnerTermId>,
         producer_phases: Vec<AttemptReservationProducerPhase>,
         consumer_state: AttemptReservationConsumerState,
-        consumer_peak_term_ids: Vec<OwnerTermId>,
+        consumer_peak_term_groups: Vec<Vec<OwnerTermId>>,
         consumer_dominated_term_ids: Vec<OwnerTermId>,
     ) -> Self {
         Self {
             attempt_wide_fixed_term_ids,
             producer_phases,
             consumer_state,
-            consumer_peak_term_ids,
+            consumer_peak_term_groups,
             consumer_dominated_term_ids,
             #[cfg(test)]
             test_attempt_wide_fixed_bytes: Some(0),
@@ -234,7 +236,7 @@ impl AttemptReservationSchedule {
                 AttemptReservationConsumerState::Bounded
             },
             producer_phases,
-            consumer_peak_term_ids: Vec::new(),
+            consumer_peak_term_groups: Vec::new(),
             consumer_dominated_term_ids: Vec::new(),
             test_attempt_wide_fixed_bytes: attempt_wide_fixed_bytes,
             #[cfg(test)]
@@ -265,6 +267,16 @@ impl AttemptReservationSchedule {
     #[cfg(test)]
     pub(crate) fn consumer_dominated_term_ids(&self) -> &[OwnerTermId] {
         &self.consumer_dominated_term_ids
+    }
+
+    #[cfg(test)]
+    pub(crate) fn consumer_peak_term_groups(&self) -> &[Vec<OwnerTermId>] {
+        &self.consumer_peak_term_groups
+    }
+
+    #[cfg(test)]
+    pub(crate) fn consumer_peak_bytes_for_test(&self, owner_terms: &[AllocationOwnerTerm]) -> Result<u64> {
+        self.consumer_peak_bytes(owner_terms, "test")
     }
 
     #[cfg(test)]
@@ -522,7 +534,7 @@ impl AttemptReservationSchedule {
     fn consumer_peak_bytes(&self, owner_terms: &[AllocationOwnerTerm], _consumer_scope: &str) -> Result<u64> {
         match self.consumer_state {
             AttemptReservationConsumerState::Passthrough => {
-                if !self.consumer_peak_term_ids.is_empty() {
+                if !self.consumer_peak_term_groups.is_empty() {
                     return Err(graph_schedule_error(
                         "passthrough_consumer_has_peak_terms",
                         None,
@@ -547,21 +559,22 @@ impl AttemptReservationSchedule {
                 Ok(0)
             },
             AttemptReservationConsumerState::Bounded => {
-                if !self.consumer_peak_term_ids.is_empty() {
-                    let mut seen = HashSet::with_capacity(self.consumer_peak_term_ids.len());
-                    if self.consumer_peak_term_ids.iter().any(|id| !seen.insert(id)) {
-                        return Err(graph_schedule_error(
-                            "duplicate_owner_term_reference",
-                            None,
-                            Some("consumer_peak"),
-                        ));
+                if !self.consumer_peak_term_groups.is_empty() {
+                    let mut consumer_peak = 0_u64;
+                    for group in &self.consumer_peak_term_groups {
+                        let mut seen = HashSet::with_capacity(group.len());
+                        if group.iter().any(|id| !seen.insert(id)) {
+                            return Err(graph_schedule_error(
+                                "duplicate_owner_term_reference",
+                                None,
+                                Some("consumer_peak"),
+                            ));
+                        }
+                        let group_peak =
+                            self.sum_term_ids(group, owner_terms, None, "consumer_stage_additional_peak_overflow")?;
+                        consumer_peak = consumer_peak.max(group_peak);
                     }
-                    return self.sum_term_ids(
-                        &self.consumer_peak_term_ids,
-                        owner_terms,
-                        None,
-                        "consumer_stage_additional_peak_overflow",
-                    );
+                    return Ok(consumer_peak);
                 }
                 #[cfg(test)]
                 if let Some(bytes) = self.test_consumer_additional_peak_bytes {
@@ -777,14 +790,16 @@ impl AttemptReservationSchedule {
             }
         }
 
-        let mut consumer_peak_seen = HashSet::with_capacity(self.consumer_peak_term_ids.len());
-        for term_id in &self.consumer_peak_term_ids {
-            if !consumer_peak_seen.insert(term_id) {
-                return Err(graph_schedule_error("duplicate_owner_term_reference", None, Some("consumer_peak")));
+        for group in &self.consumer_peak_term_groups {
+            let mut consumer_peak_seen = HashSet::with_capacity(group.len());
+            for term_id in group {
+                if !consumer_peak_seen.insert(term_id) {
+                    return Err(graph_schedule_error("duplicate_owner_term_reference", None, Some("consumer_peak")));
+                }
+                let term = self.resolve_term(term_id, owner_terms, None, "consumer_peak")?;
+                self.validate_consumer_term(term, manifest.execution_scope_fingerprint(), "consumer_peak")?;
+                record(term_id, Category::ConsumerPeak);
             }
-            let term = self.resolve_term(term_id, owner_terms, None, "consumer_peak")?;
-            self.validate_consumer_term(term, manifest.execution_scope_fingerprint(), "consumer_peak")?;
-            record(term_id, Category::ConsumerPeak);
         }
         let mut consumer_dominated_seen = HashSet::with_capacity(self.consumer_dominated_term_ids.len());
         for term_id in &self.consumer_dominated_term_ids {
@@ -1200,6 +1215,7 @@ pub(crate) struct AttemptReservationShape {
     is_attested_graph_result_passthrough_scope: bool,
     is_attested_graph_result_bounded_consumer_scope: bool,
     sort_phase_peak_bytes: Option<u64>,
+    limit_phase_peak_bytes: Option<u64>,
     sort_metadata: Option<crate::admission::requirement::SortMetadataDescriptor>,
     sort_rejection_reason: Option<String>,
     owner_term_rejection_reason: Option<String>,
@@ -1222,6 +1238,7 @@ impl AttemptReservationShape {
             is_attested_graph_result_passthrough_scope: false,
             is_attested_graph_result_bounded_consumer_scope: false,
             sort_phase_peak_bytes: None,
+            limit_phase_peak_bytes: None,
             sort_metadata: None,
             sort_rejection_reason: None,
             owner_term_rejection_reason: None,
@@ -1366,6 +1383,13 @@ impl AttemptReservationShape {
         Ok(())
     }
 
+    pub(crate) fn set_limit_phase_peak_bytes(&mut self, peak_bytes: u64) -> Result<()> {
+        if self.limit_phase_peak_bytes.replace(peak_bytes).is_some() {
+            return Err(graph_schedule_error("duplicate_limit_phase_evidence", None, Some("limit")));
+        }
+        Ok(())
+    }
+
     pub(crate) fn set_sort_metadata(
         &mut self,
         metadata: crate::admission::requirement::SortMetadataDescriptor,
@@ -1460,8 +1484,22 @@ impl AttemptReservationShape {
                 return Err(graph_schedule_error("sort_metadata_rejected", None, Some("sort"))
                     .with_fact("sort_rejection_reason", reason.as_str()));
             }
-            let peak = self
-                .sort_phase_peak_bytes
+            let limit_expected = self.sort_metadata.as_ref().is_some_and(|metadata| metadata.limit.is_some());
+            match (limit_expected, self.limit_phase_peak_bytes.is_some()) {
+                (true, false) => {
+                    return Err(graph_schedule_error("limit_preflight_unresolved", None, Some("limit")));
+                },
+                (false, true) => {
+                    return Err(graph_schedule_error("unexpected_limit_phase_evidence", None, Some("limit")));
+                },
+                _ => {},
+            }
+            let sort_peak = self.sort_phase_peak_bytes;
+            let limit_peak = self.limit_phase_peak_bytes;
+            let peak = sort_peak
+                .into_iter()
+                .chain(limit_peak)
+                .max()
                 .ok_or_else(|| graph_schedule_error("sort_preflight_unresolved", None, Some("sort")))?;
             return Ok(ResolvedReservationShape {
                 required_phase_floor_bytes: peak,
@@ -2684,6 +2722,7 @@ mod tests {
             is_attested_graph_result_passthrough_scope: false,
             is_attested_graph_result_bounded_consumer_scope: false,
             sort_phase_peak_bytes: None,
+            limit_phase_peak_bytes: None,
             sort_metadata: None,
             sort_rejection_reason: None,
             owner_term_rejection_reason: None,

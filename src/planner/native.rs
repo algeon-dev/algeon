@@ -528,7 +528,7 @@ mod tests {
     use datafusion::physical_plan::empty::EmptyExec;
     use nexus_query_engine::{
         plan::{QueryPlan, QueryPlanBuilder},
-        source::{GpuResidentSource, LocalParquetSource, SourceNode},
+        source::{GpuResidentSource, LocalParquetFile, LocalParquetSource, SourceNode},
     };
 
     use super::*;
@@ -543,21 +543,29 @@ mod tests {
         error::{DataFusionErrorExt, ErrorCode, ErrorStatus},
     };
 
-    fn local_parquet_native_plan() -> QueryPlan {
-        let schema = Arc::new(Schema::empty());
+    fn local_parquet_native_plan(path: &str) -> QueryPlan {
+        let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, false)]));
+        let file = LocalParquetFile::new(path)
+            .with_file_size_bytes(8)
+            .with_row_group_bytes(vec![8])
+            .with_projected_row_group_bytes(vec![8], vec![8])
+            .with_row_group_rows(vec![1]);
         let mut builder = QueryPlanBuilder::new();
-        let source = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
-            "/tmp/datafusion-nexus-final-plan-classifier-not-read.parquet",
+        let source = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+            vec![file],
             schema,
-            Vec::new(),
+            vec!["value".to_string()],
         )));
         builder.finish_with_host_sink(source)
     }
 
     fn native_exec_leaf() -> Arc<dyn ExecutionPlan> {
         Arc::new(
-            NexusNativeExec::try_new(local_parquet_native_plan(), NexusNativeExecutionConfig::bounded_default())
-                .expect("native runtime leaf should build without opening its source"),
+            NexusNativeExec::try_new(
+                local_parquet_native_plan("/tmp/datafusion-nexus-final-plan-classifier-not-read.parquet"),
+                NexusNativeExecutionConfig::bounded_default(),
+            )
+            .expect("native runtime leaf should build without opening its source"),
         )
     }
 
@@ -646,12 +654,18 @@ mod tests {
     #[test]
     fn planner_ticket_unions_capabilities_from_composed_native_fragments() {
         let (_backend, config) = backend_admission_config(64 * 1024 * 1024);
-        let left =
-            NexusNativeGpuProducerExec::try_new("left", local_parquet_native_plan().clone_with_gpu_resident_sink())
-                .unwrap();
-        let right =
-            NexusNativeGpuProducerExec::try_new("right", local_parquet_native_plan().clone_with_gpu_resident_sink())
-                .unwrap();
+        let left = NexusNativeGpuProducerExec::try_new(
+            "left",
+            local_parquet_native_plan("/tmp/datafusion-nexus-planner-left-not-read.parquet")
+                .clone_with_gpu_resident_sink(),
+        )
+        .unwrap();
+        let right = NexusNativeGpuProducerExec::try_new(
+            "right",
+            local_parquet_native_plan("/tmp/datafusion-nexus-planner-right-not-read.parquet")
+                .clone_with_gpu_resident_sink(),
+        )
+        .unwrap();
         let schema = left.schema();
         let mut builder = QueryPlanBuilder::new();
         let left_source =
@@ -668,10 +682,10 @@ mod tests {
             + right_proof.required_capabilities().len()
             + consumer_proof.required_capabilities().len();
         assert!(!left_proof.required_capabilities().is_empty(), "producer must expose a capability requirement");
-        let expected = QueryPlanCapabilityProof::combine(left_proof, [right_proof, consumer_proof]).unwrap();
         let composed =
             NexusNativeComposedExec::try_new(consumer_plan, vec![Arc::new(left), Arc::new(right)], config.clone())
                 .unwrap();
+        let expected = QueryPlanCapabilityProof::combine(left_proof, [right_proof, consumer_proof]).unwrap();
 
         let ticket = plan_query_admission_ticket_for_optimized_plan(&composed, &config, None).unwrap().unwrap();
 

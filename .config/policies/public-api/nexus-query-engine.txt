@@ -26,6 +26,7 @@ pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::for_composed_con
 pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::for_cugraph_graph_execution_plan(&nexus_query_engine::plan::QueryPlan) -> core::option::Option<Self>
 pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::for_cugraph_graph_input_plan(&nexus_query_engine::plan::QueryPlan) -> core::option::Option<Self>
 pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::for_query_plan(&nexus_query_engine::plan::QueryPlan) -> core::option::Option<Self>
+pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::for_query_plan_preflighted(&nexus_query_engine::plan::QueryPlan) -> nexus_query_engine::error::Result<Self>
 pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::required_capabilities(&self) -> &[nexus_query_engine::capability::ReservationRequirement]
 pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::required_floor_bytes_for(&self, u64) -> nexus_query_engine::error::Result<u64>
 pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::requirement_for_device(&self, usize) -> nexus_query_engine::error::Result<Self>
@@ -1084,6 +1085,7 @@ pub fn nexus_query_engine::exec::execute_query_plan_with_runtime_observation(&ne
 pub fn nexus_query_engine::exec::join_output_upper_bound_bytes(u64, &[nexus_query_engine::exec::JoinOutputColumnUpperBoundInput]) -> nexus_query_engine::error::Result<u64>
 pub fn nexus_query_engine::exec::materialize_gpu_result_to_host(nexus_query_engine::runtime::resident::GpuResultHandle, &mut nexus_query_engine::metrics::QueryMetrics) -> nexus_query_engine::error::Result<arrow_array::record_batch::RecordBatch>
 pub fn nexus_query_engine::exec::partial_aggregate_upper_bound_bytes(nexus_query_engine::exec::PartialAggregateShape, &[nexus_query_engine::exec::JoinOutputColumnUpperBoundInput]) -> nexus_query_engine::error::Result<u64>
+pub fn nexus_query_engine::exec::preflight_bounded_query_plan(&nexus_query_engine::plan::QueryPlan, nexus_query_engine::runtime::ExecutionBoundaryPolicy, nexus_query_engine::mode::StatisticalAggregateExecutionMode) -> nexus_query_engine::error::Result<()>
 pub fn nexus_query_engine::exec::preflight_query_plan(&nexus_query_engine::plan::QueryPlan) -> nexus_query_engine::error::Result<()>
 pub fn nexus_query_engine::exec::probe_resolved_remote_parquet_datasource(&nexus_query_engine::runtime::ExecutionContext, &nexus_query_engine::source::ResolvedParquetSource, core::option::Option<u64>) -> nexus_query_engine::error::Result<nexus_query_engine::exec::ResolvedRemoteParquetDatasourceProbe>
 pub fn nexus_query_engine::exec::read_gpu_resident_source(&nexus_query_engine::runtime::ExecutionContext, &nexus_query_engine::source::GpuResidentSource, &nexus_query_engine::runtime::resident::GpuResidentInputMap, &mut nexus_query_engine::metrics::QueryMetrics) -> nexus_query_engine::error::Result<nexus_query_engine::runtime::resident::GpuDataFrame>
