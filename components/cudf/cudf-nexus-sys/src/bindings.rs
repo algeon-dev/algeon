@@ -3032,6 +3032,16 @@ unsafe extern "C" {
         out: *mut cudf_table_handle,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
+    #[doc = " Create a new table by removing consecutive duplicate rows with explicit\n execution context.\n\n Equal rows must already be adjacent for all duplicates to be removed.\n `options` must be non-NULL and must carry an explicit device, stream, and\n memory resource. `options->mr` must outlive the returned table."]
+    pub fn cudf_unique_ex(
+        input: cudf_table_view_handle,
+        keys: *const core::ffi::c_int,
+        num_keys: core::ffi::c_int,
+        keep: cudf_duplicate_keep_option_t,
+        null_equality: cudf_stream_compaction_null_equality_t,
+        out: *mut cudf_table_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
     #[doc = " Convert string column to lowercase with explicit execution context.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned column."]
     pub fn cudf_strings_to_lower_ex(
         input: cudf_column_view_handle,

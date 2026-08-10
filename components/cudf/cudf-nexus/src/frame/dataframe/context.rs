@@ -650,5 +650,8 @@ impl DataFrameExecutionScope<'_, '_, '_> {
 
         /// Remove duplicate rows using the borrowed execution override.
         fn drop_duplicates(opts: DropDuplicatesOptions) -> Result<DataFrame> => drop_duplicates_in_context;
+
+        /// Remove consecutive duplicate rows using the borrowed execution override.
+        fn drop_consecutive_duplicates(opts: DropDuplicatesOptions) -> Result<DataFrame> => drop_consecutive_duplicates_in_context;
     );
 }

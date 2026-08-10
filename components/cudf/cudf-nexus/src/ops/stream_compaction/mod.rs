@@ -1,4 +1,4 @@
-//! GPU-accelerated stream compaction: drop_nulls, distinct (deduplicate).
+//! GPU-accelerated stream compaction: drop_nulls, distinct, and adjacent unique.
 
 mod errors;
 
@@ -204,6 +204,42 @@ pub(crate) fn distinct_impl(
     unsafe { Table::from_raw_with_domain(out, Arc::clone(execution.output_domain)) }
 }
 
+pub(crate) fn unique_impl(
+    input: &TableView<'_>,
+    keys: &[usize],
+    keep: DuplicateKeepOption,
+    null_equality: NullEquality,
+    execution: StreamCompactionExecution<'_>,
+) -> Result<Table> {
+    let operation = execution.operation;
+    let keys_i32 = checked_key_indices_i32(input, keys, operation)?;
+    let keys_count = error::usize_to_i32(keys_i32.len(), operation, "keys_count")?;
+
+    let mut out = ptr::null_mut();
+    let status = unsafe {
+        cudf_sys::cudf_unique_ex(
+            input.raw_handle(),
+            keys_i32.as_ptr(),
+            keys_count,
+            keep.to_raw(),
+            null_equality.to_stream_compaction_raw(),
+            &mut out,
+            execution.exec_options,
+        )
+    };
+    check_status_with_keys_count(
+        status,
+        operation,
+        keys_i32.len(),
+        [
+            ("keep", format!("{keep:?}").to_lowercase()),
+            ("null_equality", format!("{null_equality:?}").to_lowercase()),
+            ("execution_authority", "retained_domain".to_string()),
+        ],
+    )?;
+    unsafe { Table::from_raw_with_domain(out, Arc::clone(execution.output_domain)) }
+}
+
 /// Drop rows from a table where key columns contain nulls.
 ///
 /// Rows are kept only if at least `keep_threshold` of the specified `keys`
@@ -268,6 +304,31 @@ pub fn distinct(
             execution.output_domain(),
             execution.exec_options(),
             "stream_compaction::distinct",
+        ),
+    )
+}
+
+/// Create a new table by removing consecutive duplicate rows.
+///
+/// Rows that compare equal on `keys` must already be adjacent. Use
+/// [`distinct`] when equal rows may be separated.
+pub fn unique(
+    input: &TableView<'_>,
+    keys: &[usize],
+    keep: DuplicateKeepOption,
+    null_equality: NullEquality,
+) -> Result<Table> {
+    let ctx = ExecutionOverrides::new();
+    let execution = ResolvedExecution::unary(input.execution_domain(), &ctx, "stream_compaction::unique")?;
+    unique_impl(
+        input,
+        keys,
+        keep,
+        null_equality,
+        StreamCompactionExecution::new(
+            execution.output_domain(),
+            execution.exec_options(),
+            "stream_compaction::unique",
         ),
     )
 }
