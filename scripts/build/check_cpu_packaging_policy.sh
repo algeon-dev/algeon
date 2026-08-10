@@ -46,7 +46,7 @@ run_rejected_env target_specific_cxxflags 'x86_64_unknown_linux_gnu_CXXFLAGS=-ma
 run_rejected_env cargo_build_target 'CARGO_BUILD_TARGET=x86_64-unknown-linux-musl'
 run_rejected_env encoded_rustflags "CARGO_ENCODED_RUSTFLAGS=-C"$'\x1f'"target-feature=+aes"
 
-if rg -n 'ensure_cpu_baseline|is_x86_feature_detected!' src/bin/datafusion_nexus_server.rs; then
+if rg -n 'ensure_cpu_baseline|is_x86_feature_detected!' crates/nexus-server/src/bin/datafusion_nexus_server.rs; then
   fail "server still contains an in-process CPU feature check"
 fi
 echo "PASS: server has no in-process CPU feature detection"
@@ -139,9 +139,9 @@ env -i PATH="${tmp_dir}/bin:${PATH}" HOME="${tmp_dir}/home" \
   CMAKE='/tmp/ambient-cmake' CMAKE_GENERATOR='Unix Makefiles' \
   python3 "${HELPER}" --policy "${POLICY}" build \
     --profile portable \
-    --features 'nvml,server,iceberg' \
+    --features 'nvml,iceberg' \
     --target-root "${target_root}" \
-    --manifest "${ROOT}/Cargo.toml" \
+    --manifest "${ROOT}/crates/nexus-server/Cargo.toml" \
     --explicit-env "CUDF_INSTALL_DIR=${tmp_dir}/cudf" \
     --explicit-env "CUVS_INSTALL_DIR=${tmp_dir}/cuvs" \
     --explicit-env "CUVS_ROOT=${tmp_dir}/cuvs" \
@@ -161,7 +161,7 @@ with open(sys.argv[1], encoding="utf-8") as provenance_file:
 profile = provenance["cpu_profile"]
 command = provenance["cargo_command"]
 assert provenance["provenance_kind"] == "canonical-build-artifact"
-assert provenance["features"] == ["iceberg", "nvml", "server"]
+assert provenance["features"] == ["iceberg", "nvml"]
 assert profile["declared_baseline"] == "x86-64-v2"
 assert profile["target_triple"] == "x86_64-unknown-linux-gnu"
 assert profile["effective_rustflags"] == ["-C", "target-cpu=x86-64-v2"]
@@ -187,7 +187,7 @@ echo "PASS: canonical command and build provenance record exact policy/tool inpu
 
 env -i PATH="${tmp_dir}/bin:${PATH}" HOME="${tmp_dir}/home" \
   python3 "${HELPER}" --policy "${POLICY}" verify-build \
-    --profile portable --features 'server,iceberg,nvml' \
+    --profile portable --features 'iceberg,nvml' \
     --binary "${binary}" --provenance "${build_provenance}" \
     >"${tmp_dir}/reuse.output"
 echo "PASS: verified canonical artifact can be reused"
@@ -196,7 +196,7 @@ cp "${binary}" "${tmp_dir}/binary.backup"
 printf 'tamper\n' >>"${binary}"
 status=0
 python3 "${HELPER}" --policy "${POLICY}" verify-build \
-  --profile portable --features 'server,iceberg,nvml' \
+  --profile portable --features 'iceberg,nvml' \
   --binary "${binary}" --provenance "${build_provenance}" \
   >"${tmp_dir}/tampered-binary.output" 2>&1 || status=$?
 [[ "${status}" -eq 2 ]] || fail "tampered canonical artifact was accepted"
@@ -215,7 +215,7 @@ path.write_text(text.replace('deployment_requirement = "The host CPU', 'deployme
 PY
 status=0
 python3 "${HELPER}" --policy "${tmp_dir}/tampered-policy.toml" verify-build \
-  --profile portable --features 'server,iceberg,nvml' \
+  --profile portable --features 'iceberg,nvml' \
   --binary "${binary}" --provenance "${build_provenance}" \
   >"${tmp_dir}/tampered-policy.output" 2>&1 || status=$?
 [[ "${status}" -eq 2 ]] || fail "changed policy was accepted for artifact reuse"
@@ -229,7 +229,7 @@ printf 'post-stage-patchelf-fixture\n' >>"${staged_binary}"
 stage_provenance="${tmp_dir}/dist/cpu-provenance.json"
 stage_labels="${tmp_dir}/dist/cpu-provenance.labels"
 python3 "${HELPER}" --policy "${POLICY}" stage \
-  --profile portable --features 'server,iceberg,nvml' \
+  --profile portable --features 'iceberg,nvml' \
   --source-binary "${binary}" --staged-binary "${staged_binary}" \
   --build-provenance "${build_provenance}" \
   --output "${stage_provenance}" --labels-output "${stage_labels}" \
@@ -288,7 +288,7 @@ grep -Fq 'ambient codegen/config override variables are forbidden' "${tmp_dir}/b
   || fail "canonical build path omitted the clean-environment diagnostic"
 
 status=0
-CPU_PACKAGE_TARGET_ROOT="${tmp_dir}/missing-target" FEATURES=server SKIP_CARGO_BUILD=1 \
+CPU_PACKAGE_TARGET_ROOT="${tmp_dir}/missing-target" FEATURES=iceberg SKIP_CARGO_BUILD=1 \
   bash docker/build.sh >"${tmp_dir}/skip-without-provenance.output" 2>&1 || status=$?
 [[ "${status}" -eq 2 ]] || fail "SKIP_CARGO_BUILD reused an artifact without canonical provenance"
 grep -Fq 'cannot load provenance' "${tmp_dir}/skip-without-provenance.output" \
@@ -350,7 +350,7 @@ chmod +x "${tmp_dir}/bin/patchelf" "${tmp_dir}/bin/readelf" "${tmp_dir}/bin/ldd"
 
 CPU_PACKAGE_TARGET_ROOT="${target_root}" \
 CPU_PACKAGE_DIST_DIR="${tmp_dir}/docker-dist" \
-FEATURES=server,iceberg,nvml \
+FEATURES=iceberg,nvml \
 SKIP_CARGO_BUILD=1 \
 NO_STRIP=1 \
 CUDF_INSTALL_DIR="${tmp_dir}/cudf" \
@@ -376,7 +376,7 @@ echo "PASS: fake canonical staging prints policy/provenance-bound Docker command
 
 CPU_PACKAGE_TARGET_ROOT="${target_root}" \
 CPU_PACKAGE_DIST_DIR="${tmp_dir}/docker-dist-shared-logger" \
-FEATURES=server,iceberg,nvml \
+FEATURES=iceberg,nvml \
 SKIP_CARGO_BUILD=1 \
 NO_STRIP=1 \
 CUDF_INSTALL_DIR="${tmp_dir}/cudf" \
@@ -391,7 +391,7 @@ PATH="${tmp_dir}/bin:${PATH}" \
 status=0
 CPU_PACKAGE_TARGET_ROOT="${target_root}" \
 CPU_PACKAGE_DIST_DIR="${tmp_dir}/docker-dist-static-external-logger" \
-FEATURES=server,iceberg,nvml \
+FEATURES=iceberg,nvml \
 SKIP_CARGO_BUILD=1 \
 NO_STRIP=1 \
 CUDF_INSTALL_DIR="${tmp_dir}/cudf" \
@@ -419,7 +419,7 @@ build_fake_variant() {
       --profile portable \
       --features "${features}" \
       --target-root "${target_root}" \
-      --manifest "${ROOT}/Cargo.toml" \
+      --manifest "${ROOT}/crates/nexus-server/Cargo.toml" \
       --explicit-env "CUDF_INSTALL_DIR=${tmp_dir}/cudf" \
       --explicit-env "CUVS_INSTALL_DIR=${tmp_dir}/cuvs" \
       --explicit-env "CUVS_ROOT=${tmp_dir}/cuvs" \
@@ -427,20 +427,20 @@ build_fake_variant() {
       >"${tmp_dir}/variant-build.output"
 }
 
-build_fake_variant server,cuvs
+build_fake_variant cuvs
 CPU_PACKAGE_TARGET_ROOT="${target_root}" \
 CPU_PACKAGE_DIST_DIR="${tmp_dir}/docker-dist-cuvs" \
-FEATURES=server,cuvs SKIP_CARGO_BUILD=1 NO_STRIP=1 \
+FEATURES=cuvs SKIP_CARGO_BUILD=1 NO_STRIP=1 \
 CUDF_INSTALL_DIR="${tmp_dir}/cudf" CUVS_INSTALL_DIR="${tmp_dir}/cuvs" \
 FAKE_CLOSURE_HAS_CUVS=1 PATH="${tmp_dir}/bin:${PATH}" \
   bash docker/build.sh >"${tmp_dir}/cuvs-stage.output"
 [[ -f "${tmp_dir}/docker-dist-cuvs/lib/libcuvs.so" ]] || fail "cuVS-only package omitted canonical libcuvs.so"
 [[ -f "${tmp_dir}/docker-dist-cuvs/lib/libcuvs_c.so" ]] || fail "cuVS-only package omitted libcuvs_c.so"
 
-build_fake_variant server,cugraph
+build_fake_variant cugraph
 CPU_PACKAGE_TARGET_ROOT="${target_root}" \
 CPU_PACKAGE_DIST_DIR="${tmp_dir}/docker-dist-cugraph" \
-FEATURES=server,cugraph SKIP_CARGO_BUILD=1 NO_STRIP=1 \
+FEATURES=cugraph SKIP_CARGO_BUILD=1 NO_STRIP=1 \
 CUDF_INSTALL_DIR="${tmp_dir}/cudf" CUVS_INSTALL_DIR="${tmp_dir}/cuvs" \
 CUGRAPH_CMAKE_BUILD_DIR="${tmp_dir}/cugraph" \
 FAKE_GRAPH_CUVS_REALPATH="${tmp_dir}/cuvs/lib/libcuvs.so" FAKE_CLOSURE_HAS_CUVS=1 \
@@ -449,10 +449,10 @@ PATH="${tmp_dir}/bin:${PATH}" \
 [[ -f "${tmp_dir}/docker-dist-cugraph/lib/libcuvs.so" ]] || fail "cuGraph-only package omitted canonical libcuvs.so"
 [[ ! -e "${tmp_dir}/docker-dist-cugraph/lib/libcuvs_c.so" ]] || fail "cuGraph-only package unexpectedly staged libcuvs_c.so"
 
-build_fake_variant server,cugraph,cuvs
+build_fake_variant cugraph,cuvs
 CPU_PACKAGE_TARGET_ROOT="${target_root}" \
 CPU_PACKAGE_DIST_DIR="${tmp_dir}/docker-dist-combined" \
-FEATURES=server,cugraph,cuvs SKIP_CARGO_BUILD=1 NO_STRIP=1 \
+FEATURES=cugraph,cuvs SKIP_CARGO_BUILD=1 NO_STRIP=1 \
 CUDF_INSTALL_DIR="${tmp_dir}/cudf" CUVS_INSTALL_DIR="${tmp_dir}/cuvs" \
 CUGRAPH_CMAKE_BUILD_DIR="${tmp_dir}/cugraph" \
 FAKE_GRAPH_CUVS_REALPATH="${tmp_dir}/cuvs/lib/libcuvs.so" FAKE_CLOSURE_HAS_CUVS=1 \
@@ -465,7 +465,7 @@ echo "PASS: cuVS-only, cuGraph-only, and combined packages stage the declared ca
 printf 'fake divergent logger\n' >"${tmp_dir}/divergent-librapids_logger.so"
 status=0
 CPU_PACKAGE_TARGET_ROOT="${target_root}" CPU_PACKAGE_DIST_DIR="${tmp_dir}/docker-dist-divergent-logger" \
-FEATURES=server,cugraph,cuvs SKIP_CARGO_BUILD=1 NO_STRIP=1 \
+FEATURES=cugraph,cuvs SKIP_CARGO_BUILD=1 NO_STRIP=1 \
 CUDF_INSTALL_DIR="${tmp_dir}/cudf" CUVS_INSTALL_DIR="${tmp_dir}/cuvs" \
 CUGRAPH_CMAKE_BUILD_DIR="${tmp_dir}/cugraph" \
 FAKE_GRAPH_CUVS_REALPATH="${tmp_dir}/cuvs/lib/libcuvs.so" FAKE_CLOSURE_HAS_CUVS=1 \
@@ -480,7 +480,7 @@ grep -Fq 'multiple librapids_logger.so identities' "${tmp_dir}/divergent-logger.
 printf 'fake divergent cuvs\n' >"${tmp_dir}/divergent-libcuvs.so"
 status=0
 CPU_PACKAGE_TARGET_ROOT="${target_root}" CPU_PACKAGE_DIST_DIR="${tmp_dir}/docker-dist-divergent" \
-FEATURES=server,cugraph,cuvs SKIP_CARGO_BUILD=1 NO_STRIP=1 \
+FEATURES=cugraph,cuvs SKIP_CARGO_BUILD=1 NO_STRIP=1 \
 CUDF_INSTALL_DIR="${tmp_dir}/cudf" CUVS_INSTALL_DIR="${tmp_dir}/cuvs" \
 CUGRAPH_CMAKE_BUILD_DIR="${tmp_dir}/cugraph" \
 FAKE_GRAPH_CUVS_REALPATH="${tmp_dir}/divergent-libcuvs.so" FAKE_CLOSURE_HAS_CUVS=1 \
@@ -492,7 +492,7 @@ grep -Fq 'different libcuvs.so identities' "${tmp_dir}/divergent-cuvs.output" \
 
 status=0
 CPU_PACKAGE_TARGET_ROOT="${target_root}" CPU_PACKAGE_DIST_DIR="${tmp_dir}/docker-dist-not-found" \
-FEATURES=server,cugraph,cuvs SKIP_CARGO_BUILD=1 NO_STRIP=1 \
+FEATURES=cugraph,cuvs SKIP_CARGO_BUILD=1 NO_STRIP=1 \
 CUDF_INSTALL_DIR="${tmp_dir}/cudf" CUVS_INSTALL_DIR="${tmp_dir}/cuvs" \
 CUGRAPH_CMAKE_BUILD_DIR="${tmp_dir}/cugraph" \
 FAKE_GRAPH_CUVS_REALPATH="${tmp_dir}/cuvs/lib/libcuvs.so" FAKE_CLOSURE_HAS_CUVS=1 FAKE_LDD_NOT_FOUND=1 \
@@ -504,7 +504,7 @@ grep -Fq 'unresolved loader dependency' "${tmp_dir}/loader-not-found.output" \
 
 status=0
 CPU_PACKAGE_TARGET_ROOT="${target_root}" CPU_PACKAGE_DIST_DIR="${tmp_dir}/docker-dist-raft" \
-FEATURES=server,cugraph,cuvs SKIP_CARGO_BUILD=1 NO_STRIP=1 \
+FEATURES=cugraph,cuvs SKIP_CARGO_BUILD=1 NO_STRIP=1 \
 CUDF_INSTALL_DIR="${tmp_dir}/cudf" CUVS_INSTALL_DIR="${tmp_dir}/cuvs" \
 CUGRAPH_CMAKE_BUILD_DIR="${tmp_dir}/cugraph" \
 FAKE_GRAPH_CUVS_REALPATH="${tmp_dir}/cuvs/lib/libcuvs.so" FAKE_CLOSURE_HAS_CUVS=1 \

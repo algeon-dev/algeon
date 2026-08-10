@@ -12,20 +12,20 @@ use nexus_query_engine::{
 };
 
 /// Activity authority selected for one coordinated native query boundary.
-pub(crate) type NativeObservationActivityFactory = Arc<dyn Fn() -> Option<QueryActivityLease> + Send + Sync + 'static>;
+pub type NativeObservationActivityFactory = Arc<dyn Fn() -> Option<QueryActivityLease> + Send + Sync + 'static>;
 
 /// Observation authority selected for one native query boundary.
 ///
 /// A local owner seals its snapshot into the owning attempt only; this adapter
 /// layer deliberately retains no second snapshot store.
 #[derive(Clone, Debug)]
-pub(crate) enum NativeRuntimeObservation {
+pub enum NativeRuntimeObservation {
     Local(RuntimeObservationOwner),
     Coordinated(RuntimeObservationHandle),
 }
 
 impl NativeRuntimeObservation {
-    pub(crate) fn handle(&self) -> RuntimeObservationHandle {
+    pub fn handle(&self) -> RuntimeObservationHandle {
         match self {
             Self::Local(owner) => owner.handle(),
             Self::Coordinated(handle) => handle.clone(),
@@ -41,7 +41,7 @@ impl From<RuntimeObservationOwner> for NativeRuntimeObservation {
 
 /// Cloneable config-time observation wiring.
 #[derive(Clone)]
-pub(crate) struct NativeMetricsCapture {
+pub struct NativeMetricsCapture {
     query_id: Option<Arc<str>>,
     coordinated_observation: Option<RuntimeObservationHandle>,
     coordinated_activity: Option<NativeObservationActivityFactory>,
@@ -50,7 +50,7 @@ pub(crate) struct NativeMetricsCapture {
 }
 
 impl NativeMetricsCapture {
-    pub(crate) fn standalone() -> Self {
+    pub fn standalone() -> Self {
         let observation_config = RuntimeObservationConfig::native_execution();
         Self {
             query_id: None,
@@ -61,8 +61,7 @@ impl NativeMetricsCapture {
         }
     }
 
-    #[cfg(any(feature = "server", test))]
-    pub(crate) fn coordinated(query_id: impl Into<Arc<str>>, observation: RuntimeObservationHandle) -> Self {
+    pub fn coordinated(query_id: impl Into<Arc<str>>, observation: RuntimeObservationHandle) -> Self {
         let metric_capture_limits = observation.config().limits();
         Self {
             query_id: Some(query_id.into()),
@@ -73,18 +72,16 @@ impl NativeMetricsCapture {
         }
     }
 
-    #[cfg(feature = "server")]
-    pub(crate) fn query_id(&self) -> &str {
-        self.query_id.as_deref().expect("coordinated server capture carries a query id")
+    pub fn query_id(&self) -> Option<&str> {
+        self.query_id.as_deref()
     }
 
-    #[cfg(any(feature = "server", test))]
-    pub(crate) fn with_observation_activity_factory(mut self, factory: NativeObservationActivityFactory) -> Self {
+    pub fn with_observation_activity_factory(mut self, factory: NativeObservationActivityFactory) -> Self {
         self.coordinated_activity = Some(factory);
         self
     }
 
-    pub(crate) fn new_observation_activity(&self) -> Option<Result<QueryActivityLease>> {
+    pub fn new_observation_activity(&self) -> Option<Result<QueryActivityLease>> {
         self.coordinated_observation.as_ref()?;
         Some(match &self.coordinated_activity {
             Some(factory) => factory().ok_or_else(coordinated_activity_unavailable_error),
@@ -105,15 +102,15 @@ impl NativeMetricsCapture {
         self
     }
 
-    pub(crate) const fn runtime_observation_config(&self) -> RuntimeObservationConfig {
+    pub const fn runtime_observation_config(&self) -> RuntimeObservationConfig {
         self.observation_config
     }
 
-    pub(crate) const fn metric_capture_limits(&self) -> RuntimeObservationLimits {
+    pub const fn metric_capture_limits(&self) -> RuntimeObservationLimits {
         self.metric_capture_limits
     }
 
-    pub(crate) fn new_execution(&self) -> NativeExecutionMetricsCapture {
+    pub fn new_execution(&self) -> NativeExecutionMetricsCapture {
         NativeExecutionMetricsCapture { wiring: self.clone() }
     }
 }
@@ -121,12 +118,12 @@ impl NativeMetricsCapture {
 /// Per-wrapper projection configuration. It owns neither terminal state nor
 /// sealed runtime observations.
 #[derive(Clone)]
-pub(crate) struct NativeExecutionMetricsCapture {
+pub struct NativeExecutionMetricsCapture {
     wiring: NativeMetricsCapture,
 }
 
 impl NativeExecutionMetricsCapture {
-    pub(crate) fn new_runtime_observation(
+    pub fn new_runtime_observation(
         &self,
         query_id: impl Into<RuntimeQueryId>,
         trace_id: Option<RuntimeTraceId>,
@@ -141,15 +138,15 @@ impl NativeExecutionMetricsCapture {
         }
     }
 
-    pub(crate) fn new_observation_activity(&self) -> Option<Result<QueryActivityLease>> {
+    pub fn new_observation_activity(&self) -> Option<Result<QueryActivityLease>> {
         self.wiring.new_observation_activity()
     }
 
-    pub(crate) const fn runtime_observation_config(&self) -> RuntimeObservationConfig {
+    pub const fn runtime_observation_config(&self) -> RuntimeObservationConfig {
         self.wiring.runtime_observation_config()
     }
 
-    pub(crate) const fn metric_capture_limits(&self) -> RuntimeObservationLimits {
+    pub const fn metric_capture_limits(&self) -> RuntimeObservationLimits {
         self.wiring.metric_capture_limits()
     }
 }

@@ -2,11 +2,6 @@ use std::{collections::HashMap, net::TcpListener, sync::Arc, time::Duration};
 
 use arrow::array::{Int32Array, Int64Array, UInt32Array, UInt64Array};
 use arrow_flight::sql::client::FlightSqlServiceClient;
-use datafusion_nexus::server::{
-    NEXUS_ICEBERG_CATALOG_KIND_ENV, NEXUS_ICEBERG_GLUE_URI_ENV, NEXUS_ICEBERG_NAMESPACE_ENV,
-    NEXUS_ICEBERG_S3_ENDPOINT_ENV, NEXUS_ICEBERG_S3_PATH_STYLE_ENV, NEXUS_ICEBERG_S3_REGION_ENV,
-    NEXUS_ICEBERG_WAREHOUSE_ENV, ServerConfig, serve_with_listener,
-};
 use futures::TryStreamExt;
 use iceberg::{
     Catalog, CatalogBuilder, NamespaceIdent, TableCreation,
@@ -16,6 +11,11 @@ use iceberg::{
 use iceberg_catalog_glue::{
     AWS_ACCESS_KEY_ID, AWS_REGION_NAME, AWS_SECRET_ACCESS_KEY, GLUE_CATALOG_PROP_URI, GLUE_CATALOG_PROP_WAREHOUSE,
     GlueCatalogBuilder,
+};
+use nexus_server::{
+    NEXUS_ICEBERG_CATALOG_KIND_ENV, NEXUS_ICEBERG_GLUE_URI_ENV, NEXUS_ICEBERG_NAMESPACE_ENV,
+    NEXUS_ICEBERG_S3_ENDPOINT_ENV, NEXUS_ICEBERG_S3_PATH_STYLE_ENV, NEXUS_ICEBERG_S3_REGION_ENV,
+    NEXUS_ICEBERG_WAREHOUSE_ENV, ServerConfig, serve_with_listener,
 };
 use url::Url;
 
@@ -138,7 +138,7 @@ fn warm_cuda_once() {
     static CUDA_WARM: std::sync::OnceLock<()> = std::sync::OnceLock::new();
     CUDA_WARM.get_or_init(|| {
         // Best-effort: serve_with_listener re-runs (and surfaces) any error.
-        let _ = datafusion_nexus::server::init_cuda_device(0);
+        let _ = nexus_server::init_cuda_device(0);
     });
 }
 

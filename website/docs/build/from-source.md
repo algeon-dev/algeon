@@ -192,12 +192,12 @@ must already be installed (see
 
 ```bash
 cd "$NEXUS_ROOT/datafusion-nexus"
-cargo build --features cugraph,cuvs,server
-bash scripts/check_all.sh --features cugraph,cuvs,server
+cargo build -p nexus-server --features cugraph,cuvs
+bash scripts/check_all.sh --features cugraph,cuvs
 ```
 
-`--features cugraph,cuvs,server` builds the full GPU stack plus the Flight SQL
-server. `check_all.sh` is the canonical local check; it assigns CPU and GPU
+The `nexus-server` package owns the Flight SQL server while its `cugraph` and
+`cuvs` features forward the full GPU stack. `check_all.sh` is the canonical local check; it assigns CPU and GPU
 lanes and acquires the cross-consumer GPU lock. See [Tests](./tests.md) for the
 lane model and feature matrix.
 

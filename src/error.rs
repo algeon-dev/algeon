@@ -108,7 +108,7 @@ struct FactValue {
 }
 
 /// Sanitized, bounded facts approved for logs and retained diagnostics.
-pub(crate) struct LogSafeFactProjection {
+pub struct LogSafeFactProjection {
     entries: Vec<(&'static str, String)>,
     truncated: bool,
 }
@@ -133,7 +133,7 @@ impl Facts {
         self.insert_with_log_safety(key, value, false);
     }
 
-    pub(crate) fn insert_log_safe(&mut self, key: &'static str, value: String) {
+    pub fn insert_log_safe(&mut self, key: &'static str, value: String) {
         // The truncation marker is owned by the projection. Preserve a caller's
         // raw typed value, but never let it opt itself into disclosure or spoof
         // the synthetic retained marker.
@@ -158,7 +158,7 @@ impl Facts {
         self.values.insert(FACT_COLLISION_KEYS, FactValue { value, log_safe: true });
     }
 
-    pub(crate) fn log_safe_projection(&self) -> LogSafeFactProjection {
+    pub fn log_safe_projection(&self) -> LogSafeFactProjection {
         let safe_facts = self
             .values
             .iter()
@@ -208,8 +208,7 @@ impl fmt::Debug for Facts {
 }
 
 impl LogSafeFactProjection {
-    #[cfg(any(feature = "server", test))]
-    pub(crate) fn retained_entries(&self) -> Vec<(String, String)> {
+    pub fn retained_entries(&self) -> Vec<(String, String)> {
         let mut entries =
             self.entries.iter().map(|(key, value)| ((*key).to_string(), value.clone())).collect::<Vec<_>>();
         if self.truncated {
@@ -219,14 +218,12 @@ impl LogSafeFactProjection {
         entries
     }
 
-    #[cfg(any(feature = "server", test))]
-    pub(crate) fn rendered(&self) -> Option<String> {
+    pub fn rendered(&self) -> Option<String> {
         (!self.entries.is_empty())
             .then(|| self.entries.iter().map(|(key, value)| format!("{key}={value}")).collect::<Vec<_>>().join(", "))
     }
 
-    #[cfg(any(feature = "server", test))]
-    pub(crate) fn truncated(&self) -> bool {
+    pub fn truncated(&self) -> bool {
         self.truncated
     }
 }
@@ -406,8 +403,7 @@ impl Error {
         self
     }
 
-    #[cfg(feature = "server")]
-    pub(crate) fn with_preserved_facts(mut self, facts: Facts) -> Self {
+    pub fn with_preserved_facts(mut self, facts: Facts) -> Self {
         self.facts = facts;
         self
     }
@@ -639,7 +635,7 @@ fn diagnostic_error_message(error: &(dyn StdError + 'static)) -> String {
 /// DataFusion 54 renders SQL parser errors with `Debug` in
 /// [`DataFusionError::message`]. This extractor uses the parser's `Display`
 /// representation so Rust enum syntax does not leak into diagnostics.
-pub(crate) fn datafusion_error_human_message(error: &DataFusionError) -> String {
+pub fn datafusion_error_human_message(error: &DataFusionError) -> String {
     match error {
         DataFusionError::Context(message, _) => normalize_diagnostic_message(message),
         DataFusionError::Diagnostic(diagnostic, _) => normalize_diagnostic_message(&diagnostic.message),

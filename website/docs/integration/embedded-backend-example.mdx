@@ -200,7 +200,7 @@ citation-network Parquet files are missing.
 
 The example is built on the same public APIs available to application code:
 
-- `NexusGpuBackend::from_server_config(&config)` builds the bounded backend
+- `nexus_server::backend_from_server_config(&config)` builds the bounded backend
   from the server configuration contract.
 - `FlightSqlServer::builder().backend(backend.clone())` runs the built-in
   Flight SQL server on that backend.

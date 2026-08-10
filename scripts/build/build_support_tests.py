@@ -30,7 +30,7 @@ class InclusionSite:
 
 
 SITES = (
-    InclusionSite("root", "build.rs", "scripts/build/rapids.rs", True, True, True, True, True, False),
+    InclusionSite("root", "build.rs", "scripts/build/rapids.rs", True, False, True, True, True, False),
     InclusionSite(
         "engine",
         "crates/nexus-query-engine/build.rs",
@@ -61,6 +61,17 @@ SITES = (
         True,
         False,
         False,
+        True,
+        False,
+    ),
+    InclusionSite(
+        "server",
+        "crates/nexus-server/build.rs",
+        "../../scripts/build/rapids.rs",
+        True,
+        True,
+        True,
+        True,
         True,
         False,
     ),
@@ -314,9 +325,16 @@ def assert_manifest_contract() -> None:
         "path": "../cuvs-nexus/cuvs-nexus-sys",
     }
     assert root["features"]["cuvs"] == ["dep:cuvs", "dep:cuvs-sys", "nexus-query-engine/cuvs"]
-    assert root["features"]["server-cuvs"] == ["server", "cuvs"]
+    assert "server" not in root["features"]
+    assert "server-cugraph" not in root["features"]
+    assert "server-cuvs" not in root["features"]
     assert root["dependencies"]["cuvs"]["optional"] is True
     assert root["dependencies"]["cuvs-sys"]["optional"] is True
+
+    server = load_manifest("crates/nexus-server/Cargo.toml")
+    assert "datafusion-nexus/cuvs" in server["features"]["cuvs"]
+    assert "dep:cuvs-sys" in server["features"]["cuvs"]
+    assert server["dependencies"]["cuvs-sys"]["optional"] is True
 
     engine = load_manifest("crates/nexus-query-engine/Cargo.toml")
     assert engine["features"]["cuvs"] == ["dep:cuvs", "dep:cuvs-sys"]
@@ -380,6 +398,7 @@ def main() -> int:
                 ("bench-combined-mixed", SITES[2], True, True, "mixed", True, None),
                 ("examples-cugraph-direct", SITES[3], True, False, "direct", True, None),
                 ("examples-combined-direct", SITES[3], True, True, "direct", True, None),
+                ("server-combined-direct", SITES[4], True, True, "direct", True, None),
             ]
             for name, site, cugraph, cuvs, metadata_mode, logger, logger_linkage in scenarios:
                 run_site_scenario(

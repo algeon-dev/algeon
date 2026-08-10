@@ -192,7 +192,7 @@ impl DataFusionNexusSessionConfig {
         }
     }
 
-    pub(crate) fn frozen_for_backend_admission(mut self) -> Self {
+    pub fn frozen_for_backend_admission(mut self) -> Self {
         self.authority = DataFusionNexusSessionConfigAuthority::BackendAdmission;
         self
     }

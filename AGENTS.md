@@ -125,7 +125,7 @@ partial and must not be reported as full validation.
   in `scripts/build/`, CI helpers in `scripts/ci/`, manual helpers in
   `scripts/dev/`, and policy data in `.config/policies/`.
 - Keep `scripts/build/rapids.rs` std-only and shared by the root, native engine,
-  bench, and examples packages.
+  server, bench, tools, and examples packages.
 
 ## Public contracts
 

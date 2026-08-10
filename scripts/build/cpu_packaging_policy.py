@@ -122,8 +122,10 @@ def select_profile(policy: Mapping[str, Any], name: str) -> dict[str, Any]:
 
 def canonical_features(raw: str) -> list[str]:
     features = [feature.strip() for feature in raw.split(",") if feature.strip()]
-    if not features or "server" not in features:
-        raise PolicyError("packaging features must include 'server'")
+    if not features:
+        raise PolicyError("packaging features must not be empty")
+    if "server" in features:
+        raise PolicyError("the nexus-server package has no 'server' feature")
     if any(not re.fullmatch(r"[A-Za-z0-9_-]+", feature) for feature in features):
         raise PolicyError(f"invalid Cargo feature list: {raw!r}")
     return sorted(set(features))
@@ -457,6 +459,8 @@ def command_build(args: argparse.Namespace) -> None:
         "--no-default-features",
         "--features",
         ",".join(features),
+        "--package",
+        "nexus-server",
         "--bin",
         SERVER_BINARY,
     ]

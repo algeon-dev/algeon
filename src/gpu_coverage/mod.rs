@@ -19,14 +19,14 @@ use std::sync::Arc;
 
 use datafusion::{execution::SessionStateBuilder, prelude::SessionContext};
 
-pub(crate) use self::explain_gpu::ExplainGpuOutputMode;
-#[cfg(feature = "server")]
-pub(crate) use self::explain_gpu::parse_explain_gpu;
-pub use self::model::{
-    QueryGpuCandidateOutcome, QueryGpuCandidateReasonKind, QueryGpuCandidateSelectionOutcome, QueryGpuCoverage,
-    QueryGpuCoverageConfidence, QueryGpuCoverageDomains, QueryGpuCoverageOverall, QueryGpuCugraphCall,
-    QueryGpuRejectionPhase, QueryGpuRemedy, QueryGpuRemedyKind, QueryGpuRetryAdviceAvailability, QueryGpuRuntimeCaveat,
-    QueryGpuValidatedUnder,
+pub use self::{
+    explain_gpu::{ExplainGpuOutputMode, ExplainGpuStatement, parse_explain_gpu},
+    model::{
+        QueryGpuCandidateOutcome, QueryGpuCandidateReasonKind, QueryGpuCandidateSelectionOutcome, QueryGpuCoverage,
+        QueryGpuCoverageConfidence, QueryGpuCoverageDomains, QueryGpuCoverageOverall, QueryGpuCugraphCall,
+        QueryGpuRejectionPhase, QueryGpuRemedy, QueryGpuRemedyKind, QueryGpuRetryAdviceAvailability,
+        QueryGpuRuntimeCaveat, QueryGpuValidatedUnder,
+    },
 };
 use self::{
     physical::{candidate_outcomes_from_report, cugraph_calls, planning_diagnostics_did_io},

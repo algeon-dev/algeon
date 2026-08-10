@@ -38,11 +38,19 @@ pub fn datafusion_nexus::attempt::AttemptStream::poll_next(core::pin::Pin<&mut S
 pub struct datafusion_nexus::attempt::NexusAttempt
 impl datafusion_nexus::attempt::NexusAttempt
 pub fn datafusion_nexus::attempt::NexusAttempt::attempt_id(&self) -> nexus_query_engine::observability::attempt_report::AttemptId
+pub fn datafusion_nexus::attempt::NexusAttempt::cancel_before_stream(&self)
 pub fn datafusion_nexus::attempt::NexusAttempt::cancellation(&self) -> nexus_query_engine::attempt::cancellation::AttemptCancellation
+pub fn datafusion_nexus::attempt::NexusAttempt::complete_without_result_stream(&self)
 pub fn datafusion_nexus::attempt::NexusAttempt::completion(&self) -> nexus_query_engine::attempt::owner::AttemptCompletion
 pub async fn datafusion_nexus::attempt::NexusAttempt::execute_dataframe(&self, datafusion::dataframe::DataFrame) -> datafusion_common::error::Result<datafusion_nexus::attempt::AttemptStream>
 pub fn datafusion_nexus::attempt::NexusAttempt::execute_physical_plan(&self, alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>, &datafusion::execution::context::SessionContext) -> datafusion_common::error::Result<datafusion_nexus::attempt::AttemptStream>
+pub fn datafusion_nexus::attempt::NexusAttempt::observation_handle(&self) -> nexus_query_engine::observability::recorder::RuntimeObservationHandle
+pub fn datafusion_nexus::attempt::NexusAttempt::physical_planning_finished(&self, &dyn datafusion_physical_plan::execution_plan::ExecutionPlan)
 pub async fn datafusion_nexus::attempt::NexusAttempt::plan_sql(&self, &datafusion::execution::context::SessionContext, &str) -> datafusion_common::error::Result<alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>>
+pub fn datafusion_nexus::attempt::NexusAttempt::planning_context(&self, &datafusion::execution::context::SessionContext) -> datafusion_common::error::Result<datafusion::execution::context::SessionContext>
+pub fn datafusion_nexus::attempt::NexusAttempt::planning_failed(&self, &datafusion_common::error::DataFusionError)
+pub fn datafusion_nexus::attempt::NexusAttempt::planning_failed_adapter(&self, &datafusion_nexus::error::Error)
+pub fn datafusion_nexus::attempt::NexusAttempt::register_sealed_report_observer<F>(&self, F) where F: core::ops::function::Fn(core::option::Option<alloc::sync::Arc<nexus_query_engine::observability::attempt_report::QueryAttemptReport>>, nexus_query_engine::observability::recorder::SealedRuntimeObservationSnapshot) + core::marker::Send + core::marker::Sync + 'static
 pub fn datafusion_nexus::attempt::NexusAttempt::sealed_graph_claim_calibration_snapshot(&self) -> core::option::Option<datafusion_nexus::attempt::SealedAttemptGraphClaimCalibrationSnapshot>
 pub async fn datafusion_nexus::attempt::NexusAttempt::sql(&self, &datafusion::execution::context::SessionContext, &str) -> datafusion_common::error::Result<datafusion_nexus::attempt::AttemptStream>
 impl core::fmt::Debug for datafusion_nexus::attempt::NexusAttempt
@@ -60,6 +68,19 @@ pub use datafusion_nexus::backend::DeviceQuarantineInjection
 pub use datafusion_nexus::backend::GpuBackendFaultInjector
 pub use datafusion_nexus::backend::GpuDeviceMemoryLimit
 pub use datafusion_nexus::backend::GpuMemoryOwnership
+pub struct datafusion_nexus::backend::InstalledTestGpuBackend
+impl datafusion_nexus::backend::InstalledTestGpuBackend
+pub fn datafusion_nexus::backend::InstalledTestGpuBackend::admit_query(&self) -> nexus_query_engine::error::Result<nexus_query_engine::runtime::query_service::handle::QueryHandle>
+pub fn datafusion_nexus::backend::InstalledTestGpuBackend::backend(&self) -> &datafusion_nexus::backend::NexusGpuBackend
+pub fn datafusion_nexus::backend::InstalledTestGpuBackend::install_on(&self, datafusion::execution::session_state::SessionStateBuilder) -> datafusion_nexus::error::Result<datafusion::execution::session_state::SessionStateBuilder>
+pub fn datafusion_nexus::backend::InstalledTestGpuBackend::new() -> Self
+pub fn datafusion_nexus::backend::InstalledTestGpuBackend::optimizer_config(&self) -> &datafusion_nexus::planner::NexusNativeOptimizerConfig
+pub fn datafusion_nexus::backend::InstalledTestGpuBackend::with_config(datafusion_nexus::native_exec::NexusNativeExecutionConfig, datafusion_nexus::backend::NexusGpuDeviceProfile, datafusion_nexus::backend::NexusGpuQueuePolicy) -> Self
+pub fn datafusion_nexus::backend::InstalledTestGpuBackend::with_config_and_final_plan_requirements(datafusion_nexus::native_exec::NexusNativeExecutionConfig, datafusion_nexus::backend::NexusGpuDeviceProfile, datafusion_nexus::backend::NexusGpuQueuePolicy, impl core::iter::traits::collect::IntoIterator<Item = datafusion_nexus::planner::FinalPlanRequirement>) -> Self
+impl core::default::Default for datafusion_nexus::backend::InstalledTestGpuBackend
+pub fn datafusion_nexus::backend::InstalledTestGpuBackend::default() -> Self
+impl core::ops::drop::Drop for datafusion_nexus::backend::InstalledTestGpuBackend
+pub fn datafusion_nexus::backend::InstalledTestGpuBackend::drop(&mut self)
 pub struct datafusion_nexus::backend::NexusGpuBackend
 impl datafusion_nexus::backend::NexusGpuBackend
 pub fn datafusion_nexus::backend::NexusGpuBackend::admission_snapshot(&self) -> nexus_query_engine::error::Result<nexus_query_engine::runtime::query_service::service::api::QueryServiceAdmissionSnapshot>
@@ -86,6 +107,7 @@ pub fn datafusion_nexus::backend::NexusGpuBackend::device_profiles(&self) -> &[d
 pub fn datafusion_nexus::backend::NexusGpuBackend::device_startup_records(&self) -> &[nexus_query_engine::runtime::backend_core::GpuBackendDeviceStartupRecord]
 pub fn datafusion_nexus::backend::NexusGpuBackend::device_telemetry_snapshots(&self) -> nexus_query_engine::error::Result<alloc::vec::Vec<nexus_query_engine::runtime::gpu::inventory::DeviceTelemetrySnapshot>>
 pub fn datafusion_nexus::backend::NexusGpuBackend::fault_injector(&self) -> nexus_query_engine::runtime::backend_core::GpuBackendFaultInjector
+pub fn datafusion_nexus::backend::NexusGpuBackend::from_optimizer_config_for_admission(datafusion_nexus::planner::NexusNativeOptimizerConfig, alloc::vec::Vec<datafusion_nexus::backend::NexusGpuDeviceProfile>, alloc::vec::Vec<(usize, nexus_query_engine::runtime::backend_core::GpuMemoryOwnership)>, datafusion_nexus::backend::NexusGpuQueuePolicy) -> datafusion_nexus::error::Result<core::option::Option<Self>>
 pub fn datafusion_nexus::backend::NexusGpuBackend::gpu_execution_pool_reports(&self) -> nexus_query_engine::error::Result<alloc::vec::Vec<nexus_query_engine::runtime::gpu_execution_pool::GpuExecutionPoolSnapshot>>
 pub fn datafusion_nexus::backend::NexusGpuBackend::gpu_execution_query_report(&self) -> nexus_query_engine::error::Result<nexus_query_engine::runtime::gpu_execution_pool::GpuExecutionQuerySnapshot>
 pub fn datafusion_nexus::backend::NexusGpuBackend::identity(&self) -> nexus_query_engine::runtime::backend_core::GpuBackendCoreIdentity
@@ -93,17 +115,17 @@ pub fn datafusion_nexus::backend::NexusGpuBackend::install_on(&self, datafusion:
 pub fn datafusion_nexus::backend::NexusGpuBackend::install_on_with_cugraph_sql(&self, datafusion::execution::session_state::SessionStateBuilder, datafusion_nexus::cugraph_sql::CugraphSqlConfig) -> datafusion_nexus::error::Result<datafusion::execution::session_state::SessionStateBuilder>
 pub fn datafusion_nexus::backend::NexusGpuBackend::optimizer_config(&self) -> &datafusion_nexus::planner::NexusNativeOptimizerConfig
 pub fn datafusion_nexus::backend::NexusGpuBackend::same_backend(&self, &Self) -> bool
+pub fn datafusion_nexus::backend::NexusGpuBackend::session_capability(&self) -> &nexus_query_engine::runtime::backend_core::GpuBackendSession
 pub fn datafusion_nexus::backend::NexusGpuBackend::set_cugraph_bfs_singleflight_enabled(&self, bool)
 pub fn datafusion_nexus::backend::NexusGpuBackend::try_admit_query(&self) -> nexus_query_engine::error::Result<core::option::Option<nexus_query_engine::runtime::query_service::handle::QueryHandle>>
 impl datafusion_nexus::backend::NexusGpuBackend
 pub fn datafusion_nexus::backend::NexusGpuBackend::attempt_counters_snapshot(&self) -> nexus_query_engine::attempt::queue::AttemptBackendCountersSnapshot
 pub fn datafusion_nexus::backend::NexusGpuBackend::begin_attempt(&self, datafusion_nexus::attempt::AttemptOptions) -> datafusion_nexus::error::Result<datafusion_nexus::attempt::NexusAttempt>
 pub fn datafusion_nexus::backend::NexusGpuBackend::take_abandoned_attempt_reports(&self, usize) -> alloc::vec::Vec<alloc::sync::Arc<nexus_query_engine::observability::attempt_report::QueryAttemptReport>>
-impl datafusion_nexus::backend::NexusGpuBackend
-pub fn datafusion_nexus::backend::NexusGpuBackend::from_server_config(&datafusion_nexus::server::ServerConfig) -> datafusion_nexus::server::Result<core::option::Option<Self>>
 pub struct datafusion_nexus::backend::NexusGpuBackendBuilder
 impl datafusion_nexus::backend::NexusGpuBackendBuilder
 pub fn datafusion_nexus::backend::NexusGpuBackendBuilder::build(self) -> datafusion_nexus::error::Result<datafusion_nexus::backend::NexusGpuBackend>
+pub fn datafusion_nexus::backend::NexusGpuBackendBuilder::build_test_validation_projection(self) -> datafusion_nexus::error::Result<datafusion_nexus::backend::TestBackendValidationProjection>
 pub fn datafusion_nexus::backend::NexusGpuBackendBuilder::device_memory_ownership(self, impl core::iter::traits::collect::IntoIterator<Item = (usize, nexus_query_engine::runtime::backend_core::GpuMemoryOwnership)>) -> Self
 pub fn datafusion_nexus::backend::NexusGpuBackendBuilder::device_profiles(self, impl core::iter::traits::collect::IntoIterator<Item = datafusion_nexus::backend::NexusGpuDeviceProfile>) -> Self
 pub fn datafusion_nexus::backend::NexusGpuBackendBuilder::queue_policy(self, datafusion_nexus::backend::NexusGpuQueuePolicy) -> Self
@@ -117,6 +139,8 @@ pub fn datafusion_nexus::backend::NexusGpuBackendBuilder::default() -> Self
 pub datafusion_nexus::backend::NexusGpuDeviceInstallationBounds::lane_count: usize
 pub datafusion_nexus::backend::NexusGpuDeviceInstallationBounds::stream_pool_size: usize
 pub datafusion_nexus::backend::NexusGpuDeviceInstallationBounds::worker_count: usize
+impl datafusion_nexus::backend::NexusGpuDeviceInstallationBounds
+pub const fn datafusion_nexus::backend::NexusGpuDeviceInstallationBounds::new(usize, usize, usize) -> Self
 #[non_exhaustive] pub struct datafusion_nexus::backend::NexusGpuDeviceProfile
 impl datafusion_nexus::backend::NexusGpuDeviceProfile
 pub fn datafusion_nexus::backend::NexusGpuDeviceProfile::attempt_floor_bytes(&self) -> core::option::Option<u64>
@@ -124,6 +148,7 @@ pub fn datafusion_nexus::backend::NexusGpuDeviceProfile::backend_reserve_bytes(&
 pub fn datafusion_nexus::backend::NexusGpuDeviceProfile::cache_cap_bytes(&self) -> u64
 pub fn datafusion_nexus::backend::NexusGpuDeviceProfile::device_capabilities(&self) -> &nexus_query_engine::runtime::gpu::profile::DeviceCapabilities
 pub fn datafusion_nexus::backend::NexusGpuDeviceProfile::device_ordinal(&self) -> usize
+pub fn datafusion_nexus::backend::NexusGpuDeviceProfile::engine_config(&self, nexus_query_engine::runtime::backend_core::GpuMemoryOwnership) -> nexus_query_engine::runtime::backend_core::GpuBackendDeviceConfig
 pub fn datafusion_nexus::backend::NexusGpuDeviceProfile::install_diagnostics(&self) -> bool
 pub fn datafusion_nexus::backend::NexusGpuDeviceProfile::install_telemetry(&self) -> bool
 pub fn datafusion_nexus::backend::NexusGpuDeviceProfile::installation_bounds(&self) -> core::option::Option<datafusion_nexus::backend::NexusGpuDeviceInstallationBounds>
@@ -155,6 +180,16 @@ impl core::convert::From<nexus_query_engine::runtime::query_service::config::Que
 pub fn datafusion_nexus::backend::NexusGpuQueuePolicy::from(nexus_query_engine::runtime::query_service::config::QueueBounds) -> Self
 impl core::default::Default for datafusion_nexus::backend::NexusGpuQueuePolicy
 pub fn datafusion_nexus::backend::NexusGpuQueuePolicy::default() -> Self
+pub struct datafusion_nexus::backend::TestBackendValidationProjection
+impl datafusion_nexus::backend::TestBackendValidationProjection
+pub fn datafusion_nexus::backend::TestBackendValidationProjection::device_memory_ownership(&self) -> &[(usize, nexus_query_engine::runtime::backend_core::GpuMemoryOwnership)]
+pub fn datafusion_nexus::backend::TestBackendValidationProjection::device_ordinals(&self) -> &[usize]
+pub fn datafusion_nexus::backend::TestBackendValidationProjection::device_profiles(&self) -> &[datafusion_nexus::backend::NexusGpuDeviceProfile]
+pub fn datafusion_nexus::backend::TestBackendValidationProjection::install_on(&self, datafusion::execution::session_state::SessionStateBuilder) -> datafusion_nexus::error::Result<datafusion::execution::session_state::SessionStateBuilder>
+pub fn datafusion_nexus::backend::TestBackendValidationProjection::optimizer_config(&self) -> &datafusion_nexus::planner::NexusNativeOptimizerConfig
+pub fn datafusion_nexus::backend::TestBackendValidationProjection::query_execution_config(&self) -> nexus_query_engine::error::Result<nexus_query_engine::runtime::query_service::config::QueryExecutionConfig>
+pub fn datafusion_nexus::backend::TestBackendValidationProjection::queue_bounds(&self) -> nexus_query_engine::error::Result<nexus_query_engine::runtime::query_service::config::QueueBounds>
+pub fn datafusion_nexus::backend::test_validation_projection_from_optimizer_config(datafusion_nexus::planner::NexusNativeOptimizerConfig, alloc::vec::Vec<datafusion_nexus::backend::NexusGpuDeviceProfile>, alloc::vec::Vec<(usize, nexus_query_engine::runtime::backend_core::GpuMemoryOwnership)>, datafusion_nexus::backend::NexusGpuQueuePolicy) -> datafusion_nexus::error::Result<core::option::Option<datafusion_nexus::backend::TestBackendValidationProjection>>
 pub mod datafusion_nexus::capability
 pub enum datafusion_nexus::capability::CapabilityReason
 pub datafusion_nexus::capability::CapabilityReason::IcebergDeleteFilesUnsupported
@@ -725,6 +760,7 @@ pub fn datafusion_nexus::error::Error::status(&self) -> datafusion_nexus::error:
 pub fn datafusion_nexus::error::Error::with_boxed_source(self, alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync + 'static)>) -> Self
 pub fn datafusion_nexus::error::Error::with_fact(self, &'static str, impl alloc::string::ToString) -> Self
 pub fn datafusion_nexus::error::Error::with_log_safe_fact(self, &'static str, impl alloc::string::ToString) -> Self
+pub fn datafusion_nexus::error::Error::with_preserved_facts(self, datafusion_nexus::error::Facts) -> Self
 pub fn datafusion_nexus::error::Error::with_source<E>(self, E) -> Self where E: core::error::Error + core::marker::Send + core::marker::Sync + 'static
 impl core::convert::From<datafusion_nexus::error::Error> for datafusion_common::error::DataFusionError
 pub fn datafusion_common::error::DataFusionError::from(datafusion_nexus::error::Error) -> Self
@@ -744,18 +780,29 @@ pub fn datafusion_nexus::error::ErrorSourceDiagnostics::root_cause_when_distinct
 pub struct datafusion_nexus::error::Facts
 impl datafusion_nexus::error::Facts
 pub fn datafusion_nexus::error::Facts::get(&self, &str) -> core::option::Option<&str>
+pub fn datafusion_nexus::error::Facts::insert_log_safe(&mut self, &'static str, alloc::string::String)
 pub fn datafusion_nexus::error::Facts::iter(&self) -> impl core::iter::traits::iterator::Iterator<Item = (&'static str, &str)>
+pub fn datafusion_nexus::error::Facts::log_safe_projection(&self) -> datafusion_nexus::error::LogSafeFactProjection
 pub fn datafusion_nexus::error::Facts::new() -> Self
 impl core::fmt::Debug for datafusion_nexus::error::Facts
 pub fn datafusion_nexus::error::Facts::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct datafusion_nexus::error::LogSafeFactProjection
+impl datafusion_nexus::error::LogSafeFactProjection
+pub fn datafusion_nexus::error::LogSafeFactProjection::rendered(&self) -> core::option::Option<alloc::string::String>
+pub fn datafusion_nexus::error::LogSafeFactProjection::retained_entries(&self) -> alloc::vec::Vec<(alloc::string::String, alloc::string::String)>
+pub fn datafusion_nexus::error::LogSafeFactProjection::truncated(&self) -> bool
 pub trait datafusion_nexus::error::DataFusionErrorExt
 pub fn datafusion_nexus::error::DataFusionErrorExt::find_nexus_error(&self) -> core::option::Option<&datafusion_nexus::error::Error>
 impl datafusion_nexus::error::DataFusionErrorExt for datafusion_common::error::DataFusionError
 pub fn datafusion_common::error::DataFusionError::find_nexus_error(&self) -> core::option::Option<&datafusion_nexus::error::Error>
+pub fn datafusion_nexus::error::datafusion_error_human_message(&datafusion_common::error::DataFusionError) -> alloc::string::String
 pub const fn datafusion_nexus::error::kind_for_code(datafusion_nexus::error::ErrorCode) -> datafusion_nexus::error::ErrorKind
 pub const fn datafusion_nexus::error::status_for_code(datafusion_nexus::error::ErrorCode) -> datafusion_nexus::error::ErrorStatus
 pub type datafusion_nexus::error::Result<T> = core::result::Result<T, datafusion_nexus::error::Error>
 pub mod datafusion_nexus::gpu_coverage
+pub enum datafusion_nexus::gpu_coverage::ExplainGpuOutputMode
+pub datafusion_nexus::gpu_coverage::ExplainGpuOutputMode::Json
+pub datafusion_nexus::gpu_coverage::ExplainGpuOutputMode::Rows
 pub enum datafusion_nexus::gpu_coverage::QueryGpuCandidateReasonKind
 pub datafusion_nexus::gpu_coverage::QueryGpuCandidateReasonKind::ArrowType
 pub datafusion_nexus::gpu_coverage::QueryGpuCandidateReasonKind::Cost
@@ -811,6 +858,9 @@ pub datafusion_nexus::gpu_coverage::QueryGpuRetryAdviceAvailability::NoSealedAtt
 impl datafusion_nexus::gpu_coverage::QueryGpuRetryAdviceAvailability
 pub const fn datafusion_nexus::gpu_coverage::QueryGpuRetryAdviceAvailability::availability(self) -> &'static str
 pub const fn datafusion_nexus::gpu_coverage::QueryGpuRetryAdviceAvailability::reason(self) -> &'static str
+pub struct datafusion_nexus::gpu_coverage::ExplainGpuStatement
+pub datafusion_nexus::gpu_coverage::ExplainGpuStatement::inner_sql: alloc::string::String
+pub datafusion_nexus::gpu_coverage::ExplainGpuStatement::output_mode: datafusion_nexus::gpu_coverage::ExplainGpuOutputMode
 pub struct datafusion_nexus::gpu_coverage::QueryGpuCandidateOutcome
 pub datafusion_nexus::gpu_coverage::QueryGpuCandidateOutcome::candidate_family: alloc::string::String
 pub datafusion_nexus::gpu_coverage::QueryGpuCandidateOutcome::category: core::option::Option<alloc::string::String>
@@ -864,8 +914,11 @@ pub datafusion_nexus::gpu_coverage::QueryGpuValidatedUnder::optimizer_fingerprin
 pub datafusion_nexus::gpu_coverage::QueryGpuValidatedUnder::session_config_fingerprint: alloc::string::String
 pub const datafusion_nexus::gpu_coverage::EXPLAIN_GPU_SCHEMA_VERSION: u8
 pub const datafusion_nexus::gpu_coverage::NEXUS_EXPLAIN_COVERAGE_FUNCTION: &str
+pub fn datafusion_nexus::gpu_coverage::parse_explain_gpu(&str) -> datafusion_nexus::error::Result<core::option::Option<datafusion_nexus::gpu_coverage::ExplainGpuStatement>>
 pub async fn datafusion_nexus::gpu_coverage::validate_query(&datafusion::execution::context::SessionContext, impl core::convert::AsRef<str>) -> datafusion_nexus::error::Result<datafusion_nexus::gpu_coverage::QueryGpuCoverage>
 pub mod datafusion_nexus::gpu_coverage_sql
+pub fn datafusion_nexus::gpu_coverage_sql::coverage_batch(&datafusion_nexus::gpu_coverage::QueryGpuCoverage, datafusion_nexus::gpu_coverage::ExplainGpuOutputMode, core::option::Option<&str>) -> datafusion_common::error::Result<arrow_array::record_batch::RecordBatch>
+pub fn datafusion_nexus::gpu_coverage_sql::coverage_schema() -> arrow_schema::schema::SchemaRef
 pub fn datafusion_nexus::gpu_coverage_sql::register_gpu_coverage_udtf(&datafusion::execution::context::SessionContext)
 pub mod datafusion_nexus::gpu_functions
 pub const datafusion_nexus::gpu_functions::GPU_DESCRIBE_FUNCTION_FUNCTION: &str
@@ -904,6 +957,13 @@ pub enum datafusion_nexus::native_exec::GraphClaimCalibrationNonPhysicalReason
 pub datafusion_nexus::native_exec::GraphClaimCalibrationNonPhysicalReason::BfsSingleflightFollower
 pub datafusion_nexus::native_exec::GraphClaimCalibrationNonPhysicalReason::BfsSingleflightFollower::leader_attempt_id: core::option::Option<nexus_query_engine::observability::attempt_report::AttemptId>
 pub datafusion_nexus::native_exec::GraphClaimCalibrationNonPhysicalReason::GraphMemoryAdmissionDenied
+pub enum datafusion_nexus::native_exec::NativeRuntimeObservation
+pub datafusion_nexus::native_exec::NativeRuntimeObservation::Coordinated(nexus_query_engine::observability::recorder::RuntimeObservationHandle)
+pub datafusion_nexus::native_exec::NativeRuntimeObservation::Local(nexus_query_engine::observability::recorder::RuntimeObservationOwner)
+impl datafusion_nexus::native_exec::NativeRuntimeObservation
+pub fn datafusion_nexus::native_exec::NativeRuntimeObservation::handle(&self) -> nexus_query_engine::observability::recorder::RuntimeObservationHandle
+impl core::convert::From<nexus_query_engine::observability::recorder::RuntimeObservationOwner> for datafusion_nexus::native_exec::NativeRuntimeObservation
+pub fn datafusion_nexus::native_exec::NativeRuntimeObservation::from(nexus_query_engine::observability::recorder::RuntimeObservationOwner) -> Self
 pub struct datafusion_nexus::native_exec::GraphBfsSingleflightEventSnapshot
 pub datafusion_nexus::native_exec::GraphBfsSingleflightEventSnapshot::action: &'static str
 pub datafusion_nexus::native_exec::GraphBfsSingleflightEventSnapshot::correlation_fingerprint: core::option::Option<alloc::string::String>
@@ -921,6 +981,26 @@ pub datafusion_nexus::native_exec::GraphBfsSingleflightSnapshot::leader_failures
 pub datafusion_nexus::native_exec::GraphBfsSingleflightSnapshot::overflow_groups: u64
 pub datafusion_nexus::native_exec::GraphBfsSingleflightSnapshot::peak_width: usize
 pub datafusion_nexus::native_exec::GraphBfsSingleflightSnapshot::physical_traversals: u64
+pub struct datafusion_nexus::native_exec::NativeExecutionMetricsCapture
+impl datafusion_nexus::native_exec::NativeExecutionMetricsCapture
+pub const fn datafusion_nexus::native_exec::NativeExecutionMetricsCapture::metric_capture_limits(&self) -> nexus_query_engine::observability::runtime_observation::RuntimeObservationLimits
+pub fn datafusion_nexus::native_exec::NativeExecutionMetricsCapture::new_observation_activity(&self) -> core::option::Option<nexus_query_engine::error::Result<nexus_query_engine::runtime::query_service::service::api::QueryActivityLease>>
+pub fn datafusion_nexus::native_exec::NativeExecutionMetricsCapture::new_runtime_observation(&self, impl core::convert::Into<nexus_query_engine::observability::runtime_observation::RuntimeQueryId>, core::option::Option<nexus_query_engine::observability::runtime_observation::RuntimeTraceId>) -> datafusion_nexus::native_exec::NativeRuntimeObservation
+pub const fn datafusion_nexus::native_exec::NativeExecutionMetricsCapture::runtime_observation_config(&self) -> nexus_query_engine::observability::recorder::RuntimeObservationConfig
+impl core::fmt::Debug for datafusion_nexus::native_exec::NativeExecutionMetricsCapture
+pub fn datafusion_nexus::native_exec::NativeExecutionMetricsCapture::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct datafusion_nexus::native_exec::NativeMetricsCapture
+impl datafusion_nexus::native_exec::NativeMetricsCapture
+pub fn datafusion_nexus::native_exec::NativeMetricsCapture::coordinated(impl core::convert::Into<alloc::sync::Arc<str>>, nexus_query_engine::observability::recorder::RuntimeObservationHandle) -> Self
+pub const fn datafusion_nexus::native_exec::NativeMetricsCapture::metric_capture_limits(&self) -> nexus_query_engine::observability::runtime_observation::RuntimeObservationLimits
+pub fn datafusion_nexus::native_exec::NativeMetricsCapture::new_execution(&self) -> datafusion_nexus::native_exec::NativeExecutionMetricsCapture
+pub fn datafusion_nexus::native_exec::NativeMetricsCapture::new_observation_activity(&self) -> core::option::Option<nexus_query_engine::error::Result<nexus_query_engine::runtime::query_service::service::api::QueryActivityLease>>
+pub fn datafusion_nexus::native_exec::NativeMetricsCapture::query_id(&self) -> core::option::Option<&str>
+pub const fn datafusion_nexus::native_exec::NativeMetricsCapture::runtime_observation_config(&self) -> nexus_query_engine::observability::recorder::RuntimeObservationConfig
+pub fn datafusion_nexus::native_exec::NativeMetricsCapture::standalone() -> Self
+pub fn datafusion_nexus::native_exec::NativeMetricsCapture::with_observation_activity_factory(self, datafusion_nexus::native_exec::NativeObservationActivityFactory) -> Self
+impl core::fmt::Debug for datafusion_nexus::native_exec::NativeMetricsCapture
+pub fn datafusion_nexus::native_exec::NativeMetricsCapture::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct datafusion_nexus::native_exec::NexusNativeComposedExec
 impl datafusion_nexus::native_exec::NexusNativeComposedExec
 pub fn datafusion_nexus::native_exec::NexusNativeComposedExec::native_plan(&self) -> &nexus_query_engine::plan::core::QueryPlan
@@ -978,11 +1058,16 @@ pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::graph_memory_c
 pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::host_output_memory_pool_accounting(&self) -> bool
 pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::keyed_hash_join_strategy_options(&self) -> nexus_query_engine::capability::join::KeyedHashJoinStrategyOptions
 pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::lakehouse_cache_fill_config(&self) -> &nexus_query_engine::runtime::cache_fill::LakehouseCacheFillConfig
+pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::memory_control_policy(&self) -> nexus_query_engine::execution_contracts::MemoryControlPolicy
+pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::new_metrics_capture(&self) -> core::option::Option<datafusion_nexus::native_exec::NativeExecutionMetricsCapture>
+pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::query_id(&self) -> core::option::Option<&nexus_query_engine::correlation::QueryId>
+pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::runtime_observation_config(&self) -> nexus_query_engine::observability::recorder::RuntimeObservationConfig
 pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::source_chunk_planning_mode(&self) -> nexus_query_engine::execution_contracts::SourceChunkPlanningMode
 pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::source_chunk_planning_options(&self) -> nexus_query_engine::chunk::policy::SourceChunkPlanningOptions
 pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::source_scheduler_policy(&self) -> nexus_query_engine::runtime::context::SourceSchedulerPolicy
 pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::source_storage_profiles(&self) -> &[nexus_query_engine::runtime::object_store::SourceStorageProfile]
 pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::statistical_aggregate_execution_mode(&self) -> nexus_query_engine::mode::StatisticalAggregateExecutionMode
+pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::trace_id(&self) -> core::option::Option<&nexus_query_engine::correlation::TraceId>
 pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::with_aggregate_strategy_execution_options(self, nexus_query_engine::capability::aggregate::AggregateStrategyExecutionOptions) -> Self
 pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::with_boundary_policy(self, nexus_query_engine::execution_contracts::ExecutionBoundaryPolicy) -> Self
 pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::with_cancellation(self, nexus_query_engine::runtime::context::ExecutionCancellation) -> Self
@@ -992,6 +1077,8 @@ pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::with_host_outp
 pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::with_io_lifecycle(self, nexus_query_engine::runtime::io_lifecycle::IoLifecycle) -> Self
 pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::with_keyed_hash_join_strategy_options(self, nexus_query_engine::capability::join::KeyedHashJoinStrategyOptions) -> Self
 pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::with_lakehouse_cache_fill_config(self, nexus_query_engine::runtime::cache_fill::LakehouseCacheFillConfig) -> Self
+pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::with_memory_control_policy(self, nexus_query_engine::execution_contracts::MemoryControlPolicy) -> Self
+pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::with_metrics_capture(self, datafusion_nexus::native_exec::NativeMetricsCapture) -> Self
 pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::with_query_id(self, impl core::convert::Into<nexus_query_engine::correlation::QueryId>) -> Self
 pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::with_source_chunk_planning_mode(self, nexus_query_engine::execution_contracts::SourceChunkPlanningMode) -> Self
 pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::with_source_chunk_planning_options(self, nexus_query_engine::chunk::policy::SourceChunkPlanningOptions) -> Self
@@ -1001,6 +1088,8 @@ pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::with_source_st
 pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::with_statistical_aggregate_execution_mode(self, nexus_query_engine::mode::StatisticalAggregateExecutionMode) -> Self
 pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::with_trace_id(self, impl core::convert::Into<nexus_query_engine::correlation::TraceId>) -> Self
 impl datafusion_nexus::native_exec::NexusNativeExecutionConfig
+pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::has_query_admission_authority(&self) -> bool
+pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::query_admission_source_matches(&self, &nexus_query_engine::runtime::backend_core::GpuBackendSession) -> bool
 pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::with_query_service_handle(self, alloc::sync::Arc<nexus_query_engine::runtime::query_service::handle::QueryHandle>) -> Self
 pub struct datafusion_nexus::native_exec::NexusNativeGpuProducerExec
 impl datafusion_nexus::native_exec::producer::NexusNativeGpuProducerExec
@@ -1024,6 +1113,8 @@ pub const fn datafusion_nexus::attempt::SealedAttemptGraphClaimCalibrationSnapsh
 pub fn datafusion_nexus::attempt::SealedAttemptGraphClaimCalibrationSnapshot::rows(&self) -> &[nexus_query_engine::graph_memory::GraphClaimCalibrationRow]
 pub const fn datafusion_nexus::attempt::SealedAttemptGraphClaimCalibrationSnapshot::truncated(&self) -> bool
 pub const datafusion_nexus::native_exec::NATIVE_NEXUS_DATAFUSION_METRIC_NAMES: &[&str]
+pub const datafusion_nexus::native_exec::SERVER_CAPTURE_LOSS_METRIC_NAME: &str
+pub type datafusion_nexus::native_exec::NativeObservationActivityFactory = alloc::sync::Arc<(dyn core::ops::function::Fn() -> core::option::Option<nexus_query_engine::runtime::query_service::service::api::QueryActivityLease> + core::marker::Send + core::marker::Sync + 'static)>
 pub mod datafusion_nexus::native_report
 #[non_exhaustive] pub enum datafusion_nexus::native_report::FinalPlanDisposition
 pub datafusion_nexus::native_report::FinalPlanDisposition::DataFusion
@@ -1410,11 +1501,17 @@ pub datafusion_nexus::native_report::NativeDataFusionExecutionRow::runtime_failu
 pub datafusion_nexus::native_report::NativeDataFusionExecutionRow::runtime_outcome: datafusion_nexus::native_report::NativeDataFusionRuntimeOutcome
 pub datafusion_nexus::native_report::NativeDataFusionExecutionRow::source_diagnostics: alloc::vec::Vec<datafusion_nexus::native_report::NativeSourceDiagnosticSummary>
 pub datafusion_nexus::native_report::NativeDataFusionExecutionRow::unsupported_category: core::option::Option<alloc::string::String>
+pub struct datafusion_nexus::native_report::NativeDataFusionExecutionTsvTemplate
+impl datafusion_nexus::native_report::NativeDataFusionExecutionTsvTemplate
+pub fn datafusion_nexus::native_report::NativeDataFusionExecutionTsvTemplate::from_report(datafusion_nexus::native_report::NativeDataFusionExecutionReport) -> Self
+pub const fn datafusion_nexus::native_report::NativeDataFusionExecutionTsvTemplate::retained_capacity_bytes(&self) -> u64
+pub fn datafusion_nexus::native_report::NativeDataFusionExecutionTsvTemplate::to_tsv(&self, datafusion_nexus::native_report::NativeDataFusionRuntime) -> alloc::string::String
 pub struct datafusion_nexus::native_report::NativeDataFusionExecutionWorkloadItem
 pub datafusion_nexus::native_report::NativeDataFusionExecutionWorkloadItem::input: datafusion_nexus::native_report::NativeDataFusionExecutionWorkloadInput
 pub datafusion_nexus::native_report::NativeDataFusionExecutionWorkloadItem::query_id: alloc::string::String
 impl datafusion_nexus::native_report::NativeDataFusionExecutionWorkloadItem
 pub fn datafusion_nexus::native_report::NativeDataFusionExecutionWorkloadItem::new(impl core::convert::Into<alloc::string::String>, alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>, datafusion_nexus::planner::NativePlanningDiagnostics, datafusion_nexus::native_report::NativeDataFusionRuntime) -> Self
+pub fn datafusion_nexus::native_report::NativeDataFusionExecutionWorkloadItem::new_shared(impl core::convert::Into<alloc::string::String>, alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>, alloc::sync::Arc<datafusion_nexus::planner::NativePlanningDiagnostics>, datafusion_nexus::native_report::NativeDataFusionRuntime) -> Self
 pub fn datafusion_nexus::native_report::NativeDataFusionExecutionWorkloadItem::planning_failure(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
 pub struct datafusion_nexus::native_report::NativeDataFusionPlanCoverage
 pub datafusion_nexus::native_report::NativeDataFusionPlanCoverage::final_disposition: datafusion_nexus::planner::FinalPlanDisposition
@@ -1455,6 +1552,7 @@ pub datafusion_nexus::native_report::NativeDataFusionPlanningWorkloadItem::input
 pub datafusion_nexus::native_report::NativeDataFusionPlanningWorkloadItem::query_id: alloc::string::String
 impl datafusion_nexus::native_report::NativeDataFusionPlanningWorkloadItem
 pub fn datafusion_nexus::native_report::NativeDataFusionPlanningWorkloadItem::new(impl core::convert::Into<alloc::string::String>, alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>, datafusion_nexus::planner::NativePlanningDiagnostics) -> Self
+pub fn datafusion_nexus::native_report::NativeDataFusionPlanningWorkloadItem::new_shared(impl core::convert::Into<alloc::string::String>, alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>, alloc::sync::Arc<datafusion_nexus::planner::NativePlanningDiagnostics>) -> Self
 pub fn datafusion_nexus::native_report::NativeDataFusionPlanningWorkloadItem::planning_failure(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
 pub struct datafusion_nexus::native_report::NativeDynamicFilterRuntimeMetricRow
 pub datafusion_nexus::native_report::NativeDynamicFilterRuntimeMetricRow::consumer_kind: alloc::string::String
@@ -2024,243 +2122,6 @@ pub fn datafusion_nexus::report::PlanningReport::triage_summary(&self) -> nexus_
 pub fn datafusion_nexus::report::PlanningReport::with_correlation_from(self, &datafusion_nexus::report::PlanningReport) -> Self
 pub fn datafusion_nexus::report::PlanningReport::with_query_id(self, impl core::convert::Into<nexus_query_engine::correlation::QueryId>) -> Self
 pub fn datafusion_nexus::report::PlanningReport::with_trace_id(self, impl core::convert::Into<nexus_query_engine::correlation::TraceId>) -> Self
-pub mod datafusion_nexus::server
-pub enum datafusion_nexus::server::AuthMode
-pub datafusion_nexus::server::AuthMode::BasicBearer
-pub datafusion_nexus::server::AuthMode::BasicBearer::token_ttl_secs: u64
-pub datafusion_nexus::server::AuthMode::BasicBearer::users: alloc::vec::Vec<datafusion_nexus::server::StaticUserConfig>
-pub datafusion_nexus::server::AuthMode::Disabled
-impl datafusion_nexus::server::AuthMode
-pub fn datafusion_nexus::server::AuthMode::token_ttl(&self) -> core::option::Option<core::time::Duration>
-pub fn datafusion_nexus::server::AuthMode::validate(&self) -> datafusion_nexus::server::Result<()>
-pub enum datafusion_nexus::server::FlightSqlNativeNotSupportedClass
-pub datafusion_nexus::server::FlightSqlNativeNotSupportedClass::IcebergDeleteFiles
-pub datafusion_nexus::server::FlightSqlNativeNotSupportedClass::IcebergObjectStoreRead
-pub datafusion_nexus::server::FlightSqlNativeNotSupportedClass::NativeSortPreservingMerge
-pub datafusion_nexus::server::FlightSqlNativeNotSupportedClass::Other
-impl datafusion_nexus::server::FlightSqlNativeNotSupportedClass
-pub const fn datafusion_nexus::server::FlightSqlNativeNotSupportedClass::as_str(self) -> &'static str
-pub const fn datafusion_nexus::server::FlightSqlNativeNotSupportedClass::from_capability_reason(datafusion_nexus::capability::CapabilityReason) -> Self
-pub enum datafusion_nexus::server::IcebergCatalogBackendConfig
-pub datafusion_nexus::server::IcebergCatalogBackendConfig::Glue(datafusion_nexus::server::GlueServerBackendConfig)
-pub datafusion_nexus::server::IcebergCatalogBackendConfig::Rest(nexus_iceberg::source_access::RestIcebergCatalogConfig)
-pub enum datafusion_nexus::server::PasswordHashError
-pub datafusion_nexus::server::PasswordHashError::HashFailure(alloc::string::String)
-pub datafusion_nexus::server::PasswordHashError::InvalidHash(alloc::string::String)
-impl core::error::Error for datafusion_nexus::server::PasswordHashError
-impl core::fmt::Display for datafusion_nexus::server::PasswordHashError
-pub fn datafusion_nexus::server::PasswordHashError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-#[non_exhaustive] pub enum datafusion_nexus::server::ServerNativeConfigScope
-pub datafusion_nexus::server::ServerNativeConfigScope::BoundedExecution
-pub datafusion_nexus::server::ServerNativeConfigScope::NativeExecution
-pub datafusion_nexus::server::ServerNativeConfigScope::SourceIoResource
-impl datafusion_nexus::server::ServerNativeConfigScope
-pub const fn datafusion_nexus::server::ServerNativeConfigScope::is_bounded_only(self) -> bool
-pub enum datafusion_nexus::server::ServerShutdown
-pub datafusion_nexus::server::ServerShutdown::OsSignals
-pub datafusion_nexus::server::ServerShutdown::Token(tokio_util::sync::cancellation_token::CancellationToken)
-pub struct datafusion_nexus::server::AuthConfig
-pub datafusion_nexus::server::AuthConfig::mode: datafusion_nexus::server::AuthMode
-pub struct datafusion_nexus::server::AuthInterceptor
-impl datafusion_nexus::server::AuthInterceptor
-pub fn datafusion_nexus::server::AuthInterceptor::check(&self, &tonic::metadata::map::MetadataMap) -> core::result::Result<core::option::Option<datafusion_nexus::server::Principal>, tonic::status::Status>
-pub fn datafusion_nexus::server::AuthInterceptor::mode(&self) -> &datafusion_nexus::server::AuthMode
-pub fn datafusion_nexus::server::AuthInterceptor::new(datafusion_nexus::server::AuthMode, datafusion_nexus::server::TokenStore) -> Self
-pub fn datafusion_nexus::server::AuthInterceptor::tokens(&self) -> &datafusion_nexus::server::TokenStore
-pub struct datafusion_nexus::server::CugraphServerConfig
-pub datafusion_nexus::server::CugraphServerConfig::default_graph_options: datafusion_nexus::cugraph_sql::CugraphGraphOptions
-pub struct datafusion_nexus::server::FlightSqlServer
-impl datafusion_nexus::server::FlightSqlServer
-pub fn datafusion_nexus::server::FlightSqlServer::backend(&self) -> core::option::Option<&datafusion_nexus::backend::NexusGpuBackend>
-pub fn datafusion_nexus::server::FlightSqlServer::builder() -> datafusion_nexus::server::FlightSqlServerBuilder
-pub fn datafusion_nexus::server::FlightSqlServer::local_addr(&self) -> core::option::Option<core::net::socket_addr::SocketAddr>
-pub async fn datafusion_nexus::server::FlightSqlServer::serve(self) -> datafusion_nexus::server::Result<()>
-pub fn datafusion_nexus::server::FlightSqlServer::session_context(&self) -> &alloc::sync::Arc<datafusion::execution::context::SessionContext>
-pub struct datafusion_nexus::server::FlightSqlServerBuilder
-impl datafusion_nexus::server::FlightSqlServerBuilder
-pub fn datafusion_nexus::server::FlightSqlServerBuilder::backend(self, datafusion_nexus::backend::NexusGpuBackend) -> Self
-pub async fn datafusion_nexus::server::FlightSqlServerBuilder::build(self) -> datafusion_nexus::server::Result<datafusion_nexus::server::FlightSqlServer>
-pub fn datafusion_nexus::server::FlightSqlServerBuilder::config(self, datafusion_nexus::server::ServerConfig) -> Self
-pub fn datafusion_nexus::server::FlightSqlServerBuilder::listener(self, std::net::tcp::TcpListener) -> Self
-pub fn datafusion_nexus::server::FlightSqlServerBuilder::session_context(self, alloc::sync::Arc<datafusion::execution::context::SessionContext>) -> Self
-pub fn datafusion_nexus::server::FlightSqlServerBuilder::shutdown(self, datafusion_nexus::server::ServerShutdown) -> Self
-pub struct datafusion_nexus::server::GlueServerBackendConfig
-pub datafusion_nexus::server::GlueServerBackendConfig::catalog_handle: alloc::string::String
-pub datafusion_nexus::server::GlueServerBackendConfig::catalog_id: core::option::Option<alloc::string::String>
-pub datafusion_nexus::server::GlueServerBackendConfig::profile: core::option::Option<alloc::string::String>
-pub datafusion_nexus::server::GlueServerBackendConfig::region: alloc::string::String
-pub datafusion_nexus::server::GlueServerBackendConfig::s3_endpoint: core::option::Option<alloc::string::String>
-pub datafusion_nexus::server::GlueServerBackendConfig::s3_path_style_access: core::option::Option<bool>
-pub datafusion_nexus::server::GlueServerBackendConfig::s3_region: core::option::Option<alloc::string::String>
-pub datafusion_nexus::server::GlueServerBackendConfig::uri: core::option::Option<alloc::string::String>
-pub datafusion_nexus::server::GlueServerBackendConfig::warehouse: alloc::string::String
-impl core::fmt::Debug for datafusion_nexus::server::GlueServerBackendConfig
-pub fn datafusion_nexus::server::GlueServerBackendConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub struct datafusion_nexus::server::IcebergServerConfig
-pub datafusion_nexus::server::IcebergServerConfig::backend: datafusion_nexus::server::IcebergCatalogBackendConfig
-pub datafusion_nexus::server::IcebergServerConfig::catalog_name: alloc::string::String
-pub datafusion_nexus::server::IcebergServerConfig::namespace: alloc::string::String
-pub datafusion_nexus::server::IcebergServerConfig::parquet_read_strategy_config: datafusion_nexus::table_format::TableFormatParquetReadStrategyConfig
-pub datafusion_nexus::server::IcebergServerConfig::scan_planning_timeout: core::time::Duration
-pub datafusion_nexus::server::IcebergServerConfig::tables: alloc::vec::Vec<datafusion_nexus::server::IcebergTableRegistrationConfig>
-impl datafusion_nexus::server::IcebergServerConfig
-pub const fn datafusion_nexus::server::IcebergServerConfig::source_access_policy(&self) -> &nexus_iceberg::source_access::SourceAccessPolicy
-impl core::fmt::Debug for datafusion_nexus::server::IcebergServerConfig
-pub fn datafusion_nexus::server::IcebergServerConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub struct datafusion_nexus::server::IcebergTableRegistrationConfig
-pub datafusion_nexus::server::IcebergTableRegistrationConfig::alias: alloc::string::String
-pub datafusion_nexus::server::IcebergTableRegistrationConfig::table: alloc::string::String
-#[non_exhaustive] pub struct datafusion_nexus::server::NexusServerNativeConfigOption
-pub datafusion_nexus::server::NexusServerNativeConfigOption::description: &'static str
-pub datafusion_nexus::server::NexusServerNativeConfigOption::env_var: &'static str
-pub datafusion_nexus::server::NexusServerNativeConfigOption::scope: datafusion_nexus::server::ServerNativeConfigScope
-pub datafusion_nexus::server::NexusServerNativeConfigOption::session_key: core::option::Option<&'static str>
-pub datafusion_nexus::server::NexusServerNativeConfigOption::toml_field: &'static str
-pub datafusion_nexus::server::NexusServerNativeConfigOption::value_type: &'static str
-pub struct datafusion_nexus::server::Principal
-pub datafusion_nexus::server::Principal::roles: alloc::vec::Vec<alloc::string::String>
-pub datafusion_nexus::server::Principal::username: alloc::string::String
-pub struct datafusion_nexus::server::ServerConfig
-pub datafusion_nexus::server::ServerConfig::auth: datafusion_nexus::server::AuthConfig
-pub datafusion_nexus::server::ServerConfig::bind_addr: core::net::socket_addr::SocketAddr
-pub datafusion_nexus::server::ServerConfig::cugraph: core::option::Option<datafusion_nexus::server::CugraphServerConfig>
-pub datafusion_nexus::server::ServerConfig::gpu_device_profiles: alloc::vec::Vec<datafusion_nexus::backend::NexusGpuDeviceProfile>
-pub datafusion_nexus::server::ServerConfig::gpu_devices: alloc::vec::Vec<usize>
-pub datafusion_nexus::server::ServerConfig::gpu_memory_ownership: alloc::vec::Vec<(usize, nexus_query_engine::runtime::backend_core::GpuMemoryOwnership)>
-pub datafusion_nexus::server::ServerConfig::iceberg: core::option::Option<datafusion_nexus::server::IcebergServerConfig>
-pub datafusion_nexus::server::ServerConfig::log_filter: alloc::string::String
-pub datafusion_nexus::server::ServerConfig::native_optimizer_config: datafusion_nexus::planner::NexusNativeOptimizerConfig
-pub datafusion_nexus::server::ServerConfig::observability: datafusion_nexus::server::ServerObservabilityConfig
-pub datafusion_nexus::server::ServerConfig::queue_policy: datafusion_nexus::backend::NexusGpuQueuePolicy
-pub datafusion_nexus::server::ServerConfig::statement_ticket_ttl: core::time::Duration
-pub datafusion_nexus::server::ServerConfig::workspace: core::option::Option<datafusion_nexus::server::WorkspaceOverlayConfig>
-impl datafusion_nexus::server::ServerConfig
-pub fn datafusion_nexus::server::ServerConfig::from_env() -> datafusion_nexus::server::Result<Self>
-pub fn datafusion_nexus::server::ServerConfig::from_env_get(impl core::ops::function::FnMut(&str) -> core::option::Option<alloc::string::String>) -> datafusion_nexus::server::Result<Self>
-pub fn datafusion_nexus::server::ServerConfig::with_gpu_memory_ownership(self, impl core::iter::traits::collect::IntoIterator<Item = (usize, nexus_query_engine::runtime::backend_core::GpuMemoryOwnership)>) -> Self
-pub struct datafusion_nexus::server::ServerError
-impl datafusion_nexus::server::ServerError
-pub fn datafusion_nexus::server::ServerError::as_adapter_error(&self) -> &datafusion_nexus::error::Error
-pub fn datafusion_nexus::server::ServerError::code(&self) -> datafusion_nexus::error::ErrorCode
-pub fn datafusion_nexus::server::ServerError::configuration(impl core::convert::Into<alloc::string::String>) -> Self
-pub fn datafusion_nexus::server::ServerError::configuration_with_source(impl core::convert::Into<alloc::string::String>, impl core::error::Error + core::marker::Send + core::marker::Sync + 'static) -> Self
-pub fn datafusion_nexus::server::ServerError::fact_value(&self, &str) -> core::option::Option<&str>
-pub fn datafusion_nexus::server::ServerError::facts(&self) -> &datafusion_nexus::error::Facts
-pub fn datafusion_nexus::server::ServerError::invalid_config(&'static str, impl core::convert::Into<alloc::string::String>) -> Self
-pub fn datafusion_nexus::server::ServerError::invalid_config_with_source(&'static str, impl core::convert::Into<alloc::string::String>, impl core::error::Error + core::marker::Send + core::marker::Sync + 'static) -> Self
-pub fn datafusion_nexus::server::ServerError::kind(&self) -> datafusion_nexus::error::ErrorKind
-pub fn datafusion_nexus::server::ServerError::message(&self) -> &str
-pub fn datafusion_nexus::server::ServerError::operation(&self) -> &'static str
-pub fn datafusion_nexus::server::ServerError::session(impl core::convert::Into<alloc::string::String>, impl core::error::Error + core::marker::Send + core::marker::Sync + 'static) -> Self
-pub fn datafusion_nexus::server::ServerError::startup(impl core::convert::Into<alloc::string::String>) -> Self
-pub fn datafusion_nexus::server::ServerError::status(&self) -> datafusion_nexus::error::ErrorStatus
-pub fn datafusion_nexus::server::ServerError::transport(tonic::transport::error::Error) -> Self
-impl core::error::Error for datafusion_nexus::server::ServerError
-pub fn datafusion_nexus::server::ServerError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
-impl core::fmt::Display for datafusion_nexus::server::ServerError
-pub fn datafusion_nexus::server::ServerError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub struct datafusion_nexus::server::ServerObservabilityConfig
-pub datafusion_nexus::server::ServerObservabilityConfig::active_logical_capture_max_bytes: u64
-pub datafusion_nexus::server::ServerObservabilityConfig::global_sealed_max_bytes: u64
-pub datafusion_nexus::server::ServerObservabilityConfig::global_sealed_max_count: usize
-pub datafusion_nexus::server::ServerObservabilityConfig::per_query_max_bytes: u64
-pub datafusion_nexus::server::ServerObservabilityConfig::per_query_max_records: u64
-pub datafusion_nexus::server::ServerObservabilityConfig::sealed_ttl: core::time::Duration
-pub datafusion_nexus::server::ServerObservabilityConfig::shutdown_grace: core::time::Duration
-impl core::default::Default for datafusion_nexus::server::ServerObservabilityConfig
-pub fn datafusion_nexus::server::ServerObservabilityConfig::default() -> Self
-pub struct datafusion_nexus::server::StaticUserConfig
-pub datafusion_nexus::server::StaticUserConfig::password_hash: alloc::string::String
-pub datafusion_nexus::server::StaticUserConfig::roles: alloc::vec::Vec<alloc::string::String>
-pub datafusion_nexus::server::StaticUserConfig::username: alloc::string::String
-pub struct datafusion_nexus::server::TokenStore
-impl datafusion_nexus::server::TokenStore
-pub fn datafusion_nexus::server::TokenStore::issue(&self, datafusion_nexus::server::Principal, core::option::Option<core::time::Duration>) -> alloc::string::String
-pub fn datafusion_nexus::server::TokenStore::new() -> Self
-pub fn datafusion_nexus::server::TokenStore::sweep_expired(&self)
-pub fn datafusion_nexus::server::TokenStore::validate(&self, &str) -> core::option::Option<datafusion_nexus::server::Principal>
-pub struct datafusion_nexus::server::WorkspaceOverlayConfig
-pub datafusion_nexus::server::WorkspaceOverlayConfig::backing_aliases: core::option::Option<alloc::vec::Vec<alloc::string::String>>
-pub datafusion_nexus::server::WorkspaceOverlayConfig::backing_catalog: alloc::string::String
-pub datafusion_nexus::server::WorkspaceOverlayConfig::backing_schema: alloc::string::String
-pub datafusion_nexus::server::WorkspaceOverlayConfig::catalog: alloc::string::String
-pub datafusion_nexus::server::WorkspaceOverlayConfig::schema: alloc::string::String
-pub const datafusion_nexus::server::ERROR_CODE_METADATA_KEY: &str
-pub const datafusion_nexus::server::ERROR_KIND_METADATA_KEY: &str
-pub const datafusion_nexus::server::ERROR_OPERATION_METADATA_KEY: &str
-pub const datafusion_nexus::server::ERROR_STATUS_METADATA_KEY: &str
-pub const datafusion_nexus::server::NATIVE_MESSAGE_METADATA_KEY: &str
-pub const datafusion_nexus::server::NEXUS_ICEBERG_CATALOG_KIND_ENV: &str
-pub const datafusion_nexus::server::NEXUS_ICEBERG_CATALOG_NAME_ENV: &str
-pub const datafusion_nexus::server::NEXUS_ICEBERG_GLUE_CATALOG_ID_ENV: &str
-pub const datafusion_nexus::server::NEXUS_ICEBERG_GLUE_CATALOG_NAME_ENV: &str
-pub const datafusion_nexus::server::NEXUS_ICEBERG_GLUE_URI_ENV: &str
-pub const datafusion_nexus::server::NEXUS_ICEBERG_NAMESPACE_ENV: &str
-pub const datafusion_nexus::server::NEXUS_ICEBERG_REST_CATALOG_HANDLE_ENV: &str
-pub const datafusion_nexus::server::NEXUS_ICEBERG_REST_PREFIX_ENV: &str
-pub const datafusion_nexus::server::NEXUS_ICEBERG_REST_TOKEN_ENV: &str
-pub const datafusion_nexus::server::NEXUS_ICEBERG_REST_URI_ENV: &str
-pub const datafusion_nexus::server::NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_ENV: &str
-pub const datafusion_nexus::server::NEXUS_ICEBERG_S3_ENDPOINT_ENV: &str
-pub const datafusion_nexus::server::NEXUS_ICEBERG_S3_PATH_STYLE_ENV: &str
-pub const datafusion_nexus::server::NEXUS_ICEBERG_S3_REGION_ENV: &str
-pub const datafusion_nexus::server::NEXUS_ICEBERG_SCAN_PLANNING_TIMEOUT_SECS_ENV: &str
-pub const datafusion_nexus::server::NEXUS_ICEBERG_TABLES_ENV: &str
-pub const datafusion_nexus::server::NEXUS_ICEBERG_WAREHOUSE_ENV: &str
-pub const datafusion_nexus::server::NEXUS_SERVER_ADMISSION_MAX_OVERTAKES_PER_WAITER_ENV: &str
-pub const datafusion_nexus::server::NEXUS_SERVER_ADMISSION_MAX_QUEUED_ATTEMPTS_ENV: &str
-pub const datafusion_nexus::server::NEXUS_SERVER_ADMISSION_MAX_QUEUE_WAIT_MS_ENV: &str
-pub const datafusion_nexus::server::NEXUS_SERVER_BIND_ENV: &str
-pub const datafusion_nexus::server::NEXUS_SERVER_CONFIG_FILE_ENV: &str
-pub const datafusion_nexus::server::NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV: &str
-pub const datafusion_nexus::server::NEXUS_SERVER_CUGRAPH_DIRECTED_ENV: &str
-pub const datafusion_nexus::server::NEXUS_SERVER_CUGRAPH_ENABLED_ENV: &str
-pub const datafusion_nexus::server::NEXUS_SERVER_CUGRAPH_RENUMBER_ENV: &str
-pub const datafusion_nexus::server::NEXUS_SERVER_FINAL_PLAN_REQUIREMENT_ENV: &str
-pub const datafusion_nexus::server::NEXUS_SERVER_GPU_DEVICES_ENV: &str
-pub const datafusion_nexus::server::NEXUS_SERVER_LOG_ENV: &str
-pub const datafusion_nexus::server::NEXUS_SERVER_NATIVE_CONFIG_OPTIONS: &[datafusion_nexus::server::NexusServerNativeConfigOption]
-pub const datafusion_nexus::server::NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV: &str
-pub const datafusion_nexus::server::NEXUS_SERVER_NATIVE_MAX_RETRY_ATTEMPTS_ENV: &str
-pub const datafusion_nexus::server::NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV: &str
-pub const datafusion_nexus::server::NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV: &str
-pub const datafusion_nexus::server::NEXUS_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV: &str
-pub const datafusion_nexus::server::NEXUS_SERVER_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV: &str
-pub const datafusion_nexus::server::NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV: &str
-pub const datafusion_nexus::server::NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV: &str
-pub const datafusion_nexus::server::NEXUS_SERVER_OBSERVABILITY_ACTIVE_LOGICAL_CAPTURE_MAX_BYTES_ENV: &str
-pub const datafusion_nexus::server::NEXUS_SERVER_OBSERVABILITY_GLOBAL_SEALED_MAX_BYTES_ENV: &str
-pub const datafusion_nexus::server::NEXUS_SERVER_OBSERVABILITY_GLOBAL_SEALED_MAX_COUNT_ENV: &str
-pub const datafusion_nexus::server::NEXUS_SERVER_OBSERVABILITY_PER_QUERY_MAX_BYTES_ENV: &str
-pub const datafusion_nexus::server::NEXUS_SERVER_OBSERVABILITY_PER_QUERY_MAX_RECORDS_ENV: &str
-pub const datafusion_nexus::server::NEXUS_SERVER_OBSERVABILITY_SEALED_TTL_SECS_ENV: &str
-pub const datafusion_nexus::server::NEXUS_SERVER_OBSERVABILITY_SHUTDOWN_GRACE_SECS_ENV: &str
-pub const datafusion_nexus::server::NEXUS_SERVER_STATEMENT_TICKET_TTL_SECS_ENV: &str
-pub const datafusion_nexus::server::NEXUS_SERVER_WORKSPACE_BACKING_ALIASES_ENV: &str
-pub const datafusion_nexus::server::NEXUS_SERVER_WORKSPACE_BACKING_CATALOG_ENV: &str
-pub const datafusion_nexus::server::NEXUS_SERVER_WORKSPACE_BACKING_SCHEMA_ENV: &str
-pub const datafusion_nexus::server::NEXUS_SERVER_WORKSPACE_CATALOG_ENV: &str
-pub const datafusion_nexus::server::NEXUS_SERVER_WORKSPACE_SCHEMA_ENV: &str
-pub const datafusion_nexus::server::PREDICATE_ROLE_METADATA_KEY: &str
-pub const datafusion_nexus::server::REASON_METADATA_KEY: &str
-pub const datafusion_nexus::server::REQUIRED_OPTION_METADATA_KEY: &str
-pub const datafusion_nexus::server::UNSUPPORTED_COLUMN_METADATA_KEY: &str
-pub const datafusion_nexus::server::UNSUPPORTED_COLUMN_ROLE_METADATA_KEY: &str
-pub const datafusion_nexus::server::UNSUPPORTED_COLUMN_TYPE_METADATA_KEY: &str
-pub fn datafusion_nexus::server::build_session_config(&datafusion_nexus::server::ServerConfig) -> datafusion_nexus::server::Result<datafusion_execution::config::SessionConfig>
-pub async fn datafusion_nexus::server::build_session_context(&datafusion_nexus::server::ServerConfig) -> datafusion_nexus::server::Result<datafusion::execution::context::SessionContext>
-pub async fn datafusion_nexus::server::build_session_context_with_backend(&datafusion_nexus::server::ServerConfig, &datafusion_nexus::backend::NexusGpuBackend) -> datafusion_nexus::server::Result<datafusion::execution::context::SessionContext>
-pub fn datafusion_nexus::server::datafusion_error_to_status(datafusion_common::error::DataFusionError) -> tonic::status::Status
-pub fn datafusion_nexus::server::datafusion_error_to_status_for_operation(datafusion_common::error::DataFusionError, &'static str) -> tonic::status::Status
-pub async fn datafusion_nexus::server::handle_handshake(&datafusion_nexus::server::AuthMode, &datafusion_nexus::server::TokenStore, tonic::request::Request<tonic::codec::decode::Streaming<arrow_flight::gen::HandshakeRequest>>) -> core::result::Result<tonic::response::Response<core::pin::Pin<alloc::boxed::Box<(dyn futures_core::stream::Stream<Item = core::result::Result<arrow_flight::gen::HandshakeResponse, tonic::status::Status>> + core::marker::Send)>>>, tonic::status::Status>
-pub fn datafusion_nexus::server::hash_password(&str) -> core::result::Result<alloc::string::String, datafusion_nexus::server::PasswordHashError>
-pub fn datafusion_nexus::server::init_cuda_device(usize) -> datafusion_nexus::server::Result<()>
-pub fn datafusion_nexus::server::log_native_planning_report(&str, core::option::Option<&datafusion_nexus::report::PlanningReport>)
-pub fn datafusion_nexus::server::log_native_planning_report_for_tables(&str, core::option::Option<&datafusion_nexus::report::PlanningReport>, &str)
-pub async fn datafusion_nexus::server::serve(datafusion_nexus::server::ServerConfig) -> datafusion_nexus::server::Result<()>
-pub async fn datafusion_nexus::server::serve_with_listener(datafusion_nexus::server::ServerConfig, std::net::tcp::TcpListener) -> datafusion_nexus::server::Result<()>
-pub fn datafusion_nexus::server::verify_password(&str, &str) -> core::result::Result<bool, datafusion_nexus::server::PasswordHashError>
-pub type datafusion_nexus::server::Result<T> = core::result::Result<T, datafusion_nexus::server::ServerError>
 pub mod datafusion_nexus::session
 pub const datafusion_nexus::session::NEXUS_NATIVE_COUNT_ONLY_PHYSICAL_OPTIMIZER_RULE_NAME: &str
 pub const datafusion_nexus::session::NEXUS_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME: &str
@@ -2274,6 +2135,8 @@ pub fn datafusion::execution::session_state::SessionStateBuilder::try_with_cuvs_
 pub fn datafusion::execution::session_state::SessionStateBuilder::with_cugraph_sql(self, datafusion_nexus::cugraph_sql::CugraphSqlConfig) -> Self
 pub fn datafusion::execution::session_state::SessionStateBuilder::with_nexus_native(self, datafusion_nexus::planner::NexusNativeOptimizerConfig) -> Self
 pub fn datafusion::execution::session_state::SessionStateBuilder::with_nexus_native_rule(self, alloc::sync::Arc<datafusion_nexus::planner::NexusNativePhysicalOptimizerRule>) -> Self
+pub fn datafusion_nexus::session::install_nexus_native_rule_with_session_config(datafusion::execution::session_state::SessionStateBuilder, alloc::sync::Arc<datafusion_nexus::planner::NexusNativePhysicalOptimizerRule>, datafusion_nexus::session_config::DataFusionNexusSessionConfig) -> datafusion_common::error::Result<datafusion::execution::session_state::SessionStateBuilder>
+pub fn datafusion_nexus::session::installed_nexus_native_optimizer_config(&datafusion::execution::session_state::SessionState) -> core::option::Option<datafusion_nexus::planner::NexusNativeOptimizerConfig>
 pub fn datafusion_nexus::session::nexus_native_physical_optimizer_rules(datafusion_nexus::planner::NexusNativeOptimizerConfig) -> datafusion_nexus::session::PhysicalOptimizerRules
 pub fn datafusion_nexus::session::nexus_native_physical_optimizer_rules_with_rule(alloc::sync::Arc<datafusion_nexus::planner::NexusNativePhysicalOptimizerRule>) -> datafusion_nexus::session::PhysicalOptimizerRules
 pub type datafusion_nexus::session::PhysicalOptimizerRules = alloc::vec::Vec<alloc::sync::Arc<(dyn datafusion_physical_optimizer::optimizer::PhysicalOptimizerRule + core::marker::Send + core::marker::Sync)>>
@@ -2290,6 +2153,7 @@ pub datafusion_nexus::session_config::DataFusionNexusSessionConfig::native_stati
 impl datafusion_nexus::session_config::DataFusionNexusSessionConfig
 pub fn datafusion_nexus::session_config::DataFusionNexusSessionConfig::apply_to_optimizer_config(&self, datafusion_nexus::planner::NexusNativeOptimizerConfig) -> datafusion_common::error::Result<datafusion_nexus::planner::NexusNativeOptimizerConfig>
 pub fn datafusion_nexus::session_config::DataFusionNexusSessionConfig::from_optimizer_config(&datafusion_nexus::planner::NexusNativeOptimizerConfig) -> Self
+pub fn datafusion_nexus::session_config::DataFusionNexusSessionConfig::frozen_for_backend_admission(self) -> Self
 pub fn datafusion_nexus::session_config::DataFusionNexusSessionConfig::request_graph_raw_input_edges(&self) -> core::option::Option<u64>
 pub fn datafusion_nexus::session_config::DataFusionNexusSessionConfig::set_request_graph_raw_input_edges(&mut self, core::option::Option<u64>)
 pub fn datafusion_nexus::session_config::DataFusionNexusSessionConfig::with_request_graph_raw_input_edges(self, core::option::Option<u64>) -> Self
@@ -2351,6 +2215,8 @@ pub fn datafusion_nexus::table_format::iceberg::catalog::NexusIcebergCatalogSour
 pub fn datafusion_nexus::table_format::iceberg::catalog::NexusIcebergCatalogSource::parquet_read_strategy_config(&self) -> core::option::Option<datafusion_nexus::table_format::TableFormatParquetReadStrategyConfig>
 pub struct datafusion_nexus::table_format::iceberg::catalog::NexusIcebergSchemaProvider
 impl datafusion_nexus::table_format::iceberg::catalog::NexusIcebergSchemaProvider
+pub fn datafusion_nexus::table_format::iceberg::catalog::NexusIcebergSchemaProvider::known_or_seeded_table_exists(&self, &str) -> bool
+pub fn datafusion_nexus::table_format::iceberg::catalog::NexusIcebergSchemaProvider::known_or_seeded_table_names(&self) -> alloc::vec::Vec<alloc::string::String>
 pub async fn datafusion_nexus::table_format::iceberg::catalog::NexusIcebergSchemaProvider::seed_table(&self, alloc::string::String, alloc::sync::Arc<dyn datafusion_catalog::table::TableProvider>)
 impl datafusion_catalog::schema::SchemaProvider for datafusion_nexus::table_format::iceberg::catalog::NexusIcebergSchemaProvider
 pub fn datafusion_nexus::table_format::iceberg::catalog::NexusIcebergSchemaProvider::table<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = datafusion_common::error::Result<core::option::Option<alloc::sync::Arc<dyn datafusion_catalog::table::TableProvider>>>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
@@ -2418,6 +2284,7 @@ pub const datafusion_nexus::table_format::iceberg::NEXUS_ICEBERG_S3_SESSION_TOKE
 pub fn datafusion_nexus::table_format::iceberg::iceberg_file_scan_tasks_to_table_format_scan_plan(core::option::Option<alloc::string::String>, core::option::Option<alloc::string::String>, impl core::iter::traits::collect::IntoIterator<Item = iceberg::scan::task::FileScanTask>) -> datafusion_nexus::error::Result<datafusion_nexus::table_format::TableFormatScanPlan>
 pub fn datafusion_nexus::table_format::iceberg::iceberg_scan_candidate_to_table_format_scan_plan(nexus_iceberg::scan::IcebergScanCandidate, core::option::Option<&str>) -> datafusion_nexus::error::Result<datafusion_nexus::table_format::TableFormatScanPlan>
 pub fn datafusion_nexus::table_format::iceberg::iceberg_schema_to_datafusion_arrow_schema(&iceberg::spec::schema::Schema) -> datafusion_nexus::error::Result<arrow_schema::schema::SchemaRef>
+pub fn datafusion_nexus::table_format::iceberg::root_error_from_iceberg(nexus_iceberg::error::IcebergError, &'static str, impl core::convert::Into<alloc::string::String>) -> datafusion_nexus::error::Error
 pub fn datafusion_nexus::table_format::iceberg::source_access_policy_to_native_source_storage_profile(&nexus_iceberg::source_access::SourceAccessPolicy) -> nexus_query_engine::runtime::object_store::SourceStorageProfile
 pub mod datafusion_nexus::table_format::scan
 pub enum datafusion_nexus::table_format::scan::TableFormat

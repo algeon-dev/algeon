@@ -561,11 +561,7 @@ fn read_capability(location: &str) -> TableFormatReadCapability {
 /// The leaf deliberately exposes no vendor source chain. We preserve its
 /// machine classification and typed safe facts without attaching any raw
 /// upstream error source to the root error.
-pub(crate) fn root_error_from_iceberg(
-    source: IcebergError,
-    operation: &'static str,
-    message: impl Into<String>,
-) -> Error {
+pub fn root_error_from_iceberg(source: IcebergError, operation: &'static str, message: impl Into<String>) -> Error {
     let mut error = Error::new(root_error_code(&source), operation, message)
         .with_log_safe_fact("iceberg_error_code", source.code.as_str())
         .with_log_safe_fact("iceberg_error_status", iceberg_error_status_code(source.status))

@@ -6,8 +6,8 @@
 #   bash scripts/dev/run_server.sh --dry-run   # print the env + command without executing
 #
 # The release binary must already be built. Either artifact flavor works:
-#   cargo build --release --features server,iceberg,nvml --bin datafusion_nexus_server
-#   cargo build --release --features server,iceberg,cugraph,cuvs,nvml --bin datafusion_nexus_server
+#   cargo build --release -p nexus-server --features iceberg,nvml --bin datafusion_nexus_server
+#   cargo build --release -p nexus-server --features iceberg,cugraph,cuvs,nvml --bin datafusion_nexus_server
 # The cuGraph SQL UDTFs stay disabled unless NEXUS_SERVER_CUGRAPH_ENABLED=true
 # is exported before calling this script (requires the cugraph build).
 #
@@ -28,7 +28,7 @@ BINARY="${TARGET_ROOT}/release/datafusion_nexus_server"
 
 if [[ ! -x "${BINARY}" ]]; then
     echo "ERROR: binary not found at ${BINARY}" >&2
-    echo "       Run: cargo build --release --features server,iceberg,nvml --bin datafusion_nexus_server" >&2
+    echo "       Run: cargo build --release -p nexus-server --features iceberg,nvml --bin datafusion_nexus_server" >&2
     echo "       (add ,cugraph to the feature list for the cuGraph SQL UDTFs)" >&2
     exit 1
 fi

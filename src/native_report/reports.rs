@@ -223,25 +223,22 @@ impl NativeDataFusionExecutionReport {
 /// Planning-only fields are flattened into exact-size strings so the original
 /// physical plan and diagnostics can be dropped before execution. Runtime
 /// fields are projected from bounded metric handles when the artifact is read.
-#[cfg(feature = "server")]
 #[derive(Debug)]
-pub(crate) struct NativeDataFusionExecutionTsvTemplate {
+pub struct NativeDataFusionExecutionTsvTemplate {
     rows: Box<[NativeDataFusionExecutionTsvTemplateRow]>,
     retained_capacity_bytes: u64,
 }
 
-#[cfg(feature = "server")]
 #[derive(Debug)]
 struct NativeDataFusionExecutionTsvTemplateRow {
     prefix: Box<[Box<str>]>,
     rejected_before_execution: bool,
 }
 
-#[cfg(feature = "server")]
 impl NativeDataFusionExecutionTsvTemplate {
     const RUNTIME_FIELD_START: usize = 15;
 
-    pub(crate) fn from_report(report: NativeDataFusionExecutionReport) -> Self {
+    pub fn from_report(report: NativeDataFusionExecutionReport) -> Self {
         let rows = report
             .rows
             .into_iter()
@@ -271,11 +268,11 @@ impl NativeDataFusionExecutionTsvTemplate {
         Self { rows, retained_capacity_bytes }
     }
 
-    pub(crate) const fn retained_capacity_bytes(&self) -> u64 {
+    pub const fn retained_capacity_bytes(&self) -> u64 {
         self.retained_capacity_bytes
     }
 
-    pub(crate) fn to_tsv(&self, runtime: NativeDataFusionRuntime) -> String {
+    pub fn to_tsv(&self, runtime: NativeDataFusionRuntime) -> String {
         let runtime_summary = NativeDataFusionRuntimeSummary::from_runtime(runtime);
         let mut output = String::new();
         output.push_str(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER);
@@ -303,7 +300,6 @@ impl NativeDataFusionExecutionTsvTemplate {
     }
 }
 
-#[cfg(feature = "server")]
 fn runtime_fields(query_id: &str, summary: NativeDataFusionRuntimeSummary) -> Vec<String> {
     let row = NativeDataFusionExecutionRow {
         query_id: query_id.to_string(),
@@ -333,7 +329,7 @@ fn runtime_fields(query_id: &str, summary: NativeDataFusionRuntimeSummary) -> Ve
     row.fields().into_iter().skip(NativeDataFusionExecutionTsvTemplate::RUNTIME_FIELD_START).collect()
 }
 
-#[cfg(all(test, feature = "server"))]
+#[cfg(test)]
 mod tests {
     use datafusion::physical_plan::metrics::MetricsSet;
 

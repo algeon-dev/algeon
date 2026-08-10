@@ -7,11 +7,9 @@ use std::{env, net::SocketAddr, process::ExitCode};
 
 use anyhow::{Context, anyhow};
 use axum::Router;
-use datafusion_nexus::{
-    backend::{GpuMemoryOwnership, NexusGpuBackend},
-    server::{ServerConfig, init_cuda_device},
-};
+use datafusion_nexus::backend::GpuMemoryOwnership;
 use nexus_examples::{AppState, BindAddrs, flight, rest};
+use nexus_server::{FlightSqlServer, ServerConfig, backend_from_server_config, init_cuda_device};
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::EnvFilter;
 
@@ -41,7 +39,7 @@ async fn run() -> anyhow::Result<()> {
     init_tracing(&config.log_filter);
 
     init_cuda_device(0).context("failed to initialize CUDA device 0")?;
-    let backend = NexusGpuBackend::from_server_config(&config)
+    let backend = backend_from_server_config(&config)
         .context("failed to build shared GPU backend from server config")?
         .ok_or_else(|| {
             anyhow!(
@@ -80,7 +78,7 @@ fn rest_bind_addr() -> anyhow::Result<SocketAddr> {
 async fn serve_frontends(
     router: Router,
     rest_addr: SocketAddr,
-    flight_server: datafusion_nexus::server::FlightSqlServer,
+    flight_server: FlightSqlServer,
     shutdown: CancellationToken,
 ) -> anyhow::Result<()> {
     let rest_listener = tokio::net::TcpListener::bind(rest_addr)
@@ -140,9 +138,7 @@ fn handle_rest_result(result: Result<Result<(), std::io::Error>, tokio::task::Jo
     }
 }
 
-fn handle_flight_result(
-    result: Result<datafusion_nexus::server::Result<()>, tokio::task::JoinError>,
-) -> anyhow::Result<()> {
+fn handle_flight_result(result: Result<nexus_server::Result<()>, tokio::task::JoinError>) -> anyhow::Result<()> {
     match result {
         Ok(Ok(())) => Ok(()),
         Ok(Err(error)) => Err(error).context("Flight SQL frontend failed"),

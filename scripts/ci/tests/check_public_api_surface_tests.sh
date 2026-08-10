@@ -20,6 +20,7 @@ baseline_datafusion_nexus='pub fn datafusion_nexus::backend::NexusGpuBackend::bu
 pub struct datafusion_nexus::backend::NexusGpuBackend'
 baseline_nexus_query_engine='pub fn nexus_query_engine::runtime::GpuBackendSession::admit_query(&self) -> nexus_query_engine::error::Result<nexus_query_engine::runtime::QueryHandle>'
 baseline_nexus_bench='pub mod nexus_bench::tpch_benchmark'
+baseline_nexus_server='pub struct nexus_server::FlightSqlServer'
 
 # A deterministic fake toolchain identity, in the same shape
 # current_toolchain_identity() in the real script produces.
@@ -77,6 +78,7 @@ case "\${crate}" in
   datafusion-nexus) printf '%s\n' "\${FAKE_DATAFUSION_NEXUS:-${baseline_datafusion_nexus}}" ;;
   nexus-query-engine) printf '%s\n' "\${FAKE_NEXUS_QUERY_ENGINE:-${baseline_nexus_query_engine}}" ;;
   nexus-bench) printf '%s\n' "\${FAKE_NEXUS_BENCH:-${baseline_nexus_bench}}" ;;
+  nexus-server) printf '%s\n' "\${FAKE_NEXUS_SERVER:-${baseline_nexus_server}}" ;;
   *)
     echo "unexpected fake cargo-public-api crate: \${crate}" >&2
     exit 97
@@ -92,6 +94,7 @@ write_clean_snapshots() {
   printf '%s\n' "${baseline_datafusion_nexus}" >"${dir}/datafusion-nexus.txt"
   printf '%s\n' "${baseline_nexus_query_engine}" >"${dir}/nexus-query-engine.txt"
   printf '%s\n' "${baseline_nexus_bench}" >"${dir}/nexus-bench.txt"
+  printf '%s\n' "${baseline_nexus_server}" >"${dir}/nexus-server.txt"
 }
 
 run_check() {
@@ -141,7 +144,7 @@ assert_not_contains() {
 
 CHECK_SCRIPT=scripts/ci/check_public_api_surface.sh
 
-# 1. Clean baseline: check passes for all three crates.
+# 1. Clean baseline: check passes for all four crates.
 clean_dir="${tmp_dir}/snapshots/clean"
 write_clean_snapshots "${clean_dir}"
 run_check clean "${clean_dir}" "${CHECK_SCRIPT}" check --all-features
@@ -149,7 +152,8 @@ assert_status clean 0
 assert_contains "${tmp_dir}/clean.output" "PASS: datafusion-nexus public API matches"
 assert_contains "${tmp_dir}/clean.output" "PASS: nexus-query-engine public API matches"
 assert_contains "${tmp_dir}/clean.output" "PASS: nexus-bench public API matches"
-echo "PASS: clean snapshot matches for all three crates"
+assert_contains "${tmp_dir}/clean.output" "PASS: nexus-server public API matches"
+echo "PASS: clean snapshot matches for all four crates"
 
 # 2. Fault injection: a forbidden item reappears in one crate's public API.
 # This is the regression this whole check exists to catch, and it must fail

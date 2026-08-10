@@ -7,7 +7,7 @@
 id = "datafusion-nexus"
 lane = "gpu"
 resource_class = "shared"
-reason = "Adapter library tests include coverage SQL, native execution context, and Flight SQL cases that create cuDF runtimes on bounded fixtures."
+reason = "Adapter library tests include coverage SQL and native execution context cases that create cuDF runtimes on bounded fixtures."
 
 [[binary]]
 id = "nexus-bench"
@@ -50,15 +50,21 @@ lane = "cpu"
 reason = "Reference OTLP histogram/export-request construction tests validate protobuf shape against fixed inputs without a collector, network, or CUDA runtime."
 
 [[binary]]
-id = "datafusion-nexus::bin/datafusion_nexus_server"
+id = "nexus-server::bin/datafusion_nexus_server"
 lane = "cpu"
 reason = "Server binary unit tests exercise error/log formatting and configuration without starting CUDA or the service."
+
+[[binary]]
+id = "nexus-server"
+lane = "gpu"
+resource_class = "shared"
+reason = "Server library unit tests exercise installed backend, Flight service, and coordinator paths on bounded GPU fixtures."
 
 [[binary]]
 id = "datafusion-nexus::root_gpu_tests"
 lane = "gpu"
 resource_class = "shared"
-reason = "Merged root GPU SQL, server, session, metrics, and lifecycle tests execute bounded CUDA fixtures."
+reason = "Merged root GPU SQL, session, metrics, and lifecycle tests execute bounded CUDA fixtures."
 
 [[binary]]
 id = "datafusion-nexus::cugraph_tests"
@@ -112,20 +118,32 @@ resource_class = "shared"
 reason = "Remaining TPC-DS harness coverage executes GPU-capable parity infrastructure and remains serialized with shared CUDA users."
 
 [[binary]]
-id = "datafusion-nexus::server_config_tests"
+id = "nexus-server::server_config_tests"
 lane = "cpu"
 reason = "Flight SQL server configuration, precedence, validation, descriptors, and redaction tests do not create CUDA runtimes."
 
 [[binary]]
-id = "datafusion-nexus::server_iceberg_tests"
+id = "nexus-server::server_iceberg_tests"
 lane = "cpu"
 reason = "Server Iceberg tests validate catalog/config behavior with mocks and no native GPU execution."
 
 [[binary]]
-id = "datafusion-nexus::server_tests"
+id = "nexus-server::server_tests"
 lane = "gpu"
 resource_class = "shared"
 reason = "Flight SQL server integration tests initialize the native GPU backend and execute bounded queries."
+
+[[binary]]
+id = "nexus-server::server_cugraph_tests"
+lane = "gpu"
+resource_class = "shared"
+reason = "Flight SQL cuGraph integration tests initialize the native GPU backend and execute bounded graph queries."
+
+[[binary]]
+id = "nexus-server::server_cuvs_tests"
+lane = "gpu"
+resource_class = "shared"
+reason = "Flight SQL cuVS integration tests initialize the native GPU backend and execute bounded vector queries."
 
 [[binary]]
 id = "nexus-query-engine"

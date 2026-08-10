@@ -31,8 +31,8 @@
 #   - patchelf (recommended; rewrites RUNPATHs so the container is hermetic)
 #
 # Usage:
-#   bash docker/build.sh                  # server,iceberg,cugraph,cuvs,nvml (full)
-#   FEATURES=server,iceberg,nvml bash docker/build.sh # lean cudf-only (~1/3 size)
+#   bash docker/build.sh                  # iceberg,cugraph,cuvs,nvml (full)
+#   FEATURES=iceberg,nvml bash docker/build.sh # lean cudf-only (~1/3 size)
 #   NO_STRIP=1 bash docker/build.sh            # keep debug symbols
 #   SKIP_CARGO_BUILD=1 bash docker/build.sh    # reuse only verified canonical artifact
 #   CPU_PACKAGE_PROFILE=tuned-local-v3 bash docker/build.sh # separate v3 artifact/tag
@@ -60,7 +60,7 @@ POLICY_HELPER="$REPO_ROOT/scripts/build/cpu_packaging_policy.py"
 CPU_PACKAGE_PROFILE="${CPU_PACKAGE_PROFILE:-portable}"
 CPU_PACKAGE_TARGET_ROOT="${CPU_PACKAGE_TARGET_ROOT:-$REPO_ROOT/target/cpu-packaging}"
 FEATURES="$(python3 "$POLICY_HELPER" --policy "$POLICY_FILE" normalize-features \
-    --features "${FEATURES:-server,iceberg,cugraph,cuvs,nvml}")"
+    --features "${FEATURES:-iceberg,cugraph,cuvs,nvml}")"
 
 eval "$(python3 "$POLICY_HELPER" --policy "$POLICY_FILE" describe --profile "$CPU_PACKAGE_PROFILE")"
 
@@ -123,7 +123,7 @@ if [[ "$SKIP_CARGO_BUILD" == "0" ]]; then
         --profile "$CPU_PACKAGE_PROFILE" \
         --features "$FEATURES" \
         --target-root "$CPU_PACKAGE_TARGET_ROOT" \
-        --manifest "$REPO_ROOT/Cargo.toml" \
+        --manifest "$REPO_ROOT/crates/nexus-server/Cargo.toml" \
         "${explicit_native_env[@]}"
 else
     echo "==> SKIP_CARGO_BUILD=1 — verifying canonical artifact before reuse"

@@ -33,8 +33,6 @@ pub mod native_report;
 mod physical_plan;
 pub mod planner;
 pub mod report;
-#[cfg(feature = "server")]
-pub mod server;
 pub mod session;
 pub mod session_config;
 pub mod source_cardinality;

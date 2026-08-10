@@ -57,8 +57,7 @@ impl QueryAdmissionSource {
         Self { session, max_device_total_memory_bytes }
     }
 
-    #[cfg(feature = "server")]
-    pub(crate) fn backend_matches(&self, session: &GpuBackendSession) -> bool {
+    pub fn backend_matches(&self, session: &GpuBackendSession) -> bool {
         self.session.same_backend(session)
     }
 

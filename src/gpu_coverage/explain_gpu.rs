@@ -1,6 +1,5 @@
 //! Parsing for the small Flight SQL `EXPLAIN GPU` extension.
 
-#[cfg(any(feature = "server", test))]
 use crate::error::{Error, ErrorCode, Result};
 
 /// The shared coverage-row projection requested by an `EXPLAIN GPU` statement.
@@ -9,12 +8,10 @@ pub enum ExplainGpuOutputMode {
     /// Return the summary row followed by candidate rows.
     Rows,
     /// Return the summary row, whose `coverage_json` contains the complete evidence.
-    #[cfg(any(feature = "server", test))]
     Json,
 }
 
 /// A parsed `EXPLAIN GPU` Flight SQL extension.
-#[cfg(any(feature = "server", test))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExplainGpuStatement {
     pub inner_sql: String,
@@ -27,7 +24,6 @@ pub struct ExplainGpuStatement {
 /// exact `EXPLAIN GPU` prefix is present, malformed extension options produce
 /// a structured request error instead of being delegated to DataFusion's
 /// unrelated `EXPLAIN` implementation.
-#[cfg(any(feature = "server", test))]
 pub fn parse_explain_gpu(sql: &str) -> Result<Option<ExplainGpuStatement>> {
     let Some(after_explain) = consume_keyword(sql, "EXPLAIN") else {
         return Ok(None);
@@ -62,7 +58,6 @@ pub fn parse_explain_gpu(sql: &str) -> Result<Option<ExplainGpuStatement>> {
     Ok(Some(ExplainGpuStatement { inner_sql: after_gpu.to_string(), output_mode: ExplainGpuOutputMode::Rows }))
 }
 
-#[cfg(any(feature = "server", test))]
 fn consume_keyword<'a>(input: &'a str, keyword: &str) -> Option<&'a str> {
     let input = input.trim_start();
     let token_end = input
@@ -75,13 +70,11 @@ fn consume_keyword<'a>(input: &'a str, keyword: &str) -> Option<&'a str> {
     .then_some(&input[token_end..])
 }
 
-#[cfg(any(feature = "server", test))]
 fn required_inner_sql<'a>(input: &'a str, message: &'static str) -> Result<&'a str> {
     let inner_sql = input.trim_start();
     if inner_sql.is_empty() { Err(invalid_syntax(message)) } else { Ok(inner_sql) }
 }
 
-#[cfg(any(feature = "server", test))]
 fn reject_repeated_option(inner_sql: &str) -> Result<()> {
     if consume_keyword(inner_sql, "FORMAT").is_some() || consume_keyword(inner_sql, "VERBOSE").is_some() {
         return Err(invalid_syntax(
@@ -91,7 +84,6 @@ fn reject_repeated_option(inner_sql: &str) -> Result<()> {
     Ok(())
 }
 
-#[cfg(any(feature = "server", test))]
 fn invalid_syntax(message: impl Into<String>) -> Error {
     Error::new(ErrorCode::InvalidRequest, "datafusion_nexus.gpu_coverage.explain_gpu.parse", message)
 }

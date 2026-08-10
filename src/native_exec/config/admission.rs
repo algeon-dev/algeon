@@ -187,17 +187,13 @@ impl NexusNativeExecutionConfig {
         self.query_service_handle.is_some()
     }
 
-    pub(crate) fn has_query_admission_authority(&self) -> bool {
+    pub fn has_query_admission_authority(&self) -> bool {
         self.query_service_handle.is_some()
             || self.query_admission_source.is_some()
             || self.query_admission_ticket.is_some()
     }
 
-    #[cfg(feature = "server")]
-    pub(crate) fn query_admission_source_matches(
-        &self,
-        session: &nexus_query_engine::runtime::GpuBackendSession,
-    ) -> bool {
+    pub fn query_admission_source_matches(&self, session: &nexus_query_engine::runtime::GpuBackendSession) -> bool {
         self.query_admission_source.as_ref().is_some_and(|source| source.backend_matches(session))
     }
 }
