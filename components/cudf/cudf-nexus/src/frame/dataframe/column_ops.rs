@@ -16,7 +16,10 @@ use crate::{
         resolve::missing_column_error,
     },
     ops::{self, unary},
-    runtime::{BudgetedExecutionOutcome, ExecutionBudgetToken, ExecutionOverrides, execution_domain::ExecutionDomain},
+    runtime::{
+        BudgetedExecutionOutcome, ExecutionBudgetToken, ExecutionOverrides, execution_domain::ExecutionDomain,
+        execution_resolver::ResolvedExecution,
+    },
 };
 
 const DATAFRAME_EXPRESSION_TEMPORARY_WORKSPACE_AND_RELOCATION_CONTRACT_GAP: &str =
@@ -369,25 +372,15 @@ impl DataFrame {
     /// Returns an error if `column` is not in the schema, or if the cast
     /// is unsupported.
     pub fn cast_column(&self, column: &str, target_type: impl Into<DataType>) -> Result<Self> {
-        let target_type = target_type.into();
-        let col = self.columns.get(column).ok_or_else(|| missing_column_error("dataframe::cast_column", column))?;
-
-        let cv = col.view()?;
-        let new_col = unary::cast(&cv, &target_type)?.with_execution_domain(Arc::clone(col.execution_domain()));
-
-        let mut new_columns = self.columns.clone();
-        new_columns.insert(column.to_string(), Arc::new(new_col));
-
-        let domain = derive_frame_domain_from_columns(&new_columns, "dataframe::cast_column")?;
-        Ok(Self { columns: new_columns, row_count: self.row_count, domain })
+        self.cast_column_in_context(column, target_type.into(), &ExecutionOverrides::new(), "dataframe::cast_column")
     }
 
     /// Return a new DataFrame with one column cast under a hard execution-budget token.
     ///
     /// This is the budgeted counterpart to [`cast_column`](Self::cast_column).
-    /// It uses the expression materialization path so the cast allocation, and
-    /// any required unchanged-column relocation into the budgeted output
-    /// provenance, are routed through the token's stream-bound reservation.
+    /// The direct cast allocation and any required unchanged-column relocation
+    /// into the budgeted output provenance are routed through the token's
+    /// stream-bound reservation.
     pub fn cast_column_with_budget(
         &self,
         column: &str,
@@ -395,10 +388,44 @@ impl DataFrame {
         token: &ExecutionBudgetToken,
     ) -> Result<BudgetedExecutionOutcome<Self>> {
         let operation = "dataframe::cast_column_with_budget";
-        let target_type = target_type.into();
-        self.columns.get(column).ok_or_else(|| missing_column_error(operation, column))?;
-        self.with_columns_with_budget([(column, ops::expr::col(column).cast(target_type))], token)
-            .map_err(|error| error.reanchor(operation))
+        let context = token.execution_overrides();
+        let output = self
+            .cast_column_in_context(column, target_type.into(), &context, operation)
+            .map_err(|error| annotate_dataframe_budget_execution_error(error, token, operation))?;
+        let output_bytes = dataframe_device_allocated_size_bytes(&output, operation)?;
+        let report = token
+            .reservation_enforced_report()
+            .with_retained_bytes(output_bytes)
+            .with_output_bytes(output_bytes)
+            .with_output_rows(output.num_rows())
+            .with_unresolved_contract(DATAFRAME_EXPRESSION_TEMPORARY_WORKSPACE_AND_RELOCATION_CONTRACT_GAP);
+        Ok(BudgetedExecutionOutcome::new(output, report))
+    }
+
+    fn cast_column_in_context(
+        &self,
+        column: &str,
+        target_type: DataType,
+        context: &ExecutionOverrides<'_>,
+        operation: &'static str,
+    ) -> Result<Self> {
+        let input = self.columns.get(column).ok_or_else(|| missing_column_error(operation, column))?;
+        let input_view = input.view().map_err(|error| error.reanchor(operation))?;
+        let execution = ResolvedExecution::unary(input.execution_domain(), context, operation)?;
+        let output_column = unary::cast_impl(
+            &input_view,
+            &target_type,
+            execution.output_domain(),
+            execution.exec_options(),
+            operation,
+        )?;
+        let output_series = Series::from_column(output_column).map_err(|error| error.reanchor(operation))?;
+        self.assemble_with_columns_in_domain(
+            vec![column.to_string()],
+            vec![output_series],
+            Arc::clone(execution.output_domain()),
+            operation,
+        )
     }
 
     /// Return a new DataFrame with null values in the named column replaced
