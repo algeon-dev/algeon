@@ -110,19 +110,18 @@ impl RawDeviceArray {
         })
     }
 
-    pub(crate) fn raw_view(&self) -> Result<RawDeviceArrayView<'_>> {
-        let raw = require_non_null(self.raw_view, "RawDeviceArray::raw_view", "device_array_view")?;
-        Ok(RawDeviceArrayView {
-            raw,
+    pub(crate) fn raw_view(&self) -> RawDeviceArrayView<'_> {
+        RawDeviceArrayView {
+            raw: self.raw_view,
             owned: false,
             device: Some(self.device),
             _lifetime: PhantomData,
             _nosend_nosync: PhantomData,
-        })
+        }
     }
 
     fn copy_from_host(&mut self, handle: &EnteredContext<'_>, data: &[u8]) -> Result<()> {
-        let view = self.raw_view()?;
+        let view = self.raw_view();
         let mut error: *mut cugraph_error_t = ptr::null_mut();
 
         // SAFETY: `view.raw` is a live device-array view owned by `self`,
@@ -144,14 +143,11 @@ impl RawDeviceArray {
 
 impl Drop for RawDeviceArray {
     fn drop(&mut self) {
-        if !self.raw_view.is_null() {
-            // SAFETY: this C view owns host metadata only; upstream's implementation
-            // simply deletes the pointer/length/type record and never enters
-            // CUDA. It therefore remains safe to release after device health
-            // has failed and must not be routed through device teardown.
-            unsafe { cugraph_type_erased_device_array_view_free(self.raw_view) };
-            self.raw_view = ptr::null_mut();
-        }
+        // SAFETY: this C view owns host metadata only; upstream's implementation
+        // simply deletes the pointer/length/type record and never enters
+        // CUDA. It therefore remains safe to release after device health
+        // has failed and must not be routed through device teardown.
+        unsafe { cugraph_type_erased_device_array_view_free(self.raw_view) };
         drop_device_resource(&mut self.raw, self.device, "RawDeviceArray::drop.array", DeviceResourceKind::DeviceArray);
     }
 }
@@ -264,7 +260,6 @@ impl RawDeviceArrayView<'_> {
     }
 
     /// Whether this view is empty.
-    #[allow(dead_code)]
     pub(crate) fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -320,7 +315,7 @@ impl RawDeviceArrayView<'_> {
 
 impl Drop for RawDeviceArrayView<'_> {
     fn drop(&mut self) {
-        if self.owned && !self.raw.is_null() {
+        if self.owned {
             // SAFETY: owned views created by this module are freed exactly once
             // here. Upstream frees only host metadata; it does not access the
             // backing device allocation or call CUDA.
@@ -360,14 +355,7 @@ impl<T: CugraphElement> fmt::Debug for DeviceArray<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut d = f.debug_struct("DeviceArray");
         d.field("dtype", &T::data_type());
-        match self.inner.raw_view() {
-            Ok(view) => {
-                d.field("len", &view.len());
-            },
-            Err(error) => {
-                d.field("len_error", &error.to_string());
-            },
-        }
+        d.field("len", &self.inner.raw_view().len());
         d.finish_non_exhaustive()
     }
 }
@@ -388,7 +376,7 @@ impl<T: CugraphElement> DeviceArray<T> {
     ) -> Result<Self> {
         // SAFETY: the caller transfers ownership of the native array handle.
         let inner = unsafe { RawDeviceArray::from_raw(raw, device, operation, pointer_name, resource_handle_lease) }?;
-        let dtype = inner.raw_view()?.dtype()?;
+        let dtype = inner.raw_view().dtype()?;
         if dtype != T::data_type() {
             return Err(Error::new(ErrorKind::InvalidState, operation).with_message(format!(
                 "{pointer_name} dtype {dtype} does not match requested dtype {}",
@@ -432,13 +420,13 @@ impl<T: CugraphElement> DeviceArray<T> {
 
     /// Create a non-owning typed view of this array.
     pub fn view(&self) -> Result<DeviceArrayView<'_, T>> {
-        Ok(DeviceArrayView { inner: self.inner.raw_view()?, _element: PhantomData })
+        Ok(DeviceArrayView { inner: self.inner.raw_view(), _element: PhantomData })
     }
 
     /// Get the raw C pointer to the underlying array. For internal use.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn raw_view(&self) -> Result<RawDeviceArrayView<'_>> {
-        self.inner.raw_view()
+        Ok(self.inner.raw_view())
     }
 }
 
@@ -487,22 +475,6 @@ impl<T: CugraphElement> fmt::Debug for DeviceArrayView<'_, T> {
 }
 
 impl<'a, T: CugraphElement> DeviceArrayView<'a, T> {
-    /// Wrap a raw C view pointer that is NOT owned by us (e.g., returned from a
-    /// result accessor). The caller must ensure the pointer stays valid for `'a`
-    /// and that the underlying data is of type `T`.
-    ///
-    /// # Safety
-    ///
-    /// - `raw` must point to valid device memory containing elements of type `T`
-    /// - the memory must outlive `'a`
-    #[allow(dead_code)] // kept for potential direct use in typed algorithm paths
-    pub(crate) unsafe fn from_borrowed(raw: *mut cugraph_type_erased_device_array_view_t) -> Self {
-        // SAFETY: the caller guarantees that `raw` is a valid borrowed view of
-        // `T` and that its backing allocation outlives the returned wrapper.
-        let inner = unsafe { RawDeviceArrayView::from_borrowed_unchecked(raw, None) };
-        DeviceArrayView { inner, _element: PhantomData }
-    }
-
     /// Create a view from an existing raw device pointer.
     ///
     /// # Safety
@@ -617,20 +589,12 @@ impl<'a, T: CugraphElement> DeviceArrayView<'a, T> {
 // its typed view APIs.
 unsafe impl<T: CugraphElement> DeviceBuffer<T> for DeviceArray<T> {
     fn device_ptr(&self) -> *mut std::ffi::c_void {
-        if self.inner.raw_view.is_null() {
-            debug_assert!(!self.inner.raw_view.is_null(), "DeviceArray invariant violated: missing raw view handle");
-            return ptr::null_mut();
-        }
         // SAFETY: `self.inner.raw_view` is created during `RawDeviceArray::new`
         // and remains owned by the array until drop.
         unsafe { cugraph_type_erased_device_array_view_pointer(self.inner.raw_view) as *mut std::ffi::c_void }
     }
 
     fn len(&self) -> usize {
-        if self.inner.raw_view.is_null() {
-            debug_assert!(!self.inner.raw_view.is_null(), "DeviceArray invariant violated: missing raw view handle");
-            return 0;
-        }
         // SAFETY: `self.inner.raw_view` is created during `RawDeviceArray::new`
         // and remains owned by the array until drop.
         unsafe { cugraph_type_erased_device_array_view_size(self.inner.raw_view) }
@@ -658,7 +622,6 @@ unsafe impl<T: CugraphElement> DeviceBuffer<T> for DeviceArrayView<'_, T> {
 ///
 /// Created from a Rust slice and freed on drop. The lifetime `'a` ties it to
 /// the original slice.
-#[allow(dead_code)]
 pub(crate) struct HostArrayView<'a> {
     pub(crate) raw: *mut cugraph_type_erased_host_array_view_t,
     _lifetime: PhantomData<&'a ()>,
@@ -681,7 +644,6 @@ impl<'a> HostArrayView<'a> {
     ///
     /// Returns [`ErrorKind::InvalidInput`] if the slice is too small to hold
     /// `n_elems` elements of the given `dtype`.
-    #[allow(dead_code)]
     pub(crate) fn new(data: &'a [u8], n_elems: usize, dtype: DataType) -> Result<Self> {
         let required = checked_byte_len(n_elems, dtype, "HostArrayView::new")?;
         if data.len() < required {
@@ -716,12 +678,10 @@ impl<'a> HostArrayView<'a> {
 
 impl Drop for HostArrayView<'_> {
     fn drop(&mut self) {
-        if !self.raw.is_null() {
-            // SAFETY: `self.raw` is owned by this wrapper and is freed exactly
-            // once here. Upstream frees only the host pointer/length/type
-            // metadata and never dereferences or releases the borrowed data.
-            unsafe { cugraph_type_erased_host_array_view_free(self.raw) };
-        }
+        // SAFETY: `self.raw` is owned by this wrapper and is freed exactly
+        // once here. Upstream frees only the host pointer/length/type
+        // metadata and never dereferences or releases the borrowed data.
+        unsafe { cugraph_type_erased_host_array_view_free(self.raw) };
     }
 }
 
