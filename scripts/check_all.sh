@@ -7,6 +7,7 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "${ROOT}"
 
 readonly REQUIRED_NEXTEST_VERSION=0.9.140
+readonly REQUIRED_CARGO_HACK_VERSION=0.6.45
 readonly GPU_EXCLUSIVE_CAP=1
 readonly GPU_NEXTEST_PROFILE=default
 readonly GPU_NEXTEST_GROUP=gpu
@@ -330,6 +331,20 @@ if [[ "${needs_nextest}" -eq 1 ]]; then
   fi
 fi
 
+if [[ "${mode}" == full ]]; then
+  cargo_hack_version_output=$(cargo hack --version 2>&1)
+  cargo_hack_version_status=$?
+  if [[ "${cargo_hack_version_status}" -ne 0 ]]; then
+    printf '%s\n' "${cargo_hack_version_output}" >&2
+    echo "ERROR: canonical compatibility checks require cargo-hack ${REQUIRED_CARGO_HACK_VERSION} (version command exited ${cargo_hack_version_status}). Install it with: cargo install --locked --version ${REQUIRED_CARGO_HACK_VERSION} cargo-hack" >&2
+    exit 2
+  fi
+  if [[ "${cargo_hack_version_output}" != "cargo-hack ${REQUIRED_CARGO_HACK_VERSION}" ]]; then
+    echo "ERROR: canonical compatibility checks require exactly 'cargo-hack ${REQUIRED_CARGO_HACK_VERSION}'; got '${cargo_hack_version_output}'. Install it with: cargo install --locked --version ${REQUIRED_CARGO_HACK_VERSION} cargo-hack" >&2
+    exit 2
+  fi
+fi
+
 if [[ -n "${PHASE_LOG_DIR_OVERRIDE}" ]]; then
   PHASE_LOG_DIR=${PHASE_LOG_DIR_OVERRIDE}
   mkdir -p "${PHASE_LOG_DIR}" || usage_error "cannot create phase log directory '${PHASE_LOG_DIR}'."
@@ -401,6 +416,8 @@ PHASE_ORDER=(
   checked-bindings
   component-packages
   cuvs-native-free
+  msrv-check
+  feature-isolation-check
   rustfmt
   lane-structure
   live-inventory
@@ -439,6 +456,8 @@ define_phase native-sources "bash scripts/ci/check_native_sources.sh"
 define_phase checked-bindings "scripts/dev/bindings.sh cudf --check + cuvs --check"
 define_phase component-packages "bash scripts/ci/check_component_packages.sh"
 define_phase cuvs-native-free "CUVS_NEXUS_SYS_SKIP_NATIVE=1 cargo check --locked -p cuvs-nexus-sys --all-targets --all-features"
+define_phase msrv-check "cargo hack check --workspace --all-features --locked --rust-version --workspace-behavior=cargo"
+define_phase feature-isolation-check "cargo hack check --workspace --each-feature --exclude-features default --locked --keep-going"
 define_phase rustfmt "cargo +${RUSTFMT_TOOLCHAIN} fmt --all --check"
 define_phase lane-structure "test_lane_policy.py check-catalog + generated override check"
 define_phase live-inventory "bash scripts/ci/check_gpu_test_lane.sh ${FEATURE_ARGS[*]}"
@@ -1043,6 +1062,16 @@ checked_bindings_command() {
   bash scripts/dev/bindings.sh cuvs --check
 }
 
+msrv_check_command() {
+  cargo hack check --workspace --all-features --locked \
+    --rust-version --workspace-behavior=cargo
+}
+
+feature_isolation_check_command() {
+  cargo hack check --workspace --each-feature \
+    --exclude-features default --locked --keep-going
+}
+
 PHASE_CACHE_FILE="$(dirname -- "${PHASE_LOG_DIR}")/last-pass.json"
 phase_cache_load
 
@@ -1064,6 +1093,8 @@ if [[ "${mode}" == full ]]; then
   run_or_cache_phase component-packages "literal:packages=7" - - bash scripts/ci/check_component_packages.sh || true
   run_or_cache_phase cuvs-native-free none - - env CUVS_NEXUS_SYS_SKIP_NATIVE=1 \
     cargo check --locked -p cuvs-nexus-sys --all-targets --all-features || true
+  run_phase msrv-check none - - msrv_check_command || true
+  run_phase feature-isolation-check none - - feature_isolation_check_command || true
 fi
 
 if [[ "${lane}" != policy ]]; then

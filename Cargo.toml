@@ -106,7 +106,7 @@ object_store = { version = "0.13", default-features = false, features = ["aws"] 
 opendal = "0.58"
 opentelemetry = { version = "0.32.0", default-features = false, features = ["metrics"] }
 opentelemetry-proto = { version = "0.32.0", default-features = false, features = ["gen-tonic-messages", "metrics", "gen-tonic"] }
-parquet = { version = "59.2", features = ["async", "object_store"] }
+parquet = { version = "59.2", default-features = false, features = ["async", "object_store"] }
 prost = "0.14"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1.0"
@@ -162,7 +162,7 @@ iceberg = { workspace = true, optional = true }
 iceberg-datafusion = { workspace = true, optional = true }
 object_store = { workspace = true, optional = true }
 opendal = { workspace = true, optional = true }
-parquet = { workspace = true }
+parquet = { workspace = true, default-features = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }

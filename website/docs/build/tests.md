@@ -32,13 +32,37 @@ cd datafusion-nexus
 bash scripts/check_all.sh
 ```
 
-This is more than the three test lanes. It runs the policy and build-support
-self-tests, nightly rustfmt, lane inventory and scheduling checks, workspace-wide
-CPU/shared-GPU/exclusive-GPU tests, locked doctests, strict rustdoc, public API
-snapshots, and clippy. One workspace-wide feature selection is used throughout,
-so tests from bench, tools, and examples packages are part of the same surface.
-Operator and external-service E2E tools are still explicit commands and are not
-run by this gate.
+The no-argument full gate adds `msrv-check` and `feature-isolation-check` after
+the native/component structural checks and before nextest inventory and test
+lanes. Both are compile-only phases: they do not run tests, contact external
+services, or acquire the GPU lock. The phase table names these rows exactly.
+
+`msrv-check` uses the workspace's declared Rust version (currently Rust 1.94),
+not a second version constant maintained in this page:
+
+```bash
+cargo hack check --workspace --all-features --locked --rust-version --workspace-behavior=cargo
+```
+
+`feature-isolation-check` is the repository-owned exception to the usual
+all-features Cargo rule. Its exact command checks the live workspace's
+no-feature and non-default feature configurations and proves compilation only;
+it does not prove tests:
+
+```bash
+cargo hack check --workspace --each-feature --exclude-features default --locked --keep-going
+```
+
+The existing policy, build, test, doctest, rustdoc, public API, and Clippy
+phases use one workspace-wide feature selection, so tests from bench, tools,
+and examples packages remain part of the same surface. Operator and
+external-service E2E tools are still explicit commands and are not run by this
+gate.
+
+The installation, diagnostic, and edit-loop examples for cargo-hack use the
+repository's `cargo hack` command directly; they do not invoke a sibling
+checkout or a local absolute path. Direct GPU tests and the full gate retain
+the existing `flock /tmp/cudf-gpu.lock` contract.
 
 Every invocation ends with a compact phase table. Each row records the
 effective command, wall time, pass/fail/skipped state, fail-closed test counts
@@ -79,9 +103,10 @@ bash scripts/check_all.sh --fast --features iceberg
 
 It runs isolated policy self-tests, nightly rustfmt, build support, the
 catalog/generated lane-structure checks, and the CPU nextest lane. It does not
-run live nextest inventory, GPU tests, doctests, rustdoc, public API snapshots,
-or clippy. It still checks the committed lane catalog and generated scheduling
-overrides before the test command runs.
+run `msrv-check` or `feature-isolation-check`, live nextest inventory, GPU tests,
+doctests, rustdoc, public API snapshots, or clippy. It still checks the
+committed lane catalog and generated scheduling overrides before the test
+command runs. It remains partial validation.
 
 By default `--fast` still uses `--all-features` for the packages it builds. That
 narrows *which tests execute*, not necessarily *which unrelated test binaries
@@ -100,7 +125,8 @@ bash scripts/check_all.sh --lane all
 ```
 
 Even `--lane all` runs only the three test lanes and their required preflight;
-it does not claim full validation. GPU selections preserve the global lock.
+it does not run `msrv-check` or `feature-isolation-check` and does not claim
+full validation. GPU selections preserve the global lock.
 `--lane policy` runs policy/format/structure checks without test lanes.
 
 Feature selection follows Cargo semantics:
@@ -113,9 +139,10 @@ bash scripts/check_all.sh --all-features
 
 `--all-features` conflicts with the other feature selectors.
 `--no-default-features` may accompany `--features`. Any CLI feature selector
-replaces, rather than merges with, the compatibility `FEATURES` value. The
-selected feature set applies to every workspace phase; the default is
-`--all-features`.
+replaces, rather than merges with, the compatibility `FEATURES` value for the
+existing workspace phases. In full mode, `feature-isolation-check` still runs
+its complete package-local matrix regardless of a custom feature selector; the
+default selection for the existing phases is `--all-features`.
 
 Shared-GPU tests automatically use every CPU core available to the current
 environment. `check_all.sh` validates the positive integer returned by `nproc`

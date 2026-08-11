@@ -106,6 +106,19 @@ fn interop_shared_authority_surface_smoke() {
 
 #[test]
 fn interop_high_level_adapter_surface_smoke() {
+    type DataFrameBorrowedImport = for<'a, 'b> fn(
+        &'a BorrowedTableView<'b>,
+        Option<Vec<String>>,
+        &'a Runtime,
+    ) -> std::result::Result<DataFrame, InteropError>;
+    type DataFramePreparedImport = for<'a, 'b> fn(
+        &'a PreparedTableExport<'b>,
+        Option<Vec<String>>,
+        &'a Runtime,
+    ) -> std::result::Result<DataFrame, InteropError>;
+    type DataFrameOwnedImport =
+        fn(OwnedTableTransfer, Option<Vec<String>>, &Runtime) -> std::result::Result<DataFrame, InteropError>;
+
     fn assert_arrow_host_record_batch_import(
         _f: fn(&Runtime, &RecordBatch) -> std::result::Result<DataFrame, cudf::Error>,
     ) {
@@ -114,26 +127,9 @@ fn interop_high_level_adapter_surface_smoke() {
         _f: for<'a, 'b> fn(&'a PreparedColumnExport<'b>, &'a Runtime) -> std::result::Result<Series, InteropError>,
     ) {
     }
-    fn assert_dataframe_borrowed_import(
-        _f: for<'a, 'b> fn(
-            &'a BorrowedTableView<'b>,
-            Option<Vec<String>>,
-            &'a Runtime,
-        ) -> std::result::Result<DataFrame, InteropError>,
-    ) {
-    }
-    fn assert_dataframe_prepared_import(
-        _f: for<'a, 'b> fn(
-            &'a PreparedTableExport<'b>,
-            Option<Vec<String>>,
-            &'a Runtime,
-        ) -> std::result::Result<DataFrame, InteropError>,
-    ) {
-    }
-    fn assert_dataframe_owned_import(
-        _f: fn(OwnedTableTransfer, Option<Vec<String>>, &Runtime) -> std::result::Result<DataFrame, InteropError>,
-    ) {
-    }
+    fn assert_dataframe_borrowed_import(_f: DataFrameBorrowedImport) {}
+    fn assert_dataframe_prepared_import(_f: DataFramePreparedImport) {}
+    fn assert_dataframe_owned_import(_f: DataFrameOwnedImport) {}
     fn assert_dataframe_owned_producer(
         _f: fn(
             DataFrame,

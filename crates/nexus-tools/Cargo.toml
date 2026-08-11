@@ -21,6 +21,7 @@ datafusion-baseline-contract-validate = [
   "dep:nexus-query-engine",
   "datafusion-nexus/iceberg",
   "datafusion-nexus/bench-support",
+  "datafusion-nexus/test-support",
 ]
 clickbench-stage-probe = [
   "dep:cudf",
@@ -31,7 +32,14 @@ clickbench-stage-probe = [
   "dep:nexus-query-engine",
   "datafusion-nexus/bench-support",
 ]
-cugraph-oracle = ["dep:cudf", "dep:datafusion", "dep:datafusion-nexus", "dep:nexus-query-engine", "datafusion-nexus/cugraph"]
+cugraph-oracle = [
+  "dep:cudf",
+  "dep:datafusion",
+  "dep:datafusion-nexus",
+  "dep:nexus-query-engine",
+  "datafusion-nexus/cugraph",
+  "datafusion-nexus/test-support",
+]
 cugraph-similarity-calibrate = ["dep:cudf", "dep:nexus-query-engine", "nexus-query-engine/cugraph"]
 iceberg-e2e = [
   "dep:datafusion",
@@ -56,6 +64,7 @@ single-node-multi-gpu-validate-run = [
   "dep:datafusion",
   "dep:datafusion-nexus",
   "dep:nexus-query-engine",
+  "datafusion-nexus/test-support",
   # P6.2's device identity (model name, UUID, physical framebuffer) comes from
   # NVML, and the artifact contract requires recording it.
   "datafusion-nexus/nvml",
@@ -98,7 +107,7 @@ nexus-query-engine = { workspace = true, optional = true }
 futures = { workspace = true }
 iceberg = { workspace = true, optional = true }
 iceberg-catalog-glue = { workspace = true, optional = true }
-parquet = { workspace = true }
+parquet = { workspace = true, features = ["arrow"] }
 opentelemetry = { workspace = true, optional = true }
 opentelemetry-proto = { workspace = true, optional = true }
 prost = { workspace = true }

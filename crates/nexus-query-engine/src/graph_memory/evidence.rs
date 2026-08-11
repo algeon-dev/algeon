@@ -1,10 +1,12 @@
+#[cfg(any(feature = "cugraph", test))]
+use super::model::semantic_edge_row_width_bytes;
 use super::{
     GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES, GRAPH_MEMORY_ESTIMATE_EXCEEDS_BUDGET_REASON, GraphCalibrationSource,
     GraphMemoryClass, GraphPairCardinalityAdmissionMode, GraphPairCardinalitySource, GraphReservationOutcome,
     GraphSeedMode, GraphStatistics, GraphVertexEstimateSource,
     model::{
         GraphDerivedTerms, graph_live_reservation_floor_top_up_bytes, graph_memory_arithmetic_error,
-        project_model_bytes, semantic_edge_row_width_bytes,
+        project_model_bytes,
     },
     side_input::graph_side_input_workspace_peak_bytes,
 };

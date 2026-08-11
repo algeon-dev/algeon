@@ -1,9 +1,9 @@
+#[cfg(feature = "cugraph")]
 use arrow::datatypes::DataType;
 
-use super::{
-    evidence::GraphMemoryEstimate,
-    model::{hard_row_upper_bound_for_plan_node, missing_graph_input_error},
-};
+#[cfg(feature = "cugraph")]
+use super::model::hard_row_upper_bound_for_plan_node;
+use super::{evidence::GraphMemoryEstimate, model::missing_graph_input_error};
 use crate::{
     error::{QueryError, QueryErrorCode, Result},
     plan::{GraphAlgorithm, GraphAlgorithmParams, NodeId, PlanNode, QueryPlan},
