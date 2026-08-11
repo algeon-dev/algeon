@@ -77,7 +77,7 @@ pub(crate) fn register_gpu_resident_producer_discovery(discovery: GpuResidentPro
     let mut discoveries = GPU_RESIDENT_PRODUCER_DISCOVERIES
         .get_or_init(|| Mutex::new(Vec::new()))
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+        .expect("GPU-resident producer discovery registry mutex cannot be poisoned");
     if !discoveries.iter().any(|candidate| std::ptr::fn_addr_eq(*candidate, discovery)) {
         discoveries.push(discovery);
     }
@@ -298,7 +298,7 @@ pub(crate) fn gpu_resident_producer(plan: &dyn ExecutionPlan) -> Option<&dyn Gpu
         GPU_RESIDENT_PRODUCER_DISCOVERIES
             .get_or_init(|| Mutex::new(Vec::new()))
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .expect("GPU-resident producer discovery registry mutex cannot be poisoned")
             .clone()
     };
     discoveries.iter().find_map(|discovery| discovery(plan)).or_else(|| {

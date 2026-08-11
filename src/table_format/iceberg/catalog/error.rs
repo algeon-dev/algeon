@@ -247,7 +247,7 @@ fn extract_value_after(text: &str, marker: &str) -> Option<String> {
     let value = text[start..]
         .split(|ch: char| ch == ',' || ch == ')' || ch == '}' || ch.is_whitespace())
         .next()
-        .unwrap_or("")
+        .expect("splitting a string always yields one item")
         .trim_matches('"');
     (!value.is_empty()).then(|| value.to_string())
 }

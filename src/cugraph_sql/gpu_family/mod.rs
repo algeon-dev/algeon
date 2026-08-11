@@ -97,13 +97,15 @@ impl GpuFunctionFamily for CugraphGpuFunctionFamily {
             &self.config,
         )
         .await;
-        let normalized_options = serde_json::from_str(&row.normalized_options_json).unwrap_or_else(|_| json!({}));
+        let normalized_options: Value =
+            serde_json::from_str(&row.normalized_options_json).expect("cuGraph validation options JSON is valid");
         let normalized_call = json!({
             "schema_version": request.schema_version,
             "relations": { "edges": { "table": edges.table } },
             "options": normalized_options,
         });
-        let output_schema = serde_json::from_str(&row.output_schema_json).unwrap_or_else(|_| json!({}));
+        let output_schema: Value =
+            serde_json::from_str(&row.output_schema_json).expect("cuGraph validation schema JSON is valid");
         let details = json!({
             "edges": {
                 "table": edges.table,

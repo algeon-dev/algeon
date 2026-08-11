@@ -314,7 +314,7 @@ pub(super) fn exact_execution_plan_output_rows(plan: &dyn ExecutionPlan) -> Resu
     if partition_count <= 1 {
         let statistics = plan.partition_statistics(None)?;
         if let Precision::Exact(rows) = statistics.num_rows {
-            return Ok(u64::try_from(rows).ok());
+            return Ok(Some(rows as u64));
         }
     }
 
@@ -328,9 +328,7 @@ pub(super) fn exact_execution_plan_output_rows(plan: &dyn ExecutionPlan) -> Resu
         let Precision::Exact(rows) = statistics.num_rows else {
             return Ok(native_query_plan_hard_row_upper_bound(plan));
         };
-        let Some(rows) = u64::try_from(rows).ok() else {
-            return Ok(native_query_plan_hard_row_upper_bound(plan));
-        };
+        let rows = rows as u64;
         let Some(next_total) = total.checked_add(rows) else {
             return Ok(native_query_plan_hard_row_upper_bound(plan));
         };

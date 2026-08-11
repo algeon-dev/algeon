@@ -360,11 +360,11 @@ pub fn credential_free_endpoint_identity(endpoint: &str) -> String {
     let without_query = trimmed.find(['?', '#']).map_or(trimmed, |index| &trimmed[..index]).trim_end_matches('/');
     if let Some((scheme, rest)) = without_query.split_once("://") {
         let (authority, path) = rest.split_once('/').unwrap_or((rest, ""));
-        let authority = authority.rsplit('@').next().unwrap_or(authority);
+        let authority = authority.rsplit_once('@').map_or(authority, |(_, authority)| authority);
         if path.is_empty() { format!("{scheme}://{authority}") } else { format!("{scheme}://{authority}/{path}") }
     } else {
         let (authority, path) = without_query.split_once('/').unwrap_or((without_query, ""));
-        let authority = authority.rsplit('@').next().unwrap_or(authority);
+        let authority = authority.rsplit_once('@').map_or(authority, |(_, authority)| authority);
         if path.is_empty() { authority.to_string() } else { format!("{authority}/{path}") }
     }
 }

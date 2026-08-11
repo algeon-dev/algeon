@@ -151,8 +151,7 @@ pub(in crate::native) fn local_parquet_source_diagnostics(
     let ranged_file_count = files.iter().filter(|file| file.range.is_some()).count();
     let byte_range_disposition = if ranged_file_count == 0 {
         NativeByteRangeDisposition::FullFiles
-    } else if coalesced_files.is_ok() {
-        let coalesced_files = coalesced_files.as_ref().expect("coalesced file result already checked");
+    } else if let Ok(coalesced_files) = coalesced_files.as_ref() {
         if coalesced_files
             .iter()
             .any(|file| file.byte_range_representation == LocalParquetByteRangeRepresentation::RowGroupSelection)

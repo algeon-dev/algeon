@@ -43,10 +43,9 @@ pub(in crate::native::lowering) fn source_reader_pushdown_predicate(
     frontend_schema: SchemaRef,
     native_source: &NativeLocalParquetSource,
 ) -> Result<Option<SourceReaderPushdownPredicate>, CapabilityReason> {
-    if parquet_source.filter().is_none() {
+    let Some(scan_predicate) = parquet_source.filter() else {
         return Ok(None);
-    }
-    let scan_predicate = parquet_source.filter().expect("filter presence checked above");
+    };
     if filter.is_none() && scan_predicate_is_dynamic_filter_hint(scan_predicate.as_ref()) {
         return Ok(None);
     }

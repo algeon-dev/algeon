@@ -265,7 +265,7 @@ async fn validate_batch(
                     request.normalized_json(),
                 ),
                 None if !entry.descriptor.availability.is_available() => GpuCallValidation::invalid(
-                    entry.descriptor.availability.unavailable_reason().unwrap_or("required_feature_disabled"),
+                    entry.descriptor.availability.unavailable_reason().expect("unavailable variant has a reason"),
                     "GPU function is unavailable in this session/build",
                     entry.descriptor.function_name.clone(),
                     request.normalized_json(),

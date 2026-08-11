@@ -41,17 +41,6 @@ impl HostBfsCodebook {
         }
         values.shrink_to_fit();
         let values = Arc::new(values);
-        for (index, _) in values.iter().enumerate() {
-            i32::try_from(index).map_err(|_| {
-                Error::new(
-                    ErrorCode::SizeOverflow,
-                    "datafusion_nexus.cugraph_sql.logical_bfs_host_mapping",
-                    "logical BFS host codebook index does not fit Int32",
-                )
-                .with_fact("reason", "logical_bfs_codebook_overflow")
-                .with_fact("index", index)
-            })?;
-        }
         Ok(Self { values })
     }
 
@@ -108,10 +97,7 @@ impl HostBfsCodebook {
     }
 
     pub(super) fn code(&self, value: &str) -> Option<i32> {
-        self.values
-            .binary_search_by(|candidate| candidate.as_str().cmp(value))
-            .ok()
-            .and_then(|index| i32::try_from(index).ok())
+        self.values.binary_search_by(|candidate| candidate.as_str().cmp(value)).ok().map(|index| index as i32)
     }
 
     pub(super) fn decode_code(&self, code: i64) -> Result<String> {
