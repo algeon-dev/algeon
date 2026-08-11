@@ -5,7 +5,6 @@ fn attempt_requirement_hint_selects_grant_for_one_admission() {
             ..QueryExecutionConfig::default()
         },
         QueueBounds::default(),
-        non_gds_deployment(),
         test_ledger(4096, 1, Default::default()),
     )
     .unwrap();
@@ -24,7 +23,6 @@ fn admission_without_observation_mints_one_identity_per_committed_grant() {
     let service = AdmissionTestController::new_with_ledger(
         QueryExecutionConfig::default(),
         QueueBounds::default(),
-        non_gds_deployment(),
         test_ledger(4096, 2, Default::default()),
     )
     .unwrap();
@@ -47,7 +45,6 @@ fn attempt_binding_identity_survives_request_placement_and_handle_commit() {
     let service = AdmissionTestController::new_with_ledger(
         QueryExecutionConfig::default(),
         QueueBounds::default(),
-        non_gds_deployment(),
         test_ledger(4096, 1, Default::default()),
     )
     .unwrap();
@@ -94,7 +91,6 @@ fn eager_device_entries_share_requirement_envelope_bytes_for_fit_grant_and_execu
     let service = AdmissionTestController::new(
         QueryExecutionConfig::default(),
         QueueBounds::default(),
-        non_gds_deployment(),
     )
     .expect("synthetic admission service");
     let proof = explicit_sink_capability_proof();
@@ -163,7 +159,6 @@ fn impossible_requirement_is_rejected_before_enqueue() {
             ..QueryExecutionConfig::default()
         },
         QueueBounds::default(),
-        non_gds_deployment(),
         test_ledger(1024, 1, Default::default()),
     )
     .unwrap();
@@ -185,7 +180,6 @@ fn plan_capability_proof_missing_from_exact_device_profile_is_rejected_before_qu
             ..QueryExecutionConfig::default()
         },
         QueueBounds::default(),
-        non_gds_deployment(),
         DeviceCapabilities::only(std::iter::empty::<DeviceCapability>()),
     )
     .unwrap();
@@ -212,7 +206,6 @@ fn submitted_plan_proof_survives_admission_while_test_placement_requirement_does
     let service = AdmissionTestController::new(
         QueryExecutionConfig::default(),
         QueueBounds::default(),
-        non_gds_deployment(),
     )
     .unwrap();
     let proof = explicit_sink_capability_proof();
@@ -265,7 +258,6 @@ fn restricted_capability_service_and_requirement() -> (AdmissionTestController, 
             ..QueryExecutionConfig::default()
         },
         QueueBounds::default(),
-        non_gds_deployment(),
         DeviceCapabilities::only([capability]),
     )
     .unwrap();
@@ -318,7 +310,6 @@ fn raised_requirement_floor_is_preserved_across_admissions() {
             ..QueryExecutionConfig::default()
         },
         QueueBounds::default(),
-        non_gds_deployment(),
         test_ledger(100, 4, Default::default()),
     )
     .unwrap();

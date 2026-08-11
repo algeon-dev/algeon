@@ -411,20 +411,15 @@ impl GpuBackendCoreDraft {
             return Err(invalid_config("max_active_queries", "derived global maximum must be positive")
                 .with_fact("reason", "zero"));
         }
-        validate_controller_draft(&self.controller, &ordinals, &self.deployment_io_capability)
+        validate_controller_draft(&self.controller, &ordinals)
     }
 }
 
-fn validate_controller_draft(
-    controller: &GpuBackendControllerDraft,
-    ordinals: &[usize],
-    deployment: &DeploymentIoCapability,
-) -> Result<()> {
+fn validate_controller_draft(controller: &GpuBackendControllerDraft, ordinals: &[usize]) -> Result<()> {
     QueryService::validate_controller_policy_for_backend(
         controller.execution_config(),
         controller.queue_bounds(),
         ordinals,
-        deployment,
     )
 }
 
