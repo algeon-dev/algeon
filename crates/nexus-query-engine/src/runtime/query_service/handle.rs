@@ -607,6 +607,15 @@ fn take_owned_for_cleanup<T>(owned: &Mutex<Option<T>>, resource: &'static str) -
     }
 }
 
+fn project_pool_usage(usage: cudf::DeviceMemoryPoolUsage) -> AttemptAllocatorPoolUsage {
+    AttemptAllocatorPoolUsage {
+        reserved_current_bytes: usage.reserved_current_bytes,
+        reserved_high_bytes: usage.reserved_high_bytes,
+        used_current_bytes: usage.used_current_bytes,
+        used_high_bytes: usage.used_high_bytes,
+    }
+}
+
 struct QueryHandleRelease {
     service: Option<Arc<QueryServiceInner>>,
     admission_request_id: AdmissionRequestId,
@@ -699,14 +708,19 @@ impl QueryHandleReportCommit {
             });
         }
         let final_domain_usage = usage.map(crate::observability::AttemptFinalDomainUsage::from);
+        let post_cleanup_pool_usage =
+            self.domain.as_ref().and_then(|domain| domain.pool_usage().ok()).map(project_pool_usage);
         // The post-cleanup usage is intentionally timed independently from
         // the pre-cleanup outcome-terminal sample. No timestamp is invented
         // for a release without an admitted attempt-clock binding.
-        let post_cleanup_usage = external_completion
-            .as_ref()
-            .and_then(QueryCompletion::attempt_monotonic_ns)
-            .zip(final_domain_usage)
-            .map(|(sampled_ns, usage)| AttemptTimedDomainUsage { sampled_ns, usage });
+        let post_cleanup_usage =
+            external_completion.as_ref().and_then(QueryCompletion::attempt_monotonic_ns).zip(final_domain_usage).map(
+                |(sampled_ns, usage)| AttemptTimedDomainUsage {
+                    sampled_ns,
+                    usage,
+                    pool_usage: post_cleanup_pool_usage,
+                },
+            );
         // Commit any device or backend health disposition before taking the
         // atomic ledger snapshot. The resource evidence sequence therefore
         // reflects the state which governed report publication and reuse.
@@ -1161,8 +1175,10 @@ impl QueryHandleRelease {
         let Some(domain) = self.envelope.as_ref().and_then(|envelope| envelope.domain()) else {
             return;
         };
+        let usage = domain.usage().ok();
+        let pool_usage = domain.pool_usage().ok().map(project_pool_usage);
         self.outcome_terminal_domain_usage =
-            domain.usage().ok().map(|usage| AttemptTimedDomainUsage { sampled_ns, usage: usage.into() });
+            usage.map(|usage| AttemptTimedDomainUsage { sampled_ns, usage: usage.into(), pool_usage });
     }
 
     fn finish(mut self) {

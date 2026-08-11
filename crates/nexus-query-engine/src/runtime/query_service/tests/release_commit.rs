@@ -912,6 +912,11 @@ fn oom_release_projects_truthful_resource_evidence() {
         terminal_usage.sampled_ns <= post_cleanup_usage.sampled_ns,
         "usage samples retain their independent release ordering"
     );
+    for pool in [terminal_usage.pool_usage, post_cleanup_usage.pool_usage] {
+        let pool = pool.expect("query-domain pool usage is projected at both release samples");
+        assert!(pool.used_current_bytes <= pool.reserved_current_bytes);
+        assert!(pool.used_high_bytes <= pool.reserved_high_bytes);
+    }
     assert_eq!(
         evidence.outcome_terminal_usage.provenance,
         crate::observability::AttemptEvidenceProvenance::SampledAfterFailure

@@ -5,9 +5,10 @@ pub(super) fn execute_edge_normalize(
     context: &ExecutionContext,
     node_id: NodeId,
     node: &EdgeNormalizeNode,
-    input: GpuDataFrame,
+    mut input: GpuDataFrame,
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
+    let retained_normalization_source = input.take_live_reservation();
     let graph_residency = input.graph_residency().cloned();
     // Edge normalization only restructures topology (reverse/dedup); a null
     // weight or edge_id must not drop an edge here. Weight-null conflicts are
@@ -80,7 +81,8 @@ pub(super) fn execute_edge_normalize(
     }
 
     metrics.operator_time += timer.elapsed();
-    let output = GpuDataFrame::try_new_with_source_residency(frame, &input)?;
+    let output = GpuDataFrame::try_new_with_source_residency(frame, &input)?
+        .with_retained_normalization_source(retained_normalization_source);
     Ok(match graph_residency {
         Some(graph_residency) => output.with_graph_residency(graph_residency),
         None => output,

@@ -295,7 +295,7 @@ fn verify_artifact(cell: &CellManifest, artifact: &Value, failures: &mut Vec<Str
         || artifact.get("status").and_then(Value::as_str) != Some("measured_run")
         || artifact.pointer("/execution/measurement/qualifying").and_then(Value::as_bool) != Some(true)
     {
-        failures.push(format!("{} is not a qualifying v4 measured run", path.display()));
+        failures.push(format!("{} is not a qualifying v{} measured run", path.display(), RUN_ARTIFACT_VERSION));
     }
     if artifact
         .pointer("/execution/qualification_failures")
@@ -427,6 +427,24 @@ fn verify_allocator_bounds(artifact: &Value, failures: &mut Vec<String>, path: &
             };
             if peak > grant || peak > domain {
                 failures.push(format!("{} attempt {usage} peak exceeds its grant", path.display()));
+            }
+            let pool = format!("/terminal_evidence/resource_evidence/{usage}/value/pool_usage");
+            let reserved_current = attempt.pointer(&format!("{pool}/reserved_current_bytes")).and_then(Value::as_u64);
+            let reserved_high = attempt.pointer(&format!("{pool}/reserved_high_bytes")).and_then(Value::as_u64);
+            let used_current = attempt.pointer(&format!("{pool}/used_current_bytes")).and_then(Value::as_u64);
+            let used_high = attempt.pointer(&format!("{pool}/used_high_bytes")).and_then(Value::as_u64);
+            let Some(((reserved_current, reserved_high), (used_current, used_high))) =
+                reserved_current.zip(reserved_high).zip(used_current.zip(used_high))
+            else {
+                failures.push(format!("{} attempt has no {usage} query-domain pool usage", path.display()));
+                continue;
+            };
+            if reserved_current > reserved_high || used_current > used_high || used_current > reserved_current {
+                failures.push(format!("{} attempt {usage} has invalid query-domain pool counters", path.display()));
+            }
+            if used_high > reserved_high {
+                failures
+                    .push(format!("{} attempt {usage} pool high-water usage exceeds reserved bytes", path.display()));
             }
         }
     }
@@ -625,6 +643,16 @@ mod tests {
         assert!(contains_failed_status(&serde_json::json!({"status": "failed"})));
 
         let path = Path::new("artifact.json");
+        let manifest: QualificationManifest = serde_json::from_slice(PRODUCTION_MANIFEST).unwrap();
+        let cell = &manifest.cells[0];
+        let mut stale = qualifying_artifact(&cell.profile_sha256, 1);
+        stale["version"] = Value::from(RUN_ARTIFACT_VERSION - 1);
+        let mut stale_failures = Vec::new();
+        verify_artifact(cell, &stale, &mut stale_failures, path);
+        assert!(
+            stale_failures.contains(&format!("artifact.json is not a qualifying v{RUN_ARTIFACT_VERSION} measured run"))
+        );
+
         let mut artifact = serde_json::json!({
             "execution": {"measurement": {"aggregate": {"attempts": [{
                 "device_ordinal": null,
@@ -669,7 +697,8 @@ mod tests {
                     "offset_ns": offset_ns, "device_ordinal": device_ordinal, "health_open": true,
                     "gpu_utilization_pct": 80, "memory_utilization_pct": 80,
                     "cuda_free_bytes": 20, "nvml_used_bytes": 80, "active_attempts": 1,
-                    "managed_capacity_bytes": 100, "live_grants_bytes": 80, "live_reserved_bytes": 40,
+                    "managed_capacity_bytes": 100, "live_grants_bytes": 80,
+                    "live_grant_ids": [device_ordinal + 1], "live_reserved_bytes": 40,
                     "cache_evictable_resident_bytes": 0, "cache_pinned_in_use_bytes": 0,
                     "cache_physical_current_bytes": null, "cache_physical_peak_bytes": null,
                     "allocation_failure_count": 0, "ledger_sequence": second,

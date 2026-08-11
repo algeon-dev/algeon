@@ -65,8 +65,9 @@ pub(super) fn admit_graph_memory(
         allow_nulls: false,
         vertex_estimate,
         statistics: None,
-        already_accounted_graph_input_bytes: 0,
+        already_accounted_normalized_graph_input_bytes: 0,
         exact_normalized_graph_input_charge_bytes: None,
+        retained_normalization_source_bytes: 0,
         already_accounted_similarity_pair_input_bytes: 0,
     })?;
     // Every non-empty graph executor gets an I11 calibration row, including
@@ -180,11 +181,12 @@ pub(in crate::exec) struct GraphMemoryReservationRequest<'a> {
     pub(in crate::exec) allow_nulls: bool,
     pub(in crate::exec) vertex_estimate: Option<crate::graph_memory::GraphVertexEstimate>,
     pub(in crate::exec) statistics: Option<crate::graph_memory::GraphStatistics>,
-    pub(in crate::exec) already_accounted_graph_input_bytes: u64,
+    pub(in crate::exec) already_accounted_normalized_graph_input_bytes: u64,
     /// The exact tracker charge for a live `EdgeNormalize` output. Unlike a
     /// generic source frame, this is the sole logical graph-edge frame and may
     /// safely credit its full physical charge against the whole-peak model.
     pub(in crate::exec) exact_normalized_graph_input_charge_bytes: Option<u64>,
+    pub(in crate::exec) retained_normalization_source_bytes: u64,
     pub(in crate::exec) already_accounted_similarity_pair_input_bytes: u64,
 }
 
@@ -206,8 +208,9 @@ pub(in crate::exec) fn graph_memory_reservation_report(
         allow_nulls,
         vertex_estimate,
         statistics,
-        already_accounted_graph_input_bytes,
+        already_accounted_normalized_graph_input_bytes,
         exact_normalized_graph_input_charge_bytes,
+        retained_normalization_source_bytes,
         already_accounted_similarity_pair_input_bytes,
     } = request;
     let mut model_input = graph_memory_model_input_for_frame(input, spec, input_edges, allow_nulls)?;
@@ -235,17 +238,18 @@ pub(in crate::exec) fn graph_memory_reservation_report(
     if let Some(statistics) = statistics {
         model_input = model_input.with_statistics(statistics);
     }
-    // This is the last pre-execution point with the exact materialized edge
-    // shape. Attach the owner-provided raw-BFS construction bounds before bounded
-    // pricing so relation-backed source/target inputs do not erase it.
-    model_input = crate::graph_memory::with_raw_bfs_construction_workspace_bounds_from_owner(spec, model_input);
+    model_input = crate::graph_memory::with_graph_construction_workspace_bounds_from_owner(spec, model_input);
     let model = crate::graph_memory::GraphMemoryModel;
     let estimate = match budget_bytes.is_some() {
         true => model.estimate_for_bounded(spec, model_input)?,
         false => model.estimate(spec, model_input)?,
     };
     let report = crate::graph_memory::GraphReservationReport::from_estimate(node_id, estimate, budget_bytes)
-        .credit_live_graph_input(already_accounted_graph_input_bytes, exact_normalized_graph_input_charge_bytes)
+        .credit_live_graph_input(
+            already_accounted_normalized_graph_input_bytes,
+            exact_normalized_graph_input_charge_bytes,
+            retained_normalization_source_bytes,
+        )
         .credit_live_similarity_pair_input(already_accounted_similarity_pair_input_bytes);
     Ok(match statistics {
         Some(statistics) => report.with_statistics(statistics),

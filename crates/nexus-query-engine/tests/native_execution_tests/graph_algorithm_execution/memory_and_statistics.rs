@@ -404,8 +404,6 @@ fn bounded_sparse_pagerank_uses_runtime_vertex_estimate_to_admit_graph_memory() 
     );
     assert!(fallback_request > graph_budget_remaining);
 
-    let probe_expected_bytes =
-        graph_vertex_estimate_probe_bytes(model_input, input_bytes.saturating_add(graph_budget_remaining));
     let probe_reserve = result
         .metrics()
         .reservation_events
@@ -416,6 +414,11 @@ fn bounded_sparse_pagerank_uses_runtime_vertex_estimate_to_admit_graph_memory() 
                 && event.action == MemoryReservationEventAction::Reserve
         })
         .expect("bounded graph admission should reserve a sized exact-vertex probe");
+    let live_before_probe = probe_reserve
+        .current_reserved_bytes
+        .saturating_sub(u64::try_from(probe_reserve.charged_delta_bytes).expect("granted probe charge fits u64"));
+    let probe_expected_bytes =
+        graph_vertex_estimate_probe_bytes(model_input, probe_reserve.budget_bytes.saturating_sub(live_before_probe));
     assert_eq!(probe_reserve.requested_bytes, probe_expected_bytes);
     assert!(result.metrics().reservation_events.iter().any(|event| {
         event.memory_boundary == GRAPH_VERTEX_ESTIMATE_BOUNDARY
@@ -491,6 +494,20 @@ fn bounded_triangle_count_reports_runtime_graph_statistics() {
     assert_eq!(graph_statistics.sum_min_degree_oriented, Some(1));
     assert_eq!(graph_statistics.oriented_edge_count, Some(4));
     assert_eq!(graph_statistics.peak_chunk_min_degree_sum, Some(1));
+    let construction_workspace = cugraph::cudf_interop::graph_construction_workspace_preflight(
+        &cugraph::cudf_interop::GraphConstructionPreflightInput::new(
+            cugraph::types::DataType::Int32,
+            cugraph::types::DataType::Int32,
+            None,
+            graph_report.has_edge_id,
+            false,
+            true,
+            usize::try_from(graph_report.input_edges).unwrap(),
+            usize::try_from(graph_statistics.exact_vertices).unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
     let exact_vertex_no_statistics = GraphMemoryModel
         .estimate(
             &expected_model_spec,
@@ -504,7 +521,10 @@ fn bounded_triangle_count_reports_runtime_graph_statistics() {
                 vertex_estimate: Some(GraphVertexEstimate::runtime_exact_distinct(graph_statistics.exact_vertices)),
                 statistics: None,
                 edge_normalize_inserted: graph_report.edge_normalize_inserted,
-                construction_workspace_bounds: None,
+                construction_workspace_bounds: Some(nexus_query_engine::graph_memory::GraphConstructionWorkspaceBounds::new(
+                    construction_workspace.renumber_workspace_bytes(),
+                    construction_workspace.compression_workspace_bytes(),
+                )),
                 pair_rows: None,
                 pair_vertex_width_bytes: None,
                 pair_cardinality_source: None,
@@ -524,7 +544,10 @@ fn bounded_triangle_count_reports_runtime_graph_statistics() {
                 vertex_estimate: Some(GraphVertexEstimate::runtime_exact_distinct(graph_statistics.exact_vertices)),
                 statistics: Some(graph_statistics),
                 edge_normalize_inserted: graph_report.edge_normalize_inserted,
-                construction_workspace_bounds: None,
+                construction_workspace_bounds: Some(nexus_query_engine::graph_memory::GraphConstructionWorkspaceBounds::new(
+                    construction_workspace.renumber_workspace_bytes(),
+                    construction_workspace.compression_workspace_bytes(),
+                )),
                 pair_rows: None,
                 pair_vertex_width_bytes: None,
                 pair_cardinality_source: None,
@@ -611,9 +634,18 @@ fn pagerank_python_cugraph_reports_edge_normalize_in_graph_reservation() {
         vec![Arc::new(Int32Array::from(vec![0, 1, 2])), Arc::new(Int32Array::from(vec![1, 2, 0]))],
     )
     .unwrap();
+    let fixture_runtime = backend_runtime();
+    let fixture_dir = unique_temp_dir("pagerank-normalization-source-lifetime");
+    let edge_path = fixture_dir.join("edges.parquet");
+    DataFrame::from_record_batch(&fixture_runtime, &edge_batch).unwrap().write_parquet(&edge_path).unwrap();
+    let local_source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&edge_path)],
+        Arc::clone(&edge_schema),
+        vec!["src".to_string(), "dst".to_string()],
+    );
 
     let mut builder = QueryPlanBuilder::new();
-    let edges = builder.add_source(SourceNode::GpuResident(gpu_resident_source("edges", Arc::clone(&edge_schema), &edge_batch)));
+    let edges = builder.add_source(SourceNode::LocalParquet(local_source));
     let spec = GraphAlgorithmSpec::with_stable_schema(
         GraphAlgorithm::PageRank,
         GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
@@ -624,26 +656,40 @@ fn pagerank_python_cugraph_reports_edge_normalize_in_graph_reservation() {
     let plan = builder.finish_with_host_sink_schema(graph, stable_graph_result_schema(GraphAlgorithm::PageRank));
     assert!(plan.contains_edge_normalize());
     let admitted = context.admit_plan_with_graph_memory_calibration_override(&plan, calibration_override).unwrap();
-    let runtime = Arc::new(admitted.runtime().unwrap());
 
-    let mut gpu_inputs = GpuResidentInputMap::new();
-    gpu_inputs.insert(
-        "edges".to_string(),
-        GpuResultHandle::new(
-            &admitted,
-            GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &edge_batch).unwrap()),
-            Arc::clone(&edge_schema),
-        )
-        .unwrap(),
-    );
-
-    let result =
-        admitted.execute_with_graph_memory_calibration_override(&plan, &gpu_inputs, calibration_override).unwrap();
+    let result = admitted
+        .execute_with_graph_memory_calibration_override(&plan, &GpuResidentInputMap::new(), calibration_override)
+        .unwrap();
     let reservations = &result.metrics().graph_reservation_rows;
     assert_eq!(reservations.len(), 1);
     assert!(reservations[0].edge_normalize_inserted);
     assert_eq!(reservations[0].construction_policy, GraphConstructionPolicy::RawLibcugraph);
     assert_eq!(reservations[0].raw_input_edges, Some(45));
     assert!(reservations[0].graph_model_error_ratio.is_some());
+    let normalized_frame_bytes = result
+        .metrics()
+        .reservation_events
+        .iter()
+        .find(|event| {
+            event.memory_boundary == "bounded_generic_edge_normalize_output"
+                && event.action == MemoryReservationEventAction::Transfer
+        })
+        .expect("edge normalization must transfer its live output charge")
+        .requested_bytes;
+    let retained_source_bytes = u64::try_from(edge_batch.num_rows()).expect("fixture rows fit u64") * 2 * 4;
+    let semantic_edge_bytes = reservations[0]
+        .input_edges
+        .checked_mul(reservations[0].vertex_width_bytes.checked_mul(2).expect("edge width fits u64"))
+        .expect("semantic edge bytes fit u64");
+    let mut expected_incremental_bytes =
+        reservations[0].model_requested_bytes.max(GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES);
+    expected_incremental_bytes -= normalized_frame_bytes.min(expected_incremental_bytes);
+    expected_incremental_bytes -= retained_source_bytes.min(semantic_edge_bytes).min(expected_incremental_bytes);
+    assert_eq!(
+        reservations[0].requested_bytes, expected_incremental_bytes,
+        "graph admission must credit both live normalization owners while their grant debits remain retained"
+    );
+    drop(result);
     admitted.finish();
+    fs::remove_dir_all(fixture_dir).unwrap();
 }

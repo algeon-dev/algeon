@@ -99,6 +99,7 @@ pub struct GpuDataFrame {
     frame: DataFrame,
     placement: ExecutionPlacement,
     live_reservation: Option<MemoryGrantLiveReservation>,
+    retained_normalization_source: Option<MemoryGrantLiveReservation>,
     source_cache_pin: Option<GpuLocalParquetSourceCachePin>,
     graph_residency: Option<Arc<GraphResidencyDescriptor>>,
 }
@@ -150,7 +151,14 @@ impl GpuDataFrame {
         source_cache_pin: Option<GpuLocalParquetSourceCachePin>,
     ) -> Self {
         let placement = frame.placement();
-        Self { frame, placement, live_reservation, source_cache_pin, graph_residency: None }
+        Self {
+            frame,
+            placement,
+            live_reservation,
+            retained_normalization_source: None,
+            source_cache_pin,
+            graph_residency: None,
+        }
     }
 
     /// Borrow the underlying cuDF frame.
@@ -238,6 +246,41 @@ impl GpuDataFrame {
             (Some(reservation), Some(grant)) if reservation.belongs_to(grant) => reservation.bytes(),
             _ => 0,
         }
+    }
+
+    pub(crate) fn take_live_reservation(&mut self) -> Option<MemoryGrantLiveReservation> {
+        self.live_reservation.take()
+    }
+
+    pub(crate) fn has_live_reservation(&self) -> bool {
+        self.live_reservation.is_some()
+    }
+
+    pub(crate) fn with_transferred_live_reservation(mut self, reservation: Option<MemoryGrantLiveReservation>) -> Self {
+        debug_assert!(reservation.is_none() || self.live_reservation.is_none());
+        if reservation.is_some() {
+            self.live_reservation = reservation;
+        }
+        self
+    }
+
+    pub(crate) fn with_retained_normalization_source(
+        mut self,
+        reservation: Option<MemoryGrantLiveReservation>,
+    ) -> Self {
+        self.retained_normalization_source = reservation;
+        self
+    }
+
+    pub(crate) fn retained_normalization_source_bytes_for(&self, grant: Option<&MemoryGrant>) -> u64 {
+        match (self.retained_normalization_source.as_ref(), grant) {
+            (Some(reservation), Some(grant)) if reservation.belongs_to(grant) => reservation.bytes(),
+            _ => 0,
+        }
+    }
+
+    pub(crate) fn take_retained_normalization_source(&mut self) -> Option<MemoryGrantLiveReservation> {
+        self.retained_normalization_source.take()
     }
 }
 

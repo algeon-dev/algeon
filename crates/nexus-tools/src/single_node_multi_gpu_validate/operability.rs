@@ -538,6 +538,7 @@ mod tests {
             admission_wait: None,
             grant_id: Some(1),
             domain_id: Some(1),
+            domain_pool_usage: None,
             total_ns: Some(10),
             queue_wait_ns: Some(1),
             physical_execution_ns: Some(5),

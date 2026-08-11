@@ -11,12 +11,35 @@
 //! values from tests alone.
 #![cfg_attr(not(feature = "single-node-multi-gpu-validate-run"), allow(dead_code))]
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use serde::{Deserialize, Serialize};
 
 use super::profile::VramCalibrationProfile;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct QueryDomainPoolClaim {
+    pub(super) device_ordinal: usize,
+    pub(super) grant_id: u64,
+    pub(super) grant_bytes: u64,
+    pub(super) reserved_high_bytes: u64,
+    pub(super) used_high_bytes: u64,
+}
+
+impl QueryDomainPoolClaim {
+    fn overhead_bytes(self) -> Option<u64> {
+        self.reserved_high_bytes.checked_sub(self.used_high_bytes)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct MatchedQueryDomainPoolUsage {
+    overhead_bytes: u64,
+    reserved_high_bytes: u64,
+}
+
 /// One sampler tick's compact per-device projection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub(super) struct DeviceSeriesRow {
     pub(super) offset_ns: u64,
     pub(super) device_ordinal: usize,
@@ -34,6 +57,7 @@ pub(super) struct DeviceSeriesRow {
     pub(super) active_attempts: usize,
     pub(super) managed_capacity_bytes: u64,
     pub(super) live_grants_bytes: u64,
+    pub(super) live_grant_ids: Vec<u64>,
     pub(super) live_reserved_bytes: u64,
     pub(super) cache_evictable_resident_bytes: u64,
     pub(super) cache_pinned_in_use_bytes: u64,
@@ -355,6 +379,11 @@ pub(super) struct OrdinalVramCalibration {
     pub(super) admission_claim_bytes_at_cuda_peak: Option<u64>,
     pub(super) cache_ledger_resident_delta_bytes_at_cuda_peak: Option<u64>,
     pub(super) cache_physical_delta_bytes_at_cuda_peak: Option<u64>,
+    /// Exact private-pool page overhead matched to the live grant set at the
+    /// physical peak. Logical grant bytes remain unchanged.
+    pub(super) query_domain_pool_overhead_bytes_at_cuda_peak: Option<u64>,
+    pub(super) query_domain_pool_reserved_high_bytes_at_cuda_peak: Option<u64>,
+    pub(super) physical_observed_bytes_at_cuda_peak: Option<u64>,
     pub(super) accounted_claim_bytes_at_cuda_peak: Option<u64>,
     pub(super) underclaim_bytes: Option<u64>,
     pub(super) overclaim_bytes: Option<u64>,
@@ -478,6 +507,7 @@ pub(super) fn drift_summary(rows: &[DeviceSeriesRow], process_rows: &[ProcessSer
 /// authority.
 pub(super) fn vram_calibration_evidence(
     rows: &[DeviceSeriesRow],
+    query_domain_pool_claims: &[QueryDomainPoolClaim],
     configured_ordinals: &[usize],
     policy: VramCalibrationProfile,
 ) -> VramCalibrationEvidence {
@@ -532,14 +562,31 @@ pub(super) fn vram_calibration_evidence(
                 _ => None,
             }
         });
+        let query_domain_pool_usage = trusted_cuda_peak.and_then(|cuda_peak| {
+            matched_query_domain_pool_usage(
+                query_domain_pool_claims,
+                *ordinal,
+                &cuda_peak.live_grant_ids,
+                cuda_peak.active_attempts,
+                cuda_peak.live_grants_bytes,
+            )
+        });
+        let query_domain_pool_overhead_bytes = query_domain_pool_usage.map(|usage| usage.overhead_bytes);
+        let query_domain_pool_reserved_high_bytes = query_domain_pool_usage.map(|usage| usage.reserved_high_bytes);
+        let physical_observed_bytes = cuda_used_delta_bytes
+            .zip(query_domain_pool_reserved_high_bytes)
+            .map(|(sampled_bytes, pool_bytes)| sampled_bytes.max(pool_bytes));
         let accounted_claim_bytes = trusted_cuda_peak
             .zip(cache_ledger_delta_bytes)
-            .map(|(cuda_peak, cache_delta)| cuda_peak.live_grants_bytes.saturating_add(cache_delta));
+            .zip(query_domain_pool_overhead_bytes)
+            .and_then(|((cuda_peak, cache_delta), pool_overhead)| {
+                cuda_peak.live_grants_bytes.checked_add(cache_delta)?.checked_add(pool_overhead)
+            });
         let post_baseline_load_claim_witness = cuda_peak
             .zip(accounted_claim_bytes)
-            .is_some_and(|(_, claim)| cuda_used_delta_bytes.is_some_and(|used| used > 0) && claim > 0);
+            .is_some_and(|(_, claim)| physical_observed_bytes.is_some_and(|used| used > 0) && claim > 0);
         let (underclaim_bytes, overclaim_bytes, observed_to_claim_ratio_milli, claim_to_observed_ratio_milli, within) =
-            match (cuda_used_delta_bytes, accounted_claim_bytes) {
+            match (physical_observed_bytes, accounted_claim_bytes) {
                 (Some(observed), Some(claim)) => {
                     let observed_limit =
                         scaled_limit(claim, policy.max_observed_to_claim_ratio_milli, policy.max_underclaim_bytes);
@@ -576,6 +623,9 @@ pub(super) fn vram_calibration_evidence(
             admission_claim_bytes_at_cuda_peak: trusted_cuda_peak.map(|row| row.live_grants_bytes),
             cache_ledger_resident_delta_bytes_at_cuda_peak: cache_ledger_delta_bytes,
             cache_physical_delta_bytes_at_cuda_peak: cache_physical_delta_bytes,
+            query_domain_pool_overhead_bytes_at_cuda_peak: query_domain_pool_overhead_bytes,
+            query_domain_pool_reserved_high_bytes_at_cuda_peak: query_domain_pool_reserved_high_bytes,
+            physical_observed_bytes_at_cuda_peak: physical_observed_bytes,
             accounted_claim_bytes_at_cuda_peak: accounted_claim_bytes,
             underclaim_bytes,
             overclaim_bytes,
@@ -604,6 +654,41 @@ pub(super) fn vram_calibration_evidence(
     }
 }
 
+fn matched_query_domain_pool_usage(
+    claims: &[QueryDomainPoolClaim],
+    device_ordinal: usize,
+    live_grant_ids: &[u64],
+    active_attempts: usize,
+    live_grants_bytes: u64,
+) -> Option<MatchedQueryDomainPoolUsage> {
+    if live_grant_ids.len() != active_attempts {
+        return None;
+    }
+    if live_grant_ids.is_empty() {
+        return (live_grants_bytes == 0)
+            .then_some(MatchedQueryDomainPoolUsage { overhead_bytes: 0, reserved_high_bytes: 0 });
+    }
+    let mut claims_by_grant = BTreeMap::new();
+    for claim in claims.iter().filter(|claim| claim.device_ordinal == device_ordinal) {
+        if claims_by_grant.insert(claim.grant_id, claim).is_some() {
+            return None;
+        }
+    }
+    let mut seen = BTreeSet::new();
+    let mut matched_grants = 0_u64;
+    let mut usage = MatchedQueryDomainPoolUsage { overhead_bytes: 0, reserved_high_bytes: 0 };
+    for grant_id in live_grant_ids {
+        if !seen.insert(*grant_id) {
+            return None;
+        }
+        let claim = claims_by_grant.get(grant_id)?;
+        matched_grants = matched_grants.checked_add(claim.grant_bytes)?;
+        usage.overhead_bytes = usage.overhead_bytes.checked_add(claim.overhead_bytes()?)?;
+        usage.reserved_high_bytes = usage.reserved_high_bytes.checked_add(claim.reserved_high_bytes)?;
+    }
+    (matched_grants == live_grants_bytes).then_some(usage)
+}
+
 impl OrdinalVramCalibration {
     fn missing(device_ordinal: usize) -> Self {
         Self {
@@ -624,6 +709,9 @@ impl OrdinalVramCalibration {
             admission_claim_bytes_at_cuda_peak: None,
             cache_ledger_resident_delta_bytes_at_cuda_peak: None,
             cache_physical_delta_bytes_at_cuda_peak: None,
+            query_domain_pool_overhead_bytes_at_cuda_peak: None,
+            query_domain_pool_reserved_high_bytes_at_cuda_peak: None,
+            physical_observed_bytes_at_cuda_peak: None,
             accounted_claim_bytes_at_cuda_peak: None,
             underclaim_bytes: None,
             overclaim_bytes: None,
@@ -700,6 +788,7 @@ mod tests {
             active_attempts: 0,
             managed_capacity_bytes: 1,
             live_grants_bytes: 0,
+            live_grant_ids: Vec::new(),
             live_reserved_bytes: 0,
             cache_evictable_resident_bytes: 0,
             cache_pinned_in_use_bytes: 0,
@@ -844,6 +933,16 @@ mod tests {
         }
     }
 
+    fn pool_claim(grant_id: u64, grant_bytes: u64, overhead_bytes: u64) -> QueryDomainPoolClaim {
+        QueryDomainPoolClaim {
+            device_ordinal: 0,
+            grant_id,
+            grant_bytes,
+            reserved_high_bytes: grant_bytes.saturating_add(overhead_bytes),
+            used_high_bytes: grant_bytes,
+        }
+    }
+
     #[test]
     fn vram_calibration_compares_claims_at_the_cuda_peak_with_nvml_as_a_cross_check() {
         let mut baseline = row(0, 10);
@@ -853,11 +952,14 @@ mod tests {
         let mut peak = row(0, 20);
         peak.cuda_free_bytes = Some(8_000);
         peak.nvml_used_bytes = Some(7_900);
+        peak.active_attempts = 1;
         peak.live_grants_bytes = 1_900;
+        peak.live_grant_ids = vec![1];
         peak.cache_evictable_resident_bytes = 50;
         peak.cache_physical_current_bytes = Some(150);
 
-        let evidence = vram_calibration_evidence(&[baseline, peak], &[0], exact_calibration_policy());
+        let evidence =
+            vram_calibration_evidence(&[baseline, peak], &[pool_claim(1, 1_900, 50)], &[0], exact_calibration_policy());
         assert_eq!(evidence.status, VramCalibrationStatus::Evidenced);
         assert!(evidence.passes());
         let ordinal = evidence.ordinals[0];
@@ -867,9 +969,95 @@ mod tests {
         assert_eq!(ordinal.admission_claim_bytes_at_cuda_peak, Some(1_900));
         assert_eq!(ordinal.cache_ledger_resident_delta_bytes_at_cuda_peak, Some(50));
         assert_eq!(ordinal.cache_physical_delta_bytes_at_cuda_peak, Some(50));
-        assert_eq!(ordinal.accounted_claim_bytes_at_cuda_peak, Some(1_950));
+        assert_eq!(ordinal.query_domain_pool_overhead_bytes_at_cuda_peak, Some(50));
+        assert_eq!(ordinal.query_domain_pool_reserved_high_bytes_at_cuda_peak, Some(1_950));
+        assert_eq!(ordinal.physical_observed_bytes_at_cuda_peak, Some(2_000));
+        assert_eq!(ordinal.accounted_claim_bytes_at_cuda_peak, Some(2_000));
         assert_eq!(ordinal.cuda_peak_claim_snapshot_stable, Some(true));
-        assert_eq!(ordinal.underclaim_bytes, Some(50));
+        assert_eq!(ordinal.underclaim_bytes, Some(0));
+        assert_eq!(ordinal.within_profile_band, Some(true));
+    }
+
+    #[test]
+    fn vram_calibration_matches_pool_overhead_by_exact_live_grant_ids() {
+        let mut baseline = row(0, 10);
+        baseline.cuda_free_bytes = Some(10_000);
+        let mut peak = row(0, 20);
+        peak.cuda_free_bytes = Some(7_700);
+        peak.active_attempts = 2;
+        peak.live_grants_bytes = 2_000;
+        peak.live_grant_ids = vec![1, 2];
+        let claims = [pool_claim(1, 1_000, 100), pool_claim(2, 1_000, 200), pool_claim(3, 1_000, 999)];
+
+        let evidence = vram_calibration_evidence(&[baseline, peak], &claims, &[0], exact_calibration_policy());
+
+        let ordinal = evidence.ordinals[0];
+        assert_eq!(ordinal.query_domain_pool_overhead_bytes_at_cuda_peak, Some(300));
+        assert_eq!(ordinal.query_domain_pool_reserved_high_bytes_at_cuda_peak, Some(2_300));
+        assert_eq!(ordinal.physical_observed_bytes_at_cuda_peak, Some(2_300));
+        assert_eq!(ordinal.accounted_claim_bytes_at_cuda_peak, Some(2_300));
+        assert_eq!(ordinal.within_profile_band, Some(true));
+    }
+
+    #[test]
+    fn vram_calibration_rejects_malformed_live_grant_sets() {
+        let valid = pool_claim(1, 1_000, 100);
+        let cases = [
+            ("count mismatch", vec![], 1, 1_000, vec![valid]),
+            ("duplicate live id", vec![1, 1], 2, 2_000, vec![valid]),
+            ("missing live id", vec![2], 1, 1_000, vec![valid]),
+            ("duplicate claim id", vec![1], 1, 1_000, vec![valid, valid]),
+            ("grant byte mismatch", vec![1], 1, 999, vec![valid]),
+            (
+                "pool usage underflow",
+                vec![1],
+                1,
+                1_000,
+                vec![QueryDomainPoolClaim { reserved_high_bytes: 999, used_high_bytes: 1_000, ..valid }],
+            ),
+            ("grant sum overflow", vec![1, 2], 2, u64::MAX, vec![pool_claim(1, u64::MAX, 0), pool_claim(2, 1, 0)]),
+        ];
+        for (name, live_grant_ids, active_attempts, live_grants_bytes, claims) in cases {
+            let mut baseline = row(0, 10);
+            baseline.cuda_free_bytes = Some(10_000);
+            let mut peak = row(0, 20);
+            peak.cuda_free_bytes = Some(9_000);
+            peak.active_attempts = active_attempts;
+            peak.live_grants_bytes = live_grants_bytes;
+            peak.live_grant_ids = live_grant_ids;
+
+            let evidence = vram_calibration_evidence(&[baseline, peak], &claims, &[0], exact_calibration_policy());
+
+            assert_eq!(evidence.status, VramCalibrationStatus::Failed, "{name}");
+            assert_eq!(evidence.ordinals[0].query_domain_pool_overhead_bytes_at_cuda_peak, None, "{name}");
+        }
+    }
+
+    #[test]
+    fn vram_calibration_uses_exact_pool_reservation_when_the_sampler_misses_its_peak() {
+        let mut baseline = row(0, 10);
+        baseline.cuda_free_bytes = Some(10_000);
+        let mut peak = row(0, 20);
+        peak.cuda_free_bytes = Some(5_300);
+        peak.active_attempts = 1;
+        peak.live_grants_bytes = 4_800;
+        peak.live_grant_ids = vec![1];
+        let claims = [QueryDomainPoolClaim {
+            device_ordinal: 0,
+            grant_id: 1,
+            grant_bytes: 4_800,
+            reserved_high_bytes: 4_860,
+            used_high_bytes: 4_770,
+        }];
+
+        let evidence = vram_calibration_evidence(&[baseline, peak], &claims, &[0], exact_calibration_policy());
+
+        let ordinal = evidence.ordinals[0];
+        assert_eq!(ordinal.cuda_used_delta_bytes, Some(4_700));
+        assert_eq!(ordinal.query_domain_pool_reserved_high_bytes_at_cuda_peak, Some(4_860));
+        assert_eq!(ordinal.physical_observed_bytes_at_cuda_peak, Some(4_860));
+        assert_eq!(ordinal.accounted_claim_bytes_at_cuda_peak, Some(4_890));
+        assert_eq!(ordinal.overclaim_bytes, Some(30));
         assert_eq!(ordinal.within_profile_band, Some(true));
     }
 
@@ -879,20 +1067,40 @@ mod tests {
         baseline.cuda_free_bytes = Some(10_000);
         let mut underclaimed = row(0, 20);
         underclaimed.cuda_free_bytes = Some(8_000);
+        underclaimed.active_attempts = 1;
         underclaimed.live_grants_bytes = 1_000;
-        let evidence = vram_calibration_evidence(&[baseline, underclaimed], &[0], exact_calibration_policy());
+        underclaimed.live_grant_ids = vec![1];
+        let evidence = vram_calibration_evidence(
+            &[baseline.clone(), underclaimed],
+            &[pool_claim(1, 1_000, 0)],
+            &[0],
+            exact_calibration_policy(),
+        );
         assert_eq!(evidence.status, VramCalibrationStatus::Failed);
         assert_eq!(evidence.ordinals[0].underclaim_bytes, Some(1_000));
         assert_eq!(evidence.ordinals[0].within_profile_band, Some(false));
 
         let mut overclaimed = row(0, 20);
         overclaimed.cuda_free_bytes = Some(9_900);
+        overclaimed.active_attempts = 1;
         overclaimed.live_grants_bytes = 1_000;
-        let evidence = vram_calibration_evidence(&[baseline, overclaimed], &[0], exact_calibration_policy());
+        overclaimed.live_grant_ids = vec![1];
+        let evidence = vram_calibration_evidence(
+            &[baseline.clone(), overclaimed],
+            &[QueryDomainPoolClaim {
+                device_ordinal: 0,
+                grant_id: 1,
+                grant_bytes: 1_000,
+                reserved_high_bytes: 100,
+                used_high_bytes: 100,
+            }],
+            &[0],
+            exact_calibration_policy(),
+        );
         assert_eq!(evidence.status, VramCalibrationStatus::Failed);
         assert_eq!(evidence.ordinals[0].overclaim_bytes, Some(900));
 
-        let evidence = vram_calibration_evidence(&[baseline], &[0, 1], exact_calibration_policy());
+        let evidence = vram_calibration_evidence(&[baseline], &[], &[0, 1], exact_calibration_policy());
         assert_eq!(evidence.status, VramCalibrationStatus::Failed);
         assert!(!evidence.sampled_all_configured_ordinals);
         assert_eq!(evidence.ordinals[1].within_profile_band, None);
@@ -906,7 +1114,7 @@ mod tests {
         quiescent_post_baseline.cuda_free_bytes = Some(10_000);
 
         let evidence =
-            vram_calibration_evidence(&[baseline, quiescent_post_baseline], &[0], exact_calibration_policy());
+            vram_calibration_evidence(&[baseline, quiescent_post_baseline], &[], &[0], exact_calibration_policy());
 
         assert_eq!(evidence.status, VramCalibrationStatus::Failed);
         let ordinal = evidence.ordinals[0];
@@ -929,7 +1137,7 @@ mod tests {
         otherwise_matching_peak.claim_snapshot_end_sequence = Some(1);
 
         let evidence =
-            vram_calibration_evidence(&[baseline, otherwise_matching_peak], &[0], exact_calibration_policy());
+            vram_calibration_evidence(&[baseline, otherwise_matching_peak], &[], &[0], exact_calibration_policy());
 
         assert_eq!(evidence.status, VramCalibrationStatus::Failed);
         let ordinal = evidence.ordinals[0];
@@ -954,6 +1162,7 @@ mod tests {
 
         let evidence = vram_calibration_evidence(
             &[baseline, stable_lower_use, unstable_physical_peak],
+            &[],
             &[0],
             exact_calibration_policy(),
         );
@@ -978,7 +1187,7 @@ mod tests {
         peak.cuda_free_bytes = Some(8_000);
         peak.live_grants_bytes = 2_000;
 
-        let evidence = vram_calibration_evidence(&[baseline, peak], &[0], exact_calibration_policy());
+        let evidence = vram_calibration_evidence(&[baseline, peak], &[], &[0], exact_calibration_policy());
 
         assert_eq!(evidence.status, VramCalibrationStatus::Failed);
         assert_eq!(evidence.ordinals[0].baseline_claim_snapshot_stable, Some(false));

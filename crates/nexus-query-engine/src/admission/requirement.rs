@@ -19,14 +19,14 @@ use crate::{
     capability::ReservationRequirement,
     datatypes::cudf_dtype_from_arrow_type,
     error::{QueryError, QueryErrorCode, Result},
-    expr::{AggregateFunction, alias_wrapped_column},
+    expr::{AggregateFunction, Expr, alias_wrapped_column},
     graph_memory::{
         GraphMemoryAdmissionEvidence, GraphMemoryOwnerTermFact, GraphMemoryOwnerTermRole, GraphSourceStageLifetime,
         query_plan_hard_row_upper_bound, query_plan_node_hard_row_upper_bound,
     },
     plan::{
-        JoinNode, JoinSide, JoinType, NodeId, PlanNode, QueryPlan, ResultSink, estimated_local_parquet_source_bytes,
-        estimated_reachable_local_parquet_source_bytes,
+        AggregateNode, JoinNode, JoinSide, JoinType, NodeId, PlanNode, QueryPlan, ResultSink,
+        estimated_local_parquet_source_bytes, estimated_reachable_local_parquet_source_bytes,
     },
     runtime::ReservationKind,
     source::SourceNode,
@@ -612,7 +612,12 @@ impl AllocationOwnerTerm {
     pub(crate) const fn is_consumer_schedule_owner(&self) -> bool {
         matches!(
             self.id.owner,
-            OwnerId::Source(_) | OwnerId::Consumer(_) | OwnerId::SideInput(_) | OwnerId::Sort(_) | OwnerId::Limit(_)
+            OwnerId::Aggregate(_)
+                | OwnerId::Source(_)
+                | OwnerId::Consumer(_)
+                | OwnerId::SideInput(_)
+                | OwnerId::Sort(_)
+                | OwnerId::Limit(_)
         )
     }
 
@@ -620,6 +625,10 @@ impl AllocationOwnerTerm {
         match (&self.id.owner, self.id.role, &self.id.occurrence) {
             (OwnerId::Source(node_id), OwnerTermRole::SourceStage, OccurrenceId::PlanLocal(occurrence)) => {
                 node_id == occurrence
+            },
+            (OwnerId::Aggregate(node_id), role, OccurrenceId::PlanLocal(occurrence)) => {
+                node_id == occurrence
+                    && matches!(role, OwnerTermRole::AggregatePartialState | OwnerTermRole::AggregateOutput)
             },
             (OwnerId::Consumer(node_id), role, OccurrenceId::PlanLocal(occurrence)) => {
                 node_id == occurrence
@@ -1154,18 +1163,7 @@ fn generic_aggregate_owner_terms(plan: &QueryPlan) -> Result<Vec<AllocationOwner
     };
     if reachable.iter().any(|node| {
         matches!(&node.kind, PlanNode::Source(source) if !matches!(source.as_ref(), SourceNode::LocalParquet(_)))
-    }) || aggregate.spec.grouping_sets.is_some()
-        || aggregate.spec.aggr_exprs.iter().any(|expr| {
-            expr.distinct
-                || expr.filter.is_some()
-                || !matches!(
-                    expr.function,
-                    AggregateFunction::Sum
-                        | AggregateFunction::Min
-                        | AggregateFunction::Max
-                        | AggregateFunction::Count
-                )
-        })
+    }) || !aggregate_owner_state_is_supported(aggregate)
     {
         return Ok(Vec::new());
     }
@@ -1181,14 +1179,48 @@ fn generic_aggregate_owner_terms(plan: &QueryPlan) -> Result<Vec<AllocationOwner
     if selected_row_group_rows.is_empty() || input_rows > source_rows {
         return Ok(Vec::new());
     }
+    if output_schema.fields().iter().any(|field| fixed_width_consumer_output_column(field.data_type()).is_none()) {
+        return Ok(Vec::new());
+    }
 
+    let output_rows = if aggregate.spec.group_exprs.is_empty() { 1 } else { input_rows };
+    let partial_shapes = selected_row_group_rows.into_iter().map(|row_group_rows| {
+        if aggregate.spec.group_exprs.is_empty() {
+            crate::exec::PartialAggregateShape::Global
+        } else {
+            crate::exec::PartialAggregateShape::Grouped { input_rows: row_group_rows }
+        }
+    });
+    aggregate_owner_terms_for_shapes(plan, *aggregate_id, aggregate, output_schema, partial_shapes, output_rows)
+}
+
+fn aggregate_owner_state_is_supported(aggregate: &AggregateNode) -> bool {
+    aggregate.spec.grouping_sets.is_none()
+        && aggregate.spec.aggr_exprs.iter().all(|expr| {
+            !expr.distinct
+                && expr.filter.is_none()
+                && matches!(
+                    expr.function,
+                    AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max | AggregateFunction::Count
+                )
+        })
+}
+
+fn aggregate_owner_terms_for_shapes(
+    plan: &QueryPlan,
+    aggregate_id: NodeId,
+    aggregate: &AggregateNode,
+    output_schema: &SchemaRef,
+    partial_shapes: impl IntoIterator<Item = crate::exec::PartialAggregateShape>,
+    output_rows: u64,
+) -> Result<Vec<AllocationOwnerTerm>> {
     let Some(mut partial_columns) = output_schema
         .fields()
         .iter()
         .map(|field| fixed_width_consumer_output_column(field.data_type()))
         .collect::<Option<Vec<_>>>()
     else {
-        return Ok(Vec::new());
+        return Err(owner_term_error("aggregate_output_type_unmodeled", None, None));
     };
     partial_columns.extend(
         aggregate
@@ -1197,40 +1229,31 @@ fn generic_aggregate_owner_terms(plan: &QueryPlan) -> Result<Vec<AllocationOwner
             .iter()
             .map(|_| fixed_width_consumer_output_column(&DataType::UInt64).expect("UInt64 has a fixed-width bound")),
     );
-    let partial_bytes = selected_row_group_rows.into_iter().try_fold(0_u64, |total, row_group_rows| {
-        let partial_shape = if aggregate.spec.group_exprs.is_empty() {
-            crate::exec::PartialAggregateShape::Global
-        } else {
-            crate::exec::PartialAggregateShape::Grouped { input_rows: row_group_rows }
-        };
-        let row_group_partial = crate::exec::partial_aggregate_upper_bound_bytes(partial_shape, &partial_columns)
+    let partial_bytes = partial_shapes.into_iter().try_fold(0_u64, |total, partial_shape| {
+        let partial = crate::exec::partial_aggregate_upper_bound_bytes(partial_shape, &partial_columns)
             .map_err(|_| owner_term_error("aggregate_partial_state_unavailable", None, None))?;
-        total
-            .checked_add(row_group_partial)
-            .ok_or_else(|| owner_term_error("aggregate_partial_state_overflow", None, None))
+        total.checked_add(partial).ok_or_else(|| owner_term_error("aggregate_partial_state_overflow", None, None))
     })?;
-    let output_rows = if aggregate.spec.group_exprs.is_empty() { 1 } else { input_rows };
-    let output_bytes = bounded_consumer_frame_bytes(output_rows, output_schema)?;
     let output_copies =
-        if matches!(plan.sink(), ResultSink::GpuResident { input } if *input == *aggregate_id) { 1 } else { 2 };
-    let output_bytes = output_bytes
+        if matches!(plan.sink(), ResultSink::GpuResident { input } if *input == aggregate_id) { 1 } else { 2 };
+    let output_bytes = bounded_consumer_frame_bytes(output_rows, output_schema)?
         .checked_mul(output_copies)
         .ok_or_else(|| owner_term_error("aggregate_output_overflow", None, None))?;
     let scope = canonical_execution_scope_fingerprint(plan);
     Ok(vec![
         AllocationOwnerTerm::new(
-            OwnerId::Aggregate(*aggregate_id),
+            OwnerId::Aggregate(aggregate_id),
             OwnerTermRole::AggregatePartialState,
-            OccurrenceId::PlanLocal(*aggregate_id),
+            OccurrenceId::PlanLocal(aggregate_id),
             scope.clone(),
             AllocationClass::ActivePhase,
             partial_bytes,
             None,
         )?,
         AllocationOwnerTerm::new(
-            OwnerId::Aggregate(*aggregate_id),
+            OwnerId::Aggregate(aggregate_id),
             OwnerTermRole::AggregateOutput,
-            OccurrenceId::PlanLocal(*aggregate_id),
+            OccurrenceId::PlanLocal(aggregate_id),
             scope,
             AllocationClass::ActivePhase,
             output_bytes,
@@ -2929,7 +2952,7 @@ fn composed_consumer_bound_with_peak_terms(
     let mut used_occurrences = HashSet::with_capacity(outputs.len());
     let root = consumer_plan.root_id();
     let mut root_bound = match &consumer_plan.root_node().kind {
-        PlanNode::Source(_) | PlanNode::Filter(_) | PlanNode::Projection(_) => {
+        PlanNode::Source(_) | PlanNode::Filter(_) | PlanNode::Projection(_) | PlanNode::Aggregate(_) => {
             composed_consumer_branch_bound(consumer_plan, root, &outputs, &mut used_occurrences, owner_terms)?
         },
         PlanNode::Union(union) => {
@@ -3197,8 +3220,13 @@ fn composed_consumer_branch_bound(
         PlanNode::Projection(projection) => {
             let input = composed_consumer_branch_bound(plan, projection.input, outputs, used_occurrences, owner_terms)?;
             let mut selected_columns = HashSet::with_capacity(projection.outputs.len());
+            let mut materializes_output = false;
             for output in &projection.outputs {
                 let Some(column) = alias_wrapped_column(&output.expr) else {
+                    if alias_wrapped_literal(&output.expr) {
+                        materializes_output = true;
+                        continue;
+                    }
                     return Err(composed_schedule_error("consumer_projection_expression_workspace_unmodeled", None));
                 };
                 if !selected_columns.insert(column.name()) {
@@ -3215,6 +3243,49 @@ fn composed_consumer_branch_bound(
                         .with_fact("input_type", source.data_type())
                         .with_fact("output_type", output.field.data_type()));
                 }
+            }
+            if materializes_output {
+                let output_bytes = bounded_consumer_frame_bytes(input.rows, node.output_schema())?;
+                let output_term = consumer_owner_term(
+                    node_id,
+                    OwnerTermRole::ConsumerOutput,
+                    AllocationClass::ActivePhase,
+                    output_bytes,
+                    plan,
+                )?;
+                let output_term_id = output_term.id.clone();
+                let stage_peak =
+                    checked_consumer_add(input.final_owned_bytes, output_bytes, "consumer_projection_output_overflow")?;
+                let mut peak_owner_term_ids = input.peak_owner_term_ids.clone();
+                let mut dominated_owner_term_ids = input.dominated_owner_term_ids.clone();
+                if stage_peak >= input.additional_peak_bytes {
+                    peak_owner_term_ids = input.final_owned_term_ids.clone();
+                    peak_owner_term_ids.push(output_term_id.clone());
+                    dominated_owner_term_ids.extend(
+                        input
+                            .peak_owner_term_ids
+                            .iter()
+                            .filter(|term_id| !input.final_owned_term_ids.contains(term_id))
+                            .cloned(),
+                    );
+                } else {
+                    dominated_owner_term_ids.push(output_term_id.clone());
+                }
+                let mut owner_terms = input.owner_terms;
+                owner_terms.push(output_term);
+                return Ok(ComposedConsumerBranchBound {
+                    rows: input.rows,
+                    schema: node.output_schema().clone(),
+                    final_owned_bytes: output_bytes,
+                    additional_peak_bytes: input.additional_peak_bytes.max(stage_peak),
+                    owner_terms,
+                    peak_owner_term_groups: vec![peak_owner_term_ids.clone()],
+                    peak_owner_term_ids,
+                    dominated_owner_term_ids,
+                    final_owned_term_ids: vec![output_term_id],
+                    allocation_state: AttemptReservationConsumerState::Bounded,
+                    consumed_occurrences: Vec::new(),
+                });
             }
             // Column selection and rename retain their input columns. The
             // executor takes the same zero-copy path, so the projection owns
@@ -3233,8 +3304,83 @@ fn composed_consumer_branch_bound(
                 consumed_occurrences: Vec::new(),
             })
         },
+        PlanNode::Aggregate(aggregate) => {
+            composed_consumer_aggregate_peak_bytes(plan, node_id, aggregate, outputs, used_occurrences, owner_terms)
+        },
         _ => Err(composed_schedule_error("consumer_branch_topology_unmodeled", None)),
     }
+}
+
+fn alias_wrapped_literal(expr: &Expr) -> bool {
+    match expr {
+        Expr::Alias { expr, .. } => alias_wrapped_literal(expr),
+        Expr::Literal(_) => true,
+        _ => false,
+    }
+}
+
+fn composed_consumer_aggregate_peak_bytes(
+    plan: &QueryPlan,
+    node_id: NodeId,
+    aggregate: &AggregateNode,
+    outputs: &HashMap<&str, &ComposedGraphProducerOutputEvidence>,
+    used_occurrences: &mut HashSet<String>,
+    owner_terms: &[AllocationOwnerTerm],
+) -> Result<ComposedConsumerBranchBound> {
+    if !aggregate.spec.group_exprs.is_empty() || !aggregate_owner_state_is_supported(aggregate) {
+        return Err(composed_schedule_error("consumer_aggregate_state_unmodeled", None));
+    }
+
+    let input = composed_consumer_branch_bound(plan, aggregate.input, outputs, used_occurrences, owner_terms)?;
+    let node = plan.node(node_id).ok_or_else(|| composed_schedule_error("consumer_missing_plan_node", None))?;
+    let output_schema = node.output_schema();
+    let mut aggregate_terms = aggregate_owner_terms_for_shapes(
+        plan,
+        node_id,
+        aggregate,
+        output_schema,
+        [crate::exec::PartialAggregateShape::Global],
+        1,
+    )
+    .map_err(|_| composed_schedule_error("consumer_aggregate_owner_terms_unavailable", None))?;
+    let output_term = aggregate_terms.pop().expect("aggregate owner helper emits its output term");
+    let partial_term = aggregate_terms.pop().expect("aggregate owner helper emits its partial-state term");
+    let partial_bytes = partial_term.bytes();
+    let output_bytes = output_term.bytes();
+    let partial_term_id = partial_term.id.clone();
+    let output_term_id = output_term.id.clone();
+    let stage_peak = checked_consumer_add(
+        checked_consumer_add(input.final_owned_bytes, partial_bytes, "consumer_aggregate_partial_state_overflow")?,
+        output_bytes,
+        "consumer_aggregate_output_overflow",
+    )?;
+    let mut peak_owner_term_ids = input.peak_owner_term_ids.clone();
+    let mut dominated_owner_term_ids = input.dominated_owner_term_ids.clone();
+    if stage_peak >= input.additional_peak_bytes {
+        peak_owner_term_ids = input.final_owned_term_ids.clone();
+        peak_owner_term_ids.push(partial_term_id.clone());
+        peak_owner_term_ids.push(output_term_id.clone());
+        dominated_owner_term_ids.extend(
+            input.peak_owner_term_ids.iter().filter(|term_id| !input.final_owned_term_ids.contains(term_id)).cloned(),
+        );
+    } else {
+        dominated_owner_term_ids.extend([partial_term_id, output_term_id.clone()]);
+    }
+    let mut terms = input.owner_terms;
+    terms.extend([partial_term, output_term]);
+    Ok(ComposedConsumerBranchBound {
+        rows: 1,
+        schema: output_schema.clone(),
+        final_owned_bytes: output_bytes,
+        additional_peak_bytes: input.additional_peak_bytes.max(stage_peak),
+        owner_terms: terms,
+        peak_owner_term_groups: vec![peak_owner_term_ids.clone()],
+        peak_owner_term_ids,
+        dominated_owner_term_ids,
+        final_owned_term_ids: vec![output_term_id],
+        allocation_state: AttemptReservationConsumerState::Bounded,
+        consumed_occurrences: Vec::new(),
+    })
 }
 
 fn composed_consumer_sort_peak_bytes(
@@ -4441,6 +4587,55 @@ mod tests {
         let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("only", input_schema)));
         let projection = builder
             .add_projection(source, vec![ProjectionOutput::new(expr, Field::new("projected", output_type, false))]);
+        builder.finish_with_host_sink(projection)
+    }
+
+    fn graph_output_global_aggregate_consumer() -> QueryPlan {
+        let input_schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Float64, false)]));
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("only", input_schema)));
+        let aggregate_input_schema = Arc::new(Schema::new(vec![
+            Field::new("__nexus_native_aggregate_arg_0", DataType::Int64, false),
+            Field::new("__nexus_native_aggregate_arg_1", DataType::Float64, false),
+        ]));
+        let aggregate_input = builder.add_projection(
+            source,
+            vec![
+                ProjectionOutput::new(
+                    Expr::literal(crate::expr::LiteralValue::Int64(1)).alias("__nexus_native_aggregate_arg_0"),
+                    aggregate_input_schema.field(0).as_ref().clone(),
+                ),
+                ProjectionOutput::new(
+                    Expr::column("value").alias("__nexus_native_aggregate_arg_1"),
+                    aggregate_input_schema.field(1).as_ref().clone(),
+                ),
+            ],
+        );
+        let aggregate = builder.add_aggregate(
+            aggregate_input,
+            AggregateSpec::new(
+                Vec::new(),
+                vec![
+                    AggregateExpr::new(
+                        AggregateFunction::Count,
+                        Expr::column("__nexus_native_aggregate_arg_0"),
+                        "vertices",
+                    ),
+                    AggregateExpr::new(AggregateFunction::Sum, Expr::column("__nexus_native_aggregate_arg_1"), "total"),
+                ],
+            ),
+            Arc::new(Schema::new(vec![
+                Field::new("vertices", DataType::Int64, false),
+                Field::new("total", DataType::Float64, true),
+            ])),
+        );
+        let projection = builder.add_projection(
+            aggregate,
+            vec![
+                ProjectionOutput::new(Expr::column("vertices"), Field::new("vertices", DataType::Int64, false)),
+                ProjectionOutput::new(Expr::column("total"), Field::new("total", DataType::Float64, true)),
+            ],
+        );
         builder.finish_with_host_sink(projection)
     }
 
@@ -6419,6 +6614,53 @@ mod tests {
     }
 
     #[test]
+    fn graph_result_global_aggregate_supports_ordered_and_conservative_owner_bounds() {
+        let consumer_plan = graph_output_global_aggregate_consumer();
+        let combined = QueryPlanCapabilityProof::resolve_composed_graph_attempt(
+            &consumer_plan,
+            QueryPlanCapabilityProof::for_composed_consumer_plan(&consumer_plan)
+                .expect("the aggregate consumer must issue a composed proof"),
+            [ComposedGraphProducerCandidate::new(
+                Some("only".to_owned()),
+                Some("only".to_owned()),
+                Some(graph_bfs_proof_with_typed_output(0)),
+            )],
+        )
+        .expect("the graph-result global aggregate must compose before admission");
+        assert!(combined.as_requirement().owner_terms.iter().any(|term| {
+            matches!(term.id.owner, OwnerId::Aggregate(_)) && term.id.role == OwnerTermRole::AggregatePartialState
+        }));
+        assert!(combined.as_requirement().owner_terms.iter().any(|term| {
+            matches!(term.id.owner, OwnerId::Aggregate(_)) && term.id.role == OwnerTermRole::AggregateOutput
+        }));
+        assert!(combined.as_requirement().owner_terms.iter().any(|term| {
+            matches!(term.id.owner, OwnerId::Consumer(_)) && term.id.role == OwnerTermRole::ConsumerOutput
+        }));
+        let ordered = combined
+            .clone()
+            .resolve_reservation_envelope(reservation_policy())
+            .expect("the global aggregate owner terms must resolve an ordered bound");
+        assert_eq!(ordered.bound_derivation(), Some(AttemptBoundDerivation::OrderedTimeline));
+
+        let mut incomplete = combined.into_requirement();
+        let consumer_shape_index = incomplete
+            .reservation_shapes
+            .iter()
+            .position(|shape| shape.matches(&consumer_plan))
+            .expect("the aggregate consumer scope must remain in the proof");
+        let occurrences = incomplete.reservation_shapes[consumer_shape_index].producer_occurrences().to_vec();
+        let mut consumer_shape = AttemptReservationShape::for_query_plan(&consumer_plan);
+        consumer_shape
+            .set_producer_occurrences(occurrences)
+            .expect("the producer manifest remains valid without ordered rows");
+        incomplete.reservation_shapes[consumer_shape_index] = consumer_shape;
+        let conservative = QueryPlanCapabilityProof { requirement: incomplete }
+            .resolve_reservation_envelope(reservation_policy())
+            .expect("the aggregate owner inventory must support the conservative fallback");
+        assert_eq!(conservative.bound_derivation(), Some(AttemptBoundDerivation::ConservativeOwnerSum));
+    }
+
+    #[test]
     fn conservative_resolver_rejects_a_non_graph_source_proof_without_retained_output_term() {
         let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, false)]));
         let source_bytes = u64::try_from(cudf::DataFrame::minimum_parquet_source_read_budget_bytes()).unwrap();
@@ -6530,7 +6772,7 @@ mod tests {
     }
 
     #[test]
-    fn composed_consumer_rejects_projected_column_type_changes_and_computation() {
+    fn composed_consumer_rejects_projected_column_type_changes_and_unmodeled_computation() {
         let output =
             [ComposedGraphProducerOutputEvidence { occurrence_id: "only".to_owned(), row_count_upper_bound: 128 }];
         let type_changed =
@@ -6539,14 +6781,11 @@ mod tests {
             .expect_err("a type-changing projection would allocate a new output frame");
         assert_eq!(error.fact_value("schedule_reason"), Some("consumer_projection_output_type_mismatch"));
 
-        for expression in
-            [Expr::cast(Expr::column("value"), DataType::Float64), Expr::literal(crate::expr::LiteralValue::Int64(1))]
-        {
-            let consumer_plan = graph_output_projection_consumer(expression, DataType::Int64);
-            let error = composed_consumer_additional_peak_bytes_for_plan(&consumer_plan, &output)
-                .expect_err("casts and computed expressions lack a zero-copy allocation contract");
-            assert_eq!(error.fact_value("schedule_reason"), Some("consumer_projection_expression_workspace_unmodeled"));
-        }
+        let consumer_plan =
+            graph_output_projection_consumer(Expr::cast(Expr::column("value"), DataType::Float64), DataType::Int64);
+        let error = composed_consumer_additional_peak_bytes_for_plan(&consumer_plan, &output)
+            .expect_err("an unmodeled cast must remain rejected");
+        assert_eq!(error.fact_value("schedule_reason"), Some("consumer_projection_expression_workspace_unmodeled"));
     }
 
     #[test]

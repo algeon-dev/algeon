@@ -30,7 +30,7 @@
     {
       "name": "four-gpu-mixed",
       "profile_path": "four-gpu-mixed.json",
-      "profile_sha256": "04336867ea6fad0be3dabc4b1359eb53b7ff448f1d4c73815add077ac7a39f44",
+      "profile_sha256": "045c33da66db33ad73a6deb921c95e35b3e2e922385643942056f980968bcb4f",
       "minimum_repeats": 1,
       "maximum_sample_gap_ms": 1000,
       "required_queries": ["pagerank_topk", "bfs_topk", "pagerank"],

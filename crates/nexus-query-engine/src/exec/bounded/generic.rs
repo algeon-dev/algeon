@@ -267,10 +267,14 @@ fn execute_bounded_generic_edge_normalize_from_input(
     context: &ExecutionContext,
     node_id: NodeId,
     edge_normalize: &crate::plan::EdgeNormalizeNode,
-    input: ResidentGpuFrame,
+    mut input: ResidentGpuFrame,
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
 ) -> Result<ResidentGpuFrame> {
+    if !input.frame.has_live_reservation() {
+        let source_reservation = input.reservation.transfer_grant_live_reservation();
+        input.frame = input.frame.with_transferred_live_reservation(source_reservation);
+    }
     execute_bounded_generic_unary(
         context,
         node_id,
@@ -421,7 +425,7 @@ fn execute_bounded_generic_graph_algorithm(
     } else {
         execute_bounded_generic_node(context, plan, graph.input, gpu_inputs, reservations, metrics)?
     };
-    let ResidentGpuFrame { frame: input_frame, reservation: input_reservation } = input;
+    let ResidentGpuFrame { frame: mut input_frame, reservation: input_reservation } = input;
     let query_memory_grant = match context.memory_grant() {
         Ok(grant) => grant,
         Err(error) => {
@@ -429,15 +433,14 @@ fn execute_bounded_generic_graph_algorithm(
             return Err(error.with_fact_if_absent("node_id", node_id));
         },
     };
-    // The cold graph model includes the normalized semantic edge frame.
-    // Retain only the bytes that this tracker or the same query grant already
-    // accounts, then cap the credit at that physically live frame in
-    // graph_memory.rs. Source provenance is not a retained DataFrame owner.
-    // A source reservation and a handle-carried grant charge can describe the
-    // same live frame. They are alternative owners, never concurrent bytes;
-    // retain the larger exact charge rather than counting that frame twice.
-    let already_accounted_graph_input_bytes =
+    // A tracker and a handle-carried grant can describe the same normalized
+    // frame, so use only their larger charge. The retained pre-normalization
+    // source is a distinct live owner and receives its own bounded credit.
+    let already_accounted_normalized_graph_input_bytes =
         input_reservation.charged_bytes().max(input_frame.live_reservation_bytes_for(query_memory_grant.as_ref()));
+    let retained_normalization_source_bytes =
+        input_frame.retained_normalization_source_bytes_for(query_memory_grant.as_ref());
+    let _retained_normalization_source = input_frame.take_retained_normalization_source();
     let input_rows = input_frame.num_rows() as u64;
     let input_columns = input_frame.num_columns() as u64;
     let input_graph_residency = input_frame.graph_residency().cloned();
@@ -479,7 +482,7 @@ fn execute_bounded_generic_graph_algorithm(
     // null filter may materialize a different frame, so retain the ordinary
     // semantic cap in that case.
     let exact_normalized_graph_input_charge_bytes = (graph.spec.edge_normalize_inserted && null_edge_rows_dropped == 0)
-        .then_some(already_accounted_graph_input_bytes);
+        .then_some(already_accounted_normalized_graph_input_bytes);
     let mut filtered_input = GpuDataFrame::new(filtered_input_frame);
     if null_edge_rows_dropped == 0
         && let Some(graph_residency) = input_graph_residency
@@ -603,8 +606,9 @@ fn execute_bounded_generic_graph_algorithm(
                 source_vertex_estimate,
             ),
             statistics: graph_statistics_probe.as_ref().map(|probe| probe.statistics),
-            already_accounted_graph_input_bytes,
+            already_accounted_normalized_graph_input_bytes,
             exact_normalized_graph_input_charge_bytes,
+            retained_normalization_source_bytes,
             already_accounted_similarity_pair_input_bytes,
         }) {
             Ok(report) => report,
@@ -692,8 +696,9 @@ fn execute_bounded_generic_graph_algorithm(
             allow_nulls: false,
             vertex_estimate: source_vertex_estimate,
             statistics: None,
-            already_accounted_graph_input_bytes,
+            already_accounted_normalized_graph_input_bytes,
             exact_normalized_graph_input_charge_bytes,
+            retained_normalization_source_bytes,
             already_accounted_similarity_pair_input_bytes,
         }) {
             Ok(report) => report,
