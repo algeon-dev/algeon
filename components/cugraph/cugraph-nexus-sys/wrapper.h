@@ -64,18 +64,20 @@ CUGRAPH_EXPORT cugraph_type_erased_device_array_view_t* cugraph_layout_result_ge
 
 CUGRAPH_EXPORT void cugraph_layout_result_free(cugraph_layout_result_t* result);
 
-// Host-only preflight for the temporary workspace used by raw single-GPU
-// edgelist construction sorting. graph.h owns this public declaration; keep
+// Host-only preflight for raw single-GPU graph construction. graph.h owns this public declaration; keep
 // the explicit wrapper mirror covered by the sys ABI contract test.
-CUGRAPH_EXPORT cugraph_error_code_t cugraph_edgelist_sort_workspace_preflight(
+CUGRAPH_EXPORT cugraph_error_code_t cugraph_graph_construction_workspace_preflight(
   cugraph_data_type_id_t vertex_type,
   cugraph_data_type_id_t edge_type,
   bool_t has_edge_weights,
   cugraph_data_type_id_t weight_type,
   bool_t has_edge_ids,
   bool_t store_transposed,
+  bool_t renumber,
   size_t num_edges,
-  size_t* workspace_bytes_out,
+  size_t num_vertices,
+  size_t* renumber_workspace_bytes_out,
+  size_t* compression_workspace_bytes_out,
   cugraph_error_t** error);
 
 CUGRAPH_EXPORT cugraph_error_code_t cugraph_bfs_side_input_workspace_preflight(

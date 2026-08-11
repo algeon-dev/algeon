@@ -1,4 +1,4 @@
-//! Host-only preflight for raw libcugraph edgelist-construction sorting.
+//! Host-only preflight for raw libcugraph graph construction.
 //!
 //! The owner query reports the temporary workspace selected by the vendored
 //! cuGraph sort dispatch. It neither accepts a resource handle nor accesses a
@@ -7,7 +7,7 @@
 use std::ptr;
 
 use cugraph_sys::{
-    cugraph_bfs_side_input_workspace_preflight, cugraph_edgelist_sort_workspace_preflight, cugraph_error_t,
+    cugraph_bfs_side_input_workspace_preflight, cugraph_error_t, cugraph_graph_construction_workspace_preflight,
     cugraph_personalized_pagerank_side_input_workspace_preflight,
 };
 
@@ -16,7 +16,7 @@ use crate::{
     types::{DataType, to_bool_t},
 };
 
-const OPERATION: &str = "edgelist_sort_workspace_preflight";
+const OPERATION: &str = "graph_construction_workspace_preflight";
 const BFS_SIDE_INPUT_OPERATION: &str = "bfs_side_input_workspace_preflight";
 const PPR_SIDE_INPUT_OPERATION: &str = "personalized_pagerank_side_input_workspace_preflight";
 
@@ -28,16 +28,18 @@ const PPR_SIDE_INPUT_OPERATION: &str = "personalized_pagerank_side_input_workspa
 /// type as the endpoint vertices, so the constructor preserves that invariant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[must_use]
-pub struct EdgelistSortPreflightInput {
+pub struct GraphConstructionPreflightInput {
     vertex_type: DataType,
     edge_type: DataType,
     weight_type: Option<DataType>,
     has_edge_ids: bool,
     store_transposed: bool,
+    renumber: bool,
     num_edges: usize,
+    num_vertices: usize,
 }
 
-impl EdgelistSortPreflightInput {
+impl GraphConstructionPreflightInput {
     /// Create a preflight input for raw single-GPU graph construction.
     ///
     /// `weight_type` is `None` for an unweighted graph. Present weights must
@@ -50,14 +52,16 @@ impl EdgelistSortPreflightInput {
         weight_type: Option<DataType>,
         has_edge_ids: bool,
         store_transposed: bool,
+        renumber: bool,
         num_edges: usize,
+        num_vertices: usize,
     ) -> Result<Self> {
         if !vertex_type.is_supported_index_type() {
-            return Err(Error::new(ErrorKind::InvalidInput, "EdgelistSortPreflightInput::new")
+            return Err(Error::new(ErrorKind::InvalidInput, "GraphConstructionPreflightInput::new")
                 .with_message(format!("vertex_type must be Int32 or Int64, got {vertex_type}")));
         }
         if edge_type != vertex_type {
-            return Err(Error::new(ErrorKind::InvalidInput, "EdgelistSortPreflightInput::new")
+            return Err(Error::new(ErrorKind::InvalidInput, "GraphConstructionPreflightInput::new")
                 .with_message("edge_type must match vertex_type for raw single-GPU graph construction")
                 .with_context("vertex_type", vertex_type.to_string())
                 .with_context("edge_type", edge_type.to_string()));
@@ -65,7 +69,7 @@ impl EdgelistSortPreflightInput {
         if let Some(weight_type) = weight_type
             && !weight_type.is_float()
         {
-            return Err(Error::new(ErrorKind::InvalidInput, "EdgelistSortPreflightInput::new")
+            return Err(Error::new(ErrorKind::InvalidInput, "GraphConstructionPreflightInput::new")
                 .with_message(format!("weight_type must be Float32 or Float64, got {weight_type}")));
         }
 
@@ -75,13 +79,28 @@ impl EdgelistSortPreflightInput {
             _ => unreachable!("validated raw graph index dtype"),
         };
         if (num_edges as u128) > maximum_edges {
-            return Err(Error::new(ErrorKind::InvalidInput, "EdgelistSortPreflightInput::new")
+            return Err(Error::new(ErrorKind::InvalidInput, "GraphConstructionPreflightInput::new")
                 .with_message(format!("num_edges exceeds the {edge_type} raw graph construction limit"))
                 .with_context("num_edges", num_edges.to_string())
                 .with_context("edge_type", edge_type.to_string()));
         }
+        if (num_vertices as u128) > maximum_edges {
+            return Err(Error::new(ErrorKind::InvalidInput, "GraphConstructionPreflightInput::new")
+                .with_message(format!("num_vertices exceeds the {vertex_type} raw graph construction limit"))
+                .with_context("num_vertices", num_vertices.to_string())
+                .with_context("vertex_type", vertex_type.to_string()));
+        }
 
-        Ok(Self { vertex_type, edge_type, weight_type, has_edge_ids, store_transposed, num_edges })
+        Ok(Self {
+            vertex_type,
+            edge_type,
+            weight_type,
+            has_edge_ids,
+            store_transposed,
+            renumber,
+            num_edges,
+            num_vertices,
+        })
     }
 
     /// The raw graph's endpoint dtype.
@@ -109,9 +128,39 @@ impl EdgelistSortPreflightInput {
         self.store_transposed
     }
 
+    /// Whether construction renumbers external vertex IDs.
+    pub const fn renumber(self) -> bool {
+        self.renumber
+    }
+
     /// Number of input edges passed to raw construction.
     pub const fn num_edges(self) -> usize {
         self.num_edges
+    }
+
+    /// Upper bound on distinct vertices.
+    pub const fn num_vertices(self) -> usize {
+        self.num_vertices
+    }
+}
+
+/// Owner-provided phase bounds for raw single-GPU graph construction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[must_use]
+pub struct GraphConstructionPreflight {
+    renumber_workspace_bytes: u64,
+    compression_workspace_bytes: u64,
+}
+
+impl GraphConstructionPreflight {
+    /// Peak renumber workspace beyond the owned input edge columns.
+    pub const fn renumber_workspace_bytes(self) -> u64 {
+        self.renumber_workspace_bytes
+    }
+
+    /// Peak sort-and-compress temporary workspace.
+    pub const fn compression_workspace_bytes(self) -> u64 {
+        self.compression_workspace_bytes
     }
 }
 
@@ -122,23 +171,29 @@ impl EdgelistSortPreflightInput {
 /// device memory, or access CUDA. An unavailable or incompatible native
 /// contract is returned as a structured cuGraph error so callers can remain
 /// fail-closed.
-pub fn edgelist_sort_workspace_preflight(input: &EdgelistSortPreflightInput) -> Result<u64> {
-    let mut workspace_bytes = 0usize;
+pub fn graph_construction_workspace_preflight(
+    input: &GraphConstructionPreflightInput,
+) -> Result<GraphConstructionPreflight> {
+    let mut renumber_workspace_bytes = 0usize;
+    let mut compression_workspace_bytes = 0usize;
     let mut error: *mut cugraph_error_t = ptr::null_mut();
     let weight_type = input.weight_type.unwrap_or(DataType::Float32);
 
     // SAFETY: every scalar originates from a validated safe input; both out
     // pointers are writable for the duration of this host-only C API call.
     let code = unsafe {
-        cugraph_edgelist_sort_workspace_preflight(
+        cugraph_graph_construction_workspace_preflight(
             input.vertex_type.into(),
             input.edge_type.into(),
             to_bool_t(input.weight_type.is_some()),
             weight_type.into(),
             to_bool_t(input.has_edge_ids),
             to_bool_t(input.store_transposed),
+            to_bool_t(input.renumber),
             input.num_edges,
-            &mut workspace_bytes,
+            input.num_vertices,
+            &mut renumber_workspace_bytes,
+            &mut compression_workspace_bytes,
             &mut error,
         )
     };
@@ -146,9 +201,15 @@ pub fn edgelist_sort_workspace_preflight(input: &EdgelistSortPreflightInput) -> 
     // checker consumes it exactly once without probing CUDA state.
     unsafe { check_host_error(code, error, OPERATION) }?;
 
-    u64::try_from(workspace_bytes).map_err(|_| {
-        Error::new(ErrorKind::Unexpected, OPERATION)
-            .with_message("native size_t workspace bound does not fit the public u64 result")
+    Ok(GraphConstructionPreflight {
+        renumber_workspace_bytes: u64::try_from(renumber_workspace_bytes).map_err(|_| {
+            Error::new(ErrorKind::Unexpected, OPERATION)
+                .with_message("native size_t renumber bound does not fit the public u64 result")
+        })?,
+        compression_workspace_bytes: u64::try_from(compression_workspace_bytes).map_err(|_| {
+            Error::new(ErrorKind::Unexpected, OPERATION)
+                .with_message("native size_t compression bound does not fit the public u64 result")
+        })?,
     })
 }
 
@@ -426,22 +487,33 @@ mod tests {
 
     #[test]
     fn input_preserves_the_raw_unweighted_bfs_shape() {
-        let input = EdgelistSortPreflightInput::new(DataType::Int32, DataType::Int32, None, false, false, 47)
-            .expect("raw unweighted BFS shape is valid");
+        let input =
+            GraphConstructionPreflightInput::new(DataType::Int32, DataType::Int32, None, false, false, true, 47, 11)
+                .expect("raw unweighted BFS shape is valid");
 
         assert_eq!(input.vertex_type(), DataType::Int32);
         assert_eq!(input.edge_type(), DataType::Int32);
         assert_eq!(input.weight_type(), None);
         assert!(!input.has_edge_ids());
         assert!(!input.store_transposed());
+        assert!(input.renumber());
         assert_eq!(input.num_edges(), 47);
+        assert_eq!(input.num_vertices(), 11);
     }
 
     #[test]
     fn input_accepts_weighted_transposed_int64_shape() {
-        let input =
-            EdgelistSortPreflightInput::new(DataType::Int64, DataType::Int64, Some(DataType::Float64), true, true, 47)
-                .expect("raw weighted Int64 shape is valid");
+        let input = GraphConstructionPreflightInput::new(
+            DataType::Int64,
+            DataType::Int64,
+            Some(DataType::Float64),
+            true,
+            true,
+            true,
+            47,
+            11,
+        )
+        .expect("raw weighted Int64 shape is valid");
 
         assert_eq!(input.weight_type(), Some(DataType::Float64));
         assert!(input.has_edge_ids());
@@ -450,17 +522,19 @@ mod tests {
 
     #[test]
     fn input_rejects_a_non_index_vertex_type() {
-        let error = EdgelistSortPreflightInput::new(DataType::Float32, DataType::Float32, None, false, false, 1)
-            .expect_err("raw graph endpoints must be integer indices");
+        let error =
+            GraphConstructionPreflightInput::new(DataType::Float32, DataType::Float32, None, false, false, true, 1, 1)
+                .expect_err("raw graph endpoints must be integer indices");
 
         assert_eq!(error.kind(), ErrorKind::InvalidInput);
-        assert_eq!(error.operation(), "EdgelistSortPreflightInput::new");
+        assert_eq!(error.operation(), "GraphConstructionPreflightInput::new");
     }
 
     #[test]
     fn input_rejects_an_edge_type_that_does_not_match_the_raw_ingress() {
-        let error = EdgelistSortPreflightInput::new(DataType::Int32, DataType::Int64, None, false, false, 1)
-            .expect_err("raw single-GPU ingress uses the vertex dtype for edge_t");
+        let error =
+            GraphConstructionPreflightInput::new(DataType::Int32, DataType::Int64, None, false, false, true, 1, 1)
+                .expect_err("raw single-GPU ingress uses the vertex dtype for edge_t");
 
         assert_eq!(error.kind(), ErrorKind::InvalidInput);
         assert!(error.message().contains("edge_type must match vertex_type"));
@@ -468,9 +542,17 @@ mod tests {
 
     #[test]
     fn input_rejects_a_non_float_weight_type() {
-        let error =
-            EdgelistSortPreflightInput::new(DataType::Int32, DataType::Int32, Some(DataType::Int32), false, false, 1)
-                .expect_err("safe raw graph ingress accepts only floating edge weights");
+        let error = GraphConstructionPreflightInput::new(
+            DataType::Int32,
+            DataType::Int32,
+            Some(DataType::Int32),
+            false,
+            false,
+            true,
+            1,
+            1,
+        )
+        .expect_err("safe raw graph ingress accepts only floating edge weights");
 
         assert_eq!(error.kind(), ErrorKind::InvalidInput);
         assert!(error.message().contains("weight_type must be Float32 or Float64"));
@@ -478,9 +560,17 @@ mod tests {
 
     #[test]
     fn input_rejects_an_int32_edge_count_that_graph_construction_cannot_represent() {
-        let error =
-            EdgelistSortPreflightInput::new(DataType::Int32, DataType::Int32, None, false, false, i32::MAX as usize)
-                .expect_err("the raw C API requires the Int32 edge count to be strictly below INT32_MAX");
+        let error = GraphConstructionPreflightInput::new(
+            DataType::Int32,
+            DataType::Int32,
+            None,
+            false,
+            false,
+            true,
+            i32::MAX as usize,
+            1,
+        )
+        .expect_err("the raw C API requires the Int32 edge count to be strictly below INT32_MAX");
 
         assert_eq!(error.kind(), ErrorKind::InvalidInput);
         assert!(error.message().contains("num_edges exceeds"));
@@ -488,10 +578,13 @@ mod tests {
 
     #[test]
     fn zero_edge_preflight_is_a_host_only_query() {
-        let input = EdgelistSortPreflightInput::new(DataType::Int32, DataType::Int32, None, false, false, 0)
-            .expect("empty raw graph shape is valid");
+        let input =
+            GraphConstructionPreflightInput::new(DataType::Int32, DataType::Int32, None, false, false, true, 0, 0)
+                .expect("empty raw graph shape is valid");
 
-        let _workspace_bytes = edgelist_sort_workspace_preflight(&input).expect("host preflight succeeds");
+        let preflight = graph_construction_workspace_preflight(&input).expect("host preflight succeeds");
+        assert_eq!(preflight.renumber_workspace_bytes(), 0);
+        assert_eq!(preflight.compression_workspace_bytes(), 0);
     }
 
     #[test]
@@ -512,7 +605,7 @@ mod tests {
         assert_eq!(preflight.source_copy_bytes(), 8);
         assert_eq!(preflight.predicate_bitmap_bytes(), 24);
         assert_eq!(preflight.edge_mask_bytes(), 8);
-        assert_eq!(preflight.peak_bytes(), 60);
+        assert_eq!(preflight.peak_bytes(), 76);
     }
 
     #[test]
