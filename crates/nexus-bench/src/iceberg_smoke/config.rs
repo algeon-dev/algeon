@@ -516,8 +516,7 @@ impl IcebergNativeSmokeFixture {
         }
     }
 
-    pub fn tpch_all_tables_ident_display(&self, scale_factor: &str) -> String {
-        let _ = scale_factor;
+    pub fn tpch_all_tables_ident_display(&self, _scale_factor: &str) -> String {
         match self {
             Self::GlueS3 { database, .. } => format!("{database}_all_tables"),
             Self::RestS3 { namespace, .. } => format!("{namespace}_all_tables"),
@@ -525,8 +524,7 @@ impl IcebergNativeSmokeFixture {
         }
     }
 
-    pub fn tpcds_all_tables_ident_display(&self, scale_factor: &str) -> String {
-        let _ = scale_factor;
+    pub fn tpcds_all_tables_ident_display(&self, _scale_factor: &str) -> String {
         match self {
             Self::GlueS3 { database, .. } => format!("{database}_all_tables"),
             Self::RestS3 { namespace, .. } => format!("{namespace}_all_tables"),
@@ -630,13 +628,11 @@ fn source_access_credential_source(policy: &SourceAccessPolicy) -> &'static str 
     }
 }
 
-pub fn tpch_glue_table_name(table_name: &str, scale_factor: &str) -> String {
-    let _ = scale_factor;
+pub fn tpch_glue_table_name(table_name: &str, _scale_factor: &str) -> String {
     table_name.to_string()
 }
 
-pub fn tpcds_glue_table_name(table_name: &str, scale_factor: &str) -> String {
-    let _ = scale_factor;
+pub fn tpcds_glue_table_name(table_name: &str, _scale_factor: &str) -> String {
     table_name.to_string()
 }
 
@@ -708,8 +704,7 @@ pub fn native_optimizer_options_for_profile(
         let projection = datafusion_nexus::session_config::DataFusionNexusSessionConfig::from_optimizer_config(
             &NexusNativeOptimizerConfig::default().with_native_execution_config(execution_config.clone()),
         );
-        let max_source_reads_in_flight =
-            u64::try_from(execution_config.source_scheduler_policy().max_source_reads_in_flight()).unwrap_or(u64::MAX);
+        let max_source_reads_in_flight = execution_config.source_scheduler_policy().max_source_reads_in_flight() as u64;
         options.local_parquet_source_reuse.max_variant_selected_bytes =
             projection.native_max_source_chunk_bytes.saturating_mul(max_source_reads_in_flight);
     }

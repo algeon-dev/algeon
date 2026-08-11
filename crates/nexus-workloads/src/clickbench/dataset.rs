@@ -246,12 +246,12 @@ fn collect_hits_shards(dir: &Path) -> WorkloadResult<Vec<PathBuf>> {
             continue;
         }
         let path = entry.path();
-        if shard_index(&path).is_some() {
-            shards.push(path);
+        if let Some(index) = shard_index(&path) {
+            shards.push((index, path));
         }
     }
-    shards.sort_by_key(|path| shard_index(path).unwrap_or(u32::MAX));
-    Ok(shards)
+    shards.sort_by_key(|(index, _)| *index);
+    Ok(shards.into_iter().map(|(_, path)| path).collect())
 }
 
 fn shard_index(path: &Path) -> Option<u32> {
@@ -514,7 +514,7 @@ fn canonical_schema(schema: &Schema) -> String {
 }
 
 fn relative_dataset_path(root: &Path, path: &Path) -> String {
-    let relative = path.strip_prefix(root).unwrap_or(path);
+    let relative = path.strip_prefix(root).expect("discovered dataset path must be under root");
     relative.iter().map(|part| part.to_string_lossy()).collect::<Vec<_>>().join("/")
 }
 

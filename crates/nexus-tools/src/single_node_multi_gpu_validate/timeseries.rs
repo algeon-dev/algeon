@@ -418,7 +418,7 @@ pub(super) fn observation_pull_summary(rows: &[ProcessSeriesRow]) -> Observation
         p50_ns: percentile(&values, 50),
         p95_ns: percentile(&values, 95),
         max_ns: values.last().copied().unwrap_or_default(),
-        mean_ns: if values.is_empty() { 0 } else { u64::try_from(sum / values.len() as u128).unwrap_or(u64::MAX) },
+        mean_ns: if values.is_empty() { 0 } else { (sum / values.len() as u128) as u64 },
     }
 }
 
@@ -649,18 +649,13 @@ fn stable_claim_snapshot(row: &DeviceSeriesRow) -> bool {
 fn scaled_limit(bytes: u64, ratio_milli: u64, fixed_bytes: u64) -> u64 {
     let scaled =
         u128::from(bytes).saturating_mul(u128::from(ratio_milli)).saturating_div(1_000).min(u128::from(u64::MAX));
-    u64::try_from(scaled).unwrap_or(u64::MAX).saturating_add(fixed_bytes)
+    (scaled as u64).saturating_add(fixed_bytes)
 }
 
 fn ratio_milli(numerator: u64, denominator: u64) -> Option<u64> {
     (denominator != 0).then(|| {
-        u64::try_from(
-            u128::from(numerator)
-                .saturating_mul(1_000)
-                .saturating_div(u128::from(denominator))
-                .min(u128::from(u64::MAX)),
-        )
-        .unwrap_or(u64::MAX)
+        (u128::from(numerator).saturating_mul(1_000).saturating_div(u128::from(denominator)).min(u128::from(u64::MAX)))
+            as u64
     })
 }
 

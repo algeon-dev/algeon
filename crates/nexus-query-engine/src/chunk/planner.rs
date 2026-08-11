@@ -17,7 +17,7 @@ impl SourceChunkBatch {
 }
 
 fn source_chunk_batch_from_retry_chunks(chunks: Vec<SourceChunk>) -> SourceChunkBatch {
-    let batch_index = chunks.first().map_or(0, |chunk| chunk.chunk_index);
+    let batch_index = chunks[0].chunk_index;
     SourceChunkBatch {
         batch_index,
         estimated_source_read_bytes: source_read_bytes_for_batch_chunks(&chunks),

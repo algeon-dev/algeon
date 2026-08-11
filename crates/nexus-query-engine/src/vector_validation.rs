@@ -269,11 +269,11 @@ pub(crate) fn validate_vector_algorithm_node(
                     .with_fact("reason", "invalid_tolerance")
                     .with_fact("tolerance", params.tolerance));
             }
-            if input.dimension.is_some_and(|dimension| dimension < 2) {
+            if let Some(feature_count) = input.dimension.filter(|dimension| *dimension < 2) {
                 return Err(vector_algorithm_error("PCA requires at least two input feature columns")
                     .with_fact("node_id", node_id)
                     .with_fact("reason", "insufficient_feature_dimension")
-                    .with_fact("feature_count", input.dimension.unwrap_or(0))
+                    .with_fact("feature_count", feature_count)
                     .with_fact("minimum_feature_count", 2));
             }
             if params.n_components == 0 || input.dimension.is_some_and(|dimension| params.n_components > dimension) {

@@ -211,7 +211,7 @@ impl NativeTpchBenchmarkReport {
         output.push_str(NATIVE_TPCH_BENCHMARK_TSV_HEADER);
         output.push('\n');
         for row in &self.rows {
-            push_line(&mut output, format_args!("{}", row.to_tsv_line(self.config.native_memory_policy)));
+            push_line(&mut output, format_args!("{}", row.to_tsv_line()));
         }
         output
     }
@@ -407,11 +407,11 @@ impl NativeTpchBenchmarkRow {
         }
     }
 
-    fn to_tsv_line(&self, memory_policy: NativeTpchMemoryPolicy) -> String {
-        NativeTpchBenchmarkTsvRow { row: self, memory_policy }.to_tsv_line()
+    fn to_tsv_line(&self) -> String {
+        NativeTpchBenchmarkTsvRow { row: self }.to_tsv_line()
     }
 
-    fn fields(&self, memory_policy: NativeTpchMemoryPolicy) -> Vec<String> {
+    fn fields(&self) -> Vec<String> {
         let task_high_water_summaries = task_high_water_summaries(&self.metrics);
         let peak_memory = dominant_peak_memory_class(&task_high_water_summaries);
         let task_reservation = dominant_task_reservation_class(&task_high_water_summaries);
@@ -419,7 +419,7 @@ impl NativeTpchBenchmarkRow {
         let fields = [
             self.query_id.clone(),
             self.planning_outcome.map_or("none", NativeDataFusionPlanningOutcome::as_str).to_string(),
-            bounded_status(memory_policy, self).to_string(),
+            bounded_status(self).to_string(),
             optional_text(self.reason_code.as_deref(), "none"),
             optional_text(self.unsupported_category.as_deref(), "none"),
             format_capability_contract_rows(&self.capability_contract_rows),
@@ -568,14 +568,13 @@ impl NativeTpchBenchmarkRow {
 
 pub(super) struct NativeTpchBenchmarkTsvRow<'a> {
     row: &'a NativeTpchBenchmarkRow,
-    memory_policy: NativeTpchMemoryPolicy,
 }
 
 impl TsvRow for NativeTpchBenchmarkTsvRow<'_> {
     const COLUMNS: &'static [&'static str] = NATIVE_TPCH_BENCHMARK_TSV_COLUMNS;
 
     fn fields(&self) -> Vec<String> {
-        self.row.fields(self.memory_policy)
+        self.row.fields()
     }
 }
 
@@ -858,8 +857,7 @@ impl NativeTpchTimingMetrics {
     }
 }
 
-pub(super) fn bounded_status(memory_policy: NativeTpchMemoryPolicy, row: &NativeTpchBenchmarkRow) -> &'static str {
-    let _ = memory_policy;
+pub(super) fn bounded_status(row: &NativeTpchBenchmarkRow) -> &'static str {
     let accepted =
         row.planning_outcome == Some(NativeDataFusionPlanningOutcome::Selected) && !row.rejected_before_execution;
     let planning_failed = row.unsupported_category.as_deref() == Some("planning")

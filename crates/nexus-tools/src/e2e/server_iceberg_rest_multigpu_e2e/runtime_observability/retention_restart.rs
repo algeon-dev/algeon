@@ -182,12 +182,13 @@ pub(super) async fn run_retention_pressure(
         wait_through_artifact_ttl(params, channel, &ttl_query_id, ttl_sealed_at).await?;
     require_artifact_state(channel, &live_query_id, "active").await?;
 
-    let padding_len = usize::try_from(params.observability.per_query_bytes).unwrap_or(usize::MAX).saturating_add(4096);
-    if padding_len > 2 * 1024 * 1024 + 4096 {
+    let per_query_bytes = params.observability.per_query_bytes;
+    if per_query_bytes > 2 * 1024 * 1024 {
         return Err(
             "--per-query-bytes above 2 MiB makes the capture-budget statement unsafe; use a smaller value".into()
         );
     }
+    let padding_len = usize::try_from(per_query_bytes).expect("validated 2 MiB bound fits usize") + 4096;
     let padded_sql = format!("/*{}*/ {}", "x".repeat(padding_len), native_sql());
     let capture_budget_input_bytes = padded_sql.len();
     let mut client = correlated_client(channel, "runtime-e2e-capture-budget-pressure");

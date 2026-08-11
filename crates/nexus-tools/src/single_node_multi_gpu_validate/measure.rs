@@ -1707,7 +1707,7 @@ async fn drive_duration_paced_concurrency(
             round = round.saturating_add(1);
         }
         let queue_high_watermark = backend.admission_snapshot()?.queue_high_watermark;
-        queue_high_watermarks.push((step.step_index, u64::try_from(queue_high_watermark).unwrap_or(u64::MAX)));
+        queue_high_watermarks.push((step.step_index, queue_high_watermark as u64));
     }
     drain_with_feature_off_cugraph_capture(
         &mut tasks,
@@ -1851,7 +1851,7 @@ async fn drive_with_queue_observation(
             )
             .await;
             let queue_high_watermark = backend.admission_snapshot()?.queue_high_watermark;
-            queue_high_watermarks.push((current_step, u64::try_from(queue_high_watermark).unwrap_or(u64::MAX)));
+            queue_high_watermarks.push((current_step, queue_high_watermark as u64));
             current_step = arrival.step_index;
             current_round = arrival.round;
             step_deadline = step_submission_deadline(started, plan, current_step);
@@ -1965,7 +1965,7 @@ async fn drive_with_queue_observation(
     )
     .await;
     let queue_high_watermark = backend.admission_snapshot()?.queue_high_watermark;
-    queue_high_watermarks.push((current_step, u64::try_from(queue_high_watermark).unwrap_or(u64::MAX)));
+    queue_high_watermarks.push((current_step, queue_high_watermark as u64));
     let cancellation_barrier = finish_cancellation_barrier(cancellation_barrier, &observations).await;
     let storm_cancellations_requested = finish_storm_cancellers(storm_cancellers).await;
     observations.sort_by_key(|observation| observation.sequence);

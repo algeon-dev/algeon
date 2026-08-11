@@ -1063,11 +1063,11 @@ impl OverloadFairnessEvidence {
         begin_failures: u64,
         join_failures: u64,
     ) -> Self {
-        let configured_active_attempt_capacity = devices.iter().fold(0_u64, |total, device| {
-            total.saturating_add(u64::try_from(device.max_active_attempts).unwrap_or(u64::MAX))
-        });
-        let configured_queue_limit = u64::try_from(configured_queue_limit).unwrap_or(u64::MAX);
-        let planned_cohort_attempts = u64::try_from(planned_cohort_attempts).unwrap_or(u64::MAX);
+        let configured_active_attempt_capacity =
+            devices.iter().fold(0_u64, |total, device| total.saturating_add(device.max_active_attempts as u64));
+        let configured_queue_limit_usize = configured_queue_limit;
+        let configured_queue_limit = configured_queue_limit_usize as u64;
+        let planned_cohort_attempts = planned_cohort_attempts as u64;
         let bounded_overload_shape = planned_cohort_attempts > configured_active_attempt_capacity
             && planned_cohort_attempts <= configured_active_attempt_capacity.saturating_add(configured_queue_limit);
         let sealed_attempts = observations.len() as u64;
@@ -1175,11 +1175,9 @@ impl OverloadFairnessEvidence {
             bounded_overload_shape,
             all_planned_attempts_sealed,
             all_planned_attempts_admitted_and_completed,
-            observed_peak_queued_attempts: u64::try_from(observed_peak_queued_attempts).unwrap_or(u64::MAX),
-            queue_limit_reached: observed_peak_queued_attempts
-                == usize::try_from(configured_queue_limit).unwrap_or(usize::MAX),
-            queue_bound_respected: observed_peak_queued_attempts
-                <= usize::try_from(configured_queue_limit).unwrap_or(usize::MAX),
+            observed_peak_queued_attempts: observed_peak_queued_attempts as u64,
+            queue_limit_reached: observed_peak_queued_attempts == configured_queue_limit_usize,
+            queue_bound_respected: observed_peak_queued_attempts <= configured_queue_limit_usize,
             queued_admission_reports: queued.len() as u64,
             wait_facts_exact,
             exhausted_waiter_count: exhausted_waiters.len() as u64,
@@ -1585,7 +1583,7 @@ fn latency(measured: &[&AttemptObservation]) -> LatencyAggregate {
         p95_ns: percentile(&totals, 95.0),
         p99_ns: percentile(&totals, 99.0),
         max_ns: totals.last().copied().unwrap_or_default(),
-        mean_ns: if totals.is_empty() { 0 } else { u64::try_from(sum / totals.len() as u128).unwrap_or(u64::MAX) },
+        mean_ns: if totals.is_empty() { 0 } else { (sum / totals.len() as u128) as u64 },
         queue_wait_p95_ns: percentile(&queue_waits, 95.0),
         admission_wait_samples: admission_waits.len() as u64,
         admission_wait_p50_ns: percentile(&admission_waits, 50.0),

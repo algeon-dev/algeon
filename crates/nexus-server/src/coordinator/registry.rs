@@ -557,9 +557,9 @@ impl QueryCoordinator {
                     record.retained.as_ref().expect("retained phase owns a terminal bundle"),
                 )),
             },
-            QueryPhase::Tombstone => {
-                CoordinatorArtifact::Unavailable(record.unavailable.unwrap_or(RetainedUnavailableReason::Evicted))
-            },
+            QueryPhase::Tombstone => CoordinatorArtifact::Unavailable(
+                record.unavailable.expect("tombstone phase owns an unavailable reason"),
+            ),
         })
     }
 

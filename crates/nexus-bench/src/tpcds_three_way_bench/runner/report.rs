@@ -382,8 +382,6 @@ struct TaskHighWaterSummary {
     elapsed_ns: usize,
     max_task_reservation_bytes: usize,
     reservation_live_peak_bytes: usize,
-    max_observed_peak_bytes: Option<usize>,
-    max_retained_bytes: Option<usize>,
 }
 
 impl TaskHighWaterSummary {
@@ -391,8 +389,6 @@ impl TaskHighWaterSummary {
         self.task_count = self.task_count.saturating_add(row.task_count);
         self.elapsed_ns = self.elapsed_ns.saturating_add(row.elapsed_ns);
         self.reservation_live_peak_bytes = self.reservation_live_peak_bytes.max(row.reservation_live_peak_bytes);
-        self.max_observed_peak_bytes = max_optional_usize(self.max_observed_peak_bytes, row.max_observed_peak_bytes);
-        self.max_retained_bytes = max_optional_usize(self.max_retained_bytes, row.max_retained_bytes);
     }
 
     fn merge_runtime_row(&mut self, row: &NativeTaskRuntimeMetricRow, query_reservation_live_peak_bytes: usize) {
@@ -408,16 +404,12 @@ impl TaskHighWaterSummary {
             row.reservation_live_peak_bytes
         };
         self.reservation_live_peak_bytes = self.reservation_live_peak_bytes.max(reservation_live_peak_bytes);
-        self.max_observed_peak_bytes = max_optional_usize(self.max_observed_peak_bytes, row.max_observed_peak_bytes);
-        self.max_retained_bytes = max_optional_usize(self.max_retained_bytes, row.max_retained_bytes);
     }
 
     fn merge_synthetic_high_water(&mut self, task_count: usize, bytes: Option<usize>) {
         self.task_count = self.task_count.saturating_add(task_count);
         if let Some(bytes) = bytes {
             self.reservation_live_peak_bytes = self.reservation_live_peak_bytes.max(bytes);
-            self.max_observed_peak_bytes = max_optional_usize(self.max_observed_peak_bytes, Some(bytes));
-            self.max_retained_bytes = max_optional_usize(self.max_retained_bytes, Some(bytes));
         }
     }
 }

@@ -397,7 +397,7 @@ pub(super) fn first_present_bounded_budget_field(
         .map(|value| value.field)
         .or_else(|| max_source_chunk.as_ref().map(|value| value.field))
         .or_else(|| max_row_groups.as_ref().map(|value| value.field))
-        .unwrap_or(NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV)
+        .expect("partial explicit budget has a present field")
 }
 
 pub(super) fn parse_source_chunk_planning_mode(field: &'static str, raw: &str) -> Result<SourceChunkPlanningMode> {

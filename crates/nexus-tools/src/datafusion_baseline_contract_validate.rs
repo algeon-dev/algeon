@@ -410,7 +410,9 @@ fn render_markdown(report: &MatrixReport) -> String {
             continue;
         }
         out.push_str(&format!("### `{}`\n\n```json\n", c.id));
-        out.push_str(&serde_json::to_string_pretty(&c.error_facts).unwrap_or_default());
+        out.push_str(
+            &serde_json::to_string_pretty(&c.error_facts).expect("structured error facts must be serializable"),
+        );
         out.push_str("\n```\n\n");
     }
     out.push_str("## Terminology mapping ( empirically observed )\n\n");

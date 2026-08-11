@@ -27,25 +27,22 @@ impl QueryCoordinator {
             let victim = state
                 .records
                 .iter()
-                .filter_map(|(key, record)| {
-                    (record.phase == QueryPhase::Retained)
-                        .then_some((record.retention_order.unwrap_or(u64::MAX), key.clone()))
+                .filter(|&(_, record)| record.phase == QueryPhase::Retained)
+                .map(|(key, record)| {
+                    (record.retention_order.expect("retained phase owns a retention order"), key.clone())
                 })
                 .min()
                 .map(|(_, key)| key)
                 .expect("retained pressure requires a retained victim");
             Self::evict_retained_locked(config, state, &victim, now);
         }
-        let tombstone_max_bytes =
-            u64::try_from(config.tombstone_max_count).unwrap_or(u64::MAX).saturating_mul(TOMBSTONE_STATS_MAX_BYTES);
+        let tombstone_max_bytes = (config.tombstone_max_count as u64).saturating_mul(TOMBSTONE_STATS_MAX_BYTES);
         while state.tombstone_count > config.tombstone_max_count || state.tombstone_bytes > tombstone_max_bytes {
             let victim = state
                 .records
                 .iter()
-                .filter_map(|(key, record)| {
-                    (record.phase == QueryPhase::Tombstone)
-                        .then_some((record.tombstone_deadline.unwrap_or(now), key.clone()))
-                })
+                .filter(|&(_, record)| record.phase == QueryPhase::Tombstone)
+                .map(|(key, record)| (record.tombstone_deadline.expect("tombstone phase owns a deadline"), key.clone()))
                 .min()
                 .map(|(_, key)| key)
                 .expect("tombstone pressure requires a tombstone victim");
@@ -58,7 +55,7 @@ impl QueryCoordinator {
         if record.phase != QueryPhase::Tombstone {
             return false;
         }
-        let bytes = record.tombstone_stats.as_ref().map_or(0, |stats| u64::try_from(stats.len()).unwrap_or(u64::MAX));
+        let bytes = record.tombstone_stats.as_ref().map_or(0, |stats| stats.len() as u64);
         state.records.remove(key);
         state.tombstone_count = state.tombstone_count.checked_sub(1).expect("tombstone count underflow");
         state.tombstone_bytes = state.tombstone_bytes.checked_sub(bytes).expect("tombstone bytes underflow");
@@ -98,8 +95,7 @@ impl QueryCoordinator {
             RetainedUnavailableReason::Evicted,
             config.per_query_artifact_max_bytes,
         );
-        let tombstone_bytes =
-            record.tombstone_stats.as_ref().map_or(0, |stats| u64::try_from(stats.len()).unwrap_or(u64::MAX));
+        let tombstone_bytes = record.tombstone_stats.as_ref().map_or(0, |stats| stats.len() as u64);
         record.live_stats_cache.publish_optional_terminal(record.tombstone_stats.as_ref().map(Arc::clone));
         state.tombstone_bytes = state.tombstone_bytes.checked_add(tombstone_bytes).expect("tombstone bytes overflow");
         record.retention_deadline = None;

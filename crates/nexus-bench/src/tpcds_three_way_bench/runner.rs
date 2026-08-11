@@ -34,7 +34,7 @@ use datafusion_nexus::{
     report::CandidateOutcome,
     session::NexusSessionStateBuilderExt,
 };
-use nexus_query_engine::{harness::max_option as max_optional_usize, mode::StatisticalAggregateExecutionMode};
+use nexus_query_engine::mode::StatisticalAggregateExecutionMode;
 use nexus_workloads::tpcds::{TPCDS_QUERIES, TpcdsQuery};
 
 use crate::report_workload::{
@@ -149,7 +149,6 @@ struct IterOutcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PlanningSummary {
     planning_outcome: String,
-    native_runtime_started: bool,
     cost_reason: Option<String>,
 }
 
@@ -450,15 +449,10 @@ fn planning_summary(optimizer: Option<&NexusNativePhysicalOptimizerRule>) -> Pla
             };
             PlanningSummary {
                 planning_outcome,
-                native_runtime_started: selected > 0,
                 cost_reason: reasons.iter().copied().find(|reason| cost_reason_code(reason)).map(str::to_string),
             }
         })
-        .unwrap_or_else(|| PlanningSummary {
-            planning_outcome: String::from("cpu_only"),
-            native_runtime_started: false,
-            cost_reason: None,
-        })
+        .unwrap_or_else(|| PlanningSummary { planning_outcome: String::from("cpu_only"), cost_reason: None })
 }
 
 fn cost_reason_code(reason: &str) -> bool {

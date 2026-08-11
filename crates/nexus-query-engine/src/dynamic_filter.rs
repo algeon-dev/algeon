@@ -696,7 +696,7 @@ pub(crate) fn dynamic_filter_consumer_source_feeds_downstream_work_fanout(
     let mut current = source_node_id;
     let mut saw_work_boundary = false;
     loop {
-        let parent_count = parent_counts.get(current.index()).copied().unwrap_or_default();
+        let parent_count = parent_counts[current.index()];
         if parent_count > 1 {
             return saw_work_boundary;
         }
@@ -717,7 +717,7 @@ pub(crate) fn dynamic_filter_consumer_source_feeds_downstream_work_fanout(
 }
 
 fn dynamic_filter_single_parent(plan: &QueryPlan, parent_counts: &[usize], node_id: NodeId) -> Option<NodeId> {
-    if parent_counts.get(node_id.index()).copied().unwrap_or_default() != 1 {
+    if parent_counts[node_id.index()] != 1 {
         return None;
     }
     plan.nodes().iter().find(|candidate| candidate.input_ids().contains(&node_id)).map(|candidate| candidate.id)

@@ -27,17 +27,13 @@ use tokio::sync::Notify;
 #[cfg(test)]
 use self::artifacts::{FinalizationTestGate, run_coordinator_render_probe};
 #[cfg(test)]
-pub(crate) use self::types::CoordinatorArtifact;
+pub(crate) use self::types::{CoordinatorArtifact, QueryTerminalOutcome, RetainedUnavailableReason};
 use self::{artifacts::ArtifactEgressLimiter, registry::QueryRegistryState};
-#[allow(unused_imports)]
 pub(crate) use self::{
-    artifacts::LeasedArtifactResponse,
     maintenance::{QueryCoordinatorMaintenance, QueryCoordinatorShutdownPlan},
-    ticket::{ObservationActivityLease, QueryExecutionLease, QueryPlanningLease, QueryPlanningReportDeliveryTerminal},
+    ticket::{QueryExecutionLease, QueryPlanningLease, QueryPlanningReportDeliveryTerminal},
     types::{
-        CoordinatorTicketPayload, ObservationId, QueryCoordinatorConfig, QueryCoordinatorError,
-        QueryCoordinatorErrorKind, QueryHotCounters, QueryKey, QueryTerminal, QueryTerminalOutcome,
-        RetainedQueryBundle, RetainedUnavailableReason,
+        CoordinatorTicketPayload, QueryCoordinatorConfig, QueryCoordinatorError, QueryCoordinatorErrorKind, QueryKey,
     },
 };
 use super::observability::CapturedQuery;
