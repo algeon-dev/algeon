@@ -233,8 +233,7 @@ impl<'a> CompiledPipelineScheduler<'a> {
                 },
             };
             let attempt_id = task_attempt_id(task.id().to_string(), 1);
-            let task_span_id =
-                RuntimeSpanId::new(u64::try_from(task.id().index()).unwrap_or(u64::MAX).saturating_add(2));
+            let task_span_id = RuntimeSpanId::new((task.id().index() as u64).saturating_add(2));
             let mut task_lifecycle = observation_scope.map(|scope| {
                 RuntimeTaskLifecycle::new(
                     scope.observation().clone(),

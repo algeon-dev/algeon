@@ -41,9 +41,7 @@ pub(crate) fn parent_counts(plan: &QueryPlan) -> Vec<usize> {
     let mut counts = vec![0; plan.node_count()];
     for node in plan.nodes() {
         for input in node.input_ids() {
-            if let Some(count) = counts.get_mut(input.index()) {
-                *count += 1;
-            }
+            counts[input.index()] += 1;
         }
     }
     counts
@@ -133,9 +131,7 @@ pub(super) fn compact_reachable_rewritten_nodes(nodes: Vec<QueryNode>, root: Nod
     let mut reachable = vec![false; nodes.len()];
     let mut stack = vec![root];
     while let Some(id) = stack.pop() {
-        let Some(node) = nodes.get(id.index()) else {
-            continue;
-        };
+        let node = &nodes[id.index()];
         if reachable[id.index()] {
             continue;
         }

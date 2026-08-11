@@ -34,7 +34,6 @@ pub(in crate::exec) fn execute_vector_algorithm(
     inputs: &BTreeMap<NodeId, GpuDataFrame>,
 ) -> Result<GpuDataFrame> {
     context.check_cancellation(EXECUTE_OPERATION)?;
-    validate_vector_algorithm_execution(node_id, node)?;
     // Vector operators do not have an independent workspace estimate. Use
     // the immutable context grant for the boundary: the live member makes
     // cuVS's device-current temporaries domain-accounted before resources are
@@ -623,7 +622,7 @@ fn with_relation_tensor<T>(
         .with_vector_relation_role(role)
         .with_vector_dimension(dimension)
         .with_matrix_layout("row_major")
-        .with_input_rows(u64::try_from(input_rows).unwrap_or(u64::MAX))
+        .with_input_rows(input_rows as u64)
         .with_input_bytes(input_bytes);
     let (observation, plan_execution_id, parent_span_id) = stage_context_from_execution(context);
     let guard = RuntimeOperatorStageGuard::start(
@@ -680,7 +679,7 @@ fn with_relation_tensor<T>(
                     return Err(error);
                 },
             };
-            guard.finish(Some(u64::try_from(input_rows).unwrap_or(u64::MAX)), Some(packed_bytes));
+            guard.finish(Some(input_rows as u64), Some(packed_bytes));
             body(&tensor)
         },
         CuvsDenseVectorBinding::VectorColumn(column) => {
@@ -746,7 +745,7 @@ fn with_relation_tensor<T>(
                     return Err(error);
                 },
             };
-            guard.finish(Some(u64::try_from(input_rows).unwrap_or(u64::MAX)), Some(packed_bytes));
+            guard.finish(Some(input_rows as u64), Some(packed_bytes));
             let result = body(lease.tensor());
             let completion = lease.complete().and_then(|completion| completion.release()).map_err(|error| {
                 QueryError::from_cuvs(
@@ -814,7 +813,7 @@ fn with_owned_relation_matrix<T>(
         .with_vector_relation_role(role)
         .with_vector_dimension(dimension)
         .with_matrix_layout(matrix_layout_name(layout))
-        .with_input_rows(u64::try_from(input_rows).unwrap_or(u64::MAX))
+        .with_input_rows(input_rows as u64)
         .with_input_bytes(input_bytes);
     let (observation, plan_execution_id, parent_span_id) = stage_context_from_execution(context);
     let guard = RuntimeOperatorStageGuard::start(
@@ -911,23 +910,6 @@ fn with_owned_relation_matrix<T>(
                     return Err(error);
                 },
             };
-            if validated.rows() != input_rows || validated.dimension() != dimension {
-                let error = QueryError::new(
-                    QueryErrorCode::CudfInvariantViolation,
-                    PACK_OPERATION,
-                    "validated FixedSizeList matrix shape does not match the evaluated relation",
-                )
-                .with_fact("node_id", node_id)
-                .with_fact("relation_role", role)
-                .with_fact("column", column)
-                .with_fact("relation_rows", input_rows)
-                .with_fact("validated_rows", validated.rows())
-                .with_fact("schema_dimension", dimension)
-                .with_fact("validated_dimension", validated.dimension())
-                .with_fact("reason", "validated_matrix_shape_mismatch");
-                guard.fail(&error);
-                return Err(error);
-            }
             match resources.pack_validated_fixed_size_list_float32(&validated, layout).map_err(|error| {
                 QueryError::from_cuvs(
                     PACK_OPERATION,
@@ -946,7 +928,7 @@ fn with_owned_relation_matrix<T>(
             }
         },
     };
-    guard.finish(Some(u64::try_from(input_rows).unwrap_or(u64::MAX)), Some(packed_bytes));
+    guard.finish(Some(input_rows as u64), Some(packed_bytes));
     body(packed, dimension)
 }
 
@@ -990,7 +972,7 @@ fn with_uniform_list_relation_tensor<T>(
         .with_vector_relation_role(role)
         .with_vector_dimension(dimension)
         .with_matrix_layout("row_major")
-        .with_input_rows(u64::try_from(rows).unwrap_or(u64::MAX))
+        .with_input_rows(rows as u64)
         .with_input_bytes(input_bytes);
     let (observation, plan_execution_id, parent_span_id) = stage_context_from_execution(context);
     let guard = RuntimeOperatorStageGuard::start(
@@ -1000,21 +982,6 @@ fn with_uniform_list_relation_tensor<T>(
         RuntimeOperatorStageKind::VectorPack,
         identity,
     );
-    if rows != input.num_rows() {
-        let error = QueryError::new(
-            QueryErrorCode::CudfInvariantViolation,
-            PACK_OPERATION,
-            "validated uniform List matrix row count does not match the evaluated relation",
-        )
-        .with_fact("node_id", node_id)
-        .with_fact("relation_role", role)
-        .with_fact("column", column)
-        .with_fact("relation_rows", input.num_rows())
-        .with_fact("validated_rows", rows)
-        .with_fact("reason", "validated_matrix_row_count_mismatch");
-        guard.fail(&error);
-        return Err(error);
-    }
     if let Err(error) = context.check_cancellation("nexus_query_engine.vector_algorithm.before_uniform_list_activation")
     {
         guard.fail(&error);
@@ -1032,7 +999,7 @@ fn with_uniform_list_relation_tensor<T>(
             return Err(error);
         },
     };
-    guard.finish(Some(u64::try_from(rows).unwrap_or(u64::MAX)), Some(packed_bytes));
+    guard.finish(Some(rows as u64), Some(packed_bytes));
     let result = body(lease.tensor());
     let completion = lease.complete().and_then(|completion| completion.release()).map_err(|error| {
         QueryError::from_cuvs(PACK_OPERATION, "failed to complete the uniform List producer read lifetime", error)
@@ -1088,7 +1055,7 @@ fn with_owned_uniform_list_relation_matrix<T>(
         .with_vector_relation_role(role)
         .with_vector_dimension(dimension)
         .with_matrix_layout(matrix_layout_name(layout))
-        .with_input_rows(u64::try_from(rows).unwrap_or(u64::MAX))
+        .with_input_rows(rows as u64)
         .with_input_bytes(input_bytes);
     let (observation, plan_execution_id, parent_span_id) = stage_context_from_execution(context);
     let guard = RuntimeOperatorStageGuard::start(
@@ -1098,21 +1065,6 @@ fn with_owned_uniform_list_relation_matrix<T>(
         RuntimeOperatorStageKind::VectorPack,
         identity,
     );
-    if rows != input.num_rows() {
-        let error = QueryError::new(
-            QueryErrorCode::CudfInvariantViolation,
-            PACK_OPERATION,
-            "validated uniform List matrix row count does not match the evaluated relation",
-        )
-        .with_fact("node_id", node_id)
-        .with_fact("relation_role", role)
-        .with_fact("column", column)
-        .with_fact("relation_rows", input.num_rows())
-        .with_fact("validated_rows", rows)
-        .with_fact("reason", "validated_matrix_row_count_mismatch");
-        guard.fail(&error);
-        return Err(error);
-    }
     if let Err(error) = context.check_cancellation("nexus_query_engine.vector_algorithm.before_uniform_list_pack") {
         guard.fail(&error);
         return Err(error);
@@ -1133,7 +1085,7 @@ fn with_owned_uniform_list_relation_matrix<T>(
             return Err(error);
         },
     };
-    guard.finish(Some(u64::try_from(rows).unwrap_or(u64::MAX)), Some(packed_bytes));
+    guard.finish(Some(rows as u64), Some(packed_bytes));
     body(packed, dimension)
 }
 
@@ -1286,7 +1238,7 @@ fn observe_native<T>(
 ) -> Result<T> {
     let identity = vector_identity(node_id, algorithm, resources, native_version)
         .with_strategy_label(strategy)
-        .with_input_rows(u64::try_from(input_rows).unwrap_or(u64::MAX))
+        .with_input_rows(input_rows as u64)
         .with_input_bytes(input_bytes);
     let (observation, plan_execution_id, parent_span_id) = stage_context_from_execution(context);
     let guard = RuntimeOperatorStageGuard::start(
@@ -1298,7 +1250,7 @@ fn observe_native<T>(
     );
     match body() {
         Ok(value) => {
-            guard.finish(output_rows.map(|rows| u64::try_from(rows).unwrap_or(u64::MAX)), output_bytes);
+            guard.finish(output_rows.map(|rows| rows as u64), output_bytes);
             Ok(value)
         },
         Err(error) => {
@@ -1335,7 +1287,7 @@ fn observe_assembly(
                     return Err(error);
                 },
             };
-            guard.finish(Some(u64::try_from(output_rows).unwrap_or(u64::MAX)), Some(output_bytes));
+            guard.finish(Some(output_rows as u64), Some(output_bytes));
             Ok(output)
         },
         Err(error) => {

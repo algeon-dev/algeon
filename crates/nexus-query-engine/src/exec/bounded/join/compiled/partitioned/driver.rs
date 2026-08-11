@@ -511,7 +511,6 @@ fn repartition_partitioned_join_work(
     let overrides_lease = execution_overrides(plan.context)?;
     let overrides = overrides_lease.overrides();
     let left_partitioned = match hash_partition_join_side(
-        plan.context,
         plan.node_id,
         JoinSide::Left,
         left,
@@ -528,7 +527,6 @@ fn repartition_partitioned_join_work(
         },
     };
     let right_partitioned = match hash_partition_join_side(
-        plan.context,
         plan.node_id,
         JoinSide::Right,
         right,
@@ -742,7 +740,6 @@ pub(super) fn partition_join_sides(
     let overrides_lease = execution_overrides(plan.context)?;
     let overrides = overrides_lease.overrides();
     let left_partitioned = hash_partition_join_side(
-        plan.context,
         plan.node_id,
         JoinSide::Left,
         left,
@@ -753,7 +750,6 @@ pub(super) fn partition_join_sides(
         metrics,
     )?;
     let right_partitioned = match hash_partition_join_side(
-        plan.context,
         plan.node_id,
         JoinSide::Right,
         right,

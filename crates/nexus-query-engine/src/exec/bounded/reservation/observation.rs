@@ -114,7 +114,7 @@ impl ReservationObservation {
 
     fn logical_retained_bytes(&self, context: &ActiveReservationEventContext) -> u64 {
         fn optional_text_bytes(value: Option<&str>) -> u64 {
-            value.map_or(0, |value| u64::try_from(value.len()).unwrap_or(u64::MAX))
+            value.map_or(0, |value| value.len() as u64)
         }
 
         fn decimal_digits(mut value: usize) -> u64 {
@@ -135,25 +135,18 @@ impl ReservationObservation {
             .as_ref()
             .map_or(0, |_| self.scope.observation().source_location_id_retained_bytes().unwrap_or(0));
         42u64
-            .saturating_add(u64::try_from(self.scope.plan_execution_id().as_str().len()).unwrap_or(u64::MAX))
-            .saturating_add(u64::try_from(self.reservation_id.as_str().len()).unwrap_or(u64::MAX))
-            .saturating_add(u64::try_from(self.lineage_id.as_str().len()).unwrap_or(u64::MAX))
-            .saturating_add(task_attempt.map_or(0, |attempt| {
-                u64::try_from(attempt.task_id.as_str().len()).unwrap_or(u64::MAX).saturating_add(4)
-            }))
+            .saturating_add(self.scope.plan_execution_id().as_str().len() as u64)
+            .saturating_add(self.reservation_id.as_str().len() as u64)
+            .saturating_add(self.lineage_id.as_str().len() as u64)
+            .saturating_add(task_attempt.map_or(0, |attempt| (attempt.task_id.as_str().len() as u64).saturating_add(4)))
             .saturating_add(optional_text_bytes(context.task_kind.as_deref()))
-            .saturating_add(u64::try_from(context.reservation_kind.as_str().len()).unwrap_or(u64::MAX))
+            .saturating_add(context.reservation_kind.as_str().len() as u64)
             .saturating_add(memory_space_bytes)
-            .saturating_add(u64::try_from(context.memory_boundary.len()).unwrap_or(u64::MAX))
+            .saturating_add(context.memory_boundary.len() as u64)
             .saturating_add(optional_text_bytes(context.node_id.as_ref().map(PlanNodeId::as_str)))
             .saturating_add(optional_text_bytes(context.stage.as_deref()))
             .saturating_add(source_location_bytes)
-            .saturating_add(
-                context
-                    .row_groups
-                    .as_ref()
-                    .map_or(0, |values| u64::try_from(values.len()).unwrap_or(u64::MAX).saturating_mul(8)),
-            )
+            .saturating_add(context.row_groups.as_ref().map_or(0, |values| (values.len() as u64).saturating_mul(8)))
             .saturating_add(optional_text_bytes(context.resident_resource_id.as_deref()))
             .saturating_add(optional_text_bytes(context.source_read_contract_quality.as_deref()))
             .saturating_add(66)

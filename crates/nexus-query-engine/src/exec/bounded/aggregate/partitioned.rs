@@ -228,5 +228,5 @@ pub(super) fn partitioned_aggregate_partition_count(context: &ExecutionContext, 
     };
     let target = BoundedPartitionTargetPolicy::default().aggregate_partition_target_bytes(device_budget_bytes);
     let partitions = input_bytes.max(1).saturating_add(target.saturating_sub(1)) / target.max(1);
-    usize::try_from(partitions.clamp(1, 1024)).unwrap_or(1024)
+    partitions.clamp(1, 1024) as usize
 }

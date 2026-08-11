@@ -48,8 +48,7 @@ impl BoundedPartitionRowPolicy {
     ) -> usize {
         let row_basis = left_rows.max(right_rows).max(1);
         let row_partitions = row_basis.saturating_add(target_rows.saturating_sub(1)) / target_rows.max(1);
-        let row_partitions = usize::try_from(row_partitions.clamp(2, self.mixed_join_max_partitions as u64))
-            .unwrap_or(self.mixed_join_max_partitions);
+        let row_partitions = row_partitions.clamp(2, self.mixed_join_max_partitions as u64) as usize;
         byte_partitions.max(row_partitions)
     }
 

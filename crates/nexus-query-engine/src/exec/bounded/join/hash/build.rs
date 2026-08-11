@@ -138,11 +138,7 @@ pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_build_from_reside
     })
 }
 
-pub(in crate::exec::bounded::join) fn single_key_build_is_unique(
-    frame: &DataFrame,
-    build_keys: &[String],
-    overrides: &ExecutionOverrides<'_>,
-) -> bool {
+fn single_key_build_is_unique(frame: &DataFrame, build_keys: &[String], overrides: &ExecutionOverrides<'_>) -> bool {
     let [key] = build_keys else {
         return false;
     };

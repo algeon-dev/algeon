@@ -502,7 +502,7 @@ impl ScheduledLocalParquetRead {
                     .row_groups_selected
                     .checked_sub(selected_row_groups_before_read)
                     .filter(|row_groups| *row_groups > 0);
-                let read_duration_ns = u64::try_from(read_started_at.elapsed().as_nanos()).unwrap_or(u64::MAX);
+                let read_duration_ns = read_started_at.elapsed().as_nanos() as u64;
                 match &frame {
                     Ok(_) => observation_guard.terminal(SourceReadLifecycleState::ReadFinished { read_duration_ns }),
                     Err(error) if error.code() == QueryErrorCode::Cancelled => {
@@ -567,7 +567,7 @@ impl ScheduledLocalParquetRead {
         }
         let join_started_at = Instant::now();
         let joined = worker.join();
-        let join_duration_ns = u64::try_from(join_started_at.elapsed().as_nanos()).unwrap_or(u64::MAX);
+        let join_duration_ns = join_started_at.elapsed().as_nanos() as u64;
         if let Some(observation) = &observation {
             observation.record(SourceReadLifecycleState::ConsumerJoinFinished { join_duration_ns });
         }
@@ -645,7 +645,7 @@ impl ScheduledLocalParquetRead {
                 let result = worker.join();
                 if let Some(observation) = &observation {
                     observation.record(SourceReadLifecycleState::ConsumerJoinFinished {
-                        join_duration_ns: u64::try_from(join_started_at.elapsed().as_nanos()).unwrap_or(u64::MAX),
+                        join_duration_ns: join_started_at.elapsed().as_nanos() as u64,
                     });
                 }
                 reservations.release(*reservation, metrics);

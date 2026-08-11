@@ -63,8 +63,7 @@ fn push_filter_conjunct_to_reader_source(
     let Some(node) = plan.node(node_id) else {
         return false;
     };
-    let crossed_shared_path =
-        crossed_shared_path || parent_counts.get(node_id.index()).copied().unwrap_or_default() > 1;
+    let crossed_shared_path = crossed_shared_path || parent_counts[node_id.index()] > 1;
     match &node.kind {
         PlanNode::Source(source) => match source.as_ref() {
             SourceNode::LocalParquet(source)

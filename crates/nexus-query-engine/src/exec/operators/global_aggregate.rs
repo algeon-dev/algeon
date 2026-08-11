@@ -61,14 +61,7 @@ fn execute_global_aggregate_impl(
         match expr.function {
             AggregateFunction::Avg => {
                 let state = AvgStateAliases::for_aggregate_index(index);
-                let field = output_schema.field_with_name(expr.alias.as_str()).map_err(|_error| {
-                    QueryError::new(
-                        QueryErrorCode::InvalidPlan,
-                        "nexus_query_engine.global_aggregate.avg_state_type",
-                        "avg aggregate output field is missing from output schema",
-                    )
-                    .with_fact("alias", expr.alias.as_str())
-                })?;
+                let field = output_schema.field(index);
                 let input_type = global_aggregate_frame_input_data_type(&frame, &expr.expr)?;
                 let sum_state_type = avg_sum_state_data_type(&input_type, field.data_type())?;
                 columns.push((
@@ -79,7 +72,7 @@ fn execute_global_aggregate_impl(
                         &overrides,
                         expr,
                         AggregateFunction::Sum,
-                        Some(&sum_state_type),
+                        &sum_state_type,
                         token,
                         metrics,
                     )?,
@@ -113,7 +106,7 @@ fn execute_global_aggregate_impl(
                         &overrides,
                         expr,
                         expr.function,
-                        output_schema.field_with_name(expr.alias.as_str()).ok().map(|field| field.data_type()),
+                        output_schema.field(index).data_type(),
                         token,
                         metrics,
                     )?,
@@ -158,7 +151,7 @@ fn reduce_global_aggregate_column_impl(
     overrides: &ExecutionOverrides<'_>,
     expr: &AggregateExpr,
     function: AggregateFunction,
-    output_type: Option<&ArrowDataType>,
+    output_type: &ArrowDataType,
     token: Option<&ExecutionBudgetToken>,
     metrics: &mut QueryMetrics,
 ) -> Result<cudf::Series> {
@@ -182,7 +175,6 @@ fn reduce_global_aggregate_column_impl(
             | AggregateFunction::VarSamp
             | AggregateFunction::VarPop
     ) && series.len() == series.null_count()
-        && let Some(output_type) = output_type
     {
         return match token {
             Some(token) => {
@@ -191,9 +183,7 @@ fn reduce_global_aggregate_column_impl(
             None => global_null_output_series(context, output_type, expr.alias.as_str()),
         };
     }
-    let series = if matches!(function, AggregateFunction::Sum)
-        && let Some(output_type) = output_type
-    {
+    let series = if matches!(function, AggregateFunction::Sum) {
         let target_type = cudf_dtype_from_arrow_type(output_type).ok_or_else(|| {
             QueryError::new(
                 QueryErrorCode::UnsupportedType,

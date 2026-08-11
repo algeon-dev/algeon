@@ -68,19 +68,17 @@ pub(super) fn resolve_runtime_graph_spec_for_execution(
         input,
         spec,
         Some(budget.runtime.as_ref()),
-        budget.token.as_ref(),
+        Some(&budget.token),
     );
     match result {
         Ok(spec) => {
-            if let Some(observation) =
-                graph_budget_observation(budget.token.as_ref(), operation, "reservation_enforced")
-            {
+            if let Some(observation) = graph_budget_observation(&budget.token, operation, "reservation_enforced") {
                 observation.record(metrics);
             }
             Ok(RuntimeGraphSpecResolution::from_optional(spec))
         },
         Err(error) => {
-            let error = attach_graph_budget_error_facts(error, budget.token.as_ref(), operation);
+            let error = attach_graph_budget_error_facts(error, &budget.token, operation);
             record_graph_budget_observation_from_error(metrics, &error);
             Err(error)
         },

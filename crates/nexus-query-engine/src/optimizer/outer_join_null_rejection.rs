@@ -137,9 +137,7 @@ pub(crate) fn optimize_outer_join_null_rejection(
         let PlanNode::Join(join) = &join_node.kind else {
             continue;
         };
-        if consumer_counts.get(join_id.index()).copied().unwrap_or_default() > 1
-            || consumer_counts.get(filter_id.index()).copied().unwrap_or_default() > 1
-        {
+        if consumer_counts[join_id.index()] > 1 || consumer_counts[filter_id.index()] > 1 {
             continue;
         }
         let Some(rewrite) =
@@ -596,7 +594,7 @@ fn expr_references_any_column_name(expr: &Expr, column_names: &[&str]) -> bool {
 }
 
 fn path_is_exclusive(consumer_counts: &[usize], path: &[NodeId]) -> bool {
-    path.iter().all(|node_id| consumer_counts.get(node_id.index()).copied().unwrap_or_default() <= 1)
+    path.iter().all(|node_id| consumer_counts[node_id.index()] <= 1)
 }
 
 fn large_null_introducing_input_requires_preserved_shape(
@@ -635,9 +633,7 @@ fn null_introducing_input_is_large(plan: &QueryPlan, outer_join_id: NodeId) -> b
 
 fn consumer_counts(plan: &QueryPlan) -> Vec<usize> {
     let mut counts = rewrite::parent_counts(plan);
-    if let Some(count) = counts.get_mut(plan.sink().input().index()) {
-        *count += 1;
-    }
+    counts[plan.sink().input().index()] += 1;
     counts
 }
 

@@ -418,7 +418,7 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_build_from_frame(
         | CompiledJoinExecutionStrategy::ProjectedCross
         | CompiledJoinExecutionStrategy::MixedKeyedResidual => {
             let side = node.spec.build_side;
-            let columns = compiled_join_input_columns(context, node, strategy, side)?;
+            let columns = compiled_join_input_columns(node, strategy, side)?;
             let input = prepare_bounded_join_side_input_from_shared_frame(
                 input,
                 input_reservation,
@@ -476,7 +476,7 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_build_from_residen
         | CompiledJoinExecutionStrategy::ProjectedCross
         | CompiledJoinExecutionStrategy::MixedKeyedResidual => {
             let side = node.spec.build_side;
-            let columns = compiled_join_input_columns(context, node, strategy, side)?;
+            let columns = compiled_join_input_columns(node, strategy, side)?;
             let input = prepare_bounded_join_side_input_from_resident_frame(
                 input,
                 &columns,
@@ -531,7 +531,7 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_frame(
         .map(BoundedCompiledJoinProbeState::Filtered),
         BoundedCompiledJoinBuildState::Prepared(build) => {
             let side = probe_side(build.side);
-            let columns = compiled_join_input_columns(context, node, build.strategy, side)?;
+            let columns = compiled_join_input_columns(node, build.strategy, side)?;
             let probe = prepare_bounded_join_side_input_from_shared_frame(
                 input,
                 input_reservation,
@@ -585,7 +585,7 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_residen
         .map(BoundedCompiledJoinProbeState::Filtered),
         BoundedCompiledJoinBuildState::Prepared(build) => {
             let side = probe_side(build.side);
-            let columns = compiled_join_input_columns(context, node, build.strategy, side)?;
+            let columns = compiled_join_input_columns(node, build.strategy, side)?;
             let probe = prepare_bounded_join_side_input_from_resident_frame(
                 input,
                 &columns,
@@ -774,15 +774,7 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_frame_s
             if build.strategy == CompiledJoinExecutionStrategy::OneShotEqui
                 && stateless_streaming_probe_supported(node) =>
         {
-            execute_compiled_one_shot_equi_join_probe_from_frame_stream(
-                context,
-                node_id,
-                node,
-                build,
-                inputs,
-                reservations,
-                metrics,
-            )
+            execute_compiled_one_shot_equi_join_probe_from_frame_stream(node, build, inputs, reservations, metrics)
         },
         BoundedCompiledJoinBuildState::Prepared(build)
             if build.strategy == CompiledJoinExecutionStrategy::PartitionedHashEqui
@@ -790,15 +782,7 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_frame_s
                 && stateless_streaming_probe_supported(node) =>
         {
             if inputs.max_per_frame_reservation_bytes() <= partitioned_join_target_bytes_for_context(context) / 2 {
-                execute_compiled_one_shot_equi_join_probe_from_frame_stream(
-                    context,
-                    node_id,
-                    node,
-                    build,
-                    inputs,
-                    reservations,
-                    metrics,
-                )
+                execute_compiled_one_shot_equi_join_probe_from_frame_stream(node, build, inputs, reservations, metrics)
             } else {
                 execute_compiled_partitioned_hash_equi_join_probe_from_frame_stream(
                     context,
@@ -1219,7 +1203,6 @@ fn release_streamed_join_reservations_reverse(
 }
 
 fn compiled_join_input_columns(
-    context: &ExecutionContext,
     node: &JoinNode,
     strategy: CompiledJoinExecutionStrategy,
     side: JoinSide,
@@ -1277,7 +1260,6 @@ fn compiled_join_input_columns(
             ))
         },
         CompiledJoinExecutionStrategy::HashEqui | CompiledJoinExecutionStrategy::FilteredSemiAnti => {
-            let _ = context;
             Err(unsupported_bounded_shape(
                 "compiled prepared join input columns require a prepared join strategy",
                 "compiled_join_strategy_state_mismatch",

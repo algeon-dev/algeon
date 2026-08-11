@@ -78,9 +78,7 @@ fn execute_bounded_generic_node(
     metrics: &mut QueryMetrics,
 ) -> Result<ResidentGpuFrame> {
     context.check_cancellation("nexus_query_engine.exec.bounded.generic_node")?;
-    let node = plan
-        .node(id)
-        .ok_or_else(|| invalid_node_reference(id, "bounded generic query plan references a missing node"))?;
+    let node = plan.node(id).expect("validated bounded generic node exists");
     let frame = match &node.kind {
         PlanNode::Source(source) => match source.as_ref() {
             crate::source::SourceNode::LocalParquet(source) => {
@@ -143,7 +141,7 @@ fn execute_bounded_generic_node(
             let input = execute_bounded_generic_node(context, plan, window.input, gpu_inputs, reservations, metrics)?;
             let input_schema = plan
                 .node(window.input)
-                .ok_or_else(|| invalid_node_reference(window.input, "window references a missing input"))?
+                .expect("validated window input exists")
                 .output_schema()
                 .clone();
             let output_schema = node.output_schema().clone();
@@ -232,7 +230,7 @@ fn execute_bounded_generic_node(
             };
             let input_schema = plan
                 .node(aggregate.input)
-                .ok_or_else(|| invalid_node_reference(aggregate.input, "aggregate references a missing input"))?
+                .expect("validated aggregate input exists")
                 .output_schema()
                 .clone();
             let output_schema = node.output_schema().clone();
@@ -543,9 +541,9 @@ fn execute_bounded_generic_graph_algorithm(
     let mut runtime_spec = RuntimeGraphSpecResolution::CheckedNoRewrite;
     let mut graph_reservation = None;
     let already_accounted_similarity_pair_input_bytes = match &graph.spec.params {
-        crate::plan::GraphAlgorithmParams::Similarity(params) => {
-            side_input_accounted_bytes.get(&params.vertex_pairs.input).copied().unwrap_or(0)
-        },
+        crate::plan::GraphAlgorithmParams::Similarity(params) => *side_input_accounted_bytes
+            .get(&params.vertex_pairs.input)
+            .expect("validated similarity pair input is materialized"),
         _ => 0,
     };
     let graph_memory_limit_bytes = if !empty_input_prevalidated
@@ -865,9 +863,7 @@ fn collect_bounded_generic_source_adjacent_stages(
     let mut stages = Vec::new();
     let mut current_id = root_id;
     loop {
-        let node = plan.node(current_id).ok_or_else(|| {
-            invalid_node_reference(current_id, "bounded generic source-adjacent stream references a missing node")
-        })?;
+        let node = plan.node(current_id).expect("validated source-adjacent node exists");
         match &node.kind {
             PlanNode::Filter(filter) => {
                 stages.push(BoundedGenericSourceAdjacentStage::Filter { node_id: current_id, node: filter });

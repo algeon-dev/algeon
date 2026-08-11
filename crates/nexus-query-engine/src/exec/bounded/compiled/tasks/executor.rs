@@ -161,9 +161,7 @@ impl CompiledTaskExecutor for CompiledGpuTaskExecutor<'_> {
         state: &mut CompiledPipelineState<Self::Resource>,
     ) -> Result<CompiledTaskOutput<Self::Resource>> {
         let attempt_id = crate::observability::task_attempt_id(task.id().to_string(), 1);
-        let span_id = crate::observability::RuntimeSpanId::new(
-            u64::try_from(task.id().index()).unwrap_or(u64::MAX).saturating_add(2),
-        );
+        let span_id = crate::observability::RuntimeSpanId::new((task.id().index() as u64).saturating_add(2));
         self.execute_task_attempt(task, state, &attempt_id, span_id)
     }
 
@@ -175,7 +173,6 @@ impl CompiledTaskExecutor for CompiledGpuTaskExecutor<'_> {
         span_id: crate::observability::RuntimeSpanId,
     ) -> Result<CompiledTaskOutput<Self::Resource>> {
         self.context.check_cancellation("nexus_query_engine.exec.bounded.compiled.task")?;
-        validate_task_runtime_gates(self.pipeline, task)?;
         self.metrics.record_compiled_pipeline_task_mapping(task.id(), task.kind().as_str(), task.plan_node());
         self.metrics.record_compiled_pipeline_task_execution(task.id(), task.kind().as_str());
         let _task_observation_scope = self.reservations.enter_task_observation_scope(

@@ -48,11 +48,11 @@ where
                     "nexus_query_engine.graph_algorithm.build_graph",
                     "failed to build cuGraph graph from edge-list table",
                 )(error),
-                budget.token.as_ref(),
+                &budget.token,
                 operation,
             )
         })?;
-    attach_graph_budget_observation(f(budget.runtime.as_ref(), &entered, &mut graph), budget.token.as_ref(), operation)
+    attach_graph_budget_observation(f(budget.runtime.as_ref(), &entered, &mut graph), &budget.token, operation)
 }
 
 /// Build a cuGraph graph through `GraphBuilder` when the native edge list
@@ -93,13 +93,13 @@ where
     ))?;
     let mut graph = build_graph_from_edge_id_columns::<T>(&entered, edges, spec).map_err(|error| {
         if error.code() == QueryErrorCode::CudfResourceExhausted {
-            attach_graph_budget_error_facts(error, budget.token.as_ref(), operation)
+            attach_graph_budget_error_facts(error, &budget.token, operation)
         } else {
             error
         }
     })?;
 
-    attach_graph_budget_observation(f(budget.runtime.as_ref(), &entered, &mut graph), budget.token.as_ref(), operation)
+    attach_graph_budget_observation(f(budget.runtime.as_ref(), &entered, &mut graph), &budget.token, operation)
 }
 
 #[cfg(feature = "cugraph")]

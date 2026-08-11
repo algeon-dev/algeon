@@ -106,7 +106,6 @@ pub(crate) fn optimize_projection_simplification(
     let new_root = rewriter.rewrite_subtree(plan.root_id());
     if !rewriter.changed {
         let diagnostics = rewriter.diagnostics.clone();
-        drop(rewriter);
         return ProjectionSimplificationResult { plan, change: super::NativeOptimizerChange::Unchanged, diagnostics };
     }
 

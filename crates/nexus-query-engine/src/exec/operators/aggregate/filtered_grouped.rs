@@ -476,7 +476,7 @@ fn execute_filtered_grouped_partial_segment(
     token: &ExecutionBudgetToken,
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
-    let (prepared, prepared_indexed, prepared_schema) =
+    let (prepared, prepared_indexed) =
         prepare_filtered_grouped_partial_segment(prepared_chunk, input_schema, indexed_exprs, token, metrics)?;
     let aggregate = indexed_partial_grouped_aggregate(spec, &prepared_indexed)?;
     let output = execute_groupby_aggregate_with_budget(
@@ -496,7 +496,6 @@ fn execute_filtered_grouped_partial_segment(
                 error,
             )
         })?;
-    let _ = prepared_schema;
     Ok(GpuDataFrame::new(output))
 }
 
@@ -582,14 +581,13 @@ fn prepare_filtered_grouped_predicates_for_chunk(
     Ok(FilteredGroupedPreparedChunk { frame, schema: Arc::new(Schema::new(fields)), predicate_aliases })
 }
 
-#[allow(clippy::type_complexity)]
 fn prepare_filtered_grouped_partial_segment(
     prepared_chunk: &FilteredGroupedPreparedChunk,
     input_schema: &ArrowSchemaRef,
     indexed_exprs: &[(usize, AggregateExpr)],
     token: &ExecutionBudgetToken,
     metrics: &mut QueryMetrics,
-) -> Result<(DataFrame, Vec<(usize, AggregateExpr)>, ArrowSchemaRef)> {
+) -> Result<(DataFrame, Vec<(usize, AggregateExpr)>)> {
     let timer = Instant::now();
     let mut frame = prepared_chunk.frame.clone();
     let mut fields = prepared_chunk.schema.fields().iter().map(|field| field.as_ref().clone()).collect::<Vec<_>>();
@@ -638,7 +636,7 @@ fn prepare_filtered_grouped_partial_segment(
             })?;
     }
     metrics.operator_time += timer.elapsed();
-    Ok((frame, prepared_indexed, Arc::new(Schema::new(fields))))
+    Ok((frame, prepared_indexed))
 }
 
 fn indexed_partial_grouped_aggregate(

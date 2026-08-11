@@ -78,7 +78,7 @@ pub(super) fn partitioned_join_partition_count(context: &ExecutionContext, left_
     let target_partition_bytes = partitioned_join_target_partition_bytes(device_budget_bytes);
     let basis = left_bytes.max(right_bytes).max(1);
     let partitions = basis.saturating_add(target_partition_bytes.saturating_sub(1)) / target_partition_bytes.max(1);
-    usize::try_from(partitions.clamp(2, 1024)).unwrap_or(1024)
+    partitions.clamp(2, 1024) as usize
 }
 
 fn partitioned_mixed_join_partition_count(
@@ -131,7 +131,6 @@ pub(super) fn partitioned_join_reusable_rejected_reason(
 }
 
 pub(super) fn hash_partition_join_side(
-    context: &ExecutionContext,
     node_id: NodeId,
     side: JoinSide,
     input: BoundedJoinSideFrame,
@@ -199,7 +198,6 @@ pub(super) fn hash_partition_join_side(
         reservations.shrink_to_observed(&mut reservation, partitioned_bytes, metrics);
     }
     release_partition_input(frame, input_reservation, reservations, metrics);
-    let _ = context;
     Ok(PartitionedJoinSide { frame: partitioned, reservation, offsets })
 }
 

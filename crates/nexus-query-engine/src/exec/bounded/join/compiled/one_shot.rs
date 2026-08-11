@@ -129,7 +129,7 @@ pub(super) fn execute_compiled_one_shot_equi_join_probe_from_stream(
     validate_one_shot_equi_join(node)?;
 
     let probe_side = probe_side(build.side);
-    let probe_columns = compiled_join_input_columns(context, node, build.strategy, probe_side)?;
+    let probe_columns = compiled_join_input_columns(node, build.strategy, probe_side)?;
     let mut outputs = Vec::new();
     let mut summary = StreamedOneShotJoinSummary::new();
     let stream_result = stream_bounded_join_leaf_local_parquet_source_serial(
@@ -173,8 +173,6 @@ pub(super) fn execute_compiled_one_shot_equi_join_probe_from_stream(
 }
 
 pub(super) fn execute_compiled_one_shot_equi_join_probe_from_frame_stream(
-    context: &ExecutionContext,
-    node_id: NodeId,
     node: &JoinNode,
     build: BoundedCompiledPreparedJoinBuildState,
     inputs: ResidentFrameStreamPayload,
@@ -183,7 +181,7 @@ pub(super) fn execute_compiled_one_shot_equi_join_probe_from_frame_stream(
 ) -> Result<BoundedCompiledJoinProbeState> {
     validate_one_shot_equi_join(node)?;
     let probe_side = probe_side(build.side);
-    let probe_columns = match compiled_join_input_columns(context, node, build.strategy, probe_side) {
+    let probe_columns = match compiled_join_input_columns(node, build.strategy, probe_side) {
         Ok(columns) => columns,
         Err(error) => {
             inputs.release_all(reservations, metrics);
@@ -191,7 +189,6 @@ pub(super) fn execute_compiled_one_shot_equi_join_probe_from_frame_stream(
             return Err(error);
         },
     };
-    let _ = node_id;
     Ok(BoundedCompiledJoinProbeState::OneShotLazyStream(OneShotEquiJoinFrameStreamProbeState {
         build,
         inputs,

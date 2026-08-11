@@ -8,7 +8,6 @@ use std::{
 use arrow::record_batch::RecordBatch;
 
 use super::{
-    reservations::validate_task_runtime_gates,
     scheduler::{CompiledSchedulingCycle, CompiledTaskAdmission, CompiledTaskExecutor, CompiledTaskOutput},
     state::CompiledPipelineState,
 };

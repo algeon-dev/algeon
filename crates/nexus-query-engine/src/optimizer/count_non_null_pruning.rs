@@ -120,7 +120,6 @@ pub(crate) fn optimize_count_non_null_column_pruning(
     let new_root = rewriter.rewrite_subtree(plan.root_id(), RequiredColumns::All);
     if !rewriter.changed || rewriter.diagnostics.applied_count == 0 {
         let diagnostics = rewriter.diagnostics.clone();
-        drop(rewriter);
         return CountNonNullColumnPruningResult { plan, change: super::NativeOptimizerChange::Unchanged, diagnostics };
     }
 

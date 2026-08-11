@@ -105,7 +105,7 @@ pub(in crate::exec::bounded::join::hash) fn materialize_bounded_root_hash_join_p
         }
     }
     while offset < output_len {
-        let remaining_rows = u64::try_from(output_len - offset).unwrap_or(u64::MAX);
+        let remaining_rows = (output_len - offset) as u64;
         let remaining_output_reservation_bytes =
             proportional_join_stream_bytes(output_reservation_bytes, remaining_rows, output_rows);
         let chunk_target_bytes = reusable_hash_join_stream_target_output_bytes(context, reservations);
@@ -369,7 +369,7 @@ impl ResidentFrameStreamSource for RootHashJoinMaterializeStreamSource {
                 self.finish_success(reservations, metrics);
                 return None;
             }
-            let remaining_rows = u64::try_from(self.output_len - self.offset).unwrap_or(u64::MAX);
+            let remaining_rows = (self.output_len - self.offset) as u64;
             let remaining_output_reservation_bytes =
                 proportional_join_stream_bytes(self.output_reservation_bytes, remaining_rows, self.output_len as u64);
             let chunk_target_bytes = reusable_hash_join_stream_target_output_bytes(&self.context, reservations);
@@ -411,7 +411,7 @@ pub(in crate::exec::bounded::join::hash) fn reusable_hash_join_stream_chunk_rows
     if output_rows == 0 || output_reservation_bytes <= target_bytes {
         return usize::try_from(output_rows.max(1)).unwrap_or(usize::MAX);
     }
-    let rows = target_bytes.saturating_mul(output_rows).checked_div(output_reservation_bytes).unwrap_or(1).max(1);
+    let rows = (target_bytes.saturating_mul(output_rows) / output_reservation_bytes).max(1);
     usize::try_from(rows).unwrap_or(usize::MAX)
 }
 

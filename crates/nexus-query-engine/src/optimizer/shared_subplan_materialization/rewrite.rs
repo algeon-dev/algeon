@@ -247,17 +247,13 @@ fn factored_grouped_source_predicate(
     }
 
     let mut common_seen = BTreeSet::new();
-    let common_predicates = branches
-        .first()
-        .map(|(_, conjuncts, _)| {
-            conjuncts
-                .iter()
-                .filter(|expr| common_keys.contains(&expr.to_string()))
-                .filter(|expr| common_seen.insert(expr.to_string()))
-                .cloned()
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
+    let common_predicates = branches[0]
+        .1
+        .iter()
+        .filter(|expr| common_keys.contains(&expr.to_string()))
+        .filter(|expr| common_seen.insert(expr.to_string()))
+        .cloned()
+        .collect::<Vec<_>>();
 
     let mut branch_predicates = BTreeMap::new();
     let mut varying_predicates = Vec::new();

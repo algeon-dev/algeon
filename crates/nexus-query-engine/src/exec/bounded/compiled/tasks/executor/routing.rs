@@ -58,7 +58,7 @@ impl CompiledGpuTaskExecutor<'_> {
         let grouped_string_key = has_source_adjacent_stages
             && !aggregate.spec.group_exprs.is_empty()
             && aggregate.spec.grouping_sets.is_none()
-            && self.aggregate_has_string_group_key(aggregate_node_id, aggregate);
+            && self.aggregate_has_string_group_key(aggregate);
         SourceAdjacentAggregateChunkCapHints { has_source_adjacent_stages, grouped_string_key }
     }
 
@@ -89,18 +89,8 @@ impl CompiledGpuTaskExecutor<'_> {
         None
     }
 
-    fn aggregate_has_string_group_key(
-        &self,
-        aggregate_node_id: NodeId,
-        aggregate: &crate::plan::AggregateNode,
-    ) -> bool {
-        let Some(aggregate_node) = self.plan.node(aggregate_node_id) else {
-            return false;
-        };
-        let PlanNode::Aggregate(aggregate_ref) = &aggregate_node.kind else {
-            return false;
-        };
-        let Some(input_node) = self.plan.node(aggregate_ref.input) else {
+    fn aggregate_has_string_group_key(&self, aggregate: &crate::plan::AggregateNode) -> bool {
+        let Some(input_node) = self.plan.node(aggregate.input) else {
             return false;
         };
         let input_schema = &input_node.facts.output_schema;

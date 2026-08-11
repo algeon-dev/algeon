@@ -8,7 +8,6 @@
 
 use std::collections::BTreeSet;
 
-mod reservations;
 mod scheduler;
 mod state;
 mod tasks;
@@ -23,7 +22,7 @@ pub(in crate::exec::bounded) use tasks::{ResidentFrameStreamPayload, ResidentFra
 pub(crate) use tasks::{ResidentFrameStreamProducerTestHarness, YieldedFrameCounterTestHarness};
 
 use crate::{
-    error::{QueryError, QueryErrorCode, Result},
+    error::Result,
     exec::output::QueryOutput,
     metrics::QueryMetrics,
     observability::{
@@ -44,7 +43,6 @@ pub(in crate::exec::bounded) fn execute_compiled_pipeline(
     metrics: &mut QueryMetrics,
     observation_scope: Option<&crate::observability::RuntimeExecutionObservationScope>,
 ) -> Result<QueryOutput> {
-    validate_pipeline_sink_matches_plan(plan, pipeline)?;
     if let Some(scope) = observation_scope {
         record_compiled_pipeline_topology(scope, pipeline, context.runtime()?.device().ordinal());
     }
@@ -206,32 +204,6 @@ fn record_compiled_pipeline_topology(
                 })
             },
         );
-    }
-}
-
-fn validate_pipeline_sink_matches_plan(plan: &QueryPlan, pipeline: &CompiledPipeline) -> Result<()> {
-    let expected = match plan.sink() {
-        ResultSink::HostArrow { .. } => crate::pipeline::SinkBoundaryKind::HostArrowMaterialization,
-        ResultSink::GpuResident { .. } => crate::pipeline::SinkBoundaryKind::GpuResidentOutput,
-    };
-    if pipeline.sink().kind() == expected {
-        return Ok(());
-    }
-    Err(QueryError::new(
-        QueryErrorCode::InvalidPlan,
-        "nexus_query_engine.bounded.compiled.sink_boundary",
-        "compiled pipeline sink boundary does not match query plan sink",
-    )
-    .with_fact("plan_sink_kind", result_sink_kind(plan.sink()))
-    .with_fact("pipeline_sink_boundary_kind", pipeline.sink().kind().as_str())
-    .with_fact("sink_boundary_task_id", pipeline.sink().input())
-    .with_fact("plan_sink_node_id", plan.sink().input()))
-}
-
-fn result_sink_kind(sink: &ResultSink) -> &'static str {
-    match sink {
-        ResultSink::HostArrow { .. } => "host_arrow",
-        ResultSink::GpuResident { .. } => "gpu_resident",
     }
 }
 

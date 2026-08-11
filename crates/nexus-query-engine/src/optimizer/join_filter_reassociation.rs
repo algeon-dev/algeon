@@ -574,7 +574,7 @@ impl<'a> JoinFilterReassociationRewriter<'a> {
     }
 
     fn consumer_count(&self, node_id: NodeId) -> usize {
-        self.consumer_counts.get(node_id.index()).copied().unwrap_or_default()
+        self.consumer_counts[node_id.index()]
     }
 }
 
@@ -582,14 +582,10 @@ fn node_consumer_counts(plan: &QueryPlan) -> Vec<usize> {
     let mut consumer_counts = vec![0; plan.nodes().len()];
     for node in plan.nodes() {
         for input in node.input_ids() {
-            if let Some(count) = consumer_counts.get_mut(input.index()) {
-                *count += 1;
-            }
+            consumer_counts[input.index()] += 1;
         }
     }
-    if let Some(count) = consumer_counts.get_mut(plan.sink().input().index()) {
-        *count += 1;
-    }
+    consumer_counts[plan.sink().input().index()] += 1;
     consumer_counts
 }
 
@@ -1145,8 +1141,7 @@ fn column_scope(plan: &QueryPlan, join: &JoinNode, column: &ColumnRef) -> Expres
     match column.qualifier() {
         Some(ColumnQualifier::Input { index: 0 }) => ExpressionScope::Side(JoinSide::Left),
         Some(ColumnQualifier::Input { index: 1 }) => ExpressionScope::Side(JoinSide::Right),
-        Some(_) => unqualified_column_scope(plan, join, column.name()),
-        None => unqualified_column_scope(plan, join, column.name()),
+        _ => unqualified_column_scope(plan, join, column.name()),
     }
 }
 
@@ -1156,8 +1151,7 @@ fn unqualified_column_scope(plan: &QueryPlan, join: &JoinNode, column_name: &str
     match (left, right) {
         (true, false) => ExpressionScope::Side(JoinSide::Left),
         (false, true) => ExpressionScope::Side(JoinSide::Right),
-        (false, false) => ExpressionScope::MixedOrUnknown,
-        (true, true) => ExpressionScope::MixedOrUnknown,
+        (false, false) | (true, true) => ExpressionScope::MixedOrUnknown,
     }
 }
 

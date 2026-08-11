@@ -309,7 +309,7 @@ pub(in crate::exec) fn execute_graph_algorithm_sanitized(
         output_columns: gpu.num_columns() as u64,
         output_device_bytes,
         graph_peak_bytes,
-        elapsed_ns: u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX),
+        elapsed_ns: elapsed.as_nanos() as u64,
         gpu_resident_input_handoffs: boundary_delta.gpu_resident_input_handoffs,
         host_to_device_uploads: boundary_delta.host_to_device_uploads,
         device_to_host_materializations: boundary_delta.device_to_host_materializations,

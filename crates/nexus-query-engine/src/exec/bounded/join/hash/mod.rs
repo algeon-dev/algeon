@@ -21,8 +21,6 @@ mod state;
 mod stream;
 
 pub(in crate::exec::bounded::join) use build::reserve_and_build_bounded_hash_join;
-#[allow(unused_imports)]
-pub(super) use build::single_key_build_is_unique;
 #[allow(unused_imports)] // sibling resolution via use super::*
 pub(in crate::exec::bounded::join::hash) use build::*;
 pub(in crate::exec::bounded) use build::{

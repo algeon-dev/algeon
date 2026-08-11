@@ -65,7 +65,7 @@ impl FinalSortExecutor<'_> {
                     )
                 })
                 .map_err(|error| self.attach_final_sort_resource_facts(error, attempt))?;
-            let materialized_output_bytes = u64::try_from(materialized_output_bytes).unwrap_or(u64::MAX);
+            let materialized_output_bytes = materialized_output_bytes as u64;
             let materialized_reservation =
                 self.reserve_full_sort_materialized_output(materialized_output_bytes, attempt)?;
             let materialized_frame = {
