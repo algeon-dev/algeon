@@ -236,9 +236,9 @@ pub(in crate::exec) fn graph_memory_reservation_report(
         model_input = model_input.with_statistics(statistics);
     }
     // This is the last pre-execution point with the exact materialized edge
-    // shape. Attach the owner-provided raw-BFS sort bound before bounded
+    // shape. Attach the owner-provided raw-BFS construction bounds before bounded
     // pricing so relation-backed source/target inputs do not erase it.
-    model_input = crate::graph_memory::with_raw_bfs_sort_workspace_bound_from_owner(spec, model_input);
+    model_input = crate::graph_memory::with_raw_bfs_construction_workspace_bounds_from_owner(spec, model_input);
     let model = crate::graph_memory::GraphMemoryModel;
     let estimate = match budget_bytes.is_some() {
         true => model.estimate_for_bounded(spec, model_input)?,

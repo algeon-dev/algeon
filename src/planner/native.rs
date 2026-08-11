@@ -183,8 +183,8 @@ pub struct NexusNativePhysicalOptimizerRule {
 
 #[derive(Debug)]
 struct NexusNativePhysicalOptimizerRuleState {
-    last_input_plan_root: Mutex<Option<String>>,
-    last_input_plan_shape: Mutex<Option<String>>,
+    last_input_plan_root: Mutex<String>,
+    last_input_plan_shape: Mutex<String>,
     last_input_join_diagnostics: Mutex<Vec<NativeJoinDiagnosticSummary>>,
     last_report: Mutex<Option<PlanningReport>>,
     last_native_optimizer: Mutex<nexus_query_engine::optimizer::NativeOptimizerDiagnostics>,
@@ -208,8 +208,8 @@ impl NexusNativePhysicalOptimizerRule {
             config,
             stage: NativeOptimizerStage::Final,
             state: Arc::new(NexusNativePhysicalOptimizerRuleState {
-                last_input_plan_root: Mutex::new(None),
-                last_input_plan_shape: Mutex::new(None),
+                last_input_plan_root: Mutex::new(String::new()),
+                last_input_plan_shape: Mutex::new(String::new()),
                 last_input_join_diagnostics: Mutex::new(Vec::new()),
                 last_report: Mutex::new(None),
                 last_native_optimizer: Mutex::new(nexus_query_engine::optimizer::NativeOptimizerDiagnostics::default()),
@@ -234,13 +234,7 @@ impl NexusNativePhysicalOptimizerRule {
 
     /// Most recent planning report produced by this retained rule, if it has run.
     pub fn last_report(&self) -> Option<PlanningReport> {
-        match self.state.last_report.lock() {
-            Ok(report) => report.clone(),
-            Err(poisoned) => {
-                tracing::warn!("native planning report mutex was poisoned; returning the last captured report");
-                poisoned.into_inner().clone()
-            },
-        }
+        self.state.last_report.lock().expect("native planning report mutex poisoned").clone()
     }
 
     /// Source diagnostics captured during the most recent native planning attempt.
@@ -259,15 +253,13 @@ impl NexusNativePhysicalOptimizerRule {
                 .last_input_plan_root
                 .lock()
                 .expect("native input plan root mutex poisoned")
-                .clone()
-                .unwrap_or_default(),
+                .clone(),
             input_plan_shape: self
                 .state
                 .last_input_plan_shape
                 .lock()
                 .expect("native input plan shape mutex poisoned")
-                .clone()
-                .unwrap_or_default(),
+                .clone(),
             input_join_diagnostics: self
                 .state
                 .last_input_join_diagnostics
@@ -313,9 +305,9 @@ impl PhysicalOptimizerRule for NexusNativePhysicalOptimizerRule {
         }
 
         *self.state.last_input_plan_root.lock().expect("native input plan root mutex poisoned") =
-            Some(plan.name().to_string());
+            plan.name().to_string();
         *self.state.last_input_plan_shape.lock().expect("native input plan shape mutex poisoned") =
-            Some(physical_plan_shape(plan.as_ref()));
+            physical_plan_shape(plan.as_ref());
         *self.state.last_input_join_diagnostics.lock().expect("native input join diagnostics mutex poisoned") =
             physical_join_diagnostics(plan.as_ref());
 

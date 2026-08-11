@@ -1607,13 +1607,11 @@ impl QueryPlanCapabilityProof {
         let occurrence_id = candidate
             .runtime_occurrence_id
             .ok_or_else(|| composed_schedule_error("runtime_producer_occurrence_missing", None))?;
-        if candidate
-            .graph_result_input_name
-            .as_deref()
-            .is_some_and(|graph_result_input_name| occurrence_id != graph_result_input_name)
+        if let Some(graph_result_input_name) = candidate.graph_result_input_name.as_deref()
+            && occurrence_id != graph_result_input_name
         {
             return Err(composed_schedule_error("producer_occurrence_identity_mismatch", Some(&occurrence_id))
-                .with_fact("graph_result_input_name", candidate.graph_result_input_name.unwrap_or_default()));
+                .with_fact("graph_result_input_name", graph_result_input_name));
         }
         let proof = candidate.capability_proof.ok_or_else(|| {
             composed_schedule_error("producer_admission_proof_missing_or_ambiguous", Some(&occurrence_id))
@@ -3061,16 +3059,15 @@ fn composed_consumer_branch_bound(
                             Some(&source.input_name),
                         ));
                     }
-                    if source.row_count_upper_bound.is_some_and(|rows| rows != output.row_count_upper_bound) {
+                    if let Some(consumer_row_count_upper_bound) = source.row_count_upper_bound
+                        && consumer_row_count_upper_bound != output.row_count_upper_bound
+                    {
                         return Err(composed_schedule_error(
                             "consumer_source_row_bound_mismatch",
                             Some(&source.input_name),
                         )
                         .with_fact("producer_row_count_upper_bound", output.row_count_upper_bound)
-                        .with_fact(
-                            "consumer_row_count_upper_bound",
-                            source.row_count_upper_bound.unwrap_or_default(),
-                        ));
+                        .with_fact("consumer_row_count_upper_bound", consumer_row_count_upper_bound));
                     }
                     // The source handle is retained by the producer schedule, not
                     // allocated by the consumer. Its exact typed bytes are therefore

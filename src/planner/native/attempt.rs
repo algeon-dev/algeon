@@ -48,7 +48,6 @@ pub(super) fn optimize_count_only_native_plan(
     replace_lowered_root_or_keep_plan(
         plan,
         None,
-        None,
         lowering,
         native_execution_config,
         native_optimizer_options,
@@ -73,7 +72,6 @@ pub(super) fn optimize_final_native_plan(
         {
             let mut native_leaf = replace_lowered_root_or_keep_plan(
                 Arc::clone(boundary.source()),
-                None,
                 Some(boundary.native_equivalence_properties()),
                 native_leaf_lowering,
                 native_execution_config,
@@ -91,7 +89,6 @@ pub(super) fn optimize_final_native_plan(
     replace_lowered_root_or_keep_plan(
         plan,
         None,
-        None,
         lowering,
         native_execution_config,
         native_optimizer_options,
@@ -101,14 +98,12 @@ pub(super) fn optimize_final_native_plan(
 
 fn replace_lowered_root_or_keep_plan(
     plan: Arc<dyn ExecutionPlan>,
-    properties_plan: Option<Arc<dyn ExecutionPlan>>,
     output_equivalence_properties: Option<EquivalenceProperties>,
     lowering: crate::native::NativeLoweringResult,
     native_execution_config: &NexusNativeExecutionConfig,
     native_optimizer_options: &nexus_query_engine::optimizer::NativeOptimizerOptions,
     native_plan_cost_options: &nexus_query_engine::plan::NativePlanCostOptions,
 ) -> DataFusionResult<NativeOptimizationAttempt> {
-    let properties_plan = properties_plan.unwrap_or_else(|| Arc::clone(&plan));
     let mut lowering = lowering;
     stamp_planning_report_correlation(&mut lowering.report, native_execution_config);
     if lowering.plans.len() != 1 || lowering.selected_count() != 1 {
@@ -132,12 +127,12 @@ fn replace_lowered_root_or_keep_plan(
     let optimizer_result =
         nexus_query_engine::optimizer::optimize_query_plan(lowering.plans[0].clone(), &optimizer_options);
     let native_optimizer = optimizer_result.diagnostics;
-    let ordered_output_sort_needed = properties_plan.properties().output_ordering().is_some()
+    let ordered_output_sort_needed = plan.properties().output_ordering().is_some()
         && !crate::native::native_plan_reproduces_declared_output_ordering(&optimizer_result.plan);
     let (native_plan, appended_declared_output_sort) =
         match crate::native::reestablish_declared_output_ordering_if_needed(
             optimizer_result.plan,
-            properties_plan.properties().output_ordering(),
+            plan.properties().output_ordering(),
         ) {
             Ok(native_plan) => native_plan,
             Err(reason) => {
@@ -207,7 +202,7 @@ fn replace_lowered_root_or_keep_plan(
         native_plan,
         native_execution_config,
         &datafusion_shape,
-        output_equivalence_properties.unwrap_or_else(|| properties_plan.properties().equivalence_properties().clone()),
+        output_equivalence_properties.unwrap_or_else(|| plan.properties().equivalence_properties().clone()),
     )?;
     Ok(NativeOptimizationAttempt {
         plan,

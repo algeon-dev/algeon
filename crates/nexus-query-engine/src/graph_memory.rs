@@ -446,6 +446,31 @@ impl GraphStatistics {
     }
 }
 
+/// Owner-provided phase bounds for raw single-GPU graph construction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[must_use]
+pub struct GraphConstructionWorkspaceBounds {
+    renumber_workspace_bytes: u64,
+    compression_workspace_bytes: u64,
+}
+
+impl GraphConstructionWorkspaceBounds {
+    /// Create construction workspace bounds from the owner-provided phases.
+    pub const fn new(renumber_workspace_bytes: u64, compression_workspace_bytes: u64) -> Self {
+        Self { renumber_workspace_bytes, compression_workspace_bytes }
+    }
+
+    /// Peak workspace used while renumbering endpoints.
+    pub const fn renumber_workspace_bytes(self) -> u64 {
+        self.renumber_workspace_bytes
+    }
+
+    /// Peak workspace used while sorting and compressing endpoints.
+    pub const fn compression_workspace_bytes(self) -> u64 {
+        self.compression_workspace_bytes
+    }
+}
+
 /// Plan/runtime inputs used by the approximate graph memory model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct GraphMemoryModelInput {
@@ -466,13 +491,13 @@ pub struct GraphMemoryModelInput {
     pub vertex_estimate: Option<GraphVertexEstimate>,
     /// Whether an edge-normalize operator was inserted before graph execution.
     pub edge_normalize_inserted: bool,
-    /// Upper bound for the raw libcugraph endpoint-pair stable-sort workspace,
-    /// supplied by the owning cuGraph preflight contract.
+    /// Upper bounds for raw libcugraph graph-construction phases, supplied by
+    /// the owning cuGraph preflight contract.
     ///
     /// The value is only meaningful for raw BFS construction. `None` means
     /// the current build cannot prove that construction phase and bounded
     /// admission must reject it rather than inventing an allowance.
-    pub construction_sort_workspace_bound_bytes: Option<u64>,
+    pub construction_workspace_bounds: Option<GraphConstructionWorkspaceBounds>,
     /// Runtime topology evidence used by data-dependent pricing, when available.
     pub statistics: Option<GraphStatistics>,
     /// Exact or hard-bounded candidate-pair rows for a similarity operation.
@@ -528,10 +553,9 @@ impl GraphMemoryModelInput {
         self
     }
 
-    /// Attach the owning libcugraph upper bound for construction-sort
-    /// temporary storage.
-    pub fn with_construction_sort_workspace_bound_bytes(mut self, bound_bytes: u64) -> Self {
-        self.construction_sort_workspace_bound_bytes = Some(bound_bytes);
+    /// Attach the owning libcugraph graph-construction phase bounds.
+    pub fn with_construction_workspace_bounds(mut self, bounds: GraphConstructionWorkspaceBounds) -> Self {
+        self.construction_workspace_bounds = Some(bounds);
         self
     }
 
@@ -2077,6 +2101,12 @@ struct GraphDerivedTerms {
     output_rows: u64,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct RawBfsConstructionWorkspaceModel {
+    peak: ModelBytes,
+    retained_map: ModelBytes,
+}
+
 impl GraphMemoryOwnerComponents {
     fn from_derived(derived: GraphDerivedTerms, diagnostic_projection: bool) -> Result<Self> {
         Ok(Self {
@@ -2198,13 +2228,23 @@ fn derive_graph_terms(
     } else {
         ModelBytes(0)
     };
-    let construction_transient = checked_add_all([
-        (normalization, "normalization_transient"),
-        (sort_staging, "construction_sort_staging"),
-        (ModelBytes::from_u64(raw_bfs_sort_workspace_bound_bytes(spec, input)), "raw_bfs_sort_workspace"),
-        (renumber, "renumber_staging"),
-    ])?;
-    let construction = construction_base.add(construction_transient, "construction")?;
+    let owner_construction_workspace = raw_bfs_construction_workspace_model(spec, input, vertex_estimate)?;
+    let graph_persistent = match owner_construction_workspace {
+        Some(owner_workspace) => construction_base.add(owner_workspace.retained_map, "raw_bfs_graph_persistent")?,
+        None => construction_base,
+    };
+    let construction_transient = match owner_construction_workspace {
+        Some(owner_workspace) => normalization.add(
+            owner_workspace.peak.checked_sub(owner_workspace.retained_map, "raw_bfs_construction_transient")?,
+            "raw_bfs_construction_workspace",
+        )?,
+        None => checked_add_all([
+            (normalization, "normalization_transient"),
+            (sort_staging, "construction_sort_staging"),
+            (renumber, "renumber_staging"),
+        ])?,
+    };
+    let construction = graph_persistent.add(construction_transient, "construction")?;
     let output = output_bytes_model(spec.algorithm, input, vertex_estimate, pair_rows)?;
     let seed_input = graph_seed_memory_input(&spec.params, vertex_estimate);
     let workspace = workspace_bytes_model(
@@ -2223,18 +2263,17 @@ fn derive_graph_terms(
             force_atlas2_phase_peak_model(input, vertex_estimate, &spec.params, construction, output)?
         },
         GraphAlgorithm::Bfs if spec.graph_options.policy == GraphConstructionPolicy::RawLibcugraph => {
-            raw_libcugraph_bfs_phase_peak_model(
-                input,
-                construction,
-                raw_bfs_sort_workspace_bound_bytes(spec, input),
-                execution,
-            )?
+            let persistent = match owner_construction_workspace {
+                Some(_) => graph_persistent,
+                None => construction.checked_sub(sort_staging, "bfs_persistent_graph")?,
+            };
+            raw_libcugraph_bfs_phase_peak_model(construction, persistent, execution)?
         },
         _ => construction.add(execution, "requested_construction_execution")?.max(ModelBytes(1)),
     };
     Ok(GraphDerivedTerms {
         construction,
-        graph_persistent: construction_base,
+        graph_persistent,
         construction_transient,
         output,
         execution_workspace: workspace,
@@ -2366,18 +2405,10 @@ fn similarity_workspace_model(rows: u64, width: u64, weighted: bool) -> Result<M
 }
 
 fn raw_libcugraph_bfs_phase_peak_model(
-    input: GraphMemoryModelInput,
     construction: ModelBytes,
-    sort_bound: u64,
+    persistent: ModelBytes,
     execution: ModelBytes,
 ) -> Result<ModelBytes> {
-    let staging_width = input
-        .vertex_width_bytes
-        .checked_mul(2)
-        .ok_or_else(|| graph_memory_arithmetic_error("bfs_sort_staging_width", "multiplication"))?;
-    let transient = model_product(input.input_edges, staging_width, "bfs_sort_staging")?
-        .add(ModelBytes::from_u64(sort_bound), "bfs_sort_workspace")?;
-    let persistent = construction.checked_sub(transient, "bfs_persistent_graph")?;
     Ok(construction.max(persistent.add(execution, "bfs_persistent_execution")?).max(ModelBytes(1)))
 }
 
@@ -2844,35 +2875,50 @@ fn cugraph_graph_construction_sort_staging_bytes(input: GraphMemoryModelInput) -
         .unwrap_or(u64::MAX)
 }
 
-/// Returns the owner-provided construction workspace only for the raw BFS
+/// Returns the owner-provided construction workspace peak only for the raw BFS
 /// shape whose bounded contract requires it. Other algorithms retain their
 /// existing construction pricing until their own calibration adopts this
 /// owner-bound contract.
-fn raw_bfs_sort_workspace_bound_bytes(spec: &GraphAlgorithmSpec, input: GraphMemoryModelInput) -> u64 {
-    if spec.algorithm == GraphAlgorithm::Bfs && spec.graph_options.policy == GraphConstructionPolicy::RawLibcugraph {
-        input.construction_sort_workspace_bound_bytes.unwrap_or(0)
-    } else {
-        0
+fn raw_bfs_construction_workspace_model(
+    spec: &GraphAlgorithmSpec,
+    input: GraphMemoryModelInput,
+    vertex_estimate: u64,
+) -> Result<Option<RawBfsConstructionWorkspaceModel>> {
+    if spec.algorithm != GraphAlgorithm::Bfs
+        || spec.graph_options.policy != GraphConstructionPolicy::RawLibcugraph
+        || !spec.graph_options.renumber
+    {
+        return Ok(None);
     }
+    let Some(bounds) = input.construction_workspace_bounds else {
+        return Ok(None);
+    };
+    let retained_map = model_product(vertex_estimate, input.vertex_width_bytes, "raw_bfs_renumber_map")?;
+    let compression_peak = retained_map
+        .add(ModelBytes::from_u64(bounds.compression_workspace_bytes()), "raw_bfs_compression_workspace")?;
+    Ok(Some(RawBfsConstructionWorkspaceModel {
+        peak: ModelBytes::from_u64(bounds.renumber_workspace_bytes()).max(compression_peak),
+        retained_map,
+    }))
 }
 
-/// Raw cuGraph BFS builds its endpoint-pair sort workspace inside cuGraph.
-/// A bounded ticket therefore needs the owning preflight contract to prove
-/// the complete construction peak. An explicit edge-normalize stage has a
+/// Raw cuGraph BFS builds its construction workspace inside cuGraph. A bounded
+/// ticket therefore needs the owning preflight contract to prove the complete
+/// construction peak. An explicit edge-normalize stage has a
 /// separately owned, priced input lifetime and remains eligible for bounded
 /// pricing.
 fn require_raw_bfs_workspace_preflight(spec: &GraphAlgorithmSpec, input: GraphMemoryModelInput) -> Result<()> {
     if spec.algorithm != GraphAlgorithm::Bfs
         || spec.graph_options.policy != GraphConstructionPolicy::RawLibcugraph
         || input.edge_normalize_inserted
-        || input.construction_sort_workspace_bound_bytes.is_some()
+        || (spec.graph_options.renumber && input.construction_workspace_bounds.is_some())
     {
         return Ok(());
     }
     Err(QueryError::new(
         QueryErrorCode::InvalidPlan,
         "nexus_query_engine.graph_memory.estimate_for_bounded",
-        "raw cuGraph BFS lacks a pre-execution stable-sort workspace bound",
+        "raw cuGraph BFS lacks pre-execution graph-construction workspace bounds",
     )
     .with_fact("reason", "raw_bfs_sort_workspace_preflight_unavailable")
     .with_fact("algorithm", spec.algorithm.as_str())
@@ -3025,7 +3071,7 @@ pub fn graph_memory_model_input(
         vertex_estimate: None,
         statistics: None,
         edge_normalize_inserted: false,
-        construction_sort_workspace_bound_bytes: None,
+        construction_workspace_bounds: None,
         pair_rows: None,
         pair_vertex_width_bytes: None,
         pair_cardinality_source: None,
@@ -3058,7 +3104,7 @@ pub fn graph_memory_estimates_for_plan(
         }
         #[cfg(feature = "cugraph")]
         {
-            input = with_raw_bfs_sort_workspace_bound_from_owner(&graph.spec, input);
+            input = with_raw_bfs_construction_workspace_bounds_from_owner(&graph.spec, input);
         }
         let estimate = GraphMemoryModel.estimate_for_bounded(&graph.spec, input)?;
         estimates.push(GraphPlanMemoryEstimate { node_id: node.id, estimate });
@@ -3231,19 +3277,26 @@ fn graph_memory_model_input_for_plan_node(
 /// allowance. Raw BFS executes with a forward graph, matching the actual
 /// `Graph<cugraph::Forward>` ingress used by the traversal executor.
 #[cfg(feature = "cugraph")]
-pub(crate) fn with_raw_bfs_sort_workspace_bound_from_owner(
+pub(crate) fn with_raw_bfs_construction_workspace_bounds_from_owner(
     spec: &GraphAlgorithmSpec,
     input: GraphMemoryModelInput,
 ) -> GraphMemoryModelInput {
-    raw_bfs_sort_workspace_bound_from_owner(spec, input)
-        .map(|workspace_bound_bytes| input.with_construction_sort_workspace_bound_bytes(workspace_bound_bytes))
+    raw_bfs_construction_workspace_bounds_from_owner(spec, input)
+        .map(|bounds| input.with_construction_workspace_bounds(bounds))
         .unwrap_or(input)
 }
 
 #[cfg(feature = "cugraph")]
-fn raw_bfs_sort_workspace_bound_from_owner(spec: &GraphAlgorithmSpec, input: GraphMemoryModelInput) -> Option<u64> {
-    raw_bfs_sort_workspace_bound_from_owner_query(spec, input, |preflight| {
-        cugraph::cudf_interop::edgelist_sort_workspace_preflight(preflight).ok()
+fn raw_bfs_construction_workspace_bounds_from_owner(
+    spec: &GraphAlgorithmSpec,
+    input: GraphMemoryModelInput,
+) -> Option<GraphConstructionWorkspaceBounds> {
+    raw_bfs_construction_workspace_bounds_from_owner_query(spec, input, |preflight| {
+        let bounds = cugraph::cudf_interop::graph_construction_workspace_preflight(preflight).ok()?;
+        Some(GraphConstructionWorkspaceBounds::new(
+            bounds.renumber_workspace_bytes(),
+            bounds.compression_workspace_bytes(),
+        ))
     })
 }
 
@@ -3254,13 +3307,14 @@ fn raw_bfs_sort_workspace_bound_from_owner(spec: &GraphAlgorithmSpec, input: Gra
 /// unit-tested without introducing an engine-side substitute for the owner
 /// contract.
 #[cfg(feature = "cugraph")]
-fn raw_bfs_sort_workspace_bound_from_owner_query(
+fn raw_bfs_construction_workspace_bounds_from_owner_query(
     spec: &GraphAlgorithmSpec,
     input: GraphMemoryModelInput,
-    query: impl FnOnce(&cugraph::cudf_interop::EdgelistSortPreflightInput) -> Option<u64>,
-) -> Option<u64> {
+    query: impl FnOnce(&cugraph::cudf_interop::GraphConstructionPreflightInput) -> Option<GraphConstructionWorkspaceBounds>,
+) -> Option<GraphConstructionWorkspaceBounds> {
     if spec.algorithm != GraphAlgorithm::Bfs
         || spec.graph_options.policy != GraphConstructionPolicy::RawLibcugraph
+        || !spec.graph_options.renumber
         || input.edge_normalize_inserted
     {
         return None;
@@ -3279,13 +3333,18 @@ fn raw_bfs_sort_workspace_bound_from_owner_query(
     };
     let store_transposed =
         matches!(spec.algorithm.definition().layout_requirement, crate::plan::GraphLayoutRequirement::Transposed);
-    let preflight = cugraph::cudf_interop::EdgelistSortPreflightInput::new(
+    let vertex_upper_bound = input.vertex_upper_bound().ok()?;
+    let num_vertices =
+        input.vertex_estimate.map_or(vertex_upper_bound, |estimate| estimate.count.min(vertex_upper_bound));
+    let preflight = cugraph::cudf_interop::GraphConstructionPreflightInput::new(
         vertex_type,
         vertex_type,
         weight_type,
         input.has_edge_id,
         store_transposed,
+        spec.graph_options.renumber,
         usize::try_from(input.input_edges).ok()?,
+        usize::try_from(num_vertices).ok()?,
     )
     .ok()?;
     query(&preflight)
@@ -4193,7 +4252,7 @@ mod tests {
 
     #[cfg(feature = "cugraph")]
     #[test]
-    fn graph_memory_estimates_for_plan_raw_bfs_consumes_owner_sort_workspace_bound() {
+    fn graph_memory_estimates_for_plan_raw_bfs_consumes_owner_construction_workspace_bounds() {
         let source = LocalParquetSource::from_files(
             vec![LocalParquetFile::new("edges.parquet").with_row_group_rows(vec![100])],
             edge_schema(),
@@ -4214,13 +4273,10 @@ mod tests {
         let input = graph_memory_model_input_for_plan_node(&plan, graph, GraphMemoryCalibrationOverride::none())
             .unwrap()
             .expect("literal row count is hard graph-input evidence");
-        let workspace_bound_bytes = raw_bfs_sort_workspace_bound_from_owner(&graph.spec, input)
-            .expect("same typed owner query must produce the construction bound");
+        let workspace_bounds = raw_bfs_construction_workspace_bounds_from_owner(&graph.spec, input)
+            .expect("same typed owner query must produce the construction bounds");
         let expected = GraphMemoryModel
-            .estimate_for_bounded(
-                &graph.spec,
-                input.with_construction_sort_workspace_bound_bytes(workspace_bound_bytes),
-            )
+            .estimate_for_bounded(&graph.spec, input.with_construction_workspace_bounds(workspace_bounds))
             .unwrap();
 
         assert_eq!(planned.len(), 1);
@@ -4239,7 +4295,7 @@ mod tests {
         let input = graph_memory_model_input(100, 8, &spec.edge_columns, false, None);
 
         assert_eq!(
-            raw_bfs_sort_workspace_bound_from_owner_query(&spec, input, |_preflight| None),
+            raw_bfs_construction_workspace_bounds_from_owner_query(&spec, input, |_preflight| None),
             None,
             "an owner query error must remain an absent bound"
         );
@@ -4247,6 +4303,78 @@ mod tests {
             .estimate_for_bounded(&spec, input)
             .expect_err("an absent owner bound must retain the raw BFS rejection");
         assert_eq!(error.fact_value("reason"), Some("raw_bfs_sort_workspace_preflight_unavailable"));
+    }
+
+    #[cfg(feature = "cugraph")]
+    #[test]
+    fn raw_bfs_owner_preflight_passes_renumber_and_refined_vertex_bound() {
+        let spec = GraphAlgorithmSpec::with_stable_schema(
+            GraphAlgorithm::Bfs,
+            GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
+            GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+            GraphAlgorithmParams::Bfs(Box::new(GraphBfsParams::new(0, None))),
+        );
+        let input = graph_memory_model_input(100, 8, &spec.edge_columns, false, None)
+            .with_vertex_estimate(GraphVertexEstimate::runtime_exact_distinct(37));
+        let bounds = raw_bfs_construction_workspace_bounds_from_owner_query(&spec, input, |preflight| {
+            assert!(preflight.renumber());
+            assert_eq!(preflight.num_edges(), 100);
+            assert_eq!(preflight.num_vertices(), 37);
+            Some(GraphConstructionWorkspaceBounds::new(11, 17))
+        })
+        .expect("callback returns owner bounds");
+        assert_eq!(bounds.renumber_workspace_bytes(), 11);
+        assert_eq!(bounds.compression_workspace_bytes(), 17);
+    }
+
+    #[cfg(feature = "cugraph")]
+    #[test]
+    fn raw_bfs_owner_preflight_rejects_unbounded_identity_number_map() {
+        let spec = GraphAlgorithmSpec::with_stable_schema(
+            GraphAlgorithm::Bfs,
+            GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
+            GraphConstructionOptions {
+                directed: true,
+                renumber: false,
+                policy: GraphConstructionPolicy::RawLibcugraph,
+            },
+            GraphAlgorithmParams::Bfs(Box::new(GraphBfsParams::new(0, None))),
+        );
+        let input = graph_memory_model_input(100, 8, &spec.edge_columns, false, None);
+
+        assert_eq!(
+            raw_bfs_construction_workspace_bounds_from_owner_query(&spec, input, |_preflight| {
+                panic!("a distinct-count estimate cannot bound an identity number map")
+            }),
+            None
+        );
+        let error = GraphMemoryModel
+            .estimate_for_bounded(
+                &spec,
+                input.with_construction_workspace_bounds(GraphConstructionWorkspaceBounds::new(0, 1)),
+            )
+            .expect_err("renumber=false needs maximum endpoint evidence");
+        assert_eq!(error.fact_value("reason"), Some("raw_bfs_sort_workspace_preflight_unavailable"));
+    }
+
+    #[cfg(feature = "cugraph")]
+    #[test]
+    fn raw_bfs_owner_preflight_falls_back_to_endpoint_vertex_bound() {
+        let spec = GraphAlgorithmSpec::with_stable_schema(
+            GraphAlgorithm::Bfs,
+            GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
+            GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+            GraphAlgorithmParams::Bfs(Box::new(GraphBfsParams::new(0, None))),
+        );
+        let input = graph_memory_model_input(100, 8, &spec.edge_columns, false, None);
+        let bounds = raw_bfs_construction_workspace_bounds_from_owner_query(&spec, input, |preflight| {
+            assert!(preflight.renumber());
+            assert_eq!(preflight.num_edges(), 100);
+            assert_eq!(preflight.num_vertices(), 200);
+            Some(GraphConstructionWorkspaceBounds::new(13, 19))
+        })
+        .expect("callback returns owner bounds");
+        assert_eq!(bounds, GraphConstructionWorkspaceBounds::new(13, 19));
     }
 
     #[cfg(not(feature = "cugraph"))]
@@ -4470,7 +4598,7 @@ mod tests {
             device_total_memory_bytes: None,
             vertex_estimate: Some(GraphVertexEstimate::graph_metadata(50)),
             edge_normalize_inserted: true,
-            construction_sort_workspace_bound_bytes: None,
+            construction_workspace_bounds: None,
             statistics: None,
             pair_rows: None,
             pair_vertex_width_bytes: None,
@@ -4594,7 +4722,7 @@ mod tests {
             vertex_estimate: None,
             statistics: None,
             edge_normalize_inserted: false,
-            construction_sort_workspace_bound_bytes: None,
+            construction_workspace_bounds: None,
             pair_rows: None,
             pair_vertex_width_bytes: None,
             pair_cardinality_source: None,
@@ -4644,7 +4772,7 @@ mod tests {
             vertex_estimate: Some(GraphVertexEstimate::graph_metadata(10)),
             statistics: None,
             edge_normalize_inserted: true,
-            construction_sort_workspace_bound_bytes: None,
+            construction_workspace_bounds: None,
             pair_rows: None,
             pair_vertex_width_bytes: None,
             pair_cardinality_source: None,
@@ -4692,7 +4820,7 @@ mod tests {
             vertex_estimate: None,
             statistics: None,
             edge_normalize_inserted: false,
-            construction_sort_workspace_bound_bytes: None,
+            construction_workspace_bounds: None,
             pair_rows: None,
             pair_vertex_width_bytes: None,
             pair_cardinality_source: None,
@@ -4749,7 +4877,7 @@ mod tests {
             vertex_estimate: Some(GraphVertexEstimate::graph_metadata(VERTICES)),
             statistics: None,
             edge_normalize_inserted: true,
-            construction_sort_workspace_bound_bytes: None,
+            construction_workspace_bounds: None,
             pair_rows: None,
             pair_vertex_width_bytes: None,
             pair_cardinality_source: None,
@@ -4841,7 +4969,7 @@ mod tests {
             device_total_memory_bytes: None,
             vertex_estimate: Some(GraphVertexEstimate::graph_metadata(50)),
             edge_normalize_inserted: false,
-            construction_sort_workspace_bound_bytes: None,
+            construction_workspace_bounds: None,
             statistics: None,
             pair_rows: None,
             pair_vertex_width_bytes: None,
@@ -4853,25 +4981,39 @@ mod tests {
         assert_eq!(error.fact_value("reason"), Some("raw_bfs_sort_workspace_preflight_unavailable"));
         assert_eq!(error.fact_value("algorithm"), Some("bfs"));
 
-        let workspace_bound_bytes = 10_000;
+        let workspace_bounds = GraphConstructionWorkspaceBounds::new(10_000, 6_000);
         let admitted = GraphMemoryModel
-            .estimate_for_bounded(&spec, input.with_construction_sort_workspace_bound_bytes(workspace_bound_bytes))
+            .estimate_for_bounded(&spec, input.with_construction_workspace_bounds(workspace_bounds))
             .expect("the owner-provided bound completes raw BFS admission evidence");
-        let sort_staging_bytes = cugraph_graph_construction_sort_staging_bytes(input);
-        let persistent_graph_and_input_bytes =
-            admitted.construction_bytes.saturating_sub(sort_staging_bytes).saturating_sub(workspace_bound_bytes);
 
-        assert_eq!(admitted.construction_bytes, 14_400);
+        assert_eq!(admitted.construction_bytes, 11_600);
         assert_eq!(admitted.execution_bytes, 4_800);
-        assert_eq!(
-            admitted.requested_bytes,
-            admitted.construction_bytes.max(persistent_graph_and_input_bytes.saturating_add(admitted.execution_bytes)),
-            "the copied endpoint pair and owner sort workspace are live only in construction"
-        );
         assert_eq!(admitted.requested_bytes, admitted.construction_bytes);
 
         spec.edge_normalize_inserted = true;
         assert!(GraphMemoryModel.estimate_for_bounded(&spec, input.with_edge_normalize_inserted(true)).is_ok());
+    }
+
+    #[test]
+    fn raw_bfs_owner_bounds_retain_renumber_map_across_compression_and_execution() {
+        let spec = GraphAlgorithmSpec::with_stable_schema(
+            GraphAlgorithm::Bfs,
+            GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
+            GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+            GraphAlgorithmParams::Bfs(Box::new(GraphBfsParams::new(0, None))),
+        );
+        let input = graph_memory_model_input(1_000, 8, &spec.edge_columns, false, None)
+            .with_vertex_estimate(GraphVertexEstimate::graph_metadata(50));
+        let bounds = GraphConstructionWorkspaceBounds::new(6_000, 10_000);
+        let estimate = GraphMemoryModel
+            .estimate_for_bounded(&spec, input.with_construction_workspace_bounds(bounds))
+            .expect("owner bounds complete bounded raw BFS pricing");
+
+        assert_eq!(estimate.owner_components.graph_persistent_bytes, 16_400);
+        assert_eq!(estimate.owner_components.construction_transient_bytes, 10_000);
+        assert_eq!(estimate.construction_bytes, 26_400);
+        assert_eq!(estimate.execution_bytes, 26_400);
+        assert_eq!(estimate.requested_bytes, 42_800);
     }
 
     #[test]
@@ -4941,7 +5083,7 @@ mod tests {
             vertex_estimate: None,
             statistics: None,
             edge_normalize_inserted: false,
-            construction_sort_workspace_bound_bytes: None,
+            construction_workspace_bounds: None,
             pair_rows: None,
             pair_vertex_width_bytes: None,
             pair_cardinality_source: None,
@@ -4986,7 +5128,7 @@ mod tests {
             vertex_estimate: None,
             statistics: None,
             edge_normalize_inserted: true,
-            construction_sort_workspace_bound_bytes: None,
+            construction_workspace_bounds: None,
             pair_rows: None,
             pair_vertex_width_bytes: None,
             pair_cardinality_source: None,

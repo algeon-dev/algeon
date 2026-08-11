@@ -1471,6 +1471,11 @@ pub fn nexus_query_engine::graph_memory::GraphClaimCalibrationRow::from_reservat
 pub fn nexus_query_engine::graph_memory::GraphClaimCalibrationRow::record_measured_peak(&mut self, core::option::Option<u64>, nexus_query_engine::graph_memory::GraphMeasuredPeakProvenance)
 impl nexus_query_engine::graph_memory::GraphClaimCalibrationRow
 pub fn nexus_query_engine::graph_memory::GraphClaimCalibrationRow::to_json(&self) -> serde_json::value::Value
+pub struct nexus_query_engine::graph_memory::GraphConstructionWorkspaceBounds
+impl nexus_query_engine::graph_memory::GraphConstructionWorkspaceBounds
+pub const fn nexus_query_engine::graph_memory::GraphConstructionWorkspaceBounds::compression_workspace_bytes(self) -> u64
+pub const fn nexus_query_engine::graph_memory::GraphConstructionWorkspaceBounds::new(u64, u64) -> Self
+pub const fn nexus_query_engine::graph_memory::GraphConstructionWorkspaceBounds::renumber_workspace_bytes(self) -> u64
 pub struct nexus_query_engine::graph_memory::GraphMemoryAdmissionEvidence
 impl nexus_query_engine::graph_memory::GraphMemoryAdmissionEvidence
 pub fn nexus_query_engine::graph_memory::GraphMemoryAdmissionEvidence::cold_model_requested_bytes(&self) -> u64
@@ -1516,7 +1521,7 @@ impl nexus_query_engine::graph_memory::GraphMemoryModel
 pub fn nexus_query_engine::graph_memory::GraphMemoryModel::estimate(&self, &nexus_query_engine::plan::GraphAlgorithmSpec, nexus_query_engine::graph_memory::GraphMemoryModelInput) -> nexus_query_engine::error::Result<nexus_query_engine::graph_memory::GraphMemoryEstimate>
 pub fn nexus_query_engine::graph_memory::GraphMemoryModel::reservation_request(&self, impl alloc::string::ToString, &nexus_query_engine::graph_memory::GraphReservationReport, nexus_query_engine::metrics::MemorySpaceId) -> core::option::Option<nexus_query_engine::metrics::MemoryReservationRequest>
 pub struct nexus_query_engine::graph_memory::GraphMemoryModelInput
-pub nexus_query_engine::graph_memory::GraphMemoryModelInput::construction_sort_workspace_bound_bytes: core::option::Option<u64>
+pub nexus_query_engine::graph_memory::GraphMemoryModelInput::construction_workspace_bounds: core::option::Option<nexus_query_engine::graph_memory::GraphConstructionWorkspaceBounds>
 pub nexus_query_engine::graph_memory::GraphMemoryModelInput::device_total_memory_bytes: core::option::Option<u64>
 pub nexus_query_engine::graph_memory::GraphMemoryModelInput::edge_normalize_inserted: bool
 pub nexus_query_engine::graph_memory::GraphMemoryModelInput::has_edge_id: bool
@@ -1532,7 +1537,7 @@ pub nexus_query_engine::graph_memory::GraphMemoryModelInput::weight_width_bytes:
 impl nexus_query_engine::graph_memory::GraphMemoryModelInput
 pub fn nexus_query_engine::graph_memory::GraphMemoryModelInput::raw_edge_count(self) -> u64
 pub fn nexus_query_engine::graph_memory::GraphMemoryModelInput::vertex_upper_bound(self) -> nexus_query_engine::error::Result<u64>
-pub fn nexus_query_engine::graph_memory::GraphMemoryModelInput::with_construction_sort_workspace_bound_bytes(self, u64) -> Self
+pub fn nexus_query_engine::graph_memory::GraphMemoryModelInput::with_construction_workspace_bounds(self, nexus_query_engine::graph_memory::GraphConstructionWorkspaceBounds) -> Self
 pub fn nexus_query_engine::graph_memory::GraphMemoryModelInput::with_device_total_memory_bytes(self, u64) -> Self
 pub fn nexus_query_engine::graph_memory::GraphMemoryModelInput::with_edge_normalize_inserted(self, bool) -> Self
 pub fn nexus_query_engine::graph_memory::GraphMemoryModelInput::with_raw_input_edges(self, u64) -> Self
