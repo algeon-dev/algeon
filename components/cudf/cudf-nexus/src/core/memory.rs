@@ -1012,12 +1012,12 @@ pub struct QueryMemoryDomainOptions {
 }
 
 impl QueryMemoryDomainOptions {
-    /// Create a domain whose initial grant and immutable pool ceiling are equal.
+    /// Create a domain whose initial grant and immutable logical ceiling are equal.
     pub fn new(grant_bytes: usize) -> Self {
         Self { grant_bytes, ceiling_bytes: grant_bytes, release_threshold_bytes: None }
     }
 
-    /// Set the immutable driver pool ceiling.
+    /// Set the immutable logical ceiling for grant resizing.
     pub fn with_ceiling_bytes(mut self, ceiling_bytes: usize) -> Self {
         self.ceiling_bytes = ceiling_bytes;
         self

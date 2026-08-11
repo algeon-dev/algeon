@@ -263,7 +263,6 @@ class query_domain_resource final : public rmm::mr::device_memory_resource {
                         std::uint64_t domain_generation,
                         std::size_t grant_bytes,
                         std::size_t requested_ceiling_bytes,
-                        std::size_t effective_ceiling_bytes,
                         std::shared_ptr<manager_allocation_limit_state> manager_allocation_limit);
 
   [[nodiscard]] cudf_memory_resource_usage_t usage(bool active, std::size_t active_members) const;
@@ -313,8 +312,6 @@ class query_domain_resource final : public rmm::mr::device_memory_resource {
   bool reserve_domain_aligned_bytes(std::size_t aligned_bytes,
                                     std::size_t& reserved_total) noexcept;
 
-  [[nodiscard]] bool would_exceed_pool_ceiling(std::size_t aligned_bytes) const noexcept;
-
   [[nodiscard]] memory_failure_domain_identity failure_identity(
     std::shared_ptr<query_domain_member_counters> const& member) const noexcept;
 
@@ -347,7 +344,6 @@ class query_domain_resource final : public rmm::mr::device_memory_resource {
   std::uint64_t domain_generation_;
   std::atomic<std::size_t> grant_bytes_{0};
   std::size_t requested_ceiling_bytes_;
-  std::size_t effective_ceiling_bytes_;
   std::shared_ptr<manager_allocation_limit_state> manager_allocation_limit_;
   std::atomic<std::size_t> current_bytes_{0};
   std::atomic<std::size_t> peak_bytes_{0};
@@ -367,9 +363,8 @@ struct query_domain_state {
   std::uint64_t generation = 0;
   int32_t device   = -1;
   cudaMemPool_t pool{};
-  std::size_t ceiling_bytes           = 0;
-  std::size_t effective_ceiling_bytes = 0;
-  bool active                         = true;
+  std::size_t ceiling_bytes = 0;
+  bool active               = true;
   std::atomic<bool> trim_pending{false};
   std::size_t active_members = 0;
   std::shared_ptr<query_domain_resource> resource;

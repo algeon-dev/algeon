@@ -951,8 +951,7 @@ fn query_memory_domain_preserves_device_resource_identity() {
 }
 
 #[test]
-fn query_memory_domain_reports_verified_driver_ceiling() {
-    assert!(cudf::QueryMemoryDomain::driver_ceiling_supported());
+fn query_memory_domain_separates_logical_ceiling_from_driver_pool_maximum() {
     let runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
     let manager = runtime.device_memory_manager().unwrap();
     let requested_ceiling = 8 * 1024 * 1024;
@@ -965,8 +964,9 @@ fn query_memory_domain_reports_verified_driver_ceiling() {
 
     let usage = domain.usage().unwrap();
     assert_eq!(usage.ceiling_bytes, requested_ceiling as u64);
-    assert!(usage.driver_ceiling_verified);
-    assert!(usage.effective_driver_ceiling_bytes >= usage.ceiling_bytes);
+    assert_eq!(usage.allocation_limit_bytes, requested_ceiling as u64);
+    assert_eq!(usage.effective_driver_ceiling_bytes, 0);
+    assert!(!usage.driver_ceiling_verified);
 }
 
 #[test]

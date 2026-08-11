@@ -43,14 +43,12 @@ query_domain_resource::query_domain_resource(cudaMemPool_t pool,
                                              std::uint64_t domain_generation,
                                              std::size_t grant_bytes,
                                              std::size_t requested_ceiling_bytes,
-                                             std::size_t effective_ceiling_bytes,
                                              std::shared_ptr<manager_allocation_limit_state> manager_allocation_limit)
   : view_{pool},
     domain_id_{domain_id},
     domain_generation_{domain_generation},
     grant_bytes_{grant_bytes},
     requested_ceiling_bytes_{requested_ceiling_bytes},
-    effective_ceiling_bytes_{effective_ceiling_bytes},
     manager_allocation_limit_{std::move(manager_allocation_limit)}
 {
 }
@@ -75,8 +73,6 @@ query_domain_resource::query_domain_resource(cudaMemPool_t pool,
   out.reserved[1] = active ? 1 : 0;
   out.reserved[2] = active_members;
   out.reserved[3] = requested_ceiling_bytes_;
-  out.reserved[4] = effective_ceiling_bytes_;
-  out.reserved[5] = 1;
   return out;
 }
 
@@ -207,22 +203,6 @@ bool query_domain_resource::reserve_domain_aligned_bytes(std::size_t aligned_byt
   return reserve_aligned_bytes(current_aligned_bytes_, grant_bytes_, aligned_bytes, reserved_total);
 }
 
-bool query_domain_resource::would_exceed_pool_ceiling(std::size_t /*aligned_bytes*/) const noexcept
-{
-  cudf_memory_pool_usage_t usage{};
-  if (!pool_usage(usage)) { return false; }
-  // The driver pool ceiling caps only the pool's reserved footprint. The
-  // member and domain grant gates run before any pool growth and bound every
-  // accepted request to the grant, which never exceeds this ceiling, so a
-  // grow that the ceiling itself rejected must leave the pool reserved at
-  // the ceiling. A failure whose reserved bytes never reached the ceiling
-  // was rejected by physical exhaustion (or stranded pool free blocks): the
-  // pool can retain aggressively reserved but unused memory from a failed
-  // grow, and counting that footprint against the ceiling would misreport
-  // genuine physical pressure as a reservation-limit rejection.
-  return usage.reserved_current_bytes >= effective_ceiling_bytes_;
-}
-
 [[nodiscard]] memory_failure_domain_identity query_domain_resource::failure_identity(
   std::shared_ptr<query_domain_member_counters> const& member) const noexcept
 {
@@ -289,12 +269,6 @@ void* query_domain_resource::allocate_impl(
     if (member != nullptr) { member->current_aligned_bytes.fetch_sub(aligned_bytes); }
     record_failed_allocation(bytes);
     record_member_failed_allocation(member, bytes);
-    if (would_exceed_pool_ceiling(aligned_bytes)) {
-      throw attributed_out_of_memory{"query memory domain pool ceiling exceeded",
-                                     CUDF_MEMORY_FAILURE_SOURCE_RESERVATION_LIMIT,
-                                     failure_identity(member),
-                                     view_.pool_handle()};
-    }
     throw attributed_out_of_memory{"query memory domain physical allocation failed",
                                    CUDF_MEMORY_FAILURE_SOURCE_PHYSICAL,
                                    failure_identity(member),
@@ -517,59 +491,35 @@ std::shared_ptr<query_domain_state> reservation_aware_resource_adaptor::create_q
     error = "query memory domain grant exceeds ceiling";
     return {};
   }
-#if !CUDF_RUST_HAS_CUDA_MEMPOOL_MAX_SIZE
-  error = "query memory domains require CUDA private-pool hard ceiling support";
-  return {};
-#else
-
   cudaMemPoolProps props{};
   props.allocType     = cudaMemAllocationTypePinned;
   props.handleTypes   = cudaMemHandleTypeNone;
   props.location.type = cudaMemLocationTypeDevice;
   props.location.id   = device;
-  props.maxSize       = ceiling_bytes;
+#if CUDF_RUST_HAS_CUDA_MEMPOOL_MAX_SIZE
+  // Logical bytes are gated before allocation; the driver pool must remain
+  // free to reserve its own page-granular backing for those accepted bytes.
+  props.maxSize = 0;
+#endif
   cudaMemPool_t pool  = nullptr;
   CUDF_CUDA_TRY(cudaMemPoolCreate(&pool, &props));
   try {
     CUDF_CUDA_TRY(
       cudaMemPoolSetAttribute(pool, cudaMemPoolAttrReleaseThreshold, &release_threshold));
-    // cudaMemPoolCreate already accepted props.maxSize, which makes the requested
-    // ceiling a safe admission bound. Some CUDA runtimes expose the max-size
-    // declarations but reject the informational read-back attribute for private
-    // pools. Keep the requested limit in that case instead of rejecting a pool
-    // whose configured ceiling is usable and still enforced by this adaptor.
-    std::uint64_t effective_ceiling = ceiling_bytes;
-    auto const ceiling_status =
-      cudaMemPoolGetAttribute(pool, cudaMemPoolAttrMaxPoolSize, &effective_ceiling);
-    if (ceiling_status == cudaErrorInvalidValue || ceiling_status == cudaErrorNotSupported) {
-      cudaGetLastError();
-      effective_ceiling = ceiling_bytes;
-    } else {
-      CUDF_CUDA_TRY(ceiling_status);
-    }
-    if (effective_ceiling == 0 || effective_ceiling < ceiling_bytes) {
-      error =
-        "CUDA private-pool effective ceiling is below the requested "
-        "ceiling";
-      cudaMemPoolDestroy(pool);
-      return {};
-    }
-    auto state                     = std::make_shared<query_domain_state>();
-    auto* domain_pool              = pool;
-    state->id                      = domain_id;
-    state->generation              = next_query_domain_generation().fetch_add(1, std::memory_order_relaxed);
-    state->device                  = device;
-    state->pool                    = domain_pool;
-    pool                           = nullptr;
-    state->ceiling_bytes           = ceiling_bytes;
-    state->effective_ceiling_bytes = static_cast<std::size_t>(effective_ceiling);
+    auto state           = std::make_shared<query_domain_state>();
+    auto* domain_pool    = pool;
+    state->id            = domain_id;
+    state->generation    = next_query_domain_generation().fetch_add(1, std::memory_order_relaxed);
+    state->device        = device;
+    state->pool          = domain_pool;
+    pool                 = nullptr;
+    state->ceiling_bytes = ceiling_bytes;
     state->resource                = std::make_shared<query_domain_resource>(
       domain_pool,
       domain_id,
       state->generation,
       grant_bytes,
       state->ceiling_bytes,
-      state->effective_ceiling_bytes,
       std::move(manager_allocation_limit));
     {
       std::unique_lock lock{query_domain_mutex_};
@@ -581,7 +531,6 @@ std::shared_ptr<query_domain_state> reservation_aware_resource_adaptor::create_q
     if (pool != nullptr) { cudaMemPoolDestroy(pool); }
     throw;
   }
-#endif
 }
 
 std::shared_ptr<query_domain_member_state> reservation_aware_resource_adaptor::attach_query_domain(
