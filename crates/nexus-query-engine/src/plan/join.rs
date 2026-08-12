@@ -76,6 +76,9 @@ pub struct JoinSpec {
     /// match per bounded row for the join keys. Generic joins leave this absent
     /// and retain the conservative Cartesian upper bound.
     pub(crate) cardinality_contract: Option<JoinCardinalityContract>,
+    /// Output columns whose operator semantics prove that lookup gathers do not
+    /// exceed the selected input column's total string payload bound.
+    pub(crate) total_payload_bound_preserving_outputs: Vec<String>,
 }
 
 /// Cardinality contract for a join whose lookup side has at most one match.
@@ -105,6 +108,7 @@ impl JoinSpec {
             build_artifact_id: None,
             mark_column_name: None,
             cardinality_contract: None,
+            total_payload_bound_preserving_outputs: Vec::new(),
         }
     }
 
@@ -159,12 +163,26 @@ impl JoinSpec {
         self
     }
 
+    /// Marks one output whose total string payload remains bounded by its
+    /// selected input column despite lookup-side value repetition.
+    pub fn with_preserved_total_payload_bound_for_output(mut self, output_name: impl Into<String>) -> Self {
+        let output_name = output_name.into();
+        if !self.total_payload_bound_preserving_outputs.contains(&output_name) {
+            self.total_payload_bound_preserving_outputs.push(output_name);
+        }
+        self
+    }
+
     pub(crate) fn has_at_most_one_match_per_bounded_row(&self, bounded_side: JoinSide) -> bool {
         matches!(
             self.cardinality_contract,
             Some(JoinCardinalityContract::AtMostOneMatchPerBoundedRow { bounded_side: contract_side })
                 if contract_side == bounded_side
         )
+    }
+
+    pub(crate) fn preserves_total_payload_bound_for_output(&self, output_name: &str) -> bool {
+        self.total_payload_bound_preserving_outputs.iter().any(|candidate| candidate == output_name)
     }
 }
 

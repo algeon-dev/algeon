@@ -31,6 +31,7 @@ use nexus_query_engine::{
         graph_memory_estimates_for_plan,
     },
     observability::RuntimeObservationConfig,
+    parquet_stats::{ParquetVariableWidthEncodingProof, ParquetVariableWidthPayloadEvidence},
     plan::{PlanNode, ProjectionOutput, QueryPlan, WindowFunction},
     runtime::ExecutionCancellation,
     source::{
@@ -48,9 +49,9 @@ use crate::{
     attempt::{AttemptOptions, NexusAttemptExtension},
     backend::InstalledTestGpuBackend,
     cugraph_sql::{
-        CugraphAlgorithmParams, CugraphBfsOutputOptions, CugraphBfsParams, CugraphGraphOptions,
-        CugraphGraphPredicateTable, CugraphPageRankParams, CugraphSqlConfig, CugraphTableReference,
-        CugraphTriangleCountAllParams, result_schema_for_params,
+        CugraphAlgorithmParams, CugraphBfsOutputOptions, CugraphBfsParams, CugraphGraphEdgePredicateTable,
+        CugraphGraphOptions, CugraphGraphPredicateTable, CugraphPageRankParams, CugraphSqlConfig,
+        CugraphTableReference, CugraphTriangleCountAllParams, result_schema_for_params,
     },
     error::{DataFusionErrorExt, ErrorCode},
     native_exec::{
@@ -439,6 +440,99 @@ fn graph_ticket_plan_and_proof_with_resident_edge_plan(
     .expect("prepared graph fixture must issue a resident-input-bound proof")
 }
 
+fn production_string_parquet_plan(
+    path: &str,
+    schema: Arc<Schema>,
+    rows: u64,
+    payload_upper_bounds: &[u64],
+) -> QueryPlan {
+    assert_eq!(schema.fields().len(), payload_upper_bounds.len());
+    let payload_evidence = payload_upper_bounds
+        .iter()
+        .enumerate()
+        .map(|(index, bytes)| {
+            (
+                index,
+                ParquetVariableWidthPayloadEvidence::new(
+                    index,
+                    vec![0],
+                    *bytes,
+                    ParquetVariableWidthEncodingProof::PlainAndDictionary,
+                ),
+            )
+        })
+        .collect();
+    let uncompressed_bytes = payload_upper_bounds
+        .iter()
+        .copied()
+        .sum::<u64>()
+        .saturating_add(rows.saturating_add(1).saturating_mul(8).saturating_mul(payload_upper_bounds.len() as u64));
+    let file = LocalParquetFile::new(path)
+        .with_row_groups(vec![0])
+        .with_row_group_rows(vec![rows])
+        .with_row_group_bytes(vec![uncompressed_bytes])
+        .with_projected_row_group_bytes(vec![uncompressed_bytes], vec![uncompressed_bytes])
+        .with_variable_width_payload_evidence(payload_evidence);
+    let columns = schema.fields().iter().map(|field| field.name().clone()).collect();
+    let mut builder = nexus_query_engine::plan::QueryPlanBuilder::new();
+    let source = builder.add_source(nexus_query_engine::source::SourceNode::LocalParquet(
+        LocalParquetSource::from_files(vec![file], schema, columns),
+    ));
+    builder.finish_gpu_resident(source)
+}
+
+fn production_string_logical_proof(
+    graph_plan: &QueryPlan,
+    edge_plan: &QueryPlan,
+    predicate_plans: &[QueryPlan],
+) -> QueryPlanCapabilityProof {
+    let predicate_names = (0..predicate_plans.len()).map(cugraph_side_input_name).collect::<Vec<_>>();
+    let mut resident_inputs = vec![(CUGRAPH_EDGE_INPUT_NAME, edge_plan)];
+    resident_inputs.extend(predicate_names.iter().zip(predicate_plans).map(|(name, plan)| (name.as_str(), plan)));
+    let graph =
+        QueryPlanCapabilityProof::for_cugraph_graph_execution_plan_with_resident_inputs(graph_plan, resident_inputs)
+            .expect("production-shaped string inputs must bind to the graph plan")
+            .expect("logical graph plan must issue a capability proof");
+    let graph_evidence =
+        graph_memory_bounded_admission_evidence_for_plan(graph_plan, GraphMemoryCalibrationOverride::none(), None)
+            .expect("production-shaped logical graph plan must retain finite graph evidence");
+    let graph = graph
+        .with_graph_memory_admission_evidence(&graph_evidence)
+        .expect("graph evidence must bind before composing logical mapping producers");
+
+    QueryPlanCapabilityProof::try_combine_cugraph_materializing_input_attempt(
+        graph_plan,
+        graph,
+        CUGRAPH_EDGE_INPUT_NAME,
+        edge_plan,
+        predicate_names.iter().cloned().zip(predicate_plans),
+    )
+    .expect("production-shaped logical mapping schedule must resolve")
+    .expect("string logical mapping must materialize between its producers and graph")
+}
+
+fn production_required_floor_bytes(proof: QueryPlanCapabilityProof) -> (u64, u64) {
+    let backend = test_gpu_backend();
+    let error = backend
+        .backend()
+        .session_capability()
+        .admit_query_with_request(
+            nexus_query_engine::runtime::QueryAdmissionRequest::new().with_query_plan_capability_proof(proof),
+        )
+        .expect_err("the production-shaped proof must exceed the 256 MiB test profile");
+    assert_eq!(error.code(), nexus_query_engine::error::QueryErrorCode::ServiceOverloaded);
+    assert_eq!(error.fact_value("reason"), Some("impossible_requirement"));
+    let parse_fact = |key| {
+        error
+            .fact_value(key)
+            .unwrap_or_else(|| panic!("missing production admission fact '{key}'"))
+            .parse::<u64>()
+            .unwrap_or_else(|_| panic!("production admission fact '{key}' must be u64"))
+    };
+    assert_eq!(parse_fact("max_compatible_managed_capacity_bytes"), 256 * 1024 * 1024);
+    (parse_fact("minimum_compatible_required_floor_bytes"), parse_fact("minimum_compatible_dominant_owner_bytes"))
+}
+
 fn sorted_native_edge_source(row_group_rows: Vec<u64>, config: &NexusNativeExecutionConfig) -> Arc<dyn ExecutionPlan> {
     native_edge_source_with_root(row_group_rows, config, |builder, source| {
         builder.add_sort(source, SortSpec::new(vec![SortExpr::new(Expr::column("src"), false, false)]), edge_schema())
@@ -765,7 +859,7 @@ fn string_pagerank_plan_assigns_i64_ids_and_applies_top_k_before_decode() {
 
 #[test]
 fn string_pagerank_large_bound_prices_one_graph_after_both_endpoint_lookups() {
-    let edge_rows = 48_322_510;
+    let edge_rows = 54_957_455;
     let plan = cugraph_schema_query_plan(
         &pagerank_utf8_spec(),
         string_edge_schema(),
@@ -801,6 +895,134 @@ fn string_pagerank_large_bound_prices_one_graph_after_both_endpoint_lookups() {
         graph_memory_bounded_admission_evidence_for_plan(&plan, GraphMemoryCalibrationOverride::none(), None)
             .expect("large string PageRank plan must produce one admission token");
     assert!(evidence.cold_model_requested_bytes() > 0);
+
+    let edge_plan = production_string_parquet_plan(
+        "/tmp/production-string-pagerank.parquet",
+        string_edge_schema(),
+        edge_rows,
+        &[2_300_000_000, 2_406_637_611],
+    );
+    let proof = production_string_logical_proof(&plan, &edge_plan, &[]);
+    let (required_floor, dominant_owner) = production_required_floor_bytes(proof);
+    assert!(
+        required_floor > 4_706_637_611 && required_floor < 1_u64 << 40,
+        "production-shaped PageRank admission must remain below one TiB instead of exploding to EiB"
+    );
+    assert!(dominant_owner > 0 && dominant_owner < 1_u64 << 40);
+}
+
+#[test]
+fn string_bfs_maps_edge_relation_predicates_and_both_result_vertices() {
+    let mut spec = bfs_utf8_spec();
+    {
+        let CugraphAlgorithmParams::Bfs(params) = &mut spec.params else { unreachable!("fixture is BFS") };
+        params.source = CugraphBfsSource::Relation(CugraphGraphPredicateTable::new(
+            CugraphTableReference::parse("sources").unwrap(),
+            "source_vertex",
+        ));
+        params.predicates.include_vertices =
+            Some(CugraphGraphPredicateTable::new(CugraphTableReference::parse("included").unwrap(), "included_vertex"));
+        params.predicates.target_vertices =
+            Some(CugraphGraphPredicateTable::new(CugraphTableReference::parse("targets").unwrap(), "target_vertex"));
+        params.predicates.include_edges = Some(CugraphGraphEdgePredicateTable::new(
+            CugraphTableReference::parse("included_edges").unwrap(),
+            "edge_src",
+            "edge_dst",
+            None::<String>,
+        ));
+    }
+    let predicate_schemas = vec![
+        Arc::new(Schema::new(vec![Field::new("source_vertex", DataType::Utf8, false)])),
+        Arc::new(Schema::new(vec![Field::new("included_vertex", DataType::Utf8, false)])),
+        Arc::new(Schema::new(vec![Field::new("target_vertex", DataType::Utf8, false)])),
+        Arc::new(Schema::new(vec![
+            Field::new("edge_src", DataType::Utf8, false),
+            Field::new("edge_dst", DataType::Utf8, false),
+        ])),
+    ];
+    let plan = cugraph_schema_query_plan(
+        &spec,
+        string_edge_schema(),
+        predicate_schemas.clone(),
+        &[Some(54_957_455), Some(10_446_432), Some(10_446_432), Some(54_957_455)],
+        &CugraphResultPlanOptions::default(),
+        false,
+        Some(54_957_455),
+        None,
+    )
+    .expect("production-shaped string BFS plan should build without materializing rows");
+
+    let domain = plan
+        .nodes()
+        .iter()
+        .find_map(|node| match &node.kind {
+            PlanNode::Union(union) if union.inputs.len() == 7 => Some(union),
+            _ => None,
+        })
+        .expect("BFS codebook must include two endpoints and five side-input vertex columns");
+    assert_eq!(domain.inputs.len(), 7);
+
+    let joins = plan
+        .nodes()
+        .iter()
+        .filter_map(|node| match &node.kind {
+            PlanNode::Join(join) => Some(join),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let encode_joins =
+        joins.iter().filter(|join| join.spec.keys.iter().any(|key| key.right.name() == "__vertex_id_str")).count();
+    let decode_joins =
+        joins.iter().filter(|join| join.spec.keys.iter().any(|key| key.right.name() == "__vertex_id")).count();
+    assert_eq!(encode_joins, 7, "every codebook domain column must be encoded");
+    assert_eq!(decode_joins, 2, "BFS vertex and predecessor must both decode through the shared codebook");
+
+    let edge_plan = production_string_parquet_plan(
+        "/tmp/production-string-bfs-edges.parquet",
+        string_edge_schema(),
+        54_957_455,
+        &[2_300_000_000, 2_406_637_611],
+    );
+    let CugraphAlgorithmParams::Bfs(params) = &mut spec.params else { unreachable!("fixture is BFS") };
+    params.predicates.include_edges = None;
+    let admission_plan = cugraph_schema_query_plan(
+        &spec,
+        string_edge_schema(),
+        predicate_schemas[..3].to_vec(),
+        &[Some(10_446_432), Some(10_446_432), Some(10_446_432)],
+        &CugraphResultPlanOptions::default(),
+        false,
+        Some(54_957_455),
+        None,
+    )
+    .expect("production-shaped string BFS admission plan should build");
+    let predicate_plans = vec![
+        production_string_parquet_plan(
+            "/tmp/production-string-bfs-sources.parquet",
+            Arc::new(Schema::new(vec![Field::new("source_vertex", DataType::Utf8, false)])),
+            10_446_432,
+            &[500_000_000],
+        ),
+        production_string_parquet_plan(
+            "/tmp/production-string-bfs-included.parquet",
+            Arc::new(Schema::new(vec![Field::new("included_vertex", DataType::Utf8, false)])),
+            10_446_432,
+            &[500_000_000],
+        ),
+        production_string_parquet_plan(
+            "/tmp/production-string-bfs-targets.parquet",
+            Arc::new(Schema::new(vec![Field::new("target_vertex", DataType::Utf8, false)])),
+            10_446_432,
+            &[500_000_000],
+        ),
+    ];
+    let proof = production_string_logical_proof(&admission_plan, &edge_plan, &predicate_plans);
+    let (required_floor, dominant_owner) = production_required_floor_bytes(proof);
+    assert!(
+        required_floor > 4_706_637_611 && required_floor < 1_u64 << 40,
+        "production-shaped BFS admission must remain below one TiB instead of exploding to EiB"
+    );
+    assert!(dominant_owner > 0 && dominant_owner < 1_u64 << 40);
 }
 
 #[test]

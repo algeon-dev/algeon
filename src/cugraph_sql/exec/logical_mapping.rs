@@ -122,7 +122,18 @@ pub(super) fn decode_logical_graph_result(
         },
     };
     for (column, nullable) in columns {
-        (root, root_schema) = decode_relation_column(builder, root, root_schema, column, *nullable, codebook)?;
+        // Every BFS predecessor is selected from an original edge occurrence,
+        // so decoding cannot exceed the endpoint domain's total payload.
+        let preserves_total_payload_bound = spec.algorithm == CugraphAlgorithm::Bfs && *column == "predecessor";
+        (root, root_schema) = decode_relation_column(
+            builder,
+            root,
+            root_schema,
+            column,
+            *nullable,
+            codebook,
+            preserves_total_payload_bound,
+        )?;
     }
     Ok((root, root_schema))
 }
@@ -234,6 +245,7 @@ fn decode_relation_column(
     column: &str,
     nullable: bool,
     codebook: nexus_query_engine::plan::NodeId,
+    preserves_total_payload_bound: bool,
 ) -> Result<(nexus_query_engine::plan::NodeId, SchemaRef)> {
     schema.field_with_name(column).map_err(|_| {
         plan_error(format!("cuGraph logical vertex mapping could not decode missing result column '{column}'"))
@@ -273,6 +285,8 @@ fn decode_relation_column(
     .with_output_projection(output_projection)
     .with_build_side(JoinSide::Right)
     .with_at_most_one_match_per_bounded_row(JoinSide::Left);
+    let spec =
+        if preserves_total_payload_bound { spec.with_preserved_total_payload_bound_for_output(column) } else { spec };
     Ok((builder.add_join(relation, codebook, spec, Arc::clone(&output_schema)), output_schema))
 }
 

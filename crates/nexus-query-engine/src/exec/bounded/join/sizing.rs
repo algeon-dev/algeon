@@ -88,7 +88,7 @@ pub const PER_COLUMN_ALIGNMENT_PADDING_BYTES: u64 = JoinOutputSizingPolicy::DEFA
 pub struct JoinOutputColumnUpperBoundInput {
     /// Arrow type of the materialized output column.
     pub data_type: ArrowDataType,
-    /// Required for string-typed columns (`Utf8`, `LargeUtf8`,
+    /// Optional for string-typed columns (`Utf8`, `LargeUtf8`,
     /// `Utf8View`); ignored otherwise. The maximum byte length over
     /// input rows in the source column that flows into this output
     /// column. For LEFT/FULL OUTER joins under the NULLIFY bounds
@@ -96,11 +96,10 @@ pub struct JoinOutputColumnUpperBoundInput {
     /// the bound stays valid because non-null output rows ≤
     /// `expected_output_rows`.
     pub input_max_string_length_bytes: Option<u64>,
-    /// Optional tighter cap for operators whose string output values are a
-    /// subset of one input column's values. Joins leave this unset because
-    /// gathers can duplicate string payloads; grouped aggregate partials can
-    /// set it because each output group/value is selected from disjoint input
-    /// rows.
+    /// Optional cap for operators whose string output values are a
+    /// subset of one input column's values. Generic joins leave this unset
+    /// because gathers can duplicate string payloads; operators with a proven
+    /// multiplicity contract may set it.
     pub input_total_string_bytes: Option<u64>,
 }
 
@@ -146,16 +145,19 @@ fn column_upper_bound_bytes(expected_output_rows: u64, column: &JoinOutputColumn
         ArrowDataType::Duration(_) => expected_output_rows.saturating_mul(8),
         ArrowDataType::Decimal128(_, _) => expected_output_rows.saturating_mul(16),
         ArrowDataType::Utf8 | ArrowDataType::LargeUtf8 | ArrowDataType::Utf8View => {
-            let max_len = column.input_max_string_length_bytes.ok_or_else(|| {
-                QueryError::new(
-                    QueryErrorCode::InvalidPlan,
-                    "nexus_query_engine.bounded.join.sizing",
-                    "string column upper bound requires input_max_string_length_bytes",
-                )
-                .with_fact("dtype", format!("{:?}", column.data_type))
-            })?;
-            let data = expected_output_rows.saturating_mul(max_len);
-            let data = column.input_total_string_bytes.map_or(data, |total| data.min(total));
+            let data = match (column.input_max_string_length_bytes, column.input_total_string_bytes) {
+                (Some(max_len), Some(total)) => expected_output_rows.saturating_mul(max_len).min(total),
+                (Some(max_len), None) => expected_output_rows.saturating_mul(max_len),
+                (None, Some(total)) => total,
+                (None, None) => {
+                    return Err(QueryError::new(
+                        QueryErrorCode::InvalidPlan,
+                        "nexus_query_engine.bounded.join.sizing",
+                        "string column upper bound requires maximum-value or total-payload evidence",
+                    )
+                    .with_fact("dtype", format!("{:?}", column.data_type)));
+                },
+            };
             let offsets =
                 expected_output_rows.saturating_add(1).saturating_mul(policy.string_offset_bytes_conservative());
             data.saturating_add(offsets)
@@ -196,5 +198,27 @@ mod tests {
         assert_eq!(policy.null_mask_bytes(1), 64);
         assert_eq!(policy.null_mask_bytes(512), 64);
         assert_eq!(policy.null_mask_bytes(513), 128);
+    }
+
+    #[test]
+    fn production_shaped_total_payload_is_not_multiplied_by_rows() {
+        let rows = 109_914_910;
+        let total_payload = 4_706_637_611;
+        let policy = JoinOutputSizingPolicy::default();
+        let bound = join_output_upper_bound_bytes(
+            rows,
+            &[JoinOutputColumnUpperBoundInput {
+                data_type: ArrowDataType::Utf8,
+                input_max_string_length_bytes: None,
+                input_total_string_bytes: Some(total_payload),
+            }],
+        )
+        .expect("a total-payload cap is sufficient for subset-preserving string materialization");
+        let expected = total_payload
+            + (rows + 1) * policy.string_offset_bytes_conservative()
+            + policy.null_mask_bytes(rows)
+            + policy.per_column_alignment_padding_bytes();
+
+        assert_eq!(bound, expected);
     }
 }

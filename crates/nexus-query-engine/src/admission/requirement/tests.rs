@@ -1814,8 +1814,8 @@ fn resident_output_payload_evidence_requires_bound_producer_scope() {
         combined
             .output_column_evidence_for_scope(&consumer_scope)
             .string_payload_bound("vertex")
-            .map(|bound| bound.payload_upper_bound_bytes),
-        Some(321)
+            .and_then(|bound| bound.total_payload_upper_bound_bytes),
+        Some(321),
     );
 }
 
@@ -2931,7 +2931,7 @@ fn composed_graph_schedule_prices_nullable_keys_and_rejects_missing_string_paylo
 }
 
 #[test]
-fn composed_string_lookup_consumes_payload_lineage_without_per_row_guess() {
+fn production_shaped_string_lookup_caps_payload_without_row_multiplication() {
     let consumer_plan = graph_output_inner_join_consumer_with_contract(DataType::Utf8, false, false, true);
     let endpoint_lineages = BTreeSet::from([
         crate::admission::string_payload::StringPayloadLineage::Parquet {
@@ -2949,7 +2949,8 @@ fn composed_string_lookup_consumes_payload_lineage_without_per_row_guess() {
         string_payload_bounds: std::collections::BTreeMap::from([(
             "vertex".to_owned(),
             crate::admission::string_payload::StringPayloadBound {
-                payload_upper_bound_bytes: 4_064_566_703,
+                total_payload_upper_bound_bytes: Some(4_706_637_611),
+                max_single_value_length_bytes: None,
                 lineages: endpoint_lineages,
             },
         )]),
@@ -2958,20 +2959,22 @@ fn composed_string_lookup_consumes_payload_lineage_without_per_row_guess() {
     let producer_outputs = [
         ComposedGraphProducerOutputEvidence {
             occurrence_id: "left".to_owned(),
-            row_count_upper_bound: 48_322_510,
+            row_count_upper_bound: 109_914_910,
             column_evidence: column_evidence.clone(),
         },
         ComposedGraphProducerOutputEvidence {
             occurrence_id: "right".to_owned(),
-            row_count_upper_bound: 96_645_020,
+            row_count_upper_bound: 109_914_910,
             column_evidence,
         },
     ];
 
-    let (_, owner_terms) = composed_consumer_additional_peak_bytes_for_plan(&consumer_plan, &producer_outputs)
-        .expect("footer-coupled payload evidence must price the production-shaped string lookup");
+    let (additional_peak_bytes, owner_terms) =
+        composed_consumer_additional_peak_bytes_for_plan(&consumer_plan, &producer_outputs)
+            .expect("footer-coupled payload evidence must price the production-shaped string lookup");
     assert!(owner_terms.iter().any(|term| term.id().role == OwnerTermRole::ConsumerHashTable));
-    assert!(owner_terms.iter().all(|term| term.bytes() != 26_311_607_240));
+    assert!(additional_peak_bytes < 1_u64 << 40, "the composed lookup must remain below one TiB");
+    assert!(owner_terms.iter().all(|term| term.bytes() < 1_u64 << 40));
 }
 
 #[test]

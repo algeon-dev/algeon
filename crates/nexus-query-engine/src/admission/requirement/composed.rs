@@ -1466,14 +1466,14 @@ pub(crate) fn composed_consumer_join_peak_bytes(
     let probe_column_evidence = column_evidence.node(probe_node_id);
     let key_metadata = build_keys
         .iter()
-        .map(|key| hash_join_key_metadata(&build.schema, &build_column_evidence, key.name()))
+        .map(|key| hash_join_key_metadata(&build.schema, &build_column_evidence, build.rows, key.name()))
         .collect::<Result<Vec<_>>>()?;
     for key in &join.spec.keys {
         let probe_key = match join.spec.build_side {
             JoinSide::Left => &key.right,
             JoinSide::Right => &key.left,
         };
-        hash_join_key_metadata(&probe.schema, &probe_column_evidence, probe_key.name())?;
+        hash_join_key_metadata(&probe.schema, &probe_column_evidence, probe.rows, probe_key.name())?;
     }
     let output_rows = match join.spec.join_type {
         JoinType::Inner if join.spec.has_at_most_one_match_per_bounded_row(JoinSide::Left) => left.rows,
@@ -1624,6 +1624,7 @@ pub(crate) fn consumer_owner_term(
 pub(crate) fn hash_join_key_metadata(
     schema: &SchemaRef,
     evidence: &PlanColumnEvidence,
+    rows: u64,
     field_name: &str,
 ) -> Result<cudf::ops::join::HashJoinKeyMetadata> {
     let field = schema
@@ -1637,7 +1638,20 @@ pub(crate) fn hash_join_key_metadata(
             evidence.string_payload_bound(field_name).filter(|bound| !bound.lineages.is_empty()).ok_or_else(|| {
                 composed_schedule_error("consumer_join_variable_width_key", None).with_fact("column", field_name)
             })?;
-        let payload_upper_bound_bytes = usize::try_from(bound.payload_upper_bound_bytes).map_err(|_| {
+        let payload_upper_bound_bytes =
+            match (bound.max_single_value_length_bytes, bound.total_payload_upper_bound_bytes) {
+                (Some(max_single), Some(total)) => rows.saturating_mul(max_single).min(total),
+                (Some(max_single), None) => rows.checked_mul(max_single).ok_or_else(|| {
+                    composed_schedule_error("consumer_join_string_payload_overflow", None)
+                        .with_fact("column", field_name)
+                })?,
+                (None, Some(total)) => total,
+                (None, None) => {
+                    return Err(composed_schedule_error("consumer_join_string_payload_bound_missing", None)
+                        .with_fact("column", field_name));
+                },
+            };
+        let payload_upper_bound_bytes = usize::try_from(payload_upper_bound_bytes).map_err(|_| {
             composed_schedule_error("consumer_join_string_payload_exceeds_usize", None).with_fact("column", field_name)
         })?;
         return Ok(cudf::ops::join::HashJoinKeyMetadata::string(
@@ -1754,8 +1768,8 @@ pub(crate) fn consumer_output_column_with_evidence(
         }
         return Ok(crate::exec::JoinOutputColumnUpperBoundInput {
             data_type: field.data_type().clone(),
-            input_max_string_length_bytes: Some(bound.payload_upper_bound_bytes),
-            input_total_string_bytes: None,
+            input_max_string_length_bytes: bound.max_single_value_length_bytes,
+            input_total_string_bytes: bound.total_payload_upper_bound_bytes,
         });
     }
     Err(composed_schedule_error("consumer_variable_width_frame_unmodeled", None)
