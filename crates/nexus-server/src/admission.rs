@@ -333,7 +333,7 @@ mod tests {
         let config_file = tempfile::NamedTempFile::new().expect("create server config fixture");
         let profile = match memory_limit_bytes {
             Some(memory_limit_bytes) => format!(
-                "[[admission.device_profiles]]\ndevice_ordinal = 0\nmemory_limit_bytes = {memory_limit_bytes}\n"
+                "[[admission.device_profiles]]\ndevice_ordinal = 0\nmemory_limit_bytes = {memory_limit_bytes}\nbackend_reserve_bytes = 0\n"
             ),
             None => "[[admission.device_profiles]]\ndevice_ordinal = 0\n".to_string(),
         };
@@ -355,7 +355,6 @@ mod tests {
     #[test]
     fn server_backend_partitions_budget_and_sizes_stream_pool() {
         let env = std::collections::BTreeMap::from([
-            (crate::config::NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV, "3072".to_string()),
             (crate::config::NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, "1024".to_string()),
             (crate::config::NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, "1".to_string()),
             (crate::config::NEXUS_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV, "2".to_string()),
@@ -390,7 +389,6 @@ mod tests {
     #[test]
     fn server_config_rejects_removed_legacy_cache_profile_env_before_backend_projection() {
         let env = std::collections::BTreeMap::from([
-            (crate::config::NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV, "3072".to_string()),
             (crate::config::NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, "1024".to_string()),
             (crate::config::NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, "1".to_string()),
             ("NEXUS_SERVER_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES", "2048".to_string()),
@@ -408,7 +406,6 @@ mod tests {
     fn server_backend_honors_queue_wait_bound_env() {
         let env = std::collections::BTreeMap::from([
             (crate::config::NEXUS_SERVER_ADMISSION_MAX_QUEUE_WAIT_MS_ENV, "250".to_string()),
-            (crate::config::NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV, "3072".to_string()),
             (crate::config::NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, "1024".to_string()),
             (crate::config::NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, "1".to_string()),
         ]);
@@ -424,7 +421,6 @@ mod tests {
     #[test]
     fn server_backend_preserves_multi_gpu_device_subset() {
         let env = std::collections::BTreeMap::from([
-            (crate::config::NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV, "2048".to_string()),
             (crate::config::NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, "1024".to_string()),
             (crate::config::NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, "1".to_string()),
         ]);
@@ -452,7 +448,6 @@ mod tests {
     #[test]
     fn query_service_admission_diagnostics_payload_reports_snapshot_and_governors() {
         let env = std::collections::BTreeMap::from([
-            (crate::config::NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV, "1024".to_string()),
             (crate::config::NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, "512".to_string()),
             (crate::config::NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, "1".to_string()),
         ]);

@@ -23,7 +23,6 @@ pub struct CugraphAlgoExec {
 }
 
 impl CugraphAlgoExec {
-    #[cfg(test)]
     pub(crate) fn try_new(
         spec: CugraphAlgorithmSpec,
         edge_source: Arc<dyn ExecutionPlan>,

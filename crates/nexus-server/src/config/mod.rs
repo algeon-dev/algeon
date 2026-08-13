@@ -10,7 +10,7 @@ use std::{
 
 use nexus_query_engine::{
     mode::StatisticalAggregateExecutionMode,
-    runtime::{MemoryControlPolicy, SourceChunkPlanningMode, SourceSchedulerPolicy},
+    runtime::{SourceChunkPlanningMode, SourceSchedulerPolicy},
 };
 use serde::Deserialize;
 
@@ -51,10 +51,9 @@ pub use admission::{
 use admission::{server_device_profiles, server_gpu_devices, server_queue_policy};
 use cugraph::cugraph_config;
 pub use cugraph::{
-    CugraphServerConfig, NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV, NEXUS_SERVER_CUGRAPH_DIRECTED_ENV,
-    NEXUS_SERVER_CUGRAPH_ENABLED_ENV, NEXUS_SERVER_CUGRAPH_RENUMBER_ENV,
+    CugraphServerConfig, NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV, NEXUS_SERVER_CUGRAPH_ENABLED_ENV,
 };
-use env::{DEFAULT_BIND_ADDR, DEFAULT_LOG_FILTER, DEFAULT_STATEMENT_TICKET_TTL_SECS, EnvValues};
+use env::{DEFAULT_BIND_ADDR, DEFAULT_STATEMENT_TICKET_TTL_SECS, EnvValues};
 pub use env::{
     NEXUS_SERVER_BIND_ENV, NEXUS_SERVER_CONFIG_FILE_ENV, NEXUS_SERVER_LOG_ENV,
     NEXUS_SERVER_STATEMENT_TICKET_TTL_SECS_ENV,
@@ -79,9 +78,8 @@ use iceberg::{iceberg_config, iceberg_source_storage_profile};
 use native::native_optimizer_config;
 pub use native::{
     NEXUS_SERVER_FINAL_PLAN_REQUIREMENT_ENV, NEXUS_SERVER_NATIVE_CONFIG_OPTIONS,
-    NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV, NEXUS_SERVER_NATIVE_MAX_RETRY_ATTEMPTS_ENV,
-    NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV,
-    NEXUS_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV, NEXUS_SERVER_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV,
+    NEXUS_SERVER_NATIVE_MAX_RETRY_ATTEMPTS_ENV, NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV,
+    NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, NEXUS_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV,
     NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV, NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV,
     NexusServerNativeConfigOption, ServerNativeConfigScope,
 };
@@ -120,6 +118,10 @@ const REMOVED_LEGACY_SERVER_ENVIRONMENT_VARIABLES: &[&str] = &[
     "NEXUS_SERVER_MAX_IN_FLIGHT",
     "NEXUS_SERVER_NATIVE_MEMORY_POLICY",
     "NEXUS_SERVER_NATIVE_PIPELINE_EXECUTION_MODE",
+    "NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES",
+    "NEXUS_SERVER_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS",
+    "NEXUS_SERVER_CUGRAPH_DIRECTED",
+    "NEXUS_SERVER_CUGRAPH_RENUMBER",
     "NEXUS_SERVER_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES",
     "NEXUS_SERVER_NATIVE_GRAPH_CACHE_MAX_RETAINED_BYTES",
     "NEXUS_SERVER_NATIVE_QUERY_MEMORY_DOMAIN_CEILING_MULTIPLIER",
@@ -129,7 +131,6 @@ const REMOVED_LEGACY_SERVER_ENVIRONMENT_VARIABLES: &[&str] = &[
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
     pub bind_addr: SocketAddr,
-    pub log_filter: String,
     /// Queue-only admission policy. Device-local bounds live in
     /// `gpu_device_profiles` and are never duplicated here.
     pub queue_policy: NexusGpuQueuePolicy,
@@ -179,7 +180,6 @@ impl ServerConfig {
         let mut values = EnvValues::new(&mut get);
         reject_removed_legacy_server_environment(&mut values)?;
         let bind_addr = values.socket_addr(NEXUS_SERVER_BIND_ENV, DEFAULT_BIND_ADDR)?;
-        let log_filter = values.string(NEXUS_SERVER_LOG_ENV).unwrap_or_else(|| DEFAULT_LOG_FILTER.to_string());
         let overlay_path = values.string(NEXUS_SERVER_CONFIG_FILE_ENV).map(PathBuf::from);
         let overlay = match overlay_path {
             Some(path) => load_overlay(&path)?,
@@ -223,7 +223,6 @@ impl ServerConfig {
 
         let config = Self {
             bind_addr,
-            log_filter,
             queue_policy,
             gpu_device_profiles,
             gpu_devices,

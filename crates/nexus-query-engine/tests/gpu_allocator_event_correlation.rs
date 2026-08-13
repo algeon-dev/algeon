@@ -51,7 +51,7 @@ fn test_backend(device: DeviceId) -> GpuBackendCore {
     .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: STATIC_PARTITION_BYTES })
     .with_attempt_floor_bytes(ATTEMPT_FLOOR_BYTES)
     .with_source_work_per_attempt(1)
-    .with_max_active_queries(2)
+    .with_max_active_attempts(2)
     .with_installation_bounds(4, 2, 2);
     GpuBackendCore::builder(GpuBackendCoreDraft::new(vec![device], controller, non_gds_deployment()))
         .build()

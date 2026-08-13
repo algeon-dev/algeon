@@ -380,7 +380,7 @@ fn build_probe_backend(
     };
     let device = GpuBackendDeviceConfig::new(0, GpuMemoryOwnership::WholeDeviceExclusive)
         .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: profile.device_budget_bytes })
-        .with_max_active_queries(1)
+        .with_max_active_attempts(1)
         .with_installation_bounds(2, 1, 1);
     Ok(ToolGpuBackend::build(service_config, device)?)
 }

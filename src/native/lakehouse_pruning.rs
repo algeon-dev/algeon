@@ -38,10 +38,22 @@ use self::object_store::{
 };
 use crate::native::table_format_pruning_policy::TableFormatPruningPolicy;
 
-pub(crate) fn enabled_from_env() -> bool {
-    std::env::var("NEXUS_ICEBERG_FOOTER_PRUNING")
-        .ok()
-        .is_some_and(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true"))
+pub(crate) fn enabled_from_env() -> crate::error::Result<bool> {
+    const NEXUS_ICEBERG_FOOTER_PRUNING_ENV: &str = "NEXUS_ICEBERG_FOOTER_PRUNING";
+    let Ok(raw) = std::env::var(NEXUS_ICEBERG_FOOTER_PRUNING_ENV) else {
+        return Ok(false);
+    };
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "" => Ok(false),
+        "1" | "true" => Ok(true),
+        "0" | "false" => Ok(false),
+        other => Err(crate::error::Error::new(
+            crate::error::ErrorCode::InvalidRequest,
+            "datafusion_nexus.native.lakehouse_pruning_config",
+            format!("{NEXUS_ICEBERG_FOOTER_PRUNING_ENV} must be `true`, `false`, `1`, or `0`, got `{other}`"),
+        )
+        .with_fact("config_field", NEXUS_ICEBERG_FOOTER_PRUNING_ENV)),
+    }
 }
 
 /// Resolves footer-backed pruning for one already-lowered native plan.

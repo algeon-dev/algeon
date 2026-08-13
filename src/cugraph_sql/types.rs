@@ -96,8 +96,6 @@ pub struct CugraphSqlConfig {
     /// Native execution policy used when a cuGraph edge source has not already
     /// been rewritten into a nexus native execution node.
     pub native_execution_config: NexusNativeExecutionConfig,
-    /// Explicit CPU/GPU island host-boundary limits.
-    pub host_boundary_config: GpuIslandHostBoundaryConfig,
 }
 
 impl Default for CugraphSqlConfig {
@@ -105,7 +103,6 @@ impl Default for CugraphSqlConfig {
         Self {
             default_graph_options: CugraphGraphOptions::default(),
             native_execution_config: NexusNativeExecutionConfig::bounded_default(),
-            host_boundary_config: GpuIslandHostBoundaryConfig::default(),
         }
     }
 }
@@ -120,12 +117,6 @@ impl CugraphSqlConfig {
     /// native context.
     pub fn with_native_execution_config(mut self, native_execution_config: NexusNativeExecutionConfig) -> Self {
         self.native_execution_config = native_execution_config;
-        self
-    }
-
-    /// Set cumulative host input/output limits for explicit cuGraph GPU islands.
-    pub fn with_host_boundary_config(mut self, host_boundary_config: GpuIslandHostBoundaryConfig) -> Self {
-        self.host_boundary_config = host_boundary_config;
         self
     }
 }

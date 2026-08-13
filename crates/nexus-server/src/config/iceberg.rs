@@ -187,7 +187,12 @@ enum IcebergCatalogKind {
 #[cfg(feature = "iceberg")]
 fn iceberg_catalog_kind(values: &mut EnvValues<'_>) -> Result<IcebergCatalogKind> {
     match values.string(NEXUS_ICEBERG_CATALOG_KIND_ENV) {
-        None => Ok(IcebergCatalogKind::Glue),
+        // A defaulted backend selects the wrong catalog for someone: fail
+        // closed instead of optimizing for one deployment style.
+        None => Err(ServerError::invalid_config(
+            NEXUS_ICEBERG_CATALOG_KIND_ENV,
+            "is required when Iceberg settings are present; set `glue` or `rest`",
+        )),
         Some(raw) => match raw.trim().to_ascii_lowercase().as_str() {
             "glue" => Ok(IcebergCatalogKind::Glue),
             "rest" => Ok(IcebergCatalogKind::Rest),
@@ -379,6 +384,16 @@ pub(super) fn table_format_parquet_read_strategy_config(
         Some(value) => Some(value),
         None => None,
     };
+    if lakehouse_cache_root.is_some()
+        && lakehouse_cache_policy != TableFormatLakehouseCachePolicy::Disabled
+        && lakehouse_cache_max_bytes.is_none()
+    {
+        return Err(ServerError::invalid_config(
+            NEXUS_LAKEHOUSE_CACHE_MAX_BYTES_ENV,
+            "is required when a lakehouse cache root is configured with a filling policy; \
+             an unbounded disk cache has no retention target",
+        ));
+    }
     let storage_endpoint = values
         .string(NEXUS_ICEBERG_S3_ENDPOINT_ENV)
         .or_else(|| values.string(AWS_ENDPOINT_URL_S3_ENV))
@@ -430,10 +445,10 @@ pub(super) fn table_format_parquet_read_strategy_config(
 pub(super) fn parse_lakehouse_cache_read_policy(raw: &str) -> Result<TableFormatLakehouseCacheReadPolicy> {
     match raw.trim().to_ascii_lowercase().as_str() {
         "enabled" => Ok(TableFormatLakehouseCacheReadPolicy::Enabled),
-        "disabled" | "bypass" | "bypassed" => Ok(TableFormatLakehouseCacheReadPolicy::Disabled),
+        "disabled" => Ok(TableFormatLakehouseCacheReadPolicy::Disabled),
         other => Err(ServerError::invalid_config(
             NEXUS_LAKEHOUSE_CACHE_READ_ENV,
-            format!("must be `enabled`, `disabled`, or `bypass`, got `{other}`"),
+            format!("must be `enabled` or `disabled`, got `{other}`"),
         )),
     }
 }

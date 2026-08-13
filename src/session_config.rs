@@ -23,11 +23,9 @@ use crate::{native_exec::NexusNativeExecutionConfig, planner::NexusNativeOptimiz
 
 /// DataFusion config-extension namespace prefix for datafusion-nexus options.
 pub const DATAFUSION_NEXUS_CONFIG_PREFIX: &str = "datafusion_nexus";
-const NATIVE_DEVICE_BUDGET_BYTES_KEY: &str = "native.device_budget_bytes";
 const NATIVE_MAX_SOURCE_CHUNK_BYTES_KEY: &str = "native.max_source_chunk_bytes";
 const NATIVE_MAX_ROW_GROUPS_PER_CHUNK_KEY: &str = "native.max_row_groups_per_chunk";
 const NATIVE_MAX_RETRY_ATTEMPTS_KEY: &str = "native.max_retry_attempts";
-const NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_KEY: &str = "native.min_retry_chunk_row_groups";
 const NATIVE_MAX_SOURCE_READS_IN_FLIGHT_KEY: &str = "native.max_source_reads_in_flight";
 const NATIVE_SOURCE_CHUNK_PLANNING_MODE_KEY: &str = "native.source_chunk_planning_mode";
 const NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_KEY: &str = "native.statistical_aggregate_execution_mode";
@@ -38,7 +36,7 @@ const REQUEST_GRAPH_RAW_INPUT_EDGES_KEY: &str = "request.graph_raw_input_edges";
 #[non_exhaustive]
 pub struct DataFusionNexusSessionConfigOption {
     /// Key below [`DATAFUSION_NEXUS_CONFIG_PREFIX`], for example
-    /// `native.device_budget_bytes`.
+    /// `native.max_source_chunk_bytes`.
     pub key: &'static str,
     /// Human-readable value type used by docs and operator surfaces.
     pub value_type: &'static str,
@@ -62,12 +60,6 @@ impl DataFusionNexusSessionConfigOption {
 /// same keys and descriptions with current values.
 pub const DATAFUSION_NEXUS_SESSION_CONFIG_OPTIONS: &[DataFusionNexusSessionConfigOption] = &[
     DataFusionNexusSessionConfigOption {
-        key: NATIVE_DEVICE_BUDGET_BYTES_KEY,
-        value_type: "positive integer bytes",
-        bounded_only: true,
-        description: "Bounded native device-memory budget in bytes.",
-    },
-    DataFusionNexusSessionConfigOption {
         key: NATIVE_MAX_SOURCE_CHUNK_BYTES_KEY,
         value_type: "positive integer bytes",
         bounded_only: true,
@@ -84,12 +76,6 @@ pub const DATAFUSION_NEXUS_SESSION_CONFIG_OPTIONS: &[DataFusionNexusSessionConfi
         value_type: "positive integer",
         bounded_only: true,
         description: "Maximum bounded retry attempts.",
-    },
-    DataFusionNexusSessionConfigOption {
-        key: NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_KEY,
-        value_type: "positive integer",
-        bounded_only: true,
-        description: "Row-group count at or below which bounded source retry splitting stops.",
     },
     DataFusionNexusSessionConfigOption {
         key: NATIVE_MAX_SOURCE_READS_IN_FLIGHT_KEY,
@@ -125,16 +111,12 @@ pub const DATAFUSION_NEXUS_SESSION_CONFIG_OPTIONS: &[DataFusionNexusSessionConfi
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct DataFusionNexusSessionConfig {
-    /// Bounded native device-memory budget in bytes.
-    pub native_device_budget_bytes: u64,
     /// Maximum source bytes planned into one native bounded source chunk.
     pub native_max_source_chunk_bytes: u64,
     /// Maximum source row groups planned into one native bounded source chunk.
     pub native_max_row_groups_per_chunk: usize,
     /// Maximum bounded retry attempts.
     pub native_max_retry_attempts: usize,
-    /// Row-group count at or below which bounded source retry splitting stops.
-    pub native_min_retry_chunk_row_groups: usize,
     /// Maximum active native source reads allowed per bounded query.
     pub native_max_source_reads_in_flight: usize,
     /// Bounded source chunk planning mode.
@@ -166,11 +148,10 @@ impl DataFusionNexusSessionConfig {
     pub fn from_optimizer_config(config: &NexusNativeOptimizerConfig) -> Self {
         let execution = config.native_execution_config();
         let MemoryControlPolicy::Bounded {
-            device_budget_bytes: native_device_budget_bytes,
             max_source_chunk_bytes: native_max_source_chunk_bytes,
             max_row_groups_per_chunk: native_max_row_groups_per_chunk,
             max_retry_attempts: native_max_retry_attempts,
-            min_retry_chunk_row_groups: native_min_retry_chunk_row_groups,
+            ..
         } = execution.memory_control_policy()
         else {
             unreachable!("datafusion-nexus exposes only bounded native execution")
@@ -178,11 +159,9 @@ impl DataFusionNexusSessionConfig {
 
         let graph_memory_calibration = execution.graph_memory_calibration_override();
         Self {
-            native_device_budget_bytes,
             native_max_source_chunk_bytes,
             native_max_row_groups_per_chunk,
             native_max_retry_attempts,
-            native_min_retry_chunk_row_groups,
             native_max_source_reads_in_flight: execution.source_scheduler_policy().max_source_reads_in_flight(),
             native_source_chunk_planning_mode: execution.source_chunk_planning_mode(),
             native_statistical_aggregate_execution_mode: execution.statistical_aggregate_execution_mode(),
@@ -211,31 +190,11 @@ impl DataFusionNexusSessionConfig {
         self.validate_matches_optimizer_config(config)
     }
 
-    pub(crate) fn validate_matches_query_service_policy(
-        &self,
-        config: &NexusNativeOptimizerConfig,
-    ) -> DataFusionResult<()> {
-        self.validate_matches_optimizer_config_inner(config, NativeDeviceBudgetValidation::QueryServiceGrant)
-    }
-
     pub(crate) fn validate_matches_optimizer_config(
         &self,
         config: &NexusNativeOptimizerConfig,
     ) -> DataFusionResult<()> {
-        self.validate_matches_optimizer_config_inner(config, NativeDeviceBudgetValidation::Exact)
-    }
-
-    fn validate_matches_optimizer_config_inner(
-        &self,
-        config: &NexusNativeOptimizerConfig,
-        device_budget_validation: NativeDeviceBudgetValidation,
-    ) -> DataFusionResult<()> {
         let expected = Self::from_optimizer_config(config);
-        if device_budget_validation == NativeDeviceBudgetValidation::Exact
-            && self.native_device_budget_bytes != expected.native_device_budget_bytes
-        {
-            return Err(frozen_backend_config_error(NATIVE_DEVICE_BUDGET_BYTES_KEY));
-        }
         if self.native_max_source_chunk_bytes != expected.native_max_source_chunk_bytes {
             return Err(frozen_backend_config_error(NATIVE_MAX_SOURCE_CHUNK_BYTES_KEY));
         }
@@ -244,9 +203,6 @@ impl DataFusionNexusSessionConfig {
         }
         if self.native_max_retry_attempts != expected.native_max_retry_attempts {
             return Err(frozen_backend_config_error(NATIVE_MAX_RETRY_ATTEMPTS_KEY));
-        }
-        if self.native_min_retry_chunk_row_groups != expected.native_min_retry_chunk_row_groups {
-            return Err(frozen_backend_config_error(NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_KEY));
         }
         if self.native_max_source_reads_in_flight != expected.native_max_source_reads_in_flight {
             return Err(frozen_backend_config_error(NATIVE_MAX_SOURCE_READS_IN_FLIGHT_KEY));
@@ -268,13 +224,18 @@ impl DataFusionNexusSessionConfig {
     ) -> DataFusionResult<NexusNativeOptimizerConfig> {
         self.validate()?;
         let mut execution = base.native_execution_config().clone();
+        let MemoryControlPolicy::Bounded { device_budget_bytes, min_retry_chunk_row_groups, .. } =
+            execution.memory_control_policy()
+        else {
+            unreachable!("datafusion-nexus exposes only bounded native execution")
+        };
         execution = execution
             .with_memory_control_policy(MemoryControlPolicy::Bounded {
-                device_budget_bytes: self.native_device_budget_bytes,
+                device_budget_bytes,
                 max_source_chunk_bytes: self.native_max_source_chunk_bytes,
                 max_row_groups_per_chunk: self.native_max_row_groups_per_chunk,
                 max_retry_attempts: self.native_max_retry_attempts,
-                min_retry_chunk_row_groups: self.native_min_retry_chunk_row_groups,
+                min_retry_chunk_row_groups,
             })
             .with_source_scheduler_policy(SourceSchedulerPolicy::new(self.native_max_source_reads_in_flight))
             .with_source_chunk_planning_mode(self.native_source_chunk_planning_mode);
@@ -321,11 +282,9 @@ impl DataFusionNexusSessionConfig {
     }
 
     fn validate(&self) -> DataFusionResult<()> {
-        require_positive_u64(NATIVE_DEVICE_BUDGET_BYTES_KEY, self.native_device_budget_bytes)?;
         require_positive_u64(NATIVE_MAX_SOURCE_CHUNK_BYTES_KEY, self.native_max_source_chunk_bytes)?;
         require_positive_usize(NATIVE_MAX_ROW_GROUPS_PER_CHUNK_KEY, self.native_max_row_groups_per_chunk)?;
         require_positive_usize(NATIVE_MAX_RETRY_ATTEMPTS_KEY, self.native_max_retry_attempts)?;
-        require_positive_usize(NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_KEY, self.native_min_retry_chunk_row_groups)?;
         require_positive_usize(NATIVE_MAX_SOURCE_READS_IN_FLIGHT_KEY, self.native_max_source_reads_in_flight)?;
         Ok(())
     }
@@ -339,11 +298,9 @@ impl DataFusionNexusSessionConfig {
 
     fn value_for_key(&self, key: &str) -> String {
         match key {
-            NATIVE_DEVICE_BUDGET_BYTES_KEY => self.native_device_budget_bytes.to_string(),
             NATIVE_MAX_SOURCE_CHUNK_BYTES_KEY => self.native_max_source_chunk_bytes.to_string(),
             NATIVE_MAX_ROW_GROUPS_PER_CHUNK_KEY => self.native_max_row_groups_per_chunk.to_string(),
             NATIVE_MAX_RETRY_ATTEMPTS_KEY => self.native_max_retry_attempts.to_string(),
-            NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_KEY => self.native_min_retry_chunk_row_groups.to_string(),
             NATIVE_MAX_SOURCE_READS_IN_FLIGHT_KEY => self.native_max_source_reads_in_flight.to_string(),
             NATIVE_SOURCE_CHUNK_PLANNING_MODE_KEY => self.native_source_chunk_planning_mode.to_string(),
             NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_KEY => {
@@ -355,12 +312,6 @@ impl DataFusionNexusSessionConfig {
             _ => unreachable!("unknown datafusion-nexus session config key: {key}"),
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum NativeDeviceBudgetValidation {
-    Exact,
-    QueryServiceGrant,
 }
 
 impl ConfigExtension for DataFusionNexusSessionConfig {
@@ -382,10 +333,6 @@ impl ExtensionOptions for DataFusionNexusSessionConfig {
 
     fn set(&mut self, key: &str, value: &str) -> DataFusionResult<()> {
         match key {
-            NATIVE_DEVICE_BUDGET_BYTES_KEY => {
-                self.reject_backend_admission_key(key)?;
-                self.native_device_budget_bytes = parse_positive_u64(key, value)?;
-            },
             NATIVE_MAX_SOURCE_CHUNK_BYTES_KEY => {
                 self.reject_backend_admission_key(key)?;
                 self.native_max_source_chunk_bytes = parse_positive_u64(key, value)?;
@@ -397,10 +344,6 @@ impl ExtensionOptions for DataFusionNexusSessionConfig {
             NATIVE_MAX_RETRY_ATTEMPTS_KEY => {
                 self.reject_backend_admission_key(key)?;
                 self.native_max_retry_attempts = parse_positive_usize(key, value)?;
-            },
-            NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_KEY => {
-                self.reject_backend_admission_key(key)?;
-                self.native_min_retry_chunk_row_groups = parse_positive_usize(key, value)?;
             },
             NATIVE_MAX_SOURCE_READS_IN_FLIGHT_KEY => {
                 self.reject_backend_admission_key(key)?;
@@ -555,8 +498,8 @@ mod tests {
         let mut session_config =
             DataFusionNexusSessionConfig::from_optimizer_config(&base).frozen_for_backend_admission();
 
-        let native_error = session_config.set(NATIVE_DEVICE_BUDGET_BYTES_KEY, "2048").unwrap_err();
-        assert!(native_error.to_string().contains("native.device_budget_bytes"));
+        let native_error = session_config.set(NATIVE_MAX_SOURCE_CHUNK_BYTES_KEY, "2048").unwrap_err();
+        assert!(native_error.to_string().contains("native.max_source_chunk_bytes"));
 
         session_config.set(REQUEST_GRAPH_RAW_INPUT_EDGES_KEY, "45564149").unwrap();
         assert_eq!(session_config.request_graph_raw_input_edges, Some(45_564_149));

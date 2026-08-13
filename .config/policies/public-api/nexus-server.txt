@@ -92,7 +92,6 @@ pub nexus_server::NexusServerNativeConfigOption::session_key: core::option::Opti
 pub nexus_server::NexusServerNativeConfigOption::toml_field: &'static str
 pub nexus_server::NexusServerNativeConfigOption::value_type: &'static str
 pub struct nexus_server::Principal
-pub nexus_server::Principal::roles: alloc::vec::Vec<alloc::string::String>
 pub nexus_server::Principal::username: alloc::string::String
 pub struct nexus_server::ServerConfig
 pub nexus_server::ServerConfig::auth: nexus_server::AuthConfig
@@ -102,7 +101,6 @@ pub nexus_server::ServerConfig::gpu_device_profiles: alloc::vec::Vec<datafusion_
 pub nexus_server::ServerConfig::gpu_devices: alloc::vec::Vec<usize>
 pub nexus_server::ServerConfig::gpu_memory_ownership: alloc::vec::Vec<(usize, nexus_query_engine::runtime::backend_core::GpuMemoryOwnership)>
 pub nexus_server::ServerConfig::iceberg: core::option::Option<nexus_server::IcebergServerConfig>
-pub nexus_server::ServerConfig::log_filter: alloc::string::String
 pub nexus_server::ServerConfig::native_optimizer_config: datafusion_nexus::planner::NexusNativeOptimizerConfig
 pub nexus_server::ServerConfig::observability: nexus_server::ServerObservabilityConfig
 pub nexus_server::ServerConfig::queue_policy: datafusion_nexus::backend::NexusGpuQueuePolicy
@@ -145,7 +143,6 @@ impl core::default::Default for nexus_server::ServerObservabilityConfig
 pub fn nexus_server::ServerObservabilityConfig::default() -> Self
 pub struct nexus_server::StaticUserConfig
 pub nexus_server::StaticUserConfig::password_hash: alloc::string::String
-pub nexus_server::StaticUserConfig::roles: alloc::vec::Vec<alloc::string::String>
 pub nexus_server::StaticUserConfig::username: alloc::string::String
 pub struct nexus_server::TokenStore
 impl nexus_server::TokenStore
@@ -187,19 +184,15 @@ pub const nexus_server::NEXUS_SERVER_ADMISSION_MAX_QUEUE_WAIT_MS_ENV: &str
 pub const nexus_server::NEXUS_SERVER_BIND_ENV: &str
 pub const nexus_server::NEXUS_SERVER_CONFIG_FILE_ENV: &str
 pub const nexus_server::NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV: &str
-pub const nexus_server::NEXUS_SERVER_CUGRAPH_DIRECTED_ENV: &str
 pub const nexus_server::NEXUS_SERVER_CUGRAPH_ENABLED_ENV: &str
-pub const nexus_server::NEXUS_SERVER_CUGRAPH_RENUMBER_ENV: &str
 pub const nexus_server::NEXUS_SERVER_FINAL_PLAN_REQUIREMENT_ENV: &str
 pub const nexus_server::NEXUS_SERVER_GPU_DEVICES_ENV: &str
 pub const nexus_server::NEXUS_SERVER_LOG_ENV: &str
 pub const nexus_server::NEXUS_SERVER_NATIVE_CONFIG_OPTIONS: &[nexus_server::NexusServerNativeConfigOption]
-pub const nexus_server::NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV: &str
 pub const nexus_server::NEXUS_SERVER_NATIVE_MAX_RETRY_ATTEMPTS_ENV: &str
 pub const nexus_server::NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV: &str
 pub const nexus_server::NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV: &str
 pub const nexus_server::NEXUS_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV: &str
-pub const nexus_server::NEXUS_SERVER_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV: &str
 pub const nexus_server::NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV: &str
 pub const nexus_server::NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV: &str
 pub const nexus_server::NEXUS_SERVER_OBSERVABILITY_ACTIVE_LOGICAL_CAPTURE_MAX_BYTES_ENV: &str

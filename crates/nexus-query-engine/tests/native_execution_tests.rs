@@ -176,7 +176,7 @@ fn suite_backend_with_policy(policy: BackendTestPolicy) -> &'static GpuBackendCo
         let device = GpuBackendDeviceConfig::new(0, GpuMemoryOwnership::WholeDeviceExclusive)
             .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: NATIVE_EXECUTION_TEST_DEVICE_LIMIT_BYTES })
             .with_attempt_floor_bytes(NATIVE_EXECUTION_TEST_ATTEMPT_FLOOR_BYTES)
-            .with_max_active_queries(1)
+            .with_max_active_attempts(1)
             .with_installation_bounds(4, 1, 1);
         let backend = GpuBackendCore::builder(GpuBackendCoreDraft::new(vec![device], controller, non_gds_deployment()))
             .build()

@@ -32,7 +32,6 @@ fn server_session_configuration_preserves_datafusion_settings() {
 fn base_config() -> ServerConfig {
     ServerConfig {
         bind_addr: "127.0.0.1:0".parse().expect("test bind address"),
-        log_filter: "info".to_string(),
         queue_policy: NexusGpuQueuePolicy::default(),
         gpu_device_profiles: vec![NexusGpuDeviceProfile::new(0)],
         gpu_devices: vec![0],

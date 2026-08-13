@@ -137,11 +137,7 @@ pub fn install_nexus_native_rule_with_session_config(
     if session_extension.is_backend_admission_frozen()
         && let Some(existing) = session_config.options().extensions.get::<DataFusionNexusSessionConfig>()
     {
-        if rule.config().native_execution_config().has_query_service_handle() {
-            existing.validate_matches_query_service_policy(rule.config())?;
-        } else {
-            existing.validate_matches_optimizer_config(rule.config())?;
-        }
+        existing.validate_matches_optimizer_config(rule.config())?;
     }
     session_config.options_mut().extensions.insert(session_extension);
     refresh_cuvs_gpu_function_family_availability(&mut builder)?;

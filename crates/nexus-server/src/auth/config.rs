@@ -31,7 +31,6 @@ pub struct AuthConfig {
 /// username = "alice"
 /// # generate with: cargo run --bin datafusion_nexus_server -- hash-password
 /// password_hash = "$argon2id$v=19$m=19456,t=2,p=1$..."
-/// roles = ["reader"]
 /// ```
 ///
 /// Future modes such as JWT, OIDC, and mTLS should be added as explicit
@@ -48,26 +47,20 @@ pub enum AuthMode {
         /// Static user list, password hashes only.
         #[serde(default)]
         users: Vec<StaticUserConfig>,
-        /// TTL applied to issued bearer tokens, in seconds. Omitted or
-        /// zero means tokens never expire (not recommended for
-        /// production).
-        #[serde(default)]
+        /// TTL applied to issued bearer tokens, in seconds. Required and
+        /// must be greater than zero: a token that never expires is not a
+        /// supported configuration.
         token_ttl_secs: u64,
     },
 }
 
 impl AuthMode {
-    /// Bearer-token TTL, or `None` for non-expiring tokens.
+    /// Bearer-token TTL. `None` only when auth is disabled and no tokens
+    /// are issued; a validated `basic_bearer` mode always expires tokens.
     pub fn token_ttl(&self) -> Option<Duration> {
         match self {
             AuthMode::Disabled => None,
-            AuthMode::BasicBearer { token_ttl_secs, .. } => {
-                if *token_ttl_secs == 0 {
-                    None
-                } else {
-                    Some(Duration::from_secs(*token_ttl_secs))
-                }
-            },
+            AuthMode::BasicBearer { token_ttl_secs, .. } => Some(Duration::from_secs(*token_ttl_secs)),
         }
     }
 
@@ -77,10 +70,15 @@ impl AuthMode {
     pub fn validate(&self) -> Result<()> {
         match self {
             AuthMode::Disabled => Ok(()),
-            AuthMode::BasicBearer { users, .. } => {
+            AuthMode::BasicBearer { users, token_ttl_secs } => {
                 if users.is_empty() {
                     return Err(ServerError::configuration(
                         "auth.mode.basic_bearer requires at least one entry in `users`",
+                    ));
+                }
+                if *token_ttl_secs == 0 {
+                    return Err(ServerError::configuration(
+                        "auth.mode.token_ttl_secs must be greater than zero; non-expiring bearer tokens are not supported",
                     ));
                 }
                 let mut seen = BTreeSet::new();
@@ -115,9 +113,4 @@ pub struct StaticUserConfig {
     /// Argon2 PHC string (`$argon2id$v=19$...`). Plain passwords are
     /// rejected at load time.
     pub password_hash: String,
-    /// Free-form role tags surfaced as `Principal::roles`. Not enforced
-    /// by the auth layer itself — downstream code (or a future
-    /// authorization layer) decides what they mean.
-    #[serde(default)]
-    pub roles: Vec<String>,
 }

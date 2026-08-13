@@ -52,17 +52,14 @@ pub(super) struct ServerAdmissionDeviceProfileFileConfig {
     pub(super) worker_count: Option<usize>,
     pub(super) lane_count: Option<usize>,
     pub(super) install_telemetry: Option<bool>,
-    pub(super) install_diagnostics: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub(super) struct ServerNativeFileConfig {
-    pub(super) device_budget_bytes: Option<u64>,
     pub(super) max_source_chunk_bytes: Option<u64>,
     pub(super) max_row_groups_per_chunk: Option<usize>,
     pub(super) max_retry_attempts: Option<usize>,
-    pub(super) min_retry_chunk_row_groups: Option<usize>,
     pub(super) max_source_reads_in_flight: Option<usize>,
     pub(super) source_chunk_planning_mode: Option<String>,
     pub(super) statistical_aggregate_execution_mode: Option<String>,

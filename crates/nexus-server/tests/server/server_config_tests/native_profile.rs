@@ -1,11 +1,9 @@
 #[test]
 fn server_native_config_option_descriptors_cover_toml_env_and_session_keys() {
     let expected = [
-        ("native.device_budget_bytes", NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV),
         ("native.max_source_chunk_bytes", NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV),
         ("native.max_row_groups_per_chunk", NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV),
         ("native.max_retry_attempts", NEXUS_SERVER_NATIVE_MAX_RETRY_ATTEMPTS_ENV),
-        ("native.min_retry_chunk_row_groups", NEXUS_SERVER_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV),
         ("native.max_source_reads_in_flight", NEXUS_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV),
         ("native.source_chunk_planning_mode", NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV),
         ("native.statistical_aggregate_execution_mode", NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV),
@@ -34,16 +32,18 @@ fn server_native_config_option_descriptors_cover_toml_env_and_session_keys() {
 }
 
 #[test]
-fn server_config_requires_complete_bounded_native_profile() {
-    let env = BTreeMap::from([(NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV, "1024".to_string())]);
-    let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
-    assert!(error.to_string().contains(NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV));
+fn server_config_rejects_removed_native_budget_and_retry_floor_env() {
+    for name in ["NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES", "NEXUS_SERVER_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS"] {
+        let env = BTreeMap::from([(name, "1024".to_string())]);
+        let error = ServerConfig::from_env_get(|env_name| env.get(env_name).cloned()).unwrap_err();
+        assert_eq!(error.fact_value("config_field"), Some(name));
+        assert!(error.message().contains("removed by the resource-only admission contract"), "{error}");
+    }
 }
 
 #[test]
 fn server_config_accepts_bounded_native_profile() {
     let env = BTreeMap::from([
-        (NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV, "1024".to_string()),
         (NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, "512".to_string()),
         (NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, "8".to_string()),
     ]);
@@ -53,24 +53,32 @@ fn server_config_accepts_bounded_native_profile() {
         config.gpu_device_profiles[0].memory_limit(),
         datafusion_nexus::backend::GpuDeviceMemoryLimit::default()
     );
-    assert_eq!(projection.native_device_budget_bytes, 1024);
     assert_eq!(projection.native_max_source_chunk_bytes, 512);
     assert_eq!(projection.native_max_row_groups_per_chunk, 8);
     assert_eq!(
         projection.native_max_retry_attempts,
         datafusion_nexus::native_exec::NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS
     );
-    assert_eq!(projection.native_min_retry_chunk_row_groups, 1);
+}
+
+#[test]
+fn server_config_accepts_independent_source_chunk_limits() {
+    let env = BTreeMap::from([(NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, "512".to_string())]);
+    let config = server_config_with_default_device_profile(env).unwrap();
+    let projection = DataFusionNexusSessionConfig::from_optimizer_config(&config.native_optimizer_config);
+    assert_eq!(projection.native_max_source_chunk_bytes, 512);
+    assert_eq!(
+        projection.native_max_row_groups_per_chunk,
+        datafusion_nexus::native_exec::NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_ROW_GROUPS_PER_CHUNK
+    );
 }
 
 #[test]
 fn server_config_accepts_extended_native_query_knobs() {
     let env = BTreeMap::from([
-        (NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV, "1024".to_string()),
         (NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, "512".to_string()),
         (NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, "8".to_string()),
         (NEXUS_SERVER_NATIVE_MAX_RETRY_ATTEMPTS_ENV, "5".to_string()),
-        (NEXUS_SERVER_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV, "2".to_string()),
         (NEXUS_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV, "4".to_string()),
         (NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV, "local_parquet_throughput".to_string()),
         (NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV, "gpu_native_tolerant".to_string()),
@@ -114,29 +122,26 @@ fn server_config_accepts_toml_native_and_resource_profiles() {
 max_queued_attempts = 2
 
 [native]
-device_budget_bytes = 1024
 max_source_chunk_bytes = 512
 max_row_groups_per_chunk = 8
 max_retry_attempts = 5
-min_retry_chunk_row_groups = 2
 "#,
     );
     let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
     assert_eq!(config.queue_policy.max_queued_attempts, 2);
     let projection = DataFusionNexusSessionConfig::from_optimizer_config(&config.native_optimizer_config);
-    assert_eq!(projection.native_device_budget_bytes, 1024);
     assert_eq!(projection.native_max_source_chunk_bytes, 512);
     assert_eq!(projection.native_max_row_groups_per_chunk, 8);
     assert_eq!(projection.native_max_retry_attempts, 5);
-    assert_eq!(projection.native_min_retry_chunk_row_groups, 2);
 }
 
 #[test]
 fn server_config_rejects_zero_extended_native_query_knobs() {
     for name in [
         NEXUS_SERVER_NATIVE_MAX_RETRY_ATTEMPTS_ENV,
-        NEXUS_SERVER_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV,
         NEXUS_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV,
+        NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV,
+        NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV,
     ] {
         let env = BTreeMap::from([(name, "0".to_string())]);
         let error = ServerConfig::from_env_get(|env_name| env.get(env_name).cloned()).unwrap_err();

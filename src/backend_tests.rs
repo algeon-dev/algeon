@@ -94,8 +94,7 @@ fn backend_validation_projection_keeps_device_profiles_independent() {
             .with_attempt_floor_bytes(Some(1024))
             .with_source_work_per_attempt(3)
             .with_max_active_attempts(1)
-            .with_installation_bounds(4, 1, 1)
-            .with_diagnostics(false),
+            .with_installation_bounds(4, 1, 1),
     ];
     let policy = NexusGpuQueuePolicy::default().with_max_queued_attempts(8);
     let backend = NexusGpuBackend::builder()
@@ -160,7 +159,6 @@ fn backend_profile_projection_preserves_each_ordinal_local_envelope() {
         .with_installation_bounds(6, 2, 2)
         .with_device_capabilities(capabilities.clone())
         .with_telemetry(false)
-        .with_diagnostics(true)
         .engine_config(GpuMemoryOwnership::WholeDeviceExclusive);
     let second = NexusGpuDeviceProfile::new(3)
         .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 16384 })
@@ -170,7 +168,6 @@ fn backend_profile_projection_preserves_each_ordinal_local_envelope() {
         .with_max_active_attempts(1)
         .with_installation_bounds(2, 1, 1)
         .with_telemetry(true)
-        .with_diagnostics(false)
         .engine_config(GpuMemoryOwnership::StaticPartition { allocation_limit_bytes: 8192 });
 
     assert_eq!(first.device_ordinal(), 0);
@@ -178,7 +175,7 @@ fn backend_profile_projection_preserves_each_ordinal_local_envelope() {
     assert_eq!(first.backend_reserve_bytes(), 128);
     assert_eq!(first.attempt_floor_bytes(), Some(512));
     assert_eq!(first.source_work_per_attempt(), 2);
-    assert_eq!(first.max_active_queries(), 2);
+    assert_eq!(first.max_active_attempts(), 2);
     assert_eq!((first.stream_pool_size(), first.worker_count(), first.lane_count()), (6, 2, 2));
     assert_eq!(first.device_capabilities(), &capabilities);
 
@@ -187,7 +184,7 @@ fn backend_profile_projection_preserves_each_ordinal_local_envelope() {
     assert_eq!(second.backend_reserve_bytes(), 256);
     assert_eq!(second.attempt_floor_bytes(), Some(1024));
     assert_eq!(second.source_work_per_attempt(), 1);
-    assert_eq!(second.max_active_queries(), 1);
+    assert_eq!(second.max_active_attempts(), 1);
     assert_eq!((second.stream_pool_size(), second.worker_count(), second.lane_count()), (2, 1, 1));
     assert_eq!(second.memory_ownership(), GpuMemoryOwnership::StaticPartition { allocation_limit_bytes: 8192 });
     assert_ne!(first.device_capabilities(), second.device_capabilities());
@@ -310,10 +307,10 @@ fn backend_freeze_rejects_direct_session_config_mutation_at_planning_time() {
     let backend = bounded_backend_builder(&[0]).build_test_validation_projection().unwrap();
     let state = backend.install_on(SessionStateBuilder::new()).unwrap().build();
     let mut extension = state.config_options().extensions.get::<DataFusionNexusSessionConfig>().unwrap().clone();
-    extension.native_device_budget_bytes += 1;
+    extension.native_max_source_chunk_bytes += 1;
     let mut options = ConfigOptions::default();
     options.extensions.insert(extension);
 
     let error = backend.optimizer_config().with_datafusion_config_options(&options).unwrap_err();
-    assert!(error.to_string().contains("native.device_budget_bytes"));
+    assert!(error.to_string().contains("native.max_source_chunk_bytes"));
 }

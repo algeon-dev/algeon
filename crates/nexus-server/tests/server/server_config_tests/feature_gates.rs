@@ -32,7 +32,7 @@ fn server_config_accepts_explicit_cugraph_disabled_without_cugraph_feature() {
 fn server_config_rejects_cugraph_settings_alongside_disabled_env_without_cugraph_feature() {
     let env = BTreeMap::from([
         (NEXUS_SERVER_CUGRAPH_ENABLED_ENV, "false".to_string()),
-        (nexus_server::NEXUS_SERVER_CUGRAPH_DIRECTED_ENV, "false".to_string()),
+        (nexus_server::NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV, "raw_libcugraph".to_string()),
     ]);
     let error = server_config_with_default_device_profile(env).unwrap_err();
 

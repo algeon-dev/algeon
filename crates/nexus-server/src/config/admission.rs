@@ -116,7 +116,6 @@ fn profile_from_file(raw: &super::file::ServerAdmissionDeviceProfileFileConfig) 
     for (field, value) in [
         ("admission.device_profiles.memory_limit_bytes", raw.memory_limit_bytes),
         ("admission.device_profiles.attempt_floor_bytes", raw.attempt_floor_bytes),
-        ("admission.device_profiles.cache_cap_bytes", raw.cache_cap_bytes),
     ] {
         if value == Some(0) {
             return Err(ServerError::invalid_config(field, "must be greater than zero"));
@@ -132,6 +131,14 @@ fn profile_from_file(raw: &super::file::ServerAdmissionDeviceProfileFileConfig) 
         if value == Some(0) {
             return Err(ServerError::invalid_config(field, "must be greater than zero"));
         }
+    }
+    // Automatic capacity bakes in driver headroom; an explicit limit does not,
+    // so an explicit limit must declare its reserve (0 is a deliberate choice).
+    if raw.memory_limit_bytes.is_some() && raw.backend_reserve_bytes.is_none() {
+        return Err(ServerError::invalid_config(
+            "admission.device_profiles.backend_reserve_bytes",
+            "is required when memory_limit_bytes is explicit; declare 0 to run with no backend headroom",
+        ));
     }
     // Start from the root projection of engine defaults and apply only values
     // explicitly selected by the server file. This must not restate device
@@ -158,9 +165,6 @@ fn profile_from_file(raw: &super::file::ServerAdmissionDeviceProfileFileConfig) 
     }
     if let Some(install_telemetry) = raw.install_telemetry {
         profile = profile.with_telemetry(install_telemetry);
-    }
-    if let Some(install_diagnostics) = raw.install_diagnostics {
-        profile = profile.with_diagnostics(install_diagnostics);
     }
     match (raw.stream_pool_size, raw.worker_count, raw.lane_count) {
         (None, None, None) => {},

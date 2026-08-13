@@ -61,7 +61,7 @@ fn test_device_profiles(
                 .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: TEST_DEVICE_CAPACITY_BYTES })
                 .with_attempt_floor_bytes(attempt_floor_bytes)
                 .with_source_work_per_attempt(1)
-                .with_max_active_queries(max_active_attempts)
+                .with_max_active_attempts(max_active_attempts)
                 .with_installation_bounds(stream_pool_size, max_active_attempts, max_active_attempts)
         })
         .collect()

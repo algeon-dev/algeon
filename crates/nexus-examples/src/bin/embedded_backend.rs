@@ -9,7 +9,7 @@ use anyhow::{Context, anyhow};
 use axum::Router;
 use datafusion_nexus::backend::GpuMemoryOwnership;
 use nexus_examples::{AppState, BindAddrs, flight, rest};
-use nexus_server::{FlightSqlServer, ServerConfig, backend_from_server_config, init_cuda_device};
+use nexus_server::{FlightSqlServer, NEXUS_SERVER_LOG_ENV, ServerConfig, backend_from_server_config, init_cuda_device};
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::EnvFilter;
 
@@ -36,7 +36,7 @@ async fn run() -> anyhow::Result<()> {
         .map(|ordinal| (ordinal, GpuMemoryOwnership::WholeDeviceExclusive))
         .collect::<Vec<_>>();
     let config = config.with_gpu_memory_ownership(ownership);
-    init_tracing(&config.log_filter);
+    init_tracing(&env::var(NEXUS_SERVER_LOG_ENV).unwrap_or_else(|_| "info".to_string()));
 
     init_cuda_device(0).context("failed to initialize CUDA device 0")?;
     let backend = backend_from_server_config(&config)

@@ -32,7 +32,6 @@ use datafusion::{
 };
 
 #[cfg(feature = "cugraph")]
-use super::GpuIslandHostBoundaryConfig;
 use super::{
     CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphSqlConfig, CugraphTableReference,
     CugraphVertexIdDomain, CugraphVertexPairTable, bfs_result_schema_for_vertex_domain, datafusion_table_reference,
@@ -54,17 +53,12 @@ use crate::{
 pub struct CugraphAlgoTableProvider {
     spec: CugraphAlgorithmSpec,
     native_execution_config: NexusNativeExecutionConfig,
-    host_boundary_config: GpuIslandHostBoundaryConfig,
 }
 
 #[cfg(feature = "cugraph")]
 impl CugraphAlgoTableProvider {
-    pub fn new(
-        spec: CugraphAlgorithmSpec,
-        native_execution_config: NexusNativeExecutionConfig,
-        host_boundary_config: GpuIslandHostBoundaryConfig,
-    ) -> Self {
-        Self { spec, native_execution_config, host_boundary_config }
+    pub fn new(spec: CugraphAlgorithmSpec, native_execution_config: NexusNativeExecutionConfig) -> Self {
+        Self { spec, native_execution_config }
     }
 
     pub fn spec(&self) -> &CugraphAlgorithmSpec {
@@ -125,14 +119,13 @@ impl TableProvider for CugraphAlgoTableProvider {
         let edge_source_plan = LogicalPlanBuilder::from(scan).project(edge_source_projection(&spec))?.build()?;
         let edge_source = planning_state.create_physical_plan(&edge_source_plan).await?;
         let predicate_sources = predicate_source_plans(&planning_state, session_state, &spec, &vertex_domain).await?;
-        Ok(Arc::new(CugraphAlgoExec::try_new_with_host_boundary_config(
+        Ok(Arc::new(CugraphAlgoExec::try_new(
             spec,
             edge_source,
             predicate_sources,
             projection.cloned(),
             limit,
             native_execution_config,
-            self.host_boundary_config,
         )?))
     }
 }
@@ -308,11 +301,7 @@ impl TableFunctionImpl for CugraphTableFunction {
         let spec = parse_cugraph_algorithm_spec(self.algorithm, args, &self.config)?;
         #[cfg(feature = "cugraph")]
         {
-            Ok(Arc::new(CugraphAlgoTableProvider::new(
-                spec,
-                self.config.native_execution_config.clone(),
-                self.config.host_boundary_config,
-            )))
+            Ok(Arc::new(CugraphAlgoTableProvider::new(spec, self.config.native_execution_config.clone())))
         }
         #[cfg(not(feature = "cugraph"))]
         {
@@ -325,11 +314,7 @@ impl TableFunctionImpl for CugraphTableFunction {
         {
             let mut spec = parse_cugraph_algorithm_spec(self.algorithm, args.exprs(), &self.config)?;
             maybe_resolve_bfs_relation_output_schema(&mut spec, args.session());
-            Ok(Arc::new(CugraphAlgoTableProvider::new(
-                spec,
-                self.config.native_execution_config.clone(),
-                self.config.host_boundary_config,
-            )))
+            Ok(Arc::new(CugraphAlgoTableProvider::new(spec, self.config.native_execution_config.clone())))
         }
         #[cfg(not(feature = "cugraph"))]
         {

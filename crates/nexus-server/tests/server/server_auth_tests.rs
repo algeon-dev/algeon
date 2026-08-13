@@ -135,7 +135,6 @@ token_ttl_secs = 600
 [[auth.mode.users]]
 username = "alice"
 password_hash = "{alice_hash}"
-roles = ["reader"]
 
 [[admission.device_profiles]]
 device_ordinal = 0
@@ -161,7 +160,6 @@ device_ordinal = 0
     assert_eq!(*token_ttl_secs, 600);
     assert_eq!(users.len(), 1);
     assert_eq!(users[0].username, "alice");
-    assert_eq!(users[0].roles, vec!["reader".to_string()]);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -169,6 +167,7 @@ async fn toml_overlay_rejects_plaintext_password() {
     let toml_body = r#"
 [auth.mode]
 kind = "basic_bearer"
+token_ttl_secs = 600
 
 [[auth.mode.users]]
 username = "alice"
@@ -197,11 +196,7 @@ fn basic_bearer_config(username: &str, password: &str, ttl_secs: u64) -> AuthCon
     let hash = hash_password(password).expect("hash test password");
     AuthConfig {
         mode: AuthMode::BasicBearer {
-            users: vec![StaticUserConfig {
-                username: username.to_string(),
-                password_hash: hash,
-                roles: vec!["reader".to_string()],
-            }],
+            users: vec![StaticUserConfig { username: username.to_string(), password_hash: hash }],
             token_ttl_secs: ttl_secs,
         },
     }

@@ -46,8 +46,6 @@ export NEXUS_SERVER_LOG="${NEXUS_SERVER_LOG:-info}"
 # cuGraph SQL DSL
 #
 # NEXUS_SERVER_CUGRAPH_ENABLED              true | false (unset = enabled)
-# NEXUS_SERVER_CUGRAPH_DIRECTED             default graph direction
-# NEXUS_SERVER_CUGRAPH_RENUMBER             default cuGraph renumber flag
 # NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY  python_cugraph | raw_libcugraph
 #
 # No default is exported here: the server configuration defaults to enabled.
@@ -55,8 +53,6 @@ export NEXUS_SERVER_LOG="${NEXUS_SERVER_LOG:-info}"
 # frontend.
 # ---------------------------------------------------------------------------
 # export NEXUS_SERVER_CUGRAPH_ENABLED=true
-# export NEXUS_SERVER_CUGRAPH_DIRECTED=true
-# export NEXUS_SERVER_CUGRAPH_RENUMBER=true
 # export NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY=python_cugraph
 
 # ---------------------------------------------------------------------------

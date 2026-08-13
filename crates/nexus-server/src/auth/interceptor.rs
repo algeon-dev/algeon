@@ -86,7 +86,7 @@ mod tests {
     use super::*;
 
     fn principal(name: &str) -> Principal {
-        Principal { username: name.to_string(), roles: vec![] }
+        Principal { username: name.to_string() }
     }
 
     fn metadata_with(value: Option<&str>) -> MetadataMap {
