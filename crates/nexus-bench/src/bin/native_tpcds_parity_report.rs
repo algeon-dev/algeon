@@ -5,15 +5,17 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use datafusion_nexus::{
-    native_report::{NativeTpcdsParityReport, ParityFloatTolerance},
-    planner::NexusNativeOptimizerConfig,
-};
+use datafusion_nexus::native_report::{NativeTpcdsParityReport, ParityFloatTolerance};
 use nexus_bench::{
     report_metadata::ReportDatasetMetadataExt,
-    report_workload::tpcds::{
-        TpcdsExternalEngineConfig, TpcdsExternalOracleConfig, TpcdsParityProgressEvent, tpcds_native_optimizer_config,
-        tpcds_parity_report_rows_with_external_oracles, tpcds_report_session_config,
+    report_workload::{
+        RelationalExecutionSelection,
+        tpcds::{
+            TpcdsExternalEngineConfig, TpcdsExternalOracleConfig, TpcdsParityProgressEvent,
+            tpcds_native_optimizer_config_with_profile_settings,
+            tpcds_native_profile_settings_and_device_memory_limit_from_env,
+            tpcds_parity_report_rows_with_external_oracles_and_device_memory_limit, tpcds_report_session_config,
+        },
     },
 };
 use nexus_query_engine::mode::StatisticalAggregateExecutionMode;
@@ -35,7 +37,10 @@ async fn main() {
 
 async fn write_parity_report(dir: &std::path::Path, output: &mut impl Write) -> WorkloadResult<()> {
     let (root, metadata) = prepare_tpcds_report_dataset(dir)?;
-    let optimizer_config = native_optimizer_config_from_env();
+    let (profile, device_memory_limit) = tpcds_native_profile_settings_and_device_memory_limit_from_env();
+    let optimizer_config = RelationalExecutionSelection::strict_native()
+        .configure_native_optimizer(tpcds_native_optimizer_config_with_profile_settings(&profile))
+        .expect("TPC-DS parity installs the strict native rule");
     let statistical_aggregate_execution_mode = optimizer_config.statistical_aggregate_execution_mode();
     let query_filter = query_filter_from_env();
     let external_oracles = external_oracle_config_from_env(dir.join("external_oracles"));
@@ -55,10 +60,11 @@ async fn write_parity_report(dir: &std::path::Path, output: &mut impl Write) -> 
             output.flush().expect("failed to flush TPC-DS parity TSV row");
         }
     };
-    tpcds_parity_report_rows_with_external_oracles(
+    tpcds_parity_report_rows_with_external_oracles_and_device_memory_limit(
         &root,
         tpcds_report_session_config(),
         optimizer_config,
+        device_memory_limit,
         query_filter.as_deref(),
         external_oracles,
         tolerance,
@@ -73,10 +79,6 @@ fn unique_temp_dir(prefix: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("{prefix}-{id}"));
     fs::create_dir_all(&dir).unwrap();
     dir
-}
-
-fn native_optimizer_config_from_env() -> NexusNativeOptimizerConfig {
-    tpcds_native_optimizer_config()
 }
 
 fn query_filter_from_env() -> Option<Vec<String>> {

@@ -885,6 +885,137 @@ fn bounded_native_query_uses_group_key_source_adjacent_partitions_for_string_key
 }
 
 #[test]
+fn bounded_native_query_reuses_source_adjacent_preflight_handle_for_low_cardinality_avg_sum_count() {
+    let dir = unique_temp_dir("nexus-query-engine-bounded-source-adjacent-preflight-handle");
+    let path = dir.join("input.parquet");
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+        device_budget_bytes: 8 * 1024 * 1024 * 1024,
+        max_source_chunk_bytes: 4 * 1024 * 1024,
+        max_row_groups_per_chunk: 2,
+        max_retry_attempts: 3,
+        min_retry_chunk_row_groups: 1,
+    });
+    let input_schema = write_runtime_preflight_q01_like_parquet(&path);
+
+    let projected_schema = Arc::new(Schema::new(vec![
+        Field::new("l_returnflag", DataType::Utf8, true),
+        Field::new("l_linestatus", DataType::Utf8, true),
+        Field::new("value", DataType::Int64, false),
+    ]));
+    let aggregated_schema = Arc::new(Schema::new(vec![
+        Field::new("l_returnflag", DataType::Utf8, true),
+        Field::new("l_linestatus", DataType::Utf8, true),
+        Field::new("sum_value", DataType::Int64, true),
+        Field::new("avg_value", DataType::Float64, true),
+        Field::new("count_value", DataType::Int64, false),
+    ]));
+    let source = LocalParquetSource::from_files(
+        vec![
+            LocalParquetFile::new(&path)
+                .with_file_size_bytes(fs::metadata(&path).unwrap().len())
+                .with_row_group_bytes(vec![2 * 1024 * 1024; 4])
+                .with_projected_row_group_bytes(vec![2 * 1024 * 1024; 4], vec![2 * 1024 * 1024; 4])
+                .with_row_group_rows(vec![60_000; 4]),
+        ],
+        Arc::clone(&input_schema),
+        vec!["flag".to_string(), "status".to_string(), "value".to_string()],
+    );
+    let projection = vec![
+        Expr::column("flag").alias("l_returnflag"),
+        Expr::column("status").alias("l_linestatus"),
+        Expr::column("value"),
+    ];
+    let aggregate = AggregateSpec::new(
+        vec![Expr::column("l_returnflag"), Expr::column("l_linestatus")],
+        vec![
+            AggregateExpr::new(AggregateFunction::Sum, Expr::column("value"), "sum_value"),
+            AggregateExpr::new(AggregateFunction::Avg, Expr::column("value"), "avg_value"),
+            AggregateExpr::new(AggregateFunction::Count, Expr::column("value"), "count_value"),
+        ],
+    );
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let projection = builder.add_projection(source, projection_outputs(projection, projected_schema));
+    let aggregate = builder.add_aggregate(projection, aggregate, Arc::clone(&aggregated_schema));
+    let plan = builder.finish_with_host_sink(aggregate);
+
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let metrics = result.metrics();
+    let partial = metrics
+        .aggregate_strategy_decisions
+        .iter()
+        .find(|decision| decision.facts.get("execution_stage").map(String::as_str) == Some("partial"))
+        .expect("source-adjacent partial should record strategy facts");
+    assert_eq!(metrics.source_chunks_planned, 2);
+    assert_eq!(partial.facts.get("source_adjacent_partition_strategy").map(String::as_str), Some("group_key"));
+    assert_eq!(partial.facts.get("source_chunk_row_group_count").map(String::as_str), Some("4"));
+    assert_eq!(partial.facts.get("source_chunk_known_row_count").map(String::as_str), Some("240000"));
+    assert_eq!(
+        partial.facts.get("selected_strategy").map(String::as_str),
+        Some("prepared_sort_groupby"),
+        "unexpected source-adjacent strategy facts: {:?}",
+        partial.facts
+    );
+    assert_eq!(
+        partial.facts.get("prepared_sort_groupby_cost_model_status").map(String::as_str),
+        Some("selected_runtime_prepared_groupby")
+    );
+    assert_eq!(
+        partial.facts.get("prepared_sort_groupby_selection_reason").map(String::as_str),
+        Some("runtime_preflight_exact_grouped_key_facts")
+    );
+    assert_eq!(partial.facts.get("prepared_sort_groupby_num_groups").map(String::as_str), Some("4"));
+    assert_eq!(
+        budgeted_events(
+            metrics,
+            "nexus_query_engine.aggregate.prepare_partial.prepared_sort_groupby_runtime_preflight"
+        )
+        .len(),
+        1
+    );
+    assert!(
+        budgeted_events(metrics, "nexus_query_engine.aggregate.prepare_partial.prepared_sort_groupby").is_empty(),
+        "the preflight prepared handle must be reused by aggregate execution"
+    );
+    assert_eq!(metrics.reservation_denied_count, 0);
+    assert_eq!(metrics.source_chunks_retried, 0);
+
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.schema(), aggregated_schema);
+    let flags = string_array(batch, 0);
+    let statuses = string_array(batch, 1);
+    let sums = int64_array(batch, 2);
+    let avgs = float64_array(batch, 3);
+    let counts = int64_array(batch, 4);
+    let mut actual = (0..batch.num_rows())
+        .map(|row| {
+            (
+                flags.value(row).to_string(),
+                statuses.value(row).to_string(),
+                sums.value(row),
+                avgs.value(row),
+                counts.value(row),
+            )
+        })
+        .collect::<Vec<_>>();
+    actual.sort_by(|left, right| (left.0.as_str(), left.1.as_str()).cmp(&(right.0.as_str(), right.1.as_str())));
+    assert_eq!(
+        actual,
+        vec![
+            ("A".to_string(), "F".to_string(), 600_000, 10.0, 60_000),
+            ("A".to_string(), "O".to_string(), 1_200_000, 20.0, 60_000),
+            ("R".to_string(), "F".to_string(), 1_800_000, 30.0, 60_000),
+            ("R".to_string(), "O".to_string(), 2_400_000, 40.0, 60_000),
+        ]
+    );
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn bounded_native_query_keeps_large_string_source_adjacent_inputs_on_group_key_partitions() {
     let dir = unique_temp_dir("nexus-query-engine-bounded-source-adjacent-large-string-group-key");
     let path = dir.join("input.parquet");
@@ -1173,6 +1304,34 @@ fn write_many_row_group_q01_like_parquet(path: &Path, row_group_count: usize) ->
     )
     .unwrap();
     write_record_batch_with_row_group_rows(path, Arc::clone(&schema), batch, 1);
+    schema
+}
+
+fn write_runtime_preflight_q01_like_parquet(path: &Path) -> Arc<Schema> {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("flag", DataType::Utf8, false),
+        Field::new("status", DataType::Utf8, false),
+        Field::new("value", DataType::Int64, false),
+    ]));
+    let row_count = 240_000usize;
+    let flags = (0..row_count).map(|row| if row % 4 < 2 { "A" } else { "R" });
+    let statuses = (0..row_count).map(|row| if row % 2 == 0 { "F" } else { "O" });
+    let values = (0..row_count).map(|row| match row % 4 {
+        0 => 10i64,
+        1 => 20,
+        2 => 30,
+        _ => 40,
+    });
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(StringArray::from_iter_values(flags)),
+            Arc::new(StringArray::from_iter_values(statuses)),
+            Arc::new(Int64Array::from_iter_values(values)),
+        ],
+    )
+    .unwrap();
+    write_record_batch_with_row_group_rows(path, Arc::clone(&schema), batch, 60_000);
     schema
 }
 

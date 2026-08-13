@@ -10,8 +10,9 @@ use nexus_bench::{
     report_workload::{
         RelationalExecutionSelection,
         tpcds::{
-            TpcdsExecutionProgressEvent, tpcds_datafusion_execution_workload_items_filtered,
-            tpcds_native_analytics_optimizer_config, tpcds_report_session_config,
+            TpcdsExecutionProgressEvent, tpcds_datafusion_execution_workload_items_filtered_with_device_memory_limit,
+            tpcds_native_analytics_optimizer_config_with_profile_settings,
+            tpcds_native_profile_settings_and_device_memory_limit_from_env, tpcds_report_session_config,
         },
     },
 };
@@ -29,14 +30,15 @@ async fn main() {
 }
 
 async fn tpcds_report(dir: &std::path::Path) -> WorkloadResult<TpcdsExecutionReport> {
-    let relational_execution = RelationalExecutionSelection::native();
+    let relational_execution = RelationalExecutionSelection::strict_native();
     eprintln!(
         "[native_tpcds_execution_report] stage=run_config relational_execution={}",
         relational_execution.as_str(),
     );
     let (root, metadata) = prepare_tpcds_report_dataset(dir)?;
+    let (profile, device_memory_limit) = tpcds_native_profile_settings_and_device_memory_limit_from_env();
     let optimizer_config = relational_execution
-        .configure_native_optimizer(tpcds_native_analytics_optimizer_config())
+        .configure_native_optimizer(tpcds_native_analytics_optimizer_config_with_profile_settings(&profile))
         .expect("native execution report installs the native rule");
     let statistical_aggregate_execution_mode = optimizer_config.statistical_aggregate_execution_mode();
     let query_filter = query_filter_from_env();
@@ -67,10 +69,11 @@ async fn tpcds_report(dir: &std::path::Path) -> WorkloadResult<TpcdsExecutionRep
         None
     };
     let query_ids: Option<Vec<&str>> = query_filter.as_ref().map(|ids| ids.iter().map(String::as_str).collect());
-    let items = tpcds_datafusion_execution_workload_items_filtered(
+    let items = tpcds_datafusion_execution_workload_items_filtered_with_device_memory_limit(
         &root,
         tpcds_report_session_config(),
         optimizer_config,
+        device_memory_limit,
         query_ids.as_deref(),
         progress,
     )

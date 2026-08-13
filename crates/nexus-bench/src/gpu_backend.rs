@@ -1,5 +1,10 @@
 use std::time::Duration;
 
+use datafusion_nexus::{
+    backend::{NexusGpuBackend, NexusGpuDeviceProfile, NexusGpuQueuePolicy},
+    error::{Error as AdapterError, ErrorCode},
+    planner::{FinalPlanRequirement, NexusNativeOptimizerConfig},
+};
 use nexus_query_engine::{
     error::{QueryError, QueryErrorCode, Result},
     runtime::{
@@ -10,6 +15,39 @@ use nexus_query_engine::{
 };
 
 const OPERATION: &str = "nexus_bench.gpu_backend";
+
+pub(crate) fn build_installed_gpu_backend(
+    native_optimizer_config: NexusNativeOptimizerConfig,
+    device_memory_limit: GpuDeviceMemoryLimit,
+    source_work_per_attempt: usize,
+    max_active_attempts: usize,
+    final_plan_requirement: Option<FinalPlanRequirement>,
+) -> datafusion_nexus::error::Result<NexusGpuBackend> {
+    let native_optimizer_config = final_plan_requirement
+        .into_iter()
+        .fold(native_optimizer_config, |config, requirement| config.with_final_plan_requirement(requirement));
+    let stream_pool_size =
+        max_active_attempts.saturating_mul(source_work_per_attempt.max(1).saturating_add(1)).max(max_active_attempts);
+    let device_profile = NexusGpuDeviceProfile::new(0)
+        .with_memory_limit(device_memory_limit)
+        .with_cache_cap_bytes(0)
+        .with_source_work_per_attempt(source_work_per_attempt)
+        .with_max_active_attempts(max_active_attempts)
+        .with_installation_bounds(stream_pool_size, max_active_attempts, max_active_attempts);
+    let backend = NexusGpuBackend::from_optimizer_config_for_admission(
+        native_optimizer_config,
+        vec![device_profile],
+        vec![(0, GpuMemoryOwnership::WholeDeviceExclusive)],
+        NexusGpuQueuePolicy::default(),
+    )?;
+    backend.ok_or_else(|| {
+        AdapterError::new(
+            ErrorCode::InvalidRequest,
+            OPERATION,
+            "GPU benchmark backend construction did not produce a backend",
+        )
+    })
+}
 
 /// Process-owned GPU resources for benchmark and stress applications.
 ///
