@@ -244,7 +244,7 @@ impl DataFrame {
         let (num_cols, row_count) = {
             let view = table.view()?;
             let num_cols = view.num_columns()?;
-            (num_cols, if num_cols > 0 { view.num_rows()? } else { 0 })
+            (num_cols, view.num_rows()?)
         };
         let table_domain = Arc::clone(table.execution_domain());
 
@@ -357,7 +357,12 @@ impl DataFrame {
         }
 
         let table = if cols.is_empty() {
-            Table::empty_in_domain(Arc::clone(&self.domain), "dataframe::to_table_copy")?
+            Table::from_columns_in_domain_with_num_rows(
+                cols,
+                self.row_count,
+                Arc::clone(&self.domain),
+                "dataframe::to_table_copy",
+            )?
         } else {
             Table::from_columns(cols).map_err(|e| e.reanchor("dataframe::to_table_copy"))?
         };
@@ -417,7 +422,12 @@ impl DataFrame {
         }
 
         let table = if cols.is_empty() {
-            Table::empty_in_domain(Arc::clone(&self.domain), "dataframe::try_into_table")?
+            Table::from_columns_in_domain_with_num_rows(
+                cols,
+                self.row_count,
+                Arc::clone(&self.domain),
+                "dataframe::try_into_table",
+            )?
         } else {
             Table::from_columns(cols).map_err(|e| e.reanchor("dataframe::try_into_table"))?
         };
@@ -430,8 +440,9 @@ impl DataFrame {
     /// Build a borrowed [`TableView`] from the individual `Arc<Column>`s.
     pub(crate) fn build_table_view(&self) -> Result<TableView<'_>> {
         let views: Vec<ColumnView<'_>> = self.columns.values().map(|col| col.view()).collect::<Result<Vec<_>>>()?;
-        TableView::from_borrowed_column_views_in_domain(
+        TableView::from_borrowed_column_views_in_domain_with_num_rows(
             views,
+            self.row_count,
             Some(Arc::clone(&self.domain)),
             "dataframe::build_table_view",
         )

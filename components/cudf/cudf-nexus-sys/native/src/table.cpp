@@ -19,10 +19,13 @@
 #include <exception>
 #include <memory>
 #include <new>
+#include <optional>
 #include <vector>
 
 namespace {
-cudf_status_t validate_table_create_columns(cudf_column_handle* columns, int32_t num_columns)
+cudf_status_t validate_table_create_columns(cudf_column_handle* columns,
+                                            int32_t num_columns,
+                                            std::optional<cudf::size_type> explicit_num_rows)
 {
   for (int32_t i = 0; i < num_columns; ++i) {
     if (columns[i] == nullptr) {
@@ -34,6 +37,10 @@ cudf_status_t validate_table_create_columns(cudf_column_handle* columns, int32_t
   if (num_columns == 0) { return CUDF_SUCCESS; }
 
   auto const expected_size = cudf_column_state_from_handle(columns[0]).size();
+  if (explicit_num_rows && expected_size != *explicit_num_rows) {
+    set_error("explicit table row count does not match column size");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
   for (int32_t i = 1; i < num_columns; ++i) {
     auto const actual_size = cudf_column_state_from_handle(columns[i]).size();
     if (actual_size != expected_size) {
@@ -45,12 +52,11 @@ cudf_status_t validate_table_create_columns(cudf_column_handle* columns, int32_t
 
   return CUDF_SUCCESS;
 }
-}  // namespace
 
-extern "C" {
-cudf_status_t cudf_table_create(cudf_column_handle* columns,
-                                int32_t num_columns,
-                                cudf_table_handle* out)
+cudf_status_t cudf_table_create_impl(cudf_column_handle* columns,
+                                     int32_t num_columns,
+                                     std::optional<cudf::size_type> explicit_num_rows,
+                                     cudf_table_handle* out)
 {
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
@@ -61,7 +67,8 @@ cudf_status_t cudf_table_create(cudf_column_handle* columns,
   if (num_columns > 0) { CUDF_RUST_NULL_CHECK(columns, "columns is null"); }
   CUDF_RUST_TRY
   {
-    cudf_status_t const validation_status = validate_table_create_columns(columns, num_columns);
+    cudf_status_t const validation_status =
+      validate_table_create_columns(columns, num_columns, explicit_num_rows);
     if (validation_status != CUDF_SUCCESS) { return validation_status; }
 
     std::vector<std::unique_ptr<cudf_column_handle_state>> states;
@@ -74,13 +81,69 @@ cudf_status_t cudf_table_create(cudf_column_handle* columns,
       columns[i] = nullptr;
     }
 
-    auto const expected_rows =
-      num_columns == 0 ? static_cast<cudf::size_type>(0) : states.front()->size();
+    auto const expected_rows = explicit_num_rows.value_or(
+      num_columns == 0 ? static_cast<cudf::size_type>(0) : states.front()->size());
     *out = cudf_release_table_handle(
       cudf_make_table_handle_state_from_columns(expected_rows, std::move(states)));
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_table_view_from_column_views_impl(
+  cudf_column_view_handle* column_views,
+  int32_t num_columns,
+  std::optional<cudf::size_type> explicit_num_rows,
+  cudf_table_view_handle* out)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  if (num_columns < 0) {
+    set_error("num_columns must be >= 0");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
+  if (num_columns > 0) { CUDF_RUST_NULL_CHECK(column_views, "column_views is null"); }
+  CUDF_RUST_TRY
+  {
+    std::vector<cudf::column_view> views;
+    views.reserve(num_columns);
+    for (int32_t i = 0; i < num_columns; ++i) {
+      CUDF_RUST_NULL_CHECK(column_views[i], "column_view handle is null");
+      views.push_back(*reinterpret_cast<cudf::column_view*>(column_views[i]));
+      if (explicit_num_rows && views.back().size() != *explicit_num_rows) {
+        set_error("explicit table view row count does not match column size");
+        return CUDF_ERROR_INVALID_OPERATION;
+      }
+    }
+
+    auto const num_rows = explicit_num_rows.value_or(views.empty() ? static_cast<cudf::size_type>(0)
+                                                                   : views.front().size());
+    auto* tv            = new cudf::table_view(views, num_rows);
+    *out                = reinterpret_cast<cudf_table_view_handle>(tv);
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+}  // namespace
+
+extern "C" {
+cudf_status_t cudf_table_create(cudf_column_handle* columns,
+                                int32_t num_columns,
+                                cudf_table_handle* out)
+{
+  return cudf_table_create_impl(columns, num_columns, std::nullopt, out);
+}
+
+cudf_status_t cudf_table_create_with_num_rows(cudf_column_handle* columns,
+                                              int32_t num_columns,
+                                              int32_t num_rows,
+                                              cudf_table_handle* out)
+{
+  if (num_rows < 0) {
+    set_error("num_rows must be >= 0");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
+  return cudf_table_create_impl(columns, num_columns, static_cast<cudf::size_type>(num_rows), out);
 }
 
 cudf_status_t cudf_table_copy_ex(cudf_table_handle src,
@@ -245,30 +308,24 @@ cudf_status_t cudf_table_view_from_column_views(cudf_column_view_handle* column_
                                                 int32_t num_columns,
                                                 cudf_table_view_handle* out)
 {
-  CUDF_RUST_NULL_CHECK(out, "out is null");
-  *out = nullptr;
-  if (num_columns < 0) {
-    set_error("num_columns must be >= 0");
+  return cudf_table_view_from_column_views_impl(column_views, num_columns, std::nullopt, out);
+}
+
+cudf_status_t cudf_table_view_from_column_views_with_num_rows(cudf_column_view_handle* column_views,
+                                                              int32_t num_columns,
+                                                              int32_t num_rows,
+                                                              cudf_table_view_handle* out)
+{
+  if (num_rows < 0) {
+    set_error("num_rows must be >= 0");
     return CUDF_ERROR_INVALID_OPERATION;
   }
-  if (num_columns > 0) { CUDF_RUST_NULL_CHECK(column_views, "column_views is null"); }
-  CUDF_RUST_TRY
-  {
-    std::vector<cudf::column_view> views;
-    views.reserve(num_columns);
-    for (int32_t i = 0; i < num_columns; ++i) {
-      CUDF_RUST_NULL_CHECK(column_views[i], "column_view handle is null");
-      views.push_back(*reinterpret_cast<cudf::column_view*>(column_views[i]));
-    }
-    auto* tv = new cudf::table_view(views);
-    *out     = reinterpret_cast<cudf_table_view_handle>(tv);
-    return CUDF_SUCCESS;
-  }
-  CUDF_RUST_CATCH
+  return cudf_table_view_from_column_views_impl(
+    column_views, num_columns, static_cast<cudf::size_type>(num_rows), out);
 }
 
 cudf_status_t cudf_table_view_select_columns(cudf_table_view_handle handle,
-                                             const int32_t* indices,
+                                             int32_t const* indices,
                                              int32_t num_indices,
                                              cudf_table_view_handle* out)
 {
@@ -295,7 +352,7 @@ cudf_status_t cudf_table_view_select_columns(cudf_table_view_handle handle,
       selected.push_back(view->column(index));
     }
 
-    auto* projected = new cudf::table_view(selected);
+    auto* projected = new cudf::table_view(selected, view->num_rows());
     *out            = reinterpret_cast<cudf_table_view_handle>(projected);
     return CUDF_SUCCESS;
   }

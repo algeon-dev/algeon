@@ -174,7 +174,8 @@ class native_table_handle_state final : public cudf_table_handle_state {
     return cudf_invoke_under_provenance(_provenance, [&] {
       std::vector<std::unique_ptr<cudf_column_handle_state>> result;
       result.reserve(static_cast<std::size_t>(_table->num_columns()));
-      auto columns = _table->release();
+      auto const num_rows = _table->num_rows();
+      auto columns        = _table->release();
       try {
         for (auto& column : columns) {
           result.push_back(
@@ -189,7 +190,7 @@ class native_table_handle_state final : public cudf_table_handle_state {
         for (auto& column : columns) {
           if (column != nullptr) { restored_columns.push_back(std::move(column)); }
         }
-        _table = std::make_unique<cudf::table>(std::move(restored_columns));
+        _table = std::make_unique<cudf::table>(std::move(restored_columns), num_rows);
         throw;
       }
       return result;
@@ -197,7 +198,8 @@ class native_table_handle_state final : public cudf_table_handle_state {
   }
 
   void restore_released_columns(
-    cudf::size_type, std::vector<std::unique_ptr<cudf_column_handle_state>> columns) override
+    cudf::size_type num_rows,
+    std::vector<std::unique_ptr<cudf_column_handle_state>> columns) override
   {
     cudf_invoke_under_provenance(_provenance, [&] {
       std::vector<std::unique_ptr<cudf::column>> native_columns;
@@ -205,7 +207,7 @@ class native_table_handle_state final : public cudf_table_handle_state {
       for (auto& column : columns) {
         native_columns.push_back(column->release_native_column());
       }
-      _table = std::make_unique<cudf::table>(std::move(native_columns));
+      _table = std::make_unique<cudf::table>(std::move(native_columns), num_rows);
     });
   }
 
@@ -714,7 +716,7 @@ class column_state_table_handle_state final : public cudf_table_handle_state {
     for (auto const& column : _columns) {
       views.push_back(column->view());
     }
-    return cudf::table_view{views};
+    return cudf::table_view{views, _num_rows};
   }
 
   [[nodiscard]] std::unique_ptr<cudf::table> deep_copy(

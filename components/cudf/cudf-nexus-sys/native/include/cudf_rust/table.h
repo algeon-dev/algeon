@@ -29,13 +29,23 @@ cudf_status_t cudf_table_create(cudf_column_handle* columns,
                                 int32_t num_columns,
                                 cudf_table_handle* out);
 
+/// Create a table from an array of column handles with an explicit row count.
+///
+/// The explicit row count is required to preserve non-zero rows when
+/// `num_columns == 0`. When columns are present, it must match every column's
+/// size. Ownership and failure behavior match cudf_table_create.
+cudf_status_t cudf_table_create_with_num_rows(cudf_column_handle* columns,
+                                              int32_t num_columns,
+                                              int32_t num_rows,
+                                              cudf_table_handle* out);
+
 /// Deep-copy a table with explicit execution options.
 ///
 /// `options` must be non-NULL and must name an explicit valid device, a
 /// non-NULL stream, and a non-NULL memory resource. `options->mr` must outlive
 /// the returned table.
 cudf_status_t cudf_table_copy_ex(cudf_table_handle src,
-                                 const cudf_exec_options_t* options,
+                                 cudf_exec_options_t const* options,
                                  cudf_table_handle* out);
 
 typedef struct cudf_interop_semantic_table_t {
@@ -94,7 +104,7 @@ cudf_status_t cudf_table_create_from_owned_device_transfer(
 /// `options` must be non-NULL and must name an explicit valid device, a
 /// non-NULL stream, and a non-NULL memory resource.
 cudf_status_t cudf_table_payload_size_ex(cudf_table_handle handle,
-                                         const cudf_exec_options_t* options,
+                                         cudf_exec_options_t const* options,
                                          size_t* out);
 
 /// Return the total device allocation footprint of this owning table.
@@ -136,11 +146,21 @@ cudf_status_t cudf_table_view_from_column_views(cudf_column_view_handle* column_
                                                 int32_t num_columns,
                                                 cudf_table_view_handle* out);
 
+/// Construct a table_view from column_view handles with an explicit row count.
+///
+/// The explicit row count is required to preserve non-zero rows when
+/// `num_columns == 0`. When column views are present, it must match every
+/// column view's size. The returned table_view borrows from the column views.
+cudf_status_t cudf_table_view_from_column_views_with_num_rows(cudf_column_view_handle* column_views,
+                                                              int32_t num_columns,
+                                                              int32_t num_rows,
+                                                              cudf_table_view_handle* out);
+
 /// Construct a projected table_view by selecting columns from an existing
 /// table_view. The returned table_view is heap-allocated and must be freed
 /// with cudf_table_view_destroy.
 cudf_status_t cudf_table_view_select_columns(cudf_table_view_handle handle,
-                                             const int32_t* indices,
+                                             int32_t const* indices,
                                              int32_t num_indices,
                                              cudf_table_view_handle* out);
 

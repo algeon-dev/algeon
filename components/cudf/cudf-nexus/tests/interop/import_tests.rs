@@ -8,9 +8,9 @@ use cudf::{
     testing::prelude::*,
 };
 use rapids_interop::{
-    BorrowedTableView, BufferBinding, ColumnLayout, ExportDiagnostics, ExportProfile, InteropError, InteropErrorKind,
-    OwnedTableTransfer, OwnedTableTransferParts, PhysicalValidity, PreparedColumnExport, PreparedTableExport,
-    ProducerReadiness, SchemaNullability, SemanticColumn, SemanticTable,
+    BufferBinding, ColumnLayout, ExportDiagnostics, ExportProfile, InteropError, InteropErrorKind, OwnedTableTransfer,
+    OwnedTableTransferParts, PhysicalValidity, PreparedColumnExport, PreparedTableExport, ProducerReadiness,
+    SchemaNullability, SemanticColumn, SemanticTable,
 };
 use tempfile::TempDir;
 
@@ -286,6 +286,13 @@ fn two_numeric_columns_table(runtime: &Runtime) -> Table {
     let first = runtime.column_from_slice(&[1i32, 2, 3]).unwrap();
     let second = runtime.column_from_slice(&[10i64, 20, 30]).unwrap();
     Table::from_columns(vec![first, second]).unwrap()
+}
+
+fn zero_column_table(runtime: &Runtime) -> Table {
+    let frame = named_numeric_frame(runtime).select(std::iter::empty::<&str>()).unwrap();
+    let (table, names) = frame.try_into_table().unwrap();
+    assert!(names.is_empty());
+    table
 }
 
 fn assert_two_numeric_columns_table(table: &Table) {
@@ -614,30 +621,56 @@ mod table_import_contracts {
     }
 
     #[test]
-    fn borrowed_table_view_import_rejects_zero_column_non_empty_shape_with_stable_contract() {
+    fn borrowed_table_view_import_round_trips_zero_column_non_empty_shape() {
         let source_runtime = Runtime::builder().build().unwrap();
-        let source = two_numeric_columns_table(&source_runtime);
+        let source = zero_column_table(&source_runtime);
         let source_view = source.testing_view().unwrap();
         let borrowed = source_view.try_borrow_table_view().unwrap();
-        let malformed = BorrowedTableView::try_new(3, Vec::new(), borrowed.execution()).unwrap();
         let destination_runtime = common::sample_runtime();
 
-        let err =
-            Table::try_import_from_borrowed_table_view_into_runtime(&malformed, &destination_runtime).unwrap_err();
+        assert_eq!(borrowed.num_columns(), 0);
+        assert_eq!(borrowed.num_rows(), 3);
+        let imported =
+            Table::try_import_from_borrowed_table_view_into_runtime(&borrowed, &destination_runtime).unwrap();
 
-        assert_eq!(err.kind(), InteropErrorKind::InvalidView);
-        assert_eq!(
-            interop_error_context_value(&err, "operation"),
-            Some("interop::Table::try_import_from_borrowed_table_view_into_runtime"),
-        );
-        assert_eq!(interop_error_context_value(&err, "resource"), Some("table_shape"));
-        assert_eq!(interop_error_context_value(&err, "reason"), Some("zero_column_non_empty_table"));
-        assert_eq!(interop_error_context_value(&err, "table_row_count"), Some("3"));
-        assert_eq!(
-            interop_error_context_value(&err, "remedy"),
-            Some("provide at least one semantic column or report zero rows"),
-        );
-        assert_eq!(interop_error_context_value(&err, "num_rows"), None);
+        assert_eq!(imported.num_columns().unwrap(), 0);
+        assert_eq!(imported.num_rows().unwrap(), 3);
+        assert_table_bound_to_runtime(&imported, &destination_runtime);
+    }
+
+    #[test]
+    fn prepared_device_table_export_import_round_trips_zero_column_non_empty_shape() {
+        let source_runtime = Runtime::builder().build().unwrap();
+        let source = zero_column_table(&source_runtime);
+        let export = source.try_prepare_device_table_export().unwrap();
+        let destination_runtime = common::sample_runtime();
+        let _event_lock = common::lock_event_observation();
+
+        assert_eq!(export.table().columns().len(), 0);
+        assert_eq!(export.table().num_rows(), 3);
+        let imported =
+            Table::try_import_from_prepared_table_export_into_runtime(&export, &destination_runtime).unwrap();
+
+        assert_eq!(imported.num_columns().unwrap(), 0);
+        assert_eq!(imported.num_rows().unwrap(), 3);
+        assert_table_bound_to_runtime(&imported, &destination_runtime);
+    }
+
+    #[test]
+    fn prepared_host_table_export_import_round_trips_zero_column_non_empty_shape() {
+        let source_runtime = Runtime::builder().build().unwrap();
+        let source = zero_column_table(&source_runtime);
+        let export = source.try_prepare_host_table_export().unwrap();
+        let destination_runtime = common::sample_runtime();
+
+        assert_eq!(export.table().columns().len(), 0);
+        assert_eq!(export.table().num_rows(), 3);
+        let imported =
+            Table::try_import_from_prepared_table_export_into_runtime(&export, &destination_runtime).unwrap();
+
+        assert_eq!(imported.num_columns().unwrap(), 0);
+        assert_eq!(imported.num_rows().unwrap(), 3);
+        assert_table_bound_to_runtime(&imported, &destination_runtime);
     }
 
     #[test]

@@ -546,8 +546,6 @@ cudf_status_t cudf_table_copy_from_prepared_device_export_ex(
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
   CUDF_RUST_NULL_CHECK(table, "table is null");
-  CUDF_RUST_NULL_CHECK(semantic_columns, "semantic_columns is null");
-  CUDF_RUST_NULL_CHECK(bindings, "bindings is null");
   // Tables may be empty at the top level, so a zero-column / zero-semantic
   // graph is valid here even though column import requires one semantic root.
   if (num_semantic_columns < 0) {
@@ -558,6 +556,10 @@ cudf_status_t cudf_table_copy_from_prepared_device_export_ex(
     set_error("num_bindings must be >= 0");
     return CUDF_ERROR_INVALID_OPERATION;
   }
+  if (num_semantic_columns > 0) {
+    CUDF_RUST_NULL_CHECK(semantic_columns, "semantic_columns is null");
+  }
+  if (num_bindings > 0) { CUDF_RUST_NULL_CHECK(bindings, "bindings is null"); }
   if (table->num_rows < 0) {
     set_error("table num_rows must be >= 0");
     return CUDF_ERROR_INVALID_OPERATION;
@@ -586,8 +588,11 @@ cudf_status_t cudf_table_copy_from_prepared_device_export_ex(
     }
 
     {
-      auto copy = std::make_unique<cudf::table>(cudf::table_view(columns), exec->stream, *exec->mr);
-      *out      = cudf_release_table_handle(std::move(copy), cudf_capture_exec_provenance(*exec));
+      auto copy = std::make_unique<cudf::table>(
+        cudf::table_view(columns, static_cast<cudf::size_type>(table->num_rows)),
+        exec->stream,
+        *exec->mr);
+      *out = cudf_release_table_handle(std::move(copy), cudf_capture_exec_provenance(*exec));
     }
     return CUDF_SUCCESS;
   }
@@ -642,8 +647,6 @@ cudf_status_t cudf_table_copy_from_prepared_host_export_ex(
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
   CUDF_RUST_NULL_CHECK(table, "table is null");
-  CUDF_RUST_NULL_CHECK(semantic_columns, "semantic_columns is null");
-  CUDF_RUST_NULL_CHECK(bindings, "bindings is null");
   // Tables may be empty at the top level, so a zero-column / zero-semantic
   // graph is valid here even though column import requires one semantic root.
   if (num_semantic_columns < 0) {
@@ -654,6 +657,10 @@ cudf_status_t cudf_table_copy_from_prepared_host_export_ex(
     set_error("num_bindings must be >= 0");
     return CUDF_ERROR_INVALID_OPERATION;
   }
+  if (num_semantic_columns > 0) {
+    CUDF_RUST_NULL_CHECK(semantic_columns, "semantic_columns is null");
+  }
+  if (num_bindings > 0) { CUDF_RUST_NULL_CHECK(bindings, "bindings is null"); }
   if (table->num_rows < 0) {
     set_error("table num_rows must be >= 0");
     return CUDF_ERROR_INVALID_OPERATION;
@@ -681,7 +688,8 @@ cudf_status_t cudf_table_copy_from_prepared_host_export_ex(
         build_prepared_host_column(table->column_ids[index], col_index, bind_index, *exec));
     }
 
-    auto owned = std::make_unique<cudf::table>(std::move(columns));
+    auto owned = std::make_unique<cudf::table>(std::move(columns),
+                                               static_cast<cudf::size_type>(table->num_rows));
     *out       = cudf_release_table_handle(std::move(owned), cudf_capture_exec_provenance(*exec));
     return CUDF_SUCCESS;
   }

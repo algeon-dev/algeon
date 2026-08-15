@@ -86,6 +86,7 @@ impl Table {
     fn from_columns_impl(
         columns: Vec<Column>,
         authoritative_domain: Option<Arc<ExecutionDomain>>,
+        explicit_num_rows: Option<usize>,
         operation: &'static str,
     ) -> Result<Self> {
         let domain = if let Some(first) = columns.first() {
@@ -120,6 +121,20 @@ impl Table {
 
         Self::validate_uniform_row_counts(&columns, operation)?;
 
+        if let (Some(expected_rows), Some(first)) = (explicit_num_rows, columns.first()) {
+            let actual_rows = first
+                .view()
+                .map_err(|e| e.reanchor(operation).with_fact(FACT_COLUMN_INDEX, 0))?
+                .len()
+                .map_err(|e| e.reanchor(operation).with_fact(FACT_COLUMN_INDEX, 0))?;
+            if actual_rows != expected_rows {
+                return Err(error::row_count_mismatch_error(operation, 0, actual_rows, expected_rows));
+            }
+        }
+
+        let explicit_num_rows_i32 =
+            explicit_num_rows.map(|rows| error::usize_to_i32(rows, operation, "row_count")).transpose()?;
+
         let num_columns = i32::try_from(columns.len()).map_err(|_| {
             table_column_count_limit_error(operation, "number of columns exceeds i32::MAX", columns.len())
         })?;
@@ -135,7 +150,17 @@ impl Table {
 
         let mut table_handle = ptr::null_mut();
         // SAFETY: handles contains valid column pointers from into_raw(). num_columns matches.
-        let status = unsafe { cudf_sys::cudf_table_create(handles.as_mut_ptr(), num_columns, &mut table_handle) };
+        let status = unsafe {
+            match explicit_num_rows_i32 {
+                Some(num_rows) => cudf_sys::cudf_table_create_with_num_rows(
+                    handles.as_mut_ptr(),
+                    num_columns,
+                    num_rows,
+                    &mut table_handle,
+                ),
+                None => cudf_sys::cudf_table_create(handles.as_mut_ptr(), num_columns, &mut table_handle),
+            }
+        };
         // If creation failed, we've already released ownership of the columns
         // into the handles vec. The C shim nulls them out on success, but on
         // failure we need to destroy them ourselves.
@@ -160,11 +185,20 @@ impl Table {
     ///
     /// The columns are *moved* into the table — do not use them afterwards.
     pub fn from_columns(columns: Vec<Column>) -> Result<Self> {
-        Self::from_columns_impl(columns, None, "table::from_columns")
+        Self::from_columns_impl(columns, None, None, "table::from_columns")
+    }
+
+    pub(crate) fn from_columns_in_domain_with_num_rows(
+        columns: Vec<Column>,
+        num_rows: usize,
+        domain: Arc<ExecutionDomain>,
+        operation: &'static str,
+    ) -> Result<Self> {
+        Self::from_columns_impl(columns, Some(domain), Some(num_rows), operation)
     }
 
     pub(crate) fn empty_in_domain(domain: Arc<ExecutionDomain>, operation: &'static str) -> Result<Self> {
-        Self::from_columns_impl(Vec::new(), Some(domain), operation)
+        Self::from_columns_in_domain_with_num_rows(Vec::new(), 0, domain, operation)
     }
 
     /// Deep-copy this table.

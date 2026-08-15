@@ -200,6 +200,24 @@ impl<'a> TableView<'a> {
         authoritative_domain: Option<Arc<ExecutionDomain>>,
         operation: &'static str,
     ) -> Result<Self> {
+        Self::from_borrowed_column_views_in_domain_impl(views, authoritative_domain, None, operation)
+    }
+
+    pub(crate) fn from_borrowed_column_views_in_domain_with_num_rows(
+        views: Vec<ColumnView<'a>>,
+        num_rows: usize,
+        authoritative_domain: Option<Arc<ExecutionDomain>>,
+        operation: &'static str,
+    ) -> Result<Self> {
+        Self::from_borrowed_column_views_in_domain_impl(views, authoritative_domain, Some(num_rows), operation)
+    }
+
+    fn from_borrowed_column_views_in_domain_impl(
+        views: Vec<ColumnView<'a>>,
+        authoritative_domain: Option<Arc<ExecutionDomain>>,
+        explicit_num_rows: Option<usize>,
+        operation: &'static str,
+    ) -> Result<Self> {
         let domain = if let Some(first) = views.first() {
             let domain = Arc::clone(first.execution_domain());
             for (index, view) in views.iter().enumerate().skip(1) {
@@ -230,11 +248,22 @@ impl<'a> TableView<'a> {
             return Err(Self::empty_requires_authoritative_source_error(operation));
         };
 
-        Self::validate_uniform_row_counts(&views, operation)?;
+        if let Some(expected_rows) = explicit_num_rows {
+            for (index, view) in views.iter().enumerate() {
+                let rows = view.len().map_err(|e| e.reanchor(operation).with_fact(FACT_COLUMN_INDEX, index))?;
+                if rows != expected_rows {
+                    return Err(error::row_count_mismatch_error(operation, index, rows, expected_rows));
+                }
+            }
+        } else {
+            Self::validate_uniform_row_counts(&views, operation)?;
+        }
 
         let num_columns = i32::try_from(views.len()).map_err(|_| {
             table_column_count_limit_error(operation, "number of column views exceeds i32::MAX", views.len())
         })?;
+        let explicit_num_rows =
+            explicit_num_rows.map(|rows| error::usize_to_i32(rows, operation, "row_count")).transpose()?;
 
         let mut handles: SmallVec<[cudf_sys::cudf_column_view_handle; TABLE_HANDLE_INLINE_CAPACITY]> =
             views.iter().map(|v| v.raw_handle()).collect();
@@ -242,7 +271,17 @@ impl<'a> TableView<'a> {
         let mut out = ptr::null_mut();
         // SAFETY: handles are valid column view pointers from raw_handle(). num_columns matches.
         error::check_status_in(
-            unsafe { cudf_sys::cudf_table_view_from_column_views(handles.as_mut_ptr(), num_columns, &mut out) },
+            unsafe {
+                match explicit_num_rows {
+                    Some(num_rows) => cudf_sys::cudf_table_view_from_column_views_with_num_rows(
+                        handles.as_mut_ptr(),
+                        num_columns,
+                        num_rows,
+                        &mut out,
+                    ),
+                    None => cudf_sys::cudf_table_view_from_column_views(handles.as_mut_ptr(), num_columns, &mut out),
+                }
+            },
             operation,
         )?;
 
