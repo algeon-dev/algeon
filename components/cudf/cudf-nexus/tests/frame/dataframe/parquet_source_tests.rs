@@ -588,7 +588,9 @@ fn parquet_read_evidence_reports_bloom_pruned_row_groups() {
 
     assert_eq!(output.frame().num_rows(), 2);
     assert_eq!(pruning.input_row_groups, 5);
-    assert_eq!(pruning.row_groups_after_stats_filter, Some(pruning.input_row_groups));
+    // The fixture carries no usable row-group statistics, so 26.08 skips the stats stage
+    // (upstream #22664) and reports no survivor count for it.
+    assert_eq!(pruning.row_groups_after_stats_filter, None);
     assert!(pruning.row_groups_after_bloom_filter.is_some_and(|after| after < pruning.input_row_groups));
 }
 

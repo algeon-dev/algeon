@@ -136,7 +136,7 @@ fn test_fixed_width_dont_check_preflight_rejects_unsupported_dtype_and_row_overf
 }
 
 #[test]
-fn test_fixed_width_dont_check_preflight_zero_rows_is_zero() {
+fn test_fixed_width_dont_check_preflight_zero_rows_retains_nullable_workspace() {
     let preflight = copying::gather_fixed_width_dont_check_preflight_for_metadata(
         &[(DataType::new(TypeId::Int32), true)],
         0,
@@ -146,8 +146,20 @@ fn test_fixed_width_dont_check_preflight_zero_rows_is_zero() {
     assert_eq!(preflight.gather_map_bytes(), 0);
     assert_eq!(preflight.output_frame_bytes(), 0);
     assert_eq!(preflight.output_null_mask_bytes(), 0);
-    assert_eq!(preflight.native_workspace_bytes(), 0);
-    assert_eq!(preflight.active_phase_peak_bytes(), 0);
+    assert!(preflight.native_workspace_bytes() > 0);
+    assert_eq!(
+        preflight.native_workspace_bytes(),
+        preflight.target_mask_pointer_array_bytes()
+            + preflight.source_table_device_view_bytes()
+            + preflight.valid_count_array_bytes()
+    );
+    assert_eq!(
+        preflight.active_phase_peak_bytes(),
+        preflight.gather_map_bytes()
+            + preflight.output_frame_bytes()
+            + preflight.output_null_mask_bytes()
+            + preflight.native_workspace_bytes()
+    );
 }
 
 #[test]
