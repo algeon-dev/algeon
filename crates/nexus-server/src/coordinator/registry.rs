@@ -518,10 +518,20 @@ impl QueryCoordinator {
                     captured.finish_success(now);
                 }
             },
-            QueryTerminal::Failed { stage, error, .. } | QueryTerminal::Cancelled { stage, error } => {
+            QueryTerminal::Failed { stage, error, .. } => {
                 if let Some(captured) = &mut record.captured {
                     captured.bound_error(Arc::make_mut(error));
                     captured.finish_failed(stage, Arc::clone(error), now);
+                }
+            },
+            QueryTerminal::Cancelled { stage, error } => {
+                if let Some(captured) = &mut record.captured {
+                    captured.bound_error(Arc::make_mut(error));
+                    if record.requires_attempt_report {
+                        captured.finish_failed(stage, Arc::clone(error), now);
+                    } else {
+                        captured.finish_cancelled(stage, Arc::clone(error), now);
+                    }
                 }
             },
             QueryTerminal::Dropped | QueryTerminal::Panicked => {

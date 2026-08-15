@@ -361,3 +361,173 @@ async fn flight_sql_foreign_keys_rpcs_return_empty_with_shared_schema() {
     // Reference the UInt8Array import to keep it warning-free even when batches are empty.
     let _ = UInt8Array::from(Vec::<u8>::new());
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn strict_flight_sql_metadata_domain_uses_cpu_without_attempt_or_user_scan() {
+    let (listener, addr) = free_local_addr();
+    let mut config = test_server_config();
+    declare_test_gpu_ownership(&mut config);
+    config.bind_addr = addr;
+    config.native_optimizer_config = config.native_optimizer_config.clone().with_no_datafusion_cpu_requirement();
+    let backend = build_injected_test_backend(&mut config);
+    assert_eq!(
+        backend.optimizer_config().final_plan_requirements(),
+        &[datafusion_nexus::planner::FinalPlanRequirement::NoDataFusionCpu]
+    );
+    let ctx = nexus_server::build_session_context_with_backend(&config, &backend).await.unwrap();
+    let scan_probe = Arc::new(ScanFailingTableProvider::new(Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("label", DataType::Utf8, true),
+    ]))));
+    ctx.register_table("metadata_probe", scan_probe.clone()).unwrap();
+    ctx.register_table(
+        "user_rows",
+        Arc::new(datafusion::datasource::empty::EmptyTable::new(Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("table_name", DataType::Utf8, true),
+        ])))),
+    )
+    .unwrap();
+    let replacement = ctx.state().create_logical_plan("SELECT * FROM user_rows").await.unwrap();
+    let controlled_rewrite = Arc::new(ControlledPlanReplacement::new(replacement));
+    ctx.register_relation_planner(controlled_rewrite.clone()).unwrap();
+    let ctx = Arc::new(ctx);
+    let shutdown = CancellationToken::new();
+    let server = FlightSqlServer::builder()
+        .config(config)
+        .backend(backend.clone())
+        .session_context(Arc::clone(&ctx))
+        .listener(listener)
+        .shutdown(ServerShutdown::Token(shutdown.clone()))
+        .build()
+        .await
+        .unwrap();
+    let server = tokio::spawn(async move { server.serve().await });
+    let mut client = connect_with_retry(addr).await;
+    let attempts_before = backend.attempt_counters_snapshot();
+    let admission_before = backend.admission_snapshot().unwrap();
+
+    let get_tables = client
+        .get_tables(CommandGetTables {
+            catalog: Some("datafusion".into()),
+            db_schema_filter_pattern: Some("public".into()),
+            table_name_filter_pattern: Some("metadata_probe".into()),
+            table_types: vec![],
+            include_schema: false,
+        })
+        .await
+        .unwrap();
+    let get_tables_batches = collect_metadata_batches(&mut client, &get_tables).await;
+    assert_eq!(collect_name_and_type(&get_tables_batches), vec![("metadata_probe".into(), "TABLE".into())]);
+
+    let show_tables_info = client.execute("SHOW TABLES".to_string(), None).await.unwrap();
+    let show_tables_query_id = query_id_from_statement_flight_info(&show_tables_info);
+    let (show_tables_schema, show_tables) = collect_metadata_schema_and_batches(&mut client, &show_tables_info).await;
+    let show_tables_schema_names: Vec<&str> =
+        show_tables_schema.fields().iter().map(|field| field.name().as_str()).collect();
+    assert_eq!(show_tables_schema_names, vec!["table_catalog", "table_schema", "table_name", "table_type"]);
+    assert_eq!(
+        collect_name_and_type(&show_tables).into_iter().find(|(name, _)| name == "metadata_probe"),
+        Some(("metadata_probe".to_string(), "BASE TABLE".to_string()))
+    );
+
+    let show_columns_info = client.execute("SHOW COLUMNS FROM metadata_probe".to_string(), None).await.unwrap();
+    let direct_columns = collect_metadata_batches(&mut client, &show_columns_info).await;
+    assert_eq!(collect_string_column(&direct_columns, "column_name"), vec!["id", "label"]);
+
+    let describe_info = client.execute("DESCRIBE metadata_probe".to_string(), None).await.unwrap();
+    let described = collect_metadata_batches(&mut client, &describe_info).await;
+    assert_eq!(collect_string_column(&described, "column_name"), vec!["id", "label"]);
+
+    let information_schema_info = client
+        .execute(
+            "SELECT t.table_name, COUNT(c.column_name) AS column_count \
+             FROM information_schema.tables t \
+             JOIN information_schema.columns c \
+               ON t.table_catalog = c.table_catalog \
+              AND t.table_schema = c.table_schema \
+              AND t.table_name = c.table_name \
+             WHERE t.table_name = 'metadata_probe' \
+             GROUP BY t.table_name"
+                .to_string(),
+            None,
+        )
+        .await
+        .unwrap();
+    let information_schema = collect_metadata_batches(&mut client, &information_schema_info).await;
+    assert_eq!(collect_string_column(&information_schema, "table_name"), vec!["metadata_probe"]);
+    let column_count = information_schema.iter().find_map(|batch| {
+        batch.schema().index_of("column_count").ok().and_then(|index| int_value(batch.column(index)))
+    });
+    assert_eq!(column_count, Some(2));
+
+    let mut prepared = client.prepare("SHOW COLUMNS FROM metadata_probe".to_string(), None).await.unwrap();
+    let prepared_info = prepared.execute().await.unwrap();
+    let prepared_columns = collect_metadata_batches(&mut client, &prepared_info).await;
+    prepared.close().await.unwrap();
+    assert_eq!(
+        collect_string_column(&prepared_columns, "column_name"),
+        collect_string_column(&direct_columns, "column_name")
+    );
+
+    let cancelled_info = client.execute("SHOW TABLES".to_string(), None).await.unwrap();
+    let cancelled_query_id = query_id_from_statement_flight_info(&cancelled_info);
+    assert_eq!(cancel_query_raw(&mut client, &cancelled_info).await.result, CANCEL_RESULT_CANCELLING);
+
+    assert!(!scan_probe.scan_called(), "metadata discovery must not call the user table provider's scan method");
+    assert_eq!(backend.attempt_counters_snapshot(), attempts_before, "metadata execution must not begin Nexus attempts");
+    assert_eq!(backend.admission_snapshot().unwrap(), admission_before, "metadata execution must not alter GPU admission");
+
+    let metadata_stats = get_query_stats_raw(&mut client, &show_tables_query_id).await;
+    assert!(metadata_stats.contains("# outcome=succeeded"), "{metadata_stats}");
+    assert!(metadata_stats.contains("[physical_plan]"), "{metadata_stats}");
+    assert!(!metadata_stats.contains("# attempt_id="), "{metadata_stats}");
+    let cancelled_stats = get_query_stats_raw(&mut client, &cancelled_query_id).await;
+    assert!(cancelled_stats.contains("# outcome=cancelled"), "{cancelled_stats}");
+    assert!(!cancelled_stats.contains("# attempt_id="), "{cancelled_stats}");
+
+    let proof_rejection_info = client
+        .execute("SELECT table_name FROM information_schema.tables".to_string(), None)
+        .await
+        .unwrap();
+    controlled_rewrite.set_enabled(true);
+    let proof_rejection_ticket =
+        proof_rejection_info.endpoint.first().and_then(|endpoint| endpoint.ticket.clone()).unwrap();
+    let proof_rejection_status = match client.do_get(proof_rejection_ticket).await {
+        Err(error) => unwrap_flight_status(error),
+        Ok(stream) => unwrap_flight_status(stream.try_collect::<Vec<_>>().await.unwrap_err()),
+    };
+    controlled_rewrite.set_enabled(false);
+    assert_error_metadata(&proof_rejection_status, "invalid_request", "invalid_input", "permanent");
+    assert_eq!(
+        backend.attempt_counters_snapshot(),
+        attempts_before,
+        "a retained metadata ticket must fail instead of retrying through the data domain"
+    );
+
+    for sql in [
+        "SELECT id FROM user_rows WHERE CAST(id AS VARCHAR) ILIKE '1%'",
+        "SELECT i.table_name FROM information_schema.tables i JOIN user_rows u ON true WHERE i.table_name ILIKE '%probe%'",
+    ] {
+        let flight_info = client.execute(sql.to_string(), None).await.unwrap();
+        let ticket = flight_info.endpoint.first().and_then(|endpoint| endpoint.ticket.clone()).unwrap();
+        let status = match client.do_get(ticket).await {
+            Err(error) => unwrap_flight_status(error),
+            Ok(stream) => unwrap_flight_status(stream.try_collect::<Vec<_>>().await.unwrap_err()),
+        };
+        assert_error_metadata(&status, "final_plan_requirement_unsatisfied", "planning", "permanent");
+    }
+    assert_eq!(
+        backend.attempt_counters_snapshot().attempts_begun,
+        attempts_before.attempts_begun + 2,
+        "mixed and user-table statements must retain data-domain attempt ownership"
+    );
+
+    drop(client);
+    shutdown.cancel();
+    tokio::time::timeout(Duration::from_secs(10), server)
+        .await
+        .expect("token shutdown should drain promptly")
+        .expect("server task should not panic")
+        .expect("token shutdown should stop the server cleanly");
+}

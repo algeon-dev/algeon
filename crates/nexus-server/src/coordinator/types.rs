@@ -270,12 +270,19 @@ pub(crate) struct CoordinatorTicketPayload {
     pub(crate) correlation_id: Option<String>,
     pub(crate) prepared_handle: Option<String>,
     pub(crate) kind: u8,
+    pub(crate) execution_domain: StatementExecutionDomain,
     pub(crate) native_cancellation: ExecutionCancellation,
     /// The sole attempt for a Flight SQL result-stream invocation. It begins
     /// before logical planning and moves exactly once into DoGet.
     pub(crate) attempt: Option<NexusAttempt>,
     pub(crate) started_at: Instant,
     pub(crate) deadline: Instant,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StatementExecutionDomain {
+    Metadata,
+    Data,
 }
 
 #[derive(Debug, Clone)]

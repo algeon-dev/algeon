@@ -1,11 +1,126 @@
+use datafusion::{
+    common::{
+        TableReference,
+        tree_node::{TreeNode, TreeNodeRecursion},
+    },
+    sql::{
+        parser::Statement as DataFusionSqlStatement,
+        sqlparser::ast::{DescribeAlias, ShowStatementOptions, Statement as SqlStatement},
+    },
+};
+
 use super::*;
 
 /// after physical optimization runs (during `DataFrame::execute_stream`).
 pub(super) struct QueryPlanning {
     pub(super) ctx: SessionContext,
-    pub(super) native_rule: Arc<NexusNativePhysicalOptimizerRule>,
+    pub(super) native_rule: Option<Arc<NexusNativePhysicalOptimizerRule>>,
 }
+
+pub(super) type ParsedFlightStatement = Result<DataFusionSqlStatement, DataFusionError>;
+
 impl DatafusionNexusFlightSqlService {
+    pub(super) fn parse_flight_statement(&self, sql: &str) -> ParsedFlightStatement {
+        let state = self.ctx.state();
+        let dialect = state.config_options().sql_parser.dialect;
+        state.sql_to_statement(sql, &dialect)
+    }
+
+    pub(super) fn classify_statement_candidate(
+        &self,
+        datafusion_statement: &DataFusionSqlStatement,
+    ) -> StatementExecutionDomain {
+        let DataFusionSqlStatement::Statement(statement) = datafusion_statement else {
+            return StatementExecutionDomain::Data;
+        };
+        match statement.as_ref() {
+            SqlStatement::ShowTables {
+                terse: false,
+                history: false,
+                extended: false,
+                full: false,
+                external: false,
+                show_options,
+            } if show_options_are_empty(show_options) => StatementExecutionDomain::Metadata,
+            SqlStatement::ShowColumns { show_options, .. } if show_columns_options_are_supported(show_options) => {
+                StatementExecutionDomain::Metadata
+            },
+            SqlStatement::ExplainTable { describe_alias: DescribeAlias::Describe | DescribeAlias::Desc, .. }
+            | SqlStatement::Explain { describe_alias: DescribeAlias::Describe | DescribeAlias::Desc, .. } => {
+                StatementExecutionDomain::Metadata
+            },
+            SqlStatement::Query(_) => self
+                .ctx
+                .state()
+                .resolve_table_references(datafusion_statement)
+                .ok()
+                .filter(|references| !references.is_empty())
+                .filter(|references| references.iter().all(table_reference_is_information_schema))
+                .map_or(StatementExecutionDomain::Data, |_| StatementExecutionDomain::Metadata),
+            _ => StatementExecutionDomain::Data,
+        }
+    }
+
+    pub(super) fn verify_metadata_logical_plan(
+        &self,
+        plan: &LogicalPlan,
+        operation: &'static str,
+    ) -> crate::adapter_error::Result<()> {
+        if matches!(plan, LogicalPlan::DescribeTable(_)) {
+            return Ok(());
+        }
+
+        let mut saw_information_schema_scan = false;
+        let mut rejection = None;
+        plan.apply(|node| {
+            match node {
+                LogicalPlan::TableScan(scan) if table_reference_is_information_schema(&scan.table_name) => {
+                    saw_information_schema_scan = true;
+                },
+                LogicalPlan::TableScan(_) => rejection = Some("non_information_schema_scan"),
+                LogicalPlan::Dml(_) => rejection = Some("dml"),
+                LogicalPlan::Copy(_) => rejection = Some("copy"),
+                LogicalPlan::Ddl(_) => rejection = Some("ddl"),
+                LogicalPlan::Extension(_) => rejection = Some("extension"),
+                _ => {},
+            }
+            Ok(if rejection.is_some() { TreeNodeRecursion::Stop } else { TreeNodeRecursion::Continue })
+        })
+        .expect("metadata logical-plan inspection is infallible");
+
+        let rejection = rejection.or((!saw_information_schema_scan).then_some("missing_information_schema_scan"));
+        if let Some(reason) = rejection {
+            return Err(Error::new(
+                ErrorCode::InvalidRequest,
+                operation,
+                "statement no longer satisfies the metadata execution-domain proof",
+            )
+            .with_log_safe_fact("metadata_proof_rejection", reason));
+        }
+        Ok(())
+    }
+
+    pub(super) fn metadata_query_planning(&self) -> QueryPlanning {
+        let rules = self
+            .ctx
+            .state()
+            .physical_optimizers()
+            .iter()
+            .filter(|rule| {
+                !matches!(
+                    rule.name(),
+                    NEXUS_NATIVE_COUNT_ONLY_PHYSICAL_OPTIMIZER_RULE_NAME
+                        | NEXUS_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME
+                        | NEXUS_FINAL_PLAN_REQUIREMENT_RULE_NAME
+                )
+            })
+            .cloned()
+            .collect();
+        let state =
+            SessionStateBuilder::new_from_existing(self.ctx.state()).with_physical_optimizer_rules(rules).build();
+        QueryPlanning { ctx: SessionContext::new_with_state(state), native_rule: None }
+    }
+
     pub(super) fn attempt_query_planning(
         &self,
         correlation_id: Option<&str>,
@@ -71,7 +186,7 @@ impl DatafusionNexusFlightSqlService {
             builder
         };
         let state = builder.build();
-        QueryPlanning { ctx: SessionContext::new_with_state(state), native_rule }
+        QueryPlanning { ctx: SessionContext::new_with_state(state), native_rule: Some(native_rule) }
     }
 
     /// Retain the immutable report at the attempt-owned seal point.
@@ -149,6 +264,8 @@ impl DatafusionNexusFlightSqlService {
         started_at: Instant,
         ticket_kind: StatementTicketKind,
         prepared_handle: Option<String>,
+        parsed_statement: ParsedFlightStatement,
+        execution_domain: StatementExecutionDomain,
     ) -> Result<FlightInfo, Status> {
         self.expire_stale_tickets(Instant::now());
         // Before ticket issuance there is no per-query token, so planning
@@ -156,44 +273,32 @@ impl DatafusionNexusFlightSqlService {
         // shared with the optimizer rule, but `do_action_cancel_query` cannot
         // reach it until the ticket is registered.
         let native_cancellation = ExecutionCancellation::new();
-        let mut attempt = match self.admission.begin_attempt(crate::attempt::AttemptOptions {
-            query_id: Some(query_id.clone()),
-            trace_context: correlation_id.clone(),
-            deadline: None,
-            observation: self.runtime_observation_config,
-        }) {
-            Ok(attempt) => attempt,
-            Err(error) => {
-                self.coordinator.allow_missing_attempt_report(&query_id);
-                let (status, captured) = adapter_error_to_status_and_capture(error);
-                let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
-                planning_lease.finish_captured("planning", &status, captured);
-                return Err(status);
+        let mut attempt = match execution_domain {
+            StatementExecutionDomain::Metadata => None,
+            StatementExecutionDomain::Data => match self.admission.begin_attempt(crate::attempt::AttemptOptions {
+                query_id: Some(query_id.clone()),
+                trace_context: correlation_id.clone(),
+                deadline: None,
+                observation: self.runtime_observation_config,
+            }) {
+                Ok(attempt) => attempt,
+                Err(error) => {
+                    self.coordinator.allow_missing_attempt_report(&query_id);
+                    let (status, captured) = adapter_error_to_status_and_capture(error);
+                    let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
+                    planning_lease.finish_captured("planning", &status, captured);
+                    return Err(status);
+                },
             },
         };
         if let Some(attempt) = attempt.as_ref() {
             self.register_attempt_report_handoff(attempt, CoordinatorReportHandoffTerminal::planning(&planning_lease));
         }
-        let planning = if attempt.is_some() {
-            self.attempt_query_planning(correlation_id.as_deref(), native_cancellation.clone())
-        } else {
-            let observation = match planning_lease.observation_handle() {
-                Ok(observation) => observation,
-                Err(error) => {
-                    let (status, captured) = adapter_error_to_status_and_capture(
-                        error.adapter_error("datafusion_nexus.server.flight.statement.observation_handle"),
-                    );
-                    planning_lease.finish_captured("planning", &status, captured);
-                    return Err(status);
-                },
-            };
-            self.coordinated_query_planning(
-                &query_id,
-                correlation_id.as_deref(),
-                native_cancellation.clone(),
-                observation,
-                planning_lease.activity_factory(),
-            )
+        let planning = match execution_domain {
+            StatementExecutionDomain::Metadata => self.metadata_query_planning(),
+            StatementExecutionDomain::Data => {
+                self.attempt_query_planning(correlation_id.as_deref(), native_cancellation.clone())
+            },
         };
         let query_ctx = match attempt.as_ref() {
             Some(attempt) => match attempt.planning_context(&planning.ctx) {
@@ -210,7 +315,10 @@ impl DatafusionNexusFlightSqlService {
         };
         let query_state = query_ctx.state();
         let logical_plan = tokio::select! {
-            result = query_state.create_logical_plan(&sql)
+            result = async {
+                let statement = parsed_statement?;
+                query_state.statement_to_plan(statement).await
+            }
                 .instrument(Self::query_stage_span(None, &query_id, correlation_id.as_deref(), "planning")) => {
                 match result {
                     Ok(plan) => plan,
@@ -242,6 +350,15 @@ impl DatafusionNexusFlightSqlService {
                 return Err(status);
             }
         };
+        if execution_domain == StatementExecutionDomain::Metadata
+            && let Err(error) =
+                self.verify_metadata_logical_plan(&logical_plan, ticket_kind.metadata_logical_proof_operation())
+        {
+            let (status, captured) = adapter_error_to_status_and_capture(error);
+            let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
+            planning_lease.finish_captured("planning", &status, captured);
+            return Err(status);
+        }
         if let Err(error) = verify_flight_info_plan(&logical_plan, ticket_kind) {
             if let Some(attempt) = attempt.as_ref() {
                 attempt.planning_failed_adapter(&error);
@@ -312,6 +429,7 @@ impl DatafusionNexusFlightSqlService {
                 correlation_id: correlation_id.clone(),
                 prepared_handle,
                 kind: ticket_kind.code(),
+                execution_domain,
                 native_cancellation,
                 attempt: attempt.take(),
                 started_at,
@@ -395,6 +513,7 @@ impl DatafusionNexusFlightSqlService {
                 correlation_id: correlation_id.clone(),
                 prepared_handle: None,
                 kind: ticket_kind.code(),
+                execution_domain: StatementExecutionDomain::Data,
                 native_cancellation: ExecutionCancellation::new(),
                 attempt: attempt.take(),
                 started_at,
@@ -408,5 +527,33 @@ impl DatafusionNexusFlightSqlService {
                 )
             })?;
         Ok(info)
+    }
+}
+
+fn show_options_are_empty(options: &ShowStatementOptions) -> bool {
+    options.show_in.is_none()
+        && options.starts_with.is_none()
+        && options.limit.is_none()
+        && options.limit_from.is_none()
+        && options.filter_position.is_none()
+}
+
+fn show_columns_options_are_supported(options: &ShowStatementOptions) -> bool {
+    options.starts_with.is_none()
+        && options.limit.is_none()
+        && options.limit_from.is_none()
+        && options.filter_position.is_none()
+        && options
+            .show_in
+            .as_ref()
+            .is_some_and(|show_in| show_in.parent_type.is_none() && show_in.parent_name.is_some())
+}
+
+fn table_reference_is_information_schema(reference: &TableReference) -> bool {
+    match reference {
+        TableReference::Partial { schema, .. } | TableReference::Full { schema, .. } => {
+            schema.as_ref() == "information_schema"
+        },
+        TableReference::Bare { .. } => false,
     }
 }

@@ -652,6 +652,7 @@ fn ticket_payload(started_at: Instant, deadline: Instant) -> CoordinatorTicketPa
         correlation_id: None,
         prepared_handle: None,
         kind: 0,
+        execution_domain: StatementExecutionDomain::Data,
         native_cancellation: ExecutionCancellation::new(),
         attempt: None,
         started_at,

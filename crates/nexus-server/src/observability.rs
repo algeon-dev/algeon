@@ -469,6 +469,12 @@ impl CapturedQuery {
         }
     }
 
+    pub(super) fn finish_cancelled(&mut self, stage: &'static str, error: Arc<CapturedError>, _now: Instant) {
+        if matches!(self.delivery_outcome, None | Some(CapturedDeliveryOutcome::Dropped)) {
+            self.delivery_outcome = Some(CapturedDeliveryOutcome::Cancelled { stage, error });
+        }
+    }
+
     pub(super) fn bound_error(&mut self, error: &mut CapturedError) {
         error.apply_capture_budget(&mut self.capture);
     }
@@ -847,6 +853,7 @@ struct CapturedMetrics {
 pub(super) enum CapturedDeliveryOutcome {
     Succeeded,
     Failed { stage: &'static str, error: Arc<CapturedError> },
+    Cancelled { stage: &'static str, error: Arc<CapturedError> },
     Dropped,
 }
 
@@ -855,13 +862,14 @@ impl CapturedDeliveryOutcome {
         match self {
             Self::Succeeded => "succeeded",
             Self::Failed { .. } => "failed",
+            Self::Cancelled { .. } => "cancelled",
             Self::Dropped => "dropped",
         }
     }
 
     fn error(&self) -> Option<&CapturedError> {
         match self {
-            Self::Failed { error, .. } => Some(error.as_ref()),
+            Self::Failed { error, .. } | Self::Cancelled { error, .. } => Some(error.as_ref()),
             Self::Succeeded | Self::Dropped => None,
         }
     }

@@ -244,6 +244,7 @@ impl DatafusionNexusFlightSqlService {
             correlation_id,
             prepared_handle,
             kind,
+            execution_domain,
             native_cancellation,
             mut attempt,
             started_at,
@@ -268,22 +269,6 @@ impl DatafusionNexusFlightSqlService {
                 "executing Flight SQL statement ticket"
             );
         }
-        let coordinator_capture = if attempt.is_none() {
-            let observation = match execution_lease.observation_handle() {
-                Ok(observation) => observation,
-                Err(error) => {
-                    let (status, captured) = adapter_error_to_status_and_capture(
-                        error.adapter_error("datafusion_nexus.server.flight.execute_ticket.observation_handle"),
-                    );
-                    let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
-                    execution_lease.finish_captured("planning", &status, captured);
-                    return Err(status);
-                },
-            };
-            Some((observation, execution_lease.activity_factory()))
-        } else {
-            None
-        };
         let output_counters = execution_lease.hot_counters();
         let attempt_cancellation = attempt.as_ref().map(crate::attempt::NexusAttempt::cancellation);
         self.cancellations.insert(
@@ -335,16 +320,7 @@ impl DatafusionNexusFlightSqlService {
             // per-query context, coordinator lease, and cancellation wiring as
             // ordinary statements, but deliberately never executes a physical
             // plan or acquires GPU admission.
-            let planning = match coordinator_capture.as_ref() {
-                Some((observation, activity_factory)) => self.coordinated_query_planning(
-                    &query_id,
-                    correlation_id.as_deref(),
-                    native_cancellation.clone(),
-                    observation.clone(),
-                    Arc::clone(activity_factory),
-                ),
-                None => self.attempt_query_planning(correlation_id.as_deref(), native_cancellation.clone()),
-            };
+            let planning = self.attempt_query_planning(correlation_id.as_deref(), native_cancellation.clone());
             let query_ctx = match attempt.as_ref() {
                 Some(attempt) => match attempt.planning_context(&planning.ctx) {
                     Ok(context) => context,
@@ -461,15 +437,11 @@ impl DatafusionNexusFlightSqlService {
             return Ok(self.empty_ddl_response(&query_id, correlation_id.as_deref()));
         }
 
-        let planning = match coordinator_capture {
-            Some((observation, activity_factory)) => self.coordinated_query_planning(
-                &query_id,
-                correlation_id.as_deref(),
-                native_cancellation.clone(),
-                observation,
-                activity_factory,
-            ),
-            None => self.attempt_query_planning(correlation_id.as_deref(), native_cancellation.clone()),
+        let planning = match execution_domain {
+            StatementExecutionDomain::Metadata => self.metadata_query_planning(),
+            StatementExecutionDomain::Data => {
+                self.attempt_query_planning(correlation_id.as_deref(), native_cancellation.clone())
+            },
         };
         let query_ctx = match attempt.as_ref() {
             Some(attempt) => match attempt.planning_context(&planning.ctx) {
@@ -484,8 +456,12 @@ impl DatafusionNexusFlightSqlService {
             None => planning.ctx.clone(),
         };
         let query_state = query_ctx.state();
+        let parsed_statement = self.parse_flight_statement(&sql);
         let logical_plan = tokio::select! {
-            result = query_state.create_logical_plan(&sql)
+            result = async {
+                let statement = parsed_statement?;
+                query_state.statement_to_plan(statement).await
+            }
                 .instrument(Self::query_stage_span(
                     Some(&query_span),
                     &query_id,
@@ -521,6 +497,15 @@ impl DatafusionNexusFlightSqlService {
                 return Err(status);
             },
         };
+        if execution_domain == StatementExecutionDomain::Metadata
+            && let Err(error) =
+                self.verify_metadata_logical_plan(&logical_plan, ticket_kind.execute_metadata_logical_proof_operation())
+        {
+            let (status, captured) = adapter_error_to_status_and_capture(error);
+            let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
+            coordinator_terminal.finish_captured("planning", &status, captured);
+            return Err(status);
+        }
         if let Err(error) =
             reject_drop_object_type_mismatch(&query_ctx, &logical_plan, ticket_kind.sql_operation()).await
         {
@@ -613,12 +598,17 @@ impl DatafusionNexusFlightSqlService {
                     if let Some(attempt) = attempt.as_ref() {
                         attempt.planning_failed(&error);
                     }
-                    let diagnostics = planning.native_rule.last_planning_diagnostics();
-                    log_native_planning_report_for_tables(
-                        &query_id,
-                        diagnostics.as_ref().map(|diagnostics| &diagnostics.report),
-                        &logical_plan_tables,
-                    );
+                    let diagnostics = planning
+                        .native_rule
+                        .as_ref()
+                        .and_then(|native_rule| native_rule.last_planning_diagnostics());
+                    if execution_domain == StatementExecutionDomain::Data {
+                        log_native_planning_report_for_tables(
+                            &query_id,
+                            diagnostics.as_ref().map(|diagnostics| &diagnostics.report),
+                            &logical_plan_tables,
+                        );
+                    }
                     self.coordinator.capture_planning_failure(
                         &query_id,
                         "physical_planning",
@@ -649,18 +639,24 @@ impl DatafusionNexusFlightSqlService {
                 return Err(status);
             },
         };
-        let diagnostics = planning.native_rule.last_planning_diagnostics();
+        let diagnostics = planning.native_rule.as_ref().and_then(|native_rule| native_rule.last_planning_diagnostics());
         if let Some(attempt) = attempt.as_ref() {
             attempt.physical_planning_finished(plan.as_ref());
         }
-        log_native_planning_report_for_tables(
-            &query_id,
-            diagnostics.as_ref().map(|diagnostics| &diagnostics.report),
-            &logical_plan_tables,
-        );
+        if execution_domain == StatementExecutionDomain::Data {
+            log_native_planning_report_for_tables(
+                &query_id,
+                diagnostics.as_ref().map(|diagnostics| &diagnostics.report),
+                &logical_plan_tables,
+            );
+        }
         self.coordinator.capture_planning(&query_id, diagnostics, Arc::clone(&plan));
-        let native_execution_span =
-            Self::query_stage_span(Some(&query_span), &query_id, correlation_id.as_deref(), "native_execution");
+        let execution_stage = match execution_domain {
+            StatementExecutionDomain::Metadata => "metadata_execution",
+            StatementExecutionDomain::Data => "native_execution",
+        };
+        let execution_span =
+            Self::query_stage_span(Some(&query_span), &query_id, correlation_id.as_deref(), execution_stage);
         let stream_result: datafusion::common::Result<SendableRecordBatchStream> = match attempt.as_ref() {
             Some(attempt) => attempt
                 .execute_physical_plan(Arc::clone(&plan), &query_ctx)
@@ -685,7 +681,7 @@ impl DatafusionNexusFlightSqlService {
             attempt_cancellation_for_stream.clone(),
             Arc::clone(&guard.delivery_started),
             Arc::clone(&coordinator_terminal),
-            native_execution_span,
+            execution_span,
         );
         let cancel_token_for_tail = token.clone();
         let shutdown_token_for_tail = self.shutdown_token.clone();

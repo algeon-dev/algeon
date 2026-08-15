@@ -34,6 +34,7 @@ pub(crate) use self::{
     ticket::{QueryExecutionLease, QueryPlanningLease, QueryPlanningReportDeliveryTerminal},
     types::{
         CoordinatorTicketPayload, QueryCoordinatorConfig, QueryCoordinatorError, QueryCoordinatorErrorKind, QueryKey,
+        StatementExecutionDomain,
     },
 };
 use super::observability::CapturedQuery;

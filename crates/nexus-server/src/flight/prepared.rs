@@ -30,14 +30,15 @@ pub(super) struct PreparedStatementEntry {
     /// prepare time so neither execution channel has to re-plan to decide
     /// whether dedup applies.
     pub(super) no_result_ddl: bool,
+    pub(super) execution_domain: StatementExecutionDomain,
     /// Set after the first successful execution. Only consulted for
     /// `no_result_ddl` handles, to turn a repeat execution into a no-op.
     pub(super) executed: AtomicBool,
 }
 
 impl PreparedStatementEntry {
-    pub(super) fn new(sql: String, no_result_ddl: bool) -> Self {
-        Self { sql, no_result_ddl, executed: AtomicBool::new(false) }
+    pub(super) fn new(sql: String, no_result_ddl: bool, execution_domain: StatementExecutionDomain) -> Self {
+        Self { sql, no_result_ddl, execution_domain, executed: AtomicBool::new(false) }
     }
 
     /// True when this is a no-result-set DDL handle that has already executed

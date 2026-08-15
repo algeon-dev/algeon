@@ -31,7 +31,7 @@ impl QueryCoordinator {
         let key = state.current.get(query_id).cloned().ok_or_else(|| {
             QueryCoordinatorError::new(QueryCoordinatorErrorKind::UnknownQuery, "unknown query ticket")
         })?;
-        let (ticket, observation_id, hot, expired) = {
+        let (ticket, hot, expired) = {
             let record = state.records.get_mut(&key).expect("current query key must reference a record");
             if record.phase != QueryPhase::Ticketed {
                 return Err(QueryCoordinatorError::new(
@@ -55,16 +55,25 @@ impl QueryCoordinator {
                 record.active_leases = 1;
                 record.execution_cancellation = Some(ticket.native_cancellation.clone());
             }
-            (ticket, record.observation_id.clone(), Arc::clone(&record.hot), expired)
+            (ticket, Arc::clone(&record.hot), expired)
         };
+        #[cfg(test)]
+        let observation_id =
+            state.records.get(&key).expect("current query key must reference a record").observation_id.clone();
         state.ticketed_count = state.ticketed_count.checked_sub(1).expect("consumed ticket count underflow");
         if expired {
             drop(state);
             self.finalize_ready();
             return Err(QueryCoordinatorError::new(QueryCoordinatorErrorKind::TicketExpired, "query ticket expired"));
         }
-        let lease =
-            QueryExecutionLease { coordinator: Arc::downgrade(self), key, observation_id, hot, released: false };
+        let lease = QueryExecutionLease {
+            coordinator: Arc::downgrade(self),
+            key,
+            #[cfg(test)]
+            observation_id,
+            hot,
+            released: false,
+        };
         Ok((lease, ticket))
     }
 
@@ -346,6 +355,7 @@ impl QueryPlanningLease {
         Ok(QueryExecutionLease {
             coordinator: self.coordinator.clone(),
             key: self.key.clone(),
+            #[cfg(test)]
             observation_id: self.observation_id.clone(),
             hot: Arc::clone(&self.hot),
             released: false,
@@ -395,6 +405,7 @@ impl Drop for QueryPlanningLease {
 pub(crate) struct QueryExecutionLease {
     pub(crate) coordinator: Weak<QueryCoordinator>,
     pub(crate) key: QueryKey,
+    #[cfg(test)]
     pub(crate) observation_id: ObservationId,
     pub(crate) hot: Arc<QueryHotCounters>,
     pub(crate) released: bool,
@@ -410,6 +421,7 @@ impl QueryExecutionLease {
         Arc::clone(&self.hot)
     }
 
+    #[cfg(test)]
     pub(crate) fn observation_handle(&self) -> Result<RuntimeObservationHandle, QueryCoordinatorError> {
         self.coordinator
             .upgrade()
@@ -417,6 +429,7 @@ impl QueryExecutionLease {
             .observation_handle(&self.key, &self.observation_id)
     }
 
+    #[cfg(test)]
     pub(crate) fn activity_factory(&self) -> NativeObservationActivityFactory {
         observation_activity_factory(self.coordinator.clone(), self.key.clone(), self.observation_id.clone())
     }
