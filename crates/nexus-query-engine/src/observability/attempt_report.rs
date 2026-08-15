@@ -241,6 +241,42 @@ impl AttemptFailureCode {
     pub const fn from_query_error_code(code: crate::error::QueryErrorCode) -> Self {
         crate::error::attempt_failure_code_for_query_error(code)
     }
+
+    /// Stable snake-case label for public report projections.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Cancelled => "cancelled",
+            Self::UnsupportedPlanShape => "unsupported_plan_shape",
+            Self::UnsupportedOperator => "unsupported_operator",
+            Self::UnsupportedExpression => "unsupported_expression",
+            Self::UnsupportedType => "unsupported_type",
+            Self::InvalidPlan => "invalid_plan",
+            Self::InvalidAttemptCorrelation => "invalid_attempt_correlation",
+            Self::GraphInputInvalid => "graph_input_invalid",
+            Self::CudfInvalidInput => "cudf_invalid_input",
+            Self::CudfUnsupported => "cudf_unsupported",
+            Self::CudfResourceExhausted => "cudf_resource_exhausted",
+            Self::SizeOverflow => "size_overflow",
+            Self::HostMaterializationLimitExceeded => "host_materialization_limit_exceeded",
+            Self::CudfTemporaryFailure => "cudf_temporary_failure",
+            Self::CudfPersistentFailure => "cudf_persistent_failure",
+            Self::CudfDependencyFailure => "cudf_dependency_failure",
+            Self::SourceAccessDenied => "source_access_denied",
+            Self::SourceUnauthenticated => "source_unauthenticated",
+            Self::SourceObjectNotFound => "source_object_not_found",
+            Self::SourceTemporaryFailure => "source_temporary_failure",
+            Self::CudfInvariantViolation => "cudf_invariant_violation",
+            Self::MemoryReservationFailed => "memory_reservation_failed",
+            Self::ServiceOverloaded => "service_overloaded",
+            Self::Internal => "internal",
+            Self::BackendClosing => "backend_closing",
+            Self::DatafusionError => "datafusion_error",
+            Self::Dropped => "dropped",
+            Self::Panicked => "panicked",
+            Self::StreamSynchronizationFailed => "stream_synchronization_failed",
+            Self::CleanupCallbackAbandoned => "cleanup_callback_abandoned",
+        }
+    }
 }
 
 /// Closed stability/recovery status for a report-visible failure.
