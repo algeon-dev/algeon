@@ -175,7 +175,13 @@ fn query_attempt_report_serde_round_trips_with_stable_field_names() {
     assert_eq!(decoded, report);
     assert_eq!(decoded.total_ns(), Some(8));
     assert_eq!(decoded.planning_ns(), Some(1));
+    assert_eq!(decoded.post_planning_pre_admission_ns(), Some(1));
     assert_eq!(decoded.queue_wait_ns(), Some(1));
+    assert_eq!(decoded.admitted_to_physical_execution_ns(), Some(0));
+    assert_eq!(decoded.physical_to_gpu_dispatch_ns(), Some(1));
+    assert_eq!(decoded.admitted_to_gpu_dispatch_ns(), Some(1));
+    assert_eq!(decoded.submitted_to_gpu_dispatch_ns(), Some(5));
+    assert_eq!(decoded.gpu_dispatch_to_terminal_ns(), Some(1));
     assert_eq!(decoded.physical_execution_ns(), Some(2));
     assert_eq!(decoded.cleanup_ns(), Some(1));
 }

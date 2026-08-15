@@ -1771,6 +1771,36 @@ impl QueryAttemptReport {
             .zip(self.timestamps.admitted_ns)
             .map(|(start, end)| end.saturating_sub(start))
     }
+    pub fn post_planning_pre_admission_ns(&self) -> Option<u64> {
+        self.timestamps
+            .planning_finished_ns
+            .zip(self.timestamps.admission_requested_ns)
+            .map(|(start, end)| end.saturating_sub(start))
+    }
+    pub fn admitted_to_physical_execution_ns(&self) -> Option<u64> {
+        self.timestamps
+            .admitted_ns
+            .zip(self.timestamps.physical_execution_started_ns)
+            .map(|(start, end)| end.saturating_sub(start))
+    }
+    pub fn physical_to_gpu_dispatch_ns(&self) -> Option<u64> {
+        self.timestamps
+            .physical_execution_started_ns
+            .zip(self.timestamps.gpu_execution_started_ns)
+            .map(|(start, end)| end.saturating_sub(start))
+    }
+    pub fn admitted_to_gpu_dispatch_ns(&self) -> Option<u64> {
+        self.timestamps
+            .admitted_ns
+            .zip(self.timestamps.gpu_execution_started_ns)
+            .map(|(start, end)| end.saturating_sub(start))
+    }
+    pub fn submitted_to_gpu_dispatch_ns(&self) -> Option<u64> {
+        self.timestamps.gpu_execution_started_ns.map(|end| end.saturating_sub(self.timestamps.submitted_ns))
+    }
+    pub fn gpu_dispatch_to_terminal_ns(&self) -> Option<u64> {
+        self.timestamps.gpu_execution_started_ns.map(|start| self.timestamps.outcome_terminal_ns.saturating_sub(start))
+    }
     pub fn physical_execution_ns(&self) -> Option<u64> {
         self.timestamps
             .physical_execution_started_ns
