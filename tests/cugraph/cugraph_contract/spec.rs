@@ -1,7 +1,7 @@
 //! Registry-driven CPU-only contract rows for cuGraph algorithms.
 //!
 //! Each row asserts one stable contract surface — stable output schema,
-//! capability admission, strict-bounded rejection — for every algorithm
+//! capability admission, bounded rejection — for every algorithm
 //! currently in the cuGraph operation registry. New algorithms must
 //! extend the registry; the rows here iterate it automatically and do
 //! not need per-algorithm test files.
@@ -170,7 +170,7 @@ fn registry_algorithm_sql_output_schemas_agree_with_native_engine() {
 }
 
 #[test]
-fn registry_algorithms_admit_under_capability_with_strict_bounded_gate() {
+fn registry_algorithms_admit_under_capability_with_bounded_gate() {
     for entry in GRAPH_OPERATION_REGISTRY {
         let plan = graph_plan(entry.algorithm);
         let analysis = plan.capability_analysis();
@@ -194,7 +194,7 @@ fn registry_algorithms_admit_under_capability_with_strict_bounded_gate() {
         assert_eq!(
             node.local_requirements.len(),
             1,
-            "graph algorithms expose exactly one strict-bounded reservation requirement; {} has {}",
+            "graph algorithms expose exactly one bounded reservation requirement; {} has {}",
             entry.name,
             node.local_requirements.len(),
         );
@@ -205,11 +205,11 @@ fn registry_algorithms_admit_under_capability_with_strict_bounded_gate() {
         assert_eq!(requirement.quality, ContractQuality::ExactPreflight);
 
         let report = CapabilityContractReport::from_capability_analysis(&analysis)
-            .unwrap_or_else(|error| panic!("strict bounded report build failed for {}: {error}", entry.name));
+            .unwrap_or_else(|error| panic!("bounded report build failed for {}: {error}", entry.name));
         assert_eq!(
             report.execution_mode(),
             CapabilityEnvelopeStatus::Rejected,
-            "strict bounded execution must stay rejected until lower-level memory contracts land for {}",
+            "bounded execution must stay rejected until lower-level memory contracts land for {}",
             entry.name,
         );
         assert!(
@@ -218,7 +218,7 @@ fn registry_algorithms_admit_under_capability_with_strict_bounded_gate() {
                     && row.required_contract == GRAPH_ALGORITHM_CAPABILITY_REQUIRED_CONTRACT
                     && row.contract_status == ContractStatus::BlockedByLowerLevel
             }),
-            "strict bounded report must carry the graph algorithm gate row for {}",
+            "bounded report must carry the graph algorithm gate row for {}",
             entry.name,
         );
     }

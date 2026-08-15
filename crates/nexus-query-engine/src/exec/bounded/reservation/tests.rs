@@ -195,12 +195,12 @@ fn grant_backed_static_tracker_transfers_live_output_at_grant_cap_without_double
     );
 
     let mut active = reservations.try_reserve_owned_resident(
-        test_request(ReservationKind::OperatorOutput, "strict_output", 30, reservations.budget()),
+        test_request(ReservationKind::OperatorOutput, "bounded_output", 30, reservations.budget()),
         &mut metrics,
     )?;
     assert_eq!(grant.live_reserved_bytes(), 30);
 
-    let retained = active.transfer_grant_live_reservation().expect("strict grant should retain live output bytes");
+    let retained = active.transfer_grant_live_reservation().expect("immutable grant should retain live output bytes");
     assert_eq!(grant.live_reserved_bytes(), 30, "transfer cannot transiently double-charge the immutable grant");
     let sequence_after_transfer = governor.snapshot()?.sequence;
     reservations.release(active, &mut metrics);

@@ -25,7 +25,7 @@ fn bounded_root_topk_join_aggregate_pipeline_is_executable_with_modeled_contract
     }));
 
     let admission = nexus_query_engine::admission::bounded_pipeline_admission(&plan)
-        .expect("strict bounded admission should not fail")
+        .expect("bounded admission should not fail")
         .expect("root TopK join/aggregate pipeline should be admitted");
     assert_eq!(admission.envelope(), nexus_query_engine::capability::CapabilityEnvelope::RootTopKJoinAggregate);
 
@@ -95,7 +95,7 @@ fn bounded_root_topk_join_aggregate_allows_shared_source_reuse() {
         "source reuse is a modeled source-read contract, not computed producer fanout"
     );
     let admission = nexus_query_engine::admission::bounded_pipeline_admission(&plan)
-        .expect("strict bounded admission should not fail")
+        .expect("bounded admission should not fail")
         .expect("shared-source root TopK join/aggregate pipeline should be admitted");
     assert_eq!(admission.envelope(), nexus_query_engine::capability::CapabilityEnvelope::RootTopKJoinAggregate);
 }
@@ -133,7 +133,7 @@ fn bounded_root_topk_join_aggregate_allows_shared_computed_fanout_with_explicit_
         assert!(has_expected_shared_producer, "{variant:?}: expected shared {expected_shared_operator} producer proof");
 
         let admission = nexus_query_engine::admission::bounded_pipeline_admission(&plan)
-            .expect("strict bounded admission should not fail")
+            .expect("bounded admission should not fail")
             .unwrap_or_else(|| panic!("{variant:?} root TopK join/aggregate pipeline should be admitted"));
         assert_eq!(admission.envelope(), nexus_query_engine::capability::CapabilityEnvelope::RootTopKJoinAggregate);
     }
@@ -181,16 +181,16 @@ fn bounded_root_topk_join_aggregate_allows_distinct_and_keyless_subcontracts_wit
         );
         let report = CapabilityContractReport::from_capability_analysis(&analysis)
             .unwrap_or_else(|error| panic!("{variant:?} capability report should be valid: {error}"));
-        assert_strict_report_has_modeled_subcontract(&report, expected_contract, &format!("{variant:?}"));
+        assert_admission_report_has_modeled_subcontract(&report, expected_contract, &format!("{variant:?}"));
 
         let admission = nexus_query_engine::admission::bounded_pipeline_admission(&plan)
-            .expect("strict bounded admission should not fail")
+            .expect("bounded admission should not fail")
             .unwrap_or_else(|| panic!("{variant:?} root TopK join/aggregate pipeline should be admitted"));
         assert_eq!(admission.envelope(), nexus_query_engine::capability::CapabilityEnvelope::RootTopKJoinAggregate);
         let compiled_report =
             CapabilityContractReport::from_compiled_pipeline(admission.analysis(), admission.pipeline())
                 .unwrap_or_else(|error| panic!("{variant:?} compiled report should be valid: {error}"));
-        assert_strict_report_has_modeled_subcontract(&compiled_report, expected_contract, &format!("{variant:?}"));
+        assert_admission_report_has_modeled_subcontract(&compiled_report, expected_contract, &format!("{variant:?}"));
     }
 }
 
@@ -202,7 +202,7 @@ fn bounded_root_topk_join_aggregate_allows_direct_grouped_sources_feeding_keyles
     assert!(analysis.admits_root_topk_join_aggregate_pipeline());
     let report = CapabilityContractReport::from_capability_analysis(&analysis)
         .expect("direct grouped source root TopK capability report should be valid");
-    assert_strict_report_has_modeled_subcontract(
+    assert_admission_report_has_modeled_subcontract(
         &report,
         "root_topk_keyless_or_cross_join_subcontract",
         "direct grouped source root TopK",
@@ -241,20 +241,20 @@ fn bounded_root_topk_join_aggregate_allows_sort_fetch_hash_join_input_subcontrac
         );
         let report = CapabilityContractReport::from_capability_analysis(&analysis)
             .unwrap_or_else(|error| panic!("{variant:?} capability report should be valid: {error}"));
-        assert_strict_report_has_modeled_subcontract(
+        assert_admission_report_has_modeled_subcontract(
             &report,
             "root_topk_sort_fetch_hash_join_input_subcontract",
             &format!("{variant:?}"),
         );
 
         let admission = nexus_query_engine::admission::bounded_pipeline_admission(&plan)
-            .expect("strict bounded admission should not fail")
+            .expect("bounded admission should not fail")
             .unwrap_or_else(|| panic!("{variant:?} root TopK pipeline should be admitted"));
         assert_eq!(admission.envelope(), nexus_query_engine::capability::CapabilityEnvelope::RootTopKJoinAggregate);
         let compiled_report =
             CapabilityContractReport::from_compiled_pipeline(admission.analysis(), admission.pipeline())
                 .unwrap_or_else(|error| panic!("{variant:?} compiled report should be valid: {error}"));
-        assert_strict_report_has_modeled_subcontract(
+        assert_admission_report_has_modeled_subcontract(
             &compiled_report,
             "root_topk_sort_fetch_hash_join_input_subcontract",
             &format!("{variant:?}"),
@@ -274,12 +274,12 @@ fn bounded_root_topk_join_aggregate_sort_fetch_join_input_subcontract_excludes_k
         assert!(analysis.admits_root_topk_join_aggregate_pipeline(), "{variant:?}");
         let report = CapabilityContractReport::from_capability_analysis(&analysis)
             .unwrap_or_else(|error| panic!("{variant:?} capability report should be valid: {error}"));
-        assert_strict_report_has_modeled_subcontract(
+        assert_admission_report_has_modeled_subcontract(
             &report,
             "root_topk_keyless_or_cross_join_subcontract",
             &format!("{variant:?}"),
         );
-        assert_strict_report_lacks_modeled_subcontract(
+        assert_admission_report_lacks_modeled_subcontract(
             &report,
             "root_topk_sort_fetch_hash_join_input_subcontract",
             &format!("{variant:?}"),
@@ -314,16 +314,16 @@ fn bounded_root_topk_join_aggregate_allows_sort_fetch_join_aggregate_subcontract
         );
         let report = CapabilityContractReport::from_capability_analysis(&analysis)
             .unwrap_or_else(|error| panic!("{variant:?} capability report should be valid: {error}"));
-        assert_strict_report_has_modeled_subcontract(&report, expected_contract, &format!("{variant:?}"));
+        assert_admission_report_has_modeled_subcontract(&report, expected_contract, &format!("{variant:?}"));
 
         let admission = nexus_query_engine::admission::bounded_pipeline_admission(&plan)
-            .expect("strict bounded admission should not fail")
+            .expect("bounded admission should not fail")
             .unwrap_or_else(|| panic!("{variant:?} root TopK pipeline should be admitted"));
         assert_eq!(admission.envelope(), nexus_query_engine::capability::CapabilityEnvelope::RootTopKJoinAggregate);
         let compiled_report =
             CapabilityContractReport::from_compiled_pipeline(admission.analysis(), admission.pipeline())
                 .unwrap_or_else(|error| panic!("{variant:?} compiled report should be valid: {error}"));
-        assert_strict_report_has_modeled_subcontract(&compiled_report, expected_contract, &format!("{variant:?}"));
+        assert_admission_report_has_modeled_subcontract(&compiled_report, expected_contract, &format!("{variant:?}"));
     }
 }
 
@@ -348,20 +348,20 @@ fn bounded_root_topk_join_aggregate_allows_null_filtered_aggregate_fan_in_subcon
         );
         let report = CapabilityContractReport::from_capability_analysis(&analysis)
             .expect("null-filtered aggregate fan-in capability report should be valid");
-        assert_strict_report_has_modeled_subcontract(
+        assert_admission_report_has_modeled_subcontract(
             &report,
             "root_topk_keyed_filtered_semi_join_subcontract",
             "null_filtered_aggregate_fan_in",
         );
 
         let admission = nexus_query_engine::admission::bounded_pipeline_admission(&plan)
-            .expect("strict bounded admission should not fail")
+            .expect("bounded admission should not fail")
             .expect("null-filtered aggregate fan-in root TopK pipeline should be admitted");
         assert_eq!(admission.envelope(), nexus_query_engine::capability::CapabilityEnvelope::RootTopKJoinAggregate);
         let compiled_report =
             CapabilityContractReport::from_compiled_pipeline(admission.analysis(), admission.pipeline())
                 .expect("null-filtered aggregate fan-in compiled report should be valid");
-        assert_strict_report_has_modeled_subcontract(
+        assert_admission_report_has_modeled_subcontract(
             &compiled_report,
             "root_topk_keyed_filtered_semi_join_subcontract",
             "null_filtered_aggregate_fan_in",
@@ -467,16 +467,16 @@ fn bounded_root_topk_join_aggregate_allows_window_subcontracts_with_report_rows(
         );
         let report = CapabilityContractReport::from_capability_analysis(&analysis)
             .unwrap_or_else(|error| panic!("{variant:?} capability report should be valid: {error}"));
-        assert_strict_report_has_modeled_subcontract(&report, "root_topk_window_subcontract", &format!("{variant:?}"));
+        assert_admission_report_has_modeled_subcontract(&report, "root_topk_window_subcontract", &format!("{variant:?}"));
         if matches!(variant, RootTopKJoinAggregateVariant::WindowInputSortFullOuterJoin) {
-            assert_strict_report_has_modeled_subcontract(
+            assert_admission_report_has_modeled_subcontract(
                 &report,
                 "root_topk_window_full_outer_join_subcontract",
                 &format!("{variant:?}"),
             );
         }
         if matches!(variant, RootTopKJoinAggregateVariant::KeylessOuterCrossWindow) {
-            assert_strict_report_has_modeled_subcontract(
+            assert_admission_report_has_modeled_subcontract(
                 &report,
                 "root_topk_keyless_outer_cross_window_subcontract",
                 &format!("{variant:?}"),
@@ -487,7 +487,7 @@ fn bounded_root_topk_join_aggregate_allows_window_subcontracts_with_report_rows(
                         && row.required_contract == "join_gather_map_reservation_size_bytes"
                         && row.contract_status == ContractStatus::Modeled
                 }),
-                "{variant:?}: strict report should expose modeled gather-map contract"
+                "{variant:?}: admission report should expose modeled gather-map contract"
             );
             assert!(
                 report.gate_rows().iter().any(|row| {
@@ -496,7 +496,7 @@ fn bounded_root_topk_join_aggregate_allows_window_subcontracts_with_report_rows(
                             == "dataframe_gather_output_reservation_size_bytes+projected_cross_join_reservation_size_bytes"
                         && row.contract_status == ContractStatus::Modeled
                 }),
-                "{variant:?}: strict report should expose modeled keyless outer-cross output contract"
+                "{variant:?}: admission report should expose modeled keyless outer-cross output contract"
             );
         }
         assert!(
@@ -505,7 +505,7 @@ fn bounded_root_topk_join_aggregate_allows_window_subcontracts_with_report_rows(
                     && row.required_contract == "window_contract"
                     && row.contract_status == ContractStatus::Modeled
             }),
-            "{variant:?}: strict report should expose modeled window output contract"
+            "{variant:?}: admission report should expose modeled window output contract"
         );
         if matches!(variant, RootTopKJoinAggregateVariant::RankFilterWindowFinalProjection) {
             assert!(
@@ -514,7 +514,7 @@ fn bounded_root_topk_join_aggregate_allows_window_subcontracts_with_report_rows(
                         && row.required_contract == "query_engine_rank_filter_output_boundary"
                         && row.contract_status == ContractStatus::Modeled
                 }),
-                "{variant:?}: strict report should expose modeled rank/filter output boundary"
+                "{variant:?}: admission report should expose modeled rank/filter output boundary"
             );
         }
         assert!(
@@ -523,7 +523,7 @@ fn bounded_root_topk_join_aggregate_allows_window_subcontracts_with_report_rows(
                     && row.required_contract == "query_engine_final_topk_output_boundary"
                     && row.contract_status == ContractStatus::Modeled
             }),
-            "{variant:?}: strict report should expose final TopK output boundary"
+            "{variant:?}: admission report should expose final TopK output boundary"
         );
     }
 }
@@ -542,7 +542,7 @@ fn bounded_root_topk_join_aggregate_shape_miss_does_not_mask_general_rejection()
         assert_ne!(projection.reason, "root_topk_join_aggregate_requires_grouped_aggregate_fragment");
     }
     let admission = nexus_query_engine::admission::bounded_pipeline_admission(&plan)
-        .expect("strict bounded admission should not fail");
+        .expect("bounded admission should not fail");
     if let Some(admission) = admission {
         assert_ne!(
             admission.envelope(),

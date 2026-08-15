@@ -314,7 +314,7 @@ fn native_datafusion_execution_report_records_runtime_boundaries() {
     assert!(fill_rows.contains("cache_path_hash=cache123,stable_id_hash=stable456"));
     assert!(text.contains("operator_kind=source_read,task_count=3,elapsed_ns=0,reservation_requested_bytes=120,reservation_granted_bytes=96,reservation_released_bytes=32,reservation_live_peak_bytes=64,max_observed_peak_bytes=72,max_retained_bytes=48\t"));
     assert!(text.contains("\tcompiled_task_id=t7,operator_kind=source_read,elapsed_ns=0,reservation_requested_bytes=80,reservation_granted_bytes=64,reservation_released_bytes=48,reservation_live_peak_bytes=64,max_observed_peak_bytes=72,max_retained_bytes=48\t"));
-    assert!(text.contains("execution_mode=strict_bounded"));
+    assert!(text.contains("execution_mode=bounded"));
     assert!(text.contains("contract_status=modeled"));
     assert!(text.contains("contract_quality=query_engine_owned_boundary"));
     assert!(!text.contains("bounded_join_execution_status"));
@@ -669,7 +669,7 @@ fn capability_and_cost_declined_diagnostics() -> NativePlanningDiagnostics {
 }
 
 #[test]
-fn native_datafusion_reports_scope_strict_contract_rows_to_join_candidates() {
+fn native_datafusion_reports_scope_admission_contract_rows_to_join_candidates() {
     let mut report = PlanningReport::new();
     report.push_selected(GpuCandidate::new(
         "SortExec(fetch)(AggregateExec(HashJoinExec(LocalParquetScan,LocalParquetScan)))",
@@ -713,11 +713,11 @@ fn native_datafusion_reports_scope_strict_contract_rows_to_join_candidates() {
     assert_eq!(join_row.capability_compiled_graphs.len(), 1);
     assert!(
         non_join_row.capability_contract_rows.is_empty(),
-        "strict bounded contract rows must not bleed into unrelated candidate rows"
+        "bounded contract rows must not bleed into unrelated candidate rows"
     );
     assert!(
         non_join_row.capability_compiled_graphs.is_empty(),
-        "strict bounded graph diagnostics must not bleed into unrelated candidate rows"
+        "bounded graph diagnostics must not bleed into unrelated candidate rows"
     );
 }
 

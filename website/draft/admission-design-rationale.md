@@ -159,9 +159,6 @@ queries from hoarding what the big ones need.
 
 - No caller-supplied grant bytes, ever — the ledger would be accounting
   someone else's guess.
-- No adaptive or strict/adaptive runtime modes — ordered scheduling and
-  conservative sums are two derivations of the same hard bound, not
-  selectable behaviors.
 - No admission from CUDA/NVML readings — telemetry diagnoses, it never
   admits.
 - No automatic retry of a failed attempt — capacity pressure surfaces as a

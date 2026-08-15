@@ -35,7 +35,7 @@ mod analytical_olap;
 
 pub use analytical_olap::{
     ANALYTICAL_OLAP_QUERIES, ANALYTICAL_OLAP_QUERY_COUNT, AnalyticalOlapCapabilityFirstAdmission,
-    AnalyticalOlapCurrentStrictAdmission, AnalyticalOlapLoweringExpectation, AnalyticalOlapQuery,
+    AnalyticalOlapCurrentAdmission, AnalyticalOlapLoweringExpectation, AnalyticalOlapQuery,
     AnalyticalOlapWorkloadClass, analytical_olap_datafusion_planning_workload_items,
     analytical_olap_datafusion_planning_workload_items_with_optimizer_config,
     analytical_olap_fallback_pressure_workload_items, analytical_olap_query_ids,

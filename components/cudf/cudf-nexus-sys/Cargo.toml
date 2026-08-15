@@ -57,7 +57,7 @@ name = "current_resource_invariant_contract"
 required-features = ["test-hooks"]
 
 [[test]]
-name = "execution_context_strict_contract"
+name = "execution_context_contract"
 required-features = ["test-hooks"]
 
 [[test]]

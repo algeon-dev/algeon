@@ -1,7 +1,7 @@
-//! Plan-shape admission for strict bounded capability analysis.
+//! Plan-shape admission for bounded capability analysis.
 //!
 //! Walks already-analyzed node/edge/invariant facts and decides whether the
-//! whole [`QueryPlan`] forms a recognized strict-bounded shape (root join,
+//! whole [`QueryPlan`] forms a recognized bounded shape (root join,
 //! keyless conditional, mixed residual, etc.) or must be rejected with a
 //! local reason.
 

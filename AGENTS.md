@@ -65,10 +65,8 @@ execution belong in `crates/nexus-query-engine`.
   reports, not printed plans.
 - Admission is capability-first: reject locally with structured reasons.
 - There is one bounded admission contract: the per-device ledger, immutable
-  grants, and transactional envelopes. There is no strict/adaptive product
-  mode, tenant policy, grant band, or slot guarantee; strict- and adaptive-named
-  wire fields are canonical projections of the one contract, not separate
-  producers.
+  grants, and transactional envelopes. Every wire projection is produced by
+  that one contract.
 - The reservation ledger is integer accounting, not a residency oracle; dropping
   a frame earlier does not change what it reports.
 - Model aggregate partial/final state explicitly. AVG is SUM + COUNT followed by

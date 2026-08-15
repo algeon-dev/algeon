@@ -1,6 +1,6 @@
-//! Approximate cuGraph memory pricing outside the strict bounded gate.
+//! Approximate cuGraph memory pricing outside the bounded gate.
 //!
-//! These estimates are intentionally not strict-bounded contracts. They price a
+//! These estimates are intentionally not bounded contracts. They price a
 //! graph fragment before entering cuGraph so bounded service admission can fail
 //! locally with structured facts instead of relying on a raw RMM OOM.
 
@@ -33,11 +33,11 @@ pub(crate) use model::{
     ModelBytes, force_atlas2_phase_peaks, force_atlas2_workspace_bytes, force_atlas2_workspace_phase_bytes,
     graph_memory_model_input_for_plan_node, raw_libcugraph_property_output_staging, semantic_edge_row_width_bytes,
 };
+pub(crate) use model::{bounded_similarity_pair_cardinality_for_plan, query_plan_node_hard_row_upper_bound};
 #[cfg(all(test, feature = "cugraph"))]
 pub(crate) use model::{
     graph_construction_workspace_bounds_from_owner, graph_construction_workspace_bounds_from_owner_query,
 };
-pub(crate) use model::{query_plan_node_hard_row_upper_bound, strict_similarity_pair_cardinality_for_plan};
 
 #[cfg(test)]
 use crate::{
@@ -221,7 +221,7 @@ impl GraphPairCardinalityAdmissionMode {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Unbounded => "unbounded",
-            Self::Bounded => "strict_bounded",
+            Self::Bounded => "bounded",
         }
     }
 }

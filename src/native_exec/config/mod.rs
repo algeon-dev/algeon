@@ -349,7 +349,7 @@ impl NexusNativeExecutionConfig {
     /// Set native keyed-hash join strategy policy.
     ///
     /// This policy is copied into optimized native plans so capability
-    /// admission, strict reports, and runtime observed-build strategy selection
+    /// admission, admission reports, and runtime observed-build strategy selection
     /// share one threshold set. It is intentionally not exposed as a
     /// session/server knob until the expert surface is reviewed.
     pub fn with_keyed_hash_join_strategy_options(mut self, options: KeyedHashJoinStrategyOptions) -> Self {

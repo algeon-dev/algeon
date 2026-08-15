@@ -1,5 +1,5 @@
 #[test]
-fn strict_query_service_context_uses_hard_limited_query_domain_members() {
+fn bounded_query_service_context_uses_hard_limited_query_domain_members() {
     let config = QueryExecutionConfig { ..QueryExecutionConfig::default() };
     let service = runtime_test_service_with_profiles(
         config,
@@ -19,7 +19,7 @@ fn strict_query_service_context_uses_hard_limited_query_domain_members() {
     let admitted_context = handle.acquire_context().unwrap();
     let token = admitted_context
         .context()
-        .execution_budget_token(cudf::ExecutionBudgetRequest::new(1024 * 1024).with_boundary("test_strict_policy"))
+        .execution_budget_token(cudf::ExecutionBudgetRequest::new(1024 * 1024).with_boundary("test_admission_policy"))
         .unwrap();
 
     assert_eq!(token.enforcement(), cudf::ExecutionBudgetEnforcement::QueryDomainMember);
@@ -41,7 +41,7 @@ fn strict_query_service_context_uses_hard_limited_query_domain_members() {
     let shared_member_token = admitted_context
         .context()
         .execution_budget_token(
-            cudf::ExecutionBudgetRequest::new(1024 * 1024).with_boundary("test_strict_policy_second_stage"),
+            cudf::ExecutionBudgetRequest::new(1024 * 1024).with_boundary("test_admission_policy_second_stage"),
         )
         .expect("the shared member accepts the next stage token on the same stream");
     let second = admitted_context

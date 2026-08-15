@@ -39,6 +39,5 @@ flock /tmp/cudf-gpu.lock cargo nextest run -p nexus-query-engine --all-features 
 bash scripts/check_all.sh
 ```
 
-Do not reintroduce tenant policy, grant bands, mutable grants, or strict/adaptive
-product APIs. The contract tests pin the one-controller boundary and bounded
-capability evidence.
+The contract tests pin the one-controller boundary and bounded capability
+evidence.

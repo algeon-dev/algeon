@@ -100,9 +100,7 @@ Apache DataFusion Physical Plan
   RAPIDS limitation with an adapter workaround.
 - **One bounded admission contract**: Every native attempt is admitted against
   a single per-device ledger, immutable grants, and transactional envelopes.
-  There is no strict/adaptive product mode, tenant policy, grant band, or slot
-  guarantee. The reservation ledger is integer accounting, not a residency
-  oracle.
+  The reservation ledger is integer accounting, not a residency oracle.
 - **Structured planning diagnostics**: `NexusNativePhysicalOptimizerRule` emits
   structured `PlanningReport`s. Assert reports and structured diagnostics in
   tests, not printed string plans.

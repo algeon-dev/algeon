@@ -1408,7 +1408,7 @@ fn bounded_similarity_model_accepts_only_pre_admission_pair_evidence() {
         )
         .unwrap_err();
     assert_eq!(runtime_only.code(), QueryErrorCode::InvalidPlan);
-    assert_eq!(runtime_only.fact_value("reason"), Some("strict_pair_cardinality_evidence_not_plan_bound"));
+    assert_eq!(runtime_only.fact_value("reason"), Some("bounded_pair_cardinality_evidence_not_plan_bound"));
 
     for source in [GraphPairCardinalitySource::PlanExact, GraphPairCardinalitySource::PlanHardUpperBound] {
         let estimate =

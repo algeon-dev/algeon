@@ -200,7 +200,7 @@ fn semijoin_reduction_bounded_gate_allows_later_passes_to_route_dimension_keyset
                 && matches!(&route.consumer, DynamicFilterConsumer::LocalParquetSource { .. })
                 && route.consumer_lowering == DynamicFilterConsumerLowering::ReaderPredicate
         }),
-        "strict-gated semijoin rewrite should remain available to downstream dynamic-filter routing"
+        "admission-gated semijoin rewrite should remain available to downstream dynamic-filter routing"
     );
 }
 

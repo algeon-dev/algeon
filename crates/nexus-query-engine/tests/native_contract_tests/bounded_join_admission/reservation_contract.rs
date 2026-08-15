@@ -132,7 +132,7 @@ fn bounded_join_reservation_contract_does_not_emit_family_catalogue_projection()
         "bounded_join_contract_modes",
         "bounded_join_unresolved_preflight_contracts",
     ] {
-        assert_eq!(facts.get(forbidden), None, "{forbidden} must not be emitted by strict bounded facts");
+        assert_eq!(facts.get(forbidden), None, "{forbidden} must not be emitted by bounded facts");
     }
 }
 

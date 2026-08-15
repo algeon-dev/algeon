@@ -408,7 +408,7 @@ fn benchmark_report_partitioned_join_count_sums_runtime_executions_but_status_co
 }
 
 #[test]
-fn benchmark_report_accepted_join_rows_emit_strict_contract_rows() {
+fn benchmark_report_accepted_join_rows_emit_admission_contract_rows() {
     let config =
         NativeTpchBenchmarkConfig { query_ids: vec!["q15".to_string()], ..NativeTpchBenchmarkConfig::default() };
     let mut planning = accepted_planning_row("q15");
@@ -437,7 +437,7 @@ fn benchmark_report_accepted_join_rows_emit_strict_contract_rows() {
     let contract_rows_index = header_index(&header_fields, "capability_contract_rows");
     let graph_index = header_index(&header_fields, "capability_compiled_graphs");
     assert_eq!(fields[0], "q15");
-    assert!(fields[contract_rows_index].contains("execution_mode=strict_bounded"));
+    assert!(fields[contract_rows_index].contains("execution_mode=bounded"));
     assert!(fields[contract_rows_index].contains("contract_status=modeled"));
     assert!(fields[contract_rows_index].contains("contract_quality=hard_budgeted_report_with_unresolved_preflight"));
     assert!(

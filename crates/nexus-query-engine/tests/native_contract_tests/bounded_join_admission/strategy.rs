@@ -36,7 +36,7 @@ fn large_keyed_inner_build_selects_partitioned_strategy_with_hash_preflight_gate
 }
 
 #[test]
-fn plan_captured_keyed_hash_join_strategy_options_drive_strict_admission_facts() {
+fn plan_captured_keyed_hash_join_strategy_options_drive_admission_facts() {
     let strategy_options = KeyedHashJoinStrategyOptions::default()
         .with_large_keyed_hash_build_row_threshold(200_000_000)
         .with_large_keyed_hash_build_bytes_threshold(16 * 1024 * 1024 * 1024)

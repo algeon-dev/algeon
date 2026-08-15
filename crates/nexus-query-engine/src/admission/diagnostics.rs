@@ -10,7 +10,7 @@ use crate::{
     runtime::{BoundedJoinReservationContract, ExecutionBoundaryPolicy},
 };
 
-/// Returns diagnostic facts for join plans rejected by strict bounded admission.
+/// Returns diagnostic facts for join plans rejected by bounded admission.
 ///
 /// These facts are explanatory planning/execution diagnostics. They do not
 /// toggle executor behavior and should not be treated as optimizer hints.
@@ -35,7 +35,7 @@ pub fn bounded_join_unsupported_shape_facts(
     }
 }
 
-/// Returns modeled bounded-join facts for plans accepted by strict bounded admission.
+/// Returns modeled bounded-join facts for plans accepted by bounded admission.
 pub fn bounded_join_modeled_facts(
     plan: &QueryPlan,
     boundary_policy: ExecutionBoundaryPolicy,

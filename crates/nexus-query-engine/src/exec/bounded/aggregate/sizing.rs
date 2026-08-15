@@ -30,7 +30,7 @@ pub enum PartialAggregateShape {
     /// Global (no GROUP BY) — partial output has exactly 1 row.
     Global,
     /// Grouped — partial output has at most `input_rows` rows. This is
-    /// the conservative bound used in strict mode until a libcudf
+    /// the conservative bound used in bounded mode until a libcudf
     /// grouped-aggregate row-count preflight lands (Milestone 4.G follow-up
     /// per the q72 design doc).
     Grouped {
@@ -55,7 +55,7 @@ impl PartialAggregateShape {
 /// Delegates per-column sizing to the join helper. Returns `Ok(0)`
 /// when `columns.is_empty()`. Returns
 /// `QueryErrorCode::UnsupportedPlanShape` for any column whose Arrow
-/// dtype is not supported by strict-bounded sizing; the caller's
+/// dtype is not supported by bounded sizing; the caller's
 /// admission gate is expected to reject such plans earlier.
 pub fn partial_aggregate_upper_bound_bytes(
     shape: PartialAggregateShape,
@@ -725,7 +725,7 @@ pub(super) fn partial_aggregate_upper_bound_violation_error(
     QueryError::new(
         QueryErrorCode::Internal,
         "nexus_query_engine.bounded.aggregate.partial_upper_bound",
-        "partial aggregate output exceeded its strict bounded upper-bound reservation",
+        "partial aggregate output exceeded its bounded upper-bound reservation",
     )
     .with_fact("node_id", node_id)
     .with_fact("contract", "partial_aggregate_output_work_reservation")
@@ -741,7 +741,7 @@ fn partial_aggregate_string_sizing_upper_bound_violation_error(
     QueryError::new(
         QueryErrorCode::Internal,
         "nexus_query_engine.bounded.aggregate.string_length_sizing",
-        "string byte-count sizing output exceeded its strict bounded upper-bound reservation",
+        "string byte-count sizing output exceeded its bounded upper-bound reservation",
     )
     .with_fact("node_id", node_id)
     .with_fact("contract", "partial_aggregate_string_length_work_reservation")

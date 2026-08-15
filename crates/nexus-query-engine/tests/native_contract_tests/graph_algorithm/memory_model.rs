@@ -387,7 +387,7 @@ fn similarity_memory_model_pins_representative_citation_fixture_capture() {
 }
 
 #[test]
-fn graph_memory_report_admits_and_denies_without_strict_contract_projection() {
+fn graph_memory_report_admits_and_denies_without_admission_contract_projection() {
     let spec = GraphAlgorithmSpec::with_stable_schema(
         GraphAlgorithm::PageRank,
         GraphEdgeColumnBindings::new("src", "dst", Some("weight")),
@@ -438,7 +438,7 @@ fn graph_memory_report_admits_and_denies_without_strict_contract_projection() {
     assert_eq!(denied.outcome, GraphReservationOutcome::Denied);
     assert_eq!(denied.reason, Some("graph_memory_estimate_exceeds_budget"));
 
-    let strict = CapabilityContractReport::from_capability_analysis(
+    let bounded = CapabilityContractReport::from_capability_analysis(
         &graph_plan(
             GraphAlgorithm::PageRank,
             GraphAlgorithmParams::PageRank(GraphPageRankParams::default()),
@@ -448,7 +448,7 @@ fn graph_memory_report_admits_and_denies_without_strict_contract_projection() {
     )
     .unwrap();
     assert!(
-        strict
+        bounded
             .gate_rows()
             .iter()
             .all(|row| { row.memory_boundary != "graph_memory" && !row.required_contract.contains("graph_memory") })

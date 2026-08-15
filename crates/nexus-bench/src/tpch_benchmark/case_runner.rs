@@ -38,7 +38,7 @@ pub(super) fn benchmark_query_progress_line(
         query_index.saturating_add(1),
         query_count,
         config.dataset_mode.as_str(),
-        "strict_bounded",
+        "bounded",
         config.native_execution.as_str(),
         config.native_memory_policy.as_str(),
         profile_name,

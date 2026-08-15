@@ -17,10 +17,10 @@ use crate::{
 #[doc(hidden)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompiledBoundedPipelineSupport {
-    /// The graph is capability-admitted but outside the strict compiled
+    /// The graph is capability-admitted but outside the compiled
     /// executor envelope.
     Unsupported,
-    /// The graph is inside the strict compiled executor envelope.
+    /// The graph is inside the compiled executor envelope.
     Supported,
 }
 
@@ -88,7 +88,7 @@ pub fn compiled_bounded_pipeline_support(pipeline: &CompiledPipeline) -> Result<
 }
 
 #[doc(hidden)]
-/// Checks graph shape plus plan-node compatibility for strict compiled execution.
+/// Checks graph shape plus plan-node compatibility for compiled execution.
 pub fn compiled_bounded_query_plan_support(
     plan: &QueryPlan,
     pipeline: &CompiledPipeline,

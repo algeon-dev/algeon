@@ -620,9 +620,9 @@ fn assert_q11_keyless_proof_selected_as(
     let nexus_query_engine::capability::CapabilityEnvelopeAdmission::Admitted { envelope } =
         analysis.capability_envelope_admission()
     else {
-        panic!("{context} should be strict-bounded executable: {:?}\n{plan}", analysis.capability_envelope_admission());
+        panic!("{context} should be bounded executable: {:?}\n{plan}", analysis.capability_envelope_admission());
     };
-    assert_eq!(envelope, expected, "{context} should select the expected strict bounded envelope");
+    assert_eq!(envelope, expected, "{context} should select the expected bounded envelope");
 }
 
 #[tokio::test]

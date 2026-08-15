@@ -75,7 +75,7 @@ fn datafusion_nexus_session_config_rejects_invalid_values() {
     assert!(error.to_string().contains("native.max_retry_attempts"));
 
     // The removed pipeline-mode key remains an unknown datafusion-nexus key.
-    let error = options.set("datafusion_nexus.native.pipeline_execution_mode", "strict").unwrap_err();
+    let error = options.set("datafusion_nexus.native.pipeline_execution_mode", "invalid_mode").unwrap_err();
     assert!(error.to_string().contains("pipeline_execution_mode"));
 
     let error = options.set("datafusion_nexus.native.memory_policy", "unbounded").unwrap_err();

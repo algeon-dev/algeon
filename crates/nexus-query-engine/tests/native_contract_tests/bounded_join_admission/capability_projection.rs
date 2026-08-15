@@ -283,14 +283,14 @@ fn bounded_capability_analysis_rejects_multi_join_admission_without_family_recog
     assert_eq!(*reason, "closed_multi_join_subgraph_unsupported_node");
     assert_eq!(facts.get("operator").map(String::as_str), Some("aggregate"));
 
-    let projection = analysis.first_rejection_projection().expect("strict envelope rejection should be projected");
+    let projection = analysis.first_rejection_projection().expect("bounded envelope rejection should be projected");
     assert!(matches!(projection.owner, nexus_query_engine::capability::CapabilityRejectionOwner::Admission(_)));
 
     assert!(
         nexus_query_engine::admission::bounded_pipeline_admission(&plan)
-            .expect("strict admission should not fail")
+            .expect("admission should not fail")
             .is_none(),
-        "strict admission must reject through the same envelope projection"
+        "admission must reject through the same envelope projection"
     );
 
     let unsupported_facts = unsupported_facts(&plan, ExecutionBoundaryPolicy::default())
@@ -305,13 +305,13 @@ fn bounded_capability_analysis_rejects_multi_join_admission_without_family_recog
     }
 
     let report = CapabilityContractReport::from_capability_analysis(&analysis)
-        .expect("unsupported envelope should still produce a strict contract report");
+        .expect("unsupported envelope should still produce a admission contract report");
     assert_eq!(report.execution_mode(), CapabilityEnvelopeStatus::Rejected);
     let blocking_row = report
         .gate_rows()
         .iter()
         .find(|row| row.contract_status == ContractStatus::RejectedByCapability)
-        .expect("strict report should expose the same envelope projection");
+        .expect("admission report should expose the same envelope projection");
     assert_eq!(blocking_row.required_contract, projection.reason);
     assert_eq!(blocking_row.memory_boundary, projection.memory_boundary);
 }
@@ -409,14 +409,14 @@ fn bounded_capability_analysis_rejects_unsupported_join_output_dtype_before_stra
 }
 
 #[test]
-fn strict_contract_report_projects_rejected_node_capability_when_reservations_are_modeled() {
+fn admission_contract_report_projects_rejected_node_capability_when_reservations_are_modeled() {
     let plan = unsupported_cross_key_join_plan();
     let analysis = plan.capability_analysis();
     assert!(analysis.has_rejections());
     assert!(analysis.requirements.iter().all(|requirement| requirement.status == ContractStatus::Modeled));
 
     let report = CapabilityContractReport::from_capability_analysis(&analysis)
-        .expect("unsupported capability analysis should produce a strict contract report");
+        .expect("unsupported capability analysis should produce a admission contract report");
     let row = report
         .gate_rows()
         .iter()

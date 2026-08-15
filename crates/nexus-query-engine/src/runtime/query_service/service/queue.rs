@@ -2,9 +2,8 @@
 //!
 //! Queue order is strictly oldest-first by submission sequence. The first
 //! runnable waiter wins; a waiter blocked on one device never idles another
-//! compatible device for later work. There is no tenant rotation, priority,
-//! weight, or QoS in queue state. Finite-overtake liveness protection is part
-//! of the controller state machine.
+//! compatible device for later work. Finite-overtake liveness protection is
+//! part of the controller state machine.
 
 use super::*;
 use crate::runtime::gpu::placement::{PlacementCandidate, preferred_placement_candidate};

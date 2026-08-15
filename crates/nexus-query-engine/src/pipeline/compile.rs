@@ -434,7 +434,7 @@ fn build_tasks(
                 );
             },
             PlanNode::VectorAlgorithm(_) => {
-                return Err(invalid("vector algorithm nodes are not supported by the strict compiled pipeline")
+                return Err(invalid("vector algorithm nodes are not supported by the compiled pipeline")
                     .with_fact("node_id", node_id)
                     .with_fact("operator", "vector_algorithm"));
             },

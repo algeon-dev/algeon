@@ -1,5 +1,5 @@
 #[test]
-fn graph_algorithm_capability_blocks_strict_bounded_on_lower_level_contract() {
+fn graph_algorithm_capability_blocks_bounded_on_lower_level_contract() {
     let plan = graph_plan(
         GraphAlgorithm::Bfs,
         GraphAlgorithmParams::Bfs(Box::new(GraphBfsParams::new(0, Some(3)))),
@@ -27,7 +27,7 @@ fn graph_algorithm_capability_blocks_strict_bounded_on_lower_level_contract() {
 }
 
 #[test]
-fn graph_algorithm_strict_bounded_contract_surface_lists_lower_level_gaps() {
+fn graph_algorithm_bounded_contract_surface_lists_lower_level_gaps() {
     assert_eq!(GRAPH_ALGORITHM_CAPABILITY_MEMORY_BOUNDARY, "graph_algorithm");
     assert_eq!(GRAPH_ALGORITHM_CAPABILITY_REQUIRED_CONTRACT, "unsupported_graph_algorithm_reservation_contract");
 
@@ -47,7 +47,7 @@ fn graph_algorithm_strict_bounded_contract_surface_lists_lower_level_gaps() {
         GRAPH_ALGORITHM_CAPABILITY_LOWER_LEVEL_CONTRACTS
             .iter()
             .all(|contract| !contract.required_surface.contains("estimate")),
-        "graph strict bounded support must wait for lower-level contract surfaces, not adapter estimates"
+        "graph bounded support must wait for lower-level contract surfaces, not adapter estimates"
     );
 }
 

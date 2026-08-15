@@ -200,7 +200,7 @@ KvikIO reads the surviving Parquet bytes from S3-compatible object storage
 into GPU memory. The table your other engines query is the same table the GPU
 reads — no export, no second copy to keep in sync.
 
-Being a good lakehouse citizen also means a strict contract about what Nexus
+Being a good lakehouse citizen also means a clear contract about what Nexus
 will *never* do to your data: it does not write it. There is no INSERT,
 UPDATE, DELETE, or COPY; no table Nexus exposes can be written into; and
 nothing ever commits back to Iceberg or touches the files in storage. DDL

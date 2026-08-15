@@ -81,7 +81,7 @@ pub(super) fn accepted_capability_contract_diagnostics() -> NativeCapabilityCont
     let candidate =
         GpuCandidate::new("SortExec(fetch)(AggregateExec(HashJoinExec(LocalParquetScan,LocalParquetScan)))", 1);
     let rows = vec![
-        strict_bounded_gate_row(
+        bounded_gate_row(
             CapabilityContractGateId::Compiled(ReservationGateId::new(0)),
             CapabilityContractOwner::Compiled(ReservationGateOwner::Edge(
                 nexus_query_engine::pipeline::PipelineEdgeId::new(0),
@@ -93,7 +93,7 @@ pub(super) fn accepted_capability_contract_diagnostics() -> NativeCapabilityCont
             ContractQuality::ExactPreflight,
             None,
         ),
-        strict_bounded_gate_row(
+        bounded_gate_row(
             CapabilityContractGateId::Compiled(ReservationGateId::new(1)),
             CapabilityContractOwner::Compiled(ReservationGateOwner::SinkBoundary),
             ReservationRequirementScope::Edge,
@@ -124,7 +124,7 @@ pub(super) fn accepted_capability_contract_diagnostics() -> NativeCapabilityCont
     }
 }
 
-fn strict_bounded_gate_row(
+fn bounded_gate_row(
     gate_id: CapabilityContractGateId,
     owner: CapabilityContractOwner,
     contract_scope: ReservationRequirementScope,
@@ -488,7 +488,7 @@ pub(super) fn planning_replacement_row<'a>(
     query_id: &str,
 ) -> &'a datafusion_nexus::native_report::NativeDataFusionPlanningRow {
     let rows = report.rows.iter().filter(|row| row.query_id == query_id);
-    // Replacement assertions use the last accepted fragment row when strict
+    // Replacement assertions use the last accepted fragment row when bounded
     // whole-plan admission fails closed and child native fragments still
     // replace part of the DataFusion plan. Whole-plan assertions must use
     // `whole_plan_planning_row` so those rejections remain visible.

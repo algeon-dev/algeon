@@ -59,7 +59,7 @@ pub(super) fn admit_graph_memory(
         side_inputs,
         input_edges,
         raw_input_edges,
-        strict_pair_cardinality: None,
+        bounded_pair_cardinality: None,
         budget_bytes: context.bounded_device_budget_bytes(),
         device_total_memory_bytes: graph_device_total_memory_bytes(context)?,
         allow_nulls: false,
@@ -175,7 +175,7 @@ pub(in crate::exec) struct GraphMemoryReservationRequest<'a> {
     pub(in crate::exec) side_inputs: &'a BTreeMap<NodeId, GpuDataFrame>,
     pub(in crate::exec) input_edges: u64,
     pub(in crate::exec) raw_input_edges: Option<u64>,
-    pub(in crate::exec) strict_pair_cardinality: Option<(u64, crate::graph_memory::GraphPairCardinalitySource)>,
+    pub(in crate::exec) bounded_pair_cardinality: Option<(u64, crate::graph_memory::GraphPairCardinalitySource)>,
     pub(in crate::exec) budget_bytes: Option<u64>,
     pub(in crate::exec) device_total_memory_bytes: Option<u64>,
     pub(in crate::exec) allow_nulls: bool,
@@ -202,7 +202,7 @@ pub(in crate::exec) fn graph_memory_reservation_report(
         side_inputs,
         input_edges,
         raw_input_edges,
-        strict_pair_cardinality,
+        bounded_pair_cardinality,
         budget_bytes,
         device_total_memory_bytes,
         allow_nulls,
@@ -220,7 +220,7 @@ pub(in crate::exec) fn graph_memory_reservation_report(
     if let Some((runtime_pair_rows, pair_vertex_width_bytes, runtime_pair_cardinality_source)) =
         graph_similarity_pair_memory_evidence(spec, side_inputs)?
     {
-        let (pair_rows, pair_cardinality_source) = match strict_pair_cardinality {
+        let (pair_rows, pair_cardinality_source) = match bounded_pair_cardinality {
             Some((pair_rows, pair_cardinality_source)) => (pair_rows, pair_cardinality_source),
             None => (runtime_pair_rows, runtime_pair_cardinality_source),
         };

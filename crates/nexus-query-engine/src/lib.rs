@@ -49,7 +49,7 @@ pub mod exec;
 mod execution_contracts;
 /// DataFusion-free expression IR used by native query plans.
 pub mod expr;
-/// Approximate cuGraph memory pricing outside strict bounded admission.
+/// Approximate cuGraph memory pricing outside bounded admission.
 pub mod graph_memory;
 /// Stable helper primitives shared by report and benchmark harnesses.
 pub mod harness;

@@ -137,7 +137,7 @@ impl GraphMemoryModel {
         )
     }
 
-    /// Estimate a graph fragment for strict bounded admission.
+    /// Estimate a graph fragment for bounded admission.
     ///
     /// Similarity requires plan-exact or hard-upper-bound pair cardinality
     /// evidence here.  A count obtained by executing the pair relation is
@@ -148,7 +148,7 @@ impl GraphMemoryModel {
         spec: &GraphAlgorithmSpec,
         input: GraphMemoryModelInput,
     ) -> Result<GraphMemoryEstimate> {
-        require_strict_similarity_pair_cardinality_evidence(spec, input)?;
+        require_bounded_similarity_pair_cardinality_evidence(spec, input)?;
         require_graph_construction_workspace_preflight(spec, input)?;
         self.estimate_with_pair_cardinality_admission_mode(
             spec,
@@ -1290,7 +1290,7 @@ fn similarity_pair_memory_evidence(
     Ok((Some(pair_rows), Some(pair_vertex_width_bytes), Some(pair_cardinality_source)))
 }
 
-fn require_strict_similarity_pair_cardinality_evidence(
+fn require_bounded_similarity_pair_cardinality_evidence(
     spec: &GraphAlgorithmSpec,
     input: GraphMemoryModelInput,
 ) -> Result<()> {
@@ -1299,18 +1299,15 @@ fn require_strict_similarity_pair_cardinality_evidence(
     }
 
     let Some(source) = input.pair_cardinality_source else {
-        return Err(strict_similarity_pair_cardinality_error(
-            spec.algorithm,
-            "strict_missing_pair_cardinality_evidence",
-        )
-        .with_fact("pair_rows", input.pair_rows.unwrap_or(0))
-        .with_fact("pair_vertex_width_bytes", input.pair_vertex_width_bytes.unwrap_or(0))
-        .with_fact("pair_cardinality_source", "none"));
+        return Err(bounded_similarity_pair_cardinality_error(spec.algorithm, "missing_pair_cardinality_evidence")
+            .with_fact("pair_rows", input.pair_rows.unwrap_or(0))
+            .with_fact("pair_vertex_width_bytes", input.pair_vertex_width_bytes.unwrap_or(0))
+            .with_fact("pair_cardinality_source", "none"));
     };
     if !source.is_pre_admission_bound() {
-        return Err(strict_similarity_pair_cardinality_error(
+        return Err(bounded_similarity_pair_cardinality_error(
             spec.algorithm,
-            "strict_pair_cardinality_evidence_not_plan_bound",
+            "bounded_pair_cardinality_evidence_not_plan_bound",
         )
         .with_fact("pair_rows", input.pair_rows.unwrap_or(0))
         .with_fact("pair_vertex_width_bytes", input.pair_vertex_width_bytes.unwrap_or(0))
@@ -1319,11 +1316,11 @@ fn require_strict_similarity_pair_cardinality_evidence(
     Ok(())
 }
 
-fn strict_similarity_pair_cardinality_error(algorithm: GraphAlgorithm, reason: &'static str) -> QueryError {
+fn bounded_similarity_pair_cardinality_error(algorithm: GraphAlgorithm, reason: &'static str) -> QueryError {
     QueryError::new(
         QueryErrorCode::InvalidPlan,
-        "nexus_query_engine.graph_memory.strict_similarity_admission",
-        "strict bounded similarity admission requires plan-exact pair cardinality or a hard pair-row upper bound",
+        "nexus_query_engine.graph_memory.bounded_similarity_admission",
+        "bounded similarity admission requires plan-exact pair cardinality or a hard pair-row upper bound",
     )
     .with_fact("algorithm", algorithm.as_str())
     .with_fact("admission_mode", GraphPairCardinalityAdmissionMode::Bounded.as_str())
@@ -1355,7 +1352,7 @@ pub fn graph_memory_model_input(
     }
 }
 
-/// Estimate graph memory asks for strict bounded admission when plan/config
+/// Estimate graph memory asks for bounded admission when plan/config
 /// facts are known.
 ///
 /// Missing ordinary edge-row evidence leaves a graph node unpriced. In
@@ -1465,7 +1462,7 @@ pub fn graph_edge_list_output_rows_for_plan(plan: &QueryPlan) -> Option<u64> {
 /// native plan can prove one without executing any source.
 ///
 /// This is intentionally narrower than [`graph_edge_list_output_rows_for_plan`]:
-/// strict admission may use it for resident side inputs, while descriptive
+/// admission may use it for resident side inputs, while descriptive
 /// planning estimates remain unsuitable as an admission proof.
 pub fn query_plan_hard_row_upper_bound(plan: &QueryPlan) -> Option<u64> {
     query_plan_node_hard_row_upper_bound(plan, plan.root_id())
@@ -1505,7 +1502,7 @@ pub(crate) fn graph_memory_model_input_for_plan_node(
     if let Some(vertex_upper_bound) = edge_counts.graph_vertex_upper_bound {
         input = input.with_vertex_estimate(GraphVertexEstimate::graph_metadata(vertex_upper_bound));
     }
-    if let Some((pair_rows, pair_cardinality_source)) = strict_similarity_pair_cardinality_for_plan(plan, graph)? {
+    if let Some((pair_rows, pair_cardinality_source)) = bounded_similarity_pair_cardinality_for_plan(plan, graph)? {
         let crate::plan::GraphAlgorithmParams::Similarity(params) = &graph.spec.params else {
             return Err(QueryError::new(
                 QueryErrorCode::InvalidPlan,
@@ -1623,14 +1620,14 @@ pub(crate) fn graph_construction_workspace_bounds_from_owner_query(
     query(&preflight)
 }
 
-/// Returns only the pair-cardinality evidence that can prove strict bounded
+/// Returns only the pair-cardinality evidence that can prove bounded
 /// similarity admission before the candidate relation is materialized.
 ///
 /// This intentionally excludes runtime counts.  Callers that execute a
-/// strict bounded graph node must invoke it before evaluating graph side
+/// bounded graph node must invoke it before evaluating graph side
 /// inputs, then price the graph reservation with the returned exact count or
 /// upper bound.
-pub(crate) fn strict_similarity_pair_cardinality_for_plan(
+pub(crate) fn bounded_similarity_pair_cardinality_for_plan(
     plan: &QueryPlan,
     graph: &crate::plan::GraphAlgorithmNode,
 ) -> Result<Option<(u64, GraphPairCardinalitySource)>> {
@@ -1640,19 +1637,19 @@ pub(crate) fn strict_similarity_pair_cardinality_for_plan(
     let crate::plan::GraphAlgorithmParams::Similarity(params) = &graph.spec.params else {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
-            "nexus_query_engine.graph_memory.strict_similarity_admission",
+            "nexus_query_engine.graph_memory.bounded_similarity_admission",
             "similarity algorithm node carried non-similarity parameters",
         )
         .with_fact("algorithm", graph.spec.algorithm.as_str()));
     };
     hard_row_upper_bound_for_plan_node(plan, params.vertex_pairs.input).map(Some).ok_or_else(|| {
-        strict_similarity_pair_cardinality_error(graph.spec.algorithm, "strict_missing_pair_cardinality_evidence")
+        bounded_similarity_pair_cardinality_error(graph.spec.algorithm, "missing_pair_cardinality_evidence")
     })
 }
 
 /// Derive only mathematically hard cardinality evidence.  This deliberately
 /// does not reuse [`estimated_output_rows`], whose contract is descriptive and
-/// unsuitable for strict bounded admission.
+/// unsuitable for bounded admission.
 pub(crate) fn hard_row_upper_bound_for_plan_node(
     plan: &QueryPlan,
     node_id: NodeId,

@@ -107,7 +107,7 @@ fn bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_survives_
             .plan
             .capability_analysis()
             .admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline(),
-        "projection simplification must preserve strict bounded aggregate-over-join input wrappers"
+        "projection simplification must preserve bounded aggregate-over-join input wrappers"
     );
     assert!(
         optimized.diagnostics.projection_simplification.candidates.iter().any(|candidate| {

@@ -186,7 +186,7 @@ pub const BOUNDED_JOIN_RESERVATION_REQUIREMENTS: [BoundedJoinReservationRequirem
 ///
 /// This type intentionally has no fields: it is a stable handle for the current
 /// reservation contract catalogue. Methods return lower-level capability facts
-/// used by contract tests and adapter diagnostics. Normal strict bounded
+/// used by contract tests and adapter diagnostics. Normal bounded
 /// reporting is gate-first and does not project execution families or paths.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct BoundedJoinReservationContract;

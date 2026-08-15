@@ -127,7 +127,7 @@ def main() -> None:
         "wallTimeFields": gpu_meta.get("tpcds_benchmark_wall_time_fields", "per_measured_iteration"),
         "datasetMode": "sf100_external",
         "nativePipelineExecutionMode": gpu_meta.get(
-            "tpcds_benchmark_native_pipeline_execution_mode", "strict_bounded"
+            "tpcds_benchmark_native_pipeline_execution_mode", "bounded"
         ),
         "nativeProfileName": gpu_meta.get("tpcds_benchmark_native_profile_name", "sf100_gpu_throughput"),
         "nativeProfileSource": gpu_meta.get("tpcds_benchmark_native_profile_source", "env_profile"),

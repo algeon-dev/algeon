@@ -120,8 +120,8 @@ impl CapabilityEnvelopeStatus {
     /// Stable wire label emitted by report serializers.
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Admitted => "strict_bounded",
-            Self::Rejected => "unsupported_strict_bounded",
+            Self::Admitted => "bounded",
+            Self::Rejected => "unsupported_bounded",
         }
     }
 }
