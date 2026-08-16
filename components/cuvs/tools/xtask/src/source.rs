@@ -4,7 +4,7 @@ use anyhow::{Context, Result, ensure};
 
 use crate::command;
 
-pub(crate) const PINNED_CUVS_REVISION: &str = "2bd7cd71d31e39eb9ee00c2a250085a1afb84977";
+pub(crate) const PINNED_CUVS_REVISION: &str = "6ba2ce28687b32995d015da35b9823ec35de108b";
 const PINNED_CUVS_URL: &str = "https://github.com/rapidsai/cuvs.git";
 
 fn git(workspace_root: &Path) -> Command {

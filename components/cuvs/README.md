@@ -32,7 +32,7 @@ execution remain in DataFusion Nexus.
 ## Status
 
 This project is in early development. It currently targets Linux, Rust 1.94 or
-newer, and cuVS 26.6.0 from the pinned upstream source. API stability is less
+newer, and cuVS 26.8.0 from the pinned upstream source. API stability is less
 important than getting execution, memory, ownership, and interop contracts
 right for DataFusion Nexus.
 

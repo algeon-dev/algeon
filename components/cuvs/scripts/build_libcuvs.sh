@@ -6,7 +6,7 @@ source_dir="${repo_root}/cuvs"
 build_dir="${CUVS_CPP_BUILD_DIR:-${source_dir}/cpp/build}"
 install_dir="${CUVS_INSTALL_DIR:-${repo_root}/cuvs-install}"
 cudf_install_dir="${CUDF_INSTALL_DIR:-$(cd -- "${repo_root}/.." && pwd -P)/cudf-nexus/cudf-install}"
-expected_revision="2bd7cd71d31e39eb9ee00c2a250085a1afb84977"
+expected_revision="6ba2ce28687b32995d015da35b9823ec35de108b"
 
 (cd "${repo_root}" && cargo xtask source check)
 
@@ -127,7 +127,7 @@ done
 marker_dir="${install_dir}/share/cuvs-nexus"
 mkdir -p "${marker_dir}"
 printf '%s\n' "${expected_revision}" >"${marker_dir}/source-revision"
-printf '%s\n' "26.6.0" >"${marker_dir}/native-version"
+printf '%s\n' "26.8.0" >"${marker_dir}/native-version"
 printf '%s\n' "${canonical_rmm}" >"${marker_dir}/rmm-runtime-lib"
 
 loader_path="${lib_dir}:${cudf_lib_dir}"

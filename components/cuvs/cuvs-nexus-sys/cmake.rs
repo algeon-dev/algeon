@@ -8,8 +8,8 @@ use std::{
 use anyhow::{Context, Result};
 use cmake_package::{Error as CmakeError, Version, VersionError, find_package};
 
-pub(crate) const NATIVE_CUVS_VERSION: &str = "26.6.0";
-const PINNED_CUVS_REVISION: &str = "2bd7cd71d31e39eb9ee00c2a250085a1afb84977";
+pub(crate) const NATIVE_CUVS_VERSION: &str = "26.8.0";
+const PINNED_CUVS_REVISION: &str = "6ba2ce28687b32995d015da35b9823ec35de108b";
 const CUVS_COMPONENT: &str = "c_api";
 const CUVS_C_API_TARGET: &str = "cuvs::c_api";
 const PYTHON_PRINT_LIBCUVS_PACKAGE_DIR: &str = r#"
@@ -34,7 +34,7 @@ pub(crate) struct CuvsMetadata {
 
 fn unavailable_error() -> anyhow::Error {
     anyhow::anyhow!(
-        "CMake is unavailable or too old to inspect cuVS. Install CMake, then set CUVS_ROOT to the canonical cuVS 26.06 install prefix"
+        "CMake is unavailable or too old to inspect cuVS. Install CMake, then set CUVS_ROOT to the canonical cuVS 26.08 install prefix"
     )
 }
 
