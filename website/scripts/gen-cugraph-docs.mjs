@@ -516,7 +516,7 @@ function renderCheatsheet(specs) {
   ].join('\n');
 }
 
-function renderVertexIdSupportMatrix(specs) {
+function renderVertexIdSupport(specs) {
   const rows = specs.map(spec => {
     const contract = vertexIdContract(spec);
     const logicalEndpointTypes = contract.logical_string_endpoint_types;
@@ -535,14 +535,9 @@ function renderVertexIdSupportMatrix(specs) {
     ];
   });
   return [
-    '---',
-    'sidebar_position: 2',
-    'description: cuGraph vertex ID input and output contracts generated from the unified GPU catalog.',
-    '---',
-    '',
     '{/* GENERATED FROM the unified GPU function catalog by website/scripts/gen-cugraph-docs.mjs. Do not edit by hand. */}',
     '',
-    '# cuGraph Vertex ID Support',
+    '## Vertex ID support by function',
     '',
     'This matrix is generated from each function descriptor’s structured `edges.vertex_id_contract`. It is the authoritative overview of numeric endpoint inputs, logical string endpoint inputs, canonical string output, side-input limitations, and legacy Int32-only dispatch.',
     '',
@@ -570,8 +565,8 @@ function main() {
   }
   for (const spec of specs) write(join(ALGORITHMS_DIR, spec.family, `${spec.function_name}.mdx`), renderPage(spec));
   write(join(DOCS_DIR, '_cheatsheet.mdx'), renderCheatsheet(specs));
-  write(join(DOCS_DIR, 'vertex-id-support.mdx'), renderVertexIdSupportMatrix(specs));
-  console.log(`Wrote ${specs.length} generated cuGraph function pages, cheatsheet, and vertex-ID support matrix.`);
+  write(join(DOCS_DIR, '_vertex-id-support.mdx'), renderVertexIdSupport(specs));
+  console.log(`Wrote ${specs.length} generated cuGraph function pages, cheatsheet, and vertex-ID support partial.`);
 }
 
 main();

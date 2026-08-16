@@ -6,11 +6,19 @@ description: "How a completed DataFusion physical plan becomes native QueryPlan 
 
 # Native Lowering & Final Plans
 
-Native lowering is the adapter between DataFusion's open `ExecutionPlan` tree
-and the query engine's closed, DataFusion-free `QueryPlan` IR. It runs after
-DataFusion has chosen physical operators, so lowering consumes decisions such
-as aggregate mode, join shape, scan pushdown, partitioning, and output order
-instead of replanning them.
+Native lowering converts a completed DataFusion `ExecutionPlan` tree into the
+query engine's `QueryPlan` IR. When the converted plan wins final selection,
+it replaces the original plan with a wrapper node that executes the
+`QueryPlan` on the native engine instead.
+
+It runs after DataFusion physical planning has finished, so it translates
+decisions DataFusion already made — aggregate mode, join shape, scan pushdown,
+partitioning, output order — rather than replanning them. The two plan models
+differ in one important way: `ExecutionPlan` is an open trait, so DataFusion
+can produce any operator shape, while `QueryPlan` is a closed,
+DataFusion-free set of nodes owned by the engine. Lowering handles only the
+shapes it can map exactly and declines the rest with a structured reason
+(step 1).
 
 To DataFusion, all of this is ordinary machinery: three `PhysicalOptimizerRule`s
 and, when selection succeeds, an `ExecutionPlan` wrapper node in the completed
@@ -87,17 +95,26 @@ native-capable plan declined by cost is distinct from an unsupported plan.
 
 ### 4. Choose the DataFusion wrapper
 
-A `QueryPlan` with ordinary sources becomes `NexusNativeExec`. A plan that
-references named GPU-resident sources becomes `NexusNativeComposedExec`, whose
-children are explicit GPU producers. The composed wrapper validates that the
-required and provided input names match exactly; this is GPU-to-GPU
-composition, not arbitrary relational fragment extraction.
+The selected candidate is wrapped in one of two `ExecutionPlan` nodes:
 
-The planner derives opaque `QueryPlanCapabilityProof`s for the selected
-fragments. When planner-side admission authority is present, it combines them
-into one ticket whose device and grant acquisition waits until execution.
-Existing service handles do not need another ticket, and graph roots may defer
-ticket creation until source metadata needed by the exact proof is available.
+- `NexusNativeExec` for plans with ordinary sources.
+- `NexusNativeComposedExec` for plans that read named GPU-resident sources.
+  Its children are the explicit GPU producers, and the wrapper checks that the
+  required and provided input names match exactly. This is GPU-to-GPU
+  composition, not arbitrary relational fragment extraction.
+
+The planner also attaches admission evidence. Each selected fragment passes
+engine preflight and receives one `QueryPlanCapabilityProof`. When the
+session config is set up for planner-side admission (an admission source and
+no `QueryServiceHandle`), the proofs are combined into one
+`QueryAdmissionTicket` bound to the plan. The ticket records what the query
+needs; device and grant acquisition wait until execution. Two cases create
+no ticket: configs that already hold a `QueryServiceHandle`, because
+execution uses that handle's context, and plans with a cuGraph root. Graph
+roots get no planner-time ticket because their lakehouse footer metadata may
+still be resolving — a ticket minted now would freeze incomplete cardinality
+evidence. The root mints its own ticket once that metadata is bound to the
+exact plan.
 
 ## Selection, fallback, and mixed execution
 

@@ -35,8 +35,9 @@ takes a source vertex); see each function's page for its exact signature.
 The relation name must resolve to a table or view registered in the session.
 That relation can be backed by the session's configured sources, including
 Parquet and Iceberg. See [Integrating Nexus](../integration/overview.mdx) for
-source and session setup, and [Graph Construction Options](./graph-options.mdx)
-for directedness, vertex renumbering, and edge normalization.
+source and session setup, and
+[Graph Inputs and Construction](./graph-options.mdx) for vertex-ID contracts,
+directedness, vertex renumbering, and edge normalization.
 
 ## Functions
 
@@ -62,7 +63,7 @@ other calls bypass the cache. Configure and observe it through
 
 - **[Integrate cuGraph](../integration/overview.mdx)** — configure an embedded
   session or a Flight SQL server.
-- **[Set graph construction options](./graph-options.mdx)** — refine graph
-  semantics before choosing an algorithm.
+- **[Prepare graph inputs](./graph-options.mdx)** — choose a supported vertex-ID
+  domain and refine graph construction semantics.
 - **[Run the citation-network demo](./demo-dataset.mdx)** — follow the shared
   dataset and runnable examples used by the algorithm reference.
