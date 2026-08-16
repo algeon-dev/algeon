@@ -7,7 +7,7 @@
 use arrow::datatypes::SchemaRef;
 use datafusion::{
     catalog::Session,
-    common::{DataFusionError, TableReference},
+    common::DataFusionError,
     datasource::provider_as_source,
     execution::{SessionState, context::SessionConfig},
     logical_expr::{LogicalPlan, LogicalPlanBuilder},
@@ -88,7 +88,7 @@ impl GpuFunctionFamily for CuvsGpuFunctionFamily {
         for role in operation.descriptor().relation_roles {
             let role_name = role.as_str();
             let relation = request.relations.get(role_name).expect("common catalog validates relation roles");
-            match resolve_schema_only_input(session, &relation.table).await {
+            match resolve_schema_only_input(session, &relation.table, relation.reference.clone()).await {
                 Ok(resolved) => {
                     relation_details.insert(
                         role_name.to_string(),
@@ -331,11 +331,11 @@ struct ResolvedSchemaOnlyInput {
 async fn resolve_schema_only_input(
     session: &dyn Session,
     name: &str,
+    table_reference: datafusion::common::TableReference,
 ) -> std::result::Result<ResolvedSchemaOnlyInput, String> {
     let state = session.as_any().downcast_ref::<SessionState>().ok_or_else(|| {
         "GPU validation requires a DataFusion SessionState so named relations can be resolved".to_string()
     })?;
-    let table_reference = table_reference(name);
     let catalog_options = &state.config_options().catalog;
     let resolved = table_reference.clone().resolve(&catalog_options.default_catalog, &catalog_options.default_schema);
     let catalog =
@@ -352,16 +352,6 @@ async fn resolve_schema_only_input(
         .build()
         .map_err(|error| format!("could not construct schema-only input for table '{name}': {error}"))?;
     Ok(ResolvedSchemaOnlyInput { plan, schema: provider_schema })
-}
-
-fn table_reference(name: &str) -> TableReference {
-    let parts = name.split('.').collect::<Vec<_>>();
-    match parts.as_slice() {
-        [table] => TableReference::bare(*table),
-        [schema, table] => TableReference::partial(*schema, *table),
-        [catalog, schema, table] => TableReference::full(*catalog, *schema, *table),
-        _ => unreachable!("common GPU validation parses one- to three-part table references"),
-    }
 }
 
 fn unavailable_validation(

@@ -267,6 +267,38 @@ pub(crate) fn root_topk_join_aggregate_plan() -> nexus_query_engine::plan::Query
     root_topk_join_aggregate_variant_plan(RootTopKJoinAggregateVariant::Admitted)
 }
 
+pub(crate) fn root_topk_grouped_aggregate_input_left_join_plan() -> nexus_query_engine::plan::QueryPlan {
+    let mut builder = QueryPlanBuilder::new();
+    let edges = source(&mut builder, "root-topk-grouped-aggregate-input-edges");
+    let grouped = grouped_aggregate(&mut builder, edges);
+    let grouped_sort = builder.add_sort(
+        grouped,
+        SortSpec::new(vec![SortExpr::new(Expr::column("v"), true, false)]),
+        key_value_schema(),
+    );
+    let grouped_topk = builder.add_limit(grouped_sort, LimitSpec::fetch(30), key_value_schema());
+    let nodes = source(&mut builder, "root-topk-grouped-aggregate-input-nodes");
+    let joined = builder.add_join(
+        grouped_topk,
+        nodes,
+        JoinSpec::new(JoinType::Left, vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))])
+            .with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
+                JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
+            ])
+            .with_build_side(JoinSide::Right),
+        key_value_schema(),
+    );
+    let joined = project_key_value(&mut builder, joined);
+    let final_sort = builder.add_sort(
+        joined,
+        SortSpec::new(vec![SortExpr::new(Expr::column("v"), true, false)]),
+        key_value_schema(),
+    );
+    let final_topk = builder.add_limit(final_sort, LimitSpec::fetch(30), key_value_schema());
+    builder.finish_with_host_sink(final_topk)
+}
+
 pub(crate) fn root_topk_keyless_conditional_direct_source_aggregates_plan(
     missing_right_grouped_source_reduction: bool,
 ) -> nexus_query_engine::plan::QueryPlan {

@@ -1457,6 +1457,45 @@ fn native_optimizer_rule_retains_distinct_aggregate_over_anti_join_as_datafusion
 }
 
 #[test]
+fn native_optimizer_admits_topk_grouped_aggregate_left_join_under_bounded_contract() {
+    let dir = unique_temp_dir("datafusion-nexus-native-exec-topk-aggregate-left-join");
+    let edges = dir.join("edges.parquet");
+    let nodes = dir.join("nodes.parquet");
+    write_join_left_parquet_file(&edges);
+    write_join_right_parquet_file(&nodes);
+    let plan = single_partition_sql_plan_with_parquet_tables(
+        &[("edges", &edges), ("nodes", &nodes)],
+        "WITH top_degrees AS ( \
+             SELECT key AS vertex_id, COUNT(*) AS out_degree \
+             FROM edges \
+             GROUP BY key \
+             ORDER BY out_degree DESC \
+             LIMIT 30 \
+         ) \
+         SELECT d.vertex_id, n.r_payload, d.out_degree \
+         FROM top_degrees d \
+         LEFT JOIN nodes n ON d.vertex_id = n.key \
+         ORDER BY d.out_degree DESC \
+         LIMIT 30",
+    );
+    let rule = NexusNativePhysicalOptimizerRule::new(native_optimizer_config());
+
+    let optimized = rule.optimize(plan, &ConfigOptions::default()).unwrap();
+
+    let report = rule.last_report().expect("native optimizer should record a planning report");
+    assert!(
+        optimized.downcast_ref::<NexusNativeExec>().is_some(),
+        "outcomes={:?}; plan={}",
+        report.outcomes(),
+        displayable(optimized.as_ref()).indent(false)
+    );
+    assert_eq!(report.selected_count(), 1, "outcomes={:?}", report.outcomes());
+    assert_eq!(report.not_selected_count(), 0, "outcomes={:?}", report.outcomes());
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn native_optimizer_rule_rewrites_precision_sensitive_stddev_sort_subtree_after_order_contract() {
     let dir = unique_temp_dir("datafusion-nexus-native-exec-stddev-sort-cpu-boundary");
     let path = dir.join("input.parquet");

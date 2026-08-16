@@ -55,8 +55,8 @@ pub(super) fn peel_distributed_aggregate_pair_if_present(
 
 fn distributed_aggregate_pair_is_safe(final_aggregate: &AggregateExec, partial_aggregate: &AggregateExec) -> bool {
     // Safety is structural: group columns must be the partial output columns,
-    // aggregate functions and state fields must match, and no distinct/order
-    // by semantics may be hidden in the pair. Per-aggregate filters are
+    // aggregate functions, distinctness, and state fields must match, and no
+    // order-by semantics may be hidden in the pair. Per-aggregate filters are
     // carried by the partial aggregate, where input rows are still available.
     matches!(partial_aggregate.mode(), AggregateMode::Partial)
         && distributed_group_expr_layout_is_native_safe(final_aggregate, partial_aggregate)
@@ -68,8 +68,8 @@ fn distributed_aggregate_pair_is_safe(final_aggregate: &AggregateExec, partial_a
             final_expr.fun().name().eq_ignore_ascii_case(partial_expr.fun().name())
                 && distributed_aggregate_function_is_native_safe(final_expr.fun().name())
                 && distributed_final_output_is_native_safe(final_aggregate, final_expr.name(), final_expr.fun().name())
-                && !final_expr.is_distinct()
-                && !partial_expr.is_distinct()
+                && final_expr.is_distinct() == partial_expr.is_distinct()
+                && (!final_expr.is_distinct() || final_expr.fun().name().eq_ignore_ascii_case("count"))
                 && final_expr.order_bys().is_empty()
                 && partial_expr.order_bys().is_empty()
         })

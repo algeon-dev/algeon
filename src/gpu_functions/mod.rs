@@ -21,4 +21,4 @@ pub use table_functions::{
     GPU_DESCRIBE_FUNCTION_FUNCTION, GPU_LIST_FUNCTIONS_FUNCTION, GPU_VALIDATE_CALL_FUNCTION,
     is_builtin_gpu_metadata_table_source,
 };
-pub(crate) use validation::{GpuCallRequest, GpuCallValidation};
+pub(crate) use validation::{GpuCallRequest, GpuCallValidation, parse_table_reference};

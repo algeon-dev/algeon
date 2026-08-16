@@ -57,6 +57,17 @@ async fn cugraph_dsl_metadata_and_dry_run_work_over_flight_sql_view() {
     execute_batches(&mut client, "CREATE VIEW target_edges AS SELECT src, dst, weight FROM raw_edges WHERE src >= 0")
         .await;
 
+    let uuid_schema = "3f1c2b8e-6d4a-4e0b-9a7c-5b2d8e1f4a60";
+    execute_batches(&mut client, &format!(r#"CREATE SCHEMA "{uuid_schema}""#)).await;
+    execute_batches(
+        &mut client,
+        &format!(
+            r#"CREATE EXTERNAL TABLE "{uuid_schema}".edgesummary STORED AS PARQUET LOCATION '{}'"#,
+            parquet_path.to_string_lossy()
+        ),
+    )
+    .await;
+
     let batches = execute_batches(
         &mut client,
         "SELECT function_name \
@@ -87,6 +98,43 @@ async fn cugraph_dsl_metadata_and_dry_run_work_over_flight_sql_view() {
     assert_eq!(details["edges"]["dst_dtype"], "Int64");
     assert_eq!(details["edges"]["weight_dtype"], "Float64");
     assert!(bool_value(batch, 4, 0));
+
+    for table in [
+        format!(r#""{uuid_schema}".edgesummary"#),
+        format!(r#"datafusion."{uuid_schema}".edgesummary"#),
+    ] {
+        let call = serde_json::json!({
+            "schema_version": 1,
+            "relations": { "edges": { "table": table } },
+            "options": {
+                "source_vertex": 0,
+                "src_col": "src",
+                "dst_col": "dst",
+                "weight_col": "weight"
+            }
+        })
+        .to_string()
+        .replace('\'', "''");
+        let validated = execute_batches(
+            &mut client,
+            &format!("SELECT valid, error_code FROM gpu_validate_call('cugraph_bfs', '{call}')"),
+        )
+        .await;
+        let validated = single_batch(&validated);
+        assert!(bool_value(validated, 0, 0));
+        assert!(is_null_value(validated, 1, 0));
+    }
+
+    for sql in [
+        format!(
+            r#"SELECT * FROM cugraph_pagerank('"{uuid_schema}".edgesummary', 'src', 'dst', 'weight') LIMIT 0"#
+        ),
+        format!(
+            r#"SELECT * FROM cugraph_bfs('datafusion."{uuid_schema}".edgesummary', 0, 'src', 'dst', 'weight') LIMIT 0"#
+        ),
+    ] {
+        client.execute(sql, None).await.unwrap().try_decode_schema().unwrap();
+    }
 
     execute_batches(
         &mut client,

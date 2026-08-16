@@ -205,6 +205,27 @@ async fn default_sql_distributed_distinct_aggregate_lowers_as_explicit_aggregate
 }
 
 #[tokio::test]
+async fn default_sql_mixed_distinct_and_count_over_union_lowers_to_one_native_aggregate() {
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-mixed-distinct-count-union");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let plan = sql_plan(&path, SessionConfig::new(), SQL_MIXED_DISTINCT_COUNT_UNION_QUERY).await;
+
+    let result = lower_physical_plan_to_native_for_test(plan);
+
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let aggregates = native_aggregate_nodes(&result.plans[0]);
+    assert_eq!(aggregates.len(), 1);
+    assert_eq!(
+        aggregates[0].spec.aggr_exprs.iter().map(|expr| (expr.function, expr.distinct)).collect::<Vec<_>>(),
+        vec![(AggregateFunction::NUnique, false), (AggregateFunction::Count, false)]
+    );
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
 async fn distributed_final_partial_aggregate_function_mismatch_is_rejected() {
     let dir = unique_temp_dir("datafusion-nexus-native-lowering-distributed-function-mismatch");
     let path = dir.join("input.parquet");

@@ -219,6 +219,32 @@ fn cugraph_sql_planning_parses_defaults_explicit_columns_and_null_weight() {
 }
 
 #[test]
+fn cugraph_sql_planning_parses_quoted_uuid_table_references() {
+    let config = CugraphSqlConfig::default();
+    let schema = "3f1c2b8e-6d4a-4e0b-9a7c-5b2d8e1f4a60";
+    let two_part = format!(r#""{schema}".edgesummary"#);
+    let spec = parse_cugraph_algorithm_spec(CugraphAlgorithm::PageRank, &[lit(two_part.as_str())], &config).unwrap();
+    assert_eq!(spec.table_name.parts(), &[schema, "edgesummary"]);
+    assert_eq!(spec.table_name.to_string(), two_part);
+
+    let three_part = format!(r#"datafusion."{schema}".edgesummary"#);
+    let spec =
+        parse_cugraph_algorithm_spec(CugraphAlgorithm::Bfs, &[lit(three_part.as_str()), lit(0_i64)], &config).unwrap();
+    assert_eq!(spec.table_name.parts(), &["datafusion", schema, "edgesummary"]);
+    assert_eq!(spec.table_name.to_string(), three_part);
+
+    let escaped_quote = r#""customer""schema".edges"#;
+    let spec = parse_cugraph_algorithm_spec(CugraphAlgorithm::PageRank, &[lit(escaped_quote)], &config).unwrap();
+    assert_eq!(spec.table_name.parts(), &[r#"customer"schema"#, "edges"]);
+    assert_eq!(spec.table_name.to_string(), escaped_quote);
+
+    for reference in ["edges", "analytics.edges", "datafusion.analytics.edges"] {
+        let spec = parse_cugraph_algorithm_spec(CugraphAlgorithm::PageRank, &[lit(reference)], &config).unwrap();
+        assert_eq!(spec.table_name.to_string(), reference);
+    }
+}
+
+#[test]
 fn cugraph_sql_planning_rejects_incompatible_directedness_options() {
     let config = CugraphSqlConfig::default();
 
@@ -1288,7 +1314,11 @@ fn cugraph_sql_planning_rejects_invalid_arguments() {
     );
     assert_error_contains(
         parse_cugraph_algorithm_spec(CugraphAlgorithm::PageRank, &[lit("SELECT src FROM edges")], &config),
-        "must be a simple table",
+        "must be a valid table",
+    );
+    assert_error_contains(
+        parse_cugraph_algorithm_spec(CugraphAlgorithm::PageRank, &[lit(r#""unterminated.edges"#)], &config),
+        "must be a valid table",
     );
     assert_error_contains(
         parse_cugraph_algorithm_spec(

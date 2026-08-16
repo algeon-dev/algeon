@@ -1,3 +1,6 @@
+use std::sync::Arc;
+
+use arrow::datatypes::SchemaRef;
 use datafusion::{
     datasource::{memory::MemorySourceConfig, source::DataSourceExec},
     physical_expr::{LexOrdering, PhysicalSortExpr, expressions::Column},
@@ -204,6 +207,34 @@ pub(super) fn normalize_native_plan(plan: &dyn ExecutionPlan) -> Result<Normaliz
         candidate: GpuCandidate::with_operator_count(UNSUPPORTED_NATIVE_PLAN_SHAPE, plan.schema().fields().len(), 1),
         reason: CapabilityReason::UnsupportedOperator,
     })
+}
+
+pub(super) fn make_declared_ordered_hash_join_fetch_explicit<'a>(
+    normalized: &mut NormalizedNativePlan<'a>,
+    ordering: Option<&'a LexOrdering>,
+    output_schema: SchemaRef,
+) {
+    let Some(ordering) = ordering else {
+        return;
+    };
+    if normalized.sort.is_some() || normalized.limit.is_some() {
+        return;
+    }
+    let NormalizedNativeRoot::Input(root) = &mut normalized.root else {
+        return;
+    };
+    let NormalizedNativeInput::HashJoin(join) = &mut root.input else {
+        return;
+    };
+    let Some(fetch) = join.fetch.take() else {
+        return;
+    };
+
+    normalized.sort =
+        Some(NormalizedNativeSortExprs::from_ordering(ordering, Arc::clone(&output_schema), output_schema));
+    normalized.limit = Some(fetch);
+    normalized.candidate =
+        normalized.candidate.clone().with_outer_operator(super::DECLARED_OUTPUT_ORDERING_SORT_OPERATOR);
 }
 
 fn normalize_sort_stack<'a>(

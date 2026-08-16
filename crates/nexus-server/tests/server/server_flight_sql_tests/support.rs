@@ -356,13 +356,17 @@ async fn close_prepared_raw(
 }
 
 fn write_update_edges_parquet(path: &Path) {
+    write_int64_pairs_parquet(path, ["src", "dst"], [0, 1], [1, 2]);
+}
+
+fn write_int64_pairs_parquet(path: &Path, names: [&str; 2], left: [i64; 2], right: [i64; 2]) {
     let schema = Arc::new(Schema::new(vec![
-        Field::new("src", DataType::Int64, false),
-        Field::new("dst", DataType::Int64, false),
+        Field::new(names[0], DataType::Int64, false),
+        Field::new(names[1], DataType::Int64, false),
     ]));
     let batch = RecordBatch::try_new(
         Arc::clone(&schema),
-        vec![Arc::new(Int64Array::from(vec![0, 1])), Arc::new(Int64Array::from(vec![1, 2]))],
+        vec![Arc::new(Int64Array::from(left.to_vec())), Arc::new(Int64Array::from(right.to_vec()))],
     )
     .unwrap();
     let file = File::create(path).unwrap();

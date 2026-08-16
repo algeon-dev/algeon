@@ -388,16 +388,18 @@ pub struct CugraphTableReference {
 
 impl CugraphTableReference {
     pub fn parse(raw: &str) -> Result<Self> {
-        let parts = raw.split('.').collect::<Vec<_>>();
-        if !(1..=3).contains(&parts.len()) || parts.iter().any(|part| !is_simple_identifier(part)) {
+        let Some(reference) = crate::gpu_functions::parse_table_reference(raw) else {
             return Err(crate::error::Error::new(
                 crate::error::ErrorCode::InvalidRequest,
                 "datafusion_nexus.cugraph_sql.table_reference",
-                format!("cuGraph table source '{raw}' must be a simple table, schema.table, or catalog.schema.table identifier"),
+                format!(
+                    "cuGraph table source '{raw}' must be a valid table, schema.table, or catalog.schema.table SQL identifier"
+                ),
             )
+            .with_log_safe_fact("reason", "invalid_table_reference")
             .into());
-        }
-        Ok(Self { parts: parts.into_iter().map(ToOwned::to_owned).collect() })
+        };
+        Ok(Self { parts: reference.to_vec() })
     }
 
     pub fn parts(&self) -> &[String] {
@@ -407,7 +409,18 @@ impl CugraphTableReference {
 
 impl fmt::Display for CugraphTableReference {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.parts.join("."))
+        write!(f, "{}", datafusion_table_reference_from_parts(&self.parts).to_quoted_string())
+    }
+}
+
+fn datafusion_table_reference_from_parts(parts: &[String]) -> datafusion::common::TableReference {
+    match parts {
+        [table] => datafusion::common::TableReference::bare(table.as_str()),
+        [schema, table] => datafusion::common::TableReference::partial(schema.as_str(), table.as_str()),
+        [catalog, schema, table] => {
+            datafusion::common::TableReference::full(catalog.as_str(), schema.as_str(), table.as_str())
+        },
+        _ => unreachable!("CugraphTableReference::parse validates one to three identifier parts"),
     }
 }
 
@@ -1565,10 +1578,4 @@ pub fn result_schema_for_params(algorithm: CugraphAlgorithm, params: &CugraphAlg
         (CugraphAlgorithm::Bfs, CugraphAlgorithmParams::Bfs(params)) => bfs_result_schema(params),
         _ => stable_result_schema(algorithm),
     }
-}
-
-fn is_simple_identifier(part: &str) -> bool {
-    let mut chars = part.chars();
-    matches!(chars.next(), Some(first) if first == '_' || first.is_ascii_alphabetic())
-        && chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
 }

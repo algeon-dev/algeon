@@ -36,6 +36,134 @@ async fn create_view_statement_executes_once_and_persists_across_statements() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn strict_flight_sql_executes_mixed_distinct_and_count_over_union() {
+    let (listener, addr) = free_local_addr();
+    let env = std::collections::BTreeMap::from([(
+        nexus_server::NEXUS_SERVER_FINAL_PLAN_REQUIREMENT_ENV,
+        "no_datafusion_cpu".to_string(),
+    )]);
+    let mut config = test_server_config_with_env(env);
+    declare_test_gpu_ownership(&mut config);
+    config.bind_addr = addr;
+
+    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
+    let mut client = connect_with_retry(addr).await;
+    let dir = tempfile::Builder::new().prefix("datafusion-nexus-flight-sql-distinct-union-").tempdir().unwrap();
+    let parquet_path = dir.path().join("vertices.parquet");
+    write_update_edges_parquet(&parquet_path);
+    for table in ["hosts", "ips"] {
+        execute_batches(
+            &mut client,
+            &format!(
+                "CREATE EXTERNAL TABLE {table} STORED AS PARQUET LOCATION '{}'",
+                parquet_path.to_string_lossy()
+            ),
+        )
+        .await;
+    }
+
+    let flight_info = client
+        .execute(
+            "SELECT source, COUNT(DISTINCT vertex_id) AS assets, COUNT(*) AS rows \
+             FROM ( \
+                 SELECT 'hosts' AS source, src AS vertex_id FROM hosts \
+                 UNION ALL \
+                 SELECT 'ips' AS source, src AS vertex_id FROM ips \
+             ) scores \
+             GROUP BY source \
+             ORDER BY source"
+                .to_string(),
+            None,
+        )
+        .await
+        .unwrap();
+    let query_id = query_id_from_statement_flight_info(&flight_info);
+    let (_schema, batches) = execute_flight_info_with_stream_schema(&mut client, flight_info).await;
+    let batch = batches.iter().find(|batch| batch.num_rows() > 0).unwrap();
+    let sources = batch.column(0).as_any().downcast_ref::<StringArray>().unwrap();
+    let assets = batch.column(1).as_any().downcast_ref::<Int64Array>().unwrap();
+    let rows = batch.column(2).as_any().downcast_ref::<Int64Array>().unwrap();
+
+    assert_eq!([sources.value(0), sources.value(1)], ["hosts", "ips"]);
+    assert_eq!([assets.value(0), assets.value(1)], [2, 2]);
+    assert_eq!([rows.value(0), rows.value(1)], [2, 2]);
+    assert_single_sealed_attempt_report(&get_query_stats_raw(&mut client, &query_id).await);
+
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn strict_flight_sql_executes_grouped_aggregate_topk_then_left_join() {
+    let (listener, addr) = free_local_addr();
+    let env = std::collections::BTreeMap::from([(
+        nexus_server::NEXUS_SERVER_FINAL_PLAN_REQUIREMENT_ENV,
+        "no_datafusion_cpu".to_string(),
+    )]);
+    let mut config = test_server_config_with_env(env);
+    declare_test_gpu_ownership(&mut config);
+    config.bind_addr = addr;
+
+    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
+    let mut client = connect_with_retry(addr).await;
+    let dir = tempfile::Builder::new().prefix("datafusion-nexus-flight-sql-aggregate-topk-join-").tempdir().unwrap();
+    let relationships_path = dir.path().join("edgesummary.parquet");
+    let vertex_info_path = dir.path().join("vertexinfo.parquet");
+    write_int64_pairs_parquet(&relationships_path, ["sourceId", "targetId"], [0, 1], [1, 2]);
+    write_int64_pairs_parquet(&vertex_info_path, ["vertexId", "vertexName"], [0, 1], [10, 20]);
+    let schema = "3f1c2b8e-6d4a-4e0b-9a7c-5b2d8e1f4a60";
+    execute_batches(&mut client, &format!(r#"CREATE SCHEMA "{schema}""#)).await;
+    for (table, parquet_path) in [
+        ("edgesummary", &relationships_path),
+        ("vertexinfo", &vertex_info_path),
+    ] {
+        execute_batches(
+            &mut client,
+            &format!(
+                r#"CREATE EXTERNAL TABLE "{schema}".{table} STORED AS PARQUET LOCATION '{}'"#,
+                parquet_path.to_string_lossy()
+            ),
+        )
+        .await;
+    }
+
+    let flight_info = client
+        .execute(
+            format!(
+                r#"WITH top_degrees AS (
+                 SELECT "sourceId" AS "vertexId", COUNT(*) AS out_degree
+                 FROM "{schema}".edgesummary
+                 GROUP BY "sourceId"
+                 ORDER BY out_degree DESC
+                 LIMIT 30
+             )
+             SELECT d."vertexId", n."vertexName", d.out_degree
+             FROM top_degrees d
+             LEFT JOIN "{schema}".vertexinfo n ON d."vertexId" = n."vertexId"
+             ORDER BY d.out_degree DESC
+             LIMIT 30"#
+            ),
+            None,
+        )
+        .await
+        .unwrap();
+    let query_id = query_id_from_statement_flight_info(&flight_info);
+    let (_schema, batches) = execute_flight_info_with_stream_schema(&mut client, flight_info).await;
+    let batch = batches.iter().find(|batch| batch.num_rows() > 0).unwrap();
+    let vertex_ids = batch.column(0).as_any().downcast_ref::<Int64Array>().unwrap();
+    let vertex_names = batch.column(1).as_any().downcast_ref::<Int64Array>().unwrap();
+    let out_degrees = batch.column(2).as_any().downcast_ref::<Int64Array>().unwrap();
+    let mut rows = (0..batch.num_rows())
+        .map(|row| (vertex_ids.value(row), vertex_names.value(row), out_degrees.value(row)))
+        .collect::<Vec<_>>();
+    rows.sort_unstable();
+
+    assert_eq!(rows, vec![(0, 10, 1), (1, 20, 1)]);
+    assert_single_sealed_attempt_report(&get_query_stats_raw(&mut client, &query_id).await);
+
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn prepared_create_view_query_advertises_empty_schema_and_persists() {
     let (listener, addr) = free_local_addr();
     let mut config = test_server_config();

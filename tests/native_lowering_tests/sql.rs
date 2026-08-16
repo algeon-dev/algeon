@@ -170,6 +170,17 @@ ORDER BY distinct_payload DESC, key ASC
 LIMIT 2
 ";
 
+pub(super) const SQL_MIXED_DISTINCT_COUNT_UNION_QUERY: &str = "
+SELECT source, COUNT(DISTINCT vertex_id) AS assets, COUNT(*) AS rows
+FROM (
+    SELECT 'hosts' AS source, payload AS vertex_id FROM bench
+    UNION ALL
+    SELECT 'ips' AS source, payload AS vertex_id FROM bench
+) scores
+GROUP BY source
+ORDER BY source
+";
+
 pub(super) const SQL_SOURCE_COLUMN_FILTER_REQUIRED_COLUMNS_QUERY: &str = "
 SELECT key, SUM(m00 + m01) AS sum_x00
 FROM bench
