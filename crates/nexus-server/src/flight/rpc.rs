@@ -44,7 +44,7 @@ impl FlightSqlService for DatafusionNexusFlightSqlService {
         if query.transaction_id.is_some() {
             let (status, captured) = adapter_error_to_status_and_capture(flight_sql_transactions_unsupported_error());
             let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
-            log_statement_status(&query_id, "planning", planning_started_at, &status);
+            log_statement_status(&query_id, Some(&sql), "planning", planning_started_at, &status);
             planning_lease.fail("planning", captured);
             return Err(status);
         }
@@ -63,7 +63,7 @@ impl FlightSqlService for DatafusionNexusFlightSqlService {
                         let (status, captured) = adapter_error_to_status_and_capture(begin_error);
                         let status =
                             status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
-                        log_statement_status(&query_id, "planning", planning_started_at, &status);
+                        log_statement_status(&query_id, Some(&sql), "planning", planning_started_at, &status);
                         planning_lease.finish_captured("planning", &status, captured);
                         return Err(status);
                     },
@@ -77,7 +77,7 @@ impl FlightSqlService for DatafusionNexusFlightSqlService {
                 }
                 let (status, captured) = adapter_error_to_status_and_capture(error);
                 let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
-                log_statement_status(&query_id, "planning", planning_started_at, &status);
+                log_statement_status(&query_id, Some(&sql), "planning", planning_started_at, &status);
                 planning_lease.fail("planning", captured);
                 return Err(status);
             },
@@ -98,7 +98,7 @@ impl FlightSqlService for DatafusionNexusFlightSqlService {
             self.statement_flight_info(
                 planning_lease,
                 query_id.clone(),
-                sql,
+                sql.clone(),
                 correlation_id.clone(),
                 descriptor,
                 planning_started_at,
@@ -114,7 +114,7 @@ impl FlightSqlService for DatafusionNexusFlightSqlService {
             Ok(info) => info,
             Err(status) => {
                 let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
-                log_statement_status(&query_id, "planning", planning_started_at, &status);
+                log_statement_status(&query_id, Some(&sql), "planning", planning_started_at, &status);
                 return Err(status);
             },
         };
@@ -189,7 +189,7 @@ impl FlightSqlService for DatafusionNexusFlightSqlService {
             .statement_flight_info(
                 planning_lease,
                 query_id.clone(),
-                sql,
+                sql.clone(),
                 correlation_id.clone(),
                 request.into_inner(),
                 planning_started_at,
@@ -204,7 +204,7 @@ impl FlightSqlService for DatafusionNexusFlightSqlService {
             Ok(info) => info,
             Err(status) => {
                 let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
-                log_statement_status(&query_id, "planning", planning_started_at, &status);
+                log_statement_status(&query_id, Some(&sql), "planning", planning_started_at, &status);
                 return Err(status);
             },
         };
@@ -640,7 +640,7 @@ impl FlightSqlService for DatafusionNexusFlightSqlService {
                 prepared_statement_handle = handle.as_str(),
                 "deduplicated repeated prepared DDL execution on the update channel; returning a no-op"
             );
-            return self.complete_deduplicated_update(planning_lease, correlation_id).await;
+            return self.complete_deduplicated_update(planning_lease, sql, correlation_id).await;
         }
 
         let record_count = self

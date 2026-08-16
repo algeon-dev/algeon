@@ -17,5 +17,8 @@ pub(crate) use descriptor::{GpuFunctionAvailability, GpuFunctionDescriptor};
 pub(crate) use family::GpuFunctionFamily;
 pub(crate) use registration::install_gpu_function_family;
 pub(crate) use table_functions::gpu_metadata_table_functions;
-pub use table_functions::{GPU_DESCRIBE_FUNCTION_FUNCTION, GPU_LIST_FUNCTIONS_FUNCTION, GPU_VALIDATE_CALL_FUNCTION};
+pub use table_functions::{
+    GPU_DESCRIBE_FUNCTION_FUNCTION, GPU_LIST_FUNCTIONS_FUNCTION, GPU_VALIDATE_CALL_FUNCTION,
+    is_builtin_gpu_metadata_table_source,
+};
 pub(crate) use validation::{GpuCallRequest, GpuCallValidation};

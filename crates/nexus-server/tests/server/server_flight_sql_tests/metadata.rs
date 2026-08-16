@@ -370,11 +370,13 @@ async fn strict_flight_sql_metadata_domain_uses_cpu_without_attempt_or_user_scan
     config.bind_addr = addr;
     config.native_optimizer_config = config.native_optimizer_config.clone().with_no_datafusion_cpu_requirement();
     let backend = build_injected_test_backend(&mut config);
+    config.native_optimizer_config = datafusion_nexus::planner::NexusNativeOptimizerConfig::default();
     assert_eq!(
         backend.optimizer_config().final_plan_requirements(),
         &[datafusion_nexus::planner::FinalPlanRequirement::NoDataFusionCpu]
     );
     let ctx = nexus_server::build_session_context_with_backend(&config, &backend).await.unwrap();
+    assert_eq!(ctx.state().config_options().execution.target_partitions, 1);
     let scan_probe = Arc::new(ScanFailingTableProvider::new(Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int64, false),
         Field::new("label", DataType::Utf8, true),
@@ -388,6 +390,12 @@ async fn strict_flight_sql_metadata_domain_uses_cpu_without_attempt_or_user_scan
         ])))),
     )
     .unwrap();
+    let validation_edges = Arc::new(ScanFailingTableProvider::new(Arc::new(Schema::new(vec![
+        Field::new("src", DataType::Int64, false),
+        Field::new("dst", DataType::Int64, false),
+        Field::new("weight", DataType::Float64, false),
+    ]))));
+    ctx.register_table("validation_edges", validation_edges.clone()).unwrap();
     let replacement = ctx.state().create_logical_plan("SELECT * FROM user_rows").await.unwrap();
     let controlled_rewrite = Arc::new(ControlledPlanReplacement::new(replacement));
     ctx.register_relation_planner(controlled_rewrite.clone()).unwrap();
@@ -461,6 +469,49 @@ async fn strict_flight_sql_metadata_domain_uses_cpu_without_attempt_or_user_scan
     });
     assert_eq!(column_count, Some(2));
 
+    let gpu_list_info = client
+        .execute(
+            "SELECT function_name, provider, domain, available, summary \
+             FROM gpu_list_functions() \
+             WHERE provider IN ('cugraph', 'cuvs') \
+             ORDER BY function_name"
+                .to_string(),
+            None,
+        )
+        .await
+        .unwrap();
+    let gpu_list_query_id = query_id_from_statement_flight_info(&gpu_list_info);
+    let gpu_list = collect_metadata_batches(&mut client, &gpu_list_info).await;
+    let providers = collect_string_column(&gpu_list, "provider");
+    assert!(providers.iter().any(|provider| provider == "cugraph"), "{providers:?}");
+    assert!(providers.iter().any(|provider| provider == "cuvs"), "{providers:?}");
+
+    let describe_info = client
+        .execute(
+            "SELECT function_name FROM gpu_describe_function('cugraph_bfs')".to_string(),
+            None,
+        )
+        .await
+        .unwrap();
+    let described_function = collect_metadata_batches(&mut client, &describe_info).await;
+    assert_eq!(collect_string_column(&described_function, "function_name"), vec!["cugraph_bfs"]);
+
+    let validation_info = client
+        .execute(
+            r#"SELECT valid, relations_resolved
+               FROM gpu_validate_call(
+                 'cugraph_bfs',
+                 '{"schema_version":1,"relations":{"edges":{"table":"validation_edges"}},"options":{"source_vertex":0,"src_col":"src","dst_col":"dst","weight_col":"weight","depth_limit":2}}'
+               )"#
+            .to_string(),
+            None,
+        )
+        .await
+        .unwrap();
+    let validation = collect_metadata_batches(&mut client, &validation_info).await;
+    assert_eq!(validation.iter().map(RecordBatch::num_rows).sum::<usize>(), 1);
+    assert!(!validation_edges.scan_called(), "metadata validation must inspect only the registered table schema");
+
     let mut prepared = client.prepare("SHOW COLUMNS FROM metadata_probe".to_string(), None).await.unwrap();
     let prepared_info = prepared.execute().await.unwrap();
     let prepared_columns = collect_metadata_batches(&mut client, &prepared_info).await;
@@ -482,6 +533,10 @@ async fn strict_flight_sql_metadata_domain_uses_cpu_without_attempt_or_user_scan
     assert!(metadata_stats.contains("# outcome=succeeded"), "{metadata_stats}");
     assert!(metadata_stats.contains("[physical_plan]"), "{metadata_stats}");
     assert!(!metadata_stats.contains("# attempt_id="), "{metadata_stats}");
+    let gpu_list_stats = get_query_stats_raw(&mut client, &gpu_list_query_id).await;
+    assert!(gpu_list_stats.contains("# outcome=succeeded"), "{gpu_list_stats}");
+    assert!(!gpu_list_stats.contains("# attempt_id="), "{gpu_list_stats}");
+    assert!(!gpu_list_stats.contains("[planning]"), "{gpu_list_stats}");
     let cancelled_stats = get_query_stats_raw(&mut client, &cancelled_query_id).await;
     assert!(cancelled_stats.contains("# outcome=cancelled"), "{cancelled_stats}");
     assert!(!cancelled_stats.contains("# attempt_id="), "{cancelled_stats}");
@@ -508,6 +563,7 @@ async fn strict_flight_sql_metadata_domain_uses_cpu_without_attempt_or_user_scan
     for sql in [
         "SELECT id FROM user_rows WHERE CAST(id AS VARCHAR) ILIKE '1%'",
         "SELECT i.table_name FROM information_schema.tables i JOIN user_rows u ON true WHERE i.table_name ILIKE '%probe%'",
+        "SELECT m.function_name FROM gpu_list_functions() m JOIN user_rows u ON true",
     ] {
         let flight_info = client.execute(sql.to_string(), None).await.unwrap();
         let ticket = flight_info.endpoint.first().and_then(|endpoint| endpoint.ticket.clone()).unwrap();
@@ -519,7 +575,7 @@ async fn strict_flight_sql_metadata_domain_uses_cpu_without_attempt_or_user_scan
     }
     assert_eq!(
         backend.attempt_counters_snapshot().attempts_begun,
-        attempts_before.attempts_begun + 2,
+        attempts_before.attempts_begun + 3,
         "mixed and user-table statements must retain data-domain attempt ownership"
     );
 

@@ -68,7 +68,7 @@ use super::{
     },
     diagnostics::log_native_planning_report_for_tables,
     error::{adapter_error_to_status, datafusion_error_to_captured_error, datafusion_error_to_status_for_operation},
-    observability::CapturedError,
+    observability::{CapturedError, StableValue},
 };
 use crate::{
     adapter_error::{DataFusionErrorExt, Error, ErrorCode, ErrorLogDiagnostics},

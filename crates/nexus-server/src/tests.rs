@@ -66,7 +66,15 @@ fn bounded_config(max_active_attempts_per_device: usize) -> ServerConfig {
 }
 
 fn runtime_backend(max_active_attempts_per_device: usize) -> NexusGpuBackend {
-    NexusGpuBackend::builder()
+    runtime_backend_with_policy(max_active_attempts_per_device, false)
+}
+
+fn strict_runtime_backend(max_active_attempts_per_device: usize) -> NexusGpuBackend {
+    runtime_backend_with_policy(max_active_attempts_per_device, true)
+}
+
+fn runtime_backend_with_policy(max_active_attempts_per_device: usize, strict: bool) -> NexusGpuBackend {
+    let builder = NexusGpuBackend::builder()
         .device_memory_ownership([(0, GpuMemoryOwnership::WholeDeviceExclusive)])
         .with_native_execution_config(NexusNativeExecutionConfig::bounded(
             TEST_DEVICE_BUDGET_BYTES,
@@ -77,9 +85,9 @@ fn runtime_backend(max_active_attempts_per_device: usize) -> NexusGpuBackend {
         ))
         .device_profiles([NexusGpuDeviceProfile::new(0)
             .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: TEST_DEVICE_BUDGET_BYTES })
-            .with_max_active_attempts(max_active_attempts_per_device)])
-        .build()
-        .expect("runtime backend should build")
+            .with_max_active_attempts(max_active_attempts_per_device)]);
+    let builder = if strict { builder.with_no_datafusion_cpu_requirement() } else { builder };
+    builder.build().expect("runtime backend should build")
 }
 
 fn validation_projection(max_active_attempts_per_device: usize) -> crate::backend::TestBackendValidationProjection {
@@ -472,6 +480,42 @@ async fn build_session_context_with_backend_installs_backend_admission_source() 
     let ctx = build_session_context_with_backend(&config, &backend).await.unwrap();
 
     assert!(backend.is_session_state_bound(&ctx.state()));
+}
+
+#[tokio::test]
+async fn strict_injected_backend_is_the_session_policy_authority() {
+    let mut caller_config = bounded_config(1);
+    caller_config.native_optimizer_config = NexusNativeOptimizerConfig::default();
+    let backend = strict_runtime_backend(1);
+
+    let ctx = build_session_context_with_backend(&caller_config, &backend).await.unwrap();
+
+    assert!(backend.is_session_state_bound(&ctx.state()));
+    assert_eq!(ctx.state().config_options().execution.target_partitions, 1);
+}
+
+#[tokio::test]
+async fn builder_rejects_strict_backend_session_with_incompatible_target_partitions() {
+    let mut caller_config = bounded_config(1);
+    caller_config.native_optimizer_config = NexusNativeOptimizerConfig::default();
+    let backend = strict_runtime_backend(1);
+    let ctx = build_session_context_with_backend(&caller_config, &backend).await.unwrap();
+    let incompatible_config = ctx.state().config().clone().with_target_partitions(8);
+    let incompatible_state =
+        SessionStateBuilder::new_from_existing(ctx.state()).with_config(incompatible_config).build();
+    let incompatible_ctx = Arc::new(SessionContext::new_with_state(incompatible_state));
+
+    let error = builder_error(
+        FlightSqlServer::builder().config(caller_config).backend(backend).session_context(incompatible_ctx),
+    )
+    .await;
+
+    assert_eq!(error.code(), crate::adapter_error::ErrorCode::InvalidRequest);
+    assert_eq!(error.operation(), "datafusion_nexus.server.builder");
+    assert_eq!(error.fact_value("reason"), Some("server_session_optimizer_policy_mismatch"));
+    assert_eq!(error.fact_value("config_field"), Some("datafusion.execution.target_partitions"));
+    assert_eq!(error.fact_value("expected_value"), Some("1"));
+    assert_eq!(error.fact_value("actual_value"), Some("8"));
 }
 
 #[tokio::test]

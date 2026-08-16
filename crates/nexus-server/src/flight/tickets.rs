@@ -167,6 +167,7 @@ pub(super) struct CoordinatorExecutionTerminal {
     finished: Notify,
     key: QueryKey,
     query_id: String,
+    sql: Arc<str>,
     started_at: Instant,
 }
 
@@ -231,8 +232,8 @@ enum CoordinatorExecutionTerminalOutcome {
 
 impl CoordinatorExecutionTerminal {
     #[cfg(test)]
-    pub(super) fn new(lease: QueryExecutionLease, query_id: String, started_at: Instant) -> Arc<Self> {
-        Self::new_with_attempt_report(lease, query_id, started_at, false)
+    pub(super) fn new(lease: QueryExecutionLease, query_id: String, sql: Arc<str>, started_at: Instant) -> Arc<Self> {
+        Self::new_with_attempt_report(lease, query_id, sql, started_at, false)
     }
 
     /// Creates a terminal lease that cannot be released until the attempt
@@ -242,6 +243,7 @@ impl CoordinatorExecutionTerminal {
     pub(super) fn new_with_attempt_report(
         lease: QueryExecutionLease,
         query_id: String,
+        sql: Arc<str>,
         started_at: Instant,
         requires_attempt_report: bool,
     ) -> Arc<Self> {
@@ -256,6 +258,7 @@ impl CoordinatorExecutionTerminal {
             finished: Notify::new(),
             key,
             query_id,
+            sql,
             started_at,
         })
     }
@@ -390,7 +393,7 @@ impl CoordinatorExecutionTerminal {
             },
             CoordinatorExecutionTerminalOutcome::Captured { stage, status, captured } => {
                 lease.finish_captured(stage, &status, *captured);
-                log_statement_status(&self.query_id, stage, self.started_at, &status);
+                log_statement_status(&self.query_id, Some(&self.sql), stage, self.started_at, &status);
             },
             CoordinatorExecutionTerminalOutcome::Dropped { stage } => {
                 drop(lease);
@@ -424,7 +427,7 @@ impl CoordinatorExecutionTerminal {
         match outcome {
             CoordinatorExecutionTerminalOutcome::Captured { stage, status, captured } => {
                 lease.finish_attempt_report_delivery_failed(stage, &status, *captured, attempt_outcome);
-                log_statement_status(&self.query_id, stage, self.started_at, &status);
+                log_statement_status(&self.query_id, Some(&self.sql), stage, self.started_at, &status);
             },
             // This private path is constructed only by
             // `finish_attempt_report_delivery_failed` above.
