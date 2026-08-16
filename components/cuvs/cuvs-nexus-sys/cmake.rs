@@ -1,6 +1,6 @@
 use std::{
     collections::BTreeSet,
-    fs,
+    env, fs,
     path::{Component, Path, PathBuf},
     process::Command,
 };
@@ -8,8 +8,7 @@ use std::{
 use anyhow::{Context, Result};
 use cmake_package::{Error as CmakeError, Version, VersionError, find_package};
 
-pub(crate) const NATIVE_CUVS_VERSION: &str = "26.8.0";
-const PINNED_CUVS_REVISION: &str = "6ba2ce28687b32995d015da35b9823ec35de108b";
+pub(crate) const NATIVE_CUVS_VERSION: &str = "26.8.1";
 const CUVS_COMPONENT: &str = "c_api";
 const CUVS_C_API_TARGET: &str = "cuvs::c_api";
 const PYTHON_PRINT_LIBCUVS_PACKAGE_DIR: &str = r#"
@@ -122,6 +121,37 @@ fn resolve_shared_library(lib_dir: &Path, stem: &str) -> Result<PathBuf> {
     Ok(candidates.into_iter().next().expect("one candidate"))
 }
 
+fn is_git_sha(value: &str) -> bool {
+    value.len() == 40 && value.bytes().all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+fn cuvs_gitlink(workspace_root: &Path) -> Option<String> {
+    for (args, sha_field) in [(["ls-files", "--stage", "--", "cuvs"], 1), (["ls-tree", "HEAD", "--", "cuvs"], 2)] {
+        let Ok(output) = Command::new("git").arg("-C").arg(workspace_root).args(args).output() else {
+            return None;
+        };
+        if !output.status.success() {
+            continue;
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let fields = stdout.split_whitespace().collect::<Vec<_>>();
+        if fields.len() == 4 && fields[0] == "160000" && is_git_sha(fields[sha_field]) {
+            return Some(fields[sha_field].to_owned());
+        }
+    }
+    None
+}
+
+/// The `cuvs` submodule gitlink recorded in the superproject is the source
+/// pin. Build scripts must not hard-code a SHA, so the pin is resolved from
+/// git at build time and falls back to the marker's recorded identity only
+/// when the superproject is unavailable (e.g. a non-git source copy).
+fn recorded_cuvs_gitlink() -> Option<String> {
+    let manifest_dir = env::var_os("CARGO_MANIFEST_DIR")?;
+    let workspace_root = Path::new(&manifest_dir).parent()?;
+    cuvs_gitlink(workspace_root)
+}
+
 fn source_revision(prefix: Option<&Path>, lib_dir: &Path) -> Result<String> {
     let inferred_prefix = lib_dir.parent().filter(|path| {
         matches!(lib_dir.file_name().and_then(|name| name.to_str()), Some("lib" | "lib64")) && path.is_dir()
@@ -133,10 +163,17 @@ fn source_revision(prefix: Option<&Path>, lib_dir: &Path) -> Result<String> {
             .with_context(|| format!("failed to read source revision marker {}", marker.display()))?;
         let revision = revision.trim();
         anyhow::ensure!(
-            revision == PINNED_CUVS_REVISION,
-            "canonical cuVS prefix reports source revision {revision}, expected {PINNED_CUVS_REVISION}: {}",
+            is_git_sha(revision),
+            "canonical cuVS prefix reports an invalid source revision {revision:?}: {}",
             marker.display()
         );
+        if let Some(expected) = recorded_cuvs_gitlink() {
+            anyhow::ensure!(
+                revision == expected,
+                "canonical cuVS prefix reports source revision {revision}, but the superproject records cuvs gitlink {expected}. Rebuild the canonical prefix with `scripts/build_libcuvs.sh` from the recorded submodule: {}",
+                marker.display()
+            );
+        }
         return Ok(revision.to_owned());
     }
 

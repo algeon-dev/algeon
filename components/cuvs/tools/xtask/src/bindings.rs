@@ -8,8 +8,8 @@ use anyhow::{Context, Result, bail, ensure};
 
 use crate::source;
 
-fn generate(workspace_root: &Path, output: &Path) -> Result<()> {
-    source::verify(workspace_root)?;
+fn generate(workspace_root: &Path, output: &Path) -> Result<String> {
+    let revision = source::verify(workspace_root)?;
     let manifest_dir = workspace_root.join("tools/xtask");
     let sys_dir = workspace_root.join("cuvs-nexus-sys");
     let source_dir = workspace_root.join("cuvs");
@@ -49,7 +49,7 @@ fn generate(workspace_root: &Path, output: &Path) -> Result<()> {
         .context("bindgen failed to generate cuVS bindings from the pinned headers")?
         .write_to_file(output)
         .with_context(|| format!("failed to write generated bindings to {}", output.display()))?;
-    Ok(())
+    Ok(revision)
 }
 
 fn print_diff(checked_in: &Path, generated: &Path) -> Result<()> {
@@ -66,14 +66,14 @@ pub(crate) fn run(workspace_root: &Path, action: &str) -> Result<()> {
     ensure!(matches!(action, "generate" | "check"), "usage: cargo xtask bindings <generate|check>");
     let temporary = tempfile::Builder::new().prefix("cuvs-nexus-bindings-").tempdir()?;
     let generated = temporary.path().join("bindings.rs");
-    generate(workspace_root, &generated)?;
+    let revision = generate(workspace_root, &generated)?;
     ensure!(generated.metadata()?.len() > 0, "bindings generator produced an empty file");
     let checked_in = workspace_root.join("cuvs-nexus-sys/src/bindings.rs");
 
     if action == "generate" {
         fs::copy(&generated, &checked_in)
             .with_context(|| format!("failed to update checked-in bindings at {}", checked_in.display()))?;
-        println!("updated {} from pinned cuVS {}", checked_in.display(), source::PINNED_CUVS_REVISION);
+        println!("updated {} from pinned cuVS {}", checked_in.display(), revision);
         return Ok(());
     }
     if fs::read(&generated)? != fs::read(&checked_in)? {

@@ -424,7 +424,7 @@ fn kmeans_model_retains_fitted_params_and_device_centroids() {
     drop(matrix);
 
     let labels = i32_to_host(&runtime, labels);
-    for cluster in labels.chunks_exact(3) {
+    for cluster in labels.as_chunks::<3>().0 {
         assert_eq!(cluster[0], cluster[1]);
         assert_eq!(cluster[1], cluster[2]);
     }

@@ -70,7 +70,7 @@ fn main() -> Result<()> {
         },
         Some("source") => {
             ensure!(args.len() == 2 && args[1] == "check", "{}", usage());
-            source::verify(&workspace_root)
+            source::verify(&workspace_root).map(|_| ())
         },
         Some("help" | "--help" | "-h") | None => {
             println!("{}", usage());

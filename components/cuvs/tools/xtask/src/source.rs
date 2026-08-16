@@ -4,8 +4,11 @@ use anyhow::{Context, Result, ensure};
 
 use crate::command;
 
-pub(crate) const PINNED_CUVS_REVISION: &str = "6ba2ce28687b32995d015da35b9823ec35de108b";
 const PINNED_CUVS_URL: &str = "https://github.com/rapidsai/cuvs.git";
+
+fn is_git_sha(value: &str) -> bool {
+    value.len() == 40 && value.bytes().all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+}
 
 fn git(workspace_root: &Path) -> Command {
     let mut command = Command::new("git");
@@ -20,7 +23,10 @@ fn git_text(workspace_root: &Path, args: &[&str], description: &str) -> Result<S
     String::from_utf8(output.stdout).with_context(|| format!("{description} returned non-UTF-8 output"))
 }
 
-pub(crate) fn verify(workspace_root: &Path) -> Result<()> {
+/// The `cuvs` submodule gitlink recorded in the superproject is the source
+/// pin. Maintenance tooling resolves it from git and must not hard-code a
+/// SHA; this verifies the index, HEAD, and working checkout all agree on it.
+pub(crate) fn verify(workspace_root: &Path) -> Result<String> {
     let gitmodules = workspace_root.join(".gitmodules");
     ensure!(gitmodules.is_file(), ".gitmodules is missing");
 
@@ -38,19 +44,24 @@ pub(crate) fn verify(workspace_root: &Path) -> Result<()> {
     ensure!(url.trim() == PINNED_CUVS_URL, ".gitmodules must define submodule.cuvs.url={PINNED_CUVS_URL}");
 
     let index = git_text(workspace_root, &["ls-files", "--stage", "--", "cuvs"], "cuVS gitlink inspection")?;
-    let fields = index.split_whitespace().collect::<Vec<_>>();
+    let index_fields = index.split_whitespace().collect::<Vec<_>>();
     ensure!(
-        fields.as_slice() == ["160000", PINNED_CUVS_REVISION, "0", "cuvs"],
-        "cuvs must be a stage-0 gitlink at {PINNED_CUVS_REVISION}, found: {}",
+        index_fields.len() == 4
+            && index_fields[0] == "160000"
+            && is_git_sha(index_fields[1])
+            && index_fields[2] == "0"
+            && index_fields[3] == "cuvs",
+        "cuvs must be a stage-0 gitlink in the superproject index, found: {}",
         index.trim()
     );
+    let pinned = index_fields[1].to_owned();
 
     let head = git_text(workspace_root, &["ls-tree", "HEAD", "--", "cuvs"], "HEAD cuVS gitlink inspection")?;
     if !head.trim().is_empty() {
         let fields = head.split_whitespace().collect::<Vec<_>>();
         ensure!(
-            fields.len() == 4 && fields[0] == "160000" && fields[1] == "commit" && fields[2] == PINNED_CUVS_REVISION,
-            "superproject HEAD must record cuvs {PINNED_CUVS_REVISION}, found: {}",
+            fields.len() == 4 && fields[0] == "160000" && fields[1] == "commit" && fields[2] == pinned,
+            "superproject HEAD must record the same cuvs gitlink as the index ({pinned}), found: {}",
             head.trim()
         );
     }
@@ -63,14 +74,14 @@ pub(crate) fn verify(workspace_root: &Path) -> Result<()> {
 
     let revision = git_text(&source_dir, &["rev-parse", "HEAD"], "cuVS source revision inspection")?;
     ensure!(
-        revision.trim() == PINNED_CUVS_REVISION,
-        "cuVS submodule HEAD is {}; expected {PINNED_CUVS_REVISION}",
+        revision.trim() == pinned,
+        "cuVS submodule HEAD is {}; expected the recorded gitlink {pinned}",
         revision.trim()
     );
     let dirty =
         git_text(&source_dir, &["status", "--porcelain=v1", "--untracked-files=all"], "cuVS source status inspection")?;
     ensure!(dirty.trim().is_empty(), "cuVS source has build-input changes:\n{}", dirty.trim());
 
-    println!("cuVS source contract OK: {PINNED_CUVS_REVISION}");
-    Ok(())
+    println!("cuVS source contract OK: {pinned}");
+    Ok(pinned)
 }

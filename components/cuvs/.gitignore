@@ -27,3 +27,7 @@ cuvs-install/
 .DS_Store
 
 *.log
+
+# Kept locally, out of git
+/docs/
+/.github/
