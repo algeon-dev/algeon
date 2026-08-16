@@ -351,9 +351,10 @@ pub(crate) fn gpu_resident_producer_input_name(plan: &dyn ExecutionPlan) -> Opti
 }
 
 pub(crate) fn gpu_resident_producer_unique_output_key(plan: &dyn ExecutionPlan) -> Option<BTreeSet<String>> {
-    gpu_resident_producer(plan).and_then(|producer| {
+    let key: BTreeSet<String> = gpu_resident_producer(plan).and_then(|producer| {
         producer.unique_output_key_columns().map(|columns| columns.iter().map(|column| (*column).to_owned()).collect())
-    })
+    })?;
+    key.iter().all(|column| plan.schema().fields().iter().any(|field| field.name() == column)).then_some(key)
 }
 
 pub(crate) fn rewrite_gpu_resident_producer_for_subsumed_composed_consumer(

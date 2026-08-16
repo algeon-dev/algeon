@@ -781,19 +781,15 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_frame_s
                 && node.spec.residual_predicate.is_none()
                 && stateless_streaming_probe_supported(node) =>
         {
-            if inputs.max_per_frame_reservation_bytes() <= partitioned_join_target_bytes_for_context(context) / 2 {
-                execute_compiled_one_shot_equi_join_probe_from_frame_stream(node, build, inputs, reservations, metrics)
-            } else {
-                execute_compiled_partitioned_hash_equi_join_probe_from_frame_stream(
-                    context,
-                    node_id,
-                    node,
-                    build,
-                    inputs,
-                    reservations,
-                    metrics,
-                )
-            }
+            execute_compiled_partitioned_hash_equi_join_probe_from_frame_stream(
+                context,
+                node_id,
+                node,
+                build,
+                inputs,
+                reservations,
+                metrics,
+            )
         },
         other => {
             let inputs = match inputs.into_remaining_frames_owned(reservations, metrics) {
