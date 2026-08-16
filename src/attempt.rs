@@ -2,6 +2,7 @@
 
 use std::{
     any::Any,
+    future::Future,
     panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
     pin::Pin,
     sync::{Arc, Mutex},
@@ -20,7 +21,7 @@ use datafusion::{
     },
     prelude::{DataFrame, SessionContext},
 };
-use futures::{FutureExt, Stream};
+use futures::{FutureExt, Stream, future::BoxFuture};
 use nexus_query_engine::{
     attempt::{AttemptAdmissionBinding, AttemptAdmissionRejection, AttemptHandle, AttemptOwner, BeginAttemptRequest},
     observability::AttemptFailureSummary,
@@ -458,39 +459,49 @@ impl NexusAttempt {
     }
 
     /// Plans SQL in a fresh invocation-local session state.
-    pub async fn plan_sql(&self, ctx: &SessionContext, sql: &str) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
-        if self.cancellation().check("datafusion_nexus.attempt.plan_sql").is_err() {
-            return Err(self.cancelled_error("datafusion_nexus.attempt.plan_sql"));
-        }
-        self.fail_if_backend_closing("datafusion_nexus.attempt.plan_sql")?;
-        let invocation = self.invocation_context(ctx);
-        let handle = self.state.handle.clone();
-        let _ = handle.record_planning_started();
-        let planned =
-            AssertUnwindSafe(async { invocation.sql(sql).await?.create_physical_plan().await }).catch_unwind().await;
-        let plan = match planned {
-            Ok(Ok(plan)) => plan,
-            Ok(Err(error)) => {
-                self.planning_failed(&error);
-                return Err(error);
-            },
-            Err(panic) => {
-                self.commit(RuntimeTerminalOutcome::Panicked);
-                resume_unwind(panic);
-            },
-        };
-        if self.cancellation().check("datafusion_nexus.attempt.plan_sql").is_err() {
-            return Err(self.cancelled_error("datafusion_nexus.attempt.plan_sql"));
-        }
-        let _ = handle.set_disposition(disposition_for(classify_final_plan(plan.as_ref())));
-        let _ = handle.record_planning_finished();
-        Ok(plan)
+    pub fn plan_sql<'a>(
+        &'a self,
+        ctx: &'a SessionContext,
+        sql: &'a str,
+    ) -> BoxFuture<'a, DataFusionResult<Arc<dyn ExecutionPlan>>> {
+        Box::pin(async move {
+            if self.cancellation().check("datafusion_nexus.attempt.plan_sql").is_err() {
+                return Err(self.cancelled_error("datafusion_nexus.attempt.plan_sql"));
+            }
+            self.fail_if_backend_closing("datafusion_nexus.attempt.plan_sql")?;
+            let invocation = self.invocation_context(ctx);
+            let handle = self.state.handle.clone();
+            let _ = handle.record_planning_started();
+            let planned = AssertUnwindSafe(async { invocation.sql(sql).await?.create_physical_plan().await })
+                .catch_unwind()
+                .await;
+            let plan = match planned {
+                Ok(Ok(plan)) => plan,
+                Ok(Err(error)) => {
+                    self.planning_failed(&error);
+                    return Err(error);
+                },
+                Err(panic) => {
+                    self.commit(RuntimeTerminalOutcome::Panicked);
+                    resume_unwind(panic);
+                },
+            };
+            if self.cancellation().check("datafusion_nexus.attempt.plan_sql").is_err() {
+                return Err(self.cancelled_error("datafusion_nexus.attempt.plan_sql"));
+            }
+            let _ = handle.set_disposition(disposition_for(classify_final_plan(plan.as_ref())));
+            let _ = handle.record_planning_finished();
+            Ok(plan)
+        })
     }
 
     /// Plans and executes SQL in one invocation.
-    pub async fn sql(&self, ctx: &SessionContext, sql: &str) -> DataFusionResult<AttemptStream> {
-        let plan = self.plan_sql(ctx, sql).await?;
-        self.execute_physical_plan(plan, ctx)
+    pub fn sql<'a>(
+        &'a self,
+        ctx: &'a SessionContext,
+        sql: &'a str,
+    ) -> impl Future<Output = DataFusionResult<AttemptStream>> + Send + 'a {
+        self.plan_sql(ctx, sql).map(move |plan| plan.and_then(|plan| self.execute_physical_plan(plan, ctx)))
     }
 
     /// Plans and executes an existing `DataFrame` in one invocation. The

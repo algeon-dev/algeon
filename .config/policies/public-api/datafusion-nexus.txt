@@ -49,13 +49,13 @@ pub fn datafusion_nexus::attempt::NexusAttempt::completion(&self) -> nexus_query
 pub async fn datafusion_nexus::attempt::NexusAttempt::execute_dataframe(&self, datafusion::dataframe::DataFrame) -> datafusion_common::error::Result<datafusion_nexus::attempt::AttemptStream>
 pub fn datafusion_nexus::attempt::NexusAttempt::execute_physical_plan(&self, alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>, &datafusion::execution::context::SessionContext) -> datafusion_common::error::Result<datafusion_nexus::attempt::AttemptStream>
 pub fn datafusion_nexus::attempt::NexusAttempt::physical_planning_finished(&self, &dyn datafusion_physical_plan::execution_plan::ExecutionPlan)
-pub async fn datafusion_nexus::attempt::NexusAttempt::plan_sql(&self, &datafusion::execution::context::SessionContext, &str) -> datafusion_common::error::Result<alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>>
+pub fn datafusion_nexus::attempt::NexusAttempt::plan_sql<'a>(&'a self, &'a datafusion::execution::context::SessionContext, &'a str) -> futures_core::future::BoxFuture<'a, datafusion_common::error::Result<alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>>>
 pub fn datafusion_nexus::attempt::NexusAttempt::planning_context(&self, &datafusion::execution::context::SessionContext) -> datafusion_common::error::Result<datafusion::execution::context::SessionContext>
 pub fn datafusion_nexus::attempt::NexusAttempt::planning_failed(&self, &datafusion_common::error::DataFusionError)
 pub fn datafusion_nexus::attempt::NexusAttempt::planning_failed_adapter(&self, &datafusion_nexus::error::Error)
 pub fn datafusion_nexus::attempt::NexusAttempt::register_sealed_report_observer<F>(&self, F) where F: core::ops::function::Fn(core::option::Option<alloc::sync::Arc<nexus_query_engine::observability::attempt_report::QueryAttemptReport>>, nexus_query_engine::observability::recorder::SealedRuntimeObservationSnapshot) + core::marker::Send + core::marker::Sync + 'static
 pub fn datafusion_nexus::attempt::NexusAttempt::sealed_graph_claim_calibration_snapshot(&self) -> core::option::Option<datafusion_nexus::attempt::SealedAttemptGraphClaimCalibrationSnapshot>
-pub async fn datafusion_nexus::attempt::NexusAttempt::sql(&self, &datafusion::execution::context::SessionContext, &str) -> datafusion_common::error::Result<datafusion_nexus::attempt::AttemptStream>
+pub fn datafusion_nexus::attempt::NexusAttempt::sql<'a>(&'a self, &'a datafusion::execution::context::SessionContext, &'a str) -> impl core::future::future::Future<Output = datafusion_common::error::Result<datafusion_nexus::attempt::AttemptStream>> + core::marker::Send + 'a
 impl core::fmt::Debug for datafusion_nexus::attempt::NexusAttempt
 pub fn datafusion_nexus::attempt::NexusAttempt::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct datafusion_nexus::attempt::SealedAttemptGraphClaimCalibrationSnapshot
@@ -890,7 +890,7 @@ pub datafusion_nexus::gpu_coverage::QueryGpuValidatedUnder::session_config_finge
 pub const datafusion_nexus::gpu_coverage::EXPLAIN_GPU_SCHEMA_VERSION: u8
 pub const datafusion_nexus::gpu_coverage::NEXUS_EXPLAIN_COVERAGE_FUNCTION: &str
 pub fn datafusion_nexus::gpu_coverage::parse_explain_gpu(&str) -> datafusion_nexus::error::Result<core::option::Option<datafusion_nexus::gpu_coverage::ExplainGpuStatement>>
-pub async fn datafusion_nexus::gpu_coverage::validate_query(&datafusion::execution::context::SessionContext, impl core::convert::AsRef<str>) -> datafusion_nexus::error::Result<datafusion_nexus::gpu_coverage::QueryGpuCoverage>
+pub fn datafusion_nexus::gpu_coverage::validate_query<'a>(&'a datafusion::execution::context::SessionContext, impl core::convert::AsRef<str> + core::marker::Send + 'a) -> futures_core::future::BoxFuture<'a, datafusion_nexus::error::Result<datafusion_nexus::gpu_coverage::QueryGpuCoverage>>
 pub mod datafusion_nexus::gpu_coverage_sql
 pub fn datafusion_nexus::gpu_coverage_sql::coverage_batch(&datafusion_nexus::gpu_coverage::QueryGpuCoverage, datafusion_nexus::gpu_coverage::ExplainGpuOutputMode, core::option::Option<&str>) -> datafusion_common::error::Result<arrow_array::record_batch::RecordBatch>
 pub fn datafusion_nexus::gpu_coverage_sql::coverage_schema() -> arrow_schema::schema::SchemaRef

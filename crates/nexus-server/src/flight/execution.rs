@@ -1,3 +1,5 @@
+use futures::stream::BoxStream;
+
 use super::*;
 
 /// Keeps a Flight-owned cancellation path ahead of the attempt stream's drop
@@ -699,22 +701,24 @@ impl DatafusionNexusFlightSqlService {
         let stream_operation = ticket_kind.stream_operation();
         // `take_until` ends cleanly on cancellation, so append a one-shot tail
         // that emits CANCELLED as the gRPC trailer when the token fired.
-        let body = stream
-            .map_ok(move |batch| {
-                let _stream_enter = streaming_span_for_output.enter();
-                output_counters_for_output.record_output(batch.num_rows(), batch.get_array_memory_size());
-                batch
-            })
-            .map_err(move |error| {
-                let _stream_enter = DatafusionNexusFlightSqlService::query_stage_span(
-                    None,
-                    &query_id_for_body,
-                    correlation_id_for_body.as_deref(),
-                    "result_streaming",
-                )
-                .entered();
-                datafusion_error_to_flight_error(error, &query_id_for_body, &terminal_for_body, stream_operation)
-            });
+        let body: BoxStream<'static, Result<arrow::record_batch::RecordBatch, FlightError>> = Box::pin(
+            stream
+                .map_ok(move |batch| {
+                    let _stream_enter = streaming_span_for_output.enter();
+                    output_counters_for_output.record_output(batch.num_rows(), batch.get_array_memory_size());
+                    batch
+                })
+                .map_err(move |error| {
+                    let _stream_enter = DatafusionNexusFlightSqlService::query_stage_span(
+                        None,
+                        &query_id_for_body,
+                        correlation_id_for_body.as_deref(),
+                        "result_streaming",
+                    )
+                    .entered();
+                    datafusion_error_to_flight_error(error, &query_id_for_body, &terminal_for_body, stream_operation)
+                }),
+        );
         let terminal_for_tail = Arc::clone(&coordinator_terminal);
         let tail = futures::stream::once(async move {
             cancel_token_for_tail.is_cancelled().then(|| {
@@ -740,7 +744,7 @@ impl DatafusionNexusFlightSqlService {
             let _guard = &guard;
             batch
         });
-        let mut stream = Box::pin(stream);
+        let mut stream: BoxStream<'static, Result<arrow::record_batch::RecordBatch, FlightError>> = Box::pin(stream);
         let result_streaming_span_for_poll = streaming_span.clone();
         let stream = futures::stream::poll_fn(move |context| {
             let _stream_enter = result_streaming_span_for_poll.enter();
