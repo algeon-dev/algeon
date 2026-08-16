@@ -7,6 +7,7 @@ use nexus_query_engine::plan::{
     GraphAlgorithmParams as NativeGraphAlgorithmParams, GraphBetweennessSeeds as NativeGraphBetweennessSeeds,
     GraphConstructionOptions as NativeGraphConstructionOptions,
     GraphConstructionPolicy as NativeGraphConstructionPolicy, GraphKCoreDegreeType as NativeGraphKCoreDegreeType,
+    GraphSsspSource as NativeGraphSsspSource,
 };
 
 use super::plan_error;
@@ -226,6 +227,136 @@ pub struct CugraphOperationDefinition {
     pub sql_function_name: &'static str,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum CugraphLogicalNativeIdType {
+    Int64,
+}
+
+impl CugraphLogicalNativeIdType {
+    pub(crate) const fn data_type(self) -> DataType {
+        match self {
+            Self::Int64 => DataType::Int64,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum CugraphLogicalOutputMultiplicity {
+    OnePerVertex,
+    EdgeEndpointOccurrences,
+    SideInputOccurrences,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct CugraphLogicalOutputColumn {
+    pub(crate) name: &'static str,
+    pub(crate) nullable: bool,
+    pub(crate) multiplicity: CugraphLogicalOutputMultiplicity,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct CugraphLogicalStringContract {
+    pub(crate) native_id_type: CugraphLogicalNativeIdType,
+    pub(crate) output_columns: &'static [CugraphLogicalOutputColumn],
+}
+
+const ONE_VERTEX_LOGICAL_OUTPUT: &[CugraphLogicalOutputColumn] = &[CugraphLogicalOutputColumn {
+    name: "vertex",
+    nullable: false,
+    multiplicity: CugraphLogicalOutputMultiplicity::OnePerVertex,
+}];
+
+const BFS_LOGICAL_OUTPUTS: &[CugraphLogicalOutputColumn] = &[
+    CugraphLogicalOutputColumn {
+        name: "vertex",
+        nullable: false,
+        multiplicity: CugraphLogicalOutputMultiplicity::OnePerVertex,
+    },
+    CugraphLogicalOutputColumn {
+        name: "predecessor",
+        nullable: true,
+        multiplicity: CugraphLogicalOutputMultiplicity::EdgeEndpointOccurrences,
+    },
+];
+
+const EDGE_LOGICAL_OUTPUTS: &[CugraphLogicalOutputColumn] = &[
+    CugraphLogicalOutputColumn {
+        name: "src",
+        nullable: false,
+        multiplicity: CugraphLogicalOutputMultiplicity::EdgeEndpointOccurrences,
+    },
+    CugraphLogicalOutputColumn {
+        name: "dst",
+        nullable: false,
+        multiplicity: CugraphLogicalOutputMultiplicity::EdgeEndpointOccurrences,
+    },
+];
+
+const EDGE_BETWEENNESS_LOGICAL_OUTPUTS: &[CugraphLogicalOutputColumn] = &[
+    CugraphLogicalOutputColumn {
+        name: "source",
+        nullable: false,
+        multiplicity: CugraphLogicalOutputMultiplicity::EdgeEndpointOccurrences,
+    },
+    CugraphLogicalOutputColumn {
+        name: "destination",
+        nullable: false,
+        multiplicity: CugraphLogicalOutputMultiplicity::EdgeEndpointOccurrences,
+    },
+];
+
+const PAIR_LOGICAL_OUTPUTS: &[CugraphLogicalOutputColumn] = &[
+    CugraphLogicalOutputColumn {
+        name: "first",
+        nullable: false,
+        multiplicity: CugraphLogicalOutputMultiplicity::SideInputOccurrences,
+    },
+    CugraphLogicalOutputColumn {
+        name: "second",
+        nullable: false,
+        multiplicity: CugraphLogicalOutputMultiplicity::SideInputOccurrences,
+    },
+];
+
+impl CugraphOperationDefinition {
+    /// Whether this SQL function supports logical string vertex IDs through
+    /// the shared per-call codebook.
+    pub const fn supports_logical_string_vertices(&self) -> bool {
+        self.logical_string_contract().is_some()
+    }
+
+    pub(crate) const fn logical_string_contract(&self) -> Option<CugraphLogicalStringContract> {
+        let output_columns = match self.algorithm {
+            CugraphAlgorithm::Bfs | CugraphAlgorithm::Sssp => BFS_LOGICAL_OUTPUTS,
+            CugraphAlgorithm::PageRank
+            | CugraphAlgorithm::PersonalizedPageRank
+            | CugraphAlgorithm::Louvain
+            | CugraphAlgorithm::EigenvectorCentrality
+            | CugraphAlgorithm::KatzCentrality
+            | CugraphAlgorithm::Hits
+            | CugraphAlgorithm::BetweennessCentrality
+            | CugraphAlgorithm::DegreesAll
+            | CugraphAlgorithm::InDegreesAll
+            | CugraphAlgorithm::OutDegreesAll
+            | CugraphAlgorithm::WeaklyConnectedComponents
+            | CugraphAlgorithm::StronglyConnectedComponents
+            | CugraphAlgorithm::TriangleCountAll
+            | CugraphAlgorithm::CoreNumber
+            | CugraphAlgorithm::Leiden
+            | CugraphAlgorithm::Ecg
+            | CugraphAlgorithm::ForceAtlas2 => ONE_VERTEX_LOGICAL_OUTPUT,
+            CugraphAlgorithm::KCore => EDGE_LOGICAL_OUTPUTS,
+            CugraphAlgorithm::EdgeBetweennessCentrality => EDGE_BETWEENNESS_LOGICAL_OUTPUTS,
+            CugraphAlgorithm::Jaccard
+            | CugraphAlgorithm::Sorensen
+            | CugraphAlgorithm::Overlap
+            | CugraphAlgorithm::Cosine => PAIR_LOGICAL_OUTPUTS,
+            _ => return None,
+        };
+        Some(CugraphLogicalStringContract { native_id_type: CugraphLogicalNativeIdType::Int64, output_columns })
+    }
+}
+
 /// Source-of-truth list of SQL-visible cuGraph algorithms.
 ///
 /// Order is preserved by [`CugraphAlgorithm::all`] and is the order in which
@@ -381,6 +512,69 @@ pub struct CugraphAlgorithmSpec {
     pub output_schema: SchemaRef,
 }
 
+impl CugraphAlgorithmSpec {
+    pub(crate) fn predicate_source_specs(&self) -> Vec<PredicateSourceSpec> {
+        let mut sources = Vec::new();
+        match &self.params {
+            CugraphAlgorithmParams::Bfs(params) => {
+                if let Some(input) = params.source.relation() {
+                    sources.push(PredicateSourceSpec {
+                        table_name: input.table_name.clone(),
+                        columns: vec![PredicateSourceColumn::vertex(input.column.clone())],
+                    });
+                }
+                for input in [
+                    params.predicates.include_vertices.as_ref(),
+                    params.predicates.exclude_vertices.as_ref(),
+                    params.predicates.target_vertices.as_ref(),
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    sources.push(PredicateSourceSpec {
+                        table_name: input.table_name.clone(),
+                        columns: vec![PredicateSourceColumn::vertex(input.column.clone())],
+                    });
+                }
+                if let Some(input) = &params.predicates.include_edge_ids {
+                    sources.push(PredicateSourceSpec {
+                        table_name: input.table_name.clone(),
+                        columns: vec![PredicateSourceColumn::edge_id(input.column.clone())],
+                    });
+                }
+                if let Some(input) = &params.predicates.include_edges {
+                    let mut columns = vec![
+                        PredicateSourceColumn::vertex(input.source_col.clone()),
+                        PredicateSourceColumn::vertex(input.destination_col.clone()),
+                    ];
+                    if let Some(edge_id) = &input.edge_id_col
+                        && !columns.iter().any(|column| column.name == *edge_id)
+                    {
+                        columns.push(PredicateSourceColumn::edge_id(edge_id.clone()));
+                    }
+                    sources.push(PredicateSourceSpec { table_name: input.table_name.clone(), columns });
+                }
+            },
+            CugraphAlgorithmParams::PersonalizedPageRank(params) => sources.push(PredicateSourceSpec {
+                table_name: params.personalization.table_name.clone(),
+                columns: vec![
+                    PredicateSourceColumn::vertex(params.personalization.vertex_col.clone()),
+                    PredicateSourceColumn::float_value(params.personalization.value_col.clone()),
+                ],
+            }),
+            CugraphAlgorithmParams::Similarity(params) => sources.push(PredicateSourceSpec {
+                table_name: params.vertex_pairs.table_name.clone(),
+                columns: vec![
+                    PredicateSourceColumn::vertex(params.vertex_pairs.first_vertex_col.clone()),
+                    PredicateSourceColumn::vertex(params.vertex_pairs.second_vertex_col.clone()),
+                ],
+            }),
+            _ => {},
+        }
+        sources
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CugraphTableReference {
     parts: Vec<String>,
@@ -411,6 +605,39 @@ impl fmt::Display for CugraphTableReference {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", datafusion_table_reference_from_parts(&self.parts).to_quoted_string())
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PredicateSourceColumnRole {
+    Vertex,
+    EdgeId,
+    FloatValue,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PredicateSourceColumn {
+    pub(crate) name: String,
+    pub(crate) role: PredicateSourceColumnRole,
+}
+
+impl PredicateSourceColumn {
+    fn vertex(name: impl Into<String>) -> Self {
+        Self { name: name.into(), role: PredicateSourceColumnRole::Vertex }
+    }
+
+    fn edge_id(name: impl Into<String>) -> Self {
+        Self { name: name.into(), role: PredicateSourceColumnRole::EdgeId }
+    }
+
+    fn float_value(name: impl Into<String>) -> Self {
+        Self { name: name.into(), role: PredicateSourceColumnRole::FloatValue }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PredicateSourceSpec {
+    pub(crate) table_name: CugraphTableReference,
+    pub(crate) columns: Vec<PredicateSourceColumn>,
 }
 
 fn datafusion_table_reference_from_parts(parts: &[String]) -> datafusion::common::TableReference {
@@ -585,13 +812,19 @@ impl CugraphAlgorithmParams {
                     exact_vertex_threshold: params.exact_vertex_threshold,
                 })
             },
-            NativeGraphAlgorithmParams::Sssp(params) => Self::Sssp(CugraphSsspParams {
-                source_vertex: source
-                    .unwrap_or_else(|| CugraphBfsSource::scalar_i64(params.source_vertex))
-                    .as_i64()
-                    .expect("SSSP parser rejects non-numeric source_vertex"),
-                cutoff: params.cutoff,
-            }),
+            NativeGraphAlgorithmParams::Sssp(params) => {
+                let default_source = match params.source_vertex {
+                    NativeGraphSsspSource::I64(value) => value,
+                    NativeGraphSsspSource::Input(_) => {
+                        unreachable!("native registry defaults never contain relation-backed SSSP selectors")
+                    },
+                };
+                let source = source.unwrap_or_else(|| CugraphBfsSource::scalar_i64(default_source));
+                let CugraphBfsSource::Scalar(source) = source else {
+                    unreachable!("SSSP parser accepts only scalar source vertices")
+                };
+                Self::Sssp(CugraphSsspParams { source_vertex: source.into(), cutoff: params.cutoff })
+            },
             NativeGraphAlgorithmParams::DegreesAll(_) => Self::DegreesAll(CugraphDegreesAllParams),
             NativeGraphAlgorithmParams::InDegreesAll(_) => Self::InDegreesAll(CugraphInDegreesAllParams),
             NativeGraphAlgorithmParams::OutDegreesAll(_) => Self::OutDegreesAll(CugraphOutDegreesAllParams),
@@ -854,6 +1087,38 @@ pub enum CugraphBfsSourceVertex {
     Utf8(String),
 }
 
+/// SQL-visible scalar vertex selector used by algorithms whose native
+/// execution accepts exactly one logical vertex value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CugraphVertexSelector {
+    /// Numeric selector for the direct native vertex-id path.
+    Int64(i64),
+    /// Logical string selector mapped through the per-call codebook.
+    Utf8(String),
+}
+
+impl CugraphVertexSelector {
+    pub const fn is_utf8(&self) -> bool {
+        matches!(self, Self::Utf8(_))
+    }
+
+    pub const fn as_i64(&self) -> Option<i64> {
+        match self {
+            Self::Int64(value) => Some(*value),
+            Self::Utf8(_) => None,
+        }
+    }
+}
+
+impl From<CugraphBfsSourceVertex> for CugraphVertexSelector {
+    fn from(value: CugraphBfsSourceVertex) -> Self {
+        match value {
+            CugraphBfsSourceVertex::Int64(value) => Self::Int64(value),
+            CugraphBfsSourceVertex::Utf8(value) => Self::Utf8(value),
+        }
+    }
+}
+
 impl Default for CugraphBfsSourceVertex {
     fn default() -> Self {
         Self::Int64(0)
@@ -910,50 +1175,62 @@ pub(crate) fn vertex_id_domain_for_call(
     src_type: &DataType,
     dst_type: &DataType,
 ) -> Result<CugraphVertexIdDomain> {
-    let bfs_source = match (algorithm, params) {
-        (CugraphAlgorithm::Bfs, CugraphAlgorithmParams::Bfs(params)) => Some(&params.source),
+    let selector_is_string = match params {
+        CugraphAlgorithmParams::Bfs(params) => {
+            params.source.literal_values().map(|values| values.first().is_some_and(CugraphBfsSourceVertex::is_utf8))
+        },
+        CugraphAlgorithmParams::Sssp(params) => Some(params.source_vertex.is_utf8()),
+        CugraphAlgorithmParams::BetweennessCentrality(params) => {
+            params.seeds.as_ref().and_then(|seeds| seeds.vertices.first()).map(CugraphVertexSelector::is_utf8)
+        },
+        CugraphAlgorithmParams::EdgeBetweennessCentrality(params) => {
+            params.seeds.as_ref().and_then(|seeds| seeds.vertices.first()).map(CugraphVertexSelector::is_utf8)
+        },
         _ => None,
     };
-    let is_bfs_string_source = bfs_source.is_some_and(CugraphBfsSource::is_utf8);
-    if is_bfs_string_source {
+    if selector_is_string == Some(true) {
         if !is_string_vertex_dtype(src_type) {
             return Err(unsupported_vertex_dtype_error(format!(
-                "cuGraph BFS string source_vertex requires a string source column, found {src_type:?}"
+                "cuGraph {} string vertex selector requires a string source column, found {src_type:?}",
+                algorithm.function_name()
             )));
         }
         if !is_string_vertex_dtype(dst_type) {
             return Err(unsupported_vertex_dtype_error(format!(
-                "cuGraph BFS string source_vertex requires a string destination column, found {dst_type:?}"
+                "cuGraph {} string vertex selector requires a string destination column, found {dst_type:?}",
+                algorithm.function_name()
             )));
         }
         return Ok(CugraphVertexIdDomain::StringLogical);
     }
 
-    if algorithm == CugraphAlgorithm::Bfs
-        && bfs_source.is_some_and(CugraphBfsSource::is_literal_numeric_domain)
-        && (is_string_vertex_dtype(src_type) || is_string_vertex_dtype(dst_type))
-    {
+    if selector_is_string == Some(false) && (is_string_vertex_dtype(src_type) || is_string_vertex_dtype(dst_type)) {
         return Err(vertex_dtype_mismatch_error(format!(
-            "cuGraph BFS numeric source_vertex requires Int32 or Int64 edge columns, found source={src_type:?}, destination={dst_type:?}"
+            "cuGraph {} numeric vertex selector requires Int32 or Int64 edge columns, found source={src_type:?}, destination={dst_type:?}",
+            algorithm.function_name()
         )));
     }
 
-    if algorithm == CugraphAlgorithm::Bfs
-        && bfs_source.is_some_and(|source| matches!(source, CugraphBfsSource::Relation(_)))
-        && is_string_vertex_dtype(src_type)
-        && is_string_vertex_dtype(dst_type)
-    {
+    if is_string_vertex_dtype(src_type) || is_string_vertex_dtype(dst_type) {
+        if !is_string_vertex_dtype(src_type) || !is_string_vertex_dtype(dst_type) {
+            return Err(vertex_dtype_mismatch_error(format!(
+                "cuGraph {} logical string vertex mapping requires string source and destination columns, found source={src_type:?}, destination={dst_type:?}",
+                algorithm.function_name()
+            )));
+        }
+        if algorithm.definition().logical_string_contract().is_none() {
+            return Err(unsupported_vertex_dtype_error(format!(
+                "cuGraph {} does not support logical string vertex mapping",
+                algorithm.function_name()
+            )));
+        }
         return Ok(CugraphVertexIdDomain::StringLogical);
     }
 
-    if algorithm == CugraphAlgorithm::PageRank && is_string_vertex_dtype(src_type) && is_string_vertex_dtype(dst_type) {
-        return Ok(CugraphVertexIdDomain::StringLogical);
-    }
-
-    if algorithm == CugraphAlgorithm::PageRank && (is_string_vertex_dtype(src_type) || is_string_vertex_dtype(dst_type))
-    {
+    if selector_is_string == Some(true) {
         return Err(vertex_dtype_mismatch_error(format!(
-            "cuGraph PageRank string logical vertex mapping requires string source and destination columns, found source={src_type:?}, destination={dst_type:?}"
+            "cuGraph {} string vertex selector requires string edge columns, found source={src_type:?}, destination={dst_type:?}",
+            algorithm.function_name()
         )));
     }
 
@@ -1009,13 +1286,12 @@ pub(crate) fn validate_vertex_id_domain_support_for_call(
     .into())
 }
 
+pub(crate) fn is_numeric_vertex_dtype(data_type: &DataType) -> bool {
+    matches!(data_type, DataType::Int32 | DataType::Int64)
+}
+
 /// Validates the static schema contract for an explicit-pair similarity
-/// relation.
-///
-/// Resolution remains with the caller because the SQL table provider and
-/// metadata validator own different catalog entry points.  Both call this
-/// function after resolving the relation, which keeps the selected-column and
-/// vertex-domain rules identical.
+/// relation after the caller resolves it from the catalog.
 pub(crate) fn validate_similarity_pair_table_schema(
     table: &CugraphVertexPairTable,
     schema: &SchemaRef,
@@ -1034,7 +1310,10 @@ pub(crate) fn validate_similarity_pair_table_schema(
         ))
     })?;
 
-    if first.data_type() != second.data_type() {
+    let both_in_logical_string_domain = vertex_domain.is_string_logical()
+        && vertex_domain.accepts(first.data_type())
+        && vertex_domain.accepts(second.data_type());
+    if first.data_type() != second.data_type() && !both_in_logical_string_domain {
         return Err(vertex_dtype_mismatch_error(format!(
             "cuGraph vertex-pair columns '{}' and '{}' in '{}' must have the same dtype, found {:?} and {:?}",
             table.first_vertex_col,
@@ -1063,25 +1342,19 @@ pub(crate) fn validate_similarity_pair_table_schema(
     Ok(())
 }
 
-pub(crate) fn is_numeric_vertex_dtype(data_type: &DataType) -> bool {
-    matches!(data_type, DataType::Int32 | DataType::Int64)
-}
-
 fn unsupported_vertex_dtype_error(message: impl Into<String>) -> DataFusionError {
     Error::new(ErrorCode::UnsupportedType, "datafusion_nexus.cugraph_sql.vertex_id_type", message)
         .with_fact("reason", "unsupported_vertex_dtype")
         .into()
 }
 
+fn missing_column_error(message: impl Into<String>) -> DataFusionError {
+    Error::new(ErrorCode::FieldNotFound, "datafusion_nexus.cugraph_sql.vertex_pair_schema", message).into()
+}
+
 fn vertex_dtype_mismatch_error(message: impl Into<String>) -> DataFusionError {
     Error::new(ErrorCode::InvalidExecutionPlan, "datafusion_nexus.cugraph_sql.vertex_id_type", message)
         .with_fact("reason", "vertex_dtype_mismatch")
-        .into()
-}
-
-fn missing_column_error(message: impl Into<String>) -> DataFusionError {
-    Error::new(ErrorCode::FieldNotFound, "datafusion_nexus.cugraph_sql.vertex_pair_schema", message)
-        .with_fact("reason", "column_not_found")
         .into()
 }
 
@@ -1245,13 +1518,18 @@ impl Default for CugraphHitsParams {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CugraphBetweennessSeeds {
-    pub vertices: Vec<i64>,
+    pub vertices: Vec<CugraphVertexSelector>,
 }
 
 impl CugraphBetweennessSeeds {
     pub(crate) fn from_native(seeds: NativeGraphBetweennessSeeds) -> Self {
         match seeds {
-            NativeGraphBetweennessSeeds::I64(vertices) => Self { vertices },
+            NativeGraphBetweennessSeeds::I64(vertices) => {
+                Self { vertices: vertices.into_iter().map(CugraphVertexSelector::Int64).collect() }
+            },
+            NativeGraphBetweennessSeeds::Input { .. } => {
+                unreachable!("native registry defaults never contain relation-backed betweenness seeds")
+            },
         }
     }
 
@@ -1306,7 +1584,7 @@ impl Default for CugraphEdgeBetweennessCentralityParams {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct CugraphSsspParams {
-    pub source_vertex: i64,
+    pub source_vertex: CugraphVertexSelector,
     /// Maximum edge-weight sum to consider. `None` means no cutoff; must be >= 0 when set.
     pub cutoff: Option<f64>,
 }
@@ -1585,10 +1863,25 @@ pub(crate) fn result_schema_for_vertex_domain(
         (CugraphAlgorithm::Bfs, CugraphAlgorithmParams::Bfs(params)) => {
             bfs_result_schema_for_vertex_domain(params, domain)
         },
-        (CugraphAlgorithm::PageRank, _) if domain.is_string_logical() => Arc::new(Schema::new(vec![
-            Field::new("vertex", DataType::Utf8, false),
-            Field::new("value", DataType::Float64, false),
-        ])),
+        _ if domain.is_string_logical() => {
+            let contract = algorithm
+                .definition()
+                .logical_string_contract()
+                .expect("string vertex domain requires a logical string contract");
+            let output_columns = contract.output_columns;
+            Arc::new(Schema::new(
+                result_schema_for_params(algorithm, params)
+                    .fields()
+                    .iter()
+                    .map(|field| {
+                        output_columns.iter().find(|column| column.name == field.name()).map_or_else(
+                            || field.as_ref().clone(),
+                            |column| Field::new(column.name, DataType::Utf8, column.nullable),
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+            ))
+        },
         _ => result_schema_for_params(algorithm, params),
     }
 }

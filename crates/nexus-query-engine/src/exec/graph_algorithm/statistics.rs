@@ -329,9 +329,10 @@ fn graph_statistics_betweenness_resident_sources(
     device_total_memory_bytes: Option<u64>,
 ) -> Result<u64> {
     let requested_sources = match &spec.params {
-        crate::plan::GraphAlgorithmParams::BetweennessCentrality(params) => {
-            params.seeds.as_ref().map_or_else(|| params.k.unwrap_or(exact_vertices), |seeds| seeds.len() as u64)
-        },
+        crate::plan::GraphAlgorithmParams::BetweennessCentrality(params) => params
+            .seeds
+            .as_ref()
+            .map_or_else(|| params.k.unwrap_or(exact_vertices), |seeds| seeds.row_count_upper_bound()),
         crate::plan::GraphAlgorithmParams::EdgeBetweennessCentrality(_) => return Ok(1),
         _ => return Ok(0),
     };

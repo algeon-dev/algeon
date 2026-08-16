@@ -19,6 +19,9 @@ pub(crate) use evidence::{
     GraphMemoryOwnerComponents, GraphMemoryOwnerTermFact, GraphMemoryOwnerTermRole, GraphSourceStageLifetime,
 };
 #[cfg(feature = "cugraph")]
+pub(crate) use model::bounded_similarity_pair_cardinality_for_plan;
+pub(crate) use model::query_plan_node_hard_row_upper_bound;
+#[cfg(feature = "cugraph")]
 pub(crate) use model::with_graph_construction_workspace_bounds_from_owner;
 pub use model::{
     GraphMemoryModel, GraphMemoryModelInput, graph_edge_list_output_rows_for_plan,
@@ -33,7 +36,6 @@ pub(crate) use model::{
     ModelBytes, force_atlas2_phase_peaks, force_atlas2_workspace_bytes, force_atlas2_workspace_phase_bytes,
     graph_memory_model_input_for_plan_node, raw_libcugraph_property_output_staging, semantic_edge_row_width_bytes,
 };
-pub(crate) use model::{bounded_similarity_pair_cardinality_for_plan, query_plan_node_hard_row_upper_bound};
 #[cfg(all(test, feature = "cugraph"))]
 pub(crate) use model::{
     graph_construction_workspace_bounds_from_owner, graph_construction_workspace_bounds_from_owner_query,

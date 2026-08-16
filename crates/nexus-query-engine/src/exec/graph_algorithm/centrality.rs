@@ -267,6 +267,8 @@ pub(super) fn execute_betweenness_centrality(
 
     let input = input.into_frame();
     let (edges, vertex_type) = project_edge_list(&input, spec)?;
+    let seed_count =
+        params.seeds.as_ref().map(|seeds| betweenness_seed_count(seeds, &inputs.side_inputs)).transpose()?;
     let options = table_graph_options(spec);
     let bc_params = betweenness_centrality_params(params);
 
@@ -280,14 +282,14 @@ pub(super) fn execute_betweenness_centrality(
             let result = match vertex_type {
                 cudf::TypeId::Int32 => match &params.seeds {
                     Some(seeds) => {
-                        let seeds = betweenness_i32_seeds(seeds)?;
+                        let seeds = betweenness_i32_seeds(seeds, &inputs.side_inputs)?;
                         graph.betweenness_centrality(entered, seeds.as_slice(), &bc_params)
                     },
                     None => graph.betweenness_centrality_all(entered, &bc_params),
                 },
                 cudf::TypeId::Int64 => match &params.seeds {
                     Some(seeds) => {
-                        let seeds = betweenness_i64_seeds(seeds);
+                        let seeds = betweenness_i64_seeds(seeds, &inputs.side_inputs)?;
                         graph.betweenness_centrality(entered, seeds.as_slice(), &bc_params)
                     },
                     None => graph.betweenness_centrality_all(entered, &bc_params),
@@ -309,7 +311,6 @@ pub(super) fn execute_betweenness_centrality(
                 "nexus_query_engine.graph_algorithm.betweenness_centrality_result",
                 "failed to convert cuGraph betweenness centrality result to cudf DataFrame",
             ))?;
-            let seed_count = params.seeds.as_ref().map(|seeds| seeds.len() as u64);
             let algorithm_metadata = betweenness_algorithm_metadata(seed_count, params.normalized);
             Ok(GraphAlgorithmExecutionResult {
                 frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
@@ -338,6 +339,8 @@ pub(super) fn execute_edge_betweenness_centrality(
 
     let input = input.into_frame();
     let (edges, vertex_type) = project_edge_list(&input, spec)?;
+    let seed_count =
+        params.seeds.as_ref().map(|seeds| betweenness_seed_count(seeds, &inputs.side_inputs)).transpose()?;
     let options = table_graph_options(spec);
     let ebc_params = edge_betweenness_centrality_params(params);
 
@@ -351,14 +354,14 @@ pub(super) fn execute_edge_betweenness_centrality(
             let result = match vertex_type {
                 cudf::TypeId::Int32 => match &params.seeds {
                     Some(seeds) => {
-                        let seeds = betweenness_i32_seeds(seeds)?;
+                        let seeds = betweenness_i32_seeds(seeds, &inputs.side_inputs)?;
                         graph.edge_betweenness_centrality(entered, seeds.as_slice(), &ebc_params)
                     },
                     None => graph.edge_betweenness_centrality_all(entered, &ebc_params),
                 },
                 cudf::TypeId::Int64 => match &params.seeds {
                     Some(seeds) => {
-                        let seeds = betweenness_i64_seeds(seeds);
+                        let seeds = betweenness_i64_seeds(seeds, &inputs.side_inputs)?;
                         graph.edge_betweenness_centrality(entered, seeds.as_slice(), &ebc_params)
                     },
                     None => graph.edge_betweenness_centrality_all(entered, &ebc_params),
@@ -380,7 +383,6 @@ pub(super) fn execute_edge_betweenness_centrality(
                 "nexus_query_engine.graph_algorithm.edge_betweenness_centrality_result",
                 "failed to convert cuGraph edge betweenness centrality result to cudf DataFrame",
             ))?;
-            let seed_count = params.seeds.as_ref().map(|seeds| seeds.len() as u64);
             let algorithm_metadata = betweenness_algorithm_metadata(seed_count, params.normalized);
             Ok(GraphAlgorithmExecutionResult {
                 frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
@@ -392,7 +394,10 @@ pub(super) fn execute_edge_betweenness_centrality(
     )
 }
 
-fn betweenness_i32_seeds(seeds: &crate::plan::GraphBetweennessSeeds) -> Result<Vec<i32>> {
+fn betweenness_i32_seeds(
+    seeds: &crate::plan::GraphBetweennessSeeds,
+    side_inputs: &std::collections::BTreeMap<NodeId, GpuDataFrame>,
+) -> Result<Vec<i32>> {
     match seeds {
         crate::plan::GraphBetweennessSeeds::I64(values) => values
             .iter()
@@ -407,13 +412,106 @@ fn betweenness_i32_seeds(seeds: &crate::plan::GraphBetweennessSeeds) -> Result<V
                 })
             })
             .collect(),
+        crate::plan::GraphBetweennessSeeds::Input { input, .. } => {
+            betweenness_input_series(input, side_inputs, cudf::TypeId::Int32)?.to_vec_strict::<i32>().map_err(|error| {
+                QueryError::from_cudf(
+                    "nexus_query_engine.graph_algorithm.betweenness_seeds",
+                    "failed to read encoded Int32 betweenness seeds",
+                    error,
+                )
+            })
+        },
     }
 }
 
-fn betweenness_i64_seeds(seeds: &crate::plan::GraphBetweennessSeeds) -> Vec<i64> {
+fn betweenness_i64_seeds(
+    seeds: &crate::plan::GraphBetweennessSeeds,
+    side_inputs: &std::collections::BTreeMap<NodeId, GpuDataFrame>,
+) -> Result<Vec<i64>> {
     match seeds {
-        crate::plan::GraphBetweennessSeeds::I64(values) => values.clone(),
+        crate::plan::GraphBetweennessSeeds::I64(values) => Ok(values.clone()),
+        crate::plan::GraphBetweennessSeeds::Input { input, .. } => {
+            betweenness_input_series(input, side_inputs, cudf::TypeId::Int64)?.to_vec_strict::<i64>().map_err(|error| {
+                QueryError::from_cudf(
+                    "nexus_query_engine.graph_algorithm.betweenness_seeds",
+                    "failed to read encoded Int64 betweenness seeds",
+                    error,
+                )
+            })
+        },
     }
+}
+
+fn betweenness_seed_count(
+    seeds: &crate::plan::GraphBetweennessSeeds,
+    side_inputs: &std::collections::BTreeMap<NodeId, GpuDataFrame>,
+) -> Result<u64> {
+    match seeds {
+        crate::plan::GraphBetweennessSeeds::I64(values) => Ok(values.len() as u64),
+        crate::plan::GraphBetweennessSeeds::Input { input, row_count_upper_bound } => {
+            let rows = side_inputs.get(&input.input).map(|frame| frame.num_rows() as u64).ok_or_else(|| {
+                QueryError::new(
+                    QueryErrorCode::InvalidPlan,
+                    "nexus_query_engine.graph_algorithm.betweenness_seeds",
+                    "betweenness seed side input was not executed",
+                )
+                .with_fact("side_input_node", input.input)
+                .with_fact("column", &input.column)
+            })?;
+            if rows > *row_count_upper_bound {
+                return Err(QueryError::new(
+                    QueryErrorCode::InvalidPlan,
+                    "nexus_query_engine.graph_algorithm.betweenness_seeds",
+                    "betweenness seed side input exceeded its proven row-count bound",
+                )
+                .with_fact("side_input_rows", rows)
+                .with_fact("row_count_upper_bound", *row_count_upper_bound));
+            }
+            Ok(rows)
+        },
+    }
+}
+
+fn betweenness_input_series(
+    input: &crate::plan::GraphPredicateInput,
+    side_inputs: &std::collections::BTreeMap<NodeId, GpuDataFrame>,
+    vertex_type: cudf::TypeId,
+) -> Result<cudf::Series> {
+    let frame = side_inputs.get(&input.input).ok_or_else(|| {
+        QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.graph_algorithm.betweenness_seeds",
+            "betweenness seed side input was not executed",
+        )
+        .with_fact("side_input_node", input.input)
+        .with_fact("column", &input.column)
+    })?;
+    let series = frame.frame().series(&input.column).map_err(|error| {
+        QueryError::from_cudf(
+            "nexus_query_engine.graph_algorithm.betweenness_seeds",
+            "failed to resolve the betweenness seed side-input column",
+            error,
+        )
+    })?;
+    let side_input_dtype = series.dtype().map_err(|error| {
+        QueryError::from_cudf(
+            "nexus_query_engine.graph_algorithm.betweenness_seeds",
+            "failed to inspect the betweenness seed side-input dtype",
+            error,
+        )
+    })?;
+    if series.is_empty() || series.null_count() != 0 || side_input_dtype.id() != vertex_type {
+        return Err(QueryError::new(
+            QueryErrorCode::GraphInputInvalid,
+            "nexus_query_engine.graph_algorithm.betweenness_seeds",
+            "betweenness seed side input must be non-empty, non-null, and match the graph vertex dtype",
+        )
+        .with_fact("side_input_rows", series.len())
+        .with_fact("side_input_null_rows", series.null_count())
+        .with_fact("side_input_dtype", format!("{:?}", side_input_dtype.id()))
+        .with_fact("vertex_dtype", format!("{vertex_type:?}")));
+    }
+    Ok(series)
 }
 
 fn betweenness_algorithm_metadata(seed_count: Option<u64>, normalized: bool) -> String {

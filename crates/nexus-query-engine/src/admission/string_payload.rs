@@ -7,7 +7,7 @@ use arrow::{
 
 use crate::{
     expr::{Expr, alias_wrapped_column, representation_cast_preserves_identity},
-    plan::{GraphAlgorithm, JoinNode, JoinSide, NodeId, PlanNode, QueryPlan, WindowFunction},
+    plan::{JoinNode, JoinSide, NodeId, PlanNode, QueryPlan, WindowFunction},
     source::{SourceColumnRef, SourceNode},
 };
 
@@ -179,10 +179,8 @@ impl PlanColumnEvidenceAnalysis {
             PlanNode::Join(join) => join_evidence(join, &self.node(join.inputs[0]), &self.node(join.inputs[1])),
             PlanNode::GraphAlgorithm(graph) => {
                 let mut output = PlanColumnEvidence::default();
-                if matches!(
-                    graph.spec.algorithm,
-                    GraphAlgorithm::PageRank | GraphAlgorithm::PersonalizedPageRank | GraphAlgorithm::Bfs
-                ) && node.output_schema().field_with_name("vertex").is_ok()
+                if graph.spec.algorithm.definition().output_vertex_is_unique()
+                    && node.output_schema().field_with_name("vertex").is_ok()
                 {
                     output.unique_keys.push(BTreeSet::from(["vertex".to_owned()]));
                 }

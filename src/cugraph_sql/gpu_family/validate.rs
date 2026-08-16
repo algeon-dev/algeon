@@ -11,10 +11,9 @@ use serde_json::{Map, Value};
 use super::{
     super::{
         CUGRAPH_OPERATION_REGISTRY, CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphBfsSource,
-        CugraphBfsSourceVertex, CugraphSqlConfig, CugraphTableReference, CugraphVertexIdDomain,
+        CugraphBfsSourceVertex, CugraphSqlConfig, CugraphVertexIdDomain, PredicateSourceColumnRole,
         datafusion_table_reference, parse_cugraph_algorithm_spec, result_schema_for_vertex_domain,
-        types::validate_similarity_pair_table_schema, validate_vertex_id_domain_support_for_call,
-        vertex_id_domain_for_call,
+        validate_similarity_pair_table_schema, validate_vertex_id_domain_support_for_call, vertex_id_domain_for_call,
     },
     ERROR_COLUMN_NOT_FOUND, ERROR_INVALID_ARGUMENT, ERROR_TABLE_NOT_FOUND, ERROR_UNKNOWN_ALGORITHM,
     ERROR_UNSUPPORTED_OPTION, ERROR_UNSUPPORTED_VERTEX_DTYPE, ERROR_UNSUPPORTED_WEIGHT_DTYPE,
@@ -208,7 +207,9 @@ pub(super) async fn validate_graph_call(
             ..ValidationRow::invalid(
                 canonical_function_name,
                 ERROR_UNSUPPORTED_OPTION,
-                "cuGraph BFS logical string vertex-id mapping does not yet support edge_id_col",
+                format!(
+                    "cuGraph {canonical_function_name} logical string vertex-id mapping does not support edge_id_col"
+                ),
             )
             .with_output_schema(output_schema_json)
         };
@@ -259,42 +260,9 @@ pub(super) async fn validate_graph_call(
     // Side-input validation runs after the edge columns are resolved, so a
     // failure here must still report the resolved edge dtypes -- leaving them
     // NULL would contradict `src_col_resolved`/`dst_col_resolved` being true.
-    if let Some(mut row) = validate_bfs_predicate_sources(
-        state,
-        canonical_function_name,
-        &spec,
-        &vertex_domain,
-        output_schema_json.clone(),
-    )
-    .await
-    {
-        row.src_dtype = src_dtype.clone();
-        row.dst_dtype = dst_dtype.clone();
-        row.weight_dtype = weight_dtype.clone();
-        return row;
-    }
-    if let Some(mut row) = validate_personalized_pagerank_source(
-        state,
-        canonical_function_name,
-        &spec,
-        &vertex_domain,
-        output_schema_json.clone(),
-    )
-    .await
-    {
-        row.src_dtype = src_dtype.clone();
-        row.dst_dtype = dst_dtype.clone();
-        row.weight_dtype = weight_dtype.clone();
-        return row;
-    }
-    if let Some(mut row) = validate_similarity_vertex_pair_source(
-        state,
-        canonical_function_name,
-        &spec,
-        &vertex_domain,
-        output_schema_json.clone(),
-    )
-    .await
+    if let Some(mut row) =
+        validate_predicate_sources(state, canonical_function_name, &spec, &vertex_domain, output_schema_json.clone())
+            .await
     {
         row.src_dtype = src_dtype.clone();
         row.dst_dtype = dst_dtype.clone();
@@ -320,251 +288,99 @@ pub(super) async fn validate_graph_call(
     }
 }
 
-async fn validate_bfs_predicate_sources(
+async fn validate_predicate_sources(
     state: &dyn Session,
     function_name: &str,
     spec: &CugraphAlgorithmSpec,
     vertex_domain: &CugraphVertexIdDomain,
     output_schema_json: String,
 ) -> Option<ValidationRow> {
-    let CugraphAlgorithmParams::Bfs(params) = &spec.params else {
-        return None;
-    };
-    let predicates = &params.predicates;
-    if let Some(input) = params.source.relation()
-        && let Some(row) = validate_predicate_columns(
-            state,
-            function_name,
-            &input.table_name,
-            &[("source_vertices", input.column.as_str())],
-            vertex_domain,
-            &output_schema_json,
-        )
-        .await
-    {
-        return Some(row);
-    }
-    if let Some(input) = &predicates.include_vertices
-        && let Some(row) = validate_predicate_columns(
-            state,
-            function_name,
-            &input.table_name,
-            &[("include_vertices", input.column.as_str())],
-            vertex_domain,
-            &output_schema_json,
-        )
-        .await
-    {
-        return Some(row);
-    }
-    if let Some(input) = &predicates.exclude_vertices
-        && let Some(row) = validate_predicate_columns(
-            state,
-            function_name,
-            &input.table_name,
-            &[("exclude_vertices", input.column.as_str())],
-            vertex_domain,
-            &output_schema_json,
-        )
-        .await
-    {
-        return Some(row);
-    }
-    if let Some(input) = &predicates.target_vertices
-        && let Some(row) = validate_predicate_columns(
-            state,
-            function_name,
-            &input.table_name,
-            &[("target_vertices", input.column.as_str())],
-            vertex_domain,
-            &output_schema_json,
-        )
-        .await
-    {
-        return Some(row);
-    }
-    if let Some(input) = &predicates.include_edge_ids
-        && let Some(row) = validate_predicate_columns(
-            state,
-            function_name,
-            &input.table_name,
-            &[("include_edge_ids", input.column.as_str())],
-            vertex_domain,
-            &output_schema_json,
-        )
-        .await
-    {
-        return Some(row);
-    }
-    if let Some(input) = &predicates.include_edges {
-        let mut columns = vec![
-            ("include_edges_source", input.source_col.as_str()),
-            ("include_edges_destination", input.destination_col.as_str()),
-        ];
-        if let Some(edge_id_col) = &input.edge_id_col {
-            columns.push(("include_edges_edge_id", edge_id_col.as_str()));
-        }
-        if let Some(row) = validate_predicate_columns(
-            state,
-            function_name,
-            &input.table_name,
-            &columns,
-            vertex_domain,
-            &output_schema_json,
-        )
-        .await
+    if let CugraphAlgorithmParams::Similarity(params) = &spec.params {
+        let provider =
+            match resolve_table_provider(state, datafusion_table_reference(&params.vertex_pairs.table_name)).await {
+                Ok(provider) => provider,
+                Err(message) => {
+                    return Some(predicate_validation_error(
+                        function_name,
+                        ERROR_TABLE_NOT_FOUND,
+                        message,
+                        &output_schema_json,
+                    ));
+                },
+            };
+        if let Err(error) =
+            validate_similarity_pair_table_schema(&params.vertex_pairs, &provider.schema(), vertex_domain)
         {
-            return Some(row);
+            let code = similarity_pair_error_code(&error);
+            return Some(predicate_validation_error(function_name, code, error.to_string(), &output_schema_json));
         }
-    }
-    None
-}
-
-async fn validate_personalized_pagerank_source(
-    state: &dyn Session,
-    function_name: &str,
-    spec: &CugraphAlgorithmSpec,
-    vertex_domain: &CugraphVertexIdDomain,
-    output_schema_json: String,
-) -> Option<ValidationRow> {
-    let CugraphAlgorithmParams::PersonalizedPageRank(params) = &spec.params else {
         return None;
-    };
-    let input = &params.personalization;
-    let provider = match resolve_table_provider(state, datafusion_table_reference(&input.table_name)).await {
-        Ok(provider) => provider,
-        Err(message) => {
-            return Some(predicate_validation_error(
-                function_name,
-                ERROR_TABLE_NOT_FOUND,
-                message,
-                &output_schema_json,
-            ));
-        },
-    };
-    let schema = provider.schema();
-    let vertex = match schema.field_with_name(&input.vertex_col) {
-        Ok(field) => field,
-        Err(_) => {
-            return Some(predicate_validation_error(
-                function_name,
-                ERROR_COLUMN_NOT_FOUND,
-                format!(
-                    "cuGraph personalized PageRank source '{}' is missing vertex column '{}'",
-                    input.table_name, input.vertex_col
-                ),
-                &output_schema_json,
-            ));
-        },
-    };
-    if !vertex_domain.accepts(vertex.data_type()) {
-        return Some(predicate_validation_error(
-            function_name,
-            ERROR_VERTEX_DTYPE_MISMATCH,
-            format!(
-                "cuGraph personalized PageRank vertex column '{}' must have dtype {}",
-                input.vertex_col,
-                vertex_domain.label()
-            ),
-            &output_schema_json,
-        ));
     }
-    let value = match schema.field_with_name(&input.value_col) {
-        Ok(field) => field,
-        Err(_) => {
-            return Some(predicate_validation_error(
-                function_name,
-                ERROR_COLUMN_NOT_FOUND,
-                format!(
-                    "cuGraph personalized PageRank source '{}' is missing value column '{}'",
-                    input.table_name, input.value_col
-                ),
-                &output_schema_json,
-            ));
-        },
-    };
-    if !is_supported_weight_dtype(value.data_type()) {
-        return Some(predicate_validation_error(
-            function_name,
-            ERROR_UNSUPPORTED_WEIGHT_DTYPE,
-            format!(
-                "cuGraph personalized PageRank value column '{}' must have dtype Float32 or Float64",
-                input.value_col
-            ),
-            &output_schema_json,
-        ));
-    }
-    None
-}
-
-async fn validate_similarity_vertex_pair_source(
-    state: &dyn Session,
-    function_name: &str,
-    spec: &CugraphAlgorithmSpec,
-    vertex_domain: &CugraphVertexIdDomain,
-    output_schema_json: String,
-) -> Option<ValidationRow> {
-    let CugraphAlgorithmParams::Similarity(params) = &spec.params else {
-        return None;
-    };
-    let vertex_pairs = &params.vertex_pairs;
-    let provider = match resolve_table_provider(state, datafusion_table_reference(&vertex_pairs.table_name)).await {
-        Ok(provider) => provider,
-        Err(message) => {
-            return Some(predicate_validation_error(
-                function_name,
-                ERROR_TABLE_NOT_FOUND,
-                message,
-                &output_schema_json,
-            ));
-        },
-    };
-    if let Err(error) = validate_similarity_pair_table_schema(vertex_pairs, &provider.schema(), vertex_domain) {
-        let message = error.to_string();
-        let code = similarity_pair_error_code(&error);
-        return Some(predicate_validation_error(function_name, code, message, &output_schema_json));
-    }
-    None
-}
-
-async fn validate_predicate_columns(
-    state: &dyn Session,
-    function_name: &str,
-    table_name: &CugraphTableReference,
-    columns: &[(&str, &str)],
-    vertex_domain: &CugraphVertexIdDomain,
-    output_schema_json: &str,
-) -> Option<ValidationRow> {
-    let provider = match resolve_table_provider(state, datafusion_table_reference(table_name)).await {
-        Ok(provider) => provider,
-        Err(message) => {
-            return Some(predicate_validation_error(function_name, ERROR_TABLE_NOT_FOUND, message, output_schema_json));
-        },
-    };
-    let schema = provider.schema();
-    for (role, column) in columns {
-        let field = match schema.field_with_name(column) {
-            Ok(field) => field,
-            Err(_) => {
+    for source in spec.predicate_source_specs() {
+        let provider = match resolve_table_provider(state, datafusion_table_reference(&source.table_name)).await {
+            Ok(provider) => provider,
+            Err(message) => {
                 return Some(predicate_validation_error(
                     function_name,
-                    ERROR_COLUMN_NOT_FOUND,
-                    format!("cuGraph BFS predicate source '{}' is missing column '{}'", table_name, column),
-                    output_schema_json,
+                    ERROR_TABLE_NOT_FOUND,
+                    message,
+                    &output_schema_json,
                 ));
             },
         };
-        if !vertex_domain.accepts(field.data_type()) {
-            return Some(predicate_validation_error(
-                function_name,
-                ERROR_VERTEX_DTYPE_MISMATCH,
-                format!(
-                    "cuGraph BFS predicate column '{}' for {role} must have dtype {}",
-                    column,
-                    vertex_domain.label()
-                ),
-                output_schema_json,
-            ));
+        let schema = provider.schema();
+        for column in source.columns {
+            let field = match schema.field_with_name(&column.name) {
+                Ok(field) => field,
+                Err(_) => {
+                    return Some(predicate_validation_error(
+                        function_name,
+                        ERROR_COLUMN_NOT_FOUND,
+                        format!(
+                            "cuGraph side-input source '{}' is missing column '{}'",
+                            source.table_name, column.name
+                        ),
+                        &output_schema_json,
+                    ));
+                },
+            };
+            let mismatch = match column.role {
+                PredicateSourceColumnRole::Vertex if !vertex_domain.accepts(field.data_type()) => Some((
+                    ERROR_VERTEX_DTYPE_MISMATCH,
+                    format!(
+                        "cuGraph side-input vertex column '{}' in '{}' must have dtype {}",
+                        column.name,
+                        source.table_name,
+                        vertex_domain.label()
+                    ),
+                )),
+                PredicateSourceColumnRole::EdgeId
+                    if vertex_domain.is_string_logical() || !vertex_domain.accepts(field.data_type()) =>
+                {
+                    Some((
+                        ERROR_UNSUPPORTED_OPTION,
+                        format!(
+                            "cuGraph side-input edge-id column '{}' in '{}' requires the numeric edge-id domain",
+                            column.name, source.table_name
+                        ),
+                    ))
+                },
+                PredicateSourceColumnRole::FloatValue
+                    if !matches!(field.data_type(), DataType::Float32 | DataType::Float64) =>
+                {
+                    Some((
+                        ERROR_UNSUPPORTED_WEIGHT_DTYPE,
+                        format!(
+                            "cuGraph side-input value column '{}' in '{}' must have dtype Float32 or Float64",
+                            column.name, source.table_name
+                        ),
+                    ))
+                },
+                _ => None,
+            };
+            if let Some((code, message)) = mismatch {
+                return Some(predicate_validation_error(function_name, code, message, &output_schema_json));
+            }
         }
     }
     None
@@ -782,7 +598,7 @@ fn json_source_vertex_literal(
     algorithm: CugraphAlgorithm,
 ) -> std::result::Result<CugraphBfsSourceVertex, (&'static str, String)> {
     if let Some(value) = value.as_str() {
-        return if algorithm == CugraphAlgorithm::Bfs {
+        return if matches!(algorithm, CugraphAlgorithm::Bfs | CugraphAlgorithm::Sssp) {
             Ok(CugraphBfsSourceVertex::Utf8(value.to_string()))
         } else {
             Err((ERROR_INVALID_ARGUMENT, format!("cuGraph option '{key}' must be an integer")))
@@ -820,8 +636,8 @@ mod tests {
     use datafusion::common::DataFusionError;
 
     use super::{
-        ERROR_COLUMN_NOT_FOUND, ERROR_UNSUPPORTED_OPTION, ERROR_UNSUPPORTED_VERTEX_DTYPE, ERROR_VERTEX_DTYPE_MISMATCH,
-        similarity_pair_error_code, validation_error_code, vertex_domain_error_code,
+        ERROR_UNSUPPORTED_OPTION, ERROR_UNSUPPORTED_VERTEX_DTYPE, ERROR_VERTEX_DTYPE_MISMATCH, validation_error_code,
+        vertex_domain_error_code,
     };
     use crate::error::{Error, ErrorCode};
 
@@ -850,13 +666,5 @@ mod tests {
         )
         .into();
         assert_eq!(vertex_domain_error_code(&vertex_dtype_mismatch), ERROR_VERTEX_DTYPE_MISMATCH);
-
-        let missing_column: DataFusionError = Error::new(
-            ErrorCode::FieldNotFound,
-            "datafusion_nexus.test.cugraph_validation",
-            "vertex pair columns have mismatched dtypes",
-        )
-        .into();
-        assert_eq!(similarity_pair_error_code(&missing_column), ERROR_COLUMN_NOT_FOUND);
     }
 }

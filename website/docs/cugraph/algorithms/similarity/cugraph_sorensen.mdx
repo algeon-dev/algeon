@@ -24,6 +24,22 @@ cugraph_sorensen(table_name, src_col, dst_col, weight_col, options_json)
 
 The first positional argument names a registered edge table or view (the `edges` role). Parenthesized relation subqueries are not accepted; metadata validation uses the same registered name.
 
+## Vertex ID types
+
+The `edges` relation declares the accepted vertex-ID domains. Numeric calls preserve the existing numeric schema. When logical string support is declared, `Utf8`, `LargeUtf8`, and `Utf8View` endpoint columns share one logical domain; their vertex-identity outputs are canonicalized to `Utf8`.
+
+| Domain | Accepted endpoint inputs | Output contract |
+| --- | --- | --- |
+| Numeric edge endpoints | `Int32`, `Int64` | The numeric output schema is used for numeric calls. |
+| Logical string edge endpoints | `Utf8`, `LargeUtf8`, `Utf8View` | Vertex identity columns are canonicalized to `Utf8`; scores, distances, counts, coordinates, and opaque labels remain numeric. |
+
+The native mapping type is `Int64`. Call-specific output schemas come from `gpu_validate_call`.
+
+Logical string side-input limitations:
+
+- edge ID columns and edge-ID predicate side inputs are not supported for logical string graphs
+- candidate-pair columns must match the graph vertex domain; logical string graphs accept Utf8, LargeUtf8, or Utf8View independently per column
+
 ## Scalar arguments & JSON options
 
 ### Positional scalar arguments
@@ -50,8 +66,8 @@ This function requires `directed=false` (undirected/symmetric graph); all other 
 
 | Column | Type | Nullable | Description |
 | --- | --- | --- | --- |
-| `first` | `Int64` | no | First vertex from the explicit candidate-pair relation. |
-| `second` | `Int64` | no | Second vertex from the explicit candidate-pair relation. |
+| `first` | `Int64\|Utf8` | no | First vertex from the explicit candidate-pair relation. |
+| `second` | `Int64\|Utf8` | no | Second vertex from the explicit candidate-pair relation. |
 | `similarity` | `Float64` | no | Similarity coefficient for the explicit candidate pair. |
 
 These are generic descriptor schemas; [validate the call](#validate-before-running) to get the concrete, table-specific output schema.
@@ -66,7 +82,7 @@ import Examples from '../../_examples/cugraph_sorensen.mdx';
 
 - similarity is explicit-pair only; all-pairs candidate generation and all-pairs top-k search are not exposed
 - options_json must name vertex_pairs_table, first_vertex_col, and second_vertex_col
-- candidate-pair columns must share the same Int32 or Int64 dtype and match the graph vertex domain
+- candidate-pair columns must match the graph vertex domain; logical string graphs accept Utf8, LargeUtf8, or Utf8View independently per column
 - null candidate-pair values are rejected at execution and are never dropped
 - candidate pairs are a multiset: duplicate, reversed, and self pairs remain distinct output rows
 - result rows have no global ordering; use ORDER BY when order is required
@@ -80,7 +96,7 @@ Dry-run validation checks registered relation metadata, column presence, static 
 ```sql
 SELECT * FROM gpu_validate_call(
   'cugraph_sorensen',
-  '{"options":{"dst_col":"dst","first_vertex_col":"first","second_vertex_col":"second","src_col":"src","vertex_pairs_table":"candidate_pairs"},"relations":{"edges":{"table":"target_edges"}},"schema_version":1}'
+  '{"schema_version":1,"relations":{"edges":{"table":"target_edges"}},"options":{"src_col":"src","dst_col":"dst","vertex_pairs_table":"candidate_pairs","first_vertex_col":"first","second_vertex_col":"second"}}'
 );
 ```
 

@@ -158,7 +158,8 @@ fn descriptor(
         summary: descriptions::summary(algorithm).to_string(),
         relation_roles: json!([{
             "name": "edges",
-            "description": "Required edge-list table or view for graph construction."
+            "description": "Required edge-list table or view for graph construction.",
+            "vertex_id_contract": json_schema::vertex_id_contract_json(algorithm),
         }]),
         argument_descriptions: argument_descriptions(algorithm),
         options_schema: value(&json_schema::options_schema_json(algorithm, config)),

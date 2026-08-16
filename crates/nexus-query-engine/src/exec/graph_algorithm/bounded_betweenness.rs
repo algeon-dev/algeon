@@ -422,7 +422,9 @@ pub(super) fn graph_seed_chunk_retry_batches(
         crate::plan::GraphAlgorithmParams::EdgeBetweennessCentrality(params) => (params.seeds.as_ref()?, 1),
         _ => return None,
     };
-    let crate::plan::GraphBetweennessSeeds::I64(values) = seeds;
+    let crate::plan::GraphBetweennessSeeds::I64(values) = seeds else {
+        return None;
+    };
     if values.len() < min_chunk_size * 2 {
         return None;
     }
@@ -681,8 +683,12 @@ fn raw_betweenness_frame_to_requested_scale(
 
 #[cfg(feature = "cugraph")]
 fn betweenness_seed_literals(seeds: &crate::plan::GraphBetweennessSeeds) -> Vec<cudf::ops::expr::Expr> {
-    let crate::plan::GraphBetweennessSeeds::I64(values) = seeds;
-    values.iter().copied().map(lit).collect()
+    match seeds {
+        crate::plan::GraphBetweennessSeeds::I64(values) => values.iter().copied().map(lit).collect(),
+        crate::plan::GraphBetweennessSeeds::Input { .. } => {
+            unreachable!("bounded seed-chunk retry rewrites only literal seed batches")
+        },
+    }
 }
 
 #[cfg(feature = "cugraph")]

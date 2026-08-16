@@ -24,6 +24,21 @@ cugraph_betweenness_centrality(table_name [, src_col, dst_col [, weight_col [, o
 
 The first positional argument names a registered edge table or view (the `edges` role). Parenthesized relation subqueries are not accepted; metadata validation uses the same registered name.
 
+## Vertex ID types
+
+The `edges` relation declares the accepted vertex-ID domains. Numeric calls preserve the existing numeric schema. When logical string support is declared, `Utf8`, `LargeUtf8`, and `Utf8View` endpoint columns share one logical domain; their vertex-identity outputs are canonicalized to `Utf8`.
+
+| Domain | Accepted endpoint inputs | Output contract |
+| --- | --- | --- |
+| Numeric edge endpoints | `Int32`, `Int64` | The numeric output schema is used for numeric calls. |
+| Logical string edge endpoints | `Utf8`, `LargeUtf8`, `Utf8View` | Vertex identity columns are canonicalized to `Utf8`; scores, distances, counts, coordinates, and opaque labels remain numeric. |
+
+The native mapping type is `Int64`. Call-specific output schemas come from `gpu_validate_call`.
+
+Logical string side-input limitations:
+
+- edge ID columns and edge-ID predicate side inputs are not supported for logical string graphs
+
 ## Scalar arguments & JSON options
 
 ### Positional scalar arguments
@@ -42,7 +57,7 @@ The first positional argument names a registered edge table or view (the `edges`
 | `include_endpoints` | `Boolean` | `false` |  |  |
 | `k` | `UInt64\|null` | `null` | min 1; mutually exclusive with `seeds` | Deterministic approximate seed count. Execution uses the first k distinct graph vertices in stable order and refuses k larger than the actual vertex count. |
 | `normalized` | `Boolean` | `true` |  |  |
-| `seeds` | `List<Int64>\|null` | `null` | mutually exclusive with `k` | Explicit seed vertices for approximate betweenness. Null requests exact all-vertex betweenness unless k is set. |
+| `seeds` | `List<Int64>\|List<Utf8>\|null` | `null` | mutually exclusive with `k` | Explicit homogeneous integer or string seed vertices for approximate betweenness. Null requests exact all-vertex betweenness unless k is set. |
 
 ### Graph construction options
 
@@ -52,7 +67,7 @@ Graph construction follows the shared defaults (`directed=true`, renumbering, `p
 
 | Column | Type | Nullable | Description |
 | --- | --- | --- | --- |
-| `vertex` | `Int64` | no | Algorithm result column. |
+| `vertex` | `Int64\|Utf8` | no | Algorithm result column. |
 | `value` | `Float64` | no | Algorithm result column. |
 
 These are generic descriptor schemas; [validate the call](#validate-before-running) to get the concrete, table-specific output schema.
@@ -74,7 +89,7 @@ Dry-run validation checks registered relation metadata, column presence, static 
 ```sql
 SELECT * FROM gpu_validate_call(
   'cugraph_betweenness_centrality',
-  '{"options":{"dst_col":"dst","src_col":"src"},"relations":{"edges":{"table":"target_edges"}},"schema_version":1}'
+  '{"schema_version":1,"relations":{"edges":{"table":"target_edges"}},"options":{"src_col":"src","dst_col":"dst"}}'
 );
 ```
 

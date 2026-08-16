@@ -918,8 +918,7 @@ pub(super) fn pushed_logical_consumer_options(
     producer: &CugraphAlgoExec,
     consumer_plan: &nexus_query_engine::plan::QueryPlan,
 ) -> Result<Option<CugraphResultPlanOptions>> {
-    if !matches!(producer.spec.algorithm, CugraphAlgorithm::PageRank | CugraphAlgorithm::Bfs)
-        || is_bfs_path_output(&producer.spec)
+    if is_bfs_path_output(&producer.spec)
         || !graph_uses_logical_mapping(&producer.spec, &producer.edge_source.schema())?
         || !consumer_plan.unreachable_node_ids().is_empty()
         || consumer_plan.output_schema() != &producer.schema()
@@ -950,11 +949,7 @@ pub(super) fn pushed_logical_consumer_options(
                         let NativeExpr::Column(column) = &expression.expr else {
                             return false;
                         };
-                        match producer.spec.algorithm {
-                            CugraphAlgorithm::PageRank => matches!(column.name(), "vertex" | "value"),
-                            CugraphAlgorithm::Bfs => matches!(column.name(), "vertex" | "distance" | "reachable"),
-                            _ => false,
-                        }
+                        producer.schema().field_with_name(column.name()).is_ok()
                     }) =>
             {
                 result_options.subsumed_top_k_sort = Some(sort.spec.clone());
@@ -983,7 +978,7 @@ pub(super) fn pushed_logical_consumer_options(
 pub(super) fn cugraph_gpu_resident_producer(plan: &dyn ExecutionPlan) -> Option<&dyn GpuResidentProducer> {
     let producer = plan.downcast_ref::<CugraphAlgoExec>()?;
     let logical_mapping = graph_uses_logical_mapping(&producer.spec, &producer.edge_source.schema()).ok()?;
-    if crate::cugraph_sql::validate_bfs_logical_edge_id_capability(&producer.spec, logical_mapping).is_err()
+    if crate::cugraph_sql::validate_logical_edge_id_capability(&producer.spec, logical_mapping).is_err()
         || is_bfs_path_output(&producer.spec)
     {
         return None;
@@ -1033,7 +1028,7 @@ impl GraphExecutionPlan for CugraphAlgoExec {
             Ok(logical_mapping) => logical_mapping,
             Err(error) => return Some(error),
         };
-        if let Err(error) = crate::cugraph_sql::validate_bfs_logical_edge_id_capability(&self.spec, logical_mapping) {
+        if let Err(error) = crate::cugraph_sql::validate_logical_edge_id_capability(&self.spec, logical_mapping) {
             return Some(error);
         }
         if !is_bfs_path_output(&self.spec) {

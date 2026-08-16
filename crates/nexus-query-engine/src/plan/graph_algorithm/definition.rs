@@ -475,6 +475,33 @@ impl GraphOperationDefinition {
         }
     }
 
+    /// Whether the stable result contains at most one row for each `vertex`.
+    pub const fn output_vertex_is_unique(&self) -> bool {
+        matches!(
+            self.algorithm,
+            GraphAlgorithm::PageRank
+                | GraphAlgorithm::PersonalizedPageRank
+                | GraphAlgorithm::Bfs
+                | GraphAlgorithm::Louvain
+                | GraphAlgorithm::EigenvectorCentrality
+                | GraphAlgorithm::KatzCentrality
+                | GraphAlgorithm::Hits
+                | GraphAlgorithm::BetweennessCentrality
+                | GraphAlgorithm::Sssp
+                | GraphAlgorithm::DegreesAll
+                | GraphAlgorithm::InDegreesAll
+                | GraphAlgorithm::OutDegreesAll
+                | GraphAlgorithm::WeaklyConnectedComponents
+                | GraphAlgorithm::StronglyConnectedComponents
+                | GraphAlgorithm::TriangleCountAll
+                | GraphAlgorithm::CoreNumber
+                | GraphAlgorithm::Leiden
+                | GraphAlgorithm::Ecg
+                | GraphAlgorithm::SpectralModularityMaximization
+                | GraphAlgorithm::ForceAtlas2
+        )
+    }
+
     /// Required graph directedness, when the cuGraph operation only accepts
     /// one graph property.
     pub const fn required_graph_directedness(&self) -> Option<bool> {
@@ -567,7 +594,9 @@ impl GraphOperationDefinition {
             GraphAlgorithm::EdgeBetweennessCentrality => {
                 GraphAlgorithmParams::EdgeBetweennessCentrality(GraphEdgeBetweennessCentralityParams::default())
             },
-            GraphAlgorithm::Sssp => GraphAlgorithmParams::Sssp(GraphSsspParams { source_vertex: 0, cutoff: None }),
+            GraphAlgorithm::Sssp => {
+                GraphAlgorithmParams::Sssp(GraphSsspParams { source_vertex: GraphSsspSource::I64(0), cutoff: None })
+            },
             GraphAlgorithm::DegreesAll => GraphAlgorithmParams::DegreesAll(GraphDegreesAllParams),
             GraphAlgorithm::InDegreesAll => GraphAlgorithmParams::InDegreesAll(GraphInDegreesAllParams),
             GraphAlgorithm::OutDegreesAll => GraphAlgorithmParams::OutDegreesAll(GraphOutDegreesAllParams),

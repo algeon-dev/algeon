@@ -1298,6 +1298,7 @@ pub(super) fn execute_sssp(
 
     let input = input.into_frame();
     let (edges, vertex_type) = project_edge_list(&input, spec)?;
+    let source_vertex = sssp_source_vertex(&params.source_vertex, &inputs.side_inputs, vertex_type)?;
     let options = table_graph_options(spec);
     let sssp_p = sssp_params(params)?;
 
@@ -1310,13 +1311,13 @@ pub(super) fn execute_sssp(
         |runtime, entered, graph| {
             let frame = match vertex_type {
                 cudf::TypeId::Int32 => {
-                    let source = i32::try_from(params.source_vertex).map_err(|_| {
+                    let source = i32::try_from(source_vertex).map_err(|_| {
                         QueryError::new(
                             QueryErrorCode::InvalidPlan,
                             "nexus_query_engine.graph_algorithm.sssp_source",
                             "SSSP source vertex does not fit the Int32 graph vertex dtype",
                         )
-                        .with_fact("source_vertex", params.source_vertex)
+                        .with_fact("source_vertex", source_vertex)
                         .with_fact("vertex_dtype", "Int32")
                     })?;
                     let result = graph
@@ -1329,7 +1330,7 @@ pub(super) fn execute_sssp(
                 },
                 cudf::TypeId::Int64 => {
                     let result = graph
-                        .sssp(entered, params.source_vertex, &sssp_p)
+                        .sssp(entered, source_vertex, &sssp_p)
                         .map_err(map_cugraph_error("nexus_query_engine.graph_algorithm.sssp", "cuGraph SSSP failed"))?;
                     result.to_dataframe(runtime).map_err(map_cugraph_error(
                         "nexus_query_engine.graph_algorithm.sssp_result",
@@ -1349,7 +1350,7 @@ pub(super) fn execute_sssp(
                 frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
                 algorithm_metadata: format!(
                     "source_vertex={},cutoff={}",
-                    params.source_vertex,
+                    source_vertex,
                     params.cutoff.map_or_else(|| "none".to_string(), |v| v.to_string()),
                 ),
                 budget_observations: Vec::new(),
@@ -1357,4 +1358,64 @@ pub(super) fn execute_sssp(
             })
         },
     )
+}
+
+fn sssp_source_vertex(
+    source: &crate::plan::GraphSsspSource,
+    side_inputs: &std::collections::BTreeMap<NodeId, GpuDataFrame>,
+    vertex_type: cudf::TypeId,
+) -> Result<i64> {
+    let crate::plan::GraphSsspSource::Input(input) = source else {
+        let crate::plan::GraphSsspSource::I64(value) = source else { unreachable!() };
+        return Ok(*value);
+    };
+    let frame = side_inputs.get(&input.input).ok_or_else(|| {
+        QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.graph_algorithm.sssp_source",
+            "SSSP source side input was not executed",
+        )
+        .with_fact("side_input_node", input.input)
+        .with_fact("column", &input.column)
+    })?;
+    let series = frame.frame().series(&input.column).map_err(|error| {
+        QueryError::from_cudf(
+            "nexus_query_engine.graph_algorithm.sssp_source",
+            "failed to resolve the SSSP source side-input column",
+            error,
+        )
+        .with_fact("side_input_node", input.input)
+        .with_fact("column", &input.column)
+    })?;
+    if series.len() != 1 || series.null_count() != 0 {
+        return Err(QueryError::new(
+            QueryErrorCode::GraphInputInvalid,
+            "nexus_query_engine.graph_algorithm.sssp_source",
+            "SSSP source side input must contain exactly one non-null row",
+        )
+        .with_fact("side_input_rows", series.len())
+        .with_fact("side_input_null_rows", series.null_count()));
+    }
+    match vertex_type {
+        cudf::TypeId::Int32 => series.to_vec_strict::<i32>().map(|values| i64::from(values[0])).map_err(|error| {
+            QueryError::from_cudf(
+                "nexus_query_engine.graph_algorithm.sssp_source",
+                "failed to read the encoded Int32 SSSP source",
+                error,
+            )
+        }),
+        cudf::TypeId::Int64 => series.to_vec_strict::<i64>().map(|values| values[0]).map_err(|error| {
+            QueryError::from_cudf(
+                "nexus_query_engine.graph_algorithm.sssp_source",
+                "failed to read the encoded Int64 SSSP source",
+                error,
+            )
+        }),
+        dtype => Err(QueryError::new(
+            QueryErrorCode::UnsupportedType,
+            "nexus_query_engine.graph_algorithm.sssp_source",
+            "SSSP source side input requires an Int32 or Int64 graph vertex dtype",
+        )
+        .with_fact("vertex_dtype", format!("{dtype:?}"))),
+    }
 }

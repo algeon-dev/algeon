@@ -49,9 +49,9 @@ use crate::{
     attempt::{AttemptOptions, NexusAttemptExtension},
     backend::InstalledTestGpuBackend,
     cugraph_sql::{
-        CugraphAlgorithmParams, CugraphBfsOutputOptions, CugraphBfsParams, CugraphGraphEdgePredicateTable,
-        CugraphGraphOptions, CugraphGraphPredicateTable, CugraphPageRankParams, CugraphSqlConfig,
-        CugraphTableReference, CugraphTriangleCountAllParams, result_schema_for_params,
+        CugraphAlgorithmParams, CugraphBfsOutputOptions, CugraphBfsParams, CugraphBfsSource,
+        CugraphGraphEdgePredicateTable, CugraphGraphOptions, CugraphGraphPredicateTable, CugraphPageRankParams,
+        CugraphSqlConfig, CugraphTableReference, CugraphTriangleCountAllParams, result_schema_for_params,
     },
     error::{DataFusionErrorExt, ErrorCode},
     native_exec::{
@@ -639,6 +639,27 @@ fn pagerank_utf8_spec() -> CugraphAlgorithmSpec {
     spec
 }
 
+fn logical_string_spec(algorithm: CugraphAlgorithm) -> CugraphAlgorithmSpec {
+    let params = CugraphAlgorithmParams::from_native_defaults(algorithm, None);
+    let graph_options = algorithm.effective_default_graph_options(&CugraphGraphOptions::default());
+    let output_schema = crate::cugraph_sql::result_schema_for_vertex_domain(
+        algorithm,
+        &params,
+        Some(&crate::cugraph_sql::CugraphVertexIdDomain::StringLogical),
+    );
+    CugraphAlgorithmSpec {
+        algorithm,
+        table_name: CugraphTableReference::parse("edges").unwrap(),
+        src_col: "src".to_string(),
+        dst_col: "dst".to_string(),
+        weight_col: None,
+        edge_id_col: None,
+        graph_options,
+        params,
+        output_schema,
+    }
+}
+
 fn bfs_spec() -> CugraphAlgorithmSpec {
     let params = CugraphAlgorithmParams::Bfs(Box::new(CugraphBfsParams {
         source: CugraphBfsSource::scalar_i64(0),
@@ -915,6 +936,109 @@ fn string_pagerank_plan_restores_subsumed_top_k_order_after_decode() {
     assert_eq!(post_decode_sort.input, decode.id);
     assert_eq!(post_decode_sort.spec, result_options.subsumed_top_k_sort.unwrap());
     assert_eq!(plan.output_schema().field(0), &Field::new("vertex", DataType::Utf8, false));
+}
+
+#[test]
+fn m1_string_algorithms_share_the_int64_codebook_and_vertex_decode_path() {
+    let algorithms = [
+        CugraphAlgorithm::Louvain,
+        CugraphAlgorithm::EigenvectorCentrality,
+        CugraphAlgorithm::KatzCentrality,
+        CugraphAlgorithm::Hits,
+        CugraphAlgorithm::DegreesAll,
+        CugraphAlgorithm::InDegreesAll,
+        CugraphAlgorithm::OutDegreesAll,
+        CugraphAlgorithm::WeaklyConnectedComponents,
+        CugraphAlgorithm::StronglyConnectedComponents,
+        CugraphAlgorithm::TriangleCountAll,
+        CugraphAlgorithm::CoreNumber,
+        CugraphAlgorithm::Leiden,
+        CugraphAlgorithm::Ecg,
+        CugraphAlgorithm::ForceAtlas2,
+    ];
+
+    for algorithm in algorithms {
+        let plan = cugraph_schema_query_plan(
+            &logical_string_spec(algorithm),
+            string_edge_schema(),
+            Vec::new(),
+            &[],
+            &CugraphResultPlanOptions::default(),
+            false,
+            Some(3),
+            None,
+        )
+        .unwrap_or_else(|error| panic!("{} logical plan failed: {error}", algorithm.function_name()));
+        let graph = plan
+            .nodes()
+            .iter()
+            .find(|node| matches!(node.kind, PlanNode::GraphAlgorithm(_)))
+            .expect("logical plan must contain the native graph node");
+
+        assert_eq!(graph.output_schema().field_with_name("vertex").unwrap().data_type(), &DataType::Int64);
+        assert_eq!(plan.output_schema().field_with_name("vertex").unwrap().data_type(), &DataType::Utf8);
+        assert!(matches!(plan.root_node().kind, PlanNode::Join(_)));
+    }
+}
+
+#[test]
+fn m3_string_selectors_lower_to_encoded_native_side_inputs_and_decode_identity_outputs() {
+    let mut cases = Vec::new();
+
+    let mut sssp = logical_string_spec(CugraphAlgorithm::Sssp);
+    let CugraphAlgorithmParams::Sssp(params) = &mut sssp.params else { unreachable!() };
+    params.source_vertex = CugraphVertexSelector::Utf8("alice".to_string());
+    cases.push((sssp, vec![("vertex", false), ("predecessor", true)]));
+
+    let mut vertex_betweenness = logical_string_spec(CugraphAlgorithm::BetweennessCentrality);
+    let CugraphAlgorithmParams::BetweennessCentrality(params) = &mut vertex_betweenness.params else { unreachable!() };
+    params.seeds = Some(CugraphBetweennessSeeds {
+        vertices: vec![
+            CugraphVertexSelector::Utf8("alice".to_string()),
+            CugraphVertexSelector::Utf8("carol".to_string()),
+        ],
+    });
+    cases.push((vertex_betweenness, vec![("vertex", false)]));
+
+    let mut edge_betweenness = logical_string_spec(CugraphAlgorithm::EdgeBetweennessCentrality);
+    let CugraphAlgorithmParams::EdgeBetweennessCentrality(params) = &mut edge_betweenness.params else {
+        unreachable!()
+    };
+    params.seeds = Some(CugraphBetweennessSeeds { vertices: vec![CugraphVertexSelector::Utf8("alice".to_string())] });
+    cases.push((edge_betweenness, vec![("source", false), ("destination", false)]));
+
+    for (spec, decoded_columns) in cases {
+        let algorithm = spec.algorithm;
+        let plan = cugraph_schema_query_plan(
+            &spec,
+            string_edge_schema(),
+            Vec::new(),
+            &[],
+            &CugraphResultPlanOptions::default(),
+            false,
+            Some(3),
+            None,
+        )
+        .unwrap_or_else(|error| panic!("{} logical selector plan failed: {error}", algorithm.function_name()));
+        let graph = plan
+            .nodes()
+            .iter()
+            .find_map(|node| match &node.kind {
+                PlanNode::GraphAlgorithm(graph) => Some(graph),
+                _ => None,
+            })
+            .expect("logical selector plan must contain a native graph node");
+
+        assert_eq!(graph.spec.params.side_input_node_ids().count(), 1, "{}", algorithm.function_name());
+        for (column, nullable) in decoded_columns {
+            assert_eq!(
+                plan.output_schema().field_with_name(column).unwrap(),
+                &Field::new(column, DataType::Utf8, nullable),
+                "{}",
+                algorithm.function_name()
+            );
+        }
+    }
 }
 
 #[test]

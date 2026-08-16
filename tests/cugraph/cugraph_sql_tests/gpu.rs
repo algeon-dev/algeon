@@ -58,6 +58,34 @@ fn cugraph_input_is_runtime_native(plan: &dyn datafusion::physical_plan::Executi
     )
 }
 
+fn identity_value(array: &dyn Array, row: usize) -> i64 {
+    if array.is_null(row) {
+        return i64::MIN;
+    }
+    match array.data_type() {
+        DataType::Utf8 => {
+            i64::from(array.as_any().downcast_ref::<StringArray>().unwrap().value(row).as_bytes()[0] - b'a' + 1)
+        },
+        DataType::Int64 => {
+            let value = array.as_any().downcast_ref::<Int64Array>().unwrap().value(row);
+            if value < 0 { i64::MIN } else { value }
+        },
+        other => panic!("unexpected vertex identity dtype {other:?}"),
+    }
+}
+
+async fn identity_rows(ctx: &SessionContext, sql: &str, identity_columns: usize) -> Vec<Vec<i64>> {
+    let batches = ctx.sql(sql).await.unwrap().collect().await.unwrap();
+    let mut rows = Vec::new();
+    for batch in batches {
+        for row in 0..batch.num_rows() {
+            rows.push((0..identity_columns).map(|column| identity_value(batch.column(column).as_ref(), row)).collect());
+        }
+    }
+    rows.sort_unstable();
+    rows
+}
+
 fn plan_contains_named_node(plan: &dyn datafusion::physical_plan::ExecutionPlan, name: &str) -> bool {
     plan.name() == name || plan.children().into_iter().any(|child| plan_contains_named_node(child.as_ref(), name))
 }
@@ -1499,6 +1527,111 @@ async fn cugraph_sql_gpu_bfs_path_empty_edge_source_with_bad_include_vertices_is
     let native_message =
         nexus.fact_value("native_message").expect("native diagnostic must be preserved as a typed fact");
     assert!(!native_message.contains("Found invalid vertex"));
+}
+
+#[tokio::test]
+async fn cugraph_sql_gpu_m1_string_algorithms_preserve_numeric_vertex_identity_coverage() {
+    let (_backend, ctx) = default_backend_cugraph_sql_context();
+    register_mixed_string_algorithm_parity_edges(&ctx, "string_edges", "numeric_edges");
+
+    let cases = [
+        ("louvain", "SELECT vertex FROM cugraph_louvain('{table}')"),
+        ("eigenvector", "SELECT vertex FROM cugraph_eigenvector_centrality('{table}')"),
+        ("katz", "SELECT vertex FROM cugraph_katz_centrality('{table}')"),
+        ("hits", "SELECT vertex FROM cugraph_hits('{table}')"),
+        ("degrees", "SELECT vertex FROM cugraph_degrees_all('{table}')"),
+        ("in-degrees", "SELECT vertex FROM cugraph_in_degrees_all('{table}')"),
+        ("out-degrees", "SELECT vertex FROM cugraph_out_degrees_all('{table}')"),
+        ("weak components", "SELECT vertex FROM cugraph_weakly_connected_components('{table}')"),
+        (
+            "strong components",
+            "SELECT vertex FROM cugraph_strongly_connected_components('{table}', 'src', 'dst', NULL, '{\"directed\":true}')",
+        ),
+        ("triangle count", "SELECT vertex FROM cugraph_triangle_count_all('{table}')"),
+        ("core number", "SELECT vertex FROM cugraph_core_number('{table}')"),
+        ("leiden", "SELECT vertex FROM cugraph_leiden('{table}')"),
+        ("ecg", "SELECT vertex FROM cugraph_ecg('{table}')"),
+        (
+            "force atlas 2",
+            "SELECT vertex FROM cugraph_force_atlas2('{table}', 'src', 'dst', NULL, '{\"max_iter\":5,\"seed\":42}')",
+        ),
+    ];
+
+    for (label, template) in cases {
+        let string_rows = identity_rows(&ctx, &template.replace("{table}", "string_edges"), 1).await;
+        let numeric_rows = identity_rows(&ctx, &template.replace("{table}", "numeric_edges"), 1).await;
+        assert_eq!(string_rows, numeric_rows, "{label} logical string vertex coverage");
+        assert_eq!(string_rows, vec![vec![1], vec![2], vec![3], vec![4]], "{label} vertex set");
+    }
+    drop_session_context_on_blocking_thread(ctx).await;
+}
+
+#[tokio::test]
+async fn cugraph_sql_gpu_m2_string_side_inputs_and_edge_subset_match_numeric_identity_rows() {
+    let (_backend, ctx) = default_backend_cugraph_sql_context();
+    register_mixed_string_algorithm_parity_edges(&ctx, "string_edges", "numeric_edges");
+    register_string_algorithm_parity_side_inputs(&ctx);
+
+    let string_ppr = "SELECT vertex FROM cugraph_personalized_pagerank(\
+        'string_edges', 'src', 'dst', NULL, \
+        '{\"personalization_table\":\"string_ppr_seeds\",\"personalization_vertex_col\":\"vertex\",\"personalization_value_col\":\"value\"}')";
+    let numeric_ppr =
+        string_ppr.replace("string_edges", "numeric_edges").replace("string_ppr_seeds", "numeric_ppr_seeds");
+    assert_eq!(identity_rows(&ctx, string_ppr, 1).await, identity_rows(&ctx, &numeric_ppr, 1).await);
+
+    for function in ["cugraph_jaccard", "cugraph_sorensen", "cugraph_overlap", "cugraph_cosine"] {
+        let string_sql = format!(
+            "SELECT first, second FROM {function}(\
+             'string_edges', 'src', 'dst', NULL, \
+             '{{\"vertex_pairs_table\":\"string_candidate_pairs\",\"first_vertex_col\":\"first\",\"second_vertex_col\":\"second\"}}')"
+        );
+        let numeric_sql = string_sql
+            .replace("string_edges", "numeric_edges")
+            .replace("string_candidate_pairs", "numeric_candidate_pairs");
+        assert_eq!(
+            identity_rows(&ctx, &string_sql, 2).await,
+            identity_rows(&ctx, &numeric_sql, 2).await,
+            "{function} candidate-pair multiplicity and identity"
+        );
+    }
+
+    let string_k_core = "SELECT src, dst FROM cugraph_k_core('string_edges')";
+    let numeric_k_core = "SELECT src, dst FROM cugraph_k_core('numeric_edges')";
+    assert_eq!(identity_rows(&ctx, string_k_core, 2).await, identity_rows(&ctx, numeric_k_core, 2).await);
+    drop_session_context_on_blocking_thread(ctx).await;
+}
+
+#[tokio::test]
+async fn cugraph_sql_gpu_m3_string_selectors_match_numeric_identity_rows() {
+    let (_backend, ctx) = default_backend_cugraph_sql_context();
+    register_mixed_string_algorithm_parity_edges(&ctx, "string_edges", "numeric_edges");
+
+    let selectors = [
+        (
+            "sssp",
+            "SELECT vertex, predecessor FROM cugraph_sssp('string_edges', 'a', 'src', 'dst', 'weight')",
+            "SELECT vertex, predecessor FROM cugraph_sssp('numeric_edges', 1, 'src', 'dst', 'weight')",
+            2,
+        ),
+        (
+            "betweenness",
+            "SELECT vertex FROM cugraph_betweenness_centrality('string_edges', 'src', 'dst', NULL, '{\"seeds\":[\"a\",\"c\"]}')",
+            "SELECT vertex FROM cugraph_betweenness_centrality('numeric_edges', 'src', 'dst', NULL, '{\"seeds\":[1,3]}')",
+            1,
+        ),
+        (
+            "edge betweenness",
+            "SELECT source, destination FROM cugraph_edge_betweenness_centrality('string_edges', 'src', 'dst', NULL, '{\"seeds\":[\"a\",\"c\"]}')",
+            "SELECT source, destination FROM cugraph_edge_betweenness_centrality('numeric_edges', 'src', 'dst', NULL, '{\"seeds\":[1,3]}')",
+            2,
+        ),
+    ];
+    for (label, string_sql, numeric_sql, identity_columns) in selectors {
+        let numeric_rows = identity_rows(&ctx, numeric_sql, identity_columns).await;
+        let string_rows = identity_rows(&ctx, string_sql, identity_columns).await;
+        assert_eq!(string_rows, numeric_rows, "{label} encoded selector and decoded output identity");
+    }
+    drop_session_context_on_blocking_thread(ctx).await;
 }
 
 #[tokio::test]

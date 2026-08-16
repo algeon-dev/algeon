@@ -49,7 +49,10 @@ pub fn default_params(algorithm: GraphAlgorithm) -> GraphAlgorithmParams {
         GraphAlgorithm::EdgeBetweennessCentrality => {
             GraphAlgorithmParams::EdgeBetweennessCentrality(GraphEdgeBetweennessCentralityParams::default())
         },
-        GraphAlgorithm::Sssp => GraphAlgorithmParams::Sssp(GraphSsspParams { source_vertex: 0, cutoff: None }),
+        GraphAlgorithm::Sssp => GraphAlgorithmParams::Sssp(GraphSsspParams {
+            source_vertex: nexus_query_engine::plan::GraphSsspSource::I64(0),
+            cutoff: None,
+        }),
         GraphAlgorithm::DegreesAll => GraphAlgorithmParams::DegreesAll(GraphDegreesAllParams),
         GraphAlgorithm::InDegreesAll => GraphAlgorithmParams::InDegreesAll(GraphInDegreesAllParams),
         GraphAlgorithm::OutDegreesAll => GraphAlgorithmParams::OutDegreesAll(GraphOutDegreesAllParams),

@@ -12,22 +12,13 @@ pub(super) fn cugraph_graph_residency_descriptor(
 }
 
 pub(super) fn cugraph_spec_uses_logical_vertex_mapping(spec: &CugraphAlgorithmSpec, edge_schema: &Schema) -> bool {
-    let CugraphAlgorithmParams::Bfs(params) = &spec.params else {
-        return false;
-    };
-    if params.source.is_utf8() {
-        return true;
-    }
-    if !matches!(params.source, CugraphBfsSource::Relation(_)) {
-        return false;
-    }
     let Ok(source_field) = edge_schema.field_with_name(&spec.src_col) else {
         return true;
     };
     let Ok(destination_field) = edge_schema.field_with_name(&spec.dst_col) else {
         return true;
     };
-    is_logical_vertex_type(source_field.data_type()) && is_logical_vertex_type(destination_field.data_type())
+    is_logical_vertex_type(source_field.data_type()) || is_logical_vertex_type(destination_field.data_type())
 }
 
 pub(super) fn cugraph_graph_residency_analysis(
