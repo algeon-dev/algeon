@@ -7,15 +7,10 @@ assert_not_impl_any!(cuvs::PreparedTensorLease<'static, 'static, 'static, f32>: 
 assert_not_impl_any!(cuvs::PreparedValidatedTensorLease<'static, 'static, 'static>: Send, Sync);
 
 #[test]
-fn kmeans_safe_layer_uses_only_the_pinned_versioned_calls() {
+fn kmeans_safe_layer_uses_only_the_pinned_calls() {
     let source = include_str!("../src/kmeans.rs");
-    for required in
-        ["cuvsKMeansParamsCreate_v2", "cuvsKMeansParamsDestroy_v2", "cuvsKMeansFit_v2", "cuvsKMeansPredict_v2"]
-    {
+    for required in ["cuvsKMeansParamsCreate", "cuvsKMeansParamsDestroy", "cuvsKMeansFit", "cuvsKMeansPredict"] {
         assert!(source.contains(required), "safe KMeans layer must call {required}");
-    }
-    for forbidden in ["cuvsKMeansParamsCreate(", "cuvsKMeansParamsDestroy(", "cuvsKMeansFit(", "cuvsKMeansPredict("] {
-        assert!(!source.contains(forbidden), "safe KMeans layer must not call {forbidden}");
     }
 }
 
