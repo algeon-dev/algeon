@@ -51,7 +51,7 @@ pub fn cudf_dtype_from_arrow_type(data_type: &ArrowDataType) -> Option<CudfDataT
         ArrowDataType::Duration(unit) => {
             Some(CudfDataType::new(timestamp_unit_to_cudf_resolution(unit).duration_type_id()))
         },
-        ArrowDataType::List(field) | ArrowDataType::LargeList(field) if is_supported_string_list_child(field) => {
+        ArrowDataType::List(field) | ArrowDataType::LargeList(field) if is_supported_basic_list_child(field) => {
             Some(CudfDataType::new(TypeId::List))
         },
         _ => None,
@@ -65,7 +65,7 @@ pub fn is_timestamp_with_timezone(data_type: &ArrowDataType) -> bool {
 
 /// Returns whether this Arrow type is a list admitted only for carry/projection.
 pub fn is_supported_list_carry_type(data_type: &ArrowDataType) -> bool {
-    matches!(data_type, ArrowDataType::List(field) | ArrowDataType::LargeList(field) if is_supported_string_list_child(field))
+    matches!(data_type, ArrowDataType::List(field) | ArrowDataType::LargeList(field) if is_supported_basic_list_child(field))
 }
 
 /// Returns the physical byte width for Arrow scalar fixed-width values used by
@@ -129,8 +129,8 @@ pub fn is_arrow_fixed_width(data_type: &ArrowDataType) -> bool {
 /// Human-readable Arrow type name for client-facing diagnostics.
 pub fn diagnostic_arrow_type(data_type: &ArrowDataType) -> String {
     match data_type {
-        ArrowDataType::List(field) => format!("List({})", diagnostic_arrow_field(field)),
-        ArrowDataType::LargeList(field) => format!("LargeList({})", diagnostic_arrow_field(field)),
+        ArrowDataType::List(field) => format!("List({})", diagnostic_arrow_type(field.data_type())),
+        ArrowDataType::LargeList(field) => format!("LargeList({})", diagnostic_arrow_type(field.data_type())),
         ArrowDataType::FixedSizeList(field, size) => {
             format!("FixedSizeList({}, size={size})", diagnostic_arrow_field(field))
         },
@@ -180,8 +180,22 @@ pub(crate) fn arrow_data_types_match_except_list_child_names(left: &ArrowDataTyp
     }
 }
 
-fn is_supported_string_list_child(field: &arrow::datatypes::FieldRef) -> bool {
-    matches!(field.data_type(), ArrowDataType::Utf8 | ArrowDataType::LargeUtf8 | ArrowDataType::Utf8View)
+fn is_supported_basic_list_child(field: &arrow::datatypes::FieldRef) -> bool {
+    matches!(
+        field.data_type(),
+        ArrowDataType::Boolean
+            | ArrowDataType::Int8
+            | ArrowDataType::Int16
+            | ArrowDataType::Int32
+            | ArrowDataType::Int64
+            | ArrowDataType::UInt8
+            | ArrowDataType::UInt16
+            | ArrowDataType::UInt32
+            | ArrowDataType::UInt64
+            | ArrowDataType::Utf8
+            | ArrowDataType::LargeUtf8
+            | ArrowDataType::Utf8View
+    )
 }
 
 pub fn arrow_field_metadata_matches_except_parquet_field_id(
@@ -465,7 +479,7 @@ mod tests {
 
         assert_eq!(
             diagnostic_arrow_type(&data_type),
-            "Map(\"entries\": non-null Struct(\"key\": non-null Utf8, \"value\": non-null List(\"element\": LargeUtf8)), sorted)"
+            "Map(\"entries\": non-null Struct(\"key\": non-null Utf8, \"value\": non-null List(LargeUtf8)), sorted)"
         );
     }
 }

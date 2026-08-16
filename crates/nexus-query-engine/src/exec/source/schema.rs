@@ -1,4 +1,5 @@
 use super::*;
+use crate::datatypes::is_supported_list_carry_type;
 
 pub(in crate::exec) fn local_parquet_execution_frame_schema(source: &LocalParquetSource) -> Result<Arc<Schema>> {
     if source.is_zero_column_count_source() {
@@ -43,6 +44,9 @@ pub(super) fn materialize_missing_columns(
     let rows = row_count_override.unwrap_or_else(|| frame.num_rows());
     let timer = Instant::now();
     for (missing_index, missing_column) in source.missing_columns.iter().enumerate() {
+        if frame.column_names().iter().any(|name| name == &missing_column.name) {
+            continue;
+        }
         let series = missing_column_series(context, missing_column, rows).map_err(|error| {
             error.with_fact("missing_index", missing_index).with_fact("missing_column", missing_column.name.as_str())
         })?;
@@ -74,6 +78,17 @@ fn missing_column_series(
         )
         .with_fact("reason", "non_nullable_missing_column")
         .with_fact("missing_type", format!("{:?}", missing_column.data_type)));
+    }
+
+    if is_supported_list_carry_type(&missing_column.data_type) {
+        return cudf::interop::arrow_host::all_null_list_series(&context.runtime()?, &missing_column.data_type, rows)
+            .map_err(|error| {
+                QueryError::from_cudf(
+                    "nexus_query_engine.local_parquet_source.missing_column",
+                    "failed to construct native parquet missing nullable list column",
+                    error,
+                )
+            });
     }
 
     let scalar = match &missing_column.data_type {

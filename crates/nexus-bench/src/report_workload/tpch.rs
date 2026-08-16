@@ -44,7 +44,7 @@ pub use analytical_olap::{
 ///
 /// Uses one target partition and disables DataFusion repartitioning and
 /// dynamic filter pushdown so planning/execution reports are stable and easy
-/// to compare across native lowering changes. DataFusion 54 defaults
+/// to compare across native lowering changes. DataFusion defaults
 /// uncorrelated scalar subqueries to `ScalarSubqueryExec`; the native adapter's
 /// TPC-H contract is the relationalized join form because that is the shape the
 /// native IR can admit and execute as one plan.

@@ -116,29 +116,52 @@ fn final_plan_requirement_error(
     requirement: FinalPlanRequirement,
     report: Option<&PlanningReport>,
 ) -> Error {
+    let rejection = report.and_then(first_native_not_supported);
+    let message = rejection.and_then(|(_, _, detail)| detail).map_or_else(
+        || "exact final physical plan does not satisfy the configured GPU execution requirement".to_string(),
+        |detail| {
+            format!(
+                "GPU execution does not support {} column `{}` with Arrow type `{}`",
+                detail.role, detail.name, detail.data_type
+            )
+        },
+    );
     let mut error = Error::new(
         ErrorCode::FinalPlanRequirementUnsatisfied,
         "datafusion_nexus.planner.final_plan_requirement",
-        "exact final physical plan does not satisfy the configured GPU execution requirement",
+        message,
     )
     .with_fact("requirement", requirement.as_str())
     .with_fact("observed_final_plan_disposition", disposition.as_str())
     .with_fact("terminal_plan_disposition", FinalPlanDisposition::Rejected.as_str())
     .with_fact("physical_plan_root", plan.name());
-    if let Some((candidate, capability_reason)) = report.and_then(first_native_not_supported) {
+    if let Some((candidate, capability_reason, detail)) = rejection {
         error = error
             .with_fact("candidate_shape", candidate.shape.as_str())
             .with_fact("capability_reason", capability_reason.code())
             .with_fact("operator_count", candidate.operator_count);
+        if let Some(detail) = detail {
+            error = error
+                .with_log_safe_fact("reason", capability_reason.code())
+                .with_log_safe_fact("unsupported_column", detail.name.as_str())
+                .with_log_safe_fact("unsupported_column_type", detail.data_type.as_str())
+                .with_log_safe_fact("unsupported_column_role", detail.role);
+        }
     }
     error
 }
 
 fn first_native_not_supported(
     report: &PlanningReport,
-) -> Option<(&crate::report::GpuCandidate, crate::capability::CapabilityReason)> {
-    report.outcomes().iter().find_map(|outcome| match outcome {
-        CandidateOutcome::NotSupported { candidate, capability_reason } => Some((candidate, *capability_reason)),
+) -> Option<(
+    &crate::report::GpuCandidate,
+    crate::capability::CapabilityReason,
+    Option<&crate::report::UnsupportedColumnDetail>,
+)> {
+    report.outcomes().iter().enumerate().find_map(|(index, outcome)| match outcome {
+        CandidateOutcome::NotSupported { candidate, capability_reason } => {
+            Some((candidate, *capability_reason, report.unsupported_column(index)))
+        },
         CandidateOutcome::Selected { .. } | CandidateOutcome::NotSelectedByCost { .. } => None,
     })
 }

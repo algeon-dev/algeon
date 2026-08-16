@@ -2,7 +2,7 @@
 
 #[cfg(feature = "iceberg")]
 use std::borrow::Cow;
-use std::{future::Future, net::SocketAddr, pin::Pin, sync::Arc, time::Instant};
+use std::{net::SocketAddr, sync::Arc, time::Instant};
 
 pub(crate) use ::datafusion_nexus::{
     attempt, backend, capability, cugraph_sql, cuvs_sql, error as adapter_error, gpu_coverage, gpu_coverage_sql,
@@ -10,6 +10,7 @@ pub(crate) use ::datafusion_nexus::{
 };
 use arrow_flight::flight_service_server::FlightServiceServer;
 use datafusion::prelude::SessionContext;
+use futures::future::BoxFuture;
 use nexus_query_engine::runtime::MemoryControlPolicy;
 use tokio_util::sync::CancellationToken;
 use tonic::transport::{Server, server::TcpIncoming};
@@ -515,7 +516,7 @@ impl Drop for AdmissionCloseGuard {
     }
 }
 
-type ShutdownFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
+type ShutdownFuture = BoxFuture<'static, ()>;
 
 fn shutdown_future(
     shutdown: ServerShutdown,

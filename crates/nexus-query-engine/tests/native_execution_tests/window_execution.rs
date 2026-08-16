@@ -1,4 +1,56 @@
-use super::*;
+use super::{
+    core_execution::{assert_basic_list_payload_rows, basic_list_payload_batch},
+    *,
+};
+
+#[test]
+fn native_scalar_window_carries_basic_list_payloads_from_gpu_input() {
+    let context = backend_context();
+    let input = basic_list_payload_batch(&[3, 1, 4, 2]);
+    let input_schema = input.schema();
+    let mut output_fields = input_schema.fields().iter().map(|field| field.as_ref().clone()).collect::<Vec<_>>();
+    output_fields.push(Field::new("rn", DataType::UInt64, false));
+    let output_schema = Arc::new(Schema::new(output_fields));
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder
+        .add_source(SourceNode::GpuResident(GpuResidentSource::new("list_window_input", Arc::clone(&input_schema))));
+    let sort = builder.add_sort(
+        source,
+        SortSpec::new(vec![SortExpr::new(Expr::column("key"), false, false)]),
+        Arc::clone(&input_schema),
+    );
+    let window = builder.add_window(
+        sort,
+        WindowSpec::new(
+            Vec::new(),
+            vec![SortExpr::new(Expr::column("key"), false, false)],
+            vec![WindowFunction::row_number("rn")],
+        ),
+        Arc::clone(&output_schema),
+    );
+    let plan = builder.finish_with_host_sink(window);
+    let admitted = context.admit_plan(&plan).unwrap();
+    let runtime = Arc::new(admitted.runtime().unwrap());
+    let mut gpu_inputs = GpuResidentInputMap::new();
+    gpu_inputs.insert(
+        "list_window_input".to_string(),
+        GpuResultHandle::new(
+            &admitted,
+            GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &input).unwrap()),
+            Arc::clone(&input_schema),
+        )
+        .unwrap(),
+    );
+
+    let result = execute_query_plan_with_gpu_inputs(&admitted, &plan, &gpu_inputs).unwrap();
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize window list payloads");
+    };
+    assert_eq!(batch.schema(), output_schema);
+    assert_basic_list_payload_rows(batch, 0, 2, &[1, 2, 3, 4]);
+    assert_eq!(batch.column(5).as_primitive::<arrow::datatypes::UInt64Type>().values().as_ref(), &[1, 2, 3, 4]);
+    admitted.finish();
+}
 
 #[test]
 fn native_cumulative_aggregate_window_restores_input_order_and_carries_null_rows() {

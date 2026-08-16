@@ -31,14 +31,31 @@ The native engine has a cuDF representation for these Arrow data types:
 - `Time32` and `Time64` at their Arrow-supported resolutions
 - `Timestamp` at second, millisecond, microsecond, or nanosecond resolution
 - `Duration` at second, millisecond, microsecond, or nanosecond resolution
-- `List` / `LargeList` of UTF-8 strings as carry/projection columns
 
-Timezone-aware timestamps and UTF-8 list columns are carry types. They can pass
-through supported source/projection paths, but scalar operators, joins, sorts,
-aggregates, and windows may reject them when they need timezone-free scalar
-keys or list semantics. Temporal scalar functions also have narrower contracts
-than relational carry/projection support; for example, some date operators
-accept `Date32` or timezone-free timestamps but not `Date64`.
+### Basic-list carry matrix
+
+`List<T>` and `LargeList<T>` are supported as carry/projection columns for this
+exact set of child types:
+
+| Container | Supported child types |
+| --- | --- |
+| `List<T>` | `Boolean`, `Int8`, `Int16`, `Int32`, `Int64`, `UInt8`, `UInt16`, `UInt32`, `UInt64`, `Utf8`, `LargeUtf8`, `Utf8View` |
+| `LargeList<T>` | `Boolean`, `Int8`, `Int16`, `Int32`, `Int64`, `UInt8`, `UInt16`, `UInt32`, `UInt64`, `Utf8`, `LargeUtf8`, `Utf8View` |
+
+This is representation and carry support, not list-expression support. These
+columns can pass through supported source and projection paths, including as
+non-key payloads, but cannot be scalar or filter values, join keys, grouping or
+sort values, partitions, aggregate inputs, or window inputs. Child types are
+not implicitly cast into this matrix.
+
+The Arrow output schema preserves `List` versus `LargeList`, including the
+declared child field and nullability. Native list offsets use a bounded Int32
+representation: active offsets and child lengths must fit the nonnegative
+Int32 range. An out-of-range `LargeList` is rejected rather than truncated.
+
+Timezone-aware timestamps are also carry types. Temporal scalar functions have
+narrower contracts than relational carry/projection support; for example, some
+date operators accept `Date32` or timezone-free timestamps but not `Date64`.
 
 ## Unsupported relational types
 
@@ -49,7 +66,9 @@ These types do not have native execution support today:
 - Numeric / decimal: `Float16`, `Decimal32`, `Decimal64`, `Decimal256`
 - Binary: `Binary`, `LargeBinary`, `FixedSizeBinary`, `BinaryView`
 - Temporal: `Interval`
-- Lists whose child type is not UTF-8
+- `List` / `LargeList` with any child type outside the basic-list carry matrix,
+  including floating-point, decimal, temporal, binary, nested-list, and other
+  complex children
 - `Null` (the untyped null column type)
 
 ## cuGraph edge columns

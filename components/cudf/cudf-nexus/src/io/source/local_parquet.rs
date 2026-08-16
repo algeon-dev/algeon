@@ -583,7 +583,7 @@ impl LocalParquetSource {
                 .with_detail("reason", "missing_null_for_non_nullable_column")
                 .with_detail("target_dtype", dtype_label(target.data_type)));
             }
-            if !is_supported_missing_null_dtype(target.data_type) {
+            if !is_supported_missing_null_column(target) {
                 return Err(Error::new_with(
                     ErrorCode::UnsupportedDtype,
                     operation,

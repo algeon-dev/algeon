@@ -3,7 +3,7 @@
 use std::{fs, process::Command, sync::Arc};
 
 use arrow::{
-    array::{Array, AsArray, Int64Array},
+    array::{Array, AsArray, Int32Array, Int64Array, LargeListArray, ListArray, new_null_array},
     datatypes::{DataType as ArrowDataType, Field, Schema, TimeUnit},
     record_batch::RecordBatch,
 };
@@ -11,7 +11,7 @@ use cudf::{
     BoundaryKind, DataFrame, DataType, ErrorCode, ExecutionBudgetEnforcement, ExecutionBudgetRequest,
     ExecutionBudgetStatus, TimestampResolution, TypeId,
     core::{Column, Table},
-    frame::dataframe::InfoDetail,
+    frame::dataframe::{GpuRecordBatch, InfoDetail},
     io::{
         parquet::{RemoteParquetProfile, RemoteReadMode},
         source::{
@@ -205,6 +205,127 @@ fn read_single_chunk_with_evidence(
     assert_eq!(plan.chunks().len(), 1);
     DataFrame::read_parquet_source_chunk_with_evidence(rt, source, &plan.chunks()[0], SourceReadMode::FinalOutput)
         .unwrap()
+}
+
+#[test]
+fn read_parquet_source_materializes_typed_missing_list_columns() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("typed_missing_lists.parquet");
+    let physical_schema = Arc::new(Schema::new(vec![Field::new("id", ArrowDataType::Int32, false)]));
+    let batch =
+        RecordBatch::try_new(Arc::clone(&physical_schema), vec![Arc::new(Int32Array::from(vec![1, 2, 3]))]).unwrap();
+    let file = fs::File::create(&path).unwrap();
+    let mut writer = ArrowWriter::try_new(file, physical_schema, None).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+
+    let boolean_list = ArrowDataType::List(Arc::new(Field::new("flag", ArrowDataType::Boolean, true)));
+    let integer_list = ArrowDataType::List(Arc::new(Field::new("port", ArrowDataType::Int64, false)));
+    let string_list = ArrowDataType::LargeList(Arc::new(Field::new("tag", ArrowDataType::Utf8, true)));
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("id", ArrowDataType::Int32, false),
+        Field::new("flags", boolean_list.clone(), true),
+        Field::new("ports", integer_list.clone(), true),
+        Field::new("tags", string_list.clone(), true),
+    ]));
+    let source = LocalParquetSource::data(
+        [LocalParquetFile::new(&path, "typed-missing-lists", []).unwrap()],
+        SourceSchema::new([
+            SourceColumn::new("id", dtype(TypeId::Int32), false).unwrap(),
+            SourceColumn::new_list("flags", boolean_list, true).unwrap(),
+            SourceColumn::new_list("ports", integer_list, true).unwrap(),
+            SourceColumn::new_list("tags", string_list, true).unwrap(),
+        ])
+        .unwrap(),
+        ["id"],
+        [
+            SourceOutputColumn::new("id", SourceColumnRef::ReadColumn(0)).unwrap(),
+            SourceOutputColumn::new("flags", SourceColumnRef::MissingNull).unwrap(),
+            SourceOutputColumn::new("ports", SourceColumnRef::MissingNull).unwrap(),
+            SourceOutputColumn::new("tags", SourceColumnRef::MissingNull).unwrap(),
+        ],
+        [],
+        [],
+    )
+    .unwrap();
+    let output = read_single_chunk_with_evidence(&sample_runtime(), &source);
+    let host =
+        GpuRecordBatch::new(output.into_frame(), Arc::clone(&output_schema)).unwrap().to_host_record_batch().unwrap();
+
+    assert_eq!(host.schema(), output_schema);
+    for column in 1..=3 {
+        assert_eq!(host.column(column).null_count(), 3);
+    }
+    assert_eq!(host.column(1).as_any().downcast_ref::<ListArray>().unwrap().values().len(), 0);
+    assert_eq!(host.column(2).as_any().downcast_ref::<ListArray>().unwrap().values().len(), 0);
+    assert_eq!(host.column(3).as_any().downcast_ref::<LargeListArray>().unwrap().values().len(), 0);
+}
+
+#[test]
+fn read_parquet_source_materializes_typed_all_null_and_empty_list_columns() {
+    let dir = TempDir::new().unwrap();
+    let all_null_path = dir.path().join("typed_all_null_lists.parquet");
+    let empty_path = dir.path().join("typed_empty_lists.parquet");
+    let list_types = [
+        ArrowDataType::List(Arc::new(Field::new("flag", ArrowDataType::Boolean, true))),
+        ArrowDataType::List(Arc::new(Field::new("port", ArrowDataType::Int64, false))),
+        ArrowDataType::LargeList(Arc::new(Field::new("tag", ArrowDataType::Utf8, true))),
+    ];
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("flags", list_types[0].clone(), true),
+        Field::new("ports", list_types[1].clone(), true),
+        Field::new("tags", list_types[2].clone(), true),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        list_types.iter().map(|data_type| new_null_array(data_type, 3)).collect(),
+    )
+    .unwrap();
+    let file = fs::File::create(&all_null_path).unwrap();
+    let mut writer = ArrowWriter::try_new(file, Arc::clone(&schema), None).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+    let file = fs::File::create(&empty_path).unwrap();
+    ArrowWriter::try_new(file, Arc::clone(&schema), None).unwrap().close().unwrap();
+
+    let source = |path: &std::path::Path, stable_id: &str| {
+        LocalParquetSource::data(
+            [LocalParquetFile::new(path, stable_id, []).unwrap()],
+            SourceSchema::new([
+                SourceColumn::new_list("flags", list_types[0].clone(), true).unwrap(),
+                SourceColumn::new_list("ports", list_types[1].clone(), true).unwrap(),
+                SourceColumn::new_list("tags", list_types[2].clone(), true).unwrap(),
+            ])
+            .unwrap(),
+            ["flags", "ports", "tags"],
+            [
+                SourceOutputColumn::new("flags", SourceColumnRef::ReadColumn(0)).unwrap(),
+                SourceOutputColumn::new("ports", SourceColumnRef::ReadColumn(1)).unwrap(),
+                SourceOutputColumn::new("tags", SourceColumnRef::ReadColumn(2)).unwrap(),
+            ],
+            [],
+            [],
+        )
+        .unwrap()
+    };
+    let runtime = sample_runtime();
+    let all_null = read_single_chunk_with_evidence(&runtime, &source(&all_null_path, "typed-all-null-lists"));
+    let all_null =
+        GpuRecordBatch::new(all_null.into_frame(), Arc::clone(&schema)).unwrap().to_host_record_batch().unwrap();
+    assert_eq!(all_null.schema(), schema);
+    assert_eq!(all_null.num_rows(), 3);
+    assert!(all_null.columns().iter().all(|column| column.null_count() == 3));
+    assert_eq!(all_null.column(0).as_any().downcast_ref::<ListArray>().unwrap().values().len(), 0);
+    assert_eq!(all_null.column(1).as_any().downcast_ref::<ListArray>().unwrap().values().len(), 0);
+    assert_eq!(all_null.column(2).as_any().downcast_ref::<LargeListArray>().unwrap().values().len(), 0);
+
+    let empty = DataFrame::read_parquet_source(&runtime, &source(&empty_path, "typed-empty-lists")).unwrap();
+    let empty = GpuRecordBatch::new(empty, Arc::clone(&schema)).unwrap().to_host_record_batch().unwrap();
+    assert_eq!(empty.schema(), schema);
+    assert_eq!(empty.num_rows(), 0);
+    assert_eq!(empty.column(0).as_any().downcast_ref::<ListArray>().unwrap().value_type(), ArrowDataType::Boolean);
+    assert_eq!(empty.column(1).as_any().downcast_ref::<ListArray>().unwrap().value_type(), ArrowDataType::Int64);
+    assert_eq!(empty.column(2).as_any().downcast_ref::<LargeListArray>().unwrap().value_type(), ArrowDataType::Utf8);
 }
 
 #[test]

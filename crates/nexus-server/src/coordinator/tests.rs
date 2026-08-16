@@ -1,9 +1,7 @@
 //! Unit tests for the query coordinator.
 
 use std::{
-    future::Future,
     panic::{AssertUnwindSafe, catch_unwind},
-    pin::Pin,
     sync::{
         Arc, Barrier, Mutex,
         atomic::{AtomicUsize, Ordering},
@@ -18,6 +16,7 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use datafusion::physical_plan::{empty::EmptyExec, union::UnionExec};
+use futures::future::BoxFuture;
 use nexus_query_engine::{
     error::{QueryError, QueryErrorCode},
     observability::{
@@ -85,7 +84,7 @@ impl CoordinatorMaintenanceClock for TestMaintenanceClock {
         *self.now.lock().unwrap()
     }
 
-    fn sleep_until(&self, deadline: Instant) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+    fn sleep_until(&self, deadline: Instant) -> BoxFuture<'_, ()> {
         self.sleepers.fetch_add(1, Ordering::SeqCst);
         Box::pin(async move {
             loop {

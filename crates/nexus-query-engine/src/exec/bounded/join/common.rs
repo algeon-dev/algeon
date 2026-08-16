@@ -421,7 +421,7 @@ pub(super) fn join_side_output_upper_bound_bytes_for_row_counts(
     }
 
     let mut upper_bound_columns = Vec::with_capacity(columns.len());
-    let mut column_cache: BTreeMap<String, JoinOutputColumnUpperBoundInput> = BTreeMap::new();
+    let mut column_cache: BTreeMap<String, JoinOutputColumnBound> = BTreeMap::new();
     for column in columns {
         let upper_bound = if let Some(upper_bound) = column_cache.get(column.as_str()) {
             upper_bound.clone()
@@ -443,7 +443,7 @@ pub(super) fn join_side_output_upper_bound_bytes_for_row_counts(
     expected_output_row_counts
         .iter()
         .map(|expected_output_rows| {
-            join_output_upper_bound_bytes(*expected_output_rows, &upper_bound_columns).map_err(|error| {
+            join_output_columns_upper_bound_bytes(*expected_output_rows, &upper_bound_columns).map_err(|error| {
                 error
                     .with_fact_if_absent("node_id", node_id)
                     .with_fact_if_absent("side", side)
@@ -451,6 +451,63 @@ pub(super) fn join_side_output_upper_bound_bytes_for_row_counts(
             })
         })
         .collect()
+}
+
+#[derive(Clone)]
+enum JoinOutputColumnBound {
+    Standard(JoinOutputColumnUpperBoundInput),
+    List { input_column_bytes: u64 },
+}
+
+fn join_output_columns_upper_bound_bytes(expected_output_rows: u64, columns: &[JoinOutputColumnBound]) -> Result<u64> {
+    columns.iter().try_fold(0u64, |total, column| {
+        let column_bytes = match column {
+            JoinOutputColumnBound::Standard(column) => {
+                join_output_upper_bound_bytes(expected_output_rows, std::slice::from_ref(column))?
+            },
+            JoinOutputColumnBound::List { input_column_bytes } => {
+                // A gather output row cannot retain more child payload than the entire input list column.
+                let gathered = expected_output_rows.checked_mul(*input_column_bytes).ok_or_else(|| {
+                    QueryError::new(
+                        QueryErrorCode::SizeOverflow,
+                        "nexus_query_engine.bounded.join.output_upper_bound",
+                        "list join output byte bound overflowed",
+                    )
+                    .with_fact("reason", "list_output_bound_overflow")
+                })?;
+                let offsets =
+                    expected_output_rows.checked_add(1).and_then(|rows| rows.checked_mul(4)).ok_or_else(|| {
+                        QueryError::new(
+                            QueryErrorCode::SizeOverflow,
+                            "nexus_query_engine.bounded.join.output_upper_bound",
+                            "list join output offset bound overflowed",
+                        )
+                        .with_fact("reason", "list_output_offset_bound_overflow")
+                    })?;
+                let validity = if expected_output_rows == 0 {
+                    0
+                } else {
+                    expected_output_rows.div_ceil(8).div_ceil(64).saturating_mul(64)
+                };
+                gathered.checked_add(offsets).and_then(|bytes| bytes.checked_add(validity)).ok_or_else(|| {
+                    QueryError::new(
+                        QueryErrorCode::SizeOverflow,
+                        "nexus_query_engine.bounded.join.output_upper_bound",
+                        "list join output structural byte bound overflowed",
+                    )
+                    .with_fact("reason", "list_output_structural_bound_overflow")
+                })?
+            },
+        };
+        total.checked_add(column_bytes).ok_or_else(|| {
+            QueryError::new(
+                QueryErrorCode::SizeOverflow,
+                "nexus_query_engine.bounded.join.output_upper_bound",
+                "join output column byte bounds overflowed",
+            )
+            .with_fact("reason", "join_output_bound_overflow")
+        })
+    })
 }
 
 pub(super) fn projected_output_columns_for_retained_sizing(
@@ -468,7 +525,7 @@ fn join_output_upper_bound_column_for_frame_column(
     side: JoinSide,
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
-) -> Result<JoinOutputColumnUpperBoundInput> {
+) -> Result<JoinOutputColumnBound> {
     let series = frame.series(column).map_err(|error| {
         QueryError::from_cudf(
             "nexus_query_engine.bounded.join.output_upper_bound",
@@ -489,6 +546,27 @@ fn join_output_upper_bound_column_for_frame_column(
         .with_fact("side", side)
         .with_fact("column", column)
     })?;
+    if cudf_dtype.id() == cudf::TypeId::List {
+        let input_column_bytes = u64::try_from(series.device_allocated_size_bytes().map_err(|error| {
+            QueryError::from_cudf(
+                "nexus_query_engine.bounded.join.output_upper_bound",
+                "failed to inspect list join output source bytes for closed-form sizing",
+                error,
+            )
+            .with_fact("node_id", node_id)
+            .with_fact("side", side)
+            .with_fact("column", column)
+        })?)
+        .map_err(|_| {
+            QueryError::new(
+                QueryErrorCode::SizeOverflow,
+                "nexus_query_engine.bounded.join.output_upper_bound",
+                "list join output source bytes exceed the reservation ledger range",
+            )
+            .with_fact("reason", "list_source_bytes_exceed_u64")
+        })?;
+        return Ok(JoinOutputColumnBound::List { input_column_bytes });
+    }
     let data_type = cudf::interop::arrow_host::arrow_type_from_cudf_dtype(cudf_dtype).map_err(|error| {
         QueryError::from_cudf(
             "nexus_query_engine.bounded.join.output_upper_bound",
@@ -513,7 +591,11 @@ fn join_output_upper_bound_column_for_frame_column(
     } else {
         None
     };
-    Ok(JoinOutputColumnUpperBoundInput { data_type, input_max_string_length_bytes, input_total_string_bytes: None })
+    Ok(JoinOutputColumnBound::Standard(JoinOutputColumnUpperBoundInput {
+        data_type,
+        input_max_string_length_bytes,
+        input_total_string_bytes: None,
+    }))
 }
 
 fn max_string_byte_length_for_join_output_sizing(

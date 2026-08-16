@@ -7,7 +7,7 @@ impl FlightSqlService for DatafusionNexusFlightSqlService {
     async fn do_handshake(
         &self,
         request: Request<Streaming<HandshakeRequest>>,
-    ) -> Result<Response<Pin<Box<dyn Stream<Item = Result<HandshakeResponse, Status>> + Send>>>, Status> {
+    ) -> Result<Response<BoxStream<'static, Result<HandshakeResponse, Status>>>, Status> {
         handle_handshake(self.auth.mode(), self.auth.tokens(), request).await
     }
 

@@ -3198,7 +3198,7 @@ dependencies = [
 [[package]]
 name = "iceberg"
 version = "0.10.0"
-source = "git+https://github.com/apache/iceberg-rust.git?rev=39100a90ff51ee5f388f70bfa809936dbcfe2be2#39100a90ff51ee5f388f70bfa809936dbcfe2be2"
+source = "git+https://github.com/apache/iceberg-rust.git?rev=16badac3543ae99f90e9d0e65f56068eef3751d0#16badac3543ae99f90e9d0e65f56068eef3751d0"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -3227,6 +3227,7 @@ dependencies = [
  "fnv",
  "form_urlencoded",
  "futures",
+ "iceberg-property-macro",
  "itertools 0.13.0",
  "moka",
  "murmur3",
@@ -3256,7 +3257,7 @@ dependencies = [
 [[package]]
 name = "iceberg-catalog-glue"
 version = "0.10.0"
-source = "git+https://github.com/apache/iceberg-rust.git?rev=39100a90ff51ee5f388f70bfa809936dbcfe2be2#39100a90ff51ee5f388f70bfa809936dbcfe2be2"
+source = "git+https://github.com/apache/iceberg-rust.git?rev=16badac3543ae99f90e9d0e65f56068eef3751d0#16badac3543ae99f90e9d0e65f56068eef3751d0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3271,7 +3272,7 @@ dependencies = [
 [[package]]
 name = "iceberg-catalog-rest"
 version = "0.10.0"
-source = "git+https://github.com/apache/iceberg-rust.git?rev=39100a90ff51ee5f388f70bfa809936dbcfe2be2#39100a90ff51ee5f388f70bfa809936dbcfe2be2"
+source = "git+https://github.com/apache/iceberg-rust.git?rev=16badac3543ae99f90e9d0e65f56068eef3751d0#16badac3543ae99f90e9d0e65f56068eef3751d0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3291,7 +3292,7 @@ dependencies = [
 [[package]]
 name = "iceberg-datafusion"
 version = "0.10.0"
-source = "git+https://github.com/apache/iceberg-rust.git?rev=39100a90ff51ee5f388f70bfa809936dbcfe2be2#39100a90ff51ee5f388f70bfa809936dbcfe2be2"
+source = "git+https://github.com/apache/iceberg-rust.git?rev=16badac3543ae99f90e9d0e65f56068eef3751d0#16badac3543ae99f90e9d0e65f56068eef3751d0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3305,9 +3306,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "iceberg-property-macro"
+version = "0.10.0"
+source = "git+https://github.com/apache/iceberg-rust.git?rev=16badac3543ae99f90e9d0e65f56068eef3751d0#16badac3543ae99f90e9d0e65f56068eef3751d0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "iceberg-storage-opendal"
 version = "0.10.0"
-source = "git+https://github.com/apache/iceberg-rust.git?rev=39100a90ff51ee5f388f70bfa809936dbcfe2be2#39100a90ff51ee5f388f70bfa809936dbcfe2be2"
+source = "git+https://github.com/apache/iceberg-rust.git?rev=16badac3543ae99f90e9d0e65f56068eef3751d0#16badac3543ae99f90e9d0e65f56068eef3751d0"
 dependencies = [
  "anyhow",
  "async-trait",

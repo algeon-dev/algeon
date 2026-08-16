@@ -1,4 +1,4 @@
-use futures::stream::BoxStream;
+use futures::{future::BoxFuture, stream::BoxStream};
 
 use super::*;
 
@@ -9,7 +9,7 @@ use super::*;
 /// `Cancelled` rather than an unrelated client-drop outcome.
 struct FlightExecutionBody {
     inner: Option<SendableRecordBatchStream>,
-    cancellation: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>,
+    cancellation: BoxFuture<'static, ()>,
     native_cancellation: ExecutionCancellation,
     attempt_cancellation: Option<nexus_query_engine::attempt::AttemptCancellation>,
     delivery_started: Arc<std::sync::atomic::AtomicBool>,

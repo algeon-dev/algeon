@@ -1,6 +1,5 @@
 use std::{
     collections::BTreeSet,
-    pin::Pin,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -40,7 +39,7 @@ use datafusion::{
     physical_plan::{SendableRecordBatchStream, execute_stream as execute_physical_stream},
     prelude::SessionContext,
 };
-use futures::{Stream, StreamExt, TryStreamExt};
+use futures::{Stream, StreamExt, TryStreamExt, stream::BoxStream};
 use nexus_query_engine::{
     observability::{RuntimeObservationConfig, RuntimeObservationHandle},
     runtime::ExecutionCancellation,

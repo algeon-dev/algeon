@@ -60,7 +60,16 @@ pub(in crate::exec::source) fn cudf_source_schema(
                 .with_fact("column", field.name().as_str())
                 .with_fact("data_type", format!("{:?}", field.data_type()))
             })?;
-            cudf::io::source::SourceColumn::new(field.name().as_str(), dtype, field.is_nullable()).map_err(|error| {
+            let column = if dtype.id() == cudf::TypeId::List {
+                cudf::io::source::SourceColumn::new_list(
+                    field.name().as_str(),
+                    field.data_type().clone(),
+                    field.is_nullable(),
+                )
+            } else {
+                cudf::io::source::SourceColumn::new(field.name().as_str(), dtype, field.is_nullable())
+            };
+            column.map_err(|error| {
                 QueryError::from_cudf(
                     "nexus_query_engine.local_parquet_chunk.schema_cudf",
                     "failed to convert native local parquet source schema into cudf source schema",

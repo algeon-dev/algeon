@@ -1,13 +1,15 @@
 use std::{
-    fs,
+    fs::{self, File},
     sync::{Arc, OnceLock},
     time::{Duration, Instant},
 };
 
 use arrow::{
-    array::{Array, Int32Array, StringArray, StringViewArray},
+    array::{Array, Float64Array, Int32Array, ListArray, StringArray, StringViewArray},
+    buffer::{OffsetBuffer, ScalarBuffer},
     compute::SortOptions as ArrowSortOptions,
-    datatypes::{DataType, Field},
+    datatypes::{DataType, Field, Schema},
+    record_batch::RecordBatch,
 };
 use datafusion::{
     common::{DataFusionError, ScalarValue, config::ConfigOptions},
@@ -59,6 +61,7 @@ use nexus_query_engine::{
     },
 };
 use nexus_workloads::tpch::{TPCH_QUERIES, write_tiny_tpch_parquet_dataset};
+use parquet::arrow::ArrowWriter;
 use proptest::prelude::*;
 
 #[path = "native_exec_tests/bounded_join.rs"]
@@ -1155,6 +1158,63 @@ fn native_optimizer_rule_obeys_no_datafusion_cpu_requirement_for_rejected_plan()
 
     assert_eq!(adapter_error.code(), ErrorCode::FinalPlanRequirementUnsatisfied);
     assert_eq!(adapter_error.fact_value("requirement"), Some("no_datafusion_cpu"));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn final_plan_requirement_reports_first_unsupported_projected_column() {
+    let dir = unique_temp_dir("datafusion-nexus-native-unsupported-list-detail");
+    let path = dir.join("input.parquet");
+    let child = Arc::new(Field::new("element", DataType::Float64, true));
+    let first = ListArray::new(
+        Arc::clone(&child),
+        OffsetBuffer::new(ScalarBuffer::from(vec![0, 1, 2])),
+        Arc::new(Float64Array::from(vec![1.0, 2.0])),
+        None,
+    );
+    let second = ListArray::new(
+        Arc::clone(&child),
+        OffsetBuffer::new(ScalarBuffer::from(vec![0, 1, 2])),
+        Arc::new(Float64Array::from(vec![3.0, 4.0])),
+        None,
+    );
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("first_unsupported", DataType::List(Arc::clone(&child)), true),
+        Field::new("second_unsupported", DataType::List(child), true),
+    ]));
+    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(first), Arc::new(second)]).unwrap();
+    let mut writer = ArrowWriter::try_new(File::create(&path).unwrap(), schema, None).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+
+    let config = NexusNativeOptimizerConfig::default()
+        .with_no_datafusion_cpu_requirement()
+        .with_native_execution_config(bounded_config());
+    let rules = installed_physical_optimizer_rules(config);
+    let native_rule = rules
+        .iter()
+        .find(|rule| rule.name() == "datafusion_nexus_native")
+        .expect("native optimizer rules should contain the final native rule");
+    let requirement_rule = rules
+        .iter()
+        .find(|rule| rule.name() == NEXUS_FINAL_PLAN_REQUIREMENT_RULE_NAME)
+        .expect("native optimizer rules should contain the final-plan requirement rule");
+    let planned = native_rule.optimize(parquet_scan(&path), &ConfigOptions::default()).unwrap();
+    let error = requirement_rule
+        .optimize(planned, &ConfigOptions::default())
+        .expect_err("unsupported List<Float64> must fail the strict GPU requirement");
+    let error = adapter_error(&error);
+
+    assert_eq!(error.code(), ErrorCode::FinalPlanRequirementUnsatisfied);
+    assert_eq!(
+        error.message(),
+        "GPU execution does not support projected column `first_unsupported` with Arrow type `List(Float64)`"
+    );
+    assert_eq!(error.fact_value("reason"), Some("unsupported_type"));
+    assert_eq!(error.fact_value("unsupported_column"), Some("first_unsupported"));
+    assert_eq!(error.fact_value("unsupported_column_type"), Some("List(Float64)"));
+    assert_eq!(error.fact_value("unsupported_column_role"), Some("projected"));
 
     fs::remove_dir_all(dir).unwrap();
 }

@@ -212,7 +212,7 @@ pub(super) fn metadata_record_batch_stream(
     batch: arrow::record_batch::RecordBatch,
     operation: &'static str,
     message: &'static str,
-) -> Pin<Box<dyn Stream<Item = Result<arrow_flight::FlightData, Status>> + Send>> {
+) -> BoxStream<'static, Result<arrow_flight::FlightData, Status>> {
     let stream = encode_flight_data_stream(schema, futures::stream::once(async move { Ok(batch) }))
         .map_err(move |error| arrow_flight_error_to_status_for_operation(error, operation, message));
     Box::pin(stream)

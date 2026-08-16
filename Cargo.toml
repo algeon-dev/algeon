@@ -96,11 +96,11 @@ csv = "1.4"
 datafusion = "55.0"
 futures = "0.3"
 getrandom = "0.4"
-iceberg = { git = "https://github.com/apache/iceberg-rust.git", rev = "39100a90ff51ee5f388f70bfa809936dbcfe2be2" }
-iceberg-catalog-glue = { git = "https://github.com/apache/iceberg-rust.git", rev = "39100a90ff51ee5f388f70bfa809936dbcfe2be2" }
-iceberg-catalog-rest = { git = "https://github.com/apache/iceberg-rust.git", rev = "39100a90ff51ee5f388f70bfa809936dbcfe2be2" }
-iceberg-datafusion = { git = "https://github.com/apache/iceberg-rust.git", rev = "39100a90ff51ee5f388f70bfa809936dbcfe2be2" }
-iceberg-storage-opendal = { git = "https://github.com/apache/iceberg-rust.git", rev = "39100a90ff51ee5f388f70bfa809936dbcfe2be2" }
+iceberg = { git = "https://github.com/apache/iceberg-rust.git", rev = "16badac3543ae99f90e9d0e65f56068eef3751d0" }
+iceberg-catalog-glue = { git = "https://github.com/apache/iceberg-rust.git", rev = "16badac3543ae99f90e9d0e65f56068eef3751d0" }
+iceberg-catalog-rest = { git = "https://github.com/apache/iceberg-rust.git", rev = "16badac3543ae99f90e9d0e65f56068eef3751d0" }
+iceberg-datafusion = { git = "https://github.com/apache/iceberg-rust.git", rev = "16badac3543ae99f90e9d0e65f56068eef3751d0" }
+iceberg-storage-opendal = { git = "https://github.com/apache/iceberg-rust.git", rev = "16badac3543ae99f90e9d0e65f56068eef3751d0" }
 indexmap = "2"
 object_store = { version = "0.13", default-features = false, features = ["aws"] }
 opendal = "0.58"

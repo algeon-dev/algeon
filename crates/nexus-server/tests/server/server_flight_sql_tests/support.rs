@@ -185,9 +185,7 @@ impl TableProvider for ScanFailingTableProvider {
         _limit: Option<usize>,
     ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
         self.scan_called.store(true, Ordering::SeqCst);
-        Err(datafusion::error::DataFusionError::Execution(
-            "metadata regression provider row scan invoked".to_string(),
-        ))
+        Err(datafusion::error::DataFusionError::Execution("metadata regression provider row scan invoked".to_string()))
     }
 }
 
@@ -357,6 +355,54 @@ async fn close_prepared_raw(
 
 fn write_update_edges_parquet(path: &Path) {
     write_int64_pairs_parquet(path, ["src", "dst"], [0, 1], [1, 2]);
+}
+
+fn write_unsupported_float_list_parquet(path: &Path) {
+    let child = Arc::new(Field::new("element", DataType::Float64, true));
+    let values = ListArray::new(
+        Arc::clone(&child),
+        OffsetBuffer::new(ScalarBuffer::from(vec![0, 1, 2])),
+        Arc::new(Float64Array::from(vec![1.0, 2.0])),
+        None,
+    );
+    let schema = Arc::new(Schema::new(vec![Field::new("unsupported_values", DataType::List(child), true)]));
+    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(values)]).unwrap();
+    let mut writer = ArrowWriter::try_new(File::create(path).unwrap(), schema, None).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+}
+
+fn write_basic_list_parquet(path: &Path) {
+    let string_child = Arc::new(Field::new("element", DataType::Utf8, true));
+    let null_strings = || {
+        Arc::new(ListArray::new(
+            Arc::clone(&string_child),
+            OffsetBuffer::new(ScalarBuffer::from(vec![0; 13])),
+            Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+            Some(NullBuffer::from(vec![false; 12])),
+        )) as arrow::array::ArrayRef
+    };
+    let int_child = Arc::new(Field::new("element", DataType::Int64, true));
+    let ports = ListArray::new(
+        Arc::clone(&int_child),
+        OffsetBuffer::new(ScalarBuffer::from((0..=12).collect::<Vec<i32>>())),
+        Arc::new(Int64Array::from_iter_values(100..112)),
+        None,
+    );
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("vertexId", DataType::Int64, false),
+        Field::new("vertexAttributes__tag", DataType::List(Arc::clone(&string_child)), true),
+        Field::new("vertexAttributes__label", DataType::List(Arc::clone(&string_child)), true),
+        Field::new("vertexAttributes__rank", DataType::List(int_child), true),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(Int64Array::from_iter_values(0..12)), null_strings(), null_strings(), Arc::new(ports)],
+    )
+    .unwrap();
+    let mut writer = ArrowWriter::try_new(File::create(path).unwrap(), schema, None).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
 }
 
 fn write_int64_pairs_parquet(path: &Path, names: [&str; 2], left: [i64; 2], right: [i64; 2]) {

@@ -203,6 +203,35 @@ metadata. Client-visible fact selection is independent of
 `with_log_safe_fact`; a producer of `native_message`, for example, must treat
 it as transport-visible data.
 
+### Strict unsupported-type rejection
+
+With the `NoDataFusionCpu` final-plan requirement, an unsupported native column
+cannot remain on the executable DataFusion plan. The outer adapter error code
+is `final_plan_requirement_unsatisfied`, and Flight returns `InvalidArgument`.
+For an unsupported list projection, the status message itself identifies the
+first blocking field in schema order, its exact diagnostic Arrow type, and its
+stable role:
+
+~~~text
+GPU execution does not support projected column `countDetail` with Arrow type `List(Float64)`
+~~~
+
+That status also carries the matching structured metadata:
+
+| Metadata key | Example value |
+| --- | --- |
+| `x-datafusion-nexus-reason` | `unsupported_type` |
+| `x-datafusion-nexus-unsupported-column` | `countDetail` |
+| `x-datafusion-nexus-unsupported-column-type` | `List(Float64)` |
+| `x-datafusion-nexus-unsupported-column-role` | `projected` |
+
+The terminal `GetQueryStats` structured error retains the same facts as
+`fact.reason`, `fact.unsupported_column`, `fact.unsupported_column_type`, and
+`fact.unsupported_column_role`. Flight metadata and query stats are additional
+machine-readable projections; they do not replace the actionable status
+message. The existing allowlist and masking rules still apply, so raw facts and
+the source chain are not exposed.
+
 Protocol policy outside the built-in server belongs to the application. The
 embedded REST example intentionally maps typed errors before applying its
 ordinary DataFusion fallback, and does not expose raw facts wholesale.
