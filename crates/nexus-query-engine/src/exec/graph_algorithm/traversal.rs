@@ -445,25 +445,6 @@ fn align_include_edges(
     let (allowed_edges, null_rows_dropped) = drop_null_include_edge_rows(context, input.input, &frame, &right_keys)?;
 
     let aligned_allowed_rows = allowed_edges.num_rows();
-    let options = cudf::DataFrameJoinOptions::new()
-        .left_on(left_keys.iter().map(String::as_str))
-        .right_on(right_keys.iter().map(String::as_str))
-        .null_equality(cudf::NullEquality::Unequal);
-    *edges = edges.left_semi_join(&allowed_edges, options).map_err(|error| {
-        QueryError::from_cudf(
-            "nexus_query_engine.graph_algorithm.bfs_predicates",
-            "failed to align BFS include_edges predicate with the primary edge list",
-            error,
-        )
-        .with_fact("predicate_role", "include_edges")
-        .with_fact("input", input.input)
-        .with_fact("left_keys", left_keys.join(","))
-        .with_fact("right_keys", right_keys.join(","))
-    })?;
-
-    // A whitelist that collapses to empty (every row dropped, or empty input)
-    // would silently produce an empty BFS. Surface it as a deliberate error so
-    // the user knows the predicate, not the graph, eliminated all edges.
     if aligned_allowed_rows == 0 {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
@@ -475,6 +456,63 @@ fn align_include_edges(
         .with_fact("input_rows", input_rows)
         .with_fact("null_rows_dropped", null_rows_dropped));
     }
+
+    let indices = {
+        let allowed_edges = allowed_edges;
+        let overrides_lease = execution_overrides(context)?;
+        let overrides = overrides_lease.overrides();
+        let options =
+            cudf::frame::dataframe::DataFrameFilteredJoinOptions::new().null_equality(cudf::NullEquality::Unequal);
+        let join = allowed_edges
+            .with_execution(&overrides)
+            .build_filtered_join(right_keys.iter().map(String::as_str), options)
+            .map_err(|error| {
+                QueryError::from_cudf(
+                    "nexus_query_engine.graph_algorithm.bfs_predicates",
+                    "failed to build reusable BFS include_edges alignment",
+                    error,
+                )
+                .with_fact("predicate_role", "include_edges")
+                .with_fact("input", input.input)
+            })?;
+        let probe = join.begin_left_semi_probe_in(edges, left_keys.iter().map(String::as_str), &overrides).map_err(
+            |error| {
+                QueryError::from_cudf(
+                    "nexus_query_engine.graph_algorithm.bfs_predicates",
+                    "failed to probe BFS include_edges alignment",
+                    error,
+                )
+                .with_fact("predicate_role", "include_edges")
+                .with_fact("input", input.input)
+            },
+        )?;
+        probe.materialize_indices_in(&overrides).map_err(|error| {
+            QueryError::from_cudf(
+                "nexus_query_engine.graph_algorithm.bfs_predicates",
+                "failed to materialize BFS include_edges alignment indices",
+                error,
+            )
+            .with_fact("predicate_role", "include_edges")
+            .with_fact("input", input.input)
+        })?
+    };
+    let output_columns = edges.column_names().into_iter().map(str::to_string).collect::<Vec<_>>();
+    let overrides_lease = execution_overrides(context)?;
+    let overrides = overrides_lease.overrides();
+    *edges = edges
+        .with_execution(&overrides)
+        .materialize_join_indices(&indices, output_columns.iter().map(String::as_str))
+        .map_err(|error| {
+            QueryError::from_cudf(
+                "nexus_query_engine.graph_algorithm.bfs_predicates",
+                "failed to align BFS include_edges predicate with the primary edge list",
+                error,
+            )
+            .with_fact("predicate_role", "include_edges")
+            .with_fact("input", input.input)
+            .with_fact("left_keys", left_keys.join(","))
+            .with_fact("right_keys", right_keys.join(","))
+        })?;
 
     Ok(EdgePredicateAlignment {
         input_rows: Some(input_rows),

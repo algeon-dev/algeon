@@ -45,7 +45,7 @@ pub use types::{
     CugraphWccParams, GpuIslandHostBoundaryConfig, bfs_result_schema, result_schema_for_params, stable_result_schema,
 };
 pub(crate) use types::{
-    CugraphVertexIdDomain, bfs_result_schema_for_vertex_domain, validate_similarity_pair_table_schema,
+    CugraphVertexIdDomain, result_schema_for_vertex_domain, validate_similarity_pair_table_schema,
     validate_vertex_id_domain_support_for_call, vertex_id_domain_for_call,
 };
 

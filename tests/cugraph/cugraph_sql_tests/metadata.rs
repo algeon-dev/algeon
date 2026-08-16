@@ -19,6 +19,18 @@ async fn validate(ctx: &SessionContext, function: &str, edges: &str, options: se
     single_batch(&ctx.sql(&sql).await.unwrap().collect().await.unwrap()).clone()
 }
 
+fn assert_validation_schema_matches(batch: &RecordBatch, actual: &Schema) {
+    let reported = json_value(string_value(batch, 6, 0));
+    let fields = reported["fields"].as_array().expect("validation output schema must contain fields");
+    assert_eq!(fields.len(), actual.fields().len());
+    for (reported, actual) in fields.iter().zip(actual.fields()) {
+        assert_eq!(reported["name"].as_str(), Some(actual.name().as_str()));
+        let data_type = format!("{:?}", actual.data_type());
+        assert_eq!(reported["data_type"].as_str(), Some(data_type.as_str()));
+        assert_eq!(reported["nullable"].as_bool(), Some(actual.is_nullable()));
+    }
+}
+
 #[tokio::test]
 async fn cugraph_sql_registers_only_execution_udtfs_and_the_common_catalog() {
     let state = SessionStateBuilder::new_with_default_features()
@@ -221,11 +233,40 @@ async fn cugraph_validation_uses_common_envelope_and_preserves_graph_facts() {
     assert!(string_value(&batch, 5, 0).contains(r#""schema_version":1"#));
     assert!(string_value(&batch, 6, 0).contains(r#""reachable""#));
     assert!(bool_value(&batch, 7, 0));
+    let bfs = ctx
+        .sql(
+            "SELECT * FROM cugraph_bfs('target_edges', 0, 'src', 'dst', 'weight', \
+             '{\"depth_limit\":2,\"output_mode\":\"normalized\"}')",
+        )
+        .await
+        .unwrap();
+    assert_validation_schema_matches(&batch, bfs.schema().inner());
     let details = json_value(string_value(&batch, 8, 0));
     assert_eq!(details["edges"]["table"], "target_edges");
     assert_eq!(details["edges"]["src_dtype"], "Int64");
     assert_eq!(details["edges"]["dst_dtype"], "Int64");
     assert_eq!(details["edges"]["weight_dtype"], "Float64");
+}
+
+#[tokio::test]
+async fn cugraph_validation_output_schema_matches_pagerank_provider_for_each_vertex_domain() {
+    let state = SessionStateBuilder::new_with_default_features()
+        .try_with_cugraph_sql(CugraphSqlConfig::default())
+        .expect("install cuGraph SQL")
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+    register_edge_memtable(&ctx, "integer_edges", DataType::Int64, DataType::Int64, DataType::Float64);
+    register_string_pagerank_parity_edges(&ctx, "string_edges", "unused_numeric_edges");
+
+    for (edges, expected_vertex_type) in [("integer_edges", DataType::Int64), ("string_edges", DataType::Utf8)] {
+        let batch =
+            validate(&ctx, "cugraph_pagerank", edges, serde_json::json!({"src_col":"src","dst_col":"dst"})).await;
+        assert!(bool_value(&batch, 0, 0), "{}", string_value(&batch, 2, 0));
+
+        let df = ctx.sql(&format!("SELECT * FROM cugraph_pagerank('{edges}', 'src', 'dst')")).await.unwrap();
+        assert_eq!(df.schema().field(0).data_type(), &expected_vertex_type, "{edges} PageRank vertex type");
+        assert_validation_schema_matches(&batch, df.schema().inner());
+    }
 }
 
 #[tokio::test]

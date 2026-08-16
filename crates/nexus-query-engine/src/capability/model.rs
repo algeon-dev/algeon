@@ -1406,7 +1406,6 @@ fn projection_global_limit_rejection_projects_before_root_join(decision: &Capabi
             "projection_global_limit_rejects_distinct_or_dedup_aggregate"
                 | "projection_global_limit_rejects_unsupported_distinct_or_dedup_aggregate"
                 | "projection_global_limit_requires_fetch_limit"
-                | "projection_global_limit_requires_pre_limit_aggregate"
                 | "projection_global_limit_requires_join_fragment"
                 | "projection_global_limit_requires_non_sort_limit_input"
                 | "projection_global_limit_requires_supported_join_fragment"

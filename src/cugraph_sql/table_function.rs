@@ -34,8 +34,8 @@ use datafusion::{
 
 use super::{
     CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphSqlConfig, CugraphTableReference,
-    CugraphVertexIdDomain, CugraphVertexPairTable, bfs_result_schema_for_vertex_domain, datafusion_table_reference,
-    parse_cugraph_algorithm_spec, plan_error, validate_similarity_pair_table_schema,
+    CugraphVertexIdDomain, CugraphVertexPairTable, datafusion_table_reference, parse_cugraph_algorithm_spec,
+    plan_error, result_schema_for_vertex_domain, validate_similarity_pair_table_schema,
     validate_vertex_id_domain_support_for_call, vertex_id_domain_for_call,
 };
 #[cfg(feature = "cugraph")]
@@ -343,14 +343,7 @@ fn maybe_resolve_vertex_output_schema(spec: &mut CugraphAlgorithmSpec, session: 
 
 #[cfg(feature = "cugraph")]
 fn resolve_vertex_output_schema(spec: &mut CugraphAlgorithmSpec, vertex_domain: &CugraphVertexIdDomain) {
-    if let CugraphAlgorithmParams::Bfs(params) = &spec.params {
-        spec.output_schema = bfs_result_schema_for_vertex_domain(params, vertex_domain);
-    } else if spec.algorithm == CugraphAlgorithm::PageRank && vertex_domain.is_string_logical() {
-        spec.output_schema = Arc::new(Schema::new(vec![
-            arrow::datatypes::Field::new("vertex", DataType::Utf8, false),
-            arrow::datatypes::Field::new("value", DataType::Float64, false),
-        ]));
-    }
+    spec.output_schema = result_schema_for_vertex_domain(spec.algorithm, &spec.params, Some(vertex_domain));
 }
 
 pub fn cugraph_table_functions(config: CugraphSqlConfig) -> Vec<Arc<TableFunction>> {
@@ -392,9 +385,7 @@ async fn validate_cugraph_static_sources(
         .await?
         .ok_or_else(|| plan_error(format!("No table named '{}' for cuGraph edge source", spec.table_name)))?;
     let vertex_domain = validate_edge_source_schema(&spec, &provider.schema())?;
-    if let CugraphAlgorithmParams::Bfs(params) = &spec.params {
-        spec.output_schema = bfs_result_schema_for_vertex_domain(params, &vertex_domain);
-    }
+    spec.output_schema = result_schema_for_vertex_domain(spec.algorithm, &spec.params, Some(&vertex_domain));
     for source in predicate_source_specs(&spec) {
         let table_ref = datafusion_table_reference(&source.table_name);
         let schema = session_state.schema_for_ref(table_ref.clone())?;
@@ -407,16 +398,18 @@ async fn validate_cugraph_static_sources(
 }
 
 #[cfg(feature = "cugraph")]
+fn exact_column_expr(name: &str) -> Expr {
+    col(format!("\"{name}\""))
+}
+
+#[cfg(feature = "cugraph")]
 fn edge_source_projection(spec: &CugraphAlgorithmSpec) -> Vec<Expr> {
-    fn col_exact(name: &str) -> Expr {
-        if name.starts_with('"') && name.ends_with('"') { col(name) } else { col(format!("\"{name}\"")) }
-    }
-    let mut projection = vec![col_exact(&spec.src_col), col_exact(&spec.dst_col)];
+    let mut projection = vec![exact_column_expr(&spec.src_col), exact_column_expr(&spec.dst_col)];
     if let Some(weight) = &spec.weight_col {
-        projection.push(col_exact(weight));
+        projection.push(exact_column_expr(weight));
     }
     if let Some(edge_id) = &spec.edge_id_col {
-        projection.push(col_exact(edge_id));
+        projection.push(exact_column_expr(edge_id));
     }
     projection
 }
@@ -440,7 +433,7 @@ async fn predicate_source_plans(
         })?;
         validate_predicate_source_schema(&source, &provider.schema(), vertex_domain)?;
         let scan = LogicalPlanBuilder::scan(table_ref, provider_as_source(provider), None)?.build()?;
-        let projection = source.columns.iter().map(|column| col(&column.name)).collect::<Vec<_>>();
+        let projection = source.columns.iter().map(|column| exact_column_expr(&column.name)).collect::<Vec<_>>();
         let plan = LogicalPlanBuilder::from(scan).project(projection)?.build()?;
         plans.push(planning_state.create_physical_plan(&plan).await?);
     }

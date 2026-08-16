@@ -105,12 +105,12 @@ static NEXT_CUGRAPH_GPU_RESULT_INPUT_ID: AtomicU64 = AtomicU64::new(0);
 struct CugraphResultPlanOptions {
     projection: Option<Vec<usize>>,
     limit: Option<usize>,
-    pre_decode_sort: Option<SortSpec>,
+    subsumed_top_k_sort: Option<SortSpec>,
 }
 
 impl CugraphResultPlanOptions {
     fn new(projection: Option<Vec<usize>>, limit: Option<usize>) -> Self {
-        Self { projection, limit, pre_decode_sort: None }
+        Self { projection, limit, subsumed_top_k_sort: None }
     }
 }
 

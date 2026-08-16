@@ -20,13 +20,7 @@ pub(in crate::capability) fn single_join_post_root_pipeline_shape_decision(
         ));
     }
     validate_general_post_root_stages(plan, &post_root_stages, "single_join_post_root_pipeline")?;
-    validate_resident_source_filter_projection_leaf_pipeline_for_capability(
-        plan,
-        root_join.inputs[join_side_index(JoinSide::Left)],
-    )?;
-    validate_resident_source_filter_projection_leaf_pipeline_for_capability(
-        plan,
-        root_join.inputs[join_side_index(JoinSide::Right)],
-    )?;
+    validate_resident_leaf_pipeline_for_capability(plan, root_join.inputs[join_side_index(JoinSide::Left)])?;
+    validate_resident_leaf_pipeline_for_capability(plan, root_join.inputs[join_side_index(JoinSide::Right)])?;
     Ok(())
 }

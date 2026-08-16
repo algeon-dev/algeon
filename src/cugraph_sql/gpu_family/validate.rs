@@ -12,7 +12,7 @@ use super::{
     super::{
         CUGRAPH_OPERATION_REGISTRY, CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphBfsSource,
         CugraphBfsSourceVertex, CugraphSqlConfig, CugraphTableReference, CugraphVertexIdDomain,
-        bfs_result_schema_for_vertex_domain, datafusion_table_reference, parse_cugraph_algorithm_spec,
+        datafusion_table_reference, parse_cugraph_algorithm_spec, result_schema_for_vertex_domain,
         types::validate_similarity_pair_table_schema, validate_vertex_id_domain_support_for_call,
         vertex_id_domain_for_call,
     },
@@ -179,10 +179,8 @@ pub(super) async fn validate_graph_call(
                 };
             },
         };
-    if let CugraphAlgorithmParams::Bfs(params) = &spec.params {
-        spec.output_schema = bfs_result_schema_for_vertex_domain(params, &vertex_domain);
-        output_schema_json = schema_json(&spec.output_schema);
-    }
+    spec.output_schema = result_schema_for_vertex_domain(algorithm, &spec.params, Some(&vertex_domain));
+    output_schema_json = schema_json(&spec.output_schema);
     if let Err(error) = validate_vertex_id_domain_support_for_call(algorithm, &vertex_domain) {
         return ValidationRow {
             table_resolved: true,

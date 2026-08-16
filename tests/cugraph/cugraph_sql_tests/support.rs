@@ -125,6 +125,13 @@ pub(super) fn pagerank_rows(batches: &[RecordBatch]) -> Vec<PageRankRow> {
     rows
 }
 
+pub(super) fn pagerank_values(batches: &[RecordBatch]) -> Vec<f64> {
+    batches
+        .iter()
+        .flat_map(|batch| batch.column(1).as_any().downcast_ref::<Float64Array>().unwrap().values().iter().copied())
+        .collect()
+}
+
 // Used by the explicit Python-cuGraph PageRank tools runner.
 #[cfg_attr(test, allow(dead_code))]
 pub(super) fn python_pagerank_oracle(path: &Path) -> Option<PythonPageRankOracle> {
@@ -491,6 +498,62 @@ pub(super) fn register_string_pagerank_parity_edges(ctx: &SessionContext, string
         vec![
             Arc::new(Int64Array::from(vec![Some(1), Some(1), Some(1), Some(2), Some(3), None, Some(4)])) as ArrayRef,
             Arc::new(Int64Array::from(vec![Some(2), Some(2), Some(3), Some(4), Some(4), Some(1), None])) as ArrayRef,
+        ],
+    )
+    .unwrap();
+    ctx.register_table(numeric_table, Arc::new(MemTable::try_new(numeric_schema, vec![vec![numeric_batch]]).unwrap()))
+        .unwrap();
+}
+
+pub(super) fn register_large_string_pagerank_edges(
+    ctx: &SessionContext,
+    string_table: &str,
+    numeric_table: &str,
+    vertex_count: usize,
+) {
+    assert!(vertex_count > 1);
+    let edge_count = vertex_count + (vertex_count.saturating_sub(1) / 2);
+    let mut string_sources = Vec::with_capacity(edge_count);
+    let mut string_destinations = Vec::with_capacity(edge_count);
+    let mut numeric_sources = Vec::with_capacity(edge_count);
+    let mut numeric_destinations = Vec::with_capacity(edge_count);
+    for source in 0..vertex_count {
+        let source_id = i64::try_from(source + 1).unwrap();
+        let next_id = i64::try_from((source + 1) % vertex_count + 1).unwrap();
+        string_sources.push(format!("vertex-{source:05}"));
+        string_destinations.push(format!("vertex-{next:05}", next = (source + 1) % vertex_count));
+        numeric_sources.push(source_id);
+        numeric_destinations.push(next_id);
+        if source > 0 && source % 2 == 0 {
+            string_sources.push(format!("vertex-{source:05}"));
+            string_destinations.push("vertex-00000".to_string());
+            numeric_sources.push(source_id);
+            numeric_destinations.push(1);
+        }
+    }
+
+    let string_schema =
+        Arc::new(Schema::new(vec![Field::new("src", DataType::Utf8, false), Field::new("dst", DataType::Utf8, false)]));
+    let string_batch = RecordBatch::try_new(
+        Arc::clone(&string_schema),
+        vec![
+            Arc::new(StringArray::from(string_sources)) as ArrayRef,
+            Arc::new(StringArray::from(string_destinations)) as ArrayRef,
+        ],
+    )
+    .unwrap();
+    ctx.register_table(string_table, Arc::new(MemTable::try_new(string_schema, vec![vec![string_batch]]).unwrap()))
+        .unwrap();
+
+    let numeric_schema = Arc::new(Schema::new(vec![
+        Field::new("src", DataType::Int64, false),
+        Field::new("dst", DataType::Int64, false),
+    ]));
+    let numeric_batch = RecordBatch::try_new(
+        Arc::clone(&numeric_schema),
+        vec![
+            Arc::new(Int64Array::from(numeric_sources)) as ArrayRef,
+            Arc::new(Int64Array::from(numeric_destinations)) as ArrayRef,
         ],
     )
     .unwrap();

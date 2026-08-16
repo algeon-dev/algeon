@@ -2,7 +2,7 @@ use std::{collections::BTreeSet, sync::Arc};
 
 use arrow::datatypes::{Schema, SchemaRef};
 use datafusion::{
-    common::{JoinSide as DataFusionJoinSide, NullEquality},
+    common::{Constraint, JoinSide as DataFusionJoinSide, NullEquality},
     logical_expr::JoinType,
     physical_expr::{
         PhysicalExpr,
@@ -38,6 +38,7 @@ use crate::{
         expression_contract::validate_join_residual,
         normalize::{
             NormalizedNativeCrossJoin, NormalizedNativeHashJoin, NormalizedNativeInput, NormalizedNativeNestedLoopJoin,
+            NormalizedNativeScan,
         },
     },
 };
@@ -515,6 +516,17 @@ fn unique_lookup_bounded_side(join: &NormalizedNativeHashJoin<'_>, canonical: Ca
 
 fn input_is_unique_on(input: &NormalizedNativeInput<'_>, key_names: &BTreeSet<String>) -> bool {
     match input {
+        NormalizedNativeInput::Source(source) => {
+            let plan: &dyn ExecutionPlan = match source.scan {
+                NormalizedNativeScan::LocalParquet(source) => source,
+                NormalizedNativeScan::TableFormat(source) => source,
+            };
+            constraints_are_unique_on(
+                plan.schema().as_ref(),
+                plan.properties().equivalence_properties().constraints(),
+                key_names,
+            )
+        },
         NormalizedNativeInput::GpuResidentSource(source) => {
             source.unique_output_key.as_ref().is_some_and(|unique_key| unique_key.is_subset(key_names))
         },
@@ -549,6 +561,19 @@ fn input_is_unique_on(input: &NormalizedNativeInput<'_>, key_names: &BTreeSet<St
         },
         _ => false,
     }
+}
+
+fn constraints_are_unique_on(schema: &Schema, constraints: &[Constraint], key_names: &BTreeSet<String>) -> bool {
+    constraints.iter().any(|constraint| {
+        let indices = match constraint {
+            Constraint::PrimaryKey(indices) | Constraint::Unique(indices) => indices,
+        };
+        indices
+            .iter()
+            .map(|index| schema.fields().get(*index).map(|field| field.name().to_owned()))
+            .collect::<Option<BTreeSet<_>>>()
+            .is_some_and(|unique_key| unique_key.is_subset(key_names))
+    })
 }
 
 fn unique_projection_input_column(expr: &Arc<dyn PhysicalExpr>, input_schema: &SchemaRef) -> Option<usize> {
@@ -830,6 +855,7 @@ fn lower_join_null_equality(null_equality: NullEquality) -> NativeJoinNullEquali
 mod tests {
     use arrow::datatypes::{DataType, Field};
     use datafusion::{
+        common::{Constraint, Constraints},
         physical_expr::{
             expressions::{cast, col},
             projection::ProjectionExpr,
@@ -868,5 +894,21 @@ mod tests {
     fn narrowing_cast_does_not_claim_unique_graph_key() {
         assert!(!representation_cast_preserves_identity(&DataType::Int64, &DataType::Int32));
         assert!(representation_cast_preserves_identity(&DataType::Utf8, &DataType::Utf8View));
+    }
+
+    #[test]
+    fn source_constraints_prove_only_declared_unique_keys() {
+        let schema = Schema::new(vec![
+            Field::new("vertexId", DataType::Utf8, false),
+            Field::new("assetType", DataType::Utf8, false),
+        ]);
+        let constraints = Constraints::new_unverified(vec![Constraint::Unique(vec![0])]);
+
+        assert!(constraints_are_unique_on(
+            &schema,
+            &constraints,
+            &BTreeSet::from(["vertexId".to_owned(), "assetType".to_owned()]),
+        ));
+        assert!(!constraints_are_unique_on(&schema, &constraints, &BTreeSet::from(["assetType".to_owned()]),));
     }
 }

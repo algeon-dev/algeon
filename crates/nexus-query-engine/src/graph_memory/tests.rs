@@ -493,7 +493,7 @@ fn personalized_pagerank_side_input_owner_requires_a_hard_row_bound() {
 
 #[cfg(feature = "cugraph")]
 #[test]
-fn bfs_side_input_preflight_rejects_unsupported_dtype_include_edges_and_aliases() {
+fn bfs_side_input_preflight_rejects_unsupported_dtype_and_aliases_and_prices_include_edges() {
     let unsupported = bfs_side_input_plan(
         Arc::new(Schema::new(vec![Field::new("vertex", DataType::UInt64, false)])),
         Some(3),
@@ -514,10 +514,16 @@ fn bfs_side_input_preflight_rejects_unsupported_dtype_include_edges_and_aliases(
         params.predicates.include_edges = Some(GraphEdgePredicateInput::new(side, "src", "dst", None::<&str>));
         params
     });
-    let error =
+    let evidence =
         graph_memory_bounded_admission_evidence_for_plan(&include_edges, GraphMemoryCalibrationOverride::none(), None)
-            .expect_err("include_edges without an owner contract must fail closed");
-    assert_eq!(error.fact_value("side_input_reason"), Some("include_edges_owner_contract_missing"));
+            .expect("bounded include_edges must use the filtered-join owner contract");
+    let owner_peak = evidence
+        .owner_term_facts()
+        .iter()
+        .find(|fact| fact.role() == GraphMemoryOwnerTermRole::SideInputWorkspace)
+        .expect("include_edges side-input owner term")
+        .bytes();
+    assert!(owner_peak > 0);
 
     let duplicate = bfs_side_input_plan(
         Arc::new(Schema::new(vec![Field::new("vertex", DataType::Int64, false)])),

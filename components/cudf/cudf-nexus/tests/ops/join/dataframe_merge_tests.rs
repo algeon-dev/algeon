@@ -2,8 +2,13 @@
 use cudf::{
     DataFrame, DataFrameCrossJoinOptions, DataFrameFilteredJoinOptions, DataFrameHashJoinOptions,
     DataFrameHashJoinPairIndices, DataFrameJoinIndices, DataFrameJoinOptions, DataFrameJoinPairIndices,
-    DataFrameMixedJoinOptions, ErrorCode, ErrorKind, ExecutionOverrides, JoinType, MergeOptions,
-    frame::dataframe::InfoDetail, ops::ast::AstExpression, testing::prelude::*,
+    DataFrameMixedJoinOptions, ErrorCode, ErrorKind, ExecutionOverrides, JoinType, MergeOptions, TypeId,
+    frame::dataframe::InfoDetail,
+    ops::{
+        ast::AstExpression,
+        join::{FilteredJoin, FilteredJoinOptions},
+    },
+    testing::prelude::*,
 };
 
 use crate::common::{
@@ -547,6 +552,30 @@ fn test_dataframe_filtered_join_probe_state_materializes_without_second_size_pro
     let anti_indices = anti_state.materialize_indices().unwrap();
     let anti = filtered_join.materialize_probe(&probe, &anti_indices, ["score"]).unwrap();
     assert_eq!(i32_column(&anti, "score"), vec![10]);
+}
+
+#[test]
+fn test_filtered_join_fixed_width_metadata_preflight_matches_built_owner() {
+    let build = crate::common::dataframe_from_columns(
+        vec!["leftKey".to_string(), "rightKey".to_string()],
+        vec![
+            column_from_slice_nullable(&[2i64, 4, 8], &[true, true, true]).unwrap(),
+            column_from_slice_nullable(&[3i64, 5, 9], &[true, true, true]).unwrap(),
+        ],
+    )
+    .unwrap();
+    let options = DataFrameFilteredJoinOptions::new().null_equality(cudf::NullEquality::Unequal);
+    let metadata_bytes = FilteredJoin::pre_build_reservation_size_bytes_for_fixed_width_metadata(
+        &[TypeId::Int64, TypeId::Int64],
+        build.num_rows(),
+        FilteredJoinOptions::new().null_equality(cudf::NullEquality::Unequal),
+    )
+    .unwrap();
+    let frame_bytes = build.filtered_join_pre_build_reservation_size_bytes(["leftKey", "rightKey"], options).unwrap();
+    let owner = build.build_filtered_join(["leftKey", "rightKey"], options).unwrap();
+
+    assert_eq!(metadata_bytes, frame_bytes);
+    assert_eq!(metadata_bytes, owner.device_allocated_size_bytes().unwrap());
 }
 
 #[test]

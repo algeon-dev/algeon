@@ -72,16 +72,6 @@ pub(in crate::capability) fn projection_global_limit_shape_decision(
         .copied()
         .filter(|node_id| matches!(plan.node(*node_id).map(|node| &node.kind), Some(PlanNode::Aggregate(_))))
         .collect::<Vec<_>>();
-    if aggregate_ids.is_empty() {
-        return Err(CapabilityDecision::rejected(
-            if limit_root {
-                "projection_global_limit_limit_root_requires_pre_limit_aggregate"
-            } else {
-                "projection_global_limit_requires_pre_limit_aggregate"
-            },
-            [("limit_input", global_limit.input.to_string())],
-        ));
-    }
     let join_ids = limit_reachable
         .iter()
         .copied()

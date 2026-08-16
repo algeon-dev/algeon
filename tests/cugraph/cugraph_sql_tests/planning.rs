@@ -10,6 +10,15 @@ use nexus_query_engine::{
 
 use super::{support::*, *};
 
+fn register_exact_columns(ctx: &SessionContext, table_name: &str, columns: &[(&str, DataType)]) {
+    let schema = Arc::new(Schema::new(
+        columns.iter().map(|(name, data_type)| Field::new(*name, data_type.clone(), false)).collect::<Vec<_>>(),
+    ));
+    let arrays = columns.iter().map(|(_, data_type)| edge_column(data_type)).collect::<Vec<_>>();
+    let batch = RecordBatch::try_new(Arc::clone(&schema), arrays).unwrap();
+    ctx.register_table(table_name, Arc::new(MemTable::try_new(schema, vec![vec![batch]]).unwrap())).unwrap();
+}
+
 #[tokio::test]
 async fn cugraph_sql_planning_preserves_structured_logical_edge_id_capability_errors() {
     let state = SessionStateBuilder::new_with_default_features()
@@ -633,6 +642,93 @@ async fn cugraph_bfs_predicate_options_plan_as_exec_side_inputs() {
         cugraph.children().iter().all(|child| plan_contains_native_exec(child.as_ref())),
         "numeric BFS child relations must retain native execution planning"
     );
+}
+
+#[tokio::test]
+async fn cugraph_relation_projections_preserve_exact_camel_case_columns() {
+    let state = SessionStateBuilder::new_with_default_features()
+        .with_nexus_native(NexusNativeOptimizerConfig::default())
+        .try_with_cugraph_sql(CugraphSqlConfig::default())
+        .expect("install cuGraph SQL")
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+    register_exact_columns(
+        &ctx,
+        "camel_edges",
+        &[
+            ("edgeSrc", DataType::Int64),
+            ("edgeDst", DataType::Int64),
+            ("edgeWeight", DataType::Float64),
+            ("edgeKey", DataType::Int64),
+        ],
+    );
+    register_exact_columns(&ctx, "camel_source", &[("sourceVertex", DataType::Int64)]);
+    register_exact_columns(&ctx, "camel_include", &[("includeVertex", DataType::Int64)]);
+    register_exact_columns(&ctx, "camel_exclude", &[("excludeVertex", DataType::Int64)]);
+    register_exact_columns(&ctx, "camel_target", &[("targetVertex", DataType::Int64)]);
+    register_exact_columns(
+        &ctx,
+        "camel_allowed_edges",
+        &[("edgeSource", DataType::Int64), ("edgeDestination", DataType::Int64), ("edgeId", DataType::Int64)],
+    );
+    register_exact_columns(&ctx, "camel_seeds", &[("seedVertex", DataType::Int64), ("seedValue", DataType::Float64)]);
+    register_exact_columns(&ctx, "camel_pairs", &[("pairLeft", DataType::Int64), ("pairRight", DataType::Int64)]);
+
+    let sqls = [
+        (
+            r#"SELECT * FROM cugraph_bfs('camel_edges', NULL, 'edgeSrc', 'edgeDst', 'edgeWeight',
+                '{"source_vertices_table":"camel_source","source_vertex_col":"sourceVertex"}')"#,
+            "BFS source relation",
+        ),
+        (
+            r#"SELECT * FROM cugraph_bfs('camel_edges', 0, 'edgeSrc', 'edgeDst', 'edgeWeight',
+                '{"include_vertices_table":"camel_include","include_vertex_col":"includeVertex"}')"#,
+            "BFS include relation",
+        ),
+        (
+            r#"SELECT * FROM cugraph_bfs('camel_edges', 0, 'edgeSrc', 'edgeDst', 'edgeWeight',
+                '{"exclude_vertices_table":"camel_exclude","exclude_vertex_col":"excludeVertex"}')"#,
+            "BFS exclude relation",
+        ),
+        (
+            r#"SELECT * FROM cugraph_bfs('camel_edges', 0, 'edgeSrc', 'edgeDst', 'edgeWeight',
+                '{"target_vertices_table":"camel_target","target_vertex_col":"targetVertex"}')"#,
+            "BFS target relation",
+        ),
+        (
+            r#"SELECT * FROM cugraph_bfs('camel_edges', 0, 'edgeSrc', 'edgeDst', 'edgeWeight',
+                '{"edge_id_col":"edgeKey","include_edges_table":"camel_allowed_edges",
+                  "include_edge_src_col":"edgeSource","include_edge_dst_col":"edgeDestination",
+                  "include_edge_id_col":"edgeId"}')"#,
+            "BFS include-edges relation",
+        ),
+        (
+            r#"SELECT * FROM cugraph_personalized_pagerank('camel_edges', 'edgeSrc', 'edgeDst', 'edgeWeight',
+                '{"personalization_table":"camel_seeds","personalization_vertex_col":"seedVertex",
+                  "personalization_value_col":"seedValue"}')"#,
+            "personalized PageRank relation",
+        ),
+        (
+            r#"SELECT * FROM cugraph_jaccard('camel_edges', 'edgeSrc', 'edgeDst', NULL,
+                '{"vertex_pairs_table":"camel_pairs","first_vertex_col":"pairLeft","second_vertex_col":"pairRight"}')"#,
+            "similarity pair relation",
+        ),
+    ];
+
+    for (sql, relation) in sqls {
+        let df = ctx.sql(sql).await.unwrap_or_else(|error| panic!("{relation} should parse: {error}"));
+        let plan = df
+            .create_physical_plan()
+            .await
+            .unwrap_or_else(|error| panic!("{relation} should build exact projections: {error}"));
+        let cugraph =
+            find_cugraph_algo_exec(plan.as_ref()).unwrap_or_else(|| panic!("{relation} must retain graph boundary"));
+        assert_eq!(cugraph.children().len(), 2, "{relation} must retain edge and side-input relations");
+        assert!(
+            cugraph.children().iter().all(|child| plan_contains_native_exec(child.as_ref())),
+            "{relation} inputs must retain native execution planning"
+        );
+    }
 }
 
 #[test]

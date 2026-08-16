@@ -254,7 +254,7 @@ pub(super) fn cugraph_schema_query_plan(
         root = builder.add_projection(root, outputs);
         root_schema = Arc::clone(&execution_spec.output_schema);
     }
-    if logical_mapping && let Some(sort) = &result_options.pre_decode_sort {
+    if logical_mapping && let Some(sort) = &result_options.subsumed_top_k_sort {
         root = builder.add_sort(root, sort.clone(), Arc::clone(&root_schema));
     }
     if logical_mapping && let Some(limit) = result_options.limit {
@@ -262,6 +262,9 @@ pub(super) fn cugraph_schema_query_plan(
     }
     if let Some(codebook) = codebook {
         (root, root_schema) = decode_logical_graph_result(&mut builder, spec, root, root_schema, codebook)?;
+    }
+    if logical_mapping && let Some(sort) = &result_options.subsumed_top_k_sort {
+        root = builder.add_sort(root, sort.clone(), Arc::clone(&root_schema));
     }
     if let Some(projection) = &result_options.projection {
         root_schema = projected_schema(&root_schema, Some(projection))?;
@@ -277,7 +280,7 @@ pub(super) fn cugraph_schema_query_plan(
             .collect::<Result<Vec<_>>>()?;
         root = builder.add_projection(root, outputs);
     }
-    if !logical_mapping && let Some(sort) = &result_options.pre_decode_sort {
+    if !logical_mapping && let Some(sort) = &result_options.subsumed_top_k_sort {
         root = builder.add_sort(root, sort.clone(), Arc::clone(&root_schema));
     }
     if !logical_mapping && let Some(limit) = result_options.limit {
