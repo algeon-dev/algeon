@@ -1042,6 +1042,56 @@ fn table_format_field_id_mapping_allows_list_child_field_name_drift() {
 }
 
 #[test]
+fn table_format_field_id_mapping_allows_fixed_size_list_child_field_name_drift() {
+    let footer_list_type = DataType::FixedSizeList(
+        Arc::new(
+            Field::new("element", DataType::Int32, true)
+                .with_metadata(HashMap::from([(PARQUET_FIELD_ID_META_KEY.to_string(), "58".to_string())])),
+        ),
+        2,
+    );
+    let logical_list_type = DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Int32, true)), 2);
+    let footer_field = Field::new("old_features", footer_list_type, true)
+        .with_metadata(HashMap::from([(PARQUET_FIELD_ID_META_KEY.to_string(), "3".to_string())]));
+    let footer_schema = Arc::new(Schema::new(vec![footer_field]));
+    let scan_schema = Arc::new(Schema::new(vec![Field::new("features", logical_list_type.clone(), true)]));
+    let data_file = TableFormatDataFile::new(
+        "file-0",
+        "s3://bucket/table/part.parquet",
+        TableFormatDataFileFormat::Parquet,
+        TableFormatReadCapability::object_store("s3"),
+    )
+    .with_resolved_parquet_source(ResolvedParquetSource::remote_kvikio(
+        "s3://bucket/table/part.parquet",
+        CredentialMode::SharedProcessEnv,
+    ))
+    .with_footer_schema(footer_schema);
+    let scan_plan = TableFormatScanPlan::new(TableFormat::Iceberg)
+        .with_native_source_schema(Arc::clone(&scan_schema))
+        .with_data_file(data_file)
+        .with_projected_column(TableFormatColumnMapping::new(
+            Some(3),
+            "features",
+            Some("features"),
+            logical_list_type,
+            true,
+            TableFormatColumnSource::DirectTopLevelFileColumn,
+            crate::table_format::TableFormatColumnRole::Projected,
+        ));
+    let file_schema = table_format_file_schema(&scan_plan);
+    let requirements =
+        table_format_column_requirements(&scan_plan, &file_schema, scan_schema, None, &RequiredFields::all()).unwrap();
+    let output_schema = table_format_source_output_schema(&scan_plan, &requirements, &file_schema).unwrap();
+
+    let groups = table_format_source_read_groups(&scan_plan, &requirements, output_schema).unwrap();
+
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].requirements.read_columns, vec!["old_features"]);
+    assert_eq!(groups[0].field_id_bindings[0][0].logical_name, "features");
+    assert_eq!(groups[0].field_id_bindings[0][0].physical_name, "old_features");
+}
+
+#[test]
 fn table_format_field_id_mapping_rejects_non_parquet_list_child_metadata_drift() {
     let footer_list_type =
         DataType::List(Arc::new(Field::new("element", DataType::Utf8, true).with_metadata(HashMap::from([

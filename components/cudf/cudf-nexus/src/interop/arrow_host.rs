@@ -252,24 +252,64 @@ pub fn validate_record_batch_schema(batch: &RecordBatch) -> Result<ArrowHostSche
         .map_err(|error| error.reanchor("arrow_host::validate_record_batch_schema"))
 }
 
-/// Constructs a typed all-null `List` or `LargeList` series through the Arrow host import contract.
+/// Constructs a typed all-null supported list series through the Arrow host import contract.
 pub fn all_null_list_series(runtime: &Runtime, data_type: &ArrowDataType, rows: usize) -> Result<Series> {
+    let operation = "arrow_host::all_null_list_series";
     match data_type {
         ArrowDataType::List(field) | ArrowDataType::LargeList(field) if list_child_is_supported(field) => {},
+        ArrowDataType::FixedSizeList(field, dimension) if *dimension > 0 && list_numeric_child_is_supported(field) => {
+            let dimension = usize::try_from(*dimension)
+                .map_err(|_| size_overflow(operation, "converting FixedSizeList dimension"))?;
+            let child_rows = rows
+                .checked_mul(dimension)
+                .ok_or_else(|| size_overflow(operation, "sizing all-null FixedSizeList child rows"))?;
+            if i32::try_from(rows).is_err() || i32::try_from(child_rows).is_err() {
+                return Err(Error::new_with(
+                    ErrorCode::ValueOutOfRange,
+                    operation,
+                    "all-null FixedSizeList exceeds cudf's signed 32-bit row or child-offset range",
+                )
+                .with_detail("root_rows", rows.to_string())
+                .with_detail("child_rows", child_rows.to_string()));
+            }
+            let root_offsets = checked_size_mul(
+                checked_size_add(rows, 1, operation, "sizing all-null FixedSizeList offset count")?,
+                4,
+                operation,
+                "sizing all-null FixedSizeList offsets",
+            )?;
+            let child_values = list_child_import_device_bytes(field.data_type(), child_rows, 0, operation)?;
+            let _ = checked_size_add(
+                checked_size_add(
+                    root_offsets,
+                    cudf_null_mask_allocation_size_bytes(rows),
+                    operation,
+                    "sizing all-null FixedSizeList root buffers",
+                )?,
+                checked_size_add(
+                    child_values,
+                    cudf_null_mask_allocation_size_bytes(child_rows),
+                    operation,
+                    "sizing all-null FixedSizeList child buffers",
+                )?,
+                operation,
+                "sizing all-null FixedSizeList column",
+            )?;
+        },
         _ => {
             return Err(Error::new_with(
                 ErrorCode::UnsupportedDtype,
-                "arrow_host::all_null_list_series",
-                "typed null list construction requires a supported Arrow List or LargeList type",
+                operation,
+                "typed null list construction requires a supported Arrow list carry type",
             )
             .with_detail("arrow_type", format!("{data_type:?}"))
             .with_detail("reason", "unsupported_null_list_type"));
         },
     }
     let array = new_null_array(data_type, rows);
-    let column = arrow_array_to_column(runtime, array.as_ref(), "all_null_list")
-        .map_err(|error| error.reanchor("arrow_host::all_null_list_series"))?;
-    Series::from_column(column).map_err(|error| error.reanchor("arrow_host::all_null_list_series"))
+    let column =
+        arrow_array_to_column(runtime, array.as_ref(), "all_null_list").map_err(|error| error.reanchor(operation))?;
+    Series::from_column(column).map_err(|error| error.reanchor(operation))
 }
 
 /// Returns the device bytes retained when Arrow list arrays are concatenated
@@ -284,11 +324,14 @@ pub fn estimate_list_import_device_memory_bytes(arrays: &[ArrayRef]) -> Result<u
         ArrowDataType::List(field) | ArrowDataType::LargeList(field) if list_child_is_supported(field) => {
             field.data_type()
         },
+        ArrowDataType::FixedSizeList(field, dimension) if *dimension > 0 && list_numeric_child_is_supported(field) => {
+            field.data_type()
+        },
         _ => {
             return Err(Error::new_with(
                 ErrorCode::UnsupportedDtype,
                 operation,
-                "device import sizing requires supported Arrow List or LargeList arrays",
+                "device import sizing requires supported Arrow list carry arrays",
             )
             .with_detail("arrow_type", format!("{data_type:?}")));
         },
@@ -369,6 +412,33 @@ fn active_list_child_range(array: &dyn Array, operation: &'static str) -> Result
                 )
             })?;
             bounds(list.value_offsets(), Arc::clone(list.values()))
+        },
+        ArrowDataType::FixedSizeList(_, dimension) => {
+            let list = array.as_any().downcast_ref::<FixedSizeListArray>().ok_or_else(|| {
+                Error::new_with(
+                    ErrorCode::TypeMismatch,
+                    operation,
+                    "Arrow FixedSizeList array had an incompatible runtime type",
+                )
+            })?;
+            let dimension = usize::try_from(*dimension)
+                .map_err(|_| size_overflow(operation, "converting FixedSizeList dimension"))?;
+            let expected_child_rows = list
+                .len()
+                .checked_mul(dimension)
+                .ok_or_else(|| size_overflow(operation, "sizing active FixedSizeList child range"))?;
+            if list.values().len() != expected_child_rows {
+                return Err(error::foreign_invariant_violation(
+                    operation,
+                    "Arrow FixedSizeList values length does not match its active row span",
+                    "arrow_array",
+                    "fixed_size_list_child_length_mismatch",
+                    "provide a valid sliced FixedSizeList array",
+                )
+                .with_detail("child_len", list.values().len().to_string())
+                .with_detail("expected_child_len", expected_child_rows.to_string()));
+            }
+            Ok((Arc::clone(list.values()), 0, expected_child_rows))
         },
         _ => unreachable!("caller validates the list container type"),
     }
@@ -614,9 +684,6 @@ fn estimate_arrow_host_column_memory_bytes(
             }
         },
         ArrowDataType::FixedSizeList(child, dimension) if *dimension > 0 => {
-            let child_view = view.list_sliced_child().map_err(|error| error.reanchor(operation))?;
-            let child_rows = child_view.len().map_err(|error| error.reanchor(operation))?;
-            let child_nullable = child_view.nullable().map_err(|error| error.reanchor(operation))?;
             let dimension = usize::try_from(*dimension).map_err(|_| {
                 Error::new_with(ErrorCode::ValueOutOfRange, operation, "FixedSizeList dimension must be positive")
                     .with_detail("dimension", dimension.to_string())
@@ -626,20 +693,10 @@ fn estimate_arrow_host_column_memory_bytes(
                     .with_detail("rows", rows.to_string())
                     .with_detail("dimension", dimension.to_string())
             })?;
-            if child_rows != expected_child_rows {
-                return Err(Error::new_with(
-                    ErrorCode::ColumnLengthMismatch,
-                    operation,
-                    "cuDF list rows do not satisfy the requested FixedSizeList dimension",
-                )
-                .with_fact(crate::core::error::FACT_EXPECTED_ROWS, expected_child_rows)
-                .with_fact(crate::core::error::FACT_ACTUAL_ROWS, child_rows)
-                .with_detail("dimension", dimension.to_string())
-                .with_detail("reason", "fixed_size_list_dimension_mismatch"));
-            }
             let child_values =
-                estimate_arrow_list_fixed_width_values_capacity(child_rows, child.data_type(), operation)?;
-            let child_validity = estimate_arrow_validity_capacity(child_rows, child_nullable, operation)?;
+                estimate_arrow_list_fixed_width_values_capacity(expected_child_rows, child.data_type(), operation)?;
+            let child_validity =
+                estimate_arrow_validity_capacity(expected_child_rows, nullable || child.is_nullable(), operation)?;
             checked_size_add(child_values, child_validity, operation, "sizing Arrow FixedSizeList child buffers")?
         },
         _ => {

@@ -1475,6 +1475,33 @@ fn host_batch_cursor_estimates_numeric_list_and_fixed_size_list_buffers() {
         assert_eq!(materialized.schema(), host.schema());
         assert!(actual <= estimate, "{:?}: actual={actual} estimate={estimate}", host.column(0).data_type());
     }
+
+    let nullable_item = Arc::new(Field::new("item", ArrowDataType::Int32, false));
+    let nullable = ListArray::new(
+        Arc::clone(&nullable_item),
+        OffsetBuffer::new(ScalarBuffer::from(vec![0, 2, 2, 4])),
+        Arc::new(Int32Array::from(vec![1, 2, 3, 4])),
+        Some(NullBuffer::from(vec![true, false, true])),
+    );
+    let physical_schema =
+        Arc::new(Schema::new(vec![Field::new("values", ArrowDataType::List(Arc::clone(&nullable_item)), true)]));
+    let physical = RecordBatch::try_new(physical_schema, vec![Arc::new(nullable)]).unwrap();
+    let fixed_schema =
+        Arc::new(Schema::new(vec![Field::new("values", ArrowDataType::FixedSizeList(nullable_item, 2), true)]));
+    let frame = DataFrame::from_record_batch(&runtime, &physical).unwrap();
+    let mut cursor = GpuRecordBatch::new(frame, fixed_schema)
+        .unwrap()
+        .into_host_batch_cursor(HostBatchCursorConfig {
+            target_materialization_bytes: usize::MAX,
+            max_materialization_bytes: usize::MAX,
+            max_rows: usize::MAX,
+        })
+        .unwrap();
+    let prepared = cursor.prepare_next_batch().unwrap().unwrap();
+    let estimate = prepared.estimated_materialization_bytes();
+    let materialized = cursor.materialize_prepared_batch(prepared).unwrap();
+
+    assert!(record_batch_buffer_memory_size(&materialized) <= estimate);
 }
 
 #[test]

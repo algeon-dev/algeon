@@ -111,7 +111,6 @@ fn basic_list_type_support_policy_is_exact_and_carry_only() {
     for container in [
         DataType::ListView(Arc::new(Field::new("item", DataType::Int32, true))),
         DataType::LargeListView(Arc::new(Field::new("item", DataType::Int32, true))),
-        DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Int32, true)), 2),
     ] {
         assert!(!is_supported_list_carry_type(&container), "{container:?}");
     }
@@ -119,6 +118,51 @@ fn basic_list_type_support_policy_is_exact_and_carry_only() {
     let list_utf8 = DataType::List(Arc::new(Field::new("item", DataType::Utf8, true)));
     let large_list_large_utf8 = DataType::LargeList(Arc::new(Field::new("element", DataType::LargeUtf8, true)));
     assert!(!is_supported_arrow_cast(&list_utf8, &large_list_large_utf8));
+}
+
+#[test]
+fn fixed_size_list_type_support_policy_is_exact_and_carry_only() {
+    for child in [
+        DataType::Int8,
+        DataType::Int16,
+        DataType::Int32,
+        DataType::Int64,
+        DataType::UInt8,
+        DataType::UInt16,
+        DataType::UInt32,
+        DataType::UInt64,
+        DataType::Float32,
+        DataType::Float64,
+    ] {
+        let list = DataType::FixedSizeList(Arc::new(Field::new("item", child, true)), 3);
+        assert!(is_supported_arrow_type(&list), "{list:?}");
+        assert!(is_supported_list_carry_type(&list), "{list:?}");
+        assert_eq!(cudf_dtype_from_arrow_type(&list), Some(CudfDataType::new(TypeId::List)));
+        assert!(is_supported_arrow_implicit_cast(&list, &list), "{list:?}");
+    }
+
+    for child in [
+        DataType::Boolean,
+        DataType::Float16,
+        DataType::Utf8,
+        DataType::Decimal128(10, 2),
+        DataType::Date32,
+        DataType::Binary,
+        DataType::List(Arc::new(Field::new("nested", DataType::Int32, true))),
+        DataType::Struct(Fields::empty()),
+    ] {
+        let list = DataType::FixedSizeList(Arc::new(Field::new("item", child, true)), 3);
+        assert!(!is_supported_arrow_type(&list), "{list:?}");
+        assert!(!is_supported_list_carry_type(&list), "{list:?}");
+        assert_eq!(cudf_dtype_from_arrow_type(&list), None, "{list:?}");
+    }
+
+    for dimension in [0, -1] {
+        let list = DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Int32, true)), dimension);
+        assert!(!is_supported_arrow_type(&list), "{list:?}");
+        assert!(!is_supported_list_carry_type(&list), "{list:?}");
+        assert_eq!(cudf_dtype_from_arrow_type(&list), None, "{list:?}");
+    }
 }
 
 #[test]
@@ -167,10 +211,11 @@ fn list_string_columns_are_rejected_as_native_operator_operands() {
 }
 
 #[test]
-fn floating_list_columns_are_rejected_as_native_operator_values_and_keys() {
+fn numeric_list_columns_are_rejected_as_native_operator_values_and_keys() {
     for list_type in [
         DataType::List(Arc::new(Field::new("item", DataType::Float32, true))),
         DataType::LargeList(Arc::new(Field::new("element", DataType::Float64, false))),
+        DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Int32, true)), 2),
     ] {
         let schema = Arc::new(Schema::new(vec![
             Field::new("id", DataType::Int32, false),
@@ -205,64 +250,70 @@ fn floating_list_columns_are_rejected_as_native_operator_values_and_keys() {
 }
 
 #[test]
-fn list_string_columns_are_rejected_as_native_join_group_and_window_keys() {
-    let list_type = DataType::List(Arc::new(Field::new("item", DataType::Utf8, true)));
-    let schema = Arc::new(Schema::new(vec![
-        Field::new("id", DataType::Int32, false),
-        Field::new("tags", list_type.clone(), true),
-    ]));
-
-    let join_error = native_validation_error_for_plan(|builder| {
-        let left = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("left", Arc::clone(&schema))));
-        let right = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("right", Arc::clone(&schema))));
-        builder.add_join(
-            left,
-            right,
-            JoinSpec::new(
-                JoinType::Inner,
-                vec![JoinKey::new(ColumnRef::input(0, "tags", "tags"), ColumnRef::input(1, "tags", "tags"))],
-            )
-            .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "id", "id"), "id")]),
-            Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)])),
-        )
-    });
-    assert_eq!(join_error.code(), QueryErrorCode::UnsupportedType);
-    assert_eq!(join_error.fact_value("context"), Some("join left key"));
-
-    let group_error = native_validation_error_for_plan(|builder| {
-        let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&schema))));
-        builder.add_aggregate(
-            source,
-            AggregateSpec::new(vec![Expr::column("tags")], Vec::new()),
-            Arc::new(Schema::new(vec![Field::new("tags", list_type.clone(), true)])),
-        )
-    });
-    assert_eq!(group_error.code(), QueryErrorCode::UnsupportedType);
-    assert_eq!(group_error.fact_value("context"), Some("aggregate group key"));
-
-    for (partition_by, order_by, expected_context) in [
-        (vec![Expr::column("tags")], Vec::new(), "window partition key"),
-        (vec![Expr::column("id")], vec![SortExpr::new(Expr::column("tags"), false, false)], "window order key"),
+fn list_columns_are_rejected_as_native_join_group_and_window_keys() {
+    for list_type in [
+        DataType::List(Arc::new(Field::new("item", DataType::Utf8, true))),
+        DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float64, true)), 2),
     ] {
-        let window_error = native_validation_error_for_plan(|builder| {
-            let source =
-                builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&schema))));
-            builder.add_window(
-                source,
-                WindowSpec::new(
-                    partition_by.clone(),
-                    order_by.clone(),
-                    vec![WindowFunction::aggregate(AggregateFunction::Count, Expr::column("id"), "row_count")],
-                ),
-                Arc::new(Schema::new(vec![
-                    Field::new("id", DataType::Int32, false),
-                    Field::new("tags", list_type.clone(), true),
-                    Field::new("row_count", DataType::Int64, false),
-                ])),
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("tags", list_type.clone(), true),
+        ]));
+
+        let join_error = native_validation_error_for_plan(|builder| {
+            let left = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("left", Arc::clone(&schema))));
+            let right =
+                builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("right", Arc::clone(&schema))));
+            builder.add_join(
+                left,
+                right,
+                JoinSpec::new(
+                    JoinType::Inner,
+                    vec![JoinKey::new(ColumnRef::input(0, "tags", "tags"), ColumnRef::input(1, "tags", "tags"))],
+                )
+                .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "id", "id"), "id")]),
+                Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)])),
             )
         });
-        assert_eq!(window_error.code(), QueryErrorCode::UnsupportedType);
-        assert_eq!(window_error.fact_value("context"), Some(expected_context));
+        assert_eq!(join_error.code(), QueryErrorCode::UnsupportedType);
+        assert_eq!(join_error.fact_value("context"), Some("join left key"));
+
+        let group_error = native_validation_error_for_plan(|builder| {
+            let source =
+                builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&schema))));
+            builder.add_aggregate(
+                source,
+                AggregateSpec::new(vec![Expr::column("tags")], Vec::new()),
+                Arc::new(Schema::new(vec![Field::new("tags", list_type.clone(), true)])),
+            )
+        });
+        assert_eq!(group_error.code(), QueryErrorCode::UnsupportedType);
+        assert_eq!(group_error.fact_value("context"), Some("aggregate group key"));
+
+        for (partition_by, order_by, expected_context) in [
+            (vec![Expr::column("tags")], Vec::new(), "window partition key"),
+            (vec![Expr::column("id")], vec![SortExpr::new(Expr::column("tags"), false, false)], "window order key"),
+        ] {
+            let window_error = native_validation_error_for_plan(|builder| {
+                let source =
+                    builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&schema))));
+                builder.add_window(
+                    source,
+                    WindowSpec::new(
+                        partition_by.clone(),
+                        order_by.clone(),
+                        vec![WindowFunction::aggregate(AggregateFunction::Count, Expr::column("id"), "row_count")],
+                    ),
+                    Arc::new(Schema::new(vec![
+                        Field::new("id", DataType::Int32, false),
+                        Field::new("tags", list_type.clone(), true),
+                        Field::new("row_count", DataType::Int64, false),
+                    ])),
+                )
+            });
+            assert_eq!(window_error.code(), QueryErrorCode::UnsupportedType);
+            assert_eq!(window_error.fact_value("context"), Some(expected_context));
+        }
     }
 }
 

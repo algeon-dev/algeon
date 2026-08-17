@@ -627,6 +627,50 @@ fn local_parquet_output_override_allows_list_child_field_name_drift() {
 }
 
 #[test]
+fn local_parquet_output_override_allows_only_fixed_size_list_child_name_drift() {
+    let source_type = DataType::FixedSizeList(
+        Arc::new(
+            Field::new("element", DataType::Int32, true)
+                .with_metadata(std::collections::HashMap::from([("PARQUET:field_id".to_string(), "58".to_string())])),
+        ),
+        2,
+    );
+    let source_schema = Arc::new(Schema::new(vec![Field::new("features", source_type.clone(), true)]));
+    let source = |output_type| {
+        LocalParquetSource::from_files(
+            vec![LocalParquetFile::new("/tmp/source-contract.parquet")],
+            Arc::clone(&source_schema),
+            vec!["features".to_string()],
+        )
+        .with_column_roles(vec!["features".to_string()], Vec::new())
+        .with_output_schema_override(Arc::new(Schema::new(vec![Field::new("features", output_type, true)])))
+    };
+
+    validate_local_parquet_source(&source(DataType::FixedSizeList(
+        Arc::new(Field::new("item", DataType::Int32, true)),
+        2,
+    )))
+    .unwrap();
+
+    for output_type in [
+        DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Int32, true)), 3),
+        DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), 2),
+        DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Int32, false)), 2),
+        DataType::FixedSizeList(
+            Arc::new(Field::new("item", DataType::Int32, true).with_metadata(std::collections::HashMap::from([(
+                "extension".to_string(),
+                "output-only".to_string(),
+            )]))),
+            2,
+        ),
+    ] {
+        let error = validate_local_parquet_source(&source(output_type)).unwrap_err();
+        assert_eq!(error.fact_value("reason"), Some("output_schema_override_field_mismatch"));
+        assert_eq!(error.fact_value("field_name"), Some("features"));
+    }
+}
+
+#[test]
 fn local_parquet_output_override_rejects_non_parquet_list_child_metadata_drift() {
     let source_list_type = DataType::List(Arc::new(Field::new("element", DataType::Utf8, true).with_metadata(
         std::collections::HashMap::from([

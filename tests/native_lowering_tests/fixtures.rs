@@ -2,9 +2,9 @@ use std::{fs::File, sync::Arc};
 
 use arrow::{
     array::{
-        ArrayRef, BinaryArray, BooleanArray, Date32Array, Date64Array, Decimal128Array, Float64Array, Int32Array,
-        Int32Builder, Int64Array, ListArray, MapBuilder, StringArray, StringBuilder, StructArray,
-        TimestampMicrosecondArray, TimestampNanosecondArray,
+        ArrayRef, BinaryArray, BooleanArray, Date32Array, Date64Array, Decimal128Array, FixedSizeListArray,
+        Float64Array, Int32Array, Int32Builder, Int64Array, ListArray, MapBuilder, StringArray, StringBuilder,
+        StructArray, TimestampMicrosecondArray, TimestampNanosecondArray,
     },
     buffer::{NullBuffer, OffsetBuffer, ScalarBuffer},
     datatypes::{DataType, Field, Fields, Schema, TimeUnit},
@@ -416,6 +416,31 @@ pub(super) fn write_list_utf8_parquet_file(path: &std::path::Path) {
     let batch = RecordBatch::try_new(
         Arc::clone(&schema),
         vec![Arc::new(Int32Array::from(vec![1, 2, 3])), Arc::new(tags), Arc::new(Int64Array::from(vec![10, 20, 30]))],
+    )
+    .unwrap();
+    write_batch(path, schema, batch);
+}
+
+pub(super) fn write_fixed_size_list_int32_parquet_file(path: &std::path::Path) {
+    let item = Arc::new(Field::new("element", DataType::Int32, true));
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("features", DataType::FixedSizeList(Arc::clone(&item), 2), true),
+        Field::new("m00", DataType::Int64, false),
+    ]));
+    let features = FixedSizeListArray::new(
+        item,
+        2,
+        Arc::new(Int32Array::from(vec![Some(10), None, Some(30), Some(40), Some(50), Some(60)])),
+        Some(NullBuffer::from(vec![true, false, true])),
+    );
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from(vec![1, 2, 3])),
+            Arc::new(features),
+            Arc::new(Int64Array::from(vec![100, 200, 300])),
+        ],
     )
     .unwrap();
     write_batch(path, schema, batch);

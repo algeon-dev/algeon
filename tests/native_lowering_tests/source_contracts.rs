@@ -1231,6 +1231,46 @@ fn list_utf8_projection_lowers_as_native_carry_column() {
 }
 
 #[test]
+fn numeric_fixed_size_list_projection_lowers_as_native_carry_column() {
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-fixed-size-list-carry");
+    let path = dir.join("input.parquet");
+    write_fixed_size_list_int32_parquet_file(&path);
+    let scan = parquet_scan(&path);
+    let scan_schema = scan.schema();
+    let plan: Arc<dyn ExecutionPlan> = Arc::new(
+        ProjectionExec::try_new(
+            [
+                ProjectionExpr { expr: col("key", &scan_schema).unwrap(), alias: "key".to_string() },
+                ProjectionExpr { expr: col("features", &scan_schema).unwrap(), alias: "features".to_string() },
+            ],
+            scan,
+        )
+        .unwrap(),
+    );
+
+    let expected_features = scan_schema.field_with_name("features").unwrap();
+    let DataType::FixedSizeList(expected_child, expected_dimension) = expected_features.data_type() else {
+        panic!("Parquet fixture must retain FixedSizeList schema");
+    };
+    let result = lower_physical_plan_to_native_for_test(plan);
+
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert_eq!(source.read_columns, vec!["features".to_string(), "key".to_string()]);
+    let source_features = source.schema.field_with_name("features").unwrap();
+    let DataType::FixedSizeList(source_child, source_dimension) = source_features.data_type() else {
+        panic!("native source must retain FixedSizeList schema");
+    };
+    assert_eq!(source_dimension, expected_dimension);
+    assert_eq!(source_child.data_type(), expected_child.data_type());
+    assert_eq!(source_child.is_nullable(), expected_child.is_nullable());
+    assert_eq!(source_features.is_nullable(), expected_features.is_nullable());
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn list_utf8_sort_key_is_rejected_locally_during_native_planning() {
     let dir = unique_temp_dir("datafusion-nexus-native-lowering-list-sort-reject");
     let path = dir.join("input.parquet");

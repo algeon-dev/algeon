@@ -334,6 +334,52 @@ fn test_arrow_host_rejects_non_positive_fixed_size_list_dimension() {
 }
 
 #[test]
+fn test_arrow_host_fixed_size_list_policy_accepts_only_numeric_children() {
+    use cudf::interop::arrow_host::cudf_dtype_from_arrow_type;
+
+    for child in [
+        ArrowDataType::Int8,
+        ArrowDataType::Int16,
+        ArrowDataType::Int32,
+        ArrowDataType::Int64,
+        ArrowDataType::UInt8,
+        ArrowDataType::UInt16,
+        ArrowDataType::UInt32,
+        ArrowDataType::UInt64,
+        ArrowDataType::Float32,
+        ArrowDataType::Float64,
+    ] {
+        let data_type = ArrowDataType::FixedSizeList(Arc::new(Field::new("item", child, true)), 2);
+        assert_eq!(cudf_dtype_from_arrow_type(&data_type).unwrap(), DataType::new(TypeId::List));
+    }
+
+    for child in [
+        ArrowDataType::Boolean,
+        ArrowDataType::Utf8,
+        ArrowDataType::Decimal128(10, 2),
+        ArrowDataType::Date32,
+        ArrowDataType::Binary,
+        ArrowDataType::List(Arc::new(Field::new("nested", ArrowDataType::Int32, true))),
+    ] {
+        let data_type = ArrowDataType::FixedSizeList(Arc::new(Field::new("item", child, true)), 2);
+        assert!(cudf_dtype_from_arrow_type(&data_type).is_err(), "{data_type:?}");
+    }
+}
+
+#[test]
+fn test_all_null_fixed_size_list_rejects_child_offset_overflow_before_allocation() {
+    let runtime = crate::common::sample_runtime();
+    let data_type = ArrowDataType::FixedSizeList(Arc::new(Field::new("item", ArrowDataType::Int8, true)), i32::MAX);
+
+    let error = cudf::interop::arrow_host::all_null_list_series(&runtime, &data_type, 2)
+        .expect_err("rows times dimension beyond the cudf list offset domain must fail before allocation");
+
+    assert_eq!(error.code(), ErrorCode::ValueOutOfRange);
+    assert_eq!(error_context_value(&error, "root_rows").as_deref(), Some("2"));
+    assert_eq!(error_context_value(&error, "child_rows").as_deref(), Some("4294967294"));
+}
+
+#[test]
 fn test_arrow_host_duration_import_export_mappings() {
     use cudf::interop::arrow_host::{
         arrow_type_from_cudf_dtype, cudf_dtype_can_export_to_arrow_type, cudf_dtype_from_arrow_type,
@@ -1128,12 +1174,20 @@ fn test_large_list_boolean_slice_and_zero_child_shapes_round_trip() {
 fn test_fixed_size_list_float32_import_synthesizes_cudf_list_offsets() {
     let item = Arc::new(Field::new("item", ArrowDataType::Float32, true));
     let values = Arc::new(Float32Array::from(vec![Some(1.0), Some(2.0), Some(3.0), None, Some(5.0), Some(6.0)]));
-    let lists = FixedSizeListArray::new(Arc::clone(&item), 2, values, Some(NullBuffer::from(vec![true, false, true])));
+    let lists = Arc::new(FixedSizeListArray::new(
+        Arc::clone(&item),
+        2,
+        values,
+        Some(NullBuffer::from(vec![true, false, true])),
+    ));
     let schema = Arc::new(Schema::new(vec![Field::new("features", ArrowDataType::FixedSizeList(item, 2), true)]));
-    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(lists)]).unwrap();
+    let arrays = vec![Arc::clone(&lists) as ArrayRef];
+    let estimated = cudf::interop::arrow_host::estimate_list_import_device_memory_bytes(&arrays).unwrap();
+    let batch = RecordBatch::try_new(Arc::clone(&schema), arrays).unwrap();
 
     let frame = import_record_batch(&batch).unwrap();
     assert_eq!(frame.series("features").unwrap().dtype().unwrap(), DataType::new(TypeId::List));
+    assert!(estimated >= frame.series("features").unwrap().device_allocated_size_bytes().unwrap());
     let materialized = frame.to_record_batch().unwrap();
     let features = materialized.column(0).as_any().downcast_ref::<ListArray>().unwrap();
 
@@ -1165,11 +1219,15 @@ fn test_sliced_fixed_size_list_float32_import_uses_active_child_range() {
         Arc::new(Float32Array::from(vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0])),
         None,
     );
-    let sliced = lists.slice(1, 2);
+    let sliced = Arc::new(lists.slice(1, 2));
     let schema = Arc::new(Schema::new(vec![Field::new("features", ArrowDataType::FixedSizeList(item, 2), false)]));
-    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(sliced)]).unwrap();
+    let arrays = vec![Arc::clone(&sliced) as ArrayRef];
+    let estimated = cudf::interop::arrow_host::estimate_list_import_device_memory_bytes(&arrays).unwrap();
+    let batch = RecordBatch::try_new(Arc::clone(&schema), arrays).unwrap();
 
-    let materialized = import_record_batch(&batch).unwrap().to_record_batch().unwrap();
+    let frame = import_record_batch(&batch).unwrap();
+    assert!(estimated >= frame.series("features").unwrap().device_allocated_size_bytes().unwrap());
+    let materialized = frame.to_record_batch().unwrap();
     let features = materialized.column(0).as_any().downcast_ref::<ListArray>().unwrap();
     assert_eq!(features.value_offsets(), &[0, 2, 4]);
     assert_float32_list_value(features, 0, &[Some(2.0), Some(3.0)]);
@@ -1320,6 +1378,35 @@ fn test_gpu_record_batch_checks_each_fixed_size_list_row_not_only_total_child_le
     assert_eq!(error_context_value(&error, "minimum_actual_dimension").as_deref(), Some("1"));
     assert_eq!(error_context_value(&error, "maximum_actual_dimension").as_deref(), Some("3"));
     assert_eq!(error_context_value(&error, "reason").as_deref(), Some("schema_fixed_size_list_dimension_mismatch"));
+}
+
+#[test]
+fn test_gpu_record_batch_allows_zero_width_null_fixed_size_list_rows() {
+    let item = Arc::new(Field::new("item", ArrowDataType::Int32, false));
+    let source = ListArray::new(
+        Arc::clone(&item),
+        OffsetBuffer::new(ScalarBuffer::from(vec![0, 2, 2, 4])),
+        Arc::new(Int32Array::from(vec![1, 2, 3, 4])),
+        Some(NullBuffer::from(vec![true, false, true])),
+    );
+    let source_schema =
+        Arc::new(Schema::new(vec![Field::new("features", ArrowDataType::List(Arc::clone(&item)), true)]));
+    let source_batch = RecordBatch::try_new(source_schema, vec![Arc::new(source)]).unwrap();
+    let frame = import_record_batch(&source_batch).unwrap();
+    let fixed_schema = Arc::new(Schema::new(vec![Field::new("features", ArrowDataType::FixedSizeList(item, 2), true)]));
+
+    let materialized = cudf::frame::dataframe::GpuRecordBatch::new(frame, Arc::clone(&fixed_schema))
+        .unwrap()
+        .to_host_record_batch()
+        .unwrap();
+
+    assert_eq!(materialized.schema(), fixed_schema);
+    let features = materialized.column(0).as_any().downcast_ref::<FixedSizeListArray>().unwrap();
+    assert!(features.is_valid(0));
+    assert!(features.is_null(1));
+    assert!(features.is_valid(2));
+    assert_eq!(features.value(0).as_primitive::<arrow::datatypes::Int32Type>().values(), &[1, 2]);
+    assert_eq!(features.value(2).as_primitive::<arrow::datatypes::Int32Type>().values(), &[3, 4]);
 }
 
 #[test]

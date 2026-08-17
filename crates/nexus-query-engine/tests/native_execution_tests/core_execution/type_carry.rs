@@ -156,6 +156,40 @@ pub(super) fn assert_basic_list_payload_rows(batch: &RecordBatch, key_column: us
     );
 }
 
+pub(super) fn fixed_size_list_payload_batch(keys: &[i32]) -> RecordBatch {
+    let child = Arc::new(Field::new("element", DataType::Float64, false));
+    let values = keys
+        .iter()
+        .flat_map(|key| [f64::from(*key) + 0.25, f64::from(*key) + 0.5])
+        .collect::<Vec<_>>();
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("coordinates", DataType::FixedSizeList(Arc::clone(&child), 2), false),
+    ]));
+    RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(Int32Array::from(keys.to_vec())),
+            Arc::new(FixedSizeListArray::new(child, 2, Arc::new(Float64Array::from(values)), None)),
+        ],
+    )
+    .unwrap()
+}
+
+pub(super) fn assert_fixed_size_list_payload_rows(batch: &RecordBatch, key_column: usize, list_column: usize, keys: &[i32]) {
+    assert_eq!(int32_array(batch, key_column).values().as_ref(), keys);
+    let coordinates = batch.column(list_column).as_any().downcast_ref::<FixedSizeListArray>().unwrap();
+    assert_eq!(coordinates.value_length(), 2);
+    let values = coordinates.values().as_primitive::<arrow::datatypes::Float64Type>();
+    assert_eq!(
+        values.values().as_ref(),
+        &keys
+            .iter()
+            .flat_map(|key| [f64::from(*key) + 0.25, f64::from(*key) + 0.5])
+            .collect::<Vec<_>>()
+    );
+}
+
 #[test]
 fn native_local_parquet_source_carries_timestamp_timezone_to_host_output() {
     let dir = unique_temp_dir("nexus-query-engine-native-timestamp-tz");
@@ -250,6 +284,137 @@ fn native_local_parquet_carries_exact_basic_list_matrix() {
         panic!("host sink should materialize local Parquet list output");
     };
     assert_record_batch_columns_equal(actual, &batch);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn native_literal_batch_carries_sliced_float64_fixed_size_list_with_empty_input_batch() {
+    let context = backend_context();
+    let child = Arc::new(Field::new("element", DataType::Float64, false));
+    let full = FixedSizeListArray::new(
+        Arc::clone(&child),
+        3,
+        Arc::new(Float64Array::from(vec![
+            99.0,
+            98.0,
+            97.0,
+            f64::NAN,
+            f64::INFINITY,
+            -0.0,
+            f64::NEG_INFINITY,
+            2.0,
+            3.0,
+            4.0,
+            5.0,
+            6.0,
+            90.0,
+            91.0,
+            92.0,
+        ])),
+        None,
+    );
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("features", DataType::FixedSizeList(Arc::clone(&child), 3), false),
+    ]));
+    let expected = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(Int32Array::from(vec![1, 2, 3])), Arc::new(full.slice(1, 3))],
+    )
+    .unwrap();
+    let empty = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from(Vec::<i32>::new())),
+            Arc::new(FixedSizeListArray::new(
+                child,
+                3,
+                Arc::new(Float64Array::from(Vec::<f64>::new())),
+                None,
+            )),
+        ],
+    )
+    .unwrap();
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(
+        Arc::clone(&schema),
+        vec![empty, expected.clone()],
+    )));
+    let plan = builder.finish_with_host_sink(source);
+
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let QueryOutput::HostArrow(actual) = result.output() else {
+        panic!("host sink should materialize FixedSizeList literal output");
+    };
+    assert_record_batch_columns_equal(actual, &expected);
+}
+
+#[test]
+fn native_local_parquet_filters_projects_and_limits_nullable_int32_fixed_size_list() {
+    let dir = unique_temp_dir("nexus-query-engine-native-fixed-size-list");
+    let path = dir.join("input.parquet");
+    let context = backend_context();
+    let child = Arc::new(Field::new("element", DataType::Int32, true));
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("features", DataType::FixedSizeList(Arc::clone(&child), 2), true),
+    ]));
+    let features = FixedSizeListArray::new(
+        child,
+        2,
+        Arc::new(Int32Array::from(vec![Some(1), None, Some(3), Some(4), Some(5), Some(6), Some(7), Some(8)])),
+        Some(NullBuffer::from(vec![true, false, true, true])),
+    );
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(Int32Array::from(vec![1, 2, 3, 4])), Arc::new(features)],
+    )
+    .unwrap();
+    let file = File::create(&path).unwrap();
+    let mut writer =
+        ArrowWriter::try_new(file, Arc::clone(&schema), Some(WriterProperties::builder().build())).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
+        Arc::clone(&schema),
+        vec!["id".to_string(), "features".to_string()],
+    );
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new(
+            "features",
+            DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Int32, true)), 2),
+            true,
+        ),
+    ]));
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let filter = builder.add_filter(
+        source,
+        Expr::binary(Expr::column("id"), BinaryOp::GtEq, Expr::literal(LiteralValue::Int32(2))),
+        Arc::clone(&schema),
+    );
+    let projection = builder.add_projection(
+        filter,
+        projection_outputs(vec![Expr::column("id"), Expr::column("features")], Arc::clone(&output_schema)),
+    );
+    let limit = builder.add_limit(projection, LimitSpec::fetch(2), Arc::clone(&output_schema));
+    let plan = builder.finish_with_host_sink_schema(limit, Arc::clone(&output_schema));
+
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let QueryOutput::HostArrow(actual) = result.output() else {
+        panic!("host sink should materialize FixedSizeList Parquet output");
+    };
+    assert_eq!(actual.schema(), output_schema);
+    assert_eq!(int32_array(actual, 0).values().as_ref(), &[2, 3]);
+    let features = actual.column(1).as_any().downcast_ref::<FixedSizeListArray>().unwrap();
+    assert_eq!(features.value_length(), 2);
+    assert!(features.is_null(0));
+    assert!(features.is_valid(1));
+    assert_eq!(features.value(1).as_primitive::<arrow::datatypes::Int32Type>().values(), &[5, 6]);
 
     fs::remove_dir_all(dir).unwrap();
 }

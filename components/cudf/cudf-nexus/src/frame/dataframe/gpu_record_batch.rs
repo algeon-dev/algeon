@@ -26,6 +26,7 @@ use crate::{
             Result,
         },
         schema,
+        table::TableView,
         types::{DataType, TypeId},
     },
     interop::{
@@ -37,7 +38,9 @@ use crate::{
     },
     ops::{
         binary::{self, BinaryOperator},
+        filter,
         reduction::{self, ReduceAgg},
+        unary,
         validation::{self, FiniteFloat32ValidationProof},
     },
     runtime::{
@@ -1454,20 +1457,57 @@ fn validate_fixed_size_list_offsets(
     let widths = binary::binary_operation_vv(&ends, &starts, BinaryOperator::Sub, &int32_type)
         .map_err(|error| error.reanchor(operation))?;
     let widths_view = widths.view().map_err(|error| error.reanchor_if_needed(operation))?;
-    let minimum =
-        reduction::reduce(&widths_view, &ReduceAgg::Min, &int32_type).map_err(|error| error.reanchor(operation))?;
-    let maximum =
-        reduction::reduce(&widths_view, &ReduceAgg::Max, &int32_type).map_err(|error| error.reanchor(operation))?;
-    let minimum = minimum.value::<i32>().map_err(|error| error.reanchor(operation))?;
-    let maximum = maximum.value::<i32>().map_err(|error| error.reanchor(operation))?;
+    let root_null_count = view.null_count().map_err(|error| error.reanchor_if_needed(operation))?;
+    let filtered_widths = if root_null_count == 0 || root_null_count == rows {
+        None
+    } else {
+        let valid_rows = unary::is_valid(view).map_err(|error| error.reanchor(operation))?;
+        let valid_rows_view = valid_rows.view().map_err(|error| error.reanchor_if_needed(operation))?;
+        let widths_table =
+            TableView::from_column_views(&[&widths_view]).map_err(|error| error.reanchor_if_needed(operation))?;
+        let mut columns = filter::apply_boolean_mask(&widths_table, &valid_rows_view)
+            .map_err(|error| error.reanchor(operation))?
+            .into_columns()
+            .map_err(|error| error.reanchor_if_needed(operation))?;
+        Some(columns.pop().ok_or_else(|| {
+            error::foreign_invariant_violation(
+                operation,
+                "filtering FixedSizeList widths returned no column",
+                "list_offsets",
+                "missing_filtered_fixed_size_list_widths",
+                "ensure cuDF preserves the single input column when filtering valid list rows",
+            )
+            .with_detail("field_name", field_name.to_string())
+            .with_detail("field_index", field_index.to_string())
+        })?)
+    };
+    let (minimum, maximum, downloaded_scalars) = if root_null_count == rows {
+        (dimension, dimension, 0usize)
+    } else {
+        let reduction_view = match filtered_widths.as_ref() {
+            Some(filtered) => filtered.view().map_err(|error| error.reanchor_if_needed(operation))?,
+            None => widths_view,
+        };
+        let minimum = reduction::reduce(&reduction_view, &ReduceAgg::Min, &int32_type)
+            .map_err(|error| error.reanchor(operation))?;
+        let maximum = reduction::reduce(&reduction_view, &ReduceAgg::Max, &int32_type)
+            .map_err(|error| error.reanchor(operation))?;
+        (
+            minimum.value::<i32>().map_err(|error| error.reanchor(operation))?,
+            maximum.value::<i32>().map_err(|error| error.reanchor(operation))?,
+            2usize,
+        )
+    };
     let observation = BoundaryObservation::new(
         BoundaryKind::BoundedControlScalar,
         producer.execution_domain().placement(),
         rows,
-        2,
+        downloaded_scalars,
         true,
     )
-    .with_memory(QueryMemoryObservation::empty().with_downloaded_bytes(2 * std::mem::size_of::<i32>()));
+    .with_memory(
+        QueryMemoryObservation::empty().with_downloaded_bytes(downloaded_scalars * std::mem::size_of::<i32>()),
+    );
     record_boundary_observation_in_domain(producer.execution_domain(), observation);
     if minimum != dimension || maximum != dimension {
         return Err(Error::new_with(
@@ -1741,7 +1781,8 @@ fn rebind_fixed_size_list_structural_proof(
             .with_detail("row_count", rows.to_string())
             .with_detail("dimension", proof.dimension.to_string())
     })?;
-    if child_len != expected_child_len {
+    let root_null_count = view.null_count().map_err(|error| error.reanchor(OPERATION))?;
+    if root_null_count == 0 && child_len != expected_child_len {
         return Err(error::invariant_violation(
             OPERATION,
             "slicing a structurally validated FixedSizeList changed its fixed-width child span",

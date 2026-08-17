@@ -56,6 +56,22 @@ NaN, +infinity, -infinity, signed zero, root and child nulls, and empty valid
 lists are payload values preserved by carry paths, not scalar finite-value
 rules.
 
+### Numeric fixed-size-list carry matrix
+
+`FixedSizeList<T, D>` is supported as a carry/projection column for this exact
+numeric child matrix:
+
+| Container | Supported child types |
+| --- | --- |
+| `FixedSizeList<T, D>` | `Int8`, `Int16`, `Int32`, `Int64`, `UInt8`, `UInt16`, `UInt32`, `UInt64`, `Float32`, `Float64` |
+
+The dimension must be positive. Native import uses cuDF `LIST` offsets, so
+`rows * D` and every synthesized or observed child offset must fit the
+nonnegative Int32 range. Schema-aware Arrow output remains `FixedSizeList`,
+preserving `D`, the declared child field, and root and child nullability; every
+non-null row must have exactly `D` child positions. These columns are
+carry/projection payloads, not scalar or key operands.
+
 Timezone-aware timestamps are also carry types. Temporal scalar functions have
 narrower contracts than relational carry/projection support; for example, some
 date operators accept `Date32` or timezone-free timestamps but not `Date64`.
@@ -64,11 +80,14 @@ date operators accept `Date32` or timezone-free timestamps but not `Date64`.
 
 These types do not have native execution support today:
 
-- Nested / complex: `Struct`, `Map`, `Union`, `Dictionary`,
-  `FixedSizeList`, `ListView`, `LargeListView`, `RunEndEncoded`
+- Nested / complex: `Struct`, `Map`, `Union`, `Dictionary`, `ListView`,
+  `LargeListView`, `RunEndEncoded`
 - Numeric / decimal: `Float16`, `Decimal32`, `Decimal64`, `Decimal256`
 - Binary: `Binary`, `LargeBinary`, `FixedSizeBinary`, `BinaryView`
 - Temporal: `Interval`
+- `FixedSizeList` with `D <= 0` or a child outside the numeric fixed-size-list
+  matrix, including Boolean, string, decimal, temporal, binary, nested, and
+  other complex children
 - `List` / `LargeList` with any child type outside the basic-list carry matrix,
   including decimal, temporal, binary, nested-list, and other complex children
 - `Null` (the untyped null column type)
