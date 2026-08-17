@@ -1197,11 +1197,11 @@ mod tests {
             Error::new(
                 ErrorCode::FinalPlanRequirementUnsatisfied,
                 "datafusion_nexus.planner.final_plan_requirement",
-                "GPU execution does not support projected column `countDetail` with Arrow type `List(Float64)`",
+                "GPU execution does not support projected column `countDetail` with Arrow type `List(Decimal128(10, 2))`",
             )
             .with_fact("reason", "unsupported_type")
             .with_fact("unsupported_column", "countDetail")
-            .with_fact("unsupported_column_type", "List(Float64)")
+            .with_fact("unsupported_column_type", "List(Decimal128(10, 2))")
             .with_fact("unsupported_column_role", "projected")
             .into(),
             TEST_OPERATION,
@@ -1211,10 +1211,10 @@ mod tests {
         assert_error_metadata(&status, "final_plan_requirement_unsatisfied", "planning", "permanent");
         assert_eq!(
             status.message(),
-            "GPU execution does not support projected column `countDetail` with Arrow type `List(Float64)`"
+            "GPU execution does not support projected column `countDetail` with Arrow type `List(Decimal128(10, 2))`"
         );
         assert_metadata_value(&status, UNSUPPORTED_COLUMN_METADATA_KEY, "countDetail");
-        assert_metadata_value(&status, UNSUPPORTED_COLUMN_TYPE_METADATA_KEY, "List(Float64)");
+        assert_metadata_value(&status, UNSUPPORTED_COLUMN_TYPE_METADATA_KEY, "List(Decimal128(10, 2))");
         assert_metadata_value(&status, UNSUPPORTED_COLUMN_ROLE_METADATA_KEY, "projected");
         assert_metadata_value(&status, REASON_METADATA_KEY, "unsupported_type");
         assert_no_diagnostic_fields(status.message());

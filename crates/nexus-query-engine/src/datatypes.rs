@@ -21,7 +21,7 @@ pub fn is_supported_arrow_type(data_type: &ArrowDataType) -> bool {
 /// Converts a supported Arrow type to its cuDF dtype.
 ///
 /// Unsupported nested types and decimal shapes outside the native policy return
-/// `None`. Timezone-aware timestamps and string-list columns are admitted only
+/// `None`. Timezone-aware timestamps and basic-list columns are admitted only
 /// as carry types; operator validation decides where their semantics are
 /// unsupported.
 pub fn cudf_dtype_from_arrow_type(data_type: &ArrowDataType) -> Option<CudfDataType> {
@@ -192,6 +192,8 @@ fn is_supported_basic_list_child(field: &arrow::datatypes::FieldRef) -> bool {
             | ArrowDataType::UInt16
             | ArrowDataType::UInt32
             | ArrowDataType::UInt64
+            | ArrowDataType::Float32
+            | ArrowDataType::Float64
             | ArrowDataType::Utf8
             | ArrowDataType::LargeUtf8
             | ArrowDataType::Utf8View

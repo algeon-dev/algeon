@@ -48,7 +48,7 @@ fn native_scalar_window_carries_basic_list_payloads_from_gpu_input() {
     };
     assert_eq!(batch.schema(), output_schema);
     assert_basic_list_payload_rows(batch, 0, 2, &[1, 2, 3, 4]);
-    assert_eq!(batch.column(5).as_primitive::<arrow::datatypes::UInt64Type>().values().as_ref(), &[1, 2, 3, 4]);
+    assert_eq!(batch.column(6).as_primitive::<arrow::datatypes::UInt64Type>().values().as_ref(), &[1, 2, 3, 4]);
     admitted.finish();
 }
 

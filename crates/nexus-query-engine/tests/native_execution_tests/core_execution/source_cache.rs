@@ -35,7 +35,7 @@ fn native_local_parquet_source_scan_limit_applies_before_parent_operators() {
 }
 
 #[test]
-fn native_local_parquet_source_materializes_missing_nullable_string_lists() {
+fn native_local_parquet_source_materializes_missing_nullable_list_columns() {
     let dir = unique_temp_dir("nexus-query-engine-native-missing-nullable-source-columns");
     let path = dir.join("input.parquet");
     let context = backend_context();
@@ -43,9 +43,11 @@ fn native_local_parquet_source_materializes_missing_nullable_string_lists() {
     write_input_parquet(&runtime, &path);
 
     let list_type = DataType::List(Arc::new(Field::new("item", DataType::Utf8, true)));
+    let large_float_list_type = DataType::LargeList(Arc::new(Field::new("item", DataType::Float64, true)));
     let source_schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int32, false),
         Field::new("missing_tags", list_type.clone(), true),
+        Field::new("missing_scores", large_float_list_type.clone(), true),
     ]));
     let source = LocalParquetSource::from_files(
         vec![
@@ -56,8 +58,14 @@ fn native_local_parquet_source_materializes_missing_nullable_string_lists() {
         Arc::clone(&source_schema),
         vec!["key".to_string()],
     )
-    .with_missing_columns(vec![MissingColumn::new("missing_tags", list_type, true)])
-    .with_column_roles(vec!["key".to_string(), "missing_tags".to_string()], Vec::new());
+    .with_missing_columns(vec![
+        MissingColumn::new("missing_tags", list_type, true),
+        MissingColumn::new("missing_scores", large_float_list_type, true),
+    ])
+    .with_column_roles(
+        vec!["key".to_string(), "missing_tags".to_string(), "missing_scores".to_string()],
+        Vec::new(),
+    );
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
@@ -68,12 +76,15 @@ fn native_local_parquet_source_materializes_missing_nullable_string_lists() {
         panic!("host sink should materialize one RecordBatch");
     };
     assert_eq!(batch.num_rows(), 4);
-    assert_eq!(batch.num_columns(), 2);
+    assert_eq!(batch.num_columns(), 3);
     assert_eq!(int32_array(batch, 0).values().as_ref(), &[1, 2, 1, 3]);
     assert_eq!(batch.schema(), source_schema);
     let missing = batch.column(1).as_any().downcast_ref::<ListArray>().unwrap();
     assert_eq!(missing.null_count(), 4);
     assert_eq!(missing.values().len(), 0);
+    let missing_scores = batch.column(2).as_any().downcast_ref::<LargeListArray>().unwrap();
+    assert_eq!(missing_scores.null_count(), 4);
+    assert_eq!(missing_scores.values().len(), 0);
 
     fs::remove_dir_all(dir).unwrap();
 }

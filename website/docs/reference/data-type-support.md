@@ -39,8 +39,8 @@ exact set of child types:
 
 | Container | Supported child types |
 | --- | --- |
-| `List<T>` | `Boolean`, `Int8`, `Int16`, `Int32`, `Int64`, `UInt8`, `UInt16`, `UInt32`, `UInt64`, `Utf8`, `LargeUtf8`, `Utf8View` |
-| `LargeList<T>` | `Boolean`, `Int8`, `Int16`, `Int32`, `Int64`, `UInt8`, `UInt16`, `UInt32`, `UInt64`, `Utf8`, `LargeUtf8`, `Utf8View` |
+| `List<T>` | `Boolean`, `Int8`, `Int16`, `Int32`, `Int64`, `UInt8`, `UInt16`, `UInt32`, `UInt64`, `Float32`, `Float64`, `Utf8`, `LargeUtf8`, `Utf8View` |
+| `LargeList<T>` | `Boolean`, `Int8`, `Int16`, `Int32`, `Int64`, `UInt8`, `UInt16`, `UInt32`, `UInt64`, `Float32`, `Float64`, `Utf8`, `LargeUtf8`, `Utf8View` |
 
 This is representation and carry support, not list-expression support. These
 columns can pass through supported source and projection paths, including as
@@ -52,6 +52,9 @@ The Arrow output schema preserves `List` versus `LargeList`, including the
 declared child field and nullability. Native list offsets use a bounded Int32
 representation: active offsets and child lengths must fit the nonnegative
 Int32 range. An out-of-range `LargeList` is rejected rather than truncated.
+NaN, +infinity, -infinity, signed zero, root and child nulls, and empty valid
+lists are payload values preserved by carry paths, not scalar finite-value
+rules.
 
 Timezone-aware timestamps are also carry types. Temporal scalar functions have
 narrower contracts than relational carry/projection support; for example, some
@@ -67,8 +70,7 @@ These types do not have native execution support today:
 - Binary: `Binary`, `LargeBinary`, `FixedSizeBinary`, `BinaryView`
 - Temporal: `Interval`
 - `List` / `LargeList` with any child type outside the basic-list carry matrix,
-  including floating-point, decimal, temporal, binary, nested-list, and other
-  complex children
+  including decimal, temporal, binary, nested-list, and other complex children
 - `Null` (the untyped null column type)
 
 ## cuGraph edge columns

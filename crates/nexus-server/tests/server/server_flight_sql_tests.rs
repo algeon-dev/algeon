@@ -11,7 +11,7 @@ use std::{
 
 use arrow::{
     array::{
-        Array, BooleanArray, Float64Array, Int32Array, Int64Array, ListArray, StringArray, UInt8Array, UInt32Array,
+        Array, BooleanArray, Decimal128Array, Int32Array, Int64Array, ListArray, StringArray, UInt8Array, UInt32Array,
         UnionArray,
     },
     buffer::{NullBuffer, OffsetBuffer, ScalarBuffer},

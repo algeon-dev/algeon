@@ -706,7 +706,7 @@ fn local_parquet_source_accepts_missing_nullable_list_columns() {
 
 #[test]
 fn local_parquet_source_rejects_missing_lists_with_unsupported_children() {
-    let list_type = DataType::List(Arc::new(Field::new("item", DataType::Float64, true)));
+    let list_type = DataType::List(Arc::new(Field::new("item", DataType::Decimal128(10, 2), true)));
     let schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::UInt32, false),
         Field::new("missing_values", list_type.clone(), true),

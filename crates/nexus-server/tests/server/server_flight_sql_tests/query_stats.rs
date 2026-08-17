@@ -80,7 +80,7 @@ async fn strict_flight_reports_unsupported_list_column_in_status_metadata_and_st
     let mut client = connect_with_retry(addr).await;
     let dir = tempfile::Builder::new().prefix("datafusion-nexus-flight-unsupported-list-").tempdir().unwrap();
     let path = dir.path().join("unsupported.parquet");
-    write_unsupported_float_list_parquet(&path);
+    write_unsupported_decimal_list_parquet(&path);
     execute_batches(
         &mut client,
         &format!("CREATE EXTERNAL TABLE unsupported_lists STORED AS PARQUET LOCATION '{}'", path.to_string_lossy()),
@@ -94,7 +94,7 @@ async fn strict_flight_reports_unsupported_list_column_in_status_metadata_and_st
     assert_eq!(status.code(), Code::InvalidArgument);
     assert_eq!(
         status.message(),
-        "GPU execution does not support projected column `unsupported_values` with Arrow type `List(Float64)`"
+        "GPU execution does not support projected column `unsupported_values` with Arrow type `List(Decimal128(10, 2))`"
     );
     assert_eq!(
         status.metadata().get(UNSUPPORTED_COLUMN_METADATA_KEY).and_then(|value| value.to_str().ok()),
@@ -102,7 +102,7 @@ async fn strict_flight_reports_unsupported_list_column_in_status_metadata_and_st
     );
     assert_eq!(
         status.metadata().get(UNSUPPORTED_COLUMN_TYPE_METADATA_KEY).and_then(|value| value.to_str().ok()),
-        Some("List(Float64)")
+        Some("List(Decimal128(10, 2))")
     );
     assert_eq!(
         status.metadata().get(UNSUPPORTED_COLUMN_ROLE_METADATA_KEY).and_then(|value| value.to_str().ok()),
@@ -120,7 +120,7 @@ async fn strict_flight_reports_unsupported_list_column_in_status_metadata_and_st
     assert!(payload.contains("code=final_plan_requirement_unsatisfied\n"), "{payload}");
     assert!(payload.contains("fact.reason=unsupported_type\n"), "{payload}");
     assert!(payload.contains("fact.unsupported_column=unsupported_values\n"), "{payload}");
-    assert!(payload.contains("fact.unsupported_column_type=List(Float64)\n"), "{payload}");
+    assert!(payload.contains("fact.unsupported_column_type=List(Decimal128(10, 2))\n"), "{payload}");
     assert!(payload.contains("fact.unsupported_column_role=projected\n"), "{payload}");
     assert!(!payload.contains(path.to_string_lossy().as_ref()), "{payload}");
 }

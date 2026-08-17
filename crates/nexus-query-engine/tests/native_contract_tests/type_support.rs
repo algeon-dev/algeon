@@ -68,6 +68,8 @@ fn basic_list_type_support_policy_is_exact_and_carry_only() {
         DataType::UInt16,
         DataType::UInt32,
         DataType::UInt64,
+        DataType::Float32,
+        DataType::Float64,
         DataType::Utf8,
         DataType::LargeUtf8,
         DataType::Utf8View,
@@ -86,8 +88,6 @@ fn basic_list_type_support_policy_is_exact_and_carry_only() {
 
     let unsupported_children = [
         DataType::Float16,
-        DataType::Float32,
-        DataType::Float64,
         DataType::Decimal128(10, 2),
         DataType::Date32,
         DataType::Binary,
@@ -164,6 +164,44 @@ fn list_string_columns_are_rejected_as_native_operator_operands() {
     assert_eq!(is_not_null_error.code(), QueryErrorCode::UnsupportedType);
     assert_eq!(is_not_null_error.fact_value("context"), Some("IS NULL input"));
     assert_eq!(is_not_null_error.fact_value("expected"), Some("expected scalar operator value"));
+}
+
+#[test]
+fn floating_list_columns_are_rejected_as_native_operator_values_and_keys() {
+    for list_type in [
+        DataType::List(Arc::new(Field::new("item", DataType::Float32, true))),
+        DataType::LargeList(Arc::new(Field::new("element", DataType::Float64, false))),
+    ] {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("values", list_type, true),
+        ]));
+
+        let filter_error = native_validation_error_for_plan(|builder| {
+            let source =
+                builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&schema))));
+            builder.add_filter(
+                source,
+                Expr::binary(Expr::column("values"), BinaryOp::Eq, Expr::column("values")),
+                Arc::clone(&schema),
+            )
+        });
+        assert_eq!(filter_error.code(), QueryErrorCode::UnsupportedType);
+        assert_eq!(filter_error.fact_value("reason"), Some("list_operator_unsupported"));
+
+        let sort_error = native_validation_error_for_plan(|builder| {
+            let source =
+                builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&schema))));
+            builder.add_sort(
+                source,
+                SortSpec::new(vec![SortExpr::new(Expr::column("values"), false, false)]),
+                Arc::clone(&schema),
+            )
+        });
+        assert_eq!(sort_error.code(), QueryErrorCode::UnsupportedType);
+        assert_eq!(sort_error.fact_value("context"), Some("sort key"));
+        assert_eq!(sort_error.fact_value("expected"), Some("expected scalar operator key"));
+    }
 }
 
 #[test]

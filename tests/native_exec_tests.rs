@@ -5,7 +5,7 @@ use std::{
 };
 
 use arrow::{
-    array::{Array, Float64Array, Int32Array, ListArray, StringArray, StringViewArray},
+    array::{Array, Decimal128Array, Int32Array, ListArray, StringArray, StringViewArray},
     buffer::{OffsetBuffer, ScalarBuffer},
     compute::SortOptions as ArrowSortOptions,
     datatypes::{DataType, Field, Schema},
@@ -1166,17 +1166,17 @@ fn native_optimizer_rule_obeys_no_datafusion_cpu_requirement_for_rejected_plan()
 fn final_plan_requirement_reports_first_unsupported_projected_column() {
     let dir = unique_temp_dir("datafusion-nexus-native-unsupported-list-detail");
     let path = dir.join("input.parquet");
-    let child = Arc::new(Field::new("element", DataType::Float64, true));
+    let child = Arc::new(Field::new("element", DataType::Decimal128(10, 2), true));
     let first = ListArray::new(
         Arc::clone(&child),
         OffsetBuffer::new(ScalarBuffer::from(vec![0, 1, 2])),
-        Arc::new(Float64Array::from(vec![1.0, 2.0])),
+        Arc::new(Decimal128Array::from(vec![100_i128, 200]).with_precision_and_scale(10, 2).unwrap()),
         None,
     );
     let second = ListArray::new(
         Arc::clone(&child),
         OffsetBuffer::new(ScalarBuffer::from(vec![0, 1, 2])),
-        Arc::new(Float64Array::from(vec![3.0, 4.0])),
+        Arc::new(Decimal128Array::from(vec![300_i128, 400]).with_precision_and_scale(10, 2).unwrap()),
         None,
     );
     let schema = Arc::new(Schema::new(vec![
@@ -1203,17 +1203,17 @@ fn final_plan_requirement_reports_first_unsupported_projected_column() {
     let planned = native_rule.optimize(parquet_scan(&path), &ConfigOptions::default()).unwrap();
     let error = requirement_rule
         .optimize(planned, &ConfigOptions::default())
-        .expect_err("unsupported List<Float64> must fail the strict GPU requirement");
+        .expect_err("unsupported List<Decimal128> must fail the strict GPU requirement");
     let error = adapter_error(&error);
 
     assert_eq!(error.code(), ErrorCode::FinalPlanRequirementUnsatisfied);
     assert_eq!(
         error.message(),
-        "GPU execution does not support projected column `first_unsupported` with Arrow type `List(Float64)`"
+        "GPU execution does not support projected column `first_unsupported` with Arrow type `List(Decimal128(10, 2))`"
     );
     assert_eq!(error.fact_value("reason"), Some("unsupported_type"));
     assert_eq!(error.fact_value("unsupported_column"), Some("first_unsupported"));
-    assert_eq!(error.fact_value("unsupported_column_type"), Some("List(Float64)"));
+    assert_eq!(error.fact_value("unsupported_column_type"), Some("List(Decimal128(10, 2))"));
     assert_eq!(error.fact_value("unsupported_column_role"), Some("projected"));
 
     fs::remove_dir_all(dir).unwrap();

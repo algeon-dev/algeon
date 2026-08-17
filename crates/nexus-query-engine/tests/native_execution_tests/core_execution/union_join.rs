@@ -217,6 +217,7 @@ fn native_union_and_scalar_key_hash_join_carry_basic_list_payloads_from_gpu_inpu
         payload_schema.field(2).clone(),
         payload_schema.field(3).clone(),
         payload_schema.field(4).clone(),
+        payload_schema.field(5).clone(),
         Field::new("label", DataType::Int64, false),
     ]));
 
@@ -243,6 +244,7 @@ fn native_union_and_scalar_key_hash_join_carry_basic_list_payloads_from_gpu_inpu
             JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "ints", "ints"), "ints"),
             JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "flags", "flags"), "flags"),
             JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "tags", "tags"), "tags"),
+            JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "scores", "scores"), "scores"),
             JoinOutputColumn::right(nexus_query_engine::expr::ColumnRef::input(1, "label", "label"), "label"),
         ])
         .with_null_equality(JoinNullEquality::NullsDoNotMatch)
@@ -285,6 +287,6 @@ fn native_union_and_scalar_key_hash_join_carry_basic_list_payloads_from_gpu_inpu
     };
     assert_eq!(batch.schema(), output_schema);
     assert_basic_list_payload_rows(batch, 0, 1, &[1, 2, 3, 4]);
-    assert_eq!(int64_array(batch, 4).values().as_ref(), &[1000, 2000, 3000, 4000]);
+    assert_eq!(int64_array(batch, 5).values().as_ref(), &[1000, 2000, 3000, 4000]);
     admitted.finish();
 }

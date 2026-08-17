@@ -213,7 +213,7 @@ first blocking field in schema order, its exact diagnostic Arrow type, and its
 stable role:
 
 ~~~text
-GPU execution does not support projected column `countDetail` with Arrow type `List(Float64)`
+GPU execution does not support projected column `countDetail` with Arrow type `List(Decimal128(10, 2))`
 ~~~
 
 That status also carries the matching structured metadata:
@@ -222,7 +222,7 @@ That status also carries the matching structured metadata:
 | --- | --- |
 | `x-datafusion-nexus-reason` | `unsupported_type` |
 | `x-datafusion-nexus-unsupported-column` | `countDetail` |
-| `x-datafusion-nexus-unsupported-column-type` | `List(Float64)` |
+| `x-datafusion-nexus-unsupported-column-type` | `List(Decimal128(10, 2))` |
 | `x-datafusion-nexus-unsupported-column-role` | `projected` |
 
 The terminal `GetQueryStats` structured error retains the same facts as
