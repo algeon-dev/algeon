@@ -220,7 +220,7 @@ pub async fn nexus_server::build_session_context(&nexus_server::ServerConfig) ->
 pub async fn nexus_server::build_session_context_with_backend(&nexus_server::ServerConfig, &datafusion_nexus::backend::NexusGpuBackend) -> nexus_server::Result<datafusion::execution::context::SessionContext>
 pub fn nexus_server::datafusion_error_to_status(datafusion_common::error::DataFusionError) -> tonic::status::Status
 pub fn nexus_server::datafusion_error_to_status_for_operation(datafusion_common::error::DataFusionError, &'static str) -> tonic::status::Status
-pub async fn nexus_server::handle_handshake(&nexus_server::AuthMode, &nexus_server::TokenStore, tonic::request::Request<tonic::codec::decode::Streaming<arrow_flight::gen::HandshakeRequest>>) -> core::result::Result<tonic::response::Response<core::pin::Pin<alloc::boxed::Box<(dyn futures_core::stream::Stream<Item = core::result::Result<arrow_flight::gen::HandshakeResponse, tonic::status::Status>> + core::marker::Send)>>>, tonic::status::Status>
+pub async fn nexus_server::handle_handshake(&nexus_server::AuthMode, &nexus_server::TokenStore, tonic::request::Request<tonic::codec::decode::Streaming<arrow_flight::gen::HandshakeRequest>>) -> core::result::Result<tonic::response::Response<futures_core::stream::BoxStream<'static, core::result::Result<arrow_flight::gen::HandshakeResponse, tonic::status::Status>>>, tonic::status::Status>
 pub fn nexus_server::hash_password(&str) -> core::result::Result<alloc::string::String, nexus_server::PasswordHashError>
 pub fn nexus_server::init_cuda_device(usize) -> nexus_server::Result<()>
 pub fn nexus_server::log_native_planning_report(&str, core::option::Option<&datafusion_nexus::report::PlanningReport>)

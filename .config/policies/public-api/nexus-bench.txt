@@ -354,11 +354,11 @@ pub nexus_bench::report_workload::tpch::AnalyticalOlapCapabilityFirstAdmission::
 pub nexus_bench::report_workload::tpch::AnalyticalOlapCapabilityFirstAdmission::ExpectedSupersetWin
 impl nexus_bench::report_workload::tpch::AnalyticalOlapCapabilityFirstAdmission
 pub const fn nexus_bench::report_workload::tpch::AnalyticalOlapCapabilityFirstAdmission::as_str(self) -> &'static str
-pub enum nexus_bench::report_workload::tpch::AnalyticalOlapCurrentStrictAdmission
-pub nexus_bench::report_workload::tpch::AnalyticalOlapCurrentStrictAdmission::Accepted
-pub nexus_bench::report_workload::tpch::AnalyticalOlapCurrentStrictAdmission::RejectedBeforeExecution
-impl nexus_bench::report_workload::tpch::AnalyticalOlapCurrentStrictAdmission
-pub const fn nexus_bench::report_workload::tpch::AnalyticalOlapCurrentStrictAdmission::as_str(self) -> &'static str
+pub enum nexus_bench::report_workload::tpch::AnalyticalOlapCurrentAdmission
+pub nexus_bench::report_workload::tpch::AnalyticalOlapCurrentAdmission::Accepted
+pub nexus_bench::report_workload::tpch::AnalyticalOlapCurrentAdmission::RejectedBeforeExecution
+impl nexus_bench::report_workload::tpch::AnalyticalOlapCurrentAdmission
+pub const fn nexus_bench::report_workload::tpch::AnalyticalOlapCurrentAdmission::as_str(self) -> &'static str
 pub enum nexus_bench::report_workload::tpch::AnalyticalOlapLoweringExpectation
 pub nexus_bench::report_workload::tpch::AnalyticalOlapLoweringExpectation::NativeQueryPlan
 impl nexus_bench::report_workload::tpch::AnalyticalOlapLoweringExpectation
@@ -373,7 +373,7 @@ impl nexus_bench::report_workload::tpch::AnalyticalOlapWorkloadClass
 pub const fn nexus_bench::report_workload::tpch::AnalyticalOlapWorkloadClass::as_str(self) -> &'static str
 pub struct nexus_bench::report_workload::tpch::AnalyticalOlapQuery
 pub nexus_bench::report_workload::tpch::AnalyticalOlapQuery::capability_first_admission: nexus_bench::report_workload::tpch::AnalyticalOlapCapabilityFirstAdmission
-pub nexus_bench::report_workload::tpch::AnalyticalOlapQuery::current_strict_admission: nexus_bench::report_workload::tpch::AnalyticalOlapCurrentStrictAdmission
+pub nexus_bench::report_workload::tpch::AnalyticalOlapQuery::current_admission: nexus_bench::report_workload::tpch::AnalyticalOlapCurrentAdmission
 pub nexus_bench::report_workload::tpch::AnalyticalOlapQuery::expected_lowering: nexus_bench::report_workload::tpch::AnalyticalOlapLoweringExpectation
 pub nexus_bench::report_workload::tpch::AnalyticalOlapQuery::id: &'static str
 pub nexus_bench::report_workload::tpch::AnalyticalOlapQuery::sql: &'static str
