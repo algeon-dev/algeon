@@ -121,7 +121,6 @@ fn captured_specs_and_generated_reference_pages_match_the_canonical_registry() {
         .unwrap_or_else(|error| panic!("parse captured cuVS spec at {}: {error}", spec_path.display()));
         assert_eq!(captured["function_name"], descriptor.sql_function_name);
         assert_eq!(captured["provider"], "cuvs");
-        assert_eq!(captured["domain"], "vector");
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(captured["options_schema_json"].as_str().unwrap()).unwrap(),
             descriptor.options_json_schema(),
@@ -475,6 +474,16 @@ async fn unified_gpu_metadata_is_relation_aware_and_projects_the_canonical_regis
         .await
         .unwrap();
     assert_eq!(described.iter().map(|batch| batch.num_rows()).sum::<usize>(), 1);
+    let described_batch = &described[0];
+    let validation_schema: serde_json::Value = serde_json::from_str(
+        described_batch.column(10).as_any().downcast_ref::<arrow::array::StringArray>().unwrap().value(0),
+    )
+    .unwrap();
+    assert_eq!(
+        validation_schema["properties"]["options"]["description"],
+        "cuVS operation options and relation-column bindings. See options_schema_json."
+    );
+    assert!(validation_schema["properties"]["options"].get("properties").is_none());
 
     let call = serde_json::json!({
         "schema_version": 1,

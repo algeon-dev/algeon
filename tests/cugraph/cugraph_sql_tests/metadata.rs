@@ -70,7 +70,7 @@ async fn cugraph_registry_projects_into_the_common_catalog() {
     let ctx = SessionContext::new_with_state(state);
     let batches = ctx
         .sql(
-            "SELECT function_name, provider, domain, available, relation_roles_json, signature, summary \
+            "SELECT function_name, provider, available, relation_roles_json, signature, summary \
               FROM gpu_list_functions() WHERE provider = 'cugraph' ORDER BY function_name",
         )
         .await
@@ -85,11 +85,10 @@ async fn cugraph_registry_projects_into_the_common_catalog() {
     for (row, expected_name) in expected.into_iter().enumerate() {
         assert_eq!(string_value(batch, 0, row), expected_name);
         assert_eq!(string_value(batch, 1, row), "cugraph");
-        assert_eq!(string_value(batch, 2, row), "graph");
-        assert!(bool_value(batch, 3, row));
-        assert_eq!(json_value(string_value(batch, 4, row))[0]["name"], "edges");
-        assert!(string_value(batch, 5, row).starts_with(expected_name));
-        assert!(!string_value(batch, 6, row).trim().is_empty());
+        assert!(bool_value(batch, 2, row));
+        assert_eq!(json_value(string_value(batch, 3, row))[0]["name"], "edges");
+        assert!(string_value(batch, 4, row).starts_with(expected_name));
+        assert!(!string_value(batch, 5, row).trim().is_empty());
     }
 }
 
@@ -101,7 +100,7 @@ async fn cugraph_descriptions_retain_graph_schemas_and_use_common_validation_api
         .build();
     let ctx = SessionContext::new_with_state(state);
     let batches = ctx
-        .sql("SELECT function_name, provider, domain, relation_roles_json, argument_descriptions_json, \
+        .sql("SELECT function_name, provider, relation_roles_json, argument_descriptions_json, \
               options_schema_json, result_schemas_json, validation_request_schema_json, examples_json, limitations_json \
               FROM gpu_describe_function('cugraph_bfs')")
         .await
@@ -112,16 +111,15 @@ async fn cugraph_descriptions_retain_graph_schemas_and_use_common_validation_api
     let batch = single_batch(&batches);
     assert_eq!(string_value(batch, 0, 0), "cugraph_bfs");
     assert_eq!(string_value(batch, 1, 0), "cugraph");
-    assert_eq!(string_value(batch, 2, 0), "graph");
-    assert_eq!(json_value(string_value(batch, 3, 0))[0]["name"], "edges");
-    let arguments = json_value(string_value(batch, 4, 0));
+    assert_eq!(json_value(string_value(batch, 2, 0))[0]["name"], "edges");
+    let arguments = json_value(string_value(batch, 3, 0));
     assert!(json_array_item_by_name(&arguments, "source_vertex_or_vertices").is_object());
-    let options = json_value(string_value(batch, 5, 0));
+    let options = json_value(string_value(batch, 4, 0));
     assert_eq!(options["graph_options"]["directed"]["default"], true);
-    let schemas = json_value(string_value(batch, 6, 0));
+    let schemas = json_value(string_value(batch, 5, 0));
     assert_eq!(schemas["call_specific_authority"], "gpu_validate_call");
     assert!(schemas["field_descriptions"].as_array().unwrap().iter().any(|field| field["name"] == "vertex"));
-    let request_schema = json_value(string_value(batch, 7, 0));
+    let request_schema = json_value(string_value(batch, 6, 0));
     assert_eq!(request_schema["properties"]["relations"]["required"], serde_json::json!(["edges"]));
     assert_eq!(request_schema["properties"]["schema_version"]["const"], 1);
     assert!(
@@ -139,7 +137,8 @@ async fn cugraph_descriptions_retain_graph_schemas_and_use_common_validation_api
             .as_str()
             .is_some_and(|description| description.contains("Flat cuGraph option object"))
     );
-    let examples = json_value(string_value(batch, 8, 0));
+    assert!(request_schema["properties"]["options"].get("x_cugraph_options_schema").is_none());
+    let examples = json_value(string_value(batch, 7, 0));
     assert_eq!(
         examples[0]["call_json"],
         serde_json::json!({
@@ -155,7 +154,7 @@ async fn cugraph_descriptions_retain_graph_schemas_and_use_common_validation_api
     );
     assert!(examples[0]["call_json"]["options"].get("options").is_none());
     assert!(examples[0]["execution_sql"].as_str().unwrap().starts_with("SELECT * FROM cugraph_bfs"));
-    let limitations = json_value(string_value(batch, 9, 0));
+    let limitations = json_value(string_value(batch, 8, 0));
     assert!(
         limitations
             .as_array()

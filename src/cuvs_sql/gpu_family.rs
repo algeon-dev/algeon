@@ -24,7 +24,6 @@ use crate::{
 
 const CUVS_FAMILY_ID: &str = "cuvs";
 const CUVS_PROVIDER: &str = "cuvs";
-const CUVS_DOMAIN: &str = "vector";
 
 /// cuVS discovery and static-validation adapter installed into the common GPU
 /// function catalog.
@@ -180,7 +179,6 @@ fn descriptor_for_operation(operation: CuvsOperation, availability: GpuFunctionA
     GpuFunctionDescriptor {
         function_name: descriptor.sql_function_name.to_string(),
         provider: CUVS_PROVIDER.to_string(),
-        domain: CUVS_DOMAIN.to_string(),
         signature: signature(operation),
         summary: descriptor.summary.to_string(),
         relation_roles: Value::Array(relation_roles),
@@ -193,9 +191,9 @@ fn descriptor_for_operation(operation: CuvsOperation, availability: GpuFunctionA
                 "description": "cuVS operation options and relation-column bindings"
             }
         ]),
-        options_schema: options_schema.clone(),
+        options_schema,
         result_schemas: result_schemas(operation),
-        validation_request_schema: validation_request_schema(descriptor.relation_roles, options_schema),
+        validation_request_schema: validation_request_schema(descriptor.relation_roles),
         examples: examples(operation),
         limitations: limitations(operation),
         availability,
@@ -238,7 +236,7 @@ fn result_schemas(operation: CuvsOperation) -> Value {
     })
 }
 
-fn validation_request_schema(roles: &[CuvsRelationRole], options_schema: Value) -> Value {
+fn validation_request_schema(roles: &[CuvsRelationRole]) -> Value {
     let relation_properties = roles
         .iter()
         .map(|role| {
@@ -266,7 +264,10 @@ fn validation_request_schema(roles: &[CuvsRelationRole], options_schema: Value) 
                 "required": roles.iter().map(|role| role.as_str()).collect::<Vec<_>>(),
                 "properties": relation_properties,
             },
-            "options": options_schema,
+            "options": {
+                "type": "object",
+                "description": "cuVS operation options and relation-column bindings. See options_schema_json."
+            },
         }
     })
 }
@@ -448,7 +449,6 @@ mod tests {
         );
         assert!(descriptors.iter().all(|descriptor| {
             descriptor.provider == CUVS_PROVIDER
-                && descriptor.domain == CUVS_DOMAIN
                 && descriptor.options_schema.is_object()
                 && descriptor.validation_request_schema.is_object()
                 && descriptor.examples.is_array()

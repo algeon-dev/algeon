@@ -22,7 +22,7 @@ Start with the functions available in the current build and session. Filter by
 provider when you already know the workload:
 
 ~~~sql
-SELECT function_name, provider, domain, available, summary
+SELECT function_name, provider, available, summary
 FROM gpu_list_functions()
 WHERE provider IN ('cugraph', 'cuvs')
 ORDER BY function_name;

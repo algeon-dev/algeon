@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Capture all installed GPU function descriptors from the unified catalog on a
 # running Flight SQL server. Specs are stored by provider so generated docs
-# retain the descriptor's provider/domain grouping without a second inventory.
+# retain the descriptor's provider grouping without a second inventory.
 #
 # Prerequisites: arrow_cli and jq on PATH; a server with the desired GPU
 # families installed. For example:

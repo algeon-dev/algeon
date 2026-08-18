@@ -251,7 +251,6 @@ function loadSpecs() {
   return loadProviderSpecs({
     specDir: SPEC_DIR,
     provider: 'cugraph',
-    domain: 'graph',
     namePattern: /^cugraph_[a-z0-9_]+$/,
     validate(file, spec) {
       if (!Array.isArray(spec.relation_roles) || spec.relation_roles.length !== 1 || spec.relation_roles[0]?.name !== 'edges') {

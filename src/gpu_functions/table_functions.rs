@@ -156,7 +156,6 @@ pub(crate) fn list_schema() -> SchemaRef {
     Arc::new(Schema::new(vec![
         Field::new("function_name", DataType::Utf8, false),
         Field::new("provider", DataType::Utf8, false),
-        Field::new("domain", DataType::Utf8, false),
         Field::new("available", DataType::Boolean, false),
         Field::new("unavailable_reason", DataType::Utf8, true),
         Field::new("signature", DataType::Utf8, false),
@@ -170,7 +169,6 @@ pub(crate) fn describe_schema() -> SchemaRef {
     Arc::new(Schema::new(vec![
         Field::new("function_name", DataType::Utf8, false),
         Field::new("provider", DataType::Utf8, false),
-        Field::new("domain", DataType::Utf8, false),
         Field::new("available", DataType::Boolean, false),
         Field::new("unavailable_reason", DataType::Utf8, true),
         Field::new("signature", DataType::Utf8, false),
@@ -206,7 +204,6 @@ fn list_batch(catalog: &GpuFunctionCatalog) -> Result<RecordBatch> {
         vec![
             strings(catalog.entries().iter().map(|entry| entry.descriptor.function_name.as_str())),
             strings(catalog.entries().iter().map(|entry| entry.descriptor.provider.as_str())),
-            strings(catalog.entries().iter().map(|entry| entry.descriptor.domain.as_str())),
             bools(catalog.entries().iter().map(|entry| entry.descriptor.availability.is_available())),
             optional_strings(catalog.entries().iter().map(|entry| entry.descriptor.availability.unavailable_reason())),
             strings(catalog.entries().iter().map(|entry| entry.descriptor.signature.as_str())),
@@ -225,7 +222,6 @@ fn describe_batch(catalog: &GpuFunctionCatalog, function_name: &str) -> Result<R
         vec![
             strings([descriptor.function_name.as_str()]),
             strings([descriptor.provider.as_str()]),
-            strings([descriptor.domain.as_str()]),
             bools([descriptor.availability.is_available()]),
             optional_strings([descriptor.availability.unavailable_reason()]),
             strings([descriptor.signature.as_str()]),
@@ -369,7 +365,6 @@ mod tests {
             vec![GpuFunctionDescriptor {
                 function_name: "fake_operation".to_string(),
                 provider: "fake".to_string(),
-                domain: "test".to_string(),
                 signature: "fake_operation(input)".to_string(),
                 summary: "fake operation".to_string(),
                 relation_roles: json!(["input"]),
@@ -416,7 +411,6 @@ mod tests {
             vec![
                 ("function_name".into(), DataType::Utf8, false),
                 ("provider".into(), DataType::Utf8, false),
-                ("domain".into(), DataType::Utf8, false),
                 ("available".into(), DataType::Boolean, false),
                 ("unavailable_reason".into(), DataType::Utf8, true),
                 ("signature".into(), DataType::Utf8, false),
@@ -429,7 +423,6 @@ mod tests {
             vec![
                 ("function_name".into(), DataType::Utf8, false),
                 ("provider".into(), DataType::Utf8, false),
-                ("domain".into(), DataType::Utf8, false),
                 ("available".into(), DataType::Boolean, false),
                 ("unavailable_reason".into(), DataType::Utf8, true),
                 ("signature".into(), DataType::Utf8, false),

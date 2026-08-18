@@ -471,7 +471,7 @@ async fn strict_flight_sql_metadata_domain_uses_cpu_without_attempt_or_user_scan
 
     let gpu_list_info = client
         .execute(
-            "SELECT function_name, provider, domain, available, summary \
+            "SELECT function_name, provider, available, summary \
              FROM gpu_list_functions() \
              WHERE provider IN ('cugraph', 'cuvs') \
              ORDER BY function_name"
