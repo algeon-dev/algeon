@@ -534,28 +534,8 @@ fn fixed_width_columns(schema: &arrow::datatypes::SchemaRef) -> Option<Vec<JoinO
 }
 
 fn fixed_width_column_checked(data_type: &DataType) -> Option<JoinOutputColumnUpperBoundInput> {
-    matches!(
-        data_type,
-        DataType::Boolean
-            | DataType::Int8
-            | DataType::UInt8
-            | DataType::Int16
-            | DataType::UInt16
-            | DataType::Int32
-            | DataType::UInt32
-            | DataType::Int64
-            | DataType::UInt64
-            | DataType::Float32
-            | DataType::Float64
-            | DataType::Date32
-            | DataType::Date64
-            | DataType::Time32(_)
-            | DataType::Time64(_)
-            | DataType::Timestamp(_, None)
-            | DataType::Duration(_)
-            | DataType::Decimal128(_, _)
-    )
-    .then(|| fixed_width_column(data_type.clone()))
+    crate::admission::requirement::arrow_fixed_width_cudf_type_id(data_type)
+        .map(|_| fixed_width_column(data_type.clone()))
 }
 
 fn fixed_width_column(data_type: DataType) -> JoinOutputColumnUpperBoundInput {

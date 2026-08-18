@@ -17,8 +17,8 @@ use datafusion::{
 };
 
 use super::expression_contract::{
-    is_list_carry_type, is_supported_native_type, is_timestamp_with_timezone_type, resolve_column,
-    validate_physical_expr,
+    is_list_carry_type, is_narrow_decimal_carry, is_supported_native_type, is_timestamp_with_timezone_type,
+    resolve_column, validate_physical_expr,
 };
 use crate::capability::CapabilityReason;
 
@@ -189,7 +189,10 @@ fn validate_operator_value_expr(
     input_schema: &SchemaRef,
 ) -> Result<(), CapabilityReason> {
     let data_type = expr.data_type(input_schema.as_ref()).map_err(|_error| CapabilityReason::UnsupportedExpression)?;
-    if is_timestamp_with_timezone_type(&data_type) || is_list_carry_type(&data_type) {
+    if is_timestamp_with_timezone_type(&data_type)
+        || is_list_carry_type(&data_type)
+        || is_narrow_decimal_carry(&data_type)
+    {
         Err(CapabilityReason::UnsupportedType)
     } else {
         Ok(())

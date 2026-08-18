@@ -644,33 +644,48 @@ fn test_from_record_batch_rejects_unsupported_arrow_array_type_with_stable_code(
 }
 
 #[test]
-fn test_from_record_batch_rejects_unsupported_decimal_width_with_stable_code() {
-    let array = Decimal64Array::from(vec![Some(12345i64), None, Some(-5)]).with_precision_and_scale(18, 2).unwrap();
-    let schema = Schema::new(vec![Field::new("amount64", ArrowDataType::Decimal64(18, 2), true)]);
-    let batch = RecordBatch::try_new(Arc::new(schema), vec![Arc::new(array)]).unwrap();
+fn test_narrow_decimal_import_and_schema_aware_export_preserve_width_precision_scale_values_and_nulls() {
+    let decimal32 = Decimal32Array::from(vec![Some(12345i32), None, Some(-5)]).with_precision_and_scale(8, 2).unwrap();
+    let decimal64 =
+        Decimal64Array::from(vec![Some(-987654321i64), None, Some(42)]).with_precision_and_scale(17, 4).unwrap();
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("amount32", ArrowDataType::Decimal32(8, 2), true),
+        Field::new("amount64", ArrowDataType::Decimal64(17, 4), true),
+    ]));
+    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(decimal32), Arc::new(decimal64)]).unwrap();
 
-    let err = import_record_batch(&batch).expect_err("Decimal64 import is intentionally unsupported in this slice");
+    let frame = import_record_batch(&batch).unwrap();
+    assert_eq!(frame.series("amount32").unwrap().dtype().unwrap(), DataType::fixed_point(TypeId::Decimal32, -2));
+    assert_eq!(frame.series("amount64").unwrap().dtype().unwrap(), DataType::fixed_point(TypeId::Decimal64, -4));
 
-    assert_eq!(err.kind(), ErrorKind::Unsupported);
-    assert_eq!(err.code(), ErrorCode::UnsupportedDtype);
-    assert_eq!(err.operation(), "arrow::arrow_array_to_column");
-    assert_eq!(error_context_value(&err, "field_name").as_deref(), Some("amount64"));
-    assert_eq!(error_context_value(&err, "arrow_type").as_deref(), Some("Decimal64(18, 2)"));
+    let canonical = frame.to_record_batch().unwrap();
+    assert_eq!(canonical.schema().field(0).data_type(), &ArrowDataType::Decimal128(38, 2));
+    assert_eq!(canonical.schema().field(1).data_type(), &ArrowDataType::Decimal128(38, 4));
+
+    let actual = cudf::frame::dataframe::GpuRecordBatch::new(frame, Arc::clone(&schema))
+        .unwrap()
+        .to_host_record_batch()
+        .unwrap();
+    assert_eq!(actual.schema(), schema);
+    let amount32 = actual.column(0).as_primitive::<arrow::datatypes::Decimal32Type>();
+    assert_eq!(amount32.iter().collect::<Vec<_>>(), vec![Some(12345), None, Some(-5)]);
+    let amount64 = actual.column(1).as_primitive::<arrow::datatypes::Decimal64Type>();
+    assert_eq!(amount64.iter().collect::<Vec<_>>(), vec![Some(-987654321), None, Some(42)]);
 }
 
 #[test]
-fn test_from_record_batch_rejects_unsupported_decimal32_width_with_stable_code() {
-    let array = Decimal32Array::from(vec![Some(12345i32), None, Some(-5)]).with_precision_and_scale(9, 2).unwrap();
-    let schema = Schema::new(vec![Field::new("amount32", ArrowDataType::Decimal32(9, 2), true)]);
-    let batch = RecordBatch::try_new(Arc::new(schema), vec![Arc::new(array)]).unwrap();
-
-    let err = import_record_batch(&batch).expect_err("Decimal32 import is intentionally unsupported in this slice");
-
-    assert_eq!(err.kind(), ErrorKind::Unsupported);
-    assert_eq!(err.code(), ErrorCode::UnsupportedDtype);
-    assert_eq!(err.operation(), "arrow::arrow_array_to_column");
-    assert_eq!(error_context_value(&err, "field_name").as_deref(), Some("amount32"));
-    assert_eq!(error_context_value(&err, "arrow_type").as_deref(), Some("Decimal32(9, 2)"));
+fn test_narrow_decimal_host_policy_rejects_invalid_precision_and_scale() {
+    for data_type in [
+        ArrowDataType::Decimal32(10, 2),
+        ArrowDataType::Decimal32(9, 10),
+        ArrowDataType::Decimal64(19, 2),
+        ArrowDataType::Decimal64(18, 19),
+    ] {
+        let error = cudf::interop::arrow_host::cudf_dtype_from_arrow_type(&data_type)
+            .expect_err("invalid Arrow narrow decimal metadata must be rejected before import");
+        assert_eq!(error.code(), ErrorCode::UnsupportedDtype, "{data_type:?}");
+        assert_eq!(error_context_value(&error, "reason").as_deref(), Some("invalid_arrow_decimal_precision_scale"));
+    }
 }
 
 #[test]

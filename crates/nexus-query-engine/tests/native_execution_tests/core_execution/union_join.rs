@@ -387,3 +387,133 @@ fn native_union_and_scalar_key_hash_join_carry_fixed_size_list_payloads_from_gpu
     assert_eq!(int64_array(batch, 2).values().as_ref(), &[1000, 2000, 3000, 4000]);
     admitted.finish();
 }
+
+#[test]
+fn native_union_and_scalar_key_hash_join_carry_narrow_decimal_payloads_from_gpu_inputs() {
+    let context = backend_context();
+    let payload_schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("amount32", DataType::Decimal32(8, 2), false),
+        Field::new("amount64", DataType::Decimal64(17, 4), false),
+    ]));
+    let payload_batch = |keys: Vec<i32>| {
+        let amount32 = keys.iter().map(|key| key * 100).collect::<Vec<_>>();
+        let amount64 = keys.iter().map(|key| i64::from(*key) * 10_000).collect::<Vec<_>>();
+        RecordBatch::try_new(
+            Arc::clone(&payload_schema),
+            vec![
+                Arc::new(Int32Array::from(keys)),
+                Arc::new(Decimal32Array::from(amount32).with_precision_and_scale(8, 2).unwrap()),
+                Arc::new(Decimal64Array::from(amount64).with_precision_and_scale(17, 4).unwrap()),
+            ],
+        )
+        .unwrap()
+    };
+    let left_batch = payload_batch(vec![3, 1]);
+    let right_batch = payload_batch(vec![4, 2]);
+    let dimension_schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("label", DataType::Int64, false),
+    ]));
+    let dimension_batch = RecordBatch::try_new(
+        Arc::clone(&dimension_schema),
+        vec![
+            Arc::new(Int32Array::from(vec![1, 2, 3, 4])),
+            Arc::new(Int64Array::from(vec![1000, 2000, 3000, 4000])),
+        ],
+    )
+    .unwrap();
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("amount32", DataType::Decimal32(8, 2), false),
+        Field::new("amount64", DataType::Decimal64(17, 4), false),
+        Field::new("label", DataType::Int64, false),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let left = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
+        "narrow_decimal_left",
+        Arc::clone(&payload_schema),
+    )));
+    let right = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
+        "narrow_decimal_right",
+        Arc::clone(&payload_schema),
+    )));
+    let dimension = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
+        "narrow_decimal_dimension",
+        Arc::clone(&dimension_schema),
+    )));
+    let union = builder.add_union(vec![left, right], Arc::clone(&payload_schema));
+    let join = builder.add_join(
+        union,
+        dimension,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(
+                nexus_query_engine::expr::ColumnRef::input(0, "key", "payload_key"),
+                nexus_query_engine::expr::ColumnRef::input(1, "key", "dimension_key"),
+            )],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "key", "key"), "key"),
+            JoinOutputColumn::left(
+                nexus_query_engine::expr::ColumnRef::input(0, "amount32", "amount32"),
+                "amount32",
+            ),
+            JoinOutputColumn::left(
+                nexus_query_engine::expr::ColumnRef::input(0, "amount64", "amount64"),
+                "amount64",
+            ),
+            JoinOutputColumn::right(nexus_query_engine::expr::ColumnRef::input(1, "label", "label"), "label"),
+        ])
+        .with_null_equality(JoinNullEquality::NullsDoNotMatch)
+        .with_build_side(JoinSide::Right),
+        Arc::clone(&output_schema),
+    );
+    let sort = builder.add_sort(
+        join,
+        SortSpec::new(vec![SortExpr::new(Expr::column("key"), false, false)]),
+        Arc::clone(&output_schema),
+    );
+    let plan = builder.finish_with_host_sink(sort);
+    let admitted = context.admit_plan(&plan).unwrap();
+    let runtime = Arc::new(admitted.runtime().unwrap());
+    let mut gpu_inputs = GpuResidentInputMap::new();
+    for (name, batch) in [("narrow_decimal_left", &left_batch), ("narrow_decimal_right", &right_batch)] {
+        gpu_inputs.insert(
+            name.to_string(),
+            GpuResultHandle::new(
+                &admitted,
+                GpuDataFrame::new(DataFrame::from_record_batch(&runtime, batch).unwrap()),
+                Arc::clone(&payload_schema),
+            )
+            .unwrap(),
+        );
+    }
+    gpu_inputs.insert(
+        "narrow_decimal_dimension".to_string(),
+        GpuResultHandle::new(
+            &admitted,
+            GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &dimension_batch).unwrap()),
+            Arc::clone(&dimension_schema),
+        )
+        .unwrap(),
+    );
+
+    let result = execute_query_plan_with_gpu_inputs(&admitted, &plan, &gpu_inputs).unwrap();
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize joined narrow decimal payloads");
+    };
+    assert_eq!(batch.schema(), output_schema);
+    assert_eq!(int32_array(batch, 0).values().as_ref(), &[1, 2, 3, 4]);
+    assert_eq!(
+        batch.column(1).as_primitive::<arrow::datatypes::Decimal32Type>().values().as_ref(),
+        &[100, 200, 300, 400]
+    );
+    assert_eq!(
+        batch.column(2).as_primitive::<arrow::datatypes::Decimal64Type>().values().as_ref(),
+        &[10_000, 20_000, 30_000, 40_000]
+    );
+    assert_eq!(int64_array(batch, 3).values().as_ref(), &[1000, 2000, 3000, 4000]);
+    admitted.finish();
+}

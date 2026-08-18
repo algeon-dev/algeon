@@ -1,3 +1,6 @@
+use arrow::datatypes::{Decimal32Type, Decimal64Type, validate_decimal_precision_and_scale};
+use nexus_query_engine::datatypes::is_narrow_decimal_carry_type;
+
 use super::*;
 
 #[test]
@@ -26,6 +29,54 @@ fn decimal128_type_support_policy_rejects_invalid_arrow_decimals() {
     assert_eq!(cudf_dtype_from_arrow_type(&invalid_precision), None);
     assert!(!is_supported_arrow_type(&invalid_scale));
     assert_eq!(cudf_dtype_from_arrow_type(&invalid_scale), None);
+}
+
+#[test]
+fn decimal32_and_decimal64_type_support_policy_accepts_valid_arrow_decimals() {
+    let cases = [
+        (DataType::Decimal32(9, 2), TypeId::Decimal32, -2),
+        (DataType::Decimal32(9, -1), TypeId::Decimal32, 1),
+        (DataType::Decimal64(18, 2), TypeId::Decimal64, -2),
+        (DataType::Decimal64(18, -1), TypeId::Decimal64, 1),
+    ];
+
+    for (arrow_type, cudf_type_id, cudf_scale) in cases {
+        assert!(is_supported_arrow_type(&arrow_type), "{arrow_type:?}");
+        assert!(is_narrow_decimal_carry_type(&arrow_type), "{arrow_type:?}");
+        assert_eq!(
+            cudf_dtype_from_arrow_type(&arrow_type),
+            Some(CudfDataType::fixed_point(cudf_type_id, cudf_scale)),
+            "{arrow_type:?}"
+        );
+        assert!(is_supported_arrow_implicit_cast(&arrow_type, &arrow_type), "{arrow_type:?}");
+    }
+}
+
+#[test]
+fn decimal32_and_decimal64_type_support_policy_rejects_invalid_arrow_decimals() {
+    assert!(validate_decimal_precision_and_scale::<Decimal32Type>(10, 2).is_err());
+    let invalid_decimal32_precision = DataType::Decimal32(10, 2);
+    assert!(!is_supported_arrow_type(&invalid_decimal32_precision));
+    assert!(!is_narrow_decimal_carry_type(&invalid_decimal32_precision));
+    assert_eq!(cudf_dtype_from_arrow_type(&invalid_decimal32_precision), None);
+
+    assert!(validate_decimal_precision_and_scale::<Decimal32Type>(9, 10).is_err());
+    let invalid_decimal32_scale = DataType::Decimal32(9, 10);
+    assert!(!is_supported_arrow_type(&invalid_decimal32_scale));
+    assert!(!is_narrow_decimal_carry_type(&invalid_decimal32_scale));
+    assert_eq!(cudf_dtype_from_arrow_type(&invalid_decimal32_scale), None);
+
+    assert!(validate_decimal_precision_and_scale::<Decimal64Type>(19, 2).is_err());
+    let invalid_decimal64_precision = DataType::Decimal64(19, 2);
+    assert!(!is_supported_arrow_type(&invalid_decimal64_precision));
+    assert!(!is_narrow_decimal_carry_type(&invalid_decimal64_precision));
+    assert_eq!(cudf_dtype_from_arrow_type(&invalid_decimal64_precision), None);
+
+    assert!(validate_decimal_precision_and_scale::<Decimal64Type>(18, 19).is_err());
+    let invalid_decimal64_scale = DataType::Decimal64(18, 19);
+    assert!(!is_supported_arrow_type(&invalid_decimal64_scale));
+    assert!(!is_narrow_decimal_carry_type(&invalid_decimal64_scale));
+    assert_eq!(cudf_dtype_from_arrow_type(&invalid_decimal64_scale), None);
 }
 
 #[test]
@@ -250,14 +301,16 @@ fn numeric_list_columns_are_rejected_as_native_operator_values_and_keys() {
 }
 
 #[test]
-fn list_columns_are_rejected_as_native_join_group_and_window_keys() {
-    for list_type in [
+fn carry_only_columns_are_rejected_as_native_join_group_and_window_keys() {
+    for carry_type in [
         DataType::List(Arc::new(Field::new("item", DataType::Utf8, true))),
         DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float64, true)), 2),
+        DataType::Decimal32(9, 2),
+        DataType::Decimal64(18, 2),
     ] {
         let schema = Arc::new(Schema::new(vec![
             Field::new("id", DataType::Int32, false),
-            Field::new("tags", list_type.clone(), true),
+            Field::new("tags", carry_type.clone(), true),
         ]));
 
         let join_error = native_validation_error_for_plan(|builder| {
@@ -284,7 +337,7 @@ fn list_columns_are_rejected_as_native_join_group_and_window_keys() {
             builder.add_aggregate(
                 source,
                 AggregateSpec::new(vec![Expr::column("tags")], Vec::new()),
-                Arc::new(Schema::new(vec![Field::new("tags", list_type.clone(), true)])),
+                Arc::new(Schema::new(vec![Field::new("tags", carry_type.clone(), true)])),
             )
         });
         assert_eq!(group_error.code(), QueryErrorCode::UnsupportedType);
@@ -306,7 +359,7 @@ fn list_columns_are_rejected_as_native_join_group_and_window_keys() {
                     ),
                     Arc::new(Schema::new(vec![
                         Field::new("id", DataType::Int32, false),
-                        Field::new("tags", list_type.clone(), true),
+                        Field::new("tags", carry_type.clone(), true),
                         Field::new("row_count", DataType::Int64, false),
                     ])),
                 )
@@ -318,56 +371,75 @@ fn list_columns_are_rejected_as_native_join_group_and_window_keys() {
 }
 
 #[test]
-fn list_string_columns_are_rejected_as_native_window_operands() {
-    let list_type = DataType::List(Arc::new(Field::new("item", DataType::Utf8, true)));
-    let input_schema = Arc::new(Schema::new(vec![
-        Field::new("key", DataType::Int32, false),
-        Field::new("tags", list_type.clone(), true),
-    ]));
+fn carry_only_columns_are_rejected_as_native_aggregate_and_window_operands() {
+    for carry_type in [
+        DataType::List(Arc::new(Field::new("item", DataType::Utf8, true))),
+        DataType::Decimal32(9, 2),
+        DataType::Decimal64(18, 2),
+    ] {
+        let input_schema = Arc::new(Schema::new(vec![
+            Field::new("key", DataType::Int32, false),
+            Field::new("tags", carry_type.clone(), true),
+        ]));
 
-    let aggregate_output_schema = Arc::new(Schema::new(vec![
-        Field::new("key", DataType::Int32, false),
-        Field::new("tags", list_type.clone(), true),
-        Field::new("tag_count", DataType::Int64, false),
-    ]));
-    let aggregate_error = native_validation_error_for_plan(|builder| {
-        let source =
-            builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&input_schema))));
-        builder.add_window(
-            source,
-            WindowSpec::new(
-                vec![Expr::column("key")],
-                Vec::new(),
-                vec![WindowFunction::aggregate(AggregateFunction::Count, Expr::column("tags"), "tag_count")],
-            ),
-            aggregate_output_schema,
-        )
-    });
-    assert_eq!(aggregate_error.code(), QueryErrorCode::UnsupportedType);
-    assert_eq!(aggregate_error.fact_value("context"), Some("window aggregate input"));
-    assert_eq!(aggregate_error.fact_value("expected"), Some("expected scalar operator value"));
+        let aggregate_error = native_validation_error_for_plan(|builder| {
+            let source =
+                builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&input_schema))));
+            builder.add_aggregate(
+                source,
+                AggregateSpec::new(
+                    Vec::new(),
+                    vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("tags"), "tag_count")],
+                ),
+                Arc::new(Schema::new(vec![Field::new("tag_count", DataType::Int64, false)])),
+            )
+        });
+        assert_eq!(aggregate_error.code(), QueryErrorCode::UnsupportedType);
+        assert_eq!(aggregate_error.fact_value("context"), Some("aggregate input"));
+        assert_eq!(aggregate_error.fact_value("expected"), Some("expected scalar operator key"));
 
-    let lag_output_schema = Arc::new(Schema::new(vec![
-        Field::new("key", DataType::Int32, false),
-        Field::new("tags", list_type.clone(), true),
-        Field::new("prev_tags", list_type, true),
-    ]));
-    let lag_error = native_validation_error_for_plan(|builder| {
-        let source =
-            builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&input_schema))));
-        builder.add_window(
-            source,
-            WindowSpec::new(
-                vec![Expr::column("key")],
-                vec![SortExpr::new(Expr::column("key"), false, false)],
-                vec![WindowFunction::lag(Expr::column("tags"), 1, None, "prev_tags")],
-            ),
-            lag_output_schema,
-        )
-    });
-    assert_eq!(lag_error.code(), QueryErrorCode::UnsupportedType);
-    assert_eq!(lag_error.fact_value("context"), Some("window LAG / LEAD input"));
-    assert_eq!(lag_error.fact_value("expected"), Some("expected scalar operator value"));
+        let window_aggregate_error = native_validation_error_for_plan(|builder| {
+            let source =
+                builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&input_schema))));
+            builder.add_window(
+                source,
+                WindowSpec::new(
+                    vec![Expr::column("key")],
+                    Vec::new(),
+                    vec![WindowFunction::aggregate(AggregateFunction::Count, Expr::column("tags"), "tag_count")],
+                ),
+                Arc::new(Schema::new(vec![
+                    Field::new("key", DataType::Int32, false),
+                    Field::new("tags", carry_type.clone(), true),
+                    Field::new("tag_count", DataType::Int64, false),
+                ])),
+            )
+        });
+        assert_eq!(window_aggregate_error.code(), QueryErrorCode::UnsupportedType);
+        assert_eq!(window_aggregate_error.fact_value("context"), Some("window aggregate input"));
+        assert_eq!(window_aggregate_error.fact_value("expected"), Some("expected scalar operator value"));
+
+        let lag_error = native_validation_error_for_plan(|builder| {
+            let source =
+                builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&input_schema))));
+            builder.add_window(
+                source,
+                WindowSpec::new(
+                    vec![Expr::column("key")],
+                    vec![SortExpr::new(Expr::column("key"), false, false)],
+                    vec![WindowFunction::lag(Expr::column("tags"), 1, None, "prev_tags")],
+                ),
+                Arc::new(Schema::new(vec![
+                    Field::new("key", DataType::Int32, false),
+                    Field::new("tags", carry_type.clone(), true),
+                    Field::new("prev_tags", carry_type.clone(), true),
+                ])),
+            )
+        });
+        assert_eq!(lag_error.code(), QueryErrorCode::UnsupportedType);
+        assert_eq!(lag_error.fact_value("context"), Some("window LAG / LEAD input"));
+        assert_eq!(lag_error.fact_value("expected"), Some("expected scalar operator value"));
+    }
 }
 
 #[test]
@@ -398,6 +470,95 @@ fn list_string_null_predicates_are_rejected_in_native_post_join_residuals() {
     assert_eq!(error.code(), QueryErrorCode::UnsupportedType);
     assert_eq!(error.fact_value("context"), Some("post-join residual IS NULL input"));
     assert_eq!(error.fact_value("expected"), Some("expected scalar operator value"));
+}
+
+#[test]
+fn narrow_decimal_carry_types_are_rejected_in_operator_roles_with_structured_local_errors() {
+    for amount_type in [DataType::Decimal32(9, 2), DataType::Decimal64(18, 2)] {
+        assert!(is_narrow_decimal_carry_type(&amount_type), "{amount_type:?}");
+        let amount_type_debug = format!("{amount_type:?}");
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("amount", amount_type.clone(), true),
+        ]));
+
+        let comparison_error = native_validation_error_for_plan(|builder| {
+            let source =
+                builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&schema))));
+            builder.add_filter(
+                source,
+                Expr::binary(Expr::column("amount"), BinaryOp::Eq, Expr::column("amount")),
+                Arc::clone(&schema),
+            )
+        });
+        assert_eq!(comparison_error.code(), QueryErrorCode::UnsupportedType);
+        assert_eq!(comparison_error.fact_value("reason"), Some("narrow_decimal_comparison_unsupported"));
+        assert_eq!(comparison_error.fact_value("left_type"), Some(amount_type_debug.as_str()));
+        assert_eq!(comparison_error.fact_value("right_type"), Some(amount_type_debug.as_str()));
+
+        let cast_error = native_validation_error_for_plan(|builder| {
+            let source =
+                builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&schema))));
+            let output_schema = Arc::new(Schema::new(vec![Field::new("amount", amount_type.clone(), true)]));
+            builder.add_projection(
+                source,
+                projection_outputs(
+                    vec![Expr::cast(Expr::column("amount"), amount_type.clone())],
+                    Arc::clone(&output_schema),
+                ),
+            )
+        });
+        assert_eq!(cast_error.code(), QueryErrorCode::UnsupportedType);
+        assert_eq!(cast_error.fact_value("source_type"), Some(amount_type_debug.as_str()));
+        assert_eq!(cast_error.fact_value("target_type"), Some(amount_type_debug.as_str()));
+
+        let sort_error = native_validation_error_for_plan(|builder| {
+            let source =
+                builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&schema))));
+            builder.add_sort(
+                source,
+                SortSpec::new(vec![SortExpr::new(Expr::column("amount"), false, false)]),
+                Arc::clone(&schema),
+            )
+        });
+        assert_eq!(sort_error.code(), QueryErrorCode::UnsupportedType);
+        assert_eq!(sort_error.fact_value("context"), Some("sort key"));
+        assert_eq!(sort_error.fact_value("expected"), Some("expected scalar operator key"));
+        assert_eq!(sort_error.fact_value("data_type"), Some(amount_type_debug.as_str()));
+
+        let null_predicate_error = native_validation_error_for_plan(|builder| {
+            let source =
+                builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&schema))));
+            builder.add_filter(source, Expr::is_null(Expr::column("amount")), Arc::clone(&schema))
+        });
+        assert_eq!(null_predicate_error.code(), QueryErrorCode::UnsupportedType);
+        assert_eq!(null_predicate_error.fact_value("context"), Some("IS NULL input"));
+        assert_eq!(null_predicate_error.fact_value("expected"), Some("expected scalar operator value"));
+        assert_eq!(null_predicate_error.fact_value("data_type"), Some(amount_type_debug.as_str()));
+
+        let join_error = native_validation_error_for_plan(|builder| {
+            let left = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("left", Arc::clone(&schema))));
+            let right =
+                builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("right", Arc::clone(&schema))));
+            builder.add_join(
+                left,
+                right,
+                JoinSpec::new(
+                    JoinType::Inner,
+                    vec![JoinKey::new(
+                        ColumnRef::input(0, "amount", "amount"),
+                        ColumnRef::input(1, "amount", "amount"),
+                    )],
+                )
+                .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "id", "id"), "id")]),
+                Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)])),
+            )
+        });
+        assert_eq!(join_error.code(), QueryErrorCode::UnsupportedType);
+        assert_eq!(join_error.fact_value("context"), Some("join left key"));
+        assert_eq!(join_error.fact_value("expected"), Some("expected scalar operator key"));
+        assert_eq!(join_error.fact_value("data_type"), Some(amount_type_debug.as_str()));
+    }
 }
 
 #[test]

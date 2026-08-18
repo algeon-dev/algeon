@@ -190,6 +190,179 @@ pub(super) fn assert_fixed_size_list_payload_rows(batch: &RecordBatch, key_colum
     );
 }
 
+fn narrow_decimal_record_batch() -> RecordBatch {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("amount32", DataType::Decimal32(8, 2), true),
+        Field::new("amount64", DataType::Decimal64(17, 4), true),
+    ]));
+    RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(Int32Array::from(vec![1, 2, 3, 4])),
+            Arc::new(
+                Decimal32Array::from(vec![Some(12345), None, Some(-5), Some(999999)])
+                    .with_precision_and_scale(8, 2)
+                    .unwrap(),
+            ),
+            Arc::new(
+                Decimal64Array::from(vec![Some(-987654321), Some(42), None, Some(123456789)])
+                    .with_precision_and_scale(17, 4)
+                    .unwrap(),
+            ),
+        ],
+    )
+    .unwrap()
+}
+
+#[test]
+fn native_literal_batch_carries_decimal32_and_decimal64_with_exact_schemas() {
+    let context = backend_context();
+    let batch = narrow_decimal_record_batch();
+    let schema = batch.schema();
+    let mut builder = QueryPlanBuilder::new();
+    let source =
+        builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![batch.clone()])));
+    let plan = builder.finish_with_host_sink(source);
+
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let QueryOutput::HostArrow(actual) = result.output() else {
+        panic!("host sink should materialize narrow decimal literal output");
+    };
+    assert_record_batch_columns_equal(actual, &batch);
+}
+
+#[test]
+fn native_local_parquet_filters_projects_and_limits_decimal32_and_decimal64_payloads() {
+    let dir = unique_temp_dir("nexus-query-engine-native-narrow-decimal");
+    let path = dir.join("input.parquet");
+    let context = backend_context();
+    let batch = narrow_decimal_record_batch();
+    let schema = batch.schema();
+    let file = File::create(&path).unwrap();
+    let mut writer =
+        ArrowWriter::try_new(file, Arc::clone(&schema), Some(WriterProperties::builder().build())).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+
+    let source = NativeLocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
+        Arc::clone(&schema),
+        vec!["id".to_string(), "amount32".to_string(), "amount64".to_string()],
+    );
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("small", DataType::Decimal32(8, 2), true),
+        Field::new("large", DataType::Decimal64(17, 4), true),
+    ]));
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let filter = builder.add_filter(
+        source,
+        Expr::binary(Expr::column("id"), BinaryOp::GtEq, Expr::literal(LiteralValue::Int32(2))),
+        Arc::clone(&schema),
+    );
+    let projection = builder.add_projection(
+        filter,
+        projection_outputs(
+            vec![Expr::alias(Expr::column("amount32"), "small"), Expr::alias(Expr::column("amount64"), "large")],
+            Arc::clone(&output_schema),
+        ),
+    );
+    let limit = builder.add_limit(projection, LimitSpec::fetch(2), Arc::clone(&output_schema));
+    let plan = builder.finish_with_host_sink_schema(limit, Arc::clone(&output_schema));
+
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let QueryOutput::HostArrow(actual) = result.output() else {
+        panic!("host sink should materialize narrow decimal Parquet output");
+    };
+    assert_eq!(actual.schema(), output_schema);
+    assert_eq!(
+        actual.column(0).as_primitive::<arrow::datatypes::Decimal32Type>().iter().collect::<Vec<_>>(),
+        vec![None, Some(-5)]
+    );
+    assert_eq!(
+        actual.column(1).as_primitive::<arrow::datatypes::Decimal64Type>().iter().collect::<Vec<_>>(),
+        vec![Some(42), None]
+    );
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn native_parquet_narrow_decimal_storage_preserves_declared_narrow_or_decimal128_logical_width() {
+    let cases = [
+        (
+            "decimal32",
+            DataType::Decimal32(8, 2),
+            Arc::new(
+                Decimal32Array::from(vec![Some(12345), None, Some(-5)])
+                    .with_precision_and_scale(8, 2)
+                    .unwrap(),
+            ) as ArrayRef,
+            Arc::new(
+                Decimal128Array::from(vec![Some(12345), None, Some(-5)])
+                    .with_precision_and_scale(8, 2)
+                    .unwrap(),
+            ) as ArrayRef,
+        ),
+        (
+            "decimal64",
+            DataType::Decimal64(17, 4),
+            Arc::new(
+                Decimal64Array::from(vec![Some(-987654321), None, Some(42)])
+                    .with_precision_and_scale(17, 4)
+                    .unwrap(),
+            ) as ArrayRef,
+            Arc::new(
+                Decimal128Array::from(vec![Some(-987654321), None, Some(42)])
+                    .with_precision_and_scale(17, 4)
+                    .unwrap(),
+            ) as ArrayRef,
+        ),
+    ];
+
+    for (name, narrow_type, narrow_array, wide_array) in cases {
+        let dir = unique_temp_dir(&format!("nexus-query-engine-native-physical-logical-{name}"));
+        let path = dir.join("input.parquet");
+        let context = backend_context();
+        let narrow_schema = Arc::new(Schema::new(vec![Field::new("amount", narrow_type.clone(), true)]));
+        let narrow_batch = RecordBatch::try_new(Arc::clone(&narrow_schema), vec![narrow_array]).unwrap();
+        let file = File::create(&path).unwrap();
+        let mut writer =
+            ArrowWriter::try_new(file, Arc::clone(&narrow_schema), Some(WriterProperties::builder().build())).unwrap();
+        writer.write(&narrow_batch).unwrap();
+        writer.close().unwrap();
+
+        let execute = |schema: Arc<Schema>| {
+            let source = NativeLocalParquetSource::from_files(
+                vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
+                Arc::clone(&schema),
+                vec!["amount".to_string()],
+            );
+            let mut builder = QueryPlanBuilder::new();
+            let source = builder.add_source(SourceNode::LocalParquet(source));
+            let plan = builder.finish_with_host_sink_schema(source, schema);
+            let result = execute_query_plan(&context, &plan).unwrap();
+            let QueryOutput::HostArrow(batch) = result.output() else {
+                panic!("host sink should materialize decimal output");
+            };
+            batch.clone()
+        };
+
+        assert_record_batch_columns_equal(&execute(Arc::clone(&narrow_schema)), &narrow_batch);
+
+        let (precision, scale) = match narrow_type {
+            DataType::Decimal32(precision, scale) | DataType::Decimal64(precision, scale) => (precision, scale),
+            _ => unreachable!(),
+        };
+        let wide_schema = Arc::new(Schema::new(vec![Field::new("amount", DataType::Decimal128(precision, scale), true)]));
+        let wide_batch = RecordBatch::try_new(Arc::clone(&wide_schema), vec![wide_array]).unwrap();
+        assert_record_batch_columns_equal(&execute(wide_schema), &wide_batch);
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+}
+
 #[test]
 fn native_local_parquet_source_carries_timestamp_timezone_to_host_output() {
     let dir = unique_temp_dir("nexus-query-engine-native-timestamp-tz");

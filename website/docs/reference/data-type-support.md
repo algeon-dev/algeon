@@ -26,11 +26,30 @@ The native engine has a cuDF representation for these Arrow data types:
 - Unsigned integers: `UInt8`, `UInt16`, `UInt32`, `UInt64`
 - Floating point: `Float32`, `Float64`
 - `Decimal128` with valid Arrow decimal precision and scale
+- Carry-only `Decimal32` and `Decimal64` with valid Arrow decimal precision and scale
 - Strings: `Utf8`, `LargeUtf8`, `Utf8View`
 - `Date32`, `Date64`
 - `Time32` and `Time64` at their Arrow-supported resolutions
 - `Timestamp` at second, millisecond, microsecond, or nanosecond resolution
 - `Duration` at second, millisecond, microsecond, or nanosecond resolution
+
+### Narrow-decimal carry matrix
+
+`Decimal32(P, S)` and `Decimal64(P, S)` are carry/projection columns when the
+precision and scale pair passes Arrow's validator:
+
+| Arrow type | Raw fixed-point width | Schema-aware output |
+| --- | --- | --- |
+| `Decimal32(P, S)` | 4 bytes | `Decimal32(P, S)` |
+| `Decimal64(P, S)` | 8 bytes | `Decimal64(P, S)` |
+
+Carry paths preserve raw values, nulls, logical width, precision, and scale
+through scans, projections, aliases, row selection, `UNION ALL`, and non-key
+payloads. Without an external Arrow schema, untyped cuDF Decimal32/64 output
+retains the canonical `Decimal128(38, S)` mapping. Narrow decimals are rejected
+by local capability analysis in expressions, predicates, literals, comparisons,
+casts, join or grouping keys, sort keys, partitions, aggregate inputs, and
+window inputs.
 
 ### Basic-list carry matrix
 
@@ -82,7 +101,7 @@ These types do not have native execution support today:
 
 - Nested / complex: `Struct`, `Map`, `Union`, `Dictionary`, `ListView`,
   `LargeListView`, `RunEndEncoded`
-- Numeric / decimal: `Float16`, `Decimal32`, `Decimal64`, `Decimal256`
+- Numeric / decimal: `Float16`, `Decimal256`
 - Binary: `Binary`, `LargeBinary`, `FixedSizeBinary`, `BinaryView`
 - Temporal: `Interval`
 - `FixedSizeList` with `D <= 0` or a child outside the numeric fixed-size-list

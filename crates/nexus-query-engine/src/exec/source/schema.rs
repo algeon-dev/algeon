@@ -109,6 +109,12 @@ fn missing_column_series(
         ArrowDataType::Decimal128(_precision, scale) => {
             context.runtime()?.null_decimal128_raw_scalar(crate::datatypes::arrow_decimal_scale_to_cudf_scale(*scale))
         },
+        ArrowDataType::Decimal32(_precision, scale) => {
+            context.runtime()?.null_decimal32_raw_scalar(crate::datatypes::arrow_decimal_scale_to_cudf_scale(*scale))
+        },
+        ArrowDataType::Decimal64(_precision, scale) => {
+            context.runtime()?.null_decimal64_raw_scalar(crate::datatypes::arrow_decimal_scale_to_cudf_scale(*scale))
+        },
         ArrowDataType::Date32 => context.runtime()?.null_timestamp_raw_scalar(cudf::TimestampResolution::Days),
         ArrowDataType::Date64 => context.runtime()?.null_timestamp_raw_scalar(cudf::TimestampResolution::Milliseconds),
         ArrowDataType::Time32(unit) | ArrowDataType::Time64(unit) => {

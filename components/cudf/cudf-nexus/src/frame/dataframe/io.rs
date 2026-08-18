@@ -818,7 +818,7 @@ fn null_source_scalar(runtime: &Runtime, data_type: DataType) -> Result<Scalar> 
         TypeId::UInt64 => runtime.null_scalar::<u64>(),
         TypeId::Float32 => runtime.null_scalar::<f32>(),
         TypeId::Float64 => runtime.null_scalar::<f64>(),
-        TypeId::Decimal128 => runtime.null_decimal128_raw_scalar(data_type.scale()),
+        TypeId::Decimal32 | TypeId::Decimal64 | TypeId::Decimal128 => runtime.null_decimal_raw_scalar(data_type),
         TypeId::TimestampDays
         | TypeId::TimestampSeconds
         | TypeId::TimestampMilliseconds

@@ -43,7 +43,10 @@ use std::{
 use arrow::{
     array::*,
     buffer::{NullBuffer, OffsetBuffer, ScalarBuffer},
-    datatypes::{DataType as ArrowDataType, Field, FieldRef, Schema, TimeUnit},
+    datatypes::{
+        DataType as ArrowDataType, Decimal32Type, Decimal64Type, DecimalType, Field, FieldRef, Schema, TimeUnit,
+        validate_decimal_precision_and_scale,
+    },
     ffi::{FFI_ArrowArray, FFI_ArrowSchema},
     record_batch::{RecordBatch, RecordBatchOptions},
 };
@@ -178,8 +181,8 @@ pub fn cudf_dtype_from_arrow_type(dt: &ArrowDataType) -> Result<DataType> {
 /// [`DataFrame::to_record_batch`].
 ///
 /// Decimal32, Decimal64, and Decimal128 export as Arrow Decimal128 with
-/// precision 38 because libcudf retains decimal scale but not Arrow precision
-/// metadata.
+/// precision 38 because this dtype-only path has no retained Arrow precision
+/// metadata. Schema-aware exports preserve narrow logical decimal widths.
 pub fn arrow_type_from_cudf_dtype(dtype: DataType) -> Result<ArrowDataType> {
     arrow_type_from_cudf_dtype_in(dtype, "arrow_host::arrow_type_from_cudf_dtype")
 }
@@ -198,9 +201,9 @@ pub fn is_supported_arrow_numeric_type(dt: &ArrowDataType) -> bool {
 /// Arrow host type without changing the column's logical values.
 ///
 /// This follows the export side of the host-copy interop contract. It is not
-/// the same as Arrow import mapping: Decimal32, Decimal64, and Decimal128 all
-/// export as Arrow Decimal128 with the same scale because libcudf retains
-/// decimal scale but not Arrow precision metadata.
+/// the same as Arrow import mapping: this predicate accepts exact Decimal32/64
+/// mappings, while schema-less export canonicalizes every physical decimal to
+/// Decimal128 because libcudf retains scale but not Arrow precision metadata.
 ///
 /// Nested cudf dtypes do not retain their child schema in [`DataType`], so
 /// this dtype-only predicate deliberately returns `false` for Arrow list
@@ -523,12 +526,12 @@ fn list_child_import_device_bytes(
 /// export before any device values are copied to host.
 ///
 /// The estimate follows the final external Arrow schema rather than the cuDF
-/// source representation. In particular, Decimal32/Decimal64 widen to
-/// Decimal128, booleans become bit-packed, and string/list offset widths follow
-/// Utf8/LargeUtf8 and List/LargeList respectively. Every logical Arrow buffer
-/// is rounded to Arrow's 64-byte mutable-buffer allocation quantum, making the
-/// result an upper bound for the capacities counted by DataFusion's
-/// `get_record_batch_memory_size`.
+/// source representation. In particular, narrow decimals retain their 4-byte
+/// or 8-byte logical width, booleans become bit-packed, and string/list offset
+/// widths follow Utf8/LargeUtf8 and List/LargeList respectively. Every logical
+/// Arrow buffer is rounded to Arrow's 64-byte mutable-buffer allocation
+/// quantum, making the result an upper bound for the capacities counted by
+/// DataFusion's `get_record_batch_memory_size`.
 pub(crate) fn estimate_arrow_host_record_batch_memory_bytes(
     frame: &DataFrame,
     schema: &ArrowHostSchema,
@@ -593,6 +596,8 @@ fn estimate_empty_arrow_host_column_memory_bytes(arrow_type: &ArrowDataType, ope
         | ArrowDataType::Time64(_)
         | ArrowDataType::Timestamp(_, _)
         | ArrowDataType::Duration(_)
+        | ArrowDataType::Decimal32(_, _)
+        | ArrowDataType::Decimal64(_, _)
         | ArrowDataType::Decimal128(_, _)
         | ArrowDataType::Utf8View => Ok(0),
         ArrowDataType::Utf8 | ArrowDataType::LargeUtf8 => estimate_arrow_string_buffers(0, 0, arrow_type, operation),
@@ -632,14 +637,16 @@ fn estimate_arrow_host_column_memory_bytes(
         | ArrowDataType::UInt32
         | ArrowDataType::Float32
         | ArrowDataType::Date32
-        | ArrowDataType::Time32(_) => estimate_fixed_width_capacity(rows, 4, operation)?,
+        | ArrowDataType::Time32(_)
+        | ArrowDataType::Decimal32(_, _) => estimate_fixed_width_capacity(rows, 4, operation)?,
         ArrowDataType::Int64
         | ArrowDataType::UInt64
         | ArrowDataType::Float64
         | ArrowDataType::Date64
         | ArrowDataType::Time64(_)
         | ArrowDataType::Timestamp(_, _)
-        | ArrowDataType::Duration(_) => estimate_fixed_width_capacity(rows, 8, operation)?,
+        | ArrowDataType::Duration(_)
+        | ArrowDataType::Decimal64(_, _) => estimate_fixed_width_capacity(rows, 8, operation)?,
         ArrowDataType::Decimal128(_, _) => estimate_fixed_width_capacity(rows, 16, operation)?,
         ArrowDataType::Utf8 | ArrowDataType::LargeUtf8 | ArrowDataType::Utf8View => {
             let chars_bytes = cudf_string_chars_bytes(view, cudf_payload_bytes, operation)?;
@@ -905,6 +912,14 @@ fn cudf_dtype_from_arrow_type_in(dt: &ArrowDataType, operation: &'static str) ->
         ArrowDataType::Decimal128(_, scale) => {
             DataType::fixed_point(TypeId::Decimal128, arrow_decimal_scale_to_cudf_scale(*scale))
         },
+        ArrowDataType::Decimal32(precision, scale) => {
+            validate_arrow_decimal::<Decimal32Type>(*precision, *scale, operation)?;
+            DataType::fixed_point(TypeId::Decimal32, arrow_decimal_scale_to_cudf_scale(*scale))
+        },
+        ArrowDataType::Decimal64(precision, scale) => {
+            validate_arrow_decimal::<Decimal64Type>(*precision, *scale, operation)?;
+            DataType::fixed_point(TypeId::Decimal64, arrow_decimal_scale_to_cudf_scale(*scale))
+        },
         ArrowDataType::Utf8 | ArrowDataType::LargeUtf8 | ArrowDataType::Utf8View => DataType::new(TypeId::String),
         ArrowDataType::List(field) | ArrowDataType::LargeList(field) if list_child_is_supported(field) => {
             DataType::new(TypeId::List)
@@ -942,6 +957,16 @@ fn cudf_dtype_from_arrow_type_in(dt: &ArrowDataType, operation: &'static str) ->
     };
 
     Ok(dtype)
+}
+
+fn validate_arrow_decimal<T: DecimalType>(precision: u8, scale: i8, operation: &'static str) -> Result<()> {
+    validate_decimal_precision_and_scale::<T>(precision, scale).map_err(|error| {
+        Error::new_with(ErrorCode::UnsupportedDtype, operation, "Arrow decimal precision and scale are invalid")
+            .with_detail("precision", precision.to_string())
+            .with_detail("scale", scale.to_string())
+            .with_detail("reason", "invalid_arrow_decimal_precision_scale")
+            .with_source(error)
+    })
 }
 
 fn list_string_child_is_supported(field: &FieldRef) -> bool {
@@ -1040,21 +1065,39 @@ impl DataFrame {
     /// Returns an error if any column has an unsupported type, or if the
     /// underlying GPU-to-host copy fails.
     pub fn to_record_batch(&self) -> Result<RecordBatch> {
+        self.to_record_batch_with_optional_schema(None)
+    }
+
+    pub(crate) fn to_record_batch_with_arrow_schema(&self, schema: &ArrowHostSchema) -> Result<RecordBatch> {
+        self.to_record_batch_with_optional_schema(Some(schema))
+    }
+
+    fn to_record_batch_with_optional_schema(&self, schema: Option<&ArrowHostSchema>) -> Result<RecordBatch> {
         record_host_export_call();
         let names = self.column_names();
         let rows = self.num_rows();
         let column_count = self.num_columns();
         let placement = self.placement();
 
+        if schema.is_some_and(|schema| schema.len() != column_count) {
+            return Err(Error::new_with(
+                ErrorCode::InvariantViolation,
+                "dataframe::to_record_batch",
+                "validated Arrow schema and DataFrame column counts diverged before materialization",
+            ));
+        }
+
         let col_map = self.columns_map();
         let columns: Vec<(String, Arc<dyn Array>, bool)> = names
             .iter()
-            .map(|&name| {
+            .enumerate()
+            .map(|(index, &name)| {
                 let col = col_map.get(name).ok_or_else(|| missing_column_error("dataframe::to_record_batch", name))?;
                 let cv = col.view()?;
                 let dtype = cv.data_type()?;
                 let nullable = cv.nullable()?;
-                let arr = column_view_to_arrow(&cv, dtype)?;
+                let requested_type = schema.and_then(|schema| schema.field(index)).map(ArrowHostField::arrow_data_type);
+                let arr = column_view_to_arrow_with_requested_type(&cv, dtype, requested_type)?;
                 Ok((name.to_string(), arr, nullable))
             })
             .collect::<Result<_>>()?;
@@ -1547,6 +1590,22 @@ fn column_view_to_arrow(cv: &ColumnView<'_>, dtype: DataType) -> Result<Arc<dyn 
     }
 }
 
+fn column_view_to_arrow_with_requested_type(
+    cv: &ColumnView<'_>,
+    dtype: DataType,
+    requested_type: Option<&ArrowDataType>,
+) -> Result<Arc<dyn Array>> {
+    match (dtype.id(), requested_type) {
+        (TypeId::Decimal32, Some(ArrowDataType::Decimal32(precision, scale))) => {
+            decimal_to_arrow::<i32, Decimal32Type>(cv, dtype, *precision, *scale)
+        },
+        (TypeId::Decimal64, Some(ArrowDataType::Decimal64(precision, scale))) => {
+            decimal_to_arrow::<i64, Decimal64Type>(cv, dtype, *precision, *scale)
+        },
+        _ => column_view_to_arrow(cv, dtype),
+    }
+}
+
 pub(super) fn map_record_batch_error(error: arrow::error::ArrowError) -> Error {
     error::foreign_invariant_violation(
         "dataframe::to_record_batch",
@@ -1802,6 +1861,36 @@ where T: Copy + Default + Into<i128> {
     decimal128_array_from_values(data, cv.to_host_validity()?, arrow_scale)
 }
 
+fn decimal_to_arrow<T, A>(cv: &ColumnView<'_>, dtype: DataType, precision: u8, scale: i8) -> Result<Arc<dyn Array>>
+where
+    T: Copy + Default + arrow::datatypes::ArrowNativeType,
+    A: DecimalType<Native = T>,
+{
+    let expected_scale = arrow_decimal_scale_to_cudf_scale(scale);
+    if dtype.scale() != expected_scale {
+        return Err(Error::new_with(
+            ErrorCode::UnsupportedDtype,
+            "arrow::decimal_to_arrow",
+            "cudf decimal scale does not match retained Arrow schema",
+        )
+        .with_fact(FACT_TYPE_ID, dtype.id())
+        .with_detail("cudf_scale", dtype.scale().to_string())
+        .with_detail("arrow_scale", scale.to_string())
+        .with_detail("reason", "decimal_scale_mismatch"));
+    }
+    validate_arrow_decimal::<A>(precision, scale, "arrow::decimal_to_arrow")?;
+    let data = fixed_width_host_values::<T>(cv)?;
+    let arr = match cv.to_host_validity()? {
+        None => PrimitiveArray::<A>::from_iter_values(data),
+        Some(mask) => {
+            PrimitiveArray::<A>::from_iter(data.into_iter().zip(mask).map(|(value, valid)| valid.then_some(value)))
+        },
+    }
+    .with_precision_and_scale(precision, scale)
+    .map_err(map_decimal_to_arrow_error)?;
+    Ok(Arc::new(arr))
+}
+
 fn decimal128_array_from_values(
     data: Vec<i128>,
     validity: Option<Vec<bool>>,
@@ -1969,6 +2058,16 @@ fn arrow_array_to_column(runtime: &Runtime, arr: &dyn Array, field_name: &str) -
             let dtype = DataType::fixed_point(TypeId::Decimal128, arrow_decimal_scale_to_cudf_scale(*scale));
             decimal128_array_to_column(runtime, arr, dtype)
         },
+        ArrowDataType::Decimal32(_, scale) => primitive_arrow_to_fixed_width_column::<Decimal32Type>(
+            runtime,
+            arr,
+            DataType::fixed_point(TypeId::Decimal32, arrow_decimal_scale_to_cudf_scale(*scale)),
+        ),
+        ArrowDataType::Decimal64(_, scale) => primitive_arrow_to_fixed_width_column::<Decimal64Type>(
+            runtime,
+            arr,
+            DataType::fixed_point(TypeId::Decimal64, arrow_decimal_scale_to_cudf_scale(*scale)),
+        ),
         ArrowDataType::List(field) if list_child_is_supported(field) => {
             let list = arr.as_any().downcast_ref::<ListArray>().ok_or_else(|| {
                 unexpected_arrow_array_layout_error(
