@@ -103,10 +103,10 @@ impl NexusNativeExecutionConfig {
                 .map(NexusNativeExecutionContext::ticket_bound)
                 .and_then(|context| self.stamp_acquired_service_context(context))
                 .map_err(|error| {
-                    Error::from_native(
+                    Error::from_native_with_blocking_diagnostics(
                         "datafusion_nexus.native_exec.context",
                         "failed to acquire backend query-service nexus native execution context",
-                        self.stamp_native_error_correlation(error),
+                        self.stamp_native_error_correlation(error).with_fact("stage", "ticket_admission"),
                     )
                 });
         }

@@ -86,6 +86,17 @@ pub struct QueryPlanCapabilityProof {
     pub(crate) requirement: AttemptCapabilityEvidence,
 }
 
+#[cfg(feature = "test-hooks")]
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ComposedConsumerOwnerLifetime {
+    pub node_id: NodeId,
+    pub role: &'static str,
+    pub bytes: u64,
+    pub first_group: usize,
+    pub last_group: usize,
+}
+
 /// Adapter-observed identity and opaque admission proof for one graph producer
 /// in a composed attempt.
 ///
@@ -171,7 +182,7 @@ impl QueryPlanCapabilityProof {
         {
             let rows = query_plan_hard_row_upper_bound(plan)
                 .ok_or_else(|| composed_schedule_error("producer_retained_output_rows_missing", None))?;
-            let output_evidence = PlanColumnEvidenceAnalysis::for_plan(plan, &HashMap::new()).root(plan);
+            let output_evidence = PlanColumnEvidenceAnalysis::for_plan(plan, &HashMap::new())?.root(plan);
             let output_bytes = bounded_consumer_frame_bytes_with_evidence(rows, plan.output_schema(), &output_evidence)?;
             let retained = AllocationOwnerTerm::new(
                 OwnerId::Producer(*input),
@@ -372,14 +383,14 @@ impl QueryPlanCapabilityProof {
             }
             resident_outputs.insert(
                 input_name.to_owned(),
-                PlanColumnEvidenceAnalysis::for_plan(input_plan, &HashMap::new()).root(input_plan),
+                PlanColumnEvidenceAnalysis::for_plan(input_plan, &HashMap::new())?.root(input_plan),
             );
             resident_input_scopes.push((input_name.to_owned(), canonical_execution_scope_fingerprint(input_plan)));
         }
         let mut requirement =
             AttemptCapabilityEvidence::for_query_plan_with_policy(plan, OwnerTermConstructionPolicy::PriceLiteralBatch);
         if let [shape] = requirement.reservation_shapes.as_mut_slice() {
-            shape.set_output_column_evidence(PlanColumnEvidenceAnalysis::for_plan(plan, &resident_outputs).root(plan));
+            shape.set_output_column_evidence(PlanColumnEvidenceAnalysis::for_plan(plan, &resident_outputs)?.root(plan));
             shape.set_output_column_evidence_input_scopes(resident_input_scopes);
         }
         requirement.remove_generic_gpu_resident_retained_output_terms();
@@ -648,7 +659,7 @@ impl QueryPlanCapabilityProof {
 
         let ComposedConsumerBranchBound {
             owner_terms: consumer_owner_terms,
-            peak_owner_term_groups: mut consumer_peak_term_groups,
+            peak_owner_term_groups: consumer_peak_term_groups,
             dominated_owner_term_ids: consumer_dominated_term_ids,
             allocation_state: consumer_state,
             consumed_occurrences,
@@ -658,17 +669,6 @@ impl QueryPlanCapabilityProof {
             &producer_outputs,
             &consumer.requirement.owner_terms,
         )?;
-        consumer_peak_term_groups.extend(
-            consumer.requirement.graph_phase_term_groups(
-                consumer
-                    .requirement
-                    .reservation_shapes
-                    .iter()
-                    .find(|shape| shape.matches(consumer_plan))
-                    .ok_or_else(|| composed_schedule_error("missing_consumer_scope", None))?
-                    .execution_scope_fingerprint(),
-            ),
-        );
         let mut consumer = consumer;
         consumer.requirement.requires_composed_producer_binding = false;
         consumer.requirement.remove_generic_gpu_resident_retained_output_terms();
@@ -886,6 +886,49 @@ impl QueryPlanCapabilityProof {
             .map(AttemptReservationSchedule::phase_group_counts_for_test)
     }
 
+    #[cfg(feature = "test-hooks")]
+    #[doc(hidden)]
+    pub fn composed_consumer_owner_lifetimes_for_test(
+        &self,
+        plan: &QueryPlan,
+    ) -> Option<Vec<ComposedConsumerOwnerLifetime>> {
+        let groups = self
+            .requirement
+            .reservation_shapes
+            .iter()
+            .find(|shape| shape.matches(plan))?
+            .ordered_schedule()?
+            .consumer_peak_term_groups();
+        let scope = canonical_execution_scope_fingerprint(plan);
+        Some(
+            self.requirement
+                .owner_terms
+                .iter()
+                .filter(|term| term.execution_scope_fingerprint() == scope)
+                .filter_map(|term| {
+                    let node_id = match term.id.owner {
+                        OwnerId::Graph(id)
+                        | OwnerId::Aggregate(id)
+                        | OwnerId::Source(id)
+                        | OwnerId::Consumer(id)
+                        | OwnerId::Sort(id)
+                        | OwnerId::Limit(id) => id,
+                        _ => return None,
+                    };
+                    let first = groups.iter().position(|group| group.contains(term.id()))?;
+                    let last = groups.iter().rposition(|group| group.contains(term.id()))?;
+                    Some(ComposedConsumerOwnerLifetime {
+                        node_id,
+                        role: term.id.role_label(),
+                        bytes: term.bytes(),
+                        first_group: first,
+                        last_group: last,
+                    })
+                })
+                .collect(),
+        )
+    }
+
     /// Resolves all device-dependent owner terms against one explicit
     /// candidate device ordinal.
     pub fn requirement_for_device(&self, device_ordinal: usize) -> Result<Self> {
@@ -1033,7 +1076,10 @@ impl AttemptCapabilityEvidence {
         evidence.source_stage_bytes = source_stage_bytes;
         evidence.owner_terms = source_owner_terms;
         let mut shape = AttemptReservationShape::for_query_plan(plan);
-        shape.set_output_column_evidence(PlanColumnEvidenceAnalysis::for_plan(plan, &HashMap::new()).root(plan));
+        let output_evidence = PlanColumnEvidenceAnalysis::for_plan(plan, &HashMap::new());
+        if let Ok(output_evidence) = &output_evidence {
+            shape.set_output_column_evidence(output_evidence.root(plan));
+        }
         if let Some(reason) = literal_rejection_reason {
             shape.set_owner_term_rejection_reason(reason);
         } else if let Err(error) = source_owner_result {
@@ -1049,6 +1095,10 @@ impl AttemptCapabilityEvidence {
                 error.fact_value("reason").unwrap_or("attempt_owner_term_unavailable"),
             );
         } else if let Err(error) = aggregate_owner_result {
+            shape.set_owner_term_rejection_reason(
+                error.fact_value("reason").unwrap_or("attempt_owner_term_unavailable"),
+            );
+        } else if let Err(error) = output_evidence {
             shape.set_owner_term_rejection_reason(
                 error.fact_value("reason").unwrap_or("attempt_owner_term_unavailable"),
             );
@@ -1377,22 +1427,6 @@ impl AttemptCapabilityEvidence {
 
     pub(crate) fn concurrent_side_input_term_ids(&self) -> Vec<OwnerTermId> {
         self.owner_terms.iter().filter(|term| term.is_side_input_frame()).map(|term| term.id().clone()).collect()
-    }
-
-    pub(crate) fn graph_phase_term_groups(&self, execution_scope_fingerprint: &str) -> Vec<Vec<OwnerTermId>> {
-        let mut construction = Vec::new();
-        let mut execution = Vec::new();
-        for term in
-            self.owner_terms.iter().filter(|term| term.execution_scope_fingerprint() == execution_scope_fingerprint)
-        {
-            if term.is_construction_phase_term() {
-                construction.push(term.id().clone());
-            }
-            if term.is_execution_phase_term() || term.is_retained_output() {
-                execution.push(term.id().clone());
-            }
-        }
-        [construction, execution].into_iter().filter(|group| !group.is_empty()).collect()
     }
 
     pub(crate) fn isolated_phase_term_groups_with_alternatives(

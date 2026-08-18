@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use arrow::datatypes::{DataType, SchemaRef};
 
 use super::{
@@ -1472,6 +1474,14 @@ pub(crate) fn query_plan_node_hard_row_upper_bound(plan: &QueryPlan, node_id: No
     hard_row_upper_bound_for_plan_node(plan, node_id).map(|(rows, _)| rows)
 }
 
+pub(crate) fn query_plan_node_hard_row_upper_bound_with_resident_rows(
+    plan: &QueryPlan,
+    node_id: NodeId,
+    resident_rows: &HashMap<String, u64>,
+) -> Option<u64> {
+    hard_row_upper_bound_with_resident_rows(plan, node_id, resident_rows).map(|(rows, _)| rows)
+}
+
 /// Returns a source-owned graph vertex upper bound when the entire native plan
 /// preserves the edge-file rowset that carried the footer metadata.
 ///
@@ -1654,7 +1664,16 @@ pub(crate) fn hard_row_upper_bound_for_plan_node(
     plan: &QueryPlan,
     node_id: NodeId,
 ) -> Option<(u64, GraphPairCardinalitySource)> {
+    hard_row_upper_bound_with_resident_rows(plan, node_id, &HashMap::new())
+}
+
+fn hard_row_upper_bound_with_resident_rows(
+    plan: &QueryPlan,
+    node_id: NodeId,
+    resident_rows: &HashMap<String, u64>,
+) -> Option<(u64, GraphPairCardinalitySource)> {
     let node = plan.node(node_id)?;
+    let input_bound = |input| hard_row_upper_bound_with_resident_rows(plan, input, resident_rows);
     match &node.kind {
         PlanNode::Source(source) => match source.as_ref() {
             crate::source::SourceNode::LiteralBatch(source) => {
@@ -1668,33 +1687,37 @@ pub(crate) fn hard_row_upper_bound_for_plan_node(
                     GraphPairCardinalitySource::PlanHardUpperBound,
                 ))
             },
-            crate::source::SourceNode::GpuResident(source) => {
-                source.row_count_upper_bound.map(|rows| (rows, GraphPairCardinalitySource::PlanHardUpperBound))
-            },
+            crate::source::SourceNode::GpuResident(source) => resident_rows
+                .get(&source.input_name)
+                .copied()
+                .or(source.row_count_upper_bound)
+                .map(|rows| (rows, GraphPairCardinalitySource::PlanHardUpperBound)),
         },
-        PlanNode::Projection(projection) => hard_row_upper_bound_for_plan_node(plan, projection.input),
-        PlanNode::Filter(filter) => hard_row_upper_bound_for_plan_node(plan, filter.input)
-            .map(|(rows, _)| (rows, GraphPairCardinalitySource::PlanHardUpperBound)),
-        PlanNode::Window(window) => hard_row_upper_bound_for_plan_node(plan, window.input),
-        PlanNode::Sort(sort) => hard_row_upper_bound_for_plan_node(plan, sort.input),
+        PlanNode::Projection(projection) => input_bound(projection.input),
+        PlanNode::Filter(filter) => {
+            input_bound(filter.input).map(|(rows, _)| (rows, GraphPairCardinalitySource::PlanHardUpperBound))
+        },
+        PlanNode::Window(window) => input_bound(window.input),
+        PlanNode::Sort(sort) => input_bound(sort.input),
         PlanNode::Limit(limit) => match limit.spec.fetch {
             Some(fetch) => Some((fetch as u64, GraphPairCardinalitySource::PlanHardUpperBound)),
-            None => hard_row_upper_bound_for_plan_node(plan, limit.input).map(|(rows, _)| {
+            None => input_bound(limit.input).map(|(rows, _)| {
                 (rows.saturating_sub(limit.spec.skip as u64), GraphPairCardinalitySource::PlanHardUpperBound)
             }),
         },
         PlanNode::Union(union) => union
             .inputs
             .iter()
-            .try_fold(0_u64, |total, input| hard_row_upper_bound_for_plan_node(plan, *input)?.0.checked_add(total))
+            .try_fold(0_u64, |total, input| input_bound(*input)?.0.checked_add(total))
             .map(|rows| (rows, GraphPairCardinalitySource::PlanHardUpperBound)),
         PlanNode::Aggregate(aggregate) if aggregate.spec.group_exprs.is_empty() => {
             Some((1, GraphPairCardinalitySource::PlanExact))
         },
-        PlanNode::Aggregate(aggregate) => hard_row_upper_bound_for_plan_node(plan, aggregate.input)
-            .map(|(rows, _)| (rows, GraphPairCardinalitySource::PlanHardUpperBound)),
+        PlanNode::Aggregate(aggregate) => {
+            input_bound(aggregate.input).map(|(rows, _)| (rows, GraphPairCardinalitySource::PlanHardUpperBound))
+        },
         PlanNode::Join(join) => {
-            let left_rows = hard_row_upper_bound_for_plan_node(plan, join.inputs[0])?.0;
+            let left_rows = input_bound(join.inputs[0])?.0;
             let rows = match join.spec.join_type {
                 JoinType::LeftSemi | JoinType::LeftAnti | JoinType::LeftMark => Some(left_rows),
                 JoinType::Inner
@@ -1707,22 +1730,18 @@ pub(crate) fn hard_row_upper_bound_for_plan_node(
                     if !join.spec.keys.is_empty()
                         && join.spec.has_at_most_one_match_per_bounded_row(JoinSide::Right) =>
                 {
-                    Some(hard_row_upper_bound_for_plan_node(plan, join.inputs[1])?.0)
+                    Some(input_bound(join.inputs[1])?.0)
                 },
-                JoinType::Inner | JoinType::Cross => {
-                    left_rows.checked_mul(hard_row_upper_bound_for_plan_node(plan, join.inputs[1])?.0)
-                },
+                JoinType::Inner | JoinType::Cross => left_rows.checked_mul(input_bound(join.inputs[1])?.0),
                 JoinType::Left
                     if !join.spec.keys.is_empty()
                         && join.spec.has_at_most_one_match_per_bounded_row(JoinSide::Left) =>
                 {
                     Some(left_rows)
                 },
-                JoinType::Left => {
-                    left_rows.checked_mul(hard_row_upper_bound_for_plan_node(plan, join.inputs[1])?.0.max(1))
-                },
+                JoinType::Left => left_rows.checked_mul(input_bound(join.inputs[1])?.0.max(1)),
                 JoinType::Full => {
-                    let right_rows = hard_row_upper_bound_for_plan_node(plan, join.inputs[1])?.0;
+                    let right_rows = input_bound(join.inputs[1])?.0;
                     left_rows.checked_mul(right_rows)?.checked_add(left_rows)?.checked_add(right_rows)
                 },
             }?;

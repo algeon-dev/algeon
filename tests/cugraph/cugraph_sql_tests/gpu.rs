@@ -934,6 +934,82 @@ async fn cugraph_sql_gpu_force_atlas2_executes_weighted_layout() {
 }
 
 #[tokio::test]
+async fn cugraph_sql_gpu_string_jaccard_70_by_70_executes_with_bounded_producers() {
+    let dir = unique_temp_dir("datafusion-nexus-cugraph-string-jaccard-70-by-70");
+    let edge_path = dir.join("edges.parquet");
+    let pair_path = dir.join("pairs.parquet");
+    let edge_schema =
+        Arc::new(Schema::new(vec![Field::new("src", DataType::Utf8, false), Field::new("dst", DataType::Utf8, false)]));
+    let pair_schema = Arc::new(Schema::new(vec![
+        Field::new("first", DataType::Utf8, false),
+        Field::new("second", DataType::Utf8, false),
+    ]));
+    let vertices = (0..10).map(|vertex| format!("vertex-{vertex}")).collect::<Vec<_>>();
+    let edge_batch = RecordBatch::try_new(
+        Arc::clone(&edge_schema),
+        vec![
+            Arc::new(StringArray::from((0..70).map(|row| vertices[row % vertices.len()].as_str()).collect::<Vec<_>>()))
+                as ArrayRef,
+            Arc::new(StringArray::from(
+                (0..70).map(|row| vertices[(row + 1) % vertices.len()].as_str()).collect::<Vec<_>>(),
+            )) as ArrayRef,
+        ],
+    )
+    .unwrap();
+    let pair_batch = RecordBatch::try_new(
+        Arc::clone(&pair_schema),
+        vec![
+            Arc::new(StringArray::from((0..70).map(|row| vertices[row % vertices.len()].as_str()).collect::<Vec<_>>()))
+                as ArrayRef,
+            Arc::new(StringArray::from(
+                (0..70).map(|row| vertices[(row + 2) % vertices.len()].as_str()).collect::<Vec<_>>(),
+            )) as ArrayRef,
+        ],
+    )
+    .unwrap();
+    for (path, schema, batch) in
+        [(&edge_path, Arc::clone(&edge_schema), edge_batch), (&pair_path, Arc::clone(&pair_schema), pair_batch)]
+    {
+        let mut writer = ArrowWriter::try_new(fs::File::create(path).unwrap(), schema, None).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+    }
+
+    let (_backend, ctx) = default_backend_cugraph_sql_context();
+    ctx.register_parquet("string_similarity_edges", edge_path.to_str().unwrap(), ParquetReadOptions::default())
+        .await
+        .unwrap();
+    ctx.register_parquet("string_candidate_pairs", pair_path.to_str().unwrap(), ParquetReadOptions::default())
+        .await
+        .unwrap();
+    let df = ctx
+        .sql(
+            "SELECT first, second, similarity \
+             FROM cugraph_jaccard(\
+               'string_similarity_edges', 'src', 'dst', NULL, \
+               '{\"vertex_pairs_table\":\"string_candidate_pairs\",\"first_vertex_col\":\"first\",\"second_vertex_col\":\"second\"}'\
+             ) ORDER BY similarity DESC LIMIT 70",
+        )
+        .await
+        .unwrap();
+    let plan = df.create_physical_plan().await.unwrap();
+    assert_eq!(classify_final_plan(plan.as_ref()), FinalPlanDisposition::Native);
+    assert!(find_composed_exec(plan.as_ref()).is_some(), "string Jaccard must remain one native composed GPU island");
+    let batches = datafusion::physical_plan::collect(Arc::clone(&plan), ctx.task_ctx()).await.unwrap();
+    let output_rows = batches.iter().map(RecordBatch::num_rows).sum::<usize>();
+    assert_eq!(output_rows, 70, "explicit pair multiplicity must be preserved without exceeding the 70-row bound");
+    let schema = plan.schema();
+    assert_eq!(schema.field(0).data_type(), &DataType::Utf8);
+    assert_eq!(schema.field(1).data_type(), &DataType::Utf8);
+    assert_eq!(schema.field(2).data_type(), &DataType::Float64);
+    let metrics = NativeDataFusionExecutionMetrics::from_metrics(&plan_metrics_recursive(plan.as_ref()));
+    assert_eq!(metrics.graph_runtime_rows.len(), 1);
+
+    drop_session_context_on_blocking_thread(ctx).await;
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
 async fn cugraph_sql_gpu_similarity_rejects_actual_null_pair_values() {
     let (_backend, ctx) = default_backend_cugraph_sql_context();
     let edge_schema = Arc::new(Schema::new(vec![
@@ -1813,6 +1889,7 @@ async fn cugraph_sql_gpu_pagerank_utf8_is_native_and_matches_dense_numeric_ids()
 async fn cugraph_string_pagerank_and_bfs_bounded_metadata_joins_execute_natively() {
     let dir = unique_temp_dir("datafusion-nexus-cugraph-string-metadata-enrichment");
     let metadata_path = dir.join("metadata.parquet");
+    let unique_metadata_path = dir.join("unique-metadata.parquet");
     let metadata_schema = Arc::new(Schema::new(vec![
         Field::new("vertexId", DataType::Utf8, false),
         Field::new("vertexName", DataType::Utf8, false),
@@ -1821,23 +1898,34 @@ async fn cugraph_string_pagerank_and_bfs_bounded_metadata_joins_execute_natively
     let metadata_batch = RecordBatch::try_new(
         Arc::clone(&metadata_schema),
         vec![
+            Arc::new(StringArray::from(vec!["a", "a", "b", "c", "d", "isolated"])) as ArrayRef,
+            Arc::new(StringArray::from(vec!["A", "A2", "B", "C", "D", "Isolated"])) as ArrayRef,
+            Arc::new(Int64Array::from(vec![9, 10, 8, 7, 6, 5])) as ArrayRef,
+        ],
+    )
+    .unwrap();
+    let unique_metadata_batch = RecordBatch::try_new(
+        Arc::clone(&metadata_schema),
+        vec![
             Arc::new(StringArray::from(vec!["a", "b", "c", "d", "isolated"])) as ArrayRef,
             Arc::new(StringArray::from(vec!["A", "B", "C", "D", "Isolated"])) as ArrayRef,
             Arc::new(Int64Array::from(vec![9, 8, 7, 6, 5])) as ArrayRef,
         ],
     )
     .unwrap();
-    let mut writer =
-        ArrowWriter::try_new(fs::File::create(&metadata_path).unwrap(), Arc::clone(&metadata_schema), None).unwrap();
-    writer.write(&metadata_batch).unwrap();
-    writer.close().unwrap();
+    for (path, batch) in [(&metadata_path, metadata_batch), (&unique_metadata_path, unique_metadata_batch)] {
+        let mut writer =
+            ArrowWriter::try_new(fs::File::create(path).unwrap(), Arc::clone(&metadata_schema), None).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+    }
 
     let (_backend, ctx) = default_backend_cugraph_sql_context();
     register_string_pagerank_parity_edges(&ctx, "string_edges", "numeric_edges");
     ctx.register_parquet("vertex_metadata", metadata_path.to_str().unwrap(), ParquetReadOptions::default())
         .await
         .unwrap();
-    let metadata_url = ListingTableUrl::parse(metadata_path.to_str().unwrap()).unwrap();
+    let metadata_url = ListingTableUrl::parse(unique_metadata_path.to_str().unwrap()).unwrap();
     let metadata_options = ListingOptions::new(Arc::new(ParquetFormat::default())).with_file_extension(".parquet");
     let metadata_config =
         ListingTableConfig::new(metadata_url).with_listing_options(metadata_options).with_schema(metadata_schema);
@@ -1860,6 +1948,18 @@ async fn cugraph_string_pagerank_and_bfs_bounded_metadata_joins_execute_natively
              FROM cugraph_bfs('string_edges', 'a', 'src', 'dst', NULL, '{}') g \
              JOIN vertex_metadata m ON g.vertex = m.\"vertexId\" \
              ORDER BY g.distance, g.vertex LIMIT 10",
+        ),
+        (
+            "PageRank non-unique Left",
+            "SELECT g.vertex, g.value, m.\"vertexName\", m.\"vertexPriority\" \
+             FROM cugraph_pagerank('string_edges', 'src', 'dst') g \
+             LEFT JOIN vertex_metadata m ON g.vertex = m.\"vertexId\"",
+        ),
+        (
+            "BFS non-unique Left",
+            "SELECT g.vertex, g.distance, m.\"vertexName\", m.\"vertexPriority\" \
+             FROM cugraph_bfs('string_edges', 'a', 'src', 'dst', NULL, '{}') g \
+             LEFT JOIN vertex_metadata m ON g.vertex = m.\"vertexId\"",
         ),
         (
             "PageRank Left pre-enrichment Top-K",

@@ -137,6 +137,10 @@ const SAFE_LAYER_NON_EXECUTION_FFI_ALLOWLIST: &[(&str, &str)] = &[
     ("cudf_event_synchronize", "runtime synchronization with explicit event handle"),
     ("cudf_filtered_join_destroy", "provenance-bound lifecycle"),
     ("cudf_filtered_join_device_allocated_size", "metadata-only cached join planning accessor"),
+    (
+        "cudf_filtered_join_fixed_width_metadata_pre_build_reservation_size",
+        "metadata-only reservation calculator from explicit types and row count",
+    ),
     ("cudf_filtered_join_probe_destroy", "provenance-bound lifecycle"),
     ("cudf_filtered_join_probe_device_allocated_size", "metadata-only cached join planning accessor"),
     ("cudf_filtered_join_probe_output_size", "metadata-only cached join planning accessor"),

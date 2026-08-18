@@ -125,11 +125,11 @@ fn record_batch_with_sink_schema(batch: RecordBatch, schema: &SchemaRef) -> Resu
     for (index, (materialized_field, sink_field)) in
         batch.schema().fields().iter().zip(schema.fields().iter()).enumerate()
     {
-        if !fields_match_except_name(sink_field.as_ref(), materialized_field.as_ref()) {
+        if sink_field.data_type() != materialized_field.data_type() {
             return Err(QueryError::new(
                 QueryErrorCode::InvalidPlan,
                 "nexus_query_engine.host_arrow.materialize_schema",
-                "materialized Arrow field must match host sink schema by ordinal except for field name",
+                "materialized Arrow type must match host sink schema by ordinal",
             )
             .with_fact("field_index", index)
             .with_fact("sink_field", sink_field.name())
@@ -157,10 +157,6 @@ fn record_batch_with_sink_schema(batch: RecordBatch, schema: &SchemaRef) -> Resu
         )
         .with_source(error)
     })
-}
-
-fn fields_match_except_name(sink_field: &Field, materialized_field: &Field) -> bool {
-    crate::datatypes::arrow_fields_match_except_name(sink_field, materialized_field)
 }
 
 fn column_with_sink_field_contract(column: &ArrayRef, sink_field: &Field, field_index: usize) -> Result<ArrayRef> {

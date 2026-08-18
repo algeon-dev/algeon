@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     fs::{self, File},
     sync::{Arc, OnceLock},
     time::{Duration, Instant},
@@ -54,11 +55,12 @@ use nexus_query_engine::{
     exec::{execute_query_plan, output::QueryOutput},
     mode::CapabilityEnvelopeStatus,
     pipeline::{PipelineTaskKind, compile_pipeline},
-    plan::{NativePlanCostOptions, NativePlanCostReason},
+    plan::{NativePlanCostOptions, NativePlanCostReason, QueryPlanBuilder},
     runtime::{
         BoundedJoinReservationContract, ExecutionCancellation, LakehouseCacheFillConfig, ReservationKind,
         SourceChunkPlanningMode,
     },
+    source::SourceNode,
 };
 use nexus_workloads::tpch::{TPCH_QUERIES, write_tiny_tpch_parquet_dataset};
 use parquet::arrow::ArrowWriter;
@@ -274,6 +276,86 @@ fn native_composed_exec_hands_gpu_result_between_fragments_without_host_material
     assert_eq!(composed_metrics.sum_by_name("gpu_resident_input_handoffs").unwrap().as_usize(), 1);
     assert_eq!(composed_metrics.sum_by_name("host_to_device_uploads").unwrap().as_usize(), 0);
     assert_eq!(composed_metrics.sum_by_name("device_to_host_materializations").unwrap().as_usize(), 1);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn native_and_composed_host_outputs_bind_duplicate_external_names_by_ordinal() {
+    let dir = unique_temp_dir("datafusion-nexus-native-host-schema-binding");
+    let path = dir.join("input.parquet");
+    write_parquet_file(&path);
+    let internal_schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("payload", DataType::Int32, false),
+        Field::new("m00", DataType::Int64, false),
+    ]));
+    let external_schema = Arc::new(Schema::new_with_metadata(
+        vec![
+            Field::new("first", DataType::Int32, true)
+                .with_metadata(HashMap::from([("source".to_owned(), "left".to_owned())])),
+            Field::new("first", DataType::Int32, true)
+                .with_metadata(HashMap::from([("source".to_owned(), "right".to_owned())])),
+            Field::new("shared_targets", DataType::Int64, true)
+                .with_metadata(HashMap::from([("aggregate".to_owned(), "count".to_owned())])),
+        ],
+        HashMap::from([("query".to_owned(), "self_join_grouped".to_owned())]),
+    ));
+    let source = local_parquet_source_with_exact_metadata(
+        &path,
+        Arc::clone(&internal_schema),
+        vec!["key".to_owned(), "payload".to_owned(), "m00".to_owned()],
+    );
+
+    let normal_plan = {
+        let mut builder = QueryPlanBuilder::new();
+        let root = builder.add_source(SourceNode::LocalParquet(source.clone()));
+        builder.finish_with_host_sink_schema(root, Arc::clone(&external_schema))
+    };
+    let normal_config = admitted_native_config(&normal_plan, bounded_config());
+    let normal = Arc::new(NexusNativeExec::try_new_for_test(normal_plan, normal_config).unwrap());
+    let normal_batches = futures::executor::block_on(collect(
+        Arc::clone(&normal) as Arc<dyn ExecutionPlan>,
+        Arc::new(TaskContext::default()),
+    ))
+    .unwrap();
+    drop(normal);
+
+    let producer_plan = {
+        let mut builder = QueryPlanBuilder::new();
+        let root = builder.add_source(SourceNode::LocalParquet(source));
+        builder.finish_gpu_resident(root)
+    };
+    let consumer_plan = {
+        let mut builder = QueryPlanBuilder::new();
+        let root = builder.add_source(SourceNode::GpuResident(
+            nexus_query_engine::source::GpuResidentSource::new("fragment_input", Arc::clone(&internal_schema))
+                .with_row_count_upper_bound(3),
+        ));
+        builder.finish_with_host_sink_schema(root, Arc::clone(&external_schema))
+    };
+    let composed_config = admitted_composed_config(&consumer_plan, "fragment_input", &producer_plan, bounded_config());
+    let producer = Arc::new(NexusNativeGpuProducerExec::try_new_for_test("fragment_input", producer_plan).unwrap());
+    let composed = Arc::new(
+        NexusNativeComposedExec::try_new_for_test(
+            consumer_plan,
+            vec![producer as Arc<dyn ExecutionPlan>],
+            composed_config,
+        )
+        .unwrap(),
+    );
+    let composed_batches = futures::executor::block_on(collect(
+        Arc::clone(&composed) as Arc<dyn ExecutionPlan>,
+        Arc::new(TaskContext::default()),
+    ))
+    .unwrap();
+
+    for batch in [&normal_batches[0], &composed_batches[0]] {
+        assert_eq!(batch.schema(), external_schema);
+        assert_eq!(int32_array(batch, 0).values().as_ref(), &[1, 2, 1]);
+        assert_eq!(int32_array(batch, 1).values().as_ref(), &[5, 10, 20]);
+        assert_eq!(int64_array(batch, 2).values().as_ref(), &[100, 200, 300]);
+    }
 
     fs::remove_dir_all(dir).unwrap();
 }

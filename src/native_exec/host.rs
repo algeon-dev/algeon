@@ -20,7 +20,6 @@ use nexus_query_engine::{
     admission::QueryPlanCapabilityProof,
     exec::{execute_query_plan_observed, output::QueryOutput},
     plan::QueryPlan,
-    runtime::resident::GpuResultHandle,
 };
 
 use super::{
@@ -364,21 +363,16 @@ impl ExecutionPlan for NexusNativeExec {
                                 .with_fact("result_sink", "host_arrow"),
                             ));
                         };
-                        let handle = GpuResultHandle::new(&context, handle.into_gpu_frame(), output_schema).map_err(
-                            |error| {
-                                DataFusionError::from(native_query_runtime_error(
-                                    "datafusion_nexus.native_exec.host_batch_cursor",
-                                    "failed to bind deferred native output to the DataFusion host schema",
-                                    error,
-                                ))
-                            },
-                        )?;
                         let cursor = handle
-                            .into_host_batch_cursor(context.cancellation().clone(), HostBatchCursorConfig::default())
+                            .into_host_batch_cursor_with_host_schema(
+                                output_schema,
+                                context.cancellation().clone(),
+                                HostBatchCursorConfig::default(),
+                            )
                             .map_err(|error| {
                                 DataFusionError::from(native_query_runtime_error(
                                     "datafusion_nexus.native_exec.host_batch_cursor",
-                                    "failed to create deferred native host-output cursor",
+                                    "failed to bind and create deferred native host-output cursor",
                                     error,
                                 ))
                             })?;

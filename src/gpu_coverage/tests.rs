@@ -246,8 +246,7 @@ async fn validate_query_reports_capability_misses_without_terminal_rejection() {
         && outcome.reason_kind == Some(QueryGpuCandidateReasonKind::Expression)
         && outcome.remedy.as_ref().is_some_and(|remedy| remedy.code == "rewrite_expression")));
 
-    let unsupported =
-        validate_query(&ctx, "SELECT array[CAST(1 AS DOUBLE), CAST(2 AS DOUBLE)] AS values").await.unwrap();
+    let unsupported = validate_query(&ctx, "SELECT CAST('1' AS DECIMAL(39, 0)) AS values").await.unwrap();
     assert_eq!(unsupported.overall, QueryGpuCoverageOverall::CpuOnly);
     assert_eq!(unsupported.final_disposition, FinalPlanDisposition::DataFusion);
     assert_eq!(unsupported.domains.native_fragment_count, 0);

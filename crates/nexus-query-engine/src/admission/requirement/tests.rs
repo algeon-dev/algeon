@@ -1468,6 +1468,56 @@ fn cugraph_side_input_disables_generic_gpu_output_ownership() {
 }
 
 #[test]
+fn cugraph_side_input_uses_bounded_literal_and_case_payload_evidence() {
+    let input_schema = Arc::new(Schema::new(vec![Field::new("selector", DataType::Int64, false)]));
+    let input_batch =
+        RecordBatch::try_new(Arc::clone(&input_schema), vec![Arc::new(Int64Array::from(vec![0, 1, 2])) as ArrayRef])
+            .unwrap();
+    let output_field = Field::new("vertex_id", DataType::Utf8, false);
+
+    let side_input_proof = |expr: Expr| {
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(
+            Arc::clone(&input_schema),
+            vec![input_batch.clone()],
+        )));
+        let projection = builder.add_projection(source, vec![ProjectionOutput::new(expr, output_field.clone())]);
+        let plan = builder.finish_gpu_resident(projection);
+        QueryPlanCapabilityProof::try_for_cugraph_side_input_plan(&plan)
+    };
+
+    let literal = side_input_proof(Expr::literal(LiteralValue::Utf8("seed".to_owned())))
+        .expect("a bounded constant string projection must issue exact side-input evidence");
+    let case = side_input_proof(Expr::case(
+        vec![CaseWhen::new(
+            Expr::binary(Expr::column("selector"), BinaryOp::Gt, Expr::literal(LiteralValue::Int64(0))),
+            Expr::literal(LiteralValue::Utf8("edge".to_owned())),
+        )],
+        Expr::literal(LiteralValue::Utf8("node".to_owned())),
+    ))
+    .expect("a bounded CASE with complete literal arms must issue exact side-input evidence");
+
+    let expected = crate::exec::join_output_upper_bound_bytes(
+        3,
+        &[crate::exec::JoinOutputColumnUpperBoundInput {
+            data_type: DataType::Utf8,
+            input_max_string_length_bytes: Some(4),
+            input_total_string_bytes: Some(12),
+        }],
+    )
+    .unwrap();
+    assert_eq!(literal.as_requirement().side_input_frame_owner_term_bytes(), vec![expected]);
+    assert_eq!(case.as_requirement().side_input_frame_owner_term_bytes(), vec![expected]);
+
+    let unsupported =
+        side_input_proof(Expr::substring(Expr::literal(LiteralValue::Utf8("vertex".to_owned())), 1, Some(3)))
+            .expect_err("an unmodeled computed string expression must remain rejected");
+    assert_eq!(unsupported.fact_value("schedule_reason"), Some("side_input_schema_unmodeled"));
+    assert_eq!(unsupported.fact_value("column"), Some("vertex_id"));
+    assert_eq!(unsupported.fact_value("data_type"), Some("Utf8"));
+}
+
+#[test]
 fn composed_graph_schedule_charges_concurrent_side_input_with_graph_peak() {
     let side_schema = Arc::new(Schema::new(vec![Field::new("vertex_id", DataType::Int64, true)]));
     let mut side_builder = QueryPlanBuilder::new();
@@ -2845,6 +2895,7 @@ fn composed_consumer_rejects_projected_type_changes_and_missing_string_payload_e
     let error = composed_consumer_additional_peak_bytes_for_plan(&representation_cast, &output)
         .expect_err("a string representation cast without source-coupled payload evidence must fail closed");
     assert_eq!(error.fact_value("schedule_reason"), Some("consumer_string_payload_evidence_missing"));
+    assert_eq!(error.fact_value("column"), Some("projected"));
 
     let consumer_plan =
         graph_output_projection_consumer(Expr::cast(Expr::column("value"), DataType::Float64), DataType::Int64);
@@ -2864,7 +2915,8 @@ fn composed_consumer_case_projection_uses_cudf_owner_preflight_group() {
     let outputs = HashMap::from([("only", &output)]);
     let mut used_occurrences = HashSet::new();
     let mut memo = HashMap::new();
-    let column_evidence = PlanColumnEvidenceAnalysis::for_plan(&plan, &HashMap::new());
+    let column_evidence = PlanColumnEvidenceAnalysis::for_plan(&plan, &HashMap::new())
+        .expect("CASE projection payload evidence analysis must succeed");
     let bound = composed_consumer_branch_bound(
         &plan,
         plan.root_id(),
@@ -2927,6 +2979,10 @@ fn composed_graph_schedule_prices_nullable_keys_and_rejects_missing_string_paylo
         )
         .expect_err("string key without payload evidence must fail closed before fixed-width hash preflight");
         assert_eq!(error.fact_value("schedule_reason"), Some("consumer_join_variable_width_key"));
+        assert!(error.fact_value("node_id").is_some());
+        assert_eq!(error.fact_value("left_rows"), Some("16"));
+        assert_eq!(error.fact_value("right_rows"), Some("8"));
+        assert_eq!(error.fact_value("column"), Some("vertex"));
     }
 }
 
@@ -3020,6 +3076,16 @@ fn graph_metadata_join_consumer(
     top_k_before_enrichment: bool,
     hydrated: bool,
 ) -> QueryPlan {
+    graph_metadata_join_consumer_with_rows(join_type, bounded_side, top_k_before_enrichment, hydrated, 96)
+}
+
+fn graph_metadata_join_consumer_with_rows(
+    join_type: JoinType,
+    bounded_side: Option<JoinSide>,
+    top_k_before_enrichment: bool,
+    hydrated: bool,
+    metadata_rows: u64,
+) -> QueryPlan {
     let graph_schema = Arc::new(Schema::new(vec![
         Field::new("vertex", DataType::Utf8, false),
         Field::new("value", DataType::Float64, false),
@@ -3034,16 +3100,19 @@ fn graph_metadata_join_consumer(
     let metadata_file = if hydrated {
         metadata_file
             .with_row_groups(vec![0])
-            .with_row_group_rows(vec![96])
-            .with_row_group_bytes(vec![8_192])
-            .with_projected_row_group_bytes(vec![8_192], vec![8_192])
+            .with_row_group_rows(vec![metadata_rows])
+            .with_row_group_bytes(vec![metadata_rows.saturating_mul(128)])
+            .with_projected_row_group_bytes(
+                vec![metadata_rows.saturating_mul(128)],
+                vec![metadata_rows.saturating_mul(128)],
+            )
             .with_variable_width_payload_evidence(std::collections::BTreeMap::from([
                 (
                     0,
                     crate::parquet_stats::ParquetVariableWidthPayloadEvidence::new(
                         0,
                         vec![0],
-                        1_536,
+                        metadata_rows.saturating_mul(40),
                         crate::parquet_stats::ParquetVariableWidthEncodingProof::PlainAndDictionary,
                     ),
                 ),
@@ -3052,7 +3121,7 @@ fn graph_metadata_join_consumer(
                     crate::parquet_stats::ParquetVariableWidthPayloadEvidence::new(
                         1,
                         vec![0],
-                        2_048,
+                        metadata_rows.saturating_mul(64),
                         crate::parquet_stats::ParquetVariableWidthEncodingProof::PlainAndDictionary,
                     ),
                 ),
@@ -3061,7 +3130,7 @@ fn graph_metadata_join_consumer(
                     crate::parquet_stats::ParquetVariableWidthPayloadEvidence::new(
                         2,
                         vec![0],
-                        1_024,
+                        metadata_rows.saturating_mul(16),
                         crate::parquet_stats::ParquetVariableWidthEncodingProof::PlainAndDictionary,
                     ),
                 ),
@@ -3142,18 +3211,20 @@ fn graph_to_metadata_inner_join_uses_bounded_key_payload_evidence() {
     assert!(proof.resolve_reservation_envelope(reservation_policy()).is_ok());
 
     let left = graph_metadata_join_consumer(JoinType::Left, None, false, true);
-    let error = QueryPlanCapabilityProof::combine_composed_graph_attempt(
+    let proof = QueryPlanCapabilityProof::combine_composed_graph_attempt(
         &left,
         QueryPlanCapabilityProof::for_composed_consumer_plan(&left)
             .expect("mixed LocalParquet and graph consumer must issue a structural proof"),
         [("pagerank".to_owned(), pagerank_like_string_producer())],
     )
-    .expect_err("left enrichment without metadata uniqueness must remain fail closed");
-    assert_eq!(error.fact_value("schedule_reason"), Some("consumer_string_payload_evidence_missing"));
+    .expect("finite row and payload bounds must prove a non-unique left enrichment without claiming uniqueness");
+    proof
+        .resolve_reservation_envelope(reservation_policy())
+        .expect("the finite non-unique left enrichment must retain an ordered envelope");
 }
 
 #[test]
-fn graph_to_metadata_left_join_requires_authoritative_lookup_uniqueness() {
+fn graph_to_metadata_left_join_uses_uniqueness_only_for_the_tight_bound() {
     for top_k_before_enrichment in [true, false] {
         let qualified =
             graph_metadata_join_consumer(JoinType::Left, Some(JoinSide::Left), top_k_before_enrichment, true);
@@ -3171,14 +3242,48 @@ fn graph_to_metadata_left_join_requires_authoritative_lookup_uniqueness() {
             .expect("qualified left enrichment must select a compiled bounded pipeline");
 
         let unqualified = graph_metadata_join_consumer(JoinType::Left, None, top_k_before_enrichment, true);
-        let error = QueryPlanCapabilityProof::combine_composed_graph_attempt(
+        let proof = QueryPlanCapabilityProof::combine_composed_graph_attempt(
             &unqualified,
             QueryPlanCapabilityProof::for_composed_consumer_plan(&unqualified).unwrap(),
             [("pagerank".to_owned(), pagerank_like_string_producer())],
         )
-        .expect_err("column names cannot substitute for authoritative metadata uniqueness");
-        assert_eq!(error.fact_value("schedule_reason"), Some("consumer_string_payload_evidence_missing"));
+        .expect("finite cross-product evidence must bound an unqualified lookup without treating it as unique");
+        proof
+            .resolve_reservation_envelope(reservation_policy())
+            .expect("the conservative non-unique lookup must retain an ordered envelope");
     }
+}
+
+#[test]
+fn production_shaped_metadata_joins_retain_finite_and_authoritative_bounds() {
+    let mut output_bytes = Vec::new();
+    for (join_type, bounded_side) in
+        [(JoinType::Inner, Some(JoinSide::Right)), (JoinType::Left, Some(JoinSide::Left)), (JoinType::Left, None)]
+    {
+        let consumer = graph_metadata_join_consumer_with_rows(join_type, bounded_side, true, true, 10_408_932);
+        let proof = QueryPlanCapabilityProof::combine_composed_graph_attempt(
+            &consumer,
+            QueryPlanCapabilityProof::for_composed_consumer_plan(&consumer)
+                .expect("the production-shaped composed topology must issue a structural proof"),
+            [("pagerank".to_owned(), pagerank_like_string_producer())],
+        )
+        .expect("10M-scale metadata must use finite multiplicity instead of missing-schedule rejection");
+        let output = proof
+            .as_requirement()
+            .owner_terms
+            .iter()
+            .find(|term| {
+                term.id().owner == OwnerId::Consumer(consumer.root_id())
+                    && term.id().role == OwnerTermRole::ConsumerOutput
+            })
+            .expect("the composed join must own its output allocation");
+        output_bytes.push(output.bytes());
+        proof
+            .resolve_reservation_envelope(reservation_policy())
+            .expect("the production-shaped proof must be complete even when a device may reject its capacity floor");
+    }
+    assert!(output_bytes[2] > output_bytes[0]);
+    assert!(output_bytes[2] > output_bytes[1], "non-unique LEFT cannot reuse the authoritative one-match bound");
 }
 
 #[test]
