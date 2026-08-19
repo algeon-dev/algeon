@@ -625,6 +625,7 @@ fn schedule_scope(scope: &str) -> AttemptReservationShape {
         is_cugraph_graph_input_scope: false,
         is_cugraph_side_input_scope: false,
         is_attested_graph_result_passthrough_scope: false,
+        is_deferred_graph_result_passthrough_scope: false,
         is_attested_graph_result_bounded_consumer_scope: false,
         sort_phase_peak_bytes: None,
         limit_phase_peak_bytes: None,

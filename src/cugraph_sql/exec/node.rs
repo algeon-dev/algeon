@@ -248,6 +248,9 @@ impl CugraphAlgoExec {
         .await?;
         let prelogical_row_bounds = collected_inputs.row_bounds()?;
         check_host_staging_cancellation(&cancellation)?;
+        let exact_edge_source_gpu_plan =
+            exact_native_edge_source_gpu_plan(prepared.edge_source.as_ref(), task_context.as_ref()).await?;
+        check_host_staging_cancellation(&cancellation)?;
         validate_cugraph_graph_owner_preflight(
             &prepared.spec,
             prepared.edge_source.as_ref(),
@@ -256,13 +259,12 @@ impl CugraphAlgoExec {
             &prepared.result_options,
             prepared.edge_normalize_inserted(),
             &prepared.native_execution_config,
+            exact_edge_source_gpu_plan.as_ref(),
         )?;
         check_host_staging_cancellation(&cancellation)?;
         let mut staged_inputs = collected_inputs.prepare_logical_inputs(&prepared.spec)?;
         check_host_staging_cancellation(&cancellation)?;
         let input_row_bounds = staged_inputs.row_bounds()?;
-        let exact_edge_source_gpu_plan =
-            exact_native_edge_source_gpu_plan(prepared.edge_source.as_ref(), task_context.as_ref()).await?;
         let (prepared, admission_graph_plan) = prepared.issue_graph_aware_ticket_after_staging(
             input_row_bounds,
             task_context.as_ref(),

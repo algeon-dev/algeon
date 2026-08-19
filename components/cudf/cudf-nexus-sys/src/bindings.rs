@@ -350,6 +350,15 @@ pub struct cudf_reduce_aggregation_handle_state {
 pub struct cudf_scan_aggregation_handle_state {
     _unused: [u8; 0],
 }
+#[doc = " Allocation-free workspace bytes for a fixed-width, single-column distinct count."]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct cudf_distinct_count_workspace_preflight_result_t {
+    pub preprocessing_retained_bytes: u64,
+    pub static_set_storage_bytes: u64,
+    pub insertion_count_bytes: u64,
+    pub active_workspace_peak_bytes: u64,
+}
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct cudf_aggregation_handle_state {
@@ -1761,6 +1770,14 @@ unsafe extern "C" {
     ) -> cudf_status_t;
     #[doc = " Probe whether the cuFile driver can be opened by this process.\n\n This is a deployment capability probe. It does not register any file or\n buffer, and it closes the driver before returning on success."]
     pub fn cudf_gds_driver_available() -> cudf_status_t;
+    #[doc = " Compute the native workspace bound for a global distinct count without allocating device memory.\n Only one non-null, non-nested, fixed-width key column is supported."]
+    pub fn cudf_distinct_count_workspace_preflight(
+        num_rows: i64,
+        key_type: cudf_type_id_t,
+        null_count: i64,
+        key_count: i32,
+        out: *mut cudf_distinct_count_workspace_preflight_result_t,
+    ) -> cudf_status_t;
     #[doc = " Create a simple reduce aggregation."]
     pub fn cudf_reduce_aggregation_create(
         kind: cudf_reduce_aggregation_kind_t,

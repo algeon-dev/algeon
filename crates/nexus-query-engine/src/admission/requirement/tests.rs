@@ -105,6 +105,51 @@ fn materializing_pagerank_plan_and_producer() -> (QueryPlan, QueryPlan) {
     (graph_builder.finish_with_host_sink(graph), producer)
 }
 
+fn filtered_pagerank_plan_and_producer(with_limit: bool) -> (QueryPlan, QueryPlan) {
+    let edge_schema = Arc::new(Schema::new(vec![
+        Field::new("src", DataType::Int64, false),
+        Field::new("dst", DataType::Int64, false),
+    ]));
+    let mut producer_builder = QueryPlanBuilder::new();
+    let source = producer_builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+        vec![
+            LocalParquetFile::new("/tmp/deferred-filtered-edges.parquet")
+                .with_row_groups(vec![0])
+                .with_row_group_rows(vec![10_000])
+                .with_row_group_bytes(vec![160_000])
+                .with_projected_row_group_bytes(vec![160_000], vec![160_000]),
+        ],
+        Arc::clone(&edge_schema),
+        vec!["src".to_owned(), "dst".to_owned()],
+    )));
+    let filtered = producer_builder.add_filter(
+        source,
+        Expr::binary(Expr::column("src"), BinaryOp::Gt, Expr::literal(LiteralValue::Int64(0))),
+        Arc::clone(&edge_schema),
+    );
+    let producer_root = if with_limit {
+        producer_builder.add_limit(filtered, LimitSpec::new(0, Some(100)), Arc::clone(&edge_schema))
+    } else {
+        filtered
+    };
+    let producer = producer_builder.finish_gpu_resident(producer_root);
+
+    let mut graph_builder = QueryPlanBuilder::new();
+    let resident = graph_builder.add_source(SourceNode::GpuResident(
+        GpuResidentSource::new("edges", Arc::clone(&edge_schema)).with_row_count_upper_bound(10_000),
+    ));
+    let graph = graph_builder.add_graph_algorithm(
+        resident,
+        GraphAlgorithmSpec::with_stable_schema(
+            GraphAlgorithm::PageRank,
+            GraphEdgeColumnBindings::new("src", "dst", None::<String>),
+            GraphConstructionOptions::default(),
+            GraphAlgorithmParams::PageRank(GraphPageRankParams::default()),
+        ),
+    );
+    (graph_builder.finish_with_host_sink(graph), producer)
+}
+
 fn scheduled_materializing_pagerank_proof() -> QueryPlanCapabilityProof {
     let (graph_plan, producer_plan) = materializing_pagerank_plan_and_producer();
     let evidence =
@@ -127,6 +172,83 @@ fn scheduled_materializing_pagerank_proof() -> QueryPlanCapabilityProof {
     )
     .expect("materializing input schedule must resolve")
     .expect("projection between source and graph requires a materializing schedule")
+}
+
+#[test]
+fn filtered_edge_producer_defers_only_the_graph_phase_under_one_attempt_proof() {
+    let (graph_plan, producer_plan) = filtered_pagerank_plan_and_producer(false);
+    let graph = QueryPlanCapabilityProof::for_cugraph_graph_execution_plan(&graph_plan)
+        .expect("PageRank must issue its attested execution proof");
+    let combined = QueryPlanCapabilityProof::try_combine_cugraph_materializing_input_attempt(
+        &graph_plan,
+        graph,
+        "edges",
+        &producer_plan,
+        std::iter::empty(),
+    )
+    .expect("the deferred contract must be derivable")
+    .expect("Source-Filter-GPU sink is the supported deferred topology");
+    let descriptor = combined
+        .as_requirement()
+        .deferred_graph_phase_for_plan(&graph_plan)
+        .expect("descriptor lookup must remain unambiguous")
+        .expect("the exact graph scope retains its deferred descriptor");
+    assert_eq!(descriptor.input_name(), "edges");
+    assert_eq!(descriptor.input_schema(), producer_plan.output_schema());
+    assert_eq!(descriptor.static_edge_row_upper_bound(), 10_000);
+    assert_eq!(
+        descriptor.producer_execution_scope_fingerprint(),
+        canonical_execution_scope_fingerprint(&producer_plan)
+    );
+    assert_eq!(combined.soft_working_set_hint_bytes(), None);
+    let envelope = combined.resolve_reservation_envelope(reservation_policy()).expect("producer phase must resolve");
+    assert!(envelope.complete_phase_peak_bytes().is_some());
+
+    let mut consumer_builder = QueryPlanBuilder::new();
+    let graph_result = consumer_builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
+        "graph_result",
+        Arc::clone(graph_plan.output_schema()),
+    )));
+    let consumer_plan = consumer_builder.finish_with_host_sink(graph_result);
+    let consumer = QueryPlanCapabilityProof::for_attested_graph_result_passthrough_plan(&consumer_plan, "graph_result")
+        .expect("the exact deferred graph result handoff must issue a passthrough proof");
+    let composed = QueryPlanCapabilityProof::resolve_composed_graph_attempt(
+        &consumer_plan,
+        consumer,
+        [ComposedGraphProducerCandidate::new(
+            Some("graph_result".to_owned()),
+            Some("graph_result".to_owned()),
+            Some(combined),
+        )],
+    )
+    .expect("the deferred graph phase must remain composable with its exact host passthrough");
+    let envelope = composed.resolve_reservation_envelope(reservation_policy()).expect("composed proof must resolve");
+    let grant_bytes = envelope.complete_phase_peak_bytes().expect("the producer phase remains bounded");
+    envelope
+        .validate_composed_execution(&consumer_plan, &["graph_result".to_owned()], grant_bytes)
+        .expect("the exact runtime occurrence must match the deferred passthrough");
+    let mismatch = envelope
+        .validate_composed_execution(&consumer_plan, &["different_result".to_owned()], grant_bytes)
+        .expect_err("a different runtime occurrence must remain fail closed");
+    assert_eq!(mismatch.fact_value("schedule_reason"), Some("runtime_occurrence_order_mismatch"));
+}
+
+#[test]
+fn exact_limit_edge_producer_stays_on_the_static_graph_admission_path() {
+    let (graph_plan, producer_plan) = filtered_pagerank_plan_and_producer(true);
+    let graph = QueryPlanCapabilityProof::for_cugraph_graph_execution_plan(&graph_plan)
+        .expect("PageRank must issue its attested execution proof");
+    assert!(
+        QueryPlanCapabilityProof::try_combine_cugraph_materializing_input_attempt(
+            &graph_plan,
+            graph,
+            "edges",
+            &producer_plan,
+            std::iter::empty(),
+        )
+        .expect("an unsupported deferred topology is a normal shape miss")
+        .is_none()
+    );
 }
 
 fn ordinary_native_plan() -> QueryPlan {
@@ -471,6 +593,37 @@ fn graph_output_global_aggregate_consumer() -> QueryPlan {
         ],
     );
     builder.finish_with_host_sink(projection)
+}
+
+fn graph_output_global_nunique_consumer(input_type: DataType, nullable: bool, grouped: bool) -> QueryPlan {
+    let input_schema = Arc::new(Schema::new(vec![Field::new("label", input_type.clone(), nullable)]));
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::GpuResident(
+        GpuResidentSource::new("only", Arc::clone(&input_schema)).with_row_count_upper_bound(128),
+    ));
+    let aggregate = builder.add_aggregate(
+        source,
+        AggregateSpec::new(
+            grouped.then(|| Expr::column("label")).into_iter().collect(),
+            vec![
+                AggregateExpr::new(AggregateFunction::Count, Expr::literal(LiteralValue::Int64(1)), "rows"),
+                AggregateExpr::new(AggregateFunction::NUnique, Expr::column("label"), "components"),
+            ],
+        ),
+        if grouped {
+            Arc::new(Schema::new(vec![
+                Field::new("label", input_type, nullable),
+                Field::new("rows", DataType::Int64, false),
+                Field::new("components", DataType::Int64, false),
+            ]))
+        } else {
+            Arc::new(Schema::new(vec![
+                Field::new("rows", DataType::Int64, false),
+                Field::new("components", DataType::Int64, false),
+            ]))
+        },
+    );
+    builder.finish_with_host_sink(aggregate)
 }
 
 fn graph_output_filter_consumer(input_name: &str) -> QueryPlan {
@@ -2761,6 +2914,68 @@ fn graph_result_global_aggregate_supports_ordered_and_conservative_owner_bounds(
         .resolve_reservation_envelope(reservation_policy())
         .expect("the aggregate owner inventory must support the conservative fallback");
     assert_eq!(conservative.bound_derivation(), Some(AttemptBoundDerivation::ConservativeOwnerSum));
+}
+
+#[test]
+fn graph_result_global_count_and_nunique_use_the_native_distinct_workspace_owner() {
+    let consumer_plan = graph_output_global_nunique_consumer(DataType::Int64, false, false);
+    let producer = graph_bfs_proof_with_typed_output_and_rows(0, 64);
+    let combined = QueryPlanCapabilityProof::combine_composed_graph_attempt(
+        &consumer_plan,
+        QueryPlanCapabilityProof::for_composed_consumer_plan(&consumer_plan)
+            .expect("bounded global NUnique must issue a composed consumer proof"),
+        [("only".to_owned(), producer)],
+    )
+    .expect("one non-null fixed-width global NUnique must compose");
+    let requirement = combined.as_requirement();
+    let workspace = requirement
+        .owner_terms
+        .iter()
+        .find(|term| term.id.role == OwnerTermRole::AggregateDistinctWorkspace)
+        .expect("the native distinct workspace has one explicit owner term");
+    assert!(workspace.bytes() > 0);
+    let shape = requirement
+        .reservation_shapes
+        .iter()
+        .find(|shape| shape.matches(&consumer_plan))
+        .expect("the consumer scope is retained")
+        .ordered_schedule()
+        .expect("the mixed global aggregate has an ordered schedule");
+    let groups = shape.consumer_peak_term_groups();
+    assert!(groups.iter().any(|group| group.contains(workspace.id())));
+    assert!(groups.iter().any(|group| {
+        group.iter().any(|term| term.role == OwnerTermRole::AggregatePartialState)
+            && group.iter().any(|term| term.role == OwnerTermRole::AggregateOutput)
+            && !group.contains(workspace.id())
+    }));
+    let envelope =
+        combined.resolve_reservation_envelope(reservation_policy()).expect("the exact NUnique owner schedule resolves");
+    let peak = envelope.complete_phase_peak_bytes().expect("the exact NUnique owner schedule has one complete peak");
+    let error = envelope
+        .validate_composed_execution(&consumer_plan, &["only".to_owned()], peak - 1)
+        .expect_err("a grant one byte below the exact NUnique peak must reject before execution");
+    assert_eq!(error.fact_value("schedule_reason"), Some("immutable_grant_below_schedule_peak"));
+    assert_eq!(error.fact_value("immutable_grant_bytes"), Some((peak - 1).to_string().as_str()));
+    assert_eq!(error.fact_value("complete_phase_peak_bytes"), Some(peak.to_string().as_str()));
+}
+
+#[test]
+fn graph_result_nunique_keeps_grouped_nullable_and_variable_width_shapes_unmodeled() {
+    for (data_type, nullable, grouped, expected_reason) in [
+        (DataType::Int64, false, true, "consumer_aggregate_state_unmodeled"),
+        (DataType::Int64, true, false, "consumer_aggregate_nunique_owner_preflight_unavailable"),
+        (DataType::Utf8, false, false, "consumer_aggregate_nunique_owner_preflight_unavailable"),
+    ] {
+        let consumer_plan = graph_output_global_nunique_consumer(data_type, nullable, grouped);
+        let error = QueryPlanCapabilityProof::combine_composed_graph_attempt(
+            &consumer_plan,
+            QueryPlanCapabilityProof::for_composed_consumer_plan(&consumer_plan)
+                .expect("the consumer proof stays incomplete until its producer is bound"),
+            [("only".to_owned(), graph_bfs_proof_with_typed_output_and_rows(0, 64))],
+        )
+        .expect_err("the unsupported NUnique owner shape must fail closed");
+        assert_eq!(error.fact_value("schedule_reason"), Some(expected_reason));
+    }
 }
 
 #[test]

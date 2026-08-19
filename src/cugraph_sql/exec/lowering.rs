@@ -68,6 +68,14 @@ pub(super) fn execute_cugraph_query_to_gpu_with_options(
         edge_row_upper_bound,
         edge_vertex_upper_bound,
     )?;
+    plan.inputs.get(CUGRAPH_EDGE_INPUT_NAME).ok_or_else(|| {
+        Error::new(
+            ErrorCode::InvalidExecutionPlan,
+            "datafusion_nexus.cugraph_sql.execute_gpu",
+            "the lowered cuGraph plan is missing its GPU-resident edge input",
+        )
+        .with_fact("reason", "cugraph_edge_input_missing")
+    })?;
     if let Some(leader) = singleflight_leader {
         leader.record_traversal_submission();
     }

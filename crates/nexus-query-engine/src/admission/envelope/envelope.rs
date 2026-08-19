@@ -233,6 +233,49 @@ impl AttemptReservationEnvelope {
         occurrence_ids: &[String],
         immutable_grant_bytes: u64,
     ) -> Result<()> {
+        if self.ordered_schedule.is_none() {
+            let deferred_passthroughs = self
+                .scopes
+                .iter()
+                .filter(|scope| scope.is_deferred_graph_result_passthrough_scope() && scope.matches(consumer_plan))
+                .count();
+            if deferred_passthroughs == 1 {
+                let expected_occurrence = consumer_plan
+                    .node(consumer_plan.root_id())
+                    .and_then(|node| match &node.kind {
+                        PlanNode::Source(source) => match source.as_ref() {
+                            SourceNode::GpuResident(source) => Some(source.input_name.as_str()),
+                            _ => None,
+                        },
+                        _ => None,
+                    })
+                    .ok_or_else(|| graph_schedule_error("deferred_passthrough_source_missing", None, Some("runtime")))?;
+                let [runtime_occurrence] = occurrence_ids else {
+                    return Err(graph_schedule_error(
+                        "runtime_occurrence_count_mismatch",
+                        None,
+                        Some("runtime"),
+                    )
+                    .with_fact("scheduled_occurrence_count", 1)
+                    .with_fact("runtime_occurrence_count", occurrence_ids.len()));
+                };
+                if runtime_occurrence != expected_occurrence {
+                    return Err(graph_schedule_error(
+                        "runtime_occurrence_order_mismatch",
+                        Some(runtime_occurrence),
+                        Some("runtime"),
+                    )
+                    .with_fact("scheduled_occurrence_id", expected_occurrence));
+                }
+                let required_peak = self.required_grant_bound_bytes()?;
+                if immutable_grant_bytes < required_peak {
+                    return Err(graph_schedule_error("immutable_grant_below_schedule_peak", None, Some("runtime"))
+                        .with_fact("immutable_grant_bytes", immutable_grant_bytes)
+                        .with_fact("complete_phase_peak_bytes", required_peak));
+                }
+                return Ok(());
+            }
+        }
         let manifest = admitted_manifest_shape(&self.scopes, self.ordered_schedule.as_ref())?;
         manifest.validate_manifest_core()?;
         if let Some(schedule) = &self.ordered_schedule {

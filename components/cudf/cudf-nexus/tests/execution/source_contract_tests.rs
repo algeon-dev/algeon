@@ -128,6 +128,7 @@ const SAFE_LAYER_NON_EXECUTION_FFI_ALLOWLIST: &[(&str, &str)] = &[
     ("cudf_device_memory_info", "runtime device memory metadata"),
     ("cudf_dictionary_indices", "descriptor-only dictionary child view accessor"),
     ("cudf_dictionary_keys", "descriptor-only dictionary child view accessor"),
+    ("cudf_distinct_count_workspace_preflight", "allocation-free owner preflight from explicit type and row metadata"),
     ("cudf_distinct_hash_join_destroy", "provenance-bound lifecycle"),
     ("cudf_event_create", "runtime event lifecycle"),
     ("cudf_event_destroy", "runtime event lifecycle"),

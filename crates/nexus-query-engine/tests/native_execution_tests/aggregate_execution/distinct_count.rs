@@ -80,6 +80,76 @@ fn bounded_global_nunique_casts_to_declared_count_dtype() {
 }
 
 #[test]
+fn bounded_global_count_star_and_nunique_match_controls_on_zero_row_component() {
+    assert_bounded_global_count_and_nunique_matches_controls("zero-row", &[&[]], (0, 0), 0);
+}
+
+#[test]
+fn bounded_global_count_star_and_nunique_match_controls_on_single_component() {
+    assert_bounded_global_count_and_nunique_matches_controls("single", &[&[10, 20, 10, 30]], (4, 3), 1);
+}
+
+#[test]
+fn bounded_global_count_star_and_nunique_match_controls_across_components() {
+    assert_bounded_global_count_and_nunique_matches_controls("multi", &[&[10, 20, 30], &[10, 40, 30, 50]], (7, 5), 2);
+}
+
+fn assert_bounded_global_count_and_nunique_matches_controls(
+    fixture: &str,
+    parts: &[&[i64]],
+    expected: (i64, i64),
+    minimum_chunks: u64,
+) {
+    let dir = unique_temp_dir(&format!("nexus-query-engine-bounded-global-count-nunique-{fixture}"));
+    let input_schema = Arc::new(Schema::new(vec![Field::new("label", DataType::Int64, false)]));
+    let files = parts
+        .iter()
+        .enumerate()
+        .map(|(index, values)| {
+            let path = dir.join(format!("part-{index}.parquet"));
+            let batch =
+                RecordBatch::try_new(Arc::clone(&input_schema), vec![Arc::new(Int64Array::from(values.to_vec()))])
+                    .unwrap();
+            write_record_batch_with_row_group_rows(&path, Arc::clone(&input_schema), batch, values.len().max(1));
+            LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(path).unwrap().len())
+        })
+        .collect::<Vec<_>>();
+    let source = LocalParquetSource::from_files(files, Arc::clone(&input_schema), vec!["label".to_owned()]);
+    let build_plan = |expressions: Vec<AggregateExpr>| {
+        let output_schema = Arc::new(Schema::new(
+            expressions.iter().map(|expr| Field::new(&expr.alias, DataType::Int64, false)).collect::<Vec<_>>(),
+        ));
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::LocalParquet(source.clone()));
+        let aggregate = builder.add_aggregate(source, AggregateSpec::new(Vec::new(), expressions), output_schema);
+        builder.finish_with_host_sink(aggregate)
+    };
+    let count = AggregateExpr::new(AggregateFunction::Count, Expr::literal(LiteralValue::Int64(1)), "row_count");
+    let distinct = AggregateExpr::new(AggregateFunction::NUnique, Expr::column("label"), "distinct_labels");
+    let context = backend_context();
+    let count_result = execute_query_plan(&context, &build_plan(vec![count.clone()])).unwrap();
+    let distinct_result = execute_query_plan(&context, &build_plan(vec![distinct.clone()])).unwrap();
+    let mixed_result = execute_query_plan(&context, &build_plan(vec![count, distinct])).unwrap();
+    assert!(mixed_result.metrics().source_chunks_planned >= minimum_chunks);
+
+    let QueryOutput::HostArrow(count_batch) = count_result.output() else {
+        panic!("COUNT(*) control should materialize one RecordBatch");
+    };
+    let QueryOutput::HostArrow(distinct_batch) = distinct_result.output() else {
+        panic!("NUnique control should materialize one RecordBatch");
+    };
+    let QueryOutput::HostArrow(mixed_batch) = mixed_result.output() else {
+        panic!("mixed aggregate should materialize one RecordBatch");
+    };
+    assert_eq!(mixed_batch.num_rows(), 1);
+    assert_eq!(int64_array(count_batch, 0).value(0), expected.0);
+    assert_eq!(int64_array(distinct_batch, 0).value(0), expected.1);
+    assert_eq!(int64_array(mixed_batch, 0).value(0), int64_array(count_batch, 0).value(0));
+    assert_eq!(int64_array(mixed_batch, 1).value(0), int64_array(distinct_batch, 0).value(0));
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn bounded_grouped_count_distinct_ignores_null_values_and_keeps_null_groups() {
     let dir = unique_temp_dir("nexus-query-engine-bounded-grouped-count-distinct");
     let path = dir.join("input.parquet");

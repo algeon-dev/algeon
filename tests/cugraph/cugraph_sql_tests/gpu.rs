@@ -711,6 +711,133 @@ async fn cugraph_sql_backend_session_records_query_service_admission_metrics() {
     fs::remove_dir_all(dir).ok();
 }
 
+async fn filtered_local_parquet_context(
+    path: &std::path::Path,
+    device_capacity_bytes: u64,
+) -> (NexusGpuBackend, SessionContext) {
+    let backend = NexusGpuBackend::builder()
+        .device_memory_ownership([(0, GpuMemoryOwnership::WholeDeviceExclusive)])
+        .device_profiles([datafusion_nexus::backend::NexusGpuDeviceProfile::new(0).with_memory_limit(
+            datafusion_nexus::backend::GpuDeviceMemoryLimit::Explicit { limit_bytes: device_capacity_bytes },
+        )])
+        .build()
+        .unwrap();
+    let cugraph = CugraphSqlConfig::default()
+        .with_native_execution_config(backend.optimizer_config().native_execution_config().clone());
+    let mut config = SessionConfig::new()
+        .with_target_partitions(1)
+        .with_repartition_file_scans(false)
+        .with_repartition_aggregations(false)
+        .with_repartition_sorts(false);
+    config.options_mut().execution.parquet.pushdown_filters = false;
+    config.options_mut().optimizer.enable_dynamic_filter_pushdown = false;
+    let state = backend
+        .install_on(SessionStateBuilder::new().with_config(config).with_default_features())
+        .unwrap()
+        .try_with_cugraph_sql(cugraph)
+        .expect("install cuGraph SQL")
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+    ctx.register_parquet("large_edges", path.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
+    ctx.sql("CREATE VIEW filtered_edges AS SELECT src, dst FROM large_edges WHERE active")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    (backend, ctx)
+}
+
+#[tokio::test]
+async fn cugraph_sql_gpu_filtered_local_parquet_hits_and_bfs_use_materialized_edge_rows() {
+    const DEVICE_CAPACITY_BYTES: u64 = 128 * 1024 * 1024;
+
+    let dir = unique_temp_dir("datafusion-nexus-cugraph-filtered-local-parquet-phase");
+    let path = dir.join("large_filtered_edges.parquet");
+    write_large_filtered_directed_edges(&path);
+    let (_backend, ctx) = filtered_local_parquet_context(&path, DEVICE_CAPACITY_BYTES).await;
+
+    // One million source rows would exceed this device capacity under the
+    // static graph model; only the four rows surviving Filter should price the
+    // deferred graph phase.
+    let hits_batches = ctx
+        .sql("SELECT * FROM cugraph_hits('filtered_edges', 'src', 'dst')")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .expect("HITS must execute after runtime filtered-row phase admission");
+    assert_eq!(
+        hits_batches.iter().map(RecordBatch::num_rows).sum::<usize>(),
+        FILTERED_GRAPH_ACTIVE_ROWS,
+        "HITS must see only the active materialized edge set"
+    );
+
+    let bfs_batches = ctx
+        .sql("SELECT * FROM cugraph_bfs('filtered_edges', 0, 'src', 'dst')")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .expect("BFS must execute after runtime filtered-row phase admission");
+    assert_eq!(
+        bfs_batches.iter().map(RecordBatch::num_rows).sum::<usize>(),
+        FILTERED_GRAPH_ACTIVE_ROWS,
+        "BFS must see only the active materialized edge set"
+    );
+
+    drop_session_context_on_blocking_thread(ctx).await;
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn cugraph_sql_gpu_filtered_local_parquet_rejects_an_oversized_materialized_graph_phase_and_releases_the_grant() {
+    const DEVICE_CAPACITY_BYTES: u64 = 128 * 1024 * 1024;
+    const ACTIVE_EDGE_ROWS: usize = 600_000;
+
+    let dir = unique_temp_dir("datafusion-nexus-cugraph-filtered-local-parquet-phase-rejection");
+    let path = dir.join("large_filtered_edges.parquet");
+    write_large_filtered_directed_edges_with_active_rows(&path, ACTIVE_EDGE_ROWS);
+    let (backend, ctx) = filtered_local_parquet_context(&path, DEVICE_CAPACITY_BYTES).await;
+
+    let error = ctx
+        .sql("SELECT * FROM cugraph_hits('filtered_edges', 'src', 'dst')")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .expect_err("the runtime graph phase must reject before graph allocation when it exceeds the grant");
+    let nexus = typed_nexus_error(&error);
+    assert_eq!(nexus.code(), ErrorCode::UnsupportedOperator);
+    assert!(
+        nexus.message().contains("schedule_reason=immutable_grant_below_schedule_peak"),
+        "the structured native phase reason must survive the adapter boundary: {nexus:?}"
+    );
+    assert_eq!(nexus.fact_value("native_operation"), Some("nexus_query_engine.admission.reservation_envelope"));
+
+    drop_session_context_on_blocking_thread(ctx).await;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let reports = backend.device_ledger_reports().unwrap();
+            if reports.iter().all(|report| report.active_attempts == 0 && report.grants.is_empty()) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("graph-phase rejection must release the attempt and immutable grant");
+    let ledgers = backend.device_ledger_reports().unwrap();
+    let [ledger] = ledgers.as_slice() else {
+        panic!("one-device fixture must expose exactly one ledger after rejection: {ledgers:#?}");
+    };
+    assert_eq!(ledger.active_attempts, 0);
+    assert_eq!(ledger.live_grants_bytes, 0);
+    assert_eq!(ledger.live_reserved_bytes, 0);
+    assert!(ledger.grants.is_empty());
+    fs::remove_dir_all(dir).unwrap();
+}
+
 #[tokio::test]
 async fn cugraph_sql_gpu_betweenness_reservation_reports_request_calibration_and_seed_mode() {
     let (_backend, ctx) = default_backend_cugraph_sql_context();

@@ -125,6 +125,8 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
         };
         let ResidentGpuFrame { frame, mut reservation } = *frame;
         let live_reservation = reservation.transfer_grant_live_reservation();
+        let frame =
+            frame.with_producer_execution_scope(crate::admission::canonical_execution_scope_fingerprint(self.plan));
         let handle = match GpuResultHandle::new_with_live_reservation(
             self.context,
             frame,

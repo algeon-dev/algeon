@@ -23,7 +23,7 @@ use crate::{
             AttemptReservationConsumerState, AttemptReservationProducerOccurrence, AttemptReservationSchedule,
             AttemptReservationShape, canonical_execution_scope_fingerprint,
         },
-        string_payload::{PlanColumnEvidence, PlanColumnEvidenceAnalysis},
+        string_payload::{PlanColumnEvidence, PlanColumnEvidenceAnalysis, identity_source_column},
     },
     capability::ReservationRequirement,
     datatypes::cudf_dtype_from_arrow_type,

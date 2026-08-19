@@ -39,7 +39,10 @@ pub(crate) use model::{
 pub(crate) use model::{
     graph_construction_workspace_bounds_from_owner, graph_construction_workspace_bounds_from_owner_query,
 };
-pub(crate) use model::{query_plan_node_hard_row_upper_bound, query_plan_node_hard_row_upper_bound_with_resident_rows};
+pub(crate) use model::{
+    graph_memory_bounded_admission_evidence_for_plan_with_resident_rows, query_plan_node_hard_row_upper_bound,
+    query_plan_node_hard_row_upper_bound_with_resident_rows,
+};
 
 #[cfg(test)]
 use crate::{

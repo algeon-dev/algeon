@@ -84,6 +84,7 @@ pub(crate) struct AttemptReservationShape {
     is_cugraph_graph_input_scope: bool,
     is_cugraph_side_input_scope: bool,
     is_attested_graph_result_passthrough_scope: bool,
+    is_deferred_graph_result_passthrough_scope: bool,
     is_attested_graph_result_bounded_consumer_scope: bool,
     sort_phase_peak_bytes: Option<u64>,
     limit_phase_peak_bytes: Option<u64>,
@@ -109,6 +110,7 @@ impl AttemptReservationShape {
             is_cugraph_graph_input_scope: false,
             is_cugraph_side_input_scope: false,
             is_attested_graph_result_passthrough_scope: false,
+            is_deferred_graph_result_passthrough_scope: false,
             is_attested_graph_result_bounded_consumer_scope: false,
             sort_phase_peak_bytes: None,
             limit_phase_peak_bytes: None,
@@ -271,6 +273,11 @@ impl AttemptReservationShape {
         self.is_attested_graph_result_passthrough_scope = true;
     }
 
+    pub(crate) fn mark_deferred_graph_result_passthrough_scope(&mut self) {
+        self.is_deferred_graph_result_passthrough_scope = true;
+        self.account_for_by_graph_phase();
+    }
+
     pub(crate) fn mark_attested_graph_result_bounded_consumer_scope(&mut self) {
         self.is_attested_graph_result_bounded_consumer_scope = true;
     }
@@ -336,6 +343,10 @@ impl AttemptReservationShape {
 
     pub(crate) fn is_attested_graph_result_passthrough_scope(&self) -> bool {
         self.is_attested_graph_result_passthrough_scope
+    }
+
+    pub(crate) fn is_deferred_graph_result_passthrough_scope(&self) -> bool {
+        self.is_deferred_graph_result_passthrough_scope
     }
 
     pub(crate) fn has_graph_memory_phase(&self) -> bool {

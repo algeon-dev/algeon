@@ -221,6 +221,51 @@ pub(super) fn write_tiny_directed_edges(path: &Path) {
     writer.close().unwrap();
 }
 
+pub(super) const FILTERED_GRAPH_BASE_ROWS: usize = 1_000_000;
+pub(super) const FILTERED_GRAPH_ACTIVE_ROWS: usize = 4;
+
+pub(super) fn write_large_filtered_directed_edges(path: &Path) {
+    write_large_filtered_directed_edges_with_active_rows(path, FILTERED_GRAPH_ACTIVE_ROWS);
+}
+
+pub(super) fn write_large_filtered_directed_edges_with_active_rows(path: &Path, active_rows: usize) {
+    assert!(active_rows <= FILTERED_GRAPH_BASE_ROWS);
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("src", DataType::Int64, false),
+        Field::new("dst", DataType::Int64, false),
+        Field::new("active", DataType::Boolean, false),
+    ]));
+    let mut sources = Vec::with_capacity(FILTERED_GRAPH_BASE_ROWS);
+    let mut destinations = Vec::with_capacity(FILTERED_GRAPH_BASE_ROWS);
+    let mut active = Vec::with_capacity(FILTERED_GRAPH_BASE_ROWS);
+    for row in 0..FILTERED_GRAPH_BASE_ROWS {
+        let (src, dst) = match row {
+            0 => (0, 1),
+            1 => (0, 2),
+            2 => (1, 3),
+            3 => (2, 3),
+            row => ((row % 1024) as i64, ((row + 1) % 1024) as i64),
+        };
+        sources.push(src);
+        destinations.push(dst);
+        active.push(row < active_rows);
+    }
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int64Array::from(sources)) as ArrayRef,
+            Arc::new(Int64Array::from(destinations)) as ArrayRef,
+            Arc::new(BooleanArray::from(active)) as ArrayRef,
+        ],
+    )
+    .unwrap();
+    let file = fs::File::create(path).unwrap();
+    let props = WriterProperties::builder().set_max_row_group_row_count(Some(16_384)).build();
+    let mut writer = ArrowWriter::try_new(file, schema, Some(props)).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+}
+
 pub(super) fn write_tiny_communities(path: &Path) {
     let schema = Arc::new(Schema::new(vec![
         Field::new("src", DataType::Int64, false),

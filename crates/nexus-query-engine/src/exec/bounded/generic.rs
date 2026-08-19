@@ -37,9 +37,12 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_query_plan(
     match plan.sink() {
         ResultSink::GpuResident { .. } => {
             let live_reservation = committed.reservation.transfer_grant_live_reservation();
+            let frame = committed
+                .frame
+                .with_producer_execution_scope(crate::admission::canonical_execution_scope_fingerprint(plan));
             let handle = match GpuResultHandle::new_with_live_reservation(
                 context,
-                committed.frame,
+                frame,
                 Arc::clone(plan.output_schema()),
                 live_reservation,
             ) {

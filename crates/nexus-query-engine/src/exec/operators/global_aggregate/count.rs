@@ -22,7 +22,7 @@ fn global_count_series_impl(
     context: &ExecutionContext,
     frame: &DataFrame,
     expr: &AggregateExpr,
-    token: Option<(&ExecutionBudgetToken, &mut QueryMetrics)>,
+    mut token: Option<(&ExecutionBudgetToken, &mut QueryMetrics)>,
 ) -> Result<cudf::Series> {
     let count = if expr.function == AggregateFunction::Count && !expr.distinct && global_count_star_expr(&expr.expr) {
         frame.num_rows()
@@ -37,9 +37,22 @@ fn global_count_series_impl(
             .with_fact("column", input_column.as_str())
         })?;
         if aggregate_expr_is_exact_nunique(expr) {
-            match token.as_ref() {
-                Some((token, _metrics)) => series.nunique_in(&token.execution_overrides()),
-                None => series.nunique(),
+            let prepared = series
+                .prepare_scalar_reduction(cudf::ReduceAgg::NUnique { null_policy: cudf::NullPolicy::Exclude })
+                .map_err(|error| {
+                    QueryError::from_cudf(
+                        "nexus_query_engine.global_aggregate.count_distinct.prepare",
+                        "failed to prepare native global distinct reduction",
+                        error,
+                    )
+                    .with_fact("alias", expr.alias.as_str())
+                    .with_fact("column", input_column.as_str())
+                })?;
+            let scalar = match token.as_mut() {
+                Some((token, metrics)) => prepared.execute_with_budget(token).map(|outcome| {
+                    budgeted_value(outcome, metrics, "nexus_query_engine.global_aggregate.count_distinct").into_scalar()
+                }),
+                None => prepared.execute().map(cudf::ScalarReductionOutput::into_scalar),
             }
             .map_err(|error| {
                 QueryError::from_cudf(
@@ -49,7 +62,32 @@ fn global_count_series_impl(
                 )
                 .with_fact("alias", expr.alias.as_str())
                 .with_fact("column", input_column.as_str())
-            })?
+            })?;
+            if !scalar.is_valid().map_err(|error| {
+                QueryError::from_cudf(
+                    "nexus_query_engine.global_aggregate.count_distinct",
+                    "failed to read native global distinct scalar validity",
+                    error,
+                )
+            })? {
+                0
+            } else {
+                let count = scalar.value::<i32>().map_err(|error| {
+                    QueryError::from_cudf(
+                        "nexus_query_engine.global_aggregate.count_distinct",
+                        "failed to read native global distinct scalar value",
+                        error,
+                    )
+                })?;
+                usize::try_from(count).map_err(|_| {
+                    QueryError::new(
+                        QueryErrorCode::Internal,
+                        "nexus_query_engine.global_aggregate.count_distinct",
+                        "native global distinct count was negative",
+                    )
+                    .with_fact("distinct_count", count)
+                })?
+            }
         } else {
             series.len().saturating_sub(series.null_count())
         }
