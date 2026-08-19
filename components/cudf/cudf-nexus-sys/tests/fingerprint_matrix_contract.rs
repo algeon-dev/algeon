@@ -47,6 +47,8 @@ fn explicit_toolchain_and_discovery_env_vars_are_tracked() {
         build_support::toolchain::CLANG_TIDY_EXE_ENV,
         build_support::toolchain::CMAKE_EXE_ENV,
         "CUDF_RS_SKIP_STALENESS_CHECK",
+        "CUDF_RS_ENFORCE_STALENESS_CHECK",
+        "CUDF_ENFORCE_STALENESS_CHECK",
         "CARGO_FEATURE_TEST_HOOKS",
     ] {
         assert!(

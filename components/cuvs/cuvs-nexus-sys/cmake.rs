@@ -331,3 +331,85 @@ pub(crate) fn locate_cuvs() -> Result<CuvsMetadata> {
 
     Ok(CuvsMetadata { include_dirs, native_link_dirs, runtime_lib_dirs, libcuvs_c, libcuvs, source_revision })
 }
+
+pub(crate) fn check_libcuvs_staleness(manifest_dir: &Path, metadata: &CuvsMetadata) {
+    if env::var_os("CUVS_RS_SKIP_STALENESS_CHECK").is_some() {
+        return;
+    }
+
+    let Ok(libcuvs_meta) = fs::metadata(&metadata.libcuvs) else { return };
+    let Ok(libcuvs_mtime) = libcuvs_meta.modified() else { return };
+
+    let cuvs_cpp = manifest_dir.join("../cuvs/cpp");
+    let scan_dirs = [cuvs_cpp.join("src"), cuvs_cpp.join("include")];
+
+    let mut newest: Option<(PathBuf, std::time::SystemTime)> = None;
+    let mut total_newer = 0usize;
+    for dir in &scan_dirs {
+        if !dir.is_dir() {
+            return;
+        }
+        let (dir_newest, count) = find_newest_cpp_source(dir, libcuvs_mtime);
+        total_newer += count;
+        if let Some(candidate) = dir_newest
+            && newest.as_ref().is_none_or(|(_, time)| candidate.1 > *time)
+        {
+            newest = Some(candidate);
+        }
+    }
+
+    if total_newer == 0 {
+        return;
+    }
+
+    let display_path = newest.expect("a newer cuvs source requires a newest source path").0.display().to_string();
+    println!(
+        "cargo:warning=libcuvs appears stale: {total_newer} source file(s) under cuvs/cpp/{{src,include}} are newer than {}. Run `bash scripts/build/build_libcuvs.sh` to rebuild libcuvs. (newest: {}) Set CUVS_RS_SKIP_STALENESS_CHECK=1 to silence.",
+        metadata.libcuvs.display(),
+        display_path,
+    );
+
+    if env::var_os("CUVS_RS_ENFORCE_STALENESS_CHECK").is_some() || env::var_os("CUVS_ENFORCE_STALENESS_CHECK").is_some()
+    {
+        panic!(
+            "\n{}\n[ERROR] libcuvs is stale: {total_newer} source file(s) under cuvs/cpp/{{src,include}} are newer than {}.\n\
+             Run `bash scripts/build/build_libcuvs.sh` to rebuild libcuvs, or set CUVS_RS_SKIP_STALENESS_CHECK=1 to silence.\n{}\n",
+            "=".repeat(80),
+            metadata.libcuvs.display(),
+            "=".repeat(80),
+        );
+    }
+}
+
+fn find_newest_cpp_source(
+    dir: &Path,
+    baseline: std::time::SystemTime,
+) -> (Option<(PathBuf, std::time::SystemTime)>, usize) {
+    let mut newest: Option<(PathBuf, std::time::SystemTime)> = None;
+    let mut newer_than_baseline = 0usize;
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(current) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&current) else { continue };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(file_type) = entry.file_type() else { continue };
+            if file_type.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            let extension = path.extension().and_then(|extension| extension.to_str()).unwrap_or("");
+            if !matches!(extension, "cpp" | "cu" | "hpp" | "cuh" | "h" | "c") {
+                continue;
+            }
+            let Ok(metadata) = entry.metadata() else { continue };
+            let Ok(mtime) = metadata.modified() else { continue };
+            if mtime > baseline {
+                newer_than_baseline += 1;
+            }
+            if newest.as_ref().is_none_or(|(_, time)| mtime > *time) {
+                newest = Some((path, mtime));
+            }
+        }
+    }
+    (newest, newer_than_baseline)
+}

@@ -96,8 +96,9 @@ pub(crate) fn prepare_workspace_cmake_export_dir(
     if !auto_build_enabled {
         return Err(format!(
             "Could not resolve the cuGraph native contract from '{}', and automatic native builds are disabled by \
-             CUGRAPH_SYS_AUTO_BUILD. Either build native cuGraph first, set CUGRAPH_CMAKE_BUILD_DIR, or set all of \
-             CUGRAPH_NATIVE_INCLUDE_DIRS, CUGRAPH_NATIVE_LINK_DIRS, and CUGRAPH_RUNTIME_LIB_DIRS.",
+             CUGRAPH_SYS_AUTO_BUILD. Either build native cuGraph with `bash scripts/build/build_libcugraph.sh`, \
+             set CUGRAPH_CMAKE_BUILD_DIR, or set all of CUGRAPH_NATIVE_INCLUDE_DIRS, CUGRAPH_NATIVE_LINK_DIRS, and \
+             CUGRAPH_RUNTIME_LIB_DIRS.",
             layout.build_dir.display()
         ));
     }
@@ -1353,4 +1354,88 @@ fn split_shell_words(input: &str) -> Result<Vec<String>, String> {
     }
 
     Ok(words)
+}
+
+pub(crate) fn check_libcugraph_staleness(manifest_dir: &Path, native_link_dirs: &[PathBuf]) {
+    if env::var_os("CUGRAPH_RS_SKIP_STALENESS_CHECK").is_some() {
+        return;
+    }
+
+    let Some(libcugraph_so) = native_link_dirs.iter().map(|dir| dir.join("libcugraph.so")).find(|path| path.is_file())
+    else {
+        return;
+    };
+    let Ok(libcugraph_meta) = fs::metadata(&libcugraph_so) else { return };
+    let Ok(libcugraph_mtime) = libcugraph_meta.modified() else { return };
+
+    let cugraph_cpp = manifest_dir.join("../cugraph/cpp");
+    let scan_dirs = [cugraph_cpp.join("src"), cugraph_cpp.join("include")];
+
+    let mut newest: Option<(PathBuf, SystemTime)> = None;
+    let mut total_newer = 0usize;
+    for dir in &scan_dirs {
+        if !dir.is_dir() {
+            return;
+        }
+        let (dir_newest, count) = find_newest_cpp_source(dir, libcugraph_mtime);
+        total_newer += count;
+        if let Some(candidate) = dir_newest
+            && newest.as_ref().is_none_or(|(_, time)| candidate.1 > *time)
+        {
+            newest = Some(candidate);
+        }
+    }
+
+    if total_newer == 0 {
+        return;
+    }
+
+    let display_path = newest.expect("a newer cugraph source requires a newest source path").0.display().to_string();
+    println!(
+        "cargo:warning=libcugraph appears stale: {total_newer} source file(s) under cugraph/cpp/{{src,include}} are newer than {}. Run `bash scripts/build/build_libcugraph.sh` to rebuild native cuGraph. (newest: {}) Set CUGRAPH_RS_SKIP_STALENESS_CHECK=1 to silence.",
+        libcugraph_so.display(),
+        display_path,
+    );
+
+    if env::var_os("CUGRAPH_RS_ENFORCE_STALENESS_CHECK").is_some()
+        || env::var_os("CUGRAPH_ENFORCE_STALENESS_CHECK").is_some()
+    {
+        panic!(
+            "\n{}\n[ERROR] libcugraph is stale: {total_newer} source file(s) under cugraph/cpp/{{src,include}} are newer than {}.\n\
+             Run `bash scripts/build/build_libcugraph.sh` to rebuild native cuGraph, or set CUGRAPH_RS_SKIP_STALENESS_CHECK=1 to silence.\n{}\n",
+            "=".repeat(80),
+            libcugraph_so.display(),
+            "=".repeat(80),
+        );
+    }
+}
+
+fn find_newest_cpp_source(dir: &Path, baseline: SystemTime) -> (Option<(PathBuf, SystemTime)>, usize) {
+    let mut newest: Option<(PathBuf, SystemTime)> = None;
+    let mut newer_than_baseline = 0usize;
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(current) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&current) else { continue };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(file_type) = entry.file_type() else { continue };
+            if file_type.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            let extension = path.extension().and_then(|extension| extension.to_str()).unwrap_or("");
+            if !matches!(extension, "cpp" | "cu" | "hpp" | "cuh" | "h" | "c") {
+                continue;
+            }
+            let Ok(metadata) = entry.metadata() else { continue };
+            let Ok(mtime) = metadata.modified() else { continue };
+            if mtime > baseline {
+                newer_than_baseline += 1;
+            }
+            if newest.as_ref().is_none_or(|(_, time)| mtime > *time) {
+                newest = Some((path, mtime));
+            }
+        }
+    }
+    (newest, newer_than_baseline)
 }
