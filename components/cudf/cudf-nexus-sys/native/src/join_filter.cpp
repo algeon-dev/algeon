@@ -98,10 +98,7 @@ cudf_status_t cudf_filtered_join_fixed_width_metadata_pre_build_reservation_size
     }
     rmm::mr::cuda_memory_resource memory_resource;
     *out = cudf::filtered_join::pre_build_reservation_size(
-      cudf::table_view{columns},
-      load_factor,
-      cudf::get_default_stream(),
-      memory_resource);
+      cudf::table_view{columns}, load_factor, cudf::get_default_stream(), memory_resource);
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH

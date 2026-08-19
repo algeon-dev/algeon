@@ -54,9 +54,9 @@ cudf_status_t cudf_distinct_count_workspace_preflight(
     auto const result = cudf::distinct_count_workspace_preflight(
       num_rows, cudf::data_type{to_cudf_type_id(key_type)}, null_count, key_count);
     out->preprocessing_retained_bytes = static_cast<uint64_t>(result.preprocessing_retained_bytes);
-    out->static_set_storage_bytes = static_cast<uint64_t>(result.static_set_storage_bytes);
-    out->insertion_count_bytes = static_cast<uint64_t>(result.insertion_count_bytes);
-    out->active_workspace_peak_bytes = static_cast<uint64_t>(result.active_workspace_peak_bytes);
+    out->static_set_storage_bytes     = static_cast<uint64_t>(result.static_set_storage_bytes);
+    out->insertion_count_bytes        = static_cast<uint64_t>(result.insertion_count_bytes);
+    out->active_workspace_peak_bytes  = static_cast<uint64_t>(result.active_workspace_peak_bytes);
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH

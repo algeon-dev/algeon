@@ -122,6 +122,14 @@ bool take_flag(bool& flag)
   return true;
 }
 
+template <typename Enum>
+bool take_fault(Enum& current, Enum expected)
+{
+  if (current != expected) { return false; }
+  current = Enum::none;
+  return true;
+}
+
 std::array<int64_t, 8> g_synthetic_column_view_dummy_storage{};
 }  // namespace
 
@@ -164,65 +172,43 @@ bool take_column_view_metadata_read_failure()
 
 bool take_fixed_width_host_import_after_data_copy()
 {
-  if (g_next_fixed_width_host_import_fault != fixed_width_host_import_fault::after_data_copy) {
-    return false;
-  }
-  g_next_fixed_width_host_import_fault = fixed_width_host_import_fault::none;
-  return true;
+  return take_fault(g_next_fixed_width_host_import_fault,
+                    fixed_width_host_import_fault::after_data_copy);
 }
 
 bool take_fixed_width_host_import_after_null_mask_copy()
 {
-  if (g_next_fixed_width_host_import_fault != fixed_width_host_import_fault::after_null_mask_copy) {
-    return false;
-  }
-  g_next_fixed_width_host_import_fault = fixed_width_host_import_fault::none;
-  return true;
+  return take_fault(g_next_fixed_width_host_import_fault,
+                    fixed_width_host_import_fault::after_null_mask_copy);
 }
 
 bool take_strings_host_import_after_offsets_copy()
 {
-  if (g_next_strings_host_import_fault != strings_host_import_fault::after_offsets_copy) {
-    return false;
-  }
-  g_next_strings_host_import_fault = strings_host_import_fault::none;
-  return true;
+  return take_fault(g_next_strings_host_import_fault,
+                    strings_host_import_fault::after_offsets_copy);
 }
 
 bool take_strings_host_import_after_chars_copy()
 {
-  if (g_next_strings_host_import_fault != strings_host_import_fault::after_chars_copy) {
-    return false;
-  }
-  g_next_strings_host_import_fault = strings_host_import_fault::none;
-  return true;
+  return take_fault(g_next_strings_host_import_fault, strings_host_import_fault::after_chars_copy);
 }
 
 bool take_strings_host_import_after_null_mask_copy()
 {
-  if (g_next_strings_host_import_fault != strings_host_import_fault::after_null_mask_copy) {
-    return false;
-  }
-  g_next_strings_host_import_fault = strings_host_import_fault::none;
-  return true;
+  return take_fault(g_next_strings_host_import_fault,
+                    strings_host_import_fault::after_null_mask_copy);
 }
 
 bool take_strings_host_import_before_make_strings_column()
 {
-  if (g_next_strings_host_import_fault != strings_host_import_fault::before_make_strings_column) {
-    return false;
-  }
-  g_next_strings_host_import_fault = strings_host_import_fault::none;
-  return true;
+  return take_fault(g_next_strings_host_import_fault,
+                    strings_host_import_fault::before_make_strings_column);
 }
 
 bool take_strings_host_import_after_make_strings_column()
 {
-  if (g_next_strings_host_import_fault != strings_host_import_fault::after_make_strings_column) {
-    return false;
-  }
-  g_next_strings_host_import_fault = strings_host_import_fault::none;
-  return true;
+  return take_fault(g_next_strings_host_import_fault,
+                    strings_host_import_fault::after_make_strings_column);
 }
 
 bool take_column_handle_release_failure()
