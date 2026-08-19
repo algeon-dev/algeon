@@ -102,11 +102,11 @@ cudf_status_t configure_parquet_reader_builder(Builder& builder,
   return CUDF_SUCCESS;
 }
 
-cudf_status_t validate_parquet_reader_args(const char** columns,
+cudf_status_t validate_parquet_reader_args(char const** columns,
                                            int32_t num_columns,
                                            int64_t skip_rows,
                                            int64_t num_rows,
-                                           const int32_t* row_groups,
+                                           int32_t const* row_groups,
                                            int32_t num_row_groups)
 {
   if (num_columns < 0) {
@@ -137,13 +137,13 @@ cudf_status_t validate_parquet_reader_args(const char** columns,
   return CUDF_SUCCESS;
 }
 
-cudf_status_t validate_parquet_multi_reader_args(const char** filepaths,
+cudf_status_t validate_parquet_multi_reader_args(char const** filepaths,
                                                  int32_t num_files,
-                                                 const char** columns,
+                                                 char const** columns,
                                                  int32_t num_columns,
-                                                 const int32_t* row_group_offsets,
+                                                 int32_t const* row_group_offsets,
                                                  int32_t num_row_group_offsets,
-                                                 const int32_t* row_groups,
+                                                 int32_t const* row_groups,
                                                  int32_t num_row_groups)
 {
   if (num_files <= 0) {
@@ -220,7 +220,7 @@ cudf_status_t validate_parquet_multi_reader_args(const char** filepaths,
   return CUDF_SUCCESS;
 }
 
-cudf_status_t validate_host_parquet_buffer(const void* host_buffer, size_t host_buffer_len)
+cudf_status_t validate_host_parquet_buffer(void const* host_buffer, size_t host_buffer_len)
 {
   if (host_buffer_len == 0) {
     set_error("host_buffer_len must be > 0");
@@ -265,7 +265,7 @@ char** copy_schema_names(cudf::io::table_metadata const& metadata, int32_t* out_
   return names;
 }
 
-std::optional<std::string> optional_c_string(const char* value)
+std::optional<std::string> optional_c_string(char const* value)
 {
   if (value == nullptr || value[0] == '\0') { return std::nullopt; }
   return std::string(value);
@@ -558,7 +558,7 @@ void validate_remote_endpoint_url_no_secret(std::optional<std::string> const& en
 }
 
 std::unique_ptr<kvikio::RemoteEndpoint> make_remote_endpoint(
-  const char* uri, const cudf_io_remote_parquet_profile_t* profile)
+  char const* uri, cudf_io_remote_parquet_profile_t const* profile)
 {
   std::string url(uri);
   if (url.size() < 5 || (url[0] != 's' && url[0] != 'S') || url[1] != '3' || url[2] != ':' ||
@@ -608,8 +608,8 @@ std::unique_ptr<kvikio::RemoteEndpoint> make_remote_endpoint(
 }
 
 std::unique_ptr<counted_remote_parquet_source> make_counted_remote_source(
-  const char* uri,
-  const cudf_io_remote_parquet_profile_t* profile,
+  char const* uri,
+  cudf_io_remote_parquet_profile_t const* profile,
   std::shared_ptr<cuda::mr::any_resource<cuda::mr::device_accessible>> mr,
   std::shared_ptr<void> mr_lifetime)
 {
@@ -672,12 +672,12 @@ void write_remote_read_evidence(cudf_io_remote_parquet_read_evidence_t* out,
 }  // namespace
 
 extern "C" {
-cudf_status_t cudf_io_read_parquet_ex(const char* filepath,
-                                      const char** columns,
+cudf_status_t cudf_io_read_parquet_ex(char const* filepath,
+                                      char const** columns,
                                       int32_t num_columns,
                                       int64_t skip_rows,
                                       int64_t num_rows,
-                                      const int32_t* row_groups,
+                                      int32_t const* row_groups,
                                       int32_t num_row_groups,
                                       cudf_table_handle* out,
                                       cudf_exec_options_t const* exec_options)
@@ -713,13 +713,13 @@ cudf_status_t cudf_io_read_parquet_ex(const char* filepath,
   CUDF_RUST_IO_CATCH
 }
 
-cudf_status_t cudf_io_read_parquet_from_host_buffer_ex(const void* host_buffer,
+cudf_status_t cudf_io_read_parquet_from_host_buffer_ex(void const* host_buffer,
                                                        size_t host_buffer_len,
-                                                       const char** columns,
+                                                       char const** columns,
                                                        int32_t num_columns,
                                                        int64_t skip_rows,
                                                        int64_t num_rows,
-                                                       const int32_t* row_groups,
+                                                       int32_t const* row_groups,
                                                        int32_t num_row_groups,
                                                        cudf_table_handle* out,
                                                        cudf_exec_options_t const* exec_options)
@@ -758,8 +758,8 @@ cudf_status_t cudf_io_read_parquet_from_host_buffer_ex(const void* host_buffer,
 }
 
 cudf_status_t cudf_io_write_parquet_ex(cudf_table_view_handle table,
-                                       const char* filepath,
-                                       const char** column_names,
+                                       char const* filepath,
+                                       char const** column_names,
                                        int32_t num_columns,
                                        int32_t row_group_size_rows,
                                        int32_t dictionary_policy,
@@ -818,12 +818,12 @@ cudf_status_t cudf_io_write_parquet_ex(cudf_table_view_handle table,
   CUDF_RUST_IO_CATCH
 }
 
-cudf_status_t cudf_io_read_parquet_with_metadata_ex(const char* filepath,
-                                                    const char** columns,
+cudf_status_t cudf_io_read_parquet_with_metadata_ex(char const* filepath,
+                                                    char const** columns,
                                                     int32_t num_columns,
                                                     int64_t skip_rows,
                                                     int64_t num_rows,
-                                                    const int32_t* row_groups,
+                                                    int32_t const* row_groups,
                                                     int32_t num_row_groups,
                                                     cudf_table_handle* out_table,
                                                     char*** out_names,
@@ -882,12 +882,12 @@ cudf_status_t cudf_io_read_parquet_with_metadata_ex(const char* filepath,
 }
 
 cudf_status_t cudf_io_read_parquet_with_metadata_filter_ex(
-  const char* filepath,
-  const char** columns,
+  char const* filepath,
+  char const** columns,
   int32_t num_columns,
   int64_t skip_rows,
   int64_t num_rows,
-  const int32_t* row_groups,
+  int32_t const* row_groups,
   int32_t num_row_groups,
   cudf_ast_expression_handle predicate,
   cudf_table_handle* out_table,
@@ -953,13 +953,13 @@ cudf_status_t cudf_io_read_parquet_with_metadata_filter_ex(
 }
 
 cudf_status_t cudf_io_read_remote_parquet_with_metadata_filter_ex(
-  const char* uri,
-  const cudf_io_remote_parquet_profile_t* profile,
-  const char** columns,
+  char const* uri,
+  cudf_io_remote_parquet_profile_t const* profile,
+  char const** columns,
   int32_t num_columns,
   int64_t skip_rows,
   int64_t num_rows,
-  const int32_t* row_groups,
+  int32_t const* row_groups,
   int32_t num_row_groups,
   cudf_ast_expression_handle predicate,
   cudf_table_handle* out_table,
@@ -1037,13 +1037,13 @@ cudf_status_t cudf_io_read_remote_parquet_with_metadata_filter_ex(
 }
 
 cudf_status_t cudf_io_read_parquet_multi_with_metadata_filter_ex(
-  const char** filepaths,
+  char const** filepaths,
   int32_t num_files,
-  const char** columns,
+  char const** columns,
   int32_t num_columns,
-  const int32_t* row_group_offsets,
+  int32_t const* row_group_offsets,
   int32_t num_row_group_offsets,
-  const int32_t* row_groups,
+  int32_t const* row_groups,
   int32_t num_row_groups,
   cudf_ast_expression_handle predicate,
   cudf_table_handle* out_table,
@@ -1140,15 +1140,15 @@ cudf_status_t cudf_io_read_parquet_multi_with_metadata_filter_ex(
 }
 
 cudf_status_t cudf_io_read_parquet_multi_mixed_with_metadata_filter_ex(
-  const char** filepaths,
-  const int32_t* remote_source_flags,
-  const cudf_io_remote_parquet_profile_t* profiles,
+  char const** filepaths,
+  int32_t const* remote_source_flags,
+  cudf_io_remote_parquet_profile_t const* profiles,
   int32_t num_files,
-  const char** columns,
+  char const** columns,
   int32_t num_columns,
-  const int32_t* row_group_offsets,
+  int32_t const* row_group_offsets,
   int32_t num_row_group_offsets,
-  const int32_t* row_groups,
+  int32_t const* row_groups,
   int32_t num_row_groups,
   cudf_ast_expression_handle predicate,
   cudf_table_handle* out_table,
@@ -1292,13 +1292,13 @@ cudf_status_t cudf_io_read_parquet_multi_mixed_with_metadata_filter_ex(
 }
 
 cudf_status_t cudf_io_read_parquet_from_host_buffer_with_metadata_filter_ex(
-  const void* host_buffer,
+  void const* host_buffer,
   size_t host_buffer_len,
-  const char** columns,
+  char const** columns,
   int32_t num_columns,
   int64_t skip_rows,
   int64_t num_rows,
-  const int32_t* row_groups,
+  int32_t const* row_groups,
   int32_t num_row_groups,
   cudf_ast_expression_handle predicate,
   cudf_table_handle* out_table,
@@ -1507,8 +1507,8 @@ cudf_status_t cudf_io_probe_path_datasource(const char* filepath,
 }
 
 cudf_status_t cudf_io_probe_remote_parquet_datasource(
-  const char* uri,
-  const cudf_io_remote_parquet_profile_t* profile,
+  char const* uri,
+  cudf_io_remote_parquet_profile_t const* profile,
   int64_t preferred_read_size,
   cudf_io_datasource_probe_result_t* out)
 {

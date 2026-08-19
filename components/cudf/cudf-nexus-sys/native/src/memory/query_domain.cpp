@@ -38,12 +38,13 @@ query_domain_state::~query_domain_state()
   }
 }
 
-query_domain_resource::query_domain_resource(cudaMemPool_t pool,
-                                             std::uint64_t domain_id,
-                                             std::uint64_t domain_generation,
-                                             std::size_t grant_bytes,
-                                             std::size_t requested_ceiling_bytes,
-                                             std::shared_ptr<manager_allocation_limit_state> manager_allocation_limit)
+query_domain_resource::query_domain_resource(
+  cudaMemPool_t pool,
+  std::uint64_t domain_id,
+  std::uint64_t domain_generation,
+  std::size_t grant_bytes,
+  std::size_t requested_ceiling_bytes,
+  std::shared_ptr<manager_allocation_limit_state> manager_allocation_limit)
   : view_{pool},
     domain_id_{domain_id},
     domain_generation_{domain_generation},
@@ -249,7 +250,8 @@ void* query_domain_resource::allocate_impl(
                                    view_.pool_handle()};
   }
 
-  if (manager_allocation_limit_ != nullptr && !manager_allocation_limit_->try_reserve(aligned_bytes)) {
+  if (manager_allocation_limit_ != nullptr &&
+      !manager_allocation_limit_->try_reserve(aligned_bytes)) {
     current_aligned_bytes_.fetch_sub(aligned_bytes);
     if (member != nullptr) { member->current_aligned_bytes.fetch_sub(aligned_bytes); }
     record_failed_allocation(bytes);
@@ -501,7 +503,7 @@ std::shared_ptr<query_domain_state> reservation_aware_resource_adaptor::create_q
   // free to reserve its own page-granular backing for those accepted bytes.
   props.maxSize = 0;
 #endif
-  cudaMemPool_t pool  = nullptr;
+  cudaMemPool_t pool = nullptr;
   CUDF_CUDA_TRY(cudaMemPoolCreate(&pool, &props));
   try {
     CUDF_CUDA_TRY(
@@ -514,13 +516,12 @@ std::shared_ptr<query_domain_state> reservation_aware_resource_adaptor::create_q
     state->pool          = domain_pool;
     pool                 = nullptr;
     state->ceiling_bytes = ceiling_bytes;
-    state->resource                = std::make_shared<query_domain_resource>(
-      domain_pool,
-      domain_id,
-      state->generation,
-      grant_bytes,
-      state->ceiling_bytes,
-      std::move(manager_allocation_limit));
+    state->resource      = std::make_shared<query_domain_resource>(domain_pool,
+                                                              domain_id,
+                                                              state->generation,
+                                                              grant_bytes,
+                                                              state->ceiling_bytes,
+                                                              std::move(manager_allocation_limit));
     {
       std::unique_lock lock{query_domain_mutex_};
       query_domains_by_pool_[domain_pool] = state;
@@ -946,7 +947,7 @@ cudf_status_t cudf_query_memory_domain_usage(cudf_query_memory_domain_handle dom
   {
     auto& state   = *reinterpret_cast<query_domain_handle_state*>(domain);
     auto* adaptor = state.manager->owner->reservation_adaptor;
-    *out = adaptor->query_domain_usage(state.domain);
+    *out          = adaptor->query_domain_usage(state.domain);
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -960,7 +961,7 @@ cudf_status_t cudf_query_memory_domain_identity(cudf_query_memory_domain_handle 
   CUDF_RUST_NULL_CHECK(domain, "query memory domain is null");
   CUDF_RUST_TRY
   {
-    auto const& state = *reinterpret_cast<query_domain_handle_state*>(domain);
+    auto const& state   = *reinterpret_cast<query_domain_handle_state*>(domain);
     out->struct_size    = sizeof(cudf_query_memory_domain_identity_t);
     out->device_ordinal = state.manager->device;
     out->domain_id      = state.domain->id;

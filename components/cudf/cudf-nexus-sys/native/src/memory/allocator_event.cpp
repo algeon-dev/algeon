@@ -10,11 +10,12 @@ namespace {
 [[nodiscard]] std::uint64_t monotonic_time_ns(std::uint32_t& completeness) noexcept
 {
   timespec timestamp{};
-  if (clock_gettime(CLOCK_MONOTONIC, &timestamp) != 0 || timestamp.tv_sec < 0 || timestamp.tv_nsec < 0) {
+  if (clock_gettime(CLOCK_MONOTONIC, &timestamp) != 0 || timestamp.tv_sec < 0 ||
+      timestamp.tv_nsec < 0) {
     return 0;
   }
   constexpr auto k_nanoseconds_per_second = std::uint64_t{1'000'000'000};
-  auto const seconds                       = static_cast<std::uint64_t>(timestamp.tv_sec);
+  auto const seconds                      = static_cast<std::uint64_t>(timestamp.tv_sec);
   if (seconds > std::numeric_limits<std::uint64_t>::max() / k_nanoseconds_per_second) { return 0; }
   completeness |= CUDF_ALLOCATOR_EVENT_COMPLETENESS_HAS_TIMESTAMP;
   return seconds * k_nanoseconds_per_second + static_cast<std::uint64_t>(timestamp.tv_nsec);
@@ -60,7 +61,8 @@ void allocator_event_ring::record(cudf_memory_failure_info_t const& info,
 
   std::uint32_t completeness = CUDF_ALLOCATOR_EVENT_COMPLETENESS_HAS_ACTION;
   auto const time_ns         = monotonic_time_ns(completeness);
-  bool const has_domain = identity.kind != CUDF_MEMORY_FAILURE_DOMAIN_NONE && identity.generation != 0;
+  bool const has_domain =
+    identity.kind != CUDF_MEMORY_FAILURE_DOMAIN_NONE && identity.generation != 0;
   if (has_domain) { completeness |= CUDF_ALLOCATOR_EVENT_COMPLETENESS_HAS_DOMAIN_IDENTITY; }
   if ((info.flags & CUDF_MEMORY_FAILURE_INFO_HAS_POOL_USAGE) != 0) {
     completeness |= CUDF_ALLOCATOR_EVENT_COMPLETENESS_HAS_POOL_USAGE;
@@ -84,7 +86,8 @@ void allocator_event_ring::record(cudf_memory_failure_info_t const& info,
   target.domain_generation.store(has_domain ? identity.generation : 0, std::memory_order_release);
   target.domain_member_id.store(has_domain ? identity.secondary_id : 0, std::memory_order_release);
   target.requested_bytes.store(info.requested_bytes, std::memory_order_release);
-  target.pool_reserved_current_bytes.store(info.pool_reserved_current_bytes, std::memory_order_release);
+  target.pool_reserved_current_bytes.store(info.pool_reserved_current_bytes,
+                                           std::memory_order_release);
   target.pool_reserved_high_bytes.store(info.pool_reserved_high_bytes, std::memory_order_release);
   target.pool_used_current_bytes.store(info.pool_used_current_bytes, std::memory_order_release);
   target.pool_used_high_bytes.store(info.pool_used_high_bytes, std::memory_order_release);
@@ -95,8 +98,8 @@ void allocator_event_ring::record(cudf_memory_failure_info_t const& info,
 [[nodiscard]] cudf_allocator_event_ring_bounds_t allocator_event_ring::bounds() const noexcept
 {
   cudf_allocator_event_ring_bounds_t out{};
-  out.struct_size = sizeof(cudf_allocator_event_ring_bounds_t);
-  out.capacity    = k_capacity;
+  out.struct_size   = sizeof(cudf_allocator_event_ring_bounds_t);
+  out.capacity      = k_capacity;
   out.next_sequence = next_sequence_.load(std::memory_order_acquire);
   if (out.next_sequence > 1) {
     out.first_available_sequence =
@@ -112,41 +115,48 @@ void allocator_event_ring::record(cudf_memory_failure_info_t const& info,
   if (sequence == 0) { return CUDF_ALLOCATOR_EVENT_READ_NOT_YET_RECORDED; }
 
   auto current_bounds = bounds();
-  if (sequence >= current_bounds.next_sequence) { return CUDF_ALLOCATOR_EVENT_READ_NOT_YET_RECORDED; }
-  if (sequence < current_bounds.first_available_sequence) { return CUDF_ALLOCATOR_EVENT_READ_OVERWRITTEN; }
+  if (sequence >= current_bounds.next_sequence) {
+    return CUDF_ALLOCATOR_EVENT_READ_NOT_YET_RECORDED;
+  }
+  if (sequence < current_bounds.first_available_sequence) {
+    return CUDF_ALLOCATOR_EVENT_READ_OVERWRITTEN;
+  }
 
   auto const& source = slots_[(sequence - 1) % k_capacity];
   if (source.published_sequence.load(std::memory_order_acquire) != sequence) {
     // Recheck against a fresh producer cursor so a concurrent wrap is reported
     // as overwrite rather than a permanently pending record.
     current_bounds = bounds();
-    return sequence < current_bounds.first_available_sequence ? CUDF_ALLOCATOR_EVENT_READ_OVERWRITTEN
-                                                               : CUDF_ALLOCATOR_EVENT_READ_PENDING;
+    return sequence < current_bounds.first_available_sequence
+             ? CUDF_ALLOCATOR_EVENT_READ_OVERWRITTEN
+             : CUDF_ALLOCATOR_EVENT_READ_PENDING;
   }
 
-  out.sequence                    = sequence;
-  out.monotonic_time_ns           = source.monotonic_time_ns.load(std::memory_order_acquire);
-  out.device_ordinal              = source.device_ordinal.load(std::memory_order_acquire);
-  out.completeness                = source.completeness.load(std::memory_order_acquire);
-  out.domain_kind                 = source.domain_kind.load(std::memory_order_acquire);
-  out.failure_source              = source.failure_source.load(std::memory_order_acquire);
-  out.action                      = source.action.load(std::memory_order_acquire);
-  out.callback_attempt            = source.callback_attempt.load(std::memory_order_acquire);
-  out.trim_retry_count            = source.trim_retry_count.load(std::memory_order_acquire);
-  out.domain_id                   = source.domain_id.load(std::memory_order_acquire);
-  out.domain_generation           = source.domain_generation.load(std::memory_order_acquire);
-  out.domain_member_id            = source.domain_member_id.load(std::memory_order_acquire);
-  out.requested_bytes             = source.requested_bytes.load(std::memory_order_acquire);
-  out.pool_reserved_current_bytes = source.pool_reserved_current_bytes.load(std::memory_order_acquire);
-  out.pool_reserved_high_bytes    = source.pool_reserved_high_bytes.load(std::memory_order_acquire);
-  out.pool_used_current_bytes     = source.pool_used_current_bytes.load(std::memory_order_acquire);
-  out.pool_used_high_bytes        = source.pool_used_high_bytes.load(std::memory_order_acquire);
+  out.sequence          = sequence;
+  out.monotonic_time_ns = source.monotonic_time_ns.load(std::memory_order_acquire);
+  out.device_ordinal    = source.device_ordinal.load(std::memory_order_acquire);
+  out.completeness      = source.completeness.load(std::memory_order_acquire);
+  out.domain_kind       = source.domain_kind.load(std::memory_order_acquire);
+  out.failure_source    = source.failure_source.load(std::memory_order_acquire);
+  out.action            = source.action.load(std::memory_order_acquire);
+  out.callback_attempt  = source.callback_attempt.load(std::memory_order_acquire);
+  out.trim_retry_count  = source.trim_retry_count.load(std::memory_order_acquire);
+  out.domain_id         = source.domain_id.load(std::memory_order_acquire);
+  out.domain_generation = source.domain_generation.load(std::memory_order_acquire);
+  out.domain_member_id  = source.domain_member_id.load(std::memory_order_acquire);
+  out.requested_bytes   = source.requested_bytes.load(std::memory_order_acquire);
+  out.pool_reserved_current_bytes =
+    source.pool_reserved_current_bytes.load(std::memory_order_acquire);
+  out.pool_reserved_high_bytes = source.pool_reserved_high_bytes.load(std::memory_order_acquire);
+  out.pool_used_current_bytes  = source.pool_used_current_bytes.load(std::memory_order_acquire);
+  out.pool_used_high_bytes     = source.pool_used_high_bytes.load(std::memory_order_acquire);
 
   if (source.published_sequence.load(std::memory_order_acquire) != sequence) {
     initialize_event(out);
     current_bounds = bounds();
-    return sequence < current_bounds.first_available_sequence ? CUDF_ALLOCATOR_EVENT_READ_OVERWRITTEN
-                                                               : CUDF_ALLOCATOR_EVENT_READ_PENDING;
+    return sequence < current_bounds.first_available_sequence
+             ? CUDF_ALLOCATOR_EVENT_READ_OVERWRITTEN
+             : CUDF_ALLOCATOR_EVENT_READ_PENDING;
   }
   return CUDF_ALLOCATOR_EVENT_READ_AVAILABLE;
 }

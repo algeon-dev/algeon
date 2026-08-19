@@ -212,7 +212,7 @@ cudf_status_t cudf_device_buffer_size(cudf_device_buffer_handle handle, size_t* 
 }
 
 cudf_status_t cudf_device_buffer_copy_from_host_ex(cudf_device_buffer_handle handle,
-                                                   const void* host_data,
+                                                   void const* host_data,
                                                    size_t size,
                                                    cudf_exec_options_t const* options)
 {
@@ -245,7 +245,7 @@ cudf_status_t cudf_device_buffer_copy_from_host_ex(cudf_device_buffer_handle han
 
 cudf_status_t cudf_device_buffer_copy_from_host_range_async_ex(cudf_device_buffer_handle handle,
                                                                size_t dst_offset,
-                                                               const void* host_data,
+                                                               void const* host_data,
                                                                size_t size,
                                                                cudf_exec_options_t const* options)
 {

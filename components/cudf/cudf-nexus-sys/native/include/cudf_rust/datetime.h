@@ -38,7 +38,7 @@ typedef enum {
 cudf_status_t cudf_datetime_extract_component_ex(cudf_column_view_handle input,
                                                  cudf_datetime_component_t component,
                                                  cudf_column_handle* out,
-                                                 const cudf_exec_options_t* options);
+                                                 cudf_exec_options_t const* options);
 
 /// Floor datetimes to the requested frequency with explicit execution context.
 ///
@@ -48,7 +48,7 @@ cudf_status_t cudf_datetime_extract_component_ex(cudf_column_view_handle input,
 cudf_status_t cudf_datetime_floor_ex(cudf_column_view_handle input,
                                      cudf_datetime_rounding_frequency_t frequency,
                                      cudf_column_handle* out,
-                                     const cudf_exec_options_t* options);
+                                     cudf_exec_options_t const* options);
 
 /// Add calendrical months to a timestamp column with explicit execution
 /// context.
@@ -59,7 +59,7 @@ cudf_status_t cudf_datetime_floor_ex(cudf_column_view_handle input,
 cudf_status_t cudf_datetime_add_calendrical_months_scalar_ex(cudf_column_view_handle input,
                                                              int32_t months,
                                                              cudf_column_handle* out,
-                                                             const cudf_exec_options_t* options);
+                                                             cudf_exec_options_t const* options);
 
 #ifdef __cplusplus
 }

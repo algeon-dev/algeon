@@ -29,14 +29,14 @@ typedef enum {
 /// `options->mr` must outlive the returned column.
 cudf_status_t cudf_strings_to_lower_ex(cudf_column_view_handle input,
                                        cudf_column_handle* out,
-                                       const cudf_exec_options_t* options);
+                                       cudf_exec_options_t const* options);
 
 /// Convert string column to uppercase with explicit execution context.
 /// `options` must name an explicit valid device and non-NULL stream/MR.
 /// `options->mr` must outlive the returned column.
 cudf_status_t cudf_strings_to_upper_ex(cudf_column_view_handle input,
                                        cudf_column_handle* out,
-                                       const cudf_exec_options_t* options);
+                                       cudf_exec_options_t const* options);
 
 // ---------------------------------------------------------------------------
 // Find / contains / starts_with / ends_with (scalar target)
@@ -49,7 +49,7 @@ cudf_status_t cudf_strings_to_upper_ex(cudf_column_view_handle input,
 cudf_status_t cudf_strings_contains_ex(cudf_column_view_handle input,
                                        cudf_scalar_handle target,
                                        cudf_column_handle* out,
-                                       const cudf_exec_options_t* options);
+                                       cudf_exec_options_t const* options);
 
 /// Element-wise starts-with with explicit execution context.
 /// Returns BOOL8 column.
@@ -58,7 +58,7 @@ cudf_status_t cudf_strings_contains_ex(cudf_column_view_handle input,
 cudf_status_t cudf_strings_starts_with_ex(cudf_column_view_handle input,
                                           cudf_scalar_handle target,
                                           cudf_column_handle* out,
-                                          const cudf_exec_options_t* options);
+                                          cudf_exec_options_t const* options);
 
 /// Element-wise ends-with with explicit execution context.
 /// Returns BOOL8 column.
@@ -67,7 +67,7 @@ cudf_status_t cudf_strings_starts_with_ex(cudf_column_view_handle input,
 cudf_status_t cudf_strings_ends_with_ex(cudf_column_view_handle input,
                                         cudf_scalar_handle target,
                                         cudf_column_handle* out,
-                                        const cudf_exec_options_t* options);
+                                        cudf_exec_options_t const* options);
 
 /// Element-wise SQL LIKE pattern match with explicit execution context.
 /// Returns BOOL8 column.
@@ -80,12 +80,12 @@ cudf_status_t cudf_strings_ends_with_ex(cudf_column_view_handle input,
 /// `options` must name an explicit valid device and non-NULL stream/MR.
 /// `options->mr` must outlive the returned column.
 cudf_status_t cudf_strings_like_ex(cudf_column_view_handle input,
-                                   const char* pattern,
+                                   char const* pattern,
                                    int32_t pattern_len,
-                                   const char* escape_character,
+                                   char const* escape_character,
                                    int32_t escape_character_len,
                                    cudf_column_handle* out,
-                                   const cudf_exec_options_t* options);
+                                   cudf_exec_options_t const* options);
 
 /// Element-wise regex replacement with back-reference templates and explicit
 /// execution context. Returns STRING column.
@@ -97,12 +97,12 @@ cudf_status_t cudf_strings_like_ex(cudf_column_view_handle input,
 /// `options` must name an explicit valid device and non-NULL stream/MR.
 /// `options->mr` must outlive the returned column.
 cudf_status_t cudf_strings_replace_with_backrefs_ex(cudf_column_view_handle input,
-                                                    const char* pattern,
+                                                    char const* pattern,
                                                     int32_t pattern_len,
-                                                    const char* replacement,
+                                                    char const* replacement,
                                                     int32_t replacement_len,
                                                     cudf_column_handle* out,
-                                                    const cudf_exec_options_t* options);
+                                                    cudf_exec_options_t const* options);
 
 /// Exact retained-output / temporary-workspace preflight for
 /// `cudf_strings_replace_with_backrefs_ex`.
@@ -121,14 +121,14 @@ cudf_status_t cudf_strings_replace_with_backrefs_ex(cudf_column_view_handle inpu
 /// replacement memory is no longer in use. `options` must name an explicit
 /// valid device and non-NULL stream/MR.
 cudf_status_t cudf_strings_replace_with_backrefs_output_size_ex(cudf_column_view_handle input,
-                                                                const char* pattern,
+                                                                char const* pattern,
                                                                 int32_t pattern_len,
-                                                                const char* replacement,
+                                                                char const* replacement,
                                                                 int32_t replacement_len,
                                                                 size_t* retained_output_bytes,
                                                                 size_t* temporary_workspace_bytes,
                                                                 size_t* reservation_required_bytes,
-                                                                const cudf_exec_options_t* options);
+                                                                cudf_exec_options_t const* options);
 
 /// Opaque prepared replace-with-backrefs handle.
 ///
@@ -154,12 +154,12 @@ typedef struct cudf_prepared_replace_with_backrefs_handle_state*
 /// valid device and non-NULL stream/MR. `options->mr` must outlive the handle.
 cudf_status_t cudf_strings_prepare_replace_with_backrefs_ex(
   cudf_column_view_handle input,
-  const char* pattern,
+  char const* pattern,
   int32_t pattern_len,
-  const char* replacement,
+  char const* replacement,
   int32_t replacement_len,
   cudf_prepared_replace_with_backrefs_handle* out,
-  const cudf_exec_options_t* options);
+  cudf_exec_options_t const* options);
 
 /// Read exact output-size / retained-state facts from a prepared handle.
 cudf_status_t cudf_strings_prepared_replace_with_backrefs_output_size_facts(
@@ -167,8 +167,7 @@ cudf_status_t cudf_strings_prepared_replace_with_backrefs_output_size_facts(
   size_t* retained_output_bytes,
   size_t* retained_state_bytes,
   size_t* peak_execute_workspace_bytes,
-  size_t* execute_reservation_required_bytes,
-  uint64_t* size_pass_count);
+  size_t* execute_reservation_required_bytes);
 
 /// Consume prepared replace state and run only the write pass.
 ///
@@ -181,20 +180,12 @@ cudf_status_t cudf_strings_execute_replace_with_backrefs_ex(
   cudf_column_view_handle input,
   cudf_prepared_replace_with_backrefs_handle handle,
   cudf_column_handle* out,
-  const cudf_exec_options_t* options);
+  cudf_exec_options_t const* options);
 
 /// Destroy an unused prepared replace handle. Ownership is consumed on call;
 /// success means cleanup completed and failure means the handle is quarantined.
 cudf_status_t cudf_strings_prepared_replace_with_backrefs_destroy(
   cudf_prepared_replace_with_backrefs_handle handle);
-
-/// Process-local number of replace-with-backrefs size-kernel launches.
-/// Intended for tests that prove prepared execute performs one size traversal
-/// per prepare, not a second size traversal on execute.
-cudf_status_t cudf_strings_replace_with_backrefs_size_pass_count(uint64_t* out);
-
-/// Reset the process-local size-pass counter used by tests.
-cudf_status_t cudf_strings_replace_with_backrefs_reset_size_pass_count(void);
 
 // ---------------------------------------------------------------------------
 // Slice
@@ -211,7 +202,7 @@ cudf_status_t cudf_strings_slice_ex(cudf_column_view_handle input,
                                     int32_t stop_valid,
                                     int32_t step,
                                     cudf_column_handle* out,
-                                    const cudf_exec_options_t* options);
+                                    cudf_exec_options_t const* options);
 
 // ---------------------------------------------------------------------------
 // Concatenate
@@ -221,10 +212,10 @@ cudf_status_t cudf_strings_slice_ex(cudf_column_view_handle input,
 /// Uses an empty separator. Null inputs are replaced with empty strings.
 /// `options` must name an explicit valid device and non-NULL stream/MR.
 /// `options->mr` must outlive the returned column.
-cudf_status_t cudf_strings_concatenate_ex(const cudf_column_view_handle* columns,
+cudf_status_t cudf_strings_concatenate_ex(cudf_column_view_handle const* columns,
                                           int32_t num_columns,
                                           cudf_column_handle* out,
-                                          const cudf_exec_options_t* options);
+                                          cudf_exec_options_t const* options);
 
 // ---------------------------------------------------------------------------
 // Strip / trim
@@ -240,7 +231,7 @@ cudf_status_t cudf_strings_strip_ex(cudf_column_view_handle input,
                                     cudf_strip_side_t side,
                                     cudf_scalar_handle to_strip,
                                     cudf_column_handle* out,
-                                    const cudf_exec_options_t* options);
+                                    cudf_exec_options_t const* options);
 
 // ---------------------------------------------------------------------------
 // Attributes
@@ -252,7 +243,7 @@ cudf_status_t cudf_strings_strip_ex(cudf_column_view_handle input,
 /// `options->mr` must outlive the returned column.
 cudf_status_t cudf_strings_count_characters_ex(cudf_column_view_handle input,
                                                cudf_column_handle* out,
-                                               const cudf_exec_options_t* options);
+                                               cudf_exec_options_t const* options);
 
 /// Byte count with explicit execution context.
 /// Returns INT32 column.
@@ -260,7 +251,7 @@ cudf_status_t cudf_strings_count_characters_ex(cudf_column_view_handle input,
 /// `options->mr` must outlive the returned column.
 cudf_status_t cudf_strings_count_bytes_ex(cudf_column_view_handle input,
                                           cudf_column_handle* out,
-                                          const cudf_exec_options_t* options);
+                                          cudf_exec_options_t const* options);
 
 // ---------------------------------------------------------------------------
 // Numeric conversion (null-on-failure / TRY_CAST contract)
@@ -282,7 +273,7 @@ cudf_status_t cudf_strings_count_bytes_ex(cudf_column_view_handle input,
 cudf_status_t cudf_strings_try_to_integers_ex(cudf_column_view_handle input,
                                               cudf_data_type_handle output_type,
                                               cudf_column_handle* out,
-                                              const cudf_exec_options_t* options);
+                                              cudf_exec_options_t const* options);
 
 #ifdef __cplusplus
 }

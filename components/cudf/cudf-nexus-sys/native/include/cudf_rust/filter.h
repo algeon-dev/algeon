@@ -24,7 +24,7 @@ extern "C" {
 cudf_status_t cudf_apply_boolean_mask_ex(cudf_table_view_handle input,
                                          cudf_column_view_handle mask,
                                          cudf_table_handle* out,
-                                         const cudf_exec_options_t* options);
+                                         cudf_exec_options_t const* options);
 
 /// Node kinds for a validated row-predicate AST.
 typedef enum {
@@ -55,7 +55,7 @@ cudf_status_t cudf_filter_rows_by_predicate_ex(cudf_table_view_handle input,
                                                int32_t num_nodes,
                                                int32_t root_index,
                                                cudf_table_handle* out,
-                                               const cudf_exec_options_t* options);
+                                               cudf_exec_options_t const* options);
 
 #ifdef __cplusplus
 }

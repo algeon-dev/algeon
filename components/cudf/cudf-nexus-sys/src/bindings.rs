@@ -3124,7 +3124,6 @@ unsafe extern "C" {
         retained_state_bytes: *mut usize,
         peak_execute_workspace_bytes: *mut usize,
         execute_reservation_required_bytes: *mut usize,
-        size_pass_count: *mut u64,
     ) -> cudf_status_t;
     #[doc = " Consume prepared replace state and run only the write pass.\n\n Ownership of `handle` is consumed on call. Must not re-run the size kernel.\n Input and stream must be identical to those supplied to prepare.\n On success, synchronizes the selected stream. `options` must name an\n explicit valid device and non-NULL stream/MR. `options->mr` must outlive the\n returned column."]
     pub fn cudf_strings_execute_replace_with_backrefs_ex(
@@ -3137,10 +3136,6 @@ unsafe extern "C" {
     pub fn cudf_strings_prepared_replace_with_backrefs_destroy(
         handle: cudf_prepared_replace_with_backrefs_handle,
     ) -> cudf_status_t;
-    #[doc = " Process-local number of replace-with-backrefs size-kernel launches.\n Intended for tests that prove prepared execute performs one size traversal\n per prepare, not a second size traversal on execute."]
-    pub fn cudf_strings_replace_with_backrefs_size_pass_count(out: *mut u64) -> cudf_status_t;
-    #[doc = " Reset the process-local size-pass counter used by tests."]
-    pub fn cudf_strings_replace_with_backrefs_reset_size_pass_count() -> cudf_status_t;
     #[doc = " Slice each string with explicit execution context.\n Slices by character positions `[start, stop)` and `step`.\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned column."]
     pub fn cudf_strings_slice_ex(
         input: cudf_column_view_handle,

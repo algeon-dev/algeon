@@ -17,7 +17,7 @@ static_assert(sizeof(uint64_t) >= sizeof(std::size_t));
 
 namespace {
 /// Build a vector of cudf::order from the C enum array.
-cudf_status_t to_order_vec(const cudf_order_t* orders, int32_t n, std::vector<cudf::order>* out)
+cudf_status_t to_order_vec(cudf_order_t const* orders, int32_t n, std::vector<cudf::order>* out)
 {
   CUDF_RUST_NULL_CHECK(out, "out is null");
   out->resize(n);
@@ -32,7 +32,7 @@ cudf_status_t to_order_vec(const cudf_order_t* orders, int32_t n, std::vector<cu
 }
 
 /// Build a vector of cudf::null_order from the C enum array.
-cudf_status_t to_null_order_vec(const cudf_null_order_t* orders,
+cudf_status_t to_null_order_vec(cudf_null_order_t const* orders,
                                 int32_t n,
                                 std::vector<cudf::null_order>* out)
 {
@@ -140,8 +140,8 @@ cudf_status_t cudf_sorted_order_radix_preflight(int64_t num_rows,
 }
 
 cudf_status_t cudf_sort_ex(cudf_table_view_handle input,
-                           const cudf_order_t* column_order,
-                           const cudf_null_order_t* null_precedence,
+                           cudf_order_t const* column_order,
+                           cudf_null_order_t const* null_precedence,
                            int32_t num_keys,
                            cudf_table_handle* out,
                            cudf_exec_options_t const* options)
@@ -182,8 +182,8 @@ cudf_status_t cudf_sort_ex(cudf_table_view_handle input,
 }
 
 cudf_status_t cudf_stable_sort_ex(cudf_table_view_handle input,
-                                  const cudf_order_t* column_order,
-                                  const cudf_null_order_t* null_precedence,
+                                  cudf_order_t const* column_order,
+                                  cudf_null_order_t const* null_precedence,
                                   int32_t num_keys,
                                   cudf_table_handle* out,
                                   cudf_exec_options_t const* options)
@@ -225,8 +225,8 @@ cudf_status_t cudf_stable_sort_ex(cudf_table_view_handle input,
 
 cudf_status_t cudf_sort_by_key_ex(cudf_table_view_handle values,
                                   cudf_table_view_handle keys,
-                                  const cudf_order_t* column_order,
-                                  const cudf_null_order_t* null_precedence,
+                                  cudf_order_t const* column_order,
+                                  cudf_null_order_t const* null_precedence,
                                   int32_t num_key_columns,
                                   cudf_table_handle* out,
                                   cudf_exec_options_t const* options)
@@ -270,8 +270,8 @@ cudf_status_t cudf_sort_by_key_ex(cudf_table_view_handle values,
 
 cudf_status_t cudf_stable_sort_by_key_ex(cudf_table_view_handle values,
                                          cudf_table_view_handle keys,
-                                         const cudf_order_t* column_order,
-                                         const cudf_null_order_t* null_precedence,
+                                         cudf_order_t const* column_order,
+                                         cudf_null_order_t const* null_precedence,
                                          int32_t num_key_columns,
                                          cudf_table_handle* out,
                                          cudf_exec_options_t const* options)
@@ -315,8 +315,8 @@ cudf_status_t cudf_stable_sort_by_key_ex(cudf_table_view_handle values,
 }
 
 cudf_status_t cudf_sorted_order_ex(cudf_table_view_handle input,
-                                   const cudf_order_t* column_order,
-                                   const cudf_null_order_t* null_precedence,
+                                   cudf_order_t const* column_order,
+                                   cudf_null_order_t const* null_precedence,
                                    int32_t num_keys,
                                    cudf_column_handle* out,
                                    cudf_exec_options_t const* options)
@@ -357,8 +357,8 @@ cudf_status_t cudf_sorted_order_ex(cudf_table_view_handle input,
 }
 
 cudf_status_t cudf_is_sorted_ex(cudf_table_view_handle input,
-                                const cudf_order_t* column_order,
-                                const cudf_null_order_t* null_precedence,
+                                cudf_order_t const* column_order,
+                                cudf_null_order_t const* null_precedence,
                                 int32_t num_keys,
                                 int32_t* out,
                                 cudf_exec_options_t const* options)

@@ -123,7 +123,7 @@ cudf_status_t cudf_dictionary_set_keys_ex(cudf_column_view_handle dict_column,
   CUDF_RUST_CATCH
 }
 
-cudf_status_t cudf_dictionary_match_dictionaries_ex(const cudf_column_view_handle* dict_columns,
+cudf_status_t cudf_dictionary_match_dictionaries_ex(cudf_column_view_handle const* dict_columns,
                                                     int32_t num_columns,
                                                     cudf_column_handle** out_columns,
                                                     int32_t* out_count,

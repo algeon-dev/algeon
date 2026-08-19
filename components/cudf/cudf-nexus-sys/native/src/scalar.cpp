@@ -26,7 +26,7 @@ namespace {
 // Helper: construct a numeric scalar of the given type from a host value
 // pointer.
 template <typename T>
-std::unique_ptr<cudf::scalar> make_numeric_scalar(const void* value,
+std::unique_ptr<cudf::scalar> make_numeric_scalar(void const* value,
                                                   bool is_valid,
                                                   rmm::cuda_stream_view stream,
                                                   rmm::device_async_resource_ref mr)
@@ -37,7 +37,7 @@ std::unique_ptr<cudf::scalar> make_numeric_scalar(const void* value,
 }
 
 template <typename T>
-T read_optional_value(const void* value)
+T read_optional_value(void const* value)
 {
   T val{};
   if (value != nullptr) { std::memcpy(&val, value, sizeof(T)); }
@@ -45,7 +45,7 @@ T read_optional_value(const void* value)
 }
 
 template <typename T>
-std::unique_ptr<cudf::scalar> make_decimal_scalar(const void* value,
+std::unique_ptr<cudf::scalar> make_decimal_scalar(void const* value,
                                                   int32_t scale,
                                                   bool is_valid,
                                                   rmm::cuda_stream_view stream,
@@ -104,7 +104,7 @@ cudf_status_t make_duration_scalar(int64_t value,
 
 extern "C" {
 cudf_status_t cudf_scalar_create_numeric_ex(cudf_type_id_t type_id,
-                                            const void* value,
+                                            void const* value,
                                             int32_t is_valid,
                                             cudf_exec_options_t const* options,
                                             cudf_scalar_handle* out)
@@ -165,7 +165,7 @@ cudf_status_t cudf_scalar_create_numeric_ex(cudf_type_id_t type_id,
 }
 
 cudf_status_t cudf_scalar_create_decimal_raw_ex(cudf_type_id_t type_id,
-                                                const void* value,
+                                                void const* value,
                                                 int32_t scale,
                                                 int32_t is_valid,
                                                 cudf_exec_options_t const* options,
@@ -301,7 +301,7 @@ cudf_status_t cudf_scalar_create_duration_raw_ex(cudf_type_id_t type_id,
   CUDF_RUST_CATCH
 }
 
-cudf_status_t cudf_scalar_create_string_ex(const char* value,
+cudf_status_t cudf_scalar_create_string_ex(char const* value,
                                            int32_t is_valid,
                                            cudf_exec_options_t const* options,
                                            cudf_scalar_handle* out)

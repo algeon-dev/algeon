@@ -424,11 +424,10 @@ class bounded_failure_callback_resource_adaptor final : public rmm::mr::device_m
           trim_retry_attempted = true;
           continue;
         }
-        if (callback_ == nullptr || callback_retries >= k_max_failure_callback_retries) {
-          throw;
-        }
-        auto const action = callback_(bytes, callback_arg_) != 0 ? CUDF_MEMORY_FAILURE_ACTION_RETRY
-                                                                  : CUDF_MEMORY_FAILURE_ACTION_DECLINE;
+        if (callback_ == nullptr || callback_retries >= k_max_failure_callback_retries) { throw; }
+        auto const action = callback_(bytes, callback_arg_) != 0
+                              ? CUDF_MEMORY_FAILURE_ACTION_RETRY
+                              : CUDF_MEMORY_FAILURE_ACTION_DECLINE;
         cudf_memory_failure_info_t info{};
         fill_failure_info(info,
                           device_ordinal_,
@@ -438,7 +437,9 @@ class bounded_failure_callback_resource_adaptor final : public rmm::mr::device_m
                           failure_identity,
                           callback_retries,
                           trim_retry_count);
-        if (allocator_events_ != nullptr) { allocator_events_->record(info, failure_identity, action); }
+        if (allocator_events_ != nullptr) {
+          allocator_events_->record(info, failure_identity, action);
+        }
         if (action == CUDF_MEMORY_FAILURE_ACTION_DECLINE) { throw; }
         ++callback_retries;
       }
@@ -504,7 +505,8 @@ std::mutex& memory_resource_registry_mutex()
 std::unordered_map<rmm::mr::device_memory_resource*, std::weak_ptr<void>>&
 memory_resource_registry()
 {
-  static auto& registry = *new std::unordered_map<rmm::mr::device_memory_resource*, std::weak_ptr<void>>;
+  static auto& registry =
+    *new std::unordered_map<rmm::mr::device_memory_resource*, std::weak_ptr<void>>;
   return registry;
 }
 
@@ -675,8 +677,12 @@ cudf_status_t cudf_memory_resource_create_failure_callback(cudf_memory_resource_
     owner.async_pool        = upstream_owner.async_pool;
     owner.device            = upstream_owner.device;
     auto* upstream_mr       = cudf_memory_resource_raw_from_handle(upstream);
-    owner.mr                = make_bounded_failure_callback_resource(
-      upstream_mr, callback, callback_arg, async_pool_handle(owner.async_pool), owner.device, nullptr);
+    owner.mr                = make_bounded_failure_callback_resource(upstream_mr,
+                                                      callback,
+                                                      callback_arg,
+                                                      async_pool_handle(owner.async_pool),
+                                                      owner.device,
+                                                      nullptr);
     register_memory_resource_lifetime(state->owner);
     *out = reinterpret_cast<cudf_memory_resource_handle>(state.release());
     return CUDF_SUCCESS;
@@ -704,8 +710,12 @@ cudf_status_t cudf_memory_resource_create_failure_callback_v2(
     owner.async_pool        = upstream_owner.async_pool;
     owner.device            = upstream_owner.device;
     auto* upstream_mr       = cudf_memory_resource_raw_from_handle(upstream);
-    owner.mr                = make_bounded_failure_callback_resource(
-      upstream_mr, callback, callback_arg, async_pool_handle(owner.async_pool), owner.device, nullptr);
+    owner.mr                = make_bounded_failure_callback_resource(upstream_mr,
+                                                      callback,
+                                                      callback_arg,
+                                                      async_pool_handle(owner.async_pool),
+                                                      owner.device,
+                                                      nullptr);
     register_memory_resource_lifetime(state->owner);
     *out = reinterpret_cast<cudf_memory_resource_handle>(state.release());
     return CUDF_SUCCESS;
@@ -806,7 +816,8 @@ cudf_status_t cudf_memory_resource_destroy(cudf_memory_resource_handle handle, i
     if (status != CUDF_SUCCESS) { return status; }
     auto* state = reinterpret_cast<memory_resource_handle_state*>(handle);
     auto& owner = *state->owner;
-    if (!state->non_owning_alias && cudf_tracked_current_device_resource_if_installed_raw() == owner.mr.get()) {
+    if (!state->non_owning_alias &&
+        cudf_tracked_current_device_resource_if_installed_raw() == owner.mr.get()) {
       set_error(
         "cannot destroy a memory resource while it is installed as the "
         "current device resource");

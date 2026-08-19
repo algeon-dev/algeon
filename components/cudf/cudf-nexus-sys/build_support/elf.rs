@@ -136,7 +136,7 @@ pub(crate) fn elf_dt_needed(path: &Path) -> Result<Vec<String>, String> {
     let mut strtab_vaddr: Option<u64> = None;
     let mut strtab_size = 0u64;
     let mut needed_offsets = Vec::new();
-    for entry in dynamic_bytes.chunks_exact(16) {
+    for entry in dynamic_bytes.as_chunks::<16>().0 {
         let tag = i64_le(entry, 0);
         let value = u64_le(entry, 8);
         match tag {

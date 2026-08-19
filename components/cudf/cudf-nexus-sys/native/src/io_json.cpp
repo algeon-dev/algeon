@@ -15,7 +15,7 @@
 #include <vector>
 
 extern "C" {
-cudf_status_t cudf_io_read_json_ex(const char* filepath,
+cudf_status_t cudf_io_read_json_ex(char const* filepath,
                                    int32_t lines,
                                    cudf_table_handle* out,
                                    cudf_exec_options_t const* exec_options)
@@ -43,7 +43,7 @@ cudf_status_t cudf_io_read_json_ex(const char* filepath,
   CUDF_RUST_IO_CATCH
 }
 
-cudf_status_t cudf_io_read_json_with_metadata_ex(const char* filepath,
+cudf_status_t cudf_io_read_json_with_metadata_ex(char const* filepath,
                                                  int32_t lines,
                                                  cudf_table_handle* out_table,
                                                  char*** out_names,
@@ -120,8 +120,8 @@ cudf_status_t cudf_io_read_json_with_metadata_ex(const char* filepath,
 }
 
 cudf_status_t cudf_io_write_json_ex(cudf_table_view_handle table,
-                                    const char* filepath,
-                                    const char** column_names,
+                                    char const* filepath,
+                                    char const** column_names,
                                     int32_t num_columns,
                                     int32_t lines,
                                     int32_t include_nulls,

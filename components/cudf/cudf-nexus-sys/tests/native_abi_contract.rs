@@ -3,7 +3,6 @@ use std::{
     env, fs,
     path::{Path, PathBuf},
     process::Command,
-    time::SystemTime,
 };
 
 const MANIFEST_DIR: &str = env!("CARGO_MANIFEST_DIR");
@@ -15,42 +14,14 @@ const MEMORY_MANAGER_CPP: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR")
 const RMM_INTEROP_BRIDGE_CPP: &str =
     include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/native/src/rmm_interop_bridge.cpp"));
 
-fn cmake_cache_value<'a>(cache: &'a str, key: &str) -> Option<&'a str> {
-    cache.lines().find_map(|line| {
-        let (name_and_type, value) = line.split_once('=')?;
-        let (name, _) = name_and_type.split_once(':')?;
-        (name == key).then_some(value)
-    })
-}
-
 fn production_shim_library() -> PathBuf {
-    let profile_dir = env::current_exe()
-        .expect("current test executable path must be available")
-        .parent()
-        .and_then(Path::parent)
-        .expect("test executable must live below target profile/deps")
-        .to_owned();
-    let build_root = profile_dir.join("build");
-
-    let mut candidates = Vec::new();
-    for entry in fs::read_dir(&build_root).expect("target build directory must be readable") {
-        let entry = entry.expect("target build entry must be readable");
-        let out_dir = entry.path().join("out");
-        let cache_path = out_dir.join("build/CMakeCache.txt");
-        let library = out_dir.join("lib/libcudf_rust.so");
-        let Ok(cache) = fs::read_to_string(cache_path) else { continue };
-        if cmake_cache_value(&cache, "CUDF_RUST_ENABLE_TEST_HOOKS") != Some("OFF") || !library.is_file() {
-            continue;
-        }
-        let modified = library.metadata().and_then(|metadata| metadata.modified()).unwrap_or(SystemTime::UNIX_EPOCH);
-        candidates.push((modified, library));
-    }
-
-    candidates
-        .into_iter()
-        .max_by_key(|(modified, _)| *modified)
-        .map(|(_, library)| library)
-        .expect("a no-feature libcudf_rust.so must be built for this test")
+    let library = PathBuf::from(env!("CUDF_RUST_PRODUCTION_SHIM"));
+    assert!(
+        library.is_file(),
+        "production shim {} must exist; build.rs builds it for the current Cargo unit",
+        library.display()
+    );
+    library
 }
 
 fn defined_dynamic_symbols(library: &Path) -> BTreeSet<String> {
@@ -93,6 +64,30 @@ fn dynamic_dependencies(library: &Path) -> BTreeSet<String> {
         .filter_map(|line| line.split_once("Shared library: [").map(|(_, remainder)| remainder))
         .filter_map(|remainder| remainder.split_once(']').map(|(name, _)| name.to_owned()))
         .collect()
+}
+
+fn resolved_dynamic_dependency(library: &Path, dependency: &str) -> PathBuf {
+    let output = Command::new("ldd").arg(library).output().expect("ldd must be available for the native ABI contract");
+    assert!(
+        output.status.success(),
+        "ldd failed for {}: {}",
+        library.display(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let line = stdout
+        .lines()
+        .find(|line| line.trim_start().starts_with(&format!("{dependency} =>")))
+        .unwrap_or_else(|| panic!("{} must resolve {dependency}", library.display()));
+    let resolved = line
+        .split_once("=>")
+        .and_then(|(_, remainder)| remainder.split_whitespace().next())
+        .unwrap_or_else(|| panic!("{dependency} resolution for {} is malformed: {line}", library.display()));
+    assert_ne!(resolved, "not", "{dependency} is not resolved for {}", library.display());
+    fs::canonicalize(resolved).unwrap_or_else(|error| {
+        panic!("resolved {dependency} path {resolved} for {} is invalid: {error}", library.display())
+    })
 }
 
 fn collect_headers(dir: &Path, headers: &mut Vec<PathBuf>) {
@@ -268,6 +263,26 @@ fn rmm_singleton_bridge_is_private_and_resolved_by_the_shim() {
     assert!(NATIVE_CMAKELISTS.contains("add_library(cudf_rust_rmm_interop SHARED"));
     assert!(NATIVE_CMAKELISTS.contains("PRIVATE cudf_rust_rmm_interop"));
     assert!(NATIVE_CMAKELISTS.contains("install(TARGETS cudf_rust cudf_rust_rmm_interop LIBRARY DESTINATION lib)"));
+}
+
+#[test]
+fn libcudf_and_both_shims_resolve_one_candidate_rmm() {
+    let prefix =
+        PathBuf::from(env::var("CUDF_INSTALL_DIR").expect("CUDF_INSTALL_DIR must select the candidate prefix"));
+    let candidate = fs::canonicalize(prefix.join("lib/librmm.so")).expect("candidate librmm.so must exist");
+    let shim = production_shim_library();
+    let bridge = shim.parent().expect("shim library must have a parent directory").join("libcudf_rust_rmm_interop.so");
+    let libcudf = prefix.join("lib/libcudf.so");
+
+    assert!(dynamic_dependencies(&libcudf).contains("librmm.so"));
+    for library in [&libcudf, &shim, &bridge] {
+        assert_eq!(
+            resolved_dynamic_dependency(library, "librmm.so"),
+            candidate,
+            "{} must resolve the candidate RMM",
+            library.display()
+        );
+    }
 }
 
 #[test]

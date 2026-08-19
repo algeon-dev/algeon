@@ -147,7 +147,19 @@ pub(crate) fn installed_prefix_for_libcudf(library_path: &Path) -> Option<&Path>
 /// silently ignore updated environment variables.
 pub(crate) fn discard_stale_cmake_build_dir(c_compiler: &Path, cxx_compiler: &Path, test_hooks: &str) {
     let Ok(out_dir) = env::var("OUT_DIR") else { return };
-    let out_dir = PathBuf::from(out_dir);
+    discard_stale_cmake_build_dir_at(Path::new(&out_dir), c_compiler, cxx_compiler, test_hooks);
+}
+
+/// Staleness check for a secondary CMake build prefix, e.g. the sibling
+/// `production-out` shim produced when the active Cargo feature enables
+/// test hooks. Each prefix keeps its own cache, so it is validated with the
+/// same compiler/discovery/test-hook fingerprint as the primary build.
+pub(crate) fn discard_stale_cmake_build_dir_at(
+    out_dir: &Path,
+    c_compiler: &Path,
+    cxx_compiler: &Path,
+    test_hooks: &str,
+) {
     let build_dir = out_dir.join("build");
     let cache_path = build_dir.join("CMakeCache.txt");
     let Ok(cache) = fs::read_to_string(&cache_path) else { return };
@@ -333,6 +345,58 @@ pub(crate) fn replay_cargo_link_directives(directives: &[String]) {
 
 fn link_search_path(directive: &str) -> Option<&Path> {
     directive.strip_prefix("cargo:rustc-link-search=native=").map(Path::new)
+}
+
+/// Re-assert the primary install prefix as the exported package root after
+/// an auxiliary CMake build.
+///
+/// `cmake::Config::build` emits `cargo:root` for the prefix it configured
+/// and Cargo keeps the last value for a repeated key, so the auxiliary
+/// production prefix would otherwise become `DEP_CUDF_RUST_ROOT` while the
+/// replayed link search, rpath, and `cudf-rust-runtime-lib` metadata keep
+/// naming the primary prefix.
+pub(crate) fn reassert_primary_root(primary_root: &Path) {
+    println!("cargo:root={}", primary_root.display());
+}
+
+/// Verify the downstream identity contract for the primary install prefix:
+/// the exported package root, the `cudf-rust-runtime-lib` path, and the
+/// active linked shim derived from the replayed link manifest must all
+/// describe the same prefix.
+pub(crate) fn verify_primary_shim_identity(primary_root: &Path, runtime_lib: &Path) -> Result<(), String> {
+    let directives = read_cargo_link_directives(primary_root)
+        .map_err(|error| format!("primary root {primary_root:?} does not own a valid cargo link manifest: {error}"))?;
+    let link_dir = directives.iter().find_map(|directive| link_search_path(directive)).ok_or_else(|| {
+        format!("cargo link manifest under {} has no native link search path", primary_root.display())
+    })?;
+    let dylib = directives
+        .iter()
+        .find_map(|directive| directive.strip_prefix("cargo:rustc-link-lib=dylib="))
+        .ok_or_else(|| format!("cargo link manifest under {} has no dylib link directive", primary_root.display()))?;
+    let linked_shim = link_dir.join(format!("lib{dylib}.so"));
+    let shim_prefix = linked_shim
+        .parent()
+        .and_then(Path::parent)
+        .ok_or_else(|| format!("linked shim {} has no install prefix", linked_shim.display()))?;
+
+    if !paths_equivalent(&linked_shim, runtime_lib) {
+        return Err(format!(
+            "active linked shim {} and runtime library {} must be the same file under the primary install prefix {}",
+            linked_shim.display(),
+            runtime_lib.display(),
+            primary_root.display()
+        ));
+    }
+    if !paths_equivalent(shim_prefix, primary_root) {
+        return Err(format!(
+            "exported root {}, runtime library {}, and active linked shim {} must describe the same primary install prefix",
+            primary_root.display(),
+            runtime_lib.display(),
+            linked_shim.display()
+        ));
+    }
+
+    Ok(())
 }
 
 /// Warn (via `cargo:warning=`) when libcudf C++ sources are newer than the

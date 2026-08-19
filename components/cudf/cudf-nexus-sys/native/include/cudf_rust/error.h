@@ -27,7 +27,7 @@ typedef enum {
 /// Retrieve the thread-local error message from the last failed call.
 /// Returns NULL if no error is pending. The returned pointer is valid until the
 /// next C shim call on the same thread.
-const char* cudf_last_error_message(void);
+char const* cudf_last_error_message(void);
 
 /// Clear the thread-local error state.
 void cudf_clear_error(void);

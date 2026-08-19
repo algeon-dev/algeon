@@ -13,7 +13,7 @@
 #include <vector>
 
 extern "C" {
-cudf_status_t cudf_io_read_csv_ex(const char* filepath,
+cudf_status_t cudf_io_read_csv_ex(char const* filepath,
                                   char delimiter,
                                   int32_t has_header,
                                   cudf_table_handle* out,
@@ -44,8 +44,8 @@ cudf_status_t cudf_io_read_csv_ex(const char* filepath,
 }
 
 cudf_status_t cudf_io_write_csv_ex(cudf_table_view_handle table,
-                                   const char* filepath,
-                                   const char** column_names,
+                                   char const* filepath,
+                                   char const** column_names,
                                    int32_t num_columns,
                                    char delimiter,
                                    int32_t include_header,

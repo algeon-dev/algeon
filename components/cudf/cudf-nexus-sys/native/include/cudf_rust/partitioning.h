@@ -20,13 +20,13 @@ extern "C" {
 /// non-NULL stream, and provide a non-NULL memory resource. `options->mr` must
 /// outlive the returned table.
 cudf_status_t cudf_hash_partition_ex(cudf_table_view_handle input,
-                                     const int32_t* column_indices,
+                                     int32_t const* column_indices,
                                      int32_t num_columns,
                                      int32_t num_partitions,
                                      cudf_table_handle* out,
                                      int32_t* partition_offsets,
                                      size_t partition_offsets_len,
-                                     const cudf_exec_options_t* options);
+                                     cudf_exec_options_t const* options);
 
 #ifdef __cplusplus
 }

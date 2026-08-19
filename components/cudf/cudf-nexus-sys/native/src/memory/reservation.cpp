@@ -124,9 +124,9 @@ reservation_aware_resource_adaptor::attach_current_resource_route(
     current_resource_routes_by_stream_.erase(existing);
   }
 
-  auto state          = std::make_shared<current_resource_route_state>();
-  state->stream_key   = key;
-  state->target_owner = std::move(target_owner);
+  auto state                              = std::make_shared<current_resource_route_state>();
+  state->stream_key                       = key;
+  state->target_owner                     = std::move(target_owner);
   current_resource_routes_by_stream_[key] = state;
   return state;
 }
@@ -136,9 +136,10 @@ void reservation_aware_resource_adaptor::detach_current_resource_route(
 {
   if (state == nullptr) { return; }
   std::scoped_lock lock{current_resource_route_mutex_};
-  state->attached = false;
+  state->attached     = false;
   auto const existing = current_resource_routes_by_stream_.find(state->stream_key);
-  if (existing != current_resource_routes_by_stream_.end() && existing->second.get() == state.get()) {
+  if (existing != current_resource_routes_by_stream_.end() &&
+      existing->second.get() == state.get()) {
     current_resource_routes_by_stream_.erase(existing);
   }
 }
@@ -378,7 +379,8 @@ void* reservation_aware_resource_adaptor::do_allocate(std::size_t bytes,
     if (bytes != 0) {
       try {
         std::scoped_lock lock{current_resource_route_mutex_};
-        auto const insertion = current_resource_routes_by_pointer_.emplace(result, current_resource_route);
+        auto const insertion =
+          current_resource_routes_by_pointer_.emplace(result, current_resource_route);
         if (!insertion.second) {
           throw std::runtime_error{"duplicate current-resource routed pointer"};
         }
@@ -533,11 +535,10 @@ void reservation_aware_resource_adaptor::do_deallocate(void* ptr,
 using namespace cudf::rust::memory;
 
 extern "C" {
-cudf_status_t cudf_memory_manager_route_current_resource(
-  cudf_memory_manager_handle manager,
-  cudf_stream_handle stream,
-  cudf_memory_resource_handle resource,
-  cudf_current_resource_route_handle* out)
+cudf_status_t cudf_memory_manager_route_current_resource(cudf_memory_manager_handle manager,
+                                                         cudf_stream_handle stream,
+                                                         cudf_memory_resource_handle resource,
+                                                         cudf_current_resource_route_handle* out)
 {
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
@@ -563,7 +564,9 @@ cudf_status_t cudf_memory_manager_route_current_resource(
       return CUDF_ERROR_INVALID_OPERATION;
     }
     if (resource_state.owner->device != manager_state->device) {
-      set_error("current-resource route requires target resource and memory manager to be on the same CUDA device");
+      set_error(
+        "current-resource route requires target resource and memory manager to be on the same CUDA "
+        "device");
       return CUDF_ERROR_INVALID_OPERATION;
     }
 
@@ -579,9 +582,7 @@ cudf_status_t cudf_memory_manager_route_current_resource(
 
     // Routing the manager resource back through its own permanent adaptor
     // would recurse. It is already the current-resource allocation path.
-    if (resource_state.owner->mr.get() == manager_state->owner->mr.get()) {
-      return CUDF_SUCCESS;
-    }
+    if (resource_state.owner->mr.get() == manager_state->owner->mr.get()) { return CUDF_SUCCESS; }
 
     auto* adaptor = manager_state->owner->reservation_adaptor;
     std::string attach_error;
@@ -806,7 +807,7 @@ cudf_status_t cudf_reservation_arena_usage(cudf_reservation_arena_handle arena,
   {
     auto& state   = *reinterpret_cast<reservation_arena_handle_state*>(arena);
     auto* adaptor = state.manager->owner->reservation_adaptor;
-    *out = adaptor->arena_usage(state.arena);
+    *out          = adaptor->arena_usage(state.arena);
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH

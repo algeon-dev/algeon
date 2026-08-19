@@ -454,6 +454,10 @@ fn build_script_runs_clang_format_against_native_sources_only() {
         );
     }
     assert!(BUILD_RS.contains("CUDF_RUST_CLANG_LINT"));
+    assert!(
+        BUILD_RS.contains("collect_native_clang_lint_files(manifest_dir)"),
+        "expected build.rs to pass the crate manifest directory, not the native directory, to the lint collector"
+    );
 }
 
 #[test]
@@ -474,6 +478,46 @@ fn build_script_replays_runtime_link_search_paths_as_rpath_and_metadata() {
         BUILD_SUPPORT_CMAKE.contains("cargo:metadata=runtime-lib-dir="),
         "expected CMake module to surface runtime library directories as Cargo metadata"
     );
+}
+
+#[test]
+fn primary_shim_identity_requires_root_runtime_and_linked_shim_to_name_one_prefix() {
+    let unique = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let temp_dir = std::env::temp_dir().join(format!("cudf-sys-primary-identity-contract-{unique}"));
+    let primary = temp_dir.join("primary");
+    let production = primary.join("production-out");
+
+    for prefix in [&primary, &production] {
+        fs::create_dir_all(prefix.join("lib")).unwrap();
+        fs::create_dir_all(prefix.join("share/cudf_rust")).unwrap();
+        fs::write(prefix.join("lib/libcudf_rust.so"), b"shim").unwrap();
+        fs::write(
+            prefix.join("share/cudf_rust/cargo-link.txt"),
+            format!(
+                "cargo:rustc-link-search=native={}\ncargo:rustc-link-lib=dylib=cudf_rust\n",
+                prefix.join("lib").display()
+            ),
+        )
+        .unwrap();
+    }
+
+    let runtime_lib = primary.join("lib/libcudf_rust.so");
+    build_support::cmake::verify_primary_shim_identity(&primary, &runtime_lib)
+        .expect("consistent root, runtime library, and linked shim must pass");
+
+    // The finding-2 failure mode: runtime metadata names the auxiliary
+    // production prefix while the exported root names the primary prefix.
+    let error = build_support::cmake::verify_primary_shim_identity(&primary, &production.join("lib/libcudf_rust.so"))
+        .expect_err("auxiliary-prefix runtime library must violate the identity contract");
+    assert!(error.contains("primary install prefix"), "unexpected error: {error}");
+
+    let empty_root = temp_dir.join("empty-root");
+    fs::create_dir_all(&empty_root).unwrap();
+    let error = build_support::cmake::verify_primary_shim_identity(&empty_root, &runtime_lib)
+        .expect_err("a root without the primary install must violate the identity contract");
+    assert!(error.contains("cargo link manifest"), "unexpected error: {error}");
+
+    fs::remove_dir_all(temp_dir).unwrap();
 }
 
 #[test]
@@ -912,6 +956,16 @@ fn collect_native_clang_lint_files_is_scoped_to_src_and_include() {
     assert!(
         !lint_files.iter().any(|path| path.to_string_lossy().contains("/cudf/")),
         "expected upstream cudf files to stay out of cudf-sys lint scope: {lint_files:?}"
+    );
+
+    // The collector appends `native/src` and `native/include` to the crate
+    // manifest directory itself, so handing it the native directory
+    // double-prefixes the lookup and must be rejected.
+    let error = build_support::lint::collect_native_clang_lint_files(&build_support::lint::native_dir(manifest_dir))
+        .unwrap_err();
+    assert!(
+        error.contains("failed to read clang lint directory"),
+        "expected the native directory to be rejected as a lint root: {error}"
     );
 }
 

@@ -27,7 +27,7 @@ typedef struct cudf_device_buffer_handle_state* cudf_device_buffer_handle;
 ///
 /// Returns CUDF_ERROR_OUT_OF_MEMORY if allocation fails.
 cudf_status_t cudf_device_buffer_create_ex(size_t size,
-                                           const cudf_exec_options_t* options,
+                                           cudf_exec_options_t const* options,
                                            cudf_device_buffer_handle* out);
 
 /// Release a device buffer. Safe to call with NULL (no-op).
@@ -64,9 +64,9 @@ cudf_status_t cudf_device_buffer_size(cudf_device_buffer_handle handle, size_t* 
 ///
 /// Returns CUDF_ERROR_INVALID_OPERATION if `size > buffer_size`.
 cudf_status_t cudf_device_buffer_copy_from_host_ex(cudf_device_buffer_handle handle,
-                                                   const void* host_data,
+                                                   void const* host_data,
                                                    size_t size,
-                                                   const cudf_exec_options_t* options);
+                                                   cudf_exec_options_t const* options);
 
 /// Copy host data into a range of the device buffer without synchronizing.
 ///
@@ -90,9 +90,9 @@ cudf_status_t cudf_device_buffer_copy_from_host_ex(cudf_device_buffer_handle han
 /// Returns CUDF_ERROR_INVALID_OPERATION if the range is out of bounds.
 cudf_status_t cudf_device_buffer_copy_from_host_range_async_ex(cudf_device_buffer_handle handle,
                                                                size_t dst_offset,
-                                                               const void* host_data,
+                                                               void const* host_data,
                                                                size_t size,
-                                                               const cudf_exec_options_t* options);
+                                                               cudf_exec_options_t const* options);
 
 /// Allocate `size` bytes of page-locked (pinned) host memory.
 ///

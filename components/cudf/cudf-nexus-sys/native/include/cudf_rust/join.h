@@ -64,7 +64,7 @@ cudf_status_t cudf_inner_join_ex(cudf_table_view_handle left_keys,
                                  cudf_null_equality_t null_equality,
                                  cudf_table_handle* out_left,
                                  cudf_table_handle* out_right,
-                                 const cudf_exec_options_t* options);
+                                 cudf_exec_options_t const* options);
 
 /// Left join with explicit execution context.
 ///
@@ -77,7 +77,7 @@ cudf_status_t cudf_left_join_ex(cudf_table_view_handle left_keys,
                                 cudf_null_equality_t null_equality,
                                 cudf_table_handle* out_left,
                                 cudf_table_handle* out_right,
-                                const cudf_exec_options_t* options);
+                                cudf_exec_options_t const* options);
 
 /// Full join with explicit execution context.
 ///
@@ -90,7 +90,7 @@ cudf_status_t cudf_full_join_ex(cudf_table_view_handle left_keys,
                                 cudf_null_equality_t null_equality,
                                 cudf_table_handle* out_left,
                                 cudf_table_handle* out_right,
-                                const cudf_exec_options_t* options);
+                                cudf_exec_options_t const* options);
 
 /// Cross join with explicit execution context.
 ///
@@ -99,7 +99,7 @@ cudf_status_t cudf_full_join_ex(cudf_table_view_handle left_keys,
 cudf_status_t cudf_cross_join_ex(cudf_table_view_handle left,
                                  cudf_table_view_handle right,
                                  cudf_table_handle* out,
-                                 const cudf_exec_options_t* options);
+                                 cudf_exec_options_t const* options);
 
 /// Projected cross join with explicit input row counts and execution context.
 ///
@@ -110,7 +110,7 @@ cudf_status_t cudf_projected_cross_join_ex(cudf_table_view_handle left_selected,
                                            size_t left_num_rows,
                                            size_t right_num_rows,
                                            cudf_table_handle* out,
-                                           const cudf_exec_options_t* options);
+                                           cudf_exec_options_t const* options);
 
 /// Return exact device bytes retained by a projected cross join result.
 ///
@@ -123,7 +123,7 @@ cudf_status_t cudf_projected_cross_join_device_allocated_size_ex(
   size_t left_num_rows,
   size_t right_num_rows,
   size_t* out,
-  const cudf_exec_options_t* options);
+  cudf_exec_options_t const* options);
 
 /// Inner join indices with explicit execution context.
 ///
@@ -134,7 +134,7 @@ cudf_status_t cudf_inner_join_indices_ex(cudf_table_view_handle left_keys,
                                          cudf_null_equality_t null_equality,
                                          cudf_column_handle* out_left_indices,
                                          cudf_column_handle* out_right_indices,
-                                         const cudf_exec_options_t* options);
+                                         cudf_exec_options_t const* options);
 
 /// Left join indices with explicit execution context.
 ///
@@ -145,7 +145,7 @@ cudf_status_t cudf_left_join_indices_ex(cudf_table_view_handle left_keys,
                                         cudf_null_equality_t null_equality,
                                         cudf_column_handle* out_left_indices,
                                         cudf_column_handle* out_right_indices,
-                                        const cudf_exec_options_t* options);
+                                        cudf_exec_options_t const* options);
 
 /// Full join indices with explicit execution context.
 ///
@@ -156,7 +156,7 @@ cudf_status_t cudf_full_join_indices_ex(cudf_table_view_handle left_keys,
                                         cudf_null_equality_t null_equality,
                                         cudf_column_handle* out_left_indices,
                                         cudf_column_handle* out_right_indices,
-                                        const cudf_exec_options_t* options);
+                                        cudf_exec_options_t const* options);
 
 /// Left semi join indices with explicit execution context.
 ///
@@ -166,7 +166,7 @@ cudf_status_t cudf_left_semi_join_indices_ex(cudf_table_view_handle left_keys,
                                              cudf_table_view_handle right_keys,
                                              cudf_null_equality_t null_equality,
                                              cudf_column_handle* out_indices,
-                                             const cudf_exec_options_t* options);
+                                             cudf_exec_options_t const* options);
 
 /// Left anti join indices with explicit execution context.
 ///
@@ -176,7 +176,7 @@ cudf_status_t cudf_left_anti_join_indices_ex(cudf_table_view_handle left_keys,
                                              cudf_table_view_handle right_keys,
                                              cudf_null_equality_t null_equality,
                                              cudf_column_handle* out_indices,
-                                             const cudf_exec_options_t* options);
+                                             cudf_exec_options_t const* options);
 
 /// Conditional inner join indices with explicit execution context.
 ///
@@ -187,7 +187,7 @@ cudf_status_t cudf_conditional_inner_join_indices_ex(cudf_table_view_handle left
                                                      cudf_ast_expression_handle predicate,
                                                      cudf_column_handle* out_left_indices,
                                                      cudf_column_handle* out_right_indices,
-                                                     const cudf_exec_options_t* options);
+                                                     cudf_exec_options_t const* options);
 
 /// Conditional inner join indices with an exact output row count and explicit
 /// execution context.
@@ -198,7 +198,7 @@ cudf_status_t cudf_conditional_inner_join_indices_with_output_size_ex(
   size_t output_size,
   cudf_column_handle* out_left_indices,
   cudf_column_handle* out_right_indices,
-  const cudf_exec_options_t* options);
+  cudf_exec_options_t const* options);
 
 /// Return the exact output row count for a conditional inner join with
 /// explicit execution context.
@@ -206,7 +206,7 @@ cudf_status_t cudf_conditional_inner_join_size_ex(cudf_table_view_handle left,
                                                   cudf_table_view_handle right,
                                                   cudf_ast_expression_handle predicate,
                                                   size_t* out,
-                                                  const cudf_exec_options_t* options);
+                                                  cudf_exec_options_t const* options);
 
 /// Conditional left join indices with explicit execution context.
 ///
@@ -217,7 +217,7 @@ cudf_status_t cudf_conditional_left_join_indices_ex(cudf_table_view_handle left,
                                                     cudf_ast_expression_handle predicate,
                                                     cudf_column_handle* out_left_indices,
                                                     cudf_column_handle* out_right_indices,
-                                                    const cudf_exec_options_t* options);
+                                                    cudf_exec_options_t const* options);
 
 /// Conditional left join indices with an exact output row count and explicit
 /// execution context.
@@ -228,7 +228,7 @@ cudf_status_t cudf_conditional_left_join_indices_with_output_size_ex(
   size_t output_size,
   cudf_column_handle* out_left_indices,
   cudf_column_handle* out_right_indices,
-  const cudf_exec_options_t* options);
+  cudf_exec_options_t const* options);
 
 /// Return the exact output row count for a conditional left join with explicit
 /// execution context.
@@ -236,7 +236,7 @@ cudf_status_t cudf_conditional_left_join_size_ex(cudf_table_view_handle left,
                                                  cudf_table_view_handle right,
                                                  cudf_ast_expression_handle predicate,
                                                  size_t* out,
-                                                 const cudf_exec_options_t* options);
+                                                 cudf_exec_options_t const* options);
 
 /// Conditional full join indices with explicit execution context.
 ///
@@ -247,7 +247,7 @@ cudf_status_t cudf_conditional_full_join_indices_ex(cudf_table_view_handle left,
                                                     cudf_ast_expression_handle predicate,
                                                     cudf_column_handle* out_left_indices,
                                                     cudf_column_handle* out_right_indices,
-                                                    const cudf_exec_options_t* options);
+                                                    cudf_exec_options_t const* options);
 
 /// Compute and retain exact output-size data for a conditional full join with
 /// explicit execution context.
@@ -256,7 +256,7 @@ cudf_status_t cudf_conditional_full_join_begin_size_data_ex(
   cudf_table_view_handle right,
   cudf_ast_expression_handle predicate,
   cudf_conditional_full_join_size_data_handle* out,
-  const cudf_exec_options_t* options);
+  cudf_exec_options_t const* options);
 
 /// Destroy retained conditional full join output-size data. Ownership is
 /// consumed on call; failure quarantines the handle and must not be retried.
@@ -283,7 +283,7 @@ cudf_status_t cudf_conditional_full_join_size_data_materialize_indices_ex(
   cudf_conditional_full_join_size_data_handle size_data,
   cudf_column_handle* out_left_indices,
   cudf_column_handle* out_right_indices,
-  const cudf_exec_options_t* options);
+  cudf_exec_options_t const* options);
 
 /// Conditional left semi join indices with explicit execution context.
 ///
@@ -293,7 +293,7 @@ cudf_status_t cudf_conditional_left_semi_join_indices_ex(cudf_table_view_handle 
                                                          cudf_table_view_handle right,
                                                          cudf_ast_expression_handle predicate,
                                                          cudf_column_handle* out_indices,
-                                                         const cudf_exec_options_t* options);
+                                                         cudf_exec_options_t const* options);
 
 /// Conditional left semi join indices with an exact output row count and
 /// explicit execution context.
@@ -303,7 +303,7 @@ cudf_status_t cudf_conditional_left_semi_join_indices_with_output_size_ex(
   cudf_ast_expression_handle predicate,
   size_t output_size,
   cudf_column_handle* out_indices,
-  const cudf_exec_options_t* options);
+  cudf_exec_options_t const* options);
 
 /// Return the exact output row count for a conditional left semi join with
 /// explicit execution context.
@@ -311,7 +311,7 @@ cudf_status_t cudf_conditional_left_semi_join_size_ex(cudf_table_view_handle lef
                                                       cudf_table_view_handle right,
                                                       cudf_ast_expression_handle predicate,
                                                       size_t* out,
-                                                      const cudf_exec_options_t* options);
+                                                      cudf_exec_options_t const* options);
 
 /// Conditional left anti join indices with explicit execution context.
 ///
@@ -321,7 +321,7 @@ cudf_status_t cudf_conditional_left_anti_join_indices_ex(cudf_table_view_handle 
                                                          cudf_table_view_handle right,
                                                          cudf_ast_expression_handle predicate,
                                                          cudf_column_handle* out_indices,
-                                                         const cudf_exec_options_t* options);
+                                                         cudf_exec_options_t const* options);
 
 /// Conditional left anti join indices with an exact output row count and
 /// explicit execution context.
@@ -331,7 +331,7 @@ cudf_status_t cudf_conditional_left_anti_join_indices_with_output_size_ex(
   cudf_ast_expression_handle predicate,
   size_t output_size,
   cudf_column_handle* out_indices,
-  const cudf_exec_options_t* options);
+  cudf_exec_options_t const* options);
 
 /// Return the exact output row count for a conditional left anti join with
 /// explicit execution context.
@@ -339,7 +339,7 @@ cudf_status_t cudf_conditional_left_anti_join_size_ex(cudf_table_view_handle lef
                                                       cudf_table_view_handle right,
                                                       cudf_ast_expression_handle predicate,
                                                       size_t* out,
-                                                      const cudf_exec_options_t* options);
+                                                      cudf_exec_options_t const* options);
 
 /// Filter already-computed join-index pairs with explicit execution context.
 ///
@@ -353,7 +353,7 @@ cudf_status_t cudf_filter_join_indices_ex(cudf_table_view_handle left,
                                           cudf_join_kind_t join_kind,
                                           cudf_column_handle* out_left_indices,
                                           cudf_column_handle* out_right_indices,
-                                          const cudf_exec_options_t* options);
+                                          cudf_exec_options_t const* options);
 
 /// Mixed inner join indices with explicit execution context.
 ///
@@ -367,7 +367,7 @@ cudf_status_t cudf_mixed_inner_join_indices_ex(cudf_table_view_handle left_equal
                                                cudf_null_equality_t null_equality,
                                                cudf_column_handle* out_left_indices,
                                                cudf_column_handle* out_right_indices,
-                                               const cudf_exec_options_t* options);
+                                               cudf_exec_options_t const* options);
 
 /// Mixed left join indices with explicit execution context.
 ///
@@ -381,7 +381,7 @@ cudf_status_t cudf_mixed_left_join_indices_ex(cudf_table_view_handle left_equali
                                               cudf_null_equality_t null_equality,
                                               cudf_column_handle* out_left_indices,
                                               cudf_column_handle* out_right_indices,
-                                              const cudf_exec_options_t* options);
+                                              cudf_exec_options_t const* options);
 
 /// Mixed full join indices with explicit execution context.
 ///
@@ -395,7 +395,7 @@ cudf_status_t cudf_mixed_full_join_indices_ex(cudf_table_view_handle left_equali
                                               cudf_null_equality_t null_equality,
                                               cudf_column_handle* out_left_indices,
                                               cudf_column_handle* out_right_indices,
-                                              const cudf_exec_options_t* options);
+                                              cudf_exec_options_t const* options);
 
 /// Mixed left semi join indices with explicit execution context.
 ///
@@ -408,7 +408,7 @@ cudf_status_t cudf_mixed_left_semi_join_indices_ex(cudf_table_view_handle left_e
                                                    cudf_ast_expression_handle predicate,
                                                    cudf_null_equality_t null_equality,
                                                    cudf_column_handle* out_indices,
-                                                   const cudf_exec_options_t* options);
+                                                   cudf_exec_options_t const* options);
 
 /// Mixed left anti join indices with explicit execution context.
 ///
@@ -421,7 +421,7 @@ cudf_status_t cudf_mixed_left_anti_join_indices_ex(cudf_table_view_handle left_e
                                                    cudf_ast_expression_handle predicate,
                                                    cudf_null_equality_t null_equality,
                                                    cudf_column_handle* out_indices,
-                                                   const cudf_exec_options_t* options);
+                                                   cudf_exec_options_t const* options);
 
 /// Compute and retain exact output-size data for a mixed inner join with
 /// explicit execution context.
@@ -432,7 +432,7 @@ cudf_status_t cudf_mixed_inner_join_begin_size_data_ex(cudf_table_view_handle le
                                                        cudf_ast_expression_handle predicate,
                                                        cudf_null_equality_t null_equality,
                                                        cudf_mixed_join_size_data_handle* out,
-                                                       const cudf_exec_options_t* options);
+                                                       cudf_exec_options_t const* options);
 
 /// Compute and retain exact output-size data for a mixed left join with
 /// explicit execution context.
@@ -443,7 +443,7 @@ cudf_status_t cudf_mixed_left_join_begin_size_data_ex(cudf_table_view_handle lef
                                                       cudf_ast_expression_handle predicate,
                                                       cudf_null_equality_t null_equality,
                                                       cudf_mixed_join_size_data_handle* out,
-                                                      const cudf_exec_options_t* options);
+                                                      cudf_exec_options_t const* options);
 
 /// Compute and retain exact output-size data for a mixed full join with
 /// explicit execution context.
@@ -454,7 +454,7 @@ cudf_status_t cudf_mixed_full_join_begin_size_data_ex(cudf_table_view_handle lef
                                                       cudf_ast_expression_handle predicate,
                                                       cudf_null_equality_t null_equality,
                                                       cudf_mixed_join_size_data_handle* out,
-                                                      const cudf_exec_options_t* options);
+                                                      cudf_exec_options_t const* options);
 
 /// Compute and retain exact output-size data for a mixed left semi join with
 /// explicit execution context.
@@ -465,7 +465,7 @@ cudf_status_t cudf_mixed_left_semi_join_begin_size_data_ex(cudf_table_view_handl
                                                            cudf_ast_expression_handle predicate,
                                                            cudf_null_equality_t null_equality,
                                                            cudf_mixed_join_size_data_handle* out,
-                                                           const cudf_exec_options_t* options);
+                                                           cudf_exec_options_t const* options);
 
 /// Compute and retain exact output-size data for a mixed left anti join with
 /// explicit execution context.
@@ -476,7 +476,7 @@ cudf_status_t cudf_mixed_left_anti_join_begin_size_data_ex(cudf_table_view_handl
                                                            cudf_ast_expression_handle predicate,
                                                            cudf_null_equality_t null_equality,
                                                            cudf_mixed_join_size_data_handle* out,
-                                                           const cudf_exec_options_t* options);
+                                                           cudf_exec_options_t const* options);
 
 /// Destroy retained mixed-join output-size data. Ownership is consumed on
 /// call; failure quarantines the handle and must not be retried.
@@ -503,14 +503,14 @@ cudf_status_t cudf_mixed_join_size_data_materialize_indices_ex(
   cudf_mixed_join_size_data_handle size_data,
   cudf_column_handle* out_left_indices,
   cudf_column_handle* out_right_indices,
-  const cudf_exec_options_t* options);
+  cudf_exec_options_t const* options);
 
 /// Materialize a single left gather map from retained mixed semi/anti size data
 /// with explicit execution context.
 cudf_status_t cudf_mixed_join_size_data_materialize_single_indices_ex(
   cudf_mixed_join_size_data_handle size_data,
   cudf_column_handle* out_indices,
-  const cudf_exec_options_t* options);
+  cudf_exec_options_t const* options);
 
 /// Build a reusable distinct-hash-join artifact with explicit execution
 /// context.
@@ -521,7 +521,7 @@ cudf_status_t cudf_mixed_join_size_data_materialize_single_indices_ex(
 cudf_status_t cudf_distinct_hash_join_create_ex(cudf_table_view_handle build,
                                                 cudf_null_equality_t null_equality,
                                                 cudf_distinct_hash_join_handle* out,
-                                                const cudf_exec_options_t* options);
+                                                cudf_exec_options_t const* options);
 
 /// Destroy a reusable distinct-hash-join handle under its build-time device
 /// and memory resource. Ownership is consumed on call; success means cleanup
@@ -536,21 +536,21 @@ cudf_status_t cudf_distinct_hash_join_destroy(cudf_distinct_hash_join_handle han
 cudf_status_t cudf_distinct_hash_join_left_join_ex(cudf_distinct_hash_join_handle join,
                                                    cudf_table_view_handle probe,
                                                    cudf_column_handle* out,
-                                                   const cudf_exec_options_t* options);
+                                                   cudf_exec_options_t const* options);
 
 /// Build a reusable filtered-join artifact with explicit execution context.
 cudf_status_t cudf_filtered_join_create_ex(cudf_table_view_handle build,
                                            cudf_null_equality_t null_equality,
                                            double load_factor,
                                            cudf_filtered_join_handle* out,
-                                           const cudf_exec_options_t* options);
+                                           cudf_exec_options_t const* options);
 
 /// Return exact retained filtered-join build bytes with explicit execution context.
 cudf_status_t cudf_filtered_join_pre_build_reservation_size_ex(cudf_table_view_handle build,
                                                                cudf_null_equality_t null_equality,
                                                                double load_factor,
                                                                size_t* out,
-                                                               const cudf_exec_options_t* options);
+                                                               cudf_exec_options_t const* options);
 
 /// Destroy a reusable filtered-join handle under its build-time device and
 /// memory resource. Ownership is consumed on call; failure quarantines it.
@@ -564,13 +564,13 @@ cudf_status_t cudf_filtered_join_device_allocated_size(cudf_filtered_join_handle
 cudf_status_t cudf_filtered_join_begin_left_semi_probe_ex(cudf_filtered_join_handle join,
                                                           cudf_table_view_handle probe,
                                                           cudf_filtered_join_probe_handle* out,
-                                                          const cudf_exec_options_t* options);
+                                                          cudf_exec_options_t const* options);
 
 /// Begin a retained left anti probe with explicit execution context.
 cudf_status_t cudf_filtered_join_begin_left_anti_probe_ex(cudf_filtered_join_handle join,
                                                           cudf_table_view_handle probe,
                                                           cudf_filtered_join_probe_handle* out,
-                                                          const cudf_exec_options_t* options);
+                                                          cudf_exec_options_t const* options);
 
 /// Destroy a retained filtered-join probe state. Ownership is consumed on
 /// call; failure quarantines the state and must not be retried.
@@ -588,19 +588,19 @@ cudf_status_t cudf_filtered_join_probe_device_allocated_size(cudf_filtered_join_
 cudf_status_t cudf_filtered_join_probe_materialize_indices_ex(
   cudf_filtered_join_probe_handle handle,
   cudf_column_handle* out_indices,
-  const cudf_exec_options_t* options);
+  cudf_exec_options_t const* options);
 
 /// Return the exact row count for a left semi probe with explicit execution context.
 cudf_status_t cudf_filtered_join_left_semi_join_size_ex(cudf_filtered_join_handle join,
                                                         cudf_table_view_handle probe,
                                                         size_t* out,
-                                                        const cudf_exec_options_t* options);
+                                                        cudf_exec_options_t const* options);
 
 /// Return the exact row count for a left anti probe with explicit execution context.
 cudf_status_t cudf_filtered_join_left_anti_join_size_ex(cudf_filtered_join_handle join,
                                                         cudf_table_view_handle probe,
                                                         size_t* out,
-                                                        const cudf_exec_options_t* options);
+                                                        cudf_exec_options_t const* options);
 
 /// Probe a reusable filtered join for left semi gather indices with explicit execution context.
 cudf_status_t cudf_filtered_join_left_semi_join_with_output_size_ex(
@@ -608,7 +608,7 @@ cudf_status_t cudf_filtered_join_left_semi_join_with_output_size_ex(
   cudf_table_view_handle probe,
   size_t output_size,
   cudf_column_handle* out_indices,
-  const cudf_exec_options_t* options);
+  cudf_exec_options_t const* options);
 
 /// Probe a reusable filtered join for left anti gather indices with explicit execution context.
 cudf_status_t cudf_filtered_join_left_anti_join_with_output_size_ex(
@@ -616,7 +616,7 @@ cudf_status_t cudf_filtered_join_left_anti_join_with_output_size_ex(
   cudf_table_view_handle probe,
   size_t output_size,
   cudf_column_handle* out_indices,
-  const cudf_exec_options_t* options);
+  cudf_exec_options_t const* options);
 
 /// Build a reusable hash-join artifact with explicit execution context.
 ///
@@ -628,7 +628,7 @@ cudf_status_t cudf_hash_join_create_ex(cudf_table_view_handle build,
                                        cudf_null_equality_t null_equality,
                                        double load_factor,
                                        cudf_hash_join_handle* out,
-                                       const cudf_exec_options_t* options);
+                                       cudf_exec_options_t const* options);
 
 /// Return exact retained device bytes that must be reserved before building a
 /// reusable hash-join artifact with explicit execution context.
@@ -643,7 +643,7 @@ cudf_status_t cudf_hash_join_create_ex(cudf_table_view_handle build,
 cudf_status_t cudf_hash_join_pre_build_reservation_size_ex(cudf_table_view_handle build,
                                                            double load_factor,
                                                            size_t* out,
-                                                           const cudf_exec_options_t* options);
+                                                           cudf_exec_options_t const* options);
 
 /// Destroy a reusable hash-join handle under its build-time device and memory
 /// resource. Ownership is consumed on call; failure quarantines it.
@@ -664,7 +664,7 @@ cudf_status_t cudf_hash_join_inner_join_ex(cudf_hash_join_handle join,
                                            cudf_table_view_handle probe,
                                            cudf_column_handle* out_left_indices,
                                            cudf_column_handle* out_right_indices,
-                                           const cudf_exec_options_t* options);
+                                           cudf_exec_options_t const* options);
 
 /// Probe a reusable hash-join artifact for inner-join gather indices with an
 /// exact output row count and explicit execution context.
@@ -676,7 +676,7 @@ cudf_status_t cudf_hash_join_inner_join_with_output_size_ex(cudf_hash_join_handl
                                                             size_t output_size,
                                                             cudf_column_handle* out_left_indices,
                                                             cudf_column_handle* out_right_indices,
-                                                            const cudf_exec_options_t* options);
+                                                            cudf_exec_options_t const* options);
 
 /// Return the exact row count for an inner probe with explicit execution context.
 ///
@@ -684,7 +684,7 @@ cudf_status_t cudf_hash_join_inner_join_with_output_size_ex(cudf_hash_join_handl
 cudf_status_t cudf_hash_join_inner_join_size_ex(cudf_hash_join_handle join,
                                                 cudf_table_view_handle probe,
                                                 size_t* out,
-                                                const cudf_exec_options_t* options);
+                                                cudf_exec_options_t const* options);
 
 /// Probe a reusable hash-join artifact for left-join gather indices with
 /// explicit execution context.
@@ -695,7 +695,7 @@ cudf_status_t cudf_hash_join_left_join_ex(cudf_hash_join_handle join,
                                           cudf_table_view_handle probe,
                                           cudf_column_handle* out_left_indices,
                                           cudf_column_handle* out_right_indices,
-                                          const cudf_exec_options_t* options);
+                                          cudf_exec_options_t const* options);
 
 /// Probe a reusable hash-join artifact for left-join gather indices with an
 /// exact output row count and explicit execution context.
@@ -707,7 +707,7 @@ cudf_status_t cudf_hash_join_left_join_with_output_size_ex(cudf_hash_join_handle
                                                            size_t output_size,
                                                            cudf_column_handle* out_left_indices,
                                                            cudf_column_handle* out_right_indices,
-                                                           const cudf_exec_options_t* options);
+                                                           cudf_exec_options_t const* options);
 
 /// Return the exact row count for a left probe with explicit execution context.
 ///
@@ -715,7 +715,7 @@ cudf_status_t cudf_hash_join_left_join_with_output_size_ex(cudf_hash_join_handle
 cudf_status_t cudf_hash_join_left_join_size_ex(cudf_hash_join_handle join,
                                                cudf_table_view_handle probe,
                                                size_t* out,
-                                               const cudf_exec_options_t* options);
+                                               cudf_exec_options_t const* options);
 
 /// Probe a reusable hash-join artifact for full-join gather indices with
 /// explicit execution context.
@@ -726,7 +726,7 @@ cudf_status_t cudf_hash_join_full_join_ex(cudf_hash_join_handle join,
                                           cudf_table_view_handle probe,
                                           cudf_column_handle* out_left_indices,
                                           cudf_column_handle* out_right_indices,
-                                          const cudf_exec_options_t* options);
+                                          cudf_exec_options_t const* options);
 
 /// Probe a reusable hash-join artifact for full-join gather indices with an
 /// exact output row count and explicit execution context.
@@ -738,7 +738,7 @@ cudf_status_t cudf_hash_join_full_join_with_output_size_ex(cudf_hash_join_handle
                                                            size_t output_size,
                                                            cudf_column_handle* out_left_indices,
                                                            cudf_column_handle* out_right_indices,
-                                                           const cudf_exec_options_t* options);
+                                                           cudf_exec_options_t const* options);
 
 /// Return the exact row count for a full probe with explicit execution context.
 ///
@@ -746,7 +746,7 @@ cudf_status_t cudf_hash_join_full_join_with_output_size_ex(cudf_hash_join_handle
 cudf_status_t cudf_hash_join_full_join_size_ex(cudf_hash_join_handle join,
                                                cudf_table_view_handle probe,
                                                size_t* out,
-                                               const cudf_exec_options_t* options);
+                                               cudf_exec_options_t const* options);
 
 #ifdef __cplusplus
 }

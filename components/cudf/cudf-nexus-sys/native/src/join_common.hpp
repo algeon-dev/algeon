@@ -39,7 +39,7 @@
 
 namespace cudf_rust::join {
 /// Concatenate key and payload views into one table view.
-inline cudf::table_view concat_views(const cudf::table_view& keys, const cudf::table_view& payload)
+inline cudf::table_view concat_views(cudf::table_view const& keys, cudf::table_view const& payload)
 {
   std::vector<cudf::column_view> cols;
   cols.reserve(keys.num_columns() + payload.num_columns());
@@ -136,8 +136,8 @@ inline std::unique_ptr<cudf::table> projected_cross_join_table(
 
 /// Materialize a table given a gather map (index column).
 inline std::unique_ptr<cudf::table> gather_table(
-  const cudf::table_view& source,
-  const std::unique_ptr<rmm::device_uvector<cudf::size_type>>& map,
+  cudf::table_view const& source,
+  std::unique_ptr<rmm::device_uvector<cudf::size_type>> const& map,
   cudf::out_of_bounds_policy oob_policy,
   rmm::cuda_stream_view stream,
   rmm::device_async_resource_ref mr)
@@ -994,14 +994,11 @@ inline cudf_status_t filtered_join_create_impl(cudf_table_view_handle build,
     owner->upstream_mr_lifetime = exec->mr_lifetime;
     owner->stream_lifetime      = exec->stream_lifetime;
     owner->mr_raw               = exec->mr_raw;
-    // The filtered-join build constructor takes no memory resource: its hash
-    // table allocates through the device memory domain. Retained bytes are
-    // derived from the pre-build sizing formula, mirroring cudf::hash_join.
-    auto const reservation_size =
-      cudf::filtered_join::pre_build_reservation_size(*build_view, load_factor);
+    auto const reservation_size = cudf::filtered_join::pre_build_reservation_size(
+      *build_view, load_factor, exec->stream, *exec->mr);
     {
-      owner->join =
-        std::make_unique<cudf::filtered_join>(*build_view, null_eq, load_factor, exec->stream);
+      owner->join = std::make_unique<cudf::filtered_join>(
+        *build_view, null_eq, load_factor, exec->stream, *exec->mr);
       owner->device_allocated_size_bytes = reservation_size;
     }
     *out = reinterpret_cast<cudf_filtered_join_handle>(owner.release());

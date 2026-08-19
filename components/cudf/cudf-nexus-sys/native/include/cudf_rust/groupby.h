@@ -78,7 +78,7 @@ cudf_status_t cudf_prepared_groupby_create_ex(cudf_table_view_handle keys,
                                               cudf_null_policy_t keys_null_policy,
                                               int32_t keys_are_sorted,
                                               cudf_prepared_groupby_handle* out,
-                                              const cudf_exec_options_t* options);
+                                              cudf_exec_options_t const* options);
 
 /// Destroy a reusable groupby handle. Ownership is consumed on call; success
 /// means cleanup completed and failure means the handle remains quarantined.
@@ -98,7 +98,7 @@ cudf_status_t cudf_prepared_groupby_prepare_groups_ex(cudf_prepared_groupby_hand
                                                       int64_t* out_num_groups,
                                                       size_t* out_grouped_key_output_bytes,
                                                       int64_t* out_max_group_size,
-                                                      const cudf_exec_options_t* options);
+                                                      cudf_exec_options_t const* options);
 
 /// Execute an aggregation through a reusable groupby handle.
 ///
@@ -107,15 +107,15 @@ cudf_status_t cudf_prepared_groupby_prepare_groups_ex(cudf_prepared_groupby_hand
 /// explicit valid device and non-NULL stream/MR. `options->mr` must outlive the
 /// returned keys table and every returned result column.
 cudf_status_t cudf_prepared_groupby_aggregate_ex(cudf_prepared_groupby_handle groupby,
-                                                 const cudf_column_view_handle* values,
-                                                 const cudf_aggregation_handle* aggregations,
-                                                 const int32_t* agg_counts,
+                                                 cudf_column_view_handle const* values,
+                                                 cudf_aggregation_handle const* aggregations,
+                                                 int32_t const* agg_counts,
                                                  int32_t num_requests,
                                                  int32_t num_aggregations,
                                                  cudf_table_handle* out_keys,
                                                  cudf_column_handle** out_values,
                                                  int32_t* out_total_columns,
-                                                 const cudf_exec_options_t* options);
+                                                 cudf_exec_options_t const* options);
 
 /// Perform a groupby aggregation with explicit execution context.
 ///
@@ -139,16 +139,16 @@ cudf_status_t cudf_prepared_groupby_aggregate_ex(cudf_prepared_groupby_handle gr
 /// `options->mr` must outlive the returned keys table and every returned
 /// result column.
 cudf_status_t cudf_groupby_aggregate_ex(cudf_table_view_handle keys,
-                                        const cudf_column_view_handle* values,
-                                        const cudf_aggregation_handle* aggregations,
-                                        const int32_t* agg_counts,
+                                        cudf_column_view_handle const* values,
+                                        cudf_aggregation_handle const* aggregations,
+                                        int32_t const* agg_counts,
                                         int32_t num_requests,
                                         int32_t num_aggregations,
                                         cudf_null_policy_t keys_null_policy,
                                         cudf_table_handle* out_keys,
                                         cudf_column_handle** out_values,
                                         int32_t* out_total_columns,
-                                        const cudf_exec_options_t* options);
+                                        cudf_exec_options_t const* options);
 
 /// Perform a groupby aggregation with explicit execution context and sorted-key
 /// contract.
@@ -160,9 +160,9 @@ cudf_status_t cudf_groupby_aggregate_ex(cudf_table_view_handle keys,
 /// result column.
 cudf_status_t cudf_groupby_aggregate_with_keys_are_sorted_ex(
   cudf_table_view_handle keys,
-  const cudf_column_view_handle* values,
-  const cudf_aggregation_handle* aggregations,
-  const int32_t* agg_counts,
+  cudf_column_view_handle const* values,
+  cudf_aggregation_handle const* aggregations,
+  int32_t const* agg_counts,
   int32_t num_requests,
   int32_t num_aggregations,
   cudf_null_policy_t keys_null_policy,
@@ -170,7 +170,7 @@ cudf_status_t cudf_groupby_aggregate_with_keys_are_sorted_ex(
   cudf_table_handle* out_keys,
   cudf_column_handle** out_values,
   int32_t* out_total_columns,
-  const cudf_exec_options_t* options);
+  cudf_exec_options_t const* options);
 
 /// Perform a grouped prefix scan with explicit execution context.
 ///
@@ -181,9 +181,9 @@ cudf_status_t cudf_groupby_aggregate_with_keys_are_sorted_ex(
 /// `options->mr` must outlive the returned keys table and every returned
 /// result column.
 cudf_status_t cudf_groupby_scan_ex(cudf_table_view_handle keys,
-                                   const cudf_column_view_handle* values,
-                                   const cudf_groupby_scan_aggregation_handle* aggregations,
-                                   const int32_t* agg_counts,
+                                   cudf_column_view_handle const* values,
+                                   cudf_groupby_scan_aggregation_handle const* aggregations,
+                                   int32_t const* agg_counts,
                                    int32_t num_requests,
                                    int32_t num_aggregations,
                                    cudf_null_policy_t keys_null_policy,
@@ -191,7 +191,7 @@ cudf_status_t cudf_groupby_scan_ex(cudf_table_view_handle keys,
                                    cudf_table_handle* out_keys,
                                    cudf_column_handle** out_values,
                                    int32_t* out_total_columns,
-                                   const cudf_exec_options_t* options);
+                                   cudf_exec_options_t const* options);
 
 /// Perform a per-group row shift with explicit execution context.
 ///
@@ -213,15 +213,15 @@ cudf_status_t cudf_groupby_scan_ex(cudf_table_view_handle keys,
 /// `options` must name an explicit valid device and non-NULL stream/MR.
 /// `options->mr` must outlive the returned keys and values tables.
 cudf_status_t cudf_groupby_shift_ex(cudf_table_view_handle keys,
-                                    const cudf_column_view_handle* values,
-                                    const int32_t* offsets,
-                                    const cudf_scalar_handle* fill_values,
+                                    cudf_column_view_handle const* values,
+                                    int32_t const* offsets,
+                                    cudf_scalar_handle const* fill_values,
                                     int32_t num_value_columns,
                                     cudf_null_policy_t keys_null_policy,
                                     int32_t keys_are_sorted,
                                     cudf_table_handle* out_keys,
                                     cudf_table_handle* out_values,
-                                    const cudf_exec_options_t* options);
+                                    cudf_exec_options_t const* options);
 
 #ifdef __cplusplus
 }

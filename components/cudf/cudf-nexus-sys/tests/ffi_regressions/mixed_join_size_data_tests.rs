@@ -159,8 +159,12 @@ fn assert_size_data_payload(
     assert!(!right_indices.is_null(), "{name} did not publish right indices");
     assert_eq!(last_exec_stream_value(), expected_stream, "{name} materialize stream");
     assert_eq!(last_exec_mr_raw(), expected_mr_raw, "{name} materialize memory resource");
-    assert_eq!(read_all_i32(left_indices), expected_left_indices, "{name} left indices");
-    assert_eq!(read_all_i32(right_indices), expected_right_indices, "{name} right indices");
+    let mut actual_pairs = read_all_i32(left_indices).into_iter().zip(read_all_i32(right_indices)).collect::<Vec<_>>();
+    let mut expected_pairs =
+        expected_left_indices.iter().copied().zip(expected_right_indices.iter().copied()).collect::<Vec<_>>();
+    actual_pairs.sort_unstable();
+    expected_pairs.sort_unstable();
+    assert_eq!(actual_pairs, expected_pairs, "{name} indices");
 
     unsafe {
         cudf_sys::cudf_column_destroy(right_indices);

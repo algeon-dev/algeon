@@ -62,43 +62,43 @@ cudf_status_t cudf_sorted_order_radix_preflight(int64_t num_rows,
 /// `options` must be non-NULL and carry an explicit device, stream, and memory
 /// resource. `options->mr` must outlive the returned table.
 cudf_status_t cudf_sort_ex(cudf_table_view_handle input,
-                           const cudf_order_t* column_order,
-                           const cudf_null_order_t* null_precedence,
+                           cudf_order_t const* column_order,
+                           cudf_null_order_t const* null_precedence,
                            int32_t num_keys,
                            cudf_table_handle* out,
-                           const cudf_exec_options_t* options);
+                           cudf_exec_options_t const* options);
 
 /// Stable sort with explicit execution context.
 /// `options` must be non-NULL and carry an explicit device, stream, and memory
 /// resource. `options->mr` must outlive the returned table.
 cudf_status_t cudf_stable_sort_ex(cudf_table_view_handle input,
-                                  const cudf_order_t* column_order,
-                                  const cudf_null_order_t* null_precedence,
+                                  cudf_order_t const* column_order,
+                                  cudf_null_order_t const* null_precedence,
                                   int32_t num_keys,
                                   cudf_table_handle* out,
-                                  const cudf_exec_options_t* options);
+                                  cudf_exec_options_t const* options);
 
 /// Sort by key with explicit execution context.
 /// `options` must be non-NULL and carry an explicit device, stream, and memory
 /// resource. `options->mr` must outlive the returned table.
 cudf_status_t cudf_sort_by_key_ex(cudf_table_view_handle values,
                                   cudf_table_view_handle keys,
-                                  const cudf_order_t* column_order,
-                                  const cudf_null_order_t* null_precedence,
+                                  cudf_order_t const* column_order,
+                                  cudf_null_order_t const* null_precedence,
                                   int32_t num_key_columns,
                                   cudf_table_handle* out,
-                                  const cudf_exec_options_t* options);
+                                  cudf_exec_options_t const* options);
 
 /// Stable sort by key with explicit execution context.
 /// `options` must be non-NULL and carry an explicit device, stream, and memory
 /// resource. `options->mr` must outlive the returned table.
 cudf_status_t cudf_stable_sort_by_key_ex(cudf_table_view_handle values,
                                          cudf_table_view_handle keys,
-                                         const cudf_order_t* column_order,
-                                         const cudf_null_order_t* null_precedence,
+                                         cudf_order_t const* column_order,
+                                         cudf_null_order_t const* null_precedence,
                                          int32_t num_key_columns,
                                          cudf_table_handle* out,
-                                         const cudf_exec_options_t* options);
+                                         cudf_exec_options_t const* options);
 
 /// Sorted order with explicit execution context.
 ///
@@ -106,22 +106,22 @@ cudf_status_t cudf_stable_sort_by_key_ex(cudf_table_view_handle values,
 /// `options` must be non-NULL and carry an explicit device, stream, and memory
 /// resource. `options->mr` must outlive the returned column.
 cudf_status_t cudf_sorted_order_ex(cudf_table_view_handle input,
-                                   const cudf_order_t* column_order,
-                                   const cudf_null_order_t* null_precedence,
+                                   cudf_order_t const* column_order,
+                                   cudf_null_order_t const* null_precedence,
                                    int32_t num_keys,
                                    cudf_column_handle* out,
-                                   const cudf_exec_options_t* options);
+                                   cudf_exec_options_t const* options);
 
 /// Check whether the table is already sorted with explicit execution context.
 ///
 /// `options` must be non-NULL and carry an explicit device, stream, and memory
 /// resource.
 cudf_status_t cudf_is_sorted_ex(cudf_table_view_handle input,
-                                const cudf_order_t* column_order,
-                                const cudf_null_order_t* null_precedence,
+                                cudf_order_t const* column_order,
+                                cudf_null_order_t const* null_precedence,
                                 int32_t num_keys,
                                 int32_t* out,
-                                const cudf_exec_options_t* options);
+                                cudf_exec_options_t const* options);
 
 #ifdef __cplusplus
 }

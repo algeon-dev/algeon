@@ -16,11 +16,11 @@
 #include <cudf/table/table_view.hpp>
 #include <cudf/types.hpp>
 #include <cudf/utilities/memory_resource.hpp>
-#include <cudf/utilities/span.hpp>
 
 #include <algorithm>
 #include <functional>
 #include <memory>
+#include <span>
 #include <type_traits>
 #include <vector>
 
@@ -46,7 +46,7 @@ using unique_groupby_table_handle =
 
 cudf_status_t to_cudf_null_policy(cudf_null_policy_t input,
                                   cudf::null_policy* out,
-                                  const char* param_name)
+                                  char const* param_name)
 {
   switch (input) {
     case CUDF_NULL_POLICY_EXCLUDE: *out = cudf::null_policy::EXCLUDE; return CUDF_SUCCESS;
@@ -186,9 +186,9 @@ cudf_status_t cudf_groupby_scan_aggregation_destroy(cudf_groupby_scan_aggregatio
 }
 
 cudf_status_t cudf_groupby_aggregate_ex(cudf_table_view_handle keys,
-                                        const cudf_column_view_handle* values,
-                                        const cudf_aggregation_handle* aggregations,
-                                        const int32_t* agg_counts,
+                                        cudf_column_view_handle const* values,
+                                        cudf_aggregation_handle const* aggregations,
+                                        int32_t const* agg_counts,
                                         int32_t num_requests,
                                         int32_t num_aggregations,
                                         cudf_null_policy_t keys_null_policy,
@@ -264,9 +264,9 @@ static cudf_status_t cudf_groupby_aggregate_from_groupby(
 }
 
 static cudf_status_t build_groupby_aggregation_requests(
-  const cudf_column_view_handle* values,
-  const cudf_aggregation_handle* aggregations,
-  const int32_t* agg_counts,
+  cudf_column_view_handle const* values,
+  cudf_aggregation_handle const* aggregations,
+  int32_t const* agg_counts,
   int32_t num_requests,
   int32_t num_aggregations,
   std::vector<cudf::groupby::aggregation_request>* out)
@@ -305,9 +305,9 @@ static cudf_status_t build_groupby_aggregation_requests(
   return CUDF_SUCCESS;
 }
 
-static cudf_status_t validate_groupby_aggregate_args(const cudf_column_view_handle* values,
-                                                     const cudf_aggregation_handle* aggregations,
-                                                     const int32_t* agg_counts,
+static cudf_status_t validate_groupby_aggregate_args(cudf_column_view_handle const* values,
+                                                     cudf_aggregation_handle const* aggregations,
+                                                     int32_t const* agg_counts,
                                                      int32_t num_requests,
                                                      int32_t num_aggregations,
                                                      cudf_table_handle* out_keys,
@@ -416,9 +416,9 @@ cudf_status_t cudf_prepared_groupby_prepare_groups_ex(cudf_prepared_groupby_hand
 }
 
 cudf_status_t cudf_prepared_groupby_aggregate_ex(cudf_prepared_groupby_handle groupby,
-                                                 const cudf_column_view_handle* values,
-                                                 const cudf_aggregation_handle* aggregations,
-                                                 const int32_t* agg_counts,
+                                                 cudf_column_view_handle const* values,
+                                                 cudf_aggregation_handle const* aggregations,
+                                                 int32_t const* agg_counts,
                                                  int32_t num_requests,
                                                  int32_t num_aggregations,
                                                  cudf_table_handle* out_keys,
@@ -458,9 +458,9 @@ cudf_status_t cudf_prepared_groupby_aggregate_ex(cudf_prepared_groupby_handle gr
 
 cudf_status_t cudf_groupby_aggregate_with_keys_are_sorted_ex(
   cudf_table_view_handle keys,
-  const cudf_column_view_handle* values,
-  const cudf_aggregation_handle* aggregations,
-  const int32_t* agg_counts,
+  cudf_column_view_handle const* values,
+  cudf_aggregation_handle const* aggregations,
+  int32_t const* agg_counts,
   int32_t num_requests,
   int32_t num_aggregations,
   cudf_null_policy_t keys_null_policy,
@@ -506,9 +506,9 @@ cudf_status_t cudf_groupby_aggregate_with_keys_are_sorted_ex(
 }
 
 cudf_status_t cudf_groupby_scan_ex(cudf_table_view_handle keys,
-                                   const cudf_column_view_handle* values,
-                                   const cudf_groupby_scan_aggregation_handle* aggregations,
-                                   const int32_t* agg_counts,
+                                   cudf_column_view_handle const* values,
+                                   cudf_groupby_scan_aggregation_handle const* aggregations,
+                                   int32_t const* agg_counts,
                                    int32_t num_requests,
                                    int32_t num_aggregations,
                                    cudf_null_policy_t keys_null_policy,
@@ -681,7 +681,7 @@ cudf_status_t cudf_groupby_shift_ex(cudf_table_view_handle keys,
         *keys_view, null_policy, keys_are_sorted != 0 ? cudf::sorted::YES : cudf::sorted::NO);
       auto [result_keys, result_values] =
         gb.shift(values_table_view,
-                 cudf::host_span<cudf::size_type const>(offsets_host.data(), offsets_host.size()),
+                 std::span<cudf::size_type const>{offsets_host.data(), offsets_host.size()},
                  fill_refs,
                  exec->stream,
                  *exec->mr);

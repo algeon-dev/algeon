@@ -229,6 +229,8 @@ struct BindingExtensionSlot<T> {
     execution: Mutex<()>,
 }
 
+// MSRV 1.94 predates stable Atomic::try_update (1.95); fetch_update is the MSRV-compatible spelling.
+#[allow(deprecated)]
 impl<T> BindingExtensionSlot<T>
 where T: Any + Send + Sync
 {

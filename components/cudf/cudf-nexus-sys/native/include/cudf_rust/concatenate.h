@@ -16,18 +16,18 @@ extern "C" {
 ///
 /// `options` must be non-NULL and carry an explicit device, stream, and memory
 /// resource. `options->mr` must outlive the returned column.
-cudf_status_t cudf_concatenate_columns_ex(const cudf_column_view_handle* columns,
+cudf_status_t cudf_concatenate_columns_ex(cudf_column_view_handle const* columns,
                                           int32_t num_columns,
-                                          const cudf_exec_options_t* options,
+                                          cudf_exec_options_t const* options,
                                           cudf_column_handle* out);
 
 /// Concatenate multiple tables into a single table with explicit execution context.
 ///
 /// `options` must be non-NULL and carry an explicit device, stream, and memory
 /// resource. `options->mr` must outlive the returned table.
-cudf_status_t cudf_concatenate_tables_ex(const cudf_table_view_handle* tables,
+cudf_status_t cudf_concatenate_tables_ex(cudf_table_view_handle const* tables,
                                          int32_t num_tables,
-                                         const cudf_exec_options_t* options,
+                                         cudf_exec_options_t const* options,
                                          cudf_table_handle* out);
 
 #ifdef __cplusplus

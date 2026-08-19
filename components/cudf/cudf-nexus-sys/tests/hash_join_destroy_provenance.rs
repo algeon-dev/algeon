@@ -141,14 +141,9 @@ fn hash_join_destroy_uses_build_memory_resource() {
     assert!(!join.is_null());
 
     stream.synchronize();
-    // Device-domain model: the build constructor takes no memory resource, so
-    // its retained hash table allocates through (and later releases through)
-    // the device's current resource. The explicit execution memory resource is
-    // outputs-only and must stay untouched by construction.
-    assert_eq!(
-        build_mr.active_allocation_count(),
-        0,
-        "hash-join construction must not charge build allocations to the outputs-only execution memory resource"
+    assert!(
+        build_mr.active_allocation_count() > 0,
+        "hash-join construction must charge retained build allocations to the explicit execution memory resource"
     );
 
     unsafe { cudf_sys::cudf_hash_join_destroy(join) };
@@ -161,7 +156,7 @@ fn hash_join_destroy_uses_build_memory_resource() {
     assert_eq!(
         build_mr.active_allocation_count(),
         0,
-        "hash-join destroy must not touch the outputs-only execution memory resource"
+        "hash-join destroy must release retained build allocations from the explicit execution memory resource"
     );
 
     unsafe {

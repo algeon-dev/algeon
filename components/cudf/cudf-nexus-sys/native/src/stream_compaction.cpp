@@ -14,7 +14,7 @@
 
 extern "C" {
 cudf_status_t cudf_drop_nulls_ex(cudf_table_view_handle input,
-                                 const int* keys,
+                                 int const* keys,
                                  int num_keys,
                                  int keep_threshold,
                                  cudf_table_handle* out,
@@ -52,7 +52,7 @@ cudf_status_t cudf_drop_nulls_ex(cudf_table_view_handle input,
 }
 
 cudf_status_t cudf_distinct_ex(cudf_table_view_handle input,
-                               const int* keys,
+                               int const* keys,
                                int num_keys,
                                cudf_duplicate_keep_option_t keep,
                                cudf_stream_compaction_null_equality_t null_equality,
@@ -124,7 +124,7 @@ cudf_status_t cudf_distinct_ex(cudf_table_view_handle input,
 }
 
 cudf_status_t cudf_unique_ex(cudf_table_view_handle input,
-                             const int* keys,
+                             int const* keys,
                              int num_keys,
                              cudf_duplicate_keep_option_t keep,
                              cudf_stream_compaction_null_equality_t null_equality,

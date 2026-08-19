@@ -10,9 +10,9 @@
 #include <rmm/mr/cuda_memory_resource.hpp>
 #include <rmm/mr/pool_memory_resource.hpp>
 
-#include <new>
 #include <atomic>
 #include <cstring>
+#include <new>
 #include <stdexcept>
 #include <string>
 
@@ -57,7 +57,8 @@ class manager_allocation_limit_resource_adaptor final : public rmm::mr::device_m
     }
   }
 
-  [[nodiscard]] bool do_is_equal(rmm::mr::device_memory_resource const& other) const noexcept override
+  [[nodiscard]] bool do_is_equal(
+    rmm::mr::device_memory_resource const& other) const noexcept override
   {
     return this == std::addressof(other);
   }
@@ -101,7 +102,8 @@ default_memory_resources()
   // Deliberately leaked: device-resource destruction can still run while a
   // process unwinds worker threads at exit; these registries must outlive
   // static destruction.
-  static auto& resources = *new std::unordered_map<int32_t, std::shared_ptr<rmm::mr::device_memory_resource>>;
+  static auto& resources =
+    *new std::unordered_map<int32_t, std::shared_ptr<rmm::mr::device_memory_resource>>;
   return resources;
 }
 
@@ -175,7 +177,8 @@ std::mutex& memory_manager_registry_mutex()
 
 std::unordered_map<int32_t, std::shared_ptr<device_memory_manager_state>>& memory_manager_registry()
 {
-  static auto& registry = *new std::unordered_map<int32_t, std::shared_ptr<device_memory_manager_state>>;
+  static auto& registry =
+    *new std::unordered_map<int32_t, std::shared_ptr<device_memory_manager_state>>;
   return registry;
 }
 
@@ -189,9 +192,10 @@ bool installation_identity_equal(cudf_memory_manager_installation_identity_t con
                                  cudf_memory_manager_installation_identity_t const& right)
 {
   return left.callback_version == right.callback_version &&
-         std::memcmp(left.owner_fingerprint, right.owner_fingerprint,
-                     sizeof(left.owner_fingerprint)) == 0 &&
-         std::memcmp(left.partition_fingerprint, right.partition_fingerprint,
+         std::memcmp(
+           left.owner_fingerprint, right.owner_fingerprint, sizeof(left.owner_fingerprint)) == 0 &&
+         std::memcmp(left.partition_fingerprint,
+                     right.partition_fingerprint,
                      sizeof(left.partition_fingerprint)) == 0;
 }
 
@@ -207,9 +211,9 @@ void fill_installation_record(device_memory_manager_state* manager,
                               cudf_memory_manager_installation_cause_t requested_cause =
                                 CUDF_MEMORY_MANAGER_INSTALLATION_CAUSE_NONE)
 {
-  out                = {};
-  out.struct_size    = sizeof(cudf_memory_manager_installation_record_t);
-  out.device_ordinal = device;
+  out                   = {};
+  out.struct_size       = sizeof(cudf_memory_manager_installation_record_t);
+  out.device_ordinal    = device;
   out.effective_options = default_memory_manager_options();
   if (manager == nullptr) {
     out.status = CUDF_MEMORY_MANAGER_INSTALLATION_UNINSTALLED;
@@ -218,9 +222,7 @@ void fill_installation_record(device_memory_manager_state* manager,
   }
 
   out.flags |= CUDF_MEMORY_MANAGER_INSTALLATION_FLAG_EXISTS;
-  if (created_by_call) {
-    out.flags |= CUDF_MEMORY_MANAGER_INSTALLATION_FLAG_CREATED_BY_CALL;
-  }
+  if (created_by_call) { out.flags |= CUDF_MEMORY_MANAGER_INSTALLATION_FLAG_CREATED_BY_CALL; }
   out.effective_options       = manager->options;
   out.installation_generation = manager->installation_generation;
   if (manager->failure_callback_installed) {
@@ -315,13 +317,11 @@ cudf_status_t normalize_memory_manager_options(cudf_memory_manager_options_t con
       set_error("memory manager options base_kind is invalid");
       return CUDF_ERROR_INVALID_ARGUMENT;
   }
-  if (out.allocation_limit_bytes > 0 &&
-      out.initial_pool_size_bytes > out.allocation_limit_bytes) {
+  if (out.allocation_limit_bytes > 0 && out.initial_pool_size_bytes > out.allocation_limit_bytes) {
     set_error("memory manager initial pool size exceeds allocation limit");
     return CUDF_ERROR_INVALID_ARGUMENT;
   }
-  if (out.base_kind == CUDF_MEMORY_MANAGER_BASE_POOL &&
-      out.maximum_pool_size_bytes > 0) {
+  if (out.base_kind == CUDF_MEMORY_MANAGER_BASE_POOL && out.maximum_pool_size_bytes > 0) {
     if (out.maximum_pool_size_bytes < out.initial_pool_size_bytes) {
       set_error("memory manager maximum pool size is below initial pool size");
       return CUDF_ERROR_INVALID_ARGUMENT;
@@ -404,13 +404,11 @@ std::shared_ptr<device_memory_manager_state> make_memory_manager_for_current_dev
   if (options.allocation_limit_bytes > 0) {
     owner.manager_allocation_limit = std::make_shared<manager_allocation_limit_state>(
       static_cast<std::size_t>(options.allocation_limit_bytes));
-    owner.limiting_mr =
-      std::make_unique<manager_allocation_limit_resource_adaptor>(
-        physical_base,
-        owner.manager_allocation_limit);
+    owner.limiting_mr = std::make_unique<manager_allocation_limit_resource_adaptor>(
+      physical_base, owner.manager_allocation_limit);
     physical_base = owner.limiting_mr.get();
   }
-  auto adaptor = std::make_unique<reservation_aware_resource_adaptor>(physical_base);
+  auto adaptor              = std::make_unique<reservation_aware_resource_adaptor>(physical_base);
   owner.reservation_adaptor = adaptor.get();
   if (failure_callback_v2 != nullptr) {
     owner.reservation_mr = std::move(adaptor);
@@ -469,14 +467,15 @@ cudf_status_t validate_stream_device_for_manager(cudf_stream_handle stream,
   return CUDF_SUCCESS;
 }
 
-cudf_status_t memory_manager_for_device_impl(int32_t device,
-                                             cudf_memory_failure_callback_t failure_callback,
-                                             cudf_memory_failure_callback_v2_t failure_callback_v2,
-                                             void* failure_callback_arg,
-                                             cudf_memory_manager_options_t const* options,
-                                             cudf_memory_manager_handle* out,
-                                             cudf_memory_manager_installation_identity_t const* installation_identity,
-                                             cudf_memory_manager_installation_record_t* installation)
+cudf_status_t memory_manager_for_device_impl(
+  int32_t device,
+  cudf_memory_failure_callback_t failure_callback,
+  cudf_memory_failure_callback_v2_t failure_callback_v2,
+  void* failure_callback_arg,
+  cudf_memory_manager_options_t const* options,
+  cudf_memory_manager_handle* out,
+  cudf_memory_manager_installation_identity_t const* installation_identity,
+  cudf_memory_manager_installation_record_t* installation)
 {
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
@@ -499,8 +498,8 @@ cudf_status_t memory_manager_for_device_impl(int32_t device,
     if (guard_status != CUDF_SUCCESS) { return guard_status; }
 
     std::scoped_lock lock{memory_manager_registry_mutex()};
-    auto& registry = memory_manager_registry();
-    auto it        = registry.find(device);
+    auto& registry       = memory_manager_registry();
+    auto it              = registry.find(device);
     bool created_by_call = false;
     if (it == registry.end()) {
       it = registry
@@ -539,8 +538,7 @@ cudf_status_t memory_manager_for_device_impl(int32_t device,
     }
     if (installation_identity != nullptr) {
       if (!it->second->has_installation_identity ||
-          !installation_identity_equal(it->second->installation_identity,
-                                       *installation_identity)) {
+          !installation_identity_equal(it->second->installation_identity, *installation_identity)) {
         if (installation != nullptr) {
           fill_installation_record(it->second.get(),
                                    device,
@@ -555,11 +553,12 @@ cudf_status_t memory_manager_for_device_impl(int32_t device,
           it->second->failure_callback_v2 != failure_callback_v2 ||
           it->second->failure_callback_arg != failure_callback_arg) {
         if (installation != nullptr) {
-          fill_installation_record(it->second.get(),
-                                   device,
-                                   *installation,
-                                   false,
-                                   CUDF_MEMORY_MANAGER_INSTALLATION_CAUSE_CALLBACK_BINDING_MISMATCH);
+          fill_installation_record(
+            it->second.get(),
+            device,
+            *installation,
+            false,
+            CUDF_MEMORY_MANAGER_INSTALLATION_CAUSE_CALLBACK_BINDING_MISMATCH);
         }
         set_error("device memory manager failure callback binding does not match");
         return CUDF_ERROR_INVALID_OPERATION;
@@ -606,10 +605,9 @@ cudf_status_t memory_manager_for_device_impl(int32_t device,
           "manager remains registered");
         return CUDF_ERROR_INVALID_OPERATION;
       }
-      it->second->current_resource_installed = true;
+      it->second->current_resource_installed         = true;
       it->second->current_resource_install_retryable = false;
-      it->second->current_resource_install_cause =
-        CUDF_MEMORY_MANAGER_INSTALLATION_CAUSE_NONE;
+      it->second->current_resource_install_cause     = CUDF_MEMORY_MANAGER_INSTALLATION_CAUSE_NONE;
     }
 #ifdef CUDF_RUST_ENABLE_TEST_HOOKS
     if (invoke_failure_callback_before_install_returns().exchange(false,
@@ -617,7 +615,7 @@ cudf_status_t memory_manager_for_device_impl(int32_t device,
         it->second->options.allocation_limit_bytes > 0) {
       auto const request = static_cast<std::size_t>(it->second->options.allocation_limit_bytes) + 1;
       try {
-        auto stream = cuda::stream_ref{cudaStream_t{nullptr}};
+        auto stream      = cuda::stream_ref{cudaStream_t{nullptr}};
         auto* allocation = it->second->owner->mr->allocate(stream, request);
         it->second->owner->mr->deallocate(stream, allocation, request);
       } catch (rmm::out_of_memory const&) {
@@ -640,10 +638,6 @@ cudf_status_t memory_manager_for_device_impl(int32_t device,
 }  // namespace cudf::rust::memory
 
 using namespace cudf::rust::memory;
-
-namespace rmm {
-const char* bad_alloc::what() const noexcept { return _what.c_str(); }
-}  // namespace rmm
 
 rmm::mr::device_memory_resource* cudf_tracked_current_device_resource_raw()
 {
@@ -686,14 +680,16 @@ void cudf_test_memory_manager_invoke_failure_callback_before_install_returns(voi
 #endif
 cudf_status_t cudf_memory_manager_for_device(int32_t device, cudf_memory_manager_handle* out)
 {
-  return memory_manager_for_device_impl(device, nullptr, nullptr, nullptr, nullptr, out, nullptr, nullptr);
+  return memory_manager_for_device_impl(
+    device, nullptr, nullptr, nullptr, nullptr, out, nullptr, nullptr);
 }
 
 cudf_status_t cudf_memory_manager_for_device_with_options(
   int32_t device, cudf_memory_manager_options_t const* options, cudf_memory_manager_handle* out)
 {
   CUDF_RUST_NULL_CHECK(options, "options is null");
-  return memory_manager_for_device_impl(device, nullptr, nullptr, nullptr, options, out, nullptr, nullptr);
+  return memory_manager_for_device_impl(
+    device, nullptr, nullptr, nullptr, options, out, nullptr, nullptr);
 }
 
 cudf_status_t cudf_memory_manager_for_device_with_failure_callback(
@@ -705,7 +701,8 @@ cudf_status_t cudf_memory_manager_for_device_with_failure_callback(
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
   CUDF_RUST_NULL_CHECK(callback, "callback is null");
-  return memory_manager_for_device_impl(device, callback, nullptr, callback_arg, nullptr, out, nullptr, nullptr);
+  return memory_manager_for_device_impl(
+    device, callback, nullptr, callback_arg, nullptr, out, nullptr, nullptr);
 }
 
 cudf_status_t cudf_memory_manager_for_device_with_failure_callback_v2(
@@ -717,7 +714,8 @@ cudf_status_t cudf_memory_manager_for_device_with_failure_callback_v2(
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
   CUDF_RUST_NULL_CHECK(callback, "callback is null");
-  return memory_manager_for_device_impl(device, nullptr, callback, callback_arg, nullptr, out, nullptr, nullptr);
+  return memory_manager_for_device_impl(
+    device, nullptr, callback, callback_arg, nullptr, out, nullptr, nullptr);
 }
 
 cudf_status_t cudf_memory_manager_for_device_with_failure_callback_and_options(
@@ -731,7 +729,8 @@ cudf_status_t cudf_memory_manager_for_device_with_failure_callback_and_options(
   *out = nullptr;
   CUDF_RUST_NULL_CHECK(callback, "callback is null");
   CUDF_RUST_NULL_CHECK(options, "options is null");
-  return memory_manager_for_device_impl(device, callback, nullptr, callback_arg, options, out, nullptr, nullptr);
+  return memory_manager_for_device_impl(
+    device, callback, nullptr, callback_arg, options, out, nullptr, nullptr);
 }
 
 cudf_status_t cudf_memory_manager_for_device_with_failure_callback_v2_and_options(
@@ -745,7 +744,8 @@ cudf_status_t cudf_memory_manager_for_device_with_failure_callback_v2_and_option
   *out = nullptr;
   CUDF_RUST_NULL_CHECK(callback, "callback is null");
   CUDF_RUST_NULL_CHECK(options, "options is null");
-  return memory_manager_for_device_impl(device, nullptr, callback, callback_arg, options, out, nullptr, nullptr);
+  return memory_manager_for_device_impl(
+    device, nullptr, callback, callback_arg, options, out, nullptr, nullptr);
 }
 
 cudf_status_t cudf_memory_manager_install_owned_with_failure_callback_v2_and_options(
@@ -763,8 +763,8 @@ cudf_status_t cudf_memory_manager_install_owned_with_failure_callback_v2_and_opt
   CUDF_RUST_NULL_CHECK(options, "options is null");
   CUDF_RUST_NULL_CHECK(identity, "identity is null");
   CUDF_RUST_NULL_CHECK(installation, "installation is null");
-  *installation = {};
-  installation->struct_size = sizeof(cudf_memory_manager_installation_record_t);
+  *installation                = {};
+  installation->struct_size    = sizeof(cudf_memory_manager_installation_record_t);
   installation->device_ordinal = device;
   return memory_manager_for_device_impl(
     device, nullptr, callback, callback_arg, options, out, identity, installation);
@@ -774,8 +774,8 @@ cudf_status_t cudf_memory_manager_installation_record(
   int32_t device, cudf_memory_manager_installation_record_t* out)
 {
   CUDF_RUST_NULL_CHECK(out, "out is null");
-  *out = {};
-  out->struct_size = sizeof(cudf_memory_manager_installation_record_t);
+  *out                = {};
+  out->struct_size    = sizeof(cudf_memory_manager_installation_record_t);
   out->device_ordinal = device;
   CUDF_RUST_TRY
   {
@@ -836,7 +836,8 @@ cudf_status_t cudf_memory_manager_installation_state(int32_t device,
     *exists                     = 1;
     *failure_callback_installed = it->second->failure_callback_installed ? 1 : 0;
     *current_resource_installed =
-      it->second->current_resource_installed && manager_is_actual_current_resource(*it->second) ? 1 : 0;
+      it->second->current_resource_installed && manager_is_actual_current_resource(*it->second) ? 1
+                                                                                                : 0;
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -949,11 +950,10 @@ cudf_status_t cudf_memory_manager_allocator_event_ring_bounds(
   CUDF_RUST_CATCH
 }
 
-cudf_status_t cudf_memory_manager_read_allocator_event(
-  cudf_memory_manager_handle manager,
-  uint64_t sequence,
-  cudf_allocator_event_t* out,
-  cudf_allocator_event_read_status_t* status)
+cudf_status_t cudf_memory_manager_read_allocator_event(cudf_memory_manager_handle manager,
+                                                       uint64_t sequence,
+                                                       cudf_allocator_event_t* out,
+                                                       cudf_allocator_event_read_status_t* status)
 {
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = {};

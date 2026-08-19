@@ -21,11 +21,11 @@ typedef struct {
 } cudf_io_datasource_probe_result_t;
 
 typedef struct {
-  const char* aws_region;
-  const char* aws_access_key_id;
-  const char* aws_secret_access_key;
-  const char* aws_session_token;
-  const char* aws_endpoint_url;
+  char const* aws_region;
+  char const* aws_access_key_id;
+  char const* aws_secret_access_key;
+  char const* aws_session_token;
+  char const* aws_endpoint_url;
   /// -1 = unset, 0 = virtual-hosted style, 1 = path-style.
   int32_t path_style_access;
   /// 1 = unsigned/public request, 0 = signed/default-chain request.
@@ -86,15 +86,15 @@ typedef enum {
 ///
 /// `exec_options` must name an explicit valid device and non-NULL stream/MR.
 /// `exec_options->mr` must outlive the returned table.
-cudf_status_t cudf_io_read_parquet_ex(const char* filepath,
-                                      const char** columns,
+cudf_status_t cudf_io_read_parquet_ex(char const* filepath,
+                                      char const** columns,
                                       int32_t num_columns,
                                       int64_t skip_rows,
                                       int64_t num_rows,
-                                      const int32_t* row_groups,
+                                      int32_t const* row_groups,
                                       int32_t num_row_groups,
                                       cudf_table_handle* out,
-                                      const cudf_exec_options_t* exec_options);
+                                      cudf_exec_options_t const* exec_options);
 
 /// Read a Parquet payload borrowed from host memory into a table.
 ///
@@ -104,16 +104,16 @@ cudf_status_t cudf_io_read_parquet_ex(const char* filepath,
 /// `host_buffer` must be non-NULL and `host_buffer_len` must be > 0.
 /// `columns`, `skip_rows`, `num_rows`, `row_groups`, and `exec_options` have
 /// the same contract as `cudf_io_read_parquet_ex`.
-cudf_status_t cudf_io_read_parquet_from_host_buffer_ex(const void* host_buffer,
+cudf_status_t cudf_io_read_parquet_from_host_buffer_ex(void const* host_buffer,
                                                        size_t host_buffer_len,
-                                                       const char** columns,
+                                                       char const** columns,
                                                        int32_t num_columns,
                                                        int64_t skip_rows,
                                                        int64_t num_rows,
-                                                       const int32_t* row_groups,
+                                                       int32_t const* row_groups,
                                                        int32_t num_row_groups,
                                                        cudf_table_handle* out,
-                                                       const cudf_exec_options_t* exec_options);
+                                                       cudf_exec_options_t const* exec_options);
 
 /// Read a Parquet file, returning the table and column names.
 /// `out_names` is populated with `out_num_names` null-terminated strings.
@@ -135,17 +135,17 @@ cudf_status_t cudf_io_read_parquet_from_host_buffer_ex(const void* host_buffer,
 ///
 /// `exec_options` must name an explicit valid device and non-NULL stream/MR.
 /// `exec_options->mr` must outlive the returned table.
-cudf_status_t cudf_io_read_parquet_with_metadata_ex(const char* filepath,
-                                                    const char** columns,
+cudf_status_t cudf_io_read_parquet_with_metadata_ex(char const* filepath,
+                                                    char const** columns,
                                                     int32_t num_columns,
                                                     int64_t skip_rows,
                                                     int64_t num_rows,
-                                                    const int32_t* row_groups,
+                                                    int32_t const* row_groups,
                                                     int32_t num_row_groups,
                                                     cudf_table_handle* out_table,
                                                     char*** out_names,
                                                     int32_t* out_num_names,
-                                                    const cudf_exec_options_t* exec_options);
+                                                    cudf_exec_options_t const* exec_options);
 
 /// Read Parquet with metadata, explicit execution context, and an optional
 /// libcudf AST reader predicate.
@@ -154,30 +154,30 @@ cudf_status_t cudf_io_read_parquet_with_metadata_ex(const char* filepath,
 /// `exec_options` must name an explicit valid device and non-NULL stream/MR.
 /// `exec_options->mr` must outlive the returned table.
 cudf_status_t cudf_io_read_parquet_with_metadata_filter_ex(
-  const char* filepath,
-  const char** columns,
+  char const* filepath,
+  char const** columns,
   int32_t num_columns,
   int64_t skip_rows,
   int64_t num_rows,
-  const int32_t* row_groups,
+  int32_t const* row_groups,
   int32_t num_row_groups,
   cudf_ast_expression_handle predicate,
   cudf_table_handle* out_table,
   char*** out_names,
   int32_t* out_num_names,
   cudf_io_parquet_pruning_evidence_t* out_pruning_evidence,
-  const cudf_exec_options_t* exec_options);
+  cudf_exec_options_t const* exec_options);
 
 /// Read remote Parquet through an explicit KvikIO-backed datasource with
 /// scoped, non-global S3 options and read evidence.
 cudf_status_t cudf_io_read_remote_parquet_with_metadata_filter_ex(
-  const char* uri,
-  const cudf_io_remote_parquet_profile_t* profile,
-  const char** columns,
+  char const* uri,
+  cudf_io_remote_parquet_profile_t const* profile,
+  char const** columns,
   int32_t num_columns,
   int64_t skip_rows,
   int64_t num_rows,
-  const int32_t* row_groups,
+  int32_t const* row_groups,
   int32_t num_row_groups,
   cudf_ast_expression_handle predicate,
   cudf_table_handle* out_table,
@@ -185,7 +185,7 @@ cudf_status_t cudf_io_read_remote_parquet_with_metadata_filter_ex(
   int32_t* out_num_names,
   cudf_io_remote_parquet_read_evidence_t* out_evidence,
   cudf_io_parquet_pruning_evidence_t* out_pruning_evidence,
-  const cudf_exec_options_t* exec_options);
+  cudf_exec_options_t const* exec_options);
 
 /// Read multiple Parquet files with metadata, explicit execution context, and
 /// an optional libcudf AST reader predicate.
@@ -203,20 +203,20 @@ cudf_status_t cudf_io_read_remote_parquet_with_metadata_filter_ex(
 /// `exec_options` must name an explicit valid device and non-NULL stream/MR.
 /// `exec_options->mr` must outlive the returned table.
 cudf_status_t cudf_io_read_parquet_multi_with_metadata_filter_ex(
-  const char** filepaths,
+  char const** filepaths,
   int32_t num_files,
-  const char** columns,
+  char const** columns,
   int32_t num_columns,
-  const int32_t* row_group_offsets,
+  int32_t const* row_group_offsets,
   int32_t num_row_group_offsets,
-  const int32_t* row_groups,
+  int32_t const* row_groups,
   int32_t num_row_groups,
   cudf_ast_expression_handle predicate,
   cudf_table_handle* out_table,
   char*** out_names,
   int32_t* out_num_names,
   cudf_io_parquet_pruning_evidence_t* out_pruning_evidence,
-  const cudf_exec_options_t* exec_options);
+  cudf_exec_options_t const* exec_options);
 
 /// Read multiple Parquet files, allowing selected files to use explicit
 /// KvikIO-backed remote datasources with scoped S3 options and aggregate read
@@ -224,15 +224,15 @@ cudf_status_t cudf_io_read_parquet_multi_with_metadata_filter_ex(
 /// use the matching `profiles` entry as a remote datasource, and zero entries
 /// use libcudf's ordinary path datasource for that file.
 cudf_status_t cudf_io_read_parquet_multi_mixed_with_metadata_filter_ex(
-  const char** filepaths,
-  const int32_t* remote_source_flags,
-  const cudf_io_remote_parquet_profile_t* profiles,
+  char const** filepaths,
+  int32_t const* remote_source_flags,
+  cudf_io_remote_parquet_profile_t const* profiles,
   int32_t num_files,
-  const char** columns,
+  char const** columns,
   int32_t num_columns,
-  const int32_t* row_group_offsets,
+  int32_t const* row_group_offsets,
   int32_t num_row_group_offsets,
-  const int32_t* row_groups,
+  int32_t const* row_groups,
   int32_t num_row_groups,
   cudf_ast_expression_handle predicate,
   cudf_table_handle* out_table,
@@ -240,7 +240,7 @@ cudf_status_t cudf_io_read_parquet_multi_mixed_with_metadata_filter_ex(
   int32_t* out_num_names,
   cudf_io_remote_parquet_read_evidence_t* out_evidence,
   cudf_io_parquet_pruning_evidence_t* out_pruning_evidence,
-  const cudf_exec_options_t* exec_options);
+  cudf_exec_options_t const* exec_options);
 
 /// Read Parquet from a host buffer with metadata, explicit execution context,
 /// and an optional libcudf AST reader predicate.
@@ -250,20 +250,20 @@ cudf_status_t cudf_io_read_parquet_multi_mixed_with_metadata_filter_ex(
 /// non-NULL and `host_buffer_len` must be > 0. Other arguments have the same
 /// contract as `cudf_io_read_parquet_with_metadata_filter_ex`.
 cudf_status_t cudf_io_read_parquet_from_host_buffer_with_metadata_filter_ex(
-  const void* host_buffer,
+  void const* host_buffer,
   size_t host_buffer_len,
-  const char** columns,
+  char const** columns,
   int32_t num_columns,
   int64_t skip_rows,
   int64_t num_rows,
-  const int32_t* row_groups,
+  int32_t const* row_groups,
   int32_t num_row_groups,
   cudf_ast_expression_handle predicate,
   cudf_table_handle* out_table,
   char*** out_names,
   int32_t* out_num_names,
   cudf_io_parquet_pruning_evidence_t* out_pruning_evidence,
-  const cudf_exec_options_t* exec_options);
+  cudf_exec_options_t const* exec_options);
 
 /// Free column name array returned by metadata readers.
 void cudf_io_free_column_names(char** names, int32_t num_names);
@@ -292,7 +292,7 @@ cudf_status_t cudf_io_kvikio_drain_bounce_buffer_pools(uint64_t* out_cleared_byt
 /// Opens a path datasource and reports datasource-level read capability without
 /// launching a Parquet decode. `preferred_read_size` controls the
 /// `is_device_read_preferred` query; pass -1 when no size is known.
-cudf_status_t cudf_io_probe_path_datasource(const char* filepath,
+cudf_status_t cudf_io_probe_path_datasource(char const* filepath,
                                             int64_t preferred_read_size,
                                             cudf_io_datasource_probe_result_t* out);
 
@@ -300,8 +300,8 @@ cudf_status_t cudf_io_probe_path_datasource(const char* filepath,
 /// capability without launching a Parquet decode. This may contact the remote
 /// service to resolve file size.
 cudf_status_t cudf_io_probe_remote_parquet_datasource(
-  const char* uri,
-  const cudf_io_remote_parquet_profile_t* profile,
+  char const* uri,
+  cudf_io_remote_parquet_profile_t const* profile,
   int64_t preferred_read_size,
   cudf_io_datasource_probe_result_t* out);
 
@@ -320,12 +320,12 @@ cudf_status_t cudf_io_probe_remote_parquet_datasource(
 /// shim installs `exec_options->mr` as the current device resource only for the
 /// duration of the libcudf writer call.
 cudf_status_t cudf_io_write_parquet_ex(cudf_table_view_handle table,
-                                       const char* filepath,
-                                       const char** column_names,
+                                       char const* filepath,
+                                       char const** column_names,
                                        int32_t num_columns,
                                        int32_t row_group_size_rows,
                                        int32_t dictionary_policy,
-                                       const cudf_exec_options_t* exec_options);
+                                       cudf_exec_options_t const* exec_options);
 
 // ---------------------------------------------------------------------------
 // CSV
@@ -335,11 +335,11 @@ cudf_status_t cudf_io_write_parquet_ex(cudf_table_view_handle table,
 ///
 /// `exec_options` must name an explicit valid device and non-NULL stream/MR.
 /// `exec_options->mr` must outlive the returned table.
-cudf_status_t cudf_io_read_csv_ex(const char* filepath,
+cudf_status_t cudf_io_read_csv_ex(char const* filepath,
                                   char delimiter,
                                   int32_t has_header,
                                   cudf_table_handle* out,
-                                  const cudf_exec_options_t* exec_options);
+                                  cudf_exec_options_t const* exec_options);
 
 /// Write a table to a CSV file.
 /// `column_names` is an array of null-terminated strings (one per column).
@@ -354,12 +354,12 @@ cudf_status_t cudf_io_read_csv_ex(const char* filepath,
 /// installs `exec_options->mr` as the current device resource only for the
 /// duration of the libcudf writer call.
 cudf_status_t cudf_io_write_csv_ex(cudf_table_view_handle table,
-                                   const char* filepath,
-                                   const char** column_names,
+                                   char const* filepath,
+                                   char const** column_names,
                                    int32_t num_columns,
                                    char delimiter,
                                    int32_t include_header,
-                                   const cudf_exec_options_t* exec_options);
+                                   cudf_exec_options_t const* exec_options);
 
 // ---------------------------------------------------------------------------
 // JSON
@@ -370,10 +370,10 @@ cudf_status_t cudf_io_write_csv_ex(cudf_table_view_handle table,
 ///
 /// `exec_options` must name an explicit valid device and non-NULL stream/MR.
 /// `exec_options->mr` must outlive the returned table.
-cudf_status_t cudf_io_read_json_ex(const char* filepath,
+cudf_status_t cudf_io_read_json_ex(char const* filepath,
                                    int32_t lines,
                                    cudf_table_handle* out,
-                                   const cudf_exec_options_t* exec_options);
+                                   cudf_exec_options_t const* exec_options);
 
 /// Read JSON with metadata and explicit execution context.
 ///
@@ -382,12 +382,12 @@ cudf_status_t cudf_io_read_json_ex(const char* filepath,
 ///
 /// `exec_options` must name an explicit valid device and non-NULL stream/MR.
 /// `exec_options->mr` must outlive the returned table.
-cudf_status_t cudf_io_read_json_with_metadata_ex(const char* filepath,
+cudf_status_t cudf_io_read_json_with_metadata_ex(char const* filepath,
                                                  int32_t lines,
                                                  cudf_table_handle* out_table,
                                                  char*** out_names,
                                                  int32_t* out_num_names,
-                                                 const cudf_exec_options_t* exec_options);
+                                                 cudf_exec_options_t const* exec_options);
 
 /// Write a table to a JSON file.
 /// `lines`: 1 for JSON Lines (NDJSON), 0 for standard JSON.
@@ -403,12 +403,12 @@ cudf_status_t cudf_io_read_json_with_metadata_ex(const char* filepath,
 /// installs `exec_options->mr` as the current device resource only for the
 /// duration of the libcudf writer call.
 cudf_status_t cudf_io_write_json_ex(cudf_table_view_handle table,
-                                    const char* filepath,
-                                    const char** column_names,
+                                    char const* filepath,
+                                    char const** column_names,
                                     int32_t num_columns,
                                     int32_t lines,
                                     int32_t include_nulls,
-                                    const cudf_exec_options_t* exec_options);
+                                    cudf_exec_options_t const* exec_options);
 
 #ifdef __cplusplus
 }
